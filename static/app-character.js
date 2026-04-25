@@ -1381,4 +1381,36 @@
     window.handleCatgirlSwitch = handleCatgirlSwitch;
 
     window.appCharacter = mod;
+
+    // ======================================================================
+    // Cloudsave force-terminate: clear chat UI after character reloaded
+    // ======================================================================
+    window.addEventListener('neko-cloudsave-character-reloaded', function (event) {
+        var character_name = (event.detail || {}).character_name || '';
+
+        var chatContainer = document.getElementById('chatContainer');
+        if (chatContainer) {
+            chatContainer.innerHTML = '';
+        }
+        if (window.reactChatWindowHost && typeof window.reactChatWindowHost.clearMessages === 'function') {
+            window.reactChatWindowHost.clearMessages();
+        }
+        if (typeof window._resetReactChatSwitchState === 'function') {
+            window._resetReactChatSwitchState();
+        }
+
+        window.currentGeminiMessage = null;
+        window._geminiTurnFullText = '';
+        window.currentTurnGeminiBubbles = [];
+        window.currentTurnGeminiAttachments = [];
+        window._realisticGeminiQueue = [];
+        window._realisticGeminiBuffer = '';
+        window._pendingMusicCommand = '';
+        window._realisticGeminiTimestamp = null;
+        window._realisticGeminiVersion = (window._realisticGeminiVersion || 0) + 1;
+        window._isProcessingRealisticQueue = false;
+        window.realisticGeminiCurrentTurnId = null;
+
+        console.info('[cloudsave] 角色 ' + character_name + ' 数据已从云端重新加载，聊天 UI 已刷新');
+    });
 })();

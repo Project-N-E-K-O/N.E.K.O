@@ -24,6 +24,9 @@
     var resolvePromise = null;
     var sourceDataUrl = null;
     var recaptureFn = null;
+    // 单调递增 token：防止旧 recaptureFn 异步返回时把结果灌进新一轮 crop 会话，
+    // 或在 finally 里把新会话刚显示的"隐藏NEKO"按钮文案/disabled 状态错误重置。
+    var recaptureRunId = 0;
 
     // Selection rectangle (canvas coords, always normalized: x,y = top-left)
     var sel = null; // { x, y, w, h } or null
@@ -55,6 +58,17 @@
     var HANDLE_SIZE = 8;
     var MIN_SEL = 10;
 
+    // ======================== i18n helpers ========================
+    function tr(key, fallback) {
+        try {
+            if (typeof window.t === 'function') {
+                var v = window.t(key);
+                if (v && v !== key) return v;
+            }
+        } catch (e) { /* fall through */ }
+        return fallback;
+    }
+
     // ======================== Ensure DOM ========================
     function ensureOverlay() {
         if (overlay) return;
@@ -85,19 +99,19 @@
         tabScreenshot = document.createElement('button');
         tabScreenshot.className = 'crop-tab crop-tab-active';
         tabScreenshot.type = 'button';
-        tabScreenshot.textContent = '\u622A\u56FE';
+        tabScreenshot.textContent = tr('chat.cropTabScreenshot', '\u622A\u56FE');
         tabScreenshot.addEventListener('click', function () { switchTab('screenshot'); });
 
         tabHideNeko = document.createElement('button');
         tabHideNeko.className = 'crop-tab';
         tabHideNeko.type = 'button';
-        tabHideNeko.textContent = '\u9690\u85CFNEKO';
+        tabHideNeko.textContent = tr('chat.cropTabHideNeko', '\u9690\u85CFNEKO');
         tabHideNeko.addEventListener('click', function () { switchTab('hideNeko'); });
 
         var tabCancel = document.createElement('button');
         tabCancel.className = 'crop-tab crop-tab-cancel';
         tabCancel.type = 'button';
-        tabCancel.textContent = '\u53D6\u6D88';
+        tabCancel.textContent = tr('chat.cropTabCancel', '\u53D6\u6D88');
         tabCancel.addEventListener('click', cancelAll);
 
         topBar.appendChild(tabScreenshot);
@@ -114,14 +128,14 @@
         btnConfirm.className = 'crop-action-btn crop-action-confirm';
         btnConfirm.type = 'button';
         btnConfirm.innerHTML = '&#x2713;';
-        btnConfirm.title = '\u786E\u8BA4\u622A\u56FE';
+        btnConfirm.title = tr('chat.cropConfirmTitle', '\u786E\u8BA4\u622A\u56FE');
         btnConfirm.addEventListener('click', confirmCrop);
 
         var btnCancel = document.createElement('button');
         btnCancel.className = 'crop-action-btn crop-action-cancel';
         btnCancel.type = 'button';
         btnCancel.innerHTML = '&#x2717;';
-        btnCancel.title = '\u53D6\u6D88\u9009\u533A';
+        btnCancel.title = tr('chat.cropClearSelectionTitle', '\u53D6\u6D88\u9009\u533A');
         btnCancel.addEventListener('click', clearSelection);
 
         actionBtns.appendChild(btnCancel);
@@ -158,19 +172,26 @@
         clearSelection();
 
         if (tab === 'hideNeko' && recaptureFn) {
+            var runId = ++recaptureRunId;
+            var currentRecaptureFn = recaptureFn;
             tabHideNeko.disabled = true;
-            tabHideNeko.textContent = '\u6B63\u5728\u91CD\u65B0\u622A\u56FE...';
-            recaptureFn().then(function (newDataUrl) {
+            tabHideNeko.textContent = tr('chat.cropTabRecapturing', '\u6B63\u5728\u91CD\u65B0\u622A\u56FE...');
+            currentRecaptureFn().then(function (newDataUrl) {
+                if (runId !== recaptureRunId) return;
                 if (newDataUrl && activeTab === 'hideNeko') {
                     sourceDataUrl = newDataUrl;
                     loadImage(newDataUrl);
                 }
             }).catch(function (err) {
+                if (runId !== recaptureRunId) return;
                 console.warn('[crop] recapture failed:', err);
             }).finally(function () {
+                if (runId !== recaptureRunId) return;
                 tabHideNeko.disabled = false;
-                tabHideNeko.textContent = '\u9690\u85CFNEKO';
+                tabHideNeko.textContent = tr('chat.cropTabHideNeko', '\u9690\u85CFNEKO');
             });
+        } else if (tab === 'hideNeko' && !recaptureFn) {
+            console.warn('[crop] 点了 hideNeko 但 recaptureFn 未设置，无法重截图');
         }
     }
 
@@ -559,6 +580,9 @@
     }
 
     function close(result) {
+        // 任何已 in-flight 的 recapture promise 在 then/catch/finally 里都会发现
+        // runId 已过期，从而不会再触碰 sourceDataUrl / 按钮文案。
+        recaptureRunId++;
         if (overlay) overlay.style.display = 'none';
         sel = null;
         mode = MODE_NONE;
@@ -619,9 +643,15 @@
             sel = null;
             mode = MODE_NONE;
             activeTab = 'screenshot';
+            // 新会话开始 —— 失效任何尚未结算的旧 recapture promise，并把按钮恢复初始态。
+            // close() 已经 ++ 过一次，这里再 ++ 一次保证 cropImage 直接被重复调用
+            // （不经过 close）的边角情况也安全。
+            recaptureRunId++;
             tabScreenshot.classList.add('crop-tab-active');
             tabHideNeko.classList.remove('crop-tab-active');
             tabHideNeko.style.display = recaptureFn ? '' : 'none';
+            tabHideNeko.disabled = false;
+            tabHideNeko.textContent = tr('chat.cropTabHideNeko', '\u9690\u85CFNEKO');
             hideActionBtns();
 
             loadImage(dataUrl);

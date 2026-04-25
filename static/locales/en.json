@@ -42,6 +42,25 @@
         "toneMappingAgX": "AgX",
         "toneMappingNeutral": "Neutral"
     },
+    "autostartPrompt": {
+        "title": "Want N.E.K.O to launch at startup?",
+        "message": "It will be ready automatically the next time you turn on your computer, so you won't need to launch it manually.",
+        "note": "This only enables launch at login for the current user, and you can turn it off later.",
+        "startNow": "Enable auto launch",
+        "later": "Maybe later",
+        "never": "Don't remind me",
+        "enableFailed": "Auto launch couldn't be enabled right now. Please try again later.",
+        "requiresApproval": "Approve auto launch in your system settings first. It will take effect after approval."
+    },
+    "tutorialPrompt": {
+        "title": "Want to start the home tutorial?",
+        "message": "I can quickly show you the main entry points on the home screen so you can get started with N.E.K.O right away.",
+        "note": "You can skip it at any time, or reopen it later from Memory Browser.",
+        "startNow": "Start tutorial",
+        "later": "Maybe later",
+        "never": "Don't remind me",
+        "startFailed": "The tutorial couldn't be started right now. Please try again later."
+    },
     "characterProfile": {
         "gender": "Gender",
         "age": "Age",
@@ -155,6 +174,12 @@
         "subscriptionsUpdated": "Subscription list updated",
         "unsubscribeFailed": "Unsubscribe failed: {{error}}",
         "unsubscribeError": "Error during unsubscribe, please try again later",
+        "unsubscribeCurrentCatgirlBlocked": "Can't unsubscribe \"{{name}}\" because it's the active catgirl. Please switch to another character first.",
+        "unsubscribeLocalConfigCleanupFailed": "Failed to clean up local character configuration. The Steam unsubscribe request was cancelled; please resolve the issue and retry.",
+        "unsubscribeSteamRequestFailed": "Failed to send Steam unsubscribe request: {{error}}",
+        "unsubscribeCleanupDetail": "Cleaned {{characterCount}} character card(s) ({{characters}}); deleted {{memoryPathCount}} memory path(s)",
+        "unsubscribeNoAssociation": "No character associated with this subscription. Only the subscription folder was removed; clean up any leftover memory manually.",
+        "unsubscribeCleanupErrors": "{{count}} error(s) during cleanup. First: {{stage}} -> {{error}}",
         "validatingFolderPath": "Validating folder: {{path}}",
         "previewImageMissing": "Preview image file not found, please check the path",
         "uploadReady": "Ready to upload {{itemName}}",
@@ -260,6 +285,29 @@
         "no_local_items": "No workshop items found in the specified folder",
         "scanComplete": "Scan completed, found {{count}} items",
         "refresh": "Refresh Subscriptions",
+        "cleanLegacyMemory": "Clean Legacy Memory",
+        "cleanLegacyMemoryTooltip": "Scan and clean character memory left in legacy paths such as Documents",
+        "legacyScanTitle": "Clean Legacy Memory",
+        "legacyRuntimeMemory": "Runtime memory directory: {{path}}",
+        "legacyScanFooter": "{{count}} entries, ~{{size}} total",
+        "legacyScanDesc": "The following directories are in legacy paths (e.g. Documents), not the current active memory location (AppData). Select the entries to delete.",
+        "legacyScanLoading": "Scanning...",
+        "legacyScanEmpty": "No legacy memory found. Nothing to clean.",
+        "legacyScanFailed": "Scan failed",
+        "legacySelectAll": "Select All",
+        "legacySelectNone": "Clear",
+        "legacySelectUnlinked": "Select Unlinked",
+        "legacyStatusUnlinked": "Unlinked",
+        "legacyStatusListed": "Listed Character",
+        "legacyStatusDuplicate": "Duplicate of Runtime",
+        "legacyColName": "Name",
+        "legacyColPath": "Path",
+        "legacyColSize": "Size",
+        "legacyColStatus": "Status",
+        "legacyDeleteSelected": "Delete Selected",
+        "legacyDeleteConfirm": "Permanently delete {{count}} directories? This action cannot be undone.",
+        "legacyDeleteDone": "Deleted {{ok}}, failed {{failed}}",
+        "legacyDeleteFailed": "Cleanup failed",
         "descriptionPlaceholder": "Describe your creation in detail...",
         "tagsPlaceholder": "Enter tags, press Enter to add",
         "tagsPlaceholderSpace": "Enter tags, press Space to add",
@@ -348,7 +396,7 @@
         "default": "Default",
         "noVoiceSelected": "No Voice Selected",
         "noDescription": "No Description",
-            "characterSettingsFile": "Character Settings File",
+        "characterSettingsFile": "Character Settings File",
         "workshopAgreementText": "By clicking \"Upload\" you agree to the Steam Workshop Terms of Service, including the Workshop Legal Agreement:",
         "alreadyUploaded": "Uploaded to Workshop",
         "uploadTime": "Upload Time",
@@ -517,6 +565,7 @@
         "RESPONSE_TIMEOUT": "💥 Connection timeout (Response timeout), voice conversation interrupted.",
         "CONNECTION_TIMEOUT": "💥 Connection timeout. Please check your network connection.",
         "RESPONSE_TOO_LONG": "Response too long, output discarded (you can increase TEXT_GUARD_MAX_LENGTH in settings)",
+        "INPUT_TOO_LONG": "Input too long, please shorten and retry",
         "RESPONSE_INVALID": "AI response did not meet requirements, output discarded",
         "NO_USER_MESSAGE": "⚠️ No user message in conversation history, cannot generate response",
         "LLM_RETRY": "⚠️ LLM {{error_type}}, retrying ({{attempt}}/{{max_retries}})...",
@@ -566,6 +615,8 @@
         "tooltip": "Chat Area",
         "textInputPlaceholder": "Press Enter to send, Shift+Enter for new line",
         "send": "Send",
+        "inputTooLong": "Message too long ({{count}}/{{max}}), please shorten and retry",
+        "responseTooLong": "Response too long and was discarded; your input has been restored.",
         "importImage": "Import Image",
         "importImageAriaLabel": "Import image",
         "screenshot": "Screenshot",
@@ -577,6 +628,12 @@
         "screenshotAlt": "Screenshot {{index}}",
         "screenshotTitle": "Click to view screenshot {{index}}",
         "removeScreenshot": "Remove this screenshot",
+        "cropTabScreenshot": "Screenshot",
+        "cropTabHideNeko": "Hide NEKO",
+        "cropTabCancel": "Cancel",
+        "cropTabRecapturing": "Recapturing...",
+        "cropConfirmTitle": "Confirm crop",
+        "cropClearSelectionTitle": "Clear selection",
         "avatarPreview": "Show current avatar",
         "avatarPreviewLabel": "Current avatar",
         "avatarPreviewCardTitle": "Current Avatar",
@@ -965,6 +1022,12 @@
         "customApiWarning": "Note: After enabling custom APIs, custom configurations below will be prioritized, while core and auxiliary APIs can still be adjusted separately.",
         "enableCustomApi": "Enable Custom API Configuration",
         "enableCustomApiNote": "After enabling, custom API configuration will be used, prioritized over core APIs and auxiliary APIs",
+        "clearCustomApi": "Clear Custom API Configuration",
+        "clearCustomApiConfirm": "Are you sure you want to clear all custom API configurations? This will clear all custom API Keys, Model IDs, URLs, and uncheck GPT-SoVITS.",
+        "clearCustomApiConfirmTitle": "⚠️ Confirm Clear",
+        "clearCustomApiConfirmBtn": "Confirm Clear",
+        "clearCustomApiSaveHint": "⚠ This only clears the configuration on the page. You still need to click \"Save Settings\" to apply the changes.",
+        "clearCustomApiSuccess": "Custom API configuration cleared. Please click Save Settings to apply changes.",
         "loadProvidersFailed": "Failed to load API provider options, please refresh the page and try again",
         "saveFailed": "Save failed: {{error}}",
         "apiKeyInvalid": "API Key is invalid",
@@ -1025,6 +1088,8 @@
         "selectMotion": "Animation",
         "selectExpression": "Expression",
         "selectPersistentExpression": "Persist. Expr.",
+        "noMotion": "No Motion",
+        "noExpression": "No Expression",
         "noMotionFiles": "No motion files",
         "touchAnim": {
             "title": "Touch Anim Config",
@@ -1463,6 +1528,7 @@
         "detailDescriptionPlaceholder": "Enter detailed description",
         "catgirlProfile": "NEKO Profile: Advanced settings include Live2D model, Voice ID, etc.",
         "addCatgirl": "Add NEKO",
+        "openCloudsaveManager": "Cloud Save Manager",
         "switchCatgirl": "Switch NEKO",
         "deleteCatgirl": "Delete NEKO",
         "hideCatgirl": "Hide this NEKO",
@@ -1499,6 +1565,7 @@
         "cannotConfirmCatgirlStatus": "Unable to confirm current neko status, deletion cancelled",
         "confirmDeleteCatgirl": "Are you sure you want to delete neko \"{{name}}\"?",
         "deleteCatgirlTitle": "Delete NEKO",
+        "deleteFailed": "Delete failed",
         "addCatgirlFieldPrompt": "Please enter the name of the new field (key name)",
         "addCatgirlFieldTitle": "Add NEKO Field",
         "live2dModelError": "NEKO \"{{name}}\"'s Live2D model file does not exist or is corrupted.\n\nCurrent model path: {{path}}\n\nDo you want to fallback to default model (mao_pro)?\n\nClick \"OK\" to use default model, click \"Cancel\" to keep current settings.",
@@ -1539,6 +1606,7 @@
         "saveMasterError": "Failed to save master settings",
         "autoSaved": "Settings auto-saved",
         "autoSaveFailed": "Auto-save failed, please save manually before closing",
+        "unsavedNewCatgirlDraftDetected": "Detected an unsaved new NEKO draft. Please save or cancel it before syncing refresh",
         "exportCard": "Export Character Card",
         "exportingCard": "Exporting character card...",
         "exportCardSuccess": "Character card exported successfully",
@@ -1655,6 +1723,255 @@
         "micMute": "Mute Microphone",
         "micUnmute": "Unmute"
     },
+    "cloudsave": {
+        "pageTitle": "Cloud Save Manager - Project N.E.K.O.",
+        "headerTitle": "Cloud Save Manager",
+        "subtitle": "Prepare or restore one character at a time using the local cloud snapshot cache. It will not automatically overwrite global configuration. When the game exits through Steam, Steam Cloud uploads the snapshot folder automatically.",
+        "refresh": "Refresh",
+        "backToCharacterManager": "Back",
+        "loadingSummary": "Loading cloud save summary...",
+        "emptyState": "There are no character summaries to display right now.",
+        "providerAvailable": "Cloud save is available. You can prepare or restore individual character snapshots manually.",
+        "providerUnavailable": "Cloud save is currently unavailable. This page only shows local summaries.",
+        "providerSteamAutoCloudReady": "Steam Cloud is connected. Upload writes the local cloud snapshot now, and Steam will upload it automatically after you exit the game through Steam.",
+        "providerSteamAutoCloudOffline": "Local cloud snapshots are available, but Steam Cloud is not currently connected. Start the game from Steam while logged in if you want Steam to upload or download snapshots automatically.",
+        "providerSteamAutoCloudSourceLaunch": "This session was started from source. If Steam is running and logged in, the desktop RemoteStorage helper can assist with cloudsave download and upload, but this still is not the same as the packaged Steam Auto-Cloud path. For production-path verification, launch once through Steam or the desktop launcher.",
+        "providerSnapshotScope": "This page shows the staged cloud snapshot already stored on this device.",
+        "providerSnapshotSequence": "Sequence {{sequence}}.",
+        "providerSnapshotExportedAt": "Exported {{time}}.",
+        "providerSnapshotManualApply": "A newer staged snapshot is already on this device, but runtime data will change only after you click Apply snapshot manually.",
+        "currentCharacter": "Current character: {{name}}",
+        "noCurrentCharacter": "Current character: Not set",
+        "nameConflictNotice": {
+            "title": "Same-name reminder",
+            "bodyStorage": "Cloud save uses the character name as a single character slot. It does not split entries automatically just because one character came from Steam Workshop and another was created locally.",
+            "bodyImpact": "If two different characters share the same name, uploads and downloads will treat them as the same cloud character and may overwrite the character settings, memory directory, and cloud record.",
+            "bodyAction": "Before syncing, make sure the character name is unique. If they are not the same character, rename one of them before uploading or downloading."
+        },
+        "group": {
+            "count": "{{count}} items",
+            "workshopTitle": "Steam Workshop-origin characters",
+            "workshopDescription": "Characters in this section are confirmed to originate from Steam Workshop on either the local side or the cloud side. Switching only the current model to a Steam Workshop asset does not move a self-created character into this group.",
+            "otherTitle": "My characters",
+            "otherDescription": "Characters in this section are self-created or otherwise not known to originate from Steam Workshop. The current model asset source is shown separately in the details."
+        },
+        "resourceRecoveryTitle": "Resource recovery notes",
+        "metaNoValue": "None",
+        "warning": {
+            "local_resource_missing_on_this_device": "Local resources are already missing on this device. Restore them using the source guidance above.",
+            "cloud_resource_may_be_missing_after_download": "Resources may still be missing after download. Restore the model manually based on the recorded source if needed."
+        },
+        "modelType": {
+            "live2d": "Live2D",
+            "vrm": "VRM",
+            "live3d": "VRM",
+            "mmd": "MMD",
+            "unknown": "Unknown model"
+        },
+        "assetSource": {
+            "notRecorded": "Not recorded",
+            "steamWorkshop": "Steam Workshop",
+            "localImported": "Locally imported model",
+            "manualExternal": "External model reference",
+            "builtin": "Built-in asset"
+        },
+        "relationState": {
+            "local_only": "Local only",
+            "cloud_only": "Cloud only",
+            "matched": "Local and cloud match",
+            "diverged": "Local and cloud differ",
+            "unknown": "Unknown state"
+        },
+        "assetState": {
+            "notRecorded": "Not recorded",
+            "ready": "Ready to use",
+            "import_required": "Manual asset import required",
+            "downloadable": "Assets are missing. Check the Steam Workshop recovery status.",
+            "missing": "Only settings were restored. Assets are missing."
+        },
+        "workshopStatus": {
+            "notConfirmed": "Not confirmed",
+            "installed_and_subscribed": "Installed and still subscribed",
+            "installed_but_unsubscribed": "Cached locally, but unsubscribed",
+            "subscribed_not_installed": "Subscribed, waiting for download",
+            "available_needs_resubscribe": "Still available, but resubscription is required",
+            "unavailable": "Item is no longer available",
+            "steam_unavailable": "Steam is unavailable, status not confirmed",
+            "unknown": "Status not confirmed"
+        },
+        "badge": {
+            "local": "Local: {{value}}",
+            "cloud": "Cloud: {{value}}"
+        },
+        "scopePrefix": {
+            "localReady": "Local resources are still usable",
+            "cloudReady": "Matching Steam Workshop resources are already on this device",
+            "localMissing": "Local resources are missing",
+            "cloudAfterDownload": "After cloud download"
+        },
+        "guidance": {
+            "workshopReadyResubscribe": {
+                "title": "{{prefix}}, but the current subscription is no longer active",
+                "bodyLocal": "This device can still use the current local Steam Workshop files. If the local cache is lost in the future, you will usually need to resubscribe before the model can be restored again.",
+                "bodyCloud": "This device already has the matching Steam Workshop resources. If the local cache is lost in the future, you will usually need to resubscribe before the model can be restored again."
+            },
+            "workshopReadyUnavailable": {
+                "title": "{{prefix}}, but the original Steam Workshop item may have been removed",
+                "body": "The resource is still present on this device, so the character can keep working now. If the cache is lost later, Steam Workshop recovery will usually no longer be possible and you will need your own backup or a manual import."
+            },
+            "workshopInstalled": {
+                "title": "{{prefix}}: valid Steam Workshop resources are still present on this device",
+                "bodyLocal": "The Steam Workshop item is still installed and subscribed on this device, but the bound model file was not found. The folder layout may have changed, the update may be incomplete, or the model may need to be resynced.",
+                "bodyCloud": "The Steam Workshop item is still installed and subscribed on this device. After downloading the character data, the existing recovery path can usually restore the model. If it still fails, the model may need to be resynced."
+            },
+            "workshopCacheOnly": {
+                "title": "{{prefix}}: only an old cache may remain, and the item is unsubscribed",
+                "bodyLocal": "The device is no longer subscribed, and the current bound file is missing. If the old cache is also unusable, you will usually need to resubscribe or import the model manually.",
+                "bodyCloud": "The device is no longer subscribed. After downloading the character data, you will usually need to resubscribe to the Steam Workshop item or import the model manually if the old cache cannot restore it."
+            },
+            "workshopSubscribed": {
+                "title": "{{prefix}}: this device is still subscribed to the Steam Workshop item",
+                "bodyLocal": "This device is still subscribed to the Steam Workshop item. Once Steam finishes downloading it, the model can usually recover. If it does not, the item structure may have changed or the model may need to be resynced.",
+                "bodyCloud": "This device is still subscribed to the Steam Workshop item. After downloading the character data, the model can usually recover once Steam finishes downloading the resource."
+            },
+            "workshopResubscribe": {
+                "title": "{{prefix}}: the Steam Workshop item must be resubscribed",
+                "bodyLocal": "This character originally used Steam Workshop resources, but the current device is no longer subscribed. If the item is still available, resubscribe first and then try to restore the model again.",
+                "bodyCloud": "This cloud character originally used Steam Workshop resources, but the current device is not subscribed. After downloading the character data, resubscribe first before trying to restore the model."
+            },
+            "workshopUnavailable": {
+                "title": "{{prefix}}: the Steam Workshop item is no longer accessible",
+                "bodyLocal": "This character originally used Steam Workshop resources, but the item has been removed or is no longer accessible. Automatic recovery from Steam Workshop is no longer available on this device. You will need a manual backup or a new import.",
+                "bodyCloud": "This cloud character originally used Steam Workshop resources, but the item has been removed or is no longer accessible. After download, Steam Workshop will usually no longer be able to restore the model automatically."
+            },
+            "workshopSteamUnavailable": {
+                "title": "{{prefix}}: Steam Workshop recovery cannot be confirmed right now",
+                "body": "Steam is unavailable, not logged in, or Steamworks is not initialized. Restore Steam access first so you can confirm whether the item can still be downloaded."
+            },
+            "workshopUnknown": {
+                "title": "{{prefix}}: Steam Workshop recovery status is not confirmed",
+                "body": "The current status is still unknown. Check the Steam Workshop page to confirm the subscription state and item availability."
+            },
+            "localManualImport": {
+                "title": "Local resources: manual model import required",
+                "body": "This device is missing the locally imported or external model used by this character. Import or move the model files manually."
+            },
+            "cloudManualImport": {
+                "title": "After cloud download: manual model import required",
+                "body": "This cloud character depends on a locally imported or external model. After downloading it to this device, import or move the matching model files manually."
+            },
+            "localManualSource": {
+                "title": "This character currently uses a local or manual model",
+                "body": "Cloud save only syncs the character data. The current locally imported or external model files are not included and still need to be prepared manually on other devices."
+            },
+            "localModifiedModel": {
+                "title": "Pay attention if you changed this character model manually",
+                "body": "If you replaced a model that used to be recoverable from Steam Workshop, it now behaves like a manually imported model. After upload, other devices will still need the model files to be restored manually."
+            },
+            "cloudManualSource": {
+                "title": "This cloud character currently records a local or manual model",
+                "body": "Downloading this cloud character restores the character data only. The recorded locally imported or external model files are still not included and must be prepared manually on this device."
+            },
+            "localWorkshopOrigin": {
+                "title": "This character originally came from Steam Workshop",
+                "body": "A Steam Workshop character source still matches this character, but the current bound model is stored as a local or manual asset on this device instead of a Steam Workshop path. Cloud save syncs the character data only and will not upload the current model files. If another device needs the current look, import the model manually. If you want Steam Workshop auto-recovery again, switch back to the Steam Workshop item shown above."
+            },
+            "cloudWorkshopOrigin": {
+                "title": "This cloud character originally came from Steam Workshop",
+                "body": "This cloud character was uploaded from a Steam Workshop character, but the recorded bound model is now a local or manual asset instead of a Steam Workshop path. Downloading it restores the character data only. If another device needs the current look, prepare the model files manually and also check the Steam Workshop origin status shown above."
+            },
+            "sourceDiverged": {
+                "title": "The local model source is now different from the cloud record",
+                "body": "The local character currently uses a manually imported or external model, while the cloud record still points to Steam Workshop. If you upload again, the cloud copy will also only sync character data and not the model files."
+            }
+        },
+        "hint": {
+            "uploadResubscribe": "\nThis local character still uses Steam Workshop resources, but the current device is no longer in an active subscription state. After downloading on another device, you may need to resubscribe before the model can be restored.",
+            "uploadUnavailable": "\nThis local character still uses Steam Workshop resources, but the original item is no longer accessible. After downloading on another device, Steam Workshop recovery will usually no longer be possible.",
+            "uploadUnconfirmed": "\nThis local character comes from Steam Workshop resources, but it is not currently possible to confirm whether another device will still be able to restore the model through Steam Workshop.",
+            "uploadOriginResubscribe": "\nThis character originally came from Steam Workshop, but the current bound model is now local or manual. Other devices will still need the current model files, and resubscribing may also be required later if you want to restore the original Steam Workshop source.",
+            "uploadOriginUnavailable": "\nThis character originally came from Steam Workshop, but the original item is no longer accessible and the current bound model is now local or manual. Other devices will still need the current model files, and Steam Workshop usually can no longer restore the original source automatically.",
+            "uploadOriginUnconfirmed": "\nThis character originally came from Steam Workshop, but the current bound model is now local or manual. Other devices will still need the current model files, and it is not currently possible to confirm whether the original Steam Workshop item can still be restored.",
+            "downloadResubscribe": "\nThis cloud character originally used Steam Workshop resources, but the current device is not in an active subscription state. After download, you will usually need to resubscribe before the model can be restored.",
+            "downloadUnavailable": "\nThis cloud character originally used Steam Workshop resources, but the item is no longer accessible. After download, automatic Steam Workshop recovery will usually no longer be possible.",
+            "downloadUnconfirmed": "\nThis cloud character originally used Steam Workshop resources, but it is not currently possible to confirm whether the item can still be restored.",
+            "downloadOriginResubscribe": "\nThis cloud character originally came from Steam Workshop, but the recorded bound model is now local or manual. After download, you will still need the current model files, and resubscribing may also be required later if you want to restore the original Steam Workshop source.",
+            "downloadOriginUnavailable": "\nThis cloud character originally came from Steam Workshop, but the original item is no longer accessible and the recorded bound model is now local or manual. After download, you will still need the current model files, and Steam Workshop usually can no longer restore the original source automatically.",
+            "downloadOriginUnconfirmed": "\nThis cloud character originally came from Steam Workshop, but the recorded bound model is now local or manual. After download, you will still need the current model files, and it is not currently possible to confirm whether the original Steam Workshop item can still be restored."
+        },
+        "confirm": {
+            "uploadOverwrite": "This will overwrite the local cloud snapshot entry with the same name. It will not change the local character immediately, and model asset files are still not included.",
+            "uploadNew": "This will write the local character into the local cloud snapshot cache. Model asset files are not included.",
+            "uploadManualAsset": "\nThis local character uses a manually imported or external model. After another device downloads this character, the same model files must still be imported manually.",
+            "uploadFinal": "\nDo you want to continue preparing the Steam Cloud snapshot?",
+            "downloadOverwrite": "This will overwrite the local character settings and memory directory with the same name using the cloud snapshot already synced to this device. Model assets will not be downloaded automatically, and a local backup will be created first.",
+            "downloadNew": "This will restore the cloud snapshot already synced to this device into local storage. Model assets will not be downloaded automatically, and a local backup will be created first.",
+            "downloadManualAsset": "\nThis cloud character depends on a manually imported or external model. If this device does not already have those files, you will still need to import or move them manually after download.",
+            "downloadFinal": "\nDo you want to continue restoring from the Steam Cloud snapshot?",
+            "forceTerminateSession": "Character \"{{name}}\" has an active session.\nTerminating the session will discard the current conversation, but the cloud save download can proceed.\n\nTerminate session and continue?"
+        },
+        "dialog": {
+            "providerUnavailable": "Cloud save provider is currently unavailable. Please try again later.",
+            "uploadTitle": "Upload Cloud Save",
+            "downloadTitle": "Download Cloud Save",
+            "uploadSuccess": "Upload completed.",
+            "downloadSuccess": "Download completed.",
+            "uploadTitleSteamAutoCloud": "Prepare Steam Cloud Snapshot",
+            "downloadTitleSteamAutoCloud": "Apply Steam Cloud Snapshot",
+            "uploadSuccessSteamAutoCloud": "Local cloud snapshot updated. Steam will upload it automatically after you exit the game through Steam.",
+            "downloadSuccessSteamAutoCloud": "The Steam Cloud snapshot was applied locally.",
+            "operationFailed": "Operation failed: {{message}}",
+            "operationInProgress": "An operation for this character is already in progress. Please wait a moment.",
+            "rollbackApplied": "\nLocal data was rolled back automatically to the state before the operation.",
+            "rollbackFailed": "\nRollback also failed: {{message}}",
+            "loadFailed": "Failed to load the cloud save summary: {{message}}",
+            "stateChanged": "Cloud save status changed. Please review the refreshed summary and try again.",
+            "forceTerminateTitle": "Terminate session and continue?"
+        },
+        "action": {
+            "expandDetails": "Expand details",
+            "collapseDetails": "Collapse details",
+            "uploadDisabledByProvider": "Prepare snapshot unavailable",
+            "uploadOverwrite": "Prepare snapshot",
+            "uploadNew": "Prepare snapshot",
+            "uploadUnavailable": "Prepare snapshot unavailable",
+            "downloadDisabledByProvider": "Apply snapshot unavailable",
+            "downloadOverwrite": "Apply snapshot",
+            "downloadNew": "Apply snapshot",
+            "downloadUnavailable": "Apply snapshot unavailable"
+        },
+        "meta": {
+            "groupLocal": "Local status",
+            "groupCloud": "Cloud status",
+            "localAssetState": "Local asset state",
+            "localAssetSource": "Local asset source",
+            "localWorkshopStatus": "Local current status",
+            "localCharacterOrigin": "Local character origin",
+            "localOriginWorkshopStatus": "Local character origin and current status",
+            "cloudAssetState": "Cloud asset state",
+            "cloudAssetSource": "Cloud asset source",
+            "cloudWorkshopStatus": "Cloud current status",
+            "cloudCharacterOrigin": "Cloud character origin",
+            "cloudOriginWorkshopStatus": "Cloud character origin and current status",
+            "localUpdatedAt": "Local updated at",
+            "cloudUpdatedAt": "Cloud updated at"
+        },
+        "error": {
+            "providerUnavailable": "Cloud save provider is currently unavailable.",
+            "activeSessionBlocked": "This character has an active session. Stop the session before downloading.",
+            "memoryServerReleaseFailed": "Failed to release the local memory handle before overwrite. Please try again later.",
+            "localCharacterNotFound": "The local character could not be found.",
+            "cloudCharacterNotFound": "The cloud character could not be found.",
+            "localCharacterExists": "A local character with the same name already exists.",
+            "cloudCharacterExists": "A cloud character with the same name already exists.",
+            "writeFenceActive": "Cloud save maintenance mode is active. Please try again later.",
+            "nameAuditFailed": "The character name did not pass the cloud save validation rules.",
+            "uploadFailed": "Upload failed: {{message}}",
+            "downloadFailed": "Download failed: {{message}}",
+            "localReloadFailedRolledBack": "The download was applied, but local reload failed.",
+            "sessionTerminateFailed": "Failed to terminate active session. Please try again later."
+        }
+    },
     "settings": {
         "menu": {
             "live2dSettings": "Live2D Settings",
@@ -1760,7 +2077,17 @@
         "title": "Real-time Subtitles",
         "enable": "Subtitle Translation",
         "enableAriaLabel": "Toggle subtitle translation",
-        "markdownPlaceholder": "[formatted content]"
+        "markdownPlaceholder": "[formatted content]",
+        "settings": {
+            "targetLang": "Target Language",
+            "opacity": "Opacity",
+            "dragAnywhere": "Drag Anywhere",
+            "size": "Size",
+            "sizeSmall": "S",
+            "sizeMedium": "M",
+            "sizeLarge": "L",
+            "settingsBtn": "Subtitle Settings"
+        }
     },
     "viewer": {
         "title": "Viewer - Project N.E.K.O."
@@ -2658,7 +2985,7 @@
         "themeChanged": "Theme changed"
     },
     "characterModelNotSet": "Current character has no model set",
-   "cookiesLogin": {
+    "cookiesLogin": {
         "title": "N.E.K.O Credential Control Center",
         "header": "🔐 Credential Acquisition Center",
         "bilibili": "📺 Bilibili",
@@ -3042,5 +3369,33 @@
         "useTemporary": "Use Temporarily",
         "tempBadge": "Temp",
         "popupBlocked": "Popup was blocked. Please allow popups and try again."
+    },
+    "connectivity": {
+        "testCustom": "Test Custom API Connectivity",
+        "testCore": "Test",
+        "testCoreTooltip": "Test Core API Connectivity",
+        "testAssist": "Test",
+        "testAssistTooltip": "Test Assist API Connectivity",
+        "gsvTestText": "GSV connectivity test",
+        "gsvTestTooltip": "Test GPT-SoVITS Connectivity",
+        "error": {
+            "timeout": "Request timed out (10s)",
+            "auth_failed": "API Key is invalid or expired",
+            "connection_refused": "Cannot connect to target server",
+            "dns_error": "DNS resolution failed",
+            "ssl_error": "SSL certificate verification failed",
+            "ws_error": "WebSocket connection failed",
+            "missing_params": "Missing required parameters",
+            "unknown": "Unknown error",
+            "backend_unavailable": "Backend service unavailable",
+            "invalid_response": "Invalid response format"
+        },
+        "status": {
+            "connected": "Connected",
+            "failed": "Connection failed",
+            "untested": "Not tested",
+            "not_configured": "Not configured",
+            "testing": "Testing..."
+        }
     }
 }

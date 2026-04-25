@@ -19,7 +19,7 @@
      * Add a screenshot thumbnail to the pending list.
      * @param {string} dataUrl - image data URL
      */
-    mod.addScreenshotToList = function addScreenshotToList(dataUrl) {
+    mod.addScreenshotToList = function addScreenshotToList(dataUrl, avatarPosition) {
         S.screenshotCounter++;
 
         const screenshotsList = S.dom.screenshotsList;
@@ -30,6 +30,10 @@
         item.className = 'screenshot-item';
         item.dataset.index = S.screenshotCounter;
         item.dataset.attachmentId = 'attachment-' + Date.now() + '-' + S.screenshotCounter;
+        // Store avatar position metadata (captured at screenshot time)
+        if (avatarPosition) {
+            item.dataset.avatarPosition = JSON.stringify(avatarPosition);
+        }
 
         // Create thumbnail
         const img = document.createElement('img');
@@ -884,7 +888,10 @@
         }
 
         host.setOnComposerSubmit(function (detail) {
-            return mod.sendTextPayload(detail && detail.text, { source: 'react-chat-window' });
+            return mod.sendTextPayload(detail && detail.text, {
+                source: 'react-chat-window',
+                requestId: detail && detail.requestId
+            });
         });
         host.setOnComposerImportImage(function () {
             return mod.openImageImportPicker();
@@ -1074,6 +1081,8 @@
                     window.startSilenceDetection();
                     window.monitorInputVolume();
                 }, 1000);
+
+                window.dispatchEvent(new CustomEvent('neko:voice-session-started'));
 
                 window.isMicStarting = false;
                 S.isSwitchingMode = false;
@@ -1409,9 +1418,18 @@
             options = options || {};
             var text = String(typeof rawText === 'string' ? rawText : '').trim();
             var hasScreenshots = screenshotsList.children.length > 0;
+            var requestId = (typeof options.requestId === 'string' && options.requestId)
+                ? options.requestId
+                : ('req-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8));
+
+            // Store last submitted text for rollback on RESPONSE_TOO_LONG.
+            // Clear stale text for pure-screenshot submissions.
+            window._lastSubmittedText = text;
+            window._lastSubmittedRequestId = text ? requestId : '';
             var isReactWindowSource = options.source === 'react-chat-window';
             var reactOptimisticMessageId = '';
             var reactOptimisticMessageAppended = null;
+            var sentUserContent = false;
 
             if (!text && !hasScreenshots) return false;
 
@@ -1543,11 +1561,17 @@
                             var img = screenshotItems[i].querySelector('.screenshot-thumbnail');
                             if (img && img.src) {
                                 sentImageUrls.push(img.src);
-                                S.socket.send(JSON.stringify({
+                                var msg = {
                                     action: 'stream_data',
                                     data: img.src,
                                     input_type: U.isMobile() ? 'camera' : 'screen'
-                                }));
+                                };
+                                // Attach paired avatar position metadata (captured at screenshot time)
+                                var storedPos = screenshotItems[i].dataset.avatarPosition;
+                                if (storedPos) {
+                                    try { msg.avatar_position = JSON.parse(storedPos); } catch (e) { /* ignore */ }
+                                }
+                                S.socket.send(JSON.stringify(msg));
                             }
                         }
 
@@ -1557,6 +1581,7 @@
                                 skipReactSync: true
                             });
                         }
+                        sentUserContent = true;
 
                         // Achievement: send image
                         if (window.unlockAchievement) {
@@ -1585,7 +1610,8 @@
                         S.socket.send(JSON.stringify({
                             action: 'stream_data',
                             data: text,
-                            input_type: 'text'
+                            input_type: 'text',
+                            request_id: requestId
                         }));
 
                         if (!options.preserveInputValue) {
@@ -1596,6 +1622,7 @@
                                 skipReactSync: sentImageUrls.length > 0
                             });
                         }
+                        sentUserContent = true;
 
                         // Achievement: meow detection
                         if (window.incrementAchievementCounter) {
@@ -1625,6 +1652,10 @@
                     }
 
                     updateReactOptimisticMessageStatus('sent');
+
+                    if (sentUserContent) {
+                        window.dispatchEvent(new CustomEvent('neko:user-content-sent'));
+                    }
 
                     // Reset proactive chat timer
                     if (S.proactiveChatEnabled && window.hasAnyChatModeEnabled()) {
@@ -1751,48 +1782,84 @@
         // ----------------------------------------------------------------
         // Hide NEKO UI, recapture screen, then restore
         // ----------------------------------------------------------------
-        var NEKO_UI_IDS = [
-            'live2d-container', 'vrm-container', 'mmd-container',
-            'chat-container', 'react-chat-window-overlay',
-            'chat-avatar-preview-popup',
-            'avatar-reaction-bubble', 'subtitle-display', 'status-toast',
-            'live2d-floating-buttons', 'vrm-floating-buttons', 'mmd-floating-buttons',
-            'live2d-lock-icon', 'vrm-lock-icon', 'mmd-lock-icon',
-            'live2d-return-button-container', 'vrm-return-button-container', 'mmd-return-button-container',
-            'crop-overlay'
-        ];
-
+        // 先前通过枚举固定 ID 列表逐个 display:none — 遗漏了动态挂载的浮层
+        // (avatar popup / HUD / tutorial overlay / 第三方对话框) 以及 Electron 下
+        // 另外开的透明窗口以外还残留在主窗口的各种子元素，导致重拍后 N.E.K.O 仍然
+        // 出现在截图里。改为直接对 <html> 根元素切 visibility:hidden —— 一次把整页
+        // 画面抹掉，OS 合成器拿到的只有 Electron 透明窗体后的桌面像素。
         function hideNekoUI() {
-            var saved = [];
-            NEKO_UI_IDS.forEach(function (id) {
-                var el = document.getElementById(id);
-                if (el) {
-                    saved.push({ el: el, prev: el.style.display });
-                    el.style.display = 'none';
-                }
-            });
+            var root = document.documentElement;
+            var saved = {
+                visibility: root.style.visibility,
+                // 保险：有些 reaction bubble / toast 直接挂在 body，visibility 继承即可覆盖
+            };
+            root.style.visibility = 'hidden';
             return saved;
         }
 
         function restoreNekoUI(saved) {
-            saved.forEach(function (item) {
-                item.el.style.display = item.prev;
-            });
+            if (!saved) return;
+            document.documentElement.style.visibility = saved.visibility || '';
         }
 
         async function recaptureWithoutNeko() {
+            // Priority 0 (Electron PC): 主进程原子化路径 — 一次 IPC 完成
+            //   隐藏所有 NEKO 窗口 → 等合成 → desktopCapturer 抓图 → 恢复窗口。
+            //   把 hide/等待/抓图/show 全放主进程是因为渲染器端 setTimeout 在 Pet 窗口
+            //   hide 后会被 backgroundThrottling 拖慢到秒级，且多次 IPC 之间有时序风险。
+            var selectedSourceId = S.selectedScreenSourceId;
+            if (selectedSourceId && window.electronDesktopCapturer
+                && typeof window.electronDesktopCapturer.captureSourceWithoutNeko === 'function') {
+                try {
+                    var atomic = await window.electronDesktopCapturer.captureSourceWithoutNeko(selectedSourceId);
+                    if (atomic && atomic.success && atomic.dataUrl) {
+                        var atomicScaled = await downscaleDataUrlTo720p(atomic.dataUrl);
+                        if (atomicScaled && atomicScaled.dataUrl) return atomicScaled.dataUrl;
+                    } else if (atomic && atomic.error) {
+                        console.warn('[隐藏NEKO] 主进程原子化路径失败:', atomic.error);
+                        if (typeof window.maybeClearSourceOnNotFound === 'function') {
+                            window.maybeClearSourceOnNotFound(atomic, 'recaptureWithoutNeko atomic Source not found');
+                        }
+                    }
+                } catch (e) {
+                    console.warn('[隐藏NEKO] 主进程原子化路径抛错，回退到渲染器路径:', e);
+                }
+                // 主进程路径失败则继续走下面 renderer 端的兜底（visibility:hidden + MediaStream）
+            }
+
+            // Fallback：web 浏览器模式或主进程路径失败 —— 渲染器侧 CSS 隐藏 + 常规抓屏兜底
+            // Electron 下额外让主进程 hide 卫星窗口；Pet 自己的 DOM 用 visibility:hidden 处理。
+            // MediaStream 抓帧（getDisplayMedia）会把卫星窗口也拍进去，CSS 隐藏覆盖不到它们。
             var saved = hideNekoUI();
-            await new Promise(function (r) { setTimeout(r, 200); });
+            var fallbackHiddenIds = null;
+            if (window.electronDesktopCapturer
+                && typeof window.electronDesktopCapturer.hideNekoWindows === 'function') {
+                try {
+                    var hideRes = await window.electronDesktopCapturer.hideNekoWindows();
+                    if (hideRes && Array.isArray(hideRes.hiddenIds)) {
+                        fallbackHiddenIds = hideRes.hiddenIds;
+                    }
+                } catch (e) {
+                    console.warn('[隐藏NEKO][fallback] hide 卫星窗口失败:', e);
+                }
+            }
+            await new Promise(function (r) { setTimeout(r, 300); });
             try {
-                // Priority 1: Electron direct capture (mirrors main flow)
-                var selectedSourceId = S.selectedScreenSourceId;
-                if (selectedSourceId && window.electronDesktopCapturer
+                // Priority 1: Electron direct capture (不隐藏卫星窗口版本，仅为向后兼容兜底)
+                // 读当前的 S.selectedScreenSourceId —— Priority 0 若刚命中 'Source not found'
+                // 已经通过 maybeClearSourceOnNotFound 把它清空，此时 selectedSourceId 这个本地
+                // 快照已是僵尸 ID；继续用它只会让主进程再原样报一次 'Source not found'，
+                // 多一次 IPC 往返。重读 S 直接跳到 Priority 2 流路径。
+                var currentSourceId = S.selectedScreenSourceId;
+                if (currentSourceId && window.electronDesktopCapturer
                     && typeof window.electronDesktopCapturer.captureSourceAsDataUrl === 'function') {
                     try {
-                        var direct = await window.electronDesktopCapturer.captureSourceAsDataUrl(selectedSourceId);
+                        var direct = await window.electronDesktopCapturer.captureSourceAsDataUrl(currentSourceId);
                         if (direct && direct.success && direct.dataUrl) {
                             var scaled = await downscaleDataUrlTo720p(direct.dataUrl);
                             if (scaled && scaled.dataUrl) return scaled.dataUrl;
+                        } else if (typeof window.maybeClearSourceOnNotFound === 'function') {
+                            window.maybeClearSourceOnNotFound(direct, 'recaptureWithoutNeko Priority 1 Source not found');
                         }
                     } catch (e) { /* fallback below */ }
                 }
@@ -1833,6 +1900,17 @@
                 }
                 return null;
             } finally {
+                // 先恢复卫星窗口，再恢复 Pet 的 DOM visibility —— 反过来用户会看到
+                // 孤零零的 Pet 一帧。
+                if (fallbackHiddenIds && fallbackHiddenIds.length > 0
+                    && window.electronDesktopCapturer
+                    && typeof window.electronDesktopCapturer.restoreNekoWindows === 'function') {
+                    try {
+                        await window.electronDesktopCapturer.restoreNekoWindows(fallbackHiddenIds);
+                    } catch (e) {
+                        console.warn('[隐藏NEKO][fallback] 恢复卫星窗口失败:', e);
+                    }
+                }
                 restoreNekoUI(saved);
             }
         }
@@ -1845,6 +1923,7 @@
             // isCachedStream 用于区分缓存流（绝不能关）与一次性流（finally 要关）。
             var acquiredStream = null;
             var isCachedStream = false;
+            var captureType = null; // 'screen' | 'viewport' | null — 用于 Avatar 坐标映射
 
             try {
                 screenshotButton.disabled = true;
@@ -1869,6 +1948,7 @@
                             dataUrl = mframe.dataUrl;
                             width = mframe.width;
                             height = mframe.height;
+                            captureType = null; // 手机相机，Avatar 不在画面中
                         }
                     }
                 } else {
@@ -1890,9 +1970,20 @@
                                 // 此时回退到主进程上报的原始尺寸，避免日志空值。
                                 width = scaled.width || direct.width || 0;
                                 height = scaled.height || direct.height || 0;
+                                // 主进程直接捕获：靠 sourceId 前缀区分 screen/window
+                                captureType = window.detectScreenshotCaptureType
+                                    ? window.detectScreenshotCaptureType(null, selectedSourceId)
+                                    : null;
                                 console.log('[截图] 主进程直接捕获成功:', selectedSourceId, width + 'x' + height);
                             } else if (direct && direct.error) {
                                 console.warn('[截图] 主进程直接捕获失败:', direct.error);
+                                // 主进程 desktopCapturer 说源不存在 → selectedSourceId 已失效
+                                // （窗口被关/HWND 变了）。立刻清掉，防止 Priority 2 的
+                                // acquireOrReuseCachedStream 再拿同一个死 ID 去跑 500ms
+                                // Electron getUserMedia 超时；下一次截图也能直接跳过 Priority 1。
+                                if (typeof window.maybeClearSourceOnNotFound === 'function') {
+                                    window.maybeClearSourceOnNotFound(direct, '主进程 capture-source-as-dataurl Source not found');
+                                }
                             }
                         } catch (directErr) {
                             console.warn('[截图] 主进程直接捕获抛错，将回退到流路径:', directErr);
@@ -1918,6 +2009,9 @@
                                 dataUrl = frame.dataUrl;
                                 width = frame.width;
                                 height = frame.height;
+                                captureType = window.detectScreenshotCaptureType
+                                    ? window.detectScreenshotCaptureType(acquiredStream, S.selectedScreenSourceId)
+                                    : null;
                                 if (isCachedStream) {
                                     S.screenCaptureStreamLastUsed = Date.now();
                                     if (window.scheduleScreenCaptureIdleCheck) window.scheduleScreenCaptureIdleCheck();
@@ -1952,6 +2046,11 @@
                     console.log(window.t('console.screenshotSuccess'), width + 'x' + height);
                 }
 
+                // Capture avatar position at screenshot time, mapped to capture coordinate system.
+                // Only meaningful for the uncropped path — cropping invalidates the normalized coords.
+                var avatarPos = typeof window.getAvatarScreenPosition === 'function'
+                    ? window.getAvatarScreenPosition(captureType) : null;
+
                 // Release one-time stream BEFORE opening crop overlay
                 // Only release if it's a one-time stream — cached streams are managed globally
                 if (!isCachedStream && acquiredStream instanceof MediaStream) {
@@ -1971,10 +2070,12 @@
                         window.showStatusToast(window.t ? window.t('app.screenshotCancelled') : '\u5DF2\u53D6\u6D88\u622A\u56FE', 2000);
                         return;
                     }
-                    mod.addScreenshotToList(croppedUrl);
+                    // 裁切后坐标系变了，Avatar 位置无效：不附带 avatar_position
+                    // （除非裁切图与原图相同 — 但我们无法从 appCrop API 判定，保守跳过）
+                    mod.addScreenshotToList(croppedUrl, croppedUrl === dataUrl ? avatarPos : null);
                 } else {
-                    // Fallback: no crop module available, add full screenshot directly
-                    mod.addScreenshotToList(dataUrl);
+                    // Fallback: no crop module available, add full screenshot with avatar position
+                    mod.addScreenshotToList(dataUrl, avatarPos);
                 }
                 window.showStatusToast(window.t ? window.t('app.screenshotAdded') : '\u622A\u56FE\u5DF2\u6DFB\u52A0\uFF0C\u70B9\u51FB\u53D1\u9001\u4E00\u8D77\u53D1\u9001', 3000);
 

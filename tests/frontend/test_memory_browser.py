@@ -73,11 +73,9 @@ def test_memory_browser_page_load(mock_page: Page, running_server: str, seed_mem
     # Wait for the file list to populate (the JS fetches /api/memory/recent_files on load)
     # We should see a button with the catgirl name in the list
     mock_page.wait_for_selector("#memory-file-list button.cat-btn", state="attached", timeout=10000)
-    
+
     # The list should show our seeded catgirl
-    cat_btn = mock_page.locator("#memory-file-list button.cat-btn")
-    expect(cat_btn).to_have_count(1, timeout=5000)
-    expect(cat_btn.first).to_contain_text("测试猫娘")
+    expect(mock_page.locator("#memory-file-list button.cat-btn", has_text="测试猫娘")).to_have_count(1, timeout=5000)
 
 
 @pytest.mark.frontend
@@ -91,8 +89,9 @@ def test_memory_browser_select_file(mock_page: Page, running_server: str, seed_m
     mock_page.wait_for_selector("#memory-file-list button.cat-btn", state="attached", timeout=10000)
     
     # Click the cat button to load the memory file
-    cat_btn = mock_page.locator("#memory-file-list button.cat-btn").first
-    cat_btn.click()
+    target_cat_btn = mock_page.locator("#memory-file-list button.cat-btn", has_text="测试猫娘")
+    expect(target_cat_btn).to_have_count(1, timeout=5000)
+    target_cat_btn.first.click()
     
     # Wait for the chat content to render in the editor area
     # The chat items should appear in #memory-chat-edit

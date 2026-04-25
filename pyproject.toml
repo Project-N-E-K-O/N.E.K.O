@@ -38,7 +38,8 @@ dependencies = [
   "translatepy",
   "tomli>=2.3.0",
   "tomli-w>=1.2.0",
-  "loguru>=0.7.0",
+  # ⚠ 严禁再加 loguru / structlog / logbook。日志统一走 utils.logger_config。
+  # lint 守门：scripts/check_no_loguru.py（CI: .github/workflows/analyze.yml）
   "pyzmq>=27.1.0",
   "ormsgpack>=1.4.0",
   "browser-use>=0.11.0",
@@ -52,7 +53,11 @@ dependencies = [
   "pyncm-async==1.8.1",
   "tornado>=6.5.4",
   "jmespath>=1.1.0",
-
+  "orjson>=3.11.8",
+  # memory-evidence-rfc §3.6.6: tiktoken for persona/reflection render
+  # token budgeting (o200k_base encoding). PR-1 pins the dep; PR-3 ships
+  # utils/tokenize.py and wires render-time counting.
+  "tiktoken>=0.7.0",
 ]
 
 

@@ -58,6 +58,16 @@ async def live2d_parameter_editor(request: Request):
     })
 
 
+@router.get("/soccer_demo", response_class=HTMLResponse)
+async def soccer_demo(request: Request):
+    """Soccer MVP demo (VRM + L2D avatars)"""
+    templates = get_templates()
+    return templates.TemplateResponse("templates/soccer_demo.html", {
+        "request": request,
+        **_vrm_defaults_ctx(),
+    })
+
+
 @router.get("/live2d_emotion_manager", response_class=HTMLResponse)
 async def live2d_emotion_manager(request: Request):
     """Live2D情感映射管理器页面"""
@@ -111,6 +121,12 @@ async def api_key_settings(request: Request):
 async def steam_workshop_manager_page(request: Request, lanlan_name: str = ""):
     templates = get_templates()
     return templates.TemplateResponse("templates/steam_workshop_manager.html", {"request": request, "lanlan_name": lanlan_name})
+
+
+@router.get('/cloudsave_manager', response_class=HTMLResponse)
+async def cloudsave_manager_page(request: Request, lanlan_name: str = ""):
+    templates = get_templates()
+    return templates.TemplateResponse("templates/cloudsave_manager.html", {"request": request, "lanlan_name": lanlan_name})
 
 
 @router.get('/memory_browser', response_class=HTMLResponse)

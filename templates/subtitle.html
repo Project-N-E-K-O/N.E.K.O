@@ -1,101 +1,54 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" class="subtitle-window-host">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>N.E.K.O. Subtitle</title>
-    <style>
-        /* 与 index.css body 一致 */
-        html, body {
-            margin: 0; padding: 0;
-            width: 100%; height: 100%;
-            overflow: hidden;
-            font-family: 'Segoe UI', Arial, sans-serif;
-        }
-
-        /* 与 index.css #subtitle-display 完全一致 */
-        #subtitle-display {
-            position: absolute;
-            top: 0; left: 0;
-            width: 100%; height: 100%;
-            padding: 10px 18px;
-            background: linear-gradient(135deg, rgba(68, 183, 254, 0.95) 0%, rgba(68, 183, 254, 0.9) 50%, rgba(100, 200, 255, 0.95) 100%);
-            color: #fff;
-            border-radius: 12px;
-            font-size: 17px;
-            font-weight: 500;
-            line-height: 1.5;
-            text-align: center;
-            overflow-wrap: break-word;
-            white-space: normal;
-            box-shadow: 0 6px 24px rgba(68, 183, 254, 0.35),
-                0 0 0 1px rgba(255, 255, 255, 0.3) inset;
-            border: 1.5px solid rgba(255, 255, 255, 0.4);
-            text-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            box-sizing: border-box;
-        }
-
-        /* 与 index.css #subtitle-text 一致 */
-        #subtitle-text {
-            display: block;
-            margin-right: 24px;
-            white-space: pre-wrap;
-            overflow-wrap: break-word;
-        }
-
-        /* 与 index.css #subtitle-drag-handle 一致 */
-        #subtitle-drag-handle {
-            position: absolute;
-            top: 50%;
-            right: 4px;
-            transform: translateY(-50%);
-            width: 26px;
-            height: 26px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            cursor: grab;
-            border-radius: 6px;
-            transition: all 0.2s ease;
-            pointer-events: auto;
-            background: rgba(255, 255, 255, 0.18);
-            backdrop-filter: blur(4px);
-        }
-        #subtitle-drag-handle:hover {
-            background: rgba(255, 255, 255, 0.32);
-            box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.6);
-        }
-        #subtitle-drag-handle:active {
-            cursor: grabbing;
-            background: rgba(255, 255, 255, 0.42);
-            box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.9);
-        }
-        #subtitle-drag-arrows {
-            width: 100%; height: 100%;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-        #subtitle-drag-arrows svg {
-            width: 14px; height: 14px;
-        }
-
-        /* 与 dark-mode.css [data-theme="dark"] #subtitle-display 一致 */
-        [data-theme="dark"] #subtitle-display {
-            background: linear-gradient(135deg, rgba(42, 123, 196, 0.92) 0%, rgba(42, 123, 196, 0.88) 50%, rgba(60, 145, 220, 0.92) 100%);
-            border-color: rgba(255, 255, 255, 0.25);
-            box-shadow: 0 8px 32px rgba(42, 123, 196, 0.5),
-                0 0 0 1px rgba(255, 255, 255, 0.2) inset;
-        }
-    </style>
+    <link rel="stylesheet" href="/static/css/subtitle.css">
+    <link rel="stylesheet" href="/static/css/dark-mode.css">
 </head>
-<body>
-    <!-- 与 index.html 中 #subtitle-display 结构完全一致 -->
+<body class="subtitle-window-host">
     <div id="subtitle-display">
-        <span id="subtitle-text"></span>
+        <div id="subtitle-scroll">
+            <span id="subtitle-text"></span>
+        </div>
+        <button type="button" id="subtitle-settings-btn" title="Subtitle Settings" aria-label="Subtitle Settings">
+            <svg viewBox="0 0 24 24" fill="white" xmlns="http://www.w3.org/2000/svg" width="14" height="14">
+                <path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 00.12-.61l-1.92-3.32a.49.49 0 00-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 00-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96a.49.49 0 00-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.07.62-.07.94s.02.64.07.94l-2.03 1.58a.49.49 0 00-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6A3.6 3.6 0 1115.6 12 3.61 3.61 0 0112 15.6z"/>
+            </svg>
+        </button>
+        <div id="subtitle-settings-panel" class="hidden">
+            <div class="subtitle-settings-row">
+                <span class="subtitle-settings-label" data-subtitle-label="targetLang">目标语言</span>
+                <select id="subtitle-lang-select" title="目标语言">
+                    <option value="zh">中文</option>
+                    <option value="en">English</option>
+                    <option value="ja">日本語</option>
+                    <option value="ko">한국어</option>
+                    <option value="ru">Русский</option>
+                </select>
+            </div>
+            <div class="subtitle-settings-row">
+                <span class="subtitle-settings-label" data-subtitle-label="opacity">不透明度</span>
+                <input type="range" id="subtitle-opacity-slider" min="20" max="100" value="95" title="不透明度">
+                <span id="subtitle-opacity-value">95%</span>
+            </div>
+            <div class="subtitle-settings-row">
+                <span class="subtitle-settings-label" data-subtitle-label="dragAnywhere">整体拖动</span>
+                <label class="subtitle-settings-switch">
+                    <input type="checkbox" id="subtitle-drag-mode-toggle" aria-label="整体拖动开关">
+                    <span class="subtitle-settings-track"></span>
+                </label>
+            </div>
+            <div class="subtitle-settings-row">
+                <span class="subtitle-settings-label" data-subtitle-label="size">大小</span>
+                <div class="subtitle-size-group">
+                    <button type="button" class="subtitle-size-btn" data-size="small">小</button>
+                    <button type="button" class="subtitle-size-btn active" data-size="medium">中</button>
+                    <button type="button" class="subtitle-size-btn" data-size="large">大</button>
+                </div>
+            </div>
+        </div>
         <div id="subtitle-drag-handle">
             <div id="subtitle-drag-arrows">
                 <svg viewBox="0 0 24 24" fill="white" xmlns="http://www.w3.org/2000/svg">
@@ -109,118 +62,7 @@
         </div>
     </div>
 
-    <script>
-        var subtitleText = document.getElementById('subtitle-text');
-        var dragHandle = document.getElementById('subtitle-drag-handle');
-        var api = window.nekoSubtitle;
-
-        // ===== 监听转写消息 =====
-        window.addEventListener('neko-ws-transcript', function(e) {
-            var data = e.detail;
-            if (data && data.transcript != null) {
-                subtitleText.textContent = data.transcript || '';
-                autoResize();
-            }
-        });
-
-        // ===== 自动缩放窗口（防抖，避免流式文本高频 resize 导致闪烁）=====
-        var DEFAULT_W = 600, DEFAULT_H = 80;
-        var resizeTimer = null;
-
-        function autoResize() {
-            if (!api || !api.setSize) return;
-            // 防抖：流式文本快速到达时，仅在最后一次更新后 150ms 才真正 resize
-            if (resizeTimer) clearTimeout(resizeTimer);
-            resizeTimer = setTimeout(doResize, 150);
-        }
-
-        function doResize() {
-            resizeTimer = null;
-            var text = subtitleText.textContent || '';
-            if (!text.trim()) {
-                // 文本清空时重置为默认尺寸
-                api.setSize(DEFAULT_W, DEFAULT_H);
-                return;
-            }
-
-            // 用隐藏元素测量：先测单行宽度
-            var m = document.createElement('div');
-            m.style.cssText = 'position:absolute;visibility:hidden;left:-9999px;top:-9999px;' +
-                'font-size:17px;font-weight:500;line-height:1.5;font-family:Segoe UI,Arial,sans-serif;' +
-                'padding:10px 18px;box-sizing:border-box;white-space:nowrap;';
-            m.textContent = text;
-            document.body.appendChild(m);
-
-            // 单行宽度 + drag handle 余量
-            var singleW = m.offsetWidth + 30;
-            var finalW = Math.max(200, Math.min(singleW, 800));
-
-            // 用最终宽度测量换行后的高度
-            m.style.whiteSpace = 'normal';
-            m.style.overflowWrap = 'break-word';
-            m.style.width = finalW + 'px';
-            var finalH = Math.max(40, m.offsetHeight + 4);
-
-            document.body.removeChild(m);
-            api.setSize(finalW, finalH);
-        }
-
-        // ===== 拖拽交互（配合 setIgnoreMouseEvents forward 模式）=====
-        // 窗口默认 setIgnoreMouseEvents(true, {forward:true})
-        // mousemove 能收到，但 mousedown 收不到
-        // 进入 drag handle 区域时取消穿透，离开时恢复
-        //
-        // 拖拽委托给主进程的 DRAG_START/DRAG_STOP：主进程在 dragStart 时缓存
-        // startBounds（含固定的 width/height），后续 setBounds 使用缓存尺寸，
-        // 彻底避免 Windows DWM 透明窗口 getBounds() 尺寸漂移导致窗口逐渐放大。
-        if (api) {
-            var overHandle = false;
-            var isDragging = false;
-
-            document.addEventListener('mousemove', function(e) {
-                if (isDragging) return; // 拖拽中由主进程控制位置，renderer 不干预
-                // 检测是否在 drag handle 上
-                var el = document.elementFromPoint(e.clientX, e.clientY);
-                var isOnHandle = dragHandle.contains(el);
-                if (isOnHandle && !overHandle) {
-                    overHandle = true;
-                    api.enableInteraction();
-                } else if (!isOnHandle && overHandle) {
-                    overHandle = false;
-                    api.disableInteraction();
-                }
-            });
-
-            dragHandle.addEventListener('mousedown', function(e) {
-                isDragging = true;
-                // 委托主进程进行拖拽（主进程缓存初始尺寸，避免 getBounds 漂移）
-                api.dragStart();
-                dragHandle.style.cursor = 'grabbing';
-                e.preventDefault();
-            });
-
-            document.addEventListener('mouseup', function() {
-                if (isDragging) {
-                    dragHandle.style.cursor = 'grab';
-                    isDragging = false;
-                    // 通知主进程停止拖拽（会触发 bounceBackToWorkArea）
-                    api.dragStop();
-                }
-                if (overHandle) {
-                    // 鼠标还在 handle 上，保持交互
-                } else {
-                    api.disableInteraction();
-                }
-            });
-
-            // 鼠标离开窗口时恢复穿透
-            document.addEventListener('mouseleave', function() {
-                if (!isDragging) {
-                    overHandle = false;
-                    api.disableInteraction();
-                }
-            });
-        }
-    </script>
+    <script src="/static/subtitle-shared.js"></script>
+    <script src="/static/subtitle-window.js"></script>
 </body>
 </html>

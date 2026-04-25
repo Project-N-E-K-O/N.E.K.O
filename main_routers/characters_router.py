@@ -7,7 +7,7 @@ Handles character (catgirl) management endpoints including:
 - Voice settings
 - Microphone settings
 """
-
+import re
 import json
 import io
 import os
@@ -17,8 +17,11 @@ import copy
 import base64
 import hashlib
 import struct
+import tempfile
 import zlib
-from datetime import datetime
+from urllib.parse import urlparse
+from datetime import datetime, timezone
+from pathlib import Path
 from fastapi import APIRouter, Request, File, UploadFile, Form
 from fastapi.responses import JSONResponse, Response
 import httpx
@@ -35,6 +38,11 @@ from .shared_state import (
 )
 from .workshop_router import _ugc_sync_lock
 from main_logic.tts_client import get_custom_tts_voices, CustomTTSVoiceFetchError
+from utils.character_memory import (
+    delete_character_memory_storage,
+    list_character_memory_paths,
+    rename_character_memory_storage,
+)
 from utils.config_manager import get_reserved, set_reserved, flatten_reserved
 from utils.audio import normalize_voice_clone_api_audio, validate_audio_file
 from utils.character_name import PROFILE_NAME_MAX_UNITS, validate_character_name
@@ -57,6 +65,7 @@ from utils.frontend_utils import find_models, find_model_directory, is_user_impo
 from utils.language_utils import normalize_language_code
 from utils.logger_config import get_module_logger
 from utils.url_utils import encode_url_path
+from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable
 from config import MEMORY_SERVER_PORT, TFLINK_UPLOAD_URL, CHARACTER_RESERVED_FIELDS
 
 router = APIRouter(prefix="/api/characters", tags=["characters"])
@@ -64,6 +73,203 @@ logger = get_module_logger(__name__, "Main")
 
 
 CHARACTER_RESERVED_FIELD_SET = set(CHARACTER_RESERVED_FIELDS)
+
+
+def _json_no_store_response(content, *, status_code: int = 200):
+    return JSONResponse(
+        content=content,
+        status_code=status_code,
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+        },
+    )
+
+
+def _derive_live2d_model_name(model_ref: str) -> str:
+    raw_ref = str(model_ref or "").strip()
+    if not raw_ref:
+        return ""
+    parsed_ref = urlparse(raw_ref)
+    is_http_url = parsed_ref.scheme in {"http", "https"} and bool(parsed_ref.netloc)
+    model_ref_source = parsed_ref.path if is_http_url and parsed_ref.path else raw_ref
+    normalized_ref = model_ref_source.strip().replace("\\", "/")
+    if not normalized_ref:
+        return ""
+    if normalized_ref.endswith(".model3.json"):
+        parts = [part for part in normalized_ref.split("/") if part]
+        if len(parts) >= 2:
+            return parts[-2]
+        filename = parts[-1] if parts else normalized_ref
+        return filename[:-len(".model3.json")]
+    return normalized_ref.rsplit("/", 1)[-1]
+
+
+def _normalize_live2d_catalog_path(model_path: str) -> str:
+    normalized_path = str(model_path or "").strip().replace("\\", "/")
+    if not normalized_path:
+        return ""
+    if normalized_path.startswith("/workshop/"):
+        parts = [part for part in normalized_path.split("/") if part]
+        return "/".join(parts[2:]) if len(parts) >= 3 else ""
+    for prefix in ("/user_live2d/", "/user_live2d_local/", "/static/"):
+        if normalized_path.startswith(prefix):
+            return normalized_path[len(prefix):]
+    return normalized_path.lstrip("/")
+
+
+def _is_same_live2d_catalog_model_path(candidate_path: str, target_path: str) -> bool:
+    candidate_normalized = _normalize_live2d_catalog_path(candidate_path)
+    target_normalized = _normalize_live2d_catalog_path(target_path)
+    if not candidate_normalized or not target_normalized:
+        return False
+    if candidate_normalized == target_normalized:
+        return True
+    candidate_tail = "/".join(candidate_normalized.split("/")[-2:])
+    target_tail = "/".join(target_normalized.split("/")[-2:])
+    return bool(candidate_tail and candidate_tail == target_tail)
+
+
+def _derive_live2d_asset_source(model_path: str) -> str:
+    normalized_path = str(model_path or "").strip().replace("\\", "/")
+    if normalized_path.startswith(("http://", "https://")):
+        return "manual_external"
+    if normalized_path.startswith("/workshop/"):
+        return "steam_workshop"
+    if normalized_path.startswith("/static/"):
+        return "builtin"
+    if normalized_path.startswith(("/user_live2d/", "/user_live2d_local/")):
+        return "local_imported"
+    return ""
+
+
+def _derive_model_asset_binding(model_path: str, *, item_id: str = "") -> tuple[str, str]:
+    normalized_path = str(model_path or "").strip().replace("\\", "/")
+    normalized_item_id = str(item_id or "").strip()
+
+    if not normalized_item_id and normalized_path.startswith("/workshop/"):
+        parts = normalized_path.split("/")
+        if len(parts) >= 3:
+            normalized_item_id = str(parts[2] or "").strip()
+
+    if normalized_item_id or normalized_path.startswith("/workshop/"):
+        return "steam_workshop", normalized_item_id
+    if normalized_path.startswith(("/user_live2d/", "/user_live2d_local/", "/user_vrm/", "/user_mmd/")):
+        return "local_imported", ""
+    if normalized_path.startswith(("http://", "https://")):
+        return "manual_external", ""
+    if normalized_path.startswith("/static/") or (normalized_path and not normalized_path.startswith("/")):
+        return "builtin", ""
+    return "", ""
+
+
+def _find_live2d_model_catalog_entry(
+    all_models: list[dict],
+    *,
+    model_name: str = "",
+    model_path: str = "",
+    asset_source: str = "",
+    item_id: str = "",
+):
+    normalized_name = str(model_name or "").strip()
+    normalized_path = _normalize_live2d_catalog_path(model_path)
+    normalized_source = str(asset_source or "").strip().lower()
+    normalized_item_id = str(item_id or "").strip()
+
+    if normalized_item_id:
+        item_matches = [
+            model
+            for model in all_models
+            if str(model.get("item_id") or "").strip() == normalized_item_id
+        ]
+        item_name_matches = item_matches
+        if normalized_name:
+            item_name_matches = [
+                model
+                for model in item_matches
+                if str(model.get("name") or "").strip() == normalized_name
+            ]
+
+        if normalized_path:
+            strict_candidates = item_name_matches if item_name_matches else item_matches
+            strict_item_match = next(
+                (
+                    model
+                    for model in strict_candidates
+                    if _is_same_live2d_catalog_model_path(
+                        str(model.get("path") or "").strip().replace("\\", "/"),
+                        normalized_path,
+                    )
+                ),
+                None,
+            )
+            if strict_item_match is not None:
+                return strict_item_match
+
+        if len(item_name_matches) == 1:
+            return item_name_matches[0]
+        if len(item_matches) == 1:
+            return item_matches[0]
+
+    if normalized_path:
+        expected_prefixes: tuple[str, ...] = ()
+        if normalized_source == "builtin":
+            expected_prefixes = ("/static/",)
+        elif normalized_source in {"local", "local_imported"}:
+            expected_prefixes = ("/user_live2d/", "/user_live2d_local/")
+        elif normalized_source == "steam_workshop":
+            expected_prefixes = ("/workshop/",)
+
+        for model in all_models:
+            candidate_path = str(model.get("path") or "").strip().replace("\\", "/")
+            if expected_prefixes and not candidate_path.startswith(expected_prefixes):
+                continue
+            if _is_same_live2d_catalog_model_path(candidate_path, normalized_path):
+                return model
+
+    if normalized_name:
+        return next(
+            (model for model in all_models if str(model.get("name") or "").strip() == normalized_name),
+            None,
+        )
+
+    return None
+
+
+def _resolve_live2d_model_binding(model_identifier: str, *, item_id: str = "") -> tuple[str, str, str]:
+    normalized_model = str(model_identifier or "").strip().replace("\\", "/")
+    normalized_item_id = str(item_id or "").strip()
+    live2d_name = _derive_live2d_model_name(normalized_model)
+
+    resolved_model_path = _normalize_live2d_catalog_path(normalized_model)
+    if not resolved_model_path and live2d_name:
+        resolved_model_path = f"{live2d_name}/{live2d_name}.model3.json"
+
+    resolved_source = "steam_workshop" if normalized_item_id else (_derive_live2d_asset_source(normalized_model) or "local_imported")
+    resolved_source_id = normalized_item_id
+
+    # 外部链接保持原始绑定，不回绑到本地目录/创意工坊目录。
+    if resolved_source == "manual_external":
+        return normalized_model or resolved_model_path, resolved_source_id, resolved_source
+
+    try:
+        all_models = find_models()
+        matching_model = _find_live2d_model_catalog_entry(
+            all_models,
+            model_name=live2d_name,
+            model_path=normalized_model,
+            asset_source=resolved_source,
+            item_id=normalized_item_id,
+        )
+        if matching_model is not None:
+            matched_path = str(matching_model.get("path") or "").strip().replace("\\", "/")
+            resolved_model_path = _normalize_live2d_catalog_path(matched_path) or resolved_model_path
+            resolved_source = _derive_live2d_asset_source(matched_path) or resolved_source
+            resolved_source_id = normalized_item_id or str(matching_model.get("item_id") or "").strip()
+    except Exception as exc:
+        logger.debug("解析 Live2D 模型绑定时查找模型目录失败: %s", exc)
+
+    return resolved_model_path, resolved_source_id, resolved_source
 
 
 def _embed_zip_in_png_chunk(png_data: bytes, zip_data: bytes) -> bytes:
@@ -176,6 +382,209 @@ async def send_reload_page_notice(session, message_text: str = "语音已更新�
         return False
 
 
+async def notify_memory_server_reload(*, reason: str = "") -> bool:
+    try:
+        async with httpx.AsyncClient(proxy=None, trust_env=False) as client:
+            response = await client.post(
+                f"http://127.0.0.1:{MEMORY_SERVER_PORT}/reload",
+                timeout=5.0,
+            )
+        if response.status_code != 200:
+            logger.warning(
+                "⚠️ 记忆服务器重新加载失败，status=%s, reason=%s",
+                response.status_code,
+                reason,
+            )
+            return False
+
+        payload = response.json()
+        if payload.get("status") == "success":
+            logger.info("✅ 已通知记忆服务器重新加载配置（%s）", reason or "角色数据更新")
+            return True
+
+        logger.warning(
+            "⚠️ 记忆服务器重新加载返回非成功状态，payload=%s, reason=%s",
+            payload,
+            reason,
+        )
+    except Exception as exc:
+        logger.warning("⚠️ 通知记忆服务器重新加载配置时出错: %s（reason=%s）", exc, reason)
+    return False
+
+
+async def release_memory_server_character(character_name: str, *, reason: str = "") -> bool:
+    from urllib.parse import quote
+    from utils.internal_http_client import get_internal_http_client
+
+    try:
+        encoded_name = quote(character_name, safe="")
+        # 复用进程级单例避免 per-call SSLContext 冷启动（实测 ~1.1s/次）。
+        # 单例在 on_shutdown 末尾由 aclose_internal_http_client 统一关闭，
+        # release/upload 阶段之前都可安全共享；无需 async with。
+        client = get_internal_http_client()
+        response = await client.post(
+            f"http://127.0.0.1:{MEMORY_SERVER_PORT}/release_character/{encoded_name}",
+            timeout=5.0,
+        )
+        if response.status_code != 200:
+            logger.warning(
+                "⚠️ 释放记忆服务器角色句柄失败，status=%s, character=%s, reason=%s",
+                response.status_code,
+                character_name,
+                reason,
+            )
+            return False
+
+        payload = response.json()
+        if payload.get("status") == "success":
+            logger.info("✅ 已释放角色 %s 的记忆服务器句柄（%s）", character_name, reason or "角色文件操作前")
+            return True
+
+        logger.warning(
+            "⚠️ 释放记忆服务器角色句柄返回非成功状态，payload=%s, character=%s, reason=%s",
+            payload,
+            character_name,
+            reason,
+        )
+    except Exception as exc:
+        logger.warning(
+            "⚠️ 调用记忆服务器释放角色句柄时出错: %s（character=%s, reason=%s）",
+            exc,
+            character_name,
+            reason,
+        )
+    return False
+
+
+def _snapshot_existing_paths(targets: list[Path], backup_root: Path):
+    records = []
+    seen: set[str] = set()
+
+    for index, target_path in enumerate(sorted(targets, key=lambda item: (len(item.parts), str(item)))):
+        normalized_path = str(target_path)
+        if normalized_path in seen:
+            continue
+        seen.add(normalized_path)
+
+        backup_path = None
+        if target_path.exists():
+            backup_path = backup_root / f"{index:02d}" / target_path.name
+            backup_path.parent.mkdir(parents=True, exist_ok=True)
+            if target_path.is_dir():
+                shutil.copytree(target_path, backup_path, dirs_exist_ok=True)
+            else:
+                shutil.copy2(target_path, backup_path)
+
+        records.append({
+            "target": target_path,
+            "backup": backup_path,
+        })
+
+    return records
+
+
+def _create_character_operation_backup_dir(config_manager, prefix: str):
+    backup_root = Path(getattr(config_manager, "app_docs_dir", "")) / ".rollback_tmp"
+    backup_root.mkdir(parents=True, exist_ok=True)
+    return tempfile.TemporaryDirectory(prefix=prefix, dir=str(backup_root))
+
+
+def _restore_snapshot_paths(records) -> None:
+    for record in sorted(records, key=lambda item: len(item["target"].parts), reverse=True):
+        target_path = record["target"]
+        backup_path = record.get("backup")
+
+        if target_path.exists():
+            if target_path.is_dir():
+                shutil.rmtree(target_path)
+            else:
+                target_path.unlink()
+
+        if backup_path is None or not backup_path.exists():
+            continue
+
+        if backup_path.is_dir():
+            shutil.copytree(backup_path, target_path, dirs_exist_ok=True)
+        else:
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(backup_path, target_path)
+
+
+def _build_character_tombstones_state(config_manager, character_name: str) -> dict:
+    cloud_state = config_manager.load_cloudsave_local_state()
+    sequence_number = max(1, int(cloud_state.get("next_sequence_number") or 1))
+    tombstone_state = config_manager.load_character_tombstones_state()
+    normalized_entries = {}
+    for entry in tombstone_state.get("tombstones") or []:
+        if not isinstance(entry, dict):
+            continue
+        existing_name = str(entry.get("character_name") or "").strip()
+        if not existing_name:
+            continue
+        normalized_entries[existing_name] = entry
+
+    normalized_entries[character_name] = {
+        "character_name": character_name,
+        "deleted_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "sequence_number": sequence_number,
+    }
+    return {
+        "version": config_manager.CHARACTER_TOMBSTONES_STATE_VERSION,
+        "tombstones": [
+            normalized_entries[existing_name]
+            for existing_name in sorted(normalized_entries)
+        ],
+    }
+
+
+async def _rollback_character_operation(
+    config_manager,
+    *,
+    characters_snapshot: dict,
+    memory_snapshot_records,
+    tombstone_snapshot: dict | None = None,
+    reason: str,
+) -> str:
+    rollback_errors: list[str] = []
+
+    try:
+        await asyncio.to_thread(_restore_snapshot_paths, memory_snapshot_records)
+    except Exception as exc:
+        rollback_errors.append(f"memory restore failed: {exc}")
+
+    try:
+        await asyncio.to_thread(
+            config_manager.save_characters,
+            characters_snapshot,
+            bypass_write_fence=True,
+        )
+    except Exception as exc:
+        rollback_errors.append(f"characters restore failed: {exc}")
+
+    if tombstone_snapshot is not None:
+        try:
+            await asyncio.to_thread(
+                config_manager.save_character_tombstones_state, tombstone_snapshot
+            )
+        except Exception as exc:
+            rollback_errors.append(f"tombstones restore failed: {exc}")
+
+    try:
+        initialize_character_data = get_initialize_character_data()
+        await initialize_character_data()
+    except Exception as exc:
+        rollback_errors.append(f"initialize_character_data failed: {exc}")
+
+    try:
+        reload_notified = await notify_memory_server_reload(reason=reason)
+        if not reload_notified:
+            rollback_errors.append("notify_memory_server_reload failed: returned False")
+    except Exception as exc:
+        rollback_errors.append(f"notify_memory_server_reload failed: {exc}")
+
+    return "; ".join(rollback_errors)
+
+
 @router.get('')
 async def get_characters(request: Request):
     """获取角色数据，支持根据用户语言自动翻译人设"""
@@ -199,7 +608,7 @@ async def get_characters(request: Request):
     
     # 如果语言是中文，不需要翻译
     if user_language == 'zh-CN':
-        return JSONResponse(content=characters_data)
+        return _json_no_store_response(characters_data)
     
     # 需要翻译：翻译人设数据（在深拷贝上进行，不影响原始配置）
     try:
@@ -230,10 +639,10 @@ async def get_characters(request: Request):
             ])
             characters_data['猫娘'] = dict(results)
         
-        return JSONResponse(content=characters_data)
+        return _json_no_store_response(characters_data)
     except Exception as e:
         logger.error(f"翻译人设数据失败: {e}，返回原始数据")
-        return JSONResponse(content=characters_data)
+        return _json_no_store_response(characters_data)
 
 
 @router.get('/current_live2d_model')
@@ -255,6 +664,9 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
         # 查找指定角色的Live2D模型
         live2d_model_name = None
         model_info = None
+        saved_model_path = ""
+        saved_asset_source = ""
+        saved_item_id = ""
         
         # 首先尝试通过item_id查找模型
         if item_id:
@@ -278,7 +690,7 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
             # 在猫娘列表中查找
             if '猫娘' in characters and catgirl_name in characters['猫娘']:
                 catgirl_data = characters['猫娘'][catgirl_name]
-                live2d_model_name = get_reserved(
+                saved_model_path = get_reserved(
                     catgirl_data,
                     'avatar',
                     'live2d',
@@ -286,14 +698,13 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
                     default='',
                     legacy_keys=('live2d',),
                 )
-                if live2d_model_name and str(live2d_model_name).endswith('.model3.json'):
-                    # COMPAT(v1->v2): 新 schema 存 model_path，旧逻辑需要模型目录名。
-                    path_parts = str(live2d_model_name).replace('\\', '/').split('/')
-                    if len(path_parts) >= 2:
-                        live2d_model_name = path_parts[-2]
-                    else:
-                        filename = path_parts[-1]
-                        live2d_model_name = filename[:-len('.model3.json')]
+                live2d_model_name = _derive_live2d_model_name(saved_model_path)
+                saved_asset_source = get_reserved(
+                    catgirl_data,
+                    'avatar',
+                    'asset_source',
+                    default='',
+                )
                 
                 # 检查是否有保存的item_id
                 saved_item_id = get_reserved(
@@ -308,7 +719,13 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
                     try:
                         # 尝试通过保存的item_id查找模型
                         all_models = find_models()
-                        matching_model = next((m for m in all_models if m.get('item_id') == saved_item_id), None)
+                        matching_model = _find_live2d_model_catalog_entry(
+                            all_models,
+                            model_name=live2d_model_name,
+                            model_path=saved_model_path,
+                            asset_source=saved_asset_source,
+                            item_id=saved_item_id,
+                        )
                         if matching_model:
                             logger.debug(f"通过保存的item_id找到模型: {matching_model['name']}")
                             model_info = matching_model.copy()
@@ -360,8 +777,26 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
                 except Exception as we:
                     logger.debug(f"获取工坊模型列表时出错（非关键）: {we}")
                 
-                # 查找匹配的模型
-                matching_model = next((m for m in all_models if m['name'] == live2d_model_name), None)
+                matching_model = model_info.copy() if model_info else None
+                if matching_model is None:
+                    # 保留前面已命中的 item_id 结果；仅在没有现成匹配时再做目录级回退查找。
+                    matching_model = _find_live2d_model_catalog_entry(
+                        all_models,
+                        model_name=live2d_model_name,
+                        model_path=saved_model_path,
+                        asset_source=saved_asset_source,
+                        item_id=saved_item_id,
+                    )
+                elif not item_id and not saved_item_id:
+                    fallback_model = _find_live2d_model_catalog_entry(
+                        all_models,
+                        model_name=live2d_model_name,
+                        model_path=saved_model_path,
+                        asset_source=saved_asset_source,
+                        item_id='',
+                    )
+                    if fallback_model is not None:
+                        matching_model = fallback_model
                 
                 if matching_model:
                     # 使用完整的模型信息，包含item_id
@@ -541,11 +976,13 @@ async def update_catgirl_l2d(name: str, request: Request):
         # 切换模型类型时保留非当前模型配置，避免来回切换后丢失待机动作/光照等设置
         if model_type_str == 'live3d':
             set_reserved(characters['猫娘'][name], 'avatar', 'model_type', 'live3d')
+            active_model_binding_path = ""
             
             if vrm_model:
                 # Live3D + VRM：更新当前激活的 VRM 配置，保留 MMD 配置便于切回
                 set_reserved(characters['猫娘'][name], 'avatar', 'live3d_sub_type', 'vrm')
                 set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'model_path', vrm_model)
+                active_model_binding_path = vrm_model
 
                 # 处理 VRM 动画（复用同样的验证逻辑）
                 if 'vrm_animation' in data:
@@ -588,6 +1025,7 @@ async def update_catgirl_l2d(name: str, request: Request):
                 # Live3D + MMD：更新当前激活的 MMD 配置，保留 VRM 配置便于切回
                 set_reserved(characters['猫娘'][name], 'avatar', 'live3d_sub_type', 'mmd')
                 set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'model_path', mmd_model)
+                active_model_binding_path = mmd_model
 
                 # 处理 MMD 动画
                 if 'mmd_animation' in data:
@@ -626,14 +1064,24 @@ async def update_catgirl_l2d(name: str, request: Request):
                         set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'idle_animation', [str(x).strip() for x in mmd_idle_list])
                 
                 logger.debug(f"已保存角色 {name} 的Live3D(MMD)模型 {mmd_model}")
+
+            current_asset_source, current_asset_source_id = _derive_model_asset_binding(
+                active_model_binding_path,
+                item_id=str(item_id or ""),
+            )
+            set_reserved(characters['猫娘'][name], 'avatar', 'asset_source_id', current_asset_source_id)
+            set_reserved(
+                characters['猫娘'][name],
+                'avatar',
+                'asset_source',
+                current_asset_source or 'local_imported',
+            )
         else:
             # 更新Live2D模型设置，同时保存item_id（如果有）
-            normalized_live2d = str(live2d_model).strip().replace('\\', '/')
-            if normalized_live2d.endswith('.model3.json'):
-                live2d_model_path = normalized_live2d
-            else:
-                live2d_name = normalized_live2d.rsplit('/', 1)[-1]
-                live2d_model_path = f"{live2d_name}/{live2d_name}.model3.json"
+            live2d_model_path, resolved_item_id, resolved_asset_source = _resolve_live2d_model_binding(
+                live2d_model,
+                item_id=str(item_id or ""),
+            )
             set_reserved(
                 characters['猫娘'][name],
                 'avatar',
@@ -642,14 +1090,43 @@ async def update_catgirl_l2d(name: str, request: Request):
                 live2d_model_path,
             )
             set_reserved(characters['猫娘'][name], 'avatar', 'model_type', 'live2d')
-            if item_id:
-                set_reserved(characters['猫娘'][name], 'avatar', 'asset_source_id', str(item_id))
+
+            if 'live2d_idle_animation' in data:
+                live2d_idle_animation = data.get('live2d_idle_animation')
+                logger.info(f"[Live2D Save] 收到 live2d_idle_animation 请求: {live2d_idle_animation}")
+
+                if live2d_idle_animation is None:
+                    set_reserved(characters['猫娘'][name], 'avatar', 'live2d', 'idle_animation', None)
+                    logger.info(f"[Live2D Save] 已清空 idle_animation")
+                elif isinstance(live2d_idle_animation, str):
+                    live2d_idle_str = live2d_idle_animation.strip()
+                    if not live2d_idle_str:
+                        set_reserved(characters['猫娘'][name], 'avatar', 'live2d', 'idle_animation', None)
+                        logger.info(f"[Live2D Save] 已清空 idle_animation")
+                    else:
+                        if '://' in live2d_idle_str or live2d_idle_str.startswith('data:'):
+                            return JSONResponse(content={'success': False, 'error': 'Live2D待机动作路径不能包含URL方案'}, status_code=400)
+                        if '..' in live2d_idle_str:
+                            return JSONResponse(content={'success': False, 'error': 'Live2D待机动作路径不能包含路径遍历（..）'}, status_code=400)
+                        if live2d_idle_str.startswith('/') or live2d_idle_str.startswith('\\') or re.match(r'^[A-Za-z]:', live2d_idle_str):
+                            return JSONResponse(content={'success': False, 'error': 'Live2D待机动作路径必须是相对路径，不能是绝对路径'}, status_code=400)
+                        if not live2d_idle_str.lower().endswith('.motion3.json'):
+                            return JSONResponse(content={'success': False, 'error': 'Live2D待机动作必须是 .motion3.json 文件'}, status_code=400)
+                        set_reserved(characters['猫娘'][name], 'avatar', 'live2d', 'idle_animation', live2d_idle_str)
+                        logger.info(f"[Live2D Save] 已保存 idle_animation: {live2d_idle_str}")
+                else:
+                    return JSONResponse(content={'success': False, 'error': 'live2d_idle_animation 必须是字符串或 null'}, status_code=400)
+            else:
+                logger.info(f"[Live2D Save] 请求中未包含 live2d_idle_animation 字段, data keys: {list(data.keys())}")
+
+            if resolved_item_id:
+                set_reserved(characters['猫娘'][name], 'avatar', 'asset_source_id', str(resolved_item_id))
                 set_reserved(characters['猫娘'][name], 'avatar', 'asset_source', 'steam_workshop')
-                logger.debug(f"已保存角色 {name} 的模型 {live2d_model} 和item_id {item_id}")
+                logger.debug(f"已保存角色 {name} 的模型 {live2d_model} 和item_id {resolved_item_id}")
             else:
                 set_reserved(characters['猫娘'][name], 'avatar', 'asset_source_id', '')
-                set_reserved(characters['猫娘'][name], 'avatar', 'asset_source', 'local')
-                logger.debug(f"已保存角色 {name} 的模型 {live2d_model}")
+                set_reserved(characters['猫娘'][name], 'avatar', 'asset_source', resolved_asset_source or 'local_imported')
+                logger.debug(f"已保存角色 {name} 的模型 {live2d_model}，asset_source={resolved_asset_source or 'local_imported'}")
         
         # 保存配置
         await _config_manager.asave_characters(characters)
@@ -670,6 +1147,8 @@ async def update_catgirl_l2d(name: str, request: Request):
             'message': message
         })
         
+    except MaintenanceModeError:
+        raise
     except Exception as e:
         logger.exception("更新角色模型设置失败")
         return JSONResponse(content={
@@ -1137,8 +1616,11 @@ async def rename_catgirl(old_name: str, request: Request):
     if new_name in characters['猫娘']:
         return JSONResponse({'success': False, 'error': '新档案名已存在'}, status_code=400)
     
-    # 如果当前猫娘是被重命名的猫娘，需要先保存WebSocket连接引用，重命名完成后再发送通知
+    # 如果当前猫娘是被重命名的猫娘，先缓存 WebSocket，
+    # 只有在持久化和重载全部成功后才发送通知，避免前端先切换到未提交状态。
     is_current_catgirl = characters.get('当前猫娘') == old_name
+    rename_notification_ws = None
+    rename_notification_message = None
     
     # 检查当前角色是否有活跃的语音session
     if is_current_catgirl and old_name in session_manager:
@@ -1153,36 +1635,122 @@ async def rename_catgirl(old_name: str, request: Request):
                     'success': False, 
                     'error': '语音状态下无法修改角色名称，请先停止语音对话后再修改'
                 }, status_code=400)
-    # 先保存 WebSocket 引用，因为 initialize_character_data() 会删除旧的 session_manager 条目
-    saved_ws = None
     if is_current_catgirl and old_name in session_manager:
-        saved_ws = session_manager[old_name].websocket
-    
-    # 重命名
-    characters['猫娘'][new_name] = characters['猫娘'].pop(old_name)
-    # 如果当前猫娘是被重命名的猫娘，也需要更新
-    if is_current_catgirl:
-        characters['当前猫娘'] = new_name
-    await _config_manager.asave_characters(characters)
-    # 自动重新加载配置
-    initialize_character_data = get_initialize_character_data()
-    await initialize_character_data()
-    
-    # 在数据更新完成后再通知前端，避免前端 fetch /api/characters 时新名称尚未就绪
-    if is_current_catgirl and saved_ws:
-        logger.info(f"开始通知WebSocket客户端：猫娘从 {old_name} 重命名为 {new_name}")
-        message = json.dumps({
-            "type": "catgirl_switched",
-            "new_catgirl": new_name,
-            "old_catgirl": old_name
-        })
+        rename_notification_ws = session_manager[old_name].websocket
+        if rename_notification_ws:
+            rename_notification_message = json.dumps({
+                "type": "catgirl_switched",
+                "new_catgirl": new_name,
+                "old_catgirl": old_name
+            })
+
+    assert_cloudsave_writable(
+        _config_manager,
+        operation="rename",
+        target=f"characters/{old_name} -> {new_name}",
+    )
+
+    released_memory_handle = await release_memory_server_character(
+        old_name,
+        reason=f"角色重命名前释放 SQLite 句柄: {old_name} -> {new_name}",
+    )
+    if not released_memory_handle:
+        logger.warning("角色重命名前释放记忆服务器句柄失败，已阻止重命名: %s -> %s", old_name, new_name)
+        return JSONResponse(
+            {
+                "success": False,
+                "code": "MEMORY_SERVER_RELEASE_FAILED",
+                "error": "释放角色记忆句柄失败，已阻止重命名，请稍后重试",
+                "memory_server_released": False,
+            },
+            status_code=503,
+        )
+
+    characters_snapshot = copy.deepcopy(characters)
+    memory_targets = list_character_memory_paths(_config_manager, old_name)
+    memory_targets.extend(list_character_memory_paths(_config_manager, new_name))
+    memory_targets.append(Path(_config_manager.memory_dir) / new_name)
+    memory_server_reloaded = False
+
+    with _create_character_operation_backup_dir(_config_manager, "neko-rename-character-") as temp_dir:
+        memory_snapshot_records = await asyncio.to_thread(
+            _snapshot_existing_paths, memory_targets, Path(temp_dir)
+        )
         try:
-            await saved_ws.send_text(message)
+            rename_character_memory_storage(_config_manager, old_name, new_name)
+
+            # 重命名角色真源
+            characters['猫娘'][new_name] = characters['猫娘'].pop(old_name)
+            # 如果当前猫娘是被重命名的猫娘，也需要更新
+            if is_current_catgirl:
+                characters['当前猫娘'] = new_name
+            await _config_manager.asave_characters(characters)
+
+            # 自动重新加载配置
+            initialize_character_data = get_initialize_character_data()
+            await initialize_character_data()
+
+            memory_server_reloaded = await notify_memory_server_reload(
+                reason=f"角色重命名: {old_name} -> {new_name}",
+            )
+            if not memory_server_reloaded:
+                rollback_error = await _rollback_character_operation(
+                    _config_manager,
+                    characters_snapshot=characters_snapshot,
+                    memory_snapshot_records=memory_snapshot_records,
+                    reason=f"角色重命名回滚（memory_server 重载失败）: {old_name} -> {new_name}",
+                )
+                logger.error(
+                    "重命名角色后 notify_memory_server_reload 返回 False，已尝试回滚: %s -> %s",
+                    old_name,
+                    new_name,
+                )
+                error_message = "重命名角色失败: notify_memory_server_reload returned False"
+                if rollback_error:
+                    error_message = f"{error_message}; 回滚失败: {rollback_error}"
+                return JSONResponse(
+                    {
+                        "success": False,
+                        "error": error_message,
+                    },
+                    status_code=500,
+                )
+        except MaintenanceModeError as exc:
+            rollback_error = await _rollback_character_operation(
+                _config_manager,
+                characters_snapshot=characters_snapshot,
+                memory_snapshot_records=memory_snapshot_records,
+                reason=f"维护模式：角色重命名回滚 {old_name} -> {new_name}",
+            )
+            if rollback_error:
+                raise exc from RuntimeError(rollback_error)
+            raise
+        except Exception as exc:
+            rollback_error = await _rollback_character_operation(
+                _config_manager,
+                characters_snapshot=characters_snapshot,
+                memory_snapshot_records=memory_snapshot_records,
+                reason=f"角色重命名回滚: {old_name} -> {new_name}",
+            )
+            logger.exception("重命名角色失败，已尝试回滚: %s -> %s", old_name, new_name)
+            error_message = f"重命名角色失败: {exc}"
+            if rollback_error:
+                error_message = f"{error_message}; 回滚失败: {rollback_error}"
+            return JSONResponse({"success": False, "error": error_message}, status_code=500)
+
+    # 数据更新+重载完成后再通知前端，避免前端 fetch /api/characters 时新名称尚未就绪
+    if memory_server_reloaded and rename_notification_ws and rename_notification_message:
+        try:
+            await rename_notification_ws.send_text(rename_notification_message)
             logger.info(f"已向 {old_name} 发送重命名通知")
         except Exception as e:
             logger.warning(f"发送重命名通知给 {old_name} 失败: {e}")
-    
-    return {"success": True}
+
+    return {
+        "success": True,
+        "memory_renamed": True,
+        "memory_server_reloaded": memory_server_reloaded,
+    }
 
 
 @router.post('/catgirl/{name}/unregister_voice')
@@ -1237,7 +1805,7 @@ async def get_current_catgirl():
     _config_manager = get_config_manager()
     characters = await _config_manager.aload_characters()
     current_catgirl = characters.get('当前猫娘', '')
-    return JSONResponse(content={'current_catgirl': current_catgirl})
+    return _json_no_store_response({'current_catgirl': current_catgirl})
 
 @router.post('/current_catgirl')
 async def set_current_catgirl(request: Request):
@@ -1457,23 +2025,13 @@ async def add_catgirl(request: Request):
     init_one_catgirl = get_init_one_catgirl()
     await init_one_catgirl(key, is_new=True)
 
-    # 通知记忆服务器重新加载配置
-    # per-call AsyncClient: 用户手动新建猫娘触发，典型冷路径
-    try:
-            async with httpx.AsyncClient(proxy=None, trust_env=False) as client:
-                        resp = await client.post(f"http://127.0.0.1:{MEMORY_SERVER_PORT}/reload", timeout=5.0)
-            if resp.status_code == 200:
-                result = resp.json()
-                if result.get('status') == 'success':
-                    logger.info(f"✅ 已通知记忆服务器重新加载配置（新角色: {key}）")
-                else:
-                    logger.warning(f"⚠️ 记忆服务器重新加载配置返回: {result.get('message')}")
-            else:
-                logger.warning(f"⚠️ 记忆服务器重新加载配置失败，状态码: {resp.status_code}")
-    except Exception as e:
-        logger.warning(f"⚠️ 通知记忆服务器重新加载配置时出错: {e}（不影响角色创建）")
+    memory_server_reloaded = await notify_memory_server_reload(reason=f"新角色: {key}")
 
-    return {"success": True, "character_name": key}
+    return {
+        "success": True,
+        "character_name": key,
+        "memory_server_reloaded": memory_server_reloaded,
+    }
 
 
 @router.put('/catgirl/{name}')
@@ -1616,42 +2174,93 @@ async def delete_catgirl(name: str):
     if name == current_catgirl:
         return JSONResponse({'success': False, 'error': '不能删除当前正在使用的猫娘！请先切换到其他猫娘后再删除。'}, status_code=400)
 
-    # 删除对应的记忆文件
-    try:
-        memory_paths = [_config_manager.memory_dir, _config_manager.project_memory_dir]
-        files_to_delete = [
-            f'semantic_memory_{name}',  # 语义记忆目录（旧布局）
-            f'time_indexed_{name}',     # 时间索引数据库文件（旧布局）
-            f'settings_{name}.json',    # 设置文件（旧布局）
-            f'recent_{name}.json',      # 最近聊天记录文件（旧布局）
-            name,                       # 新布局：memory/<name>/{recent,facts,reflections,persona,time_indexed.db,...}
-        ]
+    assert_cloudsave_writable(
+        _config_manager,
+        operation="delete",
+        target=f"characters/{name}",
+    )
 
-        # 展平 product 后并行：2 个目录 × 5 个名字 = 10 个独立 IO，串行 to_thread 是 10× round-trip
-        async def _delete_one(file_path):
-            if not file_path.exists():
-                return
-            try:
-                if file_path.is_dir():
-                    await asyncio.to_thread(shutil.rmtree, file_path)
-                else:
-                    await asyncio.to_thread(file_path.unlink)
-                logger.info(f"已删除: {file_path}")
-            except Exception as e:
-                logger.warning(f"删除失败 {file_path}: {e}")
+    released_memory_handle = await release_memory_server_character(
+        name,
+        reason=f"角色删除前释放 SQLite 句柄: {name}",
+    )
+    if not released_memory_handle:
+        logger.warning("角色删除前释放记忆服务器句柄失败，已阻止删除: %s", name)
+        return JSONResponse(
+            {
+                "success": False,
+                "code": "MEMORY_SERVER_RELEASE_FAILED",
+                "error": "释放角色记忆句柄失败，已阻止删除，请稍后重试",
+                "memory_server_released": False,
+            },
+            status_code=503,
+        )
 
-        delete_targets = [base_dir / file_name for base_dir in memory_paths for file_name in files_to_delete]
-        await asyncio.gather(*(_delete_one(p) for p in delete_targets), return_exceptions=True)
-    except Exception as e:
-        logger.error(f"删除记忆文件时出错: {e}")
-    
-    # 删除角色配置
-    del characters['猫娘'][name]
-    await _config_manager.asave_characters(characters)
-    # Fast path：只停该角色的线程 + 清 dict + 刷 globals，不遍历其它 N-1 个。
-    remove_one_catgirl = get_remove_one_catgirl()
-    await remove_one_catgirl(name)
-    return {"success": True}
+    characters_snapshot = copy.deepcopy(characters)
+    memory_targets = list_character_memory_paths(_config_manager, name)
+
+    with _create_character_operation_backup_dir(_config_manager, "neko-delete-character-") as temp_dir:
+        memory_snapshot_records = await asyncio.to_thread(
+            _snapshot_existing_paths, memory_targets, Path(temp_dir)
+        )
+        tombstone_snapshot = None
+        memory_server_reloaded = False
+        try:
+            tombstone_snapshot = copy.deepcopy(_config_manager.load_character_tombstones_state())
+
+            removed_memory_paths = await asyncio.to_thread(
+                delete_character_memory_storage, _config_manager, name
+            )
+            for entry_path in removed_memory_paths:
+                logger.info(f"已删除: {entry_path}")
+
+            await asyncio.to_thread(
+                _config_manager.save_character_tombstones_state,
+                _build_character_tombstones_state(_config_manager, name),
+            )
+
+            # 删除角色配置
+            del characters['猫娘'][name]
+            await _config_manager.asave_characters(characters)
+            # Fast path：只停该角色的线程 + 清 dict + 刷 globals，不遍历其它 N-1 个。
+            remove_one_catgirl = get_remove_one_catgirl()
+            await remove_one_catgirl(name)
+            memory_server_reloaded = await notify_memory_server_reload(reason=f"删除角色: {name}")
+            if not memory_server_reloaded:
+                raise RuntimeError("notify_memory_server_reload returned False")
+        except MaintenanceModeError as exc:
+            rollback_error = await _rollback_character_operation(
+                _config_manager,
+                characters_snapshot=characters_snapshot,
+                memory_snapshot_records=memory_snapshot_records,
+                tombstone_snapshot=tombstone_snapshot,
+                reason=f"维护模式：删除角色回滚 {name}",
+            )
+            if rollback_error:
+                raise exc from RuntimeError(rollback_error)
+            raise
+        except Exception as exc:
+            rollback_error = await _rollback_character_operation(
+                _config_manager,
+                characters_snapshot=characters_snapshot,
+                memory_snapshot_records=memory_snapshot_records,
+                tombstone_snapshot=tombstone_snapshot,
+                reason=f"删除角色回滚: {name}",
+            )
+            logger.exception("删除角色失败，已尝试回滚: %s", name)
+            error_message = f"删除角色失败: {exc}"
+            if rollback_error:
+                error_message = f"{error_message}; 回滚失败: {rollback_error}"
+            return JSONResponse(
+                {
+                    "success": False,
+                    "error": error_message,
+                    "memory_server_released": released_memory_handle,
+                },
+                status_code=500,
+            )
+
+    return {"success": True, "memory_server_reloaded": memory_server_reloaded}
 
 @router.post('/clear_voice_ids')
 async def clear_voice_ids():
@@ -3224,15 +3833,23 @@ async def export_catgirl_card(name: str):
             draw.rectangle([0, 0, width, header_height], fill='#40C5F1')
 
             # 在顶部左侧添加角色名称
-            try:
-                # 尝试使用系统默认字体，支持中文
-                font_size = 36
-                font = ImageFont.truetype("msyh.ttc", font_size)  # 微软雅黑
-            except (OSError, IOError):
+            font_size = 36
+            font = None
+            font_candidates = [
+                "msyhbd.ttc", "Microsoft YaHei Bold.ttf", "simhei.ttf",
+                "msyh.ttc", "Microsoft YaHei.ttf", "simsun.ttc",
+                "NotoSansCJK-Regular.ttc", "wqy-microhei.ttc"
+            ]
+            for font_name in font_candidates:
                 try:
-                    font = ImageFont.truetype("simhei.ttf", font_size)  # 黑体
+                    font = ImageFont.truetype(font_name, font_size)
+                    break
                 except (OSError, IOError):
-                    font = ImageFont.load_default()
+                    continue
+
+            if font is None:
+                font = ImageFont.load_default()
+                logger.warning("[导出角色卡] 未找到支持中文的系统字体，可能会显示为方框")
 
             # 计算文字位置（左侧居中偏上）
             text = name
@@ -3927,6 +4544,8 @@ async def export_catgirl_with_portrait(
                 ("simsun.ttc", font_size),
                 ("msyh.ttc", font_size),
                 ("Microsoft YaHei.ttf", font_size),
+                ("NotoSansCJK-Regular.ttc", font_size),
+                ("wqy-microhei.ttc", font_size),
             ]
             for font_name, size in font_candidates:
                 try:

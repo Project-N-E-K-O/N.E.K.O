@@ -10,11 +10,35 @@ import os
 import io
 import signal
 
-# 强制 UTF-8 编码
-if sys.platform == 'win32':
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
-    
+def _configure_stdio_utf8() -> None:
+    """Normalize stdio encoding when running the launcher on Windows.
+
+    优先 stream.reconfigure（保留 stream 对象），失败再兜底换 TextIOWrapper。
+    保留原对象是为了兼容 pytest capture / IDE 控制台 / 其他 embedded host —
+    替换 sys.stdout 会断掉这些上游的 redirector。
+    """
+    if sys.platform != 'win32':
+        return
+
+    for name in ('stdout', 'stderr'):
+        stream = getattr(sys, name, None)
+        if stream is None:
+            continue
+        try:
+            reconfigure = getattr(stream, 'reconfigure', None)
+            if callable(reconfigure):
+                reconfigure(encoding='utf-8', errors='replace')
+        except Exception:
+            pass
+
+
+# 模块级立即 reconfigure 一次：即使 launcher 被作为 module import（比如
+# tests/unit/test_cloudsave_startup_flow.py 里 8 处 import launcher），也
+# 能保证 Windows 下中文 log 不崩。stream.reconfigure 幂等，
+# _bootstrap_launcher_runtime 里再调一次只是 no-op。
+_configure_stdio_utf8()
+
+
 # 检测打包环境（PyInstaller 设 sys.frozen，Nuitka 设 __compiled__）
 IS_FROZEN = getattr(sys, 'frozen', False) or '__compiled__' in globals()
 
@@ -27,13 +51,59 @@ if IS_FROZEN:
     else:
         # Nuitka 或其他
         bundle_dir = os.path.dirname(os.path.abspath(__file__))
-    
+    # tiktoken encodings (e.g. o200k_base) load merge tables from TIKTOKEN_CACHE_DIR;
+    # build_nuitka.bat pre-fetches into data/tiktoken_cache for offline use.
+    _tiktoken_cache = os.path.join(bundle_dir, "data", "tiktoken_cache")
+    if os.path.isdir(_tiktoken_cache):
+        os.environ.setdefault("TIKTOKEN_CACHE_DIR", _tiktoken_cache)
 else:
     # 运行在正常 Python 环境
     bundle_dir = os.path.dirname(os.path.abspath(__file__))
 
-sys.path.insert(0, bundle_dir)
-os.chdir(bundle_dir)
+
+def _get_project_venv_python(project_dir: str) -> str | None:
+    if sys.platform == 'win32':
+        candidate = os.path.join(project_dir, '.venv', 'Scripts', 'python.exe')
+    else:
+        candidate = os.path.join(project_dir, '.venv', 'bin', 'python')
+
+    return candidate if os.path.exists(candidate) else None
+
+
+def _maybe_reexec_into_project_venv(project_dir: str) -> None:
+    """Prefer the repo-local virtualenv when launching from source.
+
+    Users often invoke ``python launcher.py`` with the system interpreter.
+    When that interpreter differs from the project's managed ``.venv``,
+    imports fail even though the dependency is already installed locally.
+    """
+    if IS_FROZEN:
+        return
+
+    # 获取预期的 .venv 目录和当前环境的根目录
+    expected_venv_dir = os.path.abspath(os.path.join(project_dir, ".venv"))
+    current_venv_dir = os.path.abspath(sys.prefix)
+
+    # 校验当前环境是否真的是本项目的 .venv（忽略大小写差异）
+    # 这样既能兼容 uv run，又能防止在其他无关虚拟环境中误跑此脚本导致报错
+    if os.path.normcase(current_venv_dir) == os.path.normcase(expected_venv_dir):
+        return
+
+    # 如果根目录不匹配，再进行原有的解释器路径严格校验
+    current_executable = os.path.abspath(sys.executable or "")
+    if not current_executable:
+        return
+
+    candidate = _get_project_venv_python(project_dir)
+    if not candidate:
+        return
+
+    target_executable = os.path.abspath(candidate)
+    if current_executable == target_executable:
+        return
+
+    print(f"[Launcher] 当前解释器不是项目虚拟环境，正在切换到: {candidate}")
+    os.execv(target_executable, [target_executable] + sys.argv)
 
 import subprocess
 import socket
@@ -47,7 +117,9 @@ import json
 import logging
 import uuid
 import importlib
+import multiprocessing
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Dict
 from multiprocessing import Process, freeze_support, Event
 import config as config_module
@@ -60,22 +132,37 @@ from utils.port_utils import (
     is_port_in_excluded_range,
     set_port_probe_reuse,
 )
+from utils.cloudsave_runtime import (
+    ROOT_MODE_BOOTSTRAP_IMPORTING,
+    ROOT_MODE_MAINTENANCE_READONLY,
+    ROOT_MODE_NORMAL,
+    bootstrap_local_cloudsave_environment,
+    cloud_apply_fence,
+    set_root_mode,
+)
+from utils.cloudsave_autocloud import get_cloudsave_manager
+from utils.config_manager import get_config_manager, reset_config_manager_cache
+
+
+def _configure_multiprocessing_executable(project_dir: str) -> None:
+    """Force macOS/Windows spawn children to reuse the project virtualenv."""
+    if IS_FROZEN:
+        return
+
+    candidate = _get_project_venv_python(project_dir)
+    if not candidate:
+        return
+
+    try:
+        multiprocessing.set_executable(os.path.abspath(candidate))
+    except Exception as exc:
+        print(f"[Launcher] Warning: failed to pin multiprocessing executable: {exc}", flush=True)
+
 
 # 本次 launcher 启动的唯一标识
-LAUNCH_ID = uuid.uuid4().hex
-# 实例 ID：若父进程已设置则复用，否则生成新值，确保所有子进程共享同一实例标识
-INSTANCE_ID = os.environ.get("NEKO_INSTANCE_ID") or uuid.uuid4().hex
-os.environ.setdefault("NEKO_INSTANCE_ID", INSTANCE_ID)
-
-# 确保本地服务间通信不走系统代理（防止 Clash/Surge 等代理软件拦截 localhost 请求）
-# httpx 优先读小写 no_proxy，因此大小写都需要设置
-# 使用精确 token 匹配，防止 "127.0.0.1" in "127.0.0.10" 这类子串误判
-for _key in ("NO_PROXY", "no_proxy"):
-    _no_proxy_raw = os.environ.get(_key, "")
-    _tokens = set(map(str.strip, filter(None, _no_proxy_raw.split(","))))
-    for _host in ("127.0.0.1", "localhost"):
-        _tokens.add(_host)
-    os.environ[_key] = ",".join(_tokens)
+LAUNCH_ID = ""
+# 实例 ID：在显式启动路径中初始化，确保导入模块时不改动进程环境
+INSTANCE_ID = ""
 
 JOB_HANDLE = None
 _cleanup_lock = threading.Lock()
@@ -103,6 +190,11 @@ MODULE_TO_PORT_KEY: dict[str, str] = {
     "agent_server": "TOOL_SERVER_PORT",
     "main_server": "MAIN_SERVER_PORT",
 }
+SHUTDOWN_MODULE_ORDER = (
+    "main_server",
+    "memory_server",
+    "agent_server",
+)
 
 
 def _sync_runtime_config_globals(
@@ -111,10 +203,11 @@ def _sync_runtime_config_globals(
 ) -> None:
     """Keep the already-imported ``config`` module aligned with launcher choices.
 
-    On Linux/macOS, ``multiprocessing`` defaults to ``fork``. Child processes then
-    inherit the parent's already-imported ``config`` module object, so only writing
-    ``os.environ`` is insufficient: any later ``from config import TOOL_SERVER_PORT``
-    inside forked children would still see the stale pre-launcher values.
+    On Linux, ``multiprocessing`` often defaults to ``fork`` while macOS/Windows
+    commonly use ``spawn``. Either way, only writing ``os.environ`` is not enough:
+    forked children can inherit the parent's already-imported ``config`` module
+    object, and spawned children can still observe stale globals if imports happen
+    before launcher-selected overrides are reloaded.
 
     Syncing the module globals here ensures forked children and modules imported
     after forking observe the negotiated runtime ports and shared instance id.
@@ -185,7 +278,39 @@ def _install_logging_brace_compat() -> None:
     logging._neko_brace_compat_installed = True
 
 
-_install_logging_brace_compat()
+def _initialize_launcher_context() -> None:
+    """Populate per-launch ids and env only during explicit launcher startup."""
+    global LAUNCH_ID, INSTANCE_ID
+
+    if not LAUNCH_ID:
+        LAUNCH_ID = uuid.uuid4().hex
+
+    if not INSTANCE_ID:
+        INSTANCE_ID = os.environ.get("NEKO_INSTANCE_ID") or uuid.uuid4().hex
+        os.environ.setdefault("NEKO_INSTANCE_ID", INSTANCE_ID)
+        _sync_runtime_config_globals()
+
+    # 确保本地服务间通信不走系统代理（防止 Clash/Surge 等代理软件拦截 localhost 请求）
+    # httpx 优先读小写 no_proxy，因此大小写都需要设置
+    # 使用精确 token 匹配，防止 "127.0.0.1" in "127.0.0.10" 这类子串误判
+    for _key in ("NO_PROXY", "no_proxy"):
+        _no_proxy_raw = os.environ.get(_key, "")
+        _tokens = set(map(str.strip, filter(None, _no_proxy_raw.split(","))))
+        for _host in ("127.0.0.1", "localhost"):
+            _tokens.add(_host)
+        os.environ[_key] = ",".join(_tokens)
+
+
+def _bootstrap_launcher_runtime(project_dir: str) -> None:
+    """Run launcher bootstrap only from the explicit startup path."""
+    _configure_stdio_utf8()
+    _maybe_reexec_into_project_venv(project_dir)
+    if project_dir not in sys.path:
+        sys.path.insert(0, project_dir)
+    os.chdir(project_dir)
+    _configure_multiprocessing_executable(project_dir)
+    _install_logging_brace_compat()
+    _initialize_launcher_context()
 
 
 def _show_error_dialog(message: str):
@@ -226,6 +351,29 @@ def _get_last_error() -> int:
     if sys.platform != 'win32':
         return 0
     return ctypes.windll.kernel32.GetLastError()
+
+
+def _detach_child_process_session() -> None:
+    """Keep launcher-managed child servers out of the launcher's Ctrl+C process group.
+
+    Without this on macOS/Linux, terminal SIGINT reaches the launcher and all child
+    servers at once. That lets ``memory_server`` exit before ``main_server`` finishes
+    its shutdown release/cleanup sequence, which defeats the cloudsave cleanup order.
+    """
+    if os.name != "posix":
+        return
+    try:
+        os.setsid()
+    except Exception as e:
+        print(f"[Launcher] Warning: failed to detach child process session: {e}", flush=True)
+
+
+def _iter_servers_for_shutdown():
+    order = {module_name: index for index, module_name in enumerate(SHUTDOWN_MODULE_ORDER)}
+    return sorted(
+        SERVERS,
+        key=lambda server: (order.get(server.get("module", ""), len(order)), server.get("name", "")),
+    )
 
 
 def setup_job_object():
@@ -343,6 +491,8 @@ SERVERS = [
         'port': MEMORY_SERVER_PORT,
         'process': None,
         'ready_event': None,
+        'shutdown_complete_event': None,
+        'graceful_shutdown_timeout': 12,
     },
     {
         'name': 'Main Server',
@@ -350,6 +500,8 @@ SERVERS = [
         'port': MAIN_SERVER_PORT,
         'process': None,
         'ready_event': None,
+        'shutdown_complete_event': None,
+        'graceful_shutdown_timeout': 20,
     },
     {
         'name': 'Agent Server',
@@ -357,6 +509,8 @@ SERVERS = [
         'port': TOOL_SERVER_PORT,
         'process': None,
         'ready_event': None,
+        'shutdown_complete_event': None,
+        'graceful_shutdown_timeout': 8,
     },
 ]
 
@@ -460,6 +614,17 @@ def run_merged_servers() -> int:
         print(f"[Merged] All servers ready "
               f"(ports {MEMORY_SERVER_PORT}/{TOOL_SERVER_PORT}/{MAIN_SERVER_PORT})",
               flush=True)
+        try:
+            _config_manager = get_config_manager(APP_NAME)
+            set_root_mode(
+                _config_manager,
+                ROOT_MODE_NORMAL,
+                current_root=str(_config_manager.app_docs_dir),
+                last_known_good_root=str(_config_manager.app_docs_dir),
+                last_successful_boot_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            )
+        except Exception as e:
+            print(f"[Merged] Warning: failed to persist root_state boot success: {e}", flush=True)
         emit_frontend_event("startup_ready", {
             "instance_id": INSTANCE_ID,
             "selected": {
@@ -494,9 +659,11 @@ def run_memory_server(
     ready_event: Event,
     import_event: Event | None = None,
     shutdown_event: Event | None = None,
+    shutdown_complete_event: Event | None = None,
 ):
     """运行 Memory Server"""
     try:
+        _detach_child_process_session()
         _reload_runtime_config_from_env()
         # 确保工作目录正确
         if IS_FROZEN:
@@ -536,6 +703,13 @@ def run_memory_server(
         )
         server = uvicorn.Server(config)
 
+        if shutdown_complete_event is not None:
+            async def _notify_shutdown_complete() -> None:
+                print("[Memory Server] Shutdown lifecycle complete", flush=True)
+                shutdown_complete_event.set()
+
+            memory_server.app.add_event_handler("shutdown", _notify_shutdown_complete)
+
         if shutdown_event is not None:
             def _watch_shutdown() -> None:
                 shutdown_event.wait()
@@ -574,14 +748,19 @@ def run_memory_server(
         print(f"Memory Server error: {e}")
         import traceback
         traceback.print_exc()
+    finally:
+        if shutdown_complete_event is not None:
+            shutdown_complete_event.set()
 
 def run_agent_server(
     ready_event: Event,
     import_event: Event | None = None,
     shutdown_event: Event | None = None,
+    shutdown_complete_event: Event | None = None,
 ):
     """运行 Agent Server (不需要等待初始化)"""
     try:
+        _detach_child_process_session()
         _reload_runtime_config_from_env()
         # 确保工作目录正确
         if IS_FROZEN:
@@ -623,6 +802,13 @@ def run_agent_server(
         )
         server = uvicorn.Server(config)
 
+        if shutdown_complete_event is not None:
+            async def _notify_shutdown_complete() -> None:
+                print("[Agent Server] Shutdown lifecycle complete", flush=True)
+                shutdown_complete_event.set()
+
+            agent_server.app.add_event_handler("shutdown", _notify_shutdown_complete)
+
         if shutdown_event is not None:
             def _watch_shutdown() -> None:
                 shutdown_event.wait()
@@ -636,14 +822,19 @@ def run_agent_server(
         print(f"Agent Server error: {e}")
         import traceback
         traceback.print_exc()
+    finally:
+        if shutdown_complete_event is not None:
+            shutdown_complete_event.set()
 
 def run_main_server(
     ready_event: Event,
     import_event: Event | None = None,
     shutdown_event: Event | None = None,
+    shutdown_complete_event: Event | None = None,
 ):
     """运行 Main Server"""
     try:
+        _detach_child_process_session()
         _reload_runtime_config_from_env()
         # 确保工作目录正确
         if IS_FROZEN:
@@ -675,6 +866,13 @@ def run_main_server(
             forwarded_allow_ips="*" if _behind_proxy else None,
         )
         server = uvicorn.Server(config)
+
+        if shutdown_complete_event is not None:
+            async def _notify_shutdown_complete() -> None:
+                print("[Main Server] Shutdown lifecycle complete", flush=True)
+                shutdown_complete_event.set()
+
+            main_server.app.add_event_handler("shutdown", _notify_shutdown_complete)
 
         if shutdown_event is not None:
             def _watch_shutdown() -> None:
@@ -709,6 +907,9 @@ def run_main_server(
         print(f"Main Server error: {e}")
         import traceback
         traceback.print_exc()
+    finally:
+        if shutdown_complete_event is not None:
+            shutdown_complete_event.set()
 
 def check_port(port: int, timeout: float = 0.5) -> bool:
     """检查端口是否已开放"""
@@ -1041,12 +1242,18 @@ def start_server(server: Dict) -> bool:
         server['ready_event'] = Event()
         server['import_event'] = Event()
         server['shutdown_event'] = Event()
+        server['shutdown_complete_event'] = Event()
         
         # 使用 multiprocessing 启动服务器
         # 注意：不能设置 daemon=True，因为 main_server 自己会创建子进程
         server['process'] = Process(
             target=target_func,
-            args=(server['ready_event'], server['import_event'], server['shutdown_event']),
+            args=(
+                server['ready_event'],
+                server['import_event'],
+                server['shutdown_event'],
+                server['shutdown_complete_event'],
+            ),
             daemon=False,
         )
         server['process'].start()
@@ -1143,29 +1350,50 @@ def cleanup_servers():
         _cleanup_done = True
 
     print("\n正在关闭服务器...", flush=True)
-    for server in SERVERS:
+    for server in _iter_servers_for_shutdown():
         proc = server.get('process')
         if not proc:
             continue
 
         try:
             shutdown_evt = server.get('shutdown_event')
+            shutdown_complete_evt = server.get('shutdown_complete_event')
+            graceful_timeout = float(server.get('graceful_shutdown_timeout') or 8)
 
             # 先请求子进程优雅退出
             if proc.is_alive():
                 if shutdown_evt is not None:
                     shutdown_evt.set()
-                proc.join(timeout=8)
+                if shutdown_complete_evt is not None:
+                    try:
+                        shutdown_complete_evt.wait(timeout=graceful_timeout)
+                    except KeyboardInterrupt:
+                        print(f"[Launcher] {server['name']} shutdown wait interrupted, continuing cleanup", flush=True)
+                    try:
+                        proc.join(timeout=2)
+                    except KeyboardInterrupt:
+                        print(f"[Launcher] {server['name']} join interrupted, escalating shutdown", flush=True)
+                else:
+                    try:
+                        proc.join(timeout=graceful_timeout)
+                    except KeyboardInterrupt:
+                        print(f"[Launcher] {server['name']} join interrupted, escalating shutdown", flush=True)
 
             # 第二步：仍存活则发送终止信号
             if proc.is_alive():
                 proc.terminate()
-                proc.join(timeout=5)
+                try:
+                    proc.join(timeout=5)
+                except KeyboardInterrupt:
+                    print(f"[Launcher] {server['name']} terminate wait interrupted, forcing shutdown", flush=True)
 
             # 第三步：仍存活则 kill
             if proc.is_alive():
                 proc.kill()
-                proc.join(timeout=2)
+                try:
+                    proc.join(timeout=2)
+                except KeyboardInterrupt:
+                    print(f"[Launcher] {server['name']} kill wait interrupted, moving on", flush=True)
 
             # 第四步：仅在父进程仍存活时兜底强杀整个进程树，避免 PID 复用误杀
             if proc.is_alive():
@@ -1289,6 +1517,66 @@ def _ensure_playwright_browsers():
         emit_frontend_event("playwright_check", {"status": "skipped", "message": str(e)})
 
 
+def _should_use_merged_mode() -> bool:
+    """Choose merged vs multi-process mode from env override + runtime shape."""
+    merged_env = os.environ.get("NEKO_MERGED", "").strip().lower()
+    if merged_env in ("1", "true", "yes"):
+        return True
+    if merged_env in ("0", "false", "no"):
+        return False
+    return IS_FROZEN
+
+
+def _prepare_cloudsave_runtime_for_launch() -> dict:
+    """Bootstrap local cloudsave state and apply any staged snapshot before services start."""
+    print("[Launcher] 初始化本地 cloudsave 基础设施...", flush=True)
+    reset_config_manager_cache()
+    config_manager = get_config_manager(APP_NAME, migrate=False)
+
+    with cloud_apply_fence(
+        config_manager,
+        mode=ROOT_MODE_BOOTSTRAP_IMPORTING,
+        reason="launcher_phase0_bootstrap",
+    ):
+        bootstrap_result = bootstrap_local_cloudsave_environment(config_manager)
+        import_result = get_cloudsave_manager(config_manager).import_if_needed(
+            reason="launcher_phase0_prelaunch_import",
+            fence_already_active=True,
+        )
+
+    root_state = set_root_mode(
+        config_manager,
+        ROOT_MODE_NORMAL,
+        current_root=str(config_manager.app_docs_dir),
+        last_known_good_root=str(config_manager.app_docs_dir),
+    )
+    root_mode = str(root_state.get("mode") or "")
+    root_state_event_payload = {
+        "mode": root_mode,
+        "is_normal": root_mode == ROOT_MODE_NORMAL,
+        "is_readonly": root_mode == ROOT_MODE_MAINTENANCE_READONLY,
+    }
+    import_payload_source = import_result if isinstance(import_result, dict) else {}
+    sanitized_import_result = {
+        "success": import_payload_source.get("success"),
+        "action": str(import_payload_source.get("action") or ""),
+        "requested_reason": str(import_payload_source.get("requested_reason") or ""),
+    }
+    event_payload = {
+        "root_state": root_state_event_payload,
+        "manifest_name": Path(config_manager.cloudsave_manifest_path).name,
+        "manifest_exists": bool(Path(config_manager.cloudsave_manifest_path).exists()),
+        "import_result": sanitized_import_result,
+    }
+    emit_frontend_event("cloudsave_bootstrap_ready", event_payload)
+    return {
+        "bootstrap_result": bootstrap_result,
+        "import_result": import_result,
+        "root_state": root_state,
+        "event_payload": event_payload,
+    }
+
+
 def main():
     """主函数"""
     # 支持 multiprocessing 在 Windows 上的打包
@@ -1319,6 +1607,21 @@ def main():
         # 创建 Job Object，确保主进程被 kill 时子进程也会被终止
         setup_job_object()
 
+        try:
+            _prepare_cloudsave_runtime_for_launch()
+        except Exception as e:
+            try:
+                _config_manager = get_config_manager(APP_NAME)
+                set_root_mode(
+                    _config_manager,
+                    ROOT_MODE_MAINTENANCE_READONLY,
+                    last_migration_result=f"launcher_phase0_bootstrap_failed:{e}",
+                )
+            except Exception:
+                pass
+            report_startup_failure(f"Startup failed: cloudsave bootstrap error: {e}")
+            return 1
+
         # 自动安装 Playwright Chromium（browser-use 依赖）
         _ensure_playwright_browsers()
 
@@ -1329,15 +1632,7 @@ def main():
         # ── 合并 / 多进程模式选择 ──
         # 打包环境默认合并（省内存），开发环境默认分离（方便调试）。
         # 可通过环境变量 NEKO_MERGED=1/0 强制覆盖。
-        _merged_env = os.environ.get("NEKO_MERGED", "").strip().lower()
-        if _merged_env in ("1", "true", "yes"):
-            _use_merged = True
-        elif _merged_env in ("0", "false", "no"):
-            _use_merged = False
-        else:
-            _use_merged = IS_FROZEN
-
-        if _use_merged:
+        if _should_use_merged_mode():
             print("\n[Launcher] 合并进程模式\n", flush=True)
             return run_merged_servers()
 
@@ -1398,6 +1693,18 @@ def main():
             return 1
 
         # 3. 服务器已启动，通知前端
+        try:
+            _config_manager = get_config_manager(APP_NAME)
+            set_root_mode(
+                _config_manager,
+                ROOT_MODE_NORMAL,
+                current_root=str(_config_manager.app_docs_dir),
+                last_known_good_root=str(_config_manager.app_docs_dir),
+                last_successful_boot_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            )
+        except Exception as e:
+            print(f"[Launcher] Warning: failed to persist root_state boot success: {e}", flush=True)
+
         emit_frontend_event("startup_ready", {
             "instance_id": INSTANCE_ID,
             "selected": {
@@ -1448,18 +1755,11 @@ def main():
             break
 
     except KeyboardInterrupt:
-        print("\n\n收到中断信号，等待子进程退出...", flush=True)
-        # 子进程已经收到了 SIGINT，给它们一点时间自己退出
-        start_wait = time.time()
-        while time.time() - start_wait < 3:
-            all_dead = True
-            for server in SERVERS:
-                if server.get('process') and server['process'].is_alive():
-                    all_dead = False
-                    break
-            if all_dead:
-                break
-            time.sleep(0.1)
+        try:
+            signal.signal(signal.SIGINT, signal.SIG_IGN)
+        except Exception:
+            pass
+        print("\n\n收到中断信号，准备优雅关闭子进程...", flush=True)
             
     except Exception as e:
         print(f"\n发生错误: {e}", flush=True)
@@ -1543,5 +1843,11 @@ def main():
         print("再见！\n", flush=True)
     return 0
 
+
+def start_launcher() -> int:
+    """Launcher entrypoint with explicit runtime bootstrap."""
+    _bootstrap_launcher_runtime(bundle_dir)
+    return main()
+
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(start_launcher())

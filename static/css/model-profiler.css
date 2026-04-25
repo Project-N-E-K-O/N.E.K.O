@@ -1,0 +1,458 @@
+/* ═══════════════════ Model Profiler UI ═══════════════════ */
+
+.profiler-panel {
+    border: 2px solid #b3e5fc;
+    border-radius: 16px;
+    background: #f8fcff;
+    overflow: hidden;
+    font-family: 'Segoe UI', Arial, sans-serif;
+    font-size: 13px;
+    color: #333;
+    transition: border-color 0.2s;
+}
+
+.profiler-panel:hover {
+    border-color: #40C5F1;
+}
+
+/* ── 头部 ── */
+.profiler-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 16px;
+    background: linear-gradient(135deg, #40C5F1 0%, #7dd8f7 100%);
+    color: #fff;
+    cursor: pointer;
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-app-region: no-drag;
+}
+
+.profiler-title {
+    font-weight: 600;
+    font-size: 14px;
+    letter-spacing: 0.5px;
+}
+
+.profiler-header-right {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.profiler-toggle-btn {
+    background: none;
+    border: none;
+    color: #fff;
+    font-size: 14px;
+    cursor: pointer;
+    padding: 2px 6px;
+    border-radius: 4px;
+    transition: background 0.15s;
+}
+
+.profiler-toggle-btn:hover {
+    background: rgba(255, 255, 255, 0.2);
+}
+
+/* ── 状态徽章 ── */
+.profiler-badge {
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-weight: 500;
+}
+
+.profiler-badge-idle {
+    background: rgba(255, 255, 255, 0.25);
+    color: #fff;
+}
+
+.profiler-badge-running {
+    background: #4caf50;
+    color: #fff;
+    animation: profiler-pulse 1.5s ease-in-out infinite;
+}
+
+.profiler-badge-warmup {
+    background: #ff9800;
+    color: #fff;
+    animation: profiler-pulse 1s ease-in-out infinite;
+}
+
+.profiler-badge-stopped {
+    background: rgba(255, 255, 255, 0.35);
+    color: #fff;
+}
+
+@keyframes profiler-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.7; }
+}
+
+/* ── 折叠 ── */
+.profiler-panel.collapsed .profiler-body {
+    display: none;
+}
+
+/* ── 主体 ── */
+.profiler-body {
+    padding: 12px 16px 16px;
+}
+
+/* ── 控制按钮 ── */
+.profiler-controls {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin-bottom: 12px;
+}
+
+.profiler-btn {
+    padding: 5px 12px;
+    border: 1px solid #b3e5fc;
+    border-radius: 999px;
+    background: #fff;
+    color: #40C5F1;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.15s;
+    white-space: nowrap;
+}
+
+.profiler-btn:hover:not(:disabled) {
+    background: #40C5F1;
+    color: #fff;
+    border-color: #40C5F1;
+}
+
+.profiler-btn:active:not(:disabled) {
+    transform: scale(0.97);
+}
+
+.profiler-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+.profiler-start-btn:hover:not(:disabled) {
+    background: #4caf50;
+    border-color: #4caf50;
+}
+
+.profiler-stop-btn:hover:not(:disabled) {
+    background: #ff5252;
+    border-color: #ff5252;
+}
+
+/* ── 区块 ── */
+.profiler-section {
+    margin-bottom: 12px;
+}
+
+.profiler-section:last-child {
+    margin-bottom: 0;
+}
+
+.profiler-section-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: #40C5F1;
+    margin-bottom: 6px;
+    padding-bottom: 3px;
+    border-bottom: 1px solid #e3f4ff;
+}
+
+/* ── FPS 网格 ── */
+.profiler-fps-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 6px;
+}
+
+.profiler-stat {
+    background: #fff;
+    border: 1px solid #e8f4fd;
+    border-radius: 8px;
+    padding: 6px 8px;
+    text-align: center;
+}
+
+.profiler-stat-label {
+    display: block;
+    font-size: 10px;
+    color: #999;
+    margin-bottom: 2px;
+}
+
+.profiler-stat-value {
+    display: block;
+    font-size: 16px;
+    font-weight: 700;
+    color: #333;
+    font-variant-numeric: tabular-nums;
+}
+
+/* FPS 颜色编码 */
+.profiler-fps-good { color: #4caf50 !important; }
+.profiler-fps-ok { color: #ff9800 !important; }
+.profiler-fps-bad { color: #ff5722 !important; }
+.profiler-fps-critical { color: #f44336 !important; }
+
+/* ── 图表 ── */
+.profiler-chart-container {
+    background: #fff;
+    border: 1px solid #e8f4fd;
+    border-radius: 8px;
+    padding: 4px;
+    overflow: hidden;
+}
+
+.profiler-chart {
+    width: 100%;
+    height: 120px;
+    display: block;
+}
+
+/* ── 模型信息 ── */
+.profiler-info-grid {
+    background: #fff;
+    border: 1px solid #e8f4fd;
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.profiler-info-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 5px 10px;
+    border-bottom: 1px solid #f0f8ff;
+}
+
+.profiler-info-row:last-child {
+    border-bottom: none;
+}
+
+.profiler-info-key {
+    color: #888;
+    font-size: 12px;
+    flex-shrink: 0;
+    margin-right: 8px;
+}
+
+.profiler-info-val {
+    color: #333;
+    font-weight: 500;
+    font-size: 12px;
+    text-align: right;
+    word-break: break-all;
+}
+
+.profiler-info-name {
+    font-size: 11px;
+    max-width: 200px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* ── 评级 ── */
+.profiler-overall-rating {
+    text-align: center;
+    font-size: 16px;
+    font-weight: 700;
+    padding: 8px;
+    border-radius: 8px;
+    margin-bottom: 8px;
+}
+
+.profiler-rating-low {
+    background: #e8f5e9;
+    color: #2e7d32;
+}
+
+.profiler-rating-medium {
+    background: #fff3e0;
+    color: #e65100;
+}
+
+.profiler-rating-high {
+    background: #fbe9e7;
+    color: #bf360c;
+}
+
+.profiler-rating-extreme {
+    background: #ffebee;
+    color: #b71c1c;
+}
+
+.profiler-rating-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 4px;
+}
+
+.profiler-rating-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 4px 8px;
+    border-radius: 6px;
+    font-size: 11px;
+    gap: 4px;
+}
+
+.profiler-rating-item.profiler-rating-low {
+    background: #f1f8e9;
+}
+
+.profiler-rating-item.profiler-rating-medium {
+    background: #fff8e1;
+}
+
+.profiler-rating-item.profiler-rating-high {
+    background: #fce4ec;
+}
+
+.profiler-rating-item.profiler-rating-extreme {
+    background: #ffebee;
+}
+
+.profiler-rating-label {
+    color: #666;
+    flex-shrink: 0;
+}
+
+.profiler-rating-value {
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+}
+
+.profiler-rating-tag {
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 999px;
+    background: rgba(0, 0, 0, 0.06);
+    flex-shrink: 0;
+}
+
+.profiler-alltime-title {
+    margin-top: 8px;
+    font-style: italic;
+    opacity: 0.75;
+}
+
+.profiler-rating-note {
+    font-size: 10px;
+    color: #999;
+    text-align: center;
+    margin-top: 6px;
+    padding: 0 4px;
+    line-height: 1.4;
+}
+
+/* ── 占位符 ── */
+.profiler-placeholder {
+    text-align: center;
+    color: #bbb;
+    font-size: 12px;
+    padding: 12px;
+    background: #fff;
+    border: 1px dashed #e0e0e0;
+    border-radius: 8px;
+}
+
+/* ── 暗色模式 ── */
+.dark-mode .profiler-panel {
+    background: #1e2a35;
+    border-color: #2a4055;
+    color: #ddd;
+}
+
+.dark-mode .profiler-panel:hover {
+    border-color: #40C5F1;
+}
+
+.dark-mode .profiler-stat {
+    background: #253545;
+    border-color: #2a4055;
+}
+
+.dark-mode .profiler-stat-value {
+    color: #eee;
+}
+
+.dark-mode .profiler-info-grid {
+    background: #253545;
+    border-color: #2a4055;
+}
+
+.dark-mode .profiler-info-row {
+    border-bottom-color: #2a4055;
+}
+
+.dark-mode .profiler-info-val {
+    color: #ddd;
+}
+
+.dark-mode .profiler-chart-container {
+    background: #253545;
+    border-color: #2a4055;
+}
+
+.dark-mode .profiler-btn {
+    background: #253545;
+    border-color: #2a4055;
+    color: #40C5F1;
+}
+
+.dark-mode .profiler-placeholder {
+    background: #253545;
+    border-color: #2a4055;
+    color: #666;
+}
+
+.dark-mode .profiler-section-title {
+    border-bottom-color: #2a4055;
+}
+
+.dark-mode .profiler-overall-rating.profiler-rating-low {
+    background: #1b3a1b;
+    color: #81c784;
+}
+
+.dark-mode .profiler-overall-rating.profiler-rating-medium {
+    background: #3e2723;
+    color: #ffb74d;
+}
+
+.dark-mode .profiler-overall-rating.profiler-rating-high {
+    background: #3e1a1a;
+    color: #ef9a9a;
+}
+
+.dark-mode .profiler-overall-rating.profiler-rating-extreme {
+    background: #4a0e0e;
+    color: #ef5350;
+}
+
+.dark-mode .profiler-rating-item.profiler-rating-low { background: #1b3a1b; }
+.dark-mode .profiler-rating-item.profiler-rating-medium { background: #3e2723; }
+.dark-mode .profiler-rating-item.profiler-rating-high { background: #3e1a1a; }
+.dark-mode .profiler-rating-item.profiler-rating-extreme { background: #4a0e0e; }
+
+/* ── 调试可视化按钮激活态 ── */
+.profiler-debug-active {
+    background: #40C5F1 !important;
+    color: #fff !important;
+    border-color: #40C5F1 !important;
+}
+
+.dark-mode .profiler-debug-active {
+    background: #2196f3 !important;
+    color: #fff !important;
+    border-color: #2196f3 !important;
+}

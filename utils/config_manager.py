@@ -10,6 +10,7 @@ import shutil
 import threading
 import asyncio
 import math
+import uuid
 from datetime import date
 from copy import deepcopy
 from pathlib import Path
@@ -95,6 +96,43 @@ def set_reserved(data: dict, *path_and_value) -> bool:
     if last_key in current and current[last_key] == value:
         return False
     current[last_key] = value
+    return True
+
+
+def delete_reserved(data: dict, *path) -> bool:
+    """删除 `_reserved` 下的嵌套字段，并尽量清理空的中间层。"""
+    if not isinstance(data, dict) or not path:
+        return False
+
+    reserved = data.get("_reserved")
+    if not isinstance(reserved, dict):
+        return False
+
+    current = reserved
+    parents: list[tuple[dict, str]] = []
+    for key in path[:-1]:
+        if not isinstance(current, dict) or key not in current:
+            return False
+        parents.append((current, key))
+        current = current.get(key)
+
+    last_key = path[-1]
+    if not isinstance(current, dict) or last_key not in current:
+        return False
+
+    current.pop(last_key, None)
+
+    while parents:
+        parent, key = parents.pop()
+        child = parent.get(key)
+        if isinstance(child, dict) and not child:
+            parent.pop(key, None)
+            continue
+        break
+
+    if isinstance(data.get("_reserved"), dict) and not data["_reserved"]:
+        data.pop("_reserved", None)
+
     return True
 
 
@@ -218,6 +256,20 @@ def migrate_catgirl_reserved(catgirl_data: dict) -> bool:
             _legacy_live2d_to_model_path(str(live2d_model_path)),
         )
 
+    live2d_idle_animation = get_reserved(
+        catgirl_data,
+        "avatar",
+        "live2d",
+        "idle_animation",
+        default=None,
+        legacy_keys=("live2d_idle_animation",),
+    )
+    if live2d_idle_animation is not None:
+        if isinstance(live2d_idle_animation, str):
+            changed |= set_reserved(catgirl_data, "avatar", "live2d", "idle_animation", live2d_idle_animation if live2d_idle_animation else None)
+        elif isinstance(live2d_idle_animation, list):
+            changed |= set_reserved(catgirl_data, "avatar", "live2d", "idle_animation", live2d_idle_animation[0] if live2d_idle_animation else None)
+
     vrm_model_path = get_reserved(
         catgirl_data,
         "avatar",
@@ -330,7 +382,12 @@ def migrate_catgirl_reserved(catgirl_data: dict) -> bool:
             live3d_sub_type = "vrm"
         else:
             live3d_sub_type = ""
-    changed |= set_reserved(catgirl_data, "avatar", "live3d_sub_type", live3d_sub_type)
+    if live3d_sub_type:
+        changed |= set_reserved(catgirl_data, "avatar", "live3d_sub_type", live3d_sub_type)
+    else:
+        # 非 3D 角色或没有明确活动 3D 子类型时，不要强行写回空字符串，
+        # 否则会让导出/导入后的角色配置出现无意义的额外字段。
+        changed |= delete_reserved(catgirl_data, "avatar", "live3d_sub_type")
 
     # COMPAT(v1->v2): 保留字段统一迁入 _reserved 后，移除旧平铺字段，避免再次泄露到可编辑字段。
     for legacy_key in (
@@ -341,6 +398,7 @@ def migrate_catgirl_reserved(catgirl_data: dict) -> bool:
         "live2d_item_id",
         "item_id",
         "live2d",
+        "live2d_idle_animation",
         "vrm",
         "vrm_animation",
         "idleAnimation",
@@ -382,8 +440,11 @@ def flatten_reserved(catgirl_data: dict) -> dict:
 
     live2d_model_path = get_reserved(result, "avatar", "live2d", "model_path", default="")
     if live2d_model_path:
-        # COMPAT(v1->v2): 旧前端/接口读取 live2d 模型名，继续按历史语义回放目录名。
         result["live2d"] = _legacy_live2d_name_from_model_path(str(live2d_model_path))
+
+    live2d_idle_animation = get_reserved(result, "avatar", "live2d", "idle_animation", default=None)
+    if live2d_idle_animation is not None:
+        result["live2d_idle_animation"] = live2d_idle_animation
 
     vrm_model_path = get_reserved(result, "avatar", "vrm", "model_path", default="")
     if vrm_model_path:
@@ -447,6 +508,9 @@ class ConfigManager:
     """配置文件管理器"""
     _agent_quota_lock = threading.Lock()
     _free_agent_daily_limit = 300 # 免费配额并非只在本地实施，本地计算是为了减少无效请求、节约网络带宽。
+    ROOT_STATE_VERSION = 1
+    CLOUDSAVE_LOCAL_STATE_VERSION = 1
+    CHARACTER_TOMBSTONES_STATE_VERSION = 1
     
     def __init__(self, app_name=None):
         """
@@ -462,12 +526,12 @@ class ConfigManager:
 
         # CFA (Windows 受控文件夹访问/反勒索防护) 检测：
         # 如果原始 Documents 路径可读但不可写，记住它以便从中读取用户数据（模型等）
-        first_readable = getattr(self, '_first_readable_candidate', None)
-        if (first_readable is not None
-                and first_readable != self.docs_dir):
-            self._readable_docs_dir = first_readable
+        first_readable_non_writable = getattr(self, '_first_non_writable_readable_candidate', None)
+        if (first_readable_non_writable is not None
+                and first_readable_non_writable != self.docs_dir):
+            self._readable_docs_dir = first_readable_non_writable
             print("⚠ WARNING [ConfigManager] 文档目录不可写（可能受Windows安全策略/反勒索防护保护）!", file=sys.stderr)
-            print(f"⚠ WARNING [ConfigManager] 原始文档路径(只读): {first_readable}", file=sys.stderr)
+            print(f"⚠ WARNING [ConfigManager] 原始文档路径(只读): {first_readable_non_writable}", file=sys.stderr)
             print(f"⚠ WARNING [ConfigManager] 回退写入路径: {self.docs_dir}", file=sys.stderr)
             print("⚠ WARNING [ConfigManager] 用户数据将从原始路径读取，写入操作将使用回退路径", file=sys.stderr)
         else:
@@ -489,7 +553,6 @@ class ConfigManager:
         self._user_workshop_folder_persisted = False
         self.chara_dir = self.app_docs_dir / "character_cards"
         self._workshop_config_lock = threading.Lock()
-        self._workshop_config_cleanup_done = False
 
         self._characters_cache: dict | None = None
         self._characters_cache_mtime: float | None = None
@@ -500,164 +563,318 @@ class ConfigManager:
 
         self.project_config_dir = self._get_project_config_directory()
         self.project_memory_dir = self._get_project_memory_directory()
+
+    @property
+    def cloudsave_dir(self) -> Path:
+        """云存档导出根目录（运行时目录之外的规范化导出层）。"""
+        return self.app_docs_dir / "cloudsave"
+
+    @property
+    def cloudsave_catalog_dir(self) -> Path:
+        return self.cloudsave_dir / "catalog"
+
+    @property
+    def cloudsave_profiles_dir(self) -> Path:
+        return self.cloudsave_dir / "profiles"
+
+    @property
+    def cloudsave_bindings_dir(self) -> Path:
+        return self.cloudsave_dir / "bindings"
+
+    @property
+    def cloudsave_memory_dir(self) -> Path:
+        return self.cloudsave_dir / "memory"
+
+    @property
+    def cloudsave_overrides_dir(self) -> Path:
+        return self.cloudsave_dir / "overrides"
+
+    @property
+    def cloudsave_meta_dir(self) -> Path:
+        return self.cloudsave_dir / "meta"
+
+    @property
+    def cloudsave_workshop_meta_dir(self) -> Path:
+        return self.cloudsave_meta_dir / "workshop"
+
+    @property
+    def cloudsave_manifest_path(self) -> Path:
+        return self.cloudsave_dir / "manifest.json"
+
+    @property
+    def cloudsave_staging_dir(self) -> Path:
+        """本地 staging 区，不进入云端同步白名单。"""
+        return self.app_docs_dir / ".cloudsave_staging"
+
+    @property
+    def cloudsave_backups_dir(self) -> Path:
+        """本地冲突备份池，显式放在 cloudsave/ 外避免后续误同步。"""
+        return self.app_docs_dir / "cloudsave_backups"
+
+    @property
+    def local_state_dir(self) -> Path:
+        """本地状态目录，保存不进入云端的同步元数据。"""
+        return self.app_docs_dir / "state"
+
+    @property
+    def root_state_path(self) -> Path:
+        return self.local_state_dir / "root_state.json"
+
+    @property
+    def cloudsave_local_state_path(self) -> Path:
+        return self.local_state_dir / "cloudsave_local_state.json"
+
+    @property
+    def character_tombstones_state_path(self) -> Path:
+        return self.local_state_dir / "character_tombstones.json"
     
     def _log(self, msg):
         """仅在主进程中打印调试信息"""
         if self._verbose:
             print(msg, file=sys.stderr)
-    
-    def _get_documents_directory(self):
-        """获取用户文档目录（使用系统API）"""
-        candidates = []  # 候选路径列表
-        
+
+    def _can_write_existing_directory(self, directory):
+        """Check whether an existing directory accepts a real write probe."""
+        try:
+            directory = Path(directory)
+            if not directory.exists():
+                return False
+            if not os.access(str(directory), os.R_OK | os.W_OK):
+                return False
+
+            test_path = directory / f".test_neko_write.{uuid.uuid4().hex}.tmp"
+            test_path.touch()
+            test_path.unlink()
+            return True
+        except Exception:
+            return False
+
+    @staticmethod
+    def _dedupe_paths(paths):
+        unique = []
+        seen = set()
+        for path in paths:
+            if not path:
+                continue
+            normalized = str(Path(path))
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            unique.append(Path(path))
+        return unique
+
+    def _get_standard_data_directory_candidates(self):
+        """返回当前平台的首选应用数据根目录候选。"""
+        candidates = []
         if sys.platform == "win32":
-            # Windows: 使用系统API获取真正的"我的文档"路径
+            localappdata = os.environ.get("LOCALAPPDATA", "").strip()
+            if localappdata:
+                candidates.append(Path(localappdata))
+        elif sys.platform == "darwin":
+            candidates.append(Path.home() / "Library" / "Application Support")
+        else:
+            xdg_data_home = os.getenv("XDG_DATA_HOME", "").strip()
+            if xdg_data_home:
+                candidates.append(Path(xdg_data_home))
+            candidates.append(Path.home() / ".local" / "share")
+        return self._dedupe_paths(candidates)
+
+    def _get_legacy_storage_candidates(self):
+        """返回历史运行时根的父目录候选，仅用于旧数据导入。"""
+        candidates = []
+
+        if sys.platform == "win32":
             try:
                 import ctypes
                 from ctypes import windll, wintypes
-                
-                # 使用SHGetFolderPath获取我的文档路径
-                CSIDL_PERSONAL = 5  # My Documents
+
+                CSIDL_PERSONAL = 5
                 SHGFP_TYPE_CURRENT = 0
-                
+
                 buf = ctypes.create_unicode_buffer(wintypes.MAX_PATH)
                 windll.shell32.SHGetFolderPathW(None, CSIDL_PERSONAL, None, SHGFP_TYPE_CURRENT, buf)
                 api_path = Path(buf.value)
-                self._log(f"[ConfigManager] API returned path: {api_path}")
+                self._log(f"[ConfigManager] Legacy Documents API returned path: {api_path}")
                 candidates.append(api_path)
-                
-                # 如果API返回的路径看起来不对（包含特殊字符但不存在），尝试查找同盘符下可能的替代路径
+
                 if not api_path.exists() and api_path.drive:
-                    # 获取盘符
                     drive = api_path.drive
-                    # 尝试在同一盘符下查找常见的文档文件夹名
-                    possible_names = ["文档", "Documents", "My Documents"]
-                    for name in possible_names:
+                    for name in ("文档", "Documents", "My Documents"):
                         alt_path = Path(drive) / name
                         if alt_path.exists():
-                            self._log(f"[ConfigManager] Found alternative path on same drive: {alt_path}")
+                            self._log(f"[ConfigManager] Found legacy Documents alternative: {alt_path}")
                             candidates.append(alt_path)
             except Exception as e:
-                print(f"Warning: Failed to get Documents path via API: {e}", file=sys.stderr)
-            
-            # 降级：尝试从注册表读取
+                print(f"Warning: Failed to get legacy Documents path via API: {e}", file=sys.stderr)
+
             try:
                 import winreg
+
                 key = winreg.OpenKey(
                     winreg.HKEY_CURRENT_USER,
                     r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders"
                 )
                 reg_path_str = winreg.QueryValueEx(key, "Personal")[0]
                 winreg.CloseKey(key)
-                
-                # 展开环境变量
                 reg_path = Path(os.path.expandvars(reg_path_str))
-                self._log(f"[ConfigManager] Registry returned path: {reg_path}")
-                
-                # 如果注册表路径不存在，尝试在同一盘符下查找
-                if not reg_path.exists() and reg_path.drive:
-                    drive = reg_path.drive
-                    # 列出盘符下的所有文件夹，查找可能的文档文件夹
-                    try:
-                        drive_path = Path(drive + "\\")
-                        if drive_path.exists():
-                            for item in drive_path.iterdir():
-                                if item.is_dir() and item.name.lower() in ["documents", "文档", "my documents"]:
-                                    self._log(f"[ConfigManager] Found documents folder on drive: {item}")
-                                    candidates.append(item)
-                    except Exception:
-                        pass
-                
+                self._log(f"[ConfigManager] Legacy Documents registry path: {reg_path}")
                 candidates.append(reg_path)
             except Exception as e:
-                print(f"Warning: Failed to get Documents path from registry: {e}", file=sys.stderr)
-            
-            # 添加默认路径候选
+                print(f"Warning: Failed to get legacy Documents path from registry: {e}", file=sys.stderr)
+
             candidates.append(Path.home() / "Documents")
             candidates.append(Path.home() / "文档")
-
-            # AppData/Local 不受 Windows 受控文件夹访问(CFA/反勒索防护)保护，
-            # 作为 Documents 不可写时的优先回退位置
-            localappdata = os.environ.get('LOCALAPPDATA', '')
-            if localappdata:
-                candidates.append(Path(localappdata))
-
-            # 如果都不行，使用exe所在目录（打包后）或当前目录（开发时）
-            if getattr(sys, 'frozen', False):
-                candidates.append(Path(sys.executable).parent)
-            else:
-                candidates.append(Path.cwd())
-        
         elif sys.platform == "darwin":
-            # macOS: 使用标准路径
             candidates.append(Path.home() / "Documents")
-            candidates.append(Path.cwd())
         else:
-            # Linux: 尝试使用XDG
-            xdg_docs = os.getenv('XDG_DOCUMENTS_DIR')
+            xdg_docs = os.getenv("XDG_DOCUMENTS_DIR", "").strip()
             if xdg_docs:
                 candidates.append(Path(xdg_docs))
             candidates.append(Path.home() / "Documents")
-            candidates.append(Path.cwd())
-        
-        # 遍历候选路径，找到第一个真正可访问且可写的路径
-        # 同时记录第一个可读的路径（即使不可写），用于 CFA 场景下的只读回退
-        first_readable = None
+
+        if getattr(sys, 'frozen', False):
+            candidates.append(Path(sys.executable).parent)
+        candidates.append(Path.cwd())
+        return self._dedupe_paths(candidates)
+
+    def _get_legacy_document_candidates(self):
+        """Return legacy document-folder candidates only."""
+        candidates = []
+
+        if sys.platform == "win32":
+            try:
+                import ctypes
+                from ctypes import windll, wintypes
+
+                CSIDL_PERSONAL = 5
+                SHGFP_TYPE_CURRENT = 0
+
+                buf = ctypes.create_unicode_buffer(wintypes.MAX_PATH)
+                windll.shell32.SHGetFolderPathW(None, CSIDL_PERSONAL, None, SHGFP_TYPE_CURRENT, buf)
+                api_path = Path(buf.value)
+                candidates.append(api_path)
+
+                if not api_path.exists() and api_path.drive:
+                    drive = api_path.drive
+                    for name in ("文档", "Documents", "My Documents"):
+                        alt_path = Path(drive) / name
+                        if alt_path.exists():
+                            candidates.append(alt_path)
+            except Exception:
+                pass
+
+            try:
+                import winreg
+
+                key = winreg.OpenKey(
+                    winreg.HKEY_CURRENT_USER,
+                    r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders"
+                )
+                reg_path_str = winreg.QueryValueEx(key, "Personal")[0]
+                winreg.CloseKey(key)
+                reg_path = Path(os.path.expandvars(reg_path_str))
+                candidates.append(reg_path)
+            except Exception:
+                pass
+
+            candidates.append(Path.home() / "Documents")
+            candidates.append(Path.home() / "文档")
+        elif sys.platform == "darwin":
+            candidates.append(Path.home() / "Documents")
+        else:
+            xdg_docs = os.getenv("XDG_DOCUMENTS_DIR", "").strip()
+            if xdg_docs:
+                candidates.append(Path(xdg_docs))
+            candidates.append(Path.home() / "Documents")
+
+        return self._dedupe_paths(candidates)
+
+    def get_legacy_app_root_candidates(self):
+        """返回旧版用户根目录候选（带 app_name），用于阶段 0 启动导入。"""
+        roots = []
+        current_root = str(self.app_docs_dir)
+        for base_dir in self._get_legacy_storage_candidates():
+            app_root = base_dir / self.app_name
+            if str(app_root) == current_root:
+                continue
+            roots.append(app_root)
+        return self._dedupe_paths(roots)
+    
+    def _get_documents_directory(self):
+        """获取运行时数据根目录的父目录。
+
+        方法名保留为历史兼容，但阶段 0 之后它优先返回标准应用数据目录，
+        Documents / exe 目录 / cwd 仅作为旧数据导入与兜底候选。
+        """
+        primary_candidates = self._get_standard_data_directory_candidates()
+        legacy_candidates = self._get_legacy_storage_candidates()
+        legacy_document_candidates = self._get_legacy_document_candidates()
+        candidates = self._dedupe_paths(primary_candidates + legacy_candidates)
+        first_readable = next(
+            (
+                path
+                for path in legacy_document_candidates
+                if path.exists() and os.access(str(path), os.R_OK)
+            ),
+            None,
+        )
+        first_readable_non_writable = next(
+            (
+                path
+                for path in legacy_document_candidates
+                if path.exists()
+                and os.access(str(path), os.R_OK)
+                and not self._can_write_existing_directory(path)
+            ),
+            None,
+        )
         for docs_dir in candidates:
             try:
-                # 记录第一个存在且可读的路径（CFA 只阻止写入，不阻止读取）
-                if first_readable is None and docs_dir.exists() and os.access(str(docs_dir), os.R_OK):
-                    first_readable = docs_dir
-
-                # 检查路径是否存在且可访问
-                if docs_dir.exists() and os.access(str(docs_dir), os.R_OK | os.W_OK):
-                    # 尝试在该目录创建测试文件，确保真的可写
-                    test_path = docs_dir / ".test_neko_write"
-                    try:
-                        test_path.touch()
-                        test_path.unlink()
-                        self._log(f"[ConfigManager] ✓ Using documents directory: {docs_dir}")
+                if docs_dir.exists():
+                    if self._can_write_existing_directory(docs_dir):
+                        self._log(f"[ConfigManager] ✓ Using app data directory: {docs_dir}")
                         self._first_readable_candidate = first_readable
+                        self._first_non_writable_readable_candidate = first_readable_non_writable
                         return docs_dir
-                    except Exception as e:
-                        self._log(f"[ConfigManager] Path exists but not writable: {docs_dir} - {e}")
-                        continue
+                    self._log(f"[ConfigManager] Path exists but not writable: {docs_dir}")
+                    continue
 
-                # 如果路径不存在，尝试创建（测试是否可写）
                 if not docs_dir.exists():
-                    # 分步创建父目录
                     dirs_to_create = []
                     current = docs_dir
                     while current and not current.exists():
                         dirs_to_create.append(current)
                         current = current.parent
-                        if current == current.parent:  # 到达根目录
+                        if current == current.parent:
                             break
 
-                    # 从最顶层开始创建
                     for dir_path in reversed(dirs_to_create):
                         if not dir_path.exists():
-                            dir_path.mkdir(exist_ok=True)
+                            dir_path.mkdir(parents=False, exist_ok=True)
 
-                    # 测试可写性
                     test_path = docs_dir / ".test_neko_write"
                     test_path.touch()
                     test_path.unlink()
-                    self._log(f"[ConfigManager] ✓ Using documents directory (created): {docs_dir}")
+                    self._log(f"[ConfigManager] ✓ Using app data directory (created): {docs_dir}")
                     self._first_readable_candidate = first_readable
+                    self._first_non_writable_readable_candidate = first_readable_non_writable
                     return docs_dir
             except Exception as e:
                 self._log(f"[ConfigManager] Failed to use path {docs_dir}: {e}")
                 continue
 
-        # 如果所有候选都失败，返回当前目录
         self._first_readable_candidate = first_readable
+        self._first_non_writable_readable_candidate = first_readable_non_writable
         fallback = Path.cwd()
-        self._log(f"[ConfigManager] ⚠ All document directories failed, using fallback: {fallback}")
+        self._log(f"[ConfigManager] ⚠ All app data directories failed, using fallback: {fallback}")
         return fallback
     
     def _get_project_root(self):
-        """获取项目根目录（私有方法）"""
+        """获取项目根目录（私有方法）。
+
+        源码模式固定基于本文件位置回溯到仓库根目录，避免 IDE / 外部 cwd
+        导致 static、config、memory/store 等项目资源解析到错误位置。
+        """
         if getattr(sys, 'frozen', False):
             # 如果是打包后的exe（PyInstaller）
             if hasattr(sys, '_MEIPASS'):
@@ -667,8 +884,8 @@ class ConfigManager:
                 # 多文件模式：使用 exe 同目录
                 return Path(sys.executable).parent
         else:
-            # 开发模式：使用当前工作目录
-            return Path.cwd()
+            # 开发模式：固定使用仓库根目录
+            return Path(__file__).resolve().parents[1]
     
     @property
     def project_root(self):
@@ -681,21 +898,7 @@ class ConfigManager:
     
     def _get_project_memory_directory(self):
         """获取项目的memory/store目录"""
-        if getattr(sys, 'frozen', False):
-            # 如果是打包后的exe（PyInstaller）
-            # 单文件模式：数据文件在 _MEIPASS 临时目录
-            # 多文件模式：数据文件在 exe 同目录
-            if hasattr(sys, '_MEIPASS'):
-                # 单文件模式：使用临时解压目录
-                app_dir = Path(sys._MEIPASS)
-            else:
-                # 多文件模式：使用 exe 同目录
-                app_dir = Path(sys.executable).parent
-        else:
-            # 如果是脚本运行
-            app_dir = Path.cwd()
-        
-        return app_dir / "memory" / "store"
+        return self._get_project_root() / "memory" / "store"
     
     def _ensure_app_docs_directory(self):
         """确保应用文档目录存在（N.E.K.O目录本身）"""
@@ -839,6 +1042,150 @@ class ConfigManager:
         except Exception as e:
             print(f"Warning: Failed to create character_cards directory: {e}", file=sys.stderr)
             return False
+
+    def ensure_cloudsave_structure(self):
+        """确保本地 cloudsave 基础目录存在。
+
+        这里只创建目录骨架和本地工作区，不创建 manifest 内容，
+        以便阶段 0 先落地路径与状态基础设施，不改变现有同步语义。
+        """
+        try:
+            if not self._ensure_app_docs_directory():
+                return False
+
+            for directory in (
+                self.cloudsave_dir,
+                self.cloudsave_catalog_dir,
+                self.cloudsave_profiles_dir,
+                self.cloudsave_bindings_dir,
+                self.cloudsave_memory_dir,
+                self.cloudsave_overrides_dir,
+                self.cloudsave_meta_dir,
+                self.cloudsave_workshop_meta_dir,
+                self.cloudsave_staging_dir,
+                self.cloudsave_backups_dir,
+            ):
+                directory.mkdir(parents=True, exist_ok=True)
+            return True
+        except Exception as e:
+            print(f"Warning: Failed to create cloudsave structure: {e}", file=sys.stderr)
+            return False
+
+    def ensure_local_state_directory(self):
+        """确保本地状态目录存在。"""
+        try:
+            if not self._ensure_app_docs_directory():
+                return False
+            self.local_state_dir.mkdir(parents=True, exist_ok=True)
+            return True
+        except Exception as e:
+            print(f"Warning: Failed to create local state directory: {e}", file=sys.stderr)
+            return False
+
+    def build_default_root_state(self):
+        """构建默认 root_state 内容。"""
+        return {
+            "version": self.ROOT_STATE_VERSION,
+            "mode": "normal",
+            "current_root": str(self.app_docs_dir),
+            "last_known_good_root": str(self.app_docs_dir),
+            "last_migration_source": "",
+            "last_migration_result": "",
+            "last_successful_boot_at": "",
+        }
+
+    def build_default_cloudsave_local_state(self, *, client_id=None):
+        """构建默认 cloudsave_local_state 内容。"""
+        return {
+            "version": self.CLOUDSAVE_LOCAL_STATE_VERSION,
+            "client_id": str(client_id or uuid.uuid4().hex),
+            "next_sequence_number": 1,
+            "last_applied_manifest_fingerprint": "",
+            "last_successful_export_at": "",
+            "last_successful_import_at": "",
+        }
+
+    def build_default_character_tombstones_state(self):
+        """构建默认角色 tombstone 本地状态。"""
+        return {
+            "version": self.CHARACTER_TOMBSTONES_STATE_VERSION,
+            "tombstones": [],
+        }
+
+    def _load_json_file(self, path, default_value=None):
+        """加载任意 JSON 文件；文件缺失时返回默认值副本。"""
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except FileNotFoundError:
+            if default_value is not None:
+                return deepcopy(default_value)
+            raise
+        except Exception as e:
+            logger.error("加载 JSON 文件失败: path=%s error=%s", path, e)
+            raise
+
+    def _save_json_file(self, path, data):
+        """原子保存任意 JSON 文件。"""
+        atomic_write_json(path, data, ensure_ascii=False, indent=2)
+
+    def load_root_state(self, default_value=None):
+        """加载 root_state；缺失时返回默认状态。"""
+        if default_value is None:
+            default_value = self.build_default_root_state()
+        return self._load_json_file(self.root_state_path, default_value)
+
+    def save_root_state(self, data):
+        """保存 root_state。"""
+        if not self.ensure_local_state_directory():
+            raise OSError("Failed to ensure local state directory before saving root_state")
+        self._save_json_file(self.root_state_path, data)
+
+    def load_cloudsave_local_state(self, default_value=None):
+        """加载 cloudsave_local_state；缺失时返回带稳定字段结构的默认值。"""
+        if default_value is None:
+            default_value = self.build_default_cloudsave_local_state()
+        return self._load_json_file(self.cloudsave_local_state_path, default_value)
+
+    def save_cloudsave_local_state(self, data):
+        """保存 cloudsave_local_state。"""
+        if not self.ensure_local_state_directory():
+            raise OSError("Failed to ensure local state directory before saving cloudsave_local_state")
+        self._save_json_file(self.cloudsave_local_state_path, data)
+
+    def load_character_tombstones_state(self, default_value=None):
+        """加载角色 tombstone 本地状态。"""
+        if default_value is None:
+            default_value = self.build_default_character_tombstones_state()
+        return self._load_json_file(self.character_tombstones_state_path, default_value)
+
+    def save_character_tombstones_state(self, data):
+        """保存角色 tombstone 本地状态。"""
+        if not self.ensure_local_state_directory():
+            raise OSError("Failed to ensure local state directory before saving character_tombstones_state")
+        self._save_json_file(self.character_tombstones_state_path, data)
+
+    def ensure_cloudsave_state_files(self):
+        """确保本地 cloudsave 相关状态文件存在，返回是否发生创建。"""
+        created = False
+        if not self.ensure_local_state_directory():
+            raise RuntimeError(
+                "Failed to initialize local state directory for "
+                f"{self.root_state_path.name}, "
+                f"{self.cloudsave_local_state_path.name}, and "
+                f"{self.character_tombstones_state_path.name}"
+            )
+
+        if not self.root_state_path.exists():
+            self.save_root_state(self.build_default_root_state())
+            created = True
+        if not self.cloudsave_local_state_path.exists():
+            self.save_cloudsave_local_state(self.build_default_cloudsave_local_state())
+            created = True
+        if not self.character_tombstones_state_path.exists():
+            self.save_character_tombstones_state(self.build_default_character_tombstones_state())
+            created = True
+        return created
     
     def get_config_path(self, filename):
         """
@@ -866,6 +1213,10 @@ class ConfigManager:
         
         # 都不存在，返回我的文档路径（用于创建新文件）
         return docs_config_path
+
+    def get_runtime_config_path(self, filename):
+        """获取运行时真源配置路径（始终位于 app_docs_dir/config）。"""
+        return self.config_dir / filename
     
     def _get_localized_characters_source(self):
         """根据用户语言获取本地化的 characters.json 源文件路径。
@@ -1004,6 +1355,232 @@ class ConfigManager:
                     print(f"Migrated memory directory: {item.name}")
         except Exception as e:
             print(f"Warning: Failed to migrate memory files: {e}", file=sys.stderr)
+
+    def migrate_legacy_documents_memory(self):
+        """
+        启动时对 legacy 根目录（``Documents\\N.E.K.O`` / CFA 原始只读路径等）
+        下的 ``memory/`` 仅做**软迁移**：把仍在 ``characters.json[猫娘]``
+        的角色目录搬到当前 runtime ``memory_dir``；runtime 已有同名目录则
+        保留 legacy 副本并打印 warning，绝不覆盖。
+
+        **未关联条目**（目录名不在 ``characters.json[猫娘]`` 的孤立记忆）
+        不在本方法处理范围内，完全交由创意工坊页面的"清理遗留记忆"按钮
+        走 ``/api/memory/legacy/scan`` + ``purge`` 由用户主动勾选删除。
+
+        该方法应在 ``migrate_config_files`` / ``migrate_memory_files`` 之后
+        调用，此时 ``characters.json`` 已就位。任何失败只打日志不抛异常，
+        绝不阻塞启动流程。
+        """
+        try:
+            # get_legacy_app_root_candidates 已排除当前 app_docs_dir，且去重
+            legacy_roots = list(self.get_legacy_app_root_candidates() or [])
+        except Exception as exc:
+            self._log(
+                f"[ConfigManager] migrate_legacy_documents_memory: 获取 legacy roots 失败: {exc}"
+            )
+            return
+
+        # CFA 回退场景：_readable_docs_dir 是只读原 Documents，也要纳入。
+        # 只读根意味着 rmtree 永远失败、target 永远存在，下面会基于
+        # readonly_legacy_roots 跳过 rmtree 并静默 target_exists 噪音，
+        # 避免每次启动都打"清理失败/已存在"的重复日志。
+        readonly_legacy_roots: set[str] = set()
+        readable_docs = getattr(self, "_readable_docs_dir", None)
+        if readable_docs:
+            try:
+                extra = Path(readable_docs) / self.app_name
+                extra_str = str(extra)
+                if all(extra_str != str(existing) for existing in legacy_roots):
+                    legacy_roots.append(extra)
+                readonly_legacy_roots.add(extra_str)
+            except Exception:
+                pass
+
+        if not legacy_roots:
+            return
+
+        try:
+            characters = self.load_characters()
+        except Exception as exc:
+            self._log(
+                f"[ConfigManager] migrate_legacy_documents_memory: 加载 characters.json 失败: {exc}"
+            )
+            return
+
+        # characters.json 是用户可写边界；"猫娘" 字段若被损坏成 list / 字符串等
+        # 非空但非 dict 的值，.keys() 会抛 AttributeError 并被外层吞掉。
+        catgirl_map = characters.get("猫娘")
+        if not isinstance(catgirl_map, dict):
+            if catgirl_map is not None:
+                self._log(
+                    f"[ConfigManager] migrate_legacy_documents_memory: "
+                    f"characters.json 中猫娘字段类型异常 "
+                    f"({type(catgirl_map).__name__})，跳过本次软迁移"
+                )
+            else:
+                self._log(
+                    "[ConfigManager] migrate_legacy_documents_memory: "
+                    "characters.json 中无猫娘字段，跳过本次软迁移"
+                )
+            return
+
+        known_characters = set(catgirl_map.keys())
+        if not known_characters:
+            # characters.json 异常/为空时无从判断哪些应当迁移，直接退出。
+            self._log(
+                "[ConfigManager] migrate_legacy_documents_memory: "
+                "characters.json 中无角色，跳过本次软迁移"
+            )
+            return
+
+        # 分项计数便于运维排查"到底为什么没迁"。隐藏/下划线前缀、未关联角色
+        # 这两类 skip 是正常 no-op，不单独计数。
+        migrated_count = 0
+        target_exists_count = 0  # runtime 已存在同名目录，保留 legacy 副本
+        non_dir_count = 0  # 命中角色名但条目不是目录（反常，需关注）
+        failed_count = 0  # copytree/rename 失败
+
+        def _legacy_error_summary(exc: BaseException) -> str:
+            """
+            把异常压成脱敏字符串：只保留类名 + errno + strerror，
+            绝不打印 OSError/PermissionError 自带的 filename 参数（那会
+            暴露 Documents 用户名 + 角色目录名）。
+            """
+            if isinstance(exc, OSError):
+                parts = [type(exc).__name__]
+                if exc.errno is not None:
+                    parts.append(f"errno={exc.errno}")
+                strerror = getattr(exc, "strerror", None)
+                if strerror:
+                    parts.append(f"reason={strerror}")
+                return " ".join(parts)
+            return type(exc).__name__
+
+        # 日志脱敏策略：所有 self._log 绝不包含完整 legacy 路径 / 角色目录名 /
+        # 用户 Documents 路径，只打 root 序号 + 计数 + 条目类型。这些日志可能
+        # 被收集到日志文件或遥测，泄露用户本地信息不值当。
+        for legacy_root_index, legacy_root in enumerate(legacy_roots, start=1):
+            source_is_readonly = str(legacy_root) in readonly_legacy_roots
+            try:
+                legacy_memory = Path(legacy_root) / "memory"
+            except Exception:
+                continue
+            if not legacy_memory.exists() or not legacy_memory.is_dir():
+                continue
+            # 保护：绝不处理 runtime memory 自身（防御性重复检查）
+            try:
+                if legacy_memory.resolve() == Path(self.memory_dir).resolve():
+                    continue
+            except Exception:
+                pass
+
+            # Per-root 兜底：权限错误或 I/O 错误不应中断后续 legacy roots 的迁移
+            try:
+                legacy_entries = list(legacy_memory.iterdir())
+            except Exception as exc:
+                self._log(
+                    f"[ConfigManager] 枚举 legacy memory 根 #{legacy_root_index} "
+                    f"失败，跳过该根: {_legacy_error_summary(exc)}"
+                )
+                continue
+
+            for entry in legacy_entries:
+                try:
+                    entry_name = entry.name
+                    # 只过滤真正的隐藏条目（dot-file），其它形态的合法性交给
+                    # known_characters 裁定——用户如果把角色命名为 "_foo"，
+                    # 之前的 "_" 前缀黑名单会直接把它当临时条目静默跳过。
+                    if entry_name.startswith("."):
+                        continue
+
+                    # 未关联条目交给手动清理按钮，此处不做任何操作
+                    if entry_name not in known_characters:
+                        continue
+
+                    # runtime 角色记忆期望是目录结构（memory_dir/{name}/time_indexed.db
+                    # 等）；同名普通文件会占位并阻断后续写入，必须跳过。
+                    if not entry.is_dir():
+                        non_dir_count += 1
+                        self._log(
+                            f"[ConfigManager] legacy memory 根 #{legacy_root_index}: "
+                            f"命中角色名的条目不是目录（类型异常），跳过自动软迁移"
+                        )
+                        continue
+
+                    target = self.memory_dir / entry_name
+                    # target.exists() 对断链软链接返回 False（跟随软链找不到目标），
+                    # 但 os.replace 会直接覆盖该软链接，违反"绝不覆盖 runtime 已有
+                    # 目标"的语义。is_symlink() 不跟随，把断链也当成"已存在"。
+                    if target.exists() or target.is_symlink():
+                        # 只读根（如 CFA _readable_docs_dir）上的源永远删不掉，
+                        # target 存在是上一次成功迁移后的常态；静默跳过以免每次
+                        # 启动都打"已存在"日志噪音。可写根仍正常计数 + 打日志。
+                        if not source_is_readonly:
+                            target_exists_count += 1
+                            self._log(
+                                f"[ConfigManager] legacy memory 根 #{legacy_root_index}: "
+                                f"目标已存在于 runtime，保留 legacy 副本避免覆盖"
+                            )
+                        continue
+                    # 跨盘 shutil.move 退化为 copy 时若半途失败，target 可能已
+                    # 存在但不完整，下次启动会被 target.exists() 跳过。改为
+                    # "复制到同父级临时路径 → 原子 rename → best-effort 清源"。
+                    temp_target = target.parent / f".{entry_name}.migrating-{uuid.uuid4().hex}"
+                    try:
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        # symlinks=False：跟随 legacy 源里的软链，把实际内容拷到
+                        # runtime。若保留软链（symlinks=True），legacy 里用户手动
+                        # 创建的、指向 memory_dir 外部的链接会让 runtime 的
+                        # memory_dir/{name}/time_indexed.db 写入逃出边界。
+                        shutil.copytree(str(entry), str(temp_target), symlinks=False)
+                        os.replace(str(temp_target), str(target))
+                        # 只读根（CFA _readable_docs_dir）上根本不可写，rmtree
+                        # 永远会抛 PermissionError。成功迁移后直接跳过清源，
+                        # 避免每次启动都打一遍"legacy 源清理失败"日志。
+                        if not source_is_readonly:
+                            try:
+                                shutil.rmtree(str(entry))
+                            except Exception as cleanup_exc:
+                                self._log(
+                                    f"[ConfigManager] legacy memory 根 #{legacy_root_index}: "
+                                    f"已复制到 runtime，但 legacy 源清理失败，保留 legacy 副本: "
+                                    f"{_legacy_error_summary(cleanup_exc)}"
+                                )
+                        migrated_count += 1
+                        self._log(
+                            f"[ConfigManager] legacy memory 根 #{legacy_root_index}: "
+                            f"已迁移 1 个条目到 runtime"
+                        )
+                    except Exception as exc:
+                        failed_count += 1
+                        # 清理可能残留的临时目录/文件，避免下次启动误判
+                        try:
+                            if temp_target.exists():
+                                if temp_target.is_dir():
+                                    shutil.rmtree(str(temp_target), ignore_errors=True)
+                                else:
+                                    temp_target.unlink()
+                        except Exception:
+                            pass
+                        self._log(
+                            f"[ConfigManager] legacy memory 根 #{legacy_root_index}: "
+                            f"迁移条目失败: {_legacy_error_summary(exc)}"
+                        )
+                except Exception as exc:
+                    failed_count += 1
+                    self._log(
+                        f"[ConfigManager] legacy memory 根 #{legacy_root_index}: "
+                        f"处理条目时出错: {_legacy_error_summary(exc)}"
+                    )
+
+        if migrated_count or target_exists_count or non_dir_count or failed_count:
+            self._log(
+                f"[ConfigManager] legacy memory 软迁移汇总: "
+                f"迁移 {migrated_count} 个, "
+                f"目标已存在跳过 {target_exists_count} 个, "
+                f"非目录跳过 {non_dir_count} 个, "
+                f"失败 {failed_count} 个"
+            )
     
     # --- Character configuration helpers ---
 
@@ -1014,6 +1591,7 @@ class ConfigManager:
 
     def load_characters(self, character_json_path=None):
         """加载角色配置"""
+        use_default_path = character_json_path is None
         if character_json_path is None:
             character_json_path = str(self.get_config_path('characters.json'))
 
@@ -1083,7 +1661,15 @@ class ConfigManager:
                     self.save_characters(character_data, character_json_path=character_json_path)
                     logger.info("检测到旧版角色保留字段，已自动迁移到 _reserved 结构。")
                 except Exception as migrate_err:
-                    logger.warning("自动迁移角色保留字段后写回失败: %s", migrate_err)
+                    # 维护态（只读快照阶段）不能持久化，降级为 debug 日志
+                    try:
+                        from utils.cloudsave_runtime import MaintenanceModeError
+                    except Exception:
+                        MaintenanceModeError = None
+                    if MaintenanceModeError is not None and isinstance(migrate_err, MaintenanceModeError):
+                        logger.debug("角色保留字段迁移在只读阶段跳过持久化: %s", migrate_err)
+                    else:
+                        logger.warning("自动迁移角色保留字段后写回失败: %s", migrate_err)
             else:
                 with self._characters_cache_lock:
                     self._characters_cache = deepcopy(character_data)
@@ -1092,10 +1678,15 @@ class ConfigManager:
                     self._characters_dirty = False
             return character_data
 
-    def save_characters(self, data, character_json_path=None):
+    def save_characters(self, data, character_json_path=None, *, bypass_write_fence: bool = False):
         """保存角色配置（同步版本，会阻塞事件循环；async 路径请用 asave_characters）"""
         if character_json_path is None:
-            character_json_path = str(self.get_config_path('characters.json'))
+            character_json_path = str(self.get_runtime_config_path('characters.json'))
+
+        if not bypass_write_fence:
+            from utils.cloudsave_runtime import assert_cloudsave_writable
+
+            assert_cloudsave_writable(self, operation="save", target="characters.json")
 
         # 确保config目录存在
         self.ensure_config_directory()
@@ -1111,9 +1702,14 @@ class ConfigManager:
             self._characters_cache_path = character_json_path
             self._characters_dirty = False
 
-    async def asave_characters(self, data, character_json_path=None):
+    async def asave_characters(self, data, character_json_path=None, *, bypass_write_fence: bool = False):
         """async 包装：事件循环上禁止直接走同步版本（atomic_write_json 会阻塞）。"""
-        return await asyncio.to_thread(self.save_characters, data, character_json_path)
+        return await asyncio.to_thread(
+            self.save_characters,
+            data,
+            character_json_path,
+            bypass_write_fence=bypass_write_fence,
+        )
 
     # --- Voice storage helpers ---
 
@@ -2231,7 +2827,7 @@ class ConfigManager:
                 return deepcopy(default_value)
             raise
     
-    def save_json_config(self, filename, data):
+    def save_json_config(self, filename, data, *, bypass_write_fence: bool = False):
         """
         保存JSON配置文件
         
@@ -2239,6 +2835,11 @@ class ConfigManager:
             filename: 配置文件名
             data: 要保存的数据
         """
+        if not bypass_write_fence:
+            from utils.cloudsave_runtime import assert_cloudsave_writable
+
+            assert_cloudsave_writable(self, operation="save", target=filename)
+
         # 确保目录存在
         self.ensure_config_directory()
         
@@ -2288,6 +2889,11 @@ class ConfigManager:
             "live2d_dir": str(self.live2d_dir),
             "workshop_dir": str(self.workshop_dir),
             "chara_dir": str(self.chara_dir),
+            "cloudsave_dir": str(self.cloudsave_dir),
+            "cloudsave_staging_dir": str(self.cloudsave_staging_dir),
+            "cloudsave_backups_dir": str(self.cloudsave_backups_dir),
+            "local_state_dir": str(self.local_state_dir),
+            "character_tombstones_state_path": str(self.character_tombstones_state_path),
             "project_config_dir": str(self.project_config_dir),
             "project_memory_dir": str(self.project_memory_dir),
             "config_files": {
@@ -2380,6 +2986,14 @@ class ConfigManager:
         )
         for candidate in candidates:
             self._cleanup_invalid_workshop_config_file(candidate)
+
+    def repair_workshop_configs(self):
+        """显式修复 workshop 配置文件，仅在调用方明确允许写盘时执行。"""
+        with self._workshop_config_lock:
+            from utils.cloudsave_runtime import assert_cloudsave_writable
+
+            assert_cloudsave_writable(self, operation="repair", target="workshop_config.json")
+            self._cleanup_invalid_workshop_configs()
     
     def load_workshop_config(self):
         """
@@ -2388,13 +3002,6 @@ class ConfigManager:
         Returns:
             dict: workshop配置数据
         """
-        # 兼容历史错误配置：仅在进程内首次读取时自愈一次，避免高频读取重复触发清理逻辑
-        if not self._workshop_config_cleanup_done:
-            with self._workshop_config_lock:
-                if not self._workshop_config_cleanup_done:
-                    self._cleanup_invalid_workshop_configs()
-                    self._workshop_config_cleanup_done = True
-
         config_path = self.get_workshop_config_path()
         try:
             if os.path.exists(config_path):
@@ -2403,7 +3010,7 @@ class ConfigManager:
                     logger.debug(f"成功加载workshop配置: {config}")
                     return config
             else:
-                # 配置不存在时进行一次带锁初始化，避免并发/密集调用下重复创建默认配置
+                # 配置不存在时直接返回默认值，避免只读查询链路隐式写入配置文件。
                 with self._workshop_config_lock:
                     if os.path.exists(config_path):
                         with open(config_path, 'r', encoding='utf-8') as f:
@@ -2415,8 +3022,7 @@ class ConfigManager:
                         "default_workshop_folder": str(self.workshop_dir),
                         "auto_create_folder": True
                     }
-                    self.save_workshop_config(default_config)
-                    logger.info(f"创建默认workshop配置: {default_config}")
+                    logger.debug(f"workshop配置不存在，返回默认配置: {default_config}")
                     return default_config
         except Exception as e:
             error_msg = f"加载workshop配置失败: {e}"
@@ -2435,10 +3041,14 @@ class ConfigManager:
         Args:
             config_data: 要保存的配置数据
         """
-        config_path = self.get_workshop_config_path()
+        config_path = str(self.get_runtime_config_path('workshop_config.json'))
         try:
+            from utils.cloudsave_runtime import assert_cloudsave_writable
+
+            assert_cloudsave_writable(self, operation="save", target="workshop_config.json")
+
             # 确保配置目录存在
-            os.makedirs(os.path.dirname(config_path), exist_ok=True)
+            self.ensure_config_directory()
             
             # 保存配置
             atomic_write_json(config_path, config_data, indent=4, ensure_ascii=False)
@@ -2470,11 +3080,11 @@ class ConfigManager:
             return
         if not workshop_path or not os.path.isdir(workshop_path):
             return
-        self._user_workshop_folder_persisted = True
         try:
             config = self.load_workshop_config()
             config["user_workshop_folder"] = workshop_path
             self.save_workshop_config(config)
+            self._user_workshop_folder_persisted = True
             logger.info(f"已持久化Steam创意工坊路径到配置文件: {workshop_path}")
         except Exception as e:
             logger.error(f"持久化user_workshop_folder失败: {e}")
@@ -2510,16 +3120,52 @@ class ConfigManager:
 
 # 全局配置管理器实例
 _config_manager = None
+_config_manager_migrated = False
 
 
-def get_config_manager(app_name=None):
-    """获取配置管理器单例，默认使用配置中的 APP_NAME"""
-    global _config_manager
+def _ensure_config_manager_migrated():
+    global _config_manager_migrated
+    if _config_manager is None or _config_manager_migrated:
+        return _config_manager
+    # 统一在首次真正需要运行时配置时再迁移，允许启动 phase-0
+    # 先基于“尚未注入默认配置的运行根”判断是否需要导入云快照。
+    _config_manager.migrate_config_files()
+    _config_manager.migrate_memory_files()
+    # 在 config/memory 基础迁移完成后，对遗留 Documents/AppData 路径下的
+    # N.E.K.O/memory 做一次性软迁移：只迁移已关联角色的条目，未关联条目
+    # 留给前端 legacy cleanup UI 手动清理（不在启动时自动清除）。
+    # 失败只打日志不抛异常，绝不阻塞启动。
+    try:
+        _config_manager.migrate_legacy_documents_memory()
+    except Exception as exc:
+        # "shouldn't happen" 路径（方法内部已吞所有异常），但 OSError 的 str(exc)
+        # 带 filename 会泄露 Documents 用户名，只打类名避免绕过脱敏。
+        try:
+            _config_manager._log(
+                f"[ConfigManager] migrate_legacy_documents_memory 抛异常（已忽略）: "
+                f"{type(exc).__name__}"
+            )
+        except Exception:
+            pass
+    _config_manager_migrated = True
+    return _config_manager
+
+
+def reset_config_manager_cache() -> None:
+    """Clear the process-local ConfigManager singleton cache."""
+    global _config_manager, _config_manager_migrated
+    _config_manager = None
+    _config_manager_migrated = False
+
+
+def get_config_manager(app_name=None, *, migrate=True):
+    """获取配置管理器单例，默认使用配置中的 APP_NAME。"""
+    global _config_manager, _config_manager_migrated
     if _config_manager is None:
         _config_manager = ConfigManager(app_name)
-        # 初始化时自动迁移配置文件和记忆文件
-        _config_manager.migrate_config_files()
-        _config_manager.migrate_memory_files()
+        _config_manager_migrated = False
+    if migrate:
+        _ensure_config_manager_migrated()
     return _config_manager
 
 
@@ -2527,6 +3173,11 @@ def get_config_manager(app_name=None):
 def get_config_path(filename):
     """获取配置文件路径"""
     return get_config_manager().get_config_path(filename)
+
+
+def get_runtime_config_path(filename):
+    """获取运行时真源配置路径。"""
+    return get_config_manager().get_runtime_config_path(filename)
 
 
 def get_plugins_directory(app_name=None):

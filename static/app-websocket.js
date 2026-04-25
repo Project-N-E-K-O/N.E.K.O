@@ -555,6 +555,15 @@
                     if (typeof window.appendMessage === 'function') {
                         createdVisibleBubble = window.appendMessage(response.text, 'gemini', isNewMessage) === true;
                     }
+                    if (createdVisibleBubble && response.request_id) {
+                        if (window.reactChatWindowHost && typeof window.reactChatWindowHost.clearPendingRollbackDraft === 'function') {
+                            window.reactChatWindowHost.clearPendingRollbackDraft(response.request_id);
+                        }
+                        if (window._lastSubmittedRequestId === response.request_id) {
+                            window._lastSubmittedText = '';
+                            window._lastSubmittedRequestId = '';
+                        }
+                    }
                     if (!S.assistantTurnId && S.assistantTurnAwaitingBubble && createdVisibleBubble) {
                         ensureAssistantTurnStarted('gemini_response_visible_bubble', response.turn_id);
                     }
@@ -657,27 +666,61 @@
                         if (typeof window.clearAudioQueue === 'function') await window.clearAudioQueue();
                     })();
 
-                    var retryMsg = window.t ? window.t('console.aiRetrying') : '猫娘链接出现异常，校准中…';
-                    var failMsg = window.t ? window.t('console.aiFailed') : '猫娘链接出现异常';
-                    if (typeof window.showStatusToast === 'function') {
-                        window.showStatusToast(response.will_retry ? retryMsg : failMsg, 2500);
+                    // Check if this is a RESPONSE_TOO_LONG final discard
+                    var _isResponseTooLong = false;
+                    if (!response.will_retry && response.message) {
+                        try {
+                            var _pdm = typeof response.message === 'string' ? JSON.parse(response.message) : response.message;
+                            if (_pdm && _pdm.code === 'RESPONSE_TOO_LONG') _isResponseTooLong = true;
+                        } catch (_) { /* ignore */ }
                     }
 
-                    if (!response.will_retry && response.message) {
-                        var translatedDiscardMsg = window.translateStatusMessage ? window.translateStatusMessage(response.message) : response.message;
-                        var messageDiv = document.createElement('div');
-                        messageDiv.classList.add('message', 'gemini');
-                        messageDiv.textContent = '[' + (typeof window.getCurrentTimeString === 'function' ? window.getCurrentTimeString() : '') + '] \u{1F380} ' + translatedDiscardMsg;
-                        var cc2 = chatContainer();
-                        if (cc2) {
-                            cc2.appendChild(messageDiv);
-                            window.currentGeminiMessage = messageDiv;
-                            window.currentTurnGeminiBubbles = [messageDiv];
-                            cc2.scrollTop = cc2.scrollHeight;
+                    if (_isResponseTooLong) {
+                        // Suppress toast — backend sends cute text via gemini_response
+                        // Only rollback user input here
+                        if (window.reactChatWindowHost && typeof window.reactChatWindowHost.rollbackLastDraft === 'function') {
+                            window.reactChatWindowHost.rollbackLastDraft(response.request_id);
+                        }
+                        var legacyInput = document.getElementById('textInputBox');
+                        if (legacyInput && !legacyInput.value &&
+                            response.request_id && window._lastSubmittedRequestId === response.request_id &&
+                            window._lastSubmittedText) {
+                            legacyInput.value = window._lastSubmittedText;
+                            window._lastSubmittedText = '';
+                            window._lastSubmittedRequestId = '';
                         }
                     } else {
-                        var cc3 = chatContainer();
-                        if (cc3) cc3.scrollTop = cc3.scrollHeight;
+                        if (!response.will_retry) {
+                            if (window.reactChatWindowHost && typeof window.reactChatWindowHost.clearPendingRollbackDraft === 'function') {
+                                window.reactChatWindowHost.clearPendingRollbackDraft(response.request_id);
+                            }
+                            if (response.request_id && window._lastSubmittedRequestId === response.request_id) {
+                                window._lastSubmittedText = '';
+                                window._lastSubmittedRequestId = '';
+                            }
+                        }
+                        var retryMsg = window.t ? window.t('console.aiRetrying') : '猫娘链接出现异常，校准中…';
+                        var failMsg = window.t ? window.t('console.aiFailed') : '猫娘链接出现异常';
+                        if (typeof window.showStatusToast === 'function') {
+                            window.showStatusToast(response.will_retry ? retryMsg : failMsg, 2500);
+                        }
+
+                        if (!response.will_retry && response.message) {
+                            var translatedDiscardMsg = window.translateStatusMessage ? window.translateStatusMessage(response.message) : response.message;
+                            var messageDiv = document.createElement('div');
+                            messageDiv.classList.add('message', 'gemini');
+                            messageDiv.textContent = '[' + (typeof window.getCurrentTimeString === 'function' ? window.getCurrentTimeString() : '') + '] \u{1F380} ' + translatedDiscardMsg;
+                            var cc2 = chatContainer();
+                            if (cc2) {
+                                cc2.appendChild(messageDiv);
+                                window.currentGeminiMessage = messageDiv;
+                                window.currentTurnGeminiBubbles = [messageDiv];
+                                cc2.scrollTop = cc2.scrollHeight;
+                            }
+                        } else {
+                            var cc3 = chatContainer();
+                            if (cc3) cc3.scrollTop = cc3.scrollHeight;
+                        }
                     }
 
                 // -------- user_transcript --------
@@ -1165,7 +1208,24 @@
                                 dataUrl = await window.captureProactiveChatScreenshot();
                             }
                             if (dataUrl && S.socket && S.socket.readyState === WebSocket.OPEN) {
-                                S.socket.send(JSON.stringify({ action: 'screenshot_response', data: dataUrl }));
+                                var respMsg = { action: 'screenshot_response', data: dataUrl };
+                                // Determine capture type for correct coordinate mapping
+                                // null = 窗口截图或无法确定 → 不叠加；仅无流无源时默认 'screen'
+                                var captureType = null;
+                                if (typeof window.detectScreenshotCaptureType === 'function') {
+                                    captureType = window.detectScreenshotCaptureType(
+                                        S.screenCaptureStream, S.selectedScreenSourceId
+                                    );
+                                }
+                                if (captureType === null && !S.screenCaptureStream && !S.selectedScreenSourceId) {
+                                    captureType = 'screen';
+                                }
+                                var avatarPos = typeof window.getAvatarScreenPosition === 'function'
+                                    ? window.getAvatarScreenPosition(captureType) : null;
+                                if (avatarPos) {
+                                    respMsg.avatar_position = avatarPos;
+                                }
+                                S.socket.send(JSON.stringify(respMsg));
                             }
                         } catch (e2) {
                             console.warn('[App] request_screenshot capture failed:', e2);
@@ -1174,6 +1234,13 @@
 
                 // -------- system turn end (agent_callback — no proactive chat) --------
                 } else if (response.type === 'system' && response.data === 'turn end agent_callback') {
+                    if (window.reactChatWindowHost && typeof window.reactChatWindowHost.clearPendingRollbackDraft === 'function') {
+                        window.reactChatWindowHost.clearPendingRollbackDraft(response.request_id);
+                    }
+                    if (response.request_id && window._lastSubmittedRequestId === response.request_id) {
+                        window._lastSubmittedText = '';
+                        window._lastSubmittedRequestId = '';
+                    }
                     console.log('[WS] turn end (agent_callback) — skipping proactive chat schedule');
                     logAssistantLifecycle('ws:turn_end_agent_callback:received');
                     try {
@@ -1254,6 +1321,13 @@
 
                 // -------- system turn end --------
                 } else if (response.type === 'system' && response.data === 'turn end') {
+                    if (window.reactChatWindowHost && typeof window.reactChatWindowHost.clearPendingRollbackDraft === 'function') {
+                        window.reactChatWindowHost.clearPendingRollbackDraft(response.request_id);
+                    }
+                    if (response.request_id && window._lastSubmittedRequestId === response.request_id) {
+                        window._lastSubmittedText = '';
+                        window._lastSubmittedRequestId = '';
+                    }
                     console.log(window.t('console.turnEndReceived'));
                     logAssistantLifecycle('ws:turn_end:received');
                     // Flush remaining buffer

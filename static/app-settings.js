@@ -197,9 +197,17 @@
             ? window.lockedHoverFadeEnabled
             : true;
 
-        // 读取字幕设置（从 S 读取，因为 subtitle.js 会写入 S）
-        const currentSubtitleEnabled = typeof S.subtitleEnabled !== 'undefined' ? S.subtitleEnabled : (localStorage.getItem('subtitleEnabled') === 'true');
-        const currentUserLanguage = S.hasOwnProperty('userLanguage') ? S.userLanguage : (localStorage.getItem('userLanguage') || null);
+        // 读取字幕设置（统一走 subtitle-shared store，避免多处直接写 localStorage）
+        const subtitleStore = window.nekoSubtitleShared;
+        const subtitleState = subtitleStore && typeof subtitleStore.getSettings === 'function'
+            ? subtitleStore.getSettings()
+            : null;
+        const currentSubtitleEnabled = typeof S.subtitleEnabled !== 'undefined'
+            ? S.subtitleEnabled
+            : (subtitleState ? !!subtitleState.subtitleEnabled : (localStorage.getItem('subtitleEnabled') === 'true'));
+        const currentUserLanguage = S.hasOwnProperty('userLanguage')
+            ? S.userLanguage
+            : (subtitleState ? subtitleState.userLanguage : (localStorage.getItem('userLanguage') || null));
 
         const settings = {
             proactiveChatEnabled: currentProactive,
@@ -226,13 +234,6 @@
             userLanguage: currentUserLanguage
         };
         localStorage.setItem('project_neko_settings', JSON.stringify(settings));
-        // 同时保存字幕设置到独立 key（兼容 subtitle.js）
-        localStorage.setItem('subtitleEnabled', currentSubtitleEnabled.toString());
-        if (currentUserLanguage != null) {
-            localStorage.setItem('userLanguage', currentUserLanguage);
-        } else {
-            localStorage.removeItem('userLanguage');
-        }
 
         // 同步回共享状态，保持一致性
         S.proactiveChatEnabled = currentProactive;
@@ -254,6 +255,14 @@
         // 同步字幕设置到共享状态
         S.subtitleEnabled = currentSubtitleEnabled;
         S.userLanguage = currentUserLanguage;
+        if (subtitleStore && typeof subtitleStore.updateSettings === 'function') {
+            subtitleStore.updateSettings({
+                subtitleEnabled: S.subtitleEnabled,
+                userLanguage: S.userLanguage
+            }, {
+                source: 'app-settings-save'
+            });
+        }
 
         // 同步到服务器（异步，不阻塞）
         syncSettingsToServer();
@@ -428,11 +437,13 @@
 
         // 以下逻辑不依赖本地 JSON 解析结果，始终执行
 
-        // 加载字幕设置（从 localStorage 读取，因为 subtitle.js 也用同一份）
-        const savedSubtitleEnabled = localStorage.getItem('subtitleEnabled');
-        S.subtitleEnabled = savedSubtitleEnabled === 'true';
-        const savedUserLanguage = localStorage.getItem('userLanguage');
-        S.userLanguage = savedUserLanguage ? savedUserLanguage : null;
+        // 加载字幕设置（统一从 subtitle-shared store 读取）
+        const subtitleStore = window.nekoSubtitleShared;
+        const subtitleState = subtitleStore && typeof subtitleStore.getSettings === 'function'
+            ? subtitleStore.getSettings()
+            : null;
+        S.subtitleEnabled = subtitleState ? !!subtitleState.subtitleEnabled : (localStorage.getItem('subtitleEnabled') === 'true');
+        S.userLanguage = subtitleState ? subtitleState.userLanguage : (localStorage.getItem('userLanguage') || null);
 
         // 异步：从服务器加载对话设置并合并（不阻塞 UI）
         try {

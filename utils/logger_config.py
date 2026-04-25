@@ -7,6 +7,24 @@
 - 自动清理旧日志
 - 降级策略（当无法写入时的备用方案）
 - 跨平台支持
+
+╔══════════════════════════════════════════════════════════════════════════╗
+║                        ⚠⚠⚠  警  告  ⚠⚠⚠                                ║
+║                                                                          ║
+║   本模块是全仓库唯一允许的日志后端。所有 Python 进程（main_*、         ║
+║   agent_*、memory_*、user_plugin_server、各 Plugin 子进程）都必须      ║
+║   通过 setup_logging(service_name=...) 走这里。                         ║
+║                                                                          ║
+║   严禁：                                                                ║
+║     1. 引入 loguru / structlog / logbook 等第三方日志库；              ║
+║     2. 用 cwd / __file__.parent 算日志目录（AppImage squashfs 只读）；║
+║     3. 自创 FileHandler 绕过 RobustLoggerConfig；                       ║
+║     4. 把 plugin 日志单独写到别的地方。                                ║
+║                                                                          ║
+║   再有人乱搞 —— 按维护者口径就把谁杀了。                                ║
+║   lint 守门：scripts/check_no_loguru.py（CI: .github/workflows/         ║
+║   analyze.yml）。                                                        ║
+╚══════════════════════════════════════════════════════════════════════════╝
 """
 import os
 import sys
@@ -18,6 +36,21 @@ from datetime import datetime, timedelta
 from config import APP_NAME
 
 
+def _get_application_root() -> Path:
+    if getattr(sys, "frozen", False):
+        if hasattr(sys, "_MEIPASS"):
+            return Path(sys._MEIPASS)
+        return Path(sys.executable).parent
+    return Path(__file__).resolve().parents[1]
+
+
+def _get_writable_application_directory() -> Path:
+    """返回适合作为日志落盘基目录的可写路径。"""
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return _get_application_root()
+
+
 class RobustLoggerConfig:
     """鲁棒的日志配置类"""
     
@@ -27,11 +60,11 @@ class RobustLoggerConfig:
     DEFAULT_BACKUP_COUNT = 5  # Keep 5 backup files
     DEFAULT_LOG_RETENTION_DAYS = 30  # Keep logs for 30 days
     
-    def __init__(self, app_name=None, service_name=None, log_level=None, max_bytes=None, 
-                 backup_count=None, retention_days=None):
+    def __init__(self, app_name=None, service_name=None, log_level=None, max_bytes=None,
+                 backup_count=None, retention_days=None, log_subdir=None):
         """
         初始化日志配置
-        
+
         Args:
             app_name: 应用名称，用于创建日志目录，默认使用配置中的 APP_NAME
             service_name: 服务名称，用于区分不同服务的日志文件（如Main、Memory、Agent）
@@ -39,6 +72,11 @@ class RobustLoggerConfig:
             max_bytes: 单个日志文件的最大大小
             backup_count: 保留的备份文件数量
             retention_days: 日志保留天数
+            log_subdir: 日志落到基目录下的哪个子目录（如 "plugin"）。默认 None =
+                直接写到基目录 ``<docs>/N.E.K.O/logs/``。传入 ``"plugin"`` 会把日志
+                路由到 ``<docs>/N.E.K.O/logs/plugin/``，用于把大量 plugin 子进程
+                日志从顶层收纳到一个子目录，避免与 PluginServer / Main / Memory /
+                Agent 等宿主进程日志混在一起。
         """
         self.app_name = app_name if app_name is not None else APP_NAME
         self.service_name = service_name  # 服务名称用于文件名区分
@@ -46,9 +84,15 @@ class RobustLoggerConfig:
         self.max_bytes = max_bytes or self.DEFAULT_MAX_BYTES
         self.backup_count = backup_count or self.DEFAULT_BACKUP_COUNT
         self.retention_days = retention_days or self.DEFAULT_LOG_RETENTION_DAYS
-        
-        # 获取日志目录
+        self.log_subdir = log_subdir
+
+        # 获取日志目录（先拿到基目录，再按 log_subdir 路由到子目录）
         self.log_dir = self._get_log_directory()
+        if log_subdir:
+            # 不让调用方传带 "/" 的路径，避免意外逃出基目录。
+            safe = str(log_subdir).strip().strip("/\\")
+            if safe:
+                self.log_dir = self.log_dir / safe
         
         # 日志文件名：如果有service_name则包含，否则只用app_name
         if self.service_name:
@@ -88,14 +132,7 @@ class RobustLoggerConfig:
         
         # 尝试2: 使用应用程序所在目录
         try:
-            # 对于exe打包的应用，使用exe所在目录
-            if getattr(sys, 'frozen', False):
-                # 如果是打包后的exe
-                app_dir = Path(sys.executable).parent
-            else:
-                # 如果是脚本运行，使用项目根目录
-                app_dir = Path.cwd()
-            
+            app_dir = _get_writable_application_directory()
             log_dir = app_dir / "logs"
             if self._test_directory_writable(log_dir):
                 return log_dir
@@ -147,8 +184,8 @@ class RobustLoggerConfig:
             print(f"Warning: Failed to use temp directory: {e}", file=sys.stderr)
         
         # 如果所有方法都失败，返回当前目录
-        print(f"Warning: All log directory attempts failed, using current directory", file=sys.stderr)
-        return Path.cwd() / "logs"
+        print("Warning: All log directory attempts failed, using application directory", file=sys.stderr)
+        return _get_writable_application_directory() / "logs"
     
     def _get_documents_directory(self):
         """获取系统的用户文档目录（使用系统API）"""
@@ -393,24 +430,34 @@ class EnhancedLogger:
         self._logger.exception(msg, *args, **kwargs)
 
 
-def setup_logging(app_name=None, service_name=None, log_level=None, silent=False):
+def setup_logging(app_name=None, service_name=None, log_level=None, silent=False,
+                  log_subdir=None):
     """
     便捷函数：设置日志配置
-    
+
     Args:
         app_name: 应用名称，默认使用配置中的 APP_NAME（用于确定日志目录）
         service_name: 服务名称，用于区分不同服务的日志文件（如Main、Memory、Agent）
         log_level: 日志级别
         silent: 静默模式，不打印初始化消息（用于子进程避免重复输出）
-        
+        log_subdir: 日志子目录。plugin 子进程传 ``"plugin"`` 即可把
+            ``N.E.K.O_Plugin_<id>_*.log`` 收纳到 ``logs/plugin/`` 下，避免与
+            PluginServer / Main / Memory / Agent 等宿主进程的日志混在顶层。
+            默认 ``None`` = 保持老行为，写到 ``logs/`` 基目录。
+
     Returns:
         tuple: (增强的logger实例, 日志配置对象)
-        
+
     注意：
         返回的logger会自动在error()调用时包含traceback（如果在异常上下文中）
         也可以使用logger.exception()来明确记录异常信息
     """
-    config = RobustLoggerConfig(app_name=app_name, service_name=service_name, log_level=log_level)
+    config = RobustLoggerConfig(
+        app_name=app_name,
+        service_name=service_name,
+        log_level=log_level,
+        log_subdir=log_subdir,
+    )
     # 使用带命名空间的 logger 名（如 N.E.K.O.Agent），
     # 避免与第三方库的同名 logger 冲突（browser_use 内部有名为 "Agent" 的 logger）。
     base_logger = config.setup_logger()
@@ -754,4 +801,3 @@ if __name__ == "__main__":
     logger.error("这是一条error消息")
     
     print(f"\n日志已保存到: {config.get_log_file_path()}")
-

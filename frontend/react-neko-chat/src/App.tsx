@@ -540,9 +540,10 @@ export default function App({
   onAvatarInteraction,
   onJukeboxClick,
   onTranslateToggle,
+  rollbackDraft,
+  _rollbackKey,
 }: ChatWindowProps) {
   const [draft, setDraft] = useState('');
-  const [pendingDrafts, setPendingDrafts] = useState<Array<{ id: string; text: string; time: string; lastMsgId: string | null }>>([]);
   const [toolMenuOpen, setToolMenuOpen] = useState(false);
   const [activeCursorToolId, setActiveCursorToolId] = useState<string | null>(null);
   const [avatarRangeCursorVariants, setAvatarRangeCursorVariants] = useState<ToolCursorVariantState>(() => createDefaultToolCursorVariantState());
@@ -577,7 +578,21 @@ export default function App({
   const [floatingHearts, setFloatingHearts] = useState<FloatingHeart[]>([]);
   const [floatingFistDrops, setFloatingFistDrops] = useState<FloatingFistDrop[]>([]);
   const submittingRef = useRef(false);
+  const lastRollbackKeyRef = useRef('');
   const canSubmit = draft.trim().length > 0 || composerAttachments.length > 0;
+
+  // Rollback draft when host signals a RESPONSE_TOO_LONG error
+  // Use _rollbackKey for dedup — it changes on every rollbackLastDraft() call
+  // and stays the same across intermediate renderWindow() calls, so the rollback
+  // is applied exactly once regardless of how many times renderWindow fires.
+  useEffect(() => {
+    if (rollbackDraft && _rollbackKey && _rollbackKey !== lastRollbackKeyRef.current) {
+      lastRollbackKeyRef.current = _rollbackKey;
+      if (!draft || draft.trim() === '') {
+        setDraft(rollbackDraft);
+      }
+    }
+  }, [rollbackDraft, _rollbackKey, draft]);
   const resolvedImportImageAriaLabel = importImageButtonAriaLabel || importImageButtonLabel;
   const resolvedScreenshotAriaLabel = screenshotButtonAriaLabel || screenshotButtonLabel;
   const resolvedTranslateAriaLabel = translateButtonAriaLabel || translateButtonLabel;
@@ -774,39 +789,6 @@ export default function App({
 
     callback(payload);
   }
-
-  // Clear pending drafts once the host confirms them (appears in messages)
-  useEffect(() => {
-    if (pendingDrafts.length === 0) return;
-    const remaining = pendingDrafts.filter(d => {
-      const anchor = d.lastMsgId ? messages.findIndex(m => m.id === d.lastMsgId) : -1;
-      const newMsgs = messages.slice(anchor + 1);
-      const newUserTexts = new Set(
-        newMsgs
-          .filter(m => m.role === 'user')
-          .flatMap(m => m.blocks.flatMap(b => b.type === 'text' ? [b.text] : [])),
-      );
-      return !newUserTexts.has(d.text);
-    });
-    if (remaining.length < pendingDrafts.length) {
-      setPendingDrafts(remaining);
-    }
-  }, [messages, pendingDrafts]);
-
-  // Merge host messages + optimistic pending drafts
-  const lastUserAuthor = [...messages].reverse().find(m => m.role === 'user')?.author;
-  const allMessages = useMemo(() => {
-    if (pendingDrafts.length === 0) return messages;
-    const optimistic: ChatMessage[] = pendingDrafts.map(d => ({
-      id: d.id,
-      role: 'user' as const,
-      author: lastUserAuthor || 'You',
-      time: d.time,
-      blocks: [{ type: 'text' as const, text: d.text }],
-      status: 'sending' as const,
-    }));
-    return [...messages, ...optimistic];
-  }, [messages, pendingDrafts, lastUserAuthor]);
 
   useEffect(() => {
     if (!toolMenuOpen) return;
@@ -1298,7 +1280,7 @@ export default function App({
                 aria-label={inputPlaceholder}
                 rows={1}
                 value={draft}
-                onChange={(event) => setDraft(event.target.value)}
+                onChange={(event) => { setDraft(event.target.value); }}
                 onKeyDown={(event) => {
                   if (event.nativeEvent.isComposing) return;
                   if (event.key === 'Enter' && !event.shiftKey) {

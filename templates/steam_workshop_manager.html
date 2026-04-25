@@ -107,6 +107,9 @@
 <button class="btn btn-primary" onclick="loadSubscriptions()" data-i18n="steam.refresh">刷新订阅内容</button>
 <img src="/static/icons/roload_icon.png" class="refresh-icon" alt="" aria-hidden="true">
 </div>
+<div class="refresh-button-wrapper">
+<button class="btn btn-secondary" onclick="openLegacyMemoryModal()" data-i18n="steam.cleanLegacyMemory" data-i18n-title="steam.cleanLegacyMemoryTooltip" title="扫描并清理 Documents 等遗留路径下的角色记忆">清理遗留记忆</button>
+</div>
 </div>
 </div>
                 
@@ -639,6 +642,40 @@
 </div>
 <div class="modal-footer">
 <button class="btn btn-primary" onclick="closeDuplicateUploadModal()" data-i18n="common.confirm">确定</button>
+</div>
+</div>
+</div>
+
+<!-- 清理遗留记忆模态框 -->
+<div id="legacyMemoryModal" class="modal" onclick="closeLegacyMemoryModalOnOutsideClick(event)" style="display: none;">
+<div class="modal-content" onclick="event.stopPropagation()" style="max-width: 900px;">
+<div class="modal-header">
+<h3 class="modal-title" data-i18n="steam.legacyScanTitle">清理遗留记忆</h3>
+<button class="modal-close" onclick="closeLegacyMemoryModal()">&times;</button>
+</div>
+<div class="modal-body" style="padding: 20px;">
+<p data-i18n="steam.legacyScanDesc" style="margin-bottom: 12px; color: #aaa; font-size: 13px;">
+以下目录位于 Documents 等遗留路径，不是当前使用的 memory 位置（AppData）。勾选要删除的条目。
+</p>
+<div id="legacy-memory-runtime-info" style="margin-bottom: 12px; color: #888; font-size: 12px; word-break: break-all;"></div>
+<div id="legacy-memory-toolbar" style="display: none; margin-bottom: 10px; gap: 8px; flex-wrap: wrap;">
+<button type="button" class="btn btn-secondary" style="padding: 4px 12px; font-size: 13px;" onclick="legacyMemorySelectAll()" data-i18n="steam.legacySelectAll">全选</button>
+<button type="button" class="btn btn-secondary" style="padding: 4px 12px; font-size: 13px;" onclick="legacyMemorySelectNone()" data-i18n="steam.legacySelectNone">全不选</button>
+<button type="button" class="btn btn-secondary" style="padding: 4px 12px; font-size: 13px;" onclick="legacyMemorySelectUnlinked()" data-i18n="steam.legacySelectUnlinked">只选未关联</button>
+</div>
+<div id="legacy-memory-table-wrap">
+<!-- 加载/结果状态由 JS 填充 -->
+<div class="empty-state">
+<p data-i18n="steam.legacyScanLoading">扫描中...</p>
+</div>
+</div>
+</div>
+<div class="modal-footer">
+<button id="legacy-memory-delete-btn" class="btn btn-primary" onclick="legacyMemoryPurgeSelected()" disabled>
+<span data-i18n="steam.legacyDeleteSelected">删除所选</span>
+<span id="legacy-memory-delete-count"> (0)</span>
+</button>
+<button class="btn btn-secondary" onclick="closeLegacyMemoryModal()" data-i18n="steam.close">关闭</button>
 </div>
 </div>
 </div>
