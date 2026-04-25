@@ -137,6 +137,8 @@
         "live2dPreviewLoadFailed": "Live2D模型预览加载失败：{{error}} ",
         "searchAriaLabel": "搜索订阅内容",
         "sortAriaLabel": "排序方式",
+        "scrollTagsLeftAriaLabel": "向左滚动标签",
+        "scrollTagsRightAriaLabel": "向右滚动标签",
         "vrmModuleLoadFailed": "VRM 模块加载失败",
         "vrmPreviewLoaded": "VRM 模型预览已加载",
         "vrmPreviewFailed": "VRM 模型预览加载失败",

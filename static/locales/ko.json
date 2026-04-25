@@ -137,6 +137,8 @@
         "live2dPreviewLoadFailed": "Live2D 모델 미리보기 로드 실패: {{error}}",
         "searchAriaLabel": "구독 항목 검색",
         "sortAriaLabel": "정렬 방식",
+        "scrollTagsLeftAriaLabel": "태그를 왼쪽으로 스크롤",
+        "scrollTagsRightAriaLabel": "태그를 오른쪽으로 스크롤",
         "vrmModuleLoadFailed": "VRM 모듈 로드 실패",
         "vrmPreviewLoaded": "VRM 모델 미리보기를 불러왔습니다",
         "vrmPreviewFailed": "VRM 모델 미리보기 로드 실패",

@@ -841,6 +841,35 @@ if (characterCardTagInput) {
     });
 }
 
+function updateCharacterCardTagScrollControls() {
+    const wrapper = document.getElementById('character-card-tags-wrapper');
+    const leftButton = document.getElementById('character-card-tags-scroll-left');
+    const rightButton = document.getElementById('character-card-tags-scroll-right');
+    if (!wrapper || !leftButton || !rightButton) return;
+
+    const hasOverflow = (wrapper.scrollWidth - wrapper.clientWidth) > 2;
+    const atStart = wrapper.scrollLeft <= 2;
+    const atEnd = (wrapper.scrollLeft + wrapper.clientWidth) >= (wrapper.scrollWidth - 2);
+
+    leftButton.classList.toggle('is-hidden', !hasOverflow);
+    rightButton.classList.toggle('is-hidden', !hasOverflow);
+    leftButton.disabled = !hasOverflow || atStart;
+    rightButton.disabled = !hasOverflow || atEnd;
+}
+
+function scrollCharacterCardTags(direction) {
+    const wrapper = document.getElementById('character-card-tags-wrapper');
+    if (!wrapper) return;
+
+    const scrollAmount = Math.max(wrapper.clientWidth * 0.75, 120);
+    wrapper.scrollBy({
+        left: direction * scrollAmount,
+        behavior: 'smooth'
+    });
+
+    window.setTimeout(updateCharacterCardTagScrollControls, 220);
+}
+
 function addTag(tagText, type = '', locked = false) {
     // 根据type参数获取对应的标签容器元素
     const containerId = type ? `${type}-tags-container` : 'tags-container';
@@ -896,6 +925,10 @@ function addTag(tagText, type = '', locked = false) {
     } else {
         tagsContainer.appendChild(tagElement);
     }
+
+    if (type === 'character-card') {
+        updateCharacterCardTagScrollControls();
+    }
 }
 
 function removeTag(tagElement, type = '') {
@@ -903,6 +936,10 @@ function removeTag(tagElement, type = '') {
         tagElement.parentElement.remove();
     } else {
         console.error('Invalid tag element');
+    }
+
+    if (type === 'character-card') {
+        updateCharacterCardTagScrollControls();
     }
 }
 
@@ -3031,6 +3068,9 @@ function expandCharacterCardSection(card) {
     // 显示角色卡区域
     const characterCardLayout = document.getElementById('character-card-layout');
     characterCardLayout.style.display = 'flex';
+    requestAnimationFrame(() => {
+        updateCharacterCardTagScrollControls();
+    });
 
     // 滚动到角色卡区域
     characterCardLayout.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -4540,6 +4580,7 @@ function updateCardPreview() {
 document.addEventListener('DOMContentLoaded', function () {
     // 只有 description 输入框仍然存在，为其添加事件监听器
     const descriptionInput = document.getElementById('character-card-description');
+    const characterCardTagsWrapper = document.getElementById('character-card-tags-wrapper');
 
     // 页面加载完成后自动加载音色列表
     loadVoices();
@@ -4547,52 +4588,35 @@ document.addEventListener('DOMContentLoaded', function () {
     if (descriptionInput) {
         descriptionInput.addEventListener('input', updateCardPreview);
     }
+
+    if (characterCardTagsWrapper) {
+        characterCardTagsWrapper.addEventListener('scroll', updateCharacterCardTagScrollControls, { passive: true });
+        if (typeof ResizeObserver !== 'undefined') {
+            const tagsResizeObserver = new ResizeObserver(() => {
+                updateCharacterCardTagScrollControls();
+            });
+            tagsResizeObserver.observe(characterCardTagsWrapper);
+        }
+    }
+
+    window.addEventListener('resize', updateCharacterCardTagScrollControls);
+    window.setTimeout(updateCharacterCardTagScrollControls, 0);
 });
 
 // 添加标签（角色卡用）
 function addCharacterCardTag(type, tagValue) {
-    const tagInput = document.getElementById(`${type}-tag-input`);
-    const tagText = tagValue.trim();
-
-    if (tagText) {
-        const tagsContainer = document.getElementById(`${type}-tags-container`);
-
-        // 检查标签数量是否超过限制（最多4个）
-        const existingTags = tagsContainer.querySelectorAll('.tag');
-        if (existingTags.length >= 4) {
-            alert(window.t ? window.t('steam.tagLimitReached') : '标签数量不能超过4个！');
-            return;
-        }
-
-        // 检查标签字数是否超过限制（最多30字）
-        if (tagText.length > 30) {
-            alert(window.t ? window.t('steam.tagTooLong') : '标签字数不能超过30字！');
-            return;
-        }
-
-        // 检查标签是否已存在
-        const tagTexts = Array.from(existingTags).map(tag =>
-            tag.textContent.replace('×', '').trim()
-        );
-        if (!tagTexts.includes(tagText)) {
-            // 创建新标签
-            const tagElement = document.createElement('div');
-            tagElement.className = 'tag';
-            tagElement.innerHTML = `${tagText}<span class="tag-remove" onclick="removeTag(this, '${type}')">×</span>`;
-            tagsContainer.appendChild(tagElement);
-        }
-    }
-}
-
-// 移除标签
-function removeTag(tagElement, type) {
-    tagElement.parentElement.remove();
+    const tagText = String(tagValue || '').trim();
+    if (!tagText) return;
+    addTag(tagText, type);
 }
 
 // 清除所有标签
 function clearTags(type) {
     const tagsContainer = document.getElementById(`${type}-tags-container`);
     tagsContainer.innerHTML = '';
+    if (type === 'character-card') {
+        updateCharacterCardTagScrollControls();
+    }
 }
 
 // Live2D预览相关功能

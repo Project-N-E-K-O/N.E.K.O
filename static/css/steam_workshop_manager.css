@@ -495,6 +495,14 @@ border-radius: 0;
 background-color: transparent;
 align-items: center;
 }
+
+#character-card-tags-container {
+flex-wrap: nowrap;
+width: max-content;
+min-width: 100%;
+align-items: center;
+align-content: center;
+}
         
 .tag {
 display: inline-flex;
@@ -581,6 +589,8 @@ display: flex;
 flex-direction: column;
 gap: 20px;
 margin-top: 20px;
+--character-card-top-panel-height: 560px;
+--character-card-description-height: 260px;
 }
 
 /* 上方区域：角色卡信息 + Live2D预览（各自独立卡片） */
@@ -591,16 +601,22 @@ background: linear-gradient(to bottom, #7FE3FF, #DDF2FF);
 border: 1px solid #a0d8f0;
 border-radius: 30px;
 padding: 12px;
+height: var(--character-card-top-panel-height);
+max-height: var(--character-card-top-panel-height);
+align-items: stretch;
+overflow: hidden;
 }
 
 /* 左侧：角色卡信息 */
 .character-card-info-section {
 flex: 1;
 min-width: 0;
+min-height: 0;
+height: 100%;
 padding: 0;
 box-sizing: border-box;
 border-radius: 0;
-overflow: visible;
+overflow: hidden;
 background-color: transparent;
 position: relative;
 display: flex;
@@ -715,6 +731,12 @@ object-fit: contain;
 
 .description-content {
 padding: 6px 12px 12px;
+flex: 1;
+display: flex;
+min-height: 0;
+height: var(--character-card-description-height);
+max-height: var(--character-card-description-height);
+overflow: hidden;
 }
 
 /* 标签区域标题栏 - 与角色卡信息标题栏相同的凹槽样式 */
@@ -778,9 +800,61 @@ padding: 10px 16px 16px;
 background-color: #ffffff;
 border-radius: 0 0 22px 22px;
 flex: 1;
+display: flex;
+flex-direction: column;
+min-height: 0;
+height: var(--character-card-description-height);
+max-height: var(--character-card-description-height);
+overflow: hidden;
 position: relative;
 z-index: 2;
 margin: -1px 0 0 0;
+}
+
+.character-card-tags-scroll-shell {
+display: flex;
+align-items: center;
+gap: 8px;
+width: 100%;
+max-width: 100%;
+min-height: 44px;
+margin-top: 5px;
+flex: 0 0 auto;
+min-width: 0;
+}
+
+.tag-scroll-button {
+display: inline-flex;
+align-items: center;
+justify-content: center;
+width: 30px;
+height: 30px;
+padding: 0;
+border: none;
+border-radius: 999px;
+background: linear-gradient(180deg, #40c5f1 0%, #17a7ff 100%);
+color: #fff;
+font-size: 20px;
+line-height: 1;
+cursor: pointer;
+flex: 0 0 auto;
+box-shadow: 0 6px 14px rgba(23, 167, 255, 0.18);
+transition: opacity 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.tag-scroll-button:hover:not(:disabled) {
+transform: translateY(-1px);
+box-shadow: 0 8px 18px rgba(23, 167, 255, 0.24);
+}
+
+.tag-scroll-button:disabled {
+opacity: 0.4;
+cursor: default;
+box-shadow: none;
+}
+
+.tag-scroll-button.is-hidden {
+display: none;
 }
 
 .card-info-body {
@@ -788,6 +862,9 @@ padding: 10px 16px 16px;
 background-color: #ffffff;
 border-radius: 0 0 22px 22px;
 flex: 1;
+display: flex;
+flex-direction: column;
+min-height: 0;
 position: relative;
 z-index: 2;
 overflow: hidden;
@@ -818,8 +895,33 @@ opacity: 0.2;
 
 #card-info-preview {
 padding: 0;
+flex: 1;
+min-height: 0;
+overflow-y: auto;
+overflow-x: hidden;
+scrollbar-width: thin;
+-ms-overflow-style: auto;
+scrollbar-color: rgba(64, 197, 241, 0.55) rgba(179, 229, 252, 0.3);
 position: relative;
 z-index: 1;
+}
+
+#card-info-preview::-webkit-scrollbar {
+width: 8px;
+}
+
+#card-info-preview::-webkit-scrollbar-track {
+background: rgba(179, 229, 252, 0.3);
+border-radius: 999px;
+}
+
+#card-info-preview::-webkit-scrollbar-thumb {
+background: rgba(64, 197, 241, 0.55);
+border-radius: 999px;
+}
+
+#card-info-preview::-webkit-scrollbar-thumb:hover {
+background: rgba(64, 197, 241, 0.75);
 }
 
 #card-info-dynamic-content {
@@ -842,6 +944,8 @@ overflow-wrap: break-word;
 .character-card-live2d-section {
 flex: 1;
 min-width: 0;
+min-height: 0;
+height: 100%;
 padding: 0;
 box-sizing: border-box;
 background: linear-gradient(to bottom, #D6F5FF 0%, #8AE3FF 78%, #40C5F1 100%);
@@ -875,9 +979,9 @@ font-size: 1em;
 
 /* Live2D预览容器：占据大部分空间 */
 #live2d-preview-container {
-flex: 3;
+flex: 1 1 auto;
 width: 100%;
-height: auto;
+height: 100%;
 border: none;
 border-radius: 0;
 overflow: hidden;
@@ -885,7 +989,7 @@ background-color: transparent;
 display: flex;
 flex-direction: column;
 position: relative;
-min-height: 400px;
+min-height: 0;
 }
 
 /* Live2D控制区域：自适应高度 */
@@ -908,34 +1012,42 @@ overflow: hidden;
 /* 左侧：描述区域 */
 .character-card-description-section {
 flex: 1;
+min-width: 0;
 padding: 0;
 box-sizing: border-box;
 border-right: 1px solid #eaeaea;
 background-color: #fff;
 border-radius: 22px;
+display: flex;
+flex-direction: column;
+min-height: 0;
 }
         
 /* 右侧：标签和按钮区域 */
 .character-card-tags-buttons-section {
 flex: 1;
+min-width: 0;
 padding: 0;
 box-sizing: border-box;
 display: flex;
 flex-direction: column;
+min-height: 0;
 background-color: transparent;
 }
 
 /* 标签区域 */
 .character-card-tags-area {
 flex: 1;
+min-width: 0;
 background-color: transparent;
 padding: 0;
 box-sizing: border-box;
 border-radius: 0;
-overflow: visible;
+overflow: hidden;
 position: relative;
 display: flex;
 flex-direction: column;
+min-height: 0;
 }
         
 /* 按钮行：两个按钮并排 - 样式参考 workshop-card，各自独立包裹 */
@@ -1070,6 +1182,9 @@ flex-direction: column;
             
 .character-card-top-row {
 flex-direction: column;
+height: auto;
+max-height: none;
+overflow: visible;
 }
             
 .character-card-bottom-row {
@@ -1078,6 +1193,23 @@ flex-direction: column;
             
 .character-card-info-section {
 border-bottom: 1.5px solid #9dd7ff;
+height: auto;
+}
+
+.character-card-live2d-section {
+height: auto;
+}
+
+.card-info-body {
+overflow: visible;
+}
+
+#card-info-preview {
+overflow: visible;
+}
+
+#live2d-preview-container {
+min-height: 400px;
 }
             
 .character-card-description-section {
@@ -1087,6 +1219,31 @@ border-bottom: 1px solid #eaeaea;
             
 .character-card-buttons-row {
 flex-direction: column;
+}
+}
+
+@media (max-height: 820px), (max-height: 900px) and (orientation: landscape) {
+.character-card-layout {
+--character-card-top-panel-height: min(460px, 58vh);
+--character-card-description-height: min(220px, 24vh);
+}
+
+.character-card-top-row {
+height: var(--character-card-top-panel-height);
+max-height: var(--character-card-top-panel-height);
+overflow: hidden;
+}
+
+.character-card-info-section,
+.character-card-live2d-section {
+height: 100%;
+max-height: 100%;
+}
+
+.description-content,
+.control-group.tags-content {
+height: var(--character-card-description-height);
+max-height: var(--character-card-description-height);
 }
 }
 
@@ -3235,6 +3392,36 @@ margin-top: 10px;
     background: transparent;
     box-shadow: none;
     font-size: 1.05rem;
+    flex: 1;
+    width: 100%;
+    height: 100%;
+    max-height: 100%;
+    min-height: 0;
+    box-sizing: border-box;
+    resize: none;
+    overflow-y: auto;
+    overflow-x: hidden;
+    -ms-overflow-style: auto;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(64, 197, 241, 0.55) rgba(179, 229, 252, 0.3);
+}
+
+#character-cards-content #character-card-description::-webkit-scrollbar {
+    width: 8px;
+}
+
+#character-cards-content #character-card-description::-webkit-scrollbar-track {
+    background: rgba(179, 229, 252, 0.3);
+    border-radius: 999px;
+}
+
+#character-cards-content #character-card-description::-webkit-scrollbar-thumb {
+    background: rgba(64, 197, 241, 0.55);
+    border-radius: 999px;
+}
+
+#character-cards-content #character-card-description::-webkit-scrollbar-thumb:hover {
+    background: rgba(64, 197, 241, 0.75);
 }
 
 #character-cards-content #character-card-description:focus {
@@ -3255,10 +3442,44 @@ margin-top: 10px;
 
 /* 角色卡标签展示区外框（使用更高特异性选择器替代 !important） */
 #character-cards-content #character-card-tags-wrapper {
+    display: flex;
+    align-items: center;
     border: 2px solid #b3e5fc;
-    border-radius: 16px;
+    border-radius: 50px;
     background: #fff;
-    margin-bottom: 15px;
+    flex: 1;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    min-height: 44px;
+    height: 44px;
+    max-height: 44px;
+    padding: 8px 15px;
+    box-sizing: border-box;
+    align-content: center;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+}
+
+#character-cards-content #character-card-tags-wrapper::-webkit-scrollbar {
+    width: 0;
+    height: 0;
+    display: none;
+}
+
+#character-cards-content #character-card-tags-container {
+    width: max-content;
+    min-width: max-content;
+    min-height: 100%;
+    align-items: center;
+    align-content: center;
+}
+
+#character-cards-content #character-card-tags-container .tag {
+    flex: 0 0 auto;
+    white-space: nowrap;
 }
 
 /* ===== 角色卡标签页按钮样式（参照上一页按钮） ===== */

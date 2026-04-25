@@ -137,6 +137,8 @@
         "live2dPreviewLoadFailed": "Falha no carregamento da visualização do modelo Live2D: {{error}}",
         "searchAriaLabel": "Pesquisar assinaturas",
         "sortAriaLabel": "Opções de classificação",
+        "scrollTagsLeftAriaLabel": "Rolar etiquetas para a esquerda",
+        "scrollTagsRightAriaLabel": "Rolar etiquetas para a direita",
         "vrmModuleLoadFailed": "Falha ao carregar o módulo VRM",
         "vrmPreviewLoaded": "Visualização do modelo VRM carregada",
         "vrmPreviewFailed": "Falha ao carregar a visualização do modelo VRM",

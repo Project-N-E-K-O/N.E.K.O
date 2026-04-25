@@ -554,6 +554,9 @@ export default function App({
 }: ChatWindowProps) {
   const [draft, setDraft] = useState('');
   const [toolMenuOpen, setToolMenuOpen] = useState(false);
+  // 当 composer-bottom-bar 宽度 < 阈值时，把右侧 3 个工具按钮折叠成 ··· 菜单
+  const [isCompactComposer, setIsCompactComposer] = useState(false);
+  const [overflowMenuOpen, setOverflowMenuOpen] = useState(false);
   const [activeCursorToolId, setActiveCursorToolId] = useState<string | null>(null);
   const [avatarRangeCursorVariants, setAvatarRangeCursorVariants] = useState<ToolCursorVariantState>(() => createDefaultToolCursorVariantState());
   const [outsideRangeCursorVariants, setOutsideRangeCursorVariants] = useState<ToolCursorVariantState>(() => createDefaultToolCursorVariantState());
@@ -563,6 +566,8 @@ export default function App({
   const [hammerSwingPhase, setHammerSwingPhase] = useState<'idle' | 'windup' | 'swing' | 'impact' | 'recover'>('idle');
   const [isInnerHammerEasterEggActive, setIsInnerHammerEasterEggActive] = useState(false);
   const toolMenuRef = useRef<HTMLDivElement | null>(null);
+  const composerBottomBarRef = useRef<HTMLDivElement | null>(null);
+  const overflowMenuRef = useRef<HTMLDivElement | null>(null);
   const avatarCursorOverlayRef = useRef<HTMLDivElement | null>(null);
   const hammerCursorOverlayRef = useRef<HTMLDivElement | null>(null);
   const hammerSwingTimeoutIdsRef = useRef<number[]>([]);
@@ -608,6 +613,7 @@ export default function App({
   const resolvedTranslateAriaLabel = translateButtonAriaLabel || translateButtonLabel;
   const emojiButtonAriaLabel = i18n('chat.emojiButtonAriaLabel', 'Emoji');
   const toolIconsAriaLabel = i18n('chat.toolIconsAriaLabel', 'Tool icons');
+  const overflowMenuAriaLabel = i18n('chat.composerOverflowMenu', '更多工具');
   const effectiveCursorVariant = resolveEffectiveCursorVariant(
     activeCursorToolId,
     avatarRangeCursorVariants,
@@ -884,6 +890,47 @@ export default function App({
       document.removeEventListener('keydown', closeMenuOnEscape);
     };
   }, [toolMenuOpen]);
+
+  // 监听 composer-bottom-bar 宽度，决定是否进入 compact 折叠模式
+  useEffect(() => {
+    const target = composerBottomBarRef.current;
+    if (!target || typeof ResizeObserver === 'undefined') return;
+    // 阈值：低于此宽度时把右侧 3 个工具按钮折叠成 ··· 菜单。
+    // 5 按钮 + 4 分隔 + 发送按钮 + 间距，约 260px 起就开始拥挤。
+    const COMPACT_THRESHOLD = 360;
+    const observer = new ResizeObserver(entries => {
+      for (const entry of entries) {
+        setIsCompactComposer(entry.contentRect.width < COMPACT_THRESHOLD);
+      }
+    });
+    observer.observe(target);
+    return () => observer.disconnect();
+  }, []);
+
+  // 退出折叠模式时关闭 ··· 菜单
+  useEffect(() => {
+    if (!isCompactComposer) setOverflowMenuOpen(false);
+  }, [isCompactComposer]);
+
+  // ··· 菜单的外部点击 / Esc 关闭
+  useEffect(() => {
+    if (!overflowMenuOpen) return;
+    const closeOnOutsideClick = (event: MouseEvent) => {
+      const node = overflowMenuRef.current;
+      if (!node) return;
+      if (node.contains(event.target as Node)) return;
+      setOverflowMenuOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setOverflowMenuOpen(false);
+    };
+    document.addEventListener('mousedown', closeOnOutsideClick);
+    document.addEventListener('keydown', closeOnEscape);
+    return () => {
+      document.removeEventListener('mousedown', closeOnOutsideClick);
+      document.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [overflowMenuOpen]);
 
   useEffect(() => {
     if (!activeCursorToolId) return;
@@ -1236,6 +1283,110 @@ export default function App({
     }
   }
 
+  // 右侧 3 个工具按钮：在 compact 与 normal 两种布局中复用同一份 JSX，
+  // 既避免重复，也保证 ref/事件绑定在两种模式下行为一致。
+  const translateButtonNode = (
+    <button
+      className={`composer-tool-btn composer-translate-btn${translateEnabled ? ' is-active' : ''}`}
+      type="button"
+      aria-label={resolvedTranslateAriaLabel}
+      aria-pressed={translateEnabled}
+      title={translateButtonLabel}
+      onClick={() => onTranslateToggle?.()}
+    >
+      <img src="/static/icons/translate_icon.png" alt="" aria-hidden="true" />
+    </button>
+  );
+
+  const jukeboxButtonNode = (
+    <button
+      className="composer-tool-btn"
+      type="button"
+      aria-label={jukeboxButtonAriaLabel}
+      title={jukeboxButtonLabel}
+      onClick={() => onJukeboxClick?.()}
+    >
+      <img src="/static/icons/jukebox_icon.png" alt="" aria-hidden="true" />
+    </button>
+  );
+
+  const emojiToolMenuNode = (
+    <div className="composer-tool-menu" ref={toolMenuRef}>
+      <button
+        className={`composer-tool-btn composer-emoji-btn${toolMenuOpen ? ' is-active' : ''}`}
+        type="button"
+        aria-label={selectedEmojiButtonAriaLabel}
+        title={selectedEmojiButtonAriaLabel}
+        aria-controls={toolMenuOpen ? 'composer-tool-popover' : undefined}
+        aria-expanded={toolMenuOpen}
+        onClick={() => setToolMenuOpen(open => !open)}
+      >
+        <img
+          src={activeToolMenuVisual?.imagePath || '/static/icons/emoji_icon.png'}
+          style={activeToolItem ? {
+            transform: `translate(${activeToolMenuVisual?.offsetX ?? 0}px, ${activeToolMenuVisual?.offsetY ?? 0}px) scale(${activeToolItem.menuIconScale ?? 1})`,
+          } : undefined}
+          alt=""
+          aria-hidden="true"
+        />
+      </button>
+      {toolMenuOpen ? (
+        <div
+          id="composer-tool-popover"
+          className="composer-icon-popover"
+          role="group"
+          aria-label={toolIconsAriaLabel}
+        >
+          {toolIconItems.map(item => {
+            const itemLabel = getToolItemLabel(item);
+            const menuVariant = activeCursorToolId === item.id
+              ? effectiveCursorVariant
+              : 'primary';
+            const menuVisual = resolveMenuIconVisual(item, menuVariant);
+            return (
+            <button
+              key={item.id}
+              className={`composer-icon-button${activeCursorToolId === item.id ? ' is-active' : ''}`}
+              type="button"
+              aria-pressed={activeCursorToolId === item.id}
+              aria-label={itemLabel}
+              title={itemLabel}
+              onClick={(event) => {
+                latestPointerPositionRef.current = {
+                  x: event.clientX,
+                  y: event.clientY,
+                };
+                latestPointerTargetRef.current = event.currentTarget;
+                setIsCursorOverCompactCursorZone(true);
+                setIsCursorOverAvatarRange(isPointerWithinAvatarRange(event.clientX, event.clientY, avatarToolCacheState));
+                if (activeCursorToolId === item.id) {
+                  setActiveCursorToolId(null);
+                  setToolMenuOpen(false);
+                  return;
+                }
+                setAvatarRangeCursorVariants(prev => ({ ...prev, [item.id]: 'primary' }));
+                setOutsideRangeCursorVariants(prev => ({ ...prev, [item.id]: 'primary' }));
+                setActiveCursorToolId(item.id);
+                setToolMenuOpen(false);
+              }}
+            >
+              <img
+                className="composer-icon-button-image"
+                src={menuVisual.imagePath}
+                style={{
+                  transform: `translate(${menuVisual.offsetX}px, ${menuVisual.offsetY}px) scale(${item.menuIconScale ?? 1})`,
+                }}
+                alt=""
+                aria-hidden="true"
+              />
+            </button>
+            );
+          })}
+        </div>
+      ) : null}
+    </div>
+  );
+
   return (
     <main className="app-shell">
       {floatingFistDrops.map(drop => (
@@ -1402,7 +1553,7 @@ export default function App({
                   }
                 }}
               />
-              <div className="composer-bottom-bar">
+              <div className="composer-bottom-bar" ref={composerBottomBarRef}>
                 <div className="composer-bottom-tools" aria-label={composerToolsAriaLabel}>
                   <button
                     className="composer-tool-btn"
@@ -1423,102 +1574,55 @@ export default function App({
                   >
                     <img src="/static/icons/screenshot_new_icon.png" alt="" aria-hidden="true" />
                   </button>
-                  <span className="composer-tool-divider" aria-hidden="true">|</span>
-                  <button
-                    className={`composer-tool-btn composer-translate-btn${translateEnabled ? ' is-active' : ''}`}
-                    type="button"
-                    aria-label={resolvedTranslateAriaLabel}
-                    aria-pressed={translateEnabled}
-                    title={translateButtonLabel}
-                    onClick={() => onTranslateToggle?.()}
-                  >
-                    <img src="/static/icons/translate_icon.png" alt="" aria-hidden="true" />
-                  </button>
-                  <span className="composer-tool-divider" aria-hidden="true">|</span>
-                  <button
-                    className="composer-tool-btn"
-                    type="button"
-                    aria-label={jukeboxButtonAriaLabel}
-                    title={jukeboxButtonLabel}
-                    onClick={() => onJukeboxClick?.()}
-                  >
-                    <img src="/static/icons/jukebox_icon.png" alt="" aria-hidden="true" />
-                  </button>
-                  <span className="composer-tool-divider" aria-hidden="true">|</span>
-                  <div className="composer-tool-menu" ref={toolMenuRef}>
-                    <button
-                      className={`composer-tool-btn composer-emoji-btn${toolMenuOpen ? ' is-active' : ''}`}
-                      type="button"
-                      aria-label={selectedEmojiButtonAriaLabel}
-                      title={selectedEmojiButtonAriaLabel}
-                      aria-controls={toolMenuOpen ? 'composer-tool-popover' : undefined}
-                      aria-expanded={toolMenuOpen}
-                      onClick={() => setToolMenuOpen(open => !open)}
-                    >
-                      <img
-                        src={activeToolMenuVisual?.imagePath || '/static/icons/emoji_icon.png'}
-                        style={activeToolItem ? {
-                          transform: `translate(${activeToolMenuVisual?.offsetX ?? 0}px, ${activeToolMenuVisual?.offsetY ?? 0}px) scale(${activeToolItem.menuIconScale ?? 1})`,
-                        } : undefined}
-                        alt=""
-                        aria-hidden="true"
-                      />
-                    </button>
-                    {toolMenuOpen ? (
-                      <div
-                        id="composer-tool-popover"
-                        className="composer-icon-popover"
-                        role="group"
-                        aria-label={toolIconsAriaLabel}
-                      >
-                        {toolIconItems.map(item => {
-                          const itemLabel = getToolItemLabel(item);
-                          const menuVariant = activeCursorToolId === item.id
-                            ? effectiveCursorVariant
-                            : 'primary';
-                          const menuVisual = resolveMenuIconVisual(item, menuVariant);
-                          return (
-                          <button
-                            key={item.id}
-                            className={`composer-icon-button${activeCursorToolId === item.id ? ' is-active' : ''}`}
-                            type="button"
-                            aria-pressed={activeCursorToolId === item.id}
-                            aria-label={itemLabel}
-                            title={itemLabel}
-                            onClick={(event) => {
-                              latestPointerPositionRef.current = {
-                                x: event.clientX,
-                                y: event.clientY,
-                              };
-                              latestPointerTargetRef.current = event.currentTarget;
-                              setIsCursorOverCompactCursorZone(true);
-                              setIsCursorOverAvatarRange(isPointerWithinAvatarRange(event.clientX, event.clientY, avatarToolCacheState));
-                              if (activeCursorToolId === item.id) {
-                                setActiveCursorToolId(null);
-                                setToolMenuOpen(false);
-                                return;
-                              }
-                              setAvatarRangeCursorVariants(prev => ({ ...prev, [item.id]: 'primary' }));
-                              setOutsideRangeCursorVariants(prev => ({ ...prev, [item.id]: 'primary' }));
-                              setActiveCursorToolId(item.id);
-                              setToolMenuOpen(false);
-                            }}
+                  {!isCompactComposer ? (
+                    <div className="composer-tools-right" key="composer-tools-expanded">
+                      <span className="composer-tool-divider" aria-hidden="true">|</span>
+                      {translateButtonNode}
+                      <span className="composer-tool-divider" aria-hidden="true">|</span>
+                      {jukeboxButtonNode}
+                      <span className="composer-tool-divider" aria-hidden="true">|</span>
+                      {emojiToolMenuNode}
+                    </div>
+                  ) : (
+                    <>
+                      <span className="composer-tool-divider" aria-hidden="true">|</span>
+                      <div className="composer-overflow-menu" key="composer-tools-collapsed" ref={overflowMenuRef}>
+                        <button
+                          className={`composer-tool-btn composer-overflow-btn${overflowMenuOpen ? ' is-active' : ''}`}
+                          type="button"
+                          aria-label={overflowMenuAriaLabel}
+                          title={overflowMenuAriaLabel}
+                          aria-haspopup="true"
+                          aria-expanded={overflowMenuOpen}
+                          onClick={() => setOverflowMenuOpen(open => !open)}
+                        >
+                          <svg
+                            width="20"
+                            height="20"
+                            viewBox="0 0 24 24"
+                            fill="currentColor"
+                            aria-hidden="true"
+                            focusable="false"
                           >
-                            <img
-                              className="composer-icon-button-image"
-                              src={menuVisual.imagePath}
-                              style={{
-                                transform: `translate(${menuVisual.offsetX}px, ${menuVisual.offsetY}px) scale(${item.menuIconScale ?? 1})`,
-                              }}
-                              alt=""
-                              aria-hidden="true"
-                            />
-                          </button>
-                          );
-                        })}
+                            <circle cx="6" cy="12" r="2" />
+                            <circle cx="12" cy="12" r="2" />
+                            <circle cx="18" cy="12" r="2" />
+                          </svg>
+                        </button>
+                        {overflowMenuOpen ? (
+                          <div
+                            className="composer-overflow-popover"
+                            role="group"
+                            aria-label={overflowMenuAriaLabel}
+                          >
+                            {translateButtonNode}
+                            {jukeboxButtonNode}
+                            {emojiToolMenuNode}
+                          </div>
+                        ) : null}
                       </div>
-                    ) : null}
-                  </div>
+                    </>
+                  )}
                 </div>
                 <button className="send-button-circle" type="submit" aria-label={sendButtonLabel} disabled={!canSubmit}>
                   <img src="/static/icons/send_new_icon.png" alt="" aria-hidden="true" />

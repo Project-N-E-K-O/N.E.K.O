@@ -137,6 +137,8 @@
         "live2dPreviewLoadFailed": "Live2D model preview loading failed: {{error}} ",
         "searchAriaLabel": "Search subscriptions",
         "sortAriaLabel": "Sort options",
+        "scrollTagsLeftAriaLabel": "Scroll tags left",
+        "scrollTagsRightAriaLabel": "Scroll tags right",
         "vrmModuleLoadFailed": "Failed to load VRM module",
         "vrmPreviewLoaded": "VRM model preview loaded",
         "vrmPreviewFailed": "Failed to load VRM model preview",

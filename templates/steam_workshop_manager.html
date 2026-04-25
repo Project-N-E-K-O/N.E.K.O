@@ -401,8 +401,12 @@
 <div class="control-group tags-content">
 <div class="control-label" data-i18n="steam.characterCardTags" style="display: none;">角色卡标签</div>
 <input type="text" id="character-card-tag-input" class="control-input" placeholder="输入标签，按空格添加" data-i18n-placeholder="steam.tagsPlaceholderSpace">
-<div id="character-card-tags-wrapper" style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 15px; border: 2px solid #b3e5fc; border-radius: 50px; background-color: #fff; min-height: 40px; box-sizing: border-box; margin-top: 5px;">
+<div class="character-card-tags-scroll-shell">
+<button type="button" id="character-card-tags-scroll-left" class="tag-scroll-button is-hidden" aria-label="向左滚动标签" data-i18n-aria="steam.scrollTagsLeftAriaLabel" onclick="scrollCharacterCardTags(-1)">‹</button>
+<div id="character-card-tags-wrapper">
 <div class="tags-container" id="character-card-tags-container"></div>
+</div>
+<button type="button" id="character-card-tags-scroll-right" class="tag-scroll-button is-hidden" aria-label="向右滚动标签" data-i18n-aria="steam.scrollTagsRightAriaLabel" onclick="scrollCharacterCardTags(1)">›</button>
 </div>
 </div>
 </div>
