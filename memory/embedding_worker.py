@@ -181,6 +181,8 @@ class EmbeddingWarmupWorker:
             try:
                 await asyncio.wait_for(self._stop_event.wait(), timeout=interval)
             except asyncio.TimeoutError:
+                # Expected: interval elapsed without stop_event firing —
+                # fall through to the next sweep iteration.
                 pass
 
     async def _wait_for_warmup_trigger(self) -> bool:
