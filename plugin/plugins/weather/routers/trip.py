@@ -118,6 +118,19 @@ class TripRouter(PluginRouter):
             summary_parts.append(mode_advice)
         summary_parts.extend(weather_tips)
 
+        # 推送出行规划卡片到聊天框
+        card_lines = [f"📍 {origin_loc['city']} → {dest_loc['city']}  ({dist_km:.1f}km)"]
+        for r in route_summaries[:3]:
+            card_lines.append(f"{_mode_label(r['mode'])}  {r['distance']}  ⏱{r['duration']}")
+        if weather_tips:
+            card_lines.append(" ".join(weather_tips))
+        if mode_advice:
+            card_lines.append(mode_advice)
+        plugin.push_chat_content([
+            {"type": "text", "text": f"🗺️ {origin_loc['city']} → {dest_loc['city']}"},
+            {"type": "text", "text": "\n".join(card_lines)},
+        ])
+
         return Ok({
             "origin": origin_loc["city"],
             "destination": dest_loc["city"],

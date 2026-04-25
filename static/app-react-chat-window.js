@@ -1134,7 +1134,7 @@
         if (msgBlocks.length === 0) return null;
 
         // Prepend plugin badge as status block
-        msgBlocks.unshift({ type: 'status', tone: 'plugin', text: '🔌 ' + pluginId });
+        msgBlocks.unshift({ type: 'status', tone: 'info', text: '🔌 ' + pluginId });
 
         return appendMessage({
             id: 'plugin-' + Date.now() + '-' + Math.random().toString(36).substr(2, 6),

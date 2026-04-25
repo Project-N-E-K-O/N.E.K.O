@@ -160,7 +160,22 @@ class ProactiveBridge:
                             "timestamp": payload.get("time", "")
                         }
 
-                    # -------- 3. Music Direct Play --------
+                    # -------- 3. Plugin Chat Content --------
+                    elif msg_type == "chat_content":
+                        blocks = metadata.get("chat_content_blocks")
+                        if not isinstance(blocks, list) or not blocks:
+                            logger.debug("proactive bridge: chat_content skipped (no blocks) plugin={}", plugin_id)
+                            continue
+                        proactive_event = {
+                            "event_type": "plugin_chat_content",
+                            "lanlan_name": metadata.get("target_lanlan") or None,
+                            "plugin_id": plugin_id,
+                            "blocks": blocks,
+                            "text": payload.get("content", ""),
+                            "timestamp": payload.get("time", ""),
+                        }
+
+                    # -------- 4. Music Direct Play --------
                     elif msg_type == "music_play_url":
                         music_url = metadata.get("url")
                         if not isinstance(music_url, str) or not music_url.strip():

@@ -421,18 +421,6 @@ class PluginCommunicationResourceManager:
         if not self._message_target_queue:
             return
 
-        # ── chat_content: direct path to frontend WebSocket ──
-        # Skip message_plane entirely — write straight to sync_message_queue
-        # so the frontend receives it immediately without proactive_bridge relay.
-        if isinstance(msg, dict) and msg.get("message_type") == "chat_content":
-            metadata = msg.get("metadata")
-            if isinstance(metadata, dict) and isinstance(metadata.get("chat_content_blocks"), list):
-                try:
-                    self._deliver_chat_content_to_frontend(msg, metadata)
-                except Exception:
-                    self.logger.debug("chat_content direct delivery failed for plugin {}", self.plugin_id, exc_info=True)
-                return  # Do NOT fall through to message_plane
-
         if isinstance(msg, dict) and not msg.get("_bus_stored"):
             try:
                 from plugin.core.state import state
@@ -445,6 +433,26 @@ class PluginCommunicationResourceManager:
                 state.append_message_record(msg)
             except Exception:
                 self.logger.debug("Failed to store message for plugin {}", self.plugin_id, exc_info=True)
+
+        # ── chat_content: relay to message_plane via plane_bridge ──
+        # When messages arrive through the fallback channel (non-ZMQ path),
+        # they bypass message_plane entirely. Explicitly forward chat_content
+        # to plane_bridge so proactive_bridge can pick them up and deliver
+        # to main_server → WebSocket → frontend.
+        if isinstance(msg, dict) and msg.get("message_type") == "chat_content":
+            try:
+                from plugin.server.messaging.plane_bridge import publish_record
+                publish_record(store="messages", record=msg)
+                self.logger.debug(
+                    "[CHAT_CONTENT] relayed to message_plane via plane_bridge: plugin={}",
+                    self.plugin_id,
+                )
+            except Exception:
+                self.logger.debug(
+                    "[CHAT_CONTENT] plane_bridge relay failed for plugin {}",
+                    self.plugin_id,
+                    exc_info=True,
+                )
 
         try:
             await asyncio.wait_for(self._message_target_queue.put(msg), timeout=0.05)
@@ -488,53 +496,6 @@ class PluginCommunicationResourceManager:
             )
 
     # ── plugin-to-plugin comm routing ────────────────────────────
-
-    def _deliver_chat_content_to_frontend(self, msg: Dict[str, Any], metadata: Dict[str, Any]) -> None:
-        """Push chat_content directly to the session's sync_message_queue (WebSocket).
-
-        This bypasses message_plane and proactive_bridge entirely.
-        The frontend receives {type: "plugin_chat_content", ...} via WebSocket.
-        """
-        try:
-            from main_routers.shared_state import get_sync_message_queue
-            queues = get_sync_message_queue()
-        except Exception:
-            self.logger.debug("chat_content: sync_message_queue not available")
-            return
-
-        blocks = metadata.get("chat_content_blocks", [])
-        plugin_id = metadata.get("plugin_id", self.plugin_id)
-        content = msg.get("content", "")
-        target = metadata.get("target_lanlan")
-
-        ws_payload = {
-            "type": "json",
-            "data": {
-                "type": "plugin_chat_content",
-                "plugin_id": plugin_id,
-                "blocks": blocks,
-                "text": content,
-            },
-        }
-
-        delivered = False
-        if target and target in queues:
-            try:
-                queues[target].put(ws_payload)
-                delivered = True
-            except Exception:
-                pass
-        else:
-            # Broadcast to all sessions
-            for name, q in queues.items():
-                try:
-                    q.put(ws_payload)
-                    delivered = True
-                except Exception:
-                    pass
-
-        if delivered:
-            self.logger.info("[CHAT_CONTENT] delivered to frontend: plugin={}", plugin_id)
 
     async def _route_comm(self, msg: dict) -> None:
         """Forward a plugin-to-plugin request to the central comm queue."""

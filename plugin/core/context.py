@@ -926,7 +926,7 @@ class PluginContext:
 
         Args:
             source: 插件自己标明的来源
-            message_type: 消息类型，可选值: "text", "url", "binary", "binary_url"
+            message_type: 消息类型，可选值: "text", "url", "binary", "binary_url", "chat_content"
             description: 插件自己标明的描述
             priority: 插件自己设定的优先级，数字越大优先级越高
             content: 文本内容或URL（当message_type为text或url时）
@@ -939,6 +939,7 @@ class PluginContext:
         if target_lanlan:
             metadata = dict(metadata or {})
             metadata["target_lanlan"] = target_lanlan
+
         # Prefer writing messages directly to message_plane ingest to isolate high-frequency writes
         # from the control plane and rely on ZMQ backpressure.
         if zmq is not None:

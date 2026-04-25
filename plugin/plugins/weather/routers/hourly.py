@@ -111,6 +111,25 @@ class HourlyForecastRouter(PluginRouter):
 
         summary = " | ".join(parts)
 
+        # 推送逐小时预报卡片到聊天框
+        hour_lines = []
+        for h in result_hours[:8]:
+            t_str = h["time"].split("T")[1][:5] if "T" in h["time"] else h["time"]
+            temp_str = f"{h['temp']}°C" if h["temp"] is not None else "—"
+            hour_lines.append(f"{t_str}  {h['weather']}  {temp_str}  💧{h.get('precip_prob', 0)}%")
+
+        blocks = [
+            {"type": "text", "text": f"📊 {loc['city']} — {i18n.t('entry.hourly_forecast', fallback='逐小时预报')}"},
+        ]
+        if temps:
+            blocks.append({"type": "text", "text": f"🌡️ {min(temps)}~{max(temps)}°C"})
+        if hour_lines:
+            blocks.append({"type": "text", "text": "\n".join(hour_lines)})
+        if len(result_hours) > 8:
+            blocks.append({"type": "text", "text": f"… +{len(result_hours) - 8} {i18n.t('summary.more_hours', fallback='小时')}"})
+
+        plugin.push_chat_content(blocks)
+
         return Ok({
             "city": loc["city"],
             "summary": summary,

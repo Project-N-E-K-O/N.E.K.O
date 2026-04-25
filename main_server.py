@@ -499,6 +499,29 @@ async def _handle_agent_event(event: dict):
             if targets:
                 logger.info("[EventBus] music_play_url broadcasted to %d sessions", len(targets))
             return
+
+        elif event_type == "plugin_chat_content":
+            # Plugin chat content: send directly to frontend WebSocket
+            targets = [mgr] if mgr else [m for _, m in _iter_session_managers()]
+            payload = {
+                "type": "plugin_chat_content",
+                "plugin_id": event.get("plugin_id", "plugin"),
+                "blocks": event.get("blocks", []),
+                "text": event.get("text", ""),
+            }
+
+            async def _send_chat_content(target_mgr):
+                if target_mgr and target_mgr.websocket and hasattr(target_mgr.websocket, "send_json"):
+                    try:
+                        await target_mgr.websocket.send_json(payload)
+                    except Exception as e:
+                        logger.debug("[EventBus] plugin_chat_content send failed: %s", e)
+
+            await asyncio.gather(*(_send_chat_content(t) for t in targets), return_exceptions=True)
+            if targets:
+                logger.info("[EventBus] plugin_chat_content delivered to %d sessions: plugin=%s", len(targets), event.get("plugin_id"))
+            return
+
         if not mgr and event_type in ("proactive_message", "task_result"):
             fallback_name, fallback_mgr = _select_fallback_session_manager()
             if fallback_mgr is not None:

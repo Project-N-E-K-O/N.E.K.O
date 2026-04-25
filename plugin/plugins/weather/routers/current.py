@@ -88,12 +88,13 @@ class CurrentWeatherRouter(PluginRouter):
         for f in forecast[:3]:
             forecast_lines.append(f"{f['date']}  {f['weather']}  {f.get('temp_min', '')}~{f.get('temp_max', '')}°C")
 
-        plugin.push_chat_content([
+        blocks = [
             {"type": "text", "text": f"🌤️ {loc['city']} — {current['weather']} {current['temperature']}°C"},
             {"type": "text", "text": f"体感 {current['feels_like']}°C | 💧 {current['humidity']}% | 💨 {current['wind_speed']}km/h"},
-            {"type": "text", "text": "\n".join(forecast_lines)} if forecast_lines else {"type": "text", "text": ""},
-        ])
-        plugin.logger.info("push_chat_content called for {}", loc['city'])
+        ]
+        if forecast_lines:
+            blocks.append({"type": "text", "text": "\n".join(forecast_lines)})
+        plugin.push_chat_content(blocks)
 
         return Ok({
             "city": loc["city"],

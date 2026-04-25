@@ -115,6 +115,24 @@ class TravelAdviceRouter(PluginRouter):
         summary = i18n.t("summary.travel_prefix", city=loc["city"])
         summary += " ".join(advice["tips"][:3])
 
+        # 推送出行建议卡片到聊天框
+        card_lines = []
+        if advice["tips"]:
+            card_lines.append(" · ".join(advice["tips"][:3]))
+        card_lines.append(f"👔 {advice['clothing']}")
+        extras = []
+        if advice["umbrella"]:
+            extras.append("☂️ " + i18n.t("advice.bring_umbrella", fallback="带伞"))
+        if advice["sunscreen"]:
+            extras.append("🧴 " + i18n.t("advice.bring_sunscreen", fallback="防晒"))
+        if extras:
+            card_lines.append(" | ".join(extras))
+
+        plugin.push_chat_content([
+            {"type": "text", "text": f"🧳 {loc['city']} — {i18n.t('entry.travel_advice', fallback='出行建议')}"},
+            {"type": "text", "text": "\n".join(card_lines)},
+        ])
+
         return Ok({
             "city": loc["city"],
             "summary": summary,
