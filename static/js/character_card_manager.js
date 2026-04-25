@@ -306,40 +306,6 @@ function closeUploadModalOnOutsideClick(event) {
     }
 }
 
-// 本地物品区域切换功能
-function toggleLocalItemsSection() {
-    const localItemsSection = document.getElementById('local-items');
-    const toggleButton = document.getElementById('local-items-toggle-button');
-
-    // 确保本地物品内容标签页可见
-    const localItemsContent = document.getElementById('local-items-content');
-    if (localItemsContent && localItemsContent.style.display === 'none') {
-        switchTab('local-items-content');
-        return;
-    }
-
-    // 切换本地物品区域的显示/隐藏
-    if (localItemsSection && localItemsSection.style.display === 'none') {
-        // 先扫描本地物品
-        scanLocalItems();
-        localItemsSection.style.display = 'block';
-        if (toggleButton) {
-            toggleButton.textContent = window.t ? window.t('steam.localItemsHide') : '隐藏本地物品';
-        }
-        // 更新翻译，确保新显示的元素都能正确翻译
-        if (window.updatePageTexts) {
-            window.updatePageTexts();
-        }
-        // 平滑滚动到本地物品区域
-        localItemsSection.scrollIntoView({ behavior: 'smooth' });
-    } else if (localItemsSection) {
-        localItemsSection.style.display = 'none';
-        if (toggleButton) {
-            toggleButton.textContent = window.t ? window.t('steam.localItemsManage') : '管理本地物品';
-        }
-    }
-}
-
 // 标签页切换功能
 // 从localStorage加载同步数据并填充到创意工坊上传表单
 function applyWorkshopSyncData() {
@@ -474,12 +440,7 @@ function switchTab(tabId, event) {
         }
     }
 
-    // 本地物品：应用同步数据
-    if (tabId === 'local-items-content') {
-        applyWorkshopSyncData();
-    }
-
-    // 订阅内容：检查 Steam 状态
+// 订阅内容：检查 Steam 状态
     if (tabId === 'subscriptions-content') {
         checkSteamStatus();
     }
@@ -528,52 +489,6 @@ async function selectFolderForInput(inputId) {
 }
 
 
-// 扫描本地物品 - 现在仅使用默认路径
-function scanLocalItems() {
-
-    // 显示扫描开始提示
-    const startMessage = showMessage(window.t ? window.t('steam.scanningWorkshop') : '正在扫描Workshop物品...', 'info');
-
-    // 调用API扫描本地文件夹中的物品
-    fetch('/api/steam/workshop/local-items/scan', {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({})
-    })
-        .then(response => {
-            if (!response.ok) {
-                throw new Error(`HTTP错误，状态码: ${response.status}`);
-            }
-            return response.json();
-        })
-        .then(data => {
-
-            if (data.success) {
-                // 获取本地物品列表
-                const localItems = data.local_items || [];
-                const publishedItems = data.published_items || [];
-
-                // 更新UI显示本地物品
-                displayLocalItems(localItems, publishedItems);
-
-                // 直接显示扫描完成提示，使用简单清晰的消息
-                const successMessage = window.t ? window.t('steam.scanComplete', { count: localItems.length }) : `扫描完成，共找到 ${localItems.length} 个物品`;
-
-                showToast(successMessage);
-
-            } else {
-                const errorMessage = window.t ? window.t('steam.scanFailed', { error: data.error || (window.t ? window.t('common.unknownError') : '未知错误') }) : `扫描失败: ${data.error || '未知错误'}`;
-                showMessage(errorMessage, 'error', 3000);
-            }
-        })
-        .catch(error => {
-            console.error('扫描本地物品失败:', error);
-            showMessage(window.t ? window.t('steam.workshopScanError', { error: error.message }) : `扫描时出错: ${error.message}`, 'error', 3000);
-        });
-}
-
 // 检查文件是否存在
 async function doesFileExist(filePath) {
     try {
@@ -611,186 +526,6 @@ async function findPreviewImage(folderPath) {
     }
 
     return null;
-}
-
-// 创意工坊物品对比
-async function compareLocalWithWorkshop(localItem) {
-    try {
-        // 获取已发布的创意工坊物品
-        const workshopItems = await getWorkshopItems();
-
-        // 比较名称
-        for (const workshopItem of workshopItems) {
-            if (areNamesSimilar(localItem.name, workshopItem.title)) {
-                return {
-                    exists: true,
-                    item: workshopItem,
-                    reason: '名称相似'
-                };
-            }
-        }
-    } catch (error) {
-        console.error('创意工坊对比失败:', error);
-    }
-
-    return { exists: false };
-}
-
-// 检查名称是否相似
-function areNamesSimilar(name1, name2) {
-    // 简单的相似度检查，可以根据需要改进
-    name1 = name1.toLowerCase().trim();
-    name2 = name2.toLowerCase().trim();
-
-    // 如果完全相同，直接返回true
-    if (name1 === name2) return true;
-
-    // 如果一个名称包含另一个名称
-    if (name1.includes(name2) || name2.includes(name1)) return true;
-
-    // 计算编辑距离（简单版本）
-    if (Math.abs(name1.length - name2.length) > 3) return false;
-
-    return false;
-}
-
-// 获取创意工坊物品列表
-async function getWorkshopItems() {
-    try {
-        const response = await fetch('/api/steam/workshop/subscribed-items');
-        const data = await response.json();
-        if (data.success) {
-            return data.items;
-        }
-    } catch (error) {
-        console.error('获取创意工坊物品失败:', error);
-    }
-    return [];
-}
-
-// 显示本地物品卡片
-function displayLocalItems(localItems, publishedItems) {
-    const itemsList = document.getElementById('local-items-list');
-
-    if (localItems.length === 0) {
-        const emptyMessage = window.t ? window.t('steam.no_local_items') : '在指定文件夹中未找到任何创意工坊物品';
-        itemsList.innerHTML = `
-            <div class="empty-state">
-                <p>${emptyMessage}</p>
-            </div>
-        `;
-        return;
-    }
-
-    // 创建物品卡片HTML
-    itemsList.innerHTML = localItems.map(item => {
-        // 检查该物品是否已发布到创意工坊
-        const isPublished = publishedItems.some(published =>
-            published.localId === item.id ||
-            (published.title && item.name &&
-                published.title.toLowerCase() === item.name.toLowerCase())
-        );
-
-        // 确定状态类和文本
-        let statusClass = 'status-error';
-        let statusText = window.t ? window.t('steam.status.unpublished') : '未发布';
-
-        if (isPublished) {
-            statusClass = 'status-published';
-            statusText = window.t ? window.t('steam.status.published') : '已发布';
-        }
-
-        // 生成预览图片URL或使用默认图片
-        // 使用图片代理API访问本地图片，避免浏览器安全限制
-        // 确保Windows路径中的反斜杠正确编码
-        const previewUrl = item.previewImage ? `/api/steam/proxy-image?image_path=${encodeURIComponent(item.previewImage.replace(/\\/g, '/'))}` : '../static/icons/Steam_icon_logo.png';
-
-        // 生成卡片HTML，对所有用户输入进行转义以防止XSS攻击
-        // 添加data-item-path属性用于后续检查上传标记文件
-    }).join('');
-
-    // 生成卡片后，检查每个物品的上传标记文件状态
-    checkUploadStatusForLocalItems();
-}
-
-// 检查本地物品的上传标记文件状态
-function checkUploadStatusForLocalItems() {
-    // 获取所有物品卡片
-    const itemCards = document.querySelectorAll('.workshop-card');
-
-    itemCards.forEach(card => {
-        const itemPath = card.getAttribute('data-item-path');
-        if (itemPath) {
-            // 调用后端API检查上传标记文件
-            fetch(`/api/steam/workshop/check-upload-status?item_path=${itemPath}`)
-                .then(response => {
-                    if (!response.ok) {
-                        throw new Error(`HTTP错误，状态码: ${response.status}`);
-                    }
-                    return response.json();
-                })
-                .then(data => {
-                    if (data.success && data.is_published) {
-                        // 如果存在上传标记文件，更新状态为已发布
-                        const statusBadge = card.querySelector('.status-badge');
-                        if (statusBadge) {
-                            statusBadge.className = 'status-badge status-published';
-                            statusBadge.textContent = window.t ? window.t('steam.status.published') : '已发布';
-                        }
-
-                        // 更新上传按钮状态为已发布
-                        const actionButton = card.querySelector('.card-actions button');
-                        if (actionButton) {
-                            actionButton.className = 'button button-disabled';
-                            actionButton.disabled = true;
-                            actionButton.textContent = window.t ? window.t('steam.status.published') : '已发布';
-                        }
-                    }
-                })
-                .catch(error => {
-                    console.error('检查上传标记文件失败:', error);
-                });
-        }
-    });
-}
-
-// 准备物品上传
-function prepareItemForUpload(itemId, folderPath) {
-    // 确保路径格式一致（将Windows反斜杠转换为正斜杠以便正确编码）
-    const normalizedPath = folderPath.replace(/\\/g, '/');
-    // 调用API获取物品详情
-    fetch(`/api/steam/workshop/local-items/${itemId}?folder_path=${encodeURIComponent(normalizedPath)}`)
-        .then(response => {
-            if (!response.ok) {
-                throw new Error(`HTTP错误，状态码: ${response.status}`);
-            }
-            return response.json();
-        })
-        .then(data => {
-            if (data.success) {
-                const item = data.item;
-
-                // 填充上传表单（title 现在是 div 元素）
-                document.getElementById('item-title').textContent = item.name || '';
-                document.getElementById('content-folder').value = item.path || '';
-
-                // 如果有预览图片，填充预览图片路径
-                if (item.previewImage) {
-                    document.getElementById('preview-image').value = item.previewImage;
-                }
-
-                // 切换到上传区域
-                toggleUploadSection();
-
-                showMessage(window.t ? window.t('steam.itemDetailsLoaded') : '物品详情加载成功', 'success');
-            } else {
-                showMessage(window.t ? window.t('steam.itemDetailsFailed', { error: data.error || (window.t ? window.t('common.unknownError') : '未知错误') }) : `物品详情加载失败: ${data.error || '未知错误'}`, 'error');
-            }
-        })
-        .catch(error => {
-            console.error('准备上传失败:', error);
-            showMessage(window.t ? window.t('steam.prepareUploadError', { error: error.message }) : `准备上传出错: ${error.message}`, 'error');
-        });
 }
 
 // 添加完整版本的formatDate函数（包含日期和时间）
@@ -2522,9 +2257,6 @@ window.addEventListener('load', function () {
 
     // 页面加载时自动加载订阅内容
     loadSubscriptions();
-
-    // 页面加载时自动扫描本地物品
-    scanLocalItems();
 
     // 页面加载时自动加载角色卡
     loadCharacterCards();
@@ -6367,15 +6099,7 @@ async function performUpload(data) {
                     }
 
                     // 步骤3: 打开填写信息窗口（modal）
-                    if (_catgirlPanelOpen) {
-                        // 面板上下文中只打开上传模态框，不切换主页标签
-                        toggleUploadSection();
-                    } else {
-                        // 先确保本地物品标签页可见
-                        switchTab('local-items-content');
-                        // 然后显示上传表单区域
-                        toggleUploadSection();
-                    }
+                    toggleUploadSection();
                 } else {
                     showMessage(window.t ? window.t('steam.prepareUploadFailedMessage', { error: result.error || (window.t ? window.t('common.unknownError') : '未知错误') }) : `准备上传失败: ${result.error || '未知错误'}`, 'error');
                 }

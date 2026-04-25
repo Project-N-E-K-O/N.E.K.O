@@ -347,7 +347,6 @@
                 <!-- 标签切换按钮组 -->
                 <div class="tabs compact" id="workshop-tabs">
                      <button class="tab active" onclick="switchTab('character-cards-content', event)" data-i18n="steam.characterCards">角色卡</button>
-                     <button class="tab" onclick="switchTab('local-items-content', event)" data-i18n="steam.localItems">本地物品</button>
                      <button class="tab" onclick="switchTab('subscriptions-content', event)" data-i18n="steam.subscriptions">订阅内容</button>
                   </div>
                 
@@ -462,44 +461,6 @@
 </div>
 </div>
 </div>
-<!-- 本地内容标签页 -->
-<div id="local-items-content" class="tab-content">
-                
-<div class="section-card">
-<div class="section-header">
-<h2 data-i18n="steam.localItems">管理本地物品</h2>
-</div>
-                    
-<!-- 搜索和排序功能区域 -->
-<div class="filter-controls">
-<div class="filter-group">
-<div class="filter-label" data-i18n="steam.search">搜索：</div>
-<input type="text" id="search-local-items" class="control-input" placeholder="搜索本地物品..." data-i18n-placeholder="steam.searchLocalItems">
-</div>
-<div class="filter-group">
-<div class="filter-label" data-i18n="steam.sort.title">排序：</div>
-<select id="sort-local-items" class="control-select">
-<option value="name_asc" data-i18n="steam.sort.nameAsc">名称（升序）</option>
-<option value="name_desc" data-i18n="steam.sort.nameDesc">名称（降序）</option>
-<option value="date_asc" data-i18n="steam.sort.createDateAsc">创建日期（升序）</option>
-<option value="date_desc" data-i18n="steam.sort.createDateDesc">创建日期（降序）</option>
-</select>
-</div>
-<div class="filter-group">
-<button class="btn btn-primary" onclick="scanLocalItems()" style="min-width: 160px;">
-<span data-i18n="steam.scanLocalItems">扫描本地物品</span>
-</button>
-</div>
-</div>
-                    
-<div id="local-items-list" class="cards-container">
-<div class="empty-state">
-<p data-i18n="steam.emptyStateHint">请输入并扫描一个包含本地文件的文件夹</p>
-</div>
-</div>
-</div>
-</div>
-            
 <!-- 角色卡标签页 -->
 <div id="character-cards-content" class="tab-content active">
 
@@ -556,7 +517,6 @@
 <div class="empty-state">
 <p data-i18n="steam.loadingCharacterCards">正在加载角色卡...</p>
 </div>
-</div>
 
 <!-- 已隐藏猫娘区域 -->
 <div id="hidden-catgirl-area" class="hidden-catgirl-area" style="display:none;">
@@ -565,6 +525,7 @@
         <span id="hidden-catgirl-count" data-i18n="character.hiddenCatgirls">已隐藏猫娘</span>
     </button>
     <div id="hidden-catgirl-list" class="hidden-catgirl-list" style="display:none;"></div>
+</div>
 </div>
 </div>
 

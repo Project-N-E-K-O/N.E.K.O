@@ -1564,8 +1564,7 @@ overflow: hidden;
 .tab-contents .pagination,
 .tab-contents .control-input,
 .tab-contents .control-select,
-.tab-contents #subscriptions-result,
-.tab-contents #local-items-list {
+.tab-contents #subscriptions-result {
     background: transparent;
     border: none;
 }
@@ -3764,7 +3763,7 @@ margin-top: 10px;
 /* ===== 卡片视图 ===== */
 .chara-cards-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(180px, 220px));
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
     gap: 14px;
     justify-content: start;
 }
