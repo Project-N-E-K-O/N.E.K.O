@@ -70,8 +70,9 @@ class RecipeRouter(PluginRouter):
         description=(
             "按菜名或食材搜索菜谱，返回做法、食材清单。"
             "支持中英文菜名。搜不到时 LLM 可自行补充。"
+            "如果用户不想自己做，可用 food_recommend 推荐附近餐厅。"
         ),
-        llm_result_fields=["summary", "recipes"],
+        llm_result_fields=["summary", "recipes", "next_actions"],
         input_schema={
             "type": "object",
             "properties": {
@@ -145,13 +146,14 @@ class RecipeRouter(PluginRouter):
             "recipes": recipes_data,
             "query": q,
             "count": len(results),
+            "next_actions": [f"food_recommend cuisine={q} — 附近{q}餐厅", "search_nearby query=超市 — 附近超市买食材"],
         })
 
     @plugin_entry(
         id="random_recipe",
         name="随机菜谱",
-        description="随机推荐一道菜，适合回答「今天吃什么」「不知道做什么菜」。",
-        llm_result_fields=["summary", "recipe"],
+        description="随机推荐一道菜，适合回答「今天吃什么」「不知道做什么菜」。不想自己做可以用 food_recommend 找附近餐厅。",
+        llm_result_fields=["summary", "recipe", "next_actions"],
     )
     @quick_action(icon="🎲", priority=4)
     async def random_recipe(self, **_):
@@ -184,4 +186,5 @@ class RecipeRouter(PluginRouter):
         return Ok({
             "summary": summary,
             "recipe": recipe_data,
+            "next_actions": [f"food_recommend cuisine={meal.name} — 附近类似餐厅", "search_nearby query=超市 — 附近超市买食材"],
         })

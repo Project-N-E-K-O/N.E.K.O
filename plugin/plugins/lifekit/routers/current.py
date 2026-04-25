@@ -19,8 +19,11 @@ class CurrentWeatherRouter(PluginRouter):
     @plugin_entry(
         id="get_weather",
         name="获取天气",
-        description="查询指定城市（或自动定位）的当前天气和未来预报。",
-        llm_result_fields=["summary", "current", "forecast"],
+        description=(
+            "查询指定城市（或自动定位）的当前天气和未来预报。"
+            "可配合 travel_advice 获取出行建议，或 food_recommend 获取天气适合的美食推荐。"
+        ),
+        llm_result_fields=["summary", "current", "forecast", "next_actions"],
         input_schema={
             "type": "object",
             "properties": {
@@ -102,4 +105,5 @@ class CurrentWeatherRouter(PluginRouter):
             "current": current,
             "forecast": forecast,
             "vpn_detected": bool(loc.get("_vpn_detected")),
+            "next_actions": ["travel_advice — 出行建议", "food_recommend — 美食推荐", "hourly_forecast — 逐小时预报"],
         })

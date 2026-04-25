@@ -24,8 +24,9 @@ class TripRouter(PluginRouter):
             "规划从起点到终点的出行方案，结合天气给出综合建议。"
             "支持保存的地点标签（如'家'、'公司'）或城市名。"
             "自动推荐合适的出行方式（步行/骑行/公交/驾车）。"
+            "规划完成后可用 food_recommend 查看目的地美食。"
         ),
-        llm_result_fields=["summary", "routes"],
+        llm_result_fields=["summary", "routes", "next_actions"],
         input_schema={
             "type": "object",
             "properties": {
@@ -140,6 +141,7 @@ class TripRouter(PluginRouter):
             "weather_tips": weather_tips,
             "mode_advice": mode_advice,
             "provider": routing.provider,
+            "next_actions": [f"food_recommend location={dest_loc['city']} — 目的地美食", f"search_nearby location={dest_loc['city']} — 目的地附近搜索"],
         })
 
 

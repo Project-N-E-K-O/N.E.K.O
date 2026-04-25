@@ -41,8 +41,9 @@ class FoodRecommendRouter(PluginRouter):
         description=(
             "根据当前位置、天气和场景推荐附近美食。"
             "支持指定口味偏好、用餐场景和预算。"
+            "如果用户想自己做，可用 search_recipe 查菜谱。"
         ),
-        llm_result_fields=["summary", "recommendations"],
+        llm_result_fields=["summary", "recommendations", "next_actions"],
         input_schema={
             "type": "object",
             "properties": {
@@ -143,6 +144,7 @@ class FoodRecommendRouter(PluginRouter):
             "query": query,
             "weather_reason": weather_reason,
             "provider": poi_result.provider,
+            "next_actions": [f"search_recipe query={query} — 自己做{query}", "trip_advice — 规划去餐厅的路线"],
         })
 
     @staticmethod

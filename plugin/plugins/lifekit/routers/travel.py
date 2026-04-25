@@ -81,8 +81,8 @@ class TravelAdviceRouter(PluginRouter):
     @plugin_entry(
         id="travel_advice",
         name="出行建议",
-        description="根据天气给出穿衣、带伞、防晒等出行建议。",
-        llm_result_fields=["summary", "tips"],
+        description="根据天气给出穿衣、带伞、防晒等出行建议。可配合 food_recommend 获取美食推荐，或 trip_advice 规划路线。",
+        llm_result_fields=["summary", "tips", "next_actions"],
         input_schema={
             "type": "object",
             "properties": {
@@ -137,4 +137,5 @@ class TravelAdviceRouter(PluginRouter):
             "city": loc["city"],
             "summary": summary,
             **advice,
+            "next_actions": ["food_recommend — 美食推荐", "trip_advice — 路线规划"],
         })
