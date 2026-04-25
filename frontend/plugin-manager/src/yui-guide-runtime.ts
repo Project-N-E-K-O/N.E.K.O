@@ -566,10 +566,10 @@ class PluginDashboardGuideRuntime {
   cursorTransitionActive = false
   activeNarration: ActiveNarration | null = null
   pendingInterruptAck: PendingInterruptAck | null = null
-  boundPointerMoveHandler = (event: MouseEvent) => {
+  boundPointerMoveHandler = (event: PointerEvent | MouseEvent) => {
     this.handleInterrupt(event)
   }
-  boundPointerDownHandler = (event: MouseEvent) => {
+  boundPointerDownHandler = (event: PointerEvent | MouseEvent) => {
     this.onPointerDown(event)
   }
   boundInteractionGuard = (event: Event) => {
@@ -1689,8 +1689,8 @@ class PluginDashboardGuideRuntime {
     this.clearPendingInterruptAck(false)
     window.removeEventListener('resize', this.boundRefreshSpotlight, true)
     window.removeEventListener('scroll', this.boundRefreshSpotlight, true)
-    window.removeEventListener('mousemove', this.boundPointerMoveHandler, true)
-    window.removeEventListener('mousedown', this.boundPointerDownHandler, true)
+    window.removeEventListener('pointermove', this.boundPointerMoveHandler, true)
+    window.removeEventListener('pointerdown', this.boundPointerDownHandler, true)
     document.removeEventListener('pointerdown', this.boundInteractionGuard, true)
     document.removeEventListener('pointerup', this.boundInteractionGuard, true)
     document.removeEventListener('mousedown', this.boundInteractionGuard, true)
@@ -1756,8 +1756,11 @@ class PluginDashboardGuideRuntime {
     this.ensureRoot()
     window.addEventListener('resize', this.boundRefreshSpotlight, true)
     window.addEventListener('scroll', this.boundRefreshSpotlight, true)
-    window.addEventListener('mousemove', this.boundPointerMoveHandler, true)
-    window.addEventListener('mousedown', this.boundPointerDownHandler, true)
+    // 用 pointer 事件而非 mouse 事件采样：interactionGuard 把 touchstart/move/end 都拦掉了，
+    // 单挂 mousemove/mousedown 会让触屏设备永远攒不到 interruptCount，被脚本接管到结束。
+    // pointer 事件统一覆盖鼠标和触屏，capture 阶段先于 document 上的 interactionGuard 执行。
+    window.addEventListener('pointermove', this.boundPointerMoveHandler, true)
+    window.addEventListener('pointerdown', this.boundPointerDownHandler, true)
     document.addEventListener('pointerdown', this.boundInteractionGuard, true)
     document.addEventListener('pointerup', this.boundInteractionGuard, true)
     document.addEventListener('mousedown', this.boundInteractionGuard, true)

@@ -942,13 +942,10 @@
             }
 
             if (toggleId === 'agent-user-plugin' && actionId === 'management-panel') {
+                // openPluginDashboard 内部 openPage 在 resolve 前已经把 childWin
+                // 同步写入 _activeWindows，再走 waitForWindowOpen 只是冗余 round-trip
                 return openPluginDashboard('plugin_dashboard_landing', options).then(function (childWin) {
-                    if (childWin) {
-                        return waitForWindowOpen('plugin_dashboard', 6000).then(function (openedWindow) {
-                            return !!openedWindow;
-                        });
-                    }
-                    return false;
+                    return !!childWin;
                 });
             }
 

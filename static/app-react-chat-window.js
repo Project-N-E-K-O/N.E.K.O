@@ -1550,6 +1550,8 @@
     function startResize(clientX, clientY, direction) {
         var shell = getShell();
         if (!shell) return;
+        // 教程接管期禁止 resize，否则用户拉伸会让教程锚点和高亮错位
+        if (isYuiGuideDragLocked()) return;
         // 手机端仅允许向上拖动调整高度（北侧边缘）
         if (isMobileWidth() && direction !== 'n') return;
         if (minimized) return;
@@ -1570,6 +1572,11 @@
 
     function updateResize(clientX, clientY) {
         if (!resizeState) return;
+        // 教程接管期强制中断 resize，与 updateDrag 的 lock 行为对称
+        if (isYuiGuideDragLocked()) {
+            stopResize();
+            return;
+        }
 
         var shell = getShell();
         if (!shell) return;
