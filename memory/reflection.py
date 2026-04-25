@@ -75,19 +75,29 @@ REFLECTION_TERMINAL_STATUSES = frozenset({
 # Constrains the semantic category of each synthesized reflection so
 # same-(entity, relation_type) entries are naturally mergeable and the
 # render path can group by role-of-information instead of flat-listing.
+#
+# The schema is **kind-based, not name-based**: every entity gets mapped
+# to one of three kinds (user / character / relationship) and the
+# allowed relation_type set follows from the kind. Today we have one
+# user (`master`) and one character (`neko`) — but for future group-chat
+# extensions, every additional human plays role-kind `user` and reuses
+# the same relation set, every additional AI character plays role-kind
+# `character`, and a single shared `relationship` slot covers the
+# group-as-a-whole. New `entity` names plug in without touching
+# RELATION_TYPES or the prompt enum.
 RELATION_TYPES = {
-    # master — facts about the human user
+    # `user` kind — facts about a human participant
     'preference':     '偏好/喜好',
     'trait':          '性格/特征',
     'habit':          '习惯/日常',
     'identity':       '身份/背景',
     'emotional':      '情感状态',
     'boundary':       '边界/禁忌',
-    # neko — AI self-model
+    # `character` kind — AI self-model
     'self_awareness': '自我认知',
     'learned':        '习得行为',
     'role_note':      '角色备注',
-    # relationship — the dyad
+    # `relationship` kind — the group as a whole (1v1 today, NvM later)
     'dynamic':        '互动模式',
     'milestone':      '关系里程碑',
     'tension':        '摩擦/冲突',
@@ -95,11 +105,41 @@ RELATION_TYPES = {
     'agreement':     '约定/共识',
 }
 
-ENTITY_RELATION_MAP: dict[str, frozenset[str]] = {
-    'master':       frozenset({'preference', 'trait', 'habit', 'identity', 'emotional', 'boundary'}),
-    'neko':         frozenset({'self_awareness', 'learned', 'role_note'}),
+# Entity → kind mapping. New entity names default to `user` kind so that
+# adding "guest_alice" or "groupmate_bob" to the chat just works without
+# a schema migration. Override here only when an entity needs a non-user
+# template (i.e. another AI character, or a relationship aggregate).
+ENTITY_KINDS: dict[str, str] = {
+    'master':       'user',
+    'neko':         'character',
+    'relationship': 'relationship',
+}
+
+# Allowed relation_type set per kind. This is the actual source of truth
+# for validation; ENTITY_KINDS is the indirection that lets us add new
+# entities without expanding this table.
+KIND_RELATION_MAP: dict[str, frozenset[str]] = {
+    'user':         frozenset({'preference', 'trait', 'habit', 'identity', 'emotional', 'boundary'}),
+    'character':    frozenset({'self_awareness', 'learned', 'role_note'}),
     'relationship': frozenset({'dynamic', 'milestone', 'tension', 'shared_memory', 'agreement'}),
 }
+
+
+def _entity_kind(entity: str) -> str:
+    """Resolve an entity name to its ontology kind.
+
+    Unknown entities default to ``user`` — the safest fallback because
+    user-kind has the richest relation set, and future group members are
+    overwhelmingly likely to be additional human participants. Existing
+    callers ignore this default by passing the canonical entity names
+    (master / neko / relationship) we already register above.
+    """
+    return ENTITY_KINDS.get(entity, 'user')
+
+
+def _allowed_relation_types(entity: str) -> frozenset[str]:
+    return KIND_RELATION_MAP.get(_entity_kind(entity), frozenset())
+
 
 TEMPORAL_SCOPES = frozenset({'current', 'past', 'ongoing'})
 
@@ -120,9 +160,13 @@ def _validate_reflection_ontology(
     if relation_type is not None:
         if relation_type not in RELATION_TYPES:
             return False, f'unknown relation_type: {relation_type!r}'
-        allowed = ENTITY_RELATION_MAP.get(entity, frozenset())
+        allowed = _allowed_relation_types(entity)
         if relation_type not in allowed:
-            return False, f'{relation_type!r} not valid for entity {entity!r}'
+            return (
+                False,
+                f'{relation_type!r} not valid for entity {entity!r} '
+                f'(kind={_entity_kind(entity)!r})',
+            )
     if temporal_scope is not None and temporal_scope not in TEMPORAL_SCOPES:
         return False, f'unknown temporal_scope: {temporal_scope!r}'
     if len(text) > MAX_REFLECTION_TEXT_CHARS:

@@ -2,9 +2,10 @@
 """Unit tests for reflection ontology constraints (RFC memory-enhancements §3).
 
 The synthesize flow parses relation_type / temporal_scope from the LLM
-response and validates them against RELATION_TYPES / ENTITY_RELATION_MAP.
-Invalid fields degrade to None (soft fail) rather than dropping the
-whole reflection — the text itself is always preserved."""
+response and validates them against the kind-indexed
+RELATION_TYPES / KIND_RELATION_MAP (resolved via ENTITY_KINDS). Invalid
+fields degrade to None (soft fail) rather than dropping the whole
+reflection — the text itself is always preserved."""
 from __future__ import annotations
 
 import json
@@ -123,6 +124,54 @@ def test_validate_tolerates_missing_optional_fields():
     from memory.reflection import _validate_reflection_ontology
     ok, _ = _validate_reflection_ontology("master", None, None, "主人喜欢猫")
     assert ok is True
+
+
+# ── kind-based ontology (group-chat readiness) ─────────────────────
+
+
+def test_entity_kind_resolves_canonical_entities():
+    """master/neko/relationship resolve to their declared kinds."""
+    from memory.reflection import _entity_kind
+    assert _entity_kind("master") == "user"
+    assert _entity_kind("neko") == "character"
+    assert _entity_kind("relationship") == "relationship"
+
+
+def test_unknown_entity_defaults_to_user_kind():
+    """Future group members (e.g. 'guest_alice') should auto-inherit the
+    user template without requiring a code change to RELATION_TYPES."""
+    from memory.reflection import _allowed_relation_types, _entity_kind
+    assert _entity_kind("guest_alice") == "user"
+    allowed = _allowed_relation_types("guest_alice")
+    # Same set as `master`, since both are user-kind.
+    assert "preference" in allowed
+    assert "trait" in allowed
+    assert "habit" in allowed
+    # Must NOT bleed in character-kind or relationship-kind types.
+    assert "self_awareness" not in allowed
+    assert "dynamic" not in allowed
+
+
+def test_validate_accepts_unknown_user_kind_entity():
+    """Validator must let a hypothetical group-chat user use the user
+    relation set without a schema migration."""
+    from memory.reflection import _validate_reflection_ontology
+    ok, _ = _validate_reflection_ontology(
+        "guest_alice", "preference", "current", "alice 喜欢咖啡",
+    )
+    assert ok is True
+
+
+def test_validate_rejects_kind_mismatch_with_helpful_reason():
+    """Reason string includes resolved kind so debugging group-chat
+    misclassification doesn't require digging into the map."""
+    from memory.reflection import _validate_reflection_ontology
+    ok, reason = _validate_reflection_ontology(
+        "neko", "preference", "current", "x",
+    )
+    assert ok is False
+    assert "kind=" in reason
+    assert "character" in reason
 
 
 # ── synthesize integration ─────────────────────────────────────────
