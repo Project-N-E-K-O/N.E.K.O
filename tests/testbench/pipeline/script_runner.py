@@ -669,6 +669,11 @@ def apply_bootstrap(
     if last_gap_min is not None:
         try:
             gap_seconds = int(float(last_gap_min) * 60)
+            if gap_seconds < 0:
+                warnings.append(
+                    f"bootstrap.last_gap_minutes={last_gap_min!r} 是负数, 已忽略."
+                )
+                gap_seconds = None
         except (TypeError, ValueError):
             warnings.append(
                 f"bootstrap.last_gap_minutes={last_gap_min!r} 不是数字, 已忽略."
