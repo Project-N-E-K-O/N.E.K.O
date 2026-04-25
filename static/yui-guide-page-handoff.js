@@ -635,10 +635,13 @@
         dispatchSyntheticPress(button);
         manager.showPopup('settings', popup);
 
-        return new Promise(function (resolve) {
-            setTimeout(function () {
-                resolve(popup.style.display === 'flex');
-            }, POPUP_OPEN_ANIMATION_MS);
+        // 不用固定 setTimeout（低端机/教程首启动主线程繁忙时，
+        // 250ms 内 reflow + style 应用未必完成，会被误判为打开失败）。
+        // 改用轮询 waitFor，跟 closeSettingsPanel 保持对称。
+        return waitFor(function () {
+            return popup.style.display === 'flex' ? true : null;
+        }, POPUP_OPEN_ANIMATION_MS + 500).then(function (opened) {
+            return !!opened;
         });
     }
 
@@ -690,10 +693,12 @@
         dispatchSyntheticPress(button);
         manager.showPopup('agent', popup);
 
-        return new Promise(function (resolve) {
-            setTimeout(function () {
-                resolve(popup.style.display === 'flex');
-            }, POPUP_OPEN_ANIMATION_MS);
+        // 同 openSettingsPanel：用轮询 waitFor 替代固定 250ms，
+        // 避免低端机首启动时被误判为打开失败导致下游链路短路。
+        return waitFor(function () {
+            return popup.style.display === 'flex' ? true : null;
+        }, POPUP_OPEN_ANIMATION_MS + 500).then(function (opened) {
+            return !!opened;
         });
     }
 
@@ -1020,9 +1025,12 @@
 
             var expectedWindow = getOpenedWindow(normalizeWindowName('plugin_dashboard'));
             var expectedOrigin = getPluginDashboardExpectedOrigin();
-            if (!expectedWindow || expectedWindow.closed) return;
-            if (event.source !== expectedWindow) return;
+            // 不要因为 expectedWindow 已关闭就丢消息——子页常见 postMessage 后立刻
+            // window.close()，等到父页收到 message 时已可能 closed === true，
+            // 这条完成消息被早退就会让首页教程永远收不到 complete 卡死。
+            // 鉴权改靠 origin + flow + token 三件套；引用比对仅在窗口仍可识别时加固。
             if (!expectedOrigin || event.origin !== expectedOrigin) return;
+            if (expectedWindow && !expectedWindow.closed && event.source !== expectedWindow) return;
             var detail = event.data.detail || {};
             var flowId = detail.flow_id || detail.flow || '';
             var tokenId = detail.handoff_token || detail.token || '';

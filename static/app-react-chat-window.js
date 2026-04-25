@@ -1441,7 +1441,8 @@
     function updateDrag(clientX, clientY) {
         if (!dragState) return;
         if (isYuiGuideDragLocked()) {
-            stopDrag();
+            // 教程接管期强制中断拖拽：抑制后续 toggleMinimized，避免最小化球被误展开
+            stopDrag({ suppressClick: true });
             return;
         }
 
@@ -1457,8 +1458,9 @@
         applyPosition(clamped.left, clamped.top);
     }
 
-    function stopDrag() {
+    function stopDrag(options) {
         if (!dragState) return;
+        var opts = options || {};
 
         var wasMoved = dragState.moved;
 
@@ -1478,7 +1480,8 @@
         document.body.classList.remove('react-chat-window-dragging');
 
         // 最小化状态下，未发生拖拽移动 → 视为点击，恢复窗口
-        if (minimized && !wasMoved) {
+        // 但 suppressClick=true（如教程接管强制中断）时不触发，避免误展开
+        if (minimized && !wasMoved && !opts.suppressClick) {
             toggleMinimized();
         }
     }

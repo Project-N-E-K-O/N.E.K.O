@@ -1972,6 +1972,9 @@ export function initPluginDashboardYuiGuideRuntime() {
       if (!runtime.isCurrentRun(sessionId)) {
         return
       }
+      // 与主 START_EVENT 分支保持对称：先通知 opener DONE 再 cleanup，
+      // 否则 fallback 路径下 run 抛错时主页教程永远收不到完成信号会卡死
+      runtime.notify(DONE_EVENT, sessionId)
       runtime.cleanup()
     })
   }, 320)
