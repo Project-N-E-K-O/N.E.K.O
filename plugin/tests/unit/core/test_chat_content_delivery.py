@@ -1,15 +1,23 @@
-"""Tests for chat_content relay in communication.py _forward_message."""
+"""Tests for chat_content delivery chain.
+
+The production path for push_chat_content is:
+  plugin subprocess → ZMQ ingest → message_plane PUB → proactive_bridge → main_server → WebSocket
+
+These tests verify the proactive_bridge parsing logic (the only non-trivial
+transform in the chain) and the _forward_message passthrough (no special
+handling — chat_content is stored and queued like any other message type).
+"""
 
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
 
-def test_forward_message_relays_chat_content_to_plane_bridge():
-    """_forward_message should relay chat_content messages via plane_bridge.publish_record."""
+def test_forward_message_stores_chat_content_normally():
+    """_forward_message should store chat_content like any other message — no special routing."""
     from plugin.core.communication import PluginCommunicationResourceManager
 
     mgr = PluginCommunicationResourceManager.__new__(PluginCommunicationResourceManager)
@@ -28,37 +36,17 @@ def test_forward_message_relays_chat_content_to_plane_bridge():
         "_bus_stored": True,
     }
 
-    with patch("plugin.server.messaging.plane_bridge.publish_record") as mock_publish:
-        asyncio.run(mgr._forward_message(msg))
+    asyncio.run(mgr._forward_message(msg))
 
-    mock_publish.assert_called_once_with(store="messages", record=msg)
-
-
-def test_forward_message_does_not_relay_non_chat_content():
-    """_forward_message should NOT relay non-chat_content messages via plane_bridge."""
-    from plugin.core.communication import PluginCommunicationResourceManager
-
-    mgr = PluginCommunicationResourceManager.__new__(PluginCommunicationResourceManager)
-    mgr.plugin_id = "weather"
-    mgr.logger = MagicMock()
-    mgr._message_target_queue = asyncio.Queue(maxsize=100)
-
-    msg = {
-        "type": "MESSAGE_PUSH",
-        "message_type": "text",
-        "content": "Hello",
-        "_bus_stored": True,
-    }
-
-    with patch("plugin.server.messaging.plane_bridge.publish_record") as mock_publish:
-        asyncio.run(mgr._forward_message(msg))
-
-    mock_publish.assert_not_called()
+    # Message should be in the queue — no interception, no special routing
+    assert not mgr._message_target_queue.empty()
+    queued = mgr._message_target_queue.get_nowait()
+    assert queued["message_type"] == "chat_content"
 
 
-def test_proactive_bridge_handles_chat_content():
-    """ProactiveBridge should construct plugin_chat_content event from chat_content payload."""
-    import json
+def test_proactive_bridge_parses_chat_content_event():
+    """Verify proactive_bridge correctly transforms a chat_content payload
+    into a plugin_chat_content event structure."""
 
     payload = {
         "message_type": "chat_content",
@@ -74,24 +62,11 @@ def test_proactive_bridge_handles_chat_content():
         "time": "2026-04-25T00:00:00Z",
     }
 
-    event = {
-        "seq": 1,
-        "ts": 1745510400.0,
-        "store": "messages",
-        "topic": "all",
-        "payload": payload,
-        "index": {},
-    }
+    # Simulate the parsing logic from proactive_bridge._run
+    msg_type = payload.get("message_type")
+    metadata = payload.get("metadata", {})
 
-    # Simulate what proactive_bridge does when it receives this event
-    p = event.get("payload")
-    assert isinstance(p, dict)
-
-    msg_type = p.get("message_type")
     assert msg_type == "chat_content"
-
-    metadata = p.get("metadata")
-    assert isinstance(metadata, dict)
 
     blocks = metadata.get("chat_content_blocks")
     assert isinstance(blocks, list) and len(blocks) > 0
@@ -99,10 +74,10 @@ def test_proactive_bridge_handles_chat_content():
     proactive_event = {
         "event_type": "plugin_chat_content",
         "lanlan_name": metadata.get("target_lanlan") or None,
-        "plugin_id": p.get("plugin_id", ""),
+        "plugin_id": payload.get("plugin_id", ""),
         "blocks": blocks,
-        "text": p.get("content", ""),
-        "timestamp": p.get("time", ""),
+        "text": payload.get("content", ""),
+        "timestamp": payload.get("time", ""),
     }
 
     assert proactive_event["event_type"] == "plugin_chat_content"

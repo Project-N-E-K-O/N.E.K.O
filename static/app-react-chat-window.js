@@ -1126,6 +1126,13 @@
                     }
                 }
                 msgBlocks.push({ type: 'text', text: tableText });
+            } else if (b.type === 'json' && b.data) {
+                var jsonLabel = b.label ? b.label + ':\n' : '';
+                msgBlocks.push({ type: 'text', text: jsonLabel + JSON.stringify(b.data, null, 2) });
+            } else if (b.type === 'audio' && b.url) {
+                msgBlocks.push({ type: 'link', url: b.url, text: '🔊 ' + (b.title || 'Audio') });
+            } else if (b.type === 'video' && b.url) {
+                msgBlocks.push({ type: 'link', url: b.url, text: '🎬 ' + (b.title || 'Video') });
             }
         }
         if (msgBlocks.length === 0 && text) {

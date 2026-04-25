@@ -434,26 +434,6 @@ class PluginCommunicationResourceManager:
             except Exception:
                 self.logger.debug("Failed to store message for plugin {}", self.plugin_id, exc_info=True)
 
-        # ── chat_content: relay to message_plane via plane_bridge ──
-        # When messages arrive through the fallback channel (non-ZMQ path),
-        # they bypass message_plane entirely. Explicitly forward chat_content
-        # to plane_bridge so proactive_bridge can pick them up and deliver
-        # to main_server → WebSocket → frontend.
-        if isinstance(msg, dict) and msg.get("message_type") == "chat_content":
-            try:
-                from plugin.server.messaging.plane_bridge import publish_record
-                publish_record(store="messages", record=msg)
-                self.logger.debug(
-                    "[CHAT_CONTENT] relayed to message_plane via plane_bridge: plugin={}",
-                    self.plugin_id,
-                )
-            except Exception:
-                self.logger.debug(
-                    "[CHAT_CONTENT] plane_bridge relay failed for plugin {}",
-                    self.plugin_id,
-                    exc_info=True,
-                )
-
         try:
             await asyncio.wait_for(self._message_target_queue.put(msg), timeout=0.05)
         except asyncio.TimeoutError:
