@@ -10,10 +10,13 @@ from .food import FoodRecommendRouter
 from .recipe import RecipeRouter
 from .air_quality import AirQualityRouter
 from .currency import CurrencyRouter
+from .countdown import CountdownRouter
+from .unit_convert import UnitConvertRouter
 
 __all__ = [
     "CurrentWeatherRouter", "TravelAdviceRouter", "HourlyForecastRouter",
     "LocationsRouter", "TripRouter", "NearbyRouter",
     "FoodRecommendRouter", "RecipeRouter",
     "AirQualityRouter", "CurrencyRouter",
+    "CountdownRouter", "UnitConvertRouter",
 ]

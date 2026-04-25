@@ -37,6 +37,7 @@ from .routers import (
     LocationsRouter, TripRouter, NearbyRouter,
     FoodRecommendRouter, RecipeRouter,
     AirQualityRouter, CurrencyRouter,
+    CountdownRouter, UnitConvertRouter,
 )
 
 _LOCALES_DIR = Path(__file__).parent / "locales"
@@ -63,6 +64,7 @@ class LifeKitPlugin(NekoPluginBase):
         LocationsRouter, TripRouter, NearbyRouter,
         FoodRecommendRouter, RecipeRouter,
         AirQualityRouter, CurrencyRouter,
+        CountdownRouter, UnitConvertRouter,
     ]
 
     def __init__(self, ctx: Any):
