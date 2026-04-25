@@ -95,5 +95,14 @@
     "America/Los_Angeles": "洛杉磯",
     "America/Sao_Paulo": "聖保羅",
     "Australia/Sydney": "雪梨"
+  },
+  "food": {
+    "no_results": "在 {location} 附近沒有找到「{query}」相關的餐廳",
+    "summary": "{location}附近推薦「{query}」: {top}"
+  },
+  "recipe": {
+    "no_query": "請輸入菜名或食材",
+    "not_found": "沒有找到「{query}」相關的菜譜",
+    "random_fail": "隨機菜譜獲取失敗，請稍後重試"
   }
 }

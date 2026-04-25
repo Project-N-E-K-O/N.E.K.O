@@ -32,7 +32,7 @@ from plugin.sdk.plugin import (
 from ._i18n import I18n, LRUCache
 from ._geo import get_system_timezone, detect_vpn_conflict
 from ._api import geoip_locate, geocode_city, fetch_forecast, GeoIPError, GeocodeError, ForecastError, WeatherAPIError
-from .routers import CurrentWeatherRouter, TravelAdviceRouter, HourlyForecastRouter, LocationsRouter, TripRouter, NearbyRouter
+from .routers import CurrentWeatherRouter, TravelAdviceRouter, HourlyForecastRouter, LocationsRouter, TripRouter, NearbyRouter, FoodRecommendRouter, RecipeRouter
 
 _LOCALES_DIR = Path(__file__).parent / "locales"
 
@@ -53,7 +53,11 @@ class LifeKitPlugin(NekoPluginBase):
         force_locale: bool = SettingsField(False, description="强制使用上面的语言设置")
 
     # 声明 router 类，供主进程静态扫描 entry 元数据
-    __routers__ = [CurrentWeatherRouter, TravelAdviceRouter, HourlyForecastRouter, LocationsRouter, TripRouter, NearbyRouter]
+    __routers__ = [
+        CurrentWeatherRouter, TravelAdviceRouter, HourlyForecastRouter,
+        LocationsRouter, TripRouter, NearbyRouter,
+        FoodRecommendRouter, RecipeRouter,
+    ]
 
     def __init__(self, ctx: Any):
         super().__init__(ctx)

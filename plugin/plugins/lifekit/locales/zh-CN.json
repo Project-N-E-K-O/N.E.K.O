@@ -95,5 +95,14 @@
     "America/Los_Angeles": "洛杉矶",
     "America/Sao_Paulo": "圣保罗",
     "Australia/Sydney": "悉尼"
+  },
+  "food": {
+    "no_results": "在 {location} 附近没有找到「{query}」相关的餐厅",
+    "summary": "{location}附近推荐「{query}」: {top}"
+  },
+  "recipe": {
+    "no_query": "请输入菜名或食材",
+    "not_found": "没有找到「{query}」相关的菜谱",
+    "random_fail": "随机菜谱获取失败，请稍后重试"
   }
 }

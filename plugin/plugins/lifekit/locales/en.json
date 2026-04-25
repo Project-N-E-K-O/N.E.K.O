@@ -95,5 +95,14 @@
     "America/Los_Angeles": "Los Angeles",
     "America/Sao_Paulo": "São Paulo",
     "Australia/Sydney": "Sydney"
+  },
+  "food": {
+    "no_results": "No restaurants found for \"{query}\" near {location}",
+    "summary": "Recommended \"{query}\" near {location}: {top}"
+  },
+  "recipe": {
+    "no_query": "Please enter a dish name or ingredient",
+    "not_found": "No recipes found for \"{query}\"",
+    "random_fail": "Failed to get a random recipe, please try again later"
   }
 }

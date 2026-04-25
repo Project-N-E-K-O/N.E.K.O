@@ -3,7 +3,7 @@ id = "lifekit"
 name = "生活助手"
 description = "基于地理位置的多功能生活服务。天气查询、逐小时预报、出行建议、路线规划、常用地点管理、附近 POI 搜索。"
 short_description = "Location-based life services: weather, forecasts, travel advice, route planning, saved locations, nearby POI search."
-keywords = ["天气", "weather", "出行", "travel", "温度", "temperature", "预报", "forecast", "穿衣", "下雨", "rain", "紫外线", "UV", "附近", "nearby", "路线", "route", "地点", "location", "생활", "生活", "날씨", "天気"]
+keywords = ["天气", "weather", "出行", "travel", "温度", "temperature", "预报", "forecast", "穿衣", "下雨", "rain", "紫外线", "UV", "附近", "nearby", "路线", "route", "地点", "location", "美食", "food", "菜谱", "recipe", "做菜", "cooking", "생활", "生活", "날씨", "天気"]
 version = "0.2.0"
 entry = "plugin.plugins.lifekit:LifeKitPlugin"
 
