@@ -277,12 +277,19 @@
     function buildPluginDashboardHandoffUrl(tokenObj, resumeScene) {
         var handoffParams = ['yui_guide=1'];
         var flowId = tokenObj && tokenObj.flow_id ? tokenObj.flow_id : HANDOFF_FLOW_ID;
+        // source_page 必须随 URL 带过去：子页 useYuiTutorialBridge 从 query 读
+        // sourcePage，runtime 的 bridge fallback 只在 sourcePage === 'home' 时启用，
+        // 漏带就会让 START_EVENT 没赶上时插件页拿不到接管恢复，教程沉默卡死。
+        var sourcePage = tokenObj && typeof tokenObj.source_page === 'string' && tokenObj.source_page
+            ? tokenObj.source_page
+            : 'home';
         var resolvedResumeScene = tokenObj && typeof tokenObj.resume_scene === 'string'
             ? tokenObj.resume_scene
             : (resumeScene || '');
         var handoffToken = tokenObj && tokenObj.token ? tokenObj.token : '';
 
         handoffParams.push('flow_id=' + encodeURIComponent(flowId));
+        handoffParams.push('source_page=' + encodeURIComponent(sourcePage));
         handoffParams.push('resume_scene=' + encodeURIComponent(resolvedResumeScene));
         handoffParams.push('handoff_token=' + encodeURIComponent(handoffToken));
 
