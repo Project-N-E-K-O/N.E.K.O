@@ -222,7 +222,7 @@ class BiliContentService:
         cred = await self.get_valid_credential()
         if bvid:
             v = sdk.video.Video(bvid=bvid, credential=cred)
-        elif aid is not None:
+        elif aid:
             v = sdk.video.Video(aid=aid, credential=cred)
         else:
             raise RuntimeError("bvid or aid is required")
@@ -294,7 +294,8 @@ class BiliContentService:
                     if len(comments) >= max_comments:
                         break
                 page += 1
-            except Exception:
+            except Exception as e:
+                self.logger.debug("获取评论分页失败 page=%d: %s", page, e)
                 break
         return {"bvid": bvid, "count": len(comments), "comments": comments}
 
@@ -330,7 +331,8 @@ class BiliContentService:
         timeout = aiohttp.ClientTimeout(total=10)
         async with aiohttp.ClientSession(timeout=timeout) as client:
             async with client.get(sub_url) as resp:
-                sub_data = await resp.json()
+                resp.raise_for_status()
+                sub_data = await resp.json(content_type=None)
         texts = [item.get("content", "") for item in sub_data.get("body", [])]
         return {
             "bvid": bvid,
@@ -367,12 +369,12 @@ class BiliContentService:
         relation: Dict[str, Any] = {}
         try:
             up_stat = await target.get_up_stat()
-        except Exception:
-            pass
+        except Exception as e:
+            self.logger.debug("获取 up_stat 失败 uid=%d: %s", uid, e)
         try:
             relation = await target.get_relation_info()
-        except Exception:
-            pass
+        except Exception as e:
+            self.logger.debug("获取 relation_info 失败 uid=%d: %s", uid, e)
         return {
             "uid": uid,
             "name": info.get("name", ""),
@@ -500,7 +502,7 @@ class BiliContentService:
                     continue
                 img_path = img_path.strip()
                 if img_path.startswith(("http://", "https://")):
-                    pic = await sdk.Picture.async_from_url(img_path)
+                    pic = await sdk.Picture.load_url(img_path)
                 else:
                     if not os.path.isfile(img_path):
                         raise RuntimeError(f"图片文件不存在: {img_path}")
