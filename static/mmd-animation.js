@@ -144,9 +144,6 @@ class MMDAnimation {
             this.manager.cursorFollow._targetPitch = 0;
         }
 
-        // 初始化骨骼缓存
-        this._initBoneBackup(mmd.mesh);
-
         // 使用 processBones
         this._processBones = processBones;
 
@@ -453,83 +450,6 @@ class MMDAnimation {
     // ═══════════════════ IK 开关管理 ═══════════════════
 
     /**
-     * PMX 动画系统特殊路径：按 transformOrder 逐骨骼处理 Grant 和 IK。
-     * 参考 Three.js 官方 MMDAnimationHelper._animatePMXMesh 和 updateOne。
-     * 
-     * PMX 的骨骼处理顺序由 transformOrder（変形階層）决定，
-     * 同一阶层内按骨骼索引排序。对每个骨骼：
-     * 1. 如果有 Grant（付与），先递归处理 Grant 父骨骼，再叠加 Grant 旋转
-     * 2. 如果有 IK，执行 IK 求解
-     */
-    _animatePMXMesh(mesh) {
-        const grantResultMap = new Map();
-        const bones = mesh.skeleton.bones;
-        const ikSolver = this.ikSolver;
-        const grantSolver = this.grantSolver;
-        const THREE = window.THREE;
-
-        const updateOneBone = (boneIndex) => {
-            if (grantResultMap.has(boneIndex)) return;
-
-            const bone = bones[boneIndex];
-            if (!bone) return;
-
-            const boneData = this._sortedBonesData.find(b => b.index === boneIndex);
-            if (!boneData) {
-                grantResultMap.set(boneIndex, bone.quaternion.clone());
-                return;
-            }
-
-            // 初始化 grant 结果（防止无限循环）
-            grantResultMap.set(boneIndex, bone.quaternion.clone());
-
-            // Grant 处理
-            if (grantSolver && boneData.grant &&
-                !boneData.grant.isLocal && boneData.grant.affectRotation) {
-                const parentIndex = boneData.grant.parentIndex;
-                const ratio = boneData.grant.ratio;
-
-                // 递归确保 Grant 父骨骼已处理
-                if (!grantResultMap.has(parentIndex)) {
-                    updateOneBone(parentIndex);
-                }
-
-                const parentResult = grantResultMap.get(parentIndex);
-                if (parentResult) {
-                    grantSolver.addGrantRotation(bone, parentResult, ratio);
-                }
-            }
-
-            // IK 处理
-            if (ikSolver && boneData.ik) {
-                mesh.updateMatrixWorld(true);
-                ikSolver.updateOne(boneData.ik);
-
-                // 更新 IK 链中 link 骨骼的 grant 结果
-                if (boneData.ik.links) {
-                    for (const link of boneData.ik.links) {
-                        if (bones[link.index]) {
-                            grantResultMap.set(link.index, bones[link.index].quaternion.clone());
-                        }
-                    }
-                }
-            }
-
-            // 更新当前骨骼的 grant 结果
-            grantResultMap.set(boneIndex, bone.quaternion.clone());
-        };
-
-        // 按 transformOrder 排序后逐骨骼处理
-        for (const boneData of this._sortedBonesData) {
-            updateOneBone(boneData.index);
-        }
-
-        mesh.updateMatrixWorld(true);
-    }
-
-    // ═══════════════════ IK 开关管理 ═══════════════════
-
-    /**
      * 从 VMD 的 propertyKeyFrames 构建 IK 开关时间轴。
      * 返回按帧号排序的数组，每个元素包含 { frame, ikStates: Map<ikName, enabled> }。
      * 如果没有 propertyKeyFrames 或为空，返回 null。
@@ -642,7 +562,6 @@ class MMDAnimation {
         this._boneBackup = null;
         this._ikSwitchTimeline = null;
         this._lastAppliedIkEntry = null;
-        this._grantBaseBackup = null;
         this.isPlaying = false;
         this.isPaused = false;
         if (this.clock) {
