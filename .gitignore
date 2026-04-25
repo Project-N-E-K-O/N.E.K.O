@@ -128,6 +128,10 @@ local_server/cosyvoice_server/*wav
 
 # 测试报告与结果
 tests/reports/
+
+# Testbench 运行时数据目录（沙盒/日志/存档/autosave/导出/用户自定义 schema 和 dialog template）
+# 代码目录 tests/testbench/ 仍入库, 数据目录 tests/testbench_data/ 全部忽略
+tests/testbench_data/
 latest_report.json
 sendText.js
 tmp/
@@ -170,3 +174,4 @@ static/jukebox/*.vrma
 static/jukebox/*.bvh
 static/jukebox/*.fbx
 tests/prompt_dump.json
+tests/testbench/docs/dev_note.txt

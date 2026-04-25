@@ -37,8 +37,14 @@ jobs:
         run: ruff check .
 
       - name: Forbid blocking calls in async def bodies
-        # Custom AST checker — covers the gaps flake8-async doesn't:
-        # Thread/Process.join, queue.Queue.get, raw socket recv/accept/connect.
+        # Custom AST checker, broader than ruff's ASYNC* rules:
+        #   * gaps flake8-async doesn't catch: Thread/Process.join,
+        #     queue.Queue.get, raw socket recv/accept/connect
+        #   * extra blocking stdlib/3p calls: PIL.Image.open,
+        #     pyautogui.screenshot, Fernet encrypt/decrypt, shutil.*,
+        #     json.load, plus bare-import forms (sleep, rmtree, urlopen)
+        #   * depth-1 transitive: a sync helper whose body hits any of the
+        #     above, called directly from async, is also flagged.
         run: python scripts/check_async_blocking.py
 
       - name: Forbid loguru / structlog / logbook imports

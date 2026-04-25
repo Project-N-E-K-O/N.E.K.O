@@ -1083,7 +1083,7 @@ function showMessage(message, type = 'info', duration = 3000) {
     messageElement.style.marginBottom = '10px';
     messageElement.style.borderRadius = '4px';
     messageElement.style.position = 'relative';
-    messageElement.style.zIndex = '1000';
+    messageElement.style.zIndex = '2147483647';
 
     // 为不同类型设置背景色和前景色
     const bgColors = { error: '#fde8e8', warning: '#fdf6e3', success: '#e3f7f1', info: '#e8f4fd' };
@@ -1102,7 +1102,9 @@ function showMessage(message, type = 'info', duration = 3000) {
     messageArea.style.top = '20px';
     messageArea.style.right = '20px';
     messageArea.style.maxWidth = '400px';
-    messageArea.style.zIndex = '99999'; // 增加z-index确保显示在最顶层
+    // 使用 int32 最大值，确保不会被 Jukebox(100010)、driver.js(100004)、
+    // crop-overlay(100040)、react-chat-window-overlay(100000) 等更高层 overlay 遮挡
+    messageArea.style.zIndex = '2147483647';
     messageArea.style.display = 'flex';
     messageArea.style.flexDirection = 'column';
     messageArea.style.alignItems = 'flex-end';
@@ -1154,17 +1156,19 @@ function showToast(message, duration = 3000) {
         container.id = 'message-area';
         container.className = 'message-area';
         document.body.appendChild(container);
-
-        container.style.position = 'fixed';
-        container.style.top = '20px';
-        container.style.right = '20px';
-        container.style.maxWidth = '400px';
-        container.style.zIndex = '99999';
-        container.style.display = 'flex';
-        container.style.flexDirection = 'column';
-        container.style.alignItems = 'flex-end';
-        container.style.boxShadow = '0 4px 12px rgba(0,0,0,0.15)';
     }
+
+    // 若容器由模板/其他逻辑预先创建，首个 toast 沿用旧 zIndex 会被新模态遮挡；
+    // 无条件刷新定位 / 层级，确保每次都落在最顶层。
+    container.style.position = 'fixed';
+    container.style.top = '20px';
+    container.style.right = '20px';
+    container.style.maxWidth = '400px';
+    container.style.zIndex = '2147483647';
+    container.style.display = 'flex';
+    container.style.flexDirection = 'column';
+    container.style.alignItems = 'flex-end';
+    container.style.boxShadow = '0 4px 12px rgba(0,0,0,0.15)';
 
     const messageElement = document.createElement('div');
     // 使用 textContent 避免 HTML 注入风险 (resolved duplicate innerHTML comment review safely)
@@ -2295,67 +2299,188 @@ function viewItemDetails(itemId) {
 
 // 取消订阅功能
 function unsubscribeItem(itemId, itemName) {
-    if (confirm(window.t ? window.t('steam.unsubscribeConfirm', { name: itemName }) : `确定要取消订阅 "${itemName}" 吗？`)) {
-        // 查找当前卡片并添加移除动画效果
-        const cards = document.querySelectorAll('.workshop-card');
-        for (let card of cards) {
-            const cardTitle = card.querySelector('.card-title').textContent;
-            if (cardTitle === itemName) {
-                // 添加淡出效果
-                card.style.opacity = '0.6';
-                card.style.transform = 'scale(0.95)';
-                break;
-            }
-        }
-
-        // 调用后端API执行取消订阅操作
-        showMessage(window.t ? window.t('steam.cancellingSubscription', { name: itemName }) : `Cancelling subscription to "${itemName}"...`, 'success');
-
-        fetch('/api/steam/workshop/unsubscribe', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({ item_id: itemId })
-        })
-            .then(response => {
-                if (!response.ok) {
-                    throw new Error(`HTTP error! status: ${response.status}`);
-                }
-                return response.json();
-            })
-            .then(data => {
-                if (data.success) {
-                    // 显示异步操作状态
-                    let statusMessage = window.t ? window.t('steam.unsubscribeAccepted', { name: itemName }) : `已接受取消订阅: ${itemName}`;
-                    if (data.status === 'accepted') {
-                        statusMessage = window.t ? window.t('steam.unsubscribeProcessing', { name: itemName }) : `正在处理取消订阅: ${itemName}`;
-                    }
-                    showMessage(statusMessage, 'success');
-
-                    // 立即重新加载订阅列表
-                    loadSubscriptions();
-
-                    // 添加短暂延迟后再次刷新，确保获取最新状态
-                    setTimeout(() => {
-                        loadSubscriptions();
-                        showMessage(window.t ? window.t('steam.subscriptionsUpdated') : '订阅更新完成', 'success');
-                    }, 1000);
-
-                } else {
-                    const errorMsg = data.error || (window.t ? window.t('common.unknownError') : '未知错误');
-                    showMessage(window.t ? window.t('steam.unsubscribeFailed') : `取消订阅失败: ${errorMsg}`, 'error');
-                    // 如果有消息提示，显示给用户
-                    if (data.message) {
-                        showMessage(data.message, 'warning');
-                    }
-                }
-            })
-            .catch(error => {
-                console.error('取消订阅失败:', error);
-                showMessage(window.t ? window.t('steam.unsubscribeError') : '取消订阅失败', 'error');
-            });
+    if (!confirm(window.t ? window.t('steam.unsubscribeConfirm', { name: itemName }) : `确定要取消订阅 "${itemName}" 吗？`)) {
+        return;
     }
+
+    // 查找当前卡片并添加移除动画效果（用于回滚）
+    let pendingCard = null;
+    const cards = document.querySelectorAll('.workshop-card');
+    for (let card of cards) {
+        const cardTitleEl = card.querySelector('.card-title');
+        if (cardTitleEl && cardTitleEl.textContent === itemName) {
+            pendingCard = card;
+            card.style.opacity = '0.6';
+            card.style.transform = 'scale(0.95)';
+            break;
+        }
+    }
+
+    const restoreCard = () => {
+        if (pendingCard) {
+            pendingCard.style.opacity = '';
+            pendingCard.style.transform = '';
+        }
+    };
+
+    // 调用后端API执行取消订阅操作
+    showMessage(window.t ? window.t('steam.cancellingSubscription', { name: itemName }) : `Cancelling subscription to "${itemName}"...`, 'success');
+
+    fetch('/api/steam/workshop/unsubscribe', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ item_id: itemId })
+    })
+        .then(async response => {
+            // 统一解析响应体，即使非 2xx 也尝试读取 JSON，以便展示后端的 error/message
+            let data = null;
+            try {
+                data = await response.json();
+            } catch (_) {
+                data = null;
+            }
+            return { response, data };
+        })
+        .then(({ response, data }) => {
+            // 诊断日志：只记录状态/计数，避免把 cleanup_summary 里的本地路径 /
+            // 角色名直接落到浏览器或 Electron 日志里，泄露用户信息。
+            const summaryForLog = data && data.cleanup_summary ? data.cleanup_summary : {};
+            console.info('[unsubscribe response]', {
+                status: response.status,
+                ok: response.ok,
+                success: !!(data && data.success),
+                code: data && data.code,
+                status_text: data && data.status,
+                has_cleanup_summary: !!(data && data.cleanup_summary),
+                cleaned_count: Array.isArray(summaryForLog.cleaned_characters) ? summaryForLog.cleaned_characters.length : 0,
+                removed_memory_count: Array.isArray(summaryForLog.removed_memory_paths) ? summaryForLog.removed_memory_paths.length : 0,
+                error_count: Array.isArray(summaryForLog.errors) ? summaryForLog.errors.length : 0,
+            });
+            if (!response.ok) {
+                // 后端前置校验失败：按 code 映射到本地化 key，避免把后端
+                // 硬编码的中文 error 文案直接甩给英文/繁中用户。
+                const code = data && data.code;
+                if (code === 'CURRENT_CATGIRL_IN_USE') {
+                    const characterName = data.character_name || itemName;
+                    const blockedMsg = (window.t ? window.t('steam.unsubscribeCurrentCatgirlBlocked', { name: characterName }) : '') || data.error || `不能取消订阅当前正在使用的猫娘「${characterName}」，请先切换到其他角色后再取消订阅。`;
+                    // 优先使用 toast；同时用 alert 兜底，确保在 toast 被其它高层 overlay
+                    // 遮挡时用户仍能看到阻断原因（这是阻断性 action，用户必须知情）
+                    showMessage(blockedMsg, 'warning', 6000);
+                    try { window.alert(blockedMsg); } catch (_) { /* 忽略 alert 被禁用 */ }
+                    restoreCard();
+                    return;
+                }
+                if (code === 'LOCAL_CONFIG_CLEANUP_FAILED') {
+                    const msg = (window.t ? window.t('steam.unsubscribeLocalConfigCleanupFailed') : '') || data.error || '本地角色配置清理失败，已取消本次 Steam 退订请求，请修复后重试。';
+                    showMessage(msg, 'error', 8000);
+                    try { window.alert(msg); } catch (_) { /* ignore */ }
+                    restoreCard();
+                    return;
+                }
+                if (code === 'STEAM_UNSUBSCRIBE_FAILED') {
+                    const detail = (data && data.error) || `HTTP ${response.status}`;
+                    const msg = (window.t ? window.t('steam.unsubscribeSteamRequestFailed', { error: detail }) : '') || `Steam 退订请求发送失败: ${detail}`;
+                    showMessage(msg, 'error', 8000);
+                    restoreCard();
+                    return;
+                }
+                const errorMsg = (data && (data.error || data.message)) || `HTTP ${response.status}`;
+                showMessage(`${window.t ? window.t('steam.unsubscribeFailed') : '取消订阅失败'}: ${errorMsg}`, 'error');
+                restoreCard();
+                return;
+            }
+
+            if (data && data.success) {
+                // 显示异步操作状态
+                let statusMessage = window.t ? window.t('steam.unsubscribeAccepted', { name: itemName }) : `已接受取消订阅: ${itemName}`;
+                if (data.status === 'accepted') {
+                    statusMessage = window.t ? window.t('steam.unsubscribeProcessing', { name: itemName }) : `正在处理取消订阅: ${itemName}`;
+                }
+                showMessage(statusMessage, 'success');
+
+                // 同步清理汇总：让用户直接看到"角色卡和记忆删了多少"（诊断价值）
+                const summary = data.cleanup_summary || {};
+                const cleanedChars = Array.isArray(summary.cleaned_characters) ? summary.cleaned_characters : [];
+                const removedPaths = Array.isArray(summary.removed_memory_paths) ? summary.removed_memory_paths : [];
+                const errors = Array.isArray(summary.errors) ? summary.errors : [];
+
+                if (cleanedChars.length > 0 || removedPaths.length > 0) {
+                    const charactersStr = cleanedChars.join('、') || '-';
+                    const detailMsg = (window.t ? window.t('steam.unsubscribeCleanupDetail', {
+                        characterCount: cleanedChars.length,
+                        characters: charactersStr,
+                        memoryPathCount: removedPaths.length,
+                    }) : '') || `已清理角色卡: ${cleanedChars.length} 个（${charactersStr}）；已删除记忆路径: ${removedPaths.length} 条`;
+                    showMessage(detailMsg, 'success', 6000);
+                    // 只记录计数，避免 removed_memory_paths 里的本地路径被日志收集
+                    console.info('[unsubscribe cleanup summary]', {
+                        cleaned_count: cleanedChars.length,
+                        removed_memory_count: removedPaths.length,
+                        error_count: errors.length,
+                    });
+                } else if ((summary.candidate_characters || []).length === 0) {
+                    // 后端没在 characters.json 中找到关联角色（反向索引空 + 磁盘扫描空）
+                    console.warn('[unsubscribe] 未找到与该物品关联的角色，仅删除订阅文件夹');
+                    const noAssocMsg = (window.t && window.t('steam.unsubscribeNoAssociation')) || '未找到与此订阅关联的角色，仅删除了订阅文件夹；若有残留记忆请手动处理';
+                    showMessage(noAssocMsg, 'warning', 6000);
+                }
+                if (errors.length > 0) {
+                    // 只记录数量和 stage，避免 error.error 里的路径 / 角色名泄露
+                    console.warn('[unsubscribe cleanup errors]', {
+                        count: errors.length,
+                        stages: errors.map((e) => e && e.stage).filter(Boolean),
+                    });
+                    const firstErr = errors[0] || {};
+                    const errMsg = (window.t ? window.t('steam.unsubscribeCleanupErrors', {
+                        count: errors.length,
+                        stage: firstErr.stage || '',
+                        error: firstErr.error || '',
+                    }) : '') || `清理过程出现 ${errors.length} 个错误，首个: ${firstErr.stage || ''} -> ${firstErr.error || ''}`;
+                    showMessage(errMsg, 'warning', 8000);
+                    try { window.alert(errMsg); } catch (_) { /* ignore */ }
+                }
+
+                // 乐观更新：立即在本地列表里剔除该条目，UI 无需等 Steam 回调即可看到
+                // "已消失"的视觉反馈。即便 Steam 端还没完成剔除（后端 /subscribed-items
+                // 仍可能短暂返回它），下一次 loadSubscriptions 会用后端数据覆盖。
+                try {
+                    if (Array.isArray(allSubscriptions)) {
+                        const before = allSubscriptions.length;
+                        allSubscriptions = allSubscriptions.filter(
+                            (item) => String(item && item.publishedFileId) !== String(itemId)
+                        );
+                        if (allSubscriptions.length !== before) {
+                            totalPages = Math.max(1, Math.ceil(allSubscriptions.length / itemsPerPage));
+                            if (currentPage > totalPages) currentPage = totalPages;
+                            renderSubscriptionsPage();
+                            updatePagination();
+                        }
+                    }
+                } catch (optErr) {
+                    console.warn('[unsubscribe] 乐观更新失败，将依赖下一次 loadSubscriptions:', optErr);
+                }
+
+                // accepted 表示 Steam/后端取消订阅还在异步收敛；立即 loadSubscriptions
+                // 会把刚刚乐观剔除的卡片重新拉回来。延迟一次，等 Steam 端完成剔除后再刷。
+                // 其它状态（同步完成）直接刷新即可。
+                if (data.status === 'accepted') {
+                    setTimeout(loadSubscriptions, 1500);
+                } else {
+                    loadSubscriptions();
+                }
+            } else {
+                const errorMsg = (data && (data.error || data.message)) || (window.t ? window.t('common.unknownError') : '未知错误');
+                showMessage(`${window.t ? window.t('steam.unsubscribeFailed') : '取消订阅失败'}: ${errorMsg}`, 'error');
+                restoreCard();
+            }
+        })
+        .catch(error => {
+            console.error('取消订阅失败:', error);
+            showMessage(window.t ? window.t('steam.unsubscribeError') : '取消订阅失败', 'error');
+            restoreCard();
+        });
 }
 
 // 全局变量：存储所有可用模型信息
@@ -5006,4 +5131,308 @@ function selectPreviewImage() {
 
     // 触发文件选择对话框
     fileInput.click();
+}
+
+// =========================================================================
+// 清理遗留记忆（Legacy Memory Cleanup）
+// -----------------------------------------------------------------------
+// 流程：按钮点击 → openLegacyMemoryModal() → fetch GET /api/memory/legacy/scan
+// → 填充表格 → 用户勾选 → legacyMemoryPurgeSelected() → POST /api/memory/legacy/purge
+// → toast 汇报 → 重新扫描刷新弹层
+// =========================================================================
+
+// 最近一次 scan 结果缓存（用于快捷全选/只选未关联的复用）
+let _legacyMemoryLastScan = null;
+
+function _legacyMemoryI18n(key, fallback, opts) {
+    try {
+        if (window.t) {
+            const v = window.t(key, opts || {});
+            if (v && v !== key) return v;
+        }
+    } catch (_) { /* ignore */ }
+    return fallback;
+}
+
+function _legacyFormatSize(bytes) {
+    if (typeof bytes !== 'number' || bytes < 0) return '—';
+    if (bytes === 0) return '0 B';
+    const units = ['B', 'KB', 'MB', 'GB'];
+    let v = bytes;
+    let i = 0;
+    while (v >= 1024 && i < units.length - 1) {
+        v /= 1024;
+        i++;
+    }
+    return `${v.toFixed(v >= 10 || i === 0 ? 0 : 1)} ${units[i]}`;
+}
+
+function _legacyEscapeHtml(s) {
+    if (s === null || s === undefined) return '';
+    return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+function openLegacyMemoryModal() {
+    const modal = document.getElementById('legacyMemoryModal');
+    if (!modal) return;
+    modal.style.display = 'flex';
+    // 重置状态
+    const tableWrap = document.getElementById('legacy-memory-table-wrap');
+    const toolbar = document.getElementById('legacy-memory-toolbar');
+    const runtimeInfo = document.getElementById('legacy-memory-runtime-info');
+    const deleteBtn = document.getElementById('legacy-memory-delete-btn');
+    const deleteCount = document.getElementById('legacy-memory-delete-count');
+    if (tableWrap) {
+        tableWrap.innerHTML = `<div class="empty-state"><p>${_legacyEscapeHtml(
+            _legacyMemoryI18n('steam.legacyScanLoading', '扫描中...')
+        )}</p></div>`;
+    }
+    if (toolbar) toolbar.style.display = 'none';
+    if (runtimeInfo) runtimeInfo.textContent = '';
+    if (deleteBtn) deleteBtn.disabled = true;
+    if (deleteCount) deleteCount.textContent = ' (0)';
+    // 发起扫描
+    _legacyMemoryScan();
+}
+
+function closeLegacyMemoryModal() {
+    const modal = document.getElementById('legacyMemoryModal');
+    if (modal) modal.style.display = 'none';
+}
+
+function closeLegacyMemoryModalOnOutsideClick(event) {
+    if (event && event.target && event.target.id === 'legacyMemoryModal') {
+        closeLegacyMemoryModal();
+    }
+}
+
+function _legacyMemoryScan() {
+    fetch('/api/memory/legacy/scan')
+        .then((resp) => resp.json().then((data) => ({ resp, data })).catch(() => ({ resp, data: null })))
+        .then(({ resp, data }) => {
+            // 只记录状态 + 汇总计数；legacy_roots 里包含 Documents 路径，不落日志
+            console.info('[legacy memory scan]', {
+                status: resp.status,
+                ok: resp.ok,
+                success: !!(data && data.success),
+                total_entries: data && data.total_entries,
+                total_size_bytes: data && data.total_size_bytes,
+                root_count: data && Array.isArray(data.legacy_roots) ? data.legacy_roots.length : 0,
+            });
+            if (!resp.ok || !data || !data.success) {
+                const errMsg = (data && data.error) || `HTTP ${resp.status}`;
+                const tableWrap = document.getElementById('legacy-memory-table-wrap');
+                if (tableWrap) {
+                    tableWrap.innerHTML = `<div class="empty-state"><p style="color:#e57373;">${_legacyEscapeHtml(
+                        _legacyMemoryI18n('steam.legacyScanFailed', '扫描失败') + ': ' + errMsg
+                    )}</p></div>`;
+                }
+                return;
+            }
+            _legacyMemoryLastScan = data;
+            _legacyMemoryRenderTable(data);
+        })
+        .catch((err) => {
+            console.error('[legacy memory scan] 失败:', err);
+            const tableWrap = document.getElementById('legacy-memory-table-wrap');
+            if (tableWrap) {
+                tableWrap.innerHTML = `<div class="empty-state"><p style="color:#e57373;">${_legacyEscapeHtml(
+                    _legacyMemoryI18n('steam.legacyScanFailed', '扫描失败') + ': ' + (err && err.message ? err.message : err)
+                )}</p></div>`;
+            }
+        });
+}
+
+function _legacyMemoryRenderTable(data) {
+    const tableWrap = document.getElementById('legacy-memory-table-wrap');
+    const toolbar = document.getElementById('legacy-memory-toolbar');
+    const runtimeInfo = document.getElementById('legacy-memory-runtime-info');
+    if (!tableWrap) return;
+
+    if (runtimeInfo) {
+        const runtimePath = data.runtime_memory_dir || '-';
+        runtimeInfo.textContent = _legacyMemoryI18n(
+            'steam.legacyRuntimeMemory',
+            `runtime memory: ${runtimePath}`,
+            { path: runtimePath }
+        );
+    }
+
+    // 总条目数为 0 → empty state
+    if (!data.legacy_roots || data.total_entries === 0) {
+        tableWrap.innerHTML = `<div class="empty-state"><p>${_legacyEscapeHtml(
+            _legacyMemoryI18n('steam.legacyScanEmpty', '未发现遗留记忆，无需清理')
+        )}</p></div>`;
+        if (toolbar) toolbar.style.display = 'none';
+        const deleteBtn = document.getElementById('legacy-memory-delete-btn');
+        if (deleteBtn) deleteBtn.disabled = true;
+        return;
+    }
+
+    // 构造表格
+    const rows = [];
+    let globalIndex = 0;
+    for (const root of data.legacy_roots) {
+        if (!root.entries || root.entries.length === 0) continue;
+        rows.push(`
+            <tr>
+                <td colspan="5" style="background:#2a2a2a;color:#ccc;padding:6px 10px;font-size:12px;">
+                    <strong>${_legacyEscapeHtml(root.root)}</strong>
+                    <span style="color:#888;margin-left:8px;">[${_legacyEscapeHtml(root.source || '')}]</span>
+                </td>
+            </tr>
+        `);
+        for (const entry of root.entries) {
+            const statusLabel = entry.is_unlinked
+                ? _legacyMemoryI18n('steam.legacyStatusUnlinked', '未关联')
+                : (entry.runtime_has_same_name
+                    ? _legacyMemoryI18n('steam.legacyStatusDuplicate', '已有同名副本')
+                    : _legacyMemoryI18n('steam.legacyStatusListed', '仍在角色列表'));
+            const statusColor = entry.is_unlinked ? '#e57373' : (entry.runtime_has_same_name ? '#64b5f6' : '#9e9e9e');
+            const sizeStr = _legacyFormatSize(entry.size_bytes);
+            rows.push(`
+                <tr data-index="${globalIndex}" data-unlinked="${entry.is_unlinked ? '1' : '0'}">
+                    <td style="padding:6px 10px;width:30px;">
+                        <input type="checkbox" class="legacy-memory-row-cb" data-path="${_legacyEscapeHtml(entry.path)}" onchange="_legacyMemoryUpdateDeleteCount()">
+                    </td>
+                    <td style="padding:6px 10px;">${_legacyEscapeHtml(entry.name)}</td>
+                    <td style="padding:6px 10px;color:#888;font-size:12px;word-break:break-all;">${_legacyEscapeHtml(entry.path)}</td>
+                    <td style="padding:6px 10px;text-align:right;color:#ccc;">${_legacyEscapeHtml(sizeStr)}</td>
+                    <td style="padding:6px 10px;color:${statusColor};font-weight:500;">${_legacyEscapeHtml(statusLabel)}</td>
+                </tr>
+            `);
+            globalIndex++;
+        }
+    }
+
+    tableWrap.innerHTML = `
+        <div style="overflow-x:auto;max-height:50vh;overflow-y:auto;border:1px solid #333;border-radius:4px;">
+            <table style="width:100%;border-collapse:collapse;font-size:13px;">
+                <thead style="position:sticky;top:0;background:#1a1a1a;z-index:1;">
+                    <tr>
+                        <th style="padding:6px 10px;text-align:left;"></th>
+                        <th style="padding:6px 10px;text-align:left;" data-i18n="steam.legacyColName">名称</th>
+                        <th style="padding:6px 10px;text-align:left;" data-i18n="steam.legacyColPath">路径</th>
+                        <th style="padding:6px 10px;text-align:right;" data-i18n="steam.legacyColSize">大小</th>
+                        <th style="padding:6px 10px;text-align:left;" data-i18n="steam.legacyColStatus">状态</th>
+                    </tr>
+                </thead>
+                <tbody>${rows.join('')}</tbody>
+            </table>
+        </div>
+        <div style="margin-top:10px;color:#888;font-size:12px;">
+            ${_legacyEscapeHtml(_legacyMemoryI18n(
+                'steam.legacyScanFooter',
+                `共 ${data.total_entries} 条，总大小约 ${_legacyFormatSize(data.total_size_bytes)}`,
+                { count: data.total_entries, size: _legacyFormatSize(data.total_size_bytes) }
+            ))}
+        </div>
+    `;
+    if (toolbar) toolbar.style.display = 'flex';
+    _legacyMemoryUpdateDeleteCount();
+}
+
+function _legacyMemoryUpdateDeleteCount() {
+    const cbs = document.querySelectorAll('.legacy-memory-row-cb');
+    let checked = 0;
+    cbs.forEach((cb) => { if (cb.checked) checked++; });
+    const deleteBtn = document.getElementById('legacy-memory-delete-btn');
+    const deleteCount = document.getElementById('legacy-memory-delete-count');
+    if (deleteBtn) deleteBtn.disabled = checked === 0;
+    if (deleteCount) deleteCount.textContent = ` (${checked})`;
+}
+
+function legacyMemorySelectAll() {
+    document.querySelectorAll('.legacy-memory-row-cb').forEach((cb) => { cb.checked = true; });
+    _legacyMemoryUpdateDeleteCount();
+}
+
+function legacyMemorySelectNone() {
+    document.querySelectorAll('.legacy-memory-row-cb').forEach((cb) => { cb.checked = false; });
+    _legacyMemoryUpdateDeleteCount();
+}
+
+function legacyMemorySelectUnlinked() {
+    document.querySelectorAll('tr[data-index]').forEach((tr) => {
+        const cb = tr.querySelector('.legacy-memory-row-cb');
+        if (!cb) return;
+        cb.checked = tr.getAttribute('data-unlinked') === '1';
+    });
+    _legacyMemoryUpdateDeleteCount();
+}
+
+function legacyMemoryPurgeSelected() {
+    const cbs = document.querySelectorAll('.legacy-memory-row-cb');
+    const paths = [];
+    cbs.forEach((cb) => {
+        if (cb.checked) {
+            const p = cb.getAttribute('data-path');
+            if (p) paths.push(p);
+        }
+    });
+    if (paths.length === 0) return;
+
+    const confirmMsg = _legacyMemoryI18n(
+        'steam.legacyDeleteConfirm',
+        `确认永久删除 ${paths.length} 个目录？此操作不可撤销。`,
+        { count: paths.length }
+    );
+    if (!window.confirm(confirmMsg)) return;
+
+    const deleteBtn = document.getElementById('legacy-memory-delete-btn');
+    if (deleteBtn) deleteBtn.disabled = true;
+
+    fetch('/api/memory/legacy/purge', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ paths }),
+    })
+        .then((resp) => resp.json().then((data) => ({ resp, data })).catch(() => ({ resp, data: null })))
+        .then(({ resp, data }) => {
+            // 只记录状态 + 计数；removed / errors 内容含本地路径，不落日志
+            console.info('[legacy memory purge]', {
+                status: resp.status,
+                ok: resp.ok,
+                success: !!(data && data.success),
+                removed_count: data && Array.isArray(data.removed) ? data.removed.length : 0,
+                error_count: data && Array.isArray(data.errors) ? data.errors.length : 0,
+            });
+            if (!resp.ok || !data || !data.success) {
+                const errMsg = (data && data.error) || `HTTP ${resp.status}`;
+                showMessage(
+                    _legacyMemoryI18n('steam.legacyDeleteFailed', '清理失败') + ': ' + errMsg,
+                    'error',
+                    6000
+                );
+                if (deleteBtn) deleteBtn.disabled = false;
+                return;
+            }
+            const okCount = Array.isArray(data.removed) ? data.removed.length : 0;
+            const failCount = Array.isArray(data.errors) ? data.errors.length : 0;
+            const msg = _legacyMemoryI18n(
+                'steam.legacyDeleteDone',
+                `已删除 ${okCount} 条，失败 ${failCount} 条`,
+                { ok: okCount, failed: failCount }
+            );
+            showMessage(msg, failCount > 0 ? 'warning' : 'success', 5000);
+            if (failCount > 0) {
+                console.warn('[legacy memory purge errors]', data.errors);
+            }
+            // 刷新扫描
+            _legacyMemoryScan();
+        })
+        .catch((err) => {
+            console.error('[legacy memory purge] 失败:', err);
+            showMessage(
+                _legacyMemoryI18n('steam.legacyDeleteFailed', '清理失败') + ': ' + (err && err.message ? err.message : err),
+                'error',
+                6000
+            );
+            if (deleteBtn) deleteBtn.disabled = false;
+        });
 }
