@@ -50,6 +50,7 @@ import logging # noqa
 import atexit # noqa
 import httpx # noqa
 import time # noqa
+import signal # noqa
 from datetime import datetime, timezone # noqa
 from config import MAIN_SERVER_PORT, MONITOR_SERVER_PORT # noqa
 from utils.cloudsave_autocloud import get_cloudsave_manager # noqa
@@ -61,8 +62,10 @@ from utils.cloudsave_runtime import (
     is_write_fence_active,
     maintenance_error_payload,
     set_root_mode,
+    should_write_root_mode_normal_after_startup,
 )
 from utils.config_manager import get_config_manager, get_reserved # noqa
+from utils.storage_location_bootstrap import get_storage_startup_blocking_reason
 # 将日志初始化提前，确保导入阶段异常也能落盘
 from utils.logger_config import setup_logging # noqa: E402
 from utils.ssl_env_diagnostics import probe_ssl_environment, write_ssl_diagnostic # noqa: E402
@@ -239,6 +242,26 @@ async def _request_memory_server_shutdown() -> None:
             logger.warning(f"向memory_server发送关闭信号失败，状态码: {response.status_code}")
     except Exception as e:
         logger.warning(f"向memory_server发送关闭信号时出错: {e}")
+
+
+async def _request_memory_server_continue_startup(reason: str = "") -> None:
+    """Release memory_server from limited mode after the storage barrier is accepted."""
+    try:
+        from config import MEMORY_SERVER_PORT
+        from utils.internal_http_client import get_internal_http_client
+
+        client = get_internal_http_client()
+        response = await client.post(
+            f"http://127.0.0.1:{MEMORY_SERVER_PORT}/internal/storage/startup/continue",
+            json={"reason": reason},
+            timeout=60.0,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict) or payload.get("ok") is not True:
+            raise RuntimeError(f"memory_server continue-startup returned unexpected payload: {payload!r}")
+    except Exception as e:
+        raise RuntimeError(f"failed to release memory_server limited-mode startup: {e}") from e
 
 @dataclass
 class RoleState:
@@ -1035,6 +1058,7 @@ if _IS_MAIN_PROCESS:
         switch_current_catgirl_fast=switch_current_catgirl_fast,
         init_one_catgirl=init_one_catgirl,
         remove_one_catgirl=remove_one_catgirl,
+        request_app_shutdown=lambda: asyncio.create_task(request_application_shutdown_async()),
     )
 
 
@@ -1085,6 +1109,9 @@ app.include_router(pages_router)  # 兜底路由需最后挂载
 
 # 后台预加载任务
 _preload_task: asyncio.Task = None
+_runtime_startup_init_lock = asyncio.Lock()
+_runtime_startup_init_completed = False
+_heavy_import_prewarm_started = False
 
 
 async def _background_preload():
@@ -1236,13 +1263,205 @@ async def _sync_memory_server_after_startup_import(import_result):
         logger.warning(f"Steam Auto-Cloud startup import could not sync memory_server: {e}")
 
 
+async def _prewarm_heavy_imports():
+    import importlib
+
+    for mod in ("dashscope", "dashscope.audio.tts_v2"):
+        try:
+            await asyncio.to_thread(importlib.import_module, mod)
+            logger.debug(f"[prewarm] imported {mod}")
+        except Exception as e:
+            logger.debug(f"[prewarm] import {mod} failed (ignored): {e}")
+
+
+def _maybe_schedule_heavy_import_prewarm() -> None:
+    global _heavy_import_prewarm_started
+    if _heavy_import_prewarm_started:
+        return
+    _heavy_import_prewarm_started = True
+    asyncio.create_task(_prewarm_heavy_imports())
+
+
+async def _ensure_main_server_runtime_initialized(*, reason: str) -> bool:
+    global steamworks, _preload_task, agent_event_bridge, _runtime_startup_init_completed
+
+    if _runtime_startup_init_completed:
+        return False
+
+    async with _runtime_startup_init_lock:
+        if _runtime_startup_init_completed:
+            return False
+
+        _maybe_schedule_heavy_import_prewarm()
+
+        bootstrap_local_cloudsave_environment(_config_manager)
+        import_result = None
+        try:
+            import_result = await _run_cloudsave_manager_action(
+                "import_if_needed",
+                reason="main_server_startup",
+                budget_seconds=10.0,
+            )
+            logger.info("Steam Auto-Cloud startup import: %s", import_result)
+        except CloudsaveDeadlineExceeded:
+            logger.warning(
+                "Steam Auto-Cloud startup import exceeded 10.0s budget before applying runtime changes; continuing with local runtime state"
+            )
+        except Exception as e:
+            logger.warning(f"Steam Auto-Cloud startup import failed: {e}")
+
+        current_root_state = _config_manager.load_root_state()
+        if should_write_root_mode_normal_after_startup(current_root_state):
+            try:
+                set_root_mode(
+                    _config_manager,
+                    ROOT_MODE_NORMAL,
+                    current_root=str(_config_manager.app_docs_dir),
+                    last_known_good_root=str(_config_manager.app_docs_dir),
+                    last_successful_boot_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                )
+            except Exception as e:
+                logger.error("写入 main_server 启动成功标记失败，已中止后续启动写盘初始化: %s", e)
+                raise RuntimeError("main_server failed to persist ROOT_MODE_NORMAL state") from e
+        else:
+            logger.info(
+                "跳过 ROOT_MODE_NORMAL 写入，当前仍处于阻断态: %s",
+                current_root_state.get("mode") or ROOT_MODE_NORMAL,
+            )
+
+        await initialize_character_data()
+        await _sync_memory_server_after_startup_import(import_result)
+
+        logger.info("正在初始化 Steamworks...")
+        steamworks = initialize_steamworks()
+
+        from main_routers.shared_state import set_steamworks
+
+        set_steamworks(steamworks)
+        get_default_steam_info()
+
+        _preload_task = asyncio.create_task(_background_preload())
+        try:
+            agent_event_bridge = MainServerAgentBridge(on_agent_event=_handle_agent_event)
+            await agent_event_bridge.start()
+            set_main_bridge(agent_event_bridge)
+        except Exception as e:
+            logger.warning(f"Agent event bridge startup failed: {e}")
+
+        await _init_and_mount_workshop()
+
+        if steamworks:
+            _wr = importlib.import_module("main_routers.workshop_router")
+
+            async def _warmup_only():
+                try:
+                    await warmup_ugc_cache()
+                except Exception as e:
+                    logger.warning(f"UGC 缓存预热失败: {e}")
+
+            async def _sync_characters_only():
+                max_fence_retries = 15
+                retry_interval_seconds = 2
+                for attempt in range(1, max_fence_retries + 1):
+                    if not is_write_fence_active(_config_manager):
+                        break
+                    logger.info(
+                        "创意工坊角色卡同步检测到维护态写围栏，等待解除后重试 (%s/%s)",
+                        attempt,
+                        max_fence_retries,
+                    )
+                    await asyncio.sleep(retry_interval_seconds)
+                else:
+                    logger.info("创意工坊角色卡同步等待维护态解除超时，30s 后重新排队重试")
+
+                    async def _retry_sync_after_delay():
+                        try:
+                            await asyncio.sleep(30)
+                            await _sync_characters_only()
+                        except Exception as retry_exc:
+                            logger.warning(f"创意工坊角色卡同步重试任务失败: {retry_exc}")
+
+                    _wr._ugc_sync_task = asyncio.create_task(_retry_sync_after_delay())
+                    return
+                if _wr._ugc_warmup_task is not None:
+                    try:
+                        await asyncio.wait_for(asyncio.shield(_wr._ugc_warmup_task), timeout=20)
+                    except asyncio.TimeoutError:
+                        logger.warning("等待 UGC 预热任务超时（20s），继续角色卡同步")
+                    except Exception as e:
+                        logger.debug(f"等待 UGC 预热任务时异常（不影响角色卡同步）: {e}")
+                try:
+                    sync_result = await sync_workshop_character_cards()
+                    if sync_result["added"] > 0:
+                        logger.info(f"✅ 创意工坊角色卡同步完成：新增 {sync_result['added']} 个，跳过 {sync_result['skipped']} 个")
+                    else:
+                        logger.info("创意工坊角色卡同步完成：无新增角色卡")
+                except Exception as e:
+                    logger.warning(f"创意工坊角色卡同步失败（不影响启动）: {e}")
+
+            _wr._ugc_warmup_task = asyncio.create_task(_warmup_only())
+            _wr._ugc_sync_task = asyncio.create_task(_sync_characters_only())
+
+        try:
+            from utils.token_tracker import TokenTracker, install_hooks
+
+            install_hooks()
+            TokenTracker.get_instance().start_periodic_save()
+            TokenTracker.get_instance().record_app_start()
+            logger.info("Token usage tracker initialized")
+        except Exception as e:
+            logger.warning(f"Token tracker initialization failed (non-critical): {e}")
+
+        logger.info("Startup 初始化完成，后台正在预加载音频模块... (reason=%s)", reason)
+
+        try:
+            from utils.language_utils import initialize_global_language
+
+            global_lang = initialize_global_language()
+            logger.info(f"全局语言初始化完成: {global_lang}")
+        except Exception as e:
+            logger.warning(f"全局语言初始化失败（不影响启动）: {e}")
+
+        _runtime_startup_init_completed = True
+        return True
+
+
+async def release_storage_startup_barrier(*, reason: str = "storage_selection_continue_current_session") -> dict[str, Any]:
+    await _request_memory_server_continue_startup(reason)
+    initialized = await _ensure_main_server_runtime_initialized(reason=reason)
+    return {
+        "ok": True,
+        "initialized": bool(initialized),
+    }
+
+
+if _IS_MAIN_PROCESS:
+    from main_routers.shared_state import set_release_storage_startup_barrier, set_request_app_shutdown
+
+    set_release_storage_startup_barrier(release_storage_startup_barrier)
+    set_request_app_shutdown(lambda: asyncio.create_task(request_application_shutdown_async()))
+
+
 # Startup 事件：延迟初始化 Steamworks 和全局语言
 @app.on_event("startup")
 async def on_startup():
     """服务器启动时执行的初始化操作"""
     if _IS_MAIN_PROCESS:
-        global steamworks, _preload_task, agent_event_bridge, _server_loop
+        global _server_loop
         _server_loop = asyncio.get_running_loop()
+        init_shared_state(
+            role_state=role_state,
+            steamworks=steamworks,
+            templates=templates,
+            config_manager=_config_manager,
+            logger=logger,
+            initialize_character_data=initialize_character_data,
+            switch_current_catgirl_fast=switch_current_catgirl_fast,
+            init_one_catgirl=init_one_catgirl,
+            remove_one_catgirl=remove_one_catgirl,
+            request_app_shutdown=lambda: asyncio.create_task(request_application_shutdown_async()),
+            release_storage_startup_barrier=release_storage_startup_barrier,
+        )
         # asyncio 的慢回调告警只在 loop debug 模式下输出。默认关闭，
         # 需要排查事件循环停顿时设 NEKO_DEBUG_ASYNC=1 启用（会略微增加每 callback 开销）。
         if os.environ.get("NEKO_DEBUG_ASYNC") == "1":
@@ -1269,151 +1488,15 @@ async def on_startup():
             asyncio.create_task(_event_loop_heartbeat())
             logger.info("[asyncio] heartbeat enabled (stalls > 300ms will be logged)")
 
-        # 预热重量级模块导入，避免 TTS worker 线程第一次启动时在
-        # 工作线程里触发同步 import 阻塞事件循环（实测 dashscope
-        # 首次 import 会吃 GIL 3-7 秒，导致此期间 /new_dialog 响应
-        # 解析无法及时完成，表现为 "memory 服务响应超时"）。
-        # 放 to_thread 里跑，不阻塞 startup 本身。
-        async def _prewarm_heavy_imports():
-            import importlib
-            for mod in ("dashscope", "dashscope.audio.tts_v2"):
-                try:
-                    await asyncio.to_thread(importlib.import_module, mod)
-                    logger.debug(f"[prewarm] imported {mod}")
-                except Exception as e:
-                    logger.debug(f"[prewarm] import {mod} failed (ignored): {e}")
-        asyncio.create_task(_prewarm_heavy_imports())
-
-        # ── Steam Auto-Cloud 启动导入 + 角色数据初始化 ─────────────
-        # 先 bootstrap 再 import，保证导入时序稳定；任何异常都不中断启动
-        # 但会阻止持久化 ROOT_MODE_NORMAL 标记
-        bootstrap_local_cloudsave_environment(_config_manager)
-        import_result = None
-        try:
-            import_result = await _run_cloudsave_manager_action(
-                "import_if_needed",
-                reason="main_server_startup",
-                budget_seconds=10.0,
+        blocking_reason = get_storage_startup_blocking_reason(_config_manager)
+        if blocking_reason:
+            logger.info(
+                "检测到存储启动阻断态，main_server 先保持 limited-mode，等待网页端放行: %s",
+                blocking_reason,
             )
-            logger.info("Steam Auto-Cloud startup import: %s", import_result)
-        except CloudsaveDeadlineExceeded:
-            logger.warning(
-                "Steam Auto-Cloud startup import exceeded 10.0s budget before applying runtime changes; continuing with local runtime state"
-            )
-        except Exception as e:
-            logger.warning(f"Steam Auto-Cloud startup import failed: {e}")
-        try:
-            set_root_mode(
-                _config_manager,
-                ROOT_MODE_NORMAL,
-                current_root=str(_config_manager.app_docs_dir),
-                last_known_good_root=str(_config_manager.app_docs_dir),
-                last_successful_boot_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-            )
-        except Exception as e:
-            logger.error("写入 main_server 启动成功标记失败，已中止后续启动写盘初始化: %s", e)
-            raise RuntimeError("main_server failed to persist ROOT_MODE_NORMAL state") from e
-        await initialize_character_data()
-        await _sync_memory_server_after_startup_import(import_result)
+            return
 
-        logger.info("正在初始化 Steamworks...")
-        steamworks = initialize_steamworks()
-        
-        # 更新 shared_state 中的 steamworks 引用
-        from main_routers.shared_state import set_steamworks
-        set_steamworks(steamworks)
-        
-        # 尝试获取 Steam 信息
-        get_default_steam_info()
-        
-        # 在后台异步预加载音频模块（不阻塞服务器启动）
-        # 注意：不需要等待机制，Python import lock 会自动处理并发
-        _preload_task = asyncio.create_task(_background_preload())
-        # 启动 agent_server <-> main_server 的 ZeroMQ 事件桥接
-        try:
-            agent_event_bridge = MainServerAgentBridge(on_agent_event=_handle_agent_event)
-            await agent_event_bridge.start()
-            set_main_bridge(agent_event_bridge)
-        except Exception as e:
-            logger.warning(f"Agent event bridge startup failed: {e}")
-        await _init_and_mount_workshop()
-        
-        # 后台预热 UGC 缓存 + 同步角色卡（分别独立任务，互不阻塞）
-        if steamworks:
-            _wr = importlib.import_module("main_routers.workshop_router")
-            
-            async def _warmup_only():
-                """仅预热 UGC 缓存"""
-                try:
-                    await warmup_ugc_cache()
-                except Exception as e:
-                    logger.warning(f"UGC 缓存预热失败: {e}")
-            
-            async def _sync_characters_only():
-                """等待预热完成后同步角色卡"""
-                max_fence_retries = 15
-                retry_interval_seconds = 2
-                for attempt in range(1, max_fence_retries + 1):
-                    if not is_write_fence_active(_config_manager):
-                        break
-                    logger.info(
-                        "创意工坊角色卡同步检测到维护态写围栏，等待解除后重试 (%s/%s)",
-                        attempt,
-                        max_fence_retries,
-                    )
-                    await asyncio.sleep(retry_interval_seconds)
-                else:
-                    logger.info("创意工坊角色卡同步等待维护态解除超时，30s 后重新排队重试")
-
-                    async def _retry_sync_after_delay():
-                        try:
-                            await asyncio.sleep(30)
-                            await _sync_characters_only()
-                        except Exception as retry_exc:
-                            logger.warning(f"创意工坊角色卡同步重试任务失败: {retry_exc}")
-
-                    _wr._ugc_sync_task = asyncio.create_task(_retry_sync_after_delay())
-                    return
-                # 先等预热完成，角色卡同步依赖订阅物品列表
-                if _wr._ugc_warmup_task is not None:
-                    try:
-                        await asyncio.wait_for(asyncio.shield(_wr._ugc_warmup_task), timeout=20)
-                    except asyncio.TimeoutError:
-                        logger.warning("等待 UGC 预热任务超时（20s），继续角色卡同步")
-                    except Exception as e:
-                        logger.debug(f"等待 UGC 预热任务时异常（不影响角色卡同步）: {e}")
-                try:
-                    sync_result = await sync_workshop_character_cards()
-                    if sync_result["added"] > 0:
-                        logger.info(f"✅ 创意工坊角色卡同步完成：新增 {sync_result['added']} 个，跳过 {sync_result['skipped']} 个")
-                    else:
-                        logger.info("创意工坊角色卡同步完成：无新增角色卡")
-                except Exception as e:
-                    logger.warning(f"创意工坊角色卡同步失败（不影响启动）: {e}")
-            
-            # _ugc_warmup_task 仅引用预热任务，等待它不会被角色卡同步阻塞
-            _wr._ugc_warmup_task = asyncio.create_task(_warmup_only())
-            _wr._ugc_sync_task = asyncio.create_task(_sync_characters_only())
-        
-        # 初始化全局 LLM Token 用量追踪器
-        try:
-            from utils.token_tracker import TokenTracker, install_hooks
-            install_hooks()
-            TokenTracker.get_instance().start_periodic_save()
-            TokenTracker.get_instance().record_app_start()
-            logger.info("Token usage tracker initialized")
-        except Exception as e:
-            logger.warning(f"Token tracker initialization failed (non-critical): {e}")
-
-        logger.info("Startup 初始化完成，后台正在预加载音频模块...")
-
-        # 初始化全局语言变量（优先级：Steam设置 > 系统设置）
-        try:
-            from utils.language_utils import initialize_global_language
-            global_lang = initialize_global_language()
-            logger.info(f"全局语言初始化完成: {global_lang}")
-        except Exception as e:
-            logger.warning(f"全局语言初始化失败: {e}，将使用默认值")
+        await _ensure_main_server_runtime_initialized(reason="startup")
 
 
 @app.on_event("shutdown")
@@ -1617,6 +1700,43 @@ def get_start_config():
 def set_start_config(config):
     """设置启动配置到 app.state"""
     app.state.start_config = config
+
+
+async def request_application_shutdown_async():
+    """Request an application-level shutdown compatible with both launcher modes."""
+    launch_mode = os.environ.get("NEKO_LAUNCH_MODE", "").strip().lower()
+    if launch_mode == "merged":
+        loop = asyncio.get_running_loop()
+
+        def _request_merged_shutdown() -> None:
+            try:
+                os.kill(os.getpid(), signal.SIGTERM)
+            except Exception as exc:
+                logger.error("触发 merged 模式应用级关闭失败: %s", exc)
+
+        loop.call_later(0.5, _request_merged_shutdown)
+        return
+
+    launcher_pid_raw = os.environ.get("NEKO_LAUNCHER_PID", "").strip()
+    if launcher_pid_raw:
+        try:
+            launcher_pid = int(launcher_pid_raw)
+        except ValueError:
+            launcher_pid = 0
+
+        if launcher_pid > 0 and launcher_pid != os.getpid():
+            loop = asyncio.get_running_loop()
+
+            def _request_launcher_shutdown() -> None:
+                try:
+                    os.kill(launcher_pid, signal.SIGTERM)
+                except Exception as exc:
+                    logger.error("触发 launcher 级关闭失败: %s", exc)
+
+            loop.call_later(1.0, _request_launcher_shutdown)
+            return
+
+    await shutdown_server_async()
 
 
 async def _init_and_mount_workshop():

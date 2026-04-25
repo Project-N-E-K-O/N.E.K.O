@@ -3069,17 +3069,59 @@ def _collect_memory_stage_entries(
     return staged_entries
 
 
+def _managed_target_relative_path(config_manager, target_path: Path) -> Path:
+    normalized_target = Path(target_path).expanduser().resolve(strict=False)
+    runtime_root = Path(config_manager.app_docs_dir).expanduser().resolve(strict=False)
+    anchor_root = Path(getattr(config_manager, "anchor_root", config_manager.app_docs_dir)).expanduser().resolve(strict=False)
+
+    candidate_roots = [("runtime", runtime_root)]
+    if anchor_root != runtime_root:
+        candidate_roots.append(("anchor", anchor_root))
+
+    for scope, root in candidate_roots:
+        try:
+            relative_path = normalized_target.relative_to(root)
+        except ValueError:
+            continue
+        return Path(scope) / relative_path
+
+    raise ValueError(f"unmanaged cloudsave backup target: {target_path}")
+
+
+def _resolve_managed_target_path(config_manager, relative_path: str) -> Path:
+    normalized_relative_path = str(relative_path or "").strip().replace("\\", "/")
+    if not normalized_relative_path:
+        raise ValueError("managed backup relative path is empty")
+
+    parts = Path(normalized_relative_path)
+    if not parts.parts:
+        raise ValueError("managed backup relative path is empty")
+
+    scope = parts.parts[0]
+    suffix = Path(*parts.parts[1:]) if len(parts.parts) > 1 else Path()
+    if scope == "anchor":
+        root = Path(getattr(config_manager, "anchor_root", config_manager.app_docs_dir))
+        return root / suffix
+    if scope == "runtime":
+        return Path(config_manager.app_docs_dir) / suffix
+
+    # Backward compatibility for backups created before dual-root metadata was introduced.
+    return Path(config_manager.app_docs_dir) / Path(normalized_relative_path)
+
+
 def _build_backup_path(config_manager, backup_root: Path, target_path: Path) -> Path:
-    return backup_root / target_path.relative_to(config_manager.app_docs_dir)
+    return backup_root / _managed_target_relative_path(config_manager, target_path)
 
 
 def _snapshot_existing_targets(config_manager, backup_root: Path, targets: set[Path]) -> list[dict[str, Any]]:
     backup_records: list[dict[str, Any]] = []
     for target_path in sorted(targets, key=lambda path: (len(path.parts), str(path))):
+        relative_path = _managed_target_relative_path(config_manager, target_path)
         record = {
             "target": target_path,
             "backup": None,
             "is_dir": target_path.is_dir(),
+            "relative_path": str(relative_path).replace("\\", "/"),
         }
         if target_path.exists():
             backup_path = _build_backup_path(config_manager, backup_root, target_path)
@@ -3124,7 +3166,7 @@ def _write_operation_backup_metadata(
         "character_name": character_name,
         "targets": [
             {
-                "relative_path": str(record["target"].relative_to(config_manager.app_docs_dir)).replace("\\", "/"),
+                "relative_path": str(record.get("relative_path") or ""),
                 "had_backup": record.get("backup") is not None,
                 "is_dir": bool(record.get("is_dir", False)),
             }
@@ -3149,7 +3191,7 @@ def restore_cloudsave_operation_backup(config_manager, backup_root: str | Path) 
         relative_path = str(target.get("relative_path") or "").strip().replace("\\", "/")
         if not relative_path:
             continue
-        runtime_target = Path(config_manager.app_docs_dir) / relative_path
+        runtime_target = _resolve_managed_target_path(config_manager, relative_path)
         backup_path = backup_root_path / relative_path
         backup_records.append(
             {
@@ -3754,13 +3796,41 @@ def ensure_cloudsave_manifest(config_manager, *, preserve_existing_client_id: bo
 
 def bootstrap_local_cloudsave_environment(config_manager) -> dict[str, Any]:
     """Initialize phase-0 local cloudsave skeleton and state files."""
-    legacy_import = import_legacy_runtime_root_if_needed(config_manager)
     if not config_manager.ensure_cloudsave_structure():
         raise OSError("failed to ensure cloudsave directory structure")
 
     config_manager.ensure_cloudsave_state_files()
 
     root_state = config_manager.load_root_state()
+    if str(root_state.get("mode") or ROOT_MODE_NORMAL) == ROOT_MODE_DEFERRED_INIT:
+        cloud_state = config_manager.load_cloudsave_local_state()
+        cloud_changed = False
+        if not cloud_state.get("client_id"):
+            cloud_state["client_id"] = config_manager.build_default_cloudsave_local_state()["client_id"]
+            cloud_changed = True
+        next_seq = int(cloud_state.get("next_sequence_number") or 0)
+        if next_seq < 1:
+            cloud_state["next_sequence_number"] = 1
+            cloud_changed = True
+        if cloud_changed:
+            config_manager.save_cloudsave_local_state(cloud_state)
+
+        manifest = ensure_cloudsave_manifest(config_manager, preserve_existing_client_id=True)
+        return {
+            "root_state": root_state,
+            "cloudsave_local_state": config_manager.load_cloudsave_local_state(),
+            "manifest": manifest,
+            "legacy_import": {
+                "migrated": False,
+                "source": "",
+                "copied_paths": [],
+                "backup_path": "",
+                "repair_reason": "",
+                "result": "recovery_required",
+            },
+        }
+
+    legacy_import = import_legacy_runtime_root_if_needed(config_manager)
     root_state, recovered_stale_mode = _recover_stale_write_blocking_mode(config_manager, root_state)
     root_changed = False
     app_root = str(config_manager.app_docs_dir)
@@ -3816,6 +3886,12 @@ def get_root_state(config_manager) -> dict[str, Any]:
 def get_root_mode(config_manager) -> str:
     state = get_root_state(config_manager)
     return str(state.get("mode") or ROOT_MODE_NORMAL)
+
+
+def should_write_root_mode_normal_after_startup(root_state: dict[str, Any] | None) -> bool:
+    """Return True only when startup bootstrap has already settled back to normal mode."""
+    state = root_state if isinstance(root_state, dict) else {}
+    return str(state.get("mode") or ROOT_MODE_NORMAL) == ROOT_MODE_NORMAL
 
 
 def set_root_mode(config_manager, mode: str, **updates: Any) -> dict[str, Any]:
@@ -3959,9 +4035,35 @@ def _process_holds_cloud_apply_lock() -> bool:
     return _cloud_apply_lock_handle is not None or _cloud_apply_lock_file is not None
 
 
+def _should_preserve_write_blocking_mode(config_manager, root_state: dict[str, Any]) -> bool:
+    current_mode = str(root_state.get("mode") or ROOT_MODE_NORMAL)
+    if current_mode == ROOT_MODE_DEFERRED_INIT:
+        # 恢复态必须显式交给存储引导流程处理，不能在启动 bootstrap 里静默放行为 normal。
+        return True
+
+    if current_mode != ROOT_MODE_MAINTENANCE_READONLY:
+        return False
+
+    last_migration_result = str(root_state.get("last_migration_result") or "").strip()
+    if last_migration_result.startswith("restart_pending:"):
+        return True
+
+    try:
+        from utils.storage_migration import is_storage_migration_pending, load_storage_migration
+
+        migration_payload = load_storage_migration(config_manager)
+    except Exception:
+        migration_payload = None
+
+    return bool(migration_payload) and is_storage_migration_pending(migration_payload)
+
+
 def _recover_stale_write_blocking_mode(config_manager, root_state: dict[str, Any]) -> tuple[dict[str, Any], bool]:
     current_mode = str(root_state.get("mode") or ROOT_MODE_NORMAL)
     if current_mode not in WRITE_BLOCKING_MODES:
+        return root_state, False
+
+    if _should_preserve_write_blocking_mode(config_manager, root_state):
         return root_state, False
 
     if _process_holds_cloud_apply_lock():

@@ -24,6 +24,11 @@ def _make_config_manager(
         patch.object(ConfigManager, "_get_documents_directory", return_value=tmp_path),
         patch.object(
             ConfigManager,
+            "_get_standard_data_directory_candidates",
+            return_value=[tmp_path],
+        ),
+        patch.object(
+            ConfigManager,
             "get_legacy_app_root_candidates",
             return_value=list(legacy_candidates),
         ),
@@ -31,14 +36,16 @@ def _make_config_manager(
     if platform is not None:
         patchers.append(patch("utils.config_manager.sys.platform", platform))
 
-    with patchers[0], patchers[1]:
-        if len(patchers) == 2:
+    with patchers[0], patchers[1], patchers[2]:
+        if len(patchers) == 3:
             config_manager = ConfigManager("N.E.K.O")
             config_manager.get_legacy_app_root_candidates = lambda: list(legacy_candidates)
+            config_manager._get_standard_data_directory_candidates = lambda: [tmp_path]
             return config_manager
-        with patchers[2]:
+        with patchers[3]:
             config_manager = ConfigManager("N.E.K.O")
             config_manager.get_legacy_app_root_candidates = lambda: list(legacy_candidates)
+            config_manager._get_standard_data_directory_candidates = lambda: [tmp_path]
             return config_manager
 
 
@@ -534,6 +541,75 @@ def test_bootstrap_recovers_stale_blocking_mode(tmp_path):
 
     assert result["root_state"]["mode"] == "normal"
     assert result["root_state"]["last_migration_result"] == f"recovered_stale_mode:{ROOT_MODE_BOOTSTRAP_IMPORTING}"
+
+
+@pytest.mark.unit
+def test_bootstrap_preserves_deferred_init_mode(tmp_path):
+    cm = _make_config_manager(tmp_path)
+
+    from utils.cloudsave_runtime import ROOT_MODE_DEFERRED_INIT, bootstrap_local_cloudsave_environment
+
+    cm.ensure_cloudsave_state_files()
+    root_state = cm.load_root_state()
+    unavailable_root = tmp_path / "offline-selected" / "N.E.K.O"
+    root_state["mode"] = ROOT_MODE_DEFERRED_INIT
+    root_state["current_root"] = str(unavailable_root)
+    root_state["last_known_good_root"] = str(unavailable_root)
+    root_state["last_migration_result"] = f"selected_root_unavailable:{unavailable_root}"
+    cm.save_root_state(root_state)
+
+    result = bootstrap_local_cloudsave_environment(cm)
+
+    assert result["root_state"]["mode"] == ROOT_MODE_DEFERRED_INIT
+    assert result["root_state"]["current_root"] == str(unavailable_root)
+    assert result["root_state"]["last_known_good_root"] == str(unavailable_root)
+    assert result["root_state"]["last_migration_result"] == f"selected_root_unavailable:{unavailable_root}"
+
+
+@pytest.mark.unit
+def test_bootstrap_preserves_restart_pending_maintenance_mode(tmp_path):
+    cm = _make_config_manager(tmp_path)
+    anchor_base = tmp_path / "anchor-base"
+    anchor_base.mkdir(parents=True, exist_ok=True)
+    cm._get_standard_data_directory_candidates = lambda: [anchor_base]
+
+    from utils.cloudsave_runtime import (
+        ROOT_MODE_MAINTENANCE_READONLY,
+        bootstrap_local_cloudsave_environment,
+        set_root_mode,
+    )
+    from utils.storage_migration import create_pending_storage_migration
+
+    create_pending_storage_migration(
+        cm,
+        source_root=cm.app_docs_dir,
+        target_root=tmp_path / "target-root" / "N.E.K.O",
+        selection_source="custom",
+    )
+    set_root_mode(
+        cm,
+        ROOT_MODE_MAINTENANCE_READONLY,
+        last_migration_source=str(cm.app_docs_dir),
+        last_migration_result=f"restart_pending:{tmp_path / 'target-root' / 'N.E.K.O'}",
+    )
+
+    result = bootstrap_local_cloudsave_environment(cm)
+
+    assert result["root_state"]["mode"] == ROOT_MODE_MAINTENANCE_READONLY
+    assert result["root_state"]["last_migration_result"].startswith("restart_pending:")
+
+
+@pytest.mark.unit
+def test_should_write_root_mode_normal_after_startup_only_when_mode_is_normal():
+    from utils.cloudsave_runtime import (
+        ROOT_MODE_DEFERRED_INIT,
+        ROOT_MODE_MAINTENANCE_READONLY,
+        should_write_root_mode_normal_after_startup,
+    )
+
+    assert should_write_root_mode_normal_after_startup({"mode": "normal"}) is True
+    assert should_write_root_mode_normal_after_startup({"mode": ROOT_MODE_DEFERRED_INIT}) is False
+    assert should_write_root_mode_normal_after_startup({"mode": ROOT_MODE_MAINTENANCE_READONLY}) is False
 
 
 @pytest.mark.unit

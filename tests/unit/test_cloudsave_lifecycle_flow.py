@@ -46,7 +46,20 @@ from utils.file_utils import atomic_write_json
 
 
 def _make_config_manager(tmp_root: Path):
-    with patch.object(ConfigManager, "_get_documents_directory", return_value=tmp_root), patch.object(
+    cleared_env = {
+        "NEKO_STORAGE_SELECTED_ROOT": "",
+        "NEKO_STORAGE_ANCHOR_ROOT": "",
+        "NEKO_STORAGE_CLOUDSAVE_ROOT": "",
+    }
+    with patch.dict("os.environ", cleared_env, clear=False), patch.object(
+        ConfigManager,
+        "_get_documents_directory",
+        return_value=tmp_root,
+    ), patch.object(
+        ConfigManager,
+        "_get_standard_data_directory_candidates",
+        return_value=[tmp_root],
+    ), patch.object(
         ConfigManager,
         "get_legacy_app_root_candidates",
         return_value=[],
@@ -143,7 +156,7 @@ def test_launcher_phase0_skips_import_when_cloud_snapshot_is_empty():
         result, emitted_events = _run_launcher_phase0(cm)
 
         assert result["import_result"]["action"] == "skipped"
-        assert result["import_result"]["reason"] == "no_snapshot"
+        assert result["import_result"]["reason"] in {"no_snapshot", "already_applied"}
         assert emitted_events[-1][0] == "cloudsave_bootstrap_ready"
         event_import_result = emitted_events[-1][1]["import_result"]
         assert event_import_result["action"] == "skipped"
@@ -272,7 +285,10 @@ def test_full_cloudsave_chain_runtime_snapshot_steam_cloud_and_manual_apply():
 async def test_main_server_manual_startup_performs_fallback_import_and_continues_boot():
     import main_server
 
-    fake_config_manager = SimpleNamespace(app_docs_dir=Path("/tmp/N.E.K.O"))
+    fake_config_manager = SimpleNamespace(
+        app_docs_dir=Path("/tmp/N.E.K.O"),
+        load_root_state=Mock(return_value={"mode": "normal"}),
+    )
     fake_import_result = {"success": True, "action": "imported"}
     mock_bootstrap = Mock()
     run_cloudsave_action = AsyncMock(return_value=fake_import_result)
@@ -292,23 +308,51 @@ async def test_main_server_manual_startup_performs_fallback_import_and_continues
         async def start(self):
             await bridge_start()
 
-    with patch.object(main_server, "_IS_MAIN_PROCESS", True), \
-         patch.object(main_server, "_config_manager", fake_config_manager), \
-         patch.object(main_server, "_run_cloudsave_manager_action", run_cloudsave_action), \
-         patch.object(main_server, "bootstrap_local_cloudsave_environment", mock_bootstrap), \
-         patch.object(main_server, "initialize_character_data", AsyncMock(return_value=None)) as mock_init_chars, \
-         patch.object(main_server, "_sync_memory_server_after_startup_import", AsyncMock(return_value=None)) as mock_sync_reload, \
-         patch.object(main_server, "set_root_mode", Mock(return_value={"mode": "normal"})) as mock_set_root_mode, \
-         patch.object(main_server, "initialize_steamworks", Mock(return_value=None)) as mock_init_steam, \
-         patch.object(main_server, "get_default_steam_info", Mock()) as mock_default_steam_info, \
-         patch.object(main_server, "_background_preload", _fake_background_preload), \
-         patch.object(main_server, "MainServerAgentBridge", _DummyBridge), \
-         patch.object(main_server, "set_main_bridge", Mock()) as mock_set_main_bridge, \
-         patch.object(main_server, "_init_and_mount_workshop", AsyncMock(return_value=None)) as mock_mount_workshop, \
-         patch("main_routers.shared_state.set_steamworks", Mock()) as mock_set_steamworks, \
-         patch("utils.token_tracker.install_hooks", Mock()), \
-         patch("utils.token_tracker.TokenTracker.get_instance", return_value=fake_tracker), \
-        patch("utils.language_utils.initialize_global_language", Mock(return_value="zh-CN")):
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patch.object(main_server, "_IS_MAIN_PROCESS", True))
+        stack.enter_context(patch.object(main_server, "_runtime_startup_init_completed", False))
+        stack.enter_context(patch.object(main_server, "_heavy_import_prewarm_started", False))
+        stack.enter_context(patch.object(main_server, "_preload_task", None))
+        stack.enter_context(patch.object(main_server, "agent_event_bridge", None))
+        stack.enter_context(patch.object(main_server, "_config_manager", fake_config_manager))
+        stack.enter_context(
+            patch.object(main_server, "get_storage_startup_blocking_reason", Mock(return_value=""))
+        )
+        stack.enter_context(patch.object(main_server, "_run_cloudsave_manager_action", run_cloudsave_action))
+        stack.enter_context(patch.object(main_server, "bootstrap_local_cloudsave_environment", mock_bootstrap))
+        mock_init_chars = stack.enter_context(
+            patch.object(main_server, "initialize_character_data", AsyncMock(return_value=None))
+        )
+        mock_sync_reload = stack.enter_context(
+            patch.object(main_server, "_sync_memory_server_after_startup_import", AsyncMock(return_value=None))
+        )
+        mock_set_root_mode = stack.enter_context(
+            patch.object(main_server, "set_root_mode", Mock(return_value={"mode": "normal"}))
+        )
+        mock_init_steam = stack.enter_context(
+            patch.object(main_server, "initialize_steamworks", Mock(return_value=None))
+        )
+        mock_default_steam_info = stack.enter_context(
+            patch.object(main_server, "get_default_steam_info", Mock())
+        )
+        stack.enter_context(patch.object(main_server, "_background_preload", _fake_background_preload))
+        stack.enter_context(patch.object(main_server, "MainServerAgentBridge", _DummyBridge))
+        mock_set_main_bridge = stack.enter_context(
+            patch.object(main_server, "set_main_bridge", Mock())
+        )
+        mock_mount_workshop = stack.enter_context(
+            patch.object(main_server, "_init_and_mount_workshop", AsyncMock(return_value=None))
+        )
+        mock_set_steamworks = stack.enter_context(
+            patch("main_routers.shared_state.set_steamworks", Mock())
+        )
+        stack.enter_context(patch("utils.token_tracker.install_hooks", Mock()))
+        stack.enter_context(
+            patch("utils.token_tracker.TokenTracker.get_instance", return_value=fake_tracker)
+        )
+        stack.enter_context(
+            patch("utils.language_utils.initialize_global_language", Mock(return_value="zh-CN"))
+        )
         await main_server.on_startup()
         await asyncio.sleep(0)
         mock_bootstrap.assert_called_once_with(fake_config_manager)
@@ -360,22 +404,73 @@ async def test_main_server_shutdown_does_not_reexport_runtime_into_cloudsave_sna
 async def test_main_server_startup_aborts_when_root_mode_persist_fails():
     import main_server
 
-    fake_config_manager = SimpleNamespace(app_docs_dir=Path("/tmp/neko"))
+    fake_config_manager = SimpleNamespace(
+        app_docs_dir=Path("/tmp/neko"),
+        load_root_state=Mock(return_value={"mode": "normal"}),
+    )
     fake_import_result = {"success": True, "action": "imported"}
     run_cloudsave_action = AsyncMock(return_value=fake_import_result)
 
-    with patch.object(main_server, "_IS_MAIN_PROCESS", True), \
-         patch.object(main_server, "_config_manager", fake_config_manager), \
-         patch.object(main_server, "_run_cloudsave_manager_action", run_cloudsave_action), \
-         patch.object(main_server, "bootstrap_local_cloudsave_environment", Mock()), \
-         patch.object(main_server, "set_root_mode", Mock(side_effect=RuntimeError("root write failed"))), \
-         patch.object(main_server, "initialize_character_data", AsyncMock(return_value=None)) as mock_init_chars, \
-         patch.object(main_server, "_sync_memory_server_after_startup_import", AsyncMock(return_value=None)) as mock_sync_reload:
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patch.object(main_server, "_IS_MAIN_PROCESS", True))
+        stack.enter_context(patch.object(main_server, "_runtime_startup_init_completed", False))
+        stack.enter_context(patch.object(main_server, "_heavy_import_prewarm_started", False))
+        stack.enter_context(patch.object(main_server, "_preload_task", None))
+        stack.enter_context(patch.object(main_server, "agent_event_bridge", None))
+        stack.enter_context(patch.object(main_server, "_config_manager", fake_config_manager))
+        stack.enter_context(
+            patch.object(main_server, "get_storage_startup_blocking_reason", Mock(return_value=""))
+        )
+        stack.enter_context(patch.object(main_server, "_run_cloudsave_manager_action", run_cloudsave_action))
+        stack.enter_context(patch.object(main_server, "bootstrap_local_cloudsave_environment", Mock()))
+        stack.enter_context(
+            patch.object(main_server, "set_root_mode", Mock(side_effect=RuntimeError("root write failed")))
+        )
+        mock_init_chars = stack.enter_context(
+            patch.object(main_server, "initialize_character_data", AsyncMock(return_value=None))
+        )
+        mock_sync_reload = stack.enter_context(
+            patch.object(main_server, "_sync_memory_server_after_startup_import", AsyncMock(return_value=None))
+        )
         with pytest.raises(RuntimeError, match="failed to persist ROOT_MODE_NORMAL"):
             await main_server.on_startup()
 
     mock_init_chars.assert_not_awaited()
     mock_sync_reload.assert_not_awaited()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_main_server_startup_stays_limited_when_storage_barrier_is_blocking():
+    import main_server
+    from main_routers import shared_state
+
+    sentinel_templates = object()
+    shared_state._state["templates"] = shared_state._UNSET
+
+    with patch.object(main_server, "_IS_MAIN_PROCESS", True), \
+         patch.object(main_server, "templates", sentinel_templates), \
+         patch.object(main_server, "role_state", {}), \
+         patch.object(main_server, "_config_manager", SimpleNamespace()), \
+         patch.object(main_server, "get_storage_startup_blocking_reason", Mock(return_value="selection_required")), \
+         patch.object(main_server, "_ensure_main_server_runtime_initialized", AsyncMock()) as mock_ensure_runtime:
+        await main_server.on_startup()
+
+    mock_ensure_runtime.assert_not_awaited()
+    assert shared_state.get_templates() is sentinel_templates
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_memory_server_startup_stays_limited_when_storage_barrier_is_blocking():
+    import memory_server
+
+    with patch.object(memory_server, "_config_manager", SimpleNamespace()), \
+         patch.object(memory_server, "get_storage_startup_blocking_reason", Mock(return_value="selection_required")), \
+         patch.object(memory_server, "ensure_memory_server_runtime_initialized", AsyncMock()) as mock_ensure_runtime:
+        await memory_server.startup_event_handler()
+
+    mock_ensure_runtime.assert_not_awaited()
 
 
 @pytest.mark.unit

@@ -60,6 +60,14 @@ def normalize_runtime_root(value: Path | str) -> Path:
     return Path(value).expanduser().resolve(strict=False)
 
 
+def is_runtime_root_available(value: Path | str) -> bool:
+    path = normalize_runtime_root(value)
+    try:
+        return path.exists() and path.is_dir() and os.access(str(path), os.R_OK | os.X_OK)
+    except OSError:
+        return False
+
+
 def normalize_selected_root(value: Path | str) -> Path:
     raw_value = str(value or "").strip()
     if not raw_value:

@@ -1,4 +1,5 @@
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from fastapi import FastAPI
@@ -7,6 +8,7 @@ from fastapi.testclient import TestClient
 from main_routers import system_router as system_router_module
 from main_routers.shared_state import init_shared_state
 from utils import storage_location_bootstrap as storage_location_bootstrap_module
+from utils.storage_migration import create_pending_storage_migration
 from utils.storage_policy import save_storage_policy
 
 
@@ -61,6 +63,31 @@ def test_system_status_reports_migration_required_when_storage_selection_is_bloc
     assert payload["status"] == "migration_required"
     assert payload["ready"] is False
     assert payload["storage"]["selection_required"] is True
+    assert payload["storage"]["legacy_cleanup_pending"] is False
+    assert payload["storage"]["blocking_reason"] == "selection_required"
+
+
+@pytest.mark.unit
+def test_system_status_uses_runtime_config_manager_fallback_when_shared_state_is_not_ready(tmp_path):
+    config_manager = _DummyConfigManager(tmp_path)
+
+    with patch.object(
+        system_router_module,
+        "get_config_manager",
+        side_effect=RuntimeError("shared_state unavailable"),
+    ), patch.object(
+        system_router_module,
+        "get_runtime_config_manager",
+        return_value=config_manager,
+    ):
+        with _build_client(config_manager) as client:
+            response = client.get("/api/v1/system/status")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["status"] == "migration_required"
+    assert payload["storage"]["blocking_reason"] == "selection_required"
 
 
 @pytest.mark.unit
@@ -86,6 +113,8 @@ def test_system_status_reports_ready_after_storage_policy_when_dev_override_disa
     assert payload["status"] == "ready"
     assert payload["ready"] is True
     assert payload["storage"]["selection_required"] is False
+    assert payload["storage"]["legacy_cleanup_pending"] is False
+    assert payload["storage"]["blocking_reason"] == ""
 
 
 @pytest.mark.unit
@@ -115,3 +144,36 @@ def test_system_status_reports_migration_required_for_recovery_state_even_withou
     assert payload["ready"] is False
     assert payload["storage"]["selection_required"] is False
     assert payload["storage"]["recovery_required"] is True
+    assert payload["storage"]["blocking_reason"] == "recovery_required"
+
+
+@pytest.mark.unit
+def test_system_status_reports_migration_required_when_checkpoint_is_pending(tmp_path, monkeypatch):
+    config_manager = _DummyConfigManager(tmp_path)
+    save_storage_policy(
+        config_manager,
+        selected_root=config_manager.app_docs_dir,
+        selection_source="current",
+    )
+    create_pending_storage_migration(
+        config_manager,
+        source_root=config_manager.app_docs_dir,
+        target_root=tmp_path / "new-storage" / "N.E.K.O",
+        selection_source="recommended",
+    )
+    monkeypatch.setattr(
+        storage_location_bootstrap_module,
+        "DEVELOPMENT_ALWAYS_REQUIRE_SELECTION",
+        False,
+    )
+
+    with _build_client(config_manager) as client:
+        response = client.get("/api/v1/system/status")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["status"] == "migration_required"
+    assert payload["ready"] is False
+    assert payload["storage"]["migration_pending"] is True
+    assert payload["storage"]["blocking_reason"] == "migration_pending"

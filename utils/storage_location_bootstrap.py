@@ -5,12 +5,24 @@ from typing import Any
 
 from utils.cloudsave_runtime import ROOT_MODE_DEFERRED_INIT, _runtime_root_has_user_content
 from utils.storage_policy import compute_anchor_root, should_require_storage_selection
+from utils.storage_migration import (
+    is_retained_root_cleanup_available,
+    is_storage_migration_pending,
+    load_storage_migration,
+)
 
-# TEMP(development):
-# 当前开发阶段要求网页主页每次打开都弹出存储位置选择层，方便反复验证首屏显示。
-# 第二阶段已经接入 storage_policy；开发结束后这里应改回 False，
-# 恢复成“只在真正首次或恢复态时才需要选择”的正常模式。
-DEVELOPMENT_ALWAYS_REQUIRE_SELECTION = True
+# 正常模式：
+# 仅在真正首次需要选择、存在待迁移检查点或进入恢复态时，才要求网页端阻断并显示存储位置选择流程。
+DEVELOPMENT_ALWAYS_REQUIRE_SELECTION = False
+STORAGE_LOCATION_STAGE = "stage3_web_restart"
+STORAGE_STATUS_POLL_INTERVAL_MS = 1200
+STORAGE_STARTUP_BLOCKING_REASONS = frozenset(
+    {
+        "selection_required",
+        "migration_pending",
+        "recovery_required",
+    }
+)
 
 
 def _normalize_path(value: Path | str) -> str:
@@ -36,16 +48,96 @@ def _collect_legacy_sources(config_manager, *, current_root: Path, anchor_root: 
 
 def _extract_last_error(last_migration_result: str) -> str:
     result = (last_migration_result or "").strip()
-    if "failed" in result.lower():
+    lowered = result.lower()
+    if "failed" in lowered or "unavailable" in lowered:
         return result
     return ""
 
 
+def derive_storage_blocking_reason(
+    *,
+    selection_required: bool,
+    migration_pending: bool,
+    recovery_required: bool,
+) -> str:
+    if migration_pending:
+        return "migration_pending"
+    if recovery_required:
+        return "recovery_required"
+    if selection_required:
+        return "selection_required"
+    return ""
+
+
+def _build_migration_payload(migration_checkpoint: dict[str, Any] | None, last_migration_result: str) -> dict[str, Any]:
+    checkpoint = migration_checkpoint if isinstance(migration_checkpoint, dict) else {}
+    return {
+        "status": str(checkpoint.get("status") or "").strip(),
+        "source_root": _normalize_path(checkpoint.get("source_root") or "") if checkpoint.get("source_root") else "",
+        "target_root": _normalize_path(checkpoint.get("target_root") or "") if checkpoint.get("target_root") else "",
+        "selection_source": str(checkpoint.get("selection_source") or "").strip(),
+        "requested_at": str(checkpoint.get("requested_at") or "").strip(),
+        "started_at": str(checkpoint.get("started_at") or "").strip(),
+        "updated_at": str(checkpoint.get("updated_at") or "").strip(),
+        "committed_at": str(checkpoint.get("committed_at") or "").strip(),
+        "completed_at": str(checkpoint.get("completed_at") or "").strip(),
+        "backup_root": _normalize_path(checkpoint.get("backup_root") or "") if checkpoint.get("backup_root") else "",
+        "retained_source_root": _normalize_path(checkpoint.get("retained_source_root") or "") if checkpoint.get("retained_source_root") else "",
+        "retained_source_mode": str(checkpoint.get("retained_source_mode") or "").strip(),
+        "error_code": str(checkpoint.get("error_code") or "").strip(),
+        "error_message": str(checkpoint.get("error_message") or "").strip(),
+        "last_error": str(checkpoint.get("error_message") or "").strip() or _extract_last_error(last_migration_result),
+    }
+
+
+def _derive_legacy_cleanup_pending(
+    *,
+    root_state: dict[str, Any],
+    migration_payload: dict[str, Any],
+    current_root: Path,
+    anchor_root: Path,
+) -> bool:
+    retained_root = str(
+        migration_payload.get("retained_source_root")
+        or migration_payload.get("backup_root")
+        or root_state.get("last_migration_backup")
+        or ""
+    ).strip()
+    if not is_retained_root_cleanup_available(
+        retained_root,
+        current_root=current_root,
+        anchor_root=anchor_root,
+        target_root=str(migration_payload.get("target_root") or "").strip(),
+        require_exists=True,
+    ):
+        return False
+
+    root_state_flag = bool(root_state.get("legacy_cleanup_pending"))
+    migration_completed = str(migration_payload.get("status") or "").strip() == "completed"
+    return bool(root_state_flag or migration_completed)
+
+
+def _reconcile_legacy_cleanup_pending_root_state(
+    config_manager,
+    *,
+    root_state: dict[str, Any],
+    derived_legacy_cleanup_pending: bool,
+) -> dict[str, Any]:
+    if bool(root_state.get("legacy_cleanup_pending")) == bool(derived_legacy_cleanup_pending):
+        return root_state
+
+    updated_root_state = dict(root_state)
+    updated_root_state["legacy_cleanup_pending"] = bool(derived_legacy_cleanup_pending)
+    try:
+        config_manager.save_root_state(updated_root_state)
+        return updated_root_state
+    except Exception:
+        return root_state
+
+
 def _should_require_selection(config_manager, *, current_root: Path, anchor_root: Path) -> bool:
-    # TEMP(development):
-    # 开发阶段仍然始终强制弹窗，方便反复验证首屏流程。
-    # 正式收口时把 DEVELOPMENT_ALWAYS_REQUIRE_SELECTION 改回 False，
-    # 下面这条 storage_policy 判定就会恢复为正常“仅首次需要选择时弹出”。
+    # 仅保留一个可选的开发调试开关；默认走正式逻辑，
+    # 即只在真正首次或恢复态下要求选择。
     if DEVELOPMENT_ALWAYS_REQUIRE_SELECTION:
         return True
     return should_require_storage_selection(
@@ -57,32 +149,73 @@ def _should_require_selection(config_manager, *, current_root: Path, anchor_root
 
 def build_storage_location_bootstrap_payload(config_manager) -> dict[str, Any]:
     current_root = Path(config_manager.app_docs_dir).expanduser().resolve(strict=False)
+    display_current_root = Path(
+        getattr(config_manager, "reported_current_root", current_root)
+    ).expanduser().resolve(strict=False)
     anchor_root = compute_anchor_root(config_manager, current_root=current_root)
     root_state = config_manager.load_root_state()
     root_mode = str(root_state.get("mode") or "")
     last_migration_result = str(root_state.get("last_migration_result") or "")
+    migration_checkpoint = load_storage_migration(
+        config_manager,
+        anchor_root=anchor_root,
+    )
+
+    selection_required = _should_require_selection(
+        config_manager,
+        current_root=current_root,
+        anchor_root=anchor_root,
+    )
+    migration_pending = is_storage_migration_pending(migration_checkpoint)
+    recovery_required = root_mode == ROOT_MODE_DEFERRED_INIT
+    migration_payload = _build_migration_payload(
+        migration_checkpoint,
+        last_migration_result,
+    )
+    last_error_summary = migration_payload.get("last_error", "")
+    legacy_cleanup_pending = _derive_legacy_cleanup_pending(
+        root_state=root_state,
+        migration_payload=migration_payload,
+        current_root=current_root,
+        anchor_root=anchor_root,
+    )
+    root_state = _reconcile_legacy_cleanup_pending_root_state(
+        config_manager,
+        root_state=root_state,
+        derived_legacy_cleanup_pending=legacy_cleanup_pending,
+    )
 
     return {
-        "current_root": _normalize_path(current_root),
+        "current_root": _normalize_path(display_current_root),
         "recommended_root": _normalize_path(anchor_root),
         "legacy_sources": _collect_legacy_sources(
             config_manager,
-            current_root=current_root,
+            current_root=display_current_root,
             anchor_root=anchor_root,
         ),
         "anchor_root": _normalize_path(anchor_root),
         "cloudsave_root": _normalize_path(anchor_root / "cloudsave"),
-        "selection_required": _should_require_selection(
-            config_manager,
-            current_root=current_root,
-            anchor_root=anchor_root,
+        "selection_required": selection_required,
+        "migration_pending": migration_pending,
+        "recovery_required": recovery_required,
+        "blocking_reason": derive_storage_blocking_reason(
+            selection_required=selection_required,
+            migration_pending=migration_pending,
+            recovery_required=recovery_required,
         ),
-        "migration_pending": False,
-        "recovery_required": root_mode == ROOT_MODE_DEFERRED_INIT,
-        "legacy_cleanup_pending": False,
+        "legacy_cleanup_pending": legacy_cleanup_pending,
         "last_known_good_root": _normalize_path(root_state.get("last_known_good_root") or current_root),
-        "migration": {
-            "last_error": _extract_last_error(last_migration_result),
-        },
-        "stage": "stage2_web_selection",
+        "last_error_summary": str(last_error_summary or "").strip(),
+        "migration": migration_payload,
+        "stage": STORAGE_LOCATION_STAGE,
+        "poll_interval_ms": STORAGE_STATUS_POLL_INTERVAL_MS,
     }
+
+
+def get_storage_startup_blocking_reason(config_manager) -> str:
+    payload = build_storage_location_bootstrap_payload(config_manager)
+    return str(payload.get("blocking_reason") or "").strip()
+
+
+def is_storage_startup_blocked(config_manager) -> bool:
+    return get_storage_startup_blocking_reason(config_manager) in STORAGE_STARTUP_BLOCKING_REASONS

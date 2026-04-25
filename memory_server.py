@@ -59,8 +59,10 @@ from utils.cloudsave_runtime import (
     bootstrap_local_cloudsave_environment,
     maintenance_error_payload,
     set_root_mode,
+    should_write_root_mode_normal_after_startup,
 )
 from utils.config_manager import get_config_manager
+from utils.storage_location_bootstrap import get_storage_startup_blocking_reason
 from pydantic import BaseModel
 import re
 import asyncio
@@ -79,6 +81,10 @@ from utils.time_format import format_elapsed as _format_elapsed
 
 class HistoryRequest(BaseModel):
     input_history: str
+
+
+class ContinueStorageStartupRequest(BaseModel):
+    reason: str = ""
 
 app = FastAPI()
 
@@ -133,6 +139,9 @@ reconciler: Reconciler | None = None
 # 用于保护重新加载操作的锁
 _reload_lock = asyncio.Lock()
 _deferred_time_managers: list[TimeIndexedMemory] = []
+_memory_runtime_init_lock = asyncio.Lock()
+_memory_runtime_init_completed = False
+_memory_background_tasks_started = False
 
 
 def _defer_time_manager_cleanup(manager: TimeIndexedMemory | None) -> None:
@@ -1454,156 +1463,180 @@ async def _amaybe_trigger_negative_keyword_hook(
         )
 
 
+async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
+    global recent_history_manager, settings_manager, time_manager, fact_store
+    global persona_manager, reflection_engine, cursor_store, outbox, event_log, reconciler
+    global _memory_runtime_init_completed, _memory_background_tasks_started
+
+    if _memory_runtime_init_completed:
+        return False
+
+    async with _memory_runtime_init_lock:
+        if _memory_runtime_init_completed:
+            return False
+
+        bootstrap_ok = False
+        try:
+            bootstrap_local_cloudsave_environment(_config_manager)
+            bootstrap_ok = True
+        except Exception as e:
+            logger.warning(f"[Memory] cloudsave 环境 bootstrap 失败，后续 cloudsave 相关操作可能降级: {e}")
+
+        try:
+            from memory import migrate_to_character_dirs
+
+            _config_manager.ensure_memory_directory()
+            _char_data = await _config_manager.aload_characters()
+            _catgirl_names = list(_char_data.get('猫娘', {}).keys())
+            await asyncio.to_thread(migrate_to_character_dirs, _config_manager.memory_dir, _catgirl_names)
+        except Exception as _e:
+            logger.warning(f"[Memory] 目录迁移失败: {_e}")
+
+        recent_history_manager = CompressedRecentHistoryManager()
+        settings_manager = ImportantSettingsManager()
+        time_manager = TimeIndexedMemory(recent_history_manager)
+        fact_store = FactStore(time_indexed_memory=time_manager)
+        event_log = EventLog()
+        persona_manager = PersonaManager(event_log=event_log)
+        reflection_engine = ReflectionEngine(fact_store, persona_manager, event_log=event_log)
+        cursor_store = CursorStore()
+        outbox = Outbox()
+        reconciler = Reconciler(event_log)
+        _register_evidence_handlers(reconciler, persona_manager, reflection_engine)
+
+        try:
+            from utils.token_tracker import TokenTracker, install_hooks
+
+            install_hooks()
+            TokenTracker.get_instance().start_periodic_save()
+            TokenTracker.get_instance().record_app_start()
+        except Exception as e:
+            logger.warning(f"[Memory] Token tracker init failed: {e}")
+
+        await _aload_maint_state()
+
+        catgirl_names: list[str] = []
+        try:
+            character_data = await _config_manager.aload_characters()
+            catgirl_names = list(character_data.get('猫娘', {}).keys())
+            if catgirl_names:
+                results = await asyncio.gather(
+                    *(persona_manager.aensure_persona(n) for n in catgirl_names),
+                    return_exceptions=True,
+                )
+                for name, result in zip(catgirl_names, results):
+                    if isinstance(result, Exception):
+                        logger.warning(
+                            f"[Memory] Persona 迁移检查失败: {name}: {result}",
+                            exc_info=result,
+                        )
+            logger.info(f"[Memory] Persona 迁移检查完成，角色数: {len(catgirl_names)}")
+        except Exception as e:
+            logger.warning(f"[Memory] Persona 迁移检查失败: {e}")
+
+        try:
+            await _replay_pending_outbox()
+        except Exception as e:
+            logger.warning(f"[Outbox] 启动补跑顶层失败: {e}")
+
+        async def _reconcile_one(n: str):
+            try:
+                applied = await reconciler.areconcile(n)
+                if applied:
+                    logger.info(f"[Memory] reconciler {n}: 重放 {applied} 条事件")
+            except Exception as e:
+                logger.warning(f"[Memory] reconciler {n} replay 失败: {e}")
+
+        if catgirl_names:
+            await asyncio.gather(
+                *(_reconcile_one(n) for n in catgirl_names),
+                return_exceptions=True,
+            )
+
+        async def _migrate_one(n: str):
+            try:
+                await _aone_shot_migration_if_needed(n)
+            except Exception as e:
+                logger.warning(f"[Memory] {n} evidence 迁移失败: {e}")
+            try:
+                await _aone_shot_archive_migration_if_needed(n)
+            except Exception as e:
+                logger.warning(f"[Memory] {n} archive 迁移失败: {e}")
+
+        if catgirl_names:
+            await asyncio.gather(
+                *(_migrate_one(n) for n in catgirl_names),
+                return_exceptions=True,
+            )
+
+        if bootstrap_ok:
+            current_root_state = _config_manager.load_root_state()
+            if should_write_root_mode_normal_after_startup(current_root_state):
+                try:
+                    set_root_mode(
+                        _config_manager,
+                        ROOT_MODE_NORMAL,
+                        current_root=str(_config_manager.app_docs_dir),
+                        last_known_good_root=str(_config_manager.app_docs_dir),
+                        last_successful_boot_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                    )
+                except Exception as e:
+                    logger.warning(f"[Memory] 写入启动成功标记失败: {e}")
+            else:
+                logger.info(
+                    "[Memory] 跳过 ROOT_MODE_NORMAL 写入，当前仍处于阻断态: %s",
+                    current_root_state.get("mode") or ROOT_MODE_NORMAL,
+                )
+        else:
+            logger.warning("[Memory] 跳过 ROOT_MODE_NORMAL 写入：cloudsave bootstrap 未成功")
+
+        if not _memory_background_tasks_started:
+            _spawn_background_task(_periodic_rebuttal_loop())
+            _spawn_background_task(_periodic_auto_promote_loop())
+            _spawn_background_task(_periodic_idle_maintenance_loop())
+            if EVIDENCE_SIGNAL_CHECK_ENABLED:
+                _spawn_background_task(_periodic_signal_extraction_loop())
+            _spawn_background_task(_periodic_archive_sweep_loop())
+            _memory_background_tasks_started = True
+
+        _memory_runtime_init_completed = True
+        logger.info("[Memory] 运行态初始化完成 (reason=%s)", reason or "manual")
+        return True
+
+
 @app.on_event("startup")
 async def startup_event_handler():
     """应用启动时初始化"""
-    global recent_history_manager, settings_manager, time_manager, fact_store, persona_manager, reflection_engine, cursor_store, outbox, event_log, reconciler
-
-    # ── 步骤 1：bootstrap cloudsave 目录 ──────────────────────────
-    # 磁盘满/只读 FS 等场景会 raise OSError；降级为 warning 后继续，
-    # set_root_mode(NORMAL) 只在 bootstrap 成功时写入。bootstrap 内部的
-    # import_legacy_runtime_root_if_needed 可能把 legacy 扁平布局文件带进 target root，
-    # 所以 migrate 必须在 bootstrap 之后运行。
-    bootstrap_ok = False
-    try:
-        bootstrap_local_cloudsave_environment(_config_manager)
-        bootstrap_ok = True
-    except Exception as e:
-        logger.warning(f"[Memory] cloudsave 环境 bootstrap 失败，后续 cloudsave 相关操作可能降级: {e}")
-
-    # ── 步骤 2：目录结构迁移 ───────────────────────────────────
-    # 必须在 bootstrap 之后（拿到可能的 legacy 扁平文件）、组件实例化之前（组件只读 per-character 路径）。
-    try:
-        from memory import migrate_to_character_dirs
-        _config_manager.ensure_memory_directory()
-        _char_data = await _config_manager.aload_characters()
-        _catgirl_names = list(_char_data.get('猫娘', {}).keys())
-        await asyncio.to_thread(migrate_to_character_dirs, _config_manager.memory_dir, _catgirl_names)
-    except Exception as _e:
-        logger.warning(f"[Memory] 目录迁移失败: {_e}")
-
-    # ── 步骤 3：组件实例化 ──────────────────────────────────
-    recent_history_manager = CompressedRecentHistoryManager()
-    settings_manager = ImportantSettingsManager()  # 保留兼容，逐步迁移
-    time_manager = TimeIndexedMemory(recent_history_manager)
-    fact_store = FactStore(time_indexed_memory=time_manager)
-    event_log = EventLog()
-    persona_manager = PersonaManager(event_log=event_log)
-    reflection_engine = ReflectionEngine(fact_store, persona_manager, event_log=event_log)
-    cursor_store = CursorStore()
-    outbox = Outbox()
-    reconciler = Reconciler(event_log)
-    _register_evidence_handlers(reconciler, persona_manager, reflection_engine)
-
-    try:
-        from utils.token_tracker import TokenTracker, install_hooks
-        install_hooks()
-        TokenTracker.get_instance().start_periodic_save()
-        TokenTracker.get_instance().record_app_start()
-    except Exception as e:
-        logger.warning(f"[Memory] Token tracker init failed: {e}")
-
-    # 加载持久化维护状态（review_clean 标记等）
-    await _aload_maint_state()
-
-    # 自动迁移 settings → persona（如 persona 文件不存在）
-    # 注：目录结构迁移已在模块级完成（在组件实例化之前）
-    try:
-        character_data = await _config_manager.aload_characters()
-        catgirl_names = list(character_data.get('猫娘', {}).keys())
-        # 各角色的 persona 文件互相独立，并行迁移检查避免 N 倍串行磁盘 IO。
-        # return_exceptions=True：避免 fail-fast 取消其它角色正在写盘的协程，
-        # 造成 persona 文件半写入；出错的角色单独记日志。
-        if catgirl_names:
-            results = await asyncio.gather(
-                *(persona_manager.aensure_persona(n) for n in catgirl_names),
-                return_exceptions=True,
-            )
-            for name, result in zip(catgirl_names, results):
-                if isinstance(result, Exception):
-                    logger.warning(
-                        f"[Memory] Persona 迁移检查失败: {name}: {result}",
-                        exc_info=result,
-                    )
-        logger.info(f"[Memory] Persona 迁移检查完成，角色数: {len(catgirl_names)}")
-    except Exception as e:
-        logger.warning(f"[Memory] Persona 迁移检查失败: {e}")
-
-    # P1.c 启动补跑：扫 outbox 里仍 pending 的 op（进程上次被 kill 时未完成的
-    # extract_facts 等），幂等重跑。_replay_pending_outbox 内部已容错，不阻塞
-    # 主启动链路。
-    try:
-        await _replay_pending_outbox()
-    except Exception as e:
-        logger.warning(f"[Outbox] 启动补跑顶层失败: {e}")
-
-    if bootstrap_ok:
-        try:
-            set_root_mode(
-                _config_manager,
-                ROOT_MODE_NORMAL,
-                current_root=str(_config_manager.app_docs_dir),
-                last_known_good_root=str(_config_manager.app_docs_dir),
-                last_successful_boot_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-            )
-        except Exception as e:
-            logger.warning(f"[Memory] 写入启动成功标记失败: {e}")
-    else:
-        logger.warning("[Memory] 跳过 ROOT_MODE_NORMAL 写入：cloudsave bootstrap 未成功")
-
-    # memory-evidence-rfc §3.3.4: reconciler 启动期补跑 —— 崩溃后把未 apply
-    # 的 evidence / persona / reflection 事件重放到 view。per-character 独
-    # 立（各自有独立 event_log 锁 + 独立文件），并行 replay 把 N×IO 的墙
-    # 钟压成 max，同时 return_exceptions 保证一个角色的失败不带倒其他。
-    async def _reconcile_one(n: str):
-        try:
-            applied = await reconciler.areconcile(n)
-            if applied:
-                logger.info(f"[Memory] reconciler {n}: 重放 {applied} 条事件")
-        except Exception as e:
-            logger.warning(f"[Memory] reconciler {n} replay 失败: {e}")
-
-    if catgirl_names:
-        await asyncio.gather(
-            *(_reconcile_one(n) for n in catgirl_names),
-            return_exceptions=True,
+    blocking_reason = get_storage_startup_blocking_reason(_config_manager)
+    if blocking_reason:
+        logger.info(
+            "[Memory] 检测到存储启动阻断态，先保持 limited-mode，等待网页端放行: %s",
+            blocking_reason,
         )
+        return
 
-    # memory-evidence-rfc §5: 一次性迁移种子 —— 给旧 reflection / persona 补
-    # 上 evidence 字段，失败静默（不阻塞 startup）。各角色 marker 独立、
-    # 互不依赖，并行。
-    # PR-2 加：同步触发 §3.5.5 的旧 flat reflections_archive.json → 分片
-    # 目录迁移。两个 migration 都自带 idempotent guard，无依赖关系。
-    async def _migrate_one(n: str):
-        try:
-            await _aone_shot_migration_if_needed(n)
-        except Exception as e:
-            logger.warning(f"[Memory] {n} evidence 迁移失败: {e}")
-        try:
-            await _aone_shot_archive_migration_if_needed(n)
-        except Exception as e:
-            logger.warning(f"[Memory] {n} archive 迁移失败: {e}")
+    await ensure_memory_server_runtime_initialized(reason="startup")
 
-    if catgirl_names:
-        await asyncio.gather(
-            *(_migrate_one(n) for n in catgirl_names),
-            return_exceptions=True,
+
+@app.post("/internal/storage/startup/continue")
+async def continue_storage_startup(payload: ContinueStorageStartupRequest | None = None):
+    try:
+        initialized = await ensure_memory_server_runtime_initialized(
+            reason=str(getattr(payload, "reason", "") or "storage_selection_continue_current_session"),
         )
-
-    # 启动定期后台任务
-    _spawn_background_task(_periodic_rebuttal_loop())
-    _spawn_background_task(_periodic_auto_promote_loop())
-
-    # 空闲时自动维护记忆（压缩、矛盾审视、review）
-    _spawn_background_task(_periodic_idle_maintenance_loop())
-
-    # memory-evidence-rfc §3.4.3: 信号抽取后台循环（Stage-1 + Stage-2 + dispatch）
-    if EVIDENCE_SIGNAL_CHECK_ENABLED:
-        _spawn_background_task(_periodic_signal_extraction_loop())
-
-    # memory-evidence-rfc §3.5: archive 扫描后台循环（sub_zero_days
-    # 增量 + 满阈值归档），独立于 evidence signal 抽取。
-    _spawn_background_task(_periodic_archive_sweep_loop())
+        return {
+            "ok": True,
+            "initialized": bool(initialized),
+        }
+    except Exception as e:
+        logger.error(f"[Memory] 释放 limited-mode 启动失败: {e}", exc_info=True)
+        return JSONResponse(
+            status_code=500,
+            content={
+                "ok": False,
+                "error": str(e),
+            },
+        )
 
 
 @app.on_event("shutdown")

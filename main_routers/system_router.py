@@ -94,6 +94,8 @@ from utils.tutorial_prompt_state import (
     record_tutorial_completed,
 )
 from utils.storage_location_bootstrap import build_storage_location_bootstrap_payload
+from utils.config_manager import get_config_manager as get_runtime_config_manager
+from config import APP_NAME
 
 router = APIRouter(prefix="/api", tags=["system"])
 logger = get_module_logger(__name__, "Main")
@@ -168,6 +170,15 @@ def _get_request_origin(request: Request) -> str:
     if origin:
         return origin
     return _normalize_origin_value(request.headers.get("referer"))
+
+
+def _get_system_config_manager():
+    try:
+        return get_config_manager()
+    except RuntimeError:
+        # The storage bootstrap sentinel must keep working during limited startup
+        # even if main_server shared_state is not fully published yet.
+        return get_runtime_config_manager(APP_NAME, migrate=False)
 
 
 def _get_allowed_local_origins(request: Request) -> set[str]:
@@ -250,7 +261,7 @@ async def get_system_status(response: Response):
     _set_no_store_headers(response)
 
     try:
-        config_manager = get_config_manager()
+        config_manager = _get_system_config_manager()
         storage_bootstrap = build_storage_location_bootstrap_payload(config_manager)
         lifecycle_state = _derive_system_lifecycle_state(storage_bootstrap)
         return {
@@ -261,6 +272,9 @@ async def get_system_status(response: Response):
                 "selection_required": bool(storage_bootstrap.get("selection_required")),
                 "migration_pending": bool(storage_bootstrap.get("migration_pending")),
                 "recovery_required": bool(storage_bootstrap.get("recovery_required")),
+                "legacy_cleanup_pending": bool(storage_bootstrap.get("legacy_cleanup_pending")),
+                "blocking_reason": str(storage_bootstrap.get("blocking_reason") or ""),
+                "last_error_summary": str(storage_bootstrap.get("last_error_summary") or ""),
                 "stage": storage_bootstrap.get("stage") or "",
             },
         }
@@ -274,6 +288,9 @@ async def get_system_status(response: Response):
                 "selection_required": False,
                 "migration_pending": False,
                 "recovery_required": False,
+                "legacy_cleanup_pending": False,
+                "blocking_reason": "",
+                "last_error_summary": "",
                 "stage": "",
             },
         }
