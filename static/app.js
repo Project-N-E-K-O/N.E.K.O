@@ -181,7 +181,8 @@ function init_app() {
 
 const ready = async () => {
     if (ready._called) return;
-    ready._called = true;
+    if (ready._inProgress) return;
+    ready._inProgress = true;
 
     if (window.appStorageLocation && typeof window.appStorageLocation.init === 'function') {
         try {
@@ -189,13 +190,18 @@ const ready = async () => {
             // 才继续 pageConfig 和主业务初始化。
             var storageDecision = await window.appStorageLocation.init();
             if (storageDecision && storageDecision.canContinue === false) {
+                ready._inProgress = false;
                 return;
             }
         } catch (error) {
             console.warn('[Init] storage location overlay init failed', error);
+            ready._inProgress = false;
             return;
         }
     }
+
+    ready._called = true;
+    ready._inProgress = false;
 
     // 存储位置闸门放行后，才允许 pageConfig 开始加载。
     if (typeof window.startPageConfigLoad === 'function') {

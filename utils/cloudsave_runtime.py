@@ -4052,7 +4052,8 @@ def _should_preserve_write_blocking_mode(config_manager, root_state: dict[str, A
         from utils.storage_migration import is_storage_migration_pending, load_storage_migration
 
         migration_payload = load_storage_migration(config_manager)
-    except Exception:
+    except Exception as exc:
+        logger.warning("failed to load storage migration while preserving write-blocking mode: %s", exc)
         migration_payload = None
 
     return bool(migration_payload) and is_storage_migration_pending(migration_payload)

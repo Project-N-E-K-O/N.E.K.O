@@ -1620,6 +1620,18 @@ async def startup_event_handler():
 
 @app.post("/internal/storage/startup/continue")
 async def continue_storage_startup(payload: ContinueStorageStartupRequest | None = None):
+    blocking_reason = get_storage_startup_blocking_reason(_config_manager)
+    if blocking_reason:
+        return JSONResponse(
+            status_code=409,
+            content={
+                "ok": False,
+                "error_code": "storage_startup_blocked",
+                "blocking_reason": blocking_reason,
+                "error": "当前存储状态仍需选择、迁移或恢复，暂时不能释放 memory server 启动闸门。",
+            },
+        )
+
     try:
         initialized = await ensure_memory_server_runtime_initialized(
             reason=str(getattr(payload, "reason", "") or "storage_selection_continue_current_session"),

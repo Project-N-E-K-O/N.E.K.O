@@ -1479,8 +1479,23 @@ async def test_cross_server_post_memory_server_handles_business_error(monkeypatc
 def test_cross_server_session_end_uses_settle_for_zero_remaining():
     """session end must call /settle when everything was already /cache-synced."""
     source = Path("main_logic/cross_server.py").read_text(encoding="utf-8")
-    assert '_settle_endpoint = "process" if remaining else "settle"' in source
-    assert "_settle_payload = remaining if remaining else chat_history" in source
+    tree = ast.parse(source)
+    assignments = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        for target in node.targets:
+            if isinstance(target, ast.Name) and target.id in {"_settle_endpoint", "_settle_payload"}:
+                assignments[target.id] = ast.dump(node.value, include_attributes=False)
+
+    assert assignments["_settle_endpoint"] == ast.dump(
+        ast.parse('"process" if remaining else "settle"', mode="eval").body,
+        include_attributes=False,
+    )
+    assert assignments["_settle_payload"] == ast.dump(
+        ast.parse("remaining if remaining else []", mode="eval").body,
+        include_attributes=False,
+    )
 
 
 def test_cross_server_memory_cache_failure_paths_are_selective():

@@ -195,8 +195,13 @@ function resolvePageConfig(result) {
 
 function startMultiWindowPageConfigLoad() {
     return new Promise(function (resolve) {
+        var settled = false;
         // preload 通过 IPC 拿到 Pet 窗口的 lanlan_config 后派发此事件
-        window.addEventListener('neko:config-injected', function handler(event) {
+        var handler = function (event) {
+            if (settled) {
+                return;
+            }
+            settled = true;
             window.removeEventListener('neko:config-injected', handler);
             var d = (event && event.detail) || {};
             lanlan_config.lanlan_name = d.lanlan_name || '';
@@ -225,13 +230,17 @@ function startMultiWindowPageConfigLoad() {
                 }
             }
             resolve(d);
-        });
+        };
+        window.addEventListener('neko:config-injected', handler);
         // 超时保护：5 秒后 fallback 到 HTTP API
         setTimeout(function () {
-            if (!lanlan_config.lanlan_name) {
-                console.warn('[主页] 多窗口 IPC 配置超时，fallback 到 API');
-                loadPageConfig().then(resolve);
+            if (settled) {
+                return;
             }
+            settled = true;
+            window.removeEventListener('neko:config-injected', handler);
+            console.warn('[主页] 多窗口 IPC 配置超时，fallback 到 API');
+            loadPageConfig().then(resolve);
         }, 5000);
     });
 }

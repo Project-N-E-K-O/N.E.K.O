@@ -45,6 +45,10 @@ from utils.cloudsave_runtime import (
 def _make_config_manager(tmp_root: Path):
     with patch.object(ConfigManager, "_get_documents_directory", return_value=tmp_root), patch.object(
         ConfigManager,
+        "_get_standard_data_directory_candidates",
+        return_value=[tmp_root],
+    ), patch.object(
+        ConfigManager,
         "get_legacy_app_root_candidates",
         return_value=[],
     ), patch.object(
@@ -53,6 +57,7 @@ def _make_config_manager(tmp_root: Path):
         return_value=tmp_root,
     ):
         config_manager = ConfigManager("N.E.K.O")
+    config_manager._get_standard_data_directory_candidates = lambda: [tmp_root]
     config_manager.get_legacy_app_root_candidates = lambda: []
     config_manager.project_memory_dir = tmp_root / "memory" / "store"
     return config_manager
@@ -688,6 +693,7 @@ async def test_sync_workshop_character_cards_skips_save_when_maintenance_fence_t
                 operation="save",
                 target="characters.json",
             )
+            assert_saved_mock = AsyncMock(side_effect=maintenance_error)
 
             with patch.object(
                 workshop_router_module,
@@ -703,10 +709,11 @@ async def test_sync_workshop_character_cards_skips_save_when_maintenance_fence_t
                         ],
                     }
                 ),
-            ), patch.object(cm, "asave_characters", AsyncMock(side_effect=maintenance_error)):
+            ), patch.object(cm, "asave_characters", assert_saved_mock):
                 sync_result = await workshop_router_module.sync_workshop_character_cards()
 
-            assert sync_result == {"added": 0, "skipped": 0, "errors": 0}
+            assert sync_result == {"added": 0, "skipped": 0, "errors": 0, "blocked_by_write_fence": True}
+            assert_saved_mock.assert_awaited_once()
             assert "维护态工坊角色" not in cm.load_characters().get("猫娘", {})
 
 

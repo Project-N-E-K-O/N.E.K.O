@@ -59,6 +59,19 @@ def test_config_manager_env_overrides_committed_layout(tmp_path, monkeypatch):
 
 
 @pytest.mark.unit
+def test_resolve_storage_layout_keeps_default_anchor_when_policy_is_missing(tmp_path, monkeypatch):
+    monkeypatch.delenv(NEKO_STORAGE_SELECTED_ROOT_ENV, raising=False)
+    monkeypatch.delenv(NEKO_STORAGE_ANCHOR_ROOT_ENV, raising=False)
+
+    config_manager = _make_config_manager(tmp_path)
+    layout = resolve_storage_layout(config_manager)
+
+    assert layout["selected_root"] == str((tmp_path / "runtime-parent" / "N.E.K.O").resolve())
+    assert layout["anchor_root"] == str((tmp_path / "anchor-base" / "N.E.K.O").resolve())
+    assert layout["source"] == "runtime_default"
+
+
+@pytest.mark.unit
 def test_config_manager_uses_anchor_runtime_layout_when_committed_selected_root_is_unavailable(
     tmp_path,
     monkeypatch,
@@ -156,5 +169,13 @@ def test_get_config_manager_skips_runtime_file_migration_while_recovery_layout_i
         assert manager.recovery_committed_root_unavailable is True
         assert not (unavailable_selected_root / "config").exists()
         assert not (unavailable_selected_root / "memory").exists()
+        manager.recovery_committed_root_unavailable = False
+        with patch.object(manager, "migrate_config_files") as migrate_config, patch.object(
+            manager,
+            "migrate_memory_files",
+        ) as migrate_memory:
+            assert get_config_manager("N.E.K.O") is manager
+        migrate_config.assert_called_once()
+        migrate_memory.assert_called_once()
     finally:
         reset_config_manager_cache()

@@ -333,12 +333,18 @@
         if (typeof window.waitForStorageLocationStartupBarrier === 'function') {
             try {
                 await window.waitForStorageLocationStartupBarrier();
-            } catch (_) {}
+            } catch (error) {
+                console.warn('[Achievement] storage startup barrier failed; achievement manager init deferred', error);
+                return;
+            }
         } else if (window.__nekoStorageLocationStartupBarrier
             && typeof window.__nekoStorageLocationStartupBarrier.then === 'function') {
             try {
                 await window.__nekoStorageLocationStartupBarrier;
-            } catch (_) {}
+            } catch (error) {
+                console.warn('[Achievement] storage startup barrier failed; achievement manager init deferred', error);
+                return;
+            }
         }
 
         installAchievementManager(new AchievementManager());

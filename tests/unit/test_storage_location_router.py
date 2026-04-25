@@ -697,6 +697,48 @@ def test_storage_location_restart_rebinds_original_root_without_creating_migrati
 
 
 @pytest.mark.unit
+def test_storage_location_restart_rebind_rolls_back_state_when_shutdown_fails(tmp_path, monkeypatch):
+    config_manager = _make_real_config_manager(tmp_path)
+    unavailable_selected_root = tmp_path / "offline-selected" / "N.E.K.O"
+    from utils.storage_policy import save_storage_policy
+
+    save_storage_policy(
+        config_manager,
+        selected_root=unavailable_selected_root,
+        selection_source="custom",
+    )
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    unavailable_selected_root.mkdir(parents=True, exist_ok=True)
+    previous_policy = load_storage_policy(reloaded_manager, anchor_root=reloaded_manager.anchor_root)
+    previous_root_state = reloaded_manager.load_root_state()
+    monkeypatch.setattr(
+        storage_location_bootstrap_module,
+        "DEVELOPMENT_ALWAYS_REQUIRE_SELECTION",
+        False,
+    )
+
+    def request_app_shutdown():
+        raise RuntimeError("shutdown failed")
+
+    with _build_client(reloaded_manager, request_app_shutdown=request_app_shutdown) as client:
+        response = client.post(
+            "/api/storage/location/restart",
+            json={
+                "selected_root": str(unavailable_selected_root),
+                "selection_source": "current",
+            },
+        )
+
+    assert response.status_code == 500
+    payload = response.json()
+    assert payload["error_code"] == "restart_schedule_failed"
+    assert payload["restart_mode"] == "rebind_only"
+    assert load_storage_policy(reloaded_manager, anchor_root=reloaded_manager.anchor_root) == previous_policy
+    assert reloaded_manager.load_root_state() == previous_root_state
+    assert not get_storage_migration_path(reloaded_manager).exists()
+
+
+@pytest.mark.unit
 def test_storage_location_recovery_keeps_third_path_blocked_after_launcher_exports_anchor_runtime_layout(
     tmp_path,
     monkeypatch,

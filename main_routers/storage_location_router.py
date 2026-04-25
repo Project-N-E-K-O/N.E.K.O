@@ -8,6 +8,7 @@ checkpoint flow, and exposes maintenance-state diagnostics for the web UI.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import shutil
 import sys
@@ -44,6 +45,7 @@ from utils.storage_migration import (
 from utils.storage_policy import (
     StorageSelectionValidationError,
     compute_anchor_root,
+    get_storage_policy_path,
     is_runtime_root_available,
     load_storage_policy,
     normalize_runtime_root,
@@ -1051,7 +1053,8 @@ async def post_storage_location_retained_source_cleanup(
     current_root = normalize_runtime_root(config_manager.app_docs_dir)
     anchor_root = compute_anchor_root(config_manager, current_root=current_root)
     try:
-        _cleanup_retained_runtime_root(
+        await asyncio.to_thread(
+            _cleanup_retained_runtime_root,
             retained_path,
             current_root=current_root,
             anchor_root=anchor_root,
@@ -1376,20 +1379,54 @@ async def post_storage_location_restart(
                 **restart_preflight,
             }
 
-        delete_storage_migration(config_manager, anchor_root=anchor_root)
-        save_storage_policy(
-            config_manager,
-            selected_root=normalized_selected_root,
-            selection_source=payload.selection_source,
-            anchor_root=anchor_root,
-        )
-        set_root_mode(
-            config_manager,
-            ROOT_MODE_MAINTENANCE_READONLY,
-            last_migration_source=str(normalized_selected_root),
-            last_migration_result=f"restart_rebind:{normalized_selected_root}",
-        )
-        request_app_shutdown()
+        previous_root_state = config_manager.load_root_state()
+        previous_policy = load_storage_policy(config_manager, anchor_root=anchor_root)
+        previous_migration = load_storage_migration(config_manager, anchor_root=anchor_root)
+        try:
+            delete_storage_migration(config_manager, anchor_root=anchor_root)
+            save_storage_policy(
+                config_manager,
+                selected_root=normalized_selected_root,
+                selection_source=payload.selection_source,
+                anchor_root=anchor_root,
+            )
+            set_root_mode(
+                config_manager,
+                ROOT_MODE_MAINTENANCE_READONLY,
+                last_migration_source=str(normalized_selected_root),
+                last_migration_result=f"restart_rebind:{normalized_selected_root}",
+            )
+            request_app_shutdown()
+        except Exception as exc:
+            if isinstance(previous_migration, dict):
+                save_storage_migration(config_manager, previous_migration, anchor_root=anchor_root)
+            else:
+                delete_storage_migration(config_manager, anchor_root=anchor_root)
+
+            policy_path = get_storage_policy_path(config_manager, anchor_root=anchor_root)
+            if isinstance(previous_policy, dict):
+                from utils.file_utils import atomic_write_json
+
+                atomic_write_json(policy_path, previous_policy, ensure_ascii=False, indent=2)
+            else:
+                try:
+                    os.unlink(policy_path)
+                except FileNotFoundError:
+                    pass
+
+            try:
+                config_manager.save_root_state(previous_root_state)
+            except Exception:
+                pass
+
+            response.status_code = 500
+            return {
+                "ok": False,
+                "error_code": "restart_schedule_failed",
+                "error": f"受控关闭启动失败: {exc}",
+                "restart_mode": "rebind_only",
+                **restart_preflight,
+            }
         return {
             "ok": True,
             "result": "restart_initiated",

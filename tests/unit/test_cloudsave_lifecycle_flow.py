@@ -446,18 +446,18 @@ async def test_main_server_startup_stays_limited_when_storage_barrier_is_blockin
     from main_routers import shared_state
 
     sentinel_templates = object()
-    shared_state._state["templates"] = shared_state._UNSET
 
-    with patch.object(main_server, "_IS_MAIN_PROCESS", True), \
+    with patch.dict(shared_state._state, {"templates": shared_state._UNSET}), \
+         patch.object(main_server, "_IS_MAIN_PROCESS", True), \
          patch.object(main_server, "templates", sentinel_templates), \
          patch.object(main_server, "role_state", {}), \
          patch.object(main_server, "_config_manager", SimpleNamespace()), \
          patch.object(main_server, "get_storage_startup_blocking_reason", Mock(return_value="selection_required")), \
          patch.object(main_server, "_ensure_main_server_runtime_initialized", AsyncMock()) as mock_ensure_runtime:
         await main_server.on_startup()
+        assert shared_state.get_templates() is sentinel_templates
 
     mock_ensure_runtime.assert_not_awaited()
-    assert shared_state.get_templates() is sentinel_templates
 
 
 @pytest.mark.unit
@@ -470,6 +470,23 @@ async def test_memory_server_startup_stays_limited_when_storage_barrier_is_block
          patch.object(memory_server, "ensure_memory_server_runtime_initialized", AsyncMock()) as mock_ensure_runtime:
         await memory_server.startup_event_handler()
 
+    mock_ensure_runtime.assert_not_awaited()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_memory_server_continue_startup_refuses_active_storage_barrier():
+    import memory_server
+
+    with patch.object(memory_server, "_config_manager", SimpleNamespace()), \
+         patch.object(memory_server, "get_storage_startup_blocking_reason", Mock(return_value="migration_pending")), \
+         patch.object(memory_server, "ensure_memory_server_runtime_initialized", AsyncMock()) as mock_ensure_runtime:
+        response = await memory_server.continue_storage_startup(None)
+
+    assert response.status_code == 409
+    payload = json.loads(response.body.decode("utf-8"))
+    assert payload["ok"] is False
+    assert payload["blocking_reason"] == "migration_pending"
     mock_ensure_runtime.assert_not_awaited()
 
 

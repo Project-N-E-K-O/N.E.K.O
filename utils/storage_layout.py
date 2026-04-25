@@ -66,7 +66,7 @@ def resolve_storage_layout(config_manager) -> dict[str, Any]:
     if not isinstance(policy, dict):
         return build_storage_layout(
             selected_root=current_root,
-            anchor_root=current_root,
+            anchor_root=default_anchor_root,
             source="runtime_default",
         )
 
@@ -74,7 +74,7 @@ def resolve_storage_layout(config_manager) -> dict[str, Any]:
     if not selected_root_value:
         return build_storage_layout(
             selected_root=current_root,
-            anchor_root=current_root,
+            anchor_root=default_anchor_root,
             source="runtime_default",
         )
 
@@ -83,12 +83,15 @@ def resolve_storage_layout(config_manager) -> dict[str, Any]:
     except Exception:
         return build_storage_layout(
             selected_root=current_root,
-            anchor_root=current_root,
+            anchor_root=default_anchor_root,
             source="runtime_default",
         )
 
     anchor_root_value = str(policy.get("anchor_root") or "").strip()
-    anchor_root = normalize_runtime_root(anchor_root_value or default_anchor_root)
+    try:
+        anchor_root = normalize_runtime_root(anchor_root_value or default_anchor_root)
+    except Exception:
+        anchor_root = default_anchor_root
     return build_storage_layout(
         selected_root=selected_root,
         anchor_root=anchor_root,

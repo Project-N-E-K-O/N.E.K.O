@@ -4024,7 +4024,7 @@ async def sync_workshop_character_cards() -> dict:
 
         if is_write_fence_active(config_mgr):
             logger.info("sync_workshop_character_cards: 检测到维护态写围栏，跳过本轮同步并等待后续重试")
-            return {"added": 0, "skipped": 0, "errors": 0}
+            return {"added": 0, "skipped": 0, "errors": 0, "blocked_by_write_fence": True}
         
         # 使用全局锁序列化 load_characters -> save_characters 流程，防止并发覆写
         async with _ugc_sync_lock:
@@ -4156,13 +4156,13 @@ async def sync_workshop_character_cards() -> dict:
             if need_save:
                 if is_write_fence_active(config_mgr):
                     logger.info("sync_workshop_character_cards: 保存前检测到维护态写围栏，跳过本轮同步并等待后续重试")
-                    return {"added": 0, "skipped": skipped_count, "errors": 0}
+                    return {"added": 0, "skipped": skipped_count, "errors": 0, "blocked_by_write_fence": True}
 
                 try:
                     await config_mgr.asave_characters(characters)
                 except MaintenanceModeError:
                     logger.info("sync_workshop_character_cards: 保存时进入维护态写围栏，跳过本轮同步并等待后续重试")
-                    return {"added": 0, "skipped": skipped_count, "errors": 0}
+                    return {"added": 0, "skipped": skipped_count, "errors": 0, "blocked_by_write_fence": True}
 
                 logger.info(f"sync_workshop_character_cards: 已保存，新增 {added_count} 个角色卡")
                 
@@ -4191,6 +4191,18 @@ async def api_sync_workshop_character_cards():
     """
     try:
         result = await sync_workshop_character_cards()
+        if result.get("blocked_by_write_fence"):
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "success": False,
+                    "code": "WRITE_FENCE_ACTIVE",
+                    "error": "当前处于存储维护态，暂时不能同步创意工坊角色卡，请稍后重试。",
+                    "added": result.get("added", 0),
+                    "skipped": result.get("skipped", 0),
+                    "errors": result.get("errors", 0),
+                },
+            )
         return {
             "success": True,
             "added": result["added"],

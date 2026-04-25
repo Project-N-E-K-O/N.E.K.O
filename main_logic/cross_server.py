@@ -493,8 +493,8 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                 logger.info(f"[{lanlan_name}] 热重置：聊天历史 {len(chat_history)} 条，增量 {len(remaining)} 条")
                                 # 确定调用端点：有增量走 /renew，无增量走 /settle（补全摘要+时间戳）
                                 _renew_endpoint = "renew" if remaining else "settle"
-                                _renew_payload = remaining if remaining else chat_history
-                                if _renew_payload:
+                                _renew_payload = remaining if remaining else []
+                                if _renew_payload or _renew_endpoint == "settle":
                                     try:
                                         ok, err_detail, _ = await _post_memory_server(
                                             _renew_endpoint,
@@ -765,8 +765,8 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                 remaining = chat_history[last_synced_index:]
                                 logger.info(f"[{lanlan_name}] 会话结束：聊天历史 {len(chat_history)} 条，增量 {len(remaining)} 条")
                                 _settle_endpoint = "process" if remaining else "settle"
-                                _settle_payload = remaining if remaining else chat_history
-                                if not shutdown_event.is_set() and _settle_payload:
+                                _settle_payload = remaining if remaining else []
+                                if not shutdown_event.is_set() and (_settle_payload or _settle_endpoint == "settle"):
                                     try:
                                         ok, err_detail, _ = await _post_memory_server(
                                             _settle_endpoint,

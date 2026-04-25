@@ -385,6 +385,8 @@ def clean_user_data_dir(tmp_path_factory):
     cm.mmd_animation_dir = cm.mmd_dir / "animation"
     cm.workshop_dir = cm.app_docs_dir / "workshop"
     cm.chara_dir = cm.app_docs_dir / "character_cards"
+    cm.mmd_dir.mkdir(parents=True, exist_ok=True)
+    cm.mmd_animation_dir.mkdir(parents=True, exist_ok=True)
     
     # Update project dirs to mimic app/config separation or point to temp if needed
     cm.project_config_dir = cm.config_dir

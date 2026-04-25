@@ -3272,7 +3272,6 @@ def _ensure_config_manager_migrated():
     if _config_manager is None or _config_manager_migrated:
         return _config_manager
     if bool(getattr(_config_manager, "recovery_committed_root_unavailable", False)):
-        _config_manager_migrated = True
         return _config_manager
     # 统一在首次真正需要运行时配置时再迁移，允许启动 phase-0
     # 先基于“尚未注入默认配置的运行根”判断是否需要导入云快照。
