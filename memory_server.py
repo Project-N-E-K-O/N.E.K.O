@@ -1515,6 +1515,11 @@ async def startup_event_handler():
 
     # 自动迁移 settings → persona（如 persona 文件不存在）
     # 注：目录结构迁移已在模块级完成（在组件实例化之前）
+    # Pre-bind so a failure inside the try below doesn't strand the
+    # later `if catgirl_names:` blocks (and the embedding worker's
+    # fallback closure) on an unbound local — those reads run
+    # outside this try and would otherwise UnboundLocalError.
+    catgirl_names: list[str] = []
     try:
         character_data = await _config_manager.aload_characters()
         catgirl_names = list(character_data.get('猫娘', {}).keys())
