@@ -81,7 +81,7 @@ export const avatarInteractionPayloadSchema = z.discriminatedUnion('toolId', [
 
 const avatarToolIdSchema = z.enum(['lollipop', 'fist', 'hammer']);
 const avatarToolCursorVariantSchema = z.enum(['primary', 'secondary', 'tertiary']);
-const avatarToolImageKindSchema = z.enum(['cursor', 'icon', 'hidden']);
+const avatarToolImageKindSchema = z.enum(['cursor', 'icon']);
 
 const avatarToolDescriptorSchema = z.object({
   id: avatarToolIdSchema,
