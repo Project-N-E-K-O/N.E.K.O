@@ -1,8 +1,8 @@
-"""Tests for weather plugin geo utilities."""
+"""Tests for lifekit plugin geo utilities."""
 
 from __future__ import annotations
 
-from plugin.plugins.weather._geo import detect_vpn_conflict, get_system_timezone
+from plugin.plugins.lifekit._geo import detect_vpn_conflict, get_system_timezone
 
 
 def test_detect_vpn_conflict_same_tz():

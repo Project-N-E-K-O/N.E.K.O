@@ -1,13 +1,13 @@
-"""Tests for weather plugin I18n and LRUCache."""
+"""Tests for lifekit plugin I18n and LRUCache."""
 
 from __future__ import annotations
 
 import time
 from pathlib import Path
 
-from plugin.plugins.weather._i18n import I18n, LRUCache
+from plugin.plugins.lifekit._i18n import I18n, LRUCache
 
-_LOCALES_DIR = Path(__file__).parent.parent.parent.parent / "plugins" / "weather" / "locales"
+_LOCALES_DIR = Path(__file__).parent.parent.parent.parent / "plugins" / "lifekit" / "locales"
 
 
 class TestI18n:
@@ -54,7 +54,6 @@ class TestI18n:
     def test_t_chain_fallback(self):
         i18n = I18n(_LOCALES_DIR, default="zh-CN")
         i18n.set_locale("zh-TW")
-        # zh-TW has this key
         assert i18n.t("wmo.0") == "晴"
 
 
@@ -67,13 +66,13 @@ class TestLRUCache:
     def test_ttl_expiry(self):
         cache = LRUCache(max_size=3)
         cache.put("a", "data")
-        assert cache.get("a", ttl=0) is None  # TTL=0 means expired immediately
+        assert cache.get("a", ttl=0) is None
 
     def test_lru_eviction(self):
         cache = LRUCache(max_size=2)
         cache.put("a", 1)
         cache.put("b", 2)
-        cache.put("c", 3)  # evicts "a"
+        cache.put("c", 3)
         assert cache.get("a", ttl=60) is None
         assert cache.get("b", ttl=60) == 2
         assert cache.get("c", ttl=60) == 3
@@ -82,8 +81,8 @@ class TestLRUCache:
         cache = LRUCache(max_size=2)
         cache.put("a", 1)
         cache.put("b", 2)
-        cache.get("a", ttl=60)  # refresh "a"
-        cache.put("c", 3)  # evicts "b" (not "a")
+        cache.get("a", ttl=60)
+        cache.put("c", 3)
         assert cache.get("a", ttl=60) == 1
         assert cache.get("b", ttl=60) is None
 

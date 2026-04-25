@@ -21,7 +21,7 @@ def test_forward_message_stores_chat_content_normally():
     from plugin.core.communication import PluginCommunicationResourceManager
 
     mgr = PluginCommunicationResourceManager.__new__(PluginCommunicationResourceManager)
-    mgr.plugin_id = "weather"
+    mgr.plugin_id = "lifekit"
     mgr.logger = MagicMock()
     mgr._message_target_queue = asyncio.Queue(maxsize=100)
 
@@ -31,7 +31,7 @@ def test_forward_message_stores_chat_content_normally():
         "content": "Hello",
         "metadata": {
             "chat_content_blocks": [{"type": "text", "text": "Hello"}],
-            "plugin_id": "weather",
+            "plugin_id": "lifekit",
         },
         "_bus_stored": True,
     }
@@ -50,13 +50,13 @@ def test_proactive_bridge_parses_chat_content_event():
 
     payload = {
         "message_type": "chat_content",
-        "plugin_id": "weather",
+        "plugin_id": "lifekit",
         "content": "上海今天天气",
         "metadata": {
             "chat_content_blocks": [
                 {"type": "text", "text": "🌤️ 上海 — 晴 25°C"},
             ],
-            "plugin_id": "weather",
+            "plugin_id": "lifekit",
             "target_lanlan": "test_session",
         },
         "time": "2026-04-25T00:00:00Z",
@@ -81,7 +81,7 @@ def test_proactive_bridge_parses_chat_content_event():
     }
 
     assert proactive_event["event_type"] == "plugin_chat_content"
-    assert proactive_event["plugin_id"] == "weather"
+    assert proactive_event["plugin_id"] == "lifekit"
     assert proactive_event["lanlan_name"] == "test_session"
     assert proactive_event["blocks"] == [{"type": "text", "text": "🌤️ 上海 — 晴 25°C"}]
     assert proactive_event["text"] == "上海今天天气"

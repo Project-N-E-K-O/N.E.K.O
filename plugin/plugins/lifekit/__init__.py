@@ -1,10 +1,13 @@
 """
-天气出行插件 (Weather & Travel)
+生活助手插件 (Life Kit)
 
-基于 Open-Meteo（免费无 Key）提供：
+基于地理位置的多功能生活服务：
 - 当前天气 + 每日预报 (get_weather)
 - 逐小时预报 (hourly_forecast)
 - 穿衣 / 带伞 / 紫外线等出行建议 (travel_advice)
+- 路线规划 (trip_advice)
+- 常用地点管理 (list/add/remove/set_default_location)
+- 附近 POI 搜索 (search_nearby)
 
 模块化架构：entry 通过 Router 注册，便于横向扩展。
 """
@@ -35,12 +38,12 @@ _LOCALES_DIR = Path(__file__).parent / "locales"
 
 
 @neko_plugin
-class WeatherPlugin(NekoPluginBase):
-    """天气出行插件 — 生命周期 + 共享基础设施。"""
+class LifeKitPlugin(NekoPluginBase):
+    """生活助手插件 — 生命周期 + 共享基础设施。"""
 
     class Settings(PluginSettings):
-        """天气插件配置 — hot 字段会自动出现在聊天面板中。"""
-        model_config = {"toml_section": "weather"}
+        """生活助手配置 — hot 字段会自动出现在聊天面板中。"""
+        model_config = {"toml_section": "lifekit"}
 
         default_city: str = SettingsField("", hot=True, description="默认城市（留空则自动定位）")
         timezone: str = SettingsField("Asia/Shanghai", hot=True, description="时区")
@@ -86,7 +89,7 @@ class WeatherPlugin(NekoPluginBase):
         # 注册 Web UI（地点管理面板）
         self.register_static_ui("static")
         self.logger.info(
-            "WeatherPlugin started, locale={}, host_lang={}, store={}",
+            "LifeKitPlugin started, locale={}, host_lang={}, store={}",
             self._i18n.locale, lang or "(none)", self.store.enabled,
         )
         return Ok({"status": "ready"})
@@ -103,7 +106,7 @@ class WeatherPlugin(NekoPluginBase):
     async def _reload_config(self):
         cfg = await self.config.dump(timeout=5.0)
         cfg = cfg if isinstance(cfg, dict) else {}
-        self._cfg = cfg.get("weather", {}) if isinstance(cfg.get("weather"), dict) else {}
+        self._cfg = cfg.get("lifekit", {}) if isinstance(cfg.get("lifekit"), dict) else {}
 
     # ── locale 解析（供 routers 调用）──
 
@@ -293,7 +296,7 @@ class WeatherPlugin(NekoPluginBase):
         if not updates:
             return Err(SdkError("No valid fields to update"))
         try:
-            await self.config.update({"weather": updates})
+            await self.config.update({"lifekit": updates})
             await self._reload_config()
             return Ok({"message": "Config updated", "config": dict(self._cfg)})
         except Exception as e:
