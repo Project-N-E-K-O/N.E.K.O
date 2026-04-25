@@ -140,8 +140,6 @@ def redact_secrets(
                     out[k] = placeholder
                 else:
                     out[k] = _walk(v)
-                else:
-                    out[k] = _walk(v)
             return out
         if isinstance(node, list):
             return [_walk(item) for item in node]
