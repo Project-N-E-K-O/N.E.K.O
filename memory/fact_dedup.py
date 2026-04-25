@@ -363,21 +363,18 @@ class FactDedupResolver:
             logger.warning("[FactDedup] %s: LLM 调用失败: %s", name, e)
             return 0
 
-        applied = await self._aapply_decisions(name, batch, results)
+        applied, processed_keys = await self._aapply_decisions(
+            name, batch, results,
+        )
 
         # Read-modify-write the queue so concurrent enqueue calls
         # that landed during the LLM call survive — same shape as
         # PersonaManager._resolve_corrections_locked's processed-keys
-        # filter at the end.
-        processed_keys: set[tuple] = set()
-        for r in results:
-            try:
-                idx = int(r.get('index', -1))
-            except (TypeError, ValueError):
-                continue
-            if 0 <= idx < len(batch):
-                item = batch[idx]
-                processed_keys.add((item.get('candidate_id'), item.get('existing_id')))
+        # filter at the end.  ``processed_keys`` comes from
+        # _aapply_decisions and explicitly excludes pairs whose LLM
+        # decision was malformed (unknown action) — those stay queued
+        # for retry rather than being silently dropped (CodeRabbit
+        # PR-957 Major).
         current = await self.aload_pending(name)
         remaining = [
             it for it in current
@@ -391,9 +388,17 @@ class FactDedupResolver:
             )
         return applied
 
+    # Whitelist of action vocabulary the LLM may return. Anything
+    # outside this set (case mismatch, trailing whitespace, localised
+    # synonym) is treated as malformed and the queue entry is
+    # preserved for retry — the alternative is silently dropping a
+    # paraphrase pair the next batch can no longer surface (CodeRabbit
+    # PR-957 Major).
+    _VALID_ACTIONS = frozenset({'merge', 'replace', 'keep_both'})
+
     async def _aapply_decisions(
         self, name: str, batch: list[dict], results: list[dict],
-    ) -> int:
+    ) -> tuple[int, set[tuple]]:
         """Translate LLM decisions into facts.json mutations.
 
         Decision vocabulary:
@@ -417,16 +422,23 @@ class FactDedupResolver:
         defensive guard is an in-loop check: if either side of the
         current pair is already scheduled for removal by a prior
         decision, skip this decision entirely.  The earlier decision
-        wins (LLM ordering matters), and the conflicting pair stays
-        out of the queue (consumed as `applied += 1`) so the next
-        round doesn't keep flagging it.
+        wins (LLM ordering matters); the conflicting pair is still
+        consumed (so the next round doesn't keep flagging it).
+
+        Returns ``(applied_count, processed_pair_keys)``.  The set
+        contains the (candidate_id, existing_id) keys for queue
+        entries the caller should *remove* — exactly the entries we
+        applied or consumed via the conflict guard, NOT the ones we
+        skipped due to malformed LLM output (those stay queued for
+        retry).
         """
         if not results:
-            return 0
+            return 0, set()
         facts = await self._fact_store.aload_facts(name)
         by_id = {f.get('id'): f for f in facts if isinstance(f, dict) and f.get('id')}
         applied = 0
         ids_to_remove: set[str] = set()
+        processed_pairs: set[tuple] = set()
         for r in results:
             if not isinstance(r, dict):
                 continue
@@ -437,14 +449,36 @@ class FactDedupResolver:
             if not (0 <= idx < len(batch)):
                 continue
             item = batch[idx]
-            action = r.get('action', 'keep_both')
+            action = r.get('action')
+            # Strict whitelist (CodeRabbit PR-957 Major): unknown
+            # action ⇒ leave the queue entry alone so the next round
+            # gets a fresh chance.  Without this, "MERGE" / "merge "
+            # / a localised synonym would silently drop into the
+            # else-branch, then get cleared from the queue by the
+            # caller's `processed_keys` filter — losing the
+            # arbitration entirely.  Defensive normalisation
+            # (lowercase + strip) gives the LLM a tiny grace margin
+            # without opening the door to genuine garbage.
+            if isinstance(action, str):
+                action_norm = action.strip().lower()
+            else:
+                action_norm = None
+            if action_norm not in self._VALID_ACTIONS:
+                logger.warning(
+                    "[FactDedup] %s: LLM 返回未知 action=%r，pair (%s,%s) 保留队列待下轮重试",
+                    name, action, item.get('candidate_id'), item.get('existing_id'),
+                )
+                continue
+            action = action_norm
             cand_id = item.get('candidate_id')
             exist_id = item.get('existing_id')
             cand = by_id.get(cand_id)
             existing = by_id.get(exist_id)
             if cand is None or existing is None:
                 # One side disappeared between enqueue and resolve —
-                # not an error, just stale; skip silently.
+                # not an error, just stale; consume the queue entry
+                # so it doesn't keep blocking subsequent batches.
+                processed_pairs.add((cand_id, exist_id))
                 continue
             # Reciprocal-pair guard: an earlier decision in this batch
             # already scheduled one side for removal. Honouring this
@@ -456,6 +490,7 @@ class FactDedupResolver:
                     "[FactDedup] %s: 跳过冲突决策 cand=%s exist=%s (一方已被前一决策处理)",
                     name, cand_id, exist_id,
                 )
+                processed_pairs.add((cand_id, exist_id))
                 applied += 1
                 continue
             if action == 'merge':
@@ -470,6 +505,7 @@ class FactDedupResolver:
                 cur_imp = int(existing.get('importance', 5) or 5)
                 existing['importance'] = min(10, cur_imp + 1)
                 ids_to_remove.add(cand_id)
+                processed_pairs.add((cand_id, exist_id))
                 applied += 1
             elif action == 'replace':
                 # Mirror image: drop existing, keep candidate. Carry
@@ -488,10 +524,12 @@ class FactDedupResolver:
                 old = int(existing.get('importance', 5) or 5)
                 cand['importance'] = max(cur, old)
                 ids_to_remove.add(exist_id)
+                processed_pairs.add((cand_id, exist_id))
                 applied += 1
             else:  # keep_both
                 # No mutation, just count it as resolved so the queue
                 # entry is consumed.
+                processed_pairs.add((cand_id, exist_id))
                 applied += 1
 
         if ids_to_remove:
@@ -506,4 +544,4 @@ class FactDedupResolver:
             # bumped on a merge above (handled by the ids_to_remove
             # branch). The else here is no-op for the no-mutation case.
             pass
-        return applied
+        return applied, processed_pairs

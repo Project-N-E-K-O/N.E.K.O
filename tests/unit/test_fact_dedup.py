@@ -415,6 +415,67 @@ async def test_aresolve_reciprocal_pair_does_not_delete_both(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_aresolve_unknown_action_preserves_queue_for_retry(tmp_path):
+    """CodeRabbit PR-957 Major: an LLM that returns an action outside
+    the {merge, replace, keep_both} whitelist (case mismatch, trailing
+    whitespace, localised synonym, hallucinated word) used to fall
+    into the keep_both branch AND get cleared from the queue, silently
+    losing the arbitration. The fix: strict whitelist + queue
+    preservation so the next round gets a fresh chance."""
+    fs, resolver = _install_resolver(str(tmp_path))
+    cand = _fact("c1", "x", embedding=[1.0, 0.0])
+    existing = _fact("e1", "y", embedding=[0.99, 0.05], importance=4)
+    await _seed_facts(fs, "小天", [cand, existing])
+    await resolver.aenqueue_candidates("小天", [{
+        "candidate_id": "c1", "existing_id": "e1",
+        "candidate_text": "x", "existing_text": "y",
+        "entity": "master", "cosine": 0.99,
+    }])
+    # LLM returns "MERGE" (uppercase) instead of "merge" — the strict
+    # whitelist+normalise lets this through (we lowercase + strip), but
+    # genuine garbage like "FOOBAR" must NOT be silently consumed.
+    fake_llm = _make_llm_mock([{"index": 0, "action": "FOOBAR"}])
+    with patch("utils.llm_client.create_chat_llm", return_value=fake_llm):
+        resolved = await resolver.aresolve("小天")
+    # No mutation applied — both rows survive intact, importance unchanged.
+    facts = await fs.aload_facts("小天")
+    assert {f["id"] for f in facts} == {"c1", "e1"}
+    assert next(f for f in facts if f["id"] == "e1")["importance"] == 4
+    # Queue entry MUST still be there for the next round to retry.
+    pending = await resolver.aload_pending("小天")
+    assert len(pending) == 1
+    assert (pending[0]["candidate_id"], pending[0]["existing_id"]) == ("c1", "e1")
+    # `applied` count is 0 — nothing was actually decided.
+    assert resolved == 0
+
+
+@pytest.mark.asyncio
+async def test_aresolve_normalises_case_and_whitespace_in_action(tmp_path):
+    """The whitelist accepts a tiny normalisation grace margin
+    (lowercase + strip) so a model that emits "MERGE" or "merge "
+    isn't rejected for trivial formatting. Exercises the contract
+    documented in `_VALID_ACTIONS`."""
+    fs, resolver = _install_resolver(str(tmp_path))
+    cand = _fact("c1", "x", embedding=[1.0, 0.0])
+    existing = _fact("e1", "y", embedding=[0.99, 0.05], importance=4)
+    await _seed_facts(fs, "小天", [cand, existing])
+    await resolver.aenqueue_candidates("小天", [{
+        "candidate_id": "c1", "existing_id": "e1",
+        "candidate_text": "x", "existing_text": "y",
+        "entity": "master", "cosine": 0.99,
+    }])
+    # "  MERGE  " — extra whitespace + uppercase should normalise to "merge"
+    fake_llm = _make_llm_mock([{"index": 0, "action": "  MERGE  "}])
+    with patch("utils.llm_client.create_chat_llm", return_value=fake_llm):
+        resolved = await resolver.aresolve("小天")
+    assert resolved == 1
+    facts = await fs.aload_facts("小天")
+    assert {f["id"] for f in facts} == {"e1"}  # candidate dropped per merge
+    assert next(f for f in facts if f["id"] == "e1")["importance"] == 5
+    assert await resolver.aload_pending("小天") == []
+
+
+@pytest.mark.asyncio
 async def test_aresolve_skips_decision_for_disappeared_row(tmp_path):
     """If a fact in the queue has been deleted between enqueue and
     resolve (e.g. concurrent absorbed-archive sweep), the decision
