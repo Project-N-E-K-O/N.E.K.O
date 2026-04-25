@@ -1889,7 +1889,9 @@ button * {
 }
 
 [data-theme="dark"] .composer-overflow-popover {
-  background: rgba(40, 40, 40, 0.96);
+  /* 0.78 而非 0.96：与浅色模式对齐，base 规则的 backdrop-filter blur(12px)
+     是级联继承下来的，太高 alpha 会让 blur 看不见还白吃 GPU 合成开销喵。 */
+  background: rgba(40, 40, 40, 0.78);
   border-color: rgba(255, 255, 255, 0.08);
   box-shadow:
     0 8px 24px rgba(0, 0, 0, 0.5),
