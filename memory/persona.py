@@ -719,6 +719,16 @@ class PersonaManager:
             # 大阪" stays traceable. Each item: {text, replaced_at, reason,
             # source_fact_id}. None/empty list means no version history.
             'version_history': [],
+            # Vector-embedding cache (memory-enhancements P2 — see
+            # memory/embeddings.py). Populated by the background warmup
+            # worker after the EmbeddingService becomes ready; consumed
+            # by retrieval candidate generation. Same invalidation
+            # contract as token_count: text-sha mismatch OR model_id
+            # mismatch ⇒ re-embed on next worker pass. Legacy entries
+            # naturally read None.
+            'embedding': None,
+            'embedding_text_sha256': None,
+            'embedding_model_id': None,
         }
         if isinstance(entry, str):
             d = dict(defaults)
@@ -1648,6 +1658,15 @@ class PersonaManager:
                             existing['token_count'] = None
                             existing['token_count_text_sha256'] = None
                             existing['token_count_tokenizer'] = None
+                            # Same logic for the vector-embedding cache:
+                            # the persisted vector encodes old_text; a
+                            # cosine match against the new text would
+                            # silently use a stale projection. Wipe the
+                            # whole triple so the warmup worker
+                            # re-embeds on its next pass.
+                            existing['embedding'] = None
+                            existing['embedding_text_sha256'] = None
+                            existing['embedding_model_id'] = None
                             section_facts[j] = self._normalize_entry(existing)
                         else:
                             # Legacy str entry — no metadata to preserve;

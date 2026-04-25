@@ -333,6 +333,15 @@ class ReflectionEngine:
             'relation_type': None,
             'subject': None,
             'temporal_scope': None,
+            # Vector-embedding cache (memory-enhancements P2 — see
+            # memory/embeddings.py). Reflection text is immutable in the
+            # current pipeline (synthesis writes once, callers don't
+            # rewrite text), so embeddings here only invalidate when
+            # the model_id flips. Legacy entries read None and the
+            # warmup worker fills them in on the next pass.
+            'embedding': None,
+            'embedding_text_sha256': None,
+            'embedding_model_id': None,
         }
         for k, v in defaults.items():
             entry.setdefault(k, v)

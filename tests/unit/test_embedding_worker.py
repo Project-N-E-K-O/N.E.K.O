@@ -1,0 +1,446 @@
+# -*- coding: utf-8 -*-
+"""Unit tests for memory.embedding_worker.EmbeddingWarmupWorker.
+
+The worker is the only piece of P2 that runs as a background coroutine,
+so the tests focus on:
+
+  * the warmup wait correctly races (delay, first_process, stop)
+  * a disabled service short-circuits and exits without doing any work
+  * the sweep walks persona / reflection / fact stores and stamps the
+    embedding triple in place via the configured EmbeddingService
+  * a per-character fact's existing embedding is left untouched when
+    text + model_id still match (cache hit path)
+  * the per-tick budget bound is honoured so a large backlog can't
+    monopolise the loop
+
+We stub the EmbeddingService so the test is hermetic — no ONNX session,
+no model file. The stub records every call so tests can assert on the
+embed_batch trace as well as the on-disk side effects."""
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from memory.embedding_worker import (
+    EmbeddingWarmupWorker,
+    BATCH_SIZE,
+    MAX_ENTRIES_PER_TICK,
+)
+from memory.embeddings import (
+    _embedding_text_sha256,
+    EmbeddingState,
+    reset_embedding_service_for_tests,
+)
+
+
+# ── stub embedding service ───────────────────────────────────────────
+
+
+class _FakeService:
+    """Hand-rolled stub matching the surface area embedding_worker uses.
+    Avoids monkeypatching the singleton, which would fight the
+    parallel-test isolation pytest-asyncio gives us."""
+
+    def __init__(
+        self, *, available: bool = True, model_id: str = "fake-128d-int8",
+        disabled: bool = False, vector_factory=None,
+    ) -> None:
+        self._available = available
+        self._model_id = model_id
+        self._disabled = disabled
+        self._reason = "test_reason" if disabled else "none"
+        self._vector_factory = vector_factory or (lambda text: [0.5] * 4)
+        self.embed_batch_calls: list[list[str]] = []
+        self.load_called = False
+
+    def is_available(self) -> bool:
+        return self._available
+
+    def is_disabled(self) -> bool:
+        return self._disabled
+
+    def disable_reason(self) -> str:
+        return self._reason
+
+    def model_id(self):
+        return None if self._disabled else self._model_id
+
+    async def request_load(self) -> bool:
+        self.load_called = True
+        return self._available and not self._disabled
+
+    async def embed_batch(self, texts):
+        self.embed_batch_calls.append(list(texts))
+        return [self._vector_factory(t) if t else None for t in texts]
+
+    # `flip_disabled_after_n_calls` etc. would be additional knobs;
+    # tests below only need the basic shape so we keep the stub lean.
+
+
+@pytest.fixture(autouse=True)
+def _isolate_singleton():
+    """Rebuild the EmbeddingService singleton between tests so a stub
+    swap in one test never leaks into the next."""
+    reset_embedding_service_for_tests()
+    yield
+    reset_embedding_service_for_tests()
+
+
+# ── memory subsystem stubs ───────────────────────────────────────────
+
+
+class _PersonaStub:
+    """In-memory stand-in for PersonaManager. Just enough to satisfy
+    EmbeddingWarmupWorker — aensure_persona returns the live dict so
+    in-place mutations show up in the asave_persona round-trip."""
+
+    def __init__(self) -> None:
+        self.store: dict[str, dict] = {}
+        self.save_calls = 0
+
+    async def aensure_persona(self, name: str) -> dict:
+        return self.store.setdefault(name, {
+            "master": {"facts": []},
+            "neko": {"facts": []},
+        })
+
+    async def asave_persona(self, name: str, persona: dict) -> None:
+        # Rebind so serialisation → load round trips lose nothing.
+        self.store[name] = json.loads(json.dumps(persona))
+        self.save_calls += 1
+
+
+class _ReflectionStub:
+    """Mirrors the two ReflectionEngine methods the worker calls."""
+
+    def __init__(self) -> None:
+        self.store: dict[str, list[dict]] = {}
+        self.save_calls = 0
+
+    async def _aload_reflections_full(self, name: str) -> list[dict]:
+        return self.store.setdefault(name, [])
+
+    async def asave_reflections(self, name: str, items: list[dict]) -> None:
+        self.store[name] = json.loads(json.dumps(items))
+        self.save_calls += 1
+
+
+class _FactStub:
+    def __init__(self) -> None:
+        self.store: dict[str, list[dict]] = {}
+        self.save_calls = 0
+
+    async def aload_facts(self, name: str) -> list[dict]:
+        return self.store.setdefault(name, [])
+
+    async def asave_facts(self, name: str) -> None:
+        self.save_calls += 1
+
+
+def _build_worker(
+    *, service, persona, reflection, fact, names=("小天",), warmup_delay=0.01,
+) -> EmbeddingWarmupWorker:
+    w = EmbeddingWarmupWorker(
+        persona_manager=persona,
+        reflection_engine=reflection,
+        fact_store=fact,
+        get_character_names=lambda: list(names),
+        warmup_delay_seconds=warmup_delay,
+    )
+    # Hand the stub in by replacement — get_embedding_service() was
+    # called in __init__, so we override the attribute directly.
+    w._service = service
+    return w
+
+
+# ── tests ────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_worker_exits_when_service_disabled_at_construction():
+    """Sticky-disabled service ⇒ worker logs and returns immediately;
+    no warmup wait, no sweep, no save calls."""
+    service = _FakeService(disabled=True, available=False)
+    persona = _PersonaStub()
+    reflection = _ReflectionStub()
+    fact = _FactStub()
+    w = _build_worker(
+        service=service, persona=persona, reflection=reflection, fact=fact,
+    )
+    task = w.start()
+    await asyncio.wait_for(task, timeout=1.0)
+    assert service.load_called is False
+    assert persona.save_calls == 0
+    assert reflection.save_calls == 0
+    assert fact.save_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_worker_exits_when_load_fails():
+    """Service constructor said is_available, but request_load returns
+    False (model file missing). Worker must exit, not loop forever."""
+    service = _FakeService(available=False, disabled=False)
+    persona = _PersonaStub()
+    reflection = _ReflectionStub()
+    fact = _FactStub()
+    w = _build_worker(
+        service=service, persona=persona, reflection=reflection, fact=fact,
+    )
+    task = w.start()
+    await asyncio.wait_for(task, timeout=1.0)
+    assert service.load_called is True
+    assert persona.save_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_warmup_unblocks_on_first_process_signal():
+    """The wait must end on notify_first_process even if the
+    warmup_delay hasn't elapsed — the test uses a 60s delay so the
+    only way the load runs in time is via the signal."""
+    service = _FakeService(available=True)
+    # Park the loop after one sweep by stubbing the sweep to set
+    # stop_event so the test can complete deterministically.
+    persona = _PersonaStub()
+    reflection = _ReflectionStub()
+    fact = _FactStub()
+    w = _build_worker(
+        service=service, persona=persona, reflection=reflection, fact=fact,
+        warmup_delay=60.0,
+    )
+
+    # Patch out the sweep and stop after first call so the loop terminates.
+    sweep_calls = {"n": 0}
+
+    async def _stub_sweep():
+        sweep_calls["n"] += 1
+        w._stop_event.set()
+        return 0
+
+    w._sweep_once = _stub_sweep  # type: ignore
+    task = w.start()
+    await asyncio.sleep(0.05)
+    assert service.load_called is False  # warmup_delay not elapsed yet
+    w.notify_first_process()
+    await asyncio.wait_for(task, timeout=1.0)
+    assert service.load_called is True
+    assert sweep_calls["n"] >= 1
+
+
+@pytest.mark.asyncio
+async def test_sweep_embeds_persona_reflection_and_facts_in_place():
+    """End-to-end: seed entries into all three stores with embedding=None,
+    run one sweep, assert every entry got the embedding triple stamped
+    AND that the model_id matches the service's id (no cross-cache leak)."""
+    service = _FakeService(
+        available=True, model_id="fake-128d-int8",
+        vector_factory=lambda text: [float(len(text))] * 4,
+    )
+    persona = _PersonaStub()
+    persona.store["小天"] = {
+        "master": {
+            "facts": [
+                {"text": "主人喜欢猫", "embedding": None,
+                 "embedding_text_sha256": None, "embedding_model_id": None},
+                {"text": "主人住东京", "embedding": None,
+                 "embedding_text_sha256": None, "embedding_model_id": None},
+            ],
+        },
+    }
+    reflection = _ReflectionStub()
+    reflection.store["小天"] = [
+        {"id": "r1", "text": "reflection one", "embedding": None,
+         "embedding_text_sha256": None, "embedding_model_id": None},
+    ]
+    fact = _FactStub()
+    fact.store["小天"] = [
+        {"id": "f1", "text": "raw fact", "embedding": None,
+         "embedding_text_sha256": None, "embedding_model_id": None},
+    ]
+    w = _build_worker(
+        service=service, persona=persona, reflection=reflection, fact=fact,
+    )
+    processed = await w._sweep_once()
+    assert processed == 4
+
+    persona_facts = persona.store["小天"]["master"]["facts"]
+    for entry in persona_facts:
+        assert entry["embedding"] == [float(len(entry["text"]))] * 4
+        assert entry["embedding_model_id"] == "fake-128d-int8"
+        assert entry["embedding_text_sha256"] == _embedding_text_sha256(entry["text"])
+    assert reflection.store["小天"][0]["embedding"] is not None
+    assert reflection.store["小天"][0]["embedding_model_id"] == "fake-128d-int8"
+    assert fact.store["小天"][0]["embedding"] is not None
+    assert persona.save_calls == 1
+    assert reflection.save_calls == 1
+    assert fact.save_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_sweep_skips_entries_with_valid_cache():
+    """Cache hit path: text + sha + model_id all match the running
+    service ⇒ entry is NOT re-embedded. Exercises the contract that
+    lets the worker run on every poll without burning CPU."""
+    service = _FakeService(
+        available=True, model_id="fake-128d-int8",
+    )
+    persona = _PersonaStub()
+    text = "stable text"
+    persona.store["小天"] = {
+        "master": {
+            "facts": [
+                {
+                    "text": text,
+                    "embedding": [0.9] * 4,
+                    "embedding_text_sha256": _embedding_text_sha256(text),
+                    "embedding_model_id": "fake-128d-int8",
+                },
+            ],
+        },
+    }
+    reflection = _ReflectionStub()
+    fact = _FactStub()
+    w = _build_worker(
+        service=service, persona=persona, reflection=reflection, fact=fact,
+    )
+    processed = await w._sweep_once()
+    assert processed == 0
+    assert service.embed_batch_calls == []
+    # save must not be called when nothing was embedded — that would
+    # rewrite persona.json on every tick, racing with real writers.
+    assert persona.save_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_sweep_re_embeds_when_model_id_flipped():
+    """Same text + valid sha but a different model_id ⇒ stale cache;
+    must re-embed under the new id. Mirrors the dim/quant flip case."""
+    service = _FakeService(
+        available=True, model_id="fake-256d-fp32",
+    )
+    persona = _PersonaStub()
+    text = "stable text"
+    persona.store["小天"] = {
+        "master": {
+            "facts": [
+                {
+                    "text": text,
+                    "embedding": [0.9] * 4,
+                    "embedding_text_sha256": _embedding_text_sha256(text),
+                    "embedding_model_id": "fake-128d-int8",
+                },
+            ],
+        },
+    }
+    reflection = _ReflectionStub()
+    fact = _FactStub()
+    w = _build_worker(
+        service=service, persona=persona, reflection=reflection, fact=fact,
+    )
+    processed = await w._sweep_once()
+    assert processed == 1
+    entry = persona.store["小天"]["master"]["facts"][0]
+    assert entry["embedding_model_id"] == "fake-256d-fp32"
+
+
+@pytest.mark.asyncio
+async def test_sweep_respects_per_tick_budget(monkeypatch):
+    """A backlog larger than MAX_ENTRIES_PER_TICK must yield after
+    spending the budget. Remaining work picks up on the next sweep."""
+    service = _FakeService(available=True, model_id="fake-128d-int8")
+    persona = _PersonaStub()
+    persona.store["小天"] = {
+        "master": {
+            "facts": [
+                {"text": f"fact {i}", "embedding": None,
+                 "embedding_text_sha256": None, "embedding_model_id": None}
+                for i in range(MAX_ENTRIES_PER_TICK + 10)
+            ],
+        },
+    }
+    reflection = _ReflectionStub()
+    fact = _FactStub()
+    w = _build_worker(
+        service=service, persona=persona, reflection=reflection, fact=fact,
+    )
+    processed = await w._sweep_once()
+    # Budget bounds the per-tick work; the persona sweep alone should
+    # consume the whole budget here.
+    assert processed == MAX_ENTRIES_PER_TICK
+    # The remaining 10 entries are still None — proves the budget was
+    # actually enforced rather than the worker accidentally embedding
+    # everything in one go.
+    remaining_none = sum(
+        1 for e in persona.store["小天"]["master"]["facts"]
+        if e["embedding"] is None
+    )
+    assert remaining_none == 10
+
+
+@pytest.mark.asyncio
+async def test_sweep_handles_empty_text_entries_gracefully():
+    """Entries with empty text shouldn't be queued for embedding (no
+    point) and shouldn't crash the sweep."""
+    service = _FakeService(available=True, model_id="fake-128d-int8")
+    persona = _PersonaStub()
+    persona.store["小天"] = {
+        "master": {
+            "facts": [
+                {"text": "", "embedding": None,
+                 "embedding_text_sha256": None, "embedding_model_id": None},
+                {"text": "valid", "embedding": None,
+                 "embedding_text_sha256": None, "embedding_model_id": None},
+            ],
+        },
+    }
+    reflection = _ReflectionStub()
+    fact = _FactStub()
+    w = _build_worker(
+        service=service, persona=persona, reflection=reflection, fact=fact,
+    )
+    processed = await w._sweep_once()
+    assert processed == 1
+    assert persona.store["小天"]["master"]["facts"][1]["embedding"] is not None
+    assert persona.store["小天"]["master"]["facts"][0]["embedding"] is None
+
+
+@pytest.mark.asyncio
+async def test_notify_first_process_idempotent():
+    """Multiple notifications collapse to a single set — second call
+    must be a no-op (event.set is idempotent but we want to be explicit
+    about the contract for callers)."""
+    service = _FakeService(available=True, model_id="fake-128d-int8")
+    persona = _PersonaStub()
+    reflection = _ReflectionStub()
+    fact = _FactStub()
+    w = _build_worker(
+        service=service, persona=persona, reflection=reflection, fact=fact,
+    )
+    w.notify_first_process()
+    w.notify_first_process()
+    w.notify_first_process()
+    assert w._first_process_event.is_set()
+
+
+@pytest.mark.asyncio
+async def test_stop_during_warmup_skips_load():
+    """Shutdown while still in warmup wait → don't trigger the model
+    load. Catches the case where the FastAPI shutdown hook fires before
+    the user has had a chance to /process."""
+    service = _FakeService(available=True, model_id="fake-128d-int8")
+    persona = _PersonaStub()
+    reflection = _ReflectionStub()
+    fact = _FactStub()
+    w = _build_worker(
+        service=service, persona=persona, reflection=reflection, fact=fact,
+        warmup_delay=60.0,
+    )
+    task = w.start()
+    await asyncio.sleep(0.02)
+    await w.stop()
+    await asyncio.wait_for(task, timeout=1.0)
+    assert service.load_called is False

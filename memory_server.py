@@ -130,6 +130,13 @@ outbox: Outbox | None = None
 event_log: EventLog | None = None
 reconciler: Reconciler | None = None
 
+# memory-enhancements P2: vector embedding warmup + backfill worker.
+# Lazily constructed in startup hook; held at module scope so
+# /process / /renew handlers can call notify_first_process() to
+# unblock the warmup wait early. None when vectors are disabled or
+# the worker bootstrap raised.
+embedding_warmup_worker = None
+
 # 用于保护重新加载操作的锁
 _reload_lock = asyncio.Lock()
 _deferred_time_managers: list[TimeIndexedMemory] = []
@@ -1605,6 +1612,41 @@ async def startup_event_handler():
     # 增量 + 满阈值归档），独立于 evidence signal 抽取。
     _spawn_background_task(_periodic_archive_sweep_loop())
 
+    # memory-enhancements P2: vector embedding warmup + backfill worker.
+    # The warmup is gated on whichever fires first: VECTORS_WARMUP_DELAY_SECONDS
+    # elapsed since startup, OR the first /process / /renew call (signal that
+    # the user has actually engaged — frontend greeting + prominent drain
+    # are done by then). After warmup, the worker periodically scans
+    # persona/reflection/fact entries for embedding=None and fills them in
+    # batches. The whole feature is a no-op if the EmbeddingService can't
+    # find onnxruntime + a model file, so we always start the task — the
+    # service's own fallback gate decides whether anything actually happens.
+    global embedding_warmup_worker
+    try:
+        from memory.embedding_worker import EmbeddingWarmupWorker
+        from config import VECTORS_WARMUP_DELAY_SECONDS
+
+        async def _get_catgirl_names():
+            try:
+                data = await _config_manager.aload_characters()
+                return list(data.get('猫娘', {}).keys())
+            except Exception:
+                return []
+
+        embedding_warmup_worker = EmbeddingWarmupWorker(
+            persona_manager=persona_manager,
+            reflection_engine=reflection_engine,
+            fact_store=fact_store,
+            get_character_names=lambda: catgirl_names,
+            warmup_delay_seconds=VECTORS_WARMUP_DELAY_SECONDS,
+        )
+        embedding_warmup_worker.start()
+    except Exception as e:
+        # Worker construction failure is logged but never blocks startup —
+        # vectors are an optimization, not a correctness requirement.
+        logger.warning(f"[Memory] embedding worker bootstrap failed: {e}")
+        embedding_warmup_worker = None
+
 
 @app.on_event("shutdown")
 async def shutdown_event_handler():
@@ -1615,6 +1657,15 @@ async def shutdown_event_handler():
         TokenTracker.get_instance().save()
     except Exception:
         pass
+    # P2 vector worker: stop() races stop_event against an inflight
+    # batch sweep so we don't leave the task suspended in the FastAPI
+    # event loop's tear-down. Bounded wait inside stop() guarantees
+    # shutdown can't hang on a stuck inference call.
+    if embedding_warmup_worker is not None:
+        try:
+            await embedding_warmup_worker.stop()
+        except Exception as e:
+            logger.warning(f"[Memory] embedding worker stop 失败: {e}")
     managers_to_cleanup: list[TimeIndexedMemory] = []
     async with _reload_lock:
         managers_to_cleanup.extend(_deferred_time_managers)
@@ -1932,6 +1983,12 @@ async def cache_conversation(request: HistoryRequest, lanlan_name: str):
 async def process_conversation(request: HistoryRequest, lanlan_name: str):
     lanlan_name = validate_lanlan_name(lanlan_name)
     _touch_activity()
+    # P2 vector warmup: first /process is the cheapest "frontend ready"
+    # signal we have — by the time the user sends a real conversation
+    # turn, greeting and prominent drain are over. notify_first_process
+    # is a setflag, not async, so it doesn't add latency to /process.
+    if embedding_warmup_worker is not None:
+        embedding_warmup_worker.notify_first_process()
     global correction_tasks
     try:
         # 检查角色是否存在于配置中，如果不存在则记录信息但继续处理（允许新角色）
@@ -1979,6 +2036,10 @@ async def process_conversation(request: HistoryRequest, lanlan_name: str):
 async def process_conversation_for_renew(request: HistoryRequest, lanlan_name: str):
     lanlan_name = validate_lanlan_name(lanlan_name)
     _touch_activity()
+    # Same warmup hint as /process: /renew is also a "user actively
+    # using the app" signal, so it counts as the unblock event.
+    if embedding_warmup_worker is not None:
+        embedding_warmup_worker.notify_first_process()
     global correction_tasks
     try:
         # 检查角色是否存在于配置中，如果不存在则记录信息但继续处理（允许新角色）

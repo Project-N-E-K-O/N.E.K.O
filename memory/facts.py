@@ -422,6 +422,16 @@ class FactStore:
                 'hash': content_hash,
                 'created_at': datetime.now().isoformat(),
                 'absorbed': False,  # True when consumed by a reflection
+                # Vector-embedding cache (memory-enhancements P2 — see
+                # memory/embeddings.py). Written as None so /process
+                # returns immediately without blocking on embedding;
+                # the background warmup worker fills the triple in
+                # batches once the EmbeddingService is ready. Used by
+                # the upcoming fact dedup path (cosine > threshold →
+                # LLM arbitration queue).
+                'embedding': None,
+                'embedding_text_sha256': None,
+                'embedding_model_id': None,
             }
             existing_facts.append(fact_entry)
             existing_hashes.add(content_hash)
