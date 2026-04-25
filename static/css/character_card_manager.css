@@ -5831,3 +5831,7 @@ margin-top: 10px;
     background: #1a3a4a;
     color: #7ec8e3;
 }
+
+[data-theme="dark"] .catgirl-panel-right .field-row.profile-name-too-long {
+    border-color: #ff5252;
+}

@@ -1560,7 +1560,7 @@
         "fieldExists": "該設定已存在",
         "profileNameRequired": "檔案名為必填項",
         "onlyOneCatgirlLeft": "隻剩一隻貓娘，無法刪除！",
-        "cannotHideCurrentNeko": "不能隱藏目前正在使用的 NEKO",
+        "cannotHideCurrentNeko": "不能隱藏目前正在使用的貓娘",
         "cannotDeleteCurrentCatgirl": "不能刪除當前正在使用的貓娘！\n\n請先切換到其他貓娘後再刪除。",
         "cannotConfirmCatgirlStatus": "無法確認當前貓娘狀態，刪除操作已取消",
         "confirmDeleteCatgirl": "確定要刪除貓娘\"{{name}}\"？",
