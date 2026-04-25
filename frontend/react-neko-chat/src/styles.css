@@ -1323,7 +1323,8 @@ button * {
 @media (prefers-reduced-motion: reduce) {
   .composer-tools-right,
   .composer-tools-right > *,
-  .composer-overflow-menu {
+  .composer-overflow-menu,
+  .composer-overflow-popover {
     animation: none !important;
   }
 }

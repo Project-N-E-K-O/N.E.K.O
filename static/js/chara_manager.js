@@ -841,6 +841,27 @@ if (!window._charaManagerFoldHandler) {
             const willOpen = !fold.classList.contains('open');
             const foldContent = fold.querySelector(':scope > .fold-content');
 
+            // 动画切换 fold-content 高度。.open 类决定 CSS display：
+            // 展开时先加 .open 让元素可见再动画到完整高度；折叠时动画结束后再去掉 .open。
+            // 仅当动画真的启动（或没有可动画内容）时，才同步翻转箭头方向和持久化状态，
+            // 否则动画期间二次点击会让 UI 与 localStorage 写反。
+            let started = true;
+            if (foldContent) {
+                if (willOpen) {
+                    started = animateOpenable(foldContent, () => {
+                        fold.classList.add('open');
+                    });
+                } else {
+                    started = animateCollapsible(foldContent, () => {
+                        fold.classList.remove('open');
+                    });
+                }
+            } else {
+                fold.classList.toggle('open');
+            }
+
+            if (!started) return;
+
             // 同步更新箭头方向（与高度动画并行播放）
             const arrow = toggle.querySelector('.arrow');
             if (arrow && arrow.tagName === 'IMG') {
@@ -863,22 +884,6 @@ if (!window._charaManagerFoldHandler) {
                         localStorage.setItem(`catgirl_advanced_${catgirlName}`, willOpen.toString());
                     }
                 }
-            }
-
-            // 动画切换 fold-content 高度。.open 类决定 CSS display：
-            // 展开时先加 .open 让元素可见再动画到完整高度；折叠时动画结束后再去掉 .open。
-            if (foldContent) {
-                if (willOpen) {
-                    animateOpenable(foldContent, () => {
-                        fold.classList.add('open');
-                    });
-                } else {
-                    animateCollapsible(foldContent, () => {
-                        fold.classList.remove('open');
-                    });
-                }
-            } else {
-                fold.classList.toggle('open');
             }
         }
     });
@@ -1464,12 +1469,14 @@ function _prefersReducedMotion() {
 
 // 通用展开动画：先把元素压到 maxHeight:0，调用 onShow 让元素在折叠状态下变可见
 // （如 display:block / add class / 渲染内容），随后下一帧动画到实际 scrollHeight。
+// 返回 true 表示动画已启动（或在 reduced-motion 下同步完成）；返回 false 表示
+// 因正在动画中被吞掉，调用方应据此决定是否同步翻转持久状态。
 function animateOpenable(elem, onShow) {
-    if (!elem || elem.dataset.animating === 'true') return;
+    if (!elem || elem.dataset.animating === 'true') return false;
 
     if (_prefersReducedMotion()) {
         if (onShow) onShow();
-        return;
+        return true;
     }
 
     elem.dataset.animating = 'true';
@@ -1502,16 +1509,18 @@ function animateOpenable(elem, onShow) {
     };
     elem.addEventListener('transitionend', cleanup);
     fallbackTimer = setTimeout(() => cleanup(null), CATGIRL_ANIM_DURATION + 120);
+    return true;
 }
 
 // 通用折叠动画：从当前 scrollHeight 动画到 0，结束后调用 onHidden
 // （由调用方决定是 display:none / 移除 class / 清空 innerHTML 等）。
+// 返回值语义同 animateOpenable。
 function animateCollapsible(elem, onHidden) {
-    if (!elem || elem.dataset.animating === 'true') return;
+    if (!elem || elem.dataset.animating === 'true') return false;
 
     if (_prefersReducedMotion()) {
         if (onHidden) onHidden();
-        return;
+        return true;
     }
 
     elem.dataset.animating = 'true';
@@ -1544,11 +1553,12 @@ function animateCollapsible(elem, onHidden) {
     };
     elem.addEventListener('transitionend', cleanup);
     fallbackTimer = setTimeout(() => cleanup(null), CATGIRL_ANIM_DURATION + 120);
+    return true;
 }
 
 // 猫娘卡片专用包装：负责 display 切换、内容重新渲染、箭头旋转
 function animateCatgirlExpand(detailsDiv, expandBtn, renderContent) {
-    animateOpenable(detailsDiv, () => {
+    return animateOpenable(detailsDiv, () => {
         detailsDiv.style.display = 'block';
         if (renderContent) renderContent();
         if (expandBtn) expandBtn.style.transform = 'rotate(0deg)';
@@ -1556,12 +1566,13 @@ function animateCatgirlExpand(detailsDiv, expandBtn, renderContent) {
 }
 
 function animateCatgirlCollapse(detailsDiv, expandBtn, onComplete) {
-    if (expandBtn) expandBtn.style.transform = 'rotate(-90deg)';
-    animateCollapsible(detailsDiv, () => {
+    const started = animateCollapsible(detailsDiv, () => {
         detailsDiv.style.display = 'none';
         detailsDiv.innerHTML = '';
         if (onComplete) onComplete();
     });
+    if (started && expandBtn) expandBtn.style.transform = 'rotate(-90deg)';
+    return started;
 }
 
 // 渲染猫娘列表
@@ -1690,18 +1701,21 @@ function renderCatgirls() {
 
         expandBtn.onclick = function () {
             const isOpen = detailsDiv.style.display === '' || detailsDiv.style.display === 'block';
+            // 仅当动画真的启动时再翻转 localStorage / expandedCatgirlName，
+            // 避免动画期间二次点击导致状态与实际显示翻转。
             if (isOpen) {
+                if (!animateCatgirlCollapse(detailsDiv, expandBtn)) return;
                 localStorage.setItem(storageKey, 'false');
                 if (expandedCatgirlName === key) {
                     expandedCatgirlName = null;
                 }
-                animateCatgirlCollapse(detailsDiv, expandBtn);
             } else {
-                localStorage.setItem(storageKey, 'true');
-                expandedCatgirlName = key;
-                animateCatgirlExpand(detailsDiv, expandBtn, () => {
+                const started = animateCatgirlExpand(detailsDiv, expandBtn, () => {
                     showCatgirlForm(key, detailsDiv);
                 });
+                if (!started) return;
+                localStorage.setItem(storageKey, 'true');
+                expandedCatgirlName = key;
             }
         };
         list.appendChild(block);
@@ -1790,16 +1804,17 @@ function renderHiddenCatgirls(forceExpand = false) {
         if (!hiddenHeader.dataset.bound) {
             hiddenHeader.dataset.bound = 'true';
             hiddenHeader.onclick = function() {
+                // 仅当动画真的启动时再同步箭头与 aria-expanded，
+                // 避免动画期间二次点击导致箭头/aria 与实际展开状态翻转。
                 if (hiddenList.style.display !== 'none') {
-                    if (arrow) arrow.classList.remove('expanded');
-                    hiddenHeader.setAttribute('aria-expanded', 'false');
-                    animateCollapsible(hiddenList, () => {
+                    const started = animateCollapsible(hiddenList, () => {
                         hiddenList.style.display = 'none';
                     });
+                    if (!started) return;
+                    if (arrow) arrow.classList.remove('expanded');
+                    hiddenHeader.setAttribute('aria-expanded', 'false');
                 } else {
-                    if (arrow) arrow.classList.add('expanded');
-                    hiddenHeader.setAttribute('aria-expanded', 'true');
-                    animateOpenable(hiddenList, () => {
+                    const started = animateOpenable(hiddenList, () => {
                         hiddenList.innerHTML = '';
                         const freshHiddenKeys = getHiddenCatgirlKeys();
                         const catgirls = characterData['猫娘'] || {};
@@ -1809,6 +1824,9 @@ function renderHiddenCatgirls(forceExpand = false) {
                         });
                         hiddenList.style.display = 'block';
                     });
+                    if (!started) return;
+                    if (arrow) arrow.classList.add('expanded');
+                    hiddenHeader.setAttribute('aria-expanded', 'true');
                 }
             };
         }
