@@ -645,14 +645,33 @@
         document.addEventListener('DOMContentLoaded', function() {
             const mount = document.getElementById('profiler-mount');
             if (mount && typeof ModelProfilerUI !== 'undefined') {
+                const isVisible = function(el) {
+                    return !!(el && el.style.display !== 'none' && !el.classList.contains('hidden'));
+                };
+                const getActiveManager = function() {
+                    const vrmManager = window.vrmManager || null;
+                    const mmdManager = window.mmdManager || null;
+                    const vrmContainer = document.getElementById('vrm-container');
+                    const mmdContainer = document.getElementById('mmd-container');
+
+                    const vrmReady = !!vrmManager?.currentModel?.vrm;
+                    const mmdReady = !!mmdManager?.currentModel?.mesh;
+
+                    if (isVisible(vrmContainer) && vrmReady) return vrmManager;
+                    if (isVisible(mmdContainer) && mmdReady) return mmdManager;
+                    if (vrmReady) return vrmManager;
+                    if (mmdReady) return mmdManager;
+                    return vrmManager || mmdManager || null;
+                };
+
                 window._profilerUI = new ModelProfilerUI({
                     container: mount,
                     collapsed: true,
                     getManager: function() {
-                        return window.mmdManager || window.vrmManager || null;
+                        return getActiveManager();
                     },
                     getRenderer: function() {
-                        var mgr = window.mmdManager || window.vrmManager;
+                        var mgr = getActiveManager();
                         return mgr ? mgr.renderer : null;
                     }
                 });
