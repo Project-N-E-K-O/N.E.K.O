@@ -836,37 +836,49 @@ if (!window._charaManagerFoldHandler) {
         if (e.target.classList.contains('fold-toggle') || (e.target.classList.contains('arrow') && e.target.parentNode.classList.contains('fold-toggle'))) {
             let toggle = e.target.classList.contains('fold-toggle') ? e.target : e.target.parentNode;
             let fold = toggle.closest('.fold');
-            if (fold) {
-                fold.classList.toggle('open');
-                // 动态切换箭头（图片旋转）
-                let arrow = toggle.querySelector('.arrow');
-                if (arrow && arrow.tagName === 'IMG') {
-                    arrow.style.transform = fold.classList.contains('open') ? 'rotate(0deg)' : 'rotate(-90deg)';
-                }
+            if (!fold) return;
 
-                // 立即保存高级设置下拉栏状态
-                // 检查是否是最外层的fold（进阶设定）
-                const advancedSettingsText = window.t ? window.t('character.advancedSettings') : '进阶设定';
-                if (!fold.parentElement.closest('.fold') && toggle.textContent.includes(advancedSettingsText)) {
-                    // 获取当前表单
-                    const form = fold.closest('form');
-                    if (form) {
-                        // 尝试从表单的_catgirlName属性或档案名字段获取猫娘名称
-                        let catgirlName = form._catgirlName;
-                        if (!catgirlName) {
-                            const nameField = form.querySelector('[name="档案名"]');
-                            if (nameField) {
-                                catgirlName = nameField.value.trim();
-                            }
-                        }
+            const willOpen = !fold.classList.contains('open');
+            const foldContent = fold.querySelector(':scope > .fold-content');
 
-                        // 如果有猫娘名称，保存展开状态
-                        if (catgirlName) {
-                            const isOpen = fold.classList.contains('open');
-                            localStorage.setItem(`catgirl_advanced_${catgirlName}`, isOpen.toString());
+            // 同步更新箭头方向（与高度动画并行播放）
+            const arrow = toggle.querySelector('.arrow');
+            if (arrow && arrow.tagName === 'IMG') {
+                arrow.style.transform = willOpen ? 'rotate(0deg)' : 'rotate(-90deg)';
+            }
+
+            // 立即保存高级设置下拉栏状态（最外层 fold 且文本包含"进阶设定"）
+            const advancedSettingsText = window.t ? window.t('character.advancedSettings') : '进阶设定';
+            if (!fold.parentElement.closest('.fold') && toggle.textContent.includes(advancedSettingsText)) {
+                const form = fold.closest('form');
+                if (form) {
+                    let catgirlName = form._catgirlName;
+                    if (!catgirlName) {
+                        const nameField = form.querySelector('[name="档案名"]');
+                        if (nameField) {
+                            catgirlName = nameField.value.trim();
                         }
                     }
+                    if (catgirlName) {
+                        localStorage.setItem(`catgirl_advanced_${catgirlName}`, willOpen.toString());
+                    }
                 }
+            }
+
+            // 动画切换 fold-content 高度。.open 类决定 CSS display：
+            // 展开时先加 .open 让元素可见再动画到完整高度；折叠时动画结束后再去掉 .open。
+            if (foldContent) {
+                if (willOpen) {
+                    animateOpenable(foldContent, () => {
+                        fold.classList.add('open');
+                    });
+                } else {
+                    animateCollapsible(foldContent, () => {
+                        fold.classList.remove('open');
+                    });
+                }
+            } else {
+                fold.classList.toggle('open');
             }
         }
     });
@@ -1436,6 +1448,122 @@ masterForm.onsubmit = async function (e) {
     }
 };
 
+// 角色档案展开/折叠动画
+// 通过 max-height + opacity 实现高度自适应动画。max-height 在动画结束后清空，
+// 避免限制内部 textarea 的自动调整。data-animating 标志阻止动画期间重入。
+const CATGIRL_ANIM_DURATION = 280;
+const CATGIRL_ANIM_EASING = 'cubic-bezier(0.4, 0, 0.2, 1)';
+
+function _prefersReducedMotion() {
+    try {
+        return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    } catch (e) {
+        return false;
+    }
+}
+
+// 通用展开动画：先把元素压到 maxHeight:0，调用 onShow 让元素在折叠状态下变可见
+// （如 display:block / add class / 渲染内容），随后下一帧动画到实际 scrollHeight。
+function animateOpenable(elem, onShow) {
+    if (!elem || elem.dataset.animating === 'true') return;
+
+    if (_prefersReducedMotion()) {
+        if (onShow) onShow();
+        return;
+    }
+
+    elem.dataset.animating = 'true';
+    elem.style.transition = 'none';
+    elem.style.overflow = 'hidden';
+    elem.style.maxHeight = '0px';
+    elem.style.opacity = '0';
+
+    if (onShow) onShow();
+
+    void elem.offsetHeight;
+
+    requestAnimationFrame(() => {
+        const target = elem.scrollHeight;
+        elem.style.transition = `max-height ${CATGIRL_ANIM_DURATION}ms ${CATGIRL_ANIM_EASING}, opacity ${CATGIRL_ANIM_DURATION}ms ${CATGIRL_ANIM_EASING}`;
+        elem.style.maxHeight = target + 'px';
+        elem.style.opacity = '1';
+    });
+
+    let fallbackTimer = null;
+    const cleanup = (e) => {
+        if (e && (e.target !== elem || e.propertyName !== 'max-height')) return;
+        elem.style.transition = '';
+        elem.style.maxHeight = '';
+        elem.style.overflow = '';
+        elem.style.opacity = '';
+        elem.dataset.animating = '';
+        elem.removeEventListener('transitionend', cleanup);
+        if (fallbackTimer) clearTimeout(fallbackTimer);
+    };
+    elem.addEventListener('transitionend', cleanup);
+    fallbackTimer = setTimeout(() => cleanup(null), CATGIRL_ANIM_DURATION + 120);
+}
+
+// 通用折叠动画：从当前 scrollHeight 动画到 0，结束后调用 onHidden
+// （由调用方决定是 display:none / 移除 class / 清空 innerHTML 等）。
+function animateCollapsible(elem, onHidden) {
+    if (!elem || elem.dataset.animating === 'true') return;
+
+    if (_prefersReducedMotion()) {
+        if (onHidden) onHidden();
+        return;
+    }
+
+    elem.dataset.animating = 'true';
+    const startHeight = elem.scrollHeight;
+
+    elem.style.transition = 'none';
+    elem.style.overflow = 'hidden';
+    elem.style.maxHeight = startHeight + 'px';
+    elem.style.opacity = '1';
+
+    void elem.offsetHeight;
+
+    requestAnimationFrame(() => {
+        elem.style.transition = `max-height ${CATGIRL_ANIM_DURATION}ms ${CATGIRL_ANIM_EASING}, opacity ${CATGIRL_ANIM_DURATION}ms ${CATGIRL_ANIM_EASING}`;
+        elem.style.maxHeight = '0px';
+        elem.style.opacity = '0';
+    });
+
+    let fallbackTimer = null;
+    const cleanup = (e) => {
+        if (e && (e.target !== elem || e.propertyName !== 'max-height')) return;
+        elem.style.transition = '';
+        elem.style.maxHeight = '';
+        elem.style.overflow = '';
+        elem.style.opacity = '';
+        elem.dataset.animating = '';
+        elem.removeEventListener('transitionend', cleanup);
+        if (fallbackTimer) clearTimeout(fallbackTimer);
+        if (onHidden) onHidden();
+    };
+    elem.addEventListener('transitionend', cleanup);
+    fallbackTimer = setTimeout(() => cleanup(null), CATGIRL_ANIM_DURATION + 120);
+}
+
+// 猫娘卡片专用包装：负责 display 切换、内容重新渲染、箭头旋转
+function animateCatgirlExpand(detailsDiv, expandBtn, renderContent) {
+    animateOpenable(detailsDiv, () => {
+        detailsDiv.style.display = 'block';
+        if (renderContent) renderContent();
+        if (expandBtn) expandBtn.style.transform = 'rotate(0deg)';
+    });
+}
+
+function animateCatgirlCollapse(detailsDiv, expandBtn, onComplete) {
+    if (expandBtn) expandBtn.style.transform = 'rotate(-90deg)';
+    animateCollapsible(detailsDiv, () => {
+        detailsDiv.style.display = 'none';
+        detailsDiv.innerHTML = '';
+        if (onComplete) onComplete();
+    });
+}
+
 // 渲染猫娘列表
 function renderCatgirls() {
     const list = document.getElementById('catgirl-list');
@@ -1563,23 +1691,17 @@ function renderCatgirls() {
         expandBtn.onclick = function () {
             const isOpen = detailsDiv.style.display === '' || detailsDiv.style.display === 'block';
             if (isOpen) {
-                detailsDiv.style.display = 'none';
-                expandBtn.style.transform = 'rotate(-90deg)';
-                detailsDiv.innerHTML = '';
-                // 保存状态到 localStorage
                 localStorage.setItem(storageKey, 'false');
-                // 清除展开记录
                 if (expandedCatgirlName === key) {
                     expandedCatgirlName = null;
                 }
+                animateCatgirlCollapse(detailsDiv, expandBtn);
             } else {
-                detailsDiv.style.display = 'block';
-                expandBtn.style.transform = 'rotate(0deg)';
-                // 保存状态到 localStorage
                 localStorage.setItem(storageKey, 'true');
-                // 记录当前展开的猫娘
                 expandedCatgirlName = key;
-                showCatgirlForm(key, detailsDiv);
+                animateCatgirlExpand(detailsDiv, expandBtn, () => {
+                    showCatgirlForm(key, detailsDiv);
+                });
             }
         };
         list.appendChild(block);
@@ -1669,21 +1791,24 @@ function renderHiddenCatgirls(forceExpand = false) {
             hiddenHeader.dataset.bound = 'true';
             hiddenHeader.onclick = function() {
                 if (hiddenList.style.display !== 'none') {
-                    hiddenList.style.display = 'none';
                     if (arrow) arrow.classList.remove('expanded');
                     hiddenHeader.setAttribute('aria-expanded', 'false');
-                } else {
-                    hiddenList.innerHTML = '';
-                    const freshHiddenKeys = getHiddenCatgirlKeys();
-                    const catgirls = characterData['猫娘'] || {};
-                    freshHiddenKeys.forEach(k => {
-                        if (!catgirls[k]) return;
-                        hiddenList.appendChild(createHiddenCatgirlItem(k));
+                    animateCollapsible(hiddenList, () => {
+                        hiddenList.style.display = 'none';
                     });
-                    
-                    hiddenList.style.display = 'block';
+                } else {
                     if (arrow) arrow.classList.add('expanded');
                     hiddenHeader.setAttribute('aria-expanded', 'true');
+                    animateOpenable(hiddenList, () => {
+                        hiddenList.innerHTML = '';
+                        const freshHiddenKeys = getHiddenCatgirlKeys();
+                        const catgirls = characterData['猫娘'] || {};
+                        freshHiddenKeys.forEach(k => {
+                            if (!catgirls[k]) return;
+                            hiddenList.appendChild(createHiddenCatgirlItem(k));
+                        });
+                        hiddenList.style.display = 'block';
+                    });
                 }
             };
         }
