@@ -307,9 +307,11 @@
             return '';
         }
 
+        // 当前 locale 没有对应语音文件时（如 es / pt 等未提供录音的语言），
+        // 默认 fallback 是英文，避免回退到中文给非中文用户带来违和感。
         const locale = resolveGuideLocale();
-        const fileName = files[locale] || files.zh || '';
-        const fileLocale = files[locale] ? locale : 'zh';
+        const fileName = files[locale] || files.en || '';
+        const fileLocale = files[locale] ? locale : 'en';
         return fileName ? (GUIDE_AUDIO_BASE_URL + fileLocale + '/' + encodeURIComponent(fileName)) : '';
     }
 

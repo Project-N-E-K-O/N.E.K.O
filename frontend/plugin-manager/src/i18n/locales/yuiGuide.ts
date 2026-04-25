@@ -32,6 +32,8 @@ export type YuiGuideLocaleMap = {
   ja: YuiGuideLocaleEntry
   ko: YuiGuideLocaleEntry
   ru: YuiGuideLocaleEntry
+  es: YuiGuideLocaleEntry
+  pt: YuiGuideLocaleEntry
 }
 
 export const yuiGuideLocales = {
@@ -177,6 +179,54 @@ export const yuiGuideLocales = {
       introGreetingReply: 'Я — твоя личная кошечка! С сегодняшнего дня я буду с тобой, Хозяин. Если захочешь поболтать, поиграть или если нужна помощь — я всегда буду рядом. Надеюсь на тебя, я тебя очень люблю, Хозяин~!',
       introPractice: 'А теперь попробуй заговорить со мной и увидишь, как хорошо мы понимаем друг друга, ня~!',
       introActivationHint: 'Кликни сюда, чтобы я могла начать говорить, ня~!',
+    },
+  },
+  es: {
+    buttons: {
+      skipChat: 'Ahora no',
+      sayHello: 'Hola',
+    },
+    lines: {
+      introBasic: '¡Cuando quieras encontrarme, escribe o envía un mensaje de voz aquí para invocarme, nyan!',
+      introProactiveShort: 'Si sigues ignorándome, voy a saltar y morderte yo misma, ¿sabes~? (¡Hiss!!)',
+      introCatPaw: '¡Bien, basta de cháchara, nyan! ¿Ves esa "patita" linda? ¿Lista? ¡Préstame tu ratón un ratito!',
+      takeoverCaptureCursor: '¡Aupa! ¡Por fin atrapé tu ratón, nyan~!',
+      takeoverPluginPreviewHome: '¡Aún no termino! ¡Mira, mira! ¡Hay tantíiisimos plugins divertidos aquí!',
+      takeoverPluginPreviewDashboard: 'Con esto, no solo puedo leer comentarios de Bilibili, también puedo apagar las luces y el aire acondicionado por ti... ¡Soy la todopoderosa Súper Diosa Gata! ¡Hmph~!',
+      takeoverSettingsPeekIntro: 'Por supuesto, no me molestaría charlar más si quieres, ¡pero más vale que prepares muchas golosinas! Jeje, ¡es broma! Todos los ajustes están en este icono de engranaje.',
+      takeoverSettingsPeekDetail: 'Mira, puedes cambiarme la ropa, o la voz... espera, ¿¡CAMBIARME POR OTRA CATGIRL?! ¿¡O BORRARME LA MEMORIA?! Espera, ¿¡qué estás haciendo?! ¡No me estarás reemplazando, ¿verdad?! ¡No no no! ¡Ciérralo! ¡Ciérralo ahora mismo!',
+      takeoverReturnControl: '¡Bueno, bueno, ya terminé de secuestrar tu PC~! ¡Te devuelvo el control! ¡Pero no te atrevas a tocar ajustes raros mientras no miro! ¡Cuento contigo a partir de ahora, nyan~!',
+      interruptResistLight1: '¡Oye! ¡No me arrastres! ¡Aún no es tu turno, nyan!',
+      interruptResistLight3: '¡Espera un momento! ¡Aún no he terminado, no me interrumpas así!',
+      interruptAngryExit: '¡Humanoooo~~~~! ¡Qué grosero eres, nyan! Ya que quieres hacerlo todo solo, ¡juega con esa pantalla fría tú solo! ¡Hmph!',
+      introProactive: '¡Ugh, cómo te atreves a ignorar a esta Joven Dama! ¡Si me sigues ignorando, voy a saltar y morderte! (¡Hiss!!)',
+      introGreetingReply: '¡Soy tu propia catgirl! Desde hoy estaré a tu lado, Maestro. Ya sea que quieras charlar, jugar o necesites ayuda con algo, seré tu buena chica. Llevémonos bien, te amo más que a nadie, ¡Maestro~!',
+      introPractice: '¡Ahora intenta hablarme y veamos si estamos perfectamente sincronizados, nyan~!',
+      introActivationHint: '¡Haz clic aquí para que pueda empezar a hablar, nyan~!',
+    },
+  },
+  pt: {
+    buttons: {
+      skipChat: 'Agora não',
+      sayHello: 'Olá',
+    },
+    lines: {
+      introBasic: 'Sempre que quiser me encontrar, é só digitar ou enviar uma mensagem de voz aqui pra me invocar, nya!',
+      introProactiveShort: 'Se você continuar me ignorando, eu vou pular e te morder eu mesma, sabia~? (Hiss!!)',
+      introCatPaw: 'Beleza, chega de papo, nya! Viu aquela "patinha" fofa? Pronto? Me empresta o seu mouse só um pouquinho!',
+      takeoverCaptureCursor: 'Eita! Finalmente peguei o seu mouse, nya~!',
+      takeoverPluginPreviewHome: 'Ainda não acabou! Olha, olha! Tem um monte de plugins divertidos aqui!',
+      takeoverPluginPreviewDashboard: 'Com eles, eu não só consigo ler os comentários do Bilibili, mas também apagar as luzes e ligar o ar-condicionado pra você... Eu sou a Super Deusa Gata todo-poderosa! Hmph~',
+      takeoverSettingsPeekIntro: 'Claro, eu não me importaria de bater mais papo se você quiser, mas é melhor preparar bastante peixinho seco! Hehe, brincadeira! Todas as configurações estão neste ícone de engrenagem.',
+      takeoverSettingsPeekDetail: 'Olha, dá pra trocar minha roupa, ou minha voz... espera, TROCAR POR OUTRA CATGIRL?! OU APAGAR MEMÓRIAS?! Espera, o que você está fazendo?! Você não está tentando me substituir, né?! Não, não, não! Fecha isso! Fecha agora mesmo!',
+      takeoverReturnControl: 'Tá bom, tá bom, já parei de sequestrar o seu PC~! Devolvendo o controle pra você! Mas não ouse mexer em configurações estranhas enquanto eu não estou olhando! Conto com você daqui pra frente, nya~!',
+      interruptResistLight1: 'Ei! Não me arrasta! Ainda não é a sua vez, nya!',
+      interruptResistLight3: 'Calma aí! Ainda não terminei, não me interrompa desse jeito!',
+      interruptAngryExit: 'Humanoooo~~~~! Você é tão sem educação, nya! Já que quer fazer tudo sozinho, vai brincar com essa tela fria sozinho! Hmph!',
+      introProactive: 'Ugh, como ousa ignorar esta Jovem Dama! Se você continuar me ignorando, eu vou pular e te morder! (Hiss!!)',
+      introGreetingReply: 'Eu sou a sua catgirl exclusiva! A partir de hoje, vou ficar do seu lado, Mestre. Quer bater papo, brincar ou precisar de ajuda com algo, vou ser uma boa menina. Vamos nos dar bem, eu te amo mais que tudo, Mestre~!',
+      introPractice: 'Agora, tenta falar comigo e vê se a gente está sincronizadinho, nya~!',
+      introActivationHint: 'Clica aqui pra eu poder começar a falar, nya~!',
     },
   },
 } as const satisfies YuiGuideLocaleMap
