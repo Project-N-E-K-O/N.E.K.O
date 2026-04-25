@@ -1355,6 +1355,232 @@ class ConfigManager:
                     print(f"Migrated memory directory: {item.name}")
         except Exception as e:
             print(f"Warning: Failed to migrate memory files: {e}", file=sys.stderr)
+
+    def migrate_legacy_documents_memory(self):
+        """
+        启动时对 legacy 根目录（``Documents\\N.E.K.O`` / CFA 原始只读路径等）
+        下的 ``memory/`` 仅做**软迁移**：把仍在 ``characters.json[猫娘]``
+        的角色目录搬到当前 runtime ``memory_dir``；runtime 已有同名目录则
+        保留 legacy 副本并打印 warning，绝不覆盖。
+
+        **未关联条目**（目录名不在 ``characters.json[猫娘]`` 的孤立记忆）
+        不在本方法处理范围内，完全交由创意工坊页面的"清理遗留记忆"按钮
+        走 ``/api/memory/legacy/scan`` + ``purge`` 由用户主动勾选删除。
+
+        该方法应在 ``migrate_config_files`` / ``migrate_memory_files`` 之后
+        调用，此时 ``characters.json`` 已就位。任何失败只打日志不抛异常，
+        绝不阻塞启动流程。
+        """
+        try:
+            # get_legacy_app_root_candidates 已排除当前 app_docs_dir，且去重
+            legacy_roots = list(self.get_legacy_app_root_candidates() or [])
+        except Exception as exc:
+            self._log(
+                f"[ConfigManager] migrate_legacy_documents_memory: 获取 legacy roots 失败: {exc}"
+            )
+            return
+
+        # CFA 回退场景：_readable_docs_dir 是只读原 Documents，也要纳入。
+        # 只读根意味着 rmtree 永远失败、target 永远存在，下面会基于
+        # readonly_legacy_roots 跳过 rmtree 并静默 target_exists 噪音，
+        # 避免每次启动都打"清理失败/已存在"的重复日志。
+        readonly_legacy_roots: set[str] = set()
+        readable_docs = getattr(self, "_readable_docs_dir", None)
+        if readable_docs:
+            try:
+                extra = Path(readable_docs) / self.app_name
+                extra_str = str(extra)
+                if all(extra_str != str(existing) for existing in legacy_roots):
+                    legacy_roots.append(extra)
+                readonly_legacy_roots.add(extra_str)
+            except Exception:
+                pass
+
+        if not legacy_roots:
+            return
+
+        try:
+            characters = self.load_characters()
+        except Exception as exc:
+            self._log(
+                f"[ConfigManager] migrate_legacy_documents_memory: 加载 characters.json 失败: {exc}"
+            )
+            return
+
+        # characters.json 是用户可写边界；"猫娘" 字段若被损坏成 list / 字符串等
+        # 非空但非 dict 的值，.keys() 会抛 AttributeError 并被外层吞掉。
+        catgirl_map = characters.get("猫娘")
+        if not isinstance(catgirl_map, dict):
+            if catgirl_map is not None:
+                self._log(
+                    f"[ConfigManager] migrate_legacy_documents_memory: "
+                    f"characters.json 中猫娘字段类型异常 "
+                    f"({type(catgirl_map).__name__})，跳过本次软迁移"
+                )
+            else:
+                self._log(
+                    "[ConfigManager] migrate_legacy_documents_memory: "
+                    "characters.json 中无猫娘字段，跳过本次软迁移"
+                )
+            return
+
+        known_characters = set(catgirl_map.keys())
+        if not known_characters:
+            # characters.json 异常/为空时无从判断哪些应当迁移，直接退出。
+            self._log(
+                "[ConfigManager] migrate_legacy_documents_memory: "
+                "characters.json 中无角色，跳过本次软迁移"
+            )
+            return
+
+        # 分项计数便于运维排查"到底为什么没迁"。隐藏/下划线前缀、未关联角色
+        # 这两类 skip 是正常 no-op，不单独计数。
+        migrated_count = 0
+        target_exists_count = 0  # runtime 已存在同名目录，保留 legacy 副本
+        non_dir_count = 0  # 命中角色名但条目不是目录（反常，需关注）
+        failed_count = 0  # copytree/rename 失败
+
+        def _legacy_error_summary(exc: BaseException) -> str:
+            """
+            把异常压成脱敏字符串：只保留类名 + errno + strerror，
+            绝不打印 OSError/PermissionError 自带的 filename 参数（那会
+            暴露 Documents 用户名 + 角色目录名）。
+            """
+            if isinstance(exc, OSError):
+                parts = [type(exc).__name__]
+                if exc.errno is not None:
+                    parts.append(f"errno={exc.errno}")
+                strerror = getattr(exc, "strerror", None)
+                if strerror:
+                    parts.append(f"reason={strerror}")
+                return " ".join(parts)
+            return type(exc).__name__
+
+        # 日志脱敏策略：所有 self._log 绝不包含完整 legacy 路径 / 角色目录名 /
+        # 用户 Documents 路径，只打 root 序号 + 计数 + 条目类型。这些日志可能
+        # 被收集到日志文件或遥测，泄露用户本地信息不值当。
+        for legacy_root_index, legacy_root in enumerate(legacy_roots, start=1):
+            source_is_readonly = str(legacy_root) in readonly_legacy_roots
+            try:
+                legacy_memory = Path(legacy_root) / "memory"
+            except Exception:
+                continue
+            if not legacy_memory.exists() or not legacy_memory.is_dir():
+                continue
+            # 保护：绝不处理 runtime memory 自身（防御性重复检查）
+            try:
+                if legacy_memory.resolve() == Path(self.memory_dir).resolve():
+                    continue
+            except Exception:
+                pass
+
+            # Per-root 兜底：权限错误或 I/O 错误不应中断后续 legacy roots 的迁移
+            try:
+                legacy_entries = list(legacy_memory.iterdir())
+            except Exception as exc:
+                self._log(
+                    f"[ConfigManager] 枚举 legacy memory 根 #{legacy_root_index} "
+                    f"失败，跳过该根: {_legacy_error_summary(exc)}"
+                )
+                continue
+
+            for entry in legacy_entries:
+                try:
+                    entry_name = entry.name
+                    # 只过滤真正的隐藏条目（dot-file），其它形态的合法性交给
+                    # known_characters 裁定——用户如果把角色命名为 "_foo"，
+                    # 之前的 "_" 前缀黑名单会直接把它当临时条目静默跳过。
+                    if entry_name.startswith("."):
+                        continue
+
+                    # 未关联条目交给手动清理按钮，此处不做任何操作
+                    if entry_name not in known_characters:
+                        continue
+
+                    # runtime 角色记忆期望是目录结构（memory_dir/{name}/time_indexed.db
+                    # 等）；同名普通文件会占位并阻断后续写入，必须跳过。
+                    if not entry.is_dir():
+                        non_dir_count += 1
+                        self._log(
+                            f"[ConfigManager] legacy memory 根 #{legacy_root_index}: "
+                            f"命中角色名的条目不是目录（类型异常），跳过自动软迁移"
+                        )
+                        continue
+
+                    target = self.memory_dir / entry_name
+                    # target.exists() 对断链软链接返回 False（跟随软链找不到目标），
+                    # 但 os.replace 会直接覆盖该软链接，违反"绝不覆盖 runtime 已有
+                    # 目标"的语义。is_symlink() 不跟随，把断链也当成"已存在"。
+                    if target.exists() or target.is_symlink():
+                        # 只读根（如 CFA _readable_docs_dir）上的源永远删不掉，
+                        # target 存在是上一次成功迁移后的常态；静默跳过以免每次
+                        # 启动都打"已存在"日志噪音。可写根仍正常计数 + 打日志。
+                        if not source_is_readonly:
+                            target_exists_count += 1
+                            self._log(
+                                f"[ConfigManager] legacy memory 根 #{legacy_root_index}: "
+                                f"目标已存在于 runtime，保留 legacy 副本避免覆盖"
+                            )
+                        continue
+                    # 跨盘 shutil.move 退化为 copy 时若半途失败，target 可能已
+                    # 存在但不完整，下次启动会被 target.exists() 跳过。改为
+                    # "复制到同父级临时路径 → 原子 rename → best-effort 清源"。
+                    temp_target = target.parent / f".{entry_name}.migrating-{uuid.uuid4().hex}"
+                    try:
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        # symlinks=False：跟随 legacy 源里的软链，把实际内容拷到
+                        # runtime。若保留软链（symlinks=True），legacy 里用户手动
+                        # 创建的、指向 memory_dir 外部的链接会让 runtime 的
+                        # memory_dir/{name}/time_indexed.db 写入逃出边界。
+                        shutil.copytree(str(entry), str(temp_target), symlinks=False)
+                        os.replace(str(temp_target), str(target))
+                        # 只读根（CFA _readable_docs_dir）上根本不可写，rmtree
+                        # 永远会抛 PermissionError。成功迁移后直接跳过清源，
+                        # 避免每次启动都打一遍"legacy 源清理失败"日志。
+                        if not source_is_readonly:
+                            try:
+                                shutil.rmtree(str(entry))
+                            except Exception as cleanup_exc:
+                                self._log(
+                                    f"[ConfigManager] legacy memory 根 #{legacy_root_index}: "
+                                    f"已复制到 runtime，但 legacy 源清理失败，保留 legacy 副本: "
+                                    f"{_legacy_error_summary(cleanup_exc)}"
+                                )
+                        migrated_count += 1
+                        self._log(
+                            f"[ConfigManager] legacy memory 根 #{legacy_root_index}: "
+                            f"已迁移 1 个条目到 runtime"
+                        )
+                    except Exception as exc:
+                        failed_count += 1
+                        # 清理可能残留的临时目录/文件，避免下次启动误判
+                        try:
+                            if temp_target.exists():
+                                if temp_target.is_dir():
+                                    shutil.rmtree(str(temp_target), ignore_errors=True)
+                                else:
+                                    temp_target.unlink()
+                        except Exception:
+                            pass
+                        self._log(
+                            f"[ConfigManager] legacy memory 根 #{legacy_root_index}: "
+                            f"迁移条目失败: {_legacy_error_summary(exc)}"
+                        )
+                except Exception as exc:
+                    failed_count += 1
+                    self._log(
+                        f"[ConfigManager] legacy memory 根 #{legacy_root_index}: "
+                        f"处理条目时出错: {_legacy_error_summary(exc)}"
+                    )
+
+        if migrated_count or target_exists_count or non_dir_count or failed_count:
+            self._log(
+                f"[ConfigManager] legacy memory 软迁移汇总: "
+                f"迁移 {migrated_count} 个, "
+                f"目标已存在跳过 {target_exists_count} 个, "
+                f"非目录跳过 {non_dir_count} 个, "
+                f"失败 {failed_count} 个"
+            )
     
     # --- Character configuration helpers ---
 
@@ -2905,6 +3131,22 @@ def _ensure_config_manager_migrated():
     # 先基于“尚未注入默认配置的运行根”判断是否需要导入云快照。
     _config_manager.migrate_config_files()
     _config_manager.migrate_memory_files()
+    # 在 config/memory 基础迁移完成后，对遗留 Documents/AppData 路径下的
+    # N.E.K.O/memory 做一次性软迁移：只迁移已关联角色的条目，未关联条目
+    # 留给前端 legacy cleanup UI 手动清理（不在启动时自动清除）。
+    # 失败只打日志不抛异常，绝不阻塞启动。
+    try:
+        _config_manager.migrate_legacy_documents_memory()
+    except Exception as exc:
+        # "shouldn't happen" 路径（方法内部已吞所有异常），但 OSError 的 str(exc)
+        # 带 filename 会泄露 Documents 用户名，只打类名避免绕过脱敏。
+        try:
+            _config_manager._log(
+                f"[ConfigManager] migrate_legacy_documents_memory 抛异常（已忽略）: "
+                f"{type(exc).__name__}"
+            )
+        except Exception:
+            pass
     _config_manager_migrated = True
     return _config_manager
 
