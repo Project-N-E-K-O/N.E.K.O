@@ -1667,15 +1667,13 @@ async def shutdown_event_handler():
         TokenTracker.get_instance().save()
     except Exception:
         pass
-    # P2 vector worker: stop() races stop_event against an inflight
-    # batch sweep so we don't leave the task suspended in the FastAPI
-    # event loop's tear-down. Bounded wait inside stop() guarantees
-    # shutdown can't hang on a stuck inference call.
+    # P2 vector worker: kick off stop() as a task before we touch the
+    # reload lock so its bounded 2s wait overlaps with manager cleanup
+    # below instead of serializing in front of it.
+    worker_stop_task: asyncio.Task | None = None
     if embedding_warmup_worker is not None:
-        try:
-            await embedding_warmup_worker.stop()
-        except Exception as e:
-            logger.warning(f"[Memory] embedding worker stop 失败: {e}")
+        worker_stop_task = asyncio.create_task(embedding_warmup_worker.stop())
+
     managers_to_cleanup: list[TimeIndexedMemory] = []
     async with _reload_lock:
         managers_to_cleanup.extend(_deferred_time_managers)
@@ -1683,11 +1681,24 @@ async def shutdown_event_handler():
         # time_manager 在 startup 钩子里才实例化；若启动过程中就触发 shutdown 可能为 None
         if time_manager is not None and all(existing is not time_manager for existing in managers_to_cleanup):
             managers_to_cleanup.append(time_manager)
-    for manager in managers_to_cleanup:
+
+    async def _cleanup_one(m: TimeIndexedMemory) -> None:
         try:
-            manager.cleanup()
+            await asyncio.to_thread(m.cleanup)
         except Exception as cleanup_exc:
             logger.warning("[MemoryServer] 延迟释放 SQLite 引擎失败: %s", cleanup_exc)
+
+    async def _await_worker_stop() -> None:
+        try:
+            await worker_stop_task  # type: ignore[arg-type]
+        except Exception as e:
+            logger.warning(f"[Memory] embedding worker stop 失败: {e}")
+
+    shutdown_coros: list = [_cleanup_one(m) for m in managers_to_cleanup]
+    if worker_stop_task is not None:
+        shutdown_coros.append(_await_worker_stop())
+    if shutdown_coros:
+        await asyncio.gather(*shutdown_coros)
     logger.info("Memory server已关闭")
 
 

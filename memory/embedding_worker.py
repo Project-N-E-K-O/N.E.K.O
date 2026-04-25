@@ -57,8 +57,14 @@ logger = logging.getLogger(__name__)
 # Tuning knobs — kept as module-level so the loop is easy to monkeypatch
 # in tests and easy to tweak per-deploy without a code change.
 BATCH_SIZE = 16          # entries per ONNX inference call
-POLL_INTERVAL_SECONDS = 60   # idle interval between full sweeps
+POLL_INTERVAL_SECONDS = 20   # idle interval between full sweeps —
+                             # full sweep walks in-memory lists, costs
+                             # a few ms, so the interval is bounded by
+                             # acceptable backfill latency, not CPU.
 ACTIVE_INTERVAL_SECONDS = 5  # interval while there's still backlog
+                             # but the per-tick budget wasn't hit
+                             # (i.e. partial work — small breather
+                             # before the next sweep)
 MAX_ENTRIES_PER_TICK = 64    # bound per-tick work to keep memory_server
                              # responsive during a large backfill
 
@@ -138,11 +144,15 @@ class EmbeddingWarmupWorker:
             )
             return
 
-        # Backfill loop. ACTIVE_INTERVAL_SECONDS while there's still
-        # work to do (gives a fresh sweep a chance to drain the
-        # backlog quickly), POLL_INTERVAL_SECONDS once everything is
-        # caught up. Both intervals respect ``stop_event`` for prompt
-        # shutdown.
+        # Backfill loop. Three pacing tiers, all respecting stop_event:
+        #   - budget saturated (processed == MAX_ENTRIES_PER_TICK):
+        #     almost certainly more work, no sleep — ONNX inference
+        #     inside embed_batch already yields to the event loop, so
+        #     this doesn't peg CPU at the expense of other handlers.
+        #   - partial work (0 < processed < budget): ACTIVE_INTERVAL
+        #     small breather before next sweep.
+        #   - idle (processed == 0): POLL_INTERVAL, the bound on how
+        #     long a freshly written entry waits for its first vector.
         while not self._stop_event.is_set():
             try:
                 processed = await self._sweep_once()
@@ -162,6 +172,11 @@ class EmbeddingWarmupWorker:
                 )
                 return
 
+            if processed >= MAX_ENTRIES_PER_TICK:
+                # Budget hit — drain backlog without sleeping. Still
+                # checks stop_event at top of loop, so shutdown remains
+                # prompt.
+                continue
             interval = ACTIVE_INTERVAL_SECONDS if processed > 0 else POLL_INTERVAL_SECONDS
             try:
                 await asyncio.wait_for(self._stop_event.wait(), timeout=interval)
