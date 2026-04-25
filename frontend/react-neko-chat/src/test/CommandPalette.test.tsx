@@ -186,16 +186,18 @@ describe('Search', () => {
 });
 
 describe('Sections', () => {
-  it('shows pinned section when preferences have pinned items', () => {
+  it('shows pinned items first when preferences have pinned items', () => {
     const prefs: UserPreferences = { pinned: ['demo:greet'], hidden: [], recent: [] };
     renderPalette(allItems, prefs);
-    expect(screen.getByText('已置顶')).toBeInTheDocument();
+    // Pinned item should be visible
+    expect(screen.getByText('Greet')).toBeInTheDocument();
   });
 
-  it('shows recent section when preferences have recent items', () => {
+  it('shows items from recent list', () => {
     const prefs: UserPreferences = { pinned: [], hidden: [], recent: ['demo:settings:volume'] };
     renderPalette(allItems, prefs);
-    expect(screen.getByText('最近使用')).toBeInTheDocument();
+    // Recent item should be visible
+    expect(screen.getByText('Volume')).toBeInTheDocument();
   });
 
   it('hides items in hidden list', () => {

@@ -393,7 +393,10 @@
 
     /* ---- Quick Actions (chat plugin commands) ---- */
 
+    var _fetchSeq = 0;
+
     function fetchChatActions() {
+        var seq = ++_fetchSeq;
         _actionsLoading = true;
         renderWindow();
         return fetch('/chat/actions', {
@@ -406,6 +409,7 @@
             return res.json();
         })
         .then(function (data) {
+            if (seq !== _fetchSeq) return _cachedActions; // stale response
             _cachedActions = (data && data.actions) || [];
             _cachedPreferences = (data && data.preferences) || { pinned: [], hidden: [], recent: [] };
             _actionsLoading = false;
@@ -413,6 +417,7 @@
             return _cachedActions;
         })
         .catch(function (err) {
+            if (seq !== _fetchSeq) return _cachedActions;
             console.warn('[ReactChatWindow] fetchChatActions failed:', err);
             _actionsLoading = false;
             renderWindow();

@@ -1071,7 +1071,14 @@ def _extract_user_attachments(messages: Any) -> list[dict]:
             if isinstance(item, str):
                 url = item.strip()
             elif isinstance(item, dict):
-                url = str(item.get("url") or item.get("image_url") or "").strip()
+                # Handle nested {"image_url": {"url": "..."}} and flat {"url": "..."} formats
+                img_url_field = item.get("image_url")
+                if isinstance(img_url_field, dict):
+                    url = str(img_url_field.get("url") or "").strip()
+                elif isinstance(img_url_field, str):
+                    url = img_url_field.strip()
+                else:
+                    url = str(item.get("url") or "").strip()
             else:
                 url = ""
             if url:

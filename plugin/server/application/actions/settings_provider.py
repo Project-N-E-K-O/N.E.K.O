@@ -234,16 +234,24 @@ def _collect_settings_actions_sync(
         # Read current effective config for this plugin's toml_section
         toml_section = settings_cls.model_config.get("toml_section", "settings")
 
-        # Read current config from the plugin's TOML file
+        # Read current effective config (includes temporary hot-updates),
+        # falling back to TOML file if effective config is unavailable.
         current_section: dict[str, Any] = {}
         try:
-            from plugin.config.service import load_plugin_config
-
-            config_data = load_plugin_config(pid, validate=False)
-            if isinstance(config_data, dict):
-                section = config_data.get(toml_section)
-                if isinstance(section, Mapping):
-                    current_section = dict(section)
+            effective = getattr(host, "get_effective_config", None)
+            if callable(effective):
+                cfg = effective()
+                if isinstance(cfg, dict):
+                    section = cfg.get(toml_section)
+                    if isinstance(section, Mapping):
+                        current_section = dict(section)
+            if not current_section:
+                from plugin.config.service import load_plugin_config
+                config_data = load_plugin_config(pid, validate=False)
+                if isinstance(config_data, dict):
+                    section = config_data.get(toml_section)
+                    if isinstance(section, Mapping):
+                        current_section = dict(section)
         except Exception as exc:
             logger.debug(
                 "Failed to load config for plugin {} section {}: {}",

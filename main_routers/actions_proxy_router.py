@@ -27,6 +27,11 @@ router = APIRouter(tags=["actions-proxy"])
 _PLUGIN_BASE = f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}"
 
 
+def _proxy_response(resp: httpx.Response):
+    """Return upstream response with its original status code."""
+    return JSONResponse(status_code=resp.status_code, content=resp.json())
+
+
 @router.get("/chat/actions")
 async def proxy_chat_actions(
     plugin_id: Optional[str] = Query(default=None),
@@ -39,7 +44,7 @@ async def proxy_chat_actions(
     try:
         async with httpx.AsyncClient(timeout=5.0, proxy=None, trust_env=False) as client:
             resp = await client.get(url, params=params)
-            return resp.json()
+            return _proxy_response(resp)
     except Exception:
         logger.debug("Failed to proxy GET /chat/actions", exc_info=True)
         return {"actions": [], "preferences": {"pinned": [], "hidden": [], "recent": []}}
@@ -55,7 +60,7 @@ async def proxy_get_preferences():
     try:
         async with httpx.AsyncClient(timeout=5.0, proxy=None, trust_env=False) as client:
             resp = await client.get(url)
-            return resp.json()
+            return _proxy_response(resp)
     except Exception:
         logger.debug("Failed to proxy GET /chat/actions/preferences", exc_info=True)
         return {"pinned": [], "hidden": [], "recent": []}
@@ -69,7 +74,7 @@ async def proxy_save_preferences(request: Request):
     try:
         async with httpx.AsyncClient(timeout=5.0, proxy=None, trust_env=False) as client:
             resp = await client.post(url, json=body)
-            return resp.json()
+            return _proxy_response(resp)
     except Exception as exc:
         logger.warning("Failed to proxy POST /chat/actions/preferences: %s", exc)
         return JSONResponse(
@@ -91,7 +96,7 @@ async def proxy_chat_action_execute(
     try:
         async with httpx.AsyncClient(timeout=10.0, proxy=None, trust_env=False) as client:
             resp = await client.post(url, json=body)
-            return resp.json()
+            return _proxy_response(resp)
     except Exception as exc:
         logger.warning("Failed to proxy POST /chat/actions/%s/execute: %s", action_id, exc)
         return JSONResponse(

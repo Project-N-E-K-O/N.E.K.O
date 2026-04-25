@@ -24,6 +24,28 @@ except Exception:  # pragma: no cover
 logger = get_logger("server.messaging.proactive_bridge")
 
 
+def parse_chat_content_event(payload: dict, metadata: dict, plugin_id: str) -> dict | None:
+    """Parse a chat_content payload into a plugin_chat_content event.
+
+    Returns the event dict, or None if the payload is invalid.
+    Extracted for testability.
+    """
+    raw_blocks = metadata.get("chat_content_blocks")
+    if not isinstance(raw_blocks, list) or not raw_blocks:
+        return None
+    blocks = [b for b in raw_blocks if isinstance(b, dict) and "type" in b]
+    if not blocks:
+        return None
+    return {
+        "event_type": "plugin_chat_content",
+        "lanlan_name": metadata.get("target_lanlan") or None,
+        "plugin_id": plugin_id,
+        "blocks": blocks,
+        "text": payload.get("content", ""),
+        "timestamp": payload.get("time", ""),
+    }
+
+
 def _resolve_agent_push_addr() -> str:
     raw = os.getenv("NEKO_ZMQ_AGENT_PUSH_PORT", "").strip()
     if raw:
@@ -162,17 +184,9 @@ class ProactiveBridge:
 
                     # -------- 3. Plugin Chat Content --------
                     elif msg_type == "chat_content":
-                        blocks = metadata.get("chat_content_blocks")
-                        if not isinstance(blocks, list) or not blocks:
+                        proactive_event = parse_chat_content_event(payload, metadata, plugin_id)
+                        if proactive_event is None:
                             continue
-                        proactive_event = {
-                            "event_type": "plugin_chat_content",
-                            "lanlan_name": metadata.get("target_lanlan") or None,
-                            "plugin_id": plugin_id,
-                            "blocks": blocks,
-                            "text": payload.get("content", ""),
-                            "timestamp": payload.get("time", ""),
-                        }
 
                     # -------- 4. Music Direct Play --------
                     elif msg_type == "music_play_url":

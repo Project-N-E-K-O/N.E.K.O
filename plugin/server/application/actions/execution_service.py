@@ -282,7 +282,12 @@ class _SystemActionHandler:
                     result = await trigger(entry_id, args)
                     msg = str(result) if result is not None else f"Entry '{entry_id}' executed"
                 else:
-                    msg = f"Entry '{entry_id}' triggered (no IPC)"
+                    raise ServerDomainError(
+                        code="ENTRY_TRIGGER_UNSUPPORTED",
+                        message=f"Plugin host for '{plugin_id}' does not support trigger",
+                        status_code=501,
+                        details={"plugin_id": plugin_id, "entry_id": entry_id},
+                    )
             except Exception as exc:
                 raise ServerDomainError(
                     code="ENTRY_TRIGGER_FAILED",
@@ -308,6 +313,13 @@ class _SystemActionHandler:
             method = getattr(host, method_name, None)
             if method is not None:
                 await asyncio.to_thread(method, entry_id)
+            else:
+                raise ServerDomainError(
+                    code="ENTRY_TOGGLE_UNSUPPORTED",
+                    message=f"Plugin host for '{plugin_id}' does not support {method_name}",
+                    status_code=501,
+                    details={"plugin_id": plugin_id, "entry_id": entry_id},
+                )
         except Exception as exc:
             raise ServerDomainError(
                 code="ENTRY_TOGGLE_FAILED",

@@ -1138,8 +1138,11 @@ export default function App({
   }, []);
 
   const handleQuickActionNavigate = useCallback((target: string, openIn: string) => {
-    // Only allow http(s) and relative URLs — block javascript: and other dangerous protocols
-    if (target && /^javascript:/i.test(target)) return;
+    // Strict allowlist: only http(s) and relative URLs
+    if (!target) return;
+    const isRelative = target.startsWith('/') || target.startsWith('./') || target.startsWith('../');
+    const isHttp = /^https?:\/\//i.test(target);
+    if (!isRelative && !isHttp) return;
     if (openIn === 'same_tab') {
       window.location.href = target;
     } else {
