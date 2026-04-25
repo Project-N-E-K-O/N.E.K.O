@@ -1159,6 +1159,24 @@ class AutosaveScheduler:
             finally:
                 session.lock.release()
 
+            # ── Race-snapshot for Stage 2. ─────────────────────────
+            # Stage 2's two ``await asyncio.to_thread(...)`` calls are
+            # real suspension points: while we are packing the tarball
+            # (potentially hundreds of ms for a large sandbox), other
+            # coroutines on the loop can run user ops + call
+            # ``notify()``, which atomically bumps ``_dirty=True`` and
+            # ``_last_notify_at=now`` (and ``_wakeup.set()``). If we
+            # blindly clear ``_dirty=False`` after to_thread returns,
+            # **that mid-flight notify is silently dropped** and the
+            # loop won't schedule another flush — the tester's most
+            # recent change leaks until the next user op happens to
+            # touch ``notify()`` again. (GH AI-review issue, 2nd batch
+            # #1.) Snapshot the notify timestamp now (after release of
+            # session.lock — Stage 1 ran with lock held so notifies
+            # couldn't sneak in there) and compare in the bookkeeping
+            # block to decide whether the clear is safe.
+            notify_at_start = self._last_notify_at
+
             # ── Stage 2: slow I/O outside lock. ────────────────────
             # Tarball packing reads sandbox files without mutating them;
             # concurrent user writes can produce a slightly-inconsistent
@@ -1176,12 +1194,31 @@ class AutosaveScheduler:
             )
 
             # ── Bookkeeping. ───────────────────────────────────────
-            self._dirty = False
-            self._first_dirty_at = None
+            # The flush itself succeeded regardless — record the wall
+            # clock unconditionally so ``get_status`` reflects "we did
+            # write a slot just now" even when we're about to leave
+            # ``_dirty=True`` for a follow-up flush.
             self._last_flush_at = time.monotonic()
             self._last_flush_wall = stats.get("autosave_at") or autosave_at
             self._last_error = None
             self._stats["flushes"] += 1
+            if self._last_notify_at == notify_at_start:
+                # No mid-flight notify — safe to clear the dirty latch.
+                self._dirty = False
+                self._first_dirty_at = None
+            else:
+                # A notify arrived during Stage 2's to_thread window.
+                # Keep ``_dirty`` True and slide ``_first_dirty_at``
+                # forward to the newer notify so debounce / force
+                # accounting in the loop measures *that* notify's age
+                # rather than the original (already-flushed) one.
+                # ``notify()`` already called ``self._wakeup.set()`` so
+                # the loop will pick this up on its next iteration; we
+                # do **not** ``set()`` here to avoid spurious wakeups
+                # on the borderline "notify happened to land at the
+                # exact same monotonic tick" path (caught by the
+                # equality test above).
+                self._first_dirty_at = self._last_notify_at
             python_logger().info(
                 "autosave: wrote slot 0 for session=%s (json=%d bytes, "
                 "tar=%d bytes, source=%s)",

@@ -300,7 +300,7 @@ const CATALOG = {
   },
   'avatar_dedupe_cache_full': {
     label: '外部事件 · 去重缓存满',
-    description: 'avatar 事件去重缓存达到 100 条软上限, 已按 LRU 丢最旧. 同一 fill cycle 内只 warn 一次 — 必须手动 POST /api/session/external-event/dedupe-reset 清空后才会重新武装下一次通知. 高频连点道具时常见.',
+    description: 'avatar 事件去重缓存达到 100 条软上限, 已按 LRU 丢最旧. 同一 fill cycle 内只 warn 一次, 锁会在 (a) 手动 POST /api/session/external-event/dedupe-reset 清空, 或 (b) 8 s 过期清扫让缓存回落到 < 100 条之后自动重新武装下一次通知. 高频连点道具时常见.',
     category: 'external_event',
   },
 

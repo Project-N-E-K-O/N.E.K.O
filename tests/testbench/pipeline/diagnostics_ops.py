@@ -135,9 +135,11 @@ class DiagnosticsOp(StrEnum):
 
     # P25 §3 Day 1 + §4.5 L27 四问 3 (通知频率) 回应 — avatar 事件去重
     # 缓存软上限 100 条, 达到上限后按 LRU 丢最旧, 并在本 fill cycle 内
-    # 发一次本通知 (once-per-fill); caller 手动 POST
-    # /api/session/external-event/dedupe-reset 清空缓存后才会重新武装
-    # 下一次 notice. 常见触发: tester 在短时间内高频连点 avatar 道具
+    # 发一次本通知 (once-per-fill). 锁会自动重新武装的两条路径:
+    # (a) caller 手动 POST /api/session/external-event/dedupe-reset 清空,
+    # (b) 8 s 过期清扫让缓存回落到 < 100 条 (高峰静默后自然发生).
+    # 与 diagnostics_store ring-full 的 warn-once 语义对齐.
+    # 常见触发: tester 在短时间内高频连点 avatar 道具
     # 按钮 (L25 + LESSONS_LEARNED §4.27 #91 "避免 DoS 测试面板" 同类
     # 风险). 自查方式: 查 GET /api/session/external-event/dedupe-info
     # 的 cache 条目数, 配合本通知 detail 字典里的 max_entries 字段.
@@ -316,13 +318,16 @@ OP_CATALOG: dict[str, dict[str, str]] = {
         "description": (
             "avatar 事件去重缓存达到了 100 条的软上限, 已按 LRU 策略丢弃 "
             "最旧条目. 本通知在同一个 fill cycle 内只发一次 (once-per-"
-            "fill), 只有 caller 手动调用 POST "
-            "/api/session/external-event/dedupe-reset 清空缓存之后才会 "
-            "重新武装下一次 notice. 常见触发: tester 在短时间内高频连 "
-            "点 avatar 道具按钮 (参见 L25 + LESSONS_LEARNED §4.27 #91 "
-            "'避免 DoS 测试面板' 同类风险). 自查方式: 查 GET "
-            "/api/session/external-event/dedupe-info 的 cache 条目数, "
-            "并配合本通知 detail 字典里的 max_entries 字段核对上限值."
+            "fill); 当 (a) tester 手动调用 POST "
+            "/api/session/external-event/dedupe-reset 清空缓存, **或** "
+            "(b) 8 s 过期清扫让缓存回落到 < 100 条 (高峰过去后 8 秒静默 "
+            "就会发生) 时, 锁会自动重新武装, 下次再填满又会发一条新的 "
+            "notice. 与 diagnostics_store ring-full 的 warn-once 语义对齐. "
+            "常见触发: tester 在短时间内高频连点 avatar 道具按钮 (参见 "
+            "L25 + LESSONS_LEARNED §4.27 #91 '避免 DoS 测试面板' 同类风险). "
+            "自查方式: 查 GET /api/session/external-event/dedupe-info 的 "
+            "cache 条目数, 并配合本通知 detail 字典里的 max_entries 字段 "
+            "核对上限值."
         ),
     },
     DiagnosticsOp.CHAT_SEND_SYSTEM_REWRITTEN.value: {

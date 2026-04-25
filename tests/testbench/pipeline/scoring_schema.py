@@ -40,6 +40,7 @@ from __future__ import annotations
 import ast
 import copy
 import json
+import math
 import os
 import re
 import tempfile
@@ -408,8 +409,12 @@ class ScoringSchema:
         downstream arithmetic doesn't blow up.
         """
         try:
+            # OverflowError covers ``int(round(float('1e400')))`` =
+            # ``int(round(inf))`` = OverflowError (a real path when an
+            # LLM judger returns absurd scores). 2nd-batch AI review #4
+            # family extension.
             score = int(round(float(value)))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             return 0
         return max(0, min(10, score))
 
@@ -425,8 +430,11 @@ class ScoringSchema:
             return 0
         pmax = int(self.ai_ness_penalty.max)
         try:
+            # OverflowError covers ``int(round(float('1e400')))`` —
+            # same path as ``clamp_score``. 2nd-batch AI review #4
+            # family extension.
             penalty = int(round(float(value)))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             return pmax
         return max(0, min(pmax, penalty))
 
@@ -663,10 +671,15 @@ def _collect_schema_errors(raw: Any) -> list[dict[str, str]]:
             weight = d.get("weight")
             try:
                 w = float(weight)
-                if w < 0 or w != w:  # NaN check
+                # math.isfinite catches NaN **and** ±inf in one call; the
+                # bare ``w != w`` only caught NaN, so ``weight: 1e309``
+                # (= float('inf')) used to slip past validation, then later
+                # render with ``int(inf)`` blow up at OverflowError far
+                # downstream. (GH AI-review issue, 2nd batch #4.)
+                if not math.isfinite(w) or w < 0:
                     raise ValueError
-            except (TypeError, ValueError):
-                add(f"{path}.weight", f"weight={weight!r} \u5fc5\u987b\u662f \u2265 0 \u7684\u6570\u5b57.")
+            except (TypeError, ValueError, OverflowError):
+                add(f"{path}.weight", f"weight={weight!r} \u5fc5\u987b\u662f \u2265 0 \u7684\u6709\u9650\u6570\u5b57.")
             label = d.get("label")
             if label is not None and not isinstance(label, str):
                 add(f"{path}.label", "label \u82e5\u5b58\u5728\u5fc5\u987b\u662f\u5b57\u7b26\u4e32.")
@@ -688,7 +701,7 @@ def _collect_schema_errors(raw: Any) -> list[dict[str, str]]:
                 total_w = sum(float(d.get("weight", 0)) for d in dims if isinstance(d, dict))
                 if total_w <= 0:
                     add("dimensions", "\u6240\u6709\u7ef4\u5ea6\u7684 weight \u603b\u548c\u5fc5\u987b > 0.")
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 pass  # 已在上面逐条报过
 
     penalty = raw.get("ai_ness_penalty")
@@ -698,10 +711,14 @@ def _collect_schema_errors(raw: Any) -> list[dict[str, str]]:
         else:
             pmax = penalty.get("max")
             try:
+                # OverflowError protects against YAML-parsed floats like
+                # ``1e400`` (= ±inf) reaching ``int(inf)`` (raises
+                # OverflowError, not ValueError, and would otherwise
+                # bubble up as 500). (GH AI-review issue, 2nd batch #4.)
                 if int(pmax) <= 0:
                     add("ai_ness_penalty.max", f"max={pmax!r} \u5fc5\u987b\u662f > 0 \u7684\u6574\u6570.")
-            except (TypeError, ValueError):
-                add("ai_ness_penalty.max", f"max={pmax!r} \u5fc5\u987b\u662f\u6574\u6570.")
+            except (TypeError, ValueError, OverflowError):
+                add("ai_ness_penalty.max", f"max={pmax!r} \u5fc5\u987b\u662f\u6709\u9650\u6574\u6570.")
             pok = penalty.get("max_passable")
             try:
                 pok_i = int(pok)
@@ -719,15 +736,15 @@ def _collect_schema_errors(raw: Any) -> list[dict[str, str]]:
                     # review issue #12).
                     try:
                         pmax_i = int(pmax)
-                    except (TypeError, ValueError):
+                    except (TypeError, ValueError, OverflowError):
                         pmax_i = None
                     if pmax_i is not None and pok_i > pmax_i:
                         add(
                             "ai_ness_penalty.max_passable",
                             "max_passable \u4e0d\u80fd\u5927\u4e8e max.",
                         )
-            except (TypeError, ValueError):
-                add("ai_ness_penalty.max_passable", f"max_passable={pok!r} \u5fc5\u987b\u662f\u6574\u6570.")
+            except (TypeError, ValueError, OverflowError):
+                add("ai_ness_penalty.max_passable", f"max_passable={pok!r} \u5fc5\u987b\u662f\u6709\u9650\u6574\u6570.")
 
     prompt = raw.get("prompt_template")
     if not isinstance(prompt, str) or not prompt.strip():
@@ -747,8 +764,11 @@ def _collect_schema_errors(raw: Any) -> list[dict[str, str]]:
     version = raw.get("version")
     if version is not None:
         try:
+            # OverflowError catches a YAML-parsed ``version: 1e400``
+            # (= ±inf) reaching ``int(inf)``. 2nd-batch AI review #4
+            # family extension.
             int(version)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             add("version", f"version={version!r} \u5fc5\u987b\u662f\u6574\u6570.")
 
     tags = raw.get("tags")
@@ -1086,13 +1106,16 @@ def preview_prompt(schema_id: str, ctx: dict[str, Any] | None = None) -> dict[st
     """
     details = read_schema(schema_id)
     schema = ScoringSchema.from_dict(details["active"])
-    # Use the provided ctx only for known placeholders; fill the rest with
-    # a synthetic sample so the preview isn't mostly blank out of the box.
+    # Merge the **full** caller-provided ctx so render_prompt sees
+    # exactly what the real rendering path would see (custom
+    # placeholders the schema author added but that aren't in
+    # KNOWN_PLACEHOLDERS used to be silently dropped here, making
+    # preview ≠ truth — GH AI-review issue, 2nd batch #5). The
+    # KNOWN_PLACEHOLDERS / sample sets are still used **for
+    # reporting** (missing / used_report) but no longer gate which
+    # keys get rendered.
     sample = _sample_context(schema)
-    used_ctx = dict(sample)
-    for k, v in (ctx or {}).items():
-        if k in KNOWN_PLACEHOLDERS or k in sample:
-            used_ctx[k] = v
+    used_ctx: dict[str, Any] = {**sample, **(ctx or {})}
     # render_prompt auto-populates these from the schema itself — they are
     # never "missing" even when the caller didn't supply them.
     auto_provided = {

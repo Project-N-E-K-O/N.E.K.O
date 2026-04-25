@@ -8,7 +8,7 @@ tester-driven actions with a **preview → confirm → commit** flow:
 ============================== ==========================================
 op                             what it does
 ============================== ==========================================
-``recent.compress``            Summarize the tail of recent.json into one
+``recent.compress``            Summarize the **head** (oldest slice) of recent.json into one
                                SystemMessage memo (saves context budget).
 ``facts.extract``              Ask the LLM to pull atomic facts out of a
                                conversation window, dedupe, append to
@@ -416,15 +416,28 @@ async def _preview_recent_compress(
     session: Session,
     params: dict[str, Any],
 ) -> MemoryPreviewResult:
-    """Summarize the tail of recent.json.
+    """Summarize the **head** (oldest) slice of recent.json.
+
+    The slicing is ``to_compress = messages[:tail_count]`` /
+    ``kept = messages[tail_count:]``: the **first** ``tail_count``
+    messages (the oldest, since recent.json is stored chronologically
+    asc) are sent to the summarizer; the later messages are preserved
+    verbatim. The legacy parameter name ``tail_count`` is misleading
+    — it is the count of head messages to compress, not the count of
+    tail messages to keep — but renaming it would break the public
+    HTTP contract / UI label / smoke fixtures, so we keep the name and
+    document the actual semantics here. (GH AI-review issue, 2nd batch
+    #3.)
 
     Parameters (all optional)
     -------------------------
     tail_count : int
-        How many messages at the end of recent.json to feed the
-        summarizer. Defaults to ``len(recent) - max_history_length + 1``
-        to mirror the upstream ``update_history`` cut point. Clamped to
-        ``[1, len(recent)]``.
+        How many messages at the **start (oldest)** of recent.json to
+        feed the summarizer. Defaults to
+        ``len(recent) - max_history_length + 1`` to mirror the upstream
+        ``update_history`` cut point so the post-compress wire size is
+        ``1 (memo) + (max_history_length - 1) ≈ max_history_length``.
+        Clamped to ``[1, len(recent)]``.
     detailed : bool
         If True, use ``get_detailed_recent_history_manager_prompt``
         (preserves more detail). Default False.
@@ -435,8 +448,11 @@ async def _preview_recent_compress(
     tail_count, total_before, detailed}``
 
     The UI shows ``memo_system_content`` (the actual string that will
-    replace the summarized tail) as an editable textarea and
-    ``tail_messages`` as a read-only list so the tester can verify the
+    replace the summarized **head** slice — the commit path writes
+    ``[memo] + kept_tail`` so the memo lands at the *start* of the
+    new recent.json) as an editable textarea and ``tail_messages``
+    (despite the name, this is the *head* slice — the messages the
+    summarizer ate) as a read-only list so the tester can verify the
     cut-point visually.
     """
     from config.prompts_memory import (
@@ -570,6 +586,15 @@ async def _commit_recent_compress(
     edits: dict[str, Any],
 ) -> dict[str, Any]:
     """Replace recent.json with ``[memo] + kept_tail``.
+
+    The ``memo`` summarizes the **head** (oldest) slice that
+    :func:`_preview_recent_compress` already cut off; ``kept_tail`` is
+    the *later* messages preserved verbatim. Despite the legacy
+    parameter name ``tail_count`` (= count of head messages compressed,
+    not count of tail messages kept — see preview's docstring for the
+    history of this naming), the resulting recent.json layout is
+    chronological: ``[1 system memo of older context] + [latest N
+    messages]``.
 
     Accepted edits
     --------------
@@ -726,8 +751,11 @@ async def _preview_facts_extract(
         if not text:
             continue
         try:
+            # OverflowError covers an LLM JSON parse turning ``"1e400"``
+            # into ``inf`` then ``int(inf)``. 2nd-batch AI review #4
+            # family extension.
             importance = int(raw_fact.get("importance", 5))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             importance = 5
         if importance < min_importance:
             low_importance += 1
@@ -1243,7 +1271,7 @@ async def _preview_persona_resolve_corrections(
             continue
         try:
             idx = int(result.get("index", -1))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             warnings.append(f"丢弃无法解析 index 的结果: {result!r}")
             continue
         if idx < 0 or idx >= len(corrections):
@@ -1305,7 +1333,7 @@ async def _commit_persona_resolve_corrections(
             continue
         try:
             idx = int(act.get("index", -1))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             continue
         if idx < 0 or idx >= len(corrections):
             continue

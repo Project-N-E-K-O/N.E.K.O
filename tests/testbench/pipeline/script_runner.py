@@ -740,11 +740,14 @@ def apply_turn_time(session: Session, time_dict: dict[str, Any] | None) -> list[
     advance_seconds = time_dict.get("advance_seconds")
     if advance_seconds is not None:
         try:
+            # OverflowError covers ``int(float('inf'))`` from a script
+            # author writing ``advance_seconds: 1e400`` (YAML parses
+            # to ±inf). 2nd-batch AI review #4 family extension.
             secs = int(advance_seconds)
             if secs < 0:
                 raise ValueError("negative")
             session.clock.stage_next_turn(delta=timedelta(seconds=secs))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             warnings.append(
                 f"time.advance_seconds={advance_seconds!r} 非法, 已忽略."
             )

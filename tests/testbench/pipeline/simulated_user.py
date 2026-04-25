@@ -56,6 +56,7 @@ from tests.testbench.chat_messages import (
     ROLE_ASSISTANT,
     ROLE_SYSTEM,
     ROLE_USER,
+    SOURCE_EXTERNAL_EVENT_BANNER,
 )
 from tests.testbench.logger import python_logger
 from tests.testbench.model_config import ModelGroupConfig
@@ -182,9 +183,24 @@ def _resolve_simuser_cfg(session: Session) -> ModelGroupConfig:
 def _flip_history(messages: list[dict[str, Any]]) -> list[dict[str, str]]:
     """Flip ``user↔assistant`` for SimUser LLM consumption.
 
-    - ``role=user``      → ``assistant`` (SimUser 自己之前说过的话).
-    - ``role=assistant`` → ``user``      (目标 AI 说给 SimUser 的话).
-    - ``role=system``    → 丢弃 (注入给目标 AI 的测试指令, SimUser 不该看).
+    Filtering rules (applied in order):
+
+    1. ``source == SOURCE_EXTERNAL_EVENT_BANNER`` → drop. Banners are
+       UI-only visual markers (see ``chat_messages.py`` L52-L54 + r5
+       T7 design); ``prompt_builder.build_prompt_bundle`` /
+       ``memory_runner._messages_for_facts_extract`` /
+       ``external_events._proactive_summary_for_topic`` /
+       ``recent.import_from_session`` all filter banners on the
+       **source** field exactly because role alone is not authoritative
+       — today banners happen to be ``role=ROLE_SYSTEM`` and would be
+       caught by the role check below, but the L33 single-writer /
+       symmetric-read principle (one chokepoint writes,
+       **every** read site filters by the same field) is what keeps
+       this safe across future banner kinds with different roles. (GH
+       AI-review issue, 2nd batch #6.)
+    2. ``role=user``      → ``assistant`` (SimUser 自己之前说过的话).
+    3. ``role=assistant`` → ``user``      (目标 AI 说给 SimUser 的话).
+    4. ``role=system``    → 丢弃 (注入给目标 AI 的测试指令, SimUser 不该看).
 
     空 content 的条目 (例如只收到 ``{event:'user'}`` 但后续 LLM 发送失败
     导致的 placeholder) 也被丢弃 — 它们对 SimUser 没有实质上下文,
@@ -197,6 +213,8 @@ def _flip_history(messages: list[dict[str, Any]]) -> list[dict[str, str]]:
     """
     flipped: list[dict[str, str]] = []
     for m in messages:
+        if m.get("source") == SOURCE_EXTERNAL_EVENT_BANNER:
+            continue
         role = m.get("role")
         raw_content = m.get("content")
         # Normalise content shapes so the ``.strip()`` below cannot

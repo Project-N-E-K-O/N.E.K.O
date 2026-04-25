@@ -96,8 +96,17 @@ class _AvatarDedupeCache:
         # plain callable so this module stays stdlib-only.
         self._on_full = on_full
         # L27 Q3: once-per-fill-cycle latch. We only want to notify diagnostics
-        # the first time the cap trips; ``clear()`` rearms it so a tester who
-        # manually resets (L27 Q4) sees the next fill cycle report again.
+        # the first time the cap trips; the latch rearms when **either**
+        # (a) the tester manually clears the cache via ``clear()`` (L27 Q4),
+        # **or** (b) the 8 s expiry sweep inside
+        # ``_should_persist_avatar_interaction_memory`` drops the cache size
+        # back below the cap. Aligns with the sibling ``diagnostics_store.py``
+        # warn-once latch (P24 Day 10 §14.4 M4 — "Resets when the ring is
+        # cleared or drops below the cap"). Pre-fix the latch was rearm-on-
+        # ``clear()`` only, so a high-volume tester who paused for 8 s and
+        # then triggered another 100+ keys would silently never see the
+        # second AVATAR_DEDUPE_CACHE_FULL diagnostics entry (GH AI-review
+        # issue, 2nd batch #2).
         self._full_notified: bool = False
 
     def should_persist(
@@ -149,6 +158,19 @@ class _AvatarDedupeCache:
                     # break the dedupe path, so we swallow everything here.
                     pass
                 self._full_notified = True
+
+        # L27 Q3 second-half rearm: if the expiry sweep at the top of the
+        # protected helper dropped the cache **strictly below** the cap (i.e.
+        # there is real headroom now, not just the popitem aftermath that
+        # sits at exactly _MAX_ENTRIES), unlatch so the next fill cycle is
+        # allowed to notify diagnostics again. Mirrors diagnostics_store.py's
+        # ``_RING_FULL_NOTICE_FIRED`` rearm-when-below-cap behaviour. Strict
+        # ``<`` (not ``<=``) is deliberate: at == _MAX_ENTRIES we are still
+        # in the "just-full, may pop on next admit" steady state — counting
+        # that as headroom would let one bouncy admit/evict cycle re-fire
+        # the notice every call and spam the diagnostics ring.
+        if self._full_notified and len(self._cache) < self._MAX_ENTRIES:
+            self._full_notified = False
 
         return allowed
 

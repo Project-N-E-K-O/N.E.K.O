@@ -503,12 +503,12 @@ export const I18N = {
             },
           },
           recent: {
-            intro: '把 recent.json 尾部若干条消息压成一条 system 摘要, 节省 context. 只影响 recent.json, 不动 facts/reflections.',
-            compress: { label: '压缩尾部消息' },
+            intro: '把 recent.json **最旧** 的若干条消息压成一条 system 摘要 (保留最近的对话原样), 节省 context. 只影响 recent.json, 不动 facts/reflections.',
+            compress: { label: '压缩最旧消息' },
             params: {
               tail_count: '压缩条数',
               tail_count_ph: '默认按历史长度阈值自动算',
-              tail_count_help: '要送进 LLM 压缩的末尾消息数. 留空=按 max_history_length 自动推导.',
+              tail_count_help: '要送进 LLM 压缩的 **最旧** 消息数 (从开头算起). 留空=按 max_history_length 自动推导.',
               detailed: '详细摘要',
               detailed_help: '勾选后生成\u300c详细版\u300d摘要 (篇幅更长, 保留更多细节), 否则用简洁版.',
             },
@@ -519,8 +519,8 @@ export const I18N = {
               total_after: '压缩后条数',
             },
             preview: {
-              memo: '注入 recent 尾部的 system 消息',
-              memo_help: '写入时会替换为单条 system 消息挂在 kept 之前. 可在此直接修改.',
+              memo: '注入 recent 开头的 system 摘要消息',
+              memo_help: '写入时会替换为单条 system 消息挂在保留的最近消息之前. 可在此直接修改.',
               raw_summary: 'LLM 原始摘要输出',
               raw_summary_help: '仅参考. 实际写入的是上面的 system 消息文本.',
             },
