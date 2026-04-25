@@ -408,6 +408,18 @@ class FactDedupResolver:
         Decisions referencing ids that no longer exist (e.g. a
         concurrent /process absorbed them) are silently skipped —
         the next sweep will re-enqueue if the situation recurs.
+
+        Conflict avoidance (Codex PR-957 P1): if the LLM returns
+        reciprocal decisions in the same batch — e.g. ``merge`` for
+        (c1, e1) (drop c1) and ``replace`` for (e1, c1) (drop e1) —
+        a naive "remove all ids in ids_to_remove at the end" would
+        delete BOTH facts and leave the user with nothing.  The
+        defensive guard is an in-loop check: if either side of the
+        current pair is already scheduled for removal by a prior
+        decision, skip this decision entirely.  The earlier decision
+        wins (LLM ordering matters), and the conflicting pair stays
+        out of the queue (consumed as `applied += 1`) so the next
+        round doesn't keep flagging it.
         """
         if not results:
             return 0
@@ -433,6 +445,18 @@ class FactDedupResolver:
             if cand is None or existing is None:
                 # One side disappeared between enqueue and resolve —
                 # not an error, just stale; skip silently.
+                continue
+            # Reciprocal-pair guard: an earlier decision in this batch
+            # already scheduled one side for removal. Honouring this
+            # decision too would either delete both facts (merge after
+            # replace) or mutate a row about to vanish.  Treat as
+            # consumed so the queue entry clears, but skip the apply.
+            if cand_id in ids_to_remove or exist_id in ids_to_remove:
+                logger.info(
+                    "[FactDedup] %s: 跳过冲突决策 cand=%s exist=%s (一方已被前一决策处理)",
+                    name, cand_id, exist_id,
+                )
+                applied += 1
                 continue
             if action == 'merge':
                 # Bump importance and record provenance on the existing

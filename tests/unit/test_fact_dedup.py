@@ -376,6 +376,45 @@ async def test_aresolve_keep_both_leaves_facts_untouched(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_aresolve_reciprocal_pair_does_not_delete_both(tmp_path):
+    """Codex PR-957 P1: if the LLM emits reciprocal decisions on the
+    same two facts (merge for (c1,e1) AND replace for (e1,c1)) in one
+    batch, a naive removal pass would drop BOTH rows. The defensive
+    guard must keep the first decision and skip the second."""
+    fs, resolver = _install_resolver(str(tmp_path))
+    a = _fact("c1", "x", embedding=[1.0, 0.0])
+    b = _fact("e1", "y", embedding=[0.99, 0.05])
+    await _seed_facts(fs, "小天", [a, b])
+    await resolver.aenqueue_candidates("小天", [
+        {
+            "candidate_id": "c1", "existing_id": "e1",
+            "candidate_text": "x", "existing_text": "y",
+            "entity": "master", "cosine": 0.99,
+        },
+        {
+            "candidate_id": "e1", "existing_id": "c1",
+            "candidate_text": "y", "existing_text": "x",
+            "entity": "master", "cosine": 0.99,
+        },
+    ])
+    # First decision: merge (c1, e1) → drop c1, keep e1.
+    # Second decision: replace (e1, c1) — would drop e1 + keep c1
+    # if applied naively. With the guard, it must skip (because c1
+    # is already in ids_to_remove from the first decision).
+    fake_llm = _make_llm_mock([
+        {"index": 0, "action": "merge"},
+        {"index": 1, "action": "replace"},
+    ])
+    with patch("utils.llm_client.create_chat_llm", return_value=fake_llm):
+        await resolver.aresolve("小天")
+    surviving_ids = {f["id"] for f in await fs.aload_facts("小天")}
+    # The bug condition is "both rows deleted". With the guard, at
+    # least one of the two original rows must remain.
+    assert len(surviving_ids) >= 1
+    assert surviving_ids <= {"c1", "e1"}
+
+
+@pytest.mark.asyncio
 async def test_aresolve_skips_decision_for_disappeared_row(tmp_path):
     """If a fact in the queue has been deleted between enqueue and
     resolve (e.g. concurrent absorbed-archive sweep), the decision
