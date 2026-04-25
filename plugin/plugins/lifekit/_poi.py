@@ -48,6 +48,9 @@ class AMapPOI:
         params = {
             "key": self.api_key,
             "keywords": query,
+            # Note: AMap expects GCJ-02 input but we pass WGS84. The offset
+            # (~100-500m) is negligible for POI radius searches (typically 3km+).
+            # AMap returns GCJ-02 coords; distance field is server-computed.
             "location": f"{lon:.6f},{lat:.6f}",
             "radius": str(min(radius, 50000)),
             "offset": str(min(limit, 25)),

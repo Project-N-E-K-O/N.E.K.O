@@ -263,17 +263,27 @@ class LifeKitPlugin(NekoPluginBase):
             locations = result.value if hasattr(result, "value") else result
             if not isinstance(locations, list) or not locations:
                 return None
+
+            def _extract(loc: dict) -> Optional[Dict[str, Any]]:
+                city = loc.get("city")
+                lat = loc.get("lat")
+                lon = loc.get("lon")
+                if not city or lat is None or lon is None:
+                    self.logger.debug("Skipping saved location with missing fields: {}", loc.get("label", "?"))
+                    return None
+                return {"city": city, "lat": lat, "lon": lon, "country": loc.get("country", "")}
+
             if name:
                 for loc in locations:
                     if loc.get("label") == name:
-                        return {"city": loc["city"], "lat": loc["lat"], "lon": loc["lon"], "country": loc.get("country", "")}
+                        return _extract(loc)
                 return None
-            # 返回默认地点
             for loc in locations:
                 if loc.get("is_default"):
-                    return {"city": loc["city"], "lat": loc["lat"], "lon": loc["lon"], "country": loc.get("country", "")}
+                    return _extract(loc)
             return None
         except Exception:
+            self.logger.debug("Failed to read saved locations", exc_info=True)
             return None
 
     # ── 配置读写（供 Web UI 调用）──
