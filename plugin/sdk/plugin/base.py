@@ -226,27 +226,23 @@ class NekoPluginBase(_SharedNekoPluginBase):
         priority: int = 5,
         target_lanlan: str | None = None,
     ) -> object:
-        """推送富内容消息到聊天框。
+        """推送富内容卡片到聊天框（不进入 LLM 上下文）。
 
         每个 block 是一个内容单元，前端按顺序渲染。
-        消息不进入 LLM 上下文，直接显示在聊天界面。
 
         支持的 block type：
         - ``{"type": "text", "text": "..."}``
         - ``{"type": "image", "url": "...", "alt": "..."}``
-        - ``{"type": "url", "url": "...", "title": "...", "description": "..."}``
-        - ``{"type": "audio", "url": "..."}``
-        - ``{"type": "video", "url": "..."}``
-        - ``{"type": "dom", "html": "<div>...</div>"}``
+        - ``{"type": "url", "url": "...", "title": "..."}``
         - ``{"type": "table", "headers": [...], "rows": [[...], ...]}``
+        - ``{"type": "card", "card_type": "...", "title": "...", "data": {...}}``
         - ``{"type": "json", "data": {...}, "label": "..."}``
-        - ``{"type": "card", "card_type": "weather", "title": "...", "data": {...}}``
 
         Example::
 
             self.push_chat_content([
-                {"type": "text", "text": "上海今天天气"},
-                {"type": "card", "card_type": "weather", "title": "上海", "data": {...}},
+                {"type": "text", "text": "上海今天天气 晴 25°C"},
+                {"type": "text", "text": "体感 23°C | 💧 45% | 💨 12km/h"},
             ])
         """
         validated: list[dict[str, Any]] = []

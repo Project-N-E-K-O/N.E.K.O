@@ -164,7 +164,6 @@ class ProactiveBridge:
                     elif msg_type == "chat_content":
                         blocks = metadata.get("chat_content_blocks")
                         if not isinstance(blocks, list) or not blocks:
-                            logger.debug("proactive bridge: chat_content skipped (no blocks) plugin={}", plugin_id)
                             continue
                         proactive_event = {
                             "event_type": "plugin_chat_content",

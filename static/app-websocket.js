@@ -1117,18 +1117,6 @@
                             text: response.text || '',
                             timestamp: response.timestamp || new Date().toISOString(),
                         });
-                    } else {
-                        // Fallback: append as regular message
-                        var pluginId = response.plugin_id || 'plugin';
-                        var fallbackText = response.text || '📋';
-                        if (window.reactChatWindowHost && typeof window.reactChatWindowHost.appendMessage === 'function') {
-                            window.reactChatWindowHost.appendMessage({
-                                id: 'plugin-' + Date.now(),
-                                role: 'assistant',
-                                content: '🔌 ' + pluginId + '\n' + fallbackText,
-                                timestamp: response.timestamp || new Date().toISOString(),
-                            });
-                        }
                     }
 
                 // -------- agent_notification --------

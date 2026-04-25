@@ -926,7 +926,7 @@ class PluginContext:
 
         Args:
             source: 插件自己标明的来源
-            message_type: 消息类型，可选值: "text", "url", "binary", "binary_url", "chat_content"
+            message_type: 消息类型，可选值: "text", "url", "binary", "binary_url"
             description: 插件自己标明的描述
             priority: 插件自己设定的优先级，数字越大优先级越高
             content: 文本内容或URL（当message_type为text或url时）
