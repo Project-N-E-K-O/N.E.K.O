@@ -1724,3 +1724,102 @@ def get_fact_dedup_prompt(lang: str = 'zh') -> str:
 
 
 fact_dedup_prompt = FACT_DEDUP_PROMPT['zh']
+
+
+# ---------- memory_recall_rerank_prompt → i18n dict ----------
+# Drives memory/recall.py's _fine_rank step. Cosine pre-filtering
+# narrows the candidate set down to ~3× the budget; this prompt asks
+# the LLM to pick the top {BUDGET} most-relevant items for the query.
+# evidence_score appears parenthetically as auxiliary signal — the
+# LLM weighs it together with semantic relevance instead of mixing
+# into a single ranking number (cosine vs evidence are
+# dimensionally inconsistent).
+MEMORY_RECALL_RERANK_PROMPT = {
+    'zh': """以下是用户最近提到的话题。请从候选记忆中挑选最相关的 {BUDGET} 条用于注入对话上下文。
+
+======用户当前话题======
+{QUERY}
+======用户当前话题======
+
+======候选记忆======
+{CANDIDATES}
+======候选记忆======
+
+每条候选前的 score 是用户对该记忆的累计确认度（高 = 反复确认，低 = 较少证据）。可作为辅助信号——同等相关度时优先选 score 高的；但不要让 score 完全压倒相关性，无关的高 score 记忆不该入选。
+
+仅输出 JSON 数组，按重要程度从高到低排列，每项包含 id 字段：
+[{{"id": "persona.master.xxx"}}, {{"id": "reflection.ref_yyy"}}]
+
+最多 {BUDGET} 条；若候选不足 {BUDGET} 条相关，可返回更少。""",
+    'en': """Below are topics the user has just mentioned. From the candidate memories, pick the {BUDGET} most relevant ones to inject into the conversation context.
+
+======current topics======
+{QUERY}
+======current topics======
+
+======candidate memories======
+{CANDIDATES}
+======candidate memories======
+
+The `score` annotation on each candidate is the user's cumulative confirmation count for that memory (high = repeatedly confirmed, low = thin evidence). Use it as an auxiliary signal — when relevance is tied, prefer the higher score; but do not let score override relevance, an irrelevant high-score memory should not be picked.
+
+Output only a JSON array, ordered most-important first. Each item must contain an `id` field:
+[{{"id": "persona.master.xxx"}}, {{"id": "reflection.ref_yyy"}}]
+
+At most {BUDGET} items; return fewer if not enough candidates are relevant.""",
+    'ja': """以下はユーザーが最近言及したトピックです。候補メモリから、対話コンテキストに注入する最も関連性の高い {BUDGET} 件を選んでください。
+
+======現在のトピック======
+{QUERY}
+======現在のトピック======
+
+======候補メモリ======
+{CANDIDATES}
+======候補メモリ======
+
+各候補の score 注釈は、ユーザーがそのメモリを累積確認した回数です（高 = 繰り返し確認、低 = 証拠が薄い）。補助シグナルとして利用してください。関連性が同等なら score の高い方を優先しますが、関連性を score が完全に覆すべきではありません。
+
+JSON 配列のみを出力し、重要度順に並べてください。各項目に `id` フィールドを含めます：
+[{{"id": "persona.master.xxx"}}, {{"id": "reflection.ref_yyy"}}]
+
+最大 {BUDGET} 件。関連する候補がそれ以下なら、より少なく返しても構いません。""",
+    'ko': """아래는 사용자가 최근 언급한 주제입니다. 후보 메모리 중에서 대화 컨텍스트에 주입할 가장 관련성 높은 {BUDGET}개를 선택하세요.
+
+======현재 주제======
+{QUERY}
+======현재 주제======
+
+======후보 메모리======
+{CANDIDATES}
+======후보 메모리======
+
+각 후보의 score는 사용자가 해당 메모리를 누적적으로 확인한 횟수입니다(높음 = 반복 확인, 낮음 = 증거 부족). 보조 신호로 활용하세요. 관련성이 같으면 score 높은 쪽을 우선하지만, 관련성을 score가 완전히 압도해서는 안 됩니다.
+
+JSON 배열만 출력하고 중요도 순으로 정렬하세요. 각 항목에 `id` 필드를 포함:
+[{{"id": "persona.master.xxx"}}, {{"id": "reflection.ref_yyy"}}]
+
+최대 {BUDGET}개; 관련 후보가 부족하면 더 적게 반환해도 됩니다.""",
+    'ru': """Ниже представлены темы, которые пользователь только что упомянул. Из кандидатов памяти выберите {BUDGET} наиболее релевантных для внедрения в контекст диалога.
+
+======текущие темы======
+{QUERY}
+======текущие темы======
+
+======кандидаты======
+{CANDIDATES}
+======кандидаты======
+
+Аннотация `score` рядом с каждым кандидатом — это накопленное число подтверждений пользователем (высокое = повторяющееся подтверждение, низкое = слабые доказательства). Используйте как вспомогательный сигнал: при равной релевантности предпочтите более высокий score, но не позволяйте score полностью перевесить релевантность.
+
+Выводите только JSON-массив, упорядоченный по важности. Каждый элемент содержит поле `id`:
+[{{"id": "persona.master.xxx"}}, {{"id": "reflection.ref_yyy"}}]
+
+Не более {BUDGET} элементов; верните меньше, если релевантных кандидатов меньше.""",
+}
+
+
+def get_memory_recall_rerank_prompt(lang: str = 'zh') -> str:
+    return _loc(MEMORY_RECALL_RERANK_PROMPT, lang)
+
+
+memory_recall_rerank_prompt = MEMORY_RECALL_RERANK_PROMPT['zh']
