@@ -1621,3 +1621,106 @@ def get_persona_correction_prompt(lang: str = 'zh') -> str:
 
 
 persona_correction_prompt = PERSONA_CORRECTION_PROMPT['zh']
+
+
+# ---------- fact_dedup_prompt → i18n dict ----------
+# Drives memory/fact_dedup.py's resolve loop. Vector cosine selects
+# candidate (candidate_text, existing_text) pairs above a similarity
+# threshold; this prompt asks the LLM to classify each pair into
+# merge / replace / keep_both. The LLM is the arbiter, vector is just
+# the candidate generator — cosine alone can't separate "主人喜欢猫"
+# from "主人讨厌猫", so we always defer the final call to the model.
+FACT_DEDUP_PROMPT = {
+    'zh': """以下是 {COUNT} 组通过向量相似度筛选出的候选事实对，请逐组判断是否真的指向同一件事，并选择处理方式。
+
+======以下为候选事实对======
+{PAIRS}
+======以上为候选事实对======
+
+对于每组，从下列动作中选一个：
+- merge: 两条记录的确指向同一事件/偏好/状态，保留 existing，丢弃 candidate（existing 的 importance 会自动+1，candidate id 会被记入 merged_from_ids）
+- replace: 同样指向同一件事，但 candidate 措辞更准确/更新，应保留 candidate、丢弃 existing
+- keep_both: 看似相似但其实是两件不同的事（如"喜欢"与"讨厌"，或同一对象在不同情境下的不同状态），都保留
+
+注意：
+- cosine 高只是相似度高，不代表语义相同，特别要警惕褒贬相反、肯定/否定相反的情况
+- 优先选 keep_both 而非误合并；记忆系统对错误合并的容忍度低于对冗余的容忍度
+
+仅输出 JSON 数组，每项包含 index、action：
+[{{"index": 0, "action": "merge"}}, {{"index": 1, "action": "keep_both"}}]""",
+    'en': """Below are {COUNT} candidate fact pairs flagged by cosine similarity. For each pair, decide whether they actually refer to the same thing and choose how to handle it.
+
+======candidate pairs below======
+{PAIRS}
+======candidate pairs above======
+
+For each pair, pick one action:
+- merge: the two records do refer to the same event/preference/state — keep existing, drop candidate (existing's importance will auto +1; candidate id is recorded in merged_from_ids)
+- replace: same underlying thing, but the candidate's wording is more accurate/up-to-date — keep candidate, drop existing
+- keep_both: they look similar but are actually distinct ("likes" vs "dislikes", or the same subject in different contexts) — keep both
+
+Notes:
+- High cosine means high *surface* similarity, not semantic identity. Be especially careful about polarity flips (positive/negative, like/dislike).
+- Prefer keep_both over a wrongful merge — the memory system tolerates redundancy much better than incorrect merges.
+
+Output only a JSON array, each item containing index and action:
+[{{"index": 0, "action": "merge"}}, {{"index": 1, "action": "keep_both"}}]""",
+    'ja': """以下は {COUNT} 組のベクトル類似度で抽出された候補ペアです。各ペアについて、本当に同じ事柄を指しているか判断し、処理方法を選んでください。
+
+======候補ペアここから======
+{PAIRS}
+======候補ペアここまで======
+
+各ペアについて、以下のいずれかを選択：
+- merge: 同じ出来事/嗜好/状態を指している → existing を残し candidate を削除（existing の importance が自動 +1、candidate id は merged_from_ids に記録）
+- replace: 同じ事柄だが candidate の方が正確/最新 → candidate を残し existing を削除
+- keep_both: 似ているが実際には別の事柄（"好き"と"嫌い"のような極性反転、あるいは異なる文脈での同じ対象）→ 両方残す
+
+注意：
+- 高い cosine は表層的な類似度であり、意味的同一性ではない。特に極性反転（肯定/否定、好き/嫌い）に注意
+- 誤合併よりも keep_both を優先。記憶システムは冗長性より誤合併に対する耐性が低い
+
+JSON 配列のみを出力し、各項目に index と action を含めてください：
+[{{"index": 0, "action": "merge"}}, {{"index": 1, "action": "keep_both"}}]""",
+    'ko': """아래는 벡터 유사도로 선별된 {COUNT}쌍의 후보 사실 쌍입니다. 각 쌍에 대해 실제로 같은 것을 가리키는지 판단하고 처리 방법을 선택하세요.
+
+======후보 쌍 시작======
+{PAIRS}
+======후보 쌍 끝======
+
+각 쌍에 대해 다음 중 하나를 선택:
+- merge: 두 기록이 실제로 같은 사건/선호/상태를 가리킴 — existing 유지, candidate 제거 (existing의 importance가 자동 +1, candidate id는 merged_from_ids에 기록됨)
+- replace: 같은 것을 가리키지만 candidate의 표현이 더 정확/최신 — candidate 유지, existing 제거
+- keep_both: 비슷해 보이지만 실제로는 다른 것 ("좋아함"과 "싫어함" 같은 극성 반전, 혹은 다른 맥락의 같은 대상) — 둘 다 유지
+
+주의:
+- 높은 cosine은 표면적 유사도일 뿐 의미적 동일성을 보장하지 않음. 특히 극성 반전(긍정/부정, 좋아함/싫어함)에 주의
+- 잘못된 병합보다 keep_both를 우선. 기억 시스템은 중복보다 잘못된 병합에 대한 내성이 더 낮음
+
+JSON 배열만 출력하고 각 항목에 index와 action을 포함하세요:
+[{{"index": 0, "action": "merge"}}, {{"index": 1, "action": "keep_both"}}]""",
+    'ru': """Ниже представлены {COUNT} пар фактов-кандидатов, отобранных по косинусной близости. Для каждой пары определите, действительно ли они описывают одно и то же, и выберите способ обработки.
+
+======пары кандидатов ниже======
+{PAIRS}
+======пары кандидатов выше======
+
+Для каждой пары выберите одно из действий:
+- merge: записи описывают одно и то же событие/предпочтение/состояние — сохранить existing, отбросить candidate (importance у existing увеличится на 1, id candidate запишется в merged_from_ids)
+- replace: то же самое, но формулировка candidate точнее/актуальнее — сохранить candidate, отбросить existing
+- keep_both: похожи внешне, но на самом деле разные ("любит" vs "не любит", тот же объект в разных контекстах) — сохранить обе
+
+Замечания:
+- Высокий cosine означает поверхностное сходство, а не семантическую идентичность. Особенно осторожно с инверсией полярности (положительное/отрицательное, любит/не любит).
+- Предпочитайте keep_both ошибочному слиянию — система памяти переносит избыточность лучше, чем неверные слияния.
+
+Выводите только JSON-массив, каждый элемент содержит index и action:
+[{{"index": 0, "action": "merge"}}, {{"index": 1, "action": "keep_both"}}]""",
+}
+
+
+def get_fact_dedup_prompt(lang: str = 'zh') -> str:
+    return _loc(FACT_DEDUP_PROMPT, lang)
+
+
+fact_dedup_prompt = FACT_DEDUP_PROMPT['zh']

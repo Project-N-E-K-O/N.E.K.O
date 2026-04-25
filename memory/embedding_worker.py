@@ -79,12 +79,19 @@ class EmbeddingWarmupWorker:
         fact_store,
         get_character_names,         # callable returning list[str]
         warmup_delay_seconds: float,
+        dedup_resolver=None,         # optional FactDedupResolver
     ) -> None:
         self._persona_manager = persona_manager
         self._reflection_engine = reflection_engine
         self._fact_store = fact_store
         self._get_character_names = get_character_names
         self._warmup_delay = warmup_delay_seconds
+        # Optional — when None, fact embeddings still get backfilled
+        # but the dedup queue is never populated. That's the right
+        # behaviour for tests that don't want the LLM-call-prone
+        # dedup path, and for installations that prefer pure hash
+        # dedup until they've evaluated the LLM cost.
+        self._dedup_resolver = dedup_resolver
 
         self._service = get_embedding_service()
         self._first_process_event = asyncio.Event()
@@ -166,7 +173,10 @@ class EmbeddingWarmupWorker:
             try:
                 await asyncio.wait_for(self._stop_event.wait(), timeout=interval)
             except asyncio.TimeoutError:
-                pass
+                # Timeout means "no stop signal during the interval";
+                # continue the loop. Distinct from a real cancellation,
+                # which propagates as CancelledError and exits.
+                continue
 
     async def _wait_for_warmup_trigger(self) -> bool:
         """Wait for ``warmup_delay`` OR the first /process call. Returns
@@ -283,6 +293,16 @@ class EmbeddingWarmupWorker:
             return len(targets)
 
     async def _sweep_facts(self, name: str, budget: int) -> int:
+        """Embed stale fact rows in place, then opportunistically scan
+        the freshly-embedded rows for cosine collisions against the
+        rest of the fact pool — collisions go into the dedup queue
+        for the LLM-arbitrated resolve pass to handle later.
+
+        FactStore uses a threading.Lock around `asave_facts` (not an
+        asyncio.Lock like persona/reflection), and the embedding triple
+        is the only field this worker touches, so a per-character
+        asyncio lock isn't needed here — the field-level race is empty.
+        """
         try:
             facts = await self._fact_store.aload_facts(name)
         except Exception as e:  # noqa: BLE001
@@ -300,6 +320,28 @@ class EmbeddingWarmupWorker:
             logger.warning(
                 "[EmbeddingWorker] fact save failed for %s: %s", name, e,
             )
+
+        # Dedup pass: only the rows we just embedded are candidates;
+        # we don't want to repeatedly scan the entire fact history on
+        # every sweep. detect_candidates is entity-scoped + absorbed-
+        # aware, so its output is already a clean set of (candidate,
+        # existing) pairs ready for the LLM arbitration queue.
+        if self._dedup_resolver is not None:
+            try:
+                from memory.fact_dedup import FactDedupResolver  # local import keeps the worker importable when dedup module isn't loaded
+                only_for_ids = {
+                    e.get("id") for e in targets if e.get("id")
+                }
+                pairs = FactDedupResolver.detect_candidates(
+                    facts, only_for_ids=only_for_ids,
+                )
+                if pairs:
+                    await self._dedup_resolver.aenqueue_candidates(name, pairs)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "[EmbeddingWorker] dedup enqueue failed for %s: %s",
+                    name, e,
+                )
         return len(targets)
 
     # ── helpers ──────────────────────────────────────────────────────

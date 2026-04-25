@@ -136,6 +136,11 @@ reconciler: Reconciler | None = None
 # unblock the warmup wait early. None when vectors are disabled or
 # the worker bootstrap raised.
 embedding_warmup_worker = None
+# memory-enhancements P2: fact vector dedup resolver. Shares the
+# FactStore with the embedding worker (worker enqueues candidates,
+# the idle-maintenance loop resolves them). None when bootstrap
+# fails or the embedding service is permanently disabled.
+fact_dedup_resolver = None
 
 # 用于保护重新加载操作的锁
 _reload_lock = asyncio.Lock()
@@ -802,6 +807,30 @@ async def _periodic_idle_maintenance_loop():
                             logger.info(f"[IdleMaint] {name}: 审视了 {resolved} 条 persona 矛盾")
                 except Exception as e:
                     logger.warning(f"[IdleMaint] {name}: persona 矛盾审视失败: {e}")
+
+                # ── 子任务2b: Fact 向量去重（P2 step 2） ──
+                # The embedding worker enqueued candidate paraphrase
+                # pairs after the last fact-sweep; resolve them here
+                # via a single LLM call. fact_dedup_resolver is None
+                # when vectors are disabled or bootstrap failed —
+                # legacy hash + FTS5 dedup remains the entire dedup
+                # pipeline in that case.
+                if fact_dedup_resolver is not None:
+                    if not _is_idle():
+                        break
+                    try:
+                        pending_dedup = await fact_dedup_resolver.aload_pending(name)
+                        if pending_dedup:
+                            logger.info(
+                                f"[IdleMaint] {name}: 发现 {len(pending_dedup)} 对未处理的 fact 候选去重，触发 LLM 审视"
+                            )
+                            resolved = await fact_dedup_resolver.aresolve(name)
+                            if resolved:
+                                logger.info(
+                                    f"[IdleMaint] {name}: 完成 {resolved} 对 fact 去重决策"
+                                )
+                    except Exception as e:
+                        logger.warning(f"[IdleMaint] {name}: fact 向量去重失败: {e}")
 
                 # ── 子任务3: 记忆整理 review ──
                 if not _is_idle():
@@ -1621,9 +1650,10 @@ async def startup_event_handler():
     # batches. The whole feature is a no-op if the EmbeddingService can't
     # find onnxruntime + a model file, so we always start the task — the
     # service's own fallback gate decides whether anything actually happens.
-    global embedding_warmup_worker
+    global embedding_warmup_worker, fact_dedup_resolver
     try:
         from memory.embedding_worker import EmbeddingWarmupWorker
+        from memory.fact_dedup import FactDedupResolver
         from config import VECTORS_WARMUP_DELAY_SECONDS
 
         # Resolve characters dynamically on each tick rather than
@@ -1643,12 +1673,18 @@ async def startup_event_handler():
                 # known characters keep getting backfilled.
                 return list(catgirl_names)
 
+        # Dedup resolver shares the FactStore — its enqueue side is
+        # called from the embedding worker after each fact-sweep, its
+        # resolve side is called from the idle-maintenance loop below.
+        fact_dedup_resolver = FactDedupResolver(fact_store)
+
         embedding_warmup_worker = EmbeddingWarmupWorker(
             persona_manager=persona_manager,
             reflection_engine=reflection_engine,
             fact_store=fact_store,
             get_character_names=_current_catgirl_names,
             warmup_delay_seconds=VECTORS_WARMUP_DELAY_SECONDS,
+            dedup_resolver=fact_dedup_resolver,
         )
         embedding_warmup_worker.start()
     except Exception as e:
@@ -1656,6 +1692,7 @@ async def startup_event_handler():
         # vectors are an optimization, not a correctness requirement.
         logger.warning(f"[Memory] embedding worker bootstrap failed: {e}")
         embedding_warmup_worker = None
+        fact_dedup_resolver = None
 
 
 @app.on_event("shutdown")
