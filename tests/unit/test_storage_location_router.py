@@ -86,6 +86,18 @@ def _make_real_config_manager(tmp_path: Path):
     return config_manager
 
 
+def _make_anchor_root_config_manager(tmp_path: Path):
+    standard_root = tmp_path / "anchor-base"
+    patchers = [
+        patch.object(ConfigManager, "_get_documents_directory", return_value=standard_root),
+        patch.object(ConfigManager, "_get_standard_data_directory_candidates", return_value=[standard_root]),
+    ]
+    with patchers[0], patchers[1]:
+        config_manager = ConfigManager("N.E.K.O")
+    config_manager._get_standard_data_directory_candidates = lambda: [standard_root]
+    return config_manager
+
+
 def _build_client(config_manager, *, request_app_shutdown=None, release_storage_startup_barrier=None):
     init_shared_state(
         role_state={},
@@ -209,29 +221,65 @@ def test_storage_location_select_custom_parent_targets_app_subdirectory(tmp_path
 
 
 @pytest.mark.unit
-def test_storage_location_select_blocks_existing_target_content_before_restart(tmp_path):
+def test_storage_location_existing_target_content_requires_confirmation_before_restart(tmp_path):
     config_manager = _DummyConfigManager(tmp_path)
     selected_parent = tmp_path / "custom-storage-parent"
     target_root = selected_parent / "N.E.K.O"
     (target_root / "config").mkdir(parents=True)
     (target_root / "config" / "characters.json").write_text('{"existing": true}', encoding="utf-8")
+    shutdown_calls = {"count": 0}
 
-    with _build_client(config_manager) as client:
-        response = client.post(
+    with _build_client(config_manager, request_app_shutdown=lambda: shutdown_calls.__setitem__("count", shutdown_calls["count"] + 1)) as client:
+        select_response = client.post(
             "/api/storage/location/select",
             json={
                 "selected_root": str(selected_parent),
                 "selection_source": "custom",
             },
         )
+        restart_without_confirmation_response = client.post(
+            "/api/storage/location/restart",
+            json={
+                "selected_root": str(selected_parent),
+                "selection_source": "custom",
+            },
+        )
 
-    assert response.status_code == 200
-    payload = response.json()
+    assert select_response.status_code == 200
+    payload = select_response.json()
     assert payload["ok"] is True
     assert payload["result"] == "restart_required"
     assert payload["selected_root"] == str(target_root.resolve())
-    assert payload["blocking_error_code"] == "target_not_empty"
-    assert "请选择一个空目录" in payload["blocking_error_message"]
+    assert payload["blocking_error_code"] == ""
+    assert payload["target_has_existing_content"] is True
+    assert payload["requires_existing_target_confirmation"] is True
+    assert "覆盖目标中的同名运行时数据目录" in payload["existing_target_confirmation_message"]
+
+    assert restart_without_confirmation_response.status_code == 409
+    missing_confirmation_payload = restart_without_confirmation_response.json()
+    assert missing_confirmation_payload["error_code"] == "target_confirmation_required"
+    assert missing_confirmation_payload["requires_existing_target_confirmation"] is True
+    assert not get_storage_migration_path(config_manager).exists()
+
+    with _build_client(config_manager, request_app_shutdown=lambda: shutdown_calls.__setitem__("count", shutdown_calls["count"] + 1)) as client:
+        restart_with_confirmation_response = client.post(
+            "/api/storage/location/restart",
+            json={
+                "selected_root": str(selected_parent),
+                "selection_source": "custom",
+                "confirm_existing_target_content": True,
+            },
+        )
+
+    assert restart_with_confirmation_response.status_code == 200
+    restart_payload = restart_with_confirmation_response.json()
+    assert restart_payload["ok"] is True
+    assert restart_payload["result"] == "restart_initiated"
+    assert restart_payload["requires_existing_target_confirmation"] is True
+    assert shutdown_calls["count"] == 1
+    migration_payload = load_storage_migration(config_manager)
+    assert migration_payload["target_root"] == str(target_root.resolve())
+    assert migration_payload["confirmed_existing_target_content"] is True
 
 
 @pytest.mark.unit
@@ -775,3 +823,114 @@ def test_storage_location_cleanup_retained_source_removes_old_runtime_root(tmp_p
     root_state = reloaded_manager.load_root_state()
     assert root_state["legacy_cleanup_pending"] is False
     assert root_state["last_migration_backup"] == ""
+
+
+@pytest.mark.unit
+def test_storage_location_cleanup_retained_anchor_root_removes_runtime_entries_only(tmp_path):
+    config_manager = _make_anchor_root_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+
+    (source_root / "config").mkdir(parents=True, exist_ok=True)
+    (source_root / "config" / "characters.json").write_text('{"current":"A"}', encoding="utf-8")
+    (source_root / "memory" / "A").mkdir(parents=True, exist_ok=True)
+    (source_root / "memory" / "A" / "recent.json").write_text("[]", encoding="utf-8")
+    (source_root / "state").mkdir(parents=True, exist_ok=True)
+    (source_root / "state" / "storage_policy.json").write_text("{}", encoding="utf-8")
+    (source_root / "cloudsave").mkdir(parents=True, exist_ok=True)
+    (source_root / "cloudsave" / "manifest.json").write_text("{}", encoding="utf-8")
+
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    run_pending_storage_migration(config_manager)
+
+    reloaded_manager = _make_anchor_root_config_manager(tmp_path)
+    with _build_client(reloaded_manager) as client:
+        status_response = client.get("/api/storage/location/status")
+        cleanup_response = client.post(
+            "/api/storage/location/retained-source/cleanup",
+            json={"retained_root": str(source_root)},
+        )
+
+    assert status_response.status_code == 200
+    status_payload = status_response.json()
+    assert status_payload["completion_notice"]["completed"] is True
+    assert status_payload["completion_notice"]["retained_root"] == str(source_root.resolve())
+    assert status_payload["completion_notice"]["cleanup_available"] is True
+
+    assert cleanup_response.status_code == 200
+    cleanup_payload = cleanup_response.json()
+    assert cleanup_payload["ok"] is True
+    assert cleanup_payload["cleaned_root"] == str(source_root.resolve())
+
+    assert source_root.exists()
+    assert not (source_root / "config").exists()
+    assert not (source_root / "memory").exists()
+    assert (source_root / "state" / "storage_migration.json").exists()
+    assert (source_root / "cloudsave" / "manifest.json").read_text(encoding="utf-8") == "{}"
+
+    migration_payload = load_storage_migration(reloaded_manager)
+    assert migration_payload["retained_source_root"] == ""
+    assert migration_payload["retained_source_mode"] == "cleaned"
+
+    root_state = reloaded_manager.load_root_state()
+    assert root_state["legacy_cleanup_pending"] is False
+    assert root_state["last_migration_backup"] == ""
+
+
+@pytest.mark.unit
+def test_storage_location_cleanup_rejects_retained_root_that_contains_target_root(tmp_path):
+    config_manager = _make_real_config_manager(tmp_path)
+    retained_root = tmp_path / "retained-root"
+    target_root = retained_root / "target-selected" / "N.E.K.O"
+    retained_root.mkdir(parents=True, exist_ok=True)
+    target_root.mkdir(parents=True, exist_ok=True)
+    (retained_root / "config").mkdir(parents=True, exist_ok=True)
+    (target_root / "config").mkdir(parents=True, exist_ok=True)
+    save_storage_migration(
+        config_manager,
+        {
+            "version": 1,
+            "status": "completed",
+            "source_root": str(retained_root),
+            "target_root": str(target_root),
+            "selection_source": "custom",
+            "backup_root": str(retained_root),
+            "retained_source_root": str(retained_root),
+            "retained_source_mode": "manual_retention",
+            "completed_at": "2026-04-25T00:00:00Z",
+        },
+        anchor_root=config_manager.anchor_root,
+    )
+    config_manager.save_root_state({
+        "version": 1,
+        "mode": "normal",
+        "current_root": str(target_root),
+        "last_known_good_root": str(target_root),
+        "last_migration_source": str(retained_root),
+        "last_migration_backup": str(retained_root),
+        "last_migration_result": f"completed:{target_root}",
+        "last_successful_boot_at": "",
+        "legacy_cleanup_pending": True,
+    })
+
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    with _build_client(reloaded_manager) as client:
+        status_response = client.get("/api/storage/location/status")
+        cleanup_response = client.post(
+            "/api/storage/location/retained-source/cleanup",
+            json={"retained_root": str(retained_root)},
+        )
+
+    assert status_response.status_code == 200
+    status_payload = status_response.json()
+    assert status_payload["completion_notice"]["completed"] is True
+    assert status_payload["completion_notice"]["cleanup_available"] is False
+    assert cleanup_response.status_code == 404
+    assert retained_root.exists()
+    assert target_root.exists()
+    assert (target_root / "config").exists()

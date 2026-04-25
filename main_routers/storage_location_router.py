@@ -37,6 +37,7 @@ from utils.storage_migration import (
     STORAGE_MIGRATION_STATUS_FAILED,
     create_pending_storage_migration,
     delete_storage_migration,
+    is_retained_root_cleanup_available,
     load_storage_migration,
     save_storage_migration,
 )
@@ -69,6 +70,7 @@ _MIGRATED_RUNTIME_ENTRY_NAMES = (
 class StorageLocationSelectionRequest(BaseModel):
     selected_root: str = Field(..., min_length=1, max_length=4096)
     selection_source: str = Field(default="user_selected", min_length=1, max_length=64)
+    confirm_existing_target_content: bool = False
 
     @field_validator("selected_root", "selection_source")
     @classmethod
@@ -270,19 +272,20 @@ def _build_restart_preflight(
     else:
         permission_probe = existing_anchor
     permission_ok = os.access(str(permission_probe), os.W_OK)
+    target_has_existing_content = bool(
+        config_manager is not None
+        and _target_root_has_user_content(target_root, config_manager)
+    )
+    requires_existing_target_confirmation = bool(
+        target_has_existing_content
+        and not allow_existing_target_content
+    )
 
     blocking_error_code = ""
     blocking_error_message = ""
     if not permission_ok:
         blocking_error_code = "target_not_writable"
         blocking_error_message = "目标路径当前不可写，无法开始关闭后的迁移流程。"
-    elif (
-        not allow_existing_target_content
-        and config_manager is not None
-        and _target_root_has_user_content(target_root, config_manager)
-    ):
-        blocking_error_code = "target_not_empty"
-        blocking_error_message = "目标路径已经包含现有数据。请选择一个空目录，或选择其父目录让应用创建独立的 N.E.K.O 子目录。"
     elif (
         estimated_required_bytes > 0
         and target_free_bytes > 0
@@ -297,6 +300,14 @@ def _build_restart_preflight(
         "target_free_bytes": target_free_bytes,
         "permission_ok": permission_ok,
         "warning_codes": _collect_warning_codes(current_root, target_root),
+        "target_has_existing_content": target_has_existing_content,
+        "requires_existing_target_confirmation": requires_existing_target_confirmation,
+        "existing_target_confirmation_message": (
+            "目标路径已经包含现有数据。确认后迁移会覆盖目标中的同名运行时数据目录，"
+            "目标目录中的其他文件会保留。请确认已选择正确目录。"
+            if requires_existing_target_confirmation
+            else ""
+        ),
         "blocking_error_code": blocking_error_code,
         "blocking_error_message": blocking_error_message,
     }
@@ -869,12 +880,13 @@ def _build_completed_migration_notice(
         or ""
     ).strip()
     retained_exists = bool(retained_root and Path(retained_root).exists())
-    cleanup_available = bool(
-        retained_exists
-        and retained_root
-        and not paths_equal(retained_root, current_root)
-        and not paths_equal(retained_root, anchor_root)
-        and (not target_root or not paths_equal(retained_root, target_root))
+    cleanup_available = is_retained_root_cleanup_available(
+        retained_root,
+        current_root=current_root,
+        anchor_root=anchor_root,
+        target_root=target_root,
+        require_exists=True,
+        allow_anchor_root=True,
     )
     if require_existing_retained_root and not cleanup_available:
         return {
@@ -892,6 +904,38 @@ def _build_completed_migration_notice(
         "completed_at": str(migration_payload.get("completed_at") or "").strip(),
         "message": "存储位置迁移已完成，旧数据目录当前仍保留，需手动清理。",
     }
+
+
+def _cleanup_retained_runtime_root(
+    retained_path: Path,
+    *,
+    current_root: Path,
+    anchor_root: Path,
+    target_root: Path | str | None = None,
+) -> None:
+    if not is_retained_root_cleanup_available(
+        retained_path,
+        current_root=current_root,
+        anchor_root=anchor_root,
+        target_root=target_root,
+        require_exists=True,
+        allow_anchor_root=True,
+    ):
+        raise ValueError("保留目录当前不满足安全清理条件。")
+
+    if paths_equal(retained_path, anchor_root):
+        for entry_name in _MIGRATED_RUNTIME_ENTRY_NAMES:
+            entry_path = retained_path / entry_name
+            if entry_path.is_dir() and not entry_path.is_symlink():
+                shutil.rmtree(entry_path)
+            elif entry_path.exists():
+                entry_path.unlink()
+        return
+
+    if retained_path.is_dir() and not retained_path.is_symlink():
+        shutil.rmtree(retained_path)
+    elif retained_path.exists():
+        retained_path.unlink()
 
 
 async def _release_storage_startup_barrier_if_needed(*, reason: str) -> None:
@@ -1004,11 +1048,15 @@ async def post_storage_location_retained_source_cleanup(
         }
 
     retained_path = Path(expected_retained_root)
+    current_root = normalize_runtime_root(config_manager.app_docs_dir)
+    anchor_root = compute_anchor_root(config_manager, current_root=current_root)
     try:
-        if retained_path.is_dir() and not retained_path.is_symlink():
-            shutil.rmtree(retained_path)
-        elif retained_path.exists():
-            retained_path.unlink()
+        _cleanup_retained_runtime_root(
+            retained_path,
+            current_root=current_root,
+            anchor_root=anchor_root,
+            target_root=notice.get("target_root") or "",
+        )
     except Exception as exc:
         response.status_code = 500
         return {
@@ -1017,7 +1065,6 @@ async def post_storage_location_retained_source_cleanup(
             "error": f"清理旧数据保留目录失败: {exc}",
         }
 
-    anchor_root = compute_anchor_root(config_manager, current_root=normalize_runtime_root(config_manager.app_docs_dir))
     migration_payload = load_storage_migration(config_manager, anchor_root=anchor_root) or {}
     if isinstance(migration_payload, dict):
         updated_payload = dict(migration_payload)
@@ -1365,6 +1412,14 @@ async def post_storage_location_restart(
             "error": restart_preflight["blocking_error_message"],
             **restart_preflight,
         }
+    if restart_preflight["requires_existing_target_confirmation"] and not payload.confirm_existing_target_content:
+        response.status_code = 409
+        return {
+            "ok": False,
+            "error_code": "target_confirmation_required",
+            "error": restart_preflight["existing_target_confirmation_message"],
+            **restart_preflight,
+        }
 
     previous_root_state = config_manager.load_root_state()
     migration_payload = create_pending_storage_migration(
@@ -1373,6 +1428,7 @@ async def post_storage_location_restart(
         target_root=normalized_selected_root,
         selection_source=payload.selection_source,
         anchor_root=anchor_root,
+        confirmed_existing_target_content=bool(payload.confirm_existing_target_content),
     )
 
     try:

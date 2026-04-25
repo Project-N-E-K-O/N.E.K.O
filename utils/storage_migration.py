@@ -78,6 +78,14 @@ def _normalize_selection_source(value: str) -> str:
     return str(value or "user_selected").strip() or "user_selected"
 
 
+def _path_contains(parent: Path, child: Path) -> bool:
+    try:
+        child.relative_to(parent)
+        return not paths_equal(parent, child)
+    except ValueError:
+        return False
+
+
 def is_retained_root_cleanup_available(
     retained_root: Path | str | None,
     *,
@@ -85,6 +93,7 @@ def is_retained_root_cleanup_available(
     anchor_root: Path | str,
     target_root: Path | str | None = None,
     require_exists: bool = True,
+    allow_anchor_root: bool = False,
 ) -> bool:
     raw_retained_root = str(retained_root or "").strip()
     if not raw_retained_root:
@@ -98,12 +107,22 @@ def is_retained_root_cleanup_available(
     normalized_anchor_root = normalize_runtime_root(anchor_root)
     if paths_equal(normalized_retained_root, normalized_current_root):
         return False
+    if _path_contains(normalized_retained_root, normalized_current_root):
+        return False
     if paths_equal(normalized_retained_root, normalized_anchor_root):
+        if not allow_anchor_root:
+            return False
+        return any((normalized_retained_root / name).exists() for name in MIGRATED_RUNTIME_ENTRY_NAMES)
+    if _path_contains(normalized_retained_root, normalized_anchor_root):
         return False
 
     raw_target_root = str(target_root or "").strip()
-    if raw_target_root and paths_equal(normalized_retained_root, normalize_runtime_root(raw_target_root)):
-        return False
+    if raw_target_root:
+        normalized_target_root = normalize_runtime_root(raw_target_root)
+        if paths_equal(normalized_retained_root, normalized_target_root):
+            return False
+        if _path_contains(normalized_retained_root, normalized_target_root):
+            return False
 
     return True
 
@@ -260,6 +279,7 @@ def build_pending_storage_migration_payload(
     target_root: Path | str,
     selection_source: str,
     backup_root: Path | str | None = None,
+    confirmed_existing_target_content: bool = False,
     txid: str | None = None,
 ) -> dict[str, Any]:
     timestamp = _utc_now_iso()
@@ -270,6 +290,7 @@ def build_pending_storage_migration_payload(
         "source_root": str(normalize_runtime_root(source_root)),
         "target_root": str(normalize_runtime_root(target_root)),
         "selection_source": _normalize_selection_source(selection_source),
+        "confirmed_existing_target_content": bool(confirmed_existing_target_content),
         "backup_root": _normalize_optional_path(backup_root),
         "error_code": "",
         "error_message": "",
@@ -298,12 +319,14 @@ def create_pending_storage_migration(
     selection_source: str,
     anchor_root: Path | str | None = None,
     backup_root: Path | str | None = None,
+    confirmed_existing_target_content: bool = False,
 ) -> dict[str, Any]:
     payload = build_pending_storage_migration_payload(
         source_root=source_root,
         target_root=target_root,
         selection_source=selection_source,
         backup_root=backup_root,
+        confirmed_existing_target_content=confirmed_existing_target_content,
     )
     return save_storage_migration(config_manager, payload, anchor_root=anchor_root)
 
@@ -415,11 +438,12 @@ def run_pending_storage_migration(
             "legacy",
             POLICY_SELECTION_SOURCE_RECOVERED,
         }
+        confirmed_existing_target_content = bool(payload.get("confirmed_existing_target_content"))
 
-        if target_has_user_content and not use_existing_target:
+        if target_has_user_content and not use_existing_target and not confirmed_existing_target_content:
             raise StorageMigrationError(
-                "target_not_empty",
-                "目标路径已经包含现有数据，为避免覆盖，本次迁移已停止。",
+                "target_confirmation_required",
+                "目标路径已经包含现有数据，需要先确认覆盖目标中的同名运行时数据目录。",
             )
 
         _ensure_target_root_writable(target_root)
@@ -483,6 +507,7 @@ def run_pending_storage_migration(
                 anchor_root=normalized_anchor_root,
                 target_root=target_root,
                 require_exists=False,
+                allow_anchor_root=True,
             )
             set_root_mode(
                 config_manager,

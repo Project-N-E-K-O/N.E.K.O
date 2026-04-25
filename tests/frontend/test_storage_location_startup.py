@@ -240,7 +240,7 @@ def test_storage_location_selection_view_hides_internal_paths_and_supports_folde
     assert page.locator("text=本阶段提示").count() == 0
 
     page.get_by_role("button", name="选择其他位置").click()
-    expect(page.locator("text=应用会使用其中独立的 N.E.K.O 子文件夹")).to_be_visible(timeout=5_000)
+    assert page.locator("text=应用会使用其中独立的 N.E.K.O 子文件夹").count() == 0
     page.get_by_role("button", name="选择文件夹").click()
 
     custom_input = page.locator(".storage-location-input")
@@ -552,6 +552,89 @@ def test_storage_location_restart_confirmation_enters_maintenance_page_and_recov
         """,
         timeout=15_000,
     )
+
+
+@pytest.mark.frontend
+def test_storage_location_existing_target_requires_second_confirmation_before_restart(
+    mock_page: Page,
+    running_server: str,
+    tmp_path,
+):
+    page = mock_page
+    target_root = str((tmp_path / "existing-target" / "N.E.K.O").resolve())
+    restart_requests = []
+    _mock_selection_required_state(page)
+
+    page.route(
+        "**/api/storage/location/select",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(
+                {
+                    "ok": True,
+                    "result": "restart_required",
+                    "selected_root": target_root,
+                    "selection_source": "custom",
+                    "target_root": target_root,
+                    "estimated_required_bytes": 4096,
+                    "target_free_bytes": 1048576,
+                    "permission_ok": True,
+                    "warning_codes": [],
+                    "target_has_existing_content": True,
+                    "requires_existing_target_confirmation": True,
+                    "existing_target_confirmation_message": "目标路径已经包含现有数据。确认后迁移会覆盖目标中的同名运行时数据目录。",
+                    "blocking_error_code": "",
+                    "blocking_error_message": "",
+                },
+                ensure_ascii=False,
+            ),
+        ),
+    )
+
+    def handle_restart(route):
+        restart_requests.append(json.loads(route.request.post_data or "{}"))
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(
+                {
+                    "ok": True,
+                    "result": "restart_initiated",
+                    "selected_root": target_root,
+                    "target_root": target_root,
+                    "selection_source": "custom",
+                    "target_has_existing_content": True,
+                    "requires_existing_target_confirmation": True,
+                    "existing_target_confirmation_message": "目标路径已经包含现有数据。确认后迁移会覆盖目标中的同名运行时数据目录。",
+                    "blocking_error_code": "",
+                    "blocking_error_message": "",
+                    "migration": {
+                        "status": "pending",
+                        "source_root": "/tmp/runtime/N.E.K.O",
+                        "target_root": target_root,
+                        "selection_source": "custom",
+                    },
+                },
+                ensure_ascii=False,
+            ),
+        )
+
+    page.route("**/api/storage/location/restart", handle_restart)
+    page.on("dialog", lambda dialog: dialog.accept())
+
+    page.goto(f"{running_server}/", wait_until="domcontentloaded")
+    page.get_by_role("button", name="选择其他位置").click()
+    page.locator(".storage-location-input").fill(str(tmp_path / "existing-target"))
+    page.get_by_role("button", name="提交该位置").click()
+
+    confirm_restart_button = page.get_by_role("button", name="确认关闭并迁移")
+    expect(confirm_restart_button).to_be_enabled(timeout=10_000)
+    expect(page.locator("text=目标文件夹已经包含 N.E.K.O 运行时数据")).to_be_visible(timeout=10_000)
+    confirm_restart_button.click()
+
+    expect(page.get_by_role("heading", name="正在优化存储布局...")).to_be_visible(timeout=10_000)
+    assert restart_requests[-1]["confirm_existing_target_content"] is True
 
 
 @pytest.mark.frontend
@@ -947,10 +1030,23 @@ def test_storage_location_ready_state_shows_completion_notice_and_allows_manual_
         timeout=10_000,
     )
     expect(completion_card).to_be_visible(timeout=10_000)
-    expect(completion_paths.nth(0)).to_have_text(source_root, timeout=10_000)
-    expect(completion_paths.nth(1)).to_have_text(target_root, timeout=10_000)
-    expect(completion_paths.nth(2)).to_have_text(source_root, timeout=10_000)
+    expect(completion_card.locator("text=原始路径")).to_have_count(0)
+    expect(completion_paths).to_have_count(2)
+    expect(completion_paths.nth(0)).to_have_text(target_root, timeout=10_000)
+    expect(completion_paths.nth(1)).to_have_text(source_root, timeout=10_000)
     expect(cleanup_button).to_be_visible(timeout=10_000)
+    expect(completion_card.locator(".storage-location-actions button", has_text="关闭")).to_have_count(0)
+
+    before_drag = completion_card.bounding_box()
+    assert before_drag is not None
+    page.mouse.move(before_drag["x"] + 80, before_drag["y"] + 18)
+    page.mouse.down()
+    page.mouse.move(before_drag["x"] - 20, before_drag["y"] - 62)
+    page.mouse.up()
+    after_drag = completion_card.bounding_box()
+    assert after_drag is not None
+    assert abs(after_drag["x"] - before_drag["x"]) >= 40
+    assert abs(after_drag["y"] - before_drag["y"]) >= 30
 
     cleanup_button.click()
 

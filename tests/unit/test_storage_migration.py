@@ -8,6 +8,7 @@ from utils.storage_migration import (
     STORAGE_MIGRATION_STATUS_FAILED,
     create_pending_storage_migration,
     get_storage_migration_path,
+    is_retained_root_cleanup_available,
     is_storage_migration_pending,
     load_storage_migration,
     run_pending_storage_migration,
@@ -92,6 +93,31 @@ def test_is_storage_migration_pending_ignores_terminal_status():
 
 
 @pytest.mark.unit
+def test_retained_root_cleanup_rejects_paths_that_contain_protected_roots(tmp_path):
+    retained_root = tmp_path / "retained"
+    current_root = retained_root / "current" / "N.E.K.O"
+    anchor_root = tmp_path / "anchor" / "N.E.K.O"
+    target_root = retained_root / "target" / "N.E.K.O"
+    retained_root.mkdir(parents=True)
+    current_root.mkdir(parents=True)
+    anchor_root.mkdir(parents=True)
+    target_root.mkdir(parents=True)
+
+    assert not is_retained_root_cleanup_available(
+        retained_root,
+        current_root=current_root,
+        anchor_root=anchor_root,
+        target_root=target_root,
+    )
+    assert not is_retained_root_cleanup_available(
+        tmp_path,
+        current_root=current_root,
+        anchor_root=anchor_root,
+        target_root=target_root,
+    )
+
+
+@pytest.mark.unit
 def test_run_pending_storage_migration_commits_policy_and_copies_runtime_entries(tmp_path):
     config_manager = _make_config_manager(tmp_path)
     source_root = config_manager.app_docs_dir
@@ -130,6 +156,46 @@ def test_run_pending_storage_migration_commits_policy_and_copies_runtime_entries
 
 
 @pytest.mark.unit
+def test_run_pending_storage_migration_requires_confirmation_for_existing_target_content(tmp_path):
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+
+    (source_root / "config").mkdir(parents=True, exist_ok=True)
+    (source_root / "config" / "characters.json").write_text('{"current":"A"}', encoding="utf-8")
+    (target_root / "config").mkdir(parents=True, exist_ok=True)
+    (target_root / "config" / "characters.json").write_text('{"existing":"B"}', encoding="utf-8")
+    (target_root / "notes.txt").write_text("keep me", encoding="utf-8")
+
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="custom",
+    )
+
+    missing_confirmation_result = run_pending_storage_migration(config_manager)
+
+    assert missing_confirmation_result["completed"] is False
+    assert missing_confirmation_result["error_code"] == "target_confirmation_required"
+    assert (target_root / "config" / "characters.json").read_text(encoding="utf-8") == '{"existing":"B"}'
+
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="custom",
+        confirmed_existing_target_content=True,
+    )
+
+    confirmed_result = run_pending_storage_migration(config_manager)
+
+    assert confirmed_result["completed"] is True
+    assert (target_root / "config" / "characters.json").read_text(encoding="utf-8") == '{"current":"A"}'
+    assert (target_root / "notes.txt").read_text(encoding="utf-8") == "keep me"
+
+
+@pytest.mark.unit
 def test_run_pending_storage_migration_marks_cleanup_pending_only_for_non_anchor_retained_root(tmp_path):
     config_manager = _make_config_manager(tmp_path)
     source_root = tmp_path / "legacy-runtime" / "N.E.K.O"
@@ -153,7 +219,7 @@ def test_run_pending_storage_migration_marks_cleanup_pending_only_for_non_anchor
 
 
 @pytest.mark.unit
-def test_run_pending_storage_migration_does_not_mark_cleanup_pending_when_retained_root_is_anchor_root(tmp_path):
+def test_run_pending_storage_migration_marks_cleanup_pending_when_anchor_root_retains_runtime_entries(tmp_path):
     config_manager = _make_anchor_root_config_manager(tmp_path)
     source_root = config_manager.app_docs_dir
     target_root = tmp_path / "target-selected" / "N.E.K.O"
@@ -172,7 +238,7 @@ def test_run_pending_storage_migration_does_not_mark_cleanup_pending_when_retain
 
     assert result["completed"] is True
     root_state = config_manager.load_root_state()
-    assert root_state["legacy_cleanup_pending"] is False
+    assert root_state["legacy_cleanup_pending"] is True
 
 
 @pytest.mark.unit

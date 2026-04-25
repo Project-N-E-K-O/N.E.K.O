@@ -6,6 +6,9 @@
     var STORAGE_I18N_EN = {
         badge: 'Storage Location',
         bootstrapError: 'Failed to load storage initialization information. Please try again.',
+        blockingGeneric: 'The selected storage location cannot be used right now. Please choose another location or try again later.',
+        blockingInsufficientSpace: 'The target volume does not have enough free space for a safe migration.',
+        blockingTargetNotWritable: 'The target path is not writable, so migration cannot start.',
         chooseOther: 'Choose another location',
         cleanupRetainedRoot: 'Clean up old data directory',
         cleanupRetainedRootConfirm: 'This will delete the retained old data directory and will not affect the new active directory. Continue?',
@@ -15,10 +18,10 @@
         completionTitle: 'Storage migration completed',
         confirmReconnect: 'Confirm shutdown and reconnect path',
         confirmRestart: 'Confirm shutdown and migrate',
+        confirmExistingTargetContent: 'The target folder already contains N.E.K.O runtime data. If you continue, migration will replace same-name runtime data folders in the target. Other files in the target folder will be kept. Continue?',
         currentPath: 'Current path',
         customPathPlaceholder: 'Choose a parent folder; N.E.K.O will use its N.E.K.O subfolder',
         customPreviewNotice: 'Backend confirmed that switching to this location requires closing the current instance, migrating data, and restarting automatically.',
-        customSubfolderNote: 'When you choose a normal folder, the app will use a dedicated N.E.K.O subfolder inside it.',
         dialogLabel: 'Storage location selection',
         errorBadge: 'Load failed',
         errorTitle: 'Storage startup information is temporarily unavailable',
@@ -50,6 +53,7 @@
         permissionCheck: 'Write access',
         permissionOk: 'Writable',
         pickFolder: 'Choose folder',
+        pickFolderUnavailable: 'The system folder picker is unavailable. Please enter the path manually.',
         pickFolderFailed: 'Failed to open the folder picker. Please enter the path manually.',
         previewBoundary: 'The root will not hot-switch in this session, and the stable root will not be changed early. After confirmation, the backend will perform shutdown, any required migration, auto-restart, and final layout recovery in order.',
         previewOther: 'Use this location',
@@ -78,16 +82,27 @@
         recommendedPath: 'Recommended path',
         recommendedPreviewNotice: 'Backend confirmed that switching to the recommended location requires closing the current instance, migrating data, and restarting automatically.',
         recoveryRequired: 'A recoverable storage state was detected. Confirm the storage location for this launch before continuing.',
+        recoverySourceUnavailable: 'The original data path is unavailable. Reconnect it or explicitly switch to the recommended default path.',
         restartRequestFailed: 'Failed to start shutdown and migration preparation. Please try again later.',
         restartRequestUnexpected: 'The shutdown and migration preparation API returned an unrecognized result.',
+        restartNotRequired: 'The target path is already the current path. Shutdown is not required.',
+        restartScheduleFailed: 'Failed to schedule the controlled shutdown. Please try again later.',
+        restartUnavailable: 'This instance cannot perform a controlled shutdown right now. Please try again later.',
         retainedRoot: 'Retained directory',
+        retainedSourceCleanupFailed: 'Failed to clean up the old data directory. Please try again later.',
+        retainedSourceMismatch: 'The requested cleanup path does not match the retained directory. Please refresh and try again.',
+        retainedSourceNotFound: 'There is no retained old data directory to clean up.',
         selectPathRequired: 'Please provide a target path first.',
+        selectedRootInsideState: 'This location is inside N.E.K.O runtime state and cannot be used as the storage root.',
+        selectedRootUnavailable: 'The selected storage path is still unavailable. Restore that path before trying again.',
         selectionSubmitFailed: 'Failed to submit the storage location choice. Please try again later.',
         selectionSubmitUnexpected: 'The storage location selection API returned an unrecognized result.',
         selectionSubtitle: 'The app is open. Confirm the storage location on this page before continuing.',
         selectionTitle: 'Choose the storage location for this launch',
         sourceLabel: 'Source path',
         statusUnexpected: 'The storage maintenance status API returned an unrecognized result.',
+        storageBootstrapBlocking: 'Storage still needs recovery or migration, so this session cannot continue yet.',
+        targetNotEmpty: 'The target already contains runtime data. Confirm the target before migration.',
         systemStatusUnavailable: 'The local service status could not be confirmed. Please try again.',
         systemStatusUnexpected: 'The storage startup status API returned an unrecognized result.',
         targetFreeSpace: 'Free space on target volume',
@@ -100,12 +115,16 @@
         warningNetworkShare: 'The target path is on a network share. Connection instability may affect migration reliability.',
         warningSummary: 'Risk notes',
         warningSymlink: 'The target path goes through a symlink or equivalent redirect. Please confirm the actual destination.',
-        warningSyncFolder: 'The target path is inside a sync folder. Sync software may interfere during migration.'
+        warningSyncFolder: 'The target path is inside a sync folder. Sync software may interfere during migration.',
+        warningTargetHasExistingContent: 'The target already contains runtime data. A second confirmation is required before migration starts.'
     };
 
     var STORAGE_I18N_ZH_CN = {
         badge: '存储位置',
         bootstrapError: '无法读取存储位置初始化信息，请重试。',
+        blockingGeneric: '当前无法使用所选存储位置，请换一个位置或稍后重试。',
+        blockingInsufficientSpace: '目标卷剩余空间不足，无法安全执行关闭后的迁移。',
+        blockingTargetNotWritable: '目标路径当前不可写，无法开始关闭后的迁移流程。',
         chooseOther: '选择其他位置',
         cleanupRetainedRoot: '清理旧数据目录',
         cleanupRetainedRootConfirm: '这会删除当前保留的旧数据目录，且不会影响当前已经生效的新目录。要继续吗？',
@@ -115,10 +134,10 @@
         completionTitle: '存储迁移已完成',
         confirmReconnect: '确认关闭并重连路径',
         confirmRestart: '确认关闭并迁移',
+        confirmExistingTargetContent: '目标文件夹已经包含 N.E.K.O 运行时数据。继续后，迁移会覆盖目标中的同名运行时数据目录，目标目录里的其他文件会保留。确认继续吗？',
         currentPath: '当前路径',
         customPathPlaceholder: '选择一个父目录，应用会使用其中的 N.E.K.O 子文件夹',
         customPreviewNotice: '后端已确认：如果后续改用这个位置，需要先关闭当前实例，再迁移数据并自动重启。',
-        customSubfolderNote: '选择普通文件夹时，应用会使用其中独立的 N.E.K.O 子文件夹，避免和已有内容混在一起。',
         dialogLabel: '存储位置选择',
         errorBadge: '读取失败',
         errorTitle: '暂时无法读取存储位置引导信息',
@@ -150,6 +169,7 @@
         permissionCheck: '目标路径写入权限',
         permissionOk: '当前可写',
         pickFolder: '选择文件夹',
+        pickFolderUnavailable: '当前系统目录选择器不可用，请手动输入路径。',
         pickFolderFailed: '打开文件夹选择器失败，请手动输入路径。',
         previewBoundary: '当前不会在本会话里热切根，也不会提前把稳定根改成新路径。确认后会由后端按设计顺序完成关闭、必要迁移、自动重启与最终布局恢复。',
         previewOther: '提交该位置',
@@ -178,16 +198,27 @@
         recommendedPath: '推荐路径',
         recommendedPreviewNotice: '后端已确认：如果后续改用推荐位置，需要先关闭当前实例，再迁移数据并自动重启。',
         recoveryRequired: '检测到需要恢复的存储状态，请先重新确认本次使用的存储位置。',
+        recoverySourceUnavailable: '原始数据路径当前不可用。请先重连原路径，或显式切回推荐默认路径继续当前会话。',
         restartRequestFailed: '启动关闭与迁移准备失败，请稍后重试。',
         restartRequestUnexpected: '关闭与迁移准备接口返回了未识别的结果。',
+        restartNotRequired: '目标路径与当前路径一致，不需要关闭当前实例。',
+        restartScheduleFailed: '受控关闭启动失败，请稍后重试。',
+        restartUnavailable: '当前实例暂时无法执行受控关闭，请稍后重试。',
         retainedRoot: '当前保留目录',
+        retainedSourceCleanupFailed: '清理旧数据保留目录失败，请稍后重试。',
+        retainedSourceMismatch: '请求的清理路径与当前保留目录不一致，请刷新后重试。',
+        retainedSourceNotFound: '当前没有可清理的旧数据保留目录。',
         selectPathRequired: '请先提供目标路径。',
+        selectedRootInsideState: '该位置位于 N.E.K.O 运行时状态目录内，不能作为存储根目录。',
+        selectedRootUnavailable: '原始数据路径当前仍不可用，请先恢复该路径后再重试。',
         selectionSubmitFailed: '提交存储位置选择失败，请稍后重试。',
         selectionSubmitUnexpected: '存储位置选择接口返回了未识别的结果。',
         selectionSubtitle: '应用已经正常打开。接下来请先在当前页面内确认存储位置，再继续使用。',
         selectionTitle: '请选择本次运行使用的存储位置',
         sourceLabel: '原始路径',
         statusUnexpected: '存储维护状态接口返回了未识别的结果。',
+        storageBootstrapBlocking: '当前存储状态仍需恢复或迁移，暂时不能继续当前会话。',
+        targetNotEmpty: '目标路径已经包含运行时数据，请确认目标目录后再继续迁移。',
         systemStatusUnavailable: '暂时无法确认本地服务状态，请重试。',
         systemStatusUnexpected: '存储启动状态接口返回了未识别的结果。',
         targetFreeSpace: '目标卷剩余空间',
@@ -200,7 +231,8 @@
         warningNetworkShare: '目标路径位于网络共享目录，连接波动可能影响迁移稳定性。',
         warningSummary: '额外风险提示',
         warningSymlink: '目标路径命中了符号链接或等价重定向目录，请确认真实落点正确。',
-        warningSyncFolder: '目标路径位于同步盘目录，迁移期间可能受到同步程序干扰。'
+        warningSyncFolder: '目标路径位于同步盘目录，迁移期间可能受到同步程序干扰。',
+        warningTargetHasExistingContent: '目标路径已经包含运行时数据，开始迁移前需要二次确认。'
     };
 
     function cloneTranslations(base, overrides) {
@@ -225,9 +257,9 @@
         completionTitle: '存儲遷移已完成',
         confirmReconnect: '確認關閉並重連路徑',
         confirmRestart: '確認關閉並遷移',
+        confirmExistingTargetContent: '目標資料夾已經包含 N.E.K.O 執行時資料。繼續後，遷移會覆蓋目標中的同名執行時資料目錄，目標目錄裡的其他檔案會保留。確認繼續嗎？',
         currentPath: '當前路徑',
         customPathPlaceholder: '選擇一個父目錄，應用會使用其中的 N.E.K.O 子資料夾',
-        customSubfolderNote: '選擇普通資料夾時，應用會使用其中獨立的 N.E.K.O 子資料夾，避免和既有內容混在一起。',
         errorTitle: '暫時無法讀取存儲位置引導資訊',
         estimatedPayload: '預計遷移體量',
         legacyChoiceEmpty: '未檢測到可直接沿用的舊資料目錄，可直接選擇資料夾或手動輸入路徑。',
@@ -258,6 +290,7 @@
         permissionOk: '目前可寫',
         pickFolder: '選擇資料夾',
         pickFolderFailed: '開啟資料夾選擇器失敗，請手動輸入路徑。',
+        pickFolderUnavailable: '目前系統資料夾選擇器不可用，請手動輸入路徑。',
         previewBoundary: '目前不會在本次會話裡熱切根，也不會提前把穩定根改成新路徑。確認後會由後端按設計順序完成關閉、必要遷移、自動重啟與最終布局恢復。',
         previewOther: '提交此位置',
         previewStepClose: '1. 當前實例會先關閉。',
@@ -285,16 +318,27 @@
         recommendedPath: '建議路徑',
         recommendedPreviewNotice: '後端已確認：如果後續改用建議位置，需要先關閉當前實例，再遷移資料並自動重啟。',
         recoveryRequired: '檢測到需要恢復的存儲狀態，請先重新確認本次使用的存儲位置。',
+        recoverySourceUnavailable: '原始資料路徑目前不可用。請先重新連接原路徑，或明確切回建議預設路徑繼續目前會話。',
         restartRequestFailed: '啟動關閉與遷移準備失敗，請稍後重試。',
         restartRequestUnexpected: '關閉與遷移準備介面返回了未識別的結果。',
+        restartNotRequired: '目標路徑與目前路徑一致，不需要關閉目前實例。',
+        restartScheduleFailed: '受控關閉啟動失敗，請稍後重試。',
+        restartUnavailable: '目前實例暫時無法執行受控關閉，請稍後重試。',
         retainedRoot: '目前保留目錄',
+        retainedSourceCleanupFailed: '清理舊資料保留目錄失敗，請稍後重試。',
+        retainedSourceMismatch: '請求的清理路徑與目前保留目錄不一致，請重新整理後再試。',
+        retainedSourceNotFound: '目前沒有可清理的舊資料保留目錄。',
         selectPathRequired: '請先提供目標路徑。',
+        selectedRootInsideState: '該位置位於 N.E.K.O 執行時狀態目錄內，不能作為存儲根目錄。',
+        selectedRootUnavailable: '原始資料路徑目前仍不可用，請先恢復該路徑後再試。',
         selectionSubmitFailed: '提交存儲位置選擇失敗，請稍後重試。',
         selectionSubmitUnexpected: '存儲位置選擇介面返回了未識別的結果。',
         selectionSubtitle: '應用已正常開啟。接下來請先在目前頁面內確認存儲位置，再繼續使用。',
         selectionTitle: '請選擇本次執行使用的存儲位置',
         sourceLabel: '原始路徑',
         statusUnexpected: '存儲維護狀態介面返回了未識別的結果。',
+        storageBootstrapBlocking: '目前存儲狀態仍需恢復或遷移，暫時不能繼續目前會話。',
+        targetNotEmpty: '目標路徑已經包含執行時資料，請確認目標目錄後再繼續遷移。',
         systemStatusUnavailable: '暫時無法確認本地服務狀態，請重試。',
         systemStatusUnexpected: '存儲啟動狀態介面返回了未識別的結果。',
         targetFreeSpace: '目標卷剩餘空間',
@@ -307,7 +351,8 @@
         warningNetworkShare: '目標路徑位於網路共享目錄，連線波動可能影響遷移穩定性。',
         warningSummary: '額外風險提示',
         warningSymlink: '目標路徑命中了符號連結或等價重導向目錄，請確認實際落點正確。',
-        warningSyncFolder: '目標路徑位於同步碟目錄，遷移期間可能受到同步程式干擾。'
+        warningSyncFolder: '目標路徑位於同步碟目錄，遷移期間可能受到同步程式干擾。',
+        warningTargetHasExistingContent: '目標路徑已經包含執行時資料，開始遷移前需要二次確認。'
     });
 
     var STORAGE_I18N_RESOURCES = {
@@ -412,7 +457,6 @@
         completionCard: null,
         completionTitle: null,
         completionMessage: null,
-        completionSource: null,
         completionTarget: null,
         completionRetained: null,
         completionOpenTargetButton: null,
@@ -617,8 +661,84 @@
                 return translate('storage.warningNetworkShare', '目标路径位于网络共享目录，连接波动可能影响迁移稳定性。');
             case 'symlink_path':
                 return translate('storage.warningSymlink', '目标路径命中了符号链接或等价重定向目录，请确认真实落点正确。');
+            case 'target_has_existing_content':
+                return translate('storage.warningTargetHasExistingContent', '目标路径已经包含运行时数据，开始迁移前需要二次确认。');
             default:
                 return code;
+        }
+    }
+
+    function existingTargetConfirmationText() {
+        return translate(
+            'storage.confirmExistingTargetContent',
+            '目标文件夹已经包含 N.E.K.O 运行时数据。继续后，迁移会覆盖目标中的同名运行时数据目录，目标目录里的其他文件会保留。确认继续吗？'
+        );
+    }
+
+    function translateResponseErrorCode(code, fallbackText) {
+        switch (String(code || '').trim()) {
+            case 'directory_picker_unavailable':
+                return translate('storage.pickFolderUnavailable', '当前系统目录选择器不可用，请手动输入路径。');
+            case 'insufficient_space':
+                return translate('storage.blockingInsufficientSpace', '目标卷剩余空间不足，无法安全执行关闭后的迁移。');
+            case 'recovery_source_unavailable':
+                return translate('storage.recoverySourceUnavailable', '原始数据路径当前不可用。请先重连原路径，或显式切回推荐默认路径继续当前会话。');
+            case 'restart_not_required':
+                return translate('storage.restartNotRequired', '目标路径与当前路径一致，不需要关闭当前实例。');
+            case 'restart_schedule_failed':
+                return translate('storage.restartScheduleFailed', '受控关闭启动失败，请稍后重试。');
+            case 'restart_unavailable':
+                return translate('storage.restartUnavailable', '当前实例暂时无法执行受控关闭，请稍后重试。');
+            case 'retained_source_cleanup_failed':
+                return translate('storage.retainedSourceCleanupFailed', '清理旧数据保留目录失败，请稍后重试。');
+            case 'retained_source_mismatch':
+                return translate('storage.retainedSourceMismatch', '请求的清理路径与当前保留目录不一致，请刷新后重试。');
+            case 'retained_source_not_found':
+                return translate('storage.retainedSourceNotFound', '当前没有可清理的旧数据保留目录。');
+            case 'selected_root_inside_state':
+                return translate('storage.selectedRootInsideState', '该位置位于 N.E.K.O 运行时状态目录内，不能作为存储根目录。');
+            case 'selected_root_unavailable':
+                return translate('storage.selectedRootUnavailable', '原始数据路径当前仍不可用，请先恢复该路径后再重试。');
+            case 'startup_release_failed':
+                return translate('storage.selectionSubmitFailed', '提交存储位置选择失败，请稍后重试。');
+            case 'storage_bootstrap_blocking':
+                return translate('storage.storageBootstrapBlocking', '当前存储状态仍需恢复或迁移，暂时不能继续当前会话。');
+            case 'target_confirmation_required':
+                return existingTargetConfirmationText();
+            case 'target_not_empty':
+                return translate('storage.targetNotEmpty', '目标路径已经包含运行时数据，请确认目标目录后再继续迁移。');
+            case 'target_not_writable':
+                return translate('storage.blockingTargetNotWritable', '目标路径当前不可写，无法开始关闭后的迁移流程。');
+            default:
+                return fallbackText || '';
+        }
+    }
+
+    function translatePreflightBlocking(preflight) {
+        if (!preflight || !preflight.blocking_error_code) return '';
+        return translateResponseErrorCode(
+            preflight.blocking_error_code,
+            translate('storage.blockingGeneric', '当前无法使用所选存储位置，请换一个位置或稍后重试。')
+        );
+    }
+
+    function translateMaintenanceSubtitle(statusPayload, fallbackText) {
+        var blockingReason = String(
+            statusPayload && (
+                statusPayload.blocking_reason
+                || (statusPayload.storage && statusPayload.storage.blocking_reason)
+            ) || ''
+        ).trim();
+
+        switch (blockingReason) {
+            case 'migration_pending':
+                return translate('storage.maintenanceWaitingSubtitle', '当前实例即将关闭，数据会在关闭后迁移并自动重启。');
+            case 'recovery_required':
+                return translate('storage.recoveryRequired', '检测到需要恢复的存储状态，请先重新确认本次使用的存储位置。');
+            case 'selection_required':
+                return translate('storage.selectionSubtitle', '应用已经正常打开。接下来请先在当前页面内确认存储位置，再继续使用。');
+            default:
+                return fallbackText || translate('storage.maintenanceWaitingSubtitle', '当前实例即将关闭，数据会在关闭后迁移并自动重启。');
         }
     }
 
@@ -630,6 +750,9 @@
                 target_free_bytes: 0,
                 permission_ok: true,
                 warning_codes: [],
+                target_has_existing_content: false,
+                requires_existing_target_confirmation: false,
+                existing_target_confirmation_message: '',
                 blocking_error_code: '',
                 blocking_error_message: ''
             };
@@ -642,6 +765,9 @@
             permission_ok: payload.permission_ok !== false,
             warning_codes: normalizeWarningCodes(payload.warning_codes),
             restart_mode: String(payload.restart_mode || 'migrate_after_shutdown').trim(),
+            target_has_existing_content: payload.target_has_existing_content === true,
+            requires_existing_target_confirmation: payload.requires_existing_target_confirmation === true,
+            existing_target_confirmation_message: String(payload.existing_target_confirmation_message || '').trim(),
             blocking_error_code: String(payload.blocking_error_code || '').trim(),
             blocking_error_message: String(payload.blocking_error_message || '').trim()
         };
@@ -896,9 +1022,7 @@
             );
         } else if (state.bootstrap.recovery_required) {
             state.banner.hidden = false;
-            state.banner.textContent =
-                (state.bootstrap.migration && state.bootstrap.migration.last_error)
-                || translate('storage.recoveryRequired', '检测到需要恢复的存储状态，请先重新确认本次使用的存储位置。');
+            state.banner.textContent = translate('storage.recoveryRequired', '检测到需要恢复的存储状态，请先重新确认本次使用的存储位置。');
         } else {
             state.banner.hidden = true;
             state.banner.textContent = '';
@@ -1085,15 +1209,23 @@
                 : translate('storage.permissionBlocked', '当前不可写');
         }
         if (state.previewWarnings) {
-            var warnings = normalizeWarningCodes(preflight.warning_codes).map(translateWarningCode);
+            var warningCodes = normalizeWarningCodes(preflight.warning_codes);
+            if (preflight.target_has_existing_content && warningCodes.indexOf('target_has_existing_content') === -1) {
+                warningCodes.push('target_has_existing_content');
+            }
+            var warnings = warningCodes.map(translateWarningCode);
             state.previewWarnings.textContent = warnings.length
                 ? warnings.join('；')
                 : translate('storage.noWarnings', '当前未检测到需要额外提示的风险项。');
         }
         if (state.previewBlocking) {
-            var blockingText = String(preflight.blocking_error_message || '').trim();
-            state.previewBlocking.hidden = !blockingText;
-            state.previewBlocking.textContent = blockingText;
+            var blockingText = translatePreflightBlocking(preflight);
+            var confirmationText = preflight.requires_existing_target_confirmation === true
+                ? existingTargetConfirmationText()
+                : '';
+            var noteText = blockingText || confirmationText;
+            state.previewBlocking.hidden = !noteText;
+            state.previewBlocking.textContent = noteText;
             state.previewBlocking.classList.toggle('storage-location-note--error', !!blockingText);
         }
         if (state.previewConfirmButton) {
@@ -1149,8 +1281,8 @@
         if (targetRoot) {
             return translate('storage.maintenanceTargetStatus', '目标路径已记录，正在等待服务关闭并恢复：') + ' ' + targetRoot;
         }
-        if (statusPayload.last_error_summary) {
-            return String(statusPayload.last_error_summary).trim();
+        if (String(statusPayload.blocking_reason || '').trim() === 'recovery_required') {
+            return translate('storage.recoveryRequired', '检测到需要恢复的存储状态，请先重新确认本次使用的存储位置。');
         }
         return translate('storage.maintenanceWaitingStatus', '服务尚未恢复前，页面会继续停留在这里并自动重试连接。');
     }
@@ -1283,10 +1415,8 @@
         var message = createElement('p', 'storage-location-note', translate('storage.completionMessage', '新的运行目录已经生效，旧数据目录目前仍保留，是否清理由你手动决定。'));
         var pathList = createElement('div', 'storage-location-path-list');
 
-        var sourceItem = buildInfoPathRow(translate('storage.sourceLabel', '原始路径'), 'completionSource');
         var targetItem = buildInfoPathRow(translate('storage.targetLabel', '当前生效路径'), 'completionTarget');
         var retainedItem = buildInfoPathRow(translate('storage.retainedRoot', '当前保留目录'), 'completionRetained');
-        pathList.appendChild(sourceItem);
         pathList.appendChild(targetItem);
         pathList.appendChild(retainedItem);
 
@@ -1310,13 +1440,6 @@
         cleanupButton.addEventListener('click', cleanupRetainedSourceRoot);
         actions.appendChild(cleanupButton);
 
-        var dismissButton = createElement('button', 'storage-location-btn storage-location-btn--secondary', translate('common.close', '关闭'));
-        dismissButton.type = 'button';
-        dismissButton.addEventListener('click', function () {
-            card.hidden = true;
-        });
-        actions.appendChild(dismissButton);
-
         state.completionCard = card;
         state.completionTitle = title;
         state.completionMessage = message;
@@ -1325,12 +1448,76 @@
         state.completionCleanupButton = cleanupButton;
 
         title.classList.add('storage-location-panel-title--with-close');
+        title.classList.add('storage-location-completion-drag-handle');
         card.appendChild(title);
         card.appendChild(message);
         card.appendChild(pathList);
         card.appendChild(actions);
         document.body.appendChild(card);
+        installCompletionCardDragging(card);
         return card;
+    }
+
+    function installCompletionCardDragging(card) {
+        var dragState = null;
+
+        function isInteractiveTarget(target) {
+            return !!(
+                target
+                && target.closest
+                && target.closest('button, a, input, textarea, select, [role="button"]')
+            );
+        }
+
+        function moveCard(clientX, clientY) {
+            if (!dragState) return;
+            var nextLeft = clientX - dragState.offsetX;
+            var nextTop = clientY - dragState.offsetY;
+            var maxLeft = Math.max(0, window.innerWidth - dragState.width);
+            var maxTop = Math.max(0, window.innerHeight - dragState.height);
+
+            card.style.left = Math.min(Math.max(0, nextLeft), maxLeft) + 'px';
+            card.style.top = Math.min(Math.max(0, nextTop), maxTop) + 'px';
+            card.style.right = 'auto';
+            card.style.bottom = 'auto';
+        }
+
+        function stopDragging() {
+            if (!dragState) return;
+            dragState = null;
+            card.classList.remove('is-dragging');
+            document.removeEventListener('pointermove', onPointerMove);
+            document.removeEventListener('pointerup', stopDragging);
+            document.removeEventListener('pointercancel', stopDragging);
+        }
+
+        function onPointerMove(event) {
+            moveCard(event.clientX, event.clientY);
+        }
+
+        card.addEventListener('pointerdown', function (event) {
+            if (event.button !== 0 || isInteractiveTarget(event.target)) {
+                return;
+            }
+
+            var rect = card.getBoundingClientRect();
+            dragState = {
+                offsetX: event.clientX - rect.left,
+                offsetY: event.clientY - rect.top,
+                width: rect.width,
+                height: rect.height
+            };
+            card.style.width = rect.width + 'px';
+            card.style.left = rect.left + 'px';
+            card.style.top = rect.top + 'px';
+            card.style.right = 'auto';
+            card.style.bottom = 'auto';
+            card.classList.add('is-dragging');
+            document.addEventListener('pointermove', onPointerMove);
+            document.addEventListener('pointerup', stopDragging);
+            document.addEventListener('pointercancel', stopDragging);
+            event.preventDefault();
+        });
     }
 
     function applyCompletionNotice(notice) {
@@ -1343,11 +1530,7 @@
         }
 
         var card = buildCompletionNoticeCard();
-        state.completionMessage.textContent = String(
-            state.completionNotice.message
-            || translate('storage.completionMessage', '新的运行目录已经生效，旧数据目录目前仍保留，是否清理由你手动决定。')
-        ).trim();
-        state.completionSource.textContent = String(state.completionNotice.source_root || '').trim();
+        state.completionMessage.textContent = translate('storage.completionMessage', '新的运行目录已经生效，旧数据目录目前仍保留，是否清理由你手动决定。');
         state.completionTarget.textContent = String(state.completionNotice.target_root || '').trim();
         state.completionRetained.textContent = String(state.completionNotice.retained_root || '').trim();
         state.completionOpenTargetButton.hidden = !canOpenPathWithHostBridge() || !String(state.completionNotice.target_root || '').trim();
@@ -1492,18 +1675,13 @@
     }
 
     function extractResponseError(payload, fallbackText) {
-        if (payload && typeof payload.error === 'string' && payload.error) {
-            return payload.error;
-        }
-        if (payload && typeof payload.blocking_error_message === 'string' && payload.blocking_error_message) {
-            return payload.blocking_error_message;
-        }
-        if (payload && payload.detail) {
-            if (typeof payload.detail === 'string' && payload.detail) {
-                return payload.detail;
-            }
-            if (payload.detail && typeof payload.detail.message === 'string' && payload.detail.message) {
-                return payload.detail.message;
+        if (payload && typeof payload === 'object') {
+            var codedText = translateResponseErrorCode(
+                payload.error_code || payload.blocking_error_code,
+                ''
+            );
+            if (codedText) {
+                return codedText;
             }
         }
         return fallbackText;
@@ -1628,8 +1806,7 @@
 
                     setMaintenanceCopy(
                         translate('storage.maintenanceTitle', '正在优化存储布局...'),
-                        String(statusPayload.maintenance_message || '').trim()
-                            || translate('storage.maintenanceWaitingSubtitle', '当前实例即将关闭，数据会在关闭后迁移并自动重启。'),
+                        translateMaintenanceSubtitle(statusPayload),
                         buildMaintenanceStatusText(statusPayload)
                     );
                     applyMaintenanceProgress(statusPayload);
@@ -1698,8 +1875,7 @@
 
         setMaintenanceCopy(
             translate('storage.maintenanceTitle', '正在优化存储布局...'),
-            String(payload && payload.maintenance_message || '').trim()
-                || translate('storage.maintenanceWaitingSubtitle', '当前实例即将关闭，数据会在关闭后迁移并自动重启。'),
+            translateMaintenanceSubtitle(payload),
             targetRoot
                 ? translate('storage.maintenanceTargetStatus', '目标路径已记录，正在等待服务关闭并恢复：') + ' ' + targetRoot
                 : buildMaintenanceStatusText(payload)
@@ -1707,6 +1883,10 @@
         applyMaintenanceProgress(payload || {});
         setPhase('maintenance');
         startMaintenancePolling();
+    }
+
+    function confirmExistingTargetContentForRestart(preflight) {
+        return window.confirm(existingTargetConfirmationText());
     }
 
     async function requestRestart() {
@@ -1722,44 +1902,69 @@
         setSelectionStatus('', false);
 
         try {
-            var response = await fetch('/api/storage/location/restart', {
-                method: 'POST',
-                headers: {
-                    'Accept': 'application/json',
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({
-                    selected_root: state.pendingSelection.path,
-                    selection_source: state.pendingSelection.source || 'user_selected'
-                })
-            });
-
-            var payload = null;
-            try {
-                payload = await response.json();
-            } catch (_) {}
-
-            if (!response.ok) {
-                if (payload && state.previewPanel) {
-                    state.pendingSelection.preflight = extractPreflightDetails(payload, state.pendingSelection.path);
-                    updateRestartPreviewPreflight(state.pendingSelection.preflight);
-                    state.previewPanel.hidden = false;
+            var confirmExistingTargetContent = false;
+            while (true) {
+                var preflight = state.pendingSelection.preflight || {};
+                if (!confirmExistingTargetContent && preflight.requires_existing_target_confirmation === true) {
+                    if (!confirmExistingTargetContentForRestart(preflight)) {
+                        return;
+                    }
+                    confirmExistingTargetContent = true;
                 }
-                throw new Error(
-                    extractResponseError(
-                        payload,
-                        translate('storage.restartRequestFailed', '启动关闭与迁移准备失败，请稍后重试。')
-                    )
-                );
-            }
 
-            if (!payload || payload.ok !== true || payload.result !== 'restart_initiated') {
-                throw new Error(
-                    translate('storage.restartRequestUnexpected', '关闭与迁移准备接口返回了未识别的结果。')
-                );
-            }
+                var response = await fetch('/api/storage/location/restart', {
+                    method: 'POST',
+                    headers: {
+                        'Accept': 'application/json',
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        selected_root: state.pendingSelection.path,
+                        selection_source: state.pendingSelection.source || 'user_selected',
+                        confirm_existing_target_content: confirmExistingTargetContent
+                    })
+                });
 
-            enterMaintenanceMode(payload);
+                var payload = null;
+                try {
+                    payload = await response.json();
+                } catch (_) {}
+
+                if (!response.ok) {
+                    if (payload && state.previewPanel) {
+                        state.pendingSelection.preflight = extractPreflightDetails(payload, state.pendingSelection.path);
+                        updateRestartPreviewPreflight(state.pendingSelection.preflight);
+                        state.previewPanel.hidden = false;
+                    }
+                    if (
+                        payload
+                        && payload.error_code === 'target_confirmation_required'
+                        && !confirmExistingTargetContent
+                        && state.pendingSelection.preflight.requires_existing_target_confirmation === true
+                    ) {
+                        if (!confirmExistingTargetContentForRestart(state.pendingSelection.preflight)) {
+                            return;
+                        }
+                        confirmExistingTargetContent = true;
+                        continue;
+                    }
+                    throw new Error(
+                        extractResponseError(
+                            payload,
+                            translate('storage.restartRequestFailed', '启动关闭与迁移准备失败，请稍后重试。')
+                        )
+                    );
+                }
+
+                if (!payload || payload.ok !== true || payload.result !== 'restart_initiated') {
+                    throw new Error(
+                        translate('storage.restartRequestUnexpected', '关闭与迁移准备接口返回了未识别的结果。')
+                    );
+                }
+
+                enterMaintenanceMode(payload);
+                return;
+            }
         } catch (error) {
             console.warn('[storage-location] restart failed', error);
             setSelectionStatus(
@@ -1779,8 +1984,8 @@
         setPhase('error');
     }
 
-    function buildInfoPathRow(labelText, targetRefName) {
-        var item = createElement('div', 'storage-location-path-item');
+    function buildInfoPathRow(labelText, targetRefName, modifierClass) {
+        var item = createElement('div', 'storage-location-path-item' + (modifierClass ? ' ' + modifierClass : ''));
         item.appendChild(createElement('div', 'storage-location-label', labelText));
         var value = createElement('div', 'storage-location-path');
         state[targetRefName] = value;
@@ -1830,27 +2035,27 @@
         var pathsPanel = createElement('section', 'storage-location-panel');
         pathsPanel.appendChild(createElement('h3', 'storage-location-panel-title', translate('storage.pathOverview', '路径总览')));
         var pathList = createElement('div', 'storage-location-path-list');
+        pathList.appendChild(buildInfoPathRow(translate('storage.recommendedPath', '推荐路径'), 'recommendedPath', 'storage-location-path-item--recommended'));
         pathList.appendChild(buildInfoPathRow(translate('storage.currentPath', '当前路径'), 'currentPath'));
-        pathList.appendChild(buildInfoPathRow(translate('storage.recommendedPath', '推荐路径'), 'recommendedPath'));
         pathsPanel.appendChild(pathList);
         grid.appendChild(pathsPanel);
         shell.appendChild(grid);
 
         var actions = createElement('div', 'storage-location-actions');
 
-        var currentButton = registerActionButton(
-            createElement('button', 'storage-location-btn storage-location-btn--primary', translate('storage.useCurrent', '保持当前路径'))
-        );
-        currentButton.type = 'button';
-        currentButton.addEventListener('click', continueWithCurrentPath);
-        actions.appendChild(currentButton);
-
         var recommendedButton = registerActionButton(
-            createElement('button', 'storage-location-btn', translate('storage.useRecommended', '使用推荐位置'))
+            createElement('button', 'storage-location-btn storage-location-btn--primary', translate('storage.useRecommended', '使用推荐位置'))
         );
         recommendedButton.type = 'button';
         recommendedButton.addEventListener('click', useRecommendedPath);
         actions.appendChild(recommendedButton);
+
+        var currentButton = registerActionButton(
+            createElement('button', 'storage-location-btn storage-location-btn--secondary', translate('storage.useCurrent', '保持当前路径'))
+        );
+        currentButton.type = 'button';
+        currentButton.addEventListener('click', continueWithCurrentPath);
+        actions.appendChild(currentButton);
 
         var chooseOtherButton = registerActionButton(
             createElement('button', 'storage-location-btn storage-location-btn--secondary', translate('storage.chooseOther', '选择其他位置'))
@@ -1900,7 +2105,6 @@
         state.pickFolderButton = pickFolderButton;
         inputRow.appendChild(pickFolderButton);
         otherPanel.appendChild(inputRow);
-        otherPanel.appendChild(createElement('p', 'storage-location-note', translate('storage.customSubfolderNote', '选择普通文件夹时，应用会使用其中独立的 N.E.K.O 子文件夹，避免和已有内容混在一起。')));
 
         var otherActions = createElement('div', 'storage-location-actions');
         var useOtherButton = registerActionButton(

@@ -109,6 +109,7 @@ def _derive_legacy_cleanup_pending(
         anchor_root=anchor_root,
         target_root=str(migration_payload.get("target_root") or "").strip(),
         require_exists=True,
+        allow_anchor_root=True,
     ):
         return False
 
