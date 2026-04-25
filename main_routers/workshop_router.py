@@ -25,6 +25,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import FileResponse, JSONResponse
 
 from .shared_state import get_steamworks, get_config_manager, get_initialize_character_data
+from utils.cloudsave_runtime import MaintenanceModeError, is_write_fence_active
 from utils.file_utils import atomic_write_json, atomic_write_json_async, read_json_async
 from utils.workshop_utils import (
     ensure_workshop_folder_exists,
@@ -3406,6 +3407,10 @@ async def sync_workshop_character_cards() -> dict:
             return {"added": 0, "skipped": 0, "errors": 0}
         
         config_mgr = get_config_manager()
+
+        if is_write_fence_active(config_mgr):
+            logger.info("sync_workshop_character_cards: 检测到维护态写围栏，跳过本轮同步并等待后续重试")
+            return {"added": 0, "skipped": 0, "errors": 0}
         
         # 使用全局锁序列化 load_characters -> save_characters 流程，防止并发覆写
         async with _ugc_sync_lock:
@@ -3535,7 +3540,16 @@ async def sync_workshop_character_cards() -> dict:
             
             # 4. 保存并重新加载角色配置
             if need_save:
-                await config_mgr.asave_characters(characters)
+                if is_write_fence_active(config_mgr):
+                    logger.info("sync_workshop_character_cards: 保存前检测到维护态写围栏，跳过本轮同步并等待后续重试")
+                    return {"added": 0, "skipped": skipped_count, "errors": 0}
+
+                try:
+                    await config_mgr.asave_characters(characters)
+                except MaintenanceModeError:
+                    logger.info("sync_workshop_character_cards: 保存时进入维护态写围栏，跳过本轮同步并等待后续重试")
+                    return {"added": 0, "skipped": skipped_count, "errors": 0}
+
                 logger.info(f"sync_workshop_character_cards: 已保存，新增 {added_count} 个角色卡")
                 
                 try:
