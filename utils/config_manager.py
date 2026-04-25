@@ -256,6 +256,20 @@ def migrate_catgirl_reserved(catgirl_data: dict) -> bool:
             _legacy_live2d_to_model_path(str(live2d_model_path)),
         )
 
+    live2d_idle_animation = get_reserved(
+        catgirl_data,
+        "avatar",
+        "live2d",
+        "idle_animation",
+        default=None,
+        legacy_keys=("live2d_idle_animation",),
+    )
+    if live2d_idle_animation is not None:
+        if isinstance(live2d_idle_animation, str):
+            changed |= set_reserved(catgirl_data, "avatar", "live2d", "idle_animation", live2d_idle_animation if live2d_idle_animation else None)
+        elif isinstance(live2d_idle_animation, list):
+            changed |= set_reserved(catgirl_data, "avatar", "live2d", "idle_animation", live2d_idle_animation[0] if live2d_idle_animation else None)
+
     vrm_model_path = get_reserved(
         catgirl_data,
         "avatar",
@@ -384,6 +398,7 @@ def migrate_catgirl_reserved(catgirl_data: dict) -> bool:
         "live2d_item_id",
         "item_id",
         "live2d",
+        "live2d_idle_animation",
         "vrm",
         "vrm_animation",
         "idleAnimation",
@@ -425,8 +440,11 @@ def flatten_reserved(catgirl_data: dict) -> dict:
 
     live2d_model_path = get_reserved(result, "avatar", "live2d", "model_path", default="")
     if live2d_model_path:
-        # COMPAT(v1->v2): 旧前端/接口读取 live2d 模型名，继续按历史语义回放目录名。
         result["live2d"] = _legacy_live2d_name_from_model_path(str(live2d_model_path))
+
+    live2d_idle_animation = get_reserved(result, "avatar", "live2d", "idle_animation", default=None)
+    if live2d_idle_animation is not None:
+        result["live2d_idle_animation"] = live2d_idle_animation
 
     vrm_model_path = get_reserved(result, "avatar", "vrm", "model_path", default="")
     if vrm_model_path:

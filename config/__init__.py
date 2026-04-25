@@ -472,6 +472,18 @@ _VALUE_TRANSLATIONS = {
         '女': 'Женский',
         'T酱, 小T': 'Тян-тян, малышка Т',
     },
+    'es': {
+        '哥哥': 'Hermano',
+        '男': 'Masculino',
+        '女': 'Femenino',
+        'T酱, 小T': 'T-chan, Pequeña T',
+    },
+    'pt': {
+        '哥哥': 'Irmão',
+        '男': 'Masculino',
+        '女': 'Feminino',
+        'T酱, 小T': 'T-chan, Pequena T',
+    },
     # zh 和 zh-CN 使用原始中文值（不需要翻译）
 }
 
@@ -517,6 +529,10 @@ def get_localized_default_characters(language: str | None = None) -> dict:
             value_trans = _VALUE_TRANSLATIONS.get('en')
         elif lang_lower.startswith('ru'):
             value_trans = _VALUE_TRANSLATIONS.get('ru')
+        elif lang_lower.startswith('es'):
+            value_trans = _VALUE_TRANSLATIONS.get('es')
+        elif lang_lower.startswith('pt'):
+            value_trans = _VALUE_TRANSLATIONS.get('pt')
 
     # 如果不需要翻译显示字段（简体中文/韩语等），仍需本地化 system_prompt
     if value_trans is None:
@@ -770,6 +786,80 @@ TIME_ORIGINAL_TABLE_NAME = "time_indexed_original"
 TIME_COMPRESSED_TABLE_NAME = "time_indexed_compressed"
 
 
+# ── Memory evidence mechanism (docs/design/memory-evidence-rfc.md) ────
+# 用户驱动的 evidence 计数器相关常量。所有评分计算都以 "净用户确认次数"
+# 为单位（§3.1.2 偏离 task spec 原公式——去掉 importance 项）。阈值改值
+# 会产生实际 behavior 变化，详见 RFC §6.5 pre-merge reviewer gates。
+
+# §3.1.4 派生状态阈值
+EVIDENCE_CONFIRMED_THRESHOLD = 1.0   # score ≥ 1 → confirmed
+EVIDENCE_PROMOTED_THRESHOLD = 2.0    # score ≥ 2 → promoted
+EVIDENCE_ARCHIVE_THRESHOLD = -2.0    # score ≤ -2 → archive_candidate
+
+# §3.5.3 归档相关（sub_zero_days 计数 + 分片大小上限）
+EVIDENCE_ARCHIVE_DAYS = 14           # sub_zero 累计达此天数 → 真正归档
+ARCHIVE_FILE_MAX_ENTRIES = 500       # 归档分片文件单文件最大 entry 数
+
+# §3.1.5 ignored 扣分
+IGNORED_REINFORCEMENT_DELTA = -0.2   # check_feedback ignored → reinforcement += delta
+
+# §3.1.8 每种 signal 源的 delta 权重（v1.2.1：区分 direct vs indirect）
+# 直接信号（用户显式回应 surfaced reflection 或命中负面关键词）权重 1.0；
+# 间接信号（Stage-2 LLM 推断 fact 对 reflection 的关系）权重 0.5，避免
+# LLM 误关联把 evidence 污染太快。
+USER_FACT_REINFORCE_DELTA = 0.5      # Stage-2 reinforces（间接，银标准）
+USER_FACT_NEGATE_DELTA = 1.0         # Stage-2 negates（否定即使间接也保留强权，
+                                     # 因 LLM 判 negates 通常语义更明确）
+USER_CONFIRM_DELTA = 1.0             # check_feedback confirmed（直接，金标准）
+USER_REBUT_DELTA = 1.0               # check_feedback denied（直接）
+USER_KEYWORD_REBUT_DELTA = 1.0       # 关键词 + LLM target 检查（直接 + 显式）
+
+# user_fact reinforces 的 combo bonus：累计 count 超过阈值后，每条新信号额
+# 外加 bonus，让"用户反复间接表达"的信号仍能追上"一次直接确认"的权重。
+# 默认：前 2 条各 0.5；第 3 条起每条 0.5 + 0.5 bonus = 1.0。
+USER_FACT_REINFORCE_COMBO_THRESHOLD = 2   # count > threshold 时激活
+USER_FACT_REINFORCE_COMBO_BONUS = 0.5     # 超阈值后每条的额外加权
+
+# §3.4.3 signal 抽取背景循环触发条件
+EVIDENCE_SIGNAL_CHECK_ENABLED = True             # 独立开关
+EVIDENCE_SIGNAL_CHECK_EVERY_N_TURNS = 10         # 累积 N 轮触发
+EVIDENCE_SIGNAL_CHECK_IDLE_MINUTES = 5           # 或空闲 N 分钟触发
+EVIDENCE_SIGNAL_CHECK_INTERVAL_SECONDS = 40      # 轮询间隔（与 IDLE_CHECK_INTERVAL 对齐）
+EVIDENCE_DETECT_SIGNALS_MAX_OBSERVATIONS = 200   # Stage-2 prompt 带入的 existing 上限
+
+# §3.5 / §6.5 Gate 4：归档扫描背景循环间隔
+# 1 小时一次：sub_zero_days 计数本身按"自然日"防抖（每天最多 +1），
+# 所以扫描频率 ≥ 一天即可保证不漏；选 1h 是为了让"score 跌穿 0 当天"
+# 也能尽快被抓住而非等到次日 00:00。低频远低于 evidence 信号循环
+# (40s)，对 IO/CPU 影响可以忽略。
+EVIDENCE_ARCHIVE_SWEEP_INTERVAL_SECONDS = 3600
+
+# §3.6 render budget（PR-3 使用，此处先占位）
+PERSONA_RENDER_TOKEN_BUDGET = 2000       # 非-protected persona 预算
+REFLECTION_RENDER_TOKEN_BUDGET = 1000    # reflection 渲染预算
+PERSONA_RENDER_ENCODING = "o200k_base"   # tiktoken encoding
+
+# §3.9 merge-on-promote 节流（PR-3 使用）
+EVIDENCE_PROMOTE_RETRY_BACKOFF_MINUTES = 30      # 连续失败节流窗口
+EVIDENCE_PROMOTE_MAX_RETRIES = 5                 # 死信阈值
+
+# §6.5 pre-merge reviewer gates —— 草案值，reviewer 敲定前保留
+# Gate 1: 半衰期（§3.5.2）
+EVIDENCE_REIN_HALF_LIFE_DAYS = 30        # reinforcement 半衰期
+EVIDENCE_DISP_HALF_LIFE_DAYS = 180       # disputation 半衰期（longer than rein）
+
+# Gate 2: reflection 合成 context 量（§3.4.3 阶段 2）
+REFLECTION_SYNTHESIS_CONTEXT_ABSORBED_COUNT = 10   # 最近 N 条 absorbed fact 作参考
+REFLECTION_SYNTHESIS_CONTEXT_ABSORBED_DAYS = 14    # 且在 N 天内
+
+# Gate 3: LLM tier 选型（候选见 RFC §6.5 Gate 3 表）
+# "summary" = qwen-plus 级；"correction" = qwen-max 级；"emotion" = qwen-flash 级
+EVIDENCE_EXTRACT_FACTS_MODEL_TIER = "summary"       # Stage-1 抽 fact
+EVIDENCE_DETECT_SIGNALS_MODEL_TIER = "correction"   # Stage-2 判 signal 映射
+EVIDENCE_NEGATIVE_TARGET_MODEL_TIER = "emotion"     # 关键词二次判定（延迟敏感）
+EVIDENCE_PROMOTION_MERGE_MODEL_TIER = "correction"  # Promote 合并决策
+
+
 # Provider 相关配置已统一迁移至 config.providers, 此处仅 re-export 保持向后兼容
 from config.providers import (  # noqa: E402, F401
     EXTRA_BODY_OPENAI,
@@ -891,4 +981,37 @@ __all__ = [
     # OpenFang
     'OPENFANG_PORT',
     'OPENFANG_BASE_URL',
+    # Memory evidence mechanism (RFC: docs/design/memory-evidence-rfc.md)
+    'EVIDENCE_CONFIRMED_THRESHOLD',
+    'EVIDENCE_PROMOTED_THRESHOLD',
+    'EVIDENCE_ARCHIVE_THRESHOLD',
+    'EVIDENCE_ARCHIVE_DAYS',
+    'ARCHIVE_FILE_MAX_ENTRIES',
+    'IGNORED_REINFORCEMENT_DELTA',
+    'USER_FACT_REINFORCE_DELTA',
+    'USER_FACT_NEGATE_DELTA',
+    'USER_CONFIRM_DELTA',
+    'USER_REBUT_DELTA',
+    'USER_KEYWORD_REBUT_DELTA',
+    'USER_FACT_REINFORCE_COMBO_THRESHOLD',
+    'USER_FACT_REINFORCE_COMBO_BONUS',
+    'EVIDENCE_SIGNAL_CHECK_ENABLED',
+    'EVIDENCE_SIGNAL_CHECK_EVERY_N_TURNS',
+    'EVIDENCE_SIGNAL_CHECK_IDLE_MINUTES',
+    'EVIDENCE_SIGNAL_CHECK_INTERVAL_SECONDS',
+    'EVIDENCE_DETECT_SIGNALS_MAX_OBSERVATIONS',
+    'EVIDENCE_ARCHIVE_SWEEP_INTERVAL_SECONDS',
+    'PERSONA_RENDER_TOKEN_BUDGET',
+    'REFLECTION_RENDER_TOKEN_BUDGET',
+    'PERSONA_RENDER_ENCODING',
+    'EVIDENCE_PROMOTE_RETRY_BACKOFF_MINUTES',
+    'EVIDENCE_PROMOTE_MAX_RETRIES',
+    'EVIDENCE_REIN_HALF_LIFE_DAYS',
+    'EVIDENCE_DISP_HALF_LIFE_DAYS',
+    'REFLECTION_SYNTHESIS_CONTEXT_ABSORBED_COUNT',
+    'REFLECTION_SYNTHESIS_CONTEXT_ABSORBED_DAYS',
+    'EVIDENCE_EXTRACT_FACTS_MODEL_TIER',
+    'EVIDENCE_DETECT_SIGNALS_MODEL_TIER',
+    'EVIDENCE_NEGATIVE_TARGET_MODEL_TIER',
+    'EVIDENCE_PROMOTION_MERGE_MODEL_TIER',
 ]

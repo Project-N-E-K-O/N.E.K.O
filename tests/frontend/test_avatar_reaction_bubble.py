@@ -783,6 +783,258 @@ def test_live2d_hitarea_head_rect_does_not_force_bubble_too_high(mock_page: Page
 
 
 @pytest.mark.frontend
+def test_live2d_drawable_compact_head_background_reduces_top_lift(mock_page: Page, running_server: str):
+    """Regression test: large-background drawable heads should not push bubbles too high above the visible head."""
+    mock_page.goto(f"{running_server}/", wait_until="domcontentloaded")
+    mock_page.wait_for_function(
+        "() => !!(window.appState && window.avatarReactionBubble)",
+        timeout=10000,
+    )
+
+    metrics = mock_page.evaluate(
+        """
+        () => {
+            const live2dContainer = document.getElementById('live2d-container');
+            const vrmContainer = document.getElementById('vrm-container');
+            const mmdContainer = document.getElementById('mmd-container');
+            const bubble = document.getElementById('avatar-reaction-bubble');
+
+            live2dContainer.style.display = 'block';
+            live2dContainer.style.visibility = 'visible';
+            vrmContainer.style.display = 'none';
+            mmdContainer.style.display = 'none';
+
+            const bounds = {
+                left: 126,
+                top: 42,
+                right: 548,
+                bottom: 1018,
+                width: 422,
+                height: 976,
+                centerX: 337,
+                centerY: 530
+            };
+            const headRect = {
+                left: 286,
+                top: 196,
+                right: 372,
+                bottom: 340,
+                width: 86,
+                height: 144,
+                centerX: 329,
+                centerY: 268
+            };
+            const bodyRect = {
+                left: 254,
+                top: 338,
+                right: 405,
+                bottom: 636,
+                width: 151,
+                height: 298,
+                centerX: 329.5,
+                centerY: 487
+            };
+
+            window.vrmManager = null;
+            window.mmdManager = null;
+            window.live2dManager = {
+                getModelScreenBounds() {
+                    return bounds;
+                },
+                getHeadDetectionGeometryInfo() {
+                    return {
+                        type: 'live2d',
+                        bounds,
+                        rawHeadAnchor: {
+                            x: headRect.centerX,
+                            y: headRect.top + headRect.height * 0.46
+                        },
+                        headAnchor: {
+                            x: headRect.centerX,
+                            y: headRect.top + headRect.height * 0.46
+                        },
+                        headRect,
+                        bubbleHeadRect: headRect,
+                        headMode: 'face',
+                        headSource: 'drawableHeuristic',
+                        bodyRect,
+                        bodySource: 'drawableHeuristic',
+                        reliableHeadRect: true,
+                        preciseDisplayInfoRect: false,
+                        coarseHitAreaHeadRect: false,
+                        hasNormalizedGeometry: true
+                    };
+                },
+                getHeadScreenAnchor() {
+                    return {
+                        x: headRect.centerX,
+                        y: headRect.top + headRect.height * 0.46
+                    };
+                },
+                getHeadScreenRectInfo() {
+                    return {
+                        rect: headRect,
+                        mode: 'face',
+                        source: 'drawableHeuristic'
+                    };
+                },
+                getBodyScreenRectInfo() {
+                    return {
+                        rect: bodyRect,
+                        source: 'drawableHeuristic'
+                    };
+                }
+            };
+
+            window.dispatchEvent(new CustomEvent('neko-assistant-turn-start', {
+                detail: { turnId: 'turn-live2d-drawable-large-bg', timestamp: Date.now() }
+            }));
+
+            const top = parseFloat(bubble.style.top || '0');
+            const bubbleHeight = parseFloat(getComputedStyle(bubble).getPropertyValue('--bubble-height') || '0');
+
+            return {
+                top,
+                bubbleHeight,
+                headTop: headRect.top
+            };
+        }
+        """
+    )
+
+    expect(mock_page.locator("#avatar-reaction-bubble")).to_have_attribute("aria-hidden", "false")
+    assert metrics["bubbleHeight"] > 0
+    assert metrics["top"] >= metrics["headTop"] - metrics["bubbleHeight"] * 0.22 - 2
+    assert metrics["top"] <= metrics["headTop"] + 2
+
+
+@pytest.mark.frontend
+def test_live2d_drawable_compact_head_background_caps_upward_model_offset(mock_page: Page, running_server: str):
+    """Regression test: compact drawable heads on large canvases should not be over-lifted by tall body-aware layout."""
+    mock_page.goto(f"{running_server}/", wait_until="domcontentloaded")
+    mock_page.wait_for_function(
+        "() => !!(window.appState && window.avatarReactionBubble)",
+        timeout=10000,
+    )
+
+    metrics = mock_page.evaluate(
+        """
+        () => {
+            const live2dContainer = document.getElementById('live2d-container');
+            const vrmContainer = document.getElementById('vrm-container');
+            const mmdContainer = document.getElementById('mmd-container');
+            const bubble = document.getElementById('avatar-reaction-bubble');
+
+            live2dContainer.style.display = 'block';
+            live2dContainer.style.visibility = 'visible';
+            vrmContainer.style.display = 'none';
+            mmdContainer.style.display = 'none';
+
+            const bounds = {
+                left: 100,
+                top: 100,
+                right: 1100,
+                bottom: 1100,
+                width: 1000,
+                height: 1000,
+                centerX: 600,
+                centerY: 600
+            };
+            const headRect = {
+                left: 520,
+                top: 362,
+                right: 746,
+                bottom: 541,
+                width: 226,
+                height: 179,
+                centerX: 633,
+                centerY: 451.5
+            };
+            const bodyRect = {
+                left: 485,
+                top: 520,
+                right: 782,
+                bottom: 806,
+                width: 297,
+                height: 286,
+                centerX: 633.5,
+                centerY: 663
+            };
+
+            window.vrmManager = null;
+            window.mmdManager = null;
+            window.live2dManager = {
+                getModelScreenBounds() {
+                    return bounds;
+                },
+                getHeadDetectionGeometryInfo() {
+                    return {
+                        type: 'live2d',
+                        bounds,
+                        rawHeadAnchor: {
+                            x: headRect.centerX,
+                            y: headRect.top + headRect.height * 0.46
+                        },
+                        headAnchor: {
+                            x: headRect.centerX,
+                            y: headRect.top + headRect.height * 0.46
+                        },
+                        headRect,
+                        bubbleHeadRect: headRect,
+                        headMode: 'face',
+                        headSource: 'drawableHeuristic',
+                        bodyRect,
+                        bodySource: 'drawableHeuristic',
+                        reliableHeadRect: true,
+                        preciseDisplayInfoRect: false,
+                        coarseHitAreaHeadRect: false,
+                        hasNormalizedGeometry: true
+                    };
+                },
+                getHeadScreenAnchor() {
+                    return {
+                        x: headRect.centerX,
+                        y: headRect.top + headRect.height * 0.46
+                    };
+                },
+                getHeadScreenRectInfo() {
+                    return {
+                        rect: headRect,
+                        mode: 'face',
+                        source: 'drawableHeuristic'
+                    };
+                },
+                getBodyScreenRectInfo() {
+                    return {
+                        rect: bodyRect,
+                        source: 'drawableHeuristic'
+                    };
+                }
+            };
+
+            window.dispatchEvent(new CustomEvent('neko-assistant-turn-start', {
+                detail: { turnId: 'turn-live2d-drawable-offset-cap', timestamp: Date.now() }
+            }));
+
+            const top = parseFloat(bubble.style.top || '0');
+            const bubbleHeight = parseFloat(getComputedStyle(bubble).getPropertyValue('--bubble-height') || '0');
+
+            return {
+                top,
+                bubbleHeight,
+                headTop: headRect.top
+            };
+        }
+        """
+    )
+
+    expect(mock_page.locator("#avatar-reaction-bubble")).to_have_attribute("aria-hidden", "false")
+    assert metrics["bubbleHeight"] > 0
+    assert metrics["top"] >= metrics["headTop"] - metrics["bubbleHeight"] * 0.24 - 2
+    assert metrics["top"] <= metrics["headTop"] + 2
+
+
+@pytest.mark.frontend
 def test_live2d_face_rect_keeps_bounds_driven_bubble_size(mock_page: Page, running_server: str):
     """Regression test that face rect anchoring does not freeze Live2D bubble sizing."""
     mock_page.goto(f"{running_server}/", wait_until="domcontentloaded")
@@ -1201,6 +1453,64 @@ def test_live2d_manager_ignores_accessory_hitareas_that_only_look_like_heads(moc
 
 
 @pytest.mark.frontend
+def test_live2d_manager_resolves_head_from_hitarea_geometry_without_semantic_labels(mock_page: Page, running_server: str):
+    """Regression test: head hit-area detection should work from geometry even if labels carry no head/body semantics."""
+    mock_page.goto(f"{running_server}/", wait_until="domcontentloaded")
+    mock_page.wait_for_function(
+        "() => !!(window.live2dManager && window.live2dManager._getHeadHitAreaLogicalRectInfo)",
+        timeout=10000,
+    )
+
+    selected = mock_page.evaluate(
+        """
+        () => {
+            const manager = window.live2dManager;
+            const logicalBounds = manager._createScreenRect(0, 0, 1, 1);
+            const makeCandidate = (id, name, left, top, right, bottom) => {
+                const rect = manager._createScreenRect(left, top, right, bottom);
+                return {
+                    id,
+                    name,
+                    rect,
+                    area: rect.width * rect.height,
+                    areaRatio: rect.width * rect.height,
+                    autoNamed: false
+                };
+            };
+
+            const candidates = [
+                makeCandidate('ArtMesh11', 'zone_a', 0.12, 0.12, 0.24, 0.24),
+                makeCandidate('ArtMesh12', 'zone_b', 0.22, 0.14, 0.35, 0.29),
+                makeCandidate('ArtMesh13', 'zone_c', 0.16, 0.16, 0.28, 0.22),
+                makeCandidate('ArtMesh20', 'zone_d', 0.14, 0.34, 0.56, 0.88),
+                makeCandidate('ArtMesh50', 'zone_e', 0.62, 0.07, 0.95, 0.23)
+            ];
+
+            const headByGeometry = manager._resolveHeadHitAreaLogicalRectInfoByGeometry(
+                candidates,
+                logicalBounds
+            );
+
+            return headByGeometry
+                ? {
+                    x: headByGeometry.rect?.x ?? null,
+                    y: headByGeometry.rect?.y ?? null,
+                    width: headByGeometry.rect?.width ?? null,
+                    height: headByGeometry.rect?.height ?? null
+                }
+                : null;
+        }
+        """
+    )
+
+    assert selected is not None
+    assert selected["x"] < 0.3
+    assert selected["y"] < 0.2
+    assert selected["width"] <= 0.3
+    assert selected["height"] <= 0.25
+
+
+@pytest.mark.frontend
 def test_live2d_manager_keeps_large_upper_head_cluster_when_body_hint_spans_whole_chibi(mock_page: Page, running_server: str):
     """Regression test for chibi models whose inferred body rect covers almost the whole figure."""
     mock_page.goto(f"{running_server}/", wait_until="domcontentloaded")
@@ -1396,7 +1706,383 @@ def test_live2d_manager_uses_compact_bubble_head_proxy_for_large_drawable_chibi_
     assert selected["shouldProxy"] is True
     assert 100 <= selected["width"] <= 160
     assert 72 <= selected["height"] <= 110
-    assert selected["centerX"] > 1480
+    assert selected["centerX"] > 1458
+
+
+@pytest.mark.frontend
+def test_live2d_manager_compact_bubble_head_proxy_does_not_flip_to_wrong_side(mock_page: Page, running_server: str):
+    """Regression test: tiny heads should not be forced to the opposite side by proxy size constraints."""
+    mock_page.goto(f"{running_server}/", wait_until="domcontentloaded")
+    mock_page.wait_for_function(
+        "() => !!(window.live2dManager && window.live2dManager._createBubbleDrawableHeadProxyRect)",
+        timeout=10000,
+    )
+
+    selected = mock_page.evaluate(
+        """
+        () => {
+            const manager = window.live2dManager;
+            const bounds = {
+                left: 1116.85,
+                top: 597.04,
+                right: 1275.0,
+                bottom: 715.0,
+                width: 158.15,
+                height: 117.96,
+                centerX: 1195.93,
+                centerY: 656.02
+            };
+            const compactHeadRect = {
+                left: 1166.58,
+                top: 599.59,
+                right: 1242.58,
+                bottom: 663.59,
+                width: 76.0,
+                height: 64.0,
+                centerX: 1204.58,
+                centerY: 631.59
+            };
+            const bodyRect = {
+                left: 1155.48,
+                top: 612.87,
+                right: 1247.56,
+                bottom: 704.33,
+                width: 92.08,
+                height: 91.46,
+                centerX: 1201.52,
+                centerY: 658.60
+            };
+
+            const bubbleHeadRect = manager._createBubbleDrawableHeadProxyRect(
+                compactHeadRect,
+                bounds,
+                bodyRect
+            );
+
+            return {
+                width: bubbleHeadRect?.width || null,
+                centerX: bubbleHeadRect?.centerX || null,
+                headCenterX: compactHeadRect.centerX
+            };
+        }
+        """
+    )
+
+    assert selected["width"] is not None
+    assert selected["width"] <= 50
+    assert selected["centerX"] <= selected["headCenterX"] + 0.5
+
+
+@pytest.mark.frontend
+def test_live2d_manager_compact_proxy_damps_skewed_body_center_bias(mock_page: Page, running_server: str):
+    """Regression test: side-heavy body rectangles should not over-pull compact head proxy center."""
+    mock_page.goto(f"{running_server}/", wait_until="domcontentloaded")
+    mock_page.wait_for_function(
+        "() => !!(window.live2dManager && window.live2dManager._createBubbleDrawableHeadProxyRect)",
+        timeout=10000,
+    )
+
+    selected = mock_page.evaluate(
+        """
+        () => {
+            const manager = window.live2dManager;
+            const bounds = {
+                left: 1373.9443,
+                right: 2214.03,
+                top: 487.2536,
+                bottom: 1277.5821,
+                width: 840.0857,
+                height: 790.3286,
+                centerX: 1793.9871,
+                centerY: 882.4179
+            };
+            const headRect = {
+                left: 1645.6402,
+                right: 1966.9005,
+                top: 636.1779,
+                bottom: 853.6281,
+                width: 321.2603,
+                height: 217.4502,
+                centerX: 1806.2704,
+                centerY: 744.9030
+            };
+            const bodyRect = {
+                left: 1405.6211,
+                right: 2077.5588,
+                top: 762.2990,
+                bottom: 1240.2063,
+                width: 671.9377,
+                height: 477.9073,
+                centerX: 1741.5899,
+                centerY: 1001.2527
+            };
+
+            const bubbleHeadRect = manager._createBubbleDrawableHeadProxyRect(
+                headRect,
+                bounds,
+                bodyRect
+            );
+
+            return {
+                centerDeltaX: (bubbleHeadRect?.centerX || 0) - headRect.centerX,
+                headWidth: headRect.width
+            };
+        }
+        """
+    )
+
+    assert selected["centerDeltaX"] < 0
+    assert abs(selected["centerDeltaX"]) <= selected["headWidth"] * 0.0801
+
+
+@pytest.mark.frontend
+def test_live2d_manager_compact_proxy_damps_right_skewed_body_center_bias(mock_page: Page, running_server: str):
+    """Regression test: right-side body bias should also be bounded for compact head proxy."""
+    mock_page.goto(f"{running_server}/", wait_until="domcontentloaded")
+    mock_page.wait_for_function(
+        "() => !!(window.live2dManager && window.live2dManager._createBubbleDrawableHeadProxyRect)",
+        timeout=10000,
+    )
+
+    selected = mock_page.evaluate(
+        """
+        () => {
+            const manager = window.live2dManager;
+            const bounds = {
+                left: 1200,
+                right: 2200,
+                top: 420,
+                bottom: 1260,
+                width: 1000,
+                height: 840,
+                centerX: 1700,
+                centerY: 840
+            };
+            const headRect = {
+                left: 1520,
+                right: 1860,
+                top: 560,
+                bottom: 820,
+                width: 340,
+                height: 260,
+                centerX: 1690,
+                centerY: 690
+            };
+            const bodyRect = {
+                left: 1610,
+                right: 2150,
+                top: 700,
+                bottom: 1180,
+                width: 540,
+                height: 480,
+                centerX: 1880,
+                centerY: 940
+            };
+
+            const bubbleHeadRect = manager._createBubbleDrawableHeadProxyRect(
+                headRect,
+                bounds,
+                bodyRect
+            );
+
+            return {
+                centerDeltaX: (bubbleHeadRect?.centerX || 0) - headRect.centerX,
+                headWidth: headRect.width
+            };
+        }
+        """
+    )
+
+    assert selected["centerDeltaX"] > 0
+    assert abs(selected["centerDeltaX"]) <= selected["headWidth"] * 0.0801
+
+
+@pytest.mark.frontend
+def test_live2d_manager_compact_proxy_keeps_top_in_upper_head_band(mock_page: Page, running_server: str):
+    """Regression test: compact proxy top should stay in the upper part of the head region."""
+    mock_page.goto(f"{running_server}/", wait_until="domcontentloaded")
+    mock_page.wait_for_function(
+        "() => !!(window.live2dManager && window.live2dManager._createBubbleDrawableHeadProxyRect)",
+        timeout=10000,
+    )
+
+    selected = mock_page.evaluate(
+        """
+        () => {
+            const manager = window.live2dManager;
+            const bounds = {
+                left: 980,
+                right: 2060,
+                top: 360,
+                bottom: 1320,
+                width: 1080,
+                height: 960,
+                centerX: 1520,
+                centerY: 840
+            };
+            const headRect = {
+                left: 1320,
+                right: 1800,
+                top: 500,
+                bottom: 900,
+                width: 480,
+                height: 400,
+                centerX: 1560,
+                centerY: 700
+            };
+            const bodyRect = {
+                left: 1220,
+                right: 1880,
+                top: 700,
+                bottom: 1240,
+                width: 660,
+                height: 540,
+                centerX: 1550,
+                centerY: 970
+            };
+
+            const bubbleHeadRect = manager._createBubbleDrawableHeadProxyRect(
+                headRect,
+                bounds,
+                bodyRect
+            );
+
+            return {
+                top: bubbleHeadRect?.top || null,
+                headTop: headRect.top,
+                headHeight: headRect.height
+            };
+        }
+        """
+    )
+
+    assert selected["top"] is not None
+    assert selected["top"] <= selected["headTop"] + selected["headHeight"] * 0.1001
+
+
+@pytest.mark.frontend
+def test_live2d_manager_compact_proxy_offscreen_head_does_not_collapse_to_one_pixel(mock_page: Page, running_server: str):
+    """Regression test: mostly offscreen heads should not collapse proxy width/height to ~1px."""
+    mock_page.goto(f"{running_server}/", wait_until="domcontentloaded")
+    mock_page.wait_for_function(
+        "() => !!(window.live2dManager && window.live2dManager._createBubbleDrawableHeadProxyRect)",
+        timeout=10000,
+    )
+
+    selected = mock_page.evaluate(
+        """
+        () => {
+            const manager = window.live2dManager;
+            const bounds = {
+                left: 100,
+                right: 900,
+                top: 100,
+                bottom: 900,
+                width: 800,
+                height: 800,
+                centerX: 500,
+                centerY: 500
+            };
+            const headRect = {
+                left: -260,
+                right: 120,
+                top: -240,
+                bottom: 115,
+                width: 380,
+                height: 355,
+                centerX: -70,
+                centerY: -62.5
+            };
+
+            const bubbleHeadRect = manager._createBubbleDrawableHeadProxyRect(
+                headRect,
+                bounds,
+                null
+            );
+
+            return {
+                width: bubbleHeadRect?.width || null,
+                height: bubbleHeadRect?.height || null,
+                left: bubbleHeadRect?.left || null,
+                top: bubbleHeadRect?.top || null,
+                boundsLeft: bounds.left,
+                boundsTop: bounds.top
+            };
+        }
+        """
+    )
+
+    assert selected["width"] is not None
+    assert selected["height"] is not None
+    assert selected["width"] >= 100
+    assert selected["height"] >= 120
+    assert selected["left"] >= selected["boundsLeft"] - 0.1
+    assert selected["top"] >= selected["boundsTop"] - 0.1
+
+
+@pytest.mark.frontend
+def test_live2d_manager_tiny_hitarea_hint_dampens_conflicting_body_bias(mock_page: Page, running_server: str):
+    """Regression test: tiny-hit hints should not be reversed by opposite body-direction bias."""
+    mock_page.goto(f"{running_server}/", wait_until="domcontentloaded")
+    mock_page.wait_for_function(
+        "() => !!(window.live2dManager && window.live2dManager._applyTinyHitAreaBubbleHeadRectHint)",
+        timeout=10000,
+    )
+
+    selected = mock_page.evaluate(
+        """
+        () => {
+            const manager = window.live2dManager;
+            const bubbleHeadRect = {
+                left: 1000,
+                top: 400,
+                right: 1100,
+                bottom: 500,
+                width: 100,
+                height: 100,
+                centerX: 1050,
+                centerY: 450
+            };
+            const tinyHeadHitPoint = {
+                x: 1022,
+                y: 462
+            };
+            const bodyRect = {
+                left: 1110,
+                top: 470,
+                right: 1270,
+                bottom: 700,
+                width: 160,
+                height: 230,
+                centerX: 1190,
+                centerY: 585
+            };
+            const bounds = {
+                left: 900,
+                top: 300,
+                right: 1300,
+                bottom: 760,
+                width: 400,
+                height: 460
+            };
+
+            const adjusted = manager._applyTinyHitAreaBubbleHeadRectHint(
+                bubbleHeadRect,
+                tinyHeadHitPoint,
+                bodyRect,
+                bounds
+            );
+
+            return {
+                centerX: adjusted?.centerX || null,
+                centerY: adjusted?.centerY || null
+            };
+        }
+        """
+    )
+
+    assert selected["centerX"] < 1050
+    assert selected["centerY"] > 450
 
 
 @pytest.mark.frontend
@@ -1639,6 +2325,292 @@ def test_live2d_bubble_geometry_keeps_raw_head_rect_separate_from_bubble_head_re
     assert selected["headWidth"] == 269.15
     assert selected["bubbleHeadWidth"] < selected["headWidth"]
     assert selected["bubbleHeadCenterX"] > selected["headCenterX"]
+
+
+@pytest.mark.frontend
+def test_live2d_bubble_geometry_cache_rebuilds_once_after_settle_window(mock_page: Page, running_server: str):
+    """Regression test: cache should auto-refresh once so early-frame head rects do not stay locked forever."""
+    mock_page.goto(f"{running_server}/", wait_until="domcontentloaded")
+    mock_page.wait_for_function(
+        "() => !!(window.live2dManager && window.live2dManager._cacheBubbleGeometryResult)",
+        timeout=10000,
+    )
+
+    selected = mock_page.evaluate(
+        """
+        () => {
+            const manager = window.live2dManager;
+            const originalGetModelScreenBounds = manager.getModelScreenBounds.bind(manager);
+            const originalGetModelLogicalRect = manager._getModelLogicalRect.bind(manager);
+            const originalModelRootPath = manager.modelRootPath;
+            const originalCache = manager._bubbleGeometryCache;
+            const originalReadyAt = manager._bubbleGeometryModelReadyAt;
+            const originalRefreshPass = manager._bubbleGeometryRefreshPass;
+
+            const bounds = {
+                left: 1226.94,
+                top: 883.23,
+                right: 1800.88,
+                bottom: 1305.59,
+                width: 573.94,
+                height: 422.36,
+                centerX: 1513.91,
+                centerY: 1094.41
+            };
+            const logicalRect = {
+                x: 0,
+                y: 0,
+                width: 1,
+                height: 1
+            };
+            const detected = {
+                bounds,
+                rawHeadAnchor: { x: 1450.61, y: 996.82 },
+                headAnchor: { x: 1450.61, y: 996.82 },
+                headRect: {
+                    left: 1316.04,
+                    top: 925.55,
+                    right: 1585.19,
+                    bottom: 1095.25,
+                    width: 269.15,
+                    height: 169.70,
+                    centerX: 1450.61,
+                    centerY: 1010.40
+                },
+                bubbleHeadRect: {
+                    left: 1444.60,
+                    top: 942.52,
+                    right: 1552.67,
+                    bottom: 1024.44,
+                    width: 108.07,
+                    height: 81.92,
+                    centerX: 1498.64,
+                    centerY: 983.48
+                },
+                headMode: 'face',
+                headSource: 'drawableHeuristic',
+                bodyRect: {
+                    left: 1298.18,
+                    top: 1023.98,
+                    right: 1743.28,
+                    bottom: 1267.79,
+                    width: 445.10,
+                    height: 243.81,
+                    centerX: 1520.73,
+                    centerY: 1145.88
+                },
+                bodySource: 'drawableHeuristic',
+                reliableHeadRect: true,
+                preciseDisplayInfoRect: false,
+                coarseHitAreaHeadRect: false
+            };
+
+            try {
+                manager.modelRootPath = '/user_live2d/cache_refresh_model';
+                manager.getModelScreenBounds = () => bounds;
+                manager._getModelLogicalRect = () => logicalRect;
+                manager._bubbleGeometryCache = null;
+
+                // Cache is first created right after model ready -> refreshPass should stay 0.
+                manager._bubbleGeometryModelReadyAt = performance.now();
+                manager._bubbleGeometryRefreshPass = 0;
+                manager._cacheBubbleGeometryResult(detected, bounds, logicalRect);
+                const initialPass = manager._bubbleGeometryCache?.refreshPass ?? null;
+
+                // Keep this offset explicitly above settle refresh window so
+                // cacheNeedsSettleRefresh remains reliable when constants change.
+                const settleRefreshMs = Math.max(
+                    0.1,
+                    Number(manager._bubbleGeometrySettleRefreshMs) ||
+                        Number(window.LIVE2D_BUBBLE_GEOMETRY_SETTLE_REFRESH_MS) ||
+                        1800
+                );
+                // SETTLE_OFFSET_MS must stay >= settle window to keep refresh invalidation deterministic.
+                const SETTLE_OFFSET_MS = Math.max(10000, settleRefreshMs + 100);
+                const stableNowMs = Math.max(0.1, performance.now());
+                manager._bubbleGeometryModelReadyAt = stableNowMs;
+                const simulatedNowMs = stableNowMs + SETTLE_OFFSET_MS;
+                const originalPerformanceNow = performance.now.bind(performance);
+                performance.now = () => simulatedNowMs;
+                let firstFetch = null;
+                try {
+                    firstFetch = manager._getCachedBubbleGeometryResult();
+                } finally {
+                    performance.now = originalPerformanceNow;
+                }
+                const passAfterInvalidate = manager._bubbleGeometryRefreshPass;
+
+                // Rebuild cache once; subsequent fetch should remain valid.
+                manager._cacheBubbleGeometryResult(detected, bounds, logicalRect);
+                const rebuiltPass = manager._bubbleGeometryCache?.refreshPass ?? null;
+                const secondFetch = manager._getCachedBubbleGeometryResult();
+
+                return {
+                    initialPass,
+                    firstFetchIsNull: firstFetch === null,
+                    passAfterInvalidate,
+                    rebuiltPass,
+                    secondFetchHeadWidth: secondFetch?.headRect?.width ?? null
+                };
+            } finally {
+                manager.getModelScreenBounds = originalGetModelScreenBounds;
+                manager._getModelLogicalRect = originalGetModelLogicalRect;
+                manager.modelRootPath = originalModelRootPath;
+                manager._bubbleGeometryCache = originalCache;
+                manager._bubbleGeometryModelReadyAt = originalReadyAt;
+                manager._bubbleGeometryRefreshPass = originalRefreshPass;
+            }
+        }
+        """
+    )
+
+    assert selected["initialPass"] == 0
+    assert selected["firstFetchIsNull"] is True
+    assert selected["passAfterInvalidate"] == 1
+    assert selected["rebuiltPass"] == 1
+    assert selected["secondFetchHeadWidth"] == pytest.approx(269.15, abs=0.1)
+
+
+@pytest.mark.frontend
+def test_live2d_bubble_geometry_cache_respects_instance_settle_refresh_window(mock_page: Page, running_server: str):
+    """Regression test: cache settle refresh should honor per-instance settle refresh window."""
+    mock_page.goto(f"{running_server}/", wait_until="domcontentloaded")
+    mock_page.wait_for_function(
+        "() => !!(window.live2dManager && window.live2dManager._cacheBubbleGeometryResult)",
+        timeout=10000,
+    )
+
+    selected = mock_page.evaluate(
+        """
+        () => {
+            const manager = window.live2dManager;
+            const originalGetModelScreenBounds = manager.getModelScreenBounds.bind(manager);
+            const originalGetModelLogicalRect = manager._getModelLogicalRect.bind(manager);
+            const originalModelRootPath = manager.modelRootPath;
+            const originalCache = manager._bubbleGeometryCache;
+            const originalReadyAt = manager._bubbleGeometryModelReadyAt;
+            const originalRefreshPass = manager._bubbleGeometryRefreshPass;
+            const originalSettleRefreshMs = manager._bubbleGeometrySettleRefreshMs;
+
+            const bounds = {
+                left: 1226.94,
+                top: 883.23,
+                right: 1800.88,
+                bottom: 1305.59,
+                width: 573.94,
+                height: 422.36,
+                centerX: 1513.91,
+                centerY: 1094.41
+            };
+            const logicalRect = {
+                x: -1,
+                y: -1,
+                width: 2,
+                height: 2
+            };
+            const detected = {
+                bounds,
+                rawHeadAnchor: {
+                    x: 1450.61,
+                    y: 996.82
+                },
+                headAnchor: {
+                    x: 1450.61,
+                    y: 996.82
+                },
+                headRect: {
+                    left: 1316.04,
+                    top: 925.55,
+                    right: 1585.19,
+                    bottom: 1095.25,
+                    width: 269.15,
+                    height: 169.70,
+                    centerX: 1450.61,
+                    centerY: 1010.40
+                },
+                bubbleHeadRect: {
+                    left: 1373.36,
+                    top: 942.52,
+                    right: 1520.23,
+                    bottom: 1056.27,
+                    width: 146.87,
+                    height: 113.75,
+                    centerX: 1446.79,
+                    centerY: 999.40
+                },
+                headMode: 'face',
+                headSource: 'drawableHeuristic',
+                bodyRect: {
+                    left: 1298.18,
+                    top: 1023.98,
+                    right: 1743.28,
+                    bottom: 1267.79,
+                    width: 445.10,
+                    height: 243.81,
+                    centerX: 1520.73,
+                    centerY: 1145.88
+                },
+                bodySource: 'drawableHeuristic',
+                reliableHeadRect: true,
+                preciseDisplayInfoRect: false,
+                coarseHitAreaHeadRect: false
+            };
+
+            try {
+                manager.modelRootPath = '/user_live2d/cache_refresh_instance_window_model';
+                manager.getModelScreenBounds = () => bounds;
+                manager._getModelLogicalRect = () => logicalRect;
+                manager._bubbleGeometryCache = null;
+                manager._bubbleGeometryRefreshPass = 0;
+
+                const customSettleRefreshMs = 5000;
+                manager._bubbleGeometrySettleRefreshMs = customSettleRefreshMs;
+                const stableNowMs = Math.max(0.1, performance.now());
+                const earlyNowMs = stableNowMs + 2500;
+                const lateNowMs = stableNowMs + customSettleRefreshMs + 200;
+                const originalPerformanceNow = performance.now.bind(performance);
+                let earlyPass = null;
+                let earlyFetchIsPresent = false;
+                let lateFetchIsNull = false;
+                let passAfterLateInvalidate = null;
+
+                manager._bubbleGeometryModelReadyAt = stableNowMs;
+                performance.now = () => earlyNowMs;
+                try {
+                    manager._cacheBubbleGeometryResult(detected, bounds, logicalRect);
+                    earlyPass = manager._bubbleGeometryCache?.refreshPass ?? null;
+                    earlyFetchIsPresent = manager._getCachedBubbleGeometryResult() !== null;
+
+                    performance.now = () => lateNowMs;
+                    lateFetchIsNull = manager._getCachedBubbleGeometryResult() === null;
+                    passAfterLateInvalidate = manager._bubbleGeometryRefreshPass;
+                } finally {
+                    performance.now = originalPerformanceNow;
+                }
+
+                return {
+                    earlyPass,
+                    earlyFetchIsPresent,
+                    lateFetchIsNull,
+                    passAfterLateInvalidate
+                };
+            } finally {
+                manager.getModelScreenBounds = originalGetModelScreenBounds;
+                manager._getModelLogicalRect = originalGetModelLogicalRect;
+                manager.modelRootPath = originalModelRootPath;
+                manager._bubbleGeometryCache = originalCache;
+                manager._bubbleGeometryModelReadyAt = originalReadyAt;
+                manager._bubbleGeometryRefreshPass = originalRefreshPass;
+                manager._bubbleGeometrySettleRefreshMs = originalSettleRefreshMs;
+            }
+        }
+        """
+    )
+
+    assert selected["earlyPass"] == 0
+    assert selected["earlyFetchIsPresent"] is True
+    assert selected["lateFetchIsNull"] is True
+    assert selected["passAfterLateInvalidate"] == 1
 
 
 @pytest.mark.frontend
