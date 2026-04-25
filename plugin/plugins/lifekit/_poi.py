@@ -100,7 +100,8 @@ class BaiduPOI:
             "page_size": str(min(limit, 20)),
             "output": "json",
             "scope": "2",
-            "coord_type": "1",  # WGS84
+            "coord_type": "1",  # input coords are WGS84
+            "ret_coordtype": "gcj02ll",  # output in GCJ-02 (closest to WGS84 available from Baidu)
         }
         try:
             async with httpx.AsyncClient(timeout=timeout) as c:
@@ -156,9 +157,10 @@ class OverpassPOI:
     ) -> List[POIItem]:
         tag = self._TAG_MAP.get(query, "")
         if not tag:
-            # 通用搜索：用 name 匹配 — 转义正则和 Overpass QL 特殊字符
+            # 通用搜索：用 name 匹配 — 转义正则、Overpass QL 特殊字符和控制字符
             import re
-            escaped = re.sub(r'(["\\\.\*\+\?\(\)\[\]\{\}\|^$])', r'\\\1', query)
+            sanitized = re.sub(r'[\x00-\x1f\x7f]', '', query)  # strip control chars
+            escaped = re.sub(r'(["\\\.\*\+\?\(\)\[\]\{\}\|^$])', r'\\\1', sanitized)
             tag_filter = f'["name"~"{escaped}",i]'
         else:
             k, v = tag.split("=", 1)
@@ -188,9 +190,10 @@ class OverpassPOI:
                 plat = float(el.get("lat") or el.get("center", {}).get("lat", 0))
                 plon = float(el.get("lon") or el.get("center", {}).get("lon", 0))
                 dist = haversine_km(lat, lon, plat, plon) * 1000 if plat and plon else 0
+                addr_parts = [tags.get("addr:street", ""), tags.get("addr:housenumber", "")]
                 items.append(POIItem(
                     name=name,
-                    address=tags.get("addr:street", "") + " " + tags.get("addr:housenumber", ""),
+                    address=" ".join(p for p in addr_parts if p).strip(),
                     type_name=tags.get("cuisine", tags.get("shop", tags.get("amenity", ""))),
                     distance_m=dist,
                     lat=plat, lon=plon,

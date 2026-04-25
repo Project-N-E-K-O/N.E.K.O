@@ -93,7 +93,6 @@ class LifeKitPlugin(NekoPluginBase):
                 self.logger.info("Store enabled from config (was disabled at init)")
             else:
                 self.logger.info("Store is disabled — location save/load will be unavailable")
-                self.logger.warning("Store force-enabled (config missing plugin.store.enabled)")
 
         # 从主干查询全局语言
         lang = await self.fetch_user_language(timeout=3.0)
@@ -282,7 +281,7 @@ class LifeKitPlugin(NekoPluginBase):
     @plugin_entry(
         id="get_config",
         name="获取配置",
-        description="获取天气插件当前配置。",
+        description="获取生活助手当前配置。",
     )
     async def get_config_entry(self, **_):
         return Ok(dict(self._cfg))
@@ -290,7 +289,7 @@ class LifeKitPlugin(NekoPluginBase):
     @plugin_entry(
         id="update_config",
         name="更新配置",
-        description="更新天气插件配置字段。",
+        description="更新生活助手配置字段。",
         input_schema={
             "type": "object",
             "properties": {
@@ -299,6 +298,7 @@ class LifeKitPlugin(NekoPluginBase):
                 "forecast_days": {"type": "integer"},
                 "locale": {"type": "string"},
                 "cache_ttl_seconds": {"type": "integer"},
+                "force_locale": {"type": "boolean"},
             },
         },
     )
