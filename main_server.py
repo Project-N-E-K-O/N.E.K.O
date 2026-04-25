@@ -1694,6 +1694,7 @@ def get_start_config():
         "browser_mode_enabled": False,
         "browser_page": "chara_manager",
         "shutdown_memory_server_on_exit": False,
+        "request_runtime_shutdown": None,
         'server': None
     }
 
@@ -1704,21 +1705,24 @@ def set_start_config(config):
 
 async def request_application_shutdown_async():
     """Request an application-level shutdown compatible with both launcher modes."""
-    launch_mode = os.environ.get("NEKO_LAUNCH_MODE", "").strip().lower()
-    if launch_mode == "merged":
-        loop = asyncio.get_running_loop()
+    current_config = get_start_config()
+    request_runtime_shutdown = current_config.get("request_runtime_shutdown")
+    if callable(request_runtime_shutdown):
+        try:
+            await asyncio.sleep(0.5)
+            result = request_runtime_shutdown()
+            if inspect.isawaitable(result):
+                await result
+            return
+        except Exception as exc:
+            logger.error("触发运行时级应用关闭失败: %s", exc, exc_info=True)
 
-        def _request_merged_shutdown() -> None:
-            try:
-                os.kill(os.getpid(), signal.SIGTERM)
-            except Exception as exc:
-                logger.error("触发 merged 模式应用级关闭失败: %s", exc)
-
-        loop.call_later(0.5, _request_merged_shutdown)
+    if current_config.get("server") is not None:
+        await shutdown_server_async()
         return
 
     launcher_pid_raw = os.environ.get("NEKO_LAUNCHER_PID", "").strip()
-    if launcher_pid_raw:
+    if os.name != "nt" and launcher_pid_raw:
         try:
             launcher_pid = int(launcher_pid_raw)
         except ValueError:

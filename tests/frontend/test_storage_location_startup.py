@@ -47,7 +47,12 @@ def _mock_selection_required_state(
     last_error: str = "",
 ) -> None:
     effective_recommended_root = recommended_root or current_root
-    effective_legacy_sources = legacy_sources or []
+    if legacy_sources is None:
+        effective_legacy_sources = []
+    elif isinstance(legacy_sources, str):
+        effective_legacy_sources = json.loads(legacy_sources)
+    else:
+        effective_legacy_sources = legacy_sources
     blocking_reason = "migration_pending" if migration_pending else ("recovery_required" if recovery_required else "selection_required")
 
     page.route(
@@ -55,21 +60,22 @@ def _mock_selection_required_state(
         lambda route: route.fulfill(
             status=200,
             content_type="application/json",
-            body=f"""
-            {{
-              "ok": true,
-              "status": "migration_required",
-              "ready": false,
-              "storage": {{
-                "selection_required": true,
-                "migration_pending": {"true" if migration_pending else "false"},
-                "recovery_required": {"true" if recovery_required else "false"},
-                "blocking_reason": "{blocking_reason}",
-                "last_error_summary": "{last_error}",
-                "stage": "stage3_web_restart"
-              }}
-            }}
-            """,
+            body=json.dumps(
+                {
+                    "ok": True,
+                    "status": "migration_required",
+                    "ready": False,
+                    "storage": {
+                        "selection_required": True,
+                        "migration_pending": migration_pending,
+                        "recovery_required": recovery_required,
+                        "blocking_reason": blocking_reason,
+                        "last_error_summary": last_error,
+                        "stage": "stage3_web_restart",
+                    },
+                },
+                ensure_ascii=False,
+            ),
         ),
     )
     page.route(
@@ -77,27 +83,28 @@ def _mock_selection_required_state(
         lambda route: route.fulfill(
             status=200,
             content_type="application/json",
-            body=f"""
-            {{
-              "current_root": "{current_root}",
-              "recommended_root": "{effective_recommended_root}",
-              "legacy_sources": {effective_legacy_sources},
-              "anchor_root": "{effective_recommended_root}",
-              "cloudsave_root": "{effective_recommended_root}/cloudsave",
-              "selection_required": true,
-              "migration_pending": {"true" if migration_pending else "false"},
-              "recovery_required": {"true" if recovery_required else "false"},
-              "blocking_reason": "{blocking_reason}",
-              "legacy_cleanup_pending": false,
-              "last_known_good_root": "{current_root}",
-              "last_error_summary": "{last_error}",
-              "migration": {{
-                "last_error": "{last_error}"
-              }},
-              "stage": "stage3_web_restart",
-              "poll_interval_ms": 1200
-            }}
-            """,
+            body=json.dumps(
+                {
+                    "current_root": current_root,
+                    "recommended_root": effective_recommended_root,
+                    "legacy_sources": effective_legacy_sources,
+                    "anchor_root": effective_recommended_root,
+                    "cloudsave_root": f"{effective_recommended_root}/cloudsave",
+                    "selection_required": True,
+                    "migration_pending": migration_pending,
+                    "recovery_required": recovery_required,
+                    "blocking_reason": blocking_reason,
+                    "legacy_cleanup_pending": False,
+                    "last_known_good_root": current_root,
+                    "last_error_summary": last_error,
+                    "migration": {
+                        "last_error": last_error,
+                    },
+                    "stage": "stage3_web_restart",
+                    "poll_interval_ms": 1200,
+                },
+                ensure_ascii=False,
+            ),
         ),
     )
 
@@ -213,13 +220,14 @@ def test_storage_location_selection_view_hides_internal_paths_and_supports_folde
         lambda route: route.fulfill(
             status=200,
             content_type="application/json",
-            body=f"""
-            {{
-              "ok": true,
-              "cancelled": false,
-              "selected_root": "{picked_parent}"
-            }}
-            """,
+            body=json.dumps(
+                {
+                    "ok": True,
+                    "cancelled": False,
+                    "selected_root": picked_root,
+                },
+                ensure_ascii=False,
+            ),
         ),
     )
 
@@ -251,19 +259,21 @@ def test_storage_location_overlay_keeps_page_config_blocked_on_restart_required_
     select_requests = []
     target_root = tmp_path / "alt-storage" / "N.E.K.O"
     _mock_selection_required_state(page)
+
     def handle_select(route):
         select_requests.append(json.loads(route.request.post_data or "{}"))
         route.fulfill(
             status=200,
             content_type="application/json",
-            body=f"""
-            {{
-              "ok": true,
-              "result": "restart_required",
-              "selected_root": "{str(target_root.resolve())}",
-              "selection_source": "custom"
-            }}
-            """,
+            body=json.dumps(
+                {
+                    "ok": True,
+                    "result": "restart_required",
+                    "selected_root": str(target_root.resolve()),
+                    "selection_source": "custom",
+                },
+                ensure_ascii=False,
+            ),
         )
 
     page.route("**/api/storage/location/select", handle_select)
@@ -355,30 +365,31 @@ def test_storage_location_restart_confirmation_enters_maintenance_page_and_recov
             route.fulfill(
                 status=200,
                 content_type="application/json",
-                body=f"""
-                {{
-                  "ok": true,
-                  "ready": false,
-                  "status": "maintenance",
-                  "lifecycle_state": "maintenance",
-                  "migration_stage": "pending",
-                  "maintenance_message": "当前实例即将关闭，数据会在关闭后迁移并自动重启。",
-                  "poll_interval_ms": 200,
-                  "effective_root": "/tmp/runtime/N.E.K.O",
-                  "last_error_summary": "",
-                  "blocking_reason": "migration_pending",
-                  "storage": {{
-                    "selection_required": false,
-                    "migration_pending": true,
-                    "recovery_required": false,
-                    "stage": "stage3_web_restart"
-                  }},
-                  "migration": {{
-                    "status": "pending",
-                    "target_root": "{str((tmp_path / "alt-storage" / "N.E.K.O").resolve())}"
-                  }}
-                }}
-                """,
+                body=json.dumps(
+                    {
+                        "ok": True,
+                        "ready": False,
+                        "status": "maintenance",
+                        "lifecycle_state": "maintenance",
+                        "migration_stage": "pending",
+                        "maintenance_message": "当前实例即将关闭，数据会在关闭后迁移并自动重启。",
+                        "poll_interval_ms": 200,
+                        "effective_root": "/tmp/runtime/N.E.K.O",
+                        "last_error_summary": "",
+                        "blocking_reason": "migration_pending",
+                        "storage": {
+                            "selection_required": False,
+                            "migration_pending": True,
+                            "recovery_required": False,
+                            "stage": "stage3_web_restart",
+                        },
+                        "migration": {
+                            "status": "pending",
+                            "target_root": str((tmp_path / "alt-storage" / "N.E.K.O").resolve()),
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
             )
             return
 
@@ -453,21 +464,22 @@ def test_storage_location_restart_confirmation_enters_maintenance_page_and_recov
         lambda route: route.fulfill(
             status=200,
             content_type="application/json",
-            body=f"""
-            {{
-              "ok": true,
-              "result": "restart_required",
-              "selected_root": "{str((tmp_path / "alt-storage" / "N.E.K.O").resolve())}",
-              "selection_source": "custom",
-              "target_root": "{str((tmp_path / "alt-storage" / "N.E.K.O").resolve())}",
-              "estimated_required_bytes": 4096,
-              "target_free_bytes": 1048576,
-              "permission_ok": true,
-              "warning_codes": [],
-              "blocking_error_code": "",
-              "blocking_error_message": ""
-            }}
-            """,
+            body=json.dumps(
+                {
+                    "ok": True,
+                    "result": "restart_required",
+                    "selected_root": str((tmp_path / "alt-storage" / "N.E.K.O").resolve()),
+                    "selection_source": "custom",
+                    "target_root": str((tmp_path / "alt-storage" / "N.E.K.O").resolve()),
+                    "estimated_required_bytes": 4096,
+                    "target_free_bytes": 1048576,
+                    "permission_ok": True,
+                    "warning_codes": [],
+                    "blocking_error_code": "",
+                    "blocking_error_message": "",
+                },
+                ensure_ascii=False,
+            ),
         ),
     )
     page.route(
@@ -475,32 +487,33 @@ def test_storage_location_restart_confirmation_enters_maintenance_page_and_recov
         lambda route: route.fulfill(
             status=200,
             content_type="application/json",
-            body=f"""
-            {{
-              "ok": true,
-              "result": "restart_initiated",
-              "selected_root": "{str((tmp_path / "alt-storage" / "N.E.K.O").resolve())}",
-              "target_root": "{str((tmp_path / "alt-storage" / "N.E.K.O").resolve())}",
-              "selection_source": "custom",
-              "estimated_required_bytes": 4096,
-              "target_free_bytes": 1048576,
-              "permission_ok": true,
-              "warning_codes": [],
-              "blocking_error_code": "",
-              "blocking_error_message": "",
-              "migration": {{
-                "status": "pending",
-                "source_root": "/tmp/runtime/N.E.K.O",
-                "target_root": "{str((tmp_path / "alt-storage" / "N.E.K.O").resolve())}",
-                "selection_source": "custom",
-                "requested_at": "2026-04-24T00:00:00Z",
-                "backup_root": "",
-                "error_code": "",
-                "error_message": "",
-                "updated_at": "2026-04-24T00:00:00Z"
-              }}
-            }}
-            """,
+            body=json.dumps(
+                {
+                    "ok": True,
+                    "result": "restart_initiated",
+                    "selected_root": str((tmp_path / "alt-storage" / "N.E.K.O").resolve()),
+                    "target_root": str((tmp_path / "alt-storage" / "N.E.K.O").resolve()),
+                    "selection_source": "custom",
+                    "estimated_required_bytes": 4096,
+                    "target_free_bytes": 1048576,
+                    "permission_ok": True,
+                    "warning_codes": [],
+                    "blocking_error_code": "",
+                    "blocking_error_message": "",
+                    "migration": {
+                        "status": "pending",
+                        "source_root": "/tmp/runtime/N.E.K.O",
+                        "target_root": str((tmp_path / "alt-storage" / "N.E.K.O").resolve()),
+                        "selection_source": "custom",
+                        "requested_at": "2026-04-24T00:00:00Z",
+                        "backup_root": "",
+                        "error_code": "",
+                        "error_message": "",
+                        "updated_at": "2026-04-24T00:00:00Z",
+                    },
+                },
+                ensure_ascii=False,
+            ),
         ),
     )
 
@@ -835,44 +848,45 @@ def test_storage_location_ready_state_shows_completion_notice_and_allows_manual_
         lambda route: route.fulfill(
             status=200,
             content_type="application/json",
-            body=f"""
-            {{
-              "ok": true,
-              "ready": true,
-              "status": "ready",
-              "lifecycle_state": "ready",
-              "migration_stage": "completed",
-              "maintenance_message": "",
-              "poll_interval_ms": 200,
-              "effective_root": "{target_root}",
-              "last_error_summary": "",
-              "blocking_reason": "",
-              "storage": {{
-                "selection_required": false,
-                "migration_pending": false,
-                "recovery_required": false,
-                "legacy_cleanup_pending": true,
-                "stage": "stage5_completion"
-              }},
-              "migration": {{
-                "status": "completed",
-                "source_root": "{source_root}",
-                "target_root": "{target_root}",
-                "retained_source_root": "{source_root}",
-                "retained_source_mode": "manual_retention",
-                "completed_at": "2026-04-25T00:00:00Z"
-              }},
-              "completion_notice": {{
-                "completed": true,
-                "message": "新的运行目录已经生效，旧数据目录目前仍保留。",
-                "source_root": "{source_root}",
-                "target_root": "{target_root}",
-                "retained_root": "{source_root}",
-                "retained_root_exists": true,
-                "cleanup_available": true
-              }}
-            }}
-            """,
+            body=json.dumps(
+                {
+                    "ok": True,
+                    "ready": True,
+                    "status": "ready",
+                    "lifecycle_state": "ready",
+                    "migration_stage": "completed",
+                    "maintenance_message": "",
+                    "poll_interval_ms": 200,
+                    "effective_root": target_root,
+                    "last_error_summary": "",
+                    "blocking_reason": "",
+                    "storage": {
+                        "selection_required": False,
+                        "migration_pending": False,
+                        "recovery_required": False,
+                        "legacy_cleanup_pending": True,
+                        "stage": "stage5_completion",
+                    },
+                    "migration": {
+                        "status": "completed",
+                        "source_root": source_root,
+                        "target_root": target_root,
+                        "retained_source_root": source_root,
+                        "retained_source_mode": "manual_retention",
+                        "completed_at": "2026-04-25T00:00:00Z",
+                    },
+                    "completion_notice": {
+                        "completed": True,
+                        "message": "新的运行目录已经生效，旧数据目录目前仍保留。",
+                        "source_root": source_root,
+                        "target_root": target_root,
+                        "retained_root": source_root,
+                        "retained_root_exists": True,
+                        "cleanup_available": True,
+                    },
+                },
+                ensure_ascii=False,
+            ),
         ),
     )
 
@@ -942,4 +956,6 @@ def test_storage_location_ready_state_shows_completion_notice_and_allows_manual_
 
     expect(completion_card).to_be_hidden(timeout=10_000)
     assert cleanup_requests["count"] == 1
-    assert source_root in cleanup_requests["payload"]
+    assert json.loads(cleanup_requests["payload"]) == {
+        "retained_root": source_root,
+    }

@@ -390,9 +390,15 @@ def _should_detach_stdio_for_relaunch() -> bool:
 
 def _spawn_restarted_launcher() -> None:
     command = _build_launcher_relaunch_command()
+    relaunch_env = os.environ.copy()
+    # ``main_server`` uses this marker only to suppress duplicate module-level
+    # init within the *current* Python process tree (mainly Windows spawn).
+    # A storage-location relaunch is a brand-new launcher instance and must
+    # re-run full startup initialization, so we must not inherit the marker.
+    relaunch_env.pop("_NEKO_MAIN_SERVER_INITIALIZED", None)
     kwargs: dict[str, object] = {
         "cwd": os.getcwd(),
-        "env": os.environ.copy(),
+        "env": relaunch_env,
         "close_fds": True,
     }
     if _should_detach_stdio_for_relaunch():
@@ -417,6 +423,31 @@ def _mark_expected_launcher_shutdown() -> None:
 
 def _is_expected_launcher_shutdown() -> bool:
     return bool(_expected_launcher_shutdown)
+
+
+STARTUP_WAIT_RESULT_STORAGE_RESTART = "storage_restart_requested"
+
+
+def _is_pending_storage_restart_request() -> bool:
+    try:
+        config_manager = get_config_manager(APP_NAME, migrate=False)
+        load_root_state = getattr(config_manager, "load_root_state", None)
+        if not callable(load_root_state):
+            return False
+
+        root_state = load_root_state()
+        if not isinstance(root_state, dict):
+            return False
+
+        root_mode = str(root_state.get("mode") or "").strip()
+        last_migration_result = str(root_state.get("last_migration_result") or "").strip()
+        if root_mode != ROOT_MODE_MAINTENANCE_READONLY:
+            return False
+
+        return last_migration_result.startswith(("restart_pending:", "restart_rebind:"))
+    except Exception as exc:
+        print(f"[Launcher] Warning: failed to inspect storage restart intent: {exc}", flush=True)
+        return False
 
 
 def _maybe_schedule_storage_restart() -> bool:
@@ -740,6 +771,29 @@ def run_merged_servers() -> int:
         s.install_signal_handlers = lambda: None
 
     _exiting = False
+    _shutdown_watchdog_started = False
+
+    def _begin_merged_shutdown(*, reason: str = "signal") -> bool:
+        nonlocal _exiting, _shutdown_watchdog_started
+        if _exiting:
+            return False
+        _exiting = True
+        _mark_expected_launcher_shutdown()
+        watchdog_timeout = 30 if reason == "storage_location_restart" else 10
+        print(
+            f"\n[Merged] Shutting down... (reason={reason}, watchdog={watchdog_timeout}s)",
+            flush=True,
+        )
+        for s in servers:
+            s.should_exit = True
+        if not _shutdown_watchdog_started:
+            threading.Thread(
+                target=lambda timeout=watchdog_timeout: (time.sleep(timeout), os._exit(1)),
+                daemon=True,
+                name="merged-shutdown-watchdog",
+            ).start()
+            _shutdown_watchdog_started = True
+        return True
 
     def _on_exit_signal(_sig, _frame):
         nonlocal _exiting
@@ -747,16 +801,22 @@ def run_merged_servers() -> int:
             # 第二次 Ctrl+C → 强制退出（与多进程模式行为一致）
             print("\n[Merged] Force exit!", flush=True)
             os._exit(1)
-        _exiting = True
-        _mark_expected_launcher_shutdown()
-        print("\n[Merged] Shutting down...", flush=True)
-        for s in servers:
-            s.should_exit = True
-        # 看门狗：10s 后强制退出（防止 shutdown handler 卡死残留进程）
-        threading.Thread(
-            target=lambda: (time.sleep(10), os._exit(1)),
-            daemon=True, name="merged-shutdown-watchdog",
-        ).start()
+        _begin_merged_shutdown(reason=f"signal:{_sig}")
+
+    try:
+        main_server.set_start_config(
+            {
+                "browser_mode_enabled": False,
+                "browser_page": "",
+                "shutdown_memory_server_on_exit": False,
+                "request_runtime_shutdown": lambda: _begin_merged_shutdown(
+                    reason="storage_location_restart"
+                ),
+                "server": None,
+            }
+        )
+    except Exception as exc:
+        print(f"[Merged] Warning: failed to install merged shutdown bridge: {exc}", flush=True)
 
     _prev_sigint = signal.getsignal(signal.SIGINT)
     _prev_sigterm = signal.getsignal(signal.SIGTERM)
@@ -1018,6 +1078,18 @@ def run_main_server(
             forwarded_allow_ips="*" if _behind_proxy else None,
         )
         server = uvicorn.Server(config)
+        try:
+            main_server.set_start_config(
+                {
+                    "browser_mode_enabled": False,
+                    "browser_page": "",
+                    "shutdown_memory_server_on_exit": False,
+                    "request_runtime_shutdown": None,
+                    "server": server,
+                }
+            )
+        except Exception as exc:
+            print(f"[Main Server] Warning: failed to install launcher shutdown bridge: {exc}", flush=True)
 
         if shutdown_complete_event is not None:
             async def _notify_shutdown_complete() -> None:
@@ -1416,7 +1488,7 @@ def start_server(server: Dict) -> bool:
         report_startup_failure(f"Start failed: {server['name']} exception: {e}")
         return False
 
-def wait_for_servers(timeout: int = 60) -> bool:
+def wait_for_servers(timeout: int = 60) -> bool | str:
     """等待所有服务器启动完成"""
     print("\n等待服务器准备就绪...", flush=True)
     
@@ -1435,6 +1507,18 @@ def wait_for_servers(timeout: int = 60) -> bool:
         for server in SERVERS:
             proc = server.get('process')
             if proc is not None and not proc.is_alive() and not check_port(server['port']):
+                if (
+                    server.get("module") == "main_server"
+                    and _is_pending_storage_restart_request()
+                ):
+                    _mark_expected_launcher_shutdown()
+                    print(
+                        "\n[Launcher] Detected intentional main_server shutdown during startup for storage restart",
+                        flush=True,
+                    )
+                    stop_spinner.set()
+                    spinner_thread.join()
+                    return STARTUP_WAIT_RESULT_STORAGE_RESTART
                 report_startup_failure(
                     f"Startup failed: {server['name']} exited early (exitcode={proc.exitcode})"
                 )
@@ -1817,6 +1901,8 @@ def main():
             if not start_server(server):
                 all_started = False
                 break
+            if server.get("module") == "main_server":
+                allow_storage_restart = True
 
             evt = server.get('import_event')
             is_last = (i == len(SERVERS) - 1)
@@ -1854,7 +1940,12 @@ def main():
             return 1
 
         # 2. 等待最后一个服务器也准备就绪
-        if not wait_for_servers():
+        wait_result = wait_for_servers()
+        if wait_result is not True:
+            if wait_result == STARTUP_WAIT_RESULT_STORAGE_RESTART:
+                print("\n检测到启动期间触发的存储重启，正在清理当前实例...", flush=True)
+                cleanup_servers()
+                return 0
             print("\n启动失败，正在清理...", flush=True)
             report_startup_failure("Startup aborted: services did not become ready before timeout", show_dialog=False)
             cleanup_servers()
