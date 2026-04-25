@@ -105,5 +105,5 @@ class CurrentWeatherRouter(PluginRouter):
             "current": current,
             "forecast": forecast,
             "vpn_detected": bool(loc.get("_vpn_detected")),
-            "next_actions": ["travel_advice — 出行建议", "food_recommend — 美食推荐", "hourly_forecast — 逐小时预报"],
+            "next_actions": ["travel_advice — 出行建议", "food_recommend — 美食推荐", "air_quality — 空气质量", "hourly_forecast — 逐小时预报"],
         })

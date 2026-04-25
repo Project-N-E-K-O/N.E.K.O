@@ -104,5 +104,12 @@
     "no_query": "请输入菜名或食材",
     "not_found": "没有找到「{query}」相关的菜谱",
     "random_fail": "随机菜谱获取失败，请稍后重试"
+  },
+  "air_quality": {
+    "fetch_failed": "获取 {city} 的空气质量数据失败"
+  },
+  "currency": {
+    "no_currencies": "请指定源货币和目标货币",
+    "convert_failed": "汇率查询失败：{from} → {to}"
   }
 }

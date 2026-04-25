@@ -9,7 +9,8 @@ import httpx
 _GEOIP_BASE = "http://ip-api.com/json/"
 _GEOCODE_URL = "https://geocoding-api.open-meteo.com/v1/search"
 _FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
-_UA = "NEKO-Weather-Plugin/0.1"
+_AIR_QUALITY_URL = "https://air-quality-api.open-meteo.com/v1/air-quality"
+_UA = "NEKO-LifeKit-Plugin/0.2"
 
 # locale → ip-api lang
 LOCALE_TO_GEOIP_LANG: Dict[str, str] = {
@@ -172,3 +173,41 @@ def daily_val(daily: Dict[str, Any], field: str, idx: int) -> Any:
     if isinstance(arr, list) and idx < len(arr):
         return arr[idx]
     return None
+
+
+# ── Air Quality ──────────────────────────────────────────────────
+
+_AQI_VARS = "european_aqi,pm10,pm2_5,carbon_monoxide,nitrogen_dioxide,sulphur_dioxide,ozone,uv_index"
+
+
+class AirQualityError(WeatherAPIError):
+    """空气质量 API 失败。"""
+
+
+async def fetch_air_quality(
+    lat: float, lon: float,
+    *,
+    tz: str = "Asia/Shanghai",
+    timeout: float = 8.0,
+) -> Dict[str, Any]:
+    """调用 Open-Meteo Air Quality API。返回 current 数据。"""
+    params = {
+        "latitude": lat,
+        "longitude": lon,
+        "current": _AQI_VARS,
+        "timezone": tz,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as c:
+            r = await c.get(_AIR_QUALITY_URL, params=params)
+            if r.status_code == 200:
+                return r.json()
+            raise AirQualityError(f"Air quality API returned HTTP {r.status_code}", cause="api_error")
+    except AirQualityError:
+        raise
+    except (httpx.TimeoutException, httpx.ConnectTimeout, httpx.ReadTimeout):
+        raise AirQualityError("Air quality API timed out", cause="timeout")
+    except httpx.ConnectError:
+        raise AirQualityError("Air quality API connection failed", cause="network")
+    except Exception as e:
+        raise AirQualityError(f"Air quality API failed: {e}", cause="network")

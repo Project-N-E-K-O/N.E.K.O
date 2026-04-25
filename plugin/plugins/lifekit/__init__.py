@@ -32,7 +32,12 @@ from plugin.sdk.plugin import (
 from ._i18n import I18n, LRUCache
 from ._geo import get_system_timezone, detect_vpn_conflict
 from ._api import geoip_locate, geocode_city, fetch_forecast, GeoIPError, GeocodeError, ForecastError, WeatherAPIError
-from .routers import CurrentWeatherRouter, TravelAdviceRouter, HourlyForecastRouter, LocationsRouter, TripRouter, NearbyRouter, FoodRecommendRouter, RecipeRouter
+from .routers import (
+    CurrentWeatherRouter, TravelAdviceRouter, HourlyForecastRouter,
+    LocationsRouter, TripRouter, NearbyRouter,
+    FoodRecommendRouter, RecipeRouter,
+    AirQualityRouter, CurrencyRouter,
+)
 
 _LOCALES_DIR = Path(__file__).parent / "locales"
 
@@ -57,6 +62,7 @@ class LifeKitPlugin(NekoPluginBase):
         CurrentWeatherRouter, TravelAdviceRouter, HourlyForecastRouter,
         LocationsRouter, TripRouter, NearbyRouter,
         FoodRecommendRouter, RecipeRouter,
+        AirQualityRouter, CurrencyRouter,
     ]
 
     def __init__(self, ctx: Any):

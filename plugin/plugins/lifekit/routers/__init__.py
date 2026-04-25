@@ -8,9 +8,12 @@ from .trip import TripRouter
 from .nearby import NearbyRouter
 from .food import FoodRecommendRouter
 from .recipe import RecipeRouter
+from .air_quality import AirQualityRouter
+from .currency import CurrencyRouter
 
 __all__ = [
     "CurrentWeatherRouter", "TravelAdviceRouter", "HourlyForecastRouter",
     "LocationsRouter", "TripRouter", "NearbyRouter",
     "FoodRecommendRouter", "RecipeRouter",
+    "AirQualityRouter", "CurrencyRouter",
 ]

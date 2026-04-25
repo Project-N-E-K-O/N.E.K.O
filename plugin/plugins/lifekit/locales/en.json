@@ -104,5 +104,12 @@
     "no_query": "Please enter a dish name or ingredient",
     "not_found": "No recipes found for \"{query}\"",
     "random_fail": "Failed to get a random recipe, please try again later"
+  },
+  "air_quality": {
+    "fetch_failed": "Failed to get air quality data for {city}"
+  },
+  "currency": {
+    "no_currencies": "Please specify source and target currencies",
+    "convert_failed": "Currency conversion failed: {from} → {to}"
   }
 }

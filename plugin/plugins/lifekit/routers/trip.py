@@ -141,7 +141,7 @@ class TripRouter(PluginRouter):
             "weather_tips": weather_tips,
             "mode_advice": mode_advice,
             "provider": routing.provider,
-            "next_actions": [f"food_recommend location={dest_loc['city']} — 目的地美食", f"search_nearby location={dest_loc['city']} — 目的地附近搜索"],
+            "next_actions": [f"food_recommend location={dest_loc['city']} — 目的地美食", f"search_nearby location={dest_loc['city']} — 目的地附近搜索", "currency_convert — 汇率换算"],
         })
 
 
