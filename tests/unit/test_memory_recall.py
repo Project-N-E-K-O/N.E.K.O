@@ -1,0 +1,502 @@
+# -*- coding: utf-8 -*-
+"""Unit tests for memory.recall.MemoryRecallReranker.
+
+The reranker has three phases (hard filter → coarse cosine rank →
+LLM fine rank). Tests cover each phase in isolation plus the
+end-to-end ``aretrieve_candidates`` flow including the fallback path
+when the EmbeddingService is disabled.
+
+We never call a real LLM — the fine-rank tests stub
+`utils.llm_client.create_chat_llm` the same way PR #941's
+test_persona_version_history.py does."""
+from __future__ import annotations
+
+import json
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from memory.embeddings import (
+    _embedding_text_sha256,
+    reset_embedding_service_for_tests,
+)
+from memory.recall import COARSE_OVERSAMPLE, MemoryRecallReranker
+
+
+# ── stub embedding service ───────────────────────────────────────────
+
+
+class _FakeService:
+    """Minimal stand-in for EmbeddingService used by recall tests.
+    The reranker only touches a handful of methods; keep the stub
+    narrow so tests stay readable."""
+
+    def __init__(
+        self, *, available: bool = True, model_id: str = "fake-128d-int8",
+        vector_factory=None,
+    ) -> None:
+        self._available = available
+        self._model_id = model_id
+        self._vector_factory = vector_factory or (lambda text: [1.0, 0.0])
+        self.embed_calls: list[list[str]] = []
+
+    def is_available(self) -> bool:
+        return self._available
+
+    def model_id(self):
+        return self._model_id if self._available else None
+
+    async def embed_batch(self, texts):
+        self.embed_calls.append(list(texts))
+        return [self._vector_factory(t) if t else None for t in texts]
+
+
+@pytest.fixture(autouse=True)
+def _isolate_singleton():
+    reset_embedding_service_for_tests()
+    yield
+    reset_embedding_service_for_tests()
+
+
+def _make_reranker(service: _FakeService) -> MemoryRecallReranker:
+    r = MemoryRecallReranker()
+    r._service = service
+    return r
+
+
+def _obs(oid: str, text: str, *, score: float = 1.0,
+         entity: str = "master",
+         target_type: str = "persona",
+         embedding: list[float] | None = None,
+         model_id: str = "fake-128d-int8",
+         status: str | None = None,
+         suppress: bool = False,
+         protected: bool = False) -> dict:
+    """Build an observation dict in the shape ``_aload_signal_targets``
+    emits — keep all the keys the reranker may inspect."""
+    o = {
+        "id": oid,
+        "raw_id": oid.split(".")[-1],
+        "target_type": target_type,
+        "entity": entity,
+        "entity_key": entity,
+        "text": text,
+        "score": score,
+        "suppress": suppress,
+        "protected": protected,
+        "embedding": list(embedding) if embedding is not None else None,
+        "embedding_text_sha256": _embedding_text_sha256(text) if embedding else None,
+        "embedding_model_id": model_id if embedding else None,
+    }
+    if status is not None:
+        o["status"] = status
+    return o
+
+
+def _make_llm_mock(payload):
+    resp = MagicMock()
+    resp.content = json.dumps(payload)
+
+    async def _ainvoke(*_a, **_k):
+        return resp
+
+    async def _aclose():
+        return None
+
+    llm = MagicMock()
+    llm.ainvoke = _ainvoke
+    llm.aclose = _aclose
+    return llm
+
+
+# ── phase 1: hard filter ─────────────────────────────────────────────
+
+
+def test_hard_filter_drops_negative_score():
+    """User-disputed entries (evidence_score < 0) must not feed back
+    into the LLM signal-detection pool — Stage-2 would either
+    reinforce the dispute or, worse, cancel it."""
+    obs = [
+        _obs("p.master.a", "kept", score=1.5),
+        _obs("p.master.b", "dropped", score=-0.5),
+        _obs("p.master.c", "kept", score=0.0),
+    ]
+    out = MemoryRecallReranker._hard_filter(obs)
+    ids = {o["id"] for o in out}
+    assert "p.master.a" in ids
+    assert "p.master.c" in ids
+    assert "p.master.b" not in ids
+
+
+def test_hard_filter_drops_suppressed():
+    obs = [
+        _obs("p.master.a", "kept"),
+        _obs("p.master.b", "dropped", suppress=True),
+    ]
+    out = MemoryRecallReranker._hard_filter(obs)
+    assert {o["id"] for o in out} == {"p.master.a"}
+
+
+def test_hard_filter_drops_protected_persona():
+    """character_card-sourced entries have effectively infinite
+    evidence — they're never the target of a Stage-2 signal."""
+    obs = [
+        _obs("p.master.a", "kept"),
+        _obs("p.master.card", "dropped", protected=True),
+    ]
+    out = MemoryRecallReranker._hard_filter(obs)
+    assert {o["id"] for o in out} == {"p.master.a"}
+
+
+def test_hard_filter_drops_terminal_reflections():
+    """promoted/denied/archived/etc reflections shouldn't appear in
+    the active signal pool. Same exclusion as the render path."""
+    from memory.reflection import REFLECTION_TERMINAL_STATUSES
+    obs = [
+        _obs("r.x", "kept", target_type="reflection", status="confirmed"),
+    ]
+    for status in REFLECTION_TERMINAL_STATUSES:
+        obs.append(_obs(f"r.{status}", "drop", target_type="reflection", status=status))
+    out = MemoryRecallReranker._hard_filter(obs)
+    ids = {o["id"] for o in out}
+    assert "r.x" in ids
+    for status in REFLECTION_TERMINAL_STATUSES:
+        assert f"r.{status}" not in ids
+
+
+def test_hard_filter_drops_empty_text():
+    """Defensive — an empty-text observation can't be embedded or
+    matched; surface as zero-row noise rather than going through."""
+    obs = [
+        _obs("p.master.a", ""),
+        _obs("p.master.b", "   "),
+        _obs("p.master.c", "real text"),
+    ]
+    out = MemoryRecallReranker._hard_filter(obs)
+    assert {o["id"] for o in out} == {"p.master.c"}
+
+
+# ── phase 2: coarse rank by cosine ───────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_coarse_rank_falls_back_when_service_unavailable():
+    """No embedding service ⇒ pure evidence_score order, top-k slice."""
+    svc = _FakeService(available=False)
+    r = _make_reranker(svc)
+    obs = [
+        _obs("a", "x", score=0.5),
+        _obs("b", "y", score=2.0),
+        _obs("c", "z", score=1.0),
+    ]
+    out = await r._coarse_rank(obs, query_texts=["q"], k=3)
+    assert [o["id"] for o in out] == ["b", "c", "a"]
+    # Service was never asked to embed anything.
+    assert svc.embed_calls == []
+
+
+@pytest.mark.asyncio
+async def test_coarse_rank_falls_back_when_no_query():
+    """Empty/None query ⇒ no semantic basis, evidence order applies."""
+    svc = _FakeService(available=True)
+    r = _make_reranker(svc)
+    obs = [
+        _obs("a", "x", score=0.5),
+        _obs("b", "y", score=2.0),
+    ]
+    out = await r._coarse_rank(obs, query_texts=None, k=2)
+    assert [o["id"] for o in out] == ["b", "a"]
+
+
+@pytest.mark.asyncio
+async def test_coarse_rank_uses_max_cosine_across_queries():
+    """A candidate that's near ANY query vector should win — recall
+    should not require relevance to ALL topics. Implements the
+    documented max-pool semantics."""
+    # Two queries: q1 → vec [1,0], q2 → vec [0,1]. Candidates:
+    #   a: [1,0]   → cosine vs q1 = 1.0, vs q2 = 0.0  ⇒ max = 1.0
+    #   b: [0,1]   → cosine vs q1 = 0.0, vs q2 = 1.0  ⇒ max = 1.0
+    #   c: [.5,.5] → cosine vs q1 = .707, vs q2 = .707 ⇒ max = .707
+    qmap = {"q1": [1.0, 0.0], "q2": [0.0, 1.0]}
+    svc = _FakeService(
+        available=True,
+        vector_factory=lambda text: qmap.get(text, [0.0, 0.0]),
+    )
+    r = _make_reranker(svc)
+    obs = [
+        _obs("a", "ta", score=0.0, embedding=[1.0, 0.0]),
+        _obs("b", "tb", score=0.0, embedding=[0.0, 1.0]),
+        _obs("c", "tc", score=0.0, embedding=[0.7071, 0.7071]),
+    ]
+    out = await r._coarse_rank(obs, query_texts=["q1", "q2"], k=3)
+    # a and b tie at cosine 1.0 (both should rank above c).
+    assert {out[0]["id"], out[1]["id"]} == {"a", "b"}
+    assert out[2]["id"] == "c"
+
+
+@pytest.mark.asyncio
+async def test_coarse_rank_breaks_ties_with_evidence_score():
+    """Two candidates with identical cosine should fall back to
+    evidence_score for the tie-break — explicit assertion of the
+    documented contract."""
+    svc = _FakeService(
+        available=True,
+        vector_factory=lambda text: [1.0, 0.0],
+    )
+    r = _make_reranker(svc)
+    obs = [
+        _obs("a", "ta", score=0.5, embedding=[1.0, 0.0]),
+        _obs("b", "tb", score=2.0, embedding=[1.0, 0.0]),
+    ]
+    out = await r._coarse_rank(obs, query_texts=["q"], k=2)
+    assert [o["id"] for o in out] == ["b", "a"]
+
+
+@pytest.mark.asyncio
+async def test_coarse_rank_demotes_candidates_without_embedding():
+    """A row with embedding=None gets cosine = -1 so it ranks below
+    everything that does have a vector — the LLM rerank can still
+    pick it up if it's the right answer text-wise."""
+    svc = _FakeService(
+        available=True,
+        vector_factory=lambda text: [1.0, 0.0],
+    )
+    r = _make_reranker(svc)
+    obs = [
+        _obs("with_vec", "t", score=0.0, embedding=[1.0, 0.0]),
+        _obs("no_vec", "t", score=10.0),  # no embedding → no model_id
+    ]
+    out = await r._coarse_rank(obs, query_texts=["q"], k=2)
+    assert [o["id"] for o in out] == ["with_vec", "no_vec"]
+
+
+# ── phase 3: LLM rerank ──────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_aretrieve_skips_llm_when_candidates_within_budget():
+    """When coarse rank already produces ≤ budget candidates, the LLM
+    call is wasted (every candidate makes the cut). Skip it."""
+    svc = _FakeService(available=True, vector_factory=lambda t: [1.0, 0.0])
+    r = _make_reranker(svc)
+    cm = MagicMock()
+    obs = [
+        _obs("a", "ta", embedding=[1.0, 0.0]),
+        _obs("b", "tb", embedding=[1.0, 0.0]),
+    ]
+    create_llm = MagicMock()
+    with patch("utils.llm_client.create_chat_llm", create_llm):
+        out = await r.aretrieve_candidates(
+            obs, query_texts=["q"], budget=5, config_manager=cm,
+        )
+    assert {o["id"] for o in out} == {"a", "b"}
+    assert create_llm.call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_aretrieve_invokes_llm_when_pool_exceeds_budget():
+    """Coarse pool is 3 × budget by default; with budget=2 and 6+
+    cosine-ranked candidates, the LLM should be asked to pick 2."""
+    svc = _FakeService(available=True, vector_factory=lambda t: [1.0, 0.0])
+    r = _make_reranker(svc)
+    cm = MagicMock()
+    cm.get_model_api_config = MagicMock(return_value={
+        "model": "fake", "base_url": "http://fake", "api_key": "sk-fake",
+    })
+    obs = [
+        _obs(f"o{i}", f"t{i}", embedding=[1.0, 0.0]) for i in range(8)
+    ]
+    # LLM picks o3 then o5 — assert order is preserved in the output.
+    fake_llm = _make_llm_mock([{"id": "o3"}, {"id": "o5"}])
+    with patch("utils.llm_client.create_chat_llm", return_value=fake_llm):
+        out = await r.aretrieve_candidates(
+            obs, query_texts=["q"], budget=2, config_manager=cm,
+        )
+    assert [o["id"] for o in out] == ["o3", "o5"]
+
+
+@pytest.mark.asyncio
+async def test_aretrieve_drops_hallucinated_ids_from_llm():
+    """LLM returns an id that isn't in the candidate set — must be
+    silently dropped (not crash, not pass through)."""
+    svc = _FakeService(available=True, vector_factory=lambda t: [1.0, 0.0])
+    r = _make_reranker(svc)
+    cm = MagicMock()
+    cm.get_model_api_config = MagicMock(return_value={
+        "model": "fake", "base_url": "http://fake", "api_key": "sk-fake",
+    })
+    obs = [
+        _obs(f"o{i}", f"t{i}", embedding=[1.0, 0.0]) for i in range(8)
+    ]
+    fake_llm = _make_llm_mock([
+        {"id": "ghost"}, {"id": "o2"}, {"id": "another_ghost"}, {"id": "o5"},
+    ])
+    with patch("utils.llm_client.create_chat_llm", return_value=fake_llm):
+        out = await r.aretrieve_candidates(
+            obs, query_texts=["q"], budget=2, config_manager=cm,
+        )
+    assert [o["id"] for o in out] == ["o2", "o5"]
+
+
+@pytest.mark.asyncio
+async def test_aretrieve_tops_up_when_llm_returns_fewer_than_budget():
+    """LLM only returns 1 item but budget=3 — top up from the coarse-
+    rank tail so the caller still gets `budget` rows when there were
+    that many candidates."""
+    svc = _FakeService(available=True, vector_factory=lambda t: [1.0, 0.0])
+    r = _make_reranker(svc)
+    cm = MagicMock()
+    cm.get_model_api_config = MagicMock(return_value={
+        "model": "fake", "base_url": "http://fake", "api_key": "sk-fake",
+    })
+    obs = [
+        _obs(f"o{i}", f"t{i}", embedding=[1.0, 0.0], score=10 - i)
+        for i in range(8)
+    ]
+    fake_llm = _make_llm_mock([{"id": "o5"}])
+    with patch("utils.llm_client.create_chat_llm", return_value=fake_llm):
+        out = await r.aretrieve_candidates(
+            obs, query_texts=["q"], budget=3, config_manager=cm,
+        )
+    assert len(out) == 3
+    assert out[0]["id"] == "o5"
+    # Top-up draws from the coarse-rank tail in order — those are
+    # the highest-evidence_score rows the LLM didn't pick.
+    assert "o5" in {o["id"] for o in out}
+
+
+@pytest.mark.asyncio
+async def test_aretrieve_falls_back_to_coarse_on_llm_error():
+    """LLM raises ⇒ best-effort fallback to coarse rank order; never
+    crash the recall path. Stage-2 signal detection then runs against
+    the coarse-ranked top-budget."""
+    svc = _FakeService(available=True, vector_factory=lambda t: [1.0, 0.0])
+    r = _make_reranker(svc)
+    cm = MagicMock()
+    cm.get_model_api_config = MagicMock(return_value={
+        "model": "fake", "base_url": "http://fake", "api_key": "sk-fake",
+    })
+    obs = [
+        _obs(f"o{i}", f"t{i}", embedding=[1.0, 0.0], score=10 - i)
+        for i in range(8)
+    ]
+
+    class _BoomLLM:
+        async def ainvoke(self, *_a, **_k):
+            raise RuntimeError("simulated network failure")
+
+        async def aclose(self):
+            return None
+
+    with patch("utils.llm_client.create_chat_llm", return_value=_BoomLLM()):
+        out = await r.aretrieve_candidates(
+            obs, query_texts=["q"], budget=2, config_manager=cm,
+        )
+    # Falls back to coarse rank: cosine ties → score DESC ⇒ o0, o1.
+    assert len(out) == 2
+    assert {o["id"] for o in out} == {"o0", "o1"}
+
+
+@pytest.mark.asyncio
+async def test_aretrieve_skips_rerank_when_disabled():
+    """rerank=False ⇒ coarse-rank top-budget directly. Used by tests
+    and callers that want the cosine prefilter without the LLM cost."""
+    svc = _FakeService(available=True, vector_factory=lambda t: [1.0, 0.0])
+    r = _make_reranker(svc)
+    cm = MagicMock()
+    obs = [
+        _obs(f"o{i}", f"t{i}", embedding=[1.0, 0.0], score=10 - i)
+        for i in range(8)
+    ]
+    create_llm = MagicMock()
+    with patch("utils.llm_client.create_chat_llm", create_llm):
+        out = await r.aretrieve_candidates(
+            obs, query_texts=["q"], budget=2,
+            config_manager=cm, rerank=False,
+        )
+    assert create_llm.call_count == 0
+    assert len(out) == 2
+
+
+# ── full-pipeline fallback ──────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_aretrieve_full_fallback_when_service_disabled():
+    """Vectors completely off ⇒ pipeline collapses to evidence_score
+    order, top-budget. No LLM call. This is the path that runs when
+    onnxruntime / model file isn't installed."""
+    svc = _FakeService(available=False)
+    r = _make_reranker(svc)
+    cm = MagicMock()
+    obs = [
+        _obs(f"o{i}", f"t{i}", score=float(i))
+        for i in range(10)
+    ]
+    create_llm = MagicMock()
+    with patch("utils.llm_client.create_chat_llm", create_llm):
+        out = await r.aretrieve_candidates(
+            obs, query_texts=["q"], budget=3, config_manager=cm,
+        )
+    assert create_llm.call_count == 0
+    assert [o["id"] for o in out] == ["o9", "o8", "o7"]
+
+
+@pytest.mark.asyncio
+async def test_aretrieve_empty_observations_returns_empty():
+    svc = _FakeService(available=True)
+    r = _make_reranker(svc)
+    cm = MagicMock()
+    out = await r.aretrieve_candidates(
+        [], query_texts=["q"], budget=5, config_manager=cm,
+    )
+    assert out == []
+
+
+@pytest.mark.asyncio
+async def test_aretrieve_hard_filter_zero_returns_empty():
+    """Every observation excluded by hard filter ⇒ empty result; no
+    coarse rank, no LLM call."""
+    svc = _FakeService(available=True)
+    r = _make_reranker(svc)
+    cm = MagicMock()
+    obs = [
+        _obs("a", "x", suppress=True),
+        _obs("b", "y", protected=True),
+        _obs("c", "z", score=-1.0),
+    ]
+    out = await r.aretrieve_candidates(
+        obs, query_texts=["q"], budget=5, config_manager=cm,
+    )
+    assert out == []
+
+
+# ── prompt locale coverage ───────────────────────────────────────────
+
+
+def test_memory_recall_rerank_prompt_has_all_five_locales_with_placeholders():
+    """All five locales rendered + every placeholder substituted —
+    same contract test as fact_dedup.test_fact_dedup_prompt..."""
+    from config.prompts_memory import (
+        MEMORY_RECALL_RERANK_PROMPT,
+        get_memory_recall_rerank_prompt,
+    )
+    expected_locales = {"zh", "en", "ja", "ko", "ru"}
+    assert set(MEMORY_RECALL_RERANK_PROMPT.keys()) >= expected_locales
+    for lang in expected_locales:
+        rendered = (
+            get_memory_recall_rerank_prompt(lang)
+            .replace("{QUERY}", "X")
+            .replace("{CANDIDATES}", "Y")
+            .replace("{BUDGET}", "3")
+        )
+        assert "{QUERY}" not in rendered, lang
+        assert "{CANDIDATES}" not in rendered, lang
+        assert "{BUDGET}" not in rendered, lang
+
+
+def test_oversample_constant_is_at_least_two():
+    """COARSE_OVERSAMPLE = 1 would defeat the rerank — every coarse
+    candidate would already fit the budget. Lock the lower bound so
+    a future tweak can't accidentally collapse the LLM step."""
+    assert COARSE_OVERSAMPLE >= 2
