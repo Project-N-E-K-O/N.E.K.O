@@ -57,8 +57,14 @@ logger = logging.getLogger(__name__)
 # Tuning knobs — kept as module-level so the loop is easy to monkeypatch
 # in tests and easy to tweak per-deploy without a code change.
 BATCH_SIZE = 16          # entries per ONNX inference call
-POLL_INTERVAL_SECONDS = 60   # idle interval between full sweeps
+POLL_INTERVAL_SECONDS = 20   # idle interval between full sweeps —
+                             # full sweep walks in-memory lists, costs
+                             # a few ms, so the interval is bounded by
+                             # acceptable backfill latency, not CPU.
 ACTIVE_INTERVAL_SECONDS = 5  # interval while there's still backlog
+                             # but the per-tick budget wasn't hit
+                             # (i.e. partial work — small breather
+                             # before the next sweep)
 MAX_ENTRIES_PER_TICK = 64    # bound per-tick work to keep memory_server
                              # responsive during a large backfill
 
@@ -74,16 +80,20 @@ class EmbeddingWarmupWorker:
     def __init__(
         self,
         *,
-        persona_manager,
-        reflection_engine,
-        fact_store,
+        get_persona_manager,         # callable returning current PersonaManager
+        get_reflection_engine,       # callable returning current ReflectionEngine
+        get_fact_store,              # callable returning current FactStore
         get_character_names,         # callable returning list[str]
         warmup_delay_seconds: float,
         dedup_resolver=None,         # optional FactDedupResolver
     ) -> None:
-        self._persona_manager = persona_manager
-        self._reflection_engine = reflection_engine
-        self._fact_store = fact_store
+        # All store/manager accesses go through getters so /reload (which
+        # rebinds the memory_server module globals) is observed on the next
+        # sweep. Capturing concrete instances here would let the worker
+        # write through stale managers and clobber the new ones' updates.
+        self._get_persona_manager = get_persona_manager
+        self._get_reflection_engine = get_reflection_engine
+        self._get_fact_store = get_fact_store
         self._get_character_names = get_character_names
         self._warmup_delay = warmup_delay_seconds
         # Optional — when None, fact embeddings still get backfilled
@@ -145,11 +155,15 @@ class EmbeddingWarmupWorker:
             )
             return
 
-        # Backfill loop. ACTIVE_INTERVAL_SECONDS while there's still
-        # work to do (gives a fresh sweep a chance to drain the
-        # backlog quickly), POLL_INTERVAL_SECONDS once everything is
-        # caught up. Both intervals respect ``stop_event`` for prompt
-        # shutdown.
+        # Backfill loop. Three pacing tiers, all respecting stop_event:
+        #   - budget saturated (processed == MAX_ENTRIES_PER_TICK):
+        #     almost certainly more work, no sleep — ONNX inference
+        #     inside embed_batch already yields to the event loop, so
+        #     this doesn't peg CPU at the expense of other handlers.
+        #   - partial work (0 < processed < budget): ACTIVE_INTERVAL
+        #     small breather before next sweep.
+        #   - idle (processed == 0): POLL_INTERVAL, the bound on how
+        #     long a freshly written entry waits for its first vector.
         while not self._stop_event.is_set():
             try:
                 processed = await self._sweep_once()
@@ -169,14 +183,20 @@ class EmbeddingWarmupWorker:
                 )
                 return
 
+            if processed >= MAX_ENTRIES_PER_TICK:
+                # Budget hit — drain backlog without sleeping. Still
+                # checks stop_event at top of loop, so shutdown remains
+                # prompt.
+                continue
             interval = ACTIVE_INTERVAL_SECONDS if processed > 0 else POLL_INTERVAL_SECONDS
             try:
                 await asyncio.wait_for(self._stop_event.wait(), timeout=interval)
             except asyncio.TimeoutError:
-                # Timeout means "no stop signal during the interval";
-                # continue the loop. Distinct from a real cancellation,
-                # which propagates as CancelledError and exits.
-                continue
+                # Expected: interval elapsed without stop_event firing —
+                # fall through to the next sweep iteration. Distinct
+                # from a real cancellation, which propagates as
+                # CancelledError and exits the loop.
+                pass
 
     async def _wait_for_warmup_trigger(self) -> bool:
         """Wait for ``warmup_delay`` OR the first /process call. Returns
@@ -248,9 +268,10 @@ class EmbeddingWarmupWorker:
         already used by every other write path in PersonaManager so
         the convention is safe here.
         """
-        async with self._persona_manager._get_alock(name):
+        persona_manager = self._get_persona_manager()
+        async with persona_manager._get_alock(name):
             try:
-                persona = await self._persona_manager._aensure_persona_locked(name)
+                persona = await persona_manager._aensure_persona_locked(name)
             except Exception as e:  # noqa: BLE001
                 logger.warning(
                     "[EmbeddingWorker] persona load failed for %s: %s", name, e,
@@ -261,20 +282,27 @@ class EmbeddingWarmupWorker:
                 return 0
             await self._fill_embeddings(targets)
             try:
-                await self._persona_manager.asave_persona(name, persona)
+                await persona_manager.asave_persona(name, persona)
             except Exception as e:  # noqa: BLE001
                 logger.warning(
                     "[EmbeddingWorker] persona save failed for %s: %s", name, e,
                 )
+                # Returning len(targets) here would mark the batch as
+                # progress; combined with the no-sleep saturated-budget
+                # branch in _run, a persistent disk error (full / RO /
+                # permission) would hot-loop on the same entries. 0
+                # routes us through ACTIVE/POLL_INTERVAL backoff.
+                return 0
             return len(targets)
 
     async def _sweep_reflections(self, name: str, budget: int) -> int:
         """Same lock contract as persona — synthesis / auto-promote /
         confirm-promotion all hold ``_get_alock(name)`` around their
         load+save, so the worker must too (Codex PR-956 P1)."""
-        async with self._reflection_engine._get_alock(name):
+        reflection_engine = self._get_reflection_engine()
+        async with reflection_engine._get_alock(name):
             try:
-                reflections = await self._reflection_engine._aload_reflections_full(name)
+                reflections = await reflection_engine._aload_reflections_full(name)
             except Exception as e:  # noqa: BLE001
                 logger.warning(
                     "[EmbeddingWorker] reflection load failed for %s: %s", name, e,
@@ -285,11 +313,12 @@ class EmbeddingWarmupWorker:
                 return 0
             await self._fill_embeddings(targets)
             try:
-                await self._reflection_engine.asave_reflections(name, reflections)
+                await reflection_engine.asave_reflections(name, reflections)
             except Exception as e:  # noqa: BLE001
                 logger.warning(
                     "[EmbeddingWorker] reflection save failed for %s: %s", name, e,
                 )
+                return 0  # see _sweep_persona — same hot-loop guard
             return len(targets)
 
     async def _sweep_facts(self, name: str, budget: int) -> int:
@@ -303,8 +332,9 @@ class EmbeddingWarmupWorker:
         is the only field this worker touches, so a per-character
         asyncio lock isn't needed here — the field-level race is empty.
         """
+        fact_store = self._get_fact_store()
         try:
-            facts = await self._fact_store.aload_facts(name)
+            facts = await fact_store.aload_facts(name)
         except Exception as e:  # noqa: BLE001
             logger.warning(
                 "[EmbeddingWorker] fact load failed for %s: %s", name, e,
@@ -315,11 +345,16 @@ class EmbeddingWarmupWorker:
             return 0
         await self._fill_embeddings(targets)
         try:
-            await self._fact_store.asave_facts(name)
+            await fact_store.asave_facts(name)
         except Exception as e:  # noqa: BLE001
             logger.warning(
                 "[EmbeddingWorker] fact save failed for %s: %s", name, e,
             )
+            # Save failed — skip dedup enqueue (the embeddings the
+            # resolver would key on aren't durable yet) and return 0
+            # so the outer loop backs off instead of hot-looping on a
+            # persistent disk error. See _sweep_persona for context.
+            return 0
 
         # Dedup pass: only the rows we just embedded are candidates;
         # we don't want to repeatedly scan the entire fact history on

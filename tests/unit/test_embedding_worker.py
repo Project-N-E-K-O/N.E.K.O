@@ -160,9 +160,9 @@ def _build_worker(
     dedup_resolver=None,
 ) -> EmbeddingWarmupWorker:
     w = EmbeddingWarmupWorker(
-        persona_manager=persona,
-        reflection_engine=reflection,
-        fact_store=fact,
+        get_persona_manager=lambda: persona,
+        get_reflection_engine=lambda: reflection,
+        get_fact_store=lambda: fact,
         get_character_names=lambda: list(names),
         warmup_delay_seconds=warmup_delay,
         dedup_resolver=dedup_resolver,
@@ -540,3 +540,87 @@ async def test_stop_during_warmup_skips_load():
     await w.stop()
     await asyncio.wait_for(task, timeout=1.0)
     assert service.load_called is False
+
+
+@pytest.mark.asyncio
+async def test_live_getters_observe_reload_swap():
+    """Regression for /reload (CodeRabbit PR #956): a sweep after
+    swapping the underlying manager+character list must hit the NEW
+    instances, not the snapshot captured at construction time. Locks
+    in the worker exiting any "snapshot persona_manager / fact_store
+    in __init__" regression."""
+    service = _FakeService(available=True, model_id="fake-128d-int8")
+    state = {
+        "persona": _PersonaStub(),
+        "reflection": _ReflectionStub(),
+        "fact": _FactStub(),
+        "names": ["小天"],
+    }
+    state["fact"].store["小天"] = [
+        {"text": "pre-reload", "embedding": None,
+         "embedding_text_sha256": None, "embedding_model_id": None}
+    ]
+    w = EmbeddingWarmupWorker(
+        get_persona_manager=lambda: state["persona"],
+        get_reflection_engine=lambda: state["reflection"],
+        get_fact_store=lambda: state["fact"],
+        get_character_names=lambda: list(state["names"]),
+        warmup_delay_seconds=0.01,
+    )
+    w._service = service
+
+    processed = await w._sweep_once()
+    assert processed == 1
+    assert state["fact"].save_calls == 1
+    assert state["fact"].store["小天"][0]["embedding"] is not None
+
+    # Simulate /reload: build fresh stubs + a new character, swap them
+    # through the same dict the getters close over.
+    new_persona = _PersonaStub()
+    new_reflection = _ReflectionStub()
+    new_fact = _FactStub()
+    new_fact.store["小蓝"] = [
+        {"text": "post-reload", "embedding": None,
+         "embedding_text_sha256": None, "embedding_model_id": None}
+    ]
+    state["persona"] = new_persona
+    state["reflection"] = new_reflection
+    state["fact"] = new_fact
+    state["names"] = ["小蓝"]
+
+    processed = await w._sweep_once()
+    assert processed == 1
+    # New instance saw the work — proves live-getter resolution.
+    assert new_fact.save_calls == 1
+    assert new_fact.store["小蓝"][0]["embedding"] is not None
+
+
+@pytest.mark.asyncio
+async def test_save_failure_returns_zero_to_avoid_hot_loop():
+    """Regression: a sweep that successfully embedded N entries but
+    failed to persist them must report 0 progress, not N — otherwise
+    the no-sleep saturated-budget branch in _run() hot-loops on a
+    persistent disk error (full / RO / permission)."""
+    service = _FakeService(available=True, model_id="fake-128d-int8")
+
+    class _FailingFact(_FactStub):
+        async def asave_facts(self, name: str) -> None:
+            self.save_calls += 1
+            raise OSError("disk full")
+
+    persona = _PersonaStub()
+    reflection = _ReflectionStub()
+    fact = _FailingFact()
+    fact.store["小天"] = [
+        {"text": f"fact {i}", "embedding": None,
+         "embedding_text_sha256": None, "embedding_model_id": None}
+        for i in range(3)
+    ]
+    w = _build_worker(
+        service=service, persona=persona, reflection=reflection, fact=fact,
+    )
+    processed = await w._sweep_once()
+    # Embedding ran (in-memory stamps applied), but the save raised —
+    # progress accounting must reflect 0 so the outer loop backs off.
+    assert fact.save_calls == 1
+    assert processed == 0

@@ -1560,6 +1560,11 @@ async def startup_event_handler():
 
     # 自动迁移 settings → persona（如 persona 文件不存在）
     # 注：目录结构迁移已在模块级完成（在组件实例化之前）
+    # Pre-bind so a failure inside the try below doesn't strand the
+    # later `if catgirl_names:` blocks (and the embedding worker's
+    # fallback closure) on an unbound local — those reads run
+    # outside this try and would otherwise UnboundLocalError.
+    catgirl_names: list[str] = []
     try:
         character_data = await _config_manager.aload_characters()
         catgirl_names = list(character_data.get('猫娘', {}).keys())
@@ -1689,15 +1694,22 @@ async def startup_event_handler():
                 # known characters keep getting backfilled.
                 return list(catgirl_names)
 
+        # Live getters (not snapshots): /reload swaps these module
+        # globals atomically; capturing the instances here would let
+        # the worker keep writing through the old managers and clobber
+        # post-reload updates from the new ones.
         # Dedup resolver shares the FactStore — its enqueue side is
         # called from the embedding worker after each fact-sweep, its
         # resolve side is called from the idle-maintenance loop below.
+        # NOTE: this resolver still snapshots fact_store at construction,
+        # which has the same /reload-staleness shape the worker just
+        # fixed. Tracked for a follow-up — see PR comment.
         fact_dedup_resolver = FactDedupResolver(fact_store)
 
         embedding_warmup_worker = EmbeddingWarmupWorker(
-            persona_manager=persona_manager,
-            reflection_engine=reflection_engine,
-            fact_store=fact_store,
+            get_persona_manager=lambda: persona_manager,
+            get_reflection_engine=lambda: reflection_engine,
+            get_fact_store=lambda: fact_store,
             get_character_names=_current_catgirl_names,
             warmup_delay_seconds=VECTORS_WARMUP_DELAY_SECONDS,
             dedup_resolver=fact_dedup_resolver,
@@ -1720,15 +1732,13 @@ async def shutdown_event_handler():
         TokenTracker.get_instance().save()
     except Exception:
         pass
-    # P2 vector worker: stop() races stop_event against an inflight
-    # batch sweep so we don't leave the task suspended in the FastAPI
-    # event loop's tear-down. Bounded wait inside stop() guarantees
-    # shutdown can't hang on a stuck inference call.
+    # P2 vector worker: kick off stop() as a task before we touch the
+    # reload lock so its bounded 2s wait overlaps with manager cleanup
+    # below instead of serializing in front of it.
+    worker_stop_task: asyncio.Task | None = None
     if embedding_warmup_worker is not None:
-        try:
-            await embedding_warmup_worker.stop()
-        except Exception as e:
-            logger.warning(f"[Memory] embedding worker stop 失败: {e}")
+        worker_stop_task = asyncio.create_task(embedding_warmup_worker.stop())
+
     managers_to_cleanup: list[TimeIndexedMemory] = []
     async with _reload_lock:
         managers_to_cleanup.extend(_deferred_time_managers)
@@ -1736,11 +1746,24 @@ async def shutdown_event_handler():
         # time_manager 在 startup 钩子里才实例化；若启动过程中就触发 shutdown 可能为 None
         if time_manager is not None and all(existing is not time_manager for existing in managers_to_cleanup):
             managers_to_cleanup.append(time_manager)
-    for manager in managers_to_cleanup:
+
+    async def _cleanup_one(m: TimeIndexedMemory) -> None:
         try:
-            manager.cleanup()
+            await asyncio.to_thread(m.cleanup)
         except Exception as cleanup_exc:
             logger.warning("[MemoryServer] 延迟释放 SQLite 引擎失败: %s", cleanup_exc)
+
+    async def _await_worker_stop() -> None:
+        try:
+            await worker_stop_task  # type: ignore[arg-type]
+        except Exception as e:
+            logger.warning(f"[Memory] embedding worker stop 失败: {e}")
+
+    shutdown_coros: list = [_cleanup_one(m) for m in managers_to_cleanup]
+    if worker_stop_task is not None:
+        shutdown_coros.append(_await_worker_stop())
+    if shutdown_coros:
+        await asyncio.gather(*shutdown_coros)
     logger.info("Memory server已关闭")
 
 
