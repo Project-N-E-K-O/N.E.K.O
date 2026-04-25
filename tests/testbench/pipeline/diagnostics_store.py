@@ -31,6 +31,7 @@ async callers share a mutex cheaply.
 """
 from __future__ import annotations
 
+import itertools
 import threading
 import time
 import uuid
@@ -82,7 +83,15 @@ class DiagnosticsError:
 
 _LOCK = threading.Lock()
 _BUFFER: list[DiagnosticsError] = []
-_COUNTER = 0
+# ``itertools.count.__next__`` is implemented in C and is atomic under
+# CPython's GIL, so we don't need to hold ``_LOCK`` for the increment.
+# A naive ``_COUNTER += 1`` is **not** atomic (LOAD/ADD/STORE) and can
+# silently lose increments when two threads call :func:`record` concurrently
+# (one async route + one sync route running in the threadpool). The uuid4
+# suffix already kept the final id globally unique, but a duplicated counter
+# would still mis-order ids in the Errors subpage timeline (GH AI-review
+# issue #4).
+_COUNTER = itertools.count(1)
 
 # P24 Day 10 §14.4 M4: one-shot flag that flips True the first time
 # the ring overflows in the current "fill cycle" (from last clear()
@@ -93,15 +102,14 @@ _RING_FULL_NOTICE_FIRED: bool = False
 
 
 def _next_id() -> str:
-    """Generate a short monotonic id. ``e`` + base36(ms) + counter so
+    """Generate a short monotonic id. ``e`` + base16(ms) + counter so
     the id sorts roughly chronologically and is globally unique within
     one process run.
     """
-    global _COUNTER
-    _COUNTER += 1
+    n = next(_COUNTER)
     ms = int(time.time() * 1000)
     suffix = uuid.uuid4().hex[:4]
-    return f"e{ms:x}{_COUNTER:x}{suffix}"
+    return f"e{ms:x}{n:x}{suffix}"
 
 
 def _build_ring_full_notice() -> DiagnosticsError:

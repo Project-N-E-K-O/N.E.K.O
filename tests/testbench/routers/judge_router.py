@@ -61,7 +61,11 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 
-from tests.testbench.chat_messages import ROLE_ASSISTANT, ROLE_USER
+from tests.testbench.chat_messages import (
+    ROLE_ASSISTANT,
+    ROLE_USER,
+    SOURCE_EXTERNAL_EVENT_BANNER,
+)
 from tests.testbench.logger import python_logger
 from tests.testbench.model_config import ModelGroupConfig
 from tests.testbench.pipeline import diagnostics_store
@@ -485,17 +489,47 @@ class _JudgeRunRequest(BaseModel):
     model_config = {"extra": "ignore"}
 
 
+def _visible_session_messages(session) -> list[dict[str, Any]]:
+    """Return ``session.messages`` with visual-only banner pseudo-messages
+    stripped out.
+
+    Banners (``source == SOURCE_EXTERNAL_EVENT_BANNER``) are inserted
+    by ``external_events._append_external_event_banner`` purely as
+    timeline markers for the tester's UI; ``prompt_builder`` filters
+    them out of the LLM wire on the /chat/send path. Judger evaluation
+    is a **second** "session.messages → LLM" path (the judger reads
+    history + conversation + the target assistant turn into its prompt
+    template), so the same filter has to apply here too — otherwise a
+    ``[测试事件] 测试用户触发了一次 Agent 回调事件`` line shows up as a
+    fake "system" turn inside ``history`` / ``conversation`` and the
+    judger LLM scores against polluted context (GH AI-review issue
+    #5/#9 family — same chokepoint coverage gap, third instance).
+
+    All callers in this module that previously read ``session.messages``
+    directly should route through this helper so the read-side filter
+    stays symmetric with the single ``_append_external_event_banner``
+    write site (L33 single-writer / L36 §7.25 fifth-layer defense).
+    """
+    return [
+        m for m in (getattr(session, "messages", None) or [])
+        if (m or {}).get("source") != SOURCE_EXTERNAL_EVENT_BANNER
+    ]
+
+
 def _collect_messages(
     session, scope: str, message_ids: list[str],
 ) -> list[dict[str, Any]]:
     """Return the message list to drive the run from.
 
-    - ``scope=conversation`` → full ``session.messages``.
+    - ``scope=conversation`` → full ``session.messages`` minus banners.
     - ``scope=messages`` → the specific ids, preserving order from
       ``session.messages`` (so a user selecting 3 assistant messages out
       of order still gets them chronologically). Missing ids raise 422.
+
+    Banner pseudo-messages are stripped via :func:`_visible_session_messages`
+    so the judger never sees them — see that helper for the rationale.
     """
-    all_messages = session.messages or []
+    all_messages = _visible_session_messages(session)
     if scope == "conversation":
         return list(all_messages)
     if not message_ids:
@@ -632,7 +666,11 @@ def _resolve_reference_text(
     if inline is not None and inline.strip():
         return inline.strip()
     if ref_message_id:
-        for m in session.messages or []:
+        # Banner pseudo-messages cannot legitimately carry
+        # ``reference_content`` (testers can't pick them in the UI); we
+        # filter for parity with the rest of the judger read paths
+        # (banner-coverage chokepoint — see ``_visible_session_messages``).
+        for m in _visible_session_messages(session):
             if m.get("id") == ref_message_id:
                 content = m.get("reference_content") or m.get("content") or ""
                 return str(content).strip()
@@ -921,8 +959,11 @@ async def judge_run(body: _JudgeRunRequest) -> dict[str, Any]:
         # subset of session.messages). For single-granularity we need
         # the surrounding user context; if the caller selected only an
         # assistant bubble without its paired user turn, we walk back
-        # into the full session.messages to find it.
-        all_session_messages = session.messages or []
+        # into the full session.messages to find it. ``_visible_session_
+        # messages`` strips banners so the back-walk doesn't snag on a
+        # banner pseudo-message and the resulting ``history_slice``
+        # passed to the judger stays banner-free.
+        all_session_messages = _visible_session_messages(session)
         for local_idx in assistant_indices:
             target_msg = messages[local_idx]
             target_id = target_msg.get("id")
@@ -1101,7 +1142,11 @@ async def judge_run_prompt_preview(body: _JudgeRunRequest) -> dict[str, Any]:
                     ),
                 },
             )
-        all_session_messages = session.messages or []
+        # Banner-stripped view of session.messages — same rationale as
+        # the run path above; the preview mode must mirror the run mode
+        # exactly so the tester's preview matches what the judger will
+        # actually score.
+        all_session_messages = _visible_session_messages(session)
         for local_idx in assistant_indices:
             target_msg = messages[local_idx]
             target_id = target_msg.get("id")

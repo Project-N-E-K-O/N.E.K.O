@@ -182,13 +182,37 @@ def append_message(
                         "during coerce (non-fatal)",
                     )
             else:  # "warn" or prev_ts missing (edge case)
+                # ``check_timestamp_monotonic`` already short-circuits when
+                # the prior message's ts is unparseable, so reaching this
+                # branch with ``on_violation == 'coerce' and prev_ts is
+                # None`` is *defense-in-depth*: if a future refactor of
+                # the predecessor check ever returns an error without a
+                # parseable prev_ts, we still want the audit log to make
+                # the actual fallback policy obvious instead of reporting
+                # ``policy=coerce`` while silently letting the violation
+                # through (GH AI-review issue #10).
+                actual_policy = (
+                    on_violation
+                    if (on_violation == "warn" or prev_ts is not None)
+                    else "warn"
+                )
+                fallback_reason = (
+                    "prev_ts_unparseable"
+                    if (on_violation == "coerce" and prev_ts is None)
+                    else None
+                )
                 try:
                     diagnostics_store.record_internal(
                         DiagnosticsOp.TIMESTAMP_COERCED,
-                        f"消息时间戳违反单调规则 (策略={on_violation}): {detail}",
+                        f"消息时间戳违反单调规则 (策略={actual_policy}): {detail}",
                         level="warning",
                         session_id=getattr(session, "id", None),
-                        detail={"code": code, "policy": on_violation},
+                        detail={
+                            "code": code,
+                            "policy": actual_policy,
+                            "requested_policy": on_violation,
+                            "fallback_reason": fallback_reason,
+                        },
                     )
                 except Exception:  # noqa: BLE001
                     python_logger().exception(

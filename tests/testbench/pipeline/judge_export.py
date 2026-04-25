@@ -169,6 +169,23 @@ def aggregate_results(results: list[dict[str, Any]]) -> dict[str, Any]:
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for r in effective:
         grouped[str(r.get("schema_id") or "")].append(r)
+    # Also surface schemas that exist in ``results`` only as fully-
+    # errored runs (every row has ``error``, none made it into
+    # ``effective``). Without this pass the schema vanishes from
+    # ``by_schema`` and the UI shows "0 results" while the export's
+    # top-level ``errored`` count silently includes those rows — the
+    # tester then can't tell which schema is broken (GH AI-review
+    # issue #6). We seed an empty list so the per-schema loop below
+    # records ``count=0, errored=N, mode/granularity inferred from
+    # the first errored row``, giving the UI a clear "this schema is
+    # 100% errored" entry.
+    errored_only_schemas: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for r in results:
+        sid = str(r.get("schema_id") or "")
+        if sid in grouped:
+            continue
+        if r.get("error"):
+            errored_only_schemas[sid].append(r)
 
     for sid, rows in grouped.items():
         mode = str(rows[0].get("mode") or "")
@@ -271,6 +288,28 @@ def aggregate_results(results: list[dict[str, Any]]) -> dict[str, Any]:
             "verdict_distribution": dict(schema_verdicts),
             "gap_trajectory": gap_traj if mode == "comparative" else [],
             "problem_patterns": dict(problem_patterns.most_common(25)),
+        }
+
+    # Tail pass: surface schemas that have ONLY errored rows so the UI
+    # can render a clear "this schema is 100% errored" card instead of
+    # silently dropping them (GH AI-review issue #6). We can't compute
+    # any of the score / dimension fields (no successful run to extract
+    # from), so they're set to neutral empty / None values.
+    for sid, err_rows in errored_only_schemas.items():
+        first = err_rows[0]
+        by_schema[sid] = {
+            "count": 0,
+            "errored": len(err_rows),
+            "mode": str(first.get("mode") or ""),
+            "granularity": str(first.get("granularity") or ""),
+            "avg_overall": None,
+            "pass_count": 0,
+            "pass_rate": None,
+            "avg_gap": None,
+            "dimensions": [],
+            "verdict_distribution": {},
+            "gap_trajectory": [],
+            "problem_patterns": {},
         }
 
     return {

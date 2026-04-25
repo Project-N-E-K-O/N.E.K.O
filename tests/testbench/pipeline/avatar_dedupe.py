@@ -129,7 +129,14 @@ class _AvatarDedupeCache:
         # ``strip()`` matters: the helper also strips, so an un-stripped key
         # here would miss the entry and leave it stuck at the front of the LRU.
         key = str(dedupe_key or note).strip() or note
-        if key and key in self._cache:
+        # LRU semantics = "most-recently *admitted*". A rejected dedupe-window
+        # repoke is **not** an admission and must not refresh the entry's LRU
+        # position; otherwise a noisy zone repoked dryly forever would pin
+        # itself at the tail and prevent legitimate other zones from filling
+        # the cap (GH AI-review issue #3). The 8 s expiry sweep + 100 cap
+        # bound the realistic damage today, but the semantic divergence
+        # surfaces under ≥100 distinct admitted zones + a stuck repoke key.
+        if allowed and key and key in self._cache:
             self._cache.move_to_end(key, last=True)
 
         while len(self._cache) > self._MAX_ENTRIES:

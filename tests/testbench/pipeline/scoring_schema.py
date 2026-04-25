@@ -704,13 +704,28 @@ def _collect_schema_errors(raw: Any) -> list[dict[str, str]]:
                 add("ai_ness_penalty.max", f"max={pmax!r} \u5fc5\u987b\u662f\u6574\u6570.")
             pok = penalty.get("max_passable")
             try:
-                if int(pok) < 0:
+                pok_i = int(pok)
+                if pok_i < 0:
                     add("ai_ness_penalty.max_passable", "max_passable \u5fc5\u987b \u2265 0.")
-                elif isinstance(pmax, int) and int(pok) > int(pmax):
-                    add(
-                        "ai_ness_penalty.max_passable",
-                        "max_passable \u4e0d\u80fd\u5927\u4e8e max.",
-                    )
+                else:
+                    # Try to coerce ``pmax`` independently so the
+                    # ``max_passable <= max`` check fires even when
+                    # ``pmax`` arrived as a numeric float / numeric string
+                    # (e.g. ``"5"`` from a YAML config). Restricting the
+                    # comparison to ``isinstance(pmax, int)`` previously
+                    # let ``max_passable=20, max=5.0`` slip through —
+                    # the renderer then divides by ``int(pmax)=5`` and
+                    # ``max_passable`` is silently nonsensical (GH AI-
+                    # review issue #12).
+                    try:
+                        pmax_i = int(pmax)
+                    except (TypeError, ValueError):
+                        pmax_i = None
+                    if pmax_i is not None and pok_i > pmax_i:
+                        add(
+                            "ai_ness_penalty.max_passable",
+                            "max_passable \u4e0d\u80fd\u5927\u4e8e max.",
+                        )
             except (TypeError, ValueError):
                 add("ai_ness_penalty.max_passable", f"max_passable={pok!r} \u5fc5\u987b\u662f\u6574\u6570.")
 
@@ -1018,6 +1033,48 @@ def duplicate_schema(
 # ── Prompt preview helper (used by /schemas/{id}/preview_prompt) ────
 
 
+def _extract_template_placeholder_names(template: str) -> set[str]:
+    """Return the set of top-level placeholder identifiers used in
+    ``template``, mirroring the same "first identifier wins" rule that
+    :class:`_SafeFormatter.get_field` enforces at render time.
+
+    Why not ``f"{{{name}}}" in template``: that substring check only
+    matches the bare ``{name}`` form and silently misses every formatted
+    variant Python ``str.format`` accepts — ``{name!r}`` (conversion),
+    ``{name:>10}`` (format spec), ``{name.attr}`` (attribute access),
+    ``{name[0]}`` (subscript). The renderer **does** evaluate those
+    forms, so the editor's "missing placeholders" badge would lie about
+    coverage and the "used placeholders" list would under-report (GH
+    AI-review issue #13).
+
+    Uses ``string.Formatter().parse()`` which is the same parser
+    ``str.format`` runs internally, so we match the renderer's
+    behaviour byte-for-byte. ``parse`` yields ``(literal_text,
+    field_name, format_spec, conversion)`` per chunk; literal-only
+    chunks (no ``{}``) have ``field_name=None``. Empty/auto-numbered
+    fields (``{}``, ``{0}``) and pure subscript-of-positional
+    (``{0[k]}``) are skipped — schemas don't use them and counting them
+    as "used" would be confusing.
+    """
+    import string  # local import keeps module-load cost minimal
+    formatter = string.Formatter()
+    names: set[str] = set()
+    try:
+        for _literal, field_name, _spec, _conversion in formatter.parse(template):
+            if not field_name:
+                continue
+            # Match _SafeFormatter.get_field's first-identifier rule.
+            first = field_name.split(".", 1)[0].split("[", 1)[0]
+            if first and not first.isdigit():
+                names.add(first)
+    except (ValueError, IndexError):
+        # Malformed template (unbalanced braces, etc.) — preview_prompt's
+        # caller will see the formatter's real error during render; here
+        # we just return whatever we did manage to parse.
+        pass
+    return names
+
+
 def preview_prompt(schema_id: str, ctx: dict[str, Any] | None = None) -> dict[str, Any]:
     """Render a schema's prompt with a sample (or user-provided) context.
 
@@ -1047,15 +1104,16 @@ def preview_prompt(schema_id: str, ctx: dict[str, Any] | None = None) -> dict[st
         "max_raw_score",
     }
     rendered = schema.render_prompt(used_ctx)
+    template_placeholders = _extract_template_placeholder_names(schema.prompt_template)
     missing = [
         p for p in KNOWN_PLACEHOLDERS
         if p not in used_ctx
         and p not in auto_provided
-        and f"{{{p}}}" in schema.prompt_template
+        and p in template_placeholders
     ]
     used_report = sorted(
         k for k in (set(used_ctx) | auto_provided)
-        if f"{{{k}}}" in schema.prompt_template
+        if k in template_placeholders
     )
     return {
         "prompt": rendered,

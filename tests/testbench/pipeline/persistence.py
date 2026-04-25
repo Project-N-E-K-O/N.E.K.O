@@ -1372,14 +1372,24 @@ def write_pre_load_backup(session: "Session") -> Path | None:
     failed — this function never raises to keep Load resilient).
     """
     try:
+        # Take a single ``datetime.now()`` and reuse it for both the
+        # archive ``name`` field (epoch-int form) and the on-disk
+        # filename suffix (human-friendly YYYYMMDD_HHMMSS form). Two
+        # separate ``now()`` calls would tick across a second boundary
+        # ~once-in-a-million-runs and produce an archive whose internal
+        # ``name`` field doesn't match the surrounding filename — making
+        # crash-recovery scripts that match name↔file by parsing the
+        # suffix silently fall back to a less-precise heuristic (GH
+        # AI-review issue #11).
+        now_dt = datetime.now()
         archive = serialize_session(
             session,
-            name=f"pre_load_{session.id}_{int(datetime.now().timestamp())}",
+            name=f"pre_load_{session.id}_{int(now_dt.timestamp())}",
             redact_api_keys=True,
         )
         target = (
             tb_config.AUTOSAVE_DIR / f"pre_load_{session.id}_"
-            f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+            f"{now_dt.strftime('%Y%m%d_%H%M%S')}.json"
         )
         _atomic_write_json(target, archive.to_json_dict())
         python_logger().info(

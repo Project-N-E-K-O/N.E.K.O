@@ -1073,7 +1073,25 @@ def _render_session_messages_for_memory_context(
     messages = getattr(session, "messages", None) or []
     if not messages:
         return _PROACTIVE_MEMORY_EMPTY_FALLBACK
-    recent = messages[-max(1, k):]
+    # Drop external-event banner pseudo-messages BEFORE windowing so a
+    # tail full of banners doesn't push real conversation out of the
+    # k-message window. The banner is a tester-visible UI marker only;
+    # ``prompt_builder`` already filters it out of the *direct* wire
+    # (R5 T7 read-side chokepoint), but this proactive memory_context
+    # path is a *second* read site that has to apply the same filter,
+    # otherwise the banner ("[测试事件] 测试用户触发了一次 Agent 回调
+    # 事件") leaks into the proactive system prompt as a fake "系统"
+    # turn and the LLM treats it as an instruction (GH AI-review issue
+    # #5; same family as L33 single-writer / L36 §7.25 fifth-layer
+    # defense — one chokepoint ``_append_external_event_banner`` writes,
+    # *every* read site must filter symmetrically).
+    filtered = [
+        m for m in messages
+        if (m or {}).get("source") != SOURCE_EXTERNAL_EVENT_BANNER
+    ]
+    if not filtered:
+        return _PROACTIVE_MEMORY_EMPTY_FALLBACK
+    recent = filtered[-max(1, k):]
     lines: list[str] = []
     for msg in recent:
         role = str((msg or {}).get("role") or "").lower()

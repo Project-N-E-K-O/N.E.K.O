@@ -198,7 +198,27 @@ def _flip_history(messages: list[dict[str, Any]]) -> list[dict[str, str]]:
     flipped: list[dict[str, str]] = []
     for m in messages:
         role = m.get("role")
-        content = (m.get("content") or "").strip()
+        raw_content = m.get("content")
+        # Normalise content shapes so the ``.strip()`` below cannot
+        # explode on a multi-modal list (``[{type:"text", text:"..."}, ...]``)
+        # — chat_messages allows both plain string and the testbench's
+        # richer list form, so this path is reachable in practice
+        # whenever a user prepares a SimUser run from a session that
+        # also drove a vision turn (GH AI-review issue #14).
+        if isinstance(raw_content, str):
+            content = raw_content.strip()
+        elif isinstance(raw_content, list):
+            parts: list[str] = []
+            for chunk in raw_content:
+                if isinstance(chunk, dict) and chunk.get("type") == "text":
+                    txt = chunk.get("text")
+                    if isinstance(txt, str) and txt.strip():
+                        parts.append(txt.strip())
+            content = "\n".join(parts).strip()
+        elif raw_content is None:
+            content = ""
+        else:
+            content = str(raw_content).strip()
         if not content:
             continue
         if role == ROLE_USER:

@@ -234,12 +234,28 @@ def _rotate_head_half(fh: io.TextIOBase) -> None:
     try:
         data = path.read_bytes()
         half = len(data) // 2
+        # Walk forward from the byte midpoint to the next newline; if no
+        # newline is found within ~1 MB, fall back to the next valid
+        # UTF-8 boundary (a continuation byte ``0b10xxxxxx`` cannot start
+        # a code point, so we step past it). Without this guard we'd
+        # cut multi-byte CJK chars in half and the next reader (the
+        # tester's tail-the-log helper or the Errors subpage live
+        # snippet) sees ``\ufffd`` mojibake at the head — confusing for
+        # an audit log whose whole point is faithful playback (GH AI-
+        # review issue #7).
+        cut = half
+        nl = data.find(b"\n", cut, cut + 1_048_576)
+        if nl != -1:
+            cut = nl + 1
+        else:
+            while cut < len(data) and (data[cut] & 0xC0) == 0x80:
+                cut += 1
         notice = (
             f"\n\n[live_runtime_log] rotated at "
             f"{datetime.now().isoformat(timespec='seconds')} "
-            f"(file exceeded {MAX_FILE_BYTES} bytes, dropped first {half} bytes)\n\n"
+            f"(file exceeded {MAX_FILE_BYTES} bytes, dropped first {cut} bytes)\n\n"
         ).encode("utf-8", errors="replace")
-        path.write_bytes(notice + data[half:])
+        path.write_bytes(notice + data[cut:])
     except Exception:  # noqa: BLE001
         pass
     _file_handle = open(path, mode="a", encoding="utf-8", buffering=1)  # noqa: SIM115

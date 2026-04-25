@@ -831,6 +831,16 @@ class AutosaveScheduler:
         self._last_error: str | None = None
         self._last_source: str | None = None
         self._task: asyncio.Task[None] | None = None
+        # ``_stopping`` blocks new ``notify()`` and tells the background
+        # loop to bail; ``_closed`` is the *terminal* state set only
+        # **after** the last-gasp flush (see :meth:`close`). Splitting
+        # them is what lets ``_do_flush`` distinguish "scheduler is
+        # winding down — final flush is allowed" from "scheduler is
+        # gone — drop the flush". Conflating them caused the GH AI-
+        # review issue #1: ``close()`` flipped a single ``_closed`` flag
+        # before awaiting the final flush, and ``_do_flush`` then short-
+        # circuited the very flush ``close()`` was trying to perform.
+        self._stopping: bool = False
         self._closed: bool = False
         self._wakeup: asyncio.Event = asyncio.Event()
         # Serialises concurrent flushes (e.g. ``flush_now`` racing with
@@ -862,7 +872,11 @@ class AutosaveScheduler:
         the caller (``session_operation.__aexit__``) must not be broken
         by a stray exception in bookkeeping.
         """
-        if self._closed:
+        # Reject as soon as ``close()`` started winding the scheduler
+        # down, even before the final flush completes — otherwise late
+        # notifies could push ``_dirty=True`` *after* the last-gasp
+        # flush cleared it, leaking that change forever.
+        if self._stopping or self._closed:
             return
         try:
             now = time.monotonic()
@@ -905,10 +919,28 @@ class AutosaveScheduler:
         Called from ``SessionStore._destroy_locked`` **before** the
         session's per-op lock is taken for sandbox teardown, so we won't
         deadlock if our last flush blocks on the same lock.
+
+        Two-phase shutdown so the last-gasp flush actually runs:
+
+        1. ``_stopping = True`` — :meth:`notify` rejects new dirty
+           signals and the background loop will return on its next
+           iteration. This prevents the loop from racing the final
+           flush we're about to do here.
+        2. ``await _do_flush(wait_for_lock=True)`` — at this point
+           ``_closed`` is still ``False``, so :meth:`_do_flush`'s
+           internal "scheduler closed during lock wait" guard does NOT
+           trip, and the final flush completes.
+        3. ``_closed = True`` + cancel loop task — terminal state.
+
+        Conflating ``_stopping`` and ``_closed`` previously meant the
+        guard at line ~1115 of :meth:`_do_flush` raised
+        :class:`_LockContention` as soon as we acquired ``session.lock``,
+        and the trailing dirty state was silently dropped (GH AI-review
+        issue #1).
         """
         if self._closed:
             return
-        self._closed = True
+        self._stopping = True
         # Best-effort final flush so graceful shutdown captures trailing
         # dirty state. We try with a bounded timeout — if the session is
         # genuinely busy, skip (user just asked to destroy, so losing
@@ -929,7 +961,13 @@ class AutosaveScheduler:
                 python_logger().warning(
                     "autosave: close() final flush failed: %s", exc,
                 )
-        # Cancel the loop task.
+        self._closed = True
+        # Wake the loop so the ``while not self._closed`` check exits
+        # immediately (otherwise it stays parked on ``_wakeup.wait()``
+        # until ``_task.cancel()`` raises ``CancelledError`` inside
+        # ``wait()`` — works, but generates a noisy CancelledError
+        # exception per close).
+        self._wakeup.set()
         if self._task is not None and not self._task.done():
             self._task.cancel()
             try:
@@ -968,11 +1006,11 @@ class AutosaveScheduler:
         (event-driven, bursty), not a polling ``while True: sleep``.
         """
         try:
-            while not self._closed:
+            while not (self._stopping or self._closed):
                 # Wait for first dirty signal. No CPU when idle.
                 await self._wakeup.wait()
                 self._wakeup.clear()
-                if self._closed:
+                if self._stopping or self._closed:
                     return
                 cfg = get_autosave_config()
                 if not cfg.enabled:
@@ -991,7 +1029,7 @@ class AutosaveScheduler:
                 # extend the window, but cap total wait at force_seconds
                 # from the first notify.
                 await self._debounce_wait(cfg)
-                if self._closed:
+                if self._stopping or self._closed:
                     return
                 # Re-check enabled in case user toggled mid-debounce.
                 cfg = get_autosave_config()
@@ -1023,6 +1061,16 @@ class AutosaveScheduler:
                         await asyncio.sleep(_FLUSH_ERROR_BACKOFF_SECONDS)
                     except asyncio.CancelledError:
                         raise
+                    # Re-arm wakeup so the loop retries the still-dirty
+                    # state immediately after backoff. Without this the
+                    # next iteration would park on ``_wakeup.wait()`` and
+                    # only resume on the next user notify, leaving
+                    # ``_dirty=True`` stuck on disk-full / permission-
+                    # denied / serialization-error scenarios where no
+                    # further user activity is expected (GH AI-review
+                    # issue #2).
+                    self._wakeup.set()
+                    continue
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 — last-ditch; log + return
@@ -1035,7 +1083,7 @@ class AutosaveScheduler:
         """Sleep until either debounce expired with no new notifies
         OR force_seconds elapsed since first_dirty_at, whichever first.
         """
-        while not self._closed:
+        while not (self._stopping or self._closed):
             now = time.monotonic()
             first = self._first_dirty_at or now
             last_notify = self._last_notify_at or first
@@ -1054,7 +1102,7 @@ class AutosaveScheduler:
             except asyncio.TimeoutError:
                 # Debounce window has closed with no new notifies.
                 return
-            if self._closed:
+            if self._stopping or self._closed:
                 return
             # New notify came in; loop extends the window (self._last_notify_at
             # was updated inside notify()).

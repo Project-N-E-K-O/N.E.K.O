@@ -106,6 +106,7 @@ from tests.testbench.chat_messages import (
     ROLE_ASSISTANT,
     ROLE_SYSTEM,
     ROLE_USER,
+    SOURCE_EXTERNAL_EVENT_BANNER,
 )
 from tests.testbench.logger import python_logger
 from tests.testbench.model_config import ModelGroupConfig
@@ -1342,6 +1343,33 @@ async def _commit_persona_resolve_corrections(
         processed_indices.add(idx)
 
     if resolved:
+        # Two-file commit: persona first, then corrections queue. We
+        # cannot get cross-file atomicity with the project's single-file
+        # ``atomic_write_json`` chokepoint, so we lean on the actions'
+        # **idempotency under retry** to bound the worst case (GH AI-
+        # review issue #8 — full analysis):
+        #   * persona write succeeds + corrections write fails ⇒ next
+        #     ``persona.resolve_corrections`` call re-processes the same
+        #     entries. ``keep_both`` already de-dupes via
+        #     ``existing_texts``; ``keep_new`` removes-then-appends so
+        #     the second run is a no-op (old_text gone the first time);
+        #     ``keep_old`` is a no-op anyway. Only ``replace`` becomes
+        #     an append-on-retry (old_text already replaced ⇒ fall-
+        #     through, then *no* re-append because the loop's
+        #     ``replace`` branch only writes inside the matching ``if``).
+        #     Net effect of retry: at worst a duplicate entry on
+        #     ``replace`` if the user manually re-resolves the same
+        #     correction, *not* on automatic retry — acceptable.
+        #   * persona write fails ⇒ corrections queue is left untouched
+        #     (we never reach the second ``await``), so the user sees
+        #     the queue intact and can retry from the editor. No data
+        #     loss.
+        # Reversing the order ("corrections first") would be **strictly
+        # worse**: a persona-write failure after the queue is drained
+        # would silently drop the user's curated correction forever.
+        # If a future change needs stricter cross-file atomicity, the
+        # right move is a single combined journal file + a recovery
+        # pass at boot, not a re-ordering of these two writes.
         await pm.asave_persona(character, persona)
         remaining = [c for i, c in enumerate(corrections) if i not in processed_indices]
         from utils.file_utils import atomic_write_json_async
@@ -1376,6 +1404,17 @@ def _session_messages_to_langchain(session: Session) -> list[Any]:
     """
     out: list[Any] = []
     for m in session.messages:
+        # Drop external-event banner pseudo-messages so they never reach
+        # ``extract_facts`` / ``compress_history`` — banners are visual-
+        # only timeline markers and would otherwise enter the LangChain
+        # wire as a SystemMessage, contaminating fact extraction with
+        # the literal "[测试事件]" string and biasing recent-history
+        # compression. ``prompt_builder`` already filters them on the
+        # /chat/send wire path; this is the symmetric read-side filter
+        # for the LangChain memory ops (GH AI-review issue #9; same
+        # family as L33 single-writer / L36 §7.25 fifth-layer defense).
+        if m.get("source") == SOURCE_EXTERNAL_EVENT_BANNER:
+            continue
         role = m.get("role")
         content = m.get("content") or ""
         if role == ROLE_USER:
