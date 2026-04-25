@@ -80,6 +80,16 @@ def _maybe_reexec_into_project_venv(project_dir: str) -> None:
     if IS_FROZEN:
         return
 
+    # 获取预期的 .venv 目录和当前环境的根目录
+    expected_venv_dir = os.path.abspath(os.path.join(project_dir, ".venv"))
+    current_venv_dir = os.path.abspath(sys.prefix)
+
+    # 校验当前环境是否真的是本项目的 .venv（忽略大小写差异）
+    # 这样既能兼容 uv run，又能防止在其他无关虚拟环境中误跑此脚本导致报错
+    if os.path.normcase(current_venv_dir) == os.path.normcase(expected_venv_dir):
+        return
+
+    # 如果根目录不匹配，再进行原有的解释器路径严格校验
     current_executable = os.path.abspath(sys.executable or "")
     if not current_executable:
         return
