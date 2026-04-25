@@ -118,7 +118,13 @@ def coerce_int(value: Any) -> int | None:
     >>> coerce_int(None)
     """
     fval = coerce_float(value)
-    return int(fval) if fval is not None else None
+    if fval is None:
+        return None
+    try:
+        return int(fval)
+    except (OverflowError, ValueError):
+        # inf / -inf → OverflowError; nan → ValueError
+        return None
 
 
 __all__ = ["coerce_bool", "coerce_float", "coerce_int"]
