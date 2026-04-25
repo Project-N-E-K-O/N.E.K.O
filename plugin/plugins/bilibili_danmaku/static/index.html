@@ -1074,14 +1074,24 @@
     </div>
     <div class="login-panel" id="bgLlmAdvPanel">
       <div class="input-group" style="margin-bottom:12px;">
+        <label>猫娘名字 <span style="font-size:0.75rem;color:var(--text-secondary);">（用于知识库/提示词中的 <code>{name}</code> 占位符）</span></label>
+        <input type="text" id="bgLlmNekoName" placeholder="如：皖萱、小天……留空则不填充"
+          style="background:var(--bg-input);border:1.5px solid var(--border);border-radius:10px;color:var(--text);padding:10px 14px;font-size:0.9rem;width:100%;box-sizing:border-box;">
+      </div>
+      <div class="input-group" style="margin-bottom:12px;">
+        <label>知识库上下文 <span style="font-size:0.75rem;color:var(--text-secondary);">（角色人设、口头禅、常见梗，支持 <code>{name}</code>）</span></label>
+        <textarea id="bgLlmKnowledge" rows="4" style="width:100%;resize:vertical;background:var(--bg-input);border:1.5px solid var(--border);border-radius:10px;color:var(--text);padding:10px 14px;font-size:0.9rem;font-family:inherit;"
+          placeholder="例：{name} 是一只温柔的猫娘，喜欢喝奶茶，口头禅是「喵~」。遇到夸奖会害羞……"></textarea>
+      </div>
+      <div class="input-group" style="margin-bottom:12px;">
         <label>用户画像摘要</label>
         <textarea id="bgLlmProfile" rows="3" style="width:100%;resize:vertical;background:var(--bg-input);border:1.5px solid var(--border);border-radius:10px;color:var(--text);padding:10px 14px;font-size:0.9rem;font-family:inherit;"
           placeholder="描述主播/用户的基本画像，用于 LLM 上下文..."></textarea>
       </div>
       <div class="input-group">
-        <label>提示词模板</label>
-        <textarea id="bgLlmPromptTemplate" rows="3" style="width:100%;resize:vertical;background:var(--bg-input);border:1.5px solid var(--border);border-radius:10px;color:var(--text);padding:10px 14px;font-size:0.9rem;font-family:inherit;"
-          placeholder="自定义 LLM 提示词模板，留空则使用默认模板..."></textarea>
+        <label>提示词模板 <span style="font-size:0.75rem;color:var(--text-secondary);">（留空使用默认，支持 <code>{name}</code> / <code>{knowledge_context}</code>）</span></label>
+        <textarea id="bgLlmPromptTemplate" rows="4" style="width:100%;resize:vertical;background:var(--bg-input);border:1.5px solid var(--border);border-radius:10px;color:var(--text);padding:10px 14px;font-size:0.9rem;font-family:inherit;"
+          placeholder="自定义 System Prompt 模板，留空使用默认。&#10;示例：你是 {name}，一只可爱的猫娘主播。&#10;知识库参考：{knowledge_context}&#10;请根据弹幕生成引导词。"></textarea>
       </div>
     </div>
   </div>
@@ -1289,18 +1299,33 @@
 
   async function setDanmakuMax() {
     const val = parseInt(document.getElementById('danmakuMaxSlider').value);
-    toast('设置功能暂不可用', 'error');
+    try {
+      const data = await callPlugin('set_danmaku_max_length', { max_length: val });
+      toast(data.message || `已设置为 ${val}`, 'success');
+    } catch (e) {
+      toast('设置失败：' + e.message, 'error');
+    }
   }
 
   async function setTargetLanlan() {
     const val = document.getElementById('targetLanlanInput').value.trim();
-    toast('设置功能暂不可用', 'error');
+    try {
+      const data = await callPlugin('set_target_lanlan', { target_lanlan: val });
+      toast(data.message || '已保存', 'success');
+    } catch (e) {
+      toast('设置失败：' + e.message, 'error');
+    }
   }
 
   async function setMasterBiliAccount() {
     const uid = parseInt(document.getElementById('masterBiliUidInput').value, 10) || 0;
     const name = document.getElementById('masterBiliNameInput').value.trim();
-    toast('设置功能暂不可用', 'error');
+    try {
+      const data = await callPlugin('set_master_bili_account', { uid, name });
+      toast(data.message || '已保存', 'success');
+    } catch (e) {
+      toast('保存失败：' + e.message, 'error');
+    }
   }
 
   function renderStatus(data) {
@@ -1790,8 +1815,13 @@
     const resultBox = document.getElementById('biliToolResult');
     resultBox.innerHTML = renderToolEmpty(useNeko ? '已提交给 NEKO...' : '调用中...');
     try {
-      toast('工具功能暂不可用', 'error');
-      resultBox.innerHTML = renderToolEmpty('工具功能暂不可用');
+      // ask_neko_bili_* 前缀表示让 NEKO 生成人设化内容，此处复用对应接口
+      const actualEntry = entry.replace(/^ask_neko_bili_/, 'bili_');
+      const args = parseToolArgs(entry);
+      const data = await callPlugin(actualEntry, args);
+      const html = renderBiliToolResult(actualEntry, data);
+      resultBox.innerHTML = html;
+      toast('调用成功', 'success');
     } catch (e) {
       resultBox.innerHTML = renderToolError(e.message);
       toast('调用失败：' + e.message, 'error');
@@ -1874,7 +1904,7 @@
       const config = data.config || {};
       const cloud = config.cloud || {};
 
-      document.getElementById('bgLlmApiUrl').value = cloud.api_url || '';
+      document.getElementById('bgLlmApiUrl').value = cloud.url || '';
       document.getElementById('bgLlmModel').value = cloud.model || '';
       document.getElementById('bgLlmApiKey').value = '';
 
@@ -1885,6 +1915,12 @@
       const ms = config.max_samples || 30;
       document.getElementById('bgLlmMaxSamplesSlider').value = ms;
       document.getElementById('bgLlmMaxSamplesDisplay').textContent = ms;
+
+      const nekoNameEl = document.getElementById('bgLlmNekoName');
+      if (nekoNameEl) nekoNameEl.value = config.neko_name || '';
+
+      const knowledgeEl = document.getElementById('bgLlmKnowledge');
+      if (knowledgeEl) knowledgeEl.value = config.knowledge_context || '';
 
       document.getElementById('bgLlmProfile').value = config.user_profile || '';
       document.getElementById('bgLlmPromptTemplate').value = config.prompt_template || '';
@@ -1916,15 +1952,19 @@
       const apiKey = document.getElementById('bgLlmApiKey').value.trim();
       const windowSize = parseInt(document.getElementById('bgLlmWindowSlider').value);
       const maxSamples = parseInt(document.getElementById('bgLlmMaxSamplesSlider').value);
+      const nekoName = (document.getElementById('bgLlmNekoName')?.value || '').trim();
+      const knowledgeCtx = (document.getElementById('bgLlmKnowledge')?.value || '').trim();
       const userProfile = document.getElementById('bgLlmProfile').value.trim();
       const promptTemplate = document.getElementById('bgLlmPromptTemplate').value.trim();
 
       const enabled = document.getElementById('bgLlmToggle').classList.contains('active');
       const config = {
         enabled: enabled,
-        cloud: { api_url: apiUrl, model: model },
+        cloud: { url: apiUrl, model: model },
         window_size: windowSize,
         max_samples: maxSamples,
+        neko_name: nekoName,
+        knowledge_context: knowledgeCtx,
         user_profile: userProfile,
         prompt_template: promptTemplate,
       };

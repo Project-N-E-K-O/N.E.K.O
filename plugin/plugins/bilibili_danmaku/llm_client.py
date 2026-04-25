@@ -79,10 +79,13 @@ class LLMClient:
             cloud = config["cloud"]  # 全量 background_llm dict
         else:
             cloud = config            # 已经是 cloud 子对象
-        api_url = cloud.get("url", "https://api.deepseek.com")
+        api_url = cloud.get("url", "https://api.deepseek.com").rstrip("/")
         # 构造 OpenAI 兼容的 chat/completions 路径
-        if "/chat/completions" not in api_url:
-            api_url = api_url.rstrip("/") + "/v1/chat/completions"
+        if not api_url.endswith("/chat/completions"):
+            if api_url.endswith("/v1"):
+                api_url = api_url + "/chat/completions"
+            else:
+                api_url = api_url + "/v1/chat/completions"
         api_key = cloud.get("api_key", "")
         model = cloud.get("model", "deepseek-chat")
         timeout_sec = float(cloud.get("timeout_sec", 10))
@@ -99,13 +102,16 @@ class LLMClient:
         self,
         danmaku_texts: list[str],
         knowledge_context: str = "",
+        system_prompt_override: Optional[str] = None,
     ) -> Optional[str]:
         """
         根据弹幕列表生成引导词
 
         Args:
             danmaku_texts: 弹幕文本列表（普通字符串列表，已提取完成）
-            knowledge_context: 专属知识库上下文
+            knowledge_context: 专属知识库上下文（已完成占位符替换）
+            system_prompt_override: 自定义 System Prompt（含 {knowledge_context} 占位符则自动填充）；
+                                    为 None 时使用默认 SYSTEM_PROMPT
 
         Returns:
             引导词字符串，失败返回 None
@@ -117,8 +123,15 @@ class LLMClient:
 
         user_prompt = f"以下是在直播间中观众发送的弹幕：\n\n{danmaku_block}\n\n请根据以上弹幕生成 AI 发言引导词。"
 
+        ctx_str = knowledge_context or "(暂无知识库信息)"
+        if system_prompt_override:
+            # 自定义模板：支持 {knowledge_context} 占位符
+            sys_content = system_prompt_override.replace("{knowledge_context}", ctx_str)
+        else:
+            sys_content = SYSTEM_PROMPT.format(knowledge_context=ctx_str)
+
         messages = [
-            {"role": "system", "content": SYSTEM_PROMPT.format(knowledge_context=knowledge_context or "(暂无知识库信息)")},
+            {"role": "system", "content": sys_content},
             {"role": "user", "content": user_prompt},
         ]
 
@@ -142,9 +155,9 @@ class LLMClient:
         }
 
         last_error: Optional[str] = None
-        for attempt in range(self.retry_times + 1):
-            try:
-                async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession() as session:
+            for attempt in range(self.retry_times + 1):
+                try:
                     timeout = aiohttp.ClientTimeout(total=self.timeout_sec)
                     async with session.post(
                         self.api_url,
@@ -159,44 +172,46 @@ class LLMClient:
                                 "[LLMClient] 请求失败 (attempt %d/%d): %s",
                                 attempt + 1, self.retry_times + 1, last_error,
                             )
+                            await asyncio.sleep(min(0.5 * (2 ** attempt), 5.0))
                             continue
 
                         data = await resp.json()
-                        text = (
-                            data.get("choices", [{}])[0]
-                            .get("message", {})
-                            .get("content", "")
-                        )
+                        choices = data.get("choices") or []
+                        text = (choices[0] if choices else {}).get("message", {}).get("content", "")
                         if not text:
                             last_error = "API 返回空内容"
+                            await asyncio.sleep(min(0.5 * (2 ** attempt), 5.0))
                             continue
 
                         self.success_calls += 1
                         return text.strip()
 
-            except asyncio.TimeoutError:
-                last_error = f"超时 (>{self.timeout_sec}s)"
-                logger.warning(
-                    "[LLMClient] 超时 (attempt %d/%d)",
-                    attempt + 1, self.retry_times + 1,
-                )
-                continue
+                except asyncio.TimeoutError:
+                    last_error = f"超时 (>{self.timeout_sec}s)"
+                    logger.warning(
+                        "[LLMClient] 超时 (attempt %d/%d)",
+                        attempt + 1, self.retry_times + 1,
+                    )
+                    await asyncio.sleep(min(0.5 * (2 ** attempt), 5.0))
+                    continue
 
-            except aiohttp.ClientError as e:
-                last_error = str(e)[:200]
-                logger.warning(
-                    "[LLMClient] 网络错误 (attempt %d/%d): %s",
-                    attempt + 1, self.retry_times + 1, last_error,
-                )
-                continue
+                except aiohttp.ClientError as e:
+                    last_error = str(e)[:200]
+                    logger.warning(
+                        "[LLMClient] 网络错误 (attempt %d/%d): %s",
+                        attempt + 1, self.retry_times + 1, last_error,
+                    )
+                    await asyncio.sleep(min(0.5 * (2 ** attempt), 5.0))
+                    continue
 
-            except Exception as e:
-                last_error = str(e)[:200]
-                logger.error(
-                    "[LLMClient] 未知错误 (attempt %d/%d): %s",
-                    attempt + 1, self.retry_times + 1, last_error,
-                )
-                continue
+                except Exception as e:
+                    last_error = str(e)[:200]
+                    logger.error(
+                        "[LLMClient] 未知错误 (attempt %d/%d): %s",
+                        attempt + 1, self.retry_times + 1, last_error,
+                    )
+                    await asyncio.sleep(min(0.5 * (2 ** attempt), 5.0))
+                    continue
 
         # 所有重试都失败
         self.failed_calls += 1

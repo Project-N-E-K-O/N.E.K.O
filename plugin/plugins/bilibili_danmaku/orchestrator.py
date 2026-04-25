@@ -37,29 +37,54 @@ class GuidanceOrchestrator:
         knowledge_context: str = "",
         degrade_on_empty: bool = True,
         tracker: Optional[UserProfileTracker] = None,
+        neko_name: str = "",
+        prompt_template: str = "",
     ):
         """
         Args:
             llm_client: LLM 调用客户端
-            knowledge_context: 专属知识库上下文（供 LLM Prompt 使用）
+            knowledge_context: 专属知识库上下文（供 LLM Prompt 使用），支持占位符 {name}
             degrade_on_empty: LLM 失败时是否自动降级
             tracker: 用户画像追踪器（可选），注入后 Prompt 中会包含观众画像
+            neko_name: 猫娘/AI 的名字，用于替换占位符 {name}
+            prompt_template: 自定义 System Prompt 模板，留空使用默认模板，支持占位符 {name}/{knowledge_context}
         """
         self.llm_client = llm_client
         self.knowledge_context = knowledge_context
         self.degrade_on_empty = degrade_on_empty
         self.tracker = tracker
+        self.neko_name = neko_name
+        self.prompt_template = prompt_template
 
         # 统计
         self.total_processed = 0
         self.llm_success = 0
         self.degraded = 0
 
+    # ── 占位符替换 ────────────────────────────────────────────────────────────
+
+    def _fill_placeholders(self, text: str) -> str:
+        """将文本中的占位符替换为实际值
+
+        支持的占位符：
+          {name}        → 猫娘/AI 名字（neko_name）
+          {neko_name}   → 同上
+        """
+        if not text:
+            return text
+        replacements = {
+            "{name}": self.neko_name or "",
+            "{neko_name}": self.neko_name or "",
+        }
+        for placeholder, value in replacements.items():
+            text = text.replace(placeholder, value)
+        return text
+
     def _build_knowledge_context(self) -> str:
-        """构建完整的上下文（知识库 + 观众画像）"""
+        """构建完整的上下文（知识库 + 观众画像），并替换占位符"""
         parts = []
         if self.knowledge_context:
-            parts.append(self.knowledge_context)
+            parts.append(self._fill_placeholders(self.knowledge_context))
         if self.tracker:
             profile_ctx = self.tracker.get_profile_context(max_count=10)
             if profile_ctx:
@@ -91,6 +116,7 @@ class GuidanceOrchestrator:
         guidance = await self.llm_client.generate_guidance(
             danmaku_texts=danmaku_texts,
             knowledge_context=self._build_knowledge_context(),
+            system_prompt_override=self._fill_placeholders(self.prompt_template) if self.prompt_template else None,
         )
 
         if guidance:
@@ -122,6 +148,7 @@ class GuidanceOrchestrator:
         guidance = await self.llm_client.generate_guidance(
             danmaku_texts=danmaku_texts,
             knowledge_context=self._build_knowledge_context(),
+            system_prompt_override=self._fill_placeholders(self.prompt_template) if self.prompt_template else None,
         )
 
         if guidance:

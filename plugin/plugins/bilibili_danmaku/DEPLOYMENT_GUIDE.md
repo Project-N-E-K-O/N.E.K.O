@@ -20,7 +20,6 @@ bilibili_danmaku/
 ├── llm_client.py              # LLM API 调用客户端（DeepSeek/OpenAI 兼容）
 ├── orchestrator.py            # 引导词编排器（LLM → 降级摘要）
 ├── user_profile.py            # 用户画像追踪器
-├── filter.py                  # 敏感词过滤器（基础模式）
 ├── danmaku_core.py            # B站 WebSocket 弹幕监听器
 ├── bili_auth_service.py       # B站认证服务
 ├── bili_content_service.py    # B站内容服务
@@ -29,7 +28,6 @@ bilibili_danmaku/
 │   ├── config.json            # 运行时配置（自动读写）
 │   ├── config_enhanced.json   # 背景LLM 配置文件模板
 │   ├── user_profiles/         # 观众画像持久化目录
-│   └── Vocabulary/            # 敏感词库（16 个文件，约 1.1 MB）
 └── static/
     └── index.html             # 插件控制台前端
 ```
@@ -69,18 +67,18 @@ B站 WebSocket → danmaku_core.py
     "window_size": 15,
     "max_samples": 30,
     "knowledge_context": "主播是一只猫娘...",
-    "user_profile": {
-      "enabled": true,
-      "max_profiles": 50,
-      "save_on_shutdown": true
-    }
+    "timeout_sec": 10,
+    "retry_times": 2,
+    "user_profile": ""
   }
 }
 ```
 
 - `cloud.url`：LLM API 基地址（不含 chat/completions 后缀，代码自动拼接 `/v1/chat/completions`）
 - `cloud.model`：`deepseek-chat`（普通模式）或 `deepseek-reasoner`（思考模式，需处理 reasoning_content 回传）
+- `timeout_sec` / `retry_times`：API 超时秒数和重试次数（可选，默认 10s / 2次）
 - `knowledge_context`：注入 Prompt 的专属知识库（人设、世界观、常见梗）
+- `user_profile`：用户画像配置（当前实际由代码直接初始化 db_path，该字段仅占位保留，配置不影响运行）
 
 ### 2. 启动插件
 
@@ -115,5 +113,5 @@ NEKO 系统启动后，插件自动加载。`plugin.toml` 中 `auto_start = true
 ---
 
 **文档版本**: 2.0（重构后）  
-**最后更新**: 2026-04-24  
-**系统架构**: 三件套（TimeWindowAggregator + GuidanceOrchestrator + LLMClient + UserProfileTracker）
+**最后更新**: 2026-04-25  
+**系统架构**: 四件套（TimeWindowAggregator + GuidanceOrchestrator + LLMClient + UserProfileTracker）

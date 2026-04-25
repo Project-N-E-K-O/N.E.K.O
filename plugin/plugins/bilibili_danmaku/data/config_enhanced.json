@@ -6,7 +6,7 @@
     "enabled": true,
     "_comment_enabled": "是否启用背景LLM系统，开启后将使用LLM生成引导词推送给AI",
     "cloud": {
-      "api_url": "https://api.deepseek.com",
+      "url": "https://api.deepseek.com",
       "model": "deepseek-v4-flash",
       "api_key": ""
     },

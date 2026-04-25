@@ -12,11 +12,25 @@ class BiliContentService:
 
     def _require_sdk(self):
         try:
-            from bilibili_api import comment, dynamic, favorite_list, hot, rank, search, session, user, video
+            from bilibili_api import comment as bili_comment
+            from bilibili_api import dynamic, favorite_list, hot, rank, search, session, user
+            from bilibili_api import video as bili_video
             from bilibili_api.utils.picture import Picture
         except ImportError as exc:
             raise RuntimeError("缺少 bilibili_api 依赖，无法使用 B站 内容工具。") from exc
-        return comment, dynamic, favorite_list, hot, rank, search, session, user, video, Picture
+        from types import SimpleNamespace
+        return SimpleNamespace(
+            comment=bili_comment,
+            dynamic=dynamic,
+            favorite_list=favorite_list,
+            hot=hot,
+            rank=rank,
+            search=search,
+            session=session,
+            user=user,
+            video=bili_video,
+            Picture=Picture,
+        )
 
     async def get_valid_credential(self):
         credential = await self._credential_provider()
@@ -49,9 +63,9 @@ class BiliContentService:
         return payload
 
     async def _get_video_and_info(self, *, bvid: str):
-        _, _, _, _, _, _, _, _, video, _ = self._require_sdk()
+        sdk = self._require_sdk()
         cred = await self.get_valid_credential()
-        v = video.Video(bvid=bvid, credential=cred)
+        v = sdk.video.Video(bvid=bvid, credential=cred)
         info = await v.get_info()
         return v, info, cred
 
@@ -65,8 +79,8 @@ class BiliContentService:
         return v, info, cid
 
     async def search_videos(self, keyword: str, num: int = 10, order: str = "totalrank") -> Dict[str, Any]:
-        _, _, _, _, rank, search, _, _, _, _ = self._require_sdk()
-        order_video = getattr(search, "OrderVideo", None)
+        sdk = self._require_sdk()
+        order_video = getattr(sdk.search, "OrderVideo", None)
         order_map = {
             "totalrank": getattr(order_video, "TOTALRANK", None),
             "click": getattr(order_video, "CLICK", None),
@@ -76,13 +90,13 @@ class BiliContentService:
         order_enum = order_map.get(order) or order_map.get("totalrank")
         search_kwargs = {
             "keyword": keyword,
-            "search_type": search.SearchObjectType.VIDEO,
+            "search_type": sdk.search.SearchObjectType.VIDEO,
             "page": 1,
             "page_size": max(1, min(30, int(num or 10))),
         }
         if order_enum is not None:
             search_kwargs["order_type"] = order_enum
-        result = await search.search_by_type(**search_kwargs)
+        result = await sdk.search.search_by_type(**search_kwargs)
         videos: List[Dict[str, Any]] = []
         for item in result.get("result", [])[: max(1, min(30, int(num or 10)))]:
             title = item.get("title", "").replace('<em class="keyword">', "").replace("</em>", "")
@@ -100,8 +114,8 @@ class BiliContentService:
         return {"keyword": keyword, "count": len(videos), "videos": videos}
 
     async def hot_videos(self, pn: int = 1, ps: int = 20) -> Dict[str, Any]:
-        _, _, _, hot, _, _, _, _, _, _ = self._require_sdk()
-        result = await hot.get_hot_videos(pn=pn, ps=min(max(1, ps), 50))
+        sdk = self._require_sdk()
+        result = await sdk.hot.get_hot_videos(pn=pn, ps=min(max(1, ps), 50))
         videos: List[Dict[str, Any]] = []
         for item in result.get("list", []):
             stat = item.get("stat", {})
@@ -120,8 +134,8 @@ class BiliContentService:
         return {"page": pn, "count": len(videos), "videos": videos}
 
     async def hot_buzzwords(self, page_num: int = 1, page_size: int = 20) -> Dict[str, Any]:
-        _, _, _, hot, _, _, _, _, _, _ = self._require_sdk()
-        result = await hot.get_hot_buzzwords(page_num=page_num, page_size=page_size)
+        sdk = self._require_sdk()
+        result = await sdk.hot.get_hot_buzzwords(page_num=page_num, page_size=page_size)
         buzzwords: List[Dict[str, Any]] = []
         for item in result.get("buzzwords", [])[: min(max(1, page_size), 50)]:
             buzzwords.append({
@@ -137,16 +151,16 @@ class BiliContentService:
         }
 
     async def weekly_hot(self, week: int = 0) -> Dict[str, Any]:
-        _, _, _, hot, _, _, _, _, _, _ = self._require_sdk()
+        sdk = self._require_sdk()
         if week <= 0:
-            result = await hot.get_weekly_hot_videos_list()
+            result = await sdk.hot.get_weekly_hot_videos_list()
             return {
                 "week": 0,
                 "count": len(result.get("list", [])),
                 "list": result.get("list", []),
             }
 
-        result = await hot.get_weekly_hot_videos(week=week)
+        result = await sdk.hot.get_weekly_hot_videos(week=week)
         videos: List[Dict[str, Any]] = []
         for item in result.get("list", []):
             stat = item.get("stat", {})
@@ -164,30 +178,30 @@ class BiliContentService:
         return {"week": week, "count": len(videos), "videos": videos}
 
     async def rank_videos(self, category: str = "all", day: int = 3) -> Dict[str, Any]:
-        _, _, _, _, rank, _, _, _, _, _ = self._require_sdk()
+        sdk = self._require_sdk()
         type_map = {
-            "all": rank.RankType.All,
-            "original": rank.RankType.Original,
-            "rookie": rank.RankType.Rookie,
-            "douga": rank.RankType.Douga,
-            "music": rank.RankType.Music,
-            "dance": rank.RankType.Dance,
-            "game": rank.RankType.Game,
-            "knowledge": rank.RankType.Knowledge,
-            "technology": rank.RankType.Technology,
-            "sports": rank.RankType.Sports,
-            "car": rank.RankType.Car,
-            "life": rank.RankType.Life,
-            "food": rank.RankType.Food,
-            "animal": rank.RankType.Animal,
-            "fashion": rank.RankType.Fashion,
-            "ent": rank.RankType.Ent,
-            "cinephile": rank.RankType.Cinephile,
+            "all": sdk.rank.RankType.All,
+            "original": sdk.rank.RankType.Original,
+            "rookie": sdk.rank.RankType.Rookie,
+            "douga": sdk.rank.RankType.Douga,
+            "music": sdk.rank.RankType.Music,
+            "dance": sdk.rank.RankType.Dance,
+            "game": sdk.rank.RankType.Game,
+            "knowledge": sdk.rank.RankType.Knowledge,
+            "technology": sdk.rank.RankType.Technology,
+            "sports": sdk.rank.RankType.Sports,
+            "car": sdk.rank.RankType.Car,
+            "life": sdk.rank.RankType.Life,
+            "food": sdk.rank.RankType.Food,
+            "animal": sdk.rank.RankType.Animal,
+            "fashion": sdk.rank.RankType.Fashion,
+            "ent": sdk.rank.RankType.Ent,
+            "cinephile": sdk.rank.RankType.Cinephile,
         }
-        day_map = {3: rank.RankDayType.THREE_DAY, 7: rank.RankDayType.WEEK}
-        rank_type = type_map.get((category or "all").lower(), rank.RankType.All)
-        rank_day = day_map.get(day, rank.RankDayType.THREE_DAY)
-        result = await rank.get_rank(type_=rank_type, day=rank_day)
+        day_map = {3: sdk.rank.RankDayType.THREE_DAY, 7: sdk.rank.RankDayType.WEEK}
+        rank_type = type_map.get((category or "all").lower(), sdk.rank.RankType.All)
+        rank_day = day_map.get(day, sdk.rank.RankDayType.THREE_DAY)
+        result = await sdk.rank.get_rank(type_=rank_type, day=rank_day)
         videos: List[Dict[str, Any]] = []
         for item in result.get("list", []):
             stat = item.get("stat", {})
@@ -204,10 +218,10 @@ class BiliContentService:
         return {"category": category, "day": day, "count": len(videos), "videos": videos}
 
     async def video_info(self, *, bvid: Optional[str] = None, aid: Optional[int] = None) -> Dict[str, Any]:
-        _, _, _, _, _, _, _, _, video, _ = self._require_sdk()
+        sdk = self._require_sdk()
         cred = await self.get_valid_credential()
         if bvid:
-            v = video.Video(bvid=bvid, credential=cred)
+            v = sdk.video.Video(bvid=bvid, credential=cred)
         elif aid is not None:
             v = video.Video(aid=aid, credential=cred)
         else:
@@ -235,9 +249,9 @@ class BiliContentService:
         }
 
     async def comments(self, *, bvid: str, num: int = 30) -> Dict[str, Any]:
-        comment, _, _, _, _, _, _, _, video, _ = self._require_sdk()
+        sdk = self._require_sdk()
         cred = await self.get_valid_credential()
-        v = video.Video(bvid=bvid, credential=cred)
+        v = sdk.video.Video(bvid=bvid, credential=cred)
         info = await v.get_info()
         aid = info["aid"]
         max_comments = max(1, min(int(num or 30), 100))
@@ -246,11 +260,11 @@ class BiliContentService:
         max_pages = max(1, min((max_comments + 19) // 20 + 1, 5))
         while len(comments) < max_comments and page <= max_pages:
             try:
-                resp = await comment.get_comments(
+                resp = await sdk.comment.get_comments(
                     oid=aid,
-                    type_=comment.CommentResourceType.VIDEO,
+                    type_=sdk.comment.CommentResourceType.VIDEO,
                     page_index=page,
-                    order=comment.OrderType.LIKE,
+                    order=sdk.comment.OrderType.LIKE,
                     credential=cred,
                 )
                 replies = resp.get("replies") or []
@@ -345,9 +359,9 @@ class BiliContentService:
         return self._attach_keyword_match(payload, matched)
 
     async def user_info(self, uid: int) -> Dict[str, Any]:
-        _, _, _, _, _, _, _, user, _, _ = self._require_sdk()
+        sdk = self._require_sdk()
         cred = await self.get_valid_credential()
-        target = user.User(uid=uid, credential=cred)
+        target = sdk.user.User(uid=uid, credential=cred)
         info = await target.get_user_info()
         up_stat: Dict[str, Any] = {}
         relation: Dict[str, Any] = {}
@@ -375,15 +389,15 @@ class BiliContentService:
         }
 
     async def user_videos(self, uid: int, pn: int = 1, ps: int = 30, order: str = "pubdate", keyword: str = "") -> Dict[str, Any]:
-        _, _, _, _, _, _, _, user, _, _ = self._require_sdk()
+        sdk = self._require_sdk()
         cred = await self.get_valid_credential()
-        target = user.User(uid=uid, credential=cred)
+        target = sdk.user.User(uid=uid, credential=cred)
         order_map = {
-            "pubdate": user.VideoOrder.PUBDATE,
-            "click": user.VideoOrder.VIEW,
-            "stow": user.VideoOrder.FAVORITE,
+            "pubdate": sdk.user.VideoOrder.PUBDATE,
+            "click": sdk.user.VideoOrder.VIEW,
+            "stow": sdk.user.VideoOrder.FAVORITE,
         }
-        order_enum = order_map.get(order, user.VideoOrder.PUBDATE)
+        order_enum = order_map.get(order, sdk.user.VideoOrder.PUBDATE)
         result = await target.get_videos(pn=pn, ps=ps, order=order_enum, keyword=keyword)
         videos: List[Dict[str, Any]] = []
         for item in result.get("list", {}).get("vlist", []):
@@ -399,7 +413,7 @@ class BiliContentService:
         return {"uid": uid, "page": pn, "count": len(videos), "videos": videos}
 
     async def favorite_lists(self, uid: int = 0) -> Dict[str, Any]:
-        _, _, favorite_list, _, _, _, _, _, _, _ = self._require_sdk()
+        sdk = self._require_sdk()
         cred = await self.get_valid_credential()
         target_uid = uid
         if target_uid == 0:
@@ -407,7 +421,7 @@ class BiliContentService:
                 target_uid = int(cred.dedeuserid)
             except Exception as exc:
                 raise RuntimeError("无法从当前凭证解析 UID") from exc
-        result = await favorite_list.get_video_favorite_list(uid=target_uid, credential=cred)
+        result = await sdk.favorite_list.get_video_favorite_list(uid=target_uid, credential=cred)
         fav_lists: List[Dict[str, Any]] = []
         for item in result.get("list", []) or []:
             fav_lists.append({
@@ -419,9 +433,9 @@ class BiliContentService:
         return {"uid": target_uid, "count": len(fav_lists), "lists": fav_lists}
 
     async def favorite_content(self, media_id: int, page: int = 1, keyword: str = "") -> Dict[str, Any]:
-        _, _, favorite_list, _, _, _, _, _, _, _ = self._require_sdk()
+        sdk = self._require_sdk()
         cred = await self.get_valid_credential()
-        result = await favorite_list.get_video_favorite_list_content(
+        result = await sdk.favorite_list.get_video_favorite_list_content(
             media_id=media_id,
             page=page,
             keyword=keyword if keyword else None,
@@ -447,24 +461,24 @@ class BiliContentService:
         }
 
     async def reply(self, *, bvid: str, text: str, rpid: int = 0, root: int = 0) -> Dict[str, Any]:
-        comment, _, _, _, _, _, _, _, _, _ = self._require_sdk()
+        sdk = self._require_sdk()
         if not text or not text.strip():
             raise RuntimeError("text 不能为空")
         _, info, cred = await self._get_video_and_info(bvid=bvid)
         aid = info["aid"]
         if rpid == 0:
-            result = await comment.send_comment(
+            result = await sdk.comment.send_comment(
                 text=text.strip(),
                 oid=aid,
-                type_=comment.CommentResourceType.VIDEO,
+                type_=sdk.comment.CommentResourceType.VIDEO,
                 credential=cred,
             )
         else:
             actual_root = root if root != 0 else rpid
-            result = await comment.send_comment(
+            result = await sdk.comment.send_comment(
                 text=text.strip(),
                 oid=aid,
-                type_=comment.CommentResourceType.VIDEO,
+                type_=sdk.comment.CommentResourceType.VIDEO,
                 root=actual_root,
                 parent=rpid,
                 credential=cred,
@@ -472,11 +486,11 @@ class BiliContentService:
         return {"success": True, "message": "评论发送成功", "data": result if isinstance(result, dict) else str(result)}
 
     async def send_dynamic(self, text: str, images: Optional[List[str]] = None, topic_id: int = 0, schedule_time: int = 0) -> Dict[str, Any]:
-        _, dynamic, _, _, _, _, _, _, _, Picture = self._require_sdk()
+        sdk = self._require_sdk()
         if not text or not text.strip():
             raise RuntimeError("text 不能为空")
         cred = await self.get_valid_credential()
-        dyn = dynamic.BuildDynamic.empty()
+        dyn = sdk.dynamic.BuildDynamic.empty()
         dyn.add_plain_text(text.strip())
         if images:
             import os
@@ -486,28 +500,28 @@ class BiliContentService:
                     continue
                 img_path = img_path.strip()
                 if img_path.startswith(("http://", "https://")):
-                    pic = await Picture.async_from_url(img_path)
+                    pic = await sdk.Picture.async_from_url(img_path)
                 else:
                     if not os.path.isfile(img_path):
                         raise RuntimeError(f"图片文件不存在: {img_path}")
-                    pic = Picture.from_file(img_path)
+                    pic = sdk.Picture.from_file(img_path)
                 dyn.add_image(pic)
         if topic_id:
             dyn.set_topic(topic_id)
         if schedule_time > 0:
             dyn.set_send_time(schedule_time)
-        result = await dynamic.send_dynamic(info=dyn, credential=cred)
+        result = await sdk.dynamic.send_dynamic(info=dyn, credential=cred)
         return {"success": True, "message": "动态发布成功", "data": result if isinstance(result, dict) else str(result)}
 
     async def send_message(self, receiver_uid: int, text: str) -> Dict[str, Any]:
-        _, _, _, _, _, _, session, _, _, _ = self._require_sdk()
+        sdk = self._require_sdk()
         if not text or not text.strip():
             raise RuntimeError("text 不能为空")
         cred = await self.get_valid_credential()
-        result = await session.send_msg(
+        result = await sdk.session.send_msg(
             credential=cred,
             receiver_id=receiver_uid,
-            msg_type=session.EventType.TEXT,
+            msg_type=sdk.session.EventType.TEXT,
             content=text.strip(),
         )
         return {

@@ -214,9 +214,6 @@ class BiliDanmakuPlugin(NekoPluginBase):
         self._orchestrator = None  # GuidanceOrchestrator
         self._tracker = None  # UserProfileTracker
         
-        # 旧版弹幕过滤器（用于非背景LLM模式）
-        self._filter = None
-        
         # UI展示队列
         self._ui_danmaku_queue: deque = deque(maxlen=500)
         self._ui_gift_queue: deque = deque(maxlen=100)
@@ -374,30 +371,6 @@ class BiliDanmakuPlugin(NekoPluginBase):
         self._logged_in_matches_master = bool(
             self._is_logged_in and self._master_bili_uid > 0 and self._logged_in_bili_uid == self._master_bili_uid
         )
-
-    # ==========================================
-    # 过滤器初始化
-    # ==========================================
-
-    async def _init_filter(self):
-        """初始化弹幕过滤器"""
-        if BACKGROUND_LLM_AVAILABLE and self._background_llm_enabled:
-            # 背景LLM模式使用聚合器+编排器，不初始化旧版过滤器
-            return
-        # 非背景LLM模式：初始化旧版过滤器（从 filter.py 导入）
-        try:
-            from .filter import DanmakuFilter
-        except ImportError:
-            self.logger.warning("DanmakuFilter 不可用，跳过过滤器初始化")
-            return
-        # 从主配置 config.json 的 filter 子对象读取过滤配置
-        filter_cfg = self._config.get("filter", {})
-        config = {
-            "is_logged_in": self._is_logged_in,
-            "filter": filter_cfg,
-        }
-        self._filter = DanmakuFilter(config)
-        self.logger.info(f"过滤器已初始化: {getattr(self._filter, 'describe_mode', lambda: 'unknown')()}")
 
     # ==========================================
     # B站 API 结果包装
@@ -843,10 +816,15 @@ class BiliDanmakuPlugin(NekoPluginBase):
             
             # 3. 引导词编排器
             knowledge_context = config.get("knowledge_context", "")
+            prompt_template = config.get("prompt_template", "")
+            # neko_name：优先用 config 里显式保存的，兜底用 _target_lanlan
+            neko_name = config.get("neko_name", "") or self._target_lanlan
             self._orchestrator = GuidanceOrchestrator(
                 llm_client=self._llm_client,
                 knowledge_context=knowledge_context,
                 tracker=self._tracker,
+                neko_name=neko_name,
+                prompt_template=prompt_template,
             )
             self.logger.info(f"GuidanceOrchestrator 初始化完成")
             
@@ -1260,6 +1238,15 @@ class BiliDanmakuPlugin(NekoPluginBase):
             self._config["background_llm"].update(config)
             self.logger.info(f"背景LLM配置已更新: keys={list(config.keys())}")
 
+            # 运行时热更新编排器字段（无需重启）
+            if self._orchestrator is not None:
+                if "knowledge_context" in config:
+                    self._orchestrator.knowledge_context = config["knowledge_context"]
+                if "prompt_template" in config:
+                    self._orchestrator.prompt_template = config["prompt_template"]
+                if "neko_name" in config:
+                    self._orchestrator.neko_name = config["neko_name"]
+
             # 运行时启停
             if "enabled" in config:
                 target_enabled = bool(config["enabled"])
@@ -1631,7 +1618,7 @@ class BiliDanmakuPlugin(NekoPluginBase):
             f"账号状态: {'🔐 已登录' if self._is_logged_in else '👤 游客模式'}",
             f"当前登录UID: {self._logged_in_bili_uid or '(未登录)'}",
             f"主人账号冲突: {'⚠️ 当前登录账号就是主人账号' if self._logged_in_matches_master else '无'}",
-            f"过滤模式: {self._filter.describe_mode() if self._filter else '未初始化'}",
+            f"过滤模式: B站平台审核",
             f"推送间隔: {self._interval}s",
             f"目标AI: {self._target_lanlan or '(未指定)'}",
             f"主人B站账号: UID {self._master_bili_uid or '(未设置)'} / {self._master_bili_name or '(未设置)'}",
@@ -1703,6 +1690,9 @@ class BiliDanmakuPlugin(NekoPluginBase):
         """设置弹幕推送的目标 AI 名称"""
         old_value = self._target_lanlan
         self._target_lanlan = str(target_lanlan).strip()
+        # 同步到运行中的编排器（热更新占位符）
+        if self._orchestrator is not None:
+            self._orchestrator.neko_name = self._target_lanlan
         await self._save_plugin_config()
         return Ok({
             "success": True,
@@ -1886,7 +1876,6 @@ class BiliDanmakuPlugin(NekoPluginBase):
             return Err(SdkError("加密保存失败，请检查 cryptography 库是否可用"))
         self._bilibili_credential = _BiliCredential(sessdata=sessdata, bili_jct=bili_jct, buvid3=buvid3, dedeuserid=dedeuserid)
         self._is_logged_in = True
-        await self._init_filter()
         self.logger.info(f"✅ B站凭据已加密保存 (UID={dedeuserid})")
         if self._room_id > 0:
             self._schedule_listener_restart()
@@ -1914,7 +1903,6 @@ class BiliDanmakuPlugin(NekoPluginBase):
             self.logger.warning(f"⚠️ 以下凭据文件删除失败: {', '.join(failed)}")
         self._bilibili_credential = None
         self._is_logged_in = False
-        await self._init_filter()
         self.logger.info("🗑️ 已清除插件本地 B站凭据，切换为游客模式")
         if self._listener and self._listener.is_running():
             self._schedule_listener_restart()
@@ -1934,7 +1922,6 @@ class BiliDanmakuPlugin(NekoPluginBase):
     async def _reload_credential_internal(self):
         """内部重载凭据（供 BiliAuthService 回调使用）"""
         await self._load_bilibili_credential()
-        await self._init_filter()
         self.logger.info(f"凭据已重新加载: {'已登录' if self._is_logged_in else '游客模式'}")
 
     @plugin_entry(
