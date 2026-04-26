@@ -376,9 +376,14 @@ class MemoryRecallReranker:
 
         set_call_type("memory_recall_rerank")
         api_config = config_manager.get_model_api_config('summary')
+        # timeout=8: recall 在 query_memory 请求路径上，上游 plugin/core/context.py
+        # 默认 5s 截断；本地 8s 给 connect + 一次失败裕度。超时即抛
+        # APITimeoutError，外层 try/except 已会降级到 coarse rank。
+        # max_retries=0: 禁 SDK 自动重试，超时直接降级。
         llm = create_chat_llm(
             api_config['model'],
             api_config['base_url'], api_config['api_key'],
+            timeout=8, max_retries=0,
         )
         try:
             resp = await llm.ainvoke(prompt)

@@ -136,19 +136,31 @@ class CompressedRecentHistoryManager:
             return f.read()
     
     def _get_llm(self):
-        """动态获取LLM实例以支持配置热重载"""
+        """动态获取LLM实例以支持配置热重载。
+
+        timeout=30 配合业务层 max_retries=3 + 指数 backoff（最坏 ~127s）
+        覆盖 /process 上游 30s timeout 后的"放弃" 上限。
+        max_retries=0 禁掉 OpenAI SDK 默认 2 次自动重试，避免与业务层 retry 叠加翻 3 倍。
+        """
         api_config = self._config_manager.get_model_api_config('summary')
         return create_chat_llm(
             api_config['model'], api_config['base_url'],
             api_config['api_key'] or None,
+            timeout=30, max_retries=0,
         )
 
     def _get_review_llm(self):
-        """动态获取审核LLM实例以支持配置热重载"""
+        """动态获取审核LLM实例以支持配置热重载。
+
+        timeout=120 给 review_history 重写历史足够余量（prompt 长，可能含 thinking
+        模型 1-2 分钟响应）。review 是后台任务，没人等它，可以放宽。
+        max_retries=0 同上。
+        """
         api_config = self._config_manager.get_model_api_config('correction')
         return create_chat_llm(
             api_config['model'], api_config['base_url'],
             api_config['api_key'] or None,
+            timeout=120, max_retries=0,
         )
 
     async def update_history(self, new_messages, lanlan_name, detailed=False, compress=True):

@@ -281,6 +281,7 @@ class FactStore:
     async def _allm_call_with_retries(
         self, prompt: str, lanlan_name: str, tier: str, call_type: str,
         max_retries: int = 3,
+        timeout: float = 60,
     ):
         """Shared LLM helper: retry on network errors + JSON errors, same
         policy as the old `extract_facts`. Returns parsed JSON or None on
@@ -288,7 +289,12 @@ class FactStore:
 
         Note: 不再接受 temperature。项目级约定一律不下发该参数（守门见
         scripts/check_no_temperature.py）。模型从 ``tier`` 对应的 api_config
-        直接拿，不再走 SETTING_PROPOSER_MODEL fallback。"""
+        直接拿，不再走 SETTING_PROPOSER_MODEL fallback。
+
+        timeout 默认 60s 适配后台 LLM（Stage-1 fact extract / Stage-2 signal
+        detect / negative keyword check）；调用方可按需提高（如 Stage-2 开
+        thinking 后传 90s）。SDK max_retries=0 避免双层 retry 叠加（业务层
+        已经有 max_retries 参数控制）。"""
         from openai import APIConnectionError, InternalServerError, RateLimitError
         from utils.llm_client import create_chat_llm
 
@@ -300,6 +306,7 @@ class FactStore:
                 llm = create_chat_llm(
                     api_config['model'],
                     api_config['base_url'], api_config['api_key'],
+                    timeout=timeout, max_retries=0,
                 )
                 try:
                     resp = await llm.ainvoke(prompt)

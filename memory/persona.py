@@ -1595,9 +1595,13 @@ class PersonaManager:
             from utils.llm_client import create_chat_llm
             set_call_type("memory_correction")
             api_config = self._config_manager.get_model_api_config('correction')
+            # timeout=90: 持 PersonaManager 锁，锁住期间会卡 /process 路径上的
+            # arecord_mentions / aapply_signal / aensure_persona，必须有时长上限。
+            # max_retries=0: 禁 SDK 自动重试，避免叠加（这里没业务 retry，单次即终态）。
             llm = create_chat_llm(
                 api_config['model'],
                 api_config['base_url'], api_config['api_key'],
+                timeout=90, max_retries=0,
             )
             try:
                 resp = await llm.ainvoke(prompt)

@@ -663,9 +663,14 @@ class ReflectionEngine:
         try:
             set_call_type("memory_reflection")
             api_config = self._config_manager.get_model_api_config('summary')
+            # timeout=90: 持 reflection 锁，输出多字段 JSON ontology（reflection
+            # text + entity + relation_type + temporal_scope + subject）较长。
+            # max_retries=0: 禁 SDK 自动重试（无业务 retry，单次即终态，外层
+            # try/except 兜底返回 []）。
             llm = create_chat_llm(
                 api_config['model'],
                 api_config['base_url'], api_config['api_key'],
+                timeout=90, max_retries=0,
             )
             try:
                 resp = await llm.ainvoke(prompt)
@@ -1432,9 +1437,12 @@ class ReflectionEngine:
         try:
             set_call_type("memory_feedback_check")
             api_config = self._config_manager.get_model_api_config('summary')
+            # timeout=60: 后台 task 内调用，二分类任务 prompt + 输出都不大。
+            # max_retries=0: 禁 SDK 自动重试。
             llm = create_chat_llm(
                 api_config['model'],
                 api_config['base_url'], api_config['api_key'],
+                timeout=60, max_retries=0,
             )
             try:
                 resp = await llm.ainvoke(prompt)
@@ -1493,9 +1501,12 @@ class ReflectionEngine:
         try:
             set_call_type("memory_rebuttal_check")
             api_config = self._config_manager.get_model_api_config('summary')
+            # timeout=60: 周期性反驳扫描，后台跑无人等。
+            # max_retries=0: 禁 SDK 自动重试，失败 cursor 不推进自然下轮重试。
             llm = create_chat_llm(
                 api_config['model'],
                 api_config['base_url'], api_config['api_key'],
+                timeout=60, max_retries=0,
             )
             try:
                 resp = await llm.ainvoke(prompt)
@@ -2059,9 +2070,15 @@ class ReflectionEngine:
         api_config = self._config_manager.get_model_api_config(
             EVIDENCE_PROMOTION_MERGE_MODEL_TIER,
         )
+        # timeout=45: LLM 在 reflection 锁外，但 /process 末尾会同步等
+        # aauto_promote_stale 串行处理多个 reflection。每个 promote_merge
+        # prompt 决策短、输出短，应该 <10s 完成；45s 给 4-5x 裕度，超时即
+        # 触发已有 throttle/backoff 路径（EVIDENCE_PROMOTE_RETRY_BACKOFF_MINUTES）。
+        # max_retries=0: 禁 SDK 自动重试，由 throttle/dead-letter 兜底。
         llm = create_chat_llm(
             api_config['model'],
             api_config['base_url'], api_config['api_key'],
+            timeout=45, max_retries=0,
         )
         try:
             resp = await llm.ainvoke(prompt)
