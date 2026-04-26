@@ -36,6 +36,7 @@
         onComposerRemoveAttachment: null,
         onComposerSubmit: null,
         onAvatarInteraction: null,
+        onAvatarToolStateChange: null,
         pendingRollbackDrafts: Object.create(null),
         rollbackDraft: ''
     };
@@ -412,6 +413,7 @@
             onComposerRemoveAttachment: handleComposerRemoveAttachment,
             onComposerSubmit: handleComposerSubmit,
             onAvatarInteraction: handleAvatarInteraction,
+            onAvatarToolStateChange: handleAvatarToolStateChange,
             onJukeboxClick: handleJukeboxClick,
             onAvatarGeneratorClick: handleAvatarGeneratorClick,
             onTranslateToggle: handleTranslateToggle
@@ -717,6 +719,20 @@
         }
 
         dispatchHostEvent('avatar-interaction', detail);
+    }
+
+    function handleAvatarToolStateChange(payload) {
+        var detail = payload || {};
+
+        if (typeof state.onAvatarToolStateChange === 'function') {
+            try {
+                state.onAvatarToolStateChange(detail);
+            } catch (error) {
+                console.error('[ReactChatWindow] onAvatarToolStateChange failed:', error);
+            }
+        }
+
+        dispatchHostEvent('avatar-tool-state', detail);
     }
 
     function handleComposerImportImage() {
@@ -1416,6 +1432,12 @@
         overlay.hidden = true;
         document.body.classList.remove('react-chat-window-open');
         clearMobileContentCap();
+        handleAvatarToolStateChange({
+            active: false,
+            toolId: null,
+            tool: null,
+            timestamp: Date.now()
+        });
     }
 
     var CLICK_THRESHOLD = 5; // px – 移动距离低于此值视为点击
@@ -1899,6 +1921,9 @@
         },
         setOnAvatarInteraction: function (handler) {
             state.onAvatarInteraction = typeof handler === 'function' ? handler : null;
+        },
+        setOnAvatarToolStateChange: function (handler) {
+            state.onAvatarToolStateChange = typeof handler === 'function' ? handler : null;
         },
         rollbackLastDraft: rollbackLastDraft,
         clearPendingRollbackDraft: clearPendingRollbackDraft,

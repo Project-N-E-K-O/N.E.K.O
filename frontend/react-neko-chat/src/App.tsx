@@ -8,6 +8,7 @@ import {
   type ComposerSubmitPayload,
   type ComposerAttachment,
   type AvatarInteractionPayload,
+  type AvatarToolStatePayload,
 } from './message-schema';
 
 export type ChatWindowProps = ChatWindowSchemaProps & {
@@ -17,14 +18,16 @@ export type ChatWindowProps = ChatWindowSchemaProps & {
   onComposerRemoveAttachment?: (attachmentId: ComposerAttachment['id']) => void;
   onComposerSubmit?: (payload: ComposerSubmitPayload) => void;
   onAvatarInteraction?: (payload: AvatarInteractionPayload) => void;
+  onAvatarToolStateChange?: (payload: AvatarToolStatePayload) => void;
   onJukeboxClick?: () => void;
   onTranslateToggle?: () => void;
 };
 
 const defaultMessages: ChatMessage[] = [];
+type AvatarToolId = AvatarInteractionPayload['toolId'];
 
 type ToolIconItem = {
-  id: string;
+  id: AvatarToolId;
   labelKey: string;
   labelFallback: string;
   iconImagePath: string;
@@ -138,7 +141,7 @@ const compactCursorZoneSelector = [
 type CursorVariant = 'primary' | 'secondary' | 'tertiary';
 type ToolCursorVariantState = Record<string, CursorVariant>;
 type InteractionIntensity = NonNullable<AvatarInteractionPayload['intensity']>;
-type AvatarInteractionToolId = AvatarInteractionPayload['toolId'];
+type AvatarInteractionToolId = AvatarToolId;
 type AvatarTouchZone = 'ear' | 'head' | 'face' | 'body';
 type AvatarInteractionPayloadByTool = {
   [K in AvatarInteractionToolId]: Extract<AvatarInteractionPayload, { toolId: K }>;
@@ -330,6 +333,11 @@ function supportsDesktopFinePointer(): boolean {
   } catch {
     return true;
   }
+}
+
+function isElectronMultiWindowHost(): boolean {
+  return typeof window !== 'undefined'
+    && (window as Window & { __NEKO_MULTI_WINDOW__?: boolean }).__NEKO_MULTI_WINDOW__ === true;
 }
 
 function isElementVisible(elementId: string): boolean {
@@ -538,6 +546,7 @@ export default function App({
   onComposerRemoveAttachment,
   onComposerSubmit,
   onAvatarInteraction,
+  onAvatarToolStateChange,
   onJukeboxClick,
   onTranslateToggle,
   rollbackDraft,
@@ -553,6 +562,7 @@ export default function App({
   const [outsideRangeCursorVariants, setOutsideRangeCursorVariants] = useState<ToolCursorVariantState>(() => createDefaultToolCursorVariantState());
   const [isCursorOverAvatarRange, setIsCursorOverAvatarRange] = useState(false);
   const [isCursorOverCompactCursorZone, setIsCursorOverCompactCursorZone] = useState(false);
+  const [isCursorInsideHostWindow, setIsCursorInsideHostWindow] = useState(true);
   const [hammerSwingPhase, setHammerSwingPhase] = useState<'idle' | 'windup' | 'swing' | 'impact' | 'recover'>('idle');
   const [isInnerHammerEasterEggActive, setIsInnerHammerEasterEggActive] = useState(false);
   const toolMenuRef = useRef<HTMLDivElement | null>(null);
@@ -617,13 +627,18 @@ export default function App({
   const activeToolImagePaths = activeToolItem
     ? resolveToolImagePaths(activeToolItem, avatarRangeCursorVariant)
     : null;
-  const shouldUseDesktopCursorOverlay = !!activeToolItem && supportsDesktopFinePointer();
+  const isElectronMultiWindow = isElectronMultiWindowHost();
+  const shouldUseLocalDesktopCursorOverlay = !!activeToolItem
+    && supportsDesktopFinePointer()
+    && !isElectronMultiWindow;
+  const shouldRenderLocalDesktopCursorOverlay = shouldUseLocalDesktopCursorOverlay
+    && (!isElectronMultiWindow || isCursorInsideHostWindow);
   const shouldRenderAvatarRangeOverlay = isCursorOverAvatarRange && !isCursorOverCompactCursorZone;
   const avatarCursorOverlayActive = !!activeToolItem
     && activeCursorToolId !== 'hammer'
-    && shouldUseDesktopCursorOverlay;
+    && shouldRenderLocalDesktopCursorOverlay;
   const avatarCursorOverlayCompact = avatarCursorOverlayActive && !shouldRenderAvatarRangeOverlay;
-  const hammerCursorOverlayActive = activeCursorToolId === 'hammer' && shouldUseDesktopCursorOverlay;
+  const hammerCursorOverlayActive = activeCursorToolId === 'hammer' && shouldRenderLocalDesktopCursorOverlay;
   const hammerCursorOverlayCompact = hammerCursorOverlayActive && !shouldRenderAvatarRangeOverlay;
   const hammerCursorOverlayMotionActive = hammerSwingPhase !== 'idle';
   const hammerCompactImagePaths = hammerToolItem
@@ -653,6 +668,12 @@ export default function App({
   const selectedEmojiButtonAriaLabel = activeToolItem
     ? `${emojiButtonAriaLabel}: ${activeToolLabel}`
     : emojiButtonAriaLabel;
+  const isCursorWithinAvatarToolRange = isCursorInsideHostWindow
+    && isCursorOverAvatarRange
+    && !isCursorOverCompactCursorZone;
+  const avatarToolImageKind = activeToolItem
+    ? (isCursorWithinAvatarToolRange ? 'icon' : 'cursor')
+    : 'cursor';
 
   useEffect(() => {
     draftRef.current = draft;
@@ -661,6 +682,56 @@ export default function App({
   useEffect(() => {
     avatarInteractionCallbackRef.current = onAvatarInteraction;
   }, [onAvatarInteraction]);
+
+  useEffect(() => {
+    if (!onAvatarToolStateChange) return;
+
+    const outsideRangeVariant = activeCursorToolId
+      ? (outsideRangeCursorVariants[activeCursorToolId] ?? 'primary')
+      : 'primary';
+    const textContext = sanitizeInteractionTextContext(draft);
+
+    onAvatarToolStateChange({
+      active: !!activeToolItem,
+      toolId: activeToolItem?.id ?? null,
+      variant: effectiveCursorVariant,
+      avatarRangeVariant: avatarRangeCursorVariant,
+      outsideRangeVariant,
+      imageKind: avatarToolImageKind,
+      withinAvatarRange: isCursorWithinAvatarToolRange,
+      overCompactZone: isCursorOverCompactCursorZone,
+      insideHostWindow: isCursorInsideHostWindow,
+      tool: activeToolItem
+        ? {
+          id: activeToolItem.id,
+          label: getToolItemLabel(activeToolItem),
+          iconImagePath: activeToolItem.iconImagePath,
+          iconImagePathAlt: activeToolItem.iconImagePathAlt,
+          iconImagePathAlt2: activeToolItem.iconImagePathAlt2,
+          cursorImagePath: activeToolItem.cursorImagePath,
+          cursorImagePathAlt: activeToolItem.cursorImagePathAlt,
+          cursorImagePathAlt2: activeToolItem.cursorImagePathAlt2,
+          cursorHotspotX: activeToolItem.cursorHotspotX,
+          cursorHotspotY: activeToolItem.cursorHotspotY,
+          menuIconScale: activeToolItem.menuIconScale,
+        }
+        : null,
+      textContext,
+      timestamp: Date.now(),
+    });
+  }, [
+    activeCursorToolId,
+    activeToolItem,
+    avatarRangeCursorVariant,
+    draft,
+    effectiveCursorVariant,
+    avatarToolImageKind,
+    isCursorInsideHostWindow,
+    isCursorOverCompactCursorZone,
+    isCursorWithinAvatarToolRange,
+    onAvatarToolStateChange,
+    outsideRangeCursorVariants,
+  ]);
 
   function clearHammerSwingAnimation() {
     hammerSwingTimeoutIdsRef.current.forEach(timeoutId => window.clearTimeout(timeoutId));
@@ -1038,6 +1109,7 @@ export default function App({
     if (!activeCursorToolId) {
       setIsCursorOverAvatarRange(false);
       setIsCursorOverCompactCursorZone(false);
+      setIsCursorInsideHostWindow(true);
       return;
     }
 
@@ -1051,6 +1123,7 @@ export default function App({
     };
 
     const handlePointerMove = (event: PointerEvent) => {
+      setIsCursorInsideHostWindow(true);
       latestPointerPositionRef.current = { x: event.clientX, y: event.clientY };
       latestPointerTargetRef.current = event.target;
       if (frameId) return;
@@ -1071,15 +1144,45 @@ export default function App({
       });
     };
 
-    const clearCursorRangeState = () => {
+    const hideLocalCursorOverlay = () => {
       clearAvatarBoundsCache(avatarToolCacheState);
       latestPointerTargetRef.current = null;
       setIsCursorOverAvatarRange(false);
       setIsCursorOverCompactCursorZone(false);
+      setIsCursorInsideHostWindow(false);
+    };
+
+    const isPointerOutsideViewport = (event: MouseEvent | PointerEvent) => (
+      event.clientX <= 0
+      || event.clientY <= 0
+      || event.clientX >= window.innerWidth
+      || event.clientY >= window.innerHeight
+    );
+
+    const handleMouseOut = (event: MouseEvent) => {
+      if (event.relatedTarget !== null) return;
+      if (!isPointerOutsideViewport(event)) return;
+      hideLocalCursorOverlay();
+    };
+
+    const handlePointerOut = (event: PointerEvent) => {
+      if (event.relatedTarget !== null) return;
+      if (!isPointerOutsideViewport(event)) return;
+      hideLocalCursorOverlay();
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.hidden) {
+        hideLocalCursorOverlay();
+      }
     };
 
     window.addEventListener('pointermove', handlePointerMove, { passive: true, capture: true });
-    window.addEventListener('blur', clearCursorRangeState);
+    document.addEventListener('mouseleave', hideLocalCursorOverlay);
+    window.addEventListener('pointerout', handlePointerOut, true);
+    window.addEventListener('mouseout', handleMouseOut, true);
+    window.addEventListener('blur', hideLocalCursorOverlay);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
 
     return () => {
       if (frameId) {
@@ -1087,7 +1190,11 @@ export default function App({
       }
       clearAvatarBoundsCache(avatarToolCacheState);
       window.removeEventListener('pointermove', handlePointerMove, true);
-      window.removeEventListener('blur', clearCursorRangeState);
+      document.removeEventListener('mouseleave', hideLocalCursorOverlay);
+      window.removeEventListener('pointerout', handlePointerOut, true);
+      window.removeEventListener('mouseout', handleMouseOut, true);
+      window.removeEventListener('blur', hideLocalCursorOverlay);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
   }, [activeCursorToolId]);
 
@@ -1096,6 +1203,12 @@ export default function App({
     let cancelled = false;
 
     if (!activeCursorToolId) {
+      root.classList.remove('neko-tool-cursor-active');
+      root.style.removeProperty('--neko-chat-tool-cursor');
+      return;
+    }
+
+    if (isElectronMultiWindow && !isCursorInsideHostWindow) {
       root.classList.remove('neko-tool-cursor-active');
       root.style.removeProperty('--neko-chat-tool-cursor');
       return;
@@ -1112,7 +1225,7 @@ export default function App({
 
     const applyResolvedCursor = async () => {
       let cursorValue: string;
-      if (shouldUseDesktopCursorOverlay) {
+      if (shouldUseLocalDesktopCursorOverlay || isElectronMultiWindow) {
         cursorValue = 'none';
       } else if (isCursorOverAvatarRange && !isCursorOverCompactCursorZone) {
         cursorValue = resolveCursorValue(selected, effectiveCursorVariant);
@@ -1128,7 +1241,7 @@ export default function App({
     return () => {
       cancelled = true;
     };
-  }, [activeCursorToolId, avatarToolCacheState, effectiveCursorVariant, isCursorOverAvatarRange, isCursorOverCompactCursorZone, shouldUseDesktopCursorOverlay]);
+  }, [activeCursorToolId, avatarToolCacheState, effectiveCursorVariant, isCursorInsideHostWindow, isCursorOverAvatarRange, isCursorOverCompactCursorZone, isElectronMultiWindow, shouldUseLocalDesktopCursorOverlay]);
 
   useEffect(() => {
     if (!activeToolItem) return;
