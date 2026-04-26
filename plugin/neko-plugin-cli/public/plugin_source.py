@@ -1,67 +1,13 @@
+"""Backward-compatible shim — re-exports from neko_plugin_cli.core.plugin_source."""
+
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
-from .models import PluginSource
-from .toml_utils import load_toml, optional_string, require_string, require_table
+_SRC_DIR = str(Path(__file__).resolve().parent.parent / "src")
+if _SRC_DIR not in sys.path:
+    sys.path.insert(0, _SRC_DIR)
 
-
-def load_plugin_source(plugin_dir: str | Path) -> PluginSource:
-    plugin_dir = Path(plugin_dir).expanduser().resolve()
-    if not plugin_dir.is_dir():
-        raise FileNotFoundError(
-            f"plugin directory not found: {plugin_dir}\n"
-            f"Make sure the path points to an existing plugin directory that "
-            f"contains a plugin.toml file."
-        )
-
-    plugin_toml_path = plugin_dir / "plugin.toml"
-    if not plugin_toml_path.is_file():
-        raise FileNotFoundError(
-            f"plugin.toml not found in '{plugin_dir}'.\n"
-            f"Every neko plugin directory must contain a plugin.toml file that "
-            f"declares the plugin id, name, version, and other metadata. "
-            f"See the package-format documentation for the required schema."
-        )
-
-    try:
-        plugin_toml = load_toml(plugin_toml_path)
-    except Exception as exc:
-        raise ValueError(
-            f"failed to parse '{plugin_toml_path}': {exc}"
-        ) from exc
-
-    plugin_table = require_table(plugin_toml, "plugin", plugin_toml_path)
-    plugin_id = require_string(plugin_table, "id", plugin_toml_path)
-    name = optional_string(plugin_table, "name") or plugin_id
-    version = optional_string(plugin_table, "version") or "0.1.0"
-    package_type = optional_string(plugin_table, "type") or "plugin"
-
-    pyproject_toml_path = plugin_dir / "pyproject.toml"
-    pyproject_toml: dict[str, object] | None = None
-    resolved_pyproject_path: Path | None = None
-    if pyproject_toml_path.is_file():
-        try:
-            pyproject_toml = load_toml(pyproject_toml_path)
-        except Exception as exc:
-            raise ValueError(
-                f"failed to parse '{pyproject_toml_path}': {exc}"
-            ) from exc
-        resolved_pyproject_path = pyproject_toml_path
-
-    return PluginSource(
-        plugin_dir=plugin_dir,
-        plugin_toml_path=plugin_toml_path,
-        pyproject_toml_path=resolved_pyproject_path,
-        plugin_id=plugin_id,
-        name=name,
-        version=version,
-        package_type=package_type,
-        plugin_toml=plugin_toml,
-        pyproject_toml=pyproject_toml,
-    )
-
-
-def extract_runtime_config(source: PluginSource) -> dict[str, object]:
-    value = source.plugin_toml.get(source.plugin_id)
-    return value if isinstance(value, dict) else {}
+from neko_plugin_cli.core.plugin_source import *  # noqa: E402, F401, F403
+from neko_plugin_cli.core.plugin_source import load_plugin_source, extract_runtime_config  # noqa: E402, F401

@@ -15,10 +15,6 @@ from .archive_utils import (
     verify_payload_hash,
 )
 
-_REPO_ROOT = Path(__file__).resolve().parents[3]
-_DEFAULT_PLUGINS_ROOT = _REPO_ROOT / "plugin" / "plugins"
-_DEFAULT_PROFILES_ROOT = _REPO_ROOT / "plugin" / ".neko-package-profiles"
-
 
 class PackageUnpacker:
     """Extract packaged plugins into the runtime plugin directory safely."""
@@ -27,13 +23,13 @@ class PackageUnpacker:
         self,
         package_path: str | Path,
         *,
-        plugins_root: str | Path | None = None,
-        profiles_root: str | Path | None = None,
+        plugins_root: str | Path,
+        profiles_root: str | Path,
         on_conflict: str = "rename",
     ) -> UnpackResult:
         package_path = Path(package_path).expanduser().resolve()
-        plugins_root_path = Path(plugins_root).expanduser().resolve() if plugins_root is not None else _DEFAULT_PLUGINS_ROOT
-        profiles_root_path = Path(profiles_root).expanduser().resolve() if profiles_root is not None else _DEFAULT_PROFILES_ROOT
+        plugins_root_path = Path(plugins_root).expanduser().resolve()
+        profiles_root_path = Path(profiles_root).expanduser().resolve()
         plugins_root_path.mkdir(parents=True, exist_ok=True)
         profiles_root_path.mkdir(parents=True, exist_ok=True)
         on_conflict = self.normalize_conflict_strategy(on_conflict)
@@ -202,8 +198,8 @@ class PackageUnpacker:
 def unpack_package(
     package_path: str | Path,
     *,
-    plugins_root: str | Path | None = None,
-    profiles_root: str | Path | None = None,
+    plugins_root: str | Path,
+    profiles_root: str | Path,
     on_conflict: str = "rename",
 ) -> UnpackResult:
     """Public convenience wrapper for archive extraction into runtime directories."""
