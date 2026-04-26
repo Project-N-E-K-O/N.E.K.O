@@ -2597,7 +2597,7 @@ const ConnectivityManager = {
      * @returns {Promise<{success: boolean, error?: string, error_code?: string}>}
      */
     async testKey(params) {
-        const { provider_key, provider_scope, url, api_key: apiKey, model, provider_type: providerType, is_free: isFree } = params;
+        const { provider_key, provider_scope, url, api_key: apiKey, model, provider_type: providerType, is_free: isFree, cache_id: cacheId } = params;
         console.log('[ConnectivityManager] testKey called:', {
             provider_key: provider_key || '(custom)',
             provider_scope: provider_scope || '(none)',
@@ -2605,14 +2605,15 @@ const ConnectivityManager = {
             hasKey: !!apiKey,
             model: model || '(default)',
         });
-        // 取消同一 Key 的前一次未完成请求
-        const cacheKey = `${provider_key || url}|${apiKey || ''}`;
-        if (this._abortControllers[cacheKey]) {
-            this._abortControllers[cacheKey].abort();
+        // 取消同一 cacheId 的前一次未完成请求（使用 scoped cacheId 避免不同上下文互相干扰）
+        if (cacheId && this._abortControllers[cacheId]) {
+            this._abortControllers[cacheId].abort();
         }
 
         const controller = new AbortController();
-        this._abortControllers[cacheKey] = controller;
+        if (cacheId) {
+            this._abortControllers[cacheId] = controller;
+        }
 
         // 前端 15 秒超时
         const timeoutId = setTimeout(() => controller.abort(), 15000);
@@ -2641,8 +2642,8 @@ const ConnectivityManager = {
 
             clearTimeout(timeoutId);
             // Only delete if map still points to this controller (avoid race with newer request)
-            if (this._abortControllers[cacheKey] === controller) {
-                delete this._abortControllers[cacheKey];
+            if (cacheId && this._abortControllers[cacheId] === controller) {
+                delete this._abortControllers[cacheId];
             }
 
             if (!response.ok) {
@@ -2661,8 +2662,8 @@ const ConnectivityManager = {
             };
         } catch (err) {
             clearTimeout(timeoutId);
-            if (this._abortControllers[cacheKey] === controller) {
-                delete this._abortControllers[cacheKey];
+            if (cacheId && this._abortControllers[cacheId] === controller) {
+                delete this._abortControllers[cacheId];
             }
 
             if (err.name === 'AbortError') {
@@ -2749,7 +2750,7 @@ const ConnectivityManager = {
 
         // 并发测试所有唯一配置
         const testPromises = Object.entries(keyConfigs).map(async ([cacheId, config]) => {
-            const result = await this.testKey(config);
+            const result = await this.testKey({ ...config, cache_id: cacheId });
             if (result.success) {
                 this.keyStatusMap[cacheId] = LightStatus.CONNECTED;
                 this.keyErrorMap[cacheId] = null;
@@ -2852,7 +2853,7 @@ const ConnectivityManager = {
 
         // 并发测试
         const testPromises = Object.entries(keyConfigs).map(async ([cacheId, config]) => {
-            const result = await this.testKey(config);
+            const result = await this.testKey({ ...config, cache_id: cacheId });
             if (result.success) {
                 this.keyStatusMap[cacheId] = LightStatus.CONNECTED;
                 this.keyErrorMap[cacheId] = null;
@@ -3012,7 +3013,8 @@ function initConnectivityLights() {
                 ConnectivityManager.syncErrorDisplaysForKey(resolved.cacheId);
                 const result = await ConnectivityManager.testKey({
                     provider_key: resolved.providerKey, provider_scope: resolved.providerScope,
-                    url: resolved.url, api_key: resolved.key, provider_type: resolved.providerType, is_free: isFree
+                    url: resolved.url, api_key: resolved.key, provider_type: resolved.providerType, is_free: isFree,
+                    cache_id: resolved.cacheId
                 });
                 if (result.success) {
                     ConnectivityManager.keyStatusMap[resolved.cacheId] = LightStatus.CONNECTED;
@@ -3062,7 +3064,8 @@ function initConnectivityLights() {
                 ConnectivityManager.syncErrorDisplaysForKey(resolved.cacheId);
                 const result = await ConnectivityManager.testKey({
                     provider_key: resolved.providerKey, provider_scope: resolved.providerScope,
-                    url: resolved.url, api_key: resolved.key, provider_type: resolved.providerType, is_free: isFree
+                    url: resolved.url, api_key: resolved.key, provider_type: resolved.providerType, is_free: isFree,
+                    cache_id: resolved.cacheId
                 });
                 if (result.success) {
                     ConnectivityManager.keyStatusMap[resolved.cacheId] = LightStatus.CONNECTED;
