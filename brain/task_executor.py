@@ -322,23 +322,38 @@ class DirectTaskExecutor:
         return self.plugin_list
 
 
-    def _get_llm(self, *, temperature: float = 0, max_completion_tokens: int | None = None) -> ChatOpenAI:
+    def _get_llm(
+        self,
+        *,
+        temperature: float = 0,
+        max_completion_tokens: int | None = None,
+        tier: str = "summary",
+    ) -> ChatOpenAI:
         """Return a cached ChatOpenAI instance via create_chat_llm.
 
-        Instances are cached by (api_key, base_url, model, temperature,
-        max_completion_tokens).  When the provider config (api_key / base_url /
-        model) changes, all cached instances are closed and recreated.
+        ``tier`` selects the model tier (``summary`` / ``correction`` /
+        ``emotion`` / ``vision`` …) — see ``ConfigManager.get_model_api_config``.
+        Instances are cached by (tier, api_key, base_url, model, temperature,
+        max_completion_tokens). When the provider config for the **summary**
+        tier changes (the de-facto default), all cached instances across all
+        tiers are closed and recreated, so callers don't need to flush per-tier.
         """
         set_call_type("agent")
-        api_config = self._config_manager.get_model_api_config('summary')
-        config_key = (api_config['api_key'], api_config['base_url'], api_config['model'])
-
-        # If provider config changed, close all cached instances
-        if self._cached_llm_config_key != config_key:
+        api_config = self._config_manager.get_model_api_config(tier)
+        # The cross-tier flush key tracks the summary tier's provider config
+        # (current behavior). Switching providers via the UI typically happens
+        # for the summary tier and the others share the same upstream; keying
+        # off summary keeps the original semantics.
+        watch_config = self._config_manager.get_model_api_config("summary")
+        watch_key = (watch_config['api_key'], watch_config['base_url'], watch_config['model'])
+        if self._cached_llm_config_key != watch_key:
             self._close_all_llms()
-            self._cached_llm_config_key = config_key
+            self._cached_llm_config_key = watch_key
 
-        instance_key = (*config_key, temperature, max_completion_tokens)
+        instance_key = (
+            tier, api_config['api_key'], api_config['base_url'], api_config['model'],
+            temperature, max_completion_tokens,
+        )
         if instance_key not in self._cached_llms:
             llm = create_chat_llm(
                 model=api_config['model'],
@@ -350,8 +365,8 @@ class DirectTaskExecutor:
             )
             self._cached_llms[instance_key] = llm
             logger.debug(
-                "[Agent] Created new ChatOpenAI (model=%s, base_url=%s, temp=%s, max_tokens=%s)",
-                api_config['model'], api_config['base_url'], temperature, max_completion_tokens,
+                "[Agent] Created new ChatOpenAI (tier=%s, model=%s, base_url=%s, temp=%s, max_tokens=%s)",
+                tier, api_config['model'], api_config['base_url'], temperature, max_completion_tokens,
             )
 
         return self._cached_llms[instance_key]
@@ -1033,18 +1048,12 @@ class DirectTaskExecutor:
             pass
         return lines
 
-    # Stage-1 分流门槛。Stage 1 的本职工作是削减 stage 2 LLM prompt 长度，
-    # 但它自己有 BM25 (~1 ms) 和可选的 LLM coarse-screen（几百 ms~几秒）开销。
-    # 三级分流：
-    #   plugin 数 ≤ _STAGE1_FAST_SKIP_PLUGIN_COUNT 或 plugins_desc ≤
-    #     _STAGE1_BM25_TRIGGER_TOKENS → 完全跳过 stage 1。
-    #   plugins_desc 在 (BM25_TRIGGER, LLM_TRIGGER] 区间 → 只跑 BM25 + keyword
-    #     hits 取 union；不调 LLM coarse-screen（stage 2 多吞几个 plugin 没关系）。
-    #   plugins_desc > _STAGE1_LLM_TRIGGER_TOKENS → BM25 与 LLM coarse-screen
-    #     用 asyncio.gather 并行执行，关键路径 ≈ max(BM25, LLM) ≈ LLM 时长。
-    _STAGE1_FAST_SKIP_PLUGIN_COUNT = 10
-    _STAGE1_BM25_TRIGGER_TOKENS = 3000
-    _STAGE1_LLM_TRIGGER_TOKENS = 4500
+    # Stage-1 触发阈值。Stage 1 削减 stage 2 LLM prompt 长度的代价是 BM25
+    # (~1 ms) 和 LLM coarse-screen（emotion tier，几百 ms）。两级分流：
+    #   plugins_desc ≤ _STAGE1_TRIGGER_TOKENS → 完全跳过 stage 1
+    #   plugins_desc >  _STAGE1_TRIGGER_TOKENS → BM25 与 LLM coarse-screen 用
+    #     asyncio.gather 并行；关键路径 ≈ max(BM25, LLM) ≈ LLM 时长。
+    _STAGE1_TRIGGER_TOKENS = 3000
 
     async def _stage1_llm_coarse_screen(
         self, user_text: str, plugins: list, lang: str = "en",
@@ -1067,7 +1076,10 @@ class DirectTaskExecutor:
         )
 
         try:
-            llm = self._get_llm(temperature=0, max_completion_tokens=300)
+            # 走 emotion tier（qwen-flash 等 latency-sensitive 档），粗筛只要
+            # 快、JSON list 输出准确即可；BM25 + keyword hits 兜底，coarse-
+            # screen 漏一两个候选不会让最终决策崩。
+            llm = self._get_llm(temperature=0, max_completion_tokens=300, tier="emotion")
             messages = [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_text},
@@ -1141,21 +1153,13 @@ class DirectTaskExecutor:
                 keyword_hit_ids.append(pid)
 
         # ── Two-stage decision ──────────────────────────────────
-        # 见类常量 _STAGE1_* 注释里的三级分流逻辑。
+        # plugins_desc ≤ trigger 完全跳过；超阈值则 BM25 与 LLM coarse-screen
+        # （emotion tier，latency-sensitive）asyncio.gather 并行执行。
         from utils.tokenize import count_tokens
         plugins_desc_tokens = count_tokens(plugins_desc)
         plugin_count = len(plugin_list)
 
-        skip_stage1 = (
-            plugin_count <= self._STAGE1_FAST_SKIP_PLUGIN_COUNT
-            or plugins_desc_tokens <= self._STAGE1_BM25_TRIGGER_TOKENS
-        )
-        run_llm_coarse_screen = (
-            not skip_stage1
-            and plugins_desc_tokens > self._STAGE1_LLM_TRIGGER_TOKENS
-        )
-
-        if skip_stage1:
+        if plugins_desc_tokens <= self._STAGE1_TRIGGER_TOKENS:
             logger.debug(
                 "[UserPlugin] Skipping stage 1: %d plugins, %d tokens",
                 plugin_count, plugins_desc_tokens,
@@ -1163,43 +1167,26 @@ class DirectTaskExecutor:
             plugins = plugin_list
         else:
             try:
-                if run_llm_coarse_screen:
-                    # 重度：BM25 + LLM coarse-screen 并行。
-                    logger.info(
-                        "[UserPlugin] Stage 1 (heavy): BM25 || LLM coarse-screen, "
-                        "plugins_desc=%d tokens, %d plugins",
-                        plugins_desc_tokens, plugin_count,
-                    )
-                    (bm25_filtered, _), llm_ids = await asyncio.gather(
-                        asyncio.to_thread(
-                            stage1_filter,
-                            user_intent or conversation,
-                            plugin_list,
-                            bm25_top_k=10,
-                        ),
-                        self._stage1_llm_coarse_screen(
-                            user_intent or conversation, plugin_list, lang=lang,
-                        ),
-                    )
-                else:
-                    # 轻度：只跑 BM25 + keyword（跳过 LLM coarse-screen 省时）。
-                    logger.info(
-                        "[UserPlugin] Stage 1 (light): BM25 only, "
-                        "plugins_desc=%d tokens, %d plugins",
-                        plugins_desc_tokens, plugin_count,
-                    )
-                    bm25_filtered, _ = await asyncio.to_thread(
+                logger.info(
+                    "[UserPlugin] Stage 1: BM25 || LLM coarse-screen (gather), "
+                    "plugins_desc=%d tokens, %d plugins",
+                    plugins_desc_tokens, plugin_count,
+                )
+                (bm25_filtered, _), llm_ids = await asyncio.gather(
+                    asyncio.to_thread(
                         stage1_filter,
                         user_intent or conversation,
                         plugin_list,
                         bm25_top_k=10,
-                    )
-                    llm_ids = []
-
+                    ),
+                    self._stage1_llm_coarse_screen(
+                        user_intent or conversation, plugin_list, lang=lang,
+                    ),
+                )
                 bm25_ids = {p.get("id") for p in bm25_filtered if isinstance(p, dict)}
                 llm_id_set = set(llm_ids)
 
-                # Union: BM25 + (optional) LLM coarse-screen + keyword hits
+                # Union: BM25 + LLM coarse-screen + keyword hits
                 selected_ids = bm25_ids | llm_id_set | set(keyword_hit_ids)
 
                 if not selected_ids:
