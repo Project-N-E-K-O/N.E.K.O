@@ -73,8 +73,6 @@ WORKSHOP_REFERENCE_PROVIDER_HINTS = {'cosyvoice', 'minimax', 'minimax_intl'}
 
 
 async def cancel_background_tasks(*, timeout: float = 5.0) -> None:
-    global _ugc_warmup_task, _ugc_sync_task
-
     for task_attr in ("_ugc_warmup_task", "_ugc_sync_task"):
         task = globals().get(task_attr)
         if task is None:
@@ -4006,13 +4004,13 @@ async def sync_workshop_character_cards() -> dict:
             if need_save:
                 if is_write_fence_active(config_mgr):
                     logger.info("sync_workshop_character_cards: 保存前检测到维护态写围栏，跳过本轮同步并等待后续重试")
-                    return {"added": 0, "skipped": skipped_count, "errors": 0, "blocked_by_write_fence": True}
+                    return {"added": 0, "skipped": skipped_count, "errors": error_count, "blocked_by_write_fence": True}
 
                 try:
                     await config_mgr.asave_characters(characters)
                 except MaintenanceModeError:
                     logger.info("sync_workshop_character_cards: 保存时进入维护态写围栏，跳过本轮同步并等待后续重试")
-                    return {"added": 0, "skipped": skipped_count, "errors": 0, "blocked_by_write_fence": True}
+                    return {"added": 0, "skipped": skipped_count, "errors": error_count, "blocked_by_write_fence": True}
 
                 logger.info(f"sync_workshop_character_cards: 已保存，新增 {added_count} 个角色卡")
                 

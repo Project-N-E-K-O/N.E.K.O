@@ -511,7 +511,15 @@ class ConfigManager:
     ROOT_STATE_VERSION = 1
     CLOUDSAVE_LOCAL_STATE_VERSION = 1
     CHARACTER_TOMBSTONES_STATE_VERSION = 1
-    
+
+    @property
+    def selected_root(self):
+        return self.committed_selected_root
+
+    @selected_root.setter
+    def selected_root(self, value):
+        self.committed_selected_root = value
+
     def __init__(self, app_name=None):
         """
         初始化配置管理器
@@ -611,7 +619,6 @@ class ConfigManager:
             committed_selected_root = resolved_app_docs_dir
 
         self.app_docs_dir = resolved_app_docs_dir
-        self.selected_root = committed_selected_root
         self.committed_selected_root = committed_selected_root
         self.anchor_root = resolved_anchor_root
         self.reported_current_root = (

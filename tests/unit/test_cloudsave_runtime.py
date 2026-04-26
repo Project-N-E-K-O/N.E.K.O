@@ -112,6 +112,17 @@ def test_resolve_managed_target_path_rejects_traversal(tmp_path):
     assert resolved == (cm.app_docs_dir / "config" / "characters.json").resolve(strict=False)
 
 
+@pytest.mark.unit
+def test_managed_target_relative_path_prefers_nested_anchor_root(tmp_path):
+    from utils.cloudsave_runtime import _managed_target_relative_path
+
+    cm = _make_config_manager(tmp_path)
+    cm.anchor_root = cm.app_docs_dir / "anchor" / "N.E.K.O"
+    target_path = cm.anchor_root / "state" / "storage_policy.json"
+
+    assert _managed_target_relative_path(cm, target_path) == Path("anchor/state/storage_policy.json")
+
+
 def _add_runtime_character(cm, character_name: str, *, recent_text: str) -> None:
     from utils.config_manager import set_reserved
 

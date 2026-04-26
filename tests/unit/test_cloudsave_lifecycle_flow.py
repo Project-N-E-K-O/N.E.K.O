@@ -593,6 +593,34 @@ async def test_release_storage_startup_barrier_restores_memory_limited_mode_when
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_memory_server_continue_startup_preserves_409_blocking_payload():
+    import httpx
+    import main_server
+
+    payload = {
+        "ok": False,
+        "error_code": "storage_startup_blocked",
+        "blocking_reason": "migration_pending",
+    }
+
+    class _Client:
+        async def post(self, *args, **kwargs):
+            return httpx.Response(
+                409,
+                json=payload,
+                request=httpx.Request("POST", "http://127.0.0.1/internal/storage/startup/continue"),
+            )
+
+    with patch("utils.internal_http_client.get_internal_http_client", return_value=_Client()):
+        with pytest.raises(main_server.MemoryServerStartupBlocked) as exc_info:
+            await main_server._request_memory_server_continue_startup("unit_test")
+
+    assert exc_info.value.payload == payload
+    assert exc_info.value.blocking_reason == "migration_pending"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_memory_server_startup_stays_limited_when_storage_barrier_is_blocking():
     import memory_server
 
@@ -696,6 +724,26 @@ async def test_main_server_cancel_workshop_background_tasks_uses_public_api():
 
     assert calls == [2.5]
     workshop_module.cancel_background_tasks.assert_awaited_once_with(timeout=2.5)
+
+
+@pytest.mark.unit
+def test_main_server_resets_sync_shutdown_events_after_startup_rollback():
+    import main_server
+
+    event = threading.Event()
+    event.set()
+    role_state = {
+        "小满": main_server.RoleState(
+            sync_message_queue=Queue(),
+            sync_shutdown_event=event,
+            websocket_lock=asyncio.Lock(),
+        )
+    }
+
+    with patch.object(main_server, "role_state", role_state):
+        main_server._reset_sync_connector_shutdown_events()
+
+    assert event.is_set() is False
 
 
 @pytest.mark.unit

@@ -29,9 +29,17 @@ def _normalize_path(value: Path | str) -> str:
     return str(Path(value).expanduser().resolve(strict=False))
 
 
-def _collect_legacy_sources(config_manager, *, current_root: Path, anchor_root: Path) -> list[str]:
+def _collect_legacy_sources(
+    config_manager,
+    *,
+    current_root: Path,
+    anchor_root: Path,
+    actual_current_root: Path | None = None,
+) -> list[str]:
     legacy_sources: list[str] = []
     seen: set[str] = {_normalize_path(current_root), _normalize_path(anchor_root)}
+    if actual_current_root is not None:
+        seen.add(_normalize_path(actual_current_root))
 
     for candidate in config_manager.get_legacy_app_root_candidates():
         path = Path(candidate)
@@ -205,6 +213,7 @@ def build_storage_location_bootstrap_payload(config_manager) -> dict[str, Any]:
         "legacy_sources": _collect_legacy_sources(
             config_manager,
             current_root=display_current_root,
+            actual_current_root=current_root,
             anchor_root=anchor_root,
         ),
         "anchor_root": _normalize_path(anchor_root),

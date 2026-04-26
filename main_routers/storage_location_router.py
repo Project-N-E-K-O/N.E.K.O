@@ -1092,6 +1092,14 @@ async def post_storage_location_retained_source_cleanup(
     payload: StorageLocationCleanupRequest,
     response: Response,
 ):
+    async with _storage_mutation_lock:
+        return await _post_storage_location_retained_source_cleanup_locked(payload, response)
+
+
+async def _post_storage_location_retained_source_cleanup_locked(
+    payload: StorageLocationCleanupRequest,
+    response: Response,
+):
     _set_no_cache_headers(response)
 
     config_manager = _get_storage_config_manager()
@@ -1432,6 +1440,13 @@ async def _post_storage_location_restart_locked(
         }
 
     blocking_bootstrap = build_storage_location_bootstrap_payload(config_manager)
+    if bool(blocking_bootstrap.get("migration_pending")):
+        response.status_code = 409
+        return {
+            "ok": False,
+            "error_code": "migration_already_pending",
+            "error": "已有存储迁移正在等待执行，请先完成或恢复当前迁移后再发起新的重启迁移。",
+        }
     selected_root_missing_recovery = _is_selected_root_missing_recovery(
         config_manager,
         current_root=current_root,

@@ -153,6 +153,13 @@ async def test_storage_location_mutation_routes_share_serialization_lock():
         active_calls -= 1
         return {"route": "restart"}
 
+    async def fake_cleanup(_payload, _response):
+        nonlocal active_calls, max_active_calls
+        active_calls += 1
+        max_active_calls = max(max_active_calls, active_calls)
+        active_calls -= 1
+        return {"route": "cleanup"}
+
     with patch.object(
         storage_location_router_module,
         "_post_storage_location_select_locked",
@@ -161,6 +168,10 @@ async def test_storage_location_mutation_routes_share_serialization_lock():
         storage_location_router_module,
         "_post_storage_location_restart_locked",
         side_effect=fake_restart,
+    ), patch.object(
+        storage_location_router_module,
+        "_post_storage_location_retained_source_cleanup_locked",
+        side_effect=fake_cleanup,
     ):
         select_task = asyncio.create_task(
             storage_location_router_module.post_storage_location_select(payload, Response())
@@ -170,14 +181,22 @@ async def test_storage_location_mutation_routes_share_serialization_lock():
         restart_task = asyncio.create_task(
             storage_location_router_module.post_storage_location_restart(payload, Response())
         )
+        cleanup_task = asyncio.create_task(
+            storage_location_router_module.post_storage_location_retained_source_cleanup(
+                storage_location_router_module.StorageLocationCleanupRequest(),
+                Response(),
+            )
+        )
         await asyncio.sleep(0)
         assert restart_task.done() is False
+        assert cleanup_task.done() is False
 
         release_first_call.set()
-        select_result, restart_result = await asyncio.gather(select_task, restart_task)
+        select_result, restart_result, cleanup_result = await asyncio.gather(select_task, restart_task, cleanup_task)
 
     assert select_result == {"route": "select"}
     assert restart_result == {"route": "restart"}
+    assert cleanup_result == {"route": "cleanup"}
     assert max_active_calls == 1
 
 
@@ -635,6 +654,36 @@ def test_storage_location_restart_awaits_async_shutdown_callback(tmp_path):
     assert response.status_code == 200
     assert response.json()["result"] == "restart_initiated"
     assert shutdown_calls["count"] == 1
+
+
+@pytest.mark.unit
+def test_storage_location_restart_rejects_existing_pending_migration(tmp_path):
+    config_manager = _DummyConfigManager(tmp_path)
+    target_root = tmp_path / "new-storage" / "N.E.K.O"
+    create_pending_storage_migration(
+        config_manager,
+        source_root=config_manager.app_docs_dir,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    shutdown_calls = {"count": 0}
+
+    def request_app_shutdown():
+        shutdown_calls["count"] += 1
+
+    with _build_client(config_manager, request_app_shutdown=request_app_shutdown) as client:
+        response = client.post(
+            "/api/storage/location/restart",
+            json={
+                "selected_root": str(tmp_path / "other-storage" / "N.E.K.O"),
+                "selection_source": "recommended",
+            },
+        )
+
+    assert response.status_code == 409
+    assert response.json()["error_code"] == "migration_already_pending"
+    assert shutdown_calls["count"] == 0
+    assert load_storage_migration(config_manager)["target_root"] == str(target_root.resolve())
 
 
 @pytest.mark.unit

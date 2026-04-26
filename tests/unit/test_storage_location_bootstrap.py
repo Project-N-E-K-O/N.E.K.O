@@ -119,6 +119,26 @@ def test_storage_location_bootstrap_payload_uses_configured_anchor_root(tmp_path
 
 
 @pytest.mark.unit
+def test_storage_location_bootstrap_legacy_sources_dedupes_actual_and_display_current_root(tmp_path):
+    config_manager = _DummyConfigManager(tmp_path)
+    displayed_root = tmp_path / "offline-selected" / "N.E.K.O"
+    config_manager.reported_current_root = displayed_root
+    (config_manager.app_docs_dir / "config").mkdir(parents=True, exist_ok=True)
+    (config_manager.app_docs_dir / "config" / "characters.json").write_text("{}", encoding="utf-8")
+
+    config_manager.get_legacy_app_root_candidates = lambda: [
+        config_manager.app_docs_dir,
+        displayed_root,
+        config_manager._legacy_root,
+    ]
+
+    payload = build_storage_location_bootstrap_payload(config_manager)
+
+    assert payload["current_root"] == str(displayed_root.resolve())
+    assert payload["legacy_sources"] == [str(config_manager._legacy_root.resolve())]
+
+
+@pytest.mark.unit
 def test_storage_location_bootstrap_payload_uses_storage_policy_when_dev_override_disabled(tmp_path, monkeypatch):
     config_manager = _DummyConfigManager(tmp_path)
     save_storage_policy(

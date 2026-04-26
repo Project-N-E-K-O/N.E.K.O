@@ -196,6 +196,29 @@ def test_run_pending_storage_migration_requires_confirmation_for_existing_target
 
 
 @pytest.mark.unit
+def test_run_pending_storage_migration_rejects_nested_source_and_target_paths(tmp_path):
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = source_root / "nested-target" / "N.E.K.O"
+
+    (source_root / "config").mkdir(parents=True, exist_ok=True)
+    (source_root / "config" / "characters.json").write_text('{"current":"A"}', encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["attempted"] is True
+    assert result["completed"] is False
+    assert result["error_code"] == "paths_nested"
+    assert result["payload"]["status"] == STORAGE_MIGRATION_STATUS_FAILED
+
+
+@pytest.mark.unit
 def test_run_pending_storage_migration_marks_cleanup_pending_only_for_non_anchor_retained_root(tmp_path):
     config_manager = _make_config_manager(tmp_path)
     source_root = tmp_path / "legacy-runtime" / "N.E.K.O"

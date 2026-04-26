@@ -424,6 +424,8 @@ def run_pending_storage_migration(
 
         if paths_equal(source_root, target_root):
             raise StorageMigrationError("target_matches_source", "目标路径与当前路径一致，不需要执行迁移。")
+        if _path_contains(source_root, target_root) or _path_contains(target_root, source_root):
+            raise StorageMigrationError("paths_nested", "源路径和目标路径不能互相包含，无法安全执行迁移。")
         if not source_root.exists() or not source_root.is_dir():
             raise StorageMigrationError("source_root_missing", "原始数据目录不存在，无法继续迁移。")
 

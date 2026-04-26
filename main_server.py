@@ -245,6 +245,13 @@ async def _request_memory_server_shutdown() -> None:
         logger.warning(f"向memory_server发送关闭信号时出错: {e}")
 
 
+class MemoryServerStartupBlocked(RuntimeError):
+    def __init__(self, payload: dict):
+        self.payload = dict(payload)
+        self.blocking_reason = str(self.payload.get("blocking_reason") or "").strip()
+        super().__init__(f"memory_server startup still blocked: {self.payload!r}")
+
+
 async def _request_memory_server_continue_startup(reason: str = "") -> None:
     """Release memory_server from limited mode after the storage barrier is accepted."""
     try:
@@ -257,10 +264,21 @@ async def _request_memory_server_continue_startup(reason: str = "") -> None:
             json={"reason": reason},
             timeout=60.0,
         )
+        if response.status_code == 409:
+            try:
+                payload = response.json()
+            except Exception:
+                payload = {"ok": False, "blocking_reason": "", "error": response.text}
+            if isinstance(payload, dict) and payload.get("ok") is False and payload.get("blocking_reason"):
+                raise MemoryServerStartupBlocked(payload)
+            response.raise_for_status()
+
         response.raise_for_status()
         payload = response.json()
         if not isinstance(payload, dict) or payload.get("ok") is not True:
             raise RuntimeError(f"memory_server continue-startup returned unexpected payload: {payload!r}")
+    except MemoryServerStartupBlocked:
+        raise
     except Exception as e:
         raise RuntimeError(f"failed to release memory_server limited-mode startup: {e}") from e
 
@@ -372,6 +390,18 @@ async def join_sync_connector_threads(timeout: float = 3.0) -> list[str]:
 def cleanup(*, log: bool = True):
     """通知所有同步线程停止。log=False 用于 atexit 二次触发时抑制重复日志。"""
     _signal_sync_connectors_shutdown(log=log)
+
+
+def _reset_sync_connector_shutdown_events() -> None:
+    for rs in role_state.values():
+        try:
+            thread = rs.sync_process
+            if thread is not None and thread.is_alive():
+                continue
+            rs.sync_shutdown_event.clear()
+        except Exception as exc:
+            logger.debug("重置同步关闭事件失败: %s", exc, exc_info=True)
+
 
 # 只在主进程中注册 cleanup 函数，防止子进程退出时执行清理
 # log=False：on_shutdown 已经打印过 "正在清理资源..."，atexit 补一刀时不重复 log
@@ -788,6 +818,8 @@ async def _init_character_resources(k: str, is_new_character: bool):
 
     if need_start_thread:
         try:
+            if rs.sync_shutdown_event.is_set():
+                rs.sync_shutdown_event.clear()
             _char_name = k
             def _make_status_cb(char_name):
                 def _cb(msg):
@@ -1447,6 +1479,8 @@ async def _rollback_partial_main_runtime_startup() -> None:
         await join_sync_connector_threads(1.0)
     except Exception as exc:
         logger.debug("Sync connector rollback failed: %s", exc, exc_info=True)
+    finally:
+        _reset_sync_connector_shutdown_events()
 
 
 async def _ensure_main_server_runtime_initialized(*, reason: str) -> bool:

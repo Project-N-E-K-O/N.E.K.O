@@ -3082,6 +3082,7 @@ def _managed_target_relative_path(config_manager, target_path: Path) -> Path:
     candidate_roots = [("runtime", runtime_root)]
     if anchor_root != runtime_root:
         candidate_roots.append(("anchor", anchor_root))
+    candidate_roots.sort(key=lambda item: len(item[1].parts), reverse=True)
 
     for scope, root in candidate_roots:
         try:
