@@ -52,13 +52,3 @@ Source runs use this bundled development cache when no user override exists in t
 Linux and macOS nightly builds use `launcher.py` through `specs/launcher.spec`. The workflow downloads the model assets before invoking PyInstaller and packages `data/embedding_models/` into the final `N.E.K.O` directory.
 
 The workflow also checks that the packaged artifact contains the profile folder before upload.
-
-## Windows Nuitka Builds
-
-Local Windows builds use `build_nuitka.bat`. That script:
-
-1. Installs `onnxruntime` and `tokenizers` into `.venv`.
-2. Runs `scripts/prepare_embedding_model.py`.
-3. Includes `data/embedding_models/` in the Nuitka standalone bundle.
-
-The final packaged app can run vector embeddings offline as long as the downloaded profile files are present.

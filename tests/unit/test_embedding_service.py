@@ -281,6 +281,35 @@ def test_select_model_dir_skips_incomplete_app_data_for_bundled(tmp_path, monkey
     )
 
 
+def test_select_model_dir_skips_zero_byte_app_data_for_bundled(tmp_path, monkeypatch):
+    """Zero-byte residue (e.g. an interrupted download that left empty
+    files behind) must be treated the same as half-downloaded — the
+    profile dir exists with the right names but no usable bytes, and
+    selecting it would just sticky-disable at session load."""
+    app_model_dir = tmp_path / "app" / "embedding_models"
+    bundled_model_dir = tmp_path / "bundle" / "data" / "embedding_models"
+
+    onnx_dir = app_model_dir / "local-text-retrieval-v1" / "onnx"
+    onnx_dir.mkdir(parents=True)
+    (app_model_dir / "local-text-retrieval-v1" / "tokenizer.json").write_bytes(b"")
+    (onnx_dir / "model.onnx").write_bytes(b"")
+    (onnx_dir / "model.onnx_data").write_bytes(b"")
+
+    _populate_complete_profile(bundled_model_dir)
+
+    from memory import embeddings as embeddings_module
+
+    monkeypatch.setattr(
+        embeddings_module,
+        "_bundled_model_dirs",
+        lambda: [str(bundled_model_dir)],
+    )
+    assert (
+        _select_model_dir(str(app_model_dir), "local-text-retrieval-v1")
+        == str(bundled_model_dir)
+    )
+
+
 @pytest.mark.asyncio
 async def test_request_load_missing_model_file_disables_sticky():
     """No model file on disk ⇒ DISABLED with NO_MODEL_FILE. Subsequent

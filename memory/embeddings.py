@@ -550,10 +550,13 @@ class EmbeddingService:
         model_path = self._model_file_path()
         tokenizer_path = self._tokenizer_file_path()
         external_data_path = f"{model_path}_data"
+        # Match _profile_is_complete: zero-byte residue from an interrupted
+        # download passes os.path.exists but trips ort/tokenizers later. Reject
+        # it here as NO_MODEL_FILE so the disable reason is the cleanest one.
         if (
-            not os.path.exists(model_path)
-            or not os.path.exists(tokenizer_path)
-            or not os.path.exists(external_data_path)
+            not _is_nonempty_file(model_path)
+            or not _is_nonempty_file(tokenizer_path)
+            or not _is_nonempty_file(external_data_path)
         ):
             raise _DisabledError(_DisableReason.NO_MODEL_FILE)
         try:
