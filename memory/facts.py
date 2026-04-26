@@ -457,6 +457,7 @@ class FactStore:
     async def _aload_signal_targets(
         self, lanlan_name: str,
         reflection_engine=None, persona_manager=None,
+        new_facts: list[dict] | None = None,
     ) -> list[dict]:
         """Assemble the Stage-2 `existing_observations` set.
 
@@ -466,8 +467,12 @@ class FactStore:
 
         Scale control (§3.4.2 end):
           - Hard cap: top-N by evidence_score DESC (N = EVIDENCE_DETECT_SIGNALS_MAX_OBSERVATIONS)
-          - TODO PR follow-up: filter by new_facts[*].entity once Stage-1
-            returns entity; for now broad pool is acceptable (<200 items typical).
+          - When ``new_facts`` is provided AND the EmbeddingService is
+            ready, the cap is replaced by a vector-prefiltered + LLM-
+            reranked top-N (see memory/recall.py). Vectors save the
+            Stage-2 prompt tokens by narrowing the candidate set
+            from ~200 down to a much smaller LLM-validated subset;
+            the LLM call itself is still made.
 
         Injection pattern: memory_server wires `reflection_engine` / `persona_manager`
         references at call time. Without them we return empty, which simply
@@ -492,6 +497,20 @@ class FactStore:
                         'text': r.get('text', ''),
                         'entity': r.get('entity', 'relationship'),
                         'score': evidence_score(r, now),
+                        'embedding': r.get('embedding'),
+                        'embedding_text_sha256': r.get('embedding_text_sha256'),
+                        'embedding_model_id': r.get('embedding_model_id'),
+                        'status': r.get('status'),
+                        # Carry the AI-mention rate-limit suppress flag
+                        # so MemoryRecallReranker._hard_filter can drop
+                        # suppressed reflections from the rerank pool —
+                        # reflections share persona's 5h-window mention
+                        # gating (see ReflectionEngine._normalize_reflection).
+                        # Codex PR-958 P2: without this, a vector-recall
+                        # path with a suppressed reflection would slip
+                        # past the filter and re-enter Stage-2 signal
+                        # detection, defeating the suppression contract.
+                        'suppress': r.get('suppress'),
                     })
             except Exception as e:
                 logger.debug(
@@ -519,13 +538,40 @@ class FactStore:
                             'text': entry.get('text', ''),
                             'entity': entity_key,
                             'score': evidence_score(entry, now),
+                            'embedding': entry.get('embedding'),
+                            'embedding_text_sha256': entry.get('embedding_text_sha256'),
+                            'embedding_model_id': entry.get('embedding_model_id'),
+                            'suppress': entry.get('suppress'),
                         })
             except Exception as e:
                 logger.debug(
                     f"[FactStore] _aload_signal_targets 读取 persona 失败: {e}"
                 )
 
-        # Top-N by score DESC (most relevant first)
+        # P2 step 3: vector + LLM rerank when we have a query (new_facts)
+        # and the embedding service is ready. Otherwise legacy "top-N
+        # by evidence_score" — same behaviour as before P2.
+        if new_facts:
+            try:
+                from memory.recall import MemoryRecallReranker
+                reranker = MemoryRecallReranker()
+                if reranker._service.is_available():
+                    query_texts = [
+                        f.get('text', '') for f in new_facts if f.get('text')
+                    ]
+                    return await reranker.aretrieve_candidates(
+                        pool, query_texts,
+                        budget=EVIDENCE_DETECT_SIGNALS_MAX_OBSERVATIONS,
+                        config_manager=self._config_manager,
+                    )
+            except Exception as e:
+                logger.warning(
+                    "[FactStore] vector+LLM rerank failed (%s: %s); "
+                    "falling back to evidence_score order",
+                    type(e).__name__, e,
+                )
+
+        # Fallback / legacy path: top-N by score DESC (most relevant first).
         pool.sort(key=lambda o: o.get('score', 0.0), reverse=True)
         return pool[:EVIDENCE_DETECT_SIGNALS_MAX_OBSERVATIONS]
 
@@ -652,6 +698,11 @@ class FactStore:
             lanlan_name,
             reflection_engine=reflection_engine,
             persona_manager=persona_manager,
+            # Pass the freshly-persisted facts as the recall query so
+            # the vector+LLM rerank can narrow the candidate set
+            # semantically. Without new_facts the call falls back to
+            # evidence_score ordering (the legacy behaviour).
+            new_facts=persisted,
         )
         if not existing_observations:
             return persisted, []

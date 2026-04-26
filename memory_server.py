@@ -136,6 +136,11 @@ reconciler: Reconciler | None = None
 # unblock the warmup wait early. None when vectors are disabled or
 # the worker bootstrap raised.
 embedding_warmup_worker = None
+# memory-enhancements P2: fact vector dedup resolver. Shares the
+# FactStore with the embedding worker (worker enqueues candidates,
+# the idle-maintenance loop resolves them). None when bootstrap
+# fails or the embedding service is permanently disabled.
+fact_dedup_resolver = None
 
 # 用于保护重新加载操作的锁
 _reload_lock = asyncio.Lock()
@@ -163,7 +168,7 @@ async def reload_memory_components():
     atomic_write_json 保证单次写原子，极端 last-writer-wins 场景下最多
     损失一次 cursor 推进——下一轮 tick 即恢复。
     """
-    global recent_history_manager, settings_manager, time_manager, fact_store, persona_manager, reflection_engine, cursor_store, outbox, event_log, reconciler
+    global recent_history_manager, settings_manager, time_manager, fact_store, persona_manager, reflection_engine, cursor_store, outbox, event_log, reconciler, fact_dedup_resolver
     async with _reload_lock:
         logger.info("[MemoryServer] 开始重新加载记忆组件配置...")
         old_time_manager = time_manager
@@ -182,6 +187,19 @@ async def reload_memory_components():
             new_outbox = Outbox()
             new_reconciler = Reconciler(new_event_log)
             _register_evidence_handlers(new_reconciler, new_persona, new_reflection)
+            # P2 step 2: rebuild fact_dedup_resolver against the NEW
+            # FactStore so /reload doesn't leave the resolver pointing
+            # at the orphaned old store (Codex PR-957 P2). The
+            # embedding worker bound to the old fact_store keeps
+            # writing into facts_pending_dedup.json under the
+            # per-character path, which the new resolver picks up
+            # automatically since the queue is on disk.
+            try:
+                from memory.fact_dedup import FactDedupResolver
+                new_fact_dedup_resolver = FactDedupResolver(new_facts)
+            except Exception as e:
+                logger.warning(f"[MemoryServer] reload: fact_dedup_resolver 重建失败: {e}")
+                new_fact_dedup_resolver = None
 
             # 然后原子性地交换引用
             recent_history_manager = new_recent
@@ -194,6 +212,7 @@ async def reload_memory_components():
             outbox = new_outbox
             event_log = new_event_log
             reconciler = new_reconciler
+            fact_dedup_resolver = new_fact_dedup_resolver
 
             if old_time_manager is not None and old_time_manager is not new_time:
                 _defer_time_manager_cleanup(old_time_manager)
@@ -783,6 +802,32 @@ async def _periodic_idle_maintenance_loop():
                         logger.info(f"[IdleMaint] {name}: 历史记录压缩完成")
                     except Exception as e:
                         logger.warning(f"[IdleMaint] {name}: 历史记录压缩失败: {e}")
+
+                # ── 子任务1b: Fact 向量去重（P2 step 2） ──
+                # Runs *before* the review-gate so a character with
+                # short history still gets paraphrase consolidation
+                # (Codex PR-957 P2). The embedding worker enqueued
+                # candidate paraphrase pairs after the last fact-sweep;
+                # resolve them here via a single LLM call.
+                # fact_dedup_resolver is None when vectors are disabled
+                # or bootstrap failed — legacy hash + FTS5 dedup
+                # remains the entire dedup pipeline in that case.
+                if fact_dedup_resolver is not None:
+                    if not _is_idle():
+                        break
+                    try:
+                        pending_dedup = await fact_dedup_resolver.aload_pending(name)
+                        if pending_dedup:
+                            logger.info(
+                                f"[IdleMaint] {name}: 发现 {len(pending_dedup)} 对未处理的 fact 候选去重，触发 LLM 审视"
+                            )
+                            resolved = await fact_dedup_resolver.aresolve(name)
+                            if resolved:
+                                logger.info(
+                                    f"[IdleMaint] {name}: 完成 {resolved} 对 fact 去重决策"
+                                )
+                    except Exception as e:
+                        logger.warning(f"[IdleMaint] {name}: fact 向量去重失败: {e}")
 
                 # 历史不足 REVIEW_SKIP_HISTORY_LEN 条，或全局开关关闭 → 跳过矛盾审视和 review
                 if history_len < REVIEW_SKIP_HISTORY_LEN or not review_enabled:
@@ -1626,9 +1671,10 @@ async def startup_event_handler():
     # batches. The whole feature is a no-op if the EmbeddingService can't
     # find onnxruntime + a model file, so we always start the task — the
     # service's own fallback gate decides whether anything actually happens.
-    global embedding_warmup_worker
+    global embedding_warmup_worker, fact_dedup_resolver
     try:
         from memory.embedding_worker import EmbeddingWarmupWorker
+        from memory.fact_dedup import FactDedupResolver
         from config import VECTORS_WARMUP_DELAY_SECONDS
 
         # Resolve characters dynamically on each tick rather than
@@ -1652,12 +1698,20 @@ async def startup_event_handler():
         # globals atomically; capturing the instances here would let
         # the worker keep writing through the old managers and clobber
         # post-reload updates from the new ones.
+        # The dedup resolver follows the same pattern: reload rebuilds
+        # it against the new FactStore (see reload_memory_components),
+        # and the worker reads the current instance per sweep so
+        # enqueue and the idle-maintenance loop's resolve never end up
+        # racing on facts_pending_dedup.json across two instances.
+        fact_dedup_resolver = FactDedupResolver(fact_store)
+
         embedding_warmup_worker = EmbeddingWarmupWorker(
             get_persona_manager=lambda: persona_manager,
             get_reflection_engine=lambda: reflection_engine,
             get_fact_store=lambda: fact_store,
             get_character_names=_current_catgirl_names,
             warmup_delay_seconds=VECTORS_WARMUP_DELAY_SECONDS,
+            get_dedup_resolver=lambda: fact_dedup_resolver,
         )
         embedding_warmup_worker.start()
     except Exception as e:
@@ -1665,6 +1719,7 @@ async def startup_event_handler():
         # vectors are an optimization, not a correctness requirement.
         logger.warning(f"[Memory] embedding worker bootstrap failed: {e}")
         embedding_warmup_worker = None
+        fact_dedup_resolver = None
 
 
 @app.on_event("shutdown")

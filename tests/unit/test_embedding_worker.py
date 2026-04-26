@@ -157,6 +157,7 @@ class _FactStub:
 
 def _build_worker(
     *, service, persona, reflection, fact, names=("小天",), warmup_delay=0.01,
+    dedup_resolver=None,
 ) -> EmbeddingWarmupWorker:
     w = EmbeddingWarmupWorker(
         get_persona_manager=lambda: persona,
@@ -164,11 +165,24 @@ def _build_worker(
         get_fact_store=lambda: fact,
         get_character_names=lambda: list(names),
         warmup_delay_seconds=warmup_delay,
+        get_dedup_resolver=(lambda: dedup_resolver) if dedup_resolver is not None else None,
     )
     # Hand the stub in by replacement — get_embedding_service() was
     # called in __init__, so we override the attribute directly.
     w._service = service
     return w
+
+
+class _DedupResolverStub:
+    """Captures aenqueue_candidates calls so the integration test can
+    assert the worker forwards the right pairs after a fact sweep."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, list[dict]]] = []
+
+    async def aenqueue_candidates(self, name: str, pairs: list[dict]) -> int:
+        self.calls.append((name, list(pairs)))
+        return len(pairs)
 
 
 # ── tests ────────────────────────────────────────────────────────────
@@ -440,6 +454,75 @@ async def test_notify_first_process_idempotent():
 
 
 @pytest.mark.asyncio
+async def test_fact_sweep_forwards_dedup_candidates_when_resolver_present():
+    """End-to-end integration with FactDedupResolver: after the worker
+    embeds new fact rows, it should call aenqueue_candidates with the
+    cosine-collision pairs detected against the rest of the pool.
+    Confirms the wiring step 2 added in memory_server.py — without
+    this, the dedup queue stays empty even with vectors enabled."""
+    service = _FakeService(
+        available=True, model_id="fake-128d-int8",
+        # Force every embedding to be the same vector so cosine = 1.0
+        # for every pair, guaranteed above the 0.85 threshold.
+        vector_factory=lambda text: [1.0, 0.0, 0.0, 0.0],
+    )
+    persona = _PersonaStub()
+    reflection = _ReflectionStub()
+    fact = _FactStub()
+    fact.store["小天"] = [
+        # Pre-seeded existing row with a vector under the SAME model_id
+        # — this is the cosine-collision target.
+        {"id": "e1", "text": "主人喜欢猫", "entity": "master",
+         "embedding": [1.0, 0.0, 0.0, 0.0],
+         "embedding_text_sha256": _embedding_text_sha256("主人喜欢猫"),
+         "embedding_model_id": "fake-128d-int8",
+         "absorbed": False},
+        # New row needing embedding — worker fills it in this sweep
+        # and then detects the collision against e1.
+        {"id": "c1", "text": "对猫咪很感兴趣", "entity": "master",
+         "embedding": None, "embedding_text_sha256": None,
+         "embedding_model_id": None, "absorbed": False},
+    ]
+    dedup = _DedupResolverStub()
+    w = _build_worker(
+        service=service, persona=persona, reflection=reflection, fact=fact,
+        dedup_resolver=dedup,
+    )
+    processed = await w._sweep_once()
+    assert processed >= 1
+    # Worker must have called the resolver for the freshly-embedded row.
+    assert dedup.calls, "worker did not forward dedup candidates"
+    name, pairs = dedup.calls[0]
+    assert name == "小天"
+    assert any(p["candidate_id"] == "c1" and p["existing_id"] == "e1" for p in pairs)
+
+
+@pytest.mark.asyncio
+async def test_fact_sweep_skips_dedup_when_resolver_is_none():
+    """Without a resolver attached, the worker still embeds fact rows
+    but never calls into the dedup path. This preserves the legacy
+    hash-only dedup behaviour for installations that haven't enabled
+    the LLM arbitration loop yet."""
+    service = _FakeService(available=True, model_id="fake-128d-int8")
+    persona = _PersonaStub()
+    reflection = _ReflectionStub()
+    fact = _FactStub()
+    fact.store["小天"] = [
+        {"id": "c1", "text": "x", "entity": "master",
+         "embedding": None, "embedding_text_sha256": None,
+         "embedding_model_id": None, "absorbed": False},
+    ]
+    w = _build_worker(
+        service=service, persona=persona, reflection=reflection, fact=fact,
+        dedup_resolver=None,
+    )
+    processed = await w._sweep_once()
+    # Embedding still happened; no dedup machinery to crash on.
+    assert processed >= 1
+    assert fact.store["小天"][0]["embedding"] is not None
+
+
+@pytest.mark.asyncio
 async def test_stop_during_warmup_skips_load():
     """Shutdown while still in warmup wait → don't trigger the model
     load. Catches the case where the FastAPI shutdown hook fires before
@@ -541,3 +624,72 @@ async def test_save_failure_returns_zero_to_avoid_hot_loop():
     # progress accounting must reflect 0 so the outer loop backs off.
     assert fact.save_calls == 1
     assert processed == 0
+
+
+@pytest.mark.asyncio
+async def test_dedup_resolver_observed_via_live_getter():
+    """Regression for the resolver's /reload swap: reload_memory_components
+    rebuilds fact_dedup_resolver against the new FactStore, but the
+    embedding worker has to look up the current resolver per sweep —
+    otherwise post-reload enqueue still hits the OLD resolver while
+    idle-maintenance's resolve runs against the NEW one, racing on the
+    same facts_pending_dedup.json without a shared lock.
+
+    This test pins the getter pattern; if someone reverts to a snapshot
+    on `__init__`, the second sweep would still call the old resolver
+    and the assertion on `new_resolver.calls` would fail."""
+    service = _FakeService(available=True, model_id="fake-128d-int8")
+
+    persona = _PersonaStub()
+    reflection = _ReflectionStub()
+    state = {
+        "fact": _FactStub(),
+        "resolver": _DedupResolverStub(),
+    }
+    # Two pre-existing facts with embeddings + one fresh fact — the
+    # detect_candidates pass needs an embedded neighbour to flag the
+    # fresh one as a paraphrase candidate. Cosine >= 0.9 threshold;
+    # identical 4-vec gives cosine 1.0.
+    base_emb = [0.5, 0.5, 0.5, 0.5]
+    state["fact"].store["小天"] = [
+        {"id": "fact-old", "entity": "user", "text": "old",
+         "embedding": list(base_emb), "embedding_text_sha256": "x",
+         "embedding_model_id": "fake-128d-int8", "absorbed": False},
+        {"id": "fact-new", "entity": "user", "text": "old paraphrase",
+         "embedding": None,
+         "embedding_text_sha256": None, "embedding_model_id": None,
+         "absorbed": False},
+    ]
+    w = EmbeddingWarmupWorker(
+        get_persona_manager=lambda: persona,
+        get_reflection_engine=lambda: reflection,
+        get_fact_store=lambda: state["fact"],
+        get_character_names=lambda: ["小天"],
+        warmup_delay_seconds=0.01,
+        get_dedup_resolver=lambda: state["resolver"],
+    )
+    w._service = service
+    # First sweep: original resolver receives the enqueue.
+    await w._sweep_once()
+    assert len(state["resolver"].calls) >= 1
+    original_resolver = state["resolver"]
+
+    # Simulate /reload: new fact store + new resolver, queued candidate.
+    new_fact = _FactStub()
+    new_fact.store["小天"] = [
+        {"id": "fact-a", "entity": "user", "text": "alpha",
+         "embedding": list(base_emb), "embedding_text_sha256": "y",
+         "embedding_model_id": "fake-128d-int8", "absorbed": False},
+        {"id": "fact-b", "entity": "user", "text": "alpha rephrased",
+         "embedding": None,
+         "embedding_text_sha256": None, "embedding_model_id": None,
+         "absorbed": False},
+    ]
+    new_resolver = _DedupResolverStub()
+    state["fact"] = new_fact
+    state["resolver"] = new_resolver
+
+    await w._sweep_once()
+    # The NEW resolver got the enqueue, not the old one.
+    assert len(new_resolver.calls) >= 1
+    assert len(original_resolver.calls) == 1  # unchanged after reload

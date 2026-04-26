@@ -85,6 +85,7 @@ class EmbeddingWarmupWorker:
         get_fact_store,              # callable returning current FactStore
         get_character_names,         # callable returning list[str]
         warmup_delay_seconds: float,
+        get_dedup_resolver=None,     # callable returning current FactDedupResolver, or None to disable
     ) -> None:
         # All store/manager accesses go through getters so /reload (which
         # rebinds the memory_server module globals) is observed on the next
@@ -95,6 +96,17 @@ class EmbeddingWarmupWorker:
         self._get_fact_store = get_fact_store
         self._get_character_names = get_character_names
         self._warmup_delay = warmup_delay_seconds
+        # Same /reload-staleness shape as the managers above: reload
+        # rebuilds fact_dedup_resolver against the new FactStore, so the
+        # worker resolves the current instance per sweep instead of
+        # capturing the startup one. Without this, post-reload enqueue
+        # would write through the OLD resolver while the idle-maintenance
+        # loop's resolve runs through the NEW one — two instances racing
+        # on the same facts_pending_dedup.json without a shared lock.
+        # Pass None to disable dedup entirely (e.g. tests, or
+        # installations that prefer pure hash + FTS5 dedup until they
+        # have evaluated LLM cost).
+        self._get_dedup_resolver = get_dedup_resolver
 
         self._service = get_embedding_service()
         self._first_process_event = asyncio.Event()
@@ -186,7 +198,9 @@ class EmbeddingWarmupWorker:
                 await asyncio.wait_for(self._stop_event.wait(), timeout=interval)
             except asyncio.TimeoutError:
                 # Expected: interval elapsed without stop_event firing —
-                # fall through to the next sweep iteration.
+                # fall through to the next sweep iteration. Distinct
+                # from a real cancellation, which propagates as
+                # CancelledError and exits the loop.
                 pass
 
     async def _wait_for_warmup_trigger(self) -> bool:
@@ -313,6 +327,16 @@ class EmbeddingWarmupWorker:
             return len(targets)
 
     async def _sweep_facts(self, name: str, budget: int) -> int:
+        """Embed stale fact rows in place, then opportunistically scan
+        the freshly-embedded rows for cosine collisions against the
+        rest of the fact pool — collisions go into the dedup queue
+        for the LLM-arbitrated resolve pass to handle later.
+
+        FactStore uses a threading.Lock around `asave_facts` (not an
+        asyncio.Lock like persona/reflection), and the embedding triple
+        is the only field this worker touches, so a per-character
+        asyncio lock isn't needed here — the field-level race is empty.
+        """
         fact_store = self._get_fact_store()
         try:
             facts = await fact_store.aload_facts(name)
@@ -331,7 +355,37 @@ class EmbeddingWarmupWorker:
             logger.warning(
                 "[EmbeddingWorker] fact save failed for %s: %s", name, e,
             )
-            return 0  # see _sweep_persona — same hot-loop guard
+            # Save failed — skip dedup enqueue (the embeddings the
+            # resolver would key on aren't durable yet) and return 0
+            # so the outer loop backs off instead of hot-looping on a
+            # persistent disk error. See _sweep_persona for context.
+            return 0
+
+        # Dedup pass: only the rows we just embedded are candidates;
+        # we don't want to repeatedly scan the entire fact history on
+        # every sweep. detect_candidates is entity-scoped + absorbed-
+        # aware, so its output is already a clean set of (candidate,
+        # existing) pairs ready for the LLM arbitration queue.
+        dedup_resolver = (
+            self._get_dedup_resolver()
+            if self._get_dedup_resolver is not None else None
+        )
+        if dedup_resolver is not None:
+            try:
+                from memory.fact_dedup import FactDedupResolver  # local import keeps the worker importable when dedup module isn't loaded
+                only_for_ids = {
+                    e.get("id") for e in targets if e.get("id")
+                }
+                pairs = FactDedupResolver.detect_candidates(
+                    facts, only_for_ids=only_for_ids,
+                )
+                if pairs:
+                    await dedup_resolver.aenqueue_candidates(name, pairs)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "[EmbeddingWorker] dedup enqueue failed for %s: %s",
+                    name, e,
+                )
         return len(targets)
 
     # ── helpers ──────────────────────────────────────────────────────
