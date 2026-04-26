@@ -134,10 +134,7 @@
 
     // ======================== 句子分割（从 app-chat.js 复刻） ========================
 
-    function splitIntoSentences(buffer, options) {
-        options = options || {};
-        var mode = options.mode || 'normal';
-        var flushTrailingBoundary = options.flushTrailingBoundary !== false;
+    function splitIntoSentences(buffer) {
         var sentences = [];
         var s = normalizeGeminiText(buffer);
         var start = 0;
@@ -149,13 +146,11 @@
         function isBoundary(ch, next) {
             if (ch === '\n') return true;
             if (isPunctForBoundary(ch) && next && isPunctForBoundary(next)) return false;
-            if (isPunctForBoundary(ch) && !next) return flushTrailingBoundary;
+            if (isPunctForBoundary(ch) && !next) return true;
             if (ch === '\u3002' || ch === '\uFF01' || ch === '\uFF1F') return true;
-            if (mode === 'coarse') return false;
             if (ch === '!' || ch === '?') return true;
-            if (ch === '\u2026') return mode === 'normal';
+            if (ch === '\u2026') return true;
             if (ch === '.') {
-                if (mode !== 'normal') return false;
                 if (!next) return true;
                 return /\s|\n|["')\]]/.test(next);
             }
@@ -174,21 +169,6 @@
 
         var rest = s.slice(start);
         return { sentences: sentences, rest: rest };
-    }
-
-    // Queue thresholds reflect visible backlog pressure; chunk thresholds catch
-    // fast streams before enough queued bubbles accumulate.
-    var BALANCED_QUEUE_THRESHOLD = 4;
-    var BALANCED_CHUNK_THRESHOLD = 16;
-    var COARSE_QUEUE_THRESHOLD = 8;
-    var COARSE_CHUNK_THRESHOLD = 32;
-
-    function getRealisticSplitMode() {
-        var queueLen = Array.isArray(window._realisticGeminiQueue) ? window._realisticGeminiQueue.length : 0;
-        var chunkCount = window._realisticGeminiChunkCount || 0;
-        if (queueLen >= COARSE_QUEUE_THRESHOLD || chunkCount >= COARSE_CHUNK_THRESHOLD) return 'coarse';
-        if (queueLen >= BALANCED_QUEUE_THRESHOLD || chunkCount >= BALANCED_CHUNK_THRESHOLD) return 'balanced';
-        return 'normal';
     }
 
     function isFullWidthJoinPunctuation(ch) {
@@ -219,33 +199,48 @@
         return joined;
     }
 
-    function rebalanceRealisticQueueIfNeeded() {
-        var mode = getRealisticSplitMode();
-        if (mode === 'normal') return;
-        var queue = window._realisticGeminiQueue;
-        if (!Array.isArray(queue) || queue.length < 2) return;
+    function isMiddleSplitBoundary(text, index) {
+        var prev = text.charAt(index - 1);
+        var next = text.charAt(index);
+        return /\s/.test(prev) || /\s/.test(next) ||
+            isFullWidthJoinPunctuation(prev) ||
+            /[.!?;,]/.test(prev);
+    }
 
-        var originalBuffer = typeof window._realisticGeminiBuffer === 'string' ? window._realisticGeminiBuffer : '';
-        var queueText = joinRealisticPendingPieces(queue);
-        if (!queueText) return;
+    function splitRealisticTextNearMiddle(text) {
+        var normalized = normalizeGeminiText(text).replace(/^\s+/, '').replace(/\s+$/, '');
+        if (!normalized) return [];
+        if (normalized.length < 2) return [normalized];
 
-        var pieces = [queueText];
-        if (originalBuffer) pieces.push(originalBuffer);
-        var pendingText = joinRealisticPendingPieces(pieces);
-        var splitResult = splitIntoSentences(pendingText, {
-            mode: mode,
-            flushTrailingBoundary: !originalBuffer
-        });
-
-        if (splitResult.sentences.length === 0) {
-            window._realisticGeminiQueue = [queueText];
-            window._realisticGeminiBuffer = originalBuffer;
-            return;
+        var midpoint = Math.floor(normalized.length / 2);
+        var splitAt = midpoint;
+        for (var offset = 0; offset < normalized.length; offset++) {
+            var left = midpoint - offset;
+            var right = midpoint + offset;
+            if (left > 0 && left < normalized.length && isMiddleSplitBoundary(normalized, left)) {
+                splitAt = left;
+                break;
+            }
+            if (right > 0 && right < normalized.length && isMiddleSplitBoundary(normalized, right)) {
+                splitAt = right;
+                break;
+            }
         }
 
-        if (splitResult.sentences.length <= queue.length) {
-            window._realisticGeminiQueue = splitResult.sentences;
-            window._realisticGeminiBuffer = splitResult.rest;
+        var first = normalized.slice(0, splitAt).replace(/^\s+/, '').replace(/\s+$/, '');
+        var second = normalized.slice(splitAt).replace(/^\s+/, '').replace(/\s+$/, '');
+        if (!first || !second) return [normalized];
+        return [first, second];
+    }
+
+    function rebalanceRealisticQueueIfNeeded() {
+        var queue = window._realisticGeminiQueue;
+        if (!Array.isArray(queue) || queue.length <= 2) return;
+
+        var queueText = joinRealisticPendingPieces(queue);
+        var splitQueue = splitRealisticTextNearMiddle(queueText);
+        if (splitQueue.length > 0 && splitQueue.length <= queue.length) {
+            window._realisticGeminiQueue = splitQueue;
         }
     }
 
@@ -522,7 +517,6 @@
                 window._pendingMusicCommand = '';
                 window._structuredGeminiStreaming = false;
                 window._turnIsStructured = false;
-                window._realisticGeminiChunkCount = 0;
                 window.currentTurnGeminiBubbles = [];
                 window.currentTurnGeminiAttachments = [];
                 // 提前复位字幕 turn 状态：neko-assistant-turn-start 事件要等
@@ -561,7 +555,6 @@
                 window._pendingMusicCommand = '';
             }
 
-            window._realisticGeminiChunkCount = (window._realisticGeminiChunkCount || 0) + 1;
             var incoming = normalizeGeminiText(text);
 
             // 未闭合的音乐指令片段
@@ -612,7 +605,6 @@
             window._realisticGeminiBuffer = '';
             window._realisticGeminiQueue = [];
             window._lastBubbleTime = 0;
-            window._realisticGeminiChunkCount = 0;
 
             var cleanNewText = cleanMusicFromChunk(text);
 
