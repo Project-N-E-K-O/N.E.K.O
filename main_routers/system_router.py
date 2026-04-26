@@ -93,10 +93,34 @@ from utils.tutorial_prompt_state import (
     record_tutorial_started,
     record_tutorial_completed,
 )
+from utils.storage_location_bootstrap import build_storage_location_bootstrap_payload
+from utils.config_manager import get_config_manager as get_runtime_config_manager
+from config import APP_NAME
 
 router = APIRouter(prefix="/api", tags=["system"])
 logger = get_module_logger(__name__, "Main")
 _AUTOSTART_CSRF_HEADER = "X-CSRF-Token"
+
+
+def _set_no_store_headers(response: Response) -> None:
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+
+
+def _derive_system_lifecycle_state(storage_bootstrap: dict[str, Any]) -> str:
+    if not isinstance(storage_bootstrap, dict):
+        return "starting"
+
+    if (
+        bool(storage_bootstrap.get("selection_required"))
+        or bool(storage_bootstrap.get("migration_pending"))
+        or bool(storage_bootstrap.get("recovery_required"))
+        or bool(str(storage_bootstrap.get("blocking_reason") or "").strip())
+    ):
+        return "migration_required"
+
+    return "ready"
 
 
 def _build_public_error_response(
@@ -147,6 +171,15 @@ def _get_request_origin(request: Request) -> str:
     if origin:
         return origin
     return _normalize_origin_value(request.headers.get("referer"))
+
+
+def _get_system_config_manager():
+    try:
+        return get_config_manager()
+    except RuntimeError:
+        # The storage bootstrap sentinel must keep working during limited startup
+        # even if main_server shared_state is not fully published yet.
+        return get_runtime_config_manager(APP_NAME, migrate=False)
 
 
 def _get_allowed_local_origins(request: Request) -> set[str]:
@@ -221,6 +254,47 @@ async def _read_json_object(request: Request) -> dict[str, object]:
         return {}
 
     return payload if isinstance(payload, dict) else {}
+
+
+@router.get("/system/status")
+async def get_system_status(response: Response):
+    """Return a lightweight readiness snapshot for the web bootstrap sentinel."""
+    _set_no_store_headers(response)
+
+    try:
+        config_manager = _get_system_config_manager()
+        storage_bootstrap = build_storage_location_bootstrap_payload(config_manager)
+        lifecycle_state = _derive_system_lifecycle_state(storage_bootstrap)
+        return {
+            "ok": True,
+            "status": lifecycle_state,
+            "ready": lifecycle_state == "ready",
+            "storage": {
+                "selection_required": bool(storage_bootstrap.get("selection_required")),
+                "migration_pending": bool(storage_bootstrap.get("migration_pending")),
+                "recovery_required": bool(storage_bootstrap.get("recovery_required")),
+                "legacy_cleanup_pending": bool(storage_bootstrap.get("legacy_cleanup_pending")),
+                "blocking_reason": str(storage_bootstrap.get("blocking_reason") or ""),
+                "last_error_summary": str(storage_bootstrap.get("last_error_summary") or ""),
+                "stage": storage_bootstrap.get("stage") or "",
+            },
+        }
+    except Exception as exc:
+        logger.warning("system status probe unavailable during startup: %s", exc)
+        return {
+            "ok": True,
+            "status": "starting",
+            "ready": False,
+            "storage": {
+                "selection_required": False,
+                "migration_pending": False,
+                "recovery_required": False,
+                "legacy_cleanup_pending": False,
+                "blocking_reason": "",
+                "last_error_summary": "",
+                "stage": "",
+            },
+        }
 
 
 # 统一的表情包图源白名单由 utils.meme_fetcher 维护，本文件仅用于引入
@@ -631,12 +705,6 @@ def _resolve_emotion_prompt_language(text):
         return normalize_language_code(detected_lang, format='short')
     except Exception:
         return 'zh'
-
-
-@router.get("/v1/system/status")
-async def get_system_status():
-    """返回系统就绪状态，供桌面端存储闸门判断是否可以创建卫星窗口。"""
-    return {"ready": True}
 
 
 @router.get("/token-usage")

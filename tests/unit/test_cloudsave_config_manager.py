@@ -13,6 +13,10 @@ _ORIGINAL_GET_DOCUMENTS_DIRECTORY = ConfigManager._get_documents_directory
 def _make_config_manager(tmp_path):
     with patch.object(ConfigManager, "_get_documents_directory", return_value=tmp_path), patch.object(
         ConfigManager,
+        "_get_standard_data_directory_candidates",
+        return_value=[tmp_path / "standard_data"],
+    ), patch.object(
+        ConfigManager,
         "get_legacy_app_root_candidates",
         return_value=[],
     ), patch.object(
@@ -24,16 +28,20 @@ def _make_config_manager(tmp_path):
 
 
 @pytest.mark.unit
-def test_cloudsave_paths_follow_app_dir(tmp_path):
+def test_cloudsave_paths_follow_anchor_root_instead_of_runtime_root(tmp_path):
     cm = _make_config_manager(tmp_path)
+    expected_runtime_root = tmp_path / "N.E.K.O"
+    expected_anchor_root = tmp_path / "standard_data" / "N.E.K.O"
 
-    assert cm.cloudsave_dir == tmp_path / "N.E.K.O" / "cloudsave"
+    assert cm.app_docs_dir == expected_runtime_root
+    assert cm.anchor_root == expected_anchor_root
+    assert cm.cloudsave_dir == expected_anchor_root / "cloudsave"
     assert cm.cloudsave_manifest_path == cm.cloudsave_dir / "manifest.json"
-    assert cm.cloudsave_staging_dir == tmp_path / "N.E.K.O" / ".cloudsave_staging"
-    assert cm.cloudsave_backups_dir == tmp_path / "N.E.K.O" / "cloudsave_backups"
-    assert cm.root_state_path == tmp_path / "N.E.K.O" / "state" / "root_state.json"
-    assert cm.cloudsave_local_state_path == tmp_path / "N.E.K.O" / "state" / "cloudsave_local_state.json"
-    assert cm.character_tombstones_state_path == tmp_path / "N.E.K.O" / "state" / "character_tombstones.json"
+    assert cm.cloudsave_staging_dir == expected_anchor_root / ".cloudsave_staging"
+    assert cm.cloudsave_backups_dir == expected_anchor_root / "cloudsave_backups"
+    assert cm.root_state_path == expected_anchor_root / "state" / "root_state.json"
+    assert cm.cloudsave_local_state_path == expected_anchor_root / "state" / "cloudsave_local_state.json"
+    assert cm.character_tombstones_state_path == expected_anchor_root / "state" / "character_tombstones.json"
 
 
 @pytest.mark.unit

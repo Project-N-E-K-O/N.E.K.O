@@ -558,7 +558,7 @@ async def get_core_config_api():
         try:
             from utils.config_manager import get_config_manager
             config_manager = get_config_manager()
-            core_config_path = str(config_manager.get_config_path('core_config.json'))
+            core_config_path = str(config_manager.get_runtime_config_path('core_config.json'))
             core_cfg = await read_json_async(core_config_path)
             api_key = core_cfg.get('coreApiKey', '')
         except FileNotFoundError:

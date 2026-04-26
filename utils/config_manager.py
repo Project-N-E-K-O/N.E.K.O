@@ -507,11 +507,20 @@ def flatten_reserved(catgirl_data: dict) -> dict:
 class ConfigManager:
     """配置文件管理器"""
     _agent_quota_lock = threading.Lock()
+    _selected_root_unavailable_recovery_override_roots: set[str] = set()
     _free_agent_daily_limit = 300 # 免费配额并非只在本地实施，本地计算是为了减少无效请求、节约网络带宽。
     ROOT_STATE_VERSION = 1
     CLOUDSAVE_LOCAL_STATE_VERSION = 1
     CHARACTER_TOMBSTONES_STATE_VERSION = 1
-    
+
+    @property
+    def selected_root(self):
+        return self.committed_selected_root
+
+    @selected_root.setter
+    def selected_root(self, value):
+        self.committed_selected_root = value
+
     def __init__(self, app_name=None):
         """
         初始化配置管理器
@@ -523,13 +532,19 @@ class ConfigManager:
         # 检测是否在子进程中，子进程静默初始化（通过 main_server.py 设置的环境变量）
         self._verbose = '_NEKO_MAIN_SERVER_INITIALIZED' not in os.environ
         self.docs_dir = self._get_documents_directory()
+        default_app_docs_dir = self.docs_dir / self.app_name
 
         # CFA (Windows 受控文件夹访问/反勒索防护) 检测：
         # 如果原始 Documents 路径可读但不可写，记住它以便从中读取用户数据（模型等）
         first_readable_non_writable = getattr(self, '_first_non_writable_readable_candidate', None)
-        if (first_readable_non_writable is not None
-                and first_readable_non_writable != self.docs_dir):
+        self._cfa_fallback_write_docs_dir = None
+        if (
+            sys.platform == "win32"
+            and first_readable_non_writable is not None
+            and first_readable_non_writable != self.docs_dir
+        ):
             self._readable_docs_dir = first_readable_non_writable
+            self._cfa_fallback_write_docs_dir = self.docs_dir
             print("⚠ WARNING [ConfigManager] 文档目录不可写（可能受Windows安全策略/反勒索防护保护）!", file=sys.stderr)
             print(f"⚠ WARNING [ConfigManager] 原始文档路径(只读): {first_readable_non_writable}", file=sys.stderr)
             print(f"⚠ WARNING [ConfigManager] 回退写入路径: {self.docs_dir}", file=sys.stderr)
@@ -537,7 +552,86 @@ class ConfigManager:
         else:
             self._readable_docs_dir = None
 
-        self.app_docs_dir = self.docs_dir / self.app_name
+        resolved_app_docs_dir = default_app_docs_dir
+        resolved_anchor_root = default_app_docs_dir
+        committed_selected_root = default_app_docs_dir
+        recovery_committed_root_unavailable = False
+        default_anchor_root = None
+        try:
+            from utils.storage_policy import (
+                compute_anchor_root,
+                is_runtime_root_available,
+                load_storage_policy,
+                normalize_runtime_root,
+                paths_equal,
+            )
+
+            env_selected_root = os.environ.get("NEKO_STORAGE_SELECTED_ROOT", "").strip()
+            env_anchor_root = os.environ.get("NEKO_STORAGE_ANCHOR_ROOT", "").strip()
+            default_anchor_root = compute_anchor_root(self, current_root=default_app_docs_dir)
+            resolved_anchor_root = default_anchor_root
+            policy_anchor_root = normalize_runtime_root(env_anchor_root or default_anchor_root)
+            policy = load_storage_policy(self, anchor_root=policy_anchor_root)
+
+            if env_selected_root:
+                resolved_app_docs_dir = normalize_runtime_root(env_selected_root)
+                resolved_anchor_root = normalize_runtime_root(env_anchor_root or default_anchor_root)
+                committed_selected_root = resolved_app_docs_dir
+                if isinstance(policy, dict):
+                    first_run_completed = bool(policy.get("first_run_completed"))
+                    selected_root_value = str(policy.get("selected_root") or "").strip()
+                    if selected_root_value:
+                        committed_selected_root = normalize_runtime_root(selected_root_value)
+                    anchor_root_value = str(policy.get("anchor_root") or "").strip()
+                    if anchor_root_value and not env_anchor_root:
+                        resolved_anchor_root = normalize_runtime_root(anchor_root_value)
+                    if (
+                        first_run_completed
+                        and paths_equal(resolved_app_docs_dir, resolved_anchor_root)
+                        and not paths_equal(committed_selected_root, resolved_anchor_root)
+                        and not is_runtime_root_available(committed_selected_root)
+                    ):
+                        recovery_committed_root_unavailable = True
+            else:
+                if env_anchor_root:
+                    resolved_anchor_root = normalize_runtime_root(env_anchor_root)
+                if isinstance(policy, dict):
+                    first_run_completed = bool(policy.get("first_run_completed"))
+                    selected_root_value = str(policy.get("selected_root") or "").strip()
+                    if selected_root_value:
+                        committed_selected_root = normalize_runtime_root(selected_root_value)
+                        resolved_app_docs_dir = committed_selected_root
+                        if not env_anchor_root:
+                            resolved_anchor_root = normalize_runtime_root(
+                                str(policy.get("anchor_root") or "").strip() or default_anchor_root
+                            )
+                        if (
+                            first_run_completed
+                            and not paths_equal(committed_selected_root, resolved_anchor_root)
+                            and not is_runtime_root_available(committed_selected_root)
+                        ):
+                            resolved_app_docs_dir = resolved_anchor_root
+                            recovery_committed_root_unavailable = True
+        except Exception as e:
+            logger.warning(
+                "Failed to resolve storage policy paths; falling back to default runtime root: %s",
+                e,
+                exc_info=True,
+            )
+            resolved_app_docs_dir = default_app_docs_dir
+            if default_anchor_root is not None:
+                resolved_anchor_root = default_anchor_root
+            committed_selected_root = resolved_app_docs_dir
+
+        self.app_docs_dir = resolved_app_docs_dir
+        self.committed_selected_root = committed_selected_root
+        self.anchor_root = resolved_anchor_root
+        self.reported_current_root = (
+            self.committed_selected_root if recovery_committed_root_unavailable else self.app_docs_dir
+        )
+        self.recovery_committed_root_unavailable = recovery_committed_root_unavailable
+        self.recovery_committed_root_unavailable_override = False
+        self.docs_dir = self.app_docs_dir.parent
         self.config_dir = self.app_docs_dir / "config"
         self.memory_dir = self.app_docs_dir / "memory"
         self.plugins_dir = self.app_docs_dir / "plugins"
@@ -565,10 +659,28 @@ class ConfigManager:
         self.project_config_dir = self._get_project_config_directory()
         self.project_memory_dir = self._get_project_memory_directory()
 
+        if self.recovery_committed_root_unavailable:
+            try:
+                self._persist_selected_root_unavailable_recovery_state()
+                self.__class__._selected_root_unavailable_recovery_override_roots.discard(
+                    str(self.committed_selected_root)
+                )
+            except Exception as e:
+                self.recovery_committed_root_unavailable_override = True
+                self.__class__._selected_root_unavailable_recovery_override_roots.add(
+                    str(self.committed_selected_root)
+                )
+                logger.warning(
+                    "Failed to persist selected-root-unavailable recovery state; "
+                    "continuing with in-memory recovery flag: %s",
+                    e,
+                    exc_info=True,
+                )
+
     @property
     def cloudsave_dir(self) -> Path:
         """云存档导出根目录（运行时目录之外的规范化导出层）。"""
-        return self.app_docs_dir / "cloudsave"
+        return self.anchor_root / "cloudsave"
 
     @property
     def cloudsave_catalog_dir(self) -> Path:
@@ -605,17 +717,17 @@ class ConfigManager:
     @property
     def cloudsave_staging_dir(self) -> Path:
         """本地 staging 区，不进入云端同步白名单。"""
-        return self.app_docs_dir / ".cloudsave_staging"
+        return self.anchor_root / ".cloudsave_staging"
 
     @property
     def cloudsave_backups_dir(self) -> Path:
         """本地冲突备份池，显式放在 cloudsave/ 外避免后续误同步。"""
-        return self.app_docs_dir / "cloudsave_backups"
+        return self.anchor_root / "cloudsave_backups"
 
     @property
     def local_state_dir(self) -> Path:
         """本地状态目录，保存不进入云端的同步元数据。"""
-        return self.app_docs_dir / "state"
+        return self.anchor_root / "state"
 
     @property
     def root_state_path(self) -> Path:
@@ -628,6 +740,40 @@ class ConfigManager:
     @property
     def character_tombstones_state_path(self) -> Path:
         return self.local_state_dir / "character_tombstones.json"
+
+    def _build_selected_root_unavailable_recovery_state(self, state=None):
+        unavailable_root = str(self.committed_selected_root)
+        state = dict(state) if isinstance(state, dict) else {}
+        state["version"] = self.ROOT_STATE_VERSION
+        from utils.cloudsave_runtime import ROOT_MODE_DEFERRED_INIT
+
+        state["mode"] = ROOT_MODE_DEFERRED_INIT
+        state["current_root"] = unavailable_root
+        state["last_known_good_root"] = unavailable_root
+        if not str(state.get("last_migration_result") or "").strip():
+            state["last_migration_result"] = f"selected_root_unavailable:{unavailable_root}"
+        state.setdefault("last_migration_source", "")
+        state.setdefault("last_migration_backup", "")
+        state.setdefault("last_successful_boot_at", "")
+        state.setdefault("legacy_cleanup_pending", False)
+        return state
+
+    def _has_selected_root_unavailable_recovery_override(self) -> bool:
+        if not self.recovery_committed_root_unavailable:
+            return False
+        if bool(getattr(self, "recovery_committed_root_unavailable_override", False)):
+            return True
+        return str(self.committed_selected_root) in self.__class__._selected_root_unavailable_recovery_override_roots
+
+    def _persist_selected_root_unavailable_recovery_state(self):
+        state: dict = {}
+        try:
+            loaded = self._load_json_file(self.root_state_path, default_value={})
+            if isinstance(loaded, dict):
+                state = loaded
+        except Exception:
+            state = {}
+        self.save_root_state(self._build_selected_root_unavailable_recovery_state(state))
     
     def _log(self, msg):
         """仅在主进程中打印调试信息"""
@@ -936,6 +1082,15 @@ class ConfigManager:
         except Exception as e:
             print(f"Warning: Failed to create app directory {self.app_docs_dir}: {e}", file=sys.stderr)
             return False
+
+    def _ensure_anchor_root_directory(self):
+        """确保锚点目录存在（固定承载 cloudsave/state）。"""
+        try:
+            self.anchor_root.mkdir(parents=True, exist_ok=True)
+            return True
+        except Exception as e:
+            print(f"Warning: Failed to create anchor directory {self.anchor_root}: {e}", file=sys.stderr)
+            return False
     
     def ensure_config_directory(self):
         """确保我的文档下的config目录存在"""
@@ -998,11 +1153,44 @@ class ConfigManager:
 
         非 CFA 场景下返回 None（此时 live2d_dir 本身就指向 Documents）。
         """
-        if self._readable_docs_dir is not None:
+        if self.is_windows_cfa_fallback_active and self._readable_docs_dir is not None:
             p = self._readable_docs_dir / self.app_name / "live2d"
             if p.exists():
                 return p
         return None
+
+    @property
+    def is_windows_cfa_fallback_active(self) -> bool:
+        """是否处于 Windows CFA 读写分离模式。"""
+        if self._readable_docs_dir is None:
+            return False
+        write_docs_dir = getattr(self, "_cfa_fallback_write_docs_dir", None)
+        if write_docs_dir is None:
+            return False
+        current_write_docs_dir = Path(self.app_docs_dir).parent
+        return str(self._readable_docs_dir) != str(current_write_docs_dir) and str(write_docs_dir) == str(current_write_docs_dir)
+
+    def get_live2d_lookup_roots(self, *, prefer_writable: bool = True) -> list[Path]:
+        """返回 Live2D 查找路径（去重后）。
+
+        默认优先可写运行时目录，命中失败时回退到只读 legacy 目录，
+        避免 CFA 模式下“新导入模型存在但仍优先命中旧目录”。
+        """
+        readable = self.readable_live2d_dir
+        writable = Path(self.live2d_dir)
+        ordered_candidates = [writable, readable] if prefer_writable else [readable, writable]
+
+        roots: list[Path] = []
+        seen: set[str] = set()
+        for candidate in ordered_candidates:
+            if not candidate:
+                continue
+            normalized = os.path.normcase(os.path.normpath(str(candidate)))
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            roots.append(Path(candidate))
+        return roots
 
     def ensure_vrm_directory(self):
         """确保用户文档目录下的vrm目录和animation子目录存在"""
@@ -1070,7 +1258,7 @@ class ConfigManager:
         以便阶段 0 先落地路径与状态基础设施，不改变现有同步语义。
         """
         try:
-            if not self._ensure_app_docs_directory():
+            if not self._ensure_anchor_root_directory():
                 return False
 
             for directory in (
@@ -1094,7 +1282,7 @@ class ConfigManager:
     def ensure_local_state_directory(self):
         """确保本地状态目录存在。"""
         try:
-            if not self._ensure_app_docs_directory():
+            if not self._ensure_anchor_root_directory():
                 return False
             self.local_state_dir.mkdir(parents=True, exist_ok=True)
             return True
@@ -1110,8 +1298,10 @@ class ConfigManager:
             "current_root": str(self.app_docs_dir),
             "last_known_good_root": str(self.app_docs_dir),
             "last_migration_source": "",
+            "last_migration_backup": "",
             "last_migration_result": "",
             "last_successful_boot_at": "",
+            "legacy_cleanup_pending": False,
         }
 
     def build_default_cloudsave_local_state(self, *, client_id=None):
@@ -1153,7 +1343,10 @@ class ConfigManager:
         """加载 root_state；缺失时返回默认状态。"""
         if default_value is None:
             default_value = self.build_default_root_state()
-        return self._load_json_file(self.root_state_path, default_value)
+        state = self._load_json_file(self.root_state_path, default_value)
+        if self._has_selected_root_unavailable_recovery_override():
+            return self._build_selected_root_unavailable_recovery_state(state)
+        return state
 
     def save_root_state(self, data):
         """保存 root_state。"""
@@ -2907,6 +3100,8 @@ class ConfigManager:
             "memory_dir": str(self.memory_dir),
             "plugins_dir": str(self.plugins_dir),
             "live2d_dir": str(self.live2d_dir),
+            "readable_live2d_dir": str(self.readable_live2d_dir) if self.readable_live2d_dir else "",
+            "windows_cfa_fallback_active": self.is_windows_cfa_fallback_active,
             "workshop_dir": str(self.workshop_dir),
             "chara_dir": str(self.chara_dir),
             "cloudsave_dir": str(self.cloudsave_dir),
@@ -3146,6 +3341,8 @@ _config_manager_migrated = False
 def _ensure_config_manager_migrated():
     global _config_manager_migrated
     if _config_manager is None or _config_manager_migrated:
+        return _config_manager
+    if bool(getattr(_config_manager, "recovery_committed_root_unavailable", False)):
         return _config_manager
     # 统一在首次真正需要运行时配置时再迁移，允许启动 phase-0
     # 先基于“尚未注入默认配置的运行根”判断是否需要导入云快照。

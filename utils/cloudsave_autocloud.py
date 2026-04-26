@@ -7,11 +7,11 @@ from typing import Any
 
 from utils.cloudsave_runtime import (
     CloudsaveDeadlineExceeded,
-    _runtime_root_has_user_content,
     bootstrap_local_cloudsave_environment,
     export_local_cloudsave_snapshot,
     import_local_cloudsave_snapshot,
     load_cloudsave_manifest,
+    runtime_root_has_user_content,
 )
 from utils.steam_cloud_bundle import (
     download_cloudsave_bundle_from_steam,
@@ -204,7 +204,7 @@ class CloudSaveManager:
         snapshot_sequence_number = int(manifest.get("sequence_number") or 0)
         snapshot_exported_at_utc = str(manifest.get("exported_at_utc") or "")
         last_applied_manifest_fingerprint = str(cloud_state.get("last_applied_manifest_fingerprint") or "")
-        runtime_has_user_content = _runtime_root_has_user_content(
+        runtime_has_user_content = runtime_root_has_user_content(
             self.config_manager.app_docs_dir,
             config_manager=self.config_manager,
         )

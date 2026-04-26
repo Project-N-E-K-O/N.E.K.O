@@ -25,6 +25,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import FileResponse, JSONResponse
 
 from .shared_state import get_steamworks, get_config_manager, get_initialize_character_data
+from utils.cloudsave_runtime import MaintenanceModeError, is_write_fence_active
 from utils.file_utils import atomic_write_json, atomic_write_json_async, read_json_async
 from utils.workshop_utils import (
     ensure_workshop_folder_exists,
@@ -69,6 +70,35 @@ WORKSHOP_REFERENCE_AUDIO_CONTENT_TYPES = {
 }
 WORKSHOP_REFERENCE_LANGUAGES = {'ch', 'en', 'fr', 'de', 'ja', 'ko', 'ru'}
 WORKSHOP_REFERENCE_PROVIDER_HINTS = {'cosyvoice', 'minimax', 'minimax_intl'}
+
+
+async def cancel_background_tasks(*, timeout: float = 5.0) -> None:
+    for task_attr in ("_ugc_warmup_task", "_ugc_sync_task"):
+        task = globals().get(task_attr)
+        if task is None:
+            continue
+        if task.done():
+            try:
+                task.result()
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:
+                logger.debug("workshop %s finished with error during cleanup: %s", task_attr, exc, exc_info=True)
+        else:
+            task.cancel()
+            try:
+                await asyncio.wait_for(task, timeout=timeout)
+            except asyncio.CancelledError:
+                current_task = asyncio.current_task()
+                if current_task is not None and current_task.cancelling():
+                    raise
+                logger.debug("workshop %s cancelled", task_attr)
+            except asyncio.TimeoutError:
+                logger.warning("workshop %s did not stop within %.1fs", task_attr, timeout)
+            except Exception as exc:
+                logger.debug("workshop %s cleanup failed: %s", task_attr, exc, exc_info=True)
+        if globals().get(task_attr) is task:
+            globals()[task_attr] = None
 
 
 def _read_first_line(path: str, encoding: str = 'utf-8') -> str:
@@ -3817,6 +3847,10 @@ async def sync_workshop_character_cards() -> dict:
             return {"added": 0, "skipped": 0, "errors": 0}
         
         config_mgr = get_config_manager()
+
+        if is_write_fence_active(config_mgr):
+            logger.info("sync_workshop_character_cards: 检测到维护态写围栏，跳过本轮同步并等待后续重试")
+            return {"added": 0, "skipped": 0, "errors": 0, "blocked_by_write_fence": True}
         
         # 使用全局锁序列化 load_characters -> save_characters 流程，防止并发覆写
         async with _ugc_sync_lock:
@@ -3971,7 +4005,16 @@ async def sync_workshop_character_cards() -> dict:
             
             # 4. 保存并重新加载角色配置
             if need_save:
-                await config_mgr.asave_characters(characters)
+                if is_write_fence_active(config_mgr):
+                    logger.info("sync_workshop_character_cards: 保存前检测到维护态写围栏，跳过本轮同步并等待后续重试")
+                    return {"added": 0, "skipped": skipped_count, "errors": error_count, "blocked_by_write_fence": True}
+
+                try:
+                    await config_mgr.asave_characters(characters)
+                except MaintenanceModeError:
+                    logger.info("sync_workshop_character_cards: 保存时进入维护态写围栏，跳过本轮同步并等待后续重试")
+                    return {"added": 0, "skipped": skipped_count, "errors": error_count, "blocked_by_write_fence": True}
+
                 logger.info(f"sync_workshop_character_cards: 已保存，新增 {added_count} 个角色卡")
                 
                 try:
@@ -3999,6 +4042,18 @@ async def api_sync_workshop_character_cards():
     """
     try:
         result = await sync_workshop_character_cards()
+        if result.get("blocked_by_write_fence"):
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "success": False,
+                    "code": "WRITE_FENCE_ACTIVE",
+                    "error": "当前处于存储维护态，暂时不能同步创意工坊角色卡，请稍后重试。",
+                    "added": result.get("added", 0),
+                    "skipped": result.get("skipped", 0),
+                    "errors": result.get("errors", 0),
+                },
+            )
         return {
             "success": True,
             "added": result["added"],

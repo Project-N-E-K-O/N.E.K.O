@@ -325,20 +325,27 @@ def find_models():
     try:
         config_mgr = get_config_manager()
         config_mgr.ensure_live2d_directory()
-        docs_live2d_dir = str(config_mgr.live2d_dir)
         readable_live2d = config_mgr.readable_live2d_dir
 
-        if readable_live2d:
-            # CFA 场景：原始 Documents 可读，回退路径可写
-            readable_str = str(readable_live2d)
-            if os.path.exists(readable_str):
-                search_dirs.append(('documents', readable_str, '/user_live2d'))
-            if os.path.exists(docs_live2d_dir) and docs_live2d_dir != readable_str:
-                search_dirs.append(('documents_local', docs_live2d_dir, '/user_live2d_local'))
-        else:
-            # 正常场景
-            if os.path.exists(docs_live2d_dir):
-                search_dirs.append(('documents', docs_live2d_dir, '/user_live2d'))
+        def _norm(path: str) -> str:
+            return os.path.normcase(os.path.normpath(path))
+
+        writable_live2d = str(config_mgr.live2d_dir)
+        readable_live2d_str = str(readable_live2d) if readable_live2d else ""
+
+        for live2d_root in config_mgr.get_live2d_lookup_roots(prefer_writable=True):
+            live2d_root_str = str(live2d_root)
+            if not os.path.exists(live2d_root_str):
+                continue
+
+            if readable_live2d_str and _norm(live2d_root_str) == _norm(writable_live2d) and _norm(writable_live2d) != _norm(readable_live2d_str):
+                # CFA 场景的可写回退目录（优先）
+                search_dirs.append(('documents_local', live2d_root_str, '/user_live2d_local'))
+            elif readable_live2d_str and _norm(live2d_root_str) == _norm(readable_live2d_str):
+                # CFA 场景的只读原始目录（回退）
+                search_dirs.append(('documents_legacy', live2d_root_str, '/user_live2d'))
+            else:
+                search_dirs.append(('documents', live2d_root_str, '/user_live2d'))
     except Exception as e:
         logging.warning(f"无法访问用户文档live2d目录: {e}")
     
@@ -497,28 +504,27 @@ def find_model_directory(model_name: str):
     except Exception:
         pass
 
-    # 首先尝试可读的原始 Documents 目录（CFA 场景下优先，与 find_models 一致）
-    try:
-        if readable_live2d:
-            readable_model_dir = readable_live2d / model_name
-            if readable_model_dir.exists():
-                readable_model_dir_real = os.path.realpath(readable_model_dir)
-                readable_live2d_real = os.path.realpath(readable_live2d)
-                if os.path.commonpath([readable_model_dir_real, readable_live2d_real]) == readable_live2d_real:
-                    return (str(readable_model_dir), '/user_live2d')
-    except Exception as e:
-        logging.warning(f"检查原始文档目录模型时出错: {e}")
-
-    # 然后尝试可写回退路径（CFA 场景下为 AppData，正常场景为唯一路径）
+    # Live2D 路径查找：优先可写运行时目录，回退只读 legacy 目录
     try:
         config_mgr = get_config_manager()
-        _live2d_url_prefix = '/user_live2d_local' if readable_live2d else '/user_live2d'
-        docs_model_dir = config_mgr.live2d_dir / model_name
-        if docs_model_dir.exists():
+        writable_live2d = os.path.normcase(os.path.normpath(str(config_mgr.live2d_dir)))
+        readable_live2d_norm = (
+            os.path.normcase(os.path.normpath(str(readable_live2d)))
+            if readable_live2d else ""
+        )
+        for live2d_root in config_mgr.get_live2d_lookup_roots(prefer_writable=True):
+            docs_model_dir = live2d_root / model_name
+            if not docs_model_dir.exists():
+                continue
             docs_model_dir_real = os.path.realpath(docs_model_dir)
-            docs_live2d_dir_real = os.path.realpath(config_mgr.live2d_dir)
-            if os.path.commonpath([docs_model_dir_real, docs_live2d_dir_real]) == docs_live2d_dir_real:
-                return (str(docs_model_dir), _live2d_url_prefix)
+            docs_live2d_dir_real = os.path.realpath(live2d_root)
+            if os.path.commonpath([docs_model_dir_real, docs_live2d_dir_real]) != docs_live2d_dir_real:
+                continue
+
+            live2d_root_norm = os.path.normcase(os.path.normpath(str(live2d_root)))
+            if readable_live2d_norm and live2d_root_norm == writable_live2d and writable_live2d != readable_live2d_norm:
+                return (str(docs_model_dir), '/user_live2d_local')
+            return (str(docs_model_dir), '/user_live2d')
     except Exception as e:
         logging.warning(f"检查文档目录模型时出错: {e}")
 

@@ -457,6 +457,10 @@
     if (window._cardExportPage) return;
     if (window.location.pathname.includes('model_manager') || document.querySelector('#vrm-model-select') !== null) return;
 
+    if (window.__nekoStorageLocationStartupBarrier && typeof window.__nekoStorageLocationStartupBarrier.then === 'function') {
+        await window.__nekoStorageLocationStartupBarrier;
+    }
+
     // 等待页面配置加载完成
     if (window.pageConfigReady && typeof window.pageConfigReady.then === 'function') {
         await window.pageConfigReady;
