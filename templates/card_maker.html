@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title data-i18n="cardExport.title">卡面制作 - Project N.E.K.O.</title>
+    <!-- VRM 光照默认值 -->
+    <script>window.VRM_DEFAULT_LIGHTING=Object.freeze({{ vrm_defaults | tojson }});</script>
+    <script src="/static/i18n-i18next.js"></script>
+    <script src="/static/common_dialogs.js"></script>
+    <link rel="stylesheet" href="/static/css/base.css">
+    <link rel="stylesheet" href="/static/css/card_maker.css">
+    <link rel="stylesheet" href="/static/css/dark-mode.css">
+    <script src="/static/theme-manager.js"></script>
+</head>
+<body>
+    <!-- 页面标题栏 - 支持拖动窗口 -->
+    <div class="page-title-bar">
+        <h2 data-i18n="cardExport.title" data-text="卡面制作">卡面制作</h2>
+        <button id="back-btn" class="close-btn" data-i18n-title="cardExport.back" title="返回">
+            <img src="/static/icons/close_button.png" data-i18n-alt="common.close" alt="关闭">
+        </button>
+    </div>
+
+    <!-- 主内容区域 -->
+    <div id="main-content">
+    <!-- 隐藏的模型渲染区域（全屏尺寸，保持正确宽高比） -->
+    <div id="model-viewport">
+        <div id="live2d-container">
+            <canvas id="live2d-canvas"></canvas>
+        </div>
+        <div id="vrm-container" style="display: none;">
+            <canvas id="vrm-canvas"></canvas>
+        </div>
+        <div id="mmd-container" style="display: none;">
+            <canvas id="mmd-canvas"></canvas>
+        </div>
+    </div>
+
+    <!-- 左侧：卡片预览与编辑区域 -->
+    <div id="card-edit-area">
+        <!-- 图层列表面板 -->
+        <div id="layer-panel">
+            <div id="layer-panel-header">
+                <span data-i18n="cardExport.layers">图层</span>
+            </div>
+            <div id="layer-list">
+                <!-- 图层项由 JS 动态生成 -->
+            </div>
+            <div id="layer-panel-footer">
+                <button id="clear-stickers-btn" class="layer-clear-btn" data-i18n="cardExport.clearStickers">清除全部</button>
+            </div>
+        </div>
+        <div id="card-preview">
+            <div id="card-header-area">
+                <span id="card-preview-name"></span>
+            </div>
+            <div id="card-portrait-area">
+                <div id="sticker-overlay-below"></div>
+                <canvas id="card-portrait-canvas"></canvas>
+                <div id="sticker-overlay"></div>
+                <div class="sticker-rotate-handle" id="sticker-rotate-handle">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round"><path d="M1 4v6h6"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
+                </div>
+                <div id="portrait-placeholder" data-i18n="cardExport.adjustHint">选择角色后可在此预览和调整构图</div>
+            </div>
+        </div>
+        <div id="model-loading-overlay">
+            <div class="loading-spinner"></div>
+            <div class="loading-text" data-i18n="cardExport.loadingModel">正在加载模型...</div>
+        </div>
+    </div>
+
+    <!-- 右侧：控制面板 -->
+    <div id="control-panel">
+        <!-- 标签页切换 -->
+        <div id="panel-tabs">
+            <button class="panel-tab active" data-tab="model-tab" data-i18n="cardExport.modelTab">模型调整</button>
+            <button class="panel-tab" data-tab="decor-tab" data-i18n="cardExport.decorTab">装饰</button>
+        </div>
+
+        <!-- 模型调整面板 -->
+        <div id="model-tab" class="tab-content active">
+        <!-- 构图调整控件 -->
+        <div class="control-section">
+            <label data-i18n="cardExport.composition">构图调整</label>
+            <div class="control-row">
+                <span data-i18n="cardExport.offsetX">水平偏移</span>
+                <input type="range" id="offset-x" min="-500" max="500" value="0" step="1">
+                <span id="offset-x-val" class="range-val">0</span>
+            </div>
+            <div class="control-row">
+                <span data-i18n="cardExport.offsetY">垂直偏移</span>
+                <input type="range" id="offset-y" min="-500" max="500" value="0" step="1">
+                <span id="offset-y-val" class="range-val">0</span>
+            </div>
+            <div class="control-row">
+                <span data-i18n="cardExport.scale">缩放</span>
+                <input type="range" id="portrait-scale" min="50" max="300" value="100" step="1">
+                <span id="scale-val" class="range-val">100%</span>
+            </div>
+            <div class="control-row">
+                <span data-i18n="cardExport.rotation">旋转</span>
+                <input type="range" id="portrait-rotation" min="-180" max="180" value="0" step="1">
+                <span id="rotation-val" class="range-val">0°</span>
+            </div>
+            <div class="control-row">
+                <button id="reset-composition-btn" class="btn-secondary" data-i18n="cardExport.resetComposition">重置构图</button>
+                <button id="refresh-preview-btn" class="btn-secondary" data-i18n="cardExport.refreshPreview">刷新预览</button>
+            </div>
+        </div>
+        </div>
+
+        <!-- 装饰面板 -->
+        <div id="decor-tab" class="tab-content">
+            <div class="control-section">
+                <label data-i18n="cardExport.stickerPick">选择贴纸</label>
+                <div id="sticker-grid"></div>
+            </div>
+            <div class="control-section" id="sticker-controls" style="display:none;">
+                <label data-i18n="cardExport.stickerAdjust">贴纸调整</label>
+                <div class="control-row">
+                    <span data-i18n="cardExport.stickerRotation">旋转</span>
+                    <input type="range" id="sticker-rotation" min="-180" max="180" value="0" step="1">
+                    <span id="sticker-rotation-val" class="range-val">0°</span>
+                </div>
+                <div class="control-row">
+                    <span data-i18n="cardExport.stickerWidth">宽</span>
+                    <input type="range" id="sticker-w" min="10" max="2000" value="60" step="1">
+                    <span id="sticker-w-val" class="range-val">60px</span>
+                </div>
+                <div class="control-row">
+                    <span data-i18n="cardExport.stickerHeight">高</span>
+                    <input type="range" id="sticker-h" min="10" max="2000" value="60" step="1">
+                    <span id="sticker-h-val" class="range-val">60px</span>
+                </div>
+                <div class="control-row">
+                    <button type="button" id="sticker-lock-ratio" class="lock-ratio-btn active" title="锁定比例">
+                        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <rect x="3" y="11" width="18" height="11" rx="2"/>
+                            <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+                        </svg>
+                        <span data-i18n="cardExport.lockRatio">锁定比例</span>
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- 导出按钮 -->
+        <div class="control-section export-actions">
+            <button id="export-full-btn" class="btn-primary" data-i18n="cardExport.exportFull">导出角色卡</button>
+        </div>
+    </div>
+    </div>
+
+    <!-- Live2D SDK -->
+    <script src="/static/libs/live2dcubismcore.min.js"></script>
+    <script src="/static/libs/live2d.min.js"></script>
+    <script src="/static/libs/pixi.min.js"></script>
+    <script src="/static/libs/index.min.js"></script>
+    <script src="/static/live2d-core.js"></script>
+    <script src="/static/live2d-emotion.js"></script>
+    <script src="/static/live2d-model.js"></script>
+    <script src="/static/live2d-interaction.js"></script>
+    <script src="/static/avatar-popup-common.js"></script>
+    <script src="/static/avatar-ui-popup.js"></script>
+    <script src="/static/avatar-ui-popup-config.js"></script>
+    <script src="/static/avatar-ui-buttons.js"></script>
+    <script src="/static/live2d-ui-buttons.js"></script>
+    <script src="/static/avatar-ui-drag.js"></script>
+    <script src="/static/live2d-init.js"></script>
+
+    <!-- Three.js -->
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "/static/libs/three.module.js",
+            "three/addons/": "/static/libs/three/addons/",
+            "@pixiv/three-vrm": "/static/libs/three-vrm.module.min.js",
+            "@pixiv/three-vrm-animation": "/static/libs/three-vrm-animation.module.js",
+            "@moeru/three-mmd": "/static/libs/three-mmd.module.js",
+            "@moeru/three-mmd-physics-ammo": "/static/libs/three-mmd-physics-ammo.module.js?v=23",
+            "ammojs-typed": "/static/libs/ammojs-typed.module.js"
+        }
+    }
+    </script>
+    <script type="module">
+        import * as THREE from 'three';
+        window.THREE = THREE;
+        console.log('[Three.js] ES 模块已加载 (角色卡导出页)');
+        window.dispatchEvent(new CustomEvent('three-ready'));
+    </script>
+
+    <script>window._cardExportPage = true;</script>
+    <script src="/static/vrm-init.js"></script>
+    <script src="/static/mmd-init.js"></script>
+    <script src="/static/js/card_maker.js"></script>
+</body>
+</html>

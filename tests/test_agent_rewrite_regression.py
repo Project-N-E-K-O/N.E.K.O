@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import pytest
+from starlette.requests import Request
 
 from utils.config_manager import ConfigManager, get_config_manager
 
@@ -94,6 +95,32 @@ def test_main_agent_router_expected_proxy_endpoints_exist():
         assert expected in paths
 
 
+@pytest.mark.asyncio
+async def test_main_agent_router_plugin_dashboard_redirect_preserves_yui_handoff_query():
+    from config import USER_PLUGIN_SERVER_PORT
+    from main_routers.agent_router import redirect_plugin_dashboard
+
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "scheme": "http",
+        "server": ("testserver", 80),
+        "client": ("127.0.0.1", 12345),
+        "root_path": "",
+        "path": "/api/agent/user_plugin/dashboard",
+        "raw_path": b"/api/agent/user_plugin/dashboard",
+        "query_string": b"yui_guide=1&flow_id=home_yui_guide_v1&source_page=home&resume_scene=plugin_dashboard_landing&handoff_token=h_abc123",
+        "headers": [],
+    }
+    response = await redirect_plugin_dashboard(Request(scope))
+
+    assert response.headers["location"] == (
+        f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}/ui"
+        "?yui_guide=1&flow_id=home_yui_guide_v1&source_page=home"
+        "&resume_scene=plugin_dashboard_landing&handoff_token=h_abc123"
+    )
+
+
 def test_agent_server_expected_event_driven_endpoints_exist():
     paths = _route_paths_from_decorators("agent_server.py", "app")
     for expected in {
@@ -154,6 +181,107 @@ def test_agent_router_command_syncs_core_flags_locally():
 def test_agent_router_has_internal_analyze_request_endpoint():
     paths = _route_paths_from_decorators("main_routers/agent_router.py", "router")
     assert "/internal/analyze_request" in paths
+
+
+def test_yui_guide_steps_registry_keeps_m1_to_m4_home_flow_contract():
+    source = Path("static/yui-guide-steps.js").read_text(encoding="utf-8")
+
+    for expected in (
+        "const CONTRACT_VERSION = 2;",
+        "'intro_basic'",
+        "'intro_proactive'",
+        "'intro_cat_paw'",
+        "'takeover_capture_cursor'",
+        "'takeover_plugin_preview'",
+        "'takeover_settings_peek'",
+        "'takeover_return_control'",
+        "'handoff_api_key'",
+        "'handoff_memory_browser'",
+        "'handoff_steam_workshop'",
+        "'handoff_plugin_dashboard'",
+        "steps.handoff_api_key.navigation.resumeScene = 'api_key_intro';",
+        "steps.handoff_memory_browser.navigation.resumeScene = 'memory_browser_intro';",
+        "steps.handoff_steam_workshop.navigation.resumeScene = 'steam_workshop_intro';",
+        "steps.handoff_plugin_dashboard.navigation.resumeScene = 'plugin_dashboard_landing';",
+        "steps.plugin_dashboard_landing = createBaseStep('plugin_dashboard_landing', 'plugin_dashboard', '#plugin-list');",
+        "steps.api_key_intro = createBaseStep('api_key_intro', 'api_key', '#coreApiSelect-dropdown-trigger');",
+        "steps.memory_browser_intro = createBaseStep('memory_browser_intro', 'memory_browser', '#memory-file-list');",
+        "steps.steam_workshop_intro = createBaseStep('steam_workshop_intro', 'steam_workshop', '#workshop-tabs');",
+        "api_key: ['api_key_intro']",
+        "memory_browser: ['memory_browser_intro']",
+        "steam_workshop: ['steam_workshop_intro']",
+        "plugin_dashboard: ['plugin_dashboard_landing']",
+    ):
+        assert expected in source
+
+
+def test_home_template_loads_yui_runtime_stack_before_tutorial_manager():
+    source = Path("templates/index.html").read_text(encoding="utf-8")
+
+    expected_order = [
+        '<script src="/static/yui-guide-steps.js?v=20260422-1"></script>',
+        '<script src="/static/yui-guide-overlay.js?v=20260422-6"></script>',
+        '<script src="/static/yui-guide-page-handoff.js?v=20260422-6"></script>',
+        '<script src="/static/yui-guide-director.js?v=20260422-6"></script>',
+        '<script src="/static/universal-tutorial-manager.js"></script>',
+    ]
+
+    positions = [source.index(fragment) for fragment in expected_order]
+    assert positions == sorted(positions)
+
+
+def test_target_page_templates_load_yui_runtime_stack_before_tutorial_manager():
+    expected_order = [
+        '<script src="/static/yui-guide-steps.js?v=20260422-1"></script>',
+        '<script src="/static/yui-guide-overlay.js?v=20260422-6"></script>',
+        '<script src="/static/yui-guide-page-handoff.js?v=20260422-6"></script>',
+        '<script src="/static/yui-guide-director.js?v=20260422-6"></script>',
+    ]
+
+    for template_path, tutorial_manager_script in (
+        ("templates/api_key_settings.html", '<script src="/static/universal-tutorial-manager.js?v=2"></script>'),
+        ("templates/memory_browser.html", '<script src="/static/universal-tutorial-manager.js?v=12"></script>'),
+        ("templates/steam_workshop_manager.html", '<script src="/static/universal-tutorial-manager.js"></script>'),
+    ):
+        source = Path(template_path).read_text(encoding="utf-8")
+        positions = [source.index(fragment) for fragment in (*expected_order, tutorial_manager_script)]
+        assert positions == sorted(positions), template_path
+        assert '<link rel="stylesheet" href="/static/css/yui-guide.css">' in source
+
+
+def test_universal_tutorial_manager_normalizes_api_key_handoff_and_resume_scene_mappings():
+    source = Path("static/universal-tutorial-manager.js").read_text(encoding="utf-8")
+
+    for expected in (
+        "getYuiGuidePageKey(page = this.currentPage)",
+        "return 'api_key';",
+        "getPendingYuiGuideResumeScene(page = this.currentPage)",
+        "applyYuiGuideResumeScene(validSteps)",
+        "yuiGuideSceneId: 'api_key_intro'",
+        "yuiGuideSceneId: 'memory_browser_intro'",
+        "yuiGuideSceneId: 'steam_workshop_intro'",
+    ):
+        assert expected in source
+
+
+def test_plugin_manager_bootstraps_yui_overlay_bridge_and_runtime():
+    app_source = Path("frontend/plugin-manager/src/App.vue").read_text(encoding="utf-8")
+    main_source = Path("frontend/plugin-manager/src/main.ts").read_text(encoding="utf-8")
+    bridge_source = Path("frontend/plugin-manager/src/composables/useYuiTutorialBridge.ts").read_text(encoding="utf-8")
+
+    assert "<YuiTutorialOverlay />" in app_source
+    assert "useYuiTutorialBridge" in main_source
+    assert "tutorialBridge.init()" in main_source
+    assert "initPluginDashboardYuiGuideRuntime()" in main_source
+    for expected in (
+        "const QUERY_KEY_GUIDE = 'yui_guide'",
+        "const QUERY_KEY_FLOW_ID = 'flow_id'",
+        "const QUERY_KEY_SOURCE_PAGE = 'source_page'",
+        "const QUERY_KEY_RESUME_SCENE = 'resume_scene'",
+        "const QUERY_KEY_HANDOFF_TOKEN = 'handoff_token'",
+        "const COMPLETE_MESSAGE_TYPE = 'neko:yui-guide:plugin-dashboard-complete'",
+    ):
+        assert expected in bridge_source
 
 
 def test_task_executor_format_messages_marks_latest_user_request():

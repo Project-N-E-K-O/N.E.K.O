@@ -269,7 +269,7 @@ uv run pytest -q \
 - `launcher.py`
 - `main_server.py`
 - `static/js/cloudsave_manager.js`
-- `static/js/chara_manager.js`（涉及 cloudsave）
+- `static/js/character_card_manager.js`（涉及 cloudsave）
 
 ### 10.2 提交前检查
 

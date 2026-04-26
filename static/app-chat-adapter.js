@@ -293,13 +293,22 @@
 
     // ======================== processRealisticQueue（覆盖） ========================
 
+    function createRealisticQueueOwnerToken() {
+        return 'realistic-queue-' + Date.now() + '-' + Math.random().toString(36).slice(2);
+    }
+
     async function processRealisticQueue(queueVersion) {
         queueVersion = queueVersion || (window._realisticGeminiVersion || 0);
-        if (window._isProcessingRealisticQueue) return;
+        if (window._realisticProcessingOwner) return;
+        var processingOwner = createRealisticQueueOwnerToken();
+        window._realisticProcessingOwner = processingOwner;
         window._isProcessingRealisticQueue = true;
 
         try {
             while (window._realisticGeminiQueue && window._realisticGeminiQueue.length > 0) {
+                if (window._realisticProcessingOwner !== processingOwner) {
+                    break;
+                }
                 // 版本变更说明新一轮已开始（isNewMessage），旧队列
                 // 已由 _flushPendingRealisticQueue 同步渲染完毕，此处
                 // 仅需退出，不再处理任何剩余项。
@@ -320,6 +329,9 @@
                         queueVersion, window._realisticGeminiVersion || 0);
                     break;
                 }
+                if (window._realisticProcessingOwner !== processingOwner) {
+                    break;
+                }
 
                 var s = window._realisticGeminiQueue.shift();
                 if (s && (window._realisticGeminiVersion || 0) === queueVersion) {
@@ -328,15 +340,13 @@
                 }
             }
         } finally {
-            // 如果 lock 还是 true，说明没有任何外部路径（discard / audio-capture）
-            // 接管过 —— 无论 version 是否变化，我们都是当前唯一持有者，必须释放锁，
-            // 否则队列会卡死。
-            // 如果 lock 已经是 false，说明外部路径已经重置锁并可能启动了新 processor，
-            // 我们不能再递归也不能再动锁。
-            if (window._isProcessingRealisticQueue) {
-                window._isProcessingRealisticQueue = false;
-                if (window._realisticGeminiQueue && window._realisticGeminiQueue.length > 0) {
-                    processRealisticQueue(window._realisticGeminiVersion || 0);
+            if (window._realisticProcessingOwner === processingOwner) {
+                window._realisticProcessingOwner = null;
+                if (window._isProcessingRealisticQueue) {
+                    window._isProcessingRealisticQueue = false;
+                    if (window._realisticGeminiQueue && window._realisticGeminiQueue.length > 0) {
+                        processRealisticQueue(window._realisticGeminiVersion || 0);
+                    }
                 }
             }
         }
@@ -400,6 +410,9 @@
     // async processRealisticQueue 循环失效。
     // 用于 isNewMessage 开始新一轮或模式切换时，确保旧轮句子不被丢弃。
     function _flushPendingRealisticQueue() {
+        // 无论队列是否为空，都要先释放处理锁，避免 stale owner 阻塞下一轮。
+        window._isProcessingRealisticQueue = false;
+        window._realisticProcessingOwner = null;
         var queue = window._realisticGeminiQueue;
         if (!Array.isArray(queue) || queue.length === 0) return;
         // 同步创建所有待排队的 bubble
@@ -407,8 +420,6 @@
             try { createGeminiBubble(queue[i]); } catch (_) {}
         }
         window._realisticGeminiQueue = [];
-        // 重置并发锁，让下次 processRealisticQueue 可以正常启动
-        window._isProcessingRealisticQueue = false;
     }
 
     // ======================== appendMessage（覆盖核心） ========================

@@ -135,30 +135,47 @@ class FactStore:
 
     def save_facts(self, name: str) -> None:
         with self._get_lock(name):
-            assert_cloudsave_writable(
-                self._config_manager,
-                operation="save",
-                target=f"memory/{name}/facts.json",
-            )
-            facts = self._facts.get(name, [])
-            path = self._facts_path(name)
-            # Read-merge-write: 保护其他进程写入的 absorbed 标记
-            if os.path.exists(path):
-                try:
-                    with open(path, encoding='utf-8') as f:
-                        disk_facts = json.load(f)
-                    if isinstance(disk_facts, list):
-                        absorbed_ids = {
-                            f['id'] for f in disk_facts
-                            if isinstance(f, dict) and f.get('absorbed')
-                        }
-                        if absorbed_ids:
-                            for f in facts:
-                                if f.get('id') in absorbed_ids:
-                                    f['absorbed'] = True
-                except (json.JSONDecodeError, OSError):
-                    pass
-            atomic_write_json(path, facts, indent=2, ensure_ascii=False)
+            try:
+                assert_cloudsave_writable(
+                    self._config_manager,
+                    operation="save",
+                    target=f"memory/{name}/facts.json",
+                )
+                facts = self._facts.get(name, [])
+                path = self._facts_path(name)
+                # Read-merge-write: 保护其他进程写入的 absorbed 标记
+                if os.path.exists(path):
+                    try:
+                        with open(path, encoding='utf-8') as f:
+                            disk_facts = json.load(f)
+                        if isinstance(disk_facts, list):
+                            absorbed_ids = {
+                                f['id'] for f in disk_facts
+                                if isinstance(f, dict) and f.get('absorbed')
+                            }
+                            if absorbed_ids:
+                                for f in facts:
+                                    if f.get('id') in absorbed_ids:
+                                        f['absorbed'] = True
+                    except (json.JSONDecodeError, OSError):
+                        # Read-merge is best-effort: if the on-disk
+                        # file is corrupt or unreadable, fall through
+                        # and write whatever we have. The atomic
+                        # write below will overwrite the bad payload.
+                        pass
+                atomic_write_json(path, facts, indent=2, ensure_ascii=False)
+            except Exception:
+                # Cache divergence guard (CodeRabbit PR-956 Major,
+                # mirroring `PersonaManager.asave_persona`'s round-7
+                # fix from PR #936). Callers like
+                # `FactDedupResolver._aapply_decisions` mutate the
+                # in-memory list directly via `facts[:] = [...]` and
+                # then call us; if the disk write raises, the cache
+                # still holds the post-mutation state but disk
+                # doesn't, so the next `aload_facts` returns
+                # divergent data. Evicting forces a fresh disk read.
+                self._facts.pop(name, None)
+                raise
             # 基于文件修改时间节流归档：距上次归档超过 _ARCHIVE_COOLDOWN_HOURS 才尝试
             try:
                 archive_path = self._facts_archive_path(name)
@@ -422,6 +439,16 @@ class FactStore:
                 'hash': content_hash,
                 'created_at': datetime.now().isoformat(),
                 'absorbed': False,  # True when consumed by a reflection
+                # Vector-embedding cache (memory-enhancements P2 — see
+                # memory/embeddings.py). Written as None so /process
+                # returns immediately without blocking on embedding;
+                # the background warmup worker fills the triple in
+                # batches once the EmbeddingService is ready. Used by
+                # the upcoming fact dedup path (cosine > threshold →
+                # LLM arbitration queue).
+                'embedding': None,
+                'embedding_text_sha256': None,
+                'embedding_model_id': None,
             }
             existing_facts.append(fact_entry)
             existing_hashes.add(content_hash)
@@ -447,6 +474,7 @@ class FactStore:
     async def _aload_signal_targets(
         self, lanlan_name: str,
         reflection_engine=None, persona_manager=None,
+        new_facts: list[dict] | None = None,
     ) -> list[dict]:
         """Assemble the Stage-2 `existing_observations` set.
 
@@ -455,9 +483,20 @@ class FactStore:
           - 非 protected persona entry 全量
 
         Scale control (§3.4.2 end):
-          - Hard cap: top-N by evidence_score DESC (N = EVIDENCE_DETECT_SIGNALS_MAX_OBSERVATIONS)
-          - TODO PR follow-up: filter by new_facts[*].entity once Stage-1
-            returns entity; for now broad pool is acceptable (<200 items typical).
+          - When ``new_facts`` is provided, the pool is routed through
+            ``MemoryRecallReranker.aretrieve_candidates``, which owns
+            the full pipeline regardless of vector service state:
+            hard_filter (drops suppress / terminal / score<0 /
+            protected) → coarse rank (cosine top-K when vectors are
+            ready, evidence_score order otherwise) → optional LLM
+            rerank.  Vectors save Stage-2 prompt tokens when ready;
+            when not ready, behaviour collapses to filtered top-N by
+            evidence_score, matching the legacy contract but with
+            the suppression filter still applied.
+          - When ``new_facts`` is empty, falls through to the legacy
+            local top-N by evidence_score (no hard_filter — that
+            shape predates P2 and is what idle-maintenance entry
+            points expect).
 
         Injection pattern: memory_server wires `reflection_engine` / `persona_manager`
         references at call time. Without them we return empty, which simply
@@ -482,6 +521,20 @@ class FactStore:
                         'text': r.get('text', ''),
                         'entity': r.get('entity', 'relationship'),
                         'score': evidence_score(r, now),
+                        'embedding': r.get('embedding'),
+                        'embedding_text_sha256': r.get('embedding_text_sha256'),
+                        'embedding_model_id': r.get('embedding_model_id'),
+                        'status': r.get('status'),
+                        # Carry the AI-mention rate-limit suppress flag
+                        # so MemoryRecallReranker._hard_filter can drop
+                        # suppressed reflections from the rerank pool —
+                        # reflections share persona's 5h-window mention
+                        # gating (see ReflectionEngine._normalize_reflection).
+                        # Codex PR-958 P2: without this, a vector-recall
+                        # path with a suppressed reflection would slip
+                        # past the filter and re-enter Stage-2 signal
+                        # detection, defeating the suppression contract.
+                        'suppress': r.get('suppress'),
                     })
             except Exception as e:
                 logger.debug(
@@ -509,13 +562,62 @@ class FactStore:
                             'text': entry.get('text', ''),
                             'entity': entity_key,
                             'score': evidence_score(entry, now),
+                            'embedding': entry.get('embedding'),
+                            'embedding_text_sha256': entry.get('embedding_text_sha256'),
+                            'embedding_model_id': entry.get('embedding_model_id'),
+                            'suppress': entry.get('suppress'),
                         })
             except Exception as e:
                 logger.debug(
                     f"[FactStore] _aload_signal_targets 读取 persona 失败: {e}"
                 )
 
-        # Top-N by score DESC (most relevant first)
+        # P2 step 3: route through MemoryRecallReranker whenever we have
+        # a query, regardless of vector service state.  The reranker
+        # owns the unified pipeline:
+        #
+        #   _hard_filter (drops suppressed / terminal / score<0 /
+        #     protected) → coarse rank (cosine top-K when vectors are
+        #     ready, evidence_score order otherwise) → optional LLM
+        #     rerank (skipped automatically when vectors aren't
+        #     available).
+        #
+        # An earlier version gated the call on
+        # `reranker._service.is_available()` and fell through to a
+        # bare `pool.sort(score)` when the service was INIT / LOADING /
+        # DISABLED.  That meant `suppress=True` rows leaked into
+        # Stage-2 whenever vectors weren't ready, since the bare sort
+        # path didn't apply `_hard_filter` (CodeRabbit PR-956 Major).
+        # Behaviour now stays stable across the warmup window.
+        if new_facts:
+            try:
+                from memory.recall import MemoryRecallReranker
+                reranker = MemoryRecallReranker()
+                query_texts = [
+                    f.get('text', '') for f in new_facts if f.get('text')
+                ]
+                return await reranker.aretrieve_candidates(
+                    pool, query_texts,
+                    budget=EVIDENCE_DETECT_SIGNALS_MAX_OBSERVATIONS,
+                    config_manager=self._config_manager,
+                )
+            except Exception as e:
+                logger.warning(
+                    "[FactStore] vector+LLM rerank failed (%s: %s); "
+                    "falling back to evidence_score order",
+                    type(e).__name__, e,
+                )
+
+        # Fallback / legacy path: top-N by score DESC (most relevant
+        # first). Reached when (a) ``new_facts`` is empty (no recall
+        # query to drive the reranker), or (b) the reranker raised
+        # mid-call.  This matches the pre-P2 behaviour exactly —
+        # `_hard_filter` is intentionally NOT applied here because
+        # the upstream consumers in the no-new_facts shape (some
+        # idle-maintenance entry points) already operate on the
+        # unfiltered pool.  CodeRabbit PR-956's Major was specifically
+        # about the new_facts branch above silently bypassing the
+        # filter when vectors weren't ready.
         pool.sort(key=lambda o: o.get('score', 0.0), reverse=True)
         return pool[:EVIDENCE_DETECT_SIGNALS_MAX_OBSERVATIONS]
 
@@ -642,6 +744,11 @@ class FactStore:
             lanlan_name,
             reflection_engine=reflection_engine,
             persona_manager=persona_manager,
+            # Pass the freshly-persisted facts as the recall query so
+            # the vector+LLM rerank can narrow the candidate set
+            # semantically. Without new_facts the call falls back to
+            # evidence_score ordering (the legacy behaviour).
+            new_facts=persisted,
         )
         if not existing_observations:
             return persisted, []

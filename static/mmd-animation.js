@@ -80,11 +80,19 @@ class MMDAnimation {
         });
         if (requestId !== this._loadRequestId || this.manager.currentModel !== mmd) return null;
 
+        // 解析 VMD 的 IK 开关时间轴（propertyKeyFrames）
+        // VMD 动画可以在不同帧切换 IK 的启用/禁用状态
+        const ikSwitchTimeline = this._buildIkSwitchTimeline(vmdObject.propertyKeyFrames);
+
         // 清理之前的动画
         this._cleanupAnimation();
 
+        // 保存 IK 开关时间轴（在 cleanup 之后设置，避免被清掉）
+        this._ikSwitchTimeline = ikSwitchTimeline;
+
         // 构建动画 Clip
         const clip = buildAnimation(vmdObject, mmd.mesh);
+
         // 防御：把每条四元数轨道的相邻关键帧翻到同半球（dot >= 0），
         // 避免个别 VMD 在动画切换初始几帧被插值成长路径 / 奇点甩动。
         this._normalizeQuaternionTrackSigns(clip);
@@ -111,6 +119,9 @@ class MMDAnimation {
                 const { CCDIKSolver } = await import('three/addons/animation/CCDIKSolver.js');
                 if (requestId !== this._loadRequestId || this.manager.currentModel !== mmd) return null;
                 this.ikSolver = new CCDIKSolver(mmd.mesh, mmd.iks);
+
+                // 根据 VMD 的 IK 开关设置初始状态（第 0 帧）
+                this._applyIkSwitchState(0);
             } catch (e) {
                 console.warn('[MMD Animation] CCDIKSolver 不可用:', e);
             }
@@ -133,9 +144,6 @@ class MMDAnimation {
             this.manager.cursorFollow._targetPitch = 0;
         }
 
-        // 初始化骨骼缓存
-        this._initBoneBackup(mmd.mesh);
-
         // 使用 processBones
         this._processBones = processBones;
 
@@ -144,12 +152,14 @@ class MMDAnimation {
         // Pre-warm：立即应用第 0 帧，避免 T-pose 闪烁
         this.currentAction.play();
         this.mixer.update(0);
+
+        // 在第 0 帧动画姿态上初始化骨骼备份（Grant 之前！）
+        // 这样 _restoreBones 恢复的是纯动画状态，Grant 不会累积
+        this._initBoneBackup(mmd.mesh);
+
         if (this.ikSolver) this.ikSolver.update();
         if (this.grantSolver) this.grantSolver.update();
         mmd.mesh.updateMatrixWorld(true);
-
-        // 在第 0 帧姿态上初始化骨骼备份（而非 T-pose）
-        this._initBoneBackup(mmd.mesh);
 
         // 暂停，等待外部调用 play()
         this.currentAction.paused = true;
@@ -301,12 +311,16 @@ class MMDAnimation {
         // 4. 更新世界矩阵
         mesh.updateMatrixWorld(true);
 
-        // 5. IK 解算
+        // 5. IK 解算（根据 VMD 的 IK 开关状态动态启用/禁用）
         if (this.ikSolver) {
+            if (this._ikSwitchTimeline) {
+                const currentFrame = (this.mixer.time || 0) * 30;
+                this._applyIkSwitchState(currentFrame);
+            }
             this.ikSolver.update();
         }
 
-        // 6. Grant 解算
+        // 6. Grant 解算（在 IK 之后，这样 D 骨骼能收到 IK 的结果）
         if (this.grantSolver) {
             this.grantSolver.update();
         }
@@ -433,6 +447,104 @@ class MMDAnimation {
         console.log('[MMD Animation] 口型同步已停止 (stopLipSync)');
     }
 
+    // ═══════════════════ IK 开关管理 ═══════════════════
+
+    /**
+     * 从 VMD 的 propertyKeyFrames 构建 IK 开关时间轴。
+     * 返回按帧号排序的数组，每个元素包含 { frame, ikStates: Map<ikName, enabled> }。
+     * 如果没有 propertyKeyFrames 或为空，返回 null。
+     */
+    _buildIkSwitchTimeline(propertyKeyFrames) {
+        if (!propertyKeyFrames || propertyKeyFrames.length === 0) return null;
+
+        const timeline = propertyKeyFrames
+            .filter(pkf => pkf.ikStates && pkf.ikStates.length > 0)
+            .map(pkf => ({
+                frame: pkf.frameNumber,
+                ikStates: new Map(pkf.ikStates) // [[ikName, enabled], ...]
+            }))
+            .sort((a, b) => a.frame - b.frame);
+
+        if (timeline.length === 0) return null;
+
+        // 日志：输出 IK 开关信息
+        for (const entry of timeline) {
+            const states = [];
+            for (const [name, enabled] of entry.ikStates) {
+                states.push(`${name}=${enabled ? 'ON' : 'OFF'}`);
+            }
+            console.log(`[MMD Animation] IK 开关 Frame ${entry.frame}: ${states.join(', ')}`);
+        }
+
+        return timeline;
+    }
+
+    /**
+     * 根据当前帧号，从 IK 开关时间轴中查找并应用对应的 IK 启用/禁用状态。
+     * 使用"最近的不超过当前帧的 keyframe"（即 floor 查找）。
+     */
+    _applyIkSwitchState(currentFrame) {
+        if (!this._ikSwitchTimeline || !this.ikSolver) return;
+
+        const timeline = this._ikSwitchTimeline;
+        const bones = this.manager.currentModel?.mesh?.skeleton?.bones;
+        if (!bones) return;
+
+        // 找到当前帧对应的 IK 开关状态（floor 查找）
+        let activeEntry = null;
+        for (let i = timeline.length - 1; i >= 0; i--) {
+            if (timeline[i].frame <= currentFrame) {
+                activeEntry = timeline[i];
+                break;
+            }
+        }
+        if (!activeEntry) return;
+
+        // 避免重复应用同一个 entry
+        if (this._lastAppliedIkEntry === activeEntry) return;
+        this._lastAppliedIkEntry = activeEntry;
+
+        const iks = this.ikSolver.iks;
+        for (let i = 0; i < iks.length; i++) {
+            const ik = iks[i];
+            // IK 的 target 是 IK 骨骼在 skeleton.bones 中的索引
+            const ikBoneName = bones[ik.target]?.name;
+            if (!ikBoneName) continue;
+
+            // 检查 VMD 中是否有这个 IK 的开关设置
+            // 注意：VMD 中可能用半角（左足IK），模型中可能用全角（左足ＩＫ）
+            let matched = false;
+            let enabled = true;
+            if (activeEntry.ikStates.has(ikBoneName)) {
+                enabled = activeEntry.ikStates.get(ikBoneName);
+                matched = true;
+            } else {
+                // 尝试半角/全角互转匹配
+                const normalized = ikBoneName.normalize('NFKC'); // 全角→半角
+                for (const [vmdName, vmdEnabled] of activeEntry.ikStates) {
+                    const vmdNormalized = vmdName.normalize('NFKC');
+                    if (vmdNormalized === normalized) {
+                        enabled = vmdEnabled;
+                        matched = true;
+                        break;
+                    }
+                }
+            }
+
+            if (matched) {
+                console.log(`[MMD Animation] IK "${ikBoneName}" → enabled=${enabled}`);
+                // 设置 IK 链中所有 link 的 enabled 状态
+                for (const link of ik.links) {
+                    link.enabled = enabled;
+                }
+                // 同时在 ik 对象上标记整体启用状态（供 updateOne 检查）
+                ik._ikEnabled = enabled;
+            } else {
+                console.warn(`[MMD Animation] IK "${ikBoneName}" 在 VMD IK 开关中未找到匹配`);
+            }
+        }
+    }
+
     // ═══════════════════ 清理 ═══════════════════
 
     _cleanupAnimation() {
@@ -448,6 +560,8 @@ class MMDAnimation {
         this.ikSolver = null;
         this.grantSolver = null;
         this._boneBackup = null;
+        this._ikSwitchTimeline = null;
+        this._lastAppliedIkEntry = null;
         this.isPlaying = false;
         this.isPaused = false;
         if (this.clock) {

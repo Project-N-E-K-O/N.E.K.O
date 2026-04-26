@@ -404,11 +404,27 @@ function createSettingsPopupContent(manager, prefix, popup) {
 }
 
 /**
+ * 将菜单锚点 ID 标准化：trim、小写、去非法字符，再拼 ${prefix}-menu-${id}。
+ */
+function createMenuAnchorId(prefix, rawId) {
+    if (!rawId) return '';
+    var sanitized = String(rawId)
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9_-]/g, '-')
+        .replace(/-+/g, '-')
+        .replace(/^[-]+|[-]+$/g, '');
+    return sanitized ? `${prefix}-menu-${sanitized}` : '';
+}
+
+/**
  * 创建设置菜单按钮
  */
 function createSettingsMenuButton(manager, prefix, config) {
     const btn = document.createElement('div');
     btn.className = `${prefix}-settings-menu-item`;
+    var btnAnchorId = createMenuAnchorId(prefix, config && config.id);
+    if (btnAnchorId) btn.id = btnAnchorId;
     Object.assign(btn.style, {
         justifyContent: 'space-between'
     });
@@ -812,6 +828,9 @@ function createSidePanelMenuItem(manager, prefix, item) {
                 }
                 setTimeout(() => { isOpening = false; }, 500);
             } else if (item.url) {
+                if (typeof finalUrl === 'string' && (finalUrl.startsWith('/character_card_manager') || finalUrl.startsWith('/chara_manager'))) {
+                    windowName = 'neko_chara_manager';
+                }
                 isOpening = true;
                 if (typeof window.openOrFocusWindow === 'function') {
                     window.openOrFocusWindow(finalUrl, windowName);
@@ -1308,6 +1327,14 @@ function createAnimationSettingsSidePanel(manager, prefix) {
 function createSidePanelContainer(manager, prefix, options = {}) {
     const container = document.createElement('div');
     container.setAttribute('data-neko-sidepanel', '');
+    const getInteractionGuardDelay = () => {
+        const sidePanelType = container.getAttribute('data-neko-sidepanel-type') || '';
+        if (sidePanelType === 'agent-user-plugin-actions' || sidePanelType === 'agent-openclaw-actions') {
+            return 220;
+        }
+        return 0;
+    };
+    container._getInteractionGuardDelay = getInteractionGuardDelay;
     Object.assign(container.style, {
         position: 'fixed',
         display: 'none',
@@ -1345,6 +1372,7 @@ function createSidePanelContainer(manager, prefix, options = {}) {
     container._expand = () => {
         if (container.style.display === 'flex' && container.style.opacity !== '0') return;
         if (container._collapseTimeout) { clearTimeout(container._collapseTimeout); container._collapseTimeout = null; }
+        if (container._interactionGuardTimer) { clearTimeout(container._interactionGuardTimer); container._interactionGuardTimer = null; }
 
         container.style.display = 'flex';
         container.style.pointerEvents = 'none';
@@ -1364,15 +1392,25 @@ function createSidePanelContainer(manager, prefix, options = {}) {
         }
 
         requestAnimationFrame(() => {
-            container.style.pointerEvents = 'auto';
             container.style.opacity = '1';
             container.style.transform = 'translateX(0)';
+            const interactionGuardDelay = getInteractionGuardDelay();
+            if (interactionGuardDelay > 0) {
+                container._interactionGuardTimer = setTimeout(() => {
+                    container.style.pointerEvents = 'auto';
+                    container._interactionGuardTimer = null;
+                }, interactionGuardDelay);
+            } else {
+                container.style.pointerEvents = 'auto';
+            }
         });
     };
 
     container._collapse = () => {
         if (container.style.display === 'none') return;
         if (container._collapseTimeout) { clearTimeout(container._collapseTimeout); container._collapseTimeout = null; }
+        if (container._interactionGuardTimer) { clearTimeout(container._interactionGuardTimer); container._interactionGuardTimer = null; }
+        container.style.pointerEvents = 'none';
         container.style.opacity = '0';
         container.style.transform = container.dataset.goLeft === 'true' ? 'translateX(6px)' : 'translateX(-6px)';
         container._collapseTimeout = setTimeout(() => {
@@ -1394,18 +1432,51 @@ function createSidePanelContainer(manager, prefix, options = {}) {
 function attachSidePanelHover(manager, prefix, anchorEl, sidePanel) {
     const popupEl = sidePanel._popupElement || null;
     const ownerId = popupEl && popupEl.id ? popupEl.id : '';
+    const isTutorialHoverDisabled = () => {
+        if (window.isInTutorial !== true) {
+            return false;
+        }
+
+        const sidePanelType = sidePanel && typeof sidePanel.getAttribute === 'function'
+            ? (sidePanel.getAttribute('data-neko-sidepanel-type') || '')
+            : '';
+
+        return [
+            'agent-user-plugin-actions',
+            'agent-openclaw-actions',
+            'chat-settings',
+            'animation-settings',
+            'interval-proactive-chat',
+            'interval-proactive-vision',
+            'character-settings'
+        ].includes(sidePanelType);
+    };
 
     if (ownerId) sidePanel.setAttribute('data-neko-sidepanel-owner', ownerId);
 
     const collapseWithDelay = (delay = 80) => {
+        if (isTutorialHoverDisabled()) {
+            if (sidePanel._hoverCollapseTimer) {
+                clearTimeout(sidePanel._hoverCollapseTimer);
+                sidePanel._hoverCollapseTimer = null;
+            }
+            return;
+        }
+        const interactionGuardDelay = typeof sidePanel._getInteractionGuardDelay === 'function'
+            ? sidePanel._getInteractionGuardDelay()
+            : 0;
+        const normalizedDelay = interactionGuardDelay > 0
+            ? Math.max(delay, interactionGuardDelay) + 80
+            : delay;
         if (sidePanel._hoverCollapseTimer) { clearTimeout(sidePanel._hoverCollapseTimer); sidePanel._hoverCollapseTimer = null; }
         sidePanel._hoverCollapseTimer = setTimeout(() => {
             if (!anchorEl.matches(':hover') && !sidePanel.matches(':hover')) sidePanel._collapse();
             sidePanel._hoverCollapseTimer = null;
-        }, delay);
+        }, normalizedDelay);
     };
 
     const expandPanel = () => {
+        if (isTutorialHoverDisabled()) return;
         if (window.AvatarPopupUI && window.AvatarPopupUI.collapseOtherSidePanels) {
             window.AvatarPopupUI.collapseOtherSidePanels(sidePanel);
         }
@@ -1414,6 +1485,7 @@ function attachSidePanelHover(manager, prefix, anchorEl, sidePanel) {
         sidePanel._expand();
     };
     const collapsePanel = (e) => {
+        if (isTutorialHoverDisabled()) return;
         const target = e.relatedTarget;
         if (!target || (!anchorEl.contains(target) && !sidePanel.contains(target))) collapseWithDelay();
     };
@@ -1642,6 +1714,7 @@ function createCheckIndicator(manager, prefix) {
 function createToggleItem(manager, prefix, toggle, popup) {
     const toggleItem = document.createElement('div');
     toggleItem.className = `${prefix}-toggle-item`;
+    toggleItem.id = `${prefix}-toggle-${toggle.id}`;
     toggleItem.setAttribute('role', 'switch');
     toggleItem.setAttribute('tabIndex', toggle.initialDisabled ? '-1' : '0');
     toggleItem.setAttribute('aria-checked', 'false');
@@ -2097,6 +2170,8 @@ const AvatarPopupMixin = {
         ManagerProto._createMenuItem = function (item, isSubmenuItem = false) {
             const menuItem = document.createElement('div');
             menuItem.className = `${prefix}-settings-menu-item`;
+            var itemAnchorId = createMenuAnchorId(prefix, item && item.id);
+            if (itemAnchorId) menuItem.id = itemAnchorId;
             Object.assign(menuItem.style, {
                 display: 'flex',
                 alignItems: 'center',
@@ -2185,7 +2260,7 @@ const AvatarPopupMixin = {
                         }
                         setTimeout(() => { isOpening = false; }, 500);
                     } else {
-                        if (typeof finalUrl === 'string' && finalUrl.startsWith('/chara_manager')) windowName = 'neko_chara_manager';
+                        if (typeof finalUrl === 'string' && (finalUrl.startsWith('/character_card_manager') || finalUrl.startsWith('/chara_manager'))) windowName = 'neko_chara_manager';
 
                         isOpening = true;
                         if (typeof window.openOrFocusWindow === 'function') {
@@ -2379,6 +2454,7 @@ const AvatarPopupMixin = {
             // 角色设置按钮（带侧边面板）
             if (this._characterMenuItems && this._characterMenuItems.length > 0) {
                 const charSettingsBtn = this._createSettingsMenuButton({
+                    id: 'character',
                     label: window.t ? window.t('settings.menu.characterSettings') : '角色设置',
                     labelKey: 'settings.menu.characterSettings',
                     icon: '/static/icons/character_icon.png'
@@ -2393,7 +2469,6 @@ const AvatarPopupMixin = {
             const settingsItems = [
                 { id: 'api-keys', label: window.t ? window.t('settings.menu.apiKeys') : 'API密钥', labelKey: 'settings.menu.apiKeys', icon: '/static/icons/api_key_icon.png', action: 'navigate', url: '/api_key' },
                 { id: 'memory', label: window.t ? window.t('settings.menu.memoryBrowser') : '记忆浏览', labelKey: 'settings.menu.memoryBrowser', icon: '/static/icons/memory_icon.png', action: 'navigate', url: '/memory_browser' },
-                { id: 'steam-workshop', label: window.t ? window.t('settings.menu.steamWorkshop') : '创意工坊', labelKey: 'settings.menu.steamWorkshop', icon: '/static/icons/Steam_icon_logo.png', action: 'navigate', url: '/steam_workshop_manager' },
             ];
 
             settingsItems.forEach(item => {

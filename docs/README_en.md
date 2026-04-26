@@ -1,4 +1,4 @@
-<div align="center">
+﻿<div align="center">
 
 ![Logo](https://raw.githubusercontent.com/Project-N-E-K-O/N.E.K.O/main/assets/neko_logo.jpg)
 
@@ -438,7 +438,7 @@ Visit `http://localhost:48911/api_key` to configure directly through the Web int
 
 #### Modifying Character Persona
 
-- Access `http://localhost:48911/chara_manager` to enter the character editing page. The default companion preset name is `XiaoTian`; it's recommended to directly modify the name and add or change basic persona items one by one.
+- Access `http://localhost:48911/character_card_manager` to enter the character editing page. The default companion preset name is `XiaoTian`; it's recommended to directly modify the name and add or change basic persona items one by one.
 
 - Advanced persona settings include **Live2D/VRM/MMD model settings** and **voice settings**. To change the **Avatar model**, first copy the model directory to the `static` folder. From advanced settings, enter the model management interface to switch models and adjust position/size by dragging and scrolling. To change the **character voice**, prepare a continuous, clean voice recording of about 5 seconds. Enter the voice clone page through advanced settings and upload the recording.
 

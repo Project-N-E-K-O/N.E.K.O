@@ -630,6 +630,7 @@ class ConfigManager:
         self._steam_workshop_path = None
         self._user_workshop_folder_persisted = False
         self.chara_dir = self.app_docs_dir / "character_cards"
+        self.card_faces_dir = self.app_docs_dir / "card_faces"
         self._workshop_config_lock = threading.Lock()
 
         self._characters_cache: dict | None = None
@@ -1183,6 +1184,25 @@ class ConfigManager:
         except Exception as e:
             print(f"Warning: Failed to create character_cards directory: {e}", file=sys.stderr)
             return False
+
+    def ensure_card_faces_directory(self):
+        """确保我的文档下的card_faces目录存在"""
+        try:
+            if not self._ensure_app_docs_directory():
+                return False
+            self.card_faces_dir.mkdir(exist_ok=True)
+            return True
+        except Exception as e:
+            print(f"Warning: Failed to create card_faces directory: {e}", file=sys.stderr)
+            return False
+
+    def card_face_meta_path(self, name: str):
+        """返回猫娘卡面元数据 sidecar 文件路径（card_faces/{name}.json）。
+
+        不做存在性检查，调用方需自行处理。仅用于读写 sidecar 元数据
+        （作者、创建时间、来源等）。
+        """
+        return self.card_faces_dir / f"{name}.json"
 
     def ensure_cloudsave_structure(self):
         """确保本地 cloudsave 基础目录存在。

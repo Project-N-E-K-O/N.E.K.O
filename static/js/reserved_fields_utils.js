@@ -1,5 +1,5 @@
 /**
- * 角色保留字段加载工具（供 chara_manager.js / steam_workshop_manager.js 共用）。
+ * 角色保留字段加载工具（供 chara_manager.js / character_card_manager.js 共用）。
  *
  * 依赖：无外部依赖。需在使用方之前通过 <script> 引入。
  *
