@@ -38,14 +38,28 @@ SYSTEM_PROMPT = """你是一个虚拟主播直播间弹幕分析助手。
 
 
 def _normalize_base_url(raw: str) -> str:
-    """Strip OpenAI-compat path suffix so OpenAI SDK appends correctly.
+    """Strip OpenAI-compat path suffix and ensure ``/v1`` is present so the
+    OpenAI SDK appends ``/chat/completions`` correctly against typical
+    OpenAI-compatible providers.
 
-    e.g. ``https://api.deepseek.com/v1/chat/completions`` →
-    ``https://api.deepseek.com/v1``.
+    Examples::
+
+        https://api.deepseek.com                         → https://api.deepseek.com/v1
+        https://api.deepseek.com/v1                      → https://api.deepseek.com/v1
+        https://api.deepseek.com/v1/chat/completions     → https://api.deepseek.com/v1
+        https://api.deepseek.com/chat/completions        → https://api.deepseek.com/v1
     """
+    from urllib.parse import urlparse
+
     url = (raw or "").rstrip("/")
     if url.endswith("/chat/completions"):
-        url = url[: -len("/chat/completions")]
+        url = url[: -len("/chat/completions")].rstrip("/")
+    # 用户给的 base_url 可能只是 host（如 "https://api.deepseek.com"，配置文档
+    # 里就是这种）—— 补 /v1，否则 OpenAI SDK 会去打 /chat/completions（少了
+    # /v1）导致 404。已经带 path 段（/v1 / /v2 / 自定义 prefix）就别动。
+    parsed = urlparse(url)
+    if parsed.scheme and parsed.netloc and (not parsed.path or parsed.path == "/"):
+        url = url.rstrip("/") + "/v1"
     return url
 
 
@@ -195,3 +209,16 @@ class LLMClient:
         self.failed_calls += 1
         logger.error("[LLMClient] 所有重试都失败，最后错误: %s", last_error)
         return None
+
+    def get_stats(self) -> dict:
+        """获取调用统计 — 供 plugin 主体的 status / config 接口使用
+        （bilibili_danmaku/__init__.py 多处调用）。"""
+        return {
+            "total_calls": self.total_calls,
+            "success_calls": self.success_calls,
+            "failed_calls": self.failed_calls,
+            "api_url": self.api_url,
+            "model": self.model,
+            "timeout_sec": self.timeout_sec,
+            "retry_times": self.retry_times,
+        }
