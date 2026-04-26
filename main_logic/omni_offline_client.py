@@ -474,28 +474,29 @@ class OmniOfflineClient:
                             guard_attempt += 1
                             reroll_count += 1
                             will_retry = guard_attempt <= self.max_response_rerolls
-                            # 区分原因：超长用明确提示，其它守卫原因用通用提示
-                            if discard_reason and "length>" in discard_reason:
-                                final_message = json.dumps({"code": "RESPONSE_TOO_LONG"})
-                            else:
-                                final_message = json.dumps({"code": "RESPONSE_INVALID"})
-                            failure_message = None if will_retry else final_message
-                            await self._notify_response_discarded(
-                                discard_reason or "guard",
-                                guard_attempt,
-                                self.max_response_rerolls,
-                                will_retry,
-                                failure_message
-                            )
-                            
+
                             if will_retry:
-                                logger.info(f"OmniOfflineClient: 响应被丢弃（{discard_reason}），第 {guard_attempt}/{self.max_response_rerolls} 次重试")
+                                # 还能 retry：发 will_retry 通知，循环继续。前端
+                                # 收到 response_discarded(will_retry=True, message=None)
+                                # 走 retry toast 路径。
+                                await self._notify_response_discarded(
+                                    discard_reason or "guard",
+                                    guard_attempt,
+                                    self.max_response_rerolls,
+                                    True,
+                                    None,
+                                )
+                                logger.info(
+                                    "OmniOfflineClient: 响应被丢弃（%s），第 %d/%d 次重试",
+                                    discard_reason, guard_attempt, self.max_response_rerolls,
+                                )
                                 continue
 
-                            # Reroll 耗尽。length-overflow 的情况下尝试回退到
-                            # 最后一个句末标点（句号/问号/感叹号），把这截断
-                            # 后的内容当作最终回复；这样用户至少看到一段语义
-                            # 完整的话，而不是一句"回复太长"的错误提示。
+                            # Reroll 耗尽。length 超长 → 先尝试截断到最后句末
+                            # 标点恢复；找不到句末 → 才退回 RESPONSE_TOO_LONG /
+                            # RESPONSE_INVALID。两条路径**都**通过
+                            # _notify_response_discarded 唯一通道发给前端，避免
+                            # 同时发两个 status 互相覆盖。
                             recovery_text = ""
                             if discard_reason and "length>" in discard_reason:
                                 recovery_text = _truncate_to_last_sentence_end(assistant_message)
@@ -510,21 +511,43 @@ class OmniOfflineClient:
                                     "code": "RESPONSE_LENGTH_TRUNCATED",
                                     "text": recovery_text,
                                 })
-                                if self.on_status_message:
-                                    await self.on_status_message(truncate_msg)
-                                    status_reported = True
-                                # 把截断后的内容写进对话历史 + 触发重复检测，
-                                # 让后续轮次基于"用户实际听到/看到的"那段内容做判断。
-                                self._conversation_history.append(AIMessage(content=recovery_text))
+                                # 走 _notify_response_discarded（不能用
+                                # on_status_message）：前端在 response_discarded
+                                # 分支识别 RESPONSE_LENGTH_TRUNCATED 才能触发
+                                # truncate UX（不回滚输入 + 把 truncate text
+                                # 当 placeholder body）。
+                                await self._notify_response_discarded(
+                                    discard_reason or "guard",
+                                    guard_attempt,
+                                    self.max_response_rerolls,
+                                    False,
+                                    truncate_msg,
+                                )
+                                status_reported = True
+                                # _conversation_history 由 core.handle_response_discarded
+                                # 在 RESPONSE_LENGTH_TRUNCATED 分支 append
+                                # （self.session 即本 OmniOfflineClient，二者共享同一
+                                # 个 _conversation_history 列表）。这里只维护内部
+                                # 重复检测列表。
                                 await self._check_repetition(recovery_text)
                                 assistant_message = recovery_text
                                 guard_exhausted = True
                                 break
 
+                            final_message = json.dumps(
+                                {"code": "RESPONSE_TOO_LONG"}
+                                if discard_reason and "length>" in discard_reason
+                                else {"code": "RESPONSE_INVALID"}
+                            )
+                            await self._notify_response_discarded(
+                                discard_reason or "guard",
+                                guard_attempt,
+                                self.max_response_rerolls,
+                                False,
+                                final_message,
+                            )
+                            status_reported = True
                             logger.warning("OmniOfflineClient: guard 重试耗尽，无可截断句末，放弃输出")
-                            if self.on_status_message:
-                                await self.on_status_message(final_message)
-                                status_reported = True
                             assistant_message = ""
                             guard_exhausted = True
                             break
