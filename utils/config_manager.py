@@ -536,12 +536,14 @@ class ConfigManager:
         # CFA (Windows 受控文件夹访问/反勒索防护) 检测：
         # 如果原始 Documents 路径可读但不可写，记住它以便从中读取用户数据（模型等）
         first_readable_non_writable = getattr(self, '_first_non_writable_readable_candidate', None)
+        self._cfa_fallback_write_docs_dir = None
         if (
             sys.platform == "win32"
             and first_readable_non_writable is not None
             and first_readable_non_writable != self.docs_dir
         ):
             self._readable_docs_dir = first_readable_non_writable
+            self._cfa_fallback_write_docs_dir = self.docs_dir
             print("⚠ WARNING [ConfigManager] 文档目录不可写（可能受Windows安全策略/反勒索防护保护）!", file=sys.stderr)
             print(f"⚠ WARNING [ConfigManager] 原始文档路径(只读): {first_readable_non_writable}", file=sys.stderr)
             print(f"⚠ WARNING [ConfigManager] 回退写入路径: {self.docs_dir}", file=sys.stderr)
@@ -1130,7 +1132,7 @@ class ConfigManager:
 
         非 CFA 场景下返回 None（此时 live2d_dir 本身就指向 Documents）。
         """
-        if self._readable_docs_dir is not None:
+        if self.is_windows_cfa_fallback_active and self._readable_docs_dir is not None:
             p = self._readable_docs_dir / self.app_name / "live2d"
             if p.exists():
                 return p
@@ -1139,11 +1141,13 @@ class ConfigManager:
     @property
     def is_windows_cfa_fallback_active(self) -> bool:
         """是否处于 Windows CFA 读写分离模式。"""
-        if sys.platform != "win32":
-            return False
         if self._readable_docs_dir is None:
             return False
-        return str(self._readable_docs_dir) != str(self.docs_dir)
+        write_docs_dir = getattr(self, "_cfa_fallback_write_docs_dir", None)
+        if write_docs_dir is None:
+            return False
+        current_write_docs_dir = Path(self.app_docs_dir).parent
+        return str(self._readable_docs_dir) != str(current_write_docs_dir) and str(write_docs_dir) == str(current_write_docs_dir)
 
     def get_live2d_lookup_roots(self, *, prefer_writable: bool = True) -> list[Path]:
         """返回 Live2D 查找路径（去重后）。

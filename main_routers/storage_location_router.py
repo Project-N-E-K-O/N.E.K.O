@@ -1552,6 +1552,7 @@ async def _post_storage_location_restart_locked(
         }
 
     previous_root_state = config_manager.load_root_state()
+    previous_migration_payload = load_storage_migration(config_manager, anchor_root=anchor_root)
     migration_payload = create_pending_storage_migration(
         config_manager,
         source_root=current_root,
@@ -1570,7 +1571,16 @@ async def _post_storage_location_restart_locked(
         )
         await _request_app_shutdown(request_app_shutdown)
     except Exception as exc:
-        delete_storage_migration(config_manager, anchor_root=anchor_root)
+        try:
+            if isinstance(previous_migration_payload, dict):
+                save_storage_migration(config_manager, previous_migration_payload, anchor_root=anchor_root)
+            else:
+                delete_storage_migration(config_manager, anchor_root=anchor_root)
+        except Exception:
+            try:
+                delete_storage_migration(config_manager, anchor_root=anchor_root)
+            except Exception:
+                pass
         try:
             config_manager.save_root_state(previous_root_state)
         except Exception:

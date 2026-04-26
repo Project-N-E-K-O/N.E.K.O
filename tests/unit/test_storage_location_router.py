@@ -657,6 +657,43 @@ def test_storage_location_restart_awaits_async_shutdown_callback(tmp_path):
 
 
 @pytest.mark.unit
+def test_storage_location_restart_restores_previous_migration_when_shutdown_fails(tmp_path):
+    config_manager = _DummyConfigManager(tmp_path)
+    target_root = tmp_path / "new-storage" / "N.E.K.O"
+    previous_migration = save_storage_migration(
+        config_manager,
+        {
+            "version": 1,
+            "status": "completed",
+            "source_root": str(tmp_path / "old-source" / "N.E.K.O"),
+            "target_root": str(config_manager.app_docs_dir),
+            "selection_source": "custom",
+            "backup_root": str(tmp_path / "old-source" / "N.E.K.O"),
+            "retained_source_root": str(tmp_path / "old-source" / "N.E.K.O"),
+            "retained_source_mode": "manual_retention",
+        },
+    )
+    previous_root_state = config_manager.load_root_state()
+
+    def request_app_shutdown():
+        raise RuntimeError("shutdown failed")
+
+    with _build_client(config_manager, request_app_shutdown=request_app_shutdown) as client:
+        response = client.post(
+            "/api/storage/location/restart",
+            json={
+                "selected_root": str(target_root),
+                "selection_source": "recommended",
+            },
+        )
+
+    assert response.status_code == 500
+    assert response.json()["error_code"] == "restart_schedule_failed"
+    assert load_storage_migration(config_manager) == previous_migration
+    assert config_manager.load_root_state() == previous_root_state
+
+
+@pytest.mark.unit
 def test_storage_location_restart_rejects_existing_pending_migration(tmp_path):
     config_manager = _DummyConfigManager(tmp_path)
     target_root = tmp_path / "new-storage" / "N.E.K.O"

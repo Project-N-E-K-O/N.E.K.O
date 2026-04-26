@@ -10,6 +10,9 @@ from utils.storage_migration import (
     is_storage_migration_pending,
     load_storage_migration,
 )
+from utils.logger_config import get_module_logger
+
+logger = get_module_logger(__name__)
 
 # 正常模式：
 # 仅在真正首次需要选择、存在待迁移检查点或进入恢复态时，才要求网页端阻断并显示存储位置选择流程。
@@ -57,7 +60,8 @@ def _collect_legacy_sources(
 def _extract_last_error(last_migration_result: str) -> str:
     result = (last_migration_result or "").strip()
     lowered = result.lower()
-    if "failed" in lowered or "unavailable" in lowered:
+    token = lowered.split(":", 1)[0]
+    if token in {"failed", "unavailable", "selected_root_unavailable"}:
         return result
     return ""
 
@@ -153,7 +157,11 @@ def _reconcile_legacy_cleanup_pending_root_state(
     try:
         config_manager.save_root_state(updated_root_state)
         return updated_root_state
-    except Exception:
+    except Exception as exc:
+        logger.warning(
+            "_reconcile_legacy_cleanup_pending_root_state: config_manager.save_root_state failed: %s",
+            exc,
+        )
         return root_state
 
 

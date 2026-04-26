@@ -35,58 +35,34 @@ class _DummyConfigManager:
         }
 
 
-def _make_real_config_manager(tmp_path: Path):
+def _make_config_manager(tmp_path: Path, documents_directory: Path):
     standard_root = tmp_path / "anchor-base"
-    monkeypatchers = [
-        pytest.MonkeyPatch(),
-        pytest.MonkeyPatch(),
-    ]
-    monkeypatchers[0].setattr(
-        ConfigManager,
-        "_get_documents_directory",
-        lambda self: tmp_path / "runtime-parent",
-    )
-    monkeypatchers[1].setattr(
-        ConfigManager,
-        "_get_standard_data_directory_candidates",
-        lambda self: [standard_root],
-    )
-    try:
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            ConfigManager,
+            "_get_documents_directory",
+            lambda self: documents_directory,
+        )
+        mp.setattr(
+            ConfigManager,
+            "_get_standard_data_directory_candidates",
+            lambda self: [standard_root],
+        )
         config_manager = ConfigManager("N.E.K.O")
-    finally:
-        monkeypatchers[0].undo()
-        monkeypatchers[1].undo()
     config_manager._get_standard_data_directory_candidates = lambda: [standard_root]
     return config_manager
+
+
+def _make_real_config_manager(tmp_path: Path):
+    return _make_config_manager(tmp_path, tmp_path / "runtime-parent")
 
 
 def _make_anchor_root_config_manager(tmp_path: Path):
-    standard_root = tmp_path / "anchor-base"
-    monkeypatchers = [
-        pytest.MonkeyPatch(),
-        pytest.MonkeyPatch(),
-    ]
-    monkeypatchers[0].setattr(
-        ConfigManager,
-        "_get_documents_directory",
-        lambda self: standard_root,
-    )
-    monkeypatchers[1].setattr(
-        ConfigManager,
-        "_get_standard_data_directory_candidates",
-        lambda self: [standard_root],
-    )
-    try:
-        config_manager = ConfigManager("N.E.K.O")
-    finally:
-        monkeypatchers[0].undo()
-        monkeypatchers[1].undo()
-    config_manager._get_standard_data_directory_candidates = lambda: [standard_root]
-    return config_manager
+    return _make_config_manager(tmp_path, tmp_path / "anchor-base")
 
 
 @pytest.mark.unit
-def test_storage_location_bootstrap_payload_exposes_stage2_web_fields(tmp_path):
+def test_storage_location_bootstrap_payload_exposes_stage3_web_fields(tmp_path):
     config_manager = _DummyConfigManager(tmp_path)
 
     payload = build_storage_location_bootstrap_payload(config_manager)
@@ -233,6 +209,18 @@ def test_storage_location_bootstrap_payload_reports_unavailable_committed_root_d
     assert payload["recovery_required"] is True
     assert payload["blocking_reason"] == "recovery_required"
     assert "selected_root_unavailable:" in payload["last_error_summary"]
+
+
+@pytest.mark.unit
+def test_storage_location_bootstrap_last_error_uses_leading_result_token(tmp_path):
+    config_manager = _DummyConfigManager(tmp_path)
+    root_state = config_manager.load_root_state()
+    root_state["last_migration_result"] = "recovered:failed_migration:target_not_empty"
+    config_manager.load_root_state = lambda: dict(root_state)
+
+    payload = build_storage_location_bootstrap_payload(config_manager)
+
+    assert payload["last_error_summary"] == ""
 
 
 @pytest.mark.unit

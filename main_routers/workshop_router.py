@@ -89,6 +89,9 @@ async def cancel_background_tasks(*, timeout: float = 5.0) -> None:
             try:
                 await asyncio.wait_for(task, timeout=timeout)
             except asyncio.CancelledError:
+                current_task = asyncio.current_task()
+                if current_task is not None and current_task.cancelling():
+                    raise
                 logger.debug("workshop %s cancelled", task_attr)
             except asyncio.TimeoutError:
                 logger.warning("workshop %s did not stop within %.1fs", task_attr, timeout)

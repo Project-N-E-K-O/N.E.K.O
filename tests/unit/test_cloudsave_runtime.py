@@ -1,4 +1,5 @@
 import copy
+import contextlib
 import json
 import shutil
 import sqlite3
@@ -36,17 +37,14 @@ def _make_config_manager(
     if platform is not None:
         patchers.append(patch("utils.config_manager.sys.platform", platform))
 
-    with patchers[0], patchers[1], patchers[2]:
-        if len(patchers) == 3:
-            config_manager = ConfigManager("N.E.K.O")
-            config_manager.get_legacy_app_root_candidates = lambda: list(legacy_candidates)
-            config_manager._get_standard_data_directory_candidates = lambda: [tmp_path]
-            return config_manager
-        with patchers[3]:
-            config_manager = ConfigManager("N.E.K.O")
-            config_manager.get_legacy_app_root_candidates = lambda: list(legacy_candidates)
-            config_manager._get_standard_data_directory_candidates = lambda: [tmp_path]
-            return config_manager
+    with contextlib.ExitStack() as stack:
+        for patcher in patchers:
+            stack.enter_context(patcher)
+        config_manager = ConfigManager("N.E.K.O")
+
+    config_manager.get_legacy_app_root_candidates = lambda: list(legacy_candidates)
+    config_manager._get_standard_data_directory_candidates = lambda: [tmp_path]
+    return config_manager
 
 
 def _write_runtime_state(cm, *, character_name="小满"):
