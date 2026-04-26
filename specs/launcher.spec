@@ -101,6 +101,11 @@ add_data('static/*.png', 'static')
 add_data('assets', 'assets')
 add_data('templates', 'templates')
 add_data('data/browser_use_prompts', 'data/browser_use_prompts')
+# tiktoken o200k_base is fetched on first use into TIKTOKEN_CACHE_DIR.
+# launcher.py points TIKTOKEN_CACHE_DIR at data/tiktoken_cache when it
+# exists in the bundle (PR #929). The CI build warms this dir before
+# packaging; for local source builds add_data warns and skips silently.
+add_data('data/tiktoken_cache', 'data/tiktoken_cache')
 add_data('data/embedding_models', 'data/embedding_models')
 add_data('steam_appid.txt', '.')
 

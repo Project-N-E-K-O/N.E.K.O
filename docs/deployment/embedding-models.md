@@ -47,8 +47,8 @@ Source runs use this bundled development cache when no user override exists in t
 <app data>/embedding_models/local-text-retrieval-v1/
 ```
 
-## PyInstaller Nightly Builds
+## Cross-Platform Nightly Builds
 
-Linux and macOS nightly builds use `launcher.py` through `specs/launcher.spec`. The workflow downloads the model assets before invoking PyInstaller and packages `data/embedding_models/` into the final `N.E.K.O` directory.
+The cross-platform nightly workflow (`.github/workflows/build-desktop.yml`) builds the backend with Nuitka on Windows, macOS, and Linux. Before invoking Nuitka it runs `scripts/prepare_embedding_model.py` against the pinned `EMBEDDING_MODEL_REVISION` and bundles `data/embedding_models/` into the standalone artifact. After build it verifies that every required file (`tokenizer.json`, both fp32 and int8 ONNX variants, and their `*.onnx_data` sidecars) is present and non-empty before uploading.
 
-The workflow also checks that the packaged artifact contains the profile folder before upload.
+`specs/launcher.spec` declares the same `data/embedding_models/` directory so a manual PyInstaller run picks up the assets too, as long as the directory was populated by the prepare script first.
