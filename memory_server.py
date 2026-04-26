@@ -91,6 +91,7 @@ _STORAGE_LIMITED_MODE_ALLOWED_PATHS = {
     "/health",
     "/shutdown",
     "/internal/storage/startup/continue",
+    "/internal/storage/startup/block",
 }
 
 
@@ -1788,6 +1789,19 @@ async def continue_storage_startup(payload: ContinueStorageStartupRequest | None
                 "error": str(e),
             },
         )
+
+
+@app.post("/internal/storage/startup/block")
+async def block_storage_startup(payload: ContinueStorageStartupRequest | None = None):
+    global _memory_runtime_init_completed
+    reason = str(getattr(payload, "reason", "") or "").strip()
+    _memory_runtime_init_completed = False
+    logger.warning("[Memory] limited-mode restored after main_server startup failure: %s", reason or "-")
+    return {
+        "ok": True,
+        "limited_mode": True,
+        "reason": reason,
+    }
 
 
 @app.on_event("shutdown")

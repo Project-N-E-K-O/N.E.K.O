@@ -61,6 +61,9 @@ def test_system_status_reports_migration_required_when_storage_selection_is_bloc
         response = client.get(SYSTEM_STATUS_ENDPOINT)
 
     assert response.status_code == 200
+    assert "no-store" in response.headers["Cache-Control"]
+    assert response.headers["Pragma"] == "no-cache"
+    assert response.headers["Expires"] == "0"
     payload = response.json()
     assert payload["ok"] is True
     assert payload["status"] == "migration_required"
@@ -180,6 +183,33 @@ def test_system_status_reports_migration_required_when_checkpoint_is_pending(tmp
     assert payload["ready"] is False
     assert payload["storage"]["migration_pending"] is True
     assert payload["storage"]["blocking_reason"] == "migration_pending"
+
+
+@pytest.mark.unit
+def test_system_status_treats_blocking_reason_as_not_ready(tmp_path):
+    config_manager = _DummyConfigManager(tmp_path)
+
+    with patch.object(
+        system_router_module,
+        "build_storage_location_bootstrap_payload",
+        return_value={
+            "selection_required": False,
+            "migration_pending": False,
+            "recovery_required": False,
+            "legacy_cleanup_pending": False,
+            "blocking_reason": "runtime_initializing",
+            "last_error_summary": "",
+            "stage": "stage3_web_restart",
+        },
+    ):
+        with _build_client(config_manager) as client:
+            response = client.get(SYSTEM_STATUS_ENDPOINT)
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "migration_required"
+    assert payload["ready"] is False
+    assert payload["storage"]["blocking_reason"] == "runtime_initializing"
 
 
 @pytest.mark.unit

@@ -88,7 +88,8 @@ if _IS_MAIN_PROCESS:
         )
 
 try:
-    from fastapi import FastAPI # noqa
+    from fastapi import FastAPI, Request # noqa
+    from fastapi.responses import JSONResponse # noqa
     from fastapi.staticfiles import StaticFiles # noqa
     from main_logic import core as core, cross_server as cross_server # noqa
     from main_logic.agent_event_bus import MainServerAgentBridge, notify_analyze_ack, set_main_bridge # noqa
@@ -262,6 +263,26 @@ async def _request_memory_server_continue_startup(reason: str = "") -> None:
             raise RuntimeError(f"memory_server continue-startup returned unexpected payload: {payload!r}")
     except Exception as e:
         raise RuntimeError(f"failed to release memory_server limited-mode startup: {e}") from e
+
+
+async def _request_memory_server_block_startup(reason: str = "") -> None:
+    """Return memory_server to limited mode when main_server cannot finish startup."""
+    try:
+        from config import MEMORY_SERVER_PORT
+        from utils.internal_http_client import get_internal_http_client
+
+        client = get_internal_http_client()
+        response = await client.post(
+            f"http://127.0.0.1:{MEMORY_SERVER_PORT}/internal/storage/startup/block",
+            json={"reason": reason},
+            timeout=10.0,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict) or payload.get("ok") is not True:
+            raise RuntimeError(f"memory_server block-startup returned unexpected payload: {payload!r}")
+    except Exception as e:
+        raise RuntimeError(f"failed to restore memory_server limited-mode startup: {e}") from e
 
 @dataclass
 class RoleState:
@@ -934,11 +955,92 @@ lock = asyncio.Lock()
 # --- FastAPI App Setup ---
 app = FastAPI()
 
+_main_runtime_limited_mode_enabled = False
+_main_runtime_limited_mode_reason = ""
+_MAIN_LIMITED_MODE_ALLOWED_EXACT_PATHS = {
+    "/",
+    "/health",
+    "/favicon.ico",
+    "/api/beacon/shutdown",
+    "/api/system/status",
+}
+_MAIN_LIMITED_MODE_ALLOWED_PAGE_PATHS = {
+    "/l2d",
+    "/model_manager",
+    "/live2d_parameter_editor",
+    "/soccer_demo",
+    "/live2d_emotion_manager",
+    "/vrm_emotion_manager",
+    "/mmd_emotion_manager",
+    "/voice_clone",
+    "/api_key",
+    "/chara_manager",
+    "/character_card_manager",
+    "/cloudsave_manager",
+    "/memory_browser",
+    "/cookies_login",
+    "/chat",
+    "/subtitle",
+    "/agenthud",
+    "/card_maker",
+    "/jukebox",
+    "/jukebox/manager",
+    "/toast",
+}
+_MAIN_LIMITED_MODE_ALLOWED_PREFIXES = (
+    "/static/",
+    "/api/storage/location/",
+)
+
+
+def _enable_main_storage_limited_mode(reason: str) -> None:
+    global _main_runtime_limited_mode_enabled, _main_runtime_limited_mode_reason
+    _main_runtime_limited_mode_enabled = True
+    _main_runtime_limited_mode_reason = str(reason or "runtime_initializing").strip() or "runtime_initializing"
+
+
+def _disable_main_storage_limited_mode() -> None:
+    global _main_runtime_limited_mode_enabled, _main_runtime_limited_mode_reason
+    _main_runtime_limited_mode_enabled = False
+    _main_runtime_limited_mode_reason = ""
+
+
+def _is_main_limited_mode_allowed_path(path: str, method: str) -> bool:
+    if path in _MAIN_LIMITED_MODE_ALLOWED_EXACT_PATHS:
+        return True
+    if path in _MAIN_LIMITED_MODE_ALLOWED_PAGE_PATHS and method in {"GET", "HEAD"}:
+        return True
+    return any(path == prefix.rstrip("/") or path.startswith(prefix) for prefix in _MAIN_LIMITED_MODE_ALLOWED_PREFIXES)
+
+
+@app.middleware("http")
+async def main_storage_limited_mode_guard(request: Request, call_next):
+    if _runtime_startup_init_completed or not _main_runtime_limited_mode_enabled:
+        return await call_next(request)
+
+    if _is_main_limited_mode_allowed_path(request.url.path, request.method):
+        return await call_next(request)
+
+    blocking_reason = _main_runtime_limited_mode_reason or "runtime_initializing"
+    logger.info(
+        "[Main] limited-mode blocks request path=%s reason=%s",
+        request.url.path,
+        blocking_reason,
+    )
+    return JSONResponse(
+        status_code=409,
+        content={
+            "ok": False,
+            "error_code": "storage_startup_blocked",
+            "blocking_reason": blocking_reason,
+            "limited_mode": True,
+            "error": "Main server 正处于存储受限启动状态，请等待存储位置选择、迁移或恢复完成。",
+        },
+    )
+
 
 @app.exception_handler(MaintenanceModeError)
 async def handle_maintenance_mode_error(_request, exc: MaintenanceModeError):
-    from fastapi.responses import JSONResponse
-
     return JSONResponse(status_code=409, content=maintenance_error_payload(exc))
 
 
@@ -1266,6 +1368,78 @@ def _maybe_schedule_heavy_import_prewarm() -> None:
     asyncio.create_task(_prewarm_heavy_imports())
 
 
+async def _cancel_task_if_running(task: asyncio.Task | None, *, name: str, timeout: float = 1.0) -> None:
+    if task is None:
+        return
+    if task.done():
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            logger.debug("%s task finished with error during startup rollback: %s", name, exc, exc_info=True)
+        return
+
+    task.cancel()
+    try:
+        await asyncio.wait_for(task, timeout=timeout)
+    except asyncio.CancelledError:
+        logger.debug("%s task cancelled during startup rollback", name)
+    except asyncio.TimeoutError:
+        logger.warning("%s task did not stop within %.1fs during startup rollback", name, timeout)
+    except Exception as exc:
+        logger.debug("%s task cleanup failed during startup rollback: %s", name, exc, exc_info=True)
+
+
+async def _cancel_workshop_background_tasks_for_startup_rollback() -> None:
+    try:
+        _wr = importlib.import_module("main_routers.workshop_router")
+    except Exception as exc:
+        logger.debug("workshop task cleanup skipped during startup rollback: %s", exc, exc_info=True)
+        return
+
+    for task_attr in ("_ugc_warmup_task", "_ugc_sync_task"):
+        task = getattr(_wr, task_attr, None)
+        await _cancel_task_if_running(task, name=f"workshop {task_attr}", timeout=1.0)
+        if getattr(_wr, task_attr, None) is task:
+            setattr(_wr, task_attr, None)
+
+
+async def _rollback_partial_main_runtime_startup() -> None:
+    global steamworks, _preload_task, agent_event_bridge
+
+    await _cancel_task_if_running(_preload_task, name="preload", timeout=1.0)
+    _preload_task = None
+
+    await _cancel_workshop_background_tasks_for_startup_rollback()
+
+    if agent_event_bridge is not None:
+        bridge = agent_event_bridge
+        agent_event_bridge = None
+        try:
+            await bridge.stop()
+        except Exception as exc:
+            logger.debug("Agent event bridge rollback failed: %s", exc, exc_info=True)
+        try:
+            set_main_bridge(None)
+        except Exception as exc:
+            logger.debug("Agent event bridge reference rollback failed: %s", exc, exc_info=True)
+
+    try:
+        from main_routers.shared_state import set_steamworks
+
+        set_steamworks(None)
+    except Exception as exc:
+        logger.debug("Steamworks shared-state rollback failed: %s", exc, exc_info=True)
+    steamworks = None
+
+    try:
+        cleanup(log=False)
+        await join_sync_connector_threads(1.0)
+    except Exception as exc:
+        logger.debug("Sync connector rollback failed: %s", exc, exc_info=True)
+
+
 async def _ensure_main_server_runtime_initialized(*, reason: str) -> bool:
     global steamworks, _preload_task, agent_event_bridge, _runtime_startup_init_completed
 
@@ -1276,143 +1450,164 @@ async def _ensure_main_server_runtime_initialized(*, reason: str) -> bool:
         if _runtime_startup_init_completed:
             return False
 
-        _maybe_schedule_heavy_import_prewarm()
-
-        bootstrap_local_cloudsave_environment(_config_manager)
-        import_result = None
         try:
-            import_result = await _run_cloudsave_manager_action(
-                "import_if_needed",
-                reason="main_server_startup",
-                budget_seconds=10.0,
-            )
-            logger.info("Steam Auto-Cloud startup import: %s", import_result)
-        except CloudsaveDeadlineExceeded:
-            logger.warning(
-                "Steam Auto-Cloud startup import exceeded 10.0s budget before applying runtime changes; continuing with local runtime state"
-            )
-        except Exception as e:
-            logger.warning(f"Steam Auto-Cloud startup import failed: {e}")
+            _maybe_schedule_heavy_import_prewarm()
 
-        await initialize_character_data()
-        await _sync_memory_server_after_startup_import(import_result)
-
-        logger.info("正在初始化 Steamworks...")
-        steamworks = initialize_steamworks()
-
-        from main_routers.shared_state import set_steamworks
-
-        set_steamworks(steamworks)
-        get_default_steam_info()
-
-        _preload_task = asyncio.create_task(_background_preload())
-        try:
-            agent_event_bridge = MainServerAgentBridge(on_agent_event=_handle_agent_event)
-            await agent_event_bridge.start()
-            set_main_bridge(agent_event_bridge)
-        except Exception as e:
-            logger.warning(f"Agent event bridge startup failed: {e}")
-
-        await _init_and_mount_workshop()
-
-        if steamworks:
-            _wr = importlib.import_module("main_routers.workshop_router")
-
-            async def _warmup_only():
-                try:
-                    await warmup_ugc_cache()
-                except Exception as e:
-                    logger.warning(f"UGC 缓存预热失败: {e}")
-
-            async def _sync_characters_only():
-                max_fence_retries = 15
-                retry_interval_seconds = 2
-                for attempt in range(1, max_fence_retries + 1):
-                    if not is_write_fence_active(_config_manager):
-                        break
-                    logger.info(
-                        "创意工坊角色卡同步检测到维护态写围栏，等待解除后重试 (%s/%s)",
-                        attempt,
-                        max_fence_retries,
-                    )
-                    await asyncio.sleep(retry_interval_seconds)
-                else:
-                    logger.info("创意工坊角色卡同步等待维护态解除超时，30s 后重新排队重试")
-
-                    async def _retry_sync_after_delay():
-                        try:
-                            await asyncio.sleep(30)
-                            await _sync_characters_only()
-                        except Exception as retry_exc:
-                            logger.warning(f"创意工坊角色卡同步重试任务失败: {retry_exc}")
-
-                    _wr._ugc_sync_task = asyncio.create_task(_retry_sync_after_delay())
-                    return
-                if _wr._ugc_warmup_task is not None:
-                    try:
-                        await asyncio.wait_for(asyncio.shield(_wr._ugc_warmup_task), timeout=20)
-                    except asyncio.TimeoutError:
-                        logger.warning("等待 UGC 预热任务超时（20s），继续角色卡同步")
-                    except Exception as e:
-                        logger.debug(f"等待 UGC 预热任务时异常（不影响角色卡同步）: {e}")
-                try:
-                    sync_result = await sync_workshop_character_cards()
-                    if sync_result["added"] > 0:
-                        logger.info(f"✅ 创意工坊角色卡同步完成：新增 {sync_result['added']} 个，跳过 {sync_result['skipped']} 个")
-                    else:
-                        logger.info("创意工坊角色卡同步完成：无新增角色卡")
-                except Exception as e:
-                    logger.warning(f"创意工坊角色卡同步失败（不影响启动）: {e}")
-
-            _wr._ugc_warmup_task = asyncio.create_task(_warmup_only())
-            _wr._ugc_sync_task = asyncio.create_task(_sync_characters_only())
-
-        try:
-            from utils.token_tracker import TokenTracker, install_hooks
-
-            install_hooks()
-            TokenTracker.get_instance().start_periodic_save()
-            TokenTracker.get_instance().record_app_start()
-            logger.info("Token usage tracker initialized")
-        except Exception as e:
-            logger.warning(f"Token tracker initialization failed (non-critical): {e}")
-
-        logger.info("Startup 初始化完成，后台正在预加载音频模块... (reason=%s)", reason)
-
-        try:
-            from utils.language_utils import initialize_global_language
-
-            global_lang = initialize_global_language()
-            logger.info(f"全局语言初始化完成: {global_lang}")
-        except Exception as e:
-            logger.warning(f"全局语言初始化失败（不影响启动）: {e}")
-
-        current_root_state = _config_manager.load_root_state()
-        if should_write_root_mode_normal_after_startup(current_root_state):
+            bootstrap_local_cloudsave_environment(_config_manager)
+            import_result = None
             try:
-                set_root_mode(
-                    _config_manager,
-                    ROOT_MODE_NORMAL,
-                    current_root=str(_config_manager.app_docs_dir),
-                    last_known_good_root=str(_config_manager.app_docs_dir),
-                    last_successful_boot_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                import_result = await _run_cloudsave_manager_action(
+                    "import_if_needed",
+                    reason="main_server_startup",
+                    budget_seconds=10.0,
+                )
+                logger.info("Steam Auto-Cloud startup import: %s", import_result)
+            except CloudsaveDeadlineExceeded:
+                logger.warning(
+                    "Steam Auto-Cloud startup import exceeded 10.0s budget before applying runtime changes; continuing with local runtime state"
                 )
             except Exception as e:
-                logger.error("写入 main_server 启动成功标记失败，启动不会标记为成功: %s", e)
-                raise RuntimeError("main_server failed to persist ROOT_MODE_NORMAL state") from e
-        else:
-            logger.info(
-                "跳过 ROOT_MODE_NORMAL 写入，当前仍处于阻断态: %s",
-                current_root_state.get("mode") or ROOT_MODE_NORMAL,
-            )
+                logger.warning(f"Steam Auto-Cloud startup import failed: {e}")
 
-        _runtime_startup_init_completed = True
-        return True
+            await initialize_character_data()
+            await _sync_memory_server_after_startup_import(import_result)
+
+            logger.info("正在初始化 Steamworks...")
+            steamworks = initialize_steamworks()
+
+            from main_routers.shared_state import set_steamworks
+
+            set_steamworks(steamworks)
+            get_default_steam_info()
+
+            _preload_task = asyncio.create_task(_background_preload())
+            try:
+                agent_event_bridge = MainServerAgentBridge(on_agent_event=_handle_agent_event)
+                await agent_event_bridge.start()
+                set_main_bridge(agent_event_bridge)
+            except Exception as e:
+                logger.warning(f"Agent event bridge startup failed: {e}")
+
+            await _init_and_mount_workshop()
+
+            if steamworks:
+                _wr = importlib.import_module("main_routers.workshop_router")
+
+                async def _warmup_only():
+                    try:
+                        await warmup_ugc_cache()
+                    except Exception as e:
+                        logger.warning(f"UGC 缓存预热失败: {e}")
+
+                async def _sync_characters_only():
+                    max_fence_retries = 15
+                    retry_interval_seconds = 2
+                    for attempt in range(1, max_fence_retries + 1):
+                        if not is_write_fence_active(_config_manager):
+                            break
+                        logger.info(
+                            "创意工坊角色卡同步检测到维护态写围栏，等待解除后重试 (%s/%s)",
+                            attempt,
+                            max_fence_retries,
+                        )
+                        await asyncio.sleep(retry_interval_seconds)
+                    else:
+                        logger.info("创意工坊角色卡同步等待维护态解除超时，30s 后重新排队重试")
+
+                        async def _retry_sync_after_delay():
+                            try:
+                                await asyncio.sleep(30)
+                                await _sync_characters_only()
+                            except Exception as retry_exc:
+                                logger.warning(f"创意工坊角色卡同步重试任务失败: {retry_exc}")
+
+                        _wr._ugc_sync_task = asyncio.create_task(_retry_sync_after_delay())
+                        return
+                    if _wr._ugc_warmup_task is not None:
+                        try:
+                            await asyncio.wait_for(asyncio.shield(_wr._ugc_warmup_task), timeout=20)
+                        except asyncio.TimeoutError:
+                            logger.warning("等待 UGC 预热任务超时（20s），继续角色卡同步")
+                        except Exception as e:
+                            logger.debug(f"等待 UGC 预热任务时异常（不影响角色卡同步）: {e}")
+                    try:
+                        sync_result = await sync_workshop_character_cards()
+                        if sync_result["added"] > 0:
+                            logger.info(f"✅ 创意工坊角色卡同步完成：新增 {sync_result['added']} 个，跳过 {sync_result['skipped']} 个")
+                        else:
+                            logger.info("创意工坊角色卡同步完成：无新增角色卡")
+                    except Exception as e:
+                        logger.warning(f"创意工坊角色卡同步失败（不影响启动）: {e}")
+
+                _wr._ugc_warmup_task = asyncio.create_task(_warmup_only())
+                _wr._ugc_sync_task = asyncio.create_task(_sync_characters_only())
+
+            try:
+                from utils.token_tracker import TokenTracker, install_hooks
+
+                install_hooks()
+                TokenTracker.get_instance().start_periodic_save()
+                TokenTracker.get_instance().record_app_start()
+                logger.info("Token usage tracker initialized")
+            except Exception as e:
+                logger.warning(f"Token tracker initialization failed (non-critical): {e}")
+
+            logger.info("Startup 初始化完成，后台正在预加载音频模块... (reason=%s)", reason)
+
+            try:
+                from utils.language_utils import initialize_global_language
+
+                global_lang = initialize_global_language()
+                logger.info(f"全局语言初始化完成: {global_lang}")
+            except Exception as e:
+                logger.warning(f"全局语言初始化失败（不影响启动）: {e}")
+
+            current_root_state = _config_manager.load_root_state()
+            if should_write_root_mode_normal_after_startup(current_root_state):
+                try:
+                    set_root_mode(
+                        _config_manager,
+                        ROOT_MODE_NORMAL,
+                        current_root=str(_config_manager.app_docs_dir),
+                        last_known_good_root=str(_config_manager.app_docs_dir),
+                        last_successful_boot_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                    )
+                except Exception as e:
+                    logger.error("写入 main_server 启动成功标记失败，启动不会标记为成功: %s", e)
+                    raise RuntimeError("main_server failed to persist ROOT_MODE_NORMAL state") from e
+            else:
+                logger.info(
+                    "跳过 ROOT_MODE_NORMAL 写入，当前仍处于阻断态: %s",
+                    current_root_state.get("mode") or ROOT_MODE_NORMAL,
+                )
+
+            _runtime_startup_init_completed = True
+            _disable_main_storage_limited_mode()
+            return True
+        except Exception:
+            _runtime_startup_init_completed = False
+            if _main_runtime_limited_mode_enabled:
+                _enable_main_storage_limited_mode("runtime_initialization_failed")
+            await _rollback_partial_main_runtime_startup()
+            raise
 
 
 async def release_storage_startup_barrier(*, reason: str = "storage_selection_continue_current_session") -> dict[str, Any]:
     await _request_memory_server_continue_startup(reason)
-    initialized = await _ensure_main_server_runtime_initialized(reason=reason)
+    try:
+        initialized = await _ensure_main_server_runtime_initialized(reason=reason)
+    except Exception:
+        _enable_main_storage_limited_mode("runtime_initialization_failed")
+        try:
+            await _request_memory_server_block_startup(f"{reason}:main_server_init_failed")
+        except Exception as revert_exc:
+            logger.warning(
+                "main_server 初始化失败后恢复 memory_server limited-mode 失败: %s",
+                revert_exc,
+                exc_info=True,
+            )
+        raise
+    _disable_main_storage_limited_mode()
     return {
         "ok": True,
         "initialized": bool(initialized),
@@ -1467,6 +1662,7 @@ async def on_startup():
 
         blocking_reason = get_storage_startup_blocking_reason(_config_manager)
         if blocking_reason:
+            _enable_main_storage_limited_mode(blocking_reason)
             logger.info(
                 "检测到存储启动阻断态，main_server 先保持 limited-mode，等待网页端放行: %s",
                 blocking_reason,

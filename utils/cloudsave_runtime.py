@@ -619,6 +619,11 @@ def _runtime_root_has_user_content(root: Path, *, config_manager=None) -> bool:
     return False
 
 
+def runtime_root_has_user_content(root: Path, *, config_manager=None) -> bool:
+    """Public wrapper for detecting user-owned runtime data in a storage root."""
+    return _runtime_root_has_user_content(root, config_manager=config_manager)
+
+
 def _is_ignorable_runtime_entry(path: Path) -> bool:
     name = path.name
     if name == ".gitkeep":

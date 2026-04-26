@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from utils.cloudsave_runtime import ROOT_MODE_DEFERRED_INIT, _runtime_root_has_user_content
+from utils.cloudsave_runtime import ROOT_MODE_DEFERRED_INIT, runtime_root_has_user_content
 from utils.storage_policy import compute_anchor_root, should_require_storage_selection
 from utils.storage_migration import (
     is_retained_root_cleanup_available,
@@ -38,7 +38,7 @@ def _collect_legacy_sources(config_manager, *, current_root: Path, anchor_root: 
         normalized = _normalize_path(path)
         if normalized in seen:
             continue
-        if not _runtime_root_has_user_content(path, config_manager=config_manager):
+        if not runtime_root_has_user_content(path, config_manager=config_manager):
             continue
         seen.add(normalized)
         legacy_sources.append(normalized)
@@ -71,23 +71,36 @@ def derive_storage_blocking_reason(
 
 def _build_migration_payload(migration_checkpoint: dict[str, Any] | None, last_migration_result: str) -> dict[str, Any]:
     checkpoint = migration_checkpoint if isinstance(migration_checkpoint, dict) else {}
+    error_message = str(checkpoint.get("error_message") or "").strip()
+
+    def _opt_normalize(value: Any) -> str:
+        raw_value = str(value or "").strip()
+        return _normalize_path(raw_value) if raw_value else ""
+
     return {
         "status": str(checkpoint.get("status") or "").strip(),
-        "source_root": _normalize_path(checkpoint.get("source_root") or "") if checkpoint.get("source_root") else "",
-        "target_root": _normalize_path(checkpoint.get("target_root") or "") if checkpoint.get("target_root") else "",
+        "source_root": _opt_normalize(checkpoint.get("source_root")),
+        "target_root": _opt_normalize(checkpoint.get("target_root")),
         "selection_source": str(checkpoint.get("selection_source") or "").strip(),
         "requested_at": str(checkpoint.get("requested_at") or "").strip(),
         "started_at": str(checkpoint.get("started_at") or "").strip(),
         "updated_at": str(checkpoint.get("updated_at") or "").strip(),
         "committed_at": str(checkpoint.get("committed_at") or "").strip(),
         "completed_at": str(checkpoint.get("completed_at") or "").strip(),
-        "backup_root": _normalize_path(checkpoint.get("backup_root") or "") if checkpoint.get("backup_root") else "",
-        "retained_source_root": _normalize_path(checkpoint.get("retained_source_root") or "") if checkpoint.get("retained_source_root") else "",
+        "backup_root": _opt_normalize(checkpoint.get("backup_root")),
+        "retained_source_root": _opt_normalize(checkpoint.get("retained_source_root")),
         "retained_source_mode": str(checkpoint.get("retained_source_mode") or "").strip(),
         "error_code": str(checkpoint.get("error_code") or "").strip(),
-        "error_message": str(checkpoint.get("error_message") or "").strip(),
-        "last_error": str(checkpoint.get("error_message") or "").strip() or _extract_last_error(last_migration_result),
+        "error_message": error_message,
+        "last_error": error_message or _extract_last_error(last_migration_result),
     }
+
+
+def _get_configured_anchor_root(config_manager, *, current_root: Path) -> Path:
+    anchor_root = getattr(config_manager, "anchor_root", None)
+    if anchor_root:
+        return Path(anchor_root).expanduser().resolve(strict=False)
+    return compute_anchor_root(config_manager, current_root=current_root)
 
 
 def _derive_legacy_cleanup_pending(
@@ -153,7 +166,7 @@ def build_storage_location_bootstrap_payload(config_manager) -> dict[str, Any]:
     display_current_root = Path(
         getattr(config_manager, "reported_current_root", current_root)
     ).expanduser().resolve(strict=False)
-    anchor_root = compute_anchor_root(config_manager, current_root=current_root)
+    anchor_root = _get_configured_anchor_root(config_manager, current_root=current_root)
     root_state = config_manager.load_root_state()
     root_mode = str(root_state.get("mode") or "")
     last_migration_result = str(root_state.get("last_migration_result") or "")

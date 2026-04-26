@@ -727,7 +727,9 @@ class ConfigManager:
             state = {}
 
         state["version"] = self.ROOT_STATE_VERSION
-        state["mode"] = "deferred_init"
+        from utils.cloudsave_runtime import ROOT_MODE_DEFERRED_INIT
+
+        state["mode"] = ROOT_MODE_DEFERRED_INIT
         state["current_root"] = unavailable_root
         state["last_known_good_root"] = unavailable_root
         if not str(state.get("last_migration_result") or "").strip():

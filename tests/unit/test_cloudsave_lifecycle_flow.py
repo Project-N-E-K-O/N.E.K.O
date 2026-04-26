@@ -551,6 +551,47 @@ async def test_main_server_startup_stays_limited_when_storage_barrier_is_blockin
 
 
 @pytest.mark.unit
+def test_main_server_limited_mode_middleware_blocks_runtime_routes():
+    import main_server
+
+    with patch.object(main_server, "_IS_MAIN_PROCESS", False), \
+         patch.object(main_server, "_runtime_startup_init_completed", False), \
+         patch.object(main_server, "_main_runtime_limited_mode_enabled", True), \
+         patch.object(main_server, "_main_runtime_limited_mode_reason", "selection_required"):
+        with TestClient(main_server.app) as client:
+            blocked_response = client.get("/api/config/page_config")
+            health_response = client.get("/health")
+
+    assert blocked_response.status_code == 409
+    payload = blocked_response.json()
+    assert payload["error_code"] == "storage_startup_blocked"
+    assert payload["blocking_reason"] == "selection_required"
+    assert payload["limited_mode"] is True
+    assert health_response.status_code == 200
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_release_storage_startup_barrier_restores_memory_limited_mode_when_main_init_fails():
+    import main_server
+
+    init_error = RuntimeError("main init failed")
+    with patch.object(main_server, "_request_memory_server_continue_startup", AsyncMock(return_value=None)) as mock_continue, \
+         patch.object(main_server, "_ensure_main_server_runtime_initialized", AsyncMock(side_effect=init_error)) as mock_ensure, \
+         patch.object(main_server, "_request_memory_server_block_startup", AsyncMock(return_value=None)) as mock_block, \
+         patch.object(main_server, "_main_runtime_limited_mode_enabled", False), \
+         patch.object(main_server, "_main_runtime_limited_mode_reason", ""):
+        with pytest.raises(RuntimeError, match="main init failed"):
+            await main_server.release_storage_startup_barrier(reason="unit_test")
+        assert main_server._main_runtime_limited_mode_enabled is True
+        assert main_server._main_runtime_limited_mode_reason == "runtime_initialization_failed"
+
+    mock_continue.assert_awaited_once_with("unit_test")
+    mock_ensure.assert_awaited_once_with(reason="unit_test")
+    mock_block.assert_awaited_once_with("unit_test:main_server_init_failed")
+
+
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_memory_server_startup_stays_limited_when_storage_barrier_is_blocking():
     import memory_server
@@ -611,6 +652,26 @@ def test_memory_server_limited_mode_middleware_blocks_until_runtime_init_complet
     assert payload["error_code"] == "storage_startup_blocked"
     assert payload["blocking_reason"] == "runtime_initializing"
     assert payload["limited_mode"] is True
+
+
+@pytest.mark.unit
+def test_memory_server_block_startup_endpoint_restores_limited_mode():
+    import memory_server
+
+    with patch.object(memory_server, "_memory_runtime_init_completed", True):
+        with TestClient(memory_server.app) as client:
+            response = client.post(
+                "/internal/storage/startup/block",
+                json={"reason": "main_failed"},
+            )
+            blocked_response = client.get("/get_settings/小满")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["limited_mode"] is True
+    assert payload["reason"] == "main_failed"
+    assert blocked_response.status_code == 409
 
 
 @pytest.mark.unit

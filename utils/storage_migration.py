@@ -208,9 +208,9 @@ def _iter_existing_runtime_entries(root: Path) -> list[str]:
 
 def _root_has_user_content(root: Path, *, config_manager) -> bool:
     try:
-        from utils.cloudsave_runtime import _runtime_root_has_user_content
+        from utils.cloudsave_runtime import runtime_root_has_user_content
 
-        return bool(_runtime_root_has_user_content(root, config_manager=config_manager))
+        return bool(runtime_root_has_user_content(root, config_manager=config_manager))
     except Exception:
         if not root.exists() or not root.is_dir():
             return False

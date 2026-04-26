@@ -116,6 +116,7 @@ def _derive_system_lifecycle_state(storage_bootstrap: dict[str, Any]) -> str:
         bool(storage_bootstrap.get("selection_required"))
         or bool(storage_bootstrap.get("migration_pending"))
         or bool(storage_bootstrap.get("recovery_required"))
+        or bool(str(storage_bootstrap.get("blocking_reason") or "").strip())
     ):
         return "migration_required"
 

@@ -106,6 +106,19 @@ def test_storage_location_bootstrap_payload_exposes_stage2_web_fields(tmp_path):
 
 
 @pytest.mark.unit
+def test_storage_location_bootstrap_payload_uses_configured_anchor_root(tmp_path):
+    config_manager = _DummyConfigManager(tmp_path)
+    config_manager.anchor_root = tmp_path / "canonical-anchor" / "N.E.K.O"
+    config_manager._get_standard_data_directory_candidates = lambda: [tmp_path / "wrong-anchor-base"]
+
+    payload = build_storage_location_bootstrap_payload(config_manager)
+
+    assert payload["recommended_root"] == str(config_manager.anchor_root.resolve())
+    assert payload["anchor_root"] == str(config_manager.anchor_root.resolve())
+    assert payload["cloudsave_root"] == str((config_manager.anchor_root / "cloudsave").resolve())
+
+
+@pytest.mark.unit
 def test_storage_location_bootstrap_payload_uses_storage_policy_when_dev_override_disabled(tmp_path, monkeypatch):
     config_manager = _DummyConfigManager(tmp_path)
     save_storage_policy(

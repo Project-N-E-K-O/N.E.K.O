@@ -256,7 +256,10 @@ def test_storage_location_existing_target_content_requires_confirmation_before_r
     (target_root / "config" / "characters.json").write_text('{"existing": true}', encoding="utf-8")
     shutdown_calls = {"count": 0}
 
-    with _build_client(config_manager, request_app_shutdown=lambda: shutdown_calls.__setitem__("count", shutdown_calls["count"] + 1)) as client:
+    def request_app_shutdown():
+        shutdown_calls["count"] += 1
+
+    with _build_client(config_manager, request_app_shutdown=request_app_shutdown) as client:
         select_response = client.post(
             "/api/storage/location/select",
             json={
