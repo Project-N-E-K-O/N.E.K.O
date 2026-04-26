@@ -214,14 +214,22 @@ def test_service_uses_profile_onnx_layout():
     )
 
 
-def _populate_complete_profile(model_dir, profile_id="local-text-retrieval-v1"):
+def _populate_complete_profile(
+    model_dir, profile_id="local-text-retrieval-v1", *, variants=("fp32", "int8"),
+):
     """Create the minimum file set _profile_is_complete accepts (tokenizer
-    + one model variant + its onnx_data sidecar)."""
+    + one model variant + its onnx_data sidecar). ``variants`` controls
+    which ONNX variant files get written so callers can simulate
+    half-bundled / quantization-mismatched profiles."""
     profile = model_dir / profile_id
     (profile / "onnx").mkdir(parents=True)
     (profile / "tokenizer.json").write_bytes(b"{}")
-    (profile / "onnx" / "model.onnx").write_bytes(b"x")
-    (profile / "onnx" / "model.onnx_data").write_bytes(b"x")
+    if "fp32" in variants:
+        (profile / "onnx" / "model.onnx").write_bytes(b"x")
+        (profile / "onnx" / "model.onnx_data").write_bytes(b"x")
+    if "int8" in variants:
+        (profile / "onnx" / "model_quantized.onnx").write_bytes(b"x")
+        (profile / "onnx" / "model_quantized.onnx_data").write_bytes(b"x")
     return profile
 
 
@@ -278,6 +286,36 @@ def test_select_model_dir_skips_incomplete_app_data_for_bundled(tmp_path, monkey
     assert (
         _select_model_dir(str(app_model_dir), "local-text-retrieval-v1")
         == str(bundled_model_dir)
+    )
+
+
+def test_select_model_dir_skips_app_data_missing_runtime_variant(tmp_path, monkeypatch):
+    """If app-data only has the fp32 variant but the runtime resolved to
+    int8, _select_model_dir must fall through to a bundled profile that
+    actually has int8 — otherwise _load_session_blocking would just
+    sticky-disable vectors looking for model_quantized.onnx in app-data."""
+    app_model_dir = tmp_path / "app" / "embedding_models"
+    bundled_model_dir = tmp_path / "bundle" / "data" / "embedding_models"
+
+    _populate_complete_profile(app_model_dir, variants=("fp32",))
+    _populate_complete_profile(bundled_model_dir, variants=("fp32", "int8"))
+
+    from memory import embeddings as embeddings_module
+
+    monkeypatch.setattr(
+        embeddings_module,
+        "_bundled_model_dirs",
+        lambda: [str(bundled_model_dir)],
+    )
+    assert (
+        _select_model_dir(str(app_model_dir), "local-text-retrieval-v1", "int8")
+        == str(bundled_model_dir)
+    )
+    # Without quantization (caller doesn't know yet), the existing-variant
+    # behavior is preserved — app-data is still preferred.
+    assert (
+        _select_model_dir(str(app_model_dir), "local-text-retrieval-v1")
+        == str(app_model_dir)
     )
 
 

@@ -256,24 +256,39 @@ def _is_nonempty_file(path: str) -> bool:
         return False
 
 
-def _profile_is_complete(model_dir: str, profile_id: str) -> bool:
+def _profile_is_complete(
+    model_dir: str, profile_id: str, quantization: str | None = None,
+) -> bool:
     """A profile dir is usable only if it has a non-empty tokenizer plus
-    at least one full (model + onnx_data sidecar) variant the runtime can
+    a full (model + onnx_data sidecar) variant the runtime can actually
     load.
+
+    ``quantization`` lets callers narrow the variant requirement to the
+    one ``_load_session_blocking`` will actually open. Without it, an
+    app-data profile that only contains fp32 files would satisfy this
+    check even when the runtime resolved to int8 — selecting that dir
+    would then sticky-disable vectors at load even if a complete int8
+    bundle is sitting on disk. Pass ``None`` only when the runtime
+    quantization isn't decided yet (e.g. early bootstrap smoke tests).
 
     Why stricter than ``_profile_exists``: a half-downloaded or partially
     deleted app-data profile would otherwise satisfy the existence check,
     short-circuit the bundled fallback, and then trip
     ``NO_MODEL_FILE`` at session load — leaving the user with vectors
-    sticky-disabled even though the bundle on disk is fine. Treat
-    incomplete dirs as broken so we keep walking the candidate list.
+    sticky-disabled even though the bundle on disk is fine.
     """
     profile_dir = os.path.join(model_dir, profile_id)
     if not os.path.isdir(profile_dir):
         return False
     if not _is_nonempty_file(os.path.join(profile_dir, "tokenizer.json")):
         return False
-    for stem in ("model.onnx", "model_quantized.onnx"):
+    if quantization == "int8":
+        stems: tuple[str, ...] = ("model_quantized.onnx",)
+    elif quantization == "fp32":
+        stems = ("model.onnx",)
+    else:
+        stems = ("model.onnx", "model_quantized.onnx")
+    for stem in stems:
         model_path = os.path.join(profile_dir, "onnx", stem)
         sidecar_path = model_path + "_data"
         if _is_nonempty_file(model_path) and _is_nonempty_file(sidecar_path):
@@ -307,18 +322,25 @@ def _bundled_model_dirs() -> list[str]:
     return model_dirs
 
 
-def _select_model_dir(app_docs_model_dir: str, profile_id: str) -> str:
+def _select_model_dir(
+    app_docs_model_dir: str,
+    profile_id: str,
+    quantization: str | None = None,
+) -> str:
     """Prefer user-managed app-data models, otherwise use bundled assets.
 
-    A half-downloaded app-data profile is treated as broken (see
-    ``_profile_is_complete``) and we fall back to bundled — otherwise the
-    presence-only check would prefer the broken dir and sticky-disable
-    vectors at load even though the bundle is fine.
+    A half-downloaded app-data profile, or one that only has the
+    *other* quantization variant from what the runtime resolved to, is
+    treated as broken (see ``_profile_is_complete``) and we fall back to
+    bundled — otherwise the presence-only check would prefer the broken
+    dir and sticky-disable vectors at load even though the bundle is
+    fine. Callers should pass the resolved ``quantization`` so the
+    variant check matches what ``_load_session_blocking`` will open.
     """
-    if _profile_is_complete(app_docs_model_dir, profile_id):
+    if _profile_is_complete(app_docs_model_dir, profile_id, quantization):
         return app_docs_model_dir
     for bundled_dir in _bundled_model_dirs():
-        if _profile_is_complete(bundled_dir, profile_id):
+        if _profile_is_complete(bundled_dir, profile_id, quantization):
             return bundled_dir
     return app_docs_model_dir
 
@@ -714,15 +736,27 @@ def _build_default_service() -> EmbeddingService:
         VECTORS_MIN_RAM_GB = DEFAULT_VECTORS_MIN_RAM_GB
         VECTORS_MODEL_PROFILE_ID = DEFAULT_VECTORS_MODEL_PROFILE_ID
 
-    model_dir = _select_model_dir(app_docs_model_dir, VECTORS_MODEL_PROFILE_ID)
+    # Resolve quantization here so _select_model_dir can require the exact
+    # variant ``_load_session_blocking`` will open. Without this, an app-data
+    # profile that only contains the *other* variant would still satisfy the
+    # completeness check and short-circuit a complete bundled fallback. We
+    # pass the already-resolved value (and detected has_vnni) into the ctor
+    # so its own _resolve_quantization call is a no-op and doesn't double-log.
+    has_vnni = detect_avx_vnni()
+    resolved_quantization = _resolve_quantization(VECTORS_QUANTIZATION, has_vnni)
+
+    model_dir = _select_model_dir(
+        app_docs_model_dir, VECTORS_MODEL_PROFILE_ID, resolved_quantization,
+    )
 
     return EmbeddingService(
         model_dir=model_dir,
         enabled=VECTORS_ENABLED,
         embedding_dim_setting=VECTORS_EMBEDDING_DIM,
-        quantization_setting=VECTORS_QUANTIZATION,
+        quantization_setting=resolved_quantization,
         min_ram_gb=VECTORS_MIN_RAM_GB,
         profile_id=VECTORS_MODEL_PROFILE_ID,
+        has_vnni=has_vnni,
     )
 
 
