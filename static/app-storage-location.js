@@ -450,6 +450,7 @@
         maintenanceProgressLabel: null,
         maintenanceProgressValue: null,
         maintenanceProgressSteps: [],
+        lastMaintenanceProgressPayload: null,
         maintenancePollPromise: null,
         completionPollTimer: null,
         completionPollAttempts: 0,
@@ -1234,8 +1235,11 @@
         }
     }
 
-    function showRestartRequired(payload, fallbackTargetPath, selectionSource) {
-        if (!state.bootstrap || !state.previewPanel) return;
+    // 仅根据 preflight 填充预览面板的字段并显示预览面板，不切换 phase、
+    // 不修改 otherPanel 的可见性、不清空 selectionStatus。供 showRestartRequired
+    // 走完整流程，以及 rebuildModalForLocale 在快照恢复路径上单独使用。
+    function populateRestartPreview(payload, fallbackTargetPath, selectionSource) {
+        if (!state.bootstrap || !state.previewPanel) return null;
 
         var preflight = extractPreflightDetails(payload, fallbackTargetPath);
         state.pendingSelection.path = preflight.target_root || '';
@@ -1260,8 +1264,13 @@
             }
         }
         updateRestartPreviewPreflight(preflight);
-        state.otherPanel.hidden = true;
         state.previewPanel.hidden = false;
+        return preflight;
+    }
+
+    function showRestartRequired(payload, fallbackTargetPath, selectionSource) {
+        if (!populateRestartPreview(payload, fallbackTargetPath, selectionSource)) return;
+        state.otherPanel.hidden = true;
         setSelectionStatus('', false);
         setPhase('selection_required');
     }
@@ -1379,6 +1388,10 @@
     }
 
     function applyMaintenanceProgress(statusPayload) {
+        // 缓存最近一次驱动进度条渲染的 payload，供 rebuildModalForLocale 在
+        // 语言切换重建后立刻按当前 locale 重渲一次进度条，避免等下一次轮询。
+        state.lastMaintenanceProgressPayload = statusPayload || null;
+
         if (!state.maintenanceProgressBar || !state.maintenanceProgressFill) {
             return;
         }
@@ -2411,6 +2424,12 @@
             selectionStatusIsError: state.selectionStatus
                 ? state.selectionStatus.classList.contains('storage-location-note--error')
                 : false,
+            // 处于 maintenance 阶段时，下一次轮询可能要 ~900ms-1200ms 才到，
+            // 直接抓 DOM 文案先把视觉占住，避免重建瞬间退回构建期默认值。
+            maintenanceTitleText: state.maintenanceTitle ? state.maintenanceTitle.textContent : '',
+            maintenanceSubtitleText: state.maintenanceSubtitle ? state.maintenanceSubtitle.textContent : '',
+            maintenanceStatusText: state.maintenanceStatus ? state.maintenanceStatus.textContent : '',
+            lastMaintenanceProgressPayload: state.lastMaintenanceProgressPayload,
             pendingSelection: {
                 path: state.pendingSelection.path,
                 source: state.pendingSelection.source,
@@ -2497,7 +2516,8 @@
         }
 
         if (snapshot.pendingSelection.preflight && state.bootstrap && state.previewPanel) {
-            showRestartRequired(
+            // 用 populate-only 版本，避免它内部 setPhase 再被下面 setPhase(snapshot.phase) 盖掉。
+            populateRestartPreview(
                 snapshot.pendingSelection.preflight,
                 snapshot.pendingSelection.path,
                 snapshot.pendingSelection.source
@@ -2510,6 +2530,20 @@
 
         if (snapshot.selectionStatusText) {
             setSelectionStatus(snapshot.selectionStatusText, snapshot.selectionStatusIsError);
+        }
+
+        if (snapshot.phase === 'maintenance') {
+            // 先用快照的旧文案立刻填充（避免重建瞬间显示构建期默认值），下一次
+            // 轮询会用新 locale 覆盖这层临时文案。再立刻按缓存 payload 重渲一遍
+            // 进度条——这一步本身就走 translate()，所以进度条文案立刻就是新 locale 的了。
+            setMaintenanceCopy(
+                snapshot.maintenanceTitleText,
+                snapshot.maintenanceSubtitleText,
+                snapshot.maintenanceStatusText
+            );
+            if (snapshot.lastMaintenanceProgressPayload) {
+                applyMaintenanceProgress(snapshot.lastMaintenanceProgressPayload);
+            }
         }
 
         setPhase(snapshot.phase);
