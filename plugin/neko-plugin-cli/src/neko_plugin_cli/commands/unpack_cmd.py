@@ -7,12 +7,14 @@ import sys
 
 from ..core import unpack_package
 from ..paths import CliDefaults
+from ._completers import PACKAGE_FILE_COMPLETER
 from ._resolve import resolve_package_path
 
 
 def register(subparsers: argparse._SubParsersAction, *, defaults: CliDefaults) -> None:
     parser = subparsers.add_parser("unpack", help="Unpack a package archive")
-    parser.add_argument("package", help="Package file path or filename under target/")
+    pkg_arg = parser.add_argument("package", help="Package file path or filename under target/")
+    pkg_arg.complete = PACKAGE_FILE_COMPLETER  # type: ignore[attr-defined]
     parser.add_argument("--plugins-root", default=str(defaults.plugins_root), help="Destination root for extracted plugin directories")
     parser.add_argument("--profiles-root", default=str(defaults.profiles_root), help="Destination root for extracted package profiles")
     parser.add_argument("--on-conflict", choices=("rename", "fail"), default="rename", help="How to handle existing target directories")

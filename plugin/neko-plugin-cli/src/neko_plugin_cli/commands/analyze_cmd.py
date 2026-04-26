@@ -7,12 +7,14 @@ import sys
 
 from ..core import analyze_bundle_plugins
 from ..paths import CliDefaults
+from ._completers import PLUGIN_NAME_COMPLETER
 from ._resolve import resolve_plugin_dir_candidate
 
 
 def register(subparsers: argparse._SubParsersAction, *, defaults: CliDefaults) -> None:
     parser = subparsers.add_parser("analyze", help="Analyze bundle candidate plugins")
-    parser.add_argument("plugins", nargs="+", help="Plugin directory names or explicit paths")
+    plugins_arg = parser.add_argument("plugins", nargs="+", help="Plugin directory names or explicit paths")
+    plugins_arg.complete = PLUGIN_NAME_COMPLETER  # type: ignore[attr-defined]
     parser.add_argument("--current-sdk-version", help="Optional current SDK version to evaluate")
     parser.set_defaults(handler=handle, _defaults=defaults)
 

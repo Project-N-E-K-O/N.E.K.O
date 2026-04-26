@@ -8,12 +8,14 @@ from pathlib import Path
 
 from ..core import pack_bundle, pack_plugin
 from ..paths import CliDefaults
+from ._completers import PLUGIN_NAME_COMPLETER
 from ._resolve import resolve_plugin_dirs
 
 
 def register(subparsers: argparse._SubParsersAction, *, defaults: CliDefaults) -> None:
     parser = subparsers.add_parser("pack", help="Pack one plugin, multiple plugins, or all plugins")
-    parser.add_argument("plugins", nargs="*", help="Plugin directory names under plugin/plugins")
+    plugins_arg = parser.add_argument("plugins", nargs="*", help="Plugin directory names under plugin/plugins")
+    plugins_arg.complete = PLUGIN_NAME_COMPLETER  # type: ignore[attr-defined]
     parser.add_argument("--all", action="store_true", help="Pack all plugins under plugin/plugins")
     parser.add_argument("--out", help="Output file path for a single packed plugin")
     parser.add_argument("--target-dir", default=str(defaults.target_dir), help="Output directory for packed plugin archives")

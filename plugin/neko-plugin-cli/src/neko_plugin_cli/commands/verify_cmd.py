@@ -7,12 +7,14 @@ import sys
 
 from ..core import inspect_package
 from ..paths import CliDefaults
+from ._completers import PACKAGE_FILE_COMPLETER
 from ._resolve import resolve_package_path
 
 
 def register(subparsers: argparse._SubParsersAction, *, defaults: CliDefaults) -> None:
     parser = subparsers.add_parser("verify", help="Verify package payload hash")
-    parser.add_argument("package", help="Package file path or filename under target/")
+    pkg_arg = parser.add_argument("package", help="Package file path or filename under target/")
+    pkg_arg.complete = PACKAGE_FILE_COMPLETER  # type: ignore[attr-defined]
     parser.set_defaults(handler=handle, _defaults=defaults)
 
 
