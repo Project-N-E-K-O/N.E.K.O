@@ -658,13 +658,16 @@ def test_memory_server_limited_mode_middleware_blocks_until_runtime_init_complet
 def test_memory_server_block_startup_endpoint_restores_limited_mode():
     import memory_server
 
-    with patch.object(memory_server, "_memory_runtime_init_completed", True):
+    with patch.object(memory_server, "_memory_runtime_init_completed", True), \
+         patch.object(memory_server, "_memory_storage_blocked_after_init", False), \
+         patch.object(memory_server, "get_storage_startup_blocking_reason", Mock(return_value="")):
         with TestClient(memory_server.app) as client:
             response = client.post(
                 "/internal/storage/startup/block",
                 json={"reason": "main_failed"},
             )
             blocked_response = client.get("/get_settings/小满")
+            runtime_completed_during_block = memory_server._memory_runtime_init_completed
 
     assert response.status_code == 200
     payload = response.json()
@@ -672,6 +675,27 @@ def test_memory_server_block_startup_endpoint_restores_limited_mode():
     assert payload["limited_mode"] is True
     assert payload["reason"] == "main_failed"
     assert blocked_response.status_code == 409
+    assert blocked_response.json()["blocking_reason"] == "storage_startup_blocked_after_init"
+    assert runtime_completed_during_block is True
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_main_server_cancel_workshop_background_tasks_uses_public_api():
+    import main_server
+
+    calls = []
+    workshop_module = SimpleNamespace(
+        cancel_background_tasks=AsyncMock(side_effect=lambda *, timeout: calls.append(timeout)),
+        _ugc_warmup_task=None,
+        _ugc_sync_task=None,
+    )
+
+    with patch.object(main_server.importlib, "import_module", return_value=workshop_module):
+        await main_server._cancel_workshop_background_tasks(timeout=2.5)
+
+    assert calls == [2.5]
+    workshop_module.cancel_background_tasks.assert_awaited_once_with(timeout=2.5)
 
 
 @pytest.mark.unit

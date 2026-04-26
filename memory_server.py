@@ -97,14 +97,15 @@ _STORAGE_LIMITED_MODE_ALLOWED_PATHS = {
 
 @app.middleware("http")
 async def storage_limited_mode_guard(request: Request, call_next):
-    if _memory_runtime_init_completed:
+    if _memory_runtime_init_completed and not _memory_storage_blocked_after_init:
         return await call_next(request)
 
     if request.url.path in _STORAGE_LIMITED_MODE_ALLOWED_PATHS:
         return await call_next(request)
 
     blocking_reason = get_storage_startup_blocking_reason(_config_manager)
-    if blocking_reason:
+    if blocking_reason or _memory_storage_blocked_after_init:
+        blocking_reason = blocking_reason or "storage_startup_blocked_after_init"
         logger.info(
             "[Memory] limited-mode blocks request path=%s reason=%s",
             request.url.path,
@@ -202,6 +203,7 @@ _reload_lock = asyncio.Lock()
 _deferred_time_managers: list[TimeIndexedMemory] = []
 _memory_runtime_init_lock = asyncio.Lock()
 _memory_runtime_init_completed = False
+_memory_storage_blocked_after_init = False
 _memory_background_tasks_started = False
 
 
@@ -1760,6 +1762,7 @@ async def startup_event_handler():
 
 @app.post("/internal/storage/startup/continue")
 async def continue_storage_startup(payload: ContinueStorageStartupRequest | None = None):
+    global _memory_storage_blocked_after_init
     blocking_reason = get_storage_startup_blocking_reason(_config_manager)
     if blocking_reason:
         return JSONResponse(
@@ -1776,6 +1779,7 @@ async def continue_storage_startup(payload: ContinueStorageStartupRequest | None
         initialized = await ensure_memory_server_runtime_initialized(
             reason=str(getattr(payload, "reason", "") or "storage_selection_continue_current_session"),
         )
+        _memory_storage_blocked_after_init = False
         return {
             "ok": True,
             "initialized": bool(initialized),
@@ -1793,9 +1797,9 @@ async def continue_storage_startup(payload: ContinueStorageStartupRequest | None
 
 @app.post("/internal/storage/startup/block")
 async def block_storage_startup(payload: ContinueStorageStartupRequest | None = None):
-    global _memory_runtime_init_completed
+    global _memory_storage_blocked_after_init
     reason = str(getattr(payload, "reason", "") or "").strip()
-    _memory_runtime_init_completed = False
+    _memory_storage_blocked_after_init = True
     logger.warning("[Memory] limited-mode restored after main_server startup failure: %s", reason or "-")
     return {
         "ok": True,

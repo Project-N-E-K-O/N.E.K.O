@@ -1391,18 +1391,27 @@ async def _cancel_task_if_running(task: asyncio.Task | None, *, name: str, timeo
         logger.debug("%s task cleanup failed during startup rollback: %s", name, exc, exc_info=True)
 
 
-async def _cancel_workshop_background_tasks_for_startup_rollback() -> None:
+async def _cancel_workshop_background_tasks(*, timeout: float) -> None:
     try:
         _wr = importlib.import_module("main_routers.workshop_router")
     except Exception as exc:
-        logger.debug("workshop task cleanup skipped during startup rollback: %s", exc, exc_info=True)
+        logger.debug("workshop task cleanup skipped: %s", exc, exc_info=True)
+        return
+
+    cancel_background_tasks = getattr(_wr, "cancel_background_tasks", None)
+    if callable(cancel_background_tasks):
+        await cancel_background_tasks(timeout=timeout)
         return
 
     for task_attr in ("_ugc_warmup_task", "_ugc_sync_task"):
         task = getattr(_wr, task_attr, None)
-        await _cancel_task_if_running(task, name=f"workshop {task_attr}", timeout=1.0)
+        await _cancel_task_if_running(task, name=f"workshop {task_attr}", timeout=timeout)
         if getattr(_wr, task_attr, None) is task:
             setattr(_wr, task_attr, None)
+
+
+async def _cancel_workshop_background_tasks_for_startup_rollback() -> None:
+    await _cancel_workshop_background_tasks(timeout=1.0)
 
 
 async def _rollback_partial_main_runtime_startup() -> None:
@@ -1967,23 +1976,7 @@ async def shutdown_server_async():
         logger.info("正在关闭服务器...")
 
         # 取消后台创意工坊任务，避免残留协程
-        try:
-            _wr = importlib.import_module("main_routers.workshop_router")
-            _SHUTDOWN_TASK_TIMEOUT = 5  # 等待后台任务结束的超时秒数
-            for task_attr in ('_ugc_warmup_task', '_ugc_sync_task'):
-                task = getattr(_wr, task_attr, None)
-                if task and not task.done():
-                    task.cancel()
-                    try:
-                        await asyncio.wait_for(task, timeout=_SHUTDOWN_TASK_TIMEOUT)
-                    except asyncio.TimeoutError:
-                        logger.warning(f"后台任务 {task_attr} 在 {_SHUTDOWN_TASK_TIMEOUT}s 内未结束，跳过等待")
-                    except asyncio.CancelledError:
-                        logger.debug(f"后台任务 {task_attr} 已取消")
-                    except Exception as e:
-                        logger.debug(f"后台任务 {task_attr} 取消时异常: {e}")
-        except Exception as e:
-            logger.debug(f"取消创意工坊后台任务时出错: {e}")
+        await _cancel_workshop_background_tasks(timeout=5.0)
         # HEAD: memory_server shutdown signal moved into on_shutdown via
         # _request_memory_server_shutdown() to share internal_http_client pool
 

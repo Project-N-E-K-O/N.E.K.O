@@ -85,11 +85,11 @@ class StorageLocationSelectionRequest(BaseModel):
 
 
 class StorageLocationCleanupRequest(BaseModel):
-    retained_root: str = ""
+    retained_root: str = Field(default="", min_length=0, max_length=4096)
 
 
 class StorageLocationDirectoryPickerRequest(BaseModel):
-    start_path: str = ""
+    start_path: str = Field(default="", min_length=0, max_length=4096)
 
 
 class _DirectoryPickerCancelled(RuntimeError):
@@ -1009,6 +1009,12 @@ async def _release_storage_startup_barrier_if_needed(*, reason: str) -> None:
         await result
 
 
+async def _request_app_shutdown(request_app_shutdown) -> None:
+    result = request_app_shutdown()
+    if inspect.isawaitable(result):
+        await result
+
+
 @router.get("/bootstrap")
 async def get_storage_location_bootstrap(response: Response):
     _set_no_cache_headers(response)
@@ -1484,7 +1490,7 @@ async def _post_storage_location_restart_locked(
                 last_migration_source=str(normalized_selected_root),
                 last_migration_result=f"restart_rebind:{normalized_selected_root}",
             )
-            request_app_shutdown()
+            await _request_app_shutdown(request_app_shutdown)
         except Exception as exc:
             try:
                 _restore_storage_mutation_state(config_manager, state_snapshot, anchor_root=anchor_root)
@@ -1547,7 +1553,7 @@ async def _post_storage_location_restart_locked(
             last_migration_source=str(current_root),
             last_migration_result=f"restart_pending:{normalized_selected_root}",
         )
-        request_app_shutdown()
+        await _request_app_shutdown(request_app_shutdown)
     except Exception as exc:
         delete_storage_migration(config_manager, anchor_root=anchor_root)
         try:

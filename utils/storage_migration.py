@@ -361,12 +361,18 @@ def run_pending_storage_migration(
 
     def _finish_failure(error_code: str, error_message: str) -> dict[str, Any]:
         nonlocal payload, policy_payload
+        raw_payload_source_root = str(payload.get("source_root") or "").strip()
+        if source_root is not None:
+            recovery_source_root = str(source_root)
+        else:
+            fallback_root = str(getattr(config_manager, "app_docs_dir", "") or "").strip()
+            recovery_source_root = raw_payload_source_root or fallback_root or str(normalized_anchor_root)
         payload = _persist_migration_payload(
             config_manager,
             payload,
             anchor_root=normalized_anchor_root,
             status=STORAGE_MIGRATION_STATUS_FAILED,
-            backup_root=str(source_root) if source_root else "",
+            backup_root=recovery_source_root,
             error_code=error_code,
             error_message=error_message,
             failed_at=_utc_now_iso(),
@@ -389,11 +395,11 @@ def run_pending_storage_migration(
             set_root_mode(
                 config_manager,
                 ROOT_MODE_DEFERRED_INIT,
-                current_root=str(source_root) if source_root else None,
-                last_known_good_root=str(source_root) if source_root else None,
-                last_migration_source=str(source_root) if source_root else None,
+                current_root=recovery_source_root,
+                last_known_good_root=recovery_source_root,
+                last_migration_source=recovery_source_root,
                 last_migration_result=f"failed:{error_code}",
-                last_migration_backup=str(source_root) if source_root else None,
+                last_migration_backup=recovery_source_root,
                 legacy_cleanup_pending=False,
             )
         except Exception as root_state_exc:
@@ -522,15 +528,7 @@ def run_pending_storage_migration(
         except Exception as exc:
             logger.warning("Failed to persist successful storage migration root_state: %s", exc)
 
-        payload = _persist_migration_payload(
-            config_manager,
-            payload,
-            anchor_root=normalized_anchor_root,
-            status=STORAGE_MIGRATION_STATUS_RETAINING_SOURCE,
-            backup_root=str(source_root),
-            retained_source_root=str(source_root),
-            retained_source_mode="manual_retention",
-        )
+        completed_at = _utc_now_iso()
         payload = _persist_migration_payload(
             config_manager,
             payload,
@@ -541,8 +539,8 @@ def run_pending_storage_migration(
             retained_source_mode="manual_retention",
             error_code="",
             error_message="",
-            committed_at=_utc_now_iso(),
-            completed_at=_utc_now_iso(),
+            committed_at=completed_at,
+            completed_at=completed_at,
         )
         return {
             "attempted": True,

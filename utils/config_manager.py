@@ -600,7 +600,12 @@ class ConfigManager:
                         ):
                             resolved_app_docs_dir = resolved_anchor_root
                             recovery_committed_root_unavailable = True
-        except Exception:
+        except Exception as e:
+            logger.warning(
+                "Failed to resolve storage policy paths; falling back to default app docs dir: %s",
+                e,
+                exc_info=True,
+            )
             resolved_app_docs_dir = default_app_docs_dir
             resolved_anchor_root = default_app_docs_dir
             committed_selected_root = resolved_app_docs_dir
@@ -735,7 +740,9 @@ class ConfigManager:
         if not str(state.get("last_migration_result") or "").strip():
             state["last_migration_result"] = f"selected_root_unavailable:{unavailable_root}"
         state.setdefault("last_migration_source", "")
+        state.setdefault("last_migration_backup", "")
         state.setdefault("last_successful_boot_at", "")
+        state.setdefault("legacy_cleanup_pending", False)
         self.save_root_state(state)
     
     def _log(self, msg):

@@ -615,6 +615,22 @@ def test_bootstrap_preserves_restart_pending_maintenance_mode(tmp_path):
 
 
 @pytest.mark.unit
+def test_write_blocking_recovery_fails_closed_when_migration_checkpoint_cannot_load(tmp_path):
+    cm = _make_config_manager(tmp_path)
+
+    from utils import cloudsave_runtime as cloudsave_runtime_module
+    from utils.cloudsave_runtime import ROOT_MODE_MAINTENANCE_READONLY
+
+    root_state = {
+        "mode": ROOT_MODE_MAINTENANCE_READONLY,
+        "last_migration_result": "restart_pending_missing_marker",
+    }
+
+    with patch("utils.storage_migration.load_storage_migration", side_effect=OSError("unreadable")):
+        assert cloudsave_runtime_module._should_preserve_write_blocking_mode(cm, root_state) is True
+
+
+@pytest.mark.unit
 def test_should_write_root_mode_normal_after_startup_only_when_mode_is_normal():
     from utils.cloudsave_runtime import (
         ROOT_MODE_DEFERRED_INIT,

@@ -614,6 +614,30 @@ def test_storage_location_restart_persists_checkpoint_and_requests_shutdown(tmp_
 
 
 @pytest.mark.unit
+def test_storage_location_restart_awaits_async_shutdown_callback(tmp_path):
+    config_manager = _DummyConfigManager(tmp_path)
+    target_root = tmp_path / "new-storage" / "N.E.K.O"
+    shutdown_calls = {"count": 0}
+
+    async def request_app_shutdown():
+        await asyncio.sleep(0)
+        shutdown_calls["count"] += 1
+
+    with _build_client(config_manager, request_app_shutdown=request_app_shutdown) as client:
+        response = client.post(
+            "/api/storage/location/restart",
+            json={
+                "selected_root": str(target_root),
+                "selection_source": "recommended",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["result"] == "restart_initiated"
+    assert shutdown_calls["count"] == 1
+
+
+@pytest.mark.unit
 def test_storage_location_status_reports_pending_checkpoint_as_maintenance(tmp_path, monkeypatch):
     config_manager = _DummyConfigManager(tmp_path)
     create_pending_storage_migration(

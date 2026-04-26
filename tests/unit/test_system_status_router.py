@@ -15,6 +15,18 @@ from utils.storage_policy import save_storage_policy
 SYSTEM_STATUS_ENDPOINT = "/api/system/status"
 
 
+@pytest.fixture(autouse=True)
+def _reset_shared_state_after_test():
+    yield
+    init_shared_state(
+        role_state={},
+        steamworks=None,
+        templates=None,
+        config_manager=None,
+        logger=None,
+    )
+
+
 class _DummyConfigManager:
     def __init__(self, tmp_path: Path, *, root_mode: str = "normal"):
         self.app_name = "N.E.K.O"

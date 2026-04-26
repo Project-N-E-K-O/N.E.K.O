@@ -277,3 +277,43 @@ def test_run_pending_storage_migration_marks_failure_and_recovers_to_source_root
     assert root_state["mode"] == "deferred_init"
     assert root_state["current_root"] == str(source_root.resolve())
     assert root_state["last_migration_result"] == "failed:copy_failed"
+
+
+@pytest.mark.unit
+def test_run_pending_storage_migration_failure_uses_payload_source_before_normalization(tmp_path, monkeypatch):
+    from utils import storage_migration as storage_migration_module
+
+    config_manager = _make_config_manager(tmp_path)
+    source_root = tmp_path / "external-source" / "N.E.K.O"
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    payload = load_storage_migration(config_manager, anchor_root=tmp_path / "anchor-base" / "N.E.K.O")
+    persisted_source_root = payload["source_root"]
+    original_normalize_runtime_root = storage_migration_module.normalize_runtime_root
+
+    def fail_for_payload_source(value):
+        if str(value) == persisted_source_root:
+            raise ValueError("simulated source path normalization failure")
+        return original_normalize_runtime_root(value)
+
+    monkeypatch.setattr(storage_migration_module, "normalize_runtime_root", fail_for_payload_source)
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["attempted"] is True
+    assert result["completed"] is False
+    assert result["error_code"] == "storage_migration_unexpected"
+    assert result["payload"]["status"] == STORAGE_MIGRATION_STATUS_FAILED
+    assert result["payload"]["backup_root"] == persisted_source_root
+
+    root_state = config_manager.load_root_state()
+    assert root_state["mode"] == "deferred_init"
+    assert root_state["current_root"] == persisted_source_root
+    assert root_state["last_known_good_root"] == persisted_source_root
+    assert root_state["last_migration_source"] == persisted_source_root
+    assert root_state["last_migration_backup"] == persisted_source_root

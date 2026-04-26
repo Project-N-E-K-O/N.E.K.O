@@ -129,6 +129,8 @@ def test_config_manager_uses_anchor_runtime_layout_when_committed_selected_root_
     assert root_state["mode"] == "deferred_init"
     assert root_state["current_root"] == str(unavailable_selected_root.resolve())
     assert root_state["last_known_good_root"] == str(unavailable_selected_root.resolve())
+    assert root_state["last_migration_backup"] == ""
+    assert root_state["legacy_cleanup_pending"] is False
 
     layout = resolve_storage_layout(reloaded_manager)
     assert layout["selected_root"] == str(anchor_root)

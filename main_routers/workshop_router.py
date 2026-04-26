@@ -72,6 +72,34 @@ WORKSHOP_REFERENCE_LANGUAGES = {'ch', 'en', 'fr', 'de', 'ja', 'ko', 'ru'}
 WORKSHOP_REFERENCE_PROVIDER_HINTS = {'cosyvoice', 'minimax', 'minimax_intl'}
 
 
+async def cancel_background_tasks(*, timeout: float = 5.0) -> None:
+    global _ugc_warmup_task, _ugc_sync_task
+
+    for task_attr in ("_ugc_warmup_task", "_ugc_sync_task"):
+        task = globals().get(task_attr)
+        if task is None:
+            continue
+        if task.done():
+            try:
+                task.result()
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:
+                logger.debug("workshop %s finished with error during cleanup: %s", task_attr, exc, exc_info=True)
+        else:
+            task.cancel()
+            try:
+                await asyncio.wait_for(task, timeout=timeout)
+            except asyncio.CancelledError:
+                logger.debug("workshop %s cancelled", task_attr)
+            except asyncio.TimeoutError:
+                logger.warning("workshop %s did not stop within %.1fs", task_attr, timeout)
+            except Exception as exc:
+                logger.debug("workshop %s cleanup failed: %s", task_attr, exc, exc_info=True)
+        if globals().get(task_attr) is task:
+            globals()[task_attr] = None
+
+
 def _read_first_line(path: str, encoding: str = 'utf-8') -> str:
     """同步读文件首行，供 asyncio.to_thread 调用（README.md / README.txt 元数据回退）。"""
     with open(path, 'r', encoding=encoding) as f:

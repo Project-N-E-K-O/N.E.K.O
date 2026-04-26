@@ -247,7 +247,7 @@ def test_storage_location_bootstrap_payload_marks_cleanup_pending_for_non_anchor
 
 
 @pytest.mark.unit
-def test_storage_location_bootstrap_payload_reconciles_cleanup_pending_when_retained_root_is_anchor_root(tmp_path):
+def test_storage_location_bootstrap_payload_marks_cleanup_pending_when_retained_root_is_anchor_root(tmp_path):
     config_manager = _make_anchor_root_config_manager(tmp_path)
     source_root = config_manager.app_docs_dir
     target_root = tmp_path / "target-selected" / "N.E.K.O"
@@ -266,8 +266,8 @@ def test_storage_location_bootstrap_payload_reconciles_cleanup_pending_when_reta
     reloaded_manager = _make_real_config_manager(tmp_path)
     payload = build_storage_location_bootstrap_payload(reloaded_manager)
 
-    assert payload["legacy_cleanup_pending"] is False
+    assert payload["legacy_cleanup_pending"] is True
     assert payload["migration"]["retained_source_root"] == str(source_root.resolve())
 
     root_state = reloaded_manager.load_root_state()
-    assert root_state["legacy_cleanup_pending"] is False
+    assert root_state["legacy_cleanup_pending"] is True
