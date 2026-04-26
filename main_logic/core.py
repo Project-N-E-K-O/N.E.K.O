@@ -799,6 +799,13 @@ class LLMSessionManager:
         # RESPONSE_TOO_LONG 最终丢弃时：发送可爱回复 + 用角色 TTS 音色念出来。
         # RESPONSE_LENGTH_TRUNCATED：reroll 耗尽后回退到最后句末标点截断的恢复路径，
         # 把截断后的文本当作正常回复重新喂给前端 + TTS（用户输入不回滚）。
+        #
+        # 这里要复用 handle_response_complete 的"turn 收尾"语义：
+        #   - 消费 _pending_turn_meta：把它挂到 turn_end，再清空，避免漏挂或
+        #     被下一轮 turn 误消费。
+        #   - 尊重 ephemeral 语义：avatar_interaction 由 prompt_ephemeral
+        #     (persist_response=False) 触发，本来不该写 _conversation_history；
+        #     truncate-recovery / too-long-final 走到这里时不能强行 append。
         if _is_too_long_final or _truncated_text is not None:
             try:
                 if _truncated_text is not None:
@@ -819,7 +826,13 @@ class LLMSessionManager:
                 # 发送文本到前端显示
                 await self.send_lanlan_response(body_text, is_first_chunk=True)
 
-                if self.session and hasattr(self.session, '_conversation_history'):
+                # 仅当本轮**不是** ephemeral（即非 avatar_interaction 等
+                # persist_response=False 的路径）时才写历史。avatar_interaction
+                # 触发 RESPONSE_TOO_LONG/TRUNCATED 时本就该和 ephemeral 一致地
+                # 不留下 AIMessage 痕迹。
+                pending_meta = self._pending_turn_meta
+                is_ephemeral = bool(pending_meta) and pending_meta.get("kind") == "avatar_interaction"
+                if not is_ephemeral and self.session and hasattr(self.session, '_conversation_history'):
                     self.session._conversation_history.append(AIMessage(content=body_text))
 
                 # 喂给 TTS 管线用角色音色念
@@ -831,15 +844,22 @@ class LLMSessionManager:
                         else "handle_response_discarded:too_long_final"
                     )
 
-                # turn end
-                self.sync_message_queue.put({'type': 'system', 'data': 'turn end'})
+                # turn end —— 同 handle_response_complete 一样消费 _pending_turn_meta
+                turn_end_msg: dict = {'type': 'system', 'data': 'turn end'}
+                if pending_meta:
+                    turn_end_msg['meta'] = pending_meta
+                    self._pending_turn_meta = None
+                self.sync_message_queue.put(turn_end_msg)
                 if self.websocket and hasattr(self.websocket, 'client_state') and \
                         self.websocket.client_state == self.websocket.client_state.CONNECTED:
-                    await self.websocket.send_json({
+                    ws_msg = {
                         'type': 'system',
                         'data': 'turn end',
                         'request_id': self._active_text_request_id,
-                    })
+                    }
+                    if 'meta' in turn_end_msg:
+                        ws_msg['meta'] = turn_end_msg['meta']
+                    await self.websocket.send_json(ws_msg)
             except Exception as e:
                 logger.warning(f"⚠️ {'RESPONSE_LENGTH_TRUNCATED' if _truncated_text is not None else 'RESPONSE_TOO_LONG'} 回复发送失败: {e}")
             finally:
