@@ -1192,13 +1192,14 @@ async def _test_openai_compatible(url: str, api_key: str, model: str = "gpt-3.5-
     those use different protocols and will need dedicated test paths.
     """
     from utils.llm_client import ChatOpenAI as _ChatOpenAI
+    from config import CONNECTIVITY_TEST_MAX_TOKENS
 
     try:
         client = _ChatOpenAI(
             model=model,
             base_url=url,
             api_key=api_key or "sk-placeholder",
-            max_tokens=1,
+            max_completion_tokens=CONNECTIVITY_TEST_MAX_TOKENS,
             timeout=10.0,
             max_retries=0,
         )

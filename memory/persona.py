@@ -1575,13 +1575,18 @@ class PersonaManager:
         if not corrections:
             return 0
 
-        # 合并所有矛盾为单个 prompt
+        # 合并所有矛盾为单个 prompt。受 PERSONA_CORRECTION_BATCH_LIMIT
+        # 限制：corrections 队列可能堆积，单次只处理前 N 条，剩下的下次
+        # 触发时再处理。
+        from config import PERSONA_CORRECTION_BATCH_LIMIT
         pairs = []
         for i, item in enumerate(corrections):
             old_text = item.get('old_text', '')
             new_text = item.get('new_text', '')
             if old_text and new_text:
                 pairs.append((i, item))
+            if len(pairs) >= PERSONA_CORRECTION_BATCH_LIMIT:
+                break
         if not pairs:
             return 0
 

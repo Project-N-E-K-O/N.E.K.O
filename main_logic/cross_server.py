@@ -15,7 +15,13 @@ import time
 import pickle
 import aiohttp
 from queue import Empty
-from config import MONITOR_SERVER_PORT, MEMORY_SERVER_PORT, COMMENTER_SERVER_PORT
+from config import (
+    MONITOR_SERVER_PORT,
+    MEMORY_SERVER_PORT,
+    COMMENTER_SERVER_PORT,
+    AVATAR_INTERACTION_DEDUPE_WINDOW_MS,
+    PENDING_USER_IMAGES_MAX,
+)
 from datetime import datetime
 import json
 import re
@@ -27,7 +33,7 @@ from main_logic.agent_event_bus import publish_analyze_request_reliably
 
 # Setup logger for this module
 logger = get_module_logger(__name__, "Main")
-AVATAR_INTERACTION_MEMORY_DEDUPE_WINDOW_MS = 8000
+AVATAR_INTERACTION_MEMORY_DEDUPE_WINDOW_MS = AVATAR_INTERACTION_DEDUPE_WINDOW_MS
 MEMORY_CACHE_SCOPE_AVATAR = "avatar interaction cache"
 MEMORY_CACHE_SCOPE_TURN_END = "turn end cache"
 emoji_pattern = re.compile(r'[^\w\u4e00-\u9fff\s>][^\w\u4e00-\u9fff\s]{2,}[^\w\u4e00-\u9fff\s<]', flags=re.UNICODE)
@@ -443,14 +449,14 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                             last_screen = data
                             if data:
                                 pending_user_images.append(data)
-                                if len(pending_user_images) > 3:
-                                    del pending_user_images[:-3]
+                                if len(pending_user_images) > PENDING_USER_IMAGES_MAX:
+                                    del pending_user_images[:-PENDING_USER_IMAGES_MAX]
                         elif input_type == "camera":
                             last_screen = data
                             if data:
                                 pending_user_images.append(data)
-                                if len(pending_user_images) > 3:
-                                    del pending_user_images[:-3]
+                                if len(pending_user_images) > PENDING_USER_IMAGES_MAX:
+                                    del pending_user_images[:-PENDING_USER_IMAGES_MAX]
 
                     elif message["type"] == "system":
                         try:

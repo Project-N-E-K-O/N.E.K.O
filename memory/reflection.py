@@ -150,7 +150,7 @@ TEMPORAL_SCOPES = frozenset({'current', 'past', 'ongoing'})
 # The reflection itself still persists unchanged so no information is lost.
 # Measured in tiktoken (o200k_base) tokens — equivalent to ~200 CJK chars or
 # ~600 English chars under the current encoding.
-MAX_REFLECTION_TEXT_TOKENS = 150
+from config import REFLECTION_TEXT_MAX_TOKENS as MAX_REFLECTION_TEXT_TOKENS  # noqa: E402
 
 
 def _validate_reflection_ontology(
@@ -634,6 +634,20 @@ class ReflectionEngine:
         unabsorbed = await self._fact_store.aget_unabsorbed_facts(lanlan_name)
         if len(unabsorbed) < MIN_FACTS_FOR_REFLECTION:
             return []
+
+        # Cap unabsorbed facts entering this synthesis call. 上游
+        # aget_unabsorbed_facts 没有 limit 参数，长期不上线时可能堆几百
+        # 条；按 importance(desc) → 创建时间(asc) 排序后取前 N 条，避免
+        # 一次性塞超长 prompt。
+        from config import REFLECTION_SYNTHESIS_FACTS_MAX
+        if len(unabsorbed) > REFLECTION_SYNTHESIS_FACTS_MAX:
+            unabsorbed = sorted(
+                unabsorbed,
+                key=lambda f: (
+                    -int(f.get('importance', 5) or 5),
+                    str(f.get('created_at') or ''),
+                ),
+            )[:REFLECTION_SYNTHESIS_FACTS_MAX]
 
         # 排序一次：on-disk 字段与 _reflection_id_from_facts 内部 sorted 对齐，
         # 消除 "hash 用 sorted，存盘不 sorted" 的隐式非对称
@@ -1322,7 +1336,8 @@ class ReflectionEngine:
             if evidence_score(r, now) < 0:
                 continue
             eligible.append(r)
-        return eligible[:2]
+        from config import REFLECTION_SURFACE_TOP_K
+        return eligible[:REFLECTION_SURFACE_TOP_K]
 
     def get_followup_topics(self, lanlan_name: str) -> list[dict]:
         """Get pending reflections suitable for natural mention in proactive chat.
@@ -2050,6 +2065,12 @@ class ReflectionEngine:
                 f" (evidence_score={evidence_score(r, now):.2f})"
             )
         pool_text = "\n".join(pool_lines) if pool_lines else "(印象池为空)"
+        # Cap the impression pool at PERSONA_MERGE_POOL_MAX_TOKENS — same
+        # entity 长期累积下来 persona+reflection 池可能超 8k tokens；
+        # 这里整段截尾（按 score DESC 已排序，超出的是低分项，可丢）。
+        from config import PERSONA_MERGE_POOL_MAX_TOKENS
+        from utils.tokenize import truncate_to_tokens
+        pool_text = truncate_to_tokens(pool_text, PERSONA_MERGE_POOL_MAX_TOKENS)
 
         prompt = get_promotion_merge_prompt(get_global_language()).format(
             AI_NAME=lanlan_name,

@@ -169,6 +169,82 @@ async def atruncate_to_tokens(
     return await asyncio.to_thread(truncate_to_tokens, text, max_tokens, encoding)
 
 
+def truncate_head_tail_tokens(
+    text: str,
+    head_tokens: int,
+    tail_tokens: int,
+    *,
+    separator: str = "…[省略中段]…",
+    encoding: str = PERSONA_RENDER_ENCODING,
+) -> str:
+    """Truncate ``text`` keeping ``head_tokens`` from the start and
+    ``tail_tokens`` from the end, joined by ``separator``.
+
+    Use case: long user / assistant messages where both opening context
+    (greeting / topic) and closing intent (question / conclusion) carry
+    semantic weight and a plain ``[:N]`` cut would drop the most important
+    half. If ``text`` already fits within ``head_tokens + tail_tokens``,
+    it is returned unchanged.
+
+    The returned string's token count is bounded by
+    ``head_tokens + tail_tokens + count_tokens(separator)``.
+    """
+    if not text or head_tokens < 0 or tail_tokens < 0:
+        return text
+    total = head_tokens + tail_tokens
+    if total <= 0:
+        return ""
+    if count_tokens(text, encoding) <= total:
+        return text
+    enc = _get_encoder(encoding)
+    if enc is None:
+        # Heuristic fallback: cut by char position using same weighting
+        # as `_count_tokens_heuristic`. Approximate but bounded.
+        head_str = _truncate_to_tokens_heuristic(text, head_tokens)
+        # For tail, scan from the end using the same logic.
+        running = 0.0
+        cut_idx = len(text)
+        for i in range(len(text) - 1, -1, -1):
+            weight = 1.5 if is_cjk_char(text[i]) else 0.25
+            if math.ceil(running + weight) > tail_tokens:
+                cut_idx = i + 1
+                break
+            running += weight
+        else:
+            cut_idx = 0
+        tail_str = text[cut_idx:]
+        if not head_str and not tail_str:
+            return ""
+        return f"{head_str}{separator}{tail_str}"
+    tokens = enc.encode(text)
+    head_tok = tokens[:head_tokens]
+    tail_tok = tokens[-tail_tokens:] if tail_tokens > 0 else []
+    head_str = enc.decode(head_tok) if head_tok else ""
+    tail_str = enc.decode(tail_tok) if tail_tok else ""
+    return f"{head_str}{separator}{tail_str}"
+
+
+async def atruncate_head_tail_tokens(
+    text: str,
+    head_tokens: int,
+    tail_tokens: int,
+    *,
+    separator: str = "…[省略中段]…",
+    encoding: str = PERSONA_RENDER_ENCODING,
+) -> str:
+    """Async twin of `truncate_head_tail_tokens`."""
+    if not text or head_tokens < 0 or tail_tokens < 0:
+        return text
+    return await asyncio.to_thread(
+        truncate_head_tail_tokens,
+        text,
+        head_tokens,
+        tail_tokens,
+        separator=separator,
+        encoding=encoding,
+    )
+
+
 def _truncate_to_tokens_heuristic(text: str, max_tokens: int) -> str:
     """Heuristic prefix scan that mirrors `_count_tokens_heuristic`'s
     weighting (CJK 1.5 / non-CJK 0.25). Walks the string once and stops

@@ -9,6 +9,7 @@ from utils.llm_client import SystemMessage, HumanMessage, AIMessage, create_chat
 from openai import APIConnectionError, InternalServerError, RateLimitError
 from utils.frontend_utils import calculate_text_similarity
 from utils.tokenize import count_tokens, truncate_to_tokens
+from config import OMNI_RECENT_RESPONSES_MAX
 
 # Sentence-final terminators used to recover from a length-overflow when
 # rerolls have been exhausted. Commas, semicolons, and colons are NOT
@@ -216,7 +217,7 @@ class OmniOfflineClient:
         # 重复度检测
         self._recent_responses = []  # 存储最近3轮助手回复
         self._repetition_threshold = 0.8  # 相似度阈值
-        self._max_recent_responses = 3  # 最多存储的回复数
+        self._max_recent_responses = OMNI_RECENT_RESPONSES_MAX  # 最多存储的回复数
         
         # ========== 输出前缀检测 ==========
         self.lanlan_name = lanlan_name

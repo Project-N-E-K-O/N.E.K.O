@@ -14,7 +14,18 @@ from datetime import datetime, timezone
 import uuid
 from openai import APIConnectionError, InternalServerError, RateLimitError
 import httpx
-from config import USER_PLUGIN_SERVER_PORT
+from config import (
+    USER_PLUGIN_SERVER_PORT,
+    AGENT_HISTORY_TURNS,
+    AGENT_RECENT_CTX_PER_ITEM_TOKENS,
+    AGENT_RECENT_CTX_TOTAL_TOKENS,
+    AGENT_PLUGIN_DESC_BM25_THRESHOLD,
+    AGENT_PLUGIN_SHORTDESC_MAX_TOKENS,
+    AGENT_PLUGIN_COARSE_MAX_TOKENS,
+    AGENT_UNIFIED_ASSESS_MAX_TOKENS,
+    AGENT_PLUGIN_FULL_MAX_TOKENS,
+    TASK_DETAIL_MAX_TOKENS,
+)
 from utils.llm_client import create_chat_llm, ChatOpenAI
 from config.prompts_agent import (
     UNIFIED_CHANNEL_SYSTEM_PROMPT,
@@ -253,7 +264,7 @@ class DirectTaskExecutor:
 
         logger.info("[Agent] Generating short_description for %d plugin(s)", len(to_generate))
         try:
-            llm = self._get_llm(temperature=0, max_completion_tokens=150)
+            llm = self._get_llm(temperature=0, max_completion_tokens=AGENT_PLUGIN_SHORTDESC_MAX_TOKENS)
             for p in to_generate:
                 quota_error = await self._check_agent_quota("task_executor.ensure_short_desc")
                 if quota_error:
@@ -261,7 +272,13 @@ class DirectTaskExecutor:
                     break
                 pid = p.get("id", "unknown")
                 try:
-                    desc = str(p.get("description", "") or "").strip()
+                    from config import PLUGIN_INPUT_DESC_MAX_TOKENS
+                    from utils.tokenize import truncate_to_tokens
+                    raw_desc = str(p.get("description", "") or "").strip()
+                    # Plugin manifest 的 description 字段无 cap，恶意/超大
+                    # plugin 可能塞 1MB 文本。先截到 PLUGIN_INPUT_DESC_MAX_TOKENS
+                    # 再送入 short_description 生成 prompt。
+                    desc = truncate_to_tokens(raw_desc, PLUGIN_INPUT_DESC_MAX_TOKENS)
                     messages = [
                         {"role": "system", "content": "You are an agentic automation assessment agent, generate a concise plugin summary under 200 tokens in English."},
                         {"role": "user", "content": f"Plugin: {pid}\nDescription: {desc}\n\nReturn ONLY the summary."},
@@ -269,7 +286,7 @@ class DirectTaskExecutor:
                     resp = await llm.ainvoke(messages)
                     text = (resp.content or "").strip()
                     from utils.tokenize import count_tokens
-                    if text and count_tokens(text) <= 200:
+                    if text and count_tokens(text) <= AGENT_PLUGIN_SHORTDESC_MAX_TOKENS:
                         p["short_description"] = text
                         self._short_desc_cache[pid] = (desc, text)
                         # LLM 生成原文不写 logger
@@ -431,7 +448,7 @@ class DirectTaskExecutor:
             return ""
 
         latest_user_text = ""
-        for m in reversed(messages[-10:]):
+        for m in reversed(messages[-AGENT_HISTORY_TURNS:]):
             if m.get('role') == 'user':
                 latest_user_text = _describe_user_message(_extract_text(m), _extract_attachments(m))
                 if latest_user_text:
@@ -439,7 +456,7 @@ class DirectTaskExecutor:
         lines = []
         if latest_user_text:
             lines.append(f"LATEST_USER_REQUEST: {latest_user_text}")
-        for m in messages[-10:]:
+        for m in messages[-AGENT_HISTORY_TURNS:]:
             role = m.get('role', 'user')
             text = _describe_user_message(_extract_text(m), _extract_attachments(m))
             if text:
@@ -449,7 +466,7 @@ class DirectTaskExecutor:
     def _extract_latest_user_payload(self, messages: List[Dict[str, Any]]) -> tuple[str, list[dict]]:
         latest_text = ""
         latest_attachments: list[dict] = []
-        for m in reversed(messages[-10:]):
+        for m in reversed(messages[-AGENT_HISTORY_TURNS:]):
             if not isinstance(m, dict) or m.get("role") != "user":
                 continue
             latest_text = str(m.get("text") or m.get("content") or "").strip()
@@ -589,8 +606,8 @@ class DirectTaskExecutor:
             if text and text != latest:
                 context_candidates.append(text)
         if context_candidates:
-            return truncate_to_tokens(" / ".join([*context_candidates[-2:], latest]), 200)
-        return truncate_to_tokens(latest, 200)
+            return truncate_to_tokens(" / ".join([*context_candidates[-2:], latest]), TASK_DETAIL_MAX_TOKENS)
+        return truncate_to_tokens(latest, TASK_DETAIL_MAX_TOKENS)
 
     @staticmethod
     def _sanitize_correction_text(text: str) -> str:
@@ -624,7 +641,7 @@ class DirectTaskExecutor:
         # Per-item cap on the redacted correction text (one role-message in the
         # recent-context window). Group with `agent_server.py` callback summary —
         # both are "longer reflective blurbs" the LLM will see standalone.
-        return truncate_to_tokens(cleaned, 400)
+        return truncate_to_tokens(cleaned, AGENT_RECENT_CTX_PER_ITEM_TOKENS)
 
     def _sanitize_recent_context(self, recent_context: List[Dict[str, str]]) -> List[Dict[str, str]]:
         from utils.tokenize import count_tokens
@@ -641,7 +658,7 @@ class DirectTaskExecutor:
             if not content:
                 continue
             total_tokens += count_tokens(content)
-            if total_tokens > 1000:
+            if total_tokens > AGENT_RECENT_CTX_TOTAL_TOKENS:
                 break
             sanitized.append({"role": role, "content": content})
         sanitized.reverse()
@@ -918,7 +935,7 @@ class DirectTaskExecutor:
 
         for attempt in range(max_retries):
             try:
-                llm = self._get_llm(temperature=0, max_completion_tokens=600)
+                llm = self._get_llm(temperature=0, max_completion_tokens=AGENT_UNIFIED_ASSESS_MAX_TOKENS)
 
                 messages = [
                     {"role": "system", "content": system_prompt},
@@ -1053,7 +1070,7 @@ class DirectTaskExecutor:
     #   plugins_desc ≤ _STAGE1_TRIGGER_TOKENS → 完全跳过 stage 1
     #   plugins_desc >  _STAGE1_TRIGGER_TOKENS → BM25 与 LLM coarse-screen 用
     #     asyncio.gather 并行；关键路径 ≈ max(BM25, LLM) ≈ LLM 时长。
-    _STAGE1_TRIGGER_TOKENS = 3000
+    _STAGE1_TRIGGER_TOKENS = AGENT_PLUGIN_DESC_BM25_THRESHOLD
 
     async def _stage1_llm_coarse_screen(
         self, user_text: str, plugins: list, lang: str = "en",
@@ -1064,9 +1081,9 @@ class DirectTaskExecutor:
         for p in plugins:
             pid = p.get("id", "unknown") if isinstance(p, dict) else "unknown"
             short = (p.get("short_description") or p.get("description", "")) if isinstance(p, dict) else ""
-            if count_tokens(short) > 200:
+            if count_tokens(short) > AGENT_PLUGIN_SHORTDESC_MAX_TOKENS:
                 # 给 "..." 预留 token 空间，保证最终长度 ≤ 200
-                short = truncate_to_tokens(short, 200 - count_tokens("...")) + "..."
+                short = truncate_to_tokens(short, AGENT_PLUGIN_SHORTDESC_MAX_TOKENS - count_tokens("...")) + "..."
             summaries.append(f"- {pid}: {short}")
         plugin_summaries = "\n".join(summaries)
 
@@ -1079,7 +1096,7 @@ class DirectTaskExecutor:
             # 走 emotion tier（qwen-flash 等 latency-sensitive 档），粗筛只要
             # 快、JSON list 输出准确即可；BM25 + keyword hits 兜底，coarse-
             # screen 漏一两个候选不会让最终决策崩。
-            llm = self._get_llm(temperature=0, max_completion_tokens=300, tier="emotion")
+            llm = self._get_llm(temperature=0, max_completion_tokens=AGENT_PLUGIN_COARSE_MAX_TOKENS, tier="emotion")
             messages = [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_text},
@@ -1225,7 +1242,7 @@ class DirectTaskExecutor:
         
         for attempt in range(max_retries):
             try:
-                llm = self._get_llm(temperature=0, max_completion_tokens=500)
+                llm = self._get_llm(temperature=0, max_completion_tokens=AGENT_PLUGIN_FULL_MAX_TOKENS)
 
                 messages = [
                     {"role": "system", "content": system_prompt},

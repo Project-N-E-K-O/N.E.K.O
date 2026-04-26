@@ -1376,12 +1376,16 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         )
         return normalized_current == incoming
 
-    def _truncate_llm_text(self, text: str, limit: int = 1000) -> str:
-        # `limit` is in tiktoken tokens (o200k_base). 1000 ≈ 1400 CJK chars or
-        # ~4000 English chars under the current encoding. Sync because callers
-        # are sync; truncate_to_tokens handles tiktoken-unavailable fallback.
-        # Reserves token room for the trailing "..." so the result fits limit.
+    def _truncate_llm_text(self, text: str, limit: int | None = None) -> str:
+        # `limit` is in tiktoken tokens (o200k_base). Default 1000 ≈ 1400 CJK
+        # chars or ~4000 English chars under the current encoding. Sync because
+        # callers are sync; truncate_to_tokens handles tiktoken-unavailable
+        # fallback. Reserves token room for the trailing "..." so the result
+        # fits limit.
         from utils.tokenize import count_tokens, truncate_to_tokens
+        if limit is None:
+            from config import MCP_TOOL_RESULT_MAX_TOKENS
+            limit = MCP_TOOL_RESULT_MAX_TOKENS
         cleaned = text.strip()
         if count_tokens(cleaned) <= limit:
             return cleaned

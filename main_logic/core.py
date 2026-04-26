@@ -33,7 +33,12 @@ from main_logic.tts_client import get_tts_worker, dummy_tts_worker, TTS_PROVIDER
 from utils.llm_client import AIMessage
 from main_logic.session_state import SessionStateMachine, SessionEvent
 from utils.preferences import load_global_conversation_settings, aload_global_conversation_settings
-from config import MEMORY_SERVER_PORT, TOOL_SERVER_PORT
+from config import (
+    MEMORY_SERVER_PORT,
+    TOOL_SERVER_PORT,
+    SESSION_ARCHIVE_TRIGGER_TOKENS,
+    AVATAR_INTERACTION_DEDUPE_MAX_ITEMS,
+)
 from config.prompts_sys import (
     _loc,
     SESSION_INIT_PROMPT, SESSION_INIT_PROMPT_AGENT,
@@ -385,7 +390,7 @@ class LLMSessionManager:
         self.last_audio_send_error_time = 0.0  # 上次音频发送错误的时间戳
         self.audio_error_log_interval = 2.0  # 音频错误log间隔（秒）
 
-        self._recent_avatar_interaction_ids = deque(maxlen=32)
+        self._recent_avatar_interaction_ids = deque(maxlen=AVATAR_INTERACTION_DEDUPE_MAX_ITEMS)
         self._recent_avatar_interaction_id_set = set()
         self._last_avatar_interaction_at = 0
         self._last_avatar_interaction_speak_at = 0
@@ -753,7 +758,7 @@ class LLMSessionManager:
                             _ct(_budget_text(m))
                             for m in self.session._conversation_history[1:]
                         )
-                        _ctx_threshold_met = _ctx_total >= 5000
+                        _ctx_threshold_met = _ctx_total >= SESSION_ARCHIVE_TRIGGER_TOKENS
                     else:
                         _ctx_threshold_met = False
                     if _elapsed >= 40 or _turn_threshold_met or _ctx_threshold_met:

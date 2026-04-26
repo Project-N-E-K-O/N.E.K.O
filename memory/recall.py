@@ -62,7 +62,7 @@ logger = logging.getLogger(__name__)
 # semantic shortlist is 3× the budget so the LLM has 2 candidates per
 # slot to choose from. Lower would over-trust cosine; higher would
 # stuff the LLM prompt with more text than it can rank reliably.
-COARSE_OVERSAMPLE = 3
+from config import RECALL_COARSE_OVERSAMPLE as COARSE_OVERSAMPLE  # noqa: E402
 
 
 class MemoryRecallReranker:
@@ -353,6 +353,11 @@ class MemoryRecallReranker:
 
         # The id-keyed indirection prevents the LLM from inventing
         # ids that aren't in the candidate set.
+        from config import (
+            RECALL_PER_CANDIDATE_MAX_TOKENS,
+            RECALL_CANDIDATES_TOTAL_MAX_TOKENS,
+        )
+        from utils.tokenize import truncate_to_tokens
         cand_lines = []
         id_to_obs: dict[str, dict] = {}
         for c in candidates:
@@ -361,17 +366,21 @@ class MemoryRecallReranker:
                 continue
             id_to_obs[cid] = c
             score = c.get('score', 0.0)
-            cand_lines.append(
-                f"[{cid}] (score={score:.2f}) {c.get('text', '')}"
-            )
+            # 单条 candidate text 截断到 RECALL_PER_CANDIDATE_MAX_TOKENS
+            txt = truncate_to_tokens(c.get('text', '') or '', RECALL_PER_CANDIDATE_MAX_TOKENS)
+            cand_lines.append(f"[{cid}] (score={score:.2f}) {txt}")
         if not cand_lines:
             return []
 
         query_text = "\n".join(f"- {q}" for q in query_texts if q)
+        # 兜底总和截断（候选已 ranked，截尾的是低 score 的）
+        candidates_text = truncate_to_tokens(
+            "\n".join(cand_lines), RECALL_CANDIDATES_TOTAL_MAX_TOKENS
+        )
         prompt = (
             prompt_loader(lang)
             .replace('{QUERY}', query_text)
-            .replace('{CANDIDATES}', "\n".join(cand_lines))
+            .replace('{CANDIDATES}', candidates_text)
             .replace('{BUDGET}', str(budget))
         )
 

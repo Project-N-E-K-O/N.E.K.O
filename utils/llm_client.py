@@ -198,6 +198,7 @@ class ChatOpenAI:
         **_kwargs: Any,
     ):
         self.model = model
+        self.base_url = base_url
         # ``temperature=None`` is a legitimate caller intent: "don't include a
         # temperature field in the request body at all". Required for models
         # that reject the parameter outright (o1 / o3 / gpt-5-thinking /
@@ -222,6 +223,9 @@ class ChatOpenAI:
         self._aclient = AsyncOpenAI(**client_kw)
         self._client = OpenAI(**client_kw)
 
+    def _is_anthropic(self) -> bool:
+        return bool(self.base_url) and "api.anthropic.com" in str(self.base_url)
+
     def _params(self, messages: Any, *, stream: bool = False) -> dict:
         p: dict[str, Any] = {
             "model": self.model,
@@ -233,14 +237,38 @@ class ChatOpenAI:
         # 模型可以直通. 0.0 合法 → `is not None` 而不是 `if self.temperature`.
         if self.temperature is not None:
             p["temperature"] = self.temperature
-        if self.max_completion_tokens:
-            p["max_completion_tokens"] = self.max_completion_tokens
-        elif self.max_tokens:
-            p["max_tokens"] = self.max_tokens
+        # Provider-aware routing of token-limit field:
+        #   Anthropic SDK / Anthropic-compat endpoints → max_tokens
+        #   Everyone else (OpenAI / OpenAI-compat / Gemini-compat / etc.) → max_completion_tokens
+        # Caller can pass either kwarg; this layer always emits the right field
+        # name based on base_url. This eliminates "I forgot which one this
+        # provider needs" footguns at every call site.
+        token_limit = self.max_completion_tokens or self.max_tokens
+        limit_field: str | None = None
+        limit_value: int | None = None
+        if token_limit:
+            limit_field = "max_tokens" if self._is_anthropic() else "max_completion_tokens"
+            limit_value = int(token_limit)
+            p[limit_field] = limit_value
         if self.extra_body:
             p["extra_body"] = self.extra_body
         if stream:
             p["stream_options"] = {"include_usage": True}
+
+        # TEMPORARY: prompt audit log (env NEKO_LLM_PROMPT_AUDIT=1). Remove with
+        # utils/llm_prompt_audit.py once budget tuning is done.
+        try:
+            from utils import llm_prompt_audit
+            if llm_prompt_audit.is_enabled():
+                llm_prompt_audit.record_llm_request(
+                    model=self.model,
+                    base_url=self.base_url,
+                    params=p,
+                    field_name=limit_field,
+                    field_value=limit_value,
+                )
+        except Exception:
+            pass
         return p
 
     # --- sync / async invoke ---

@@ -93,7 +93,7 @@ def _format_error(error: Any, lang: str) -> str:
     return _try_extract_error_message(s, lang)
 
 
-def _truncate(s: str, limit: int = 200) -> str:
+def _truncate(s: str, limit: int | None = None) -> str:
     """Cut tool-result summaries fed back into the LLM context. ``limit`` is
     in tiktoken tokens (o200k_base) — 200 ≈ 270 CJK chars / ~800 English
     chars under the current encoding. Sync helper; truncate_to_tokens
@@ -103,6 +103,9 @@ def _truncate(s: str, limit: int = 200) -> str:
     guaranteed to fit within ``limit``.
     """
     from utils.tokenize import count_tokens, truncate_to_tokens
+    if limit is None:
+        from config import TASK_DETAIL_MAX_TOKENS
+        limit = TASK_DETAIL_MAX_TOKENS
     if count_tokens(s) <= limit:
         return s
     suffix = "…"

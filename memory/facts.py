@@ -633,13 +633,23 @@ class FactStore:
             return []
 
         # Build prompt sections
+        # 单条 observation 截到 EVIDENCE_PER_OBSERVATION_MAX_TOKENS
+        # 总和截到 EVIDENCE_OBSERVATIONS_TOTAL_MAX_TOKENS（候选数已 cap=200，
+        # 但单条无 cap 时仍可能超 25k；这里兜底）。
+        from config import (
+            EVIDENCE_PER_OBSERVATION_MAX_TOKENS,
+            EVIDENCE_OBSERVATIONS_TOTAL_MAX_TOKENS,
+        )
+        from utils.tokenize import truncate_to_tokens
         new_facts_text = "\n".join(
-            f"[{f.get('id', '')}] {f.get('text', '')}" for f in new_facts
+            f"[{f.get('id', '')}] {truncate_to_tokens(f.get('text', '') or '', EVIDENCE_PER_OBSERVATION_MAX_TOKENS)}"
+            for f in new_facts
         )
         obs_text = "\n".join(
-            f"[{o['id']}] {o.get('text', '')}"
+            f"[{o['id']}] {truncate_to_tokens(o.get('text', '') or '', EVIDENCE_PER_OBSERVATION_MAX_TOKENS)}"
             for o in existing_observations
         )
+        obs_text = truncate_to_tokens(obs_text, EVIDENCE_OBSERVATIONS_TOTAL_MAX_TOKENS)
         prompt = get_signal_detection_prompt(get_global_language()) \
             .replace('{NEW_FACTS}', new_facts_text) \
             .replace('{EXISTING_OBSERVATIONS}', obs_text) \

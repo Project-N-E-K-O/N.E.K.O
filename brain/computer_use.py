@@ -18,7 +18,7 @@ import threading
 import traceback
 from io import BytesIO
 from PIL import Image
-from config import get_agent_extra_body
+from config import get_agent_extra_body, COMPUTER_USE_MAX_TOKENS, LLM_PING_MAX_TOKENS
 from utils.config_manager import get_config_manager
 from utils.llm_client import create_chat_llm, ChatOpenAI
 from utils.logger_config import get_module_logger
@@ -453,7 +453,7 @@ class ComputerUseAdapter:
         self,
         max_steps: int = 50,
         max_image_history: int = 2,
-        max_tokens: int = 6000,
+        max_completion_tokens: int = COMPUTER_USE_MAX_TOKENS,
         thinking: bool = True,
     ):
         self.last_error: Optional[str] = None
@@ -464,7 +464,7 @@ class ComputerUseAdapter:
         self._done_event.set()  # initially "done" (no task running)
         self.max_steps = max_steps
         self.max_image_history = max_image_history
-        self.max_tokens = max_tokens
+        self.max_completion_tokens = max_completion_tokens
         self.thinking = thinking
 
         # Screen dimensions
@@ -558,7 +558,7 @@ class ComputerUseAdapter:
                 resp = self._llm_client._client.chat.completions.create(
                     model=model,
                     messages=[{"role": "user", "content": "ok"}],
-                    max_completion_tokens=5,
+                    max_completion_tokens=LLM_PING_MAX_TOKENS,
                     timeout=20,
                     extra_body=extra or None,
                 )
@@ -1022,7 +1022,7 @@ class ComputerUseAdapter:
                 resp = self._llm_client._client.chat.completions.create(
                     model=model,
                     messages=messages,
-                    max_completion_tokens=self.max_tokens,
+                    max_completion_tokens=self.max_completion_tokens,
                     extra_body=extra or None,
                 )
                 msg = resp.choices[0].message
