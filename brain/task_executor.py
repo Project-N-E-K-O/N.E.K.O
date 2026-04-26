@@ -1033,6 +1033,19 @@ class DirectTaskExecutor:
             pass
         return lines
 
+    # Stage-1 分流门槛。Stage 1 的本职工作是削减 stage 2 LLM prompt 长度，
+    # 但它自己有 BM25 (~1 ms) 和可选的 LLM coarse-screen（几百 ms~几秒）开销。
+    # 三级分流：
+    #   plugin 数 ≤ _STAGE1_FAST_SKIP_PLUGIN_COUNT 或 plugins_desc ≤
+    #     _STAGE1_BM25_TRIGGER_TOKENS → 完全跳过 stage 1。
+    #   plugins_desc 在 (BM25_TRIGGER, LLM_TRIGGER] 区间 → 只跑 BM25 + keyword
+    #     hits 取 union；不调 LLM coarse-screen（stage 2 多吞几个 plugin 没关系）。
+    #   plugins_desc > _STAGE1_LLM_TRIGGER_TOKENS → BM25 与 LLM coarse-screen
+    #     用 asyncio.gather 并行执行，关键路径 ≈ max(BM25, LLM) ≈ LLM 时长。
+    _STAGE1_FAST_SKIP_PLUGIN_COUNT = 10
+    _STAGE1_BM25_TRIGGER_TOKENS = 3000
+    _STAGE1_LLM_TRIGGER_TOKENS = 4500
+
     async def _stage1_llm_coarse_screen(
         self, user_text: str, plugins: list, lang: str = "en",
     ) -> list[str]:
@@ -1127,32 +1140,65 @@ class DirectTaskExecutor:
                 keyword_hit_ids.append(pid)
 
         # ── Two-stage decision ──────────────────────────────────
-        # plugins_desc 会被拼进 LLM prompt — 用 token 而不是字符判断阈值。
-        # 3000 tokens ≈ 4000 CJK 字 / ~12k EN 字，超过则进 Stage-1 BM25 粗筛。
+        # 见类常量 _STAGE1_* 注释里的三级分流逻辑。
         from utils.tokenize import count_tokens
         plugins_desc_tokens = count_tokens(plugins_desc)
-        if plugins_desc_tokens > 3000:
+        plugin_count = len(plugin_list)
+
+        skip_stage1 = (
+            plugin_count <= self._STAGE1_FAST_SKIP_PLUGIN_COUNT
+            or plugins_desc_tokens <= self._STAGE1_BM25_TRIGGER_TOKENS
+        )
+        run_llm_coarse_screen = (
+            not skip_stage1
+            and plugins_desc_tokens > self._STAGE1_LLM_TRIGGER_TOKENS
+        )
+
+        if skip_stage1:
+            logger.debug(
+                "[UserPlugin] Skipping stage 1: %d plugins, %d tokens",
+                plugin_count, plugins_desc_tokens,
+            )
+            plugins = plugin_list
+        else:
             try:
-                # Stage 1: coarse filter (fail-open — falls back to full list on error)
-                logger.info(
-                    "[UserPlugin] Stage 1 triggered: plugins_desc=%d tokens, %d plugins",
-                    plugins_desc_tokens, len(plugin_list),
-                )
+                if run_llm_coarse_screen:
+                    # 重度：BM25 + LLM coarse-screen 并行。
+                    logger.info(
+                        "[UserPlugin] Stage 1 (heavy): BM25 || LLM coarse-screen, "
+                        "plugins_desc=%d tokens, %d plugins",
+                        plugins_desc_tokens, plugin_count,
+                    )
+                    (bm25_filtered, _), llm_ids = await asyncio.gather(
+                        asyncio.to_thread(
+                            stage1_filter,
+                            user_intent or conversation,
+                            plugin_list,
+                            bm25_top_k=10,
+                        ),
+                        self._stage1_llm_coarse_screen(
+                            user_intent or conversation, plugin_list, lang=lang,
+                        ),
+                    )
+                else:
+                    # 轻度：只跑 BM25 + keyword（跳过 LLM coarse-screen 省时）。
+                    logger.info(
+                        "[UserPlugin] Stage 1 (light): BM25 only, "
+                        "plugins_desc=%d tokens, %d plugins",
+                        plugins_desc_tokens, plugin_count,
+                    )
+                    bm25_filtered, _ = await asyncio.to_thread(
+                        stage1_filter,
+                        user_intent or conversation,
+                        plugin_list,
+                        bm25_top_k=10,
+                    )
+                    llm_ids = []
 
-                # BM25 + keyword filter（纯 CPU，offload 到线程）
-                bm25_filtered, _ = await asyncio.to_thread(
-                    stage1_filter,
-                    user_intent or conversation,
-                    plugin_list,
-                    bm25_top_k=10,
-                )
                 bm25_ids = {p.get("id") for p in bm25_filtered if isinstance(p, dict)}
-
-                # LLM coarse screen
-                llm_ids = await self._stage1_llm_coarse_screen(user_intent or conversation, plugin_list, lang=lang)
                 llm_id_set = set(llm_ids)
 
-                # Union: BM25 + LLM + keyword hits
+                # Union: BM25 + (optional) LLM coarse-screen + keyword hits
                 selected_ids = bm25_ids | llm_id_set | set(keyword_hit_ids)
 
                 if not selected_ids:
@@ -1165,16 +1211,13 @@ class DirectTaskExecutor:
 
                 logger.info(
                     "[UserPlugin] Stage 1 result: %d/%d plugins -> stage 2 (bm25=%d, llm=%d, kw=%d)",
-                    len(stage2_plugins), len(plugin_list),
+                    len(stage2_plugins), plugin_count,
                     len(bm25_ids), len(llm_id_set), len(keyword_hit_ids),
                 )
                 plugins = stage2_plugins
             except Exception as stage1_err:
                 logger.warning("[UserPlugin] Stage 1 failed, falling back to full list: %s", stage1_err)
                 plugins = plugin_list
-        else:
-            logger.debug("[UserPlugin] Skipping stage 1: plugins_desc=%d tokens <= 3000", plugins_desc_tokens)
-            plugins = plugin_list
 
         # Annotate keyword-hit plugins
         plugins_desc = annotate_keyword_hits(plugins_desc, keyword_hit_ids)
