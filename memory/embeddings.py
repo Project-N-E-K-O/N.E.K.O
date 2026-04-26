@@ -246,6 +246,30 @@ def _profile_exists(model_dir: str, profile_id: str) -> bool:
     return os.path.isdir(os.path.join(model_dir, profile_id))
 
 
+def _profile_is_complete(model_dir: str, profile_id: str) -> bool:
+    """A profile dir is usable only if it has the tokenizer plus at least
+    one full (model + onnx_data sidecar) variant the runtime can load.
+
+    Why stricter than ``_profile_exists``: a half-downloaded or partially
+    deleted app-data profile would otherwise satisfy the existence check,
+    short-circuit the bundled fallback, and then trip
+    ``NO_MODEL_FILE`` at session load — leaving the user with vectors
+    sticky-disabled even though the bundle on disk is fine. Treat
+    incomplete dirs as broken so we keep walking the candidate list.
+    """
+    profile_dir = os.path.join(model_dir, profile_id)
+    if not os.path.isdir(profile_dir):
+        return False
+    if not os.path.isfile(os.path.join(profile_dir, "tokenizer.json")):
+        return False
+    for stem in ("model.onnx", "model_quantized.onnx"):
+        model_path = os.path.join(profile_dir, "onnx", stem)
+        sidecar_path = model_path + "_data"
+        if os.path.isfile(model_path) and os.path.isfile(sidecar_path):
+            return True
+    return False
+
+
 def _bundled_model_dirs() -> list[str]:
     """Candidate roots for build-time packaged embedding assets.
 
@@ -273,11 +297,17 @@ def _bundled_model_dirs() -> list[str]:
 
 
 def _select_model_dir(app_docs_model_dir: str, profile_id: str) -> str:
-    """Prefer user-managed app-data models, otherwise use bundled assets."""
-    if _profile_exists(app_docs_model_dir, profile_id):
+    """Prefer user-managed app-data models, otherwise use bundled assets.
+
+    A half-downloaded app-data profile is treated as broken (see
+    ``_profile_is_complete``) and we fall back to bundled — otherwise the
+    presence-only check would prefer the broken dir and sticky-disable
+    vectors at load even though the bundle is fine.
+    """
+    if _profile_is_complete(app_docs_model_dir, profile_id):
         return app_docs_model_dir
     for bundled_dir in _bundled_model_dirs():
-        if _profile_exists(bundled_dir, profile_id):
+        if _profile_is_complete(bundled_dir, profile_id):
             return bundled_dir
     return app_docs_model_dir
 

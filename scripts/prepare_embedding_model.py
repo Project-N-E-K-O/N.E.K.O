@@ -85,7 +85,15 @@ def main(argv: list[str] | None = None) -> int:
         required=True,
         help="Concrete Hugging Face repo to mirror into the anonymous profile folder.",
     )
-    parser.add_argument("--revision", default="main")
+    parser.add_argument(
+        "--revision",
+        required=True,
+        help=(
+            "Pinned upstream commit/tag/SHA. A moving branch like 'main' is "
+            "rejected: the profile id is the compatibility contract, so the "
+            "weights/tokenizer behind it must not drift over time."
+        ),
+    )
     parser.add_argument("--profile-id", default=DEFAULT_PROFILE_ID)
     parser.add_argument(
         "--output-root",
@@ -100,6 +108,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args(argv)
+
+    if args.revision.lower() in ("main", "master"):
+        parser.error(
+            "--revision must be a pinned commit or tag, not a moving branch "
+            f"({args.revision!r}); pin to a specific SHA to keep the profile "
+            "id reproducible."
+        )
 
     files = _iter_files(args.variant)
     profile_dir = Path(args.output_root) / args.profile_id

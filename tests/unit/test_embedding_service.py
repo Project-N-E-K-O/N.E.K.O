@@ -214,11 +214,22 @@ def test_service_uses_profile_onnx_layout():
     )
 
 
+def _populate_complete_profile(model_dir, profile_id="local-text-retrieval-v1"):
+    """Create the minimum file set _profile_is_complete accepts (tokenizer
+    + one model variant + its onnx_data sidecar)."""
+    profile = model_dir / profile_id
+    (profile / "onnx").mkdir(parents=True)
+    (profile / "tokenizer.json").write_bytes(b"{}")
+    (profile / "onnx" / "model.onnx").write_bytes(b"x")
+    (profile / "onnx" / "model.onnx_data").write_bytes(b"x")
+    return profile
+
+
 def test_select_model_dir_prefers_app_data_profile(tmp_path):
     app_model_dir = tmp_path / "app" / "embedding_models"
     bundled_model_dir = tmp_path / "bundle" / "data" / "embedding_models"
-    (app_model_dir / "local-text-retrieval-v1").mkdir(parents=True)
-    (bundled_model_dir / "local-text-retrieval-v1").mkdir(parents=True)
+    _populate_complete_profile(app_model_dir)
+    _populate_complete_profile(bundled_model_dir)
 
     assert _select_model_dir(str(app_model_dir), "local-text-retrieval-v1") == str(app_model_dir)
 
@@ -226,7 +237,36 @@ def test_select_model_dir_prefers_app_data_profile(tmp_path):
 def test_select_model_dir_falls_back_to_bundled_profile(tmp_path, monkeypatch):
     app_model_dir = tmp_path / "app" / "embedding_models"
     bundled_model_dir = tmp_path / "bundle" / "data" / "embedding_models"
-    (bundled_model_dir / "local-text-retrieval-v1").mkdir(parents=True)
+    _populate_complete_profile(bundled_model_dir)
+
+    from memory import embeddings as embeddings_module
+
+    monkeypatch.setattr(
+        embeddings_module,
+        "_bundled_model_dirs",
+        lambda: [str(bundled_model_dir)],
+    )
+    assert (
+        _select_model_dir(str(app_model_dir), "local-text-retrieval-v1")
+        == str(bundled_model_dir)
+    )
+
+
+def test_select_model_dir_skips_incomplete_app_data_for_bundled(tmp_path, monkeypatch):
+    """A half-downloaded app-data profile (e.g. tokenizer present but onnx
+    sidecar missing) must NOT short-circuit the bundled fallback —
+    selecting it would just sticky-disable vectors at session load even
+    though the bundled profile on disk is complete."""
+    app_model_dir = tmp_path / "app" / "embedding_models"
+    bundled_model_dir = tmp_path / "bundle" / "data" / "embedding_models"
+
+    half_downloaded = app_model_dir / "local-text-retrieval-v1" / "onnx"
+    half_downloaded.mkdir(parents=True)
+    (app_model_dir / "local-text-retrieval-v1" / "tokenizer.json").write_bytes(b"{}")
+    (half_downloaded / "model.onnx").write_bytes(b"x")
+    # missing model.onnx_data — incomplete profile
+
+    _populate_complete_profile(bundled_model_dir)
 
     from memory import embeddings as embeddings_module
 

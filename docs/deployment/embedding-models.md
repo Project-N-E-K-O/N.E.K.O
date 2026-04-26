@@ -21,10 +21,13 @@ Download model files into the anonymous profile folder. This example mirrors a H
 ```bash
 uv run python scripts/prepare_embedding_model.py \
   --repo jinaai/jina-embeddings-v5-text-nano-retrieval \
+  --revision ac5d898c8d382b17167c33e5c8af644a3519b47d \
   --profile-id local-text-retrieval-v1 \
   --output-root data/embedding_models \
   --variant both
 ```
+
+`--revision` must be a pinned commit or tag — moving branches like `main` are rejected. The profile id is the cache compatibility contract, so the upstream weights/tokenizer behind it must not drift between runs.
 
 The resulting layout must be:
 

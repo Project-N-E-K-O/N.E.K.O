@@ -63,10 +63,13 @@ set "TIKTOKEN_CACHE_DIR="
 
 REM 3d. Download anonymous embedding profile assets for offline packaged use.
 REM The concrete repo can be changed without exposing it to runtime config or user cache ids.
+REM Pin upstream weights/tokenizer to a specific commit; the profile id is the
+REM cache compatibility contract, so a moving branch would silently drift.
 set "EMBEDDING_MODEL_REPO=jinaai/jina-embeddings-v5-text-nano-retrieval"
 set "EMBEDDING_MODEL_PROFILE_ID=local-text-retrieval-v1"
-echo Preparing embedding model profile %EMBEDDING_MODEL_PROFILE_ID% from %EMBEDDING_MODEL_REPO% ...
-uv run python scripts\prepare_embedding_model.py --repo "%EMBEDDING_MODEL_REPO%" --profile-id "%EMBEDDING_MODEL_PROFILE_ID%" --output-root data\embedding_models --variant both
+set "EMBEDDING_MODEL_REVISION=ac5d898c8d382b17167c33e5c8af644a3519b47d"
+echo Preparing embedding model profile %EMBEDDING_MODEL_PROFILE_ID% from %EMBEDDING_MODEL_REPO%@%EMBEDDING_MODEL_REVISION% ...
+uv run python scripts\prepare_embedding_model.py --repo "%EMBEDDING_MODEL_REPO%" --revision "%EMBEDDING_MODEL_REVISION%" --profile-id "%EMBEDDING_MODEL_PROFILE_ID%" --output-root data\embedding_models --variant both
 if %errorlevel% neq 0 (
     echo [ERROR] embedding model asset preparation failed.
     pause
@@ -219,25 +222,28 @@ echo Signing projectneko_server.exe...
 set AZURE_TENANT_ID=71451461-49ce-42e2-b4ae-a965434e3cf5
 signtool.exe sign /v /fd SHA256 /tr "http://timestamp.acs.microsoft.com" /td "SHA256" /dlib "C:\Users\wehos\AppData\Local\Microsoft\MicrosoftTrustedSigningClientTools\Azure.CodeSigning.Dlib.dll" /dmdf ".\metadata.package.json" "dist\Xiao8\projectneko_server.exe"
 
-REM Step: Clean old bin folder in lanlan_frd directory
-set "TARGET_DIR=C:\\Users\\wehos\\Project\\lanlan_release\\lanlan_frd"
+REM Step: Optional - copy artifacts into the lanlan_frd Electron host project for final packaging.
+REM TARGET_DIR can be overridden via env var; if unset/missing the Nuitka standalone bundle at
+REM dist\Xiao8 is the final artifact and we skip the Electron packaging steps gracefully.
+if "%TARGET_DIR%"=="" set "TARGET_DIR=C:\Users\wehos\Project\lanlan_release\lanlan_frd"
 echo.
+if not exist "%TARGET_DIR%" (
+    echo [INFO] TARGET_DIR not present: %TARGET_DIR%
+    echo [INFO] Skipping lanlan_frd Electron packaging steps.
+    echo Final Nuitka artifact: dist\Xiao8
+    goto :final_done
+)
 echo Cleaning target directory: %TARGET_DIR%\bin
-if exist "%TARGET_DIR%\\bin" (
+if exist "%TARGET_DIR%\bin" (
     echo Deleting old bin folder...
-    rmdir /s /q "%TARGET_DIR%\\bin"
+    rmdir /s /q "%TARGET_DIR%\bin"
 )
 echo Cleanup completed!
 echo.
 
 REM Step: Copy dist\Xiao8 as lanlan_frd\bin
 echo Copying dist\Xiao8 to %TARGET_DIR%\bin...
-if not exist "%TARGET_DIR%" (
-    echo [ERROR] Target directory does not exist: %TARGET_DIR%
-    pause
-    exit /b 1
-)
-xcopy /e /i /y "dist\Xiao8" "%TARGET_DIR%\\bin"
+xcopy /e /i /y "dist\Xiao8" "%TARGET_DIR%\bin"
 if %errorlevel% neq 0 (
     echo [ERROR] Failed to copy dist\Xiao8 to bin folder!
     pause
@@ -302,4 +308,5 @@ echo.
 echo Final package location: %TARGET_DIR%\dist\N.E.K.O
 echo.
 
+:final_done
 pause

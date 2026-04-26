@@ -11,6 +11,10 @@ permissions:
 env:
   EMBEDDING_MODEL_REPO: jinaai/jina-embeddings-v5-text-nano-retrieval
   EMBEDDING_MODEL_PROFILE_ID: local-text-retrieval-v1
+  # Pin upstream weights/tokenizer to a specific commit. The profile id is the
+  # cache compatibility contract — a moving branch would let upstream drift
+  # while the id stays the same, breaking reproducibility across nightlies.
+  EMBEDDING_MODEL_REVISION: ac5d898c8d382b17167c33e5c8af644a3519b47d
 
 jobs:
   launcher-pyinstaller:
@@ -51,6 +55,7 @@ jobs:
         run: |
           uv run python scripts/prepare_embedding_model.py \
             --repo "$EMBEDDING_MODEL_REPO" \
+            --revision "$EMBEDDING_MODEL_REVISION" \
             --profile-id "$EMBEDDING_MODEL_PROFILE_ID" \
             --output-root data/embedding_models \
             --variant both
@@ -60,11 +65,30 @@ jobs:
 
       - name: Verify bundled embedding assets
         shell: bash
+        # memory/embeddings.py treats the onnx_data sidecars and the int8
+        # quantized weights as required at session-load time. CI must mirror
+        # that contract — silently shipping an artifact missing them would
+        # have the runtime sticky-disable vectors with model_file_missing.
         run: |
-          test -f "dist/N.E.K.O/_internal/data/embedding_models/$EMBEDDING_MODEL_PROFILE_ID/tokenizer.json" \
-            || test -f "dist/N.E.K.O/data/embedding_models/$EMBEDDING_MODEL_PROFILE_ID/tokenizer.json"
-          test -f "dist/N.E.K.O/_internal/data/embedding_models/$EMBEDDING_MODEL_PROFILE_ID/onnx/model.onnx" \
-            || test -f "dist/N.E.K.O/data/embedding_models/$EMBEDDING_MODEL_PROFILE_ID/onnx/model.onnx"
+          set -euo pipefail
+          required=(
+            "tokenizer.json"
+            "onnx/model.onnx"
+            "onnx/model.onnx_data"
+            "onnx/model_quantized.onnx"
+            "onnx/model_quantized.onnx_data"
+          )
+          missing=0
+          for rel in "${required[@]}"; do
+            if [ ! -f "dist/N.E.K.O/_internal/data/embedding_models/$EMBEDDING_MODEL_PROFILE_ID/$rel" ] \
+                && [ ! -f "dist/N.E.K.O/data/embedding_models/$EMBEDDING_MODEL_PROFILE_ID/$rel" ]; then
+              echo "::error::missing bundled embedding asset: $rel"
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            exit 1
+          fi
 
       - name: Upload nightly artifact
         uses: actions/upload-artifact@v4
