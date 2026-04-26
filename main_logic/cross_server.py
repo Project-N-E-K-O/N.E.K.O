@@ -19,7 +19,9 @@ from config import MONITOR_SERVER_PORT, MEMORY_SERVER_PORT, COMMENTER_SERVER_POR
 from datetime import datetime
 import json
 import re
+import httpx
 from utils.frontend_utils import replace_blank, is_only_punctuation
+from utils.internal_http_client import get_internal_http_client
 from utils.logger_config import get_module_logger
 from main_logic.agent_event_bus import publish_analyze_request_reliably
 
@@ -260,14 +262,14 @@ async def _post_memory_server(
     encoded_name = quote(lanlan_name, safe="")
     url = f"http://127.0.0.1:{MEMORY_SERVER_PORT}/{endpoint}/{encoded_name}"
 
-    async with aiohttp.ClientSession() as session:
-        async with session.post(
-            url,
-            json={"input_history": json.dumps(payload, indent=2, ensure_ascii=False)},
-            timeout=aiohttp.ClientTimeout(total=timeout_s),
-        ) as response:
-            raw_body = await response.text()
-            status_code = response.status
+    client = get_internal_http_client()
+    response = await client.post(
+        url,
+        json={"input_history": json.dumps(payload, indent=2, ensure_ascii=False)},
+        timeout=timeout_s,
+    )
+    raw_body = response.text
+    status_code = response.status_code
 
     if status_code < 200 or status_code >= 300:
         return False, f"HTTP {status_code} (body_len={len(raw_body)})", {}
@@ -287,7 +289,7 @@ async def _post_memory_server(
 
 
 def _is_expected_memory_write_exception(exc: Exception) -> bool:
-    return isinstance(exc, (asyncio.TimeoutError, aiohttp.ClientError, ConnectionError, OSError))
+    return isinstance(exc, (asyncio.TimeoutError, aiohttp.ClientError, httpx.HTTPError, ConnectionError, OSError))
 
 
 def _mark_memory_cache_success(lanlan_name: str, scope: str, health_state: dict[str, bool]) -> None:
@@ -322,6 +324,8 @@ def _mark_memory_cache_exception(
     msg = f"[{lanlan_name}] {scope} 异常（{reason}{'，持续' if was_unhealthy else '，进入异常状态'}）: {type(exc).__name__}: {exc}"
     if was_unhealthy:
         logger.debug(msg)
+    elif reason == "未知类型":
+        logger.warning(msg, exc_info=True)
     else:
         logger.warning(msg)
 
@@ -494,30 +498,29 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                 # 确定调用端点：有增量走 /renew，无增量走 /settle（补全摘要+时间戳）
                                 _renew_endpoint = "renew" if remaining else "settle"
                                 _renew_payload = remaining if remaining else []
-                                if _renew_payload or _renew_endpoint == "settle":
-                                    try:
-                                        ok, err_detail, _ = await _post_memory_server(
-                                            _renew_endpoint,
-                                            lanlan_name,
-                                            _renew_payload,
-                                            timeout_s=30.0,
-                                        )
-                                        if not ok:
-                                            logger.error(f"[{lanlan_name}] 热重置记忆处理失败 ({_renew_endpoint}): {err_detail}")
-                                            if status_callback:
-                                                try:
-                                                    status_callback(f"⚠️ 热重置记忆失败: {err_detail}")
-                                                except Exception:
-                                                    pass
-                                        else:
-                                            logger.info(f"[{lanlan_name}] 热重置记忆已成功上传到 memory_server ({_renew_endpoint})")
-                                    except RuntimeError as e:
-                                        if "shutdown" in str(e).lower() or "closed" in str(e).lower():
-                                            logger.info(f"[{lanlan_name}] 进程正在关闭，{_renew_endpoint}请求已取消")
-                                        else:
-                                            logger.exception(f"[{lanlan_name}] 调用 /{_renew_endpoint} API 失败: {type(e).__name__}: {e}")
-                                    except Exception as e:
+                                try:
+                                    ok, err_detail, _ = await _post_memory_server(
+                                        _renew_endpoint,
+                                        lanlan_name,
+                                        _renew_payload,
+                                        timeout_s=30.0,
+                                    )
+                                    if not ok:
+                                        logger.error(f"[{lanlan_name}] 热重置记忆处理失败 ({_renew_endpoint}): {err_detail}")
+                                        if status_callback:
+                                            try:
+                                                status_callback(f"⚠️ 热重置记忆失败: {err_detail}")
+                                            except Exception:
+                                                pass
+                                    else:
+                                        logger.info(f"[{lanlan_name}] 热重置记忆已成功上传到 memory_server ({_renew_endpoint})")
+                                except RuntimeError as e:
+                                    if "shutdown" in str(e).lower() or "closed" in str(e).lower():
+                                        logger.info(f"[{lanlan_name}] 进程正在关闭，{_renew_endpoint}请求已取消")
+                                    else:
                                         logger.exception(f"[{lanlan_name}] 调用 /{_renew_endpoint} API 失败: {type(e).__name__}: {e}")
+                                except Exception as e:
+                                    logger.exception(f"[{lanlan_name}] 调用 /{_renew_endpoint} API 失败: {type(e).__name__}: {e}")
                                 chat_history.clear()
                                 last_synced_index = 0
 
@@ -766,7 +769,7 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                 logger.info(f"[{lanlan_name}] 会话结束：聊天历史 {len(chat_history)} 条，增量 {len(remaining)} 条")
                                 _settle_endpoint = "process" if remaining else "settle"
                                 _settle_payload = remaining if remaining else []
-                                if not shutdown_event.is_set() and (_settle_payload or _settle_endpoint == "settle"):
+                                if not shutdown_event.is_set():
                                     try:
                                         ok, err_detail, _ = await _post_memory_server(
                                             _settle_endpoint,
@@ -933,6 +936,12 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
     except Exception as e:
         logger.error(f"[{lanlan_name}] Sync进程错误: {e}", exc_info=True)
     finally:
+        try:
+            from utils.internal_http_client import aclose_internal_http_client_current_loop
+
+            loop.run_until_complete(aclose_internal_http_client_current_loop())
+        except Exception:
+            pass
         loop.close()
         # 线程退出阶段测试环境可能已经关闭日志捕获流；这里避免再做收尾 info 日志，
         # 以免 shutdown 正常完成时反而刷出 logging error 噪音。

@@ -571,7 +571,7 @@ class ConfigManager:
                     if selected_root_value:
                         committed_selected_root = normalize_runtime_root(selected_root_value)
                     anchor_root_value = str(policy.get("anchor_root") or "").strip()
-                    if anchor_root_value:
+                    if anchor_root_value and not env_anchor_root:
                         resolved_anchor_root = normalize_runtime_root(anchor_root_value)
                     if (
                         first_run_completed
@@ -587,9 +587,10 @@ class ConfigManager:
                     if selected_root_value:
                         committed_selected_root = normalize_runtime_root(selected_root_value)
                         resolved_app_docs_dir = committed_selected_root
-                        resolved_anchor_root = normalize_runtime_root(
-                            str(policy.get("anchor_root") or "").strip() or default_anchor_root
-                        )
+                        if not env_anchor_root:
+                            resolved_anchor_root = normalize_runtime_root(
+                                str(policy.get("anchor_root") or "").strip() or default_anchor_root
+                            )
                         if (
                             first_run_completed
                             and not paths_equal(committed_selected_root, resolved_anchor_root)

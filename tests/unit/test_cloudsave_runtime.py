@@ -97,6 +97,21 @@ def _write_runtime_state(cm, *, character_name="小满"):
     return characters
 
 
+@pytest.mark.unit
+def test_resolve_managed_target_path_rejects_traversal(tmp_path):
+    from utils.cloudsave_runtime import _resolve_managed_target_path
+
+    cm = _make_config_manager(tmp_path)
+
+    with pytest.raises(ValueError):
+        _resolve_managed_target_path(cm, "anchor/../../outside.txt")
+    with pytest.raises(ValueError):
+        _resolve_managed_target_path(cm, "/absolute/outside.txt")
+
+    resolved = _resolve_managed_target_path(cm, "runtime/config/characters.json")
+    assert resolved == (cm.app_docs_dir / "config" / "characters.json").resolve(strict=False)
+
+
 def _add_runtime_character(cm, character_name: str, *, recent_text: str) -> None:
     from utils.config_manager import set_reserved
 

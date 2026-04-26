@@ -246,12 +246,16 @@ async function waitForStorageLocationStartupBarrierInternal() {
     if (typeof window.waitForStorageLocationStartupBarrier === 'function') {
         try {
             await window.waitForStorageLocationStartupBarrier();
-        } catch (_) { }
+        } catch (error) {
+            console.warn('[Init] waitForStorageLocationStartupBarrier failed', error);
+        }
     } else if (window.__nekoStorageLocationStartupBarrier
         && typeof window.__nekoStorageLocationStartupBarrier.then === 'function') {
         try {
             await window.__nekoStorageLocationStartupBarrier;
-        } catch (_) { }
+        } catch (error) {
+            console.warn('[Init] __nekoStorageLocationStartupBarrier failed', error);
+        }
     }
 }
 

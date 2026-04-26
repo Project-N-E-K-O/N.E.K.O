@@ -3094,19 +3094,27 @@ def _resolve_managed_target_path(config_manager, relative_path: str) -> Path:
         raise ValueError("managed backup relative path is empty")
 
     parts = Path(normalized_relative_path)
-    if not parts.parts:
-        raise ValueError("managed backup relative path is empty")
+    if not parts.parts or parts.is_absolute() or ".." in parts.parts:
+        raise ValueError("managed backup relative path is invalid")
 
     scope = parts.parts[0]
     suffix = Path(*parts.parts[1:]) if len(parts.parts) > 1 else Path()
     if scope == "anchor":
         root = Path(getattr(config_manager, "anchor_root", config_manager.app_docs_dir))
-        return root / suffix
-    if scope == "runtime":
-        return Path(config_manager.app_docs_dir) / suffix
+    elif scope == "runtime":
+        root = Path(config_manager.app_docs_dir)
+    else:
+        # Backward compatibility for backups created before dual-root metadata was introduced.
+        root = Path(config_manager.app_docs_dir)
+        suffix = Path(normalized_relative_path)
 
-    # Backward compatibility for backups created before dual-root metadata was introduced.
-    return Path(config_manager.app_docs_dir) / Path(normalized_relative_path)
+    resolved_root = root.expanduser().resolve(strict=False)
+    candidate = (root / suffix).expanduser().resolve(strict=False)
+    try:
+        candidate.relative_to(resolved_root)
+    except ValueError as exc:
+        raise ValueError("managed backup relative path escapes storage root") from exc
+    return candidate
 
 
 def _build_backup_path(config_manager, backup_root: Path, target_path: Path) -> Path:

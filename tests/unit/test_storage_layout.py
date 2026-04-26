@@ -5,6 +5,7 @@ import pytest
 
 from utils.storage_layout import NEKO_STORAGE_ANCHOR_ROOT_ENV, NEKO_STORAGE_SELECTED_ROOT_ENV, resolve_storage_layout
 from utils.storage_policy import save_storage_policy
+from utils.file_utils import atomic_write_json
 
 
 def _make_config_manager(tmp_path: Path):
@@ -56,6 +57,34 @@ def test_config_manager_env_overrides_committed_layout(tmp_path, monkeypatch):
     assert config_manager.anchor_root == override_anchor_root
     assert config_manager.cloudsave_dir == override_anchor_root / "cloudsave"
     assert config_manager.local_state_dir == override_anchor_root / "state"
+
+
+@pytest.mark.unit
+def test_config_manager_env_anchor_takes_precedence_over_policy_anchor(tmp_path, monkeypatch):
+    override_selected_root = (tmp_path / "override-selected" / "N.E.K.O").resolve()
+    override_anchor_root = (tmp_path / "override-anchor" / "N.E.K.O").resolve()
+    stale_policy_anchor = (tmp_path / "stale-policy-anchor" / "N.E.K.O").resolve()
+    atomic_write_json(
+        override_anchor_root / "state" / "storage_policy.json",
+        {
+            "version": 1,
+            "anchor_root": str(stale_policy_anchor),
+            "selected_root": str(override_selected_root),
+            "selection_source": "custom",
+            "cloudsave_strategy": "fixed_anchor",
+            "first_run_completed": True,
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+    monkeypatch.setenv(NEKO_STORAGE_SELECTED_ROOT_ENV, str(override_selected_root))
+    monkeypatch.setenv(NEKO_STORAGE_ANCHOR_ROOT_ENV, str(override_anchor_root))
+
+    config_manager = _make_config_manager(tmp_path)
+
+    assert config_manager.app_docs_dir == override_selected_root
+    assert config_manager.anchor_root == override_anchor_root
+    assert config_manager.anchor_root != stale_policy_anchor
 
 
 @pytest.mark.unit

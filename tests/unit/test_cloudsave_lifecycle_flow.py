@@ -9,6 +9,8 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
+from fastapi.testclient import TestClient
+
 
 def _role_state_from_session_managers(session_managers: dict) -> dict:
     """Build a role_state dict seeded with the given session_managers.
@@ -488,6 +490,22 @@ async def test_memory_server_continue_startup_refuses_active_storage_barrier():
     assert payload["ok"] is False
     assert payload["blocking_reason"] == "migration_pending"
     mock_ensure_runtime.assert_not_awaited()
+
+
+@pytest.mark.unit
+def test_memory_server_limited_mode_middleware_blocks_runtime_routes():
+    import memory_server
+
+    with patch.object(memory_server, "_config_manager", SimpleNamespace()), \
+         patch.object(memory_server, "get_storage_startup_blocking_reason", Mock(return_value="selection_required")):
+        with TestClient(memory_server.app) as client:
+            response = client.get("/get_settings/小满")
+
+    assert response.status_code == 409
+    payload = response.json()
+    assert payload["error_code"] == "storage_startup_blocked"
+    assert payload["blocking_reason"] == "selection_required"
+    assert payload["limited_mode"] is True
 
 
 @pytest.mark.unit

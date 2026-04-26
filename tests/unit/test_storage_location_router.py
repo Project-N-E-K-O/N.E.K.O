@@ -166,6 +166,33 @@ async def test_storage_location_select_same_path_releases_limited_startup_barrie
 
 
 @pytest.mark.unit
+def test_storage_location_select_same_path_rolls_back_when_startup_release_fails(tmp_path):
+    config_manager = _DummyConfigManager(tmp_path)
+    previous_root_state = config_manager.load_root_state()
+
+    async def release_storage_startup_barrier(*, reason: str):
+        raise RuntimeError("release failed")
+
+    with _build_client(
+        config_manager,
+        release_storage_startup_barrier=release_storage_startup_barrier,
+    ) as client:
+        response = client.post(
+            "/api/storage/location/select",
+            json={
+                "selected_root": str(config_manager.app_docs_dir),
+                "selection_source": "current",
+            },
+        )
+
+    assert response.status_code == 503
+    payload = response.json()
+    assert payload["error_code"] == "startup_release_failed"
+    assert load_storage_policy(config_manager) is None
+    assert config_manager.load_root_state() == previous_root_state
+
+
+@pytest.mark.unit
 def test_storage_location_select_different_path_requires_restart_without_committing_policy(tmp_path):
     config_manager = _DummyConfigManager(tmp_path)
     target_root = tmp_path / "new-storage" / "N.E.K.O"

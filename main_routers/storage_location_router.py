@@ -148,6 +148,60 @@ def _get_storage_config_manager():
         return get_runtime_config_manager(APP_NAME, migrate=False)
 
 
+def _snapshot_storage_mutation_state(config_manager, *, anchor_root: Path) -> dict[str, Any]:
+    return {
+        "root_state": config_manager.load_root_state(),
+        "policy": load_storage_policy(config_manager, anchor_root=anchor_root),
+        "migration": load_storage_migration(config_manager, anchor_root=anchor_root),
+    }
+
+
+def _restore_storage_mutation_state(
+    config_manager,
+    snapshot: dict[str, Any],
+    *,
+    anchor_root: Path,
+) -> None:
+    previous_migration = snapshot.get("migration")
+    if isinstance(previous_migration, dict):
+        save_storage_migration(config_manager, previous_migration, anchor_root=anchor_root)
+    else:
+        delete_storage_migration(config_manager, anchor_root=anchor_root)
+
+    policy_path = get_storage_policy_path(config_manager, anchor_root=anchor_root)
+    previous_policy = snapshot.get("policy")
+    if isinstance(previous_policy, dict):
+        from utils.file_utils import atomic_write_json
+
+        atomic_write_json(policy_path, previous_policy, ensure_ascii=False, indent=2)
+    else:
+        try:
+            os.unlink(policy_path)
+        except FileNotFoundError:
+            pass
+
+    previous_root_state = snapshot.get("root_state")
+    if isinstance(previous_root_state, dict):
+        config_manager.save_root_state(previous_root_state)
+
+
+async def _release_storage_startup_barrier_or_rollback(
+    config_manager,
+    *,
+    snapshot: dict[str, Any],
+    anchor_root: Path,
+    reason: str,
+) -> None:
+    try:
+        await _release_storage_startup_barrier_if_needed(reason=reason)
+    except Exception:
+        try:
+            _restore_storage_mutation_state(config_manager, snapshot, anchor_root=anchor_root)
+        except Exception:
+            pass
+        raise
+
+
 def _safe_path_size(path: Path) -> int:
     try:
         if path.is_symlink():
@@ -997,7 +1051,10 @@ async def post_storage_location_pick_directory(
     _set_no_cache_headers(response)
 
     try:
-        selected_root = _pick_storage_location_directory(start_path=payload.start_path)
+        selected_root = await asyncio.to_thread(
+            _pick_storage_location_directory,
+            start_path=payload.start_path,
+        )
     except _DirectoryPickerCancelled:
         return {
             "ok": True,
@@ -1159,6 +1216,7 @@ async def post_storage_location_select(
                         "error": "当前存储状态仍需恢复或迁移，暂时不能继续当前会话。",
                     }
 
+                state_snapshot = _snapshot_storage_mutation_state(config_manager, anchor_root=anchor_root)
                 delete_storage_migration(config_manager, anchor_root=anchor_root)
                 policy_payload = save_storage_policy(
                     config_manager,
@@ -1174,7 +1232,10 @@ async def post_storage_location_select(
                     last_migration_result=f"recovered:failed_migration:{migration_payload.get('error_code') or 'unknown'}",
                 )
                 try:
-                    await _release_storage_startup_barrier_if_needed(
+                    await _release_storage_startup_barrier_or_rollback(
+                        config_manager,
+                        snapshot=state_snapshot,
+                        anchor_root=anchor_root,
                         reason="storage_selection_continue_current_session",
                     )
                 except Exception as exc:
@@ -1191,6 +1252,7 @@ async def post_storage_location_select(
                     "selection_source": policy_payload["selection_source"],
                 }
 
+            state_snapshot = _snapshot_storage_mutation_state(config_manager, anchor_root=anchor_root)
             policy_payload = save_storage_policy(
                 config_manager,
                 selected_root=current_root,
@@ -1205,7 +1267,10 @@ async def post_storage_location_select(
                 last_migration_result=f"recovered:selected_root_unavailable:{committed_selected_root}",
             )
             try:
-                await _release_storage_startup_barrier_if_needed(
+                await _release_storage_startup_barrier_or_rollback(
+                    config_manager,
+                    snapshot=state_snapshot,
+                    anchor_root=anchor_root,
                     reason="storage_selection_continue_current_session",
                 )
             except Exception as exc:
@@ -1221,6 +1286,7 @@ async def post_storage_location_select(
                 "selected_root": str(current_root),
                 "selection_source": policy_payload["selection_source"],
             }
+        state_snapshot = _snapshot_storage_mutation_state(config_manager, anchor_root=anchor_root)
         policy_payload = save_storage_policy(
             config_manager,
             selected_root=current_root,
@@ -1228,7 +1294,10 @@ async def post_storage_location_select(
             anchor_root=anchor_root,
         )
         try:
-            await _release_storage_startup_barrier_if_needed(
+            await _release_storage_startup_barrier_or_rollback(
+                config_manager,
+                snapshot=state_snapshot,
+                anchor_root=anchor_root,
                 reason="storage_selection_continue_current_session",
             )
         except Exception as exc:
@@ -1379,9 +1448,7 @@ async def post_storage_location_restart(
                 **restart_preflight,
             }
 
-        previous_root_state = config_manager.load_root_state()
-        previous_policy = load_storage_policy(config_manager, anchor_root=anchor_root)
-        previous_migration = load_storage_migration(config_manager, anchor_root=anchor_root)
+        state_snapshot = _snapshot_storage_mutation_state(config_manager, anchor_root=anchor_root)
         try:
             delete_storage_migration(config_manager, anchor_root=anchor_root)
             save_storage_policy(
@@ -1398,24 +1465,8 @@ async def post_storage_location_restart(
             )
             request_app_shutdown()
         except Exception as exc:
-            if isinstance(previous_migration, dict):
-                save_storage_migration(config_manager, previous_migration, anchor_root=anchor_root)
-            else:
-                delete_storage_migration(config_manager, anchor_root=anchor_root)
-
-            policy_path = get_storage_policy_path(config_manager, anchor_root=anchor_root)
-            if isinstance(previous_policy, dict):
-                from utils.file_utils import atomic_write_json
-
-                atomic_write_json(policy_path, previous_policy, ensure_ascii=False, indent=2)
-            else:
-                try:
-                    os.unlink(policy_path)
-                except FileNotFoundError:
-                    pass
-
             try:
-                config_manager.save_root_state(previous_root_state)
+                _restore_storage_mutation_state(config_manager, state_snapshot, anchor_root=anchor_root)
             except Exception:
                 pass
 

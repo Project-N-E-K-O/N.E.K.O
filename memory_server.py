@@ -87,6 +87,37 @@ class ContinueStorageStartupRequest(BaseModel):
     reason: str = ""
 
 app = FastAPI()
+_STORAGE_LIMITED_MODE_ALLOWED_PATHS = {
+    "/health",
+    "/shutdown",
+    "/internal/storage/startup/continue",
+}
+
+
+@app.middleware("http")
+async def storage_limited_mode_guard(request: Request, call_next):
+    if request.url.path in _STORAGE_LIMITED_MODE_ALLOWED_PATHS:
+        return await call_next(request)
+
+    blocking_reason = get_storage_startup_blocking_reason(_config_manager)
+    if blocking_reason:
+        logger.info(
+            "[Memory] limited-mode blocks request path=%s reason=%s",
+            request.url.path,
+            blocking_reason,
+        )
+        return JSONResponse(
+            status_code=409,
+            content={
+                "ok": False,
+                "error_code": "storage_startup_blocked",
+                "blocking_reason": blocking_reason,
+                "limited_mode": True,
+                "error": "Memory server 正处于存储受限启动状态，请等待存储位置选择、迁移或恢复完成。",
+            },
+        )
+
+    return await call_next(request)
 
 
 @app.exception_handler(MaintenanceModeError)

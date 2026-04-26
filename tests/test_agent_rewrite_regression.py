@@ -1296,43 +1296,35 @@ def test_cross_server_publish_no_http_fallback():
         "_publish_analyze_request_with_fallback still targets HTTP endpoint"
 
 
+class _FakeInternalResponse:
+    def __init__(self, status, body):
+        self.status_code = status
+        self.text = body
+
+
+def _make_fake_internal_client(status, body, capture=None):
+    class FakeInternalClient:
+        async def post(self, url, **kwargs):
+            if capture is not None:
+                capture.append({"url": url, **kwargs})
+            return _FakeInternalResponse(status, body)
+
+    return FakeInternalClient
+
+
 async def test_cross_server_post_memory_server_success_and_url_encoding(monkeypatch):
     """_post_memory_server should treat 2xx + JSON body as success and URL-encode names."""
     from main_logic.cross_server import _post_memory_server
 
     calls = []
 
-    class FakeResponse:
-        def __init__(self, status, body):
-            self.status = status
-            self._body = body
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
-
-        async def text(self):
-            return self._body
-
-    class FakeSession:
-        def __init__(self, response):
-            self._response = response
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
-
-        def post(self, url, **kwargs):
-            calls.append({"url": url, **kwargs})
-            return self._response
-
     monkeypatch.setattr(
-        "main_logic.cross_server.aiohttp.ClientSession",
-        lambda: FakeSession(FakeResponse(200, json.dumps({"status": "cached", "count": 2}, ensure_ascii=False))),
+        "main_logic.cross_server.get_internal_http_client",
+        lambda: _make_fake_internal_client(
+            200,
+            json.dumps({"status": "cached", "count": 2}, ensure_ascii=False),
+            capture=calls,
+        )(),
     )
 
     ok, err_detail, payload = await _post_memory_server(
@@ -1354,31 +1346,10 @@ async def test_cross_server_post_memory_server_handles_http_non_2xx(monkeypatch)
     """_post_memory_server should convert non-2xx response into explicit error detail."""
     from main_logic.cross_server import _post_memory_server
 
-    class FakeResponse:
-        def __init__(self, status, body):
-            self.status = status
-            self._body = body
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
-
-        async def text(self):
-            return self._body
-
-    class FakeSession:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
-
-        def post(self, url, **kwargs):
-            return FakeResponse(502, "bad gateway")
-
-    monkeypatch.setattr("main_logic.cross_server.aiohttp.ClientSession", lambda: FakeSession())
+    monkeypatch.setattr(
+        "main_logic.cross_server.get_internal_http_client",
+        lambda: _make_fake_internal_client(502, "bad gateway")(),
+    )
 
     ok, err_detail, payload = await _post_memory_server(
         "cache",
@@ -1396,31 +1367,10 @@ async def test_cross_server_post_memory_server_handles_non_json_2xx(monkeypatch)
     """_post_memory_server should fail loudly when body is non-JSON despite 2xx."""
     from main_logic.cross_server import _post_memory_server
 
-    class FakeResponse:
-        def __init__(self, status, body):
-            self.status = status
-            self._body = body
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
-
-        async def text(self):
-            return self._body
-
-    class FakeSession:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
-
-        def post(self, url, **kwargs):
-            return FakeResponse(200, "<html>oops</html>")
-
-    monkeypatch.setattr("main_logic.cross_server.aiohttp.ClientSession", lambda: FakeSession())
+    monkeypatch.setattr(
+        "main_logic.cross_server.get_internal_http_client",
+        lambda: _make_fake_internal_client(200, "<html>oops</html>")(),
+    )
 
     ok, err_detail, payload = await _post_memory_server(
         "cache",
@@ -1438,31 +1388,10 @@ async def test_cross_server_post_memory_server_handles_business_error(monkeypatc
     """_post_memory_server should return explicit error when memory_server returns status=error."""
     from main_logic.cross_server import _post_memory_server
 
-    class FakeResponse:
-        def __init__(self, status, body):
-            self.status = status
-            self._body = body
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
-
-        async def text(self):
-            return self._body
-
-    class FakeSession:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
-
-        def post(self, url, **kwargs):
-            return FakeResponse(200, json.dumps({"status": "error", "message": "boom"}))
-
-    monkeypatch.setattr("main_logic.cross_server.aiohttp.ClientSession", lambda: FakeSession())
+    monkeypatch.setattr(
+        "main_logic.cross_server.get_internal_http_client",
+        lambda: _make_fake_internal_client(200, json.dumps({"status": "error", "message": "boom"}))(),
+    )
 
     ok, err_detail, payload = await _post_memory_server(
         "cache",
@@ -1542,6 +1471,26 @@ def test_cross_server_memory_cache_exception_logs_warning_once_then_debug(monkey
     assert "进入异常状态" in warning_msgs[0]
     assert "持续" in debug_msgs[0]
     assert health_state[cs.MEMORY_CACHE_SCOPE_TURN_END] is True
+
+
+def test_cross_server_unknown_memory_cache_exception_keeps_traceback(monkeypatch):
+    import main_logic.cross_server as cs
+
+    warning_calls = []
+    monkeypatch.setattr(
+        cs.logger,
+        "warning",
+        lambda msg, *args, **kwargs: warning_calls.append(
+            {"message": msg % args if args else msg, "kwargs": kwargs}
+        ),
+    )
+
+    health_state = {cs.MEMORY_CACHE_SCOPE_TURN_END: False}
+    cs._mark_memory_cache_exception("小天", cs.MEMORY_CACHE_SCOPE_TURN_END, ValueError("bad payload"), health_state)
+
+    assert len(warning_calls) == 1
+    assert "未知类型" in warning_calls[0]["message"]
+    assert warning_calls[0]["kwargs"].get("exc_info") is True
 
 
 def test_cross_server_memory_cache_business_failure_and_recovery(monkeypatch):
