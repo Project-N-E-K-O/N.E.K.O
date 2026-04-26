@@ -450,6 +450,14 @@
         maintenanceProgressLabel: null,
         maintenanceProgressValue: null,
         maintenanceProgressSteps: [],
+        lastMaintenanceProgressPayload: null,
+        // 记录最近一次 setSelectionStatus / showError 时使用的 i18n key（如有）。
+        // rebuildModalForLocale 在切语言后会优先按 key 重新翻译，避免快照里塞回旧 locale 的字面文案。
+        // 来自后端透传的运行时错误（error.message 等）则不带 key，rebuild 时按原文回填。
+        selectionStatusI18nKey: '',
+        selectionStatusI18nFallback: '',
+        errorTextI18nKey: '',
+        errorTextI18nFallback: '',
         maintenancePollPromise: null,
         completionPollTimer: null,
         completionPollAttempts: 0,
@@ -818,12 +826,30 @@
         }
     }
 
-    function setSelectionStatus(message, isError) {
-        if (!state.selectionStatus) return;
+    function setSelectionStatus(message, isError, options) {
+        // options.i18nKey + options.i18nFallback 表示这条 status 是翻译出来的，
+        // rebuildModalForLocale 切语言后会用 translate(key, fallback) 重新算文案。
+        // 不传 options 则视作运行时动态文本（如后端 error.message），rebuild 时
+        // 沿用旧文案不重译。
         var text = String(message || '').trim();
+        if (text && options && options.i18nKey) {
+            state.selectionStatusI18nKey = String(options.i18nKey);
+            state.selectionStatusI18nFallback = String(options.i18nFallback || '');
+        } else {
+            state.selectionStatusI18nKey = '';
+            state.selectionStatusI18nFallback = '';
+        }
+        if (!state.selectionStatus) return;
         state.selectionStatus.hidden = !text;
         state.selectionStatus.textContent = text;
         state.selectionStatus.classList.toggle('storage-location-note--error', !!isError && !!text);
+    }
+
+    function setSelectionStatusByKey(key, fallback, isError) {
+        setSelectionStatus(translate(key, fallback), isError, {
+            i18nKey: key,
+            i18nFallback: fallback,
+        });
     }
 
     function setLoadingCopy(title, subtitle) {
@@ -1234,8 +1260,11 @@
         }
     }
 
-    function showRestartRequired(payload, fallbackTargetPath, selectionSource) {
-        if (!state.bootstrap || !state.previewPanel) return;
+    // 仅根据 preflight 填充预览面板的字段并显示预览面板，不切换 phase、
+    // 不修改 otherPanel 的可见性、不清空 selectionStatus。供 showRestartRequired
+    // 走完整流程，以及 rebuildModalForLocale 在快照恢复路径上单独使用。
+    function populateRestartPreview(payload, fallbackTargetPath, selectionSource) {
+        if (!state.bootstrap || !state.previewPanel) return null;
 
         var preflight = extractPreflightDetails(payload, fallbackTargetPath);
         state.pendingSelection.path = preflight.target_root || '';
@@ -1260,8 +1289,13 @@
             }
         }
         updateRestartPreviewPreflight(preflight);
-        state.otherPanel.hidden = true;
         state.previewPanel.hidden = false;
+        return preflight;
+    }
+
+    function showRestartRequired(payload, fallbackTargetPath, selectionSource) {
+        if (!populateRestartPreview(payload, fallbackTargetPath, selectionSource)) return;
+        state.otherPanel.hidden = true;
         setSelectionStatus('', false);
         setPhase('selection_required');
     }
@@ -1379,6 +1413,10 @@
     }
 
     function applyMaintenanceProgress(statusPayload) {
+        // 缓存最近一次驱动进度条渲染的 payload，供 rebuildModalForLocale 在
+        // 语言切换重建后立刻按当前 locale 重渲一次进度条，避免等下一次轮询。
+        state.lastMaintenanceProgressPayload = statusPayload || null;
+
         if (!state.maintenanceProgressBar || !state.maintenanceProgressFill) {
             return;
         }
@@ -1674,14 +1712,45 @@
         }
     }
 
+    var STORAGE_ERROR_DETAIL_MAX_LEN = 200;
+
+    function truncateErrorDetail(text) {
+        var trimmed = String(text || '').trim();
+        if (trimmed.length <= STORAGE_ERROR_DETAIL_MAX_LEN) return trimmed;
+        return trimmed.slice(0, STORAGE_ERROR_DETAIL_MAX_LEN) + '…';
+    }
+
     function extractResponseError(payload, fallbackText) {
         if (payload && typeof payload === 'object') {
-            var codedText = translateResponseErrorCode(
-                payload.error_code || payload.blocking_error_code,
-                ''
-            );
+            var rawError = typeof payload.error === 'string' ? String(payload.error).trim() : '';
+            var code = String(payload.error_code || payload.blocking_error_code || '').trim();
+            var codedText = translateResponseErrorCode(code, '');
             if (codedText) {
+                // startup_release_failed 这类后端会把异常细节塞进 payload.error
+                // （f"... {exc}" 风格）。完整字符串可能含路径/异常类名/栈片段，
+                // 直接展示既不友好也可能泄露内部信息。所以：
+                //   - 完整原文打到 console.warn 给开发者看
+                //   - UI 只展示翻译后的概括语 + 裁短的尾巴（≤200 字符）
+                if (code === 'startup_release_failed' && rawError && rawError !== codedText) {
+                    try {
+                        console.warn('[storage-location] startup_release_failed detail:', rawError);
+                    } catch (_) {}
+                    return codedText + ' ' + truncateErrorDetail(rawError);
+                }
                 return codedText;
+            }
+            // 未在 translateResponseErrorCode 命中的 error_code 走通用兜底：
+            // 本仓 i18n 设计哲学是「错误码翻译完整性在评审时强制，不做运行时
+            // hit 兜底」，所以这里不要把后端 raw payload.error 透出给 UI——
+            // 详情打到 console 给开发者，UI 走调用方传入的 fallbackText 概括语。
+            if (rawError) {
+                try {
+                    console.warn(
+                        '[storage-location] unhandled storage error_code, raw detail:',
+                        code || '(none)',
+                        rawError
+                    );
+                } catch (_) {}
             }
         }
         return fallbackText;
@@ -1692,10 +1761,7 @@
 
         var normalizedTargetPath = String(targetPath || '').trim();
         if (!normalizedTargetPath) {
-            setSelectionStatus(
-                translate('storage.selectPathRequired', '请先提供目标路径。'),
-                true
-            );
+            setSelectionStatusByKey('storage.selectPathRequired', '请先提供目标路径。', true);
             return;
         }
 
@@ -1891,10 +1957,7 @@
 
     async function requestRestart() {
         if (!state.pendingSelection.path) {
-            setSelectionStatus(
-                translate('storage.selectPathRequired', '请先提供目标路径。'),
-                true
-            );
+            setSelectionStatusByKey('storage.selectPathRequired', '请先提供目标路径。', true);
             return;
         }
 
@@ -1978,9 +2041,17 @@
     }
 
     function showError(error) {
-        state.errorText.textContent = error
-            ? String(error.message || error)
-            : translate('storage.bootstrapError', '无法读取存储位置初始化信息，请重试。');
+        if (error) {
+            // 运行时透传的错误（fetch / parse 失败等）。文案由调用方/异常自带，
+            // 不打 i18n key，rebuild 切语言时按原文回填。
+            state.errorTextI18nKey = '';
+            state.errorTextI18nFallback = '';
+            state.errorText.textContent = String(error.message || error);
+        } else {
+            state.errorTextI18nKey = 'storage.bootstrapError';
+            state.errorTextI18nFallback = '无法读取存储位置初始化信息，请重试。';
+            state.errorText.textContent = translate(state.errorTextI18nKey, state.errorTextI18nFallback);
+        }
         setPhase('error');
     }
 
@@ -2386,6 +2457,193 @@
         state.overlay = overlay;
     }
 
+    // 当 i18next 加载完成或用户切换语言时，模态框里通过 translate(key, fallback)
+    // 取到的静态文本不会自动刷新（DOM 在更早就已经构建出来）。这里把模态框
+    // 拆掉重建，并把不依赖 DOM 的关键状态恢复回去，保证语言切换可见。
+    function rebuildModalForLocale() {
+        if (!state.overlay) return;
+
+        var snapshot = {
+            phase: state.phase,
+            submitting: state.submitting,
+            otherPanelHidden: state.otherPanel ? state.otherPanel.hidden : true,
+            previewPanelHidden: state.previewPanel ? state.previewPanel.hidden : true,
+            customInputValue: state.customInput ? state.customInput.value : '',
+            errorText: state.errorText ? state.errorText.textContent : '',
+            errorTextI18nKey: state.errorTextI18nKey,
+            errorTextI18nFallback: state.errorTextI18nFallback,
+            selectionStatusText: state.selectionStatus ? state.selectionStatus.textContent : '',
+            selectionStatusIsError: state.selectionStatus
+                ? state.selectionStatus.classList.contains('storage-location-note--error')
+                : false,
+            selectionStatusI18nKey: state.selectionStatusI18nKey,
+            selectionStatusI18nFallback: state.selectionStatusI18nFallback,
+            // 处于 maintenance 阶段时，下一次轮询可能要 ~900ms-1200ms 才到，
+            // 直接抓 DOM 文案先把视觉占住，避免重建瞬间退回构建期默认值。
+            maintenanceTitleText: state.maintenanceTitle ? state.maintenanceTitle.textContent : '',
+            maintenanceSubtitleText: state.maintenanceSubtitle ? state.maintenanceSubtitle.textContent : '',
+            maintenanceStatusText: state.maintenanceStatus ? state.maintenanceStatus.textContent : '',
+            lastMaintenanceProgressPayload: state.lastMaintenanceProgressPayload,
+            pendingSelection: {
+                path: state.pendingSelection.path,
+                source: state.pendingSelection.source,
+                preflight: state.pendingSelection.preflight
+                    ? Object.assign({}, state.pendingSelection.preflight)
+                    : null,
+            },
+            otherSelection: {
+                key: state.otherSelection.key,
+                path: state.otherSelection.path,
+            },
+            completionNotice: state.completionNotice,
+            completionCardVisible: !!(state.completionCard && !state.completionCard.hidden),
+        };
+
+        if (state.overlay.parentNode) {
+            state.overlay.parentNode.removeChild(state.overlay);
+        }
+        state.overlay = null;
+        state.loadingView = null;
+        state.maintenanceView = null;
+        state.selectionView = null;
+        state.errorView = null;
+        state.banner = null;
+        state.currentPath = null;
+        state.recommendedPath = null;
+        state.otherPanel = null;
+        state.legacyChoices = null;
+        state.customInput = null;
+        state.pickFolderButton = null;
+        state.useOtherButton = null;
+        state.previewPanel = null;
+        state.previewText = null;
+        state.previewSource = null;
+        state.previewTarget = null;
+        state.previewEstimated = null;
+        state.previewFreeSpace = null;
+        state.previewPermission = null;
+        state.previewWarnings = null;
+        state.previewBlocking = null;
+        state.previewConfirmButton = null;
+        state.previewActions = null;
+        state.selectionStatus = null;
+        state.errorText = null;
+        state.loadingTitle = null;
+        state.loadingSubtitle = null;
+        state.maintenanceTitle = null;
+        state.maintenanceSubtitle = null;
+        state.maintenanceStatus = null;
+        state.maintenanceProgressBar = null;
+        state.maintenanceProgressFill = null;
+        state.maintenanceProgressLabel = null;
+        state.maintenanceProgressValue = null;
+        state.maintenanceProgressSteps = [];
+        state.actionButtons = [];
+
+        if (state.completionCard && state.completionCard.parentNode) {
+            state.completionCard.parentNode.removeChild(state.completionCard);
+        }
+        state.completionCard = null;
+        state.completionTitle = null;
+        state.completionMessage = null;
+        state.completionTarget = null;
+        state.completionRetained = null;
+        state.completionOpenTargetButton = null;
+        state.completionOpenRetainedButton = null;
+        state.completionCleanupButton = null;
+
+        buildModalDom();
+
+        state.pendingSelection = snapshot.pendingSelection;
+        state.otherSelection = snapshot.otherSelection;
+
+        if (state.customInput) {
+            state.customInput.value = snapshot.customInputValue;
+        }
+
+        if (state.bootstrap) {
+            updateSelectionSummary();
+        }
+
+        if (state.otherPanel) {
+            state.otherPanel.hidden = snapshot.otherPanelHidden;
+        }
+
+        if (snapshot.pendingSelection.preflight && state.bootstrap && state.previewPanel) {
+            // 用 populate-only 版本，避免它内部 setPhase 再被下面 setPhase(snapshot.phase) 盖掉。
+            populateRestartPreview(
+                snapshot.pendingSelection.preflight,
+                snapshot.pendingSelection.path,
+                snapshot.pendingSelection.source
+            );
+        }
+
+        if (state.errorText) {
+            // 优先按 i18n key 重新翻译，避免快照里塞回旧 locale 的字面文案；
+            // 没有 key 的情况（运行时错误透传等）保留快照原文。
+            if (snapshot.errorTextI18nKey) {
+                state.errorTextI18nKey = snapshot.errorTextI18nKey;
+                state.errorTextI18nFallback = snapshot.errorTextI18nFallback;
+                state.errorText.textContent = translate(
+                    snapshot.errorTextI18nKey,
+                    snapshot.errorTextI18nFallback
+                );
+            } else if (snapshot.errorText) {
+                state.errorTextI18nKey = '';
+                state.errorTextI18nFallback = '';
+                state.errorText.textContent = snapshot.errorText;
+            }
+        }
+
+        if (snapshot.selectionStatusI18nKey) {
+            setSelectionStatusByKey(
+                snapshot.selectionStatusI18nKey,
+                snapshot.selectionStatusI18nFallback,
+                snapshot.selectionStatusIsError
+            );
+        } else if (snapshot.selectionStatusText) {
+            setSelectionStatus(snapshot.selectionStatusText, snapshot.selectionStatusIsError);
+        }
+
+        if (snapshot.phase === 'maintenance') {
+            // 先用快照的旧文案立刻填充（避免重建瞬间显示构建期默认值），下一次
+            // 轮询会用新 locale 覆盖这层临时文案。再立刻按缓存 payload 重渲一遍
+            // 进度条——这一步本身就走 translate()，所以进度条文案立刻就是新 locale 的了。
+            setMaintenanceCopy(
+                snapshot.maintenanceTitleText,
+                snapshot.maintenanceSubtitleText,
+                snapshot.maintenanceStatusText
+            );
+            if (snapshot.lastMaintenanceProgressPayload) {
+                applyMaintenanceProgress(snapshot.lastMaintenanceProgressPayload);
+            }
+        }
+
+        setPhase(snapshot.phase);
+        setSubmitting(snapshot.submitting);
+
+        if (snapshot.completionCardVisible && snapshot.completionNotice) {
+            applyCompletionNotice(snapshot.completionNotice);
+        }
+    }
+
+    function handleLocaleChange() {
+        // 重建可能涉及修改大量 DOM；只有当模态框已经挂载时才需要刷新。
+        if (!state.overlay) return;
+        try {
+            rebuildModalForLocale();
+        } catch (error) {
+            console.warn('[storage-location] locale rebuild failed', error);
+        }
+    }
+
+    var localeListenerAttached = false;
+    function attachLocaleListener() {
+        if (localeListenerAttached) return;
+        localeListenerAttached = true;
+        window.addEventListener('localechange', handleLocaleChange);
+    }
+
     async function fetchBootstrap() {
         setPhase('loading');
         setLoadingCopy(
@@ -2428,6 +2686,7 @@
 
     async function beginSentinelFlow() {
         buildModalDom();
+        attachLocaleListener();
         setPhase('loading');
         setLoadingCopy(
             translate('storage.loadingTitle', '正在确认存储布局状态'),
