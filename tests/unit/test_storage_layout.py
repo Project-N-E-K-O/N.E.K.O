@@ -45,6 +45,20 @@ def test_config_manager_uses_committed_storage_policy_for_selected_and_anchor_ro
 
 
 @pytest.mark.unit
+def test_config_manager_keeps_fixed_anchor_when_policy_load_fails(tmp_path, monkeypatch):
+    monkeypatch.delenv(NEKO_STORAGE_SELECTED_ROOT_ENV, raising=False)
+    monkeypatch.delenv(NEKO_STORAGE_ANCHOR_ROOT_ENV, raising=False)
+
+    with patch("utils.storage_policy.load_storage_policy", side_effect=OSError("policy unreadable")):
+        config_manager = _make_config_manager(tmp_path)
+
+    assert config_manager.app_docs_dir == (tmp_path / "runtime-parent" / "N.E.K.O")
+    assert config_manager.committed_selected_root == config_manager.app_docs_dir
+    assert config_manager.anchor_root == (tmp_path / "anchor-base" / "N.E.K.O").resolve()
+    assert config_manager.cloudsave_dir == config_manager.anchor_root / "cloudsave"
+
+
+@pytest.mark.unit
 def test_config_manager_env_overrides_committed_layout(tmp_path, monkeypatch):
     override_selected_root = (tmp_path / "override-selected" / "N.E.K.O").resolve()
     override_anchor_root = (tmp_path / "override-anchor" / "N.E.K.O").resolve()

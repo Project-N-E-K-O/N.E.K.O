@@ -556,6 +556,7 @@ class ConfigManager:
         resolved_anchor_root = default_app_docs_dir
         committed_selected_root = default_app_docs_dir
         recovery_committed_root_unavailable = False
+        default_anchor_root = None
         try:
             from utils.storage_policy import (
                 compute_anchor_root,
@@ -613,12 +614,13 @@ class ConfigManager:
                             recovery_committed_root_unavailable = True
         except Exception as e:
             logger.warning(
-                "Failed to resolve storage policy paths; falling back to default app docs dir: %s",
+                "Failed to resolve storage policy paths; falling back to default runtime root: %s",
                 e,
                 exc_info=True,
             )
             resolved_app_docs_dir = default_app_docs_dir
-            resolved_anchor_root = default_app_docs_dir
+            if default_anchor_root is not None:
+                resolved_anchor_root = default_anchor_root
             committed_selected_root = resolved_app_docs_dir
 
         self.app_docs_dir = resolved_app_docs_dir

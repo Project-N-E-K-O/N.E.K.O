@@ -9,7 +9,11 @@ from utils.storage_location_bootstrap import (
     get_storage_startup_blocking_reason,
     is_storage_startup_blocked,
 )
-from utils.storage_migration import create_pending_storage_migration, run_pending_storage_migration
+from utils.storage_migration import (
+    create_pending_storage_migration,
+    delete_storage_migration,
+    run_pending_storage_migration,
+)
 from utils.storage_policy import save_storage_policy
 
 
@@ -273,6 +277,37 @@ def test_storage_location_bootstrap_payload_marks_cleanup_pending_for_non_anchor
 
     root_state = reloaded_manager.load_root_state()
     assert root_state["legacy_cleanup_pending"] is True
+
+
+@pytest.mark.unit
+def test_storage_location_bootstrap_keeps_cleanup_pending_when_checkpoint_is_missing(tmp_path):
+    config_manager = _make_real_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+
+    (source_root / "config").mkdir(parents=True, exist_ok=True)
+    (source_root / "config" / "characters.json").write_text('{"current":"A"}', encoding="utf-8")
+
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    run_pending_storage_migration(config_manager)
+    delete_storage_migration(config_manager)
+
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    root_state_before = reloaded_manager.load_root_state()
+    assert root_state_before["legacy_cleanup_pending"] is True
+    assert root_state_before["last_migration_backup"] == str(source_root.resolve())
+
+    payload = build_storage_location_bootstrap_payload(reloaded_manager)
+
+    assert payload["legacy_cleanup_pending"] is True
+    root_state_after = reloaded_manager.load_root_state()
+    assert root_state_after["legacy_cleanup_pending"] is True
+    assert root_state_after["last_migration_backup"] == str(source_root.resolve())
 
 
 @pytest.mark.unit

@@ -122,6 +122,11 @@ def _derive_legacy_cleanup_pending(
     current_root: Path,
     anchor_root: Path,
 ) -> bool:
+    if bool(root_state.get("legacy_cleanup_pending")):
+        return True
+    if str(root_state.get("last_migration_backup") or "").strip():
+        return True
+
     retained_root = str(
         migration_payload.get("retained_source_root")
         or migration_payload.get("backup_root")
@@ -138,9 +143,8 @@ def _derive_legacy_cleanup_pending(
     ):
         return False
 
-    root_state_flag = bool(root_state.get("legacy_cleanup_pending"))
     migration_completed = str(migration_payload.get("status") or "").strip() == "completed"
-    return bool(root_state_flag or migration_completed)
+    return bool(migration_completed)
 
 
 def _reconcile_legacy_cleanup_pending_root_state(
