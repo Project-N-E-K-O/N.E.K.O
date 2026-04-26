@@ -2092,9 +2092,9 @@
             "textGuardMaxLength": "回复长度上限",
             "unlimited": "无限制",
             "characters": "字",
-            "tokens": "tokens",
+            "tokens": "词元",
             "textGuardUnlimitedWarning": "可能导致猫娘出现严重问题，非必要不建议无限制",
-            "textGuardHighWarning": "设置过大可能导致猫娘记忆和语言混乱，建议 1000 tokens 以内",
+            "textGuardHighWarning": "设置过大可能导致猫娘记忆和语言混乱，建议 1000 词元以内",
             "textGuardNote": "按 tiktoken 统计；仅对文本回复有效，不影响语音对话"
         }
     },
