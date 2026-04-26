@@ -56,7 +56,7 @@ def _mock_selection_required_state(
     blocking_reason = "migration_pending" if migration_pending else ("recovery_required" if recovery_required else "selection_required")
 
     page.route(
-        "**/api/v1/system/status",
+        "**/api/system/status",
         lambda route: route.fulfill(
             status=200,
             content_type="application/json",
@@ -357,7 +357,7 @@ def test_storage_location_restart_confirmation_enters_maintenance_page_and_recov
             """,
         )
 
-    page.route("**/api/v1/system/status", handle_status)
+    page.route("**/api/system/status", handle_status)
 
     def handle_storage_location_status(route):
         storage_status_requests["count"] += 1
@@ -645,7 +645,7 @@ def test_storage_location_pending_migration_refresh_stays_on_maintenance_page_in
     page = mock_page
 
     page.route(
-        "**/api/v1/system/status",
+        "**/api/system/status",
         lambda route: route.fulfill(
             status=200,
             content_type="application/json",
@@ -752,7 +752,7 @@ def test_storage_location_overlay_stays_open_for_recovery_required_state_even_if
     page = mock_page
 
     page.route(
-        "**/api/v1/system/status",
+        "**/api/system/status",
         lambda route: route.fulfill(
             status=200,
             content_type="application/json",
@@ -821,7 +821,7 @@ def test_storage_location_ready_state_skips_overlay_and_allows_normal_startup(
     bootstrap_requests = {"count": 0}
 
     page.route(
-        "**/api/v1/system/status",
+        "**/api/system/status",
         lambda route: route.fulfill(
             status=200,
             content_type="application/json",
@@ -904,7 +904,7 @@ def test_storage_location_ready_state_shows_completion_notice_and_allows_manual_
     target_root = str((tmp_path / "target-root" / "N.E.K.O").resolve())
 
     page.route(
-        "**/api/v1/system/status",
+        "**/api/system/status",
         lambda route: route.fulfill(
             status=200,
             content_type="application/json",

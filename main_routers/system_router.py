@@ -255,7 +255,7 @@ async def _read_json_object(request: Request) -> dict[str, object]:
     return payload if isinstance(payload, dict) else {}
 
 
-@router.get("/v1/system/status")
+@router.get("/system/status")
 async def get_system_status(response: Response):
     """Return a lightweight readiness snapshot for the web bootstrap sentinel."""
     _set_no_store_headers(response)

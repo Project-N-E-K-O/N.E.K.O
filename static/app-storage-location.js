@@ -889,7 +889,7 @@
     }
 
     async function fetchSystemStatus() {
-        var response = await fetch('/api/v1/system/status', {
+        var response = await fetch('/api/system/status', {
             cache: 'no-store',
             headers: {
                 'Accept': 'application/json'

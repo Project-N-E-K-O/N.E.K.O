@@ -12,6 +12,9 @@ from utils.storage_migration import create_pending_storage_migration
 from utils.storage_policy import save_storage_policy
 
 
+SYSTEM_STATUS_ENDPOINT = "/api/system/status"
+
+
 class _DummyConfigManager:
     def __init__(self, tmp_path: Path, *, root_mode: str = "normal"):
         self.app_name = "N.E.K.O"
@@ -55,7 +58,7 @@ def test_system_status_reports_migration_required_when_storage_selection_is_bloc
     config_manager = _DummyConfigManager(tmp_path)
 
     with _build_client(config_manager) as client:
-        response = client.get("/api/v1/system/status")
+        response = client.get(SYSTEM_STATUS_ENDPOINT)
 
     assert response.status_code == 200
     payload = response.json()
@@ -81,7 +84,7 @@ def test_system_status_uses_runtime_config_manager_fallback_when_shared_state_is
         return_value=config_manager,
     ):
         with _build_client(config_manager) as client:
-            response = client.get("/api/v1/system/status")
+            response = client.get(SYSTEM_STATUS_ENDPOINT)
 
     assert response.status_code == 200
     payload = response.json()
@@ -105,7 +108,7 @@ def test_system_status_reports_ready_after_storage_policy_when_dev_override_disa
     )
 
     with _build_client(config_manager) as client:
-        response = client.get("/api/v1/system/status")
+        response = client.get(SYSTEM_STATUS_ENDPOINT)
 
     assert response.status_code == 200
     payload = response.json()
@@ -135,7 +138,7 @@ def test_system_status_reports_migration_required_for_recovery_state_even_withou
     )
 
     with _build_client(config_manager) as client:
-        response = client.get("/api/v1/system/status")
+        response = client.get(SYSTEM_STATUS_ENDPOINT)
 
     assert response.status_code == 200
     payload = response.json()
@@ -168,7 +171,7 @@ def test_system_status_reports_migration_required_when_checkpoint_is_pending(tmp
     )
 
     with _build_client(config_manager) as client:
-        response = client.get("/api/v1/system/status")
+        response = client.get(SYSTEM_STATUS_ENDPOINT)
 
     assert response.status_code == 200
     payload = response.json()
@@ -177,3 +180,13 @@ def test_system_status_reports_migration_required_when_checkpoint_is_pending(tmp
     assert payload["ready"] is False
     assert payload["storage"]["migration_pending"] is True
     assert payload["storage"]["blocking_reason"] == "migration_pending"
+
+
+@pytest.mark.unit
+def test_system_status_does_not_expose_legacy_versioned_route(tmp_path):
+    config_manager = _DummyConfigManager(tmp_path)
+
+    with _build_client(config_manager) as client:
+        response = client.get("/api/v1/system/status")
+
+    assert response.status_code == 404
