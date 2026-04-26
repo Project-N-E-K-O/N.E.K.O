@@ -1805,10 +1805,7 @@ body.react-chat-window-dragging {
         font-size: 0.78rem;
     }
 
-    .crop-bg-image {
-        top: 36px;
-        height: calc(100% - 36px);
-    }
+    /* .crop-bg-image 的 top/width/height 由 app-crop.js computeImgMetrics() 写入 inline style，此处不再重复定义 */
 
     .crop-canvas {
         top: 36px;
