@@ -140,7 +140,15 @@ async def test_persona_locks_prevent_corruption_proof(tmp_path):
         await pm.arecord_mentions("小天", text)
 
     with patch.object(pm, "asave_persona", side_effect=slow_save):
-        await asyncio.gather(*(racy_record("主人喜欢喝咖啡") for _ in range(10)))
+        # `return_exceptions=True` keeps the race playing out when a coroutine
+        # raises (Windows surfaces concurrent atomic-replace contention as
+        # PermissionError; on POSIX the same race usually manifests as silent
+        # lost updates). Either failure mode satisfies the oracle: the lock is
+        # what prevents both.
+        await asyncio.gather(
+            *(racy_record("主人喜欢喝咖啡") for _ in range(10)),
+            return_exceptions=True,
+        )
 
     # Without the lock at least one update is lost
     fresh, _ = _install_persona(str(tmp_path))

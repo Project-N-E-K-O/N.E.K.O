@@ -308,11 +308,18 @@ class PluginPacker:
                 archive.write(path, arcname=path.relative_to(staging_root).as_posix())
 
     def compute_payload_hash(self, payload_dir: Path) -> str:
-        digest = hashlib.sha256()
-        for path in sorted(payload_dir.rglob("*")):
+        # Sort by the posix relative path (matches `compute_archive_payload_hash`).
+        # `sorted(rglob(...))` sorts WindowsPath objects case-insensitively, which
+        # diverges from the archive-side hash that sorts case-sensitively on the
+        # posix path string and would yield a payload-hash mismatch on Windows.
+        entries: list[tuple[str, Path]] = []
+        for path in payload_dir.rglob("*"):
             if path.is_dir():
                 continue
-            relative = path.relative_to(payload_dir).as_posix()
+            entries.append((path.relative_to(payload_dir).as_posix(), path))
+
+        digest = hashlib.sha256()
+        for relative, path in sorted(entries, key=lambda item: item[0]):
             digest.update(relative.encode("utf-8"))
             digest.update(b"\0")
             digest.update(path.read_bytes())

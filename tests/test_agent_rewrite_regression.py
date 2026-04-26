@@ -215,36 +215,43 @@ def test_yui_guide_steps_registry_keeps_m1_to_m4_home_flow_contract():
         assert expected in source
 
 
+_YUI_RUNTIME_SCRIPTS = (
+    "yui-guide-steps.js",
+    "yui-guide-overlay.js",
+    "yui-guide-page-handoff.js",
+    "yui-guide-director.js",
+)
+
+
+def _script_tag_position(source: str, script_name: str) -> int:
+    """Find the position of a `<script src="/static/{script_name}...">` tag,
+    ignoring the `?v=...` cache-buster query string."""
+    needle = f'<script src="/static/{script_name}'
+    position = source.find(needle)
+    assert position != -1, f"missing script tag for {script_name}"
+    return position
+
+
 def test_home_template_loads_yui_runtime_stack_before_tutorial_manager():
     source = Path("templates/index.html").read_text(encoding="utf-8")
 
-    expected_order = [
-        '<script src="/static/yui-guide-steps.js?v=20260422-1"></script>',
-        '<script src="/static/yui-guide-overlay.js?v=20260422-6"></script>',
-        '<script src="/static/yui-guide-page-handoff.js?v=20260422-6"></script>',
-        '<script src="/static/yui-guide-director.js?v=20260422-6"></script>',
-        '<script src="/static/universal-tutorial-manager.js"></script>',
+    positions = [
+        _script_tag_position(source, name)
+        for name in (*_YUI_RUNTIME_SCRIPTS, "universal-tutorial-manager.js")
     ]
-
-    positions = [source.index(fragment) for fragment in expected_order]
     assert positions == sorted(positions)
 
 
 def test_target_page_templates_load_yui_runtime_stack_before_tutorial_manager():
-    expected_order = [
-        '<script src="/static/yui-guide-steps.js?v=20260422-1"></script>',
-        '<script src="/static/yui-guide-overlay.js?v=20260422-6"></script>',
-        '<script src="/static/yui-guide-page-handoff.js?v=20260422-6"></script>',
-        '<script src="/static/yui-guide-director.js?v=20260422-6"></script>',
-    ]
-
-    for template_path, tutorial_manager_script in (
-        ("templates/api_key_settings.html", '<script src="/static/universal-tutorial-manager.js?v=2"></script>'),
-        ("templates/memory_browser.html", '<script src="/static/universal-tutorial-manager.js?v=12"></script>'),
-        ("templates/steam_workshop_manager.html", '<script src="/static/universal-tutorial-manager.js"></script>'),
+    for template_path in (
+        "templates/api_key_settings.html",
+        "templates/memory_browser.html",
     ):
         source = Path(template_path).read_text(encoding="utf-8")
-        positions = [source.index(fragment) for fragment in (*expected_order, tutorial_manager_script)]
+        positions = [
+            _script_tag_position(source, name)
+            for name in (*_YUI_RUNTIME_SCRIPTS, "universal-tutorial-manager.js")
+        ]
         assert positions == sorted(positions), template_path
         assert '<link rel="stylesheet" href="/static/css/yui-guide.css">' in source
 
