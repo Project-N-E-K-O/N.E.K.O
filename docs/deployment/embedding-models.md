@@ -41,7 +41,7 @@ data/embedding_models/local-text-retrieval-v1/
     model_quantized.onnx_data
 ```
 
-Source runs use this bundled development cache when no user override exists in the app data directory. A user override can still be placed under:
+Source runs use this bundled development cache when the user's app-data profile is absent **or incomplete**. The runtime falls back to the bundle whenever the app-data profile fails its completeness check — common cases include a missing `tokenizer.json`, a missing `onnx/<model>.onnx_data` sidecar, zero-byte residue from an interrupted download, or only the wrong quantization variant for the runtime that resolved (fp32 files when the runtime needs int8, or vice versa). A user override can still be placed under:
 
 ```text
 <app data>/embedding_models/local-text-retrieval-v1/
@@ -49,6 +49,14 @@ Source runs use this bundled development cache when no user override exists in t
 
 ## Cross-Platform Nightly Builds
 
-The cross-platform nightly workflow (`.github/workflows/build-desktop.yml`) builds the backend with Nuitka on Windows, macOS, and Linux. Before invoking Nuitka it runs `scripts/prepare_embedding_model.py` against the pinned `EMBEDDING_MODEL_REVISION` and bundles `data/embedding_models/` into the standalone artifact. After build it verifies that every required file (`tokenizer.json`, both fp32 and int8 ONNX variants, and their `*.onnx_data` sidecars) is present and non-empty before uploading.
+The cross-platform nightly workflow (`.github/workflows/build-desktop.yml`) builds the backend with Nuitka on Windows, macOS, and Linux. Before invoking Nuitka it runs `scripts/prepare_embedding_model.py` against the pinned `EMBEDDING_MODEL_REVISION`, warms the `tiktoken` o200k_base cache into `data/tiktoken_cache/`, and bundles both directories into the standalone artifact. After build it verifies that every required embedding file (`tokenizer.json`, both fp32 and int8 ONNX variants, and their `*.onnx_data` sidecars) is present and non-empty, and that the tiktoken cache has at least one blob.
 
-`specs/launcher.spec` declares the same `data/embedding_models/` directory so a manual PyInstaller run picks up the assets too, as long as the directory was populated by the prepare script first.
+`specs/launcher.spec` declares the same `data/embedding_models/` and `data/tiktoken_cache/` directories, so a manual PyInstaller run can match the nightly's offline behavior — but only if both directories were populated beforehand. Run `scripts/prepare_embedding_model.py` to fill the embedding profile, and warm the tiktoken cache with:
+
+```bash
+mkdir -p data/tiktoken_cache
+TIKTOKEN_CACHE_DIR="$(pwd)/data/tiktoken_cache" \
+  uv run python -c "import tiktoken; tiktoken.get_encoding('o200k_base')"
+```
+
+The spec file refuses to build when `data/embedding_models/` is present but `onnxruntime` / `tokenizers` cannot be collected — shipping weights without the runtime that loads them would silently sticky-disable vectors at first use.

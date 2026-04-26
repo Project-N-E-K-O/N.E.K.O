@@ -41,7 +41,7 @@ data/embedding_models/local-text-retrieval-v1/
     model_quantized.onnx_data
 ```
 
-ユーザーの app-data ディレクトリにオーバーライドが存在しない場合、ソース実行はこのバンドル開発キャッシュを使用します。ユーザーオーバーライドは引き続き次の場所に配置できます：
+ユーザーの app-data プロファイルが存在しない場合**または不完全な場合**、ソース実行はこのバンドル開発キャッシュを使用します。ランタイムは app-data プロファイルが完全性チェックを通らない場合に bundle へフォールバックします——よくあるケースは `tokenizer.json` の欠落、`onnx/<model>.onnx_data` サイドカーの欠落、ダウンロード中断による 0 バイトファイルの残骸、あるいはランタイムが解決した量子化バリアントと一致しないファイルしか置かれていない（int8 が必要なのに fp32 しかない、またはその逆）場合などです。ユーザーオーバーライドは引き続き次の場所に配置できます：
 
 ```text
 <app data>/embedding_models/local-text-retrieval-v1/
@@ -49,6 +49,14 @@ data/embedding_models/local-text-retrieval-v1/
 
 ## クロスプラットフォーム Nightly ビルド
 
-クロスプラットフォーム nightly ワークフロー（`.github/workflows/build-desktop.yml`）は、Windows、macOS、Linux 上で Nuitka を使ってバックエンドをビルドします。Nuitka を呼び出す前に、ピン留めされた `EMBEDDING_MODEL_REVISION` を使って `scripts/prepare_embedding_model.py` を実行し、`data/embedding_models/` を standalone 成果物にバンドルします。ビルド後、すべての必須ファイル（`tokenizer.json`、fp32 と int8 の両 ONNX バリアント、対応する `*.onnx_data` サイドカー）が存在し非空であることを検証してから artifact をアップロードします。
+クロスプラットフォーム nightly ワークフロー（`.github/workflows/build-desktop.yml`）は、Windows、macOS、Linux 上で Nuitka を使ってバックエンドをビルドします。Nuitka を呼び出す前に、ピン留めされた `EMBEDDING_MODEL_REVISION` を使って `scripts/prepare_embedding_model.py` を実行し、`tiktoken` の o200k_base キャッシュを `data/tiktoken_cache/` にウォームアップしてから、両ディレクトリを standalone 成果物にバンドルします。ビルド後、すべての必須 embedding ファイル（`tokenizer.json`、fp32 と int8 の両 ONNX バリアント、対応する `*.onnx_data` サイドカー）が存在し非空であること、また tiktoken キャッシュに少なくとも 1 つの blob があることを検証します。
 
-`specs/launcher.spec` も同じ `data/embedding_models/` ディレクトリを宣言しているため、手動で PyInstaller を実行する場合も、prepare スクリプトが事前にこのディレクトリを準備していれば正しくアセットを取り込めます。
+`specs/launcher.spec` は `data/embedding_models/` と `data/tiktoken_cache/` を同時に宣言しているため、手動で PyInstaller を実行して nightly のオフライン動作を再現したい場合は、両ディレクトリを事前に埋めておく必要があります。前者には `scripts/prepare_embedding_model.py` を実行し、後者は以下のコマンドでウォームアップしてください：
+
+```bash
+mkdir -p data/tiktoken_cache
+TIKTOKEN_CACHE_DIR="$(pwd)/data/tiktoken_cache" \
+  uv run python -c "import tiktoken; tiktoken.get_encoding('o200k_base')"
+```
+
+`data/embedding_models/` が存在するのに `onnxruntime` / `tokenizers` の収集に失敗した場合、spec ファイルはビルドを中止します——重みだけをバンドルして推論ランタイムを欠いた成果物は初回利用時にベクトル機能を sticky-disable し、気付きにくい不具合になるためです。

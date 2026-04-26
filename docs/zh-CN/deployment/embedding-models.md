@@ -41,7 +41,7 @@ data/embedding_models/local-text-retrieval-v1/
     model_quantized.onnx_data
 ```
 
-当用户的 app-data 目录没有覆盖文件时，源码运行使用这个本地开发缓存。如果用户想覆盖，仍然可以放到：
+当用户的 app-data profile 不存在**或不完整**时，源码运行使用这个本地开发缓存。运行时只要 app-data profile 没通过完整性校验就会回退到 bundle——常见情况包括缺少 `tokenizer.json`、缺少 `onnx/<model>.onnx_data` sidecar、下载中断留下的 0 字节文件，或只放了与运行时实际选中的量化方式不匹配的变体（要 int8 但只有 fp32，或反过来）。用户覆盖目录仍然可以放到：
 
 ```text
 <app data>/embedding_models/local-text-retrieval-v1/
@@ -49,6 +49,14 @@ data/embedding_models/local-text-retrieval-v1/
 
 ## 跨平台 Nightly 构建
 
-跨平台 nightly 工作流（`.github/workflows/build-desktop.yml`）在 Windows、macOS、Linux 上用 Nuitka 构建后端。在调用 Nuitka 之前会先用钉死的 `EMBEDDING_MODEL_REVISION` 跑 `scripts/prepare_embedding_model.py`，把 `data/embedding_models/` 一起打进 standalone 产物。构建完成后会校验所有必需文件（`tokenizer.json`、fp32 和 int8 两个 ONNX 变体、以及对应的 `*.onnx_data` sidecar）存在且非空，再上传 artifact。
+跨平台 nightly 工作流（`.github/workflows/build-desktop.yml`）在 Windows、macOS、Linux 上用 Nuitka 构建后端。在调用 Nuitka 之前会先用钉死的 `EMBEDDING_MODEL_REVISION` 跑 `scripts/prepare_embedding_model.py`，并把 `tiktoken` 的 o200k_base 缓存预热到 `data/tiktoken_cache/`，然后把两个目录一起打进 standalone 产物。构建完成后会校验所有必需的 embedding 文件（`tokenizer.json`、fp32 和 int8 两个 ONNX 变体、以及对应的 `*.onnx_data` sidecar）存在且非空，并校验 tiktoken 缓存中至少有一个 blob。
 
-`specs/launcher.spec` 也声明了同一个 `data/embedding_models/` 目录，因此本地手动跑 PyInstaller 也能在 prepare 脚本预先填好该目录后正确打包资源。
+`specs/launcher.spec` 同时声明了 `data/embedding_models/` 与 `data/tiktoken_cache/`，因此本地手动跑 PyInstaller 想要复现 nightly 的离线行为时，必须先把这两个目录都填好。前者跑 `scripts/prepare_embedding_model.py`，后者用以下命令预热：
+
+```bash
+mkdir -p data/tiktoken_cache
+TIKTOKEN_CACHE_DIR="$(pwd)/data/tiktoken_cache" \
+  uv run python -c "import tiktoken; tiktoken.get_encoding('o200k_base')"
+```
+
+如果 `data/embedding_models/` 已经存在但 `onnxruntime` / `tokenizers` 收集失败，spec 文件会直接中止构建——只打权重不带推理后端的产物会在首次调用时把向量功能 sticky-disable，是个无声坑。

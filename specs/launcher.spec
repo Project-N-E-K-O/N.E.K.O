@@ -46,6 +46,17 @@ critical_packages = [
     'tokenizers',
 ]
 
+# onnxruntime + tokenizers are only needed when the bundle ships embedding
+# weights. If the build is going to package data/embedding_models but the
+# runtime libs cannot be collected, the resulting artifact would carry
+# multi-MB of weights it cannot load — the runtime would sticky-disable
+# vectors with NO_ONNXRUNTIME at first use. Treat that combination as a
+# build error rather than a silent warning.
+embedding_runtime_packages = {'onnxruntime', 'tokenizers'}
+embedding_assets_present = os.path.isdir(
+    os.path.join(PROJECT_ROOT, 'data', 'embedding_models')
+)
+
 for pkg in critical_packages:
     try:
         tmp_ret = collect_all(pkg)
@@ -53,6 +64,13 @@ for pkg in critical_packages:
         binaries += tmp_ret[1]
         hiddenimports += tmp_ret[2]
     except Exception as e:
+        if pkg in embedding_runtime_packages and embedding_assets_present:
+            raise RuntimeError(
+                f"Cannot collect {pkg!r}, but data/embedding_models is "
+                "present and will be bundled. Install with "
+                "`uv sync --extra embeddings` or remove the embedding "
+                "assets directory before building."
+            ) from e
         print(f"Warning: Could not collect {pkg}: {e}")
 
 # 添加配置文件（只添加 .json 文件，不包含 .py 代码）
