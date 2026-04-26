@@ -1676,12 +1676,20 @@
 
     function extractResponseError(payload, fallbackText) {
         if (payload && typeof payload === 'object') {
-            var codedText = translateResponseErrorCode(
-                payload.error_code || payload.blocking_error_code,
-                ''
-            );
+            var rawError = typeof payload.error === 'string' ? String(payload.error).trim() : '';
+            var code = String(payload.error_code || payload.blocking_error_code || '').trim();
+            var codedText = translateResponseErrorCode(code, '');
             if (codedText) {
+                // 对于 startup_release_failed 这类承载具体异常详情的后端错误，
+                // 后端 error 字段会附带异常信息（如 ".. {exc}"）。仅显示翻译后的
+                // 概括语会让用户与开发者都看不到根因，因此把详情拼接出来。
+                if (code === 'startup_release_failed' && rawError && rawError !== codedText) {
+                    return codedText + ' ' + rawError;
+                }
                 return codedText;
+            }
+            if (rawError) {
+                return rawError;
             }
         }
         return fallbackText;
@@ -2386,6 +2394,149 @@
         state.overlay = overlay;
     }
 
+    // 当 i18next 加载完成或用户切换语言时，模态框里通过 translate(key, fallback)
+    // 取到的静态文本不会自动刷新（DOM 在更早就已经构建出来）。这里把模态框
+    // 拆掉重建，并把不依赖 DOM 的关键状态恢复回去，保证语言切换可见。
+    function rebuildModalForLocale() {
+        if (!state.overlay) return;
+
+        var snapshot = {
+            phase: state.phase,
+            submitting: state.submitting,
+            otherPanelHidden: state.otherPanel ? state.otherPanel.hidden : true,
+            previewPanelHidden: state.previewPanel ? state.previewPanel.hidden : true,
+            customInputValue: state.customInput ? state.customInput.value : '',
+            errorText: state.errorText ? state.errorText.textContent : '',
+            selectionStatusText: state.selectionStatus ? state.selectionStatus.textContent : '',
+            selectionStatusIsError: state.selectionStatus
+                ? state.selectionStatus.classList.contains('storage-location-note--error')
+                : false,
+            pendingSelection: {
+                path: state.pendingSelection.path,
+                source: state.pendingSelection.source,
+                preflight: state.pendingSelection.preflight
+                    ? Object.assign({}, state.pendingSelection.preflight)
+                    : null,
+            },
+            otherSelection: {
+                key: state.otherSelection.key,
+                path: state.otherSelection.path,
+            },
+            completionNotice: state.completionNotice,
+            completionCardVisible: !!(state.completionCard && !state.completionCard.hidden),
+        };
+
+        if (state.overlay.parentNode) {
+            state.overlay.parentNode.removeChild(state.overlay);
+        }
+        state.overlay = null;
+        state.loadingView = null;
+        state.maintenanceView = null;
+        state.selectionView = null;
+        state.errorView = null;
+        state.banner = null;
+        state.currentPath = null;
+        state.recommendedPath = null;
+        state.otherPanel = null;
+        state.legacyChoices = null;
+        state.customInput = null;
+        state.pickFolderButton = null;
+        state.useOtherButton = null;
+        state.previewPanel = null;
+        state.previewText = null;
+        state.previewSource = null;
+        state.previewTarget = null;
+        state.previewEstimated = null;
+        state.previewFreeSpace = null;
+        state.previewPermission = null;
+        state.previewWarnings = null;
+        state.previewBlocking = null;
+        state.previewConfirmButton = null;
+        state.previewActions = null;
+        state.selectionStatus = null;
+        state.errorText = null;
+        state.loadingTitle = null;
+        state.loadingSubtitle = null;
+        state.maintenanceTitle = null;
+        state.maintenanceSubtitle = null;
+        state.maintenanceStatus = null;
+        state.maintenanceProgressBar = null;
+        state.maintenanceProgressFill = null;
+        state.maintenanceProgressLabel = null;
+        state.maintenanceProgressValue = null;
+        state.maintenanceProgressSteps = [];
+        state.actionButtons = [];
+
+        if (state.completionCard && state.completionCard.parentNode) {
+            state.completionCard.parentNode.removeChild(state.completionCard);
+        }
+        state.completionCard = null;
+        state.completionTitle = null;
+        state.completionMessage = null;
+        state.completionTarget = null;
+        state.completionRetained = null;
+        state.completionOpenTargetButton = null;
+        state.completionOpenRetainedButton = null;
+        state.completionCleanupButton = null;
+
+        buildModalDom();
+
+        state.pendingSelection = snapshot.pendingSelection;
+        state.otherSelection = snapshot.otherSelection;
+
+        if (state.customInput) {
+            state.customInput.value = snapshot.customInputValue;
+        }
+
+        if (state.bootstrap) {
+            updateSelectionSummary();
+        }
+
+        if (state.otherPanel) {
+            state.otherPanel.hidden = snapshot.otherPanelHidden;
+        }
+
+        if (snapshot.pendingSelection.preflight && state.bootstrap && state.previewPanel) {
+            showRestartRequired(
+                snapshot.pendingSelection.preflight,
+                snapshot.pendingSelection.path,
+                snapshot.pendingSelection.source
+            );
+        }
+
+        if (snapshot.errorText && state.errorText) {
+            state.errorText.textContent = snapshot.errorText;
+        }
+
+        if (snapshot.selectionStatusText) {
+            setSelectionStatus(snapshot.selectionStatusText, snapshot.selectionStatusIsError);
+        }
+
+        setPhase(snapshot.phase);
+        setSubmitting(snapshot.submitting);
+
+        if (snapshot.completionCardVisible && snapshot.completionNotice) {
+            applyCompletionNotice(snapshot.completionNotice);
+        }
+    }
+
+    function handleLocaleChange() {
+        // 重建可能涉及修改大量 DOM；只有当模态框已经挂载时才需要刷新。
+        if (!state.overlay) return;
+        try {
+            rebuildModalForLocale();
+        } catch (error) {
+            console.warn('[storage-location] locale rebuild failed', error);
+        }
+    }
+
+    var localeListenerAttached = false;
+    function attachLocaleListener() {
+        if (localeListenerAttached) return;
+        localeListenerAttached = true;
+        window.addEventListener('localechange', handleLocaleChange);
+    }
+
     async function fetchBootstrap() {
         setPhase('loading');
         setLoadingCopy(
@@ -2428,6 +2579,7 @@
 
     async function beginSentinelFlow() {
         buildModalDom();
+        attachLocaleListener();
         setPhase('loading');
         setLoadingCopy(
             translate('storage.loadingTitle', '正在确认存储布局状态'),
