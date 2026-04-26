@@ -158,6 +158,10 @@ class FactStore:
                                     if f.get('id') in absorbed_ids:
                                         f['absorbed'] = True
                     except (json.JSONDecodeError, OSError):
+                        # Read-merge is best-effort: if the on-disk
+                        # file is corrupt or unreadable, fall through
+                        # and write whatever we have. The atomic
+                        # write below will overwrite the bad payload.
                         pass
                 atomic_write_json(path, facts, indent=2, ensure_ascii=False)
             except Exception:
