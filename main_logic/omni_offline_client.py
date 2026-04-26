@@ -25,6 +25,47 @@ def _truncate_to_last_sentence_end(text: str) -> str:
     if last < 0:
         return ""
     return text[:last + 1]
+
+
+# Punctuation/symbol density thresholds for the "model went insane" detector
+# (`_is_gibberish_response` below). The point of the response-length guard is
+# not really "long replies are bad" — it's a circuit breaker for runaway model
+# states (BPE-loop repeating a single token, dump-everything mode emitting
+# nothing but emojis / punctuation, etc.). Once we know we're in that state we
+# don't want to salvage a "sentence" out of it; we want to discard.
+_GIBBERISH_MIN_LEN = 30        # Below this we don't bother judging.
+_GIBBERISH_PS_RATIO_FLOOR = 0.02   # < 2% punct/symbol → suspicious "wall of text"
+_GIBBERISH_PS_RATIO_CEIL = 0.60    # > 60% punct/symbol → suspicious "wall of marks"
+
+
+def _is_gibberish_response(text: str) -> bool:
+    """Heuristic: is ``text`` a runaway / gibberish model output?
+
+    Based on the density of Unicode punctuation (Pc/Pd/Pe/Pf/Pi/Po/Ps) plus
+    symbols (Sc/Sk/Sm/So — i.e. emoji, math marks, kaomoji components):
+
+    - density < 2% → almost certainly a tight repetition loop (a single
+      character or short n-gram repeated past the token cap), no real
+      sentences to recover.
+    - density > 60% → almost certainly an emoji / kaomoji / mark spam mode.
+
+    Either way the right thing to do is filter the response entirely (let
+    `handle_response_discarded` show the locale "fault" placeholder and write
+    that placeholder — not the gibberish — into history) rather than try to
+    cut a sentence out of garbage. Short responses (< 30 chars) skip the
+    judgement; the guard only fires after we've blown past the token cap, so
+    in practice ``text`` is always long here.
+    """
+    import unicodedata
+    n = len(text)
+    if n < _GIBBERISH_MIN_LEN:
+        return False
+    n_marks = sum(
+        1 for c in text
+        if unicodedata.category(c)[0] in ("P", "S")
+    )
+    ratio = n_marks / n
+    return ratio < _GIBBERISH_PS_RATIO_FLOOR or ratio > _GIBBERISH_PS_RATIO_CEIL
 from utils.logger_config import get_module_logger
 from utils.token_tracker import set_call_type
 
@@ -497,22 +538,30 @@ class OmniOfflineClient:
                                 )
                                 continue
 
-                            # Reroll 耗尽。length 超长 → 先尝试截断到最后句末
-                            # 标点恢复；找不到句末 → 才退回 RESPONSE_TOO_LONG /
-                            # RESPONSE_INVALID。两条路径**都**通过
-                            # _notify_response_discarded 唯一通道发给前端，避免
-                            # 同时发两个 status 互相覆盖。
+                            # Reroll 耗尽。length 超长有两类：
+                            #   (a) 模型真的写得多但还在正常说话 → 截到最后一个
+                            #       句末标点，作为 RESPONSE_LENGTH_TRUNCATED 回复
+                            #       发给前端，placeholder 不进 history（截取版进）。
+                            #   (b) 模型疯了（BPE 重复 / emoji 刷屏 / 没标点的
+                            #       连续乱码）→ 不要试图截"句子"出来，直接 filter
+                            #       走 RESPONSE_TOO_LONG（语义=故障），core 那边
+                            #       会让前端显示故障 placeholder + 把 placeholder
+                            #       写进 history（让下一轮 LLM 知道这一轮失败）。
                             #
-                            # 关键：先把 assistant_message 硬截到 max_response_length
-                            # 再找句末标点；否则截出来的句末仍可能在 token 上限
-                            # 之外（比如最后一个句号在 950 token 处但 cap 是 300），
-                            # 反而把超限正文作为 RESPONSE_LENGTH_TRUNCATED 发回前端。
+                            # 触发 (b) 的条件：_is_gibberish_response（标点/符号
+                            # 密度 < 2% 或 > 60%）或截不出句末（整段无 . ! ? 。 ！ ？ …）。
+                            #
+                            # 关键：(a) 路径要先把 assistant_message 硬截到
+                            # max_response_length 再找句末，否则截出来的句末仍
+                            # 可能在 token 上限之外（比如最后一个句号在 950 token
+                            # 处但 cap 是 300）。
                             recovery_text = ""
                             if discard_reason and "length>" in discard_reason:
-                                capped = truncate_to_tokens(
-                                    assistant_message, self.max_response_length,
-                                )
-                                recovery_text = _truncate_to_last_sentence_end(capped)
+                                if not _is_gibberish_response(assistant_message):
+                                    capped = truncate_to_tokens(
+                                        assistant_message, self.max_response_length,
+                                    )
+                                    recovery_text = _truncate_to_last_sentence_end(capped)
 
                             if recovery_text:
                                 logger.info(
@@ -560,7 +609,14 @@ class OmniOfflineClient:
                                 final_message,
                             )
                             status_reported = True
-                            logger.warning("OmniOfflineClient: guard 重试耗尽，无可截断句末，放弃输出")
+                            # gibberish 或截不出句末 / 非 length 类 guard 失败 —
+                            # 走故障 placeholder 路径，core 会用 locale "fault"
+                            # 文案占住 history，避免下一轮 LLM 看到空助手轮次。
+                            logger.warning(
+                                "OmniOfflineClient: guard 重试耗尽 (reason=%s)，"
+                                "filter 输出走故障 placeholder",
+                                discard_reason,
+                            )
                             assistant_message = ""
                             guard_exhausted = True
                             break

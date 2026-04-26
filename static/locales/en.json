@@ -612,7 +612,7 @@
         "textInputPlaceholder": "Press Enter to send, Shift+Enter for new line",
         "send": "Send",
         "inputTooLong": "Message too long ({{count}}/{{max}}), please shorten and retry",
-        "responseTooLong": "Response too long and was discarded; your input has been restored.",
+        "responseTooLong": "Master, you made me think too hard, my brain can't keep up, meow!",
         "importImage": "Import Image",
         "importImageAriaLabel": "Import image",
         "screenshot": "Screenshot",
