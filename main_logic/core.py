@@ -643,6 +643,31 @@ class LLMSessionManager:
         except Exception as e:
             logger.warning("[%s] handle_proactive_complete: WS send turn_end error: %s", self.lanlan_name, e)
 
+    async def _emit_turn_end(self, active_request_id) -> None:
+        """同时把 turn end 信号下发给 sync_message_queue 和 WebSocket，
+        并把 ``_pending_turn_meta`` 透传到两条通道后清空。两条路径共用：
+        - ``handle_response_complete`` 正常完成
+        - ``handle_response_discarded`` 的 truncate-recovery / too-long-final
+        语义统一：sync queue 和 WS 都带相同 meta，避免一边有 meta 一边没。"""
+        turn_end_msg: dict = {'type': 'system', 'data': 'turn end'}
+        pending_meta = self._pending_turn_meta
+        if pending_meta:
+            turn_end_msg['meta'] = pending_meta
+            self._pending_turn_meta = None
+        self.sync_message_queue.put(turn_end_msg)
+        try:
+            if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
+                ws_msg = {
+                    'type': 'system',
+                    'data': 'turn end',
+                    'request_id': active_request_id,
+                }
+                if 'meta' in turn_end_msg:
+                    ws_msg['meta'] = turn_end_msg['meta']
+                await self.websocket.send_json(ws_msg)
+        except Exception as e:
+            logger.error(f"💥 WS Send Turn End Error: {e}")
+
     async def handle_response_complete(self):
         """Qwen完成回调：用于处理Core API的响应完成事件，包含TTS和热切换逻辑"""
         active_request_id = self._active_text_request_id
@@ -653,23 +678,8 @@ class LLMSessionManager:
                 await self._request_tts_done_for_turn("handle_response_complete")
             except Exception as e:
                 logger.warning(f"⚠️ 发送TTS结束信号失败: {e}")
-        turn_end_msg: dict = {'type': 'system', 'data': 'turn end'}
-        pending_meta = self._pending_turn_meta
-        if pending_meta:
-            turn_end_msg['meta'] = pending_meta
-            self._pending_turn_meta = None
-        self.sync_message_queue.put(turn_end_msg)
-
-        # 直接向前端发送turn end消息
         try:
-            if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
-                await self.websocket.send_json({
-                    'type': 'system',
-                    'data': 'turn end',
-                    'request_id': active_request_id,
-                })
-        except Exception as e:
-            logger.error(f"💥 WS Send Turn End Error: {e}")
+            await self._emit_turn_end(active_request_id)
         finally:
             self._active_text_request_id = None
 
@@ -844,22 +854,12 @@ class LLMSessionManager:
                         else "handle_response_discarded:too_long_final"
                     )
 
-                # turn end —— 同 handle_response_complete 一样消费 _pending_turn_meta
-                turn_end_msg: dict = {'type': 'system', 'data': 'turn end'}
-                if pending_meta:
-                    turn_end_msg['meta'] = pending_meta
-                    self._pending_turn_meta = None
-                self.sync_message_queue.put(turn_end_msg)
-                if self.websocket and hasattr(self.websocket, 'client_state') and \
-                        self.websocket.client_state == self.websocket.client_state.CONNECTED:
-                    ws_msg = {
-                        'type': 'system',
-                        'data': 'turn end',
-                        'request_id': self._active_text_request_id,
-                    }
-                    if 'meta' in turn_end_msg:
-                        ws_msg['meta'] = turn_end_msg['meta']
-                    await self.websocket.send_json(ws_msg)
+                # turn end —— 复用 _emit_turn_end helper（同 handle_response_complete
+                # 走同一套语义；sync queue 和 WS 都带相同 meta）。
+                # 注：上面读 pending_meta 已经触发 is_ephemeral 判定，但这里
+                # _emit_turn_end 自己会再读一次 _pending_turn_meta 做透传 + 清空，
+                # 二者读的是同一个值，幂等。
+                await self._emit_turn_end(self._active_text_request_id)
             except Exception as e:
                 logger.warning(f"⚠️ {'RESPONSE_LENGTH_TRUNCATED' if _truncated_text is not None else 'RESPONSE_TOO_LONG'} 回复发送失败: {e}")
             finally:

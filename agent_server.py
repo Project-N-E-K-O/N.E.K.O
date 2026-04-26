@@ -1294,7 +1294,7 @@ async def _run_computer_use_task(
             if not finished:
                 logger.warning("[ComputerUse] Thread did not stop within 15s after cancel")
     except Exception as e:
-        info["error"] = str(e)
+        info["error"] = _tt(str(e), 350)
         logger.error("[ComputerUse] Task %s failed: %s", task_id, e)
     finally:
         # cancel_task may have pre-marked status="cancelled" before this dispatch
@@ -2188,7 +2188,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                         bu_info["end_time"] = _now_iso()
                         bu_info["result"] = bres
                         if not success:
-                            bu_info["error"] = (bu_parsed or "")[:500]
+                            bu_info["error"] = _tt((bu_parsed or ""), 350)
                         await _emit_task_result(
                             lanlan_name,
                             channel="browser_use",
@@ -2251,7 +2251,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                             lanlan_name, task_id=bu_task_id, method="browser_use",
                             desc=result.task_description or "", detail=str(e)[:200], success=False,
                         )
-                        bu_info["error"] = str(e)[:500]
+                        bu_info["error"] = _tt(str(e), 350)
                         bu_session.complete_task(str(e), success=False)
                         try:
                             await _emit_task_result(
@@ -2433,7 +2433,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                             logger.warning(f"[OpenFang] Task failed: {e}")
                             of_info["status"] = "failed"
                             of_info["end_time"] = _now_iso()
-                            of_info["error"] = str(e)[:500]
+                            of_info["error"] = _tt(str(e), 350)
                             of_session.complete_task(str(e), success=False)
                             _task_tracker.record_completed(
                                 lanlan_name, task_id=of_task_id, method="openfang",
@@ -2998,7 +2998,7 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
                 _suppress_reply = _is_reply_suppressed(res.result if isinstance(res.result, dict) else None)
                 if not _suppress_reply:
                     if not res.success:
-                        info["error"] = (detail or str(res.error or ""))[:500]
+                        info["error"] = _tt((detail or str(res.error or "")), 350)
                     _lang = _rp_lang(None)
                     display_id = await _get_plugin_display_id(plugin_id)
                     if res.success:
@@ -3040,7 +3040,7 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
                 return
             info["status"] = "failed"
             info["end_time"] = _now_iso()
-            info["error"] = str(e)[:500]
+            info["error"] = _tt(str(e), 350)
             logger.error(f"[Plugin] Direct execute failed: {e}", exc_info=True)
             try:
                 await _emit_task_result(
@@ -3680,7 +3680,7 @@ async def openfang_run(payload: Dict[str, Any]):
             _result_text = _r.get("result", "") or ""
             _error_text = _r.get("error", "") or ""
             if not _success:
-                reg["error"] = _error_text
+                reg["error"] = _tt(_error_text, 350)
 
             # callback summary 进 LLM context — 与 _sanitize_correction_text per-item 同档（400 tokens）
             await _emit_task_result(
@@ -3707,7 +3707,7 @@ async def openfang_run(payload: Dict[str, Any]):
                 return
             logger.error("[OpenFang] Task %s failed: %s", task_id, e)
             reg["status"] = "failed"
-            reg["error"] = str(e)
+            reg["error"] = _tt(str(e), 350)
             reg["end_time"] = datetime.now(timezone.utc).isoformat()
             try:
                 await _emit_task_result(
