@@ -60,6 +60,12 @@ dependencies = [
   "tiktoken>=0.7.0",
 ]
 
+[project.optional-dependencies]
+embeddings = [
+  "onnxruntime",
+  "tokenizers",
+]
+
 
 [tool.hatch.build.targets.wheel]
 packages = [

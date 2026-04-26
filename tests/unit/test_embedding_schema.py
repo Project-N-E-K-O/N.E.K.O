@@ -51,12 +51,12 @@ def test_persona_normalize_entry_preserves_existing_embedding_payload():
         "text": "x",
         "embedding": [0.1, 0.2, 0.3],
         "embedding_text_sha256": "deadbeef",
-        "embedding_model_id": "jina-v5-nano-128d-int8",
+        "embedding_model_id": "local-text-retrieval-v1-128d-int8",
     }
     entry = PersonaManager._normalize_entry(raw)
     assert entry["embedding"] == [0.1, 0.2, 0.3]
     assert entry["embedding_text_sha256"] == "deadbeef"
-    assert entry["embedding_model_id"] == "jina-v5-nano-128d-int8"
+    assert entry["embedding_model_id"] == "local-text-retrieval-v1-128d-int8"
 
 
 def test_reflection_normalize_seeds_embedding_fields_as_none():
@@ -73,12 +73,12 @@ def test_reflection_normalize_preserves_existing_embedding():
         "text": "t",
         "embedding": [0.5, 0.5],
         "embedding_text_sha256": "abc",
-        "embedding_model_id": "jina-v5-nano-256d-fp32",
+        "embedding_model_id": "local-text-retrieval-v1-256d-fp32",
     }
     out = ReflectionEngine._normalize_reflection(raw)
     assert out["embedding"] == [0.5, 0.5]
     assert out["embedding_text_sha256"] == "abc"
-    assert out["embedding_model_id"] == "jina-v5-nano-256d-fp32"
+    assert out["embedding_model_id"] == "local-text-retrieval-v1-256d-fp32"
 
 
 # ── replace branch invalidates the embedding cache ──────────────────
@@ -153,7 +153,7 @@ async def test_replace_invalidates_embedding_cache(tmp_path):
         pm, "小天", "主人住在东京",
         embedding=[0.1] * 128,
         embedding_text_sha256="cafef00d" * 8,
-        embedding_model_id="jina-v5-nano-128d-int8",
+        embedding_model_id="local-text-retrieval-v1-128d-int8",
     )
     # Sanity: the seed actually round-tripped to disk with the cache
     # populated, so the assertion below proves invalidation, not a
@@ -193,7 +193,7 @@ async def test_replace_preserves_embedding_when_replace_branch_not_taken(tmp_pat
         pm, "小天", "主人喜欢猫",
         embedding=[0.5] * 128,
         embedding_text_sha256="0123abcd" * 8,
-        embedding_model_id="jina-v5-nano-128d-int8",
+        embedding_model_id="local-text-retrieval-v1-128d-int8",
     )
     original_embedding = list(seeded["embedding"])
 
@@ -210,7 +210,7 @@ async def test_replace_preserves_embedding_when_replace_branch_not_taken(tmp_pat
         if e.get("text") == "主人喜欢猫"
     )
     assert cat_entry["embedding"] == original_embedding
-    assert cat_entry["embedding_model_id"] == "jina-v5-nano-128d-int8"
+    assert cat_entry["embedding_model_id"] == "local-text-retrieval-v1-128d-int8"
 
 
 def test_invalidate_embedding_cache_helper_wipes_triple():
@@ -225,7 +225,7 @@ def test_invalidate_embedding_cache_helper_wipes_triple():
     entry = {
         "embedding": [0.1, 0.2, 0.3],
         "embedding_text_sha256": "deadbeef" * 8,
-        "embedding_model_id": "jina-v5-nano-128d-int8",
+        "embedding_model_id": "local-text-retrieval-v1-128d-int8",
     }
     PersonaManager._invalidate_embedding_cache(entry)
     assert entry["embedding"] is None
@@ -273,7 +273,7 @@ def test_apply_character_card_sync_invalidates_embedding_on_text_change():
         "protected": True,
         "embedding": [0.9] * 4,
         "embedding_text_sha256": "stale" * 12,
-        "embedding_model_id": "jina-v5-nano-128d-int8",
+        "embedding_model_id": "local-text-retrieval-v1-128d-int8",
     })
     pm._apply_character_card_sync(
         "test", persona,

@@ -32,6 +32,7 @@ from memory.embeddings import (
     _coerce_dim,
     _embedding_text_sha256,
     _resolve_quantization,
+    _select_model_dir,
     build_model_id,
     clear_embedding_fields,
     cosine_similarity,
@@ -74,9 +75,12 @@ def test_coerce_dim_auto_delegates_to_ram():
 def test_coerce_dim_explicit_pinning_preserves_value():
     """An explicit dim must be honoured (even if RAM is higher) — that's
     the override the user opts into to fix a Matryoshka level."""
+    assert _coerce_dim(32, 64.0) == 32
     assert _coerce_dim(64, 64.0) == 64
     assert _coerce_dim(128, 4.5) == 128
     assert _coerce_dim(256, 8.0) == 256
+    assert _coerce_dim(512, 16.0) == 512
+    assert _coerce_dim(768, 16.0) == 768
 
 
 def test_coerce_dim_invalid_value_falls_back_to_auto():
@@ -104,11 +108,11 @@ def test_resolve_quantization_invalid_falls_back_to_auto():
 
 def test_build_model_id_encodes_axes():
     """Cache fingerprint must change with any of base / dim / quant."""
-    a = build_model_id("jina-v5-nano", 128, "int8")
-    b = build_model_id("jina-v5-nano", 256, "int8")
-    c = build_model_id("jina-v5-nano", 128, "fp32")
+    a = build_model_id("local-text-retrieval-v1", 128, "int8")
+    b = build_model_id("local-text-retrieval-v1", 256, "int8")
+    c = build_model_id("local-text-retrieval-v1", 128, "fp32")
     d = build_model_id("other", 128, "int8")
-    assert a == "jina-v5-nano-128d-int8"
+    assert a == "local-text-retrieval-v1-128d-int8"
     assert len({a, b, c, d}) == 4
 
 
@@ -174,7 +178,7 @@ def test_service_healthy_construction_stays_init_until_load():
     assert svc.is_disabled() is False
     assert svc.is_available() is False
     assert svc._state == EmbeddingState.INIT
-    assert svc.model_id() == "jina-v5-nano-256d-fp32"
+    assert svc.model_id() == "local-text-retrieval-v1-256d-fp32"
     assert svc.dim() == 256
     assert svc.quantization() == "fp32"
 
@@ -184,6 +188,164 @@ def test_service_dim_pinning_overrides_auto():
     # Even on 4.5 GB RAM, the pinned dim wins.
     assert svc.dim() == 256
     assert svc.model_id().endswith("256d-fp32")
+
+
+def test_service_uses_profile_onnx_layout():
+    """The default profile uses a task-specific ONNX export under
+    onnx/model*.onnx, not the old model_<quant>.onnx layout."""
+    fp32 = _service(
+        ram_gb=16.0,
+        quantization_setting="fp32",
+        model_dir="/models",
+    )
+    int8 = _service(
+        ram_gb=16.0,
+        quantization_setting="int8",
+        model_dir="/models",
+    )
+    assert fp32._model_file_path().replace("\\", "/").endswith(
+        "/local-text-retrieval-v1/onnx/model.onnx",
+    )
+    assert int8._model_file_path().replace("\\", "/").endswith(
+        "/local-text-retrieval-v1/onnx/model_quantized.onnx",
+    )
+    assert fp32._tokenizer_file_path().replace("\\", "/").endswith(
+        "/local-text-retrieval-v1/tokenizer.json",
+    )
+
+
+def _populate_complete_profile(
+    model_dir, profile_id="local-text-retrieval-v1", *, variants=("fp32", "int8"),
+):
+    """Create the minimum file set _profile_is_complete accepts (tokenizer
+    + one model variant + its onnx_data sidecar). ``variants`` controls
+    which ONNX variant files get written so callers can simulate
+    half-bundled / quantization-mismatched profiles."""
+    profile = model_dir / profile_id
+    (profile / "onnx").mkdir(parents=True)
+    (profile / "tokenizer.json").write_bytes(b"{}")
+    if "fp32" in variants:
+        (profile / "onnx" / "model.onnx").write_bytes(b"x")
+        (profile / "onnx" / "model.onnx_data").write_bytes(b"x")
+    if "int8" in variants:
+        (profile / "onnx" / "model_quantized.onnx").write_bytes(b"x")
+        (profile / "onnx" / "model_quantized.onnx_data").write_bytes(b"x")
+    return profile
+
+
+def test_select_model_dir_prefers_app_data_profile(tmp_path):
+    app_model_dir = tmp_path / "app" / "embedding_models"
+    bundled_model_dir = tmp_path / "bundle" / "data" / "embedding_models"
+    _populate_complete_profile(app_model_dir)
+    _populate_complete_profile(bundled_model_dir)
+
+    assert _select_model_dir(str(app_model_dir), "local-text-retrieval-v1") == str(app_model_dir)
+
+
+def test_select_model_dir_falls_back_to_bundled_profile(tmp_path, monkeypatch):
+    app_model_dir = tmp_path / "app" / "embedding_models"
+    bundled_model_dir = tmp_path / "bundle" / "data" / "embedding_models"
+    _populate_complete_profile(bundled_model_dir)
+
+    from memory import embeddings as embeddings_module
+
+    monkeypatch.setattr(
+        embeddings_module,
+        "_bundled_model_dirs",
+        lambda: [str(bundled_model_dir)],
+    )
+    assert (
+        _select_model_dir(str(app_model_dir), "local-text-retrieval-v1")
+        == str(bundled_model_dir)
+    )
+
+
+def test_select_model_dir_skips_incomplete_app_data_for_bundled(tmp_path, monkeypatch):
+    """A half-downloaded app-data profile (e.g. tokenizer present but onnx
+    sidecar missing) must NOT short-circuit the bundled fallback —
+    selecting it would just sticky-disable vectors at session load even
+    though the bundled profile on disk is complete."""
+    app_model_dir = tmp_path / "app" / "embedding_models"
+    bundled_model_dir = tmp_path / "bundle" / "data" / "embedding_models"
+
+    half_downloaded = app_model_dir / "local-text-retrieval-v1" / "onnx"
+    half_downloaded.mkdir(parents=True)
+    (app_model_dir / "local-text-retrieval-v1" / "tokenizer.json").write_bytes(b"{}")
+    (half_downloaded / "model.onnx").write_bytes(b"x")
+    # missing model.onnx_data — incomplete profile
+
+    _populate_complete_profile(bundled_model_dir)
+
+    from memory import embeddings as embeddings_module
+
+    monkeypatch.setattr(
+        embeddings_module,
+        "_bundled_model_dirs",
+        lambda: [str(bundled_model_dir)],
+    )
+    assert (
+        _select_model_dir(str(app_model_dir), "local-text-retrieval-v1")
+        == str(bundled_model_dir)
+    )
+
+
+def test_select_model_dir_skips_app_data_missing_runtime_variant(tmp_path, monkeypatch):
+    """If app-data only has the fp32 variant but the runtime resolved to
+    int8, _select_model_dir must fall through to a bundled profile that
+    actually has int8 — otherwise _load_session_blocking would just
+    sticky-disable vectors looking for model_quantized.onnx in app-data."""
+    app_model_dir = tmp_path / "app" / "embedding_models"
+    bundled_model_dir = tmp_path / "bundle" / "data" / "embedding_models"
+
+    _populate_complete_profile(app_model_dir, variants=("fp32",))
+    _populate_complete_profile(bundled_model_dir, variants=("fp32", "int8"))
+
+    from memory import embeddings as embeddings_module
+
+    monkeypatch.setattr(
+        embeddings_module,
+        "_bundled_model_dirs",
+        lambda: [str(bundled_model_dir)],
+    )
+    assert (
+        _select_model_dir(str(app_model_dir), "local-text-retrieval-v1", "int8")
+        == str(bundled_model_dir)
+    )
+    # Without quantization (caller doesn't know yet), the existing-variant
+    # behavior is preserved — app-data is still preferred.
+    assert (
+        _select_model_dir(str(app_model_dir), "local-text-retrieval-v1")
+        == str(app_model_dir)
+    )
+
+
+def test_select_model_dir_skips_zero_byte_app_data_for_bundled(tmp_path, monkeypatch):
+    """Zero-byte residue (e.g. an interrupted download that left empty
+    files behind) must be treated the same as half-downloaded — the
+    profile dir exists with the right names but no usable bytes, and
+    selecting it would just sticky-disable at session load."""
+    app_model_dir = tmp_path / "app" / "embedding_models"
+    bundled_model_dir = tmp_path / "bundle" / "data" / "embedding_models"
+
+    onnx_dir = app_model_dir / "local-text-retrieval-v1" / "onnx"
+    onnx_dir.mkdir(parents=True)
+    (app_model_dir / "local-text-retrieval-v1" / "tokenizer.json").write_bytes(b"")
+    (onnx_dir / "model.onnx").write_bytes(b"")
+    (onnx_dir / "model.onnx_data").write_bytes(b"")
+
+    _populate_complete_profile(bundled_model_dir)
+
+    from memory import embeddings as embeddings_module
+
+    monkeypatch.setattr(
+        embeddings_module,
+        "_bundled_model_dirs",
+        lambda: [str(bundled_model_dir)],
+    )
+    assert (
+        _select_model_dir(str(app_model_dir), "local-text-retrieval-v1")
+        == str(bundled_model_dir)
+    )
 
 
 @pytest.mark.asyncio
@@ -238,6 +400,50 @@ async def test_embed_empty_string_returns_none_even_when_disabled():
     assert await svc.embed("") is None
 
 
+def test_infer_uses_last_token_pooling_and_matryoshka_truncation():
+    """The default profile specifies last-token pooling. This locks the
+    runtime against accidentally reverting to mean pooling."""
+    import numpy as np
+
+    class _Encoding:
+        def __init__(self, ids):
+            self.ids = ids
+            self.attention_mask = [1] * len(ids)
+
+    class _Tokenizer:
+        def encode_batch(self, texts):
+            return [_Encoding([1, 2, 3]), _Encoding([4])]
+
+    class _Input:
+        def __init__(self, name):
+            self.name = name
+
+    class _Session:
+        def __init__(self):
+            self.feeds = None
+
+        def get_inputs(self):
+            return [_Input("input_ids"), _Input("attention_mask"), _Input("token_type_ids")]
+
+        def run(self, _outputs, feeds):
+            self.feeds = feeds
+            return [np.array([
+                [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [3.0, 4.0, 0.0]],
+                [[5.0, 0.0, 0.0], [9.0, 9.0, 9.0], [8.0, 8.0, 8.0]],
+            ], dtype=np.float32)]
+
+    svc = _service(ram_gb=16.0)
+    svc._dim = 2  # private override keeps the fixture tiny while testing truncation
+    session = _Session()
+    svc._session = session
+    svc._tokenizer = _Tokenizer()
+    out = svc._infer_blocking(["abc", "d"])
+
+    assert out[0] == pytest.approx([0.6, 0.8])
+    assert out[1] == pytest.approx([1.0, 0.0])
+    assert "token_type_ids" in session.feeds
+
+
 # ── cosine + cache helpers ────────────────────────────────────────
 
 
@@ -267,9 +473,11 @@ def test_is_cached_embedding_valid_full_match():
         "text": text,
         "embedding": [0.1, 0.2, 0.3],
         "embedding_text_sha256": _embedding_text_sha256(text),
-        "embedding_model_id": "jina-v5-nano-128d-int8",
+        "embedding_model_id": "local-text-retrieval-v1-128d-int8",
     }
-    assert is_cached_embedding_valid(entry, text, "jina-v5-nano-128d-int8")
+    assert is_cached_embedding_valid(
+        entry, text, "local-text-retrieval-v1-128d-int8",
+    )
 
 
 def test_is_cached_embedding_valid_text_mismatch():
@@ -279,9 +487,11 @@ def test_is_cached_embedding_valid_text_mismatch():
         "text": "new",
         "embedding": [0.1, 0.2],
         "embedding_text_sha256": _embedding_text_sha256("old"),
-        "embedding_model_id": "jina-v5-nano-128d-int8",
+        "embedding_model_id": "local-text-retrieval-v1-128d-int8",
     }
-    assert not is_cached_embedding_valid(entry, "new", "jina-v5-nano-128d-int8")
+    assert not is_cached_embedding_valid(
+        entry, "new", "local-text-retrieval-v1-128d-int8",
+    )
 
 
 def test_is_cached_embedding_valid_model_id_mismatch():
@@ -292,10 +502,14 @@ def test_is_cached_embedding_valid_model_id_mismatch():
         "text": text,
         "embedding": [0.1, 0.2],
         "embedding_text_sha256": _embedding_text_sha256(text),
-        "embedding_model_id": "jina-v5-nano-128d-int8",
+        "embedding_model_id": "local-text-retrieval-v1-128d-int8",
     }
-    assert not is_cached_embedding_valid(entry, text, "jina-v5-nano-256d-int8")
-    assert not is_cached_embedding_valid(entry, text, "jina-v5-nano-128d-fp32")
+    assert not is_cached_embedding_valid(
+        entry, text, "local-text-retrieval-v1-256d-int8",
+    )
+    assert not is_cached_embedding_valid(
+        entry, text, "local-text-retrieval-v1-128d-fp32",
+    )
 
 
 def test_is_cached_embedding_valid_missing_or_empty_embedding():
@@ -303,13 +517,17 @@ def test_is_cached_embedding_valid_missing_or_empty_embedding():
     base = {
         "text": text,
         "embedding_text_sha256": _embedding_text_sha256(text),
-        "embedding_model_id": "jina-v5-nano-128d-int8",
+        "embedding_model_id": "local-text-retrieval-v1-128d-int8",
     }
     assert not is_cached_embedding_valid(
-        {**base, "embedding": None}, text, "jina-v5-nano-128d-int8",
+        {**base, "embedding": None},
+        text,
+        "local-text-retrieval-v1-128d-int8",
     )
     assert not is_cached_embedding_valid(
-        {**base, "embedding": []}, text, "jina-v5-nano-128d-int8",
+        {**base, "embedding": []},
+        text,
+        "local-text-retrieval-v1-128d-int8",
     )
 
 
@@ -322,7 +540,7 @@ def test_is_cached_embedding_valid_disabled_service_never_valid():
         "text": text,
         "embedding": [0.1, 0.2],
         "embedding_text_sha256": _embedding_text_sha256(text),
-        "embedding_model_id": "jina-v5-nano-128d-int8",
+        "embedding_model_id": "local-text-retrieval-v1-128d-int8",
     }
     assert not is_cached_embedding_valid(entry, text, None)
 
@@ -345,10 +563,18 @@ def test_stamp_embedding_fields_writes_full_triple():
     """stamp() must set vector + sha + model_id atomically (from the
     callsite's POV) — partial writes break is_cached_embedding_valid."""
     entry: dict = {}
-    stamp_embedding_fields(entry, [0.1, 0.2, 0.3], "hello", "jina-v5-nano-128d-int8")
+    stamp_embedding_fields(
+        entry,
+        [0.1, 0.2, 0.3],
+        "hello",
+        "local-text-retrieval-v1-128d-int8",
+    )
     assert entry["embedding"] == [0.1, 0.2, 0.3]
     assert entry["embedding_text_sha256"] == _embedding_text_sha256("hello")
-    assert entry["embedding_model_id"] == "jina-v5-nano-128d-int8"
+    assert (
+        entry["embedding_model_id"]
+        == "local-text-retrieval-v1-128d-int8"
+    )
     # Vector list is copied, not aliased — mutating the source after
     # stamping must not corrupt the stored cache.
     src = [9.0, 9.0]
@@ -359,11 +585,13 @@ def test_stamp_embedding_fields_writes_full_triple():
 
 def test_stamp_then_check_round_trips():
     text = "round-trip text"
-    model_id = "jina-v5-nano-256d-fp32"
+    model_id = "local-text-retrieval-v1-256d-fp32"
     entry: dict = {"text": text}
     stamp_embedding_fields(entry, [1.0, 0.0, 0.0], text, model_id)
     assert is_cached_embedding_valid(entry, text, model_id)
     # Text changes → invalid.
     assert not is_cached_embedding_valid(entry, text + "!", model_id)
     # Model change → invalid.
-    assert not is_cached_embedding_valid(entry, text, "jina-v5-nano-128d-fp32")
+    assert not is_cached_embedding_valid(
+        entry, text, "local-text-retrieval-v1-128d-fp32",
+    )

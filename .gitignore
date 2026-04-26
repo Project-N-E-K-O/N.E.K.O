@@ -54,9 +54,13 @@ __pycache__/
 .venv_monitor/
 .matplotlib/
 .pyinstaller-config/
+# Local Windows Nuitka build script — maintainer-only, not for repo
+build_nuitka.bat
 # Playwright browsers cache (used by build_nuitka.bat, not for repo)
 playwright_browsers/
 .playwright-browsers/
+# Local embedding model cache (downloaded by scripts/prepare_embedding_model.py)
+data/embedding_models/
 .env
 .env.local
 .env.development.local

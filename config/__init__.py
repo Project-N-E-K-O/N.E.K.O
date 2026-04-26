@@ -867,10 +867,10 @@ EVIDENCE_PROMOTION_MERGE_MODEL_TIER = "correction"  # Promote 合并决策
 # matrix. Defaults are tuned so the feature is opt-out at the install
 # level (drop the model file → on; remove it → off) without a config edit.
 VECTORS_ENABLED = True                       # master kill switch
-VECTORS_EMBEDDING_DIM = "auto"               # "auto" | 64 | 128 | 256 | 384
+VECTORS_EMBEDDING_DIM = "auto"               # "auto" | 32/64/128/256/512/768
 VECTORS_QUANTIZATION = "auto"                # "auto" | "int8" | "fp32"
 VECTORS_MIN_RAM_GB = 4.0                     # below this → disabled regardless
-VECTORS_MODEL_BASE_ID = "jina-v5-nano"       # logical model name (drives model file path)
+VECTORS_MODEL_PROFILE_ID = "local-text-retrieval-v1"  # anonymous profile id + local model folder
 # Warmup: the ONNX session (~150 MB unpack) loads on first triggering
 # event after startup. The warmup task waits up to this many seconds
 # after startup OR until first /process call, whichever comes first.
@@ -1035,6 +1035,6 @@ __all__ = [
     'VECTORS_EMBEDDING_DIM',
     'VECTORS_QUANTIZATION',
     'VECTORS_MIN_RAM_GB',
-    'VECTORS_MODEL_BASE_ID',
+    'VECTORS_MODEL_PROFILE_ID',
     'VECTORS_WARMUP_DELAY_SECONDS',
 ]

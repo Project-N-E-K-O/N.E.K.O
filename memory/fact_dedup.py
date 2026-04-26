@@ -57,9 +57,9 @@ logger = logging.getLogger(__name__)
 
 
 # Cosine cutoff for "candidate is *probably* a paraphrase". 0.85 is
-# the design number from the P2 plan — empirically what Jina-v5 nano
-# emits for "主人喜欢猫" vs "对猫咪很感兴趣" (≈0.88) without false-
-# positives between "主人喜欢猫" / "主人讨厌猫" (≈0.78). Tunable per
+# the design number from the P2 plan — empirically what the default
+# local profile emits for "主人喜欢猫" vs "对猫咪很感兴趣" (≈0.88)
+# without false-positives between "主人喜欢猫" / "主人讨厌猫" (≈0.78). Tunable per
 # deploy via the constant; lower values flood the LLM, higher misses
 # real paraphrases.
 FACT_DEDUP_COSINE_THRESHOLD = 0.85
