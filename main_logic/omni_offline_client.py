@@ -66,10 +66,10 @@ def _is_gibberish_response(text: str) -> bool:
     Based on the density of Unicode punctuation (Pc/Pd/Pe/Pf/Pi/Po/Ps) plus
     symbols (Sc/Sk/Sm/So — i.e. emoji, math marks, kaomoji components):
 
-    - density < 2% → almost certainly a tight repetition loop (a single
+    - density < 1.5% → almost certainly a tight repetition loop (a single
       character or short n-gram repeated past the token cap), no real
       sentences to recover.
-    - density > 60% → almost certainly an emoji / kaomoji / mark spam mode.
+    - density > 25% → almost certainly an emoji / kaomoji / mark spam mode.
 
     Either way the right thing to do is filter the response entirely (let
     `handle_response_discarded` show the locale "fault" placeholder and write

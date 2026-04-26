@@ -2341,11 +2341,21 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                 session_id=of_session.session_id,
                                 local_task_id=of_task_id,
                             )
-                            logger.info("[OpenFang] Task completed: success=%s, agent=%s, result_len=%d, steps=%s, artifacts_count=%d",
-                                        of_res.get("success"), of_res.get("agent_name"),
-                                        len(str(of_res.get("result", ""))),
-                                        of_res.get("steps"),
-                                        len(of_res.get("artifacts") or []))
+                            # steps 列表可能含 daemon 返回的 user/AI/tool 原文，
+                            # logger 只记数量，预览走 print 兜底。
+                            _of_steps = of_res.get("steps")
+                            _of_steps_count = len(_of_steps) if isinstance(_of_steps, list) else int(bool(_of_steps))
+                            logger.info(
+                                "[OpenFang] Task completed: success=%s, agent=%s, result_len=%d, steps_count=%d, artifacts_count=%d",
+                                of_res.get("success"), of_res.get("agent_name"),
+                                len(str(of_res.get("result", ""))),
+                                _of_steps_count,
+                                len(of_res.get("artifacts") or []),
+                            )
+                            if _of_steps is not None:
+                                import json as _json_for_steps
+                                from utils.tokenize import truncate_to_tokens as _tt_steps
+                                print(f"[OpenFang] steps preview: {_tt_steps(_json_for_steps.dumps(_of_steps, ensure_ascii=False), 120)}")
                             logger.debug("[OpenFang] ====== RAW RESULT (debug) ======")
                             logger.debug("[OpenFang] keys=%s", list(of_res.keys()))
                             # result / error / artifacts 都可能含 LLM/用户原文，
@@ -3060,7 +3070,14 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
             info["status"] = "failed"
             info["end_time"] = _now_iso()
             info["error"] = _tt(str(e), 350)
-            logger.error(f"[Plugin] Direct execute failed: {e}", exc_info=True)
+            # exception 字符串可能含 provider/plugin 原文 / 用户输入；logger
+            # 只记元数据，原文 + traceback 走 print 兜底。
+            import traceback as _tb
+            logger.error(
+                "[Plugin] Direct execute failed: task_id=%s plugin_id=%s exc_type=%s",
+                task_id, plugin_id, type(e).__name__,
+            )
+            print(f"[Plugin] Direct execute raw error (task_id={task_id}, plugin_id={plugin_id}):\n{_tb.format_exc()}")
             try:
                 await _emit_task_result(
                     lanlan_name,

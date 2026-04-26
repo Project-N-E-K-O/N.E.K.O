@@ -12,7 +12,15 @@ import time
 from collections import deque
 from functools import lru_cache
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
+
+
+# Sentinel for `send_lanlan_response(request_id=...)` so we can tell apart
+# "caller didn't pass it (use shared field as fallback)" from "caller
+# explicitly passed None to mean 'no request id'". A normal default of
+# None collapses both into the same code path and would let recovery /
+# proactive paths accidentally bind their messages to a newer request_id.
+_REQUEST_ID_UNSET: Any = object()
 from datetime import datetime
 from websockets import exceptions as web_exceptions
 from fastapi import WebSocket, WebSocketDisconnect
@@ -426,11 +434,11 @@ class LLMSessionManager:
                 value = int(conversation_settings['textGuardMaxLength'])
             else:
                 value = int(self._config_manager.get_core_config().get('TEXT_GUARD_MAX_LENGTH', 300))
-            # 0 表示无限制，返回一个很大的数
-            if value == 0:
+            # 0 / 负数都表示"无限制"，与 OmniOfflineClient.__init__ /
+            # update_max_response_length 的语义统一。原本 < 0 会 raise 然后
+            # fallback 到 300，存量配置带 -1 的会被静默降级。
+            if value <= 0:
                 return 999999
-            if value < 0:
-                raise ValueError
             return value
         except Exception:
             return 300
@@ -483,12 +491,28 @@ class LLMSessionManager:
         self._tts_done_pending_until_ready = False
         return "queued"
 
-    async def _request_tts_done_for_turn(self, source: str) -> str:
-        """线程安全地为当前轮次请求 TTS 结束信号。"""
+    async def _request_tts_done_for_turn(
+        self,
+        source: str,
+        expected_speech_id: str | None = None,
+    ) -> str:
+        """线程安全地为当前轮次请求 TTS 结束信号。
+
+        ``expected_speech_id`` 可选 sid 校验：调用方持有本轮 sid 快照
+        时传入，函数会在锁内确认 ``self.current_speech_id`` 仍等于该
+        快照才发 done。recovery / proactive 等 await 之间用户开新轮的
+        场景，旧轮的 done 信号否则会直接结束新轮的 TTS（首句被截 / 整轮
+        静音）。不传则保持原行为：始终发 done。"""
         if not self.use_tts:
             return "disabled"
 
         async with self.tts_cache_lock:
+            if expected_speech_id is not None and self.current_speech_id != expected_speech_id:
+                logger.debug(
+                    "%s: stale TTS done skipped (expected=%s current=%s)",
+                    source, expected_speech_id, self.current_speech_id,
+                )
+                return "stale"
             status = self._request_tts_done_locked()
 
         if status == "already":
@@ -881,13 +905,17 @@ class LLMSessionManager:
                 if not is_ephemeral and self.session and hasattr(self.session, '_conversation_history'):
                     self.session._conversation_history.append(AIMessage(content=body_text))
 
-                # 喂给 TTS 管线用角色音色念
+                # 喂给 TTS 管线用角色音色念。recovery 路径下两次 await
+                # 之间用户可能开新轮（ self.current_speech_id 被改），所以
+                # done 信号也要带 expected_speech_id 校验，否则旧 recovery
+                # 的 done 会结束新轮的 TTS（首句被截 / 整轮静音）。
                 if self.use_tts:
                     await self.feed_tts_chunk(body_text, expected_speech_id=recovery_turn_id)
                     await self._request_tts_done_for_turn(
                         "handle_response_discarded:length_truncated"
                         if _truncated_text is not None
-                        else "handle_response_discarded:too_long_final"
+                        else "handle_response_discarded:too_long_final",
+                        expected_speech_id=recovery_turn_id,
                     )
 
                 # turn end —— 复用 _emit_turn_end helper（同 handle_response_complete
@@ -1022,18 +1050,28 @@ class LLMSessionManager:
         text: str,
         is_first_chunk: bool = False,
         turn_id: str | None = None,
-        request_id: str | None = None,
+        request_id: Any = _REQUEST_ID_UNSET,
     ):
         """Qwen输出转录回调: 可用于前端显示/缓存/同步。
 
-        ``request_id`` 显式传入用于跨轮安全：discard / recovery 路径
-        必须传入函数开头快照的 ``active_request_id``，避免新轮已经写入
-        共享字段后回读到错的 id 导致前端 rollback 串轮。默认 fallback
-        到共享字段保持现有 LLM 流式 callsite 行为不变。
+        ``request_id`` 三态：
+          - 不传（即默认 ``_REQUEST_ID_UNSET``）→ fallback 到共享字段
+            ``self._active_text_request_id``，保留现有 LLM 流式 callsite 行为
+          - 显式传 ``None`` → 真"冻结为空"，proactive / 无 request_id 的
+            场景需要让前端知道这条消息不绑定任何用户请求
+          - 显式传 str → 跨轮安全：discard / recovery 必须用函数开头快照
+            的 ``active_request_id``，避免新轮已经写入共享字段后回读到
+            错的 id 导致前端 rollback 串轮
+        默认 sentinel 用 module-level ``_REQUEST_ID_UNSET = object()`` 区分
+        "未传"和"显式 None"，与单纯 ``request_id is None`` 检测不同。
         """
         text_clean = self.emotion_pattern.sub('', text)
         effective_turn_id = turn_id or self.current_speech_id
-        effective_request_id = request_id if request_id is not None else self._active_text_request_id
+        effective_request_id = (
+            self._active_text_request_id
+            if request_id is _REQUEST_ID_UNSET
+            else request_id
+        )
         message = {
             "type": "gemini_response",
             "text": text_clean,
