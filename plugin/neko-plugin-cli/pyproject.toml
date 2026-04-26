@@ -12,6 +12,7 @@ dependencies = [
 # tomli is only needed on Python <3.11 where tomllib is not available
 legacy = ["tomli>=2.0"]
 completion = ["shtab>=1.7"]
+interactive = ["questionary>=2.0"]
 
 [project.scripts]
 neko-plugin = "neko_plugin_cli.cli:main"

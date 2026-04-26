@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import argparse
 
-from .commands import pack_cmd, inspect_cmd, verify_cmd, unpack_cmd, analyze_cmd
+from .commands import pack_cmd, inspect_cmd, verify_cmd, unpack_cmd, analyze_cmd, init_cmd
 from .paths import resolve_default_paths
 
 
@@ -49,6 +49,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers = parser.add_subparsers(dest="command")
 
+    init_cmd.register(subparsers, defaults=defaults)
     pack_cmd.register(subparsers, defaults=defaults)
     inspect_cmd.register(subparsers, defaults=defaults)
     verify_cmd.register(subparsers, defaults=defaults)
