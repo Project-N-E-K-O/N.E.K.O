@@ -52,6 +52,7 @@ from memory.persona import (
     SUPPRESS_WINDOW_HOURS,
     _is_mentioned,
 )
+from memory.stop_names import acollect_stop_names
 
 if TYPE_CHECKING:
     from memory.event_log import EventLog
@@ -1143,11 +1144,17 @@ class ReflectionEngine:
 
     @classmethod
     def _apply_record_reflection_mentions(
-        cls, reflections: list[dict], response_text: str,
+        cls,
+        reflections: list[dict],
+        response_text: str,
+        stop_names: list[str] | None = None,
     ) -> bool:
         """AI response 提到任一 **confirmed** reflection 的文本 → recent_mentions 累加。
         Pending reflection 本意就是"AI 主动试探"，抑制会反向破坏机制——
         所以只扫 confirmed。语义和 persona._apply_record_mentions 对齐。
+
+        ``stop_names`` 在进 ``_is_mentioned`` 之前剥掉，避免高频出现的
+        master/lanlan + 昵称把无关 reflection 也判成 mentioned。
         """
         now = datetime.now()
         now_str = now.isoformat()
@@ -1158,7 +1165,7 @@ class ReflectionEngine:
                 continue
             if r.get('status') != 'confirmed':
                 continue
-            if not _is_mentioned(r.get('text', ''), response_text):
+            if not _is_mentioned(r.get('text', ''), response_text, stop_names=stop_names):
                 continue
             mentions = r.get('recent_mentions', [])
             mentions.append(now_str)
@@ -1211,9 +1218,12 @@ class ReflectionEngine:
         """
         if not response_text:
             return
+        stop_names = await acollect_stop_names(self._config_manager, lanlan_name)
         async with self._get_alock(lanlan_name):
             reflections = await self._aload_reflections_full(lanlan_name)
-            if self._apply_record_reflection_mentions(reflections, response_text):
+            if self._apply_record_reflection_mentions(
+                reflections, response_text, stop_names=stop_names,
+            ):
                 active = [
                     r for r in reflections
                     if r.get('status') not in REFLECTION_TERMINAL_STATUSES

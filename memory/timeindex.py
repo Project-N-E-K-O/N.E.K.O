@@ -1,6 +1,7 @@
 from utils.llm_client import SQLChatMessageHistory, SystemMessage
 from sqlalchemy import create_engine, text
 from config import TIME_ORIGINAL_TABLE_NAME, TIME_COMPRESSED_TABLE_NAME
+from memory.stop_names import collect_stop_names, strip_stop_names
 from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable
 from utils.config_manager import get_config_manager
 from utils.logger_config import get_module_logger
@@ -373,12 +374,21 @@ class TimeIndexedMemory:
         await asyncio.to_thread(self._ensure_fts_table, lanlan_name)
 
     def index_fact(self, lanlan_name: str, fact_id: str, content: str) -> None:
-        """将事实插入 FTS5 索引。"""
+        """将事实插入 FTS5 索引。
+
+        索引前先剥离 master/lanlan + 各自昵称：这些 token 几乎在每条 fact
+        里都出现，BM25 IDF 虽然会自动降权，但留着仍会让 dedup 时的得分
+        被它们噪声化（"主人喜欢猫" vs "主人讨厌狗" 仍因共享"主人"获得
+        非零相似度）。索引侧 + 查询侧同步剥离才能让 BM25 完全围绕
+        substantive 内容算分。
+        """
         self._assert_timeindex_writable(lanlan_name)
         if not self._ensure_engine_exists(lanlan_name):
             return
         if not self._ensure_fts_table(lanlan_name):
             return
+        stop_names = collect_stop_names(get_config_manager(), lanlan_name)
+        indexed_content = strip_stop_names(content, stop_names)
         try:
             with self.engines[lanlan_name].connect() as conn:
                 # 先检查是否已存在
@@ -390,7 +400,7 @@ class TimeIndexedMemory:
                     return  # 已索引
                 conn.execute(
                     text(f"INSERT INTO {self.FACTS_FTS_TABLE}(fact_id, content) VALUES(:fid, :content)"),
-                    {"fid": fact_id, "content": content}
+                    {"fid": fact_id, "content": indexed_content}
                 )
                 conn.commit()
         except Exception as e:
@@ -403,6 +413,9 @@ class TimeIndexedMemory:
         """通过 FTS5 BM25 搜索事实。返回 [(fact_id, bm25_score), ...]。
 
         FTS5 bm25() 分数通常为负值，分数越小（越负）代表相关性越高。
+        查询前先剥离 master/lanlan + 各自昵称：和 ``index_fact`` 对称，
+        只有索引侧与查询侧同时去掉这些 stop-name，BM25 才能围绕
+        substantive 内容真正区分相似度。
         """
         try:
             if not self._ensure_engine_exists(lanlan_name, readonly=True):
@@ -412,9 +425,15 @@ class TimeIndexedMemory:
         except MaintenanceModeError as exc:
             logger.debug(f"[TimeIndexedMemory] 维护态跳过搜索 {lanlan_name} 的 FTS 索引初始化: {exc}")
             return []
+        stop_names = collect_stop_names(get_config_manager(), lanlan_name)
+        normalized_query = strip_stop_names(query, stop_names)
+        if not normalized_query.strip():
+            # Stripping 后什么都没剩——多半是纯名字查询，不让 FTS5 在空
+            # query 上抛 syntax error。
+            return []
         try:
             # 转义 FTS5 特殊字符
-            safe_query = query.replace('"', '""')
+            safe_query = normalized_query.replace('"', '""')
             with self.engines[lanlan_name].connect() as conn:
                 result = conn.execute(
                     text(
