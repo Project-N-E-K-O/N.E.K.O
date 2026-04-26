@@ -596,6 +596,14 @@
                     }
                 } catch (e) {
                     console.error('[Audio] 创建分析器失败:', e);
+                    // 任意节点构造失败时，把整条链路上的 ref 全部 null 掉，
+                    // 让 scheduleAudioChunks 的 hasAnalyser=!!globalAnalyser 路径
+                    // 退化为 source.connect(destination) 直连，避免把音频灌进
+                    // 一个未连接到 destination 的 dangling analyser 而静音。
+                    S.globalAnalyser = null;
+                    S.spatialPannerNode = null;
+                    S.spatialDistanceGainNode = null;
+                    S.speakerGainNode = null;
                 }
             }
             // Always sync global references (even when no new nodes were created)
