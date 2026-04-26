@@ -47,14 +47,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime
+import re
 
 from memory.embeddings import (
     cosine_similarity,
     get_embedding_service,
     is_cached_embedding_valid,
 )
-from memory.evidence import evidence_score
 
 logger = logging.getLogger(__name__)
 
@@ -269,9 +268,12 @@ class MemoryRecallReranker:
         embedded_scored: list[tuple[float, dict]] = []
         unembedded: list[dict] = []
         for o in observations:
+            # ``observations`` already passed through ``_hard_filter``,
+            # which guarantees every entry is a dict with non-empty
+            # text — no need for a defensive isinstance check here.
             text = o.get('text', '')
             cvec = o.get('embedding')
-            if isinstance(o, dict) and is_cached_embedding_valid(o, text, model_id):
+            if is_cached_embedding_valid(o, text, model_id):
                 # Max-cosine across query vectors. Candidates with
                 # equal cosine fall back to evidence_score for tie-
                 # breaking — covered in the unit test.
@@ -375,7 +377,14 @@ class MemoryRecallReranker:
             await llm.aclose()
         raw = resp.content.strip()
         if raw.startswith("```"):
-            raw = raw.replace("```json", "").replace("```", "").strip()
+            # Case-insensitive strip handles ``` / ```json / ```JSON /
+            # ```Json — small models occasionally emit non-canonical
+            # casing or trailing newline immediately after the fence
+            # tag, which the previous literal `.replace("```json", "")`
+            # would miss.
+            raw = re.sub(r'^```\w*\s*\n?', '', raw, count=1)
+            raw = re.sub(r'\n?\s*```\s*$', '', raw, count=1)
+            raw = raw.strip()
         decisions = robust_json_loads(raw)
         if not isinstance(decisions, list):
             logger.warning(

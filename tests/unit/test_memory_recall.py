@@ -451,9 +451,11 @@ async def test_aretrieve_tops_up_when_llm_returns_fewer_than_budget():
         )
     assert len(out) == 3
     assert out[0]["id"] == "o5"
-    # Top-up draws from the coarse-rank tail in order — those are
-    # the highest-evidence_score rows the LLM didn't pick.
-    assert "o5" in {o["id"] for o in out}
+    # The remaining two slots top up from the coarse-rank tail in
+    # order — those are the highest-evidence_score rows the LLM
+    # didn't pick. Position 0 already pinned to o5 above; here we
+    # just assert the top-up didn't somehow drop o5.
+    assert {o["id"] for o in out[1:]}.isdisjoint({"o5"})
 
 
 @pytest.mark.asyncio
