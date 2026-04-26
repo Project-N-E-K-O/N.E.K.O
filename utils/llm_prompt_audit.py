@@ -19,6 +19,7 @@ budget 占比是否合理。
 """
 from __future__ import annotations
 
+import functools
 import json
 import os
 import threading
@@ -30,7 +31,6 @@ from typing import Any
 _ENABLED = os.environ.get("NEKO_LLM_PROMPT_AUDIT", "").lower() in ("1", "true", "yes")
 _LOG_DIR = Path("logs/llm_prompt_audit")
 _LOCK = threading.Lock()
-_PRINTED_BANNER = False
 
 
 def is_enabled() -> bool:
@@ -102,6 +102,25 @@ def _safe_call_type() -> str:
         return "unknown"
 
 
+@functools.cache
+def _print_banner_once() -> None:
+    """Print the audit-enabled banner exactly once per process. Using
+    ``functools.cache`` instead of a module-level boolean sentinel
+    sidesteps static-analysis "global variable not used" false positives
+    while keeping identical print-once semantics."""
+    try:
+        print(
+            "[LLM_PROMPT_AUDIT] enabled — writing to "
+            f"{_LOG_DIR.resolve()} (NEKO_LLM_PROMPT_AUDIT=1)",
+            flush=True,
+        )
+    except Exception:
+        # Banner print failures are intentionally ignored: stdout closed /
+        # encoding error etc. must not abort the audit record itself, let
+        # alone the main LLM call.
+        pass
+
+
 def record_llm_request(
     *,
     model: str,
@@ -118,20 +137,7 @@ def record_llm_request(
     if not _ENABLED:
         return
 
-    global _PRINTED_BANNER
-    if not _PRINTED_BANNER:
-        _PRINTED_BANNER = True
-        try:
-            print(
-                "[LLM_PROMPT_AUDIT] enabled — writing to "
-                f"{_LOG_DIR.resolve()} (NEKO_LLM_PROMPT_AUDIT=1)",
-                flush=True,
-            )
-        except Exception:
-            # Banner print failures are intentionally ignored: stdout
-            # closed / encoding error etc. must not abort the audit
-            # record itself, let alone the main LLM call.
-            pass
+    _print_banner_once()
 
     try:
         messages = params.get("messages") or []
