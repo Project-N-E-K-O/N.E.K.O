@@ -778,7 +778,9 @@
         "defaultDevice": "システムのデフォルトスピーカー",
         "deviceLabel": "スピーカー {{index}}",
         "loadFailed": "スピーカーリストの取得に失敗しました",
-        "noDevices": "スピーカーデバイスが検出されませんでした"
+        "noDevices": "スピーカーデバイスが検出されませんでした",
+        "spatialAudioLabel": "空間オーディオ",
+        "spatialAudioHint": "キャラクターウィンドウのメインモニターに対する位置からステレオ定位と距離減衰を適用"
     },
     "status": {
         "initializing": "初期化中...",

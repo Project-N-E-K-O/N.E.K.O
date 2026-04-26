@@ -778,7 +778,9 @@
         "defaultDevice": "System Default Speaker",
         "deviceLabel": "Speaker {{index}}",
         "loadFailed": "Failed to get speaker list",
-        "noDevices": "No speaker devices detected"
+        "noDevices": "No speaker devices detected",
+        "spatialAudioLabel": "Spatial Audio",
+        "spatialAudioHint": "Stereo panning and distance falloff based on the character window's position relative to your primary monitor"
     },
     "status": {
         "initializing": "Initializing...",

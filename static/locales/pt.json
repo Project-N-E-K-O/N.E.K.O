@@ -778,7 +778,9 @@
         "defaultDevice": "Alto-falante padrão do sistema",
         "deviceLabel": "Palestrante {{index}}",
         "loadFailed": "Falha ao obter lista de palestrantes",
-        "noDevices": "Nenhum dispositivo de alto-falante detectado"
+        "noDevices": "Nenhum dispositivo de alto-falante detectado",
+        "spatialAudioLabel": "Áudio espacial",
+        "spatialAudioHint": "Panorâmica estéreo e atenuação por distância conforme a posição da janela do personagem em relação ao monitor principal"
     },
     "status": {
         "initializing": "Inicializando...",

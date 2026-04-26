@@ -778,7 +778,9 @@
         "defaultDevice": "Altavoz predeterminado del sistema",
         "deviceLabel": "Altavoz {{index}}",
         "loadFailed": "No se pudo obtener la lista de oradores",
-        "noDevices": "No se detectaron dispositivos de altavoz"
+        "noDevices": "No se detectaron dispositivos de altavoz",
+        "spatialAudioLabel": "Audio espacial",
+        "spatialAudioHint": "Paneo estéreo y atenuación por distancia según la posición de la ventana del personaje respecto al monitor principal"
     },
     "status": {
         "initializing": "Inicializando...",
