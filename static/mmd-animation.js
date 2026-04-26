@@ -35,8 +35,87 @@ class MMDAnimation {
         // 骨骼缓存（用于 IK/Grant 更新时保存/恢复）
         this._boneBackup = null;
 
+        // ── 双 MixerSlot 架构（crossfade 支持） ──
+        // 两个独立的动画槽位，交替用于 active / outgoing
+        this._slotA = this._createEmptySlot();
+        this._slotB = this._createEmptySlot();
+        this._activeSlot = null;    // 指向当前 active 的 slot (A 或 B)
+        this._outgoingSlot = null;  // 过渡期间指向正在淡出的 slot，非过渡时为 null
+
+        // Crossfade 状态
+        this._isCrossfading = false;
+        this._blendWeight = 0.0;
+        this._fadeDuration = 0.4;   // 默认过渡时长（秒）
+        this._fadeElapsed = 0.0;    // 已经过的过渡时间
+
+        // 绑定姿态备份（首次 skeleton.pose() 后保存，crossfade 时用于恢复干净的绑定姿态）
+        this._bindPoseBackup = null;
+
+        // 循环点过渡状态
+        this._isLoopCrossfading = false;
+        this._loopOutgoingSnapshot = null;
+        this._loopFadeElapsed = 0.0;
+        this._loopFadeDuration = 0.17;
+        this._loopCrossfadeThreshold = 0.95; // dot product threshold
+
         // 模块缓存
         this._mmdModuleCache = null;
+    }
+
+    /**
+     * 创建一个空的 MixerSlot 结构。
+     * 每个 slot 包含运行一个完整动画流水线所需的全部状态。
+     * @returns {MixerSlot} 所有字段初始化为 null 的 slot 对象
+     */
+    _createEmptySlot() {
+        return {
+            mixer: null,
+            action: null,
+            clip: null,
+            ikSolver: null,
+            grantSolver: null,
+            boneBackup: null,
+            ikSwitchTimeline: null,
+            lastAppliedIkEntry: null,
+            snapshot: null,
+            vmdUrl: null,
+        };
+    }
+
+    /**
+     * 回收一个 MixerSlot 的所有资源，将字段重置为 null。
+     * 保留 slot 对象引用本身以便复用。
+     * @param {MixerSlot} slot - 要回收的 slot
+     */
+    _recycleSlot(slot) {
+        if (slot.action) {
+            slot.action.stop();
+            slot.action = null;
+        }
+        if (slot.mixer) {
+            slot.mixer.stopAllAction();
+            slot.mixer = null;
+        }
+        slot.clip = null;
+        slot.ikSolver = null;
+        slot.grantSolver = null;
+        slot.boneBackup = null;
+        slot.ikSwitchTimeline = null;
+        slot.lastAppliedIkEntry = null;
+        slot.snapshot = null;
+        slot.vmdUrl = null;
+    }
+
+    /**
+     * 返回当前非 active 的那个 slot。
+     * 如果 _activeSlot 为 null，默认返回 _slotA。
+     * @returns {MixerSlot} 非 active 的 slot
+     */
+    _getInactiveSlot() {
+        if (this._activeSlot === null) {
+            return this._slotA;
+        }
+        return this._activeSlot === this._slotA ? this._slotB : this._slotA;
     }
 
     async _getMMDModule() {
@@ -52,7 +131,7 @@ class MMDAnimation {
 
     // ═══════════════════ VMD 加载 ═══════════════════
 
-    async loadAnimation(vmdUrl) {
+    async loadAnimation(vmdUrl, options = {}) {
         const requestId = ++this._loadRequestId;
         const THREE = window.THREE;
         if (!THREE) throw new Error('Three.js 未加载');
@@ -68,104 +147,309 @@ class MMDAnimation {
 
         const { VMDLoader, buildAnimation, GrantSolver, processBones } = mmdModule;
 
-        // 加载 VMD 文件
+        // 加载 VMD 文件（旧动画继续播放，不暴露 T-pose）
         const vmdLoader = new VMDLoader();
         const vmdObject = await new Promise((resolve, reject) => {
-            vmdLoader.load(
-                vmdUrl,
-                (vmd) => resolve(vmd),
-                undefined,
-                (error) => reject(error)
-            );
+            vmdLoader.load(vmdUrl, resolve, undefined, reject);
         });
         if (requestId !== this._loadRequestId || this.manager.currentModel !== mmd) return null;
 
-        // 解析 VMD 的 IK 开关时间轴（propertyKeyFrames）
-        // VMD 动画可以在不同帧切换 IK 的启用/禁用状态
+        // 解析 IK 开关时间轴
         const ikSwitchTimeline = this._buildIkSwitchTimeline(vmdObject.propertyKeyFrames);
 
-        // 清理之前的动画
-        this._cleanupAnimation();
-
-        // 保存 IK 开关时间轴（在 cleanup 之后设置，避免被清掉）
-        this._ikSwitchTimeline = ikSwitchTimeline;
-
         // 构建动画 Clip
-        const clip = buildAnimation(vmdObject, mmd.mesh);
-
-        // 防御：把每条四元数轨道的相邻关键帧翻到同半球（dot >= 0），
-        // 避免个别 VMD 在动画切换初始几帧被插值成长路径 / 奇点甩动。
+        // 【关键】buildAnimation 内部用 bone.position.toArray() 作为 basePosition，
+        // 把 VMD 的 position 偏移量加到当前骨骼 position 上。
+        // 如果此时骨骼不是绑定姿态（outgoing 动画在播放），basePosition 就是错误的。
+        // 必须在 buildAnimation 之前恢复绑定姿态。
+        const hasActiveAnimation = !!(this._activeSlot && this._activeSlot.mixer);
+        const needRestoreForBuild = hasActiveAnimation && this._bindPoseBackup && mmd.mesh.skeleton?.bones;
+        if (needRestoreForBuild) {
+            // 保存当前骨骼状态（outgoing 的动画状态）
+            const savedPositions = mmd.mesh.skeleton.bones.map(b => b.position.clone());
+            const savedQuaternions = mmd.mesh.skeleton.bones.map(b => b.quaternion.clone());
+            // 恢复绑定姿态
+            mmd.mesh.skeleton.bones.forEach((bone, i) => {
+                if (this._bindPoseBackup[i]) {
+                    bone.position.copy(this._bindPoseBackup[i].position);
+                    bone.quaternion.copy(this._bindPoseBackup[i].quaternion);
+                }
+            });
+            // 在绑定姿态上构建 clip
+            var clip = buildAnimation(vmdObject, mmd.mesh);
+            // 恢复 outgoing 的动画状态
+            mmd.mesh.skeleton.bones.forEach((bone, i) => {
+                bone.position.copy(savedPositions[i]);
+                bone.quaternion.copy(savedQuaternions[i]);
+            });
+        } else {
+            var clip = buildAnimation(vmdObject, mmd.mesh);
+        }
         this._normalizeQuaternionTrackSigns(clip);
-        this.currentClip = clip;
 
-        // 创建 AnimationMixer
-        this.mixer = new THREE.AnimationMixer(mmd.mesh);
-        this.currentAction = this.mixer.clipAction(clip);
-        this.currentAction.setLoop(this.isLoop ? THREE.LoopRepeat : THREE.LoopOnce, Infinity);
-        this.currentAction.clampWhenFinished = true; // 防止动画结束后 action 被 disable 导致 T-Pose
+        // 判断过渡模式
+        const fadeDuration = Math.max(0, Math.min(options.fadeDuration !== undefined ? options.fadeDuration : 0.4, 1.0));
+        const immediate = options.immediate === true || fadeDuration === 0;
 
-        // 安全网：如果循环动画意外触发 finished 事件，自动重播
-        this.mixer.addEventListener('finished', (e) => {
-            if (this.isLoop && e.action === this.currentAction) {
-                console.warn('[MMD Animation] 循环动画意外结束，自动重播');
-                e.action.reset();
-                e.action.play();
+        // ── 同步块开始（RAF 无法插入） ──
+
+        if (hasActiveAnimation && !immediate) {
+            // ═══ Crossfade 路径 ═══
+
+            // 如果正在 crossfade，先完成当前过渡
+            if (this._isCrossfading) {
+                this._abortCrossfade();
             }
-        });
 
-        // IK 解算器
-        if (mmd.iks && mmd.iks.length > 0) {
-            try {
-                const { CCDIKSolver } = await import('three/addons/animation/CCDIKSolver.js');
-                if (requestId !== this._loadRequestId || this.manager.currentModel !== mmd) return null;
-                this.ikSolver = new CCDIKSolver(mmd.mesh, mmd.iks);
+            // 跨 clip 同半球对齐
+            this._alignClipToCurrentPose(clip, mmd.mesh);
 
-                // 根据 VMD 的 IK 开关设置初始状态（第 0 帧）
-                this._applyIkSwitchState(0);
-            } catch (e) {
-                console.warn('[MMD Animation] CCDIKSolver 不可用:', e);
+            // 当前 active → outgoing
+            this._outgoingSlot = this._activeSlot;
+
+            // 初始化新 slot
+            const newSlot = this._getInactiveSlot();
+
+            // 【关键】在创建新 mixer/clipAction 之前，恢复骨骼到绑定姿态。
+            // 不用 skeleton.pose()——它依赖父骨骼的 world matrix，在 crossfade 期间
+            // 父骨骼可能被 outgoing 的 Grant/IK 污染，导致 pose() 计算出错误的 local transform。
+            // 改用首次加载时保存的绑定姿态备份，直接恢复每根骨骼的 position/quaternion。
+            if (this._bindPoseBackup && mmd.mesh.skeleton?.bones) {
+                mmd.mesh.skeleton.bones.forEach((bone, i) => {
+                    if (this._bindPoseBackup[i]) {
+                        bone.position.copy(this._bindPoseBackup[i].position);
+                        bone.quaternion.copy(this._bindPoseBackup[i].quaternion);
+                    }
+                });
+            } else if (mmd.mesh.skeleton) {
+                // 回退：如果没有绑定姿态备份（不应该发生），用 skeleton.pose()
+                mmd.mesh.skeleton.pose();
             }
+
+            newSlot.mixer = new THREE.AnimationMixer(mmd.mesh);
+            newSlot.clip = clip;
+            newSlot.action = newSlot.mixer.clipAction(clip);
+
+            newSlot.action.setLoop(this.isLoop ? THREE.LoopRepeat : THREE.LoopOnce, Infinity);
+            newSlot.action.clampWhenFinished = true;
+            newSlot.ikSwitchTimeline = ikSwitchTimeline;
+            newSlot.lastAppliedIkEntry = null;
+            newSlot.vmdUrl = vmdUrl;
+
+            // 安全网：循环动画意外结束时自动重播
+            newSlot.mixer.addEventListener('finished', (e) => {
+                if (this.isLoop && this._activeSlot && e.action === this._activeSlot.action) {
+                    console.warn('[MMD Animation] 循环动画意外结束，自动重播');
+                    e.action.reset();
+                    e.action.play();
+                }
+            });
+
+            // 循环点过渡：监听 loop 事件
+            newSlot.mixer.addEventListener('loop', (e) => {
+                if (this._activeSlot && e.action === this._activeSlot.action) {
+                    this._onLoopEvent(this._activeSlot, mmd.mesh);
+                }
+            });
+
+            // IK 解算器
+            if (mmd.iks && mmd.iks.length > 0) {
+                try {
+                    const { CCDIKSolver } = await import('three/addons/animation/CCDIKSolver.js');
+                    if (requestId !== this._loadRequestId || this.manager.currentModel !== mmd) return null;
+                    newSlot.ikSolver = new CCDIKSolver(mmd.mesh, mmd.iks);
+                    if (newSlot.ikSwitchTimeline) {
+                        this._applyIkSwitchStateForSlot(newSlot, 0);
+                    }
+                } catch (e) {
+                    console.warn('[MMD Animation] CCDIKSolver 不可用:', e);
+                }
+            }
+
+            // Grant 解算器
+            if (mmd.grants && mmd.grants.length > 0) {
+                newSlot.grantSolver = new GrantSolver(mmd.mesh, mmd.grants);
+            }
+
+            // Pre-warm：应用第 0 帧
+            // 【关键】在 action.play() 之前再次恢复绑定姿态。
+            // 因为上面的 await import('CCDIKSolver') 让出了控制权，
+            // 期间 outgoing slot 的 pipeline 可能修改了骨骼。
+            // action.play() 内部触发 saveOriginalState，必须确保骨骼是绑定姿态。
+            if (this._bindPoseBackup && mmd.mesh.skeleton?.bones) {
+                mmd.mesh.skeleton.bones.forEach((bone, i) => {
+                    if (this._bindPoseBackup[i]) {
+                        bone.position.copy(this._bindPoseBackup[i].position);
+                        bone.quaternion.copy(this._bindPoseBackup[i].quaternion);
+                    }
+                });
+                // DEBUG: 确认绑定姿态恢复后骨骼值
+                const bones = mmd.mesh.skeleton.bones;
+                for (const bone of bones) {
+                    if (bone.name.includes('IK') || bone.name.includes('ＩＫ')) {
+                        console.log(`[BIND DEBUG] BEFORE play() ${bone.name} pos=(${bone.position.x.toFixed(3)}, ${bone.position.y.toFixed(3)}, ${bone.position.z.toFixed(3)})`);
+                    }
+                }
+            }
+            newSlot.action.play();
+            newSlot.mixer.update(0);
+
+            // 初始化骨骼备份（Grant 之前！）
+            this._initSlotBoneBackup(newSlot, mmd.mesh);
+
+            if (newSlot.ikSolver) newSlot.ikSolver.update();
+            if (newSlot.grantSolver) newSlot.grantSolver.update();
+            mmd.mesh.updateMatrixWorld(true);
+
+            // 设为 active
+            this._activeSlot = newSlot;
+
+            // 开始 crossfade
+            this._beginCrossfade(fadeDuration);
+
+            // crossfade 立即开始播放
+            this.isPlaying = true;
+            this.isPaused = false;
+            if (!this.clock) {
+                this.clock = new THREE.Clock();
+            }
+            this.clock.start();
+
+            // 重置 cursorFollow
+            this._resetCursorFollowEyes();
+
+            this._processBones = processBones;
+
+        } else {
+            // ═══ 首次加载 / 硬切路径 ═══
+
+            // 清理所有 slot
+            this._recycleSlot(this._slotA);
+            this._recycleSlot(this._slotB);
+            this._activeSlot = null;
+            this._outgoingSlot = null;
+            this._isCrossfading = false;
+            this._blendWeight = 0.0;
+            this._fadeElapsed = 0.0;
+
+            // 也清理旧的 class-level 状态（从旧 loadAnimation 迁移过来的）
+            if (this.currentAction) { this.currentAction.stop(); this.currentAction = null; }
+            if (this.mixer) { this.mixer.stopAllAction(); this.mixer = null; }
+            this.currentClip = null;
+            this.ikSolver = null;
+            this.grantSolver = null;
+            this._boneBackup = null;
+            this._ikSwitchTimeline = null;
+            this._lastAppliedIkEntry = null;
+            this.isPlaying = false;
+            this.isPaused = false;
+            if (this.clock) { this.clock.stop(); this.clock = null; }
+
+            // 初始化 slot A
+            const slot = this._slotA;
+            slot.mixer = new THREE.AnimationMixer(mmd.mesh);
+            slot.clip = clip;
+            slot.action = slot.mixer.clipAction(clip);
+            slot.action.setLoop(this.isLoop ? THREE.LoopRepeat : THREE.LoopOnce, Infinity);
+            slot.action.clampWhenFinished = true;
+            slot.ikSwitchTimeline = ikSwitchTimeline;
+            slot.lastAppliedIkEntry = null;
+            slot.vmdUrl = vmdUrl;
+
+            // 安全网
+            slot.mixer.addEventListener('finished', (e) => {
+                if (this.isLoop && this._activeSlot && e.action === this._activeSlot.action) {
+                    console.warn('[MMD Animation] 循环动画意外结束，自动重播');
+                    e.action.reset();
+                    e.action.play();
+                }
+            });
+
+            // 循环点过渡：监听 loop 事件
+            slot.mixer.addEventListener('loop', (e) => {
+                if (this._activeSlot && e.action === this._activeSlot.action) {
+                    this._onLoopEvent(this._activeSlot, mmd.mesh);
+                }
+            });
+
+            // IK 解算器
+            if (mmd.iks && mmd.iks.length > 0) {
+                try {
+                    const { CCDIKSolver } = await import('three/addons/animation/CCDIKSolver.js');
+                    if (requestId !== this._loadRequestId || this.manager.currentModel !== mmd) return null;
+                    slot.ikSolver = new CCDIKSolver(mmd.mesh, mmd.iks);
+                    if (slot.ikSwitchTimeline) {
+                        this._applyIkSwitchStateForSlot(slot, 0);
+                    }
+                } catch (e) {
+                    console.warn('[MMD Animation] CCDIKSolver 不可用:', e);
+                }
+            }
+
+            // Grant 解算器
+            if (mmd.grants && mmd.grants.length > 0) {
+                slot.grantSolver = new GrantSolver(mmd.mesh, mmd.grants);
+            }
+
+            // 重置骨骼到绑定姿态
+            if (mmd.mesh.skeleton) mmd.mesh.skeleton.pose();
+
+            // 保存绑定姿态（首次加载时 skeleton.pose() 是干净的，后续 crossfade 用这个备份）
+            if (!this._bindPoseBackup && mmd.mesh.skeleton?.bones) {
+                this._bindPoseBackup = mmd.mesh.skeleton.bones.map(bone => ({
+                    position: bone.position.clone(),
+                    quaternion: bone.quaternion.clone()
+                }));
+                // DEBUG: 打印保存的绑定姿态值
+                for (const bone of mmd.mesh.skeleton.bones) {
+                    if (bone.name.includes('IK') || bone.name.includes('ＩＫ')) {
+                        console.log(`[BIND DEBUG] SAVED bindPose ${bone.name} pos=(${bone.position.x.toFixed(3)}, ${bone.position.y.toFixed(3)}, ${bone.position.z.toFixed(3)})`);
+                    }
+                }
+            }
+
+            // 重置 cursorFollow
+            this._resetCursorFollowEyes();
+
+            this._processBones = processBones;
+
+            if (!this.clock) {
+                this.clock = new THREE.Clock();
+            }
+
+            // Pre-warm：应用第 0 帧
+            slot.action.play();
+            slot.mixer.update(0);
+
+            // 初始化骨骼备份（Grant 之前！）
+            this._initSlotBoneBackup(slot, mmd.mesh);
+
+            if (slot.ikSolver) slot.ikSolver.update();
+            if (slot.grantSolver) slot.grantSolver.update();
+            mmd.mesh.updateMatrixWorld(true);
+
+            // 设为 active
+            this._activeSlot = slot;
+
+            // 暂停，等待外部 play()
+            slot.action.paused = true;
+            this.clock.stop();
         }
 
-        // Grant 解算器
-        if (mmd.grants && mmd.grants.length > 0) {
-            this.grantSolver = new GrantSolver(mmd.mesh, mmd.grants);
-        }
+        // 更新 backward-compatible 属性（供外部代码读取）
+        this.mixer = this._activeSlot.mixer;
+        this.currentAction = this._activeSlot.action;
+        this.currentClip = this._activeSlot.clip;
+        this.ikSolver = this._activeSlot.ikSolver;
+        this.grantSolver = this._activeSlot.grantSolver;
+        this._boneBackup = this._activeSlot.boneBackup;
+        this._ikSwitchTimeline = this._activeSlot.ikSwitchTimeline;
+        this._lastAppliedIkEntry = this._activeSlot.lastAppliedIkEntry;
 
-        // 重置骨骼到绑定姿态（干净的基准状态）
-        if (mmd.mesh.skeleton) mmd.mesh.skeleton.pose();
+        this.manager._isTPose = false;
 
-        // 重置 cursorFollow 的眼骨偏移状态（新动画的骨骼基准已重置）
-        if (this.manager?.cursorFollow) {
-            this.manager.cursorFollow._eyeLastOffsetQuat?.identity();
-            this.manager.cursorFollow._currentYaw = 0;
-            this.manager.cursorFollow._currentPitch = 0;
-            this.manager.cursorFollow._targetYaw = 0;
-            this.manager.cursorFollow._targetPitch = 0;
-        }
-
-        // 使用 processBones
-        this._processBones = processBones;
-
-        this.clock = new THREE.Clock();
-
-        // Pre-warm：立即应用第 0 帧，避免 T-pose 闪烁
-        this.currentAction.play();
-        this.mixer.update(0);
-
-        // 在第 0 帧动画姿态上初始化骨骼备份（Grant 之前！）
-        // 这样 _restoreBones 恢复的是纯动画状态，Grant 不会累积
-        this._initBoneBackup(mmd.mesh);
-
-        if (this.ikSolver) this.ikSolver.update();
-        if (this.grantSolver) this.grantSolver.update();
-        mmd.mesh.updateMatrixWorld(true);
-
-        // 暂停，等待外部调用 play()
-        this.currentAction.paused = true;
-        this.clock.stop();
-
-        console.log('[MMD Animation] 动画加载完成:', vmdUrl);
+        console.log('[MMD Animation] 动画加载完成:', vmdUrl,
+            hasActiveAnimation && !immediate ? `(crossfade ${fadeDuration}s)` : '(直接加载)');
 
         return clip;
     }
@@ -191,6 +475,55 @@ class MMDAnimation {
                     v[i + 1] = -v[i + 1];
                     v[i + 2] = -v[i + 2];
                     v[i + 3] = -v[i + 3];
+                }
+            }
+        }
+    }
+
+    // ═══════════════════ Crossfade 辅助 ═══════════════════
+
+    _resetCursorFollowEyes() {
+        if (this.manager?.cursorFollow) {
+            this.manager.cursorFollow._eyeLastOffsetQuat?.identity();
+            this.manager.cursorFollow._currentYaw = 0;
+            this.manager.cursorFollow._currentPitch = 0;
+            this.manager.cursorFollow._targetYaw = 0;
+            this.manager.cursorFollow._targetPitch = 0;
+        }
+    }
+
+    /**
+     * 跨 clip 同半球对齐：把新 clip 每条 QuaternionKeyframeTrack 的关键帧
+     * 整体翻到当前骨骼姿态的同半球（dot >= 0）。
+     * 确保 crossfade 的 slerp 走最短旋转路径。
+     * @param {THREE.AnimationClip} clip - 新动画 clip
+     * @param {Object} mesh - 包含 skeleton.bones 的 mesh
+     */
+    _alignClipToCurrentPose(clip, mesh) {
+        const THREE = window.THREE;
+        if (!clip?.tracks || !THREE?.QuaternionKeyframeTrack || !mesh?.skeleton?.bones) return;
+
+        // 建立骨骼名 → quaternion 的查找表
+        const boneMap = new Map();
+        for (const bone of mesh.skeleton.bones) {
+            boneMap.set(bone.name, bone.quaternion);
+        }
+
+        const stride = 4;
+        for (const track of clip.tracks) {
+            if (!(track instanceof THREE.QuaternionKeyframeTrack)) continue;
+            // MMD track name format: "boneName.quaternion"
+            const boneName = track.name.split('.')[0];
+            const bq = boneMap.get(boneName);
+            if (!bq) continue;
+            const v = track.values;
+            if (!v || v.length < stride) continue;
+            // Compare first keyframe with current bone quaternion
+            const dot = bq.x * v[0] + bq.y * v[1] + bq.z * v[2] + bq.w * v[3];
+            if (dot < 0) {
+                // Flip entire track (internal consistency preserved by _normalizeQuaternionTrackSigns)
+                for (let i = 0; i < v.length; i++) {
+                    v[i] = -v[i];
                 }
             }
         }
@@ -228,15 +561,170 @@ class MMDAnimation {
         });
     }
 
+    // ─── Slot-aware 骨骼缓存（crossfade 用） ───
+
+    /**
+     * 为指定 slot 初始化骨骼备份数组，从当前骨骼状态克隆。
+     * @param {MixerSlot} slot - 目标 slot
+     * @param {Object} mesh - 包含 skeleton.bones 的 mesh 对象
+     */
+    _initSlotBoneBackup(slot, mesh) {
+        const THREE = window.THREE;
+        if (!mesh?.skeleton?.bones || !THREE) return;
+        slot.boneBackup = mesh.skeleton.bones.map(bone => ({
+            position: bone.position.clone(),
+            quaternion: bone.quaternion.clone()
+        }));
+    }
+
+    /**
+     * 将当前骨骼状态保存到指定 slot 的备份数组。
+     * @param {MixerSlot} slot - 目标 slot
+     * @param {Object} mesh - 包含 skeleton.bones 的 mesh 对象
+     */
+    _saveBonesToSlot(slot, mesh) {
+        if (!slot.boneBackup || !mesh?.skeleton?.bones) return;
+        mesh.skeleton.bones.forEach((bone, i) => {
+            if (slot.boneBackup[i]) {
+                slot.boneBackup[i].position.copy(bone.position);
+                slot.boneBackup[i].quaternion.copy(bone.quaternion);
+            }
+        });
+    }
+
+    /**
+     * 从指定 slot 的备份数组恢复骨骼状态。
+     * @param {MixerSlot} slot - 源 slot
+     * @param {Object} mesh - 包含 skeleton.bones 的 mesh 对象
+     */
+    _restoreBonesFromSlot(slot, mesh) {
+        if (!slot.boneBackup || !mesh?.skeleton?.bones) return;
+        mesh.skeleton.bones.forEach((bone, i) => {
+            if (slot.boneBackup[i]) {
+                bone.position.copy(slot.boneBackup[i].position);
+                bone.quaternion.copy(slot.boneBackup[i].quaternion);
+            }
+        });
+    }
+
+    // ─── 骨骼快照（crossfade 混合用） ───
+
+    /**
+     * 捕获当前骨骼状态到 slot 的快照数组。
+     * 快照在首次调用时分配，后续复用（对象池）。
+     * @param {MixerSlot} slot - 目标 slot
+     * @param {Object} mesh - 包含 skeleton.bones 的 mesh
+     */
+    _captureSnapshot(slot, mesh) {
+        if (!mesh?.skeleton?.bones) return;
+        const bones = mesh.skeleton.bones;
+        if (!slot.snapshot || slot.snapshot.length !== bones.length) {
+            const THREE = window.THREE;
+            slot.snapshot = bones.map(bone => ({
+                position: bone.position.clone(),
+                quaternion: bone.quaternion.clone()
+            }));
+        } else {
+            bones.forEach((bone, i) => {
+                slot.snapshot[i].position.copy(bone.position);
+                slot.snapshot[i].quaternion.copy(bone.quaternion);
+            });
+        }
+    }
+
+    /**
+     * 将 slot 的快照写入实际骨骼。
+     * @param {MixerSlot} slot - 源 slot
+     * @param {Object} mesh - 包含 skeleton.bones 的 mesh
+     */
+    _applySnapshot(slot, mesh) {
+        if (!slot.snapshot || !mesh?.skeleton?.bones) return;
+        mesh.skeleton.bones.forEach((bone, i) => {
+            if (slot.snapshot[i]) {
+                bone.position.copy(slot.snapshot[i].position);
+                bone.quaternion.copy(slot.snapshot[i].quaternion);
+            }
+        });
+    }
+
+    /**
+     * 在骨骼层面混合两个快照的状态，结果直接写入实际骨骼。
+     * position 使用 lerp，quaternion 使用 slerp。
+     * @param {Array} outSnapshot - outgoing slot 的骨骼快照
+     * @param {Array} inSnapshot - active slot 的骨骼快照
+     * @param {number} weight - 混合权重 (0.0 = 完全 out, 1.0 = 完全 in)
+     * @param {Object} mesh - 包含 skeleton.bones 的 mesh
+     */
+    _blendBones(outSnapshot, inSnapshot, weight, mesh) {
+        if (!outSnapshot || !inSnapshot || !mesh?.skeleton?.bones) return;
+        const bones = mesh.skeleton.bones;
+        const len = Math.min(outSnapshot.length, inSnapshot.length, bones.length);
+        for (let i = 0; i < len; i++) {
+            bones[i].position.lerpVectors(outSnapshot[i].position, inSnapshot[i].position, weight);
+            bones[i].quaternion.slerpQuaternions(outSnapshot[i].quaternion, inSnapshot[i].quaternion, weight);
+        }
+    }
+
+    // ─── Crossfade 生命周期 ───
+
+    /**
+     * 开始 crossfade 过渡。
+     * @param {number} fadeDuration - 过渡时长（秒）
+     */
+    _beginCrossfade(fadeDuration) {
+        this._isCrossfading = true;
+        this._blendWeight = 0.0;
+        this._fadeElapsed = 0.0;
+        this._fadeDuration = Math.max(0, Math.min(fadeDuration, 1.0)); // clamp to [0, 1.0]
+
+        // 通知物理系统准备过渡（当前为 no-op，crossfade 的平滑混合不需要冻结物理）
+        // 保留此钩子供未来扩展（例如：物理冻结、阻尼调整等）
+    }
+
+    /**
+     * 完成 crossfade 过渡：回收 outgoing slot，恢复单 slot 运行。
+     */
+    _completeCrossfade() {
+        this._blendWeight = 1.0;
+        this._isCrossfading = false;
+        this._fadeElapsed = 0.0;
+
+        if (this._outgoingSlot) {
+            this._recycleSlot(this._outgoingSlot);
+            this._outgoingSlot = null;
+        }
+
+        // 通知物理系统对齐到新动画的骨骼位置
+        const physics = this.manager.currentModel?.physics;
+        if (physics && typeof physics.reset === 'function') {
+            const mesh = this.manager.currentModel?.mesh;
+            if (mesh) mesh.updateMatrixWorld(true);
+            try { physics.reset(); } catch (e) { /* noop */ }
+        }
+    }
+
+    /**
+     * 中断当前 crossfade：立即完成（snap weight to 1.0）。
+     * 用于连续 loadAnimation 调用时先完成当前过渡。
+     */
+    _abortCrossfade() {
+        if (!this._isCrossfading) return;
+        this._completeCrossfade();
+    }
+
     // ═══════════════════ 播放控制 ═══════════════════
 
     play() {
-        if (!this.currentAction) {
-            return;
+        const action = this._activeSlot?.action || this.currentAction;
+        if (!action) return;
+        action.paused = false;
+        action.play();
+        if (this.clock) {
+            this.clock.start();
+        } else {
+            this.clock = new window.THREE.Clock();
+            this.clock.start();
         }
-        this.currentAction.paused = false;
-        this.currentAction.play();
-        if (this.clock) this.clock.start();
         this.isPlaying = true;
         this.isPaused = false;
         this.manager._isTPose = false;
@@ -249,15 +737,27 @@ class MMDAnimation {
     }
 
     stop() {
+        // 如果正在 crossfade，先完成
+        if (this._isCrossfading) {
+            this._abortCrossfade();
+        }
+
+        // 停止 active slot
+        if (this._activeSlot?.action) {
+            this._activeSlot.action.stop();
+        }
+        if (this._activeSlot?.mixer) {
+            this._activeSlot.mixer.stopAllAction();
+        }
+
+        // 也停止 class-level（兼容旧路径）
         if (this.currentAction) {
             this.currentAction.stop();
         }
+
         if (this.clock) this.clock.stop();
 
-        const mesh = this.manager.currentModel?.mesh;
-        if (mesh?.skeleton) {
-            mesh.skeleton.pose();
-        }
+        // 不调用 skeleton.pose()——保持最后一帧姿态
 
         if (this.manager?.cursorFollow) {
             const cf = this.manager.cursorFollow;
@@ -280,59 +780,164 @@ class MMDAnimation {
     setLoop(loop) {
         const THREE = window.THREE;
         this.isLoop = loop;
-        if (this.currentAction && THREE) {
-            this.currentAction.setLoop(loop ? THREE.LoopRepeat : THREE.LoopOnce, Infinity);
+        const action = this._activeSlot?.action || this.currentAction;
+        if (action && THREE) {
+            action.setLoop(loop ? THREE.LoopRepeat : THREE.LoopOnce, Infinity);
         }
     }
 
     setTimeScale(scale) {
-        if (this.currentAction) {
-            this.currentAction.timeScale = scale;
+        const action = this._activeSlot?.action || this.currentAction;
+        if (action) {
+            action.timeScale = scale;
         }
     }
 
     // ═══════════════════ 帧更新 ═══════════════════
 
-    update(delta) {
-        if (!this.isPlaying || !this.mixer) return;
+    /**
+     * 执行单个 MixerSlot 的完整动画流水线。
+     * 顺序：restoreBones → mixer.update → saveBones → updateMatrixWorld → IK → Grant
+     * @param {MixerSlot} slot - 要更新的 slot
+     * @param {number} delta - 帧间隔时间
+     * @param {Object} mesh - 模型 mesh
+     */
+    _updateSlotPipeline(slot, delta, mesh) {
+        // 1. 恢复骨骼到上帧动画基准
+        this._restoreBonesFromSlot(slot, mesh);
 
-        const mesh = this.manager.currentModel?.mesh;
-        if (!mesh) return;
+        // 2. AnimationMixer 更新
+        slot.mixer.update(delta);
 
-        // 1. 恢复骨骼到上帧动画基准（PropertyMixer 缓存一致性）
-        this._restoreBones(mesh);
+        // 3. 保存动画后的骨骼状态（Grant 之前！）
+        this._saveBonesToSlot(slot, mesh);
 
-        // 2. AnimationMixer 更新（在干净基准上应用新帧动画）
-        this.mixer.update(delta);
-
-        // 3. 保存动画后的骨骼状态（供下帧恢复）
-        this._saveBones(mesh);
+        // DEBUG: 追踪 IK target 骨骼的 position 变化（临时默认开启）
+        if (this._isCrossfading) {
+            const bones = mesh.skeleton?.bones;
+            if (bones) {
+                for (const bone of bones) {
+                    if (bone.name.includes('IK') || bone.name.includes('ＩＫ')) {
+                        const slotName = slot === this._activeSlot ? 'ACTIVE' : 'OUTGOING';
+                        console.log(`[IK DEBUG] ${slotName} ${bone.name} pos=(${bone.position.x.toFixed(3)}, ${bone.position.y.toFixed(3)}, ${bone.position.z.toFixed(3)}) quat=(${bone.quaternion.x.toFixed(3)}, ${bone.quaternion.y.toFixed(3)}, ${bone.quaternion.z.toFixed(3)}, ${bone.quaternion.w.toFixed(3)})`);
+                    }
+                }
+            }
+        }
 
         // 4. 更新世界矩阵
         mesh.updateMatrixWorld(true);
 
-        // 5. IK 解算（根据 VMD 的 IK 开关状态动态启用/禁用）
-        if (this.ikSolver) {
-            if (this._ikSwitchTimeline) {
-                const currentFrame = (this.mixer.time || 0) * 30;
-                this._applyIkSwitchState(currentFrame);
+        // 5. IK 解算
+        if (slot.ikSolver) {
+            if (slot.ikSwitchTimeline) {
+                const currentFrame = (slot.mixer.time || 0) * 30;
+                this._applyIkSwitchStateForSlot(slot, currentFrame);
             }
-            this.ikSolver.update();
+            slot.ikSolver.update();
         }
 
-        // 6. Grant 解算（在 IK 之后，这样 D 骨骼能收到 IK 的结果）
-        if (this.grantSolver) {
-            this.grantSolver.update();
+        // 6. Grant 解算
+        if (slot.grantSolver) {
+            slot.grantSolver.update();
+        }
+    }
+
+    update(delta) {
+        if (!this.isPlaying) return;
+
+        const mesh = this.manager.currentModel?.mesh;
+        if (!mesh) return;
+
+        if (this._isCrossfading && this._outgoingSlot && this._activeSlot) {
+            // ── 双 slot crossfade 路径 ──
+
+            // 1. 更新 outgoing slot 流水线
+            try {
+                this._updateSlotPipeline(this._outgoingSlot, delta, mesh);
+            } catch (e) {
+                console.warn('[MMD Animation] Outgoing slot pipeline error, completing crossfade:', e);
+                this._completeCrossfade();
+                return;
+            }
+            this._captureSnapshot(this._outgoingSlot, mesh);
+
+            // 2. 更新 active slot 流水线
+            this._updateSlotPipeline(this._activeSlot, delta, mesh);
+            this._captureSnapshot(this._activeSlot, mesh);
+
+            // TODO: IK 共享优化 — 当两个 slot 的 IK 开关状态一致时（_getIkSwitchState 返回相同字符串），
+            // 可以只运行一套 IK solver，将结果复制到另一个 slot 的快照中，减少 CCD 迭代开销。
+            // 当前实现已在各自的 _updateSlotPipeline 中独立运行 IK，结果正确但未做此优化。
+
+            // 物理系统注：crossfade 期间骨骼混合输出逐帧平滑变化，物理系统不需要特殊处理。
+            // 物理冻结/重置仅在 _completeCrossfade 时执行。
+
+            // 3. 推进混合权重
+            this._fadeElapsed += delta;
+            this._blendWeight = Math.min(this._fadeElapsed / this._fadeDuration, 1.0);
+
+            // 4. 骨骼混合
+            this._blendBones(
+                this._outgoingSlot.snapshot,
+                this._activeSlot.snapshot,
+                this._blendWeight,
+                mesh
+            );
+
+            // 5. 检查完成
+            if (this._blendWeight >= 1.0) {
+                this._completeCrossfade();
+            }
+
+        } else if (this._activeSlot && this._activeSlot.mixer) {
+            // ── 单 slot 路径（零额外开销） ──
+            this._updateSlotPipeline(this._activeSlot, delta, mesh);
+
+            // 循环点自过渡
+            if (this._isLoopCrossfading && this._loopOutgoingSnapshot) {
+                this._loopFadeElapsed += delta;
+                const loopWeight = Math.min(this._loopFadeElapsed / this._loopFadeDuration, 1.0);
+                // 捕获当前帧状态
+                this._captureSnapshot(this._activeSlot, mesh);
+                // 从 loop outgoing 向当前帧混合
+                this._blendBones(this._loopOutgoingSnapshot, this._activeSlot.snapshot, loopWeight, mesh);
+                if (loopWeight >= 1.0) {
+                    this._isLoopCrossfading = false;
+                    this._loopOutgoingSnapshot = null;
+                }
+            }
+
+        } else if (this.mixer) {
+            // ── 旧版兼容路径（loadAnimation 尚未迁移到 slot 时使用） ──
+            this._restoreBones(mesh);
+            this.mixer.update(delta);
+            this._saveBones(mesh);
+            mesh.updateMatrixWorld(true);
+
+            if (this.ikSolver) {
+                if (this._ikSwitchTimeline) {
+                    const currentFrame = (this.mixer.time || 0) * 30;
+                    this._applyIkSwitchState(currentFrame);
+                }
+                this.ikSolver.update();
+            }
+            if (this.grantSolver) {
+                this.grantSolver.update();
+            }
         }
 
-        // 7. 检查动画结束（非循环模式）
-        if (!this.isLoop && this.currentAction) {
-            const clipDuration = this.currentClip?.duration || 0;
-            if (this.mixer.time >= clipDuration) {
-                this.pause();
-                // 重置到 T-Pose
-                if (this.manager.core) {
-                    this.manager.core.resetModelPose();
+        // 检查动画结束（非循环模式）— 适用于所有路径
+        if (!this.isLoop) {
+            const activeAction = this._activeSlot?.action || this.currentAction;
+            const activeClip = this._activeSlot?.clip || this.currentClip;
+            const activeMixer = this._activeSlot?.mixer || this.mixer;
+            if (activeAction && activeClip && activeMixer) {
+                if (activeMixer.time >= activeClip.duration) {
+                    this.pause();
+                    if (this.manager.core) {
+                        this.manager.core.resetModelPose();
+                    }
                 }
             }
         }
@@ -545,9 +1150,167 @@ class MMDAnimation {
         }
     }
 
+    /**
+     * 根据当前帧号，从 slot 的 IK 开关时间轴中查找并应用对应的 IK 启用/禁用状态。
+     * 与 _applyIkSwitchState 相同逻辑，但使用 slot-local 状态而非 class-level 状态。
+     * @param {MixerSlot} slot - 包含 ikSwitchTimeline、ikSolver、lastAppliedIkEntry 的 slot
+     * @param {number} currentFrame - 当前帧号
+     */
+    _applyIkSwitchStateForSlot(slot, currentFrame) {
+        if (!slot.ikSwitchTimeline || !slot.ikSolver) return;
+
+        const timeline = slot.ikSwitchTimeline;
+        const bones = this.manager.currentModel?.mesh?.skeleton?.bones;
+        if (!bones) return;
+
+        // 找到当前帧对应的 IK 开关状态（floor 查找）
+        let activeEntry = null;
+        for (let i = timeline.length - 1; i >= 0; i--) {
+            if (timeline[i].frame <= currentFrame) {
+                activeEntry = timeline[i];
+                break;
+            }
+        }
+        if (!activeEntry) return;
+
+        // 避免重复应用同一个 entry
+        if (slot.lastAppliedIkEntry === activeEntry) return;
+        slot.lastAppliedIkEntry = activeEntry;
+
+        const iks = slot.ikSolver.iks;
+        for (let i = 0; i < iks.length; i++) {
+            const ik = iks[i];
+            // IK 的 target 是 IK 骨骼在 skeleton.bones 中的索引
+            const ikBoneName = bones[ik.target]?.name;
+            if (!ikBoneName) continue;
+
+            // 检查 VMD 中是否有这个 IK 的开关设置
+            // 注意：VMD 中可能用半角（左足IK），模型中可能用全角（左足ＩＫ）
+            let matched = false;
+            let enabled = true;
+            if (activeEntry.ikStates.has(ikBoneName)) {
+                enabled = activeEntry.ikStates.get(ikBoneName);
+                matched = true;
+            } else {
+                // 尝试半角/全角互转匹配
+                const normalized = ikBoneName.normalize('NFKC'); // 全角→半角
+                for (const [vmdName, vmdEnabled] of activeEntry.ikStates) {
+                    const vmdNormalized = vmdName.normalize('NFKC');
+                    if (vmdNormalized === normalized) {
+                        enabled = vmdEnabled;
+                        matched = true;
+                        break;
+                    }
+                }
+            }
+
+            if (matched) {
+                console.log(`[MMD Animation] IK "${ikBoneName}" → enabled=${enabled}`);
+                // 设置 IK 链中所有 link 的 enabled 状态
+                for (const link of ik.links) {
+                    link.enabled = enabled;
+                }
+                // 同时在 ik 对象上标记整体启用状态（供 updateOne 检查）
+                ik._ikEnabled = enabled;
+            } else {
+                console.warn(`[MMD Animation] IK "${ikBoneName}" 在 VMD IK 开关中未找到匹配`);
+            }
+        }
+    }
+
+    /**
+     * 获取 slot 当前所有 IK 链的启用状态，返回可比较的字符串表示。
+     * 用于判断两个 slot 的 IK 状态是否一致（优化：一致时只跑一套 IK）。
+     * @param {MixerSlot} slot
+     * @returns {string|null} IK 状态字符串，或 null（无 IK solver）
+     */
+    _getIkSwitchState(slot) {
+        if (!slot.ikSolver || !slot.ikSolver.iks) return null;
+        return slot.ikSolver.iks.map(ik => ik._ikEnabled !== false ? '1' : '0').join('');
+    }
+
+    // ═══════════════════ 循环点过渡 ═══════════════════
+
+    /**
+     * 测量循环动画首尾帧的骨骼姿态不连续程度。
+     * 返回所有骨骼四元数 dot 积的最小值（越小 = 越不连续）。
+     * @param {MixerSlot} slot - 包含 clip 的 slot
+     * @param {Object} mesh - 包含 skeleton.bones 的 mesh
+     * @returns {number} 最小 dot 积（0~1），1.0 = 完全连续
+     */
+    _measureLoopDiscontinuity(slot, mesh) {
+        if (!slot.clip?.tracks || !mesh?.skeleton?.bones) return 1.0;
+        const THREE = window.THREE;
+        if (!THREE?.QuaternionKeyframeTrack) return 1.0;
+
+        let minDot = 1.0;
+        const stride = 4;
+        for (const track of slot.clip.tracks) {
+            if (!(track instanceof THREE.QuaternionKeyframeTrack)) continue;
+            const v = track.values;
+            if (!v || v.length < stride * 2) continue;
+            // Compare first and last keyframe
+            const lastIdx = v.length - stride;
+            const dot = Math.abs(
+                v[0] * v[lastIdx] + v[1] * v[lastIdx + 1] +
+                v[2] * v[lastIdx + 2] + v[3] * v[lastIdx + 3]
+            );
+            if (dot < minDot) minDot = dot;
+        }
+        return minDot;
+    }
+
+    /**
+     * 循环事件处理：检测循环点不连续性，必要时启动自过渡。
+     * @param {MixerSlot} slot - 触发 loop 事件的 slot
+     * @param {Object} mesh - 包含 skeleton.bones 的 mesh
+     */
+    _onLoopEvent(slot, mesh) {
+        // 如果正在 inter-animation crossfade，不做 loop crossfade
+        if (this._isCrossfading) return;
+
+        const discontinuity = this._measureLoopDiscontinuity(slot, mesh);
+        if (discontinuity < this._loopCrossfadeThreshold) {
+            // 保存当前骨骼状态作为 loop outgoing
+            if (!mesh?.skeleton?.bones) return;
+            if (!this._loopOutgoingSnapshot) {
+                this._loopOutgoingSnapshot = mesh.skeleton.bones.map(bone => ({
+                    position: bone.position.clone(),
+                    quaternion: bone.quaternion.clone()
+                }));
+            } else {
+                mesh.skeleton.bones.forEach((bone, i) => {
+                    if (this._loopOutgoingSnapshot[i]) {
+                        this._loopOutgoingSnapshot[i].position.copy(bone.position);
+                        this._loopOutgoingSnapshot[i].quaternion.copy(bone.quaternion);
+                    }
+                });
+            }
+            this._isLoopCrossfading = true;
+            this._loopFadeElapsed = 0;
+        }
+    }
+
     // ═══════════════════ 清理 ═══════════════════
 
     _cleanupAnimation() {
+        // 回收两个 slot
+        this._recycleSlot(this._slotA);
+        this._recycleSlot(this._slotB);
+        this._activeSlot = null;
+        this._outgoingSlot = null;
+
+        // 重置 crossfade 状态
+        this._isCrossfading = false;
+        this._blendWeight = 0.0;
+        this._fadeElapsed = 0.0;
+
+        // 重置循环点过渡状态
+        this._isLoopCrossfading = false;
+        this._loopOutgoingSnapshot = null;
+        this._loopFadeElapsed = 0.0;
+
+        // 清理 class-level 兼容属性
         if (this.currentAction) {
             this.currentAction.stop();
             this.currentAction = null;

@@ -206,9 +206,9 @@ class MMDManager {
 
     // ═══════════════════ 动画 ═══════════════════
 
-    async loadAnimation(vmdPath) {
+    async loadAnimation(vmdPath, options = {}) {
         if (!this.animationModule) throw new Error('MMDAnimation 未初始化');
-        const clip = await this.animationModule.loadAnimation(vmdPath);
+        const clip = await this.animationModule.loadAnimation(vmdPath, options);
         this.currentAnimationUrl = vmdPath;
         return clip;
     }
