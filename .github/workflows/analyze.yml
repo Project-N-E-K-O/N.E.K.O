@@ -13,11 +13,16 @@ permissions:
 
 jobs:
   python-lint:
-    name: Python lint (ruff + async-blocking + no-loguru + no-temperature)
+    name: Python lint (ruff + async-blocking + no-loguru + no-temperature + prompt-hygiene + i18n-sync)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          # i18n-sync needs full history to diff against the merge-base of
+          # origin/main. Other lint steps don't care, but fetch-depth: 0 has
+          # negligible cost on this repo.
+          fetch-depth: 0
 
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
@@ -62,3 +67,24 @@ jobs:
         # across memory tasks. See memory/__init__.py and .agent/rules/
         # neko-guide.md for the rationale.
         run: python scripts/check_no_temperature.py
+
+      - name: Enforce prompt-i18n conventions (inline-EN-only + multilang-in-config)
+        # Two rules in one walker:
+        #   - INLINE_PROMPT_NON_EN: any string at an LLM call site or in a
+        #     module-level *PROMPT/*INSTRUCTION/*SYSTEM constant must be
+        #     English-bodied (CJK ratio <30%). Embedded short examples in
+        #     CJK are allowed under the threshold.
+        #   - I18N_NOT_IN_CONFIG: multi-language dicts (≥2 lang keys, must
+        #     include 'en') belong in config/prompts_*.py, not regular code.
+        # Per-line `# noqa: <CODE>` suppression supported. See PR #974 for
+        # the reference incident that motivated this lint.
+        run: python scripts/check_prompt_hygiene.py
+
+      - name: Verify i18n locale files move in lockstep (PR-only)
+        # Diff-based: when ANY static/locales/*.json or
+        # frontend/plugin-manager/src/i18n/locales/*.ts changes, ALL files
+        # in the group must change AND every hunk must occupy the same line
+        # ranges across all languages. Skipped on direct push to main —
+        # there's nothing to diff against.
+        if: github.event_name == 'pull_request'
+        run: python scripts/check_i18n_sync.py --base "origin/${{ github.base_ref }}"
