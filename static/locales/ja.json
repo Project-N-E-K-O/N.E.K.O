@@ -612,7 +612,7 @@
         "textInputPlaceholder": "Enterで送信、Shift+Enterで改行",
         "send": "送信",
         "inputTooLong": "メッセージが長すぎます（{{count}}/{{max}}）。短くしてから再試行してください",
-        "responseTooLong": "ご主人様、考えすぎちゃってもう頭が追いつかないにゃ～！",
+        "responseTooLong": "うーん、さっきはちょっと長く話しすぎちゃったにゃ～次はもっと短くまとめるね！",
         "importImage": "画像を取り込む",
         "importImageAriaLabel": "画像を取り込む",
         "screenshot": "スクリーンショット",

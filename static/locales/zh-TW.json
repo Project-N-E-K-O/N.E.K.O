@@ -612,7 +612,7 @@
         "textInputPlaceholder": "迴車發送，Shift+迴車換行",
         "send": "發送",
         "inputTooLong": "訊息過長（{{count}}/{{max}}），請精簡後重試",
-        "responseTooLong": "唔主人你讓人家想太多了，人家想不過來了啦！",
+        "responseTooLong": "唔，剛才人家想太多說太長了喵～下一句會說得簡短一點的！",
         "importImage": "匯入圖片",
         "importImageAriaLabel": "匯入圖片",
         "screenshot": "截圖",

@@ -2411,8 +2411,13 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                             of_info["status"] = "completed" if success else "failed"
                             of_info["end_time"] = _now_iso()
                             of_info["result"] = of_res
+                            # 与 /openfang/run direct path 同款 fallback chain：
+                            # daemon 失败时可能把原因塞在 result，error_message
+                            # 必须能从 result 兜回，否则 HUD 收到 failed 但
+                            # error_message="" 拿不到失败说明。
+                            _of_error_src = of_error_text or of_result_text
                             if not success:
-                                of_info["error"] = _tt((of_error_text or of_result_text), 350)
+                                of_info["error"] = _tt(_of_error_src, 350)
                             await _emit_task_result(
                                 lanlan_name,
                                 channel="openfang",
@@ -2420,7 +2425,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                 success=success,
                                 summary=summary,
                                 detail=of_result_text if success else "",
-                                error_message=of_error_text if not success else "",
+                                error_message=_of_error_src if not success else "",
                             )
                             try:
                                 await _emit_main_event(
@@ -3739,10 +3744,17 @@ async def openfang_run(payload: Dict[str, Any]):
             # 可能把原因塞进 result 而非 error；成功时 result 偶尔为空（如
             # 仅有 artifacts）。两条出口都做兜底，避免前端拿到空 summary
             # 或丢失败原因。
-            _summary_src = _result_text or _error_text
+            # 极端兜底：result 和 error 都为空时（e.g. 仅 artifacts 的成功
+            # 返回）summary 走默认占位串，避免前端 / LLM callback 拿到空
+            # summary。
+            _summary_src = _result_text or _error_text or (
+                "(OpenFang task completed with no result text)"
+                if _success
+                else "(OpenFang task failed with no error text)"
+            )
             _err_src = _error_text or _result_text
             if not _success:
-                reg["error"] = _tt(_err_src, 350)
+                reg["error"] = _tt(_err_src or "(OpenFang task failed with no error text)", 350)
 
             # callback summary 进 LLM context — 与 _sanitize_correction_text per-item 同档（400 tokens）
             await _emit_task_result(
@@ -3752,7 +3764,7 @@ async def openfang_run(payload: Dict[str, Any]):
                 success=_success,
                 summary=_tt(_summary_src, 400),
                 detail=_result_text,
-                error_message=_err_src if not _success else "",
+                error_message=(_err_src or "(OpenFang task failed with no error text)") if not _success else "",
             )
             # Terminal task_update so HUD transitions out of running
             try:
@@ -3774,13 +3786,17 @@ async def openfang_run(payload: Dict[str, Any]):
             reg["error"] = _tt(str(e), 350)
             reg["end_time"] = datetime.now(timezone.utc).isoformat()
             try:
+                # except 路径也走非空 summary，避免前端 / LLM callback 拿到
+                # 空摘要；error_message 用 exception 原文（已被外层 reg["error"]
+                # truncate，这里独立 cap）。
+                _exc_msg = str(e) or "(OpenFang task raised with no message)"
                 await _emit_task_result(
                     _lanlan,
                     channel="openfang",
                     task_id=task_id,
                     success=False,
-                    summary="",
-                    error_message=str(e),
+                    summary=_tt(_exc_msg, 400),
+                    error_message=_tt(_exc_msg, 350),
                 )
             except Exception:
                 logger.debug("[OpenFang] terminal task_result emit failed", exc_info=True)

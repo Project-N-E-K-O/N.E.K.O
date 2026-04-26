@@ -612,7 +612,7 @@
         "textInputPlaceholder": "보내려면 Enter를 누르고, 줄을 바꾸려면 Shift+Enter를 누르세요.",
         "send": "보내기",
         "inputTooLong": "메시지가 너무 깁니다 ({{count}}/{{max}}). 줄여서 다시 시도해 주세요",
-        "responseTooLong": "주인님이 너무 많이 생각하게 해서 머리가 따라가지 못해요냥!",
+        "responseTooLong": "음, 방금 너무 길게 말해버렸어요냥～다음엔 짧고 간단하게 말할게요!",
         "importImage": "이미지 가져오기",
         "importImageAriaLabel": "이미지 가져오기",
         "screenshot": "스크린샷",

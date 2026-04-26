@@ -612,7 +612,7 @@
         "textInputPlaceholder": "Pressione Enter para enviar, Shift+Enter para nova linha",
         "send": "Enviar",
         "inputTooLong": "Mensagem muito longa ({{count}}/{{max}}), encurte e tente novamente",
-        "responseTooLong": "Mestre, você me fez pensar demais, minha cabeça não consegue acompanhar, miau!",
+        "responseTooLong": "Hmm, divaguei demais, miau~ Da próxima vez responderei curto e direto.",
         "importImage": "Importar imagem",
         "importImageAriaLabel": "Importar imagem",
         "screenshot": "Captura de tela",
