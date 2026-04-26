@@ -809,7 +809,8 @@ class LLMSessionManager:
                     "max_attempts": max_attempts,
                     "will_retry": will_retry,
                     "message": message or "",
-                    "request_id": self._active_text_request_id,
+                    # 透传函数开头的 snapshot，避免新轮覆盖后串轮
+                    "request_id": active_request_id,
                 })
             except Exception as e:
                 logger.warning(f"发送 response_discarded 到前端失败: {e}")
@@ -841,8 +842,12 @@ class LLMSessionManager:
                         self._tts_done_queued_for_turn = False
                         self._tts_done_pending_until_ready = False
 
-                # 发送文本到前端显示
-                await self.send_lanlan_response(body_text, is_first_chunk=True)
+                # 发送文本到前端显示。显式传 active_request_id snapshot，
+                # 避免 send_lanlan_response 内部回读共享字段时拿到新轮 id
+                # 串掉前端 rollback 绑定。
+                await self.send_lanlan_response(
+                    body_text, is_first_chunk=True, request_id=active_request_id,
+                )
 
                 # 仅当本轮**不是** ephemeral（即非 avatar_interaction 等
                 # persist_response=False 的路径）时才写历史。avatar_interaction
@@ -982,16 +987,29 @@ class LLMSessionManager:
                     if is_first_chunk and self.tts_thread and not self.tts_thread.is_alive():
                         self._respawn_tts_worker()
 
-    async def send_lanlan_response(self, text: str, is_first_chunk: bool = False, turn_id: str | None = None):
-        """Qwen输出转录回调: 可用于前端显示/缓存/同步。"""
+    async def send_lanlan_response(
+        self,
+        text: str,
+        is_first_chunk: bool = False,
+        turn_id: str | None = None,
+        request_id: str | None = None,
+    ):
+        """Qwen输出转录回调: 可用于前端显示/缓存/同步。
+
+        ``request_id`` 显式传入用于跨轮安全：discard / recovery 路径
+        必须传入函数开头快照的 ``active_request_id``，避免新轮已经写入
+        共享字段后回读到错的 id 导致前端 rollback 串轮。默认 fallback
+        到共享字段保持现有 LLM 流式 callsite 行为不变。
+        """
         text_clean = self.emotion_pattern.sub('', text)
         effective_turn_id = turn_id or self.current_speech_id
+        effective_request_id = request_id if request_id is not None else self._active_text_request_id
         message = {
             "type": "gemini_response",
             "text": text_clean,
             "isNewMessage": is_first_chunk,
             "turn_id": effective_turn_id,
-            "request_id": self._active_text_request_id,
+            "request_id": effective_request_id,
         }
 
         # 无论 WS 发送成功与否，始终将消息写入 sync_message_queue 和 message_cache，

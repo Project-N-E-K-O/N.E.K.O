@@ -1547,9 +1547,11 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                         summary=summary,
                         detail=mcp_detail,
                     )
-                    # task_description 是 LLM 生成的任务描述，不写 logger
+                    # task_description 是 LLM 生成的任务描述，不写 logger；
+                    # print 也只截到预览长度（与同文件其他调试 print 一致），
+                    # 避免长 description 把 stdout 刷爆。
                     logger.info(f"[TaskExecutor] ✅ MCP task completed and notified (desc_len={len(result.task_description or '')})")
-                    print(f"[TaskExecutor] MCP task description: {(result.task_description or '')}")
+                    print(f"[TaskExecutor] MCP task description (preview): {_tt(result.task_description or '', 120)}")
                 except Exception as e:
                     logger.warning(f"[TaskExecutor] Failed to notify main_server: {e}")
             else:
@@ -3583,17 +3585,22 @@ def _extract_tool_intent_as_text(refusal_text: str) -> str:
 
     if readable_args:
         args_text = ", ".join(readable_args)
-        return (
+        result = (
             f"I wanted to {action}: {args_text}\n\n"
             f"However, due to a model compatibility issue with tool calling, "
             f"I cannot execute this tool directly. "
             f"Based on my knowledge, let me provide what information I can about this topic."
         )
     else:
-        return (
+        result = (
             f"I attempted to {action}, but encountered a compatibility issue.\n\n"
             f"Let me provide what information I can based on my existing knowledge."
         )
+    # 统一兜底：args_text 可能含长 query 串（multi-string args 或 base64
+    # 之类），就算上面的 readable_args[:5] 取过 5 个，每个都长的话整段
+    # 仍可能超 200 token。这里再过一次 _tt 保证最终交回 LLM 的 message
+    # 严格 ≤ 200 token，与 not match 分支语义对齐。
+    return _tt(result, 200)
 
 
 # ── OpenFang endpoints ──────────────────────────────────────

@@ -180,9 +180,18 @@ class OmniOfflineClient:
         self.on_response_discarded = on_response_discarded
         
         # 普通对话守卫配置（先决定 max_response_length，create_chat_llm
-        # 用得到 _budget_to_max_tokens(self.max_response_length)）
+        # 用得到 _budget_to_max_tokens(self.max_response_length)）。
+        # 0 / 负数 在 update_max_response_length 路径里被解释成"无限制"
+        # （= _UNLIMITED_BUDGET）；__init__ 必须用同样的语义，否则首轮
+        # 持久化配置直接读到 0 时会先按 300+20 cap 创建 LLM，直到用户再
+        # 改一次滑块才恢复 unlimited。
         self.enable_response_guard = True
-        self.max_response_length = max_response_length if isinstance(max_response_length, int) and max_response_length > 0 else 300
+        if not isinstance(max_response_length, int):
+            self.max_response_length = 300
+        elif max_response_length > 0:
+            self.max_response_length = max_response_length
+        else:
+            self.max_response_length = _UNLIMITED_BUDGET
         # 最多允许的自动重 roll 次数：1 次 reroll → 总共 2 次尝试。
         # 第 2 次仍超长时不再丢弃整段，而是回退到最后一个句末标点截断。
         self.max_response_rerolls = 1
