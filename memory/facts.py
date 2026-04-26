@@ -143,7 +143,10 @@ class FactStore:
                 )
                 facts = self._facts.get(name, [])
                 path = self._facts_path(name)
-                # Read-merge-write: 保护其他进程写入的 absorbed 标记
+                # Read-merge-write: 保护其他进程/路径写入的 monotonic 标记
+                # （只能从 False → True 单向翻的字段：absorbed、signal_processed）。
+                # 否则旧 cache 的写路径会用 False 覆盖磁盘上的 True，让同一批
+                # facts 被 drain loop 重复送进 Stage-2 / 重复合成 reflection。
                 if os.path.exists(path):
                     try:
                         with open(path, encoding='utf-8') as f:
@@ -153,10 +156,16 @@ class FactStore:
                                 f['id'] for f in disk_facts
                                 if isinstance(f, dict) and f.get('absorbed')
                             }
-                            if absorbed_ids:
+                            signal_processed_ids = {
+                                f['id'] for f in disk_facts
+                                if isinstance(f, dict) and f.get('signal_processed')
+                            }
+                            if absorbed_ids or signal_processed_ids:
                                 for f in facts:
                                     if f.get('id') in absorbed_ids:
                                         f['absorbed'] = True
+                                    if f.get('id') in signal_processed_ids:
+                                        f['signal_processed'] = True
                     except (json.JSONDecodeError, OSError):
                         # Read-merge is best-effort: if the on-disk
                         # file is corrupt or unreadable, fall through

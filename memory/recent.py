@@ -313,11 +313,12 @@ class CompressedRecentHistoryManager:
         return SystemMessage(content=_loc(MEMORY_MEMO_EMPTY, get_global_language())), ""
 
     async def further_compress(self, initial_summary):
-        # Stage-2 LLM 输出硬限：RECENT_SUMMARY_MAX_TOKENS + 100 余量。
-        # 防 LLM 不听 prompt 里"800 字"的指令写小作文；超出时下面会做
-        # 句末标点回溯截断保证语义边界完整。
+        # Stage-2 LLM 输出硬限：RECENT_SUMMARY_MAX_TOKENS + 400 余量。
+        # prompt 要求 800 字/words，CJK 800 字 ≈ 1200 token (×1.5)、
+        # EN 800 words ≈ 1067 token；cap 1400 给 17-33% bandwidth。
+        # 仍然防 LLM 写小作文，超出时下面会做句末标点回溯保证语义边界。
         from utils.tokenize import truncate_to_last_sentence_end
-        stage2_cap = RECENT_SUMMARY_MAX_TOKENS + 100
+        stage2_cap = RECENT_SUMMARY_MAX_TOKENS + 400
         retries = 0
         max_retries = 3
         while retries < max_retries:
