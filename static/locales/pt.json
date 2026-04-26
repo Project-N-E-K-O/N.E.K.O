@@ -612,7 +612,7 @@
         "textInputPlaceholder": "Pressione Enter para enviar, Shift+Enter para nova linha",
         "send": "Enviar",
         "inputTooLong": "Mensagem muito longa ({{count}}/{{max}}), encurte e tente novamente",
-        "responseTooLong": "A resposta foi muito longa e foi descartada; sua entrada foi restaurada.",
+        "responseTooLong": "Hmm, divaguei demais, miau~ Da próxima vez responderei curto e direto.",
         "importImage": "Importar imagem",
         "importImageAriaLabel": "Importar imagem",
         "screenshot": "Captura de tela",
@@ -2092,9 +2092,10 @@
             "textGuardMaxLength": "Limite de comprimento de resposta",
             "unlimited": "Ilimitado",
             "characters": "caracteres",
+            "tokens": "tokens",
             "textGuardUnlimitedWarning": "Pode causar problemas sérios com a gata, não recomendado, a menos que seja necessário",
-            "textGuardHighWarning": "Configuração muito alta pode causar confusão de memória e idioma, recomendado dentro de 500 caracteres",
-            "textGuardNote": "Aplica-se apenas a respostas de texto; não afeta sessões de voz"
+            "textGuardHighWarning": "Configuração muito alta pode causar confusão de memória e idioma, recomendado dentro de 1000 tokens",
+            "textGuardNote": "Calculado via tiktoken; aplica-se apenas a respostas de texto e não afeta sessões de voz"
         }
     },
     "openclawGuide": {

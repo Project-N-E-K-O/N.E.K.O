@@ -612,7 +612,7 @@
         "textInputPlaceholder": "보내려면 Enter를 누르고, 줄을 바꾸려면 Shift+Enter를 누르세요.",
         "send": "보내기",
         "inputTooLong": "메시지가 너무 깁니다 ({{count}}/{{max}}). 줄여서 다시 시도해 주세요",
-        "responseTooLong": "주인님이 너무 많이 생각하게 해서 머리가 따라가지 못해요냥!",
+        "responseTooLong": "음, 방금 너무 길게 말해버렸어요냥～다음엔 짧고 간단하게 말할게요!",
         "importImage": "이미지 가져오기",
         "importImageAriaLabel": "이미지 가져오기",
         "screenshot": "스크린샷",
@@ -2089,12 +2089,13 @@
             "fullscreenTracking": "전체 화면 추적",
             "localTracking": "로컬 추적",
             "lockedHoverFade": "잠금 호버 페이드",
-            "textGuardMaxLength": "응답 글자 수 제한",
+            "textGuardMaxLength": "응답 길이 상한",
             "unlimited": "무제한",
             "characters": "자",
+            "tokens": "토큰",
             "textGuardUnlimitedWarning": "냥이에게 심각한 문제가 발생할 수 있으며, 필요한 경우가 아니면 무제한을 권장하지 않습니다",
-            "textGuardHighWarning": "설정이 너무 크면 냥이의 기억과 언어가 혼란스러워질 수 있습니다. 500자 이내를 권장합니다",
-            "textGuardNote": "텍스트 응답에만 적용되며, 음성 세션에는 영향을 주지 않습니다"
+            "textGuardHighWarning": "설정이 너무 크면 냥이의 기억과 언어가 혼란스러워질 수 있습니다. 1000 토큰 이내를 권장합니다",
+            "textGuardNote": "tiktoken 기준; 텍스트 응답에만 적용되며 음성 세션에는 영향이 없습니다"
         }
     },
     "openclawGuide": {

@@ -584,20 +584,20 @@ function createTextGuardSlider(manager, prefix) {
 
     const slider = document.createElement('input');
     slider.type = 'range';
-    // 滑动条位置：0-10 对应 50-1500（每档150字），11 对应无限制
-    // 默认值 350字 = (350-50)/150 = 2
+    // 滑动条位置：0-10 对应 100-1100（每档 100 tokens），11 对应无限制
+    // 默认值 300 tokens = (300-100)/100 = 2
     slider.min = '0';
     slider.max = '11';
     slider.step = '1';
 
     // 当前值转换：数值 -> 滑动条位置
-    const currentValue = typeof window.textGuardMaxLength !== 'undefined' ? window.textGuardMaxLength : 350;
+    const currentValue = typeof window.textGuardMaxLength !== 'undefined' ? window.textGuardMaxLength : 300;
     let currentPosition;
     if (currentValue === 0 || currentValue === null || currentValue === undefined) {
         currentPosition = 11; // 无限制
     } else {
-        // 找到最接近的档位：50 + position * 150
-        currentPosition = Math.min(10, Math.max(0, Math.round((currentValue - 50) / 150)));
+        // 找到最接近的档位：100 + position * 100
+        currentPosition = Math.min(10, Math.max(0, Math.round((currentValue - 100) / 100)));
     }
     slider.value = currentPosition;
 
@@ -615,9 +615,10 @@ function createTextGuardSlider(manager, prefix) {
             valueDisplay.textContent = unlimitedText;
             valueDisplay.setAttribute('data-i18n', 'settings.toggles.unlimited');
         } else {
-            const value = 50 + parseInt(position) * 150;
-            const unit = (typeof window.t === 'function') ? window.t('settings.toggles.characters') : '字';
-            valueDisplay.textContent = `${value}${unit}`;
+            const value = 100 + parseInt(position) * 100;
+            // 单位从"字"切到 token：UI label 用独立的 i18n key（locale 文件已同步）。
+            const unit = (typeof window.t === 'function') ? window.t('settings.toggles.tokens') : 'tokens';
+            valueDisplay.textContent = `${value} ${unit}`;
             valueDisplay.removeAttribute('data-i18n');
         }
     };
@@ -635,11 +636,11 @@ function createTextGuardSlider(manager, prefix) {
         if (position === 11) {
             value = 0; // 0 表示无限制
         } else {
-            value = 50 + position * 150;
+            value = 100 + position * 100;
         }
         window.textGuardMaxLength = value;
         if (typeof window.saveNEKOSettings === 'function') window.saveNEKOSettings();
-        console.log(`[TextGuard] 回复字数限制已设置为 ${value === 0 ? '无限制' : value + '字'}`);
+        console.log(`[TextGuard] 回复 token 上限已设置为 ${value === 0 ? '无限制' : value + ' tokens'}`);
     });
 
     slider.addEventListener('click', (e) => e.stopPropagation());

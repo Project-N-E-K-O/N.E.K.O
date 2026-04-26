@@ -285,7 +285,9 @@ async def analyze_screenshot_from_data_url(data_url: str, window_title: str = ''
         description = await analyze_image_with_vision_model(base64_data, window_title=window_title)
         
         if description:
-            logger.info(f"AI截图分析成功: {description[:100]}...")
+            # AI 截图分析结果（描述用户屏幕内容）不写 logger
+            logger.info(f"AI截图分析成功 (description_len={len(description)})")
+            print(f"AI截图分析: {description[:100]}...")
         else:
             logger.info("AI截图分析失败")
         

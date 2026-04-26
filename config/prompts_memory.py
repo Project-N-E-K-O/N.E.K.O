@@ -1183,7 +1183,7 @@ REFLECTION_PROMPT = {
 {FACTS}
 ======以上为事实======
 
-请基于这些事实，合成一段简短的反思洞察(2-3句话)，总结你观察到的模式、趋势或关系动态。
+请基于这些事实，合成一段简短的反思洞察，总结你观察到的模式、趋势或关系动态。
 不要简单罗列事实，而是要提炼出更高层次的理解。
 
 请判断这段反思主要关于谁：
@@ -1197,7 +1197,7 @@ REFLECTION_PROMPT = {
 - relationship 可用: dynamic(互动模式) | milestone(里程碑) | tension(摩擦) | shared_memory(共同记忆) | agreement(约定)
 - temporal_scope: current(当前) | past(过去) | ongoing(持续)
 
-要求：紧扣单一观察或模式，不要把多个无关事实混在一起；长度保持在 2-3 句简短洞察内即可。
+要求：紧扣单一观察或模式，不要把多个无关事实混在一起；长度不得超过 150 字。
 
 请以 JSON 格式返回：
 {{"reflection": "你的反思洞察", "entity": "master/neko/relationship", "relation_type": "preference", "temporal_scope": "current"}}""",
@@ -1207,7 +1207,7 @@ REFLECTION_PROMPT = {
 {FACTS}
 ======以上为事实======
 
-Based on these facts, synthesize a brief reflective insight (2-3 sentences) summarizing the patterns, trends, or relationship dynamics you observe.
+Based on these facts, synthesize a brief reflective insight summarizing the patterns, trends, or relationship dynamics you observe.
 Do not simply list the facts — distill a higher-level understanding.
 
 Determine which entity the reflection primarily concerns:
@@ -1221,7 +1221,7 @@ Also provide a semantic relation_type (must match the entity) and a temporal_sco
 - relationship: dynamic | milestone | tension | shared_memory | agreement
 - temporal_scope: current | past | ongoing
 
-Requirements: stay focused on a single observation or pattern; do not mix unrelated facts. The 2-3-sentence length guidance above still applies.
+Requirements: stay focused on a single observation or pattern; do not mix unrelated facts. Keep the reflection under 150 words.
 
 Return in JSON format:
 {{"reflection": "your reflective insight", "entity": "master/neko/relationship", "relation_type": "preference", "temporal_scope": "current"}}""",
@@ -1231,7 +1231,7 @@ Return in JSON format:
 {FACTS}
 ======以上为事实======
 
-これらの事実に基づき、観察されたパターン、傾向、または関係の動態をまとめた簡潔な反省的洞察（2〜3文）を合成してください。
+これらの事実に基づき、観察されたパターン、傾向、または関係の動態をまとめた簡潔な反省的洞察を合成してください。
 単に事実を列挙するのではなく、より高い次元の理解を抽出してください。
 
 この反思が主に誰についてのものか判断してください：
@@ -1245,7 +1245,7 @@ Return in JSON format:
 - relationship: dynamic | milestone | tension | shared_memory | agreement
 - temporal_scope: current | past | ongoing
 
-要件：単一の観察やパターンに集中し、無関係な事実を混ぜないこと。長さは先に示した 2-3 文の範囲を維持。
+要件：単一の観察やパターンに集中し、無関係な事実を混ぜないこと。長さは 150 字を超えないこと。
 
 JSON形式で返してください：
 {{"reflection": "あなたの反省的洞察", "entity": "master/neko/relationship", "relation_type": "preference", "temporal_scope": "current"}}""",
@@ -1255,7 +1255,7 @@ JSON形式で返してください：
 {FACTS}
 ======以上为事实======
 
-이 사실들을 바탕으로 관찰된 패턴, 추세 또는 관계 동태를 요약하는 간략한 반성적 통찰(2-3문장)을 합성해 주세요.
+이 사실들을 바탕으로 관찰된 패턴, 추세 또는 관계 동태를 요약하는 간략한 반성적 통찰을 합성해 주세요.
 단순히 사실을 나열하지 말고 더 높은 차원의 이해를 도출해 주세요.
 
 이 반성이 주로 누구에 대한 것인지 판단해 주세요:
@@ -1269,7 +1269,7 @@ JSON形式で返してください：
 - relationship: dynamic | milestone | tension | shared_memory | agreement
 - temporal_scope: current | past | ongoing
 
-요구사항: 단일 관찰 또는 패턴에 집중하고 관련 없는 사실을 섞지 마세요. 위의 2-3문장 길이 지침은 그대로 유지합니다.
+요구사항: 단일 관찰 또는 패턴에 집중하고 관련 없는 사실을 섞지 마세요. 길이는 150자를 초과하지 마세요.
 
 JSON 형식으로 반환해 주세요:
 {{"reflection": "당신의 반성적 통찰", "entity": "master/neko/relationship", "relation_type": "preference", "temporal_scope": "current"}}""",
@@ -1279,7 +1279,7 @@ JSON 형식으로 반환해 주세요:
 {FACTS}
 ======以上为事实======
 
-На основе этих фактов синтезируйте краткое рефлексивное наблюдение (2-3 предложения), обобщающее замеченные закономерности, тенденции или динамику отношений.
+На основе этих фактов синтезируйте краткое рефлексивное наблюдение, обобщающее замеченные закономерности, тенденции или динамику отношений.
 Не просто перечисляйте факты — извлеките понимание более высокого уровня.
 
 Определите, к кому это наблюдение относится в первую очередь:
@@ -1293,7 +1293,7 @@ JSON 형식으로 반환해 주세요:
 - relationship: dynamic | milestone | tension | shared_memory | agreement
 - temporal_scope: current | past | ongoing
 
-Требования: сосредоточьтесь на одном наблюдении или паттерне, не смешивайте не связанные факты. Указанная выше длина в 2-3 предложения сохраняется.
+Требования: сосредоточьтесь на одном наблюдении или паттерне, не смешивайте не связанные факты. Длина — не более 150 слов.
 
 Верните в формате JSON:
 {{"reflection": "ваше рефлексивное наблюдение", "entity": "master/neko/relationship", "relation_type": "preference", "temporal_scope": "current"}}""",

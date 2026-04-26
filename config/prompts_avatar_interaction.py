@@ -909,7 +909,9 @@ def _avatar_interaction_locale(language: str | None) -> str:
     return "en"
 
 
-def _sanitize_avatar_interaction_text_context(text: str, max_length: int = 80) -> str:
+def _sanitize_avatar_interaction_text_context(text: str, max_tokens: int = 80) -> str:
+    from utils.tokenize import truncate_to_tokens
+
     raw_text = str(text or '')
     if not raw_text:
         return ''
@@ -931,9 +933,8 @@ def _sanitize_avatar_interaction_text_context(text: str, max_length: int = 80) -
         return ''
 
     cleaned = ' / '.join(sanitized_lines)
-    safe_max_length = max(1, int(max_length))
-    if len(cleaned) > safe_max_length:
-        cleaned = cleaned[:safe_max_length].rstrip()
+    safe_max_tokens = max(1, int(max_tokens))
+    cleaned = truncate_to_tokens(cleaned, safe_max_tokens).rstrip()
     if not cleaned:
         return ''
 

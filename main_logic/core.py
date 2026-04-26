@@ -12,7 +12,15 @@ import time
 from collections import deque
 from functools import lru_cache
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
+
+
+# Sentinel for `send_lanlan_response(request_id=...)` so we can tell apart
+# "caller didn't pass it (use shared field as fallback)" from "caller
+# explicitly passed None to mean 'no request id'". A normal default of
+# None collapses both into the same code path and would let recovery /
+# proactive paths accidentally bind their messages to a newer request_id.
+_REQUEST_ID_UNSET: Any = object()
 from datetime import datetime
 from websockets import exceptions as web_exceptions
 from fastapi import WebSocket, WebSocketDisconnect
@@ -415,21 +423,25 @@ class LLMSessionManager:
         return True
 
     def _get_text_guard_max_length(self) -> int:
+        """读取用户设置的回复 token 上限。
+        单位：tiktoken (o200k_base) tokens。0 = 无限制（返回 999999）。
+        默认 300 tokens ≈ 400 CJK 字 / ~1200 英文字符。
+        """
         try:
             # 优先从对话设置中读取，如果不存在则从核心配置读取
             conversation_settings = load_global_conversation_settings()
             if 'textGuardMaxLength' in conversation_settings:
                 value = int(conversation_settings['textGuardMaxLength'])
             else:
-                value = int(self._config_manager.get_core_config().get('TEXT_GUARD_MAX_LENGTH', 350))
-            # 0 表示无限制，返回一个很大的数
-            if value == 0:
+                value = int(self._config_manager.get_core_config().get('TEXT_GUARD_MAX_LENGTH', 300))
+            # 0 / 负数都表示"无限制"，与 OmniOfflineClient.__init__ /
+            # update_max_response_length 的语义统一。原本 < 0 会 raise 然后
+            # fallback 到 300，存量配置带 -1 的会被静默降级。
+            if value <= 0:
                 return 999999
-            if value < 0:
-                raise ValueError
             return value
         except Exception:
-            return 350
+            return 300
 
     def _enqueue_tts_text_chunk(self, speech_id, text: str) -> None:
         """把一段文本 chunk 入 TTS 队列，http_sentence 类 provider 走 normalizer。
@@ -479,12 +491,28 @@ class LLMSessionManager:
         self._tts_done_pending_until_ready = False
         return "queued"
 
-    async def _request_tts_done_for_turn(self, source: str) -> str:
-        """线程安全地为当前轮次请求 TTS 结束信号。"""
+    async def _request_tts_done_for_turn(
+        self,
+        source: str,
+        expected_speech_id: str | None = None,
+    ) -> str:
+        """线程安全地为当前轮次请求 TTS 结束信号。
+
+        ``expected_speech_id`` 可选 sid 校验：调用方持有本轮 sid 快照
+        时传入，函数会在锁内确认 ``self.current_speech_id`` 仍等于该
+        快照才发 done。recovery / proactive 等 await 之间用户开新轮的
+        场景，旧轮的 done 信号否则会直接结束新轮的 TTS（首句被截 / 整轮
+        静音）。不传则保持原行为：始终发 done。"""
         if not self.use_tts:
             return "disabled"
 
         async with self.tts_cache_lock:
+            if expected_speech_id is not None and self.current_speech_id != expected_speech_id:
+                logger.debug(
+                    "%s: stale TTS done skipped (expected=%s current=%s)",
+                    source, expected_speech_id, self.current_speech_id,
+                )
+                return "stale"
             status = self._request_tts_done_locked()
 
         if status == "already":
@@ -639,6 +667,31 @@ class LLMSessionManager:
         except Exception as e:
             logger.warning("[%s] handle_proactive_complete: WS send turn_end error: %s", self.lanlan_name, e)
 
+    async def _emit_turn_end(self, active_request_id) -> None:
+        """同时把 turn end 信号下发给 sync_message_queue 和 WebSocket，
+        并把 ``_pending_turn_meta`` 透传到两条通道后清空。两条路径共用：
+        - ``handle_response_complete`` 正常完成
+        - ``handle_response_discarded`` 的 truncate-recovery / too-long-final
+        语义统一：sync queue 和 WS 都带相同 meta，避免一边有 meta 一边没。"""
+        turn_end_msg: dict = {'type': 'system', 'data': 'turn end'}
+        pending_meta = self._pending_turn_meta
+        if pending_meta:
+            turn_end_msg['meta'] = pending_meta
+            self._pending_turn_meta = None
+        self.sync_message_queue.put(turn_end_msg)
+        try:
+            if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
+                ws_msg = {
+                    'type': 'system',
+                    'data': 'turn end',
+                    'request_id': active_request_id,
+                }
+                if 'meta' in turn_end_msg:
+                    ws_msg['meta'] = turn_end_msg['meta']
+                await self.websocket.send_json(ws_msg)
+        except Exception as e:
+            logger.error(f"💥 WS Send Turn End Error: {e}")
+
     async def handle_response_complete(self):
         """Qwen完成回调：用于处理Core API的响应完成事件，包含TTS和热切换逻辑"""
         active_request_id = self._active_text_request_id
@@ -649,26 +702,24 @@ class LLMSessionManager:
                 await self._request_tts_done_for_turn("handle_response_complete")
             except Exception as e:
                 logger.warning(f"⚠️ 发送TTS结束信号失败: {e}")
-        turn_end_msg: dict = {'type': 'system', 'data': 'turn end'}
-        pending_meta = self._pending_turn_meta
-        if pending_meta:
-            turn_end_msg['meta'] = pending_meta
-            self._pending_turn_meta = None
-        self.sync_message_queue.put(turn_end_msg)
-
-        # 直接向前端发送turn end消息
         try:
-            if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
-                await self.websocket.send_json({
-                    'type': 'system',
-                    'data': 'turn end',
-                    'request_id': active_request_id,
-                })
-        except Exception as e:
-            logger.error(f"💥 WS Send Turn End Error: {e}")
+            await self._emit_turn_end(active_request_id)
         finally:
-            self._active_text_request_id = None
+            # Compare-and-clear：仅在共享字段仍是本轮快照时才清空，避免
+            # 抹掉用户在 turn end 发出前提交的新轮 request_id。
+            if self._active_text_request_id == active_request_id:
+                self._active_text_request_id = None
 
+        await self._finalize_turn_after_emit()
+
+    async def _finalize_turn_after_emit(self) -> None:
+        """Turn end 之后的统一收尾：renew/prewarm 判断 + agent callback 投递。
+
+        被 ``handle_response_complete`` 和 ``handle_response_discarded`` 的
+        recovery / too-long-final 分支共用，避免连续走 RESPONSE_LENGTH_TRUNCATED
+        / RESPONSE_TOO_LONG 时 session 不归档/不预热而陷入"上下文越来越大→
+        一直截断恢复"循环。
+        """
         # ── 热切换逻辑 ─────────────────────────────────────────────────────────
         # 正在切换过程中则跳过所有热切换判断
         if not self.is_hot_swap_imminent:
@@ -677,10 +728,34 @@ class LLMSessionManager:
                 if hasattr(self, 'is_preparing_new_session') and not self.is_preparing_new_session:
                     _elapsed = (datetime.now() - self.session_start_time).total_seconds() if self.session_start_time else 0
                     _turn_threshold_met = self._session_turn_count >= 10
-                    _ctx_threshold_met = (
-                        isinstance(self.session, OmniOfflineClient)
-                        and sum(len(str(m.content)) for m in self.session._conversation_history[1:]) >= 10000
-                    )
+                    # Session 历史 token 总量阈值。turn-end 后的冷路径，
+                    # sync count_tokens 即可（10 条消息合计 < 50ms）。
+                    # m.content 在多模态消息下是 list[dict]（含 image_url base64）；
+                    # 直接 str() 会把 base64 一起算进 budget，带图对话会被过早判定。
+                    # 这里只统计可见文本部分。
+                    if isinstance(self.session, OmniOfflineClient):
+                        from utils.tokenize import count_tokens as _ct
+
+                        def _budget_text(message) -> str:
+                            content = getattr(message, "content", "")
+                            if isinstance(content, str):
+                                return content
+                            if isinstance(content, list):
+                                return "\n".join(
+                                    str(part.get("text") or "").strip()
+                                    for part in content
+                                    if isinstance(part, dict)
+                                    and str(part.get("type") or "") in {"text", "input_text", "output_text"}
+                                )
+                            return ""
+
+                        _ctx_total = sum(
+                            _ct(_budget_text(m))
+                            for m in self.session._conversation_history[1:]
+                        )
+                        _ctx_threshold_met = _ctx_total >= 5000
+                    else:
+                        _ctx_threshold_met = False
                     if _elapsed >= 40 or _turn_threshold_met or _ctx_threshold_met:
                         logger.info(f"[{self.lanlan_name}] Main Listener: Uptime threshold met. Marking for new session preparation.")
                         self.is_preparing_new_session = True
@@ -728,17 +803,33 @@ class LLMSessionManager:
         """
         处理响应被丢弃的通知：清空 TTS 管线 + 前端输出，必要时发送 turn end
         """
+        # 快照本轮的 request_id，函数末尾只在仍等于快照时才清空——
+        # 防止用户在本轮 turn end 发出前就提交下一条文本时，新轮的
+        # request_id 被旧 discard 回调误抹掉（前端 rollback / clearPending
+        # rollback 会跨轮串掉）。
+        active_request_id = self._active_text_request_id
         logger.warning(f"[{self.lanlan_name}] 响应异常已丢弃 (reason={reason}, attempt={attempt}/{max_attempts}, will_retry={will_retry})")
 
-        # 检测是否为 RESPONSE_TOO_LONG 最终丢弃
+        # 检测是否为 RESPONSE_TOO_LONG 最终丢弃 / RESPONSE_LENGTH_TRUNCATED 截断恢复
         _is_too_long_final = False
+        _truncated_text = None  # 非 None 表示进入 reroll 耗尽后的"截断到句末"恢复路径
         if not will_retry and message:
             try:
                 parsed = json.loads(message) if isinstance(message, str) else message
-                if isinstance(parsed, dict) and parsed.get('code') == 'RESPONSE_TOO_LONG':
-                    _is_too_long_final = True
+                if isinstance(parsed, dict):
+                    if parsed.get('code') == 'RESPONSE_TOO_LONG':
+                        _is_too_long_final = True
+                    elif parsed.get('code') == 'RESPONSE_LENGTH_TRUNCATED':
+                        candidate = parsed.get('text')
+                        if isinstance(candidate, str) and candidate.strip():
+                            _truncated_text = candidate
             except Exception as _parse_err:
-                logger.debug(f"[{self.lanlan_name}] response_discarded JSON 解析失败: {_parse_err}, message={message!r}")
+                # message 可能含 RESPONSE_LENGTH_TRUNCATED.text（截断后的 AI 原文），
+                # 不写进 logger；只记元数据，原文走 print 兜底。
+                logger.debug(
+                    f"[{self.lanlan_name}] response_discarded JSON 解析失败: {_parse_err} (msg_len={len(message or '')})"
+                )
+                print(f"[response_discarded parse_err] raw: {message!r}")
 
         await self._clear_tts_pipeline()
 
@@ -752,50 +843,93 @@ class LLMSessionManager:
                     "max_attempts": max_attempts,
                     "will_retry": will_retry,
                     "message": message or "",
-                    "request_id": self._active_text_request_id,
+                    # 透传函数开头的 snapshot，避免新轮覆盖后串轮
+                    "request_id": active_request_id,
                 })
             except Exception as e:
                 logger.warning(f"发送 response_discarded 到前端失败: {e}")
 
-        # RESPONSE_TOO_LONG 最终丢弃时：发送可爱回复 + 用角色 TTS 音色念出来
-        if _is_too_long_final:
+        # RESPONSE_TOO_LONG 最终丢弃时：发送可爱回复 + 用角色 TTS 音色念出来。
+        # RESPONSE_LENGTH_TRUNCATED：reroll 耗尽后回退到最后句末标点截断的恢复路径，
+        # 把截断后的文本当作正常回复重新喂给前端 + TTS（用户输入不回滚）。
+        #
+        # 这里要复用 handle_response_complete 的"turn 收尾"语义：
+        #   - 消费 _pending_turn_meta：把它挂到 turn_end，再清空，避免漏挂或
+        #     被下一轮 turn 误消费。
+        #   - 尊重 ephemeral 语义：avatar_interaction 由 prompt_ephemeral
+        #     (persist_response=False) 触发，本来不该写 _conversation_history；
+        #     truncate-recovery / too-long-final 走到这里时不能强行 append。
+        if _is_too_long_final or _truncated_text is not None:
             try:
-                too_long_text = _get_chat_locale_text(
-                    self.user_language,
-                    'responseTooLong',
-                    "Response too long and was discarded; your input has been restored.",
-                )
+                if _truncated_text is not None:
+                    body_text = _truncated_text
+                else:
+                    body_text = _get_chat_locale_text(
+                        self.user_language,
+                        'responseTooLong',
+                        "Response too long and was discarded; your input has been restored.",
+                    )
 
+                # 冻结本轮 recovery 用的 turn/speech id snapshot——后面所有
+                # send_lanlan_response / feed_tts_chunk 都用这个本地变量，
+                # 不再回读共享字段；否则用户在 response_discarded 发出后立刻
+                # 提交下一条文本时，新轮会改写 self.current_speech_id，截断
+                # 恢复出来的正文 + 音频会带着新轮的 turn_id 发出去，前端
+                # （app-websocket.js assistant turn 生命周期是按 turn_id 建的）
+                # 会把恢复内容和新轮串到一起。
                 if self.use_tts:
                     async with self.lock:
-                        self.current_speech_id = str(uuid4())
+                        recovery_turn_id = str(uuid4())
+                        self.current_speech_id = recovery_turn_id
                         self._tts_done_queued_for_turn = False
                         self._tts_done_pending_until_ready = False
+                else:
+                    recovery_turn_id = self.current_speech_id
 
-                # 发送文本到前端显示
-                await self.send_lanlan_response(too_long_text, is_first_chunk=True)
+                # 发送文本到前端显示。显式传 active_request_id snapshot，
+                # 避免 send_lanlan_response 内部回读共享字段时拿到新轮 id
+                # 串掉前端 rollback 绑定。
+                await self.send_lanlan_response(
+                    body_text,
+                    is_first_chunk=True,
+                    turn_id=recovery_turn_id,
+                    request_id=active_request_id,
+                )
 
-                if self.session and hasattr(self.session, '_conversation_history'):
-                    self.session._conversation_history.append(AIMessage(content=too_long_text))
+                # 仅当本轮**不是** ephemeral（即非 avatar_interaction 等
+                # persist_response=False 的路径）时才写历史。avatar_interaction
+                # 触发 RESPONSE_TOO_LONG/TRUNCATED 时本就该和 ephemeral 一致地
+                # 不留下 AIMessage 痕迹。
+                pending_meta = self._pending_turn_meta
+                is_ephemeral = bool(pending_meta) and pending_meta.get("kind") == "avatar_interaction"
+                if not is_ephemeral and self.session and hasattr(self.session, '_conversation_history'):
+                    self.session._conversation_history.append(AIMessage(content=body_text))
 
-                # 喂给 TTS 管线用角色音色念
+                # 喂给 TTS 管线用角色音色念。recovery 路径下两次 await
+                # 之间用户可能开新轮（ self.current_speech_id 被改），所以
+                # done 信号也要带 expected_speech_id 校验，否则旧 recovery
+                # 的 done 会结束新轮的 TTS（首句被截 / 整轮静音）。
                 if self.use_tts:
-                    await self.feed_tts_chunk(too_long_text)
-                    await self._request_tts_done_for_turn("handle_response_discarded:too_long_final")
+                    await self.feed_tts_chunk(body_text, expected_speech_id=recovery_turn_id)
+                    await self._request_tts_done_for_turn(
+                        "handle_response_discarded:length_truncated"
+                        if _truncated_text is not None
+                        else "handle_response_discarded:too_long_final",
+                        expected_speech_id=recovery_turn_id,
+                    )
 
-                # turn end
-                self.sync_message_queue.put({'type': 'system', 'data': 'turn end'})
-                if self.websocket and hasattr(self.websocket, 'client_state') and \
-                        self.websocket.client_state == self.websocket.client_state.CONNECTED:
-                    await self.websocket.send_json({
-                        'type': 'system',
-                        'data': 'turn end',
-                        'request_id': self._active_text_request_id,
-                    })
+                # turn end —— 复用 _emit_turn_end helper（同 handle_response_complete
+                # 走同一套语义；sync queue 和 WS 都带相同 meta）。
+                # 注：上面读 pending_meta 已经触发 is_ephemeral 判定，但这里
+                # _emit_turn_end 自己会再读一次 _pending_turn_meta 做透传 + 清空，
+                # 二者读的是同一个值，幂等。
+                await self._emit_turn_end(active_request_id)
             except Exception as e:
-                logger.warning(f"⚠️ RESPONSE_TOO_LONG 回复发送失败: {e}")
+                logger.warning(f"⚠️ {'RESPONSE_LENGTH_TRUNCATED' if _truncated_text is not None else 'RESPONSE_TOO_LONG'} 回复发送失败: {e}")
             finally:
-                self._active_text_request_id = None
+                # Compare-and-clear：见函数顶部 active_request_id 快照说明。
+                if self._active_text_request_id == active_request_id:
+                    self._active_text_request_id = None
 
         if self.sync_message_queue:
             self.sync_message_queue.put({
@@ -803,10 +937,19 @@ class LLMSessionManager:
                 'data': 'response_discarded_clear'
             })
 
-        if not will_retry and not _is_too_long_final:
-            self._active_text_request_id = None
+        if not will_retry and not _is_too_long_final and _truncated_text is None:
+            # Compare-and-clear：仅当共享字段仍是本轮快照时才清空。
+            if self._active_text_request_id == active_request_id:
+                self._active_text_request_id = None
 
-        # turn end will 由 handle_response_complete 统一发送
+        # Recovery / too-long-final 路径相当于"这一轮 LLM 已完成"——必须
+        # 跑跟 handle_response_complete 同款的 turn 后置流程（renew/prewarm
+        # 判断 + agent callback 投递），否则连续多轮走 RESPONSE_LENGTH_TRUNCATED
+        # / RESPONSE_TOO_LONG 时 session 不归档/不预热，会卡进"上下文越来越
+        # 大→一直截断恢复"的死循环。普通 will_retry / RESPONSE_INVALID 路径
+        # 还会重试同轮，不算 turn 真正结束，跳过 finalize。
+        if _is_too_long_final or _truncated_text is not None:
+            await self._finalize_turn_after_emit()
 
 
     async def handle_audio_data(self, audio_data: bytes):
@@ -902,16 +1045,39 @@ class LLMSessionManager:
                     if is_first_chunk and self.tts_thread and not self.tts_thread.is_alive():
                         self._respawn_tts_worker()
 
-    async def send_lanlan_response(self, text: str, is_first_chunk: bool = False, turn_id: str | None = None):
-        """Qwen输出转录回调: 可用于前端显示/缓存/同步。"""
+    async def send_lanlan_response(
+        self,
+        text: str,
+        is_first_chunk: bool = False,
+        turn_id: str | None = None,
+        request_id: Any = _REQUEST_ID_UNSET,
+    ):
+        """Qwen输出转录回调: 可用于前端显示/缓存/同步。
+
+        ``request_id`` 三态：
+          - 不传（即默认 ``_REQUEST_ID_UNSET``）→ fallback 到共享字段
+            ``self._active_text_request_id``，保留现有 LLM 流式 callsite 行为
+          - 显式传 ``None`` → 真"冻结为空"，proactive / 无 request_id 的
+            场景需要让前端知道这条消息不绑定任何用户请求
+          - 显式传 str → 跨轮安全：discard / recovery 必须用函数开头快照
+            的 ``active_request_id``，避免新轮已经写入共享字段后回读到
+            错的 id 导致前端 rollback 串轮
+        默认 sentinel 用 module-level ``_REQUEST_ID_UNSET = object()`` 区分
+        "未传"和"显式 None"，与单纯 ``request_id is None`` 检测不同。
+        """
         text_clean = self.emotion_pattern.sub('', text)
         effective_turn_id = turn_id or self.current_speech_id
+        effective_request_id = (
+            self._active_text_request_id
+            if request_id is _REQUEST_ID_UNSET
+            else request_id
+        )
         message = {
             "type": "gemini_response",
             "text": text_clean,
             "isNewMessage": is_first_chunk,
             "turn_id": effective_turn_id,
-            "request_id": self._active_text_request_id,
+            "request_id": effective_request_id,
         }
 
         # 无论 WS 发送成功与否，始终将消息写入 sync_message_queue 和 message_cache，
@@ -2771,7 +2937,9 @@ class LLMSessionManager:
                     await self.websocket.send_json({'type': 'system', 'data': 'turn end'})
             except Exception:
                 pass
-        logger.info("[%s] Proactive stream delivered: %.40s…", self.lanlan_name, full_text)
+        # proactive 原文不写 logger（隐私）；本地 print 兜底
+        logger.info("[%s] Proactive stream delivered (text_len=%d)", self.lanlan_name, len(full_text or ""))
+        print(f"[{self.lanlan_name}] Proactive stream delivered: {(full_text or '')[:40]}…")
         return True
 
     async def handle_avatar_interaction(self, payload: dict) -> dict:

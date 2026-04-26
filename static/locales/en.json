@@ -612,7 +612,7 @@
         "textInputPlaceholder": "Press Enter to send, Shift+Enter for new line",
         "send": "Send",
         "inputTooLong": "Message too long ({{count}}/{{max}}), please shorten and retry",
-        "responseTooLong": "Response too long and was discarded; your input has been restored.",
+        "responseTooLong": "Mmh, I rambled a bit too long there, meow~ I'll keep my next reply short and to the point!",
         "importImage": "Import Image",
         "importImageAriaLabel": "Import image",
         "screenshot": "Screenshot",
@@ -2091,10 +2091,11 @@
             "lockedHoverFade": "Locked Hover Fade",
             "textGuardMaxLength": "Response Length Limit",
             "unlimited": "Unlimited",
-            "characters": " chars",
+            "characters": "chars",
+            "tokens": "tokens",
             "textGuardUnlimitedWarning": "May cause serious issues with the cat girl, not recommended unless necessary",
-            "textGuardHighWarning": "Setting too high may cause memory and language confusion, recommended within 500 chars",
-            "textGuardNote": "Applies to text replies only; does not affect voice sessions"
+            "textGuardHighWarning": "Setting too high may cause memory and language confusion, recommended within 1000 tokens",
+            "textGuardNote": "Counted via tiktoken; applies to text replies only and does not affect voice sessions"
         }
     },
     "openclawGuide": {

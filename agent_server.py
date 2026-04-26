@@ -25,6 +25,7 @@ logger, log_config = setup_logging(service_name="Agent", log_level=logging.INFO)
 
 from config import TOOL_SERVER_PORT, USER_PLUGIN_SERVER_PORT, OPENFANG_BASE_URL
 from utils.config_manager import get_config_manager
+from utils.tokenize import truncate_to_tokens as _tt
 from main_logic.agent_event_bus import AgentServerEventBridge
 try:
     from brain.computer_use import ComputerUseAdapter
@@ -207,7 +208,9 @@ class AgentTaskTracker:
             "kind": kind,
             "method": method,
             "desc": desc,
-            "detail": detail[:300] if detail else "",
+            # detail 注入到 callback prompt 里给 LLM —— 用 token 限额（同
+            # "tool/task result detail" 200-token group），而不是 char-slice
+            "detail": _tt(detail, 200) if detail else "",
             "task_id": task_id,
         })
         self._trim(records)
@@ -929,20 +932,29 @@ async def _emit_task_result(
         status = "partial"
     else:
         status = "failed"
-    _SUMMARY_LIMIT = 500
-    _DETAIL_LIMIT = 1500
-    _ERROR_LIMIT = 500
+    # tiktoken token-based limits（同 main_logic 的语义分组）：
+    # summary 是 LLM-facing 摘要（同 group B "longer reflective blurb" 400 tok）
+    # detail 是前端 HUD 展示用的较长版本（同 group G "large tool result" 1000 tok）
+    # error_message 独立一档 350 tok。
+    _SUMMARY_LIMIT = 400
+    _DETAIL_LIMIT = 1000
+    _ERROR_LIMIT = 350
+    # 一次性 truncate 后复用——避免同 summary 在 text/summary 字段被
+    # encode 两次，也让"最终 budget 由谁负责"的语义聚拢到这一处。
+    _summary_t = _tt(summary, _SUMMARY_LIMIT)
+    _detail_t = _tt(detail, _DETAIL_LIMIT) if detail else ""
+    _error_t = _tt(error_message, _ERROR_LIMIT) if error_message else ""
     await _emit_main_event(
         "task_result",
         lanlan_name,
-        text=summary[:_SUMMARY_LIMIT],
+        text=_summary_t,
         task_id=task_id,
         channel=channel,
         status=status,
         success=success,
-        summary=summary[:_SUMMARY_LIMIT],
-        detail=detail[:_DETAIL_LIMIT] if detail else "",
-        error_message=error_message[:_ERROR_LIMIT] if error_message else "",
+        summary=_summary_t,
+        detail=_detail_t,
+        error_message=_error_t,
         direct_reply=direct_reply,
         timestamp=_now_iso(),
     )
@@ -1287,9 +1299,19 @@ async def _run_computer_use_task(
             if not finished:
                 logger.warning("[ComputerUse] Thread did not stop within 15s after cancel")
     except Exception as e:
-        info["error"] = str(e)
-        logger.error("[ComputerUse] Task %s failed: %s", task_id, e)
+        info["error"] = _tt(str(e), 350)
+        # exception 字符串经常夹带用户输入 / 模型输出 / 上游响应原文，
+        # logger 只记 task_id + exc_type 元数据，原文走 print 兜底。
+        logger.error("[ComputerUse] Task %s failed (exc_type=%s)", task_id, type(e).__name__)
+        print(f"[ComputerUse] Task {task_id} raw error: {e}")
     finally:
+        # 异常路径下 run_instruction() 直接抛错 → cu_detail 仍是空字符串，
+        # 但 info["error"] 已经写了 exception 文本。把 info["error"] 回填到
+        # cu_detail，让下游 summary / detail / error_message 三条出口都能
+        # 拿到失败原因（前端 task_update / task_result + analyzer 都依赖
+        # 这条；之前会发出 failed + error_message="" 让前端拿不到细节）。
+        if not cu_detail and info.get("error"):
+            cu_detail = info["error"]
         # cancel_task may have pre-marked status="cancelled" before this dispatch
         # observed the cancellation; preserve that signal regardless of whether
         # the CU thread returned normally or raised CancelledError.
@@ -1310,13 +1332,13 @@ async def _run_computer_use_task(
         _task_tracker.record_completed(
             lanlan_name, task_id=task_id, method="computer_use",
             desc=instruction or "",
-            detail=cu_detail[:200] if cu_detail else "",
+            detail=_tt(cu_detail, 200) if cu_detail else "",
             success=success and info["status"] != "cancelled",
             cancelled=(info["status"] == "cancelled"),
         )
         # 失败时将解析后的 cu_detail 写入 info["error"]（仅在非异常路径下补全）
         if not success and not info.get("error") and cu_detail:
-            info["error"] = cu_detail[:500]
+            info["error"] = _tt(cu_detail, 350)
         Modules.computer_use_running = False
         Modules.active_computer_use_task_id = None
         Modules.active_computer_use_async_task = None
@@ -1540,7 +1562,11 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                         summary=summary,
                         detail=mcp_detail,
                     )
-                    logger.info(f"[TaskExecutor] ✅ MCP task completed and notified: {result.task_description}")
+                    # task_description 是 LLM 生成的任务描述，不写 logger；
+                    # print 也只截到预览长度（与同文件其他调试 print 一致），
+                    # 避免长 description 把 stdout 刷爆。
+                    logger.info(f"[TaskExecutor] ✅ MCP task completed and notified (desc_len={len(result.task_description or '')})")
+                    print(f"[TaskExecutor] MCP task description (preview): {_tt(result.task_description or '', 120)}")
                 except Exception as e:
                     logger.warning(f"[TaskExecutor] Failed to notify main_server: {e}")
             else:
@@ -1565,7 +1591,9 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                         lanlan_name, task_id=ti["id"], method="computer_use",
                         desc=result.task_description or "",
                     )
-                    logger.info(f"[ComputerUse] Scheduled task {ti['id']} (session={cu_session.session_id[:8]}): {result.task_description[:50]}...")
+                    # task_description 是用户/LLM 原文，不写进 logger；本地 print 兜底
+                    logger.info(f"[ComputerUse] Scheduled task {ti['id']} (session={cu_session.session_id[:8]}, desc_len={len(result.task_description or '')})")
+                    print(f"[ComputerUse] task {ti['id']} description: {(result.task_description or '')[:120]}")
                     try:
                         await _emit_main_event(
                             "task_update",
@@ -1699,7 +1727,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                             _reg["end_time"] = _now_iso()
                             _reg["result"] = up_result.result
                             if not up_result.success:
-                                _reg["error"] = (detail or str(up_result.error or ""))[:500]
+                                _reg["error"] = _tt((detail or str(up_result.error or "")), 350)
                         if up_result.success and is_deferred:
                             # 保持任务为 running 状态，等待 daemon 触发后回调完成
                             reminder_id = run_data.get("reminder_id") if isinstance(run_data, dict) else None
@@ -1729,7 +1757,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                         channel="user_plugin",
                                         task_id=str(up_result.task_id or ""),
                                         success=True,
-                                        summary=summary[:500],
+                                        summary=summary,
                                         detail=detail,
                                         direct_reply=False,
                                     )
@@ -1752,8 +1780,8 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                         channel="user_plugin",
                                         task_id=str(up_result.task_id or ""),
                                         success=False,
-                                        summary=_fail_summary[:500],
-                                        error_message=(detail or str(up_result.error or ""))[:500],
+                                        summary=_fail_summary,
+                                        error_message=(detail or str(up_result.error or "")),
                                     )
                                 except Exception as emit_err:
                                     logger.debug("[TaskExecutor] emit task_result(failed) failed: task_id=%s plugin_id=%s error=%s", up_result.task_id, plugin_id, emit_err)
@@ -1765,7 +1793,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                     task={"id": result.task_id, "status": up_terminal, "type": "user_plugin",
                                           "start_time": up_start, "end_time": _now_iso(),
                                           "params": task_params,
-                                          "error": (detail or str(up_result.error or ""))[:500] if not up_result.success else None},
+                                          "error": _tt((detail or str(up_result.error or "")), 350) if not up_result.success else None},
                                 )
                             except Exception as emit_err:
                                 logger.debug("[TaskExecutor] emit task_update(terminal) failed: task_id=%s plugin_id=%s error=%s", result.task_id, plugin_id, emit_err)
@@ -1806,10 +1834,12 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                         _reg = Modules.task_registry.get(result.task_id)
                         if _reg and _reg.get("status") == "cancelled":
                             return
-                        logger.exception("[TaskExecutor] UserPlugin dispatch failed: %s", e)
+                        # exception 字符串可能含用户/LLM 原文，logger 只记元数据
+                        logger.error("[TaskExecutor] UserPlugin dispatch failed (exc_type=%s)", type(e).__name__)
+                        print(f"[TaskExecutor] UserPlugin dispatch raw error: {e}")
                         if _reg:
                             _reg["status"] = "failed"
-                            _reg["error"] = str(e)[:500]
+                            _reg["error"] = _tt(str(e), 350)
                         _task_tracker.record_completed(
                             lanlan_name, task_id=result.task_id, method="user_plugin",
                             desc=f"{plugin_id}.{entry_id}: {result.task_description or ''}",
@@ -1832,7 +1862,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                 task={"id": result.task_id, "status": "failed", "type": "user_plugin",
                                       "start_time": up_start, "end_time": _now_iso(),
                                       "params": task_params,
-                                      "error": str(e)[:500]},
+                                      "error": _tt(str(e), 350)},
                             )
                         except Exception as emit_err:
                             logger.debug("[TaskExecutor] emit task_update(dispatch_failed) failed: task_id=%s error=%s", result.task_id, emit_err)
@@ -1984,7 +2014,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                             _reg["result"] = nk_result
                             _reg["session_id"] = str(nk_result.get("session_id") or _reg.get("session_id") or "")
                             if not success:
-                                _reg["error"] = str(nk_result.get("error") or "")[:500]
+                                _reg["error"] = _tt(str(nk_result.get("error") or ""), 350)
                         _task_tracker.record_completed(
                             lanlan_name, task_id=result.task_id, method="openclaw",
                             desc=result.task_description or instruction or "",
@@ -2019,7 +2049,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                 "start_time": nk_start,
                                 "end_time": _now_iso(),
                                 "params": task_params,
-                                "error": str(nk_result.get("error") or "")[:500] if not success else None,
+                                "error": _tt(str(nk_result.get("error") or ""), 350) if not success else None,
                             },
                         )
                     except asyncio.CancelledError as e:
@@ -2068,7 +2098,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                         logger.exception("[OpenClaw] dispatch failed: %s", e)
                         if _reg:
                             _reg["status"] = "failed"
-                            _reg["error"] = str(e)[:500]
+                            _reg["error"] = _tt(str(e), 350)
                         _task_tracker.record_completed(
                             lanlan_name, task_id=result.task_id, method="openclaw",
                             desc=result.task_description or instruction or "",
@@ -2096,7 +2126,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                     "start_time": nk_start,
                                     "end_time": _now_iso(),
                                     "params": task_params,
-                                    "error": str(e)[:500],
+                                    "error": _tt(str(e), 350),
                                 },
                             )
                         except Exception:
@@ -2177,7 +2207,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                         bu_info["end_time"] = _now_iso()
                         bu_info["result"] = bres
                         if not success:
-                            bu_info["error"] = (bu_parsed or "")[:500]
+                            bu_info["error"] = _tt((bu_parsed or ""), 350)
                         await _emit_task_result(
                             lanlan_name,
                             channel="browser_use",
@@ -2192,7 +2222,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                 "task_update", lanlan_name,
                                 task={"id": bu_task_id, "status": bu_info["status"],
                                       "type": "browser_use", "start_time": bu_start, "end_time": _now_iso(),
-                                      "error": (bu_parsed[:500] if bu_parsed else "") if not success else None,
+                                      "error": (_tt(bu_parsed, 350) if bu_parsed else "") if not success else None,
                                       "session_id": bu_session.session_id},
                             )
                         except Exception as emit_err:
@@ -2233,14 +2263,16 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                             # errors (e.g. ConnectionError from CDP teardown) as the
                             # cancel signal instead of clobbering with "failed".
                             return
-                        logger.warning(f"[BrowserUse] Failed: {e}")
+                        # exception 字符串可能含用户/LLM 原文，logger 只记元数据
+                        logger.warning(f"[BrowserUse] Failed (exc_type={type(e).__name__})")
+                        print(f"[BrowserUse] Task raw error: {e}")
                         bu_info["status"] = "failed"
                         bu_info["end_time"] = _now_iso()
                         _task_tracker.record_completed(
                             lanlan_name, task_id=bu_task_id, method="browser_use",
                             desc=result.task_description or "", detail=str(e)[:200], success=False,
                         )
-                        bu_info["error"] = str(e)[:500]
+                        bu_info["error"] = _tt(str(e), 350)
                         bu_session.complete_task(str(e), success=False)
                         try:
                             await _emit_task_result(
@@ -2258,7 +2290,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                 "task_update", lanlan_name,
                                 task={"id": bu_task_id, "status": "failed", "type": "browser_use",
                                       "start_time": bu_start, "end_time": _now_iso(),
-                                      "error": str(e)[:500],
+                                      "error": _tt(str(e), 350),
                                       "session_id": bu_session.session_id},
                             )
                         except Exception as emit_err:
@@ -2321,16 +2353,48 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                 session_id=of_session.session_id,
                                 local_task_id=of_task_id,
                             )
-                            logger.info("[OpenFang] Task completed: success=%s, agent=%s, result_len=%d, steps=%s, artifacts_count=%d",
-                                        of_res.get("success"), of_res.get("agent_name"),
-                                        len(str(of_res.get("result", ""))),
-                                        of_res.get("steps"),
-                                        len(of_res.get("artifacts") or []))
+                            # steps 列表可能含 daemon 返回的 user/AI/tool 原文，
+                            # logger 只记数量，预览走 print 兜底。
+                            _of_steps = of_res.get("steps")
+                            _of_steps_count = len(_of_steps) if isinstance(_of_steps, list) else int(bool(_of_steps))
+                            logger.info(
+                                "[OpenFang] Task completed: success=%s, agent=%s, result_len=%d, steps_count=%d, artifacts_count=%d",
+                                of_res.get("success"), of_res.get("agent_name"),
+                                len(str(of_res.get("result", ""))),
+                                _of_steps_count,
+                                len(of_res.get("artifacts") or []),
+                            )
+                            if _of_steps is not None:
+                                # debug-only：单独 try 兜底，避免不可 JSON 序列化的
+                                # step 对象把整个 OpenFang 任务拖进异常分支误标失败
+                                try:
+                                    import json as _json_for_steps
+                                    from utils.tokenize import truncate_to_tokens as _tt_steps
+                                    _steps_repr = _json_for_steps.dumps(_of_steps, ensure_ascii=False, default=str)
+                                    print(f"[OpenFang] steps preview: {_tt_steps(_steps_repr, 120)}")
+                                except Exception as _steps_err:
+                                    print(f"[OpenFang] steps preview unavailable (exc_type={type(_steps_err).__name__})")
                             logger.debug("[OpenFang] ====== RAW RESULT (debug) ======")
                             logger.debug("[OpenFang] keys=%s", list(of_res.keys()))
-                            logger.debug("[OpenFang] result (first 500): %s", str(of_res.get("result", ""))[:500])
-                            logger.debug("[OpenFang] error: %s", of_res.get("error"))
-                            logger.debug("[OpenFang] artifacts=%s", of_res.get("artifacts"))
+                            # result / error / artifacts 都可能含 LLM/用户原文，
+                            # 全部走 print 不进 logger
+                            logger.debug(
+                                "[OpenFang] result_len=%d, error_len=%d, artifacts_count=%d",
+                                len(str(of_res.get("result", ""))),
+                                len(str(of_res.get("error") or "")),
+                                len(of_res.get("artifacts") or []),
+                            )
+                            print(f"[OpenFang] result (first 500): {str(of_res.get('result', ''))[:500]}")
+                            # error 可能是几 KB 的堆栈/解释文本；artifacts 可能是大
+                            # JSON / base64 列表，无界 print 既泄漏面大又会卡 stdout。
+                            _of_err = str(of_res.get("error") or "")
+                            print(f"[OpenFang] error (first 500, len={len(_of_err)}): {_of_err[:500]}")
+                            _of_arts = of_res.get("artifacts")
+                            if isinstance(_of_arts, list):
+                                _of_art_types = [type(a).__name__ for a in _of_arts[:3]]
+                                print(f"[OpenFang] artifacts: count={len(_of_arts)}, types(first3)={_of_art_types}")
+                            else:
+                                print(f"[OpenFang] artifacts_present={_of_arts is not None}")
                             logger.debug("[OpenFang] ==============================")
                             if of_info.get("status") == "cancelled":
                                 return
@@ -2339,19 +2403,28 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                             of_error_text = of_res.get("error", "") or ""
                             _lang = _rp_lang(None)
                             _done = _rp_phrase('cu_status_done', _lang) if success else _rp_phrase('cu_status_ended', _lang)
-                            summary = _rp_phrase('cu_task_done', _lang, desc=result.task_description, status=_done, detail=of_result_text[:300]) if of_result_text else \
+                            # 两处 detail 都回流到 LLM context — 同语义统一到 200 tokens
+                            # （和 result_parser._truncate / fallback Context 同一档）。
+                            summary = _rp_phrase('cu_task_done', _lang, desc=result.task_description, status=_done, detail=_tt(of_result_text, 200)) if of_result_text else \
                                       _rp_phrase('cu_task_desc_only', _lang, desc=result.task_description, status=_done)
                             of_session.complete_task(of_result_text or summary, success)
+                            # _of_error_src 和 task_tracker.detail 都用 fallback chain：
+                            # daemon 按惯例把失败说明塞 error 而不是 result，下游 detail
+                            # 也得能从 error 兜回，否则 analyzer 看到 failed 但 detail="
+                            # 拿不到任何线索（前面 of_info["error"] 修过但 task_tracker
+                            # 这条出口没同步）。
+                            _of_error_src = of_error_text or of_result_text or "(OpenFang task failed with no error text)"
+                            _track_detail = of_result_text if success else _of_error_src
                             _task_tracker.record_completed(
                                 lanlan_name, task_id=of_task_id, method="openfang",
                                 desc=result.task_description or "",
-                                detail=of_result_text[:200] if of_result_text else "", success=success,
+                                detail=_tt(_track_detail, 200) if _track_detail else "", success=success,
                             )
                             of_info["status"] = "completed" if success else "failed"
                             of_info["end_time"] = _now_iso()
                             of_info["result"] = of_res
                             if not success:
-                                of_info["error"] = (of_error_text or of_result_text)[:500]
+                                of_info["error"] = _tt(_of_error_src, 350)
                             await _emit_task_result(
                                 lanlan_name,
                                 channel="openfang",
@@ -2359,7 +2432,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                 success=success,
                                 summary=summary,
                                 detail=of_result_text if success else "",
-                                error_message=of_error_text if not success else "",
+                                error_message=_of_error_src if not success else "",
                             )
                             try:
                                 await _emit_main_event(
@@ -2409,10 +2482,12 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                         except Exception as e:
                             if of_info.get("status") == "cancelled":
                                 return
-                            logger.warning(f"[OpenFang] Task failed: {e}")
+                            # exception 字符串可能含用户/LLM 原文，logger 只记元数据
+                            logger.warning(f"[OpenFang] Task failed (exc_type={type(e).__name__})")
+                            print(f"[OpenFang] Task raw error: {e}")
                             of_info["status"] = "failed"
                             of_info["end_time"] = _now_iso()
-                            of_info["error"] = str(e)[:500]
+                            of_info["error"] = _tt(str(e), 350)
                             of_session.complete_task(str(e), success=False)
                             _task_tracker.record_completed(
                                 lanlan_name, task_id=of_task_id, method="openfang",
@@ -2432,7 +2507,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                     "task_update", lanlan_name,
                                     task={"id": of_task_id, "status": "failed", "type": "openfang",
                                           "start_time": of_start, "end_time": _now_iso(),
-                                          "error": str(e)[:500],
+                                          "error": _tt(str(e), 350),
                                           "session_id": of_session.session_id},
                                 )
                             except Exception:
@@ -2977,7 +3052,7 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
                 _suppress_reply = _is_reply_suppressed(res.result if isinstance(res.result, dict) else None)
                 if not _suppress_reply:
                     if not res.success:
-                        info["error"] = (detail or str(res.error or ""))[:500]
+                        info["error"] = _tt((detail or str(res.error or "")), 350)
                     _lang = _rp_lang(None)
                     display_id = await _get_plugin_display_id(plugin_id)
                     if res.success:
@@ -2989,13 +3064,13 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
                         channel="user_plugin",
                         task_id=task_id,
                         success=res.success,
-                        summary=summary[:500],
+                        summary=summary,
                         detail=detail if res.success else "",
-                        error_message=(detail or str(res.error or ""))[:500] if not res.success else "",
+                        error_message=(detail or str(res.error or "")) if not res.success else "",
                         direct_reply=False,
                     )
                 elif not res.success:
-                    info["error"] = (detail or str(res.error or ""))[:500]
+                    info["error"] = _tt((detail or str(res.error or "")), 350)
             except Exception as emit_err:
                 logger.debug("[Plugin] emit task_result failed: task_id=%s plugin_id=%s error=%s", task_id, plugin_id, emit_err)
         except asyncio.CancelledError:
@@ -3019,8 +3094,15 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
                 return
             info["status"] = "failed"
             info["end_time"] = _now_iso()
-            info["error"] = str(e)[:500]
-            logger.error(f"[Plugin] Direct execute failed: {e}", exc_info=True)
+            info["error"] = _tt(str(e), 350)
+            # exception 字符串可能含 provider/plugin 原文 / 用户输入；logger
+            # 只记元数据，原文 + traceback 走 print 兜底。
+            import traceback as _tb
+            logger.error(
+                "[Plugin] Direct execute failed: task_id=%s plugin_id=%s exc_type=%s",
+                task_id, plugin_id, type(e).__name__,
+            )
+            print(f"[Plugin] Direct execute raw error (task_id={task_id}, plugin_id={plugin_id}):\n{_tb.format_exc()}")
             try:
                 await _emit_task_result(
                     lanlan_name,
@@ -3395,7 +3477,8 @@ async def openfang_llm_proxy(request: Request, path: str):
                     content=body, headers=forward_headers,
                 )
                 logger.info("[LLM Proxy] upstream response: status=%s, len=%d", resp.status_code, len(resp.content))
-                logger.debug("[LLM Proxy] upstream body (first 500): %s", resp.text[:500])
+                # body 可能含 LLM 生成原文；不写 logger，仅本地 print
+                print(f"[LLM Proxy] upstream body (first 500): {resp.text[:500]}")
                 # 尝试 JSON patch
                 try:
                     data = resp.json()
@@ -3519,7 +3602,16 @@ def _extract_tool_intent_as_text(refusal_text: str) -> str:
     match = _re.search(pattern, cleaned, _re.DOTALL)
 
     if not match:
-        return f"I attempted to perform an action but encountered a compatibility issue. Let me provide what I know instead.\n\nContext: {cleaned[:300]}"
+        # Context 会回到 LLM 的下一轮上下文 — token 而非字符。
+        # 给固定前缀预留 budget，保证整条 fallback ≤ 200 token。
+        from utils.tokenize import count_tokens
+        prefix = "I attempted to perform an action but encountered a compatibility issue. Let me provide what I know instead.\n\nContext: "
+        prefix_tokens = count_tokens(prefix)
+        if prefix_tokens >= 200:
+            # 极端 / 文案被改长 / 本地化场景的兜底：把整条前缀也截到 200，
+            # 保证返回串永远不超预算。
+            return _tt(prefix, 200)
+        return prefix + _tt(cleaned, 200 - prefix_tokens)
 
     tool_name = match.group(1)
     args_raw = match.group(2)
@@ -3544,17 +3636,22 @@ def _extract_tool_intent_as_text(refusal_text: str) -> str:
 
     if readable_args:
         args_text = ", ".join(readable_args)
-        return (
+        result = (
             f"I wanted to {action}: {args_text}\n\n"
             f"However, due to a model compatibility issue with tool calling, "
             f"I cannot execute this tool directly. "
             f"Based on my knowledge, let me provide what information I can about this topic."
         )
     else:
-        return (
+        result = (
             f"I attempted to {action}, but encountered a compatibility issue.\n\n"
             f"Let me provide what information I can based on my existing knowledge."
         )
+    # 统一兜底：args_text 可能含长 query 串（multi-string args 或 base64
+    # 之类），就算上面的 readable_args[:5] 取过 5 个，每个都长的话整段
+    # 仍可能超 200 token。这里再过一次 _tt 保证最终交回 LLM 的 message
+    # 严格 ≤ 200 token，与 not match 分支语义对齐。
+    return _tt(result, 200)
 
 
 # ── OpenFang endpoints ──────────────────────────────────────
@@ -3650,17 +3747,31 @@ async def openfang_run(payload: Dict[str, Any]):
             _success = _r.get("success", False)
             _result_text = _r.get("result", "") or ""
             _error_text = _r.get("error", "") or ""
+            # 跟 _run_openfang_dispatch 同款的 fallback chain：daemon 失败时
+            # 可能把原因塞进 result 而非 error；成功时 result 偶尔为空（如
+            # 仅有 artifacts）。两条出口都做兜底，避免前端拿到空 summary
+            # 或丢失败原因。
+            # 极端兜底：result 和 error 都为空时（e.g. 仅 artifacts 的成功
+            # 返回）summary 走默认占位串，避免前端 / LLM callback 拿到空
+            # summary。
+            _summary_src = _result_text or _error_text or (
+                "(OpenFang task completed with no result text)"
+                if _success
+                else "(OpenFang task failed with no error text)"
+            )
+            _err_src = _error_text or _result_text
             if not _success:
-                reg["error"] = _error_text
+                reg["error"] = _tt(_err_src or "(OpenFang task failed with no error text)", 350)
 
+            # callback summary 进 LLM context — 与 _sanitize_correction_text per-item 同档（400 tokens）
             await _emit_task_result(
                 _lanlan,
                 channel="openfang",
                 task_id=task_id,
                 success=_success,
-                summary=_result_text[:500],
+                summary=_tt(_summary_src, 400),
                 detail=_result_text,
-                error_message=_error_text,
+                error_message=(_err_src or "(OpenFang task failed with no error text)") if not _success else "",
             )
             # Terminal task_update so HUD transitions out of running
             try:
@@ -3675,18 +3786,24 @@ async def openfang_run(payload: Dict[str, Any]):
             reg = Modules.task_registry[task_id]
             if reg.get("status") == "cancelled":
                 return
-            logger.error("[OpenFang] Task %s failed: %s", task_id, e)
+            # exception 字符串可能含用户/LLM 原文，logger 只记元数据
+            logger.error("[OpenFang] Task %s failed (exc_type=%s)", task_id, type(e).__name__)
+            print(f"[OpenFang] Task {task_id} raw error: {e}")
             reg["status"] = "failed"
-            reg["error"] = str(e)
+            reg["error"] = _tt(str(e), 350)
             reg["end_time"] = datetime.now(timezone.utc).isoformat()
             try:
+                # except 路径也走非空 summary，避免前端 / LLM callback 拿到
+                # 空摘要；error_message 用 exception 原文（已被外层 reg["error"]
+                # truncate，这里独立 cap）。
+                _exc_msg = str(e) or "(OpenFang task raised with no message)"
                 await _emit_task_result(
                     _lanlan,
                     channel="openfang",
                     task_id=task_id,
                     success=False,
-                    summary="",
-                    error_message=str(e),
+                    summary=_tt(_exc_msg, 400),
+                    error_message=_tt(_exc_msg, 350),
                 )
             except Exception:
                 logger.debug("[OpenFang] terminal task_result emit failed", exc_info=True)

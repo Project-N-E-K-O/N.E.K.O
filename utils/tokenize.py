@@ -22,6 +22,7 @@ import logging
 import math
 
 from config import PERSONA_RENDER_ENCODING
+from utils.cjk import count_cjk_chars, is_cjk_char
 
 logger = logging.getLogger(__name__)
 
@@ -90,12 +91,7 @@ def _count_tokens_heuristic(text: str) -> int:
         # Defensive double-check kept here so direct callers of the
         # heuristic (tests, future callsites) get the same contract.
         return 0
-    cjk = sum(
-        1 for c in text
-        if '\u4e00' <= c <= '\u9fff'
-        or '\u3040' <= c <= '\u30ff'
-        or '\uac00' <= c <= '\ud7af'
-    )
+    cjk = count_cjk_chars(text)
     non_cjk = len(text) - cjk
     # Floor of 1 for non-empty text: int() truncated short latin strings
     # (e.g. "ok" → 0.5 → 0), which made score-trim treat them as free
@@ -126,6 +122,64 @@ async def acount_tokens(
     if not text:
         return 0
     return await asyncio.to_thread(count_tokens, text, encoding)
+
+
+def truncate_to_tokens(
+    text: str,
+    max_tokens: int,
+    encoding: str = PERSONA_RENDER_ENCODING,
+) -> str:
+    """Return ``text`` truncated to at most ``max_tokens`` tokens.
+
+    If ``text`` already fits, it is returned unchanged. Otherwise the
+    tiktoken-encoded token sequence is sliced and decoded back to a
+    string. Decoding may yield a string slightly shorter than the original
+    cut boundary because BPE merges can split a multi-byte char across
+    tokens — that is acceptable for our budget-trim use cases (LLM prompt
+    truncation, log truncation): we'd rather drop a partial char than
+    leak past the limit.
+
+    Heuristic fallback: when tiktoken is unavailable, we under-estimate
+    `max_tokens` worth of chars by inverting the same per-class density
+    used in `_count_tokens_heuristic`, scanning prefix characters until
+    the running token estimate hits the cap. We never over-count; if the
+    heuristic mis-classifies the budget will be slightly tighter than
+    intended, never looser.
+    """
+    if not text or max_tokens <= 0:
+        return "" if max_tokens <= 0 else text
+    enc = _get_encoder(encoding)
+    if enc is None:
+        return _truncate_to_tokens_heuristic(text, max_tokens)
+    tokens = enc.encode(text)
+    if len(tokens) <= max_tokens:
+        return text
+    return enc.decode(tokens[:max_tokens])
+
+
+async def atruncate_to_tokens(
+    text: str,
+    max_tokens: int,
+    encoding: str = PERSONA_RENDER_ENCODING,
+) -> str:
+    """Async twin of `truncate_to_tokens` — see module docstring for why
+    the encode hop into a worker thread matters on the FastAPI loop."""
+    if not text or max_tokens <= 0:
+        return "" if max_tokens <= 0 else text
+    return await asyncio.to_thread(truncate_to_tokens, text, max_tokens, encoding)
+
+
+def _truncate_to_tokens_heuristic(text: str, max_tokens: int) -> str:
+    """Heuristic prefix scan that mirrors `_count_tokens_heuristic`'s
+    weighting (CJK 1.5 / non-CJK 0.25). Walks the string once and stops
+    just before the running estimate would exceed `max_tokens`."""
+    running = 0.0
+    for i, c in enumerate(text):
+        weight = 1.5 if is_cjk_char(c) else 0.25
+        if math.ceil(running + weight) > max_tokens:
+            return text[:i]
+        running += weight
+    return text
 
 
 def tokenizer_identity(encoding: str = PERSONA_RENDER_ENCODING) -> str:
