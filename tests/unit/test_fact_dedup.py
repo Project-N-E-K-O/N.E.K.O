@@ -169,6 +169,34 @@ def test_detect_candidates_skips_self():
     assert FactDedupResolver.detect_candidates(facts) == []
 
 
+def test_detect_candidates_skips_when_model_id_differs():
+    """During a backfill that flips embedding_dim or quantization, two
+    rows transiently coexist with vectors from different
+    embedding_model_ids. Comparing them via cosine_similarity would
+    either crash on dim mismatch or — more insidiously — produce a
+    numerically valid but semantically incomparable score, falsely
+    flagging the pair (CodeRabbit PR-956 Major). detect_candidates
+    must skip cross-model_id sibs and let the next sweep retry once
+    backfill catches up."""
+    same_vec = [1.0, 0.0, 0.0]
+    f1 = _fact("f1", "x", embedding=same_vec)
+    f2 = _fact("f2", "y", embedding=same_vec)
+    # Force a model_id mismatch — emulates one row reembedded under a
+    # new config while the other still has the legacy vector.
+    f2["embedding_model_id"] = "jina-v5-nano-256d-fp32"
+    assert FactDedupResolver.detect_candidates([f1, f2]) == []
+
+
+def test_detect_candidates_skips_when_candidate_lacks_model_id():
+    """A row whose embedding triple is half-stamped (vector but no
+    model_id, e.g. legacy data before P2 schema add) is still
+    invalid for cosine — no anchor for the alignment check."""
+    f1 = _fact("f1", "x", embedding=[1.0, 0.0])
+    f2 = _fact("f2", "y", embedding=[1.0, 0.0])
+    f1["embedding_model_id"] = None
+    assert FactDedupResolver.detect_candidates([f1, f2]) == []
+
+
 def test_detect_candidates_only_for_ids_filters_candidate_side():
     """only_for_ids constrains the *candidate* (newer) side so the
     worker doesn't repeatedly scan the entire history on every sweep
@@ -682,6 +710,75 @@ async def test_aresolve_batch_limit_caps_in_flight_pairs(tmp_path):
         resolved2 = await resolver.aresolve("小天")
     assert resolved2 == 5
     assert await resolver.aload_pending("小天") == []
+
+
+@pytest.mark.asyncio
+async def test_aenqueue_returns_zero_in_maintenance_mode(tmp_path):
+    """When cloudsave is in maintenance mode `_asave_pending` skips the
+    write, so reporting `appended` to the worker would mark the pairs
+    as durable — but they only live in this process's heap and are
+    lost on restart. `aenqueue_candidates` must collapse the return
+    to 0 so the worker treats the maintenance window as "no progress"
+    rather than silently dropping work (CodeRabbit PR-956 Major)."""
+    from utils.cloudsave_runtime import MaintenanceModeError
+    fs, resolver = _install_resolver(str(tmp_path))
+
+    def _raise_maintenance(*_a, **_k):
+        raise MaintenanceModeError("read_only", operation="save", target="x")
+    with patch(
+        "memory.fact_dedup.assert_cloudsave_writable",
+        side_effect=_raise_maintenance,
+    ):
+        appended = await resolver.aenqueue_candidates("小天", [{
+            "candidate_id": "c1", "existing_id": "e1",
+            "candidate_text": "x", "existing_text": "y",
+            "entity": "master", "cosine": 0.99,
+        }])
+    assert appended == 0
+    # And the queue file genuinely didn't land on disk — `aload_pending`
+    # is empty, not "appended-but-not-saved".
+    assert await resolver.aload_pending("小天") == []
+
+
+@pytest.mark.asyncio
+async def test_aresolve_returns_zero_when_queue_save_fails_in_maintenance(tmp_path):
+    """Symmetric to enqueue: if facts.json was written but the queue
+    cleanup is skipped, returning `applied` would convince the worker
+    to re-enter ACTIVE_INTERVAL drumming on the same maintenance
+    window. Returning 0 routes through the longer POLL_INTERVAL
+    backoff, the right cadence for "wait for maintenance to clear"
+    (CodeRabbit PR-956 Major)."""
+    from utils.cloudsave_runtime import MaintenanceModeError
+    fs, resolver = _install_resolver(str(tmp_path))
+    cand = _fact("c1", "x", embedding=[1.0, 0.0])
+    existing = _fact("e1", "y", embedding=[0.99, 0.05], importance=4)
+    await _seed_facts(fs, "小天", [cand, existing])
+    # Enqueue while writes are still allowed.
+    await resolver.aenqueue_candidates("小天", [{
+        "candidate_id": "c1", "existing_id": "e1",
+        "candidate_text": "x", "existing_text": "y",
+        "entity": "master", "cosine": 0.99,
+    }])
+
+    fake_llm = _make_llm_mock([{"index": 0, "action": "merge"}])
+    # First call (during enqueue setup) wasn't patched, so the queue
+    # is on disk. Now flip maintenance ON before resolve runs.
+    call_count = {"n": 0}
+
+    def _flaky_assert(*_a, **_k):
+        # First write inside _aapply_decisions (facts.json) is allowed;
+        # the subsequent _asave_pending(remaining) trips maintenance.
+        # FactStore's write goes through utils.file_utils, not via
+        # assert_cloudsave_writable, so we only need to trip the
+        # resolver's call site.
+        call_count["n"] += 1
+        if call_count["n"] >= 1:
+            raise MaintenanceModeError("read_only", operation="save", target="x")
+
+    with patch("utils.llm_client.create_chat_llm", return_value=fake_llm), \
+            patch("memory.fact_dedup.assert_cloudsave_writable", side_effect=_flaky_assert):
+        resolved = await resolver.aresolve("小天")
+    assert resolved == 0
 
 
 def test_rebind_fact_store_preserves_alocks(tmp_path):

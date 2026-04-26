@@ -152,7 +152,13 @@ class FactDedupResolver:
             pass
         return []
 
-    async def _asave_pending(self, name: str, items: list[dict]) -> None:
+    async def _asave_pending(self, name: str, items: list[dict]) -> bool:
+        """Persist the pending queue. Returns True on success, False if
+        cloudsave is in maintenance mode (write skipped). Callers MUST
+        propagate the False — reporting an enqueue/resolve as
+        successful when the on-disk queue isn't actually updated would
+        silently drop work across the maintenance window
+        (CodeRabbit PR-956 Major)."""
         try:
             assert_cloudsave_writable(
                 self._config_manager,
@@ -164,10 +170,11 @@ class FactDedupResolver:
                 "[FactDedup] %s: 维护态跳过 facts_pending_dedup.json 写入: %s",
                 name, exc,
             )
-            return
+            return False
         await atomic_write_json_async(
             self._pending_path(name), items, indent=2, ensure_ascii=False,
         )
+        return True
 
     async def aenqueue_candidates(
         self, name: str, pairs: list[dict],
@@ -211,7 +218,15 @@ class FactDedupResolver:
                 existing_keys.add(key)
                 appended += 1
             if appended:
-                await self._asave_pending(name, existing)
+                if not await self._asave_pending(name, existing):
+                    # Maintenance-mode skip: the queue file was NOT
+                    # written, so we have to tell the caller the
+                    # appended pairs aren't durable. The worker treats
+                    # the return as "progress" — a stale True here
+                    # would mark the next sweep as "queue advanced"
+                    # and leave the candidates only in this process's
+                    # memory until restart drops them.
+                    return 0
                 logger.info(
                     "[FactDedup] %s: 入队 %d 对候选（队列总长 %d）",
                     name, appended, len(existing),
@@ -269,10 +284,11 @@ class FactDedupResolver:
                 # existence in active facts.
                 continue
             cvec = f.get('embedding')
-            if not cvec:
-                # Cannot dedup without an embedding — skip; the
-                # worker will retry on its next sweep once the vector
-                # is filled.
+            cmodel = f.get('embedding_model_id')
+            if not cvec or not cmodel:
+                # Cannot dedup without an embedding or its model_id —
+                # skip; the worker will retry on its next sweep once
+                # the vector triple is filled.
                 continue
             entity = f.get('entity') or 'master'
             ctext = f.get('text', '')
@@ -305,6 +321,18 @@ class FactDedupResolver:
                     continue
                 svec = sib.get('embedding')
                 if not svec:
+                    continue
+                # Cross-model_id comparison is meaningless: a 64d INT8
+                # vector and a 128d FP32 vector live in different
+                # embedding spaces even when the dim happens to match
+                # (different quantisation schemes ⇒ different scale +
+                # axes). cosine_similarity already returns 0.0 on
+                # length mismatch, but same-dim/different-quant pairs
+                # would otherwise produce numerically valid cosines
+                # against semantically incomparable vectors. Skip
+                # until the next sweep so backfill catches up
+                # (CodeRabbit PR-956 Major).
+                if sib.get('embedding_model_id') != cmodel:
                     continue
                 cos = cosine_similarity(cvec, svec)
                 if cos < threshold:
@@ -413,7 +441,19 @@ class FactDedupResolver:
             it for it in current
             if (it.get('candidate_id'), it.get('existing_id')) not in processed_keys
         ]
-        await self._asave_pending(name, remaining)
+        if not await self._asave_pending(name, remaining):
+            # Maintenance-mode skip: queue cleanup didn't land on disk
+            # so reporting `applied` as progress would mislead the
+            # caller into thinking the queue shrunk. facts.json was
+            # already saved by _aapply_decisions, so the next resolve
+            # tick will see the (now-stale) queue entries hit the
+            # disappeared-row branch and consume them harmlessly —
+            # data loss is bounded to "queue file lags facts.json by
+            # one tick". Returning 0 makes the worker back off to
+            # POLL_INTERVAL_SECONDS rather than ACTIVE_INTERVAL,
+            # which is the right cadence for a maintenance window
+            # (CodeRabbit PR-956 Major).
+            return 0
         if applied:
             logger.info(
                 "[FactDedup] %s: 处理 %d 对，剩余队列 %d 条",
