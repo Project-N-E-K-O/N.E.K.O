@@ -2,8 +2,8 @@
 """
 EmbeddingService — Tier 0 of the memory hierarchy: vector embeddings.
 
-Provides ``embed(text)`` / ``embed_batch(texts)`` over a CPU ONNX Jina v5
-nano model. Used by:
+Provides ``embed(text)`` / ``embed_batch(texts)`` over the local CPU ONNX
+text-retrieval embedding profile. Used by:
 
   * fact dedup at write time (cosine > threshold → LLM arbitration queue)
   * persona / reflection retrieval (cosine top-K → LLM rerank precandidates)
@@ -22,7 +22,7 @@ before invoking ``embed()`` / ``embed_batch()`` and fall back to the
 pre-vector code path. The disable is process-local and final — once
 ``DISABLED`` we don't retry within the same process.
 
-Lazy load: the model file (~150 MB) is NOT loaded at startup. The
+Lazy load: the model file is NOT loaded at startup. The
 warmup is gated on the first ``request_load()`` call from
 memory_server's post-ready hook (after the frontend has finished its
 greeting / prominent drain). Until ``READY``, ``embed()`` returns None.
@@ -45,6 +45,7 @@ import hashlib
 import logging
 import os
 import platform
+import sys
 
 logger = logging.getLogger(__name__)
 
@@ -54,14 +55,15 @@ logger = logging.getLogger(__name__)
 # importable in test harnesses that bypass the full app config.
 
 DEFAULT_VECTORS_ENABLED = True
-DEFAULT_VECTORS_EMBEDDING_DIM = "auto"            # "auto" | 64 | 128 | 256 | 384
-DEFAULT_VECTORS_MODEL_BASE_ID = "jina-v5-nano"    # logical model name
+DEFAULT_VECTORS_EMBEDDING_DIM = "auto"            # "auto" | 32 | 64 | 128 | 256 | 512 | 768
+DEFAULT_VECTORS_MODEL_PROFILE_ID = "local-text-retrieval-v1"
 DEFAULT_VECTORS_QUANTIZATION = "auto"             # "auto" | "int8" | "fp32"
 DEFAULT_VECTORS_MIN_RAM_GB = 4.0
 DEFAULT_VECTORS_MODEL_DIR_NAME = "embedding_models"
+DEFAULT_VECTORS_MAX_LENGTH = 8192
 
-# Matryoshka discrete steps the Jina v5 family supports.
-_DIM_STEPS = (64, 128, 256, 384, 768)
+# Matryoshka discrete steps supported by the default local profile.
+_DIM_STEPS = (32, 64, 128, 256, 512, 768)
 
 
 class EmbeddingState(enum.Enum):
@@ -167,8 +169,8 @@ def resolve_dim_for_ram(ram_gb: float | None) -> int | None:
     headroom for the rest of the app (LLM client, websocket pool, TTS
     buffers, frontend renderer if collocated).
 
-    ≥ 16 GB → 256 (not 384). 384 is reserved for an opt-in override; the
-    extra 50 % vector storage isn't worth the recall delta in v1.
+    ≥ 16 GB → 256. Higher Matryoshka levels (512/768) are reserved for
+    opt-in overrides until we have enough latency data from real installs.
     """
     if ram_gb is None or ram_gb < DEFAULT_VECTORS_MIN_RAM_GB:
         return None
@@ -229,14 +231,55 @@ def _resolve_quantization(value: str, has_vnni: bool) -> str:
     return value
 
 
-def build_model_id(base: str, dim: int, quantization: str) -> str:
+def build_model_id(profile: str, dim: int, quantization: str) -> str:
     """Return the canonical id used in ``embedding_model_id`` cache fields.
 
-    Format: ``<base>-<dim>d-<quant>`` (e.g. ``jina-v5-nano-128d-int8``).
+    Format: ``<profile>-<dim>d-<quant>`` (e.g.
+    ``local-text-retrieval-v1-128d-int8``).
     A change to any axis flips the id, which invalidates cached
     embeddings on the next read — same idea as ``tokenizer_identity``.
     """
-    return f"{base}-{dim}d-{quantization}"
+    return f"{profile}-{dim}d-{quantization}"
+
+
+def _profile_exists(model_dir: str, profile_id: str) -> bool:
+    return os.path.isdir(os.path.join(model_dir, profile_id))
+
+
+def _bundled_model_dirs() -> list[str]:
+    """Candidate roots for build-time packaged embedding assets.
+
+    Developers and CI place model files under
+    ``data/embedding_models/<profile_id>/...``. In source runs this is
+    relative to the repo root; in PyInstaller/Nuitka builds it lives next
+    to the bundled launcher resources.
+    """
+    roots: list[str] = []
+    if hasattr(sys, "_MEIPASS"):
+        roots.append(str(sys._MEIPASS))
+    if getattr(sys, "frozen", False) or "__compiled__" in globals():
+        roots.append(os.path.dirname(os.path.abspath(sys.executable)))
+    roots.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+    seen: set[str] = set()
+    model_dirs: list[str] = []
+    for root in roots:
+        path = os.path.join(root, "data", DEFAULT_VECTORS_MODEL_DIR_NAME)
+        norm = os.path.abspath(path)
+        if norm not in seen:
+            seen.add(norm)
+            model_dirs.append(norm)
+    return model_dirs
+
+
+def _select_model_dir(app_docs_model_dir: str, profile_id: str) -> str:
+    """Prefer user-managed app-data models, otherwise use bundled assets."""
+    if _profile_exists(app_docs_model_dir, profile_id):
+        return app_docs_model_dir
+    for bundled_dir in _bundled_model_dirs():
+        if _profile_exists(bundled_dir, profile_id):
+            return bundled_dir
+    return app_docs_model_dir
 
 
 # ── service ──────────────────────────────────────────────────────────
@@ -268,7 +311,7 @@ class EmbeddingService:
         embedding_dim_setting=DEFAULT_VECTORS_EMBEDDING_DIM,
         quantization_setting: str = DEFAULT_VECTORS_QUANTIZATION,
         min_ram_gb: float = DEFAULT_VECTORS_MIN_RAM_GB,
-        base_model_id: str = DEFAULT_VECTORS_MODEL_BASE_ID,
+        profile_id: str = DEFAULT_VECTORS_MODEL_PROFILE_ID,
         ram_gb: float | None = None,        # injected for tests
         has_vnni: bool | None = None,       # injected for tests
     ) -> None:
@@ -277,7 +320,7 @@ class EmbeddingService:
         self._embedding_dim_setting = embedding_dim_setting
         self._quantization_setting = quantization_setting
         self._min_ram_gb = min_ram_gb
-        self._base_model_id = base_model_id
+        self._profile_id = profile_id
 
         # Resolved at construction so ``model_id()`` can return early
         # even before the session loads — callers reading
@@ -329,7 +372,7 @@ class EmbeddingService:
         should not write embedding rows in that case."""
         if self._state == EmbeddingState.DISABLED or self._dim is None:
             return None
-        return build_model_id(self._base_model_id, self._dim, self._quantization)
+        return build_model_id(self._profile_id, self._dim, self._quantization)
 
     def dim(self) -> int | None:
         return self._dim
@@ -436,18 +479,24 @@ class EmbeddingService:
     def _model_file_path(self) -> str:
         """Resolve the on-disk ONNX file path for the active quantization.
 
-        Layout: ``<model_dir>/<base_id>/model_<quant>.onnx`` plus a
-        sibling ``tokenizer.json``. Files are NOT bundled with the repo
-        — they're either downloaded by an external bootstrapper or
-        dropped in by the user. Missing files are a non-fatal disable
-        reason, not a startup error.
+        Layout mirrors the task-specific ONNX repository export:
+        ``<model_dir>/<profile_id>/onnx/model.onnx`` (fp32) or
+        ``model_quantized.onnx`` (int8), plus a root-level
+        ``tokenizer.json``. Files are NOT bundled with the repo — they're
+        either downloaded by an external bootstrapper or dropped in by the
+        user. Missing files are a non-fatal disable reason, not a startup
+        error.
         """
+        filename = (
+            "model_quantized.onnx"
+            if self._quantization == "int8" else "model.onnx"
+        )
         return os.path.join(
-            self._model_dir, self._base_model_id, f"model_{self._quantization}.onnx",
+            self._model_dir, self._profile_id, "onnx", filename,
         )
 
     def _tokenizer_file_path(self) -> str:
-        return os.path.join(self._model_dir, self._base_model_id, "tokenizer.json")
+        return os.path.join(self._model_dir, self._profile_id, "tokenizer.json")
 
     def _load_session_blocking(self) -> None:
         """Synchronous load — runs under ``asyncio.to_thread``.
@@ -459,7 +508,12 @@ class EmbeddingService:
         """
         model_path = self._model_file_path()
         tokenizer_path = self._tokenizer_file_path()
-        if not os.path.exists(model_path) or not os.path.exists(tokenizer_path):
+        external_data_path = f"{model_path}_data"
+        if (
+            not os.path.exists(model_path)
+            or not os.path.exists(tokenizer_path)
+            or not os.path.exists(external_data_path)
+        ):
             raise _DisabledError(_DisableReason.NO_MODEL_FILE)
         try:
             import onnxruntime as ort  # type: ignore
@@ -469,7 +523,7 @@ class EmbeddingService:
             from tokenizers import Tokenizer  # type: ignore
         except ImportError as e:
             # huggingface tokenizers is the only sane way to load the
-            # SentencePiece-based Jina tokenizer offline. Distinct
+            # SentencePiece-style tokenizer offline. Distinct
             # disable reason so operators don't chase a phantom
             # onnxruntime install when it's actually tokenizers
             # that's missing.
@@ -482,6 +536,10 @@ class EmbeddingService:
             model_path, sess_options=sess_opts, providers=["CPUExecutionProvider"],
         )
         self._tokenizer = Tokenizer.from_file(tokenizer_path)
+        try:
+            self._tokenizer.enable_truncation(max_length=DEFAULT_VECTORS_MAX_LENGTH)
+        except Exception as e:  # noqa: BLE001 — old tokenizers can still run without it
+            logger.warning("EmbeddingService: tokenizer truncation setup failed: %s", e)
 
     def _infer_blocking(self, texts: list[str]) -> list[list[float]]:
         """Tokenize + run ONNX session + L2-normalize + Matryoshka-trunc.
@@ -505,17 +563,18 @@ class EmbeddingService:
         for i, (id_row, mask_row) in enumerate(zip(ids, mask)):
             ids_arr[i, : len(id_row)] = id_row
             mask_arr[i, : len(mask_row)] = mask_row
-        outputs = self._session.run(
-            None, {"input_ids": ids_arr, "attention_mask": mask_arr},
-        )
-        # Mean-pool over tokens with attention mask, then L2-normalize,
-        # then Matryoshka-truncate to active dim. Order matters: pooling
-        # before truncation preserves the trained projection.
+        input_names = {i.name for i in self._session.get_inputs()}
+        feeds = {"input_ids": ids_arr}
+        if "attention_mask" in input_names:
+            feeds["attention_mask"] = mask_arr
+        if "token_type_ids" in input_names:
+            feeds["token_type_ids"] = np.zeros_like(ids_arr)
+        outputs = self._session.run(None, feeds)
+        # The default profile uses last-token pooling. Then L2-normalize
+        # and Matryoshka-truncate to the active dim.
         token_embeddings = outputs[0]
-        mask_3d = mask_arr[..., None].astype(np.float32)
-        summed = (token_embeddings * mask_3d).sum(axis=1)
-        counts = np.clip(mask_arr.sum(axis=1, keepdims=True), 1, None)
-        pooled = summed / counts
+        last_indices = np.maximum(mask_arr.sum(axis=1) - 1, 0)
+        pooled = token_embeddings[np.arange(len(texts)), last_indices]
         if self._dim is not None and self._dim < pooled.shape[1]:
             pooled = pooled[:, : self._dim]
         norms = np.linalg.norm(pooled, axis=1, keepdims=True)
@@ -577,7 +636,9 @@ def _build_default_service() -> EmbeddingService:
     try:
         from utils.config_manager import get_config_manager
         cm = get_config_manager()
-        model_dir = os.path.join(str(cm.app_docs_dir), DEFAULT_VECTORS_MODEL_DIR_NAME)
+        app_docs_model_dir = os.path.join(
+            str(cm.app_docs_dir), DEFAULT_VECTORS_MODEL_DIR_NAME,
+        )
     except Exception as e:
         # Outside the FastAPI context (e.g. some isolated test that
         # imports this module before bootstrapping config) we still
@@ -597,7 +658,7 @@ def _build_default_service() -> EmbeddingService:
             VECTORS_EMBEDDING_DIM,
             VECTORS_QUANTIZATION,
             VECTORS_MIN_RAM_GB,
-            VECTORS_MODEL_BASE_ID,
+            VECTORS_MODEL_PROFILE_ID,
         )
     except ImportError:
         # Config module hasn't been updated yet — fall back to defaults.
@@ -607,7 +668,9 @@ def _build_default_service() -> EmbeddingService:
         VECTORS_EMBEDDING_DIM = DEFAULT_VECTORS_EMBEDDING_DIM
         VECTORS_QUANTIZATION = DEFAULT_VECTORS_QUANTIZATION
         VECTORS_MIN_RAM_GB = DEFAULT_VECTORS_MIN_RAM_GB
-        VECTORS_MODEL_BASE_ID = DEFAULT_VECTORS_MODEL_BASE_ID
+        VECTORS_MODEL_PROFILE_ID = DEFAULT_VECTORS_MODEL_PROFILE_ID
+
+    model_dir = _select_model_dir(app_docs_model_dir, VECTORS_MODEL_PROFILE_ID)
 
     return EmbeddingService(
         model_dir=model_dir,
@@ -615,7 +678,7 @@ def _build_default_service() -> EmbeddingService:
         embedding_dim_setting=VECTORS_EMBEDDING_DIM,
         quantization_setting=VECTORS_QUANTIZATION,
         min_ram_gb=VECTORS_MIN_RAM_GB,
-        base_model_id=VECTORS_MODEL_BASE_ID,
+        profile_id=VECTORS_MODEL_PROFILE_ID,
     )
 
 

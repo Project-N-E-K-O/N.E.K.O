@@ -40,6 +40,10 @@ critical_packages = [
     # at first call.
     'tiktoken',
     'tiktoken_ext',
+    # Optional embedding runtime. Present in release/nightly build envs;
+    # skipped gracefully for source installs that do not enable vectors.
+    'onnxruntime',
+    'tokenizers',
 ]
 
 for pkg in critical_packages:
@@ -97,6 +101,7 @@ add_data('static/*.png', 'static')
 add_data('assets', 'assets')
 add_data('templates', 'templates')
 add_data('data/browser_use_prompts', 'data/browser_use_prompts')
+add_data('data/embedding_models', 'data/embedding_models')
 add_data('steam_appid.txt', '.')
 
 # 添加 Steam 相关的 DLL 和库文件（必须放在根目录）

@@ -1,0 +1,115 @@
+# -*- coding: utf-8 -*-
+"""Download local embedding model assets for development and packaging.
+
+The runtime uses an anonymous profile id (for example
+``local-text-retrieval-v1``). This script maps a concrete model repository
+onto that profile folder at build time, so source, PyInstaller and Nuitka
+builds all share the same on-disk layout.
+"""
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+
+DEFAULT_PROFILE_ID = "local-text-retrieval-v1"
+DEFAULT_OUTPUT_ROOT = Path("data") / "embedding_models"
+
+FILES_BY_VARIANT = {
+    "fp32": (
+        "tokenizer.json",
+        "onnx/model.onnx",
+        "onnx/model.onnx_data",
+    ),
+    "int8": (
+        "tokenizer.json",
+        "onnx/model_quantized.onnx",
+        "onnx/model_quantized.onnx_data",
+    ),
+}
+
+
+def _iter_files(variant: str) -> list[str]:
+    if variant == "both":
+        files: list[str] = []
+        for group in FILES_BY_VARIANT.values():
+            for item in group:
+                if item not in files:
+                    files.append(item)
+        return files
+    return list(FILES_BY_VARIANT[variant])
+
+
+def _download(url: str, dest: Path, *, force: bool) -> None:
+    if dest.exists() and dest.stat().st_size > 0 and not force:
+        print(f"[embedding-model] keep existing {dest}")
+        return
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_suffix(dest.suffix + ".tmp")
+    print(f"[embedding-model] download {url}")
+    try:
+        with urllib.request.urlopen(url, timeout=120) as response:
+            with tmp.open("wb") as f:
+                while True:
+                    chunk = response.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+    except urllib.error.URLError as exc:
+        if tmp.exists():
+            tmp.unlink()
+        raise RuntimeError(f"failed to download {url}: {exc}") from exc
+    os.replace(tmp, dest)
+    print(f"[embedding-model] wrote {dest} ({dest.stat().st_size} bytes)")
+
+
+def _verify(profile_dir: Path, files: list[str]) -> None:
+    missing = [
+        str(profile_dir / rel)
+        for rel in files
+        if not (profile_dir / rel).exists() or (profile_dir / rel).stat().st_size <= 0
+    ]
+    if missing:
+        raise RuntimeError("embedding model asset check failed; missing: " + ", ".join(missing))
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--repo",
+        required=True,
+        help="Concrete Hugging Face repo to mirror into the anonymous profile folder.",
+    )
+    parser.add_argument("--revision", default="main")
+    parser.add_argument("--profile-id", default=DEFAULT_PROFILE_ID)
+    parser.add_argument(
+        "--output-root",
+        default=str(DEFAULT_OUTPUT_ROOT),
+        help="Directory containing embedding profile subdirectories.",
+    )
+    parser.add_argument(
+        "--variant",
+        choices=("fp32", "int8", "both"),
+        default="both",
+        help="Which ONNX weights to download.",
+    )
+    parser.add_argument("--force", action="store_true")
+    args = parser.parse_args(argv)
+
+    files = _iter_files(args.variant)
+    profile_dir = Path(args.output_root) / args.profile_id
+    for rel in files:
+        url = f"https://huggingface.co/{args.repo}/resolve/{args.revision}/{rel}"
+        _download(url, profile_dir / rel, force=args.force)
+    _verify(profile_dir, files)
+    print(f"[embedding-model] profile ready: {profile_dir}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

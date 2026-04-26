@@ -1,0 +1,74 @@
+name: Nightly Build
+
+on:
+  schedule:
+    - cron: "30 18 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  EMBEDDING_MODEL_REPO: jinaai/jina-embeddings-v5-text-nano-retrieval
+  EMBEDDING_MODEL_PROFILE_ID: local-text-retrieval-v1
+
+jobs:
+  launcher-pyinstaller:
+    if: github.repository == 'Project-N-E-K-O/N.E.K.O'
+    name: PyInstaller launcher (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20.19"
+
+      - name: Install Python dependencies
+        run: |
+          uv sync --extra embeddings
+          uv pip install pyinstaller==6.12.0
+
+      - name: Build frontends
+        run: bash build_frontend.sh
+
+      - name: Prepare embedding model assets
+        run: |
+          uv run python scripts/prepare_embedding_model.py \
+            --repo "$EMBEDDING_MODEL_REPO" \
+            --profile-id "$EMBEDDING_MODEL_PROFILE_ID" \
+            --output-root data/embedding_models \
+            --variant both
+
+      - name: Build launcher with PyInstaller
+        run: uv run pyinstaller specs/launcher.spec --noconfirm
+
+      - name: Verify bundled embedding assets
+        shell: bash
+        run: |
+          test -f "dist/N.E.K.O/_internal/data/embedding_models/$EMBEDDING_MODEL_PROFILE_ID/tokenizer.json" \
+            || test -f "dist/N.E.K.O/data/embedding_models/$EMBEDDING_MODEL_PROFILE_ID/tokenizer.json"
+          test -f "dist/N.E.K.O/_internal/data/embedding_models/$EMBEDDING_MODEL_PROFILE_ID/onnx/model.onnx" \
+            || test -f "dist/N.E.K.O/data/embedding_models/$EMBEDDING_MODEL_PROFILE_ID/onnx/model.onnx"
+
+      - name: Upload nightly artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: neko-pyinstaller-${{ matrix.os }}
+          path: dist/N.E.K.O
+          retention-days: 7

@@ -88,7 +88,10 @@ def _fact(fid: str, text: str, *, entity: str = "master",
         "merged_from_ids": merged_from_ids or [],
         "embedding": list(embedding) if embedding is not None else None,
         "embedding_text_sha256": "sha-" + fid if embedding else None,
-        "embedding_model_id": "jina-v5-nano-128d-int8" if embedding else None,
+        "embedding_model_id": (
+            "local-text-retrieval-v1-128d-int8"
+            if embedding else None
+        ),
     }
 
 
@@ -183,7 +186,7 @@ def test_detect_candidates_skips_when_model_id_differs():
     f2 = _fact("f2", "y", embedding=same_vec)
     # Force a model_id mismatch — emulates one row reembedded under a
     # new config while the other still has the legacy vector.
-    f2["embedding_model_id"] = "jina-v5-nano-256d-fp32"
+    f2["embedding_model_id"] = "local-text-retrieval-v1-256d-fp32"
     assert FactDedupResolver.detect_candidates([f1, f2]) == []
 
 

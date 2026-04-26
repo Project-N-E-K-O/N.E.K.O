@@ -32,6 +32,7 @@ from memory.embeddings import (
     _coerce_dim,
     _embedding_text_sha256,
     _resolve_quantization,
+    _select_model_dir,
     build_model_id,
     clear_embedding_fields,
     cosine_similarity,
@@ -74,9 +75,12 @@ def test_coerce_dim_auto_delegates_to_ram():
 def test_coerce_dim_explicit_pinning_preserves_value():
     """An explicit dim must be honoured (even if RAM is higher) — that's
     the override the user opts into to fix a Matryoshka level."""
+    assert _coerce_dim(32, 64.0) == 32
     assert _coerce_dim(64, 64.0) == 64
     assert _coerce_dim(128, 4.5) == 128
     assert _coerce_dim(256, 8.0) == 256
+    assert _coerce_dim(512, 16.0) == 512
+    assert _coerce_dim(768, 16.0) == 768
 
 
 def test_coerce_dim_invalid_value_falls_back_to_auto():
@@ -104,11 +108,11 @@ def test_resolve_quantization_invalid_falls_back_to_auto():
 
 def test_build_model_id_encodes_axes():
     """Cache fingerprint must change with any of base / dim / quant."""
-    a = build_model_id("jina-v5-nano", 128, "int8")
-    b = build_model_id("jina-v5-nano", 256, "int8")
-    c = build_model_id("jina-v5-nano", 128, "fp32")
+    a = build_model_id("local-text-retrieval-v1", 128, "int8")
+    b = build_model_id("local-text-retrieval-v1", 256, "int8")
+    c = build_model_id("local-text-retrieval-v1", 128, "fp32")
     d = build_model_id("other", 128, "int8")
-    assert a == "jina-v5-nano-128d-int8"
+    assert a == "local-text-retrieval-v1-128d-int8"
     assert len({a, b, c, d}) == 4
 
 
@@ -174,7 +178,7 @@ def test_service_healthy_construction_stays_init_until_load():
     assert svc.is_disabled() is False
     assert svc.is_available() is False
     assert svc._state == EmbeddingState.INIT
-    assert svc.model_id() == "jina-v5-nano-256d-fp32"
+    assert svc.model_id() == "local-text-retrieval-v1-256d-fp32"
     assert svc.dim() == 256
     assert svc.quantization() == "fp32"
 
@@ -184,6 +188,57 @@ def test_service_dim_pinning_overrides_auto():
     # Even on 4.5 GB RAM, the pinned dim wins.
     assert svc.dim() == 256
     assert svc.model_id().endswith("256d-fp32")
+
+
+def test_service_uses_profile_onnx_layout():
+    """The default profile uses a task-specific ONNX export under
+    onnx/model*.onnx, not the old model_<quant>.onnx layout."""
+    fp32 = _service(
+        ram_gb=16.0,
+        quantization_setting="fp32",
+        model_dir="/models",
+    )
+    int8 = _service(
+        ram_gb=16.0,
+        quantization_setting="int8",
+        model_dir="/models",
+    )
+    assert fp32._model_file_path().replace("\\", "/").endswith(
+        "/local-text-retrieval-v1/onnx/model.onnx",
+    )
+    assert int8._model_file_path().replace("\\", "/").endswith(
+        "/local-text-retrieval-v1/onnx/model_quantized.onnx",
+    )
+    assert fp32._tokenizer_file_path().replace("\\", "/").endswith(
+        "/local-text-retrieval-v1/tokenizer.json",
+    )
+
+
+def test_select_model_dir_prefers_app_data_profile(tmp_path):
+    app_model_dir = tmp_path / "app" / "embedding_models"
+    bundled_model_dir = tmp_path / "bundle" / "data" / "embedding_models"
+    (app_model_dir / "local-text-retrieval-v1").mkdir(parents=True)
+    (bundled_model_dir / "local-text-retrieval-v1").mkdir(parents=True)
+
+    assert _select_model_dir(str(app_model_dir), "local-text-retrieval-v1") == str(app_model_dir)
+
+
+def test_select_model_dir_falls_back_to_bundled_profile(tmp_path, monkeypatch):
+    app_model_dir = tmp_path / "app" / "embedding_models"
+    bundled_model_dir = tmp_path / "bundle" / "data" / "embedding_models"
+    (bundled_model_dir / "local-text-retrieval-v1").mkdir(parents=True)
+
+    from memory import embeddings as embeddings_module
+
+    monkeypatch.setattr(
+        embeddings_module,
+        "_bundled_model_dirs",
+        lambda: [str(bundled_model_dir)],
+    )
+    assert (
+        _select_model_dir(str(app_model_dir), "local-text-retrieval-v1")
+        == str(bundled_model_dir)
+    )
 
 
 @pytest.mark.asyncio
@@ -238,6 +293,50 @@ async def test_embed_empty_string_returns_none_even_when_disabled():
     assert await svc.embed("") is None
 
 
+def test_infer_uses_last_token_pooling_and_matryoshka_truncation():
+    """The default profile specifies last-token pooling. This locks the
+    runtime against accidentally reverting to mean pooling."""
+    import numpy as np
+
+    class _Encoding:
+        def __init__(self, ids):
+            self.ids = ids
+            self.attention_mask = [1] * len(ids)
+
+    class _Tokenizer:
+        def encode_batch(self, texts):
+            return [_Encoding([1, 2, 3]), _Encoding([4])]
+
+    class _Input:
+        def __init__(self, name):
+            self.name = name
+
+    class _Session:
+        def __init__(self):
+            self.feeds = None
+
+        def get_inputs(self):
+            return [_Input("input_ids"), _Input("attention_mask"), _Input("token_type_ids")]
+
+        def run(self, _outputs, feeds):
+            self.feeds = feeds
+            return [np.array([
+                [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [3.0, 4.0, 0.0]],
+                [[5.0, 0.0, 0.0], [9.0, 9.0, 9.0], [8.0, 8.0, 8.0]],
+            ], dtype=np.float32)]
+
+    svc = _service(ram_gb=16.0)
+    svc._dim = 2  # private override keeps the fixture tiny while testing truncation
+    session = _Session()
+    svc._session = session
+    svc._tokenizer = _Tokenizer()
+    out = svc._infer_blocking(["abc", "d"])
+
+    assert out[0] == pytest.approx([0.6, 0.8])
+    assert out[1] == pytest.approx([1.0, 0.0])
+    assert "token_type_ids" in session.feeds
+
+
 # ── cosine + cache helpers ────────────────────────────────────────
 
 
@@ -267,9 +366,11 @@ def test_is_cached_embedding_valid_full_match():
         "text": text,
         "embedding": [0.1, 0.2, 0.3],
         "embedding_text_sha256": _embedding_text_sha256(text),
-        "embedding_model_id": "jina-v5-nano-128d-int8",
+        "embedding_model_id": "local-text-retrieval-v1-128d-int8",
     }
-    assert is_cached_embedding_valid(entry, text, "jina-v5-nano-128d-int8")
+    assert is_cached_embedding_valid(
+        entry, text, "local-text-retrieval-v1-128d-int8",
+    )
 
 
 def test_is_cached_embedding_valid_text_mismatch():
@@ -279,9 +380,11 @@ def test_is_cached_embedding_valid_text_mismatch():
         "text": "new",
         "embedding": [0.1, 0.2],
         "embedding_text_sha256": _embedding_text_sha256("old"),
-        "embedding_model_id": "jina-v5-nano-128d-int8",
+        "embedding_model_id": "local-text-retrieval-v1-128d-int8",
     }
-    assert not is_cached_embedding_valid(entry, "new", "jina-v5-nano-128d-int8")
+    assert not is_cached_embedding_valid(
+        entry, "new", "local-text-retrieval-v1-128d-int8",
+    )
 
 
 def test_is_cached_embedding_valid_model_id_mismatch():
@@ -292,10 +395,14 @@ def test_is_cached_embedding_valid_model_id_mismatch():
         "text": text,
         "embedding": [0.1, 0.2],
         "embedding_text_sha256": _embedding_text_sha256(text),
-        "embedding_model_id": "jina-v5-nano-128d-int8",
+        "embedding_model_id": "local-text-retrieval-v1-128d-int8",
     }
-    assert not is_cached_embedding_valid(entry, text, "jina-v5-nano-256d-int8")
-    assert not is_cached_embedding_valid(entry, text, "jina-v5-nano-128d-fp32")
+    assert not is_cached_embedding_valid(
+        entry, text, "local-text-retrieval-v1-256d-int8",
+    )
+    assert not is_cached_embedding_valid(
+        entry, text, "local-text-retrieval-v1-128d-fp32",
+    )
 
 
 def test_is_cached_embedding_valid_missing_or_empty_embedding():
@@ -303,13 +410,17 @@ def test_is_cached_embedding_valid_missing_or_empty_embedding():
     base = {
         "text": text,
         "embedding_text_sha256": _embedding_text_sha256(text),
-        "embedding_model_id": "jina-v5-nano-128d-int8",
+        "embedding_model_id": "local-text-retrieval-v1-128d-int8",
     }
     assert not is_cached_embedding_valid(
-        {**base, "embedding": None}, text, "jina-v5-nano-128d-int8",
+        {**base, "embedding": None},
+        text,
+        "local-text-retrieval-v1-128d-int8",
     )
     assert not is_cached_embedding_valid(
-        {**base, "embedding": []}, text, "jina-v5-nano-128d-int8",
+        {**base, "embedding": []},
+        text,
+        "local-text-retrieval-v1-128d-int8",
     )
 
 
@@ -322,7 +433,7 @@ def test_is_cached_embedding_valid_disabled_service_never_valid():
         "text": text,
         "embedding": [0.1, 0.2],
         "embedding_text_sha256": _embedding_text_sha256(text),
-        "embedding_model_id": "jina-v5-nano-128d-int8",
+        "embedding_model_id": "local-text-retrieval-v1-128d-int8",
     }
     assert not is_cached_embedding_valid(entry, text, None)
 
@@ -345,10 +456,18 @@ def test_stamp_embedding_fields_writes_full_triple():
     """stamp() must set vector + sha + model_id atomically (from the
     callsite's POV) — partial writes break is_cached_embedding_valid."""
     entry: dict = {}
-    stamp_embedding_fields(entry, [0.1, 0.2, 0.3], "hello", "jina-v5-nano-128d-int8")
+    stamp_embedding_fields(
+        entry,
+        [0.1, 0.2, 0.3],
+        "hello",
+        "local-text-retrieval-v1-128d-int8",
+    )
     assert entry["embedding"] == [0.1, 0.2, 0.3]
     assert entry["embedding_text_sha256"] == _embedding_text_sha256("hello")
-    assert entry["embedding_model_id"] == "jina-v5-nano-128d-int8"
+    assert (
+        entry["embedding_model_id"]
+        == "local-text-retrieval-v1-128d-int8"
+    )
     # Vector list is copied, not aliased — mutating the source after
     # stamping must not corrupt the stored cache.
     src = [9.0, 9.0]
@@ -359,11 +478,13 @@ def test_stamp_embedding_fields_writes_full_triple():
 
 def test_stamp_then_check_round_trips():
     text = "round-trip text"
-    model_id = "jina-v5-nano-256d-fp32"
+    model_id = "local-text-retrieval-v1-256d-fp32"
     entry: dict = {"text": text}
     stamp_embedding_fields(entry, [1.0, 0.0, 0.0], text, model_id)
     assert is_cached_embedding_valid(entry, text, model_id)
     # Text changes → invalid.
     assert not is_cached_embedding_valid(entry, text + "!", model_id)
     # Model change → invalid.
-    assert not is_cached_embedding_valid(entry, text, "jina-v5-nano-128d-fp32")
+    assert not is_cached_embedding_valid(
+        entry, text, "local-text-retrieval-v1-128d-fp32",
+    )
