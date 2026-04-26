@@ -26,6 +26,17 @@ import re
 # Comma / 中文逗号 / 顿号 / 分号 / 空白都视为昵称字段分隔符。
 _NICKNAME_SPLIT_RE = re.compile(r"[,，;；、\s]+")
 
+# 纯拉丁/数字字母的别名（"Tony"、"al"、"T-酱" 也算，只要不含 CJK / 其他脚本）。
+# 这类别名走 word-boundary 替换，避免 ``Al`` 把 ``Algorithm`` 截掉一截。
+_LATIN_ALIAS_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
+
+# 别名最短长度。Codex PR-971 P2: 单字符 alias（``T`` / ``天``）做全文 substring
+# replace 会把所有命中字符抹掉——``今天天气好`` + stop=``天`` 会留下
+# ``今  气好``，``_extract_keywords`` 抽到的 n-gram 只剩 ``气好`` 一个，悄无声
+# 息地把 BM25/记忆召回的 recall 砍光。漏掉一个真单字别名是次要损失，比起
+# 把每条 fact 都腌一遍完全可接受。
+_MIN_STOP_NAME_LEN = 2
+
 
 def split_nickname_aliases(raw) -> list[str]:
     """Split a ``昵称`` field (comma/space-separated) into individual aliases.
@@ -102,19 +113,41 @@ async def acollect_stop_names(
 
 
 def strip_stop_names(text: str, stop_names: list[str] | None) -> str:
-    """Remove every ``stop_name`` occurrence from ``text`` (substring replace).
+    """Remove every ``stop_name`` occurrence from ``text``.
 
-    Names are replaced with a single space rather than empty string so
-    that ``_extract_keywords`` ' tokenizer sees a clean word boundary
-    instead of merging the surrounding characters into a fake n-gram.
-    Caller is expected to pass ``stop_names`` ordered longest-first
+    Names are replaced with a single space (not empty) so that
+    ``_extract_keywords`` ' tokenizer sees a clean separator instead of
+    merging the surrounding characters into a fake n-gram. Caller is
+    expected to pass ``stop_names`` ordered longest-first
     (``collect_stop_names`` already guarantees this).
+
+    Per-alias strategy (Codex PR-971 P2):
+      * len < 2 → 跳过。单字符 alias（``T`` 或 ``天``）做全文 substring
+        replace 会把所有命中字符抹掉，对 ``_extract_keywords`` 的 n-gram
+        切分是毁灭性的；漏剥一个真单字别名远比悄无声息腐蚀全量 fact 文本
+        要轻。
+      * 纯拉丁 alias (``Tony`` / ``Al``) → word-boundary 替换，否则
+        ``Al`` 会把 ``Algorithm`` 截成 `` gorithm``。boundary 用显式
+        ``[A-Za-z0-9_]`` 前后查 ascii，避免 ``\\b`` 在 Python 默认
+        Unicode 模式下把 CJK 算成 word-char 而失效（``\\bTony\\b`` 在
+        ``今天Tony来了`` 里不命中）。
+      * CJK / 混合脚本 alias (``T酱`` / ``小天``) → 仍走 substring
+        replace。CJK 没有 word boundary 概念，且 ≥2 字符的 CJK 串足够
+        specific，substring 误伤 vanishingly rare。
     """
     if not text or not stop_names:
         return text
     out = text
     for n in stop_names:
-        if not n:
+        if not n or len(n) < _MIN_STOP_NAME_LEN:
             continue
-        out = out.replace(n, ' ')
+        if _LATIN_ALIAS_RE.fullmatch(n):
+            pattern = (
+                r"(?<![A-Za-z0-9_])"
+                + re.escape(n)
+                + r"(?![A-Za-z0-9_])"
+            )
+            out = re.sub(pattern, ' ', out, flags=re.IGNORECASE)
+        else:
+            out = out.replace(n, ' ')
     return out
