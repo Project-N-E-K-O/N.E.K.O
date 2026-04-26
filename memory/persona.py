@@ -1588,6 +1588,11 @@ class PersonaManager:
                 break
         if not pairs:
             return 0
+        # 仅允许"本批送进 prompt"的全局 index 被消费 —— LLM 偶尔会回写
+        # 没在这一批 prompt 里的合法全局 index（比如 hallucinate 出未来批
+        # 的 idx），不防的话会误改未送审的 corrections，导致队列数据被
+        # 错误消费。
+        allowed_indices = {i for i, _ in pairs}
 
         batch_text = "\n".join(
             f"[{i}] 已有: {item['old_text']} | 新观察: {item['new_text']}"
@@ -1626,7 +1631,7 @@ class PersonaManager:
                 continue
             try:
                 idx = int(result.get('index', -1))
-                if idx < 0 or idx >= len(corrections):
+                if idx < 0 or idx >= len(corrections) or idx not in allowed_indices:
                     continue
                 item = corrections[idx]
             except (ValueError, TypeError):
@@ -1708,7 +1713,7 @@ class PersonaManager:
                     continue
                 try:
                     idx = int(raw_idx)
-                    if 0 <= idx < len(corrections):
+                    if 0 <= idx < len(corrections) and idx in allowed_indices:
                         key = corrections[idx].get('created_at', '')
                         if key:
                             processed_keys.add(key)

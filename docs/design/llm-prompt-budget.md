@@ -251,11 +251,12 @@ NEKO_LLM_PROMPT_AUDIT=1 ./run.sh   # 启用
 ## 9. 历史变更
 
 - **PR #967**：字符长度统一切到 tiktoken token；引入 `utils/tokenize.py` 的 `count_tokens` / `truncate_to_tokens` / `atruncate_to_tokens`。
-- **PR #969 (本次)**：
+- **PR #976 (本次)**：
   - 新增 §3.7 LLM Context & Output Budget 集中区
   - 47 个原硬编码常量化 + 11 个新 component 补 budget
-  - `ChatOpenAI._params()` 加 provider 自动路由
+  - `ChatOpenAI._params()` 加 provider 自动路由 + 新增 `invoke_raw` / `ainvoke_raw`
   - 修复 cua/engine.py 6 处非 Anthropic provider 错用 `max_tokens`
+  - 修复 brain/computer_use.py 两处 ping/正式调用绕过 `_params()` 的 raw SDK 调用
   - 新增 `utils/tokenize.py:truncate_head_tail_tokens` 头尾保留截断
   - bilibili llm_client 改走统一 `create_chat_llm`
   - 临时 `NEKO_LLM_PROMPT_AUDIT` 审计日志（测完即删）

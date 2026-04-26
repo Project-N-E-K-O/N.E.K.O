@@ -555,12 +555,15 @@ class ComputerUseAdapter:
                     self._llm_client_sig = current_sig
                 extra = get_agent_extra_body(model) or {}
                 set_call_type("agent_cua")
-                resp = self._llm_client._client.chat.completions.create(
-                    model=model,
-                    messages=[{"role": "user", "content": "ok"}],
-                    max_completion_tokens=LLM_PING_MAX_TOKENS,
-                    timeout=20,
-                    extra_body=extra or None,
+                # Set per-call params on the client so _params() sees them
+                # and routes max_tokens vs max_completion_tokens by base_url.
+                # Going through invoke_raw keeps the raw-resp path intact
+                # (we only need .content for the ping, but the call path
+                # is now uniform with _call_llm below).
+                self._llm_client.max_completion_tokens = LLM_PING_MAX_TOKENS
+                self._llm_client.extra_body = extra or {}
+                resp = self._llm_client.invoke_raw(
+                    [{"role": "user", "content": "ok"}]
                 )
                 _ = resp.choices[0].message.content
                 self.init_ok = True
@@ -1019,12 +1022,13 @@ class ComputerUseAdapter:
                         ),
                     }
                 set_call_type("agent_cua")
-                resp = self._llm_client._client.chat.completions.create(
-                    model=model,
-                    messages=messages,
-                    max_completion_tokens=self.max_completion_tokens,
-                    extra_body=extra or None,
-                )
+                # Provider-aware routing via _params(): Anthropic gets
+                # max_tokens, others get max_completion_tokens. invoke_raw
+                # returns the raw SDK response so we can still read
+                # reasoning_content for thinking models.
+                self._llm_client.max_completion_tokens = self.max_completion_tokens
+                self._llm_client.extra_body = extra or {}
+                resp = self._llm_client.invoke_raw(messages)
                 msg = resp.choices[0].message
                 content = msg.content or ""
                 reasoning = getattr(msg, "reasoning_content", None)

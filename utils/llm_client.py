@@ -289,6 +289,20 @@ class ChatOpenAI:
         usage_dict = resp.usage.model_dump() if resp.usage else {}
         return LLMResponse(content=content or "", response_metadata={"token_usage": usage_dict})
 
+    # --- raw-resp invoke (for callers needing reasoning_content / raw choices) ---
+
+    async def ainvoke_raw(self, messages: Any):
+        """Async invoke that returns the underlying SDK ChatCompletion
+        response. Parameter routing still flows through `_params()`
+        (Anthropic → max_tokens, others → max_completion_tokens). Use only
+        when you need fields beyond `LLMResponse` (e.g. thinking models'
+        ``reasoning_content``); prefer `ainvoke` otherwise."""
+        return await self._aclient.chat.completions.create(**self._params(messages))
+
+    def invoke_raw(self, messages: Any):
+        """Sync twin of `ainvoke_raw`."""
+        return self._client.chat.completions.create(**self._params(messages))
+
     # --- async streaming ---
 
     async def astream(self, messages: Any) -> AsyncIterator[LLMStreamChunk]:

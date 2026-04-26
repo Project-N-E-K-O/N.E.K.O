@@ -1177,8 +1177,9 @@ async def _test_openai_compatible(url: str, api_key: str, model: str = "gpt-3.5-
     """Test an OpenAI-compatible REST API endpoint.
 
     Uses the project's ChatOpenAI client (same as actual conversations) to send
-    a minimal chat completion request (max_tokens=1). This ensures the test
-    exercises the exact same auth and request path as real usage.
+    a minimal chat completion request (bounded by CONNECTIVITY_TEST_MAX_TOKENS).
+    This ensures the test exercises the exact same auth and request path as
+    real usage.
 
     Args:
         url: Base URL for the API endpoint.
@@ -1374,7 +1375,7 @@ async def test_connectivity(req: ConnectivityTestRequest) -> dict:
        前端传完整参数，后端直接使用。
 
     根据 provider_type 选择测试策略：
-    - openai_compatible（默认）：通过 ChatOpenAI 发送最小 chat completion 请求（max_tokens=1）
+    - openai_compatible（默认）：通过 ChatOpenAI 发送最小 chat completion 请求（max_completion_tokens 由 CONNECTIVITY_TEST_MAX_TOKENS 控制）
     - websocket：WebSocket 握手，成功后立即关闭
 
     所有请求 10 秒超时。端点为 async，天然支持并发请求不阻塞。
