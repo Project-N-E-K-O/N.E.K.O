@@ -4,6 +4,7 @@ import pytest
 
 from utils import storage_location_bootstrap as storage_location_bootstrap_module
 from utils.config_manager import ConfigManager
+from utils.storage_layout import NEKO_STORAGE_ANCHOR_ROOT_ENV, NEKO_STORAGE_SELECTED_ROOT_ENV
 from utils.storage_location_bootstrap import (
     build_storage_location_bootstrap_payload,
     get_storage_startup_blocking_reason,
@@ -46,6 +47,8 @@ class _DummyConfigManager:
 def _make_config_manager(tmp_path: Path, documents_directory: Path):
     standard_root = tmp_path / "anchor-base"
     with pytest.MonkeyPatch.context() as mp:
+        mp.delenv(NEKO_STORAGE_SELECTED_ROOT_ENV, raising=False)
+        mp.delenv(NEKO_STORAGE_ANCHOR_ROOT_ENV, raising=False)
         mp.setattr(
             ConfigManager,
             "_get_documents_directory",
@@ -57,6 +60,7 @@ def _make_config_manager(tmp_path: Path, documents_directory: Path):
             lambda self: [standard_root],
         )
         config_manager = ConfigManager("N.E.K.O")
+    # Preserve the same candidate list after __init__ so later calls stay deterministic.
     config_manager._get_standard_data_directory_candidates = lambda: [standard_root]
     return config_manager
 
@@ -120,6 +124,19 @@ def test_storage_location_bootstrap_payload_uses_configured_anchor_root(tmp_path
 
 
 @pytest.mark.unit
+def test_storage_location_config_manager_helper_ignores_storage_env(tmp_path, monkeypatch):
+    env_selected_root = tmp_path / "env-selected" / "N.E.K.O"
+    env_anchor_root = tmp_path / "env-anchor" / "N.E.K.O"
+    monkeypatch.setenv(NEKO_STORAGE_SELECTED_ROOT_ENV, str(env_selected_root))
+    monkeypatch.setenv(NEKO_STORAGE_ANCHOR_ROOT_ENV, str(env_anchor_root))
+
+    config_manager = _make_real_config_manager(tmp_path)
+
+    assert config_manager.app_docs_dir == (tmp_path / "runtime-parent" / "N.E.K.O")
+    assert config_manager.anchor_root == (tmp_path / "anchor-base" / "N.E.K.O").resolve()
+
+
+@pytest.mark.unit
 def test_storage_location_bootstrap_legacy_sources_dedupes_actual_and_display_current_root(tmp_path):
     config_manager = _DummyConfigManager(tmp_path)
     displayed_root = tmp_path / "offline-selected" / "N.E.K.O"
@@ -137,6 +154,32 @@ def test_storage_location_bootstrap_legacy_sources_dedupes_actual_and_display_cu
 
     assert payload["current_root"] == str(displayed_root.resolve())
     assert payload["legacy_sources"] == [str(config_manager._legacy_root.resolve())]
+
+
+@pytest.mark.unit
+def test_storage_location_bootstrap_legacy_source_scan_is_best_effort(tmp_path, monkeypatch):
+    config_manager = _DummyConfigManager(tmp_path)
+    bad_root = tmp_path / "bad-legacy" / "N.E.K.O"
+    good_root = tmp_path / "good-legacy" / "N.E.K.O"
+    (good_root / "config").mkdir(parents=True, exist_ok=True)
+    (good_root / "config" / "characters.json").write_text("{}", encoding="utf-8")
+    config_manager.get_legacy_app_root_candidates = lambda: [bad_root, good_root]
+
+    def fake_has_user_content(path, *, config_manager):
+        if Path(path) == bad_root:
+            raise OSError("candidate unreadable")
+        return True
+
+    monkeypatch.setattr(storage_location_bootstrap_module, "runtime_root_has_user_content", fake_has_user_content)
+
+    payload = build_storage_location_bootstrap_payload(config_manager)
+
+    assert payload["legacy_sources"] == [str(good_root.resolve())]
+
+    config_manager.get_legacy_app_root_candidates = lambda: (_ for _ in ()).throw(OSError("scan failed"))
+    payload = build_storage_location_bootstrap_payload(config_manager)
+
+    assert payload["legacy_sources"] == []
 
 
 @pytest.mark.unit

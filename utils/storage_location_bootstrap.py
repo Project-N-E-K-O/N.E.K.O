@@ -44,12 +44,22 @@ def _collect_legacy_sources(
     if actual_current_root is not None:
         seen.add(_normalize_path(actual_current_root))
 
-    for candidate in config_manager.get_legacy_app_root_candidates():
-        path = Path(candidate)
-        normalized = _normalize_path(path)
-        if normalized in seen:
-            continue
-        if not runtime_root_has_user_content(path, config_manager=config_manager):
+    try:
+        candidates = config_manager.get_legacy_app_root_candidates()
+    except Exception as exc:
+        logger.warning("Failed to collect legacy storage root candidates: %s", exc)
+        return legacy_sources
+
+    for candidate in candidates:
+        try:
+            path = Path(candidate)
+            normalized = _normalize_path(path)
+            if normalized in seen:
+                continue
+            if not runtime_root_has_user_content(path, config_manager=config_manager):
+                continue
+        except Exception as exc:
+            logger.warning("Skipping legacy storage root candidate %r: %s", candidate, exc)
             continue
         seen.add(normalized)
         legacy_sources.append(normalized)

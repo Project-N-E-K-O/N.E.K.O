@@ -12,12 +12,17 @@ def _make_config_manager(tmp_path: Path):
     from utils.config_manager import ConfigManager
 
     standard_root = tmp_path / "anchor-base"
-    patchers = [
-        patch.object(ConfigManager, "_get_documents_directory", return_value=tmp_path / "runtime-parent"),
-        patch.object(ConfigManager, "_get_standard_data_directory_candidates", return_value=[standard_root]),
-    ]
-    with patchers[0], patchers[1]:
+    with patch.object(
+        ConfigManager,
+        "_get_documents_directory",
+        return_value=tmp_path / "runtime-parent",
+    ), patch.object(
+        ConfigManager,
+        "_get_standard_data_directory_candidates",
+        return_value=[standard_root],
+    ):
         config_manager = ConfigManager("N.E.K.O")
+    # Preserve the mocked candidate list after __init__ so subsequent layout calls stay deterministic.
     config_manager._get_standard_data_directory_candidates = lambda: [standard_root]
     return config_manager
 
