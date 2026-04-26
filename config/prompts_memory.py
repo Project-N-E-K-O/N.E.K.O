@@ -1191,8 +1191,16 @@ REFLECTION_PROMPT = {
 - "neko": 主要关于 {LANLAN_NAME} 的自我认知
 - "relationship": 关于两人之间的关系动态
 
+请同时给出该反思的语义类别 relation_type（必须与 entity 匹配），以及时间范围 temporal_scope：
+- master 可用: preference(偏好) | trait(性格) | habit(习惯) | identity(身份) | emotional(情感) | boundary(边界)
+- neko 可用: self_awareness(自我认知) | learned(习得行为) | role_note(角色备注)
+- relationship 可用: dynamic(互动模式) | milestone(里程碑) | tension(摩擦) | shared_memory(共同记忆) | agreement(约定)
+- temporal_scope: current(当前) | past(过去) | ongoing(持续)
+
+要求：紧扣单一观察或模式，不要把多个无关事实混在一起；长度保持在 2-3 句简短洞察内即可。
+
 请以 JSON 格式返回：
-{{"reflection": "你的反思洞察", "entity": "master/neko/relationship"}}""",
+{{"reflection": "你的反思洞察", "entity": "master/neko/relationship", "relation_type": "preference", "temporal_scope": "current"}}""",
     'en': """Below are a series of extracted facts about {LANLAN_NAME} and {MASTER_NAME}:
 
 ======以下为事实======
@@ -1207,8 +1215,16 @@ Determine which entity the reflection primarily concerns:
 - "neko": primarily about {LANLAN_NAME}'s self-perception
 - "relationship": about the dynamics between them
 
+Also provide a semantic relation_type (must match the entity) and a temporal_scope:
+- master: preference | trait | habit | identity | emotional | boundary
+- neko: self_awareness | learned | role_note
+- relationship: dynamic | milestone | tension | shared_memory | agreement
+- temporal_scope: current | past | ongoing
+
+Requirements: stay focused on a single observation or pattern; do not mix unrelated facts. The 2-3-sentence length guidance above still applies.
+
 Return in JSON format:
-{{"reflection": "your reflective insight", "entity": "master/neko/relationship"}}""",
+{{"reflection": "your reflective insight", "entity": "master/neko/relationship", "relation_type": "preference", "temporal_scope": "current"}}""",
     'ja': """以下は {LANLAN_NAME} と {MASTER_NAME} に関する一連の抽出済み事実です：
 
 ======以下为事实======
@@ -1223,8 +1239,16 @@ Return in JSON format:
 - "neko": 主に {LANLAN_NAME} の自己認識について
 - "relationship": 二人の関係の動態について
 
+さらに意味カテゴリ relation_type（entity と整合）と時間範囲 temporal_scope も付けてください：
+- master: preference | trait | habit | identity | emotional | boundary
+- neko: self_awareness | learned | role_note
+- relationship: dynamic | milestone | tension | shared_memory | agreement
+- temporal_scope: current | past | ongoing
+
+要件：単一の観察やパターンに集中し、無関係な事実を混ぜないこと。長さは先に示した 2-3 文の範囲を維持。
+
 JSON形式で返してください：
-{{"reflection": "あなたの反省的洞察", "entity": "master/neko/relationship"}}""",
+{{"reflection": "あなたの反省的洞察", "entity": "master/neko/relationship", "relation_type": "preference", "temporal_scope": "current"}}""",
     'ko': """다음은 {LANLAN_NAME}과 {MASTER_NAME}에 대해 추출된 일련의 사실입니다:
 
 ======以下为事实======
@@ -1239,8 +1263,16 @@ JSON形式で返してください：
 - "neko": 주로 {LANLAN_NAME}의 자기 인식에 대해
 - "relationship": 두 사람 사이의 관계 동태에 대해
 
+또한 의미 범주 relation_type(entity와 일치해야 함)과 시간 범위 temporal_scope를 함께 제공해 주세요:
+- master: preference | trait | habit | identity | emotional | boundary
+- neko: self_awareness | learned | role_note
+- relationship: dynamic | milestone | tension | shared_memory | agreement
+- temporal_scope: current | past | ongoing
+
+요구사항: 단일 관찰 또는 패턴에 집중하고 관련 없는 사실을 섞지 마세요. 위의 2-3문장 길이 지침은 그대로 유지합니다.
+
 JSON 형식으로 반환해 주세요:
-{{"reflection": "당신의 반성적 통찰", "entity": "master/neko/relationship"}}""",
+{{"reflection": "당신의 반성적 통찰", "entity": "master/neko/relationship", "relation_type": "preference", "temporal_scope": "current"}}""",
     'ru': """Ниже представлена серия извлечённых фактов о {LANLAN_NAME} и {MASTER_NAME}:
 
 ======以下为事实======
@@ -1255,8 +1287,16 @@ JSON 형식으로 반환해 주세요:
 - "neko": в основном о самовосприятии {LANLAN_NAME}
 - "relationship": о динамике отношений между ними
 
+Также укажите семантическую категорию relation_type (должна соответствовать entity) и временной охват temporal_scope:
+- master: preference | trait | habit | identity | emotional | boundary
+- neko: self_awareness | learned | role_note
+- relationship: dynamic | milestone | tension | shared_memory | agreement
+- temporal_scope: current | past | ongoing
+
+Требования: сосредоточьтесь на одном наблюдении или паттерне, не смешивайте не связанные факты. Указанная выше длина в 2-3 предложения сохраняется.
+
 Верните в формате JSON:
-{{"reflection": "ваше рефлексивное наблюдение", "entity": "master/neko/relationship"}}""",
+{{"reflection": "ваше рефлексивное наблюдение", "entity": "master/neko/relationship", "relation_type": "preference", "temporal_scope": "current"}}""",
 }
 
 

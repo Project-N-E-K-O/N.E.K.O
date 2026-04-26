@@ -71,6 +71,108 @@ REFLECTION_TERMINAL_STATUSES = frozenset({
     'promoted', 'denied', 'archived', 'merged', 'promote_blocked',
 })
 
+# ── Reflection ontology (RFC memory-enhancements §3) ────────────────
+# Constrains the semantic category of each synthesized reflection so
+# same-(entity, relation_type) entries are naturally mergeable and the
+# render path can group by role-of-information instead of flat-listing.
+#
+# The schema is **kind-based, not name-based**: every entity gets mapped
+# to one of three kinds (user / character / relationship) and the
+# allowed relation_type set follows from the kind. Today we have one
+# user (`master`) and one character (`neko`) — but for future group-chat
+# extensions, every additional human plays role-kind `user` and reuses
+# the same relation set, every additional AI character plays role-kind
+# `character`, and a single shared `relationship` slot covers the
+# group-as-a-whole. New `entity` names plug in without touching
+# RELATION_TYPES or the prompt enum.
+RELATION_TYPES = {
+    # `user` kind — facts about a human participant
+    'preference':     '偏好/喜好',
+    'trait':          '性格/特征',
+    'habit':          '习惯/日常',
+    'identity':       '身份/背景',
+    'emotional':      '情感状态',
+    'boundary':       '边界/禁忌',
+    # `character` kind — AI self-model
+    'self_awareness': '自我认知',
+    'learned':        '习得行为',
+    'role_note':      '角色备注',
+    # `relationship` kind — the group as a whole (1v1 today, NvM later)
+    'dynamic':        '互动模式',
+    'milestone':      '关系里程碑',
+    'tension':        '摩擦/冲突',
+    'shared_memory': '共同记忆',
+    'agreement':     '约定/共识',
+}
+
+# Entity → kind mapping. New entity names default to `user` kind so that
+# adding "guest_alice" or "groupmate_bob" to the chat just works without
+# a schema migration. Override here only when an entity needs a non-user
+# template (i.e. another AI character, or a relationship aggregate).
+ENTITY_KINDS: dict[str, str] = {
+    'master':       'user',
+    'neko':         'character',
+    'relationship': 'relationship',
+}
+
+# Allowed relation_type set per kind. This is the actual source of truth
+# for validation; ENTITY_KINDS is the indirection that lets us add new
+# entities without expanding this table.
+KIND_RELATION_MAP: dict[str, frozenset[str]] = {
+    'user':         frozenset({'preference', 'trait', 'habit', 'identity', 'emotional', 'boundary'}),
+    'character':    frozenset({'self_awareness', 'learned', 'role_note'}),
+    'relationship': frozenset({'dynamic', 'milestone', 'tension', 'shared_memory', 'agreement'}),
+}
+
+
+def _entity_kind(entity: str) -> str:
+    """Resolve an entity name to its ontology kind.
+
+    Unknown entities default to ``user`` — the safest fallback because
+    user-kind has the richest relation set, and future group members are
+    overwhelmingly likely to be additional human participants. Existing
+    callers ignore this default by passing the canonical entity names
+    (master / neko / relationship) we already register above.
+    """
+    return ENTITY_KINDS.get(entity, 'user')
+
+
+def _allowed_relation_types(entity: str) -> frozenset[str]:
+    return KIND_RELATION_MAP.get(_entity_kind(entity), frozenset())
+
+
+TEMPORAL_SCOPES = frozenset({'current', 'past', 'ongoing'})
+
+# Soft cap on reflection text length. Beyond this, the ontology fields
+# are stripped because the text is likely a compound/multi-fact statement.
+# The reflection itself still persists unchanged so no information is lost.
+MAX_REFLECTION_TEXT_CHARS = 200
+
+
+def _validate_reflection_ontology(
+    entity: str,
+    relation_type: str | None,
+    temporal_scope: str | None,
+    text: str,
+) -> tuple[bool, str]:
+    """Returns (is_valid, reason). Invalid entries keep their text but
+    have relation_type/temporal_scope stripped — see caller."""
+    if relation_type is not None:
+        if relation_type not in RELATION_TYPES:
+            return False, f'unknown relation_type: {relation_type!r}'
+        allowed = _allowed_relation_types(entity)
+        if relation_type not in allowed:
+            return (
+                False,
+                f'{relation_type!r} not valid for entity {entity!r} '
+                f'(kind={_entity_kind(entity)!r})',
+            )
+    if temporal_scope is not None and temporal_scope not in TEMPORAL_SCOPES:
+        return False, f'unknown temporal_scope: {temporal_scope!r}'
+    if len(text) > MAX_REFLECTION_TEXT_CHARS:
+        return False, f'text too long: {len(text)} chars (compound risk)'
+    return True, 'ok'
+
 
 def _reflection_id_from_facts(source_fact_ids: list[str]) -> str:
     """根据 source fact ids 生成确定性 reflection id（P1 幂等性核心）。
@@ -226,6 +328,11 @@ class ReflectionEngine:
             'recent_mentions': [],
             'suppress': False,
             'suppressed_at': None,
+            # Ontology fields (RFC memory-enhancements §3). All optional —
+            # legacy entries and validation-stripped entries both read None.
+            'relation_type': None,
+            'subject': None,
+            'temporal_scope': None,
         }
         for k, v in defaults.items():
             entry.setdefault(k, v)
@@ -567,6 +674,36 @@ class ReflectionEngine:
             reflection_entity = result.get('entity', 'relationship')
             if reflection_entity not in ('master', 'neko', 'relationship'):
                 reflection_entity = 'relationship'
+
+            # Ontology fields (RFC §3). Missing fields are tolerated — we
+            # only enforce consistency when the LLM does fill them in, so
+            # older prompts stay compatible. Validation failure degrades
+            # to null (soft fail) rather than dropping the whole reflection.
+            rel_type = result.get('relation_type')
+            if rel_type is not None and not isinstance(rel_type, str):
+                rel_type = None
+            temporal = result.get('temporal_scope')
+            if temporal is not None and not isinstance(temporal, str):
+                temporal = None
+            subject = result.get('subject')
+            if subject is not None and not isinstance(subject, str):
+                subject = None
+
+            ok, reason = _validate_reflection_ontology(
+                reflection_entity, rel_type, temporal, reflection_text,
+            )
+            if not ok:
+                logger.info(
+                    f"[Reflection] ontology 验证不通过({reason})，降级为 null: "
+                    f"entity={reflection_entity} rel_type={rel_type}"
+                )
+                # Strip the entire ontology tuple — keeping `subject` while
+                # dropping the rest would leave a half-structured record
+                # (no class but still a subject label), which downstream
+                # grouping/filtering can't interpret consistently.
+                rel_type = None
+                temporal = None
+                subject = None
         except Exception as e:
             logger.warning(f"[Reflection] 合成失败: {e}")
             return []
@@ -599,6 +736,12 @@ class ReflectionEngine:
             'next_eligible_at': (now + timedelta(minutes=REFLECTION_COOLDOWN_MINUTES)).isoformat(),
             'reinforcement': initial_rein,
             'rein_last_signal_at': now_iso if initial_rein > 0 else None,
+            # Ontology (RFC §3). May be None if the model omitted them or
+            # validation demoted them. Callers that want to filter or group
+            # by relation_type should treat None as "uncategorized".
+            'relation_type': rel_type,
+            'temporal_scope': temporal,
+            'subject': subject,
         })
 
         # 再次 load：LLM 调用期间可能有并发 synth；用最新 list 做 id dedup 追加

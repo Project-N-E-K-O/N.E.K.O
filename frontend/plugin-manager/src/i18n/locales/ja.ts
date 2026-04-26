@@ -1,6 +1,8 @@
 /**
  * 日本語言語パック
  */
+import { yuiGuideLocales } from './yuiGuide'
+
 export default {
   common: {
     loading: '読み込み中...',
@@ -406,5 +408,15 @@ export default {
   },
   app: {
     titleSuffix: 'N.E.K.O プラグイン管理'
+  },
+  tutorial: {
+    yuiGuide: yuiGuideLocales.ja
+  },
+  yuiTutorial: {
+    title: 'にゃ～プラグイン管理画面へようこそ！',
+    welcome: 'ここがすべてのプラグインを管理する場所だよ！プラグインを見たり、起動したり、設定したりして、もっとすごい猫猫神にしてね～',
+    hint: 'ゆっくり見てね、終わったら下のボタンを押して教えてにゃ～',
+    complete: '見終わったにゃ～',
+    dismiss: 'また今度'
   }
 }

@@ -137,6 +137,8 @@
         "live2dPreviewLoadFailed": "Live2D模型预览加载失败：{{error}} ",
         "searchAriaLabel": "搜索订阅内容",
         "sortAriaLabel": "排序方式",
+        "scrollTagsLeftAriaLabel": "向左滚动标签",
+        "scrollTagsRightAriaLabel": "向右滚动标签",
         "vrmModuleLoadFailed": "VRM 模块加载失败",
         "vrmPreviewLoaded": "VRM 模型预览已加载",
         "vrmPreviewFailed": "VRM 模型预览加载失败",
@@ -2754,7 +2756,30 @@
             "desc": "为了获得最佳的引导体验，建议进入全屏模式。\n全屏模式下，引导内容会更清晰，不会被其他元素遮挡。",
             "enterFullscreen": "进入全屏引导"
         },
-        "drag_hint": "按住拖动以移动提示框"
+        "drag_hint": "按住拖动以移动提示框",
+        "yuiGuide": {
+            "buttons": {
+                "skipChat": "暂时不聊天",
+                "sayHello": "你好"
+            },
+            "lines": {
+                "introBasic": "想要找我的时候，随时在这里打字或者发语音都能召唤本喵哦！",
+                "introCatPaw": "好啦不说废话了喵——你看到那个可爱的‘猫爪’了吗，准备好了吗？让我借用一下你的鼠标吧！",
+                "takeoverCaptureCursor": "嘿咻！可算逮住你的鼠标了喵～",
+                "takeoverPluginPreviewHome": "还没完呢！你快看快看，这里还有超～～多好玩的插件呢！",
+                "takeoverPluginPreviewDashboard": "有了它们，我不光能看 B 站弹幕，还能帮你关灯开空调…… 本喵就是无所不能的超级猫猫神！哼哼～",
+                "takeoverSettingsPeekIntro": "当然啦，如果你想让本喵多和你聊聊天也不是不行啦，给我多准备点小鱼干吧，嘿嘿，好了不逗你啦，设置都在这个齿轮里。",
+                "takeoverSettingsPeekDetail": "你看，这里可以穿我的新衣服、给我换一个好听的声音……换一个猫娘或是修改记忆？等一下！你在干嘛？该不会是想把我换掉吧？啊啊啊不行！快关掉快关掉！",
+                "takeoverReturnControl": "好啦好啦，不霸占你的电脑啦～控制权还给你了喵！可不许趁我不注意乱点奇怪的设置哦！之后的日子也请你多多关照了喵～",
+                "interruptResistLight1": "喂！不要拽我啦，还没轮到你的回合呢！",
+                "interruptResistLight3": "等一下啦！还没结束呢，不要随便打断我啦！",
+                "interruptAngryExit": "人类~~~~！你真的很没礼貌喵！既然你这么想自己操作，那你就自己对着冰冷的屏幕玩去吧！哼！",
+                "introProactive": "可恶，居然敢无视本大小姐嘛！要说你一直没理我，我可是会主动跑出来咬你的哦～（哈！！）",
+                "introGreetingReply": "我是你的专属猫娘，从今天起就由我来陪伴主人咯。无论是想要聊天解闷、一起玩耍，还是需要我帮忙做些什么，我都会乖乖陪在主人身边的喵。以后请多多指教啦，最喜欢主人了~！",
+                "introPractice": "现在你可以试试跟我说说话啦，看看我们是不是超有默契的喵～",
+                "introActivationHint": "点一下这里，我就能开始说话啦～"
+            }
+        }
     },
     "console": {
         "oggOpusInitFailed": "[OGG OPUS] 初始化 Promise 失败，将允许重试:",

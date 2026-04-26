@@ -404,6 +404,33 @@ describe('App', () => {
     expect(screen.getByRole('button', { name: '棒棒糖' })).toHaveAttribute('aria-pressed', 'true');
   });
 
+  it('emits avatar tool state changes for desktop hosts', () => {
+    const onAvatarToolStateChange = vi.fn();
+    render(<App onAvatarToolStateChange={onAvatarToolStateChange} />);
+
+    expect(onAvatarToolStateChange).toHaveBeenCalledWith(expect.objectContaining({
+      active: false,
+      toolId: null,
+      tool: null,
+    }));
+
+    onAvatarToolStateChange.mockClear();
+    fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
+    fireEvent.click(screen.getByRole('button', { name: '锤子' }));
+
+    expect(onAvatarToolStateChange).toHaveBeenCalledWith(expect.objectContaining({
+      active: true,
+      toolId: 'hammer',
+      variant: 'primary',
+      tool: expect.objectContaining({
+        id: 'hammer',
+        cursorImagePath: '/static/icons/chat_hammer1_cursor.png',
+        cursorHotspotX: 50,
+        cursorHotspotY: 48,
+      }),
+    }));
+  });
+
   it('anchors the desktop cursor overlay to the current pointer when a tool is activated', () => {
     const { container } = render(<App />);
 
@@ -416,6 +443,31 @@ describe('App', () => {
     const overlay = container.querySelector('.avatar-cursor-overlay');
     expect(overlay).not.toBeNull();
     expect((overlay as HTMLDivElement).style.transform).toBe('translate3d(201px, 280px, 0)');
+  });
+
+  it('uses the native cursor and clears it when leaving the Electron chat window', () => {
+    (window as Window & { __NEKO_MULTI_WINDOW__?: boolean }).__NEKO_MULTI_WINDOW__ = true;
+
+    try {
+      const { container } = render(<App />);
+
+      fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
+      fireEvent.click(screen.getByRole('button', { name: '猫爪' }));
+
+      expect(container.querySelector('.avatar-cursor-overlay')).toBeNull();
+      expect(document.documentElement).toHaveClass('neko-tool-cursor-active');
+
+      fireEvent.pointerOut(window, { relatedTarget: null, clientX: 160, clientY: 220 });
+      expect(container.querySelector('.avatar-cursor-overlay')).toBeNull();
+      expect(document.documentElement).toHaveClass('neko-tool-cursor-active');
+
+      fireEvent.pointerOut(window, { relatedTarget: null, clientX: -1, clientY: 220 });
+
+      expect(container.querySelector('.avatar-cursor-overlay')).toBeNull();
+      expect(document.documentElement).not.toHaveClass('neko-tool-cursor-active');
+    } finally {
+      delete (window as Window & { __NEKO_MULTI_WINDOW__?: boolean }).__NEKO_MULTI_WINDOW__;
+    }
   });
 
   it('shows the hammer secondary cursor asset on outside-range desktop clicks', () => {
