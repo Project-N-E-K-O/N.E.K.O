@@ -1295,7 +1295,10 @@ async def _run_computer_use_task(
                 logger.warning("[ComputerUse] Thread did not stop within 15s after cancel")
     except Exception as e:
         info["error"] = _tt(str(e), 350)
-        logger.error("[ComputerUse] Task %s failed: %s", task_id, e)
+        # exception 字符串经常夹带用户输入 / 模型输出 / 上游响应原文，
+        # logger 只记 task_id + exc_type 元数据，原文走 print 兜底。
+        logger.error("[ComputerUse] Task %s failed (exc_type=%s)", task_id, type(e).__name__)
+        print(f"[ComputerUse] Task {task_id} raw error: {e}")
     finally:
         # cancel_task may have pre-marked status="cancelled" before this dispatch
         # observed the cancellation; preserve that signal regardless of whether
@@ -1819,7 +1822,9 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                         _reg = Modules.task_registry.get(result.task_id)
                         if _reg and _reg.get("status") == "cancelled":
                             return
-                        logger.exception("[TaskExecutor] UserPlugin dispatch failed: %s", e)
+                        # exception 字符串可能含用户/LLM 原文，logger 只记元数据
+                        logger.error("[TaskExecutor] UserPlugin dispatch failed (exc_type=%s)", type(e).__name__)
+                        print(f"[TaskExecutor] UserPlugin dispatch raw error: {e}")
                         if _reg:
                             _reg["status"] = "failed"
                             _reg["error"] = _tt(str(e), 350)
@@ -2246,7 +2251,9 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                             # errors (e.g. ConnectionError from CDP teardown) as the
                             # cancel signal instead of clobbering with "failed".
                             return
-                        logger.warning(f"[BrowserUse] Failed: {e}")
+                        # exception 字符串可能含用户/LLM 原文，logger 只记元数据
+                        logger.warning(f"[BrowserUse] Failed (exc_type={type(e).__name__})")
+                        print(f"[BrowserUse] Task raw error: {e}")
                         bu_info["status"] = "failed"
                         bu_info["end_time"] = _now_iso()
                         _task_tracker.record_completed(
@@ -2440,7 +2447,9 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                         except Exception as e:
                             if of_info.get("status") == "cancelled":
                                 return
-                            logger.warning(f"[OpenFang] Task failed: {e}")
+                            # exception 字符串可能含用户/LLM 原文，logger 只记元数据
+                            logger.warning(f"[OpenFang] Task failed (exc_type={type(e).__name__})")
+                            print(f"[OpenFang] Task raw error: {e}")
                             of_info["status"] = "failed"
                             of_info["end_time"] = _now_iso()
                             of_info["error"] = _tt(str(e), 350)
@@ -3722,7 +3731,9 @@ async def openfang_run(payload: Dict[str, Any]):
             reg = Modules.task_registry[task_id]
             if reg.get("status") == "cancelled":
                 return
-            logger.error("[OpenFang] Task %s failed: %s", task_id, e)
+            # exception 字符串可能含用户/LLM 原文，logger 只记元数据
+            logger.error("[OpenFang] Task %s failed (exc_type=%s)", task_id, type(e).__name__)
+            print(f"[OpenFang] Task {task_id} raw error: {e}")
             reg["status"] = "failed"
             reg["error"] = _tt(str(e), 350)
             reg["end_time"] = datetime.now(timezone.utc).isoformat()

@@ -231,8 +231,11 @@ class OmniOfflineClient:
         """更新回复 token 上限（用户可能在对话期间修改设置）。
         单位与 ``self.max_response_length`` 一致：tiktoken token 数。
         同步刷新 ``self.llm.max_completion_tokens`` 让下一次 astream 请求
-        在新的 budget+20 自然停止。"""
-        if isinstance(max_length, int) and max_length >= 0:
+        在新的 budget+20 自然停止。
+
+        ``0`` / 负数都解释成"无限制"，与 ``__init__`` 同款语义；上层把
+        -1 当取消上限信号也能透下来。"""
+        if isinstance(max_length, int):
             self.max_response_length = max_length if max_length > 0 else _UNLIMITED_BUDGET
             if self.llm is not None:
                 self.llm.max_completion_tokens = _budget_to_max_tokens(self.max_response_length)

@@ -686,6 +686,16 @@ class LLMSessionManager:
             if self._active_text_request_id == active_request_id:
                 self._active_text_request_id = None
 
+        await self._finalize_turn_after_emit()
+
+    async def _finalize_turn_after_emit(self) -> None:
+        """Turn end 之后的统一收尾：renew/prewarm 判断 + agent callback 投递。
+
+        被 ``handle_response_complete`` 和 ``handle_response_discarded`` 的
+        recovery / too-long-final 分支共用，避免连续走 RESPONSE_LENGTH_TRUNCATED
+        / RESPONSE_TOO_LONG 时 session 不归档/不预热而陷入"上下文越来越大→
+        一直截断恢复"循环。
+        """
         # ── 热切换逻辑 ─────────────────────────────────────────────────────────
         # 正在切换过程中则跳过所有热切换判断
         if not self.is_hot_swap_imminent:
@@ -836,17 +846,30 @@ class LLMSessionManager:
                         "Response too long and was discarded; your input has been restored.",
                     )
 
+                # 冻结本轮 recovery 用的 turn/speech id snapshot——后面所有
+                # send_lanlan_response / feed_tts_chunk 都用这个本地变量，
+                # 不再回读共享字段；否则用户在 response_discarded 发出后立刻
+                # 提交下一条文本时，新轮会改写 self.current_speech_id，截断
+                # 恢复出来的正文 + 音频会带着新轮的 turn_id 发出去，前端
+                # （app-websocket.js assistant turn 生命周期是按 turn_id 建的）
+                # 会把恢复内容和新轮串到一起。
                 if self.use_tts:
                     async with self.lock:
-                        self.current_speech_id = str(uuid4())
+                        recovery_turn_id = str(uuid4())
+                        self.current_speech_id = recovery_turn_id
                         self._tts_done_queued_for_turn = False
                         self._tts_done_pending_until_ready = False
+                else:
+                    recovery_turn_id = self.current_speech_id
 
                 # 发送文本到前端显示。显式传 active_request_id snapshot，
                 # 避免 send_lanlan_response 内部回读共享字段时拿到新轮 id
                 # 串掉前端 rollback 绑定。
                 await self.send_lanlan_response(
-                    body_text, is_first_chunk=True, request_id=active_request_id,
+                    body_text,
+                    is_first_chunk=True,
+                    turn_id=recovery_turn_id,
+                    request_id=active_request_id,
                 )
 
                 # 仅当本轮**不是** ephemeral（即非 avatar_interaction 等
@@ -860,7 +883,7 @@ class LLMSessionManager:
 
                 # 喂给 TTS 管线用角色音色念
                 if self.use_tts:
-                    await self.feed_tts_chunk(body_text)
+                    await self.feed_tts_chunk(body_text, expected_speech_id=recovery_turn_id)
                     await self._request_tts_done_for_turn(
                         "handle_response_discarded:length_truncated"
                         if _truncated_text is not None
@@ -891,7 +914,14 @@ class LLMSessionManager:
             if self._active_text_request_id == active_request_id:
                 self._active_text_request_id = None
 
-        # turn end will 由 handle_response_complete 统一发送
+        # Recovery / too-long-final 路径相当于"这一轮 LLM 已完成"——必须
+        # 跑跟 handle_response_complete 同款的 turn 后置流程（renew/prewarm
+        # 判断 + agent callback 投递），否则连续多轮走 RESPONSE_LENGTH_TRUNCATED
+        # / RESPONSE_TOO_LONG 时 session 不归档/不预热，会卡进"上下文越来越
+        # 大→一直截断恢复"的死循环。普通 will_retry / RESPONSE_INVALID 路径
+        # 还会重试同轮，不算 turn 真正结束，跳过 finalize。
+        if _is_too_long_final or _truncated_text is not None:
+            await self._finalize_turn_after_emit()
 
 
     async def handle_audio_data(self, audio_data: bytes):
