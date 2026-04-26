@@ -34,8 +34,30 @@ def _truncate_to_last_sentence_end(text: str) -> str:
 # nothing but emojis / punctuation, etc.). Once we know we're in that state we
 # don't want to salvage a "sentence" out of it; we want to discard.
 _GIBBERISH_MIN_LEN = 30        # Below this we don't bother judging.
-_GIBBERISH_PS_RATIO_FLOOR = 0.02   # < 2% punct/symbol → suspicious "wall of text"
-_GIBBERISH_PS_RATIO_CEIL = 0.60    # > 60% punct/symbol → suspicious "wall of marks"
+_GIBBERISH_PS_RATIO_FLOOR = 0.015  # < 1.5% punct/symbol → BPE-loop / wall-of-chars
+_GIBBERISH_PS_RATIO_CEIL = 0.25    # > 25% punct/symbol → emoji/mark spam
+
+# Slack between the conversational length budget and the LLM API's hard
+# `max_completion_tokens`. The API cap is the *first* line of defense (let
+# the model stop naturally before generating tokens we'd just discard); the
+# Python-side guard kicks in only on overshoot, where it can decide
+# truncate vs. gibberish-filter. We need *some* overshoot for the fence
+# to actually fire — if API caps exactly at the budget the model stops
+# right at the edge with a half-sentence and we can't tell apart "ran
+# long" from "naturally finished at the cap". 20 tokens is enough to
+# matter without bloating cost.
+_MAX_TOKENS_SLACK = 20
+_UNLIMITED_BUDGET = 999999  # sentinel set when user picks the slider's "无限制"
+
+
+def _budget_to_max_tokens(budget: int) -> int | None:
+    """Convert ``max_response_length`` budget into the LLM API's
+    ``max_completion_tokens``. ``None`` for the unlimited sentinel so the
+    request omits the field entirely (large fixed values get rejected as
+    out-of-range by some providers)."""
+    if budget >= _UNLIMITED_BUDGET:
+        return None
+    return budget + _MAX_TOKENS_SLACK
 
 
 def _is_gibberish_response(text: str) -> bool:
@@ -157,10 +179,22 @@ class OmniOfflineClient:
         self.on_repetition_detected = on_repetition_detected
         self.on_response_discarded = on_response_discarded
         
-        # Initialize ChatOpenAI client
+        # 普通对话守卫配置（先决定 max_response_length，create_chat_llm
+        # 用得到 _budget_to_max_tokens(self.max_response_length)）
+        self.enable_response_guard = True
+        self.max_response_length = max_response_length if isinstance(max_response_length, int) and max_response_length > 0 else 300
+        # 最多允许的自动重 roll 次数：1 次 reroll → 总共 2 次尝试。
+        # 第 2 次仍超长时不再丢弃整段，而是回退到最后一个句末标点截断。
+        self.max_response_rerolls = 1
+
+        # Initialize ChatOpenAI client. max_completion_tokens 设为
+        # max_response_length + 20 让 LLM API 自然在 budget+20 token 处停下来，
+        # 既省掉无效生成成本，又给 fence 留 20 token slack 看到 overshoot
+        # 能区分 truncate / gibberish-filter 路径。
         self.llm = create_chat_llm(
             self.model, self.base_url, self.api_key,
             temperature=1.0, streaming=True, max_retries=0,
+            max_completion_tokens=_budget_to_max_tokens(self.max_response_length),
         )
         
         # State management
@@ -175,29 +209,24 @@ class OmniOfflineClient:
         self._repetition_threshold = 0.8  # 相似度阈值
         self._max_recent_responses = 3  # 最多存储的回复数
         
-        # ========== 普通对话守卫配置 ==========
-        # `max_response_length` is measured in tiktoken (o200k_base) tokens.
-        # Default 300 ≈ 400 CJK chars / ~1200 English chars. A frontend
-        # slider lets the user override (see `_get_text_guard_max_length`
-        # in core.py).
-        self.enable_response_guard = True
-        self.max_response_length = max_response_length if isinstance(max_response_length, int) and max_response_length > 0 else 300
-        # 最多允许的自动重 roll 次数：1 次 reroll → 总共 2 次尝试。
-        # 第 2 次仍超长时不再丢弃整段，而是回退到最后一个句末标点截断。
-        self.max_response_rerolls = 1
-
         # ========== 输出前缀检测 ==========
         self.lanlan_name = lanlan_name
         self.master_name = master_name
         self._prefix_buffer_size = max(len(lanlan_name), len(master_name)) + 3 if (lanlan_name or master_name) else 0
 
         # 质量守卫回调：由 core.py 设置，用于通知前端清理气泡
+        # （max_response_length / max_response_rerolls / enable_response_guard
+        # 已经在创建 self.llm 之前初始化，因为 _budget_to_max_tokens 用得到。）
 
     def update_max_response_length(self, max_length: int) -> None:
         """更新回复 token 上限（用户可能在对话期间修改设置）。
-        单位与 ``self.max_response_length`` 一致：tiktoken token 数。"""
+        单位与 ``self.max_response_length`` 一致：tiktoken token 数。
+        同步刷新 ``self.llm.max_completion_tokens`` 让下一次 astream 请求
+        在新的 budget+20 自然停止。"""
         if isinstance(max_length, int) and max_length >= 0:
-            self.max_response_length = max_length if max_length > 0 else 999999
+            self.max_response_length = max_length if max_length > 0 else _UNLIMITED_BUDGET
+            if self.llm is not None:
+                self.llm.max_completion_tokens = _budget_to_max_tokens(self.max_response_length)
             logger.debug(f"OmniOfflineClient: token 上限已更新为 {max_length}")
 
     def _match_name_prefix(self, text: str, name: str) -> int:
@@ -253,10 +282,13 @@ class OmniOfflineClient:
                 base_url = self.base_url
                 api_key = self.api_key
 
-            # 先创建新 client，成功后再原子替换，避免半切换状态
+            # 先创建新 client，成功后再原子替换，避免半切换状态。
+            # max_completion_tokens 跟随当前 max_response_length 同步设置
+            # （和 __init__ 一致）。
             new_llm = create_chat_llm(
                 new_model, base_url, api_key,
                 temperature=1.0, streaming=True, max_retries=0,
+                max_completion_tokens=_budget_to_max_tokens(self.max_response_length),
             )
             old_llm = self.llm
             self.llm = new_llm
