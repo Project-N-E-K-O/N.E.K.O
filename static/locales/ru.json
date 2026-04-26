@@ -3427,6 +3427,7 @@
         "savingCardFace": "Сохранение...",
         "saveCardFaceSuccess": "Сохранено успешно!",
         "saveCardFaceFailed": "Ошибка сохранения: {{error}}",
+        "saveCardFacePartialSuccess": "PNG сохранён, но запись метаданных не удалась: {{error}}",
         "renderFailed": "Не удалось отрендерить изображение карточки",
         "exportTitle": "Экспорт карточки персонажа"
     },

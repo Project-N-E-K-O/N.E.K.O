@@ -3427,6 +3427,7 @@
         "savingCardFace": "저장 중...",
         "saveCardFaceSuccess": "저장 성공!",
         "saveCardFaceFailed": "저장 실패: {{error}}",
+        "saveCardFacePartialSuccess": "PNG는 저장되었지만 메타데이터 쓰기에 실패했습니다: {{error}}",
         "renderFailed": "카드 이미지를 렌더링할 수 없습니다",
         "exportTitle": "캐릭터 카드 내보내기"
     },

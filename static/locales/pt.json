@@ -184,7 +184,6 @@
         "previewImageMissing": "Arquivo de imagem de visualização não encontrado, verifique o caminho",
         "uploadReady": "Pronto para carregar {{itemName}}",
         "pageDescription": "Navegue, assine, baixe e gerencie modelos e vozes Live2D do Steam Workshop",
-        "voiceNote": "Para configurações de voz, vá para a página de configurações do Live2D para registrar manualmente",
         "openVoiceClone": "Abrir no clone de voz",
         "configurePath": "Configurar caminho",
         "localModPathConfig": "Configuração do caminho do mod local",
@@ -3428,6 +3427,7 @@
         "savingCardFace": "Salvando...",
         "saveCardFaceSuccess": "Salvo com sucesso!",
         "saveCardFaceFailed": "Falha ao salvar: {{error}}",
+        "saveCardFacePartialSuccess": "PNG salvo, mas a escrita de metadados falhou: {{error}}",
         "renderFailed": "Não foi possível renderizar o rosto do cartão",
         "exportTitle": "Exportar cartão de personagem"
     },

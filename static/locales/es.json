@@ -184,7 +184,6 @@
         "previewImageMissing": "No se encontró el archivo de imagen de vista previa, verifique la ruta",
         "uploadReady": "Listo para cargar {{itemName}}",
         "pageDescription": "Gestiona tarjetas de personaje: explora, edita, importa/exporta tarjetas y administra modelos y voces (incluyendo Steam Workshop como fuente opcional)",
-        "voiceNote": "Para la configuración de voz, vaya a la página de configuración de Live2D para registrarse manualmente",
         "openVoiceClone": "Abrir en clon de voz",
         "configurePath": "Configurar ruta",
         "localModPathConfig": "Configuración de ruta de modificación local",
@@ -3428,6 +3427,7 @@
         "savingCardFace": "Guardando...",
         "saveCardFaceSuccess": "¡Guardado correctamente!",
         "saveCardFaceFailed": "Error al guardar: {{error}}",
+        "saveCardFacePartialSuccess": "PNG guardado, pero la escritura de metadatos falló: {{error}}",
         "renderFailed": "No se puede renderizar la imagen de la tarjeta",
         "exportTitle": "Exportar tarjeta de personaje"
     },

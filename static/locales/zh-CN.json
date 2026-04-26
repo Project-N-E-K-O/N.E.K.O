@@ -3427,6 +3427,7 @@
         "savingCardFace": "保存中...",
         "saveCardFaceSuccess": "保存成功！",
         "saveCardFaceFailed": "保存失败: {{error}}",
+        "saveCardFacePartialSuccess": "PNG 已保存，但元数据写入失败: {{error}}",
         "renderFailed": "无法渲染卡面图片",
         "exportTitle": "导出角色卡"
     },

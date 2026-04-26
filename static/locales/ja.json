@@ -3427,6 +3427,7 @@
         "savingCardFace": "保存中...",
         "saveCardFaceSuccess": "保存しました！",
         "saveCardFaceFailed": "保存に失敗しました: {{error}}",
+        "saveCardFacePartialSuccess": "PNGは保存されましたが、メタデータの書き込みに失敗しました: {{error}}",
         "renderFailed": "カード画像をレンダリングできません",
         "exportTitle": "キャラクターカードをエクスポート"
     },
