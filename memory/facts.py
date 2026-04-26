@@ -21,7 +21,6 @@ from config import (
     EVIDENCE_DETECT_SIGNALS_MAX_OBSERVATIONS,
     EVIDENCE_DETECT_SIGNALS_MODEL_TIER,
     EVIDENCE_EXTRACT_FACTS_MODEL_TIER,
-    SETTING_PROPOSER_MODEL,
 )
 from config.prompts_memory import (
     get_fact_extraction_prompt,
@@ -281,11 +280,15 @@ class FactStore:
 
     async def _allm_call_with_retries(
         self, prompt: str, lanlan_name: str, tier: str, call_type: str,
-        max_retries: int = 3, temperature: float = 0.3,
+        max_retries: int = 3,
     ):
         """Shared LLM helper: retry on network errors + JSON errors, same
         policy as the old `extract_facts`. Returns parsed JSON or None on
-        terminal failure (caller decides whether to abort / swallow)."""
+        terminal failure (caller decides whether to abort / swallow).
+
+        Note: 不再接受 temperature。项目级约定一律不下发该参数（守门见
+        scripts/check_no_temperature.py）。模型从 ``tier`` 对应的 api_config
+        直接拿，不再走 SETTING_PROPOSER_MODEL fallback。"""
         from openai import APIConnectionError, InternalServerError, RateLimitError
         from utils.llm_client import create_chat_llm
 
@@ -295,9 +298,8 @@ class FactStore:
                 set_call_type(call_type)
                 api_config = self._config_manager.get_model_api_config(tier)
                 llm = create_chat_llm(
-                    api_config.get('model', SETTING_PROPOSER_MODEL),
+                    api_config['model'],
                     api_config['base_url'], api_config['api_key'],
-                    temperature=temperature,
                 )
                 try:
                     resp = await llm.ainvoke(prompt)
@@ -649,7 +651,6 @@ class FactStore:
             prompt, lanlan_name,
             tier=EVIDENCE_DETECT_SIGNALS_MODEL_TIER,
             call_type="memory_signal_detection",
-            temperature=0.2,  # judgment-style task, keep deterministic-ish
         )
         if parsed is None:
             return None

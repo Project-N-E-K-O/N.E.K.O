@@ -47,8 +47,6 @@
 | `NEKO_ROUTER_MODEL` | `qwen-plus` | メモリルーティングモデル |
 | `NEKO_SEMANTIC_MODEL` | `text-embedding-v4` | エンベディングモデル |
 | `NEKO_RERANKER_MODEL` | `qwen-plus` | 検索リランキングモデル |
-| `NEKO_SETTING_PROPOSER_MODEL` | `qwen-max` | 設定更新提案モデル |
-| `NEKO_SETTING_VERIFIER_MODEL` | `qwen-max` | 設定更新検証モデル |
 
 ## サービス URL
 

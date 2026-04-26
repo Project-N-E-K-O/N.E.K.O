@@ -1529,7 +1529,6 @@ async def _amaybe_trigger_negative_keyword_hook(
         prompt, lanlan_name,
         tier=EVIDENCE_NEGATIVE_TARGET_MODEL_TIER,
         call_type="memory_negative_target_check",
-        temperature=0.1,
         max_retries=2,
     )
     if parsed is None or not isinstance(parsed, dict):

@@ -184,7 +184,7 @@ class ChatOpenAI:
         model: str = "",
         base_url: str | None = None,
         api_key: str | None = None,
-        temperature: float | None = 1.0,
+        temperature: float | None = None,
         streaming: bool = False,
         max_retries: int = 2,
         extra_body: dict | None = None,
@@ -198,11 +198,11 @@ class ChatOpenAI:
         **_kwargs: Any,
     ):
         self.model = model
-        # ``temperature=None`` is a legitimate caller intent: "don't include a
-        # temperature field in the request body at all". Required for models
-        # that reject the parameter outright (o1 / o3 / gpt-5-thinking /
-        # Claude extended-thinking). Kept default=1.0 for backwards compat so
-        # existing callers that omit the kwarg behave unchanged.
+        # 项目级硬性约定：不再下发 temperature。default=None → 不写进请求体，
+        # 由模型端自定。o1/o3/gpt-5-thinking/Claude extended-thinking 等拒绝该
+        # 参数的模型可以直通；普通模型也走它们自己的默认值，避免不同 task 之间
+        # 因为温度数值漂移引入难复现的回归。callers 不应再传 temperature=
+        # （CI 由 scripts/check_no_temperature.py 守门）。
         self.temperature = temperature
         self.extra_body: dict = extra_body or {}
         self.max_completion_tokens = max_completion_tokens
@@ -228,9 +228,9 @@ class ChatOpenAI:
             "messages": _normalize_messages(messages),
             "stream": stream,
         }
-        # 仅当显式设置 temperature 才写进请求体; None 表示 "由模型端自定".
-        # 这让 o1/o3/gpt-5-thinking/Claude extended-thinking 等拒绝该参数的
-        # 模型可以直通. 0.0 合法 → `is not None` 而不是 `if self.temperature`.
+        # 项目级约定：default=None → 不写 temperature 进请求体。本分支保留是
+        # 为了向后兼容显式 `temperature=0` 这类 case（0.0 合法，所以判 None 而
+        # 不是 truthy），实际 callers 不应再传该参数。
         if self.temperature is not None:
             p["temperature"] = self.temperature
         if self.max_completion_tokens:
@@ -305,7 +305,7 @@ def create_chat_llm(
     base_url: str | None,
     api_key: str | None,
     *,
-    temperature: float = 1.0,
+    temperature: float | None = None,
     streaming: bool = False,
     max_retries: int = 2,
     max_completion_tokens: int | None = None,

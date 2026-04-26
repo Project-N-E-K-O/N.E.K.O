@@ -75,8 +75,6 @@
 | 配置项 | 代码常量 | 默认值 | 用途 |
 |-------|---------|--------|------|
 | 路由模型 | `ROUTER_MODEL` | `openai/gpt-4.1` | 记忆路由决策 |
-| 设置提议模型 | `SETTING_PROPOSER_MODEL` | `qwen-max` | 设置更新提议 |
-| 设置验证模型 | `SETTING_VERIFIER_MODEL` | `qwen-max` | 设置更新验证 |
 | 语义模型 | `SEMANTIC_MODEL` | `text-embedding-v4` | 语义嵌入 |
 | 重排序模型 | `RERANKER_MODEL` | `qwen-plus` | 搜索结果重排序 |
 

@@ -32,7 +32,6 @@ from config import (
     EVIDENCE_PROMOTE_RETRY_BACKOFF_MINUTES,
     EVIDENCE_PROMOTED_THRESHOLD,
     EVIDENCE_PROMOTION_MERGE_MODEL_TIER,
-    SETTING_PROPOSER_MODEL,
 )
 from memory.evidence import evidence_score, initial_reinforcement_from_importance
 from utils.cloudsave_runtime import assert_cloudsave_writable
@@ -665,9 +664,8 @@ class ReflectionEngine:
             set_call_type("memory_reflection")
             api_config = self._config_manager.get_model_api_config('summary')
             llm = create_chat_llm(
-                api_config.get('model', SETTING_PROPOSER_MODEL),
+                api_config['model'],
                 api_config['base_url'], api_config['api_key'],
-                temperature=0.5,
             )
             try:
                 resp = await llm.ainvoke(prompt)
@@ -1435,9 +1433,8 @@ class ReflectionEngine:
             set_call_type("memory_feedback_check")
             api_config = self._config_manager.get_model_api_config('summary')
             llm = create_chat_llm(
-                api_config.get('model', SETTING_PROPOSER_MODEL),
+                api_config['model'],
                 api_config['base_url'], api_config['api_key'],
-                temperature=0.1,
             )
             try:
                 resp = await llm.ainvoke(prompt)
@@ -1497,9 +1494,8 @@ class ReflectionEngine:
             set_call_type("memory_rebuttal_check")
             api_config = self._config_manager.get_model_api_config('summary')
             llm = create_chat_llm(
-                api_config.get('model', SETTING_PROPOSER_MODEL),
+                api_config['model'],
                 api_config['base_url'], api_config['api_key'],
-                temperature=0.1,
             )
             try:
                 resp = await llm.ainvoke(prompt)
@@ -2064,9 +2060,8 @@ class ReflectionEngine:
             EVIDENCE_PROMOTION_MERGE_MODEL_TIER,
         )
         llm = create_chat_llm(
-            api_config.get('model', SETTING_PROPOSER_MODEL),
+            api_config['model'],
             api_config['base_url'], api_config['api_key'],
-            temperature=0.1,
         )
         try:
             resp = await llm.ainvoke(prompt)

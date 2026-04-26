@@ -29,7 +29,6 @@ from datetime import datetime, timedelta
 from config import (
     PERSONA_RENDER_TOKEN_BUDGET,
     REFLECTION_RENDER_TOKEN_BUDGET,
-    SETTING_PROPOSER_MODEL,
 )
 from memory.evidence import evidence_score
 from memory.stop_names import (
@@ -1597,9 +1596,8 @@ class PersonaManager:
             set_call_type("memory_correction")
             api_config = self._config_manager.get_model_api_config('correction')
             llm = create_chat_llm(
-                api_config.get('model', SETTING_PROPOSER_MODEL),
+                api_config['model'],
                 api_config['base_url'], api_config['api_key'],
-                temperature=0.3,
             )
             try:
                 resp = await llm.ainvoke(prompt)

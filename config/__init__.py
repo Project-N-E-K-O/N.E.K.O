@@ -274,10 +274,12 @@ DEFAULT_AGENT_MODEL_URL = ""
 DEFAULT_AGENT_MODEL_API_KEY = ""
 
 # 模型配置常量（默认值）
-# 注：以下5个直接被导入使用的变量保留原名以保持向后兼容性
+# 注：以下直接被导入使用的变量保留原名以保持向后兼容性
 DEFAULT_ROUTER_MODEL = ROUTER_MODEL = 'qwen-plus'
-DEFAULT_SETTING_PROPOSER_MODEL = SETTING_PROPOSER_MODEL = "qwen-max"
-DEFAULT_SETTING_VERIFIER_MODEL = SETTING_VERIFIER_MODEL = "qwen-max"
+# SETTING_PROPOSER_MODEL / SETTING_VERIFIER_MODEL 已经退环境（2026-04）：
+# 旧的 memory.settings 抽取/校验链路已被 evidence + reflection 取代，参见
+# memory/settings.py 顶部的注释。其它走 LLM 的 memory 子模块全部按 tier 拿
+# api_config['model']，不再有 hardcoded fallback。
 DEFAULT_SEMANTIC_MODEL = SEMANTIC_MODEL = 'text-embedding-v4'
 DEFAULT_RERANKER_MODEL = RERANKER_MODEL = 'qwen-plus'
 
@@ -958,13 +960,11 @@ __all__ = [
     'DEFAULT_CORE_URL',
     'DEFAULT_CORE_MODEL',
     'DEFAULT_OPENROUTER_URL',
-    # 直接被导入使用的5个模型配置（导出 DEFAULT_ 和无前缀版本）
+    # 直接被导入使用的模型配置（导出 DEFAULT_ 和无前缀版本）
     'DEFAULT_ROUTER_MODEL',
     'ROUTER_MODEL',
-    'DEFAULT_SETTING_PROPOSER_MODEL',
-    'SETTING_PROPOSER_MODEL',
-    'DEFAULT_SETTING_VERIFIER_MODEL',
-    'SETTING_VERIFIER_MODEL',
+    # SETTING_PROPOSER_MODEL / SETTING_VERIFIER_MODEL 于 2026-04 退环境，
+    # 见 memory/settings.py 顶部说明。
     'DEFAULT_SEMANTIC_MODEL',
     'SEMANTIC_MODEL',
     'DEFAULT_RERANKER_MODEL',

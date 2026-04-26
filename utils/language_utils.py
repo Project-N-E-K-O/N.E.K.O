@@ -968,7 +968,7 @@ async def translate_text(text: str, target_lang: str, source_lang: Optional[str]
         llm = create_chat_llm(
             emotion_config['model'], emotion_config['base_url'],
             emotion_config['api_key'],
-            temperature=0.3, timeout=10.0,
+            timeout=10.0,
         )
 
         instruction = _loc(TRANSLATION_INSTRUCTION, lang).format(
@@ -1062,7 +1062,7 @@ class TranslationService:
             
             self._llm_client = create_chat_llm(
                 config['model'], config['base_url'], config['api_key'],
-                temperature=0.3, max_completion_tokens=2000, timeout=30.0,
+                max_completion_tokens=2000, timeout=30.0,
             )
             
             return self._llm_client

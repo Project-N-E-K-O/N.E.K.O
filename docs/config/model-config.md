@@ -15,8 +15,6 @@ N.E.K.O. uses different AI models for different tasks. Each can be individually 
 | Router | `qwen-plus` | `NEKO_ROUTER_MODEL` | Memory routing decisions |
 | Semantic | `text-embedding-v4` | `NEKO_SEMANTIC_MODEL` | Text embeddings for memory |
 | Reranker | `qwen-plus` | `NEKO_RERANKER_MODEL` | Search result reranking |
-| Setting proposer | `qwen-max` | `NEKO_SETTING_PROPOSER_MODEL` | Proposing setting updates |
-| Setting verifier | `qwen-max` | `NEKO_SETTING_VERIFIER_MODEL` | Verifying setting updates |
 
 ## Custom model endpoints
 

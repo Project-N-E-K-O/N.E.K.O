@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   python-lint:
-    name: Python lint (ruff + async-blocking + no-loguru)
+    name: Python lint (ruff + async-blocking + no-loguru + no-temperature)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -53,3 +53,12 @@ jobs:
         # (formatter, sinks, file naming, multi-process behaviour) and breaks
         # plugin/main parity. This check fails the build on any such import.
         run: python scripts/check_no_loguru.py
+
+      - name: Forbid `temperature=` kwargs on LLM client calls (memory + utils)
+        # Project policy: do NOT pass `temperature=` to create_chat_llm /
+        # ChatOpenAI / wrappers in memory_server.py + memory/ + utils/. The
+        # default (None) omits the field — required for o1/o3/gpt-5-thinking/
+        # Claude extended-thinking, and avoids per-call-site temperature drift
+        # across memory tasks. See memory/__init__.py and .agent/rules/
+        # neko-guide.md for the rationale.
+        run: python scripts/check_no_temperature.py
