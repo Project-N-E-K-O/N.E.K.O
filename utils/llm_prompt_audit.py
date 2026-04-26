@@ -71,7 +71,18 @@ def _content_to_text(content: Any) -> str:
                 out.append(json.dumps(part, ensure_ascii=False)[:200])
         return "\n".join(out)
     if isinstance(content, dict):
-        return json.dumps(content, ensure_ascii=False)
+        # 镜像 list 分支的类型分流：上游偶尔直接传单个 part dict（不是
+        # list 包裹），不能 json.dumps(整个 content)——否则 image_url
+        # base64 会原样落盘，既泄露用户截图也撑爆 jsonl。
+        ptype = content.get("type")
+        if ptype in ("text", "input_text", "output_text"):
+            return str(content.get("text") or "")
+        if ptype in ("image_url", "input_image"):
+            return "[image]"
+        try:
+            return json.dumps(content, ensure_ascii=False)[:200]
+        except Exception:
+            return str(content)[:200]
     return str(content) if content is not None else ""
 
 

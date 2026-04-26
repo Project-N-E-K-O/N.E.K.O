@@ -105,7 +105,11 @@ class LLMClient:
             cloud = config["cloud"]
         else:
             cloud = config
-        api_url = _normalize_base_url(cloud.get("url", "https://api.deepseek.com/v1"))
+        # 用 `or` 兜底而不是 `cloud.get("url", default)`：键存在但值是空字符串
+        # 时（用户配置文件留空），dict.get 不会走 default，最终 base_url=""
+        # 会让请求稳定失败。
+        raw_url = (cloud.get("url") or "").strip() or "https://api.deepseek.com/v1"
+        api_url = _normalize_base_url(raw_url)
         api_key = cloud.get("api_key", "")
         model = cloud.get("model", "deepseek-chat")
         timeout_sec = float(cloud.get("timeout_sec", 10))
