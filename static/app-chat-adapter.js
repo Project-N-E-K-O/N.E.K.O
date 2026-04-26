@@ -134,7 +134,10 @@
 
     // ======================== 句子分割（从 app-chat.js 复刻） ========================
 
-    function splitIntoSentences(buffer) {
+    function splitIntoSentences(buffer, options) {
+        options = options || {};
+        var mode = options.mode || 'normal';
+        var flushTrailingBoundary = !!options.flushTrailingBoundary;
         var sentences = [];
         var s = normalizeGeminiText(buffer);
         var start = 0;
@@ -146,11 +149,13 @@
         function isBoundary(ch, next) {
             if (ch === '\n') return true;
             if (isPunctForBoundary(ch) && next && isPunctForBoundary(next)) return false;
-            if (isPunctForBoundary(ch) && !next) return false;
+            if (isPunctForBoundary(ch) && !next) return flushTrailingBoundary;
             if (ch === '\u3002' || ch === '\uFF01' || ch === '\uFF1F') return true;
+            if (mode === 'coarse') return false;
             if (ch === '!' || ch === '?') return true;
-            if (ch === '\u2026') return true;
+            if (ch === '\u2026') return mode === 'normal';
             if (ch === '.') {
+                if (mode !== 'normal') return false;
                 if (!next) return true;
                 return /\s|\n|["')\]]/.test(next);
             }
@@ -169,6 +174,67 @@
 
         var rest = s.slice(start);
         return { sentences: sentences, rest: rest };
+    }
+
+    function getRealisticSplitMode() {
+        var queueLen = Array.isArray(window._realisticGeminiQueue) ? window._realisticGeminiQueue.length : 0;
+        var chunkCount = window._realisticGeminiChunkCount || 0;
+        if (queueLen >= 8 || chunkCount >= 32) return 'coarse';
+        if (queueLen >= 4 || chunkCount >= 16) return 'balanced';
+        return 'normal';
+    }
+
+    function isFullWidthJoinPunctuation(ch) {
+        return ch === '\u3001' || ch === '\u3002' || ch === '\uFF0C' || ch === '\uFF01' ||
+            ch === '\uFF1F' || ch === '\uFF1B' || ch === '\uFF1A' || ch === '\u2026';
+    }
+
+    function joinRealisticPendingPieces(pieces) {
+        var joined = '';
+        for (var i = 0; i < pieces.length; i++) {
+            var piece = normalizeGeminiText(pieces[i]).replace(/^\s+/, '').replace(/\s+$/, '');
+            if (!piece) continue;
+            if (!joined) {
+                joined = piece;
+                continue;
+            }
+            var prev = joined.replace(/\s+$/, '');
+            var prevLast = prev.charAt(prev.length - 1);
+            var nextFirst = piece.replace(/^\s+/, '').charAt(0);
+            var glue = (isFullWidthJoinPunctuation(prevLast) || isFullWidthJoinPunctuation(nextFirst)) ? '' : ' ';
+            joined = prev + glue + piece;
+        }
+        return joined;
+    }
+
+    function rebalanceRealisticQueueIfNeeded() {
+        var mode = getRealisticSplitMode();
+        if (mode === 'normal') return;
+        var queue = window._realisticGeminiQueue;
+        if (!Array.isArray(queue) || queue.length < 2) return;
+
+        var originalBuffer = typeof window._realisticGeminiBuffer === 'string' ? window._realisticGeminiBuffer : '';
+        var queueText = joinRealisticPendingPieces(queue);
+        if (!queueText) return;
+
+        var pieces = [queueText];
+        if (originalBuffer) pieces.push(originalBuffer);
+        var pendingText = joinRealisticPendingPieces(pieces);
+        var splitResult = splitIntoSentences(pendingText, {
+            mode: mode,
+            flushTrailingBoundary: !originalBuffer
+        });
+
+        if (splitResult.sentences.length === 0) {
+            window._realisticGeminiQueue = [queueText];
+            window._realisticGeminiBuffer = originalBuffer;
+            return;
+        }
+
+        if (splitResult.sentences.length <= queue.length) {
+            window._realisticGeminiQueue = splitResult.sentences;
+            window._realisticGeminiBuffer = splitResult.rest;
+        }
     }
 
     // ======================== 合并模式检测 ========================
@@ -444,6 +510,7 @@
                 window._pendingMusicCommand = '';
                 window._structuredGeminiStreaming = false;
                 window._turnIsStructured = false;
+                window._realisticGeminiChunkCount = 0;
                 window.currentTurnGeminiBubbles = [];
                 window.currentTurnGeminiAttachments = [];
                 // 提前复位字幕 turn 状态：neko-assistant-turn-start 事件要等
@@ -480,8 +547,10 @@
                 window._realisticGeminiQueue = [];
                 window._lastBubbleTime = 0;
                 window._pendingMusicCommand = '';
+                window._realisticGeminiChunkCount = 0;
             }
 
+            window._realisticGeminiChunkCount = (window._realisticGeminiChunkCount || 0) + 1;
             var incoming = normalizeGeminiText(text);
 
             // 未闭合的音乐指令片段
@@ -522,6 +591,7 @@
             if (splitResult.sentences.length > 0) {
                 window._realisticGeminiQueue = window._realisticGeminiQueue || [];
                 window._realisticGeminiQueue.push.apply(window._realisticGeminiQueue, splitResult.sentences);
+                rebalanceRealisticQueueIfNeeded();
                 processRealisticQueue(window._realisticGeminiVersion || 0);
                 createdVisibleBubble = (window.currentTurnGeminiBubbles ? window.currentTurnGeminiBubbles.length : 0) > bubbleCountBefore;
             }
@@ -531,6 +601,7 @@
             window._realisticGeminiBuffer = '';
             window._realisticGeminiQueue = [];
             window._lastBubbleTime = 0;
+            window._realisticGeminiChunkCount = 0;
 
             var cleanNewText = cleanMusicFromChunk(text);
 
