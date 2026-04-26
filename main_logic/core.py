@@ -415,13 +415,17 @@ class LLMSessionManager:
         return True
 
     def _get_text_guard_max_length(self) -> int:
+        """读取用户设置的回复 token 上限。
+        单位：tiktoken (o200k_base) tokens。0 = 无限制（返回 999999）。
+        默认 300 tokens ≈ 400 CJK 字 / ~1200 英文字符。
+        """
         try:
             # 优先从对话设置中读取，如果不存在则从核心配置读取
             conversation_settings = load_global_conversation_settings()
             if 'textGuardMaxLength' in conversation_settings:
                 value = int(conversation_settings['textGuardMaxLength'])
             else:
-                value = int(self._config_manager.get_core_config().get('TEXT_GUARD_MAX_LENGTH', 350))
+                value = int(self._config_manager.get_core_config().get('TEXT_GUARD_MAX_LENGTH', 300))
             # 0 表示无限制，返回一个很大的数
             if value == 0:
                 return 999999
@@ -429,7 +433,7 @@ class LLMSessionManager:
                 raise ValueError
             return value
         except Exception:
-            return 350
+            return 300
 
     def _enqueue_tts_text_chunk(self, speech_id, text: str) -> None:
         """把一段文本 chunk 入 TTS 队列，http_sentence 类 provider 走 normalizer。
@@ -677,10 +681,17 @@ class LLMSessionManager:
                 if hasattr(self, 'is_preparing_new_session') and not self.is_preparing_new_session:
                     _elapsed = (datetime.now() - self.session_start_time).total_seconds() if self.session_start_time else 0
                     _turn_threshold_met = self._session_turn_count >= 10
-                    _ctx_threshold_met = (
-                        isinstance(self.session, OmniOfflineClient)
-                        and sum(len(str(m.content)) for m in self.session._conversation_history[1:]) >= 10000
-                    )
+                    # Session 历史 token 总量阈值。turn-end 后的冷路径，
+                    # sync count_tokens 即可（10 条消息合计 < 50ms）。
+                    if isinstance(self.session, OmniOfflineClient):
+                        from utils.tokenize import count_tokens as _ct
+                        _ctx_total = sum(
+                            _ct(str(m.content))
+                            for m in self.session._conversation_history[1:]
+                        )
+                        _ctx_threshold_met = _ctx_total >= 5000
+                    else:
+                        _ctx_threshold_met = False
                     if _elapsed >= 40 or _turn_threshold_met or _ctx_threshold_met:
                         logger.info(f"[{self.lanlan_name}] Main Listener: Uptime threshold met. Marking for new session preparation.")
                         self.is_preparing_new_session = True
@@ -730,13 +741,19 @@ class LLMSessionManager:
         """
         logger.warning(f"[{self.lanlan_name}] 响应异常已丢弃 (reason={reason}, attempt={attempt}/{max_attempts}, will_retry={will_retry})")
 
-        # 检测是否为 RESPONSE_TOO_LONG 最终丢弃
+        # 检测是否为 RESPONSE_TOO_LONG 最终丢弃 / RESPONSE_LENGTH_TRUNCATED 截断恢复
         _is_too_long_final = False
+        _truncated_text = None  # 非 None 表示进入 reroll 耗尽后的"截断到句末"恢复路径
         if not will_retry and message:
             try:
                 parsed = json.loads(message) if isinstance(message, str) else message
-                if isinstance(parsed, dict) and parsed.get('code') == 'RESPONSE_TOO_LONG':
-                    _is_too_long_final = True
+                if isinstance(parsed, dict):
+                    if parsed.get('code') == 'RESPONSE_TOO_LONG':
+                        _is_too_long_final = True
+                    elif parsed.get('code') == 'RESPONSE_LENGTH_TRUNCATED':
+                        candidate = parsed.get('text')
+                        if isinstance(candidate, str) and candidate.strip():
+                            _truncated_text = candidate
             except Exception as _parse_err:
                 logger.debug(f"[{self.lanlan_name}] response_discarded JSON 解析失败: {_parse_err}, message={message!r}")
 
@@ -757,14 +774,19 @@ class LLMSessionManager:
             except Exception as e:
                 logger.warning(f"发送 response_discarded 到前端失败: {e}")
 
-        # RESPONSE_TOO_LONG 最终丢弃时：发送可爱回复 + 用角色 TTS 音色念出来
-        if _is_too_long_final:
+        # RESPONSE_TOO_LONG 最终丢弃时：发送可爱回复 + 用角色 TTS 音色念出来。
+        # RESPONSE_LENGTH_TRUNCATED：reroll 耗尽后回退到最后句末标点截断的恢复路径，
+        # 把截断后的文本当作正常回复重新喂给前端 + TTS（用户输入不回滚）。
+        if _is_too_long_final or _truncated_text is not None:
             try:
-                too_long_text = _get_chat_locale_text(
-                    self.user_language,
-                    'responseTooLong',
-                    "Response too long and was discarded; your input has been restored.",
-                )
+                if _truncated_text is not None:
+                    body_text = _truncated_text
+                else:
+                    body_text = _get_chat_locale_text(
+                        self.user_language,
+                        'responseTooLong',
+                        "Response too long and was discarded; your input has been restored.",
+                    )
 
                 if self.use_tts:
                     async with self.lock:
@@ -773,15 +795,19 @@ class LLMSessionManager:
                         self._tts_done_pending_until_ready = False
 
                 # 发送文本到前端显示
-                await self.send_lanlan_response(too_long_text, is_first_chunk=True)
+                await self.send_lanlan_response(body_text, is_first_chunk=True)
 
                 if self.session and hasattr(self.session, '_conversation_history'):
-                    self.session._conversation_history.append(AIMessage(content=too_long_text))
+                    self.session._conversation_history.append(AIMessage(content=body_text))
 
                 # 喂给 TTS 管线用角色音色念
                 if self.use_tts:
-                    await self.feed_tts_chunk(too_long_text)
-                    await self._request_tts_done_for_turn("handle_response_discarded:too_long_final")
+                    await self.feed_tts_chunk(body_text)
+                    await self._request_tts_done_for_turn(
+                        "handle_response_discarded:length_truncated"
+                        if _truncated_text is not None
+                        else "handle_response_discarded:too_long_final"
+                    )
 
                 # turn end
                 self.sync_message_queue.put({'type': 'system', 'data': 'turn end'})
@@ -793,7 +819,7 @@ class LLMSessionManager:
                         'request_id': self._active_text_request_id,
                     })
             except Exception as e:
-                logger.warning(f"⚠️ RESPONSE_TOO_LONG 回复发送失败: {e}")
+                logger.warning(f"⚠️ {'RESPONSE_LENGTH_TRUNCATED' if _truncated_text is not None else 'RESPONSE_TOO_LONG'} 回复发送失败: {e}")
             finally:
                 self._active_text_request_id = None
 
@@ -803,7 +829,7 @@ class LLMSessionManager:
                 'data': 'response_discarded_clear'
             })
 
-        if not will_retry and not _is_too_long_final:
+        if not will_retry and not _is_too_long_final and _truncated_text is None:
             self._active_text_request_id = None
 
         # turn end will 由 handle_response_complete 统一发送
@@ -2771,7 +2797,9 @@ class LLMSessionManager:
                     await self.websocket.send_json({'type': 'system', 'data': 'turn end'})
             except Exception:
                 pass
-        logger.info("[%s] Proactive stream delivered: %.40s…", self.lanlan_name, full_text)
+        # proactive 原文不写 logger（隐私）；本地 print 兜底
+        logger.info("[%s] Proactive stream delivered (text_len=%d)", self.lanlan_name, len(full_text or ""))
+        print(f"[{self.lanlan_name}] Proactive stream delivered: {(full_text or '')[:40]}…")
         return True
 
     async def handle_avatar_interaction(self, payload: dict) -> dict:

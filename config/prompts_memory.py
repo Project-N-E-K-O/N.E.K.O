@@ -1197,7 +1197,7 @@ REFLECTION_PROMPT = {
 - relationship 可用: dynamic(互动模式) | milestone(里程碑) | tension(摩擦) | shared_memory(共同记忆) | agreement(约定)
 - temporal_scope: current(当前) | past(过去) | ongoing(持续)
 
-要求：紧扣单一观察或模式，不要把多个无关事实混在一起；长度保持在 2-3 句简短洞察内即可。
+要求：紧扣单一观察或模式，不要把多个无关事实混在一起；长度保持在 2-3 句、约 150 字以内的简短洞察。
 
 请以 JSON 格式返回：
 {{"reflection": "你的反思洞察", "entity": "master/neko/relationship", "relation_type": "preference", "temporal_scope": "current"}}""",
@@ -1221,7 +1221,7 @@ Also provide a semantic relation_type (must match the entity) and a temporal_sco
 - relationship: dynamic | milestone | tension | shared_memory | agreement
 - temporal_scope: current | past | ongoing
 
-Requirements: stay focused on a single observation or pattern; do not mix unrelated facts. The 2-3-sentence length guidance above still applies.
+Requirements: stay focused on a single observation or pattern; do not mix unrelated facts. Keep the reflection within 2-3 sentences and roughly 150 words.
 
 Return in JSON format:
 {{"reflection": "your reflective insight", "entity": "master/neko/relationship", "relation_type": "preference", "temporal_scope": "current"}}""",
@@ -1245,7 +1245,7 @@ Return in JSON format:
 - relationship: dynamic | milestone | tension | shared_memory | agreement
 - temporal_scope: current | past | ongoing
 
-要件：単一の観察やパターンに集中し、無関係な事実を混ぜないこと。長さは先に示した 2-3 文の範囲を維持。
+要件：単一の観察やパターンに集中し、無関係な事実を混ぜないこと。長さは 2-3 文、約 150 字以内に収める。
 
 JSON形式で返してください：
 {{"reflection": "あなたの反省的洞察", "entity": "master/neko/relationship", "relation_type": "preference", "temporal_scope": "current"}}""",
@@ -1269,7 +1269,7 @@ JSON形式で返してください：
 - relationship: dynamic | milestone | tension | shared_memory | agreement
 - temporal_scope: current | past | ongoing
 
-요구사항: 단일 관찰 또는 패턴에 집중하고 관련 없는 사실을 섞지 마세요. 위의 2-3문장 길이 지침은 그대로 유지합니다.
+요구사항: 단일 관찰 또는 패턴에 집중하고 관련 없는 사실을 섞지 마세요. 길이는 2-3문장, 약 150자 이내로 유지하세요.
 
 JSON 형식으로 반환해 주세요:
 {{"reflection": "당신의 반성적 통찰", "entity": "master/neko/relationship", "relation_type": "preference", "temporal_scope": "current"}}""",
@@ -1293,7 +1293,7 @@ JSON 형식으로 반환해 주세요:
 - relationship: dynamic | milestone | tension | shared_memory | agreement
 - temporal_scope: current | past | ongoing
 
-Требования: сосредоточьтесь на одном наблюдении или паттерне, не смешивайте не связанные факты. Указанная выше длина в 2-3 предложения сохраняется.
+Требования: сосредоточьтесь на одном наблюдении или паттерне, не смешивайте не связанные факты. Длина — 2-3 предложения, около 150 слов.
 
 Верните в формате JSON:
 {{"reflection": "ваше рефлексивное наблюдение", "entity": "master/neko/relationship", "relation_type": "preference", "temporal_scope": "current"}}""",

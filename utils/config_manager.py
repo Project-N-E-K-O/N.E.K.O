@@ -2498,7 +2498,8 @@ class ConfigManager:
         else:
             config['DISABLE_TTS'] = False
 
-        # 文本模式回复长度守卫上限（字/词数，超限会丢弃并重试）
+        # 文本模式回复长度守卫上限（tiktoken o200k_base tokens，超限触发 reroll；
+        # reroll 耗尽后回退到最后一个句末标点截断后落定）
         try:
             config['TEXT_GUARD_MAX_LENGTH'] = int(core_cfg.get('textGuardMaxLength', 300))
             if config['TEXT_GUARD_MAX_LENGTH'] <= 0:

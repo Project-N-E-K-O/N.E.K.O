@@ -44,6 +44,7 @@ from utils.file_utils import (
     robust_json_loads,
 )
 from utils.logger_config import get_module_logger
+from utils.tokenize import count_tokens
 from utils.token_tracker import set_call_type
 from memory.persona import (
     PersonaManager,
@@ -146,7 +147,9 @@ TEMPORAL_SCOPES = frozenset({'current', 'past', 'ongoing'})
 # Soft cap on reflection text length. Beyond this, the ontology fields
 # are stripped because the text is likely a compound/multi-fact statement.
 # The reflection itself still persists unchanged so no information is lost.
-MAX_REFLECTION_TEXT_CHARS = 200
+# Measured in tiktoken (o200k_base) tokens — equivalent to ~200 CJK chars or
+# ~600 English chars under the current encoding.
+MAX_REFLECTION_TEXT_TOKENS = 150
 
 
 def _validate_reflection_ontology(
@@ -169,8 +172,9 @@ def _validate_reflection_ontology(
             )
     if temporal_scope is not None and temporal_scope not in TEMPORAL_SCOPES:
         return False, f'unknown temporal_scope: {temporal_scope!r}'
-    if len(text) > MAX_REFLECTION_TEXT_CHARS:
-        return False, f'text too long: {len(text)} chars (compound risk)'
+    n_tokens = count_tokens(text)
+    if n_tokens > MAX_REFLECTION_TEXT_TOKENS:
+        return False, f'text too long: {n_tokens} tokens (compound risk)'
     return True, 'ok'
 
 
@@ -773,7 +777,9 @@ class ReflectionEngine:
             # 未持久化、可能与磁盘版文本不同的"幽灵反思"，违反"返回值
             # = 本调用真正新建的反思"语义。
             return []
-        logger.info(f"[Reflection] {lanlan_name}: 合成了新反思 {rid}: {reflection_text[:50]}...")
+        # reflection 原文不写 logger（隐私）；本地 print 兜底
+        logger.info(f"[Reflection] {lanlan_name}: 合成了新反思 {rid} (len={len(reflection_text)} chars)")
+        print(f"[Reflection] {lanlan_name}: 新反思 {rid}: {reflection_text[:50]}...")
         return [reflection]
 
     # alias for backward compat (system_router calls .reflect())
@@ -1522,7 +1528,8 @@ class ReflectionEngine:
         reflections = self.load_reflections(lanlan_name)
         text = self._apply_promotion_status(reflections, reflection_id, 'confirmed')
         if text is not None:
-            logger.info(f"[Reflection] {lanlan_name}: 反思已确认(软persona): {text[:50]}...")
+            logger.info(f"[Reflection] {lanlan_name}: 反思已确认(软persona) id={reflection_id} len={len(text)}")
+            print(f"[Reflection] {lanlan_name}: 反思已确认(软persona): {text[:50]}...")
         self.save_reflections(lanlan_name, reflections)
         self._mark_surfaced_handled(lanlan_name, reflection_id, 'confirmed')
 
@@ -1531,7 +1538,8 @@ class ReflectionEngine:
             reflections = await self.aload_reflections(lanlan_name)
             text = self._apply_promotion_status(reflections, reflection_id, 'confirmed')
             if text is not None:
-                logger.info(f"[Reflection] {lanlan_name}: 反思已确认(软persona): {text[:50]}...")
+                logger.info(f"[Reflection] {lanlan_name}: 反思已确认(软persona) id={reflection_id} len={len(text)}")
+                print(f"[Reflection] {lanlan_name}: 反思已确认(软persona): {text[:50]}...")
             await self.asave_reflections(lanlan_name, reflections)
             await self._amark_surfaced_handled(lanlan_name, reflection_id, 'confirmed')
 
@@ -1540,7 +1548,8 @@ class ReflectionEngine:
         reflections = self.load_reflections(lanlan_name)
         text = self._apply_promotion_status(reflections, reflection_id, 'denied')
         if text is not None:
-            logger.info(f"[Reflection] {lanlan_name}: 反思被否定: {text[:50]}...")
+            logger.info(f"[Reflection] {lanlan_name}: 反思被否定 id={reflection_id} len={len(text)}")
+            print(f"[Reflection] {lanlan_name}: 反思被否定: {text[:50]}...")
         self.save_reflections(lanlan_name, reflections)
         self._mark_surfaced_handled(lanlan_name, reflection_id, 'denied')
 
@@ -1549,7 +1558,8 @@ class ReflectionEngine:
             reflections = await self.aload_reflections(lanlan_name)
             text = self._apply_promotion_status(reflections, reflection_id, 'denied')
             if text is not None:
-                logger.info(f"[Reflection] {lanlan_name}: 反思被否定: {text[:50]}...")
+                logger.info(f"[Reflection] {lanlan_name}: 反思被否定 id={reflection_id} len={len(text)}")
+                print(f"[Reflection] {lanlan_name}: 反思被否定: {text[:50]}...")
             await self.asave_reflections(lanlan_name, reflections)
             await self._amark_surfaced_handled(lanlan_name, reflection_id, 'denied')
 

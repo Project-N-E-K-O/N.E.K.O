@@ -19,14 +19,25 @@ import logging
 import locale
 from datetime import datetime
 
+from utils.cjk import count_chinese_chars, count_hangul_chars, count_kana_chars
 
-chinese_char_pattern = re.compile(r'[\u4e00-\u9fff]+')
+# Unicode regexes (compiled once). `regex` package is needed for `\p{L}`
+# class — standard `re` only supports the ASCII letter shorthand.
+# - _CJK_STRIP: replace any CJK char with a space so subsequent word
+#   matching only finds non-CJK letter runs.
+# - _NON_CJK_WORD: any maximal run of Unicode "letter" chars in any
+#   script (Latin, Cyrillic, Arabic, Greek, Hebrew, Thai, Devanagari, …).
+#   Excludes digits/punctuation/spaces by virtue of `\p{L}+`.
+_CJK_STRIP = regex.compile(r'[一-鿿぀-ヿ가-힯]')
+_NON_CJK_WORD = regex.compile(r'\p{L}+')
+
+
 bracket_patterns = [re.compile(r'\(.*?\)'),
                    re.compile('（.*?）')]
 
 # whether contain chinese character
 def contains_chinese(text):
-    return bool(chinese_char_pattern.search(text))
+    return count_chinese_chars(text) > 0
 
 
 # replace special symbol
@@ -36,19 +47,25 @@ def replace_corner_mark(text):
     return text
 
 def estimate_speech_time(text, unit_duration=0.2):
-    # 中文汉字范围
-    chinese_chars = re.findall(r'[\u4e00-\u9fff]', text)
-    chinese_units = len(chinese_chars) * 1.5
+    # Per-class duration coefficients (heuristic, not corpus-calibrated):
+    #   - Chinese hanzi: 1.5 units/char (polysyllabic, slower TTS)
+    #   - Japanese kana: 1.0 units/char (mono-syllabic)
+    #   - Korean Hangul: 1.0 units/char (one syllable per syllable block)
+    #   - Other letter words (Latin, Cyrillic, Arabic, Greek, Hebrew, Thai,
+    #     Devanagari, …): 1.5 units/word (rough syllable average for
+    #     Romance/Germanic/Slavic prose; Arabic+Hebrew skew shorter but
+    #     1.5 is conservative — over-estimating duration is fine for fence
+    #     callers, who'd rather cut early than let TTS run long)
+    chinese_units = count_chinese_chars(text) * 1.5
+    japanese_units = count_kana_chars(text) * 1.0
+    korean_units = count_hangul_chars(text) * 1.0
 
-    # 日文假名范围（平假名 3040–309F，片假名 30A0–30FF）
-    japanese_kana = re.findall(r'[\u3040-\u30FF]', text)
-    japanese_units = len(japanese_kana) * 1.0
+    # Strip CJK first so word matching doesn't collapse CJK runs into a
+    # single "word" (the `\p{L}` class includes Han / Kana / Hangul).
+    non_cjk_text = _CJK_STRIP.sub(' ', text)
+    other_units = len(_NON_CJK_WORD.findall(non_cjk_text)) * 1.5
 
-    # 英文单词（连续的 a-z 或 A-Z）
-    english_words = re.findall(r'\b[a-zA-Z]+\b', text)
-    english_units = len(english_words) * 1.5
-
-    total_units = chinese_units + japanese_units + english_units
+    total_units = chinese_units + japanese_units + korean_units + other_units
     estimated_seconds = total_units * unit_duration
 
     return estimated_seconds
@@ -70,10 +87,8 @@ def count_words_and_chars(text: str) -> int:
     """
     if not text:
         return 0
-    count = 0
-    chinese_chars = re.findall(r'[\u4e00-\u9fff]', text)
-    count += len(chinese_chars)
-    text_without_chinese = re.sub(r'[\u4e00-\u9fff]', ' ', text)
+    count = count_chinese_chars(text)
+    text_without_chinese = re.sub(r'[一-鿿]', ' ', text)
     english_words = [w for w in text_without_chinese.split() if w.strip()]
     count += len(english_words)
     return count

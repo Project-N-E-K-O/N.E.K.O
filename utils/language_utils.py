@@ -1196,11 +1196,14 @@ class TranslationService:
 
             translated = response.content.strip()
             if not translated:
-                logger.warning(f"翻译服务：LLM返回空结果，使用原文: '{text[:50]}...'")
-                return text            
+                # 原文/译文都不写 logger
+                logger.warning(f"翻译服务：LLM返回空结果，使用原文 (text_len={len(text)})")
+                print(f"[翻译] LLM 空结果，原文: '{text[:50]}...'")
+                return text
             await self._save_to_cache(text, target_lang_normalized, translated)
-            
-            logger.debug(f"翻译服务：'{text[:50]}...' -> '{translated[:50]}...' ({target_lang})")
+
+            logger.debug(f"翻译服务：text_len={len(text)} -> translated_len={len(translated)} ({target_lang})")
+            print(f"[翻译] '{text[:50]}...' -> '{translated[:50]}...' ({target_lang})")
             return translated
             
         except Exception as e:

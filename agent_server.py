@@ -1540,7 +1540,9 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                         summary=summary,
                         detail=mcp_detail,
                     )
-                    logger.info(f"[TaskExecutor] ✅ MCP task completed and notified: {result.task_description}")
+                    # task_description 是 LLM 生成的任务描述，不写 logger
+                    logger.info(f"[TaskExecutor] ✅ MCP task completed and notified (desc_len={len(result.task_description or '')})")
+                    print(f"[TaskExecutor] MCP task description: {(result.task_description or '')}")
                 except Exception as e:
                     logger.warning(f"[TaskExecutor] Failed to notify main_server: {e}")
             else:
@@ -1565,7 +1567,9 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                         lanlan_name, task_id=ti["id"], method="computer_use",
                         desc=result.task_description or "",
                     )
-                    logger.info(f"[ComputerUse] Scheduled task {ti['id']} (session={cu_session.session_id[:8]}): {result.task_description[:50]}...")
+                    # task_description 是用户/LLM 原文，不写进 logger；本地 print 兜底
+                    logger.info(f"[ComputerUse] Scheduled task {ti['id']} (session={cu_session.session_id[:8]}, desc_len={len(result.task_description or '')})")
+                    print(f"[ComputerUse] task {ti['id']} description: {(result.task_description or '')[:120]}")
                     try:
                         await _emit_main_event(
                             "task_update",
@@ -2328,7 +2332,9 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                         len(of_res.get("artifacts") or []))
                             logger.debug("[OpenFang] ====== RAW RESULT (debug) ======")
                             logger.debug("[OpenFang] keys=%s", list(of_res.keys()))
-                            logger.debug("[OpenFang] result (first 500): %s", str(of_res.get("result", ""))[:500])
+                            # OpenFang result 可能含 LLM/用户原文；只 logger 长度，print 给开发者
+                            logger.debug("[OpenFang] result_len=%d", len(str(of_res.get("result", ""))))
+                            print(f"[OpenFang] result (first 500): {str(of_res.get('result', ''))[:500]}")
                             logger.debug("[OpenFang] error: %s", of_res.get("error"))
                             logger.debug("[OpenFang] artifacts=%s", of_res.get("artifacts"))
                             logger.debug("[OpenFang] ==============================")
@@ -2339,13 +2345,16 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                             of_error_text = of_res.get("error", "") or ""
                             _lang = _rp_lang(None)
                             _done = _rp_phrase('cu_status_done', _lang) if success else _rp_phrase('cu_status_ended', _lang)
-                            summary = _rp_phrase('cu_task_done', _lang, desc=result.task_description, status=_done, detail=of_result_text[:300]) if of_result_text else \
+                            from utils.tokenize import truncate_to_tokens as _tt
+                            # 两处 detail 都回流到 LLM context — 同语义统一到 200 tokens
+                            # （和 result_parser._truncate / fallback Context 同一档）。
+                            summary = _rp_phrase('cu_task_done', _lang, desc=result.task_description, status=_done, detail=_tt(of_result_text, 200)) if of_result_text else \
                                       _rp_phrase('cu_task_desc_only', _lang, desc=result.task_description, status=_done)
                             of_session.complete_task(of_result_text or summary, success)
                             _task_tracker.record_completed(
                                 lanlan_name, task_id=of_task_id, method="openfang",
                                 desc=result.task_description or "",
-                                detail=of_result_text[:200] if of_result_text else "", success=success,
+                                detail=_tt(of_result_text, 200) if of_result_text else "", success=success,
                             )
                             of_info["status"] = "completed" if success else "failed"
                             of_info["end_time"] = _now_iso()
@@ -3395,7 +3404,8 @@ async def openfang_llm_proxy(request: Request, path: str):
                     content=body, headers=forward_headers,
                 )
                 logger.info("[LLM Proxy] upstream response: status=%s, len=%d", resp.status_code, len(resp.content))
-                logger.debug("[LLM Proxy] upstream body (first 500): %s", resp.text[:500])
+                # body 可能含 LLM 生成原文；不写 logger，仅本地 print
+                print(f"[LLM Proxy] upstream body (first 500): {resp.text[:500]}")
                 # 尝试 JSON patch
                 try:
                     data = resp.json()
@@ -3519,7 +3529,9 @@ def _extract_tool_intent_as_text(refusal_text: str) -> str:
     match = _re.search(pattern, cleaned, _re.DOTALL)
 
     if not match:
-        return f"I attempted to perform an action but encountered a compatibility issue. Let me provide what I know instead.\n\nContext: {cleaned[:300]}"
+        from utils.tokenize import truncate_to_tokens
+        # Context 会回到 LLM 的下一轮上下文 — token 而非字符
+        return f"I attempted to perform an action but encountered a compatibility issue. Let me provide what I know instead.\n\nContext: {truncate_to_tokens(cleaned, 200)}"
 
     tool_name = match.group(1)
     args_raw = match.group(2)
@@ -3653,12 +3665,14 @@ async def openfang_run(payload: Dict[str, Any]):
             if not _success:
                 reg["error"] = _error_text
 
+            from utils.tokenize import truncate_to_tokens as _tt
+            # callback summary 进 LLM context — 与 _sanitize_correction_text per-item 同档（400 tokens）
             await _emit_task_result(
                 _lanlan,
                 channel="openfang",
                 task_id=task_id,
                 success=_success,
-                summary=_result_text[:500],
+                summary=_tt(_result_text, 400),
                 detail=_result_text,
                 error_message=_error_text,
             )

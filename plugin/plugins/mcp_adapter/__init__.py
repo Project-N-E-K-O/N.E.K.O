@@ -948,10 +948,11 @@ class MCPClient:
                 if not line:
                     break
                 
-                # 记录 stderr 输出
+                # 记录 stderr 输出 — 上游 MCP 进程的 stderr 可能含敏感数据，不写 logger
                 stderr_text = line.decode().strip()
                 if stderr_text and self.logger:
-                    self.logger.debug(f"MCP server '{self.config.name}' stderr: {stderr_text}")
+                    self.logger.debug(f"MCP server '{self.config.name}' stderr (len={len(stderr_text)})")
+                    print(f"[MCP] '{self.config.name}' stderr: {stderr_text}")
         except asyncio.CancelledError:
             pass
         except Exception as e:
@@ -1373,11 +1374,15 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         )
         return normalized_current == incoming
 
-    def _truncate_llm_text(self, text: str, limit: int = 1200) -> str:
+    def _truncate_llm_text(self, text: str, limit: int = 1000) -> str:
+        # `limit` is in tiktoken tokens (o200k_base). 1000 ≈ 1400 CJK chars or
+        # ~4000 English chars under the current encoding. Sync because callers
+        # are sync; truncate_to_tokens handles tiktoken-unavailable fallback.
+        from utils.tokenize import count_tokens, truncate_to_tokens
         cleaned = text.strip()
-        if len(cleaned) <= limit:
+        if count_tokens(cleaned) <= limit:
             return cleaned
-        return cleaned[:limit] + "..."
+        return truncate_to_tokens(cleaned, limit) + "..."
 
     def _summarize_mcp_result(self, result: object) -> str:
         if result is None:

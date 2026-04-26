@@ -1196,7 +1196,9 @@ def get_active_window_title(include_raw: bool = False) -> Optional[Union[str, Di
                 sanitized_title = raw_title[:30] + '...'
             else:
                 sanitized_title = raw_title
-            logger.info(f"获取到活跃窗口标题: {sanitized_title}")
+            # 窗口标题是用户面对的内容，不写 logger
+            logger.info(f"获取到活跃窗口标题 (len={len(raw_title)})")
+            print(f"获取到活跃窗口标题: {sanitized_title}")
             
             if include_raw:
                 return {
@@ -1269,7 +1271,9 @@ async def generate_diverse_queries(window_title: str) -> List[str]:
         ])
         response_text = _extract_llm_text_content(getattr(response, 'content', None))
         if not response_text:
-            logger.warning(f"为窗口标题「{sanitized_title}」生成搜索关键词时收到空包，使用默认清理方法回退")
+            # 窗口标题不写 logger
+            logger.warning("为窗口标题（len 已脱敏）生成搜索关键词时收到空包，使用默认清理方法回退")
+            print(f"为窗口标题「{sanitized_title}」生成搜索关键词时收到空包")
             clean_title = clean_window_title(window_title)
             return [clean_title, clean_title, clean_title] if clean_title else []
 
@@ -1292,11 +1296,9 @@ async def generate_diverse_queries(window_title: str) -> List[str]:
             while len(queries) < 3 and clean_title:
                 queries.append(clean_title)
         
-        # 使用脱敏后的标题记录日志
-        if china_region:
-            logger.info(f"为窗口标题「{sanitized_title}」生成的查询关键词: {queries}")
-        else:
-            logger.info(f"为窗口标题「{sanitized_title}」生成的查询关键词: {queries}")
+        # 窗口标题 + AI 生成的查询关键词都不写 logger
+        logger.info(f"窗口标题→查询关键词生成完成 (queries_count={len(queries[:3])})")
+        print(f"为窗口标题「{sanitized_title}」生成的查询关键词: {queries}")
         return queries[:3]
         
     except Exception as e:
@@ -1305,10 +1307,8 @@ async def generate_diverse_queries(window_title: str) -> List[str]:
             sanitized_title = window_title[:30] + '...'
         else:
             sanitized_title = window_title
-        if is_china_region():
-            logger.warning(f"为窗口标题「{sanitized_title}」生成多样化查询失败，使用默认清理方法: {e}")
-        else:
-            logger.warning(f"为窗口标题「{sanitized_title}」生成多样化查询失败，使用默认清理方法: {e}")
+        logger.warning(f"窗口标题→多样化查询生成失败，回退默认清理方法: {e}")
+        print(f"为窗口标题「{sanitized_title}」生成多样化查询失败: {e}")
         # 回退到原始清理方法
         clean_title = clean_window_title(window_title)
         return [clean_title, clean_title, clean_title]
@@ -1823,11 +1823,9 @@ async def fetch_window_context_content(limit: int = 5) -> Dict[str, Any]:
                     'window_title': sanitized_title
                 }
         
-        # 日志中使用脱敏后的标题
-        if china_region:
-            logger.info(f"从窗口标题「{sanitized_title}」生成多样化查询: {search_queries}")
-        else:
-            logger.info(f"从窗口标题「{sanitized_title}」生成多样化查询: {search_queries}")
+        # 窗口标题 + 查询都不写 logger
+        logger.info(f"从窗口标题生成多样化查询完成 (queries_count={len(search_queries or [])})")
+        print(f"从窗口标题「{sanitized_title}」生成多样化查询: {search_queries}")
         
         # 执行搜索并合并结果
         all_results = []
@@ -2476,11 +2474,10 @@ async def fetch_weibo_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
             logger.info("微博动态:")  # 统一对齐 B站 的提示词
             for i, weibo in enumerate(weibo_list, 1):
                 content = weibo.get('content', '')
-                # 稍微放宽一点截断长度，保证显示效果更好
                 if len(content) > 50:
                     content = content[:50] + "..."
-                # 去掉冗余的时间和作者，直接干干净净地打印 content
-                logger.info(f"  - {content}")
+                # 微博正文是用户面对的内容，不写 logger
+                print(f"  - {content}")
 
             return {'success': True, 'statuses': weibo_list}
         else:

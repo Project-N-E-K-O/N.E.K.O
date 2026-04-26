@@ -14,6 +14,18 @@ from config.prompts_memory import (
 )
 from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable
 from utils.language_utils import get_global_language
+from utils.tokenize import acount_tokens
+
+# Stage-1 → Stage-2 trigger threshold. Two-stage flow:
+#   Stage 1 (`compress_history`) summarises raw messages with no explicit
+#     length cap in the prompt — model writes naturally.
+#   Stage 2 (`further_compress`) is invoked only when Stage-1 output exceeds
+#     this threshold; its own prompt hard-caps output at 500 chars/words per
+#     language, so Stage-2 results are always far under MAX_SUMMARY_TOKENS.
+# 1000 tokens ≈ 1400 CJK chars / ~4000 English chars — generous enough that
+# Stage 2 only triggers on genuinely runaway Stage-1 outputs (the Stage-2
+# 500-char/word cap is independent of this gate).
+MAX_SUMMARY_TOKENS = 1000
 
 # Setup logger
 from utils.file_utils import (
@@ -247,7 +259,7 @@ class CompressedRecentHistoryManager:
                 if '对话摘要' in summary_json:
                     print(f"💗摘要结果：{summary_json['对话摘要']}")
                     summary = summary_json['对话摘要']
-                    if len(summary) > 500:
+                    if await acount_tokens(summary) > MAX_SUMMARY_TOKENS:
                         summary = await self.further_compress(summary)
                         if summary is None:
                             continue

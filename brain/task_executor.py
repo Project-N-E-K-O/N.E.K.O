@@ -263,15 +263,18 @@ class DirectTaskExecutor:
                 try:
                     desc = str(p.get("description", "") or "").strip()
                     messages = [
-                        {"role": "system", "content": "You are an agentic automation assessment agent, generate a concise plugin summary under 300 characters in English."},
+                        {"role": "system", "content": "You are an agentic automation assessment agent, generate a concise plugin summary under 200 tokens in English."},
                         {"role": "user", "content": f"Plugin: {pid}\nDescription: {desc}\n\nReturn ONLY the summary."},
                     ]
                     resp = await llm.ainvoke(messages)
                     text = (resp.content or "").strip()
-                    if text and len(text) <= 300:
+                    from utils.tokenize import count_tokens
+                    if text and count_tokens(text) <= 200:
                         p["short_description"] = text
                         self._short_desc_cache[pid] = (desc, text)
-                        logger.debug("[Agent] Generated short_description for %s: %s", pid, text[:80])
+                        # LLM 生成原文不写 logger
+                        logger.debug("[Agent] Generated short_description for %s (len=%d chars)", pid, len(text))
+                        print(f"[Agent] short_description {pid}: {text[:80]}")
                 except Exception as e:
                     # Don't cache failures — allow retry on next refresh
                     logger.debug("[Agent] Failed to generate short_description for %s: %s", pid, e)
@@ -565,13 +568,14 @@ class DirectTaskExecutor:
         if not latest_is_vague:
             return latest
 
+        from utils.tokenize import truncate_to_tokens
         context_candidates: List[str] = []
         for text in user_turns[-3:]:
             if text and text != latest:
                 context_candidates.append(text)
         if context_candidates:
-            return " / ".join([*context_candidates[-2:], latest])[:300]
-        return latest[:300]
+            return truncate_to_tokens(" / ".join([*context_candidates[-2:], latest]), 200)
+        return truncate_to_tokens(latest, 200)
 
     @staticmethod
     def _sanitize_correction_text(text: str) -> str:
@@ -601,11 +605,19 @@ class DirectTaskExecutor:
         for pattern, replacement in patterns:
             cleaned = re.sub(pattern, replacement, cleaned)
         cleaned = re.sub(r"\s+", " ", cleaned).strip()
-        return cleaned[:500]
+        from utils.tokenize import truncate_to_tokens
+        # Per-item cap on the redacted correction text (one role-message in the
+        # recent-context window). Group with `agent_server.py` callback summary —
+        # both are "longer reflective blurbs" the LLM will see standalone.
+        return truncate_to_tokens(cleaned, 400)
 
     def _sanitize_recent_context(self, recent_context: List[Dict[str, str]]) -> List[Dict[str, str]]:
+        from utils.tokenize import count_tokens
         sanitized: List[Dict[str, str]] = []
-        total_chars = 0
+        total_tokens = 0
+        # Total budget across the assembled recent-context window — fits ~2-3
+        # per-item (400-token) entries plus headroom. Caller stops accumulating
+        # once we cross this; partial last item is dropped.
         for item in reversed(recent_context[-4:]):
             role = str(item.get("role") or "").strip().lower()
             if role not in {"user", "assistant"}:
@@ -613,8 +625,8 @@ class DirectTaskExecutor:
             content = self._sanitize_correction_text(item.get("content", ""))
             if not content:
                 continue
-            total_chars += len(content)
-            if total_chars > 1200:
+            total_tokens += count_tokens(content)
+            if total_tokens > 1000:
                 break
             sanitized.append({"role": role, "content": content})
         sanitized.reverse()
@@ -905,7 +917,9 @@ class DirectTaskExecutor:
                 response = await llm.ainvoke(messages)
                 text = (response.content or "").strip()
 
-                logger.debug("[UnifiedAssessment] Raw response: %s", text[:500])
+                # LLM raw response 不写 logger
+                logger.debug("[UnifiedAssessment] Raw response (len=%d chars)", len(text))
+                print(f"[UnifiedAssessment] Raw response: {text[:500]}")
 
                 if text.startswith("```"):
                     text = text.replace("```json", "").replace("```", "").strip()
@@ -1023,12 +1037,13 @@ class DirectTaskExecutor:
         self, user_text: str, plugins: list, lang: str = "en",
     ) -> list[str]:
         """Stage 1 LLM coarse screening: return list of plugin IDs deemed relevant."""
+        from utils.tokenize import count_tokens, truncate_to_tokens
         summaries = []
         for p in plugins:
             pid = p.get("id", "unknown") if isinstance(p, dict) else "unknown"
             short = (p.get("short_description") or p.get("description", "")) if isinstance(p, dict) else ""
-            if len(short) > 300:
-                short = short[:300] + "..."
+            if count_tokens(short) > 200:
+                short = truncate_to_tokens(short, 200) + "..."
             summaries.append(f"- {pid}: {short}")
         plugin_summaries = "\n".join(summaries)
 
@@ -1112,12 +1127,16 @@ class DirectTaskExecutor:
                 keyword_hit_ids.append(pid)
 
         # ── Two-stage decision ──────────────────────────────────
-        if len(plugins_desc) > 4000:
+        # plugins_desc 会被拼进 LLM prompt — 用 token 而不是字符判断阈值。
+        # 3000 tokens ≈ 4000 CJK 字 / ~12k EN 字，超过则进 Stage-1 BM25 粗筛。
+        from utils.tokenize import count_tokens
+        plugins_desc_tokens = count_tokens(plugins_desc)
+        if plugins_desc_tokens > 3000:
             try:
                 # Stage 1: coarse filter (fail-open — falls back to full list on error)
                 logger.info(
-                    "[UserPlugin] Stage 1 triggered: plugins_desc=%d chars, %d plugins",
-                    len(plugins_desc), len(plugin_list),
+                    "[UserPlugin] Stage 1 triggered: plugins_desc=%d tokens, %d plugins",
+                    plugins_desc_tokens, len(plugin_list),
                 )
 
                 # BM25 + keyword filter（纯 CPU，offload 到线程）
@@ -1154,13 +1173,15 @@ class DirectTaskExecutor:
                 logger.warning("[UserPlugin] Stage 1 failed, falling back to full list: %s", stage1_err)
                 plugins = plugin_list
         else:
-            logger.debug("[UserPlugin] Skipping stage 1: plugins_desc=%d chars <= 4000", len(plugins_desc))
+            logger.debug("[UserPlugin] Skipping stage 1: plugins_desc=%d tokens <= 3000", plugins_desc_tokens)
             plugins = plugin_list
 
         # Annotate keyword-hit plugins
         plugins_desc = annotate_keyword_hits(plugins_desc, keyword_hit_ids)
 
-        logger.debug(f"[UserPlugin] passing plugin descriptions: {plugins_desc[:1000]}")
+        # plugin descriptions 可能含用户安装的插件配置文本（含 prompt 模板），不写 logger
+        logger.debug(f"[UserPlugin] passing plugin descriptions (len={len(plugins_desc)})")
+        print(f"[UserPlugin] plugin descriptions: {plugins_desc[:1000]}")
 
         # Stage 2: full LLM assessment
         system_prompt = _loc(USER_PLUGIN_SYSTEM_PROMPT, lang).format(plugins_desc=plugins_desc)
@@ -1197,8 +1218,12 @@ class DirectTaskExecutor:
                     prompt_dump = (system_prompt + "\n\n" + user_prompt)[:2000]
                 except Exception:
                     prompt_dump = "(failed to build prompt dump)"
-                logger.debug(f"[UserPlugin Assessment] prompt (truncated): {prompt_dump}")
-                logger.debug(f"[UserPlugin Assessment] raw LLM response: {repr(raw_text)[:2000]}")
+                # prompt 含用户输入 + LLM 响应原文，不写 logger
+                logger.debug(f"[UserPlugin Assessment] prompt (truncated, len={len(prompt_dump)})")
+                print(f"[UserPlugin Assessment] prompt (truncated): {prompt_dump}")
+                _raw_repr = repr(raw_text) if raw_text is not None else "None"
+                logger.debug(f"[UserPlugin Assessment] raw LLM response (len={len(_raw_repr)})")
+                print(f"[UserPlugin Assessment] raw LLM response: {_raw_repr[:2000]}")
                 
                 text = raw_text.strip() if isinstance(raw_text, str) else ""
                 
@@ -1220,11 +1245,13 @@ class DirectTaskExecutor:
                 try:
                     decision = json.loads(text)
                 except Exception as e:
-                    # 只在 DEBUG 级别记录 raw_text，避免隐私泄露和日志膨胀
+                    # raw_text 含 LLM 原文，不写 logger
+                    _raw_dump = repr(raw_text) if raw_text is not None else "None"
                     logger.debug(
-                        "[UserPlugin Assessment] JSON parse error; raw_text (truncated): %s",
-                        (repr(raw_text)[:2000] if raw_text is not None else None),
+                        "[UserPlugin Assessment] JSON parse error; raw_text len=%d",
+                        len(_raw_dump),
                     )
+                    print(f"[UserPlugin Assessment] JSON parse error; raw_text (truncated): {_raw_dump[:2000]}")
                     # ERROR 级别只记录错误信息，不包含敏感内容
                     logger.exception("[UserPlugin Assessment] JSON parse error")
                     # Try to extract JSON from the text if it's embedded in other text
@@ -1546,7 +1573,9 @@ class DirectTaskExecutor:
                     up_decision.plugin_id, up_decision.entry_id, up_decision.reason,
                 )
                 return TaskResult(task_id=task_id, has_task=False, reason=up_decision.reason)
-            logger.info("[TaskExecutor] Using UserPlugin: %s, plugin_id=%s", up_decision.task_description, up_decision.plugin_id)
+            # task_description 是 LLM 决策出的任务描述，不写 logger
+            logger.info("[TaskExecutor] Using UserPlugin (desc_len=%d), plugin_id=%s", len(up_decision.task_description or ""), up_decision.plugin_id)
+            print(f"[TaskExecutor] Using UserPlugin: {up_decision.task_description}, plugin_id={up_decision.plugin_id}")
             return TaskResult(
                 task_id=task_id,
                 has_task=True,

@@ -7,7 +7,24 @@ import time
 from typing import Optional, Callable, Dict, Any, Awaitable
 from utils.llm_client import SystemMessage, HumanMessage, AIMessage, create_chat_llm
 from openai import APIConnectionError, InternalServerError, RateLimitError
-from utils.frontend_utils import calculate_text_similarity, count_words_and_chars
+from utils.frontend_utils import calculate_text_similarity
+from utils.tokenize import count_tokens
+
+# Sentence-final terminators used to recover from a length-overflow when
+# rerolls have been exhausted. Commas, semicolons, and colons are NOT
+# included on purpose — those would leave the kept text mid-thought.
+_SENTENCE_END_CHARS = '.!?。！？…'
+
+
+def _truncate_to_last_sentence_end(text: str) -> str:
+    """Return the prefix of ``text`` up to and including the last
+    sentence-terminating punctuation mark. Returns ``""`` if no sentence
+    terminator is present (caller should fall through to the
+    too-long-and-discarded UX in that case)."""
+    last = max((text.rfind(ch) for ch in _SENTENCE_END_CHARS), default=-1)
+    if last < 0:
+        return ""
+    return text[:last + 1]
 from utils.logger_config import get_module_logger
 from utils.token_tracker import set_call_type
 
@@ -118,9 +135,15 @@ class OmniOfflineClient:
         self._max_recent_responses = 3  # 最多存储的回复数
         
         # ========== 普通对话守卫配置 ==========
-        self.enable_response_guard = True     # 是否启用质量守卫
+        # `max_response_length` is measured in tiktoken (o200k_base) tokens.
+        # Default 300 ≈ 400 CJK chars / ~1200 English chars. A frontend
+        # slider lets the user override (see `_get_text_guard_max_length`
+        # in core.py).
+        self.enable_response_guard = True
         self.max_response_length = max_response_length if isinstance(max_response_length, int) and max_response_length > 0 else 300
-        self.max_response_rerolls = 2         # 最多允许的自动重试次数
+        # 最多允许的自动重 roll 次数：1 次 reroll → 总共 2 次尝试。
+        # 第 2 次仍超长时不再丢弃整段，而是回退到最后一个句末标点截断。
+        self.max_response_rerolls = 1
 
         # ========== 输出前缀检测 ==========
         self.lanlan_name = lanlan_name
@@ -130,10 +153,11 @@ class OmniOfflineClient:
         # 质量守卫回调：由 core.py 设置，用于通知前端清理气泡
 
     def update_max_response_length(self, max_length: int) -> None:
-        """更新回复字数限制(用户可能在对话期间修改设置)"""
+        """更新回复 token 上限（用户可能在对话期间修改设置）。
+        单位与 ``self.max_response_length`` 一致：tiktoken token 数。"""
         if isinstance(max_length, int) and max_length >= 0:
             self.max_response_length = max_length if max_length > 0 else 999999
-            logger.debug(f"OmniOfflineClient: 字数限制已更新为 {max_length}")
+            logger.debug(f"OmniOfflineClient: token 上限已更新为 {max_length}")
 
     def _match_name_prefix(self, text: str, name: str) -> int:
         """Check if text starts with a name prefix like 'Name | ' or 'Name |'.
@@ -403,11 +427,11 @@ class OmniOfflineClient:
                                     is_first_chunk = False
 
                                     if self.enable_response_guard:
-                                        current_length = count_words_and_chars(assistant_message)
+                                        current_length = count_tokens(assistant_message)
                                         if current_length > self.max_response_length:
                                             guard_triggered = True
                                             discard_reason = f"length>{self.max_response_length}"
-                                            logger.info(f"OmniOfflineClient: 检测到长回复 ({current_length}字)，准备重试")
+                                            logger.info(f"OmniOfflineClient: 检测到长回复 ({current_length} tokens)，准备重试")
                                             self._is_responding = False
                                             break
                             elif content and not content.strip():
@@ -441,7 +465,7 @@ class OmniOfflineClient:
                                         await self.on_text_delta(flush_text, is_first_chunk)
                                     is_first_chunk = False
                                     if self.enable_response_guard:
-                                        current_length = count_words_and_chars(assistant_message)
+                                        current_length = count_tokens(assistant_message)
                                         if current_length > self.max_response_length:
                                             guard_triggered = True
                                             discard_reason = f"length>{self.max_response_length}"
@@ -467,8 +491,37 @@ class OmniOfflineClient:
                             if will_retry:
                                 logger.info(f"OmniOfflineClient: 响应被丢弃（{discard_reason}），第 {guard_attempt}/{self.max_response_rerolls} 次重试")
                                 continue
-                            
-                            logger.warning("OmniOfflineClient: guard 重试耗尽，放弃输出")
+
+                            # Reroll 耗尽。length-overflow 的情况下尝试回退到
+                            # 最后一个句末标点（句号/问号/感叹号），把这截断
+                            # 后的内容当作最终回复；这样用户至少看到一段语义
+                            # 完整的话，而不是一句"回复太长"的错误提示。
+                            recovery_text = ""
+                            if discard_reason and "length>" in discard_reason:
+                                recovery_text = _truncate_to_last_sentence_end(assistant_message)
+
+                            if recovery_text:
+                                logger.info(
+                                    "OmniOfflineClient: guard 重试耗尽，截断至最后句末 "
+                                    "(原 %d tokens → 截断后 %d tokens)",
+                                    count_tokens(assistant_message), count_tokens(recovery_text),
+                                )
+                                truncate_msg = json.dumps({
+                                    "code": "RESPONSE_LENGTH_TRUNCATED",
+                                    "text": recovery_text,
+                                })
+                                if self.on_status_message:
+                                    await self.on_status_message(truncate_msg)
+                                    status_reported = True
+                                # 把截断后的内容写进对话历史 + 触发重复检测，
+                                # 让后续轮次基于"用户实际听到/看到的"那段内容做判断。
+                                self._conversation_history.append(AIMessage(content=recovery_text))
+                                await self._check_repetition(recovery_text)
+                                assistant_message = recovery_text
+                                guard_exhausted = True
+                                break
+
+                            logger.warning("OmniOfflineClient: guard 重试耗尽，无可截断句末，放弃输出")
                             if self.on_status_message:
                                 await self.on_status_message(final_message)
                                 status_reported = True

@@ -885,11 +885,14 @@ async def list_gptsovits_voices(request: Request):
                     result = await resp.json(content_type=None)
                 except Exception:
                     text = await resp.text()
-                    logger.error(f"GPT-SoVITS v3 API 返回非 JSON 响应 (HTTP {resp.status}): {text[:200]}")
+                    # 上游响应可能含 TTS 原文 echo，不写 logger
+                    logger.error(f"GPT-SoVITS v3 API 返回非 JSON 响应 (HTTP {resp.status}, body_len={len(text)})")
+                    print(f"[GSV] API 非 JSON 响应 raw: {text[:200]}")
                     return {"success": False, "error": "Upstream TTS service error", "code": "TTS_CONNECTION_FAILED"}
                 if resp.status == 200:
                     return {"success": True, "voices": result}
-                logger.error(f"GPT-SoVITS v3 API 返回错误状态 HTTP {resp.status}: {str(result)[:200]}")
+                logger.error(f"GPT-SoVITS v3 API 返回错误状态 HTTP {resp.status}")
+                print(f"[GSV] API 错误状态 raw: {str(result)[:200]}")
                 return {"success": False, "error": "Upstream TTS service error", "code": "TTS_CONNECTION_FAILED"}
     except aiohttp.ClientError as e:
         logger.error(f"GPT-SoVITS v3 API 请求失败: {e}")
@@ -984,7 +987,8 @@ async def test_gptsovits_connectivity(request: Request):
                     audio_chunks.append(first_response)
                     logger.info(f"[GSV Test] First response: binary {len(first_response)} bytes")
                 else:
-                    logger.info(f"[GSV Test] First response: {first_response[:200]}")
+                    logger.info(f"[GSV Test] First response (text, len={len(first_response)})")
+                    print(f"[GSV Test] First response: {first_response[:200]}")
                     try:
                         first_data = _json.loads(first_response)
                         if first_data.get("type") == "sentence":
@@ -1000,7 +1004,8 @@ async def test_gptsovits_connectivity(request: Request):
                             audio_chunks.append(msg)
                             logger.debug(f"[GSV Test] Audio chunk: {len(msg)} bytes")
                         else:
-                            logger.info(f"[GSV Test] JSON msg: {msg[:200]}")
+                            logger.info(f"[GSV Test] JSON msg (len={len(msg)})")
+                            print(f"[GSV Test] JSON msg: {msg[:200]}")
                             msg_data = _json.loads(msg)
                             if msg_data.get("type") == "sentence":
                                 got_sentence = True

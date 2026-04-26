@@ -2089,12 +2089,13 @@
             "fullscreenTracking": "全屏跟蹤",
             "localTracking": "局部跟蹤",
             "lockedHoverFade": "鎖定懸停淡化",
-            "textGuardMaxLength": "回覆字數限制",
+            "textGuardMaxLength": "回覆長度上限",
             "unlimited": "無限制",
             "characters": "字",
+            "tokens": "tokens",
             "textGuardUnlimitedWarning": "可能導致貓娘出現嚴重問題，非必要不建議無限制",
-            "textGuardHighWarning": "設定過大可能導致貓娘記憶和語言混亂，建議500字以內",
-            "textGuardNote": "僅對文字回覆有效，不影響語音對話"
+            "textGuardHighWarning": "設定過大可能導致貓娘記憶和語言混亂，建議 1000 tokens 以內",
+            "textGuardNote": "依 tiktoken 統計；僅對文字回覆有效，不影響語音對話"
         }
     },
     "openclawGuide": {

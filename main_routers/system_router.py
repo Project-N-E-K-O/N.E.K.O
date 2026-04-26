@@ -27,8 +27,22 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
 from openai import APIConnectionError, InternalServerError, RateLimitError
 from utils.llm_client import SystemMessage, HumanMessage, create_chat_llm
+from utils.tokenize import count_tokens
 import ssl
 import httpx
+
+# Phase 2 proactive output ceiling. The model occasionally runs off; this
+# fence cuts the stream and aborts TTS once the running output exceeds the
+# token budget. We use sync `count_tokens` here on purpose:
+#   - At fence time `full_text` is < 1 KB (we abort at 300 tokens ≈ 400 CJK
+#     chars); tiktoken Rust encode of that size is sub-millisecond.
+#   - tiktoken's Rust core releases the GIL inside `encode`, so a sync call
+#     does NOT block other coroutines' IO callbacks for any meaningful time.
+#   - `asyncio.to_thread` adds ~0.1 ms scheduling overhead per call (warmed
+#     thread pool) — 3-4× the actual encode work. Across a 30-chunk stream
+#     that's a few milliseconds saved per turn, but more importantly avoids
+#     the cold-start case where the first thread hop can take much longer.
+PHASE2_OUTPUT_MAX_TOKENS = 300
 from cachetools import TTLCache
 
 from .shared_state import get_steamworks, get_config_manager, get_sync_message_queue, get_session_manager
@@ -3392,7 +3406,9 @@ async def proactive_chat(request: Request):
                         print(f"[{lanlan_name}]- Phase 1 音乐话题去重命中，跳过: {track_name}")
                         music_content = None  # 彻底清空，防止去重后的残留数据泄漏到 fallback 逻辑
                     else:
-                        logger.debug(f"[{lanlan_name}]- Phase 1 音乐话题已添加: {music_topic[:100]}...")
+                        # proactive 话题文本（即将拼进 phase2 prompt）不写 logger
+                        logger.debug(f"[{lanlan_name}]- Phase 1 音乐话题已添加 (topic_len={len(music_topic)})")
+                        print(f"[{lanlan_name}]- Phase 1 音乐话题: {music_topic[:100]}")
                         selected_music_link = {
                             'title': track_name,
                             'artist': track_artist,
@@ -3404,7 +3420,8 @@ async def proactive_chat(request: Request):
                         selected_music_topic_key = music_topic_key
                         phase1_topics.append(('music', music_topic))
                 else:
-                    logger.debug(f"[{lanlan_name}] Phase 1 音乐话题已添加: {music_topic[:100]}...")
+                    logger.debug(f"[{lanlan_name}] Phase 1 音乐话题已添加 (topic_len={len(music_topic)})")
+                    print(f"[{lanlan_name}] Phase 1 音乐话题: {music_topic[:100]}")
                     phase1_topics.append(('music', music_topic))
 
         # ============================================================
@@ -3681,8 +3698,10 @@ async def proactive_chat(request: Request):
                         print(f"[{lanlan_name}] Phase 2 fence 触发 (pipe_count={pipe_count})，abort")
                         aborted = True
                         return True
-            if len(full_text) + len(text) > 400:
-                print(f"[{lanlan_name}] Phase 2 长度超限 ({len(full_text)+len(text)} > 400)，abort")
+            # sync count_tokens — see PHASE2_OUTPUT_MAX_TOKENS docstring
+            n_tokens = count_tokens(full_text + text)
+            if n_tokens > PHASE2_OUTPUT_MAX_TOKENS:
+                print(f"[{lanlan_name}] Phase 2 长度超限 ({n_tokens} > {PHASE2_OUTPUT_MAX_TOKENS} tokens)，abort")
                 aborted = True
                 return True
             full_text += text
@@ -3798,7 +3817,9 @@ async def proactive_chat(request: Request):
             }))
         
         response_text = full_text.strip()
-        logger.debug(f"[{lanlan_name}] Phase 2 流式完成 (vision={phase2_use_vision}): {response_text[:120]}...")
+        # 不要把 proactive 原文写进 logger（会进日志文件 / 遥测）；只记元数据。
+        # 完整原文通过 print 给开发者本地查看。
+        logger.debug(f"[{lanlan_name}] Phase 2 流式完成 (vision={phase2_use_vision}, len={len(response_text)} chars)")
         print(f"\n[PROACTIVE-DEBUG] Phase 2 STREAM output: {response_text[:200]}...\n")
 
         has_music_topic = 'music' in active_channels

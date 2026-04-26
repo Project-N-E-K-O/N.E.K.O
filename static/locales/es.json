@@ -2092,9 +2092,10 @@
             "textGuardMaxLength": "Límite de longitud de respuesta",
             "unlimited": "Ilimitado",
             "characters": "caracteres",
+            "tokens": "tokens",
             "textGuardUnlimitedWarning": "Puede causar problemas graves con la gata, no recomendado a menos que sea necesario.",
-            "textGuardHighWarning": "Un ajuste demasiado alto puede causar confusión en la memoria y el idioma, recomendado dentro de 500 caracteres",
-            "textGuardNote": "Se aplica únicamente a respuestas de texto; no afecta las sesiones de voz"
+            "textGuardHighWarning": "Un ajuste demasiado alto puede causar confusión en la memoria y el idioma, recomendado dentro de 1000 tokens",
+            "textGuardNote": "Calculado mediante tiktoken; se aplica únicamente a respuestas de texto y no afecta las sesiones de voz"
         }
     },
     "openclawGuide": {

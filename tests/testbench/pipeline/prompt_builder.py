@@ -11,8 +11,8 @@ the Testbench UI:
   i.e. the actual system message string that lands in ``wire_messages[0]``.
 * ``wire_messages`` — the OpenAI-style ``[{role, content}, ...]`` array
   that ``chat_runner`` (P09) will pass to ``create_chat_llm().astream(...)``.
-* ``char_counts`` — per-section char counts + total + rough token estimate,
-  for UI badges.
+* ``char_counts`` — per-section char counts + total + tiktoken token count
+  (via ``utils.tokenize.count_tokens``) for UI badges.
 * ``metadata`` — resolved ``master_name`` / ``character_name`` / ``language``
   plus flags describing whether the character prompt was taken from the
   session persona's ``system_prompt`` field or defaulted via
@@ -73,6 +73,7 @@ from memory import (
 )
 from tests.testbench.session_store import Session
 from utils.time_format import format_elapsed as _format_elapsed
+from utils.tokenize import count_tokens as _tt_count_tokens
 
 # Same pattern upstream uses to strip parenthetical asides from recent history.
 _BRACKETS_RE = re.compile(r"(\[.*?\]|\(.*?\)|（.*?）|【.*?】|\{.*?\}|<.*?>)")
@@ -655,9 +656,7 @@ def build_prompt_bundle(session: Session) -> PromptBundle:
         "holiday_context": len(memory_components["holiday_context"]),
         "closing":         len(closing),
         "system_prompt_total": len(system_prompt),
-        # 粗略估算: CJK ~1 char ≈ 0.5 token; 这里用一半字符数作为快速 hint,
-        # 精确计数到 P15 Judger 要算预算时再引入 tiktoken.
-        "approx_tokens":   len(system_prompt) // 2,
+        "approx_tokens":   _tt_count_tokens(system_prompt),
     }
 
     metadata = {

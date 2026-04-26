@@ -84,6 +84,7 @@ from memory import (
 )
 from utils.frontend_utils import get_timestamp
 from utils.time_format import format_elapsed as _format_elapsed
+from utils.tokenize import count_tokens as _dump_count_tokens
 
 
 # ── helpers ──────────────────────────────────────────────────────────
@@ -422,7 +423,7 @@ def main():
                 "language": lang,
                 "dump_time": datetime.now().isoformat(timespec="seconds"),
                 "system_prompt_chars": len(system_content),
-                "approx_tokens": len(system_content) // 2,
+                "approx_tokens": _dump_count_tokens(system_content),
             },
             "background": {
                 "session_init": session_init,
@@ -449,12 +450,12 @@ def main():
 
     # ── Summary stats ──
     sys_len = len(system_content)
-    approx_tokens = sys_len // 2  # rough CJK estimate
+    approx_tokens = _dump_count_tokens(system_content)
     print(f"\n{'='*60}")
     print(f"角色          : {target}")
     print(f"主人          : {master_name}")
     print(f"语言          : {lang}")
-    print(f"System prompt : {sys_len} 字符 (~{approx_tokens} tokens)")
+    print(f"System prompt : {sys_len} 字符 ({approx_tokens} tokens, tiktoken o200k_base)")
     print(f"输出格式      : {'raw' if args.raw else 'flat' if args.flat else 'structured'}")
     print(f"{'='*60}")
     print(f"\n[OK] 输出完成，文件已保存至：{output_path}")

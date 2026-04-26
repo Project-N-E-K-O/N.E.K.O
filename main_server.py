@@ -539,7 +539,9 @@ async def _handle_agent_event(event: dict):
                         except Exception as e:
                             logger.warning("[EventBus] direct task_result turn_end failed: %s", e)
                     if delivered:
-                        logger.info("[EventBus] direct task_result reply delivered: %.60s", detail_text[:60])
+                        # detail_text 是面向用户的回复内容，不写 logger
+                        logger.info("[EventBus] direct task_result reply delivered (detail_len=%d)", len(detail_text))
+                        print(f"[EventBus] direct task_result reply: {detail_text[:60]}")
                         return
 
                 # Build structured callback and enqueue for LLM injection
@@ -578,7 +580,9 @@ async def _handle_agent_event(event: dict):
                         if err_msg:
                             notif["error_message"] = err_msg[:500]
                         await ws.send_json(notif)
-                        logger.info("[EventBus] agent_notification sent to frontend: %.60s", text[:60])
+                        # text 是面向前端的通知正文，不写 logger
+                        logger.info("[EventBus] agent_notification sent to frontend (text_len=%d)", len(text))
+                        print(f"[EventBus] agent_notification text: {text[:60]}")
                     except Exception as e:
                         logger.warning("[EventBus] agent_notification WS send failed: %s", e)
                 else:
