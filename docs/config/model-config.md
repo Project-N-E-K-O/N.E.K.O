@@ -12,9 +12,6 @@ N.E.K.O. uses different AI models for different tasks. Each can be individually 
 | Emotion | `qwen-flash` | `NEKO_EMOTION_MODEL` | Emotion analysis for expressions |
 | Vision | `qwen3-vl-plus-2025-09-23` | `NEKO_VISION_MODEL` | Image/screenshot understanding |
 | Agent | `qwen3.5-plus` | `NEKO_AGENT_MODEL` | Agent task execution |
-| Router | `qwen-plus` | `NEKO_ROUTER_MODEL` | Memory routing decisions |
-| Semantic | `text-embedding-v4` | `NEKO_SEMANTIC_MODEL` | Text embeddings for memory |
-| Reranker | `qwen-plus` | `NEKO_RERANKER_MODEL` | Search result reranking |
 
 ## Custom model endpoints
 

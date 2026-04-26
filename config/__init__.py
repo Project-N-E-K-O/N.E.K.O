@@ -274,14 +274,19 @@ DEFAULT_AGENT_MODEL_URL = ""
 DEFAULT_AGENT_MODEL_API_KEY = ""
 
 # 模型配置常量（默认值）
-# 注：以下直接被导入使用的变量保留原名以保持向后兼容性
-DEFAULT_ROUTER_MODEL = ROUTER_MODEL = 'qwen-plus'
-# SETTING_PROPOSER_MODEL / SETTING_VERIFIER_MODEL 已经退环境（2026-04）：
-# 旧的 memory.settings 抽取/校验链路已被 evidence + reflection 取代，参见
-# memory/settings.py 顶部的注释。其它走 LLM 的 memory 子模块全部按 tier 拿
-# api_config['model']，不再有 hardcoded fallback。
-DEFAULT_SEMANTIC_MODEL = SEMANTIC_MODEL = 'text-embedding-v4'
-DEFAULT_RERANKER_MODEL = RERANKER_MODEL = 'qwen-plus'
+# 注：以下退环境的常量已经从导出列表里删除（2026-04）：
+#   * SETTING_PROPOSER_MODEL / SETTING_VERIFIER_MODEL —— 旧的 memory.settings
+#     抽取/校验链路已被 evidence + reflection 取代，参见 memory/settings.py
+#     顶部说明。
+#   * ROUTER_MODEL —— 当年规划的"记忆路由模型"从未在代码里被读过；记忆路由
+#     已经走 tier 化的 summary/correction，没有独立模型。
+#   * SEMANTIC_MODEL —— "text-embedding-v4" 字面量没人用；嵌入服务走本地
+#     ONNX（memory/embeddings.py 的 EmbeddingService），模型 id 由
+#     profile_id+dim+quantization 拼出。
+#   * RERANKER_MODEL —— 记忆 LLM 重排（memory/recall.py::MemoryRecallReranker）
+#     按 tier="summary" 拿 api_config['model']，不再有 hardcoded 'qwen-plus'。
+# 走 LLM 的 memory 子模块一律按 tier 拿 api_config['model']，不再有 hardcoded
+# fallback；新增需求请加 tier，不要再加这种"全局默认模型字面量"。
 
 # 其他模型配置（仅通过 config_manager 动态获取）
 DEFAULT_CONVERSATION_MODEL = 'qwen-max'
@@ -960,15 +965,9 @@ __all__ = [
     'DEFAULT_CORE_URL',
     'DEFAULT_CORE_MODEL',
     'DEFAULT_OPENROUTER_URL',
-    # 直接被导入使用的模型配置（导出 DEFAULT_ 和无前缀版本）
-    'DEFAULT_ROUTER_MODEL',
-    'ROUTER_MODEL',
-    # SETTING_PROPOSER_MODEL / SETTING_VERIFIER_MODEL 于 2026-04 退环境，
-    # 见 memory/settings.py 顶部说明。
-    'DEFAULT_SEMANTIC_MODEL',
-    'SEMANTIC_MODEL',
-    'DEFAULT_RERANKER_MODEL',
-    'RERANKER_MODEL',
+    # ROUTER_MODEL / SEMANTIC_MODEL / RERANKER_MODEL / SETTING_PROPOSER_MODEL /
+    # SETTING_VERIFIER_MODEL 于 2026-04 全部退环境（无 Python 调用方），见
+    # memory/settings.py 顶部说明 + 上方常量块的注释。新增需求走 tier 化路径。
     # 其他模型配置（仅导出 DEFAULT_ 版本）
     'DEFAULT_CONVERSATION_MODEL',
     'DEFAULT_SUMMARY_MODEL',

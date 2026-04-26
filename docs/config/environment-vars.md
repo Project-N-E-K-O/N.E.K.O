@@ -44,9 +44,6 @@ All environment variables use the `NEKO_` prefix.
 | `NEKO_CORRECTION_MODEL` | `qwen-max` | Text correction model |
 | `NEKO_EMOTION_MODEL` | `qwen-turbo` / `qwen-flash` | Emotion analysis model |
 | `NEKO_VISION_MODEL` | `qwen3-vl-plus-2025-09-23` | Vision/image understanding model |
-| `NEKO_ROUTER_MODEL` | `qwen-plus` | Memory routing model |
-| `NEKO_SEMANTIC_MODEL` | `text-embedding-v4` | Embedding model |
-| `NEKO_RERANKER_MODEL` | `qwen-plus` | Search reranking model |
 
 ## Service URLs
 
