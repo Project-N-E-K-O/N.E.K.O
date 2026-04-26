@@ -1244,7 +1244,7 @@ async def generate_diverse_queries(window_title: str) -> List[str]:
         llm = create_chat_llm(
             summary_config['model'], summary_config['base_url'],
             summary_config['api_key'],
-            temperature=1.0, timeout=10.0, max_retries=0,
+            timeout=10.0, max_retries=0,
         )
         
         # 清理/脱敏窗口标题用于日志显示

@@ -146,7 +146,7 @@ class CompressedRecentHistoryManager:
         api_config = self._config_manager.get_model_api_config('summary')
         return create_chat_llm(
             api_config['model'], api_config['base_url'],
-            api_config['api_key'] or None, temperature=0.3,
+            api_config['api_key'] or None,
         )
 
     def _get_review_llm(self):
@@ -154,7 +154,7 @@ class CompressedRecentHistoryManager:
         api_config = self._config_manager.get_model_api_config('correction')
         return create_chat_llm(
             api_config['model'], api_config['base_url'],
-            api_config['api_key'] or None, temperature=0.1,
+            api_config['api_key'] or None,
         )
 
     async def update_history(self, new_messages, lanlan_name, detailed=False, compress=True):

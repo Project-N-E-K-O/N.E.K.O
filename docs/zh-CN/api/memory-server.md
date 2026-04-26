@@ -24,12 +24,12 @@
 
 ## 使用的模型
 
-| 任务 | 默认模型 |
-|------|----------|
-| 嵌入 | `text-embedding-v4` |
-| 摘要 | `qwen-plus` (SUMMARY_MODEL) |
-| 路由 | `qwen-plus` (ROUTER_MODEL) |
-| 重排序 | `qwen-plus` (RERANKER_MODEL) |
+| 任务 | 来源 |
+|------|------|
+| 嵌入 | `data/embedding_models/<profile>/` 下打包的 ONNX 模型（见 `memory/embeddings.py::EmbeddingService`） |
+| 事实抽取 / 信号检测 / 反思 / promotion 合并 / 事实去重 / recall 重排 | tier `summary`（`get_model_api_config('summary')`） |
+| 历史复核 / persona 校正 | tier `correction`（`get_model_api_config('correction')`） |
+| 负向 target 关键词判定 | tier `emotion` |
 
 ## 通信方式
 

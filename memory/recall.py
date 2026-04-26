@@ -349,7 +349,6 @@ class MemoryRecallReranker:
         from utils.file_utils import robust_json_loads
         from utils.token_tracker import set_call_type
         from utils.llm_client import create_chat_llm
-        from config import SETTING_PROPOSER_MODEL
 
         # The id-keyed indirection prevents the LLM from inventing
         # ids that aren't in the candidate set.
@@ -385,11 +384,10 @@ class MemoryRecallReranker:
         )
 
         set_call_type("memory_recall_rerank")
-        api_config = config_manager.get_model_api_config('correction')
+        api_config = config_manager.get_model_api_config('summary')
         llm = create_chat_llm(
-            api_config.get('model', SETTING_PROPOSER_MODEL),
+            api_config['model'],
             api_config['base_url'], api_config['api_key'],
-            temperature=0.2,
         )
         try:
             resp = await llm.ainvoke(prompt)

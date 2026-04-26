@@ -970,22 +970,28 @@ async def translate_text(text: str, target_lang: str, source_lang: Optional[str]
         llm = create_chat_llm(
             emotion_config['model'], emotion_config['base_url'],
             emotion_config['api_key'],
-            temperature=0.3, timeout=10.0,
+            timeout=10.0,
         )
 
         instruction = _loc(TRANSLATION_INSTRUCTION, lang).format(
             source_name=source_name, target_name=target_name)
         requirements = _loc(TRANSLATION_REQUIREMENTS, lang)
         system_prompt = f"{instruction}\n{TRANSLATION_WATERMARK_START}\n{requirements}\n{TRANSLATION_WATERMARK_END}"
-        
+
         messages = [
             SystemMessage(content=system_prompt),
             HumanMessage(content=text)
         ]
-        
+
         set_call_type("translation")
-        response = await llm.ainvoke(messages)
-        translated_text = response.content.strip()
+        # ad-hoc 客户端，每次请求新建 → 必须 aclose 释放底层 httpx 连接池，
+        # 与 memory/ 其它调用点的 try/finally 收尾对偶（缓存版客户端在
+        # TranslationService._llm_client 里复用，不走这条路径）。
+        try:
+            response = await llm.ainvoke(messages)
+            translated_text = response.content.strip()
+        finally:
+            await llm.aclose()
 
         logger.info(f"✅ [翻译服务] LLM翻译成功: {source_lang} -> {target_lang}")
         return translated_text, google_failed
@@ -1065,7 +1071,6 @@ class TranslationService:
             from config import TRANSLATION_OUTPUT_MAX_TOKENS
             self._llm_client = create_chat_llm(
                 config['model'], config['base_url'], config['api_key'],
-                temperature=0.3,
                 max_completion_tokens=TRANSLATION_OUTPUT_MAX_TOKENS,
                 timeout=30.0,
             )

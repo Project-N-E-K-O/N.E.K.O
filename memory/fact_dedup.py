@@ -375,7 +375,6 @@ class FactDedupResolver:
             return await self._aresolve_locked(name)
 
     async def _aresolve_locked(self, name: str) -> int:
-        from config import SETTING_PROPOSER_MODEL
         from config.prompts_memory import get_fact_dedup_prompt
         from utils.language_utils import get_global_language
         from utils.llm_client import create_chat_llm
@@ -400,11 +399,10 @@ class FactDedupResolver:
 
         try:
             set_call_type("memory_fact_dedup")
-            api_config = self._config_manager.get_model_api_config('correction')
+            api_config = self._config_manager.get_model_api_config('summary')
             llm = create_chat_llm(
-                api_config.get('model', SETTING_PROPOSER_MODEL),
+                api_config['model'],
                 api_config['base_url'], api_config['api_key'],
-                temperature=0.2,
             )
             try:
                 resp = await llm.ainvoke(prompt)

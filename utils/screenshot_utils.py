@@ -196,7 +196,6 @@ async def analyze_image_with_vision_model(
             api_key=vision_api_key,
             max_retries=0,
             max_completion_tokens=max_completion_tokens,
-            temperature=0,
         )
         messages = [
             {
