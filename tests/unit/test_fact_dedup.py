@@ -186,6 +186,44 @@ def test_detect_candidates_only_for_ids_filters_candidate_side():
     assert all(p["candidate_id"] == "f3" for p in pairs)
 
 
+def test_detect_candidates_same_batch_pair_emitted_in_canonical_direction_only():
+    """When two fresh rows in the same batch collide, the queue should
+    receive ONE pair, not both (a,b) and (b,a). Without the canonical
+    direction guard the LLM's `replace` semantics would degenerate to
+    "whichever the outer loop visited first" (CodeRabbit PR-956 Major)."""
+    same_vec = [1.0, 0.0, 0.0]
+    facts = [
+        _fact("alpha", "a", embedding=same_vec),
+        _fact("beta", "b", embedding=same_vec),
+    ]
+    pairs = FactDedupResolver.detect_candidates(
+        facts, only_for_ids={"alpha", "beta"},
+    )
+    assert len(pairs) == 1
+    p = pairs[0]
+    # Canonical direction: smaller id is candidate, larger is existing.
+    assert (p["candidate_id"], p["existing_id"]) == ("alpha", "beta")
+
+
+def test_detect_candidates_cross_batch_pair_unaffected_by_canonical_guard():
+    """The canonical-direction guard only kicks in when BOTH ids are in
+    ``only_for_ids``. A fresh row paired with an already-embedded
+    sibling must always produce the (fresh, existing) pair regardless
+    of lexical order on the ids."""
+    same_vec = [1.0, 0.0, 0.0]
+    # `zzz` is the fresh one but lexically larger than `aaa`.
+    facts = [
+        _fact("aaa", "old", embedding=same_vec),
+        _fact("zzz", "fresh", embedding=same_vec),
+    ]
+    pairs = FactDedupResolver.detect_candidates(
+        facts, only_for_ids={"zzz"},
+    )
+    assert len(pairs) == 1
+    assert pairs[0]["candidate_id"] == "zzz"
+    assert pairs[0]["existing_id"] == "aaa"
+
+
 def test_detect_candidates_per_fact_limit_caps_collisions():
     """A pathological row near 5 existing rows must not produce 5
     pairs — the cap keeps the queue interpretable."""
@@ -450,6 +488,41 @@ async def test_aresolve_unknown_action_preserves_queue_for_retry(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_aresolve_dedupes_repeated_pair_from_llm(tmp_path):
+    """Small models occasionally emit the same pair twice with conflicting
+    actions. Without a same-pair guard, the second decision overwrote
+    the first — e.g. ``keep_both`` then ``merge`` would still drop the
+    candidate, despite the first arbitration explicitly preserving it.
+    Only the first decision is honoured (CodeRabbit PR-956 Major)."""
+    fs, resolver = _install_resolver(str(tmp_path))
+    cand = _fact("c1", "x", embedding=[1.0, 0.0], importance=5)
+    existing = _fact("e1", "y", embedding=[0.99, 0.05], importance=5)
+    await _seed_facts(fs, "小天", [cand, existing])
+    await resolver.aenqueue_candidates("小天", [{
+        "candidate_id": "c1", "existing_id": "e1",
+        "candidate_text": "x", "existing_text": "y",
+        "entity": "master", "cosine": 0.99,
+    }])
+    # LLM hallucinates two decisions for the same (c1,e1) pair: a
+    # benign keep_both first, then a destructive merge. Without the
+    # guard, the merge would still drop c1 even though keep_both
+    # already resolved the pair.
+    fake_llm = _make_llm_mock([
+        {"index": 0, "action": "keep_both"},
+        {"index": 0, "action": "merge"},
+    ])
+    with patch("utils.llm_client.create_chat_llm", return_value=fake_llm):
+        await resolver.aresolve("小天")
+    facts = await fs.aload_facts("小天")
+    # Both rows survive — merge from the duplicated decision was ignored.
+    assert {f["id"] for f in facts} == {"c1", "e1"}
+    # Importance unchanged (no merge applied).
+    assert next(f for f in facts if f["id"] == "e1")["importance"] == 5
+    # Queue entry consumed exactly once.
+    assert await resolver.aload_pending("小天") == []
+
+
+@pytest.mark.asyncio
 async def test_aresolve_normalises_case_and_whitespace_in_action(tmp_path):
     """The whitelist accepts a tiny normalisation grace margin
     (lowercase + strip) so a model that emits "MERGE" or "merge "
@@ -609,3 +682,30 @@ async def test_aresolve_batch_limit_caps_in_flight_pairs(tmp_path):
         resolved2 = await resolver.aresolve("小天")
     assert resolved2 == 5
     assert await resolver.aload_pending("小天") == []
+
+
+def test_rebind_fact_store_preserves_alocks(tmp_path):
+    """/reload swaps FactStore but rebind_fact_store must keep the
+    per-character ``_alocks`` dict — otherwise an in-flight aresolve
+    on the OLD instance and a fresh aenqueue on the NEW instance would
+    take *different* asyncio.Locks while writing the same on-disk
+    facts_pending_dedup.json (CodeRabbit PR-956 Major)."""
+    fs1, resolver = _install_resolver(str(tmp_path))
+    # Materialise a per-character lock the way live code would (lazy +
+    # DCL on first acquire).
+    lock_before = resolver._get_alock("小天")
+    assert "小天" in resolver._alocks
+
+    # Build a second FactStore as if /reload rebuilt the world.
+    cm2 = _mock_cm(str(tmp_path))
+    with patch("memory.facts.get_config_manager", return_value=cm2):
+        from memory.facts import FactStore
+        fs2 = FactStore()
+        fs2._config_manager = cm2
+    resolver.rebind_fact_store(fs2)
+
+    # Same instance, same lock dict, same lock object — that's the
+    # whole point: serialisation across reload is preserved.
+    assert resolver._fact_store is fs2
+    assert resolver._fact_store is not fs1
+    assert resolver._get_alock("小天") is lock_before

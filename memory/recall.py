@@ -45,7 +45,6 @@ shape.
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 import re
 
@@ -101,6 +100,18 @@ class MemoryRecallReranker:
         """
         if not observations:
             return []
+
+        # Normalise query_texts up-front so phase 2 (coarse) and phase 3
+        # (LLM rerank) see the same shape: drop None/empty/whitespace
+        # entries, collapse to None when nothing remains. Without this,
+        # callers passing [""] / ["   "] would get coarse-rank fallback
+        # to evidence order (because _coarse_rank filters empties before
+        # embed_batch) but still pay an LLM rerank with an empty
+        # {QUERY} placeholder — wasted tokens and unstable output.
+        if query_texts:
+            query_texts = [t.strip() for t in query_texts if isinstance(t, str) and t.strip()]
+            if not query_texts:
+                query_texts = None
 
         # Phase 1: hard filter (suppressed / terminal / score < 0 /
         # protected).  This is the only stage that uses evidence_score

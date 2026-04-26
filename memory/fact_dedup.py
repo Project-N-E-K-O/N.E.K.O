@@ -93,6 +93,23 @@ class FactDedupResolver:
         self._alocks: dict[str, asyncio.Lock] = {}
         self._alocks_guard = threading.Lock()
 
+    def rebind_fact_store(self, fact_store: "FactStore") -> None:
+        """Swap the FactStore reference *in place*, keeping ``_alocks``.
+
+        /reload rebuilds FactStore for the new core_config but the
+        pending_dedup queue is on disk per-character — both old and new
+        FactStores resolve to the same file path through
+        ``ensure_character_dir``. If reload also rebuilt the resolver,
+        the old resolver's per-character locks would be orphaned and a
+        mid-reload ``aresolve`` running under the old instance could
+        race a fresh ``aenqueue_candidates`` on the new instance,
+        corrupting the queue file. Rebinding instead preserves the
+        single lock dict so the entire reload window remains
+        serialised on the same asyncio.Locks (CodeRabbit PR-956 Major).
+        """
+        self._fact_store = fact_store
+        self._config_manager = fact_store._config_manager
+
     # ── lock helper ──────────────────────────────────────────────────
 
     def _get_alock(self, name: str) -> asyncio.Lock:
@@ -268,6 +285,22 @@ class FactDedupResolver:
                 sid = sib.get('id')
                 if not sid or sid == cid:
                     continue
+                # Same-batch deduplication (CodeRabbit PR-956 Major):
+                # when both rows are in the fresh ``only_for_ids`` batch,
+                # the outer loop visits this pair from BOTH sides
+                # (cid=a/sid=b and cid=b/sid=a). Without a guard, the
+                # queue gets (a,b) AND (b,a), wasting
+                # FACT_DEDUP_PAIRS_PER_NEW / FACT_DEDUP_BATCH_LIMIT
+                # budget and letting traversal order decide which row
+                # plays "candidate" for the LLM's replace semantics.
+                # Keep one canonical direction (cid < sid by id) so a
+                # single pair lands in the queue. The cross-batch case
+                # ("fresh vs already-embedded") is unaffected — there
+                # sid is NOT in only_for_ids and the check is a no-op.
+                if (only_for_ids is not None
+                        and sid in only_for_ids
+                        and cid >= sid):
+                    continue
                 if sib.get('absorbed'):
                     continue
                 svec = sib.get('embedding')
@@ -439,6 +472,7 @@ class FactDedupResolver:
         applied = 0
         ids_to_remove: set[str] = set()
         processed_pairs: set[tuple] = set()
+        seen_pairs: set[tuple] = set()
         for r in results:
             if not isinstance(r, dict):
                 continue
@@ -449,6 +483,23 @@ class FactDedupResolver:
             if not (0 <= idx < len(batch)):
                 continue
             item = batch[idx]
+            # Defend against the LLM returning the same pair twice with
+            # different actions (small-model output instability).
+            # Without this guard, a `keep_both` first then `merge`
+            # second would still apply the merge — the merge branch's
+            # `cand_id in ids_to_remove` check only catches conflicts
+            # *between different pairs*, not against an earlier
+            # decision on the SAME pair (CodeRabbit PR-956 Major).
+            cand_id_dedup = item.get('candidate_id')
+            exist_id_dedup = item.get('existing_id')
+            pair_key = (cand_id_dedup, exist_id_dedup)
+            if pair_key in seen_pairs:
+                logger.info(
+                    "[FactDedup] %s: 跳过重复决策 cand=%s exist=%s (LLM 在同一批次返回多次)",
+                    name, cand_id_dedup, exist_id_dedup,
+                )
+                continue
+            seen_pairs.add(pair_key)
             action = r.get('action')
             # Strict whitelist (CodeRabbit PR-957 Major): unknown
             # action ⇒ leave the queue entry alone so the next round

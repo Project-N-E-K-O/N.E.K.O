@@ -407,6 +407,34 @@ async def test_aretrieve_invokes_llm_when_pool_exceeds_budget():
 
 
 @pytest.mark.asyncio
+async def test_aretrieve_normalises_blank_query_texts_before_llm_rerank():
+    """``query_texts=[""]`` or ``["   "]`` slipped past the entry guard
+    (which only checks falsiness of the list itself), reached coarse-
+    rank as evidence_score fallback, but then triggered an LLM rerank
+    with an empty {QUERY} placeholder — wasted tokens and unstable
+    output. Strip + collapse-to-None so phase 2 and phase 3 see the
+    same shape (CodeRabbit PR-956 Minor)."""
+    svc = _FakeService(available=True, vector_factory=lambda t: [1.0, 0.0])
+    r = _make_reranker(svc)
+    cm = MagicMock()
+    cm.get_model_api_config = MagicMock(return_value={
+        "model": "fake", "base_url": "http://fake", "api_key": "sk-fake",
+    })
+    obs = [
+        _obs(f"o{i}", f"t{i}", embedding=[1.0, 0.0], score=10 - i) for i in range(8)
+    ]
+    fake_llm = _make_llm_mock([{"id": "o0"}, {"id": "o1"}])
+    with patch("utils.llm_client.create_chat_llm", return_value=fake_llm) as p:
+        out = await r.aretrieve_candidates(
+            obs, query_texts=["   ", ""], budget=2, config_manager=cm,
+        )
+    # No LLM call — blank queries collapsed to None ⇒ coarse fallback
+    # to evidence_score order returns the [:budget] slice directly.
+    assert p.call_count == 0
+    assert [o["id"] for o in out] == ["o0", "o1"]
+
+
+@pytest.mark.asyncio
 async def test_aretrieve_drops_hallucinated_ids_from_llm():
     """LLM returns an id that isn't in the candidate set — must be
     silently dropped (not crash, not pass through)."""

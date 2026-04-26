@@ -187,16 +187,23 @@ async def reload_memory_components():
             new_outbox = Outbox()
             new_reconciler = Reconciler(new_event_log)
             _register_evidence_handlers(new_reconciler, new_persona, new_reflection)
-            # P2 step 2: rebuild fact_dedup_resolver against the NEW
-            # FactStore so /reload doesn't leave the resolver pointing
-            # at the orphaned old store (Codex PR-957 P2). The
-            # embedding worker bound to the old fact_store keeps
-            # writing into facts_pending_dedup.json under the
-            # per-character path, which the new resolver picks up
-            # automatically since the queue is on disk.
+            # P2 step 2: rebind the existing fact_dedup_resolver to the
+            # NEW FactStore in place rather than constructing a new
+            # resolver. Going via rebind_fact_store preserves the
+            # per-character ``_alocks`` dict, so a mid-reload
+            # ``aresolve`` still in flight on the old instance and a
+            # fresh ``aenqueue_candidates`` arriving on the new
+            # instance serialise on the same asyncio.Lock (CodeRabbit
+            # PR-956 Major; Codex PR-957 P2). Falls back to fresh
+            # construction only if there was no prior resolver
+            # (extremely cold-path during reload — startup never ran).
             try:
                 from memory.fact_dedup import FactDedupResolver
-                new_fact_dedup_resolver = FactDedupResolver(new_facts)
+                if fact_dedup_resolver is not None:
+                    fact_dedup_resolver.rebind_fact_store(new_facts)
+                    new_fact_dedup_resolver = fact_dedup_resolver
+                else:
+                    new_fact_dedup_resolver = FactDedupResolver(new_facts)
             except Exception as e:
                 logger.warning(f"[MemoryServer] reload: fact_dedup_resolver 重建失败: {e}")
                 new_fact_dedup_resolver = None
