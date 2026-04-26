@@ -690,3 +690,76 @@ async def test_aload_signal_targets_carries_reflection_suppress_flag(tmp_path):
     survivor_ids = {o["id"] for o in survivors}
     assert "reflection.r_active" in survivor_ids
     assert "reflection.r_silent" not in survivor_ids
+
+
+@pytest.mark.asyncio
+async def test_aload_signal_targets_suppress_filter_applies_when_vectors_disabled(tmp_path):
+    """CodeRabbit PR-956 Major regression: an earlier shape gated the
+    `aretrieve_candidates` call on `reranker._service.is_available()`
+    and fell through to a bare `pool.sort(score)` when the embedding
+    service was INIT / LOADING / DISABLED. The bare-sort path skipped
+    `_hard_filter`, so suppressed reflections (and persona entries)
+    leaked back into the Stage-2 candidate set during the warmup
+    window — defeating the AI-mention rate-limit gate.
+
+    The unification routes everything through the reranker
+    regardless of vector state; this test pins that contract by
+    forcing the embedding service into DISABLED and asserting the
+    suppressed reflection is still dropped from the returned pool."""
+    from unittest.mock import AsyncMock, MagicMock
+    from memory.facts import FactStore
+    from memory.embeddings import reset_embedding_service_for_tests
+
+    reset_embedding_service_for_tests()
+    cm = MagicMock()
+    cm.memory_dir = str(tmp_path)
+    cm.aget_character_data = AsyncMock(return_value=(
+        "主人", "小天", {}, {}, {"human": "主人", "system": "SYS"}, {}, {}, {}, {},
+    ))
+    cm.get_character_data = MagicMock(return_value=(
+        "主人", "小天", {}, {}, {"human": "主人", "system": "SYS"}, {}, {}, {}, {},
+    ))
+    cm.get_model_api_config = MagicMock(return_value={
+        "model": "fake", "base_url": "http://fake", "api_key": "sk-fake",
+    })
+    with patch("memory.facts.get_config_manager", return_value=cm):
+        fs = FactStore()
+        fs._config_manager = cm
+
+    refl_engine = MagicMock()
+
+    async def _fake_load(_name):
+        return [
+            {"id": "r_active", "text": "active observation",
+             "entity": "master", "status": "confirmed",
+             "suppress": False},
+            {"id": "r_silent", "text": "silenced observation",
+             "entity": "master", "status": "confirmed",
+             "suppress": True, "suppressed_at": "2026-04-25T00:00:00"},
+        ]
+
+    refl_engine._aload_reflections_full = _fake_load
+    persona = MagicMock()
+
+    async def _fake_persona(_name):
+        return {}
+
+    persona.aensure_persona = _fake_persona
+
+    # Force unavailable embedding service — would have triggered the
+    # bare-sort fallback under the old shape that bypassed
+    # _hard_filter.
+    disabled = _FakeService(available=False)
+    with patch("memory.recall.get_embedding_service", return_value=disabled):
+        result = await fs._aload_signal_targets(
+            "小天",
+            reflection_engine=refl_engine,
+            persona_manager=persona,
+            new_facts=[{"id": "f1", "text": "user mentioned cats"}],
+        )
+
+    result_ids = {o["id"] for o in result}
+    assert "reflection.r_active" in result_ids
+    # The whole point: even with vectors DISABLED, hard_filter ran
+    # and dropped the suppressed reflection.
+    assert "reflection.r_silent" not in result_ids

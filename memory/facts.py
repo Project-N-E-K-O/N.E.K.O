@@ -483,13 +483,20 @@ class FactStore:
           - 非 protected persona entry 全量
 
         Scale control (§3.4.2 end):
-          - Hard cap: top-N by evidence_score DESC (N = EVIDENCE_DETECT_SIGNALS_MAX_OBSERVATIONS)
-          - When ``new_facts`` is provided AND the EmbeddingService is
-            ready, the cap is replaced by a vector-prefiltered + LLM-
-            reranked top-N (see memory/recall.py). Vectors save the
-            Stage-2 prompt tokens by narrowing the candidate set
-            from ~200 down to a much smaller LLM-validated subset;
-            the LLM call itself is still made.
+          - When ``new_facts`` is provided, the pool is routed through
+            ``MemoryRecallReranker.aretrieve_candidates``, which owns
+            the full pipeline regardless of vector service state:
+            hard_filter (drops suppress / terminal / score<0 /
+            protected) → coarse rank (cosine top-K when vectors are
+            ready, evidence_score order otherwise) → optional LLM
+            rerank.  Vectors save Stage-2 prompt tokens when ready;
+            when not ready, behaviour collapses to filtered top-N by
+            evidence_score, matching the legacy contract but with
+            the suppression filter still applied.
+          - When ``new_facts`` is empty, falls through to the legacy
+            local top-N by evidence_score (no hard_filter — that
+            shape predates P2 and is what idle-maintenance entry
+            points expect).
 
         Injection pattern: memory_server wires `reflection_engine` / `persona_manager`
         references at call time. Without them we return empty, which simply
@@ -565,22 +572,35 @@ class FactStore:
                     f"[FactStore] _aload_signal_targets 读取 persona 失败: {e}"
                 )
 
-        # P2 step 3: vector + LLM rerank when we have a query (new_facts)
-        # and the embedding service is ready. Otherwise legacy "top-N
-        # by evidence_score" — same behaviour as before P2.
+        # P2 step 3: route through MemoryRecallReranker whenever we have
+        # a query, regardless of vector service state.  The reranker
+        # owns the unified pipeline:
+        #
+        #   _hard_filter (drops suppressed / terminal / score<0 /
+        #     protected) → coarse rank (cosine top-K when vectors are
+        #     ready, evidence_score order otherwise) → optional LLM
+        #     rerank (skipped automatically when vectors aren't
+        #     available).
+        #
+        # An earlier version gated the call on
+        # `reranker._service.is_available()` and fell through to a
+        # bare `pool.sort(score)` when the service was INIT / LOADING /
+        # DISABLED.  That meant `suppress=True` rows leaked into
+        # Stage-2 whenever vectors weren't ready, since the bare sort
+        # path didn't apply `_hard_filter` (CodeRabbit PR-956 Major).
+        # Behaviour now stays stable across the warmup window.
         if new_facts:
             try:
                 from memory.recall import MemoryRecallReranker
                 reranker = MemoryRecallReranker()
-                if reranker._service.is_available():
-                    query_texts = [
-                        f.get('text', '') for f in new_facts if f.get('text')
-                    ]
-                    return await reranker.aretrieve_candidates(
-                        pool, query_texts,
-                        budget=EVIDENCE_DETECT_SIGNALS_MAX_OBSERVATIONS,
-                        config_manager=self._config_manager,
-                    )
+                query_texts = [
+                    f.get('text', '') for f in new_facts if f.get('text')
+                ]
+                return await reranker.aretrieve_candidates(
+                    pool, query_texts,
+                    budget=EVIDENCE_DETECT_SIGNALS_MAX_OBSERVATIONS,
+                    config_manager=self._config_manager,
+                )
             except Exception as e:
                 logger.warning(
                     "[FactStore] vector+LLM rerank failed (%s: %s); "
@@ -588,7 +608,16 @@ class FactStore:
                     type(e).__name__, e,
                 )
 
-        # Fallback / legacy path: top-N by score DESC (most relevant first).
+        # Fallback / legacy path: top-N by score DESC (most relevant
+        # first). Reached when (a) ``new_facts`` is empty (no recall
+        # query to drive the reranker), or (b) the reranker raised
+        # mid-call.  This matches the pre-P2 behaviour exactly —
+        # `_hard_filter` is intentionally NOT applied here because
+        # the upstream consumers in the no-new_facts shape (some
+        # idle-maintenance entry points) already operate on the
+        # unfiltered pool.  CodeRabbit PR-956's Major was specifically
+        # about the new_facts branch above silently bypassing the
+        # filter when vectors weren't ready.
         pool.sort(key=lambda o: o.get('score', 0.0), reverse=True)
         return pool[:EVIDENCE_DETECT_SIGNALS_MAX_OBSERVATIONS]
 
