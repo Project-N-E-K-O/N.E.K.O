@@ -137,7 +137,7 @@
     function splitIntoSentences(buffer, options) {
         options = options || {};
         var mode = options.mode || 'normal';
-        var flushTrailingBoundary = !!options.flushTrailingBoundary;
+        var flushTrailingBoundary = options.flushTrailingBoundary !== false;
         var sentences = [];
         var s = normalizeGeminiText(buffer);
         var start = 0;
@@ -186,7 +186,12 @@
 
     function isFullWidthJoinPunctuation(ch) {
         return ch === '\u3001' || ch === '\u3002' || ch === '\uFF0C' || ch === '\uFF01' ||
-            ch === '\uFF1F' || ch === '\uFF1B' || ch === '\uFF1A' || ch === '\u2026';
+            ch === '\uFF1F' || ch === '\uFF1B' || ch === '\uFF1A' || ch === '\u2026' ||
+            ch === '\u201D' || ch === '\u2019' || ch === ')' || ch === ']' || ch === '}' ||
+            ch === '\uFF09' || ch === '\uFF3D' || ch === '\uFF5D' ||
+            ch === '\u3009' || ch === '\u300B' || ch === '\u300D' || ch === '\u300F' ||
+            ch === '\u3011' || ch === '\u3015' || ch === '\u3017' || ch === '\u3019' ||
+            ch === '\u301B' || ch === '\u301E' || ch === '\u301F';
     }
 
     function joinRealisticPendingPieces(pieces) {
