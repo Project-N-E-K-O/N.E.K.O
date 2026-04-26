@@ -451,6 +451,13 @@
         maintenanceProgressValue: null,
         maintenanceProgressSteps: [],
         lastMaintenanceProgressPayload: null,
+        // 记录最近一次 setSelectionStatus / showError 时使用的 i18n key（如有）。
+        // rebuildModalForLocale 在切语言后会优先按 key 重新翻译，避免快照里塞回旧 locale 的字面文案。
+        // 来自后端透传的运行时错误（error.message 等）则不带 key，rebuild 时按原文回填。
+        selectionStatusI18nKey: '',
+        selectionStatusI18nFallback: '',
+        errorTextI18nKey: '',
+        errorTextI18nFallback: '',
         maintenancePollPromise: null,
         completionPollTimer: null,
         completionPollAttempts: 0,
@@ -819,12 +826,30 @@
         }
     }
 
-    function setSelectionStatus(message, isError) {
-        if (!state.selectionStatus) return;
+    function setSelectionStatus(message, isError, options) {
+        // options.i18nKey + options.i18nFallback 表示这条 status 是翻译出来的，
+        // rebuildModalForLocale 切语言后会用 translate(key, fallback) 重新算文案。
+        // 不传 options 则视作运行时动态文本（如后端 error.message），rebuild 时
+        // 沿用旧文案不重译。
         var text = String(message || '').trim();
+        if (text && options && options.i18nKey) {
+            state.selectionStatusI18nKey = String(options.i18nKey);
+            state.selectionStatusI18nFallback = String(options.i18nFallback || '');
+        } else {
+            state.selectionStatusI18nKey = '';
+            state.selectionStatusI18nFallback = '';
+        }
+        if (!state.selectionStatus) return;
         state.selectionStatus.hidden = !text;
         state.selectionStatus.textContent = text;
         state.selectionStatus.classList.toggle('storage-location-note--error', !!isError && !!text);
+    }
+
+    function setSelectionStatusByKey(key, fallback, isError) {
+        setSelectionStatus(translate(key, fallback), isError, {
+            i18nKey: key,
+            i18nFallback: fallback,
+        });
     }
 
     function setLoadingCopy(title, subtitle) {
@@ -1714,8 +1739,18 @@
                 }
                 return codedText;
             }
+            // 未在 translateResponseErrorCode 命中的 error_code 走通用兜底：
+            // 本仓 i18n 设计哲学是「错误码翻译完整性在评审时强制，不做运行时
+            // hit 兜底」，所以这里不要把后端 raw payload.error 透出给 UI——
+            // 详情打到 console 给开发者，UI 走调用方传入的 fallbackText 概括语。
             if (rawError) {
-                return truncateErrorDetail(rawError);
+                try {
+                    console.warn(
+                        '[storage-location] unhandled storage error_code, raw detail:',
+                        code || '(none)',
+                        rawError
+                    );
+                } catch (_) {}
             }
         }
         return fallbackText;
@@ -1726,10 +1761,7 @@
 
         var normalizedTargetPath = String(targetPath || '').trim();
         if (!normalizedTargetPath) {
-            setSelectionStatus(
-                translate('storage.selectPathRequired', '请先提供目标路径。'),
-                true
-            );
+            setSelectionStatusByKey('storage.selectPathRequired', '请先提供目标路径。', true);
             return;
         }
 
@@ -1925,10 +1957,7 @@
 
     async function requestRestart() {
         if (!state.pendingSelection.path) {
-            setSelectionStatus(
-                translate('storage.selectPathRequired', '请先提供目标路径。'),
-                true
-            );
+            setSelectionStatusByKey('storage.selectPathRequired', '请先提供目标路径。', true);
             return;
         }
 
@@ -2012,9 +2041,17 @@
     }
 
     function showError(error) {
-        state.errorText.textContent = error
-            ? String(error.message || error)
-            : translate('storage.bootstrapError', '无法读取存储位置初始化信息，请重试。');
+        if (error) {
+            // 运行时透传的错误（fetch / parse 失败等）。文案由调用方/异常自带，
+            // 不打 i18n key，rebuild 切语言时按原文回填。
+            state.errorTextI18nKey = '';
+            state.errorTextI18nFallback = '';
+            state.errorText.textContent = String(error.message || error);
+        } else {
+            state.errorTextI18nKey = 'storage.bootstrapError';
+            state.errorTextI18nFallback = '无法读取存储位置初始化信息，请重试。';
+            state.errorText.textContent = translate(state.errorTextI18nKey, state.errorTextI18nFallback);
+        }
         setPhase('error');
     }
 
@@ -2433,10 +2470,14 @@
             previewPanelHidden: state.previewPanel ? state.previewPanel.hidden : true,
             customInputValue: state.customInput ? state.customInput.value : '',
             errorText: state.errorText ? state.errorText.textContent : '',
+            errorTextI18nKey: state.errorTextI18nKey,
+            errorTextI18nFallback: state.errorTextI18nFallback,
             selectionStatusText: state.selectionStatus ? state.selectionStatus.textContent : '',
             selectionStatusIsError: state.selectionStatus
                 ? state.selectionStatus.classList.contains('storage-location-note--error')
                 : false,
+            selectionStatusI18nKey: state.selectionStatusI18nKey,
+            selectionStatusI18nFallback: state.selectionStatusI18nFallback,
             // 处于 maintenance 阶段时，下一次轮询可能要 ~900ms-1200ms 才到，
             // 直接抓 DOM 文案先把视觉占住，避免重建瞬间退回构建期默认值。
             maintenanceTitleText: state.maintenanceTitle ? state.maintenanceTitle.textContent : '',
@@ -2537,11 +2578,30 @@
             );
         }
 
-        if (snapshot.errorText && state.errorText) {
-            state.errorText.textContent = snapshot.errorText;
+        if (state.errorText) {
+            // 优先按 i18n key 重新翻译，避免快照里塞回旧 locale 的字面文案；
+            // 没有 key 的情况（运行时错误透传等）保留快照原文。
+            if (snapshot.errorTextI18nKey) {
+                state.errorTextI18nKey = snapshot.errorTextI18nKey;
+                state.errorTextI18nFallback = snapshot.errorTextI18nFallback;
+                state.errorText.textContent = translate(
+                    snapshot.errorTextI18nKey,
+                    snapshot.errorTextI18nFallback
+                );
+            } else if (snapshot.errorText) {
+                state.errorTextI18nKey = '';
+                state.errorTextI18nFallback = '';
+                state.errorText.textContent = snapshot.errorText;
+            }
         }
 
-        if (snapshot.selectionStatusText) {
+        if (snapshot.selectionStatusI18nKey) {
+            setSelectionStatusByKey(
+                snapshot.selectionStatusI18nKey,
+                snapshot.selectionStatusI18nFallback,
+                snapshot.selectionStatusIsError
+            );
+        } else if (snapshot.selectionStatusText) {
             setSelectionStatus(snapshot.selectionStatusText, snapshot.selectionStatusIsError);
         }
 
