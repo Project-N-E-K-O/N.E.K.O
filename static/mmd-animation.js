@@ -339,6 +339,13 @@ class MMDAnimation {
             this._activeSlot = null;
             this._outgoingSlot = null;
             this._isCrossfading = false;
+            this._blendWeight = 0.0;
+            this._fadeElapsed = 0.0;
+
+            // 清理循环点过渡状态，避免跨动画泄漏
+            this._isLoopCrossfading = false;
+            this._loopOutgoingSnapshot = null;
+            this._loopFadeElapsed = 0.0;
 
             // 也清理 class-level
             if (this.currentAction) { this.currentAction.enabled = false; this.currentAction = null; }
@@ -461,8 +468,6 @@ class MMDAnimation {
             // 清除 _stopSnapshot 引用（已被 crossfade 接管）
             // 不在这里清——update() 还需要用。在 _completeCrossfade 中清。
 
-            console.log('[MMD Animation] 动画加载完成:', vmdUrl, `(快照式 crossfade ${fadeDuration}s)`);
-
         } else {
             // ═══ 首次加载 / 硬切路径 ═══
 
@@ -474,6 +479,11 @@ class MMDAnimation {
             this._isCrossfading = false;
             this._blendWeight = 0.0;
             this._fadeElapsed = 0.0;
+
+            // 清理循环点过渡状态，避免跨动画泄漏
+            this._isLoopCrossfading = false;
+            this._loopOutgoingSnapshot = null;
+            this._loopFadeElapsed = 0.0;
 
             // 也清理旧的 class-level 状态（从旧 loadAnimation 迁移过来的）
             // 【关键】不调用 action.stop() / mixer.stopAllAction()——
@@ -595,7 +605,8 @@ class MMDAnimation {
         this.manager._isTPose = false;
 
         console.log('[MMD Animation] 动画加载完成:', vmdUrl,
-            hasActiveAnimation && !immediate ? `(crossfade ${fadeDuration}s)` : '(直接加载)');
+            hasStopSnapshot ? `(快照式 crossfade ${fadeDuration}s)` :
+            hasActiveAnimation && !immediate && !activeDisabled ? `(crossfade ${fadeDuration}s)` : '(直接加载)');
 
         return clip;
     }
@@ -1060,7 +1071,9 @@ class MMDAnimation {
 
             // 3. 推进混合权重
             this._fadeElapsed += delta;
-            this._blendWeight = Math.min(this._fadeElapsed / this._fadeDuration, 1.0);
+            this._blendWeight = this._fadeDuration > 0
+                ? Math.min(this._fadeElapsed / this._fadeDuration, 1.0)
+                : 1.0;
 
             // 4. 骨骼混合
             this._blendBones(
