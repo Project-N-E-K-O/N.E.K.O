@@ -473,11 +473,19 @@ async def test_aresolve_reciprocal_pair_does_not_delete_both(tmp_path):
     ])
     with patch("utils.llm_client.create_chat_llm", return_value=fake_llm):
         await resolver.aresolve("小天")
-    surviving_ids = {f["id"] for f in await fs.aload_facts("小天")}
-    # The bug condition is "both rows deleted". With the guard, at
-    # least one of the two original rows must remain.
-    assert len(surviving_ids) >= 1
-    assert surviving_ids <= {"c1", "e1"}
+    facts = await fs.aload_facts("小天")
+    # First-decision-wins: merge(c1,e1) ran ⇒ c1 is dropped, e1 keeps
+    # provenance to c1 + importance bump.  The second decision
+    # (replace(e1,c1)) is silently skipped via the reciprocal guard
+    # because c1 is already in ids_to_remove.  Asserting only "≥1
+    # survivor" would also accept "wrong row deleted" or "both kept",
+    # neither of which matches the documented contract (CodeRabbit
+    # PR-956 Minor).
+    assert {f["id"] for f in facts} == {"e1"}
+    survivor = next(f for f in facts if f["id"] == "e1")
+    assert "c1" in (survivor.get("merged_from_ids") or [])
+    # importance bumped from default 5 → 6 (capped at 10 elsewhere).
+    assert survivor["importance"] == 6
 
 
 @pytest.mark.asyncio
@@ -779,6 +787,51 @@ async def test_aresolve_returns_zero_when_queue_save_fails_in_maintenance(tmp_pa
             patch("memory.fact_dedup.assert_cloudsave_writable", side_effect=_flaky_assert):
         resolved = await resolver.aresolve("小天")
     assert resolved == 0
+
+
+@pytest.mark.asyncio
+async def test_aapply_decisions_evicts_fact_cache_on_save_failure(tmp_path):
+    """Mirror of `asave_persona`'s round-7 contract from PR #936:
+    `_aapply_decisions` does `facts[:] = [...]` on the FactStore's
+    in-memory list before calling `asave_facts`. If the save raises
+    after the mutation, the cache holds the post-mutation state but
+    disk does not — the next `aload_facts` would return divergent
+    data, and a paraphrase that the LLM said to drop would silently
+    resurrect (or vice versa) on whichever side won the race. The
+    fix lives in `FactStore.save_facts` itself: any exception now
+    evicts `_facts[name]` so the next read pulls fresh from disk
+    (CodeRabbit PR-956 Major)."""
+    fs, resolver = _install_resolver(str(tmp_path))
+    cand = _fact("c1", "x", embedding=[1.0, 0.0])
+    existing = _fact("e1", "y", embedding=[0.99, 0.05], importance=4)
+    await _seed_facts(fs, "小天", [cand, existing])
+    # Enqueue while writes are still allowed.
+    await resolver.aenqueue_candidates("小天", [{
+        "candidate_id": "c1", "existing_id": "e1",
+        "candidate_text": "x", "existing_text": "y",
+        "entity": "master", "cosine": 0.99,
+    }])
+
+    # Patch atomic_write_json (used inside save_facts) to raise on the
+    # facts.json write. The pending_dedup write goes through
+    # atomic_write_json_async which is a different symbol — the queue
+    # save path is unaffected.
+    fake_llm = _make_llm_mock([{"index": 0, "action": "merge"}])
+    with patch("utils.llm_client.create_chat_llm", return_value=fake_llm), \
+            patch("memory.facts.atomic_write_json",
+                  side_effect=OSError("disk full simulation")):
+        with pytest.raises(OSError):
+            await resolver.aresolve("小天")
+
+    # Cache was evicted on the failure ⇒ next read goes to disk and
+    # returns the *original* state (c1 + e1 both present, importance
+    # unchanged). Without eviction, the cache would return the
+    # mutated post-merge state with c1 missing and e1.importance=5.
+    assert "小天" not in fs._facts
+    facts = await fs.aload_facts("小天")
+    assert {f["id"] for f in facts} == {"c1", "e1"}
+    e1 = next(f for f in facts if f["id"] == "e1")
+    assert e1["importance"] == 4  # untouched
 
 
 def test_rebind_fact_store_preserves_alocks(tmp_path):

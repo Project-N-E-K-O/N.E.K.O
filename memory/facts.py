@@ -135,30 +135,43 @@ class FactStore:
 
     def save_facts(self, name: str) -> None:
         with self._get_lock(name):
-            assert_cloudsave_writable(
-                self._config_manager,
-                operation="save",
-                target=f"memory/{name}/facts.json",
-            )
-            facts = self._facts.get(name, [])
-            path = self._facts_path(name)
-            # Read-merge-write: 保护其他进程写入的 absorbed 标记
-            if os.path.exists(path):
-                try:
-                    with open(path, encoding='utf-8') as f:
-                        disk_facts = json.load(f)
-                    if isinstance(disk_facts, list):
-                        absorbed_ids = {
-                            f['id'] for f in disk_facts
-                            if isinstance(f, dict) and f.get('absorbed')
-                        }
-                        if absorbed_ids:
-                            for f in facts:
-                                if f.get('id') in absorbed_ids:
-                                    f['absorbed'] = True
-                except (json.JSONDecodeError, OSError):
-                    pass
-            atomic_write_json(path, facts, indent=2, ensure_ascii=False)
+            try:
+                assert_cloudsave_writable(
+                    self._config_manager,
+                    operation="save",
+                    target=f"memory/{name}/facts.json",
+                )
+                facts = self._facts.get(name, [])
+                path = self._facts_path(name)
+                # Read-merge-write: 保护其他进程写入的 absorbed 标记
+                if os.path.exists(path):
+                    try:
+                        with open(path, encoding='utf-8') as f:
+                            disk_facts = json.load(f)
+                        if isinstance(disk_facts, list):
+                            absorbed_ids = {
+                                f['id'] for f in disk_facts
+                                if isinstance(f, dict) and f.get('absorbed')
+                            }
+                            if absorbed_ids:
+                                for f in facts:
+                                    if f.get('id') in absorbed_ids:
+                                        f['absorbed'] = True
+                    except (json.JSONDecodeError, OSError):
+                        pass
+                atomic_write_json(path, facts, indent=2, ensure_ascii=False)
+            except Exception:
+                # Cache divergence guard (CodeRabbit PR-956 Major,
+                # mirroring `PersonaManager.asave_persona`'s round-7
+                # fix from PR #936). Callers like
+                # `FactDedupResolver._aapply_decisions` mutate the
+                # in-memory list directly via `facts[:] = [...]` and
+                # then call us; if the disk write raises, the cache
+                # still holds the post-mutation state but disk
+                # doesn't, so the next `aload_facts` returns
+                # divergent data. Evicting forces a fresh disk read.
+                self._facts.pop(name, None)
+                raise
             # 基于文件修改时间节流归档：距上次归档超过 _ARCHIVE_COOLDOWN_HOURS 才尝试
             try:
                 archive_path = self._facts_archive_path(name)
