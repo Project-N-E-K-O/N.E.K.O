@@ -681,7 +681,10 @@ class LLMSessionManager:
         try:
             await self._emit_turn_end(active_request_id)
         finally:
-            self._active_text_request_id = None
+            # Compare-and-clear：仅在共享字段仍是本轮快照时才清空，避免
+            # 抹掉用户在 turn end 发出前提交的新轮 request_id。
+            if self._active_text_request_id == active_request_id:
+                self._active_text_request_id = None
 
         # ── 热切换逻辑 ─────────────────────────────────────────────────────────
         # 正在切换过程中则跳过所有热切换判断
@@ -766,6 +769,11 @@ class LLMSessionManager:
         """
         处理响应被丢弃的通知：清空 TTS 管线 + 前端输出，必要时发送 turn end
         """
+        # 快照本轮的 request_id，函数末尾只在仍等于快照时才清空——
+        # 防止用户在本轮 turn end 发出前就提交下一条文本时，新轮的
+        # request_id 被旧 discard 回调误抹掉（前端 rollback / clearPending
+        # rollback 会跨轮串掉）。
+        active_request_id = self._active_text_request_id
         logger.warning(f"[{self.lanlan_name}] 响应异常已丢弃 (reason={reason}, attempt={attempt}/{max_attempts}, will_retry={will_retry})")
 
         # 检测是否为 RESPONSE_TOO_LONG 最终丢弃 / RESPONSE_LENGTH_TRUNCATED 截断恢复
@@ -859,11 +867,13 @@ class LLMSessionManager:
                 # 注：上面读 pending_meta 已经触发 is_ephemeral 判定，但这里
                 # _emit_turn_end 自己会再读一次 _pending_turn_meta 做透传 + 清空，
                 # 二者读的是同一个值，幂等。
-                await self._emit_turn_end(self._active_text_request_id)
+                await self._emit_turn_end(active_request_id)
             except Exception as e:
                 logger.warning(f"⚠️ {'RESPONSE_LENGTH_TRUNCATED' if _truncated_text is not None else 'RESPONSE_TOO_LONG'} 回复发送失败: {e}")
             finally:
-                self._active_text_request_id = None
+                # Compare-and-clear：见函数顶部 active_request_id 快照说明。
+                if self._active_text_request_id == active_request_id:
+                    self._active_text_request_id = None
 
         if self.sync_message_queue:
             self.sync_message_queue.put({
@@ -872,7 +882,9 @@ class LLMSessionManager:
             })
 
         if not will_retry and not _is_too_long_final and _truncated_text is None:
-            self._active_text_request_id = None
+            # Compare-and-clear：仅当共享字段仍是本轮快照时才清空。
+            if self._active_text_request_id == active_request_id:
+                self._active_text_request_id = None
 
         # turn end will 由 handle_response_complete 统一发送
 

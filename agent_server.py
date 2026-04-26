@@ -2348,8 +2348,16 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                 len(of_res.get("artifacts") or []),
                             )
                             print(f"[OpenFang] result (first 500): {str(of_res.get('result', ''))[:500]}")
-                            print(f"[OpenFang] error: {of_res.get('error')}")
-                            print(f"[OpenFang] artifacts: {of_res.get('artifacts')}")
+                            # error 可能是几 KB 的堆栈/解释文本；artifacts 可能是大
+                            # JSON / base64 列表，无界 print 既泄漏面大又会卡 stdout。
+                            _of_err = str(of_res.get("error") or "")
+                            print(f"[OpenFang] error (first 500, len={len(_of_err)}): {_of_err[:500]}")
+                            _of_arts = of_res.get("artifacts")
+                            if isinstance(_of_arts, list):
+                                _of_art_types = [type(a).__name__ for a in _of_arts[:3]]
+                                print(f"[OpenFang] artifacts: count={len(_of_arts)}, types(first3)={_of_art_types}")
+                            else:
+                                print(f"[OpenFang] artifacts_present={_of_arts is not None}")
                             logger.debug("[OpenFang] ==============================")
                             if of_info.get("status") == "cancelled":
                                 return
@@ -3547,7 +3555,9 @@ def _extract_tool_intent_as_text(refusal_text: str) -> str:
         prefix = "I attempted to perform an action but encountered a compatibility issue. Let me provide what I know instead.\n\nContext: "
         prefix_tokens = count_tokens(prefix)
         if prefix_tokens >= 200:
-            return prefix
+            # 极端 / 文案被改长 / 本地化场景的兜底：把整条前缀也截到 200，
+            # 保证返回串永远不超预算。
+            return _tt(prefix, 200)
         return prefix + _tt(cleaned, 200 - prefix_tokens)
 
     tool_name = match.group(1)
