@@ -1944,43 +1944,62 @@ async def maybe_spawn_review(name: str) -> None:
         cancel_event = asyncio.Event()
         correction_cancel_flags[name] = cancel_event
         snapshot = list(history)  # 浅拷贝即可，消息对象不可变
-        task = asyncio.create_task(_run_review_in_background(name, snapshot))
+        # 把 cancel_event 显式传给后台 task（不再依靠 finally 时再从 dict 拿），
+        # 这样 task 自己持有的 event 引用不会被并发的新 spawn 覆盖。
+        task = asyncio.create_task(_run_review_in_background(name, snapshot, cancel_event))
         correction_tasks[name] = task
 
 
-async def _run_review_in_background(lanlan_name: str, snapshot: list):
+async def _run_review_in_background(
+    lanlan_name: str, snapshot: list, cancel_event: asyncio.Event,
+):
     """在后台运行 review_history，支持取消。
 
     Phase C 改动：
-    - snapshot 由 caller 拍下传入（不再重新读 history）
-    - review_history 返回 True / 'white' / False，分别对应：成功 patch /
-      cutoff 失配丢弃 / LLM 失败或被取消
-    - 成功：更新 last_review_ts + last_reviewed_cutoff_tail (K=3 fingerprint)
-    - 'white'：把 last_reviewed_cutoff_tail 设 None（caller 决定立刻重 review）
-    - False：不动 maint_state，下轮 gate 重判
+    - snapshot + cancel_event 由 caller 拍下传入（task 自己持有引用）
+    - review_history 返回 (status, fingerprint) tuple：
+        ('patched', new_fp) → 成功 patch；new_fp 是 patch 后 new_history 末尾
+                              的 K 条 fingerprint，**必须**用这个新 fingerprint
+                              （review 可能改写过末尾 K 条里的任一条，
+                              ``build_review_fingerprint(snapshot)`` 是旧的）
+        ('white', None)    → cutoff 失配 / 整段丢弃
+        ('failed', None)   → LLM 失败 / 被取消 / 格式错误
+
+    白 review 处理（CodeRabbit Issue #1 修复）：
+    - **不**更新 last_review_ts → 下轮 gate 4 视为"距上次 review 时间已久"
+      → 配合 fingerprint=None → MIN_NEW_MSGS gate 视为 ∞ → 下次 /process
+      立即重 review，重建锚点。这才符合"白 review = 锚点丢失，应尽快重建"
+      的用户原意。
+
+    清理（CodeRabbit Issue #2 修复）：
+    - finally 按 task/event 身份比对再 pop/clear，避免并发新 spawn 写入的
+      条目被误删。理论上 spawn lock + asyncio finally 同步语义已经排除了
+      race，但身份检查是廉价的防御。
     """
-    from memory.recent import build_review_fingerprint
-
-    cancel_event = correction_cancel_flags.get(lanlan_name)
-    if cancel_event is None:
-        cancel_event = asyncio.Event()
-        correction_cancel_flags[lanlan_name] = cancel_event
-
     try:
         result = await recent_history_manager.review_history(
             lanlan_name, snapshot, cancel_event=cancel_event,
         )
+        # 兼容意外的返回类型，统一解包
+        if isinstance(result, tuple) and len(result) == 2:
+            status, fingerprint = result
+        else:
+            status, fingerprint = ('failed', None)
+
         state = _maint_state.setdefault(lanlan_name, {})
-        if result is True:
+        if status == 'patched':
             logger.info(f"✅ {lanlan_name} 的记忆整理任务完成")
             state['review_clean'] = True
             state['last_review_ts'] = datetime.now().isoformat()
-            state['last_reviewed_cutoff_tail'] = build_review_fingerprint(snapshot)
+            state['last_reviewed_cutoff_tail'] = fingerprint
             await _asave_maint_state()
-        elif result == 'white':
-            logger.info(f"⚠️ {lanlan_name} 白 review（cutoff 失配），fingerprint 清空允许立即重试")
+        elif status == 'white':
+            logger.info(
+                f"⚠️ {lanlan_name} 白 review（cutoff 失配），fingerprint 清空、不刷 ts，允许立即重试"
+            )
             state['last_reviewed_cutoff_tail'] = None
-            state['last_review_ts'] = datetime.now().isoformat()  # interval 仍生效
+            # 故意不更新 last_review_ts：让下轮 gate 4 用旧 ts（通常已过 30/60s）
+            # 直接放行，配合 fingerprint=None 触发 gate 5 的 ∞ 通行 → 立即重 review。
             await _asave_maint_state()
         else:
             logger.info(f"ℹ️ {lanlan_name} 的记忆整理未执行（被跳过或失败）")
@@ -1989,11 +2008,13 @@ async def _run_review_in_background(lanlan_name: str, snapshot: list):
     except Exception as e:
         logger.error(f"❌ {lanlan_name} 的记忆整理任务出错: {e}")
     finally:
-        if correction_tasks.get(lanlan_name) is not None:
+        # 按 task/event 身份比对再清理：如果并发的新 spawn 已经写入了新 task /
+        # 新 event，本 task 不应该把它们清掉。
+        current_task = asyncio.current_task()
+        if correction_tasks.get(lanlan_name) is current_task:
             correction_tasks.pop(lanlan_name, None)
-        ev = correction_cancel_flags.get(lanlan_name)
-        if ev is not None:
-            ev.clear()
+        if correction_cancel_flags.get(lanlan_name) is cancel_event:
+            correction_cancel_flags.pop(lanlan_name, None)
 
 def _extract_ai_response(messages: list) -> str:
     """从消息列表中提取最后一条 AI 回复的文本。"""

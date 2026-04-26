@@ -503,14 +503,19 @@ class CompressedRecentHistoryManager:
           → caller 应将 fingerprint 设为 None，下一轮 review 立刻可起。
 
         Returns:
-            True   → 成功 patch 并落盘
-            'white' → cutoff 在当前 history 里失配，整段丢弃
-            False  → LLM 失败 / 被取消 / 历史为空 / 响应格式错误
+            (str, list[dict] | None) tuple:
+              ('patched', new_fingerprint) — 成功 patch 并落盘；new_fingerprint
+                  是 patch 后 new_history 末尾 review 区的 K 条 fingerprint，供
+                  caller 写入 maint_state（**必须**用这个新 fingerprint，而不是
+                  ``build_review_fingerprint(snapshot)``——review 可能改写过末
+                  尾 K 条里的任一条，旧 fingerprint 在新 history 里再也定位不到）
+              ('white', None) — cutoff 在当前 history 里失配，整段丢弃
+              ('failed', None) — LLM 失败 / 被取消 / 历史为空 / 响应格式错误
         """
         # 检查是否被取消
         if cancel_event and cancel_event.is_set():
             print(f"⚠️ {lanlan_name} 的记忆整理被取消（启动前）")
-            return False
+            return ('failed', None)
 
         # snapshot 由 caller 提供（spawn 时拍下）；为兼容老调用兜底从磁盘读
         if snapshot is None:
@@ -518,7 +523,7 @@ class CompressedRecentHistoryManager:
 
         if not snapshot:
             print(f"{lanlan_name} 的历史记录为空，无需审阅")
-            return False
+            return ('failed', None)
 
         # 将 snapshot 转为可读文本格式（喂 LLM）
         name_mapping = self.name_mapping.copy()
@@ -546,7 +551,7 @@ class CompressedRecentHistoryManager:
         # 检查是否被取消
         if cancel_event and cancel_event.is_set():
             print(f"⚠️ {lanlan_name} 的记忆整理被取消（准备调用LLM前）")
-            return False
+            return ('failed', None)
 
         retries = 0
         max_retries = 3
@@ -564,7 +569,7 @@ class CompressedRecentHistoryManager:
                 # 检查是否被取消（LLM调用后）
                 if cancel_event and cancel_event.is_set():
                     print(f"⚠️ {lanlan_name} 的记忆整理被取消（LLM调用后，保存前）")
-                    return False
+                    return ('failed', None)
 
                 # 确保response_content是字符串
                 response_content = str(response_content).strip()
@@ -579,7 +584,7 @@ class CompressedRecentHistoryManager:
 
                 if not (isinstance(review_result, dict) and '修正说明' in review_result and '修正后的对话' in review_result):
                     print(f"❌ 审阅响应格式错误：{response_content}")
-                    return False
+                    return ('failed', None)
 
                 print(f"记忆整理结果：{review_result['修正说明']}")
 
@@ -608,9 +613,16 @@ class CompressedRecentHistoryManager:
                 if cutoff_idx is None:
                     # 白 review：cutoff 在当前 history 里失配（被压缩 / 被清空）
                     print(f"⚠️ {lanlan_name} review 完成但 cutoff 失配（白 review，丢弃）")
-                    return 'white'
+                    return ('white', None)
 
                 take_count = min(capacity, len(corrected_messages))
+                if take_count == 0:
+                    # corrected 为空（罕见：LLM 返回空"修正后的对话"），等价于
+                    # 整段删除 review 范围。视为白 review 让下轮重建锚点；不去
+                    # 写盘也不更新 fingerprint（避免 anchor 漂移到非 review 区）。
+                    print(f"⚠️ {lanlan_name} review 输出为空，按白 review 处理")
+                    return ('white', None)
+
                 # 替换 [cutoff_idx - capacity + 1, cutoff_idx] 这 capacity 个 slot
                 # 为 corrected 末尾 take_count 条；cutoff_idx 之后新增的保留。
                 # take_count < capacity 时，前 (capacity - take_count) 个 slot
@@ -635,19 +647,30 @@ class CompressedRecentHistoryManager:
                     ensure_ascii=False,
                 )
 
+                # ── Issue #3 修复：基于 patched 后的 new_history 算新 fingerprint ──
+                # patched 区在 new_history 里的范围是 [patched_start, patched_end]：
+                #   patched_start = cutoff_idx - capacity + 1
+                #   patched_end   = patched_start + take_count - 1
+                # 新 fingerprint = K 条以 patched_end 结尾的消息。如果 patched_end
+                # 之前的消息不足 K-1 条，取从 0 开始所有可用的。
+                patched_end = (cutoff_idx - capacity + 1) + take_count - 1
+                fp_start = max(0, patched_end - REVIEW_FINGERPRINT_K + 1)
+                fp_messages = new_history[fp_start:patched_end + 1]
+                new_fingerprint = build_review_fingerprint(fp_messages, k=REVIEW_FINGERPRINT_K)
+
                 print(
                     f"✅ {lanlan_name} 的记忆已修正：cutoff_idx={cutoff_idx}, "
                     f"capacity={capacity}, corrected={len(corrected_messages)}, "
                     f"take={take_count}, history {len(current)}→{len(new_history)}"
                 )
-                return True
+                return ('patched', new_fingerprint)
 
             except (APIConnectionError, InternalServerError, RateLimitError) as e:
                 logger.info(f"ℹ️ 捕获到 {type(e).__name__} 错误")
                 retries += 1
                 if retries >= max_retries:
                     print(f'❌ 记忆整理失败，已达到最大重试次数: {e}')
-                    return False
+                    return ('failed', None)
                 # 指数退避: 1, 2, 4 秒
                 wait_time = 2 ** (retries - 1)
                 print(f'⚠️ 遇到网络或429错误，等待 {wait_time} 秒后重试 (第 {retries}/{max_retries} 次)')
@@ -655,11 +678,11 @@ class CompressedRecentHistoryManager:
                 # 检查是否被取消
                 if cancel_event and cancel_event.is_set():
                     print(f"⚠️ {lanlan_name} 的记忆整理在重试等待期间被取消")
-                    return False
+                    return ('failed', None)
             except Exception as e:
                 logger.error(f"❌ 历史记录审阅失败：{e}")
-                return False
+                return ('failed', None)
 
         # 如果所有重试都失败
         print(f"❌ {lanlan_name} 的记忆整理失败，已达到最大重试次数")
-        return False
+        return ('failed', None)
