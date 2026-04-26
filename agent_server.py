@@ -939,17 +939,22 @@ async def _emit_task_result(
     _SUMMARY_LIMIT = 400
     _DETAIL_LIMIT = 1000
     _ERROR_LIMIT = 350
+    # 一次性 truncate 后复用——避免同 summary 在 text/summary 字段被
+    # encode 两次，也让"最终 budget 由谁负责"的语义聚拢到这一处。
+    _summary_t = _tt(summary, _SUMMARY_LIMIT)
+    _detail_t = _tt(detail, _DETAIL_LIMIT) if detail else ""
+    _error_t = _tt(error_message, _ERROR_LIMIT) if error_message else ""
     await _emit_main_event(
         "task_result",
         lanlan_name,
-        text=_tt(summary, _SUMMARY_LIMIT),
+        text=_summary_t,
         task_id=task_id,
         channel=channel,
         status=status,
         success=success,
-        summary=_tt(summary, _SUMMARY_LIMIT),
-        detail=_tt(detail, _DETAIL_LIMIT) if detail else "",
-        error_message=_tt(error_message, _ERROR_LIMIT) if error_message else "",
+        summary=_summary_t,
+        detail=_detail_t,
+        error_message=_error_t,
         direct_reply=direct_reply,
         timestamp=_now_iso(),
     )
@@ -2403,20 +2408,21 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                             summary = _rp_phrase('cu_task_done', _lang, desc=result.task_description, status=_done, detail=_tt(of_result_text, 200)) if of_result_text else \
                                       _rp_phrase('cu_task_desc_only', _lang, desc=result.task_description, status=_done)
                             of_session.complete_task(of_result_text or summary, success)
+                            # _of_error_src 和 task_tracker.detail 都用 fallback chain：
+                            # daemon 按惯例把失败说明塞 error 而不是 result，下游 detail
+                            # 也得能从 error 兜回，否则 analyzer 看到 failed 但 detail="
+                            # 拿不到任何线索（前面 of_info["error"] 修过但 task_tracker
+                            # 这条出口没同步）。
+                            _of_error_src = of_error_text or of_result_text or "(OpenFang task failed with no error text)"
+                            _track_detail = of_result_text if success else _of_error_src
                             _task_tracker.record_completed(
                                 lanlan_name, task_id=of_task_id, method="openfang",
                                 desc=result.task_description or "",
-                                detail=_tt(of_result_text, 200) if of_result_text else "", success=success,
+                                detail=_tt(_track_detail, 200) if _track_detail else "", success=success,
                             )
                             of_info["status"] = "completed" if success else "failed"
                             of_info["end_time"] = _now_iso()
                             of_info["result"] = of_res
-                            # 与 /openfang/run direct path 同款 fallback chain：
-                            # daemon 失败时可能把原因塞在 result，error_message
-                            # 必须能从 result 兜回；result 和 error 都为空时
-                            # 走默认占位串，避免 HUD/analyzer 拿到 failed 但
-                            # error_message="" 完全没失败说明。
-                            _of_error_src = of_error_text or of_result_text or "(OpenFang task failed with no error text)"
                             if not success:
                                 of_info["error"] = _tt(_of_error_src, 350)
                             await _emit_task_result(
