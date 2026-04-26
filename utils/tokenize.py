@@ -201,9 +201,12 @@ def truncate_head_tail_tokens(
         # Heuristic fallback: cut by char position using same weighting
         # as `_count_tokens_heuristic`. Approximate but bounded.
         head_str = _truncate_to_tokens_heuristic(text, head_tokens)
-        # For tail, scan from the end using the same logic.
+        # For tail, scan from the end using the same logic. The for/else
+        # covers both branches: if the budget is exceeded mid-scan we set
+        # cut_idx via the break path; if the entire string fits within
+        # tail_tokens (rare here since we already returned early when
+        # text fits in head+tail) the else clause sets cut_idx = 0.
         running = 0.0
-        cut_idx = len(text)
         for i in range(len(text) - 1, -1, -1):
             weight = 1.5 if is_cjk_char(text[i]) else 0.25
             if math.ceil(running + weight) > tail_tokens:

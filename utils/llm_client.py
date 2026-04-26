@@ -268,6 +268,10 @@ class ChatOpenAI:
                     field_value=limit_value,
                 )
         except Exception:
+            # Audit hook is debug-only and must never bubble up — a broken
+            # logger should not break LLM calls. Intentionally swallowed;
+            # this whole try/except disappears when the audit module is
+            # removed.
             pass
         return p
 

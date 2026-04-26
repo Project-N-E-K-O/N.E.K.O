@@ -117,6 +117,9 @@ def record_llm_request(
                 flush=True,
             )
         except Exception:
+            # Banner print failures are intentionally ignored: stdout
+            # closed / encoding error etc. must not abort the audit
+            # record itself, let alone the main LLM call.
             pass
 
     try:
@@ -160,8 +163,11 @@ def record_llm_request(
                 f.write(line)
                 f.write("\n")
     except Exception as e:
-        # 审计永远不能影响主流程
+        # 审计永远不能影响主流程：jsonl 写盘 / token 计数 / encoding
+        # 任意一步失败都吞掉，main LLM call 必须能继续。
         try:
             print(f"[LLM_PROMPT_AUDIT] record failed: {e}", flush=True)
         except Exception:
+            # 连 print 都失败（stdout 关闭等极端情况）→ 也吞掉。
+            # 这是临时调试模块，丢失一条审计记录不影响任何业务正确性。
             pass
