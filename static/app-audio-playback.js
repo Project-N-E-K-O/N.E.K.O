@@ -571,14 +571,29 @@
                 try {
                     S.globalAnalyser = S.audioPlayerContext.createAnalyser();
                     S.globalAnalyser.fftSize = 2048;
-                    // Insert speaker gain node: source -> analyser -> gainNode -> destination
+                    // Audio graph:
+                    //   source -> analyser -> spatialPanner -> spatialDistanceGain -> speakerGain -> destination
+                    // spatialPanner / spatialDistanceGain 始终存在；当空间音频关闭时
+                    // pan=0 / gain=1 形成 transparent passthrough，避免动态切换图结构。
+                    S.spatialPannerNode = S.audioPlayerContext.createStereoPanner();
+                    S.spatialPannerNode.pan.value = 0;
+                    S.spatialDistanceGainNode = S.audioPlayerContext.createGain();
+                    S.spatialDistanceGainNode.gain.value = 1;
+
                     S.speakerGainNode = S.audioPlayerContext.createGain();
                     var vol = (typeof window.getSpeakerVolume === 'function')
                         ? window.getSpeakerVolume() : 100;
                     S.speakerGainNode.gain.value = vol / 100;
-                    S.globalAnalyser.connect(S.speakerGainNode);
+
+                    S.globalAnalyser.connect(S.spatialPannerNode);
+                    S.spatialPannerNode.connect(S.spatialDistanceGainNode);
+                    S.spatialDistanceGainNode.connect(S.speakerGainNode);
                     S.speakerGainNode.connect(S.audioPlayerContext.destination);
-                    console.log('[Audio] 全局分析器和扬声器增益节点已创建并连接');
+                    console.log('[Audio] 全局分析器、空间音频与扬声器增益节点已创建并连接');
+
+                    if (window.appSpatialAudio && typeof window.appSpatialAudio.attach === 'function') {
+                        window.appSpatialAudio.attach();
+                    }
                 } catch (e) {
                     console.error('[Audio] 创建分析器失败:', e);
                 }

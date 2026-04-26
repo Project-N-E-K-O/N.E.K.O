@@ -778,7 +778,9 @@
         "defaultDevice": "시스템 기본 스피커",
         "deviceLabel": "스피커 {{index}}",
         "loadFailed": "스피커 목록을 가져오지 못했습니다",
-        "noDevices": "스피커 장치가 감지되지 않았습니다"
+        "noDevices": "스피커 장치가 감지되지 않았습니다",
+        "spatialAudioLabel": "공간 음향",
+        "spatialAudioHint": "주 모니터 기준 캐릭터 창 위치에 따른 스테레오 패닝과 거리 감쇠"
     },
     "status": {
         "initializing": "초기화 중...",

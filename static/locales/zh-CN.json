@@ -778,7 +778,9 @@
         "defaultDevice": "系统默认扬声器",
         "deviceLabel": "扬声器 {{index}}",
         "loadFailed": "获取扬声器列表失败",
-        "noDevices": "没有检测到扬声器设备"
+        "noDevices": "没有检测到扬声器设备",
+        "spatialAudioLabel": "空间音频",
+        "spatialAudioHint": "根据猫娘窗口相对主屏的位置做立体声与距离衰减"
     },
     "status": {
         "initializing": "正在初始化...",
