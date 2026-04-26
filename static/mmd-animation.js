@@ -1520,6 +1520,8 @@ class MMDAnimation {
 
     dispose() {
         this._cleanupAnimation();
+        this._bindPoseBackup = null;
+        this._stopSnapshot = null;
 
         if (this._audioSource) {
             try { this._audioSource.disconnect(); } catch (e) { /* ignore */ }
