@@ -247,9 +247,24 @@ def handle_verify(args: argparse.Namespace) -> int:
         return 0
 
     if result.payload_hash_verified is None:
-        print("[FAIL] metadata.toml missing, payload hash could not be verified", file=sys.stderr)
+        print(
+            "[FAIL] metadata.toml is missing from the package, so the payload hash "
+            "could not be verified. The package may still be valid, but its integrity "
+            "cannot be confirmed. Re-pack the plugin to include metadata.toml.",
+            file=sys.stderr,
+        )
     else:
-        print("[FAIL] payload hash verification failed", file=sys.stderr)
+        print(
+            "[FAIL] payload hash verification failed: the hash computed from the "
+            "archive content does not match the hash stored in metadata.toml. "
+            "This can happen when:\n"
+            "  - the package was built on a different OS (e.g. Windows) with an older\n"
+            "    version of neko-plugin-cli that had cross-platform sorting issues\n"
+            "  - the archive was modified or corrupted after packaging\n"
+            "  - the plugin source changed but the package was not re-built\n"
+            "Try re-packing the plugin with the latest neko-plugin-cli.",
+            file=sys.stderr,
+        )
     return 1
 
 
@@ -324,11 +339,18 @@ def resolve_plugin_dirs(*, plugin_names: list[str], pack_all: bool) -> list[Path
             if path.is_file()
         )
         if not plugin_dirs:
-            raise FileNotFoundError(f"No plugin.toml files found under {PLUGIN_ROOT}")
+            raise FileNotFoundError(
+                f"no plugin.toml files found under '{PLUGIN_ROOT}'. "
+                f"Make sure plugin directories exist and each contains a plugin.toml file."
+            )
         return plugin_dirs
 
     if not plugin_names:
-        raise ValueError("Please provide a plugin name or use --all")
+        raise ValueError(
+            "no plugin names provided. Specify one or more plugin directory names "
+            "(e.g. 'neko-plugin pack my_plugin'), or use --all to pack every plugin "
+            f"found under '{PLUGIN_ROOT}'."
+        )
 
     return [resolve_plugin_dir_candidate(item) for item in plugin_names]
 
@@ -342,7 +364,12 @@ def resolve_plugin_dir_candidate(raw: str) -> Path:
 
     plugin_toml = plugin_dir / "plugin.toml"
     if not plugin_toml.is_file():
-        raise FileNotFoundError(f"plugin.toml not found for plugin '{raw}': {plugin_toml}")
+        raise FileNotFoundError(
+            f"plugin.toml not found for plugin '{raw}'.\n"
+            f"  looked in: {plugin_dir}\n"
+            f"Make sure the plugin directory name is correct and contains a plugin.toml file. "
+            f"Available plugins can be found under '{PLUGIN_ROOT}'."
+        )
     return plugin_dir
 
 
@@ -355,7 +382,13 @@ def resolve_package_path(raw: str) -> Path:
     if target_candidate.exists():
         return target_candidate
 
-    raise FileNotFoundError(f"package file not found: {raw}")
+    raise FileNotFoundError(
+        f"package file not found: '{raw}'.\n"
+        f"  looked in: {candidate}\n"
+        f"  also tried: {target_candidate}\n"
+        f"Provide a full path to the .neko-plugin or .neko-bundle file, "
+        f"or a filename that exists under '{TARGET_DIR}'."
+    )
 
 
 if __name__ == "__main__":

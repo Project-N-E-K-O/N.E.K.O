@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .models import PackResult, PayloadBuildResult, PluginSource
+from .normalize import normalize_archive_key, normalize_relative_posix
 from .pack_rules import PackRuleSet, load_pack_rules, should_skip_path
 from .plugin_source import load_plugin_source
 from .profile import write_bundle_profile, write_default_profile
@@ -66,7 +67,10 @@ class PluginPacker:
         source = load_plugin_source(plugin_dir)
         if source.package_type != "plugin":
             raise ValueError(
-                f"single-plugin pack only supports package_type='plugin', got {source.package_type!r}"
+                f"single-plugin pack only supports package_type='plugin', "
+                f"but '{source.plugin_id}' declares type='{source.package_type}' "
+                f"in its plugin.toml. Use pack_bundle() for non-plugin package types, "
+                f"or change [plugin].type to 'plugin' in plugin.toml."
             )
         paths = PackPaths.create(package_id=source.plugin_id)
         try:
@@ -120,11 +124,23 @@ class PluginPacker:
     ) -> PackResult:
         sources = [load_plugin_source(item) for item in plugin_dirs]
         if len(sources) < 2:
-            raise ValueError("bundle pack requires at least two plugins")
+            raise ValueError(
+                f"bundle pack requires at least two plugins, but only "
+                f"{len(sources)} plugin(s) were provided. "
+                f"Use pack_plugin() for single-plugin packaging."
+            )
 
         plugin_ids = [source.plugin_id for source in sources]
         if len(set(plugin_ids)) != len(plugin_ids):
-            raise ValueError("bundle pack does not support duplicate plugin_ids")
+            seen: dict[str, int] = {}
+            for pid in plugin_ids:
+                seen[pid] = seen.get(pid, 0) + 1
+            duplicates = [f"'{pid}' (x{count})" for pid, count in seen.items() if count > 1]
+            raise ValueError(
+                f"bundle pack does not support duplicate plugin_ids. "
+                f"Duplicates found: {', '.join(duplicates)}. "
+                f"Each plugin in a bundle must have a unique [plugin].id in its plugin.toml."
+            )
 
         resolved_bundle_id = (bundle_id or self.build_bundle_id(plugin_ids)).strip()
         resolved_package_name = (package_name or f"{resolved_bundle_id} bundle").strip()
@@ -274,7 +290,10 @@ class PluginPacker:
             lines.append(f'package_description = "{escape_string(package_description)}"')
 
         lines.append("")
-        paths.manifest_path.write_text("\n".join(lines), encoding="utf-8")
+        # Force LF line endings regardless of platform.
+        paths.manifest_path.write_text(
+            "\n".join(lines), encoding="utf-8", newline="\n",
+        )
 
     def write_metadata(
         self,
@@ -297,22 +316,39 @@ class PluginPacker:
                 "",
             ]
         )
-        paths.metadata_path.write_text(content, encoding="utf-8")
+        # Force LF line endings regardless of platform.
+        paths.metadata_path.write_text(content, encoding="utf-8", newline="\n")
 
     def export_package(self, staging_root: Path, package_path: Path) -> None:
+        """Write the staging tree into a ZIP archive.
+
+        Files are sorted by their NFC-normalized posix-relative path so that
+        the archive entry order is identical on every platform.
+        """
         package_path.parent.mkdir(parents=True, exist_ok=True)
+        file_entries = [
+            (normalize_relative_posix(path, staging_root), path)
+            for path in staging_root.rglob("*")
+            if not path.is_dir()
+        ]
         with zipfile.ZipFile(package_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-            for path in sorted(staging_root.rglob("*")):
-                if path.is_dir():
-                    continue
-                archive.write(path, arcname=path.relative_to(staging_root).as_posix())
+            for arcname, path in sorted(file_entries, key=lambda item: item[0]):
+                archive.write(path, arcname=arcname)
 
     def compute_payload_hash(self, payload_dir: Path) -> str:
+        """Compute SHA-256 over all files under *payload_dir*.
+
+        Uses the same algorithm as :func:`archive_utils.compute_archive_payload_hash`:
+        entries are sorted by NFC-normalized posix-relative path (case-sensitive),
+        and each entry contributes ``path + NUL + content + NUL`` to the digest.
+        """
         digest = hashlib.sha256()
-        for path in sorted(payload_dir.rglob("*")):
-            if path.is_dir():
-                continue
-            relative = path.relative_to(payload_dir).as_posix()
+        file_entries = [
+            (normalize_relative_posix(path, payload_dir), path)
+            for path in payload_dir.rglob("*")
+            if not path.is_dir()
+        ]
+        for relative, path in sorted(file_entries, key=lambda item: item[0]):
             digest.update(relative.encode("utf-8"))
             digest.update(b"\0")
             digest.update(path.read_bytes())

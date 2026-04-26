@@ -49,7 +49,19 @@ class PackageUnpacker:
             payload_hash = compute_archive_payload_hash(archive)
             payload_hash_verified = verify_payload_hash(metadata, payload_hash)
             if payload_hash_verified is False:
-                raise ValueError("payload hash mismatch between archive payload and metadata.toml")
+                meta_payload = metadata.get("payload", {}) if metadata else {}
+                expected = meta_payload.get("hash", "<unknown>") if isinstance(meta_payload, dict) else "<unknown>"
+                raise ValueError(
+                    f"payload hash mismatch: the archive content does not match the hash "
+                    f"recorded in metadata.toml.\n"
+                    f"  expected (metadata.toml): {expected}\n"
+                    f"  computed (archive):       {payload_hash}\n"
+                    f"This usually means the package was built on a different platform "
+                    f"(e.g. Windows vs Linux) with an older version of neko-plugin-cli "
+                    f"that had cross-platform sorting issues, or the archive was modified "
+                    f"after packaging. Try re-packing the plugin with the latest "
+                    f"neko-plugin-cli."
+                )
             folder_mapping = self.plan_plugin_targets(
                 plugin_folders,
                 plugins_root_path,
@@ -169,13 +181,21 @@ class PackageUnpacker:
     def require_string(self, data: dict[str, object], key: str) -> str:
         value = data.get(key)
         if not isinstance(value, str) or not value.strip():
-            raise ValueError(f"manifest field '{key}' must be a non-empty string")
+            actual = repr(value) if value is not None else "<missing>"
+            raise ValueError(
+                f"manifest.toml field '{key}' must be a non-empty string, got {actual}. "
+                f"The package manifest may be malformed or was created by an incompatible tool."
+            )
         return value.strip()
 
     def normalize_conflict_strategy(self, value: str) -> str:
         normalized = value.strip().lower()
         if normalized not in {"rename", "fail"}:
-            raise ValueError("on_conflict must be either 'rename' or 'fail'")
+            raise ValueError(
+                f"on_conflict must be either 'rename' or 'fail', got '{value}'. "
+                f"'rename' appends a numeric suffix to avoid overwriting existing directories; "
+                f"'fail' aborts if the target directory already exists."
+            )
         return normalized
 
 

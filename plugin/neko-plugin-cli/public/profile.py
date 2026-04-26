@@ -29,7 +29,10 @@ def write_default_profile(source: PluginSource, profiles_dir: Path) -> list[Path
     if runtime_config:
         lines.extend(dump_mapping(runtime_config))
 
-    profile_path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+    # Force LF line endings regardless of platform.
+    profile_path.write_text(
+        "\n".join(lines).rstrip() + "\n", encoding="utf-8", newline="\n",
+    )
     return [profile_path.resolve()]
 
 
@@ -63,5 +66,8 @@ def write_bundle_profile(sources: list[PluginSource], profiles_dir: Path) -> lis
         if runtime_config:
             lines.extend(dump_mapping(runtime_config))
 
-    profile_path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+    # Force LF line endings regardless of platform.
+    profile_path.write_text(
+        "\n".join(lines).rstrip() + "\n", encoding="utf-8", newline="\n",
+    )
     return [profile_path.resolve()]

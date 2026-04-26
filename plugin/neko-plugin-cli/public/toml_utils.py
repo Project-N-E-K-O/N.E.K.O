@@ -9,24 +9,39 @@ except ModuleNotFoundError:  # pragma: no cover
 
 
 def load_toml(path: Path) -> dict[str, object]:
-    with path.open("rb") as file_obj:
-        data = tomllib.load(file_obj)
+    try:
+        with path.open("rb") as file_obj:
+            data = tomllib.load(file_obj)
+    except Exception as exc:
+        raise ValueError(
+            f"failed to parse TOML file '{path}': {exc}"
+        ) from exc
     if not isinstance(data, dict):
-        raise ValueError(f"TOML root must be a table: {path}")
+        raise ValueError(
+            f"TOML file '{path}' root must be a table (mapping), "
+            f"got {type(data).__name__}"
+        )
     return data
 
 
 def require_table(data: dict[str, object], key: str, source_path: Path) -> dict[str, object]:
     value = data.get(key)
     if not isinstance(value, dict):
-        raise ValueError(f"required TOML table [{key}] missing in {source_path}")
+        raise ValueError(
+            f"required TOML table [{key}] is missing in '{source_path}'. "
+            f"Add a [{key}] section with the required fields."
+        )
     return value
 
 
 def require_string(data: dict[str, object], key: str, source_path: Path) -> str:
     value = data.get(key)
     if not isinstance(value, str) or not value.strip():
-        raise ValueError(f"required string '{key}' missing in {source_path}")
+        actual = repr(value) if value is not None else "<missing>"
+        raise ValueError(
+            f"required string field '{key}' is missing or empty in '{source_path}' "
+            f"(got {actual}). This field must be a non-empty string."
+        )
     return value.strip()
 
 

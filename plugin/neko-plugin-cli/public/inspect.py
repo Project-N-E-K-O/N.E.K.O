@@ -77,7 +77,11 @@ class PackageInspector:
     def require_string(self, data: dict[str, object], key: str) -> str:
         value = data.get(key)
         if not isinstance(value, str) or not value.strip():
-            raise ValueError(f"manifest field '{key}' must be a non-empty string")
+            actual = repr(value) if value is not None else "<missing>"
+            raise ValueError(
+                f"manifest.toml field '{key}' must be a non-empty string, got {actual}. "
+                f"The package manifest may be malformed or was created by an incompatible tool."
+            )
         return value.strip()
 
 

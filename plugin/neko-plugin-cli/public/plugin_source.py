@@ -9,13 +9,28 @@ from .toml_utils import load_toml, optional_string, require_string, require_tabl
 def load_plugin_source(plugin_dir: str | Path) -> PluginSource:
     plugin_dir = Path(plugin_dir).expanduser().resolve()
     if not plugin_dir.is_dir():
-        raise FileNotFoundError(f"plugin directory not found: {plugin_dir}")
+        raise FileNotFoundError(
+            f"plugin directory not found: {plugin_dir}\n"
+            f"Make sure the path points to an existing plugin directory that "
+            f"contains a plugin.toml file."
+        )
 
     plugin_toml_path = plugin_dir / "plugin.toml"
     if not plugin_toml_path.is_file():
-        raise FileNotFoundError(f"plugin.toml not found: {plugin_toml_path}")
+        raise FileNotFoundError(
+            f"plugin.toml not found in '{plugin_dir}'.\n"
+            f"Every neko plugin directory must contain a plugin.toml file that "
+            f"declares the plugin id, name, version, and other metadata. "
+            f"See the package-format documentation for the required schema."
+        )
 
-    plugin_toml = load_toml(plugin_toml_path)
+    try:
+        plugin_toml = load_toml(plugin_toml_path)
+    except Exception as exc:
+        raise ValueError(
+            f"failed to parse '{plugin_toml_path}': {exc}"
+        ) from exc
+
     plugin_table = require_table(plugin_toml, "plugin", plugin_toml_path)
     plugin_id = require_string(plugin_table, "id", plugin_toml_path)
     name = optional_string(plugin_table, "name") or plugin_id
@@ -23,8 +38,16 @@ def load_plugin_source(plugin_dir: str | Path) -> PluginSource:
     package_type = optional_string(plugin_table, "type") or "plugin"
 
     pyproject_toml_path = plugin_dir / "pyproject.toml"
-    pyproject_toml = load_toml(pyproject_toml_path) if pyproject_toml_path.is_file() else None
-    resolved_pyproject_path = pyproject_toml_path if pyproject_toml_path.is_file() else None
+    pyproject_toml: dict[str, object] | None = None
+    resolved_pyproject_path: Path | None = None
+    if pyproject_toml_path.is_file():
+        try:
+            pyproject_toml = load_toml(pyproject_toml_path)
+        except Exception as exc:
+            raise ValueError(
+                f"failed to parse '{pyproject_toml_path}': {exc}"
+            ) from exc
+        resolved_pyproject_path = pyproject_toml_path
 
     return PluginSource(
         plugin_dir=plugin_dir,
