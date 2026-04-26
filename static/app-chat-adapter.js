@@ -176,11 +176,18 @@
         return { sentences: sentences, rest: rest };
     }
 
+    // Queue thresholds reflect visible backlog pressure; chunk thresholds catch
+    // fast streams before enough queued bubbles accumulate.
+    var BALANCED_QUEUE_THRESHOLD = 4;
+    var BALANCED_CHUNK_THRESHOLD = 16;
+    var COARSE_QUEUE_THRESHOLD = 8;
+    var COARSE_CHUNK_THRESHOLD = 32;
+
     function getRealisticSplitMode() {
         var queueLen = Array.isArray(window._realisticGeminiQueue) ? window._realisticGeminiQueue.length : 0;
         var chunkCount = window._realisticGeminiChunkCount || 0;
-        if (queueLen >= 8 || chunkCount >= 32) return 'coarse';
-        if (queueLen >= 4 || chunkCount >= 16) return 'balanced';
+        if (queueLen >= COARSE_QUEUE_THRESHOLD || chunkCount >= COARSE_CHUNK_THRESHOLD) return 'coarse';
+        if (queueLen >= BALANCED_QUEUE_THRESHOLD || chunkCount >= BALANCED_CHUNK_THRESHOLD) return 'balanced';
         return 'normal';
     }
 
@@ -552,7 +559,6 @@
                 window._realisticGeminiQueue = [];
                 window._lastBubbleTime = 0;
                 window._pendingMusicCommand = '';
-                window._realisticGeminiChunkCount = 0;
             }
 
             window._realisticGeminiChunkCount = (window._realisticGeminiChunkCount || 0) + 1;
