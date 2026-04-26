@@ -877,12 +877,16 @@ def test_storage_location_cleanup_retained_source_removes_old_runtime_root(tmp_p
             "/api/storage/location/retained-source/cleanup",
             json={"retained_root": str(source_root)},
         )
+        status_response = client.get("/api/storage/location/status")
 
     assert response.status_code == 200
     payload = response.json()
     assert payload["ok"] is True
     assert payload["cleaned_root"] == str(source_root.resolve())
     assert not source_root.exists()
+    status_payload = status_response.json()
+    assert status_payload["storage"]["legacy_cleanup_pending"] is False
+    assert status_payload["completion_notice"]["completed"] is False
 
     migration_payload = load_storage_migration(reloaded_manager)
     assert migration_payload["backup_root"] == ""

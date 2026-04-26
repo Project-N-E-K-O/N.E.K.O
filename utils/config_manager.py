@@ -581,6 +581,8 @@ class ConfigManager:
                     ):
                         recovery_committed_root_unavailable = True
             else:
+                if env_anchor_root:
+                    resolved_anchor_root = normalize_runtime_root(env_anchor_root)
                 if isinstance(policy, dict):
                     first_run_completed = bool(policy.get("first_run_completed"))
                     selected_root_value = str(policy.get("selected_root") or "").strip()
@@ -598,10 +600,6 @@ class ConfigManager:
                         ):
                             resolved_app_docs_dir = resolved_anchor_root
                             recovery_committed_root_unavailable = True
-                    elif env_anchor_root:
-                        resolved_anchor_root = normalize_runtime_root(env_anchor_root)
-                elif env_anchor_root:
-                    resolved_anchor_root = normalize_runtime_root(env_anchor_root)
         except Exception:
             resolved_app_docs_dir = default_app_docs_dir
             resolved_anchor_root = default_app_docs_dir
@@ -644,7 +642,15 @@ class ConfigManager:
         self.project_memory_dir = self._get_project_memory_directory()
 
         if self.recovery_committed_root_unavailable:
-            self._persist_selected_root_unavailable_recovery_state()
+            try:
+                self._persist_selected_root_unavailable_recovery_state()
+            except Exception as e:
+                logger.warning(
+                    "Failed to persist selected-root-unavailable recovery state; "
+                    "continuing with in-memory recovery flag: %s",
+                    e,
+                    exc_info=True,
+                )
 
     @property
     def cloudsave_dir(self) -> Path:

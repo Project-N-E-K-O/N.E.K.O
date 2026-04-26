@@ -924,6 +924,10 @@ def _build_completed_migration_notice(
         return {
             "completed": False,
         }
+    if str(migration_payload.get("retained_source_mode") or "").strip() == "cleaned":
+        return {
+            "completed": False,
+        }
 
     current_root = normalize_runtime_root(config_manager.app_docs_dir)
     anchor_root = compute_anchor_root(config_manager, current_root=current_root)

@@ -96,6 +96,9 @@ _STORAGE_LIMITED_MODE_ALLOWED_PATHS = {
 
 @app.middleware("http")
 async def storage_limited_mode_guard(request: Request, call_next):
+    if _memory_runtime_init_completed:
+        return await call_next(request)
+
     if request.url.path in _STORAGE_LIMITED_MODE_ALLOWED_PATHS:
         return await call_next(request)
 

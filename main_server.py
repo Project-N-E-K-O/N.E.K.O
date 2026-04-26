@@ -1045,22 +1045,6 @@ from main_routers.workshop_router import router as workshop_router # noqa
 from main_routers.cookies_login_router import router as cookies_login_router # noqa
 from main_routers.shared_state import init_shared_state # noqa
 
-# 初始化共享状态，供各路由访问
-# 注意：steamworks 会在 startup 事件中初始化后更新
-if _IS_MAIN_PROCESS:
-    init_shared_state(
-        role_state=role_state,
-        steamworks=None,  # 延迟初始化，会在 startup 事件中设置
-        templates=templates,
-        config_manager=_config_manager,
-        logger=logger,
-        initialize_character_data=initialize_character_data,
-        switch_current_catgirl_fast=switch_current_catgirl_fast,
-        init_one_catgirl=init_one_catgirl,
-        remove_one_catgirl=remove_one_catgirl,
-        request_app_shutdown=lambda: asyncio.create_task(request_application_shutdown_async()),
-    )
-
 
 # ── 健康检查 / 指纹端点 ──────────────────────────────────────────
 @app.get("/health")
@@ -1433,13 +1417,6 @@ async def release_storage_startup_barrier(*, reason: str = "storage_selection_co
         "ok": True,
         "initialized": bool(initialized),
     }
-
-
-if _IS_MAIN_PROCESS:
-    from main_routers.shared_state import set_release_storage_startup_barrier, set_request_app_shutdown
-
-    set_release_storage_startup_barrier(release_storage_startup_barrier)
-    set_request_app_shutdown(lambda: asyncio.create_task(request_application_shutdown_async()))
 
 
 # Startup 事件：延迟初始化 Steamworks 和全局语言

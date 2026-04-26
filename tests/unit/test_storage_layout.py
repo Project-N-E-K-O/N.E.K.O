@@ -137,6 +137,65 @@ def test_config_manager_uses_anchor_runtime_layout_when_committed_selected_root_
 
 
 @pytest.mark.unit
+def test_config_manager_uses_env_anchor_when_policy_selected_root_is_unavailable(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.delenv(NEKO_STORAGE_SELECTED_ROOT_ENV, raising=False)
+    env_anchor_root = (tmp_path / "env-anchor" / "N.E.K.O").resolve()
+    unavailable_selected_root = (tmp_path / "offline-selected" / "N.E.K.O").resolve()
+    stale_policy_anchor = (tmp_path / "stale-policy-anchor" / "N.E.K.O").resolve()
+    atomic_write_json(
+        env_anchor_root / "state" / "storage_policy.json",
+        {
+            "version": 1,
+            "anchor_root": str(stale_policy_anchor),
+            "selected_root": str(unavailable_selected_root),
+            "selection_source": "custom",
+            "cloudsave_strategy": "fixed_anchor",
+            "first_run_completed": True,
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+    monkeypatch.setenv(NEKO_STORAGE_ANCHOR_ROOT_ENV, str(env_anchor_root))
+
+    reloaded_manager = _make_config_manager(tmp_path)
+
+    assert reloaded_manager.recovery_committed_root_unavailable is True
+    assert reloaded_manager.app_docs_dir == env_anchor_root
+    assert reloaded_manager.anchor_root == env_anchor_root
+    assert reloaded_manager.selected_root == unavailable_selected_root
+    assert reloaded_manager.reported_current_root == unavailable_selected_root
+
+
+@pytest.mark.unit
+def test_config_manager_recovery_state_persist_failure_is_best_effort(
+    tmp_path,
+    monkeypatch,
+):
+    from utils.config_manager import ConfigManager
+
+    monkeypatch.delenv(NEKO_STORAGE_SELECTED_ROOT_ENV, raising=False)
+    monkeypatch.delenv(NEKO_STORAGE_ANCHOR_ROOT_ENV, raising=False)
+
+    initial_manager = _make_config_manager(tmp_path)
+    unavailable_selected_root = tmp_path / "offline-selected" / "N.E.K.O"
+    save_storage_policy(
+        initial_manager,
+        selected_root=unavailable_selected_root,
+        selection_source="custom",
+    )
+
+    with patch.object(ConfigManager, "save_root_state", side_effect=OSError("disk unavailable")):
+        reloaded_manager = _make_config_manager(tmp_path)
+
+    assert reloaded_manager.recovery_committed_root_unavailable is True
+    assert reloaded_manager.selected_root == unavailable_selected_root.resolve()
+    assert reloaded_manager.reported_current_root == unavailable_selected_root.resolve()
+
+
+@pytest.mark.unit
 def test_config_manager_preserves_recovery_context_when_launcher_exports_anchor_runtime_layout(
     tmp_path,
     monkeypatch,
