@@ -193,8 +193,14 @@ def test_config_manager_recovery_state_persist_failure_is_best_effort(
         reloaded_manager = _make_config_manager(tmp_path)
 
     assert reloaded_manager.recovery_committed_root_unavailable is True
+    assert reloaded_manager.recovery_committed_root_unavailable_override is True
     assert reloaded_manager.selected_root == unavailable_selected_root.resolve()
     assert reloaded_manager.reported_current_root == unavailable_selected_root.resolve()
+    root_state = reloaded_manager.load_root_state()
+    assert root_state["mode"] == "deferred_init"
+    assert root_state["current_root"] == str(unavailable_selected_root.resolve())
+    assert root_state["last_known_good_root"] == str(unavailable_selected_root.resolve())
+    assert root_state["last_migration_result"].startswith("selected_root_unavailable:")
 
 
 @pytest.mark.unit

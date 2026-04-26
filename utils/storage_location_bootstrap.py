@@ -243,9 +243,29 @@ def build_storage_location_bootstrap_payload(config_manager) -> dict[str, Any]:
     }
 
 
+def get_storage_startup_blocking_reason_readonly(config_manager) -> str:
+    current_root = Path(config_manager.app_docs_dir).expanduser().resolve(strict=False)
+    anchor_root = _get_configured_anchor_root(config_manager, current_root=current_root)
+    root_state = config_manager.load_root_state()
+    root_mode = str(root_state.get("mode") or "")
+    migration_checkpoint = load_storage_migration(
+        config_manager,
+        anchor_root=anchor_root,
+    )
+
+    return derive_storage_blocking_reason(
+        selection_required=_should_require_selection(
+            config_manager,
+            current_root=current_root,
+            anchor_root=anchor_root,
+        ),
+        migration_pending=is_storage_migration_pending(migration_checkpoint),
+        recovery_required=root_mode == ROOT_MODE_DEFERRED_INIT,
+    )
+
+
 def get_storage_startup_blocking_reason(config_manager) -> str:
-    payload = build_storage_location_bootstrap_payload(config_manager)
-    return str(payload.get("blocking_reason") or "").strip()
+    return str(get_storage_startup_blocking_reason_readonly(config_manager) or "").strip()
 
 
 def is_storage_startup_blocked(config_manager) -> bool:

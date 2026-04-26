@@ -223,12 +223,14 @@ class TestConfigManagerCFA:
             return appdata_dir
 
         with patch.object(ConfigManager, '_get_documents_directory', fake_get_docs), \
-             patch.object(ConfigManager, '_get_standard_data_directory_candidates', return_value=[appdata_dir]):
+             patch.object(ConfigManager, '_get_standard_data_directory_candidates', return_value=[appdata_dir]), \
+             patch('utils.config_manager.sys.platform', 'win32'):
             cm = ConfigManager.__new__(ConfigManager)
             cm.__init__(app_name=APP_NAME)
 
         assert cm.docs_dir == appdata_dir
         assert cm._readable_docs_dir is None
+        assert cm.is_windows_cfa_fallback_active is False
 
     def test_normal_readable_live2d_dir_returns_none(self, normal_env):
         """In normal mode, readable_live2d_dir should return None."""

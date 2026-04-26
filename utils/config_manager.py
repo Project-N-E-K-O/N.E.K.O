@@ -507,6 +507,7 @@ def flatten_reserved(catgirl_data: dict) -> dict:
 class ConfigManager:
     """配置文件管理器"""
     _agent_quota_lock = threading.Lock()
+    _selected_root_unavailable_recovery_override_roots: set[str] = set()
     _free_agent_daily_limit = 300 # 免费配额并非只在本地实施，本地计算是为了减少无效请求、节约网络带宽。
     ROOT_STATE_VERSION = 1
     CLOUDSAVE_LOCAL_STATE_VERSION = 1
@@ -627,6 +628,7 @@ class ConfigManager:
             self.committed_selected_root if recovery_committed_root_unavailable else self.app_docs_dir
         )
         self.recovery_committed_root_unavailable = recovery_committed_root_unavailable
+        self.recovery_committed_root_unavailable_override = False
         self.docs_dir = self.app_docs_dir.parent
         self.config_dir = self.app_docs_dir / "config"
         self.memory_dir = self.app_docs_dir / "memory"
@@ -658,7 +660,14 @@ class ConfigManager:
         if self.recovery_committed_root_unavailable:
             try:
                 self._persist_selected_root_unavailable_recovery_state()
+                self.__class__._selected_root_unavailable_recovery_override_roots.discard(
+                    str(self.committed_selected_root)
+                )
             except Exception as e:
+                self.recovery_committed_root_unavailable_override = True
+                self.__class__._selected_root_unavailable_recovery_override_roots.add(
+                    str(self.committed_selected_root)
+                )
                 logger.warning(
                     "Failed to persist selected-root-unavailable recovery state; "
                     "continuing with in-memory recovery flag: %s",
@@ -730,16 +739,9 @@ class ConfigManager:
     def character_tombstones_state_path(self) -> Path:
         return self.local_state_dir / "character_tombstones.json"
 
-    def _persist_selected_root_unavailable_recovery_state(self):
+    def _build_selected_root_unavailable_recovery_state(self, state=None):
         unavailable_root = str(self.committed_selected_root)
-        state: dict = {}
-        try:
-            loaded = self._load_json_file(self.root_state_path, default_value={})
-            if isinstance(loaded, dict):
-                state = loaded
-        except Exception:
-            state = {}
-
+        state = dict(state) if isinstance(state, dict) else {}
         state["version"] = self.ROOT_STATE_VERSION
         from utils.cloudsave_runtime import ROOT_MODE_DEFERRED_INIT
 
@@ -752,7 +754,24 @@ class ConfigManager:
         state.setdefault("last_migration_backup", "")
         state.setdefault("last_successful_boot_at", "")
         state.setdefault("legacy_cleanup_pending", False)
-        self.save_root_state(state)
+        return state
+
+    def _has_selected_root_unavailable_recovery_override(self) -> bool:
+        if not self.recovery_committed_root_unavailable:
+            return False
+        if bool(getattr(self, "recovery_committed_root_unavailable_override", False)):
+            return True
+        return str(self.committed_selected_root) in self.__class__._selected_root_unavailable_recovery_override_roots
+
+    def _persist_selected_root_unavailable_recovery_state(self):
+        state: dict = {}
+        try:
+            loaded = self._load_json_file(self.root_state_path, default_value={})
+            if isinstance(loaded, dict):
+                state = loaded
+        except Exception:
+            state = {}
+        self.save_root_state(self._build_selected_root_unavailable_recovery_state(state))
     
     def _log(self, msg):
         """仅在主进程中打印调试信息"""
@@ -1322,7 +1341,10 @@ class ConfigManager:
         """加载 root_state；缺失时返回默认状态。"""
         if default_value is None:
             default_value = self.build_default_root_state()
-        return self._load_json_file(self.root_state_path, default_value)
+        state = self._load_json_file(self.root_state_path, default_value)
+        if self._has_selected_root_unavailable_recovery_override():
+            return self._build_selected_root_unavailable_recovery_state(state)
+        return state
 
     def save_root_state(self, data):
         """保存 root_state。"""

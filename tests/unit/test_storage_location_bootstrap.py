@@ -4,7 +4,11 @@ import pytest
 
 from utils import storage_location_bootstrap as storage_location_bootstrap_module
 from utils.config_manager import ConfigManager
-from utils.storage_location_bootstrap import build_storage_location_bootstrap_payload
+from utils.storage_location_bootstrap import (
+    build_storage_location_bootstrap_payload,
+    get_storage_startup_blocking_reason,
+    is_storage_startup_blocked,
+)
 from utils.storage_migration import create_pending_storage_migration, run_pending_storage_migration
 from utils.storage_policy import save_storage_policy
 
@@ -79,6 +83,23 @@ def test_storage_location_bootstrap_payload_exposes_stage3_web_fields(tmp_path):
     assert payload["last_error_summary"] == ""
     assert payload["poll_interval_ms"] == 1200
     assert payload["stage"] == "stage3_web_restart"
+
+
+@pytest.mark.unit
+def test_storage_startup_blocking_reason_uses_readonly_path_without_legacy_scan_or_writes(tmp_path):
+    config_manager = _DummyConfigManager(tmp_path)
+
+    def fail_legacy_scan():
+        raise AssertionError("startup blocked check should not scan legacy sources")
+
+    def fail_root_state_write(_data):
+        raise AssertionError("startup blocked check should not write root_state")
+
+    config_manager.get_legacy_app_root_candidates = fail_legacy_scan
+    config_manager.save_root_state = fail_root_state_write
+
+    assert get_storage_startup_blocking_reason(config_manager) == "selection_required"
+    assert is_storage_startup_blocked(config_manager) is True
 
 
 @pytest.mark.unit
