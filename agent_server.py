@@ -2353,9 +2353,15 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                 len(of_res.get("artifacts") or []),
                             )
                             if _of_steps is not None:
-                                import json as _json_for_steps
-                                from utils.tokenize import truncate_to_tokens as _tt_steps
-                                print(f"[OpenFang] steps preview: {_tt_steps(_json_for_steps.dumps(_of_steps, ensure_ascii=False), 120)}")
+                                # debug-only：单独 try 兜底，避免不可 JSON 序列化的
+                                # step 对象把整个 OpenFang 任务拖进异常分支误标失败
+                                try:
+                                    import json as _json_for_steps
+                                    from utils.tokenize import truncate_to_tokens as _tt_steps
+                                    _steps_repr = _json_for_steps.dumps(_of_steps, ensure_ascii=False, default=str)
+                                    print(f"[OpenFang] steps preview: {_tt_steps(_steps_repr, 120)}")
+                                except Exception as _steps_err:
+                                    print(f"[OpenFang] steps preview unavailable (exc_type={type(_steps_err).__name__})")
                             logger.debug("[OpenFang] ====== RAW RESULT (debug) ======")
                             logger.debug("[OpenFang] keys=%s", list(of_res.keys()))
                             # result / error / artifacts 都可能含 LLM/用户原文，
