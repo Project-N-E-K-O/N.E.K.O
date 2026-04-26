@@ -91,7 +91,23 @@ def _safe_count_tokens(text: str) -> int:
         from utils.tokenize import count_tokens
         return count_tokens(text)
     except Exception:
-        return max(1, len(text) // 4) if text else 0
+        # Self-contained fallback when `utils.tokenize` itself fails to
+        # import (otherwise count_tokens already has its own heuristic).
+        # Mirror tokenize._count_tokens_heuristic 的口径（CJK 1.5 /
+        # 其他 0.25，向上取整），不直接 import utils.cjk 以保证此分支
+        # 始终可用。
+        if not text:
+            return 0
+        cjk = sum(
+            1 for ch in text
+            if ("一" <= ch <= "鿿")
+            or ("぀" <= ch <= "ヿ")
+            or ("가" <= ch <= "힯")
+        )
+        non_cjk = len(text) - cjk
+        # 1.5 * cjk + 0.25 * non_cjk = (6 * cjk + non_cjk) / 4，
+        # +3 // 4 等价向上取整。
+        return max(1, (cjk * 6 + non_cjk + 3) // 4)
 
 
 def _safe_call_type() -> str:
