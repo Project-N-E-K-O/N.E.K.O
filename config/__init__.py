@@ -285,7 +285,7 @@ DEFAULT_RERANKER_MODEL = RERANKER_MODEL = 'qwen-plus'
 DEFAULT_CONVERSATION_MODEL = 'qwen-max'
 DEFAULT_SUMMARY_MODEL = "qwen-plus"
 DEFAULT_CORRECTION_MODEL = 'qwen-max'
-DEFAULT_EMOTION_MODEL = 'qwen-flash'
+DEFAULT_EMOTION_MODEL = 'qwen3.6-flash-2026-04-16'
 DEFAULT_VISION_MODEL = "qwen3-vl-plus-2025-09-23"
 DEFAULT_AGENT_MODEL = "qwen3.5-plus"
 
@@ -654,7 +654,7 @@ DEFAULT_ASSIST_API_PROFILES = {
         'CONVERSATION_MODEL' : "qwen3.6-plus",
         'SUMMARY_MODEL': "qwen3.6-plus",
         'CORRECTION_MODEL': "qwen3.6-plus",
-        'EMOTION_MODEL': "qwen-flash",
+        'EMOTION_MODEL': "qwen3.6-flash-2026-04-16",
         'VISION_MODEL': "qwen3.6-plus",
         'AGENT_MODEL': "qwen3.6-plus",
     },
