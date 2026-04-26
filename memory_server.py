@@ -130,6 +130,18 @@ outbox: Outbox | None = None
 event_log: EventLog | None = None
 reconciler: Reconciler | None = None
 
+# memory-enhancements P2: vector embedding warmup + backfill worker.
+# Lazily constructed in startup hook; held at module scope so
+# /process / /renew handlers can call notify_first_process() to
+# unblock the warmup wait early. None when vectors are disabled or
+# the worker bootstrap raised.
+embedding_warmup_worker = None
+# memory-enhancements P2: fact vector dedup resolver. Shares the
+# FactStore with the embedding worker (worker enqueues candidates,
+# the idle-maintenance loop resolves them). None when bootstrap
+# fails or the embedding service is permanently disabled.
+fact_dedup_resolver = None
+
 # 用于保护重新加载操作的锁
 _reload_lock = asyncio.Lock()
 _deferred_time_managers: list[TimeIndexedMemory] = []
@@ -156,7 +168,7 @@ async def reload_memory_components():
     atomic_write_json 保证单次写原子，极端 last-writer-wins 场景下最多
     损失一次 cursor 推进——下一轮 tick 即恢复。
     """
-    global recent_history_manager, settings_manager, time_manager, fact_store, persona_manager, reflection_engine, cursor_store, outbox, event_log, reconciler
+    global recent_history_manager, settings_manager, time_manager, fact_store, persona_manager, reflection_engine, cursor_store, outbox, event_log, reconciler, fact_dedup_resolver
     async with _reload_lock:
         logger.info("[MemoryServer] 开始重新加载记忆组件配置...")
         old_time_manager = time_manager
@@ -175,6 +187,26 @@ async def reload_memory_components():
             new_outbox = Outbox()
             new_reconciler = Reconciler(new_event_log)
             _register_evidence_handlers(new_reconciler, new_persona, new_reflection)
+            # P2 step 2: rebind the existing fact_dedup_resolver to the
+            # NEW FactStore in place rather than constructing a new
+            # resolver. Going via rebind_fact_store preserves the
+            # per-character ``_alocks`` dict, so a mid-reload
+            # ``aresolve`` still in flight on the old instance and a
+            # fresh ``aenqueue_candidates`` arriving on the new
+            # instance serialise on the same asyncio.Lock (CodeRabbit
+            # PR-956 Major; Codex PR-957 P2). Falls back to fresh
+            # construction only if there was no prior resolver
+            # (extremely cold-path during reload — startup never ran).
+            try:
+                from memory.fact_dedup import FactDedupResolver
+                if fact_dedup_resolver is not None:
+                    fact_dedup_resolver.rebind_fact_store(new_facts)
+                    new_fact_dedup_resolver = fact_dedup_resolver
+                else:
+                    new_fact_dedup_resolver = FactDedupResolver(new_facts)
+            except Exception as e:
+                logger.warning(f"[MemoryServer] reload: fact_dedup_resolver 重建失败: {e}")
+                new_fact_dedup_resolver = None
 
             # 然后原子性地交换引用
             recent_history_manager = new_recent
@@ -187,6 +219,7 @@ async def reload_memory_components():
             outbox = new_outbox
             event_log = new_event_log
             reconciler = new_reconciler
+            fact_dedup_resolver = new_fact_dedup_resolver
 
             if old_time_manager is not None and old_time_manager is not new_time:
                 _defer_time_manager_cleanup(old_time_manager)
@@ -776,6 +809,32 @@ async def _periodic_idle_maintenance_loop():
                         logger.info(f"[IdleMaint] {name}: 历史记录压缩完成")
                     except Exception as e:
                         logger.warning(f"[IdleMaint] {name}: 历史记录压缩失败: {e}")
+
+                # ── 子任务1b: Fact 向量去重（P2 step 2） ──
+                # Runs *before* the review-gate so a character with
+                # short history still gets paraphrase consolidation
+                # (Codex PR-957 P2). The embedding worker enqueued
+                # candidate paraphrase pairs after the last fact-sweep;
+                # resolve them here via a single LLM call.
+                # fact_dedup_resolver is None when vectors are disabled
+                # or bootstrap failed — legacy hash + FTS5 dedup
+                # remains the entire dedup pipeline in that case.
+                if fact_dedup_resolver is not None:
+                    if not _is_idle():
+                        break
+                    try:
+                        pending_dedup = await fact_dedup_resolver.aload_pending(name)
+                        if pending_dedup:
+                            logger.info(
+                                f"[IdleMaint] {name}: 发现 {len(pending_dedup)} 对未处理的 fact 候选去重，触发 LLM 审视"
+                            )
+                            resolved = await fact_dedup_resolver.aresolve(name)
+                            if resolved:
+                                logger.info(
+                                    f"[IdleMaint] {name}: 完成 {resolved} 对 fact 去重决策"
+                                )
+                    except Exception as e:
+                        logger.warning(f"[IdleMaint] {name}: fact 向量去重失败: {e}")
 
                 # 历史不足 REVIEW_SKIP_HISTORY_LEN 条，或全局开关关闭 → 跳过矛盾审视和 review
                 if history_len < REVIEW_SKIP_HISTORY_LEN or not review_enabled:
@@ -1508,6 +1567,11 @@ async def startup_event_handler():
 
     # 自动迁移 settings → persona（如 persona 文件不存在）
     # 注：目录结构迁移已在模块级完成（在组件实例化之前）
+    # Pre-bind so a failure inside the try below doesn't strand the
+    # later `if catgirl_names:` blocks (and the embedding worker's
+    # fallback closure) on an unbound local — those reads run
+    # outside this try and would otherwise UnboundLocalError.
+    catgirl_names: list[str] = []
     try:
         character_data = await _config_manager.aload_characters()
         catgirl_names = list(character_data.get('猫娘', {}).keys())
@@ -1605,6 +1669,65 @@ async def startup_event_handler():
     # 增量 + 满阈值归档），独立于 evidence signal 抽取。
     _spawn_background_task(_periodic_archive_sweep_loop())
 
+    # memory-enhancements P2: vector embedding warmup + backfill worker.
+    # The warmup is gated on whichever fires first: VECTORS_WARMUP_DELAY_SECONDS
+    # elapsed since startup, OR the first /process / /renew call (signal that
+    # the user has actually engaged — frontend greeting + prominent drain
+    # are done by then). After warmup, the worker periodically scans
+    # persona/reflection/fact entries for embedding=None and fills them in
+    # batches. The whole feature is a no-op if the EmbeddingService can't
+    # find onnxruntime + a model file, so we always start the task — the
+    # service's own fallback gate decides whether anything actually happens.
+    global embedding_warmup_worker, fact_dedup_resolver
+    try:
+        from memory.embedding_worker import EmbeddingWarmupWorker
+        from memory.fact_dedup import FactDedupResolver
+        from config import VECTORS_WARMUP_DELAY_SECONDS
+
+        # Resolve characters dynamically on each tick rather than
+        # capturing the startup snapshot — new characters added via
+        # the admin path (or restored from cloudsave) need to land in
+        # the worker's sweep without a process restart. config_manager
+        # caches load_characters internally so this is a cache lookup
+        # in the steady state; cache misses do file I/O but only
+        # once per character-config change.
+        def _current_catgirl_names() -> list[str]:
+            try:
+                data = _config_manager.load_characters()
+                return list((data or {}).get('猫娘', {}).keys())
+            except Exception:
+                # Lookup failure shouldn't crash the sweep — fall back
+                # to the startup snapshot so at least the originally
+                # known characters keep getting backfilled.
+                return list(catgirl_names)
+
+        # Live getters (not snapshots): /reload swaps these module
+        # globals atomically; capturing the instances here would let
+        # the worker keep writing through the old managers and clobber
+        # post-reload updates from the new ones.
+        # The dedup resolver follows the same pattern: reload rebuilds
+        # it against the new FactStore (see reload_memory_components),
+        # and the worker reads the current instance per sweep so
+        # enqueue and the idle-maintenance loop's resolve never end up
+        # racing on facts_pending_dedup.json across two instances.
+        fact_dedup_resolver = FactDedupResolver(fact_store)
+
+        embedding_warmup_worker = EmbeddingWarmupWorker(
+            get_persona_manager=lambda: persona_manager,
+            get_reflection_engine=lambda: reflection_engine,
+            get_fact_store=lambda: fact_store,
+            get_character_names=_current_catgirl_names,
+            warmup_delay_seconds=VECTORS_WARMUP_DELAY_SECONDS,
+            get_dedup_resolver=lambda: fact_dedup_resolver,
+        )
+        embedding_warmup_worker.start()
+    except Exception as e:
+        # Worker construction failure is logged but never blocks startup —
+        # vectors are an optimization, not a correctness requirement.
+        logger.warning(f"[Memory] embedding worker bootstrap failed: {e}")
+        embedding_warmup_worker = None
+        fact_dedup_resolver = None
+
 
 @app.on_event("shutdown")
 async def shutdown_event_handler():
@@ -1615,6 +1738,13 @@ async def shutdown_event_handler():
         TokenTracker.get_instance().save()
     except Exception:
         pass
+    # P2 vector worker: kick off stop() as a task before we touch the
+    # reload lock so its bounded 2s wait overlaps with manager cleanup
+    # below instead of serializing in front of it.
+    worker_stop_task: asyncio.Task | None = None
+    if embedding_warmup_worker is not None:
+        worker_stop_task = asyncio.create_task(embedding_warmup_worker.stop())
+
     managers_to_cleanup: list[TimeIndexedMemory] = []
     async with _reload_lock:
         managers_to_cleanup.extend(_deferred_time_managers)
@@ -1622,11 +1752,24 @@ async def shutdown_event_handler():
         # time_manager 在 startup 钩子里才实例化；若启动过程中就触发 shutdown 可能为 None
         if time_manager is not None and all(existing is not time_manager for existing in managers_to_cleanup):
             managers_to_cleanup.append(time_manager)
-    for manager in managers_to_cleanup:
+
+    async def _cleanup_one(m: TimeIndexedMemory) -> None:
         try:
-            manager.cleanup()
+            await asyncio.to_thread(m.cleanup)
         except Exception as cleanup_exc:
             logger.warning("[MemoryServer] 延迟释放 SQLite 引擎失败: %s", cleanup_exc)
+
+    async def _await_worker_stop() -> None:
+        try:
+            await worker_stop_task  # type: ignore[arg-type]
+        except Exception as e:
+            logger.warning(f"[Memory] embedding worker stop 失败: {e}")
+
+    shutdown_coros: list = [_cleanup_one(m) for m in managers_to_cleanup]
+    if worker_stop_task is not None:
+        shutdown_coros.append(_await_worker_stop())
+    if shutdown_coros:
+        await asyncio.gather(*shutdown_coros)
     logger.info("Memory server已关闭")
 
 
@@ -1932,6 +2075,12 @@ async def cache_conversation(request: HistoryRequest, lanlan_name: str):
 async def process_conversation(request: HistoryRequest, lanlan_name: str):
     lanlan_name = validate_lanlan_name(lanlan_name)
     _touch_activity()
+    # P2 vector warmup: first /process is the cheapest "frontend ready"
+    # signal we have — by the time the user sends a real conversation
+    # turn, greeting and prominent drain are over. notify_first_process
+    # is a setflag, not async, so it doesn't add latency to /process.
+    if embedding_warmup_worker is not None:
+        embedding_warmup_worker.notify_first_process()
     global correction_tasks
     try:
         # 检查角色是否存在于配置中，如果不存在则记录信息但继续处理（允许新角色）
@@ -1979,6 +2128,10 @@ async def process_conversation(request: HistoryRequest, lanlan_name: str):
 async def process_conversation_for_renew(request: HistoryRequest, lanlan_name: str):
     lanlan_name = validate_lanlan_name(lanlan_name)
     _touch_activity()
+    # Same warmup hint as /process: /renew is also a "user actively
+    # using the app" signal, so it counts as the unblock event.
+    if embedding_warmup_worker is not None:
+        embedding_warmup_worker.notify_first_process()
     global correction_tasks
     try:
         # 检查角色是否存在于配置中，如果不存在则记录信息但继续处理（允许新角色）

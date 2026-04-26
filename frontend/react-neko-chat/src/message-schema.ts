@@ -79,6 +79,39 @@ export const avatarInteractionPayloadSchema = z.discriminatedUnion('toolId', [
   }).strict(),
 ]);
 
+const avatarToolIdSchema = z.enum(['lollipop', 'fist', 'hammer']);
+const avatarToolCursorVariantSchema = z.enum(['primary', 'secondary', 'tertiary']);
+const avatarToolImageKindSchema = z.enum(['cursor', 'icon']);
+
+const avatarToolDescriptorSchema = z.object({
+  id: avatarToolIdSchema,
+  label: z.string().optional(),
+  iconImagePath: z.string().min(1),
+  iconImagePathAlt: z.string().optional(),
+  iconImagePathAlt2: z.string().optional(),
+  cursorImagePath: z.string().min(1),
+  cursorImagePathAlt: z.string().optional(),
+  cursorImagePathAlt2: z.string().optional(),
+  cursorHotspotX: z.number().finite().optional(),
+  cursorHotspotY: z.number().finite().optional(),
+  menuIconScale: z.number().finite().positive().optional(),
+}).strict();
+
+export const avatarToolStatePayloadSchema = z.object({
+  active: z.boolean(),
+  toolId: avatarToolIdSchema.nullable().optional(),
+  variant: avatarToolCursorVariantSchema.optional(),
+  avatarRangeVariant: avatarToolCursorVariantSchema.optional(),
+  outsideRangeVariant: avatarToolCursorVariantSchema.optional(),
+  imageKind: avatarToolImageKindSchema.optional(),
+  withinAvatarRange: z.boolean().optional(),
+  overCompactZone: z.boolean().optional(),
+  insideHostWindow: z.boolean().optional(),
+  tool: avatarToolDescriptorSchema.nullable().optional(),
+  textContext: z.string().optional(),
+  timestamp: z.number().finite(),
+}).strict();
+
 export const messageBlockSchema = z.discriminatedUnion('type', [
   textBlockSchema,
   imageBlockSchema,
@@ -159,6 +192,10 @@ export const chatWindowPropsSchema = z.object({
     .args(avatarInteractionPayloadSchema)
     .returns(z.void())
     .optional(),
+  onAvatarToolStateChange: z.function()
+    .args(avatarToolStatePayloadSchema)
+    .returns(z.void())
+    .optional(),
   onJukeboxClick: z.function()
     .args()
     .returns(z.void())
@@ -182,6 +219,7 @@ export type StatusBlock = z.infer<typeof statusBlockSchema>;
 export type ButtonGroupBlock = z.infer<typeof buttonGroupBlockSchema>;
 export type ComposerAttachment = z.infer<typeof composerAttachmentSchema>;
 export type AvatarInteractionPayload = z.infer<typeof avatarInteractionPayloadSchema>;
+export type AvatarToolStatePayload = z.infer<typeof avatarToolStatePayloadSchema>;
 export type MessageBlock = z.infer<typeof messageBlockSchema>;
 export type ChatMessage = z.infer<typeof chatMessageSchema>;
 export type ComposerSubmitPayload = z.infer<typeof composerSubmitSchema>;

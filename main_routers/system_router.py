@@ -633,6 +633,12 @@ def _resolve_emotion_prompt_language(text):
         return 'zh'
 
 
+@router.get("/v1/system/status")
+async def get_system_status():
+    """返回系统就绪状态，供桌面端存储闸门判断是否可以创建卫星窗口。"""
+    return {"ready": True}
+
+
 @router.get("/token-usage")
 async def get_token_usage(days: int = 7):
     """返回最近 N 天的 LLM token 用量统计。"""

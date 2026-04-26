@@ -1601,7 +1601,7 @@ def get_start_config():
         return app.state.start_config
     return {
         "browser_mode_enabled": False,
-        "browser_page": "chara_manager",
+        "browser_page": "character_card_manager",
         "shutdown_memory_server_on_exit": False,
         'server': None
     }
@@ -1806,7 +1806,7 @@ if __name__ == "__main__":
     parser.add_argument("--open-browser",   action="store_true",
                         help="启动后是否打开浏览器并监控它")
     parser.add_argument("--page",           type=str, default="",
-                        choices=["index", "chara_manager", "api_key", ""],
+                        choices=["index", "character_card_manager", "api_key", ""],
                         help="要打开的页面路由（不含域名和端口）")
     args = parser.parse_args()
 

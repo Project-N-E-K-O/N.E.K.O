@@ -1,6 +1,8 @@
 /**
  * English language pack
  */
+import { yuiGuideLocales } from './yuiGuide'
+
 export default {
   common: {
     loading: 'Loading...',
@@ -406,5 +408,15 @@ export default {
   },
   app: {
     titleSuffix: 'N.E.K.O Plugin Manager'
+  },
+  tutorial: {
+    yuiGuide: yuiGuideLocales['en-US']
+  },
+  yuiTutorial: {
+    title: 'Meow~ Welcome to the Plugin Manager!',
+    welcome: 'This is where you manage all your plugins, nya~ You can browse, launch, and tweak them to make me even more powerful!',
+    hint: 'Take your time and poke around a little, then tap the button below when you\'re done~',
+    complete: 'All done, meow~',
+    dismiss: 'Maybe later~'
   }
 }

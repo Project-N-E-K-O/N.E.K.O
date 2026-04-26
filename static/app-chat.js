@@ -379,15 +379,25 @@
 
     // ======================== 拟真输出队列 ========================
 
+    function createRealisticQueueOwnerToken() {
+        return 'realistic-queue-' + Date.now() + '-' + Math.random().toString(36).slice(2);
+    }
+
     async function processRealisticQueue(queueVersion) {
         queueVersion = queueVersion || (window._realisticGeminiVersion || 0);
-        if (window._isProcessingRealisticQueue) return;
+        if (window._realisticProcessingOwner) return;
+
+        const processingOwner = createRealisticQueueOwnerToken();
+        window._realisticProcessingOwner = processingOwner;
         window._isProcessingRealisticQueue = true;
 
         const chatContainer = S.dom.chatContainer;
 
         try {
             while (window._realisticGeminiQueue && window._realisticGeminiQueue.length > 0) {
+                if (window._realisticProcessingOwner !== processingOwner) {
+                    break;
+                }
                 if ((window._realisticGeminiVersion || 0) !== queueVersion) {
                     break;
                 }
@@ -399,6 +409,9 @@
                 }
 
                 if ((window._realisticGeminiVersion || 0) !== queueVersion) {
+                    break;
+                }
+                if (window._realisticProcessingOwner !== processingOwner) {
                     break;
                 }
 
@@ -416,15 +429,15 @@
                 }
             }
         } finally {
-            // 如果 lock 还是 true，说明没有任何外部路径（discard / audio-capture）
-            // 接管过 —— 无论 version 是否变化，我们都是当前唯一持有者，必须释放锁，
-            // 否则队列会卡死。
-            // 如果 lock 已经是 false，说明外部路径已经重置锁并可能启动了新 processor，
-            // 我们不能再递归也不能再动锁。
-            if (window._isProcessingRealisticQueue) {
-                window._isProcessingRealisticQueue = false;
-                if (window._realisticGeminiQueue && window._realisticGeminiQueue.length > 0) {
-                    processRealisticQueue(window._realisticGeminiVersion || 0);
+            // 只有当前 owner 仍然匹配时，才说明处理中没有被外部路径接管。
+            // 这时才允许当前实例释放 owner/lock 并决定是否继续拉起下一轮处理。
+            if (window._realisticProcessingOwner === processingOwner) {
+                window._realisticProcessingOwner = null;
+                if (window._isProcessingRealisticQueue) {
+                    window._isProcessingRealisticQueue = false;
+                    if (window._realisticGeminiQueue && window._realisticGeminiQueue.length > 0) {
+                        processRealisticQueue(window._realisticGeminiVersion || 0);
+                    }
                 }
             }
         }

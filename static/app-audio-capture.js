@@ -766,6 +766,7 @@
         window._realisticGeminiVersion = (window._realisticGeminiVersion || 0) + 1;
         window.currentTurnGeminiBubbles = [];
         window._isProcessingRealisticQueue = false;
+        window._realisticProcessingOwner = null;
 
         // 停止静音检测
         stopSilenceDetection();

@@ -323,6 +323,14 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
         }
     };
 
+    const isYuiGuideDragLocked = () => {
+        const body = document.body;
+        return !!(body && (
+            body.classList.contains('yui-guide-home-driver-hidden')
+            || body.classList.contains('yui-taking-over')
+        ));
+    };
+
 
 
     // 点击触发随机表情和动作（低优先级，会自动恢复）
@@ -335,6 +343,7 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
     model.on('pointerdown', (event) => {
         if (!this._isModelReadyForInteraction) return;
         if (this.isLocked) return;
+        if (isYuiGuideDragLocked()) return;
 
         // 检测是否为触摸事件，且是多点触摸（双指缩放）
         const originalEvent = event.data.originalEvent;
@@ -439,6 +448,13 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
     const onDragMove = (event) => {
         if (!this._isModelReadyForInteraction) return;
         if (this._isDraggingModel) {
+            if (isYuiGuideDragLocked()) {
+                this._isDraggingModel = false;
+                document.getElementById('live2d-canvas').style.cursor = '';
+                restoreButtonPointerEvents();
+                return;
+            }
+
             // 再次检查是否变成多点触摸
             if (event.touches && event.touches.length > 1) {
                 // 如果变成多点触摸，停止拖拽

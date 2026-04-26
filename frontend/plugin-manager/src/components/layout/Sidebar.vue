@@ -4,7 +4,6 @@
       <img src="@/assets/neko-logo.png" alt="N.E.K.O" class="sidebar-brand__logo" />
       <span class="sidebar-brand__text">N.E.K.O</span>
     </div>
-
     <div class="sidebar-nav">
       <router-link
         v-for="item in navItems"
@@ -17,6 +16,7 @@
           class="nav-item"
           :class="{ 'nav-item--active': isExactActive || isRouteActive(item.path) }"
           :aria-current="isExactActive || isRouteActive(item.path) ? 'page' : undefined"
+          :data-yui-guide-id="item.guideId || null"
           @click="navigate"
         >
           <el-icon class="nav-item__icon"><component :is="item.icon" /></el-icon>
@@ -50,7 +50,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, type Component } from 'vue'
+import { computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { usePluginStore } from '@/stores/plugin'
@@ -63,9 +63,9 @@ const pluginStore = usePluginStore()
 const adapters = computed(() => pluginStore.pluginsWithStatus.filter((p) => p.type === 'adapter'))
 
 const navItems = computed(() => [
-  { path: '/', icon: Odometer, label: t('nav.dashboard') },
-  { path: '/plugins', icon: Box, label: t('nav.plugins') },
-  { path: '/runs', icon: VideoPlay, label: t('nav.runs') },
+  { path: '/', icon: Odometer, label: t('nav.dashboard'), guideId: 'sidebar-dashboard' },
+  { path: '/plugins', icon: Box, label: t('nav.plugins'), guideId: 'sidebar-plugins' },
+  { path: '/runs', icon: VideoPlay, label: t('nav.runs'), guideId: 'sidebar-runs' },
   { path: '/logs/_server', icon: Monitor, label: t('nav.serverLogs') },
 ])
 

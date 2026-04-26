@@ -9,7 +9,7 @@
 | 路径 | 模板 | 描述 |
 |------|------|------|
 | `/` | `index.html` | 带有 Live2D/VRM 渲染的主聊天界面 |
-| `/chara_manager` | `chara_manager.html` | 角色性格和设置编辑器 |
+| `/character_card_manager` | `character_card_manager.html` | 角色性格和设置编辑器 |
 | `/api_key` | `api_key_settings.html` | API 密钥配置面板 |
 | `/model_manager` | `model_manager.html` | 模型浏览和管理 |
 | `/live2d_parameter_editor` | `live2d_parameter_editor.html` | Live2D 模型参数微调 |
@@ -17,7 +17,6 @@
 | `/vrm_emotion_manager` | `vrm_emotion_manager.html` | VRM 情感映射 |
 | `/voice_clone` | `voice_clone.html` | 语音克隆界面 |
 | `/memory_browser` | `memory_browser.html` | 记忆浏览和编辑 |
-| `/steam_workshop_manager` | `steam_workshop_manager.html` | Steam 创意工坊管理 |
 
 ## 深色模式
 

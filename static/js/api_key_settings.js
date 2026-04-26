@@ -148,15 +148,21 @@ function showStatus(message, type = 'info') {
         return;
     }
 
+    // 清除之前的自动隐藏定时器，避免新消息被旧定时器提前关闭
+    if (showStatus._hideTimer) {
+        clearTimeout(showStatus._hideTimer);
+        showStatus._hideTimer = null;
+    }
+
     statusDiv.textContent = message;
     statusDiv.className = `status ${type}`;
     statusDiv.style.display = 'block';
 
-    if (type === 'success') {
-        setTimeout(() => {
-            statusDiv.style.display = 'none';
-        }, 3000);
-    }
+    const delay = type === 'error' ? 5000 : 3000;
+    showStatus._hideTimer = setTimeout(() => {
+        statusDiv.style.display = 'none';
+        showStatus._hideTimer = null;
+    }, delay);
 }
 
 function showCurrentApiKey(message, rawKey = '', hasKey = false) {

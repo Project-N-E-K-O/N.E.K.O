@@ -66,6 +66,7 @@ playwright_browsers/
 *.code-workspace
 .claude
 CLAUDE.md
+/.workbuddy/
 
 # Rust: ignore target and cargo artifacts
 /launcher/target/
@@ -128,6 +129,10 @@ local_server/cosyvoice_server/*wav
 
 # 测试报告与结果
 tests/reports/
+
+# Testbench 运行时数据目录（沙盒/日志/存档/autosave/导出/用户自定义 schema 和 dialog template）
+# 代码目录 tests/testbench/ 仍入库, 数据目录 tests/testbench_data/ 全部忽略
+tests/testbench_data/
 latest_report.json
 sendText.js
 tmp/
@@ -155,6 +160,10 @@ plugin/plugins/web_radio/
 
 # QQ 自动回复：NapCat.Shell 整个目录不入库，仅保留 .gitkeep 占位
 plugin/plugins/qq_auto_reply/NapCat.Shell/*
+
+# bilibili_danmaku 插件运行时数据（凭据、用户画像），不入库
+plugin/plugins/bilibili_danmaku/data/bili_credential.*
+plugin/plugins/bilibili_danmaku/data/user_profiles/
 !plugin/plugins/qq_auto_reply/NapCat.Shell/.gitkeep
 # Ignore local temporary Steam/launcher environment dumps
 .tmp_env_*
@@ -170,3 +179,4 @@ static/jukebox/*.vrma
 static/jukebox/*.bvh
 static/jukebox/*.fbx
 tests/prompt_dump.json
+tests/testbench/docs/dev_note.txt

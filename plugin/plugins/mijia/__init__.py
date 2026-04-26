@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -38,6 +39,8 @@ from .mijia_api.infrastructure.credential_store import FileCredentialStore
 from .mijia_api.domain.models import Credential
 from .mijia_api.domain.exceptions import TokenExpiredError, DeviceNotFoundError, DeviceOfflineError
 
+_EMBEDDED_BY_AGENT = os.getenv("NEKO_PLUGIN_HOSTED_BY_AGENT", "").strip().lower() == "true"
+
 @neko_plugin
 class MijiaPlugin(NekoPluginBase):
     """米家智能家居插件"""
@@ -66,11 +69,13 @@ class MijiaPlugin(NekoPluginBase):
         is_first_launch = not data_dir.exists() or not any(data_dir.iterdir())
 
         # 首次启动：立即调度打开浏览器，完全不等待凭据加载
-        if is_first_launch:
+        if is_first_launch and not _EMBEDDED_BY_AGENT:
             self.logger.info("首次启动，立即打开配置页面")
             task = asyncio.create_task(self._auto_open_config_page())
             self._background_tasks.add(task)
             task.add_done_callback(self._background_tasks.discard)
+        elif is_first_launch:
+            self.logger.info("首次启动但当前由 Agent 托管，跳过自动打开米家配置页面")
         else:
             # 有数据：后台静默加载凭据，不阻塞启动
             task = asyncio.create_task(self._background_load_credential())

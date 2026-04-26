@@ -1,0 +1,473 @@
+.yui-guide-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100006;
+  pointer-events: none;
+}
+
+body.yui-guide-home-driver-hidden .driver-overlay,
+body.yui-guide-home-driver-hidden .driver-popover,
+body.yui-guide-home-driver-hidden .driver-highlight {
+  opacity: 0 !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
+
+.yui-guide-stage {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+
+.yui-guide-backdrop {
+  position: fixed;
+  inset: 0;
+  opacity: 0;
+  transition: opacity 180ms ease;
+}
+
+.yui-guide-backdrop {
+  width: 100%;
+  height: 100%;
+}
+
+.yui-guide-backdrop-cutout {
+  transition:
+    x 220ms ease,
+    y 220ms ease,
+    width 220ms ease,
+    height 220ms ease,
+    rx 220ms ease,
+    ry 220ms ease;
+}
+
+.yui-guide-backdrop.is-visible {
+  opacity: 1;
+}
+
+.yui-guide-spotlight-frame {
+  position: fixed;
+  border: 2px solid #93d6ff;
+  box-shadow:
+    0 0 0 4px #a1e4ff,
+    0 0 0 7px #aff3ff,
+    0 16px 32px rgba(147, 214, 255, 0.18);
+  opacity: 0;
+  transform: translateY(0);
+  transition:
+    opacity 180ms ease,
+    top 220ms ease,
+    left 220ms ease,
+    width 220ms ease,
+    height 220ms ease,
+    border-radius 220ms ease;
+  pointer-events: none;
+}
+
+.yui-guide-spotlight-frame.is-visible {
+  opacity: 1;
+  animation: yui-guide-chat-pulse 1.5s ease-in-out infinite;
+}
+
+.yui-guide-spotlight-frame-persistent {
+  border-color: #93d6ff;
+}
+
+.yui-guide-spotlight-frame-action {
+  z-index: 1;
+  border-color: #93d6ff;
+  box-shadow:
+    0 0 0 4px #a1e4ff,
+    0 0 0 7px #aff3ff,
+    0 16px 30px rgba(147, 214, 255, 0.20);
+}
+
+.yui-guide-spotlight-frame.is-circular-mask {
+  box-shadow:
+    0 0 0 9999px rgba(3, 7, 18, 0.62),
+    0 0 0 4px #a1e4ff,
+    0 0 0 7px #aff3ff,
+    0 16px 32px rgba(147, 214, 255, 0.18);
+}
+
+.yui-guide-precise-highlight {
+  box-shadow:
+    0 0 0 2px rgba(147, 214, 255, 0.98),
+    0 0 0 5px rgba(161, 228, 255, 0.72),
+    0 14px 28px rgba(147, 214, 255, 0.18) !important;
+  border-radius: 16px !important;
+  animation: yui-guide-chat-pulse 1.5s ease-in-out infinite;
+}
+
+.yui-guide-bubble {
+  position: fixed;
+  width: min(320px, calc(100vw - 32px));
+  padding: 14px 16px 16px;
+  border-radius: 20px;
+  background:
+    linear-gradient(150deg, rgba(255, 250, 244, 0.96), rgba(255, 236, 223, 0.96));
+  border: 1px solid rgba(255, 168, 125, 0.35);
+  box-shadow:
+    0 24px 60px rgba(133, 67, 32, 0.18),
+    0 8px 22px rgba(133, 67, 32, 0.12);
+  color: #533423;
+  backdrop-filter: blur(8px);
+  transform: translateY(8px) scale(0.98);
+  opacity: 0;
+  transition: opacity 180ms ease, transform 220ms ease;
+}
+
+.yui-guide-bubble.is-visible {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+}
+
+.yui-guide-bubble::after {
+  content: '';
+  position: absolute;
+  right: 26px;
+  bottom: -10px;
+  width: 20px;
+  height: 20px;
+  transform: rotate(45deg);
+  background: inherit;
+  border-right: 1px solid rgba(255, 168, 125, 0.32);
+  border-bottom: 1px solid rgba(255, 168, 125, 0.32);
+}
+
+.yui-guide-bubble-title {
+  margin-bottom: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #dc6f38;
+}
+
+.yui-guide-bubble-body {
+  font-size: 15px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+.yui-guide-bubble[data-emotion='happy'] {
+  background:
+    linear-gradient(150deg, rgba(255, 250, 244, 0.96), rgba(255, 240, 219, 0.96));
+}
+
+.yui-guide-bubble[data-emotion='surprised'] {
+  background:
+    linear-gradient(150deg, rgba(250, 252, 255, 0.96), rgba(232, 242, 255, 0.96));
+  border-color: rgba(117, 165, 255, 0.35);
+  color: #24405f;
+}
+
+.yui-guide-bubble.is-angry,
+.yui-guide-bubble[data-emotion='angry'] {
+  background:
+    linear-gradient(150deg, rgba(255, 244, 241, 0.97), rgba(255, 219, 214, 0.97));
+  border-color: rgba(226, 98, 86, 0.42);
+  color: #6c241e;
+}
+
+.yui-guide-preview {
+  position: fixed;
+  top: 88px;
+  left: 50%;
+  width: min(720px, calc(100vw - 48px));
+  padding: 18px 20px 20px;
+  border-radius: 24px;
+  transform: translate(-50%, -12px) scale(0.98);
+  opacity: 0;
+  background:
+    radial-gradient(circle at top left, rgba(95, 190, 255, 0.22), transparent 32%),
+    linear-gradient(155deg, rgba(15, 24, 38, 0.92), rgba(20, 34, 56, 0.9));
+  border: 1px solid rgba(116, 193, 255, 0.28);
+  box-shadow:
+    0 26px 60px rgba(3, 10, 26, 0.3),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  transition: opacity 180ms ease, transform 220ms ease;
+}
+
+.yui-guide-preview.is-visible {
+  opacity: 1;
+  transform: translate(-50%, 0) scale(1);
+}
+
+.yui-guide-preview-title {
+  margin-bottom: 14px;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: rgba(177, 227, 255, 0.94);
+}
+
+.yui-guide-preview-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 12px;
+}
+
+.yui-guide-preview-card {
+  padding: 14px 12px;
+  border-radius: 18px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.11), rgba(255, 255, 255, 0.03));
+  border: 1px solid rgba(164, 220, 255, 0.18);
+  color: #eef8ff;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.18);
+  animation: yui-guide-preview-float 1.2s ease both;
+  animation-delay: calc(var(--yui-guide-preview-order, 0) * 80ms);
+}
+
+.yui-guide-preview-card-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 58px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: rgba(112, 214, 255, 0.16);
+  color: #9de7ff;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.yui-guide-preview-card-label {
+  margin-top: 10px;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.yui-guide-cursor-shell {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 2;
+  transition-property: transform;
+  transition-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: transform;
+}
+
+.yui-guide-cursor {
+  width: 46px;
+  height: 46px;
+  margin-left: -20px;
+  margin-top: -18px;
+  background-image: url('/static/assets/tutorial/ghost-cursor/default-ghost-cursor.png');
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: contain;
+  filter: drop-shadow(0 10px 20px rgba(138, 78, 50, 0.24));
+  transform-origin: center;
+}
+
+.yui-guide-cursor::after {
+  content: none;
+}
+
+.yui-guide-cursor.is-clicking {
+  background-image: url('/static/assets/tutorial/ghost-cursor/click-ghost-cursor.png');
+  animation: yui-guide-cursor-click 240ms ease;
+}
+
+.yui-guide-cursor.is-wobbling {
+  animation: yui-guide-cursor-wobble 620ms ease;
+}
+
+body.yui-taking-over,
+body.yui-taking-over * {
+  cursor: none !important;
+}
+
+body.yui-taking-over #neko-tutorial-skip-btn,
+body.yui-taking-over #neko-tutorial-skip-btn * {
+  cursor: auto !important;
+}
+
+body.yui-taking-over.yui-resistance-cursor-reveal,
+body.yui-taking-over.yui-resistance-cursor-reveal * {
+  cursor: auto !important;
+}
+
+body.yui-taking-over #neko-tutorial-skip-btn:focus-visible {
+  outline: 2px solid #fff !important;
+  outline-offset: 3px;
+}
+
+body.yui-guide-home-driver-hidden #sidebar,
+body.yui-guide-home-driver-hidden #sidebarbox,
+body.yui-guide-home-driver-hidden #resetSessionButton,
+body.yui-guide-home-driver-hidden .side-btn,
+body.yui-guide-home-driver-hidden #status,
+body.yui-guide-home-driver-hidden #live2d-return-button-container,
+body.yui-guide-home-driver-hidden #vrm-return-button-container,
+body.yui-guide-home-driver-hidden #mmd-return-button-container,
+body.yui-taking-over #sidebar,
+body.yui-taking-over #sidebarbox,
+body.yui-taking-over #resetSessionButton,
+body.yui-taking-over .side-btn,
+body.yui-taking-over #status,
+body.yui-taking-over #live2d-return-button-container,
+body.yui-taking-over #vrm-return-button-container,
+body.yui-taking-over #mmd-return-button-container {
+  display: none !important;
+  visibility: hidden !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
+body.yui-guide-home-driver-hidden #live2d-container,
+body.yui-guide-home-driver-hidden #live2d-canvas,
+body.yui-guide-home-driver-hidden #vrm-container,
+body.yui-guide-home-driver-hidden #vrm-canvas,
+body.yui-guide-home-driver-hidden #mmd-container,
+body.yui-guide-home-driver-hidden #mmd-canvas,
+body.yui-taking-over #live2d-container,
+body.yui-taking-over #live2d-canvas,
+body.yui-taking-over #vrm-container,
+body.yui-taking-over #vrm-canvas,
+body.yui-taking-over #mmd-container,
+body.yui-taking-over #mmd-canvas {
+  pointer-events: none !important;
+  cursor: none !important;
+}
+
+body.yui-guide-home-driver-hidden #react-chat-window-drag-handle,
+body.yui-taking-over #react-chat-window-drag-handle {
+  pointer-events: none !important;
+  cursor: none !important;
+}
+
+.yui-guide-overlay.is-angry .yui-guide-cursor {
+  background-color: transparent;
+  filter:
+    drop-shadow(0 14px 26px rgba(116, 33, 25, 0.34))
+    saturate(1.08);
+}
+
+body.yui-taking-over #react-chat-window-root .composer-input-shell,
+body.yui-taking-over #react-chat-window-root .composer-input-shell:focus-within {
+  box-shadow: none !important;
+}
+
+body.yui-taking-over #react-chat-window-root .composer-input,
+body.yui-taking-over #react-chat-window-root .composer-input:focus,
+body.yui-taking-over #react-chat-window-root .composer-input:focus-visible {
+  outline: none !important;
+  box-shadow: none !important;
+}
+
+@keyframes yui-guide-cursor-click {
+  0% {
+    transform: scale(1);
+  }
+
+  45% {
+    transform: scale(0.82);
+  }
+
+  100% {
+    transform: scale(1);
+  }
+}
+
+@keyframes yui-guide-cursor-wobble {
+  0% {
+    transform: rotate(0deg);
+  }
+
+  20% {
+    transform: rotate(-10deg);
+  }
+
+  42% {
+    transform: rotate(12deg);
+  }
+
+  68% {
+    transform: rotate(-7deg);
+  }
+
+  100% {
+    transform: rotate(0deg);
+  }
+}
+
+@keyframes yui-guide-preview-float {
+  0% {
+    opacity: 0;
+    transform: translateY(18px) scale(0.96);
+  }
+
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* 注意：脉冲效果不能用 transform，否则会覆盖宿主元素的 transform
+ * （如居中弹层 translate(-50%, -50%)、图标 rotate 等），
+ * 改用 box-shadow 强弱变化模拟"呼吸"高亮，宿主自带 transform 不受影响。 */
+@keyframes yui-guide-chat-pulse {
+  0%,
+  100% {
+    box-shadow:
+      0 0 0 2px rgba(147, 214, 255, 0.98),
+      0 0 0 5px rgba(161, 228, 255, 0.72),
+      0 14px 28px rgba(147, 214, 255, 0.18) !important;
+  }
+
+  50% {
+    box-shadow:
+      0 0 0 2px rgba(147, 214, 255, 1),
+      0 0 0 8px rgba(161, 228, 255, 0.55),
+      0 16px 32px rgba(147, 214, 255, 0.28) !important;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .yui-guide-backdrop,
+  .yui-guide-backdrop-cutout,
+  .yui-guide-spotlight-frame,
+  .yui-guide-precise-highlight,
+  .yui-guide-bubble,
+  .yui-guide-preview,
+  .yui-guide-preview-card,
+  .yui-guide-cursor-shell,
+  .yui-guide-cursor,
+  .yui-guide-cursor.is-clicking,
+  .yui-guide-cursor.is-wobbling {
+    animation: none !important;
+    transition: none !important;
+  }
+
+  .yui-guide-bubble,
+  .yui-guide-preview,
+  .yui-guide-preview.is-visible,
+  .yui-guide-cursor,
+  .yui-guide-cursor-shell,
+  .yui-guide-spotlight-frame {
+    transform: none !important;
+  }
+}
+
+@media (max-width: 768px) {
+  .yui-guide-bubble {
+    width: min(300px, calc(100vw - 24px));
+  }
+
+  .yui-guide-preview {
+    top: 72px;
+    width: calc(100vw - 24px);
+    padding: 16px;
+  }
+
+  .yui-guide-preview-list {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

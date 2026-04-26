@@ -19,10 +19,12 @@ Live2DManager.prototype.recordInitialParameters = function() {
         this.initialParameters = {};
         
         const paramCount = coreModel.getParameterCount();
-        console.log(`开始记录${paramCount}个初始参数...`);
-        
-        // 创建可折叠的详细日志组（默认折叠状态）
-        console.groupCollapsed(`参数记录详情 (${paramCount}个参数)`);
+        // 详细参数日志默认关闭，避免控制台刷屏；如需调试可在控制台执行：
+        // window.NEKO_DEBUG_PARAMS = true; 然后重新加载模型。
+        const _verbose = !!(typeof window !== 'undefined' && window.NEKO_DEBUG_PARAMS);
+        if (_verbose) {
+            console.groupCollapsed(`参数记录详情 (${paramCount}个参数)`);
+        }
         
         // 需要跳过的位置相关参数
         const skipParams = ['ParamAngleX', 'ParamAngleY', 'ParamAngleZ', 'ParamMouthOpenY', 'ParamO'];
@@ -34,35 +36,34 @@ Live2DManager.prototype.recordInitialParameters = function() {
                 let paramId = null;
                 try {
                     paramId = coreModel.getParameterId(i);
-                    console.log(`使用getParameterId获取参数 ${i}: ${paramId}`);
+                    if (_verbose) console.log(`使用getParameterId获取参数 ${i}: ${paramId}`);
                 } catch (e1) {
                      // getParameterId方法不存在，使用备用方案（这是正常的）
                      paramId = `param_${i}`;
-                     console.log(`getParameterId不可用，使用索引参数名: ${paramId}`);
+                     if (_verbose) console.log(`getParameterId不可用，使用索引参数名: ${paramId}`);
                  }
                 
                 const currentValue = coreModel.getParameterValueByIndex(i);
                 
                 // 跳过位置和嘴巴相关参数
                 if (skipParams.includes(paramId)) {
-                    console.log(`跳过位置/嘴巴参数: ${paramId} = ${currentValue}`);
+                    if (_verbose) console.log(`跳过位置/嘴巴参数: ${paramId} = ${currentValue}`);
                     continue;
                 }
                 
                 // 使用索引作为参数名的备用方案
                 const paramKey = paramId || `param_${i}`;
                 this.initialParameters[paramKey] = currentValue;
-                console.log(`记录参数: ${paramKey} = ${currentValue}`);
+                if (_verbose) console.log(`记录参数: ${paramKey} = ${currentValue}`);
             } catch (e) {
                 console.warn(`记录参数 ${i} 失败:`, e);
             }
         }
         
         // 结束可折叠日志组
-        console.groupEnd();
+        if (_verbose) console.groupEnd();
         
-        console.log(`已成功记录${Object.keys(this.initialParameters).length}个初始参数 (跳过${paramCount - Object.keys(this.initialParameters).length}个位置/嘴巴参数)`);
-        console.log(`记录的参数列表:`, Object.keys(this.initialParameters));
+        console.log(`[Live2D] 已记录${Object.keys(this.initialParameters).length}个初始参数 (跳过${paramCount - Object.keys(this.initialParameters).length}个位置/嘴巴参数)`);
     } catch (error) {
         console.warn('记录初始参数失败:', error);
         this.initialParameters = {};
