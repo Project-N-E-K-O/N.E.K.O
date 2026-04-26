@@ -25,6 +25,17 @@ is the wrong default.
 from __future__ import annotations
 
 
+# Single source of truth for the CJK character-class regex range, so callers
+# that need a `regex.compile(...)`-friendly pattern stay in sync with the
+# function-level helpers below if the ranges ever shift.
+CJK_REGEX_CHAR_CLASS = (
+    "一-鿿"   # Han
+    "぀-ヿ"   # Kana
+    "ｦ-ﾟ"   # Halfwidth katakana
+    "가-힯"   # Hangul syllables
+)
+
+
 def is_chinese_char(c: str) -> bool:
     """Han / Chinese hanzi / Japanese kanji / Korean hanja (CJK Unified)."""
     return "\u4e00" <= c <= "\u9fff"

@@ -1841,10 +1841,9 @@ async def fetch_window_context_content(limit: int = 5) -> Dict[str, Any]:
             if not query or len(query) < 2:
                 continue
             
-            if china_region:
-                logger.info(f"使用查询关键词: {query}")
-            else:
-                logger.info(f"使用查询关键词: {query}")
+            # query 是从用户窗口标题派生的搜索词，不写 logger
+            logger.info(f"使用查询关键词 (len={len(query)})")
+            print(f"使用查询关键词: {query}")
             
             search_result = await search_func(query, limit)
             

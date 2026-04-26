@@ -19,16 +19,22 @@ import logging
 import locale
 from datetime import datetime
 
-from utils.cjk import count_chinese_chars, count_hangul_chars, count_kana_chars
+from utils.cjk import (
+    CJK_REGEX_CHAR_CLASS,
+    count_chinese_chars,
+    count_hangul_chars,
+    count_kana_chars,
+)
 
 # Unicode regexes (compiled once). `regex` package is needed for `\p{L}`
 # class — standard `re` only supports the ASCII letter shorthand.
 # - _CJK_STRIP: replace any CJK char with a space so subsequent word
-#   matching only finds non-CJK letter runs.
+#   matching only finds non-CJK letter runs. Range comes from utils.cjk
+#   so it stays in sync with is_cjk_char / count_cjk_chars.
 # - _NON_CJK_WORD: any maximal run of Unicode "letter" chars in any
 #   script (Latin, Cyrillic, Arabic, Greek, Hebrew, Thai, Devanagari, …).
 #   Excludes digits/punctuation/spaces by virtue of `\p{L}+`.
-_CJK_STRIP = regex.compile(r'[一-鿿぀-ヿｦ-ﾟ가-힯]')
+_CJK_STRIP = regex.compile(f"[{CJK_REGEX_CHAR_CLASS}]")
 _NON_CJK_WORD = regex.compile(r'\p{L}+')
 
 

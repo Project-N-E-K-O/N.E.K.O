@@ -948,8 +948,10 @@ class MCPClient:
                 if not line:
                     break
                 
-                # 记录 stderr 输出 — 上游 MCP 进程的 stderr 可能含敏感数据，不写 logger
-                stderr_text = line.decode().strip()
+                # 记录 stderr 输出 — 上游 MCP 进程的 stderr 可能含敏感数据，不写 logger。
+                # decode 用 errors="replace" 防止单行非 UTF-8 字节让整个 stderr
+                # 协程崩掉、子进程的 stderr buffer 后续被堵死。
+                stderr_text = line.decode("utf-8", errors="replace").strip()
                 if stderr_text and self.logger:
                     self.logger.debug(f"MCP server '{self.config.name}' stderr (len={len(stderr_text)})")
                     print(f"[MCP] '{self.config.name}' stderr: {stderr_text}")

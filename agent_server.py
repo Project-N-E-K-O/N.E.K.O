@@ -1710,7 +1710,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                             _reg["end_time"] = _now_iso()
                             _reg["result"] = up_result.result
                             if not up_result.success:
-                                _reg["error"] = (detail or str(up_result.error or ""))[:500]
+                                _reg["error"] = _tt((detail or str(up_result.error or "")), 350)
                         if up_result.success and is_deferred:
                             # 保持任务为 running 状态，等待 daemon 触发后回调完成
                             reminder_id = run_data.get("reminder_id") if isinstance(run_data, dict) else None
@@ -1776,7 +1776,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                     task={"id": result.task_id, "status": up_terminal, "type": "user_plugin",
                                           "start_time": up_start, "end_time": _now_iso(),
                                           "params": task_params,
-                                          "error": (detail or str(up_result.error or ""))[:500] if not up_result.success else None},
+                                          "error": _tt((detail or str(up_result.error or "")), 350) if not up_result.success else None},
                                 )
                             except Exception as emit_err:
                                 logger.debug("[TaskExecutor] emit task_update(terminal) failed: task_id=%s plugin_id=%s error=%s", result.task_id, plugin_id, emit_err)
@@ -1820,7 +1820,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                         logger.exception("[TaskExecutor] UserPlugin dispatch failed: %s", e)
                         if _reg:
                             _reg["status"] = "failed"
-                            _reg["error"] = str(e)[:500]
+                            _reg["error"] = _tt(str(e), 350)
                         _task_tracker.record_completed(
                             lanlan_name, task_id=result.task_id, method="user_plugin",
                             desc=f"{plugin_id}.{entry_id}: {result.task_description or ''}",
@@ -1843,7 +1843,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                 task={"id": result.task_id, "status": "failed", "type": "user_plugin",
                                       "start_time": up_start, "end_time": _now_iso(),
                                       "params": task_params,
-                                      "error": str(e)[:500]},
+                                      "error": _tt(str(e), 350)},
                             )
                         except Exception as emit_err:
                             logger.debug("[TaskExecutor] emit task_update(dispatch_failed) failed: task_id=%s error=%s", result.task_id, emit_err)
@@ -1995,7 +1995,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                             _reg["result"] = nk_result
                             _reg["session_id"] = str(nk_result.get("session_id") or _reg.get("session_id") or "")
                             if not success:
-                                _reg["error"] = str(nk_result.get("error") or "")[:500]
+                                _reg["error"] = _tt(str(nk_result.get("error") or ""), 350)
                         _task_tracker.record_completed(
                             lanlan_name, task_id=result.task_id, method="openclaw",
                             desc=result.task_description or instruction or "",
@@ -2030,7 +2030,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                 "start_time": nk_start,
                                 "end_time": _now_iso(),
                                 "params": task_params,
-                                "error": str(nk_result.get("error") or "")[:500] if not success else None,
+                                "error": _tt(str(nk_result.get("error") or ""), 350) if not success else None,
                             },
                         )
                     except asyncio.CancelledError as e:
@@ -2079,7 +2079,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                         logger.exception("[OpenClaw] dispatch failed: %s", e)
                         if _reg:
                             _reg["status"] = "failed"
-                            _reg["error"] = str(e)[:500]
+                            _reg["error"] = _tt(str(e), 350)
                         _task_tracker.record_completed(
                             lanlan_name, task_id=result.task_id, method="openclaw",
                             desc=result.task_description or instruction or "",
@@ -2107,7 +2107,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                     "start_time": nk_start,
                                     "end_time": _now_iso(),
                                     "params": task_params,
-                                    "error": str(e)[:500],
+                                    "error": _tt(str(e), 350),
                                 },
                             )
                         except Exception:
@@ -2203,7 +2203,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                 "task_update", lanlan_name,
                                 task={"id": bu_task_id, "status": bu_info["status"],
                                       "type": "browser_use", "start_time": bu_start, "end_time": _now_iso(),
-                                      "error": (bu_parsed[:500] if bu_parsed else "") if not success else None,
+                                      "error": (_tt(bu_parsed, 350) if bu_parsed else "") if not success else None,
                                       "session_id": bu_session.session_id},
                             )
                         except Exception as emit_err:
@@ -2269,7 +2269,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                 "task_update", lanlan_name,
                                 task={"id": bu_task_id, "status": "failed", "type": "browser_use",
                                       "start_time": bu_start, "end_time": _now_iso(),
-                                      "error": str(e)[:500],
+                                      "error": _tt(str(e), 350),
                                       "session_id": bu_session.session_id},
                             )
                         except Exception as emit_err:
@@ -2339,11 +2339,17 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                         len(of_res.get("artifacts") or []))
                             logger.debug("[OpenFang] ====== RAW RESULT (debug) ======")
                             logger.debug("[OpenFang] keys=%s", list(of_res.keys()))
-                            # OpenFang result 可能含 LLM/用户原文；只 logger 长度，print 给开发者
-                            logger.debug("[OpenFang] result_len=%d", len(str(of_res.get("result", ""))))
+                            # result / error / artifacts 都可能含 LLM/用户原文，
+                            # 全部走 print 不进 logger
+                            logger.debug(
+                                "[OpenFang] result_len=%d, error_len=%d, artifacts_count=%d",
+                                len(str(of_res.get("result", ""))),
+                                len(str(of_res.get("error") or "")),
+                                len(of_res.get("artifacts") or []),
+                            )
                             print(f"[OpenFang] result (first 500): {str(of_res.get('result', ''))[:500]}")
-                            logger.debug("[OpenFang] error: %s", of_res.get("error"))
-                            logger.debug("[OpenFang] artifacts=%s", of_res.get("artifacts"))
+                            print(f"[OpenFang] error: {of_res.get('error')}")
+                            print(f"[OpenFang] artifacts: {of_res.get('artifacts')}")
                             logger.debug("[OpenFang] ==============================")
                             if of_info.get("status") == "cancelled":
                                 return
@@ -2366,7 +2372,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                             of_info["end_time"] = _now_iso()
                             of_info["result"] = of_res
                             if not success:
-                                of_info["error"] = (of_error_text or of_result_text)[:500]
+                                of_info["error"] = _tt((of_error_text or of_result_text), 350)
                             await _emit_task_result(
                                 lanlan_name,
                                 channel="openfang",
@@ -2447,7 +2453,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                     "task_update", lanlan_name,
                                     task={"id": of_task_id, "status": "failed", "type": "openfang",
                                           "start_time": of_start, "end_time": _now_iso(),
-                                          "error": str(e)[:500],
+                                          "error": _tt(str(e), 350),
                                           "session_id": of_session.session_id},
                                 )
                             except Exception:
@@ -3535,8 +3541,14 @@ def _extract_tool_intent_as_text(refusal_text: str) -> str:
     match = _re.search(pattern, cleaned, _re.DOTALL)
 
     if not match:
-        # Context 会回到 LLM 的下一轮上下文 — token 而非字符
-        return f"I attempted to perform an action but encountered a compatibility issue. Let me provide what I know instead.\n\nContext: {_tt(cleaned, 200)}"
+        # Context 会回到 LLM 的下一轮上下文 — token 而非字符。
+        # 给固定前缀预留 budget，保证整条 fallback ≤ 200 token。
+        from utils.tokenize import count_tokens
+        prefix = "I attempted to perform an action but encountered a compatibility issue. Let me provide what I know instead.\n\nContext: "
+        prefix_tokens = count_tokens(prefix)
+        if prefix_tokens >= 200:
+            return prefix
+        return prefix + _tt(cleaned, 200 - prefix_tokens)
 
     tool_name = match.group(1)
     args_raw = match.group(2)

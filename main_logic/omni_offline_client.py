@@ -8,7 +8,7 @@ from typing import Optional, Callable, Dict, Any, Awaitable
 from utils.llm_client import SystemMessage, HumanMessage, AIMessage, create_chat_llm
 from openai import APIConnectionError, InternalServerError, RateLimitError
 from utils.frontend_utils import calculate_text_similarity
-from utils.tokenize import count_tokens
+from utils.tokenize import count_tokens, truncate_to_tokens
 
 # Sentence-final terminators used to recover from a length-overflow when
 # rerolls have been exhausted. Commas, semicolons, and colons are NOT
@@ -475,6 +475,11 @@ class OmniOfflineClient:
                             reroll_count += 1
                             will_retry = guard_attempt <= self.max_response_rerolls
 
+                            # max_attempts 报给前端的是**总尝试次数**而非
+                            # rerolls 次数（rerolls 不含首次尝试）。前端 attempt
+                            # / max_attempts 进度条要 1/2 → 2/2 才合理。
+                            total_attempts = self.max_response_rerolls + 1
+
                             if will_retry:
                                 # 还能 retry：发 will_retry 通知，循环继续。前端
                                 # 收到 response_discarded(will_retry=True, message=None)
@@ -482,13 +487,13 @@ class OmniOfflineClient:
                                 await self._notify_response_discarded(
                                     discard_reason or "guard",
                                     guard_attempt,
-                                    self.max_response_rerolls,
+                                    total_attempts,
                                     True,
                                     None,
                                 )
                                 logger.info(
                                     "OmniOfflineClient: 响应被丢弃（%s），第 %d/%d 次重试",
-                                    discard_reason, guard_attempt, self.max_response_rerolls,
+                                    discard_reason, guard_attempt, total_attempts,
                                 )
                                 continue
 
@@ -497,9 +502,17 @@ class OmniOfflineClient:
                             # RESPONSE_INVALID。两条路径**都**通过
                             # _notify_response_discarded 唯一通道发给前端，避免
                             # 同时发两个 status 互相覆盖。
+                            #
+                            # 关键：先把 assistant_message 硬截到 max_response_length
+                            # 再找句末标点；否则截出来的句末仍可能在 token 上限
+                            # 之外（比如最后一个句号在 950 token 处但 cap 是 300），
+                            # 反而把超限正文作为 RESPONSE_LENGTH_TRUNCATED 发回前端。
                             recovery_text = ""
                             if discard_reason and "length>" in discard_reason:
-                                recovery_text = _truncate_to_last_sentence_end(assistant_message)
+                                capped = truncate_to_tokens(
+                                    assistant_message, self.max_response_length,
+                                )
+                                recovery_text = _truncate_to_last_sentence_end(capped)
 
                             if recovery_text:
                                 logger.info(
@@ -519,7 +532,7 @@ class OmniOfflineClient:
                                 await self._notify_response_discarded(
                                     discard_reason or "guard",
                                     guard_attempt,
-                                    self.max_response_rerolls,
+                                    total_attempts,
                                     False,
                                     truncate_msg,
                                 )
@@ -542,7 +555,7 @@ class OmniOfflineClient:
                             await self._notify_response_discarded(
                                 discard_reason or "guard",
                                 guard_attempt,
-                                self.max_response_rerolls,
+                                total_attempts,
                                 False,
                                 final_message,
                             )

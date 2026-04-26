@@ -772,7 +772,12 @@ class LLMSessionManager:
                         if isinstance(candidate, str) and candidate.strip():
                             _truncated_text = candidate
             except Exception as _parse_err:
-                logger.debug(f"[{self.lanlan_name}] response_discarded JSON 解析失败: {_parse_err}, message={message!r}")
+                # message 可能含 RESPONSE_LENGTH_TRUNCATED.text（截断后的 AI 原文），
+                # 不写进 logger；只记元数据，原文走 print 兜底。
+                logger.debug(
+                    f"[{self.lanlan_name}] response_discarded JSON 解析失败: {_parse_err} (msg_len={len(message or '')})"
+                )
+                print(f"[response_discarded parse_err] raw: {message!r}")
 
         await self._clear_tts_pipeline()
 
