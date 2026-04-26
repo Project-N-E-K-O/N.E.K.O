@@ -1687,22 +1687,35 @@
         }
     }
 
+    var STORAGE_ERROR_DETAIL_MAX_LEN = 200;
+
+    function truncateErrorDetail(text) {
+        var trimmed = String(text || '').trim();
+        if (trimmed.length <= STORAGE_ERROR_DETAIL_MAX_LEN) return trimmed;
+        return trimmed.slice(0, STORAGE_ERROR_DETAIL_MAX_LEN) + '…';
+    }
+
     function extractResponseError(payload, fallbackText) {
         if (payload && typeof payload === 'object') {
             var rawError = typeof payload.error === 'string' ? String(payload.error).trim() : '';
             var code = String(payload.error_code || payload.blocking_error_code || '').trim();
             var codedText = translateResponseErrorCode(code, '');
             if (codedText) {
-                // 对于 startup_release_failed 这类承载具体异常详情的后端错误，
-                // 后端 error 字段会附带异常信息（如 ".. {exc}"）。仅显示翻译后的
-                // 概括语会让用户与开发者都看不到根因，因此把详情拼接出来。
+                // startup_release_failed 这类后端会把异常细节塞进 payload.error
+                // （f"... {exc}" 风格）。完整字符串可能含路径/异常类名/栈片段，
+                // 直接展示既不友好也可能泄露内部信息。所以：
+                //   - 完整原文打到 console.warn 给开发者看
+                //   - UI 只展示翻译后的概括语 + 裁短的尾巴（≤200 字符）
                 if (code === 'startup_release_failed' && rawError && rawError !== codedText) {
-                    return codedText + ' ' + rawError;
+                    try {
+                        console.warn('[storage-location] startup_release_failed detail:', rawError);
+                    } catch (_) {}
+                    return codedText + ' ' + truncateErrorDetail(rawError);
                 }
                 return codedText;
             }
             if (rawError) {
-                return rawError;
+                return truncateErrorDetail(rawError);
             }
         }
         return fallbackText;
