@@ -158,12 +158,31 @@ def test_launcher_phase0_skips_import_when_cloud_snapshot_is_empty():
         result, emitted_events = _run_launcher_phase0(cm)
 
         assert result["import_result"]["action"] == "skipped"
-        assert result["import_result"]["reason"] in {"no_snapshot", "already_applied"}
+        assert result["import_result"]["reason"] == "no_snapshot"
         assert emitted_events[-1][0] == "cloudsave_bootstrap_ready"
         event_import_result = emitted_events[-1][1]["import_result"]
         assert event_import_result["action"] == "skipped"
         assert event_import_result["requested_reason"] == "launcher_phase0_prelaunch_import"
         assert "reason" not in event_import_result
+
+
+@pytest.mark.unit
+def test_launcher_phase0_skips_import_when_snapshot_is_already_applied():
+    with TemporaryDirectory() as td:
+        cm = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(cm)
+        _write_runtime_state(cm, character_name="已应用角色", recent_message="已应用快照")
+        export_cloudsave_character_unit(cm, "已应用角色")
+
+        result, emitted_events = _run_launcher_phase0(cm)
+
+        assert result["import_result"]["action"] == "skipped"
+        assert result["import_result"]["reason"] == "already_applied"
+        status = result["import_result"]["status"]
+        assert status["has_snapshot"] is True
+        assert status["runtime_has_user_content"] is True
+        assert status["last_applied_manifest_fingerprint"] == status["manifest_fingerprint"]
+        assert emitted_events[-1][0] == "cloudsave_bootstrap_ready"
 
 
 @pytest.mark.unit
