@@ -322,6 +322,10 @@ enable_shutdown = False
 # 全局变量用于管理correction任务
 correction_tasks = {}  # {lanlan_name: asyncio.Task}
 correction_cancel_flags = {}  # {lanlan_name: asyncio.Event}
+# Phase C: 防 spawn 竞态——/process /renew /settle / IdleMaint 都共用 maybe_spawn_review，
+# 多入口同时进 gate 检查会有 in-flight check → spawn 之间的 await 窗口；用 per-name lock
+# 串行化 gate+spawn 这一段，确保同名角色至多一个 review 在跑。
+_review_spawn_locks: dict[str, asyncio.Lock] = {}
 # 每角色结算锁：首轮摘要期间阻塞 /new_dialog，确保热切换后读到最新数据
 _settle_locks: dict[str, asyncio.Lock] = {}
 # 强引用注册表：防止 fire-and-forget task 被 GC
@@ -331,8 +335,9 @@ _BACKGROUND_TASKS: set[asyncio.Task] = set()
 _last_activity_time: datetime = datetime.now()            # 最后一次对话活动时间
 IDLE_CHECK_INTERVAL = 40             # 空闲检查轮询间隔（秒）
 IDLE_THRESHOLD = 10                  # 多少秒无活动视为空闲（匹配最低 proactive 间隔）
-REVIEW_MIN_INTERVAL = 300            # review（correction）最短间隔（秒）。Phase C 改为 30s + 活跃 ×2
-REVIEW_SKIP_HISTORY_LEN = 8          # 历史不足此数的角色跳过 review / correction
+REVIEW_MIN_INTERVAL = 30             # review 最短间隔（秒）。配合 active 时 ×2 + 消息门 双重限流
+REVIEW_SKIP_HISTORY_LEN = 8          # 历史不足此数的角色跳过 review
+MIN_NEW_MSGS_FOR_REVIEW = 5          # 自上次 review cutoff 起累积 ≥ N 条 user msg 才允许触发新一轮
 
 # ── 启动错峰 initial_delay（避免首轮全部撞 startup + interval 同一时刻） ──
 # 每个循环首次执行时间 = startup + 该 delay；之后按各自 INTERVAL 周期跑。
@@ -864,8 +869,6 @@ async def _periodic_idle_maintenance_loop():
                 logger.debug(f"[IdleMaint] 加载角色列表失败: {e}")
                 continue
 
-            review_enabled = await _ais_review_enabled()
-
             for name in catgirl_names:
                 # 每处理一个角色前重新检查空闲，一旦变忙立即退出
                 if not _is_idle():
@@ -932,34 +935,14 @@ async def _periodic_idle_maintenance_loop():
                     except Exception as e:
                         logger.warning(f"[IdleMaint] {name}: persona 矛盾审视失败: {e}")
 
-                    # 历史不足 REVIEW_SKIP_HISTORY_LEN 条，或全局开关关闭 → 跳过 review
-                    if history_len < REVIEW_SKIP_HISTORY_LEN or not review_enabled:
-                        continue
-
                     # ── 子任务3: 记忆整理 review ──
+                    # Phase C: gate 逻辑全部集中到 maybe_spawn_review，IdleMaint
+                    # 不再做单点门禁。spawn 函数内部自查 review_enabled / 历史长度
+                    # / min_interval / 新消息门 / in-flight，不过门就 skip。
                     if not _is_idle():
                         break
-                    # 已 review 且没有新对话 → 跳过
-                    if _is_review_clean(name):
-                        continue
-                    # 已有 review 任务在跑 → 跳过
-                    if name in correction_tasks and not correction_tasks[name].done():
-                        continue
-                    # 最短间隔限制
-                    last_review = _maint_state.get(name, {}).get('last_review_ts')
-                    if last_review:
-                        try:
-                            elapsed = (datetime.now() - datetime.fromisoformat(last_review)).total_seconds()
-                            if elapsed < REVIEW_MIN_INTERVAL:
-                                continue
-                        except (ValueError, TypeError):
-                            logger.debug(f"[IdleMaint] {name}: last_review_ts 格式无效，视为未 review 过")
-                    logger.info(f"[IdleMaint] {name}: 空闲期间执行记忆整理")
                     try:
-                        cancel_event = asyncio.Event()
-                        correction_cancel_flags[name] = cancel_event
-                        task = asyncio.create_task(_run_review_in_background(name))
-                        correction_tasks[name] = task
+                        await maybe_spawn_review(name)
                     except Exception as e:
                         logger.warning(f"[IdleMaint] {name}: 记忆整理启动失败: {e}")
 
@@ -1880,39 +1863,134 @@ async def shutdown_event_handler():
     logger.info("Memory server已关闭")
 
 
-async def _run_review_in_background(lanlan_name: str):
-    """在后台运行review_history，支持取消"""
-    global correction_tasks, correction_cancel_flags
-    
-    # 获取该角色的取消标志
+def _get_review_spawn_lock(name: str) -> asyncio.Lock:
+    """惰性 per-name asyncio.Lock，串行化 gate+spawn 检查。"""
+    lock = _review_spawn_locks.get(name)
+    if lock is None:
+        lock = asyncio.Lock()
+        _review_spawn_locks[name] = lock
+    return lock
+
+
+def _count_new_user_msgs_since_last_review(name: str, current_history: list) -> float:
+    """数自上次 review cutoff 起 history 里的 user msg 数。
+
+    白 review（fingerprint=None）→ 视为足够多放行。
+    fingerprint 在 current 里找不到（被压缩 / 清空）→ 同样视为足够多放行
+    （应当尽快重 review 重建 fingerprint）。
+    """
+    from memory.recent import _find_fingerprint_position
+    fp = _maint_state.get(name, {}).get('last_reviewed_cutoff_tail')
+    if not fp:
+        return float('inf')
+    cutoff_idx = _find_fingerprint_position(current_history, fp)
+    if cutoff_idx is None:
+        return float('inf')
+    return sum(
+        1 for m in current_history[cutoff_idx + 1:]
+        if getattr(m, 'type', '') == 'human'
+    )
+
+
+async def maybe_spawn_review(name: str) -> None:
+    """统一 review 触发入口（Phase C）。
+
+    /process /renew /settle / IdleMaint 都调这一个函数。本身**不**取消任何
+    在跑的 review——看到 in-flight 直接 skip 本次 spawn。由 spawn 锁串行化
+    gate+spawn 防多入口竞态。
+
+    Gates（任一不过都 skip）：
+    1. 已有 review 在跑（in-flight）
+    2. ``review_enabled``（``recent_memory_auto_review`` flag）
+    3. 历史长度 < ``REVIEW_SKIP_HISTORY_LEN``
+    4. 距上次 review 完成 < ``REVIEW_MIN_INTERVAL``（活跃时 ×2）
+    5. 自上次 review cutoff 起累积 user msg < ``MIN_NEW_MSGS_FOR_REVIEW``
+    """
+    async with _get_review_spawn_lock(name):
+        # Gate 1: in-flight
+        existing = correction_tasks.get(name)
+        if existing is not None and not existing.done():
+            return
+        # Gate 2: review_enabled
+        if not await _ais_review_enabled():
+            return
+        # 拉 history（gate 3/5 + 后续做 snapshot 都需要）
+        try:
+            history = await recent_history_manager.aget_recent_history(name)
+        except Exception as e:
+            logger.debug(f"[Review/spawn] {name}: 拉 history 失败: {e}")
+            return
+        # Gate 3: history 长度
+        if len(history) < REVIEW_SKIP_HISTORY_LEN:
+            return
+        # Gate 4: min interval (active doubled)
+        last_review = _maint_state.get(name, {}).get('last_review_ts')
+        if last_review:
+            try:
+                elapsed = (datetime.now() - datetime.fromisoformat(last_review)).total_seconds()
+                effective_min = REVIEW_MIN_INTERVAL * (2 if not _is_idle() else 1)
+                if elapsed < effective_min:
+                    return
+            except (ValueError, TypeError):
+                pass
+        # Gate 5: 够多新 user 消息
+        if _count_new_user_msgs_since_last_review(name, history) < MIN_NEW_MSGS_FOR_REVIEW:
+            return
+        # 全过 → spawn
+        logger.info(f"[Review/spawn] {name}: 触发 review (history_len={len(history)})")
+        cancel_event = asyncio.Event()
+        correction_cancel_flags[name] = cancel_event
+        snapshot = list(history)  # 浅拷贝即可，消息对象不可变
+        task = asyncio.create_task(_run_review_in_background(name, snapshot))
+        correction_tasks[name] = task
+
+
+async def _run_review_in_background(lanlan_name: str, snapshot: list):
+    """在后台运行 review_history，支持取消。
+
+    Phase C 改动：
+    - snapshot 由 caller 拍下传入（不再重新读 history）
+    - review_history 返回 True / 'white' / False，分别对应：成功 patch /
+      cutoff 失配丢弃 / LLM 失败或被取消
+    - 成功：更新 last_review_ts + last_reviewed_cutoff_tail (K=3 fingerprint)
+    - 'white'：把 last_reviewed_cutoff_tail 设 None（caller 决定立刻重 review）
+    - False：不动 maint_state，下轮 gate 重判
+    """
+    from memory.recent import build_review_fingerprint
+
     cancel_event = correction_cancel_flags.get(lanlan_name)
-    if not cancel_event:
+    if cancel_event is None:
         cancel_event = asyncio.Event()
         correction_cancel_flags[lanlan_name] = cancel_event
-    
+
     try:
-        # 直接异步调用review_history方法
-        success = await recent_history_manager.review_history(lanlan_name, cancel_event)
-        if success:
+        result = await recent_history_manager.review_history(
+            lanlan_name, snapshot, cancel_event=cancel_event,
+        )
+        state = _maint_state.setdefault(lanlan_name, {})
+        if result is True:
             logger.info(f"✅ {lanlan_name} 的记忆整理任务完成")
-            # 仅在 review 实际成功修正并保存时标记 clean + 记录时间
-            state = _maint_state.setdefault(lanlan_name, {})
             state['review_clean'] = True
             state['last_review_ts'] = datetime.now().isoformat()
+            state['last_reviewed_cutoff_tail'] = build_review_fingerprint(snapshot)
+            await _asave_maint_state()
+        elif result == 'white':
+            logger.info(f"⚠️ {lanlan_name} 白 review（cutoff 失配），fingerprint 清空允许立即重试")
+            state['last_reviewed_cutoff_tail'] = None
+            state['last_review_ts'] = datetime.now().isoformat()  # interval 仍生效
             await _asave_maint_state()
         else:
-            logger.info(f"ℹ️ {lanlan_name} 的记忆整理未执行（被跳过或条件不满足）")
+            logger.info(f"ℹ️ {lanlan_name} 的记忆整理未执行（被跳过或失败）")
     except asyncio.CancelledError:
         logger.info(f"⚠️ {lanlan_name} 的记忆整理任务被取消")
     except Exception as e:
         logger.error(f"❌ {lanlan_name} 的记忆整理任务出错: {e}")
     finally:
-        # 清理任务记录
-        if lanlan_name in correction_tasks:
-            del correction_tasks[lanlan_name]
-        # 重置取消标志
-        if lanlan_name in correction_cancel_flags:
-            correction_cancel_flags[lanlan_name].clear()
+        if correction_tasks.get(lanlan_name) is not None:
+            correction_tasks.pop(lanlan_name, None)
+        ev = correction_cancel_flags.get(lanlan_name)
+        if ev is not None:
+            ev.clear()
 
 def _extract_ai_response(messages: list) -> str:
     """从消息列表中提取最后一条 AI 回复的文本。"""
@@ -2213,19 +2291,11 @@ async def process_conversation(request: HistoryRequest, lanlan_name: str):
         # 异步事实提取（不阻塞返回，失败静默跳过）
         await _spawn_outbox_extract_facts(lanlan_name, input_history)
 
-        # 在后台启动review_history任务
-        if lanlan_name in correction_tasks and not correction_tasks[lanlan_name].done():
-            # 如果已有任务在运行，取消它
-            correction_tasks[lanlan_name].cancel()
-            try:
-                await correction_tasks[lanlan_name]
-            except asyncio.CancelledError:
-                pass
-        
-        # 启动新的review任务
-        task = asyncio.create_task(_run_review_in_background(lanlan_name))
-        correction_tasks[lanlan_name] = task
-        
+        # Phase C: 不再 cancel-and-restart review；让 maybe_spawn_review 在新消息
+        # 门 + min_interval + in-flight 多重 gate 后决定起或不起。在跑的 review
+        # 跑完会自行 patch 当前 history 末尾的可改区，新消息保留不动。
+        await maybe_spawn_review(lanlan_name)
+
         return {"status": "processed"}
     except Exception as e:
         logger.error(f"处理对话历史失败: {e}")
@@ -2264,19 +2334,9 @@ async def process_conversation_for_renew(request: HistoryRequest, lanlan_name: s
         # 异步事实提取
         await _spawn_outbox_extract_facts(lanlan_name, input_history)
 
-        # 在后台启动review_history任务
-        if lanlan_name in correction_tasks and not correction_tasks[lanlan_name].done():
-            # 如果已有任务在运行，取消它
-            correction_tasks[lanlan_name].cancel()
-            try:
-                await correction_tasks[lanlan_name]
-            except asyncio.CancelledError:
-                pass
-        
-        # 启动新的review任务
-        task = asyncio.create_task(_run_review_in_background(lanlan_name))
-        correction_tasks[lanlan_name] = task
-        
+        # Phase C: 见 /process 的注释——不再 cancel-and-restart。
+        await maybe_spawn_review(lanlan_name)
+
         return {"status": "processed"}
     except Exception as e:
         return {"status": "error", "message": str(e)}
@@ -2308,14 +2368,8 @@ async def settle_conversation(request: HistoryRequest, lanlan_name: str):
         if input_history:
             await _spawn_outbox_extract_facts(lanlan_name, input_history)
 
-        if lanlan_name in correction_tasks and not correction_tasks[lanlan_name].done():
-            correction_tasks[lanlan_name].cancel()
-            try:
-                await correction_tasks[lanlan_name]
-            except asyncio.CancelledError:
-                pass
-        task = asyncio.create_task(_run_review_in_background(lanlan_name))
-        correction_tasks[lanlan_name] = task
+        # Phase C: 见 /process 的注释——不再 cancel-and-restart。
+        await maybe_spawn_review(lanlan_name)
 
         return {"status": "settled"}
     except Exception as e:

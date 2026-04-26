@@ -27,6 +27,97 @@ from utils.tokenize import acount_tokens
 # 500-char/word cap is independent of this gate).
 MAX_SUMMARY_TOKENS = 1000
 
+# ── Phase C review snapshot/capacity 算法 ─────────────────────────────
+# Fingerprint = 末尾 K 条消息的 (type, content[:50]) 元组列表。K=3 兼顾
+# 抗碰撞（连续 3 条 mixed user+ai 几乎不会误命中）和定位精度。
+REVIEW_FINGERPRINT_K = 3
+REVIEW_FINGERPRINT_CONTENT_PREFIX = 50
+
+
+def _msg_fingerprint(m) -> tuple[str, str]:
+    """归一化一条消息为 (type, content_prefix) 元组用于 fingerprint 比对。
+
+    支持消息对象（HumanMessage/AIMessage/...）和 dict（持久化 fingerprint）。
+    content 是 list 时（multimodal）拼成 string。content 截断到前
+    REVIEW_FINGERPRINT_CONTENT_PREFIX 字符——只要重启用户没改写已有消息内容，
+    这个前缀稳定。
+    """
+    if isinstance(m, dict):
+        t = m.get('type', '') or ''
+        c = m.get('content', '') if 'content' in m else (m.get('data', {}).get('content', '') if isinstance(m.get('data'), dict) else '')
+    else:
+        t = getattr(m, 'type', '') or ''
+        c = getattr(m, 'content', '') or ''
+    if isinstance(c, list):
+        parts = []
+        for p in c:
+            if isinstance(p, dict):
+                parts.append(p.get('text', '') or str(p))
+            else:
+                parts.append(str(p))
+        c = ' '.join(parts)
+    elif not isinstance(c, str):
+        c = str(c)
+    return (str(t), c[:REVIEW_FINGERPRINT_CONTENT_PREFIX])
+
+
+def build_review_fingerprint(snapshot, k: int = REVIEW_FINGERPRINT_K) -> list[dict]:
+    """从 snapshot 末尾取 K 条做 fingerprint，序列化成可 JSON 持久化的 dict 列表。"""
+    if not snapshot:
+        return []
+    tail = snapshot[-k:] if len(snapshot) >= k else list(snapshot)
+    out = []
+    for m in tail:
+        t, c = _msg_fingerprint(m)
+        out.append({'type': t, 'content': c})
+    return out
+
+
+def _find_fingerprint_position(current: list, fingerprint: list[dict]) -> int | None:
+    """在 current 里找最后一段连续 K 条消息匹配 fingerprint 的位置。
+
+    返回 fingerprint 末位（也就是 cutoff）在 current 里的 index；
+    找不到返回 None。从尾往前搜，多个候选时取最靠后的（最近）。
+    """
+    if not current or not fingerprint:
+        return None
+    k = len(fingerprint)
+    if len(current) < k:
+        return None
+    fp_norm = [(fp['type'], fp['content']) for fp in fingerprint]
+    for i in range(len(current) - k, -1, -1):
+        if all(_msg_fingerprint(current[i + j]) == fp_norm[j] for j in range(k)):
+            return i + k - 1
+    return None
+
+
+def _compute_review_capacity(snapshot: list, current: list) -> tuple[int, int | None]:
+    """给定 review 启动时的 snapshot 和当前 history，算出 (capacity, cutoff_idx)。
+
+    1. 用 snapshot 末尾 K 条做 anchor 在 current 里定位 cutoff_idx。
+    2. 从 cutoff_idx 起逆向走，对比 snapshot[-1], snapshot[-2], ... 与
+       current[cutoff_idx], current[cutoff_idx-1], ... 的连续匹配长度
+       即 capacity（当中间出现压缩 SystemMessage 等"alien"条目时停下）。
+
+    返回 ``(0, None)`` 表示白 review。
+    """
+    if not snapshot or not current:
+        return (0, None)
+    anchor = build_review_fingerprint(snapshot, REVIEW_FINGERPRINT_K)
+    cutoff_idx = _find_fingerprint_position(current, anchor)
+    if cutoff_idx is None:
+        return (0, None)
+    # 从 cutoff 起逆向走（包含 cutoff 自身），算 capacity
+    capacity = 0
+    s_idx = len(snapshot) - 1
+    c_idx = cutoff_idx
+    while s_idx >= 0 and c_idx >= 0 and _msg_fingerprint(current[c_idx]) == _msg_fingerprint(snapshot[s_idx]):
+        capacity += 1
+        s_idx -= 1
+        c_idx -= 1
+    return (capacity, cutoff_idx)
+
+
 # Setup logger
 from utils.file_utils import (
     atomic_write_json,
@@ -152,15 +243,20 @@ class CompressedRecentHistoryManager:
     def _get_review_llm(self):
         """动态获取审核LLM实例以支持配置热重载。
 
-        timeout=120 给 review_history 重写历史足够余量（prompt 长，可能含 thinking
-        模型 1-2 分钟响应）。review 是后台任务，没人等它，可以放宽。
-        max_retries=0 同上。
+        timeout=120 给 review_history 重写历史足够余量。review 是纯后台任务
+        （Phase C 重设计后不持锁、不阻塞用户路径、并发跑也无所谓），完全可以
+        开 thinking——重写历史的判断密度高，思考受益明显。
+
+        Phase D：extra_body=None 显式覆盖 create_chat_llm 自动解析，让 thinking
+        模型按其默认行为响应（thinking 模式开启）。
+        max_retries=0 同上：禁 SDK 自动重试，由业务层 retry 兜底。
         """
         api_config = self._config_manager.get_model_api_config('correction')
         return create_chat_llm(
             api_config['model'], api_config['base_url'],
             api_config['api_key'] or None,
             timeout=120, max_retries=0,
+            extra_body=None,
         )
 
     async def update_history(self, new_messages, lanlan_name, detailed=False, compress=True):
@@ -391,54 +487,50 @@ class CompressedRecentHistoryManager:
 
         return self.user_histories.get(lanlan_name, [])
 
-    async def review_history(self, lanlan_name, cancel_event=None):
+    async def review_history(self, lanlan_name, snapshot=None, cancel_event=None):
         """
-        审阅历史记录，寻找并修正矛盾、冗余、逻辑混乱或复读的部分
-        :param lanlan_name: 角色名称
-        :param cancel_event: asyncio.Event对象，用于取消操作
+        审阅历史记录，寻找并修正矛盾、冗余、逻辑混乱或复读的部分。
+
+        Phase C 重设计（snapshot + capacity-based 替换）：
+        - ``snapshot``：spawn 时拍下的 history 副本（list of message objects）。
+          LLM 输入用 snapshot 不用当前 history——这样 review LLM 期间用户路径
+          可以继续追加消息 / 触发压缩，互不干扰。
+        - 完成时基于 snapshot 末尾 K=3 条做 fingerprint 匹配，定位 cutoff 在
+          当前 history 里的位置；逆向走出 capacity（连续匹配长度）；用 corrected
+          末尾 ``min(capacity, len(corrected))`` 条替换当前 history 里 cutoff 前
+          连续 ``capacity`` 个 slot；cutoff 之后的新增消息保持不动。
+        - cutoff 找不到（被压缩吞了 / 被 /new_dialog 清了）→ 整段丢弃 = 白 review
+          → caller 应将 fingerprint 设为 None，下一轮 review 立刻可起。
+
+        Returns:
+            True   → 成功 patch 并落盘
+            'white' → cutoff 在当前 history 里失配，整段丢弃
+            False  → LLM 失败 / 被取消 / 历史为空 / 响应格式错误
         """
         # 检查是否被取消
         if cancel_event and cancel_event.is_set():
             print(f"⚠️ {lanlan_name} 的记忆整理被取消（启动前）")
             return False
-            
-        # 检查配置文件中是否禁用自动审阅
-        try:
-            from utils.config_manager import get_config_manager
-            config_manager = get_config_manager()
-            config_path = str(config_manager.get_runtime_config_path('core_config.json'))
-            if await asyncio.to_thread(os.path.exists, config_path):
-                config_data = await read_json_async(config_path)
-                if 'recent_memory_auto_review' in config_data and not config_data['recent_memory_auto_review']:
-                    print(f"{lanlan_name} 的自动记忆整理已禁用，跳过审阅")
-                    return False
-        except Exception as e:
-            print(f"读取配置文件失败：{e}，继续执行审阅")
 
-        # 获取当前历史记录
+        # snapshot 由 caller 提供（spawn 时拍下）；为兼容老调用兜底从磁盘读
+        if snapshot is None:
+            snapshot = await self.aget_recent_history(lanlan_name)
 
-        current_history = await self.aget_recent_history(lanlan_name)
-        
-        if not current_history:
+        if not snapshot:
             print(f"{lanlan_name} 的历史记录为空，无需审阅")
             return False
-        
-        # 检查是否被取消
-        if cancel_event and cancel_event.is_set():
-            print(f"{lanlan_name} 的记忆整理被取消（获取历史后）")
-            return False
-        
-        # 将消息转换为可读的文本格式
+
+        # 将 snapshot 转为可读文本格式（喂 LLM）
         name_mapping = self.name_mapping.copy()
         name_mapping['ai'] = lanlan_name
-        
+
         history_text = ""
-        for msg in current_history:
+        for msg in snapshot:
             if hasattr(msg, 'type') and msg.type in name_mapping:
                 role = name_mapping[msg.type]
             else:
                 role = "unknown"
-            
+
             if hasattr(msg, 'content'):
                 if isinstance(msg.content, str):
                     content = msg.content
@@ -448,14 +540,14 @@ class CompressedRecentHistoryManager:
                     content = str(msg.content)
             else:
                 content = str(msg)
-            
+
             history_text += f"{role}: {content}\n\n"
-        
+
         # 检查是否被取消
         if cancel_event and cancel_event.is_set():
             print(f"⚠️ {lanlan_name} 的记忆整理被取消（准备调用LLM前）")
             return False
-        
+
         retries = 0
         max_retries = 3
         while retries < max_retries:
@@ -468,12 +560,12 @@ class CompressedRecentHistoryManager:
                     response_content = (await review_llm.ainvoke(prompt)).content
                 finally:
                     await review_llm.aclose()
-                
+
                 # 检查是否被取消（LLM调用后）
                 if cancel_event and cancel_event.is_set():
                     print(f"⚠️ {lanlan_name} 的记忆整理被取消（LLM调用后，保存前）")
                     return False
-                
+
                 # 确保response_content是字符串
                 response_content = str(response_content).strip()
 
@@ -484,48 +576,72 @@ class CompressedRecentHistoryManager:
 
                 # 解析JSON响应
                 review_result = robust_json_loads(response_content)
-                
-                if '修正说明' in review_result and '修正后的对话' in review_result:
-                    print(f"记忆整理结果：{review_result['修正说明']}")
-                    
-                    # 将修正后的对话转换回消息格式
-                    corrected_messages = []
-                    for msg_data in review_result['修正后的对话']:
-                        role = msg_data.get('role', 'user')
-                        content = msg_data.get('content', '')
-                        
-                        if role in ['user', 'human', name_mapping['human']]:
-                            corrected_messages.append(HumanMessage(content=content))
-                        elif role in ['ai', 'assistant', name_mapping['ai']]:
-                            corrected_messages.append(AIMessage(content=content))
-                        elif role in ['system', 'system_message', name_mapping['system']]:
-                            corrected_messages.append(SystemMessage(content=content))
-                        else:
-                            # 默认作为用户消息处理
-                            corrected_messages.append(HumanMessage(content=content))
-                    
-                    # 更新历史记录
-                    self.user_histories[lanlan_name] = corrected_messages
 
-                    # 保存到文件
-                    assert_cloudsave_writable(
-                        self._config_manager,
-                        operation="save",
-                        target=f"memory/{lanlan_name}/recent.json",
-                    )
-                    await atomic_write_json_async(
-                        self.log_file_path[lanlan_name],
-                        await asyncio.to_thread(messages_to_dict, corrected_messages),
-                        indent=2,
-                        ensure_ascii=False,
-                    )
-                    
-                    print(f"✅ {lanlan_name} 的记忆已修正并保存")
-                    return True
-                else:
+                if not (isinstance(review_result, dict) and '修正说明' in review_result and '修正后的对话' in review_result):
                     print(f"❌ 审阅响应格式错误：{response_content}")
                     return False
-                    
+
+                print(f"记忆整理结果：{review_result['修正说明']}")
+
+                # 将修正后的对话转换回消息格式。SystemMessage 类型由 compress
+                # 产生（summary 备忘录），review 不应该输出，丢弃以保护压缩边界。
+                corrected_messages = []
+                for msg_data in review_result['修正后的对话']:
+                    role = msg_data.get('role', 'user')
+                    content = msg_data.get('content', '')
+
+                    if role in ['system', 'system_message', name_mapping['system']]:
+                        # 跳过：summary 由 compress 拥有，review 不能改写
+                        continue
+                    elif role in ['user', 'human', name_mapping['human']]:
+                        corrected_messages.append(HumanMessage(content=content))
+                    elif role in ['ai', 'assistant', name_mapping['ai']]:
+                        corrected_messages.append(AIMessage(content=content))
+                    else:
+                        # 默认作为用户消息处理
+                        corrected_messages.append(HumanMessage(content=content))
+
+                # ── Phase C 关键：基于 snapshot 算 capacity 做尾部对齐替换 ──
+                current = await self.aget_recent_history(lanlan_name)
+                capacity, cutoff_idx = _compute_review_capacity(snapshot, current)
+
+                if cutoff_idx is None:
+                    # 白 review：cutoff 在当前 history 里失配（被压缩 / 被清空）
+                    print(f"⚠️ {lanlan_name} review 完成但 cutoff 失配（白 review，丢弃）")
+                    return 'white'
+
+                take_count = min(capacity, len(corrected_messages))
+                # 替换 [cutoff_idx - capacity + 1, cutoff_idx] 这 capacity 个 slot
+                # 为 corrected 末尾 take_count 条；cutoff_idx 之后新增的保留。
+                # take_count < capacity 时，前 (capacity - take_count) 个 slot
+                # 直接消失（review 决定删条，结果就比原来短）。
+                new_history = (
+                    current[:cutoff_idx - capacity + 1]
+                    + corrected_messages[-take_count:]
+                    + current[cutoff_idx + 1:]
+                )
+
+                # 更新 + 落盘
+                self.user_histories[lanlan_name] = new_history
+                assert_cloudsave_writable(
+                    self._config_manager,
+                    operation="save",
+                    target=f"memory/{lanlan_name}/recent.json",
+                )
+                await atomic_write_json_async(
+                    self.log_file_path[lanlan_name],
+                    await asyncio.to_thread(messages_to_dict, new_history),
+                    indent=2,
+                    ensure_ascii=False,
+                )
+
+                print(
+                    f"✅ {lanlan_name} 的记忆已修正：cutoff_idx={cutoff_idx}, "
+                    f"capacity={capacity}, corrected={len(corrected_messages)}, "
+                    f"take={take_count}, history {len(current)}→{len(new_history)}"
+                )
+                return True
+
             except (APIConnectionError, InternalServerError, RateLimitError) as e:
                 logger.info(f"ℹ️ 捕获到 {type(e).__name__} 错误")
                 retries += 1
@@ -543,7 +659,7 @@ class CompressedRecentHistoryManager:
             except Exception as e:
                 logger.error(f"❌ 历史记录审阅失败：{e}")
                 return False
-        
+
         # 如果所有重试都失败
         print(f"❌ {lanlan_name} 的记忆整理失败，已达到最大重试次数")
         return False

@@ -46,6 +46,11 @@ logger = get_module_logger(__name__, "Memory")
 _ARCHIVE_AGE_DAYS = 7          # absorbed 且创建超过此天数的 facts 被归档
 _ARCHIVE_COOLDOWN_HOURS = 24   # 两次归档尝试之间的最小间隔
 
+# Sentinel：让 _allm_call_with_retries 区分"调用方没指定 extra_body"（默认走
+# create_chat_llm 自动解析）和"调用方显式传 None"（关闭 extra_body 自动解析，
+# 保留 thinking）。Phase D：Stage-2 signal detection 显式传 None 开 thinking。
+_DEFAULT_EXTRA_BODY = object()
+
 
 class FactExtractionFailed(RuntimeError):
     """Stage-1 LLM call exhausted retries (RFC §3.4.2 末段).
@@ -282,6 +287,7 @@ class FactStore:
         self, prompt: str, lanlan_name: str, tier: str, call_type: str,
         max_retries: int = 3,
         timeout: float = 60,
+        extra_body=_DEFAULT_EXTRA_BODY,
     ):
         """Shared LLM helper: retry on network errors + JSON errors, same
         policy as the old `extract_facts`. Returns parsed JSON or None on
@@ -294,7 +300,12 @@ class FactStore:
         timeout 默认 60s 适配后台 LLM（Stage-1 fact extract / Stage-2 signal
         detect / negative keyword check）；调用方可按需提高（如 Stage-2 开
         thinking 后传 90s）。SDK max_retries=0 避免双层 retry 叠加（业务层
-        已经有 max_retries 参数控制）。"""
+        已经有 max_retries 参数控制）。
+
+        extra_body：默认 _DEFAULT_EXTRA_BODY 让 create_chat_llm 自动按模型
+        解析（多数 provider 落地为 disable thinking）；显式传 None 表示"不
+        下发 extra_body" → 模型默认行为（thinking 模型会进入 thinking 模式）。
+        Phase D：Stage-2 signal detection 显式传 None 开 thinking。"""
         from openai import APIConnectionError, InternalServerError, RateLimitError
         from utils.llm_client import create_chat_llm
 
@@ -303,10 +314,13 @@ class FactStore:
             try:
                 set_call_type(call_type)
                 api_config = self._config_manager.get_model_api_config(tier)
+                _llm_kwargs = dict(timeout=timeout, max_retries=0)
+                if extra_body is not _DEFAULT_EXTRA_BODY:
+                    _llm_kwargs['extra_body'] = extra_body
                 llm = create_chat_llm(
                     api_config['model'],
                     api_config['base_url'], api_config['api_key'],
-                    timeout=timeout, max_retries=0,
+                    **_llm_kwargs,
                 )
                 try:
                     resp = await llm.ainvoke(prompt)
@@ -654,10 +668,17 @@ class FactStore:
             .replace('{EXISTING_OBSERVATIONS}', obs_text) \
             .replace('{LANLAN_NAME}', lanlan_name)
 
+        # Phase D：Stage-2 signal detection 开 thinking——
+        # 任务是 new_fact × existing_observation 的关系判断 + target_id 选择，
+        # 现有 [memory/facts.py:670-708](memory/facts.py:670) 防御代码本身就是
+        # 在补 LLM 幻觉，思考能减少 target_id 错位。完全后台 (signal extraction
+        # loop)，无人等。timeout 拉到 90s 给 thinking 模型留余量。
         parsed = await self._allm_call_with_retries(
             prompt, lanlan_name,
             tier=EVIDENCE_DETECT_SIGNALS_MODEL_TIER,
             call_type="memory_signal_detection",
+            timeout=90,
+            extra_body=None,
         )
         if parsed is None:
             return None
