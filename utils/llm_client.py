@@ -226,7 +226,12 @@ class ChatOpenAI:
     def _is_anthropic(self) -> bool:
         return bool(self.base_url) and "api.anthropic.com" in str(self.base_url)
 
-    def _params(self, messages: Any, *, stream: bool = False) -> dict:
+    def _params(self, messages: Any, *, stream: bool = False, **overrides: Any) -> dict:
+        """Build the request body. ``overrides`` lets per-call invokers
+        substitute ``max_completion_tokens`` / ``max_tokens`` / ``extra_body``
+        (and any other SDK-accepted kwarg) without mutating the instance —
+        critical when a single ChatOpenAI is shared across concurrent code
+        paths (e.g. background ping vs. main task in computer_use)."""
         p: dict[str, Any] = {
             "model": self.model,
             "messages": _normalize_messages(messages),
@@ -240,20 +245,27 @@ class ChatOpenAI:
         # Provider-aware routing of token-limit field:
         #   Anthropic SDK / Anthropic-compat endpoints → max_tokens
         #   Everyone else (OpenAI / OpenAI-compat / Gemini-compat / etc.) → max_completion_tokens
-        # Caller can pass either kwarg; this layer always emits the right field
-        # name based on base_url. This eliminates "I forgot which one this
-        # provider needs" footguns at every call site.
-        token_limit = self.max_completion_tokens or self.max_tokens
+        # Per-call overrides take precedence over instance attrs so concurrent
+        # callers on the same client don't corrupt each other's budgets.
+        token_limit = overrides.pop("max_completion_tokens", None)
+        if token_limit is None:
+            token_limit = overrides.pop("max_tokens", None)
+        if token_limit is None:
+            token_limit = self.max_completion_tokens or self.max_tokens
         limit_field: str | None = None
         limit_value: int | None = None
         if token_limit:
             limit_field = "max_tokens" if self._is_anthropic() else "max_completion_tokens"
             limit_value = int(token_limit)
             p[limit_field] = limit_value
-        if self.extra_body:
-            p["extra_body"] = self.extra_body
+        extra_body = overrides.pop("extra_body", self.extra_body)
+        if extra_body:
+            p["extra_body"] = extra_body
         if stream:
             p["stream_options"] = {"include_usage": True}
+        # Anything else the caller passed (e.g. timeout, logit_bias) goes
+        # straight through to the SDK call.
+        p.update(overrides)
 
         # TEMPORARY: prompt audit log (env NEKO_LLM_PROMPT_AUDIT=1). Remove with
         # utils/llm_prompt_audit.py once budget tuning is done.
@@ -291,17 +303,26 @@ class ChatOpenAI:
 
     # --- raw-resp invoke (for callers needing reasoning_content / raw choices) ---
 
-    async def ainvoke_raw(self, messages: Any):
+    async def ainvoke_raw(self, messages: Any, **overrides: Any):
         """Async invoke that returns the underlying SDK ChatCompletion
         response. Parameter routing still flows through `_params()`
         (Anthropic → max_tokens, others → max_completion_tokens). Use only
         when you need fields beyond `LLMResponse` (e.g. thinking models'
-        ``reasoning_content``); prefer `ainvoke` otherwise."""
-        return await self._aclient.chat.completions.create(**self._params(messages))
+        ``reasoning_content``); prefer `ainvoke` otherwise.
 
-    def invoke_raw(self, messages: Any):
-        """Sync twin of `ainvoke_raw`."""
-        return self._client.chat.completions.create(**self._params(messages))
+        ``overrides`` lets the caller provide per-call values for
+        ``max_completion_tokens`` / ``max_tokens`` / ``extra_body`` / SDK
+        kwargs like ``timeout`` without touching ``self.*`` — required when
+        a single client is shared across concurrent code paths."""
+        return await self._aclient.chat.completions.create(
+            **self._params(messages, **overrides)
+        )
+
+    def invoke_raw(self, messages: Any, **overrides: Any):
+        """Sync twin of `ainvoke_raw`. See its docstring for ``overrides``."""
+        return self._client.chat.completions.create(
+            **self._params(messages, **overrides)
+        )
 
     # --- async streaming ---
 
