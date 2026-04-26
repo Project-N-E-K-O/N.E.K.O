@@ -172,6 +172,7 @@ class MMDAnimation {
         // 必须在 buildAnimation 之前恢复绑定姿态。
         const hasActiveAnimation = !!(this._activeSlot && this._activeSlot.mixer);
         const needRestoreForBuild = this._bindPoseBackup && mmd.mesh.skeleton?.bones;
+        let clip;
         if (needRestoreForBuild) {
             // 保存当前骨骼状态（outgoing 的动画状态）
             const savedPositions = mmd.mesh.skeleton.bones.map(b => b.position.clone());
@@ -184,14 +185,14 @@ class MMDAnimation {
                 }
             });
             // 在绑定姿态上构建 clip
-            var clip = buildAnimation(vmdObject, mmd.mesh);
+            clip = buildAnimation(vmdObject, mmd.mesh);
             // 恢复 outgoing 的动画状态
             mmd.mesh.skeleton.bones.forEach((bone, i) => {
                 bone.position.copy(savedPositions[i]);
                 bone.quaternion.copy(savedQuaternions[i]);
             });
         } else {
-            var clip = buildAnimation(vmdObject, mmd.mesh);
+            clip = buildAnimation(vmdObject, mmd.mesh);
         }
         this._normalizeQuaternionTrackSigns(clip);
 
@@ -849,6 +850,11 @@ class MMDAnimation {
         // 清理快照模式标记
         this._snapshotCrossfade = false;
         this._stopSnapshot = null;
+
+        // 清理循环点过渡状态，避免跨动画泄漏
+        this._isLoopCrossfading = false;
+        this._loopOutgoingSnapshot = null;
+        this._loopFadeElapsed = 0.0;
 
         if (this._outgoingSlot) {
             this._recycleSlot(this._outgoingSlot);
@@ -1509,12 +1515,12 @@ class MMDAnimation {
         this._loopFadeElapsed = 0.0;
 
         // 清理 class-level 兼容属性
+        // 同 _recycleSlot：不调用 action.stop()/mixer.stopAllAction()，避免 restoreOriginalState
         if (this.currentAction) {
-            this.currentAction.stop();
+            this.currentAction.enabled = false;
             this.currentAction = null;
         }
         if (this.mixer) {
-            this.mixer.stopAllAction();
             this.mixer = null;
         }
         this.currentClip = null;
