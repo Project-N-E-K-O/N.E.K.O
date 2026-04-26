@@ -56,6 +56,7 @@ from utils.storage_policy import (
 from utils.config_manager import get_config_manager as get_runtime_config_manager
 
 router = APIRouter(prefix="/api/storage/location", tags=["storage_location"])
+_storage_mutation_lock = asyncio.Lock()
 _MIGRATED_RUNTIME_ENTRY_NAMES = (
     "config",
     "memory",
@@ -244,9 +245,9 @@ def _estimate_runtime_payload_bytes(source_root: Path) -> int:
 
 def _target_root_has_user_content(target_root: Path, config_manager) -> bool:
     try:
-        from utils.cloudsave_runtime import _runtime_root_has_user_content
+        from utils.cloudsave_runtime import runtime_root_has_user_content
 
-        return bool(_runtime_root_has_user_content(target_root, config_manager=config_manager))
+        return bool(runtime_root_has_user_content(target_root, config_manager=config_manager))
     except Exception:
         if not target_root.exists() or not target_root.is_dir():
             return False
@@ -1161,6 +1162,14 @@ async def post_storage_location_select(
     payload: StorageLocationSelectionRequest,
     response: Response,
 ):
+    async with _storage_mutation_lock:
+        return await _post_storage_location_select_locked(payload, response)
+
+
+async def _post_storage_location_select_locked(
+    payload: StorageLocationSelectionRequest,
+    response: Response,
+):
     _set_no_cache_headers(response)
 
     config_manager = _get_storage_config_manager()
@@ -1366,6 +1375,14 @@ async def post_storage_location_select(
 
 @router.post("/restart")
 async def post_storage_location_restart(
+    payload: StorageLocationSelectionRequest,
+    response: Response,
+):
+    async with _storage_mutation_lock:
+        return await _post_storage_location_restart_locked(payload, response)
+
+
+async def _post_storage_location_restart_locked(
     payload: StorageLocationSelectionRequest,
     response: Response,
 ):

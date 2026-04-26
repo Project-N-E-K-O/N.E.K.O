@@ -1,8 +1,9 @@
+import asyncio
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 from fastapi.testclient import TestClient
 
 from main_routers import storage_location_router as storage_location_router_module
@@ -111,6 +112,73 @@ def _build_client(config_manager, *, request_app_shutdown=None, release_storage_
     app = FastAPI()
     app.include_router(storage_location_router_module.router)
     return TestClient(app)
+
+
+@pytest.mark.unit
+def test_storage_location_target_content_probe_uses_public_runtime_helper(tmp_path):
+    config_manager = _DummyConfigManager(tmp_path)
+    target_root = tmp_path / "target" / "N.E.K.O"
+
+    with patch("utils.cloudsave_runtime.runtime_root_has_user_content", return_value=True) as helper:
+        assert storage_location_router_module._target_root_has_user_content(target_root, config_manager) is True
+
+    helper.assert_called_once_with(target_root, config_manager=config_manager)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_storage_location_mutation_routes_share_serialization_lock():
+    payload = storage_location_router_module.StorageLocationSelectionRequest(
+        selected_root="/tmp/neko-target",
+        selection_source="custom",
+    )
+    active_calls = 0
+    max_active_calls = 0
+    first_call_entered = asyncio.Event()
+    release_first_call = asyncio.Event()
+
+    async def fake_select(_payload, _response):
+        nonlocal active_calls, max_active_calls
+        active_calls += 1
+        max_active_calls = max(max_active_calls, active_calls)
+        first_call_entered.set()
+        await release_first_call.wait()
+        active_calls -= 1
+        return {"route": "select"}
+
+    async def fake_restart(_payload, _response):
+        nonlocal active_calls, max_active_calls
+        active_calls += 1
+        max_active_calls = max(max_active_calls, active_calls)
+        active_calls -= 1
+        return {"route": "restart"}
+
+    with patch.object(
+        storage_location_router_module,
+        "_post_storage_location_select_locked",
+        side_effect=fake_select,
+    ), patch.object(
+        storage_location_router_module,
+        "_post_storage_location_restart_locked",
+        side_effect=fake_restart,
+    ):
+        select_task = asyncio.create_task(
+            storage_location_router_module.post_storage_location_select(payload, Response())
+        )
+        await asyncio.wait_for(first_call_entered.wait(), timeout=1.0)
+
+        restart_task = asyncio.create_task(
+            storage_location_router_module.post_storage_location_restart(payload, Response())
+        )
+        await asyncio.sleep(0)
+        assert restart_task.done() is False
+
+        release_first_call.set()
+        select_result, restart_result = await asyncio.gather(select_task, restart_task)
+
+    assert select_result == {"route": "select"}
+    assert restart_result == {"route": "restart"}
+    assert max_active_calls == 1
 
 
 @pytest.mark.unit
