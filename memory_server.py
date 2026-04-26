@@ -1932,6 +1932,9 @@ async def maybe_spawn_review(name: str) -> None:
                 if elapsed < effective_min:
                     return
             except (ValueError, TypeError):
+                # last_review_ts 格式损坏（旧版本字段 / 手改文件 / 编码错误）→
+                # 视为"从未 review 过"，不阻塞触发；继续走 gate 5（新消息门）。
+                # 下次 review 成功后会用合法 ISO 字符串覆写。
                 pass
         # Gate 5: 够多新 user 消息
         if _count_new_user_msgs_since_last_review(name, history) < MIN_NEW_MSGS_FOR_REVIEW:
