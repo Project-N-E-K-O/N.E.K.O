@@ -141,8 +141,7 @@ def test_storage_location_select_same_path_persists_policy_and_continues(tmp_pat
 
 
 @pytest.mark.unit
-@pytest.mark.asyncio
-async def test_storage_location_select_same_path_releases_limited_startup_barrier(tmp_path):
+def test_storage_location_select_same_path_releases_limited_startup_barrier(tmp_path):
     config_manager = _DummyConfigManager(tmp_path)
     release_calls = []
 
@@ -245,6 +244,7 @@ def test_storage_location_select_custom_parent_targets_app_subdirectory(tmp_path
     assert payload["selected_root"] == str(expected_root.resolve())
     assert payload["target_root"] == str(expected_root.resolve())
     assert payload["blocking_error_code"] == ""
+    assert payload["target_has_existing_content"] is False
 
 
 @pytest.mark.unit
@@ -271,6 +271,15 @@ def test_storage_location_existing_target_content_requires_confirmation_before_r
                 "selection_source": "custom",
             },
         )
+        assert not get_storage_migration_path(config_manager).exists()
+        restart_with_confirmation_response = client.post(
+            "/api/storage/location/restart",
+            json={
+                "selected_root": str(selected_parent),
+                "selection_source": "custom",
+                "confirm_existing_target_content": True,
+            },
+        )
 
     assert select_response.status_code == 200
     payload = select_response.json()
@@ -286,17 +295,6 @@ def test_storage_location_existing_target_content_requires_confirmation_before_r
     missing_confirmation_payload = restart_without_confirmation_response.json()
     assert missing_confirmation_payload["error_code"] == "target_confirmation_required"
     assert missing_confirmation_payload["requires_existing_target_confirmation"] is True
-    assert not get_storage_migration_path(config_manager).exists()
-
-    with _build_client(config_manager, request_app_shutdown=lambda: shutdown_calls.__setitem__("count", shutdown_calls["count"] + 1)) as client:
-        restart_with_confirmation_response = client.post(
-            "/api/storage/location/restart",
-            json={
-                "selected_root": str(selected_parent),
-                "selection_source": "custom",
-                "confirm_existing_target_content": True,
-            },
-        )
 
     assert restart_with_confirmation_response.status_code == 200
     restart_payload = restart_with_confirmation_response.json()
@@ -1007,3 +1005,5 @@ def test_storage_location_cleanup_rejects_retained_root_that_contains_target_roo
     assert retained_root.exists()
     assert target_root.exists()
     assert (target_root / "config").exists()
+    migration_payload = load_storage_migration(reloaded_manager)
+    assert migration_payload["status"] == "completed"

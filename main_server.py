@@ -1294,25 +1294,6 @@ async def _ensure_main_server_runtime_initialized(*, reason: str) -> bool:
         except Exception as e:
             logger.warning(f"Steam Auto-Cloud startup import failed: {e}")
 
-        current_root_state = _config_manager.load_root_state()
-        if should_write_root_mode_normal_after_startup(current_root_state):
-            try:
-                set_root_mode(
-                    _config_manager,
-                    ROOT_MODE_NORMAL,
-                    current_root=str(_config_manager.app_docs_dir),
-                    last_known_good_root=str(_config_manager.app_docs_dir),
-                    last_successful_boot_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-                )
-            except Exception as e:
-                logger.error("写入 main_server 启动成功标记失败，已中止后续启动写盘初始化: %s", e)
-                raise RuntimeError("main_server failed to persist ROOT_MODE_NORMAL state") from e
-        else:
-            logger.info(
-                "跳过 ROOT_MODE_NORMAL 写入，当前仍处于阻断态: %s",
-                current_root_state.get("mode") or ROOT_MODE_NORMAL,
-            )
-
         await initialize_character_data()
         await _sync_memory_server_after_startup_import(import_result)
 
@@ -1405,6 +1386,25 @@ async def _ensure_main_server_runtime_initialized(*, reason: str) -> bool:
             logger.info(f"全局语言初始化完成: {global_lang}")
         except Exception as e:
             logger.warning(f"全局语言初始化失败（不影响启动）: {e}")
+
+        current_root_state = _config_manager.load_root_state()
+        if should_write_root_mode_normal_after_startup(current_root_state):
+            try:
+                set_root_mode(
+                    _config_manager,
+                    ROOT_MODE_NORMAL,
+                    current_root=str(_config_manager.app_docs_dir),
+                    last_known_good_root=str(_config_manager.app_docs_dir),
+                    last_successful_boot_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                )
+            except Exception as e:
+                logger.error("写入 main_server 启动成功标记失败，启动不会标记为成功: %s", e)
+                raise RuntimeError("main_server failed to persist ROOT_MODE_NORMAL state") from e
+        else:
+            logger.info(
+                "跳过 ROOT_MODE_NORMAL 写入，当前仍处于阻断态: %s",
+                current_root_state.get("mode") or ROOT_MODE_NORMAL,
+            )
 
         _runtime_startup_init_completed = True
         return True

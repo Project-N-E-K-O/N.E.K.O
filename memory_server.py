@@ -119,8 +119,22 @@ async def storage_limited_mode_guard(request: Request, call_next):
                 "error": "Memory server 正处于存储受限启动状态，请等待存储位置选择、迁移或恢复完成。",
             },
         )
-
-    return await call_next(request)
+    runtime_blocking_reason = "runtime_initializing"
+    logger.info(
+        "[Memory] limited-mode blocks request path=%s reason=%s",
+        request.url.path,
+        runtime_blocking_reason,
+    )
+    return JSONResponse(
+        status_code=409,
+        content={
+            "ok": False,
+            "error_code": "storage_startup_blocked",
+            "blocking_reason": runtime_blocking_reason,
+            "limited_mode": True,
+            "error": "Memory server 正处于存储受限启动状态，请等待存储位置选择、迁移或恢复完成。",
+        },
+    )
 
 
 @app.exception_handler(MaintenanceModeError)
