@@ -683,10 +683,27 @@ class LLMSessionManager:
                     _turn_threshold_met = self._session_turn_count >= 10
                     # Session 历史 token 总量阈值。turn-end 后的冷路径，
                     # sync count_tokens 即可（10 条消息合计 < 50ms）。
+                    # m.content 在多模态消息下是 list[dict]（含 image_url base64）；
+                    # 直接 str() 会把 base64 一起算进 budget，带图对话会被过早判定。
+                    # 这里只统计可见文本部分。
                     if isinstance(self.session, OmniOfflineClient):
                         from utils.tokenize import count_tokens as _ct
+
+                        def _budget_text(message) -> str:
+                            content = getattr(message, "content", "")
+                            if isinstance(content, str):
+                                return content
+                            if isinstance(content, list):
+                                return "\n".join(
+                                    str(part.get("text") or "").strip()
+                                    for part in content
+                                    if isinstance(part, dict)
+                                    and str(part.get("type") or "") in {"text", "input_text", "output_text"}
+                                )
+                            return ""
+
                         _ctx_total = sum(
-                            _ct(str(m.content))
+                            _ct(_budget_text(m))
                             for m in self.session._conversation_history[1:]
                         )
                         _ctx_threshold_met = _ctx_total >= 5000

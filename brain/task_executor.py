@@ -1056,7 +1056,8 @@ class DirectTaskExecutor:
             pid = p.get("id", "unknown") if isinstance(p, dict) else "unknown"
             short = (p.get("short_description") or p.get("description", "")) if isinstance(p, dict) else ""
             if count_tokens(short) > 200:
-                short = truncate_to_tokens(short, 200) + "..."
+                # 给 "..." 预留 token 空间，保证最终长度 ≤ 200
+                short = truncate_to_tokens(short, 200 - count_tokens("...")) + "..."
             summaries.append(f"- {pid}: {short}")
         plugin_summaries = "\n".join(summaries)
 

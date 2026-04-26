@@ -31,8 +31,11 @@ def is_chinese_char(c: str) -> bool:
 
 
 def is_kana_char(c: str) -> bool:
-    """Japanese hiragana + katakana."""
-    return "\u3040" <= c <= "\u30ff"
+    """Japanese hiragana + katakana, including halfwidth katakana
+    (U+FF66..U+FF9F: \uff66-\uff9f). Halfwidth kana looks visually narrow but its
+    BPE token density is closer to fullwidth katakana than to ASCII;
+    classifying it as kana keeps the heuristic fallback honest."""
+    return ("\u3040" <= c <= "\u30ff") or ("\uff66" <= c <= "\uff9f")
 
 
 def is_hangul_char(c: str) -> bool:
@@ -42,10 +45,12 @@ def is_hangul_char(c: str) -> bool:
 
 def is_cjk_char(c: str) -> bool:
     """Any of Han / Kana / Hangul. Used by the tiktoken heuristic fallback
-    where all three are weighted the same."""
+    where all three are weighted the same. Kana includes halfwidth katakana
+    (U+FF66..U+FF9F) \u2014 see is_kana_char."""
     return (
         "\u4e00" <= c <= "\u9fff"
         or "\u3040" <= c <= "\u30ff"
+        or "\uff66" <= c <= "\uff9f"
         or "\uac00" <= c <= "\ud7af"
     )
 
@@ -57,8 +62,11 @@ def count_chinese_chars(text: str) -> int:
 
 
 def count_kana_chars(text: str) -> int:
-    """Count Japanese kana only."""
-    return sum(1 for c in text if "\u3040" <= c <= "\u30ff")
+    """Count Japanese kana only \u2014 fullwidth + halfwidth (see is_kana_char)."""
+    return sum(
+        1 for c in text
+        if ("\u3040" <= c <= "\u30ff") or ("\uff66" <= c <= "\uff9f")
+    )
 
 
 def count_hangul_chars(text: str) -> int:

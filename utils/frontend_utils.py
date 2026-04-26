@@ -28,7 +28,7 @@ from utils.cjk import count_chinese_chars, count_hangul_chars, count_kana_chars
 # - _NON_CJK_WORD: any maximal run of Unicode "letter" chars in any
 #   script (Latin, Cyrillic, Arabic, Greek, Hebrew, Thai, Devanagari, …).
 #   Excludes digits/punctuation/spaces by virtue of `\p{L}+`.
-_CJK_STRIP = regex.compile(r'[一-鿿぀-ヿ가-힯]')
+_CJK_STRIP = regex.compile(r'[一-鿿぀-ヿｦ-ﾟ가-힯]')
 _NON_CJK_WORD = regex.compile(r'\p{L}+')
 
 

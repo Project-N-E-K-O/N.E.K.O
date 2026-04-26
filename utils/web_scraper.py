@@ -1271,8 +1271,8 @@ async def generate_diverse_queries(window_title: str) -> List[str]:
         ])
         response_text = _extract_llm_text_content(getattr(response, 'content', None))
         if not response_text:
-            # 窗口标题不写 logger
-            logger.warning("为窗口标题（len 已脱敏）生成搜索关键词时收到空包，使用默认清理方法回退")
+            # 窗口标题不写 logger，但记下长度元数据便于调试
+            logger.warning(f"为窗口标题生成搜索关键词时收到空包 (title_len={len(window_title)})")
             print(f"为窗口标题「{sanitized_title}」生成搜索关键词时收到空包")
             clean_title = clean_window_title(window_title)
             return [clean_title, clean_title, clean_title] if clean_title else []

@@ -97,11 +97,19 @@ def _truncate(s: str, limit: int = 200) -> str:
     """Cut tool-result summaries fed back into the LLM context. ``limit`` is
     in tiktoken tokens (o200k_base) — 200 ≈ 270 CJK chars / ~800 English
     chars under the current encoding. Sync helper; truncate_to_tokens
-    falls back to a heuristic when tiktoken is unavailable."""
+    falls back to a heuristic when tiktoken is unavailable.
+
+    Reserves token room for the trailing ellipsis so the returned string is
+    guaranteed to fit within ``limit``.
+    """
     from utils.tokenize import count_tokens, truncate_to_tokens
     if count_tokens(s) <= limit:
         return s
-    return truncate_to_tokens(s, limit) + "…"
+    suffix = "…"
+    suffix_tokens = count_tokens(suffix)
+    if limit <= suffix_tokens:
+        return truncate_to_tokens(s, limit)
+    return truncate_to_tokens(s, limit - suffix_tokens) + suffix
 
 
 # ── ComputerUse / BrowserUse 共用 ───────────────────────────────────────

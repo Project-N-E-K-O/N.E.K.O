@@ -25,6 +25,7 @@ logger, log_config = setup_logging(service_name="Agent", log_level=logging.INFO)
 
 from config import TOOL_SERVER_PORT, USER_PLUGIN_SERVER_PORT, OPENFANG_BASE_URL
 from utils.config_manager import get_config_manager
+from utils.tokenize import truncate_to_tokens as _tt
 from main_logic.agent_event_bus import AgentServerEventBridge
 try:
     from brain.computer_use import ComputerUseAdapter
@@ -207,7 +208,9 @@ class AgentTaskTracker:
             "kind": kind,
             "method": method,
             "desc": desc,
-            "detail": detail[:300] if detail else "",
+            # detail 注入到 callback prompt 里给 LLM —— 用 token 限额（同
+            # "tool/task result detail" 200-token group），而不是 char-slice
+            "detail": _tt(detail, 200) if detail else "",
             "task_id": task_id,
         })
         self._trim(records)
@@ -929,20 +932,24 @@ async def _emit_task_result(
         status = "partial"
     else:
         status = "failed"
-    _SUMMARY_LIMIT = 500
-    _DETAIL_LIMIT = 1500
-    _ERROR_LIMIT = 500
+    # tiktoken token-based limits（同 main_logic 的语义分组）：
+    # summary 是 LLM-facing 摘要（同 group B "longer reflective blurb" 400 tok）
+    # detail 是前端 HUD 展示用的较长版本（同 group G "large tool result" 1000 tok）
+    # error_message 独立一档 350 tok。
+    _SUMMARY_LIMIT = 400
+    _DETAIL_LIMIT = 1000
+    _ERROR_LIMIT = 350
     await _emit_main_event(
         "task_result",
         lanlan_name,
-        text=summary[:_SUMMARY_LIMIT],
+        text=_tt(summary, _SUMMARY_LIMIT),
         task_id=task_id,
         channel=channel,
         status=status,
         success=success,
-        summary=summary[:_SUMMARY_LIMIT],
-        detail=detail[:_DETAIL_LIMIT] if detail else "",
-        error_message=error_message[:_ERROR_LIMIT] if error_message else "",
+        summary=_tt(summary, _SUMMARY_LIMIT),
+        detail=_tt(detail, _DETAIL_LIMIT) if detail else "",
+        error_message=_tt(error_message, _ERROR_LIMIT) if error_message else "",
         direct_reply=direct_reply,
         timestamp=_now_iso(),
     )
@@ -1310,13 +1317,13 @@ async def _run_computer_use_task(
         _task_tracker.record_completed(
             lanlan_name, task_id=task_id, method="computer_use",
             desc=instruction or "",
-            detail=cu_detail[:200] if cu_detail else "",
+            detail=_tt(cu_detail, 200) if cu_detail else "",
             success=success and info["status"] != "cancelled",
             cancelled=(info["status"] == "cancelled"),
         )
         # 失败时将解析后的 cu_detail 写入 info["error"]（仅在非异常路径下补全）
         if not success and not info.get("error") and cu_detail:
-            info["error"] = cu_detail[:500]
+            info["error"] = _tt(cu_detail, 350)
         Modules.computer_use_running = False
         Modules.active_computer_use_task_id = None
         Modules.active_computer_use_async_task = None
@@ -1733,7 +1740,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                         channel="user_plugin",
                                         task_id=str(up_result.task_id or ""),
                                         success=True,
-                                        summary=summary[:500],
+                                        summary=summary,
                                         detail=detail,
                                         direct_reply=False,
                                     )
@@ -1756,8 +1763,8 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                         channel="user_plugin",
                                         task_id=str(up_result.task_id or ""),
                                         success=False,
-                                        summary=_fail_summary[:500],
-                                        error_message=(detail or str(up_result.error or ""))[:500],
+                                        summary=_fail_summary,
+                                        error_message=(detail or str(up_result.error or "")),
                                     )
                                 except Exception as emit_err:
                                     logger.debug("[TaskExecutor] emit task_result(failed) failed: task_id=%s plugin_id=%s error=%s", up_result.task_id, plugin_id, emit_err)
@@ -2345,7 +2352,6 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                             of_error_text = of_res.get("error", "") or ""
                             _lang = _rp_lang(None)
                             _done = _rp_phrase('cu_status_done', _lang) if success else _rp_phrase('cu_status_ended', _lang)
-                            from utils.tokenize import truncate_to_tokens as _tt
                             # 两处 detail 都回流到 LLM context — 同语义统一到 200 tokens
                             # （和 result_parser._truncate / fallback Context 同一档）。
                             summary = _rp_phrase('cu_task_done', _lang, desc=result.task_description, status=_done, detail=_tt(of_result_text, 200)) if of_result_text else \
@@ -2998,13 +3004,13 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
                         channel="user_plugin",
                         task_id=task_id,
                         success=res.success,
-                        summary=summary[:500],
+                        summary=summary,
                         detail=detail if res.success else "",
-                        error_message=(detail or str(res.error or ""))[:500] if not res.success else "",
+                        error_message=(detail or str(res.error or "")) if not res.success else "",
                         direct_reply=False,
                     )
                 elif not res.success:
-                    info["error"] = (detail or str(res.error or ""))[:500]
+                    info["error"] = _tt((detail or str(res.error or "")), 350)
             except Exception as emit_err:
                 logger.debug("[Plugin] emit task_result failed: task_id=%s plugin_id=%s error=%s", task_id, plugin_id, emit_err)
         except asyncio.CancelledError:
@@ -3529,9 +3535,8 @@ def _extract_tool_intent_as_text(refusal_text: str) -> str:
     match = _re.search(pattern, cleaned, _re.DOTALL)
 
     if not match:
-        from utils.tokenize import truncate_to_tokens
         # Context 会回到 LLM 的下一轮上下文 — token 而非字符
-        return f"I attempted to perform an action but encountered a compatibility issue. Let me provide what I know instead.\n\nContext: {truncate_to_tokens(cleaned, 200)}"
+        return f"I attempted to perform an action but encountered a compatibility issue. Let me provide what I know instead.\n\nContext: {_tt(cleaned, 200)}"
 
     tool_name = match.group(1)
     args_raw = match.group(2)
@@ -3665,7 +3670,6 @@ async def openfang_run(payload: Dict[str, Any]):
             if not _success:
                 reg["error"] = _error_text
 
-            from utils.tokenize import truncate_to_tokens as _tt
             # callback summary 进 LLM context — 与 _sanitize_correction_text per-item 同档（400 tokens）
             await _emit_task_result(
                 _lanlan,

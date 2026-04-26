@@ -1378,11 +1378,16 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         # `limit` is in tiktoken tokens (o200k_base). 1000 ≈ 1400 CJK chars or
         # ~4000 English chars under the current encoding. Sync because callers
         # are sync; truncate_to_tokens handles tiktoken-unavailable fallback.
+        # Reserves token room for the trailing "..." so the result fits limit.
         from utils.tokenize import count_tokens, truncate_to_tokens
         cleaned = text.strip()
         if count_tokens(cleaned) <= limit:
             return cleaned
-        return truncate_to_tokens(cleaned, limit) + "..."
+        suffix = "..."
+        suffix_tokens = count_tokens(suffix)
+        if limit <= suffix_tokens:
+            return truncate_to_tokens(cleaned, limit)
+        return truncate_to_tokens(cleaned, limit - suffix_tokens) + suffix
 
     def _summarize_mcp_result(self, result: object) -> str:
         if result is None:

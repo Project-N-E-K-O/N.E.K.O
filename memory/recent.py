@@ -257,16 +257,26 @@ class CompressedRecentHistoryManager:
                 summary_json = robust_json_loads(response_content)
                 # 从JSON字典中提取对话摘要，假设摘要存储在名为'key'的键下
                 if '对话摘要' in summary_json:
-                    print(f"💗摘要结果：{summary_json['对话摘要']}")
-                    summary = summary_json['对话摘要']
+                    raw_summary = summary_json['对话摘要']
+                    # Qwen 偶尔返回 list/dict 而不是字符串；强制 str-ify 后再喂
+                    # acount_tokens（不然会抛 TypeError 把整轮压缩流程崩掉）。
+                    summary = (
+                        raw_summary if isinstance(raw_summary, str)
+                        else json.dumps(raw_summary, ensure_ascii=False)
+                    )
+                    print(f"💗摘要结果：{summary}")
                     if await acount_tokens(summary) > MAX_SUMMARY_TOKENS:
                         summary = await self.further_compress(summary)
                         if summary is None:
                             continue
-                    # Listen. Here, summary_json['对话摘要'] is not supposed to be anything else than str, but Qwen is shit.
+                        if not isinstance(summary, str):
+                            summary = json.dumps(summary, ensure_ascii=False)
                     from config.prompts_sys import _loc, MEMORY_MEMO_WITH_SUMMARY
                     memo_text = _loc(MEMORY_MEMO_WITH_SUMMARY, get_global_language()).format(summary=summary)
-                    return SystemMessage(content=memo_text), str(summary_json['对话摘要'])
+                    # 第二个返回值（用于上层缓存）跟 memo_text 用的 summary 保持
+                    # 一致——之前用 raw 摘要会出现"用户看到的 memo 用了 stage-2
+                    # 摘要、缓存却存了 stage-1 原文"的诡异不一致。
+                    return SystemMessage(content=memo_text), summary
                 else:
                     print('💥 摘要failed: ', response_content)
                     retries += 1

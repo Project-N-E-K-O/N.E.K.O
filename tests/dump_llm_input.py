@@ -85,6 +85,7 @@ from memory import (
 from utils.frontend_utils import get_timestamp
 from utils.time_format import format_elapsed as _format_elapsed
 from utils.tokenize import count_tokens as _dump_count_tokens
+from utils.tokenize import tokenizer_identity as _dump_tokenizer_identity
 
 
 # ── helpers ──────────────────────────────────────────────────────────
@@ -455,7 +456,7 @@ def main():
     print(f"角色          : {target}")
     print(f"主人          : {master_name}")
     print(f"语言          : {lang}")
-    print(f"System prompt : {sys_len} 字符 ({approx_tokens} tokens, tiktoken o200k_base)")
+    print(f"System prompt : {sys_len} 字符 ({approx_tokens} tokens, {_dump_tokenizer_identity()})")
     print(f"输出格式      : {'raw' if args.raw else 'flat' if args.flat else 'structured'}")
     print(f"{'='*60}")
     print(f"\n[OK] 输出完成，文件已保存至：{output_path}")
