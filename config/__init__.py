@@ -862,7 +862,7 @@ REFLECTION_SYNTHESIS_CONTEXT_ABSORBED_DAYS = 14    # 且在 N 天内
 # Gate 3: LLM tier 选型（候选见 RFC §6.5 Gate 3 表）
 # "summary" = qwen-plus 级；"correction" = qwen-max 级；"emotion" = qwen-flash 级
 EVIDENCE_EXTRACT_FACTS_MODEL_TIER = "summary"       # Stage-1 抽 fact
-EVIDENCE_DETECT_SIGNALS_MODEL_TIER = "correction"   # Stage-2 判 signal 映射
+EVIDENCE_DETECT_SIGNALS_MODEL_TIER = "summary"      # Stage-2 判 signal 映射
 EVIDENCE_NEGATIVE_TARGET_MODEL_TIER = "emotion"     # 关键词二次判定（延迟敏感）
 EVIDENCE_PROMOTION_MERGE_MODEL_TIER = "correction"  # Promote 合并决策
 

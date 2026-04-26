@@ -329,11 +329,22 @@ _BACKGROUND_TASKS: set[asyncio.Task] = set()
 
 # ── 空闲维护相关 ────────────────────────────────────────────────────
 _last_activity_time: datetime = datetime.now()            # 最后一次对话活动时间
-IDLE_CHECK_INTERVAL = 40             # 空闲检查轮询间隔（秒，正常阶段）
-IDLE_CHECK_INTERVAL_STARTUP = 10     # 启动阶段高频轮询间隔
+IDLE_CHECK_INTERVAL = 40             # 空闲检查轮询间隔（秒）
 IDLE_THRESHOLD = 10                  # 多少秒无活动视为空闲（匹配最低 proactive 间隔）
-REVIEW_MIN_INTERVAL = 300            # review（correction）最短间隔（秒）
+REVIEW_MIN_INTERVAL = 300            # review（correction）最短间隔（秒）。Phase C 改为 30s + 活跃 ×2
 REVIEW_SKIP_HISTORY_LEN = 8          # 历史不足此数的角色跳过 review / correction
+
+# ── 启动错峰 initial_delay（避免首轮全部撞 startup + interval 同一时刻） ──
+# 每个循环首次执行时间 = startup + 该 delay；之后按各自 INTERVAL 周期跑。
+# 设计原则：archive sweep 用最长 INTERVAL (3600s) 但很多用户不到 1h 就退出，
+# 必须显著前移；rebuttal/auto_promote 同 300s 间隔但不能同时跑，错开 60s；
+# IdleMaint/Signal 已经间隔短，仅给 startup tasks (cloudsave / outbox replay /
+# migration) 一点喘息空间。EmbeddingWarmupWorker 自带 30s warmup gate，不在此处。
+_INITIAL_DELAY_IDLE_MAINT = 20       # IdleMaint 首次 (原 10s startup 高频已废)
+_INITIAL_DELAY_SIGNAL = 60           # Signal extraction 首次 (原 40s)
+_INITIAL_DELAY_REBUTTAL = 100        # Rebuttal 首次 (原 300s)
+_INITIAL_DELAY_AUTO_PROMOTE = 150    # Auto-promote 首次 (原 300s, 错开 rebuttal 50s)
+_INITIAL_DELAY_ARCHIVE = 250         # Archive sweep 首次 (原 3600s, 大幅前移确保短会话用户也能跑到)
 
 # ── 持久化维护状态（跨重启保留 review_clean 标记） ──────────────────
 _maint_state: dict[str, dict] = {}   # {角色名: {"review_clean": bool, "last_review_ts": str}}
@@ -478,7 +489,7 @@ OutboxHandler = Callable[[str, dict], Awaitable[None]]
 _OUTBOX_HANDLERS: dict[str, OutboxHandler] = {}
 
 # 启动期补跑 fan-out 并发上限：防止 24h 停机后的 outbox 洪水冲击 LLM 后端。
-_REPLAY_CONCURRENCY = 4
+_REPLAY_CONCURRENCY = 2
 _replay_semaphore: asyncio.Semaphore | None = None  # 懒构造（event loop-bound）
 
 
@@ -706,14 +717,17 @@ async def _periodic_rebuttal_loop():
 
     游标持久化（P0 修复）：`CURSOR_REBUTTAL_CHECKED_UNTIL` 写入 cursors.json，
     关机→重启后从磁盘读取，消灭"默认只回扫 1 小时导致关机期间反驳丢失"的缺陷。
+
+    首轮启动延迟 _INITIAL_DELAY_REBUTTAL 秒（与其他后台循环错峰）。
     """
+    await asyncio.sleep(_INITIAL_DELAY_REBUTTAL)
     while True:
-        await asyncio.sleep(REBUTTAL_CHECK_INTERVAL)
         try:
             character_data = await _config_manager.aload_characters()
             catgirl_names = list(character_data.get('猫娘', {}).keys())
         except Exception as e:
             logger.debug(f"[Rebuttal] 加载角色列表失败: {e}")
+            await asyncio.sleep(REBUTTAL_CHECK_INTERVAL)
             continue
 
         now = datetime.now()
@@ -777,6 +791,8 @@ async def _periodic_rebuttal_loop():
                 return_exceptions=True,
             )
 
+        await asyncio.sleep(REBUTTAL_CHECK_INTERVAL)
+
 
 AUTO_PROMOTE_CHECK_INTERVAL = 300  # 5 分钟
 
@@ -790,14 +806,17 @@ async def _periodic_auto_promote_loop():
 
     Per-character 用 asyncio.gather 并行——每个角色内部仍是顺序操作
     （锁串行），但跨角色可以打满。
+
+    首轮启动延迟 _INITIAL_DELAY_AUTO_PROMOTE 秒（与其他后台循环错峰）。
     """
+    await asyncio.sleep(_INITIAL_DELAY_AUTO_PROMOTE)
     while True:
-        await asyncio.sleep(AUTO_PROMOTE_CHECK_INTERVAL)
         try:
             character_data = await _config_manager.aload_characters()
             catgirl_names = list(character_data.get('猫娘', {}).keys())
         except Exception as e:
             logger.debug(f"[AutoPromote] 加载角色列表失败: {e}")
+            await asyncio.sleep(AUTO_PROMOTE_CHECK_INTERVAL)
             continue
 
         async def _promote_one(name: str):
@@ -814,141 +833,140 @@ async def _periodic_auto_promote_loop():
                 return_exceptions=True,
             )
 
+        await asyncio.sleep(AUTO_PROMOTE_CHECK_INTERVAL)
+
 
 async def _periodic_idle_maintenance_loop():
     """定期检查系统是否空闲，空闲时自动执行记忆维护任务。
 
-    启动阶段以 IDLE_CHECK_INTERVAL_STARTUP(10s) 高频轮询，尽快捕获启动后的
-    首个空闲窗口执行维护（用户上次强制退出导致的未完成任务在这里收尾）。
-    首轮维护完成或 recent_memory_auto_review 被禁用后恢复 IDLE_CHECK_INTERVAL(40s)。
+    首次执行延迟 _INITIAL_DELAY_IDLE_MAINT 秒（让 startup 期 cloudsave / outbox
+    replay / migration 任务先消化），之后每 IDLE_CHECK_INTERVAL 秒轮询一次。
 
     每轮为每个角色依次执行：
     1. 历史记录压缩 — 有需要就跑（history > max_history_length）
-    2. Persona 矛盾审视 — 有需要就跑（pending corrections 非空，history >= 8）
-    3. 记忆整理 review — review_clean 则跳过；受 REVIEW_MIN_INTERVAL 最短间隔；history < 8 跳过
+    1b. Fact 向量去重 — 有需要就跑（vectors 启用且 pending dedup 队列非空）
+    2. Persona 矛盾审视 — 有需要就跑（pending corrections 非空）；不受 recent_memory_auto_review
+       开关或 REVIEW_SKIP_HISTORY_LEN 影响：persona corrections 不读 recent history，是独立的
+       矛盾消解管线，不应被 review 开关一刀切。
+    3. 记忆整理 review — review_clean 则跳过；受 REVIEW_MIN_INTERVAL 最短间隔；
+       history < REVIEW_SKIP_HISTORY_LEN 或 review_enabled 关闭则跳过。
     """
-    startup_phase = True
+    await asyncio.sleep(_INITIAL_DELAY_IDLE_MAINT)
     while True:
-        await asyncio.sleep(IDLE_CHECK_INTERVAL_STARTUP if startup_phase else IDLE_CHECK_INTERVAL)
-
-        # correction 被禁用 → 无需高频轮询
-        if startup_phase and not await _ais_review_enabled():
-            startup_phase = False
-
-        if not _is_idle():
-            continue
-
         try:
-            character_data = await _config_manager.aload_characters()
-            catgirl_names = list(character_data.get('猫娘', {}).keys())
-        except Exception as e:
-            logger.debug(f"[IdleMaint] 加载角色列表失败: {e}")
-            continue
-
-        review_enabled = await _ais_review_enabled()
-
-        for name in catgirl_names:
-            # 每处理一个角色前重新检查空闲，一旦变忙立即退出
             if not _is_idle():
-                logger.debug("[IdleMaint] 检测到新活动，中断本轮维护")
-                break
+                continue
 
             try:
-                history = await recent_history_manager.aget_recent_history(name)
-                history_len = len(history)
+                character_data = await _config_manager.aload_characters()
+                catgirl_names = list(character_data.get('猫娘', {}).keys())
+            except Exception as e:
+                logger.debug(f"[IdleMaint] 加载角色列表失败: {e}")
+                continue
 
-                # ── 子任务1: 历史记录压缩（有需要就跑，不受全局开关控制） ──
-                if history_len > recent_history_manager.max_history_length:
-                    logger.info(
-                        f"[IdleMaint] {name}: 历史记录过长 ({history_len} > "
-                        f"{recent_history_manager.max_history_length})，触发压缩"
-                    )
-                    try:
-                        # 传空消息列表仅触发压缩逻辑
-                        await recent_history_manager.update_history([], name, detailed=True)
-                        logger.info(f"[IdleMaint] {name}: 历史记录压缩完成")
-                    except Exception as e:
-                        logger.warning(f"[IdleMaint] {name}: 历史记录压缩失败: {e}")
+            review_enabled = await _ais_review_enabled()
 
-                # ── 子任务1b: Fact 向量去重（P2 step 2） ──
-                # Runs *before* the review-gate so a character with
-                # short history still gets paraphrase consolidation
-                # (Codex PR-957 P2). The embedding worker enqueued
-                # candidate paraphrase pairs after the last fact-sweep;
-                # resolve them here via a single LLM call.
-                # fact_dedup_resolver is None when vectors are disabled
-                # or bootstrap failed — legacy hash + FTS5 dedup
-                # remains the entire dedup pipeline in that case.
-                if fact_dedup_resolver is not None:
+            for name in catgirl_names:
+                # 每处理一个角色前重新检查空闲，一旦变忙立即退出
+                if not _is_idle():
+                    logger.debug("[IdleMaint] 检测到新活动，中断本轮维护")
+                    break
+
+                try:
+                    history = await recent_history_manager.aget_recent_history(name)
+                    history_len = len(history)
+
+                    # ── 子任务1: 历史记录压缩（有需要就跑，不受全局开关控制） ──
+                    if history_len > recent_history_manager.max_history_length:
+                        logger.info(
+                            f"[IdleMaint] {name}: 历史记录过长 ({history_len} > "
+                            f"{recent_history_manager.max_history_length})，触发压缩"
+                        )
+                        try:
+                            # 传空消息列表仅触发压缩逻辑
+                            await recent_history_manager.update_history([], name, detailed=True)
+                            logger.info(f"[IdleMaint] {name}: 历史记录压缩完成")
+                        except Exception as e:
+                            logger.warning(f"[IdleMaint] {name}: 历史记录压缩失败: {e}")
+
+                    # ── 子任务1b: Fact 向量去重（P2 step 2） ──
+                    # Runs *before* the review-gate so a character with
+                    # short history still gets paraphrase consolidation
+                    # (Codex PR-957 P2). The embedding worker enqueued
+                    # candidate paraphrase pairs after the last fact-sweep;
+                    # resolve them here via a single LLM call.
+                    # fact_dedup_resolver is None when vectors are disabled
+                    # or bootstrap failed — legacy hash + FTS5 dedup
+                    # remains the entire dedup pipeline in that case.
+                    if fact_dedup_resolver is not None:
+                        if not _is_idle():
+                            break
+                        try:
+                            pending_dedup = await fact_dedup_resolver.aload_pending(name)
+                            if pending_dedup:
+                                logger.info(
+                                    f"[IdleMaint] {name}: 发现 {len(pending_dedup)} 对未处理的 fact 候选去重，触发 LLM 审视"
+                                )
+                                resolved = await fact_dedup_resolver.aresolve(name)
+                                if resolved:
+                                    logger.info(
+                                        f"[IdleMaint] {name}: 完成 {resolved} 对 fact 去重决策"
+                                    )
+                        except Exception as e:
+                            logger.warning(f"[IdleMaint] {name}: fact 向量去重失败: {e}")
+
+                    # ── 子任务2: Persona 矛盾审视（有需要就跑，不受 review_enabled / history_len 限制） ──
+                    # resolve_corrections 不读 recent history，矛盾队列由独立的 evidence 管线
+                    # 维护，应当永远跑。把 review 闸门移到子任务 3 之前。
                     if not _is_idle():
                         break
                     try:
-                        pending_dedup = await fact_dedup_resolver.aload_pending(name)
-                        if pending_dedup:
+                        pending_corrections = await persona_manager.aload_pending_corrections(name)
+                        if pending_corrections:
                             logger.info(
-                                f"[IdleMaint] {name}: 发现 {len(pending_dedup)} 对未处理的 fact 候选去重，触发 LLM 审视"
+                                f"[IdleMaint] {name}: 发现 {len(pending_corrections)} 条未处理的 persona 矛盾，触发审视"
                             )
-                            resolved = await fact_dedup_resolver.aresolve(name)
+                            resolved = await persona_manager.resolve_corrections(name)
                             if resolved:
-                                logger.info(
-                                    f"[IdleMaint] {name}: 完成 {resolved} 对 fact 去重决策"
-                                )
+                                logger.info(f"[IdleMaint] {name}: 审视了 {resolved} 条 persona 矛盾")
                     except Exception as e:
-                        logger.warning(f"[IdleMaint] {name}: fact 向量去重失败: {e}")
+                        logger.warning(f"[IdleMaint] {name}: persona 矛盾审视失败: {e}")
 
-                # 历史不足 REVIEW_SKIP_HISTORY_LEN 条，或全局开关关闭 → 跳过矛盾审视和 review
-                if history_len < REVIEW_SKIP_HISTORY_LEN or not review_enabled:
-                    continue
+                    # 历史不足 REVIEW_SKIP_HISTORY_LEN 条，或全局开关关闭 → 跳过 review
+                    if history_len < REVIEW_SKIP_HISTORY_LEN or not review_enabled:
+                        continue
 
-                # ── 子任务2: Persona 矛盾审视（有需要就跑） ──
-                if not _is_idle():
-                    break
-                try:
-                    pending_corrections = await persona_manager.aload_pending_corrections(name)
-                    if pending_corrections:
-                        logger.info(
-                            f"[IdleMaint] {name}: 发现 {len(pending_corrections)} 条未处理的 persona 矛盾，触发审视"
-                        )
-                        resolved = await persona_manager.resolve_corrections(name)
-                        if resolved:
-                            logger.info(f"[IdleMaint] {name}: 审视了 {resolved} 条 persona 矛盾")
-                except Exception as e:
-                    logger.warning(f"[IdleMaint] {name}: persona 矛盾审视失败: {e}")
-
-                # ── 子任务3: 记忆整理 review ──
-                if not _is_idle():
-                    break
-                # 已 review 且没有新对话 → 跳过
-                if _is_review_clean(name):
-                    continue
-                # 已有 review 任务在跑 → 跳过
-                if name in correction_tasks and not correction_tasks[name].done():
-                    continue
-                # 最短间隔限制
-                last_review = _maint_state.get(name, {}).get('last_review_ts')
-                if last_review:
+                    # ── 子任务3: 记忆整理 review ──
+                    if not _is_idle():
+                        break
+                    # 已 review 且没有新对话 → 跳过
+                    if _is_review_clean(name):
+                        continue
+                    # 已有 review 任务在跑 → 跳过
+                    if name in correction_tasks and not correction_tasks[name].done():
+                        continue
+                    # 最短间隔限制
+                    last_review = _maint_state.get(name, {}).get('last_review_ts')
+                    if last_review:
+                        try:
+                            elapsed = (datetime.now() - datetime.fromisoformat(last_review)).total_seconds()
+                            if elapsed < REVIEW_MIN_INTERVAL:
+                                continue
+                        except (ValueError, TypeError):
+                            logger.debug(f"[IdleMaint] {name}: last_review_ts 格式无效，视为未 review 过")
+                    logger.info(f"[IdleMaint] {name}: 空闲期间执行记忆整理")
                     try:
-                        elapsed = (datetime.now() - datetime.fromisoformat(last_review)).total_seconds()
-                        if elapsed < REVIEW_MIN_INTERVAL:
-                            continue
-                    except (ValueError, TypeError):
-                        logger.debug(f"[IdleMaint] {name}: last_review_ts 格式无效，视为未 review 过")
-                logger.info(f"[IdleMaint] {name}: 空闲期间执行记忆整理")
-                try:
-                    cancel_event = asyncio.Event()
-                    correction_cancel_flags[name] = cancel_event
-                    task = asyncio.create_task(_run_review_in_background(name))
-                    correction_tasks[name] = task
+                        cancel_event = asyncio.Event()
+                        correction_cancel_flags[name] = cancel_event
+                        task = asyncio.create_task(_run_review_in_background(name))
+                        correction_tasks[name] = task
+                    except Exception as e:
+                        logger.warning(f"[IdleMaint] {name}: 记忆整理启动失败: {e}")
+
                 except Exception as e:
-                    logger.warning(f"[IdleMaint] {name}: 记忆整理启动失败: {e}")
-
-            except Exception as e:
-                logger.debug(f"[IdleMaint] {name}: 处理失败，跳过: {e}")
-
-        # 首轮维护完成 → 恢复正常轮询间隔
-        if startup_phase:
-            startup_phase = False
-            logger.info("[IdleMaint] 启动阶段结束，恢复正常轮询间隔")
+                    logger.debug(f"[IdleMaint] {name}: 处理失败，跳过: {e}")
+        finally:
+            await asyncio.sleep(IDLE_CHECK_INTERVAL)
 
 
 # memory-evidence-rfc §3.3.6 Reconciler handlers live in
@@ -1142,15 +1160,19 @@ async def _periodic_archive_sweep_loop():
     Per-character iteration is parallel (`asyncio.gather`) — each
     character has independent files + locks; one slow char must not
     block another.
+
+    首轮启动延迟 _INITIAL_DELAY_ARCHIVE 秒（远小于 INTERVAL=3600s，确保
+    短会话用户也能跑到一次归档；之后按 INTERVAL 周期跑）。
     """
     from memory.evidence import maybe_mark_sub_zero
+    await asyncio.sleep(_INITIAL_DELAY_ARCHIVE)
     while True:
-        await asyncio.sleep(EVIDENCE_ARCHIVE_SWEEP_INTERVAL_SECONDS)
         try:
             character_data = await _config_manager.aload_characters()
             catgirl_names = list(character_data.get('猫娘', {}).keys())
         except Exception as e:
             logger.debug(f"[ArchiveSweep] 加载角色列表失败: {e}")
+            await asyncio.sleep(EVIDENCE_ARCHIVE_SWEEP_INTERVAL_SECONDS)
             continue
 
         now = datetime.now()
@@ -1261,6 +1283,8 @@ async def _periodic_archive_sweep_loop():
                 *(_sweep_one(name) for name in catgirl_names),
                 return_exceptions=True,
             )
+
+        await asyncio.sleep(EVIDENCE_ARCHIVE_SWEEP_INTERVAL_SECONDS)
 
 
 # ── memory-evidence-rfc §3.4.3: background signal extraction loop ───
@@ -1396,9 +1420,12 @@ async def _adispatch_evidence_signals(
 
 async def _periodic_signal_extraction_loop():
     """每 EVIDENCE_SIGNAL_CHECK_INTERVAL_SECONDS 轮询，满足触发条件时对每个
-    catgirl 跑 Stage-1 + Stage-2 + signal dispatch（RFC §3.4.3）。"""
+    catgirl 跑 Stage-1 + Stage-2 + signal dispatch（RFC §3.4.3）。
+
+    首轮启动延迟 _INITIAL_DELAY_SIGNAL 秒（与其他后台循环错峰）。
+    """
+    await asyncio.sleep(_INITIAL_DELAY_SIGNAL)
     while True:
-        await asyncio.sleep(EVIDENCE_SIGNAL_CHECK_INTERVAL_SECONDS)
         try:
             character_data = await _config_manager.aload_characters()
             catgirl_names = list(character_data.get('猫娘', {}).keys())
@@ -1490,6 +1517,8 @@ async def _periodic_signal_extraction_loop():
                 *(_signal_check_one(name) for name in catgirl_names),
                 return_exceptions=True,
             )
+
+        await asyncio.sleep(EVIDENCE_SIGNAL_CHECK_INTERVAL_SECONDS)
 
 
 # ── memory-evidence-rfc §3.4.5: negative-keyword hook helpers ───────
