@@ -27,7 +27,7 @@ uv run python scripts/prepare_embedding_model.py \
   --variant both
 ```
 
-`--revision` must be a pinned commit or tag — moving branches like `main` are rejected. The profile id is the cache compatibility contract, so the upstream weights/tokenizer behind it must not drift between runs.
+`--revision` must be a 40-char lowercase hex commit SHA. Branch refs like `main` and tags (which can be force-pushed upstream) are rejected — the profile id is the cache compatibility contract and the weights/tokenizer behind it must not drift between runs. If the (repo, revision) recorded in `.prepared.json` differs from a previous run, the script forces a re-download so stale files cannot leak across pins.
 
 The resulting layout must be:
 

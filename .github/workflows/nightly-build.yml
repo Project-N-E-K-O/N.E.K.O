@@ -78,11 +78,14 @@ jobs:
             "onnx/model_quantized.onnx"
             "onnx/model_quantized.onnx_data"
           )
+          # -s (non-empty) instead of -f (exists): a zero-byte tokenizer or
+          # onnx blob still passes -f but is broken at runtime, and matches
+          # prepare_embedding_model.py's own non-empty contract.
           missing=0
           for rel in "${required[@]}"; do
-            if [ ! -f "dist/N.E.K.O/_internal/data/embedding_models/$EMBEDDING_MODEL_PROFILE_ID/$rel" ] \
-                && [ ! -f "dist/N.E.K.O/data/embedding_models/$EMBEDDING_MODEL_PROFILE_ID/$rel" ]; then
-              echo "::error::missing bundled embedding asset: $rel"
+            if [ ! -s "dist/N.E.K.O/_internal/data/embedding_models/$EMBEDDING_MODEL_PROFILE_ID/$rel" ] \
+                && [ ! -s "dist/N.E.K.O/data/embedding_models/$EMBEDDING_MODEL_PROFILE_ID/$rel" ]; then
+              echo "::error::missing or empty bundled embedding asset: $rel"
               missing=1
             fi
           done

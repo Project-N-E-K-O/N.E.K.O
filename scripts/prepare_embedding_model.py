@@ -9,7 +9,9 @@ builds all share the same on-disk layout.
 from __future__ import annotations
 
 import argparse
+import json
 import os
+import re
 import sys
 import urllib.error
 import urllib.request
@@ -18,6 +20,11 @@ from pathlib import Path
 
 DEFAULT_PROFILE_ID = "local-text-retrieval-v1"
 DEFAULT_OUTPUT_ROOT = Path("data") / "embedding_models"
+PREPARED_MARKER = ".prepared.json"
+# 40-char lowercase hex git SHA. Tags / branch refs / short SHAs are rejected
+# so the profile id stays a strict compatibility contract — anything that can
+# move under our feet, even tags (which can be force-pushed), is excluded.
+_SHA40_RE = re.compile(r"^[0-9a-f]{40}$")
 
 FILES_BY_VARIANT = {
     "fp32": (
@@ -78,6 +85,26 @@ def _verify(profile_dir: Path, files: list[str]) -> None:
         raise RuntimeError("embedding model asset check failed; missing: " + ", ".join(missing))
 
 
+def _read_marker(profile_dir: Path) -> dict | None:
+    marker = profile_dir / PREPARED_MARKER
+    if not marker.exists():
+        return None
+    try:
+        data = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _write_marker(profile_dir: Path, repo: str, revision: str) -> None:
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    marker = profile_dir / PREPARED_MARKER
+    marker.write_text(
+        json.dumps({"repo": repo, "revision": revision}, indent=2),
+        encoding="utf-8",
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -89,9 +116,10 @@ def main(argv: list[str] | None = None) -> int:
         "--revision",
         required=True,
         help=(
-            "Pinned upstream commit/tag/SHA. A moving branch like 'main' is "
-            "rejected: the profile id is the compatibility contract, so the "
-            "weights/tokenizer behind it must not drift over time."
+            "Pinned upstream commit SHA (40 lowercase hex chars). Branch refs "
+            "and tags are rejected: the profile id is the compatibility "
+            "contract, so anything that can move — including tags, which can "
+            "be force-pushed upstream — is excluded."
         ),
     )
     parser.add_argument("--profile-id", default=DEFAULT_PROFILE_ID)
@@ -109,19 +137,38 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args(argv)
 
-    if args.revision.lower() in ("main", "master"):
+    if not _SHA40_RE.match(args.revision):
         parser.error(
-            "--revision must be a pinned commit or tag, not a moving branch "
-            f"({args.revision!r}); pin to a specific SHA to keep the profile "
-            "id reproducible."
+            "--revision must be a 40-char lowercase hex commit SHA "
+            f"(got {args.revision!r}); branch refs like 'main'/'dev' and "
+            "tags are rejected because the profile id must stay reproducible."
         )
 
     files = _iter_files(args.variant)
     profile_dir = Path(args.output_root) / args.profile_id
+
+    # Force re-download whenever the (repo, revision) pair changed since the
+    # last successful prepare for this profile. Without this, a second run
+    # against a different revision would silently keep the old non-empty
+    # files (size>0 satisfies _download's skip), and ship weights that don't
+    # match the revision the build claims to be pinned to.
+    existing = _read_marker(profile_dir)
+    revision_changed = bool(
+        existing
+        and (existing.get("repo") != args.repo or existing.get("revision") != args.revision)
+    )
+    if revision_changed:
+        print(
+            f"[embedding-model] profile previously prepared from "
+            f"{existing.get('repo')}@{existing.get('revision')}; "
+            f"forcing re-download for {args.repo}@{args.revision}",
+        )
+
     for rel in files:
         url = f"https://huggingface.co/{args.repo}/resolve/{args.revision}/{rel}"
-        _download(url, profile_dir / rel, force=args.force)
+        _download(url, profile_dir / rel, force=args.force or revision_changed)
     _verify(profile_dir, files)
+    _write_marker(profile_dir, args.repo, args.revision)
     print(f"[embedding-model] profile ready: {profile_dir}")
     return 0
 

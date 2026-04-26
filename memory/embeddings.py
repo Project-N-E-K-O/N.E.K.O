@@ -246,9 +246,20 @@ def _profile_exists(model_dir: str, profile_id: str) -> bool:
     return os.path.isdir(os.path.join(model_dir, profile_id))
 
 
+def _is_nonempty_file(path: str) -> bool:
+    """File present AND >0 bytes. Zero-byte residue from an interrupted
+    download passes plain ``isfile`` but trips the loader downstream — we
+    treat it as missing so the bundled fallback still kicks in."""
+    try:
+        return os.path.isfile(path) and os.path.getsize(path) > 0
+    except OSError:
+        return False
+
+
 def _profile_is_complete(model_dir: str, profile_id: str) -> bool:
-    """A profile dir is usable only if it has the tokenizer plus at least
-    one full (model + onnx_data sidecar) variant the runtime can load.
+    """A profile dir is usable only if it has a non-empty tokenizer plus
+    at least one full (model + onnx_data sidecar) variant the runtime can
+    load.
 
     Why stricter than ``_profile_exists``: a half-downloaded or partially
     deleted app-data profile would otherwise satisfy the existence check,
@@ -260,12 +271,12 @@ def _profile_is_complete(model_dir: str, profile_id: str) -> bool:
     profile_dir = os.path.join(model_dir, profile_id)
     if not os.path.isdir(profile_dir):
         return False
-    if not os.path.isfile(os.path.join(profile_dir, "tokenizer.json")):
+    if not _is_nonempty_file(os.path.join(profile_dir, "tokenizer.json")):
         return False
     for stem in ("model.onnx", "model_quantized.onnx"):
         model_path = os.path.join(profile_dir, "onnx", stem)
         sidecar_path = model_path + "_data"
-        if os.path.isfile(model_path) and os.path.isfile(sidecar_path):
+        if _is_nonempty_file(model_path) and _is_nonempty_file(sidecar_path):
             return True
     return False
 
