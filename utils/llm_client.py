@@ -289,14 +289,18 @@ class ChatOpenAI:
 
     # --- sync / async invoke ---
 
-    async def ainvoke(self, messages: Any) -> LLMResponse:
-        resp = await self._aclient.chat.completions.create(**self._params(messages))
+    async def ainvoke(self, messages: Any, **overrides: Any) -> LLMResponse:
+        """``overrides`` (e.g. ``max_completion_tokens=1100``) flow through
+        ``_params()`` so concurrent callers on the same client don't
+        clobber each other's budgets. See ``ainvoke_raw`` for details."""
+        resp = await self._aclient.chat.completions.create(**self._params(messages, **overrides))
         content = resp.choices[0].message.content if resp.choices else ""
         usage_dict = resp.usage.model_dump() if resp.usage else {}
         return LLMResponse(content=content or "", response_metadata={"token_usage": usage_dict})
 
-    def invoke(self, messages: Any) -> LLMResponse:
-        resp = self._client.chat.completions.create(**self._params(messages))
+    def invoke(self, messages: Any, **overrides: Any) -> LLMResponse:
+        """Sync twin of ``ainvoke``. See its docstring for ``overrides``."""
+        resp = self._client.chat.completions.create(**self._params(messages, **overrides))
         content = resp.choices[0].message.content if resp.choices else ""
         usage_dict = resp.usage.model_dump() if resp.usage else {}
         return LLMResponse(content=content or "", response_metadata={"token_usage": usage_dict})

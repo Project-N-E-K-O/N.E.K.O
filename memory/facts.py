@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 
 from config import (
     EVIDENCE_DETECT_SIGNALS_MAX_OBSERVATIONS,
+    EVIDENCE_DETECT_SIGNALS_MAX_NEW_FACTS,
     EVIDENCE_DETECT_SIGNALS_MODEL_TIER,
     EVIDENCE_EXTRACT_FACTS_MODEL_TIER,
 )
@@ -441,6 +442,13 @@ class FactStore:
                 'hash': content_hash,
                 'created_at': datetime.now().isoformat(),
                 'absorbed': False,  # True when consumed by a reflection
+                # Stage-2 signal detection drain marker. False → still in queue
+                # for the next idle-loop tick. amark_signal_processed() flips
+                # to True after Stage-2 LLM returns successfully. Old facts.json
+                # without this key are read with default=True (i.e. treated as
+                # already processed) so an upgrade doesn't replay months of
+                # history through Stage-2.
+                'signal_processed': False,
                 # Vector-embedding cache (memory-enhancements P2 — see
                 # memory/embeddings.py). Written as None so /process
                 # returns immediately without blocking on embedding;
@@ -630,14 +638,18 @@ class FactStore:
         """Stage-2: map new facts onto existing observations with
         reinforces/negates signals. Returns validated signals (target_ids
         already filtered against existing_observations), or None on
-        terminal failure."""
+        terminal failure.
+
+        new_facts 的数量上限由调用方在 ``aextract_facts_and_detect_signals``
+        里按 ``EVIDENCE_DETECT_SIGNALS_MAX_NEW_FACTS`` 控制（drain 模式：
+        超出部分留 signal_processed=False 下次 idle 再处理）。"""
         if not new_facts or not existing_observations:
             return []
 
         # Build prompt sections
         # 单条 observation 截到 EVIDENCE_PER_OBSERVATION_MAX_TOKENS
-        # 总和截到 EVIDENCE_OBSERVATIONS_TOTAL_MAX_TOKENS（候选数已 cap=200，
-        # 但单条无 cap 时仍可能超 25k；这里兜底）。
+        # 总和截到 EVIDENCE_OBSERVATIONS_TOTAL_MAX_TOKENS（候选数已 cap=30，
+        # 但单条无 cap 时仍可能超 15k；这里兜底）。
         from config import (
             EVIDENCE_PER_OBSERVATION_MAX_TOKENS,
             EVIDENCE_OBSERVATIONS_TOTAL_MAX_TOKENS,
@@ -723,19 +735,30 @@ class FactStore:
         self, lanlan_name: str, messages: list,
         reflection_engine=None, persona_manager=None,
     ) -> tuple[list[dict], list[dict]]:
-        """Two-stage extraction (RFC §3.4.2).
+        """Two-stage extraction (RFC §3.4.2) with drain semantics.
 
         Stage-1: pure fact extraction from user messages — no existing
         observations in prompt to avoid self-cycling.
         Stage-2: new_facts × existing_observations → reinforces/negates
         signals (with defensive target_id validation).
 
-        Returns (new_facts, signals). Caller dispatches each signal through
-        PersonaManager.aapply_signal / ReflectionEngine.aapply_signal.
+        Drain (PR #976)：
+        - Stage-1 抽取后 facts 落盘带 ``signal_processed=False``
+        - Stage-2 拉**所有** signal_processed=False 的 facts（不止本轮新抽
+          的，也包括上轮没处理完的尾部），按 importance DESC 取前 N
+          (=EVIDENCE_DETECT_SIGNALS_MAX_NEW_FACTS) 进 Stage-2，多余的留
+          原状下次 idle tick 再 drain
+        - Stage-2 成功后调 ``amark_signal_processed`` 标记本批
+        - Stage-2 失败 → 不标记，下轮重试
+
+        Returns (new_facts_this_round, signals). Caller dispatches each
+        signal through PersonaManager.aapply_signal / ReflectionEngine.
+        aapply_signal.
 
         Failure semantics (§3.4.2 末段):
         - Stage-1 failure → abort, no fact written; caller retries later
-        - Stage-2 failure → new facts already on disk; signals empty this round
+        - Stage-2 failure → new facts already on disk + signal_processed=False
+          → next idle tick will pick them up again
         """
         extracted = await self._allm_extract_facts(lanlan_name, messages)
         if extracted is None:
@@ -745,32 +768,57 @@ class FactStore:
                 f"Stage-1 LLM call exhausted retries for {lanlan_name!r}"
             )
         if not extracted:
-            return [], []
+            extracted = []
 
-        persisted = await self._apersist_new_facts(lanlan_name, extracted)
-        if not persisted:
-            return [], []
+        # Persist 本轮新抽到的 facts（带 signal_processed=False 入库）。
+        # 即使本轮抽到 0 条，下面仍要 drain 上轮没处理完的 unprocessed 尾部。
+        persisted_this_round = await self._apersist_new_facts(lanlan_name, extracted)
+
+        # Drain：拉所有 signal_processed=False 的 facts（含历史尾部 + 本轮新增）。
+        # 老 facts 没这个字段时 default=True，避免升级后把几个月历史 fact
+        # 一起重跑 Stage-2。
+        all_facts = await self.aload_facts(lanlan_name)
+        unprocessed = [
+            f for f in all_facts
+            if not f.get('signal_processed', True)
+        ]
+        if not unprocessed:
+            return persisted_this_round, []
+
+        # 按 importance DESC + 创建时间 ASC 排序，取前 N 条做这一批 batch。
+        # 多余的留 signal_processed=False 给下一轮 idle tick。
+        unprocessed.sort(
+            key=lambda f: (
+                -int(f.get('importance', 5) or 5),
+                str(f.get('created_at') or ''),
+            ),
+        )
+        batch = unprocessed[:EVIDENCE_DETECT_SIGNALS_MAX_NEW_FACTS]
 
         existing_observations = await self._aload_signal_targets(
             lanlan_name,
             reflection_engine=reflection_engine,
             persona_manager=persona_manager,
-            # Pass the freshly-persisted facts as the recall query so
-            # the vector+LLM rerank can narrow the candidate set
-            # semantically. Without new_facts the call falls back to
-            # evidence_score ordering (the legacy behaviour).
-            new_facts=persisted,
+            # 用 batch 而不是仅本轮新增作为 query，向量召回更聚焦。
+            new_facts=batch,
         )
         if not existing_observations:
-            return persisted, []
+            # 没召回到 observations（首次冷启动 / persona 池为空）→ 标记
+            # 这一批为已处理，避免下轮空跑。
+            await self.amark_signal_processed(lanlan_name, [f['id'] for f in batch])
+            return persisted_this_round, []
 
         signals = await self._allm_detect_signals(
-            lanlan_name, persisted, existing_observations,
+            lanlan_name, batch, existing_observations,
         )
         if signals is None:
-            # Stage-2 LLM failure: facts already persisted; signals drop this round
-            return persisted, []
-        return persisted, signals
+            # Stage-2 LLM failure: 不 mark，下次重试同一批
+            return persisted_this_round, []
+
+        # Stage-2 成功 → 标记本批 processed（无论 signals 是否为空——
+        # 空 signals 也意味着 LLM 看过了，没找到关联，下轮没必要重跑）
+        await self.amark_signal_processed(lanlan_name, [f['id'] for f in batch])
+        return persisted_this_round, signals
 
     async def extract_facts(self, messages: list, lanlan_name: str) -> list[dict]:
         """Stage-1-only backward-compat entry.
@@ -825,3 +873,25 @@ class FactStore:
 
     async def amark_absorbed(self, name: str, fact_ids: list[str]) -> None:
         await asyncio.to_thread(self.mark_absorbed, name, fact_ids)
+
+    def mark_signal_processed(self, name: str, fact_ids: list[str]) -> None:
+        """Mark facts as having gone through Stage-2 signal detection.
+
+        Mirrors `mark_absorbed`'s shape so the drain loop in
+        `aextract_facts_and_detect_signals` can checkpoint a batch after
+        the LLM call returns. Old on-disk facts that lack the field are
+        treated as already processed (default=True) at read time, so
+        re-flipping them here is a no-op.
+        """
+        facts = self.load_facts(name)
+        id_set = set(fact_ids)
+        changed = False
+        for f in facts:
+            if f.get('id') in id_set and not f.get('signal_processed', False):
+                f['signal_processed'] = True
+                changed = True
+        if changed:
+            self.save_facts(name)
+
+    async def amark_signal_processed(self, name: str, fact_ids: list[str]) -> None:
+        await asyncio.to_thread(self.mark_signal_processed, name, fact_ids)

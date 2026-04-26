@@ -56,8 +56,8 @@ from config import (
     PROACTIVE_EXTERNAL_PER_ITEM_MAX_TOKENS,
     PROACTIVE_EXTERNAL_TOTAL_MAX_TOKENS,
     PROACTIVE_PHASE2_OUTPUT_MAX_TOKENS as PHASE2_OUTPUT_MAX_TOKENS,
-    PROACTIVE_LLM_DEFAULT_MAX_TOKENS,
-    PROACTIVE_LLM_RETRY_MAX_TOKENS,
+    PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
+    PROACTIVE_PHASE1_UNIFIED_MAX_TOKENS,
     PROACTIVE_CHAT_HISTORY_MAX,
     PROACTIVE_TOPIC_HISTORY_MAX,
     EMOTION_ANALYSIS_MAX_TOKENS,
@@ -3074,7 +3074,7 @@ async def proactive_chat(request: Request):
             }, status_code=500))
 
         def _make_llm(temperature: float = 1.0,
-                      max_completion_tokens: int = PROACTIVE_LLM_DEFAULT_MAX_TOKENS,
+                      max_completion_tokens: int = PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
                       use_vision: bool = False, disable_thinking: bool = True):
             """
             创建 LLM 实例。use_vision=True 时使用 vision 模型；disable_thinking=False 时不注入 extra_body。
@@ -3095,7 +3095,7 @@ async def proactive_chat(request: Request):
         async def _llm_call_with_retry(
             system_prompt: str, label: str, *,
             temperature: float = 1.0,
-            max_completion_tokens: int = PROACTIVE_LLM_RETRY_MAX_TOKENS,
+            max_completion_tokens: int = PROACTIVE_PHASE1_UNIFIED_MAX_TOKENS,
             timeout: float = 16.0,
             use_vision: bool = False, disable_thinking: bool = True,
             image_b64: str = '',
@@ -3815,7 +3815,7 @@ async def proactive_chat(request: Request):
             async with asyncio.timeout(25.0):
                 # 使用 async with 确保 ChatOpenAI 正确关闭
                 async with _make_llm(temperature=1.0,
-                                    max_completion_tokens=PROACTIVE_LLM_DEFAULT_MAX_TOKENS,
+                                    max_completion_tokens=PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
                                     use_vision=phase2_use_vision, disable_thinking=True) as llm:
                     async for chunk in llm.astream(messages):
                         # Phase 2 preempt check：每 chunk 顶端做 O(1) 状态机读，

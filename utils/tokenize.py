@@ -169,6 +169,36 @@ async def atruncate_to_tokens(
     return await asyncio.to_thread(truncate_to_tokens, text, max_tokens, encoding)
 
 
+_SENTENCE_END_CHARS = '.!?。！？…\n'
+"""Sentence-final terminators for `truncate_to_last_sentence_end`. Commas
+and other mid-sentence punctuation are intentionally excluded — keeping
+text up to a comma would leave the prefix mid-thought; we'd rather drop
+the whole partial sentence than ship a half-finished clause. Newline is
+included so paragraph-level cuts are also valid sentence boundaries."""
+
+
+def truncate_to_last_sentence_end(text: str) -> str:
+    """Return the prefix of ``text`` up to and including the last
+    sentence-terminating punctuation mark (one of ``_SENTENCE_END_CHARS``).
+
+    Returns the original ``text`` unchanged if it already ends with a
+    sentence terminator. Returns ``""`` if no terminator is present
+    (caller should fall through to the discarded-overflow UX).
+
+    Use case: token-cap (``max_completion_tokens``) truncation can chop
+    LLM output mid-sentence. Apply this helper after the cap to reset
+    the boundary to the last clean sentence end.
+    """
+    if not text:
+        return text
+    if text[-1] in _SENTENCE_END_CHARS:
+        return text
+    last = max((text.rfind(ch) for ch in _SENTENCE_END_CHARS), default=-1)
+    if last < 0:
+        return ""
+    return text[:last + 1]
+
+
 def truncate_head_tail_tokens(
     text: str,
     head_tokens: int,

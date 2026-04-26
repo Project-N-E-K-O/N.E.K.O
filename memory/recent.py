@@ -313,6 +313,11 @@ class CompressedRecentHistoryManager:
         return SystemMessage(content=_loc(MEMORY_MEMO_EMPTY, get_global_language())), ""
 
     async def further_compress(self, initial_summary):
+        # Stage-2 LLM 输出硬限：RECENT_SUMMARY_MAX_TOKENS + 100 余量。
+        # 防 LLM 不听 prompt 里"800 字"的指令写小作文；超出时下面会做
+        # 句末标点回溯截断保证语义边界完整。
+        from utils.tokenize import truncate_to_last_sentence_end
+        stage2_cap = RECENT_SUMMARY_MAX_TOKENS + 100
         retries = 0
         max_retries = 3
         while retries < max_retries:
@@ -321,7 +326,10 @@ class CompressedRecentHistoryManager:
                 set_call_type("memory_compression")
                 llm = self._get_llm()
                 try:
-                    response_content = (await llm.ainvoke(get_further_summarize_prompt(get_global_language()) % initial_summary)).content
+                    response_content = (await llm.ainvoke(
+                        get_further_summarize_prompt(get_global_language()) % initial_summary,
+                        max_completion_tokens=stage2_cap,
+                    )).content
                 finally:
                     await llm.aclose()
                 response_content = str(response_content).strip()
@@ -331,8 +339,17 @@ class CompressedRecentHistoryManager:
                 summary_json = robust_json_loads(response_content)
                 # 从JSON字典中提取对话摘要，假设摘要存储在名为'key'的键下
                 if '对话摘要' in summary_json:
-                    print(f"💗第二轮摘要结果：{summary_json['对话摘要']}")
-                    return summary_json['对话摘要']
+                    summary_text = str(summary_json['对话摘要']).strip()
+                    # 命中 stage2_cap → LLM 输出可能停在句子中段（如逗号 / 短语）。
+                    # 回溯到最后一个句末标点（. ! ? 。！？… \n），保证持久化的
+                    # 摘要语义边界完整。如果根本没找到句末标点（极端短文本），
+                    # truncate_to_last_sentence_end 返回 ""，此时退到原文以避免
+                    # 完全丢摘要。
+                    sane = truncate_to_last_sentence_end(summary_text)
+                    if not sane:
+                        sane = summary_text
+                    print(f"💗第二轮摘要结果：{sane}")
+                    return sane
                 else:
                     print('💥 第二轮摘要failed: ', response_content)
                     retries += 1

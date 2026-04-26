@@ -37,6 +37,7 @@ from config import (
     MEMORY_SERVER_PORT,
     TOOL_SERVER_PORT,
     SESSION_ARCHIVE_TRIGGER_TOKENS,
+    SESSION_TURN_THRESHOLD,
     AVATAR_INTERACTION_DEDUPE_MAX_ITEMS,
 )
 from config.prompts_sys import (
@@ -729,10 +730,11 @@ class LLMSessionManager:
         # 正在切换过程中则跳过所有热切换判断
         if not self.is_hot_swap_imminent:
             try:
-                # 1. 时间/轮次/上下文驱动：任一条件满足 → 开始准备新 session + 触发记忆归档
+                # 1. 轮次 / 上下文 token 任一满足 → 准备新 session + 记忆归档。
+                #    （已删除 elapsed >= 40s 的纯时间触发：长时间发呆不应强制
+                #     归档 cache，由 turn / token 真实驱动。）
                 if hasattr(self, 'is_preparing_new_session') and not self.is_preparing_new_session:
-                    _elapsed = (datetime.now() - self.session_start_time).total_seconds() if self.session_start_time else 0
-                    _turn_threshold_met = self._session_turn_count >= 10
+                    _turn_threshold_met = self._session_turn_count >= SESSION_TURN_THRESHOLD
                     # Session 历史 token 总量阈值。turn-end 后的冷路径，
                     # sync count_tokens 即可（10 条消息合计 < 50ms）。
                     # m.content 在多模态消息下是 list[dict]（含 image_url base64）；
@@ -761,7 +763,7 @@ class LLMSessionManager:
                         _ctx_threshold_met = _ctx_total >= SESSION_ARCHIVE_TRIGGER_TOKENS
                     else:
                         _ctx_threshold_met = False
-                    if _elapsed >= 40 or _turn_threshold_met or _ctx_threshold_met:
+                    if _turn_threshold_met or _ctx_threshold_met:
                         logger.info(f"[{self.lanlan_name}] Main Listener: Uptime threshold met. Marking for new session preparation.")
                         self.is_preparing_new_session = True
                         self.summary_triggered_time = datetime.now()

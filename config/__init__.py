@@ -832,7 +832,7 @@ EVIDENCE_SIGNAL_CHECK_ENABLED = True             # 独立开关
 EVIDENCE_SIGNAL_CHECK_EVERY_N_TURNS = 10         # 累积 N 轮触发
 EVIDENCE_SIGNAL_CHECK_IDLE_MINUTES = 5           # 或空闲 N 分钟触发
 EVIDENCE_SIGNAL_CHECK_INTERVAL_SECONDS = 40      # 轮询间隔（与 IDLE_CHECK_INTERVAL 对齐）
-EVIDENCE_DETECT_SIGNALS_MAX_OBSERVATIONS = 200   # Stage-2 prompt 带入的 existing 上限
+EVIDENCE_DETECT_SIGNALS_MAX_OBSERVATIONS = 30    # Stage-2 LLM rerank 后进 prompt 的 obs 上限（减少 NxM 配对决策点）
 
 # §3.5 / §6.5 Gate 4：归档扫描背景循环间隔
 # 1 小时一次：sub_zero_days 计数本身按"自然日"防抖（每天最多 +1），
@@ -843,7 +843,7 @@ EVIDENCE_ARCHIVE_SWEEP_INTERVAL_SECONDS = 3600
 
 # §3.6 render budget（PR-3 使用，此处先占位）
 PERSONA_RENDER_TOKEN_BUDGET = 2000       # 非-protected persona 预算
-REFLECTION_RENDER_TOKEN_BUDGET = 1000    # reflection 渲染预算
+REFLECTION_RENDER_TOKEN_BUDGET = 2000    # reflection 渲染预算（pending+confirmed 总和）
 PERSONA_RENDER_ENCODING = "o200k_base"   # tiktoken encoding
 
 # ========================================================================
@@ -911,12 +911,12 @@ REFLECTION_TEXT_MAX_TOKENS = 150
   (relation_type / temporal_scope) — 文本本身不丢。
 - 上游：LLM 综合若干 fact 后输出的反思文本。"""
 
-REFLECTION_SURFACE_TOP_K = 2
+REFLECTION_SURFACE_TOP_K = 3
 """单次 surfacing 最多返回的反思条数。
 - 用途：get_pending_reflections_for_check / followup 等查询接口的截断。
 - 上游：满足 evidence_score≥0 且 cooldown 已过的候选反思集合。"""
 
-REFLECTION_SYNTHESIS_FACTS_MAX = 30
+REFLECTION_SYNTHESIS_FACTS_MAX = 20
 """单次 reflection synthesis 最多带入的 unabsorbed fact 数。
 - 用途：_synthesize_reflections_locked 调用 LLM 前先按 importance/创建
   时间排序，截到此数。
@@ -951,7 +951,7 @@ RECALL_PER_CANDIDATE_MAX_TOKENS = 200
 - 用途：_fine_rank 拼 candidates 前对每条 candidate.text 做截断。
 - 上游：archived fact / observation 文本。"""
 
-RECALL_CANDIDATES_TOTAL_MAX_TOKENS = 25000
+RECALL_CANDIDATES_TOTAL_MAX_TOKENS = 15000
 """LLM rerank 输入的 candidates 拼合后总 token 上限。
 - 用途：候选数已 cap 但单条单独 cap 仍可能撑爆——这条是兜底。
 - 上游：cap 之后的 candidates 列表序列化。
@@ -964,10 +964,19 @@ EVIDENCE_PER_OBSERVATION_MAX_TOKENS = 200
 - 用途：_allm_detect_signals 拼 observations 前对每条 text 截断。
 - 上游：archived fact / observation 文本。"""
 
-EVIDENCE_OBSERVATIONS_TOTAL_MAX_TOKENS = 25000
+EVIDENCE_OBSERVATIONS_TOTAL_MAX_TOKENS = 15000
 """Stage-2 signal detection observations 拼合后总 token 上限。
-- 用途：兜底，防止 200 条 × 单条上限 = 40k 撑爆。
+- 用途：兜底，防止单条上限 × 条数撑爆。
 - 上游：cap 之后的 observations 列表序列化。"""
+
+EVIDENCE_DETECT_SIGNALS_MAX_NEW_FACTS = 20
+"""Stage-2 signal detection 单次 batch 处理的 new_facts 上限。
+- 用途：_allm_detect_signals 入口对 new_facts 按 importance DESC 截到 N 条；
+  超出部分留在 facts.json 中 `signal_processed=False`，下次 idle 维护循环
+  再 drain 一批。
+- 与 FACT_DEDUP_BATCH_LIMIT 同口径（LLM 在 N×M 配对决策时的舒适 batch
+  ~20 条），避免 LLM 在 30+ 条 new_facts 上判失焦。
+- 上游：Stage-1 LLM 抽取出来的 new facts 列表。"""
 
 NEGATIVE_KEYWORD_CHECK_CONTEXT_ITEMS = 3
 """负面关键词检查带的 user message 上下文条数。
@@ -1072,9 +1081,16 @@ SESSION_ARCHIVE_TRIGGER_TOKENS = 5000
 - 用途：core.py 主循环每 turn-end 后检查；超过则置
   is_preparing_new_session=True，触发记忆压缩 + 新会话准备。
 - 上游：当前会话的 conversation_history。
-- 限制：仅对 OmniOfflineClient 路径生效（realtime 走轮次/时间触发）。
+- 限制：仅对 OmniOfflineClient 路径生效（realtime 不维护历史，走轮次触发）。
 - 设计依据：用户一轮平均 ~150 token + AI 一轮平均 ~400 token =
-  ~550/轮；5000/550 ≈ 9 轮触发归档（与 _session_turn_count >= 10 对齐）。"""
+  ~550/轮；5000/550 ≈ 9 轮触发归档（与 SESSION_TURN_THRESHOLD 对齐）。"""
+
+SESSION_TURN_THRESHOLD = 10
+"""触发会话归档的用户轮次阈值。
+- 用途：core.py:_session_turn_count >= 此值触发新会话准备（与
+  SESSION_ARCHIVE_TRIGGER_TOKENS 是 OR 关系，任一满足即触发）。
+- 计数语义：仅用户输入计数（AI 回复不算），见 core.py:980。
+- 设计依据：~10 轮约对应 5500 token 总量，跟 token 触发对齐。"""
 
 AVATAR_INTERACTION_DEDUPE_MAX_ITEMS = 32
 """_recent_avatar_interaction_ids deque maxlen。
@@ -1139,15 +1155,19 @@ PROACTIVE_PHASE2_OUTPUT_MAX_TOKENS = 300
 - 用途：流式生成超过此值则 abort（防止 LLM 跑飞写小作文）。
 - 上游：LLM 输出（不是输入）。"""
 
-PROACTIVE_LLM_DEFAULT_MAX_TOKENS = 1536
-"""_make_llm 默认 max_completion_tokens。
-- 用途：Phase 1 / Phase 2 的 LLM 调用统一默认值。
-- 上游：LLM 输出。"""
+PROACTIVE_PHASE2_GENERATE_MAX_TOKENS = int(PROACTIVE_PHASE2_OUTPUT_MAX_TOKENS * 1.5)
+"""Phase 2 主流式生成的 SDK 端 max_completion_tokens。
+- 用途：_make_llm 默认值，由 Phase 2 stream 主调用使用。
+- 设计依据：应用层在 [main_routers/system_router.py] 流式中段
+  `count_tokens(full_text + chunk) > PROACTIVE_PHASE2_OUTPUT_MAX_TOKENS`
+  硬 abort，所以 SDK 端再大也用不上。设成 abort fence × 1.5 留 50%
+  bandwidth 给 token 计数误差和 prompt-cache flush 边界。"""
 
-PROACTIVE_LLM_RETRY_MAX_TOKENS = 1024
-"""_llm_call_with_retry 默认 max_completion_tokens。
-- 用途：带重试的 LLM 调用更保守的输出上限（错了重试代价低）。
-- 上游：LLM 输出。"""
+PROACTIVE_PHASE1_UNIFIED_MAX_TOKENS = 1024
+"""Phase 1 unified 筛选 LLM 的 max_completion_tokens。
+- 用途：_llm_call_with_retry 默认值，由 Phase 1 unified prompt 使用
+  （web 筛选 + music 关键词 + meme 关键词单次合并调用）。
+- 上游：LLM 输出 JSON（话题 ID 列表 + 简短理由）。"""
 
 PROACTIVE_CHAT_HISTORY_MAX = 10
 """_proactive_chat_history deque maxlen。
@@ -1171,7 +1191,7 @@ PLUGIN_USER_CONTEXT_MAX_ITEMS = 200
 - 上游：用户与 plugin 的交互事件序列。"""
 
 # ---- Utils: translation / vision / connectivity test / MCP ----
-TRANSLATION_OUTPUT_MAX_TOKENS = 2000
+TRANSLATION_OUTPUT_MAX_TOKENS = 1000
 """翻译 LLM 的 max_completion_tokens。
 - 用途：单 chunk 翻译输出上限。
 - 上游：LLM 输出。"""
@@ -1390,6 +1410,7 @@ __all__ = [
     'RECALL_CANDIDATES_TOTAL_MAX_TOKENS',
     'EVIDENCE_PER_OBSERVATION_MAX_TOKENS',
     'EVIDENCE_OBSERVATIONS_TOTAL_MAX_TOKENS',
+    'EVIDENCE_DETECT_SIGNALS_MAX_NEW_FACTS',
     'NEGATIVE_KEYWORD_CHECK_CONTEXT_ITEMS',
     'AGENT_HISTORY_TURNS',
     'TASK_DETAIL_MAX_TOKENS',
@@ -1409,6 +1430,7 @@ __all__ = [
     'LLM_PING_MAX_TOKENS',
     'OPENCLAW_MAGIC_INTENT_MAX_TOKENS',
     'SESSION_ARCHIVE_TRIGGER_TOKENS',
+    'SESSION_TURN_THRESHOLD',
     'AVATAR_INTERACTION_DEDUPE_MAX_ITEMS',
     'AVATAR_INTERACTION_DEDUPE_WINDOW_MS',
     'AVATAR_INTERACTION_CONTEXT_MAX_TOKENS',
@@ -1420,8 +1442,8 @@ __all__ = [
     'PROACTIVE_EXTERNAL_PER_ITEM_MAX_TOKENS',
     'PROACTIVE_EXTERNAL_TOTAL_MAX_TOKENS',
     'PROACTIVE_PHASE2_OUTPUT_MAX_TOKENS',
-    'PROACTIVE_LLM_DEFAULT_MAX_TOKENS',
-    'PROACTIVE_LLM_RETRY_MAX_TOKENS',
+    'PROACTIVE_PHASE2_GENERATE_MAX_TOKENS',
+    'PROACTIVE_PHASE1_UNIFIED_MAX_TOKENS',
     'PROACTIVE_CHAT_HISTORY_MAX',
     'PROACTIVE_TOPIC_HISTORY_MAX',
     'EMOTION_ANALYSIS_MAX_TOKENS',
