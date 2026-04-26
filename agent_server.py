@@ -1300,6 +1300,13 @@ async def _run_computer_use_task(
         logger.error("[ComputerUse] Task %s failed (exc_type=%s)", task_id, type(e).__name__)
         print(f"[ComputerUse] Task {task_id} raw error: {e}")
     finally:
+        # 异常路径下 run_instruction() 直接抛错 → cu_detail 仍是空字符串，
+        # 但 info["error"] 已经写了 exception 文本。把 info["error"] 回填到
+        # cu_detail，让下游 summary / detail / error_message 三条出口都能
+        # 拿到失败原因（前端 task_update / task_result + analyzer 都依赖
+        # 这条；之前会发出 failed + error_message="" 让前端拿不到细节）。
+        if not cu_detail and info.get("error"):
+            cu_detail = info["error"]
         # cancel_task may have pre-marked status="cancelled" before this dispatch
         # observed the cancellation; preserve that signal regardless of whether
         # the CU thread returned normally or raised CancelledError.
@@ -3728,8 +3735,14 @@ async def openfang_run(payload: Dict[str, Any]):
             _success = _r.get("success", False)
             _result_text = _r.get("result", "") or ""
             _error_text = _r.get("error", "") or ""
+            # 跟 _run_openfang_dispatch 同款的 fallback chain：daemon 失败时
+            # 可能把原因塞进 result 而非 error；成功时 result 偶尔为空（如
+            # 仅有 artifacts）。两条出口都做兜底，避免前端拿到空 summary
+            # 或丢失败原因。
+            _summary_src = _result_text or _error_text
+            _err_src = _error_text or _result_text
             if not _success:
-                reg["error"] = _tt(_error_text, 350)
+                reg["error"] = _tt(_err_src, 350)
 
             # callback summary 进 LLM context — 与 _sanitize_correction_text per-item 同档（400 tokens）
             await _emit_task_result(
@@ -3737,9 +3750,9 @@ async def openfang_run(payload: Dict[str, Any]):
                 channel="openfang",
                 task_id=task_id,
                 success=_success,
-                summary=_tt(_result_text, 400),
+                summary=_tt(_summary_src, 400),
                 detail=_result_text,
-                error_message=_error_text,
+                error_message=_err_src if not _success else "",
             )
             # Terminal task_update so HUD transitions out of running
             try:
