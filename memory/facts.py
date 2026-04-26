@@ -655,24 +655,38 @@ class FactStore:
         if not new_facts or not existing_observations:
             return []
 
-        # Build prompt sections
-        # 单条 observation 截到 EVIDENCE_PER_OBSERVATION_MAX_TOKENS
-        # 总和截到 EVIDENCE_OBSERVATIONS_TOTAL_MAX_TOKENS（候选数已 cap=30，
-        # 但单条无 cap 时仍可能超 15k；这里兜底）。
+        # Build prompt sections.
+        # 关键：先按预算累计构造 budgeted_observations 子集，prompt 和后面
+        # 的 valid_ids / id_to_obs 都从同一个子集构造。否则总量截断把尾部
+        # observation 砍掉后，valid_ids 还来自全集，LLM 可能 hallucinate
+        # 一个被截掉的 id 通过校验落到错误条目（CodeRabbit fingerprint
+        # e625b666 抓到的 race）。
         from config import (
             EVIDENCE_PER_OBSERVATION_MAX_TOKENS,
             EVIDENCE_OBSERVATIONS_TOTAL_MAX_TOKENS,
         )
-        from utils.tokenize import truncate_to_tokens
+        from utils.tokenize import truncate_to_tokens, count_tokens
         new_facts_text = "\n".join(
             f"[{f.get('id', '')}] {truncate_to_tokens(f.get('text', '') or '', EVIDENCE_PER_OBSERVATION_MAX_TOKENS)}"
             for f in new_facts
         )
-        obs_text = "\n".join(
-            f"[{o['id']}] {truncate_to_tokens(o.get('text', '') or '', EVIDENCE_PER_OBSERVATION_MAX_TOKENS)}"
-            for o in existing_observations
-        )
-        obs_text = truncate_to_tokens(obs_text, EVIDENCE_OBSERVATIONS_TOTAL_MAX_TOKENS)
+        # 累计 token 直到撞到总量上限，超过的尾部 obs 直接丢出本次 prompt。
+        budgeted_observations: list[tuple[dict, str]] = []  # (obs, formatted_line)
+        running = 0
+        for o in existing_observations:
+            line = (
+                f"[{o['id']}] "
+                f"{truncate_to_tokens(o.get('text', '') or '', EVIDENCE_PER_OBSERVATION_MAX_TOKENS)}"
+            )
+            line_tokens = count_tokens(line) + 1  # +1 ≈ 一个换行符
+            if budgeted_observations and running + line_tokens > EVIDENCE_OBSERVATIONS_TOTAL_MAX_TOKENS:
+                # 至少保留一条；超过总量后丢尾部
+                break
+            budgeted_observations.append((o, line))
+            running += line_tokens
+        if not budgeted_observations:
+            return []
+        obs_text = "\n".join(line for _, line in budgeted_observations)
         prompt = get_signal_detection_prompt(get_global_language()) \
             .replace('{NEW_FACTS}', new_facts_text) \
             .replace('{EXISTING_OBSERVATIONS}', obs_text) \
@@ -695,9 +709,10 @@ class FactStore:
         if not isinstance(raw_signals, list):
             return []
 
-        # Defensive: drop hallucinated target_ids (§3.4.8)
-        valid_ids = {o['id'] for o in existing_observations}
-        id_to_obs = {o['id']: o for o in existing_observations}
+        # Defensive: drop hallucinated target_ids (§3.4.8). 校验池**必须**和
+        # prompt 看到的子集一致，否则被尾部预算切掉的 obs id 仍会被当成合法。
+        valid_ids = {o['id'] for o, _ in budgeted_observations}
+        id_to_obs = {o['id']: o for o, _ in budgeted_observations}
         validated: list[dict] = []
         for s in raw_signals:
             if not isinstance(s, dict):
@@ -812,9 +827,12 @@ class FactStore:
             new_facts=batch,
         )
         if not existing_observations:
-            # 没召回到 observations（首次冷启动 / persona 池为空）→ 标记
-            # 这一批为已处理，避免下轮空跑。
-            await self.amark_signal_processed(lanlan_name, [f['id'] for f in batch])
+            # 不区分"真为空"（冷启动 / persona 池只有 protected）与"加载失败"
+            # （_aload_signal_targets 把 reflection/persona load 异常吞成 []）：
+            # 故意**不** mark batch processed，让下轮 idle tick 重试同一批。
+            # 代价是冷启动场景每轮 idle 都跑一次 _aload_signal_targets（无 LLM
+            # 调用，纯文件 IO，开销可接受）；上行收益是绝不会因瞬时 IO 失败
+            # 把整批 facts 永久跳过 Stage-2（CodeRabbit fingerprint e625b666）。
             return persisted_this_round, []
 
         signals = await self._allm_detect_signals(

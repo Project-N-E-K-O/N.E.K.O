@@ -221,9 +221,14 @@ def truncate_head_tail_tokens(
     callers passing ``head=tail=N`` can trust the output never exceeds
     ``2N`` tokens — earlier behaviour silently let ``count_tokens(separator)``
     leak past the budget.
+
+    Negative arguments are clamped to 0 so misconfiguration can't bypass
+    the budget by passing a sentinel like ``-1``.
     """
-    if not text or head_tokens < 0 or tail_tokens < 0:
+    if not text:
         return text
+    head_tokens = max(0, head_tokens)
+    tail_tokens = max(0, tail_tokens)
     total = head_tokens + tail_tokens
     if total <= 0:
         return ""
@@ -287,7 +292,7 @@ async def atruncate_head_tail_tokens(
     encoding: str = PERSONA_RENDER_ENCODING,
 ) -> str:
     """Async twin of `truncate_head_tail_tokens`."""
-    if not text or head_tokens < 0 or tail_tokens < 0:
+    if not text:
         return text
     return await asyncio.to_thread(
         truncate_head_tail_tokens,
