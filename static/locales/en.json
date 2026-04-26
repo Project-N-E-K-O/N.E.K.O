@@ -2091,7 +2091,7 @@
             "lockedHoverFade": "Locked Hover Fade",
             "textGuardMaxLength": "Response Length Limit",
             "unlimited": "Unlimited",
-            "characters": " chars",
+            "characters": "chars",
             "tokens": "tokens",
             "textGuardUnlimitedWarning": "May cause serious issues with the cat girl, not recommended unless necessary",
             "textGuardHighWarning": "Setting too high may cause memory and language confusion, recommended within 1000 tokens",

@@ -2413,9 +2413,10 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                             of_info["result"] = of_res
                             # 与 /openfang/run direct path 同款 fallback chain：
                             # daemon 失败时可能把原因塞在 result，error_message
-                            # 必须能从 result 兜回，否则 HUD 收到 failed 但
-                            # error_message="" 拿不到失败说明。
-                            _of_error_src = of_error_text or of_result_text
+                            # 必须能从 result 兜回；result 和 error 都为空时
+                            # 走默认占位串，避免 HUD/analyzer 拿到 failed 但
+                            # error_message="" 完全没失败说明。
+                            _of_error_src = of_error_text or of_result_text or "(OpenFang task failed with no error text)"
                             if not success:
                                 of_info["error"] = _tt(_of_error_src, 350)
                             await _emit_task_result(
