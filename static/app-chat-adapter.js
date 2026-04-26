@@ -146,7 +146,7 @@
         function isBoundary(ch, next) {
             if (ch === '\n') return true;
             if (isPunctForBoundary(ch) && next && isPunctForBoundary(next)) return false;
-            if (isPunctForBoundary(ch) && !next) return true;
+            if (isPunctForBoundary(ch) && !next) return false;
             if (ch === '\u3002' || ch === '\uFF01' || ch === '\uFF1F') return true;
             if (ch === '!' || ch === '?') return true;
             if (ch === '\u2026') return true;
