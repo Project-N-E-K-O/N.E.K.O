@@ -207,7 +207,15 @@ class MMDManager {
     // ═══════════════════ 动画 ═══════════════════
 
     async loadAnimation(vmdPath, options = {}) {
-        if (!this.animationModule) throw new Error('MMDAnimation 未初始化');
+        // 防御性检查：如果 animationModule 未初始化（并行加载竞态），尝试延迟初始化
+        if (!this.animationModule) {
+            if (typeof MMDAnimation !== 'undefined') {
+                this.animationModule = new MMDAnimation(this);
+                console.warn('[MMD Manager] animationModule 延迟初始化成功（并行加载竞态）');
+            } else {
+                throw new Error('MMDAnimation 未初始化');
+            }
+        }
         const clip = await this.animationModule.loadAnimation(vmdPath, options);
         this.currentAnimationUrl = vmdPath;
         return clip;
