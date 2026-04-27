@@ -1228,12 +1228,13 @@ def _build_extension_map(
         if not host_pid:
             continue
         
-        # 检查是否启用
-        runtime_cfg = ctx.conf.get("plugin_runtime")
-        if isinstance(runtime_cfg, dict):
-            if not parse_bool_config(runtime_cfg.get("enabled"), default=True):
-                continue
-        
+        # 用 ctx.enabled 而不是直接重读 conf —— 前者已包含 manifest 默认值
+        # 之上叠加的 user override（plugin_runtime_overrides.json），重读 conf
+        # 会绕过 override，导致初始 host 注入清单和 state.plugins.runtime_enabled
+        # 不一致。
+        if not ctx.enabled:
+            continue
+
         extension_map.setdefault(host_pid, []).append({
             "ext_id": ctx.pid,
             "ext_entry": ctx.entry,
