@@ -37,7 +37,7 @@ from plugin.settings import (
 from plugin.sdk.shared.core.entry_runtime import resolve_entry_timeout
 from plugin.sdk.shared.core.result_contract import model_schema_from_type
 from plugin.sdk.shared.core.router import PluginRouter
-from plugin.sdk.plugin.ui import UI_CONTEXT_META_ATTR
+from plugin.sdk.plugin.ui import UI_ACTION_META_ATTR, UI_CONTEXT_META_ATTR
 from plugin.core.bus.types import dispatch_bus_change
 from plugin.core.zmq_transport import (
     HostTransport, ChildTransport, CH_CMD, CH_RES, CH_STS, CH_MSG, CH_COMM, CH_RESP,
@@ -682,6 +682,36 @@ def _plugin_process_runner(
                 data = {"value": result}
             return {"state": data, "state_schema": schema}
 
+        def _get_ui_action_meta(member: Any) -> dict[str, Any] | None:
+            meta = getattr(member, UI_ACTION_META_ATTR, None)
+            if meta is None and hasattr(member, "__func__"):
+                meta = getattr(member.__func__, UI_ACTION_META_ATTR, None)
+            return dict(meta) if isinstance(meta, dict) else None
+
+        def _collect_ui_actions() -> list[dict[str, Any]]:
+            actions: list[dict[str, Any]] = []
+            for entry_id, handler in entry_map.items():
+                ui_meta = _get_ui_action_meta(handler)
+                if not ui_meta:
+                    continue
+                entry_meta = entry_meta_map.get(entry_id)
+                action_id = str(ui_meta.get("id") or entry_id)
+                actions.append({
+                    "id": action_id,
+                    "entry_id": entry_id,
+                    "label": ui_meta.get("label") or getattr(entry_meta, "name", entry_id),
+                    "description": getattr(entry_meta, "description", ""),
+                    "input_schema": dict(getattr(entry_meta, "input_schema", None) or {}),
+                    "icon": ui_meta.get("icon"),
+                    "tone": ui_meta.get("tone") or "default",
+                    "group": ui_meta.get("group"),
+                    "order": int(ui_meta.get("order") or 0),
+                    "confirm": ui_meta.get("confirm") or False,
+                    "refresh_context": bool(ui_meta.get("refresh_context", True)),
+                })
+            actions.sort(key=lambda item: (str(item.get("group") or ""), int(item.get("order") or 0), str(item.get("label") or item.get("id"))))
+            return actions
+
         def _rebuild_entry_map() -> None:
             """重建 entry_map + events_by_type（Extension 注入/卸载后调用）。"""
             collected = instance.collect_entries(wrap_with_hooks=True)
@@ -1146,7 +1176,10 @@ def _plugin_process_runner(
                 if inspect.isawaitable(result):
                     result = await _run_with_watchdog(result, f"ui_context.{context_id}", 5.0)
                 ret["success"] = True
-                ret["data"] = _serialize_ui_context_result(result)
+                ret["data"] = {
+                    **_serialize_ui_context_result(result),
+                    "actions": _collect_ui_actions(),
+                }
             except Exception as e:
                 logger.exception("Failed to execute UI context '{}'", context_id)
                 ret["error"] = str(e)

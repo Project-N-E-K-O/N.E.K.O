@@ -237,6 +237,18 @@ export function getPluginHostedSurfaceContext(pluginId: string, params: {
   })
 }
 
+export function callPluginHostedSurfaceAction(pluginId: string, actionId: string, args?: Record<string, any>): Promise<{
+  plugin_id: string
+  action_id: string
+  result: any
+}> {
+  const safeId = encodeURIComponent(pluginId)
+  const safeActionId = encodeURIComponent(actionId)
+  return post(`/plugin/${safeId}/hosted-ui/action/${safeActionId}`, {
+    args: args || {},
+  })
+}
+
 /**
  * 禁用 Extension（热切换）
  */

@@ -39,6 +39,27 @@ def test_normalize_plugin_ui_manifest_panel_and_guide() -> None:
     assert manifest["guide"][0]["permissions"] == ["state:read"]
 
 
+def test_normalize_plugin_ui_manifest_infers_mode_and_id_from_entry() -> None:
+    conf = {
+        "plugin": {
+            "ui": {
+                "panel": [{"entry": "static/index.html"}],
+                "guide": [{"entry": "docs/quickstart.tsx"}],
+            }
+        }
+    }
+
+    manifest = normalize_plugin_ui_manifest(conf, plugin_id="demo")
+
+    assert manifest is not None
+    assert manifest["panel"][0]["id"] == "main"
+    assert manifest["panel"][0]["mode"] == "static"
+    assert manifest["panel"][0]["context"] == "main"
+    assert manifest["guide"][0]["id"] == "quickstart"
+    assert manifest["guide"][0]["mode"] == "hosted-tsx"
+    assert manifest["guide"][0]["context"] == "quickstart"
+
+
 def test_normalize_plugin_ui_manifest_warnings_for_invalid_fields() -> None:
     conf = {
         "plugin": {

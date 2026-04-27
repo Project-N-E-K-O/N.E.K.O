@@ -19,16 +19,11 @@ supported = ">=0.1.0,<0.3.0"
 enabled = true
 
 [[plugin.ui.panel]]
-id = "main"
 title = "MCP Adapter"
-mode = "static"
 entry = "static/index.html"
-open_in = "iframe"
 
 [[plugin.ui.guide]]
-id = "quickstart"
 title = "MCP Adapter 快速开始"
-mode = "hosted-tsx"
 entry = "docs/quickstart.tsx"
 
 [plugin_runtime]

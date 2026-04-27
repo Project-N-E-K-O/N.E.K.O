@@ -13,6 +13,8 @@ import {
   StatCard,
   KeyValue,
   DataTable,
+  ButtonGroup,
+  ActionButton,
 } from "@neko/plugin-ui"
 
 export default function QuickstartGuide({ plugin, state, entries }) {
@@ -56,6 +58,20 @@ enabled = true`
             { key: "error", label: "Error" },
           ]}
         />
+      </Card>
+
+      <Card title="快捷操作">
+        <ButtonGroup>
+          {actions
+            .filter((action) => action.id === "connect_server" || action.id === "disconnect_server")
+            .map((action) => (
+              <ActionButton
+                action={action}
+                values={{ server_name: state.servers[0]?.name || "" }}
+              />
+            ))}
+        </ButtonGroup>
+        <Text>按钮会复用插件入口执行逻辑。当前示例默认作用于第一条 Server。</Text>
       </Card>
 
       <Card title="推荐配置流程">

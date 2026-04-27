@@ -1733,6 +1733,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
             }
             return False
     
+    @ui.action(label="连接", tone="primary", group="server", order=10, refresh_context=True)
     @plugin_entry(
         id="list_servers",
         name="List MCP Servers",
@@ -1797,6 +1798,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         
         return Ok({"servers": servers, "total": len(servers)})
     
+    @ui.action(label="断开", tone="warning", group="server", order=20, refresh_context=True)
     @plugin_entry(
         id="connect_server",
         name="Connect MCP Server",
@@ -1837,6 +1839,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         else:
             return Err(SdkError(f"Failed to connect to server '{server_name}'"))
     
+    @ui.action(label="添加 Server", tone="success", group="server", order=5, refresh_context=True)
     @plugin_entry(
         id="disconnect_server",
         name="Disconnect MCP Server",
@@ -1875,6 +1878,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         
         return Ok({"message": f"Disconnected from server '{server_name}'"})
     
+    @ui.action(label="移除 Server", tone="danger", group="server", order=30, confirm="确定要移除这些 MCP Server 吗？", refresh_context=True)
     @plugin_entry(
         id="add_server",
         name="Add MCP Server",

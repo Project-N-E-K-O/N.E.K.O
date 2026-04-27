@@ -120,17 +120,23 @@ def normalize_manifest_surface(
             "message": f"Surface item must be a table, got {type(raw_surface).__name__}.",
         }]
 
+    entry = raw_surface.get("entry")
+    inferred_id = "main"
+    if isinstance(entry, str) and entry.strip():
+        stem = Path(entry.strip()).stem.strip()
+        if stem and stem not in {"index", "panel", "main"}:
+            inferred_id = stem
     surface_id = raw_surface.get("id")
     if not isinstance(surface_id, str) or not surface_id.strip():
         if surface_id is not None:
-            add_warning("id", "invalid_id", "Surface id must be a non-empty string; using 'main'.")
-        surface_id = "main"
+            add_warning("id", "invalid_id", f"Surface id must be a non-empty string; using '{inferred_id}'.")
+        surface_id = inferred_id
 
     mode = raw_surface.get("mode")
     if not isinstance(mode, str) or not mode.strip():
         if mode is not None:
-            add_warning("mode", "invalid_mode", "Surface mode must be a string; using 'static'.")
-        mode = "static"
+            add_warning("mode", "invalid_mode", "Surface mode must be a string; inferring from entry.")
+        mode = infer_mode_from_entry(entry)
     elif mode.strip().lower() not in SURFACE_MODES:
         add_warning(
             "mode",
@@ -140,7 +146,6 @@ def normalize_manifest_surface(
         mode = "static"
     mode = mode.strip().lower()
 
-    entry = raw_surface.get("entry")
     if mode != "auto" and (not isinstance(entry, str) or not entry.strip()):
         return None, [{
             "path": f"{path}.entry",
@@ -185,7 +190,22 @@ def normalize_manifest_surface(
         normalized["open_in"] = open_in_value
     if isinstance(raw_surface.get("context"), str) and raw_surface["context"].strip():
         normalized["context"] = raw_surface["context"].strip()
+    elif kind in {"panel", "guide"}:
+        normalized["context"] = surface_id.strip()
     return normalized, warnings
+
+
+def infer_mode_from_entry(entry: object) -> str:
+    if not isinstance(entry, str) or not entry.strip():
+        return "auto"
+    suffix = Path(entry.strip()).suffix.lower()
+    if suffix in {".tsx", ".jsx"}:
+        return "hosted-tsx"
+    if suffix in {".md", ".mdx"}:
+        return "markdown"
+    if suffix in {".html", ".htm"}:
+        return "static"
+    return "static"
 
 
 def resolve_surface_entry_path(plugin_meta: Mapping[str, object], entry: str) -> Path | None:

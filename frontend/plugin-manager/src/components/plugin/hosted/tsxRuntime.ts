@@ -148,6 +148,7 @@ export function buildHostedTsxDocument(options: BuildHostedTsxDocumentOptions) {
     .neko-button:hover { transform: translateY(-1px); box-shadow: 0 8px 18px rgba(64,158,255,0.14); }
     .neko-button[data-tone="danger"] { color: var(--danger); border-color: rgba(245,108,108,0.38); background: rgba(245,108,108,0.1); }
     .neko-button[data-tone="success"] { color: var(--success); border-color: rgba(103,194,58,0.38); background: rgba(103,194,58,0.1); }
+    .neko-button:disabled { opacity: 0.55; cursor: wait; transform: none; }
     .neko-button-group { display: flex; flex-wrap: wrap; gap: 8px; }
     .neko-badge {
       display: inline-flex; align-items: center; gap: 6px;
@@ -302,6 +303,54 @@ export function buildHostedTsxDocument(options: BuildHostedTsxDocumentOptions) {
     }
     function useI18n() { return { t, locale: __NEKO_PAYLOAD.locale }; }
     function t(key) { return key; }
+    const __pendingRequests = new Map();
+    window.addEventListener('message', (event) => {
+      const data = event.data;
+      if (!data || typeof data !== 'object' || data.type !== 'neko-hosted-surface-response') return;
+      const pending = __pendingRequests.get(data.requestId);
+      if (!pending) return;
+      __pendingRequests.delete(data.requestId);
+      if (data.ok) pending.resolve(data.result);
+      else pending.reject(new Error(data.error || 'Hosted surface request failed'));
+    });
+    function requestHost(method, payload) {
+      const requestId = Math.random().toString(36).slice(2) + Date.now().toString(36);
+      return new Promise((resolve, reject) => {
+        __pendingRequests.set(requestId, { resolve, reject });
+        parent.postMessage({ type: 'neko-hosted-surface-request', requestId, method, payload }, '*');
+        window.setTimeout(() => {
+          if (!__pendingRequests.has(requestId)) return;
+          __pendingRequests.delete(requestId);
+          reject(new Error('Hosted surface request timed out'));
+        }, 30000);
+      });
+    }
+    const api = {
+      call(actionId, args) { return requestHost('call', { actionId, args: args || {} }); },
+      refresh() { return requestHost('refresh', {}); },
+    };
+    function ActionButton(props) {
+      const action = props.action || {};
+      const actionId = props.actionId || action.entry_id || action.id;
+      const label = props.label || action.label || actionId;
+      const button = h('button', {
+        className: 'neko-button ' + (props.className || ''),
+        'data-tone': props.tone || action.tone || 'primary',
+        onClick: async () => {
+          try {
+            button.disabled = true;
+            const result = await api.call(actionId, props.values || props.args || {});
+            if (typeof props.onResult === 'function') props.onResult(result);
+          } catch (error) {
+            if (typeof props.onError === 'function') props.onError(error);
+            else alert(error && error.message ? error.message : String(error));
+          } finally {
+            button.disabled = false;
+          }
+        },
+      }, props.children || label);
+      return button;
+    }
     Object.assign(window, {
       h,
       Fragment,
@@ -327,6 +376,8 @@ export function buildHostedTsxDocument(options: BuildHostedTsxDocumentOptions) {
       Tabs,
       useI18n,
       t,
+      api,
+      ActionButton,
     });
     try {
 ${escapeScriptContent(compiled)}
@@ -340,6 +391,7 @@ ${escapeScriptContent(compiled)}
         entries: __NEKO_PAYLOAD.entries,
         config: __NEKO_PAYLOAD.config,
         warnings: __NEKO_PAYLOAD.warnings,
+        api,
         locale: __NEKO_PAYLOAD.locale,
         t,
         useI18n,
@@ -363,6 +415,7 @@ ${escapeScriptContent(compiled)}
         Steps,
         Step,
         Tabs,
+        ActionButton,
       });
       appendChild(document.getElementById('root'), rendered);
     } catch (error) {

@@ -539,6 +539,13 @@ class PluginUiQueryService:
                     if isinstance(ui_context_result, Mapping):
                         state_payload = ui_context_result.get("state", {})
                         state_schema = ui_context_result.get("state_schema")
+                        context_actions = ui_context_result.get("actions")
+                        if isinstance(context_actions, list):
+                            actions = [
+                                dict(item)
+                                for item in context_actions
+                                if isinstance(item, Mapping)
+                            ]
                 except Exception as exc:
                     warnings.append(PluginUiWarning(
                         path=f"plugin.ui.{kind}.{surface_id}.context",
@@ -579,6 +586,63 @@ class PluginUiQueryService:
                 message="Failed to query plugin UI context",
                 status_code=500,
                 details={"plugin_id": plugin_id, "kind": kind, "surface_id": surface_id, "error_type": type(exc).__name__},
+            ) from exc
+
+    async def call_surface_action(self, plugin_id: str, *, action_id: str, args: Mapping[str, object] | None) -> dict[str, object]:
+        try:
+            plugin_meta = await asyncio.to_thread(_get_plugin_meta_sync, plugin_id)
+            if plugin_meta is None:
+                raise ServerDomainError(
+                    code="PLUGIN_NOT_FOUND",
+                    message=f"Plugin '{plugin_id}' not found",
+                    status_code=404,
+                    details={"plugin_id": plugin_id},
+                )
+            entries_obj = plugin_meta.get("entries")
+            if not isinstance(entries_obj, list):
+                entries_obj = plugin_meta.get("entries_preview")
+            entry_ids = {
+                str(item.get("id"))
+                for item in entries_obj
+                if isinstance(item, Mapping) and item.get("id")
+            } if isinstance(entries_obj, list) else set()
+            if action_id not in entry_ids:
+                raise ServerDomainError(
+                    code="PLUGIN_UI_ACTION_NOT_FOUND",
+                    message=f"UI action '{action_id}' is not a plugin entry",
+                    status_code=404,
+                    details={"plugin_id": plugin_id, "action_id": action_id},
+                )
+            with state.acquire_plugin_hosts_read_lock():
+                host = state.plugin_hosts.get(plugin_id)
+            if host is None or not hasattr(host, "is_alive") or not host.is_alive() or not hasattr(host, "trigger"):
+                raise ServerDomainError(
+                    code="PLUGIN_NOT_RUNNING",
+                    message=f"Plugin '{plugin_id}' is not running",
+                    status_code=409,
+                    details={"plugin_id": plugin_id},
+                )
+            result = await host.trigger(action_id, dict(args or {}))
+            return {
+                "plugin_id": plugin_id,
+                "action_id": action_id,
+                "result": result,
+            }
+        except ServerDomainError:
+            raise
+        except Exception as exc:
+            logger.error(
+                "call_surface_action failed: plugin_id={}, action_id={}, err_type={}, err={}",
+                plugin_id,
+                action_id,
+                type(exc).__name__,
+                str(exc),
+            )
+            raise ServerDomainError(
+                code="PLUGIN_UI_ACTION_FAILED",
+                message="Failed to execute plugin UI action",
+                status_code=500,
+                details={"plugin_id": plugin_id, "action_id": action_id, "error_type": type(exc).__name__},
             ) from exc
 
     async def get_static_dir(self, plugin_id: str) -> Path | None:

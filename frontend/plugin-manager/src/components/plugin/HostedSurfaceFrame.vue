@@ -47,7 +47,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Document, Loading, WarningFilled } from '@element-plus/icons-vue'
-import { getPluginHostedSurfaceContext, getPluginHostedSurfaceSource } from '@/api/plugins'
+import { callPluginHostedSurfaceAction, getPluginHostedSurfaceContext, getPluginHostedSurfaceSource } from '@/api/plugins'
 import { buildHostedTsxDocument } from '@/components/plugin/hosted/tsxRuntime'
 import type { PluginUiSurface } from '@/types/api'
 
@@ -165,6 +165,46 @@ function handleMessage(event: MessageEvent) {
     const message = typeof data.payload?.message === 'string' ? data.payload.message : t('plugins.ui.loadError')
     error.value = message
     emit('error', message)
+    return
+  }
+  if (data && typeof data === 'object' && data.type === 'neko-hosted-surface-request') {
+    handleHostedRequest(data)
+  }
+}
+
+async function handleHostedRequest(data: any) {
+  const requestId = typeof data.requestId === 'string' ? data.requestId : ''
+  const method = typeof data.method === 'string' ? data.method : ''
+  const respond = (payload: Record<string, any>) => {
+    iframeRef.value?.contentWindow?.postMessage({
+      type: 'neko-hosted-surface-response',
+      requestId,
+      ...payload,
+    }, '*')
+  }
+  if (!requestId) return
+  try {
+    if (method === 'call') {
+      const actionId = String(data.payload?.actionId || '')
+      const args = data.payload?.args && typeof data.payload.args === 'object' ? data.payload.args : {}
+      const result = await callPluginHostedSurfaceAction(props.pluginId, actionId, args)
+      respond({ ok: true, result })
+      return
+    }
+    if (method === 'refresh') {
+      const context = await getPluginHostedSurfaceContext(props.pluginId, {
+        kind: props.surface.kind,
+        id: props.surface.id,
+      })
+      respond({ ok: true, result: context })
+      return
+    }
+    respond({ ok: false, error: `Unsupported hosted surface method: ${method}` })
+  } catch (caught: any) {
+    respond({
+      ok: false,
+      error: caught?.response?.data?.detail || caught?.message || String(caught),
+    })
   }
 }
 
