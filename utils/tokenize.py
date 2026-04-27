@@ -169,6 +169,141 @@ async def atruncate_to_tokens(
     return await asyncio.to_thread(truncate_to_tokens, text, max_tokens, encoding)
 
 
+_SENTENCE_END_CHARS = '.!?。！？…\n'
+"""Sentence-final terminators for `truncate_to_last_sentence_end`. Commas
+and other mid-sentence punctuation are intentionally excluded — keeping
+text up to a comma would leave the prefix mid-thought; we'd rather drop
+the whole partial sentence than ship a half-finished clause. Newline is
+included so paragraph-level cuts are also valid sentence boundaries."""
+
+
+def truncate_to_last_sentence_end(text: str) -> str:
+    """Return the prefix of ``text`` up to and including the last
+    sentence-terminating punctuation mark (one of ``_SENTENCE_END_CHARS``).
+
+    Returns the original ``text`` unchanged if it already ends with a
+    sentence terminator. Returns ``""`` if no terminator is present
+    (caller should fall through to the discarded-overflow UX).
+
+    Use case: token-cap (``max_completion_tokens``) truncation can chop
+    LLM output mid-sentence. Apply this helper after the cap to reset
+    the boundary to the last clean sentence end.
+    """
+    if not text:
+        return text
+    if text[-1] in _SENTENCE_END_CHARS:
+        return text
+    last = max((text.rfind(ch) for ch in _SENTENCE_END_CHARS), default=-1)
+    if last < 0:
+        return ""
+    return text[:last + 1]
+
+
+def truncate_head_tail_tokens(
+    text: str,
+    head_tokens: int,
+    tail_tokens: int,
+    *,
+    separator: str = "…[省略中段]…",
+    encoding: str = PERSONA_RENDER_ENCODING,
+) -> str:
+    """Truncate ``text`` keeping head/tail tokens, joined by ``separator``.
+
+    Use case: long user / assistant messages where both opening context
+    (greeting / topic) and closing intent (question / conclusion) carry
+    semantic weight and a plain ``[:N]`` cut would drop the most important
+    half. If ``text`` already fits within ``head_tokens + tail_tokens``,
+    it is returned unchanged.
+
+    Token budget semantics: the returned string's total token count is
+    guaranteed ``≤ head_tokens + tail_tokens``. The separator is paid for
+    out of the head/tail allocation (head shrinks first, then tail) so
+    callers passing ``head=tail=N`` can trust the output never exceeds
+    ``2N`` tokens — earlier behaviour silently let ``count_tokens(separator)``
+    leak past the budget.
+
+    Negative arguments are clamped to 0 so misconfiguration can't bypass
+    the budget by passing a sentinel like ``-1``.
+    """
+    if not text:
+        return text
+    head_tokens = max(0, head_tokens)
+    tail_tokens = max(0, tail_tokens)
+    total = head_tokens + tail_tokens
+    if total <= 0:
+        return ""
+    if count_tokens(text, encoding) <= total:
+        return text
+    # Reserve room for the separator out of head/tail so the final
+    # `head + sep + tail` never exceeds `total`. Bias the deduction
+    # toward `head` first (head_alloc shrinks first, then tail) — keeps
+    # tail (last sentence / question) intact when budgets are tight.
+    sep_tokens = count_tokens(separator, encoding) if separator else 0
+    if sep_tokens >= total:
+        # Pathological: budget can't even fit the separator. Degrade to
+        # a plain head-only truncation (better than returning sep alone).
+        return truncate_to_tokens(text, total, encoding)
+    head_alloc = max(0, head_tokens - sep_tokens)
+    tail_alloc = tail_tokens
+    if head_alloc + tail_alloc + sep_tokens > total:
+        # Sanity: head_alloc was already shaved; if rounding misbehaved
+        # take the rest from tail.
+        tail_alloc = max(0, total - head_alloc - sep_tokens)
+    enc = _get_encoder(encoding)
+    if enc is None:
+        # Heuristic fallback: cut by char position using same weighting
+        # as `_count_tokens_heuristic`. Approximate but bounded.
+        head_str = _truncate_to_tokens_heuristic(text, head_alloc) if head_alloc else ""
+        # For tail, scan from the end using the same logic. The for/else
+        # covers both branches: if the budget is exceeded mid-scan we set
+        # cut_idx via the break path; if the entire string fits within
+        # tail_alloc (rare here since we already returned early when
+        # text fits in head+tail) the else clause sets cut_idx = 0.
+        if tail_alloc <= 0:
+            tail_str = ""
+        else:
+            running = 0.0
+            for i in range(len(text) - 1, -1, -1):
+                weight = 1.5 if is_cjk_char(text[i]) else 0.25
+                if math.ceil(running + weight) > tail_alloc:
+                    cut_idx = i + 1
+                    break
+                running += weight
+            else:
+                cut_idx = 0
+            tail_str = text[cut_idx:]
+        if not head_str and not tail_str:
+            return ""
+        return f"{head_str}{separator}{tail_str}"
+    tokens = enc.encode(text)
+    head_tok = tokens[:head_alloc] if head_alloc else []
+    tail_tok = tokens[-tail_alloc:] if tail_alloc > 0 else []
+    head_str = enc.decode(head_tok) if head_tok else ""
+    tail_str = enc.decode(tail_tok) if tail_tok else ""
+    return f"{head_str}{separator}{tail_str}"
+
+
+async def atruncate_head_tail_tokens(
+    text: str,
+    head_tokens: int,
+    tail_tokens: int,
+    *,
+    separator: str = "…[省略中段]…",
+    encoding: str = PERSONA_RENDER_ENCODING,
+) -> str:
+    """Async twin of `truncate_head_tail_tokens`."""
+    if not text:
+        return text
+    return await asyncio.to_thread(
+        truncate_head_tail_tokens,
+        text,
+        head_tokens,
+        tail_tokens,
+        separator=separator,
+        encoding=encoding,
+    )
+
+
 def _truncate_to_tokens_heuristic(text: str, max_tokens: int) -> str:
     """Heuristic prefix scan that mirrors `_count_tokens_heuristic`'s
     weighting (CJK 1.5 / non-CJK 0.25). Walks the string once and stops

@@ -682,8 +682,9 @@ async def translate_with_translatepy(text: str, source_lang: str, target_lang: s
             except Exception:
                 return None
         
-        # 如果文本太长（超过5000字符），分段翻译
-        max_chunk_size = 5000
+        # 如果文本太长，分段翻译
+        from config import TRANSLATION_CHUNK_MAX_CHARS_SHORT
+        max_chunk_size = TRANSLATION_CHUNK_MAX_CHARS_SHORT
         chunks = _split_text_into_chunks(text, max_chunk_size)
         
         if len(chunks) > 1:
@@ -877,8 +878,9 @@ async def translate_text(text: str, target_lang: str, source_lang: Optional[str]
             
             # 使用 asyncio.wait_for 实现超时机制
             async def _translate_internal():
-                # 如果文本太长（超过15k字符），分段翻译
-                max_chunk_size = 15000
+                # 如果文本太长，分段翻译
+                from config import TRANSLATION_CHUNK_MAX_CHARS_LONG
+                max_chunk_size = TRANSLATION_CHUNK_MAX_CHARS_LONG
                 chunks = _split_text_into_chunks(text, max_chunk_size)
                 
                 if len(chunks) > 1:
@@ -1065,10 +1067,12 @@ class TranslationService:
             
             if self._llm_client is not None:
                 return self._llm_client
-            
+
+            from config import TRANSLATION_OUTPUT_MAX_TOKENS
             self._llm_client = create_chat_llm(
                 config['model'], config['base_url'], config['api_key'],
-                max_completion_tokens=2000, timeout=30.0,
+                max_completion_tokens=TRANSLATION_OUTPUT_MAX_TOKENS,
+                timeout=30.0,
             )
             
             return self._llm_client

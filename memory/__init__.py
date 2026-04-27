@@ -22,9 +22,10 @@
    掩盖。
 
 3. **memory 子模块走的 tier**：现役 LLM 路径全部跑在 ``summary`` 或 ``correction``
-   tier 上（fact extraction / signal detection / reflection synthesis / promotion
-   merge / fact dedup / recall rerank → ``summary``；recent.review +
-   persona.correction → ``correction``）。不要再引入新的 hardcoded 模型名字。
+   tier 上（fact extraction / signal detection / reflection synthesis /
+   fact dedup / recall rerank → ``summary``；recent.review +
+   persona.correction + promotion merge → ``correction``）。不要再引入新的
+   hardcoded 模型名字。
 
 如果有非常具体的理由需要绕过，先删 ``scripts/check_no_temperature.py`` 并在
 PR 描述里说明，由 reviewer 把关。

@@ -149,7 +149,7 @@ TEMPORAL_SCOPES = frozenset({'current', 'past', 'ongoing'})
 # The reflection itself still persists unchanged so no information is lost.
 # Measured in tiktoken (o200k_base) tokens — equivalent to ~200 CJK chars or
 # ~600 English chars under the current encoding.
-MAX_REFLECTION_TEXT_TOKENS = 150
+from config import REFLECTION_TEXT_MAX_TOKENS as MAX_REFLECTION_TEXT_TOKENS  # noqa: E402
 
 
 def _validate_reflection_ontology(
@@ -634,6 +634,21 @@ class ReflectionEngine:
         if len(unabsorbed) < MIN_FACTS_FOR_REFLECTION:
             return []
 
+        # Cap unabsorbed facts entering this synthesis call. 上游
+        # aget_unabsorbed_facts 没有 limit 参数，长期不上线时可能堆几百
+        # 条；按 importance(desc) → 创建时间(asc) 排序后取前 N 条，避免
+        # 一次性塞超长 prompt。
+        from config import REFLECTION_SYNTHESIS_FACTS_MAX
+        from memory.facts import safe_importance
+        if len(unabsorbed) > REFLECTION_SYNTHESIS_FACTS_MAX:
+            unabsorbed = sorted(
+                unabsorbed,
+                key=lambda f: (
+                    -safe_importance(f),
+                    str(f.get('created_at') or ''),
+                ),
+            )[:REFLECTION_SYNTHESIS_FACTS_MAX]
+
         # 排序一次：on-disk 字段与 _reflection_id_from_facts 内部 sorted 对齐，
         # 消除 "hash 用 sorted，存盘不 sorted" 的隐式非对称
         source_fact_ids = sorted(f['id'] for f in unabsorbed)
@@ -663,9 +678,14 @@ class ReflectionEngine:
         try:
             set_call_type("memory_reflection")
             api_config = self._config_manager.get_model_api_config('summary')
+            # timeout=90: 持 reflection 锁，输出多字段 JSON ontology（reflection
+            # text + entity + relation_type + temporal_scope + subject）较长。
+            # max_retries=0: 禁 SDK 自动重试（无业务 retry，单次即终态，外层
+            # try/except 兜底返回 []）。
             llm = create_chat_llm(
                 api_config['model'],
                 api_config['base_url'], api_config['api_key'],
+                timeout=90, max_retries=0,
             )
             try:
                 resp = await llm.ainvoke(prompt)
@@ -731,8 +751,9 @@ class ReflectionEngine:
         # 就带一点正分，不必等多轮 user confirms 才穿越 CONFIRMED 阈值。
         # 不走 aapply_signal（synthesis 本身不经 event log），直接写进初始
         # 字典——synth 不是 event-sourced，这些初始值就是 ground truth。
+        from memory.facts import safe_importance
         max_importance = max(
-            (int(f.get('importance', 5) or 5) for f in unabsorbed),
+            (safe_importance(f) for f in unabsorbed),
             default=5,
         )
         initial_rein = initial_reinforcement_from_importance(max_importance)
@@ -1320,7 +1341,8 @@ class ReflectionEngine:
             if evidence_score(r, now) < 0:
                 continue
             eligible.append(r)
-        return eligible[:2]
+        from config import REFLECTION_SURFACE_TOP_K
+        return eligible[:REFLECTION_SURFACE_TOP_K]
 
     def get_followup_topics(self, lanlan_name: str) -> list[dict]:
         """Get pending reflections suitable for natural mention in proactive chat.
@@ -1432,9 +1454,12 @@ class ReflectionEngine:
         try:
             set_call_type("memory_feedback_check")
             api_config = self._config_manager.get_model_api_config('summary')
+            # timeout=60: 后台 task 内调用，二分类任务 prompt + 输出都不大。
+            # max_retries=0: 禁 SDK 自动重试。
             llm = create_chat_llm(
                 api_config['model'],
                 api_config['base_url'], api_config['api_key'],
+                timeout=60, max_retries=0,
             )
             try:
                 resp = await llm.ainvoke(prompt)
@@ -1493,9 +1518,12 @@ class ReflectionEngine:
         try:
             set_call_type("memory_rebuttal_check")
             api_config = self._config_manager.get_model_api_config('summary')
+            # timeout=60: 周期性反驳扫描，后台跑无人等。
+            # max_retries=0: 禁 SDK 自动重试，失败 cursor 不推进自然下轮重试。
             llm = create_chat_llm(
                 api_config['model'],
                 api_config['base_url'], api_config['api_key'],
+                timeout=60, max_retries=0,
             )
             try:
                 resp = await llm.ainvoke(prompt)
@@ -2046,6 +2074,12 @@ class ReflectionEngine:
                 f" (evidence_score={evidence_score(r, now):.2f})"
             )
         pool_text = "\n".join(pool_lines) if pool_lines else "(印象池为空)"
+        # Cap the impression pool at PERSONA_MERGE_POOL_MAX_TOKENS — same
+        # entity 长期累积下来 persona+reflection 池可能超 8k tokens；
+        # 这里整段截尾（按 score DESC 已排序，超出的是低分项，可丢）。
+        from config import PERSONA_MERGE_POOL_MAX_TOKENS
+        from utils.tokenize import truncate_to_tokens
+        pool_text = truncate_to_tokens(pool_text, PERSONA_MERGE_POOL_MAX_TOKENS)
 
         prompt = get_promotion_merge_prompt(get_global_language()).format(
             AI_NAME=lanlan_name,
@@ -2059,9 +2093,15 @@ class ReflectionEngine:
         api_config = self._config_manager.get_model_api_config(
             EVIDENCE_PROMOTION_MERGE_MODEL_TIER,
         )
+        # timeout=45: LLM 在 reflection 锁外，但 /process 末尾会同步等
+        # aauto_promote_stale 串行处理多个 reflection。每个 promote_merge
+        # prompt 决策短、输出短，应该 <10s 完成；45s 给 4-5x 裕度，超时即
+        # 触发已有 throttle/backoff 路径（EVIDENCE_PROMOTE_RETRY_BACKOFF_MINUTES）。
+        # max_retries=0: 禁 SDK 自动重试，由 throttle/dead-letter 兜底。
         llm = create_chat_llm(
             api_config['model'],
             api_config['base_url'], api_config['api_key'],
+            timeout=45, max_retries=0,
         )
         try:
             resp = await llm.ainvoke(prompt)

@@ -42,7 +42,6 @@ import httpx
 #     thread pool) — 3-4× the actual encode work. Across a 30-chunk stream
 #     that's a few milliseconds saved per turn, but more importantly avoids
 #     the cold-start case where the first thread hop can take much longer.
-PHASE2_OUTPUT_MAX_TOKENS = 300
 from cachetools import TTLCache
 
 from .shared_state import get_steamworks, get_config_manager, get_sync_message_queue, get_session_manager
@@ -52,6 +51,16 @@ from config import (
     AUTOSTART_CSRF_TOKEN,
     MEMORY_SERVER_PORT,
     get_extra_body,
+    PROACTIVE_PHASE1_FETCH_PER_SOURCE,
+    PROACTIVE_PHASE1_TOTAL_TOPICS,
+    PROACTIVE_EXTERNAL_PER_ITEM_MAX_TOKENS,
+    PROACTIVE_EXTERNAL_TOTAL_MAX_TOKENS,
+    PROACTIVE_PHASE2_OUTPUT_MAX_TOKENS as PHASE2_OUTPUT_MAX_TOKENS,
+    PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
+    PROACTIVE_PHASE1_UNIFIED_MAX_TOKENS,
+    PROACTIVE_CHAT_HISTORY_MAX,
+    PROACTIVE_TOPIC_HISTORY_MAX,
+    EMOTION_ANALYSIS_MAX_TOKENS,
 )
 from config.prompts_sys import _loc
 from config.prompts_emotion import get_outward_emotion_analysis_prompt
@@ -949,8 +958,8 @@ _proactive_topic_history: dict[str, deque] = {}
 _RECENT_CHAT_MAX_AGE_SECONDS = 3600  # 1小时内的搭话记录
 _RECENT_TOPIC_MAX_AGE_SECONDS = 3600  # 1小时内避免重复外部话题
 _PROACTIVE_SIMILARITY_THRESHOLD = 0.94  # 高阈值，尽量避免误杀
-_PHASE1_FETCH_PER_SOURCE = 10  # Phase 1 每个信息源固定抓取条数
-_PHASE1_TOTAL_TOPIC_TARGET = 20  # Phase 1 输入给筛选模型的总候选目标条数
+_PHASE1_FETCH_PER_SOURCE = PROACTIVE_PHASE1_FETCH_PER_SOURCE  # Phase 1 每个信息源固定抓取条数
+_PHASE1_TOTAL_TOPIC_TARGET = PROACTIVE_PHASE1_TOTAL_TOPICS  # Phase 1 输入给筛选模型的总候选目标条数
 
 # --- 来源动态权重系统 ---
 _SOURCE_WEIGHT_DECAY_LAMBDA = 0.002   # 指数衰减系数，半衰期 ≈ 5.8 分钟
@@ -1286,7 +1295,7 @@ def _record_proactive_chat(lanlan_name: str, message: str, channel: str = ''):
     - channel: 来源通道（可选，默认 'vision'）
     """
     if lanlan_name not in _proactive_chat_history:
-        _proactive_chat_history[lanlan_name] = deque(maxlen=10)
+        _proactive_chat_history[lanlan_name] = deque(maxlen=PROACTIVE_CHAT_HISTORY_MAX)
     _proactive_chat_history[lanlan_name].append((time.time(), message, channel))
 
 
@@ -1368,7 +1377,7 @@ def _record_topic_usage(lanlan_name: str, topic_key: str):
     if not topic_key:
         return
     if lanlan_name not in _proactive_topic_history:
-        _proactive_topic_history[lanlan_name] = deque(maxlen=100)
+        _proactive_topic_history[lanlan_name] = deque(maxlen=PROACTIVE_TOPIC_HISTORY_MAX)
     _proactive_topic_history[lanlan_name].append((time.time(), topic_key))
 
 
@@ -1761,7 +1770,7 @@ async def emotion_analysis(request: Request):
             api_key,
             temperature=0.3,
             # Gemini 模型可能返回 markdown 格式，需要更多 token
-            max_completion_tokens=40,
+            max_completion_tokens=EMOTION_ANALYSIS_MAX_TOKENS,
         )
         async with llm:
             result = await llm.ainvoke(messages)
@@ -3064,7 +3073,8 @@ async def proactive_chat(request: Request):
                 "detail": str(e)
             }, status_code=500))
 
-        def _make_llm(temperature: float = 1.0, max_tokens: int = 1536,
+        def _make_llm(temperature: float = 1.0,
+                      max_completion_tokens: int = PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
                       use_vision: bool = False, disable_thinking: bool = True):
             """
             创建 LLM 实例。use_vision=True 时使用 vision 模型；disable_thinking=False 时不注入 extra_body。
@@ -3075,16 +3085,18 @@ async def proactive_chat(request: Request):
                 m, bu, ak = correction_model, correction_base_url, correction_api_key
             kw: dict = dict(
                 temperature=temperature,
-                max_completion_tokens=max_tokens,
+                max_completion_tokens=max_completion_tokens,
                 streaming=True,
             )
             if not disable_thinking:
                 kw["extra_body"] = None  # skip auto-resolved extra_body
             return create_chat_llm(m, bu, ak, **kw)
-        
+
         async def _llm_call_with_retry(
             system_prompt: str, label: str, *,
-            temperature: float = 1.0, max_tokens: int = 1024, timeout: float = 16.0,
+            temperature: float = 1.0,
+            max_completion_tokens: int = PROACTIVE_PHASE1_UNIFIED_MAX_TOKENS,
+            timeout: float = 16.0,
             use_vision: bool = False, disable_thinking: bool = True,
             image_b64: str = '',
             dynamic_context: str = '',
@@ -3112,8 +3124,10 @@ async def proactive_chat(request: Request):
             for attempt in range(max_retries):
                 try:
                     # 使用 async with 确保 ChatOpenAI (AsyncOpenAI) 实例被正确关闭
-                    async with _make_llm(temperature=temperature, max_tokens=max_tokens,
-                                        use_vision=use_vision, disable_thinking=disable_thinking) as llm:
+                    async with _make_llm(temperature=temperature,
+                                        max_completion_tokens=max_completion_tokens,
+                                        use_vision=use_vision,
+                                        disable_thinking=disable_thinking) as llm:
                         response = await asyncio.wait_for(
                             llm.ainvoke(messages),
                             timeout=timeout
@@ -3185,6 +3199,7 @@ async def proactive_chat(request: Request):
                     remaining_total -= len(selected_links)
                     lines = []
                     for idx, item in enumerate(selected_links, start=1):
+                        from utils.tokenize import truncate_to_tokens as _ttt
                         title = item.get('title', '').strip()
                         if not title:
                             continue
@@ -3196,7 +3211,10 @@ async def proactive_chat(request: Request):
                         if url:
                             suffix.append(f"URL: {url}")
                         ext = (" | " + " | ".join(suffix)) if suffix else ""
-                        lines.append(f"{idx}. {title}{ext}")
+                        # 单条外部内容截到 PROACTIVE_EXTERNAL_PER_ITEM_MAX_TOKENS，
+                        # 防止个别 title/url 异常长撑爆 prompt。
+                        item_line = _ttt(f"{idx}. {title}{ext}", PROACTIVE_EXTERNAL_PER_ITEM_MAX_TOKENS)
+                        lines.append(item_line)
                     if lines:
                         parts.append(f"--- {label} ---\n" + "\n".join(lines))
                         continue
@@ -3207,9 +3225,18 @@ async def proactive_chat(request: Request):
                     if compact_lines:
                         fallback_lines = compact_lines[:remaining_total]
                         if fallback_lines:
+                            from utils.tokenize import truncate_to_tokens as _ttt
+                            fallback_lines = [
+                                _ttt(ln, PROACTIVE_EXTERNAL_PER_ITEM_MAX_TOKENS)
+                                for ln in fallback_lines
+                            ]
                             parts.append(f"--- {label} ---\n" + "\n".join(fallback_lines))
                             remaining_total -= len(fallback_lines)
-            merged_web_content = "\n\n".join(parts)
+            from utils.tokenize import truncate_to_tokens as _ttt
+            # 兜底总和截断：防止 20 source × 200 token = 4k 超过 2k 总预算
+            merged_web_content = _ttt(
+                "\n\n".join(parts), PROACTIVE_EXTERNAL_TOTAL_MAX_TOKENS
+            )
         
         # Phase 1 结果收集
         phase1_topics: list[tuple[str, str]] = []  # [(channel, topic_summary), ...]
@@ -3284,6 +3311,7 @@ async def proactive_chat(request: Request):
                         if selected_links_2:
                             remaining_total_2 -= len(selected_links_2)
                             lines = []
+                            from utils.tokenize import truncate_to_tokens as _ttt2
                             for idx, item in enumerate(selected_links_2, start=1):
                                 t = item.get('title', '').strip()
                                 if not t:
@@ -3296,10 +3324,17 @@ async def proactive_chat(request: Request):
                                 if u:
                                     suffix.append(f"URL: {u}")
                                 ext = (" | " + " | ".join(suffix)) if suffix else ""
-                                lines.append(f"{idx}. {t}{ext}")
+                                # 同上路径，单条 cap
+                                lines.append(_ttt2(
+                                    f"{idx}. {t}{ext}",
+                                    PROACTIVE_EXTERNAL_PER_ITEM_MAX_TOKENS,
+                                ))
                             if lines:
                                 parts.append(f"--- {label} ---\n" + "\n".join(lines))
-                    merged_web_content = "\n\n".join(parts)
+                    from utils.tokenize import truncate_to_tokens as _ttt3
+                    merged_web_content = _ttt3(
+                        "\n\n".join(parts), PROACTIVE_EXTERNAL_TOTAL_MAX_TOKENS
+                    )
                 else:
                     merged_web_content = ""
                     all_web_links = []
@@ -3779,7 +3814,8 @@ async def proactive_chat(request: Request):
         try:
             async with asyncio.timeout(25.0):
                 # 使用 async with 确保 ChatOpenAI 正确关闭
-                async with _make_llm(temperature=1.0, max_tokens=1536,
+                async with _make_llm(temperature=1.0,
+                                    max_completion_tokens=PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
                                     use_vision=phase2_use_vision, disable_thinking=True) as llm:
                     async for chunk in llm.astream(messages):
                         # Phase 2 preempt check：每 chunk 顶端做 O(1) 状态机读，

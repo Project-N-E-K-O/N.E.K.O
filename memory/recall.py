@@ -62,7 +62,7 @@ logger = logging.getLogger(__name__)
 # semantic shortlist is 3× the budget so the LLM has 2 candidates per
 # slot to choose from. Lower would over-trust cosine; higher would
 # stuff the LLM prompt with more text than it can rank reliably.
-COARSE_OVERSAMPLE = 3
+from config import RECALL_COARSE_OVERSAMPLE as COARSE_OVERSAMPLE  # noqa: E402
 
 
 class MemoryRecallReranker:
@@ -352,6 +352,11 @@ class MemoryRecallReranker:
 
         # The id-keyed indirection prevents the LLM from inventing
         # ids that aren't in the candidate set.
+        from config import (
+            RECALL_PER_CANDIDATE_MAX_TOKENS,
+            RECALL_CANDIDATES_TOTAL_MAX_TOKENS,
+        )
+        from utils.tokenize import truncate_to_tokens
         cand_lines = []
         id_to_obs: dict[str, dict] = {}
         for c in candidates:
@@ -360,25 +365,34 @@ class MemoryRecallReranker:
                 continue
             id_to_obs[cid] = c
             score = c.get('score', 0.0)
-            cand_lines.append(
-                f"[{cid}] (score={score:.2f}) {c.get('text', '')}"
-            )
+            # 单条 candidate text 截断到 RECALL_PER_CANDIDATE_MAX_TOKENS
+            txt = truncate_to_tokens(c.get('text', '') or '', RECALL_PER_CANDIDATE_MAX_TOKENS)
+            cand_lines.append(f"[{cid}] (score={score:.2f}) {txt}")
         if not cand_lines:
             return []
 
         query_text = "\n".join(f"- {q}" for q in query_texts if q)
+        # 兜底总和截断（候选已 ranked，截尾的是低 score 的）
+        candidates_text = truncate_to_tokens(
+            "\n".join(cand_lines), RECALL_CANDIDATES_TOTAL_MAX_TOKENS
+        )
         prompt = (
             prompt_loader(lang)
             .replace('{QUERY}', query_text)
-            .replace('{CANDIDATES}', "\n".join(cand_lines))
+            .replace('{CANDIDATES}', candidates_text)
             .replace('{BUDGET}', str(budget))
         )
 
         set_call_type("memory_recall_rerank")
         api_config = config_manager.get_model_api_config('summary')
+        # timeout=8: recall 在 query_memory 请求路径上，上游 plugin/core/context.py
+        # 默认 5s 截断；本地 8s 给 connect + 一次失败裕度。超时即抛
+        # APITimeoutError，外层 try/except 已会降级到 coarse rank。
+        # max_retries=0: 禁 SDK 自动重试，超时直接降级。
         llm = create_chat_llm(
             api_config['model'],
             api_config['base_url'], api_config['api_key'],
+            timeout=8, max_retries=0,
         )
         try:
             resp = await llm.ainvoke(prompt)

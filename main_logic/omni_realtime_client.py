@@ -11,7 +11,13 @@ from pathlib import Path
 
 from typing import Optional, Callable, Dict, Any, Awaitable
 from enum import Enum
-from config import NATIVE_IMAGE_MIN_INTERVAL, IMAGE_IDLE_RATE_MULTIPLIER
+from config import (
+    NATIVE_IMAGE_MIN_INTERVAL,
+    IMAGE_IDLE_RATE_MULTIPLIER,
+    OMNI_RECENT_RESPONSES_MAX,
+    OMNI_WS_FRAME_LIMIT_BYTES,
+    VISION_ANALYSIS_MAX_TOKENS,
+)
 from utils.config_manager import get_config_manager
 from utils.audio_processor import AudioProcessor
 from utils.file_utils import atomic_write_json
@@ -272,7 +278,7 @@ class OmniRealtimeClient:
         # 重复度检测
         self._recent_responses = []  # 存储最近3轮助手回复
         self._repetition_threshold = 0.8  # 相似度阈值
-        self._max_recent_responses = 3  # 最多存储的回复数
+        self._max_recent_responses = OMNI_RECENT_RESPONSES_MAX  # 最多存储的回复数
         self._current_response_transcript = ""  # 当前回复的转录文本
         
         # Backpressure control - 防止503过载错误
@@ -692,7 +698,7 @@ class OmniRealtimeClient:
             raise
 
     # ── Frame-size helpers ──────────────────────────────────────────
-    _WS_FRAME_LIMIT = 250_000  # safe threshold below 256KB server cap
+    _WS_FRAME_LIMIT = OMNI_WS_FRAME_LIMIT_BYTES  # safe threshold below 256KB server cap
 
     @staticmethod
     def _try_shrink_image_payload(event: dict, payload: str) -> Optional[str]:
@@ -813,7 +819,7 @@ class OmniRealtimeClient:
                 # lower quality before dropping. PIL decode + JPEG re-encode
                 # is CPU-heavy (50-150ms on a 4K screenshot), so off-load to
                 # a thread to keep the event loop responsive.
-                if len(payload) > 250000:
+                if len(payload) > OMNI_WS_FRAME_LIMIT_BYTES:
                     payload = await asyncio.to_thread(
                         self._try_shrink_image_payload, event, payload
                     )
@@ -973,7 +979,7 @@ class OmniRealtimeClient:
             
             description = await analyze_image_with_vision_model(
                 image_b64=image_b64,
-                max_tokens=500
+                max_completion_tokens=VISION_ANALYSIS_MAX_TOKENS
             )
             
             if description:

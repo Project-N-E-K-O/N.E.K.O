@@ -25,7 +25,7 @@ from datetime import datetime
 from websockets import exceptions as web_exceptions
 from fastapi import WebSocket, WebSocketDisconnect
 from utils.frontend_utils import contains_chinese, replace_blank, replace_corner_mark, remove_bracket, \
-    is_only_punctuation, TtsStreamNormalizer
+    is_only_punctuation, TtsStreamNormalizer, TtsBracketStripper, TtsMarkdownStripper
 from utils.screenshot_utils import process_screen_data, overlay_avatar_annotation
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic.omni_offline_client import OmniOfflineClient
@@ -33,7 +33,13 @@ from main_logic.tts_client import get_tts_worker, dummy_tts_worker, TTS_PROVIDER
 from utils.llm_client import AIMessage
 from main_logic.session_state import SessionStateMachine, SessionEvent
 from utils.preferences import load_global_conversation_settings, aload_global_conversation_settings
-from config import MEMORY_SERVER_PORT, TOOL_SERVER_PORT
+from config import (
+    MEMORY_SERVER_PORT,
+    TOOL_SERVER_PORT,
+    SESSION_ARCHIVE_TRIGGER_TOKENS,
+    SESSION_TURN_THRESHOLD,
+    AVATAR_INTERACTION_DEDUPE_MAX_ITEMS,
+)
 from config.prompts_sys import (
     _loc,
     SESSION_INIT_PROMPT, SESSION_INIT_PROMPT_AGENT,
@@ -240,6 +246,14 @@ class LLMSessionManager:
         self._tts_stream_normalizer = TtsStreamNormalizer()
         self._tts_norm_speech_id: Optional[str] = None
         self._tts_normalize_enabled: bool = True  # 默认启用，_start_tts_thread 按 provider 类别覆盖
+        # 括号 / markdown 剥离器：朗读时不读括号内的旁白与 markdown 标记。
+        # 与 _tts_stream_normalizer 解耦——CJK 空格规范化是 provider 相关的
+        # （ws_bistream provider 关），但括号/markdown 剥离是 TTS 通用需求，
+        # 始终启用。两者串接顺序：normalizer → markdown → bracket，因为
+        # markdown 链接 ``[文本](url)`` 必须先剥成 ``文本`` 再交给 bracket，
+        # 否则 ``[`` ``]`` 会被 bracket 当成普通括号把链接文本一起吞掉。
+        self._tts_markdown_stripper = TtsMarkdownStripper()
+        self._tts_bracket_stripper = TtsBracketStripper()
         # 流式音频重采样器（24kHz→48kHz）- 维护内部状态避免 chunk 边界不连续
         self.audio_resampler = soxr.ResampleStream(24000, 48000, 1, dtype='float32')
         self.lock = asyncio.Lock()  # 使用异步锁替代同步锁
@@ -385,7 +399,7 @@ class LLMSessionManager:
         self.last_audio_send_error_time = 0.0  # 上次音频发送错误的时间戳
         self.audio_error_log_interval = 2.0  # 音频错误log间隔（秒）
 
-        self._recent_avatar_interaction_ids = deque(maxlen=32)
+        self._recent_avatar_interaction_ids = deque(maxlen=AVATAR_INTERACTION_DEDUPE_MAX_ITEMS)
         self._recent_avatar_interaction_id_set = set()
         self._last_avatar_interaction_at = 0
         self._last_avatar_interaction_speak_at = 0
@@ -454,18 +468,31 @@ class LLMSessionManager:
         worker 退出）请继续用 ``tts_request_queue.put`` 直接发送，并在合适
         时机调用 ``_reset_tts_stream_normalizer``。
         """
+        # speech_id 切换时重置所有 stripper 状态（pending 内容属于上一轮，丢弃）
+        if speech_id != self._tts_norm_speech_id:
+            self._tts_stream_normalizer.reset()
+            self._tts_markdown_stripper.reset()
+            self._tts_bracket_stripper.reset()
+            self._tts_norm_speech_id = speech_id
+
         if self._tts_normalize_enabled:
-            if speech_id != self._tts_norm_speech_id:
-                self._tts_stream_normalizer.reset()
-                self._tts_norm_speech_id = speech_id
             text = self._tts_stream_normalizer.feed(text)
             if not text:
                 return
+        # markdown → bracket 顺序固定：链接先剥成文本再交给 bracket
+        text = self._tts_markdown_stripper.feed(text)
+        if not text:
+            return
+        text = self._tts_bracket_stripper.feed(text)
+        if not text:
+            return
         self.tts_request_queue.put((speech_id, text))
 
     def _reset_tts_stream_normalizer(self) -> None:
-        """清空 normalizer 状态。中断 / 轮次结束 / session 重建时调用。"""
+        """清空所有 TTS 文本 stripper 状态。中断 / 轮次结束 / session 重建时调用。"""
         self._tts_stream_normalizer.reset()
+        self._tts_markdown_stripper.reset()
+        self._tts_bracket_stripper.reset()
         self._tts_norm_speech_id = None
 
     def _request_tts_done_locked(self) -> str:
@@ -485,6 +512,18 @@ class LLMSessionManager:
         if not self.tts_ready or self.tts_pending_chunks:
             self._tts_done_pending_until_ready = True
             return "deferred"
+
+        # 把 markdown/bracket stripper 的 pending 兜底 emit：链 markdown.flush()
+        # → bracket.feed(...) → bracket.flush() 顺序，与 _enqueue_tts_text_chunk
+        # 的串接顺序一致。markdown.flush 把残留的孤立 marker 字符删掉再 emit；
+        # bracket.feed 处理任何残留括号字符；bracket.flush 直接 reset 不读
+        # 未闭合的括号内容。normalizer.flush 永远返回 ""，省略调用。
+        flushed = self._tts_markdown_stripper.flush()
+        if flushed:
+            flushed = self._tts_bracket_stripper.feed(flushed)
+        self._tts_bracket_stripper.flush()
+        if flushed and self._tts_norm_speech_id is not None:
+            self.tts_request_queue.put((self._tts_norm_speech_id, flushed))
 
         self.tts_request_queue.put((None, None))
         self._tts_done_queued_for_turn = True
@@ -724,10 +763,11 @@ class LLMSessionManager:
         # 正在切换过程中则跳过所有热切换判断
         if not self.is_hot_swap_imminent:
             try:
-                # 1. 时间/轮次/上下文驱动：任一条件满足 → 开始准备新 session + 触发记忆归档
+                # 1. 轮次 / 上下文 token 任一满足 → 准备新 session + 记忆归档。
+                #    （已删除 elapsed >= 40s 的纯时间触发：长时间发呆不应强制
+                #     归档 cache，由 turn / token 真实驱动。）
                 if hasattr(self, 'is_preparing_new_session') and not self.is_preparing_new_session:
-                    _elapsed = (datetime.now() - self.session_start_time).total_seconds() if self.session_start_time else 0
-                    _turn_threshold_met = self._session_turn_count >= 10
+                    _turn_threshold_met = self._session_turn_count >= SESSION_TURN_THRESHOLD
                     # Session 历史 token 总量阈值。turn-end 后的冷路径，
                     # sync count_tokens 即可（10 条消息合计 < 50ms）。
                     # m.content 在多模态消息下是 list[dict]（含 image_url base64）；
@@ -753,10 +793,10 @@ class LLMSessionManager:
                             _ct(_budget_text(m))
                             for m in self.session._conversation_history[1:]
                         )
-                        _ctx_threshold_met = _ctx_total >= 5000
+                        _ctx_threshold_met = _ctx_total >= SESSION_ARCHIVE_TRIGGER_TOKENS
                     else:
                         _ctx_threshold_met = False
-                    if _elapsed >= 40 or _turn_threshold_met or _ctx_threshold_met:
+                    if _turn_threshold_met or _ctx_threshold_met:
                         logger.info(f"[{self.lanlan_name}] Main Listener: Uptime threshold met. Marking for new session preparation.")
                         self.is_preparing_new_session = True
                         self.summary_triggered_time = datetime.now()

@@ -134,19 +134,23 @@ async def process_screen_data(data: str) -> Optional[str]:
 
 async def analyze_image_with_vision_model(
     image_b64: str,
-    max_tokens: int = 500,
+    max_completion_tokens: int | None = None,
     window_title: str = '',
 ) -> Optional[str]:
     """
     使用视觉模型分析图片
-    
+
     参数:
         image_b64: 图片的base64编码（不含data:前缀）
-        max_tokens: 最大输出token数，默认 500
+        max_completion_tokens: 最大输出 token 数；None 时取
+            config.VISION_ANALYSIS_MAX_TOKENS 默认值
         window_title: 可选的窗口标题，提供时会加入提示词以丰富上下文
-        
+
     返回: 图片描述文本，失败则返回 None
     """
+    if max_completion_tokens is None:
+        from config import VISION_ANALYSIS_MAX_TOKENS
+        max_completion_tokens = VISION_ANALYSIS_MAX_TOKENS
     try:
         from utils.config_manager import get_config_manager
         
@@ -191,7 +195,7 @@ async def analyze_image_with_vision_model(
             base_url=vision_base_url or None,
             api_key=vision_api_key,
             max_retries=0,
-            max_completion_tokens=max_tokens,
+            max_completion_tokens=max_completion_tokens,
         )
         messages = [
             {

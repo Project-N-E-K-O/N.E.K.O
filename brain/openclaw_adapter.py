@@ -18,6 +18,7 @@ from typing import Any, Dict, Optional
 
 import httpx
 
+from config import OPENCLAW_MAGIC_INTENT_MAX_TOKENS
 from utils.file_utils import robust_json_loads
 from utils.llm_client import create_chat_llm
 from utils.config_manager import get_config_manager
@@ -352,7 +353,7 @@ class OpenClawAdapter:
                 base_url=base_url,
                 api_key=api_key or None,
                 temperature=0,
-                max_completion_tokens=80,
+                max_completion_tokens=OPENCLAW_MAGIC_INTENT_MAX_TOKENS,
                 max_retries=0,
                 extra_body=None,
             )
