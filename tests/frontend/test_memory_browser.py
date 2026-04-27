@@ -157,6 +157,10 @@ def test_memory_browser_page_load(mock_page: Page, running_server: str, seed_mem
     expect(mock_page.locator("#storage-location-manage-btn")).to_be_enabled()
     expect(mock_page.locator("#storage-recommended-root")).to_have_count(0)
     expect(mock_page.locator("#storage-current-root")).not_to_have_text("加载中...", timeout=5000)
+    expect(mock_page.locator("#storage-location-overlay")).to_have_count(0)
+    assert mock_page.evaluate("typeof window.appStorageLocation") == "object"
+    assert mock_page.evaluate("typeof window.waitForStorageLocationStartupBarrier") == "undefined"
+    assert mock_page.evaluate("typeof window.__nekoStorageLocationStartupBarrier") == "undefined"
 
 
 @pytest.mark.frontend
@@ -461,6 +465,24 @@ def test_memory_browser_storage_restart_requires_preflight_and_confirms_existing
     """Stage 3 calls restart after preflight and carries existing-target confirmation."""
     requests = []
     _install_ready_memory_browser_routes(mock_page, seed_memory_file)
+    mock_page.add_init_script(
+        """
+        window.__storageRestartMessages = [];
+        window.__storageRestartClosed = false;
+        Object.defineProperty(window, 'opener', {
+            configurable: true,
+            value: {
+                closed: false,
+                postMessage(message, origin) {
+                    window.__storageRestartMessages.push({ message, origin });
+                }
+            }
+        });
+        window.close = function () {
+            window.__storageRestartClosed = true;
+        };
+        """
+    )
 
     def handle_preflight(route):
         requests.append(("preflight", _request_json(route)))
@@ -519,6 +541,19 @@ def test_memory_browser_storage_restart_requires_preflight_and_confirms_existing
     expect(mock_page.locator("#storage-location-preflight-btn")).to_be_disabled()
     expect(mock_page.locator("#storage-target-root-input")).to_be_disabled()
     expect(mock_page.locator("#storage-location-restart-btn")).to_be_hidden()
+    mock_page.wait_for_function("window.__storageRestartMessages.length === 1", timeout=5000)
+    assert mock_page.evaluate("window.location.pathname") == "/memory_browser"
+    restart_message = mock_page.evaluate("window.__storageRestartMessages[0]")
+    assert restart_message["origin"] == running_server
+    assert restart_message["message"]["type"] == "storage_location_restart_initiated"
+    assert restart_message["message"]["sender_id"]
+    assert restart_message["message"]["payload"] == {
+        "ok": True,
+        "result": "restart_initiated",
+        "restart_mode": "migrate_after_shutdown",
+        "selected_root": "/tmp/stage3-target/N.E.K.O",
+        "target_root": "/tmp/stage3-target/N.E.K.O",
+    }
     assert requests[0][0] == "preflight"
     assert requests[1] == (
         "restart",
@@ -527,4 +562,218 @@ def test_memory_browser_storage_restart_requires_preflight_and_confirms_existing
             "selection_source": "custom",
             "confirm_existing_target_content": True,
         },
+    )
+    mock_page.wait_for_function("window.__storageRestartClosed === true", timeout=5000)
+
+
+@pytest.mark.frontend
+def test_memory_browser_storage_restart_standalone_reuses_storage_maintenance_overlay(mock_page: Page, running_server: str, seed_memory_file):
+    """Standalone memory page should show the shared storage maintenance overlay after restart."""
+    _install_ready_memory_browser_routes(mock_page, seed_memory_file)
+
+    def handle_preflight(route):
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            json={
+                "ok": True,
+                "result": "restart_required",
+                "restart_mode": "migrate_after_shutdown",
+                "selected_root": "/tmp/standalone-target/N.E.K.O",
+                "target_root": "/tmp/standalone-target/N.E.K.O",
+                "estimated_required_bytes": 1024,
+                "target_free_bytes": 4096,
+                "permission_ok": True,
+                "warning_codes": [],
+                "target_has_existing_content": False,
+                "requires_existing_target_confirmation": False,
+                "existing_target_confirmation_message": "",
+                "blocking_error_code": "",
+                "blocking_error_message": "",
+                "selection_source": "custom",
+            },
+        )
+
+    def handle_restart(route):
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            json={
+                "ok": True,
+                "result": "restart_initiated",
+                "restart_mode": "migrate_after_shutdown",
+                "selected_root": "/tmp/standalone-target/N.E.K.O",
+                "target_root": "/tmp/standalone-target/N.E.K.O",
+                "migration": {
+                    "status": "pending",
+                    "target_root": "/tmp/standalone-target/N.E.K.O",
+                },
+            },
+        )
+
+    def handle_storage_status(route):
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            json={
+                "ok": True,
+                "ready": False,
+                "status": "maintenance",
+                "lifecycle_state": "maintenance",
+                "migration_stage": "pending",
+                "maintenance_message": "当前实例即将关闭，数据会在关闭后迁移并自动重启。",
+                "poll_interval_ms": 500,
+                "effective_root": str(seed_memory_file.parents[2]),
+                "blocking_reason": "migration_pending",
+                "migration": {
+                    "status": "pending",
+                    "target_root": "/tmp/standalone-target/N.E.K.O",
+                },
+            },
+        )
+
+    mock_page.route("**/api/storage/location/preflight", handle_preflight)
+    mock_page.route("**/api/storage/location/restart", handle_restart)
+    mock_page.route("**/api/storage/location/status", handle_storage_status)
+
+    mock_page.goto(f"{running_server}/memory_browser")
+    mock_page.wait_for_selector("#memory-file-list button.cat-btn", state="attached", timeout=10000)
+    mock_page.locator("#storage-location-manage-btn").click()
+    mock_page.locator("#storage-target-root-input").fill("/tmp/standalone-target")
+
+    with mock_page.expect_response(lambda r: "/api/storage/location/preflight" in r.url and r.status == 200):
+        mock_page.locator("#storage-location-preflight-btn").click()
+    with mock_page.expect_response(lambda r: "/api/storage/location/restart" in r.url and r.status == 200):
+        mock_page.locator("#storage-location-restart-btn").click()
+
+    expect(mock_page.get_by_role("heading", name="正在优化存储布局...")).to_be_visible(timeout=10_000)
+    expect(mock_page.locator("#storage-location-overlay")).to_be_visible(timeout=10_000)
+    expect(mock_page.locator('[role="progressbar"]')).to_be_visible(timeout=10_000)
+    assert mock_page.evaluate("typeof window.__nekoStorageLocationStartupBarrier") == "undefined"
+    assert mock_page.evaluate("window.location.pathname") == "/memory_browser"
+
+
+@pytest.mark.frontend
+def test_memory_browser_web_popup_restart_drives_opener_maintenance_overlay(mock_page: Page, running_server: str, seed_memory_file):
+    """A real web popup opened from the home page must hand off restart maintenance to its opener."""
+    context = mock_page.context
+    _install_ready_memory_browser_routes(context, seed_memory_file)
+
+    target_root = "/tmp/web-popup-target/N.E.K.O"
+
+    context.route(
+        "**/api/system/status",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            json={
+                "ok": True,
+                "status": "ready",
+                "ready": True,
+                "storage": {
+                    "selection_required": False,
+                    "migration_pending": False,
+                    "recovery_required": False,
+                    "blocking_reason": "",
+                    "last_error_summary": "",
+                    "stage": "web_popup_restart",
+                },
+            },
+        ),
+    )
+    context.route(
+        "**/api/storage/location/status",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            json={
+                "ok": True,
+                "ready": False,
+                "status": "maintenance",
+                "lifecycle_state": "maintenance",
+                "migration_stage": "pending",
+                "maintenance_message": "当前实例即将关闭，数据会在关闭后迁移并自动重启。",
+                "poll_interval_ms": 500,
+                "effective_root": str(seed_memory_file.parents[2]),
+                "blocking_reason": "migration_pending",
+                "storage": {
+                    "selection_required": False,
+                    "migration_pending": True,
+                    "recovery_required": False,
+                    "blocking_reason": "migration_pending",
+                    "stage": "web_popup_restart",
+                },
+                "migration": {
+                    "status": "pending",
+                    "target_root": target_root,
+                },
+            },
+        ),
+    )
+    context.route(
+        "**/api/storage/location/preflight",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            json={
+                "ok": True,
+                "result": "restart_required",
+                "restart_mode": "migrate_after_shutdown",
+                "selected_root": target_root,
+                "target_root": target_root,
+                "estimated_required_bytes": 1024,
+                "target_free_bytes": 4096,
+                "permission_ok": True,
+                "warning_codes": [],
+                "target_has_existing_content": False,
+                "requires_existing_target_confirmation": False,
+                "existing_target_confirmation_message": "",
+                "blocking_error_code": "",
+                "blocking_error_message": "",
+                "selection_source": "custom",
+            },
+        ),
+    )
+    context.route(
+        "**/api/storage/location/restart",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            json={
+                "ok": True,
+                "result": "restart_initiated",
+                "restart_mode": "migrate_after_shutdown",
+                "selected_root": target_root,
+                "target_root": target_root,
+                "migration": {
+                    "status": "pending",
+                    "target_root": target_root,
+                },
+            },
+        ),
+    )
+
+    home_page = mock_page
+    home_page.goto(f"{running_server}/", wait_until="domcontentloaded")
+    expect(home_page.locator("#storage-location-overlay")).to_be_hidden(timeout=10_000)
+
+    with home_page.expect_popup() as popup_info:
+        home_page.evaluate("() => window.open('/memory_browser', 'neko_memory')")
+    memory_page = popup_info.value
+    memory_page.on("console", lambda msg: print(f"Memory Popup Console: {msg.text}"))
+    memory_page.wait_for_selector("#memory-file-list button.cat-btn", state="attached", timeout=10000)
+    assert memory_page.evaluate("window.opener !== null")
+
+    memory_page.locator("#storage-location-manage-btn").click()
+    memory_page.locator("#storage-target-root-input").fill("/tmp/web-popup-target")
+    with memory_page.expect_response(lambda r: "/api/storage/location/preflight" in r.url and r.status == 200):
+        memory_page.locator("#storage-location-preflight-btn").click()
+    with memory_page.expect_response(lambda r: "/api/storage/location/restart" in r.url and r.status == 200):
+        memory_page.locator("#storage-location-restart-btn").click()
+
+    expect(home_page.get_by_role("heading", name="正在优化存储布局...")).to_be_visible(timeout=10_000)
+    expect(home_page.locator("#storage-location-overlay")).to_be_visible(timeout=10_000)
+    expect(home_page.locator('[role="progressbar"]')).to_be_visible(timeout=10_000)
+    assert home_page.locator("body").evaluate(
+        "node => node.classList.contains('storage-location-modal-open')"
     )

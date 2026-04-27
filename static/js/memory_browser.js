@@ -13,6 +13,11 @@
         limited: false
     };
     let storagePreflightState = null;
+    const STORAGE_RESTART_MESSAGE_TYPE = 'storage_location_restart_initiated';
+    const STORAGE_RESTART_CHANNEL = 'neko_storage_location_channel';
+    const STORAGE_RESTART_SENDER_ID = window.__nekoStorageLocationPageId || (
+        'memory-browser-' + Date.now() + '-' + Math.random().toString(36).slice(2)
+    );
 
     const STORAGE_BLOCKING_STATUS_KEYS = {
         selection_required: 'memory.storageSelectionRequired',
@@ -20,11 +25,24 @@
         recovery_required: 'memory.storageRecoveryRequired'
     };
 
+    function interpolateText(text, options) {
+        const values = options && typeof options === 'object' ? options : {};
+        return String(text || '').replace(/\{\{\s*([\w.-]+)\s*\}\}/g, function (match, name) {
+            if (!Object.prototype.hasOwnProperty.call(values, name)) return match;
+            const value = values[name];
+            return value === undefined || value === null ? '' : String(value);
+        });
+    }
+
     function translate(key, fallback, options) {
+        let text = fallback;
         if (window.t) {
-            return window.t(key, options || {});
+            const translated = window.t(key, options || {});
+            if (typeof translated === 'string' && translated && translated !== key) {
+                text = translated;
+            }
         }
-        return fallback;
+        return interpolateText(text, options);
     }
 
     function setElementText(id, text) {
@@ -199,6 +217,12 @@
         );
         restartBtn.hidden = !canRestart;
         restartBtn.disabled = !canRestart;
+    }
+
+    function sleep(ms) {
+        return new Promise(function (resolve) {
+            window.setTimeout(resolve, ms);
+        });
     }
 
     function setStoragePreflightBusy(busy) {
@@ -395,12 +419,14 @@
             }
             restartAccepted = true;
             setStoragePreflightResult(translate('memory.storageRestartInitiated', '已请求关闭并迁移。应用即将进入维护状态，请等待重启完成。'), 'success');
+            notifyStorageRestartInitiated(payload, selectedRoot);
             storagePreflightState = null;
             const input = document.getElementById('storage-target-root-input');
             if (input) {
                 input.disabled = true;
             }
             renderStorageRestartButton();
+            await closeStorageManagerAfterRestartNotice(payload);
         } catch (e) {
             console.warn('[MemoryBrowser] storage location restart failed:', e);
             setStoragePreflightResult(String(e && e.message ? e.message : translate('memory.storageRestartFailed', '关闭并迁移请求失败')), 'error');
@@ -409,6 +435,119 @@
             if (!restartAccepted) {
                 setStoragePreflightBusy(false);
             }
+        }
+    }
+
+    function buildStorageRestartMessage(payload, selectedRoot) {
+        const normalizedPayload = payload && typeof payload === 'object' ? payload : {};
+        return {
+            type: STORAGE_RESTART_MESSAGE_TYPE,
+            sender_id: STORAGE_RESTART_SENDER_ID,
+            payload: Object.assign({}, normalizedPayload, {
+                selected_root: String(normalizedPayload.selected_root || selectedRoot || '').trim(),
+                target_root: String(normalizedPayload.target_root || normalizedPayload.selected_root || selectedRoot || '').trim()
+            })
+        };
+    }
+
+    function notifyStorageRestartInitiated(payload, selectedRoot) {
+        const message = buildStorageRestartMessage(payload, selectedRoot);
+        try {
+            if (typeof BroadcastChannel !== 'undefined') {
+                const channel = new BroadcastChannel(STORAGE_RESTART_CHANNEL);
+                channel.postMessage(message);
+                channel.close();
+            }
+        } catch (e) {
+            console.warn('[MemoryBrowser] storage restart broadcast failed:', e);
+        }
+
+        try {
+            if (window.opener && !window.opener.closed) {
+                window.opener.postMessage(message, PARENT_ORIGIN);
+            }
+        } catch (e) {
+            console.warn('[MemoryBrowser] storage restart opener notification failed:', e);
+        }
+
+        try {
+            if (window.parent && window.parent !== window) {
+                window.parent.postMessage(message, PARENT_ORIGIN);
+            }
+        } catch (e) {
+            console.warn('[MemoryBrowser] storage restart parent notification failed:', e);
+        }
+    }
+
+    async function closeStorageManagerAfterRestartNotice(payload) {
+        await sleep(250);
+        const host = window.nekoHost;
+        if (host && typeof host.closeWindow === 'function') {
+            try {
+                const result = await host.closeWindow();
+                if (!result || result.ok !== false) {
+                    return;
+                }
+            } catch (e) {
+                console.warn('[MemoryBrowser] host closeWindow failed after storage restart:', e);
+            }
+        }
+
+        const hasExternalOwner = !!(
+            (window.opener && !window.opener.closed)
+            || (window.parent && window.parent !== window)
+        );
+        if (hasExternalOwner) {
+            try {
+                window.close();
+                return;
+            } catch (_) {}
+        }
+        await showStandaloneStorageMaintenanceOverlay(payload);
+    }
+
+    function ensureStylesheet(href) {
+        if (document.querySelector('link[href="' + href + '"]')) {
+            return;
+        }
+        const link = document.createElement('link');
+        link.rel = 'stylesheet';
+        link.href = href;
+        document.head.appendChild(link);
+    }
+
+    function loadScriptOnce(src, configureScript) {
+        return new Promise(function (resolve, reject) {
+            const existing = document.querySelector('script[src="' + src + '"]');
+            if (existing) {
+                resolve();
+                return;
+            }
+            const script = document.createElement('script');
+            script.src = src;
+            if (typeof configureScript === 'function') {
+                configureScript(script);
+            }
+            script.onload = function () { resolve(); };
+            script.onerror = function () { reject(new Error('failed to load ' + src)); };
+            document.body.appendChild(script);
+        });
+    }
+
+    async function showStandaloneStorageMaintenanceOverlay(payload) {
+        try {
+            ensureStylesheet('/static/css/storage-location.css');
+            await loadScriptOnce('/static/app-storage-location.js', function (script) {
+                script.setAttribute('data-storage-location-auto-start', 'false');
+            });
+            if (
+                window.appStorageLocation
+                && typeof window.appStorageLocation.enterExternalMaintenanceMode === 'function'
+            ) {
+                window.appStorageLocation.enterExternalMaintenanceMode(payload || {});
+            }
+        } catch (e) {
+            console.warn('[MemoryBrowser] standalone storage maintenance overlay failed:', e);
         }
     }
 
