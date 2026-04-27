@@ -7116,6 +7116,8 @@ async function clearAllModelPreviews(showModelNotSetMessage = false) {
 // 清除Live2D预览并显示占位符
 async function clearLive2DPreview(showModelNotSetMessage = false) {
     try {
+        cancelPendingLive2DPreviewLoads();
+
         // 如果有模型加载，先移除它
         if (live2dPreviewManager && live2dPreviewManager.currentModel) {
             await live2dPreviewManager.removeModel(true);
@@ -7164,6 +7166,26 @@ async function clearLive2DPreview(showModelNotSetMessage = false) {
 
 // 通过模型名称加载Live2D模型
 async function loadLive2DModelByName(modelName, modelInfo = null) {
+    const loadGeneration = beginLive2DPreviewLoadGeneration();
+    let loadedModel = null;
+    const ensureCurrentLoad = async () => {
+        if (isCurrentLive2DPreviewLoad(loadGeneration)) {
+            return;
+        }
+
+        if (loadedModel && live2dPreviewManager?.currentModel === loadedModel) {
+            try {
+                await live2dPreviewManager.removeModel(true);
+            } catch (cleanupError) {
+                console.warn('[CharacterCard] 清理过期 Live2D 预览失败:', cleanupError);
+            }
+        }
+
+        const staleError = new Error('Stale Live2D preview load');
+        staleError.code = 'STALE_LIVE2D_PREVIEW_LOAD';
+        throw staleError;
+    };
+
     try {
         // 每次加载前都重新校验预览上下文。
         // Steam 详情面板会动态销毁并重建 canvas，仅凭 manager 是否存在
@@ -7172,6 +7194,7 @@ async function loadLive2DModelByName(modelName, modelInfo = null) {
         if (!live2dPreviewManager || !live2dPreviewManager.pixi_app) {
             throw new Error('Live2D preview is not ready');
         }
+        await ensureCurrentLoad();
 
         // 强制resize PIXI应用，确保canvas尺寸正确
         // 这是必要的，因为当容器最初是隐藏的(display:none)时，PIXI的尺寸会是0
@@ -7188,6 +7211,7 @@ async function loadLive2DModelByName(modelName, modelInfo = null) {
             // 重置当前预览模型引用
             currentPreviewModel = null;
         }
+        await ensureCurrentLoad();
 
         // 如果没有传入modelInfo，则从API获取模型列表
         if (!modelInfo) {
@@ -7204,6 +7228,7 @@ async function loadLive2DModelByName(modelName, modelInfo = null) {
                 throw new Error(window.t('steam.modelNotFound', '模型未找到'));
             }
         }
+        await ensureCurrentLoad();
 
         // 确保获取正确的steam_id，优先使用modelInfo中的item_id
         let finalSteamId = modelInfo.item_id;
@@ -7224,6 +7249,7 @@ async function loadLive2DModelByName(modelName, modelInfo = null) {
         }
         const filesData = await filesRes.json();
         if (!filesData.success) throw new Error(window.t('live2d.modelFilesFetchFailed', '无法获取模型文件列表'));
+        await ensureCurrentLoad();
         window._previewMotionFiles = filesData.motion_files || [];
 
         // 2. Fetch model config
@@ -7245,6 +7271,7 @@ async function loadLive2DModelByName(modelName, modelInfo = null) {
         const modelConfigRes = await fetch(modelJsonUrl);
         if (!modelConfigRes.ok) throw new Error((window.t && window.t('live2d.modelConfigFetchFailed', { status: modelConfigRes.statusText })) || `无法获取模型配置: ${modelConfigRes.statusText}`);
         const modelConfig = await modelConfigRes.json();
+        await ensureCurrentLoad();
 
         // 3. Add URL context for the loader
         modelConfig.url = modelJsonUrl;
@@ -7278,22 +7305,30 @@ async function loadLive2DModelByName(modelName, modelInfo = null) {
             wheelEnabled: true,
             skipCloseWindows: true  // 创意工坊页面不需要关闭其他窗口
         });
+        loadedModel = live2dPreviewManager.currentModel || null;
+        await ensureCurrentLoad();
 
         // 设置当前预览模型引用，用于播放动作和表情
-        currentPreviewModel = live2dPreviewManager.currentModel;
+        currentPreviewModel = loadedModel;
 
         // 清除模型路径，防止拖动预览时自动保存到preference
         live2dPreviewManager._lastLoadedModelPath = null;
 
         // 更新预览控件
         await updatePreviewControlsAfterModelLoad(filesData);
+        await ensureCurrentLoad();
 
         // 模型加载完成后，确保它在容器中正确显示
         setTimeout(() => {
-            if (live2dPreviewManager && live2dPreviewManager.currentModel) {
+            if (!isCurrentLive2DPreviewLoad(loadGeneration)) {
+                return;
+            }
+
+            const canvas = document.getElementById('live2d-preview-canvas');
+            if (live2dPreviewManager && live2dPreviewManager.currentModel && canvas) {
                 fitLive2DPreviewModelToContainer(live2dPreviewManager.currentModel);
                 // 确保canvas正确显示，占位符被隐藏
-                document.getElementById('live2d-preview-canvas').style.display = '';
+                canvas.style.display = '';
                 const placeholder = document.querySelector('#live2d-preview-content .preview-placeholder');
                 if (placeholder) placeholder.style.display = 'none';
                 // 强制重绘canvas
@@ -7307,6 +7342,10 @@ async function loadLive2DModelByName(modelName, modelInfo = null) {
         selectedModelInfo = modelInfo;
         showMessage((window.t && window.t('live2d.modelLoadSuccess', { model: modelName })) || `模型 ${modelName} 加载成功`, 'success');
     } catch (error) {
+        if (error && error.code === 'STALE_LIVE2D_PREVIEW_LOAD') {
+            return;
+        }
+
         console.error('Failed to load Live2D model by name:', error);
         showMessage((window.t && window.t('live2d.modelLoadFailed', { model: modelName })) || `加载模型 ${modelName} 失败`, 'error');
 
@@ -7488,6 +7527,20 @@ function clearTags(type) {
 // Live2D预览相关功能
 let live2dPreviewManager = null;
 let currentPreviewModel = null;
+let live2dPreviewLoadGeneration = 0;
+
+function beginLive2DPreviewLoadGeneration() {
+    live2dPreviewLoadGeneration += 1;
+    return live2dPreviewLoadGeneration;
+}
+
+function cancelPendingLive2DPreviewLoads() {
+    live2dPreviewLoadGeneration += 1;
+}
+
+function isCurrentLive2DPreviewLoad(loadGeneration) {
+    return loadGeneration === live2dPreviewLoadGeneration;
+}
 
 // 初始化Live2D预览环境
 async function initLive2DPreview() {

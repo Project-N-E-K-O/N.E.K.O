@@ -665,6 +665,7 @@ def _build_workshop_card_face_meta(item: dict) -> dict:
 
 
 def _read_card_face_origin(meta_path: Path) -> str | None:
+    """Read the persisted card-face origin marker from the sidecar file."""
     try:
         if not meta_path.exists():
             return None
@@ -679,6 +680,7 @@ def _read_card_face_origin(meta_path: Path) -> str | None:
 
 
 def _is_workshop_card_face_normalized(face_path: Path) -> bool:
+    """Return True when the existing face already matches the workshop 3:4 derivative shape."""
     if not face_path.exists():
         return False
 
@@ -699,10 +701,17 @@ def _is_workshop_card_face_normalized(face_path: Path) -> bool:
 
 
 def _should_refresh_workshop_card_face(face_path: Path, meta_path: Path) -> bool:
+    """Decide whether a workshop preview is allowed to replace the current card face."""
     if not face_path.exists():
         return True
 
     origin = _read_card_face_origin(meta_path)
+    if origin is None:
+        # 当 sidecar 缺失时，无法证明现有图片来源于工坊同步。
+        # 只有看起来已经像标准化工坊卡面的图片，才允许继续刷新；
+        # 其他情况一律保守保留，避免覆盖用户手动放入的自定义卡面。
+        return _is_workshop_card_face_normalized(face_path)
+
     if origin in {'self', 'imported'}:
         return False
 
@@ -710,6 +719,7 @@ def _should_refresh_workshop_card_face(face_path: Path, meta_path: Path) -> bool
 
 
 def _render_workshop_card_face_image(img):
+    """Render a workshop preview into the normalized 3:4 in-app card-face layout."""
     from PIL import Image as PILImage, ImageFilter, ImageOps
 
     resampling = getattr(PILImage, 'Resampling', PILImage)
@@ -770,6 +780,7 @@ def _is_matching_workshop_character(catgirl_data: dict, item_id) -> bool:
 
 
 def _ensure_workshop_card_face_from_preview(config_mgr, chara_name: str, preview_image_path: str | None) -> bool:
+    """Create or refresh a workshop-derived card face from the Steam preview image."""
     if not preview_image_path or not os.path.isfile(preview_image_path):
         return False
     if not config_mgr.ensure_card_faces_directory():
@@ -807,6 +818,7 @@ def _ensure_workshop_card_face_from_preview(config_mgr, chara_name: str, preview
 
 
 def _ensure_workshop_card_face_meta(config_mgr, chara_name: str, item: dict) -> bool:
+    """Persist sidecar metadata for workshop-generated card faces when missing."""
     if not config_mgr.ensure_card_faces_directory():
         return False
 
