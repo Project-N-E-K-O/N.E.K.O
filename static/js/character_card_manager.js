@@ -5172,8 +5172,9 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
 
 async function ensureCanModifyCardsOutsideVoiceMode() {
     // 检查语音状态 - 先获取权威当前角色，再检查语音模式
+    // cache: 'no-store' 防止浏览器/WebView 复用旧响应导致语音保护 fail-open
     try {
-        const currentResp = await fetch('/api/characters/current_catgirl');
+        const currentResp = await fetch('/api/characters/current_catgirl', { cache: 'no-store' });
         if (!currentResp.ok) {
             throw new Error(`current_catgirl request failed: ${currentResp.status}`);
         }
@@ -5181,7 +5182,10 @@ async function ensureCanModifyCardsOutsideVoiceMode() {
         const currentCatgirl = currentData.current_catgirl || '';
 
         if (currentCatgirl) {
-            const voiceResp = await fetch(`/api/characters/catgirl/${encodeURIComponent(currentCatgirl)}/voice_mode_status`);
+            const voiceResp = await fetch(
+                `/api/characters/catgirl/${encodeURIComponent(currentCatgirl)}/voice_mode_status`,
+                { cache: 'no-store' }
+            );
             if (!voiceResp.ok) {
                 throw new Error(`voice_mode_status request failed: ${voiceResp.status}`);
             }
@@ -5190,22 +5194,23 @@ async function ensureCanModifyCardsOutsideVoiceMode() {
                 const msg = window.t ? window.t('character.cannotModifyInVoiceMode') : '语音状态下无法切换或删除角色卡，请先关闭语音控制';
                 showMessage(msg, 'error', 6000);
                 await showAlertDialog(msg, { type: 'error' });
-                return false;
+                return { ok: false };
             }
         }
-        return true;
+        return { ok: true, currentCatgirl };
     } catch (error) {
         console.error('检查语音模式状态失败:', error);
         const msg = window.t ? window.t('character.voiceModeCheckFailed') : '检查语音模式状态失败，请稍后重试';
         showMessage(msg, 'error', 6000);
         await showAlertDialog(msg, { type: 'error' });
-        return false;
+        return { ok: false };
     }
 }
 
 // 切换猫娘
 async function workshopSwitchCatgirl(name) {
-    if (!(await ensureCanModifyCardsOutsideVoiceMode())) {
+    const guard = await ensureCanModifyCardsOutsideVoiceMode();
+    if (!guard.ok) {
         return;
     }
 
@@ -5231,8 +5236,15 @@ async function workshopSwitchCatgirl(name) {
 
 // 删除猫娘
 async function workshopDeleteCatgirl(name) {
-    // 检查是否为当前猫娘
-    if (name === window._workshopCurrentCatgirl) {
+    // 先做语音态预检并拿到权威当前角色名，避免别窗口切换后本地缓存失效
+    const guard = await ensureCanModifyCardsOutsideVoiceMode();
+    if (!guard.ok) {
+        return;
+    }
+
+    // 用权威值校验“是否当前角色”——本地 window._workshopCurrentCatgirl 在跨窗口切换后可能过期
+    const authoritativeCurrent = guard.currentCatgirl || window._workshopCurrentCatgirl;
+    if (name === authoritativeCurrent) {
         const msg = window.t ? window.t('character.cannotDeleteCurrentCard') : '不能删除当前正在使用的角色卡';
         showMessage(msg, 'error', 6000);
         await showAlertDialog(msg, { type: 'error' });
@@ -5252,10 +5264,6 @@ async function workshopDeleteCatgirl(name) {
         }
     } catch (e) {
         // 如果检查失败，继续让用户尝试（后端也有保护）
-    }
-
-    if (!(await ensureCanModifyCardsOutsideVoiceMode())) {
-        return;
     }
 
     // 确认删除
@@ -5282,7 +5290,18 @@ async function workshopDeleteCatgirl(name) {
     if (!confirmed) return;
 
     try {
-        await fetch('/api/characters/catgirl/' + encodeURIComponent(name), { method: 'DELETE' });
+        const resp = await fetch('/api/characters/catgirl/' + encodeURIComponent(name), { method: 'DELETE' });
+        if (!resp.ok) {
+            let serverMsg = '';
+            try {
+                const data = await resp.json();
+                serverMsg = data?.error || data?.message || '';
+            } catch (_) { /* 响应不是 JSON 就退回到默认文案 */ }
+            const msg = serverMsg || (window.t ? window.t('character.deleteError') : '删除猫娘时发生错误');
+            showMessage(msg, 'error', 6000);
+            await showAlertDialog(msg, { type: 'error' });
+            return;
+        }
         // 重新加载角色卡列表
         await loadCharacterCards();
     } catch (error) {
