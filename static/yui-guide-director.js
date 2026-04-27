@@ -3380,9 +3380,17 @@
                 agentMaster: this.readAgentToggleChecked('agent-master'),
                 userPlugin: this.readAgentToggleChecked('agent-user-plugin')
             };
+            const controller = typeof AbortController === 'function'
+                ? new AbortController()
+                : null;
+            const timeoutId = controller
+                ? window.setTimeout(() => controller.abort(), 650)
+                : 0;
 
             try {
-                const response = await fetch('/api/agent/flags');
+                const response = await fetch('/api/agent/flags', {
+                    signal: controller ? controller.signal : undefined
+                });
                 if (!response.ok) {
                     return fallbackSnapshot;
                 }
@@ -3405,6 +3413,10 @@
                 };
             } catch (_) {
                 return fallbackSnapshot;
+            } finally {
+                if (timeoutId) {
+                    window.clearTimeout(timeoutId);
+                }
             }
         }
 
@@ -4377,7 +4389,12 @@
                 this.overlay.clearActionSpotlight();
                 // 恢复猫爪总开关和用户插件开关到接管前状态
                 await rollbackAgentSwitches();
-                await this.waitForHomeMainUIReady(3600);
+                const homeReady = await this.waitForHomeMainUIReady(3600);
+                if (!homeReady) {
+                    console.warn('[YuiGuide] 插件面板预览后主页 UI 未恢复，终止后续接管流程');
+                    this.requestTermination('home_ui_not_ready', 'skip');
+                    return;
+                }
                 if (runId !== this.sceneRunId || this.isStopping()) {
                     return;
                 }
