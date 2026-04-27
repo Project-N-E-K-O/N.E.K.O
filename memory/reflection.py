@@ -1527,12 +1527,17 @@ class ReflectionEngine:
         try:
             set_call_type("memory_rebuttal_check")
             api_config = self._config_manager.get_model_api_config('summary')
-            # timeout=60: 周期性反驳扫描，后台跑无人等。
+            # timeout=90: 开 thinking 后判断"用户最近的话否定了哪条 confirmed
+            # reflection"——drain 模式下每批最多 20 条 user msg × 多条
+            # confirmed reflection，思考能改善误判（防止把 user 的反讽 / 情景
+            # 转换误标为否定）。完全后台无锁，没人等结果，安全开 thinking。
             # max_retries=0: 禁 SDK 自动重试，失败 cursor 不推进自然下轮重试。
+            # extra_body=None: 显式开 thinking。
             llm = create_chat_llm(
                 api_config['model'],
                 api_config['base_url'], api_config['api_key'],
-                timeout=60, max_retries=0,
+                timeout=90, max_retries=0,
+                extra_body=None,
             )
             try:
                 resp = await llm.ainvoke(prompt)
