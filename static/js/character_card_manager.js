@@ -8007,7 +8007,7 @@ function updatePreviewControls(motionFiles, expressionFiles) {
     // 更新动作选择框：始终提供空选项，允许保存“无待机动作”。
     const emptyMotionOption = document.createElement('option');
     emptyMotionOption.value = '';
-    emptyMotionOption.textContent = window.t ? window.t('character.noIdleMotion', '无动作') : '无动作';
+    emptyMotionOption.textContent = (window.t && window.t('character.noIdleMotion', '无动作')) || '无动作';
     motionSelect.appendChild(emptyMotionOption);
 
     if (motionFiles.length > 0) {
@@ -8025,13 +8025,13 @@ function updatePreviewControls(motionFiles, expressionFiles) {
     } else {
         motionSelect.disabled = true;
         playMotionBtn.disabled = true;
-        emptyMotionOption.textContent = window.t('live2d.noMotionFiles', '没有动作文件');
+        emptyMotionOption.textContent = (window.t && window.t('live2d.noMotionFiles', '没有动作文件')) || '没有动作文件';
     }
 
     // 更新表情选择框：始终提供空选项，避免默认选中第一个表情。
     const emptyExpressionOption = document.createElement('option');
     emptyExpressionOption.value = '';
-    emptyExpressionOption.textContent = window.t ? window.t('character.noExpression', '无表情') : '无表情';
+    emptyExpressionOption.textContent = (window.t && window.t('character.noExpression', '无表情')) || '无表情';
     expressionSelect.appendChild(emptyExpressionOption);
 
     if (expressionFiles.length > 0) {
@@ -8050,7 +8050,7 @@ function updatePreviewControls(motionFiles, expressionFiles) {
     } else {
         expressionSelect.disabled = true;
         playExpressionBtn.disabled = true;
-        emptyExpressionOption.textContent = window.t('live2d.noExpressionFiles', '没有表情文件');
+        emptyExpressionOption.textContent = (window.t && window.t('live2d.noExpressionFiles', '没有表情文件')) || '没有表情文件';
     }
 
     // 显示预览控件
