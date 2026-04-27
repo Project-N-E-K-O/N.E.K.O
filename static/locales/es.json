@@ -1639,7 +1639,7 @@
         "cardCreatedAt": "Creado",
         "cardMeta": "Información de la tarjeta",
         "cardNotCreated": "Aún no creado",
-        "cannotSwitchInVoiceMode": "No se puede cambiar de tarjeta mientras el control de voz está activo. Desactive el control de voz primero.",
+        "cannotModifyInVoiceMode": "No se puede cambiar ni eliminar tarjetas mientras el control de voz está activo. Desactive el control de voz primero.",
         "cardOriginImported": "Importado",
         "cardOriginLabel": "Origen",
         "cardOriginSelf": "Local",

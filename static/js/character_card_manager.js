@@ -5170,29 +5170,42 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
     }
 }
 
-// 切换猫娘
-async function workshopSwitchCatgirl(name) {
+async function ensureCanModifyCardsOutsideVoiceMode() {
     // 检查语音状态 - 先获取权威当前角色，再检查语音模式
     try {
         const currentResp = await fetch('/api/characters/current_catgirl');
+        if (!currentResp.ok) {
+            throw new Error(`current_catgirl request failed: ${currentResp.status}`);
+        }
         const currentData = await currentResp.json();
         const currentCatgirl = currentData.current_catgirl || '';
 
         if (currentCatgirl) {
             const voiceResp = await fetch(`/api/characters/catgirl/${encodeURIComponent(currentCatgirl)}/voice_mode_status`);
+            if (!voiceResp.ok) {
+                throw new Error(`voice_mode_status request failed: ${voiceResp.status}`);
+            }
             const voiceData = await voiceResp.json();
             if (voiceData.is_voice_mode) {
-                const msg = window.t ? window.t('character.cannotSwitchInVoiceMode') : '语音状态下无法切换角色卡，请先关闭语音控制';
+                const msg = window.t ? window.t('character.cannotModifyInVoiceMode') : '语音状态下无法切换或删除角色卡，请先关闭语音控制';
                 showMessage(msg, 'error', 6000);
                 await showAlertDialog(msg, { type: 'error' });
-                return;
+                return false;
             }
         }
+        return true;
     } catch (error) {
         console.error('检查语音模式状态失败:', error);
         const msg = window.t ? window.t('character.voiceModeCheckFailed') : '检查语音模式状态失败，请稍后重试';
         showMessage(msg, 'error', 6000);
         await showAlertDialog(msg, { type: 'error' });
+        return false;
+    }
+}
+
+// 切换猫娘
+async function workshopSwitchCatgirl(name) {
+    if (!(await ensureCanModifyCardsOutsideVoiceMode())) {
         return;
     }
 
@@ -5239,6 +5252,10 @@ async function workshopDeleteCatgirl(name) {
         }
     } catch (e) {
         // 如果检查失败，继续让用户尝试（后端也有保护）
+    }
+
+    if (!(await ensureCanModifyCardsOutsideVoiceMode())) {
+        return;
     }
 
     // 确认删除
