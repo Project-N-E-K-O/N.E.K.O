@@ -635,19 +635,77 @@ async def shutdown_memory_server():
         logger.error(f"处理关闭信号时出错: {e}")
         return {"status": "error", "message": str(e)}
 
-REBUTTAL_CHECK_INTERVAL = 300  # 5 分钟
+REBUTTAL_CHECK_INTERVAL = 180  # 3 分钟
 REBUTTAL_FIRST_RUN_LOOKBACK_HOURS = 1  # 首次启动 / 时钟回拨兜底回扫窗口
+# Drain pattern: 一次最多处理 N 条 user 消息，避免高频用户场景下 prompt 爆炸。
+# 多余的留到下一轮（cursor 推进到第 N 条的 timestamp，不丢消息）。
+REBUTTAL_DRAIN_BATCH_LIMIT = 20
+# 读 SQL 时的硬上限——bound memory，防止 1h fallback 把整张表拉进来。
+# 200 行通常包含 50-100 条 user 消息，足以喂多次 drain。
+REBUTTAL_SQL_ROW_LIMIT = 200
+
+
+def _coerce_db_ts(ts) -> datetime | None:
+    """归一化 SQL 行里的 timestamp 字段为 datetime。
+
+    SQLAlchemy + SQLite 在某些 driver 配置下返回字符串而非 datetime；与
+    memory/timeindex.py:get_last_conversation_time 同款归一化。返回 None
+    表示无法解析（caller 应跳过此行而不是把 None 写进 cursor）。
+    """
+    if isinstance(ts, datetime):
+        return ts
+    if isinstance(ts, str):
+        try:
+            return datetime.fromisoformat(ts)
+        except ValueError:
+            try:
+                return datetime.strptime(ts, "%Y-%m-%d %H:%M:%S.%f")
+            except ValueError:
+                return None
+    return None
+
+
+def _extract_user_messages_with_ts_from_rows(rows: list) -> list[tuple[str, datetime]]:
+    """从 time_indexed SQL 查询结果中提取 (用户消息文本, timestamp) 元组。
+
+    rows: [(timestamp, session_id, message_json), ...] (ASC ordered by ts)
+    message_json 是 langchain SQLChatMessageHistory 存储的 JSON 字符串。
+    content 可能是 str 或 list[{type, text}]。
+
+    返回的 list 按 ts ASC 排序，caller 可基于 last item 的 ts 推 cursor。
+    timestamp 通过 _coerce_db_ts 归一化为 datetime 对象（SQL driver 可能
+    返回 str）；解析失败的行会被跳过。
+    """
+    out: list[tuple[str, datetime]] = []
+    for ts_raw, _, msg_json in rows:
+        ts = _coerce_db_ts(ts_raw)
+        if ts is None:
+            continue
+        try:
+            msg = json.loads(msg_json) if isinstance(msg_json, str) else msg_json
+            if isinstance(msg, dict) and msg.get('type') == 'human':
+                content = msg.get('data', {}).get('content', '')
+                if isinstance(content, str):
+                    if content.strip():
+                        out.append((content, ts))
+                elif isinstance(content, list):
+                    for part in content:
+                        if isinstance(part, dict) and part.get('type') == 'text':
+                            text_val = part.get('text', '')
+                            if text_val.strip():
+                                out.append((text_val, ts))
+        except (json.JSONDecodeError, TypeError):
+            continue
+    return out
 
 
 def _extract_user_messages_from_rows(rows: list) -> list[str]:
-    """从 time_indexed SQL 查询结果中提取用户消息文本。
+    """从 time_indexed SQL 查询结果中提取用户消息文本（legacy text-only 视图）。
 
-    rows: [(session_id, message_json), ...]
-    message_json 是 langchain SQLChatMessageHistory 存储的 JSON 字符串。
-    content 可能是 str 或 list[{type, text}]，与 _extract_user_messages 对齐。
+    rows: [(timestamp, session_id, message_json), ...]
     """
     user_msgs = []
-    for _, msg_json in rows:
+    for _, _, msg_json in rows:
         try:
             msg = json.loads(msg_json) if isinstance(msg_json, str) else msg_json
             if isinstance(msg, dict) and msg.get('type') == 'human':
@@ -739,7 +797,13 @@ async def _periodic_rebuttal_loop():
 
         async def _check_one_rebuttal(name: str):
             """单个 catgirl 的反驳检查。各角色互相独立，外层 gather 并行。
-            内部对 feedbacks 仍串行 areject_promotion（同 reflection 不能并发处理）。"""
+            内部对 feedbacks 仍串行 areject_promotion（同 reflection 不能并发处理）。
+
+            Drain 模式：每轮最多处理 ``REBUTTAL_DRAIN_BATCH_LIMIT`` (=20) 条
+            user 消息，cursor 推进到第 N 条的 timestamp。背压期（高频对话用户
+            或 1h fallback）下分多个 tick 排干，每次 LLM prompt 大小受控；
+            消息不丢（cursor 严格按已处理位置推进）。
+            """
             try:
                 confirmed = await reflection_engine.aget_confirmed_reflections(name)
                 if not confirmed:
@@ -754,6 +818,7 @@ async def _periodic_rebuttal_loop():
                 start_time = await _resolve_rebuttal_start_time(name, now)
                 rows = await time_manager.aretrieve_original_by_timeframe(
                     name, start_time, now,
+                    limit_rows=REBUTTAL_SQL_ROW_LIMIT,
                 )
                 if not rows:
                     await cursor_store.aset_cursor(
@@ -761,12 +826,44 @@ async def _periodic_rebuttal_loop():
                     )
                     return
 
-                user_msgs = _extract_user_messages_from_rows(rows)
-                if not user_msgs:
-                    await cursor_store.aset_cursor(
-                        name, CURSOR_REBUTTAL_CHECKED_UNTIL, now,
-                    )
+                # 提取 (msg, ts) 元组（ASC by ts；ts 已归一化为 datetime）
+                user_msgs_with_ts = _extract_user_messages_with_ts_from_rows(rows)
+                if not user_msgs_with_ts:
+                    # 窗口里只有 AI 消息或无 user 内容 → 推进 cursor 到 SQL 截
+                    # 取的最后一行 ts（如果命中 LIMIT 还有更多行）或 now（清空了）
+                    last_row_ts = _coerce_db_ts(rows[-1][0])
+                    if len(rows) >= REBUTTAL_SQL_ROW_LIMIT and last_row_ts is not None:
+                        await cursor_store.aset_cursor(
+                            name, CURSOR_REBUTTAL_CHECKED_UNTIL, last_row_ts,
+                        )
+                    else:
+                        # 既然没命中 LIMIT，窗口已经全部扫过；直接推到 now。
+                        # last_row_ts 解析失败也走这条（保守 fallback）。
+                        await cursor_store.aset_cursor(
+                            name, CURSOR_REBUTTAL_CHECKED_UNTIL, now,
+                        )
                     return
+
+                # Drain 取前 N 条 user msg。然后扩展 batch 把和 batch 末位
+                # 共享同 ts 的后续 user msg 也吸收进来——因为 SQL 用
+                # ``timestamp BETWEEN`` (inclusive)，cursor 推进到 batch[-1].ts
+                # 后下一轮会把同 ts 的行原样重读。如果不扩展，多条同 ts 的
+                # user msg 在 batch 边界被切，会出现"只处理一部分，剩下的下
+                # 轮当 batch 边界又被切"的死循环（``store_conversation`` 一
+                # 批 message 共享 timestamp，所以同 ts 多条很常见）。
+                # 扩展受 SQL 行 LIMIT 兜底，不会无界增长。
+                batch = user_msgs_with_ts[:REBUTTAL_DRAIN_BATCH_LIMIT]
+                if len(user_msgs_with_ts) > len(batch):
+                    boundary_ts = batch[-1][1]
+                    extend_idx = len(batch)
+                    while (
+                        extend_idx < len(user_msgs_with_ts)
+                        and user_msgs_with_ts[extend_idx][1] == boundary_ts
+                    ):
+                        extend_idx += 1
+                    if extend_idx > len(batch):
+                        batch = user_msgs_with_ts[:extend_idx]
+                user_msgs = [m for m, _ in batch]
 
                 # 复用 check_feedback 判断反驳
                 feedbacks = await reflection_engine.check_feedback_for_confirmed(
@@ -777,9 +874,33 @@ async def _periodic_rebuttal_loop():
                     logger.warning(f"[Rebuttal] {name}: 反驳检查失败，保留游标待重试")
                     return
 
-                # 成功才推进游标并持久化
+                # 成功才推进游标并持久化。Drain 推进规则：
+                # - 还有 user msgs 在本次 read 内未处理（batch 已扩展含所有
+                #   同 ts，所以剩余的 ts 一定 > batch[-1].ts）
+                #   → cursor 推到第一个未处理 user msg 的 ts（next read 的
+                #     BETWEEN 起点，包含该行不会重处理因为它本来就 unprocessed）
+                # - SQL 命中 LIMIT 但 user msgs 全处理 → cursor 推到最后一行 ts
+                #   (next read 会重读 same-ts cluster 但 LLM 调用幂等无害)
+                # - 全干净 → cursor 推到 now
+                more_user_msgs = len(user_msgs_with_ts) > len(batch)
+                hit_sql_limit = len(rows) >= REBUTTAL_SQL_ROW_LIMIT
+                if more_user_msgs:
+                    new_cursor = user_msgs_with_ts[len(batch)][1]
+                    logger.info(
+                        f"[Rebuttal] {name}: drain 处理 {len(batch)} 条，"
+                        f"cursor 推进到下一未处理 user msg ts，下轮续"
+                    )
+                elif hit_sql_limit:
+                    last_row_ts = _coerce_db_ts(rows[-1][0])
+                    new_cursor = last_row_ts if last_row_ts is not None else now
+                    logger.info(
+                        f"[Rebuttal] {name}: drain 处理 {len(batch)} 条 user msg，"
+                        f"SQL 命中 LIMIT，cursor 推进到最后一行 ts，下轮续"
+                    )
+                else:
+                    new_cursor = now
                 await cursor_store.aset_cursor(
-                    name, CURSOR_REBUTTAL_CHECKED_UNTIL, now,
+                    name, CURSOR_REBUTTAL_CHECKED_UNTIL, new_cursor,
                 )
                 for fb in feedbacks:
                     if isinstance(fb, dict) and fb.get('feedback') == 'denied':
@@ -799,7 +920,7 @@ async def _periodic_rebuttal_loop():
         await asyncio.sleep(REBUTTAL_CHECK_INTERVAL)
 
 
-AUTO_PROMOTE_CHECK_INTERVAL = 300  # 5 分钟
+AUTO_PROMOTE_CHECK_INTERVAL = 180  # 3 分钟（与 rebuttal 同步，覆盖同样级别的状态变化）
 
 async def _periodic_auto_promote_loop():
     """定期执行 auto_promote_stale：pending→confirmed→promoted 状态迁移。
@@ -2074,20 +2195,29 @@ async def api_reflect(lanlan_name: str):
     absorbed 标记竞态问题。
     """
     lanlan_name = validate_lanlan_name(lanlan_name)
-    auto_transitions = 0
     reflection_result = None
-    try:
-        auto_transitions = await reflection_engine.aauto_promote_stale(lanlan_name)
-    except Exception as e:
-        logger.debug(f"[ReflectAPI] {lanlan_name}: auto_promote_stale 失败: {e}")
+    # auto_promote_stale 改 fire-and-forget：开 thinking 后 promote_merge 单
+    # 调用可能 30-90s，串行多个 confirmed reflection 累计能超 client 15s
+    # timeout。periodic auto_promote loop 每 180s 跑一次会兜底，本端点不
+    # 等也安全。caller (system_router) 仅用 auto_transitions 打 log，丢失
+    # 计数无功能影响。
+    _spawn_background_task(_safe_auto_promote(lanlan_name))
     try:
         reflection_result = await reflection_engine.reflect(lanlan_name)
     except Exception as e:
         logger.debug(f"[ReflectAPI] {lanlan_name}: reflect 失败: {e}")
     return {
         "reflection": reflection_result,
-        "auto_transitions": auto_transitions,
+        "auto_transitions": 0,  # fire-and-forget，本调用不返回真实计数
     }
+
+
+async def _safe_auto_promote(lanlan_name: str) -> None:
+    """fire-and-forget 包装，吞 reflection_engine.aauto_promote_stale 的异常。"""
+    try:
+        await reflection_engine.aauto_promote_stale(lanlan_name)
+    except Exception as e:
+        logger.debug(f"[ReflectAPI] {lanlan_name}: 后台 auto_promote_stale 失败: {e}")
 
 
 @app.get("/followup_topics/{lanlan_name}")
