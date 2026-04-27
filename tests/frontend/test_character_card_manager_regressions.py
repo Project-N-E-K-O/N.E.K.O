@@ -115,6 +115,8 @@ def _install_preview_stubs(page: Page, load_delay_ms: int = 0) -> None:
 
             class FakeLive2DManager {
                 constructor() {
+                    window.__managerSequence = (window.__managerSequence || 0) + 1;
+                    this.instanceId = window.__managerSequence;
                     this.currentModel = null;
                     this.pixi_app = this._createPixiApp('live2d-preview-canvas');
                 }
@@ -129,6 +131,9 @@ def _install_preview_stubs(page: Page, load_delay_ms: int = 0) -> None:
                                 this.screen = { width, height };
                             },
                             render() {}
+                        },
+                        destroy() {
+                            this.destroyed = true;
                         }
                     };
                 }
@@ -619,6 +624,143 @@ def test_character_card_manager_clear_preview_resets_refresh_state(
     assert state["hasCurrentPreviewModel"] is False
     assert not any(
         "清除Live2D预览失败:" in entry
+        for entry in state["consoleErrors"]
+    )
+    assert not [entry for entry in state["messages"] if entry["type"] == "error"]
+
+
+@pytest.mark.frontend
+def test_character_card_manager_panel_close_recreates_live2d_preview_context(
+    mock_page: Page,
+    running_server: str,
+):
+    _open_character_card_manager(mock_page, running_server)
+    _install_preview_stubs(mock_page, load_delay_ms=0)
+
+    state = mock_page.evaluate(
+        """
+        async () => {
+            window.__messages = [];
+            window.__consoleErrors = [];
+            window.__consoleWarnings = [];
+            window.showMessage = (message, type) => {
+                window.__messages.push({
+                    message: String(message || ''),
+                    type: String(type || '')
+                });
+            };
+            console.error = (...args) => {
+                window.__consoleErrors.push(args.map(arg => String(arg)).join(' '));
+            };
+            console.warn = (...args) => {
+                window.__consoleWarnings.push(args.map(arg => String(arg)).join(' '));
+            };
+
+            const mountPanelPreview = () => {
+                const existing = document.querySelector('.catgirl-panel-overlay');
+                if (existing) {
+                    existing.remove();
+                }
+
+                const overlay = document.createElement('div');
+                overlay.className = 'catgirl-panel-overlay active';
+                const wrapper = document.createElement('div');
+                wrapper.className = 'catgirl-panel-wrapper phase-expand';
+                overlay.appendChild(wrapper);
+
+                const host = document.createElement('div');
+                host.id = 'regression-steam-host';
+                host.style.width = '960px';
+                host.style.margin = '0 auto';
+                wrapper.appendChild(host);
+                document.body.appendChild(overlay);
+
+                buildSteamTabContent('RegressionCard', {}, null, host);
+
+                const previewContainer = document.getElementById('live2d-preview-container');
+                const previewContent = document.getElementById('live2d-preview-content');
+                const previewCanvas = document.getElementById('live2d-preview-canvas');
+
+                if (previewContainer) {
+                    previewContainer.style.height = '360px';
+                }
+                if (previewContent) {
+                    previewContent.style.width = '360px';
+                    previewContent.style.height = '360px';
+                    Object.defineProperty(previewContent, 'clientWidth', {
+                        configurable: true,
+                        get: () => 360
+                    });
+                    Object.defineProperty(previewContent, 'clientHeight', {
+                        configurable: true,
+                        get: () => 360
+                    });
+                }
+                if (previewCanvas) {
+                    Object.defineProperty(previewCanvas, 'clientWidth', {
+                        configurable: true,
+                        get: () => 360
+                    });
+                    Object.defineProperty(previewCanvas, 'clientHeight', {
+                        configurable: true,
+                        get: () => 360
+                    });
+                }
+            };
+
+            mountPanelPreview();
+            await loadLive2DModelByName('ATLS', {
+                name: 'ATLS',
+                path: '/workshop/steam123/ATLS/ATLS.model3.json',
+                item_id: 'steam123'
+            });
+            await new Promise(resolve => setTimeout(resolve, 120));
+
+            const firstManagerId = live2dPreviewManager?.instanceId || null;
+            const firstCanvas = document.getElementById('live2d-preview-canvas');
+
+            await closeCatgirlPanel();
+
+            const managerAfterClose = live2dPreviewManager;
+            const firstCanvasConnectedAfterClose = firstCanvas ? firstCanvas.isConnected : null;
+
+            mountPanelPreview();
+            await loadLive2DModelByName('ATLS', {
+                name: 'ATLS',
+                path: '/workshop/steam123/ATLS/ATLS.model3.json',
+                item_id: 'steam123'
+            });
+            await new Promise(resolve => setTimeout(resolve, 120));
+
+            return {
+                firstManagerId,
+                secondManagerId: live2dPreviewManager?.instanceId || null,
+                managerClearedOnClose: managerAfterClose === null,
+                firstCanvasConnectedAfterClose,
+                hasCurrentModelAfterReopen: !!live2dPreviewManager?.currentModel,
+                hasCurrentPreviewModelAfterReopen: !!currentPreviewModel,
+                canvasDisplayAfterReopen: document.getElementById('live2d-preview-canvas')?.style.display || '',
+                refreshButtonDisplayAfterReopen: document.getElementById('live2d-refresh-btn')?.style.display || '',
+                consoleErrors: window.__consoleErrors,
+                messages: window.__messages
+            };
+        }
+        """
+    )
+
+    assert state["firstManagerId"] is not None
+    assert state["secondManagerId"] is not None
+    assert state["firstManagerId"] != state["secondManagerId"]
+    assert state["managerClearedOnClose"] is True
+    assert state["firstCanvasConnectedAfterClose"] is False
+    assert state["hasCurrentModelAfterReopen"] is True
+    assert state["hasCurrentPreviewModelAfterReopen"] is True
+    assert state["canvasDisplayAfterReopen"] == ""
+    assert state["refreshButtonDisplayAfterReopen"] == "flex"
+    assert not any(
+        "清除Live2D预览失败:" in entry
+        or "Failed to initialize Live2D preview:" in entry
+        or "Failed to load Live2D model by name:" in entry
         for entry in state["consoleErrors"]
     )
     assert not [entry for entry in state["messages"] if entry["type"] == "error"]

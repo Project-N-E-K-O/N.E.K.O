@@ -4160,15 +4160,19 @@ function openNewCatgirlPanel() {
 }
 window.openNewCatgirlPanel = openNewCatgirlPanel;
 
-function closeCatgirlPanel() {
+async function closeCatgirlPanel() {
     const overlay = document.querySelector('.catgirl-panel-overlay');
     if (!overlay) return;
+    if (overlay.dataset.closing === 'true') return;
+    overlay.dataset.closing = 'true';
 
     // 清理模型预览资源（如果 Steam 标签页曾加载过）
     try {
-        if (typeof disposeWorkshopVrm === 'function') disposeWorkshopVrm();
-        if (typeof disposeWorkshopMmd === 'function') disposeWorkshopMmd();
-        if (typeof clearLive2DPreview === 'function') clearLive2DPreview();
+        const cleanupTasks = [];
+        if (typeof disposeWorkshopVrm === 'function') cleanupTasks.push(disposeWorkshopVrm());
+        if (typeof disposeWorkshopMmd === 'function') cleanupTasks.push(disposeWorkshopMmd());
+        if (typeof destroyLive2DPreviewContext === 'function') cleanupTasks.push(destroyLive2DPreviewContext());
+        await Promise.allSettled(cleanupTasks);
     } catch (e) {
         console.warn('[Panel] 清理预览资源时出错:', e);
     }
@@ -4179,14 +4183,12 @@ function closeCatgirlPanel() {
         wrapper.classList.add('phase-center');
     }
 
-    setTimeout(() => {
-        overlay.classList.remove('active');
-        if (wrapper) wrapper.classList.remove('phase-center');
-        setTimeout(() => {
-            overlay.remove();
-            _catgirlPanelOpen = false;
-        }, 400);
-    }, 300);
+    await new Promise(resolve => setTimeout(resolve, 300));
+    overlay.classList.remove('active');
+    if (wrapper) wrapper.classList.remove('phase-center');
+    await new Promise(resolve => setTimeout(resolve, 400));
+    overlay.remove();
+    _catgirlPanelOpen = false;
 }
 window.closeCatgirlPanel = closeCatgirlPanel;
 
@@ -7139,10 +7141,11 @@ async function clearLive2DPreview(showModelNotSetMessage = false) {
     try {
         cancelPendingLive2DPreviewLoads();
         selectedModelInfo = null;
+        window._previewMotionFiles = [];
         setLive2DPreviewRefreshButtonState(false, false);
 
         // 如果有模型加载，先移除它
-        if (live2dPreviewManager && live2dPreviewManager.currentModel) {
+        if (live2dPreviewManager && typeof live2dPreviewManager.removeModel === 'function') {
             await live2dPreviewManager.removeModel(true);
         }
         currentPreviewModel = null;
@@ -7184,6 +7187,72 @@ async function clearLive2DPreview(showModelNotSetMessage = false) {
 
     } catch (error) {
         console.error('清除Live2D预览失败:', error);
+    }
+}
+
+async function destroyLive2DPreviewContext() {
+    const manager = live2dPreviewManager;
+    cancelPendingLive2DPreviewLoads();
+    selectedModelInfo = null;
+    currentPreviewModel = null;
+    window._previewMotionFiles = [];
+    setLive2DPreviewRefreshButtonState(false, false);
+
+    if (!manager) {
+        return;
+    }
+
+    if (typeof manager._activeLoadToken === 'number') {
+        manager._activeLoadToken += 1;
+    }
+
+    try {
+        await clearLive2DPreview();
+    } finally {
+        manager._isLoadingModel = false;
+        manager._modelLoadState = 'idle';
+        manager._isModelReadyForInteraction = false;
+
+        if (manager._canvasRevealTimer) {
+            clearTimeout(manager._canvasRevealTimer);
+            manager._canvasRevealTimer = null;
+        }
+
+        try {
+            if (manager.pixi_app && manager.pixi_app.view && manager.pixi_app.view.style) {
+                manager.pixi_app.view.style.transition = '';
+                manager.pixi_app.view.style.opacity = '';
+            }
+        } catch (_) {}
+
+        if (manager._previewResizeHandlerBound && manager._previewResizeHandler) {
+            window.removeEventListener('resize', manager._previewResizeHandler);
+        }
+        manager._previewResizeHandlerBound = false;
+        manager._previewResizeHandler = null;
+
+        if (manager._screenChangeHandler) {
+            window.removeEventListener('resize', manager._screenChangeHandler);
+            manager._screenChangeHandler = null;
+        }
+        if (manager._displayChangeHandler) {
+            window.removeEventListener('electron-display-changed', manager._displayChangeHandler);
+            manager._displayChangeHandler = null;
+        }
+
+        if (manager.pixi_app && typeof manager.pixi_app.destroy === 'function') {
+            try {
+                manager.pixi_app.destroy(true);
+            } catch (destroyError) {
+                console.warn('[CharacterCard] 销毁 Live2D 预览 PIXI 实例失败:', destroyError);
+            }
+        }
+
+        manager.pixi_app = null;
+        manager.currentModel = null;
+        manager.isInitialized = false;
+        manager._lastPIXIContext = { canvasId: null, containerId: null };
+        live2dPreviewManager = null;
     }
 }
 

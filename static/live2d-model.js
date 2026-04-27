@@ -17,6 +17,167 @@ const Easing = {
     }
 };
 
+Live2DManager.prototype.removeModel = async function(force = false, options = {}) {
+    const shouldSkipCloseWindows = force || options.skipCloseWindows === true;
+    const activeModel = this.currentModel || null;
+    const stage = this.pixi_app && this.pixi_app.stage;
+    const ticker = this.pixi_app && this.pixi_app.ticker;
+
+    if (window.closeAllSettingsWindows && !shouldSkipCloseWindows) {
+        try {
+            window.closeAllSettingsWindows();
+        } catch (_) {}
+    }
+
+    if (this._savedParamsTimer) {
+        clearInterval(this._savedParamsTimer);
+        this._savedParamsTimer = null;
+    }
+
+    if (this._reinstallTimer) {
+        clearTimeout(this._reinstallTimer);
+        this._reinstallTimer = null;
+        this._reinstallScheduled = false;
+    }
+
+    if (this._canvasRevealTimer) {
+        clearTimeout(this._canvasRevealTimer);
+        this._canvasRevealTimer = null;
+    }
+
+    try {
+        if (this.pixi_app && this.pixi_app.view && this.pixi_app.view.style) {
+            this.pixi_app.view.style.transition = '';
+            this.pixi_app.view.style.opacity = '';
+        }
+    } catch (_) {}
+
+    if (this._idleMotionLoopTimers instanceof Set) {
+        this._idleMotionLoopTimers.forEach(timer => clearTimeout(timer));
+        this._idleMotionLoopTimers.clear();
+    }
+
+    if (activeModel) {
+        try {
+            const evts = activeModel.internalModel && activeModel.internalModel.events;
+            if (evts && typeof evts.removeAllListeners === 'function') {
+                evts.removeAllListeners('motionFinish');
+            }
+        } catch (_) {}
+    }
+
+    this._reinstallAttempts = 0;
+    if (typeof this.teardownPersistentExpressions === 'function') {
+        try {
+            this.teardownPersistentExpressions();
+        } catch (_) {}
+    }
+    this.initialParameters = {};
+
+    if (activeModel) {
+        try {
+            const coreModel = activeModel.internalModel && activeModel.internalModel.coreModel;
+            if (coreModel && this._mouthOverrideInstalled && typeof this._origCoreModelUpdate === 'function') {
+                coreModel.update = this._origCoreModelUpdate;
+            }
+        } catch (_) {}
+    }
+    this._mouthOverrideInstalled = false;
+    this._origCoreModelUpdate = null;
+    this._coreModelRef = null;
+
+    if (this._mouthTicker && ticker) {
+        try {
+            ticker.remove(this._mouthTicker);
+        } catch (_) {}
+        this._mouthTicker = null;
+    }
+
+    try {
+        if (this._mouseTrackingListener) {
+            window.removeEventListener('pointermove', this._mouseTrackingListener);
+            this._mouseTrackingListener = null;
+        }
+
+        if (this._lockIconTicker && ticker) {
+            ticker.remove(this._lockIconTicker);
+        }
+        this._lockIconTicker = null;
+        if (this._lockIconElement && this._lockIconElement.parentNode) {
+            this._lockIconElement.parentNode.removeChild(this._lockIconElement);
+        }
+        this._lockIconElement = null;
+
+        if (this._floatingButtonsTicker && ticker) {
+            ticker.remove(this._floatingButtonsTicker);
+        }
+        this._floatingButtonsTicker = null;
+        if (this._floatingButtonsContainer && this._floatingButtonsContainer.parentNode) {
+            this._floatingButtonsContainer.parentNode.removeChild(this._floatingButtonsContainer);
+        }
+        this._floatingButtonsContainer = null;
+        this._floatingButtons = {};
+
+        if (this._returnButtonContainer && this._returnButtonContainer.parentNode) {
+            this._returnButtonContainer.parentNode.removeChild(this._returnButtonContainer);
+        }
+        this._returnButtonContainer = null;
+
+        if (this._popupTimers) {
+            Object.values(this._popupTimers).forEach(timer => clearTimeout(timer));
+        }
+        this._popupTimers = {};
+
+        ticker && ticker.stop && ticker.stop();
+    } catch (_) {}
+
+    try {
+        stage && stage.removeAllListeners && stage.removeAllListeners();
+    } catch (_) {}
+    try {
+        activeModel && activeModel.removeAllListeners && activeModel.removeAllListeners();
+    } catch (_) {}
+
+    try {
+        stage && stage.removeChild && activeModel && stage.removeChild(activeModel);
+    } catch (_) {}
+    try {
+        activeModel && activeModel.destroy && activeModel.destroy({ children: true });
+    } catch (_) {}
+
+    try {
+        if (stage && Array.isArray(stage.children)) {
+            const orphanedModels = [];
+            for (let i = stage.children.length - 1; i >= 0; i--) {
+                const child = stage.children[i];
+                if (child && child.internalModel) {
+                    orphanedModels.push(child);
+                }
+            }
+            for (const child of orphanedModels) {
+                try { stage.removeChild(child); } catch (_) {}
+                try { child.destroy({ children: true }); } catch (_) {}
+            }
+        }
+    } catch (e) {
+        console.warn('清理舞台残留模型时出错:', e);
+    }
+
+    try {
+        ticker && ticker.start && ticker.start();
+    } catch (_) {}
+
+    this.currentModel = null;
+    this._lastLoadedModelPath = null;
+    if (typeof this._resetDerivedModelMetadata === 'function') {
+        this._resetDerivedModelMetadata();
+    }
+    this._isModelReadyForInteraction = false;
+    if (!this._isLoadingModel) {
+        this._modelLoadState = 'idle';
+    }
+};
+
 // 加载模型
 Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
     if (!this.pixi_app) {
@@ -45,132 +206,9 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
     try {
         // 移除当前模型
         if (this.currentModel) {
-            // 关闭所有已打开的设置窗口（防御性检查）；可通过 options.skipCloseWindows 跳过此操作（例如从设置窗口返回时重新加载模型）
-            if (window.closeAllSettingsWindows && !options.skipCloseWindows) {
-                window.closeAllSettingsWindows();
-            }
-            // 清除保存参数的定时器
-            if (this._savedParamsTimer) {
-                clearInterval(this._savedParamsTimer);
-                this._savedParamsTimer = null;
-            }
-            
-            // 清除延迟重新安装覆盖的定时器
-            if (this._reinstallTimer) {
-                clearTimeout(this._reinstallTimer);
-                this._reinstallTimer = null;
-                this._reinstallScheduled = false;
-            }
-
-            // 清理 Idle 循环定时器
-            if (this._idleMotionLoopTimers instanceof Set) {
-                this._idleMotionLoopTimers.forEach(timer => clearTimeout(timer));
-                this._idleMotionLoopTimers.clear();
-            }
-
-            // 解绑旧模型上的 motionFinish 监听
-            try {
-                const evts = this.currentModel.internalModel && this.currentModel.internalModel.events;
-                if (evts && typeof evts.removeAllListeners === 'function') {
-                    evts.removeAllListeners('motionFinish');
-                }
-            } catch (_) {}
-
-            // 重置重装计数（切换模型时）
-            this._reinstallAttempts = 0;
-            // 先清空常驻表情记录和初始参数
-            this.teardownPersistentExpressions();
-            this.initialParameters = {};
-
-            // 还原 coreModel.update 覆盖
-            try {
-                const coreModel = this.currentModel.internalModel && this.currentModel.internalModel.coreModel;
-                if (coreModel && this._mouthOverrideInstalled && typeof this._origCoreModelUpdate === 'function') {
-                    coreModel.update = this._origCoreModelUpdate;
-                }
-            } catch (_) {}
-            this._mouthOverrideInstalled = false;
-            this._origCoreModelUpdate = null;
-            this._coreModelRef = null;
-            // 同时移除 mouthTicker（若曾启用过 ticker 模式）
-            if (this._mouthTicker && this.pixi_app && this.pixi_app.ticker) {
-                try { this.pixi_app.ticker.remove(this._mouthTicker); } catch (_) {}
-                this._mouthTicker = null;
-            }
-
-            // 移除由 HTML 锁图标或交互注册的监听，避免访问已销毁的显示对象
-            try {
-                // 清理鼠标跟踪监听器
-                if (this._mouseTrackingListener) {
-                    window.removeEventListener('pointermove', this._mouseTrackingListener);
-                    this._mouseTrackingListener = null;
-                }
-                
-                // 先移除锁图标的 ticker 回调
-                if (this._lockIconTicker && this.pixi_app && this.pixi_app.ticker) {
-                    this.pixi_app.ticker.remove(this._lockIconTicker);
-                }
-                this._lockIconTicker = null;
-                // 移除锁图标元素
-                if (this._lockIconElement && this._lockIconElement.parentNode) {
-                    this._lockIconElement.parentNode.removeChild(this._lockIconElement);
-                }
-                this._lockIconElement = null;
-                
-                // 清理浮动按钮系统
-                if (this._floatingButtonsTicker && this.pixi_app && this.pixi_app.ticker) {
-                    this.pixi_app.ticker.remove(this._floatingButtonsTicker);
-                }
-                this._floatingButtonsTicker = null;
-                if (this._floatingButtonsContainer && this._floatingButtonsContainer.parentNode) {
-                    this._floatingButtonsContainer.parentNode.removeChild(this._floatingButtonsContainer);
-                }
-                this._floatingButtonsContainer = null;
-                this._floatingButtons = {};
-                // 清理"请她回来"按钮容器
-                if (this._returnButtonContainer && this._returnButtonContainer.parentNode) {
-                    this._returnButtonContainer.parentNode.removeChild(this._returnButtonContainer);
-                }
-                this._returnButtonContainer = null;
-                // 清理所有弹出框定时器
-                Object.values(this._popupTimers).forEach(timer => clearTimeout(timer));
-                this._popupTimers = {};
-                
-                // 暂停 ticker，期间做销毁，随后恢复
-                this.pixi_app.ticker && this.pixi_app.ticker.stop();
-            } catch (_) {}
-            try {
-                this.pixi_app.stage.removeAllListeners && this.pixi_app.stage.removeAllListeners();
-            } catch (_) {}
-            try {
-                this.currentModel.removeAllListeners && this.currentModel.removeAllListeners();
-            } catch (_) {}
-
-            // 从舞台移除并销毁旧模型
-            try { this.pixi_app.stage.removeChild(this.currentModel); } catch (_) {}
-            try { this.currentModel.destroy({ children: true }); } catch (_) {}
-            try { this.pixi_app.ticker && this.pixi_app.ticker.start(); } catch (_) {}
-        }
-
-        // 防御性清理：确保舞台上没有残留的 Live2D 模型
-        // 这可以防止由于并发问题或其他原因导致的模型叠加
-        try {
-            const stage = this.pixi_app.stage;
-            const childrenToRemove = [];
-            for (let i = stage.children.length - 1; i >= 0; i--) {
-                const child = stage.children[i];
-                // 检查是否是 Live2D 模型（通过检查 internalModel 属性）
-                if (child && child.internalModel) {
-                    childrenToRemove.push(child);
-                }
-            }
-            for (const child of childrenToRemove) {
-                console.warn('发现舞台上残留的 Live2D 模型，正在清理...');
-                try { stage.removeChild(child); } catch (_) {}
-                try { child.destroy({ children: true }); } catch (_) {}
-            }
-        } catch (e) {
-            console.warn('清理舞台残留模型时出错:', e);
+            await this.removeModel(false, {
+                skipCloseWindows: !!options.skipCloseWindows
+            });
         }
 
         const model = await Live2DModel.from(modelPath, { autoFocus: false });
