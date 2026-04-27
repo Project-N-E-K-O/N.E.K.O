@@ -17,8 +17,8 @@ const Easing = {
     }
 };
 
-Live2DManager.prototype.removeModel = async function(force = false, options = {}) {
-    const shouldSkipCloseWindows = force || options.skipCloseWindows === true;
+Live2DManager.prototype.removeModel = async function(options = {}) {
+    const shouldSkipCloseWindows = options.skipCloseWindows === true;
     const activeModel = this.currentModel || null;
     const stage = this.pixi_app && this.pixi_app.stage;
     const ticker = this.pixi_app && this.pixi_app.ticker;
@@ -206,7 +206,7 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
     try {
         // 移除当前模型
         if (this.currentModel) {
-            await this.removeModel(false, {
+            await this.removeModel({
                 skipCloseWindows: !!options.skipCloseWindows
             });
         }

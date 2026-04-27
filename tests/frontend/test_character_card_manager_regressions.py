@@ -718,11 +718,13 @@ def test_character_card_manager_panel_close_recreates_live2d_preview_context(
 
             const firstManagerId = live2dPreviewManager?.instanceId || null;
             const firstCanvas = document.getElementById('live2d-preview-canvas');
+            const firstPixiApp = live2dPreviewManager?.pixi_app || null;
 
             await closeCatgirlPanel();
 
             const managerAfterClose = live2dPreviewManager;
             const firstCanvasConnectedAfterClose = firstCanvas ? firstCanvas.isConnected : null;
+            const firstPixiAppDestroyed = firstPixiApp ? firstPixiApp.destroyed === true : null;
 
             mountPanelPreview();
             await loadLive2DModelByName('ATLS', {
@@ -737,6 +739,7 @@ def test_character_card_manager_panel_close_recreates_live2d_preview_context(
                 secondManagerId: live2dPreviewManager?.instanceId || null,
                 managerClearedOnClose: managerAfterClose === null,
                 firstCanvasConnectedAfterClose,
+                firstPixiAppDestroyed,
                 hasCurrentModelAfterReopen: !!live2dPreviewManager?.currentModel,
                 hasCurrentPreviewModelAfterReopen: !!currentPreviewModel,
                 canvasDisplayAfterReopen: document.getElementById('live2d-preview-canvas')?.style.display || '',
@@ -753,6 +756,7 @@ def test_character_card_manager_panel_close_recreates_live2d_preview_context(
     assert state["firstManagerId"] != state["secondManagerId"]
     assert state["managerClearedOnClose"] is True
     assert state["firstCanvasConnectedAfterClose"] is False
+    assert state["firstPixiAppDestroyed"] is True
     assert state["hasCurrentModelAfterReopen"] is True
     assert state["hasCurrentPreviewModelAfterReopen"] is True
     assert state["canvasDisplayAfterReopen"] == ""

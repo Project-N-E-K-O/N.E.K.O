@@ -4141,14 +4141,18 @@ function openCatgirlPanel(card, originEl) {
             setTimeout(_resizeAllPanelTextareas, 500);
 
             // 延迟初始化 Steam 标签页内容（等待面板展开动画完成后）
+            // 用 overlay 持有 timer id，关闭时统一 clearTimeout，避免在 closing 期间重建预览
             if (!isNew) {
-                setTimeout(() => {
+                const steamInitTimer = setTimeout(() => {
+                    overlay._steamTabInitTimer = null;
+                    if (overlay.dataset.closing === 'true' || !overlay.isConnected) return;
                     const steamContainer = rightSection.querySelector('.panel-tab-steam');
                     if (steamContainer && !steamContainer.dataset.initialized) {
                         steamContainer.dataset.initialized = 'true';
                         buildSteamTabContent(name, rawData, card, steamContainer);
                     }
                 }, 500);
+                overlay._steamTabInitTimer = steamInitTimer;
             }
         }, 500);
     });
@@ -4165,6 +4169,12 @@ async function closeCatgirlPanel() {
     if (!overlay) return;
     if (overlay.dataset.closing === 'true') return;
     overlay.dataset.closing = 'true';
+
+    // 取消尚未触发的 Steam 标签页延迟初始化，避免在清理后又把预览建回来
+    if (overlay._steamTabInitTimer) {
+        clearTimeout(overlay._steamTabInitTimer);
+        overlay._steamTabInitTimer = null;
+    }
 
     // 清理模型预览资源（如果 Steam 标签页曾加载过）
     try {
@@ -6916,7 +6926,7 @@ async function loadVrmPreview(modelPath, rawData) {
 
         // 清理 Live2D 预览（如果有）
         if (live2dPreviewManager && live2dPreviewManager.currentModel) {
-            await live2dPreviewManager.removeModel(true);
+            await live2dPreviewManager.removeModel({ skipCloseWindows: true });
             currentPreviewModel = null;
         }
 
@@ -7020,7 +7030,7 @@ async function loadMmdPreview(modelPath, rawData) {
 
         // 清理 Live2D 预览（如果有）
         if (live2dPreviewManager && live2dPreviewManager.currentModel) {
-            await live2dPreviewManager.removeModel(true);
+            await live2dPreviewManager.removeModel({ skipCloseWindows: true });
             currentPreviewModel = null;
         }
 
@@ -7146,7 +7156,7 @@ async function clearLive2DPreview(showModelNotSetMessage = false) {
 
         // 如果有模型加载，先移除它
         if (live2dPreviewManager && typeof live2dPreviewManager.removeModel === 'function') {
-            await live2dPreviewManager.removeModel(true);
+            await live2dPreviewManager.removeModel({ skipCloseWindows: true });
         }
         currentPreviewModel = null;
 
@@ -7268,7 +7278,7 @@ async function loadLive2DModelByName(modelName, modelInfo = null) {
 
         if (loadedModel && live2dPreviewManager?.currentModel === loadedModel) {
             try {
-                await live2dPreviewManager.removeModel(true);
+                await live2dPreviewManager.removeModel({ skipCloseWindows: true });
             } catch (cleanupError) {
                 console.warn('[CharacterCard] 清理过期 Live2D 预览失败:', cleanupError);
             }
@@ -7300,7 +7310,7 @@ async function loadLive2DModelByName(modelName, modelInfo = null) {
 
         // 如果已经有模型加载，先移除它
         if (live2dPreviewManager && live2dPreviewManager.currentModel) {
-            await live2dPreviewManager.removeModel(true);
+            await live2dPreviewManager.removeModel({ skipCloseWindows: true });
             // 重置当前预览模型引用
             currentPreviewModel = null;
         }
