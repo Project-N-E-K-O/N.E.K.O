@@ -837,7 +837,25 @@ async def _periodic_rebuttal_loop():
         # 强力记忆关 → rebuttal LLM 整段停（这是 evidence-RFC 引入的最贵
         # 周期 LLM 之一，每 180s 一次开 thinking 跑 drain）。关闭后用户的
         # 反驳信号经由 per-turn check_feedback (主动搭话回应) 仍能进 evidence。
+        #
+        # 关态推进 cursor 到 now：否则重新开启时 _resolve_rebuttal_start_time
+        # 拿到的是关闭前的旧 cursor，下一轮会把关闭期间积攒的所有 user msg
+        # 整段补处理（极大 prompt + 大量 LLM 调用）。"关时不跑" 应等价于
+        # "关时已 noop 处理完"——重开后从 now 重新累积，不回补。
         if not await _ais_powerful_memory_enabled():
+            try:
+                character_data = await _config_manager.aload_characters()
+                catgirl_names = list(character_data.get('猫娘', {}).keys())
+                cursor_now = datetime.now()
+                for name in catgirl_names:
+                    try:
+                        await cursor_store.aset_cursor(
+                            name, CURSOR_REBUTTAL_CHECKED_UNTIL, cursor_now,
+                        )
+                    except Exception:
+                        pass  # 单角色 cursor 推进失败不致命
+            except Exception as e:
+                logger.debug(f"[Rebuttal] 关态 cursor 推进失败: {e}")
             await asyncio.sleep(REBUTTAL_CHECK_INTERVAL)
             continue
 
@@ -1610,7 +1628,21 @@ async def _periodic_signal_extraction_loop():
         # 引入的 token 大头（每 40s 轮询一次，trigger 时跑 Stage-1 + Stage-2 两
         # 个 LLM 调用，Stage-2 还开 thinking）。关闭后 evidence_score 不再变化，
         # confirmed/promoted 走 time-driven fallback。
+        #
+        # 关态推进 last_check_ts 到 now（同 rebuttal 处的理由）：避免重开后
+        # 把关闭期间的所有 user msg 当成"积压"一次性塞进 Stage-1+Stage-2 prompt。
         if not await _ais_powerful_memory_enabled():
+            try:
+                character_data = await _config_manager.aload_characters()
+                catgirl_names = list(character_data.get('猫娘', {}).keys())
+                cursor_now = datetime.now()
+                for name in catgirl_names:
+                    try:
+                        _signal_check_mark_done(name, cursor_now)
+                    except Exception:
+                        pass
+            except Exception as e:
+                logger.debug(f"[SignalLoop] 关态 cursor 推进失败: {e}")
             await asyncio.sleep(EVIDENCE_SIGNAL_CHECK_INTERVAL_SECONDS)
             continue
 
@@ -2040,6 +2072,25 @@ async def block_storage_startup(payload: ContinueStorageStartupRequest | None = 
         "limited_mode": True,
         "reason": reason,
     }
+
+
+@app.post("/internal/memory/reset_confirmed_at")
+async def internal_reset_confirmed_at():
+    """强力记忆 ON→OFF migration：重置所有角色 confirmed reflection 的
+    confirmed_at 锚点到 now。
+
+    main_routers/memory_router.py 通过 HTTP 触发本端点——helper
+    ``_reset_confirmed_at_for_all_characters`` 依赖本进程内的
+    ``reflection_engine`` 全局，必须在 memory_server 进程跑才能拿到正确的
+    实例（main_server 进程虽然能 import memory_server 模块，但那是个 fresh
+    副本，``reflection_engine`` 是 None，调用会成 no-op）。
+    """
+    try:
+        count = await _reset_confirmed_at_for_all_characters()
+        return {"ok": True, "count": count}
+    except Exception as e:
+        logger.warning(f"[Memory] reset_confirmed_at migration 失败: {e}")
+        return {"ok": False, "error": str(e), "count": 0}
 
 
 @app.on_event("shutdown")

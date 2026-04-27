@@ -1802,53 +1802,44 @@ class ReflectionEngine:
             WEAK_MEMORY_AUTO_PROMOTE_DAYS,
         )
 
+        from memory.persona import PersonaManager
         async with self._get_alock(lanlan_name):
             reflections = await self._aload_reflections_full(lanlan_name)
             now = datetime.now()
             transitions = 0
             confirmed_ids: list[str] = []
             promoted_ids: list[str] = []
+            denied_ids: list[str] = []
 
+            # Pass 1: pending → confirmed by created_at age
             for r in reflections:
-                status = r.get('status')
+                if r.get('status') != 'pending':
+                    continue
+                created_iso = r.get('created_at')
+                if not created_iso:
+                    continue
+                try:
+                    created = datetime.fromisoformat(created_iso)
+                except (ValueError, TypeError):
+                    continue
+                age_days = (now - created).total_seconds() / 86400
+                if age_days < WEAK_MEMORY_AUTO_CONFIRM_DAYS:
+                    continue
+                r['status'] = 'confirmed'
+                r['confirmed_at'] = now.isoformat()
+                r['auto_confirmed'] = True
+                rid = r.get('id')
+                if rid:
+                    confirmed_ids.append(rid)
+                transitions += 1
+                logger.info(
+                    f"[Reflection] {lanlan_name}: pending→confirmed "
+                    f"(time-driven, {int(age_days)}d): {r.get('text', '')[:50]}..."
+                )
 
-                # pending → confirmed
-                if status == 'pending':
-                    created_iso = r.get('created_at')
-                    if not created_iso:
-                        continue
-                    try:
-                        created = datetime.fromisoformat(created_iso)
-                    except (ValueError, TypeError):
-                        continue
-                    age_days = (now - created).total_seconds() / 86400
-                    if age_days < WEAK_MEMORY_AUTO_CONFIRM_DAYS:
-                        continue
-                    r['status'] = 'confirmed'
-                    r['confirmed_at'] = now.isoformat()
-                    r['auto_confirmed'] = True
-                    confirmed_ids.append(r.get('id'))
-                    transitions += 1
-                    logger.info(
-                        f"[Reflection] {lanlan_name}: pending→confirmed "
-                        f"(time-driven, {int(age_days)}d): {r.get('text', '')[:50]}..."
-                    )
-
-            # 写回 confirmed 状态变更（让 confirmed_at 落盘后再走 promote 阶段）
-            if transitions:
-                active = [
-                    r for r in reflections
-                    if r.get('status') not in REFLECTION_TERMINAL_STATUSES
-                ]
-                await self.asave_reflections(lanlan_name, active)
-                if confirmed_ids:
-                    await self._abatch_mark_surfaced_handled(
-                        lanlan_name, confirmed_ids, 'confirmed',
-                    )
-                # 重新 load 一次给 promote 阶段用最新视图
-                reflections = await self._aload_reflections_full(lanlan_name)
-
-            # confirmed → promoted (单独遍历，保证 promote 看到最新 confirmed)
+            # Pass 2: confirmed → promoted/denied by confirmed_at age
+            # 注：刚被 Pass 1 翻成 confirmed 的 confirmed_at = now，age = 0 不会
+            # 命中 14 天阈值——所以同一条 reflection 不会一轮内 pending→promoted。
             for r in reflections:
                 if r.get('status') != 'confirmed':
                     continue
@@ -1884,11 +1875,11 @@ class ReflectionEngine:
                     )
                     continue
 
-                from memory.persona import PersonaManager
                 if code == PersonaManager.FACT_ADDED:
                     r['status'] = 'promoted'
                     r['promoted_at'] = now.isoformat()
-                    promoted_ids.append(rid)
+                    if rid:
+                        promoted_ids.append(rid)
                     transitions += 1
                     logger.info(
                         f"[Reflection] {lanlan_name}: confirmed→promoted "
@@ -1898,6 +1889,8 @@ class ReflectionEngine:
                 elif code == PersonaManager.FACT_REJECTED_CARD:
                     r['status'] = 'denied'
                     r['denied_reason'] = 'rejected_by_persona_card_time_driven'
+                    if rid:
+                        denied_ids.append(rid)
                     transitions += 1
                     logger.info(
                         f"[Reflection] {lanlan_name}: confirmed→denied "
@@ -1905,18 +1898,22 @@ class ReflectionEngine:
                     )
                 # FACT_QUEUED_CORRECTION → 留在 confirmed，下轮再试
 
-            if promoted_ids:
-                # promoted 仍在 active 集合里（status='promoted' 不是 terminal
-                # in REFLECTION_TERMINAL_STATUSES？check is required，但根据
-                # 现有定义 promoted 不算 terminal）
-                active = [
-                    r for r in reflections
-                    if r.get('status') not in REFLECTION_TERMINAL_STATUSES
-                ]
-                await self.asave_reflections(lanlan_name, active)
-                await self._abatch_mark_surfaced_handled(
-                    lanlan_name, promoted_ids, 'confirmed',
-                )
+            # 单次落盘：按完整 reflections 列表（含刚被翻成 promoted/denied 的
+            # 终态条目）保存。**不过滤 REFLECTION_TERMINAL_STATUSES**——上一
+            # 版 bug 是过滤后终态条目变成 inactive，被
+            # _prepare_save_reflections 当成 stale 不写主文件，导致 promoted/
+            # denied 翻转丢失。asave_reflections 内部 _prepare_save_reflections
+            # 会按 _REFLECTION_ARCHIVE_DAYS 自然把陈旧 terminal 移到 archive
+            # 分片，不需要这里再做过滤。
+            # 任何 transition（confirmed/promoted/denied）都触发 save——只 gate
+            # 在 promoted_ids 上会丢掉纯 FACT_REJECTED_CARD 批次的 denied 翻转。
+            if transitions:
+                await self.asave_reflections(lanlan_name, reflections)
+                handled_ids = confirmed_ids + promoted_ids + denied_ids
+                if handled_ids:
+                    await self._abatch_mark_surfaced_handled(
+                        lanlan_name, handled_ids, 'confirmed',
+                    )
 
         return transitions
 

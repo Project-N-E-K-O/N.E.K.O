@@ -519,14 +519,30 @@ async def update_powerful_memory_config(request: Request):
         # 开→关切换：重置所有角色 confirmed reflection 的 confirmed_at 到 now，
         # 让 time-driven fallback 走完整的 14 天计时；避免"刚关就立刻批量
         # promote 已经卡了很久的 confirmed"的体验断层。
+        # 必须走 HTTP 调 memory_server——本 router 在 main_server 进程，直接
+        # `from memory_server import ...` 拿到的是 fresh 副本，reflection_engine
+        # 是 None，migration 会静默 no-op。memory_server 跑在独立进程
+        # (MEMORY_SERVER_PORT)，那里 reflection_engine 由 startup hook 初始化。
         if prev_enabled and not enabled:
             try:
-                from memory_server import _reset_confirmed_at_for_all_characters
-                migrated = await _reset_confirmed_at_for_all_characters()
-                logger.info(
-                    f"强力记忆切换 ON→OFF：已重置 {migrated} 条 confirmed "
-                    f"reflection 的 confirmed_at 锚点"
+                from config import MEMORY_SERVER_PORT
+                from utils.internal_http_client import get_internal_http_client
+                client = get_internal_http_client()
+                resp = await client.post(
+                    f"http://127.0.0.1:{MEMORY_SERVER_PORT}/internal/memory/reset_confirmed_at",
+                    timeout=10.0,
                 )
+                if resp.status_code == 200:
+                    payload = resp.json()
+                    migrated = int(payload.get('count', 0))
+                    logger.info(
+                        f"强力记忆切换 ON→OFF：已重置 {migrated} 条 confirmed "
+                        f"reflection 的 confirmed_at 锚点"
+                    )
+                else:
+                    logger.warning(
+                        f"强力记忆切换 migration HTTP 状态码 {resp.status_code}"
+                    )
             except Exception as e:
                 logger.warning(f"强力记忆切换 migration 失败（不致命）: {e}")
 
