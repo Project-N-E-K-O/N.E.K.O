@@ -12,6 +12,7 @@
     "preview": "vite preview",
     "build-only": "vite build",
     "type-check": "vue-tsc --build",
+    "check-hosted-tsx": "node scripts/check-hosted-tsx.mjs",
     "lint": "eslint . --fix --cache",
     "format": "prettier --write src/"
   },
