@@ -643,8 +643,9 @@ def test_storage_location_external_restart_notice_reuses_maintenance_overlay(
 
     expect(page.get_by_role("heading", name="正在优化存储布局...")).to_be_visible(timeout=10_000)
     expect(page.locator('[role="progressbar"]')).to_be_visible(timeout=10_000)
-    assert page.locator("body").evaluate(
-        "node => node.classList.contains('storage-location-modal-open')"
+    page.wait_for_function(
+        "() => document.body.classList.contains('storage-location-modal-open')",
+        timeout=10_000,
     )
 
 

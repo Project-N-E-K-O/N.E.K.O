@@ -1,6 +1,6 @@
 import pytest
 from pathlib import Path
-from playwright.sync_api import Page, expect
+from playwright.sync_api import BrowserContext, Page, expect
 
 from utils.file_utils import atomic_write_json
 from utils.storage_policy import save_storage_policy
@@ -76,8 +76,8 @@ def seed_memory_file(clean_user_data_dir, running_server):
     return memory_file
 
 
-def _install_ready_memory_browser_routes(page: Page, memory_file: Path):
-    """Mock storage + memory APIs so the page is tested in ready mode."""
+def _install_ready_memory_browser_routes(page: Page | BrowserContext, memory_file: Path) -> None:
+    """Mock storage + memory APIs so the page (or whole context) is tested in ready mode."""
     app_root = memory_file.parents[2]
     review_state = {"enabled": True}
 

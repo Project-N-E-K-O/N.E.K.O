@@ -189,9 +189,9 @@
             console.warn('[MemoryBrowser] storage location bootstrap failed:', e);
             storageLocationState = {
                 bootstrap: null,
-                blockingReason: '',
+                blockingReason: 'bootstrap_failed',
                 loadFailed: true,
-                limited: false
+                limited: true
             };
         }
         renderStorageLocationPanel();
@@ -323,6 +323,9 @@
         if (!payload || payload.ok !== true) {
             return translate('memory.storagePreflightFailed', '预检失败');
         }
+        if (payload.blocking_error_code || payload.blocking_error_message) {
+            return storageErrorMessage(payload, translate('memory.storagePreflightFailed', '预检失败'));
+        }
         if (payload.result === 'restart_not_required') {
             return translate('memory.storageAlreadyCurrentRoot', '当前已在该位置');
         }
@@ -362,7 +365,8 @@
                 throw new Error(storageErrorMessage(payload, translate('memory.storagePreflightFailed', '预检失败')));
             }
             storagePreflightState = payload;
-            setStoragePreflightResult(formatPreflightResult(payload), 'success');
+            const isBlocked = !!(payload.blocking_error_code || payload.blocking_error_message);
+            setStoragePreflightResult(formatPreflightResult(payload), isBlocked ? 'error' : 'success');
             renderStorageRestartButton();
         } catch (e) {
             console.warn('[MemoryBrowser] storage location preflight failed:', e);

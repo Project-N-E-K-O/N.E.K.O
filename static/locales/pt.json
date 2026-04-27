@@ -1502,7 +1502,7 @@
         "tutorialPageResetSuccess": "O tutorial desta página foi redefinido. Ele será mostrado novamente quando você visitar.",
         "tutorialPageResetSuccessWithName": "O tutorial para \"{{pageName}}\" foi redefinido. Ele será mostrado novamente quando você visitar essa página.",
         "refreshed": "Memória atualizada, nova memória será usada na próxima conversa",
-        "refreshingContext": "Contexto refrescante...",
+        "refreshingContext": "Atualizando contexto...",
         "storageLocation": "Local de armazenamento",
         "storageCurrentRoot": "Local de dados atual",
         "storageStatusBlocked": "É preciso resolver o estado do armazenamento primeiro",

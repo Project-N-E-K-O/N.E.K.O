@@ -580,6 +580,7 @@ body .container-header {
     justify-content: center;
     padding: 24px;
     background: rgba(23, 167, 255, 0.18);
+    -webkit-backdrop-filter: blur(4px);
     backdrop-filter: blur(4px);
 }
 
