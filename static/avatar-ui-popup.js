@@ -160,13 +160,12 @@ function injectPopupStyles(prefix) {
         .${prefix}-toggle-item:hover:not([aria-disabled="true"]) {
             background: var(--neko-popup-hover, rgba(68, 183, 254, 0.1));
         }
-        .${prefix}-toggle-item.${prefix}-toggle-item-static,
         .${prefix}-toggle-item.${prefix}-toggle-item-static:hover:not([aria-disabled="true"]) {
-            background: var(--neko-popup-selected-bg, rgba(68, 183, 254, 0.1)) !important;
+            background: var(--neko-popup-hover, rgba(68, 183, 254, 0.1)) !important;
         }
         .${prefix}-toggle-item.${prefix}-toggle-item-static .${prefix}-toggle-indicator[aria-checked="true"] {
-            background-color: #69c5ff;
-            border-color: #69c5ff;
+            background-color: var(--neko-popup-accent, #44b7fe);
+            border-color: var(--neko-popup-accent, #44b7fe);
         }
         .${prefix}-settings-menu-item {
             display: flex;
@@ -1110,6 +1109,20 @@ function createAnimationSettingsSidePanel(manager, prefix) {
         boxSizing: 'border-box',
         transition: 'background 0.2s ease'
     };
+    const updateTrackingToggleRowBackground = (row, checked) => {
+        if (!row) return;
+        const hovered = row.matches(':hover');
+        row.style.background = hovered
+            ? (checked
+                ? 'var(--neko-popup-selected-hover, rgba(68,183,254,0.15))'
+                : 'var(--neko-popup-hover-subtle, rgba(68,183,254,0.08))')
+            : 'transparent';
+    };
+    const bindTrackingToggleRowHover = (row, getChecked) => {
+        if (!row || typeof getChecked !== 'function') return;
+        row.addEventListener('mouseenter', () => updateTrackingToggleRowBackground(row, getChecked()));
+        row.addEventListener('mouseleave', () => updateTrackingToggleRowBackground(row, getChecked()));
+    };
 
     // 鼠标跟踪复选框
     const checkbox = document.createElement('input');
@@ -1121,9 +1134,11 @@ function createAnimationSettingsSidePanel(manager, prefix) {
     const { indicator, updateStyle: updateIndicatorStyle } = manager._createCheckIndicator();
     Object.assign(indicator.style, { width: '20px', height: '20px', flexShrink: '0' });
 
+    let trackingClickArea = null;
     const updateRowStyle = () => {
         const isChecked = checkbox.checked;
         updateIndicatorStyle(isChecked);
+        updateTrackingToggleRowBackground(trackingClickArea, isChecked);
     };
     checkbox.updateStyle = updateRowStyle;
     updateRowStyle();
@@ -1135,11 +1150,13 @@ function createAnimationSettingsSidePanel(manager, prefix) {
     Object.assign(label.style, { userSelect: 'none', fontSize: '12px', whiteSpace: 'nowrap' });
 
     // 鼠标跟踪点击区域（左半部分）
-    const trackingClickArea = document.createElement('div');
+    trackingClickArea = document.createElement('div');
     Object.assign(trackingClickArea.style, trackingToggleRowStyle);
     trackingClickArea.appendChild(checkbox);
     trackingClickArea.appendChild(indicator);
     trackingClickArea.appendChild(label);
+    bindTrackingToggleRowHover(trackingClickArea, () => checkbox.checked);
+    updateRowStyle();
 
     const handleTrackingChange = () => {
         const enabled = !checkbox.checked;
@@ -1183,8 +1200,10 @@ function createAnimationSettingsSidePanel(manager, prefix) {
         modeClickArea.tabIndex = isEnabled ? 0 : -1;
     };
 
+    let modeClickArea = null;
     const updateModeRowStyle = () => {
         updateModeIndicatorStyle(modeCheckbox.checked);
+        updateTrackingToggleRowBackground(modeClickArea, modeCheckbox.checked);
     };
 
     const getTrackingModeState = () => {
@@ -1209,11 +1228,13 @@ function createAnimationSettingsSidePanel(manager, prefix) {
     }
     Object.assign(modeLabel.style, { userSelect: 'none', fontSize: '12px', whiteSpace: 'nowrap' });
 
-    const modeClickArea = document.createElement('div');
+    modeClickArea = document.createElement('div');
     Object.assign(modeClickArea.style, trackingToggleRowStyle);
     modeClickArea.appendChild(modeCheckbox);
     modeClickArea.appendChild(modeIndicator);
     modeClickArea.appendChild(modeLabel);
+    bindTrackingToggleRowHover(modeClickArea, () => modeCheckbox.checked);
+    updateModeRowStyle();
 
     // 初始化跟踪模式按钮状态
     updateTrackingModeToggleState();
@@ -1274,6 +1295,7 @@ function createAnimationSettingsSidePanel(manager, prefix) {
 
     const updateHoverFadeRowStyle = () => {
         updateHoverFadeIndicatorStyle(hoverFadeCheckbox.checked);
+        updateTrackingToggleRowBackground(hoverFadeRow, hoverFadeCheckbox.checked);
         hoverFadeRow.setAttribute('aria-checked', String(hoverFadeCheckbox.checked));
     };
     hoverFadeCheckbox.updateStyle = updateHoverFadeRowStyle;
@@ -1288,6 +1310,8 @@ function createAnimationSettingsSidePanel(manager, prefix) {
     hoverFadeRow.appendChild(hoverFadeIndicator);
     hoverFadeRow.appendChild(hoverFadeLabel);
     Object.assign(hoverFadeRow.style, { cursor: 'pointer' });
+    bindTrackingToggleRowHover(hoverFadeRow, () => hoverFadeCheckbox.checked);
+    updateHoverFadeRowStyle();
 
     const handleHoverFadeChange = () => {
         const enabled = !hoverFadeCheckbox.checked;
@@ -1901,7 +1925,7 @@ function createSettingsToggleItem(manager, prefix, toggle) {
 
     const updateIndicatorStyle = (checked) => {
         if (checked) {
-            const activeColor = toggle.alwaysTinted ? '#69c5ff' : 'var(--neko-popup-accent, #44b7fe)';
+            const activeColor = 'var(--neko-popup-accent, #44b7fe)';
             indicator.style.backgroundColor = activeColor;
             indicator.style.borderColor = activeColor;
             checkmark.style.opacity = '1';
@@ -1931,11 +1955,7 @@ function createSettingsToggleItem(manager, prefix, toggle) {
         toggleItem.setAttribute('aria-checked', isChecked ? 'true' : 'false');
         indicator.setAttribute('aria-checked', isChecked ? 'true' : 'false');
         updateIndicatorStyle(isChecked);
-        toggleItem.style.background = toggle.alwaysTinted
-            ? 'var(--neko-popup-selected-bg, rgba(68,183,254,0.1))'
-            : isChecked
-            ? 'var(--neko-popup-selected-bg, rgba(68,183,254,0.1))'
-            : 'transparent';
+        toggleItem.style.background = 'transparent';
     };
 
     updateStyle();
@@ -1944,18 +1964,14 @@ function createSettingsToggleItem(manager, prefix, toggle) {
     toggleItem.appendChild(indicator);
     toggleItem.appendChild(label);
 
-    if (!toggle.alwaysTinted) {
-        toggleItem.addEventListener('mouseenter', () => {
-            if (checkbox.checked) {
-                toggleItem.style.background = 'var(--neko-popup-selected-hover, rgba(68,183,254,0.15))';
-            } else {
-                toggleItem.style.background = 'var(--neko-popup-hover-subtle, rgba(68,183,254,0.08))';
-            }
-        });
-        toggleItem.addEventListener('mouseleave', () => {
-            updateStyle();
-        });
-    }
+    toggleItem.addEventListener('mouseenter', () => {
+        toggleItem.style.background = checkbox.checked
+            ? 'var(--neko-popup-selected-hover, rgba(68,183,254,0.15))'
+            : 'var(--neko-popup-hover-subtle, rgba(68,183,254,0.08))';
+    });
+    toggleItem.addEventListener('mouseleave', () => {
+        updateStyle();
+    });
 
     const handleToggleChange = (isChecked) => {
         updateStyle();
