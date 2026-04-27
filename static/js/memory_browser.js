@@ -13,8 +13,12 @@
         limited: false
     };
     let storagePreflightState = null;
-    const STORAGE_RESTART_MESSAGE_TYPE = 'storage_location_restart_initiated';
-    const STORAGE_RESTART_CHANNEL = 'neko_storage_location_channel';
+    // 单一来源：app-storage-location.js 在 memory_browser.html 里先于本文件加载并把常量
+    // 挂到 window.appStorageLocation 上；这里直接复用，避免两份字面量随时间漂移。
+    const STORAGE_RESTART_MESSAGE_TYPE = (window.appStorageLocation && window.appStorageLocation.STORAGE_RESTART_MESSAGE_TYPE)
+        || 'storage_location_restart_initiated';
+    const STORAGE_RESTART_CHANNEL = (window.appStorageLocation && window.appStorageLocation.STORAGE_RESTART_CHANNEL)
+        || 'neko_storage_location_channel';
     const STORAGE_RESTART_SENDER_ID = window.__nekoStorageLocationPageId || (
         'memory-browser-' + Date.now() + '-' + Math.random().toString(36).slice(2)
     );
@@ -279,10 +283,15 @@
             const host = window.nekoHost;
             if (host && typeof host.pickDirectory === 'function') {
                 try {
-                    payload = await host.pickDirectory({
+                    const result = await host.pickDirectory({
                         startPath,
                         title: translate('memory.storagePickTarget', '选择位置')
                     });
+                    if (!result || typeof result !== 'object') {
+                        console.warn('[MemoryBrowser] host directory picker returned invalid result, falling back to backend:', result);
+                    } else {
+                        payload = result;
+                    }
                 } catch (e) {
                     console.warn('[MemoryBrowser] host directory picker failed, falling back to backend:', e);
                 }

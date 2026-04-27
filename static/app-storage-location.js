@@ -2534,6 +2534,8 @@
             return checkReadyStateCompletionNotice();
         },
         enterExternalMaintenanceMode: enterExternalMaintenanceMode,
+        STORAGE_RESTART_MESSAGE_TYPE: STORAGE_RESTART_MESSAGE_TYPE,
+        STORAGE_RESTART_CHANNEL: STORAGE_RESTART_CHANNEL,
     };
 
     window.addEventListener('message', function (event) {
