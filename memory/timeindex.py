@@ -307,10 +307,19 @@ class TimeIndexedMemory:
     async def aretrieve_summary_by_timeframe(self, lanlan_name, start_time, end_time):
         return []
 
-    def retrieve_original_by_timeframe(self, lanlan_name, start_time, end_time):
-        # 懒加载：首次访问时（例如重启后立刻读取）需要注册 engine，
-        # 否则 rebuttal loop 会静默跳过，直到 store_conversation 才触发建表。
-        # 读路径走 readonly，维护态也允许读。
+    def retrieve_original_by_timeframe(self, lanlan_name, start_time, end_time, limit_rows: int | None = None):
+        """读取 [start_time, end_time] 窗口内的原始对话行。
+
+        返回 ``[(timestamp, session_id, message), ...]``，按 timestamp ASC 排
+        序——保证 caller 可以基于最后一行的 ts 推进 cursor 做 drainage。
+
+        ``limit_rows`` 不为 None 时在 SQL 层加 LIMIT，防止超长 fallback 窗口
+        把整张表拉进内存。
+
+        懒加载：首次访问（例如重启后立刻读取）需要注册 engine，否则 rebuttal
+        loop 会静默跳过，直到 store_conversation 才触发建表。读路径走
+        readonly，维护态也允许读。
+        """
         try:
             if not self._ensure_engine_exists(lanlan_name, readonly=True):
                 return []
@@ -319,20 +328,25 @@ class TimeIndexedMemory:
             return []
         table_name = self._validate_table_name(TIME_ORIGINAL_TABLE_NAME)
         try:
-            # 查询指定时间范围内的对话
+            sql = (
+                f"SELECT timestamp, session_id, message FROM {table_name} "
+                f"WHERE timestamp BETWEEN :start_time AND :end_time "
+                f"ORDER BY timestamp ASC"
+            )
+            params: dict = {"start_time": start_time, "end_time": end_time}
+            if limit_rows is not None and limit_rows > 0:
+                sql += " LIMIT :limit_rows"
+                params["limit_rows"] = int(limit_rows)
             with self.engines[lanlan_name].connect() as conn:
-                result = conn.execute(
-                    text(f"SELECT session_id, message FROM {table_name} WHERE timestamp BETWEEN :start_time AND :end_time"),
-                    {"start_time": start_time, "end_time": end_time}
-                )
+                result = conn.execute(text(sql), params)
                 return result.fetchall()
         except Exception as e:
             logger.warning(f"[TimeIndexedMemory] 按时间范围读取原始对话失败: {e}")
             return []
 
-    async def aretrieve_original_by_timeframe(self, lanlan_name, start_time, end_time):
+    async def aretrieve_original_by_timeframe(self, lanlan_name, start_time, end_time, limit_rows: int | None = None):
         return await asyncio.to_thread(
-            self.retrieve_original_by_timeframe, lanlan_name, start_time, end_time
+            self.retrieve_original_by_timeframe, lanlan_name, start_time, end_time, limit_rows
         )
 
     # ── FTS5 事实索引 ─────────────────────────────────────────────

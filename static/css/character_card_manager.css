@@ -3597,7 +3597,7 @@ margin-top: 10px;
     color: #b3e5fc;
 }
 
-/* 角色卡标签展示区外框（使用更高特异性选择器替代 !important） */
+/* 角色卡标签展示区外框（提高选择器特异性，并由 wrapper 承担横向滚动与滚动条隐藏） */
 #character-card-tags-wrapper {
     display: flex;
     align-items: center;
