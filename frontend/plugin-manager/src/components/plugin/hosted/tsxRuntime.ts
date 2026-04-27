@@ -175,7 +175,31 @@ export function buildHostedTsxDocument(options: BuildHostedTsxDocumentOptions) {
     .neko-table th, .neko-table td { padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--border); }
     .neko-table th { color: var(--muted); font-size: 12px; background: rgba(148,163,184,0.08); }
     .neko-table tr:last-child td { border-bottom: none; }
+    .neko-table tbody tr { transition: background-color 140ms ease; }
+    .neko-table tbody tr:hover { background: rgba(64,158,255,0.06); }
+    .neko-table tbody tr.is-selected { background: rgba(64,158,255,0.12); }
     .neko-divider { height: 1px; background: var(--border); margin: 4px 0; }
+    .neko-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; }
+    .neko-toolbar-group { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+    .neko-alert {
+      border: 1px solid rgba(64,158,255,0.26);
+      border-radius: var(--radius-lg);
+      padding: 12px 14px;
+      background: rgba(64,158,255,0.08);
+      color: var(--text);
+      line-height: 1.65;
+    }
+    .neko-alert[data-tone="success"] { border-color: rgba(103,194,58,0.28); background: rgba(103,194,58,0.1); }
+    .neko-alert[data-tone="warning"] { border-color: rgba(230,162,60,0.32); background: rgba(230,162,60,0.11); }
+    .neko-alert[data-tone="danger"] { border-color: rgba(245,108,108,0.32); background: rgba(245,108,108,0.1); }
+    .neko-empty { display: grid; gap: 8px; place-items: center; padding: 26px; color: var(--muted); text-align: center; border: 1px dashed var(--border); border-radius: var(--radius-lg); }
+    .neko-empty-title { color: var(--text); font-weight: 720; }
+    .neko-list { display: grid; gap: 8px; }
+    .neko-list-item { padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface); }
+    .neko-progress { display: grid; gap: 6px; }
+    .neko-progress-track { height: 8px; border-radius: 999px; overflow: hidden; background: rgba(148,163,184,0.18); }
+    .neko-progress-bar { height: 100%; width: var(--progress, 0%); border-radius: inherit; background: var(--primary); transition: width 220ms ease; }
+    .neko-progress-label { display: flex; justify-content: space-between; color: var(--muted); font-size: 12px; }
     .neko-form { display: grid; gap: 12px; }
     .neko-field { display: grid; gap: 6px; }
     .neko-field-label { color: var(--text); font-size: 13px; font-weight: 680; }
@@ -314,9 +338,26 @@ export function buildHostedTsxDocument(options: BuildHostedTsxDocumentOptions) {
     function DataTable(props) {
       const rows = Array.isArray(props.data) ? props.data : [];
       const columns = props.columns || Object.keys(rows[0] || {});
-      return h('table', { className: 'neko-table ' + (props.className || '') }, h('thead', null, h('tr', null, columns.map((column) => h('th', null, typeof column === 'string' ? column : column.label || column.key)))), h('tbody', null, rows.map((row) => h('tr', null, columns.map((column) => { const key = typeof column === 'string' ? column : column.key; return h('td', null, row && row[key] !== undefined ? row[key] : ''); })))));
+      const selectedKey = props.selectedKey;
+      return h('table', { className: 'neko-table ' + (props.className || '') }, h('thead', null, h('tr', null, columns.map((column) => h('th', null, typeof column === 'string' ? column : column.label || column.key)))), h('tbody', null, rows.map((row, index) => {
+        const rowKey = props.rowKey ? row?.[props.rowKey] : index;
+        return h('tr', { className: selectedKey !== undefined && rowKey === selectedKey ? 'is-selected' : '', onClick: () => props.onSelect && props.onSelect(row, index) }, columns.map((column) => { const key = typeof column === 'string' ? column : column.key; return h('td', null, row && row[key] !== undefined ? row[key] : ''); }));
+      })));
     }
     function Divider() { return h('div', { className: 'neko-divider' }); }
+    function Toolbar(props) { return h('div', { className: 'neko-toolbar ' + (props.className || '') }, props.children); }
+    function ToolbarGroup(props) { return h('div', { className: 'neko-toolbar-group ' + (props.className || '') }, props.children); }
+    function Alert(props) { return h('div', { className: 'neko-alert ' + (props.className || ''), 'data-tone': props.tone || 'primary' }, props.children || props.message); }
+    function EmptyState(props) { return h('div', { className: 'neko-empty ' + (props.className || '') }, props.title ? h('div', { className: 'neko-empty-title' }, props.title) : null, props.description ? h('div', null, props.description) : props.children); }
+    function List(props) {
+      const items = Array.isArray(props.items) ? props.items : [];
+      return h('div', { className: 'neko-list ' + (props.className || '') }, props.children || items.map((item) => h('div', { className: 'neko-list-item' }, props.render ? props.render(item) : (item.label || item.name || String(item)))));
+    }
+    function Progress(props) {
+      const value = Math.max(0, Math.min(100, Number(props.value || 0)));
+      return h('div', { className: 'neko-progress ' + (props.className || '') }, h('div', { className: 'neko-progress-label' }, h('span', null, props.label || ''), h('span', null, String(value) + '%')), h('div', { className: 'neko-progress-track' }, h('div', { className: 'neko-progress-bar', style: { '--progress': value + '%' } })));
+    }
+    function JsonView(props) { return CodeBlock({ children: JSON.stringify(props.data ?? props.value ?? {}, null, 2) }); }
     function Field(props) {
       return h('label', { className: 'neko-field ' + (props.className || '') },
         props.label ? h('span', { className: 'neko-field-label' }, props.label) : null,
@@ -477,6 +518,20 @@ export function buildHostedTsxDocument(options: BuildHostedTsxDocumentOptions) {
       }, props.children || label);
       return button;
     }
+    function RefreshButton(props) {
+      return Button({
+        tone: props.tone || 'primary',
+        onClick: async () => {
+          try {
+            await api.refresh();
+            if (typeof props.onRefresh === 'function') props.onRefresh();
+          } catch (error) {
+            if (typeof props.onError === 'function') props.onError(error);
+            else alert(error && error.message ? error.message : String(error));
+          }
+        },
+      }, props.children || props.label || '刷新');
+    }
     Object.assign(window, {
       h,
       Fragment,
@@ -494,6 +549,13 @@ export function buildHostedTsxDocument(options: BuildHostedTsxDocumentOptions) {
       KeyValue,
       DataTable,
       Divider,
+      Toolbar,
+      ToolbarGroup,
+      Alert,
+      EmptyState,
+      List,
+      Progress,
+      JsonView,
       Field,
       Input,
       Select,
@@ -511,6 +573,7 @@ export function buildHostedTsxDocument(options: BuildHostedTsxDocumentOptions) {
       t,
       api,
       ActionButton,
+      RefreshButton,
     });
     try {
 ${escapeScriptContent(compiled)}
@@ -542,6 +605,13 @@ ${escapeScriptContent(compiled)}
         KeyValue,
         DataTable,
         Divider,
+        Toolbar,
+        ToolbarGroup,
+        Alert,
+        EmptyState,
+        List,
+        Progress,
+        JsonView,
         Field,
         Input,
         Select,
@@ -556,6 +626,7 @@ ${escapeScriptContent(compiled)}
         Step,
         Tabs,
         ActionButton,
+        RefreshButton,
       });
       appendChild(document.getElementById('root'), rendered);
     } catch (error) {

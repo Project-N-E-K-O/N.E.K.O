@@ -14,6 +14,14 @@ import {
   ButtonGroup,
   KeyValue,
   Divider,
+  Textarea,
+  Button,
+  RefreshButton,
+  Toolbar,
+  ToolbarGroup,
+  EmptyState,
+  Alert,
+  Progress,
 } from "@neko/plugin-ui"
 
 export default function McpAdapterPanel({ plugin, state, entries, actions }) {
@@ -28,12 +36,46 @@ export default function McpAdapterPanel({ plugin, state, entries, actions }) {
   const disconnectServer = safeActions.find((action) => action.id === "disconnect_server")
   const removeServers = safeActions.find((action) => action.id === "remove_servers")
   const firstServer = servers[0]
+  let selectedServerName = firstServer?.name || ""
+  let importJson = `{
+  "name": "example",
+  "transport": "stdio",
+  "command": "uvx",
+  "args": ["mcp-server-example"],
+  "enabled": true,
+  "auto_connect": true
+}`
+
+  const importServer = async () => {
+    if (!addServer) {
+      alert("add_server action is unavailable")
+      return
+    }
+    try {
+      const payload = JSON.parse(importJson)
+      await api.call("add_server", payload)
+      await api.refresh()
+    } catch (error) {
+      alert(error && error.message ? error.message : String(error))
+    }
+  }
 
   return (
     <Page
       title={safePlugin.name || "MCP Adapter"}
       subtitle="连接 MCP servers，并把它们的 tools 暴露为 N.E.K.O 插件入口。"
     >
+      <Toolbar>
+        <ToolbarGroup>
+          <StatusBadge tone={connectedServers.length > 0 ? "success" : "warning"}>
+            {connectedServers.length > 0 ? "运行中" : "待连接"}
+          </StatusBadge>
+        </ToolbarGroup>
+        <ToolbarGroup>
+          <RefreshButton>刷新状态</RefreshButton>
+        </ToolbarGroup>
+      </Toolbar>
+
       <Grid cols={4}>
         <StatCard label="已配置 Server" value={safeState.total_servers || 0} />
         <StatCard label="已连接 Server" value={safeState.connected_servers || 0} />
@@ -50,18 +92,21 @@ export default function McpAdapterPanel({ plugin, state, entries, actions }) {
             <Text>
               配置 MCP Server 后，点击连接即可发现 tools。发现到的 tools 会通过 Adapter 网关注册为可调用入口。
             </Text>
+            <Progress label="连接率" value={servers.length > 0 ? Math.round((connectedServers.length / servers.length) * 100) : 0} />
           </Stack>
         </Card>
 
         <Card title="当前插件">
-          <KeyValue
-            data={{
-              ID: safePlugin.id || "mcp_adapter",
-              Version: safePlugin.version || "-",
-              Type: safePlugin.type || "adapter",
-              Entries: safeEntries.length,
-            }}
-          />
+          <Stack>
+            <KeyValue
+              data={{
+                ID: safePlugin.id || "mcp_adapter",
+                Version: safePlugin.version || "-",
+                Type: safePlugin.type || "adapter",
+                Entries: safeEntries.length,
+              }}
+            />
+          </Stack>
         </Card>
       </Grid>
 
@@ -70,6 +115,11 @@ export default function McpAdapterPanel({ plugin, state, entries, actions }) {
           <Stack>
             <DataTable
               data={servers}
+              rowKey="name"
+              selectedKey={selectedServerName}
+              onSelect={(server) => {
+                selectedServerName = server?.name || ""
+              }}
               columns={[
                 { key: "name", label: "Server" },
                 { key: "transport", label: "Transport" },
@@ -79,22 +129,23 @@ export default function McpAdapterPanel({ plugin, state, entries, actions }) {
               ]}
             />
             <ButtonGroup>
-              {connectServer && firstServer ? (
-                <ActionButton action={connectServer} values={{ server_name: firstServer.name }} />
+              {connectServer && selectedServerName ? (
+                <ActionButton action={connectServer} values={{ server_name: selectedServerName }} />
               ) : null}
-              {disconnectServer && firstServer ? (
-                <ActionButton action={disconnectServer} values={{ server_name: firstServer.name }} />
+              {disconnectServer && selectedServerName ? (
+                <ActionButton action={disconnectServer} values={{ server_name: selectedServerName }} />
               ) : null}
-              {removeServers && firstServer ? (
-                <ActionButton action={removeServers} values={{ server_names: [firstServer.name] }} />
+              {removeServers && selectedServerName ? (
+                <ActionButton action={removeServers} values={{ server_names: [selectedServerName] }} />
               ) : null}
             </ButtonGroup>
-            <Text>快捷操作默认作用于第一条 Server；完整多选操作后续可再扩展。</Text>
+            <Text>点击表格行选择 Server，再执行连接、断开或移除操作。</Text>
           </Stack>
         ) : (
-          <Stack>
-            <Warning>当前还没有配置 MCP Server。你可以用下面的表单添加一个。</Warning>
-          </Stack>
+          <EmptyState
+            title="暂无 MCP Server"
+            description="使用下方表单或 JSON 导入添加第一个 MCP Server。"
+          />
         )}
       </Card>
 
@@ -102,7 +153,22 @@ export default function McpAdapterPanel({ plugin, state, entries, actions }) {
         <Card title="添加 MCP Server">
           <ActionForm action={addServer} submitLabel="添加并连接" />
         </Card>
-      ) : null}
+      ) : (
+        <Alert tone="warning">当前上下文没有暴露 add_server 动作，无法使用自动表单。</Alert>
+      )}
+
+      <Card title="从 JSON 导入 Server">
+        <Stack>
+          <Text>粘贴一个 MCP server 配置 JSON，字段会直接传给 add_server 入口。</Text>
+          <Textarea
+            value={importJson}
+            onChange={(value) => {
+              importJson = value
+            }}
+          />
+          <Button tone="success" onClick={importServer}>导入 JSON</Button>
+        </Stack>
+      </Card>
 
       <Card title="插件入口预览">
         <DataTable
