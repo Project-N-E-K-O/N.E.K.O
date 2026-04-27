@@ -3368,6 +3368,46 @@
             }, Number.isFinite(timeoutMs) ? timeoutMs : 1800);
         }
 
+        readAgentToggleChecked(toggleId) {
+            const checkbox = this.getAgentToggleCheckbox(toggleId);
+            return checkbox && typeof checkbox.checked === 'boolean'
+                ? !!checkbox.checked
+                : null;
+        }
+
+        async getAgentSwitchSnapshot() {
+            const fallbackSnapshot = {
+                agentMaster: this.readAgentToggleChecked('agent-master'),
+                userPlugin: this.readAgentToggleChecked('agent-user-plugin')
+            };
+
+            try {
+                const response = await fetch('/api/agent/flags');
+                if (!response.ok) {
+                    return fallbackSnapshot;
+                }
+
+                const data = await response.json();
+                if (!data || data.success !== true) {
+                    return fallbackSnapshot;
+                }
+
+                const flags = data.agent_flags && typeof data.agent_flags === 'object'
+                    ? data.agent_flags
+                    : {};
+                return {
+                    agentMaster: typeof data.analyzer_enabled === 'boolean'
+                        ? data.analyzer_enabled
+                        : (typeof flags.agent_enabled === 'boolean' ? flags.agent_enabled : fallbackSnapshot.agentMaster),
+                    userPlugin: typeof flags.user_plugin_enabled === 'boolean'
+                        ? flags.user_plugin_enabled
+                        : fallbackSnapshot.userPlugin
+                };
+            } catch (_) {
+                return fallbackSnapshot;
+            }
+        }
+
         async clickAgentSidePanelAction(toggleId, actionId, options) {
             return this.callHomeInteractionApi('clickAgentSidePanelAction', [toggleId, actionId, options || null], async () => {
                 const button = await this.waitForAgentSidePanelActionVisible(toggleId, actionId, 1800);
@@ -4114,19 +4154,21 @@
             // clickAgentSidePanelAction 会把窗口打开交给按钮点击链路处理；
             // 这里优先依赖 waitForOpenedWindow(PLUGIN_DASHBOARD_WINDOW_NAME) 等待副作用结果，
             // 只有点击链路没有拉起窗口时才回退 openPluginDashboardWindow。
-            const clicked = await this.clickAgentSidePanelAction('agent-user-plugin', 'management-panel', {
+            await this.clickAgentSidePanelAction('agent-user-plugin', 'management-panel', {
                 keepMainUIVisible: true
             });
-            let pluginDashboardWindow = null;
-            if (!clicked && runId === this.sceneRunId && !this.destroyed && !this.angryExitTriggered) {
+            let pluginDashboardWindow = await this.waitForOpenedWindow(PLUGIN_DASHBOARD_WINDOW_NAME, 6000);
+            if (
+                (!pluginDashboardWindow || pluginDashboardWindow.closed)
+                && runId === this.sceneRunId
+                && !this.destroyed
+                && !this.angryExitTriggered
+            ) {
                 pluginDashboardWindow = await this.openPluginDashboardWindow({
                     keepMainUIVisible: true
                 });
             }
 
-            if (!pluginDashboardWindow || pluginDashboardWindow.closed) {
-                pluginDashboardWindow = await this.waitForOpenedWindow(PLUGIN_DASHBOARD_WINDOW_NAME, 6000);
-            }
             if (pluginDashboardWindow && !pluginDashboardWindow.closed) {
                 await this.runPluginPreviewHomeExitSequence({
                     managementButton: managementButton,
@@ -4253,16 +4295,19 @@
                     voiceKey: step.performance.voiceKey || 'takeover_plugin_preview_home'
                 }).catch(() => {});
             }
+            const originalAgentSwitches = await this.getAgentSwitchSnapshot();
             let agentSwitchesRolledBack = false;
             const rollbackAgentSwitches = async () => {
                 if (agentSwitchesRolledBack) {
                     return;
                 }
                 agentSwitchesRolledBack = true;
-                await Promise.all([
-                    this.setAgentMasterEnabled(false).catch(() => {}),
-                    this.setAgentFlagEnabled('user_plugin_enabled', false).catch(() => {})
-                ]);
+                if (typeof originalAgentSwitches.agentMaster === 'boolean') {
+                    await this.setAgentMasterEnabled(originalAgentSwitches.agentMaster).catch(() => {});
+                }
+                if (typeof originalAgentSwitches.userPlugin === 'boolean') {
+                    await this.setAgentFlagEnabled('user_plugin_enabled', originalAgentSwitches.userPlugin).catch(() => {});
+                }
             };
 
             try {
@@ -4330,7 +4375,7 @@
                 this.clearSceneExtraSpotlights();
                 this.clearRetainedExtraSpotlights();
                 this.overlay.clearActionSpotlight();
-                // 恢复关闭猫爪总开关和用户插件开关
+                // 恢复猫爪总开关和用户插件开关到接管前状态
                 await rollbackAgentSwitches();
                 await this.waitForHomeMainUIReady(3600);
                 if (runId !== this.sceneRunId || this.isStopping()) {
