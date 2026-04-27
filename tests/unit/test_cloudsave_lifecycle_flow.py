@@ -561,6 +561,7 @@ def test_main_server_limited_mode_middleware_blocks_runtime_routes():
         with TestClient(main_server.app) as client:
             blocked_response = client.get("/api/config/page_config")
             health_response = client.get("/health")
+            steam_language_response = client.get("/api/config/steam_language")
 
     assert blocked_response.status_code == 409
     payload = blocked_response.json()
@@ -568,6 +569,7 @@ def test_main_server_limited_mode_middleware_blocks_runtime_routes():
     assert payload["blocking_reason"] == "selection_required"
     assert payload["limited_mode"] is True
     assert health_response.status_code == 200
+    assert steam_language_response.status_code == 200
 
 
 @pytest.mark.unit

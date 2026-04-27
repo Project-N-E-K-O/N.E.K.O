@@ -4,14 +4,14 @@
 
 v0.8 存储位置迁移已经完成首启阻断、路径选择、关闭后迁移、恢复、迁移完成提示和旧目录清理等核心能力。当前入口主要服务于“首次启动或异常恢复时必须先处理存储状态”的场景。
 
-后续还需要一个常驻入口，让用户在应用已经正常运行后也能主动查看当前存储位置，并发起后续迁移。该入口放在“记忆浏览”页面左侧栏中，在“新手引导”区块下方。
+当前还需要一个常驻入口，让用户在应用已经正常运行后也能主动查看当前存储位置，并发起后续迁移。该入口放在“记忆浏览”页面左侧栏中，在“新手引导”区块下方。
 
-本文只描述下一阶段设计，不代表当前代码已经全部实现。
+本文记录该常驻入口的设计与当前落地状态；历史阶段说明仅用于回溯实施边界。
 
 当前代码事实：
 
-- `/memory_browser` 已有阶段 1 的“存储位置”只读入口：展示当前数据位置、保留禁用的“更改存储位置”占位、支持打开当前目录。
-- `/memory_browser` 已有阶段 2/3 的常驻迁移管理 modal：ready 状态下可选择或输入目标位置，先调用 `/api/storage/location/preflight` 展示预检结果，再由用户点击“确认关闭并迁移”调用 `/api/storage/location/restart`。
+- `/memory_browser` 已有“存储位置”常驻入口：展示当前数据位置，ready 状态下启用“更改存储位置”，并支持打开当前目录。
+- `/memory_browser` 已有常驻迁移管理 modal：ready 状态下可选择或输入目标位置，先调用 `/api/storage/location/preflight` 展示预检结果，再由用户点击“确认关闭并迁移”调用 `/api/storage/location/restart`。
 - `/memory_browser` 常驻入口不调用 `/select`；`/select` 继续保留给首启或恢复阻断流程。
 - 后端在 ready 状态下已经具备 `bootstrap/select/restart/status/cleanup` 等存储迁移主链路能力。
 - 当前 `/api/storage/location/preflight` 已实现为 side-effect-free 预检接口，不写策略、迁移检查点或 root_state，不释放 startup barrier，不触发关闭。
@@ -262,7 +262,6 @@ GET /storage_location_manager
 
 - `memory.storageLocation`
 - `memory.storageCurrentRoot`
-- `memory.storageStatusReady`
 - `memory.storageStatusBlocked`
 - `memory.changeStorageLocation`
 - `memory.openCurrentStorageRoot`
@@ -270,7 +269,6 @@ GET /storage_location_manager
 - `memory.storageMigrationPending`
 - `memory.storageCleanupAvailable`
 - `memory.storageManagementUnavailable`
-- `memory.storageManagementComingSoon`
 - `memory.storageMemoryLimitedState`
 - `memory.storageAlreadyCurrentRoot`
 
@@ -296,7 +294,7 @@ GET /storage_location_manager
 
 展示规则：
 
-- 当 `bootstrap.blocking_reason=""` 时，视为可管理状态，显示当前数据位置、“更改存储位置”禁用占位按钮和“打开当前目录”按钮；正常 ready 状态不需要额外显示“存储位置已就绪”。
+- 当 `bootstrap.blocking_reason=""` 时，视为可管理状态，显示当前数据位置、启用“更改存储位置”和“打开当前目录”按钮；正常 ready 状态不需要额外显示“存储位置已就绪”。
 - 当 `bootstrap.blocking_reason=selection_required` 时，显示“当前需要先确认存储位置”。阶段 1 只展示状态，不自动打开首启阻断 UI，不继续初始化记忆列表和自动整理接口。
 - 当 `bootstrap.blocking_reason=migration_pending` 时，显示“正在迁移或等待重启”，禁用更改按钮。
 - 当 `bootstrap.blocking_reason=recovery_required` 时，显示“需要恢复存储位置”。常驻管理入口不能绕过恢复流程发起新的迁移。
@@ -315,7 +313,7 @@ GET /storage_location_manager
 启用条件：
 
 - 只有 `bootstrap.blocking_reason=""` 且后端 `status.ready=true` 时，按钮才允许进入“常驻迁移管理”。
-- 在 `/api/storage/location/preflight` 落地前，阶段 1 的“更改存储位置”按钮可以先禁用，或打开只读说明 modal，但不能调用 `/select` 模拟预检。
+- 当前 `/api/storage/location/preflight` 已落地，ready 状态下“更改存储位置”按钮直接打开管理 modal；常驻入口不能调用 `/select` 模拟预检。
 - `selection_required/recovery_required/migration_pending` 只展示状态和恢复提示，不作为常驻迁移入口。
 
 这里的 modal 指同一套网页 UI：
@@ -386,11 +384,11 @@ modal 内容复用 v0.8 选择流程：
 
 - 前端显示“当前已在该位置”，不调用写状态接口。
 
-在 `/preflight` 实现前：
+当前 `/preflight` 已实现：
 
 - 常驻入口不得把 `/select` 当成通用预检接口。
-- 如果临时复用 `/select`，只能在目标路径已由前端判断为“不同于当前路径”后调用，并且必须把这条过渡实现标记为待删除。
-- 第一阶段推荐不启用迁移发起按钮，只完成状态展示和打开目录能力。
+- 常驻入口应先调用 `/preflight`，只有成功预检且用户确认后才调用 `/restart`。
+- 目标路径等于当前路径时，只展示“当前已在该位置”，不调用 `/select` 或 `/restart`。
 
 ### 6.5 打开当前目录
 
@@ -489,7 +487,7 @@ POST /api/storage/location/preflight
 补充说明：
 
 - 当前仓库里已实现 `/api/storage/location/preflight`，常驻入口应使用该接口做管理预检。
-- 常驻入口不应再临时复用 `/select` 获取 `restart_required` 预检结果，避免把“当前路径继续当前会话”这条分支暴露给 ready 状态下的管理入口。
+- 常驻入口不应复用 `/select` 获取 `restart_required` 预检结果，避免把“当前路径继续当前会话”这条分支暴露给 ready 状态下的管理入口。
 
 ### 7.3 继续保留现有启动选择接口
 
@@ -679,7 +677,7 @@ NEKO-PC 不需要为常驻入口新增迁移状态机。
 - `bootstrap.blocking_reason` 非空时，跳过普通 `/api/memory/*` 初始化，显示记忆浏览受限启动占位。
 - 如需迁移完成提示或后续维护态接续，再辅以 `/api/storage/location/status`。
 - 支持“打开当前目录”。
-- “更改存储位置”按钮在阶段 1 不真正发起迁移；推荐保留为禁用占位并设置 `memory.storageManagementComingSoon` 提示，不调用 `/select`、`/restart` 或 `/preflight`。
+- 阶段 1 当时不真正发起迁移；当前实现已经进入阶段 2/3，ready 状态下按钮应启用并打开管理 modal，不再保留阶段 1 的禁用占位文案。
 - 把初始化接入现有 `DOMContentLoaded`，并在 `languageChanged` 时刷新动态文案。
 - 同步扩充 `tests/frontend/test_memory_browser.py`，把 `bootstrap-first` 作为阶段 1 的硬性回归用例，而不是留到后端阶段再补。
 
