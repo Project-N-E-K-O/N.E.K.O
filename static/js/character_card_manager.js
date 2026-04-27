@@ -6354,6 +6354,7 @@ async function performUpload(data) {
                     const itemTitle = document.getElementById('item-title');
                     const itemDescription = document.getElementById('item-description');
                     const contentFolder = document.getElementById('content-folder');
+                    const previewImageInput = document.getElementById('preview-image');
                     const tagsContainer = document.getElementById('tags-container');
 
 
@@ -6368,6 +6369,11 @@ async function performUpload(data) {
                     }
                     // 使用临时目录路径（隐藏字段）
                     if (contentFolder) contentFolder.value = result.temp_folder;
+                    // 若后端成功从角色卡卡面复制出预览图，则默认带入；没有卡面时不改动用户当前预览图输入。
+                    if (previewImageInput && result.preview_image) {
+                        previewImageInput.value = result.preview_image;
+                        previewImageInput.classList.remove('error');
+                    }
                     resetWorkshopVoiceReferenceFields(cardName);
 
                     // 添加角色卡标签到上传标签（允许用户编辑）

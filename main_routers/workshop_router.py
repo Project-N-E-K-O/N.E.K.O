@@ -3344,6 +3344,20 @@ async def prepare_workshop_upload(request: Request):
             await asyncio.to_thread(shutil.copytree, model_dir, model_dest_dir, dirs_exist_ok=True)
             logger.info(f"模型文件已复制到临时目录: {model_dest_dir}")
         
+        # 如果角色卡已有卡面，则默认复制为 Workshop 预览图；没有卡面时保持原逻辑不变。
+        preview_image_path = None
+        if character_card_name:
+            try:
+                config_mgr = get_config_manager()
+                face_path = config_mgr.card_faces_dir / f"{character_card_name}.png"
+                if face_path.exists() and face_path.is_file():
+                    preview_image_path = os.path.join(temp_item_dir, 'preview.png')
+                    await asyncio.to_thread(shutil.copy2, str(face_path), preview_image_path)
+                    logger.info(f"已使用角色卡卡面作为默认 Workshop 预览图: {preview_image_path}")
+            except Exception as preview_error:
+                preview_image_path = None
+                logger.warning(f"复制角色卡卡面作为默认预览图失败，将保持预览图不变: {preview_error}")
+        
         # 读取 .workshop_meta.json（如果存在）
         workshop_item_id = None
         if character_card_name:
@@ -3352,13 +3366,16 @@ async def prepare_workshop_upload(request: Request):
                 workshop_item_id = meta_data.get('workshop_item_id')
                 logger.info(f"检测到已存在的 Workshop 物品 ID: {workshop_item_id}")
         
-        return JSONResponse({
+        response_data = {
             "success": True,
             "temp_folder": temp_item_dir,
             "item_id": item_id,
             "workshop_item_id": workshop_item_id,  # 如果存在，返回已存在的物品ID
             "message": "上传准备完成"
-        })
+        }
+        if preview_image_path:
+            response_data["preview_image"] = preview_image_path
+        return JSONResponse(response_data)
         
     except Exception as e:
         logger.error(f"准备上传失败: {e}")
