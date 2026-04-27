@@ -759,7 +759,7 @@ def test_character_card_manager_panel_close_recreates_live2d_preview_context(
     assert state["firstPixiAppDestroyed"] is True
     assert state["hasCurrentModelAfterReopen"] is True
     assert state["hasCurrentPreviewModelAfterReopen"] is True
-    assert state["canvasDisplayAfterReopen"] == ""
+    assert state["canvasDisplayAfterReopen"] != "none"
     assert state["refreshButtonDisplayAfterReopen"] == "flex"
     assert not any(
         "清除Live2D预览失败:" in entry

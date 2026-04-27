@@ -90,8 +90,8 @@ Live2DManager.prototype.removeModel = async function(options = {}) {
         try {
             ticker.remove(this._mouthTicker);
         } catch (_) {}
-        this._mouthTicker = null;
     }
+    this._mouthTicker = null;
 
     try {
         if (this._mouseTrackingListener) {
@@ -127,7 +127,10 @@ Live2DManager.prototype.removeModel = async function(options = {}) {
             Object.values(this._popupTimers).forEach(timer => clearTimeout(timer));
         }
         this._popupTimers = {};
+    } catch (_) {}
 
+    // ticker.stop 单独保护：上一段 UI 清理任意一步抛错都不能让 ticker 漏停
+    try {
         ticker && ticker.stop && ticker.stop();
     } catch (_) {}
 
