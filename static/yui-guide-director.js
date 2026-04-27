@@ -4244,18 +4244,7 @@
             } else {
                 pluginDashboardWindow = await this.waitForOpenedWindow(PLUGIN_DASHBOARD_WINDOW_NAME, 6000);
             }
-            if (
-                pluginDashboardWindow
-                && !pluginDashboardWindow.closed
-                && (
-                    !hadPluginDashboard
-                    || !existingPluginDashboardWindow
-                    || existingPluginDashboardWindow.closed
-                    || pluginDashboardWindow !== existingPluginDashboardWindow
-                )
-            ) {
-                this.pluginDashboardWindowCreatedByGuide = true;
-            }
+            this.pluginDashboardWindowCreatedByGuide = !!(pluginDashboardWindow && !pluginDashboardWindow.closed) && !hadPluginDashboard;
             if (
                 (!pluginDashboardWindow || pluginDashboardWindow.closed)
                 && runId === this.sceneRunId
@@ -4265,7 +4254,7 @@
                 pluginDashboardWindow = await this.openPluginDashboardWindow({
                     keepMainUIVisible: true
                 });
-                this.pluginDashboardWindowCreatedByGuide = !!(pluginDashboardWindow && !pluginDashboardWindow.closed);
+                this.pluginDashboardWindowCreatedByGuide = !!(pluginDashboardWindow && !pluginDashboardWindow.closed) && !hadPluginDashboard;
             }
 
             if (pluginDashboardWindow && !pluginDashboardWindow.closed) {

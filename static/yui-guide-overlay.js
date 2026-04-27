@@ -382,6 +382,7 @@
                 width: width,
                 height: height,
                 radius: radius,
+                padding: padding,
                 isCircular: isCircular
             };
         }
@@ -427,8 +428,12 @@
 
             cutout.hidden = false;
             cutout.style.removeProperty('display');
+            const maxInset = spotlightRect.padding == null
+                ? BACKDROP_CUTOUT_INSET
+                : Math.max(0, spotlightRect.padding);
             const inset = Math.max(0, Math.min(
                 BACKDROP_CUTOUT_INSET,
+                maxInset,
                 Math.floor(spotlightRect.width / 2),
                 Math.floor(spotlightRect.height / 2)
             ));

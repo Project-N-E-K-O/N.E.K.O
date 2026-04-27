@@ -215,7 +215,7 @@ button * {
     position: fixed;
     right: 20px;
     bottom: 20px;
-    z-index: 99998;
+    z-index: 100010;
     pointer-events: auto;
     border: 0;
     border-radius: 999px;
