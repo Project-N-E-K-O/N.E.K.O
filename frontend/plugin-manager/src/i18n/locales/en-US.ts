@@ -74,7 +74,9 @@ export default {
     sdkVersion: 'SDK Version',
     updateTime: 'Update Time',
     noMetricsData: 'No Performance Data',
-    failedToLoadServerInfo: 'Failed to load server info'
+    failedToLoadServerInfo: 'Failed to load server info',
+    startTutorial: 'Tutorial Guide',
+    tutorialHint: 'New to the plugin manager? Tap here and I will show you around.'
   },
   plugins: {
     title: 'Plugins',
@@ -417,6 +419,29 @@ export default {
     welcome: 'This is where you manage all your plugins, nya~ You can browse, launch, and tweak them to make me even more powerful!',
     hint: 'Take your time and poke around a little, then tap the button below when you\'re done~',
     complete: 'All done, meow~',
-    dismiss: 'Maybe later~'
+    dismiss: 'Maybe later~',
+    keyboardSkipHint: 'Press Enter or Space for the next step. This becomes active 0.5 seconds after each step starts.',
+    steps: {
+      start: {
+        title: 'Start Here',
+        body: 'Use this button whenever you want to replay the plugin manager tour. I will not pop up on my own, nya.'
+      },
+      stats: {
+        title: 'Plugin Overview',
+        body: 'These cards show total, running, stopped, and crashed plugins so you can read the current state at a glance.'
+      },
+      metrics: {
+        title: 'Performance Monitor',
+        body: 'This area shows CPU, memory, threads, and active plugin counts for the plugin service.'
+      },
+      server: {
+        title: 'Server Info',
+        body: 'Here you can check the SDK version, plugin count, and update time to confirm the service is healthy.'
+      },
+      plugins: {
+        title: 'Plugin List',
+        body: 'Go to Plugin Management on the left to start, stop, configure plugins, or inspect plugin logs.'
+      }
+    }
   }
 }

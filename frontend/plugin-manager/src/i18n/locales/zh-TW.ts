@@ -74,7 +74,9 @@ export default {
     sdkVersion: 'SDK 版本',
     updateTime: '更新時間',
     noMetricsData: '暫無效能資料',
-    failedToLoadServerInfo: '無法載入伺服器資訊'
+    failedToLoadServerInfo: '無法載入伺服器資訊',
+    startTutorial: '教程引導',
+    tutorialHint: '第一次使用外掛管理器？點這裡讓我帶你快速認識一下。'
   },
   plugins: {
     title: '外掛列表',
@@ -417,6 +419,29 @@ export default {
     welcome: '這裡就是管理所有外掛的地方啦！你可以查看、啟動、配置各種外掛，讓我變得更厲害哦～',
     hint: '隨便看看吧，看完了點下面的按鈕告訴我～',
     complete: '看完了喵～',
-    dismiss: '先不看'
+    dismiss: '先不看',
+    keyboardSkipHint: '按 Enter 或空格進入下一步，每步開始後 0.5 秒生效。',
+    steps: {
+      start: {
+        title: '從這裡開始',
+        body: '點這個按鈕就可以隨時重新播放外掛管理器的教程，不會自動打擾你喵。'
+      },
+      stats: {
+        title: '外掛總覽',
+        body: '這裡會顯示外掛總數、執行中、已停止和崩潰數量，讓你一眼看出目前狀態。'
+      },
+      metrics: {
+        title: '效能監控',
+        body: '這裡展示外掛服務整體的 CPU、記憶體、執行緒和活躍外掛情況，排查問題時很有用。'
+      },
+      server: {
+        title: '伺服器資訊',
+        body: '這裡可以看到 SDK 版本、外掛數量和更新時間，用來確認目前外掛服務是否正常。'
+      },
+      plugins: {
+        title: '外掛列表入口',
+        body: '要啟動、停止、配置外掛，或者查看單個外掛日誌，就從左側的外掛管理進入。'
+      }
+    }
   }
 }

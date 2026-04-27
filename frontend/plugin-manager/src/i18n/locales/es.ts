@@ -74,7 +74,9 @@ export default {
     sdkVersion: 'Versión del SDK',
     updateTime: 'Hora de actualización',
     noMetricsData: 'Sin datos de rendimiento',
-    failedToLoadServerInfo: 'Error al cargar la información del servidor'
+    failedToLoadServerInfo: 'Error al cargar la información del servidor',
+    startTutorial: 'Guía tutorial',
+    tutorialHint: '¿Primera vez en el gestor de plugins? Pulsa aquí y te lo enseño rápido.'
   },
   plugins: {
     title: 'Plugins',
@@ -417,6 +419,29 @@ export default {
     welcome: 'Aquí es donde gestionas todos tus plugins, nya~ Puedes navegar, lanzar y ajustarlos para hacerme aún más poderosa.',
     hint: 'Tómate tu tiempo para explorar un poco, y luego pulsa el botón de abajo cuando termines~',
     complete: '¡Todo listo, meow~!',
-    dismiss: 'Quizás luego~'
+    dismiss: 'Quizás luego~',
+    keyboardSkipHint: 'Pulsa Enter o Espacio para ir al siguiente paso. Se activa 0,5 segundos después de iniciar cada paso.',
+    steps: {
+      start: {
+        title: 'Empieza aquí',
+        body: 'Usa este botón cuando quieras repetir el tutorial del gestor de plugins. No apareceré sola, nya.'
+      },
+      stats: {
+        title: 'Resumen de plugins',
+        body: 'Estas tarjetas muestran plugins totales, en ejecución, detenidos y con fallos para ver el estado de un vistazo.'
+      },
+      metrics: {
+        title: 'Monitor de rendimiento',
+        body: 'Esta zona muestra CPU, memoria, hilos y plugins activos del servicio de plugins.'
+      },
+      server: {
+        title: 'Información del servidor',
+        body: 'Aquí puedes revisar la versión del SDK, el número de plugins y la hora de actualización para confirmar que todo va bien.'
+      },
+      plugins: {
+        title: 'Lista de plugins',
+        body: 'Entra en Plugins a la izquierda para iniciar, detener, configurar plugins o revisar sus logs.'
+      }
+    }
   }
 }

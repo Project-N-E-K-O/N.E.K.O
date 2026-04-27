@@ -8,6 +8,7 @@ const READY_EVENT = 'neko:yui-guide:plugin-dashboard:ready'
 const DONE_EVENT = 'neko:yui-guide:plugin-dashboard:done'
 const INTERRUPT_REQUEST_EVENT = 'neko:yui-guide:plugin-dashboard:interrupt-request'
 const INTERRUPT_ACK_EVENT = 'neko:yui-guide:plugin-dashboard:interrupt-ack'
+const LOCAL_TUTORIAL_START_EVENT = 'neko:plugin-dashboard-tutorial:start'
 const GUIDE_AUDIO_BASE_URL = '/static/assets/tutorial/guide-audio/'
 const DEFAULT_GUIDE_LOCALE = 'zh'
 const HOME_YUI_GUIDE_FLOW_ID = 'home_yui_guide_v1'
@@ -17,6 +18,7 @@ const DEFAULT_INTERRUPT_SPEED_THRESHOLD = 1.8
 const DEFAULT_INTERRUPT_ACCELERATION_THRESHOLD = 0.09
 const DEFAULT_INTERRUPT_ACCELERATION_STREAK = 3
 const DEFAULT_INTERRUPT_THROTTLE_MS = 500
+const LOCAL_TUTORIAL_ADVANCE_COOLDOWN_MS = 500
 const SCRIPTED_MOTION_INTERRUPT_STREAK = 2
 const DEFAULT_PASSIVE_RESISTANCE_DISTANCE = 10
 const DEFAULT_PASSIVE_RESISTANCE_SPEED_THRESHOLD = 0.2
@@ -76,6 +78,22 @@ type StartPayload = {
   audioUrl?: string
   closeOnDone?: boolean
   interruptCount?: number
+}
+
+export type PluginDashboardLocalTutorialStep = {
+  targetId: string
+  title: string
+  body: string
+  motion?: 'point' | 'ellipse' | 'click'
+  durationMs?: number
+}
+
+export type PluginDashboardLocalTutorialPayload = {
+  steps: PluginDashboardLocalTutorialStep[]
+  labels?: {
+    skip?: string
+    keyboardHint?: string
+  }
 }
 
 type SpotlightRect = {
@@ -521,6 +539,70 @@ function injectStyle() {
       animation: yui-guide-plugin-click 240ms ease;
     }
 
+    #${ROOT_ID} .yui-guide-plugin-card {
+      position: fixed;
+      right: 32px;
+      bottom: 32px;
+      z-index: 3;
+      width: min(360px, calc(100vw - 40px));
+      padding: 18px;
+      border: 1px solid rgba(147, 214, 255, 0.42);
+      border-radius: 18px;
+      background: color-mix(in srgb, var(--el-bg-color, #ffffff) 92%, transparent);
+      box-shadow: 0 18px 48px rgba(15, 23, 42, 0.28);
+      color: var(--el-text-color-primary, #1f2937);
+      pointer-events: auto;
+      backdrop-filter: blur(18px) saturate(1.25);
+      -webkit-backdrop-filter: blur(18px) saturate(1.25);
+    }
+
+    #${ROOT_ID} .yui-guide-plugin-card[hidden] {
+      display: none;
+    }
+
+    #${ROOT_ID} .yui-guide-plugin-card-title {
+      margin: 0 0 8px;
+      font-size: 16px;
+      font-weight: 700;
+      line-height: 1.4;
+    }
+
+    #${ROOT_ID} .yui-guide-plugin-card-body {
+      margin: 0;
+      color: var(--el-text-color-regular, #4b5563);
+      font-size: 13px;
+      line-height: 1.7;
+    }
+
+    #${ROOT_ID} .yui-guide-plugin-card-hint {
+      margin: 10px 0 0;
+      color: var(--el-text-color-secondary, #6b7280);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    #${ROOT_ID} .yui-guide-plugin-card-actions {
+      display: flex;
+      justify-content: flex-end;
+      margin-top: 14px;
+    }
+
+    #${ROOT_ID} .yui-guide-plugin-skip {
+      border: 1px solid color-mix(in srgb, var(--el-border-color, #dcdfe6) 70%, transparent);
+      border-radius: 999px;
+      padding: 6px 12px;
+      background: transparent;
+      color: var(--el-text-color-regular, #4b5563);
+      cursor: pointer;
+      font: inherit;
+      font-size: 12px;
+    }
+
+    #${ROOT_ID} .yui-guide-plugin-skip:hover {
+      border-color: var(--el-color-primary, #409eff);
+      color: var(--el-color-primary, #409eff);
+    }
+
     @keyframes yui-guide-plugin-pulse {
       0%, 100% { transform: scale(1); }
       50% { transform: scale(1.02); }
@@ -545,6 +627,11 @@ class PluginDashboardGuideRuntime {
   spotlight: HTMLDivElement | null = null
   cursorShell: HTMLDivElement | null = null
   cursorInner: HTMLDivElement | null = null
+  guideCard: HTMLElement | null = null
+  guideCardTitle: HTMLHeadingElement | null = null
+  guideCardBody: HTMLParagraphElement | null = null
+  guideCardHint: HTMLParagraphElement | null = null
+  guideCardSkip: HTMLButtonElement | null = null
   cursorPosition: { x: number; y: number } | null = null
   lastCursorTarget: { x: number; y: number } | null = null
   spotlightElement: Element | null = null
@@ -566,6 +653,8 @@ class PluginDashboardGuideRuntime {
   cursorTransitionActive = false
   activeNarration: ActiveNarration | null = null
   pendingInterruptAck: PendingInterruptAck | null = null
+  localTutorialStepAdvanceReadyAt = 0
+  localTutorialStepAdvance: (() => void) | null = null
   boundPointerMoveHandler = (event: PointerEvent | MouseEvent) => {
     this.handleInterrupt(event)
   }
@@ -593,6 +682,9 @@ class PluginDashboardGuideRuntime {
       return
     }
     this.setSpotlight(this.spotlightElement)
+  }
+  boundLocalTutorialKeydown = (event: KeyboardEvent) => {
+    this.handleLocalTutorialKeydown(event)
   }
 
   isCurrentRun(sessionId: string) {
@@ -649,9 +741,32 @@ class PluginDashboardGuideRuntime {
     cursorInner.className = 'yui-guide-plugin-cursor'
     cursorShell.appendChild(cursorInner)
 
+    const guideCard = document.createElement('section')
+    guideCard.className = 'yui-guide-plugin-card'
+    guideCard.hidden = true
+    guideCard.setAttribute('role', 'dialog')
+    guideCard.setAttribute('aria-live', 'polite')
+    const guideCardTitle = document.createElement('h3')
+    guideCardTitle.className = 'yui-guide-plugin-card-title'
+    const guideCardBody = document.createElement('p')
+    guideCardBody.className = 'yui-guide-plugin-card-body'
+    const guideCardHint = document.createElement('p')
+    guideCardHint.className = 'yui-guide-plugin-card-hint'
+    const guideCardActions = document.createElement('div')
+    guideCardActions.className = 'yui-guide-plugin-card-actions'
+    const guideCardSkip = document.createElement('button')
+    guideCardSkip.type = 'button'
+    guideCardSkip.className = 'yui-guide-plugin-skip'
+    guideCardActions.appendChild(guideCardSkip)
+    guideCard.appendChild(guideCardTitle)
+    guideCard.appendChild(guideCardBody)
+    guideCard.appendChild(guideCardHint)
+    guideCard.appendChild(guideCardActions)
+
     root.appendChild(backdrop)
     root.appendChild(interactionShield)
     root.appendChild(spotlight)
+    root.appendChild(guideCard)
     root.appendChild(cursorShell)
     document.body.appendChild(root)
 
@@ -664,6 +779,11 @@ class PluginDashboardGuideRuntime {
     this.spotlight = spotlight
     this.cursorShell = cursorShell
     this.cursorInner = cursorInner
+    this.guideCard = guideCard
+    this.guideCardTitle = guideCardTitle
+    this.guideCardBody = guideCardBody
+    this.guideCardHint = guideCardHint
+    this.guideCardSkip = guideCardSkip
     this.syncBackdropViewport()
   }
 
@@ -1303,6 +1423,64 @@ class PluginDashboardGuideRuntime {
     })
   }
 
+  requestLocalTutorialStepAdvance() {
+    if (!this.running || Date.now() < this.localTutorialStepAdvanceReadyAt) {
+      return false
+    }
+    const advance = this.localTutorialStepAdvance
+    if (!advance) {
+      return false
+    }
+    this.localTutorialStepAdvance = null
+    this.cancelActiveNarration()
+    this.cancelCursorMotion()
+    advance()
+    return true
+  }
+
+  handleLocalTutorialKeydown(event: KeyboardEvent) {
+    if (event.key !== 'Enter' && event.key !== ' ') {
+      return
+    }
+
+    event.preventDefault()
+    event.stopPropagation()
+    this.requestLocalTutorialStepAdvance()
+  }
+
+  showLocalGuideCard(step: PluginDashboardLocalTutorialStep, labels?: PluginDashboardLocalTutorialPayload['labels']) {
+    this.ensureRoot()
+    if (!this.guideCard || !this.guideCardTitle || !this.guideCardBody || !this.guideCardHint || !this.guideCardSkip) {
+      return
+    }
+
+    this.guideCardTitle.textContent = step.title
+    this.guideCardBody.textContent = step.body
+    this.guideCardHint.textContent = labels?.keyboardHint || ''
+    this.guideCardSkip.textContent = labels?.skip || 'Skip'
+    this.guideCardSkip.onclick = () => {
+      this.cleanup()
+    }
+    this.guideCard.hidden = false
+  }
+
+  hideLocalGuideCard() {
+    if (this.guideCard) {
+      this.guideCard.hidden = true
+    }
+    if (this.guideCardSkip) {
+      this.guideCardSkip.onclick = null
+    }
+  }
+
+  resolveLocalGuideTarget(step: PluginDashboardLocalTutorialStep) {
+    const targetId = String(step.targetId || '').trim()
+    if (!targetId) {
+      return null
+    }
+    return document.querySelector(`[data-yui-guide-id="${CSS.escape(targetId)}"]`) as HTMLElement | null
+  }
+
   interruptNarrationForResistance() {
     const narration = this.activeNarration
     if (!narration || narration.cancelled) {
@@ -1650,6 +1828,105 @@ class PluginDashboardGuideRuntime {
     this.cleanup()
   }
 
+  async runLocalTutorial(sessionId: string, payload: PluginDashboardLocalTutorialPayload) {
+    const steps = Array.isArray(payload.steps)
+      ? payload.steps.filter((step) => step && step.targetId && (step.title || step.body))
+      : []
+    if (steps.length === 0) {
+      return
+    }
+
+    if (this.running) {
+      this.cleanup()
+    }
+
+    this.running = true
+    this.activeSessionId = sessionId
+    this.localTutorialStepAdvanceReadyAt = Date.now() + LOCAL_TUTORIAL_ADVANCE_COOLDOWN_MS
+    const isCurrent = () => this.isCurrentRun(sessionId)
+    this.ensureRoot()
+    window.addEventListener('resize', this.boundRefreshSpotlight, true)
+    window.addEventListener('scroll', this.boundRefreshSpotlight, true)
+    document.addEventListener('keydown', this.boundLocalTutorialKeydown, true)
+
+    try {
+      this.showCursor(window.innerWidth / 2, Math.max(72, window.innerHeight / 2))
+
+      for (const step of steps) {
+        if (!isCurrent()) {
+          return
+        }
+
+        const target = await this.waitForElement(() => this.resolveLocalGuideTarget(step), 2500)
+        if (!isCurrent()) {
+          return
+        }
+        if (!target) {
+          continue
+        }
+
+        target.scrollIntoView({ block: 'center', inline: 'center', behavior: 'smooth' })
+        if (!(await this.waitForSceneDelay(240, isCurrent))) {
+          return
+        }
+
+        this.setSpotlight(target)
+        this.showLocalGuideCard(step, payload.labels)
+        this.localTutorialStepAdvanceReadyAt = Date.now() + LOCAL_TUTORIAL_ADVANCE_COOLDOWN_MS
+        let stepAdvanced = false
+        const isCurrentStep = () => isCurrent() && !stepAdvanced
+        const stepAdvancePromise = new Promise<void>((resolve) => {
+          this.localTutorialStepAdvance = () => {
+            stepAdvanced = true
+            resolve()
+          }
+        })
+
+        await Promise.race([
+          this.moveCursorToElementWithRecovery(target, 620, isCurrentStep),
+          stepAdvancePromise,
+        ])
+        if (!isCurrent()) {
+          return
+        }
+        if (stepAdvanced) {
+          this.localTutorialStepAdvance = null
+          continue
+        }
+
+        if (step.motion === 'click') {
+          this.clickCursor()
+        } else if (step.motion === 'ellipse') {
+          await Promise.race([
+            this.runEllipse(target, Math.max(1200, step.durationMs || 2200), isCurrentStep),
+            stepAdvancePromise,
+          ])
+        }
+
+        if (!isCurrent()) {
+          return
+        }
+        if (stepAdvanced) {
+          this.localTutorialStepAdvance = null
+          continue
+        }
+
+        await Promise.race([
+          Promise.all([
+            this.startNarration(step.body),
+            this.waitForSceneDelay(Math.max(1400, step.durationMs || 2200), isCurrentStep),
+          ]),
+          stepAdvancePromise,
+        ])
+        this.localTutorialStepAdvance = null
+      }
+    } finally {
+      if (isCurrent()) {
+        this.cleanup()
+      }
+    }
+  }
+
   cleanup() {
     const pauseResolvers = this.scenePauseResolvers.slice()
     this.scenePauseResolvers = []
@@ -1702,6 +1979,7 @@ class PluginDashboardGuideRuntime {
     document.removeEventListener('click', this.boundInteractionGuard, true)
     document.removeEventListener('dblclick', this.boundInteractionGuard, true)
     document.removeEventListener('contextmenu', this.boundInteractionGuard, true)
+    document.removeEventListener('keydown', this.boundLocalTutorialKeydown, true)
     this.clearSpotlight()
     if (this.root && this.root.parentNode) {
       this.root.parentNode.removeChild(this.root)
@@ -1719,6 +1997,11 @@ class PluginDashboardGuideRuntime {
     this.spotlight = null
     this.cursorShell = null
     this.cursorInner = null
+    this.guideCard = null
+    this.guideCardTitle = null
+    this.guideCardBody = null
+    this.guideCardHint = null
+    this.guideCardSkip = null
     this.cursorPosition = null
     this.spotlightElement = null
     this.lastCursorTarget = null
@@ -1738,6 +2021,8 @@ class PluginDashboardGuideRuntime {
     this.cursorTransitionActive = false
     this.activeNarration = null
     this.pendingInterruptAck = null
+    this.localTutorialStepAdvanceReadyAt = 0
+    this.localTutorialStepAdvance = null
     this.scenePauseResolvers = []
   }
 
@@ -1874,6 +2159,12 @@ class PluginDashboardGuideRuntime {
   }
 }
 
+export function startPluginDashboardTutorial(payload: PluginDashboardLocalTutorialPayload) {
+  window.dispatchEvent(new CustomEvent<PluginDashboardLocalTutorialPayload>(LOCAL_TUTORIAL_START_EVENT, {
+    detail: payload,
+  }))
+}
+
 export function initPluginDashboardYuiGuideRuntime() {
   const runtime = new PluginDashboardGuideRuntime()
   const tutorialBridge = useYuiTutorialBridge()
@@ -1910,6 +2201,17 @@ export function initPluginDashboardYuiGuideRuntime() {
       target.interruptCount = Math.max(0, Math.floor(payload.interruptCount as number))
     }
   }
+
+  window.addEventListener(LOCAL_TUTORIAL_START_EVENT, (event: Event) => {
+    const payload = (event as CustomEvent<PluginDashboardLocalTutorialPayload>).detail
+    const sessionId = `local-${Date.now()}`
+    runtime.runLocalTutorial(sessionId, payload).catch(() => {
+      if (!runtime.isCurrentRun(sessionId)) {
+        return
+      }
+      runtime.cleanup()
+    })
+  })
 
   window.addEventListener('message', (event: MessageEvent) => {
     const data = event.data

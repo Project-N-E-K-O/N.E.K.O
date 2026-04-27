@@ -74,7 +74,9 @@ export default {
     sdkVersion: 'SDK 版本',
     updateTime: '更新时间',
     noMetricsData: '暂无性能数据',
-    failedToLoadServerInfo: '无法加载服务器信息'
+    failedToLoadServerInfo: '无法加载服务器信息',
+    startTutorial: '教程引导',
+    tutorialHint: '第一次使用插件管理器？点这里让我带你快速认识一下。'
   },
   plugins: {
     title: '插件列表',
@@ -417,6 +419,29 @@ export default {
     welcome: '这里就是管理所有插件的地方啦！你可以查看、启动、配置各种插件，让我变得更厉害哦～',
     hint: '随便看看吧，看完了点下面的按钮告诉我～',
     complete: '看完了喵～',
-    dismiss: '先不看'
+    dismiss: '先不看',
+    keyboardSkipHint: '按 Enter 或空格进入下一步，每步开始后 0.5 秒生效。',
+    steps: {
+      start: {
+        title: '从这里开始',
+        body: '点这个按钮就可以随时重新播放插件管理器的教程，不会自动打扰你喵。'
+      },
+      stats: {
+        title: '插件总览',
+        body: '这里会显示插件总数、运行中、已停止和崩溃数量，让你一眼看出当前状态。'
+      },
+      metrics: {
+        title: '性能监控',
+        body: '这里展示插件服务整体的 CPU、内存、线程和活跃插件情况，排查问题时很有用。'
+      },
+      server: {
+        title: '服务器信息',
+        body: '这里可以看到 SDK 版本、插件数量和更新时间，用来确认当前插件服务是否正常。'
+      },
+      plugins: {
+        title: '插件列表入口',
+        body: '要启动、停止、配置插件，或者查看单个插件日志，就从左侧的插件管理进入。'
+      }
+    }
   }
 }

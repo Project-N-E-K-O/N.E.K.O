@@ -74,7 +74,9 @@ export default {
     sdkVersion: 'SDK 버전',
     updateTime: '업데이트 시간',
     noMetricsData: '성능 데이터 없음',
-    failedToLoadServerInfo: '서버 정보를 불러오지 못했습니다'
+    failedToLoadServerInfo: '서버 정보를 불러오지 못했습니다',
+    startTutorial: '튜토리얼 가이드',
+    tutorialHint: '플러그인 관리자가 처음이라면 여기를 눌러 빠르게 둘러보자냥.'
   },
   plugins: {
     title: '플러그인 목록',
@@ -417,6 +419,29 @@ export default {
     welcome: '여기가 모든 플러그인을 관리하는 곳이야! 플러그인을 보고, 실행하고, 설정해서 나를 더 강력하게 만들어줘~',
     hint: '천천히 둘러보고 다 봤으면 아래 버튼을 눌러줘~',
     complete: '다 봤어 냐~',
-    dismiss: '나중에 볼게'
+    dismiss: '나중에 볼게',
+    keyboardSkipHint: 'Enter 또는 Space를 누르면 다음 단계로 넘어가. 각 단계 시작 0.5초 후부터 동작해.',
+    steps: {
+      start: {
+        title: '여기서 시작',
+        body: '이 버튼으로 언제든 플러그인 관리자 튜토리얼을 다시 볼 수 있어. 내가 먼저 튀어나오진 않는다냥.'
+      },
+      stats: {
+        title: '플러그인 개요',
+        body: '전체, 실행 중, 정지됨, 충돌한 플러그인 수를 한눈에 확인할 수 있어.'
+      },
+      metrics: {
+        title: '성능 모니터링',
+        body: '플러그인 서비스의 CPU, 메모리, 스레드, 활성 플러그인 상태를 보여줘.'
+      },
+      server: {
+        title: '서버 정보',
+        body: 'SDK 버전, 플러그인 수, 업데이트 시간을 확인해서 서비스 상태를 볼 수 있어.'
+      },
+      plugins: {
+        title: '플러그인 목록',
+        body: '플러그인 시작, 정지, 설정, 로그 확인은 왼쪽의 플러그인 관리에서 하면 된다냥.'
+      }
+    }
   }
 }

@@ -74,7 +74,9 @@ export default {
     sdkVersion: 'SDKバージョン',
     updateTime: '更新時間',
     noMetricsData: 'パフォーマンスデータなし',
-    failedToLoadServerInfo: 'サーバー情報の読み込みに失敗しました'
+    failedToLoadServerInfo: 'サーバー情報の読み込みに失敗しました',
+    startTutorial: 'チュートリアル',
+    tutorialHint: 'プラグイン管理が初めて？ここを押せば案内するにゃ。'
   },
   plugins: {
     title: 'プラグイン一覧',
@@ -417,6 +419,29 @@ export default {
     welcome: 'ここがすべてのプラグインを管理する場所だよ！プラグインを見たり、起動したり、設定したりして、もっとすごい猫猫神にしてね～',
     hint: 'ゆっくり見てね、終わったら下のボタンを押して教えてにゃ～',
     complete: '見終わったにゃ～',
-    dismiss: 'また今度'
+    dismiss: 'また今度',
+    keyboardSkipHint: 'Enter または Space で次へ進みます。各ステップ開始から 0.5 秒後に有効になります。',
+    steps: {
+      start: {
+        title: 'ここから開始',
+        body: 'このボタンでいつでもプラグイン管理の案内をもう一度見られるよ。勝手には出てこないにゃ。'
+      },
+      stats: {
+        title: 'プラグイン概要',
+        body: '合計、実行中、停止中、クラッシュしたプラグイン数をここで一目で確認できるよ。'
+      },
+      metrics: {
+        title: 'パフォーマンス監視',
+        body: 'CPU、メモリ、スレッド、アクティブなプラグイン数など、サービス全体の状態を確認できるよ。'
+      },
+      server: {
+        title: 'サーバー情報',
+        body: 'SDK バージョン、プラグイン数、更新時間を見て、サービスが正常か確認できるよ。'
+      },
+      plugins: {
+        title: 'プラグイン一覧',
+        body: '起動、停止、設定、ログ確認は左側のプラグイン管理から入ってね。'
+      }
+    }
   }
 }
