@@ -3707,6 +3707,11 @@
                     console.warn('[YuiGuide] 获取插件面板 origin 失败:', error);
                 }
             }
+            if (window.YUI_GUIDE_PLUGIN_DASHBOARD_ORIGIN) {
+                try {
+                    return new URL(String(window.YUI_GUIDE_PLUGIN_DASHBOARD_ORIGIN), window.location.href).origin;
+                } catch (_) {}
+            }
             if (window.NEKO_USER_PLUGIN_BASE) {
                 try {
                     return new URL(String(window.NEKO_USER_PLUGIN_BASE), window.location.href).origin;
@@ -4230,7 +4235,6 @@
             }
             if (
                 (!pluginDashboardWindow || pluginDashboardWindow.closed)
-                && !hadPluginDashboard
                 && runId === this.sceneRunId
                 && !this.destroyed
                 && !this.angryExitTriggered
@@ -4238,8 +4242,8 @@
                 pluginDashboardWindow = await this.openPluginDashboardWindow({
                     keepMainUIVisible: true
                 });
+                this.pluginDashboardWindowCreatedByGuide = !!(pluginDashboardWindow && !pluginDashboardWindow.closed);
             }
-            this.pluginDashboardWindowCreatedByGuide = !!(!hadPluginDashboard && pluginDashboardWindow && !pluginDashboardWindow.closed);
 
             if (pluginDashboardWindow && !pluginDashboardWindow.closed) {
                 await this.runPluginPreviewHomeExitSequence({

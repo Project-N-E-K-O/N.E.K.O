@@ -995,8 +995,11 @@
         return Promise.resolve(true);
     }
 
-    function openPluginDashboard(options) {
-        var normalizedOptions = Object.assign({}, options || {}, {
+    function openPluginDashboard(resumeSceneOrOptions, options) {
+        var legacyResumeScene = typeof resumeSceneOrOptions === 'string' ? resumeSceneOrOptions : '';
+        var sourceOptions = legacyResumeScene ? (options || {}) : (resumeSceneOrOptions || {});
+        var normalizedOptions = Object.assign({}, sourceOptions, {
+            resumeScene: legacyResumeScene || sourceOptions.resumeScene || sourceOptions.resume_scene || null,
             forceReload: true
         });
         return openPage(
@@ -1101,7 +1104,12 @@
                 && !tokenObj.consumed
                 && tokenObj.target_page === 'plugin_dashboard'
             );
-            if (hasActivePluginDashboardToken) return false;
+            var isTokenHandoffMessage = !!(
+                data.type === 'neko:yui-guide:plugin-dashboard-complete'
+                || detail.handoff_token
+                || detail.token
+            );
+            if (hasActivePluginDashboardToken && isTokenHandoffMessage) return false;
 
             var sessionId = typeof data.sessionId === 'string' ? data.sessionId : '';
             var requestId = typeof data.requestId === 'string' ? data.requestId : '';

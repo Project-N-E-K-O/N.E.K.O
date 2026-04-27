@@ -129,6 +129,23 @@ async def test_main_agent_router_plugin_dashboard_redirect_keeps_only_v_query():
     assert response.headers["location"] == f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}/ui?v=abc123"
 
 
+@pytest.mark.asyncio
+async def test_main_agent_router_plugin_dashboard_redirect_ignores_empty_v_query():
+    from config import USER_PLUGIN_SERVER_PORT
+    from main_routers.agent_router import redirect_plugin_dashboard
+
+    request = Request({
+        "type": "http",
+        "method": "GET",
+        "path": "/api/agent/user_plugin/dashboard",
+        "headers": [],
+        "query_string": b"v=&yui_guide=1",
+    })
+    response = await redirect_plugin_dashboard(request)
+
+    assert response.headers["location"] == f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}/ui"
+
+
 def test_agent_server_expected_event_driven_endpoints_exist():
     paths = _route_paths_from_decorators("agent_server.py", "app")
     for expected in {
