@@ -4320,15 +4320,33 @@
             let agentSwitchesRolledBack = false;
             const rollbackAgentSwitches = async () => {
                 if (agentSwitchesRolledBack) {
-                    return;
+                    return true;
                 }
-                agentSwitchesRolledBack = true;
+                const restoreResults = [];
+                const restoreSwitch = async (label, action) => {
+                    try {
+                        const restored = await action();
+                        if (restored !== true) {
+                            console.warn('[YuiGuide] 恢复接管前开关状态失败:', label);
+                            return false;
+                        }
+                        return true;
+                    } catch (error) {
+                        console.warn('[YuiGuide] 恢复接管前开关状态异常:', label, error);
+                        return false;
+                    }
+                };
                 if (typeof originalAgentSwitches.agentMaster === 'boolean') {
-                    await this.setAgentMasterEnabled(originalAgentSwitches.agentMaster).catch(() => {});
+                    restoreResults.push(await restoreSwitch('agent-master', () => this.setAgentMasterEnabled(originalAgentSwitches.agentMaster)));
                 }
                 if (typeof originalAgentSwitches.userPlugin === 'boolean') {
-                    await this.setAgentFlagEnabled('user_plugin_enabled', originalAgentSwitches.userPlugin).catch(() => {});
+                    restoreResults.push(await restoreSwitch('user_plugin_enabled', () => this.setAgentFlagEnabled('user_plugin_enabled', originalAgentSwitches.userPlugin)));
                 }
+                const restoredAll = restoreResults.every(Boolean);
+                if (restoredAll) {
+                    agentSwitchesRolledBack = true;
+                }
+                return restoredAll;
             };
 
             try {
