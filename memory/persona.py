@@ -137,6 +137,12 @@ class PersonaManager:
         # (pure-Python block, no await inside).
         self._alocks: dict[str, asyncio.Lock] = {}
         self._alocks_guard = threading.Lock()
+        # 独立的 resolve_corrections 串行锁——只为防多入口（IdleMaint subtask 2
+        # 与 _extract_facts_and_check_feedback）并发触发同名角色的 LLM 重叠
+        # 应用导致重复处理同一批 corrections。本锁与 _alocks (data lock)
+        # 完全分开，所以 LLM 期间 aadd_fact / arecord_mentions / aapply_signal
+        # 仍能正常拿 _alocks 推进（不再卡 /process 路径）。
+        self._resolve_alocks: dict[str, asyncio.Lock] = {}
         # memory-evidence-rfc §3.3.3：evidence 写路径必须走 record_and_save，
         # 保证 event↔view 合约。event_log 注入；None 时 aapply_signal 不可用。
         self._event_log = event_log
@@ -153,6 +159,19 @@ class PersonaManager:
                 if name not in self._alocks:
                     self._alocks[name] = asyncio.Lock()
         return self._alocks[name]
+
+    def _get_resolve_alock(self, name: str) -> asyncio.Lock:
+        """Per-character asyncio.Lock 专用于 resolve_corrections 串行化。
+
+        只 serialize resolve_corrections 之间的并发，**不**与 data lock
+        (_get_alock) 互锁。LLM 调用在本锁内、data lock 外——data lock 仅
+        在 LLM 前后的短临界区被借用。
+        """
+        if name not in self._resolve_alocks:
+            with self._alocks_guard:
+                if name not in self._resolve_alocks:
+                    self._resolve_alocks[name] = asyncio.Lock()
+        return self._resolve_alocks[name]
 
     # ── file paths ───────────────────────────────────────────────────
 
@@ -1559,76 +1578,118 @@ class PersonaManager:
         将所有 pending corrections 合并为一个 prompt 发给 correction model，
         返回处理的矛盾数量。
 
-        P2.a.2: 角色级 asyncio.Lock 串行化；整个流程（load + LLM + write back）
-        都在锁内，避免 aadd_fact / arecord_mentions 并发写 persona.json。
-        """
-        async with self._get_alock(name):
-            return await self._resolve_corrections_locked(name)
+        C4 重构 + thinking：LLM 调用在 data lock 外。data lock 仅在 LLM
+        前后短暂借用（load corrections / load persona + apply + save）。
+        独立的 _resolve_alock 串行同名角色的 resolve_corrections 调用，
+        防多入口（IdleMaint subtask 2 与 _extract_facts_and_check_feedback）
+        并发触发同一批 corrections 被重复处理（特别是 keep_new 没有 dedup
+        会导致重复 append）。
 
-    async def _resolve_corrections_locked(self, name: str) -> int:
-        """resolve_corrections 的内部实现。调用方必须已持有
-        self._get_alock(name)。"""
+        为什么这样安全：
+        - LLM 期间 aadd_fact / arecord_mentions / aapply_signal / aensure_persona
+          可正常拿 data lock 推进，不再卡 /process 路径
+        - resolve 之间互斥（resolve_alock）防同批 corrections 重复处理
+        - apply 阶段读 fresh persona，与 LLM 期间被并发写入的 persona 状态
+          自然合并
+        - 末尾"重读 corrections 文件 → filter processed_keys → save"已经
+          做了对 LLM 期间新增 correction 的保护
+        """
         from config.prompts_memory import persona_correction_prompt
 
-        corrections = await self.aload_pending_corrections(name)
-        if not corrections:
-            return 0
+        # ── 串行 resolve（独立锁，与 data lock 不互锁） ──
+        async with self._get_resolve_alock(name):
+            # ── 短临界 1: 拿 corrections 列表 ──
+            async with self._get_alock(name):
+                corrections = await self.aload_pending_corrections(name)
+            if not corrections:
+                return 0
 
-        # 合并所有矛盾为单个 prompt。受 PERSONA_CORRECTION_BATCH_LIMIT
-        # 限制：corrections 队列可能堆积，单次只处理前 N 条，剩下的下次
-        # 触发时再处理。
-        from config import PERSONA_CORRECTION_BATCH_LIMIT
-        pairs = []
-        for i, item in enumerate(corrections):
-            old_text = item.get('old_text', '')
-            new_text = item.get('new_text', '')
-            if old_text and new_text:
-                pairs.append((i, item))
-            if len(pairs) >= PERSONA_CORRECTION_BATCH_LIMIT:
-                break
-        if not pairs:
-            return 0
-        # 仅允许"本批送进 prompt"的全局 index 被消费 —— LLM 偶尔会回写
-        # 没在这一批 prompt 里的合法全局 index（比如 hallucinate 出未来批
-        # 的 idx），不防的话会误改未送审的 corrections，导致队列数据被
-        # 错误消费。
-        allowed_indices = {i for i, _ in pairs}
+            # 合并所有矛盾为单个 prompt。受 PERSONA_CORRECTION_BATCH_LIMIT
+            # 限制：corrections 队列可能堆积，单次只处理前 N 条，剩下的下次
+            # 触发时再处理。
+            from config import PERSONA_CORRECTION_BATCH_LIMIT
+            pairs = []
+            for i, item in enumerate(corrections):
+                old_text = item.get('old_text', '')
+                new_text = item.get('new_text', '')
+                if old_text and new_text:
+                    pairs.append((i, item))
+                if len(pairs) >= PERSONA_CORRECTION_BATCH_LIMIT:
+                    break
+            if not pairs:
+                return 0
+            # 仅允许"本批送进 prompt"的全局 index 被消费 —— LLM 偶尔会回写
+            # 没在这一批 prompt 里的合法全局 index（比如 hallucinate 出未来批
+            # 的 idx），不防的话会误改未送审的 corrections，导致队列数据被
+            # 错误消费。
+            allowed_indices = {i for i, _ in pairs}
 
-        batch_text = "\n".join(
-            f"[{i}] 已有: {item['old_text']} | 新观察: {item['new_text']}"
-            for i, item in pairs
-        )
-        prompt = persona_correction_prompt.format(pairs=batch_text, count=len(pairs))
-
-        try:
-            from utils.token_tracker import set_call_type
-            from utils.llm_client import create_chat_llm
-            set_call_type("memory_correction")
-            api_config = self._config_manager.get_model_api_config('correction')
-            # timeout=90: 持 PersonaManager 锁，锁住期间会卡 /process 路径上的
-            # arecord_mentions / aapply_signal / aensure_persona，必须有时长上限。
-            # max_retries=0: 禁 SDK 自动重试，避免叠加（这里没业务 retry，单次即终态）。
-            llm = create_chat_llm(
-                api_config['model'],
-                api_config['base_url'], api_config['api_key'],
-                timeout=90, max_retries=0,
+            batch_text = "\n".join(
+                f"[{i}] 已有: {item['old_text']} | 新观察: {item['new_text']}"
+                for i, item in pairs
             )
-            try:
-                resp = await llm.ainvoke(prompt)
-            finally:
-                await llm.aclose()
-            raw = resp.content
-            if raw.startswith("```"):
-                raw = raw.replace("```json", "").replace("```", "").strip()
-            results = robust_json_loads(raw)
-            if not isinstance(results, list):
-                results = [results]
-        except Exception as e:
-            logger.warning(f"[Persona] {name}: correction model 调用失败: {e}")
-            return 0
+            prompt = persona_correction_prompt.format(pairs=batch_text, count=len(pairs))
 
-        # 应用结果（本函数被 resolve_corrections 在锁下调用，故用 _locked 变体）
-        persona = await self._aensure_persona_locked(name)
+            # ── LLM (锁外) ──
+            try:
+                from utils.token_tracker import set_call_type
+                from utils.llm_client import create_chat_llm
+                set_call_type("memory_correction")
+                api_config = self._config_manager.get_model_api_config('correction')
+                # timeout=120: 开 thinking 后批量决策（每对 keep_old/keep_new/
+                # keep_both/replace + 重写 merged_text）值得思考——后果不可逆
+                # （persona pollution）。LLM 在 data lock 外，可放宽 timeout
+                # 不阻塞 /process 路径上的 arecord_mentions / aapply_signal。
+                # max_retries=0: 禁 SDK 自动重试（这里没业务 retry，单次即终态）。
+                # extra_body=None: 显式开 thinking。
+                llm = create_chat_llm(
+                    api_config['model'],
+                    api_config['base_url'], api_config['api_key'],
+                    timeout=120, max_retries=0,
+                    extra_body=None,
+                )
+                try:
+                    resp = await llm.ainvoke(prompt)
+                finally:
+                    await llm.aclose()
+                raw = resp.content
+                if raw.startswith("```"):
+                    raw = raw.replace("```json", "").replace("```", "").strip()
+                results = robust_json_loads(raw)
+                if not isinstance(results, list):
+                    results = [results]
+            except Exception as e:
+                logger.warning(f"[Persona] {name}: correction model 调用失败: {e}")
+                return 0
+
+            # ── 短临界 2: load fresh persona + apply + save ──
+            return await self._apply_correction_results(
+                name, corrections, allowed_indices, results,
+            )
+
+    async def _apply_correction_results(
+        self,
+        name: str,
+        corrections: list[dict],
+        allowed_indices: set,
+        results: list,
+    ) -> int:
+        """resolve_corrections 的 LLM-后应用阶段。在 data lock 内执行。"""
+        async with self._get_alock(name):
+            persona = await self._aensure_persona_locked(name)
+            return await self._apply_correction_results_locked(
+                name, persona, corrections, allowed_indices, results,
+            )
+
+    async def _apply_correction_results_locked(
+        self,
+        name: str,
+        persona: dict,
+        corrections: list[dict],
+        allowed_indices: set,
+        results: list,
+    ) -> int:
+        """data lock 已持有时的 apply 实现。"""
         resolved = 0
         for result in results:
             if not isinstance(result, dict):
