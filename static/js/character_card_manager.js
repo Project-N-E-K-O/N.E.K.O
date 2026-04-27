@@ -5517,9 +5517,7 @@ function buildSteamTabContent(name, rawData, card, container) {
     controlsDiv.innerHTML = `
         <div style="display: flex; gap: 10px; margin-bottom: 10px; flex-wrap: wrap;">
             <div style="flex: 1; min-width: 150px;">
-                <select id="preview-motion-select" class="control-input" style="width: 100%;">
-                    <option value="" data-i18n="steam.selectMotion">${window.t ? window.t('steam.selectMotion') : '选择动作'}</option>
-                </select>
+                <select id="preview-motion-select" class="control-input" style="width: 100%;"></select>
                 <div style="font-size: 11px; color: #888; margin-top: 3px; text-align: center;" data-i18n="character.idleMotionHint">${window.t ? window.t('character.idleMotionHint') : '保存角色时，当前选中的动作将被设为待机动作'}</div>
             </div>
             <div class="btn-play-wrapper">
@@ -5530,9 +5528,7 @@ function buildSteamTabContent(name, rawData, card, container) {
         </div>
         <div style="display: flex; gap: 10px; flex-wrap: wrap;">
             <div style="flex: 1; min-width: 150px;">
-                <select id="preview-expression-select" class="control-input" style="width: 100%;">
-                    <option value="" data-i18n="steam.selectExpression">${window.t ? window.t('steam.selectExpression') : '选择表情'}</option>
-                </select>
+                <select id="preview-expression-select" class="control-input" style="width: 100%;"></select>
             </div>
             <div class="btn-play-wrapper">
                 <button id="preview-play-expression-btn" class="btn" disabled>
@@ -7574,16 +7570,20 @@ async function updatePreviewControlsAfterModelLoad(filesData) {
         console.error('Failed to update preview controls:', error);
     }
 
-    // 恢复已保存的待机动作（如果存在）
+    // 恢复已保存的待机动作（如果存在）。显式保留空值，避免“无动作”被浏览器默认选中第一个 option。
     const rawData = window._currentCardRawData || {};
     const savedIdleAnimation = rawData._reserved?.avatar?.live2d?.idle_animation
         || rawData.avatar?.live2d?.idle_animation
-        || rawData.live2d_idle_animation;
+        || rawData.live2d_idle_animation
+        || '';
     const savedIdleAnimationBaseName = savedIdleAnimation
         ? String(savedIdleAnimation).split('/').pop()
         : '';
     const availableMotionFiles = window._previewMotionFiles || [];
     let initialMotionToPlay = '';
+    if (motionSelect) {
+        motionSelect.value = '';
+    }
     if (savedIdleAnimationBaseName && motionSelect) {
         const matchingSavedMotion = availableMotionFiles.find(file => {
             const normalizedFile = String(file || '');
@@ -7593,17 +7593,6 @@ async function updatePreviewControlsAfterModelLoad(filesData) {
         if (matchingSavedMotion) {
             motionSelect.value = matchingSavedMotion;
             initialMotionToPlay = matchingSavedMotion;
-        }
-    }
-
-    if (!initialMotionToPlay && motionSelect && motionSelect.value) {
-        initialMotionToPlay = motionSelect.value;
-    }
-
-    if (!initialMotionToPlay && availableMotionFiles.length > 0) {
-        initialMotionToPlay = availableMotionFiles[0];
-        if (motionSelect) {
-            motionSelect.value = initialMotionToPlay;
         }
     }
 
@@ -8015,10 +8004,16 @@ function updatePreviewControls(motionFiles, expressionFiles) {
     motionSelect.innerHTML = '';
     expressionSelect.innerHTML = '';
 
-    // 更新动作选择框
+    // 更新动作选择框：始终提供空选项，允许保存“无待机动作”。
+    const emptyMotionOption = document.createElement('option');
+    emptyMotionOption.value = '';
+    emptyMotionOption.textContent = (window.t && window.t('character.noIdleMotion', '无动作')) || '无动作';
+    motionSelect.appendChild(emptyMotionOption);
+
     if (motionFiles.length > 0) {
         motionSelect.disabled = false;
         playMotionBtn.disabled = false;
+        motionSelect.value = '';
 
         // 添加动作选项（value 使用文件名，便于直接作为 live2d_idle_animation）
         motionFiles.forEach((motionFile) => {
@@ -8030,17 +8025,19 @@ function updatePreviewControls(motionFiles, expressionFiles) {
     } else {
         motionSelect.disabled = true;
         playMotionBtn.disabled = true;
-
-        const option = document.createElement('option');
-        option.value = '';
-        option.textContent = window.t('live2d.noMotionFiles', '没有动作文件');
-        motionSelect.appendChild(option);
+        emptyMotionOption.textContent = (window.t && window.t('live2d.noMotionFiles', '没有动作文件')) || '没有动作文件';
     }
 
-    // 更新表情选择框
+    // 更新表情选择框：始终提供空选项，避免默认选中第一个表情。
+    const emptyExpressionOption = document.createElement('option');
+    emptyExpressionOption.value = '';
+    emptyExpressionOption.textContent = (window.t && window.t('character.noExpression', '无表情')) || '无表情';
+    expressionSelect.appendChild(emptyExpressionOption);
+
     if (expressionFiles.length > 0) {
         expressionSelect.disabled = false;
         playExpressionBtn.disabled = false;
+        expressionSelect.value = '';
 
         // 添加表情选项
         expressionFiles.forEach(expressionFile => {
@@ -8053,11 +8050,7 @@ function updatePreviewControls(motionFiles, expressionFiles) {
     } else {
         expressionSelect.disabled = true;
         playExpressionBtn.disabled = true;
-
-        const option = document.createElement('option');
-        option.value = '';
-        option.textContent = window.t('live2d.noExpressionFiles', '没有表情文件');
-        expressionSelect.appendChild(option);
+        emptyExpressionOption.textContent = (window.t && window.t('live2d.noExpressionFiles', '没有表情文件')) || '没有表情文件';
     }
 
     // 显示预览控件
