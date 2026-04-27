@@ -1527,7 +1527,7 @@
         "storageRunPreflight": "Preflight",
         "storagePickTargetFailed": "Failed to choose target location. Please enter a path manually.",
         "storagePreflightFailed": "Preflight failed",
-        "storagePreflightReady": "Preflight passed. After confirmation, the app must close and migrate data after shutdown.",
+        "storagePreflightReady": "Preflight passed. After confirmation, the app will close and migrate data on shutdown.",
         "storagePreflightTarget": "Target location: {{path}}",
         "storageExistingTargetWarning": "The target location already contains data. A second confirmation will be required before migration.",
         "storageTargetRequired": "Please choose or enter a target location first",
@@ -1535,7 +1535,7 @@
         "storageConfirmRestart": "Confirm Close and Migrate",
         "storagePreflightRequired": "Please run preflight first",
         "storageRestartStarting": "Preparing to close and migrate...",
-        "storageRestartInitiated": "Close and migrate has been requested. The app will enter maintenance mode; please wait for restart to finish.",
+        "storageRestartInitiated": "Close-and-migrate request submitted. The app will enter maintenance mode; please wait for the restart to finish.",
         "storageRestartFailed": "Close and migrate request failed"
     },
     "character": {
