@@ -404,6 +404,21 @@ describe('App', () => {
     expect(screen.getByRole('button', { name: '棒棒糖' })).toHaveAttribute('aria-pressed', 'true');
   });
 
+  it('clears the selected avatar tool from the icon badge', () => {
+    render(<App />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
+    fireEvent.click(screen.getByRole('button', { name: '猫爪' }));
+
+    expect(screen.getByRole('button', { name: 'Emoji: 猫爪' })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: '恢复鼠标' }));
+
+    expect(screen.getByRole('button', { name: 'Emoji' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Emoji: 猫爪' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '恢复鼠标' })).not.toBeInTheDocument();
+  });
+
   it('emits avatar tool state changes for desktop hosts', () => {
     const onAvatarToolStateChange = vi.fn();
     render(<App onAvatarToolStateChange={onAvatarToolStateChange} />);
