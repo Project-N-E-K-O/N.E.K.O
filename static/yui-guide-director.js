@@ -1589,6 +1589,7 @@
 
             const normalizedOptions = options || {};
             const padding = Number.isFinite(normalizedOptions.padding) ? normalizedOptions.padding : DEFAULT_SPOTLIGHT_PADDING;
+            const radius = Number.isFinite(normalizedOptions.radius) ? normalizedOptions.radius : 20;
             const elementKey = String(key);
             let element = this.virtualSpotlights.get(elementKey) || null;
             if (!element) {
@@ -1604,15 +1605,17 @@
                 this.virtualSpotlights.set(elementKey, element);
             }
 
-            const left = Math.max(0, Math.floor(rect.left - padding));
-            const top = Math.max(0, Math.floor(rect.top - padding));
-            const right = Math.min(window.innerWidth, Math.ceil(rect.right + padding));
-            const bottom = Math.min(window.innerHeight, Math.ceil(rect.bottom + padding));
+            const left = Math.max(0, Math.floor(rect.left));
+            const top = Math.max(0, Math.floor(rect.top));
+            const right = Math.min(window.innerWidth, Math.ceil(rect.right));
+            const bottom = Math.min(window.innerHeight, Math.ceil(rect.bottom));
             element.style.left = left + 'px';
             element.style.top = top + 'px';
             element.style.width = Math.max(0, right - left) + 'px';
             element.style.height = Math.max(0, bottom - top) + 'px';
-            element.style.borderRadius = (Number.isFinite(normalizedOptions.radius) ? normalizedOptions.radius : 20) + 'px';
+            element.style.borderRadius = radius + 'px';
+            element.setAttribute('data-yui-guide-spotlight-padding', String(padding));
+            element.setAttribute('data-yui-guide-spotlight-radius', String(radius));
             return element;
         }
 
@@ -3384,7 +3387,7 @@
                 ? new AbortController()
                 : null;
             const timeoutId = controller
-                ? window.setTimeout(() => controller.abort(), 650)
+                ? window.setTimeout(() => controller.abort(), 800)
                 : 0;
 
             try {

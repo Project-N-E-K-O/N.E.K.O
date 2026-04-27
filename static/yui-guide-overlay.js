@@ -497,9 +497,9 @@
             const secondaryActionRect = this.getSpotlightRect(this.secondaryActionHighlightedElement);
             const extraRects = this.extraSpotlightElements.map((element) => this.getSpotlightRect(element));
             const persistentMaskRect = persistentRect && !persistentRect.isCircular ? persistentRect : null;
-            const actionMaskRect = actionRect || null;
-            const secondaryActionMaskRect = secondaryActionRect || null;
-            const extraMaskRects = extraRects.filter(Boolean);
+            const actionMaskRect = actionRect && !actionRect.isCircular ? actionRect : null;
+            const secondaryActionMaskRect = secondaryActionRect && !secondaryActionRect.isCircular ? secondaryActionRect : null;
+            const extraMaskRects = extraRects.filter((rect) => rect && !rect.isCircular);
 
             if (this.backdrop) {
                 this.syncBackdropViewport();
