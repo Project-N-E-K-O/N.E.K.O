@@ -1485,6 +1485,8 @@
         "enabled": "Activado",
         "disabled": "Desactivado",
         "autoReviewNote": "Cuando esté habilitado, el sistema organizará y optimizará automáticamente el contenido de la memoria para mejorar la calidad de la conversación.",
+        "strongMemory": "Memoria reforzada",
+        "strongMemoryNote": "Cuando está activada, se ejecuta consolidación profunda de memoria (retroalimentación verbal, detección automática de refutaciones, acumulación de evidencia multicanal). Al desactivarla se ahorra alrededor del 40% de llamadas al modelo.",
         "saveFailedStatus": "Error al guardar",
         "tutorialReset": "Guía tutorial",
         "tutorialSelectPage": "-- Seleccionar página --",

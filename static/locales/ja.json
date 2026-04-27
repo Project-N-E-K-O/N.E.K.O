@@ -1485,6 +1485,8 @@
         "enabled": "有効",
         "disabled": "無効",
         "autoReviewNote": "有効にすると、システムはメモリコンテンツを自動的に整理および最適化して、会話品質を向上させます",
+        "strongMemory": "強化メモリ",
+        "strongMemoryNote": "有効時、深い記憶の固定化（口頭フィードバック、自動反論検出、複数チャネルの根拠累積）が動作します。無効にすると約 40% のモデル呼び出しを節約できます。",
         "saveFailedStatus": "保存失敗",
         "tutorialReset": "チュートリアル",
         "tutorialSelectPage": "-- ページを選択 --",

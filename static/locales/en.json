@@ -1485,6 +1485,8 @@
         "enabled": "Enabled",
         "disabled": "Disabled",
         "autoReviewNote": "When enabled, the system will automatically organize and optimize memory content to improve conversation quality",
+        "strongMemory": "Powerful Memory",
+        "strongMemoryNote": "When enabled, deep memory consolidation runs (verbal feedback, automatic rebuttal detection, multi-channel evidence accumulation). Disabling saves about 40% of model calls.",
         "saveFailedStatus": "Save failed",
         "tutorialReset": "Tutorial Guide",
         "tutorialSelectPage": "-- Select Page --",
