@@ -543,69 +543,65 @@ class FactStore:
         now = datetime.now()
         pool: list[dict] = []
 
+        # CodeRabbit follow-up：之前 reflection / persona 加载失败时被 try-except
+        # 吞掉，只 debug log 后继续返回 partial pool。下游 caller 看到非空 pool
+        # 会正常 mark batch processed，那部分失败的池里可能 reinforce/negate 的
+        # signal 永久丢失。改成不 catch、直接 raise，让 caller (drain 路径) 用
+        # try-except 捕获并跳过 mark，保证下轮 idle 重试。
+        # NegKW caller (memory_server.py) 已有自己的 try-except，不受影响。
         if reflection_engine is not None:
-            try:
-                all_refl = await reflection_engine._aload_reflections_full(lanlan_name)
-                for r in all_refl:
-                    if r.get('status') not in ('confirmed', 'promoted'):
-                        continue
-                    pool.append({
-                        'id': f"reflection.{r.get('id', '')}",
-                        'raw_id': r.get('id', ''),
-                        'target_type': 'reflection',
-                        'text': r.get('text', ''),
-                        'entity': r.get('entity', 'relationship'),
-                        'score': evidence_score(r, now),
-                        'embedding': r.get('embedding'),
-                        'embedding_text_sha256': r.get('embedding_text_sha256'),
-                        'embedding_model_id': r.get('embedding_model_id'),
-                        'status': r.get('status'),
-                        # Carry the AI-mention rate-limit suppress flag
-                        # so MemoryRecallReranker._hard_filter can drop
-                        # suppressed reflections from the rerank pool —
-                        # reflections share persona's 5h-window mention
-                        # gating (see ReflectionEngine._normalize_reflection).
-                        # Codex PR-958 P2: without this, a vector-recall
-                        # path with a suppressed reflection would slip
-                        # past the filter and re-enter Stage-2 signal
-                        # detection, defeating the suppression contract.
-                        'suppress': r.get('suppress'),
-                    })
-            except Exception as e:
-                logger.debug(
-                    f"[FactStore] _aload_signal_targets 读取 reflection 失败: {e}"
-                )
+            all_refl = await reflection_engine._aload_reflections_full(lanlan_name)
+            for r in all_refl:
+                if r.get('status') not in ('confirmed', 'promoted'):
+                    continue
+                pool.append({
+                    'id': f"reflection.{r.get('id', '')}",
+                    'raw_id': r.get('id', ''),
+                    'target_type': 'reflection',
+                    'text': r.get('text', ''),
+                    'entity': r.get('entity', 'relationship'),
+                    'score': evidence_score(r, now),
+                    'embedding': r.get('embedding'),
+                    'embedding_text_sha256': r.get('embedding_text_sha256'),
+                    'embedding_model_id': r.get('embedding_model_id'),
+                    'status': r.get('status'),
+                    # Carry the AI-mention rate-limit suppress flag
+                    # so MemoryRecallReranker._hard_filter can drop
+                    # suppressed reflections from the rerank pool —
+                    # reflections share persona's 5h-window mention
+                    # gating (see ReflectionEngine._normalize_reflection).
+                    # Codex PR-958 P2: without this, a vector-recall
+                    # path with a suppressed reflection would slip
+                    # past the filter and re-enter Stage-2 signal
+                    # detection, defeating the suppression contract.
+                    'suppress': r.get('suppress'),
+                })
 
         if persona_manager is not None:
-            try:
-                persona = await persona_manager.aensure_persona(lanlan_name)
-                for entity_key, section in persona.items():
-                    if not isinstance(section, dict):
+            persona = await persona_manager.aensure_persona(lanlan_name)
+            for entity_key, section in persona.items():
+                if not isinstance(section, dict):
+                    continue
+                for entry in section.get('facts', []):
+                    if not isinstance(entry, dict):
                         continue
-                    for entry in section.get('facts', []):
-                        if not isinstance(entry, dict):
-                            continue
-                        if entry.get('protected'):
-                            # protected = character_card；evidence 对它永远
-                            # inf，signal 施加它也没语义。跳过。
-                            continue
-                        pool.append({
-                            'id': f"persona.{entity_key}.{entry.get('id', '')}",
-                            'raw_id': entry.get('id', ''),
-                            'target_type': 'persona',
-                            'entity_key': entity_key,
-                            'text': entry.get('text', ''),
-                            'entity': entity_key,
-                            'score': evidence_score(entry, now),
-                            'embedding': entry.get('embedding'),
-                            'embedding_text_sha256': entry.get('embedding_text_sha256'),
-                            'embedding_model_id': entry.get('embedding_model_id'),
-                            'suppress': entry.get('suppress'),
-                        })
-            except Exception as e:
-                logger.debug(
-                    f"[FactStore] _aload_signal_targets 读取 persona 失败: {e}"
-                )
+                    if entry.get('protected'):
+                        # protected = character_card；evidence 对它永远
+                        # inf，signal 施加它也没语义。跳过。
+                        continue
+                    pool.append({
+                        'id': f"persona.{entity_key}.{entry.get('id', '')}",
+                        'raw_id': entry.get('id', ''),
+                        'target_type': 'persona',
+                        'entity_key': entity_key,
+                        'text': entry.get('text', ''),
+                        'entity': entity_key,
+                        'score': evidence_score(entry, now),
+                        'embedding': entry.get('embedding'),
+                        'embedding_text_sha256': entry.get('embedding_text_sha256'),
+                        'embedding_model_id': entry.get('embedding_model_id'),
+                        'suppress': entry.get('suppress'),
+                    })
 
         # P2 step 3: route through MemoryRecallReranker whenever we have
         # a query, regardless of vector service state.  The reranker
@@ -729,6 +725,10 @@ class FactStore:
         # prompt 看到的子集一致，否则被尾部预算切掉的 obs id 仍会被当成合法。
         valid_ids = {o['id'] for o, _ in budgeted_observations}
         id_to_obs = {o['id']: o for o, _ in budgeted_observations}
+        # source_fact_id 也要校验在本批 new_facts 里（CodeRabbit 1f follow-up）。
+        # 否则 LLM hallucinate 一个不在本次 prompt 里的 fact id 仍会被作为合法
+        # source 落到 evidence 计数器更新里。
+        new_fact_ids = {f['id'] for f in new_facts if f.get('id')}
         validated: list[dict] = []
         for s in raw_signals:
             if not isinstance(s, dict):
@@ -737,6 +737,13 @@ class FactStore:
             ttype = s.get('target_type')
             signal = s.get('signal')
             if signal not in ('reinforces', 'negates'):
+                continue
+            sid = s.get('source_fact_id')
+            if sid is not None and sid not in new_fact_ids:
+                logger.warning(
+                    f"[FactStore] {lanlan_name}: Stage-2 返回 source_fact_id="
+                    f"{sid!r} 不在本批 new_facts 里，丢弃"
+                )
                 continue
             # Reconstruct full prompt-space id if LLM returned just the raw id
             candidate_full = tid
@@ -841,20 +848,29 @@ class FactStore:
         )
         batch = unprocessed[:EVIDENCE_DETECT_SIGNALS_MAX_NEW_FACTS]
 
-        existing_observations = await self._aload_signal_targets(
-            lanlan_name,
-            reflection_engine=reflection_engine,
-            persona_manager=persona_manager,
-            # 用 batch 而不是仅本轮新增作为 query，向量召回更聚焦。
-            new_facts=batch,
-        )
+        try:
+            existing_observations = await self._aload_signal_targets(
+                lanlan_name,
+                reflection_engine=reflection_engine,
+                persona_manager=persona_manager,
+                # 用 batch 而不是仅本轮新增作为 query，向量召回更聚焦。
+                new_facts=batch,
+            )
+        except Exception as e:
+            # _aload_signal_targets 现在不再吞 reflection/persona load 异常
+            # （CodeRabbit 1f follow-up：partial pool + checkpoint 会让失败池
+            # 那部分的 signal 永久丢失）。任一 manager raise 时整轮放弃 mark，
+            # 下轮 idle 重试。
+            logger.warning(
+                f"[FactStore] {lanlan_name}: _aload_signal_targets 失败，"
+                f"跳过本轮 Stage-2 mark，下轮 idle 重试: {e}"
+            )
+            return persisted_this_round, [], []
         if not existing_observations:
-            # 不区分"真为空"（冷启动 / persona 池只有 protected）与"加载失败"
-            # （_aload_signal_targets 把 reflection/persona load 异常吞成 []）：
-            # 故意**不**返回 batch_fact_ids，让 caller 不 mark，下轮 idle
-            # tick 重试同一批。代价是冷启动场景每轮 idle 都跑一次
-            # _aload_signal_targets（无 LLM 调用）；收益是绝不会因瞬时 IO
-            # 失败把整批 facts 永久跳过 Stage-2（CodeRabbit e625b666）。
+            # 真为空（冷启动 / persona 池只有 protected）：故意**不**返回
+            # batch_fact_ids，让 caller 不 mark，下轮 idle tick 重试同一批。
+            # 代价是冷启动每轮跑一次 _aload_signal_targets（无 LLM 调用）；
+            # 收益是绝不丢 signal（CodeRabbit fingerprint e625b666）。
             return persisted_this_round, [], []
 
         signals = await self._allm_detect_signals(
