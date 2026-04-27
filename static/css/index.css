@@ -215,7 +215,7 @@ button * {
     position: fixed;
     right: 20px;
     bottom: 20px;
-    z-index: 100050;
+    z-index: 99998;
     pointer-events: auto;
     border: 0;
     border-radius: 999px;
@@ -226,6 +226,7 @@ button * {
     font-weight: 600;
     line-height: 1;
     box-shadow: 0 10px 24px rgba(0, 0, 0, 0.24);
+    -webkit-backdrop-filter: blur(8px);
     backdrop-filter: blur(8px);
     cursor: pointer;
     transition: transform 0.15s ease, background-color 0.15s ease, box-shadow 0.15s ease;

@@ -122,6 +122,7 @@ let currentGuideAudio: HTMLAudioElement | null = null
 let currentGuideAudioTimer: number | null = null
 let currentGuideSpeechStop: (() => void) | null = null
 let openerMessageOrigin = ''
+const guideAudioDurationCache = new Map<string, number>()
 
 type StartPayload = {
   line?: string
@@ -213,11 +214,8 @@ function resolveSpeechLang() {
 }
 
 function getAllowedOpenerOrigins() {
+  const origins = new Set<string>(ALLOWED_OPENER_ORIGINS)
   const trustedOrigin = getTrustedOpenerOrigin()
-  const origins = new Set<string>()
-  ALLOWED_OPENER_ORIGINS.forEach((origin) => {
-    origins.add(origin)
-  })
   if (trustedOrigin) {
     origins.add(trustedOrigin)
   }
@@ -277,6 +275,29 @@ function resolveGuideAudioSrc(voiceKey?: keyof typeof GUIDE_AUDIO_BY_KEY, audioU
   return fileName ? `${GUIDE_AUDIO_BASE_URL}${fileLocale}/${encodeURIComponent(fileName)}` : ''
 }
 
+function getGuideAudioDurationCacheKey(audioSrc: string) {
+  const normalizedAudioSrc = typeof audioSrc === 'string' ? audioSrc.trim() : ''
+  if (!normalizedAudioSrc) {
+    return ''
+  }
+
+  try {
+    return new URL(normalizedAudioSrc, window.location.href).href
+  } catch (_) {
+    return normalizedAudioSrc
+  }
+}
+
+function cacheGuideAudioDuration(audioSrc: string, durationSeconds: number) {
+  if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) {
+    return
+  }
+  const cacheKey = getGuideAudioDurationCacheKey(audioSrc)
+  if (cacheKey) {
+    guideAudioDurationCache.set(cacheKey, Math.round(durationSeconds * 1000))
+  }
+}
+
 function playGuideAudioWithPromise(audioSrc: string, minimumDurationMs: number) {
   const normalizedAudioSrc = typeof audioSrc === 'string' ? audioSrc.trim() : ''
   if (!normalizedAudioSrc) {
@@ -306,6 +327,7 @@ function playGuideAudioWithPromise(audioSrc: string, minimumDurationMs: number) 
       }
       audio.onended = null
       audio.onerror = null
+      audio.onloadedmetadata = null
       if (success) {
         resolve()
         return
@@ -319,6 +341,9 @@ function playGuideAudioWithPromise(audioSrc: string, minimumDurationMs: number) 
     currentGuideAudioTimer = timerId
 
     audio.preload = 'auto'
+    audio.onloadedmetadata = () => {
+      cacheGuideAudioDuration(normalizedAudioSrc, audio.duration)
+    }
     audio.onended = () => finish(true)
     audio.onerror = () => finish(false, new Error('guide_audio_error'))
     const stop = () => {
@@ -345,6 +370,27 @@ function loadGuideAudioDurationMs(audioSrc: string, fallbackDurationMs: number) 
   const normalizedAudioSrc = typeof audioSrc === 'string' ? audioSrc.trim() : ''
   if (!normalizedAudioSrc) {
     return Promise.resolve(fallbackDurationMs)
+  }
+
+  const cacheKey = getGuideAudioDurationCacheKey(normalizedAudioSrc)
+  const cachedDurationMs = cacheKey ? guideAudioDurationCache.get(cacheKey) : null
+  if (Number.isFinite(cachedDurationMs) && (cachedDurationMs as number) > 0) {
+    return Promise.resolve(cachedDurationMs as number)
+  }
+
+  const currentAudioCacheKey = currentGuideAudio
+    ? getGuideAudioDurationCacheKey(currentGuideAudio.currentSrc || currentGuideAudio.src || '')
+    : ''
+  if (
+    currentGuideAudio
+    && cacheKey
+    && currentAudioCacheKey === cacheKey
+    && Number.isFinite(currentGuideAudio.duration)
+    && currentGuideAudio.duration > 0
+  ) {
+    const durationMs = Math.round(currentGuideAudio.duration * 1000)
+    guideAudioDurationCache.set(cacheKey, durationMs)
+    return Promise.resolve(durationMs)
   }
 
   return new Promise<number>((resolve) => {
@@ -374,6 +420,9 @@ function loadGuideAudioDurationMs(audioSrc: string, fallbackDurationMs: number) 
       const durationMs = Number.isFinite(audio.duration) && audio.duration > 0
         ? audio.duration * 1000
         : 0
+      if (cacheKey && durationMs > 0) {
+        guideAudioDurationCache.set(cacheKey, Math.round(durationMs))
+      }
       finish(durationMs)
     }
     audio.onerror = () => finish()

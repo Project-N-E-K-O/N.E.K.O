@@ -398,7 +398,7 @@
                 const computed = window.getComputedStyle(element);
                 const radius = parseFloat(computed.borderTopLeftRadius || computed.borderRadius || '');
                 if (Number.isFinite(radius) && radius > 0) {
-                    return radius + radiusPadding;
+                    return Math.max(0, radius + radiusPadding);
                 }
             } catch (_) {}
 

@@ -3396,7 +3396,7 @@
                 }
 
                 const data = await response.json();
-                if (!data || data.success !== true) {
+                if (!data || data.success === false) {
                     return fallbackSnapshot;
                 }
 
