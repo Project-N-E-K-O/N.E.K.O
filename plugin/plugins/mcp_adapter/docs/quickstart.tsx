@@ -10,10 +10,12 @@ import {
   Step,
   CodeBlock,
   StatusBadge,
+  StatCard,
   KeyValue,
+  DataTable,
 } from "@neko/plugin-ui"
 
-export default function QuickstartGuide({ plugin }) {
+export default function QuickstartGuide({ plugin, entries, actions }) {
   const configExample = `[mcp_servers.example]
 transport = "stdio"
 command = "uvx"
@@ -35,6 +37,11 @@ enabled = true`
         <Card title="状态">
           <StatusBadge tone="success">Adapter: {plugin.id}</StatusBadge>
         </Card>
+      </Grid>
+
+      <Grid cols={2}>
+        <StatCard label="已声明入口" value={entries.length} />
+        <StatCard label="右键动作" value={actions.length} />
       </Grid>
 
       <Card title="推荐配置流程">
@@ -67,6 +74,17 @@ enabled = true`
             url: "sse / streamable-http 服务地址",
             enabled: "是否启用该 server",
           }}
+        />
+      </Card>
+
+      <Card title="当前可见入口示例">
+        <DataTable
+          data={entries.slice(0, 6)}
+          columns={[
+            { key: "id", label: "入口 ID" },
+            { key: "name", label: "名称" },
+            { key: "description", label: "描述" },
+          ]}
         />
       </Card>
 

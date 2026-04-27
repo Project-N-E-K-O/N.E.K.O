@@ -69,6 +69,23 @@ export interface PluginUiWarning {
   message: string
 }
 
+export interface PluginUiContext {
+  plugin_id: string
+  kind: PluginUiSurfaceKind
+  surface_id: string
+  plugin: PluginMeta
+  surface: PluginUiSurface
+  state: Record<string, any>
+  actions: PluginListAction[]
+  entries: PluginEntry[]
+  config: {
+    schema: JSONSchema
+    value: Record<string, any>
+    readonly?: boolean
+  }
+  warnings?: PluginUiWarning[]
+}
+
 export interface PluginUiInfo {
   plugin_id: string
   has_ui: boolean

@@ -47,7 +47,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Document, Loading, WarningFilled } from '@element-plus/icons-vue'
-import { getPluginHostedSurfaceSource } from '@/api/plugins'
+import { getPluginHostedSurfaceContext, getPluginHostedSurfaceSource } from '@/api/plugins'
 import { buildHostedTsxDocument } from '@/components/plugin/hosted/tsxRuntime'
 import type { PluginUiSurface } from '@/types/api'
 
@@ -134,11 +134,16 @@ async function loadHostedTsx() {
       kind: props.surface.kind,
       id: props.surface.id,
     })
+    const context = await getPluginHostedSurfaceContext(props.pluginId, {
+      kind: props.surface.kind,
+      id: props.surface.id,
+    })
     if (loadId !== currentLoadId) return
     hostedDocument.value = buildHostedTsxDocument({
       source: response.source,
       pluginId: props.pluginId,
       surface: props.surface,
+      context,
       locale: String(locale.value),
     })
     iframeKey.value += 1

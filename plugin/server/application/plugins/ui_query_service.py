@@ -490,6 +490,77 @@ class PluginUiQueryService:
                 details={"plugin_id": plugin_id, "kind": kind, "surface_id": surface_id, "error_type": type(exc).__name__},
             ) from exc
 
+    async def get_surface_context(self, plugin_id: str, *, kind: str, surface_id: str) -> dict[str, object]:
+        try:
+            plugin_meta = await asyncio.to_thread(_get_plugin_meta_sync, plugin_id)
+            if plugin_meta is None:
+                raise ServerDomainError(
+                    code="PLUGIN_NOT_FOUND",
+                    message=f"Plugin '{plugin_id}' not found",
+                    status_code=404,
+                    details={"plugin_id": plugin_id},
+                )
+
+            surfaces, warnings = _build_surfaces_sync(plugin_id, plugin_meta)
+            surface = next(
+                (
+                    item for item in surfaces
+                    if item.get("kind") == kind and item.get("id") == surface_id
+                ),
+                None,
+            )
+            if surface is None:
+                raise ServerDomainError(
+                    code="PLUGIN_UI_SURFACE_NOT_FOUND",
+                    message=f"UI surface '{kind}:{surface_id}' not found",
+                    status_code=404,
+                    details={"plugin_id": plugin_id, "kind": kind, "surface_id": surface_id},
+                )
+
+            entries_obj = plugin_meta.get("entries")
+            if not isinstance(entries_obj, list):
+                entries_obj = plugin_meta.get("entries_preview")
+            entries = [dict(item) for item in entries_obj if isinstance(item, Mapping)] if isinstance(entries_obj, list) else []
+
+            actions_obj = plugin_meta.get("list_actions")
+            actions = [dict(item) for item in actions_obj if isinstance(item, Mapping)] if isinstance(actions_obj, list) else []
+
+            config_schema = plugin_meta.get("input_schema") if isinstance(plugin_meta.get("input_schema"), Mapping) else {"type": "object", "properties": {}}
+
+            return {
+                "plugin_id": plugin_id,
+                "kind": kind,
+                "surface_id": surface_id,
+                "plugin": dict(plugin_meta),
+                "surface": surface,
+                "state": {},
+                "actions": actions,
+                "entries": entries,
+                "config": {
+                    "schema": config_schema,
+                    "value": {},
+                    "readonly": True,
+                },
+                "warnings": warnings,
+            }
+        except ServerDomainError:
+            raise
+        except IO_RUNTIME_ERRORS as exc:
+            logger.error(
+                "get_surface_context failed: plugin_id={}, kind={}, surface_id={}, err_type={}, err={}",
+                plugin_id,
+                kind,
+                surface_id,
+                type(exc).__name__,
+                str(exc),
+            )
+            raise ServerDomainError(
+                code="PLUGIN_UI_CONTEXT_QUERY_FAILED",
+                message="Failed to query plugin UI context",
+                status_code=500,
+                details={"plugin_id": plugin_id, "kind": kind, "surface_id": surface_id, "error_type": type(exc).__name__},
+            ) from exc
+
     async def get_static_dir(self, plugin_id: str) -> Path | None:
         try:
             plugin_meta = await asyncio.to_thread(_get_plugin_meta_sync, plugin_id)

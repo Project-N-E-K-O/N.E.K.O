@@ -8,6 +8,7 @@ import type {
   PluginHealth,
   PluginMessage,
   PluginUiInfo,
+  PluginUiContext,
   PluginUiSurface,
   PluginUiWarning,
 } from '@/types/api'
@@ -216,6 +217,19 @@ export function getPluginHostedSurfaceSource(pluginId: string, params: {
 }> {
   const safeId = encodeURIComponent(pluginId)
   return get(`/plugin/${safeId}/hosted-ui/source`, {
+    params: {
+      kind: params.kind,
+      id: params.id,
+    },
+  })
+}
+
+export function getPluginHostedSurfaceContext(pluginId: string, params: {
+  kind: PluginUiSurface['kind']
+  id: string
+}): Promise<PluginUiContext> {
+  const safeId = encodeURIComponent(pluginId)
+  return get(`/plugin/${safeId}/hosted-ui/context`, {
     params: {
       kind: params.kind,
       id: params.id,

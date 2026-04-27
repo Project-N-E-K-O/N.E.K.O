@@ -221,3 +221,17 @@ async def plugin_hosted_ui_source(plugin_id: str, kind: str = "panel", id: str =
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
     return JSONResponse(source)
+
+
+@router.get("/plugin/{plugin_id}/hosted-ui/context")
+async def plugin_hosted_ui_context(plugin_id: str, kind: str = "panel", id: str = "main"):
+    """获取 hosted surface 只读上下文。"""
+    try:
+        context = await plugin_ui_query_service.get_surface_context(
+            plugin_id,
+            kind=kind,
+            surface_id=id,
+        )
+    except ServerDomainError as error:
+        raise_http_from_domain(error, logger=logger)
+    return JSONResponse(context)

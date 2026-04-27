@@ -1,10 +1,11 @@
 import { transform } from 'sucrase'
-import type { PluginUiSurface } from '@/types/api'
+import type { PluginUiContext, PluginUiSurface } from '@/types/api'
 
 type BuildHostedTsxDocumentOptions = {
   source: string
   pluginId: string
   surface: PluginUiSurface
+  context?: PluginUiContext | null
   locale: string
 }
 
@@ -55,10 +56,13 @@ function compileHostedTsx(source: string) {
 export function buildHostedTsxDocument(options: BuildHostedTsxDocumentOptions) {
   const compiled = compileHostedTsx(options.source)
   const payload = JSON.stringify({
-    plugin: {
-      id: options.pluginId,
-    },
+    plugin: options.context?.plugin || { id: options.pluginId },
     surface: options.surface,
+    state: options.context?.state || {},
+    actions: options.context?.actions || [],
+    entries: options.context?.entries || [],
+    config: options.context?.config || { schema: { type: 'object', properties: {} }, value: {}, readonly: true },
+    warnings: options.context?.warnings || [],
     locale: options.locale,
   })
 
@@ -297,12 +301,43 @@ export function buildHostedTsxDocument(options: BuildHostedTsxDocumentOptions) {
     }
     function useI18n() { return { t, locale: __NEKO_PAYLOAD.locale }; }
     function t(key) { return key; }
+    Object.assign(window, {
+      h,
+      Fragment,
+      Page,
+      Card,
+      Section,
+      Heading,
+      Stack,
+      Grid,
+      Text,
+      Button,
+      ButtonGroup,
+      StatusBadge,
+      StatCard,
+      KeyValue,
+      DataTable,
+      Divider,
+      CodeBlock,
+      Tip,
+      Warning,
+      Steps,
+      Step,
+      Tabs,
+      useI18n,
+      t,
+    });
     try {
 ${escapeScriptContent(compiled)}
       if (typeof __Panel !== 'function') throw new Error('Hosted TSX must export a default function component.');
       const rendered = __Panel({
         plugin: __NEKO_PAYLOAD.plugin,
         surface: __NEKO_PAYLOAD.surface,
+        state: __NEKO_PAYLOAD.state,
+        actions: __NEKO_PAYLOAD.actions,
+        entries: __NEKO_PAYLOAD.entries,
+        config: __NEKO_PAYLOAD.config,
+        warnings: __NEKO_PAYLOAD.warnings,
         locale: __NEKO_PAYLOAD.locale,
         t,
         useI18n,
