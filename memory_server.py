@@ -454,22 +454,29 @@ async def _reset_confirmed_at_for_all_characters() -> int:
     被 main_routers/memory_router.py 的 update_powerful_memory_config 调用——
     只在 prev=True, new=False 切换时跑。让 time-driven fallback 走完整 14 天
     计时，避免"刚关就立刻批量 promote 旧 confirmed"的体验断层。
+
+    返回真实迁移条目数。**对不可恢复失败（reflection_engine 未初始化 / 角色
+    列表加载失败）一律 raise**，让 caller endpoint 区分"真实 0 条"（角色都
+    loaded 但没需要重置的）vs"根本没跑"（早期失败）。CodeRabbit PR #997
+    feedback：之前两条早期失败路径都返回 0 → endpoint 包装成 ok=true,
+    count=0 → 上游 memory_router 误判成功 → 落盘 powerful_memory_enabled=False
+    → 旧 confirmed_at 永久漏迁移。
     """
     if reflection_engine is None:
-        return 0
-    try:
-        character_data = await _config_manager.aload_characters()
-        catgirl_names = list(character_data.get('猫娘', {}).keys())
-    except Exception as e:
-        logger.warning(f"[Memory] migration 加载角色列表失败: {e}")
-        return 0
+        raise RuntimeError(
+            "reflection_engine 未初始化（memory_server limited-mode 或 startup 未完成）"
+        )
+    character_data = await _config_manager.aload_characters()
+    catgirl_names = list(character_data.get('猫娘', {}).keys())
+    # 角色列表为空（没配过猫娘）是合法的"0 条要迁移" case，正常返回 0。
     total = 0
     for name in catgirl_names:
         try:
             count = await reflection_engine.areset_confirmed_at_to_now(name)
             total += count
         except Exception as e:
-            logger.warning(f"[Memory] migration {name} 重置失败: {e}")
+            # 单角色失败不致命——记录后继续。最终 count 反映成功的 N 条。
+            logger.warning(f"[Memory] migration {name} 重置失败（其他角色继续）: {e}")
     return total
 
 
