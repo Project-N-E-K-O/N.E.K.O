@@ -1439,7 +1439,7 @@ async def _periodic_signal_extraction_loop():
                 messages = convert_to_messages(json.dumps(message_dicts))
 
                 try:
-                    persisted, signals = await fact_store.aextract_facts_and_detect_signals(
+                    persisted, signals, batch_fact_ids = await fact_store.aextract_facts_and_detect_signals(
                         name, messages,
                         reflection_engine=reflection_engine,
                         persona_manager=persona_manager,
@@ -1465,6 +1465,13 @@ async def _periodic_signal_extraction_loop():
                     logger.info(
                         f"[SignalLoop] {name}: dispatch {len(signals)} 个 evidence 信号"
                     )
+
+                # Drain checkpoint：dispatch 全部成功（含 signals=[] 即 LLM
+                # 看过没关联）才 mark batch processed。任何 aapply 失败保留
+                # signal_processed=False 让下轮 idle 重试这批 fact，避免
+                # 把没落地的 signal 永久跳过（CodeRabbit fingerprint c755101c）。
+                if dispatch_ok and batch_fact_ids:
+                    await fact_store.amark_signal_processed(name, batch_fact_ids)
 
                 if not dispatch_ok:
                     logger.warning(

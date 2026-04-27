@@ -774,7 +774,7 @@ class FactStore:
     async def aextract_facts_and_detect_signals(
         self, lanlan_name: str, messages: list,
         reflection_engine=None, persona_manager=None,
-    ) -> tuple[list[dict], list[dict]]:
+    ) -> tuple[list[dict], list[dict], list[str]]:
         """Two-stage extraction (RFC §3.4.2) with drain semantics.
 
         Stage-1: pure fact extraction from user messages — no existing
@@ -788,17 +788,23 @@ class FactStore:
           的，也包括上轮没处理完的尾部），按 importance DESC 取前 N
           (=EVIDENCE_DETECT_SIGNALS_MAX_NEW_FACTS) 进 Stage-2，多余的留
           原状下次 idle tick 再 drain
-        - Stage-2 成功后调 ``amark_signal_processed`` 标记本批
-        - Stage-2 失败 → 不标记，下轮重试
 
-        Returns (new_facts_this_round, signals). Caller dispatches each
-        signal through PersonaManager.aapply_signal / ReflectionEngine.
-        aapply_signal.
+        Returns ``(new_facts_this_round, signals, batch_fact_ids)``：
+        - ``new_facts_this_round``: 本轮 Stage-1 新抽出 + 落盘的 facts
+          （供 outbox 等审计用途）
+        - ``signals``: 待 dispatch 的 evidence 信号
+        - ``batch_fact_ids``: 本次 Stage-2 处理的 fact id 列表 —— **caller
+          在全部 signal 通过 aapply_signal 应用成功后**必须调用
+          ``amark_signal_processed(lanlan_name, batch_fact_ids)`` 完成
+          checkpoint。若 caller 在 dispatch 中途 / 之后崩溃，下轮 idle 会
+          看到 signal_processed=False 的 facts 重抽 Stage-2 重新生成
+          signals 重试 dispatch（CodeRabbit fingerprint c755101c）。
 
         Failure semantics (§3.4.2 末段):
         - Stage-1 failure → abort, no fact written; caller retries later
-        - Stage-2 failure → new facts already on disk + signal_processed=False
-          → next idle tick will pick them up again
+        - Stage-2 LLM failure → batch_fact_ids 仍然返回 []，caller 不会
+          mark，下轮 idle 重试同一批
+        - dispatch failure（caller 端）→ caller 不调 amark，下轮重试
         """
         extracted = await self._allm_extract_facts(lanlan_name, messages)
         if extracted is None:
@@ -823,7 +829,7 @@ class FactStore:
             if not f.get('signal_processed', True)
         ]
         if not unprocessed:
-            return persisted_this_round, []
+            return persisted_this_round, [], []
 
         # 按 importance DESC + 创建时间 ASC 排序，取前 N 条做这一批 batch。
         # 多余的留 signal_processed=False 给下一轮 idle tick。
@@ -845,23 +851,27 @@ class FactStore:
         if not existing_observations:
             # 不区分"真为空"（冷启动 / persona 池只有 protected）与"加载失败"
             # （_aload_signal_targets 把 reflection/persona load 异常吞成 []）：
-            # 故意**不** mark batch processed，让下轮 idle tick 重试同一批。
-            # 代价是冷启动场景每轮 idle 都跑一次 _aload_signal_targets（无 LLM
-            # 调用，纯文件 IO，开销可接受）；上行收益是绝不会因瞬时 IO 失败
-            # 把整批 facts 永久跳过 Stage-2（CodeRabbit fingerprint e625b666）。
-            return persisted_this_round, []
+            # 故意**不**返回 batch_fact_ids，让 caller 不 mark，下轮 idle
+            # tick 重试同一批。代价是冷启动场景每轮 idle 都跑一次
+            # _aload_signal_targets（无 LLM 调用）；收益是绝不会因瞬时 IO
+            # 失败把整批 facts 永久跳过 Stage-2（CodeRabbit e625b666）。
+            return persisted_this_round, [], []
 
         signals = await self._allm_detect_signals(
             lanlan_name, batch, existing_observations,
         )
         if signals is None:
-            # Stage-2 LLM failure: 不 mark，下次重试同一批
-            return persisted_this_round, []
+            # Stage-2 LLM failure: 不返回 batch_ids，caller 不 mark，下轮重试
+            return persisted_this_round, [], []
 
-        # Stage-2 成功 → 标记本批 processed（无论 signals 是否为空——
-        # 空 signals 也意味着 LLM 看过了，没找到关联，下轮没必要重跑）
-        await self.amark_signal_processed(lanlan_name, [f['id'] for f in batch])
-        return persisted_this_round, signals
+        # Stage-2 成功 → 返回 batch_fact_ids 让 caller 在 dispatch 全部成功
+        # 后调 amark_signal_processed。**不**在这里立刻 mark：caller 还没有
+        # 把 signals 喂给 PersonaManager / ReflectionEngine.aapply_signal，
+        # 中途崩溃或部分失败时这批 fact 必须能下轮重跑（CodeRabbit c755101c）。
+        # 即使 signals=[]（LLM 看过认为没关联）也返回 batch_ids，caller 看到
+        # 空 signals 直接当 dispatch_ok=True 调 amark，避免下轮空跑。
+        batch_fact_ids = [f['id'] for f in batch]
+        return persisted_this_round, signals, batch_fact_ids
 
     async def extract_facts(self, messages: list, lanlan_name: str) -> list[dict]:
         """Stage-1-only backward-compat entry.
