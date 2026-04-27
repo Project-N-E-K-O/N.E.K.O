@@ -2140,20 +2140,29 @@ async def api_reflect(lanlan_name: str):
     absorbed 标记竞态问题。
     """
     lanlan_name = validate_lanlan_name(lanlan_name)
-    auto_transitions = 0
     reflection_result = None
-    try:
-        auto_transitions = await reflection_engine.aauto_promote_stale(lanlan_name)
-    except Exception as e:
-        logger.debug(f"[ReflectAPI] {lanlan_name}: auto_promote_stale 失败: {e}")
+    # auto_promote_stale 改 fire-and-forget：开 thinking 后 promote_merge 单
+    # 调用可能 30-90s，串行多个 confirmed reflection 累计能超 client 15s
+    # timeout。periodic auto_promote loop 每 180s 跑一次会兜底，本端点不
+    # 等也安全。caller (system_router) 仅用 auto_transitions 打 log，丢失
+    # 计数无功能影响。
+    _spawn_background_task(_safe_auto_promote(lanlan_name))
     try:
         reflection_result = await reflection_engine.reflect(lanlan_name)
     except Exception as e:
         logger.debug(f"[ReflectAPI] {lanlan_name}: reflect 失败: {e}")
     return {
         "reflection": reflection_result,
-        "auto_transitions": auto_transitions,
+        "auto_transitions": 0,  # fire-and-forget，本调用不返回真实计数
     }
+
+
+async def _safe_auto_promote(lanlan_name: str) -> None:
+    """fire-and-forget 包装，吞 reflection_engine.aauto_promote_stale 的异常。"""
+    try:
+        await reflection_engine.aauto_promote_stale(lanlan_name)
+    except Exception as e:
+        logger.debug(f"[ReflectAPI] {lanlan_name}: 后台 auto_promote_stale 失败: {e}")
 
 
 @app.get("/followup_topics/{lanlan_name}")

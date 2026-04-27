@@ -2093,15 +2093,18 @@ class ReflectionEngine:
         api_config = self._config_manager.get_model_api_config(
             EVIDENCE_PROMOTION_MERGE_MODEL_TIER,
         )
-        # timeout=45: LLM 在 reflection 锁外，但 /process 末尾会同步等
-        # aauto_promote_stale 串行处理多个 reflection。每个 promote_merge
-        # prompt 决策短、输出短，应该 <10s 完成；45s 给 4-5x 裕度，超时即
-        # 触发已有 throttle/backoff 路径（EVIDENCE_PROMOTE_RETRY_BACKOFF_MINUTES）。
+        # timeout=90: 开 thinking 后 promote merge 决策（merge_into / promote_fresh /
+        # reject + target_id 选择 + 重写 merged_text）值得思考——后果不可逆
+        # （persona pollution），已有 throttle/backoff/dead-letter 兜底，开
+        # thinking 完全在收益侧。LLM 调用本身在锁外（pre/post 短临界区分别拿
+        # reflection 锁做 stamp 和 CAS），所以 90s 不阻塞同角色其他 reflection 写。
         # max_retries=0: 禁 SDK 自动重试，由 throttle/dead-letter 兜底。
+        # extra_body=None: 显式开 thinking。
         llm = create_chat_llm(
             api_config['model'],
             api_config['base_url'], api_config['api_key'],
-            timeout=45, max_retries=0,
+            timeout=90, max_retries=0,
+            extra_body=None,
         )
         try:
             resp = await llm.ainvoke(prompt)
