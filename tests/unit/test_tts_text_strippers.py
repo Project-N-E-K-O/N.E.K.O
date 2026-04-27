@@ -169,6 +169,25 @@ def test_markdown_underscore_in_identifier_preserved():
     assert out == "use foo_bar variable"
 
 
+def test_markdown_underscore_emphasis_around_cjk():
+    """``你_好_`` 应作为 italic 剥离成 ``你好``——CJK 字符不算 ASCII word boundary。
+
+    回归：早期 _safe_split 用 ``str.isalnum()`` 把 CJK 当 alnum，结果开 ``_``
+    被错当 identifier 跳过、emit 后 _strip 又认成 marker——两边语义不一致
+    emphasis 漏剥（emit 出字面 ``你_好`` + 末尾 ``_`` 在 flush 删掉）。
+    """
+    s = TtsMarkdownStripper()
+    out = _feed_chunks(s, ["你_好_"])
+    assert out == "你好"
+
+
+def test_markdown_underscore_emphasis_cjk_split_across_chunks():
+    """跨 chunk 的 CJK italic：``你_好_`` 切两片仍要正确剥离。"""
+    s = TtsMarkdownStripper()
+    out = _feed_chunks(s, ["你_好", "_"])
+    assert out == "你好"
+
+
 def test_markdown_bold_split_across_chunks():
     """``**bold**`` 切在中间：marker 跨 chunk 时 hold pending 直到闭合。"""
     s = TtsMarkdownStripper()

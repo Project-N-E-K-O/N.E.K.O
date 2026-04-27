@@ -492,16 +492,21 @@ class TtsMarkdownStripper:
         work_str = "".join(work)
         for marker in cls._SINGLE_MARKERS:
             if marker == "_":
-                # ``_`` 两侧紧贴 alnum 时属于 identifier（``foo_bar``），不当 italic marker。
-                # 与 _strip 的 italic underscore 正则的 lookbehind/lookahead 保持一致。
+                # ``_`` 两侧紧贴 ASCII alnum 时属于 identifier（``foo_bar``），不当 italic marker。
+                # 边界判定必须与 _strip 的 italic underscore 正则严格对齐：
+                # 那里用 ``[A-Za-z0-9_]``（ASCII-only），CJK / 西里尔等
+                # Unicode letter 不算 word boundary。如果这里改用
+                # ``str.isalnum()``（含 CJK），``你_好_`` 的开 `_` 在 split
+                # 阶段会被误判成 identifier 跳过，结果整段 emit 后 _strip
+                # 又把它认成 marker——两边语义不一致 emphasis 漏剥。
                 positions = []
                 for i, c in enumerate(work_str):
                     if c != "_":
                         continue
-                    left_alnum = i > 0 and (work_str[i - 1].isalnum() or work_str[i - 1] == "_")
+                    left_alnum = i > 0 and cls._is_ascii_word_char(work_str[i - 1])
                     right_alnum = (
                         i + 1 < len(work_str)
-                        and (work_str[i + 1].isalnum() or work_str[i + 1] == "_")
+                        and cls._is_ascii_word_char(work_str[i + 1])
                     )
                     if left_alnum and right_alnum:
                         continue  # identifier 内的 _，不算 marker
@@ -542,6 +547,15 @@ class TtsMarkdownStripper:
         for pat, repl in cls._PATTERNS:
             text = pat.sub(repl, text)
         return text
+
+    @staticmethod
+    def _is_ascii_word_char(c: str) -> bool:
+        """ASCII ``[A-Za-z0-9_]`` 字符判定，刻意不含 CJK / 其他 Unicode letter。
+
+        必须与 _PATTERNS 里 italic underscore 正则的 ``[A-Za-z0-9_]`` 字符类
+        语义一致——不要换成 ``str.isalnum()``（会把 CJK / Cyrillic 等当 alnum）。
+        """
+        return ("a" <= c <= "z") or ("A" <= c <= "Z") or ("0" <= c <= "9") or c == "_"
 
 
 def is_only_punctuation(text):
