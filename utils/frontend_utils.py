@@ -310,48 +310,67 @@ class TtsBracketStripper:
     本类，否则链接文本会被吃掉。
     """
 
-    # 半角 + 全角 + 各类引用括号；刻意不含 `{` `｛` `}` `｝`
-    # （编程语境会出现，朗读时反而希望保留）。
-    _OPEN = frozenset("(（[［【〈〔《「『")
-    _CLOSE = frozenset(")）]］】〉〕》」』")
+    # 半角 + 全角 + 各类引用括号 → 配对的 close。刻意不含 `{` `｛`
+    # `}` `｝`（编程语境会出现，朗读时反而希望保留）。
+    _PAIRS = {
+        "(": ")",
+        "（": "）",
+        "[": "]",
+        "［": "］",
+        "【": "】",
+        "〈": "〉",
+        "〔": "〕",
+        "《": "》",
+        "「": "」",
+        "『": "』",
+    }
+    _OPEN = frozenset(_PAIRS.keys())
+    _CLOSE = frozenset(_PAIRS.values())
 
-    __slots__ = ("_depth",)
+    __slots__ = ("_stack",)
 
     def __init__(self):
-        self._depth = 0
+        self._stack = []
 
     def reset(self) -> None:
-        """清空 depth。新 speech_id 或中断时调。"""
-        self._depth = 0
+        """清空 opener stack。新 speech_id 或中断时调。"""
+        self._stack.clear()
 
     def feed(self, chunk: str) -> str:
-        """逐字符扫描，返回当前可 emit 的（深度为 0 之外的）文本。"""
+        """逐字符扫描，返回当前可 emit 的文本（opener stack 非空时为空）。
+
+        opener stack 替代单纯 depth 计数，做 type-pair 校验：close 只有
+        与 stack 顶 opener 配对时才弹栈，否则按字面 emit（depth 0 时）
+        或随括号内容一起丢（depth > 0 时）。这样 ``（旁白]继续`` 里的
+        ``]`` 不会被误当成 ``（`` 的合法闭合而提前结束括号态。
+        """
         if not chunk:
             return ""
         out = []
-        depth = self._depth
+        stack = self._stack
         for c in chunk:
             if c in self._OPEN:
-                depth += 1
+                stack.append(self._PAIRS[c])
             elif c in self._CLOSE:
-                if depth > 0:
-                    depth -= 1
-                else:
+                if stack and stack[-1] == c:
+                    stack.pop()
+                elif not stack:
                     # 落单的 close 括号：当成普通标点 emit，避免把
                     # ``50)`` 这种数学/列表写法的 ``)`` 整个吃掉。
                     out.append(c)
-            elif depth == 0:
+                # else: 在括号内但与 top opener 不配对（``（旁白]``），
+                # 当成括号内的一个标点字符随上下文一起丢。
+            elif not stack:
                 out.append(c)
-            # else: depth > 0，正在括号里，整个丢
-        self._depth = depth
+            # else: 在括号里，整个丢
         return "".join(out)
 
     def flush(self) -> str:
-        """轮次收尾：清零 depth，返回 ``""``。
+        """轮次收尾：清空 stack，返回 ``""``。
 
         未闭合括号的悬挂内容已经在 feed 阶段被丢弃，这里只需重置状态。
         """
-        self._depth = 0
+        self._stack.clear()
         return ""
 
 
@@ -516,29 +535,36 @@ class TtsMarkdownStripper:
             if len(positions) % 2:
                 split = min(split, positions[-1])
 
-        # ``[ ]`` 配对
-        stack = []
-        for i, c in enumerate(work_str):
+        # ``[ ... ]`` 链接识别：从最早未确认非链接的 ``[`` 起 hold pending。
+        # 必须在 ``]`` 之后看到非 ``(`` 字符才能确认"不是链接"——否则
+        # chunk1 = ``...[docs]`` / chunk2 = ``(url)`` 这种切法会让上一块
+        # 把 ``[docs]`` 提前 emit 给下游 bracket stripper，被当成普通方括
+        # 号整段吞掉，``docs`` 永远朗读不出来。``](`` 已出现且 ``)`` 未到
+        # 时同样 hold（链接 URL 还没写完）。
+        positions = []
+        i = 0
+        while i < len(work_str):
+            c = work_str[i]
             if c == "[":
-                stack.append(i)
-            elif c == "]" and stack:
-                stack.pop()
-        if stack:
-            split = min(split, stack[0])
-
-        # ``](`` 后未见 ``)`` —— 链接 URL 还没写完
-        idx = 0
-        while True:
-            j = work_str.find("](", idx)
-            if j < 0:
-                break
-            close = work_str.find(")", j + 2)
-            if close < 0:
-                bracket_pos = work_str.rfind("[", 0, j)
-                if bracket_pos >= 0:
-                    split = min(split, bracket_pos)
-                break
-            idx = close + 1
+                positions.append(i)
+                i += 1
+            elif c == "]" and positions:
+                if i + 1 >= len(work_str):
+                    break  # ``]`` 在 buf 末尾，下个 chunk 可能是 ``(`` → hold
+                if work_str[i + 1] == "(":
+                    close = work_str.find(")", i + 2)
+                    if close < 0:
+                        break  # ``](url`` 还没闭合 → hold from ``[``
+                    positions.pop()
+                    i = close + 1
+                else:
+                    # ``]X`` 且 X != ``(`` → 不是链接，settled
+                    positions.pop()
+                    i += 1
+            else:
+                i += 1
+        if positions:
+            split = min(split, positions[0])
 
         return max(0, split)
 

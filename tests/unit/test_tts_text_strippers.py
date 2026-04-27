@@ -118,6 +118,34 @@ def test_bracket_stray_close_emits_literal():
     assert out == "a)b)c"
 
 
+def test_bracket_mismatched_close_does_not_close_other_type():
+    """``（旁白]继续`` 里 ``]`` 不应被当成 ``（`` 的合法闭合。
+
+    回归 CodeRabbit Major：旧版用 depth 计数，``]`` 把 ``（`` 的 depth
+    错误地减为 0，``继续`` 因此被当作括号外内容朗读出来——而旁白其实
+    没有真正闭合。type-pair stack 下 ``]`` 与 top ``）`` 不配对，作为
+    括号内标点随上下文一起丢，整个括号到 flush 才被清掉。
+    """
+    s = TtsBracketStripper()
+    out = _feed_chunks(s, ["（旁白]继续"])
+    # ``（`` 从未真正闭合 → 整段（含 ``继续``）都不应朗读出来
+    assert out == ""
+
+
+def test_bracket_mismatched_nesting_pairs_correctly():
+    """嵌套不同括号类型时按 type 配对，不会因为外层 close 提前匹配内层。"""
+    s = TtsBracketStripper()
+    # 标准嵌套：内层 ``】`` 配对内层 ``【``，外层 ``）`` 配对外层 ``（``
+    out = _feed_chunks(s, ["（中【深】中）"])
+    assert out == ""
+    # 反过来：外层 close 出现在内层未闭合时，作为括号内标点丢掉
+    s2 = TtsBracketStripper()
+    out2 = _feed_chunks(s2, ["（外【内）外】"])
+    # ``）`` 与 top ``】`` 不配对 → 丢；``】`` 配对 ``【`` → pop；
+    # ``（`` 仍未闭合 → flush 时清空，所有内容丢弃
+    assert out2 == ""
+
+
 # ============================================================================
 # TtsMarkdownStripper
 # ============================================================================
@@ -200,6 +228,41 @@ def test_markdown_link_split_across_chunks():
     s = TtsMarkdownStripper()
     out = _feed_chunks(s, ["see [doc", "s](http://x) end"])
     assert out == "see docs end"
+
+
+def test_markdown_link_split_at_bracket_paren_boundary():
+    """``[docs]`` / ``(url)`` 分两 chunk —— 不能让上一块就把 ``[docs]`` 提前 emit。
+
+    回归 CodeRabbit Major：旧版 ``_safe_split`` 只在 buf 已经包含 ``](``
+    时才 hold，所以这种刚好切在 ``]`` 后的 chunk 边界会让 ``[docs]``
+    早 emit，下游 bracket stripper 把它当成普通方括号整段吞掉，``docs``
+    根本不会朗读出来。
+    """
+    s = TtsMarkdownStripper()
+    out = _feed_chunks(s, ["see [docs]", "(http://x) end"])
+    assert out == "see docs end"
+
+
+def test_markdown_link_split_immediately_after_close_bracket_not_link():
+    """``]`` 在 buf 末尾、下一 chunk 不是 ``(`` —— markdown 字面透传 ``[ ]``。
+
+    chunk1 末尾是 ``]`` 时 ``_safe_split`` 必须 hold（无法判断是否链接）；
+    待 chunk2 到达确认非 ``(`` 才 emit。markdown stripper 本身不剥非链接
+    的方括号，``[ref]`` 字面输出，由下游 bracket stripper 接力处理。
+    """
+    md = TtsMarkdownStripper()
+    br = TtsBracketStripper()
+    chunks = ["see [ref]", "X end"]
+    parts = []
+    for c in chunks:
+        t = md.feed(c)
+        if t:
+            parts.append(br.feed(t))
+    parts.append(br.feed(md.flush()))
+    br.flush()
+    out = "".join(parts)
+    # 链表既定设计：``[ref]`` 走 bracket 被整段吞掉，剩 ``see X end``
+    assert out == "see X end"
 
 
 def test_markdown_unclosed_bold_at_flush_strips_marker():
