@@ -465,13 +465,77 @@ async def update_review_config(request: Request):
         await asyncio.to_thread(
             config_manager.save_json_config, 'core_config.json', config_data
         )
-        
+
         logger.info(f"记忆整理配置已更新: enabled={enabled}")
         return {"success": True, "enabled": enabled}
     except MaintenanceModeError:
         raise
     except Exception as e:
         logger.error(f"更新记忆整理配置失败: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@router.get('/powerful_memory_config')
+async def get_powerful_memory_config():
+    """获取强力记忆开关。默认 True（保兼容老用户）。"""
+    try:
+        from utils.config_manager import get_config_manager
+        config_manager = get_config_manager()
+        config_data = await asyncio.to_thread(
+            config_manager.load_json_config, 'core_config.json', default_value={}
+        )
+        return {"enabled": config_data.get('powerful_memory_enabled', True)}
+    except Exception as e:
+        logger.error(f"读取强力记忆配置失败: {e}")
+        return {"enabled": True}
+
+
+@router.post('/powerful_memory_config')
+async def update_powerful_memory_config(request: Request):
+    """更新强力记忆开关。
+
+    关闭时停掉 evidence-RFC 引入的全部新 LLM 路径（Stage-2 / promote_merge /
+    rebuttal / negative-keyword / fact_dedup / persona corrections）。保留主
+    动搭话回应的 check_feedback 作为唯一 evidence channel。开→关切换时把所
+    有 confirmed reflection 的 confirmed_at 重置到 now，避免立即批量 promote。
+    """
+    try:
+        data = await request.json()
+        enabled = data.get('enabled', True)
+
+        from utils.config_manager import get_config_manager
+        config_manager = get_config_manager()
+        config_data = await asyncio.to_thread(
+            config_manager.load_json_config, 'core_config.json', default_value={}
+        )
+
+        prev_enabled = config_data.get('powerful_memory_enabled', True)
+        config_data['powerful_memory_enabled'] = enabled
+
+        await asyncio.to_thread(
+            config_manager.save_json_config, 'core_config.json', config_data
+        )
+
+        # 开→关切换：重置所有角色 confirmed reflection 的 confirmed_at 到 now，
+        # 让 time-driven fallback 走完整的 14 天计时；避免"刚关就立刻批量
+        # promote 已经卡了很久的 confirmed"的体验断层。
+        if prev_enabled and not enabled:
+            try:
+                from memory_server import _reset_confirmed_at_for_all_characters
+                migrated = await _reset_confirmed_at_for_all_characters()
+                logger.info(
+                    f"强力记忆切换 ON→OFF：已重置 {migrated} 条 confirmed "
+                    f"reflection 的 confirmed_at 锚点"
+                )
+            except Exception as e:
+                logger.warning(f"强力记忆切换 migration 失败（不致命）: {e}")
+
+        logger.info(f"强力记忆配置已更新: enabled={enabled} (prev={prev_enabled})")
+        return {"success": True, "enabled": enabled}
+    except MaintenanceModeError:
+        raise
+    except Exception as e:
+        logger.error(f"更新强力记忆配置失败: {e}")
         return {"success": False, "error": str(e)}
 
 

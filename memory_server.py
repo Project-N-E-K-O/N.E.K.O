@@ -424,6 +424,55 @@ async def _ais_review_enabled() -> bool:
     return True
 
 
+async def _ais_powerful_memory_enabled() -> bool:
+    """检查"强力记忆"是否启用——controls evidence-RFC 引入的全部新 LLM 路径。
+
+    关闭时只保留 RFC 之前的基础流水线（Stage-1 fact 抽取 / reflection synthesize
+    / recent compress+review / recall reranker / 主动搭话回应的 check_feedback）
+    + time-driven promote fallback。关后可省 ~40-50% token。
+
+    持久化到 ``core_config.json`` 的 ``powerful_memory_enabled`` 字段，缺失默
+    认 True（保兼容）。每次需要时再开 read_json_async，不缓存——和
+    ``_ais_review_enabled`` 同款热加载，无需重启即生效。
+    """
+    from utils.file_utils import read_json_async
+    try:
+        config_path = str(_config_manager.get_runtime_config_path('core_config.json'))
+        if not await asyncio.to_thread(os.path.exists, config_path):
+            return True
+        config_data = await read_json_async(config_path)
+        if isinstance(config_data, dict) and not config_data.get('powerful_memory_enabled', True):
+            return False
+    except Exception as e:
+        logger.debug(f"[Memory] 读取强力记忆开关配置失败，默认启用: {e}")
+    return True
+
+
+async def _reset_confirmed_at_for_all_characters() -> int:
+    """开→关 migration：所有角色的 confirmed reflection 重置 confirmed_at 锚点。
+
+    被 main_routers/memory_router.py 的 update_powerful_memory_config 调用——
+    只在 prev=True, new=False 切换时跑。让 time-driven fallback 走完整 14 天
+    计时，避免"刚关就立刻批量 promote 旧 confirmed"的体验断层。
+    """
+    if reflection_engine is None:
+        return 0
+    try:
+        character_data = await _config_manager.aload_characters()
+        catgirl_names = list(character_data.get('猫娘', {}).keys())
+    except Exception as e:
+        logger.warning(f"[Memory] migration 加载角色列表失败: {e}")
+        return 0
+    total = 0
+    for name in catgirl_names:
+        try:
+            count = await reflection_engine.areset_confirmed_at_to_now(name)
+            total += count
+        except Exception as e:
+            logger.warning(f"[Memory] migration {name} 重置失败: {e}")
+    return total
+
+
 def _touch_activity() -> None:
     """记录一次对话活动，刷新空闲计时器。"""
     global _last_activity_time
@@ -785,6 +834,13 @@ async def _periodic_rebuttal_loop():
     """
     await asyncio.sleep(_INITIAL_DELAY_REBUTTAL)
     while True:
+        # 强力记忆关 → rebuttal LLM 整段停（这是 evidence-RFC 引入的最贵
+        # 周期 LLM 之一，每 180s 一次开 thinking 跑 drain）。关闭后用户的
+        # 反驳信号经由 per-turn check_feedback (主动搭话回应) 仍能进 evidence。
+        if not await _ais_powerful_memory_enabled():
+            await asyncio.sleep(REBUTTAL_CHECK_INTERVAL)
+            continue
+
         try:
             character_data = await _config_manager.aload_characters()
             catgirl_names = list(character_data.get('猫娘', {}).keys())
@@ -945,11 +1001,21 @@ async def _periodic_auto_promote_loop():
             await asyncio.sleep(AUTO_PROMOTE_CHECK_INTERVAL)
             continue
 
+        powerful = await _ais_powerful_memory_enabled()
+
         async def _promote_one(name: str):
             try:
-                transitions = await reflection_engine.aauto_promote_stale(name)
+                if powerful:
+                    # score-driven + merge LLM (current evidence-RFC 路径)
+                    transitions = await reflection_engine.aauto_promote_stale(name)
+                else:
+                    # 强力记忆关：time-driven 直接 aadd_fact，零 LLM
+                    transitions = await reflection_engine.aauto_promote_time_driven(name)
                 if transitions:
-                    logger.info(f"[AutoPromote] {name}: {transitions} 条状态迁移")
+                    logger.info(
+                        f"[AutoPromote] {name}: {transitions} 条状态迁移"
+                        f"({'score+merge' if powerful else 'time-driven'})"
+                    )
             except Exception as e:
                 logger.debug(f"[AutoPromote] {name}: 处理失败: {e}")
 
@@ -990,6 +1056,11 @@ async def _periodic_idle_maintenance_loop():
                 logger.debug(f"[IdleMaint] 加载角色列表失败: {e}")
                 continue
 
+            # 强力记忆开关 → 控制 1b (fact_dedup) 和 2 (persona corrections)
+            # 是否跑。子任务 1 (history 压缩) 和 3 (recent.review) 是 RFC 之
+            # 前的基础设施，永远跑。本轮快照一次，跨角色复用。
+            powerful_enabled = await _ais_powerful_memory_enabled()
+
             for name in catgirl_names:
                 # 每处理一个角色前重新检查空闲，一旦变忙立即退出
                 if not _is_idle():
@@ -1022,7 +1093,8 @@ async def _periodic_idle_maintenance_loop():
                     # fact_dedup_resolver is None when vectors are disabled
                     # or bootstrap failed — legacy hash + FTS5 dedup
                     # remains the entire dedup pipeline in that case.
-                    if fact_dedup_resolver is not None:
+                    # 强力记忆关 → 整段跳过（向量去重是 evidence-RFC 后期引入的）
+                    if powerful_enabled and fact_dedup_resolver is not None:
                         if not _is_idle():
                             break
                         try:
@@ -1039,22 +1111,26 @@ async def _periodic_idle_maintenance_loop():
                         except Exception as e:
                             logger.warning(f"[IdleMaint] {name}: fact 向量去重失败: {e}")
 
-                    # ── 子任务2: Persona 矛盾审视（有需要就跑，不受 review_enabled / history_len 限制） ──
-                    # resolve_corrections 不读 recent history，矛盾队列由独立的 evidence 管线
-                    # 维护，应当永远跑。把 review 闸门移到子任务 3 之前。
-                    if not _is_idle():
-                        break
-                    try:
-                        pending_corrections = await persona_manager.aload_pending_corrections(name)
-                        if pending_corrections:
-                            logger.info(
-                                f"[IdleMaint] {name}: 发现 {len(pending_corrections)} 条未处理的 persona 矛盾，触发审视"
-                            )
-                            resolved = await persona_manager.resolve_corrections(name)
-                            if resolved:
-                                logger.info(f"[IdleMaint] {name}: 审视了 {resolved} 条 persona 矛盾")
-                    except Exception as e:
-                        logger.warning(f"[IdleMaint] {name}: persona 矛盾审视失败: {e}")
+                    # ── 子任务2: Persona 矛盾审视（强力记忆关时跳过） ──
+                    # resolve_corrections 由 evidence-RFC 引入；矛盾队列的产生路
+                    # 径（aadd_fact 的 keyword overlap heuristic 触发 _aqueue_correction）
+                    # 在强力记忆关时仍可能产生（time-driven aadd_fact 也走启发式检查），
+                    # 但消化路径 LLM 整批审视成本高，关时不跑。queue 会累积，
+                    # 等用户重开强力记忆时一次性消化。
+                    if powerful_enabled:
+                        if not _is_idle():
+                            break
+                        try:
+                            pending_corrections = await persona_manager.aload_pending_corrections(name)
+                            if pending_corrections:
+                                logger.info(
+                                    f"[IdleMaint] {name}: 发现 {len(pending_corrections)} 条未处理的 persona 矛盾，触发审视"
+                                )
+                                resolved = await persona_manager.resolve_corrections(name)
+                                if resolved:
+                                    logger.info(f"[IdleMaint] {name}: 审视了 {resolved} 条 persona 矛盾")
+                        except Exception as e:
+                            logger.warning(f"[IdleMaint] {name}: persona 矛盾审视失败: {e}")
 
                     # ── 子任务3: 记忆整理 review ──
                     # Phase C: gate 逻辑全部集中到 maybe_spawn_review，IdleMaint
@@ -1530,11 +1606,20 @@ async def _periodic_signal_extraction_loop():
     """
     await asyncio.sleep(_INITIAL_DELAY_SIGNAL)
     while True:
+        # 强力记忆关 → Stage-1 + Stage-2 evidence 抽取整段停。这是 evidence-RFC
+        # 引入的 token 大头（每 40s 轮询一次，trigger 时跑 Stage-1 + Stage-2 两
+        # 个 LLM 调用，Stage-2 还开 thinking）。关闭后 evidence_score 不再变化，
+        # confirmed/promoted 走 time-driven fallback。
+        if not await _ais_powerful_memory_enabled():
+            await asyncio.sleep(EVIDENCE_SIGNAL_CHECK_INTERVAL_SECONDS)
+            continue
+
         try:
             character_data = await _config_manager.aload_characters()
             catgirl_names = list(character_data.get('猫娘', {}).keys())
         except Exception as e:
             logger.debug(f"[SignalLoop] 加载角色列表失败: {e}")
+            await asyncio.sleep(EVIDENCE_SIGNAL_CHECK_INTERVAL_SECONDS)
             continue
 
         now = datetime.now()
@@ -2213,11 +2298,17 @@ async def api_reflect(lanlan_name: str):
 
 
 async def _safe_auto_promote(lanlan_name: str) -> None:
-    """fire-and-forget 包装，吞 reflection_engine.aauto_promote_stale 的异常。"""
+    """fire-and-forget 包装，吞 reflection_engine.aauto_promote_* 的异常。
+
+    根据强力记忆开关二选一：开 → score-driven + merge LLM；关 → time-driven。
+    """
     try:
-        await reflection_engine.aauto_promote_stale(lanlan_name)
+        if await _ais_powerful_memory_enabled():
+            await reflection_engine.aauto_promote_stale(lanlan_name)
+        else:
+            await reflection_engine.aauto_promote_time_driven(lanlan_name)
     except Exception as e:
-        logger.debug(f"[ReflectAPI] {lanlan_name}: 后台 auto_promote_stale 失败: {e}")
+        logger.debug(f"[ReflectAPI] {lanlan_name}: 后台 auto_promote 失败: {e}")
 
 
 @app.get("/followup_topics/{lanlan_name}")
@@ -2266,6 +2357,10 @@ async def _extract_facts_and_check_feedback(messages: list, lanlan_name: str):
         # Best-effort counter bump; a failure here only delays the next
         # signal-extraction cycle — not worth interrupting conversation flow.
         logger.debug(f"[MemoryServer] signal-check turn counter 更新失败: {e}")
+
+    # 强力记忆开关——本轮 evidence-related 路径的 gate（promote/negative-keyword/
+    # corrections）。check_feedback 自身仍跑（主动搭话回应是核心 channel）。
+    powerful_enabled = await _ais_powerful_memory_enabled()
 
     try:
         # 1. 事实提取（legacy flow；真正的 Stage-1+Stage-2 走
@@ -2349,35 +2444,43 @@ async def _extract_facts_and_check_feedback(messages: list, lanlan_name: str):
                                 f"{rid}，此次 denial 未转入 status: {e}"
                             )
 
-                # 让后续 score 扫描把 pending→confirmed 推进
+                # 让后续扫描把 pending→confirmed 推进。强力记忆决定走哪条：
+                #   开 → score-driven + merge LLM
+                #   关 → time-driven (14 天 confirm + 14 天 promote, 零 LLM)
                 try:
-                    await reflection_engine.aauto_promote_stale(lanlan_name)
+                    if powerful_enabled:
+                        await reflection_engine.aauto_promote_stale(lanlan_name)
+                    else:
+                        await reflection_engine.aauto_promote_time_driven(lanlan_name)
                 except Exception as e:
                     logger.debug(
-                        f"[MemoryServer] {lanlan_name}: auto_promote_stale 失败: {e}"
+                        f"[MemoryServer] {lanlan_name}: auto_promote 失败: {e}"
                     )
     except Exception as e:
         logger.warning(f"[MemoryServer] 反馈检查失败: {e}")
 
-    try:
-        # 3.5 负面关键词 hook（§3.4.5）——命中就派个异步小 LLM 任务
-        if user_msgs:
-            from utils.language_utils import get_global_language
-            _spawn_background_task(
-                _amaybe_trigger_negative_keyword_hook(
-                    lanlan_name, user_msgs, get_global_language(),
+    if powerful_enabled:
+        try:
+            # 3.5 负面关键词 hook（§3.4.5）——命中就派个异步小 LLM 任务
+            # 强力记忆关 → 整段不跑（这是 evidence-RFC 引入的额外 LLM 路径）
+            if user_msgs:
+                from utils.language_utils import get_global_language
+                _spawn_background_task(
+                    _amaybe_trigger_negative_keyword_hook(
+                        lanlan_name, user_msgs, get_global_language(),
+                    )
                 )
-            )
-    except Exception as e:
-        logger.debug(f"[MemoryServer] 负面关键词 hook 派发失败: {e}")
+        except Exception as e:
+            logger.debug(f"[MemoryServer] 负面关键词 hook 派发失败: {e}")
 
-    try:
-        # 4. 审视矛盾队列（如果有 pending corrections）
-        resolved = await persona_manager.resolve_corrections(lanlan_name)
-        if resolved:
-            logger.info(f"[MemoryServer] {lanlan_name}: 审视了 {resolved} 条 persona 矛盾")
-    except Exception as e:
-        logger.warning(f"[MemoryServer] 矛盾审视失败: {e}")
+        try:
+            # 4. 审视矛盾队列（如果有 pending corrections）
+            # 强力记忆关 → 不跑 LLM 批量审视（corrections queue 累积，等重开消化）
+            resolved = await persona_manager.resolve_corrections(lanlan_name)
+            if resolved:
+                logger.info(f"[MemoryServer] {lanlan_name}: 审视了 {resolved} 条 persona 矛盾")
+        except Exception as e:
+            logger.warning(f"[MemoryServer] 矛盾审视失败: {e}")
 
 
 async def _outbox_extract_facts_handler(lanlan_name: str, payload: dict) -> None:
