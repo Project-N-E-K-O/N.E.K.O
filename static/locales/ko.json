@@ -1631,6 +1631,7 @@
         "exportSettingsFailed": "설정 내보내기 실패: {{error}}",
         "capturingPortrait": "스탠딩 이미지 캡처 중...",
         "generatingCard": "캐릭터 카드 생성 중...",
+        "idleMotionHint": "저장 시 선택한 모션이 대기 모션으로 설정됩니다",
         "settings": "설정",
         "renamePrompt": "새 프로필 이름을 입력하세요",
         "renameTitle": "이름 변경",

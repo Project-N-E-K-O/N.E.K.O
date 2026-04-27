@@ -1631,6 +1631,7 @@
         "exportSettingsFailed": "導出設定失敗: {{error}}",
         "capturingPortrait": "正在捕獲立繪...",
         "generatingCard": "正在生成角色卡...",
+        "idleMotionHint": "儲存時，選擇的動作將被設為待機動作",
         "settings": "設定",
         "renamePrompt": "請輸入新的檔案名",
         "renameTitle": "修改名稱",

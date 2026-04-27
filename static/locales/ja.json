@@ -1631,6 +1631,7 @@
         "exportSettingsFailed": "設定のエクスポートに失敗しました: {{error}}",
         "capturingPortrait": "立ち絵をキャプチャ中...",
         "generatingCard": "キャラクターカードを生成中...",
+        "idleMotionHint": "保存時、選択したモーションが待機モーションとして設定されます",
         "settings": "設定",
         "renamePrompt": "新しいプロフィール名を入力してください",
         "renameTitle": "名前の変更",
