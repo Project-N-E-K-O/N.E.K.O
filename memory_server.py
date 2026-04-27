@@ -645,17 +645,42 @@ REBUTTAL_DRAIN_BATCH_LIMIT = 20
 REBUTTAL_SQL_ROW_LIMIT = 200
 
 
-def _extract_user_messages_with_ts_from_rows(rows: list) -> list[tuple[str, object]]:
+def _coerce_db_ts(ts) -> datetime | None:
+    """归一化 SQL 行里的 timestamp 字段为 datetime。
+
+    SQLAlchemy + SQLite 在某些 driver 配置下返回字符串而非 datetime；与
+    memory/timeindex.py:get_last_conversation_time 同款归一化。返回 None
+    表示无法解析（caller 应跳过此行而不是把 None 写进 cursor）。
+    """
+    if isinstance(ts, datetime):
+        return ts
+    if isinstance(ts, str):
+        try:
+            return datetime.fromisoformat(ts)
+        except ValueError:
+            try:
+                return datetime.strptime(ts, "%Y-%m-%d %H:%M:%S.%f")
+            except ValueError:
+                return None
+    return None
+
+
+def _extract_user_messages_with_ts_from_rows(rows: list) -> list[tuple[str, datetime]]:
     """从 time_indexed SQL 查询结果中提取 (用户消息文本, timestamp) 元组。
 
     rows: [(timestamp, session_id, message_json), ...] (ASC ordered by ts)
     message_json 是 langchain SQLChatMessageHistory 存储的 JSON 字符串。
     content 可能是 str 或 list[{type, text}]。
 
-    返回的 list 同样按 ts ASC 排序，caller 可基于 last item 的 ts 推 cursor。
+    返回的 list 按 ts ASC 排序，caller 可基于 last item 的 ts 推 cursor。
+    timestamp 通过 _coerce_db_ts 归一化为 datetime 对象（SQL driver 可能
+    返回 str）；解析失败的行会被跳过。
     """
-    out: list[tuple[str, object]] = []
-    for ts, _, msg_json in rows:
+    out: list[tuple[str, datetime]] = []
+    for ts_raw, _, msg_json in rows:
+        ts = _coerce_db_ts(ts_raw)
+        if ts is None:
+            continue
         try:
             msg = json.loads(msg_json) if isinstance(msg_json, str) else msg_json
             if isinstance(msg, dict) and msg.get('type') == 'human':
@@ -801,17 +826,19 @@ async def _periodic_rebuttal_loop():
                     )
                     return
 
-                # 提取 (msg, ts) 元组（ASC by ts）
+                # 提取 (msg, ts) 元组（ASC by ts；ts 已归一化为 datetime）
                 user_msgs_with_ts = _extract_user_messages_with_ts_from_rows(rows)
                 if not user_msgs_with_ts:
                     # 窗口里只有 AI 消息或无 user 内容 → 推进 cursor 到 SQL 截
                     # 取的最后一行 ts（如果命中 LIMIT 还有更多行）或 now（清空了）
-                    last_row_ts = rows[-1][0]
-                    if len(rows) >= REBUTTAL_SQL_ROW_LIMIT:
+                    last_row_ts = _coerce_db_ts(rows[-1][0])
+                    if len(rows) >= REBUTTAL_SQL_ROW_LIMIT and last_row_ts is not None:
                         await cursor_store.aset_cursor(
                             name, CURSOR_REBUTTAL_CHECKED_UNTIL, last_row_ts,
                         )
                     else:
+                        # 既然没命中 LIMIT，窗口已经全部扫过；直接推到 now。
+                        # last_row_ts 解析失败也走这条（保守 fallback）。
                         await cursor_store.aset_cursor(
                             name, CURSOR_REBUTTAL_CHECKED_UNTIL, now,
                         )
