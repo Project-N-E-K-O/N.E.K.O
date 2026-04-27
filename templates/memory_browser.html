@@ -101,6 +101,36 @@
             </div>
         </div>
     </div>
+    <div class="storage-location-modal-backdrop" id="storage-location-modal" hidden>
+        <div class="storage-location-modal-card" role="dialog" aria-modal="true" aria-labelledby="storage-location-modal-title">
+            <div class="storage-location-modal-head">
+                <h3 id="storage-location-modal-title" data-i18n="memory.storageManagementTitle">更改存储位置</h3>
+                <button type="button" class="storage-location-modal-close" id="storage-location-modal-close" data-i18n-title="common.close">×</button>
+            </div>
+            <div class="storage-location-modal-body">
+                <div class="storage-location-modal-field">
+                    <span class="storage-location-modal-label" data-i18n="memory.storageCurrentRoot">当前数据位置</span>
+                    <span class="storage-location-modal-value" id="storage-modal-current-root">-</span>
+                </div>
+                <label class="storage-location-modal-field" for="storage-target-root-input">
+                    <span class="storage-location-modal-label" data-i18n="memory.storageTargetRoot">目标位置</span>
+                    <input type="text" id="storage-target-root-input" class="storage-location-target-input" data-i18n-placeholder="memory.storageTargetPlaceholder" placeholder="选择或输入新的数据位置">
+                </label>
+                <div class="storage-location-modal-actions">
+                    <button type="button" class="storage-location-open-btn" id="storage-location-pick-btn">
+                        <span data-i18n="memory.storagePickTarget">选择位置</span>
+                    </button>
+                    <button type="button" class="storage-location-manage-btn" id="storage-location-preflight-btn">
+                        <span data-i18n="memory.storageRunPreflight">预检</span>
+                    </button>
+                </div>
+                <div class="storage-location-preflight-result" id="storage-location-preflight-result"></div>
+                <button type="button" class="storage-location-restart-btn" id="storage-location-restart-btn" hidden disabled>
+                    <span data-i18n="memory.storageConfirmRestart">确认关闭并迁移</span>
+                </button>
+            </div>
+        </div>
+    </div>
     <script src="/static/js/memory_browser.js"></script>
 
     <!-- Driver.js 库 -->

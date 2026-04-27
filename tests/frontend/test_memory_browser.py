@@ -6,6 +6,11 @@ from utils.file_utils import atomic_write_json
 from utils.storage_policy import save_storage_policy
 
 
+def _request_json(route):
+    post_data_json = route.request.post_data_json
+    return post_data_json() if callable(post_data_json) else post_data_json
+
+
 @pytest.fixture
 def seed_memory_file(clean_user_data_dir, running_server):
     """Create a seed memory file in the test memory directory."""
@@ -114,8 +119,7 @@ def _install_ready_memory_browser_routes(page: Page, memory_file: Path):
 
     def handle_review_config(route):
         if route.request.method == "POST":
-            post_data_json = route.request.post_data_json
-            payload = post_data_json() if callable(post_data_json) else post_data_json
+            payload = _request_json(route)
             review_state["enabled"] = bool(payload.get("enabled"))
             route.fulfill(status=200, content_type="application/json", json={"success": True, "enabled": review_state["enabled"]})
             return
@@ -150,7 +154,7 @@ def test_memory_browser_page_load(mock_page: Page, running_server: str, seed_mem
 
     # Stage 1 storage-location entry is read-only and must not auto-start migration.
     expect(mock_page.locator(".storage-location-section")).to_be_visible()
-    expect(mock_page.locator("#storage-location-manage-btn")).to_be_disabled()
+    expect(mock_page.locator("#storage-location-manage-btn")).to_be_enabled()
     expect(mock_page.locator("#storage-recommended-root")).to_have_count(0)
     expect(mock_page.locator("#storage-current-root")).not_to_have_text("加载中...", timeout=5000)
 
@@ -254,7 +258,134 @@ def test_memory_browser_storage_bootstrap_blocks_memory_apis(mock_page: Page, ru
     expect(mock_page.locator("#storage-location-status")).to_contain_text("存储位置", timeout=5000)
     expect(mock_page.locator("#memory-chat-edit .memory-limited-state")).to_be_visible()
     expect(mock_page.locator("#review-toggle-checkbox")).to_be_disabled()
+    expect(mock_page.locator("#storage-location-manage-btn")).to_be_disabled()
 
     assert "/api/storage/location/bootstrap" in requested_paths
     assert not any("/api/memory/recent_files" in path for path in requested_paths)
     assert not any("/api/memory/review_config" in path for path in requested_paths)
+
+
+@pytest.mark.frontend
+def test_memory_browser_storage_preflight_modal_waits_for_restart_confirmation(mock_page: Page, running_server: str, seed_memory_file):
+    """Preflight should not call restart until the user confirms migration."""
+    requested_paths = []
+    _install_ready_memory_browser_routes(mock_page, seed_memory_file)
+
+    def handle_preflight(route):
+        requested_paths.append("/api/storage/location/preflight")
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            json={
+                "ok": True,
+                "result": "restart_required",
+                "restart_mode": "migrate_after_shutdown",
+                "selected_root": "/tmp/stage2-target/N.E.K.O",
+                "target_root": "/tmp/stage2-target/N.E.K.O",
+                "estimated_required_bytes": 1024,
+                "target_free_bytes": 4096,
+                "permission_ok": True,
+                "warning_codes": [],
+                "target_has_existing_content": False,
+                "requires_existing_target_confirmation": False,
+                "existing_target_confirmation_message": "",
+                "blocking_error_code": "",
+                "blocking_error_message": "",
+            },
+        )
+
+    def handle_forbidden_storage_mutation(route):
+        requested_paths.append(route.request.url)
+        route.fulfill(status=500, content_type="application/json", json={"error": "mutation should not be called"})
+
+    mock_page.route("**/api/storage/location/preflight", handle_preflight)
+    mock_page.route("**/api/storage/location/select", handle_forbidden_storage_mutation)
+    mock_page.route("**/api/storage/location/restart", handle_forbidden_storage_mutation)
+
+    mock_page.goto(f"{running_server}/memory_browser")
+    mock_page.wait_for_selector("#memory-file-list button.cat-btn", state="attached", timeout=10000)
+
+    mock_page.locator("#storage-location-manage-btn").click()
+    expect(mock_page.locator("#storage-location-modal")).to_be_visible()
+    mock_page.locator("#storage-target-root-input").fill("/tmp/stage2-target")
+
+    with mock_page.expect_response(lambda r: "/api/storage/location/preflight" in r.url and r.status == 200):
+        mock_page.locator("#storage-location-preflight-btn").click()
+
+    expect(mock_page.locator("#storage-location-preflight-result")).to_contain_text("/tmp/stage2-target/N.E.K.O", timeout=5000)
+    expect(mock_page.locator("#storage-location-restart-btn")).to_be_visible()
+    assert requested_paths == ["/api/storage/location/preflight"]
+
+
+@pytest.mark.frontend
+def test_memory_browser_storage_restart_requires_preflight_and_confirms_existing_target(mock_page: Page, running_server: str, seed_memory_file):
+    """Stage 3 calls restart after preflight and carries existing-target confirmation."""
+    requests = []
+    _install_ready_memory_browser_routes(mock_page, seed_memory_file)
+
+    def handle_preflight(route):
+        requests.append(("preflight", _request_json(route)))
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            json={
+                "ok": True,
+                "result": "restart_required",
+                "restart_mode": "migrate_after_shutdown",
+                "selected_root": "/tmp/stage3-target/N.E.K.O",
+                "target_root": "/tmp/stage3-target/N.E.K.O",
+                "estimated_required_bytes": 1024,
+                "target_free_bytes": 4096,
+                "permission_ok": True,
+                "warning_codes": [],
+                "target_has_existing_content": True,
+                "requires_existing_target_confirmation": True,
+                "existing_target_confirmation_message": "目标路径已经包含现有数据。",
+                "blocking_error_code": "",
+                "blocking_error_message": "",
+                "selection_source": "custom",
+            },
+        )
+
+    def handle_restart(route):
+        requests.append(("restart", _request_json(route)))
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            json={
+                "ok": True,
+                "result": "restart_initiated",
+                "restart_mode": "migrate_after_shutdown",
+                "selected_root": "/tmp/stage3-target/N.E.K.O",
+                "target_root": "/tmp/stage3-target/N.E.K.O",
+            },
+        )
+
+    mock_page.route("**/api/storage/location/preflight", handle_preflight)
+    mock_page.route("**/api/storage/location/restart", handle_restart)
+    mock_page.on("dialog", lambda dialog: dialog.accept())
+
+    mock_page.goto(f"{running_server}/memory_browser")
+    mock_page.wait_for_selector("#memory-file-list button.cat-btn", state="attached", timeout=10000)
+    mock_page.locator("#storage-location-manage-btn").click()
+    mock_page.locator("#storage-target-root-input").fill("/tmp/stage3-target")
+
+    with mock_page.expect_response(lambda r: "/api/storage/location/preflight" in r.url and r.status == 200):
+        mock_page.locator("#storage-location-preflight-btn").click()
+    with mock_page.expect_response(lambda r: "/api/storage/location/restart" in r.url and r.status == 200):
+        mock_page.locator("#storage-location-restart-btn").click()
+
+    expect(mock_page.locator("#storage-location-preflight-result")).to_contain_text("关闭并迁移", timeout=5000)
+    expect(mock_page.locator("#storage-location-pick-btn")).to_be_disabled()
+    expect(mock_page.locator("#storage-location-preflight-btn")).to_be_disabled()
+    expect(mock_page.locator("#storage-target-root-input")).to_be_disabled()
+    expect(mock_page.locator("#storage-location-restart-btn")).to_be_hidden()
+    assert requests[0][0] == "preflight"
+    assert requests[1] == (
+        "restart",
+        {
+            "selected_root": "/tmp/stage3-target/N.E.K.O",
+            "selection_source": "custom",
+            "confirm_existing_target_content": True,
+        },
+    )

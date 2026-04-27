@@ -12,6 +12,7 @@
         loadFailed: false,
         limited: false
     };
+    let storagePreflightState = null;
 
     const STORAGE_BLOCKING_STATUS_KEYS = {
         selection_required: 'memory.storageSelectionRequired',
@@ -95,8 +96,10 @@
 
         const manageBtn = document.getElementById('storage-location-manage-btn');
         if (manageBtn) {
-            manageBtn.disabled = true;
-            manageBtn.title = translate('memory.storageManagementComingSoon', '存储位置管理即将开放');
+            manageBtn.disabled = state.loadFailed || !!state.blockingReason || !String(bootstrap.current_root || '').trim();
+            manageBtn.title = manageBtn.disabled
+                ? translate('memory.storageManagementUnavailable', '当前存储位置暂不可用')
+                : '';
         }
 
         const openBtn = document.getElementById('storage-location-open-btn');
@@ -132,6 +135,239 @@
         }
         renderStorageLocationPanel();
         return storageLocationState;
+    }
+
+    function setStoragePreflightResult(message, type) {
+        const resultEl = document.getElementById('storage-location-preflight-result');
+        if (!resultEl) return;
+        resultEl.textContent = message || '';
+        resultEl.classList.toggle('is-error', type === 'error');
+        resultEl.classList.toggle('is-success', type === 'success');
+    }
+
+    function renderStorageRestartButton() {
+        const restartBtn = document.getElementById('storage-location-restart-btn');
+        if (!restartBtn) return;
+        const canRestart = !!(
+            storagePreflightState
+            && storagePreflightState.ok === true
+            && storagePreflightState.result === 'restart_required'
+            && !storagePreflightState.blocking_error_code
+        );
+        restartBtn.hidden = !canRestart;
+        restartBtn.disabled = !canRestart;
+    }
+
+    function setStoragePreflightBusy(busy) {
+        const btn = document.getElementById('storage-location-preflight-btn');
+        if (btn) {
+            btn.disabled = !!busy;
+        }
+        const pickBtn = document.getElementById('storage-location-pick-btn');
+        if (pickBtn) {
+            pickBtn.disabled = !!busy;
+        }
+    }
+
+    function openStorageLocationManager() {
+        const state = storageLocationState || {};
+        const bootstrap = state.bootstrap || {};
+        if (state.loadFailed || state.blockingReason || !String(bootstrap.current_root || '').trim()) {
+            setElementText('storage-location-status', translate('memory.storageManagementUnavailable', '当前存储位置暂不可用'));
+            return;
+        }
+
+        const modal = document.getElementById('storage-location-modal');
+        if (!modal) return;
+        setElementText('storage-modal-current-root', displayPath(bootstrap.current_root));
+
+        const input = document.getElementById('storage-target-root-input');
+        if (input) {
+            input.value = '';
+            input.placeholder = translate('memory.storageTargetPlaceholder', '选择或输入新的数据位置');
+        }
+        storagePreflightState = null;
+        setStoragePreflightResult('', '');
+        renderStorageRestartButton();
+        modal.hidden = false;
+    }
+
+    function closeStorageLocationManager() {
+        const modal = document.getElementById('storage-location-modal');
+        if (modal) {
+            modal.hidden = true;
+        }
+        const input = document.getElementById('storage-target-root-input');
+        if (input) {
+            input.disabled = false;
+        }
+    }
+
+    async function pickStorageTargetDirectory() {
+        const bootstrap = storageLocationState.bootstrap || {};
+        const startPath = String(bootstrap.current_root || '').trim();
+        setStoragePreflightBusy(true);
+        try {
+            let payload = null;
+            const host = window.nekoHost;
+            if (host && typeof host.pickDirectory === 'function') {
+                try {
+                    payload = await host.pickDirectory({
+                        startPath,
+                        title: translate('memory.storagePickTarget', '选择位置')
+                    });
+                } catch (e) {
+                    console.warn('[MemoryBrowser] host directory picker failed, falling back to backend:', e);
+                }
+            }
+            if (!payload) {
+                const resp = await fetch('/api/storage/location/pick-directory', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ start_path: startPath })
+                });
+                payload = await resp.json();
+                if (!resp.ok || !payload || payload.ok !== true) {
+                    throw new Error(payload && payload.error ? payload.error : 'pick-directory failed');
+                }
+            }
+            if (payload.cancelled) {
+                return;
+            }
+            const selectedRoot = String(payload.selected_root || '').trim();
+            if (!selectedRoot) {
+                throw new Error('empty selected_root');
+            }
+            const input = document.getElementById('storage-target-root-input');
+            if (input) {
+                input.value = selectedRoot;
+            }
+            storagePreflightState = null;
+            setStoragePreflightResult('', '');
+            renderStorageRestartButton();
+        } catch (e) {
+            console.warn('[MemoryBrowser] pick storage target failed:', e);
+            setStoragePreflightResult(translate('memory.storagePickTargetFailed', '选择目标位置失败，请手动输入路径'), 'error');
+        } finally {
+            setStoragePreflightBusy(false);
+        }
+    }
+
+    function formatPreflightResult(payload) {
+        if (!payload || payload.ok !== true) {
+            return translate('memory.storagePreflightFailed', '预检失败');
+        }
+        if (payload.result === 'restart_not_required') {
+            return translate('memory.storageAlreadyCurrentRoot', '当前已在该位置');
+        }
+
+        const lines = [
+            translate('memory.storagePreflightReady', '预检通过。确认后应用需要关闭，并在关闭后迁移数据。'),
+            translate('memory.storagePreflightTarget', '目标位置：{{path}}', {
+                path: String(payload.target_root || payload.selected_root || '')
+            })
+        ];
+        if (payload.requires_existing_target_confirmation) {
+            lines.push(payload.existing_target_confirmation_message || translate('memory.storageExistingTargetWarning', '目标位置已经包含现有数据，后续确认迁移前需要二次确认。'));
+        }
+        return lines.filter(Boolean).join('\n');
+    }
+
+    async function runStorageLocationPreflight() {
+        const input = document.getElementById('storage-target-root-input');
+        const selectedRoot = input ? String(input.value || '').trim() : '';
+        if (!selectedRoot) {
+            setStoragePreflightResult(translate('memory.storageTargetRequired', '请先选择或输入目标位置'), 'error');
+            return;
+        }
+        setStoragePreflightBusy(true);
+        setStoragePreflightResult(translate('memory.storagePreflightRunning', '正在预检...'), 'success');
+        try {
+            const resp = await fetch('/api/storage/location/preflight', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    selected_root: selectedRoot,
+                    selection_source: 'custom'
+                })
+            });
+            const payload = await resp.json();
+            if (!resp.ok || !payload || payload.ok !== true) {
+                throw new Error(payload && (payload.error || payload.error_code) ? (payload.error || payload.error_code) : 'preflight failed');
+            }
+            storagePreflightState = payload;
+            setStoragePreflightResult(formatPreflightResult(payload), 'success');
+            renderStorageRestartButton();
+        } catch (e) {
+            console.warn('[MemoryBrowser] storage location preflight failed:', e);
+            storagePreflightState = null;
+            setStoragePreflightResult(String(e && e.message ? e.message : translate('memory.storagePreflightFailed', '预检失败')), 'error');
+            renderStorageRestartButton();
+        } finally {
+            setStoragePreflightBusy(false);
+        }
+    }
+
+    async function restartWithStorageLocation() {
+        if (!storagePreflightState || storagePreflightState.result !== 'restart_required') {
+            setStoragePreflightResult(translate('memory.storagePreflightRequired', '请先完成预检'), 'error');
+            renderStorageRestartButton();
+            return;
+        }
+        const selectedRoot = String(storagePreflightState.selected_root || storagePreflightState.target_root || '').trim();
+        if (!selectedRoot) {
+            setStoragePreflightResult(translate('memory.storagePreflightFailed', '预检失败'), 'error');
+            return;
+        }
+
+        let confirmExistingTargetContent = false;
+        if (storagePreflightState.requires_existing_target_confirmation) {
+            const message = storagePreflightState.existing_target_confirmation_message
+                || translate('memory.storageExistingTargetWarning', '目标位置已经包含现有数据，后续确认迁移前需要二次确认。');
+            if (!window.confirm(message)) {
+                return;
+            }
+            confirmExistingTargetContent = true;
+        }
+
+        const restartBtn = document.getElementById('storage-location-restart-btn');
+        if (restartBtn) {
+            restartBtn.disabled = true;
+        }
+        let restartAccepted = false;
+        setStoragePreflightBusy(true);
+        setStoragePreflightResult(translate('memory.storageRestartStarting', '正在准备关闭并迁移...'), 'success');
+        try {
+            const resp = await fetch('/api/storage/location/restart', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    selected_root: selectedRoot,
+                    selection_source: storagePreflightState.selection_source || 'custom',
+                    confirm_existing_target_content: confirmExistingTargetContent
+                })
+            });
+            const payload = await resp.json();
+            if (!resp.ok || !payload || payload.ok !== true) {
+                throw new Error(payload && (payload.error || payload.error_code) ? (payload.error || payload.error_code) : 'restart failed');
+            }
+            restartAccepted = true;
+            setStoragePreflightResult(translate('memory.storageRestartInitiated', '已请求关闭并迁移。应用即将进入维护状态，请等待重启完成。'), 'success');
+            storagePreflightState = null;
+            const input = document.getElementById('storage-target-root-input');
+            if (input) {
+                input.disabled = true;
+            }
+            renderStorageRestartButton();
+        } catch (e) {
+            console.warn('[MemoryBrowser] storage location restart failed:', e);
+            setStoragePreflightResult(String(e && e.message ? e.message : translate('memory.storageRestartFailed', '关闭并迁移请求失败')), 'error');
+            renderStorageRestartButton();
+        } finally {
+            if (!restartAccepted) {
+                setStoragePreflightBusy(false);
+            }
+        }
     }
 
     function renderMemoryBrowserLimitedState(state) {
@@ -640,6 +876,52 @@
         if (openStorageBtn) {
             openStorageBtn.addEventListener('click', function () {
                 openCurrentStorageRoot();
+            });
+        }
+        const manageStorageBtn = document.getElementById('storage-location-manage-btn');
+        if (manageStorageBtn) {
+            manageStorageBtn.addEventListener('click', function () {
+                openStorageLocationManager();
+            });
+        }
+        const closeStorageModalBtn = document.getElementById('storage-location-modal-close');
+        if (closeStorageModalBtn) {
+            closeStorageModalBtn.addEventListener('click', function () {
+                closeStorageLocationManager();
+            });
+        }
+        const storageModal = document.getElementById('storage-location-modal');
+        if (storageModal) {
+            storageModal.addEventListener('click', function (event) {
+                if (event.target === storageModal) {
+                    closeStorageLocationManager();
+                }
+            });
+        }
+        const pickStorageBtn = document.getElementById('storage-location-pick-btn');
+        if (pickStorageBtn) {
+            pickStorageBtn.addEventListener('click', function () {
+                pickStorageTargetDirectory();
+            });
+        }
+        const preflightStorageBtn = document.getElementById('storage-location-preflight-btn');
+        if (preflightStorageBtn) {
+            preflightStorageBtn.addEventListener('click', function () {
+                runStorageLocationPreflight();
+            });
+        }
+        const storageTargetInput = document.getElementById('storage-target-root-input');
+        if (storageTargetInput) {
+            storageTargetInput.addEventListener('input', function () {
+                storagePreflightState = null;
+                setStoragePreflightResult('', '');
+                renderStorageRestartButton();
+            });
+        }
+        const restartStorageBtn = document.getElementById('storage-location-restart-btn');
+        if (restartStorageBtn) {
+            restartStorageBtn.addEventListener('click', function () {
+                restartWithStorageLocation();
             });
         }
 

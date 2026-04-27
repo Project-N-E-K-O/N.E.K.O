@@ -11,9 +11,10 @@ v0.8 存储位置迁移已经完成首启阻断、路径选择、关闭后迁移
 当前代码事实：
 
 - `/memory_browser` 已有阶段 1 的“存储位置”只读入口：展示当前数据位置、保留禁用的“更改存储位置”占位、支持打开当前目录。
-- `/memory_browser` 尚未启用常驻迁移管理 modal，也不会从该入口调用 `/select`、`/restart` 或 `/preflight` 发起迁移。
+- `/memory_browser` 已有阶段 2/3 的常驻迁移管理 modal：ready 状态下可选择或输入目标位置，先调用 `/api/storage/location/preflight` 展示预检结果，再由用户点击“确认关闭并迁移”调用 `/api/storage/location/restart`。
+- `/memory_browser` 常驻入口不调用 `/select`；`/select` 继续保留给首启或恢复阻断流程。
 - 后端在 ready 状态下已经具备 `bootstrap/select/restart/status/cleanup` 等存储迁移主链路能力。
-- 当前 `/api/storage/location/preflight` 尚未实现。
+- 当前 `/api/storage/location/preflight` 已实现为 side-effect-free 预检接口，不写策略、迁移检查点或 root_state，不释放 startup barrier，不触发关闭。
 - 主服务受限启动时允许访问 `/memory_browser` 和 `/api/storage/location/*`，但不允许访问普通 `/api/memory/*` 业务接口。因此常驻入口必须先读取存储状态，再决定是否初始化记忆列表和自动记忆整理。
 
 ## 1. 目标
@@ -487,8 +488,8 @@ POST /api/storage/location/preflight
 
 补充说明：
 
-- 当前仓库里尚未实现 `/api/storage/location/preflight`，因此在文档和任务拆分里应把它明确标成“待新增能力”，不要写成现有能力。
-- 在它落地之前，常驻入口若临时复用 `/select` 获取 `restart_required` 预检结果，必须非常谨慎地避免把“当前路径继续当前会话”这条分支暴露给 ready 状态下的管理入口。
+- 当前仓库里已实现 `/api/storage/location/preflight`，常驻入口应使用该接口做管理预检。
+- 常驻入口不应再临时复用 `/select` 获取 `restart_required` 预检结果，避免把“当前路径继续当前会话”这条分支暴露给 ready 状态下的管理入口。
 
 ### 7.3 继续保留现有启动选择接口
 
@@ -693,10 +694,10 @@ NEKO-PC 不需要为常驻入口新增迁移状态机。
 
 ### 阶段 2：side-effect-free 预检
 
-- 后端新增 `/api/storage/location/preflight`。
-- ready 状态下启用“更改存储位置”按钮，前端可选择目录并展示预检结果。
+- 后端新增 `/api/storage/location/preflight`。当前已实现。
+- ready 状态下启用“更改存储位置”按钮，前端可选择或输入目录并展示预检结果。当前已实现。
 - 非 ready 状态下管理按钮保持禁用或只展示状态说明。
-- 前端在本阶段仍不调用 `/restart`；按钮最多停在“确认关闭并迁移”前的预检结果展示，避免一次 PR 同时引入预检和关闭迁移风险。
+- 前端在本阶段仍不调用 `/restart`；只展示预检结果，避免预检和关闭迁移风险耦合。当前代码已继续完成阶段 3，因此实现上会在成功预检后显示“确认关闭并迁移”按钮。
 
 验收：
 
@@ -708,15 +709,16 @@ NEKO-PC 不需要为常驻入口新增迁移状态机。
 
 ### 阶段 3：确认迁移
 
-- 前端接入 `/api/storage/location/restart`。
+- 前端接入 `/api/storage/location/restart`。当前已实现。
 - 维护态优先复用 v0.8 的交互语义与文案；若要直接复用现有 UI 代码，必须先把 `app-storage-location.js` 拆成 `autoStart=false` 的可复用控制器。
 - 桌面端仍只观察后端状态。
-- 如果选择在 `memory_browser.js` 内先实现轻量 modal，应把与后端交互的函数集中在一个小型 storage management section 中，避免散落到记忆文件列表逻辑里。
+- 当前选择在 `memory_browser.js` 内先实现轻量 modal，并把与后端交互的函数集中在 storage management section 中，避免散落到记忆文件列表逻辑里。
+- 成功调用 `/restart` 后，前端隐藏“确认关闭并迁移”按钮并锁定目标输入、选择目录和预检按钮，避免应用关闭前重复提交。
 
 验收：
 
-- 点击确认后进入维护态。
-- 目标已有运行时内容时必须先完成二次确认，`/restart` 才携带 `confirm_existing_target_content=true`。
+- 点击确认后调用 `/restart`，由后端写迁移检查点、进入维护态并请求受控关闭。
+- 目标已有运行时内容时必须先完成二次确认，`/restart` 才携带 `confirm_existing_target_content=true`。当前已有前端回归测试覆盖。
 - 服务关闭后迁移并重启。
 - 迁移完成后当前目录变为目标目录。
 - 旧目录默认保留。
