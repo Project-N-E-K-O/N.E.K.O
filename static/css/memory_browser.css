@@ -438,6 +438,267 @@ body .container-header {
     box-shadow: none;
 }
 
+/* 存储位置常驻入口 */
+.storage-location-section {
+    margin-top: 0;
+}
+
+.storage-location-card-mini {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.storage-location-mini-row {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.storage-location-mini-label {
+    color: #40C5F1;
+    font-size: 0.9rem;
+    font-weight: 700;
+}
+
+.storage-location-mini-value {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 10px 14px;
+    background: #fff;
+    border: 2px solid #e3f4ff;
+    border-radius: 16px;
+    color: #268fb8;
+    font-size: 0.82rem;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+}
+
+.storage-location-mini-status {
+    min-height: 16px;
+    color: #40C5F1;
+    font-size: 0.82rem;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+}
+
+.storage-location-mini-status:empty {
+    display: none;
+}
+
+.storage-location-manage-btn,
+.storage-location-open-btn,
+.storage-location-restart-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    min-height: 44px;
+    padding: 10px 15px;
+    border-radius: 50px;
+    box-sizing: border-box;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    text-align: center;
+    font-size: 0.95rem;
+    font-weight: 700;
+    line-height: 1.25;
+}
+
+.storage-location-manage-btn {
+    background: linear-gradient(135deg, #40C5F1 0%, #22b3ff 100%);
+    border: none;
+    color: #fff;
+}
+
+.storage-location-restart-btn {
+    background: linear-gradient(135deg, #ff8a65 0%, #ff5252 100%);
+    border: none;
+    color: #fff;
+}
+
+.storage-location-open-btn {
+    background: #fff;
+    border: 2px solid #e3f4ff;
+    color: #40C5F1;
+}
+
+.storage-location-manage-btn:not(:disabled):hover {
+    background: linear-gradient(135deg, #5dd2f6 0%, #35bdff 100%);
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(64, 197, 241, 0.3);
+}
+
+.storage-location-open-btn:not(:disabled):hover {
+    border-color: #40C5F1;
+    background: #f0f9ff;
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(64, 197, 241, 0.25);
+}
+
+.storage-location-restart-btn:not(:disabled):hover {
+    background: linear-gradient(135deg, #ff9b78 0%, #ff6464 100%);
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(255, 82, 82, 0.25);
+}
+
+.storage-location-manage-btn:not(:disabled):active,
+.storage-location-open-btn:not(:disabled):active,
+.storage-location-restart-btn:not(:disabled):active {
+    transform: translateY(0);
+}
+
+.storage-location-manage-btn:disabled,
+.storage-location-open-btn:disabled,
+.storage-location-restart-btn:disabled,
+.auto-review-toggle-btn.is-disabled {
+    background: #f5f5f5;
+    border-color: #e0e0e0;
+    color: #b0b0b0;
+    cursor: not-allowed;
+    opacity: 0.72;
+    transform: none;
+    box-shadow: none;
+}
+
+.memory-limited-state {
+    color: #40C5F1;
+    padding: 28px 18px;
+    text-align: center;
+    line-height: 1.7;
+    background: #f0f9ff;
+    border: 2px dashed #b3e5fc;
+    border-radius: 20px;
+    overflow-wrap: anywhere;
+}
+
+.storage-location-modal-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 2000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    background: rgba(23, 167, 255, 0.18);
+    -webkit-backdrop-filter: blur(4px);
+    backdrop-filter: blur(4px);
+}
+
+.storage-location-modal-backdrop[hidden] {
+    display: none;
+}
+
+.storage-location-modal-card {
+    width: min(560px, 100%);
+    max-height: min(720px, 90vh);
+    overflow-y: auto;
+    box-sizing: border-box;
+    padding: 20px;
+    background: #fff;
+    border: 2px solid #b3e5fc;
+    border-radius: 24px;
+    box-shadow: 0 18px 48px rgba(34, 179, 255, 0.22);
+}
+
+.storage-location-modal-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 18px;
+}
+
+.storage-location-modal-head h3 {
+    margin: 0;
+    color: #40C5F1;
+    font-size: 1.2rem;
+}
+
+.storage-location-modal-close {
+    width: 36px;
+    height: 36px;
+    border: 2px solid #e3f4ff;
+    border-radius: 50%;
+    background: #fff;
+    color: #40C5F1;
+    cursor: pointer;
+    font-size: 1.4rem;
+    line-height: 1;
+    transition: all 0.2s ease;
+}
+
+.storage-location-modal-close:hover {
+    border-color: #40C5F1;
+    background: #f0f9ff;
+}
+
+.storage-location-restart-btn[hidden] {
+    display: none;
+}
+
+.storage-location-modal-body,
+.storage-location-modal-field {
+    display: flex;
+    flex-direction: column;
+}
+
+.storage-location-modal-body {
+    gap: 14px;
+}
+
+.storage-location-modal-field {
+    gap: 8px;
+}
+
+.storage-location-modal-label {
+    color: #40C5F1;
+    font-size: 0.9rem;
+    font-weight: 700;
+}
+
+.storage-location-modal-value,
+.storage-location-target-input,
+.storage-location-preflight-result {
+    box-sizing: border-box;
+    width: 100%;
+    padding: 12px 14px;
+    border: 2px solid #e3f4ff;
+    border-radius: 16px;
+    background: #fff;
+    color: #268fb8;
+    font-size: 0.9rem;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+
+.storage-location-target-input:focus {
+    outline: none;
+    border-color: #40C5F1;
+    box-shadow: 0 0 0 3px rgba(64, 197, 241, 0.1);
+}
+
+.storage-location-modal-actions {
+    display: flex;
+    gap: 10px;
+}
+
+.storage-location-preflight-result:empty {
+    display: none;
+}
+
+.storage-location-preflight-result.is-error {
+    border-color: #ffcdd2;
+    background: #fff5f5;
+    color: #e74c3c;
+}
+
+.storage-location-preflight-result.is-success {
+    border-color: #b3e5fc;
+    background: #f0f9ff;
+    color: #268fb8;
+}
+
 /* 编辑器区域 */
 .editor {
     flex: 1;

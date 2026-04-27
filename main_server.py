@@ -998,6 +998,7 @@ _MAIN_LIMITED_MODE_ALLOWED_EXACT_PATHS = {
     "/health",
     "/favicon.ico",
     "/api/beacon/shutdown",
+    "/api/config/steam_language",
     "/api/system/status",
 }
 _MAIN_LIMITED_MODE_ALLOWED_PAGE_PATHS = {
