@@ -15,7 +15,7 @@ import {
   DataTable,
 } from "@neko/plugin-ui"
 
-export default function QuickstartGuide({ plugin, entries, actions }) {
+export default function QuickstartGuide({ plugin, state, entries }) {
   const configExample = `[mcp_servers.example]
 transport = "stdio"
 command = "uvx"
@@ -39,10 +39,24 @@ enabled = true`
         </Card>
       </Grid>
 
-      <Grid cols={2}>
-        <StatCard label="已声明入口" value={entries.length} />
-        <StatCard label="右键动作" value={actions.length} />
+      <Grid cols={3}>
+        <StatCard label="已连接服务器" value={state.connected_servers} />
+        <StatCard label="已配置服务器" value={state.total_servers} />
+        <StatCard label="已发现工具" value={state.total_tools} />
       </Grid>
+
+      <Card title="MCP Server 状态">
+        <DataTable
+          data={state.servers}
+          columns={[
+            { key: "name", label: "Server" },
+            { key: "transport", label: "Transport" },
+            { key: "connected", label: "Connected" },
+            { key: "tools_count", label: "Tools" },
+            { key: "error", label: "Error" },
+          ]}
+        />
+      </Card>
 
       <Card title="推荐配置流程">
         <Steps>

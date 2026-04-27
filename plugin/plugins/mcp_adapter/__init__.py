@@ -19,6 +19,7 @@ from urllib.parse import urljoin
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Callable
 
+from pydantic import BaseModel
 from bs4 import BeautifulSoup  # type: ignore[import-untyped]
 from markdownify import markdownify as markdownify_html  # type: ignore[import-untyped]
 
@@ -29,6 +30,7 @@ from plugin.sdk.plugin import (
     Ok,
     Err,
     SdkError,
+    ui,
 )
 from plugin.sdk.adapter import AdapterGatewayCore, DefaultPolicyEngine, NekoAdapterPlugin
 from plugin.sdk.adapter.gateway_models import ExternalRequest
@@ -93,6 +95,21 @@ class MCPServerConnection:
     connected: bool = False
     error: Optional[str] = None
     request_id: int = 0
+
+
+class McpServerView(BaseModel):
+    name: str
+    transport: str
+    connected: bool
+    tools_count: int
+    error: str | None = None
+
+
+class McpPanelState(BaseModel):
+    connected_servers: int
+    total_servers: int
+    total_tools: int
+    servers: list[McpServerView]
 
 
 class MCPClient:
@@ -1104,6 +1121,37 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         self._serializer: Optional[MCPResponseSerializer] = None
         self._policy: Optional[DefaultPolicyEngine] = None
         self._gateway_core: Optional[AdapterGatewayCore] = None
+
+    @ui.context(id="quickstart", title="MCP Adapter 快速开始")
+    async def get_quickstart_ui_context(self) -> McpPanelState:
+        servers: list[McpServerView] = []
+        seen: set[str] = set()
+        for name, client in self._clients.items():
+            seen.add(name)
+            servers.append(McpServerView(
+                name=name,
+                transport=client.config.transport,
+                connected=bool(client.connected),
+                tools_count=len(client.tools),
+                error=None,
+            ))
+        for name, cfg in self._servers_config.items():
+            if name in seen or not isinstance(cfg, dict):
+                continue
+            state = self._server_states.get(name, {})
+            servers.append(McpServerView(
+                name=name,
+                transport=str(cfg.get("transport", "unknown")),
+                connected=bool(state.get("connected", False)),
+                tools_count=int(state.get("tools_count", 0) or 0),
+                error=str(state.get("error")) if state.get("error") else None,
+            ))
+        return McpPanelState(
+            connected_servers=sum(1 for item in servers if item.connected),
+            total_servers=len(servers),
+            total_tools=sum(item.tools_count for item in servers),
+            servers=servers,
+        )
     
     @lifecycle(id="startup")
     async def on_startup(self):

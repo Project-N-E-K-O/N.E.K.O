@@ -526,6 +526,25 @@ class PluginUiQueryService:
             actions = [dict(item) for item in actions_obj if isinstance(item, Mapping)] if isinstance(actions_obj, list) else []
 
             config_schema = plugin_meta.get("input_schema") if isinstance(plugin_meta.get("input_schema"), Mapping) else {"type": "object", "properties": {}}
+            state_payload: object = {}
+            state_schema: object = None
+            context_id = surface.get("context")
+            if not isinstance(context_id, str) or not context_id.strip():
+                context_id = str(surface.get("id") or "main")
+            with state.acquire_plugin_hosts_read_lock():
+                host = state.plugin_hosts.get(plugin_id)
+            if host is not None and hasattr(host, "is_alive") and host.is_alive() and hasattr(host, "get_ui_context"):
+                try:
+                    ui_context_result = await host.get_ui_context(str(context_id))
+                    if isinstance(ui_context_result, Mapping):
+                        state_payload = ui_context_result.get("state", {})
+                        state_schema = ui_context_result.get("state_schema")
+                except Exception as exc:
+                    warnings.append(PluginUiWarning(
+                        path=f"plugin.ui.{kind}.{surface_id}.context",
+                        code="ui_context_failed",
+                        message=f"Failed to load UI context '{context_id}': {exc}",
+                    ).model_dump())
 
             return {
                 "plugin_id": plugin_id,
@@ -533,7 +552,8 @@ class PluginUiQueryService:
                 "surface_id": surface_id,
                 "plugin": dict(plugin_meta),
                 "surface": surface,
-                "state": {},
+                "state": state_payload,
+                "state_schema": state_schema,
                 "actions": actions,
                 "entries": entries,
                 "config": {

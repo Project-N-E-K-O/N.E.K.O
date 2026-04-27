@@ -76,6 +76,7 @@ export interface PluginUiContext {
   plugin: PluginMeta
   surface: PluginUiSurface
   state: Record<string, any>
+  state_schema?: JSONSchema | null
   actions: PluginListAction[]
   entries: PluginEntry[]
   config: {
