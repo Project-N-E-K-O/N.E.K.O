@@ -21,7 +21,7 @@ enabled = true
 [[plugin.ui.panel]]
 title = "MCP Adapter"
 entry = "ui/panel.tsx"
-context = "quickstart"
+context = "dashboard"
 
 [[plugin.ui.panel]]
 id = "legacy"
@@ -31,7 +31,7 @@ entry = "static/index.html"
 [[plugin.ui.guide]]
 title = "MCP Adapter 快速开始"
 entry = "docs/quickstart.tsx"
-permissions = ["state:read", "action:call"]
+permissions = ["state:read"]
 
 [plugin_runtime]
 enabled = true

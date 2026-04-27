@@ -1122,8 +1122,8 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         self._policy: Optional[DefaultPolicyEngine] = None
         self._gateway_core: Optional[AdapterGatewayCore] = None
 
-    @ui.context(id="quickstart", title="MCP Adapter 快速开始")
-    async def get_quickstart_ui_context(self) -> McpPanelState:
+    @ui.context(id="dashboard", title="MCP Adapter 管理面板")
+    async def get_dashboard_ui_context(self) -> McpPanelState:
         servers: list[McpServerView] = []
         seen: set[str] = set()
         for name, client in self._clients.items():
