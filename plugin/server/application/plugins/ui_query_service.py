@@ -7,6 +7,12 @@ from pathlib import Path
 from plugin.core.state import state
 from plugin._types.models import PluginUiSurface, PluginUiWarning
 from plugin.logging_config import get_logger
+from plugin.core.ui_manifest import (
+    default_permissions,
+    normalize_warnings,
+    resolve_surface_entry_path,
+    static_surface_url,
+)
 from plugin.server.domain import IO_RUNTIME_ERRORS
 from plugin.server.domain.errors import ServerDomainError
 
@@ -80,26 +86,6 @@ def _get_plugin_ui_config_from_meta(plugin_meta: Mapping[str, object]) -> dict[s
     return _normalize_mapping(plugin_ui_obj, context="plugins.plugin_ui")
 
 
-def _normalize_warnings(raw_warnings: object) -> list[dict[str, object]]:
-    if not isinstance(raw_warnings, list):
-        return []
-    warnings: list[dict[str, object]] = []
-    for index, raw_warning in enumerate(raw_warnings):
-        if not isinstance(raw_warning, Mapping):
-            continue
-        path = raw_warning.get("path")
-        code = raw_warning.get("code")
-        message = raw_warning.get("message")
-        if not isinstance(path, str) or not path:
-            path = f"plugin.ui.warnings[{index}]"
-        if not isinstance(code, str) or not code:
-            code = "ui_manifest_warning"
-        if not isinstance(message, str) or not message:
-            message = "UI manifest warning"
-        warnings.append(PluginUiWarning(path=path, code=code, message=message).model_dump())
-    return warnings
-
-
 def _infer_static_ui_config_from_meta(plugin_meta: Mapping[str, object]) -> dict[str, object] | None:
     config_path_obj = plugin_meta.get("config_path")
     if not isinstance(config_path_obj, str) or not config_path_obj:
@@ -160,57 +146,6 @@ def _has_static_ui_from_meta(plugin_meta: Mapping[str, object]) -> bool:
     return static_dir is not None and (static_dir / "index.html").exists()
 
 
-def _normalize_ui_mode(value: object) -> str:
-    if not isinstance(value, str):
-        return "static"
-    mode = value.strip().lower()
-    if mode in {"static", "hosted-tsx", "markdown", "auto"}:
-        return mode
-    return "static"
-
-
-def _normalize_ui_open_in(value: object, *, default: str = "iframe") -> str:
-    if not isinstance(value, str):
-        return default
-    open_in = value.strip().lower()
-    if open_in in {"iframe", "new_tab", "same_tab"}:
-        return open_in
-    return default
-
-
-def _normalize_permissions(raw: object, *, kind: str) -> list[str]:
-    if isinstance(raw, list):
-        return [item.strip() for item in raw if isinstance(item, str) and item.strip()]
-    if kind == "guide" or kind == "docs":
-        return ["state:read"]
-    return ["state:read", "config:read", "action:call"]
-
-
-def _resolve_entry_path(plugin_meta: Mapping[str, object], entry: str) -> Path | None:
-    config_path_obj = plugin_meta.get("config_path")
-    if not isinstance(config_path_obj, str) or not config_path_obj:
-        return None
-    try:
-        root = Path(config_path_obj).parent.resolve()
-        candidate = (root / entry).resolve()
-        candidate.relative_to(root)
-        return candidate
-    except Exception:
-        return None
-
-
-def _surface_url(plugin_id: str, mode: str, entry: str) -> str | None:
-    if mode != "static":
-        return None
-    normalized_entry = entry.strip().replace("\\", "/").lstrip("/")
-    if normalized_entry == "static/index.html":
-        return f"/plugin/{plugin_id}/ui/"
-    if normalized_entry.startswith("static/"):
-        rel = normalized_entry.removeprefix("static/")
-        return f"/plugin/{plugin_id}/ui/{rel}"
-    return None
-
-
 def _surface_from_mapping(
     raw_surface: object,
     *,
@@ -224,18 +159,21 @@ def _surface_from_mapping(
     surface = _normalize_mapping(raw_surface, context=f"plugins.plugin_ui.{kind}[{index}]")
     surface_id_obj = surface.get("id")
     surface_id = surface_id_obj.strip() if isinstance(surface_id_obj, str) and surface_id_obj.strip() else "main"
-    mode = _normalize_ui_mode(surface.get("mode"))
+    mode_obj = surface.get("mode")
+    mode = mode_obj.strip().lower() if isinstance(mode_obj, str) and mode_obj.strip() else "static"
     entry_obj = surface.get("entry")
     entry = entry_obj.strip() if isinstance(entry_obj, str) and entry_obj.strip() else ""
     if not entry and mode != "auto":
         return None
     title_obj = surface.get("title")
-    open_in = _normalize_ui_open_in(surface.get("open_in"), default="iframe")
-    permissions = _normalize_permissions(surface.get("permissions"), kind=kind)
+    open_in_obj = surface.get("open_in")
+    open_in = open_in_obj.strip().lower() if isinstance(open_in_obj, str) and open_in_obj.strip() else "iframe"
+    permissions_obj = surface.get("permissions")
+    permissions = [item for item in permissions_obj if isinstance(item, str)] if isinstance(permissions_obj, list) else default_permissions(kind)
     available = True
     warnings: list[dict[str, object]] = []
     if entry and mode in {"static", "hosted-tsx", "markdown"}:
-        entry_path = _resolve_entry_path(plugin_meta, entry)
+        entry_path = resolve_surface_entry_path(plugin_meta, entry)
         available = entry_path is not None and entry_path.is_file()
         if not available:
             warnings.append(PluginUiWarning(
@@ -249,8 +187,8 @@ def _surface_from_mapping(
         mode=mode,  # type: ignore[arg-type]
         title=title_obj.strip() if isinstance(title_obj, str) and title_obj.strip() else None,
         entry=entry or None,
-        url=_surface_url(plugin_id, mode, entry) if entry else None,
-        ui_path=_surface_url(plugin_id, mode, entry) if entry else None,
+        url=static_surface_url(plugin_id, mode, entry) if entry else None,
+        ui_path=static_surface_url(plugin_id, mode, entry) if entry else None,
         open_in=open_in,  # type: ignore[arg-type]
         context=surface.get("context") if isinstance(surface.get("context"), str) else None,
         permissions=permissions,
@@ -307,10 +245,10 @@ def _build_static_compat_surface(plugin_id: str, plugin_meta: Mapping[str, objec
 
 def _build_surfaces_sync(plugin_id: str, plugin_meta: Mapping[str, object]) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
     surfaces = _build_manifest_surfaces(plugin_id, plugin_meta)
-    warnings = _normalize_warnings(plugin_meta.get("plugin_ui", {}).get("warnings") if isinstance(plugin_meta.get("plugin_ui"), Mapping) else None)
+    warnings = normalize_warnings(plugin_meta.get("plugin_ui", {}).get("warnings") if isinstance(plugin_meta.get("plugin_ui"), Mapping) else None)
     for surface in surfaces:
         surface_warnings = surface.pop("_warnings", None)
-        warnings.extend(_normalize_warnings(surface_warnings))
+        warnings.extend(normalize_warnings(surface_warnings))
     seen = {(str(surface.get("kind")), str(surface.get("id"))) for surface in surfaces}
     static_surface = _build_static_compat_surface(plugin_id, plugin_meta)
     if static_surface is not None and ("panel", "main") not in seen:
@@ -515,7 +453,7 @@ class PluginUiQueryService:
                     details={"plugin_id": plugin_id, "kind": kind, "surface_id": surface_id},
                 )
 
-            entry_path = _resolve_entry_path(plugin_meta, entry_obj)
+            entry_path = resolve_surface_entry_path(plugin_meta, entry_obj)
             if entry_path is None or not entry_path.is_file():
                 raise ServerDomainError(
                     code="PLUGIN_UI_SURFACE_ENTRY_NOT_FOUND",

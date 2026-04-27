@@ -38,6 +38,7 @@ from plugin._types.version import SDK_VERSION
 from plugin.server.infrastructure.config_resolver import resolve_plugin_config_from_path
 from plugin.core.state import state
 from plugin._types.models import PluginMeta, PluginAuthor, PluginDependency
+from plugin.core.ui_manifest import normalize_plugin_ui_manifest
 from plugin.settings import (
     BUILTIN_PLUGIN_CONFIG_ROOT,
     PLUGIN_ENABLE_ID_CONFLICT_CHECK,
@@ -87,150 +88,9 @@ class PluginContext:
     python_requirements: List[str] = field(default_factory=list)
 
 
-def _normalize_plugin_ui_surface(raw_surface: Any, *, kind: str, index: int, plugin_id: str, logger: Any) -> Optional[Dict[str, Any]]:
-    path = f"plugin.ui.{kind}[{index}]"
-    warnings: List[Dict[str, str]] = []
-
-    def add_warning(field: str, code: str, message: str) -> None:
-        warnings.append({"path": f"{path}.{field}" if field else path, "code": code, "message": message})
-
-    if not isinstance(raw_surface, dict):
-        return {
-            "_invalid": True,
-            "_warnings": [{
-                "path": path,
-                "code": "invalid_surface_shape",
-                "message": f"Surface item must be a table, got {type(raw_surface).__name__}.",
-            }],
-        }
-
-    surface_id = raw_surface.get("id")
-    if not isinstance(surface_id, str) or not surface_id.strip():
-        if surface_id is not None:
-            add_warning("id", "invalid_id", "Surface id must be a non-empty string; using 'main'.")
-        surface_id = "main"
-    mode = raw_surface.get("mode")
-    if not isinstance(mode, str) or not mode.strip():
-        if mode is not None:
-            add_warning("mode", "invalid_mode", "Surface mode must be a string; using 'static'.")
-        mode = "static"
-    elif mode.strip().lower() not in {"static", "hosted-tsx", "markdown", "auto"}:
-        add_warning(
-            "mode",
-            "unsupported_mode",
-            f"Unsupported mode '{mode}'. Use static, hosted-tsx, markdown, or auto; using static.",
-        )
-        mode = "static"
-    entry = raw_surface.get("entry")
-    if mode != "auto" and (not isinstance(entry, str) or not entry.strip()):
-        return {
-            "_invalid": True,
-            "_warnings": [{
-                "path": f"{path}.entry",
-                "code": "missing_entry",
-                "message": f"Surface '{surface_id}' must define entry when mode is {mode}.",
-            }],
-        }
-
-    open_in = raw_surface.get("open_in")
-    if isinstance(open_in, str) and open_in.strip().lower() in {"iframe", "new_tab", "same_tab"}:
-        open_in_value: str | None = open_in.strip().lower()
-    else:
-        if open_in is not None:
-            add_warning("open_in", "invalid_open_in", "open_in must be iframe, new_tab, or same_tab; using default.")
-        open_in_value = "iframe" if mode == "static" else None
-
-    permissions = raw_surface.get("permissions")
-    allowed_permissions = {"state:read", "config:read", "config:write", "action:call", "logs:read", "runs:read"}
-    if isinstance(permissions, list):
-        normalized_permissions = []
-        for perm_index, item in enumerate(permissions):
-            if not isinstance(item, str) or not item.strip():
-                add_warning(f"permissions[{perm_index}]", "invalid_permission", "Permission must be a non-empty string.")
-                continue
-            permission = item.strip()
-            if permission not in allowed_permissions:
-                add_warning(
-                    f"permissions[{perm_index}]",
-                    "unknown_permission",
-                    f"Unknown permission '{permission}'.",
-                )
-                continue
-            normalized_permissions.append(permission)
-    elif kind in {"guide", "docs"}:
-        normalized_permissions = ["state:read"]
-    else:
-        normalized_permissions = ["state:read", "config:read", "action:call"]
-
-    normalized: Dict[str, Any] = {
-        "id": surface_id.strip(),
-        "kind": kind,
-        "mode": mode.strip().lower(),
-        "permissions": normalized_permissions,
-    }
-    if isinstance(raw_surface.get("title"), str) and raw_surface["title"].strip():
-        normalized["title"] = raw_surface["title"].strip()
-    if isinstance(entry, str) and entry.strip():
-        normalized["entry"] = entry.strip()
-    if open_in_value:
-        normalized["open_in"] = open_in_value
-    if isinstance(raw_surface.get("context"), str) and raw_surface["context"].strip():
-        normalized["context"] = raw_surface["context"].strip()
-    if warnings:
-        normalized["_warnings"] = warnings
-    return normalized
-
-
 def _extract_plugin_ui_config(conf: Dict[str, Any], *, plugin_id: str, logger: Any) -> Optional[Dict[str, Any]]:
-    plugin_section = conf.get("plugin")
-    if not isinstance(plugin_section, dict):
-        return None
-    ui_section = plugin_section.get("ui")
-    if not isinstance(ui_section, dict):
-        if ui_section is not None:
-            return {
-                "enabled": False,
-                "warnings": [{
-                    "path": "plugin.ui",
-                    "code": "invalid_ui_shape",
-                    "message": f"plugin.ui must be a table, got {type(ui_section).__name__}.",
-                }],
-            }
-        return None
-    enabled = parse_bool_config(ui_section.get("enabled"), default=True)
-    result: Dict[str, Any] = {"enabled": enabled}
-    warnings: List[Dict[str, str]] = []
-    for kind in ("panel", "guide", "docs"):
-        raw_items = ui_section.get(kind)
-        if raw_items is None:
-            continue
-        if isinstance(raw_items, dict):
-            raw_items = [raw_items]
-        if not isinstance(raw_items, list):
-            warnings.append({
-                "path": f"plugin.ui.{kind}",
-                "code": "invalid_surface_list",
-                "message": f"Expected array of tables for {kind}, got {type(raw_items).__name__}.",
-            })
-            continue
-        items: List[Dict[str, Any]] = []
-        for index, raw_surface in enumerate(raw_items):
-            normalized = _normalize_plugin_ui_surface(
-                raw_surface,
-                kind=kind,
-                index=index,
-                plugin_id=plugin_id,
-                logger=logger,
-            )
-            if normalized is not None:
-                warnings.extend(normalized.pop("_warnings", []))
-            if normalized is not None and not normalized.pop("_invalid", False):
-                items.append(normalized)
-        if items:
-            result[kind] = items
-    if warnings:
-        result["warnings"] = warnings
-    return result
+    _ = logger
+    return normalize_plugin_ui_manifest(conf, plugin_id=plugin_id)
 
 
 # Mapping from (plugin_id, entry_id) -> actual python method name on the instance.
