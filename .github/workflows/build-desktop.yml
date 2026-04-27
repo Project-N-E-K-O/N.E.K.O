@@ -29,6 +29,12 @@ on:
 env:
   PYTHON_VERSION: '3.11'
   NODE_VERSION: '20'
+  # Anonymous embedding profile id (compatibility contract — bumped only when
+  # the upstream weights/tokenizer become incompatible with previously-cached
+  # vectors). The repo + revision together pin the actual artifacts.
+  EMBEDDING_MODEL_REPO: jinaai/jina-embeddings-v5-text-nano-retrieval
+  EMBEDDING_MODEL_PROFILE_ID: local-text-retrieval-v1
+  EMBEDDING_MODEL_REVISION: ac5d898c8d382b17167c33e5c8af644a3519b47d
 
 jobs:
   # ──────────────────────────────────────────────
@@ -106,7 +112,9 @@ jobs:
         shell: bash
         run: |
           uv venv .venv
-          uv sync
+          # Pull the optional `embeddings` extra (onnxruntime + tokenizers) so
+          # both the build-time prepare step and the bundled runtime have them.
+          uv sync --extra embeddings
           uv pip install --python .venv nuitka ordered-set zstandard
 
       # --- Generate runtime config files (not tracked in git) ---
@@ -190,6 +198,44 @@ jobs:
             Write-Warning "Playwright Chromium install failed; will download on first run."
           }
 
+      # --- Prepare local embedding model assets (cross-platform) ---
+      # Mirrors the upstream Hugging Face repo at a pinned revision into the
+      # anonymous profile folder so the bundled app can run vector memory
+      # offline. The runtime (memory/embeddings.py) auto-falls back to bundled
+      # assets when the user's app-data profile is incomplete.
+      - name: Prepare embedding model assets
+        shell: bash
+        run: |
+          VENV_PYTHON=".venv/bin/python"
+          if [ -f ".venv/Scripts/python.exe" ]; then
+            VENV_PYTHON=".venv/Scripts/python.exe"
+          fi
+          $VENV_PYTHON scripts/prepare_embedding_model.py \
+            --repo "$EMBEDDING_MODEL_REPO" \
+            --revision "$EMBEDDING_MODEL_REVISION" \
+            --profile-id "$EMBEDDING_MODEL_PROFILE_ID" \
+            --output-root data/embedding_models \
+            --variant both
+
+      # --- Warm tiktoken o200k_base cache for offline use (PR #929) ---
+      # tiktoken downloads encoding blobs (~1.5 MB each) on first use into
+      # TIKTOKEN_CACHE_DIR; without warming, the bundled app would either
+      # need network at startup or fall back to the heuristic counter.
+      # launcher.py points TIKTOKEN_CACHE_DIR at data/tiktoken_cache when it
+      # exists in the bundle.
+      - name: Warm tiktoken cache (o200k_base)
+        shell: bash
+        run: |
+          mkdir -p data/tiktoken_cache
+          VENV_PYTHON=".venv/bin/python"
+          if [ -f ".venv/Scripts/python.exe" ]; then
+            VENV_PYTHON=".venv/Scripts/python.exe"
+          fi
+          TIKTOKEN_CACHE_DIR="$(pwd)/data/tiktoken_cache" \
+            $VENV_PYTHON -c "import tiktoken; tiktoken.get_encoding('o200k_base')"
+          echo "=== tiktoken_cache ==="
+          ls -la data/tiktoken_cache/
+
       - name: Set up Node.js for frontend builds
         uses: actions/setup-node@v4
         with:
@@ -246,6 +292,12 @@ jobs:
           if [[ "$RUNNER_OS" != "macOS" ]]; then
             NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=playwright_browsers=playwright_browsers"
           fi
+          if [ -d "data/tiktoken_cache" ]; then
+            NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=data/tiktoken_cache=data/tiktoken_cache"
+          fi
+          if [ -d "data/embedding_models" ]; then
+            NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=data/embedding_models=data/embedding_models"
+          fi
           NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=static=static"
 
           # Packages
@@ -268,6 +320,10 @@ jobs:
           NUITKA_OPTS="$NUITKA_OPTS --include-package=browser_use"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=browser_use_sdk"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=playwright"
+          NUITKA_OPTS="$NUITKA_OPTS --include-package=tiktoken"
+          NUITKA_OPTS="$NUITKA_OPTS --include-package=tiktoken_ext"
+          NUITKA_OPTS="$NUITKA_OPTS --include-package=onnxruntime"
+          NUITKA_OPTS="$NUITKA_OPTS --include-package=tokenizers"
 
           # Package data
           NUITKA_OPTS="$NUITKA_OPTS --include-package-data=audiolab"
@@ -351,6 +407,8 @@ jobs:
           if exist "frontend\plugin-manager\dist" set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=frontend/plugin-manager/dist=frontend/plugin-manager/dist
           if exist "plugin\plugins" set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=plugin/plugins=plugin/plugins
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=playwright_browsers=playwright_browsers
+          if exist "data\tiktoken_cache" set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=data/tiktoken_cache=data/tiktoken_cache
+          if exist "data\embedding_models" set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=data/embedding_models=data/embedding_models
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=static=static
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=uvicorn
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=fastapi
@@ -382,6 +440,10 @@ jobs:
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=browser_use_sdk
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=playwright
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package-data=playwright
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=tiktoken
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=tiktoken_ext
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=onnxruntime
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=tokenizers
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package-data=jinja2
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package-data=certifi
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package-data=bilibili_api
@@ -408,6 +470,41 @@ jobs:
           fi
           echo "=== Build output ==="
           ls -la dist/Xiao8/ || echo "dist/Xiao8 not found!"
+
+      # --- Verify bundled embedding + tiktoken assets ---
+      # memory/embeddings.py treats every onnx_data sidecar plus both fp32
+      # and int8 variants as required at session-load time; tiktoken
+      # o200k_base must also be present so utils.tokenize doesn't fall
+      # back to the heuristic counter. Use -s (non-empty) so a zero-byte
+      # file from an interrupted download fails the build, matching
+      # prepare_embedding_model.py's own non-empty contract.
+      - name: Verify bundled offline assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -d "dist/Xiao8" ]; then
+            echo "::error::dist/Xiao8 not found, cannot verify"
+            exit 1
+          fi
+          embedding_required=(
+            "tokenizer.json"
+            "onnx/model.onnx"
+            "onnx/model.onnx_data"
+            "onnx/model_quantized.onnx"
+            "onnx/model_quantized.onnx_data"
+          )
+          missing=0
+          for rel in "${embedding_required[@]}"; do
+            if [ ! -s "dist/Xiao8/data/embedding_models/$EMBEDDING_MODEL_PROFILE_ID/$rel" ]; then
+              echo "::error::missing or empty bundled embedding asset: $rel"
+              missing=1
+            fi
+          done
+          if ! ls dist/Xiao8/data/tiktoken_cache/ 2>/dev/null | grep -q .; then
+            echo "::error::data/tiktoken_cache empty in bundle (o200k_base would re-download at runtime)"
+            missing=1
+          fi
+          [ "$missing" -eq 0 ]
 
       - name: Upload Python backend artifact
         uses: actions/upload-artifact@v4

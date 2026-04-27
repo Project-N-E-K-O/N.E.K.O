@@ -171,6 +171,79 @@
         return { sentences: sentences, rest: rest };
     }
 
+    function isFullWidthJoinPunctuation(ch) {
+        return ch === '\u3001' || ch === '\u3002' || ch === '\uFF0C' || ch === '\uFF01' ||
+            ch === '\uFF1F' || ch === '\uFF1B' || ch === '\uFF1A' || ch === '\u2026' ||
+            ch === '\u201D' || ch === '\u2019' || ch === ')' || ch === ']' || ch === '}' ||
+            ch === '\uFF09' || ch === '\uFF3D' || ch === '\uFF5D' ||
+            ch === '\u3009' || ch === '\u300B' || ch === '\u300D' || ch === '\u300F' ||
+            ch === '\u3011' || ch === '\u3015' || ch === '\u3017' || ch === '\u3019' ||
+            ch === '\u301B' || ch === '\u301E' || ch === '\u301F';
+    }
+
+    function joinRealisticPendingPieces(pieces) {
+        var joined = '';
+        for (var i = 0; i < pieces.length; i++) {
+            var piece = normalizeGeminiText(pieces[i]).replace(/^\s+/, '').replace(/\s+$/, '');
+            if (!piece) continue;
+            if (!joined) {
+                joined = piece;
+                continue;
+            }
+            var prev = joined.replace(/\s+$/, '');
+            var prevLast = prev.charAt(prev.length - 1);
+            var nextFirst = piece.replace(/^\s+/, '').charAt(0);
+            var glue = (isFullWidthJoinPunctuation(prevLast) || isFullWidthJoinPunctuation(nextFirst)) ? '' : ' ';
+            joined = prev + glue + piece;
+        }
+        return joined;
+    }
+
+    function isMiddleSplitBoundary(text, index) {
+        var prev = text.charAt(index - 1);
+        var next = text.charAt(index);
+        return /\s/.test(prev) || /\s/.test(next) ||
+            isFullWidthJoinPunctuation(prev) ||
+            /[.!?;,]/.test(prev);
+    }
+
+    function splitRealisticTextNearMiddle(text) {
+        var normalized = normalizeGeminiText(text).replace(/^\s+/, '').replace(/\s+$/, '');
+        if (!normalized) return [];
+        if (normalized.length < 2) return [normalized];
+
+        var midpoint = Math.floor(normalized.length / 2);
+        var splitAt = midpoint;
+        for (var offset = 0; offset < normalized.length; offset++) {
+            var left = midpoint - offset;
+            var right = midpoint + offset;
+            if (left > 0 && left < normalized.length && isMiddleSplitBoundary(normalized, left)) {
+                splitAt = left;
+                break;
+            }
+            if (right > 0 && right < normalized.length && isMiddleSplitBoundary(normalized, right)) {
+                splitAt = right;
+                break;
+            }
+        }
+
+        var first = normalized.slice(0, splitAt).replace(/^\s+/, '').replace(/\s+$/, '');
+        var second = normalized.slice(splitAt).replace(/^\s+/, '').replace(/\s+$/, '');
+        if (!first || !second) return [normalized];
+        return [first, second];
+    }
+
+    function rebalanceRealisticQueueIfNeeded() {
+        var queue = window._realisticGeminiQueue;
+        if (!Array.isArray(queue) || queue.length <= 2) return;
+
+        var queueText = joinRealisticPendingPieces(queue);
+        var splitQueue = splitRealisticTextNearMiddle(queueText);
+        if (splitQueue.length > 0 && splitQueue.length <= queue.length) {
+            window._realisticGeminiQueue = splitQueue;
+        }
+    }
+
     // ======================== 合并模式检测 ========================
 
     function isMergeMessagesEnabled() {
@@ -293,13 +366,22 @@
 
     // ======================== processRealisticQueue（覆盖） ========================
 
+    function createRealisticQueueOwnerToken() {
+        return 'realistic-queue-' + Date.now() + '-' + Math.random().toString(36).slice(2);
+    }
+
     async function processRealisticQueue(queueVersion) {
         queueVersion = queueVersion || (window._realisticGeminiVersion || 0);
-        if (window._isProcessingRealisticQueue) return;
+        if (window._realisticProcessingOwner) return;
+        var processingOwner = createRealisticQueueOwnerToken();
+        window._realisticProcessingOwner = processingOwner;
         window._isProcessingRealisticQueue = true;
 
         try {
             while (window._realisticGeminiQueue && window._realisticGeminiQueue.length > 0) {
+                if (window._realisticProcessingOwner !== processingOwner) {
+                    break;
+                }
                 // 版本变更说明新一轮已开始（isNewMessage），旧队列
                 // 已由 _flushPendingRealisticQueue 同步渲染完毕，此处
                 // 仅需退出，不再处理任何剩余项。
@@ -320,6 +402,9 @@
                         queueVersion, window._realisticGeminiVersion || 0);
                     break;
                 }
+                if (window._realisticProcessingOwner !== processingOwner) {
+                    break;
+                }
 
                 var s = window._realisticGeminiQueue.shift();
                 if (s && (window._realisticGeminiVersion || 0) === queueVersion) {
@@ -328,15 +413,13 @@
                 }
             }
         } finally {
-            // 如果 lock 还是 true，说明没有任何外部路径（discard / audio-capture）
-            // 接管过 —— 无论 version 是否变化，我们都是当前唯一持有者，必须释放锁，
-            // 否则队列会卡死。
-            // 如果 lock 已经是 false，说明外部路径已经重置锁并可能启动了新 processor，
-            // 我们不能再递归也不能再动锁。
-            if (window._isProcessingRealisticQueue) {
-                window._isProcessingRealisticQueue = false;
-                if (window._realisticGeminiQueue && window._realisticGeminiQueue.length > 0) {
-                    processRealisticQueue(window._realisticGeminiVersion || 0);
+            if (window._realisticProcessingOwner === processingOwner) {
+                window._realisticProcessingOwner = null;
+                if (window._isProcessingRealisticQueue) {
+                    window._isProcessingRealisticQueue = false;
+                    if (window._realisticGeminiQueue && window._realisticGeminiQueue.length > 0) {
+                        processRealisticQueue(window._realisticGeminiVersion || 0);
+                    }
                 }
             }
         }
@@ -400,6 +483,9 @@
     // async processRealisticQueue 循环失效。
     // 用于 isNewMessage 开始新一轮或模式切换时，确保旧轮句子不被丢弃。
     function _flushPendingRealisticQueue() {
+        // 无论队列是否为空，都要先释放处理锁，避免 stale owner 阻塞下一轮。
+        window._isProcessingRealisticQueue = false;
+        window._realisticProcessingOwner = null;
         var queue = window._realisticGeminiQueue;
         if (!Array.isArray(queue) || queue.length === 0) return;
         // 同步创建所有待排队的 bubble
@@ -407,8 +493,6 @@
             try { createGeminiBubble(queue[i]); } catch (_) {}
         }
         window._realisticGeminiQueue = [];
-        // 重置并发锁，让下次 processRealisticQueue 可以正常启动
-        window._isProcessingRealisticQueue = false;
     }
 
     // ======================== appendMessage（覆盖核心） ========================
@@ -511,6 +595,7 @@
             if (splitResult.sentences.length > 0) {
                 window._realisticGeminiQueue = window._realisticGeminiQueue || [];
                 window._realisticGeminiQueue.push.apply(window._realisticGeminiQueue, splitResult.sentences);
+                rebalanceRealisticQueueIfNeeded();
                 processRealisticQueue(window._realisticGeminiVersion || 0);
                 createdVisibleBubble = (window.currentTurnGeminiBubbles ? window.currentTurnGeminiBubbles.length : 0) > bubbleCountBefore;
             }
@@ -710,7 +795,21 @@
 
     // ======================== 自动开启 React chat ========================
 
-    function autoOpenReactChat() {
+    async function waitForStartupBarrier() {
+        if (typeof window.waitForStorageLocationStartupBarrier === 'function') {
+            try {
+                await window.waitForStorageLocationStartupBarrier();
+            } catch (_) {}
+        } else if (window.__nekoStorageLocationStartupBarrier
+            && typeof window.__nekoStorageLocationStartupBarrier.then === 'function') {
+            try {
+                await window.__nekoStorageLocationStartupBarrier;
+            } catch (_) {}
+        }
+    }
+
+    async function autoOpenReactChat() {
+        await waitForStartupBarrier();
         hideOldChat();
         var host = getHost();
         if (host && typeof host.openWindow === 'function') {

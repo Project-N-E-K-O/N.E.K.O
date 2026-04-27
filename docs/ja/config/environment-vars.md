@@ -44,11 +44,6 @@
 | `NEKO_CORRECTION_MODEL` | `qwen-max` | テキスト校正モデル |
 | `NEKO_EMOTION_MODEL` | `qwen-turbo` / `qwen-flash` | 感情分析モデル |
 | `NEKO_VISION_MODEL` | `qwen3-vl-plus-2025-09-23` | ビジョン/画像理解モデル |
-| `NEKO_ROUTER_MODEL` | `qwen-plus` | メモリルーティングモデル |
-| `NEKO_SEMANTIC_MODEL` | `text-embedding-v4` | エンベディングモデル |
-| `NEKO_RERANKER_MODEL` | `qwen-plus` | 検索リランキングモデル |
-| `NEKO_SETTING_PROPOSER_MODEL` | `qwen-max` | 設定更新提案モデル |
-| `NEKO_SETTING_VERIFIER_MODEL` | `qwen-max` | 設定更新検証モデル |
 
 ## サービス URL
 

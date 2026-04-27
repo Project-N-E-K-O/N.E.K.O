@@ -1193,6 +1193,7 @@
         cancelReturnBallReveal(container);
         restoreSavedReturnBallStyle(container);
         resetReturnBallTemporaryStyle(container);
+        container.removeAttribute('data-neko-return-visible');
         container.style.display = 'none';
         container.style.pointerEvents = 'none';
         container.style.removeProperty('visibility');
@@ -1229,6 +1230,7 @@
         cancelReturnBallReveal(container);
         restoreSavedReturnBallStyle(container);
         resetReturnBallTemporaryStyle(container);
+        container.setAttribute('data-neko-return-visible', 'true');
         container.style.display = 'flex';
         container.style.visibility = 'hidden';
         container.style.pointerEvents = 'none';

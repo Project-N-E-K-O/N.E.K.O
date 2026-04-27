@@ -28,7 +28,7 @@ Raw conversation ──> Summary model (qwen-plus) ──> Compressed summary
                                                    Stored in time_indexed_compressed
 ```
 
-The `ROUTER_MODEL` (default: `qwen-plus`) decides which memories are relevant enough to retain in full versus compress.
+The summary tier model (configured via `NEKO_SUMMARY_MODEL`) compresses raw turns into stored conversation summaries.
 
 ## Memory review
 

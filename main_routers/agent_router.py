@@ -302,8 +302,12 @@ async def proxy_mcp_availability():
 
 
 @router.get('/user_plugin/dashboard')
-async def redirect_plugin_dashboard():
-    return RedirectResponse(f"{USER_PLUGIN_BASE}/ui")
+async def redirect_plugin_dashboard(request: Request):
+    target = f"{USER_PLUGIN_BASE}/ui"
+    qs = str(request.url.query) if request.url.query else ''
+    if qs:
+        target = f"{target}?{qs}"
+    return RedirectResponse(target)
 
 
 @router.get('/openclaw/guide', response_class=HTMLResponse)

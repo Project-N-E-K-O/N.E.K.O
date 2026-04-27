@@ -1,6 +1,8 @@
 /**
  * 繁體中文語言包
  */
+import { yuiGuideLocales } from './yuiGuide'
+
 export default {
   common: {
     loading: '載入中...',
@@ -406,5 +408,15 @@ export default {
   },
   app: {
     titleSuffix: 'N.E.K.O 外掛管理'
+  },
+  tutorial: {
+    yuiGuide: yuiGuideLocales['zh-TW']
+  },
+  yuiTutorial: {
+    title: '喵～歡迎來到外掛管理面板！',
+    welcome: '這裡就是管理所有外掛的地方啦！你可以查看、啟動、配置各種外掛，讓我變得更厲害哦～',
+    hint: '隨便看看吧，看完了點下面的按鈕告訴我～',
+    complete: '看完了喵～',
+    dismiss: '先不看'
   }
 }

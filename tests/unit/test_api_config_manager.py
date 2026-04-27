@@ -365,7 +365,7 @@ class TestProviderExclusion:
         data = get_config()
         registry = data.get('api_key_registry', {})
 
-        expected_restricted = {'openai', 'gemini', 'grok', 'claude', 'qwen_intl'}
+        expected_restricted = {'openai', 'gemini', 'grok', 'claude', 'qwen_intl', 'openrouter'}
         for pk, entry in registry.items():
             if pk in expected_restricted:
                 assert entry.get('restricted') is True, \

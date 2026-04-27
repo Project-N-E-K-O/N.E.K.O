@@ -1,14 +1,29 @@
+"""Legacy ``settings.json`` accessor.
+
+历史背景
+--------
+原本这里同时承载两件事：
+
+1. 维护 ``memory/{name}/settings.json`` 的读写。这部分仍然在用——
+   ``memory_server.py`` 和 testbench/dump 工具都会调用 ``get_settings`` /
+   ``load_settings`` / ``save_settings`` 来把磁盘上的旧字段合进 prompt。
+2. 用 LLM 从对话里抽取新设定 + 用 LLM 跑矛盾消解。这套已经被 evidence /
+   reflection 流水线全面取代——见 ``memory_server.py::process_history``
+   里 "旧模块已禁用（性能不足）" 的注释；``extract_and_update_settings`` 与
+   ``detect_and_resolve_contradictions`` 已经没有任何调用方。
+
+为了避免这两个死方法继续把 ``SETTING_PROPOSER_MODEL`` /
+``SETTING_VERIFIER_MODEL`` 这种已退役的硬编码常量留在身上（也避免
+项目级 "no temperature" 守门时还得给死代码开口子），本次清理直接把
+LLM 路径删掉，只保留磁盘读写。如果未来真的需要重启这套，请走
+evidence/reflection 范式，不要复活旧代码。
+"""
 import json
-import asyncio
-from utils.llm_client import create_chat_llm
-from openai import APIConnectionError, InternalServerError, RateLimitError
-from config import SETTING_PROPOSER_MODEL, SETTING_VERIFIER_MODEL
+
 from config import CHARACTER_RESERVED_FIELDS
-from utils.config_manager import get_config_manager
 from utils.cloudsave_runtime import assert_cloudsave_writable
-from utils.token_tracker import set_call_type
-from utils.file_utils import atomic_write_json, robust_json_loads
-from config.prompts_memory import settings_extractor_prompt, settings_verifier_prompt
+from utils.config_manager import get_config_manager
+from utils.file_utils import atomic_write_json
 
 
 class ImportantSettingsManager:
@@ -17,22 +32,6 @@ class ImportantSettingsManager:
         self.settings_file = None
         self._config_manager = get_config_manager()
         self._excluded_profile_fields = set(CHARACTER_RESERVED_FIELDS)
-    
-    def _get_proposer(self):
-        """动态获取Proposer LLM实例以支持配置热重载"""
-        api_config = self._config_manager.get_model_api_config('summary')
-        return create_chat_llm(
-            SETTING_PROPOSER_MODEL, api_config['base_url'],
-            api_config['api_key'], temperature=0.5,
-        )
-
-    def _get_verifier(self):
-        """动态获取Verifier LLM实例以支持配置热重载"""
-        api_config = self._config_manager.get_model_api_config('summary')
-        return create_chat_llm(
-            SETTING_VERIFIER_MODEL, api_config['base_url'],
-            api_config['api_key'], temperature=0.5,
-        )
 
     def load_settings(self):
         # It is important to update the settings with the latest character on-disk files
@@ -64,103 +63,6 @@ class ImportantSettingsManager:
             indent=2,
             ensure_ascii=False,
         )
-
-    async def detect_and_resolve_contradictions(self, old_settings, new_settings, lanlan_name):
-        # 使用LLM检测矛盾并解决它们
-        prompt = settings_verifier_prompt % (json.dumps(old_settings, ensure_ascii=False), json.dumps(new_settings, ensure_ascii=False))
-        prompt = prompt.replace("{LANLAN_NAME}", lanlan_name)
-
-        retries = 0
-        max_retries = 3
-        while retries < max_retries:
-            try:
-                set_call_type("memory_settings")
-                verifier = self._get_verifier()
-                response = await verifier.ainvoke(prompt)
-                result = response.content
-                if result.startswith("```"):
-                    result = result .replace("```json", "").replace("```", "").strip()
-            except (APIConnectionError, InternalServerError, RateLimitError) as e:
-                print(f"ℹ️ 捕获到 {type(e).__name__} 错误")
-                retries += 1
-                if retries >= max_retries:
-                    print(f"❌ Setting resolver query失败，已达到最大重试次数: {e}")
-                    return old_settings
-                # 指数退避: 1, 2, 4 秒
-                wait_time = 2 ** (retries - 1)
-                print(f'⚠️ 遇到网络或429错误，等待 {wait_time} 秒后重试 (第 {retries}/{max_retries} 次)')
-                await asyncio.sleep(wait_time)
-                continue
-            except Exception as e:
-                print(f"❌ Setting resolver query出错: {e}")
-                retries += 1
-                continue
-            try:
-                merged_settings = robust_json_loads(result)
-                return merged_settings
-            except (json.JSONDecodeError, ValueError):
-                # 如果解析失败，返回新设定
-                retries += 1
-                print(f"❌ Setting resolver返回值解析失败。返回值：{response.content}")
-        return old_settings
-
-    async def extract_and_update_settings(self, messages, lanlan_name):
-        name_mapping = self.name_mapping.copy()
-        name_mapping['ai'] = lanlan_name
-        lines = []
-        for msg in messages:
-            try:
-                parts = []
-                for i in msg.content:
-                    if isinstance(i, dict):
-                        parts.append(i.get("text", f"|{i.get('type','')}|"))
-                    else:
-                        parts.append(str(i))
-                joined = "\n".join(parts)
-            except Exception:
-                joined = str(getattr(msg, 'content', ''))
-            lines.append(f"{name_mapping[msg.type]} | {joined}")
-        prompt = settings_extractor_prompt % ("\n".join(lines))
-        prompt = prompt.replace('{LANLAN_NAME}', lanlan_name)
-        prompt = prompt.replace('{MASTER_NAME}', self.name_mapping.get('human', '主人'))
-        retries = 0
-        max_retries = 3
-        new_settings = ""
-        while retries < max_retries:
-            try:
-                set_call_type("memory_settings")
-                proposer = self._get_proposer()
-                response = await proposer.ainvoke(prompt)
-            except (APIConnectionError, InternalServerError, RateLimitError) as e:
-                print(f"ℹ️ 捕获到 {type(e).__name__} 错误")
-                retries += 1
-                if retries >= max_retries:
-                    print(f"❌ Setting LLM query失败，已达到最大重试次数: {e}")
-                    return
-                # 指数退避: 1, 2, 4 秒
-                wait_time = 2 ** (retries - 1)
-                print(f'⚠️ 遇到网络或429错误，等待 {wait_time} 秒后重试 (第 {retries}/{max_retries} 次)')
-                await asyncio.sleep(wait_time)
-                continue
-            except Exception as e:
-                print(f"❌ Setting LLM query出错: {e}")
-                retries += 1
-                continue
-            try:
-                result = response.content
-                if result.startswith("```"):
-                    result = result .replace("```json", "").replace("```", "").strip()
-                new_settings = robust_json_loads(result)
-            except (json.JSONDecodeError, ValueError):
-                print(f"❌ Setting LLM返回的设定JSON解析失败。返回值：{response.content}")
-                retries += 1
-            break
-
-        # 检测并解决矛盾
-        if len(new_settings)>0:
-            await asyncio.to_thread(self.load_settings)
-            self.settings[lanlan_name] = await self.detect_and_resolve_contradictions(self.settings[lanlan_name], new_settings, lanlan_name)
-            await asyncio.to_thread(self.save_settings, lanlan_name)
 
     def get_settings(self, lanlan_name):
         self.load_settings()

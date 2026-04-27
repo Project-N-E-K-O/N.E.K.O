@@ -5,6 +5,29 @@
 
 window.AgentHUD = window.AgentHUD || {};
 
+var PLUGIN_DASHBOARD_FIRST_VISIT_STORAGE_KEY = 'neko_plugin_dashboard_first_visit_completed';
+var PLUGIN_DASHBOARD_REDIRECT_URL = '/api/agent/user_plugin/dashboard';
+var PLUGIN_DASHBOARD_FIRST_VISIT_URL = `${PLUGIN_DASHBOARD_REDIRECT_URL}?yui_guide=1`;
+
+function hasSeenPluginDashboardFirstVisit() {
+    try {
+        return window.localStorage.getItem(PLUGIN_DASHBOARD_FIRST_VISIT_STORAGE_KEY) === '1';
+    } catch (_) {
+        return false;
+    }
+}
+
+function markPluginDashboardFirstVisitSeen() {
+    try {
+        window.localStorage.setItem(PLUGIN_DASHBOARD_FIRST_VISIT_STORAGE_KEY, '1');
+    } catch (_) {}
+}
+
+function appendCacheBuster(url) {
+    var separator = typeof url === 'string' && url.indexOf('?') >= 0 ? '&' : '?';
+    return `${url}${separator}v=${Date.now()}`;
+}
+
 /**
  * 精简 AI 生成的冗长任务描述为用户友好的短文本
  * 例: "设置一个15分钟后的一次性提醒，内容为'起来活动'" → "15分钟后 起来活动"
@@ -181,7 +204,18 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
 
         // 侧边快捷入口（用户插件管理面板 / OpenClaw 接入教程）
         if ((toggle.id === 'agent-user-plugin' || toggle.id === 'agent-openclaw') && typeof this._createSidePanelContainer === 'function') {
+            document.querySelectorAll(`[data-neko-sidepanel-type="${toggle.id}-actions"]`).forEach((element) => {
+                if (element && typeof element.remove === 'function') {
+                    element.remove();
+                }
+            });
+            const existingSidePanelById = document.getElementById(`${toggle.id}-actions`);
+            if (existingSidePanelById && typeof existingSidePanelById.remove === 'function') {
+                existingSidePanelById.remove();
+            }
             const sidePanel = this._createSidePanelContainer();
+            sidePanel.id = `${toggle.id}-actions`;
+            sidePanel.setAttribute('data-neko-sidepanel-type', `${toggle.id}-actions`);
             sidePanel.style.flexDirection = 'column';
             sidePanel.style.alignItems = 'stretch';
             sidePanel.style.gap = '4px';
@@ -192,13 +226,17 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
             const configBtn = document.createElement('div');
             const actionConfig = toggle.id === 'agent-user-plugin'
                 ? {
+                    actionId: 'management-panel',
                     labelKey: 'settings.toggles.pluginManagementPanel',
                     labelFallback: '管理面板',
                     icon: '⚙',
-                    url: '/api/agent/user_plugin/dashboard',
-                    windowName: 'neko_plugin_dashboard'
+                    url: PLUGIN_DASHBOARD_REDIRECT_URL,
+                    firstVisitUrl: PLUGIN_DASHBOARD_FIRST_VISIT_URL,
+                    windowName: 'neko_plugin_dashboard',
+                    forceReloadOnReuse: true
                 }
                 : {
+                    actionId: 'openclaw-guide',
                     labelKey: 'settings.toggles.openclawGuide',
                     labelFallback: 'OpenClaw 接入教程',
                     icon: '📘',
@@ -206,6 +244,13 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
                     windowName: 'neko_openclaw_guide',
                     forceReloadOnReuse: true
                 };
+            const existingActionButton = document.getElementById(`neko-sidepanel-action-${toggle.id}-${actionConfig.actionId}`);
+            if (existingActionButton && typeof existingActionButton.remove === 'function') {
+                existingActionButton.remove();
+            }
+            configBtn.id = `neko-sidepanel-action-${toggle.id}-${actionConfig.actionId}`;
+            configBtn.setAttribute('data-neko-sidepanel-action', actionConfig.actionId);
+            configBtn.setAttribute('data-neko-sidepanel-toggle', toggle.id);
             Object.assign(configBtn.style, {
                 display: 'flex',
                 alignItems: 'center',
@@ -259,10 +304,14 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
                 const left = Math.max(0, Math.floor((screen.width - width) / 2));
                 const top = Math.max(0, Math.floor((screen.height - height) / 2));
                 const features = `width=${width},height=${height},left=${left},top=${top},menubar=no,toolbar=no,location=no,status=no,resizable=yes,scrollbars=yes`;
-                const targetUrl = actionConfig.forceReloadOnReuse
-                    ? `${actionConfig.url}?v=${Date.now()}`
+                const rawUrl = actionConfig.actionId === 'management-panel' && !hasSeenPluginDashboardFirstVisit()
+                    ? (actionConfig.firstVisitUrl || actionConfig.url)
                     : actionConfig.url;
+                const targetUrl = actionConfig.forceReloadOnReuse
+                    ? appendCacheBuster(rawUrl)
+                    : rawUrl;
                 const existingWindow = window._openedWindows && window._openedWindows[actionConfig.windowName];
+                let openedWindow = null;
                 if (actionConfig.forceReloadOnReuse && existingWindow && !existingWindow.closed) {
                     try {
                         existingWindow.location.replace(targetUrl);
@@ -270,10 +319,14 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
                         existingWindow.location.href = targetUrl;
                     }
                     existingWindow.focus();
+                    openedWindow = existingWindow;
                 } else if (typeof window.openOrFocusWindow === 'function') {
-                    window.openOrFocusWindow(targetUrl, actionConfig.windowName, features);
+                    openedWindow = window.openOrFocusWindow(targetUrl, actionConfig.windowName, features);
                 } else {
-                    window.open(targetUrl, actionConfig.windowName, features);
+                    openedWindow = window.open(targetUrl, actionConfig.windowName, features);
+                }
+                if (actionConfig.actionId === 'management-panel' && openedWindow && !openedWindow.closed) {
+                    markPluginDashboardFirstVisitSeen();
                 }
                 setTimeout(() => { isOpening = false; }, 500);
             });

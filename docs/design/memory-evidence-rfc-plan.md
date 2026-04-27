@@ -1088,7 +1088,7 @@ async def _score_trim_async(entries, budget: int, now: datetime) -> list:
 **失败模式**：
 
 - `tiktoken` import 失败：单次 warn + heuristic fallback（§3.2）
-- `acount_tokens` 抛异常：log.error + 该 entry 按 `len(text) // 2` 估算，不崩 render
+- `acount_tokens` 抛异常：log.error + 该 entry 退到 `_count_tokens_heuristic`（CJK 1.5 / 非 CJK 0.25）兜底估算，不崩 render
 
 #### §3.7 话题级回避机制 —— V1 不做
 

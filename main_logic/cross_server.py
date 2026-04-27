@@ -8,23 +8,34 @@
 
 import ssl
 import uuid
+from urllib.parse import quote
 
 import asyncio
 import time
 import pickle
 import aiohttp
 from queue import Empty
-from config import MONITOR_SERVER_PORT, MEMORY_SERVER_PORT, COMMENTER_SERVER_PORT
+from config import (
+    MONITOR_SERVER_PORT,
+    MEMORY_SERVER_PORT,
+    COMMENTER_SERVER_PORT,
+    AVATAR_INTERACTION_DEDUPE_WINDOW_MS,
+    PENDING_USER_IMAGES_MAX,
+)
 from datetime import datetime
 import json
 import re
+import httpx
 from utils.frontend_utils import replace_blank, is_only_punctuation
+from utils.internal_http_client import get_internal_http_client
 from utils.logger_config import get_module_logger
 from main_logic.agent_event_bus import publish_analyze_request_reliably
 
 # Setup logger for this module
 logger = get_module_logger(__name__, "Main")
-AVATAR_INTERACTION_MEMORY_DEDUPE_WINDOW_MS = 8000
+AVATAR_INTERACTION_MEMORY_DEDUPE_WINDOW_MS = AVATAR_INTERACTION_DEDUPE_WINDOW_MS
+MEMORY_CACHE_SCOPE_AVATAR = "avatar interaction cache"
+MEMORY_CACHE_SCOPE_TURN_END = "turn end cache"
 emoji_pattern = re.compile(r'[^\w\u4e00-\u9fff\s>][^\w\u4e00-\u9fff\s]{2,}[^\w\u4e00-\u9fff\s<]', flags=re.UNICODE)
 emoji_pattern2 = re.compile("["
         u"\U0001F600-\U0001F64F"  # emoticons
@@ -246,6 +257,85 @@ async def keep_reader(ws: aiohttp.ClientWebSocketResponse):
         pass
 
 
+async def _post_memory_server(
+    endpoint: str,
+    lanlan_name: str,
+    payload: list[dict],
+    *,
+    timeout_s: float,
+) -> tuple[bool, str, dict]:
+    """Post history payload to memory_server and treat only 2xx+valid JSON as success."""
+    encoded_name = quote(lanlan_name, safe="")
+    url = f"http://127.0.0.1:{MEMORY_SERVER_PORT}/{endpoint}/{encoded_name}"
+
+    client = get_internal_http_client()
+    response = await client.post(
+        url,
+        json={"input_history": json.dumps(payload, indent=2, ensure_ascii=False)},
+        timeout=timeout_s,
+    )
+    raw_body = response.text
+    status_code = response.status_code
+
+    if status_code < 200 or status_code >= 300:
+        return False, f"HTTP {status_code} (body_len={len(raw_body)})", {}
+
+    try:
+        result = json.loads(raw_body) if raw_body else {}
+    except json.JSONDecodeError:
+        return False, f"non-JSON response (body_len={len(raw_body)})", {}
+
+    if not isinstance(result, dict):
+        return False, f"unexpected response type: {type(result).__name__}", {}
+
+    if result.get("status") == "error":
+        return False, str(result.get("message", "unknown_error")), result
+
+    return True, "", result
+
+
+def _is_expected_memory_write_exception(exc: Exception) -> bool:
+    return isinstance(exc, (asyncio.TimeoutError, aiohttp.ClientError, httpx.HTTPError, ConnectionError, OSError))
+
+
+def _mark_memory_cache_success(lanlan_name: str, scope: str, health_state: dict[str, bool]) -> None:
+    if health_state.get(scope, False):
+        logger.info(f"[{lanlan_name}] {scope} 已恢复")
+    health_state[scope] = False
+
+
+def _mark_memory_cache_business_failure(
+    lanlan_name: str,
+    scope: str,
+    detail: str,
+    health_state: dict[str, bool],
+) -> None:
+    was_unhealthy = health_state.get(scope, False)
+    health_state[scope] = True
+    if was_unhealthy:
+        logger.debug(f"[{lanlan_name}] {scope} 失败（持续）: {detail}")
+    else:
+        logger.debug(f"[{lanlan_name}] {scope} 失败（进入失败状态）: {detail}")
+
+
+def _mark_memory_cache_exception(
+    lanlan_name: str,
+    scope: str,
+    exc: Exception,
+    health_state: dict[str, bool],
+) -> None:
+    was_unhealthy = health_state.get(scope, False)
+    health_state[scope] = True
+    reason = "网络层" if _is_expected_memory_write_exception(exc) else "未知类型"
+    msg = f"[{lanlan_name}] {scope} 异常（{reason}{'，持续' if was_unhealthy else '，进入异常状态'}）: {type(exc).__name__}: {exc}"
+    if was_unhealthy:
+        logger.debug(msg)
+    elif reason == "未知类型":
+        logger.warning(msg, exc_info=True)
+    else:
+        logger.warning(msg)
+
+
 def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_server_url=f"ws://127.0.0.1:{MONITOR_SERVER_PORT}", config=None, status_callback=None):
     """独立进程运行的同步连接器
 
@@ -283,6 +373,10 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
         pending_user_images = []
         last_synced_index = 0  # 用于 turn end 时仅同步新增消息到 memory，避免 memory_browser 不更新
         avatar_interaction_memory_cache: dict[str, dict[str, int | str]] = {}
+        memory_cache_health_state = {
+            MEMORY_CACHE_SCOPE_AVATAR: False,
+            MEMORY_CACHE_SCOPE_TURN_END: False,
+        }
 
         while not shutdown_event.is_set():
             try:
@@ -355,14 +449,14 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                             last_screen = data
                             if data:
                                 pending_user_images.append(data)
-                                if len(pending_user_images) > 3:
-                                    del pending_user_images[:-3]
+                                if len(pending_user_images) > PENDING_USER_IMAGES_MAX:
+                                    del pending_user_images[:-PENDING_USER_IMAGES_MAX]
                         elif input_type == "camera":
                             last_screen = data
                             if data:
                                 pending_user_images.append(data)
-                                if len(pending_user_images) > 3:
-                                    del pending_user_images[:-3]
+                                if len(pending_user_images) > PENDING_USER_IMAGES_MAX:
+                                    del pending_user_images[:-PENDING_USER_IMAGES_MAX]
 
                     elif message["type"] == "system":
                         try:
@@ -409,33 +503,30 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                 logger.info(f"[{lanlan_name}] 热重置：聊天历史 {len(chat_history)} 条，增量 {len(remaining)} 条")
                                 # 确定调用端点：有增量走 /renew，无增量走 /settle（补全摘要+时间戳）
                                 _renew_endpoint = "renew" if remaining else "settle"
-                                _renew_payload = remaining if remaining else chat_history
-                                if _renew_payload:
-                                    try:
-                                        async with aiohttp.ClientSession() as session:
-                                            async with session.post(
-                                                f"http://127.0.0.1:{MEMORY_SERVER_PORT}/{_renew_endpoint}/{lanlan_name}",
-                                                json={'input_history': json.dumps(_renew_payload, indent=2, ensure_ascii=False)},
-                                                timeout=aiohttp.ClientTimeout(total=30.0)
-                                            ) as response:
-                                                result = await response.json()
-                                                if result.get('status') == 'error':
-                                                    err_detail = result.get('message', '未知错误')
-                                                    logger.error(f"[{lanlan_name}] 热重置记忆处理失败 ({_renew_endpoint}): {err_detail}")
-                                                    if status_callback:
-                                                        try:
-                                                            status_callback(f"⚠️ 热重置记忆失败: {err_detail}")
-                                                        except Exception:
-                                                            pass
-                                                else:
-                                                    logger.info(f"[{lanlan_name}] 热重置记忆已成功上传到 memory_server ({_renew_endpoint})")
-                                    except RuntimeError as e:
-                                        if "shutdown" in str(e).lower() or "closed" in str(e).lower():
-                                            logger.info(f"[{lanlan_name}] 进程正在关闭，{_renew_endpoint}请求已取消")
-                                        else:
-                                            logger.exception(f"[{lanlan_name}] 调用 /{_renew_endpoint} API 失败: {type(e).__name__}: {e}")
-                                    except Exception as e:
+                                _renew_payload = remaining if remaining else []
+                                try:
+                                    ok, err_detail, _ = await _post_memory_server(
+                                        _renew_endpoint,
+                                        lanlan_name,
+                                        _renew_payload,
+                                        timeout_s=30.0,
+                                    )
+                                    if not ok:
+                                        logger.error(f"[{lanlan_name}] 热重置记忆处理失败 ({_renew_endpoint}): {err_detail}")
+                                        if status_callback:
+                                            try:
+                                                status_callback(f"⚠️ 热重置记忆失败: {err_detail}")
+                                            except Exception:
+                                                pass
+                                    else:
+                                        logger.info(f"[{lanlan_name}] 热重置记忆已成功上传到 memory_server ({_renew_endpoint})")
+                                except RuntimeError as e:
+                                    if "shutdown" in str(e).lower() or "closed" in str(e).lower():
+                                        logger.info(f"[{lanlan_name}] 进程正在关闭，{_renew_endpoint}请求已取消")
+                                    else:
                                         logger.exception(f"[{lanlan_name}] 调用 /{_renew_endpoint} API 失败: {type(e).__name__}: {e}")
+                                except Exception as e:
+                                    logger.exception(f"[{lanlan_name}] 调用 /{_renew_endpoint} API 失败: {type(e).__name__}: {e}")
                                 chat_history.clear()
                                 last_synced_index = 0
 
@@ -497,19 +588,34 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                         ]
                                         cache_persist_failed = False
                                         try:
-                                            async with aiohttp.ClientSession() as session:
-                                                async with session.post(
-                                                    f"http://127.0.0.1:{MEMORY_SERVER_PORT}/cache/{lanlan_name}",
-                                                    json={'input_history': json.dumps(avatar_memory_messages, indent=2, ensure_ascii=False)},
-                                                    timeout=aiohttp.ClientTimeout(total=10.0)
-                                                ) as response:
-                                                    result = await response.json()
-                                                    if result.get('status') == 'error':
-                                                        cache_persist_failed = True
-                                                        logger.debug(f"[{lanlan_name}] avatar interaction cache skipped: {result.get('message', 'unknown error')}")
+                                            ok, err_detail, _ = await _post_memory_server(
+                                                "cache",
+                                                lanlan_name,
+                                                avatar_memory_messages,
+                                                timeout_s=10.0,
+                                            )
+                                            if ok:
+                                                _mark_memory_cache_success(
+                                                    lanlan_name,
+                                                    MEMORY_CACHE_SCOPE_AVATAR,
+                                                    memory_cache_health_state,
+                                                )
+                                            else:
+                                                cache_persist_failed = True
+                                                _mark_memory_cache_business_failure(
+                                                    lanlan_name,
+                                                    MEMORY_CACHE_SCOPE_AVATAR,
+                                                    err_detail,
+                                                    memory_cache_health_state,
+                                                )
                                         except Exception as e:
                                             cache_persist_failed = True
-                                            logger.debug(f"[{lanlan_name}] avatar interaction cache failed: {e}")
+                                            _mark_memory_cache_exception(
+                                                lanlan_name,
+                                                MEMORY_CACHE_SCOPE_AVATAR,
+                                                e,
+                                                memory_cache_health_state,
+                                            )
                                         if cache_persist_failed and dedupe_rollback_key:
                                             if dedupe_prior_entry is not None:
                                                 avatar_interaction_memory_cache[dedupe_rollback_key] = dedupe_prior_entry
@@ -571,17 +677,33 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                 if had_user_input_this_turn and not shutdown_event.is_set() and last_synced_index < len(chat_history):
                                     new_messages = chat_history[last_synced_index:]
                                     try:
-                                        async with aiohttp.ClientSession() as session:
-                                            async with session.post(
-                                                f"http://127.0.0.1:{MEMORY_SERVER_PORT}/cache/{lanlan_name}",
-                                                json={'input_history': json.dumps(new_messages, indent=2, ensure_ascii=False)},
-                                                timeout=aiohttp.ClientTimeout(total=10.0)
-                                            ) as response:
-                                                result = await response.json()
-                                                if result.get('status') != 'error':
-                                                    last_synced_index = len(chat_history)
+                                        ok, err_detail, _ = await _post_memory_server(
+                                            "cache",
+                                            lanlan_name,
+                                            new_messages,
+                                            timeout_s=10.0,
+                                        )
+                                        if ok:
+                                            _mark_memory_cache_success(
+                                                lanlan_name,
+                                                MEMORY_CACHE_SCOPE_TURN_END,
+                                                memory_cache_health_state,
+                                            )
+                                            last_synced_index = len(chat_history)
+                                        else:
+                                            _mark_memory_cache_business_failure(
+                                                lanlan_name,
+                                                MEMORY_CACHE_SCOPE_TURN_END,
+                                                err_detail,
+                                                memory_cache_health_state,
+                                            )
                                     except Exception as e:
-                                        logger.debug(f"[{lanlan_name}] turn end cache 失败: {e}")
+                                        _mark_memory_cache_exception(
+                                            lanlan_name,
+                                            MEMORY_CACHE_SCOPE_TURN_END,
+                                            e,
+                                            memory_cache_health_state,
+                                        )
 
                             elif message["data"] == 'session end': # 当前session结束了
                                 # 检查是否正在关闭，如果是则跳过网络操作
@@ -646,30 +768,32 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                     last_synced_index = 0
                                     break
                                 
-                                # 增量结算：只发 /cache 未覆盖的剩余消息，触发 LLM 结算
+                                # 会话结算：
+                                # - 有增量（未被 /cache 覆盖）→ /process
+                                # - 无增量但有历史（已全部 /cache）→ /settle，补全摘要/时间索引/事实提取
                                 remaining = chat_history[last_synced_index:]
                                 logger.info(f"[{lanlan_name}] 会话结束：聊天历史 {len(chat_history)} 条，增量 {len(remaining)} 条")
-                                if not shutdown_event.is_set() and remaining:
+                                _settle_endpoint = "process" if remaining else "settle"
+                                _settle_payload = remaining if remaining else []
+                                if not shutdown_event.is_set():
                                     try:
-                                        async with aiohttp.ClientSession() as session:
-                                            async with session.post(
-                                                f"http://127.0.0.1:{MEMORY_SERVER_PORT}/process/{lanlan_name}",
-                                                json={'input_history': json.dumps(remaining, indent=2, ensure_ascii=False)},
-                                                timeout=aiohttp.ClientTimeout(total=30.0)
-                                            ) as response:
-                                                result = await response.json()
-                                                if result.get('status') == 'error':
-                                                    err_detail = result.get('message', '未知错误')
-                                                    logger.warning(f"[{lanlan_name}] session end 记忆结算失败: {err_detail}")
-                                                    if status_callback:
-                                                        try:
-                                                            status_callback(f"⚠️ 记忆摘要失败: {err_detail}")
-                                                        except Exception:
-                                                            pass
-                                                else:
-                                                    logger.info(f"[{lanlan_name}] session end 记忆结算完成，{len(remaining)} 条消息")
+                                        ok, err_detail, _ = await _post_memory_server(
+                                            _settle_endpoint,
+                                            lanlan_name,
+                                            _settle_payload,
+                                            timeout_s=30.0,
+                                        )
+                                        if not ok:
+                                            logger.warning(f"[{lanlan_name}] session end 记忆结算失败 ({_settle_endpoint}): {err_detail}")
+                                            if status_callback:
+                                                try:
+                                                    status_callback(f"⚠️ 记忆摘要失败: {err_detail}")
+                                                except Exception:
+                                                    pass
+                                        else:
+                                            logger.info(f"[{lanlan_name}] session end 记忆结算完成（{_settle_endpoint}），{len(_settle_payload)} 条消息")
                                     except Exception as e:
-                                        logger.warning(f"[{lanlan_name}] session end 记忆结算失败: {e}")
+                                        logger.warning(f"[{lanlan_name}] session end 记忆结算失败 ({_settle_endpoint}): {e}")
                                         if status_callback:
                                             try:
                                                 status_callback(f"⚠️ 记忆结算异常: {type(e).__name__}")
@@ -818,6 +942,12 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
     except Exception as e:
         logger.error(f"[{lanlan_name}] Sync进程错误: {e}", exc_info=True)
     finally:
+        try:
+            from utils.internal_http_client import aclose_internal_http_client_current_loop
+
+            loop.run_until_complete(aclose_internal_http_client_current_loop())
+        except Exception:
+            pass
         loop.close()
         # 线程退出阶段测试环境可能已经关闭日志捕获流；这里避免再做收尾 info 日志，
         # 以免 shutdown 正常完成时反而刷出 logging error 噪音。

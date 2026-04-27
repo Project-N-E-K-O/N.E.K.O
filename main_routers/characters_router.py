@@ -1670,6 +1670,15 @@ async def rename_catgirl(old_name: str, request: Request):
     memory_targets = list_character_memory_paths(_config_manager, old_name)
     memory_targets.extend(list_character_memory_paths(_config_manager, new_name))
     memory_targets.append(Path(_config_manager.memory_dir) / new_name)
+    # 卡面文件纳入 snapshot，使迁移失败也能回滚
+    old_face = _config_manager.card_faces_dir / f"{old_name}.png"
+    new_face = _config_manager.card_faces_dir / f"{new_name}.png"
+    old_meta = _config_manager.card_face_meta_path(old_name)
+    new_meta = _config_manager.card_face_meta_path(new_name)
+    memory_targets.append(old_face)
+    memory_targets.append(new_face)
+    memory_targets.append(old_meta)
+    memory_targets.append(new_meta)
     memory_server_reloaded = False
 
     with _create_character_operation_backup_dir(_config_manager, "neko-rename-character-") as temp_dir:
@@ -1689,6 +1698,24 @@ async def rename_catgirl(old_name: str, request: Request):
             # 自动重新加载配置
             initialize_character_data = get_initialize_character_data()
             await initialize_character_data()
+
+            # 迁移卡面 PNG 与 sidecar JSON（纳入同一事务）
+            from datetime import datetime as _dt
+            _ts = _dt.now().strftime('%Y%m%d%H%M%S')
+            if old_face.exists():
+                if new_face.exists():
+                    backup_face = _config_manager.card_faces_dir / f"{new_name}.png.conflict-{_ts}.bak"
+                    await asyncio.to_thread(new_face.rename, backup_face)
+                    logger.info(f"[重命名卡面] 冲突备份: {new_face} -> {backup_face}")
+                await asyncio.to_thread(old_face.rename, new_face)
+                logger.info(f"[重命名卡面] 已迁移: {old_face} -> {new_face}")
+            if old_meta.exists():
+                if new_meta.exists():
+                    backup_meta = _config_manager.card_face_meta_path(f"{new_name}.conflict-{_ts}.bak")
+                    await asyncio.to_thread(new_meta.rename, backup_meta)
+                    logger.info(f"[重命名卡面元数据] 冲突备份: {new_meta} -> {backup_meta}")
+                await asyncio.to_thread(old_meta.rename, new_meta)
+                logger.info(f"[重命名卡面元数据] 已迁移: {old_meta} -> {new_meta}")
 
             memory_server_reloaded = await notify_memory_server_reload(
                 reason=f"角色重命名: {old_name} -> {new_name}",
@@ -1738,7 +1765,7 @@ async def rename_catgirl(old_name: str, request: Request):
                 error_message = f"{error_message}; 回滚失败: {rollback_error}"
             return JSONResponse({"success": False, "error": error_message}, status_code=500)
 
-    # 数据更新+重载完成后再通知前端，避免前端 fetch /api/characters 时新名称尚未就绪
+    # 数据更新+重载+卡面迁移完成后再通知前端
     if memory_server_reloaded and rename_notification_ws and rename_notification_message:
         try:
             await rename_notification_ws.send_text(rename_notification_message)
@@ -2198,6 +2225,10 @@ async def delete_catgirl(name: str):
 
     characters_snapshot = copy.deepcopy(characters)
     memory_targets = list_character_memory_paths(_config_manager, name)
+    face_path = _config_manager.card_faces_dir / f"{name}.png"
+    meta_path = _config_manager.card_face_meta_path(name)
+    memory_targets.append(face_path)
+    memory_targets.append(meta_path)
 
     with _create_character_operation_backup_dir(_config_manager, "neko-delete-character-") as temp_dir:
         memory_snapshot_records = await asyncio.to_thread(
@@ -2213,6 +2244,12 @@ async def delete_catgirl(name: str):
             )
             for entry_path in removed_memory_paths:
                 logger.info(f"已删除: {entry_path}")
+
+            # 同步删除卡面 PNG 与 sidecar JSON（纳入同一事务以便回滚）
+            if face_path.exists():
+                await asyncio.to_thread(face_path.unlink)
+            if meta_path.exists():
+                await asyncio.to_thread(meta_path.unlink)
 
             await asyncio.to_thread(
                 _config_manager.save_character_tombstones_state,
@@ -2630,6 +2667,7 @@ async def delete_voice(voice_id: str):
 _trim_tasks: dict[str, dict] = {}
 
 MAX_UPLOAD_SIZE = 100 * 1024 * 1024  # 100 MB
+MAX_CARD_FACE_SIZE = 10 * 1024 * 1024  # 10 MB
 
 
 class _UploadTooLargeError(Exception):
@@ -3810,105 +3848,137 @@ async def export_catgirl_card(name: str):
                             else:
                                 logger.warning(f'找不到VRM模型文件: {vrm_path}')
 
-                # 3. 添加元数据文件
+                # 3. 读取卡面元数据 sidecar（作者 / 创建时间）
+                _sidecar_meta_path = _config_manager.card_face_meta_path(name)
+                _sidecar_existed = await asyncio.to_thread(_sidecar_meta_path.exists)
+                _sidecar_meta = await asyncio.to_thread(_read_card_meta, _sidecar_meta_path)
+                now_iso = datetime.now().isoformat(timespec='seconds')
+                # 优先使用已有的创建时间；未设置时使用当前时间并回写 sidecar，
+                # 以确保后续导出不会重复刷新。
+                _author = str(_sidecar_meta.get('author') or '').strip()[:64]
+                _existing_created_at = str(_sidecar_meta.get('created_at') or '').strip()
+                _created_at = _existing_created_at or now_iso
+                if not _existing_created_at:
+                    try:
+                        _config_manager.ensure_card_faces_directory()
+                        _new_meta = dict(_sidecar_meta)
+                        _new_meta['created_at'] = _created_at
+                        if not _new_meta.get('updated_at'):
+                            _new_meta['updated_at'] = now_iso
+                        # 仅当 sidecar 原本不存在且 origin 为默认值（None/空/'self'）时才推断来源，
+                        # 避免覆盖已有的 self 默认值或用户设定。
+                        if not _sidecar_existed and _new_meta.get('origin') in (None, '', 'self'):
+                            _new_meta['origin'] = _detect_card_origin_from_character(catgirl_data or {})
+                        await asyncio.to_thread(_write_card_meta, _sidecar_meta_path, _new_meta)
+                    except Exception as _meta_persist_err:
+                        logger.warning(f"[导出角色卡] 回写创建时间到 sidecar 失败: {_meta_persist_err}")
+
+                # 4. 添加元数据文件
                 metadata = {
                     'version': '1.0',
-                    'export_time': datetime.now().isoformat(),
+                    'export_time': now_iso,
                     'character_name': name,
+                    'author': _author,
+                    'created_at': _created_at,
                     'model_included': model_added,
                     'model_type': model_type
                 }
                 zf.writestr('metadata.json', json.dumps(metadata, ensure_ascii=False, indent=2))
 
-            # 4. 创建PNG图片（长方形角色卡样式）
-            from PIL import Image, ImageDraw, ImageFont
-
-            # 创建长方形图片 (宽:高 = 3:4)
-            width, height = 600, 800
-            img = Image.new('RGB', (width, height), color='#E8F4F8')  # 淡蓝色背景
-            draw = ImageDraw.Draw(img)
-
-            # 顶部1/6区域使用深蓝色
-            header_height = height // 6
-            draw.rectangle([0, 0, width, header_height], fill='#40C5F1')
-
-            # 在顶部左侧添加角色名称
-            font_size = 36
-            font = None
-            font_candidates = [
-                "msyhbd.ttc", "Microsoft YaHei Bold.ttf", "simhei.ttf",
-                "msyh.ttc", "Microsoft YaHei.ttf", "simsun.ttc",
-                "NotoSansCJK-Regular.ttc", "wqy-microhei.ttc"
-            ]
-            for font_name in font_candidates:
+            # 5. 获取卡面图：优先使用保存的 card_faces/{name}.png，
+            #    不存在时才回退到合成图。
+            from utils.screenshot_utils import _validate_image_data
+            saved_face_path = _config_manager.card_faces_dir / f"{name}.png"
+            png_data = None
+            if saved_face_path.exists():
                 try:
-                    font = ImageFont.truetype(font_name, font_size)
-                    break
-                except (OSError, IOError):
-                    continue
+                    png_data = await asyncio.to_thread(saved_face_path.read_bytes)
+                    validated = await asyncio.to_thread(_validate_image_data, png_data)
+                    if validated is None:
+                        logger.warning(f"[导出角色卡] 已保存卡面验证失败，回退到合成图")
+                        png_data = None
+                    elif not png_data.startswith(b'\x89PNG\r\n\x1a\n'):
+                        try:
+                            from PIL import Image
+                            from io import BytesIO
+                            img = await asyncio.to_thread(Image.open, BytesIO(png_data))
+                            buf = BytesIO()
+                            await asyncio.to_thread(img.save, buf, format='PNG')
+                            png_data = buf.getvalue()
+                        except Exception as _conv_err:
+                            logger.warning(f"[导出角色卡] 卡面非 PNG 且重新编码失败，回退到合成图: {_conv_err}")
+                            png_data = None
+                except Exception as _read_err:
+                    logger.warning(f"[导出角色卡] 读取已保存卡面失败，回退到合成图: {_read_err}")
+                    png_data = None
 
-            if font is None:
-                font = ImageFont.load_default()
-                logger.warning("[导出角色卡] 未找到支持中文的系统字体，可能会显示为方框")
+            if png_data is None:
+                # 回退：合成一张默认长方形角色卡图片
+                from PIL import Image, ImageDraw, ImageFont
+                width, height = 600, 800
+                img = Image.new('RGB', (width, height), color='#E8F4F8')
+                draw = ImageDraw.Draw(img)
+                header_height = height // 6
+                draw.rectangle([0, 0, width, header_height], fill='#40C5F1')
 
-            # 计算文字位置（左侧居中偏上）
-            text = name
-            bbox = draw.textbbox((0, 0), text, font=font)
-            text_width = bbox[2] - bbox[0]
-            text_height = bbox[3] - bbox[1]
+                font_size = 36
+                font = None
+                font_candidates = [
+                    "msyhbd.ttc", "Microsoft YaHei Bold.ttf", "simhei.ttf",
+                    "msyh.ttc", "Microsoft YaHei.ttf", "simsun.ttc",
+                    "NotoSansCJK-Regular.ttc", "wqy-microhei.ttc"
+                ]
+                for font_name in font_candidates:
+                    try:
+                        font = ImageFont.truetype(font_name, font_size)
+                        break
+                    except (OSError, IOError):
+                        continue
 
-            # 文字位置：左侧留边距，垂直居中
-            text_x = 30
-            text_y = (header_height - text_height) // 2 - bbox[1]
+                if font is None:
+                    font = ImageFont.load_default()
+                    logger.warning("[导出角色卡] 未找到支持中文的系统字体，可能会显示为方框")
 
-            # 绘制白色文字
-            draw.text((text_x, text_y), text, fill='white', font=font)
+                text = name
+                bbox = draw.textbbox((0, 0), text, font=font)
+                text_height = bbox[3] - bbox[1]
+                text_x = 30
+                text_y = (header_height - text_height) // 2 - bbox[1]
+                draw.text((text_x, text_y), text, fill='white', font=font)
+                png_path = temp_path / 'character_card.png'
+                img.save(png_path, 'PNG')
+                with open(png_path, 'rb') as f:
+                    png_data = f.read()
 
-            png_path = temp_path / 'character_card.png'
-            img.save(png_path, 'PNG')
-
-            # 5. 将压缩包数据嵌入 PNG 的 neKo 块（合法 PNG chunk，Electron 可正常预览）
-            with open(png_path, 'rb') as f:
-                png_data = f.read()
-
+            # 6. 将压缩包数据嵌入 PNG 的 neKo 块（合法 PNG chunk，Electron 可正常预览）
             with open(zip_path, 'rb') as f:
                 zip_data = f.read()
 
             combined_data = _embed_zip_in_png_chunk(png_data, zip_data)
 
-            # 6. 返回图片文件
-            # 使用档案名作为文件名，并进行安全编码
+            # 7. 返回文件下载
             from urllib.parse import quote
 
-            # 清理档案名：移除不安全的文件系统字符，但保留中文
             safe_name = "".join(c for c in name if c.isalnum() or c in (' ', '-', '_', '·', '•') or '\u4e00' <= c <= '\u9fff').strip()
             if not safe_name:
                 safe_name = "character_card"
-
-            # 构建文件名：档案名.png
             original_filename = f"{safe_name}.png"
-
-            # 对文件名进行 RFC 5987 编码（UTF-8 + URL 编码）
-            # 这样浏览器可以正确显示中文文件名
             encoded_filename = quote(original_filename, safe='')
-
-            # 构建 Content-Disposition 头
-            # filename*=UTF-8'' 语法允许使用 URL 编码的 UTF-8 字符
             content_disposition = f"attachment; filename*=UTF-8''{encoded_filename}"
-
-            # X-Filename 头必须使用 ASCII 字符
             try:
                 ascii_filename = original_filename.encode('ascii').decode('ascii')
             except UnicodeEncodeError:
-                # 如果包含非 ASCII 字符，使用安全的 ASCII 文件名
                 ascii_filename = "character_card.png"
 
             return Response(
                 content=combined_data,
-                media_type='image/png',
+                # 用 octet-stream 避免浏览器将响应作为图片在新标签中预览，
+                # 配合前端 <a download> 开启下载流程。
+                media_type='application/octet-stream',
                 headers={
                     'Content-Disposition': content_disposition,
-                    'X-Filename': ascii_filename
+                    'X-Filename': ascii_filename,
+                    'Cache-Control': 'no-store',
                 }
             )
 
@@ -4003,15 +4073,15 @@ async def export_catgirl_settings_only(name: str):
 
 
 @router.post('/import-card')
-async def import_character_card(zip_file: UploadFile = File(...)):
+async def import_character_card(
+    zip_file: UploadFile = File(...),
+    card_image: UploadFile = File(None),
+):
     """导入角色卡（从PNG图片中提取的ZIP文件）
 
-    导入流程：
-    1. 接收ZIP文件数据
-    2. 解压并读取角色设定JSON
-    3. 如果有模型文件，解压到用户模型目录
-    4. 将角色设定添加到characters.json
-    5. 返回导入结果
+    可选参数：
+      - card_image: 原始载体 PNG。若提供且本地尚未存在同名卡面，则直接存为
+        该角色的 card-face，以谙则老角色卡「封面图即卡面」的习惯。
     """
     import zipfile
     import tempfile
@@ -4341,6 +4411,73 @@ async def import_character_card(zip_file: UploadFile = File(...)):
             if initialize_character_data:
                 await initialize_character_data()
 
+            # 写入卡面元数据 sidecar（origin=imported）
+            try:
+                _config_manager.ensure_card_faces_directory()
+                meta_path = _config_manager.card_face_meta_path(character_name)
+                imported_author = ''
+                imported_created_at = ''
+                if isinstance(metadata, dict):
+                    imported_author = str(metadata.get('author', '') or '').strip()[:64]
+                    imported_created_at = str(metadata.get('created_at', '') or '').strip()[:32]
+                    if not imported_created_at:
+                        imported_created_at = str(metadata.get('export_time', '') or '').strip()[:32]
+                now_iso = datetime.now().isoformat(timespec='seconds')
+                # 优先使用源卡中的创建时间，未提供时才赋为当前时间
+                created_at = imported_created_at or now_iso
+                meta = {
+                    'author': imported_author,
+                    'origin': 'imported',
+                    'created_at': created_at,
+                    'updated_at': now_iso,
+                }
+                await asyncio.to_thread(_write_card_meta, meta_path, meta)
+            except Exception as meta_err:
+                logger.warning(f"[导入角色卡] 写入卡面元数据失败: {meta_err}")
+                return JSONResponse({
+                    "success": True,
+                    "error": f"角色数据已导入，但卡面元数据写入失败: {meta_err}",
+                    "card_meta_saved": False,
+                    "character_name": character_name,
+                }, status_code=200)
+
+            # 老角色卡兼容：如果前端上传了载体 PNG，且本地还没有同名卡面，
+            # 则直接使用该 PNG 作为卡面（带 neKo chunk 不影响质量）。
+            try:
+                if card_image is not None and card_image.filename:
+                    face_path = _config_manager.card_faces_dir / f"{character_name}.png"
+                    if not face_path.exists():
+                        try:
+                            # 先用更大的上传限制读取载体 PNG（可能嵌入 ZIP）
+                            face_buffer = await _read_limited_stream(card_image, MAX_UPLOAD_SIZE)
+                            face_bytes = face_buffer.getvalue()
+                        except _UploadTooLargeError as e:
+                            logger.warning(f"[导入角色卡] 载体 PNG 超过上传限制，跳过保存: {e}")
+                            face_bytes = b''
+                        if face_bytes:
+                            try:
+                                from utils.screenshot_utils import _validate_image_data
+                                from PIL import Image as PILImage
+
+                                validated = await asyncio.to_thread(_validate_image_data, face_bytes)
+                                if validated is None:
+                                    logger.warning(f"[导入角色卡] 载体 PNG 验证失败，跳过保存")
+                                else:
+                                    if validated.mode not in ('RGB', 'RGBA', 'L'):
+                                        validated = validated.convert('RGB')
+                                    out = io.BytesIO()
+                                    validated.save(out, format='PNG')
+                                    valid_png = out.getvalue()
+                                    if len(valid_png) > MAX_CARD_FACE_SIZE:
+                                        logger.warning(f"[导入角色卡] 重编码后的卡面图 ({len(valid_png)} bytes) 超过最大限制 ({MAX_CARD_FACE_SIZE} bytes)，跳过保存")
+                                    else:
+                                        await asyncio.to_thread(face_path.write_bytes, valid_png)
+                                        logger.info(f"[导入角色卡] 已将载体 PNG 存为卡面: {face_path}")
+                            except Exception as pil_err:
+                                logger.warning(f"[导入角色卡] 卡面图 PNG 处理失败，跳过保存: {pil_err}")
+            except Exception as face_err:
+                logger.warning(f"[导入角色卡] 保存载体 PNG 为卡面失败: {face_err}")
+
         return JSONResponse({
             'success': True,
             'character_name': character_name,
@@ -4357,6 +4494,278 @@ async def import_character_card(zip_file: UploadFile = File(...)):
         # 清理临时目录
         if temp_dir and os.path.exists(temp_dir):
             await asyncio.to_thread(shutil.rmtree, temp_dir, ignore_errors=True)
+
+
+# ====== 角色卡卡面（Card Face）存储 ======
+
+# 卡面元数据 sidecar 默认结构
+def _default_card_meta(origin: str = 'self') -> dict:
+    """返回默认卡面元数据。"""
+    return {
+        'author': '',
+        'origin': origin,  # self / imported / steam
+        'created_at': None,
+        'updated_at': None,
+    }
+
+
+def _read_card_meta(meta_path) -> dict:
+    """读取 sidecar JSON，文件不存在或损坏时返回默认值。"""
+    try:
+        if meta_path.exists():
+            with open(meta_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            if not isinstance(data, dict):
+                logger.warning(f"卡面元数据内容无效（非字典）{meta_path}: {type(data).__name__}")
+                return _default_card_meta(origin=None)
+            # 合并默认字段，保证字段完整
+            merged = _default_card_meta()
+            merged.update({k: v for k, v in data.items() if k in merged})
+            return merged
+    except Exception as e:
+        logger.warning(f"读取卡面元数据失败 {meta_path}: {e}")
+        return _default_card_meta(origin=None)
+    return _default_card_meta()
+
+
+def _write_card_meta(meta_path, meta: dict) -> None:
+    """写入 sidecar JSON（原子写入）。调用方需先 ensure_card_faces_directory()。"""
+    from utils.file_utils import atomic_write_json
+    atomic_write_json(meta_path, meta, ensure_ascii=False, indent=2)
+
+
+def _detect_card_origin_from_character(catgirl_data: dict) -> str:
+    """从猫娘配置推断 origin（用于无 sidecar 时的回退）。
+    依据角色卡本身的来源（character_origin.source），而非模型来源（avatar.asset_source），
+    确保更换模型不会改变角色卡来源标注。"""
+    try:
+        char_source = get_reserved(catgirl_data, 'character_origin', 'source', default='')
+        if char_source == 'steam_workshop':
+            return 'steam'
+    except Exception:
+        pass
+    return 'self'
+
+
+@router.get('/card-faces')
+async def list_card_faces():
+    """返回所有已设置自定义卡面的猫娘名列表（用于前端避免无意义的 404 请求）"""
+    _config_manager = get_config_manager()
+    faces_dir = _config_manager.card_faces_dir
+    names: list[str] = []
+    orphans: list[str] = []
+    try:
+        characters = await _config_manager.aload_characters()
+        valid_names = set(characters.get('猫娘', {}).keys())
+        if faces_dir.exists():
+            for p in await asyncio.to_thread(lambda: list(faces_dir.glob('*.png'))):
+                stem = p.stem
+                if stem in valid_names:
+                    names.append(stem)
+                else:
+                    orphans.append(stem)
+        if orphans:
+            logger.info(f"[list_card_faces] 孤儿卡面文件（无对应角色）: {orphans}")
+    except Exception:
+        logger.exception("list_card_faces failed")
+        return JSONResponse({'success': False, 'error': '读取卡面列表失败'}, status_code=500)
+
+    return JSONResponse({'success': True, 'names': names}, status_code=200)
+
+
+@router.get('/card-metas')
+async def list_card_metas():
+    """批量返回所有猫娘的卡面元数据。
+
+    对于没有 sidecar JSON 的历史角色卡，会根据猫娘配置推断 origin 后
+    返回默认值，保证旧版本升级后前端仍能显示卡面信息。
+    """
+    _config_manager = get_config_manager()
+    faces_dir = _config_manager.card_faces_dir
+    metas: dict = {}
+    try:
+        # 先加载角色列表，构建有效名称集合
+        characters = await _config_manager.aload_characters()
+        valid_names = set((characters.get('猫娘', {}) or {}).keys())
+        # 只读取属于有效角色的 sidecar
+        if faces_dir.exists():
+            json_files = await asyncio.to_thread(lambda: list(faces_dir.glob('*.json')))
+            for p in json_files:
+                if p.stem in valid_names:
+                    meta = await asyncio.to_thread(_read_card_meta, p)
+                    if meta.get('origin') is None:
+                        # sidecar 损坏：当作缺失处理，重新推断 origin
+                        meta = _default_card_meta(_detect_card_origin_from_character(characters['猫娘'][p.stem]))
+                    metas[p.stem] = meta
+        # 补齐缺失 sidecar 的猫娘：按配置推断 origin，返回默认值
+        for cname, cdata in (characters.get('猫娘', {}) or {}).items():
+            if cname in metas:
+                continue
+            inferred = _default_card_meta(_detect_card_origin_from_character(cdata or {}))
+            metas[cname] = inferred
+    except Exception as e:
+        logger.warning(f"批量读取卡面元数据失败: {e}")
+        return JSONResponse({'success': False, 'error': '批量读取卡面元数据失败', 'details': str(e)}, status_code=500)
+
+    return JSONResponse({'success': True, 'metas': metas})
+
+
+@router.get('/catgirl/{name}/card-meta')
+async def get_card_meta(name: str):
+    """获取单个猫娘的卡面元数据。无 sidecar 时根据猫娘配置推断 origin 后返回默认。"""
+    _config_manager = get_config_manager()
+    safe_name = os.path.basename(name)
+    if safe_name != name or not name:
+        return JSONResponse({'success': False, 'error': '无效的角色名'}, status_code=400)
+
+    characters = await _config_manager.aload_characters()
+    if name not in characters.get('猫娘', {}):
+        return JSONResponse({'success': False, 'error': '猫娘不存在'}, status_code=404)
+
+    meta_path = _config_manager.card_face_meta_path(name)
+    meta = await asyncio.to_thread(_read_card_meta, meta_path)
+    if not meta_path.exists() or meta.get('origin') is None:
+        # 无 sidecar 或读取失败：根据猫娘配置推断 origin
+        meta['origin'] = _detect_card_origin_from_character(characters['猫娘'][name])
+    return JSONResponse({'success': True, 'meta': meta})
+
+
+@router.put('/catgirl/{name}/card-meta')
+async def put_card_meta(name: str, request: Request):
+    """更新卡面元数据（当前仅支持 author 字段，且仅 origin=self 时允许）。"""
+    _config_manager = get_config_manager()
+    safe_name = os.path.basename(name)
+    if safe_name != name or not name:
+        return JSONResponse({'success': False, 'error': '无效的角色名'}, status_code=400)
+
+    characters = await _config_manager.aload_characters()
+    if name not in characters.get('猫娘', {}):
+        return JSONResponse({'success': False, 'error': '猫娘不存在'}, status_code=404)
+
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse({'success': False, 'error': '请求体必须是合法的JSON格式'}, status_code=400)
+
+    new_author = data.get('author') if isinstance(data, dict) else None
+    if new_author is None:
+        return JSONResponse({'success': False, 'error': '缺少 author 字段'}, status_code=400)
+    new_author = str(new_author).strip()
+    if len(new_author) > 64:
+        return JSONResponse({'success': False, 'error': '作者名称过长（最长64字符）'}, status_code=400)
+
+    meta_path = _config_manager.card_face_meta_path(name)
+    existing = await asyncio.to_thread(_read_card_meta, meta_path)
+    if not meta_path.exists() or existing.get('origin') is None:
+        existing['origin'] = _detect_card_origin_from_character(characters['猫娘'][name])
+
+    if existing.get('origin') != 'self':
+        return JSONResponse({'success': False, 'error': '仅本地创作的卡面可修改作者'}, status_code=403)
+
+    existing['author'] = new_author
+    now_iso = datetime.now().isoformat(timespec='seconds')
+    existing['updated_at'] = now_iso
+    if not existing.get('created_at'):
+        existing['created_at'] = now_iso
+
+    _config_manager.ensure_card_faces_directory()
+    await asyncio.to_thread(_write_card_meta, meta_path, existing)
+    return JSONResponse({'success': True, 'meta': existing})
+
+
+@router.get('/catgirl/{name}/card-face')
+async def get_card_face(name: str):
+    """获取角色的自定义卡面图片"""
+    _config_manager = get_config_manager()
+    # 安全检查：防止路径遍历
+    safe_name = os.path.basename(name)
+    if safe_name != name or not name:
+        return JSONResponse({'success': False, 'error': '无效的角色名'}, status_code=400)
+
+    face_path = _config_manager.card_faces_dir / f"{name}.png"
+    if not face_path.exists():
+        return JSONResponse({'success': False, 'error': '卡面不存在'}, status_code=404)
+
+    image_data = await asyncio.to_thread(face_path.read_bytes)
+    return Response(content=image_data, media_type='image/png', headers={'Cache-Control': 'no-store'})
+
+
+@router.put('/catgirl/{name}/card-face')
+async def put_card_face(name: str, image: UploadFile = File(...)):
+    """保存角色的自定义卡面图片"""
+    _config_manager = get_config_manager()
+    # 安全检查：防止路径遍历
+    safe_name = os.path.basename(name)
+    if safe_name != name or not name:
+        return JSONResponse({'success': False, 'error': '无效的角色名'}, status_code=400)
+
+    characters = await _config_manager.aload_characters()
+    if name not in characters.get('猫娘', {}):
+        return JSONResponse({'success': False, 'error': '猫娘不存在'}, status_code=404)
+
+    # 验证文件类型
+    content_type = image.content_type or ''
+    if not content_type.startswith('image/'):
+        return JSONResponse({'success': False, 'error': '文件类型无效，请上传图片'}, status_code=400)
+
+    # 流式读取并限制大小
+    try:
+        image_buffer = await _read_limited_stream(image, MAX_CARD_FACE_SIZE)
+    except _UploadTooLargeError:
+        return JSONResponse({'success': False, 'error': '图片文件过大（最大 10MB）'}, status_code=400)
+
+    # 在线程中验证并重新编码为 PNG
+    try:
+        from utils.screenshot_utils import _validate_image_data
+        from PIL import Image as PILImage
+
+        image_buffer.seek(0)
+        validated_img = await asyncio.to_thread(_validate_image_data, image_buffer.getvalue())
+        if validated_img is None:
+            return JSONResponse({'success': False, 'error': '无效的图片文件'}, status_code=400)
+
+        def _reencode(img) -> bytes:
+            if img.mode not in ('RGB', 'RGBA', 'L'):
+                img = img.convert('RGB')
+            out = io.BytesIO()
+            img.save(out, format='PNG')
+            return out.getvalue()
+
+        png_bytes = await asyncio.to_thread(_reencode, validated_img)
+    except Exception:
+        return JSONResponse({'success': False, 'error': '无效的图片文件'}, status_code=400)
+
+    # 重编码后再次校验大小（压缩后仍可能超过限制）
+    if len(png_bytes) > MAX_CARD_FACE_SIZE:
+        return JSONResponse({'success': False, 'error': '文件过大（重编码后超过10MB）'}, status_code=413)
+
+    # 确保目录存在
+    _config_manager.ensure_card_faces_directory()
+
+    face_path = _config_manager.card_faces_dir / f"{name}.png"
+    await asyncio.to_thread(face_path.write_bytes, png_bytes)
+
+    # 同步更新 sidecar 元数据
+    meta_path = _config_manager.card_face_meta_path(name)
+    try:
+        meta = await asyncio.to_thread(_read_card_meta, meta_path)
+        now_iso = datetime.now().isoformat(timespec='seconds')
+        # 上传即视为本地创作；若此前是导入的，刷新创建时间
+        previous_origin = meta.get('origin')
+        meta['origin'] = 'self'
+        if previous_origin != 'self' or not meta.get('created_at'):
+            meta['created_at'] = now_iso
+        meta['updated_at'] = now_iso
+        await asyncio.to_thread(_write_card_meta, meta_path, meta)
+    except Exception as meta_err:
+        logger.warning(f"[上传卡面] 写入 sidecar 元数据失败: {meta_err}")
+        return JSONResponse({
+            'success': True,
+            'partial_success': True,
+            'error': f"卡面已保存，但元数据写入失败: {meta_err}",
+        }, status_code=200)
+
+    return JSONResponse({'success': True})
 
 
 class _InvalidPortraitError(ValueError):

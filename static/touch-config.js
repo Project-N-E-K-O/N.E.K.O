@@ -555,5 +555,20 @@ async function touchPage_init(){
 
 }
 
-touchPage_init()
-InitializationTouchSet();
+async function startTouchConfigAfterStorageBarrier() {
+    if (typeof window.waitForStorageLocationStartupBarrier === 'function') {
+        try {
+            await window.waitForStorageLocationStartupBarrier();
+        } catch (_) {}
+    } else if (window.__nekoStorageLocationStartupBarrier
+        && typeof window.__nekoStorageLocationStartupBarrier.then === 'function') {
+        try {
+            await window.__nekoStorageLocationStartupBarrier;
+        } catch (_) {}
+    }
+
+    touchPage_init()
+    InitializationTouchSet();
+}
+
+startTouchConfigAfterStorageBarrier()

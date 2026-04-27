@@ -2792,3 +2792,40 @@ def get_greeting_prompt(gap_seconds: float, lang: str = 'zh') -> str | None:
     else:  # ≥ 24h
         table = GREETING_PROMPT_VERY_LONG
     return table.get(lang_key, table.get('en', table['zh']))
+
+
+# ── 节日 / 周末提示模板 ─────────────────────────────────────────────
+# Consumed by utils.holiday_cache for proactive holiday/weekend hint
+# injection. Templates carry {name} (holiday name) and optionally {days}.
+
+HOLIDAY_HINT_TODAY: dict[str, str] = {
+    'zh': '今天是{name}！这是一个特别的日子。',
+    'en': 'Today is {name}! It is a special day.',
+    'ja': '今日は{name}だ！特別な日だね。',
+    'ko': '오늘은 {name}이다! 특별한 날이야.',
+    'ru': 'Сегодня {name}! Это особенный день.',
+}
+
+HOLIDAY_HINT_SOON: dict[str, str] = {
+    'zh': '再过{days}天就是{name}假期了，可以期待一下。',
+    'en': 'The {name} holiday is coming in {days} days — something to look forward to.',
+    'ja': 'あと{days}日で{name}の休日だ。楽しみだね。',
+    'ko': '{days}일 후면 {name} 연휴다. 기대되네.',
+    'ru': 'Через {days} дней начнутся праздники {name} — есть чего ждать.',
+}
+
+HOLIDAY_HINT_WEEK: dict[str, str] = {
+    'zh': '这周就是{name}假期了哦。',
+    'en': 'The {name} holiday is coming up this week.',
+    'ja': '今週は{name}の休日がやってくるよ。',
+    'ko': '이번 주에 {name} 연휴가 다가오고 있어.',
+    'ru': 'На этой неделе начнутся праздники {name}.',
+}
+
+WEEKEND_HINT: dict[str, str] = {
+    'zh': '今天是周末，好好放松吧。',
+    'en': 'It is the weekend — time to relax.',
+    'ja': '今日は週末だ。ゆっくり過ごしてね。',
+    'ko': '오늘은 주말이다. 푹 쉬어.',
+    'ru': 'Сегодня выходной — время отдохнуть.',
+}

@@ -1035,12 +1035,23 @@
                 window.mmdManager._uiUpdateLoopId = null;
             }
 
-            // 隐藏所有悬浮按钮、锁图标和返回按钮（它们挂载在 document.body 上，不随容器隐藏）
+            // 隐藏所有悬浮按钮、锁图标和返回按钮（它们挂载在 document.body 上，不随容器隐藏）。
+            // 记录隐藏前的 display，避免恢复时清空 display 导致容器短暂按默认 block 布局显示，
+            // 出现“语音控制/屏幕分享/猫爪/设置/请她离开”先挤在一起再分开的闪烁。
             document.querySelectorAll(
                 '#live2d-floating-buttons, #vrm-floating-buttons, #mmd-floating-buttons, ' +
                 '#live2d-lock-icon, #vrm-lock-icon, #mmd-lock-icon, ' +
                 '#live2d-return-button-container, #vrm-return-button-container, #mmd-return-button-container'
-            ).forEach(function (el) { el.style.display = 'none'; });
+            ).forEach(function (el) {
+                var computedDisplay = '';
+                try {
+                    computedDisplay = window.getComputedStyle(el).display || '';
+                } catch (_) {}
+                el.dataset.nekoPreHideDisplay = computedDisplay && computedDisplay !== 'none'
+                    ? computedDisplay
+                    : (el.style.display || 'none');
+                el.style.display = 'none';
+            });
         } catch (error) {
             console.error('[UI] 隐藏主界面失败:', error);
         }
@@ -1087,6 +1098,7 @@
                 // 重启 VRM UI 更新循环（被 handleHideMainUI 停止）
                 if (window.vrmManager && window.vrmManager._uiUpdateLoopId == null
                     && typeof window.vrmManager._startUIUpdateLoop === 'function') {
+                    window.vrmManager._snapUIPosition = true;
                     window.vrmManager._startUIUpdateLoop();
                 }
             } else if (currentModelType === 'live3d') {
@@ -1131,6 +1143,7 @@
                     }
                     if (window.vrmManager && window.vrmManager._uiUpdateLoopId == null
                         && typeof window.vrmManager._startUIUpdateLoop === 'function') {
+                        window.vrmManager._snapUIPosition = true;
                         window.vrmManager._startUIUpdateLoop();
                     }
                 }
@@ -1155,6 +1168,46 @@
                     window.live2dManager.resumeRendering();
                 }
             }
+
+            // 只恢复常规悬浮按钮与锁图标。
+            // “请她回来”按钮默认由“请她离开”流程显示；从角色外形/模型管理窗口返回时
+            // 如果在这里把 return-button-container 的 display 从 none 清空，会凭空多出一个返回按钮。
+            // 恢复为隐藏前的 display（如 flex/block），并让浮动按钮首两帧保持不可见，
+            // 等 UI 更新循环完成定位后再显露，避免按钮先挤在一起再分开。
+            var restoringFloatingEls = Array.from(document.querySelectorAll(
+                '#live2d-floating-buttons, #vrm-floating-buttons, #mmd-floating-buttons, ' +
+                '#live2d-lock-icon, #vrm-lock-icon, #mmd-lock-icon'
+            ));
+            var hiddenFloatingButtonEls = [];
+            restoringFloatingEls.forEach(function (el) {
+                var restoreDisplay = el.dataset.nekoPreHideDisplay || '';
+                var isFloatingButtons = !!(el.id && /-floating-buttons$/.test(el.id));
+                if (restoreDisplay && restoreDisplay !== 'none') {
+                    if (isFloatingButtons) {
+                        el.style.visibility = 'hidden';
+                        hiddenFloatingButtonEls.push(el);
+                    }
+                    el.style.display = restoreDisplay;
+                }
+                delete el.dataset.nekoPreHideDisplay;
+            });
+            if (hiddenFloatingButtonEls.length > 0) {
+                requestAnimationFrame(function () {
+                    requestAnimationFrame(function () {
+                        hiddenFloatingButtonEls.forEach(function (el) {
+                            if (!el || !el.isConnected || el.style.display === 'none') return;
+                            el.style.removeProperty('visibility');
+                        });
+                    });
+                });
+            }
+            document.querySelectorAll(
+                '#live2d-return-button-container, #vrm-return-button-container, #mmd-return-button-container'
+            ).forEach(function (el) {
+                if (!el.getAttribute('data-neko-return-visible')) {
+                    el.style.display = 'none';
+                }
+            });
         } catch (error) {
             console.error('[UI] 显示主界面失败:', error);
         }
@@ -1192,6 +1245,7 @@
     // =====================================================================
 
     var nekoBroadcastChannel = null;
+    var _isRelayingYuiGuideHandoffSent = false;
     try {
         if (typeof BroadcastChannel !== 'undefined') {
             nekoBroadcastChannel = new BroadcastChannel('neko_page_channel');
@@ -1278,6 +1332,25 @@
                         }
                         break;
                     }
+                    case 'handoff_consumed': {
+                        // 目标页面消费了 handoff token，转发为 DOM 事件
+                        window.dispatchEvent(new CustomEvent('neko:yui-guide:handoff-consumed', {
+                            detail: event.data.detail || {}
+                        }));
+                        break;
+                    }
+                    case 'handoff_sent': {
+                        // 其他标签页发出了 handoff-sent，转发为本地 DOM 事件
+                        _isRelayingYuiGuideHandoffSent = true;
+                        try {
+                            window.dispatchEvent(new CustomEvent('neko:yui-guide:handoff-sent', {
+                                detail: event.data.detail || {}
+                            }));
+                        } finally {
+                            _isRelayingYuiGuideHandoffSent = false;
+                        }
+                        break;
+                    }
                     case 'request_avatar_capture': {
                         if (window.location.pathname === '/chat') break;
                         var captureLanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
@@ -1328,6 +1401,21 @@
     } catch (e) {
         console.log('[BroadcastChannel] 初始化失败，将使用 postMessage 后备方案:', e);
     }
+
+    // =====================================================================
+    // Cross-window handoff event forwarding via BroadcastChannel
+    // =====================================================================
+
+    // 首页发出 handoff-sent DOM 事件时，转发到 BC 让其他标签页感知
+    window.addEventListener('neko:yui-guide:handoff-sent', function (evt) {
+        if (_isRelayingYuiGuideHandoffSent) return;
+        if (!nekoBroadcastChannel) return;
+        nekoBroadcastChannel.postMessage({
+            action: 'handoff_sent',
+            detail: evt.detail || {},
+            timestamp: Date.now()
+        });
+    });
 
     // =====================================================================
     // Cross-window avatar forwarding via BroadcastChannel

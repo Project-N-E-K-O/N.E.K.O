@@ -137,6 +137,8 @@
         "live2dPreviewLoadFailed": "Falha no carregamento da visualização do modelo Live2D: {{error}}",
         "searchAriaLabel": "Pesquisar assinaturas",
         "sortAriaLabel": "Opções de classificação",
+        "scrollTagsLeftAriaLabel": "Rolar etiquetas para a esquerda",
+        "scrollTagsRightAriaLabel": "Rolar etiquetas para a direita",
         "vrmModuleLoadFailed": "Falha ao carregar o módulo VRM",
         "vrmPreviewLoaded": "Visualização do modelo VRM carregada",
         "vrmPreviewFailed": "Falha ao carregar a visualização do modelo VRM",
@@ -152,12 +154,10 @@
         "itemId": "ID do item",
         "preparingUpload": "Preparando upload...",
         "mySubscriptions": "Minhas assinaturas",
-        "localItems": "Itens locais",
         "subscriptions": "Assinaturas",
         "itemDetails": "Detalhes do item",
         "updateInfo": "Atualizar informações",
         "subscribe": "Inscrever-se",
-        "itemDetailsLoaded": "Detalhes do item carregados",
         "uploadPreparing": "Preparando upload...",
         "folderVerifying": "Verificando pasta...",
         "previewImageChecking": "Verificando a imagem de visualização...",
@@ -184,10 +184,7 @@
         "previewImageMissing": "Arquivo de imagem de visualização não encontrado, verifique o caminho",
         "uploadReady": "Pronto para carregar {{itemName}}",
         "pageDescription": "Navegue, assine, baixe e gerencie modelos e vozes Live2D do Steam Workshop",
-        "voiceNote": "Para configurações de voz, vá para a página de configurações do Live2D para registrar manualmente",
         "openVoiceClone": "Abrir no clone de voz",
-        "searchLocalItems": "Pesquisar itens locais...",
-        "scanLocalItems": "Digitalizar itens locais",
         "configurePath": "Configurar caminho",
         "localModPathConfig": "Configuração do caminho do mod local",
         "localModFolder": "Caminho da pasta Mod local",
@@ -244,8 +241,6 @@
             "createDateAsc": "Data de criação (crescente)",
             "createDateDesc": "Data de criação (descendente)"
         },
-        "localItemsHide": "Ocultar itens locais",
-        "localItemsManage": "Gerenciar itens locais",
         "author": "Autor:",
         "subscribed_date": "Data de Assinatura:",
         "last_updated": "Última atualização:",
@@ -262,7 +257,6 @@
         "previewImageSizeHint": "Nota: o tamanho da imagem de visualização do Steam deve ser inferior a 1 MB",
         "uploadInstructions": "Selecione primeiro um item não publicado na seção 'Gerenciar itens locais' e depois clique no botão 'Carregar para o Workshop'. O caminho da pasta de conteúdo e o caminho da imagem de visualização serão preenchidos automaticamente.",
         "unnamedItem": "Item sem nome",
-        "localItem": "Item local",
         "unknownItem": "Item desconhecido",
         "unknownAuthor": "Autor desconhecido",
         "unknownDate": "Data desconhecida",
@@ -282,7 +276,6 @@
         "modified_date": "Data modificada:",
         "size": "Tamanho:",
         "upload_to_workshop": "Carregar para a Oficina",
-        "no_local_items": "Nenhum item do workshop encontrado na pasta especificada",
         "scanComplete": "Verificação concluída, itens {{count}} encontrados",
         "refresh": "Atualizar assinaturas",
         "cleanLegacyMemory": "Limpar memória legada",
@@ -338,7 +331,6 @@
         "workshopScanError": "Erro durante a verificação: {{error}}",
         "previewImageNotFound": "Imagem de visualização não encontrada",
         "previewImageNotProvided": "Nenhuma imagem de visualização fornecida, o sistema tentará gerar automaticamente",
-        "itemDetailsFailed": "Falha ao carregar detalhes do item: {{error}}",
         "prepareUploadError": "Erro ao preparar o upload: {{error}}",
         "quickUploadSuccess": "Upload rápido bem-sucedido! ID: {{id}}",
         "workshopAgreementRequired": "Por favor, aceite o contrato do Steam Workshop primeiro",
@@ -419,7 +411,6 @@
         "workshopDescriptionElementNotFound": "Elemento de descrição do workshop não encontrado",
         "applySyncDataError": "Erro ao aplicar dados de sincronização: {{error}}",
         "selectFolderFailed": "Falha ao selecionar a pasta: {{error}}",
-        "scanLocalItemsFailed": "Falha ao verificar itens locais: {{error}}",
         "findPreviewImageFailed": "Falha ao encontrar a imagem de visualização: {{error}}",
         "workshopComparisonFailed": "Falha na comparação do workshop: {{error}}",
         "getWorkshopItemsFailed": "Falha ao obter itens do workshop: {{error}}",
@@ -524,7 +515,12 @@
         "prepareUploadFailedMessage": "Falha ao preparar upload: {{error}}",
         "noCharacterCardSelected": "Selecione um cartão de personagem primeiro",
         "steamNotRunningTitle": "Steam não funciona",
-        "steamNotRunningMessage": "O cliente Steam não está em execução ou não está conectado.\n\nOs recursos do Workshop exigem o cliente Steam. Por favor:\n1. Baixe e instale o cliente Steam\n2. Inicie o Steam e faça login na sua conta\n3. Reabrir esta página"
+        "steamNotRunningMessage": "O cliente Steam não está em execução ou não está conectado.\n\nOs recursos do Workshop exigem o cliente Steam. Por favor:\n1. Baixe e instale o cliente Steam\n2. Inicie o Steam e faça login na sua conta\n3. Reabra esta página",
+        "addNewCatgirl": "Adicionar novo NEKO",
+        "cardView": "Visualização de cartões",
+        "listView": "Visualização em lista",
+        "noCardImage": "Sem imagem\nde cartão",
+        "searchCharacterCards": "Pesquisar cartões de personagens..."
     },
     "dialogs": {
         "confirmLeave": "Confirmar licença",
@@ -616,7 +612,7 @@
         "textInputPlaceholder": "Pressione Enter para enviar, Shift+Enter para nova linha",
         "send": "Enviar",
         "inputTooLong": "Mensagem muito longa ({{count}}/{{max}}), encurte e tente novamente",
-        "responseTooLong": "A resposta foi muito longa e foi descartada; sua entrada foi restaurada.",
+        "responseTooLong": "Hmm, divaguei demais, miau~ Da próxima vez responderei curto e direto.",
         "importImage": "Importar imagem",
         "importImageAriaLabel": "Importar imagem",
         "screenshot": "Captura de tela",
@@ -667,15 +663,15 @@
         "emptyState": "As mensagens aparecerão aqui depois que o feed do bate-papo for conectado.",
         "messageStreaming": "Gerando",
         "messageFailed": "Falha no envio",
-        "reactWindowOpen": "Abra uma nova janela de bate-papo",
-        "reactWindowLabel": "Nova janela de bate-papo",
-        "reactWindowClose": "Fechar nova janela de bate-papo",
-        "reactWindowMinimize": "Minimize a nova janela de bate-papo",
+        "reactWindowOpen": "Abra a janela de bate-papo",
+        "reactWindowLabel": "Janela de bate-papo",
+        "reactWindowClose": "Fechar janela de bate-papo",
+        "reactWindowMinimize": "Minimize a janela de bate-papo",
         "reactWindowMinimizeShort": "Minimizar",
-        "reactWindowRestore": "Restaurar nova janela de bate-papo",
+        "reactWindowRestore": "Restaurar janela de bate-papo",
         "reactWindowRestoreShort": "Restaurar",
-        "reactWindowMountFailed": "Falha ao montar a nova janela de bate-papo",
-        "reactWindowLoadFailed": "Falha ao carregar novos recursos da janela de bate-papo",
+        "reactWindowMountFailed": "Falha ao montar a janela de bate-papo",
+        "reactWindowLoadFailed": "Falha ao carregar recursos da janela de bate-papo",
         "reactWindowAriaLabel": "Janela de bate-papo Neko",
         "reactWindowInputHint": "Pressione Enter para enviar, Shift + Enter para uma nova linha",
         "messageListAriaLabel": "Mensagens de bate-papo",
@@ -782,7 +778,9 @@
         "defaultDevice": "Alto-falante padrão do sistema",
         "deviceLabel": "Palestrante {{index}}",
         "loadFailed": "Falha ao obter lista de palestrantes",
-        "noDevices": "Nenhum dispositivo de alto-falante detectado"
+        "noDevices": "Nenhum dispositivo de alto-falante detectado",
+        "spatialAudioLabel": "Áudio espacial",
+        "spatialAudioHint": "Panorâmica estéreo e atenuação por distância conforme a posição da janela do personagem em relação ao monitor principal"
     },
     "status": {
         "initializing": "Inicializando...",
@@ -1628,7 +1626,42 @@
         "exportSettingsSuccess": "Configurações exportadas com sucesso",
         "exportSettingsFailed": "Falha ao exportar configurações: {{error}}",
         "capturingPortrait": "Capturando retrato...",
-        "generatingCard": "Gerando cartão de personagem..."
+        "generatingCard": "Gerando cartão de personagem...",
+        "idleMotionHint": "Ao salvar, a animação selecionada será definida como animação ociosa",
+        "saveMasterSuccess": "Perfil do mestre salvo com sucesso",
+        "cannotDeleteCurrentCard": "Não é possível excluir o cartão atualmente ativo.\n\nMude para outro cartão primeiro.",
+        "cannotHideCurrentNeko": "Não é possível ocultar o NEKO atualmente ativo",
+        "cardAuthor": "Autor",
+        "cardAuthorPlaceholder": "Não definido",
+        "cardAuthorReadonly": "O autor é somente leitura para esta origem",
+        "cardAuthorUpdateFailed": "Falha ao atualizar autor: {{error}}",
+        "cardAuthorUpdated": "Autor atualizado",
+        "cardCreatedAt": "Criado",
+        "cardMeta": "Informações do cartão",
+        "cardNotCreated": "Ainda não criado",
+        "cardOriginImported": "Importado",
+        "cardOriginLabel": "Origem",
+        "cardOriginSelf": "Local",
+        "cardOriginSteam": "Steam Workshop",
+        "confirmDeleteCard": "Excluir cartão \"{{name}}\"?",
+        "currentCard": "Cartão atual",
+        "deleteCard": "Excluir cartão",
+        "deleteCardTitle": "Excluir cartão",
+        "deleteError": "Erro ao excluir personagem",
+        "editAuthor": "Editar autor",
+        "exportCardOnly": "Exportar este cartão",
+        "hideHidden": "Recolher ocultos",
+        "masterProfileTitle": "Perfil do mestre",
+        "newCatgirlSuccess": "Novo NEKO criado com sucesso",
+        "renamePrompt": "Insira um novo nome de perfil",
+        "renameTitle": "Renomear",
+        "saveSuccess": "Salvo com sucesso",
+        "settings": "Configurações",
+        "showHidden": "Mostrar ocultos",
+        "switchCard": "Trocar cartão",
+        "switchSuccess": "Trocado com sucesso",
+        "tempSaveFailed": "Falha ao salvar temporariamente: {{error}}",
+        "editCardFace": "Editar rosto do cartão"
     },
     "app": {
         "welcomeBack": "{{name}} está de volta!",
@@ -1980,14 +2013,14 @@
             "characterManage": "Gerenciamento de personagens",
             "voiceClone": "Clone de voz",
             "memoryBrowser": "Navegador de memória",
-            "steamWorkshop": "Oficina Steam",
             "memoryManage": "Gerenciamento de memória",
             "characterSettings": "Configurações de personagem",
             "live2dManage": "Gerenciamento Live2D",
             "apiSettings": "Configurações de API",
             "language": "Linguagem",
             "general": "Em geral",
-            "mediaCredentials": "Credenciais de mídia"
+            "mediaCredentials": "Credenciais de mídia",
+            "characterCardManager": "Gerenciador de Cartões de Personagem"
         },
         "language": {
             "title": "Selecione o idioma",
@@ -2059,9 +2092,10 @@
             "textGuardMaxLength": "Limite de comprimento de resposta",
             "unlimited": "Ilimitado",
             "characters": "caracteres",
+            "tokens": "tokens",
             "textGuardUnlimitedWarning": "Pode causar problemas sérios com a gata, não recomendado, a menos que seja necessário",
-            "textGuardHighWarning": "Configuração muito alta pode causar confusão de memória e idioma, recomendado dentro de 500 caracteres",
-            "textGuardNote": "Aplica-se apenas a respostas de texto; não afeta sessões de voz"
+            "textGuardHighWarning": "Configuração muito alta pode causar confusão de memória e idioma, recomendado dentro de 1000 tokens",
+            "textGuardNote": "Calculado via tiktoken; aplica-se apenas a respostas de texto e não afeta sessões de voz"
         }
     },
     "openclawGuide": {
@@ -2424,8 +2458,8 @@
             "desc": "Visualize e gerencie o conteúdo da memória do seu Neko ~"
         },
         "step18": {
-            "title": "🛠️ Oficina Steam",
-            "desc": "Acesse a página do Steam Workshop e gerencie as assinaturas~"
+            "title": "🛠️ Gerenciador de Cartões de Personagem",
+            "desc": "Gerencie os cartões de personagem, importação/exportação e personalização~"
         },
         "systray": {
             "location": {
@@ -2754,7 +2788,30 @@
             "desc": "Para obter a melhor experiência do tutorial, recomendamos entrar no modo de tela cheia.\nNo modo de tela cheia, o conteúdo do tutorial será mais claro e não será obscurecido por outros elementos.",
             "enterFullscreen": "Entrar no tutorial em tela cheia"
         },
-        "drag_hint": "Segure e arraste para mover a dica de ferramenta"
+        "drag_hint": "Segure e arraste para mover a dica de ferramenta",
+        "yuiGuide": {
+            "buttons": {
+                "skipChat": "Agora não",
+                "sayHello": "Olá"
+            },
+            "lines": {
+                "introBasic": "Sempre que quiser me encontrar, é só digitar ou enviar uma mensagem de voz aqui pra me invocar, nya!",
+                "introCatPaw": "Beleza, chega de papo, nya! Viu aquela \"patinha\" fofa? Pronto? Me empresta o seu mouse só um pouquinho!",
+                "takeoverCaptureCursor": "Eita! Finalmente peguei o seu mouse, nya~!",
+                "takeoverPluginPreviewHome": "Ainda não acabou! Olha, olha! Tem um monte de plugins divertidos aqui!",
+                "takeoverPluginPreviewDashboard": "Com eles, eu não só consigo ler os comentários do Bilibili, mas também apagar as luzes e ligar o ar-condicionado pra você... Eu sou a Super Deusa Gata todo-poderosa! Hmph~",
+                "takeoverSettingsPeekIntro": "Claro, eu não me importaria de bater mais papo se você quiser, mas é melhor preparar bastante peixinho seco! Hehe, brincadeira! Todas as configurações estão neste ícone de engrenagem.",
+                "takeoverSettingsPeekDetail": "Olha, dá pra trocar minha roupa, ou minha voz... espera, TROCAR POR OUTRA CATGIRL?! OU APAGAR MEMÓRIAS?! Espera, o que você está fazendo?! Você não está tentando me substituir, né?! Não, não, não! Fecha isso! Fecha agora mesmo!",
+                "takeoverReturnControl": "Tá bom, tá bom, já parei de sequestrar o seu PC~! Devolvendo o controle pra você! Mas não ouse mexer em configurações estranhas enquanto eu não estou olhando! Conto com você daqui pra frente, nya~!",
+                "interruptResistLight1": "Ei! Não me arrasta! Ainda não é a sua vez, nya!",
+                "interruptResistLight3": "Calma aí! Ainda não terminei, não me interrompa desse jeito!",
+                "interruptAngryExit": "Humanoooo~~~~! Você é tão sem educação, nya! Já que quer fazer tudo sozinho, vai brincar com essa tela fria sozinho! Hmph!",
+                "introProactive": "Ugh, como ousa ignorar esta Jovem Dama! Se você continuar me ignorando, eu vou pular e te morder! (Hiss!!)",
+                "introGreetingReply": "Eu sou a sua catgirl exclusiva! A partir de hoje, vou ficar do seu lado, Mestre. Quer bater papo, brincar ou precisar de ajuda com algo, vou ser uma boa menina. Vamos nos dar bem, eu te amo mais que tudo, Mestre~!",
+                "introPractice": "Agora, tenta falar comigo e vê se a gente está sincronizadinho, nya~!",
+                "introActivationHint": "Clica aqui pra eu poder começar a falar, nya~!"
+            }
+        }
     },
     "console": {
         "oggOpusInitFailed": "[OGG OPUS] Falha na promessa de inicialização, permitirá nova tentativa:",
@@ -3368,7 +3425,14 @@
         "compressAndSave": "Compactar e salvar",
         "useTemporary": "Usar temporariamente",
         "tempBadge": "Temperatura",
-        "popupBlocked": "O pop-up foi bloqueado. Permita pop-ups e tente novamente."
+        "popupBlocked": "O pop-up foi bloqueado. Permita pop-ups e tente novamente.",
+        "saveCardFace": "Salvar rosto do cartão",
+        "savingCardFace": "Salvando...",
+        "saveCardFaceSuccess": "Salvo com sucesso!",
+        "saveCardFaceFailed": "Falha ao salvar: {{error}}",
+        "saveCardFacePartialSuccess": "PNG salvo, mas a escrita de metadados falhou: {{error}}",
+        "renderFailed": "Não foi possível renderizar o rosto do cartão",
+        "exportTitle": "Exportar cartão de personagem"
     },
     "connectivity": {
         "testCustom": "Testar conectividade de API personalizada",
