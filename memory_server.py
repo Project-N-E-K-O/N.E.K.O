@@ -844,8 +844,25 @@ async def _periodic_rebuttal_loop():
                         )
                     return
 
-                # Drain 取前 N 条 user msg
+                # Drain 取前 N 条 user msg。然后扩展 batch 把和 batch 末位
+                # 共享同 ts 的后续 user msg 也吸收进来——因为 SQL 用
+                # ``timestamp BETWEEN`` (inclusive)，cursor 推进到 batch[-1].ts
+                # 后下一轮会把同 ts 的行原样重读。如果不扩展，多条同 ts 的
+                # user msg 在 batch 边界被切，会出现"只处理一部分，剩下的下
+                # 轮当 batch 边界又被切"的死循环（``store_conversation`` 一
+                # 批 message 共享 timestamp，所以同 ts 多条很常见）。
+                # 扩展受 SQL 行 LIMIT 兜底，不会无界增长。
                 batch = user_msgs_with_ts[:REBUTTAL_DRAIN_BATCH_LIMIT]
+                if len(user_msgs_with_ts) > len(batch):
+                    boundary_ts = batch[-1][1]
+                    extend_idx = len(batch)
+                    while (
+                        extend_idx < len(user_msgs_with_ts)
+                        and user_msgs_with_ts[extend_idx][1] == boundary_ts
+                    ):
+                        extend_idx += 1
+                    if extend_idx > len(batch):
+                        batch = user_msgs_with_ts[:extend_idx]
                 user_msgs = [m for m, _ in batch]
 
                 # 复用 check_feedback 判断反驳
@@ -858,16 +875,27 @@ async def _periodic_rebuttal_loop():
                     return
 
                 # 成功才推进游标并持久化。Drain 推进规则：
-                # - 处理了所有 user msg（batch 等于全量）且 SQL 没命中 LIMIT
-                #   → cursor 推进到 now（窗口已干净）
-                # - 命中 drain limit 或 SQL limit（还有未处理的）
-                #   → cursor 只推进到本批最后一条 ts，下一轮接着排
+                # - 还有 user msgs 在本次 read 内未处理（batch 已扩展含所有
+                #   同 ts，所以剩余的 ts 一定 > batch[-1].ts）
+                #   → cursor 推到第一个未处理 user msg 的 ts（next read 的
+                #     BETWEEN 起点，包含该行不会重处理因为它本来就 unprocessed）
+                # - SQL 命中 LIMIT 但 user msgs 全处理 → cursor 推到最后一行 ts
+                #   (next read 会重读 same-ts cluster 但 LLM 调用幂等无害)
+                # - 全干净 → cursor 推到 now
                 more_user_msgs = len(user_msgs_with_ts) > len(batch)
                 hit_sql_limit = len(rows) >= REBUTTAL_SQL_ROW_LIMIT
-                if more_user_msgs or hit_sql_limit:
-                    new_cursor = batch[-1][1]
+                if more_user_msgs:
+                    new_cursor = user_msgs_with_ts[len(batch)][1]
                     logger.info(
-                        f"[Rebuttal] {name}: drain 处理 {len(batch)} 条，cursor 推进到 batch 末位 ts，下轮续"
+                        f"[Rebuttal] {name}: drain 处理 {len(batch)} 条，"
+                        f"cursor 推进到下一未处理 user msg ts，下轮续"
+                    )
+                elif hit_sql_limit:
+                    last_row_ts = _coerce_db_ts(rows[-1][0])
+                    new_cursor = last_row_ts if last_row_ts is not None else now
+                    logger.info(
+                        f"[Rebuttal] {name}: drain 处理 {len(batch)} 条 user msg，"
+                        f"SQL 命中 LIMIT，cursor 推进到最后一行 ts，下轮续"
                     )
                 else:
                     new_cursor = now
