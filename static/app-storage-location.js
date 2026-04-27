@@ -90,6 +90,7 @@
         progressWaitingShutdown: 'Waiting for the current instance to shut down safely',
         rebindPreviewNotice: 'Backend confirmed that the original path is reachable again. The current instance will close and restart on that path. No runtime data will be copied this time.',
         recommendedPath: 'Recommended path',
+        selectedPath: 'Selected path',
         recommendedPreviewNotice: 'Backend confirmed that switching to the recommended location requires closing the current instance, migrating data, and restarting automatically.',
         recoveryRequired: 'A recoverable storage state was detected. Confirm the storage location for this launch before continuing.',
         recoverySourceUnavailable: 'The original data path is unavailable. Reconnect it or explicitly switch to the recommended default path.',
@@ -98,7 +99,7 @@
         restartNotRequired: 'The target path is already the current path. Shutdown is not required.',
         restartScheduleFailed: 'Failed to schedule the controlled shutdown. Please try again later.',
         restartUnavailable: 'This instance cannot perform a controlled shutdown right now. Please try again later.',
-        retainedRoot: 'Retained directory',
+        retainedRoot: 'Old data directory',
         retainedSourceCleanupFailed: 'Failed to clean up the old data directory. Please try again later.',
         retainedSourceMismatch: 'The requested cleanup path does not match the retained directory. Please refresh and try again.',
         retainedSourceNotFound: 'There is no retained old data directory to clean up.',
@@ -108,7 +109,7 @@
         selectionSubmitFailed: 'Failed to submit the storage location choice. Please try again later.',
         selectionSubmitUnexpected: 'The storage location selection API returned an unrecognized result.',
         selectionSubtitle: 'The app is open. Confirm the storage location on this page before continuing.',
-        selectionTitle: 'Choose the storage location for this launch',
+        selectionTitle: 'Storage location selection',
         sourceLabel: 'Source path',
         statusUnexpected: 'The storage maintenance status API returned an unrecognized result.',
         storageBootstrapBlocking: 'Storage still needs recovery or migration, so this session cannot continue yet.',
@@ -140,7 +141,7 @@
         cleanupRetainedRootConfirm: '这会删除当前保留的旧数据目录，且不会影响当前已经生效的新目录。要继续吗？',
         cleanupRetainedRootDone: '旧数据目录已清理，当前仅保留新的运行目录。',
         cleanupRetainedRootFailed: '清理旧数据目录失败，请稍后重试。',
-        completionMessage: '新的运行目录已经生效，旧数据目录目前仍保留，你可以稍后再决定是否清理。',
+        completionMessage: '新的运行目录已经生效，旧数据目录目前仍保留，是否清理由你手动决定。',
         completionTitle: '存储迁移已完成',
         confirmReconnect: '确认关闭并重连路径',
         confirmRestart: '确认关闭并迁移',
@@ -206,6 +207,7 @@
         progressWaitingShutdown: '正在等待当前实例安全关闭',
         rebindPreviewNotice: '后端已确认：原路径已经可以重新连接。后续会关闭当前实例并自动重启到该路径，本次不会复制运行时数据。',
         recommendedPath: '推荐路径',
+        selectedPath: '选择路径',
         recommendedPreviewNotice: '后端已确认：如果后续改用推荐位置，需要先关闭当前实例，再迁移数据并自动重启。',
         recoveryRequired: '检测到需要恢复的存储状态，请先重新确认本次使用的存储位置。',
         recoverySourceUnavailable: '原始数据路径当前不可用。请先重连原路径，或显式切回推荐默认路径继续当前会话。',
@@ -214,7 +216,7 @@
         restartNotRequired: '目标路径与当前路径一致，不需要关闭当前实例。',
         restartScheduleFailed: '受控关闭启动失败，请稍后重试。',
         restartUnavailable: '当前实例暂时无法执行受控关闭，请稍后重试。',
-        retainedRoot: '当前保留目录',
+        retainedRoot: '旧数据目录',
         retainedSourceCleanupFailed: '清理旧数据保留目录失败，请稍后重试。',
         retainedSourceMismatch: '请求的清理路径与当前保留目录不一致，请刷新后重试。',
         retainedSourceNotFound: '当前没有可清理的旧数据保留目录。',
@@ -224,7 +226,7 @@
         selectionSubmitFailed: '提交存储位置选择失败，请稍后重试。',
         selectionSubmitUnexpected: '存储位置选择接口返回了未识别的结果。',
         selectionSubtitle: '应用已经正常打开。接下来请先在当前页面内确认存储位置，再继续使用。',
-        selectionTitle: '请选择本次运行使用的存储位置',
+        selectionTitle: '存储位置选择',
         sourceLabel: '原始路径',
         statusUnexpected: '存储维护状态接口返回了未识别的结果。',
         storageBootstrapBlocking: '当前存储状态仍需恢复或迁移，暂时不能继续当前会话。',
@@ -326,6 +328,7 @@
         progressWaitingShutdown: '正在等待當前實例安全關閉',
         rebindPreviewNotice: '後端已確認：原路徑已可以重新連線。後續會關閉當前實例並自動重啟到該路徑，本次不會複製執行時資料。',
         recommendedPath: '建議路徑',
+        selectedPath: '選擇路徑',
         recommendedPreviewNotice: '後端已確認：如果後續改用建議位置，需要先關閉當前實例，再遷移資料並自動重啟。',
         recoveryRequired: '檢測到需要恢復的存儲狀態，請先重新確認本次使用的存儲位置。',
         recoverySourceUnavailable: '原始資料路徑目前不可用。請先重新連接原路徑，或明確切回建議預設路徑繼續目前會話。',
@@ -334,7 +337,7 @@
         restartNotRequired: '目標路徑與目前路徑一致，不需要關閉目前實例。',
         restartScheduleFailed: '受控關閉啟動失敗，請稍後重試。',
         restartUnavailable: '目前實例暫時無法執行受控關閉，請稍後重試。',
-        retainedRoot: '目前保留目錄',
+        retainedRoot: '舊資料目錄',
         retainedSourceCleanupFailed: '清理舊資料保留目錄失敗，請稍後重試。',
         retainedSourceMismatch: '請求的清理路徑與目前保留目錄不一致，請重新整理後再試。',
         retainedSourceNotFound: '目前沒有可清理的舊資料保留目錄。',
@@ -344,7 +347,7 @@
         selectionSubmitFailed: '提交存儲位置選擇失敗，請稍後重試。',
         selectionSubmitUnexpected: '存儲位置選擇介面返回了未識別的結果。',
         selectionSubtitle: '應用已正常開啟。接下來請先在目前頁面內確認存儲位置，再繼續使用。',
-        selectionTitle: '請選擇本次執行使用的存儲位置',
+        selectionTitle: '存儲位置選擇',
         sourceLabel: '原始路徑',
         statusUnexpected: '存儲維護狀態介面返回了未識別的結果。',
         storageBootstrapBlocking: '目前存儲狀態仍需恢復或遷移，暫時不能繼續目前會話。',
@@ -454,7 +457,6 @@
         maintenanceView: null,
         maintenanceTitle: null,
         maintenanceSubtitle: null,
-        maintenanceStatus: null,
         maintenanceProgressBar: null,
         maintenanceProgressFill: null,
         maintenanceProgressLabel: null,
@@ -485,20 +487,13 @@
         errorView: null,
         banner: null,
         currentPath: null,
-        recommendedPath: null,
-        otherPanel: null,
-        legacyChoices: null,
         customInput: null,
         pickFolderButton: null,
         useOtherButton: null,
         previewPanel: null,
         previewText: null,
-        previewSource: null,
-        previewTarget: null,
         previewEstimated: null,
         previewFreeSpace: null,
-        previewPermission: null,
-        previewWarnings: null,
         previewBlocking: null,
         previewConfirmButton: null,
         previewActions: null,
@@ -670,21 +665,11 @@
         return Array.isArray(value) ? value.filter(Boolean) : [];
     }
 
-    function translateWarningCode(code) {
-        switch (String(code || '').trim()) {
-            case 'sync_folder':
-                return translate('storage.warningSyncFolder', '目标路径位于同步盘目录，迁移期间可能受到同步程序干扰。');
-            case 'external_volume':
-                return translate('storage.warningExternalVolume', '目标路径位于外置卷或挂载卷，稳定性取决于卷是否持续可用。');
-            case 'network_share':
-                return translate('storage.warningNetworkShare', '目标路径位于网络共享目录，连接波动可能影响迁移稳定性。');
-            case 'symlink_path':
-                return translate('storage.warningSymlink', '目标路径命中了符号链接或等价重定向目录，请确认真实落点正确。');
-            case 'target_has_existing_content':
-                return translate('storage.warningTargetHasExistingContent', '目标路径已经包含运行时数据，开始迁移前需要二次确认。');
-            default:
-                return code;
-        }
+    function buildRestartPreviewReminder() {
+        return translate(
+            'storage.restartPreviewReminder',
+            '更改存储位置会先关闭当前实例，关闭后迁移数据并自动重启；旧数据默认保留。'
+        );
     }
 
     function existingTargetConfirmationText() {
@@ -755,7 +740,7 @@
             case 'recovery_required':
                 return translate('storage.recoveryRequired', '检测到需要恢复的存储状态，请先重新确认本次使用的存储位置。');
             case 'selection_required':
-                return translate('storage.selectionSubtitle', '应用已经正常打开。接下来请先在当前页面内确认存储位置，再继续使用。');
+                return '';
             default:
                 return fallbackText || translate('storage.maintenanceWaitingSubtitle', '当前实例即将关闭，数据会在关闭后迁移并自动重启。');
         }
@@ -876,12 +861,24 @@
         if (state.maintenanceTitle && typeof title === 'string' && title) {
             state.maintenanceTitle.textContent = title;
         }
-        if (state.maintenanceSubtitle && typeof subtitle === 'string' && subtitle) {
-            state.maintenanceSubtitle.textContent = subtitle;
+        if (state.maintenanceSubtitle) {
+            state.maintenanceSubtitle.textContent = buildMaintenanceSubtitleText(subtitle, status);
         }
-        if (state.maintenanceStatus) {
-            state.maintenanceStatus.textContent = String(status || '').trim();
+    }
+
+    function buildMaintenanceSubtitleText(subtitle, status) {
+        var subtitleText = String(subtitle || '').trim();
+        var statusText = String(status || '').trim();
+        if (!statusText || statusText === subtitleText || isRedundantMaintenanceStatus(statusText)) {
+            return subtitleText;
         }
+        return subtitleText ? subtitleText + ' ' + statusText : statusText;
+    }
+
+    function isRedundantMaintenanceStatus(text) {
+        var normalized = String(text || '').trim();
+        return normalized === translate('storage.maintenanceWaitingStatus', '服务尚未恢复前，页面会继续停留在这里并自动重试连接。')
+            || normalized === translate('storage.maintenanceClosingStatus', '正在等待当前实例完成关闭...');
     }
 
     function sleep(ms) {
@@ -1000,56 +997,20 @@
         }
     }
 
-    function renderLegacyList() {
-        if (!state.legacyChoices) return;
-        clearChildren(state.legacyChoices);
-
-        var legacySources = Array.isArray(state.bootstrap && state.bootstrap.legacy_sources)
-            ? state.bootstrap.legacy_sources
-            : [];
-
-        if (!legacySources.length) {
-            state.legacyChoices.appendChild(
-                createElement(
-                    'p',
-                    'storage-location-empty',
-                    translate('storage.legacyChoiceEmpty', '未检测到可直接复用的旧数据目录，可直接选择文件夹或手动输入路径。')
-                )
-            );
-            return;
-        }
-
-        legacySources.forEach(function (path, index) {
-            var choice = createElement('button', 'storage-location-choice');
-            choice.type = 'button';
-            if (state.otherSelection.key === 'legacy-' + index) {
-                choice.classList.add('is-active');
-            }
-            choice.addEventListener('click', function () {
-                state.otherSelection.key = 'legacy-' + index;
-                state.otherSelection.path = path;
-                renderLegacyList();
-                updateOtherButtonState();
-            });
-
-            var title = createElement('div', 'storage-location-choice-title');
-            title.appendChild(createElement('span', '', translate('storage.useLegacyPath', '使用该旧数据路径')));
-            title.appendChild(createElement('span', 'storage-location-choice-check', state.otherSelection.key === 'legacy-' + index ? '✓' : ''));
-            choice.appendChild(title);
-            choice.appendChild(createElement('div', 'storage-location-path', path));
-            state.legacyChoices.appendChild(choice);
-        });
-    }
-
     function updateSelectionSummary() {
         if (!state.bootstrap) return;
 
         var currentRoot = state.bootstrap.current_root || '';
         var recommendedRoot = state.bootstrap.recommended_root || '';
-        var currentIsRecommended = pathEquals(currentRoot, recommendedRoot);
 
-        state.currentPath.textContent = currentRoot;
-        state.recommendedPath.textContent = recommendedRoot;
+        if (state.currentPath) {
+            state.currentPath.textContent = currentRoot;
+        }
+        if (state.customInput && !String(state.customInput.value || '').trim()) {
+            state.customInput.value = recommendedRoot;
+            state.otherSelection.key = 'custom';
+            state.otherSelection.path = recommendedRoot;
+        }
 
         if (state.bootstrap.migration_pending) {
             state.banner.hidden = false;
@@ -1065,7 +1026,6 @@
             state.banner.textContent = '';
         }
 
-        renderLegacyList();
         updateOtherButtonState();
     }
 
@@ -1076,22 +1036,10 @@
         state.useOtherButton.disabled = state.submitting || disabled;
     }
 
-    function openOtherPanel() {
-        resetPreviewState();
-        setSelectionStatus('', false);
-        state.otherPanel.hidden = false;
-        if (state.customInput) {
-            state.customInput.focus();
-        }
-    }
-
     function backToSelection() {
-        var pendingSource = state.pendingSelection.source;
         resetPreviewState();
         setSelectionStatus('', false);
-        if (pendingSource === 'custom' || pendingSource === 'legacy') {
-            state.otherPanel.hidden = false;
-        }
+        if (state.customInput) state.customInput.focus();
         setPhase('selection_required');
     }
 
@@ -1219,7 +1167,6 @@
             }
 
             applyCustomStorageRootDisplay(selectedRoot);
-            renderLegacyList();
             updateOtherButtonState();
             state.customInput.focus();
         } catch (error) {
@@ -1234,26 +1181,14 @@
 
     function updateRestartPreviewPreflight(preflight) {
         if (!preflight) return;
+        if (state.previewText) {
+            state.previewText.textContent = buildRestartPreviewReminder(preflight);
+        }
         if (state.previewEstimated) {
             state.previewEstimated.textContent = formatBytes(preflight.estimated_required_bytes);
         }
         if (state.previewFreeSpace) {
             state.previewFreeSpace.textContent = formatBytes(preflight.target_free_bytes);
-        }
-        if (state.previewPermission) {
-            state.previewPermission.textContent = preflight.permission_ok
-                ? translate('storage.permissionOk', '当前可写')
-                : translate('storage.permissionBlocked', '当前不可写');
-        }
-        if (state.previewWarnings) {
-            var warningCodes = normalizeWarningCodes(preflight.warning_codes);
-            if (preflight.target_has_existing_content && warningCodes.indexOf('target_has_existing_content') === -1) {
-                warningCodes.push('target_has_existing_content');
-            }
-            var warnings = warningCodes.map(translateWarningCode);
-            state.previewWarnings.textContent = warnings.length
-                ? warnings.join('；')
-                : translate('storage.noWarnings', '当前未检测到需要额外提示的风险项。');
         }
         if (state.previewBlocking) {
             var blockingText = translatePreflightBlocking(preflight);
@@ -1272,8 +1207,8 @@
     }
 
     // 仅根据 preflight 填充预览面板的字段并显示预览面板，不切换 phase、
-    // 不修改 otherPanel 的可见性、不清空 selectionStatus。供 showRestartRequired
-    // 走完整流程，以及 rebuildModalForLocale 在快照恢复路径上单独使用。
+    // 不清空 selectionStatus。供 showRestartRequired 走完整流程，以及
+    // rebuildModalForLocale 在快照恢复路径上单独使用。
     function populateRestartPreview(payload, fallbackTargetPath, selectionSource) {
         if (!state.bootstrap || !state.previewPanel) return null;
 
@@ -1281,8 +1216,6 @@
         state.pendingSelection.path = preflight.target_root || '';
         state.pendingSelection.source = selectionSource || '';
         state.pendingSelection.preflight = preflight;
-        state.previewSource.textContent = state.bootstrap.current_root || '';
-        state.previewTarget.textContent = preflight.target_root || '';
         if (preflight.restart_mode === 'rebind_only') {
             state.previewText.textContent = translate(
                 'storage.rebindPreviewNotice',
@@ -1292,9 +1225,7 @@
                 state.previewConfirmButton.textContent = translate('storage.confirmReconnect', '确认关闭并重连路径');
             }
         } else {
-            state.previewText.textContent = selectionSource === 'recommended'
-                ? translate('storage.recommendedPreviewNotice', '后端已确认：如果后续改用推荐位置，需要先关闭当前实例，再迁移数据并自动重启。')
-                : translate('storage.customPreviewNotice', '后端已确认：如果后续改用这个位置，也需要先关闭当前实例，再迁移数据并自动重启。');
+            state.previewText.textContent = buildRestartPreviewReminder(preflight);
             if (state.previewConfirmButton) {
                 state.previewConfirmButton.textContent = translate('storage.confirmRestart', '确认关闭并迁移');
             }
@@ -1306,7 +1237,6 @@
 
     function showRestartRequired(payload, fallbackTargetPath, selectionSource) {
         if (!populateRestartPreview(payload, fallbackTargetPath, selectionSource)) return;
-        state.otherPanel.hidden = true;
         setSelectionStatus('', false);
         setPhase('selection_required');
     }
@@ -1465,7 +1395,7 @@
         var pathList = createElement('div', 'storage-location-path-list');
 
         var targetItem = buildInfoPathRow(translate('storage.targetLabel', '当前生效路径'), 'completionTarget');
-        var retainedItem = buildInfoPathRow(translate('storage.retainedRoot', '当前保留目录'), 'completionRetained');
+        var retainedItem = buildInfoPathRow(translate('storage.retainedRoot', '旧数据目录'), 'completionRetained');
         pathList.appendChild(targetItem);
         pathList.appendChild(retainedItem);
 
@@ -1814,9 +1744,6 @@
 
             if (payload.result === 'continue_current_session') {
                 resetPreviewState();
-                if (state.otherPanel) {
-                    state.otherPanel.hidden = true;
-                }
                 hideOverlay();
                 resolveStartupDecision({
                     canContinue: true,
@@ -2120,21 +2047,15 @@
         submitSelection(state.bootstrap.current_root || '', 'current');
     }
 
-    function useRecommendedPath() {
-        if (!state.bootstrap) return;
-        submitSelection(state.bootstrap.recommended_root || '', 'recommended');
-    }
-
     function useOtherPath() {
-        var isLegacySelection = state.otherSelection.key === 'legacy'
-            || String(state.otherSelection.key || '').indexOf('legacy-') === 0;
-        var selectionPath = state.otherSelection.path || '';
-        if (!isLegacySelection) {
-            selectionPath = applyCustomStorageRootDisplay(selectionPath);
-            renderLegacyList();
-            updateOtherButtonState();
-        }
-        submitSelection(selectionPath, isLegacySelection ? 'legacy' : 'custom');
+        var selectionPath = String(
+            state.customInput && state.customInput.value
+            || state.otherSelection.path
+            || ''
+        ).trim();
+        selectionPath = applyCustomStorageRootDisplay(selectionPath);
+        updateOtherButtonState();
+        submitSelection(selectionPath, 'custom');
     }
 
     function buildSelectionView() {
@@ -2142,9 +2063,7 @@
         var shell = createElement('div', 'storage-location-shell');
 
         var hero = createElement('div', 'storage-location-hero');
-        hero.appendChild(createElement('span', 'storage-location-badge', translate('storage.badge', '存储位置')));
-        hero.appendChild(createElement('h2', 'storage-location-title', translate('storage.selectionTitle', '请选择本次运行使用的存储位置')));
-        hero.appendChild(createElement('p', 'storage-location-subtitle', translate('storage.selectionSubtitle', '应用已经正常打开。接下来请先在当前页面内确认存储位置，再继续使用。')));
+        hero.appendChild(createElement('h2', 'storage-location-title', translate('storage.selectionTitle', '存储位置选择')));
         shell.appendChild(hero);
 
         var banner = createElement('div', 'storage-location-banner');
@@ -2157,52 +2076,9 @@
         var pathsPanel = createElement('section', 'storage-location-panel');
         pathsPanel.appendChild(createElement('h3', 'storage-location-panel-title', translate('storage.pathOverview', '路径总览')));
         var pathList = createElement('div', 'storage-location-path-list');
-        pathList.appendChild(buildInfoPathRow(translate('storage.recommendedPath', '推荐路径'), 'recommendedPath', 'storage-location-path-item--recommended'));
-        pathList.appendChild(buildInfoPathRow(translate('storage.currentPath', '当前路径'), 'currentPath'));
-        pathsPanel.appendChild(pathList);
-        grid.appendChild(pathsPanel);
-        shell.appendChild(grid);
 
-        var actions = createElement('div', 'storage-location-actions');
-
-        var recommendedButton = registerActionButton(
-            createElement('button', 'storage-location-btn storage-location-btn--primary', translate('storage.useRecommended', '使用推荐位置'))
-        );
-        recommendedButton.type = 'button';
-        recommendedButton.addEventListener('click', useRecommendedPath);
-        actions.appendChild(recommendedButton);
-
-        var currentButton = registerActionButton(
-            createElement('button', 'storage-location-btn storage-location-btn--secondary', translate('storage.useCurrent', '保持当前路径'))
-        );
-        currentButton.type = 'button';
-        currentButton.addEventListener('click', continueWithCurrentPath);
-        actions.appendChild(currentButton);
-
-        var chooseOtherButton = registerActionButton(
-            createElement('button', 'storage-location-btn storage-location-btn--secondary', translate('storage.chooseOther', '选择其他位置'))
-        );
-        chooseOtherButton.type = 'button';
-        chooseOtherButton.addEventListener('click', openOtherPanel);
-        actions.appendChild(chooseOtherButton);
-
-        shell.appendChild(actions);
-
-        var selectionStatus = createElement('p', 'storage-location-note');
-        selectionStatus.hidden = true;
-        state.selectionStatus = selectionStatus;
-        shell.appendChild(selectionStatus);
-
-        var otherPanel = createElement('section', 'storage-location-other');
-        otherPanel.hidden = true;
-        state.otherPanel = otherPanel;
-        otherPanel.appendChild(createElement('h3', 'storage-location-panel-title', translate('storage.otherPanelTitle', '其他位置')));
-        otherPanel.appendChild(createElement('p', 'storage-location-note', translate('storage.otherPanelNote', '你可以直接复用旧数据目录，也可以选择一个新的文件夹作为后续运行位置。')));
-
-        var legacyChoices = createElement('div', 'storage-location-choice-list');
-        state.legacyChoices = legacyChoices;
-        otherPanel.appendChild(legacyChoices);
-
+        var selectedPathItem = createElement('div', 'storage-location-path-item storage-location-path-item--recommended');
+        selectedPathItem.appendChild(createElement('div', 'storage-location-label', translate('storage.selectedPath', '选择路径')));
         var inputRow = createElement('div', 'storage-location-input-row');
         var customInput = createElement('input', 'storage-location-input');
         customInput.type = 'text';
@@ -2213,7 +2089,6 @@
         customInput.addEventListener('input', function () {
             state.otherSelection.key = 'custom';
             state.otherSelection.path = String(customInput.value || '').trim();
-            renderLegacyList();
             updateOtherButtonState();
         });
         state.customInput = customInput;
@@ -2226,45 +2101,43 @@
         pickFolderButton.addEventListener('click', pickOtherDirectory);
         state.pickFolderButton = pickFolderButton;
         inputRow.appendChild(pickFolderButton);
-        otherPanel.appendChild(inputRow);
+        selectedPathItem.appendChild(inputRow);
+        pathList.appendChild(selectedPathItem);
+        pathList.appendChild(buildInfoPathRow(translate('storage.currentPath', '当前路径'), 'currentPath'));
+        pathsPanel.appendChild(pathList);
+        grid.appendChild(pathsPanel);
+        shell.appendChild(grid);
 
-        var otherActions = createElement('div', 'storage-location-actions');
+        var actions = createElement('div', 'storage-location-actions');
+
         var useOtherButton = registerActionButton(
-            createElement('button', 'storage-location-btn', translate('storage.previewOther', '提交该位置'))
+            createElement('button', 'storage-location-btn storage-location-btn--primary', translate('storage.previewOther', '提交该位置'))
         );
         useOtherButton.type = 'button';
-        useOtherButton.dataset.forceDisabled = '1';
-        useOtherButton.disabled = true;
         useOtherButton.addEventListener('click', useOtherPath);
         state.useOtherButton = useOtherButton;
-        otherActions.appendChild(useOtherButton);
-        otherPanel.appendChild(otherActions);
+        actions.appendChild(useOtherButton);
 
-        shell.appendChild(otherPanel);
+        var currentButton = registerActionButton(
+            createElement('button', 'storage-location-btn storage-location-btn--secondary', translate('storage.useCurrent', '保持当前路径'))
+        );
+        currentButton.type = 'button';
+        currentButton.addEventListener('click', continueWithCurrentPath);
+        actions.appendChild(currentButton);
+
+        shell.appendChild(actions);
+
+        var selectionStatus = createElement('p', 'storage-location-note');
+        selectionStatus.hidden = true;
+        state.selectionStatus = selectionStatus;
+        shell.appendChild(selectionStatus);
 
         var previewPanel = createElement('section', 'storage-location-panel');
         previewPanel.hidden = true;
         state.previewPanel = previewPanel;
-        previewPanel.appendChild(createElement('h3', 'storage-location-panel-title', translate('storage.previewTitle', '该选择需要后续关闭并迁移')));
         var previewText = createElement('p', 'storage-location-note');
         state.previewText = previewText;
         previewPanel.appendChild(previewText);
-
-        var previewList = createElement('div', 'storage-location-restart-list');
-        var sourceItem = createElement('div', 'storage-location-path-item');
-        sourceItem.appendChild(createElement('div', 'storage-location-label', translate('storage.sourceLabel', '当前路径')));
-        var previewSource = createElement('div', 'storage-location-restart-path');
-        state.previewSource = previewSource;
-        sourceItem.appendChild(previewSource);
-        previewList.appendChild(sourceItem);
-
-        var targetItem = createElement('div', 'storage-location-path-item');
-        targetItem.appendChild(createElement('div', 'storage-location-label', translate('storage.targetLabel', '目标路径')));
-        var previewTarget = createElement('div', 'storage-location-restart-path');
-        state.previewTarget = previewTarget;
-        targetItem.appendChild(previewTarget);
-        previewList.appendChild(targetItem);
-        previewPanel.appendChild(previewList);
 
         var preflightList = createElement('div', 'storage-location-summary-list');
 
@@ -2282,64 +2155,12 @@
         freeSpaceItem.appendChild(previewFreeSpace);
         preflightList.appendChild(freeSpaceItem);
 
-        var permissionItem = createElement('div', 'storage-location-summary-item');
-        permissionItem.appendChild(createElement('div', 'storage-location-label', translate('storage.permissionCheck', '目标路径写入权限')));
-        var previewPermission = createElement('div', 'storage-location-summary-value');
-        state.previewPermission = previewPermission;
-        permissionItem.appendChild(previewPermission);
-        preflightList.appendChild(permissionItem);
-
-        var warningsItem = createElement('div', 'storage-location-summary-item');
-        warningsItem.appendChild(createElement('div', 'storage-location-label', translate('storage.warningSummary', '额外风险提示')));
-        var previewWarnings = createElement('div', 'storage-location-summary-value');
-        state.previewWarnings = previewWarnings;
-        warningsItem.appendChild(previewWarnings);
-        preflightList.appendChild(warningsItem);
-
         previewPanel.appendChild(preflightList);
 
         var previewBlocking = createElement('p', 'storage-location-note');
         previewBlocking.hidden = true;
         state.previewBlocking = previewBlocking;
         previewPanel.appendChild(previewBlocking);
-
-        var previewSteps = createElement('div', 'storage-location-preview-steps');
-        previewSteps.appendChild(
-            createElement(
-                'div',
-                'storage-location-preview-step',
-                translate('storage.previewStepClose', '1. 当前实例会先关闭。')
-            )
-        );
-        previewSteps.appendChild(
-            createElement(
-                'div',
-                'storage-location-preview-step',
-                translate('storage.previewStepMigrate', '2. 关闭后会恢复目标存储布局；必要时再迁移数据。')
-            )
-        );
-        previewSteps.appendChild(
-            createElement(
-                'div',
-                'storage-location-preview-step',
-                translate('storage.previewStepRestart', '3. 迁移完成后会自动重启。')
-            )
-        );
-        previewSteps.appendChild(
-            createElement(
-                'div',
-                'storage-location-preview-step',
-                translate('storage.previewStepRetain', '4. 旧数据默认不会自动删除。')
-            )
-        );
-        previewPanel.appendChild(previewSteps);
-        previewPanel.appendChild(
-            createElement(
-                'p',
-                'storage-location-note',
-                translate('storage.previewBoundary', '当前不会在本会话里热切根，也不会提前把稳定根改成新路径。确认后会由后端按设计顺序完成关闭、必要迁移、自动重启与最终布局恢复。')
-            )
-        );
 
         var previewActions = createElement('div', 'storage-location-restart-actions');
         var confirmRestartButton = registerActionButton(
@@ -2371,7 +2192,6 @@
 
         var shell = createElement('div', 'storage-location-shell');
         var hero = createElement('div', 'storage-location-hero');
-        hero.appendChild(createElement('span', 'storage-location-badge', translate('storage.badge', '存储位置')));
         var loadingTitle = createElement('h2', 'storage-location-title', translate('storage.loadingTitle', '正在确认存储布局状态'));
         var loadingSubtitle = createElement('p', 'storage-location-subtitle', translate('storage.loadingSubtitle', '主业务界面会在存储状态确认完成后再继续加载。'));
         state.loadingTitle = loadingTitle;
@@ -2392,11 +2212,8 @@
 
         var shell = createElement('div', 'storage-location-shell');
         var hero = createElement('div', 'storage-location-hero');
-        hero.appendChild(createElement('span', 'storage-location-badge', translate('storage.badge', '存储位置')));
-
         var maintenanceTitle = createElement('h2', 'storage-location-title', translate('storage.maintenanceTitle', '正在优化存储布局...'));
         var maintenanceSubtitle = createElement('p', 'storage-location-subtitle', translate('storage.maintenanceWaitingSubtitle', '当前实例即将关闭，数据会在关闭后迁移并自动重启。'));
-        var maintenanceStatus = createElement('p', 'storage-location-note');
         var maintenanceProgress = createElement('section', 'storage-location-progress');
         var progressMeta = createElement('div', 'storage-location-progress-meta');
         var progressLabel = createElement('div', 'storage-location-progress-label', translate('storage.progressWaitingShutdown', '正在等待当前实例安全关闭'));
@@ -2433,7 +2250,6 @@
 
         state.maintenanceTitle = maintenanceTitle;
         state.maintenanceSubtitle = maintenanceSubtitle;
-        state.maintenanceStatus = maintenanceStatus;
         state.maintenanceProgressBar = progressTrack;
         state.maintenanceProgressFill = progressFill;
         state.maintenanceProgressLabel = progressLabel;
@@ -2442,7 +2258,6 @@
 
         hero.appendChild(maintenanceTitle);
         hero.appendChild(maintenanceSubtitle);
-        hero.appendChild(maintenanceStatus);
         shell.appendChild(hero);
         shell.appendChild(maintenanceProgress);
         shell.appendChild(
@@ -2464,7 +2279,6 @@
 
         var shell = createElement('div', 'storage-location-shell');
         var hero = createElement('div', 'storage-location-hero');
-        hero.appendChild(createElement('span', 'storage-location-badge', translate('storage.errorBadge', '读取失败')));
         hero.appendChild(createElement('h2', 'storage-location-title', translate('storage.errorTitle', '暂时无法读取存储位置引导信息')));
         var errorText = createElement('p', 'storage-location-error-text');
         state.errorText = errorText;
@@ -2517,7 +2331,6 @@
         var snapshot = {
             phase: state.phase,
             submitting: state.submitting,
-            otherPanelHidden: state.otherPanel ? state.otherPanel.hidden : true,
             previewPanelHidden: state.previewPanel ? state.previewPanel.hidden : true,
             customInputValue: state.customInput ? state.customInput.value : '',
             errorText: state.errorText ? state.errorText.textContent : '',
@@ -2533,7 +2346,6 @@
             // 直接抓 DOM 文案先把视觉占住，避免重建瞬间退回构建期默认值。
             maintenanceTitleText: state.maintenanceTitle ? state.maintenanceTitle.textContent : '',
             maintenanceSubtitleText: state.maintenanceSubtitle ? state.maintenanceSubtitle.textContent : '',
-            maintenanceStatusText: state.maintenanceStatus ? state.maintenanceStatus.textContent : '',
             lastMaintenanceProgressPayload: state.lastMaintenanceProgressPayload,
             pendingSelection: {
                 path: state.pendingSelection.path,
@@ -2560,20 +2372,13 @@
         state.errorView = null;
         state.banner = null;
         state.currentPath = null;
-        state.recommendedPath = null;
-        state.otherPanel = null;
-        state.legacyChoices = null;
         state.customInput = null;
         state.pickFolderButton = null;
         state.useOtherButton = null;
         state.previewPanel = null;
         state.previewText = null;
-        state.previewSource = null;
-        state.previewTarget = null;
         state.previewEstimated = null;
         state.previewFreeSpace = null;
-        state.previewPermission = null;
-        state.previewWarnings = null;
         state.previewBlocking = null;
         state.previewConfirmButton = null;
         state.previewActions = null;
@@ -2583,7 +2388,6 @@
         state.loadingSubtitle = null;
         state.maintenanceTitle = null;
         state.maintenanceSubtitle = null;
-        state.maintenanceStatus = null;
         state.maintenanceProgressBar = null;
         state.maintenanceProgressFill = null;
         state.maintenanceProgressLabel = null;
@@ -2614,10 +2418,6 @@
 
         if (state.bootstrap) {
             updateSelectionSummary();
-        }
-
-        if (state.otherPanel) {
-            state.otherPanel.hidden = snapshot.otherPanelHidden;
         }
 
         if (snapshot.pendingSelection.preflight && state.bootstrap && state.previewPanel) {
@@ -2663,7 +2463,7 @@
             setMaintenanceCopy(
                 snapshot.maintenanceTitleText,
                 snapshot.maintenanceSubtitleText,
-                snapshot.maintenanceStatusText
+                ''
             );
             if (snapshot.lastMaintenanceProgressPayload) {
                 applyMaintenanceProgress(snapshot.lastMaintenanceProgressPayload);
