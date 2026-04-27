@@ -63,3 +63,34 @@ def test_coerce_overrides_drops_invalid_entries():
 def test_coerce_overrides_handles_non_mapping():
     assert ro._coerce_overrides([1, 2, 3]) == {}
     assert ro._coerce_overrides(None) == {}
+
+
+@pytest.mark.plugin_unit
+def test_set_runtime_override_holds_cache_lock_during_disk_write(
+    _isolate_runtime_overrides, monkeypatch
+):
+    """Regression: set/clear must serialize the disk write under _cache_lock.
+
+    Releasing the lock before writing lets two concurrent toggles capture
+    independent snapshots, then race on `_save_to_disk` order — the second
+    write wins and the first toggle's plugin_id silently disappears.
+    """
+    lock_held_during_save: list[bool] = []
+    original_save = ro._save_to_disk
+
+    def _spy(overrides):
+        # On a non-reentrant Lock, a non-blocking acquire from the holder thread
+        # still returns False — so this is True iff the lock is currently held.
+        acquired = ro._cache_lock.acquire(blocking=False)
+        lock_held_during_save.append(not acquired)
+        if acquired:
+            ro._cache_lock.release()
+        original_save(overrides)
+
+    monkeypatch.setattr(ro, "_save_to_disk", _spy)
+    ro.reset_cache_for_testing()
+
+    ro.set_runtime_override("alpha", False)
+    ro.clear_runtime_override("alpha")
+
+    assert lock_held_during_save == [True, True]

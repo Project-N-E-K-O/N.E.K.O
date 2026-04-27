@@ -91,7 +91,12 @@ def get_runtime_override(plugin_id: str) -> bool | None:
 
 
 def set_runtime_override(plugin_id: str, enabled: bool) -> None:
-    """Persist ``enabled`` as the user's override for ``plugin_id``."""
+    """Persist ``enabled`` as the user's override for ``plugin_id``.
+
+    The disk write happens while ``_cache_lock`` is still held so that two
+    concurrent toggles cannot race and overwrite each other with stale
+    snapshots (each writer would see only its own mutation).
+    """
     if not plugin_id:
         return
     global _cache
@@ -101,12 +106,15 @@ def set_runtime_override(plugin_id: str, enabled: bool) -> None:
         if _cache.get(plugin_id) == enabled:
             return
         _cache[plugin_id] = enabled
-        snapshot = dict(_cache)
-    _save_to_disk(snapshot)
+        _save_to_disk(dict(_cache))
 
 
 def clear_runtime_override(plugin_id: str) -> None:
-    """Remove the override for ``plugin_id`` (e.g. when the plugin is deleted)."""
+    """Remove the override for ``plugin_id`` (e.g. when the plugin is deleted).
+
+    Holds ``_cache_lock`` across the disk write for the same race-avoidance
+    reason as :func:`set_runtime_override`.
+    """
     if not plugin_id:
         return
     global _cache
@@ -116,8 +124,7 @@ def clear_runtime_override(plugin_id: str) -> None:
         if plugin_id not in _cache:
             return
         _cache.pop(plugin_id, None)
-        snapshot = dict(_cache)
-    _save_to_disk(snapshot)
+        _save_to_disk(dict(_cache))
 
 
 def reset_cache_for_testing() -> None:
