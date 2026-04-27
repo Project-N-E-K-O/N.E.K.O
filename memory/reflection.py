@@ -617,15 +617,15 @@ class ReflectionEngine:
           4. 始终在末尾 amark_absorbed，确保 save 成功但 mark 失败后的
              重启补跑能真正把 facts 的 absorbed 置为 True。
 
-        并发（P2.a.2）：整个方法在角色级 asyncio.Lock 下串行，避免与
-        aauto_promote_stale / aconfirm_promotion 竞写 reflections.json。
+        并发（C3 重构 + thinking）：LLM 调用在锁外。锁仅守护"再 load → id
+        dedup → append → save"这一段几十毫秒的临界区。这样：
+          - LLM (90-120s with thinking) 期间不阻塞同角色其他 reflection 写
+            （aapply_signal / aauto_promote_stale 的 pending→confirmed 段 /
+             arecord_mentions / aget_followup_topics 等）
+          - 双写防御：rid 由 source_fact_ids 决定（确定性），并发 synth 拿同
+            一批 facts 算出同 rid，post-LLM 锁内 dedup append 兜住。失败一方
+            返回 [] 不污染 caller 视图。
         """
-        async with self._get_alock(lanlan_name):
-            return await self._synthesize_reflections_locked(lanlan_name)
-
-    async def _synthesize_reflections_locked(self, lanlan_name: str) -> list[dict]:
-        """synthesize_reflections 的内部实现。调用方必须已持有
-        self._get_alock(lanlan_name)。"""
         from config.prompts_memory import get_reflection_prompt
         from utils.language_utils import get_global_language
         from utils.llm_client import create_chat_llm
@@ -656,6 +656,8 @@ class ReflectionEngine:
 
         # 幂等 short-circuit：同一批 facts 的 reflection 已持久化 →
         # 不重复调 LLM，仅补跑 mark_absorbed（致命点 3 的重启补救路径）
+        # 注：这里是 lock-外的 advisory check，提早避免无谓 LLM；最终
+        # dedup 在 lock-内重做（防 LLM 期间并发写入）。
         existing_reflections = await self.aload_reflections(lanlan_name)
         existing = next((r for r in existing_reflections if r.get('id') == rid), None)
         if existing is not None:
@@ -678,14 +680,18 @@ class ReflectionEngine:
         try:
             set_call_type("memory_reflection")
             api_config = self._config_manager.get_model_api_config('summary')
-            # timeout=90: 持 reflection 锁，输出多字段 JSON ontology（reflection
-            # text + entity + relation_type + temporal_scope + subject）较长。
+            # timeout=120: 开 thinking 后输出多字段 JSON ontology（reflection
+            # text + entity + relation_type + temporal_scope + subject）+ 思考
+            # 过程，比简单分类长。LLM 在锁外，不阻塞同角色其他 reflection 写。
             # max_retries=0: 禁 SDK 自动重试（无业务 retry，单次即终态，外层
             # try/except 兜底返回 []）。
+            # extra_body=None: 显式开 thinking——synth 是创意+结构化合成，
+            # 思考能改善 ontology 字段的一致性和 reflection text 的质量。
             llm = create_chat_llm(
                 api_config['model'],
                 api_config['base_url'], api_config['api_key'],
-                timeout=90, max_retries=0,
+                timeout=120, max_retries=0,
+                extra_body=None,
             )
             try:
                 resp = await llm.ainvoke(prompt)
@@ -777,19 +783,22 @@ class ReflectionEngine:
             'subject': subject,
         })
 
-        # 再次 load：LLM 调用期间可能有并发 synth；用最新 list 做 id dedup 追加
-        reflections = await self.aload_reflections(lanlan_name)
-        created = False
-        if any(r.get('id') == rid for r in reflections):
-            logger.info(
-                f"[Reflection] {lanlan_name}: reflection {rid} 已被并发 synth 写入，跳过重复 append"
-            )
-        else:
-            reflections.append(reflection)
-            await self.asave_reflections(lanlan_name, reflections)
-            created = True
+        # ── LOCK 仅护住 re-load + dedup append + save ──
+        async with self._get_alock(lanlan_name):
+            # 再次 load：LLM 调用期间可能有并发 synth；用最新 list 做 id dedup 追加
+            reflections = await self.aload_reflections(lanlan_name)
+            created = False
+            if any(r.get('id') == rid for r in reflections):
+                logger.info(
+                    f"[Reflection] {lanlan_name}: reflection {rid} 已被并发 synth 写入，跳过重复 append"
+                )
+            else:
+                reflections.append(reflection)
+                await self.asave_reflections(lanlan_name, reflections)
+                created = True
 
         # 无条件 mark_absorbed：幂等，且覆盖 save 成功后但在此崩溃的补跑情况
+        # （fact_store 自己有锁，不需要在 reflection 锁内）
         await self._fact_store.amark_absorbed(lanlan_name, source_fact_ids)
 
         if not created:
