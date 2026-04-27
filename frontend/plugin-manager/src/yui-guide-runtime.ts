@@ -144,6 +144,7 @@ type SpotlightRect = {
   width: number
   height: number
   radius: number
+  padding: number
 }
 
 type ActiveNarration = {
@@ -1174,6 +1175,7 @@ class PluginDashboardGuideRuntime {
       width,
       height,
       radius,
+      padding,
     }
   }
 
@@ -1214,8 +1216,10 @@ class PluginDashboardGuideRuntime {
     ;(this.backdropCutout as unknown as { hidden?: boolean }).hidden = false
     this.backdropCutout.setAttribute('visibility', 'visible')
     this.backdropCutout.style.removeProperty('display')
+    const maxInset = Math.max(0, spotlightRect.padding)
     const inset = Math.max(0, Math.min(
       BACKDROP_CUTOUT_INSET,
+      maxInset,
       Math.floor(spotlightRect.width / 2),
       Math.floor(spotlightRect.height / 2),
     ))

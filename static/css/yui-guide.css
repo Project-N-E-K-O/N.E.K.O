@@ -86,6 +86,7 @@ body.yui-guide-home-driver-hidden .driver-highlight {
   border-radius: inherit;
   --yui-guide-spotlight-corner-size: min(34%, 138px);
   --yui-guide-spotlight-border-gap: min(68%, 144px);
+
   background:
     linear-gradient(rgba(39, 89, 228, 0.98), rgba(39, 89, 228, 0.98)) top center / calc(100% - var(--yui-guide-spotlight-border-gap)) 2px no-repeat,
     linear-gradient(rgba(39, 89, 228, 0.98), rgba(39, 89, 228, 0.98)) bottom center / calc(100% - var(--yui-guide-spotlight-border-gap)) 2px no-repeat,

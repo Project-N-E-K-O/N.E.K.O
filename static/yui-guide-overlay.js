@@ -504,10 +504,10 @@
             const actionRect = this.getSpotlightRect(this.actionHighlightedElement);
             const secondaryActionRect = this.getSpotlightRect(this.secondaryActionHighlightedElement);
             const extraRects = this.extraSpotlightElements.map((element) => this.getSpotlightRect(element));
-            const persistentMaskRect = persistentRect && !persistentRect.isCircular ? persistentRect : null;
-            const actionMaskRect = actionRect && !actionRect.isCircular ? actionRect : null;
-            const secondaryActionMaskRect = secondaryActionRect && !secondaryActionRect.isCircular ? secondaryActionRect : null;
-            const extraMaskRects = extraRects.filter((rect) => rect && !rect.isCircular);
+            const persistentMaskRect = persistentRect || null;
+            const actionMaskRect = actionRect || null;
+            const secondaryActionMaskRect = secondaryActionRect || null;
+            const extraMaskRects = extraRects.filter((rect) => !!rect);
 
             if (this.backdrop) {
                 this.syncBackdropViewport();
@@ -537,7 +537,7 @@
                 if (!entry) {
                     return;
                 }
-                const maskRect = rect && !rect.isCircular ? rect : null;
+                const maskRect = rect || null;
                 const sourceElement = this.extraSpotlightElements[index] || null;
                 const variant = sourceElement && typeof sourceElement.getAttribute === 'function'
                     ? sourceElement.getAttribute('data-yui-guide-spotlight-variant')

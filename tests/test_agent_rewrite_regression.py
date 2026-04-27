@@ -2,6 +2,7 @@ import ast
 import asyncio
 import json
 from pathlib import Path
+from urllib.parse import urlencode
 
 import pytest
 from starlette.requests import Request
@@ -13,7 +14,7 @@ def _expected_plugin_dashboard_location(v: str = "") -> str:
     from config import USER_PLUGIN_BASE
 
     base_ui = USER_PLUGIN_BASE.rstrip("/") + "/ui"
-    return f"{base_ui}?v={v}" if v else base_ui
+    return f"{base_ui}?{urlencode({'v': v})}" if v else base_ui
 
 
 def _route_paths_from_decorators(py_file_path: str, target_name: str):

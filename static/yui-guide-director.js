@@ -3702,7 +3702,10 @@
             const api = this.getHomeInteractionApi();
             if (api && typeof api.getPluginDashboardExpectedOrigin === 'function') {
                 try {
-                    return api.getPluginDashboardExpectedOrigin() || '';
+                    const apiOrigin = api.getPluginDashboardExpectedOrigin();
+                    if (typeof apiOrigin === 'string' && apiOrigin.trim() !== '') {
+                        return apiOrigin.trim();
+                    }
                 } catch (error) {
                     console.warn('[YuiGuide] 获取插件面板 origin 失败:', error);
                 }
@@ -3959,6 +3962,25 @@
             } catch (_) {}
         }
 
+        stopHoverElement(element) {
+            if (!element) {
+                return;
+            }
+
+            try {
+                element.dispatchEvent(new MouseEvent('mouseleave', {
+                    bubbles: true,
+                    cancelable: true,
+                    view: window
+                }));
+                element.dispatchEvent(new MouseEvent('mouseout', {
+                    bubbles: true,
+                    cancelable: true,
+                    view: window
+                }));
+            } catch (_) {}
+        }
+
         getVisibleHomeModelElement() {
             const candidates = [
                 document.getElementById('live2d-container'),
@@ -4058,11 +4080,26 @@
             await removeHighlight(normalizedTargets.catPawButton);
         }
 
+        async cleanupPluginPreviewState(targets) {
+            const normalizedTargets = targets || {};
+            this.stopHoverElement(normalizedTargets.hoverTarget || normalizedTargets.pluginToggle || null);
+            this.collapseAgentSidePanel('agent-user-plugin');
+            this.clearVirtualSpotlight('plugin-management-entry');
+            this.clearSceneExtraSpotlights();
+            this.clearRetainedExtraSpotlights();
+            this.overlay.clearActionSpotlight();
+            await this.closePluginDashboardWindowIfCreatedByGuide('插件预览中途清理');
+            await this.closeAgentPanel().catch(() => {});
+        }
+
         async runTakeoverCaptureActionSequence(step, performance, runId) {
             this.customSecondarySpotlightTarget = null;
             this.clearPreciseHighlights();
             this.clearSceneExtraSpotlights();
             this.clearRetainedExtraSpotlights();
+            let shouldCleanupPreviewState = false;
+            let pluginPreviewCleanedUp = false;
+            let hoveredPluginToggle = null;
             const timingScale = this.getGuideVoiceTimingScale(performance && performance.voiceKey);
             const scaleSceneMs = (value, minValue, maxValue) => {
                 const baseValue = Number.isFinite(value) ? value : 0;
@@ -4094,178 +4131,199 @@
                 padding: 4
             });
 
-            // 1-3. 高亮猫爪 -> 平滑移动 -> 点击并打开猫爪面板
-            this.addRetainedExtraSpotlight(catPawButton);
-            this.overlay.clearActionSpotlight();
-            const movedToCatPaw = await this.moveCursorToElement(catPawButton, scaleSceneMs(1500, 900, 2600));
-            if (!movedToCatPaw || guardFailed()) {
-                return null;
-            }
-
-            this.cursor.click();
-            const agentPanelOpened = await this.openAgentPanel();
-            if (!agentPanelOpened || guardFailed()) {
-                return null;
-            }
-
-            const agentMasterToggle = await this.waitForElement(() => {
-                const toggleItem = this.getAgentToggleElement('agent-master');
-                return this.getElementRect(toggleItem) ? toggleItem : null;
-            }, 4000);
-            if (!agentMasterToggle || guardFailed()) {
-                return null;
-            }
-
-            // 4-6. 高亮猫爪总开关 -> 平滑移动 -> 点击并同步打开
-            this.addRetainedExtraSpotlight(agentMasterToggle);
-            const movedToAgentMaster = await this.moveCursorToElement(agentMasterToggle, scaleSceneMs(1200, 760, 2200));
-            if (!movedToAgentMaster || guardFailed()) {
-                return null;
-            }
-
-            this.cursor.click();
-            const agentMasterEnabled = await this.setAgentMasterEnabled(true);
-            if (!agentMasterEnabled || guardFailed()) {
-                return null;
-            }
-
-            const agentMasterState = await this.waitForAgentToggleState('agent-master', true, 1800);
-            if (!agentMasterState || guardFailed()) {
-                return null;
-            }
-            if (!(await this.waitForSceneDelay(scaleSceneMs(420, 180, 900)))) {
-                return null;
-            }
-            if (guardFailed()) {
-                return null;
-            }
-
-            const pluginToggle = await this.waitForElement(() => {
-                const toggleItem = this.getAgentToggleElement('agent-user-plugin');
-                return this.getElementRect(toggleItem) ? toggleItem : null;
-            }, 2200);
-            if (!pluginToggle || guardFailed()) {
-                return null;
-            }
-
-            // 7-9. 高亮用户插件 -> 平滑移动 -> 点击并同步打开
-            this.addRetainedExtraSpotlight(pluginToggle);
-            const movedToPluginToggle = await this.moveCursorToElement(pluginToggle, scaleSceneMs(1300, 820, 2300));
-            if (!movedToPluginToggle || guardFailed()) {
-                return null;
-            }
-
-            this.cursor.click();
-            const pluginToggleEnabled = await this.setAgentFlagEnabled('user_plugin_enabled', true);
-            if (!pluginToggleEnabled || guardFailed()) {
-                return null;
-            }
-
-            const pluginToggleState = await this.waitForAgentToggleState('agent-user-plugin', true, 1800);
-            if (!pluginToggleState || guardFailed()) {
-                return null;
-            }
-
-            if (!(await this.waitForSceneDelay(scaleSceneMs(180, 80, 420)))) {
-                return null;
-            }
-
-            // 10. 通过悬停让管理面板显现
-            this.hoverElement(pluginToggle);
-
-            const managementButton = await this.ensureAgentSidePanelActionVisible(
-                'agent-user-plugin',
-                'management-panel',
-                2600
-            );
-            if (!managementButton || guardFailed()) {
-                return null;
-            }
-
-            const stableManagementButton = await this.waitForStableElementRect(
-                managementButton,
-                scaleSceneMs(320, 160, 760)
-            );
-            const managementMovementTarget = stableManagementButton || managementButton;
-            if (!managementMovementTarget || guardFailed()) {
-                return null;
-            }
-            this.setSpotlightGeometryHint(managementButton, {
-                padding: 22
-            });
-
-            // 11-13. 高亮管理面板 -> 移动到高亮中心点 -> 点击并同步打开真实页面
-            this.addRetainedExtraSpotlight(managementButton);
-            if (!(await this.waitForSceneDelay(scaleSceneMs(60, 40, 180)))) {
-                return null;
-            }
-            const movedToManagementButton = await this.moveCursorToTrackedElement(
-                managementMovementTarget,
-                scaleSceneMs(1900, 1200, 3200),
-                {
-                    recheckDelayMs: scaleSceneMs(180, 80, 420)
+            try {
+                // 1-3. 高亮猫爪 -> 平滑移动 -> 点击并打开猫爪面板
+                shouldCleanupPreviewState = true;
+                this.addRetainedExtraSpotlight(catPawButton);
+                this.overlay.clearActionSpotlight();
+                const movedToCatPaw = await this.moveCursorToElement(catPawButton, scaleSceneMs(1500, 900, 2600));
+                if (!movedToCatPaw || guardFailed()) {
+                    return null;
                 }
-            );
-            if (!movedToManagementButton || guardFailed()) {
-                return null;
-            }
 
-            if (!(await this.waitForSceneDelay(scaleSceneMs(90, 40, 220)))) {
-                return null;
-            }
-            await this.clickCursorAndWait(scaleSceneMs(180, 90, 420));
-            // clickAgentSidePanelAction 会把窗口打开交给按钮点击链路处理；
-            // 这里优先依赖 waitForOpenedWindow(PLUGIN_DASHBOARD_WINDOW_NAME) 等待副作用结果，
-            // 只有点击链路没有拉起窗口时才回退 openPluginDashboardWindow。
-            const existingPluginDashboardWindow = await this.waitForOpenedWindow(PLUGIN_DASHBOARD_WINDOW_NAME, 120);
-            const hadPluginDashboard = !!(existingPluginDashboardWindow && !existingPluginDashboardWindow.closed);
-            await this.clickAgentSidePanelAction('agent-user-plugin', 'management-panel', {
-                keepMainUIVisible: true
-            });
-            let pluginDashboardWindow = null;
-            if (hadPluginDashboard) {
-                try {
-                    existingPluginDashboardWindow.location.reload();
-                    pluginDashboardWindow = await this.waitForOpenedWindow(PLUGIN_DASHBOARD_WINDOW_NAME, 6000);
-                } catch (error) {
-                    console.warn('[YuiGuide] 刷新已有插件面板失败:', error);
-                    try {
-                        existingPluginDashboardWindow.close();
-                    } catch (closeError) {
-                        console.warn('[YuiGuide] 关闭旧插件面板失败:', closeError);
+                this.cursor.click();
+                const agentPanelOpened = await this.openAgentPanel();
+                if (!agentPanelOpened || guardFailed()) {
+                    return null;
+                }
+
+                const agentMasterToggle = await this.waitForElement(() => {
+                    const toggleItem = this.getAgentToggleElement('agent-master');
+                    return this.getElementRect(toggleItem) ? toggleItem : null;
+                }, 4000);
+                if (!agentMasterToggle || guardFailed()) {
+                    return null;
+                }
+
+                // 4-6. 高亮猫爪总开关 -> 平滑移动 -> 点击并同步打开
+                this.addRetainedExtraSpotlight(agentMasterToggle);
+                const movedToAgentMaster = await this.moveCursorToElement(agentMasterToggle, scaleSceneMs(1200, 760, 2200));
+                if (!movedToAgentMaster || guardFailed()) {
+                    return null;
+                }
+
+                this.cursor.click();
+                const agentMasterEnabled = await this.setAgentMasterEnabled(true);
+                if (!agentMasterEnabled || guardFailed()) {
+                    return null;
+                }
+
+                const agentMasterState = await this.waitForAgentToggleState('agent-master', true, 1800);
+                if (!agentMasterState || guardFailed()) {
+                    return null;
+                }
+                if (!(await this.waitForSceneDelay(scaleSceneMs(420, 180, 900)))) {
+                    return null;
+                }
+                if (guardFailed()) {
+                    return null;
+                }
+
+                const pluginToggle = await this.waitForElement(() => {
+                    const toggleItem = this.getAgentToggleElement('agent-user-plugin');
+                    return this.getElementRect(toggleItem) ? toggleItem : null;
+                }, 2200);
+                if (!pluginToggle || guardFailed()) {
+                    return null;
+                }
+
+                // 7-9. 高亮用户插件 -> 平滑移动 -> 点击并同步打开
+                this.addRetainedExtraSpotlight(pluginToggle);
+                const movedToPluginToggle = await this.moveCursorToElement(pluginToggle, scaleSceneMs(1300, 820, 2300));
+                if (!movedToPluginToggle || guardFailed()) {
+                    return null;
+                }
+
+                this.cursor.click();
+                const pluginToggleEnabled = await this.setAgentFlagEnabled('user_plugin_enabled', true);
+                if (!pluginToggleEnabled || guardFailed()) {
+                    return null;
+                }
+
+                const pluginToggleState = await this.waitForAgentToggleState('agent-user-plugin', true, 1800);
+                if (!pluginToggleState || guardFailed()) {
+                    return null;
+                }
+
+                if (!(await this.waitForSceneDelay(scaleSceneMs(180, 80, 420)))) {
+                    return null;
+                }
+
+                // 10. 通过悬停让管理面板显现
+                hoveredPluginToggle = pluginToggle;
+                this.hoverElement(pluginToggle);
+
+                const managementButton = await this.ensureAgentSidePanelActionVisible(
+                    'agent-user-plugin',
+                    'management-panel',
+                    2600
+                );
+                if (!managementButton || guardFailed()) {
+                    return null;
+                }
+
+                const stableManagementButton = await this.waitForStableElementRect(
+                    managementButton,
+                    scaleSceneMs(320, 160, 760)
+                );
+                const managementMovementTarget = stableManagementButton || managementButton;
+                if (!managementMovementTarget || guardFailed()) {
+                    return null;
+                }
+                const managementButtonRect = this.getElementRect(managementButton);
+                const managementSpotlightTarget = managementButtonRect
+                    ? this.createVirtualSpotlight('plugin-management-entry', {
+                        left: Math.max(0, managementButtonRect.left - 14),
+                        top: managementButtonRect.top,
+                        right: Math.min(window.innerWidth, managementButtonRect.right + 14),
+                        bottom: managementButtonRect.bottom
+                    }, {
+                        padding: DEFAULT_SPOTLIGHT_PADDING,
+                        radius: 18
+                    })
+                    : managementButton;
+
+                // 11-13. 高亮管理面板 -> 移动到高亮中心点 -> 点击并同步打开真实页面
+                this.addRetainedExtraSpotlight(managementSpotlightTarget);
+                if (!(await this.waitForSceneDelay(scaleSceneMs(60, 40, 180)))) {
+                    return null;
+                }
+                const movedToManagementButton = await this.moveCursorToTrackedElement(
+                    managementMovementTarget,
+                    scaleSceneMs(1900, 1200, 3200),
+                    {
+                        recheckDelayMs: scaleSceneMs(180, 80, 420)
                     }
+                );
+                if (!movedToManagementButton || guardFailed()) {
+                    return null;
+                }
+
+                if (!(await this.waitForSceneDelay(scaleSceneMs(90, 40, 220)))) {
+                    return null;
+                }
+                await this.clickCursorAndWait(scaleSceneMs(180, 90, 420));
+                const existingPluginDashboardWindow = await this.waitForOpenedWindow(PLUGIN_DASHBOARD_WINDOW_NAME, 120);
+                const hadPluginDashboard = !!(existingPluginDashboardWindow && !existingPluginDashboardWindow.closed);
+                await this.clickAgentSidePanelAction('agent-user-plugin', 'management-panel', {
+                    keepMainUIVisible: true
+                });
+                let pluginDashboardWindow = null;
+                if (hadPluginDashboard) {
+                    try {
+                        existingPluginDashboardWindow.location.reload();
+                        pluginDashboardWindow = await this.waitForOpenedWindow(PLUGIN_DASHBOARD_WINDOW_NAME, 6000);
+                        this.pluginDashboardWindowCreatedByGuide = false;
+                    } catch (error) {
+                        console.warn('[YuiGuide] 刷新已有插件面板失败:', error);
+                        try {
+                            existingPluginDashboardWindow.close();
+                        } catch (closeError) {
+                            console.warn('[YuiGuide] 关闭旧插件面板失败:', closeError);
+                        }
+                        pluginDashboardWindow = await this.openPluginDashboardWindow({
+                            keepMainUIVisible: true
+                        });
+                        if (!pluginDashboardWindow || pluginDashboardWindow.closed) {
+                            pluginDashboardWindow = await this.waitForOpenedWindow(PLUGIN_DASHBOARD_WINDOW_NAME, 6000);
+                        }
+                        this.pluginDashboardWindowCreatedByGuide = !!(pluginDashboardWindow && !pluginDashboardWindow.closed);
+                    }
+                } else {
+                    pluginDashboardWindow = await this.waitForOpenedWindow(PLUGIN_DASHBOARD_WINDOW_NAME, 6000);
+                    this.pluginDashboardWindowCreatedByGuide = !!(pluginDashboardWindow && !pluginDashboardWindow.closed);
+                }
+                if (
+                    (!pluginDashboardWindow || pluginDashboardWindow.closed)
+                    && runId === this.sceneRunId
+                    && !this.destroyed
+                    && !this.angryExitTriggered
+                ) {
                     pluginDashboardWindow = await this.openPluginDashboardWindow({
                         keepMainUIVisible: true
                     });
-                    if (!pluginDashboardWindow || pluginDashboardWindow.closed) {
-                        pluginDashboardWindow = await this.waitForOpenedWindow(PLUGIN_DASHBOARD_WINDOW_NAME, 6000);
-                    }
+                    this.pluginDashboardWindowCreatedByGuide = !!(pluginDashboardWindow && !pluginDashboardWindow.closed);
                 }
-            } else {
-                pluginDashboardWindow = await this.waitForOpenedWindow(PLUGIN_DASHBOARD_WINDOW_NAME, 6000);
-            }
-            this.pluginDashboardWindowCreatedByGuide = !!(pluginDashboardWindow && !pluginDashboardWindow.closed) && !hadPluginDashboard;
-            if (
-                (!pluginDashboardWindow || pluginDashboardWindow.closed)
-                && runId === this.sceneRunId
-                && !this.destroyed
-                && !this.angryExitTriggered
-            ) {
-                pluginDashboardWindow = await this.openPluginDashboardWindow({
-                    keepMainUIVisible: true
-                });
-                this.pluginDashboardWindowCreatedByGuide = !!(pluginDashboardWindow && !pluginDashboardWindow.closed) && !hadPluginDashboard;
-            }
 
-            if (pluginDashboardWindow && !pluginDashboardWindow.closed) {
-                await this.runPluginPreviewHomeExitSequence({
-                    managementButton: managementButton,
-                    pluginToggle: pluginToggle,
-                    agentMasterToggle: agentMasterToggle,
-                    catPawButton: catPawButton
-                }, runId, scaleSceneMs);
+                if (pluginDashboardWindow && !pluginDashboardWindow.closed) {
+                    await this.runPluginPreviewHomeExitSequence({
+                        managementButton: managementSpotlightTarget,
+                        pluginToggle: pluginToggle,
+                        agentMasterToggle: agentMasterToggle,
+                        catPawButton: catPawButton
+                    }, runId, scaleSceneMs);
+                    pluginPreviewCleanedUp = true;
+                    shouldCleanupPreviewState = false;
+                }
+                return pluginDashboardWindow;
+            } finally {
+                if (shouldCleanupPreviewState && !pluginPreviewCleanedUp) {
+                    await this.cleanupPluginPreviewState({
+                        catPawButton: catPawButton,
+                        hoverTarget: hoveredPluginToggle
+                    }).catch(() => {});
+                }
             }
-            return pluginDashboardWindow;
         }
 
         waitForPluginDashboardPerformance(windowRef, payload) {

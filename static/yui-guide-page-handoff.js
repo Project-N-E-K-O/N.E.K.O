@@ -997,10 +997,13 @@
 
     function openPluginDashboard(resumeSceneOrOptions, options) {
         var hasLegacySignature = arguments.length > 1 && options !== undefined;
-        var legacyResumeScene = hasLegacySignature && typeof resumeSceneOrOptions === 'string'
+        var hasLegacyStringOnlySignature = arguments.length === 1 && typeof resumeSceneOrOptions === 'string';
+        var legacyResumeScene = (hasLegacySignature || hasLegacyStringOnlySignature) && typeof resumeSceneOrOptions === 'string'
             ? resumeSceneOrOptions
             : '';
-        var sourceOptions = hasLegacySignature ? (options || {}) : (resumeSceneOrOptions || {});
+        var sourceOptions = hasLegacySignature
+            ? (options || {})
+            : (hasLegacyStringOnlySignature ? {} : (resumeSceneOrOptions || {}));
         var normalizedOptions = Object.assign({}, sourceOptions, {
             resumeScene: legacyResumeScene || sourceOptions.resumeScene || sourceOptions.resume_scene || null,
             forceReload: true
