@@ -290,6 +290,260 @@ class TtsStreamNormalizer:
         return ""
 
 
+class TtsBracketStripper:
+    """跨 chunk 安全的 TTS 括号剥离器。
+
+    括号内容连同括号本身**整体不读**（含所有半角/全角括号类型，包含
+    嵌套）。流式输入下一句 ``她（笑）说`` 可能被切成 ``她（``、``笑``、
+    ``）说`` 三个 chunk，本类用 ``depth`` 计数维持嵌套状态，跨 chunk
+    不丢失。
+
+    每个新 TTS 轮次（``speech_id`` 切换）必须调 :meth:`reset`，否则
+    上一轮悬挂的 open bracket 会把新一轮的开头一段静音掉。
+    :meth:`flush` 在 turn end 前调一次，把残留的未闭合括号 depth 直接
+    清零（半个 ``（thinking...`` 不读比读半个更安全）。
+
+    设计上和 markdown 剥离解耦：``[`` ``]`` 的"剥外壳保内容"语义留给
+    :class:`TtsMarkdownStripper` 处理（markdown 链接 ``[文本](URL)``
+    需要保留 ``文本``）。本类把 ``[`` ``]`` 视作整段不读的括号，因此
+    ``TtsMarkdownStripper`` 必须串在前面，先把链接等剥成纯文本再交给
+    本类，否则链接文本会被吃掉。
+    """
+
+    # 半角 + 全角 + 各类引用括号；刻意不含 `{` `｛` `}` `｝`
+    # （编程语境会出现，朗读时反而希望保留）。
+    _OPEN = frozenset("(（[［【〈〔《「『")
+    _CLOSE = frozenset(")）]］】〉〕》」』")
+
+    __slots__ = ("_depth",)
+
+    def __init__(self):
+        self._depth = 0
+
+    def reset(self) -> None:
+        """清空 depth。新 speech_id 或中断时调。"""
+        self._depth = 0
+
+    def feed(self, chunk: str) -> str:
+        """逐字符扫描，返回当前可 emit 的（深度为 0 之外的）文本。"""
+        if not chunk:
+            return ""
+        out = []
+        depth = self._depth
+        for c in chunk:
+            if c in self._OPEN:
+                depth += 1
+            elif c in self._CLOSE:
+                if depth > 0:
+                    depth -= 1
+                else:
+                    # 落单的 close 括号：当成普通标点 emit，避免把
+                    # ``50)`` 这种数学/列表写法的 ``)`` 整个吃掉。
+                    out.append(c)
+            elif depth == 0:
+                out.append(c)
+            # else: depth > 0，正在括号里，整个丢
+        self._depth = depth
+        return "".join(out)
+
+    def flush(self) -> str:
+        """轮次收尾：清零 depth，返回 ``""``。
+
+        未闭合括号的悬挂内容已经在 feed 阶段被丢弃，这里只需重置状态。
+        """
+        self._depth = 0
+        return ""
+
+
+class TtsMarkdownStripper:
+    """跨 chunk 安全的 markdown 剥离器（best effort）。
+
+    剥外壳保内容：``**X**`` → ``X``、``[X](url)`` → ``X`` 等。
+    覆盖以下模式（顺序 = 优先级）：
+
+    1. 三反引号 fence ``` ```lang\\nbody``` ``` → 整段丢（朗读代码无意义）
+    2. 行内 fence ``` ``X`` ``` → ``X``
+    3. 图片 ``![alt](url)`` → 整段丢（含 alt）
+    4. 链接 ``[text](url)`` → ``text``
+    5. ``**X**`` / ``__X__`` → ``X``
+    6. ``*X*`` / ``_X_`` → ``X``（``_`` 严格要求两侧非字母数字，避开变量名）
+    7. ``~~X~~`` → ``X``
+    8. 行首 ``#``/``##``/...``/``>``/``-``/``*``/``\\d+.`` 列表/标题/引用前缀 → 删
+
+    流式策略：用 ``_safe_split`` 找出"从最早未配对的 marker 起到 buf 末"的位置，
+    那段 hold 成 pending 等下个 chunk；前面的 emit。pending 上限 ``_MAX_PENDING``
+    防止模型半天不闭合一直憋着——超限就强制 emit + reset，避免内存膨胀。
+    :meth:`flush` 在 turn end 前调一次，把 pending strip 一遍并把残留的孤立
+    marker 字符（``*`` ``_`` ``~`` ``\\``` ``[`` ``]`` ``(`` ``)``）删掉再 emit。
+
+    刻意 best effort：嵌套 emphasis、跨 fence 的复杂场景不保证完美——LLM
+    很少这么写，过度工程化得不偿失。完全不会"吃"用户内容（坏情况只是漏剥）。
+    """
+
+    __slots__ = ("_pending",)
+
+    # pending 字节上限，防止模型不闭合时无限累加。超限直接 emit + reset。
+    _MAX_PENDING = 256
+
+    # 多字符 marker（必须先于单字符匹配，否则 ``**`` 会被算成两个 ``*``）。
+    _MULTI_MARKERS = ("```", "**", "__", "~~")
+    _SINGLE_MARKERS = ("*", "_", "~", "`")
+
+    # _strip 用的完整正则模式（顺序敏感）
+    _PATTERNS = (
+        # 多行 fence（含语言标签）整段删
+        (re.compile(r"```[^\n]*\n[\s\S]*?```"), ""),
+        # 行内 fence 保留内容
+        (re.compile(r"```([^`\n]*?)```"), r"\1"),
+        # 图片整段删（包括 alt 文本，避免朗读 "alt-text"）
+        (re.compile(r"!\[[^\]]*?\]\([^)]*?\)"), ""),
+        # 链接保留 text，丢 url
+        (re.compile(r"\[([^\]]+?)\]\([^)]*?\)"), r"\1"),
+        # bold（先于 italic 处理，避免 ``**X**`` 被当成两个 ``*X*``）
+        (re.compile(r"\*\*([^*\n]+?)\*\*"), r"\1"),
+        (re.compile(r"__([^_\n]+?)__"), r"\1"),
+        # italic
+        (re.compile(r"(?<!\*)\*([^*\n]+?)\*(?!\*)"), r"\1"),
+        # ``_`` 两侧必须非字母数字，否则会吃掉 ``foo_bar`` 这种变量名
+        (re.compile(r"(?<![A-Za-z0-9_])_([^_\n]+?)_(?![A-Za-z0-9_])"), r"\1"),
+        # strikethrough
+        (re.compile(r"~~([^~\n]+?)~~"), r"\1"),
+        # inline code
+        (re.compile(r"`+([^`\n]+?)`+"), r"\1"),
+        # 行首 marker（heading / blockquote / list）
+        (re.compile(r"(?m)^[ \t]*(?:#{1,6}|>+|[-*+]|\d+\.)[ \t]+"), ""),
+    )
+
+    # flush 兜底：删掉残留的孤立 marker 字符
+    _DANGLING_RE = re.compile(r"[*_~`\[\]()]+")
+
+    def __init__(self):
+        self._pending = ""
+
+    def reset(self) -> None:
+        """清空 pending。新 speech_id 或中断时调。"""
+        self._pending = ""
+
+    def feed(self, chunk: str) -> str:
+        """喂入新 chunk，返回当前可安全 emit 的已剥离文本。"""
+        if not chunk:
+            return ""
+        buf = self._pending + chunk
+
+        # pending 撑满兜底：模型一直不闭合时强制 emit + reset，避免内存膨胀
+        if len(buf) > self._MAX_PENDING:
+            out = self._strip(buf)
+            self._pending = ""
+            return out
+
+        split = self._safe_split(buf)
+        emit = buf[:split]
+        self._pending = buf[split:]
+
+        if not emit:
+            return ""
+        return self._strip(emit)
+
+    def flush(self) -> str:
+        """轮次收尾：strip pending，再删掉残留的孤立 marker 字符后 emit。"""
+        if not self._pending:
+            return ""
+        out = self._strip(self._pending)
+        out = self._DANGLING_RE.sub("", out)
+        self._pending = ""
+        return out
+
+    @classmethod
+    def _safe_split(cls, buf: str) -> int:
+        """找出 buf 中"从最早未配对 marker 到末尾"的起点。
+
+        前面的部分是"已经能确定不会被后续 chunk 改变"的，可以直接 emit；
+        从这个位置起到 buf 末是 pending，等更多 chunk 决定如何 strip。
+        """
+        split = len(buf)
+        work = list(buf)
+
+        # 多字符 marker：parity 检查。配对的 black-out，避免单字符再次计入。
+        for marker in cls._MULTI_MARKERS:
+            mlen = len(marker)
+            positions = []
+            i = 0
+            current = "".join(work)
+            while True:
+                j = current.find(marker, i)
+                if j < 0:
+                    break
+                positions.append(j)
+                i = j + mlen
+            if not positions:
+                continue
+            if len(positions) % 2:
+                # 末尾一个未配对，从它起 hold
+                split = min(split, positions[-1])
+                paired = positions[:-1]
+            else:
+                paired = positions
+            for p in paired:
+                for k in range(mlen):
+                    if 0 <= p + k < len(work):
+                        work[p + k] = "\0"
+
+        # 单字符 marker（已 black-out 多字符配对的视图）
+        work_str = "".join(work)
+        for marker in cls._SINGLE_MARKERS:
+            if marker == "_":
+                # ``_`` 两侧紧贴 alnum 时属于 identifier（``foo_bar``），不当 italic marker。
+                # 与 _strip 的 italic underscore 正则的 lookbehind/lookahead 保持一致。
+                positions = []
+                for i, c in enumerate(work_str):
+                    if c != "_":
+                        continue
+                    left_alnum = i > 0 and (work_str[i - 1].isalnum() or work_str[i - 1] == "_")
+                    right_alnum = (
+                        i + 1 < len(work_str)
+                        and (work_str[i + 1].isalnum() or work_str[i + 1] == "_")
+                    )
+                    if left_alnum and right_alnum:
+                        continue  # identifier 内的 _，不算 marker
+                    positions.append(i)
+            else:
+                positions = [i for i, c in enumerate(work_str) if c == marker]
+            if len(positions) % 2:
+                split = min(split, positions[-1])
+
+        # ``[ ]`` 配对
+        stack = []
+        for i, c in enumerate(work_str):
+            if c == "[":
+                stack.append(i)
+            elif c == "]" and stack:
+                stack.pop()
+        if stack:
+            split = min(split, stack[0])
+
+        # ``](`` 后未见 ``)`` —— 链接 URL 还没写完
+        idx = 0
+        while True:
+            j = work_str.find("](", idx)
+            if j < 0:
+                break
+            close = work_str.find(")", j + 2)
+            if close < 0:
+                bracket_pos = work_str.rfind("[", 0, j)
+                if bracket_pos >= 0:
+                    split = min(split, bracket_pos)
+                break
+            idx = close + 1
+
+        return max(0, split)
+
+    @classmethod
+    def _strip(cls, text: str) -> str:
+        for pat, repl in cls._PATTERNS:
+            text = pat.sub(repl, text)
+        return text
+
+
 def is_only_punctuation(text):
     # Regular expression: Match strings that consist only of punctuation marks or are empty.
     punctuation_pattern = r'^[\p{P}\p{S}]*$'
