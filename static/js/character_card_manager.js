@@ -5433,7 +5433,7 @@ function buildSteamTabContent(name, rawData, card, container) {
                 </div>
             </div>
             <div id="live2d-preview-overlay" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 100; pointer-events: auto;"></div>
-            <button id="live2d-refresh-btn" style="position: absolute; top: 10px; right: 10px; z-index: 101; width: 30px; height: 30px; border: none; border-radius: 50%; background-color: transparent; color: white; cursor: pointer; display: flex; justify-content: center; align-items: center; font-size: 16px; pointer-events: auto;" title="${window.t ? window.t('steam.refreshLive2DPreview') : '刷新Live2D预览'}" onclick="refreshLive2DPreview()">↻</button>
+            <button id="live2d-refresh-btn" style="position: absolute; top: 10px; right: 10px; z-index: 101; width: 30px; height: 30px; border: none; border-radius: 50%; background-color: transparent; color: white; cursor: pointer; display: none; justify-content: center; align-items: center; font-size: 16px; pointer-events: auto;" title="${window.t ? window.t('steam.refreshLive2DPreview') : '刷新Live2D预览'}" onclick="refreshLive2DPreview()">↻</button>
         </div>`;
     live2dSection.appendChild(previewContainer);
 
@@ -6455,6 +6455,16 @@ async function scanModels() {
 // 全局变量：当前选择的模型信息
 let selectedModelInfo = null;
 
+function setLive2DPreviewRefreshButtonState(visible, enabled = visible) {
+    const refreshButton = document.getElementById('live2d-refresh-btn');
+    if (!refreshButton) return;
+
+    refreshButton.style.display = visible ? 'flex' : 'none';
+    refreshButton.disabled = !enabled;
+    refreshButton.style.cursor = enabled ? 'pointer' : 'default';
+    refreshButton.setAttribute('aria-hidden', visible ? 'false' : 'true');
+}
+
 function fitLive2DPreviewModelToContainer(model) {
     if (!live2dPreviewManager || !live2dPreviewManager.pixi_app || !model) return;
 
@@ -6895,6 +6905,8 @@ async function disposeWorkshopMmd() {
 async function loadVrmPreview(modelPath, rawData) {
     try {
         cancelPendingLive2DPreviewLoads();
+        selectedModelInfo = null;
+        setLive2DPreviewRefreshButtonState(false, false);
 
         // 先清理之前的 3D 预览
         await disposeWorkshopVrm();
@@ -6997,6 +7009,8 @@ async function loadVrmPreview(modelPath, rawData) {
 async function loadMmdPreview(modelPath, rawData) {
     try {
         cancelPendingLive2DPreviewLoads();
+        selectedModelInfo = null;
+        setLive2DPreviewRefreshButtonState(false, false);
 
         // 先清理之前的 3D 预览
         await disposeWorkshopVrm();
@@ -7096,6 +7110,8 @@ async function loadMmdPreview(modelPath, rawData) {
 
 // 清除所有模型预览（Live2D + VRM + MMD）
 async function clearAllModelPreviews(showModelNotSetMessage = false) {
+    selectedModelInfo = null;
+    setLive2DPreviewRefreshButtonState(false, false);
     await disposeWorkshopVrm();
     await disposeWorkshopMmd();
     hideAll3DPreviews();
@@ -7122,12 +7138,14 @@ async function clearAllModelPreviews(showModelNotSetMessage = false) {
 async function clearLive2DPreview(showModelNotSetMessage = false) {
     try {
         cancelPendingLive2DPreviewLoads();
+        selectedModelInfo = null;
+        setLive2DPreviewRefreshButtonState(false, false);
 
         // 如果有模型加载，先移除它
         if (live2dPreviewManager && live2dPreviewManager.currentModel) {
             await live2dPreviewManager.removeModel(true);
-            currentPreviewModel = null;
         }
+        currentPreviewModel = null;
 
         // 隐藏canvas，显示占位符
         const canvas = document.getElementById('live2d-preview-canvas');
@@ -7173,6 +7191,7 @@ async function clearLive2DPreview(showModelNotSetMessage = false) {
 async function loadLive2DModelByName(modelName, modelInfo = null) {
     const loadGeneration = beginLive2DPreviewLoadGeneration();
     let loadedModel = null;
+    setLive2DPreviewRefreshButtonState(false, false);
     const ensureCurrentLoad = async () => {
         if (isCurrentLive2DPreviewLoad(loadGeneration)) {
             return;
@@ -7345,12 +7364,14 @@ async function loadLive2DModelByName(modelName, modelInfo = null) {
 
         // 更新全局selectedModelInfo变量
         selectedModelInfo = modelInfo;
+        setLive2DPreviewRefreshButtonState(true, true);
         showMessage((window.t && window.t('live2d.modelLoadSuccess', { model: modelName })) || `模型 ${modelName} 加载成功`, 'success');
     } catch (error) {
         if (error && error.code === 'STALE_LIVE2D_PREVIEW_LOAD') {
             return;
         }
 
+        setLive2DPreviewRefreshButtonState(false, false);
         console.error('Failed to load Live2D model by name:', error);
         showMessage((window.t && window.t('live2d.modelLoadFailed', { model: modelName })) || `加载模型 ${modelName} 失败`, 'error');
 
@@ -7418,12 +7439,20 @@ async function updatePreviewControlsAfterModelLoad(filesData) {
     const savedIdleAnimation = rawData._reserved?.avatar?.live2d?.idle_animation
         || rawData.avatar?.live2d?.idle_animation
         || rawData.live2d_idle_animation;
+    const savedIdleAnimationBaseName = savedIdleAnimation
+        ? String(savedIdleAnimation).split('/').pop()
+        : '';
     const availableMotionFiles = window._previewMotionFiles || [];
     let initialMotionToPlay = '';
-    if (savedIdleAnimation && motionSelect) {
-        if (availableMotionFiles.includes(savedIdleAnimation)) {
-            motionSelect.value = savedIdleAnimation;
-            initialMotionToPlay = savedIdleAnimation;
+    if (savedIdleAnimationBaseName && motionSelect) {
+        const matchingSavedMotion = availableMotionFiles.find(file => {
+            const normalizedFile = String(file || '');
+            return normalizedFile === savedIdleAnimation
+                || normalizedFile.split('/').pop() === savedIdleAnimationBaseName;
+        });
+        if (matchingSavedMotion) {
+            motionSelect.value = matchingSavedMotion;
+            initialMotionToPlay = matchingSavedMotion;
         }
     }
 
@@ -7446,14 +7475,16 @@ async function updatePreviewControlsAfterModelLoad(filesData) {
             : [];
     }
 
+    const scheduledMotionSelection = motionSelect ? motionSelect.value : '';
+
     if (initialMotionToPlay && previewModelToAutoplay) {
         requestAnimationFrame(() => {
             if (
                 currentPreviewModel === previewModelToAutoplay
                 && live2dPreviewManager?.currentModel === previewModelToAutoplay
                 && motionSelect
+                && motionSelect.value === scheduledMotionSelection
             ) {
-                motionSelect.value = initialMotionToPlay;
                 handlePreviewMotionPlay();
             }
         });

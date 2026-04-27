@@ -391,7 +391,7 @@ def test_character_card_manager_live2d_preview_loads_after_regression_fixes(
                 _reserved: {
                     avatar: {
                         live2d: {
-                            idle_animation: 'motions/cry.motion3.json'
+                            idle_animation: 'cry.motion3.json'
                         }
                     }
                 }
@@ -418,6 +418,8 @@ def test_character_card_manager_live2d_preview_loads_after_regression_fixes(
                 placeholderDisplay: document.querySelector('#live2d-preview-content .preview-placeholder')?.style.display || '',
                 controlsDisplay: document.getElementById('live2d-preview-controls')?.style.display || '',
                 hasCurrentModel: !!live2dPreviewManager?.currentModel,
+                selectedModelName: selectedModelInfo?.name || '',
+                refreshButtonDisplay: document.getElementById('live2d-refresh-btn')?.style.display || '',
                 selectedMotion: document.getElementById('preview-motion-select')?.value || '',
                 configuredIdleAnimations: live2dPreviewManager?._userIdleAnimations || [],
                 motionCalls: currentPreviewModel?.motionCalls || [],
@@ -434,6 +436,8 @@ def test_character_card_manager_live2d_preview_loads_after_regression_fixes(
     assert state["canvasDisplay"] != "none"
     assert state["placeholderDisplay"] == "none"
     assert state["hasCurrentModel"] is True
+    assert state["selectedModelName"] == "ATLS"
+    assert state["refreshButtonDisplay"] == "flex"
     assert "motions/idle.motion3.json" in state["motionOptions"]
     assert "hide_tail" in state["expressionOptions"]
     assert state["selectedMotion"] == "motions/cry.motion3.json"
@@ -541,10 +545,12 @@ def test_character_card_manager_cancels_stale_live2d_when_switching_to_3d_previe
             return {
                 title: document.getElementById('model-preview-title')?.textContent || '',
                 live2dCanvasDisplay: document.getElementById('live2d-preview-canvas')?.style.display || '',
+                refreshButtonDisplay: document.getElementById('live2d-refresh-btn')?.style.display || '',
                 vrmDisplay: document.getElementById('vrm-preview-container')?.style.display || '',
                 mmdDisplay: document.getElementById('mmd-preview-container')?.style.display || '',
                 hasCurrentLive2dModel: !!live2dPreviewManager?.currentModel,
                 hasCurrentPreviewModel: !!currentPreviewModel,
+                selectedModelName: selectedModelInfo?.name || '',
                 messages: window.__messages,
                 consoleErrors: window.__consoleErrors
             };
@@ -558,14 +564,61 @@ def test_character_card_manager_cancels_stale_live2d_when_switching_to_3d_previe
 
     assert state["title"] == expected_title
     assert state["live2dCanvasDisplay"] == "none"
+    assert state["refreshButtonDisplay"] == "none"
     assert state["hasCurrentLive2dModel"] is False
     assert state["hasCurrentPreviewModel"] is False
+    assert state["selectedModelName"] == ""
     assert state["vrmDisplay"] == ("block" if expected_visible_container == "vrm-preview-container" else "none")
     assert state["mmdDisplay"] == ("block" if expected_visible_container == "mmd-preview-container" else "none")
     assert not any(
         "Failed to load Live2D model by name" in entry
         or "[Workshop VRM] 加载预览失败:" in entry
         or "[Workshop MMD] 加载预览失败:" in entry
+        for entry in state["consoleErrors"]
+    )
+
+
+@pytest.mark.frontend
+def test_character_card_manager_clear_preview_resets_refresh_state(
+    mock_page: Page,
+    running_server: str,
+):
+    _open_character_card_manager(mock_page, running_server)
+    _mount_steam_preview_dom(mock_page)
+    _install_preview_stubs(mock_page, load_delay_ms=30)
+
+    state = mock_page.evaluate(
+        """
+        async () => {
+            await loadLive2DModelByName('ATLS', {
+                name: 'ATLS',
+                path: '/workshop/steam123/ATLS/ATLS.model3.json',
+                item_id: 'steam123'
+            });
+
+            await new Promise(resolve => setTimeout(resolve, 180));
+            await clearAllModelPreviews(true);
+
+            return {
+                canvasDisplay: document.getElementById('live2d-preview-canvas')?.style.display || '',
+                placeholderDisplay: document.querySelector('#live2d-preview-content .preview-placeholder')?.style.display || '',
+                refreshButtonDisplay: document.getElementById('live2d-refresh-btn')?.style.display || '',
+                selectedModelName: selectedModelInfo?.name || '',
+                hasCurrentPreviewModel: !!currentPreviewModel,
+                messages: window.__messages,
+                consoleErrors: window.__consoleErrors
+            };
+        }
+        """
+    )
+
+    assert state["canvasDisplay"] == "none"
+    assert state["placeholderDisplay"] == "flex"
+    assert state["refreshButtonDisplay"] == "none"
+    assert state["selectedModelName"] == ""
+    assert state["hasCurrentPreviewModel"] is False
+    assert not any(
+        "清除Live2D预览失败:" in entry
         for entry in state["consoleErrors"]
     )
     assert not [entry for entry in state["messages"] if entry["type"] == "error"]

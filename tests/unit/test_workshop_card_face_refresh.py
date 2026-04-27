@@ -17,6 +17,18 @@ def _write_meta(path: Path, origin: str) -> None:
     path.write_text(json.dumps({"origin": origin}), encoding="utf-8")
 
 
+class _FakeConfigManager:
+    def __init__(self, root: Path):
+        self.card_faces_dir = root / "card_faces"
+
+    def ensure_card_faces_directory(self) -> bool:
+        self.card_faces_dir.mkdir(parents=True, exist_ok=True)
+        return True
+
+    def card_face_meta_path(self, chara_name: str) -> Path:
+        return self.card_faces_dir / f"{chara_name}.meta.json"
+
+
 @pytest.mark.unit
 def test_should_refresh_workshop_card_face_allows_missing_face_file(tmp_path: Path):
     face_path = tmp_path / "card_faces" / "demo.png"
@@ -66,3 +78,28 @@ def test_render_workshop_card_face_image_outputs_normalized_canvas():
 
     assert rendered.size == workshop_router.WORKSHOP_CARD_FACE_SIZE
     assert rendered.mode == "RGBA"
+
+
+@pytest.mark.unit
+def test_ensure_workshop_card_face_from_preview_persists_sidecar_when_rendering(tmp_path: Path):
+    config_mgr = _FakeConfigManager(tmp_path)
+    preview_path = tmp_path / "preview.png"
+    _write_image(preview_path, (1024, 1024))
+
+    created = workshop_router._ensure_workshop_card_face_from_preview(
+        config_mgr,
+        "demo",
+        str(preview_path),
+        {"authorName": "Tester"},
+    )
+
+    face_path = config_mgr.card_faces_dir / "demo.png"
+    meta_path = config_mgr.card_face_meta_path("demo")
+
+    assert created is True
+    assert face_path.is_file()
+    assert meta_path.is_file()
+
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    assert meta["origin"] == "steam"
+    assert meta["author"] == "Tester"

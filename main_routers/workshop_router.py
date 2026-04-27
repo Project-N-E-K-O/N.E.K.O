@@ -724,11 +724,7 @@ def _render_workshop_card_face_image(img):
     resampling = getattr(PILImage, 'Resampling', PILImage)
     lanczos = getattr(resampling, 'LANCZOS', PILImage.BICUBIC)
 
-    img = ImageOps.exif_transpose(img)
-    has_alpha = 'A' in img.getbands() or 'transparency' in (img.info or {})
-    working = img.convert('RGBA' if has_alpha else 'RGB')
-    if working.mode != 'RGBA':
-        working = working.convert('RGBA')
+    working = ImageOps.exif_transpose(img).convert('RGBA')
 
     canvas = PILImage.new('RGBA', WORKSHOP_CARD_FACE_SIZE, (231, 245, 255, 255))
     background = ImageOps.fit(
@@ -778,7 +774,12 @@ def _is_matching_workshop_character(catgirl_data: dict, item_id) -> bool:
         return False
 
 
-def _ensure_workshop_card_face_from_preview(config_mgr, chara_name: str, preview_image_path: str | None) -> bool:
+def _ensure_workshop_card_face_from_preview(
+    config_mgr,
+    chara_name: str,
+    preview_image_path: str | None,
+    item: dict | None = None,
+) -> bool:
     """Create or refresh a workshop-derived card face from the Steam preview image."""
     if not preview_image_path or not os.path.isfile(preview_image_path):
         return False
@@ -791,6 +792,9 @@ def _ensure_workshop_card_face_from_preview(config_mgr, chara_name: str, preview
         return False
 
     from PIL import Image as PILImage
+
+    if item and not meta_path.exists():
+        atomic_write_json(meta_path, _build_workshop_card_face_meta(item), ensure_ascii=False, indent=2)
 
     fd, temp_path = tempfile.mkstemp(
         prefix=f".{face_path.name}.",
@@ -4096,6 +4100,7 @@ async def sync_workshop_character_cards() -> dict:
                                             config_mgr,
                                             chara_name,
                                             preview_image_path,
+                                            item,
                                         )
                                         meta_created = await asyncio.to_thread(
                                             _ensure_workshop_card_face_meta,
@@ -4203,6 +4208,7 @@ async def sync_workshop_character_cards() -> dict:
                                     config_mgr,
                                     chara_name,
                                     preview_image_path,
+                                    item,
                                 )
                                 if face_created:
                                     logger.info(
