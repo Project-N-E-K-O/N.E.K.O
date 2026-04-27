@@ -348,8 +348,8 @@ window.updateChatModeStyle = function(checkbox) {
     const checkmark = indicator?.querySelector('.chat-mode-checkmark');
     if (!indicator || !checkmark) return;
     if (checkbox.checked) {
-        indicator.style.backgroundColor = '#44b7fe';
-        indicator.style.borderColor = '#44b7fe';
+        indicator.style.backgroundColor = 'var(--neko-popup-accent, #44b7fe)';
+        indicator.style.borderColor = 'var(--neko-popup-accent, #44b7fe)';
         checkmark.style.opacity = '1';
     } else {
         indicator.style.backgroundColor = 'transparent';
@@ -358,13 +358,11 @@ window.updateChatModeStyle = function(checkbox) {
     }
 
     const hovered = wrapper.matches(':hover');
-    wrapper.style.background = checkbox.checked
-        ? (hovered
+    wrapper.style.background = hovered
+        ? (checkbox.checked
             ? 'var(--neko-popup-selected-hover, rgba(68,183,254,0.15))'
-            : 'var(--neko-popup-selected-bg, rgba(68,183,254,0.1))')
-        : (hovered
-            ? 'var(--neko-popup-hover-subtle, rgba(68,183,254,0.08))'
-            : 'transparent');
+            : 'var(--neko-popup-hover-subtle, rgba(68,183,254,0.08))')
+        : 'transparent';
 };
 
 // 兼容旧函数名
@@ -619,20 +617,23 @@ Live2DManager.prototype.showPopup = function (buttonId, popup) {
             const indicator = toggleItem.querySelector('[class*="-toggle-indicator"]');
             const checkmark = indicator?.querySelector('[class*="-toggle-checkmark"]');
             if (!indicator || !checkmark) return;
-            const alwaysTinted = ['live2d-merge-messages', 'live2d-focus-mode', 'live2d-avatar-reaction-bubble'].includes(checkbox.id);
-            const checkedColor = alwaysTinted ? '#69c5ff' : '#44b7fe';
+            const checkedColor = 'var(--neko-popup-accent, #44b7fe)';
 
+            const hovered = toggleItem.matches(':hover');
             if (checkbox.checked) {
                 indicator.style.backgroundColor = checkedColor;
                 indicator.style.borderColor = checkedColor;
                 checkmark.style.opacity = '1';
-                toggleItem.style.background = 'rgba(68, 183, 254, 0.1)';
             } else {
                 indicator.style.backgroundColor = 'transparent';
                 indicator.style.borderColor = '#ccc';
                 checkmark.style.opacity = '0';
-                toggleItem.style.background = alwaysTinted ? 'rgba(68, 183, 254, 0.1)' : 'transparent';
             }
+            toggleItem.style.background = hovered
+                ? (checkbox.checked
+                    ? 'var(--neko-popup-selected-hover, rgba(68,183,254,0.15))'
+                    : 'var(--neko-popup-hover-subtle, rgba(68,183,254,0.08))')
+                : 'transparent';
         };
 
         // 更新 merge messages checkbox 状态和视觉样式
