@@ -1383,6 +1383,7 @@
             this.sceneExtraSpotlightElements = [];
             this.pluginDashboardHandoff = null;
             this.pluginDashboardLastInterruptRequestId = '';
+            this.pluginDashboardWindowCreatedByGuide = false;
             this.customSecondarySpotlightTarget = null;
             this.keydownHandler = this.onKeyDown.bind(this);
             this.pointerMoveHandler = this.onPointerMove.bind(this);
@@ -4175,12 +4176,17 @@
             // clickAgentSidePanelAction 会把窗口打开交给按钮点击链路处理；
             // 这里优先依赖 waitForOpenedWindow(PLUGIN_DASHBOARD_WINDOW_NAME) 等待副作用结果，
             // 只有点击链路没有拉起窗口时才回退 openPluginDashboardWindow。
+            const existingPluginDashboardWindow = await this.waitForOpenedWindow(PLUGIN_DASHBOARD_WINDOW_NAME, 120);
+            const hadPluginDashboard = !!(existingPluginDashboardWindow && !existingPluginDashboardWindow.closed);
             await this.clickAgentSidePanelAction('agent-user-plugin', 'management-panel', {
                 keepMainUIVisible: true
             });
-            let pluginDashboardWindow = await this.waitForOpenedWindow(PLUGIN_DASHBOARD_WINDOW_NAME, 6000);
+            let pluginDashboardWindow = hadPluginDashboard
+                ? existingPluginDashboardWindow
+                : await this.waitForOpenedWindow(PLUGIN_DASHBOARD_WINDOW_NAME, 6000);
             if (
                 (!pluginDashboardWindow || pluginDashboardWindow.closed)
+                && !hadPluginDashboard
                 && runId === this.sceneRunId
                 && !this.destroyed
                 && !this.angryExitTriggered
@@ -4189,6 +4195,7 @@
                     keepMainUIVisible: true
                 });
             }
+            this.pluginDashboardWindowCreatedByGuide = !!(!hadPluginDashboard && pluginDashboardWindow && !pluginDashboardWindow.closed);
 
             if (pluginDashboardWindow && !pluginDashboardWindow.closed) {
                 await this.runPluginPreviewHomeExitSequence({
@@ -4317,6 +4324,7 @@
                 }).catch(() => {});
             }
             const originalAgentSwitches = await this.getAgentSwitchSnapshot();
+            this.pluginDashboardWindowCreatedByGuide = false;
             let agentSwitchesRolledBack = false;
             const rollbackAgentSwitches = async () => {
                 if (agentSwitchesRolledBack) {
@@ -4408,7 +4416,10 @@
                 });
                 await dashboardNarrationPromise;
                 const pluginDashboardCompleted = await pluginDashboardPerformancePromise;
-                await this.closeNamedWindow(PLUGIN_DASHBOARD_WINDOW_NAME);
+                if (this.pluginDashboardWindowCreatedByGuide) {
+                    await this.closeNamedWindow(PLUGIN_DASHBOARD_WINDOW_NAME);
+                    this.pluginDashboardWindowCreatedByGuide = false;
+                }
                 if (this.pluginDashboardHandoff && this.pluginDashboardHandoff.windowRef === dashboardWindow && typeof this.pluginDashboardHandoff.resolve === 'function') {
                     this.pluginDashboardHandoff.resolve(!!pluginDashboardCompleted);
                 }
@@ -4683,9 +4694,12 @@
             this.closeManagedPanels().catch((error) => {
                 console.warn('[YuiGuide] 终止时关闭首页面板失败:', error);
             });
-            this.closeNamedWindow(PLUGIN_DASHBOARD_WINDOW_NAME).catch((error) => {
-                console.warn('[YuiGuide] 终止时关闭插件面板失败:', error);
-            });
+            if (this.pluginDashboardWindowCreatedByGuide) {
+                this.pluginDashboardWindowCreatedByGuide = false;
+                this.closeNamedWindow(PLUGIN_DASHBOARD_WINDOW_NAME).catch((error) => {
+                    console.warn('[YuiGuide] 终止时关闭插件面板失败:', error);
+                });
+            }
             if (typeof window.handleShowMainUI === 'function') {
                 try {
                     window.handleShowMainUI();
