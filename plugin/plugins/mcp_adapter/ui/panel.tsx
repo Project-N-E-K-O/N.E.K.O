@@ -10,12 +10,15 @@ import {
   StatusBadge,
   DataTable,
   ActionButton,
-  ActionForm,
   ButtonGroup,
   KeyValue,
   Divider,
   Textarea,
   Button,
+  Field,
+  Input,
+  Select,
+  Switch,
   RefreshButton,
   Toolbar,
   ToolbarGroup,
@@ -34,6 +37,7 @@ type McpServerView = {
   connected?: boolean
   tools_count?: number
   error?: string | null
+  tools?: Array<{ name?: string; description?: string }>
 }
 
 type McpPanelState = {
@@ -58,6 +62,22 @@ const defaultImportJson = `{
   "auto_connect": true
 }`
 
+const emptyServerForm = {
+  name: "",
+  transport: "stdio",
+  command: "",
+  args: "",
+  url: "",
+  env: "",
+  autoConnect: true,
+}
+
+const transportOptions = [
+  { value: "stdio", label: "stdio" },
+  { value: "sse", label: "sse" },
+  { value: "streamable-http", label: "streamable-http" },
+]
+
 export default function McpAdapterPanel(props: PluginSurfaceProps<McpPanelState>) {
   const { plugin, state, entries, actions } = props
   const { t } = props
@@ -75,6 +95,7 @@ export default function McpAdapterPanel(props: PluginSurfaceProps<McpPanelState>
   const removeServers = safeActions.find((action) => action.id === "remove_servers")
   const firstServer = servers[0]
   const [selectedServerName, setSelectedServerName] = props.useLocalState("selectedServerName", firstServer?.name || "")
+  const [selectedServerNames, setSelectedServerNames] = props.useLocalState<string[]>("selectedServerNames", [])
   const effectiveSelectedServerName = selectedServerName || firstServer?.name || ""
   const importErrorId = "mcp-adapter-import-error"
   const configExample = `[mcp_servers.example]
@@ -84,6 +105,84 @@ args = ["mcp-server-example"]
 enabled = true
 auto_connect = true`
   const [importJson, setImportJson] = props.useLocalState("importJson", defaultImportJson)
+  const [importAutoConnect, setImportAutoConnect] = props.useLocalState("importAutoConnect", true)
+  const [serverForm, setServerForm] = props.useLocalState("serverForm", emptyServerForm)
+  const [formMessage, setFormMessage] = props.useLocalState("serverFormMessage", "")
+  const [formMessageTone, setFormMessageTone] = props.useLocalState("serverFormMessageTone", "danger")
+
+  const selectedNames = selectedServerNames.filter((name) => servers.some((server) => server.name === name))
+  const effectiveActionServerName = selectedNames[0] || effectiveSelectedServerName
+
+  const updateServerForm = (patch) => {
+    setServerForm((previous) => ({ ...previous, ...patch }))
+    setFormMessage("")
+  }
+
+  const parseArgs = (value) => String(value || "").split(",").map((item) => item.trim()).filter(Boolean)
+
+  const buildServerPayload = (server, autoConnectOverride?) => {
+    const name = String(server.name || "").trim()
+    const transport = String(server.transport || "stdio").trim() || "stdio"
+    if (!name) throw new Error(t("panel.form.errors.nameRequired"))
+    const payload: Record<string, any> = {
+      name,
+      transport,
+      auto_connect: autoConnectOverride === undefined ? !!server.autoConnect : !!autoConnectOverride,
+    }
+    if (server.enabled !== undefined) payload.enabled = !!server.enabled
+    if (transport === "stdio") {
+      const command = String(server.command || "").trim()
+      if (!command) throw new Error(t("panel.form.errors.commandRequired"))
+      payload.command = command
+      const args = Array.isArray(server.args) ? server.args : parseArgs(server.args)
+      if (args.length > 0) payload.args = args
+    } else {
+      const url = String(server.url || "").trim()
+      if (!url) throw new Error(t("panel.form.errors.urlRequired"))
+      payload.url = url
+    }
+    if (server.env && typeof server.env === "object" && !Array.isArray(server.env)) {
+      payload.env = server.env
+    } else if (String(server.env || "").trim()) {
+      payload.env = JSON.parse(String(server.env))
+    }
+    return payload
+  }
+
+  const parseMcpConfig = (jsonText) => {
+    const data = JSON.parse(jsonText)
+    const serverList = Array.isArray(data)
+      ? data
+      : (data && typeof data === "object" && typeof data.name === "string")
+        ? [data]
+        : Object.entries((data && data.mcpServers) || data || {}).map(([name, config]) => ({
+            ...(config && typeof config === "object" ? config : {}),
+            name,
+          }))
+
+    return serverList
+      .filter((server) => server && typeof server === "object")
+      .map((server) => {
+        const type = String(server.type || server.transport || "").trim()
+        const typeMap = {
+          stdio: "stdio",
+          sse: "sse",
+          streamable_http: "streamable-http",
+          "streamable-http": "streamable-http",
+          http: "streamable-http",
+        }
+        const transport = typeMap[type] || (server.url ? (String(server.url).includes("/sse") ? "sse" : "streamable-http") : "stdio")
+        return {
+          name: server.name,
+          transport,
+          command: server.command,
+          args: server.args,
+          url: server.url,
+          env: server.env,
+          enabled: server.enabled,
+        }
+      })
+  }
 
   const setImportError = (message) => {
     const node = document.getElementById(importErrorId)
@@ -99,12 +198,67 @@ auto_connect = true`
       return
     }
     try {
-      const payload = JSON.parse(importJson)
-      await props.api.call("add_server", payload)
+      const serversToImport = parseMcpConfig(importJson)
+      if (serversToImport.length === 0) {
+        setImportError(t("panel.import.noServers"))
+        return
+      }
+      const succeeded: string[] = []
+      const failed: Array<{ name: string; error: string }> = []
+      for (const server of serversToImport) {
+        try {
+          const payload = buildServerPayload(server, importAutoConnect)
+          await props.api.call("add_server", payload)
+          succeeded.push(payload.name)
+        } catch (error) {
+          failed.push({
+            name: String(server.name || t("panel.import.unknownServer")),
+            error: error && error.message ? error.message : String(error),
+          })
+        }
+      }
       await props.api.refresh()
+      setImportError(t("panel.import.result", { success: succeeded.length, failed: failed.length }) + (failed.length > 0 ? `\n${failed.map((item) => `- ${item.name}: ${item.error}`).join("\n")}` : ""))
     } catch (error) {
       setImportError(error && error.message ? error.message : String(error))
     }
+  }
+
+  const addServerFromForm = async () => {
+    if (!addServer) {
+      setFormMessageTone("danger")
+      setFormMessage(t("panel.errors.addServerUnavailable"))
+      return
+    }
+    try {
+      const payload = buildServerPayload(serverForm)
+      await props.api.call("add_server", payload)
+      await props.api.refresh()
+      setServerForm(emptyServerForm)
+      setFormMessageTone("success")
+      setFormMessage(t("panel.form.added", { name: payload.name }))
+    } catch (error) {
+      setFormMessageTone("danger")
+      setFormMessage(error && error.message ? error.message : String(error))
+    }
+  }
+
+  const toggleSelectedServer = (serverName) => {
+    if (!serverName) return
+    setSelectedServerName(serverName)
+    setSelectedServerNames((previous) => {
+      const set = new Set(previous)
+      if (set.has(serverName)) set.delete(serverName)
+      else set.add(serverName)
+      return Array.from(set)
+    })
+  }
+
+  const removeSelectedServers = async () => {
+    if (!removeServers || selectedNames.length === 0) return
+    await props.api.call("remove_servers", { server_names: selectedNames })
+    setSelectedServerNames([])
+    await props.api.refresh()
   }
 
   return (
@@ -173,27 +327,50 @@ auto_connect = true`
             <DataTable
               data={servers}
               rowKey="name"
-              selectedKey={effectiveSelectedServerName}
+              selectedKey={effectiveActionServerName}
               onSelect={(server) => {
                 setSelectedServerName(server?.name || "")
               }}
               columns={[
+                {
+                  key: "selected",
+                  label: t("panel.servers.columns.selected"),
+                  render: (server) => (
+                    <Switch
+                      checked={selectedNames.includes(server?.name || "")}
+                      onChange={() => toggleSelectedServer(server?.name || "")}
+                    />
+                  ),
+                },
                 { key: "name", label: "Server" },
                 { key: "transport", label: "Transport" },
                 { key: "connected", label: "Connected" },
                 { key: "tools_count", label: "Tools" },
+                {
+                  key: "tools",
+                  label: t("panel.servers.columns.toolNames"),
+                  render: (server) => {
+                    const tools = Array.isArray(server?.tools) ? server.tools : []
+                    return tools.length > 0
+                      ? tools.slice(0, 6).map((tool) => tool?.name || "").filter(Boolean).join(", ")
+                      : ""
+                  },
+                },
                 { key: "error", label: "Error" },
               ]}
             />
             <ButtonGroup>
-              {connectServer && effectiveSelectedServerName ? (
-                <ActionButton action={connectServer} values={{ server_name: effectiveSelectedServerName }} />
+              {connectServer && effectiveActionServerName ? (
+                <ActionButton action={connectServer} values={{ server_name: effectiveActionServerName }} />
               ) : null}
-              {disconnectServer && effectiveSelectedServerName ? (
-                <ActionButton action={disconnectServer} values={{ server_name: effectiveSelectedServerName }} />
+              {disconnectServer && effectiveActionServerName ? (
+                <ActionButton action={disconnectServer} values={{ server_name: effectiveActionServerName }} />
               ) : null}
-              {removeServers && effectiveSelectedServerName ? (
-                <ActionButton action={removeServers} values={{ server_names: [effectiveSelectedServerName] }} />
+              {removeServers && effectiveActionServerName ? (
+                <ActionButton action={removeServers} values={{ server_names: [effectiveActionServerName] }} />
+              ) : null}
+              {removeServers && selectedNames.length > 0 ? (
+                <Button tone="danger" onClick={removeSelectedServers}>{t("panel.servers.removeSelected", { count: selectedNames.length })}</Button>
               ) : null}
             </ButtonGroup>
             <Text>{t("panel.servers.selectionHint")}</Text>
@@ -207,19 +384,45 @@ auto_connect = true`
       </Card>
 
       <Grid cols={2}>
-        {addServer ? (
-          <Card title={t("panel.addServer.title")}>
-            <ActionForm action={addServer} submitLabel={t("panel.addServer.submit")} />
-          </Card>
-        ) : (
-          <Card title={t("panel.addServer.title")}>
+        <Card title={t("panel.addServer.title")}>
+          {formMessage ? <Alert tone={formMessageTone === "success" ? "success" : "danger"}>{formMessage}</Alert> : null}
+          {addServer ? (
+            <Stack>
+              <Field label={t("panel.form.name")} required>
+                <Input value={serverForm.name} placeholder="my_server" onChange={(value) => updateServerForm({ name: value })} />
+              </Field>
+              <Field label={t("panel.form.transport")} required>
+                <Select value={serverForm.transport} options={transportOptions} onChange={(value) => updateServerForm({ transport: value })} />
+              </Field>
+              {serverForm.transport === "stdio" ? (
+                <>
+                  <Field label={t("panel.form.command")} required>
+                    <Input value={serverForm.command} placeholder="uvx" onChange={(value) => updateServerForm({ command: value })} />
+                  </Field>
+                  <Field label={t("panel.form.args")} help={t("panel.form.argsHelp")}>
+                    <Input value={serverForm.args} placeholder="mcp-server-example, /tmp" onChange={(value) => updateServerForm({ args: value })} />
+                  </Field>
+                </>
+              ) : (
+                <Field label={t("panel.form.url")} required>
+                  <Input value={serverForm.url} placeholder="https://example.com/mcp" onChange={(value) => updateServerForm({ url: value })} />
+                </Field>
+              )}
+              <Field label={t("panel.form.env")} help={t("panel.form.envHelp")}>
+                <Textarea value={serverForm.env} placeholder='{"TOKEN":"..."}' onChange={(value) => updateServerForm({ env: value })} />
+              </Field>
+              <Switch checked={serverForm.autoConnect} label={t("panel.form.autoConnect")} onChange={(value) => updateServerForm({ autoConnect: value })} />
+              <Button tone="success" onClick={addServerFromForm}>{t("panel.addServer.submit")}</Button>
+            </Stack>
+          ) : (
             <Alert tone="warning">{t("panel.errors.addServerFormUnavailable")}</Alert>
-          </Card>
-        )}
+          )}
+        </Card>
 
         <Card title={t("panel.import.title")}>
           <Stack>
             <Text>{t("panel.import.description")}</Text>
+            <Switch checked={importAutoConnect} label={t("panel.import.autoConnect")} onChange={setImportAutoConnect} />
             <Textarea
               value={importJson}
               onChange={(value) => {

@@ -19,7 +19,7 @@ from urllib.parse import urljoin
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Callable
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from bs4 import BeautifulSoup  # type: ignore[import-untyped]
 from markdownify import markdownify as markdownify_html  # type: ignore[import-untyped]
 
@@ -104,6 +104,7 @@ class McpServerView(BaseModel):
     connected: bool
     tools_count: int
     error: str | None = None
+    tools: list[dict[str, str]] = Field(default_factory=list)
 
 
 class McpPanelState(BaseModel):
@@ -1135,6 +1136,13 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
                 connected=bool(client.connected),
                 tools_count=len(client.tools),
                 error=None,
+                tools=[
+                    {
+                        "name": tool.name,
+                        "description": tool.description,
+                    }
+                    for tool in client.tools
+                ],
             ))
         for name, cfg in self._servers_config.items():
             if name in seen or not isinstance(cfg, dict):
@@ -1146,6 +1154,11 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
                 connected=bool(state.get("connected", False)),
                 tools_count=int(state.get("tools_count", 0) or 0),
                 error=str(state.get("error")) if state.get("error") else None,
+                tools=[
+                    {"name": str(tool_name), "description": ""}
+                    for tool_name in state.get("tools", [])
+                    if isinstance(tool_name, str)
+                ] if isinstance(state.get("tools"), list) else [],
             ))
         return McpPanelState(
             connected_servers=sum(1 for item in servers if item.connected),
