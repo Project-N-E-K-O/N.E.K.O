@@ -20,6 +20,38 @@
       </template>
 
       <el-tabs v-model="activeTab" data-yui-guide-id="plugin-detail-tabs">
+        <el-tab-pane v-if="panelSurfaces.length > 0" :label="$t('plugins.ui.panel')" name="panel">
+          <div class="surface-section" data-yui-guide-id="plugin-detail-panel">
+            <el-tabs v-if="panelSurfaces.length > 1" v-model="activePanelSurfaceId" type="border-card">
+              <el-tab-pane
+                v-for="surface in panelSurfaces"
+                :key="surface.id"
+                :label="surface.title || surface.id"
+                :name="surface.id"
+              >
+                <HostedSurfaceFrame :plugin-id="pluginId" :surface="surface" height="560px" />
+              </el-tab-pane>
+            </el-tabs>
+            <HostedSurfaceFrame v-else :plugin-id="pluginId" :surface="panelSurfaces[0]!" height="560px" />
+          </div>
+        </el-tab-pane>
+
+        <el-tab-pane v-if="guideSurfaces.length > 0" :label="$t('plugins.ui.guide')" name="guide">
+          <div class="surface-section" data-yui-guide-id="plugin-detail-guide">
+            <el-tabs v-if="guideSurfaces.length > 1" v-model="activeGuideSurfaceId" type="border-card">
+              <el-tab-pane
+                v-for="surface in guideSurfaces"
+                :key="surface.id"
+                :label="surface.title || surface.id"
+                :name="surface.id"
+              >
+                <HostedSurfaceFrame :plugin-id="pluginId" :surface="surface" height="560px" />
+              </el-tab-pane>
+            </el-tabs>
+            <HostedSurfaceFrame v-else :plugin-id="pluginId" :surface="guideSurfaces[0]!" height="560px" />
+          </div>
+        </el-tab-pane>
+
         <el-tab-pane :label="$t('plugins.basicInfo')" name="info">
           <div class="info-section" data-yui-guide-id="plugin-detail-info">
             <el-descriptions :column="2" border>
@@ -116,6 +148,9 @@ import MetricsCard from '@/components/metrics/MetricsCard.vue'
 import PluginConfigEditor from '@/components/plugin/PluginConfigEditor.vue'
 import LogViewer from '@/components/logs/LogViewer.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
+import HostedSurfaceFrame from '@/components/plugin/HostedSurfaceFrame.vue'
+import { getPluginUiSurfaces } from '@/api/plugins'
+import type { PluginUiSurface } from '@/types/api'
 
 const route = useRoute()
 const router = useRouter()
@@ -124,11 +159,17 @@ const pluginStore = usePluginStore()
 const pluginId = computed(() => route.params.id as string)
 const activeTab = ref('info')
 const loading = ref(true)
-const allowedTabs = new Set(['info', 'entries', 'metrics', 'config', 'logs'])
+const surfaces = ref<PluginUiSurface[]>([])
+const activePanelSurfaceId = ref('')
+const activeGuideSurfaceId = ref('')
+const allowedTabs = new Set(['panel', 'guide', 'info', 'entries', 'metrics', 'config', 'logs'])
 
 const plugin = computed(() => {
   return pluginStore.pluginsWithStatus.find(p => p.id === pluginId.value)
 })
+
+const panelSurfaces = computed(() => surfaces.value.filter((surface) => surface.kind === 'panel'))
+const guideSurfaces = computed(() => surfaces.value.filter((surface) => surface.kind === 'guide' || surface.kind === 'docs'))
 
 const isExtension = computed(() => plugin.value?.type === 'extension')
 const isAdapter = computed(() => plugin.value?.type === 'adapter')
@@ -174,11 +215,35 @@ function resolveActiveTab(value: unknown): string {
   return typeof value === 'string' && allowedTabs.has(value) ? value : 'info'
 }
 
+function resolveDefaultTab(value: unknown): string {
+  const requested = resolveActiveTab(value)
+  if (requested === 'panel' && panelSurfaces.value.length === 0) return 'info'
+  if (requested === 'guide' && guideSurfaces.value.length === 0) return 'info'
+  return requested
+}
+
+function syncSurfaceTabs() {
+  if (!activePanelSurfaceId.value && panelSurfaces.value[0]) {
+    activePanelSurfaceId.value = panelSurfaces.value[0].id
+  }
+  if (!activeGuideSurfaceId.value && guideSurfaces.value[0]) {
+    activeGuideSurfaceId.value = guideSurfaces.value[0].id
+  }
+}
+
+async function fetchSurfaces() {
+  surfaces.value = await getPluginUiSurfaces(pluginId.value)
+  activePanelSurfaceId.value = ''
+  activeGuideSurfaceId.value = ''
+  syncSurfaceTabs()
+}
+
 onMounted(async () => {
   try {
-    activeTab.value = resolveActiveTab(route.query.tab)
     await pluginStore.fetchPlugins()
     await pluginStore.fetchPluginStatus(pluginId.value)
+    await fetchSurfaces()
+    activeTab.value = resolveDefaultTab(route.query.tab)
     pluginStore.setSelectedPlugin(pluginId.value)
   } finally {
     loading.value = false
@@ -188,9 +253,21 @@ onMounted(async () => {
 watch(
   () => route.query.tab,
   (tab) => {
-    activeTab.value = resolveActiveTab(tab)
+    activeTab.value = resolveDefaultTab(tab)
   },
 )
+
+watch(pluginId, async () => {
+  loading.value = true
+  try {
+    await pluginStore.fetchPluginStatus(pluginId.value)
+    await fetchSurfaces()
+    activeTab.value = resolveDefaultTab(route.query.tab)
+    pluginStore.setSelectedPlugin(pluginId.value)
+  } finally {
+    loading.value = false
+  }
+})
 </script>
 
 <style scoped>
@@ -236,6 +313,10 @@ watch(
 
 .info-section {
   padding: 20px 0;
+}
+
+.surface-section {
+  padding: 16px 0;
 }
 
 .bound-extensions {

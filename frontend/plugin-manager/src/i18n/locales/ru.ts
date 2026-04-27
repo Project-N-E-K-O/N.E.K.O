@@ -242,9 +242,16 @@ export default {
     },
     ui: {
       open: 'Открыть UI',
+      panel: 'Панель',
+      guide: 'Обучение',
       loading: 'Загрузка интерфейса плагина...',
       loadError: 'Не удалось загрузить интерфейс плагина',
-      noUI: 'У этого плагина нет пользовательского интерфейса'
+      noUI: 'У этого плагина нет пользовательского интерфейса',
+      hostedTsxPending: 'Рендеринг Hosted TSX скоро будет доступен',
+      markdownPending: 'Рендеринг Markdown-обучения скоро будет доступен',
+      autoPending: 'Автоматические панели скоро будут доступны',
+      surfaceUnavailable: 'Surface недоступен',
+      hostedRuntimePending: 'Vue-контейнер распознал этот Surface. TSX, Markdown и Auto рендереры будут подключены позже.'
     }
   },
   metrics: {

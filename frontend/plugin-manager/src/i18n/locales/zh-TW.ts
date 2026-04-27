@@ -242,9 +242,16 @@ export default {
     },
     ui: {
       open: '開啟介面',
+      panel: '面板',
+      guide: '教程',
       loading: '載入外掛介面中...',
       loadError: '載入外掛介面失敗',
-      noUI: '該外掛沒有自訂介面'
+      noUI: '該外掛沒有自訂介面',
+      hostedTsxPending: 'Hosted TSX 渲染即將支援',
+      markdownPending: 'Markdown 教程渲染即將支援',
+      autoPending: '自動生成面板即將支援',
+      surfaceUnavailable: 'Surface 暫不可用',
+      hostedRuntimePending: '前端容器已識別到該 Surface。TSX/Markdown/Auto 渲染器會在後續階段接入。'
     }
   },
   metrics: {

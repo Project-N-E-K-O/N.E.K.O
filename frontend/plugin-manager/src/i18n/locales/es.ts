@@ -242,9 +242,16 @@ export default {
     },
     ui: {
       open: 'Abrir UI',
+      panel: 'Panel',
+      guide: 'Tutorial',
       loading: 'Cargando UI del plugin...',
       loadError: 'Error al cargar la UI del plugin',
-      noUI: 'Este plugin no tiene UI personalizada'
+      noUI: 'Este plugin no tiene UI personalizada',
+      hostedTsxPending: 'El renderizado Hosted TSX estará disponible pronto',
+      markdownPending: 'El renderizado de tutoriales Markdown estará disponible pronto',
+      autoPending: 'Los paneles autogenerados estarán disponibles pronto',
+      surfaceUnavailable: 'Surface no disponible',
+      hostedRuntimePending: 'El contenedor Vue reconoció esta Surface. Los renderizadores TSX, Markdown y Auto se conectarán en una fase posterior.'
     }
   },
   metrics: {

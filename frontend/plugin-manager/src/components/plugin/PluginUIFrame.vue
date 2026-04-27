@@ -67,6 +67,10 @@ const expectedOrigin = window.location.origin
 
 const uiUrl = computed(() => {
   if (!props.pluginId) return ''
+  // LEGACY_STATIC_UI_COMPAT:
+  // This component is the original static UI iframe path. New entry points
+  // should consume PluginUiSurface and render static panels through the
+  // surface container, while this remains as compatibility renderer.
   return `/plugin/${encodeURIComponent(props.pluginId)}/ui/`
 })
 

@@ -242,9 +242,16 @@ export default {
     },
     ui: {
       open: 'UI 열기',
+      panel: '패널',
+      guide: '튜토리얼',
       loading: '플러그인 UI 로딩 중...',
       loadError: '플러그인 UI를 불러오지 못했습니다',
-      noUI: '이 플러그인에는 사용자 정의 UI가 없습니다'
+      noUI: '이 플러그인에는 사용자 정의 UI가 없습니다',
+      hostedTsxPending: 'Hosted TSX 렌더링은 곧 지원됩니다',
+      markdownPending: 'Markdown 튜토리얼 렌더링은 곧 지원됩니다',
+      autoPending: '자동 생성 패널은 곧 지원됩니다',
+      surfaceUnavailable: 'Surface를 사용할 수 없습니다',
+      hostedRuntimePending: 'Vue 컨테이너가 이 Surface를 인식했습니다. TSX/Markdown/Auto 렌더러는 이후 단계에서 연결됩니다.'
     }
   },
   metrics: {

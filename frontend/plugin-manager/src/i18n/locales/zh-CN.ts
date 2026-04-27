@@ -242,9 +242,16 @@ export default {
     },
     ui: {
       open: '打开界面',
+      panel: '面板',
+      guide: '教程',
       loading: '加载插件界面中...',
       loadError: '加载插件界面失败',
-      noUI: '该插件没有自定义界面'
+      noUI: '该插件没有自定义界面',
+      hostedTsxPending: 'Hosted TSX 渲染即将支持',
+      markdownPending: 'Markdown 教程渲染即将支持',
+      autoPending: '自动生成面板即将支持',
+      surfaceUnavailable: 'Surface 暂不可用',
+      hostedRuntimePending: '前端容器已经识别到该 Surface。TSX/Markdown/Auto 渲染器会在后续阶段接入。'
     }
   },
   metrics: {

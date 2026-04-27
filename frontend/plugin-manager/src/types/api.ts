@@ -32,6 +32,9 @@ export type PluginType = 'plugin' | 'extension' | 'script' | 'adapter'
 
 export type PluginListActionKind = 'builtin' | 'ui' | 'route' | 'url'
 
+export type PluginUiSurfaceKind = 'panel' | 'guide' | 'docs'
+export type PluginUiSurfaceMode = 'static' | 'hosted-tsx' | 'markdown' | 'auto'
+
 export interface PluginListAction {
   id: string
   kind: PluginListActionKind
@@ -44,6 +47,36 @@ export interface PluginListAction {
   danger?: boolean
   disabled?: boolean
   requires_running?: boolean
+}
+
+export interface PluginUiSurface {
+  id: string
+  kind: PluginUiSurfaceKind
+  mode: PluginUiSurfaceMode
+  title?: string
+  entry?: string
+  url?: string
+  ui_path?: string
+  open_in?: 'iframe' | 'new_tab' | 'same_tab'
+  context?: string
+  permissions?: string[]
+  available?: boolean
+}
+
+export interface PluginUiWarning {
+  path: string
+  code: string
+  message: string
+}
+
+export interface PluginUiInfo {
+  plugin_id: string
+  has_ui: boolean
+  explicitly_registered?: boolean
+  ui_path?: string | null
+  static_dir?: string | null
+  static_files?: string[]
+  static_files_count?: number
 }
 
 export interface PluginMeta {

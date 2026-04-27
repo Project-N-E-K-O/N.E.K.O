@@ -242,9 +242,16 @@ export default {
     },
     ui: {
       open: 'UIを開く',
+      panel: 'パネル',
+      guide: 'チュートリアル',
       loading: 'プラグインUIを読み込み中...',
       loadError: 'プラグインUIの読み込みに失敗しました',
-      noUI: 'このプラグインにはカスタムUIがありません'
+      noUI: 'このプラグインにはカスタムUIがありません',
+      hostedTsxPending: 'Hosted TSX レンダリングは近日対応予定です',
+      markdownPending: 'Markdown チュートリアル表示は近日対応予定です',
+      autoPending: '自動生成パネルは近日対応予定です',
+      surfaceUnavailable: 'Surface は現在利用できません',
+      hostedRuntimePending: 'Vue コンテナはこの Surface を認識しています。TSX/Markdown/Auto レンダラーは後続フェーズで接続されます。'
     }
   },
   metrics: {

@@ -190,3 +190,17 @@ async def plugin_ui_info(plugin_id: str):
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
     return JSONResponse(ui_info)
+
+
+@router.get("/plugin/{plugin_id}/surfaces")
+async def plugin_ui_surfaces(plugin_id: str):
+    """获取插件统一 UI Surface 列表。
+
+    LEGACY_STATIC_UI_COMPAT:
+    Existing static UI is normalized as a mode="static" panel surface.
+    """
+    try:
+        surfaces = await plugin_ui_query_service.get_surfaces(plugin_id)
+    except ServerDomainError as error:
+        raise_http_from_domain(error, logger=logger)
+    return JSONResponse(surfaces)

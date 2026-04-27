@@ -7,6 +7,8 @@ import type {
   PluginStatusData,
   PluginHealth,
   PluginMessage,
+  PluginUiInfo,
+  PluginUiSurface,
 } from '@/types/api'
 
 /**
@@ -109,6 +111,71 @@ export function getPluginMessages(params?: {
   priority_min?: number
 }): Promise<{ messages: PluginMessage[]; count: number; time: string }> {
   return get('/plugin/messages', { params })
+}
+
+function normalizeSurface(raw: any, fallbackKind: PluginUiSurface['kind'] = 'panel'): PluginUiSurface | null {
+  if (!raw || typeof raw !== 'object') return null
+  const id = typeof raw.id === 'string' && raw.id.trim() ? raw.id.trim() : 'main'
+  const kind = raw.kind === 'guide' || raw.kind === 'docs' || raw.kind === 'panel' ? raw.kind : fallbackKind
+  const mode = raw.mode === 'hosted-tsx' || raw.mode === 'markdown' || raw.mode === 'auto' || raw.mode === 'static'
+    ? raw.mode
+    : 'static'
+  return {
+    id,
+    kind,
+    mode,
+    title: typeof raw.title === 'string' ? raw.title : undefined,
+    entry: typeof raw.entry === 'string' ? raw.entry : undefined,
+    url: typeof raw.url === 'string' ? raw.url : undefined,
+    ui_path: typeof raw.ui_path === 'string' ? raw.ui_path : undefined,
+    open_in: raw.open_in === 'new_tab' || raw.open_in === 'same_tab' || raw.open_in === 'iframe' ? raw.open_in : undefined,
+    context: typeof raw.context === 'string' ? raw.context : undefined,
+    permissions: Array.isArray(raw.permissions) ? raw.permissions.filter((item: unknown) => typeof item === 'string') : undefined,
+    available: typeof raw.available === 'boolean' ? raw.available : undefined,
+  }
+}
+
+/**
+ * 获取插件 UI surface 列表。优先使用未来统一 /surfaces 接口，
+ * 当前后端未实现时回退到现有 /ui-info，把 static UI 归一化为 panel surface。
+ */
+export async function getPluginUiSurfaces(pluginId: string): Promise<PluginUiSurface[]> {
+  const safeId = encodeURIComponent(pluginId)
+  try {
+    const response = await get<{ surfaces?: any[] } | any[]>(`/plugin/${safeId}/surfaces`)
+    const rawSurfaces = Array.isArray(response) ? response : response?.surfaces
+    if (Array.isArray(rawSurfaces)) {
+      return rawSurfaces
+        .map((surface) => normalizeSurface(surface))
+        .filter((surface): surface is PluginUiSurface => !!surface)
+    }
+  } catch {
+    // Older plugin servers expose only /ui-info; fall through to compatibility mode.
+  }
+
+  // LEGACY_STATIC_UI_COMPAT:
+  // Existing plugins expose static/index.html through /plugin/{id}/ui-info.
+  // Keep this fallback until backend surfaces normalize it as:
+  // [[plugin.ui.panel]] mode = "static", entry = "static/index.html".
+  try {
+    const info = await get<PluginUiInfo>(`/plugin/${safeId}/ui-info`)
+    if (!info?.has_ui) {
+      return []
+    }
+    return [{
+      id: 'main',
+      kind: 'panel',
+      mode: 'static',
+      title: undefined,
+      entry: 'static/index.html',
+      url: info.ui_path || `/plugin/${safeId}/ui/`,
+      ui_path: info.ui_path || `/plugin/${safeId}/ui/`,
+      open_in: 'iframe',
+      available: true,
+    }]
+  } catch {
+    return []
+  }
 }
 
 /**
