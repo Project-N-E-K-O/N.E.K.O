@@ -288,9 +288,10 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
                 const top = Math.max(0, Math.floor((screen.height - height) / 2));
                 const features = `width=${width},height=${height},left=${left},top=${top},menubar=no,toolbar=no,location=no,status=no,resizable=yes,scrollbars=yes`;
                 const rawUrl = actionConfig.url;
+                const absoluteUrl = new URL(rawUrl, document.baseURI || window.location.href).toString();
                 const targetUrl = actionConfig.forceReloadOnReuse
-                    ? appendCacheBuster(rawUrl)
-                    : rawUrl;
+                    ? appendCacheBuster(absoluteUrl)
+                    : absoluteUrl;
                 const existingWindow = window._openedWindows && window._openedWindows[actionConfig.windowName];
                 let openedWindow = null;
                 if (actionConfig.forceReloadOnReuse && existingWindow && !existingWindow.closed) {

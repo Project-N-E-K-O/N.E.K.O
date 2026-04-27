@@ -3704,7 +3704,12 @@
                 try {
                     const apiOrigin = api.getPluginDashboardExpectedOrigin();
                     if (typeof apiOrigin === 'string' && apiOrigin.trim() !== '') {
-                        return apiOrigin.trim();
+                        const trimmedOrigin = apiOrigin.trim();
+                        try {
+                            return new URL(trimmedOrigin).origin;
+                        } catch (_) {
+                            return trimmedOrigin;
+                        }
                     }
                 } catch (error) {
                     console.warn('[YuiGuide] 获取插件面板 origin 失败:', error);

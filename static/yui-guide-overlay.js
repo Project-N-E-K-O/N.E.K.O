@@ -359,10 +359,13 @@
             const rawHeight = Math.max(0, Math.round(rect.height));
             const rawMinEdge = Math.min(rawWidth, rawHeight);
             const radiusOverride = readSpotlightNumberAttr(element, 'data-yui-guide-spotlight-radius');
+            const geometryHint = typeof element.getAttribute === 'function'
+                ? (element.getAttribute('data-yui-guide-spotlight-geometry') || '').trim().toLowerCase()
+                : '';
             const rawRadius = radiusOverride != null
                 ? Math.max(0, radiusOverride)
                 : Math.max(0, this.getSpotlightRadius(element, padding) - padding);
-            const sizeTolerance = Math.max(18, Math.round(rawMinEdge * 0.2));
+            const sizeTolerance = Math.max(8, Math.round(rawMinEdge * 0.12));
             const left = Math.max(0, Math.floor(rect.left - padding));
             const top = Math.max(0, Math.floor(rect.top - padding));
             const right = Math.min(window.innerWidth, Math.ceil(rect.right + padding));
@@ -370,7 +373,8 @@
             const width = Math.max(0, right - left);
             const height = Math.max(0, bottom - top);
             const radius = this.getSpotlightRadius(element, padding);
-            const isCircular = rawMinEdge > 0
+            const isCircular = geometryHint === 'circle'
+                && rawMinEdge > 0
                 && Math.abs(rawWidth - rawHeight) <= sizeTolerance
                 && rawRadius >= ((rawMinEdge / 2) - 4);
 

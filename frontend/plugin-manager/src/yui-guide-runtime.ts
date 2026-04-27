@@ -10,6 +10,8 @@ const READY_EVENT = 'neko:yui-guide:plugin-dashboard:ready'
 const DONE_EVENT = 'neko:yui-guide:plugin-dashboard:done'
 const INTERRUPT_REQUEST_EVENT = 'neko:yui-guide:plugin-dashboard:interrupt-request'
 const INTERRUPT_ACK_EVENT = 'neko:yui-guide:plugin-dashboard:interrupt-ack'
+const HANDOFF_STORAGE_KEY = 'neko_yui_guide_handoff_token'
+const PREACTIVATE_CLEANUP_MS = 8000
 const GUIDE_AUDIO_BASE_URL = '/static/assets/tutorial/guide-audio/'
 const DEFAULT_GUIDE_LOCALE = 'zh'
 const DEFAULT_INTERRUPT_DISTANCE = 32
@@ -923,6 +925,7 @@ class PluginDashboardGuideRuntime {
   cursorTransitionActive = false
   activeNarration: ActiveNarration | null = null
   pendingInterruptAck: PendingInterruptAck | null = null
+  preactivationTimeoutId: number | null = null
   boundPointerMoveHandler = (event: PointerEvent | MouseEvent) => {
     this.handleInterrupt(event)
   }
@@ -954,6 +957,57 @@ class PluginDashboardGuideRuntime {
 
   isCurrentRun(sessionId: string) {
     return this.running && this.activeSessionId === sessionId
+  }
+
+  hasPendingPluginDashboardHandoff() {
+    if (typeof window === 'undefined' || typeof window.localStorage === 'undefined') {
+      return false
+    }
+
+    try {
+      const raw = window.localStorage.getItem(HANDOFF_STORAGE_KEY)
+      if (!raw) {
+        return false
+      }
+      const token = JSON.parse(raw) as {
+        target_page?: string
+        consumed?: boolean
+      } | null
+      return !!(
+        token
+        && token.target_page === 'plugin_dashboard'
+        && token.consumed !== true
+      )
+    } catch {
+      return false
+    }
+  }
+
+  clearPreactivationTimeout() {
+    if (this.preactivationTimeoutId !== null) {
+      window.clearTimeout(this.preactivationTimeoutId)
+      this.preactivationTimeoutId = null
+    }
+  }
+
+  preactivatePendingOverlay() {
+    if (!window.opener || window.opener.closed) {
+      return false
+    }
+    if (!this.hasPendingPluginDashboardHandoff()) {
+      return false
+    }
+
+    this.activateOverlayShell()
+    this.clearPreactivationTimeout()
+    this.preactivationTimeoutId = window.setTimeout(() => {
+      this.preactivationTimeoutId = null
+      if (this.running) {
+        return
+      }
+      this.cleanup()
+    }, PREACTIVATE_CLEANUP_MS)
+    return true
   }
 
   ensureRoot() {
@@ -1277,16 +1331,20 @@ class PluginDashboardGuideRuntime {
     this.updateBackdropCutout(null)
   }
 
-  showCursor(x: number, y: number) {
+  activateOverlayShell() {
     this.ensureRoot()
-    if (!this.cursorShell) {
-      return
-    }
-
     document.documentElement.classList.add('yui-guide-plugin-dashboard-running')
     document.documentElement.classList.add('yui-taking-over')
     document.body.classList.add('yui-guide-plugin-dashboard-running')
     document.body.classList.add('yui-taking-over')
+  }
+
+  showCursor(x: number, y: number) {
+    this.activateOverlayShell()
+    if (!this.cursorShell) {
+      return
+    }
+
     this.cursorShell.classList.add('is-visible')
     this.cursorShell.style.transitionDuration = '0ms'
     this.cursorShell.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px)`
@@ -2114,6 +2172,7 @@ class PluginDashboardGuideRuntime {
     this.cursorTransitionActive = false
     this.activeNarration = null
     this.pendingInterruptAck = null
+    this.clearPreactivationTimeout()
     this.scenePauseResolvers = []
   }
 
@@ -2122,6 +2181,7 @@ class PluginDashboardGuideRuntime {
       return
     }
 
+    this.clearPreactivationTimeout()
     this.cleanup()
     this.running = true
     this.activeSessionId = sessionId
@@ -2129,7 +2189,7 @@ class PluginDashboardGuideRuntime {
       ? Math.max(0, Math.floor(payload.interruptCount as number))
       : 0
     const isCurrent = () => this.isCurrentRun(sessionId)
-    this.ensureRoot()
+    this.activateOverlayShell()
     window.addEventListener('resize', this.boundRefreshSpotlight, true)
     window.addEventListener('scroll', this.boundRefreshSpotlight, true)
     // 用 pointer 事件而非 mouse 事件采样：interactionGuard 把 touchstart/move/end 都拦掉了，
@@ -2280,6 +2340,7 @@ class PluginDashboardGuideRuntime {
 export function initPluginDashboardYuiGuideRuntime() {
   const runtime = new PluginDashboardGuideRuntime()
   let receivedStartMessage = false
+  runtime.preactivatePendingOverlay()
 
   window.addEventListener('message', (event: MessageEvent) => {
     const data = event.data
