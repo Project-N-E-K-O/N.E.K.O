@@ -371,7 +371,15 @@ def test_memory_browser_storage_picker_preflights_selected_directory(mock_page: 
 
     expect(mock_page.locator("#storage-target-root-input")).to_have_value("/tmp/picked-storage", timeout=5000)
     pick_options = mock_page.evaluate("window.__storagePickOptions")
-    assert pick_options["startPath"].endswith("N.E.K.O") is False
+    start_path = pick_options["startPath"]
+    app_root = str(seed_memory_file.parents[2])
+    assert start_path, "startPath should not be empty"
+    assert not start_path.endswith("N.E.K.O"), (
+        f"picker should be opened at the parent of the current root, got {start_path!r}"
+    )
+    assert app_root.startswith(start_path), (
+        f"startPath should be a parent of app_root; got start_path={start_path!r} app_root={app_root!r}"
+    )
 
     with mock_page.expect_response(lambda r: "/api/storage/location/preflight" in r.url and r.status == 200):
         mock_page.locator("#storage-location-preflight-btn").click()

@@ -214,6 +214,7 @@
             && storagePreflightState.ok === true
             && storagePreflightState.result === 'restart_required'
             && !storagePreflightState.blocking_error_code
+            && !storagePreflightState.blocking_error_message
         );
         restartBtn.hidden = !canRestart;
         restartBtn.disabled = !canRestart;
@@ -417,9 +418,9 @@
                     confirm_existing_target_content: confirmExistingTargetContent
                 })
             });
-            const payload = await resp.json();
+            const payload = await readJsonResponse(resp);
             if (!resp.ok || !payload || payload.ok !== true) {
-                throw new Error(payload && (payload.error || payload.error_code) ? (payload.error || payload.error_code) : 'restart failed');
+                throw new Error(storageErrorMessage(payload, translate('memory.storageRestartFailed', '关闭并迁移请求失败')));
             }
             restartAccepted = true;
             setStoragePreflightResult(translate('memory.storageRestartInitiated', '已请求关闭并迁移。应用即将进入维护状态，请等待重启完成。'), 'success');
