@@ -306,7 +306,9 @@ async def proxy_mcp_availability():
 async def redirect_plugin_dashboard(request: Request):
     target_url = f"{USER_PLUGIN_BASE}/ui"
     if "v" in request.query_params:
-        target_url = f"{target_url}?{urlencode({'v': request.query_params.get('v', '')})}"
+        v = request.query_params["v"].strip()
+        if v:
+            target_url = f"{target_url}?{urlencode({'v': v})}"
     return RedirectResponse(target_url)
 
 

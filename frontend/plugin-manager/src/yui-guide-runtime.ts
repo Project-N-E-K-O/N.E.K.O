@@ -611,9 +611,11 @@ function stopCurrentGuideSpeech() {
 }
 
 async function resolveNarrationDurationMs(payload: StartPayload) {
-  const fallbackDurationMs = Number.isFinite(payload.narrationDurationMs)
-    ? clamp(Math.round(payload.narrationDurationMs as number), 3000, 24000)
-    : PLUGIN_DASHBOARD_DEFAULT_TOTAL_MS
+  if (Number.isFinite(payload.narrationDurationMs)) {
+    return Math.min(Math.max(0, Math.round(payload.narrationDurationMs as number)), 24000)
+  }
+
+  const fallbackDurationMs = PLUGIN_DASHBOARD_DEFAULT_TOTAL_MS
   const localAudioSrc = resolveGuideAudioSrc(payload.voiceKey, payload.audioUrl)
   if (!localAudioSrc) {
     return fallbackDurationMs

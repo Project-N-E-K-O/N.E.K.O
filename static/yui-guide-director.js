@@ -3698,6 +3698,23 @@
             return null;
         }
 
+        getPluginDashboardExpectedOrigin() {
+            const api = this.getHomeInteractionApi();
+            if (api && typeof api.getPluginDashboardExpectedOrigin === 'function') {
+                try {
+                    return api.getPluginDashboardExpectedOrigin() || '';
+                } catch (error) {
+                    console.warn('[YuiGuide] 获取插件面板 origin 失败:', error);
+                }
+            }
+            if (window.NEKO_USER_PLUGIN_BASE) {
+                try {
+                    return new URL(String(window.NEKO_USER_PLUGIN_BASE), window.location.href).origin;
+                } catch (_) {}
+            }
+            return 'http://127.0.0.1:48916';
+        }
+
         async openModelManagerPage(lanlanName) {
             const api = this.getHomeInteractionApi();
             const targetLanlanName = typeof lanlanName === 'string' && lanlanName.trim()
@@ -6494,6 +6511,10 @@
 
             const handoff = this.pluginDashboardHandoff;
             if (!handoff || !handoff.windowRef || event.source !== handoff.windowRef) {
+                return;
+            }
+            const expectedOrigin = this.getPluginDashboardExpectedOrigin();
+            if (expectedOrigin && event.origin !== expectedOrigin) {
                 return;
             }
 

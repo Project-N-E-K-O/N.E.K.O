@@ -1277,6 +1277,7 @@
         readHandoffToken: readHandoffToken,
         consumeHandoffToken: consumeHandoffToken,
         clearHandoffToken: clearHandoffToken,
+        getPluginDashboardExpectedOrigin: getPluginDashboardExpectedOrigin,
         openPageWithHandoff: openPageWithHandoff,
         openPluginDashboard: openPluginDashboard,
         listenPluginDashboardComplete: listenPluginDashboardComplete,
