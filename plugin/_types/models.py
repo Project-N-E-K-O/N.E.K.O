@@ -141,6 +141,7 @@ class PluginMeta(BaseModel):
     dependencies: List[PluginDependency] = Field(default_factory=list)
     host_plugin_id: Optional[str] = None  # extension 类型的宿主插件 ID
     plugin_ui: Optional[Dict[str, Any]] = None
+    i18n: Optional[Dict[str, Any]] = None
 
 
 class HealthCheckResponse(BaseModel):

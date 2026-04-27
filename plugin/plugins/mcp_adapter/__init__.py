@@ -30,6 +30,7 @@ from plugin.sdk.plugin import (
     Ok,
     Err,
     SdkError,
+    tr,
     ui,
 )
 from plugin.sdk.adapter import AdapterGatewayCore, DefaultPolicyEngine, NekoAdapterPlugin
@@ -1735,8 +1736,8 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
     
     @plugin_entry(
         id="list_servers",
-        name="List MCP Servers",
-        description="列出所有配置的 MCP servers 及其状态",
+        name=tr("entries.listServers.name", default="List MCP Servers"),
+        description=tr("entries.listServers.description", default="List all configured MCP servers and their status."),
         llm_result_fields=["total"],
     )
     async def list_servers(self, **_):
@@ -1797,18 +1798,18 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         
         return Ok({"servers": servers, "total": len(servers)})
     
-    @ui.action(label="连接", tone="primary", group="server", order=10, refresh_context=True)
+    @ui.action(label=tr("actions.connect.label", default="Connect"), tone="primary", group="server", order=10, refresh_context=True)
     @plugin_entry(
         id="connect_server",
-        name="Connect MCP Server",
-        description="连接到指定的 MCP server",
+        name=tr("entries.connect.name", default="Connect MCP Server"),
+        description=tr("entries.connect.description", default="Connect to a configured MCP server."),
         llm_result_fields=["message"],
         input_schema={
             "type": "object",
             "properties": {
                 "server_name": {
                     "type": "string",
-                    "description": "Server name from config"
+                    "description": tr("entries.connect.fields.server_name.description", default="Server name from config")
                 }
             },
             "required": ["server_name"]
@@ -1838,18 +1839,18 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         else:
             return Err(SdkError(f"Failed to connect to server '{server_name}'"))
     
-    @ui.action(label="断开", tone="warning", group="server", order=20, refresh_context=True)
+    @ui.action(label=tr("actions.disconnect.label", default="Disconnect"), tone="warning", group="server", order=20, refresh_context=True)
     @plugin_entry(
         id="disconnect_server",
-        name="Disconnect MCP Server",
-        description="断开与指定 MCP server 的连接",
+        name=tr("entries.disconnect.name", default="Disconnect MCP Server"),
+        description=tr("entries.disconnect.description", default="Disconnect from a configured MCP server."),
         llm_result_fields=["message"],
         input_schema={
             "type": "object",
             "properties": {
                 "server_name": {
                     "type": "string",
-                    "description": "Server name"
+                    "description": tr("entries.common.fields.server_name.description", default="Server name")
                 }
             },
             "required": ["server_name"]
@@ -1877,48 +1878,48 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         
         return Ok({"message": f"Disconnected from server '{server_name}'"})
     
-    @ui.action(label="添加 Server", tone="success", group="server", order=5, refresh_context=True)
+    @ui.action(label=tr("actions.addServer.label", default="Add Server"), tone="success", group="server", order=5, refresh_context=True)
     @plugin_entry(
         id="add_server",
-        name="Add MCP Server",
-        description="添加新的 MCP server 配置",
+        name=tr("entries.addServer.name", default="Add MCP Server"),
+        description=tr("entries.addServer.description", default="Add a new MCP server configuration."),
         llm_result_fields=["message"],
         input_schema={
             "type": "object",
             "properties": {
                 "name": {
                     "type": "string",
-                    "description": "Server name (unique identifier)"
+                    "description": tr("entries.addServer.fields.name.description", default="Server name, used as a unique identifier")
                 },
                 "transport": {
                     "type": "string",
                     "enum": ["stdio", "sse", "streamable-http"],
-                    "description": "Transport type"
+                    "description": tr("entries.addServer.fields.transport.description", default="Transport type")
                 },
                 "command": {
                     "type": "string",
-                    "description": "Command to run (for stdio transport)"
+                    "description": tr("entries.addServer.fields.command.description", default="Command to run for stdio transport")
                 },
                 "args": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Command arguments"
+                    "description": tr("entries.addServer.fields.args.description", default="Command arguments")
                 },
                 "url": {
                     "type": "string",
-                    "description": "Server URL (for sse/http transport)"
+                    "description": tr("entries.addServer.fields.url.description", default="Server URL for SSE or HTTP transport")
                 },
                 "env": {
                     "type": "object",
-                    "description": "Environment variables"
+                    "description": tr("entries.addServer.fields.env.description", default="Environment variables")
                 },
                 "enabled": {
                     "type": "boolean",
-                    "description": "Whether to enable this server"
+                    "description": tr("entries.addServer.fields.enabled.description", default="Whether to enable this server")
                 },
                 "auto_connect": {
                     "type": "boolean",
-                    "description": "Whether to connect immediately"
+                    "description": tr("entries.addServer.fields.autoConnect.description", default="Whether to connect immediately")
                 }
             },
             "required": ["name", "transport"]
@@ -2007,11 +2008,11 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         
         return Ok({"message": f"Added server '{name}'"})
     
-    @ui.action(label="移除 Server", tone="danger", group="server", order=30, confirm="确定要移除这些 MCP Server 吗？", refresh_context=True)
+    @ui.action(label=tr("actions.removeServers.label", default="Remove Server"), tone="danger", group="server", order=30, confirm=tr("actions.removeServers.confirm", default="Remove these MCP Servers?"), refresh_context=True)
     @plugin_entry(
         id="remove_servers",
-        name="Remove MCP Servers",
-        description="批量移除 MCP server 配置",
+        name=tr("entries.removeServers.name", default="Remove MCP Servers"),
+        description=tr("entries.removeServers.description", default="Remove one or more MCP server configurations."),
         llm_result_fields=["message"],
         input_schema={
             "type": "object",
@@ -2019,7 +2020,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
                 "server_names": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "List of server names to remove"
+                    "description": tr("entries.removeServers.fields.server_names.description", default="List of server names to remove")
                 }
             },
             "required": ["server_names"]
@@ -2070,23 +2071,23 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
     
     @plugin_entry(
         id="call_tool",
-        name="Call MCP Tool",
-        description="调用指定 MCP server 的 tool",
+        name=tr("entries.callTool.name", default="Call MCP Tool"),
+        description=tr("entries.callTool.description", default="Call a tool exposed by a configured MCP server."),
         llm_result_fields=["summary"],
         input_schema={
             "type": "object",
             "properties": {
                 "server_name": {
                     "type": "string",
-                    "description": "Server name"
+                    "description": tr("entries.common.fields.server_name.description", default="Server name")
                 },
                 "tool_name": {
                     "type": "string",
-                    "description": "Tool name"
+                    "description": tr("entries.common.fields.tool_name.description", default="Tool name")
                 },
                 "arguments": {
                     "type": "object",
-                    "description": "Tool arguments"
+                    "description": tr("entries.common.fields.arguments.description", default="Tool arguments")
                 }
             },
             "required": ["server_name", "tool_name"]
@@ -2124,8 +2125,8 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
     
     @plugin_entry(
         id="list_tools",
-        name="List MCP Tools",
-        description="列出所有可用的 MCP tools",
+        name=tr("entries.listTools.name", default="List MCP Tools"),
+        description=tr("entries.listTools.description", default="List all available MCP tools."),
         llm_result_fields=["total"],
     )
     async def list_tools(self, server_name: Optional[str] = None, **_):
@@ -2149,27 +2150,27 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
     
     @plugin_entry(
         id="gateway_invoke",
-        name="Gateway Invoke",
-        description="通过 Gateway Core 调用 MCP tool（新架构）",
+        name=tr("entries.gatewayInvoke.name", default="Gateway Invoke"),
+        description=tr("entries.gatewayInvoke.description", default="Call an MCP tool through Gateway Core."),
         llm_result_fields=["summary"],
         input_schema={
             "type": "object",
             "properties": {
                 "tool_name": {
                     "type": "string",
-                    "description": "Tool name to invoke"
+                    "description": tr("entries.common.fields.tool_name.description", default="Tool name")
                 },
                 "arguments": {
                     "type": "object",
-                    "description": "Tool arguments"
+                    "description": tr("entries.common.fields.arguments.description", default="Tool arguments")
                 },
                 "target_plugin_id": {
                     "type": "string",
-                    "description": "Optional: route to NEKO plugin instead of MCP tool"
+                    "description": tr("entries.gatewayInvoke.fields.targetPluginId.description", default="Optional target N.E.K.O plugin ID")
                 },
                 "timeout_s": {
                     "type": "number",
-                    "description": "Optional timeout in seconds for downstream call"
+                    "description": tr("entries.gatewayInvoke.fields.timeout.description", default="Optional timeout in seconds for the downstream call")
                 }
             },
             "required": ["tool_name"]

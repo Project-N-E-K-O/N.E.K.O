@@ -11,6 +11,7 @@ from plugin.sdk.shared.core.base import DEFAULT_PLUGIN_VERSION as _DEFAULT_PLUGI
 from plugin.sdk.shared.core.base import NekoPluginBase as _SharedNekoPluginBase
 from plugin.sdk.shared.core.base import PluginMeta as _SharedPluginMeta
 from plugin.sdk.shared.core.events import EventHandler, EventMeta
+from plugin.sdk.shared.i18n import PluginI18n, load_plugin_i18n_from_dir
 from plugin.sdk.shared.models.exceptions import EntryConflictError
 
 DEFAULT_PLUGIN_VERSION = _DEFAULT_PLUGIN_VERSION
@@ -31,6 +32,7 @@ class NekoPluginBase(_SharedNekoPluginBase):
         self.plugins = Plugins(self.ctx)
         self._memory_client = None
         self._system_info_client = None
+        self.i18n = load_plugin_i18n_from_dir(self.config_dir / "i18n")
         self._static_ui_config: dict[str, Any] | None = None
         self._list_actions: list[dict[str, Any]] = []
         self._dynamic_entries: dict[str, dict[str, Any]] = {}

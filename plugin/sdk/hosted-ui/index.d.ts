@@ -30,6 +30,12 @@ export type HostedApi = {
   refresh: () => Promise<any>
 }
 
+export type HostedI18n = {
+  locale: string
+  default_locale?: string
+  messages?: Record<string, Record<string, string>>
+}
+
 export type LocalStateSetter<T> = (next: T | ((previous: T) => T)) => T
 
 export type PluginSurfaceProps<State = Record<string, any>> = {
@@ -46,7 +52,8 @@ export type PluginSurfaceProps<State = Record<string, any>> = {
   }
   warnings: Array<{ path: string; code: string; message: string }>
   locale: string
-  t: (key: string) => string
+  t: (source: string, params?: Record<string, any>) => string
+  i18n: HostedI18n
   api: HostedApi
   useLocalState: <T>(key: string, initialValue: T | (() => T)) => [T, LocalStateSetter<T>]
 }
@@ -118,5 +125,5 @@ export function Warning(props: CommonProps): any
 export function Steps(props: CommonProps): any
 export function Step(props: CommonProps & { index?: any; title?: any }): any
 export function Tabs(props: CommonProps & { id?: string; activeId?: string; items?: Array<{ id?: string; label?: any; title?: any; content?: any }>; onChange?: (id: string, index: number) => void }): any
-export function useI18n(): { t: (key: string) => string; locale: string }
+export function useI18n(): { t: (key: string, params?: Record<string, any>) => string; locale: string }
 export function useLocalState<T>(key: string, initialValue: T | (() => T)): [T, LocalStateSetter<T>]

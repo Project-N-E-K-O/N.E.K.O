@@ -72,6 +72,7 @@ function buildPayload(options: BuildHostedTsxDocumentOptions) {
     config: options.context?.config || { schema: { type: 'object', properties: {} }, value: {}, readonly: true },
     warnings: options.context?.warnings || [],
     locale: options.locale,
+    i18n: options.context?.i18n || { locale: options.locale, messages: {}, default_locale: 'en' },
   }
 }
 
@@ -112,6 +113,7 @@ ${escapeScriptContent(uiKit.runtime)}
         config: next.config || __NEKO_PAYLOAD.config,
         warnings: Array.isArray(next.warnings) ? next.warnings : [],
         locale: __NEKO_PAYLOAD.locale,
+        i18n: next.i18n && typeof next.i18n === 'object' ? next.i18n : __NEKO_PAYLOAD.i18n,
       };
     }
     function __hostedProps() {
@@ -125,6 +127,7 @@ ${escapeScriptContent(uiKit.runtime)}
         config: __NEKO_PAYLOAD.config,
         warnings: __NEKO_PAYLOAD.warnings,
         locale: __NEKO_PAYLOAD.locale,
+        i18n: __NEKO_PAYLOAD.i18n,
         ...window.NekoUiKit,
         api: window.NekoUiKit.api,
         useLocalState: window.NekoUiKit.useLocalState,

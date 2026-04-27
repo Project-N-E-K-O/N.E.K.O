@@ -48,6 +48,7 @@ _MANAGED_META_KEYS = {
     "author",
     "dependencies",
     "host_plugin_id",
+    "i18n",
     "plugin_ui",
     "config_path",
     "entry_point",

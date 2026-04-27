@@ -389,8 +389,43 @@ function Tabs(props) {
     h('div', { className: 'neko-tab-panel' }, props.children || (activeTab && activeTab.content))
   );
 }
+function localeCandidates(locale, fallbackLocale) {
+  const candidates = [];
+  const add = (value) => {
+    const text = String(value || '').trim();
+    if (text && !candidates.includes(text)) candidates.push(text);
+  };
+  add(locale);
+  if (locale && String(locale).includes('-')) add(String(locale).split('-')[0]);
+  if (String(locale || '').trim().toLowerCase() === 'zh') add('zh-CN');
+  add(fallbackLocale);
+  if (fallbackLocale && String(fallbackLocale).includes('-')) add(String(fallbackLocale).split('-')[0]);
+  add('en');
+  add('zh-CN');
+  return candidates;
+}
+function interpolateI18n(text, params) {
+  if (!params || typeof params !== 'object') return text;
+  return String(text).replace(/\{\{\s*([A-Za-z_][\w.-]*)\s*\}\}|\{\s*([A-Za-z_][\w.-]*)\s*\}/g, (match, keyA, keyB) => {
+    const key = keyA || keyB;
+    const value = params[key];
+    return value === undefined || value === null ? match : String(value);
+  });
+}
+function t(key, params) {
+  const safeKey = String(key || '');
+  const payload = __NEKO_PAYLOAD.i18n && typeof __NEKO_PAYLOAD.i18n === 'object' ? __NEKO_PAYLOAD.i18n : {};
+  const messages = payload.messages && typeof payload.messages === 'object' ? payload.messages : {};
+  for (const candidate of localeCandidates(__NEKO_PAYLOAD.locale, payload.default_locale)) {
+    const bundle = messages[candidate];
+    if (bundle && typeof bundle[safeKey] === 'string') {
+      return interpolateI18n(bundle[safeKey], params);
+    }
+  }
+  if (params && typeof params.defaultValue === 'string') return interpolateI18n(params.defaultValue, params);
+  return safeKey;
+}
 function useI18n() { return { t, locale: __NEKO_PAYLOAD.locale }; }
-function t(key) { return key; }
 
 function refreshHostedPayload(context) {
   if (typeof window.__NekoRefreshHostedPayload === 'function') {

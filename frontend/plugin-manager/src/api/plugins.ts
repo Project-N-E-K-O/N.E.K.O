@@ -227,12 +227,14 @@ export function getPluginHostedSurfaceSource(pluginId: string, params: {
 export function getPluginHostedSurfaceContext(pluginId: string, params: {
   kind: PluginUiSurface['kind']
   id: string
+  locale?: string
 }): Promise<PluginUiContext> {
   const safeId = encodeURIComponent(pluginId)
   return get(`/plugin/${safeId}/hosted-ui/context`, {
     params: {
       kind: params.kind,
       id: params.id,
+      locale: params.locale,
     },
   })
 }

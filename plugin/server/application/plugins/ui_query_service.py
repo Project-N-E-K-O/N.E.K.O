@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -15,6 +16,7 @@ from plugin.core.ui_manifest import (
 )
 from plugin.server.domain import IO_RUNTIME_ERRORS
 from plugin.server.domain.errors import ServerDomainError
+from plugin.sdk.shared.i18n import load_plugin_i18n_from_meta, resolve_i18n_refs
 
 logger = get_logger("server.application.plugins.ui_query")
 _ALLOWED_PLUGIN_LIST_ACTION_KINDS = {"builtin", "ui", "route", "url"}
@@ -34,6 +36,8 @@ _ALLOWED_PLUGIN_LIST_ACTION_BUILTINS = {
     "enable_extension",
     "disable_extension",
 }
+_HOSTED_TRANSLATIONS_MAX_BYTES = 128 * 1024
+_HOSTED_TRANSLATIONS_DEFAULT_SOURCE_LOCALE = "en-US"
 
 
 def _normalize_mapping(raw: Mapping[object, object], *, context: str) -> dict[str, object]:
@@ -281,6 +285,79 @@ def _surface_allows_action_call(surface: Mapping[str, object]) -> bool:
     return isinstance(permissions, list) and "action:call" in permissions
 
 
+def _normalize_translations(raw: object, *, path: Path) -> dict[str, object]:
+    if not isinstance(raw, Mapping):
+        raise ServerDomainError(
+            code="PLUGIN_UI_TRANSLATIONS_INVALID",
+            message=f"Hosted UI translations file '{path.name}' must be a JSON object",
+            status_code=500,
+            details={"path": str(path)},
+        )
+    source_locale = raw.get("sourceLocale")
+    if not isinstance(source_locale, str) or not source_locale.strip():
+        source_locale = _HOSTED_TRANSLATIONS_DEFAULT_SOURCE_LOCALE
+    translations_obj = raw.get("translations", {})
+    if not isinstance(translations_obj, Mapping):
+        raise ServerDomainError(
+            code="PLUGIN_UI_TRANSLATIONS_INVALID",
+            message=f"Hosted UI translations file '{path.name}' must define translations as an object",
+            status_code=500,
+            details={"path": str(path)},
+        )
+    translations: dict[str, dict[str, str]] = {}
+    for locale, messages_obj in translations_obj.items():
+        if not isinstance(locale, str) or not locale.strip() or not isinstance(messages_obj, Mapping):
+            raise ServerDomainError(
+                code="PLUGIN_UI_TRANSLATIONS_INVALID",
+                message=f"Hosted UI translations file '{path.name}' contains invalid locale entries",
+                status_code=500,
+                details={"path": str(path), "locale": str(locale)},
+            )
+        messages: dict[str, str] = {}
+        for key, value in messages_obj.items():
+            if not isinstance(key, str) or not isinstance(value, str):
+                raise ServerDomainError(
+                    code="PLUGIN_UI_TRANSLATIONS_INVALID",
+                    message=f"Hosted UI translations file '{path.name}' messages must be string-to-string mappings",
+                    status_code=500,
+                    details={"path": str(path), "locale": locale, "key": str(key)},
+                )
+            messages[key] = value
+        translations[locale] = messages
+    return {
+        "source_locale": source_locale.strip(),
+        "translations": translations,
+    }
+
+
+def _load_surface_translations_sync(entry_path: Path) -> dict[str, object]:
+    translations_path = entry_path.with_suffix(".translations.json")
+    if not translations_path.is_file():
+        return {
+            "source_locale": _HOSTED_TRANSLATIONS_DEFAULT_SOURCE_LOCALE,
+            "translations": {},
+        }
+    try:
+        if translations_path.stat().st_size > _HOSTED_TRANSLATIONS_MAX_BYTES:
+            raise ServerDomainError(
+                code="PLUGIN_UI_TRANSLATIONS_TOO_LARGE",
+                message=f"Hosted UI translations file '{translations_path.name}' is too large",
+                status_code=500,
+                details={"path": str(translations_path), "max_bytes": _HOSTED_TRANSLATIONS_MAX_BYTES},
+            )
+        raw = json.loads(translations_path.read_text(encoding="utf-8"))
+    except ServerDomainError:
+        raise
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ServerDomainError(
+            code="PLUGIN_UI_TRANSLATIONS_READ_FAILED",
+            message=f"Failed to read hosted UI translations file '{translations_path.name}'",
+            status_code=500,
+            details={"path": str(translations_path), "error_type": type(exc).__name__},
+        ) from exc
+    return _normalize_translations(raw, path=translations_path)
+
+
 def _entry_ids_from_meta(plugin_meta: Mapping[str, object]) -> set[str]:
     entries_obj = plugin_meta.get("entries")
     if not isinstance(entries_obj, list):
@@ -372,6 +449,8 @@ def _normalize_plugin_list_action(
     label_obj = action.get("label")
     if isinstance(label_obj, str) and label_obj.strip():
         normalized["label"] = label_obj.strip()
+    elif isinstance(label_obj, Mapping):
+        normalized["label"] = dict(label_obj)
 
     target_obj = action.get("target")
     if isinstance(target_obj, str) and target_obj.strip():
@@ -384,6 +463,8 @@ def _normalize_plugin_list_action(
     confirm_message_obj = action.get("confirm_message")
     if isinstance(confirm_message_obj, str) and confirm_message_obj.strip():
         normalized["confirm_message"] = confirm_message_obj.strip()
+    elif isinstance(confirm_message_obj, Mapping):
+        normalized["confirm_message"] = dict(confirm_message_obj)
 
     confirm_mode_obj = action.get("confirm_mode")
     if isinstance(confirm_mode_obj, str) and confirm_mode_obj in _ALLOWED_PLUGIN_LIST_ACTION_CONFIRM_MODES:
@@ -521,6 +602,7 @@ class PluginUiQueryService:
                 )
 
             source = await asyncio.to_thread(entry_path.read_text, encoding="utf-8")
+            translations_payload = await asyncio.to_thread(_load_surface_translations_sync, entry_path)
             return {
                 "plugin_id": plugin_id,
                 "kind": kind,
@@ -528,6 +610,8 @@ class PluginUiQueryService:
                 "mode": mode,
                 "entry": entry_obj,
                 "source": source,
+                "source_locale": translations_payload["source_locale"],
+                "translations": translations_payload["translations"],
                 "warnings": warnings,
             }
         except ServerDomainError:
@@ -548,7 +632,7 @@ class PluginUiQueryService:
                 details={"plugin_id": plugin_id, "kind": kind, "surface_id": surface_id, "error_type": type(exc).__name__},
             ) from exc
 
-    async def get_surface_context(self, plugin_id: str, *, kind: str, surface_id: str) -> dict[str, object]:
+    async def get_surface_context(self, plugin_id: str, *, kind: str, surface_id: str, locale: str | None = None) -> dict[str, object]:
         try:
             plugin_meta = await asyncio.to_thread(_get_plugin_meta_sync, plugin_id)
             if plugin_meta is None:
@@ -611,7 +695,9 @@ class PluginUiQueryService:
                         message=f"Failed to load UI context '{context_id}': {exc}",
                     ).model_dump())
 
-            return {
+            plugin_i18n = load_plugin_i18n_from_meta(plugin_meta)
+            resolved_locale = locale or "en"
+            resolved_context = {
                 "plugin_id": plugin_id,
                 "kind": kind,
                 "surface_id": surface_id,
@@ -627,7 +713,13 @@ class PluginUiQueryService:
                     "readonly": True,
                 },
                 "warnings": warnings,
+                "i18n": {
+                    "locale": resolved_locale,
+                    "messages": plugin_i18n.messages,
+                    "default_locale": plugin_i18n.default_locale,
+                },
             }
+            return resolve_i18n_refs(resolved_context, plugin_i18n, locale=resolved_locale)  # type: ignore[return-value]
         except ServerDomainError:
             raise
         except IO_RUNTIME_ERRORS as exc:

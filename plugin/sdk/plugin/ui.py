@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Any, TypeVar
 
 F = TypeVar("F", bound=Callable[..., object])
@@ -38,12 +38,12 @@ def context(*, id: str = "main", title: str | None = None) -> Callable[[F], F]:
 def action(
     *,
     id: str | None = None,
-    label: str | None = None,
+    label: object | None = None,
     icon: str | None = None,
     tone: str = "default",
     group: str | None = None,
     order: int = 0,
-    confirm: bool | str = False,
+    confirm: bool | str | Mapping[str, object] = False,
     refresh_context: bool = True,
 ) -> Callable[[F], F]:
     """Attach UI metadata to an existing plugin entry."""

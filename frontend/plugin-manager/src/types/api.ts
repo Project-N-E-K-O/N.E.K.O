@@ -85,6 +85,11 @@ export interface PluginUiContext {
     readonly?: boolean
   }
   warnings?: PluginUiWarning[]
+  i18n?: {
+    locale: string
+    default_locale?: string
+    messages?: Record<string, Record<string, string>>
+  }
 }
 
 export interface PluginUiInfo {
@@ -115,6 +120,7 @@ export interface PluginMeta {
   dependencies?: PluginDependency[]
   input_schema?: JSONSchema
   host_plugin_id?: string
+  i18n?: Record<string, any>
   status?: string
   list_actions?: PluginListAction[]
 }

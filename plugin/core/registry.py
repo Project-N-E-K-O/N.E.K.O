@@ -705,6 +705,13 @@ def _build_plugin_meta(
     )
     if plugin_ui is not None:
         setattr(meta, "plugin_ui", plugin_ui)
+    i18n_config = pdata.get("i18n")
+    if not isinstance(i18n_config, dict):
+        i18n_config = {}
+    setattr(meta, "i18n", {
+        "default_locale": str(i18n_config.get("default_locale") or "en"),
+        "locales_dir": str(i18n_config.get("locales_dir") or "i18n"),
+    })
     return meta
 
 
@@ -762,13 +769,16 @@ def _extract_entries_preview(pid: str, cls: type, conf: dict, pdata: dict) -> Li
             seen.add(eid)
 
             input_schema = _to_dict(getattr(event_meta, "input_schema", {}) or {})
+            name_obj = getattr(event_meta, "name", "") or ""
+            description_obj = getattr(event_meta, "description", "") or ""
+            return_message_obj = getattr(event_meta, "return_message", "") or ""
             entry_preview: Dict[str, Any] = {
                     "id": eid,
-                    "name": str(getattr(event_meta, "name", "") or ""),
-                    "description": str(getattr(event_meta, "description", "") or ""),
+                    "name": name_obj if isinstance(name_obj, (str, dict)) else str(name_obj),
+                    "description": description_obj if isinstance(description_obj, (str, dict)) else str(description_obj),
                     "event_key": f"{pid}.{eid}",
                     "input_schema": input_schema,
-                    "return_message": str(getattr(event_meta, "return_message", "") or ""),
+                    "return_message": return_message_obj if isinstance(return_message_obj, (str, dict)) else str(return_message_obj),
                     "event_type": str(getattr(event_meta, "event_type", "plugin_entry") or "plugin_entry"),
                     "kind": str(getattr(event_meta, "kind", "action") or "action"),
                     "auto_start": bool(getattr(event_meta, "auto_start", False)),
@@ -798,8 +808,8 @@ def _extract_entries_preview(pid: str, cls: type, conf: dict, pdata: dict) -> Li
                 results.append(
                     {
                         "id": eid,
-                        "name": str(ent.get("name") or ""),
-                        "description": str(ent.get("description") or ""),
+                        "name": ent.get("name") if isinstance(ent.get("name"), (str, dict)) else str(ent.get("name") or ""),
+                        "description": ent.get("description") if isinstance(ent.get("description"), (str, dict)) else str(ent.get("description") or ""),
                         "event_key": f"{pid}.{eid}",
                         "input_schema": _to_dict(ent.get("input_schema") or {}),
                         "return_message": "",

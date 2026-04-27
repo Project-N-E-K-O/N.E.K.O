@@ -159,6 +159,7 @@ async function loadHostedTsx() {
     const context = await getPluginHostedSurfaceContext(props.pluginId, {
       kind: props.surface.kind,
       id: props.surface.id,
+      locale: String(locale.value),
     })
     if (loadId !== currentLoadId) return
     hostedDocument.value = buildHostedTsxDocument({
@@ -235,6 +236,7 @@ async function handleHostedRequest(data: any) {
       const context = await getPluginHostedSurfaceContext(props.pluginId, {
         kind: props.surface.kind,
         id: props.surface.id,
+        locale: String(locale.value),
       })
       respond({ ok: true, result: context })
       return

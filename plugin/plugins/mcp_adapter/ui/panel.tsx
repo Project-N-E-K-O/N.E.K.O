@@ -60,6 +60,7 @@ const defaultImportJson = `{
 
 export default function McpAdapterPanel(props: PluginSurfaceProps<McpPanelState>) {
   const { plugin, state, entries, actions } = props
+  const { t } = props
   const safePlugin = plugin || {}
   const safeState = state || {}
   const safeEntries = Array.isArray(entries) ? entries as PluginEntryView[] : []
@@ -94,7 +95,7 @@ auto_connect = true`
   const importServer = async () => {
     setImportError("")
     if (!addServer) {
-      setImportError("add_server action is unavailable")
+      setImportError(t("panel.errors.addServerUnavailable"))
       return
     }
     try {
@@ -109,58 +110,58 @@ auto_connect = true`
   return (
     <Page
       title={safePlugin.name || "MCP Adapter"}
-      subtitle="管理 MCP Server 连接、发现 tools，并把外部能力发布为 N.E.K.O 插件入口。"
+      subtitle={t("panel.subtitle")}
     >
       <Toolbar>
         <ToolbarGroup>
           <StatusBadge tone={connectedServers.length > 0 ? "success" : "warning"}>
-            {connectedServers.length > 0 ? "Gateway 在线" : "等待连接"}
+            {connectedServers.length > 0 ? t("panel.status.gatewayOnline") : t("panel.status.waiting")}
           </StatusBadge>
-          {errorServers.length > 0 ? <StatusBadge tone="danger">{errorServers.length} 个异常</StatusBadge> : null}
+          {errorServers.length > 0 ? <StatusBadge tone="danger">{t("panel.status.errorCount", { count: errorServers.length })}</StatusBadge> : null}
         </ToolbarGroup>
         <ToolbarGroup>
-          <RefreshButton>刷新状态</RefreshButton>
+          <RefreshButton>{t("panel.actions.refresh")}</RefreshButton>
         </ToolbarGroup>
       </Toolbar>
 
       <Grid cols={4}>
-        <StatCard label="已配置 Server" value={safeState.total_servers || 0} />
-        <StatCard label="已连接 Server" value={safeState.connected_servers || 0} />
-        <StatCard label="已发现 Tools" value={safeState.total_tools || 0} />
-        <StatCard label="插件入口" value={safeEntries.length} />
+        <StatCard label={t("panel.stats.configuredServers")} value={safeState.total_servers || 0} />
+        <StatCard label={t("panel.stats.connectedServers")} value={safeState.connected_servers || 0} />
+        <StatCard label={t("panel.stats.discoveredTools")} value={safeState.total_tools || 0} />
+        <StatCard label={t("panel.stats.pluginEntries")} value={safeEntries.length} />
       </Grid>
 
       {errorServers.length > 0 ? (
         <Alert tone="danger">
-          有 MCP Server 处于异常状态，请在下方表格查看 Error 列，必要时断开后重新连接。
+          {t("panel.alerts.serverErrors")}
         </Alert>
       ) : null}
 
       <Grid cols={2}>
-        <Card title="Gateway 状态">
+        <Card title={t("panel.gateway.title")}>
           <Stack>
-            <Progress label="连接率" value={servers.length > 0 ? Math.round((connectedServers.length / servers.length) * 100) : 0} />
+            <Progress label={t("panel.gateway.connectionRate")} value={servers.length > 0 ? Math.round((connectedServers.length / servers.length) * 100) : 0} />
             <KeyValue
-              data={{
-                在线: connectedServers.length,
-                离线: disconnectedServers.length,
-                异常: errorServers.length,
-                Adapter: safePlugin.id || "mcp_adapter",
-              }}
+              items={[
+                { key: "online", label: t("panel.gateway.online"), value: connectedServers.length },
+                { key: "offline", label: t("panel.gateway.offline"), value: disconnectedServers.length },
+                { key: "errors", label: t("panel.gateway.errors"), value: errorServers.length },
+                { key: "adapter", label: "Adapter", value: safePlugin.id || "mcp_adapter" },
+              ]}
             />
           </Stack>
         </Card>
 
-        <Card title="接入流程">
+        <Card title={t("panel.flow.title")}>
           <Steps>
-            <Step index="1" title="添加 Server">
-              <Text>使用表单或 JSON 导入保存 MCP Server 配置。</Text>
+            <Step index="1" title={t("panel.flow.addServer.title")}>
+              <Text>{t("panel.flow.addServer.body")}</Text>
             </Step>
-            <Step index="2" title="连接并发现 Tools">
-              <Text>连接成功后，Adapter 会发现 tools 并注册为动态插件入口。</Text>
+            <Step index="2" title={t("panel.flow.connect.title")}>
+              <Text>{t("panel.flow.connect.body")}</Text>
             </Step>
-            <Step index="3" title="在入口列表调用">
-              <Text>发现到的 tools 会出现在插件入口中，可被工作流或其他插件调用。</Text>
+            <Step index="3" title={t("panel.flow.invoke.title")}>
+              <Text>{t("panel.flow.invoke.body")}</Text>
             </Step>
           </Steps>
         </Card>
@@ -195,30 +196,30 @@ auto_connect = true`
                 <ActionButton action={removeServers} values={{ server_names: [effectiveSelectedServerName] }} />
               ) : null}
             </ButtonGroup>
-            <Text>点击表格行选择 Server，再执行连接、断开或移除操作。</Text>
+            <Text>{t("panel.servers.selectionHint")}</Text>
           </Stack>
         ) : (
           <EmptyState
-            title="暂无 MCP Server"
-            description="使用下方表单或 JSON 导入添加第一个 MCP Server。"
+            title={t("panel.servers.empty.title")}
+            description={t("panel.servers.empty.description")}
           />
         )}
       </Card>
 
       <Grid cols={2}>
         {addServer ? (
-          <Card title="添加 MCP Server">
-            <ActionForm action={addServer} submitLabel="添加并连接" />
+          <Card title={t("panel.addServer.title")}>
+            <ActionForm action={addServer} submitLabel={t("panel.addServer.submit")} />
           </Card>
         ) : (
-          <Card title="添加 MCP Server">
-            <Alert tone="warning">当前上下文没有暴露 add_server 动作，无法使用自动表单。</Alert>
+          <Card title={t("panel.addServer.title")}>
+            <Alert tone="warning">{t("panel.errors.addServerFormUnavailable")}</Alert>
           </Card>
         )}
 
-        <Card title="从 JSON 导入">
+        <Card title={t("panel.import.title")}>
           <Stack>
-            <Text>适合粘贴完整 server 配置；字段会直接传给 add_server 入口。</Text>
+            <Text>{t("panel.import.description")}</Text>
             <Textarea
               value={importJson}
               onChange={(value) => {
@@ -227,43 +228,43 @@ auto_connect = true`
               }}
             />
             <p id={importErrorId} className="neko-action-error" hidden></p>
-            <Button tone="success" onClick={importServer}>导入 JSON</Button>
+            <Button tone="success" onClick={importServer}>{t("panel.import.submit")}</Button>
           </Stack>
         </Card>
       </Grid>
 
       <Grid cols={2}>
-        <Card title="最小配置示例">
+        <Card title={t("panel.examples.minimalConfig")}>
           <CodeBlock>{configExample}</CodeBlock>
         </Card>
 
-        <Card title="Transport 选择">
+        <Card title={t("panel.transport.title")}>
           <KeyValue
-            data={{
-              stdio: "本地命令或 uvx/npmx 启动的 MCP Server",
-              sse: "远端 SSE 服务",
-              "streamable-http": "支持流式 HTTP 的远端服务",
-              安全: "不要导入不可信命令或环境变量",
-            }}
+            items={[
+              { key: "stdio", label: "stdio", value: t("panel.transport.stdio") },
+              { key: "sse", label: "sse", value: t("panel.transport.sse") },
+              { key: "streamable-http", label: "streamable-http", value: t("panel.transport.streamableHttp") },
+              { key: "security", label: t("panel.transport.security"), value: t("panel.transport.securityDescription") },
+            ]}
           />
         </Card>
       </Grid>
 
-      <Card title="已发布插件入口">
+      <Card title={t("panel.entries.title")}>
         <DataTable
           data={safeEntries.slice(0, 12)}
           columns={[
-            { key: "id", label: "入口 ID" },
-            { key: "name", label: "名称" },
-            { key: "description", label: "描述" },
+            { key: "id", label: t("panel.entries.columns.id") },
+            { key: "name", label: t("panel.entries.columns.name") },
+            { key: "description", label: t("panel.entries.columns.description") },
           ]}
         />
         <Divider />
-        <Tip>连接 MCP Server 后，发现到的 tools 会动态注册为入口，并出现在这里。</Tip>
+        <Tip>{t("panel.entries.tip")}</Tip>
       </Card>
 
       <Warning>
-        stdio transport 会启动本地进程。导入配置前请确认命令来源可靠，避免执行不可信 MCP Server。
+        {t("panel.warnings.stdio")}
       </Warning>
     </Page>
   )
