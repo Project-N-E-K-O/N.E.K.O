@@ -639,11 +639,12 @@ class ReflectionEngine:
         # 条；按 importance(desc) → 创建时间(asc) 排序后取前 N 条，避免
         # 一次性塞超长 prompt。
         from config import REFLECTION_SYNTHESIS_FACTS_MAX
+        from memory.facts import safe_importance
         if len(unabsorbed) > REFLECTION_SYNTHESIS_FACTS_MAX:
             unabsorbed = sorted(
                 unabsorbed,
                 key=lambda f: (
-                    -int(f.get('importance', 5) or 5),
+                    -safe_importance(f),
                     str(f.get('created_at') or ''),
                 ),
             )[:REFLECTION_SYNTHESIS_FACTS_MAX]
@@ -745,8 +746,9 @@ class ReflectionEngine:
         # 就带一点正分，不必等多轮 user confirms 才穿越 CONFIRMED 阈值。
         # 不走 aapply_signal（synthesis 本身不经 event log），直接写进初始
         # 字典——synth 不是 event-sourced，这些初始值就是 ground truth。
+        from memory.facts import safe_importance
         max_importance = max(
-            (int(f.get('importance', 5) or 5) for f in unabsorbed),
+            (safe_importance(f) for f in unabsorbed),
             default=5,
         )
         initial_rein = initial_reinforcement_from_importance(max_importance)
