@@ -5433,7 +5433,7 @@ function buildSteamTabContent(name, rawData, card, container) {
                 </div>
             </div>
             <div id="live2d-preview-overlay" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 100; pointer-events: auto;"></div>
-            <button id="live2d-refresh-btn" style="position: absolute; top: 10px; right: 10px; z-index: 101; width: 30px; height: 30px; border: none; border-radius: 50%; background-color: transparent; color: white; cursor: pointer; display: flex; justify-content: center; align-items: center; font-size: 16px; pointer-events: auto;" title="${window.t ? window.t('steam.refreshLive2DPreview') : '刷新Live2D预览'}" onclick="refreshLive2DPreview()">↻</button>
+            <button id="live2d-refresh-btn" style="position: absolute; top: 10px; right: 10px; z-index: 101; width: 30px; height: 30px; border: none; border-radius: 50%; background-color: transparent; color: white; cursor: pointer; display: none; justify-content: center; align-items: center; font-size: 16px; pointer-events: auto;" title="${window.t ? window.t('steam.refreshLive2DPreview') : '刷新Live2D预览'}" onclick="refreshLive2DPreview()">↻</button>
         </div>`;
     live2dSection.appendChild(previewContainer);
 
@@ -5468,6 +5468,7 @@ function buildSteamTabContent(name, rawData, card, container) {
             </div>
         </div>`;
     live2dSection.appendChild(controlsDiv);
+    ensurePreviewPlaybackBindings();
     topRow.appendChild(live2dSection);
     layout.appendChild(topRow);
 
@@ -6454,6 +6455,16 @@ async function scanModels() {
 // 全局变量：当前选择的模型信息
 let selectedModelInfo = null;
 
+function setLive2DPreviewRefreshButtonState(visible, enabled = visible) {
+    const refreshButton = document.getElementById('live2d-refresh-btn');
+    if (!refreshButton) return;
+
+    refreshButton.style.display = visible ? 'flex' : 'none';
+    refreshButton.disabled = !enabled;
+    refreshButton.style.cursor = enabled ? 'pointer' : 'default';
+    refreshButton.setAttribute('aria-hidden', visible ? 'false' : 'true');
+}
+
 function fitLive2DPreviewModelToContainer(model) {
     if (!live2dPreviewManager || !live2dPreviewManager.pixi_app || !model) return;
 
@@ -6893,6 +6904,10 @@ async function disposeWorkshopMmd() {
 // 加载 VRM 模型预览
 async function loadVrmPreview(modelPath, rawData) {
     try {
+        cancelPendingLive2DPreviewLoads();
+        selectedModelInfo = null;
+        setLive2DPreviewRefreshButtonState(false, false);
+
         // 先清理之前的 3D 预览
         await disposeWorkshopVrm();
         await disposeWorkshopMmd();
@@ -6993,6 +7008,10 @@ async function loadVrmPreview(modelPath, rawData) {
 // 加载 MMD 模型预览
 async function loadMmdPreview(modelPath, rawData) {
     try {
+        cancelPendingLive2DPreviewLoads();
+        selectedModelInfo = null;
+        setLive2DPreviewRefreshButtonState(false, false);
+
         // 先清理之前的 3D 预览
         await disposeWorkshopVrm();
         await disposeWorkshopMmd();
@@ -7091,6 +7110,8 @@ async function loadMmdPreview(modelPath, rawData) {
 
 // 清除所有模型预览（Live2D + VRM + MMD）
 async function clearAllModelPreviews(showModelNotSetMessage = false) {
+    selectedModelInfo = null;
+    setLive2DPreviewRefreshButtonState(false, false);
     await disposeWorkshopVrm();
     await disposeWorkshopMmd();
     hideAll3DPreviews();
@@ -7116,11 +7137,15 @@ async function clearAllModelPreviews(showModelNotSetMessage = false) {
 // 清除Live2D预览并显示占位符
 async function clearLive2DPreview(showModelNotSetMessage = false) {
     try {
+        cancelPendingLive2DPreviewLoads();
+        selectedModelInfo = null;
+        setLive2DPreviewRefreshButtonState(false, false);
+
         // 如果有模型加载，先移除它
         if (live2dPreviewManager && live2dPreviewManager.currentModel) {
             await live2dPreviewManager.removeModel(true);
-            currentPreviewModel = null;
         }
+        currentPreviewModel = null;
 
         // 隐藏canvas，显示占位符
         const canvas = document.getElementById('live2d-preview-canvas');
@@ -7164,10 +7189,35 @@ async function clearLive2DPreview(showModelNotSetMessage = false) {
 
 // 通过模型名称加载Live2D模型
 async function loadLive2DModelByName(modelName, modelInfo = null) {
+    const loadGeneration = beginLive2DPreviewLoadGeneration();
+    let loadedModel = null;
+    setLive2DPreviewRefreshButtonState(false, false);
+    const ensureCurrentLoad = async () => {
+        if (isCurrentLive2DPreviewLoad(loadGeneration)) {
+            return;
+        }
+
+        if (loadedModel && live2dPreviewManager?.currentModel === loadedModel) {
+            try {
+                await live2dPreviewManager.removeModel(true);
+            } catch (cleanupError) {
+                console.warn('[CharacterCard] 清理过期 Live2D 预览失败:', cleanupError);
+            }
+        }
+
+        const staleError = new Error('Stale Live2D preview load');
+        staleError.code = 'STALE_LIVE2D_PREVIEW_LOAD';
+        throw staleError;
+    };
+
     try {
-        // 确保live2dPreviewManager已初始化
+        // 每次加载前都重新校验预览上下文。
+        // Steam 详情面板会动态销毁并重建 canvas，仅凭 manager 是否存在
+        // 无法判断它是否还绑定在当前这次打开的预览节点上。
+        await initLive2DPreview();
+        await ensureCurrentLoad();
         if (!live2dPreviewManager || !live2dPreviewManager.pixi_app) {
-            await initLive2DPreview();
+            throw new Error('Live2D preview is not ready');
         }
 
         // 强制resize PIXI应用，确保canvas尺寸正确
@@ -7185,6 +7235,7 @@ async function loadLive2DModelByName(modelName, modelInfo = null) {
             // 重置当前预览模型引用
             currentPreviewModel = null;
         }
+        await ensureCurrentLoad();
 
         // 如果没有传入modelInfo，则从API获取模型列表
         if (!modelInfo) {
@@ -7201,6 +7252,7 @@ async function loadLive2DModelByName(modelName, modelInfo = null) {
                 throw new Error(window.t('steam.modelNotFound', '模型未找到'));
             }
         }
+        await ensureCurrentLoad();
 
         // 确保获取正确的steam_id，优先使用modelInfo中的item_id
         let finalSteamId = modelInfo.item_id;
@@ -7221,6 +7273,7 @@ async function loadLive2DModelByName(modelName, modelInfo = null) {
         }
         const filesData = await filesRes.json();
         if (!filesData.success) throw new Error(window.t('live2d.modelFilesFetchFailed', '无法获取模型文件列表'));
+        await ensureCurrentLoad();
         window._previewMotionFiles = filesData.motion_files || [];
 
         // 2. Fetch model config
@@ -7242,6 +7295,7 @@ async function loadLive2DModelByName(modelName, modelInfo = null) {
         const modelConfigRes = await fetch(modelJsonUrl);
         if (!modelConfigRes.ok) throw new Error((window.t && window.t('live2d.modelConfigFetchFailed', { status: modelConfigRes.statusText })) || `无法获取模型配置: ${modelConfigRes.statusText}`);
         const modelConfig = await modelConfigRes.json();
+        await ensureCurrentLoad();
 
         // 3. Add URL context for the loader
         modelConfig.url = modelJsonUrl;
@@ -7275,22 +7329,30 @@ async function loadLive2DModelByName(modelName, modelInfo = null) {
             wheelEnabled: true,
             skipCloseWindows: true  // 创意工坊页面不需要关闭其他窗口
         });
+        loadedModel = live2dPreviewManager.currentModel || null;
+        await ensureCurrentLoad();
 
         // 设置当前预览模型引用，用于播放动作和表情
-        currentPreviewModel = live2dPreviewManager.currentModel;
+        currentPreviewModel = loadedModel;
 
         // 清除模型路径，防止拖动预览时自动保存到preference
         live2dPreviewManager._lastLoadedModelPath = null;
 
         // 更新预览控件
         await updatePreviewControlsAfterModelLoad(filesData);
+        await ensureCurrentLoad();
 
         // 模型加载完成后，确保它在容器中正确显示
         setTimeout(() => {
-            if (live2dPreviewManager && live2dPreviewManager.currentModel) {
+            if (!isCurrentLive2DPreviewLoad(loadGeneration)) {
+                return;
+            }
+
+            const canvas = document.getElementById('live2d-preview-canvas');
+            if (live2dPreviewManager && live2dPreviewManager.currentModel && canvas) {
                 fitLive2DPreviewModelToContainer(live2dPreviewManager.currentModel);
                 // 确保canvas正确显示，占位符被隐藏
-                document.getElementById('live2d-preview-canvas').style.display = '';
+                canvas.style.display = '';
                 const placeholder = document.querySelector('#live2d-preview-content .preview-placeholder');
                 if (placeholder) placeholder.style.display = 'none';
                 // 强制重绘canvas
@@ -7302,8 +7364,14 @@ async function loadLive2DModelByName(modelName, modelInfo = null) {
 
         // 更新全局selectedModelInfo变量
         selectedModelInfo = modelInfo;
+        setLive2DPreviewRefreshButtonState(true, true);
         showMessage((window.t && window.t('live2d.modelLoadSuccess', { model: modelName })) || `模型 ${modelName} 加载成功`, 'success');
     } catch (error) {
+        if (error && error.code === 'STALE_LIVE2D_PREVIEW_LOAD') {
+            return;
+        }
+
+        setLive2DPreviewRefreshButtonState(false, false);
         console.error('Failed to load Live2D model by name:', error);
         showMessage((window.t && window.t('live2d.modelLoadFailed', { model: modelName })) || `加载模型 ${modelName} 失败`, 'error');
 
@@ -7371,11 +7439,55 @@ async function updatePreviewControlsAfterModelLoad(filesData) {
     const savedIdleAnimation = rawData._reserved?.avatar?.live2d?.idle_animation
         || rawData.avatar?.live2d?.idle_animation
         || rawData.live2d_idle_animation;
-    if (savedIdleAnimation && motionSelect) {
-        const motionFiles = window._previewMotionFiles || [];
-        if (motionFiles.includes(savedIdleAnimation)) {
-            motionSelect.value = savedIdleAnimation;
+    const savedIdleAnimationBaseName = savedIdleAnimation
+        ? String(savedIdleAnimation).split('/').pop()
+        : '';
+    const availableMotionFiles = window._previewMotionFiles || [];
+    let initialMotionToPlay = '';
+    if (savedIdleAnimationBaseName && motionSelect) {
+        const matchingSavedMotion = availableMotionFiles.find(file => {
+            const normalizedFile = String(file || '');
+            return normalizedFile === savedIdleAnimation
+                || normalizedFile.split('/').pop() === savedIdleAnimationBaseName;
+        });
+        if (matchingSavedMotion) {
+            motionSelect.value = matchingSavedMotion;
+            initialMotionToPlay = matchingSavedMotion;
         }
+    }
+
+    if (!initialMotionToPlay && motionSelect && motionSelect.value) {
+        initialMotionToPlay = motionSelect.value;
+    }
+
+    if (!initialMotionToPlay && availableMotionFiles.length > 0) {
+        initialMotionToPlay = availableMotionFiles[0];
+        if (motionSelect) {
+            motionSelect.value = initialMotionToPlay;
+        }
+    }
+
+    const previewModelToAutoplay = currentPreviewModel;
+
+    if (live2dPreviewManager) {
+        live2dPreviewManager._userIdleAnimations = initialMotionToPlay
+            ? [String(initialMotionToPlay).split('/').pop()]
+            : [];
+    }
+
+    const scheduledMotionSelection = motionSelect ? motionSelect.value : '';
+
+    if (initialMotionToPlay && previewModelToAutoplay) {
+        requestAnimationFrame(() => {
+            if (
+                currentPreviewModel === previewModelToAutoplay
+                && live2dPreviewManager?.currentModel === previewModelToAutoplay
+                && motionSelect
+                && motionSelect.value === scheduledMotionSelection
+            ) {
+                handlePreviewMotionPlay();
+            }
+        });
     }
 }
 
@@ -7485,6 +7597,20 @@ function clearTags(type) {
 // Live2D预览相关功能
 let live2dPreviewManager = null;
 let currentPreviewModel = null;
+let live2dPreviewLoadGeneration = 0;
+
+function beginLive2DPreviewLoadGeneration() {
+    live2dPreviewLoadGeneration += 1;
+    return live2dPreviewLoadGeneration;
+}
+
+function cancelPendingLive2DPreviewLoads() {
+    live2dPreviewLoadGeneration += 1;
+}
+
+function isCurrentLive2DPreviewLoad(loadGeneration) {
+    return loadGeneration === live2dPreviewLoadGeneration;
+}
 
 // 初始化Live2D预览环境
 async function initLive2DPreview() {
@@ -7494,43 +7620,70 @@ async function initLive2DPreview() {
             throw new Error('Live2DManager class not found');
         }
 
-        // 避免重复初始化
-        if (live2dPreviewManager && live2dPreviewManager.pixi_app) {
-            return; // 已经正常初始化，不需要重新初始化
+        const canvasId = 'live2d-preview-canvas';
+        const containerId = 'live2d-preview-content';
+        const canvas = document.getElementById(canvasId);
+        const container = document.getElementById(containerId);
+
+        // Steam 预览区域是动态创建的；在 DOM 尚未生成时静默跳过，
+        // 避免页面初始加载阶段提前报错并污染后续初始化状态。
+        if (!canvas || !container) {
+            return;
         }
 
-        // 清理可能存在的残缺实例
-        live2dPreviewManager = null;
+        if (!live2dPreviewManager) {
+            live2dPreviewManager = new Live2DManager();
+        }
 
-        // 创建一个新的Live2DManager实例
-        live2dPreviewManager = new Live2DManager();
-        await live2dPreviewManager.initPIXI('live2d-preview-canvas', 'live2d-preview-content');
+        const existingView = live2dPreviewManager.pixi_app?.view || null;
+        const needsPixiRebuild = !!(
+            existingView && (
+                existingView !== canvas ||
+                !existingView.isConnected
+            )
+        );
+
+        if (needsPixiRebuild && typeof live2dPreviewManager.rebuildPIXI === 'function') {
+            await live2dPreviewManager.rebuildPIXI(canvasId, containerId);
+        } else if (typeof live2dPreviewManager.ensurePIXIReady === 'function') {
+            await live2dPreviewManager.ensurePIXIReady(canvasId, containerId);
+        } else if (!live2dPreviewManager.pixi_app) {
+            await live2dPreviewManager.initPIXI(canvasId, containerId);
+        }
 
         // 覆盖applyModelSettings方法，为预览模式实现专门的显示逻辑
-        const originalApplyModelSettings = live2dPreviewManager.applyModelSettings;
-        live2dPreviewManager.applyModelSettings = function (model, options) {
-            // 获取预览容器的尺寸
-            const container = document.getElementById('live2d-preview-content');
-            if (!container || !this.pixi_app || !this.pixi_app.renderer) {
-                return originalApplyModelSettings(model, options);
-            }
-            fitLive2DPreviewModelToContainer(model);
-        };
+        if (!live2dPreviewManager._previewApplyModelSettingsPatched) {
+            const originalApplyModelSettings = live2dPreviewManager.applyModelSettings;
+            live2dPreviewManager.applyModelSettings = function (model, options) {
+                // 获取预览容器的尺寸
+                const previewContainer = document.getElementById(containerId);
+                if (!previewContainer || !this.pixi_app || !this.pixi_app.renderer) {
+                    return originalApplyModelSettings.call(this, model, options);
+                }
+                fitLive2DPreviewModelToContainer(model);
+            };
+            live2dPreviewManager._previewApplyModelSettingsPatched = true;
+        }
 
         // 添加窗口大小变化的监听，当预览区域大小变化时重新计算模型缩放和位置
-        function resizePreviewModel() {
-            const container = document.getElementById('live2d-preview-content');
-            if (live2dPreviewManager && live2dPreviewManager.pixi_app && container &&
-                container.clientWidth > 0 && container.clientHeight > 0) {
-                live2dPreviewManager.pixi_app.renderer.resize(container.clientWidth, container.clientHeight);
-            }
-            if (live2dPreviewManager && live2dPreviewManager.currentModel) {
-                // 调用我们覆盖的applyModelSettings方法，重新计算模型缩放和位置
-                live2dPreviewManager.applyModelSettings(live2dPreviewManager.currentModel, {});
-                if (live2dPreviewManager.pixi_app && live2dPreviewManager.pixi_app.renderer) {
-                    live2dPreviewManager.pixi_app.renderer.render(live2dPreviewManager.pixi_app.stage);
+        if (!live2dPreviewManager._previewResizeHandlerBound) {
+            function resizePreviewModel() {
+                const previewContainer = document.getElementById(containerId);
+                if (live2dPreviewManager && live2dPreviewManager.pixi_app && previewContainer &&
+                    previewContainer.clientWidth > 0 && previewContainer.clientHeight > 0) {
+                    live2dPreviewManager.pixi_app.renderer.resize(previewContainer.clientWidth, previewContainer.clientHeight);
+                }
+                if (live2dPreviewManager && live2dPreviewManager.currentModel) {
+                    // 调用我们覆盖的applyModelSettings方法，重新计算模型缩放和位置
+                    live2dPreviewManager.applyModelSettings(live2dPreviewManager.currentModel, {});
+                    if (live2dPreviewManager.pixi_app && live2dPreviewManager.pixi_app.renderer) {
+                        live2dPreviewManager.pixi_app.renderer.render(live2dPreviewManager.pixi_app.stage);
+                    }
                 }
             }
+            live2dPreviewManager._previewResizeHandler = resizePreviewModel;
+            live2dPreviewManager._previewResizeHandlerBound = true;
+            window.addEventListener('resize', resizePreviewModel);
         }
 
         // 添加removeModel方法的fallback，防止调用时出错
@@ -7553,9 +7706,6 @@ async function initLive2DPreview() {
             };
         }
 
-        // 添加窗口大小变化监听
-        window.addEventListener('resize', resizePreviewModel);
-
     } catch (error) {
         console.error('Failed to initialize Live2D preview:', error);
         live2dPreviewManager = null;
@@ -7566,8 +7716,9 @@ async function initLive2DPreview() {
 // 从文件夹加载Live2D模型
 async function loadLive2DModelFromFolder(files) {
     try {
+        await initLive2DPreview();
         if (!live2dPreviewManager || !live2dPreviewManager.pixi_app) {
-            await initLive2DPreview();
+            throw new Error('Live2D preview is not ready');
         }
 
         // 获取第一个文件夹的名称
@@ -7771,55 +7922,56 @@ function updatePreviewControls(motionFiles, expressionFiles) {
 
     // 显示预览控件
     previewControls.style.display = '';
+
+    ensurePreviewPlaybackBindings();
 }
 
-// 播放预览动作
-const playMotionBtn = document.getElementById('preview-play-motion-btn');
-if (playMotionBtn) {
-    playMotionBtn.addEventListener('click', () => {
-        if (!currentPreviewModel) return;
+function handlePreviewMotionPlay() {
+    if (!currentPreviewModel) return;
 
-        const motionSelect = document.getElementById('preview-motion-select');
-        const motionFile = motionSelect.value;
-        if (!motionFile) return;
+    const motionSelect = document.getElementById('preview-motion-select');
+    const motionFile = motionSelect ? motionSelect.value : '';
+    if (!motionFile) return;
 
-        const motionIndex = (window._previewMotionFiles || []).indexOf(motionFile);
-        if (motionIndex < 0) return;
+    const motionIndex = (window._previewMotionFiles || []).indexOf(motionFile);
+    if (motionIndex < 0) return;
 
-        try {
-            currentPreviewModel.motion('PreviewAll', motionIndex, 3);
-        } catch (error) {
-            console.error('Failed to play motion:', error);
-            showMessage(window.t('live2d.playMotionFailed', { motion: motionFile }), 'error');
-        }
-    });
+    try {
+        currentPreviewModel.motion('PreviewAll', motionIndex, 3);
+    } catch (error) {
+        console.error('Failed to play motion:', error);
+        showMessage(window.t('live2d.playMotionFailed', { motion: motionFile }), 'error');
+    }
 }
 
-// 播放预览表情
-const playExpressionBtn = document.getElementById('preview-play-expression-btn');
-if (playExpressionBtn) {
-    playExpressionBtn.addEventListener('click', () => {
-        if (!currentPreviewModel) return;
+function handlePreviewExpressionPlay() {
+    if (!currentPreviewModel) return;
 
-        const expressionSelect = document.getElementById('preview-expression-select');
-        const expressionName = expressionSelect.value;
+    const expressionSelect = document.getElementById('preview-expression-select');
+    const expressionName = expressionSelect ? expressionSelect.value : '';
+    if (!expressionName) return;
 
-        if (!expressionName) return;
-
-        try {
-            currentPreviewModel.expression(expressionName);
-        } catch (error) {
-            console.error('Failed to play expression:', error);
-            showMessage(window.t('live2d.playExpressionFailed', { expression: expressionName }), 'error');
-        }
-    });
+    try {
+        currentPreviewModel.expression(expressionName);
+    } catch (error) {
+        console.error('Failed to play expression:', error);
+        showMessage(window.t('live2d.playExpressionFailed', { expression: expressionName }), 'error');
+    }
 }
 
-// 页面加载完成后初始化Live2D预览环境
-document.addEventListener('DOMContentLoaded', function () {
-    // 延迟初始化，确保其他资源已加载
-    setTimeout(initLive2DPreview, 1000);
-});
+function ensurePreviewPlaybackBindings() {
+    const playMotionBtn = document.getElementById('preview-play-motion-btn');
+    if (playMotionBtn && playMotionBtn.dataset.previewMotionBound !== 'true') {
+        playMotionBtn.addEventListener('click', handlePreviewMotionPlay);
+        playMotionBtn.dataset.previewMotionBound = 'true';
+    }
+
+    const playExpressionBtn = document.getElementById('preview-play-expression-btn');
+    if (playExpressionBtn && playExpressionBtn.dataset.previewExpressionBound !== 'true') {
+        playExpressionBtn.addEventListener('click', handlePreviewExpressionPlay);
+        playExpressionBtn.dataset.previewExpressionBound = 'true';
+    }
+}
 
 // 注意事项标签功能
 (function () {
