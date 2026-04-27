@@ -358,7 +358,10 @@
             const rawWidth = Math.max(0, Math.round(rect.width));
             const rawHeight = Math.max(0, Math.round(rect.height));
             const rawMinEdge = Math.min(rawWidth, rawHeight);
-            const rawRadius = Math.max(0, this.getSpotlightRadius(element, padding) - padding);
+            const radiusOverride = readSpotlightNumberAttr(element, 'data-yui-guide-spotlight-radius');
+            const rawRadius = radiusOverride != null
+                ? Math.max(0, radiusOverride)
+                : Math.max(0, this.getSpotlightRadius(element, padding) - padding);
             const sizeTolerance = Math.max(18, Math.round(rawMinEdge * 0.2));
             const left = Math.max(0, Math.floor(rect.left - padding));
             const top = Math.max(0, Math.floor(rect.top - padding));

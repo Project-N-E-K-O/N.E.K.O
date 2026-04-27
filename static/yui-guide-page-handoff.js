@@ -37,6 +37,7 @@
 
     var _activeWindows = {};
     var _activeTimers = {};
+    var _pluginDashboardCompleteDeprecatedWarned = false;
 
     function syncMainUIVisibility() {
         var hasOpenWindow = Object.keys(_activeWindows).some(function (key) {
@@ -85,7 +86,7 @@
         try {
             targetUrl = new URL(openUrl, window.location.origin).toString();
         } catch (_) {}
-        var existingWindow = window._openedWindows ? window._openedWindows[fullName] : null;
+        var existingWindow = getOpenedWindow(fullName);
         var hadExistingWindow = !!(existingWindow && !existingWindow.closed);
         var childWin;
 
@@ -1020,6 +1021,10 @@
      */
     function listenPluginDashboardComplete(onComplete) {
         if (typeof onComplete !== 'function') return function () {};
+        if (!_pluginDashboardCompleteDeprecatedWarned) {
+            _pluginDashboardCompleteDeprecatedWarned = true;
+            console.warn('[YuiGuideHandoff] listenPluginDashboardComplete 已弃用，请改用 neko:yui-guide:plugin-dashboard:start / neko:yui-guide:plugin-dashboard:interrupt-ack 消息流程。');
+        }
 
         function handler(event) {
             if (!event.data || typeof event.data !== 'object') return;

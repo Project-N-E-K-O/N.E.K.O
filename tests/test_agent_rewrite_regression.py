@@ -95,7 +95,7 @@ def test_main_agent_router_expected_proxy_endpoints_exist():
 
 
 @pytest.mark.asyncio
-async def test_main_agent_router_plugin_dashboard_redirect_strips_yui_handoff_query():
+async def test_main_agent_router_plugin_dashboard_redirect_uses_base_ui_url_without_query():
     from config import USER_PLUGIN_SERVER_PORT
     from main_routers.agent_router import redirect_plugin_dashboard
 

@@ -24,6 +24,7 @@ const DEFAULT_PASSIVE_RESISTANCE_INTERVAL_MS = 140
 const DEFAULT_RESISTANCE_CURSOR_REVEAL_MS = 3000
 const PLUGIN_DASHBOARD_MOVE_TO_MAIN_MS = 780
 const PLUGIN_DASHBOARD_SCROLL_PHASE_MS = 2000
+const PLUGIN_MAIN_SPOTLIGHT_INSET = -25
 const PLUGIN_DASHBOARD_DEFAULT_TOTAL_MS = 9000
 const RESISTANCE_LINES = [
   '喂！不要拽我啦，还没轮到你的回合呢！',
@@ -123,6 +124,7 @@ let currentGuideAudioTimer: number | null = null
 let currentGuideSpeechStop: (() => void) | null = null
 let openerMessageOrigin = ''
 const guideAudioDurationCache = new Map<string, number>()
+const guideAudioDurationPromiseCache = new Map<string, Promise<number>>()
 
 type StartPayload = {
   line?: string
@@ -307,14 +309,44 @@ function playGuideAudioWithPromise(audioSrc: string, minimumDurationMs: number) 
   return new Promise<void>((resolve, reject) => {
     let settled = false
     const audio = new Audio(normalizedAudioSrc)
+    const cacheKey = getGuideAudioDurationCacheKey(normalizedAudioSrc)
+    let resolveMetadataDuration: ((durationMs: number) => void) | null = null
+    let metadataTimerId: number | null = null
     const maxWaitMs = Math.max(3000, minimumDurationMs) + 12000
     currentGuideAudio = audio
+    if (cacheKey) {
+      let metadataPromise: Promise<number>
+      metadataPromise = new Promise<number>((resolveMetadata) => {
+        resolveMetadataDuration = resolveMetadata
+        metadataTimerId = window.setTimeout(() => {
+          metadataTimerId = null
+          resolveMetadata(0)
+        }, 2500)
+      }).finally(() => {
+        if (guideAudioDurationPromiseCache.get(cacheKey) === metadataPromise) {
+          guideAudioDurationPromiseCache.delete(cacheKey)
+        }
+      })
+      guideAudioDurationPromiseCache.set(cacheKey, metadataPromise)
+    }
+
+    const finishMetadataDuration = (durationMs: number) => {
+      if (metadataTimerId !== null) {
+        window.clearTimeout(metadataTimerId)
+        metadataTimerId = null
+      }
+      if (resolveMetadataDuration) {
+        resolveMetadataDuration(durationMs)
+        resolveMetadataDuration = null
+      }
+    }
 
     const finish = (success: boolean, error?: unknown) => {
       if (settled) {
         return
       }
       settled = true
+      finishMetadataDuration(0)
       window.clearTimeout(timerId)
       if (currentGuideAudioTimer === timerId) {
         currentGuideAudioTimer = null
@@ -342,7 +374,11 @@ function playGuideAudioWithPromise(audioSrc: string, minimumDurationMs: number) 
 
     audio.preload = 'auto'
     audio.onloadedmetadata = () => {
+      const durationMs = Number.isFinite(audio.duration) && audio.duration > 0
+        ? Math.round(audio.duration * 1000)
+        : 0
       cacheGuideAudioDuration(normalizedAudioSrc, audio.duration)
+      finishMetadataDuration(durationMs)
     }
     audio.onended = () => finish(true)
     audio.onerror = () => finish(false, new Error('guide_audio_error'))
@@ -366,7 +402,7 @@ function playGuideAudioWithPromise(audioSrc: string, minimumDurationMs: number) 
   })
 }
 
-function loadGuideAudioDurationMs(audioSrc: string, fallbackDurationMs: number) {
+function loadGuideAudioDurationMs(audioSrc: string, fallbackDurationMs: number): Promise<number> {
   const normalizedAudioSrc = typeof audioSrc === 'string' ? audioSrc.trim() : ''
   if (!normalizedAudioSrc) {
     return Promise.resolve(fallbackDurationMs)
@@ -376,6 +412,16 @@ function loadGuideAudioDurationMs(audioSrc: string, fallbackDurationMs: number) 
   const cachedDurationMs = cacheKey ? guideAudioDurationCache.get(cacheKey) : null
   if (Number.isFinite(cachedDurationMs) && (cachedDurationMs as number) > 0) {
     return Promise.resolve(cachedDurationMs as number)
+  }
+
+  const pendingDurationPromise = cacheKey ? guideAudioDurationPromiseCache.get(cacheKey) : null
+  if (pendingDurationPromise) {
+    return pendingDurationPromise.then((durationMs): number | Promise<number> => {
+      if (Number.isFinite(durationMs) && durationMs > 0) {
+        return durationMs
+      }
+      return loadGuideAudioDurationMs(normalizedAudioSrc, fallbackDurationMs)
+    })
   }
 
   const currentAudioCacheKey = currentGuideAudio
@@ -2114,7 +2160,8 @@ class PluginDashboardGuideRuntime {
       return
     }
 
-    mainContainer.setAttribute('data-yui-guide-spotlight-padding', '-25')
+    // Negative padding is an inverse inset: getSpotlightRect shrinks the main spotlight by 25px.
+    mainContainer.setAttribute('data-yui-guide-spotlight-padding', String(PLUGIN_MAIN_SPOTLIGHT_INSET))
 
     if (!isCurrent()) {
       return
