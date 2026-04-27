@@ -3707,9 +3707,7 @@
                         const trimmedOrigin = apiOrigin.trim();
                         try {
                             return new URL(trimmedOrigin).origin;
-                        } catch (_) {
-                            return trimmedOrigin;
-                        }
+                        } catch (_) {}
                     }
                 } catch (error) {
                     console.warn('[YuiGuide] 获取插件面板 origin 失败:', error);
@@ -4281,11 +4279,6 @@
                         this.pluginDashboardWindowCreatedByGuide = false;
                     } catch (error) {
                         console.warn('[YuiGuide] 刷新已有插件面板失败:', error);
-                        try {
-                            existingPluginDashboardWindow.close();
-                        } catch (closeError) {
-                            console.warn('[YuiGuide] 关闭旧插件面板失败:', closeError);
-                        }
                         pluginDashboardWindow = await this.openPluginDashboardWindow({
                             keepMainUIVisible: true
                         });
@@ -4293,6 +4286,13 @@
                             pluginDashboardWindow = await this.waitForOpenedWindow(PLUGIN_DASHBOARD_WINDOW_NAME, 6000);
                         }
                         this.pluginDashboardWindowCreatedByGuide = !!(pluginDashboardWindow && !pluginDashboardWindow.closed);
+                        if (pluginDashboardWindow && !pluginDashboardWindow.closed) {
+                            try {
+                                existingPluginDashboardWindow.close();
+                            } catch (closeError) {
+                                console.warn('[YuiGuide] 关闭旧插件面板失败:', closeError);
+                            }
+                        }
                     }
                 } else {
                     pluginDashboardWindow = await this.waitForOpenedWindow(PLUGIN_DASHBOARD_WINDOW_NAME, 6000);

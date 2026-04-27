@@ -11,6 +11,7 @@ const DONE_EVENT = 'neko:yui-guide:plugin-dashboard:done'
 const INTERRUPT_REQUEST_EVENT = 'neko:yui-guide:plugin-dashboard:interrupt-request'
 const INTERRUPT_ACK_EVENT = 'neko:yui-guide:plugin-dashboard:interrupt-ack'
 const HANDOFF_STORAGE_KEY = 'neko_yui_guide_handoff_token'
+const HANDOFF_TOKEN_VERSION = 1
 const PREACTIVATE_CLEANUP_MS = 8000
 const GUIDE_AUDIO_BASE_URL = '/static/assets/tutorial/guide-audio/'
 const DEFAULT_GUIDE_LOCALE = 'zh'
@@ -970,13 +971,21 @@ class PluginDashboardGuideRuntime {
         return false
       }
       const token = JSON.parse(raw) as {
+        token_version?: number
+        flow_id?: string
         target_page?: string
         consumed?: boolean
+        expires_at?: number
       } | null
       return !!(
         token
+        && token.token_version === HANDOFF_TOKEN_VERSION
+        && typeof token.flow_id === 'string'
+        && token.flow_id.trim() !== ''
         && token.target_page === 'plugin_dashboard'
         && token.consumed !== true
+        && Number.isFinite(token.expires_at)
+        && Number(token.expires_at) > Date.now()
       )
     } catch {
       return false
@@ -1216,8 +1225,10 @@ class PluginDashboardGuideRuntime {
 
     let radius = 18
     try {
-      const computed = window.getComputedStyle(htmlElement)
-      const parsedRadius = Number.parseFloat(computed.borderTopLeftRadius || computed.borderRadius || '')
+      const explicitRadius = readSpotlightNumberAttr(htmlElement, 'data-yui-guide-spotlight-radius')
+      const parsedRadius = Number.isFinite(explicitRadius) && Number(explicitRadius) > 0
+        ? Number(explicitRadius)
+        : Number.parseFloat(window.getComputedStyle(htmlElement).borderTopLeftRadius || window.getComputedStyle(htmlElement).borderRadius || '')
       if (Number.isFinite(parsedRadius) && parsedRadius > 0) {
         radius = Math.max(MIN_SPOTLIGHT_RADIUS, parsedRadius + padding)
       }
