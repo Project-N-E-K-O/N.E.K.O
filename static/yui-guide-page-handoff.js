@@ -996,14 +996,16 @@
     }
 
     function openPluginDashboard(resumeSceneOrOptions, options) {
-        var hasLegacySignature = arguments.length > 1 && options !== undefined;
-        var hasLegacyStringOnlySignature = arguments.length === 1 && typeof resumeSceneOrOptions === 'string';
-        var legacyResumeScene = (hasLegacySignature || hasLegacyStringOnlySignature) && typeof resumeSceneOrOptions === 'string'
-            ? resumeSceneOrOptions
-            : '';
-        var sourceOptions = hasLegacySignature
-            ? (options || {})
-            : (hasLegacyStringOnlySignature ? {} : (resumeSceneOrOptions || {}));
+        var firstArgIsString = typeof resumeSceneOrOptions === 'string';
+        var legacyResumeScene = firstArgIsString ? resumeSceneOrOptions : '';
+        var sourceOptions;
+        if (firstArgIsString) {
+            sourceOptions = (options && typeof options === 'object') ? options : {};
+        } else if (resumeSceneOrOptions && typeof resumeSceneOrOptions === 'object') {
+            sourceOptions = resumeSceneOrOptions;
+        } else {
+            sourceOptions = {};
+        }
         var normalizedOptions = Object.assign({}, sourceOptions, {
             resumeScene: legacyResumeScene || sourceOptions.resumeScene || sourceOptions.resume_scene || null,
             forceReload: true
