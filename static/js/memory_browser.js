@@ -6,6 +6,203 @@
     let chatData = [];
     let currentCatName = '';
     let memoryFileRequestId = 0;
+    let storageLocationState = {
+        bootstrap: null,
+        blockingReason: '',
+        loadFailed: false,
+        limited: false
+    };
+
+    const STORAGE_BLOCKING_STATUS_KEYS = {
+        selection_required: 'memory.storageSelectionRequired',
+        migration_pending: 'memory.storageMigrationPending',
+        recovery_required: 'memory.storageRecoveryRequired'
+    };
+
+    function translate(key, fallback, options) {
+        if (window.t) {
+            return window.t(key, options || {});
+        }
+        return fallback;
+    }
+
+    function setElementText(id, text) {
+        const el = document.getElementById(id);
+        if (el) {
+            el.textContent = text;
+        }
+    }
+
+    function displayPath(path) {
+        const normalized = String(path || '').trim();
+        return normalized || '-';
+    }
+
+    function getStorageBlockingReason(bootstrapPayload) {
+        if (!bootstrapPayload || typeof bootstrapPayload !== 'object') {
+            return '';
+        }
+        const explicitReason = String(bootstrapPayload.blocking_reason || '').trim();
+        if (explicitReason) {
+            return explicitReason;
+        }
+        if (bootstrapPayload.selection_required) {
+            return 'selection_required';
+        }
+        if (bootstrapPayload.migration_pending) {
+            return 'migration_pending';
+        }
+        if (bootstrapPayload.recovery_required) {
+            return 'recovery_required';
+        }
+        return '';
+    }
+
+    function describeStorageState(state) {
+        if (!state || state.loadFailed) {
+            return translate('memory.storageLoadFailed', '存储位置加载失败');
+        }
+        const blockingReason = state.blockingReason || '';
+        if (!blockingReason) {
+            return '';
+        }
+        const statusKey = STORAGE_BLOCKING_STATUS_KEYS[blockingReason] || 'memory.storageStatusBlocked';
+        return translate(statusKey, '当前需要先处理存储位置状态');
+    }
+
+    function setReviewControlsEnabled(enabled) {
+        const checkbox = document.getElementById('review-toggle-checkbox');
+        const label = document.querySelector("label[for='review-toggle-checkbox']");
+        if (checkbox) {
+            checkbox.disabled = !enabled;
+            if (!enabled) {
+                checkbox.checked = false;
+            }
+        }
+        if (label) {
+            label.classList.toggle('is-disabled', !enabled);
+        }
+        if (!enabled) {
+            updateToggleText(false);
+        }
+    }
+
+    function renderStorageLocationPanel() {
+        const state = storageLocationState || {};
+        const bootstrap = state.bootstrap || {};
+        setElementText('storage-current-root', state.loadFailed ? '-' : displayPath(bootstrap.current_root));
+        setElementText('storage-location-status', describeStorageState(state));
+
+        const manageBtn = document.getElementById('storage-location-manage-btn');
+        if (manageBtn) {
+            manageBtn.disabled = true;
+            manageBtn.title = translate('memory.storageManagementComingSoon', '存储位置管理即将开放');
+        }
+
+        const openBtn = document.getElementById('storage-location-open-btn');
+        if (openBtn) {
+            openBtn.disabled = state.loadFailed || !String(bootstrap.current_root || '').trim();
+        }
+    }
+
+    async function initStorageLocationPanel() {
+        try {
+            const resp = await fetch('/api/storage/location/bootstrap', {
+                headers: { 'Cache-Control': 'no-cache' }
+            });
+            if (!resp.ok) {
+                throw new Error('storage bootstrap failed: ' + resp.status);
+            }
+            const bootstrap = await resp.json();
+            const blockingReason = getStorageBlockingReason(bootstrap);
+            storageLocationState = {
+                bootstrap,
+                blockingReason,
+                loadFailed: false,
+                limited: !!blockingReason
+            };
+        } catch (e) {
+            console.warn('[MemoryBrowser] storage location bootstrap failed:', e);
+            storageLocationState = {
+                bootstrap: null,
+                blockingReason: '',
+                loadFailed: true,
+                limited: false
+            };
+        }
+        renderStorageLocationPanel();
+        return storageLocationState;
+    }
+
+    function renderMemoryBrowserLimitedState(state) {
+        currentMemoryFile = null;
+        currentCatName = '';
+        chatData = [];
+        memoryFileRequestId++;
+
+        const list = document.getElementById('memory-file-list');
+        if (list) {
+            list.innerHTML = '';
+            const item = document.createElement('li');
+            item.style.cssText = 'color:#40C5F1; padding: 8px; line-height: 1.5;';
+            item.textContent = describeStorageState(state);
+            list.appendChild(item);
+        }
+
+        const editDiv = document.getElementById('memory-chat-edit');
+        if (editDiv) {
+            editDiv.textContent = '';
+            const placeholder = document.createElement('div');
+            placeholder.className = 'memory-limited-state';
+            placeholder.textContent = translate(
+                'memory.storageMemoryLimitedState',
+                '当前存储位置还未就绪。请先完成存储位置选择、恢复或等待迁移完成，然后再查看记忆。'
+            );
+            editDiv.appendChild(placeholder);
+        }
+
+        const saveRow = document.getElementById('save-row');
+        if (saveRow) {
+            saveRow.style.display = 'none';
+        }
+        setReviewControlsEnabled(false);
+    }
+
+    async function openCurrentStorageRoot() {
+        const currentRoot = String(storageLocationState.bootstrap && storageLocationState.bootstrap.current_root || '').trim();
+        if (!currentRoot) {
+            setElementText('storage-location-status', translate('memory.storageManagementUnavailable', '当前存储位置暂不可用'));
+            return;
+        }
+        const openBtn = document.getElementById('storage-location-open-btn');
+        if (openBtn) {
+            openBtn.disabled = true;
+        }
+        try {
+            const host = window.nekoHost;
+            if (host && typeof host.openPath === 'function') {
+                const result = await host.openPath({ path: currentRoot });
+                if (result && result.ok === false) {
+                    throw new Error(result.error || 'openPath failed');
+                }
+                setElementText('storage-location-status', '');
+                return;
+            }
+            if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+                await navigator.clipboard.writeText(currentRoot);
+                setElementText('storage-location-status', translate('memory.storagePathCopied', '已复制当前目录路径'));
+                return;
+            }
+            setElementText('storage-location-status', translate('memory.storageOpenPathUnavailable', '当前环境无法直接打开目录，请手动复制路径'));
+        } catch (e) {
+            console.warn('[MemoryBrowser] open current storage root failed:', e);
+            setElementText('storage-location-status', translate('memory.storageOpenPathFailed', '打开当前目录失败'));
+        } finally {
+            if (openBtn) {
+                openBtn.disabled = storageLocationState.loadFailed || !currentRoot;
+            }
+        }
+    }
 
     /** Normalize message body from recent_*.json (string or OpenAI-style content blocks). */
     function extractDataContent(data) {
@@ -406,9 +603,15 @@
     // 将函数暴露到全局作用域，供 HTML onclick 调用
     window.closeMemoryBrowser = closeMemoryBrowser;
     // 页面加载时隐藏保存按钮
-    document.addEventListener('DOMContentLoaded', function () {
-        loadMemoryFileList();
-        loadReviewConfig();
+    document.addEventListener('DOMContentLoaded', async function () {
+        const storagePanelState = await initStorageLocationPanel();
+        if (storagePanelState && storagePanelState.limited) {
+            renderMemoryBrowserLimitedState(storagePanelState);
+        } else {
+            setReviewControlsEnabled(true);
+            loadMemoryFileList();
+            loadReviewConfig();
+        }
         document.getElementById('save-row').style.display = 'none';
 
         // 监听checkbox变化
@@ -423,9 +626,20 @@
         if (window.i18n) {
             window.i18n.on('languageChanged', function () {
                 const checkbox = document.getElementById('review-toggle-checkbox');
+                renderStorageLocationPanel();
                 if (checkbox) {
                     updateToggleText(checkbox.checked);
                 }
+                if (storageLocationState && storageLocationState.limited) {
+                    renderMemoryBrowserLimitedState(storageLocationState);
+                }
+            });
+        }
+
+        const openStorageBtn = document.getElementById('storage-location-open-btn');
+        if (openStorageBtn) {
+            openStorageBtn.addEventListener('click', function () {
+                openCurrentStorageRoot();
             });
         }
 

@@ -437,6 +437,115 @@ body .container-header {
     box-shadow: none;
 }
 
+/* 存储位置常驻入口 */
+.storage-location-section {
+    margin-top: 0;
+}
+
+.storage-location-card-mini {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.storage-location-mini-row {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.storage-location-mini-label {
+    color: #40C5F1;
+    font-size: 0.9rem;
+    font-weight: 700;
+}
+
+.storage-location-mini-value {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 10px 14px;
+    background: #fff;
+    border: 2px solid #e3f4ff;
+    border-radius: 16px;
+    color: #268fb8;
+    font-size: 0.82rem;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+}
+
+.storage-location-mini-status {
+    min-height: 16px;
+    color: #40C5F1;
+    font-size: 0.82rem;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+}
+
+.storage-location-mini-status:empty {
+    display: none;
+}
+
+.storage-location-manage-btn,
+.storage-location-open-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    min-height: 44px;
+    padding: 10px 15px;
+    border-radius: 50px;
+    box-sizing: border-box;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    text-align: center;
+    font-size: 0.95rem;
+    font-weight: 700;
+    line-height: 1.25;
+}
+
+.storage-location-manage-btn {
+    background: linear-gradient(135deg, #40C5F1 0%, #22b3ff 100%);
+    border: none;
+    color: #fff;
+}
+
+.storage-location-open-btn {
+    background: #fff;
+    border: 2px solid #e3f4ff;
+    color: #40C5F1;
+}
+
+.storage-location-manage-btn:not(:disabled):hover,
+.storage-location-open-btn:not(:disabled):hover {
+    border-color: #40C5F1;
+    background: #f0f9ff;
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(64, 197, 241, 0.25);
+}
+
+.storage-location-manage-btn:disabled,
+.storage-location-open-btn:disabled,
+.auto-review-toggle-btn.is-disabled {
+    background: #f5f5f5;
+    border-color: #e0e0e0;
+    color: #b0b0b0;
+    cursor: not-allowed;
+    opacity: 0.72;
+    transform: none;
+    box-shadow: none;
+}
+
+.memory-limited-state {
+    color: #40C5F1;
+    padding: 28px 18px;
+    text-align: center;
+    line-height: 1.7;
+    background: #f0f9ff;
+    border: 2px dashed #b3e5fc;
+    border-radius: 20px;
+    overflow-wrap: anywhere;
+}
+
 /* 编辑器区域 */
 .editor {
     flex: 1;
