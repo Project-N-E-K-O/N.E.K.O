@@ -852,10 +852,14 @@ async def _periodic_rebuttal_loop():
                         await cursor_store.aset_cursor(
                             name, CURSOR_REBUTTAL_CHECKED_UNTIL, cursor_now,
                         )
-                    except Exception:
-                        pass  # 单角色 cursor 推进失败不致命
+                    except Exception as cursor_e:
+                        # 单角色 cursor 推进失败不致命——下一轮再试，最坏
+                        # 是该角色重开时多扫一段窗口，不影响其他角色。
+                        logger.debug(
+                            f"[Rebuttal] {name}: 关态 cursor 推进失败: {cursor_e}"
+                        )
             except Exception as e:
-                logger.debug(f"[Rebuttal] 关态 cursor 推进失败: {e}")
+                logger.debug(f"[Rebuttal] 关态 cursor 推进 batch 失败: {e}")
             await asyncio.sleep(REBUTTAL_CHECK_INTERVAL)
             continue
 
@@ -1639,10 +1643,14 @@ async def _periodic_signal_extraction_loop():
                 for name in catgirl_names:
                     try:
                         _signal_check_mark_done(name, cursor_now)
-                    except Exception:
-                        pass
+                    except Exception as cursor_e:
+                        # 单角色 last_check_ts 推进失败不致命——同 rebuttal
+                        # 处的理由，下一轮再试。
+                        logger.debug(
+                            f"[SignalLoop] {name}: 关态 cursor 推进失败: {cursor_e}"
+                        )
             except Exception as e:
-                logger.debug(f"[SignalLoop] 关态 cursor 推进失败: {e}")
+                logger.debug(f"[SignalLoop] 关态 cursor 推进 batch 失败: {e}")
             await asyncio.sleep(EVIDENCE_SIGNAL_CHECK_INTERVAL_SECONDS)
             continue
 
