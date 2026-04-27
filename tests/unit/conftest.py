@@ -22,7 +22,13 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _reset_shared_state():
-    from main_routers import shared_state
+    try:
+        from main_routers import shared_state
+    except ModuleNotFoundError:
+        # Lightweight unit tests that do not import router modules should still
+        # be runnable in minimal environments without optional web dependencies.
+        yield
+        return
 
     snapshot = dict(shared_state._state)
     try:

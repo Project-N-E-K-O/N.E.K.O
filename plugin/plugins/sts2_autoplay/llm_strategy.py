@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List, Optional
+import re
+from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 
@@ -262,3 +263,122 @@ class LLMStrategy:
         if decision is None:
             return None
         return validate_llm_decision(decision, context)
+
+    async def select_action_with_llm_and_reasoning(self, strategy: str, context: Dict[str, Any], cfg: Dict[str, Any], strategy_prompt_for_llm, build_llm_decision_payload, invoke_llm_json, parse_llm_decision_response, validate_llm_decision, llm_methods) -> Optional[Tuple[Dict[str, Any], Optional[Dict[str, Any]]]]:
+        strategy_prompt = strategy_prompt_for_llm(strategy)
+        if not strategy_prompt:
+            return None
+        payload = build_llm_decision_payload(context, character_strategy=strategy)
+        guidance_content = payload.pop("neko_guidance", None)
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "你是兰兰（Lanlan）体系里的 sts2_autoplay 自动决策器。"
+                    "你当前是在替兰兰做尖塔决策，必须保持兰兰身份并严格从给定的 legal_actions 中选择一个当前合法动作。"
+                    "绝不能编造不存在的动作、索引或参数。输出必须是 JSON，不要输出 markdown 或额外解释。"
+                ),
+            },
+        ]
+        if guidance_content:
+            messages.append({
+                "role": "system",
+                "content": f"猫娘（监督者）的指导意见：{guidance_content}",
+            })
+        messages.append({
+            "role": "system",
+            "content": f"以下是当前策略文档，请严格遵守：\n\n{strategy_prompt}",
+        })
+        messages.append({
+            "role": "user",
+            "content": (
+                "请根据以下当前局面与合法动作，选择下一步动作。\n"
+                "只输出一个 JSON 对象，格式如下：\n"
+                '{"action_type":"...","kwargs":{},"reason":"..."}\n'
+                "要求：\n"
+                "1. action_type 必须与 legal_actions 中某一项的 action_type 完全一致。\n"
+                "2. kwargs 只能包含该动作允许的字段。\n"
+                "3. 所有 index/option_index/card_index/target_index 都必须来自给定 allowed_values。\n"
+                "4. 如果某个动作没有参数，kwargs 返回空对象。\n"
+                "5. 战斗硬优先级：如果 tactical_summary 显示当前手牌可击杀怪物，必须优先选择能击杀该怪物的 play_card。\n"
+                "6. 若当前不能击杀怪物，且 tactical_summary 显示敌方本回合有攻击，同时 remaining_block_needed > 0 且存在 best_effective_block > 0，则必须优先选择能减少本回合承伤的直接防御牌；即使不能一次防满，也要先补防。\n"
+                "7. 只有在无法击杀且也没有有效防御牌时，才能选择普通攻击或其他运转动作。\n"
+                "8. 不要输出 JSON 以外的任何内容。\n\n"
+                f"decision_context = {json.dumps(payload, ensure_ascii=False)}"
+            ),
+        })
+        raw_text = await invoke_llm_json(messages, cfg)
+        decision = await parse_llm_decision_response(raw_text, messages=messages, cfg=cfg, llm_methods=llm_methods)
+        if decision is None:
+            return None
+        validated = validate_llm_decision(decision, context)
+        if validated is None:
+            return None
+        reasoning = {
+            "situation_summary": payload.get("snapshot", {}).get("screen", ""),
+            "primary_goal": "",
+            "candidate_actions": [a.get("action_type") for a in payload.get("legal_actions", [])],
+            "chosen_action": decision.get("action_type", ""),
+            "reason": decision.get("reason", ""),
+        }
+        return validated, reasoning
+
+    async def select_action_full_model_and_reasoning(self, context: Dict[str, Any], cfg: Dict[str, Any], configured_character_strategy, strategy_prompt_for_llm, build_llm_decision_payload, build_full_model_reasoning_messages, build_full_model_checked_context, build_full_model_final_messages, parse_llm_reasoning_response, parse_llm_decision_response, validate_llm_decision, invoke_llm_json, try_parse_llm_json, await_stable_step_context, llm_methods) -> Optional[Tuple[Dict[str, Any], Optional[Dict[str, Any]]]]:
+        self.logger.info("[sts2_autoplay][full-model] stage1 reasoning start")
+        strategy_prompt = strategy_prompt_for_llm(configured_character_strategy())
+        reasoning_payload = build_llm_decision_payload(context, character_strategy=configured_character_strategy())
+        guidance_content = reasoning_payload.pop("neko_guidance", None)
+        reasoning_messages = build_full_model_reasoning_messages(reasoning_payload, strategy_prompt, guidance=guidance_content)
+        reasoning_text = await invoke_llm_json(reasoning_messages, cfg)
+        reasoning = await parse_llm_reasoning_response(reasoning_text, messages=reasoning_messages, llm_methods=llm_methods)
+        if reasoning is None:
+            self.logger.warning("[sts2_autoplay][full-model] stage1 reasoning parse failed")
+            return None
+        self.logger.info("[sts2_autoplay][full-model] stage1 reasoning parsed")
+        checked_context, program_checks = await build_full_model_checked_context(context, reasoning, configured_character_strategy, build_llm_decision_payload, await_stable_step_context, llm_methods)
+        self.logger.info("[sts2_autoplay][full-model] program check complete")
+        final_payload = build_llm_decision_payload(checked_context, character_strategy=configured_character_strategy())
+        final_payload.pop("neko_guidance", None)
+        final_payload["model_reasoning"] = reasoning
+        final_payload["program_checks"] = program_checks
+        final_messages = build_full_model_final_messages(final_payload, strategy_prompt)
+        self.logger.info("[sts2_autoplay][full-model] stage2 final decision start")
+        final_text = await invoke_llm_json(final_messages, cfg)
+        decision = await parse_llm_decision_response(final_text, messages=final_messages, cfg=cfg, llm_methods=llm_methods)
+        if decision is None:
+            self.logger.warning("[sts2_autoplay][full-model] stage2 final decision parse failed")
+            return None
+        validated = validate_llm_decision(decision, checked_context)
+        if validated is None:
+            self.logger.warning("[sts2_autoplay][full-model] stage2 final decision rejected by validator")
+            return None
+        self.logger.info("[sts2_autoplay][full-model] stage2 final decision validated")
+        return validated, reasoning
+
+    def build_full_model_reasoning_messages(self, payload: Dict[str, Any], strategy_prompt: Optional[str], guidance: Optional[str] = None) -> List[Dict[str, Any]]:
+        messages = [
+            {
+                "role": "system",
+                "content": "你是 sts2_autoplay 的全模型推理阶段。你只能分析当前局面、说明目标与候选动作，不要直接输出最终执行动作。只输出 JSON。",
+            },
+        ]
+        if guidance:
+            messages.append({
+                "role": "system",
+                "content": f"猫娘（监督者）的指导意见：{guidance}",
+            })
+        if strategy_prompt:
+            messages.append({
+                "role": "system",
+                "content": f"以下是当前角色策略文档，请在推理时参考：\n\n{strategy_prompt}",
+            })
+        messages.append({
+            "role": "user",
+            "content": (
+                "请基于当前局面进行推理，只输出一个 JSON 对象，格式如下：\n"
+                '{"situation_summary":"...","primary_goal":"...","candidate_actions":[],"risks":[],"checks_requested":[]}\n'
+                "不要输出最终动作，也不要输出 markdown。\n"
+                f"reasoning_context = {json.dumps(payload, ensure_ascii=False)}"
+            ),
+        })
+        return messages

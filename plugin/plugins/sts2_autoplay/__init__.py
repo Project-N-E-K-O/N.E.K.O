@@ -33,10 +33,10 @@ class STS2AutoplayPlugin(NekoPluginBase):
         await self._service.shutdown()
         return Ok({"status": "shutdown"})
 
-    def _push_frontend_notification(self, *, content: str, description: str, metadata: Dict[str, Any], priority: int = 5) -> None:
+    def _push_frontend_notification(self, *, content: str, description: str, metadata: Dict[str, Any], priority: int = 5, message_type: str = "neko_observation") -> None:
         self.push_message(
             source="sts2_autoplay",
-            message_type="proactive_notification",
+            message_type=message_type,
             description=description,
             priority=priority,
             content=content,
@@ -107,35 +107,48 @@ class STS2AutoplayPlugin(NekoPluginBase):
     @plugin_entry(id="sts2_step_once", name="执行一步", description="根据当前策略执行一步尖塔合法动作。", llm_result_fields=["summary"], input_schema={"type": "object", "properties": {}})
     async def sts2_step_once(self, **_):
         try:
-            return Ok(await self._service.step_once())
+            payload = await self._service.step_once()
+            return await self.finish(data=payload, reply=False, message=str(payload.get("summary") or ""))
         except Exception as e:
             return Err(str(e))
 
-    @plugin_entry(id="sts2_start_autoplay", name="开启尖塔游玩", description="启动后台尖塔自动游玩循环。", llm_result_fields=["summary"], input_schema={"type": "object", "properties": {}})
-    async def sts2_start_autoplay(self, **_):
+    @plugin_entry(id="sts2_play_one_card_by_neko", name="猫娘选择并打出一张牌", description="当用户让猫娘选择卡牌打出时调用：插件会读取玩家/手牌/敌人状态，选择一张 play_card，先告诉猫娘将要打出的卡牌和理由，然后执行并结束。", llm_result_fields=["summary"], input_schema={"type": "object", "properties": {"objective": {"type": "string", "description": "用户授权目标，例如：帮我选一张牌打出去"}}})
+    async def sts2_play_one_card_by_neko(self, objective: Optional[str] = None, **_):
         try:
-            return Ok(await self._service.start_autoplay())
+            payload = await self._service.play_one_card_by_neko(objective=objective)
+            return await self.finish(data=payload, reply=False, message=str(payload.get("summary") or ""))
+        except Exception as e:
+            return Err(str(e))
+
+    @plugin_entry(id="sts2_start_autoplay", name="开启尖塔游玩", description="由猫娘根据用户请求启动半自动尖塔游玩循环；例如用户说'帮我打这一关'时调用。", llm_result_fields=["summary"], input_schema={"type": "object", "properties": {"objective": {"type": "string", "description": "用户授权目标，例如：帮我打这一关"}, "stop_condition": {"type": "string", "default": "current_floor", "description": "停止条件：current_floor/current_combat/manual"}}})
+    async def sts2_start_autoplay(self, objective: Optional[str] = None, stop_condition: str = "current_floor", **_):
+        try:
+            payload = await self._service.start_autoplay(objective=objective, stop_condition=stop_condition)
+            return await self.finish(data=payload, reply=False, message=str(payload.get("summary") or ""))
         except Exception as e:
             return Err(str(e))
 
     @plugin_entry(id="sts2_pause_autoplay", name="暂停尖塔游玩", description="暂停后台尖塔自动游玩循环。", llm_result_fields=["summary"], input_schema={"type": "object", "properties": {}})
     async def sts2_pause_autoplay(self, **_):
         try:
-            return Ok(await self._service.pause_autoplay())
+            payload = await self._service.pause_autoplay()
+            return await self.finish(data=payload, reply=False, message=str(payload.get("summary") or ""))
         except Exception as e:
             return Err(str(e))
 
     @plugin_entry(id="sts2_resume_autoplay", name="恢复尖塔游玩", description="恢复已暂停的尖塔自动游玩循环。", llm_result_fields=["summary"], input_schema={"type": "object", "properties": {}})
     async def sts2_resume_autoplay(self, **_):
         try:
-            return Ok(await self._service.resume_autoplay())
+            payload = await self._service.resume_autoplay()
+            return await self.finish(data=payload, reply=False, message=str(payload.get("summary") or ""))
         except Exception as e:
             return Err(str(e))
 
     @plugin_entry(id="sts2_stop_autoplay", name="停止尖塔游玩", description="停止后台尖塔自动游玩循环。", llm_result_fields=["summary"], input_schema={"type": "object", "properties": {}})
     async def sts2_stop_autoplay(self, **_):
         try:
-            return Ok(await self._service.stop_autoplay())
+            payload = await self._service.stop_autoplay()
+            return await self.finish(data=payload, reply=False, message=str(payload.get("summary") or ""))
         except Exception as e:
             return Err(str(e))
 
@@ -146,17 +159,27 @@ class STS2AutoplayPlugin(NekoPluginBase):
         except Exception as e:
             return Err(str(e))
 
+    @plugin_entry(id="sts2_send_neko_guidance", name="发送Neko指导", description="向后台 autoplay 发送猫娘的软指导，会在下一轮决策时被 LLM 参考。", llm_result_fields=["summary"], input_schema={"type": "object", "properties": {"content": {"type": "string", "description": "猫娘的指导内容，自然语言"}, "step": {"type": "integer", "description": "对应的步数（可选）"}, "type": {"type": "string", "default": "soft_guidance"}}})
+    async def sts2_send_neko_guidance(self, content: str, step: Optional[int] = None, type: str = "soft_guidance", **_):
+        try:
+            payload = await self._service.send_neko_guidance({"content": content, "step": step, "type": type})
+            return await self.finish(data=payload, reply=False, message=str(payload.get("summary") or ""))
+        except Exception as e:
+            return Err(str(e))
+
     @plugin_entry(id="sts2_set_mode", name="设置尖塔模式", description="设置尖塔自动游玩模式。支持 full-program / half-program / full-model。", llm_result_fields=["summary"], input_schema={"type": "object", "properties": {"mode": {"type": "string", "default": "half-program"}}, "required": ["mode"]})
     async def sts2_set_mode(self, mode: str, **_):
         try:
-            return Ok(await self._service.set_mode(mode))
+            payload = await self._service.set_mode(mode)
+            return await self.finish(data=payload, reply=False, message=str(payload.get("summary") or ""))
         except Exception as e:
             return Err(str(e))
 
     @plugin_entry(id="sts2_set_character_strategy", name="设置角色策略", description="设置角色策略名称。会按 strategies/<name>.md 在策略目录中匹配对应文档。", llm_result_fields=["summary"], input_schema={"type": "object", "properties": {"character_strategy": {"type": "string", "default": "defect"}}, "required": ["character_strategy"]})
     async def sts2_set_character_strategy(self, character_strategy: str, **_):
         try:
-            return Ok(await self._service.set_character_strategy(character_strategy))
+            payload = await self._service.set_character_strategy(character_strategy)
+            return await self.finish(data=payload, reply=False, message=str(payload.get("summary") or ""))
         except Exception as e:
             return Err(str(e))
 
@@ -165,6 +188,6 @@ class STS2AutoplayPlugin(NekoPluginBase):
         try:
             payload = await self._service.set_speed(action_interval_seconds=action_interval_seconds, post_action_delay_seconds=post_action_delay_seconds, poll_interval_active_seconds=poll_interval_active_seconds)
             self._save_speed_overrides(action_interval_seconds=payload.get("action_interval_seconds"), post_action_delay_seconds=payload.get("post_action_delay_seconds"), poll_interval_active_seconds=payload.get("poll_interval_active_seconds"))
-            return Ok(payload)
+            return await self.finish(data=payload, reply=False, message=str(payload.get("summary") or ""))
         except Exception as e:
             return Err(str(e))

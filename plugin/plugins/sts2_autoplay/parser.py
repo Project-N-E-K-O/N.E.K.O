@@ -4,6 +4,8 @@ import re
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+import yaml
+
 
 class StrategyParser:
     def __init__(self, logger) -> None:
@@ -15,22 +17,75 @@ class StrategyParser:
     def _strategies_dir(self) -> Path:
         return Path(__file__).with_name("strategies")
 
+    _CHARACTER_STRATEGY_ALIASES = {
+        "defect": "defect",
+        "the_defect": "defect",
+        "故障机器人": "defect",
+        "鸡煲": "defect",
+        "雞煲": "defect",
+        "机器人": "defect",
+        "機器人": "defect",
+        "ironclad": "ironclad",
+        "the_ironclad": "ironclad",
+        "铁甲战士": "ironclad",
+        "鐵甲戰士": "ironclad",
+        "战士": "ironclad",
+        "戰士": "ironclad",
+        "铁甲": "ironclad",
+        "鐵甲": "ironclad",
+        "红战士": "ironclad",
+        "紅戰士": "ironclad",
+        "silent_hunter": "silent_hunter",
+        "silent": "silent_hunter",
+        "the_silent": "silent_hunter",
+        "静默猎手": "silent_hunter",
+        "靜默獵手": "silent_hunter",
+        "猎手": "silent_hunter",
+        "獵手": "silent_hunter",
+        "necrobinder": "necrobinder",
+        "the_necrobinder": "necrobinder",
+        "死灵缚者": "necrobinder",
+        "死靈縛者": "necrobinder",
+        "死灵": "necrobinder",
+        "死靈": "necrobinder",
+        "regent": "regent",
+        "the_regent": "regent",
+        "摄政王": "regent",
+        "攝政王": "regent",
+    }
+
+    def _available_character_strategies(self) -> list[str]:
+        strategies_dir = self._strategies_dir
+        if not strategies_dir.exists() or not strategies_dir.is_dir():
+            return []
+        return sorted(path.stem for path in strategies_dir.glob("*.md") if path.is_file())
+
     def _normalize_character_strategy_name(self, strategy_name: Any) -> str:
         raw = str(strategy_name or "defect").strip().lower().replace(" ", "_")
+        alias = self._CHARACTER_STRATEGY_ALIASES.get(raw)
+        if alias:
+            return alias
         normalized = re.sub(r"[^a-z0-9_-]", "", raw)
         if not normalized:
-            raise RuntimeError("角色策略名称不能为空")
-        return normalized
+            available = ", ".join(self._available_character_strategies()) or "无"
+            raise RuntimeError(f"角色策略名称不能为空或不受支持: {strategy_name!r}；可用策略: {available}")
+        return self._CHARACTER_STRATEGY_ALIASES.get(normalized, normalized)
 
     def _ensure_character_strategy_exists(self, strategy_name: str) -> Path:
+        strategy_name = self._normalize_character_strategy_name(strategy_name)
         path = self._strategies_dir / f"{strategy_name}.md"
         if not path.exists() or not path.is_file():
-            raise RuntimeError(f"未找到角色策略文档: {strategy_name}")
+            available = ", ".join(self._available_character_strategies()) or "无"
+            raise RuntimeError(f"未找到角色策略文档: {strategy_name}；期望路径: {path}；可用策略: {available}")
         return path
 
     def _load_strategy_prompt(self, strategy: str) -> Optional[str]:
         strategy_name = self._normalize_character_strategy_name(strategy)
-        path = self._ensure_character_strategy_exists(strategy_name)
+        path = self._strategies_dir / f"{strategy_name}.md"
+        if not path.exists() or not path.is_file():
+            self.logger.warning(f"策略文档不存在: {path}，回退到 defect")
+            strategy_name = "defect"
+            path = self._strategies_dir / "defect.md"
         cached = self._strategy_prompt_cache.get(strategy_name)
         if cached is not None:
             return cached
@@ -142,7 +197,175 @@ class StrategyParser:
             rendered.append("")
         return "\n".join(rendered).strip() or prompt
 
+    def _empty_strategy_constraints(self) -> Dict[str, Any]:
+        return {
+            "required": {},
+            "high_priority": {},
+            "conditional": {},
+            "low_priority": {},
+            "combat_preferences": {},
+            "combat_estimators": {},
+            "map_preferences": {},
+            "shop_preferences": {
+                "relic": {"required": {}, "high_priority": {}, "conditional": {}, "low_priority": {}},
+                "potion": {"required": {}, "high_priority": {}, "conditional": {}, "low_priority": {}},
+                "card": {"required": {}, "high_priority": {}, "conditional": {}, "low_priority": {}, "unremovable": {}},
+            },
+        }
+
+    def _parse_strategy_frontmatter(self, prompt: str) -> Optional[Dict[str, Any]]:
+        text = prompt or ""
+        if not text.startswith("---"):
+            return None
+        match = re.match(r"^---\s*\r?\n([\s\S]*?)\r?\n---\s*(?:\r?\n|$)", text)
+        if not match:
+            raise RuntimeError("策略 Frontmatter 格式错误: 找到起始分隔符，但缺少结束分隔符")
+        try:
+            data = yaml.safe_load(match.group(1)) or {}
+        except yaml.YAMLError as exc:
+            raise RuntimeError(f"策略 Frontmatter YAML 解析失败: {exc}") from exc
+        if not isinstance(data, dict):
+            raise RuntimeError("策略 Frontmatter 必须解析为映射对象")
+        constraints_data = data.get("constraints")
+        if constraints_data is None:
+            return None
+        if not isinstance(constraints_data, dict):
+            raise RuntimeError("策略 Frontmatter 字段 constraints 必须是映射对象")
+        return constraints_data
+
+    def _normalize_constraint_items(self, items: Any, *, with_conditions: bool = False) -> Any:
+        if items is None:
+            return {"items": [], "conditions": []} if with_conditions else []
+        if isinstance(items, str):
+            values = [item.strip().lower() for item in re.split(r"[,，、]", items) if item.strip()]
+            return {"items": values, "conditions": []} if with_conditions else values
+        if isinstance(items, list):
+            values: list[str] = []
+            conditions: list[str] = []
+            for item in items:
+                if isinstance(item, dict):
+                    raw_items = item.get("items", item.get("aliases", item.get("keywords", [])))
+                    normalized_items = self._normalize_constraint_items(raw_items)
+                    for value in normalized_items:
+                        if value not in values:
+                            values.append(value)
+                    raw_condition = item.get("condition", item.get("description", ""))
+                    if raw_condition:
+                        condition = str(raw_condition).strip()
+                        if condition and condition not in conditions:
+                            conditions.append(condition)
+                    raw_conditions = item.get("conditions", [])
+                    if isinstance(raw_conditions, list):
+                        for condition_item in raw_conditions:
+                            condition = str(condition_item).strip()
+                            if condition and condition not in conditions:
+                                conditions.append(condition)
+                    continue
+                value = str(item).strip().lower()
+                if value and value not in values:
+                    values.append(value)
+            return {"items": values, "conditions": conditions} if with_conditions else values
+        value = str(items).strip().lower()
+        values = [value] if value else []
+        return {"items": values, "conditions": []} if with_conditions else values
+
+    def _merge_named_constraint_bucket(self, target: Dict[str, Any], bucket: Any, *, with_conditions: bool = False) -> None:
+        if not isinstance(bucket, dict):
+            return
+        for label, items in bucket.items():
+            key = str(label).strip()
+            if not key:
+                continue
+            if with_conditions:
+                normalized = self._normalize_constraint_items(items, with_conditions=True)
+                entry = target.setdefault(key, {"items": [], "conditions": []})
+                for item in normalized.get("items", []):
+                    if item not in entry["items"]:
+                        entry["items"].append(item)
+                for condition in normalized.get("conditions", []):
+                    if condition not in entry["conditions"]:
+                        entry["conditions"].append(condition)
+                continue
+            normalized_items = self._normalize_constraint_items(items)
+            existing = target.setdefault(key, [])
+            for item in normalized_items:
+                if item not in existing:
+                    existing.append(item)
+
+    def _merge_frontmatter_constraints(self, constraints: Dict[str, Any], data: Dict[str, Any]) -> Dict[str, Any]:
+        for category in ("required", "high_priority", "low_priority"):
+            self._merge_named_constraint_bucket(constraints[category], data.get(category))
+        self._merge_named_constraint_bucket(constraints["conditional"], data.get("conditional"), with_conditions=True)
+        self._merge_named_constraint_bucket(constraints["map_preferences"], data.get("map_preferences"), with_conditions=True)
+
+        combat_preferences = data.get("combat_preferences")
+        if isinstance(combat_preferences, dict):
+            for label, items in combat_preferences.items():
+                key = str(label).strip()
+                if not key:
+                    continue
+                normalized = self._normalize_constraint_items(items, with_conditions=True)
+                entry = constraints["combat_preferences"].setdefault(key, {"keywords": [], "conditions": []})
+                for item in normalized.get("items", []):
+                    if item not in entry["keywords"]:
+                        entry["keywords"].append(item)
+                for condition in normalized.get("conditions", []):
+                    if condition not in entry["conditions"]:
+                        entry["conditions"].append(condition)
+
+        combat_estimators = data.get("combat_estimators")
+        if isinstance(combat_estimators, dict):
+            for label, value in combat_estimators.items():
+                key = str(label).strip()
+                if not key:
+                    continue
+                entry = constraints["combat_estimators"].setdefault(key, {"keywords": [], "conditions": []})
+                if isinstance(value, dict):
+                    normalized = self._normalize_constraint_items(value.get("keywords", value.get("items", [])), with_conditions=True)
+                    for item in normalized.get("items", []):
+                        if item not in entry["keywords"]:
+                            entry["keywords"].append(item)
+                    for field_key, field_value in value.items():
+                        if field_key in {"keywords", "items", "conditions", "condition", "description"}:
+                            continue
+                        entry[str(field_key).strip().lower()] = str(field_value).strip().lower()
+                    raw_condition = value.get("condition", value.get("description", ""))
+                    if raw_condition:
+                        condition = str(raw_condition).strip()
+                        if condition and condition not in entry["conditions"]:
+                            entry["conditions"].append(condition)
+                    raw_conditions = value.get("conditions", [])
+                    if isinstance(raw_conditions, list):
+                        for condition_item in raw_conditions:
+                            condition = str(condition_item).strip()
+                            if condition and condition not in entry["conditions"]:
+                                entry["conditions"].append(condition)
+                else:
+                    normalized = self._normalize_constraint_items(value, with_conditions=True)
+                    for item in normalized.get("items", []):
+                        if item not in entry["keywords"]:
+                            entry["keywords"].append(item)
+                    for condition in normalized.get("conditions", []):
+                        if condition not in entry["conditions"]:
+                            entry["conditions"].append(condition)
+
+        shop_preferences = data.get("shop_preferences")
+        if isinstance(shop_preferences, dict):
+            for shop_type in ("relic", "potion", "card"):
+                shop_data = shop_preferences.get(shop_type)
+                if not isinstance(shop_data, dict):
+                    continue
+                for category in ("required", "high_priority", "low_priority", "unremovable"):
+                    if category in constraints["shop_preferences"][shop_type]:
+                        self._merge_named_constraint_bucket(constraints["shop_preferences"][shop_type][category], shop_data.get(category))
+                self._merge_named_constraint_bucket(constraints["shop_preferences"][shop_type]["conditional"], shop_data.get("conditional"), with_conditions=True)
+        return constraints
+
     def _parse_strategy_constraints(self, prompt: str) -> Dict[str, Any]:
+        constraints = self._empty_strategy_constraints()
+        frontmatter_constraints = self._parse_strategy_frontmatter(prompt or "")
+        if frontmatter_constraints is not None:
+            return self._merge_frontmatter_constraints(constraints, frontmatter_constraints)
         match = re.search(r"^#{2,3}\s*程序约束\s*$([\s\S]*?)(?=^##\s+|\Z)", prompt or "", flags=re.MULTILINE)
         if match:
             section = match.group(1)
@@ -150,19 +373,6 @@ class StrategyParser:
             section = self._strategy_sections_for_constraints(prompt or "")
             if not section:
                 return {}
-        constraints: Dict[str, Any] = {
-            "required": {},
-            "high_priority": {},
-            "conditional": {},
-            "low_priority": {},
-            "combat_preferences": {},
-            "combat_estimators": {},
-            "shop_preferences": {
-                "relic": {"required": {}, "high_priority": {}, "conditional": {}, "low_priority": {}},
-                "potion": {"required": {}, "high_priority": {}, "conditional": {}, "low_priority": {}},
-                "card": {"required": {}, "high_priority": {}, "conditional": {}, "low_priority": {}, "unremovable": {}},
-            },
-        }
         current_category = ""
         current_shop_type = ""
         for raw_line in section.splitlines():

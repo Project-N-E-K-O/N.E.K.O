@@ -125,10 +125,9 @@ class ProactiveBridge:
                     if not isinstance(metadata, dict):
                         metadata = {}
 
-                    # -------- 1. Proactive Spoken Notification --------
+                    # -------- 1. Proactive Spoken Notification (AI会说出来) --------
                     if msg_type == "proactive_notification":
                         raw_content = payload.get("content")
-                        # 通过 result_parser 确保 content 不含原始 JSON
                         try:
                             from brain.result_parser import parse_push_message_content
                             content = parse_push_message_content(raw_content)
@@ -150,8 +149,31 @@ class ProactiveBridge:
                             "status": "completed",
                             "timestamp": payload.get("time", ""),
                         }
-                    
-                    # -------- 2. Music Allowlist Add --------
+
+                    # -------- 2. Neko Observation (猫娘感知，不说出来) --------
+                    elif msg_type == "neko_observation":
+                        raw_content = payload.get("content")
+                        try:
+                            from brain.result_parser import parse_push_message_content
+                            content = parse_push_message_content(raw_content)
+                        except Exception:
+                            content = str(raw_content or "").strip()
+
+                        proactive_event = {
+                            "event_type": "neko_observation",
+                            "lanlan_name": metadata.get("target_lanlan") or None,
+                            "text": content,
+                            "summary": metadata.get("description") or content[:50],
+                            "detail": content,
+                            "channel": f"plugin:{plugin_id}" if plugin_id else "plugin",
+                            "metadata": metadata,
+                            "task_id": metadata.get("task_id", ""),
+                            "success": True,
+                            "status": "completed",
+                            "timestamp": payload.get("time", ""),
+                        }
+
+                    # -------- 3. Music Allowlist Add --------
                     elif msg_type == "music_allowlist_add":
                         proactive_event = {
                             "event_type": "music_allowlist_add",
@@ -160,7 +182,7 @@ class ProactiveBridge:
                             "timestamp": payload.get("time", "")
                         }
 
-                    # -------- 3. Music Direct Play --------
+                    # -------- 4. Music Direct Play --------
                     elif msg_type == "music_play_url":
                         music_url = metadata.get("url")
                         if not isinstance(music_url, str) or not music_url.strip():

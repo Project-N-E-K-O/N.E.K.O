@@ -416,6 +416,8 @@ class CombatAnalyzer:
         current_block = self._combat_player_block(combat)
         playable_hand = [card for card in hand if isinstance(card, dict) and bool(card.get("playable"))]
         constraints = strategy_constraints_loader(character_strategy)
+        combat_preferences = constraints.get("combat_preferences") if isinstance(constraints, dict) and isinstance(constraints.get("combat_preferences"), dict) else {}
+        combat_estimators = constraints.get("combat_estimators") if isinstance(constraints, dict) and isinstance(constraints.get("combat_estimators"), dict) else {}
         incoming_attack_total = sum(self._enemy_intent_attack_total(enemy) for enemy in enemies if isinstance(enemy, dict))
         direct_block_total = sum(self._card_block_value(card) for card in playable_hand)
         direct_damage_total = sum(self._card_total_damage_value(card, combat=combat, strategy_constraints=constraints) for card in playable_hand)
@@ -451,6 +453,7 @@ class CombatAnalyzer:
         best_effective_block = min(best_playable_block, remaining_block_needed)
         should_prioritize_defense = incoming_attack_total > current_block and best_effective_block > 0
         return {
+            "character_strategy": character_strategy,
             "current_block": current_block,
             "incoming_attack_total": incoming_attack_total,
             "remaining_block_needed": remaining_block_needed,
@@ -463,12 +466,28 @@ class CombatAnalyzer:
             "lethal_targets": lethal_targets,
             "recommended_target_index": recommended_target_index,
             "should_prioritize_lethal": bool(lethal_targets),
+            "strategy_preferences": {
+                label: {
+                    "keywords": entry.get("keywords", []),
+                    "conditions": entry.get("conditions", []),
+                }
+                for label, entry in combat_preferences.items()
+                if isinstance(entry, dict)
+            },
+            "strategy_estimators": {
+                label: {
+                    "keywords": entry.get("keywords", []),
+                    "conditions": entry.get("conditions", []),
+                }
+                for label, entry in combat_estimators.items()
+                if isinstance(entry, dict)
+            },
         }
 
-    def sanitize_combat_for_prompt(self, combat: Dict[str, Any], strategy_constraints_loader) -> Dict[str, Any]:
+    def sanitize_combat_for_prompt(self, combat: Dict[str, Any], strategy_constraints_loader, character_strategy: Optional[str] = None) -> Dict[str, Any]:
         hand = combat.get("hand") if isinstance(combat.get("hand"), list) else []
         enemies = combat.get("enemies") if isinstance(combat.get("enemies"), list) else []
-        constraints = strategy_constraints_loader(None)
+        constraints = strategy_constraints_loader(character_strategy)
         return {
             "turn": combat.get("turn"),
             "turn_count": combat.get("turn_count"),
@@ -556,3 +575,31 @@ class CombatAnalyzer:
             if any(self._enemy_intent_attack_total(enemy) > 0 for enemy in enemies if isinstance(enemy, dict)):
                 score += 1
         return max(score, 0)
+
+    def _best_playable_damage_card(self, combat: Dict[str, Any], *, target_index: Any = None, strategy_constraints: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+        hand = combat.get("hand") if isinstance(combat.get("hand"), list) else []
+        playable = [c for c in hand if isinstance(c, dict) and bool(c.get("playable"))]
+        if not playable:
+            return None
+        best: Optional[Dict[str, Any]] = None
+        best_damage = 0
+        for card in playable:
+            dmg = self._card_total_damage_value(card, combat=combat, target_index=target_index, strategy_constraints=strategy_constraints)
+            if dmg > best_damage:
+                best_damage = dmg
+                best = card
+        return best
+
+    def _best_playable_block_card(self, combat: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        hand = combat.get("hand") if isinstance(combat.get("hand"), list) else []
+        playable = [c for c in hand if isinstance(c, dict) and bool(c.get("playable"))]
+        if not playable:
+            return None
+        best: Optional[Dict[str, Any]] = None
+        best_block = 0
+        for card in playable:
+            blk = self._card_block_value(card)
+            if blk > best_block:
+                best_block = blk
+                best = card
+        return best

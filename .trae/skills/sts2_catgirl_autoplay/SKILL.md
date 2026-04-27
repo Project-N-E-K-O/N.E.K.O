@@ -1,6 +1,6 @@
 ---
-name: "sts2_catgirl_autoplay"
-description: "Design and implement catgirl-supervised autoplay for sts2_autoplay plugin. Invoke when user wants to add catgirl oversight, guidance injection, or full-step reporting to the Slay the Spire 2 autoplay plugin."
+name: "sts2_neko_autoplay"
+description: "Design and implement neko-supervised autoplay for sts2_autoplay plugin. Invoke when user wants to add neko oversight, guidance injection, or full-step reporting to the Slay the Spire 2 autoplay plugin."
 ---
 
 # STS2 猫娘监督自动游玩方案

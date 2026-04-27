@@ -5,6 +5,56 @@ from typing import Any, Callable, Dict, List, Optional, Set
 
 
 class HeuristicSelector:
+    _CHARACTER_STRATEGY_ALIASES: Dict[str, Set[str]] = {
+        "defect": {
+            "defect",
+            "the_defect",
+            "故障机器人",
+            "鸡煲",
+            "雞煲",
+            "机器人",
+            "機器人",
+        },
+        "ironclad": {
+            "ironclad",
+            "the_ironclad",
+            "铁甲战士",
+            "鐵甲戰士",
+            "铁血战士",
+            "鐵血戰士",
+            "战士",
+            "戰士",
+            "铁甲",
+            "鐵甲",
+            "红战士",
+            "紅戰士",
+        },
+        "silent_hunter": {
+            "silent_hunter",
+            "silent hunter",
+            "silent",
+            "the_silent",
+            "静默猎手",
+            "靜默獵手",
+            "猎手",
+            "獵手",
+        },
+        "necrobinder": {
+            "necrobinder",
+            "the_necrobinder",
+            "死灵缚者",
+            "死靈縛者",
+            "死灵",
+            "死靈",
+        },
+        "regent": {
+            "regent",
+            "the_regent",
+            "摄政王",
+            "攝政王",
+        },
+    }
+
     def __init__(self, logger) -> None:
         self.logger = logger
 
@@ -15,6 +65,60 @@ class HeuristicSelector:
             return int(value)
         except Exception:
             return default
+
+    def _option_texts(self, option: Dict[str, Any]) -> Set[str]:
+        texts = option.get("texts") if isinstance(option.get("texts"), set) else set()
+        normalized = {str(text).strip().lower() for text in texts if str(text).strip()}
+        raw = option.get("raw") if isinstance(option.get("raw"), dict) else option
+        for key in ("name", "card_name", "relic_name", "potion_name", "label", "title", "description"):
+            value = raw.get(key) if isinstance(raw, dict) else None
+            if value is not None and str(value).strip():
+                normalized.add(str(value).strip().lower())
+        return normalized
+
+    def _constraint_aliases(self, entry: Any) -> List[str]:
+        if isinstance(entry, dict):
+            items = entry.get("items", [])
+        else:
+            items = entry
+        if isinstance(items, str):
+            items = [items]
+        if not isinstance(items, list):
+            return []
+        return [str(item).strip().lower() for item in items if str(item).strip()]
+
+    def _matches_constraint_alias(self, texts: Set[str], aliases: List[str]) -> bool:
+        return any(alias in text for text in texts for alias in aliases)
+
+    def _score_constraint_bucket(self, *, texts: Set[str], bucket: Dict[str, Any], category: str, bonus: int, strategy: str, scene: str, candidate: str) -> Dict[str, Any]:
+        score = 0
+        hits: List[Dict[str, Any]] = []
+        if not isinstance(bucket, dict):
+            return {"score": score, "hits": hits}
+        for label, entry in bucket.items():
+            aliases = self._constraint_aliases(entry)
+            if not aliases or not self._matches_constraint_alias(texts, aliases):
+                continue
+            score += bonus
+            hits.append({
+                "strategy": strategy,
+                "scene": scene,
+                "candidate": candidate,
+                "category": category,
+                "label": str(label),
+                "matched_aliases": [alias for alias in aliases if any(alias in text for text in texts)],
+                "score_delta": bonus,
+            })
+        return {"score": score, "hits": hits}
+
+    def _strategy_constraints(self, selector_methods, strategy: Optional[str] = None) -> Dict[str, Any]:
+        active_strategy = strategy or selector_methods._configured_character_strategy()
+        try:
+            constraints = selector_methods._load_strategy_constraints(active_strategy)
+        except RuntimeError as exc:
+            self.logger.warning(f"加载策略约束失败，跳过通用约束评分: strategy={active_strategy}, error={exc}")
+            return {}
+        return constraints if isinstance(constraints, dict) else {}
 
     def select_preemptive_program_action(self, actions: List[Dict[str, Any]], context: Dict[str, Any], selector_methods) -> Optional[Dict[str, Any]]:
         reward_action = selector_methods._select_reward_action_heuristic(actions, context)
@@ -56,7 +160,7 @@ class HeuristicSelector:
         combat = analyzer_methods._combat_state(context)
         if combat:
             selector_methods._log_combat_block_fields(context)
-        tactical_summary = combat_analyzer.build_tactical_summary(combat, selector_methods._load_strategy_constraints) if combat else {}
+        tactical_summary = combat_analyzer.build_tactical_summary(combat, selector_methods._load_strategy_constraints, selector_methods._configured_character_strategy()) if combat else {}
         if combat:
             has_lethal = bool(tactical_summary.get("lethal_targets"))
             should_prioritize_defense = bool(tactical_summary.get("should_prioritize_defense"))
@@ -239,32 +343,32 @@ class HeuristicSelector:
         return selected
 
     def find_preferred_shop_card_index(self, context: Dict[str, Any], selector_methods) -> Optional[int]:
-        if selector_methods._configured_character_strategy() != "defect":
-            return None
         shop_cards = selector_methods._shop_card_options(context)
         if not shop_cards:
             return None
         best_option: Optional[Dict[str, Any]] = None
         best_score: Optional[int] = None
         for option in shop_cards:
-            score = selector_methods._score_defect_card_option(option, context)
+            details = selector_methods._score_strategy_card_option_details(option, context)
+            score = details.get("score", 0)
+            if selector_methods._configured_character_strategy() == "defect":
+                score += selector_methods._score_defect_card_option(option, context)
             if best_score is None or score > best_score:
                 best_option = option
                 best_score = score
-        if best_option is None or best_score is None or best_score < 90:
+        threshold = 90 if selector_methods._configured_character_strategy() == "defect" else 22
+        if best_option is None or best_score is None or best_score < threshold:
             return None
         return int(best_option["index"])
 
     def find_preferred_shop_relic_index(self, context: Dict[str, Any], selector_methods) -> Optional[int]:
-        if selector_methods._configured_character_strategy() != "defect":
-            return None
         shop_relics = selector_methods._shop_relic_options(context)
         if not shop_relics:
             return None
         best_option: Optional[Dict[str, Any]] = None
         best_score: Optional[int] = None
         for option in shop_relics:
-            score = selector_methods._score_defect_shop_relic_option(option, context)
+            score = selector_methods._score_shop_named_option(option, context, "relic")
             if best_score is None or score > best_score:
                 best_option = option
                 best_score = score
@@ -273,8 +377,6 @@ class HeuristicSelector:
         return int(best_option["index"])
 
     def find_preferred_shop_potion_index(self, context: Dict[str, Any], selector_methods) -> Optional[int]:
-        if selector_methods._configured_character_strategy() != "defect":
-            return None
         shop_potions = selector_methods._shop_potion_options(context)
         if not shop_potions:
             return None
@@ -284,7 +386,7 @@ class HeuristicSelector:
         best_option: Optional[Dict[str, Any]] = None
         best_score: Optional[int] = None
         for option in shop_potions:
-            score = selector_methods._score_defect_shop_potion_option(option, context)
+            score = selector_methods._score_shop_named_option(option, context, "potion")
             if best_score is None or score > best_score:
                 best_option = option
                 best_score = score
@@ -375,27 +477,51 @@ class HeuristicSelector:
             return -80
         return base_score
 
-    def score_shop_named_option(self, option: Dict[str, Any], context: Dict[str, Any], item_type: str, selector_methods) -> int:
-        texts = option.get("texts") if isinstance(option.get("texts"), set) else set()
-        constraints = selector_methods._load_strategy_constraints(selector_methods._configured_character_strategy())
+    def score_shop_named_option_details(self, option: Dict[str, Any], context: Dict[str, Any], item_type: str, selector_methods) -> Dict[str, Any]:
+        strategy = selector_methods._configured_character_strategy()
+        constraints = self._strategy_constraints(selector_methods, strategy)
         shop_preferences = constraints.get("shop_preferences") if isinstance(constraints, dict) else {}
         bucket = shop_preferences.get(item_type) if isinstance(shop_preferences, dict) and isinstance(shop_preferences.get(item_type), dict) else {}
+        scene = f"shop_{item_type}"
+        return self.score_strategy_named_option(option, context, bucket, scene, selector_methods, strategy=strategy)
+
+    def score_shop_named_option(self, option: Dict[str, Any], context: Dict[str, Any], item_type: str, selector_methods) -> int:
+        return self.score_shop_named_option_details(option, context, item_type, selector_methods).get("score", 0)
+
+    def score_strategy_named_option(self, option: Dict[str, Any], context: Dict[str, Any], bucket: Dict[str, Any], scene: str, selector_methods, *, strategy: Optional[str] = None) -> Dict[str, Any]:
+        active_strategy = strategy or selector_methods._configured_character_strategy()
+        texts = self._option_texts(option)
+        candidate = str(option.get("name") or option.get("card_name") or option.get("relic_name") or option.get("potion_name") or option.get("index") or "")
         score = 0
-        for category, bonus in (("required", 36), ("high_priority", 22), ("low_priority", -20)):
-            entries = bucket.get(category) if isinstance(bucket.get(category), dict) else {}
-            for items in entries.values():
-                if any(alias in text for text in texts for alias in items if isinstance(alias, str)):
-                    score += bonus
-        conditional_entries = bucket.get("conditional") if isinstance(bucket.get("conditional"), dict) else {}
-        for entry in conditional_entries.values():
-            items = entry.get("items") if isinstance(entry, dict) else []
-            if any(alias in text for text in texts for alias in items if isinstance(alias, str)):
-                score += 10
-        return score
+        hits: List[Dict[str, Any]] = []
+        for category, bonus in (("required", 36), ("high_priority", 22), ("conditional", 10), ("low_priority", -20)):
+            entries = bucket.get(category) if isinstance(bucket, dict) and isinstance(bucket.get(category), dict) else {}
+            result = self._score_constraint_bucket(
+                texts=texts,
+                bucket=entries,
+                category=category,
+                bonus=bonus,
+                strategy=active_strategy,
+                scene=scene,
+                candidate=candidate,
+            )
+            score += result["score"]
+            hits.extend(result["hits"])
+        return {
+            "strategy": active_strategy,
+            "scene": scene,
+            "candidate": candidate,
+            "score": score,
+            "constraint_hits": hits,
+            "selected": False,
+        }
+
+    def score_strategy_card_option_details(self, option: Dict[str, Any], context: Dict[str, Any], selector_methods) -> Dict[str, Any]:
+        strategy = selector_methods._configured_character_strategy()
+        constraints = self._strategy_constraints(selector_methods, strategy)
+        return self.score_strategy_named_option(option, context, constraints, "card_reward", selector_methods, strategy=strategy)
 
     def find_preferred_card_option_index(self, raw: Dict[str, Any], context: Dict[str, Any], selector_methods) -> Optional[int]:
-        if selector_methods._configured_character_strategy() != "defect":
-            return None
         options = selector_methods._card_reward_options(raw, context)
         if options:
             selector_methods._log_card_reward_options(options, context)
@@ -406,7 +532,10 @@ class HeuristicSelector:
         best_option: Optional[Dict[str, Any]] = None
         best_score: Optional[int] = None
         for option in options:
-            score = selector_methods._score_defect_card_option(option, context)
+            details = selector_methods._score_strategy_card_option_details(option, context)
+            score = details.get("score", 0)
+            if selector_methods._configured_character_strategy() == "defect":
+                score += selector_methods._score_defect_card_option(option, context)
             if best_score is None or score > best_score:
                 best_option = option
                 best_score = score
@@ -414,20 +543,45 @@ class HeuristicSelector:
             return None
         return best_option["index"]
 
+    def score_strategy_map_option_details(self, option: Dict[str, Any], context: Dict[str, Any], selector_methods) -> Dict[str, Any]:
+        strategy = selector_methods._configured_character_strategy()
+        constraints = self._strategy_constraints(selector_methods, strategy)
+        map_preferences = constraints.get("map_preferences") if isinstance(constraints, dict) else {}
+        texts = self._option_texts(option)
+        candidate = str(option.get("name") or option.get("label") or option.get("description") or option.get("index") or "")
+        result = self._score_constraint_bucket(
+            texts=texts,
+            bucket=map_preferences if isinstance(map_preferences, dict) else {},
+            category="map_preferences",
+            bonus=18,
+            strategy=strategy,
+            scene="map",
+            candidate=candidate,
+        )
+        return {
+            "strategy": strategy,
+            "scene": "map",
+            "candidate": candidate,
+            "score": result["score"],
+            "constraint_hits": result["hits"],
+            "selected": False,
+        }
+
     def find_preferred_map_option_index(self, raw: Dict[str, Any], context: Dict[str, Any], selector_methods) -> Optional[int]:
-        if selector_methods._configured_character_strategy() != "defect":
-            return None
         options = selector_methods._extract_generic_option_descriptions(raw)
         if not options:
             return None
         best_option: Optional[Dict[str, Any]] = None
         best_score: Optional[int] = None
         for option in options:
-            score = selector_methods._score_defect_map_option(option, context)
+            details = selector_methods._score_strategy_map_option_details(option, context)
+            score = details.get("score", 0)
+            if selector_methods._configured_character_strategy() == "defect":
+                score += selector_methods._score_defect_map_option(option, context)
             if best_score is None or score > best_score:
                 best_option = option
                 best_score = score
-        if best_option is None or best_score is None:
+        if best_option is None or best_score is None or best_score <= 0:
             return None
         return int(best_option["index"])
 
@@ -552,20 +706,27 @@ class HeuristicSelector:
             score += 10
         return {"score": score, "base_score": base_score, "constraint_hits": constraint_hits}
 
+    def _character_strategy_aliases(self, strategy: Any) -> Set[str]:
+        normalized = str(strategy or "").strip().lower().replace(" ", "_")
+        aliases = set(self._CHARACTER_STRATEGY_ALIASES.get(normalized, set()))
+        if normalized:
+            aliases.add(normalized)
+            aliases.add(normalized.replace("_", " "))
+        return {str(alias).strip().lower() for alias in aliases if str(alias).strip()}
+
     def find_preferred_character_option_index(self, raw: Dict[str, Any], context: Dict[str, Any], selector_methods) -> Optional[int]:
         if not selector_methods._is_character_select_context(context):
             return None
-        preferred_aliases = [
-            {"故障机器人", "defect"},
-            {"铁血战士", "ironclad"},
-        ]
+        strategy = selector_methods._configured_character_strategy()
+        aliases = self._character_strategy_aliases(strategy)
+        if not aliases:
+            return None
         options = selector_methods._character_selection_options(raw, context)
         if not options:
             return None
-        for aliases in preferred_aliases:
-            for option in options:
-                if selector_methods._character_option_matches(option, aliases):
-                    return option["index"]
+        for option in options:
+            if selector_methods._character_option_matches(option, aliases):
+                return option["index"]
         return None
 
     def find_discardable_potion_index(self, context: Dict[str, Any], selector_methods) -> int:
@@ -582,7 +743,7 @@ class HeuristicSelector:
 
     def find_playable_card_index(self, context: Dict[str, Any], selector_methods, combat_analyzer) -> int:
         combat = selector_methods._combat_state(context)
-        tactical_summary = combat_analyzer.build_tactical_summary(combat, selector_methods._load_strategy_constraints)
+        tactical_summary = combat_analyzer.build_tactical_summary(combat, selector_methods._load_strategy_constraints, selector_methods._configured_character_strategy())
         target_index = tactical_summary.get("recommended_target_index")
         best_damage_card = combat_analyzer._best_playable_damage_card(combat, target_index=target_index)
         if best_damage_card is not None:
@@ -598,7 +759,7 @@ class HeuristicSelector:
 
     def find_card_target_index(self, context: Dict[str, Any], card_index: int, selector_methods, combat_analyzer) -> Optional[int]:
         combat = selector_methods._combat_state(context)
-        tactical_summary = combat_analyzer.build_tactical_summary(combat, selector_methods._load_strategy_constraints)
+        tactical_summary = combat_analyzer.build_tactical_summary(combat, selector_methods._load_strategy_constraints, selector_methods._configured_character_strategy())
         preferred_target = tactical_summary.get("recommended_target_index")
         hand = combat.get("hand") if isinstance(combat.get("hand"), list) else []
         for card in hand:
