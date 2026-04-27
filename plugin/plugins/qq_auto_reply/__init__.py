@@ -1215,7 +1215,9 @@ class QQAutoReplyPlugin(NekoPluginBase):
 
         system_prompt = "\n".join(system_prompt_parts)
         self.logger.info(f"系统提示词长度: {len(system_prompt)} 字符")
-        self.logger.info(f"使用语言: {user_language}, 初始提示: {init_prompt_template[:50]}...")
+        # init_prompt_template 是用户配置的 prompt 模板，可能含个人化内容；不写 logger
+        self.logger.info(f"使用语言: {user_language}, init_prompt_len={len(init_prompt_template or '')}")
+        print(f"[QQ Auto] 初始提示: {(init_prompt_template or '')[:50]}...")
         return system_prompt, should_use_memory_context
 
 

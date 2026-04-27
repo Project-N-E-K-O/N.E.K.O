@@ -12,7 +12,7 @@
     <link rel="stylesheet" href="/static/css/storage-location.css">
     <link rel="stylesheet" href="/static/css/dark-mode.css">
     <link rel="stylesheet" href="/static/css/tutorial-styles.css">
-    <link rel="stylesheet" href="/static/css/yui-guide.css">
+    <link rel="stylesheet" href="/static/css/yui-guide.css?v=20260427-2">
     <script src="/static/theme-manager.js"></script>
 </head>
 <body>
@@ -43,6 +43,19 @@
                                 </label>
                                 <div class="auto-review-toggle-note" data-i18n="memory.autoReviewNote">
                                     开启后系统将自动整理和优化记忆内容，提高对话质量
+                                </div>
+                            </div>
+                        </div>
+                        <div class="review-toggle">
+                            <div class="review-toggle-title" data-i18n="memory.strongMemory">强力记忆</div>
+                            <div class="auto-review-toggle-wrapper">
+                                <input type="checkbox" id="strong-memory-toggle-checkbox">
+                                <label for="strong-memory-toggle-checkbox" class="auto-review-toggle-btn">
+                                    <span class="auto-review-toggle-icon"></span>
+                                    <span class="auto-review-toggle-text" id="strong-memory-toggle-text" data-i18n="memory.disabled">已关闭</span>
+                                </label>
+                                <div class="auto-review-toggle-note" data-i18n="memory.strongMemoryNote">
+                                    开启时启用深度记忆固化（口头反馈、自动反驳检测、多通道证据累加），关闭后约可节省 40% 模型调用
                                 </div>
                             </div>
                         </div>
@@ -141,8 +154,8 @@
 
     <script src="/static/yui-guide-steps.js?v=20260422-1"></script>
     <script src="/static/yui-guide-overlay.js?v=20260422-6"></script>
-    <script src="/static/yui-guide-page-handoff.js?v=20260422-9"></script>
-    <script src="/static/yui-guide-director.js?v=20260422-7"></script>
+    <script src="/static/yui-guide-page-handoff.js?v=20260427-2"></script>
+    <script src="/static/yui-guide-director.js?v=20260427-2"></script>
     <!-- 通用教程管理器 -->
     <script src="/static/universal-tutorial-manager.js?v=12"></script>
 

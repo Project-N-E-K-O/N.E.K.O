@@ -17,7 +17,6 @@ import ptLocale from 'element-plus/dist/locale/pt.mjs'
 import { MotionPlugin } from '@vueuse/motion'
 import App from './App.vue'
 import { initDarkMode } from './composables/useDarkMode'
-import { useYuiTutorialBridge } from './composables/useYuiTutorialBridge'
 import { i18n, getLocale } from './i18n'
 import router from './router'
 import { useConnectionStore } from './stores/connection'
@@ -26,10 +25,7 @@ import { initPluginDashboardYuiGuideRuntime } from './yui-guide-runtime'
 // 初始化深色模式（在应用挂载前）
 // 这样可以避免页面闪烁，并确保状态在应用启动时就正确初始化
 initDarkMode()
-
-// 初始化 Yui 教程桥（检测 URL 中的 handoff 参数）
-const tutorialBridge = useYuiTutorialBridge()
-tutorialBridge.init()
+initPluginDashboardYuiGuideRuntime()
 
 console.log('🚀 Starting N.E.K.O Plugin Management System...')
 
@@ -75,7 +71,6 @@ console.log('✅ Mounting app to #app...')
 app.mount('#app')
 
 console.log('✅ App mounted successfully!')
-initPluginDashboardYuiGuideRuntime()
 
 // 启动连接健康检查
 const connectionStore = useConnectionStore()

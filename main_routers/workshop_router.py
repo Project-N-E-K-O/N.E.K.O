@@ -13,6 +13,7 @@ import os
 import sys
 import json
 import time
+import tempfile
 import asyncio
 import threading
 import mimetypes
@@ -70,6 +71,11 @@ WORKSHOP_REFERENCE_AUDIO_CONTENT_TYPES = {
 }
 WORKSHOP_REFERENCE_LANGUAGES = {'ch', 'en', 'fr', 'de', 'ja', 'ko', 'ru'}
 WORKSHOP_REFERENCE_PROVIDER_HINTS = {'cosyvoice', 'minimax', 'minimax_intl'}
+WORKSHOP_CARD_FACE_SIZE = (768, 1024)
+WORKSHOP_CARD_FACE_PADDING = 48
+WORKSHOP_CARD_FACE_RATIO_TOLERANCE = 0.02
+WORKSHOP_CARD_FACE_MARKER_KEY = 'neko_workshop_card_face'
+WORKSHOP_CARD_FACE_MARKER_VALUE = 'steam_preview_v1'
 
 
 async def cancel_background_tasks(*, timeout: float = 5.0) -> None:
@@ -642,6 +648,208 @@ def find_preview_image_in_folder(folder_path):
             return image_path
     
     return None
+
+
+def _build_workshop_card_face_meta(item: dict) -> dict:
+    workshop_author = ''
+    try:
+        workshop_author = str(item.get('authorName') or item.get('author') or item.get('creatorName') or '').strip()[:64]
+    except Exception:
+        workshop_author = ''
+
+    now_iso = datetime.utcnow().isoformat() + 'Z'
+    return {
+        'author': workshop_author,
+        'origin': 'steam',
+        'created_at': now_iso,
+        'updated_at': now_iso,
+    }
+
+
+def _read_card_face_origin(meta_path: Path) -> str | None:
+    """Read the persisted card-face origin marker from the sidecar file."""
+    try:
+        if not meta_path.exists():
+            return None
+        with open(meta_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            return None
+        origin = str(data.get('origin', '') or '').strip()
+        return origin or None
+    except Exception:
+        return None
+
+
+def _is_workshop_card_face_normalized(face_path: Path) -> bool:
+    """Return True when the existing face already matches the workshop 3:4 derivative shape."""
+    if not face_path.exists():
+        return False
+
+    from PIL import Image as PILImage
+
+    try:
+        with PILImage.open(face_path) as img:
+            width, height = img.size
+    except Exception:
+        return False
+
+    if width <= 0 or height <= 0:
+        return False
+
+    target_ratio = WORKSHOP_CARD_FACE_SIZE[0] / WORKSHOP_CARD_FACE_SIZE[1]
+    current_ratio = width / height
+    return abs(current_ratio - target_ratio) <= WORKSHOP_CARD_FACE_RATIO_TOLERANCE
+
+
+def _should_refresh_workshop_card_face(face_path: Path, meta_path: Path) -> bool:
+    """Decide whether a workshop preview is allowed to replace the current card face."""
+    if not face_path.exists():
+        return True
+
+    origin = _read_card_face_origin(meta_path)
+    if origin is None:
+        # sidecar 缺失时默认保护现有自定义 PNG；但如果卡面带有本地生成的
+        # Workshop marker，说明它是渲染中断后留下的孤儿文件，允许后续重试。
+        return _has_workshop_card_face_marker(face_path)
+
+    if origin in {'self', 'imported'}:
+        return False
+
+    return not _is_workshop_card_face_normalized(face_path)
+
+
+def _render_workshop_card_face_image(img):
+    """Render a workshop preview into the normalized 3:4 in-app card-face layout."""
+    from PIL import Image as PILImage, ImageFilter, ImageOps
+
+    resampling = getattr(PILImage, 'Resampling', PILImage)
+    lanczos = getattr(resampling, 'LANCZOS', PILImage.BICUBIC)
+
+    working = ImageOps.exif_transpose(img).convert('RGBA')
+
+    canvas = PILImage.new('RGBA', WORKSHOP_CARD_FACE_SIZE, (231, 245, 255, 255))
+    background = ImageOps.fit(
+        working,
+        WORKSHOP_CARD_FACE_SIZE,
+        method=lanczos,
+        centering=(0.5, 0.5),
+    )
+    background = background.filter(ImageFilter.GaussianBlur(radius=28))
+    canvas = PILImage.blend(canvas, background, 0.82)
+    canvas = PILImage.alpha_composite(
+        canvas,
+        PILImage.new('RGBA', WORKSHOP_CARD_FACE_SIZE, (255, 255, 255, 30)),
+    )
+
+    foreground = working.copy()
+    foreground.thumbnail(
+        (
+            max(64, WORKSHOP_CARD_FACE_SIZE[0] - WORKSHOP_CARD_FACE_PADDING * 2),
+            max(64, WORKSHOP_CARD_FACE_SIZE[1] - WORKSHOP_CARD_FACE_PADDING * 2),
+        ),
+        resample=lanczos,
+    )
+    foreground = ImageOps.expand(foreground, border=8, fill=(255, 255, 255, 28))
+
+    offset_x = (WORKSHOP_CARD_FACE_SIZE[0] - foreground.width) // 2
+    offset_y = (WORKSHOP_CARD_FACE_SIZE[1] - foreground.height) // 2
+    canvas.alpha_composite(foreground, (offset_x, offset_y))
+    return canvas
+
+
+def _has_workshop_card_face_marker(face_path: Path) -> bool:
+    """Detect workshop-generated preview PNGs even if the sidecar is missing."""
+    try:
+        from PIL import Image as PILImage
+
+        with PILImage.open(face_path) as img:
+            return str(img.info.get(WORKSHOP_CARD_FACE_MARKER_KEY, '') or '') == WORKSHOP_CARD_FACE_MARKER_VALUE
+    except Exception:
+        return False
+
+
+def _is_matching_workshop_character(catgirl_data: dict, item_id) -> bool:
+    if not isinstance(catgirl_data, dict):
+        return False
+
+    try:
+        source = str(get_reserved(catgirl_data, 'character_origin', 'source', default='') or '').strip()
+        if source != 'steam_workshop':
+            return False
+
+        current_item_id = str(item_id or '').strip()
+        source_id = str(get_reserved(catgirl_data, 'character_origin', 'source_id', default='') or '').strip()
+        if not current_item_id or not source_id:
+            return False
+        return source_id == current_item_id
+    except Exception:
+        return False
+
+
+def _ensure_workshop_card_face_from_preview(
+    config_mgr,
+    chara_name: str,
+    preview_image_path: str | None,
+    item: dict | None = None,
+) -> bool:
+    """Create or refresh a workshop-derived card face from the Steam preview image."""
+    if not preview_image_path or not os.path.isfile(preview_image_path):
+        return False
+    if not config_mgr.ensure_card_faces_directory():
+        return False
+
+    face_path = config_mgr.card_faces_dir / f"{chara_name}.png"
+    meta_path = config_mgr.card_face_meta_path(chara_name)
+    if not _should_refresh_workshop_card_face(face_path, meta_path):
+        return False
+
+    from PIL import Image as PILImage
+    from PIL import PngImagePlugin
+
+    fd, temp_path = tempfile.mkstemp(
+        prefix=f".{face_path.name}.",
+        suffix=".tmp",
+        dir=str(face_path.parent),
+    )
+
+    try:
+        with os.fdopen(fd, 'w+b') as temp_file:
+            with PILImage.open(preview_image_path) as img:
+                normalized = _render_workshop_card_face_image(img)
+                pnginfo = PngImagePlugin.PngInfo()
+                pnginfo.add_text(WORKSHOP_CARD_FACE_MARKER_KEY, WORKSHOP_CARD_FACE_MARKER_VALUE)
+                normalized.save(temp_file, format='PNG', optimize=True, pnginfo=pnginfo)
+            temp_file.flush()
+            os.fsync(temp_file.fileno())
+        os.replace(temp_path, face_path)
+        if item and not meta_path.exists():
+            atomic_write_json(meta_path, _build_workshop_card_face_meta(item), ensure_ascii=False, indent=2)
+    except Exception:
+        try:
+            os.remove(temp_path)
+        except FileNotFoundError:
+            pass
+        raise
+
+    return True
+
+
+def _ensure_workshop_card_face_meta(config_mgr, chara_name: str, item: dict) -> bool:
+    """Persist sidecar metadata for workshop-generated card faces when missing."""
+    if not config_mgr.ensure_card_faces_directory():
+        return False
+
+    face_path = config_mgr.card_faces_dir / f"{chara_name}.png"
+    if not face_path.exists() or not _has_workshop_card_face_marker(face_path):
+        return False
+
+    meta_path = config_mgr.card_face_meta_path(chara_name)
+    if meta_path.exists():
+        return False
+
+    atomic_write_json(meta_path, _build_workshop_card_face_meta(item), ensure_ascii=False, indent=2)
+    return True
 
 
 def _sanitize_voice_prefix(prefix: str, default_prefix: str = 'voice') -> str:
@@ -3821,9 +4029,10 @@ async def sync_workshop_character_cards() -> dict:
     可在服务器启动时直接调用，无需等待用户打开创意工坊管理页面。
     
     Returns:
-        dict: {"added": int, "skipped": int, "errors": int}
+        dict: {"added": int, "backfilled_faces": int, "skipped": int, "errors": int}
     """
     added_count = 0
+    backfilled_face_count = 0
     skipped_count = 0
     error_count = 0
     
@@ -3835,22 +4044,39 @@ async def sync_workshop_character_cards() -> dict:
         if isinstance(items_result, JSONResponse):
             # JSONResponse — 说明出错了，直接返回
             logger.warning("sync_workshop_character_cards: 获取订阅物品失败（返回了 JSONResponse）")
-            return {"added": 0, "skipped": 0, "errors": 1}
+            return {"added": 0, "backfilled_faces": 0, "skipped": 0, "errors": 1}
         
         if not isinstance(items_result, dict) or not items_result.get('success'):
             logger.warning("sync_workshop_character_cards: 获取订阅物品失败")
-            return {"added": 0, "skipped": 0, "errors": 1}
+            return {"added": 0, "backfilled_faces": 0, "skipped": 0, "errors": 1}
         
         subscribed_items = items_result.get('items', [])
         if not subscribed_items:
             logger.info("sync_workshop_character_cards: 没有订阅物品，跳过同步")
-            return {"added": 0, "skipped": 0, "errors": 0}
+            return {"added": 0, "backfilled_faces": 0, "skipped": 0, "errors": 0}
         
         config_mgr = get_config_manager()
 
-        if is_write_fence_active(config_mgr):
-            logger.info("sync_workshop_character_cards: 检测到维护态写围栏，跳过本轮同步并等待后续重试")
-            return {"added": 0, "skipped": 0, "errors": 0, "blocked_by_write_fence": True}
+        def _write_fence_blocked_result() -> dict:
+            return {
+                "added": 0,
+                "backfilled_faces": backfilled_face_count,
+                "skipped": skipped_count,
+                "errors": error_count,
+                "blocked_by_write_fence": True,
+            }
+
+        def _abort_if_write_fence_active(message: str):
+            if not is_write_fence_active(config_mgr):
+                return None
+            logger.info(message)
+            return _write_fence_blocked_result()
+
+        blocked_result = _abort_if_write_fence_active(
+            "sync_workshop_character_cards: 检测到维护态写围栏，跳过本轮同步并等待后续重试"
+        )
+        if blocked_result is not None:
+            return blocked_result
         
         # 使用全局锁序列化 load_characters -> save_characters 流程，防止并发覆写
         async with _ugc_sync_lock:
@@ -3868,6 +4094,7 @@ async def sync_workshop_character_cards() -> dict:
                     continue
                 
                 item_id = item.get('publishedFileId', '')
+                preview_image_path = find_preview_image_in_folder(installed_folder)
                 
                 # 3. 扫描 .chara.json 文件（递归遍历子目录）
                 try:
@@ -3901,6 +4128,55 @@ async def sync_workshop_character_cards() -> dict:
                             # 已存在则跳过（当前设计：仅填充缺失角色卡，不覆盖已有数据；
                             # 如需支持创意工坊更新覆写本地数据，可添加 allow_workshop_overwrite 配置项）
                             if chara_name in characters['猫娘']:
+                                existing_data = characters['猫娘'].get(chara_name) or {}
+                                if _is_matching_workshop_character(existing_data, item_id):
+                                    try:
+                                        blocked_result = _abort_if_write_fence_active(
+                                            f"sync_workshop_character_cards: 回填角色卡封面前检测到维护态写围栏，跳过本轮同步并等待后续重试（角色 {chara_name}，物品 {item_id}）"
+                                        )
+                                        if blocked_result is not None:
+                                            return blocked_result
+                                        face_created = await asyncio.to_thread(
+                                            _ensure_workshop_card_face_from_preview,
+                                            config_mgr,
+                                            chara_name,
+                                            preview_image_path,
+                                            item,
+                                        )
+                                        meta_created = False
+                                        if not face_created:
+                                            blocked_result = _abort_if_write_fence_active(
+                                                f"sync_workshop_character_cards: 回填角色卡封面元数据前检测到维护态写围栏，跳过本轮同步并等待后续重试（角色 {chara_name}，物品 {item_id}）"
+                                            )
+                                            if blocked_result is not None:
+                                                return blocked_result
+                                            meta_created = await asyncio.to_thread(
+                                                _ensure_workshop_card_face_meta,
+                                                config_mgr,
+                                                chara_name,
+                                                item,
+                                            )
+                                        if face_created:
+                                            backfilled_face_count += 1
+                                            logger.info(
+                                                "sync_workshop_character_cards: 已同步角色卡封面 '%s' (来自物品 %s)",
+                                                chara_name,
+                                                item_id,
+                                            )
+                                        if meta_created:
+                                            logger.info(
+                                                "sync_workshop_character_cards: 已补写角色卡封面元数据 '%s' (来自物品 %s)",
+                                                chara_name,
+                                                item_id,
+                                            )
+                                    except Exception as face_err:
+                                        error_count += 1
+                                        logger.warning(
+                                            "sync_workshop_character_cards: 回填角色卡封面或元数据失败 %s (物品 %s): %s",
+                                            chara_name,
+                                            item_id,
+                                            face_err,
+                                        )
                                 skipped_count += 1
                                 continue
                             
@@ -3974,26 +4250,46 @@ async def sync_workshop_character_cards() -> dict:
                             added_count += 1
                             logger.info(f"sync_workshop_character_cards: 添加角色卡 '{chara_name}' (来自物品 {item_id})")
 
-                            # 写入卡面元数据 sidecar（origin=steam）
+                            # 同步生成本地卡面和 sidecar，前端封面只认 card_faces/{name}.png
                             try:
-                                config_mgr.ensure_card_faces_directory()
-                                meta_path = config_mgr.card_face_meta_path(chara_name)
-                                if not meta_path.exists():
-                                    workshop_author = ''
-                                    try:
-                                        workshop_author = str(item.get('authorName') or item.get('author') or item.get('creatorName') or '').strip()[:64]
-                                    except Exception:
-                                        workshop_author = ''
-                                    now_iso = datetime.utcnow().isoformat() + 'Z'
-                                    meta = {
-                                        'author': workshop_author,
-                                        'origin': 'steam',
-                                        'created_at': now_iso,
-                                        'updated_at': now_iso,
-                                    }
-                                    await atomic_write_json_async(meta_path, meta, ensure_ascii=False, indent=2)
-                            except Exception as meta_err:
-                                logger.warning(f"sync_workshop_character_cards: 写入卡面元数据失败 {chara_name}: {meta_err}")
+                                blocked_result = _abort_if_write_fence_active(
+                                    f"sync_workshop_character_cards: 生成角色卡封面前检测到维护态写围栏，跳过本轮同步并等待后续重试（角色 {chara_name}，物品 {item_id}）"
+                                )
+                                if blocked_result is not None:
+                                    return blocked_result
+                                face_created = await asyncio.to_thread(
+                                    _ensure_workshop_card_face_from_preview,
+                                    config_mgr,
+                                    chara_name,
+                                    preview_image_path,
+                                    item,
+                                )
+                                if face_created:
+                                    logger.info(
+                                        "sync_workshop_character_cards: 已生成角色卡封面 '%s' (来自物品 %s)",
+                                        chara_name,
+                                        item_id,
+                                    )
+                                elif item:
+                                    blocked_result = _abort_if_write_fence_active(
+                                        f"sync_workshop_character_cards: 补写角色卡封面元数据前检测到维护态写围栏，跳过本轮同步并等待后续重试（角色 {chara_name}，物品 {item_id}）"
+                                    )
+                                    if blocked_result is not None:
+                                        return blocked_result
+                                    await asyncio.to_thread(
+                                        _ensure_workshop_card_face_meta,
+                                        config_mgr,
+                                        chara_name,
+                                        item,
+                                    )
+                            except Exception as face_meta_err:
+                                error_count += 1
+                                logger.warning(
+                                    "sync_workshop_character_cards: 补写角色卡封面或元数据失败 %s (物品 %s): %s",
+                                    chara_name,
+                                    item_id,
+                                    face_meta_err,
+                                )
                             
                         except Exception as e:
                             logger.warning(f"sync_workshop_character_cards: 处理文件 {chara_file_path} 失败: {e}")
@@ -4005,17 +4301,19 @@ async def sync_workshop_character_cards() -> dict:
             
             # 4. 保存并重新加载角色配置
             if need_save:
-                if is_write_fence_active(config_mgr):
-                    logger.info("sync_workshop_character_cards: 保存前检测到维护态写围栏，跳过本轮同步并等待后续重试")
-                    return {"added": 0, "skipped": skipped_count, "errors": error_count, "blocked_by_write_fence": True}
+                blocked_result = _abort_if_write_fence_active(
+                    "sync_workshop_character_cards: 保存前检测到维护态写围栏，跳过本轮同步并等待后续重试"
+                )
+                if blocked_result is not None:
+                    return blocked_result
 
                 try:
                     await config_mgr.asave_characters(characters)
                 except MaintenanceModeError:
                     logger.info("sync_workshop_character_cards: 保存时进入维护态写围栏，跳过本轮同步并等待后续重试")
-                    return {"added": 0, "skipped": skipped_count, "errors": error_count, "blocked_by_write_fence": True}
+                    return _write_fence_blocked_result()
 
-                logger.info(f"sync_workshop_character_cards: 已保存，新增 {added_count} 个角色卡")
+                logger.info(f"sync_workshop_character_cards: 已保存，新增 {added_count} 个角色卡，回填 {backfilled_face_count} 个封面")
                 
                 try:
                     initialize_character_data = get_initialize_character_data()
@@ -4025,13 +4323,16 @@ async def sync_workshop_character_cards() -> dict:
                 except Exception as e:
                     logger.warning(f"sync_workshop_character_cards: 重新加载角色配置失败: {e}")
             else:
-                logger.info("sync_workshop_character_cards: 无需更新，所有角色卡已存在")
+                if backfilled_face_count > 0:
+                    logger.info(f"sync_workshop_character_cards: 无新增角色卡，但已回填 {backfilled_face_count} 个封面")
+                else:
+                    logger.info("sync_workshop_character_cards: 无需更新，所有角色卡已存在")
         
     except Exception as e:
         logger.error(f"sync_workshop_character_cards: 同步过程出错: {e}", exc_info=True)
         error_count += 1
     
-    return {"added": added_count, "skipped": skipped_count, "errors": error_count}
+    return {"added": added_count, "backfilled_faces": backfilled_face_count, "skipped": skipped_count, "errors": error_count}
 
 
 @router.post('/sync-characters')
@@ -4050,6 +4351,7 @@ async def api_sync_workshop_character_cards():
                     "code": "WRITE_FENCE_ACTIVE",
                     "error": "当前处于存储维护态，暂时不能同步创意工坊角色卡，请稍后重试。",
                     "added": result.get("added", 0),
+                    "backfilled_faces": result.get("backfilled_faces", 0),
                     "skipped": result.get("skipped", 0),
                     "errors": result.get("errors", 0),
                 },
@@ -4057,9 +4359,14 @@ async def api_sync_workshop_character_cards():
         return {
             "success": True,
             "added": result["added"],
+            "backfilled_faces": result.get("backfilled_faces", 0),
             "skipped": result["skipped"],
             "errors": result["errors"],
-            "message": f"同步完成：新增 {result['added']} 个角色卡，跳过 {result['skipped']} 个已存在，{result['errors']} 个错误"
+            "message": (
+                f"同步完成：新增 {result['added']} 个角色卡，"
+                f"回填 {result.get('backfilled_faces', 0)} 个封面，"
+                f"跳过 {result['skipped']} 个已存在，{result['errors']} 个错误"
+            )
         }
     except Exception as e:
         logger.error(f"API sync-characters 失败: {e}")

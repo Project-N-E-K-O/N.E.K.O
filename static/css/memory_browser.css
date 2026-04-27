@@ -317,7 +317,8 @@ body .container-header {
     transition: all 0.3s ease;
 }
 
-#review-toggle-checkbox:checked+.auto-review-toggle-btn .auto-review-toggle-icon::after {
+#review-toggle-checkbox:checked+.auto-review-toggle-btn .auto-review-toggle-icon::after,
+#strong-memory-toggle-checkbox:checked+.auto-review-toggle-btn .auto-review-toggle-icon::after {
     opacity: 1;
     transform: scale(1);
 }

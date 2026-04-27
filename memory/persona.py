@@ -29,9 +29,13 @@ from datetime import datetime, timedelta
 from config import (
     PERSONA_RENDER_TOKEN_BUDGET,
     REFLECTION_RENDER_TOKEN_BUDGET,
-    SETTING_PROPOSER_MODEL,
 )
 from memory.evidence import evidence_score
+from memory.stop_names import (
+    acollect_stop_names,
+    collect_stop_names,
+    strip_stop_names,
+)
 from utils.cloudsave_runtime import assert_cloudsave_writable
 from utils.config_manager import get_config_manager
 from utils.file_utils import (
@@ -60,12 +64,19 @@ AUTO_CONFIRM_DAYS = 3                # pending reflection N 天无反对 → 自
 # Split on any CJK/Latin punctuation, symbols, whitespace
 _SPLIT_RE = re.compile(r'[，。、！？；：\u201c\u201d\u2018\u2019（）()\[\]{}<>《》【】\s,.!?;:\-\u2014\u2026\xb7\u3000]+')
 
-def _extract_keywords(text: str) -> set[str]:
+def _extract_keywords(text: str, stop_names: list[str] | None = None) -> set[str]:
     """从文本提取关键词/n-gram，支持 CJK 和拉丁文。
 
     - 拉丁文按空格分词，保留 len>=2 的 token
     - CJK 文本生成 2-gram 和 3-gram 滑动窗口
+
+    ``stop_names`` 给定时（master/lanlan + 各自昵称），先在 tokenize 之前把这些
+    名字从原文剥离——否则高频实体名每轮对话都出现，会生成大量 n-gram，主导
+    ``_is_mentioned`` 的集合命中与 ``_texts_may_contradict`` 的 fuzzy 矛盾检测，
+    放大无效匹配。
     """
+    if stop_names:
+        text = strip_stop_names(text, stop_names)
     segments = _SPLIT_RE.split(text)
     keywords: set[str] = set()
 
@@ -88,14 +99,24 @@ def _extract_keywords(text: str) -> set[str]:
     return keywords
 
 
-def _is_mentioned(fact_text: str, response_text: str) -> bool:
-    """判断 response 中是否"提及"了某条 persona 事实。"""
+def _is_mentioned(
+    fact_text: str,
+    response_text: str,
+    stop_names: list[str] | None = None,
+) -> bool:
+    """判断 response 中是否"提及"了某条 persona 事实。
+
+    ``stop_names`` 给定时同时从 fact 与 response 中剥离——否则 AI 几乎
+    每轮都会喊 master/lanlan 名字，触发"提及"误命中并把无关 fact 推入
+    suppress 流程。
+    """
     if not fact_text or not response_text:
         return False
-    keywords = _extract_keywords(fact_text)
+    keywords = _extract_keywords(fact_text, stop_names=stop_names)
     if not keywords:
         return False
-    return any(kw in response_text for kw in keywords)
+    haystack = strip_stop_names(response_text, stop_names) if stop_names else response_text
+    return any(kw in haystack for kw in keywords)
 
 
 class PersonaManager:
@@ -116,6 +137,12 @@ class PersonaManager:
         # (pure-Python block, no await inside).
         self._alocks: dict[str, asyncio.Lock] = {}
         self._alocks_guard = threading.Lock()
+        # 独立的 resolve_corrections 串行锁——只为防多入口（IdleMaint subtask 2
+        # 与 _extract_facts_and_check_feedback）并发触发同名角色的 LLM 重叠
+        # 应用导致重复处理同一批 corrections。本锁与 _alocks (data lock)
+        # 完全分开，所以 LLM 期间 aadd_fact / arecord_mentions / aapply_signal
+        # 仍能正常拿 _alocks 推进（不再卡 /process 路径）。
+        self._resolve_alocks: dict[str, asyncio.Lock] = {}
         # memory-evidence-rfc §3.3.3：evidence 写路径必须走 record_and_save，
         # 保证 event↔view 合约。event_log 注入；None 时 aapply_signal 不可用。
         self._event_log = event_log
@@ -132,6 +159,19 @@ class PersonaManager:
                 if name not in self._alocks:
                     self._alocks[name] = asyncio.Lock()
         return self._alocks[name]
+
+    def _get_resolve_alock(self, name: str) -> asyncio.Lock:
+        """Per-character asyncio.Lock 专用于 resolve_corrections 串行化。
+
+        只 serialize resolve_corrections 之间的并发，**不**与 data lock
+        (_get_alock) 互锁。LLM 调用在本锁内、data lock 外——data lock 仅
+        在 LLM 前后的短临界区被借用。
+        """
+        if name not in self._resolve_alocks:
+            with self._alocks_guard:
+                if name not in self._resolve_alocks:
+                    self._resolve_alocks[name] = asyncio.Lock()
+        return self._resolve_alocks[name]
 
     # ── file paths ───────────────────────────────────────────────────
 
@@ -520,7 +560,9 @@ class PersonaManager:
                         # cosine-based retrieval matches.
                         self._invalidate_embedding_cache(entry)
                         modified = True
-                        logger.info(f"[Persona] {name}: card 同步更新 [{entity}] \"{old_text[:30]}\" → \"{text[:30]}\"")
+                        # persona 文本不写 logger
+                        logger.info(f"[Persona] {name}: card 同步更新 [{entity}] (old_len={len(old_text)} new_len={len(text)})")
+                        print(f"[Persona] {name}: card 同步更新 [{entity}] \"{old_text[:30]}\" → \"{text[:30]}\"")
                     new_card_entries.append(entry)
                 else:
                     # 新字段 → 创建
@@ -530,7 +572,8 @@ class PersonaManager:
                     entry['protected'] = True
                     new_card_entries.append(entry)
                     modified = True
-                    logger.info(f"[Persona] {name}: card 同步新增 [{entity}] \"{text[:40]}\"")
+                    logger.info(f"[Persona] {name}: card 同步新增 [{entity}] (len={len(text)})")
+                    print(f"[Persona] {name}: card 同步新增 [{entity}] \"{text[:40]}\"")
 
             # 检查是否有 card 中已删除的条目
             removed_ids = set(existing_card.keys()) - expected_ids
@@ -538,7 +581,8 @@ class PersonaManager:
                 modified = True
                 for rid in removed_ids:
                     removed_text = existing_card[rid].get('text', '')
-                    logger.info(f"[Persona] {name}: card 同步移除 [{entity}] \"{removed_text[:40]}\"")
+                    logger.info(f"[Persona] {name}: card 同步移除 [{entity}] (len={len(removed_text)})")
+                    print(f"[Persona] {name}: card 同步移除 [{entity}] \"{removed_text[:40]}\"")
 
 
             if modified:
@@ -803,7 +847,7 @@ class PersonaManager:
         """
         persona = self.ensure_persona(name)
         section_facts = self._get_section_facts(persona, entity)
-        stop_names = self._get_entity_stop_names()
+        stop_names = self._get_entity_stop_names(name)
 
         code, old_text = self._evaluate_fact_contradiction(name, text, section_facts, stop_names)
         if code == self.FACT_REJECTED_CARD:
@@ -827,7 +871,7 @@ class PersonaManager:
         async with self._get_alock(name):
             persona = await self._aensure_persona_locked(name)
             section_facts = self._get_section_facts(persona, entity)
-            stop_names = await self._aget_entity_stop_names()
+            stop_names = await self._aget_entity_stop_names(name)
 
             code, old_text = self._evaluate_fact_contradiction(name, text, section_facts, stop_names)
             if code == self.FACT_REJECTED_CARD:
@@ -1416,55 +1460,33 @@ class PersonaManager:
     def _get_section_facts(self, persona: dict, entity: str) -> list:
         return persona.setdefault(entity, {}).setdefault('facts', [])
 
-    def _get_entity_stop_names(self) -> list[str]:
-        """Return master + neko names to strip from contradiction keywords."""
-        try:
-            master_name, her_name, _, _, _, _, _, _, _ = (
-                self._config_manager.get_character_data()
-            )
-            names = []
-            if master_name:
-                names.append(master_name)
-            if her_name:
-                names.append(her_name)
-            return names
-        except Exception:
-            return []
+    def _get_entity_stop_names(self, lanlan_name: str | None = None) -> list[str]:
+        """Return master + lanlan names + their 昵称 — used to strip stop-names
+        before any keyword/BM25/extraction step in the memory pipeline.
 
-    async def _aget_entity_stop_names(self) -> list[str]:
-        try:
-            master_name, her_name, _, _, _, _, _, _, _ = (
-                await self._config_manager.aget_character_data()
-            )
-            names = []
-            if master_name:
-                names.append(master_name)
-            if her_name:
-                names.append(her_name)
-            return names
-        except Exception:
-            return []
+        ``lanlan_name`` 缺省走 "当前猫娘"。给定时用该角色自己的 ``昵称``——
+        这条路径下 ``aadd_fact`` 等显式拿到了目标角色，避免在多角色配置里
+        误用当前活跃角色的昵称。
+        """
+        return collect_stop_names(self._config_manager, lanlan_name)
+
+    async def _aget_entity_stop_names(self, lanlan_name: str | None = None) -> list[str]:
+        return await acollect_stop_names(self._config_manager, lanlan_name)
 
     @staticmethod
     def _texts_may_contradict(old_text: str, new_text: str,
                               stop_names: list[str] | None = None) -> bool:
         """Lightweight keyword-overlap heuristic for contradiction detection.
 
-        Uses the same CJK-aware tokenization as _is_mentioned.
-        ``stop_names`` — entity names (master/neko) whose n-grams are
-        stripped from both sides so that shared names alone don't inflate
-        the overlap ratio.
+        Uses the same CJK-aware tokenization as ``_is_mentioned``.
+        ``stop_names`` — master/lanlan + 各自昵称——会先从原文 substring
+        replace 掉，然后再切 n-gram，避免共享的实体名独自拉高 overlap 比例
+        造成误报。
         """
         if not old_text or not new_text:
             return False
-        old_kw = _extract_keywords(old_text)
-        new_kw = _extract_keywords(new_text)
-        if stop_names:
-            stop_kw: set[str] = set()
-            for sn in stop_names:
-                stop_kw |= _extract_keywords(sn)
-            old_kw -= stop_kw
-            new_kw -= stop_kw
+        old_kw = _extract_keywords(old_text, stop_names=stop_names)
+        new_kw = _extract_keywords(new_text, stop_names=stop_names)
         if not old_kw or not new_kw:
             return False
         overlap = old_kw & new_kw
@@ -1556,70 +1578,125 @@ class PersonaManager:
         将所有 pending corrections 合并为一个 prompt 发给 correction model，
         返回处理的矛盾数量。
 
-        P2.a.2: 角色级 asyncio.Lock 串行化；整个流程（load + LLM + write back）
-        都在锁内，避免 aadd_fact / arecord_mentions 并发写 persona.json。
-        """
-        async with self._get_alock(name):
-            return await self._resolve_corrections_locked(name)
+        C4 重构 + thinking：LLM 调用在 data lock 外。data lock 仅在 LLM
+        前后短暂借用（load corrections / load persona + apply + save）。
+        独立的 _resolve_alock 串行同名角色的 resolve_corrections 调用，
+        防多入口（IdleMaint subtask 2 与 _extract_facts_and_check_feedback）
+        并发触发同一批 corrections 被重复处理（特别是 keep_new 没有 dedup
+        会导致重复 append）。
 
-    async def _resolve_corrections_locked(self, name: str) -> int:
-        """resolve_corrections 的内部实现。调用方必须已持有
-        self._get_alock(name)。"""
+        为什么这样安全：
+        - LLM 期间 aadd_fact / arecord_mentions / aapply_signal / aensure_persona
+          可正常拿 data lock 推进，不再卡 /process 路径
+        - resolve 之间互斥（resolve_alock）防同批 corrections 重复处理
+        - apply 阶段读 fresh persona，与 LLM 期间被并发写入的 persona 状态
+          自然合并
+        - 末尾"重读 corrections 文件 → filter processed_keys → save"已经
+          做了对 LLM 期间新增 correction 的保护
+        """
         from config.prompts_memory import persona_correction_prompt
 
-        corrections = await self.aload_pending_corrections(name)
-        if not corrections:
-            return 0
+        # ── 串行 resolve（独立锁，与 data lock 不互锁） ──
+        async with self._get_resolve_alock(name):
+            # ── 短临界 1: 拿 corrections 列表 ──
+            async with self._get_alock(name):
+                corrections = await self.aload_pending_corrections(name)
+            if not corrections:
+                return 0
 
-        # 合并所有矛盾为单个 prompt
-        pairs = []
-        for i, item in enumerate(corrections):
-            old_text = item.get('old_text', '')
-            new_text = item.get('new_text', '')
-            if old_text and new_text:
-                pairs.append((i, item))
-        if not pairs:
-            return 0
+            # 合并所有矛盾为单个 prompt。受 PERSONA_CORRECTION_BATCH_LIMIT
+            # 限制：corrections 队列可能堆积，单次只处理前 N 条，剩下的下次
+            # 触发时再处理。
+            from config import PERSONA_CORRECTION_BATCH_LIMIT
+            pairs = []
+            for i, item in enumerate(corrections):
+                old_text = item.get('old_text', '')
+                new_text = item.get('new_text', '')
+                if old_text and new_text:
+                    pairs.append((i, item))
+                if len(pairs) >= PERSONA_CORRECTION_BATCH_LIMIT:
+                    break
+            if not pairs:
+                return 0
+            # 仅允许"本批送进 prompt"的全局 index 被消费 —— LLM 偶尔会回写
+            # 没在这一批 prompt 里的合法全局 index（比如 hallucinate 出未来批
+            # 的 idx），不防的话会误改未送审的 corrections，导致队列数据被
+            # 错误消费。
+            allowed_indices = {i for i, _ in pairs}
 
-        batch_text = "\n".join(
-            f"[{i}] 已有: {item['old_text']} | 新观察: {item['new_text']}"
-            for i, item in pairs
-        )
-        prompt = persona_correction_prompt.format(pairs=batch_text, count=len(pairs))
-
-        try:
-            from utils.token_tracker import set_call_type
-            from utils.llm_client import create_chat_llm
-            set_call_type("memory_correction")
-            api_config = self._config_manager.get_model_api_config('correction')
-            llm = create_chat_llm(
-                api_config.get('model', SETTING_PROPOSER_MODEL),
-                api_config['base_url'], api_config['api_key'],
-                temperature=0.3,
+            batch_text = "\n".join(
+                f"[{i}] 已有: {item['old_text']} | 新观察: {item['new_text']}"
+                for i, item in pairs
             )
-            try:
-                resp = await llm.ainvoke(prompt)
-            finally:
-                await llm.aclose()
-            raw = resp.content
-            if raw.startswith("```"):
-                raw = raw.replace("```json", "").replace("```", "").strip()
-            results = robust_json_loads(raw)
-            if not isinstance(results, list):
-                results = [results]
-        except Exception as e:
-            logger.warning(f"[Persona] {name}: correction model 调用失败: {e}")
-            return 0
+            prompt = persona_correction_prompt.format(pairs=batch_text, count=len(pairs))
 
-        # 应用结果（本函数被 resolve_corrections 在锁下调用，故用 _locked 变体）
-        persona = await self._aensure_persona_locked(name)
+            # ── LLM (锁外) ──
+            try:
+                from utils.token_tracker import set_call_type
+                from utils.llm_client import create_chat_llm
+                set_call_type("memory_correction")
+                api_config = self._config_manager.get_model_api_config('correction')
+                # timeout=120: 开 thinking 后批量决策（每对 keep_old/keep_new/
+                # keep_both/replace + 重写 merged_text）值得思考——后果不可逆
+                # （persona pollution）。LLM 在 data lock 外，可放宽 timeout
+                # 不阻塞 /process 路径上的 arecord_mentions / aapply_signal。
+                # max_retries=0: 禁 SDK 自动重试（这里没业务 retry，单次即终态）。
+                # extra_body=None: 显式开 thinking。
+                llm = create_chat_llm(
+                    api_config['model'],
+                    api_config['base_url'], api_config['api_key'],
+                    timeout=120, max_retries=0,
+                    extra_body=None,
+                )
+                try:
+                    resp = await llm.ainvoke(prompt)
+                finally:
+                    await llm.aclose()
+                raw = resp.content
+                if raw.startswith("```"):
+                    raw = raw.replace("```json", "").replace("```", "").strip()
+                results = robust_json_loads(raw)
+                if not isinstance(results, list):
+                    results = [results]
+            except Exception as e:
+                logger.warning(f"[Persona] {name}: correction model 调用失败: {e}")
+                return 0
+
+            # ── 短临界 2: load fresh persona + apply + save ──
+            return await self._apply_correction_results(
+                name, corrections, allowed_indices, results,
+            )
+
+    async def _apply_correction_results(
+        self,
+        name: str,
+        corrections: list[dict],
+        allowed_indices: set,
+        results: list,
+    ) -> int:
+        """resolve_corrections 的 LLM-后应用阶段。在 data lock 内执行。"""
+        async with self._get_alock(name):
+            persona = await self._aensure_persona_locked(name)
+            return await self._apply_correction_results_locked(
+                name, persona, corrections, allowed_indices, results,
+            )
+
+    async def _apply_correction_results_locked(
+        self,
+        name: str,
+        persona: dict,
+        corrections: list[dict],
+        allowed_indices: set,
+        results: list,
+    ) -> int:
+        """data lock 已持有时的 apply 实现。"""
         resolved = 0
         for result in results:
             if not isinstance(result, dict):
                 continue
             try:
                 idx = int(result.get('index', -1))
-                if idx < 0 or idx >= len(corrections):
+                if idx < 0 or idx >= len(corrections) or idx not in allowed_indices:
                     continue
                 item = corrections[idx]
             except (ValueError, TypeError):
@@ -1701,7 +1778,7 @@ class PersonaManager:
                     continue
                 try:
                     idx = int(raw_idx)
-                    if 0 <= idx < len(corrections):
+                    if 0 <= idx < len(corrections) and idx in allowed_indices:
                         key = corrections[idx].get('created_at', '')
                         if key:
                             processed_keys.add(key)
@@ -1723,7 +1800,12 @@ class PersonaManager:
 
     # ── 提及疲劳：记录 + 更新 suppress ───────────────────────────
 
-    def _apply_record_mentions(self, persona: dict, response_text: str) -> bool:
+    def _apply_record_mentions(
+        self,
+        persona: dict,
+        response_text: str,
+        stop_names: list[str] | None = None,
+    ) -> bool:
         now_str = datetime.now().isoformat()
         now = datetime.now()
         cutoff = now - timedelta(hours=SUPPRESS_WINDOW_HOURS)
@@ -1734,7 +1816,7 @@ class PersonaManager:
                 continue
             if entry.get('protected'):
                 continue
-            if not _is_mentioned(entry.get('text', ''), response_text):
+            if not _is_mentioned(entry.get('text', ''), response_text, stop_names=stop_names):
                 continue
 
             mentions = entry.get('recent_mentions', [])
@@ -1752,15 +1834,19 @@ class PersonaManager:
         """主动搭话投递后，扫描 response 中哪些 persona 条目被提及。
 
         核心逻辑：5小时内提及 > SUPPRESS_MENTION_LIMIT 次 → suppress。
+        Stop-names 在进 ``_is_mentioned`` 之前剥掉，避免 master/lanlan
+        每轮被喊一次就把无关 fact 全部判成 mentioned。
         """
         persona = self.ensure_persona(name)
-        if self._apply_record_mentions(persona, response_text):
+        stop_names = self._get_entity_stop_names(name)
+        if self._apply_record_mentions(persona, response_text, stop_names=stop_names):
             self.save_persona(name, persona)
 
     async def arecord_mentions(self, name: str, response_text: str) -> None:
+        stop_names = await self._aget_entity_stop_names(name)
         async with self._get_alock(name):
             persona = await self._aensure_persona_locked(name)
-            if self._apply_record_mentions(persona, response_text):
+            if self._apply_record_mentions(persona, response_text, stop_names=stop_names):
                 await self.asave_persona(name, persona)
 
     def _apply_update_suppressions(self, persona: dict) -> bool:

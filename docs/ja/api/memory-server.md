@@ -24,12 +24,12 @@ Memory Server は以下のエンドポイントを提供します：
 
 ## 使用モデル
 
-| タスク | デフォルトモデル |
-|------|---------------|
-| エンベディング | `text-embedding-v4` |
-| 要約 | `qwen-plus` (SUMMARY_MODEL) |
-| ルーティング | `qwen-plus` (ROUTER_MODEL) |
-| リランキング | `qwen-plus` (RERANKER_MODEL) |
+| タスク | ソース |
+|------|--------|
+| エンベディング | `data/embedding_models/<profile>/` 配下のバンドル ONNX モデル（`memory/embeddings.py::EmbeddingService` 参照） |
+| 事実抽出 / シグナル検出 / 反省 / プロモーションマージ / 事実重複除去 / 想起リランキング | tier `summary`（`get_model_api_config('summary')`） |
+| 履歴レビュー / ペルソナ訂正 | tier `correction`（`get_model_api_config('correction')`） |
+| ネガティブターゲットキーワード判定 | tier `emotion` |
 
 ## 通信
 

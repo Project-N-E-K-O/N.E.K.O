@@ -160,13 +160,12 @@ function injectPopupStyles(prefix) {
         .${prefix}-toggle-item:hover:not([aria-disabled="true"]) {
             background: var(--neko-popup-hover, rgba(68, 183, 254, 0.1));
         }
-        .${prefix}-toggle-item.${prefix}-toggle-item-static,
         .${prefix}-toggle-item.${prefix}-toggle-item-static:hover:not([aria-disabled="true"]) {
-            background: var(--neko-popup-selected-bg, rgba(68, 183, 254, 0.1)) !important;
+            background: var(--neko-popup-hover, rgba(68, 183, 254, 0.1)) !important;
         }
         .${prefix}-toggle-item.${prefix}-toggle-item-static .${prefix}-toggle-indicator[aria-checked="true"] {
-            background-color: #69c5ff;
-            border-color: #69c5ff;
+            background-color: var(--neko-popup-accent, #44b7fe);
+            border-color: var(--neko-popup-accent, #44b7fe);
         }
         .${prefix}-settings-menu-item {
             display: flex;
@@ -584,20 +583,20 @@ function createTextGuardSlider(manager, prefix) {
 
     const slider = document.createElement('input');
     slider.type = 'range';
-    // 滑动条位置：0-10 对应 50-1500（每档150字），11 对应无限制
-    // 默认值 350字 = (350-50)/150 = 2
+    // 滑动条位置：0-10 对应 100-1100（每档 100 tokens），11 对应无限制
+    // 默认值 300 tokens = (300-100)/100 = 2
     slider.min = '0';
     slider.max = '11';
     slider.step = '1';
 
     // 当前值转换：数值 -> 滑动条位置
-    const currentValue = typeof window.textGuardMaxLength !== 'undefined' ? window.textGuardMaxLength : 350;
+    const currentValue = typeof window.textGuardMaxLength !== 'undefined' ? window.textGuardMaxLength : 300;
     let currentPosition;
     if (currentValue === 0 || currentValue === null || currentValue === undefined) {
         currentPosition = 11; // 无限制
     } else {
-        // 找到最接近的档位：50 + position * 150
-        currentPosition = Math.min(10, Math.max(0, Math.round((currentValue - 50) / 150)));
+        // 找到最接近的档位：100 + position * 100
+        currentPosition = Math.min(10, Math.max(0, Math.round((currentValue - 100) / 100)));
     }
     slider.value = currentPosition;
 
@@ -615,9 +614,10 @@ function createTextGuardSlider(manager, prefix) {
             valueDisplay.textContent = unlimitedText;
             valueDisplay.setAttribute('data-i18n', 'settings.toggles.unlimited');
         } else {
-            const value = 50 + parseInt(position) * 150;
-            const unit = (typeof window.t === 'function') ? window.t('settings.toggles.characters') : '字';
-            valueDisplay.textContent = `${value}${unit}`;
+            const value = 100 + parseInt(position) * 100;
+            // 单位从"字"切到 token：UI label 用独立的 i18n key（locale 文件已同步）。
+            const unit = (typeof window.t === 'function') ? window.t('settings.toggles.tokens') : 'tokens';
+            valueDisplay.textContent = `${value} ${unit}`;
             valueDisplay.removeAttribute('data-i18n');
         }
     };
@@ -635,11 +635,11 @@ function createTextGuardSlider(manager, prefix) {
         if (position === 11) {
             value = 0; // 0 表示无限制
         } else {
-            value = 50 + position * 150;
+            value = 100 + position * 100;
         }
         window.textGuardMaxLength = value;
         if (typeof window.saveNEKOSettings === 'function') window.saveNEKOSettings();
-        console.log(`[TextGuard] 回复字数限制已设置为 ${value === 0 ? '无限制' : value + '字'}`);
+        console.log(`[TextGuard] 回复 token 上限已设置为 ${value === 0 ? '无限制' : value + ' tokens'}`);
     });
 
     slider.addEventListener('click', (e) => e.stopPropagation());
@@ -1109,6 +1109,20 @@ function createAnimationSettingsSidePanel(manager, prefix) {
         boxSizing: 'border-box',
         transition: 'background 0.2s ease'
     };
+    const updateTrackingToggleRowBackground = (row, checked) => {
+        if (!row) return;
+        const hovered = row.matches(':hover');
+        row.style.background = hovered
+            ? (checked
+                ? 'var(--neko-popup-selected-hover, rgba(68,183,254,0.15))'
+                : 'var(--neko-popup-hover-subtle, rgba(68,183,254,0.08))')
+            : 'transparent';
+    };
+    const bindTrackingToggleRowHover = (row, getChecked) => {
+        if (!row || typeof getChecked !== 'function') return;
+        row.addEventListener('mouseenter', () => updateTrackingToggleRowBackground(row, getChecked()));
+        row.addEventListener('mouseleave', () => updateTrackingToggleRowBackground(row, getChecked()));
+    };
 
     // 鼠标跟踪复选框
     const checkbox = document.createElement('input');
@@ -1120,9 +1134,11 @@ function createAnimationSettingsSidePanel(manager, prefix) {
     const { indicator, updateStyle: updateIndicatorStyle } = manager._createCheckIndicator();
     Object.assign(indicator.style, { width: '20px', height: '20px', flexShrink: '0' });
 
+    let trackingClickArea = null;
     const updateRowStyle = () => {
         const isChecked = checkbox.checked;
         updateIndicatorStyle(isChecked);
+        updateTrackingToggleRowBackground(trackingClickArea, isChecked);
     };
     checkbox.updateStyle = updateRowStyle;
     updateRowStyle();
@@ -1134,11 +1150,13 @@ function createAnimationSettingsSidePanel(manager, prefix) {
     Object.assign(label.style, { userSelect: 'none', fontSize: '12px', whiteSpace: 'nowrap' });
 
     // 鼠标跟踪点击区域（左半部分）
-    const trackingClickArea = document.createElement('div');
+    trackingClickArea = document.createElement('div');
     Object.assign(trackingClickArea.style, trackingToggleRowStyle);
     trackingClickArea.appendChild(checkbox);
     trackingClickArea.appendChild(indicator);
     trackingClickArea.appendChild(label);
+    bindTrackingToggleRowHover(trackingClickArea, () => checkbox.checked);
+    updateRowStyle();
 
     const handleTrackingChange = () => {
         const enabled = !checkbox.checked;
@@ -1182,8 +1200,10 @@ function createAnimationSettingsSidePanel(manager, prefix) {
         modeClickArea.tabIndex = isEnabled ? 0 : -1;
     };
 
+    let modeClickArea = null;
     const updateModeRowStyle = () => {
         updateModeIndicatorStyle(modeCheckbox.checked);
+        updateTrackingToggleRowBackground(modeClickArea, modeCheckbox.checked);
     };
 
     const getTrackingModeState = () => {
@@ -1208,11 +1228,13 @@ function createAnimationSettingsSidePanel(manager, prefix) {
     }
     Object.assign(modeLabel.style, { userSelect: 'none', fontSize: '12px', whiteSpace: 'nowrap' });
 
-    const modeClickArea = document.createElement('div');
+    modeClickArea = document.createElement('div');
     Object.assign(modeClickArea.style, trackingToggleRowStyle);
     modeClickArea.appendChild(modeCheckbox);
     modeClickArea.appendChild(modeIndicator);
     modeClickArea.appendChild(modeLabel);
+    bindTrackingToggleRowHover(modeClickArea, () => modeCheckbox.checked);
+    updateModeRowStyle();
 
     // 初始化跟踪模式按钮状态
     updateTrackingModeToggleState();
@@ -1273,6 +1295,7 @@ function createAnimationSettingsSidePanel(manager, prefix) {
 
     const updateHoverFadeRowStyle = () => {
         updateHoverFadeIndicatorStyle(hoverFadeCheckbox.checked);
+        updateTrackingToggleRowBackground(hoverFadeRow, hoverFadeCheckbox.checked);
         hoverFadeRow.setAttribute('aria-checked', String(hoverFadeCheckbox.checked));
     };
     hoverFadeCheckbox.updateStyle = updateHoverFadeRowStyle;
@@ -1287,6 +1310,8 @@ function createAnimationSettingsSidePanel(manager, prefix) {
     hoverFadeRow.appendChild(hoverFadeIndicator);
     hoverFadeRow.appendChild(hoverFadeLabel);
     Object.assign(hoverFadeRow.style, { cursor: 'pointer' });
+    bindTrackingToggleRowHover(hoverFadeRow, () => hoverFadeCheckbox.checked);
+    updateHoverFadeRowStyle();
 
     const handleHoverFadeChange = () => {
         const enabled = !hoverFadeCheckbox.checked;
@@ -1900,7 +1925,7 @@ function createSettingsToggleItem(manager, prefix, toggle) {
 
     const updateIndicatorStyle = (checked) => {
         if (checked) {
-            const activeColor = toggle.alwaysTinted ? '#69c5ff' : 'var(--neko-popup-accent, #44b7fe)';
+            const activeColor = 'var(--neko-popup-accent, #44b7fe)';
             indicator.style.backgroundColor = activeColor;
             indicator.style.borderColor = activeColor;
             checkmark.style.opacity = '1';
@@ -1927,13 +1952,14 @@ function createSettingsToggleItem(manager, prefix, toggle) {
 
     const updateStyle = () => {
         const isChecked = checkbox.checked;
+        const hovered = toggleItem.matches(':hover');
         toggleItem.setAttribute('aria-checked', isChecked ? 'true' : 'false');
         indicator.setAttribute('aria-checked', isChecked ? 'true' : 'false');
         updateIndicatorStyle(isChecked);
-        toggleItem.style.background = toggle.alwaysTinted
-            ? 'var(--neko-popup-selected-bg, rgba(68,183,254,0.1))'
-            : isChecked
-            ? 'var(--neko-popup-selected-bg, rgba(68,183,254,0.1))'
+        toggleItem.style.background = hovered
+            ? (isChecked
+                ? 'var(--neko-popup-selected-hover, rgba(68,183,254,0.15))'
+                : 'var(--neko-popup-hover-subtle, rgba(68,183,254,0.08))')
             : 'transparent';
     };
 
@@ -1943,18 +1969,12 @@ function createSettingsToggleItem(manager, prefix, toggle) {
     toggleItem.appendChild(indicator);
     toggleItem.appendChild(label);
 
-    if (!toggle.alwaysTinted) {
-        toggleItem.addEventListener('mouseenter', () => {
-            if (checkbox.checked) {
-                toggleItem.style.background = 'var(--neko-popup-selected-hover, rgba(68,183,254,0.15))';
-            } else {
-                toggleItem.style.background = 'var(--neko-popup-hover-subtle, rgba(68,183,254,0.08))';
-            }
-        });
-        toggleItem.addEventListener('mouseleave', () => {
-            updateStyle();
-        });
-    }
+    toggleItem.addEventListener('mouseenter', () => {
+        updateStyle();
+    });
+    toggleItem.addEventListener('mouseleave', () => {
+        updateStyle();
+    });
 
     const handleToggleChange = (isChecked) => {
         updateStyle();

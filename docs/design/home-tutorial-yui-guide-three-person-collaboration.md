@@ -51,14 +51,14 @@
 当前仓库中，与本项目直接相关的核心落点包括：
 
 - [static/universal-tutorial-manager.js](../../static/universal-tutorial-manager.js)
-- [templates/index.html](../../templates/index.html)
+- `templates/index.html`
 - [static/avatar-ui-popup.js](../../static/avatar-ui-popup.js)
 - [static/app-interpage.js](../../static/app-interpage.js)
 - [static/app-ui.js](../../static/app-ui.js)
 - [static/app-buttons.js](../../static/app-buttons.js)
-- [main_routers/agent_router.py](../../main_routers/agent_router.py)
-- [plugin/server/routes/frontend.py](../../plugin/server/routes/frontend.py)
-- [frontend/plugin-manager](../../frontend/plugin-manager)
+- `main_routers/agent_router.py`
+- `plugin/server/routes/frontend.py`
+- `frontend/plugin-manager`
 
 这些文件并不是同一层的代码：
 
@@ -374,7 +374,7 @@
 ### 主负责文件
 
 - [static/universal-tutorial-manager.js](../../static/universal-tutorial-manager.js)
-- [templates/index.html](../../templates/index.html)
+- `templates/index.html`
 - 本文档及相关设计文档
 - 若采用单文件场景注册表，默认由主负责人持有 `static/yui-guide-steps.js`
 
@@ -432,7 +432,7 @@
 ### 可协同但不应主改的文件
 
 - [static/universal-tutorial-manager.js](../../static/universal-tutorial-manager.js)
-- [templates/index.html](../../templates/index.html)
+- `templates/index.html`
 
 开发 B 可以提出挂接点需求，但不要直接长期占用这些文件。
 
@@ -484,9 +484,9 @@
 
 如果进入 `Phase 4`，开发 C 还将临时扩展负责：
 
-- [frontend/plugin-manager](../../frontend/plugin-manager)
-- [plugin/server/routes/frontend.py](../../plugin/server/routes/frontend.py)
-- [main_routers/agent_router.py](../../main_routers/agent_router.py)
+- `frontend/plugin-manager`
+- `plugin/server/routes/frontend.py`
+- `main_routers/agent_router.py`
 
 其中 [static/app-ui.js](../../static/app-ui.js) 和 [static/app-buttons.js](../../static/app-buttons.js) 由开发 C 主导，但仍按后文“共管文件”规则协作，不视为独占写入范围。
 
@@ -509,7 +509,7 @@
 以下文件默认只允许主负责人长期修改：
 
 - [static/universal-tutorial-manager.js](../../static/universal-tutorial-manager.js)
-- [templates/index.html](../../templates/index.html)
+- `templates/index.html`
 
 原因：
 
@@ -551,7 +551,7 @@
 
 若进入插件面板教程桥阶段，再追加：
 
-- [frontend/plugin-manager](../../frontend/plugin-manager)
+- `frontend/plugin-manager`
 
 ## 7.5 共管但需提前同步的文件
 
@@ -712,7 +712,7 @@
 - 先建立首版共享场景注册表与场景 ID 骨架
 - 明确 step change 生命周期回调
 - 决定旧教程键和新版本教程键如何并存
-- 在 [templates/index.html](../../templates/index.html) 中挂载新脚本和样式
+- 在 `templates/index.html` 中挂载新脚本和样式
 - 把原始剧本中的三句开场白映射到首页已有教程骨架，而不是另起一套独立流程
 - 第一阶段只允许 `sceneOrder` 非空的页面启用 Yui Guide 运行时；当前实际只启用首页
 - 第一阶段不允许把旧首页教程整套删掉；它仍然作为 driver 状态骨架存在
@@ -842,8 +842,8 @@
 ### 开发 C
 
 - 负责 `/ui/` 轻量 bootstrap
-- 负责在 [frontend/plugin-manager](../../frontend/plugin-manager) 中补最小教程桥
-- 负责与 [plugin/server/routes/frontend.py](../../plugin/server/routes/frontend.py) 和 [main_routers/agent_router.py](../../main_routers/agent_router.py) 的入口关系对齐
+- 负责在 `frontend/plugin-manager` 中补最小教程桥
+- 负责与 `plugin/server/routes/frontend.py` 和 `main_routers/agent_router.py` 的入口关系对齐
 - 把原始剧本中的“打开插件管理”从首页预演层升级为真正能进入插件面板的教程节点
 
 ### 里程碑完成标准
@@ -985,7 +985,7 @@
 
 应对：
 
-- [templates/index.html](../../templates/index.html) 只由主负责人长期持有
+- `templates/index.html` 只由主负责人长期持有
 
 ## 13.6 风险：过早进入 `/ui/` 阶段
 

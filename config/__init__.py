@@ -218,6 +218,7 @@ TOOL_SERVER_PORT = _read_port_env("TOOL_SERVER_PORT", 48915)
 USER_PLUGIN_SERVER_PORT = _read_port_env("USER_PLUGIN_SERVER_PORT", 48916)
 AGENT_MQ_PORT = _read_port_env("AGENT_MQ_PORT", 48917)
 MAIN_AGENT_EVENT_PORT = _read_port_env("MAIN_AGENT_EVENT_PORT", 48918)
+USER_PLUGIN_BASE = f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}"
 
 # OpenFang Agent 执行后端端口 (由 Electron 并行启动，端口写入 port_config.json)
 OPENFANG_PORT = _read_port_env("OPENFANG_PORT", 50051)
@@ -274,18 +275,25 @@ DEFAULT_AGENT_MODEL_URL = ""
 DEFAULT_AGENT_MODEL_API_KEY = ""
 
 # 模型配置常量（默认值）
-# 注：以下5个直接被导入使用的变量保留原名以保持向后兼容性
-DEFAULT_ROUTER_MODEL = ROUTER_MODEL = 'qwen-plus'
-DEFAULT_SETTING_PROPOSER_MODEL = SETTING_PROPOSER_MODEL = "qwen-max"
-DEFAULT_SETTING_VERIFIER_MODEL = SETTING_VERIFIER_MODEL = "qwen-max"
-DEFAULT_SEMANTIC_MODEL = SEMANTIC_MODEL = 'text-embedding-v4'
-DEFAULT_RERANKER_MODEL = RERANKER_MODEL = 'qwen-plus'
+# 注：以下退环境的常量已经从导出列表里删除（2026-04）：
+#   * SETTING_PROPOSER_MODEL / SETTING_VERIFIER_MODEL —— 旧的 memory.settings
+#     抽取/校验链路已被 evidence + reflection 取代，参见 memory/settings.py
+#     顶部说明。
+#   * ROUTER_MODEL —— 当年规划的"记忆路由模型"从未在代码里被读过；记忆路由
+#     已经走 tier 化的 summary/correction，没有独立模型。
+#   * SEMANTIC_MODEL —— "text-embedding-v4" 字面量没人用；嵌入服务走本地
+#     ONNX（memory/embeddings.py 的 EmbeddingService），模型 id 由
+#     profile_id+dim+quantization 拼出。
+#   * RERANKER_MODEL —— 记忆 LLM 重排（memory/recall.py::MemoryRecallReranker）
+#     按 tier="summary" 拿 api_config['model']，不再有 hardcoded 'qwen-plus'。
+# 走 LLM 的 memory 子模块一律按 tier 拿 api_config['model']，不再有 hardcoded
+# fallback；新增需求请加 tier，不要再加这种"全局默认模型字面量"。
 
 # 其他模型配置（仅通过 config_manager 动态获取）
 DEFAULT_CONVERSATION_MODEL = 'qwen-max'
 DEFAULT_SUMMARY_MODEL = "qwen-plus"
 DEFAULT_CORRECTION_MODEL = 'qwen-max'
-DEFAULT_EMOTION_MODEL = 'qwen-flash'
+DEFAULT_EMOTION_MODEL = 'qwen3.6-flash-2026-04-16'
 DEFAULT_VISION_MODEL = "qwen3-vl-plus-2025-09-23"
 DEFAULT_AGENT_MODEL = "qwen3.5-plus"
 
@@ -654,7 +662,7 @@ DEFAULT_ASSIST_API_PROFILES = {
         'CONVERSATION_MODEL' : "qwen3.6-plus",
         'SUMMARY_MODEL': "qwen3.6-plus",
         'CORRECTION_MODEL': "qwen3.6-plus",
-        'EMOTION_MODEL': "qwen-flash",
+        'EMOTION_MODEL': "qwen3.6-flash-2026-04-16",
         'VISION_MODEL': "qwen3.6-plus",
         'AGENT_MODEL': "qwen3.6-plus",
     },
@@ -796,6 +804,13 @@ EVIDENCE_CONFIRMED_THRESHOLD = 1.0   # score ≥ 1 → confirmed
 EVIDENCE_PROMOTED_THRESHOLD = 2.0    # score ≥ 2 → promoted
 EVIDENCE_ARCHIVE_THRESHOLD = -2.0    # score ≤ -2 → archive_candidate
 
+# 强力记忆 OFF（powerful_memory_enabled=False）时的 time-driven fallback 阈值。
+# pre-RFC 行为：不靠 evidence_score，纯按 reflection 年龄推进 lifecycle，零
+# LLM 成本。pre-RFC 用 3 天，但实测过激（"3 天没否认 != 用户认可"）；这里
+# 拉到 14 天给用户更长窗口主动反驳。
+WEAK_MEMORY_AUTO_CONFIRM_DAYS = 14   # pending → confirmed (按 created_at 计)
+WEAK_MEMORY_AUTO_PROMOTE_DAYS = 14   # confirmed → promoted (按 confirmed_at 计)
+
 # §3.5.3 归档相关（sub_zero_days 计数 + 分片大小上限）
 EVIDENCE_ARCHIVE_DAYS = 14           # sub_zero 累计达此天数 → 真正归档
 ARCHIVE_FILE_MAX_ENTRIES = 500       # 归档分片文件单文件最大 entry 数
@@ -825,7 +840,7 @@ EVIDENCE_SIGNAL_CHECK_ENABLED = True             # 独立开关
 EVIDENCE_SIGNAL_CHECK_EVERY_N_TURNS = 10         # 累积 N 轮触发
 EVIDENCE_SIGNAL_CHECK_IDLE_MINUTES = 5           # 或空闲 N 分钟触发
 EVIDENCE_SIGNAL_CHECK_INTERVAL_SECONDS = 40      # 轮询间隔（与 IDLE_CHECK_INTERVAL 对齐）
-EVIDENCE_DETECT_SIGNALS_MAX_OBSERVATIONS = 200   # Stage-2 prompt 带入的 existing 上限
+EVIDENCE_DETECT_SIGNALS_MAX_OBSERVATIONS = 30    # Stage-2 LLM rerank 后进 prompt 的 obs 上限（减少 NxM 配对决策点）
 
 # §3.5 / §6.5 Gate 4：归档扫描背景循环间隔
 # 1 小时一次：sub_zero_days 计数本身按"自然日"防抖（每天最多 +1），
@@ -836,8 +851,383 @@ EVIDENCE_ARCHIVE_SWEEP_INTERVAL_SECONDS = 3600
 
 # §3.6 render budget（PR-3 使用，此处先占位）
 PERSONA_RENDER_TOKEN_BUDGET = 2000       # 非-protected persona 预算
-REFLECTION_RENDER_TOKEN_BUDGET = 1000    # reflection 渲染预算
+REFLECTION_RENDER_TOKEN_BUDGET = 2000    # reflection 渲染预算（pending+confirmed 总和）
 PERSONA_RENDER_ENCODING = "o200k_base"   # tiktoken encoding
+
+# ========================================================================
+# §3.7 LLM Context & Output Budget
+# ------------------------------------------------------------------------
+# 所有"会被拼进 LLM messages 的输入侧 component"和"LLM 输出侧 max_tokens"
+# 都集中在这里。对应的设计文档：docs/design/llm-prompt-budget.md
+#
+# 命名约定：
+#   *_MAX_TOKENS                       → tiktoken o200k_base token 数
+#                                         （≈ 1.3-1.5 CJK char / 4 EN char）
+#   *_TRIGGER_TOKENS                   → 触发某个动作的 token 阈值（不是硬上限）
+#   *_MAX_ITEMS / *_MAX                → 条数（消息 / deque maxlen / list[-N:]）
+#   *_MAX_CHARS                        → 字符数（仅遗留 char-based 流程用）
+#   *_BYTES                            → 字节
+#   *_MS                               → 毫秒
+#
+# 注释格式（每条常量）：
+#   - "用途"：这个值会卡哪个 component
+#   - "上游"：被 cap 的内容来自哪里（用户输入 / 外部 API / 内部计算）
+#   - 设计依据 / 互动关系（如有）
+#
+# 已知"咎由自取"项（NOT capped by design）：
+#   - 用户原话直接拼进 HumanMessage（omni_offline_client.py:413）
+#   - OpenClaw magic intent user_text（用 1MB 输入做 80-token 分类，自找的）
+#   - emotion 分析 user text
+#   - bilibili knowledge_context（用户配置的知识库）
+#   - sts2_autoplay strategy_prompt（用户写的策略文件）
+# 详见 docs/design/llm-prompt-budget.md "已知不 cap 项"。
+# ========================================================================
+
+# ---- Memory: recent history compression ----
+RECENT_HISTORY_MAX_ITEMS = 10
+"""压缩后保留的近期消息条数。
+- 用途：CompressedRecentHistoryManager 把超过 compress_threshold 的旧消息
+  压缩成 1 条 summary 后，原始消息列表保留最后 N 条。
+- 上游：用户和 AI 的对话流水。
+- 互动：和 RECENT_COMPRESS_THRESHOLD_ITEMS 配对——压缩后保留 N 条 +
+  Stage-1 summary 1 条 = N+1 条进入下次压缩计数。"""
+
+RECENT_COMPRESS_THRESHOLD_ITEMS = 15
+"""触发 LLM 压缩的条数阈值。
+- 用途：当某 lanlan 的 user_histories 累积到 > 此值时调一次
+  compress_history。
+- 上游：累积的对话条数。"""
+
+RECENT_SUMMARY_MAX_TOKENS = 1000
+"""Stage-1 压缩输出的 token 上限。
+- 用途：Stage-1 LLM 把 N 条原始消息压缩成一段文本；如果输出
+  > 此值则触发 Stage-2 进一步压缩（500 chars/words 硬截）。
+- 上游：Stage-1 LLM 自由生成的摘要长度。
+- 触发关系：output_tokens > 此值 → further_compress() 二次压缩。"""
+
+RECENT_PER_MESSAGE_MAX_TOKENS = 500
+"""压缩输入的单条 message token 上限。
+- 用途：compress_history 把每条原始 message 拼进 prompt 前先做头尾保留
+  截断（utils.tokenize.truncate_head_tail_tokens，head=tail=250）。
+- 上游：用户/AI 的原始对话文本，正常一轮 30-500 token，长贴可能数 KB。
+- 截断策略：保留头尾各 250 token，中段用 "…[省略中段]…" 替换。"""
+
+# ---- Memory: reflection ----
+REFLECTION_TEXT_MAX_TOKENS = 150
+"""单条 reflection 文本的 soft cap。
+- 用途：超过此值的 reflection 在保存时会剥离 ontology 字段
+  (relation_type / temporal_scope) — 文本本身不丢。
+- 上游：LLM 综合若干 fact 后输出的反思文本。"""
+
+REFLECTION_SURFACE_TOP_K = 3
+"""单次 surfacing 最多返回的反思条数。
+- 用途：get_pending_reflections_for_check / followup 等查询接口的截断。
+- 上游：满足 evidence_score≥0 且 cooldown 已过的候选反思集合。"""
+
+REFLECTION_SYNTHESIS_FACTS_MAX = 20
+"""单次 reflection synthesis 最多带入的 unabsorbed fact 数。
+- 用途：_synthesize_reflections_locked 调用 LLM 前先按 importance/创建
+  时间排序，截到此数。
+- 上游：用户长期不"吸收"事实就会堆积；外循环（aget_unabsorbed_facts）
+  当前没数量限制，所以这层是唯一保护。
+- 设计依据：30 条 × 平均 50 token = 1500 token，留给 LLM 综合处理够用。"""
+
+# ---- Memory: persona ----
+PERSONA_MERGE_POOL_MAX_TOKENS = 4000
+"""promote-merge 时同 entity persona+reflection 池总 token 上限。
+- 用途：_allm_call_promotion_merge 把同 entity 的所有 confirmed/promoted
+  persona 和 reflection 全拼进 prompt，本 cap 防止该池失控。
+- 上游：同一 entity 长期累积的 persona/reflection。
+- 注意：这条不复用 PERSONA_RENDER_TOKEN_BUDGET（render 是给主对话看的，
+  merge 是给 promotion LLM 看的，需要更大的池才能做合并判断）。"""
+
+PERSONA_CORRECTION_BATCH_LIMIT = 10
+"""单次 persona corrections resolve 处理的 batch 大小。
+- 用途：_resolve_corrections_locked 从 pending_corrections 队列取前 N
+  条丢给 LLM 做对错判断，剩下的下一轮再处理。
+- 上游：pending_corrections 队列。"""
+
+# ---- Memory: recall ----
+RECALL_COARSE_OVERSAMPLE = 3
+"""vector coarse-rank 的过采样倍数。
+- 用途：top_k = budget * 此值；coarse 阶段多取 3× 候选给 LLM rerank
+  挑选。
+- 上游：embedding 检索的 candidate pool。"""
+
+RECALL_PER_CANDIDATE_MAX_TOKENS = 200
+"""LLM rerank 输入的单条 candidate text 上限。
+- 用途：_fine_rank 拼 candidates 前对每条 candidate.text 做截断。
+- 上游：archived fact / observation 文本。"""
+
+RECALL_CANDIDATES_TOTAL_MAX_TOKENS = 15000
+"""LLM rerank 输入的 candidates 拼合后总 token 上限。
+- 用途：候选数已 cap 但单条单独 cap 仍可能撑爆——这条是兜底。
+- 上游：cap 之后的 candidates 列表序列化。
+- 设计依据：理论上 budget*3 × per_candidate = 600*200 = 120k；25k 是
+  实际安全值，超出时按尾部截断（保留高 score 的）。"""
+
+# ---- Memory: evidence signal detection ----
+EVIDENCE_PER_OBSERVATION_MAX_TOKENS = 200
+"""Stage-2 signal detection 输入的单条 observation text 上限。
+- 用途：_allm_detect_signals 拼 observations 前对每条 text 截断。
+- 上游：archived fact / observation 文本。"""
+
+EVIDENCE_OBSERVATIONS_TOTAL_MAX_TOKENS = 15000
+"""Stage-2 signal detection observations 拼合后总 token 上限。
+- 用途：兜底，防止单条上限 × 条数撑爆。
+- 上游：cap 之后的 observations 列表序列化。"""
+
+EVIDENCE_DETECT_SIGNALS_MAX_NEW_FACTS = 20
+"""Stage-2 signal detection 单次 batch 处理的 new_facts 上限。
+- 用途：_allm_detect_signals 入口对 new_facts 按 importance DESC 截到 N 条；
+  超出部分留在 facts.json 中 `signal_processed=False`，下次 idle 维护循环
+  再 drain 一批。
+- 与 FACT_DEDUP_BATCH_LIMIT 同口径（LLM 在 N×M 配对决策时的舒适 batch
+  ~20 条），避免 LLM 在 30+ 条 new_facts 上判失焦。
+- 上游：Stage-1 LLM 抽取出来的 new facts 列表。"""
+
+NEGATIVE_KEYWORD_CHECK_CONTEXT_ITEMS = 3
+"""负面关键词检查带的 user message 上下文条数。
+- 用途：memory_server._amaybe_trigger_negative_keyword_hook 取 user
+  消息列表的最后 N 条作为 LLM 上下文。
+- 上游：会话流水。"""
+
+# ---- Agent: task results / history / plugin pipeline ----
+AGENT_HISTORY_TURNS = 10
+"""task_executor messages[-N:] 历史窗口。
+- 用途：_extract_context_for_user_intent / _resolve_openclaw_sender_id
+  等多个站点统一从最近 N 条消息里抽取 user 意图。
+- 上游：core.py 维护的 conversation_history。"""
+
+TASK_DETAIL_MAX_TOKENS = 200
+"""任务详情字段（detail / desc）回流给 LLM 的 token 上限。
+- 用途：agent_server._sanitize / result_parser._truncate / brain/
+  task_executor 等多处 detail 字段统一档位。
+- 上游：plugin 返回值 / ComputerUse 子任务结果 / OpenFang 输出。"""
+
+TASK_SUMMARY_MAX_TOKENS = 400
+"""任务摘要字段（summary）回流给 LLM 的 token 上限。
+- 用途：_emit_task_result 的 summary 档位（比 detail 长）。
+- 上游：result_parser 生成的自然语言摘要。"""
+
+TASK_LARGE_DETAIL_MAX_TOKENS = 1000
+"""任务大详情字段回流给前端 HUD 的 token 上限。
+- 用途：_emit_task_result 的 detail 字段；前端展示用，不直接进 LLM。
+- 上游：plugin 完整结构化输出。"""
+
+TASK_ERROR_MAX_TOKENS = 350
+"""任务错误消息字段的 token 上限。
+- 用途：_emit_task_result 的 error 档位。
+- 上游：异常 stack / API 错误响应。"""
+
+AGENT_TASK_TRACKER_MAX_RECORDS = 50
+"""AgentTaskTracker 最多保留的任务执行记录数。
+- 用途：deque-like 结构 maxlen，供 analyzer 去重 / 上下文交错排序。
+- 上游：分发出去的 agent 任务数。"""
+
+AGENT_RECENT_CTX_PER_ITEM_TOKENS = 400
+"""task_executor _sanitize_recent_context 单条上限。
+- 用途：从 conversation 抽取最近 user/assistant 消息，每条进 prompt
+  前先 truncate 到此值。
+- 上游：会话流水。"""
+
+AGENT_RECENT_CTX_TOTAL_TOKENS = 1000
+"""task_executor _sanitize_recent_context 总和上限。
+- 用途：累计 token 超过此值停止收集后续消息（partial last item dropped）。
+- 上游：cap 后的 4 条 messages 序列化。"""
+
+AGENT_PLUGIN_DESC_BM25_THRESHOLD = 3000
+"""plugins_desc 触发 stage1 BM25 + LLM coarse-screen 并行的 token 阈值。
+- 用途：≤ 此值直接 stage2；> 此值跑两阶段筛选。
+- 上游：所有可用 plugin 的 description 拼合。"""
+
+AGENT_PLUGIN_SHORTDESC_MAX_TOKENS = 150
+"""插件短描述（生成阶段）的 max_completion_tokens。
+- 用途：_ensure_short_descriptions LLM 生成 short_description 输出的上限。
+- 上游：LLM 输出（不是输入）。"""
+
+AGENT_PLUGIN_COARSE_MAX_TOKENS = 300
+"""插件粗筛 stage1 LLM 的 max_completion_tokens。
+- 用途：返回选中的 plugin id 列表。
+- 上游：LLM 输出。"""
+
+AGENT_UNIFIED_ASSESS_MAX_TOKENS = 600
+"""Unified channel assessment 的 max_completion_tokens。
+- 用途：判断走哪条执行通道（QwenPaw / OpenFang / BrowserUse / ComputerUse）。
+- 上游：LLM 输出。"""
+
+AGENT_PLUGIN_FULL_MAX_TOKENS = 500
+"""插件完整评估 stage2 LLM 的 max_completion_tokens。
+- 用途：返回 plugin_id + plugin_args + reason。
+- 上游：LLM 输出。"""
+
+PLUGIN_INPUT_DESC_MAX_TOKENS = 1000
+"""_ensure_short_descriptions 输入的 plugin manifest description 上限。
+- 用途：生成 short_description 时把原始 description 截断后再送入 prompt
+  （防止恶意/超大 plugin 喂超长 manifest）。
+- 上游：plugin 注册时的 manifest description 字段。"""
+
+# ---- Agent: ComputerUse / OpenClaw ----
+COMPUTER_USE_MAX_TOKENS = 6000
+"""ComputerUse 主调用的 max_completion_tokens。
+- 用途：VLM 生成 thought + action + code 的输出上限。
+- 上游：LLM 输出。"""
+
+LLM_PING_MAX_TOKENS = 5
+"""LLM 健康检查的 max_completion_tokens。
+- 用途：连通性 ping 仅返回 "ok" 即可。
+- 上游：LLM 输出。"""
+
+OPENCLAW_MAGIC_INTENT_MAX_TOKENS = 80
+"""OpenClaw magic intent 分类的 max_completion_tokens。
+- 用途：判断用户输入是 /clear /new /stop /daemon-approve 中的哪个。
+- 上游：LLM 输出固定 JSON ~15 token，80 留 5x 安全垫。"""
+
+# ---- Main: session / avatar / omni ----
+SESSION_ARCHIVE_TRIGGER_TOKENS = 5000
+"""会话历史归档触发的累计 token 总量。
+- 用途：core.py 主循环每 turn-end 后检查；超过则置
+  is_preparing_new_session=True，触发记忆压缩 + 新会话准备。
+- 上游：当前会话的 conversation_history。
+- 限制：仅对 OmniOfflineClient 路径生效（realtime 不维护历史，走轮次触发）。
+- 设计依据：用户一轮平均 ~150 token + AI 一轮平均 ~400 token =
+  ~550/轮；5000/550 ≈ 9 轮触发归档（与 SESSION_TURN_THRESHOLD 对齐）。"""
+
+SESSION_TURN_THRESHOLD = 10
+"""触发会话归档的用户轮次阈值。
+- 用途：core.py:_session_turn_count >= 此值触发新会话准备（与
+  SESSION_ARCHIVE_TRIGGER_TOKENS 是 OR 关系，任一满足即触发）。
+- 计数语义：仅用户输入计数（AI 回复不算），见 core.py:980。
+- 设计依据：~10 轮约对应 5500 token 总量，跟 token 触发对齐。"""
+
+AVATAR_INTERACTION_DEDUPE_MAX_ITEMS = 32
+"""_recent_avatar_interaction_ids deque maxlen。
+- 用途：去重已处理的 avatar 交互 ID。
+- 上游：UI/avatar 端的交互事件序列。"""
+
+AVATAR_INTERACTION_DEDUPE_WINDOW_MS = 8000
+"""avatar 交互去重的时间窗口。
+- 用途：cross_server _should_persist_avatar_interaction_memory 在此窗口
+  内同 key 的交互不重复持久化。
+- 上游：UI 端的交互时间戳。"""
+
+AVATAR_INTERACTION_CONTEXT_MAX_TOKENS = 80
+"""avatar 交互文本上下文的 token 上限。
+- 用途：_sanitize_avatar_interaction_text_context 截断后写进 LLM
+  prompt 作为 avatar 触发的现场上下文。
+- 上游：avatar 端透传的现场文本片段。"""
+
+PENDING_USER_IMAGES_MAX = 3
+"""cross_server pending_user_images 保留的最近图片数。
+- 用途：del pending_user_images[:-N] 滑动窗口。
+- 上游：用户上传的图片队列。"""
+
+OMNI_RECENT_RESPONSES_MAX = 3
+"""omni_offline / omni_realtime 最近 AI 回复轮数。
+- 用途：_recent_responses 列表 pop(0) 维护的滑动窗口；用于重复检测
+  (_check_repetition)。
+- 上游：当前会话内的 AI 历史回复。"""
+
+OMNI_WS_FRAME_LIMIT_BYTES = 250_000
+"""omni_realtime WebSocket 帧大小安全阈值。
+- 用途：发送前检查 payload size，超过则拒绝（低于 256KB 服务器上限）。
+- 上游：序列化后的 WS 帧字节数（不是 token）。"""
+
+# ---- Main: proactive search & emotion ----
+PROACTIVE_PHASE1_FETCH_PER_SOURCE = 10
+"""Phase 1 每个信息源固定抓取条数。
+- 用途：fetch_news_content / fetch_video_content 等的 limit 参数统一值。
+- 上游：外部 web/news/video 抓取结果。"""
+
+PROACTIVE_PHASE1_TOTAL_TOPICS = 20
+"""Phase 1 输入给筛选 LLM 的候选话题总数。
+- 用途：从所有 source 合并后去重，截到此数后送 LLM 筛选。
+- 上游：cap 后的 fetch 结果汇总。"""
+
+PROACTIVE_EXTERNAL_PER_ITEM_MAX_TOKENS = 200
+"""Phase 2 外部内容（news/video/social/meme 等）单条 token 上限。
+- 用途：build_phase2_external_section 拼 system prompt 前对每条 web
+  content 做截断。
+- 上游：外部 API 返回的 title + source + url + 摘要。
+- 设计依据：单条 200 token 已足够 LLM 知道"这是什么"，详细信息靠
+  Phase 2 LLM 自行总结。"""
+
+PROACTIVE_EXTERNAL_TOTAL_MAX_TOKENS = 2000
+"""Phase 2 外部内容拼合后的总 token 上限。
+- 用途：所有 selected web items 序列化后，再做一次总和截断。
+- 上游：cap 后的 external_section 文本。
+- 设计依据：留出主对话流的 5k 总预算给 character_prompt + memory + 历史。"""
+
+PROACTIVE_PHASE2_OUTPUT_MAX_TOKENS = 300
+"""Phase 2 流式输出的 abort fence。
+- 用途：流式生成超过此值则 abort（防止 LLM 跑飞写小作文）。
+- 上游：LLM 输出（不是输入）。"""
+
+PROACTIVE_PHASE2_GENERATE_MAX_TOKENS = int(PROACTIVE_PHASE2_OUTPUT_MAX_TOKENS * 1.5)
+"""Phase 2 主流式生成的 SDK 端 max_completion_tokens。
+- 用途：_make_llm 默认值，由 Phase 2 stream 主调用使用。
+- 设计依据：应用层在 [main_routers/system_router.py] 流式中段
+  `count_tokens(full_text + chunk) > PROACTIVE_PHASE2_OUTPUT_MAX_TOKENS`
+  硬 abort，所以 SDK 端再大也用不上。设成 abort fence × 1.5 留 50%
+  bandwidth 给 token 计数误差和 prompt-cache flush 边界。"""
+
+PROACTIVE_PHASE1_UNIFIED_MAX_TOKENS = 1024
+"""Phase 1 unified 筛选 LLM 的 max_completion_tokens。
+- 用途：_llm_call_with_retry 默认值，由 Phase 1 unified prompt 使用
+  （web 筛选 + music 关键词 + meme 关键词单次合并调用）。
+- 上游：LLM 输出 JSON（话题 ID 列表 + 简短理由）。"""
+
+PROACTIVE_CHAT_HISTORY_MAX = 10
+"""_proactive_chat_history deque maxlen。
+- 用途：每个 lanlan 维护的最近主动搭话记录，用于 1h 内去重。
+- 上游：proactive 触发的搭话事件。"""
+
+PROACTIVE_TOPIC_HISTORY_MAX = 100
+"""_proactive_topic_history deque maxlen。
+- 用途：每个 lanlan 维护的最近话题去重队列。
+- 上游：proactive 选中的话题 key。"""
+
+EMOTION_ANALYSIS_MAX_TOKENS = 40
+"""情感分析 LLM 的 max_completion_tokens。
+- 用途：返回情感标签 + score 等短输出。
+- 上游：LLM 输出（注意：Gemini 可能返回 markdown 包裹，留 40 token 余量）。"""
+
+# ---- Plugin platform ----
+PLUGIN_USER_CONTEXT_MAX_ITEMS = 200
+"""每用户上下文 deque maxlen（plugin core state）。
+- 用途：plugin 跨调用维护的 per-user 上下文条数上限。
+- 上游：用户与 plugin 的交互事件序列。"""
+
+# ---- Utils: translation / vision / connectivity test / MCP ----
+TRANSLATION_OUTPUT_MAX_TOKENS = 1000
+"""翻译 LLM 的 max_completion_tokens。
+- 用途：单 chunk 翻译输出上限。
+- 上游：LLM 输出。"""
+
+TRANSLATION_CHUNK_MAX_CHARS_SHORT = 5000
+"""翻译短文本路径的分块字符数上限（chars，遗留 char-based）。
+- 用途：单次翻译调用的输入字符数；长文本被切成多块串行翻译。
+- 上游：用户/系统传入的待翻译原文。"""
+
+TRANSLATION_CHUNK_MAX_CHARS_LONG = 15000
+"""翻译长文本路径的分块字符数上限（chars，遗留 char-based）。
+- 用途：长文本翻译路径下的更大 chunk size。
+- 上游：用户/系统传入的待翻译原文。"""
+
+VISION_ANALYSIS_MAX_TOKENS = 500
+"""截图 / 图像分析 LLM 的 max_completion_tokens。
+- 用途：返回画面描述。
+- 上游：LLM 输出。"""
+
+CONNECTIVITY_TEST_MAX_TOKENS = 1
+"""provider 连通性测试请求的 max_completion_tokens。
+- 用途：仅测试 API 可达，最小请求。
+- 上游：LLM 输出。"""
+
+MCP_TOOL_RESULT_MAX_TOKENS = 1000
+"""MCP 工具结果回流给 LLM 前的 token 上限。
+- 用途：mcp_adapter._truncate_llm_text 默认 limit；超过则截断 + "..."。
+- 上游：MCP server 返回的工具执行结果。"""
 
 # §3.9 merge-on-promote 节流（PR-3 使用）
 EVIDENCE_PROMOTE_RETRY_BACKOFF_MINUTES = 30      # 连续失败节流窗口
@@ -855,7 +1245,7 @@ REFLECTION_SYNTHESIS_CONTEXT_ABSORBED_DAYS = 14    # 且在 N 天内
 # Gate 3: LLM tier 选型（候选见 RFC §6.5 Gate 3 表）
 # "summary" = qwen-plus 级；"correction" = qwen-max 级；"emotion" = qwen-flash 级
 EVIDENCE_EXTRACT_FACTS_MODEL_TIER = "summary"       # Stage-1 抽 fact
-EVIDENCE_DETECT_SIGNALS_MODEL_TIER = "correction"   # Stage-2 判 signal 映射
+EVIDENCE_DETECT_SIGNALS_MODEL_TIER = "summary"      # Stage-2 判 signal 映射
 EVIDENCE_NEGATIVE_TARGET_MODEL_TIER = "emotion"     # 关键词二次判定（延迟敏感）
 EVIDENCE_PROMOTION_MERGE_MODEL_TIER = "correction"  # Promote 合并决策
 
@@ -941,6 +1331,7 @@ __all__ = [
     'COMMENTER_SERVER_PORT',
     'TOOL_SERVER_PORT',
     'USER_PLUGIN_SERVER_PORT',
+    'USER_PLUGIN_BASE',
     'AGENT_MQ_PORT',
     'MAIN_AGENT_EVENT_PORT',
     'INSTANCE_ID',
@@ -958,17 +1349,9 @@ __all__ = [
     'DEFAULT_CORE_URL',
     'DEFAULT_CORE_MODEL',
     'DEFAULT_OPENROUTER_URL',
-    # 直接被导入使用的5个模型配置（导出 DEFAULT_ 和无前缀版本）
-    'DEFAULT_ROUTER_MODEL',
-    'ROUTER_MODEL',
-    'DEFAULT_SETTING_PROPOSER_MODEL',
-    'SETTING_PROPOSER_MODEL',
-    'DEFAULT_SETTING_VERIFIER_MODEL',
-    'SETTING_VERIFIER_MODEL',
-    'DEFAULT_SEMANTIC_MODEL',
-    'SEMANTIC_MODEL',
-    'DEFAULT_RERANKER_MODEL',
-    'RERANKER_MODEL',
+    # ROUTER_MODEL / SEMANTIC_MODEL / RERANKER_MODEL / SETTING_PROPOSER_MODEL /
+    # SETTING_VERIFIER_MODEL 于 2026-04 全部退环境（无 Python 调用方），见
+    # memory/settings.py 顶部说明 + 上方常量块的注释。新增需求走 tier 化路径。
     # 其他模型配置（仅导出 DEFAULT_ 版本）
     'DEFAULT_CONVERSATION_MODEL',
     'DEFAULT_SUMMARY_MODEL',
@@ -1001,6 +1384,8 @@ __all__ = [
     # Memory evidence mechanism (RFC: docs/design/memory-evidence-rfc.md)
     'EVIDENCE_CONFIRMED_THRESHOLD',
     'EVIDENCE_PROMOTED_THRESHOLD',
+    'WEAK_MEMORY_AUTO_CONFIRM_DAYS',
+    'WEAK_MEMORY_AUTO_PROMOTE_DAYS',
     'EVIDENCE_ARCHIVE_THRESHOLD',
     'EVIDENCE_ARCHIVE_DAYS',
     'ARCHIVE_FILE_MAX_ENTRIES',
@@ -1021,6 +1406,65 @@ __all__ = [
     'PERSONA_RENDER_TOKEN_BUDGET',
     'REFLECTION_RENDER_TOKEN_BUDGET',
     'PERSONA_RENDER_ENCODING',
+    # §3.7 LLM Context & Output Budget
+    'RECENT_HISTORY_MAX_ITEMS',
+    'RECENT_COMPRESS_THRESHOLD_ITEMS',
+    'RECENT_SUMMARY_MAX_TOKENS',
+    'RECENT_PER_MESSAGE_MAX_TOKENS',
+    'REFLECTION_TEXT_MAX_TOKENS',
+    'REFLECTION_SURFACE_TOP_K',
+    'REFLECTION_SYNTHESIS_FACTS_MAX',
+    'PERSONA_MERGE_POOL_MAX_TOKENS',
+    'PERSONA_CORRECTION_BATCH_LIMIT',
+    'RECALL_COARSE_OVERSAMPLE',
+    'RECALL_PER_CANDIDATE_MAX_TOKENS',
+    'RECALL_CANDIDATES_TOTAL_MAX_TOKENS',
+    'EVIDENCE_PER_OBSERVATION_MAX_TOKENS',
+    'EVIDENCE_OBSERVATIONS_TOTAL_MAX_TOKENS',
+    'EVIDENCE_DETECT_SIGNALS_MAX_NEW_FACTS',
+    'NEGATIVE_KEYWORD_CHECK_CONTEXT_ITEMS',
+    'AGENT_HISTORY_TURNS',
+    'TASK_DETAIL_MAX_TOKENS',
+    'TASK_SUMMARY_MAX_TOKENS',
+    'TASK_LARGE_DETAIL_MAX_TOKENS',
+    'TASK_ERROR_MAX_TOKENS',
+    'AGENT_TASK_TRACKER_MAX_RECORDS',
+    'AGENT_RECENT_CTX_PER_ITEM_TOKENS',
+    'AGENT_RECENT_CTX_TOTAL_TOKENS',
+    'AGENT_PLUGIN_DESC_BM25_THRESHOLD',
+    'AGENT_PLUGIN_SHORTDESC_MAX_TOKENS',
+    'AGENT_PLUGIN_COARSE_MAX_TOKENS',
+    'AGENT_UNIFIED_ASSESS_MAX_TOKENS',
+    'AGENT_PLUGIN_FULL_MAX_TOKENS',
+    'PLUGIN_INPUT_DESC_MAX_TOKENS',
+    'COMPUTER_USE_MAX_TOKENS',
+    'LLM_PING_MAX_TOKENS',
+    'OPENCLAW_MAGIC_INTENT_MAX_TOKENS',
+    'SESSION_ARCHIVE_TRIGGER_TOKENS',
+    'SESSION_TURN_THRESHOLD',
+    'AVATAR_INTERACTION_DEDUPE_MAX_ITEMS',
+    'AVATAR_INTERACTION_DEDUPE_WINDOW_MS',
+    'AVATAR_INTERACTION_CONTEXT_MAX_TOKENS',
+    'PENDING_USER_IMAGES_MAX',
+    'OMNI_RECENT_RESPONSES_MAX',
+    'OMNI_WS_FRAME_LIMIT_BYTES',
+    'PROACTIVE_PHASE1_FETCH_PER_SOURCE',
+    'PROACTIVE_PHASE1_TOTAL_TOPICS',
+    'PROACTIVE_EXTERNAL_PER_ITEM_MAX_TOKENS',
+    'PROACTIVE_EXTERNAL_TOTAL_MAX_TOKENS',
+    'PROACTIVE_PHASE2_OUTPUT_MAX_TOKENS',
+    'PROACTIVE_PHASE2_GENERATE_MAX_TOKENS',
+    'PROACTIVE_PHASE1_UNIFIED_MAX_TOKENS',
+    'PROACTIVE_CHAT_HISTORY_MAX',
+    'PROACTIVE_TOPIC_HISTORY_MAX',
+    'EMOTION_ANALYSIS_MAX_TOKENS',
+    'PLUGIN_USER_CONTEXT_MAX_ITEMS',
+    'TRANSLATION_OUTPUT_MAX_TOKENS',
+    'TRANSLATION_CHUNK_MAX_CHARS_SHORT',
+    'TRANSLATION_CHUNK_MAX_CHARS_LONG',
+    'VISION_ANALYSIS_MAX_TOKENS',
+    'CONNECTIVITY_TEST_MAX_TOKENS',
+    'MCP_TOOL_RESULT_MAX_TOKENS',
     'EVIDENCE_PROMOTE_RETRY_BACKOFF_MINUTES',
     'EVIDENCE_PROMOTE_MAX_RETRIES',
     'EVIDENCE_REIN_HALF_LIFE_DAYS',

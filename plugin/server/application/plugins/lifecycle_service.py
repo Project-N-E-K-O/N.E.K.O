@@ -30,6 +30,10 @@ from plugin.server.domain import IO_RUNTIME_ERRORS, RUNTIME_ERRORS
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.application.plugins.registry_service import PluginRegistryService
 from plugin.server.infrastructure.config_resolver import resolve_plugin_config_from_path
+from plugin.server.infrastructure.runtime_overrides import (
+    clear_runtime_override,
+    set_runtime_override,
+)
 from plugin.server.messaging.lifecycle_events import emit_lifecycle_event
 from plugin.settings import PLUGIN_CONFIG_ROOTS, PLUGIN_SHUTDOWN_TIMEOUT
 from plugin.utils import parse_bool_config
@@ -934,6 +938,7 @@ class PluginLifecycleService:
             await asyncio.to_thread(_pop_plugin_host_sync, plugin_id)
             await asyncio.to_thread(_remove_event_handlers_sync, plugin_id)
             await asyncio.to_thread(_remove_plugin_metadata_sync, plugin_id)
+            await asyncio.to_thread(clear_runtime_override, plugin_id)
             await plugin_registry_service.refresh_registry()
         except ServerDomainError:
             raise
@@ -1026,6 +1031,7 @@ class PluginLifecycleService:
             result["message"] = "Host not running; extension metadata updated"
 
         await asyncio.to_thread(_set_plugin_runtime_enabled_sync, ext_id, False)
+        await asyncio.to_thread(set_runtime_override, ext_id, False)
         _emit_lifecycle_event(
             event_type="extension_disabled",
             plugin_id=ext_id,
@@ -1116,6 +1122,7 @@ class PluginLifecycleService:
             result["message"] = "Host not running; extension will be injected when host starts"
 
         await asyncio.to_thread(_set_plugin_runtime_enabled_sync, ext_id, True)
+        await asyncio.to_thread(set_runtime_override, ext_id, True)
         _emit_lifecycle_event(
             event_type="extension_enabled",
             plugin_id=ext_id,

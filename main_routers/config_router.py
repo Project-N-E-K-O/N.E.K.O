@@ -885,11 +885,14 @@ async def list_gptsovits_voices(request: Request):
                     result = await resp.json(content_type=None)
                 except Exception:
                     text = await resp.text()
-                    logger.error(f"GPT-SoVITS v3 API 返回非 JSON 响应 (HTTP {resp.status}): {text[:200]}")
+                    # 上游响应可能含 TTS 原文 echo，不写 logger
+                    logger.error(f"GPT-SoVITS v3 API 返回非 JSON 响应 (HTTP {resp.status}, body_len={len(text)})")
+                    print(f"[GSV] API 非 JSON 响应 raw: {text[:200]}")
                     return {"success": False, "error": "Upstream TTS service error", "code": "TTS_CONNECTION_FAILED"}
                 if resp.status == 200:
                     return {"success": True, "voices": result}
-                logger.error(f"GPT-SoVITS v3 API 返回错误状态 HTTP {resp.status}: {str(result)[:200]}")
+                logger.error(f"GPT-SoVITS v3 API 返回错误状态 HTTP {resp.status}")
+                print(f"[GSV] API 错误状态 raw: {str(result)[:200]}")
                 return {"success": False, "error": "Upstream TTS service error", "code": "TTS_CONNECTION_FAILED"}
     except aiohttp.ClientError as e:
         logger.error(f"GPT-SoVITS v3 API 请求失败: {e}")
@@ -984,7 +987,8 @@ async def test_gptsovits_connectivity(request: Request):
                     audio_chunks.append(first_response)
                     logger.info(f"[GSV Test] First response: binary {len(first_response)} bytes")
                 else:
-                    logger.info(f"[GSV Test] First response: {first_response[:200]}")
+                    logger.info(f"[GSV Test] First response (text, len={len(first_response)})")
+                    print(f"[GSV Test] First response: {first_response[:200]}")
                     try:
                         first_data = _json.loads(first_response)
                         if first_data.get("type") == "sentence":
@@ -1000,7 +1004,8 @@ async def test_gptsovits_connectivity(request: Request):
                             audio_chunks.append(msg)
                             logger.debug(f"[GSV Test] Audio chunk: {len(msg)} bytes")
                         else:
-                            logger.info(f"[GSV Test] JSON msg: {msg[:200]}")
+                            logger.info(f"[GSV Test] JSON msg (len={len(msg)})")
+                            print(f"[GSV Test] JSON msg: {msg[:200]}")
                             msg_data = _json.loads(msg)
                             if msg_data.get("type") == "sentence":
                                 got_sentence = True
@@ -1172,8 +1177,9 @@ async def _test_openai_compatible(url: str, api_key: str, model: str = "gpt-3.5-
     """Test an OpenAI-compatible REST API endpoint.
 
     Uses the project's ChatOpenAI client (same as actual conversations) to send
-    a minimal chat completion request (max_tokens=1). This ensures the test
-    exercises the exact same auth and request path as real usage.
+    a minimal chat completion request (bounded by CONNECTIVITY_TEST_MAX_TOKENS).
+    This ensures the test exercises the exact same auth and request path as
+    real usage.
 
     Args:
         url: Base URL for the API endpoint.
@@ -1187,13 +1193,14 @@ async def _test_openai_compatible(url: str, api_key: str, model: str = "gpt-3.5-
     those use different protocols and will need dedicated test paths.
     """
     from utils.llm_client import ChatOpenAI as _ChatOpenAI
+    from config import CONNECTIVITY_TEST_MAX_TOKENS
 
     try:
         client = _ChatOpenAI(
             model=model,
             base_url=url,
             api_key=api_key or "sk-placeholder",
-            max_tokens=1,
+            max_completion_tokens=CONNECTIVITY_TEST_MAX_TOKENS,
             timeout=10.0,
             max_retries=0,
         )
@@ -1368,7 +1375,7 @@ async def test_connectivity(req: ConnectivityTestRequest) -> dict:
        前端传完整参数，后端直接使用。
 
     根据 provider_type 选择测试策略：
-    - openai_compatible（默认）：通过 ChatOpenAI 发送最小 chat completion 请求（max_tokens=1）
+    - openai_compatible（默认）：通过 ChatOpenAI 发送最小 chat completion 请求（max_completion_tokens 由 CONNECTIVITY_TEST_MAX_TOKENS 控制）
     - websocket：WebSocket 握手，成功后立即关闭
 
     所有请求 10 秒超时。端点为 async，天然支持并发请求不阻塞。
