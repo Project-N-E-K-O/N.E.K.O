@@ -24,8 +24,10 @@ const DEFAULT_PASSIVE_RESISTANCE_INTERVAL_MS = 140
 const DEFAULT_RESISTANCE_CURSOR_REVEAL_MS = 3000
 const PLUGIN_DASHBOARD_MOVE_TO_MAIN_MS = 780
 const PLUGIN_DASHBOARD_SCROLL_PHASE_MS = 2000
+// Negative values mean inward/inset padding for the plugin-main spotlight.
 const PLUGIN_MAIN_SPOTLIGHT_INSET = -25
 const PLUGIN_DASHBOARD_DEFAULT_TOTAL_MS = 9000
+const MIN_SPOTLIGHT_RADIUS = 4
 const RESISTANCE_LINES = [
   '喂！不要拽我啦，还没轮到你的回合呢！',
   '等一下啦！还没结束呢，不要随便打断我啦！',
@@ -1158,7 +1160,8 @@ class PluginDashboardGuideRuntime {
       const computed = window.getComputedStyle(htmlElement)
       const parsedRadius = Number.parseFloat(computed.borderTopLeftRadius || computed.borderRadius || '')
       if (Number.isFinite(parsedRadius) && parsedRadius > 0) {
-        radius = Math.max(0, parsedRadius + padding)
+        const effectivePadding = Math.abs(padding)
+        radius = Math.max(MIN_SPOTLIGHT_RADIUS, parsedRadius + effectivePadding)
       }
     } catch (_) {}
 
@@ -2160,7 +2163,6 @@ class PluginDashboardGuideRuntime {
       return
     }
 
-    // Negative padding is an inverse inset: getSpotlightRect shrinks the main spotlight by 25px.
     mainContainer.setAttribute('data-yui-guide-spotlight-padding', String(PLUGIN_MAIN_SPOTLIGHT_INSET))
 
     if (!isCurrent()) {

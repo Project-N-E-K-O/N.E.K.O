@@ -183,7 +183,6 @@
     const INTRO_GREETING_REPLY_TEXT_KEY = 'tutorial.yuiGuide.lines.introGreetingReply';
     const TAKEOVER_PLUGIN_DASHBOARD_TEXT = '有了它们，我不光能看 B 站弹幕，还能帮你关灯开空调…… 本喵就是无所不能的超级猫猫神！哼哼～';
     const TAKEOVER_PLUGIN_DASHBOARD_TEXT_KEY = 'tutorial.yuiGuide.lines.takeoverPluginPreviewDashboard';
-    const TAKEOVER_PLUGIN_DASHBOARD_DURATION_MS = 9000;
     const TAKEOVER_SETTINGS_DETAIL_TEXT = '你看，这里可以穿我的新衣服、给我换一个好听的声音……换一个猫娘或是修改记忆？等一下！你在干嘛？该不会是想把我换掉吧？啊啊啊不行！快关掉快关掉！';
     const TAKEOVER_SETTINGS_DETAIL_TEXT_KEY = 'tutorial.yuiGuide.lines.takeoverSettingsPeekDetail';
     const INTRO_SKIP_ACTION_ID = 'yui-guide-intro-skip-chat';
@@ -358,6 +357,13 @@
             en: 5738,
             ko: 6640,
             ru: 5897
+        }),
+        takeover_plugin_preview_dashboard: Object.freeze({
+            zh: 9218,
+            ja: 16538,
+            en: 10857,
+            ko: 10857,
+            ru: 9497
         }),
         takeover_settings_peek_intro: Object.freeze({
             zh: 11877,
@@ -4365,6 +4371,8 @@
                 const dashboardAudioUrl = this.voiceQueue && typeof this.voiceQueue.resolveGuideAudioSrc === 'function'
                     ? this.voiceQueue.resolveGuideAudioSrc(dashboardVoiceKey)
                     : '';
+                const dashboardNarrationDurationMs = this.getGuideVoiceDurationMs(dashboardVoiceKey, resolveGuideLocale())
+                    || estimateSpeechDurationMs(dashboardText);
                 const dashboardNarrationStartedAtMs = Date.now();
                 const dashboardNarrationPromise = this.speakLineAndWait(dashboardText, {
                     voiceKey: dashboardVoiceKey
@@ -4373,7 +4381,7 @@
                 const pluginDashboardPerformancePromise = this.waitForPluginDashboardPerformance(dashboardWindow, {
                     line: dashboardText,
                     closeOnDone: true,
-                    narrationDurationMs: TAKEOVER_PLUGIN_DASHBOARD_DURATION_MS,
+                    narrationDurationMs: dashboardNarrationDurationMs,
                     voiceKey: dashboardVoiceKey,
                     audioUrl: dashboardAudioUrl,
                     narrationStartedAtMs: dashboardNarrationStartedAtMs

@@ -532,11 +532,12 @@
                 if (!entry) {
                     return;
                 }
+                const maskRect = rect && !rect.isCircular ? rect : null;
                 const sourceElement = this.extraSpotlightElements[index] || null;
                 const variant = sourceElement && typeof sourceElement.getAttribute === 'function'
                     ? sourceElement.getAttribute('data-yui-guide-spotlight-variant')
                     : '';
-                this.updateBackdropCutout(entry.cutout, rect || null);
+                this.updateBackdropCutout(entry.cutout, maskRect);
                 this.updateSpotlightFrame(entry.frame, rect || null, {
                     allowMask: true,
                     variant: variant

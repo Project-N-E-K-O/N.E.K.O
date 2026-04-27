@@ -11,6 +11,7 @@ Handles agent-related endpoints including:
 
 import time
 from pathlib import Path
+from urllib.parse import urlencode
 
 from utils.logger_config import get_module_logger
 from fastapi import APIRouter, Body, HTTPException, Request
@@ -302,8 +303,11 @@ async def proxy_mcp_availability():
 
 
 @router.get('/user_plugin/dashboard')
-async def redirect_plugin_dashboard():
-    return RedirectResponse(f"{USER_PLUGIN_BASE}/ui")
+async def redirect_plugin_dashboard(request: Request):
+    target_url = f"{USER_PLUGIN_BASE}/ui"
+    if "v" in request.query_params:
+        target_url = f"{target_url}?{urlencode({'v': request.query_params.get('v', '')})}"
+    return RedirectResponse(target_url)
 
 
 @router.get('/openclaw/guide', response_class=HTMLResponse)

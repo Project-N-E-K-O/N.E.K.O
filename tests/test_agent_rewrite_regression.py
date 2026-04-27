@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import pytest
+from starlette.requests import Request
 
 from utils.config_manager import ConfigManager, get_config_manager
 
@@ -99,9 +100,33 @@ async def test_main_agent_router_plugin_dashboard_redirect_uses_base_ui_url_with
     from config import USER_PLUGIN_SERVER_PORT
     from main_routers.agent_router import redirect_plugin_dashboard
 
-    response = await redirect_plugin_dashboard()
+    request = Request({
+        "type": "http",
+        "method": "GET",
+        "path": "/api/agent/user_plugin/dashboard",
+        "headers": [],
+        "query_string": b"",
+    })
+    response = await redirect_plugin_dashboard(request)
 
     assert response.headers["location"] == f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}/ui"
+
+
+@pytest.mark.asyncio
+async def test_main_agent_router_plugin_dashboard_redirect_keeps_only_v_query():
+    from config import USER_PLUGIN_SERVER_PORT
+    from main_routers.agent_router import redirect_plugin_dashboard
+
+    request = Request({
+        "type": "http",
+        "method": "GET",
+        "path": "/api/agent/user_plugin/dashboard",
+        "headers": [],
+        "query_string": b"v=abc123&yui_guide=1&handoff=token",
+    })
+    response = await redirect_plugin_dashboard(request)
+
+    assert response.headers["location"] == f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}/ui?v=abc123"
 
 
 def test_agent_server_expected_event_driven_endpoints_exist():

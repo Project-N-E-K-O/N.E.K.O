@@ -69,6 +69,7 @@ body.yui-guide-home-driver-hidden .driver-highlight {
   position: absolute;
   inset: 3px;
   border-radius: inherit;
+  pointer-events: none;
   background: linear-gradient(180deg, rgba(84, 133, 255, 0.09), rgba(89, 211, 255, 0.03));
   box-shadow:
     0 0 0 1px rgba(214, 243, 255, 0.72),
