@@ -1782,6 +1782,164 @@ class ReflectionEngine:
                 )
         return transitions
 
+    async def aauto_promote_time_driven(self, lanlan_name: str) -> int:
+        """Time-driven fallback for "强力记忆 OFF" 模式。
+
+        零 LLM 成本。仿 pre-RFC 行为，纯按 reflection 年龄推进 lifecycle：
+          - pending 满 ``WEAK_MEMORY_AUTO_CONFIRM_DAYS`` 天 (按 created_at 计)
+            → status='confirmed', confirmed_at=now, auto_confirmed=True
+          - confirmed 满 ``WEAK_MEMORY_AUTO_PROMOTE_DAYS`` 天 (按 confirmed_at
+            计) → 直接调 ``persona.aadd_fact`` 走简单合入路径，**不**走 merge
+            LLM。aadd_fact 的内部启发式去重 + 角色卡矛盾检查兜底。
+
+        Returns: pending→confirmed + confirmed→promoted 的总 transition 数。
+
+        与 ``aauto_promote_stale`` 互斥使用——caller 根据强力记忆开关二选一。
+        本方法不读 evidence_score，evidence 字段缺/0 完全无影响。
+        """
+        from config import (
+            WEAK_MEMORY_AUTO_CONFIRM_DAYS,
+            WEAK_MEMORY_AUTO_PROMOTE_DAYS,
+        )
+
+        from memory.persona import PersonaManager
+        async with self._get_alock(lanlan_name):
+            reflections = await self._aload_reflections_full(lanlan_name)
+            now = datetime.now()
+            transitions = 0
+            confirmed_ids: list[str] = []
+            promoted_ids: list[str] = []
+            denied_ids: list[str] = []
+
+            # Pass 1: pending → confirmed by created_at age
+            for r in reflections:
+                if r.get('status') != 'pending':
+                    continue
+                created_iso = r.get('created_at')
+                if not created_iso:
+                    continue
+                try:
+                    created = datetime.fromisoformat(created_iso)
+                except (ValueError, TypeError):
+                    continue
+                age_days = (now - created).total_seconds() / 86400
+                if age_days < WEAK_MEMORY_AUTO_CONFIRM_DAYS:
+                    continue
+                r['status'] = 'confirmed'
+                r['confirmed_at'] = now.isoformat()
+                r['auto_confirmed'] = True
+                rid = r.get('id')
+                if rid:
+                    confirmed_ids.append(rid)
+                transitions += 1
+                logger.info(
+                    f"[Reflection] {lanlan_name}: pending→confirmed "
+                    f"(time-driven, {int(age_days)}d): {r.get('text', '')[:50]}..."
+                )
+
+            # Pass 2: confirmed → promoted/denied by confirmed_at age
+            # 注：刚被 Pass 1 翻成 confirmed 的 confirmed_at = now，age = 0 不会
+            # 命中 14 天阈值——所以同一条 reflection 不会一轮内 pending→promoted。
+            for r in reflections:
+                if r.get('status') != 'confirmed':
+                    continue
+                confirmed_iso = r.get('confirmed_at')
+                if not confirmed_iso:
+                    continue
+                try:
+                    confirmed_at = datetime.fromisoformat(confirmed_iso)
+                except (ValueError, TypeError):
+                    continue
+                age_days = (now - confirmed_at).total_seconds() / 86400
+                if age_days < WEAK_MEMORY_AUTO_PROMOTE_DAYS:
+                    continue
+
+                # 直接走 persona.aadd_fact——pre-RFC 简单合入。三种返回：
+                #   FACT_ADDED → 把 reflection status 翻到 promoted
+                #   FACT_REJECTED_CARD → 翻到 denied (角色卡矛盾)
+                #   FACT_QUEUED_CORRECTION → 在强力记忆关时 corrections queue
+                #     不会被消化（resolve_corrections gate off），所以这里
+                #     reflection 留在 confirmed，下轮再试。属于已知的轻度
+                #     "记忆失活" case；rare（启发式 ratio ≥0.4 才命中）。
+                rid = r.get('id')
+                try:
+                    code = await self._persona_manager.aadd_fact(
+                        lanlan_name, r.get('text', ''),
+                        entity=r.get('entity', 'relationship'),
+                        source='reflection_time_driven',
+                        source_id=rid,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"[Promote] {lanlan_name}/{rid}: time-driven aadd_fact 失败: {e}"
+                    )
+                    continue
+
+                if code == PersonaManager.FACT_ADDED:
+                    r['status'] = 'promoted'
+                    r['promoted_at'] = now.isoformat()
+                    if rid:
+                        promoted_ids.append(rid)
+                    transitions += 1
+                    logger.info(
+                        f"[Reflection] {lanlan_name}: confirmed→promoted "
+                        f"(time-driven, {int(age_days)}d, no LLM): "
+                        f"{r.get('text', '')[:50]}..."
+                    )
+                elif code == PersonaManager.FACT_REJECTED_CARD:
+                    r['status'] = 'denied'
+                    r['denied_reason'] = 'rejected_by_persona_card_time_driven'
+                    if rid:
+                        denied_ids.append(rid)
+                    transitions += 1
+                    logger.info(
+                        f"[Reflection] {lanlan_name}: confirmed→denied "
+                        f"(time-driven, 角色卡矛盾): {rid}"
+                    )
+                # FACT_QUEUED_CORRECTION → 留在 confirmed，下轮再试
+
+            # 单次落盘：按完整 reflections 列表（含刚被翻成 promoted/denied 的
+            # 终态条目）保存。**不过滤 REFLECTION_TERMINAL_STATUSES**——上一
+            # 版 bug 是过滤后终态条目变成 inactive，被
+            # _prepare_save_reflections 当成 stale 不写主文件，导致 promoted/
+            # denied 翻转丢失。asave_reflections 内部 _prepare_save_reflections
+            # 会按 _REFLECTION_ARCHIVE_DAYS 自然把陈旧 terminal 移到 archive
+            # 分片，不需要这里再做过滤。
+            # 任何 transition（confirmed/promoted/denied）都触发 save——只 gate
+            # 在 promoted_ids 上会丢掉纯 FACT_REJECTED_CARD 批次的 denied 翻转。
+            if transitions:
+                await self.asave_reflections(lanlan_name, reflections)
+                handled_ids = confirmed_ids + promoted_ids + denied_ids
+                if handled_ids:
+                    await self._abatch_mark_surfaced_handled(
+                        lanlan_name, handled_ids, 'confirmed',
+                    )
+
+        return transitions
+
+    async def areset_confirmed_at_to_now(self, lanlan_name: str) -> int:
+        """开→关 migration：把所有 confirmed reflection 的 confirmed_at 重置
+        到 now，让 time-driven fallback 走完整的 14 天计时。
+
+        避免"用户开了一阵又关了，发现关了之后旧 confirmed 立刻 14 天到点
+        批量 promote"的体验断层。返回受影响条目数。
+        """
+        async with self._get_alock(lanlan_name):
+            reflections = await self._aload_reflections_full(lanlan_name)
+            now_iso = datetime.now().isoformat()
+            count = 0
+            for r in reflections:
+                if r.get('status') == 'confirmed':
+                    r['confirmed_at'] = now_iso
+                    count += 1
+            if count:
+                active = [
+                    r for r in reflections
+                    if r.get('status') not in REFLECTION_TERMINAL_STATUSES
+                ]
+                await self.asave_reflections(lanlan_name, active)
+        return count
+
     # ── Merge-on-promote (RFC §3.9) ───────────────────────────────────
 
     @staticmethod

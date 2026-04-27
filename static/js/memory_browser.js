@@ -409,6 +409,7 @@
     document.addEventListener('DOMContentLoaded', function () {
         loadMemoryFileList();
         loadReviewConfig();
+        loadPowerfulMemoryConfig();
         document.getElementById('save-row').style.display = 'none';
 
         // 监听checkbox变化
@@ -418,6 +419,12 @@
                 toggleReview(this.checked);
             });
         }
+        const strongCheckbox = document.getElementById('strong-memory-toggle-checkbox');
+        if (strongCheckbox) {
+            strongCheckbox.addEventListener('change', function () {
+                togglePowerfulMemory(this.checked);
+            });
+        }
 
         // 监听i18n语言变化
         if (window.i18n) {
@@ -425,6 +432,10 @@
                 const checkbox = document.getElementById('review-toggle-checkbox');
                 if (checkbox) {
                     updateToggleText(checkbox.checked);
+                }
+                const strongCheckbox = document.getElementById('strong-memory-toggle-checkbox');
+                if (strongCheckbox) {
+                    updatePowerfulMemoryToggleText(strongCheckbox.checked);
                 }
             });
         }
@@ -514,6 +525,62 @@
                 checkbox.checked = !enabled;
             }
             updateToggleText(!enabled);
+        }
+    }
+
+    // ── 强力记忆开关（与 review 开关对偶，仿同样 load/update/toggle 模板） ──
+
+    async function loadPowerfulMemoryConfig() {
+        try {
+            const resp = await fetch('/api/memory/powerful_memory_config');
+            const data = await resp.json();
+            const checkbox = document.getElementById('strong-memory-toggle-checkbox');
+            if (checkbox) {
+                checkbox.checked = data.enabled;
+            }
+            updatePowerfulMemoryToggleText(data.enabled);
+        } catch (e) {
+            console.error('加载强力记忆配置失败:', e);
+        }
+    }
+
+    function updatePowerfulMemoryToggleText(enabled) {
+        const textSpan = document.getElementById('strong-memory-toggle-text');
+        if (!textSpan) return;
+        if (enabled) {
+            textSpan.setAttribute('data-i18n', 'memory.enabled');
+            textSpan.textContent = window.t ? window.t('memory.enabled') : '已开启';
+        } else {
+            textSpan.setAttribute('data-i18n', 'memory.disabled');
+            textSpan.textContent = window.t ? window.t('memory.disabled') : '已关闭';
+        }
+    }
+
+    async function togglePowerfulMemory(enabled) {
+        try {
+            const resp = await fetch('/api/memory/powerful_memory_config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ enabled: enabled })
+            });
+            const data = await resp.json();
+
+            if (data.success) {
+                updatePowerfulMemoryToggleText(enabled);
+            } else {
+                const checkbox = document.getElementById('strong-memory-toggle-checkbox');
+                if (checkbox) {
+                    checkbox.checked = !enabled;
+                }
+                updatePowerfulMemoryToggleText(!enabled);
+            }
+        } catch (e) {
+            console.error('更新强力记忆配置失败:', e);
+            const checkbox = document.getElementById('strong-memory-toggle-checkbox');
+            if (checkbox) {
+                checkbox.checked = !enabled;
+            }
+            updatePowerfulMemoryToggleText(!enabled);
         }
     }
 

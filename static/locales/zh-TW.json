@@ -1485,6 +1485,8 @@
         "enabled": "已開啓",
         "disabled": "已關閉",
         "autoReviewNote": "開啓後係統將自動整理和優化記憶內容，提高對話質量",
+        "strongMemory": "強力記憶",
+        "strongMemoryNote": "開啟時啟用深度記憶固化（口頭反饋、自動反駁偵測、多通道證據累加），關閉後約可節省 40% 模型呼叫",
         "saveFailedStatus": "保存失敗",
         "tutorialReset": "新手引導",
         "tutorialSelectPage": "-- 選擇頁面 --",
