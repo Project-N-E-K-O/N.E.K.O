@@ -318,6 +318,145 @@ def test_memory_browser_storage_preflight_modal_waits_for_restart_confirmation(m
 
 
 @pytest.mark.frontend
+def test_memory_browser_storage_picker_preflights_selected_directory(mock_page: Page, running_server: str, seed_memory_file):
+    """Directory picker selection should flow into preflight without generic failure."""
+    requests = []
+    _install_ready_memory_browser_routes(mock_page, seed_memory_file)
+
+    mock_page.add_init_script(
+        """
+        window.nekoHost = {
+            pickDirectory: async (options) => {
+                window.__storagePickOptions = options;
+                return { cancelled: false, selected_root: '/tmp/picked-storage' };
+            }
+        };
+        """
+    )
+
+    def handle_preflight(route):
+        requests.append(_request_json(route))
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            json={
+                "ok": True,
+                "result": "restart_required",
+                "restart_mode": "migrate_after_shutdown",
+                "selected_root": "/tmp/picked-storage/N.E.K.O",
+                "target_root": "/tmp/picked-storage/N.E.K.O",
+                "estimated_required_bytes": 1024,
+                "target_free_bytes": 4096,
+                "permission_ok": True,
+                "warning_codes": [],
+                "target_has_existing_content": False,
+                "requires_existing_target_confirmation": False,
+                "existing_target_confirmation_message": "",
+                "blocking_error_code": "",
+                "blocking_error_message": "",
+                "selection_source": "custom",
+            },
+        )
+
+    mock_page.route("**/api/storage/location/preflight", handle_preflight)
+
+    mock_page.goto(f"{running_server}/memory_browser")
+    mock_page.wait_for_selector("#memory-file-list button.cat-btn", state="attached", timeout=10000)
+    mock_page.locator("#storage-location-manage-btn").click()
+    mock_page.locator("#storage-location-pick-btn").click()
+
+    expect(mock_page.locator("#storage-target-root-input")).to_have_value("/tmp/picked-storage", timeout=5000)
+    pick_options = mock_page.evaluate("window.__storagePickOptions")
+    assert pick_options["startPath"].endswith("N.E.K.O") is False
+
+    with mock_page.expect_response(lambda r: "/api/storage/location/preflight" in r.url and r.status == 200):
+        mock_page.locator("#storage-location-preflight-btn").click()
+
+    expect(mock_page.locator("#storage-location-preflight-result")).to_contain_text("/tmp/picked-storage/N.E.K.O", timeout=5000)
+    assert requests == [{"selected_root": "/tmp/picked-storage", "selection_source": "custom"}]
+
+
+@pytest.mark.frontend
+def test_memory_browser_open_current_root_uses_host_bridge(mock_page: Page, running_server: str, seed_memory_file):
+    """Opening current storage root should call the desktop host bridge when present."""
+    _install_ready_memory_browser_routes(mock_page, seed_memory_file)
+    mock_page.add_init_script(
+        """
+        window.nekoHost = {
+            openPath: async (payload) => {
+                window.__openedStoragePath = payload.path;
+                return { ok: true };
+            }
+        };
+        """
+    )
+
+    mock_page.goto(f"{running_server}/memory_browser")
+    mock_page.wait_for_selector("#memory-file-list button.cat-btn", state="attached", timeout=10000)
+    mock_page.locator("#storage-location-open-btn").click()
+
+    opened_path = mock_page.wait_for_function("window.__openedStoragePath", timeout=5000).json_value()
+    assert opened_path == str(seed_memory_file.parents[2])
+
+
+@pytest.mark.frontend
+def test_memory_browser_open_current_root_uses_backend_without_host_bridge(mock_page: Page, running_server: str, seed_memory_file):
+    """Plain web usage should ask the backend to open the current storage root."""
+    requested_paths = []
+    _install_ready_memory_browser_routes(mock_page, seed_memory_file)
+
+    def handle_open_current(route):
+        requested_paths.append("/api/storage/location/open-current")
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            json={"ok": True, "current_root": str(seed_memory_file.parents[2])},
+        )
+
+    mock_page.route("**/api/storage/location/open-current", handle_open_current)
+
+    mock_page.goto(f"{running_server}/memory_browser")
+    mock_page.wait_for_selector("#memory-file-list button.cat-btn", state="attached", timeout=10000)
+
+    with mock_page.expect_response(lambda r: "/api/storage/location/open-current" in r.url and r.status == 200):
+        mock_page.locator("#storage-location-open-btn").click()
+
+    assert requested_paths == ["/api/storage/location/open-current"]
+
+
+@pytest.mark.frontend
+def test_memory_browser_open_current_root_falls_back_when_host_bridge_fails(mock_page: Page, running_server: str, seed_memory_file):
+    """Host bridge failures should not block the backend open-current fallback."""
+    requested_paths = []
+    _install_ready_memory_browser_routes(mock_page, seed_memory_file)
+    mock_page.add_init_script(
+        """
+        window.nekoHost = {
+            openPath: async () => ({ ok: false, error: 'native open failed' })
+        };
+        """
+    )
+
+    def handle_open_current(route):
+        requested_paths.append("/api/storage/location/open-current")
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            json={"ok": True, "current_root": str(seed_memory_file.parents[2])},
+        )
+
+    mock_page.route("**/api/storage/location/open-current", handle_open_current)
+
+    mock_page.goto(f"{running_server}/memory_browser")
+    mock_page.wait_for_selector("#memory-file-list button.cat-btn", state="attached", timeout=10000)
+
+    with mock_page.expect_response(lambda r: "/api/storage/location/open-current" in r.url and r.status == 200):
+        mock_page.locator("#storage-location-open-btn").click()
+
+    assert requested_paths == ["/api/storage/location/open-current"]
+
+
+@pytest.mark.frontend
 def test_memory_browser_storage_restart_requires_preflight_and_confirms_existing_target(mock_page: Page, running_server: str, seed_memory_file):
     """Stage 3 calls restart after preflight and carries existing-target confirmation."""
     requests = []

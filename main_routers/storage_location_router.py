@@ -103,6 +103,13 @@ class _DirectoryPickerUnavailable(RuntimeError):
         self.message = str(message or "当前环境暂不支持系统目录选择，请手动输入路径。").strip() or "当前环境暂不支持系统目录选择，请手动输入路径。"
 
 
+class _OpenStorageRootUnavailable(RuntimeError):
+    def __init__(self, error_code: str, message: str):
+        super().__init__(message)
+        self.error_code = str(error_code or "open_storage_root_unavailable").strip() or "open_storage_root_unavailable"
+        self.message = str(message or "当前环境暂不支持直接打开目录。").strip() or "当前环境暂不支持直接打开目录。"
+
+
 def _set_no_cache_headers(response: Response) -> None:
     response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     response.headers["Pragma"] = "no-cache"
@@ -687,6 +694,41 @@ def _pick_storage_location_directory(*, start_path: str) -> str:
         return _pick_directory_via_tkinter(start_path=normalized_start_path)
 
 
+def _open_path_in_file_manager(path: Path | str) -> None:
+    target_path = normalize_runtime_root(path)
+    if not target_path.exists() or not target_path.is_dir():
+        raise _OpenStorageRootUnavailable(
+            "storage_root_unavailable",
+            "当前数据目录不存在或不可访问。",
+        )
+
+    try:
+        if sys.platform == "win32":
+            os.startfile(str(target_path))  # type: ignore[attr-defined]
+            return
+        if sys.platform == "darwin":
+            subprocess.Popen(["open", str(target_path)])
+            return
+
+        opener = shell_shutil.which("xdg-open") or shell_shutil.which("gio")
+        if not opener:
+            raise _OpenStorageRootUnavailable(
+                "open_storage_root_unavailable",
+                "当前系统未找到可用的文件管理器打开命令。",
+            )
+        if os.path.basename(opener) == "gio":
+            subprocess.Popen([opener, "open", str(target_path)])
+        else:
+            subprocess.Popen([opener, str(target_path)])
+    except _OpenStorageRootUnavailable:
+        raise
+    except Exception as exc:
+        raise _OpenStorageRootUnavailable(
+            "open_storage_root_failed",
+            f"打开当前数据目录失败: {exc}",
+        ) from exc
+
+
 def _build_status_payload(config_manager) -> dict[str, Any]:
     bootstrap_payload = build_storage_location_bootstrap_payload(config_manager)
     blocking_reason = str(bootstrap_payload.get("blocking_reason") or "").strip()
@@ -1084,6 +1126,29 @@ async def post_storage_location_pick_directory(
         "ok": True,
         "cancelled": False,
         "selected_root": str(normalize_runtime_root(selected_root)),
+    }
+
+
+@router.post("/open-current")
+async def post_storage_location_open_current(response: Response):
+    _set_no_cache_headers(response)
+
+    config_manager = _get_storage_config_manager()
+    current_root = normalize_runtime_root(config_manager.app_docs_dir)
+    try:
+        await asyncio.to_thread(_open_path_in_file_manager, current_root)
+    except _OpenStorageRootUnavailable as exc:
+        response.status_code = 503
+        return {
+            "ok": False,
+            "error_code": exc.error_code,
+            "error": exc.message,
+            "current_root": str(current_root),
+        }
+
+    return {
+        "ok": True,
+        "current_root": str(current_root),
     }
 
 

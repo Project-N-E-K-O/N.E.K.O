@@ -39,6 +39,49 @@
         return normalized || '-';
     }
 
+    function parentPath(path) {
+        const normalized = String(path || '').trim();
+        if (!normalized) return '';
+        const trimmed = normalized.replace(/[\\/]+$/, '');
+        const separatorIndex = Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\'));
+        if (separatorIndex <= 0) return '';
+        return trimmed.slice(0, separatorIndex);
+    }
+
+    function getStorageDirectoryPickerStartPath() {
+        const input = document.getElementById('storage-target-root-input');
+        const inputPath = input ? String(input.value || '').trim() : '';
+        if (inputPath) return inputPath;
+
+        const bootstrap = storageLocationState.bootstrap || {};
+        const recommendedRoot = String(bootstrap.recommended_root || '').trim();
+        const currentRoot = String(bootstrap.current_root || '').trim();
+        if (recommendedRoot && recommendedRoot !== currentRoot) {
+            return parentPath(recommendedRoot) || recommendedRoot;
+        }
+        return parentPath(currentRoot) || currentRoot;
+    }
+
+    async function readJsonResponse(resp) {
+        try {
+            return await resp.json();
+        } catch (e) {
+            return null;
+        }
+    }
+
+    function storageErrorMessage(payload, fallback) {
+        if (!payload || typeof payload !== 'object') {
+            return fallback;
+        }
+        return String(
+            payload.error
+            || payload.blocking_error_message
+            || payload.error_code
+            || fallback
+        );
+    }
+
     function getStorageBlockingReason(bootstrapPayload) {
         if (!bootstrapPayload || typeof bootstrapPayload !== 'object') {
             return '';
@@ -204,8 +247,7 @@
     }
 
     async function pickStorageTargetDirectory() {
-        const bootstrap = storageLocationState.bootstrap || {};
-        const startPath = String(bootstrap.current_root || '').trim();
+        const startPath = getStorageDirectoryPickerStartPath();
         setStoragePreflightBusy(true);
         try {
             let payload = null;
@@ -226,9 +268,9 @@
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ start_path: startPath })
                 });
-                payload = await resp.json();
+                payload = await readJsonResponse(resp);
                 if (!resp.ok || !payload || payload.ok !== true) {
-                    throw new Error(payload && payload.error ? payload.error : 'pick-directory failed');
+                    throw new Error(storageErrorMessage(payload, translate('memory.storagePickTargetFailed', '选择目标位置失败，请手动输入路径')));
                 }
             }
             if (payload.cancelled) {
@@ -291,9 +333,9 @@
                     selection_source: 'custom'
                 })
             });
-            const payload = await resp.json();
+            const payload = await readJsonResponse(resp);
             if (!resp.ok || !payload || payload.ok !== true) {
-                throw new Error(payload && (payload.error || payload.error_code) ? (payload.error || payload.error_code) : 'preflight failed');
+                throw new Error(storageErrorMessage(payload, translate('memory.storagePreflightFailed', '预检失败')));
             }
             storagePreflightState = payload;
             setStoragePreflightResult(formatPreflightResult(payload), 'success');
@@ -417,10 +459,23 @@
         try {
             const host = window.nekoHost;
             if (host && typeof host.openPath === 'function') {
-                const result = await host.openPath({ path: currentRoot });
-                if (result && result.ok === false) {
-                    throw new Error(result.error || 'openPath failed');
+                try {
+                    const result = await host.openPath({ path: currentRoot });
+                    if (result && result.ok === false) {
+                        throw new Error(result.error || 'openPath failed');
+                    }
+                    setElementText('storage-location-status', '');
+                    return;
+                } catch (hostError) {
+                    console.warn('[MemoryBrowser] host openPath failed, falling back to backend:', hostError);
                 }
+            }
+            const resp = await fetch('/api/storage/location/open-current', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' }
+            });
+            const payload = await readJsonResponse(resp);
+            if (resp.ok && payload && payload.ok === true) {
                 setElementText('storage-location-status', '');
                 return;
             }

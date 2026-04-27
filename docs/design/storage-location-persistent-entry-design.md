@@ -635,6 +635,7 @@ NEKO-PC 不需要为常驻入口新增迁移状态机。
 - 继续提供 `window.nekoHost.openPath()`。
 - 继续提供 `window.nekoHost.closeWindow()`。
 - 在桌面端打开“记忆浏览”页面时承载同一套网页常驻入口和页面内 modal。
+- 通过 `window.open('/memory_browser')` 打开的同源桌面子窗口应注入相同的 `window.nekoHost` 能力；如果宿主桥不可用，网页端继续回退到 NEKO 后端的 `pick-directory/open-current` 能力。
 
 禁止：
 

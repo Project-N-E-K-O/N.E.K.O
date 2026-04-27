@@ -692,6 +692,51 @@ def test_storage_location_pick_directory_returns_selected_root(tmp_path):
 
 
 @pytest.mark.unit
+def test_storage_location_open_current_opens_only_current_root(tmp_path):
+    config_manager = _DummyConfigManager(tmp_path)
+    opened_paths = []
+
+    def fake_open_path(path):
+        opened_paths.append(Path(path))
+
+    with patch.object(
+        storage_location_router_module,
+        "_open_path_in_file_manager",
+        side_effect=fake_open_path,
+    ):
+        with _build_client(config_manager) as client:
+            response = client.post("/api/storage/location/open-current")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["current_root"] == str(config_manager.app_docs_dir.resolve())
+    assert opened_paths == [config_manager.app_docs_dir.resolve()]
+
+
+@pytest.mark.unit
+def test_storage_location_open_current_reports_unavailable(tmp_path):
+    config_manager = _DummyConfigManager(tmp_path)
+
+    with patch.object(
+        storage_location_router_module,
+        "_open_path_in_file_manager",
+        side_effect=storage_location_router_module._OpenStorageRootUnavailable(
+            "open_storage_root_unavailable",
+            "当前环境暂不支持直接打开目录。",
+        ),
+    ):
+        with _build_client(config_manager) as client:
+            response = client.post("/api/storage/location/open-current")
+
+    assert response.status_code == 503
+    payload = response.json()
+    assert payload["ok"] is False
+    assert payload["error_code"] == "open_storage_root_unavailable"
+    assert payload["current_root"] == str(config_manager.app_docs_dir.resolve())
+
+
+@pytest.mark.unit
 def test_storage_location_bootstrap_falls_back_to_runtime_config_manager_when_shared_state_is_not_ready(tmp_path):
     config_manager = _DummyConfigManager(tmp_path)
 

@@ -522,7 +522,12 @@ body .container-header {
     color: #40C5F1;
 }
 
-.storage-location-manage-btn:not(:disabled):hover,
+.storage-location-manage-btn:not(:disabled):hover {
+    background: linear-gradient(135deg, #5dd2f6 0%, #35bdff 100%);
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(64, 197, 241, 0.3);
+}
+
 .storage-location-open-btn:not(:disabled):hover {
     border-color: #40C5F1;
     background: #f0f9ff;
@@ -530,8 +535,21 @@ body .container-header {
     box-shadow: 0 4px 12px rgba(64, 197, 241, 0.25);
 }
 
+.storage-location-restart-btn:not(:disabled):hover {
+    background: linear-gradient(135deg, #ff9b78 0%, #ff6464 100%);
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(255, 82, 82, 0.25);
+}
+
+.storage-location-manage-btn:not(:disabled):active,
+.storage-location-open-btn:not(:disabled):active,
+.storage-location-restart-btn:not(:disabled):active {
+    transform: translateY(0);
+}
+
 .storage-location-manage-btn:disabled,
 .storage-location-open-btn:disabled,
+.storage-location-restart-btn:disabled,
 .auto-review-toggle-btn.is-disabled {
     background: #f5f5f5;
     border-color: #e0e0e0;
