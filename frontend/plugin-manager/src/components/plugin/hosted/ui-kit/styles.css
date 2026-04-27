@@ -127,7 +127,15 @@ body {
 .neko-form { display: grid; gap: 12px; }
 .neko-field { display: grid; gap: 6px; }
 .neko-field-label { color: var(--text); font-size: 13px; font-weight: 680; }
+.neko-field-required { margin-left: 4px; color: var(--danger); }
 .neko-field-help { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.neko-field-error, .neko-action-error {
+  margin: 0;
+  color: var(--danger);
+  font-size: 12px;
+  line-height: 1.55;
+}
+.neko-action-control { display: inline-grid; gap: 6px; align-items: start; }
 .neko-input, .neko-select, .neko-textarea {
   width: 100%;
   border: 1px solid var(--border);
@@ -143,6 +151,10 @@ body {
   border-color: rgba(64,158,255,0.58);
   box-shadow: 0 0 0 3px rgba(64,158,255,0.12);
 }
+.neko-input[data-invalid="true"], .neko-select[data-invalid="true"], .neko-textarea[data-invalid="true"] {
+  border-color: rgba(245,108,108,0.72);
+  box-shadow: 0 0 0 3px rgba(245,108,108,0.12);
+}
 .neko-switch { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); }
 .neko-checkbox { width: 16px; height: 16px; accent-color: var(--primary); }
 
@@ -157,6 +169,21 @@ body {
 .neko-tip { border: 1px solid rgba(230,162,60,0.28); border-radius: 14px; padding: 12px; background: rgba(230,162,60,0.1); color: var(--text); line-height: 1.7; }
 .neko-warning { border-color: rgba(245,108,108,0.28); background: rgba(245,108,108,0.1); }
 .neko-error { margin: 20px; padding: 16px; border: 1px solid rgba(245,108,108,0.35); border-radius: 14px; background: rgba(245,108,108,0.1); color: var(--danger); white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.neko-error-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.neko-error-meta { margin-top: 10px; color: var(--muted); font-size: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.neko-inline-error {
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid rgba(245,108,108,0.32);
+  border-radius: 12px;
+  background: rgba(245,108,108,0.09);
+  color: var(--danger);
+  white-space: normal;
+}
+.neko-inline-error-title { font-weight: 760; }
+.neko-inline-error-message { margin: 0; white-space: pre-wrap; color: inherit; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+.neko-inline-error-meta { color: var(--muted); font-size: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 
 .flex { display: flex; } .grid { display: grid; } .hidden { display: none; }
 .items-center { align-items: center; } .justify-between { justify-content: space-between; }

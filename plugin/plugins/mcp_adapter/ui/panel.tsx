@@ -37,6 +37,7 @@ export default function McpAdapterPanel({ plugin, state, entries, actions }) {
   const removeServers = safeActions.find((action) => action.id === "remove_servers")
   const firstServer = servers[0]
   let selectedServerName = firstServer?.name || ""
+  const importErrorId = "mcp-adapter-import-error"
   let importJson = `{
   "name": "example",
   "transport": "stdio",
@@ -46,9 +47,17 @@ export default function McpAdapterPanel({ plugin, state, entries, actions }) {
   "auto_connect": true
 }`
 
+  const setImportError = (message) => {
+    const node = document.getElementById(importErrorId)
+    if (!node) return
+    node.textContent = message || ""
+    node.hidden = !message
+  }
+
   const importServer = async () => {
+    setImportError("")
     if (!addServer) {
-      alert("add_server action is unavailable")
+      setImportError("add_server action is unavailable")
       return
     }
     try {
@@ -56,7 +65,7 @@ export default function McpAdapterPanel({ plugin, state, entries, actions }) {
       await api.call("add_server", payload)
       await api.refresh()
     } catch (error) {
-      alert(error && error.message ? error.message : String(error))
+      setImportError(error && error.message ? error.message : String(error))
     }
   }
 
@@ -164,8 +173,10 @@ export default function McpAdapterPanel({ plugin, state, entries, actions }) {
             value={importJson}
             onChange={(value) => {
               importJson = value
+              setImportError("")
             }}
           />
+          <p id={importErrorId} className="neko-action-error" hidden></p>
           <Button tone="success" onClick={importServer}>导入 JSON</Button>
         </Stack>
       </Card>

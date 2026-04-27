@@ -53,28 +53,49 @@ function findPluginTomls(targets) {
   return result
 }
 
-function createCheckFile(entryPath, tempDir, index) {
+function surfaceLabel(surface) {
+  return `${surface.kind}:${surface.id || surface.entry || 'main'}`
+}
+
+function hasDefaultExport(source) {
+  return /\bexport\s+default\b/.test(source)
+}
+
+function createCheckFile(entryPath, tempDir, index, surface, tomlPath) {
   const source = readFileSync(entryPath, 'utf8')
   const stripped = source.replace(/^\s*import\s+[^;]+from\s+['"](?:@neko\/plugin-ui|neko:ui)['"];?\s*$/gm, '')
   const checkPath = join(tempDir, `surface-${index}.tsx`)
+  const prefixLines = 6
   writeFileSync(
     checkPath,
     `/// <reference path="${typeDeclPath}" />\nimport * as NekoUi from "@neko/plugin-ui";\nconst { ${[
       'Page', 'Card', 'Section', 'Heading', 'Stack', 'Grid', 'Text', 'Button', 'ButtonGroup',
       'StatusBadge', 'StatCard', 'KeyValue', 'DataTable', 'Divider', 'Toolbar', 'ToolbarGroup',
       'Alert', 'EmptyState', 'List', 'Progress', 'JsonView', 'Field', 'Input', 'Select',
-      'Textarea', 'Switch', 'Form', 'ActionButton', 'RefreshButton', 'ActionForm', 'CodeBlock',
+      'Textarea', 'Switch', 'Form', 'ActionButton', 'RefreshButton', 'ActionForm', 'InlineError', 'CodeBlock',
       'Tip', 'Warning', 'Steps', 'Step', 'Tabs', 'useI18n',
     ].join(', ')} } = NekoUi;\ndeclare const h: any;\ndeclare const Fragment: any;\ndeclare const api: { call(actionId: string, args?: Record<string, any>): Promise<any>; refresh(): Promise<any> };\n${stripped}\n`,
     'utf8',
   )
-  return checkPath
+  return {
+    checkPath,
+    entryPath,
+    surface,
+    tomlPath,
+    prefixLines,
+    hasDefaultExport: hasDefaultExport(stripped),
+  }
 }
 
-function formatDiagnostic(diagnostic) {
+function formatDiagnostic(diagnostic, metaByCheckPath) {
   const message = ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n')
   if (diagnostic.file && diagnostic.start !== undefined) {
+    const meta = metaByCheckPath.get(diagnostic.file.fileName)
     const pos = diagnostic.file.getLineAndCharacterOfPosition(diagnostic.start)
+    if (meta) {
+      const sourceLine = Math.max(1, pos.line + 1 - meta.prefixLines)
+      return `${meta.entryPath}:${sourceLine}:${pos.character + 1} [${surfaceLabel(meta.surface)}] - ${message}`
+    }
     return `${diagnostic.file.fileName}:${pos.line + 1}:${pos.character + 1} - ${message}`
   }
   return message
@@ -84,6 +105,8 @@ function main() {
   const pluginTomls = findPluginTomls(process.argv.slice(2))
   const tempDir = mkdtempSync(join(tmpdir(), 'neko-hosted-tsx-'))
   const checkFiles = []
+  const errors = []
+  const warnings = []
 
   try {
     for (const tomlPath of pluginTomls) {
@@ -98,7 +121,14 @@ function main() {
           process.exitCode = 1
           continue
         }
-        checkFiles.push(createCheckFile(entryPath, tempDir, checkFiles.length))
+        const checkFile = createCheckFile(entryPath, tempDir, checkFiles.length, surface, tomlPath)
+        checkFiles.push(checkFile)
+        if (!checkFile.hasDefaultExport) {
+          errors.push(`${entryPath}:1:1 [${surfaceLabel(surface)}] - Hosted TSX must export a default function component.`)
+        }
+        if (/\balert\s*\(/.test(readFileSync(entryPath, 'utf8'))) {
+          warnings.push(`${entryPath} [${surfaceLabel(surface)}] - Prefer inline UI errors over alert(); use ActionForm/ActionButton onError or InlineError.`)
+        }
       }
     }
 
@@ -107,7 +137,8 @@ function main() {
       return
     }
 
-    const program = ts.createProgram(checkFiles, {
+    const metaByCheckPath = new Map(checkFiles.map((item) => [item.checkPath, item]))
+    const program = ts.createProgram(checkFiles.map((item) => item.checkPath), {
       jsx: ts.JsxEmit.React,
       jsxFactory: 'h',
       jsxFragmentFactory: 'Fragment',
@@ -121,9 +152,19 @@ function main() {
       allowSyntheticDefaultImports: true,
     })
     const diagnostics = ts.getPreEmitDiagnostics(program)
-    if (diagnostics.length > 0) {
+    if (warnings.length > 0) {
+      console.warn('Hosted TSX warnings:')
+      for (const warning of warnings) {
+        console.warn(`  ${warning}`)
+      }
+    }
+    if (errors.length > 0 || diagnostics.length > 0) {
+      console.error('Hosted TSX check failed:')
+      for (const error of errors) {
+        console.error(`  ${error}`)
+      }
       for (const diagnostic of diagnostics) {
-        console.error(formatDiagnostic(diagnostic))
+        console.error(`  ${formatDiagnostic(diagnostic, metaByCheckPath)}`)
       }
       process.exitCode = 1
       return

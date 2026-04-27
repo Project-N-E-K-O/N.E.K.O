@@ -44,10 +44,10 @@
                 :label="surface.title || surface.id"
                 :name="surface.id"
               >
-                <HostedSurfaceFrame :plugin-id="pluginId" :surface="surface" height="560px" />
+                <HostedSurfaceFrame :plugin-id="pluginId" :surface="surface" height="560px" @open-logs="openLogsTab" />
               </el-tab-pane>
             </el-tabs>
-            <HostedSurfaceFrame v-else :plugin-id="pluginId" :surface="panelSurfaces[0]!" height="560px" />
+            <HostedSurfaceFrame v-else :plugin-id="pluginId" :surface="panelSurfaces[0]!" height="560px" @open-logs="openLogsTab" />
           </div>
         </el-tab-pane>
 
@@ -75,10 +75,10 @@
                 :label="surface.title || surface.id"
                 :name="surface.id"
               >
-                <HostedSurfaceFrame :plugin-id="pluginId" :surface="surface" height="560px" />
+                <HostedSurfaceFrame :plugin-id="pluginId" :surface="surface" height="560px" @open-logs="openLogsTab" />
               </el-tab-pane>
             </el-tabs>
-            <HostedSurfaceFrame v-else :plugin-id="pluginId" :surface="guideSurfaces[0]!" height="560px" />
+            <HostedSurfaceFrame v-else :plugin-id="pluginId" :surface="guideSurfaces[0]!" height="560px" @open-logs="openLogsTab" />
           </div>
         </el-tab-pane>
 
@@ -260,6 +260,16 @@ function syncSurfaceTabs() {
   if (!activeGuideSurfaceId.value && guideSurfaces.value[0]) {
     activeGuideSurfaceId.value = guideSurfaces.value[0].id
   }
+}
+
+function openLogsTab() {
+  activeTab.value = 'logs'
+  router.replace({
+    query: {
+      ...route.query,
+      tab: 'logs',
+    },
+  })
 }
 
 async function fetchSurfaces() {

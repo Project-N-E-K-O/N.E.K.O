@@ -668,6 +668,10 @@ class PluginUiQueryService:
             surfaces, _warnings = _build_surfaces_sync(plugin_id, plugin_meta)
             surface = _find_surface(surfaces, kind=kind, surface_id=surface_id)
             if surface is None:
+                logger.warning(
+                    "Hosted UI action rejected: plugin_id={}, surface={}:{}, action_id={}, reason=surface_not_found",
+                    plugin_id, kind, surface_id, action_id,
+                )
                 raise ServerDomainError(
                     code="PLUGIN_UI_SURFACE_NOT_FOUND",
                     message=f"UI surface '{kind}:{surface_id}' not found",
@@ -675,6 +679,10 @@ class PluginUiQueryService:
                     details={"plugin_id": plugin_id, "kind": kind, "surface_id": surface_id},
                 )
             if not _surface_allows_action_call(surface):
+                logger.warning(
+                    "Hosted UI action rejected: plugin_id={}, surface={}:{}, action_id={}, reason=missing_action_permission",
+                    plugin_id, kind, surface_id, action_id,
+                )
                 raise ServerDomainError(
                     code="PLUGIN_UI_ACTION_FORBIDDEN",
                     message=f"UI surface '{kind}:{surface_id}' is not allowed to call plugin actions",
@@ -684,6 +692,10 @@ class PluginUiQueryService:
 
             entry_ids = _entry_ids_from_meta(plugin_meta)
             if not entry_ids:
+                logger.warning(
+                    "Hosted UI action rejected: plugin_id={}, surface={}:{}, action_id={}, reason=no_plugin_entries",
+                    plugin_id, kind, surface_id, action_id,
+                )
                 raise ServerDomainError(
                     code="PLUGIN_UI_ACTION_NOT_FOUND",
                     message=f"UI action '{action_id}' is not a plugin entry",
@@ -693,6 +705,10 @@ class PluginUiQueryService:
             with state.acquire_plugin_hosts_read_lock():
                 host = state.plugin_hosts.get(plugin_id)
             if host is None or not hasattr(host, "is_alive") or not host.is_alive() or not hasattr(host, "trigger"):
+                logger.warning(
+                    "Hosted UI action rejected: plugin_id={}, surface={}:{}, action_id={}, reason=plugin_not_running",
+                    plugin_id, kind, surface_id, action_id,
+                )
                 raise ServerDomainError(
                     code="PLUGIN_NOT_RUNNING",
                     message=f"Plugin '{plugin_id}' is not running",
@@ -707,6 +723,10 @@ class PluginUiQueryService:
                     if isinstance(ui_context_result, Mapping) and isinstance(ui_context_result.get("actions"), list):
                         actions = list(ui_context_result["actions"])
                 except Exception as exc:
+                    logger.warning(
+                        "Hosted UI action context failed: plugin_id={}, surface={}:{}, action_id={}, err_type={}, err={}",
+                        plugin_id, kind, surface_id, action_id, type(exc).__name__, str(exc),
+                    )
                     raise ServerDomainError(
                         code="PLUGIN_UI_CONTEXT_QUERY_FAILED",
                         message="Failed to query plugin UI action context",
@@ -726,6 +746,10 @@ class PluginUiQueryService:
                 entry_ids=entry_ids,
             )
             if resolved_action_id is None:
+                logger.warning(
+                    "Hosted UI action rejected: plugin_id={}, surface={}:{}, action_id={}, reason=action_not_exposed",
+                    plugin_id, kind, surface_id, action_id,
+                )
                 raise ServerDomainError(
                     code="PLUGIN_UI_ACTION_FORBIDDEN",
                     message=f"UI action '{action_id}' is not exposed by surface '{kind}:{surface_id}'",
@@ -743,8 +767,10 @@ class PluginUiQueryService:
             raise
         except Exception as exc:
             logger.error(
-                "call_surface_action failed: plugin_id={}, action_id={}, err_type={}, err={}",
+                "call_surface_action failed: plugin_id={}, surface={}:{}, action_id={}, err_type={}, err={}",
                 plugin_id,
+                kind,
+                surface_id,
                 action_id,
                 type(exc).__name__,
                 str(exc),

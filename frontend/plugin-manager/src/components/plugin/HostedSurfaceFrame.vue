@@ -1,5 +1,16 @@
 <template>
   <div class="hosted-surface-frame" :style="frameStyle">
+    <el-alert
+      v-if="runtimeError"
+      class="hosted-surface-frame__runtime-alert"
+      :type="runtimeErrorFatal ? 'error' : 'warning'"
+      show-icon
+      :closable="true"
+      :title="runtimeErrorTitle"
+      :description="runtimeError"
+      @close="runtimeError = ''"
+    />
+
     <iframe
       v-if="surface.mode === 'static' && surfaceUrl"
       ref="iframeRef"
@@ -62,6 +73,7 @@ const props = withDefaults(defineProps<{
 const emit = defineEmits<{
   load: []
   error: [error: string]
+  openLogs: []
 }>()
 
 const { locale, t } = useI18n()
@@ -70,6 +82,8 @@ const iframeKey = ref(0)
 const hostedDocument = ref('')
 const loading = ref(false)
 const error = ref('')
+const runtimeError = ref('')
+const runtimeErrorFatal = ref(false)
 let currentLoadId = 0
 
 const frameStyle = computed(() => ({
@@ -109,6 +123,10 @@ const placeholderText = computed(() => {
   return t('plugins.ui.hostedRuntimePending')
 })
 
+const runtimeErrorTitle = computed(() => {
+  return runtimeErrorFatal.value ? t('plugins.ui.loadError') : '插件界面控件错误'
+})
+
 function handleLoad() {
   emit('load')
 }
@@ -121,6 +139,8 @@ async function loadHostedTsx() {
   if (props.surface.mode !== 'hosted-tsx' || props.surface.available === false) {
     hostedDocument.value = ''
     error.value = ''
+    runtimeError.value = ''
+    runtimeErrorFatal.value = false
     loading.value = false
     return
   }
@@ -128,6 +148,8 @@ async function loadHostedTsx() {
   const loadId = ++currentLoadId
   loading.value = true
   error.value = ''
+  runtimeError.value = ''
+  runtimeErrorFatal.value = false
   hostedDocument.value = ''
   try {
     const response = await getPluginHostedSurfaceSource(props.pluginId, {
@@ -163,8 +185,23 @@ function handleMessage(event: MessageEvent) {
   const data = event.data
   if (data && typeof data === 'object' && data.type === 'neko-hosted-surface-error') {
     const message = typeof data.payload?.message === 'string' ? data.payload.message : t('plugins.ui.loadError')
-    error.value = message
+    const fatal = data.payload?.fatal !== false
+    runtimeError.value = message
+    runtimeErrorFatal.value = fatal
+    console.error('[HostedSurfaceFrame] plugin UI error', {
+      pluginId: props.pluginId,
+      surface: `${props.surface.kind}:${props.surface.id}`,
+      fatal,
+      scope: data.payload?.scope,
+      details: data.payload?.details,
+      message,
+    })
+    if (fatal) error.value = message
     emit('error', message)
+    return
+  }
+  if (data && typeof data === 'object' && data.type === 'neko-hosted-surface-open-logs') {
+    emit('openLogs')
     return
   }
   if (data && typeof data === 'object' && data.type === 'neko-hosted-surface-request') {
@@ -236,6 +273,10 @@ watch(
   border-radius: 16px;
   background: color-mix(in srgb, var(--el-bg-color) 92%, transparent);
   overflow: hidden;
+}
+
+.hosted-surface-frame__runtime-alert {
+  margin: 12px;
 }
 
 .hosted-surface-frame__iframe {

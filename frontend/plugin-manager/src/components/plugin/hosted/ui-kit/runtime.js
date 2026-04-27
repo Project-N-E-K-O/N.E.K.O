@@ -1,6 +1,58 @@
 const NekoUiKit = {};
 window.NekoUiKit = NekoUiKit;
 
+function formatErrorMessage(error) {
+  if (!error) return 'Unknown error';
+  if (typeof error === 'string') return error;
+  if (error.message) return String(error.message);
+  return String(error);
+}
+function reportHostedRuntimeError(scope, error, details) {
+  const message = formatErrorMessage(error);
+  try {
+    console.error('[plugin-ui]', scope, { message, details, error });
+  } catch (_) {}
+  try {
+    parent.postMessage({ type: 'neko-hosted-surface-error', payload: { message, scope, details: details || {}, fatal: false } }, '*');
+  } catch (_) {}
+}
+function createInlineError(title, error, details) {
+  const box = document.createElement('div');
+  box.className = 'neko-inline-error';
+  box.setAttribute('role', 'alert');
+  const heading = document.createElement('strong');
+  heading.className = 'neko-inline-error-title';
+  heading.textContent = title || '组件渲染失败';
+  const message = document.createElement('pre');
+  message.className = 'neko-inline-error-message';
+  message.textContent = formatErrorMessage(error);
+  box.appendChild(heading);
+  box.appendChild(message);
+  if (details) {
+    const meta = document.createElement('span');
+    meta.className = 'neko-inline-error-meta';
+    meta.textContent = String(details);
+    box.appendChild(meta);
+  }
+  return box;
+}
+function setInlineError(node, error) {
+  if (!node) return;
+  const message = error ? formatErrorMessage(error) : '';
+  node.textContent = message;
+  node.hidden = !message;
+}
+function setControlInvalid(control, invalid) {
+  if (!control || typeof control.setAttribute !== 'function') return;
+  if (invalid) {
+    control.setAttribute('aria-invalid', 'true');
+    control.setAttribute('data-invalid', 'true');
+  } else {
+    control.removeAttribute('aria-invalid');
+    control.removeAttribute('data-invalid');
+  }
+}
+
 function appendChild(parent, child) {
   if (child === null || child === undefined || child === false) return;
   if (Array.isArray(child)) {
@@ -17,7 +69,12 @@ function appendChild(parent, child) {
 function h(type, props, ...children) {
   props = props || {};
   if (typeof type === 'function') {
-    return type({ ...props, children });
+    try {
+      return type({ ...props, children });
+    } catch (error) {
+      reportHostedRuntimeError('component.render', error, { component: type.name || 'Anonymous' });
+      return createInlineError(`组件 ${type.name || 'Anonymous'} 渲染失败`, error);
+    }
   }
   const element = document.createElement(type);
   for (const [key, value] of Object.entries(props)) {
@@ -28,7 +85,14 @@ function h(type, props, ...children) {
     else if (value === true) element.setAttribute(key, '');
     else element.setAttribute(key, String(value));
   }
-  children.forEach((child) => appendChild(element, child));
+  children.forEach((child) => {
+    try {
+      appendChild(element, child);
+    } catch (error) {
+      reportHostedRuntimeError('dom.appendChild', error, { element: type });
+      element.appendChild(createInlineError('子节点挂载失败', error));
+    }
+  });
   return element;
 }
 
@@ -72,7 +136,15 @@ function DataTable(props) {
       const rowKey = props.rowKey ? row?.[props.rowKey] : index;
       return h('tr', { className: selectedKey !== undefined && rowKey === selectedKey ? 'is-selected' : '', onClick: () => props.onSelect && props.onSelect(row, index) }, columns.map((column) => {
         const key = typeof column === 'string' ? column : column.key;
-        return h('td', null, row && row[key] !== undefined ? row[key] : '');
+        try {
+          if (column && typeof column === 'object' && typeof column.render === 'function') {
+            return h('td', null, column.render(row, index));
+          }
+          return h('td', null, row && row[key] !== undefined ? row[key] : '');
+        } catch (error) {
+          reportHostedRuntimeError('DataTable.cell', error, { row: index, column: key });
+          return h('td', null, createInlineError('单元格渲染失败', error, key));
+        }
       }));
     }))
   );
@@ -82,10 +154,18 @@ function Divider() { return h('div', { className: 'neko-divider' }); }
 function Toolbar(props) { return h('div', { className: 'neko-toolbar ' + (props.className || '') }, props.children); }
 function ToolbarGroup(props) { return h('div', { className: 'neko-toolbar-group ' + (props.className || '') }, props.children); }
 function Alert(props) { return h('div', { className: 'neko-alert ' + (props.className || ''), 'data-tone': props.tone || 'primary' }, props.children || props.message); }
+function InlineError(props) { return createInlineError(props.title || '错误', props.error || props.message || props.children, props.details); }
 function EmptyState(props) { return h('div', { className: 'neko-empty ' + (props.className || '') }, props.title ? h('div', { className: 'neko-empty-title' }, props.title) : null, props.description ? h('div', null, props.description) : props.children); }
 function List(props) {
   const items = Array.isArray(props.items) ? props.items : [];
-  return h('div', { className: 'neko-list ' + (props.className || '') }, props.children || items.map((item) => h('div', { className: 'neko-list-item' }, props.render ? props.render(item) : (item.label || item.name || String(item)))));
+  return h('div', { className: 'neko-list ' + (props.className || '') }, props.children || items.map((item, index) => {
+    try {
+      return h('div', { className: 'neko-list-item' }, props.render ? props.render(item, index) : (item.label || item.name || String(item)));
+    } catch (error) {
+      reportHostedRuntimeError('List.item', error, { index });
+      return h('div', { className: 'neko-list-item' }, createInlineError('列表项渲染失败', error, index));
+    }
+  }));
 }
 function Progress(props) {
   const value = Math.max(0, Math.min(100, Number(props.value || 0)));
@@ -93,17 +173,19 @@ function Progress(props) {
 }
 function JsonView(props) { return CodeBlock({ children: JSON.stringify(props.data ?? props.value ?? {}, null, 2) }); }
 function Field(props) {
-  return h('label', { className: 'neko-field ' + (props.className || '') },
-    props.label ? h('span', { className: 'neko-field-label' }, props.label) : null,
+  const error = props.error || '';
+  return h('label', { className: 'neko-field ' + (error ? 'is-invalid ' : '') + (props.className || '') },
+    props.label ? h('span', { className: 'neko-field-label' }, props.label, props.required ? h('span', { className: 'neko-field-required' }, '*') : null) : null,
     props.children,
-    props.help ? h('p', { className: 'neko-field-help' }, props.help) : null
+    props.help ? h('p', { className: 'neko-field-help' }, props.help) : null,
+    error ? h('p', { className: 'neko-field-error', role: 'alert' }, error) : null
   );
 }
-function Input(props) { return h('input', { className: 'neko-input ' + (props.className || ''), value: props.value || '', placeholder: props.placeholder || '', onInput: (event) => props.onChange && props.onChange(event.target.value) }); }
-function Textarea(props) { return h('textarea', { className: 'neko-textarea ' + (props.className || ''), value: props.value || '', placeholder: props.placeholder || '', onInput: (event) => props.onChange && props.onChange(event.target.value) }); }
+function Input(props) { return h('input', { className: 'neko-input ' + (props.className || ''), value: props.value || '', placeholder: props.placeholder || '', 'aria-invalid': props.invalid || props.error ? 'true' : undefined, 'data-invalid': props.invalid || props.error ? 'true' : undefined, onInput: (event) => props.onChange && props.onChange(event.target.value) }); }
+function Textarea(props) { return h('textarea', { className: 'neko-textarea ' + (props.className || ''), value: props.value || '', placeholder: props.placeholder || '', 'aria-invalid': props.invalid || props.error ? 'true' : undefined, 'data-invalid': props.invalid || props.error ? 'true' : undefined, onInput: (event) => props.onChange && props.onChange(event.target.value) }); }
 function Select(props) {
   const options = props.options || [];
-  return h('select', { className: 'neko-select ' + (props.className || ''), value: props.value || '', onChange: (event) => props.onChange && props.onChange(event.target.value) },
+  return h('select', { className: 'neko-select ' + (props.className || ''), value: props.value || '', 'aria-invalid': props.invalid || props.error ? 'true' : undefined, 'data-invalid': props.invalid || props.error ? 'true' : undefined, onChange: (event) => props.onChange && props.onChange(event.target.value) },
     options.map((option) => {
       const value = typeof option === 'string' ? option : option.value;
       const label = typeof option === 'string' ? option : option.label || option.value;
@@ -113,7 +195,7 @@ function Select(props) {
 }
 function Switch(props) {
   return h('label', { className: 'neko-switch ' + (props.className || '') },
-    h('input', { className: 'neko-checkbox', type: 'checkbox', checked: !!props.checked, onChange: (event) => props.onChange && props.onChange(!!event.target.checked) }),
+    h('input', { className: 'neko-checkbox', type: 'checkbox', checked: !!props.checked, 'aria-invalid': props.invalid || props.error ? 'true' : undefined, 'data-invalid': props.invalid || props.error ? 'true' : undefined, onChange: (event) => props.onChange && props.onChange(!!event.target.checked) }),
     props.label || props.children
   );
 }
@@ -131,11 +213,11 @@ function parseValueForSchema(value, schema) {
   if (!schema || typeof schema !== 'object') return value;
   if (schema.type === 'integer') {
     const parsed = parseInt(value, 10);
-    return Number.isFinite(parsed) ? parsed : 0;
+    return Number.isFinite(parsed) ? parsed : value;
   }
   if (schema.type === 'number') {
     const parsed = parseFloat(value);
-    return Number.isFinite(parsed) ? parsed : 0;
+    return Number.isFinite(parsed) ? parsed : value;
   }
   if (schema.type === 'boolean') return !!value;
   if (schema.type === 'array') {
@@ -144,46 +226,105 @@ function parseValueForSchema(value, schema) {
   }
   if (schema.type === 'object') {
     if (value && typeof value === 'object') return value;
-    try { return JSON.parse(String(value || '{}')); } catch (_) { return {}; }
+    try { return JSON.parse(String(value || '{}')); } catch (_) { return value; }
   }
   return value;
 }
+function isEmptyValue(value) {
+  if (value === undefined || value === null || value === '') return true;
+  if (Array.isArray(value)) return value.length === 0;
+  return false;
+}
+function validateValueForSchema(key, value, schema, required) {
+  if (required && isEmptyValue(value)) return `${key} 为必填项`;
+  if (isEmptyValue(value)) return '';
+  if (!schema || typeof schema !== 'object') return '';
+  if (Array.isArray(schema.enum) && !schema.enum.includes(value)) return `${key} 必须是允许的枚举值`;
+  if (schema.type === 'integer' && !Number.isInteger(value)) return `${key} 必须是整数`;
+  if (schema.type === 'number' && typeof value !== 'number') return `${key} 必须是数字`;
+  if (schema.type === 'boolean' && typeof value !== 'boolean') return `${key} 必须是布尔值`;
+  if (schema.type === 'array' && !Array.isArray(value)) return `${key} 必须是数组`;
+  if (schema.type === 'object' && (!value || typeof value !== 'object' || Array.isArray(value))) return `${key} 必须是对象 JSON`;
+  return '';
+}
 function ActionForm(props) {
   const action = props.action || {};
+  if (!action.id && !action.entry_id) {
+    return createInlineError('动作不可用', '当前上下文没有提供可调用 action');
+  }
   const schema = action.input_schema || {};
   const properties = schema.properties || {};
+  const requiredFields = Array.isArray(schema.required) ? schema.required : [];
   const values = {};
+  const fieldErrorNodes = {};
+  const fieldControls = {};
   Object.keys(properties).forEach((key) => { values[key] = defaultValueForSchema(properties[key]); });
+  function setFieldError(key, error) {
+    setInlineError(fieldErrorNodes[key], error);
+    setControlInvalid(fieldControls[key], !!error);
+  }
+  function clearErrors() {
+    Object.keys(fieldErrorNodes).forEach((key) => setFieldError(key, ''));
+    setInlineError(formError, '');
+  }
+  function validateForm() {
+    let valid = true;
+    Object.entries(properties).forEach(([key, fieldSchema]) => {
+      const error = validateValueForSchema(key, values[key], fieldSchema, requiredFields.includes(key));
+      setFieldError(key, error);
+      if (error) valid = false;
+    });
+    return valid;
+  }
+  const formError = h('div', { className: 'neko-action-error', role: 'alert', hidden: true });
   const fields = Object.entries(properties).map(([key, fieldSchema]) => {
     const label = fieldSchema.title || fieldSchema.description || key;
     const help = fieldSchema.description && fieldSchema.description !== label ? fieldSchema.description : '';
+    const required = requiredFields.includes(key);
+    const onChange = (value) => {
+      values[key] = parseValueForSchema(value, fieldSchema);
+      setFieldError(key, '');
+      setInlineError(formError, '');
+    };
+    let control;
     if (Array.isArray(fieldSchema.enum)) {
-      return Field({ label, help, children: [Select({ value: values[key], options: fieldSchema.enum, onChange: (value) => { values[key] = value; } })] });
+      control = Select({ value: values[key], options: fieldSchema.enum, onChange });
+    } else if (fieldSchema.type === 'boolean') {
+      control = Switch({ checked: values[key], onChange });
+    } else if (fieldSchema.type === 'object' || fieldSchema.type === 'array') {
+      control = Textarea({ value: Array.isArray(values[key]) ? values[key].join(', ') : JSON.stringify(values[key]), onChange });
+    } else {
+      control = Input({ value: values[key], onChange });
     }
-    if (fieldSchema.type === 'boolean') {
-      return Field({ label, help, children: [Switch({ checked: values[key], onChange: (value) => { values[key] = value; } })] });
-    }
-    if (fieldSchema.type === 'object' || fieldSchema.type === 'array') {
-      return Field({ label, help, children: [Textarea({ value: Array.isArray(values[key]) ? values[key].join(', ') : JSON.stringify(values[key]), onChange: (value) => { values[key] = parseValueForSchema(value, fieldSchema); } })] });
-    }
-    return Field({ label, help, children: [Input({ value: values[key], onChange: (value) => { values[key] = parseValueForSchema(value, fieldSchema); } })] });
+    fieldControls[key] = control instanceof HTMLLabelElement ? control.querySelector('input,select,textarea') : control;
+    const field = Field({ label, help, required, children: [control] });
+    const errorNode = h('p', { className: 'neko-field-error', role: 'alert', hidden: true });
+    fieldErrorNodes[key] = errorNode;
+    field.appendChild(errorNode);
+    return field;
   });
   return Form({
     onSubmit: async (event) => {
       const submitButton = event.currentTarget.querySelector('button[type="submit"]');
+      clearErrors();
+      if (!validateForm()) {
+        setInlineError(formError, '请先修正表单中的错误');
+        return;
+      }
       try {
         if (submitButton) submitButton.disabled = true;
         const result = await api.call(action.entry_id || action.id, values);
         if (action.refresh_context !== false) await api.refresh();
         if (typeof props.onResult === 'function') props.onResult(result);
       } catch (error) {
+        reportHostedRuntimeError('ActionForm.submit', error, { action: action.id || action.entry_id });
+        setInlineError(formError, error);
         if (typeof props.onError === 'function') props.onError(error);
-        else alert(error && error.message ? error.message : String(error));
       } finally {
         if (submitButton) submitButton.disabled = false;
       }
     },
-    children: [...fields, Button({ tone: action.tone || 'primary', type: 'submit', children: [props.submitLabel || action.label || action.id || 'Submit'] })],
+    children: [formError, ...fields, Button({ tone: action.tone || 'primary', type: 'submit', children: [props.submitLabel || action.label || action.id || 'Submit'] })],
   });
 }
 
@@ -239,50 +380,56 @@ function ActionButton(props) {
   const action = props.action || {};
   const actionId = props.actionId || action.entry_id || action.id;
   const label = props.label || action.label || actionId;
+  const errorNode = h('div', { className: 'neko-action-error', role: 'alert', hidden: true });
   const button = h('button', {
     className: 'neko-button ' + (props.className || ''),
     'data-tone': props.tone || action.tone || 'primary',
     onClick: async () => {
       try {
+        setInlineError(errorNode, '');
         button.disabled = true;
         const result = await api.call(actionId, props.values || props.args || {});
         if (action.refresh_context !== false && props.refresh !== false) await api.refresh();
         if (typeof props.onResult === 'function') props.onResult(result);
       } catch (error) {
+        reportHostedRuntimeError('ActionButton.click', error, { action: actionId });
+        setInlineError(errorNode, error);
         if (typeof props.onError === 'function') props.onError(error);
-        else alert(error && error.message ? error.message : String(error));
       } finally {
         button.disabled = false;
       }
     },
   }, props.children || label);
-  return button;
+  return h('div', { className: 'neko-action-control' }, button, errorNode);
 }
 function RefreshButton(props) {
   let button = null;
+  const errorNode = h('div', { className: 'neko-action-error', role: 'alert', hidden: true });
   button = Button({
     tone: props.tone || 'primary',
     onClick: async () => {
       try {
+        setInlineError(errorNode, '');
         if (button) button.disabled = true;
         await api.refresh();
         if (typeof props.onRefresh === 'function') props.onRefresh();
       } catch (error) {
+        reportHostedRuntimeError('RefreshButton.click', error);
+        setInlineError(errorNode, error);
         if (typeof props.onError === 'function') props.onError(error);
-        else alert(error && error.message ? error.message : String(error));
       } finally {
         if (button) button.disabled = false;
       }
     },
     children: [props.children || props.label || '刷新'],
   });
-  return button;
+  return h('div', { className: 'neko-action-control' }, button, errorNode);
 }
 
 Object.assign(NekoUiKit, {
   appendChild, h, Fragment, Page, Card, Section, Heading, Stack, Grid, Text, Button, ButtonGroup,
   StatusBadge, StatCard, KeyValue, DataTable, Divider, Toolbar, ToolbarGroup,
-  Alert, EmptyState, List, Progress, JsonView, Field, Input, Select, Textarea,
+  Alert, InlineError, EmptyState, List, Progress, JsonView, Field, Input, Select, Textarea,
   Switch, Form, ActionForm, CodeBlock, Tip, Warning, Steps, Step, Tabs, useI18n,
   t, api, ActionButton, RefreshButton,
 });

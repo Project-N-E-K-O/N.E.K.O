@@ -66,7 +66,7 @@ declare module "@neko/plugin-ui" {
   export function KeyValue(props: CommonProps & { data?: Record<string, any>; items?: Array<{ key?: string; label?: any; value?: any }> }): any
   export function DataTable<T = Record<string, any>>(props: CommonProps & {
     data?: T[]
-    columns?: Array<string | { key: keyof T | string; label?: any }>
+    columns?: Array<string | { key: keyof T | string; label?: any; render?: (row: T, index: number) => any }>
     rowKey?: keyof T | string
     selectedKey?: any
     onSelect?: (row: T, index: number) => void
@@ -75,15 +75,16 @@ declare module "@neko/plugin-ui" {
   export function Toolbar(props: CommonProps): any
   export function ToolbarGroup(props: CommonProps): any
   export function Alert(props: CommonProps & { tone?: Tone; message?: any }): any
+  export function InlineError(props: CommonProps & { title?: any; message?: any; error?: any; details?: any }): any
   export function EmptyState(props: CommonProps & { title?: any; description?: any }): any
-  export function List<T = any>(props: CommonProps & { items?: T[]; render?: (item: T) => any }): any
+  export function List<T = any>(props: CommonProps & { items?: T[]; render?: (item: T, index: number) => any }): any
   export function Progress(props: CommonProps & { label?: any; value?: number }): any
   export function JsonView(props: CommonProps & { data?: any; value?: any }): any
-  export function Field(props: CommonProps & { label?: any; help?: any }): any
-  export function Input(props: CommonProps & { value?: any; placeholder?: string; onChange?: (value: string) => void }): any
-  export function Select(props: CommonProps & { value?: any; options?: Array<string | { value: any; label?: any }>; onChange?: (value: any) => void }): any
-  export function Textarea(props: CommonProps & { value?: any; placeholder?: string; onChange?: (value: string) => void }): any
-  export function Switch(props: CommonProps & { checked?: boolean; label?: any; onChange?: (value: boolean) => void }): any
+  export function Field(props: CommonProps & { label?: any; help?: any; error?: any; required?: boolean }): any
+  export function Input(props: CommonProps & { value?: any; placeholder?: string; invalid?: boolean; error?: any; onChange?: (value: string) => void }): any
+  export function Select(props: CommonProps & { value?: any; options?: Array<string | { value: any; label?: any }>; invalid?: boolean; error?: any; onChange?: (value: any) => void }): any
+  export function Textarea(props: CommonProps & { value?: any; placeholder?: string; invalid?: boolean; error?: any; onChange?: (value: string) => void }): any
+  export function Switch(props: CommonProps & { checked?: boolean; label?: any; invalid?: boolean; error?: any; onChange?: (value: boolean) => void }): any
   export function Form(props: CommonProps & { onSubmit?: (event: Event) => void | Promise<void> }): any
   export function ActionButton(props: CommonProps & {
     action?: HostedAction

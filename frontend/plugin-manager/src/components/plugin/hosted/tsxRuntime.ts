@@ -126,9 +126,26 @@ ${escapeScriptContent(uiKit.runtime)}
     }
     function __showHostedError(error) {
       const message = error && error.stack ? error.stack : String(error);
+      const meta = {
+        pluginId: __NEKO_PAYLOAD.plugin && (__NEKO_PAYLOAD.plugin.id || __NEKO_PAYLOAD.plugin.plugin_id),
+        surface: __NEKO_PAYLOAD.surface && (__NEKO_PAYLOAD.surface.kind + ':' + __NEKO_PAYLOAD.surface.id),
+        entry: __NEKO_PAYLOAD.surface && __NEKO_PAYLOAD.surface.entry,
+      };
+      try {
+        console.error('[plugin-ui] fatal surface render error', { ...meta, message, error });
+      } catch (_) {}
       const root = document.getElementById('root');
-      if (root) root.replaceChildren(window.NekoUiKit.h('pre', { className: 'neko-error' }, message));
-      parent.postMessage({ type: 'neko-hosted-surface-error', payload: { message } }, '*');
+      if (root) root.replaceChildren(window.NekoUiKit.h('div', { className: 'neko-error', role: 'alert' },
+        window.NekoUiKit.h('strong', null, '插件界面渲染失败'),
+        window.NekoUiKit.h('pre', null, message),
+        window.NekoUiKit.h('div', { className: 'neko-error-actions' },
+          window.NekoUiKit.h('button', { className: 'neko-button', type: 'button', onClick: () => window.__NekoRenderHostedSurface && window.__NekoRenderHostedSurface() }, '重新渲染'),
+          window.NekoUiKit.h('button', { className: 'neko-button', type: 'button', onClick: () => navigator.clipboard && navigator.clipboard.writeText(message).catch(() => {}) }, '复制错误'),
+          window.NekoUiKit.h('button', { className: 'neko-button', type: 'button', onClick: () => parent.postMessage({ type: 'neko-hosted-surface-open-logs', payload: meta }, '*') }, '查看日志')
+        ),
+        window.NekoUiKit.h('div', { className: 'neko-error-meta' }, JSON.stringify(meta))
+      ));
+      parent.postMessage({ type: 'neko-hosted-surface-error', payload: { message, fatal: true, scope: 'surface.render', details: meta } }, '*');
     }
     window.__NekoRefreshHostedPayload = function(context) {
       __NEKO_PAYLOAD = __normalizeHostedPayload(context);
