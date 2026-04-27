@@ -266,7 +266,7 @@ type YuiGuideHandoffToken = {
 | 文件 / 模块 | owner | 说明 |
 |---|---|---|
 | [static/universal-tutorial-manager.js](../../static/universal-tutorial-manager.js) | 主负责人 | 高冲突骨架文件 |
-| [templates/index.html](../../templates/index.html) | 主负责人 | 首页脚本装配入口 |
+| `templates/index.html` | 主负责人 | 首页脚本装配入口 |
 | `static/yui-guide-steps.js` | 主负责人 | 共享场景注册表与步骤契约 |
 | `static/yui-guide-director.js` | 开发 B | 演出层主模块 |
 | `static/yui-guide-overlay.js` | 开发 B | 演出层 UI 壳 |

@@ -6,7 +6,7 @@ Handles HTML page rendering endpoints.
 """
 
 from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 
 from .shared_state import get_templates
 
@@ -95,13 +95,6 @@ async def mmd_emotion_manager(request: Request):
     })
 
 
-@router.get('/chara_manager', response_class=HTMLResponse)
-async def chara_manager(request: Request):
-    """渲染主控制页面"""
-    templates = get_templates()
-    return templates.TemplateResponse('templates/chara_manager.html', {"request": request})
-
-
 @router.get('/voice_clone', response_class=HTMLResponse)
 async def voice_clone_page(request: Request):
     templates = get_templates()
@@ -117,10 +110,18 @@ async def api_key_settings(request: Request):
     })
 
 
-@router.get('/steam_workshop_manager', response_class=HTMLResponse)
-async def steam_workshop_manager_page(request: Request, lanlan_name: str = ""):
+@router.get('/chara_manager')
+async def chara_manager_redirect(request: Request):
+    url = "/character_card_manager"
+    if request.query_params:
+        url += "?" + str(request.query_params)
+    return RedirectResponse(url=url, status_code=307)
+
+
+@router.get('/character_card_manager', response_class=HTMLResponse)
+async def character_card_manager_page(request: Request, lanlan_name: str = ""):
     templates = get_templates()
-    return templates.TemplateResponse("templates/steam_workshop_manager.html", {"request": request, "lanlan_name": lanlan_name})
+    return templates.TemplateResponse("templates/character_card_manager.html", {"request": request, "lanlan_name": lanlan_name})
 
 
 @router.get('/cloudsave_manager', response_class=HTMLResponse)
@@ -164,11 +165,11 @@ async def get_agenthud_page(request: Request):
     return templates.TemplateResponse("templates/agenthud.html", {"request": request})
 
 
-@router.get("/card_export", response_class=HTMLResponse)
-async def get_card_export_page(request: Request):
-    """角色卡导出页面（独立加载模型并可调整构图）"""
+@router.get("/card_maker", response_class=HTMLResponse)
+async def get_card_maker_page(request: Request):
+    """卡面制作页面（独立加载模型并可调整构图）"""
     templates = get_templates()
-    return templates.TemplateResponse("templates/card_export.html", {
+    return templates.TemplateResponse("templates/card_maker.html", {
         "request": request,
         **_vrm_defaults_ctx(),
     })

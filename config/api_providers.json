@@ -75,7 +75,7 @@
       "conversation_model": "qwen3.6-plus",
       "summary_model": "qwen3.6-plus",
       "correction_model": "qwen3.6-plus",
-      "emotion_model": "qwen-flash",
+      "emotion_model": "qwen3.6-flash-2026-04-16",
       "vision_model": "qwen3.6-plus",
       "agent_model": "qwen3.6-plus"
     },
@@ -87,7 +87,7 @@
       "conversation_model": "qwen3.6-plus",
       "summary_model": "qwen3.6-plus",
       "correction_model": "qwen3.6-plus",
-      "emotion_model": "qwen-flash",
+      "emotion_model": "qwen3.6-flash-2026-04-16",
       "vision_model": "qwen3.6-plus",
       "agent_model": "qwen3.6-plus"
     },

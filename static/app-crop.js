@@ -208,11 +208,21 @@
         imgNaturalWidth = natW;
         imgNaturalHeight = natH;
 
-        var scale = Math.min(overlayW / natW, overlayH / natH, 1);
+        // 移除 1 的上限，让低分辨率截图在高分屏上也能放大填满容器，
+        // 避免周围出现大面积黑边导致用户误以为边缘内容"选不到"。
+        var scale = Math.min(overlayW / natW, overlayH / natH);
         imgDisplayWidth = Math.round(natW * scale);
         imgDisplayHeight = Math.round(natH * scale);
         imgDisplayLeft = Math.round((overlayW - imgDisplayWidth) / 2);
         imgDisplayTop = Math.round((overlayH - imgDisplayHeight) / 2);
+
+        // 同步 DOM 图片尺寸和位置，确保 CSS 显示和 canvas 计算完全一致
+        if (imgEl) {
+            imgEl.style.width = imgDisplayWidth + 'px';
+            imgEl.style.height = imgDisplayHeight + 'px';
+            imgEl.style.left = imgDisplayLeft + 'px';
+            imgEl.style.top = (imgDisplayTop + getTopBarHeight()) + 'px';
+        }
     }
 
     function canvasToImage(cx, cy) {

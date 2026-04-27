@@ -49,9 +49,14 @@ def _make_config_manager(tmp_root: Path):
         ConfigManager,
         "get_legacy_app_root_candidates",
         return_value=[],
+    ), patch.object(
+        ConfigManager,
+        "_get_standard_data_directory_candidates",
+        return_value=[tmp_root],
     ):
         config_manager = ConfigManager("N.E.K.O")
     config_manager.get_legacy_app_root_candidates = lambda: []
+    config_manager._get_standard_data_directory_candidates = lambda: [tmp_root]
     return config_manager
 
 

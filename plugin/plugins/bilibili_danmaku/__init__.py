@@ -681,7 +681,9 @@ class BiliDanmakuPlugin(NekoPluginBase):
                             break
                     generated_text = ''.join(reply_chunks).strip()
                     if generated_text:
-                        self.logger.info(f"B站{action_name}生成完成 (length: {len(generated_text)}): {generated_text[:120]}")
+                        # 生成的弹幕回复原文不写 logger
+                        self.logger.info(f"B站{action_name}生成完成 (length: {len(generated_text)})")
+                        print(f"B站{action_name}生成完成: {generated_text[:120]}")
                     if generated_text and not self._is_same_as_intent(generated_text, user_intent):
                         return generated_text
                     if generated_text:
@@ -1012,7 +1014,9 @@ class BiliDanmakuPlugin(NekoPluginBase):
         
         content = f"📊【弹幕引导词】\n\n{guidance}\n\n{sample_note}"
         
-        self.logger.info(f"_push_guidance_to_ai 推送: content_len={len(content)}, preview={content[:80]}")
+        # 引导词原文（基于真实弹幕内容生成）不写 logger
+        self.logger.info(f"_push_guidance_to_ai 推送: content_len={len(content)}")
+        print(f"_push_guidance_to_ai preview: {content[:80]}")
         self._push_to_ai(content, "弹幕引导词", priority=5)
 
     # ==========================================

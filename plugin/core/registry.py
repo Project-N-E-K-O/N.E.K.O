@@ -669,8 +669,12 @@ def _build_plugin_meta(
             if isinstance(kw, str) and kw.strip():
                 keywords.append(kw.strip())
     short_desc = str(pdata.get("short_description", "") or "").strip()
-    if len(short_desc) > 300:
-        short_desc = short_desc[:300]
+    # Defensive cap on plugin manifest short_description. 200 tokens — same
+    # as task_executor's downstream short_description LLM-prompt cap, so the
+    # value is consistent across "plugin descriptive blurb" callsites.
+    from utils.tokenize import count_tokens, truncate_to_tokens
+    if count_tokens(short_desc) > 200:
+        short_desc = truncate_to_tokens(short_desc, 200)
     passive = parse_bool_config(pdata.get("passive"), default=False)
 
     return PluginMeta(

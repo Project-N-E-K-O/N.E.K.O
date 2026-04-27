@@ -1051,8 +1051,17 @@ if (toggleBtn) {
 const sidebar = document.getElementById('sidebar');
 
 
-// --- 初始化 ---
-document.addEventListener('DOMContentLoaded', () => {
+async function initCommonUiAfterStorageBarrier() {
+    if (typeof window.waitForStorageLocationStartupBarrier === 'function') {
+        try {
+            await window.waitForStorageLocationStartupBarrier();
+        } catch (_) {}
+    } else if (window.__nekoStorageLocationStartupBarrier
+        && typeof window.__nekoStorageLocationStartupBarrier.then === 'function') {
+        try {
+            await window.__nekoStorageLocationStartupBarrier;
+        } catch (_) {}
+    }
 
     setupResizableChatContainer();
 
@@ -1087,6 +1096,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // 确保自动滚动在页面加载后生效
     scrollToBottom();
+}
+
+// --- 初始化 ---
+document.addEventListener('DOMContentLoaded', () => {
+    initCommonUiAfterStorageBarrier();
 });
 
 // 监听 DOM 变化，确保新内容添加后自动滚动

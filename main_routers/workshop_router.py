@@ -25,6 +25,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import FileResponse, JSONResponse
 
 from .shared_state import get_steamworks, get_config_manager, get_initialize_character_data
+from utils.cloudsave_runtime import MaintenanceModeError, is_write_fence_active
 from utils.file_utils import atomic_write_json, atomic_write_json_async, read_json_async
 from utils.workshop_utils import (
     ensure_workshop_folder_exists,
@@ -69,6 +70,35 @@ WORKSHOP_REFERENCE_AUDIO_CONTENT_TYPES = {
 }
 WORKSHOP_REFERENCE_LANGUAGES = {'ch', 'en', 'fr', 'de', 'ja', 'ko', 'ru'}
 WORKSHOP_REFERENCE_PROVIDER_HINTS = {'cosyvoice', 'minimax', 'minimax_intl'}
+
+
+async def cancel_background_tasks(*, timeout: float = 5.0) -> None:
+    for task_attr in ("_ugc_warmup_task", "_ugc_sync_task"):
+        task = globals().get(task_attr)
+        if task is None:
+            continue
+        if task.done():
+            try:
+                task.result()
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:
+                logger.debug("workshop %s finished with error during cleanup: %s", task_attr, exc, exc_info=True)
+        else:
+            task.cancel()
+            try:
+                await asyncio.wait_for(task, timeout=timeout)
+            except asyncio.CancelledError:
+                current_task = asyncio.current_task()
+                if current_task is not None and current_task.cancelling():
+                    raise
+                logger.debug("workshop %s cancelled", task_attr)
+            except asyncio.TimeoutError:
+                logger.warning("workshop %s did not stop within %.1fs", task_attr, timeout)
+            except Exception as exc:
+                logger.debug("workshop %s cleanup failed: %s", task_attr, exc, exc_info=True)
+        if globals().get(task_attr) is task:
+            globals()[task_attr] = None
 
 
 def _read_first_line(path: str, encoding: str = 'utf-8') -> str:
@@ -2688,209 +2718,6 @@ async def save_workshop_config_api(config_data: dict):
         return {"success": False, "error": str(e)}
 
 
-@router.post('/local-items/scan')
-async def scan_local_workshop_items(request: Request):
-    try:
-        logger.info('接收到扫描本地创意工坊物品的API请求')
-        
-        # 确保配置已加载
-        from utils.workshop_utils import load_workshop_config
-        workshop_config_data = await asyncio.to_thread(load_workshop_config)
-        logger.info(f'创意工坊配置已加载: {workshop_config_data}')
-        
-        data = await request.json()
-        logger.info(f'请求数据: {data}')
-        folder_path = data.get('folder_path')
-        
-        # 安全检查：始终使用get_workshop_path()作为基础目录
-        base_workshop_folder = os.path.abspath(os.path.normpath(get_workshop_path()))
-        
-        # 如果没有提供路径，使用默认路径
-        default_path_used = False
-        if not folder_path:
-            # 优先使用get_workshop_path()函数获取路径
-            folder_path = base_workshop_folder
-            default_path_used = True
-            logger.info(f'未提供文件夹路径，使用默认路径: {folder_path}')
-            # 确保默认文件夹存在
-            ensure_workshop_folder_exists(folder_path)
-        else:
-            # 用户提供了路径，标准化处理
-            folder_path = os.path.normpath(folder_path)
-            
-            # 如果是相对路径，基于默认路径解析
-            if not os.path.isabs(folder_path):
-                folder_path = os.path.normpath(folder_path)
-            
-            logger.info(f'用户指定路径: {folder_path}')
-
-        try:
-            folder_path = _assert_under_base(folder_path, base_workshop_folder)
-        except PermissionError:
-            logger.warning(f'路径遍历尝试被拒绝: {folder_path}')
-            return JSONResponse(content={"success": False, "error": "权限错误：指定的路径不在基础目录下"}, status_code=403)
-        
-        logger.info(f'最终使用的文件夹路径: {folder_path}, 默认路径使用状态: {default_path_used}')
-        
-        if not os.path.exists(folder_path):
-            logger.warning(f'文件夹不存在: {folder_path}')
-            return JSONResponse(content={"success": False, "error": f"指定的文件夹不存在: {folder_path}", "default_path_used": default_path_used}, status_code=404)
-        
-        if not os.path.isdir(folder_path):
-            logger.warning(f'指定的路径不是文件夹: {folder_path}')
-            return JSONResponse(content={"success": False, "error": f"指定的路径不是文件夹: {folder_path}", "default_path_used": default_path_used}, status_code=400)
-        
-        # 扫描本地创意工坊物品
-        local_items = []
-        published_items = []
-        item_id = 1
-        item_source = "N.E.K.O./workshop"
-        
-        # 获取Steam下载的workshop路径，这个路径需要被排除
-        steam_workshop_path = get_workshop_path()
-        
-        # 遍历文件夹，扫描所有子文件夹
-        for item_folder in os.listdir(folder_path):
-            item_path = os.path.join(folder_path, item_folder)
-            if os.path.isdir(item_path):
-                    
-                # 排除Steam下载的物品目录（WORKSHOP_PATH）
-                if os.path.normpath(item_path) == os.path.normpath(steam_workshop_path):
-                    logger.info(f"跳过Steam下载的workshop目录: {item_path}")
-                    continue
-                stat_info = os.stat(item_path)
-                
-                # 处理预览图路径（如果有）
-                preview_image = find_preview_image_in_folder(item_path)
-                
-                local_items.append({
-                    "id": f"local_{item_id}",
-                    "source": item_source,
-                    "name": item_folder,
-                    "path": item_path,  # 返回绝对路径
-                    "lastModified": stat_info.st_mtime,
-                    "size": get_folder_size(item_path),
-                    "tags": ["本地文件"],
-                    "previewImage": preview_image  # 返回绝对路径
-                })
-                item_id += 1
-        
-        logger.info(f"扫描完成，找到 {len(local_items)} 个本地创意工坊物品")
-        
-        return JSONResponse(content={
-            "success": True,
-            "local_items": local_items,
-            "published_items": published_items,
-            "folder_path": folder_path,  # 返回绝对路径
-            "default_path_used": default_path_used
-        })
-        
-    except Exception as e:
-        logger.error(f"扫描本地创意工坊物品失败: {e}")
-        return JSONResponse(content={"success": False, "error": str(e)}, status_code=500)
-
-# 获取创意工坊配置
-
-@router.get('/local-items/{item_id}')
-async def get_local_workshop_item(item_id: str, folder_path: str = None):
-    try:
-        # 这个接口需要从缓存或临时存储中获取物品信息
-        # 这里简化实现，实际应用中应该有更完善的缓存机制
-        # folder_path 已经通过函数参数获取
-        
-        if not folder_path:
-            return JSONResponse(content={"success": False, "error": "未提供文件夹路径"}, status_code=400)
-        
-        # 安全检查：始终使用get_workshop_path()作为基础目录
-        base_workshop_folder = os.path.abspath(os.path.normpath(get_workshop_path()))
-        
-        # Windows路径处理：确保路径分隔符正确
-        if os.name == 'nt':  # Windows系统
-            # 解码并处理Windows路径
-            decoded_folder_path = unquote(folder_path)
-            # 替换斜杠为反斜杠，确保Windows路径格式正确
-            decoded_folder_path = decoded_folder_path.replace('/', '\\')
-            # 处理可能的双重编码问题
-            if decoded_folder_path.startswith('\\\\'):
-                decoded_folder_path = decoded_folder_path[2:]  # 移除多余的反斜杠前缀
-        else:
-            decoded_folder_path = unquote(folder_path)
-        
-        # 关键修复：将相对路径转换为基于基础目录的绝对路径
-        # 确保路径是绝对路径，如果不是则视为相对路径
-        if not os.path.isabs(decoded_folder_path):
-            # 将相对路径转换为基于基础目录的绝对路径
-            full_path = os.path.join(base_workshop_folder, decoded_folder_path)
-        else:
-            # 如果已经是绝对路径，仍然确保它在基础目录内（安全检查）
-            full_path = decoded_folder_path
-            # 标准化路径
-            full_path = os.path.normpath(full_path)
-            
-        # 安全检查：验证路径是否在基础目录内
-        full_path = os.path.realpath(os.path.normpath(full_path))
-        if os.path.commonpath([full_path, base_workshop_folder]) != base_workshop_folder:
-            logger.warning(f'路径遍历尝试被拒绝: {folder_path}')
-            return JSONResponse(content={"success": False, "error": "访问被拒绝: 路径不在允许的范围内"}, status_code=403)
-        
-        folder_path = full_path
-        logger.info(f'处理后的完整路径: {folder_path}')
-        
-        # 解析本地ID
-        if item_id.startswith('local_'):
-            index = int(item_id.split('_')[1])
-            
-            try:
-                # 检查folder_path是否已经是项目文件夹路径
-                if os.path.isdir(folder_path):
-                    # 情况1：folder_path直接指向项目文件夹
-                    stat_info = os.stat(folder_path)
-                    item_name = os.path.basename(folder_path)
-                    
-                    item = {
-                        "id": item_id,
-                        "name": item_name,
-                        "path": folder_path,
-                        "lastModified": stat_info.st_mtime,
-                        "size": get_folder_size(folder_path),
-                        "tags": ["模组"],
-                        "previewImage": find_preview_image_in_folder(folder_path)
-                    }
-                    
-                    return JSONResponse(content={"success": True, "item": item})
-                else:
-                    # 情况2：尝试原始逻辑，从folder_path中查找第index个子文件夹
-                    items = []
-                    for i, item_folder in enumerate(os.listdir(folder_path)):
-                        item_path = os.path.join(folder_path, item_folder)
-                        if os.path.isdir(item_path) and i + 1 == index:
-                            stat_info = os.stat(item_path)
-                            items.append({
-                                "id": f"local_{i + 1}",
-                                "name": item_folder,
-                                "path": item_path,
-                                "lastModified": stat_info.st_mtime,
-                                "size": get_folder_size(item_path),
-                                "tags": ["模组"],
-                                "previewImage": find_preview_image_in_folder(item_path)
-                            })
-                            break
-                    
-                    if items:
-                        return JSONResponse(content={"success": True, "item": items[0]})
-                    else:
-                        return JSONResponse(content={"success": False, "error": "物品不存在"}, status_code=404)
-            except Exception as e:
-                logger.error(f"处理本地物品路径时出错: {e}")
-                return JSONResponse(content={"success": False, "error": f"路径处理错误: {str(e)}"}, status_code=500)
-        
-        return JSONResponse(content={"success": False, "error": "无效的物品ID格式"}, status_code=400)
-        
-    except Exception as e:
-        logger.error(f"获取本地创意工坊物品失败: {e}")
-        return JSONResponse(content={"success": False, "error": str(e)}, status_code=500)
-
-
 @router.get('/check-upload-status')
 async def check_upload_status(item_path: str = None):
     try:
@@ -4020,6 +3847,10 @@ async def sync_workshop_character_cards() -> dict:
             return {"added": 0, "skipped": 0, "errors": 0}
         
         config_mgr = get_config_manager()
+
+        if is_write_fence_active(config_mgr):
+            logger.info("sync_workshop_character_cards: 检测到维护态写围栏，跳过本轮同步并等待后续重试")
+            return {"added": 0, "skipped": 0, "errors": 0, "blocked_by_write_fence": True}
         
         # 使用全局锁序列化 load_characters -> save_characters 流程，防止并发覆写
         async with _ugc_sync_lock:
@@ -4050,8 +3881,12 @@ async def sync_workshop_character_cards() -> dict:
                         try:
                             chara_data = await read_json_async(chara_file_path)
                             
-                            chara_name = chara_data.get('档案名') or chara_data.get('name')
-                            if not chara_name:
+                            chara_name_raw = chara_data.get('档案名') or chara_data.get('name')
+                            if not chara_name_raw:
+                                continue
+                            chara_name = str(chara_name_raw).strip()
+                            if not chara_name or '/' in chara_name or '\\' in chara_name or '..' in chara_name or len(chara_name) > 120:
+                                logger.warning(f"sync_workshop_character_cards: 跳过非法角色名 '{chara_name_raw}' (物品 {item_id})")
                                 continue
 
                             if chara_name in deleted_character_names:
@@ -4138,6 +3973,27 @@ async def sync_workshop_character_cards() -> dict:
                             need_save = True
                             added_count += 1
                             logger.info(f"sync_workshop_character_cards: 添加角色卡 '{chara_name}' (来自物品 {item_id})")
+
+                            # 写入卡面元数据 sidecar（origin=steam）
+                            try:
+                                config_mgr.ensure_card_faces_directory()
+                                meta_path = config_mgr.card_face_meta_path(chara_name)
+                                if not meta_path.exists():
+                                    workshop_author = ''
+                                    try:
+                                        workshop_author = str(item.get('authorName') or item.get('author') or item.get('creatorName') or '').strip()[:64]
+                                    except Exception:
+                                        workshop_author = ''
+                                    now_iso = datetime.utcnow().isoformat() + 'Z'
+                                    meta = {
+                                        'author': workshop_author,
+                                        'origin': 'steam',
+                                        'created_at': now_iso,
+                                        'updated_at': now_iso,
+                                    }
+                                    await atomic_write_json_async(meta_path, meta, ensure_ascii=False, indent=2)
+                            except Exception as meta_err:
+                                logger.warning(f"sync_workshop_character_cards: 写入卡面元数据失败 {chara_name}: {meta_err}")
                             
                         except Exception as e:
                             logger.warning(f"sync_workshop_character_cards: 处理文件 {chara_file_path} 失败: {e}")
@@ -4149,7 +4005,16 @@ async def sync_workshop_character_cards() -> dict:
             
             # 4. 保存并重新加载角色配置
             if need_save:
-                await config_mgr.asave_characters(characters)
+                if is_write_fence_active(config_mgr):
+                    logger.info("sync_workshop_character_cards: 保存前检测到维护态写围栏，跳过本轮同步并等待后续重试")
+                    return {"added": 0, "skipped": skipped_count, "errors": error_count, "blocked_by_write_fence": True}
+
+                try:
+                    await config_mgr.asave_characters(characters)
+                except MaintenanceModeError:
+                    logger.info("sync_workshop_character_cards: 保存时进入维护态写围栏，跳过本轮同步并等待后续重试")
+                    return {"added": 0, "skipped": skipped_count, "errors": error_count, "blocked_by_write_fence": True}
+
                 logger.info(f"sync_workshop_character_cards: 已保存，新增 {added_count} 个角色卡")
                 
                 try:
@@ -4177,6 +4042,18 @@ async def api_sync_workshop_character_cards():
     """
     try:
         result = await sync_workshop_character_cards()
+        if result.get("blocked_by_write_fence"):
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "success": False,
+                    "code": "WRITE_FENCE_ACTIVE",
+                    "error": "当前处于存储维护态，暂时不能同步创意工坊角色卡，请稍后重试。",
+                    "added": result.get("added", 0),
+                    "skipped": result.get("skipped", 0),
+                    "errors": result.get("errors", 0),
+                },
+            )
         return {
             "success": True,
             "added": result["added"],

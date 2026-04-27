@@ -948,10 +948,13 @@ class MCPClient:
                 if not line:
                     break
                 
-                # 记录 stderr 输出
-                stderr_text = line.decode().strip()
+                # 记录 stderr 输出 — 上游 MCP 进程的 stderr 可能含敏感数据，不写 logger。
+                # decode 用 errors="replace" 防止单行非 UTF-8 字节让整个 stderr
+                # 协程崩掉、子进程的 stderr buffer 后续被堵死。
+                stderr_text = line.decode("utf-8", errors="replace").strip()
                 if stderr_text and self.logger:
-                    self.logger.debug(f"MCP server '{self.config.name}' stderr: {stderr_text}")
+                    self.logger.debug(f"MCP server '{self.config.name}' stderr (len={len(stderr_text)})")
+                    print(f"[MCP] '{self.config.name}' stderr: {stderr_text}")
         except asyncio.CancelledError:
             pass
         except Exception as e:
@@ -1373,11 +1376,24 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         )
         return normalized_current == incoming
 
-    def _truncate_llm_text(self, text: str, limit: int = 1200) -> str:
+    def _truncate_llm_text(self, text: str, limit: int | None = None) -> str:
+        # `limit` is in tiktoken tokens (o200k_base). Default 1000 ≈ 1400 CJK
+        # chars or ~4000 English chars under the current encoding. Sync because
+        # callers are sync; truncate_to_tokens handles tiktoken-unavailable
+        # fallback. Reserves token room for the trailing "..." so the result
+        # fits limit.
+        from utils.tokenize import count_tokens, truncate_to_tokens
+        if limit is None:
+            from config import MCP_TOOL_RESULT_MAX_TOKENS
+            limit = MCP_TOOL_RESULT_MAX_TOKENS
         cleaned = text.strip()
-        if len(cleaned) <= limit:
+        if count_tokens(cleaned) <= limit:
             return cleaned
-        return cleaned[:limit] + "..."
+        suffix = "..."
+        suffix_tokens = count_tokens(suffix)
+        if limit <= suffix_tokens:
+            return truncate_to_tokens(cleaned, limit)
+        return truncate_to_tokens(cleaned, limit - suffix_tokens) + suffix
 
     def _summarize_mcp_result(self, result: object) -> str:
         if result is None:

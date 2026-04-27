@@ -27,8 +27,21 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
 from openai import APIConnectionError, InternalServerError, RateLimitError
 from utils.llm_client import SystemMessage, HumanMessage, create_chat_llm
+from utils.tokenize import count_tokens
 import ssl
 import httpx
+
+# Phase 2 proactive output ceiling. The model occasionally runs off; this
+# fence cuts the stream and aborts TTS once the running output exceeds the
+# token budget. We use sync `count_tokens` here on purpose:
+#   - At fence time `full_text` is < 1 KB (we abort at 300 tokens ≈ 400 CJK
+#     chars); tiktoken Rust encode of that size is sub-millisecond.
+#   - tiktoken's Rust core releases the GIL inside `encode`, so a sync call
+#     does NOT block other coroutines' IO callbacks for any meaningful time.
+#   - `asyncio.to_thread` adds ~0.1 ms scheduling overhead per call (warmed
+#     thread pool) — 3-4× the actual encode work. Across a 30-chunk stream
+#     that's a few milliseconds saved per turn, but more importantly avoids
+#     the cold-start case where the first thread hop can take much longer.
 from cachetools import TTLCache
 
 from .shared_state import get_steamworks, get_config_manager, get_sync_message_queue, get_session_manager
@@ -38,6 +51,16 @@ from config import (
     AUTOSTART_CSRF_TOKEN,
     MEMORY_SERVER_PORT,
     get_extra_body,
+    PROACTIVE_PHASE1_FETCH_PER_SOURCE,
+    PROACTIVE_PHASE1_TOTAL_TOPICS,
+    PROACTIVE_EXTERNAL_PER_ITEM_MAX_TOKENS,
+    PROACTIVE_EXTERNAL_TOTAL_MAX_TOKENS,
+    PROACTIVE_PHASE2_OUTPUT_MAX_TOKENS as PHASE2_OUTPUT_MAX_TOKENS,
+    PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
+    PROACTIVE_PHASE1_UNIFIED_MAX_TOKENS,
+    PROACTIVE_CHAT_HISTORY_MAX,
+    PROACTIVE_TOPIC_HISTORY_MAX,
+    EMOTION_ANALYSIS_MAX_TOKENS,
 )
 from config.prompts_sys import _loc
 from config.prompts_emotion import get_outward_emotion_analysis_prompt
@@ -93,10 +116,34 @@ from utils.tutorial_prompt_state import (
     record_tutorial_started,
     record_tutorial_completed,
 )
+from utils.storage_location_bootstrap import build_storage_location_bootstrap_payload
+from utils.config_manager import get_config_manager as get_runtime_config_manager
+from config import APP_NAME
 
 router = APIRouter(prefix="/api", tags=["system"])
 logger = get_module_logger(__name__, "Main")
 _AUTOSTART_CSRF_HEADER = "X-CSRF-Token"
+
+
+def _set_no_store_headers(response: Response) -> None:
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+
+
+def _derive_system_lifecycle_state(storage_bootstrap: dict[str, Any]) -> str:
+    if not isinstance(storage_bootstrap, dict):
+        return "starting"
+
+    if (
+        bool(storage_bootstrap.get("selection_required"))
+        or bool(storage_bootstrap.get("migration_pending"))
+        or bool(storage_bootstrap.get("recovery_required"))
+        or bool(str(storage_bootstrap.get("blocking_reason") or "").strip())
+    ):
+        return "migration_required"
+
+    return "ready"
 
 
 def _build_public_error_response(
@@ -147,6 +194,15 @@ def _get_request_origin(request: Request) -> str:
     if origin:
         return origin
     return _normalize_origin_value(request.headers.get("referer"))
+
+
+def _get_system_config_manager():
+    try:
+        return get_config_manager()
+    except RuntimeError:
+        # The storage bootstrap sentinel must keep working during limited startup
+        # even if main_server shared_state is not fully published yet.
+        return get_runtime_config_manager(APP_NAME, migrate=False)
 
 
 def _get_allowed_local_origins(request: Request) -> set[str]:
@@ -221,6 +277,47 @@ async def _read_json_object(request: Request) -> dict[str, object]:
         return {}
 
     return payload if isinstance(payload, dict) else {}
+
+
+@router.get("/system/status")
+async def get_system_status(response: Response):
+    """Return a lightweight readiness snapshot for the web bootstrap sentinel."""
+    _set_no_store_headers(response)
+
+    try:
+        config_manager = _get_system_config_manager()
+        storage_bootstrap = build_storage_location_bootstrap_payload(config_manager)
+        lifecycle_state = _derive_system_lifecycle_state(storage_bootstrap)
+        return {
+            "ok": True,
+            "status": lifecycle_state,
+            "ready": lifecycle_state == "ready",
+            "storage": {
+                "selection_required": bool(storage_bootstrap.get("selection_required")),
+                "migration_pending": bool(storage_bootstrap.get("migration_pending")),
+                "recovery_required": bool(storage_bootstrap.get("recovery_required")),
+                "legacy_cleanup_pending": bool(storage_bootstrap.get("legacy_cleanup_pending")),
+                "blocking_reason": str(storage_bootstrap.get("blocking_reason") or ""),
+                "last_error_summary": str(storage_bootstrap.get("last_error_summary") or ""),
+                "stage": storage_bootstrap.get("stage") or "",
+            },
+        }
+    except Exception as exc:
+        logger.warning("system status probe unavailable during startup: %s", exc)
+        return {
+            "ok": True,
+            "status": "starting",
+            "ready": False,
+            "storage": {
+                "selection_required": False,
+                "migration_pending": False,
+                "recovery_required": False,
+                "legacy_cleanup_pending": False,
+                "blocking_reason": "",
+                "last_error_summary": "",
+                "stage": "",
+            },
+        }
 
 
 # 统一的表情包图源白名单由 utils.meme_fetcher 维护，本文件仅用于引入
@@ -861,8 +958,8 @@ _proactive_topic_history: dict[str, deque] = {}
 _RECENT_CHAT_MAX_AGE_SECONDS = 3600  # 1小时内的搭话记录
 _RECENT_TOPIC_MAX_AGE_SECONDS = 3600  # 1小时内避免重复外部话题
 _PROACTIVE_SIMILARITY_THRESHOLD = 0.94  # 高阈值，尽量避免误杀
-_PHASE1_FETCH_PER_SOURCE = 10  # Phase 1 每个信息源固定抓取条数
-_PHASE1_TOTAL_TOPIC_TARGET = 20  # Phase 1 输入给筛选模型的总候选目标条数
+_PHASE1_FETCH_PER_SOURCE = PROACTIVE_PHASE1_FETCH_PER_SOURCE  # Phase 1 每个信息源固定抓取条数
+_PHASE1_TOTAL_TOPIC_TARGET = PROACTIVE_PHASE1_TOTAL_TOPICS  # Phase 1 输入给筛选模型的总候选目标条数
 
 # --- 来源动态权重系统 ---
 _SOURCE_WEIGHT_DECAY_LAMBDA = 0.002   # 指数衰减系数，半衰期 ≈ 5.8 分钟
@@ -1198,7 +1295,7 @@ def _record_proactive_chat(lanlan_name: str, message: str, channel: str = ''):
     - channel: 来源通道（可选，默认 'vision'）
     """
     if lanlan_name not in _proactive_chat_history:
-        _proactive_chat_history[lanlan_name] = deque(maxlen=10)
+        _proactive_chat_history[lanlan_name] = deque(maxlen=PROACTIVE_CHAT_HISTORY_MAX)
     _proactive_chat_history[lanlan_name].append((time.time(), message, channel))
 
 
@@ -1280,7 +1377,7 @@ def _record_topic_usage(lanlan_name: str, topic_key: str):
     if not topic_key:
         return
     if lanlan_name not in _proactive_topic_history:
-        _proactive_topic_history[lanlan_name] = deque(maxlen=100)
+        _proactive_topic_history[lanlan_name] = deque(maxlen=PROACTIVE_TOPIC_HISTORY_MAX)
     _proactive_topic_history[lanlan_name].append((time.time(), topic_key))
 
 
@@ -1673,7 +1770,7 @@ async def emotion_analysis(request: Request):
             api_key,
             temperature=0.3,
             # Gemini 模型可能返回 markdown 格式，需要更多 token
-            max_completion_tokens=40,
+            max_completion_tokens=EMOTION_ANALYSIS_MAX_TOKENS,
         )
         async with llm:
             result = await llm.ainvoke(messages)
@@ -2976,7 +3073,8 @@ async def proactive_chat(request: Request):
                 "detail": str(e)
             }, status_code=500))
 
-        def _make_llm(temperature: float = 1.0, max_tokens: int = 1536,
+        def _make_llm(temperature: float = 1.0,
+                      max_completion_tokens: int = PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
                       use_vision: bool = False, disable_thinking: bool = True):
             """
             创建 LLM 实例。use_vision=True 时使用 vision 模型；disable_thinking=False 时不注入 extra_body。
@@ -2987,16 +3085,18 @@ async def proactive_chat(request: Request):
                 m, bu, ak = correction_model, correction_base_url, correction_api_key
             kw: dict = dict(
                 temperature=temperature,
-                max_completion_tokens=max_tokens,
+                max_completion_tokens=max_completion_tokens,
                 streaming=True,
             )
             if not disable_thinking:
                 kw["extra_body"] = None  # skip auto-resolved extra_body
             return create_chat_llm(m, bu, ak, **kw)
-        
+
         async def _llm_call_with_retry(
             system_prompt: str, label: str, *,
-            temperature: float = 1.0, max_tokens: int = 1024, timeout: float = 16.0,
+            temperature: float = 1.0,
+            max_completion_tokens: int = PROACTIVE_PHASE1_UNIFIED_MAX_TOKENS,
+            timeout: float = 16.0,
             use_vision: bool = False, disable_thinking: bool = True,
             image_b64: str = '',
             dynamic_context: str = '',
@@ -3024,8 +3124,10 @@ async def proactive_chat(request: Request):
             for attempt in range(max_retries):
                 try:
                     # 使用 async with 确保 ChatOpenAI (AsyncOpenAI) 实例被正确关闭
-                    async with _make_llm(temperature=temperature, max_tokens=max_tokens,
-                                        use_vision=use_vision, disable_thinking=disable_thinking) as llm:
+                    async with _make_llm(temperature=temperature,
+                                        max_completion_tokens=max_completion_tokens,
+                                        use_vision=use_vision,
+                                        disable_thinking=disable_thinking) as llm:
                         response = await asyncio.wait_for(
                             llm.ainvoke(messages),
                             timeout=timeout
@@ -3097,6 +3199,7 @@ async def proactive_chat(request: Request):
                     remaining_total -= len(selected_links)
                     lines = []
                     for idx, item in enumerate(selected_links, start=1):
+                        from utils.tokenize import truncate_to_tokens as _ttt
                         title = item.get('title', '').strip()
                         if not title:
                             continue
@@ -3108,7 +3211,10 @@ async def proactive_chat(request: Request):
                         if url:
                             suffix.append(f"URL: {url}")
                         ext = (" | " + " | ".join(suffix)) if suffix else ""
-                        lines.append(f"{idx}. {title}{ext}")
+                        # 单条外部内容截到 PROACTIVE_EXTERNAL_PER_ITEM_MAX_TOKENS，
+                        # 防止个别 title/url 异常长撑爆 prompt。
+                        item_line = _ttt(f"{idx}. {title}{ext}", PROACTIVE_EXTERNAL_PER_ITEM_MAX_TOKENS)
+                        lines.append(item_line)
                     if lines:
                         parts.append(f"--- {label} ---\n" + "\n".join(lines))
                         continue
@@ -3119,9 +3225,18 @@ async def proactive_chat(request: Request):
                     if compact_lines:
                         fallback_lines = compact_lines[:remaining_total]
                         if fallback_lines:
+                            from utils.tokenize import truncate_to_tokens as _ttt
+                            fallback_lines = [
+                                _ttt(ln, PROACTIVE_EXTERNAL_PER_ITEM_MAX_TOKENS)
+                                for ln in fallback_lines
+                            ]
                             parts.append(f"--- {label} ---\n" + "\n".join(fallback_lines))
                             remaining_total -= len(fallback_lines)
-            merged_web_content = "\n\n".join(parts)
+            from utils.tokenize import truncate_to_tokens as _ttt
+            # 兜底总和截断：防止 20 source × 200 token = 4k 超过 2k 总预算
+            merged_web_content = _ttt(
+                "\n\n".join(parts), PROACTIVE_EXTERNAL_TOTAL_MAX_TOKENS
+            )
         
         # Phase 1 结果收集
         phase1_topics: list[tuple[str, str]] = []  # [(channel, topic_summary), ...]
@@ -3196,6 +3311,7 @@ async def proactive_chat(request: Request):
                         if selected_links_2:
                             remaining_total_2 -= len(selected_links_2)
                             lines = []
+                            from utils.tokenize import truncate_to_tokens as _ttt2
                             for idx, item in enumerate(selected_links_2, start=1):
                                 t = item.get('title', '').strip()
                                 if not t:
@@ -3208,10 +3324,17 @@ async def proactive_chat(request: Request):
                                 if u:
                                     suffix.append(f"URL: {u}")
                                 ext = (" | " + " | ".join(suffix)) if suffix else ""
-                                lines.append(f"{idx}. {t}{ext}")
+                                # 同上路径，单条 cap
+                                lines.append(_ttt2(
+                                    f"{idx}. {t}{ext}",
+                                    PROACTIVE_EXTERNAL_PER_ITEM_MAX_TOKENS,
+                                ))
                             if lines:
                                 parts.append(f"--- {label} ---\n" + "\n".join(lines))
-                    merged_web_content = "\n\n".join(parts)
+                    from utils.tokenize import truncate_to_tokens as _ttt3
+                    merged_web_content = _ttt3(
+                        "\n\n".join(parts), PROACTIVE_EXTERNAL_TOTAL_MAX_TOKENS
+                    )
                 else:
                     merged_web_content = ""
                     all_web_links = []
@@ -3386,7 +3509,9 @@ async def proactive_chat(request: Request):
                         print(f"[{lanlan_name}]- Phase 1 音乐话题去重命中，跳过: {track_name}")
                         music_content = None  # 彻底清空，防止去重后的残留数据泄漏到 fallback 逻辑
                     else:
-                        logger.debug(f"[{lanlan_name}]- Phase 1 音乐话题已添加: {music_topic[:100]}...")
+                        # proactive 话题文本（即将拼进 phase2 prompt）不写 logger
+                        logger.debug(f"[{lanlan_name}]- Phase 1 音乐话题已添加 (topic_len={len(music_topic)})")
+                        print(f"[{lanlan_name}]- Phase 1 音乐话题: {music_topic[:100]}")
                         selected_music_link = {
                             'title': track_name,
                             'artist': track_artist,
@@ -3398,7 +3523,8 @@ async def proactive_chat(request: Request):
                         selected_music_topic_key = music_topic_key
                         phase1_topics.append(('music', music_topic))
                 else:
-                    logger.debug(f"[{lanlan_name}] Phase 1 音乐话题已添加: {music_topic[:100]}...")
+                    logger.debug(f"[{lanlan_name}] Phase 1 音乐话题已添加 (topic_len={len(music_topic)})")
+                    print(f"[{lanlan_name}] Phase 1 音乐话题: {music_topic[:100]}")
                     phase1_topics.append(('music', music_topic))
 
         # ============================================================
@@ -3675,8 +3801,10 @@ async def proactive_chat(request: Request):
                         print(f"[{lanlan_name}] Phase 2 fence 触发 (pipe_count={pipe_count})，abort")
                         aborted = True
                         return True
-            if len(full_text) + len(text) > 400:
-                print(f"[{lanlan_name}] Phase 2 长度超限 ({len(full_text)+len(text)} > 400)，abort")
+            # sync count_tokens — see PHASE2_OUTPUT_MAX_TOKENS docstring
+            n_tokens = count_tokens(full_text + text)
+            if n_tokens > PHASE2_OUTPUT_MAX_TOKENS:
+                print(f"[{lanlan_name}] Phase 2 长度超限 ({n_tokens} > {PHASE2_OUTPUT_MAX_TOKENS} tokens)，abort")
                 aborted = True
                 return True
             full_text += text
@@ -3686,7 +3814,8 @@ async def proactive_chat(request: Request):
         try:
             async with asyncio.timeout(25.0):
                 # 使用 async with 确保 ChatOpenAI 正确关闭
-                async with _make_llm(temperature=1.0, max_tokens=1536,
+                async with _make_llm(temperature=1.0,
+                                    max_completion_tokens=PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
                                     use_vision=phase2_use_vision, disable_thinking=True) as llm:
                     async for chunk in llm.astream(messages):
                         # Phase 2 preempt check：每 chunk 顶端做 O(1) 状态机读，
@@ -3792,7 +3921,9 @@ async def proactive_chat(request: Request):
             }))
         
         response_text = full_text.strip()
-        logger.debug(f"[{lanlan_name}] Phase 2 流式完成 (vision={phase2_use_vision}): {response_text[:120]}...")
+        # 不要把 proactive 原文写进 logger（会进日志文件 / 遥测）；只记元数据。
+        # 完整原文通过 print 给开发者本地查看。
+        logger.debug(f"[{lanlan_name}] Phase 2 流式完成 (vision={phase2_use_vision}, len={len(response_text)} chars)")
         print(f"\n[PROACTIVE-DEBUG] Phase 2 STREAM output: {response_text[:200]}...\n")
 
         has_music_topic = 'music' in active_channels

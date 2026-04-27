@@ -40,7 +40,22 @@ critical_packages = [
     # at first call.
     'tiktoken',
     'tiktoken_ext',
+    # Optional embedding runtime. Present in release/nightly build envs;
+    # skipped gracefully for source installs that do not enable vectors.
+    'onnxruntime',
+    'tokenizers',
 ]
+
+# onnxruntime + tokenizers are only needed when the bundle ships embedding
+# weights. If the build is going to package data/embedding_models but the
+# runtime libs cannot be collected, the resulting artifact would carry
+# multi-MB of weights it cannot load — the runtime would sticky-disable
+# vectors with NO_ONNXRUNTIME at first use. Treat that combination as a
+# build error rather than a silent warning.
+embedding_runtime_packages = {'onnxruntime', 'tokenizers'}
+embedding_assets_present = os.path.isdir(
+    os.path.join(PROJECT_ROOT, 'data', 'embedding_models')
+)
 
 for pkg in critical_packages:
     try:
@@ -49,6 +64,13 @@ for pkg in critical_packages:
         binaries += tmp_ret[1]
         hiddenimports += tmp_ret[2]
     except Exception as e:
+        if pkg in embedding_runtime_packages and embedding_assets_present:
+            raise RuntimeError(
+                f"Cannot collect {pkg!r}, but data/embedding_models is "
+                "present and will be bundled. Install with "
+                "`uv sync --extra embeddings` or remove the embedding "
+                "assets directory before building."
+            ) from e
         print(f"Warning: Could not collect {pkg}: {e}")
 
 # 添加配置文件（只添加 .json 文件，不包含 .py 代码）
@@ -97,6 +119,12 @@ add_data('static/*.png', 'static')
 add_data('assets', 'assets')
 add_data('templates', 'templates')
 add_data('data/browser_use_prompts', 'data/browser_use_prompts')
+# tiktoken o200k_base is fetched on first use into TIKTOKEN_CACHE_DIR.
+# launcher.py points TIKTOKEN_CACHE_DIR at data/tiktoken_cache when it
+# exists in the bundle (PR #929). The CI build warms this dir before
+# packaging; for local source builds add_data warns and skips silently.
+add_data('data/tiktoken_cache', 'data/tiktoken_cache')
+add_data('data/embedding_models', 'data/embedding_models')
 add_data('steam_appid.txt', '.')
 
 # 添加 Steam 相关的 DLL 和库文件（必须放在根目录）

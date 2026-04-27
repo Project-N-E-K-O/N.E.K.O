@@ -1769,12 +1769,10 @@ body.react-chat-window-dragging {
 /* Background image + canvas positioned below topbar */
 .crop-bg-image {
     position: absolute;
-    top: 40px;
     left: 0;
-    right: 0;
-    bottom: 0;
-    width: 100%;
-    height: calc(100% - 40px);
+    top: 0;
+    width: auto;
+    height: auto;
     object-fit: contain;
     pointer-events: none;
     user-select: none;
@@ -1850,10 +1848,7 @@ body.react-chat-window-dragging {
         font-size: 0.78rem;
     }
 
-    .crop-bg-image {
-        top: 36px;
-        height: calc(100% - 36px);
-    }
+    /* .crop-bg-image 的 top/width/height 由 app-crop.js computeImgMetrics() 写入 inline style，此处不再重复定义 */
 
     .crop-canvas {
         top: 36px;

@@ -1,5 +1,5 @@
 /**
- * card_export.js – 角色卡导出页面交互逻辑
+ * card_maker.js – 卡面制作页面交互逻辑
  *
  * 功能：
  *  1. 获取角色列表
@@ -59,10 +59,36 @@
     const refreshBtn    = $('#refresh-preview-btn');
     const exportFullBtn = $('#export-full-btn');
 
+    // ====== maker 模式检测 ======
+    const _urlParams = new URLSearchParams(window.location.search);
+    const isMakerMode = _urlParams.get('mode') === 'maker';
+
     // ====== 初始化 ======
     document.addEventListener('DOMContentLoaded', async () => {
         // 禁用鼠标跟踪（导出页面不需要）
         window.mouseTrackingEnabled = false;
+
+        // 设置标题和按钮（maker 模式与导出模式使用不同文案）
+        const titleEl = document.querySelector('.page-title-bar h2');
+        if (isMakerMode) {
+            document.title = (window.t ? window.t('cardExport.title') : '卡面制作') + ' - Project N.E.K.O.';
+            if (titleEl) {
+                titleEl.textContent = window.t ? window.t('cardExport.title') : '卡面制作';
+            }
+            if (exportFullBtn) {
+                exportFullBtn.textContent = window.t ? window.t('cardExport.saveCardFace') : '保存卡面';
+                exportFullBtn.setAttribute('data-i18n', 'cardExport.saveCardFace');
+            }
+        } else {
+            document.title = (window.t ? window.t('cardExport.exportTitle') : '导出角色卡') + ' - Project N.E.K.O.';
+            if (titleEl) {
+                titleEl.textContent = window.t ? window.t('cardExport.exportTitle') : '导出角色卡';
+            }
+            if (exportFullBtn) {
+                exportFullBtn.textContent = window.t ? window.t('cardExport.exportFull', '导出角色卡') : '导出角色卡';
+                exportFullBtn.setAttribute('data-i18n', 'cardExport.exportFull');
+            }
+        }
 
         bindEvents();
 
@@ -96,7 +122,10 @@
 
         resetBtn.addEventListener('click', resetComposition);
         refreshBtn.addEventListener('click', () => refreshPreview());
-        exportFullBtn.addEventListener('click', () => doExport('full'));
+        exportFullBtn.addEventListener('click', () => {
+            if (isMakerMode) { doSaveCardFace(); }
+            else { doExport('full'); }
+        });
         backBtn.addEventListener('click', () => {
             if (window.opener) { window.close(); }
             else { window.history.back(); }
@@ -645,6 +674,61 @@
         }
     }
 
+    // ====== 保存卡面（maker 模式专用） ======
+    async function doSaveCardFace() {
+        if (!currentCharaName) return;
+
+        try {
+            exportFullBtn.disabled = true;
+            exportFullBtn.textContent = t('cardExport.savingCardFace', '保存中...');
+
+            const cardBlob = await renderFullCard();
+            if (!cardBlob) {
+                throw new Error(t('cardExport.renderFailed', '无法渲染卡面图片'));
+            }
+
+            const formData = new FormData();
+            formData.append('image', cardBlob, 'card_face.png');
+
+            const response = await fetch(
+                `/api/characters/catgirl/${encodeURIComponent(currentCharaName)}/card-face`,
+                { method: 'PUT', body: formData }
+            );
+
+            if (!response.ok) {
+                const errData = await response.json().catch(() => ({}));
+                throw new Error(errData.error || `HTTP ${response.status}`);
+            }
+
+            const respJson = await response.json().catch(() => ({}));
+            if (respJson.partial_success) {
+                exportFullBtn.textContent = t('cardExport.saveCardFacePartialSuccess', 'PNG 已保存，但元数据写入失败: {{error}}', { error: respJson.error || '' });
+                exportFullBtn.disabled = false;
+                return;
+            }
+
+            // 通知父窗口更新卡面
+            if (window.opener) {
+                window.opener.postMessage({
+                    type: 'card-face-updated',
+                    name: currentCharaName,
+                    timestamp: Date.now()
+                }, window.location.origin);
+            }
+
+            exportFullBtn.textContent = t('cardExport.saveCardFaceSuccess', '保存成功！');
+            setTimeout(() => {
+                exportFullBtn.disabled = false;
+                exportFullBtn.textContent = t('cardExport.saveCardFace', '保存卡面');
+            }, 1500);
+        } catch (e) {
+            console.error('[CardMaker] 保存卡面失败:', e);
+            alert(t('cardExport.saveCardFaceFailed', '保存失败: ' + e.message, { error: e.message }));
+            exportFullBtn.disabled = false;
+            exportFullBtn.textContent = t('cardExport.saveCardFace', '保存卡面');
+        }
+    }
+
     /**
      * 根据构图参数渲染最终立绘 Blob
      * 输出尺寸与后端卡片立绘区域完全一致（600 × (800 - 800//6)），确保所见即所得
@@ -683,6 +767,58 @@
 
         if (aboveStickers.length > 0) {
             await drawStickerList(ctx, aboveStickers, outW, outH);
+        }
+
+        return new Promise((resolve) => {
+            outCanvas.toBlob((blob) => resolve(blob), 'image/png');
+        });
+    }
+
+    /**
+     * 渲染完整角色卡（蓝色头部 + 角色名 + 立绘）用于卡面保存
+     * 输出尺寸 600×800，与后端角色卡完全一致
+     */
+    async function renderFullCard() {
+        const portraitBlob = await renderFinalPortrait();
+        if (!portraitBlob) {
+            console.warn('[card_maker] renderFinalPortrait returned null, aborting card render');
+            return null;
+        }
+
+        const cardW = 600, cardH = 800;
+        const headerH = Math.floor(cardH / 6); // 133px
+
+        const outCanvas = document.createElement('canvas');
+        outCanvas.width = cardW;
+        outCanvas.height = cardH;
+        const ctx = outCanvas.getContext('2d');
+
+        // 底色
+        ctx.fillStyle = '#E8F4F8';
+        ctx.fillRect(0, 0, cardW, cardH);
+
+        // 蓝色头部
+        ctx.fillStyle = '#40C5F1';
+        ctx.fillRect(0, 0, cardW, headerH);
+
+        // 角色名称（白色，带阴影）
+        const displayName = currentCharaName || '';
+        ctx.font = 'bold 42px "Microsoft YaHei", "SimHei", "PingFang SC", sans-serif';
+        ctx.textBaseline = 'middle';
+
+        // 阴影
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.25)';
+        ctx.fillText(displayName, 42, headerH / 2 + 2);
+
+        // 白色文字
+        ctx.fillStyle = '#FFFFFF';
+        ctx.fillText(displayName, 40, headerH / 2);
+
+        // 绘制立绘到头部下方
+        if (portraitBlob) {
+            const portraitImg = await createImageBitmap(portraitBlob);
+            ctx.drawImage(portraitImg, 0, headerH, cardW, cardH - headerH);
+            portraitImg.close();
         }
 
         return new Promise((resolve) => {
@@ -1176,13 +1312,13 @@
     }
 
     // ====== 工具函数 ======
-    function t(key, fallback) {
+    function t(key, fallback, options) {
         if (window.i18next && typeof window.i18next.t === 'function') {
-            const val = window.i18next.t(key);
+            const val = window.i18next.t(key, options);
             if (val && val !== key) return val;
         }
         if (window.t && typeof window.t === 'function') {
-            const val = window.t(key);
+            const val = window.t(key, options);
             if (val && val !== key) return val;
         }
         return fallback;

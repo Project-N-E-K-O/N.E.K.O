@@ -52,7 +52,7 @@
 主负责人长期持有的重点文件建议为：
 
 - [static/universal-tutorial-manager.js](../../static/universal-tutorial-manager.js)
-- [templates/index.html](../../templates/index.html)
+- `templates/index.html`
 - `static/yui-guide-steps.js`
 - 本文档与相关设计文档
 
@@ -101,7 +101,7 @@
 - 冻结 `YuiGuideStep` 的字段形状
 - 明确 `Director` 最小挂接接口
 - 明确 `handoff` 最小字段结构
-- 明确以下高冲突文件的 owner：[static/universal-tutorial-manager.js](../../static/universal-tutorial-manager.js)、[templates/index.html](../../templates/index.html)、`static/yui-guide-steps.js`
+- 明确以下高冲突文件的 owner：[static/universal-tutorial-manager.js](../../static/universal-tutorial-manager.js)、`templates/index.html`、`static/yui-guide-steps.js`
 - 约定合并顺序和合并窗口
 
 ### 这一阶段主负责人应该产出的东西
@@ -139,7 +139,7 @@
 ### 主负责人此阶段的核心职责
 
 - 在 [static/universal-tutorial-manager.js](../../static/universal-tutorial-manager.js) 中补出 step change 到 Director 的挂接点
-- 在 [templates/index.html](../../templates/index.html) 中补脚本和样式装配位
+- 在 `templates/index.html` 中补脚本和样式装配位
 - 建立 `static/yui-guide-steps.js` 首版骨架
 - 把 `intro_basic`、`intro_proactive`、`intro_cat_paw` 这些场景先收口进同一套场景注册表
 - 审核开发 B 的台词和演出配置是否真的对应到这些场景 ID

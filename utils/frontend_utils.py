@@ -19,14 +19,31 @@ import logging
 import locale
 from datetime import datetime
 
+from utils.cjk import (
+    CJK_REGEX_CHAR_CLASS,
+    count_chinese_chars,
+    count_hangul_chars,
+    count_kana_chars,
+)
 
-chinese_char_pattern = re.compile(r'[\u4e00-\u9fff]+')
+# Unicode regexes (compiled once). `regex` package is needed for `\p{L}`
+# class — standard `re` only supports the ASCII letter shorthand.
+# - _CJK_STRIP: replace any CJK char with a space so subsequent word
+#   matching only finds non-CJK letter runs. Range comes from utils.cjk
+#   so it stays in sync with is_cjk_char / count_cjk_chars.
+# - _NON_CJK_WORD: any maximal run of Unicode "letter" chars in any
+#   script (Latin, Cyrillic, Arabic, Greek, Hebrew, Thai, Devanagari, …).
+#   Excludes digits/punctuation/spaces by virtue of `\p{L}+`.
+_CJK_STRIP = regex.compile(f"[{CJK_REGEX_CHAR_CLASS}]")
+_NON_CJK_WORD = regex.compile(r'\p{L}+')
+
+
 bracket_patterns = [re.compile(r'\(.*?\)'),
                    re.compile('（.*?）')]
 
 # whether contain chinese character
 def contains_chinese(text):
-    return bool(chinese_char_pattern.search(text))
+    return count_chinese_chars(text) > 0
 
 
 # replace special symbol
@@ -36,19 +53,25 @@ def replace_corner_mark(text):
     return text
 
 def estimate_speech_time(text, unit_duration=0.2):
-    # 中文汉字范围
-    chinese_chars = re.findall(r'[\u4e00-\u9fff]', text)
-    chinese_units = len(chinese_chars) * 1.5
+    # Per-class duration coefficients (heuristic, not corpus-calibrated):
+    #   - Chinese hanzi: 1.5 units/char (polysyllabic, slower TTS)
+    #   - Japanese kana: 1.0 units/char (mono-syllabic)
+    #   - Korean Hangul: 1.0 units/char (one syllable per syllable block)
+    #   - Other letter words (Latin, Cyrillic, Arabic, Greek, Hebrew, Thai,
+    #     Devanagari, …): 1.5 units/word (rough syllable average for
+    #     Romance/Germanic/Slavic prose; Arabic+Hebrew skew shorter but
+    #     1.5 is conservative — over-estimating duration is fine for fence
+    #     callers, who'd rather cut early than let TTS run long)
+    chinese_units = count_chinese_chars(text) * 1.5
+    japanese_units = count_kana_chars(text) * 1.0
+    korean_units = count_hangul_chars(text) * 1.0
 
-    # 日文假名范围（平假名 3040–309F，片假名 30A0–30FF）
-    japanese_kana = re.findall(r'[\u3040-\u30FF]', text)
-    japanese_units = len(japanese_kana) * 1.0
+    # Strip CJK first so word matching doesn't collapse CJK runs into a
+    # single "word" (the `\p{L}` class includes Han / Kana / Hangul).
+    non_cjk_text = _CJK_STRIP.sub(' ', text)
+    other_units = len(_NON_CJK_WORD.findall(non_cjk_text)) * 1.5
 
-    # 英文单词（连续的 a-z 或 A-Z）
-    english_words = re.findall(r'\b[a-zA-Z]+\b', text)
-    english_units = len(english_words) * 1.5
-
-    total_units = chinese_units + japanese_units + english_units
+    total_units = chinese_units + japanese_units + korean_units + other_units
     estimated_seconds = total_units * unit_duration
 
     return estimated_seconds
@@ -70,10 +93,8 @@ def count_words_and_chars(text: str) -> int:
     """
     if not text:
         return 0
-    count = 0
-    chinese_chars = re.findall(r'[\u4e00-\u9fff]', text)
-    count += len(chinese_chars)
-    text_without_chinese = re.sub(r'[\u4e00-\u9fff]', ' ', text)
+    count = count_chinese_chars(text)
+    text_without_chinese = re.sub(r'[一-鿿]', ' ', text)
     english_words = [w for w in text_without_chinese.split() if w.strip()]
     count += len(english_words)
     return count
@@ -325,20 +346,27 @@ def find_models():
     try:
         config_mgr = get_config_manager()
         config_mgr.ensure_live2d_directory()
-        docs_live2d_dir = str(config_mgr.live2d_dir)
         readable_live2d = config_mgr.readable_live2d_dir
 
-        if readable_live2d:
-            # CFA 场景：原始 Documents 可读，回退路径可写
-            readable_str = str(readable_live2d)
-            if os.path.exists(readable_str):
-                search_dirs.append(('documents', readable_str, '/user_live2d'))
-            if os.path.exists(docs_live2d_dir) and docs_live2d_dir != readable_str:
-                search_dirs.append(('documents_local', docs_live2d_dir, '/user_live2d_local'))
-        else:
-            # 正常场景
-            if os.path.exists(docs_live2d_dir):
-                search_dirs.append(('documents', docs_live2d_dir, '/user_live2d'))
+        def _norm(path: str) -> str:
+            return os.path.normcase(os.path.normpath(path))
+
+        writable_live2d = str(config_mgr.live2d_dir)
+        readable_live2d_str = str(readable_live2d) if readable_live2d else ""
+
+        for live2d_root in config_mgr.get_live2d_lookup_roots(prefer_writable=True):
+            live2d_root_str = str(live2d_root)
+            if not os.path.exists(live2d_root_str):
+                continue
+
+            if readable_live2d_str and _norm(live2d_root_str) == _norm(writable_live2d) and _norm(writable_live2d) != _norm(readable_live2d_str):
+                # CFA 场景的可写回退目录（优先）
+                search_dirs.append(('documents_local', live2d_root_str, '/user_live2d_local'))
+            elif readable_live2d_str and _norm(live2d_root_str) == _norm(readable_live2d_str):
+                # CFA 场景的只读原始目录（回退）
+                search_dirs.append(('documents_legacy', live2d_root_str, '/user_live2d'))
+            else:
+                search_dirs.append(('documents', live2d_root_str, '/user_live2d'))
     except Exception as e:
         logging.warning(f"无法访问用户文档live2d目录: {e}")
     
@@ -497,28 +525,27 @@ def find_model_directory(model_name: str):
     except Exception:
         pass
 
-    # 首先尝试可读的原始 Documents 目录（CFA 场景下优先，与 find_models 一致）
-    try:
-        if readable_live2d:
-            readable_model_dir = readable_live2d / model_name
-            if readable_model_dir.exists():
-                readable_model_dir_real = os.path.realpath(readable_model_dir)
-                readable_live2d_real = os.path.realpath(readable_live2d)
-                if os.path.commonpath([readable_model_dir_real, readable_live2d_real]) == readable_live2d_real:
-                    return (str(readable_model_dir), '/user_live2d')
-    except Exception as e:
-        logging.warning(f"检查原始文档目录模型时出错: {e}")
-
-    # 然后尝试可写回退路径（CFA 场景下为 AppData，正常场景为唯一路径）
+    # Live2D 路径查找：优先可写运行时目录，回退只读 legacy 目录
     try:
         config_mgr = get_config_manager()
-        _live2d_url_prefix = '/user_live2d_local' if readable_live2d else '/user_live2d'
-        docs_model_dir = config_mgr.live2d_dir / model_name
-        if docs_model_dir.exists():
+        writable_live2d = os.path.normcase(os.path.normpath(str(config_mgr.live2d_dir)))
+        readable_live2d_norm = (
+            os.path.normcase(os.path.normpath(str(readable_live2d)))
+            if readable_live2d else ""
+        )
+        for live2d_root in config_mgr.get_live2d_lookup_roots(prefer_writable=True):
+            docs_model_dir = live2d_root / model_name
+            if not docs_model_dir.exists():
+                continue
             docs_model_dir_real = os.path.realpath(docs_model_dir)
-            docs_live2d_dir_real = os.path.realpath(config_mgr.live2d_dir)
-            if os.path.commonpath([docs_model_dir_real, docs_live2d_dir_real]) == docs_live2d_dir_real:
-                return (str(docs_model_dir), _live2d_url_prefix)
+            docs_live2d_dir_real = os.path.realpath(live2d_root)
+            if os.path.commonpath([docs_model_dir_real, docs_live2d_dir_real]) != docs_live2d_dir_real:
+                continue
+
+            live2d_root_norm = os.path.normcase(os.path.normpath(str(live2d_root)))
+            if readable_live2d_norm and live2d_root_norm == writable_live2d and writable_live2d != readable_live2d_norm:
+                return (str(docs_model_dir), '/user_live2d_local')
+            return (str(docs_model_dir), '/user_live2d')
     except Exception as e:
         logging.warning(f"检查文档目录模型时出错: {e}")
 
