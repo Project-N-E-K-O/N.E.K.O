@@ -505,7 +505,10 @@
         if (hasExternalOwner) {
             try {
                 window.close();
-                return;
+                await sleep(150);
+                if (window.closed) {
+                    return;
+                }
             } catch (_) {}
         }
         await showStandaloneStorageMaintenanceOverlay(payload);
