@@ -632,7 +632,7 @@ export default function App({
     && supportsDesktopFinePointer()
     && !isElectronMultiWindow;
   const shouldRenderLocalDesktopCursorOverlay = shouldUseLocalDesktopCursorOverlay
-    && (!isElectronMultiWindow || isCursorInsideHostWindow);
+    && isCursorInsideHostWindow;
   const shouldRenderAvatarRangeOverlay = isCursorOverAvatarRange && !isCursorOverCompactCursorZone;
   const avatarCursorOverlayActive = !!activeToolItem
     && activeCursorToolId !== 'hammer'
@@ -1208,7 +1208,7 @@ export default function App({
       return;
     }
 
-    if (isElectronMultiWindow && !isCursorInsideHostWindow) {
+    if ((shouldUseLocalDesktopCursorOverlay || isElectronMultiWindow) && !isCursorInsideHostWindow) {
       root.classList.remove('neko-tool-cursor-active');
       root.style.removeProperty('--neko-chat-tool-cursor');
       return;

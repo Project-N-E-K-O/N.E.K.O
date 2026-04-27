@@ -445,6 +445,27 @@ describe('App', () => {
     expect((overlay as HTMLDivElement).style.transform).toBe('translate3d(201px, 280px, 0)');
   });
 
+  it('restores the native cursor while desktop system UI owns focus', () => {
+    const { container } = render(<App />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
+    fireEvent.click(screen.getByRole('button', { name: '猫爪' }));
+
+    expect(container.querySelector('.avatar-cursor-overlay')).not.toBeNull();
+    expect(document.documentElement).toHaveClass('neko-tool-cursor-active');
+
+    fireEvent.blur(window);
+
+    expect(container.querySelector('.avatar-cursor-overlay')).toBeNull();
+    expect(document.documentElement).not.toHaveClass('neko-tool-cursor-active');
+    expect(document.documentElement.style.getPropertyValue('--neko-chat-tool-cursor')).toBe('');
+
+    fireEvent.pointerMove(window, { clientX: 180, clientY: 260 });
+
+    expect(container.querySelector('.avatar-cursor-overlay')).not.toBeNull();
+    expect(document.documentElement).toHaveClass('neko-tool-cursor-active');
+  });
+
   it('uses the native cursor and clears it when leaving the Electron chat window', () => {
     (window as Window & { __NEKO_MULTI_WINDOW__?: boolean }).__NEKO_MULTI_WINDOW__ = true;
 
