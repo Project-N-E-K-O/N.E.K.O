@@ -404,6 +404,21 @@ describe('App', () => {
     expect(screen.getByRole('button', { name: '棒棒糖' })).toHaveAttribute('aria-pressed', 'true');
   });
 
+  it('clears the selected avatar tool from the icon badge', () => {
+    render(<App />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
+    fireEvent.click(screen.getByRole('button', { name: '猫爪' }));
+
+    expect(screen.getByRole('button', { name: 'Emoji: 猫爪' })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: '恢复鼠标' }));
+
+    expect(screen.getByRole('button', { name: 'Emoji' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Emoji: 猫爪' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '恢复鼠标' })).not.toBeInTheDocument();
+  });
+
   it('emits avatar tool state changes for desktop hosts', () => {
     const onAvatarToolStateChange = vi.fn();
     render(<App onAvatarToolStateChange={onAvatarToolStateChange} />);
@@ -443,6 +458,27 @@ describe('App', () => {
     const overlay = container.querySelector('.avatar-cursor-overlay');
     expect(overlay).not.toBeNull();
     expect((overlay as HTMLDivElement).style.transform).toBe('translate3d(201px, 280px, 0)');
+  });
+
+  it('restores the native cursor while desktop system UI owns focus', () => {
+    const { container } = render(<App />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
+    fireEvent.click(screen.getByRole('button', { name: '猫爪' }));
+
+    expect(container.querySelector('.avatar-cursor-overlay')).not.toBeNull();
+    expect(document.documentElement).toHaveClass('neko-tool-cursor-active');
+
+    fireEvent.blur(window);
+
+    expect(container.querySelector('.avatar-cursor-overlay')).toBeNull();
+    expect(document.documentElement).not.toHaveClass('neko-tool-cursor-active');
+    expect(document.documentElement.style.getPropertyValue('--neko-chat-tool-cursor')).toBe('');
+
+    fireEvent.pointerMove(window, { clientX: 180, clientY: 260 });
+
+    expect(container.querySelector('.avatar-cursor-overlay')).not.toBeNull();
+    expect(document.documentElement).toHaveClass('neko-tool-cursor-active');
   });
 
   it('uses the native cursor and clears it when leaving the Electron chat window', () => {
