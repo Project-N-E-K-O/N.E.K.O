@@ -13,6 +13,7 @@ import os
 import sys
 import json
 import time
+import tempfile
 import asyncio
 import threading
 import mimetypes
@@ -670,10 +671,9 @@ def _is_matching_workshop_character(catgirl_data: dict, item_id) -> bool:
             return False
 
         current_item_id = str(item_id or '').strip()
-        if not current_item_id:
-            return True
-
         source_id = str(get_reserved(catgirl_data, 'character_origin', 'source_id', default='') or '').strip()
+        if not current_item_id or not source_id:
+            return False
         return source_id == current_item_id
     except Exception:
         return False
@@ -691,12 +691,29 @@ def _ensure_workshop_card_face_from_preview(config_mgr, chara_name: str, preview
 
     from PIL import Image as PILImage, ImageOps
 
-    with PILImage.open(preview_image_path) as img:
-        img = ImageOps.exif_transpose(img)
-        if img.mode not in ('RGB', 'RGBA', 'L'):
-            has_alpha = 'A' in img.getbands() or 'transparency' in (img.info or {})
-            img = img.convert('RGBA' if has_alpha else 'RGB')
-        img.save(face_path, format='PNG')
+    fd, temp_path = tempfile.mkstemp(
+        prefix=f".{face_path.name}.",
+        suffix=".tmp",
+        dir=str(face_path.parent),
+    )
+
+    try:
+        with os.fdopen(fd, 'w+b') as temp_file:
+            with PILImage.open(preview_image_path) as img:
+                img = ImageOps.exif_transpose(img)
+                if img.mode not in ('RGB', 'RGBA', 'L'):
+                    has_alpha = 'A' in img.getbands() or 'transparency' in (img.info or {})
+                    img = img.convert('RGBA' if has_alpha else 'RGB')
+                img.save(temp_file, format='PNG')
+            temp_file.flush()
+            os.fsync(temp_file.fileno())
+        os.replace(temp_path, face_path)
+    except Exception:
+        try:
+            os.remove(temp_path)
+        except FileNotFoundError:
+            pass
+        raise
 
     return True
 
@@ -3981,6 +3998,12 @@ async def sync_workshop_character_cards() -> dict:
                                             chara_name,
                                             preview_image_path,
                                         )
+                                        meta_created = await asyncio.to_thread(
+                                            _ensure_workshop_card_face_meta,
+                                            config_mgr,
+                                            chara_name,
+                                            item,
+                                        )
                                         if face_created:
                                             backfilled_face_count += 1
                                             logger.info(
@@ -3988,15 +4011,15 @@ async def sync_workshop_character_cards() -> dict:
                                                 chara_name,
                                                 item_id,
                                             )
-                                            await asyncio.to_thread(
-                                                _ensure_workshop_card_face_meta,
-                                                config_mgr,
+                                        if meta_created:
+                                            logger.info(
+                                                "sync_workshop_character_cards: 已补写角色卡封面元数据 '%s' (来自物品 %s)",
                                                 chara_name,
-                                                item,
+                                                item_id,
                                             )
                                     except Exception as face_err:
                                         logger.warning(
-                                            "sync_workshop_character_cards: 回填角色卡封面失败 %s (物品 %s): %s",
+                                            "sync_workshop_character_cards: 回填角色卡封面或元数据失败 %s (物品 %s): %s",
                                             chara_name,
                                             item_id,
                                             face_err,
