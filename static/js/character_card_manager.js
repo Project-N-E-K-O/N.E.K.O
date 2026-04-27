@@ -3834,24 +3834,20 @@ function openCatgirlPanel(card, originEl) {
 
         const deleteBtn = document.createElement('button');
         deleteBtn.type = 'button';
-        deleteBtn.className = 'card-panel-action-btn delete-btn';
-        deleteBtn.disabled = isCurrentChara;
+        deleteBtn.className = 'card-panel-action-btn delete-btn' + (isCurrentChara ? ' disabled' : '');
         deleteBtn.title = isCurrentChara
             ? (window.t ? window.t('character.cannotDeleteCurrentCard') : '当前正在使用的角色卡无法删除，请先切换到其他角色卡')
             : (window.t ? window.t('character.deleteCard') : '删除角色卡');
         deleteBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>'
             + '<span>' + (window.t ? window.t('character.deleteCard') : '删除') + '</span>';
-        deleteBtn.onclick = function (e) {
+        deleteBtn.onclick = async function (e) {
             e.stopPropagation();
-            if (isCurrentChara) {
-                if (typeof showMessage === 'function') {
-                    showMessage(window.t ? window.t('character.cannotDeleteCurrentCard') : '当前正在使用的角色卡无法删除，请先切换到其他角色卡', 'error');
-                }
-                return;
+            // 不再用打开面板时快照的 isCurrentChara 拦截——workshopDeleteCatgirl 内部会用权威当前角色名做判断，
+            // 这样跨窗口切换、用户取消、后端拒绝等情况都会被正确处理，且只有真正删除成功后才关面板，避免提前关掉丢未保存改动
+            const deleted = await workshopDeleteCatgirl(name);
+            if (deleted) {
+                closeCatgirlPanel();
             }
-            workshopDeleteCatgirl(name);
-            // 删除会刷新列表，关闭面板
-            setTimeout(() => closeCatgirlPanel(), 300);
         };
         actions.appendChild(deleteBtn);
 
@@ -5181,8 +5177,50 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
     }
 }
 
+async function ensureCanModifyCardsOutsideVoiceMode() {
+    // 检查语音状态 - 先获取权威当前角色，再检查语音模式
+    // cache: 'no-store' 防止浏览器/WebView 复用旧响应导致语音保护 fail-open
+    try {
+        const currentResp = await fetch('/api/characters/current_catgirl', { cache: 'no-store' });
+        if (!currentResp.ok) {
+            throw new Error(`current_catgirl request failed: ${currentResp.status}`);
+        }
+        const currentData = await currentResp.json();
+        const currentCatgirl = currentData.current_catgirl || '';
+
+        if (currentCatgirl) {
+            const voiceResp = await fetch(
+                `/api/characters/catgirl/${encodeURIComponent(currentCatgirl)}/voice_mode_status`,
+                { cache: 'no-store' }
+            );
+            if (!voiceResp.ok) {
+                throw new Error(`voice_mode_status request failed: ${voiceResp.status}`);
+            }
+            const voiceData = await voiceResp.json();
+            if (voiceData.is_voice_mode) {
+                const msg = window.t ? window.t('character.cannotModifyInVoiceMode') : '语音状态下无法切换或删除角色卡，请先关闭语音控制';
+                showMessage(msg, 'error', 6000);
+                await showAlertDialog(msg, { type: 'error' });
+                return { ok: false };
+            }
+        }
+        return { ok: true, currentCatgirl };
+    } catch (error) {
+        console.error('检查语音模式状态失败:', error);
+        const msg = window.t ? window.t('character.voiceModeCheckFailed') : '检查语音模式状态失败，请稍后重试';
+        showMessage(msg, 'error', 6000);
+        await showAlertDialog(msg, { type: 'error' });
+        return { ok: false };
+    }
+}
+
 // 切换猫娘
 async function workshopSwitchCatgirl(name) {
+    const guard = await ensureCanModifyCardsOutsideVoiceMode();
+    if (!guard.ok) {
+        return;
+    }
+
     try {
         const response = await fetch('/api/characters/current_catgirl', {
             method: 'POST',
@@ -5204,11 +5242,21 @@ async function workshopSwitchCatgirl(name) {
 }
 
 // 删除猫娘
+// 返回值约定：成功删除返回 true；任何早退/失败/用户取消都返回 false——给调用方据此决定是否关面板
 async function workshopDeleteCatgirl(name) {
-    // 检查是否为当前猫娘
-    if (name === window._workshopCurrentCatgirl) {
-        showMessage(window.t ? window.t('character.cannotDeleteCurrentCard') : '不能删除当前正在使用的角色卡', 'error');
-        return;
+    // 先做语音态预检并拿到权威当前角色名，避免别窗口切换后本地缓存失效
+    const guard = await ensureCanModifyCardsOutsideVoiceMode();
+    if (!guard.ok) {
+        return false;
+    }
+
+    // 用权威值校验“是否当前角色”——本地 window._workshopCurrentCatgirl 在跨窗口切换后可能过期
+    const authoritativeCurrent = guard.currentCatgirl || window._workshopCurrentCatgirl;
+    if (name === authoritativeCurrent) {
+        const msg = window.t ? window.t('character.cannotDeleteCurrentCard') : '不能删除当前正在使用的角色卡';
+        showMessage(msg, 'error', 6000);
+        await showAlertDialog(msg, { type: 'error' });
+        return false;
     }
 
     // 检查是否只剩一只猫娘
@@ -5219,7 +5267,7 @@ async function workshopDeleteCatgirl(name) {
             const catgirls = allData?.['猫娘'] || {};
             if (Object.keys(catgirls).length <= 1) {
                 showMessage(window.t ? window.t('character.onlyOneCatgirlLeft') : '只剩一只猫娘，无法删除！', 'error');
-                return;
+                return false;
             }
         }
     } catch (e) {
@@ -5247,15 +5295,28 @@ async function workshopDeleteCatgirl(name) {
         cancelText,
         danger: true,
     });
-    if (!confirmed) return;
+    if (!confirmed) return false;
 
     try {
-        await fetch('/api/characters/catgirl/' + encodeURIComponent(name), { method: 'DELETE' });
+        const resp = await fetch('/api/characters/catgirl/' + encodeURIComponent(name), { method: 'DELETE' });
+        if (!resp.ok) {
+            let serverMsg = '';
+            try {
+                const data = await resp.json();
+                serverMsg = data?.error || data?.message || '';
+            } catch (_) { /* 响应不是 JSON 就退回到默认文案 */ }
+            const msg = serverMsg || (window.t ? window.t('character.deleteError') : '删除猫娘时发生错误');
+            showMessage(msg, 'error', 6000);
+            await showAlertDialog(msg, { type: 'error' });
+            return false;
+        }
         // 重新加载角色卡列表
         await loadCharacterCards();
+        return true;
     } catch (error) {
         console.error('删除猫娘失败:', error);
         showMessage(window.t ? window.t('character.deleteError') : '删除猫娘时发生错误', 'error');
+        return false;
     }
 }
 

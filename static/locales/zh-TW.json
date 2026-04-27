@@ -1673,6 +1673,8 @@
         "saveSuccess": "儲存成功",
         "switchSuccess": "切換成功",
         "deleteError": "刪除貓娘時發生錯誤",
+        "cannotModifyInVoiceMode": "語音狀態下無法切換或刪除角色卡，請先關閉語音控制",
+        "voiceModeCheckFailed": "檢查語音模式狀態失敗，請稍後重試",
         "switchCard": "切換角色卡",
         "deleteCard": "刪除角色卡",
         "currentCard": "當前角色卡",

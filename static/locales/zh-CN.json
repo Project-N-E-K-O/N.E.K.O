@@ -1673,6 +1673,8 @@
         "newCatgirlSuccess": "新猫娘创建成功",
         "saveSuccess": "保存成功",
         "switchSuccess": "切换成功",
+        "cannotModifyInVoiceMode": "语音状态下无法切换或删除角色卡，请先关闭语音控制",
+        "voiceModeCheckFailed": "检查语音模式状态失败，请稍后重试",
         "deleteError": "删除猫娘时发生错误",
         "switchCard": "切换角色卡",
         "deleteCard": "删除角色卡",

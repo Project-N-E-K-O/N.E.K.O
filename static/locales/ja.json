@@ -1673,6 +1673,8 @@
         "saveSuccess": "保存しました",
         "switchSuccess": "切り替えに成功しました",
         "deleteError": "キャラクターの削除中にエラーが発生しました",
+        "cannotModifyInVoiceMode": "音声制御が有効な状態ではカードの切り替えや削除はできません。先に音声制御をオフにしてください。",
+        "voiceModeCheckFailed": "音声モード状態の確認に失敗しました。しばらくしてからもう一度お試しください。",
         "switchCard": "カード切替",
         "deleteCard": "カード削除",
         "currentCard": "現在のカード",

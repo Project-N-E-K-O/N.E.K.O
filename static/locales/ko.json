@@ -1673,6 +1673,8 @@
         "saveSuccess": "저장 완료",
         "switchSuccess": "전환 완료",
         "deleteError": "캐릭터 삭제 중 오류가 발생했습니다",
+        "cannotModifyInVoiceMode": "음성 제어가 활성화된 상태에서는 카드를 전환하거나 삭제할 수 없습니다. 음성 제어를 먼저 끄세요.",
+        "voiceModeCheckFailed": "음성 모드 상태 확인에 실패했습니다. 잠시 후 다시 시도해 주세요.",
         "switchCard": "카드 전환",
         "deleteCard": "카드 삭제",
         "currentCard": "현재 카드",

@@ -1673,6 +1673,8 @@
         "newCatgirlSuccess": "New NEKO created successfully",
         "saveSuccess": "Saved successfully",
         "switchSuccess": "Switched successfully",
+        "cannotModifyInVoiceMode": "Cannot switch or delete cards while voice control is active. Please turn off voice control first.",
+        "voiceModeCheckFailed": "Failed to check voice mode status. Please try again later.",
         "deleteError": "Error occurred while deleting NEKO",
         "switchCard": "Switch Card",
         "deleteCard": "Delete Card",
