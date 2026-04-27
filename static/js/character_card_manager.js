@@ -5172,17 +5172,29 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
 
 // 切换猫娘
 async function workshopSwitchCatgirl(name) {
-    // 检查语音状态
+    // 检查语音状态 - 先获取权威当前角色，再检查语音模式
     try {
-        const voiceResp = await fetch(`/api/characters/catgirl/${encodeURIComponent(window._workshopCurrentCatgirl || '')}/voice_mode_status`);
-        const voiceData = await voiceResp.json();
-        if (voiceData.is_voice_mode) {
-            const msg = window.t ? window.t('character.cannotSwitchInVoiceMode') : '语音状态下无法切换角色卡，请先关闭语音控制';
-            showMessage(msg, 'error', 6000);
-            await showAlertDialog(msg, { type: 'error' });
-            return;
+        const currentResp = await fetch('/api/characters/current_catgirl');
+        const currentData = await currentResp.json();
+        const currentCatgirl = currentData.current_catgirl || '';
+
+        if (currentCatgirl) {
+            const voiceResp = await fetch(`/api/characters/catgirl/${encodeURIComponent(currentCatgirl)}/voice_mode_status`);
+            const voiceData = await voiceResp.json();
+            if (voiceData.is_voice_mode) {
+                const msg = window.t ? window.t('character.cannotSwitchInVoiceMode') : '语音状态下无法切换角色卡，请先关闭语音控制';
+                showMessage(msg, 'error', 6000);
+                await showAlertDialog(msg, { type: 'error' });
+                return;
+            }
         }
-    } catch (_) { /* 忽略 API 错误 */ }
+    } catch (error) {
+        console.error('检查语音模式状态失败:', error);
+        const msg = window.t ? window.t('character.voiceModeCheckFailed') : '检查语音模式状态失败，请稍后重试';
+        showMessage(msg, 'error', 6000);
+        await showAlertDialog(msg, { type: 'error' });
+        return;
+    }
 
     try {
         const response = await fetch('/api/characters/current_catgirl', {
