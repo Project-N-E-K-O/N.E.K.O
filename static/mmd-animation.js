@@ -45,7 +45,7 @@ class MMDAnimation {
         // Crossfade 状态
         this._isCrossfading = false;
         this._blendWeight = 0.0;
-        this._fadeDuration = 0.4;   // 默认过渡时长（秒）
+        this._fadeDuration = 2;   // 默认过渡时长（秒）
         this._fadeElapsed = 0.0;    // 已经过的过渡时间
 
         // 绑定姿态备份（首次 skeleton.pose() 后保存，crossfade 时用于恢复干净的绑定姿态）
