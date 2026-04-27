@@ -9,6 +9,13 @@ from starlette.requests import Request
 from utils.config_manager import ConfigManager, get_config_manager
 
 
+def _expected_plugin_dashboard_location(v: str = "") -> str:
+    from config import USER_PLUGIN_BASE
+
+    base_ui = USER_PLUGIN_BASE.rstrip("/") + "/ui"
+    return f"{base_ui}?v={v}" if v else base_ui
+
+
 def _route_paths_from_decorators(py_file_path: str, target_name: str):
     source = Path(py_file_path).read_text(encoding="utf-8")
     tree = ast.parse(source)
@@ -97,7 +104,6 @@ def test_main_agent_router_expected_proxy_endpoints_exist():
 
 @pytest.mark.asyncio
 async def test_main_agent_router_plugin_dashboard_redirect_uses_base_ui_url_without_query():
-    from config import USER_PLUGIN_SERVER_PORT
     from main_routers.agent_router import redirect_plugin_dashboard
 
     request = Request({
@@ -109,12 +115,11 @@ async def test_main_agent_router_plugin_dashboard_redirect_uses_base_ui_url_with
     })
     response = await redirect_plugin_dashboard(request)
 
-    assert response.headers["location"] == f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}/ui"
+    assert response.headers["location"] == _expected_plugin_dashboard_location()
 
 
 @pytest.mark.asyncio
 async def test_main_agent_router_plugin_dashboard_redirect_keeps_only_v_query():
-    from config import USER_PLUGIN_SERVER_PORT
     from main_routers.agent_router import redirect_plugin_dashboard
 
     request = Request({
@@ -126,12 +131,11 @@ async def test_main_agent_router_plugin_dashboard_redirect_keeps_only_v_query():
     })
     response = await redirect_plugin_dashboard(request)
 
-    assert response.headers["location"] == f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}/ui?v=abc123"
+    assert response.headers["location"] == _expected_plugin_dashboard_location("abc123")
 
 
 @pytest.mark.asyncio
 async def test_main_agent_router_plugin_dashboard_redirect_ignores_empty_v_query():
-    from config import USER_PLUGIN_SERVER_PORT
     from main_routers.agent_router import redirect_plugin_dashboard
 
     request = Request({
@@ -143,7 +147,7 @@ async def test_main_agent_router_plugin_dashboard_redirect_ignores_empty_v_query
     })
     response = await redirect_plugin_dashboard(request)
 
-    assert response.headers["location"] == f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}/ui"
+    assert response.headers["location"] == _expected_plugin_dashboard_location()
 
 
 def test_agent_server_expected_event_driven_endpoints_exist():

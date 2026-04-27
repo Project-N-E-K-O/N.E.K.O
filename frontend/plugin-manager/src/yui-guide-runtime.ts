@@ -2028,11 +2028,15 @@ class PluginDashboardGuideRuntime {
       } catch (_) {}
     })
     document.documentElement.classList.remove('yui-guide-plugin-dashboard-running')
+    document.documentElement.removeAttribute('data-yui-guide-spotlight-padding')
     document.documentElement.classList.remove('yui-taking-over')
     document.documentElement.classList.remove('yui-resistance-cursor-reveal')
     document.body.classList.remove('yui-guide-plugin-dashboard-running')
     document.body.classList.remove('yui-taking-over')
     document.body.classList.remove('yui-resistance-cursor-reveal')
+    document
+      .querySelector('[data-yui-guide-id="plugin-main"]')
+      ?.removeAttribute('data-yui-guide-spotlight-padding')
     if (currentGuideAudioTimer !== null) {
       window.clearTimeout(currentGuideAudioTimer)
       currentGuideAudioTimer = null

@@ -4226,12 +4226,35 @@
             if (hadPluginDashboard) {
                 try {
                     existingPluginDashboardWindow.location.reload();
+                    pluginDashboardWindow = await this.waitForOpenedWindow(PLUGIN_DASHBOARD_WINDOW_NAME, 6000);
                 } catch (error) {
                     console.warn('[YuiGuide] 刷新已有插件面板失败:', error);
+                    try {
+                        existingPluginDashboardWindow.close();
+                    } catch (closeError) {
+                        console.warn('[YuiGuide] 关闭旧插件面板失败:', closeError);
+                    }
+                    pluginDashboardWindow = await this.openPluginDashboardWindow({
+                        keepMainUIVisible: true
+                    });
+                    if (!pluginDashboardWindow || pluginDashboardWindow.closed) {
+                        pluginDashboardWindow = await this.waitForOpenedWindow(PLUGIN_DASHBOARD_WINDOW_NAME, 6000);
+                    }
                 }
-                pluginDashboardWindow = await this.waitForOpenedWindow(PLUGIN_DASHBOARD_WINDOW_NAME, 6000);
             } else {
                 pluginDashboardWindow = await this.waitForOpenedWindow(PLUGIN_DASHBOARD_WINDOW_NAME, 6000);
+            }
+            if (
+                pluginDashboardWindow
+                && !pluginDashboardWindow.closed
+                && (
+                    !hadPluginDashboard
+                    || !existingPluginDashboardWindow
+                    || existingPluginDashboardWindow.closed
+                    || pluginDashboardWindow !== existingPluginDashboardWindow
+                )
+            ) {
+                this.pluginDashboardWindowCreatedByGuide = true;
             }
             if (
                 (!pluginDashboardWindow || pluginDashboardWindow.closed)

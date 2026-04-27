@@ -218,6 +218,7 @@ TOOL_SERVER_PORT = _read_port_env("TOOL_SERVER_PORT", 48915)
 USER_PLUGIN_SERVER_PORT = _read_port_env("USER_PLUGIN_SERVER_PORT", 48916)
 AGENT_MQ_PORT = _read_port_env("AGENT_MQ_PORT", 48917)
 MAIN_AGENT_EVENT_PORT = _read_port_env("MAIN_AGENT_EVENT_PORT", 48918)
+USER_PLUGIN_BASE = f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}"
 
 # OpenFang Agent 执行后端端口 (由 Electron 并行启动，端口写入 port_config.json)
 OPENFANG_PORT = _read_port_env("OPENFANG_PORT", 50051)
@@ -1323,6 +1324,7 @@ __all__ = [
     'COMMENTER_SERVER_PORT',
     'TOOL_SERVER_PORT',
     'USER_PLUGIN_SERVER_PORT',
+    'USER_PLUGIN_BASE',
     'AGENT_MQ_PORT',
     'MAIN_AGENT_EVENT_PORT',
     'INSTANCE_ID',
