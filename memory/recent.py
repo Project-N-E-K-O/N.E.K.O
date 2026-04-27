@@ -590,10 +590,31 @@ class CompressedRecentHistoryManager:
 
                 # 将修正后的对话转换回消息格式。SystemMessage 类型由 compress
                 # 产生（summary 备忘录），review 不应该输出，丢弃以保护压缩边界。
+                #
+                # content 归一化（trust-boundary 防御）：thinking 模型偶尔会把
+                # JSON content 字段输出为 list/dict 而非 string。现有
+                # compress_history（[memory/recent.py:329-340](memory/recent.py:329)）
+                # 已经针对这种情况做过处理；review 的输出同样是模型生成、同样
+                # 不可信，必须归一化后再写回 recent history，否则下游（recall /
+                # prompt build / fingerprint 比对的 content[:50] 截取）会拿到非
+                # 字符串数据炸掉。
                 corrected_messages = []
                 for msg_data in review_result['修正后的对话']:
                     role = msg_data.get('role', 'user')
                     content = msg_data.get('content', '')
+
+                    # 归一化 content 到 str
+                    if not isinstance(content, str):
+                        if isinstance(content, list):
+                            parts = []
+                            for item in content:
+                                if isinstance(item, dict):
+                                    parts.append(item.get('text', '') or str(item))
+                                else:
+                                    parts.append(str(item))
+                            content = '\n'.join(parts)
+                        else:
+                            content = str(content)
 
                     if role in ['system', 'system_message', name_mapping['system']]:
                         # 跳过：summary 由 compress 拥有，review 不能改写
