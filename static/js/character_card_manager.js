@@ -598,10 +598,10 @@ if (characterCardTagInput) {
 }
 
 function updateCharacterCardTagScrollControls() {
-    const wrapper = document.getElementById('character-card-tags-wrapper');
-    const leftButton = document.getElementById('character-card-tags-scroll-left');
-    const rightButton = document.getElementById('character-card-tags-scroll-right');
-    if (!wrapper || !leftButton || !rightButton) return;
+    const controls = ensureCharacterCardTagScrollControls();
+    if (!controls) return;
+
+    const { wrapper, leftButton, rightButton } = controls;
 
     const hasOverflow = (wrapper.scrollWidth - wrapper.clientWidth) > 2;
     const atStart = wrapper.scrollLeft <= 2;
@@ -611,6 +611,79 @@ function updateCharacterCardTagScrollControls() {
     rightButton.classList.toggle('is-hidden', !hasOverflow);
     leftButton.disabled = !hasOverflow || atStart;
     rightButton.disabled = !hasOverflow || atEnd;
+}
+
+function createCharacterCardTagScrollButton(direction) {
+    const isLeft = direction < 0;
+    const button = document.createElement('button');
+    const labelKey = isLeft ? 'steam.scrollTagsLeftAriaLabel' : 'steam.scrollTagsRightAriaLabel';
+    const fallbackLabel = isLeft ? '向左滚动标签' : '向右滚动标签';
+
+    button.type = 'button';
+    button.id = isLeft ? 'character-card-tags-scroll-left' : 'character-card-tags-scroll-right';
+    button.className = 'tag-scroll-button is-hidden';
+    button.textContent = isLeft ? '<' : '>';
+    button.setAttribute('data-i18n-title', labelKey);
+    button.setAttribute('data-i18n-aria', labelKey);
+    button.setAttribute('title', window.t ? window.t(labelKey) : fallbackLabel);
+    button.setAttribute('aria-label', window.t ? window.t(labelKey) : fallbackLabel);
+    button.addEventListener('click', () => {
+        scrollCharacterCardTags(isLeft ? -1 : 1);
+    });
+
+    return button;
+}
+
+function ensureCharacterCardTagScrollControls() {
+    const wrapper = document.getElementById('character-card-tags-wrapper');
+    if (!wrapper) return null;
+
+    let shell = wrapper.parentElement && wrapper.parentElement.classList.contains('character-card-tags-scroll-shell')
+        ? wrapper.parentElement
+        : null;
+
+    if (!shell && wrapper.parentNode) {
+        shell = document.createElement('div');
+        shell.className = 'character-card-tags-scroll-shell';
+        wrapper.parentNode.insertBefore(shell, wrapper);
+        shell.appendChild(createCharacterCardTagScrollButton(-1));
+        shell.appendChild(wrapper);
+        shell.appendChild(createCharacterCardTagScrollButton(1));
+    }
+
+    if (!shell) return null;
+
+    let leftButton = shell.querySelector('#character-card-tags-scroll-left');
+    if (!leftButton) {
+        leftButton = createCharacterCardTagScrollButton(-1);
+        shell.insertBefore(leftButton, shell.firstChild || null);
+    }
+
+    let rightButton = shell.querySelector('#character-card-tags-scroll-right');
+    if (!rightButton) {
+        rightButton = createCharacterCardTagScrollButton(1);
+        shell.appendChild(rightButton);
+    }
+
+    if (wrapper.dataset.scrollControlsBound !== 'true') {
+        wrapper.addEventListener('scroll', updateCharacterCardTagScrollControls, { passive: true });
+
+        if (typeof ResizeObserver !== 'undefined') {
+            const tagsContainer = document.getElementById('character-card-tags-container');
+            const tagsResizeObserver = new ResizeObserver(() => {
+                updateCharacterCardTagScrollControls();
+            });
+            tagsResizeObserver.observe(wrapper);
+            if (tagsContainer) {
+                tagsResizeObserver.observe(tagsContainer);
+            }
+            wrapper._tagScrollResizeObserver = tagsResizeObserver;
+        }
+
+        wrapper.dataset.scrollControlsBound = 'true';
+    }
+
+    return { wrapper, leftButton, rightButton };
 }
 
 function scrollCharacterCardTags(direction) {
@@ -684,6 +757,7 @@ function addTag(tagText, type = '', locked = false) {
 
     if (type === 'character-card') {
         updateCharacterCardTagScrollControls();
+        requestAnimationFrame(updateCharacterCardTagScrollControls);
     }
 }
 
@@ -696,6 +770,7 @@ function removeTag(tagElement, type = '') {
 
     if (type === 'character-card') {
         updateCharacterCardTagScrollControls();
+        requestAnimationFrame(updateCharacterCardTagScrollControls);
     }
 }
 
@@ -2279,8 +2354,9 @@ async function autoScanAndAddWorkshopCharacterCards() {
             } else {
                 const syncResult = await syncResponse.json();
                 if (syncResult.success) {
-                    if (syncResult.added > 0) {
-                        console.log(`[工坊同步] 服务端同步完成：新增 ${syncResult.added} 个角色卡，跳过 ${syncResult.skipped} 个已存在`);
+                    const backfilledFaces = Number(syncResult.backfilled_faces || 0);
+                    if (syncResult.added > 0 || backfilledFaces > 0) {
+                        console.log(`[工坊同步] 服务端同步完成：新增 ${syncResult.added} 个角色卡，回填 ${backfilledFaces} 个封面，跳过 ${syncResult.skipped} 个已存在`);
                         // 刷新角色卡列表
                         loadCharacterCards();
                     } else {
@@ -3981,8 +4057,8 @@ function openCatgirlPanel(card, originEl) {
                                     // 重新计算模型缩放和位置（修复在隐藏标签中加载导致的0尺寸问题）
                                     if (live2dPreviewManager.currentModel) {
                                         live2dPreviewManager.applyModelSettings(live2dPreviewManager.currentModel, {});
-                                        if (live2dPreviewManager.app && live2dPreviewManager.app.renderer) {
-                                            live2dPreviewManager.app.renderer.render(live2dPreviewManager.app.stage);
+                                        if (live2dPreviewManager.pixi_app && live2dPreviewManager.pixi_app.renderer) {
+                                            live2dPreviewManager.pixi_app.renderer.render(live2dPreviewManager.pixi_app.stage);
                                         }
                                     }
                                 }
@@ -5514,12 +5590,12 @@ function buildSteamTabContent(name, rawData, card, container) {
 
     const tagsWrapper = document.createElement('div');
     tagsWrapper.id = 'character-card-tags-wrapper';
-    tagsWrapper.style.cssText = 'display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 15px; border: 2px solid #b3e5fc; border-radius: 50px; background-color: #fff; min-height: 40px; box-sizing: border-box; margin-top: 5px;';
     const tagsContainer = document.createElement('div');
     tagsContainer.className = 'tags-container';
     tagsContainer.id = 'character-card-tags-container';
     tagsWrapper.appendChild(tagsContainer);
     tagsControlGroup.appendChild(tagsWrapper);
+    ensureCharacterCardTagScrollControls();
     tagsArea.appendChild(tagsControlGroup);
     tagsButtonsSection.appendChild(tagsArea);
 
@@ -5785,6 +5861,7 @@ function expandCharacterCardSection(card) {
                 tagsContainer.appendChild(tagElement);
             });
         }
+        requestAnimationFrame(updateCharacterCardTagScrollControls);
     }
 
     // 显示角色卡区域
@@ -6376,6 +6453,65 @@ async function scanModels() {
 
 // 全局变量：当前选择的模型信息
 let selectedModelInfo = null;
+
+function fitLive2DPreviewModelToContainer(model) {
+    if (!live2dPreviewManager || !live2dPreviewManager.pixi_app || !model) return;
+
+    const renderer = live2dPreviewManager.pixi_app.renderer;
+    const screenWidth = Number(renderer?.screen?.width) || 0;
+    const screenHeight = Number(renderer?.screen?.height) || 0;
+    if (screenWidth <= 0 || screenHeight <= 0) return;
+
+    model.anchor.set(0.5, 0.5);
+    if (!Number.isFinite(model.scale?.x) || model.scale.x <= 0 || !Number.isFinite(model.scale?.y) || model.scale.y <= 0) {
+        model.scale.set(0.18);
+    }
+
+    model.x = screenWidth * 0.5;
+    model.y = screenHeight * 0.5;
+
+    // Live2DManager 在 addChild 之前会先调用 applyModelSettings。
+    // 这时直接依赖 getBounds() 做精确 fitting 并不稳定，先做保守居中，
+    // 等模型真正挂到 stage 上后再用 bounds 做二次校正。
+    if (!model.parent || typeof model.getBounds !== 'function') return;
+
+    let bounds = null;
+    try {
+        bounds = model.getBounds();
+    } catch (error) {
+        console.warn('[CharacterCard] 获取 Live2D 预览 bounds 失败:', error);
+        return;
+    }
+
+    const initialWidth = Number(bounds?.width) || 0;
+    const initialHeight = Number(bounds?.height) || 0;
+    if (initialWidth <= 1 || initialHeight <= 1) return;
+
+    const padding = 30;
+    const availableWidth = Math.max(80, screenWidth - padding * 2);
+    const availableHeight = Math.max(80, screenHeight - padding * 2);
+    const scaleRatio = Math.min(availableWidth / initialWidth, availableHeight / initialHeight);
+
+    if (Number.isFinite(scaleRatio) && scaleRatio > 0) {
+        const nextScaleX = Math.max(0.02, Math.min(model.scale.x * scaleRatio, 2.5));
+        const nextScaleY = Math.max(0.02, Math.min(model.scale.y * scaleRatio, 2.5));
+        model.scale.set(nextScaleX, nextScaleY);
+    }
+
+    try {
+        const fittedBounds = model.getBounds();
+        const fittedWidth = Number(fittedBounds?.width) || 0;
+        const fittedHeight = Number(fittedBounds?.height) || 0;
+        if (fittedWidth > 1 && fittedHeight > 1) {
+            const currentCenterX = (Number(fittedBounds.x) || 0) + fittedWidth * 0.5;
+            const currentCenterY = (Number(fittedBounds.y) || 0) + fittedHeight * 0.5;
+            model.x += (screenWidth * 0.5) - currentCenterX;
+            model.y += (screenHeight * 0.5) - currentCenterY;
+        }
+    } catch (error) {
+        console.warn('[CharacterCard] 校正 Live2D 预览位置失败:', error);
+    }
+}
 
 // 初始化模型选择功能
 // 音色相关函数（功能暂未实现）
@@ -7152,13 +7288,14 @@ async function loadLive2DModelByName(modelName, modelInfo = null) {
         // 模型加载完成后，确保它在容器中正确显示
         setTimeout(() => {
             if (live2dPreviewManager && live2dPreviewManager.currentModel) {
-                live2dPreviewManager.applyModelSettings(live2dPreviewManager.currentModel, {});
+                fitLive2DPreviewModelToContainer(live2dPreviewManager.currentModel);
                 // 确保canvas正确显示，占位符被隐藏
                 document.getElementById('live2d-preview-canvas').style.display = '';
-                document.querySelector('.preview-placeholder').style.display = 'none';
+                const placeholder = document.querySelector('#live2d-preview-content .preview-placeholder');
+                if (placeholder) placeholder.style.display = 'none';
                 // 强制重绘canvas
-                if (live2dPreviewManager.app && live2dPreviewManager.app.renderer) {
-                    live2dPreviewManager.app.renderer.render(live2dPreviewManager.app.stage);
+                if (live2dPreviewManager.pixi_app && live2dPreviewManager.pixi_app.renderer) {
+                    live2dPreviewManager.pixi_app.renderer.render(live2dPreviewManager.pixi_app.stage);
                 }
             }
         }, 100);
@@ -7316,7 +7453,6 @@ function updateCardPreview() {
 document.addEventListener('DOMContentLoaded', function () {
     // 只有 description 输入框仍然存在，为其添加事件监听器
     const descriptionInput = document.getElementById('character-card-description');
-    const characterCardTagsWrapper = document.getElementById('character-card-tags-wrapper');
 
     // 页面加载完成后自动加载音色列表
     loadVoices();
@@ -7325,17 +7461,8 @@ document.addEventListener('DOMContentLoaded', function () {
         descriptionInput.addEventListener('input', updateCardPreview);
     }
 
-    if (characterCardTagsWrapper) {
-        characterCardTagsWrapper.addEventListener('scroll', updateCharacterCardTagScrollControls, { passive: true });
-        if (typeof ResizeObserver !== 'undefined') {
-            const tagsResizeObserver = new ResizeObserver(() => {
-                updateCharacterCardTagScrollControls();
-            });
-            tagsResizeObserver.observe(characterCardTagsWrapper);
-        }
-    }
-
     window.addEventListener('resize', updateCharacterCardTagScrollControls);
+    ensureCharacterCardTagScrollControls();
     window.setTimeout(updateCharacterCardTagScrollControls, 0);
 });
 
@@ -7384,45 +7511,10 @@ async function initLive2DPreview() {
         live2dPreviewManager.applyModelSettings = function (model, options) {
             // 获取预览容器的尺寸
             const container = document.getElementById('live2d-preview-content');
-            if (!container) {
+            if (!container || !this.pixi_app || !this.pixi_app.renderer) {
                 return originalApplyModelSettings(model, options);
             }
-
-            const containerWidth = container.clientWidth;
-            const containerHeight = container.clientHeight;
-
-            // 先设置临时缩放和锚点以便获取实际边界
-            model.anchor.set(0.5, 0.5);
-            model.scale.set(0.1); // 临时缩放值
-            model.x = 0;
-            model.y = 0;
-
-            // 获取模型的实际边界
-            const bounds = model.getBounds();
-            const modelWidth = bounds.width / 0.1; // 还原原始宽度
-            const modelHeight = bounds.height / 0.1; // 还原原始高度
-
-            // 计算适合容器的缩放比例
-            const padding = 30;
-            const availableWidth = Math.max(50, containerWidth - padding * 2);
-            const availableHeight = Math.max(50, containerHeight - padding * 2);
-
-            // 基于实际模型尺寸计算缩放
-            const scaleX = availableWidth / modelWidth;
-            const scaleY = availableHeight / modelHeight;
-
-            // 取较小值确保完整显示
-            let defaultScale = Math.min(scaleX, scaleY);
-            defaultScale = Math.max(0.01, Math.min(defaultScale, 1.0));
-
-            model.scale.set(defaultScale);
-
-            // 将模型居中显示在容器中央
-            model.x = containerWidth * 0.5;
-            model.y = containerHeight * 0.5;
-
-            // 锚点保持中心，确保模型居中缩放
-            model.anchor.set(0.5, 0.5);
+            fitLive2DPreviewModelToContainer(model);
         };
 
         // 添加窗口大小变化的监听，当预览区域大小变化时重新计算模型缩放和位置
@@ -7435,6 +7527,9 @@ async function initLive2DPreview() {
             if (live2dPreviewManager && live2dPreviewManager.currentModel) {
                 // 调用我们覆盖的applyModelSettings方法，重新计算模型缩放和位置
                 live2dPreviewManager.applyModelSettings(live2dPreviewManager.currentModel, {});
+                if (live2dPreviewManager.pixi_app && live2dPreviewManager.pixi_app.renderer) {
+                    live2dPreviewManager.pixi_app.renderer.render(live2dPreviewManager.pixi_app.stage);
+                }
             }
         }
 
@@ -7442,9 +7537,9 @@ async function initLive2DPreview() {
         if (!live2dPreviewManager.removeModel) {
             live2dPreviewManager.removeModel = async function (force) {
                 try {
-                    if (this.currentModel && this.app && this.app.stage) {
+                    if (this.currentModel && this.pixi_app && this.pixi_app.stage) {
                         // 移除当前模型
-                        this.app.stage.removeChild(this.currentModel);
+                        this.pixi_app.stage.removeChild(this.currentModel);
                         this.currentModel = null;
 
                         // 如果有清理资源的方法，调用它
