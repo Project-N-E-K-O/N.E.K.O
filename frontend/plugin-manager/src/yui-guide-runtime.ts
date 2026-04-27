@@ -725,39 +725,41 @@ function injectStyle() {
       inset: 0;
       padding: 2px;
       border-radius: inherit;
+      --yui-guide-plugin-spotlight-corner-size: min(34%, 138px);
+      --yui-guide-plugin-spotlight-border-gap: min(68%, 144px);
       background:
-        linear-gradient(rgba(39, 89, 228, 0.98), rgba(39, 89, 228, 0.98)) top center / calc(100% - 144px) 2px no-repeat,
-        linear-gradient(rgba(39, 89, 228, 0.98), rgba(39, 89, 228, 0.98)) bottom center / calc(100% - 144px) 2px no-repeat,
-        linear-gradient(90deg, rgba(39, 89, 228, 0.98), rgba(39, 89, 228, 0.98)) left center / 2px calc(100% - 144px) no-repeat,
-        linear-gradient(90deg, rgba(39, 89, 228, 0.98), rgba(39, 89, 228, 0.98)) right center / 2px calc(100% - 144px) no-repeat,
+        linear-gradient(rgba(39, 89, 228, 0.98), rgba(39, 89, 228, 0.98)) top center / calc(100% - var(--yui-guide-plugin-spotlight-border-gap)) 2px no-repeat,
+        linear-gradient(rgba(39, 89, 228, 0.98), rgba(39, 89, 228, 0.98)) bottom center / calc(100% - var(--yui-guide-plugin-spotlight-border-gap)) 2px no-repeat,
+        linear-gradient(90deg, rgba(39, 89, 228, 0.98), rgba(39, 89, 228, 0.98)) left center / 2px calc(100% - var(--yui-guide-plugin-spotlight-border-gap)) no-repeat,
+        linear-gradient(90deg, rgba(39, 89, 228, 0.98), rgba(39, 89, 228, 0.98)) right center / 2px calc(100% - var(--yui-guide-plugin-spotlight-border-gap)) no-repeat,
         radial-gradient(circle at top left,
           rgba(235, 249, 255, 0.98) 0,
-          rgba(186, 231, 255, 0.98) 18px,
-          rgba(76, 137, 255, 0.95) 72px,
-          rgba(39, 89, 228, 0.98) 132px,
-          transparent 138px
-        ) top left / 138px 138px no-repeat,
+          rgba(186, 231, 255, 0.98) 13%,
+          rgba(76, 137, 255, 0.95) 52%,
+          rgba(39, 89, 228, 0.98) 96%,
+          transparent 100%
+        ) top left / var(--yui-guide-plugin-spotlight-corner-size) var(--yui-guide-plugin-spotlight-corner-size) no-repeat,
         radial-gradient(circle at top right,
           rgba(235, 249, 255, 0.98) 0,
-          rgba(186, 231, 255, 0.98) 18px,
-          rgba(76, 137, 255, 0.95) 72px,
-          rgba(39, 89, 228, 0.98) 132px,
-          transparent 138px
-        ) top right / 138px 138px no-repeat,
+          rgba(186, 231, 255, 0.98) 13%,
+          rgba(76, 137, 255, 0.95) 52%,
+          rgba(39, 89, 228, 0.98) 96%,
+          transparent 100%
+        ) top right / var(--yui-guide-plugin-spotlight-corner-size) var(--yui-guide-plugin-spotlight-corner-size) no-repeat,
         radial-gradient(circle at bottom right,
           rgba(235, 249, 255, 0.98) 0,
-          rgba(186, 231, 255, 0.98) 18px,
-          rgba(76, 137, 255, 0.95) 72px,
-          rgba(39, 89, 228, 0.98) 132px,
-          transparent 138px
-        ) bottom right / 138px 138px no-repeat,
+          rgba(186, 231, 255, 0.98) 13%,
+          rgba(76, 137, 255, 0.95) 52%,
+          rgba(39, 89, 228, 0.98) 96%,
+          transparent 100%
+        ) bottom right / var(--yui-guide-plugin-spotlight-corner-size) var(--yui-guide-plugin-spotlight-corner-size) no-repeat,
         radial-gradient(circle at bottom left,
           rgba(235, 249, 255, 0.98) 0,
-          rgba(186, 231, 255, 0.98) 18px,
-          rgba(76, 137, 255, 0.95) 72px,
-          rgba(39, 89, 228, 0.98) 132px,
-          transparent 138px
-        ) bottom left / 138px 138px no-repeat;
+          rgba(186, 231, 255, 0.98) 13%,
+          rgba(76, 137, 255, 0.95) 52%,
+          rgba(39, 89, 228, 0.98) 96%,
+          transparent 100%
+        ) bottom left / var(--yui-guide-plugin-spotlight-corner-size) var(--yui-guide-plugin-spotlight-corner-size) no-repeat;
       pointer-events: none;
       -webkit-mask:
         linear-gradient(#000 0 0) content-box,

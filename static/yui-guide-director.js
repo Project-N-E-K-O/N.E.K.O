@@ -3613,6 +3613,17 @@
             }
         }
 
+        closePluginDashboardWindowIfCreatedByGuide(context) {
+            if (!this.pluginDashboardWindowCreatedByGuide) {
+                return;
+            }
+
+            this.pluginDashboardWindowCreatedByGuide = false;
+            this.closeNamedWindow(PLUGIN_DASHBOARD_WINDOW_NAME).catch((error) => {
+                console.warn('[YuiGuide] ' + (context || '清理') + '时关闭插件面板失败:', error);
+            });
+        }
+
         async setAgentMasterEnabled(enabled) {
             return this.callHomeInteractionApi('setAgentMasterEnabled', [enabled], async () => {
                 const response = await fetch('/api/agent/command', {
@@ -4181,9 +4192,17 @@
             await this.clickAgentSidePanelAction('agent-user-plugin', 'management-panel', {
                 keepMainUIVisible: true
             });
-            let pluginDashboardWindow = hadPluginDashboard
-                ? existingPluginDashboardWindow
-                : await this.waitForOpenedWindow(PLUGIN_DASHBOARD_WINDOW_NAME, 6000);
+            let pluginDashboardWindow = null;
+            if (hadPluginDashboard) {
+                try {
+                    existingPluginDashboardWindow.location.reload();
+                } catch (error) {
+                    console.warn('[YuiGuide] 刷新已有插件面板失败:', error);
+                }
+                pluginDashboardWindow = await this.waitForOpenedWindow(PLUGIN_DASHBOARD_WINDOW_NAME, 6000);
+            } else {
+                pluginDashboardWindow = await this.waitForOpenedWindow(PLUGIN_DASHBOARD_WINDOW_NAME, 6000);
+            }
             if (
                 (!pluginDashboardWindow || pluginDashboardWindow.closed)
                 && !hadPluginDashboard
@@ -4694,12 +4713,7 @@
             this.closeManagedPanels().catch((error) => {
                 console.warn('[YuiGuide] 终止时关闭首页面板失败:', error);
             });
-            if (this.pluginDashboardWindowCreatedByGuide) {
-                this.pluginDashboardWindowCreatedByGuide = false;
-                this.closeNamedWindow(PLUGIN_DASHBOARD_WINDOW_NAME).catch((error) => {
-                    console.warn('[YuiGuide] 终止时关闭插件面板失败:', error);
-                });
-            }
+            this.closePluginDashboardWindowIfCreatedByGuide('终止');
             if (typeof window.handleShowMainUI === 'function') {
                 try {
                     window.handleShowMainUI();
@@ -6272,6 +6286,7 @@
             this.closeManagedPanels().catch((error) => {
                 console.warn('[YuiGuide] 销毁时关闭首页面板失败:', error);
             });
+            this.closePluginDashboardWindowIfCreatedByGuide('销毁');
             if (typeof window.handleShowMainUI === 'function') {
                 try {
                     window.handleShowMainUI();

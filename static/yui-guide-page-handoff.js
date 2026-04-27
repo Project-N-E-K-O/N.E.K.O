@@ -197,7 +197,6 @@
     var HANDOFF_TOKEN_TTL_MS = 5 * 60 * 1000;
     var HANDOFF_FLOW_ID = 'home_yui_guide_v1';
     var DEFAULT_PLUGIN_DASHBOARD_ORIGIN = 'http://127.0.0.1:48916';
-    var PLUGIN_DASHBOARD_HANDOFF_EVENT = 'neko:yui-guide:plugin-dashboard:start';
     var PLUGIN_DASHBOARD_DONE_EVENT = 'neko:yui-guide:plugin-dashboard:done';
     var PLUGIN_DASHBOARD_INTERRUPT_REQUEST_EVENT = 'neko:yui-guide:plugin-dashboard:interrupt-request';
     var PLUGIN_DASHBOARD_INTERRUPT_ACK_EVENT = 'neko:yui-guide:plugin-dashboard:interrupt-ack';
@@ -1032,8 +1031,7 @@
             };
         var completeCallback = typeof callbacks.onComplete === 'function' ? callbacks.onComplete : null;
         var interruptCallback = typeof callbacks.onInterrupt === 'function' ? callbacks.onInterrupt : null;
-        var startCallback = typeof callbacks.onStart === 'function' ? callbacks.onStart : null;
-        if (!completeCallback && !interruptCallback && !startCallback) return function () {};
+        if (!completeCallback && !interruptCallback) return function () {};
         if (!_pluginDashboardCompleteDeprecatedWarned) {
             _pluginDashboardCompleteDeprecatedWarned = true;
             console.warn('[YuiGuideHandoff] listenPluginDashboardComplete 已弃用，请改用 neko:yui-guide:plugin-dashboard:start / neko:yui-guide:plugin-dashboard:interrupt-ack 消息流程。');
@@ -1063,14 +1061,21 @@
                 return false;
             }
 
-            var expectedWindow = getOpenedWindow(normalizeWindowName('plugin_dashboard'));
-            if (expectedWindow && !expectedWindow.closed && event.source !== expectedWindow) {
+            var fullName = normalizeWindowName('plugin_dashboard');
+            var trackedWindow = (_activeWindows && _activeWindows[fullName])
+                || (window._openedWindows && window._openedWindows[fullName])
+                || null;
+            if (trackedWindow) {
+                if (trackedWindow.closed) {
+                    return false;
+                }
+                return event.source === trackedWindow;
+            }
+
+            if (!window.opener || window.opener.closed) {
                 return false;
             }
-            if (!expectedWindow && window.opener && !window.opener.closed && event.source !== window.opener) {
-                return false;
-            }
-            return true;
+            return event.source === window.opener;
         }
 
         function handleTokenBackedComplete(data, detail) {
@@ -1113,14 +1118,6 @@
                     sessionId: sessionId,
                     requestId: requestId,
                     type: data.type
-                }));
-                return true;
-            }
-            if (data.type === PLUGIN_DASHBOARD_HANDOFF_EVENT) {
-                if (!startCallback) return true;
-                if (!markProcessed('start:' + sessionId)) return true;
-                startCallback(Object.assign({}, data.payload || {}, {
-                    sessionId: sessionId
                 }));
                 return true;
             }
@@ -1183,8 +1180,7 @@
             || normalizeWindowName(windowName) === normalizeWindowName('plugin_dashboard')
         );
         if (isPluginDashboardTarget) {
-            // Plugin dashboard uses the dedicated PLUGIN_DASHBOARD_HANDOFF_EVENT /
-            // PLUGIN_DASHBOARD_INTERRUPT_ACK_EVENT flow managed by the guide director.
+            // Plugin dashboard uses the dedicated start / interrupt-ack flow managed by the guide director.
             var pluginDashboardOptions = Object.assign({}, options || {}, {
                 forceReload: true
             });
