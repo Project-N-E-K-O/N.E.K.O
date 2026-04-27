@@ -1063,7 +1063,7 @@ class PluginDashboardGuideRuntime {
       const computed = window.getComputedStyle(htmlElement)
       const parsedRadius = Number.parseFloat(computed.borderTopLeftRadius || computed.borderRadius || '')
       if (Number.isFinite(parsedRadius) && parsedRadius > 0) {
-        radius = parsedRadius + padding
+        radius = Math.max(0, parsedRadius + padding)
       }
     } catch (_) {}
 
@@ -2102,11 +2102,22 @@ class PluginDashboardGuideRuntime {
     const elapsedBeforeMotionMs = Number.isFinite(payload.narrationStartedAtMs)
       ? Math.max(0, Date.now() - Math.round(payload.narrationStartedAtMs as number))
       : 0
-    const remainingNarrationDurationMs = Math.max(0, totalNarrationDurationMs - elapsedBeforeMotionMs)
-    const moveToMainDurationMs = PLUGIN_DASHBOARD_MOVE_TO_MAIN_MS
-    const scrollDownDurationMs = Math.round(PLUGIN_DASHBOARD_SCROLL_PHASE_MS / 2)
-    const scrollUpDurationMs = PLUGIN_DASHBOARD_SCROLL_PHASE_MS - scrollDownDurationMs
-    const ellipseDurationMs = Math.max(0, remainingNarrationDurationMs - moveToMainDurationMs - scrollDownDurationMs - scrollUpDurationMs)
+    const budgetMs = Math.max(0, totalNarrationDurationMs - elapsedBeforeMotionMs)
+    const baseMoveToMainDurationMs = PLUGIN_DASHBOARD_MOVE_TO_MAIN_MS
+    const baseScrollDownDurationMs = Math.round(PLUGIN_DASHBOARD_SCROLL_PHASE_MS / 2)
+    const baseScrollUpDurationMs = PLUGIN_DASHBOARD_SCROLL_PHASE_MS - baseScrollDownDurationMs
+    const fixedPartsDurationMs = baseMoveToMainDurationMs + baseScrollDownDurationMs + baseScrollUpDurationMs
+    let moveToMainDurationMs = baseMoveToMainDurationMs
+    let scrollDownDurationMs = baseScrollDownDurationMs
+    let scrollUpDurationMs = baseScrollUpDurationMs
+    let ellipseDurationMs = Math.max(0, budgetMs - fixedPartsDurationMs)
+    if (budgetMs < fixedPartsDurationMs && fixedPartsDurationMs > 0) {
+      const scale = budgetMs / fixedPartsDurationMs
+      moveToMainDurationMs = Math.floor(baseMoveToMainDurationMs * scale)
+      scrollDownDurationMs = Math.floor(baseScrollDownDurationMs * scale)
+      scrollUpDurationMs = Math.max(0, Math.round(budgetMs) - moveToMainDurationMs - scrollDownDurationMs)
+      ellipseDurationMs = 0
+    }
 
     if (!isCurrent()) {
       return

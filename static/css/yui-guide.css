@@ -176,7 +176,14 @@ body.yui-guide-home-driver-hidden .driver-highlight {
 }
 
 .yui-guide-spotlight-frame.is-circular-mask {
-  box-shadow: none;
+  box-shadow: none !important;
+}
+
+.yui-guide-spotlight-frame.is-circular-mask.is-visible,
+.yui-guide-spotlight-frame.is-circular-mask .yui-guide-chat-pulse {
+  animation: none !important;
+  animation-name: none !important;
+  box-shadow: none !important;
 }
 
 .yui-guide-spotlight-frame.is-circular-mask .yui-guide-spotlight-chrome,

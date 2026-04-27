@@ -1102,11 +1102,14 @@
         if (isPluginDashboardTarget) {
             // Plugin dashboard uses the dedicated PLUGIN_DASHBOARD_HANDOFF_EVENT /
             // PLUGIN_DASHBOARD_INTERRUPT_ACK_EVENT flow managed by the guide director.
+            var pluginDashboardOptions = Object.assign({}, options || {}, {
+                forceReload: true
+            });
             return openPage(
                 buildPluginDashboardUrl(),
                 windowName,
                 features,
-                options
+                pluginDashboardOptions
             );
         }
 

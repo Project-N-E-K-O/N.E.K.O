@@ -4253,84 +4253,97 @@
                     voiceKey: step.performance.voiceKey || 'takeover_plugin_preview_home'
                 }).catch(() => {});
             }
-            let dashboardWindow = await this.runTakeoverCaptureActionSequence(
-                step,
-                (step && step.performance) || {},
-                runId
-            );
-            await homeNarrationPromise;
-            if (runId !== this.sceneRunId || this.isStopping()) {
-                return;
-            }
-            if (!dashboardWindow) {
-                return;
-            }
+            let agentSwitchesRolledBack = false;
+            const rollbackAgentSwitches = async () => {
+                if (agentSwitchesRolledBack) {
+                    return;
+                }
+                agentSwitchesRolledBack = true;
+                await Promise.all([
+                    this.setAgentMasterEnabled(false).catch(() => {}),
+                    this.setAgentFlagEnabled('user_plugin_enabled', false).catch(() => {})
+                ]);
+            };
 
-            const dashboardText = this.resolveGuideCopy(
-                TAKEOVER_PLUGIN_DASHBOARD_TEXT_KEY,
-                TAKEOVER_PLUGIN_DASHBOARD_TEXT
-            );
-            this.appendGuideChatMessage(dashboardText, {
-                textKey: TAKEOVER_PLUGIN_DASHBOARD_TEXT_KEY
-            });
-            const homeCursorPosition = this.overlay && typeof this.overlay.getCursorPosition === 'function'
-                ? this.overlay.getCursorPosition()
-                : null;
-            this.cursor.hide();
-            let pluginPanelClosed = false;
-            const closePluginPreviewPanel = async () => {
-                if (pluginPanelClosed || runId !== this.sceneRunId || this.isStopping()) {
+            try {
+                let dashboardWindow = await this.runTakeoverCaptureActionSequence(
+                    step,
+                    (step && step.performance) || {},
+                    runId
+                );
+                await homeNarrationPromise;
+                if (runId !== this.sceneRunId || this.isStopping()) {
+                    return;
+                }
+                if (!dashboardWindow) {
                     return;
                 }
 
-                pluginPanelClosed = true;
-                this.collapseAgentSidePanel('agent-user-plugin');
-                this.clearVirtualSpotlight('plugin-management-entry');
-                await this.closeAgentPanel().catch(() => {});
-            };
-            const dashboardVoiceKey = 'takeover_plugin_preview_dashboard';
-            const dashboardAudioUrl = this.voiceQueue && typeof this.voiceQueue.resolveGuideAudioSrc === 'function'
-                ? this.voiceQueue.resolveGuideAudioSrc(dashboardVoiceKey)
-                : '';
-            const dashboardNarrationStartedAtMs = Date.now();
-            const dashboardNarrationPromise = this.speakLineAndWait(dashboardText, {
-                voiceKey: dashboardVoiceKey
-            }).catch(() => {}).finally(() => closePluginPreviewPanel());
+                const dashboardText = this.resolveGuideCopy(
+                    TAKEOVER_PLUGIN_DASHBOARD_TEXT_KEY,
+                    TAKEOVER_PLUGIN_DASHBOARD_TEXT
+                );
+                this.appendGuideChatMessage(dashboardText, {
+                    textKey: TAKEOVER_PLUGIN_DASHBOARD_TEXT_KEY
+                });
+                const homeCursorPosition = this.overlay && typeof this.overlay.getCursorPosition === 'function'
+                    ? this.overlay.getCursorPosition()
+                    : null;
+                this.cursor.hide();
+                let pluginPanelClosed = false;
+                const closePluginPreviewPanel = async () => {
+                    if (pluginPanelClosed || runId !== this.sceneRunId || this.isStopping()) {
+                        return;
+                    }
 
-            const pluginDashboardPerformancePromise = this.waitForPluginDashboardPerformance(dashboardWindow, {
-                line: dashboardText,
-                closeOnDone: true,
-                narrationDurationMs: TAKEOVER_PLUGIN_DASHBOARD_DURATION_MS,
-                voiceKey: dashboardVoiceKey,
-                audioUrl: dashboardAudioUrl,
-                narrationStartedAtMs: dashboardNarrationStartedAtMs
-            }).catch(() => {
-                return false;
-            });
-            await dashboardNarrationPromise;
-            const pluginDashboardCompleted = await pluginDashboardPerformancePromise;
-            await this.closeNamedWindow(PLUGIN_DASHBOARD_WINDOW_NAME);
-            if (this.pluginDashboardHandoff && this.pluginDashboardHandoff.windowRef === dashboardWindow && typeof this.pluginDashboardHandoff.resolve === 'function') {
-                this.pluginDashboardHandoff.resolve(!!pluginDashboardCompleted);
-            }
-            this.customSecondarySpotlightTarget = null;
-            this.clearSceneExtraSpotlights();
-            this.clearRetainedExtraSpotlights();
-            this.overlay.clearActionSpotlight();
-            // 恢复关闭猫爪总开关和用户插件开关
-            await Promise.all([
-                this.setAgentMasterEnabled(false).catch(() => {}),
-                this.setAgentFlagEnabled('user_plugin_enabled', false).catch(() => {})
-            ]);
-            await this.waitForHomeMainUIReady(3600);
-            if (runId !== this.sceneRunId || this.isStopping()) {
-                return;
-            }
+                    pluginPanelClosed = true;
+                    this.collapseAgentSidePanel('agent-user-plugin');
+                    this.clearVirtualSpotlight('plugin-management-entry');
+                    await this.closeAgentPanel().catch(() => {});
+                };
+                const dashboardVoiceKey = 'takeover_plugin_preview_dashboard';
+                const dashboardAudioUrl = this.voiceQueue && typeof this.voiceQueue.resolveGuideAudioSrc === 'function'
+                    ? this.voiceQueue.resolveGuideAudioSrc(dashboardVoiceKey)
+                    : '';
+                const dashboardNarrationStartedAtMs = Date.now();
+                const dashboardNarrationPromise = this.speakLineAndWait(dashboardText, {
+                    voiceKey: dashboardVoiceKey
+                }).catch(() => {}).finally(() => closePluginPreviewPanel());
 
-            if (homeCursorPosition) {
-                this.cursor.showAt(homeCursorPosition.x, homeCursorPosition.y);
+                const pluginDashboardPerformancePromise = this.waitForPluginDashboardPerformance(dashboardWindow, {
+                    line: dashboardText,
+                    closeOnDone: true,
+                    narrationDurationMs: TAKEOVER_PLUGIN_DASHBOARD_DURATION_MS,
+                    voiceKey: dashboardVoiceKey,
+                    audioUrl: dashboardAudioUrl,
+                    narrationStartedAtMs: dashboardNarrationStartedAtMs
+                }).catch(() => {
+                    return false;
+                });
+                await dashboardNarrationPromise;
+                const pluginDashboardCompleted = await pluginDashboardPerformancePromise;
+                await this.closeNamedWindow(PLUGIN_DASHBOARD_WINDOW_NAME);
+                if (this.pluginDashboardHandoff && this.pluginDashboardHandoff.windowRef === dashboardWindow && typeof this.pluginDashboardHandoff.resolve === 'function') {
+                    this.pluginDashboardHandoff.resolve(!!pluginDashboardCompleted);
+                }
+                this.customSecondarySpotlightTarget = null;
+                this.clearSceneExtraSpotlights();
+                this.clearRetainedExtraSpotlights();
+                this.overlay.clearActionSpotlight();
+                // 恢复关闭猫爪总开关和用户插件开关
+                await rollbackAgentSwitches();
+                await this.waitForHomeMainUIReady(3600);
+                if (runId !== this.sceneRunId || this.isStopping()) {
+                    return;
+                }
+
+                if (homeCursorPosition) {
+                    this.cursor.showAt(homeCursorPosition.x, homeCursorPosition.y);
+                }
+                this.overlay.clearActionSpotlight();
+            } finally {
+                await rollbackAgentSwitches();
             }
-            this.overlay.clearActionSpotlight();
         }
 
         async runSettingsPeekScene(step, performance, runId) {
