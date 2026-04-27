@@ -228,7 +228,7 @@
       :class="{ 'plugin-workbench__side--visible': packagePanelVisible }"
       data-yui-guide-id="plugin-list-package-panel"
     >
-      <PackageManagerPanel embedded @close="closePackagePanel" />
+      <PackageManagerPanel v-if="packagePanelVisible" embedded @close="closePackagePanel" />
     </aside>
 
     <!-- Floating multi-select action bar -->

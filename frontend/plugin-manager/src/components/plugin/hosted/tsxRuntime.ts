@@ -58,10 +58,10 @@ export function buildHostedTsxDocument(options: BuildHostedTsxDocumentOptions) {
   const payload = JSON.stringify({
     plugin: options.context?.plugin || { id: options.pluginId },
     surface: options.surface,
-    state: options.context?.state || {},
+    state: (options.context?.state && typeof options.context.state === 'object') ? options.context.state : {},
     stateSchema: options.context?.state_schema || null,
-    actions: options.context?.actions || [],
-    entries: options.context?.entries || [],
+    actions: Array.isArray(options.context?.actions) ? options.context.actions : [],
+    entries: Array.isArray(options.context?.entries) ? options.context.entries : [],
     config: options.context?.config || { schema: { type: 'object', properties: {} }, value: {}, readonly: true },
     warnings: options.context?.warnings || [],
     locale: options.locale,
@@ -176,6 +176,31 @@ export function buildHostedTsxDocument(options: BuildHostedTsxDocumentOptions) {
     .neko-table th { color: var(--muted); font-size: 12px; background: rgba(148,163,184,0.08); }
     .neko-table tr:last-child td { border-bottom: none; }
     .neko-divider { height: 1px; background: var(--border); margin: 4px 0; }
+    .neko-form { display: grid; gap: 12px; }
+    .neko-field { display: grid; gap: 6px; }
+    .neko-field-label { color: var(--text); font-size: 13px; font-weight: 680; }
+    .neko-field-help { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+    .neko-input,
+    .neko-select,
+    .neko-textarea {
+      width: 100%;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      padding: 8px 10px;
+      background: var(--surface-strong);
+      color: var(--text);
+      font: inherit;
+      outline: none;
+    }
+    .neko-textarea { min-height: 84px; resize: vertical; }
+    .neko-input:focus,
+    .neko-select:focus,
+    .neko-textarea:focus {
+      border-color: rgba(64,158,255,0.58);
+      box-shadow: 0 0 0 3px rgba(64,158,255,0.12);
+    }
+    .neko-switch { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); }
+    .neko-checkbox { width: 16px; height: 16px; accent-color: var(--primary); }
     .neko-tabs { display: grid; gap: 12px; }
     .neko-tab-list { display: flex; gap: 8px; flex-wrap: wrap; }
     .neko-tab-button { border: 1px solid var(--border); background: var(--surface); color: var(--muted); border-radius: 999px; padding: 6px 11px; font: inherit; cursor: pointer; }
@@ -292,6 +317,107 @@ export function buildHostedTsxDocument(options: BuildHostedTsxDocumentOptions) {
       return h('table', { className: 'neko-table ' + (props.className || '') }, h('thead', null, h('tr', null, columns.map((column) => h('th', null, typeof column === 'string' ? column : column.label || column.key)))), h('tbody', null, rows.map((row) => h('tr', null, columns.map((column) => { const key = typeof column === 'string' ? column : column.key; return h('td', null, row && row[key] !== undefined ? row[key] : ''); })))));
     }
     function Divider() { return h('div', { className: 'neko-divider' }); }
+    function Field(props) {
+      return h('label', { className: 'neko-field ' + (props.className || '') },
+        props.label ? h('span', { className: 'neko-field-label' }, props.label) : null,
+        props.children,
+        props.help ? h('p', { className: 'neko-field-help' }, props.help) : null
+      );
+    }
+    function Input(props) {
+      return h('input', { className: 'neko-input ' + (props.className || ''), value: props.value || '', placeholder: props.placeholder || '', onInput: (event) => props.onChange && props.onChange(event.target.value) });
+    }
+    function Textarea(props) {
+      return h('textarea', { className: 'neko-textarea ' + (props.className || ''), value: props.value || '', placeholder: props.placeholder || '', onInput: (event) => props.onChange && props.onChange(event.target.value) });
+    }
+    function Select(props) {
+      const options = props.options || [];
+      return h('select', { className: 'neko-select ' + (props.className || ''), value: props.value || '', onChange: (event) => props.onChange && props.onChange(event.target.value) },
+        options.map((option) => {
+          const value = typeof option === 'string' ? option : option.value;
+          const label = typeof option === 'string' ? option : option.label || option.value;
+          return h('option', { value }, label);
+        })
+      );
+    }
+    function Switch(props) {
+      return h('label', { className: 'neko-switch ' + (props.className || '') },
+        h('input', { className: 'neko-checkbox', type: 'checkbox', checked: !!props.checked, onChange: (event) => props.onChange && props.onChange(!!event.target.checked) }),
+        props.label || props.children
+      );
+    }
+    function Form(props) {
+      return h('form', { className: 'neko-form ' + (props.className || ''), onSubmit: (event) => { event.preventDefault(); if (props.onSubmit) props.onSubmit(event); } }, ...(props.children || []));
+    }
+    function defaultValueForSchema(schema) {
+      if (!schema || typeof schema !== 'object') return '';
+      if (schema.default !== undefined) return schema.default;
+      if (schema.type === 'boolean') return false;
+      if (schema.type === 'array') return [];
+      if (schema.type === 'object') return {};
+      return '';
+    }
+    function parseValueForSchema(value, schema) {
+      if (!schema || typeof schema !== 'object') return value;
+      if (schema.type === 'integer') {
+        const parsed = parseInt(value, 10);
+        return Number.isFinite(parsed) ? parsed : 0;
+      }
+      if (schema.type === 'number') {
+        const parsed = parseFloat(value);
+        return Number.isFinite(parsed) ? parsed : 0;
+      }
+      if (schema.type === 'boolean') return !!value;
+      if (schema.type === 'array') {
+        if (Array.isArray(value)) return value;
+        return String(value || '').split(',').map((item) => item.trim()).filter(Boolean);
+      }
+      if (schema.type === 'object') {
+        if (value && typeof value === 'object') return value;
+        try { return JSON.parse(String(value || '{}')); } catch (_) { return {}; }
+      }
+      return value;
+    }
+    function ActionForm(props) {
+      const action = props.action || {};
+      const schema = action.input_schema || {};
+      const properties = schema.properties || {};
+      const values = {};
+      Object.keys(properties).forEach((key) => { values[key] = defaultValueForSchema(properties[key]); });
+      const form = Form({
+        onSubmit: async () => {
+          const submitButton = form.querySelector('button[type="submit"]');
+          try {
+            if (submitButton) submitButton.disabled = true;
+            const result = await api.call(action.entry_id || action.id, values);
+            if (action.refresh_context !== false) await api.refresh();
+            if (typeof props.onResult === 'function') props.onResult(result);
+          } catch (error) {
+            if (typeof props.onError === 'function') props.onError(error);
+            else alert(error && error.message ? error.message : String(error));
+          } finally {
+            if (submitButton) submitButton.disabled = false;
+          }
+        }
+      }, [
+        ...Object.entries(properties).map(([key, fieldSchema]) => {
+          const label = fieldSchema.title || fieldSchema.description || key;
+          const help = fieldSchema.description && fieldSchema.description !== label ? fieldSchema.description : '';
+          if (Array.isArray(fieldSchema.enum)) {
+            return Field({ label, help }, Select({ value: values[key], options: fieldSchema.enum, onChange: (value) => { values[key] = value; } }));
+          }
+          if (fieldSchema.type === 'boolean') {
+            return Field({ label, help }, Switch({ checked: values[key], onChange: (value) => { values[key] = value; } }));
+          }
+          if (fieldSchema.type === 'object' || fieldSchema.type === 'array') {
+            return Field({ label, help }, Textarea({ value: Array.isArray(values[key]) ? values[key].join(', ') : JSON.stringify(values[key]), onChange: (value) => { values[key] = parseValueForSchema(value, fieldSchema); } }));
+          }
+          return Field({ label, help }, Input({ value: values[key], onChange: (value) => { values[key] = parseValueForSchema(value, fieldSchema); } }));
+        }),
+        Button({ tone: action.tone || 'primary', type: 'submit' }, props.submitLabel || action.label || action.id || 'Submit')
+      ]);
+      return form;
+    }
     function CodeBlock(props) { return h('pre', { className: 'neko-code' }, props.children); }
     function Tip(props) { return h('aside', { className: 'neko-tip' }, props.children); }
     function Warning(props) { return h('aside', { className: 'neko-tip neko-warning' }, props.children); }
@@ -368,6 +494,13 @@ export function buildHostedTsxDocument(options: BuildHostedTsxDocumentOptions) {
       KeyValue,
       DataTable,
       Divider,
+      Field,
+      Input,
+      Select,
+      Textarea,
+      Switch,
+      Form,
+      ActionForm,
       CodeBlock,
       Tip,
       Warning,
@@ -409,6 +542,13 @@ ${escapeScriptContent(compiled)}
         KeyValue,
         DataTable,
         Divider,
+        Field,
+        Input,
+        Select,
+        Textarea,
+        Switch,
+        Form,
+        ActionForm,
         CodeBlock,
         Tip,
         Warning,

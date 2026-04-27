@@ -20,6 +20,11 @@ enabled = true
 
 [[plugin.ui.panel]]
 title = "MCP Adapter"
+entry = "ui/panel.tsx"
+
+[[plugin.ui.panel]]
+id = "legacy"
+title = "旧版静态面板"
 entry = "static/index.html"
 
 [[plugin.ui.guide]]

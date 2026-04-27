@@ -15,9 +15,15 @@ import {
   DataTable,
   ButtonGroup,
   ActionButton,
+  ActionForm,
 } from "@neko/plugin-ui"
 
-export default function QuickstartGuide({ plugin, state, entries }) {
+export default function QuickstartGuide({ plugin, state, entries, actions }) {
+  const safePlugin = plugin || {}
+  const safeState = state || {}
+  const safeEntries = Array.isArray(entries) ? entries : []
+  const safeActions = Array.isArray(actions) ? actions : []
+  const servers = Array.isArray(safeState.servers) ? safeState.servers : []
   const configExample = `[mcp_servers.example]
 transport = "stdio"
 command = "uvx"
@@ -37,19 +43,19 @@ enabled = true`
           <Text>发现到的 MCP tools 会被适配为 N.E.K.O 可调用的动态入口。</Text>
         </Card>
         <Card title="状态">
-          <StatusBadge tone="success">Adapter: {plugin.id}</StatusBadge>
+          <StatusBadge tone="success">Adapter: {safePlugin.id || "mcp_adapter"}</StatusBadge>
         </Card>
       </Grid>
 
       <Grid cols={3}>
-        <StatCard label="已连接服务器" value={state.connected_servers} />
-        <StatCard label="已配置服务器" value={state.total_servers} />
-        <StatCard label="已发现工具" value={state.total_tools} />
+        <StatCard label="已连接服务器" value={safeState.connected_servers || 0} />
+        <StatCard label="已配置服务器" value={safeState.total_servers || 0} />
+        <StatCard label="已发现工具" value={safeState.total_tools || 0} />
       </Grid>
 
       <Card title="MCP Server 状态">
         <DataTable
-          data={state.servers}
+          data={servers}
           columns={[
             { key: "name", label: "Server" },
             { key: "transport", label: "Transport" },
@@ -62,16 +68,23 @@ enabled = true`
 
       <Card title="快捷操作">
         <ButtonGroup>
-          {actions
+          {safeActions
             .filter((action) => action.id === "connect_server" || action.id === "disconnect_server")
             .map((action) => (
               <ActionButton
                 action={action}
-                values={{ server_name: state.servers[0]?.name || "" }}
+                values={{ server_name: servers[0]?.name || "" }}
               />
             ))}
         </ButtonGroup>
         <Text>按钮会复用插件入口执行逻辑。当前示例默认作用于第一条 Server。</Text>
+      </Card>
+
+      <Card title="添加 MCP Server">
+        <ActionForm
+          action={safeActions.find((action) => action.id === "add_server")}
+          submitLabel="添加 Server"
+        />
       </Card>
 
       <Card title="推荐配置流程">
@@ -109,7 +122,7 @@ enabled = true`
 
       <Card title="当前可见入口示例">
         <DataTable
-          data={entries.slice(0, 6)}
+          data={safeEntries.slice(0, 6)}
           columns={[
             { key: "id", label: "入口 ID" },
             { key: "name", label: "名称" },
