@@ -7,7 +7,88 @@ import time
 from typing import Optional, Callable, Dict, Any, Awaitable
 from utils.llm_client import SystemMessage, HumanMessage, AIMessage, create_chat_llm
 from openai import APIConnectionError, InternalServerError, RateLimitError
-from utils.frontend_utils import calculate_text_similarity, count_words_and_chars
+from utils.frontend_utils import calculate_text_similarity
+from utils.tokenize import count_tokens, truncate_to_tokens
+from config import OMNI_RECENT_RESPONSES_MAX
+
+# Sentence-final terminators used to recover from a length-overflow when
+# rerolls have been exhausted. Commas, semicolons, and colons are NOT
+# included on purpose — those would leave the kept text mid-thought.
+_SENTENCE_END_CHARS = '.!?。！？…'
+
+
+def _truncate_to_last_sentence_end(text: str) -> str:
+    """Return the prefix of ``text`` up to and including the last
+    sentence-terminating punctuation mark. Returns ``""`` if no sentence
+    terminator is present (caller should fall through to the
+    too-long-and-discarded UX in that case)."""
+    last = max((text.rfind(ch) for ch in _SENTENCE_END_CHARS), default=-1)
+    if last < 0:
+        return ""
+    return text[:last + 1]
+
+
+# Punctuation/symbol density thresholds for the "model went insane" detector
+# (`_is_gibberish_response` below). The point of the response-length guard is
+# not really "long replies are bad" — it's a circuit breaker for runaway model
+# states (BPE-loop repeating a single token, dump-everything mode emitting
+# nothing but emojis / punctuation, etc.). Once we know we're in that state we
+# don't want to salvage a "sentence" out of it; we want to discard.
+_GIBBERISH_MIN_LEN = 30        # Below this we don't bother judging.
+_GIBBERISH_PS_RATIO_FLOOR = 0.015  # < 1.5% punct/symbol → BPE-loop / wall-of-chars
+_GIBBERISH_PS_RATIO_CEIL = 0.25    # > 25% punct/symbol → emoji/mark spam
+
+# Slack between the conversational length budget and the LLM API's hard
+# `max_completion_tokens`. The API cap is the *first* line of defense (let
+# the model stop naturally before generating tokens we'd just discard); the
+# Python-side guard kicks in only on overshoot, where it can decide
+# truncate vs. gibberish-filter. We need *some* overshoot for the fence
+# to actually fire — if API caps exactly at the budget the model stops
+# right at the edge with a half-sentence and we can't tell apart "ran
+# long" from "naturally finished at the cap". 20 tokens is enough to
+# matter without bloating cost.
+_MAX_TOKENS_SLACK = 20
+_UNLIMITED_BUDGET = 999999  # sentinel set when user picks the slider's "无限制"
+
+
+def _budget_to_max_tokens(budget: int) -> int | None:
+    """Convert ``max_response_length`` budget into the LLM API's
+    ``max_completion_tokens``. ``None`` for the unlimited sentinel so the
+    request omits the field entirely (large fixed values get rejected as
+    out-of-range by some providers)."""
+    if budget >= _UNLIMITED_BUDGET:
+        return None
+    return budget + _MAX_TOKENS_SLACK
+
+
+def _is_gibberish_response(text: str) -> bool:
+    """Heuristic: is ``text`` a runaway / gibberish model output?
+
+    Based on the density of Unicode punctuation (Pc/Pd/Pe/Pf/Pi/Po/Ps) plus
+    symbols (Sc/Sk/Sm/So — i.e. emoji, math marks, kaomoji components):
+
+    - density < 1.5% → almost certainly a tight repetition loop (a single
+      character or short n-gram repeated past the token cap), no real
+      sentences to recover.
+    - density > 25% → almost certainly an emoji / kaomoji / mark spam mode.
+
+    Either way the right thing to do is filter the response entirely (let
+    `handle_response_discarded` show the locale "fault" placeholder and write
+    that placeholder — not the gibberish — into history) rather than try to
+    cut a sentence out of garbage. Short responses (< 30 chars) skip the
+    judgement; the guard only fires after we've blown past the token cap, so
+    in practice ``text`` is always long here.
+    """
+    import unicodedata
+    n = len(text)
+    if n < _GIBBERISH_MIN_LEN:
+        return False
+    n_marks = sum(
+        1 for c in text
+        if unicodedata.category(c)[0] in ("P", "S")
+    )
+    ratio = n_marks / n
+    return ratio < _GIBBERISH_PS_RATIO_FLOOR or ratio > _GIBBERISH_PS_RATIO_CEIL
 from utils.logger_config import get_module_logger
 from utils.token_tracker import set_call_type
 
@@ -99,10 +180,31 @@ class OmniOfflineClient:
         self.on_repetition_detected = on_repetition_detected
         self.on_response_discarded = on_response_discarded
         
-        # Initialize ChatOpenAI client
+        # 普通对话守卫配置（先决定 max_response_length，create_chat_llm
+        # 用得到 _budget_to_max_tokens(self.max_response_length)）。
+        # 0 / 负数 在 update_max_response_length 路径里被解释成"无限制"
+        # （= _UNLIMITED_BUDGET）；__init__ 必须用同样的语义，否则首轮
+        # 持久化配置直接读到 0 时会先按 300+20 cap 创建 LLM，直到用户再
+        # 改一次滑块才恢复 unlimited。
+        self.enable_response_guard = True
+        if not isinstance(max_response_length, int):
+            self.max_response_length = 300
+        elif max_response_length > 0:
+            self.max_response_length = max_response_length
+        else:
+            self.max_response_length = _UNLIMITED_BUDGET
+        # 最多允许的自动重 roll 次数：1 次 reroll → 总共 2 次尝试。
+        # 第 2 次仍超长时不再丢弃整段，而是回退到最后一个句末标点截断。
+        self.max_response_rerolls = 1
+
+        # Initialize ChatOpenAI client. max_completion_tokens 设为
+        # max_response_length + 20 让 LLM API 自然在 budget+20 token 处停下来，
+        # 既省掉无效生成成本，又给 fence 留 20 token slack 看到 overshoot
+        # 能区分 truncate / gibberish-filter 路径。
         self.llm = create_chat_llm(
             self.model, self.base_url, self.api_key,
             temperature=1.0, streaming=True, max_retries=0,
+            max_completion_tokens=_budget_to_max_tokens(self.max_response_length),
         )
         
         # State management
@@ -115,25 +217,30 @@ class OmniOfflineClient:
         # 重复度检测
         self._recent_responses = []  # 存储最近3轮助手回复
         self._repetition_threshold = 0.8  # 相似度阈值
-        self._max_recent_responses = 3  # 最多存储的回复数
+        self._max_recent_responses = OMNI_RECENT_RESPONSES_MAX  # 最多存储的回复数
         
-        # ========== 普通对话守卫配置 ==========
-        self.enable_response_guard = True     # 是否启用质量守卫
-        self.max_response_length = max_response_length if isinstance(max_response_length, int) and max_response_length > 0 else 300
-        self.max_response_rerolls = 2         # 最多允许的自动重试次数
-
         # ========== 输出前缀检测 ==========
         self.lanlan_name = lanlan_name
         self.master_name = master_name
         self._prefix_buffer_size = max(len(lanlan_name), len(master_name)) + 3 if (lanlan_name or master_name) else 0
 
         # 质量守卫回调：由 core.py 设置，用于通知前端清理气泡
+        # （max_response_length / max_response_rerolls / enable_response_guard
+        # 已经在创建 self.llm 之前初始化，因为 _budget_to_max_tokens 用得到。）
 
     def update_max_response_length(self, max_length: int) -> None:
-        """更新回复字数限制(用户可能在对话期间修改设置)"""
-        if isinstance(max_length, int) and max_length >= 0:
-            self.max_response_length = max_length if max_length > 0 else 999999
-            logger.debug(f"OmniOfflineClient: 字数限制已更新为 {max_length}")
+        """更新回复 token 上限（用户可能在对话期间修改设置）。
+        单位与 ``self.max_response_length`` 一致：tiktoken token 数。
+        同步刷新 ``self.llm.max_completion_tokens`` 让下一次 astream 请求
+        在新的 budget+20 自然停止。
+
+        ``0`` / 负数都解释成"无限制"，与 ``__init__`` 同款语义；上层把
+        -1 当取消上限信号也能透下来。"""
+        if isinstance(max_length, int):
+            self.max_response_length = max_length if max_length > 0 else _UNLIMITED_BUDGET
+            if self.llm is not None:
+                self.llm.max_completion_tokens = _budget_to_max_tokens(self.max_response_length)
+            logger.debug(f"OmniOfflineClient: token 上限已更新为 {max_length}")
 
     def _match_name_prefix(self, text: str, name: str) -> int:
         """Check if text starts with a name prefix like 'Name | ' or 'Name |'.
@@ -188,10 +295,13 @@ class OmniOfflineClient:
                 base_url = self.base_url
                 api_key = self.api_key
 
-            # 先创建新 client，成功后再原子替换，避免半切换状态
+            # 先创建新 client，成功后再原子替换，避免半切换状态。
+            # max_completion_tokens 跟随当前 max_response_length 同步设置
+            # （和 __init__ 一致）。
             new_llm = create_chat_llm(
                 new_model, base_url, api_key,
                 temperature=1.0, streaming=True, max_retries=0,
+                max_completion_tokens=_budget_to_max_tokens(self.max_response_length),
             )
             old_llm = self.llm
             self.llm = new_llm
@@ -403,11 +513,11 @@ class OmniOfflineClient:
                                     is_first_chunk = False
 
                                     if self.enable_response_guard:
-                                        current_length = count_words_and_chars(assistant_message)
+                                        current_length = count_tokens(assistant_message)
                                         if current_length > self.max_response_length:
                                             guard_triggered = True
                                             discard_reason = f"length>{self.max_response_length}"
-                                            logger.info(f"OmniOfflineClient: 检测到长回复 ({current_length}字)，准备重试")
+                                            logger.info(f"OmniOfflineClient: 检测到长回复 ({current_length} tokens)，准备重试")
                                             self._is_responding = False
                                             break
                             elif content and not content.strip():
@@ -441,7 +551,7 @@ class OmniOfflineClient:
                                         await self.on_text_delta(flush_text, is_first_chunk)
                                     is_first_chunk = False
                                     if self.enable_response_guard:
-                                        current_length = count_words_and_chars(assistant_message)
+                                        current_length = count_tokens(assistant_message)
                                         if current_length > self.max_response_length:
                                             guard_triggered = True
                                             discard_reason = f"length>{self.max_response_length}"
@@ -450,28 +560,108 @@ class OmniOfflineClient:
                             guard_attempt += 1
                             reroll_count += 1
                             will_retry = guard_attempt <= self.max_response_rerolls
-                            # 区分原因：超长用明确提示，其它守卫原因用通用提示
+
+                            # max_attempts 报给前端的是**总尝试次数**而非
+                            # rerolls 次数（rerolls 不含首次尝试）。前端 attempt
+                            # / max_attempts 进度条要 1/2 → 2/2 才合理。
+                            total_attempts = self.max_response_rerolls + 1
+
+                            if will_retry:
+                                # 还能 retry：发 will_retry 通知，循环继续。前端
+                                # 收到 response_discarded(will_retry=True, message=None)
+                                # 走 retry toast 路径。
+                                await self._notify_response_discarded(
+                                    discard_reason or "guard",
+                                    guard_attempt,
+                                    total_attempts,
+                                    True,
+                                    None,
+                                )
+                                logger.info(
+                                    "OmniOfflineClient: 响应被丢弃（%s），第 %d/%d 次重试",
+                                    discard_reason, guard_attempt, total_attempts,
+                                )
+                                continue
+
+                            # Reroll 耗尽。length 超长有两类：
+                            #   (a) 模型真的写得多但还在正常说话 → 截到最后一个
+                            #       句末标点，作为 RESPONSE_LENGTH_TRUNCATED 回复
+                            #       发给前端，placeholder 不进 history（截取版进）。
+                            #   (b) 模型疯了（BPE 重复 / emoji 刷屏 / 没标点的
+                            #       连续乱码）→ 不要试图截"句子"出来，直接 filter
+                            #       走 RESPONSE_TOO_LONG（语义=故障），core 那边
+                            #       会让前端显示故障 placeholder + 把 placeholder
+                            #       写进 history（让下一轮 LLM 知道这一轮失败）。
+                            #
+                            # 触发 (b) 的条件：_is_gibberish_response（标点/符号
+                            # 密度 < 2% 或 > 60%）或截不出句末（整段无 . ! ? 。 ！ ？ …）。
+                            #
+                            # 关键：(a) 路径要先把 assistant_message 硬截到
+                            # max_response_length 再找句末，否则截出来的句末仍
+                            # 可能在 token 上限之外（比如最后一个句号在 950 token
+                            # 处但 cap 是 300）。
+                            recovery_text = ""
                             if discard_reason and "length>" in discard_reason:
-                                final_message = json.dumps({"code": "RESPONSE_TOO_LONG"})
-                            else:
-                                final_message = json.dumps({"code": "RESPONSE_INVALID"})
-                            failure_message = None if will_retry else final_message
+                                if not _is_gibberish_response(assistant_message):
+                                    capped = truncate_to_tokens(
+                                        assistant_message, self.max_response_length,
+                                    )
+                                    recovery_text = _truncate_to_last_sentence_end(capped)
+
+                            if recovery_text:
+                                logger.info(
+                                    "OmniOfflineClient: guard 重试耗尽，截断至最后句末 "
+                                    "(原 %d tokens → 截断后 %d tokens)",
+                                    count_tokens(assistant_message), count_tokens(recovery_text),
+                                )
+                                truncate_msg = json.dumps({
+                                    "code": "RESPONSE_LENGTH_TRUNCATED",
+                                    "text": recovery_text,
+                                })
+                                # 走 _notify_response_discarded（不能用
+                                # on_status_message）：前端在 response_discarded
+                                # 分支识别 RESPONSE_LENGTH_TRUNCATED 才能触发
+                                # truncate UX（不回滚输入 + 把 truncate text
+                                # 当 placeholder body）。
+                                await self._notify_response_discarded(
+                                    discard_reason or "guard",
+                                    guard_attempt,
+                                    total_attempts,
+                                    False,
+                                    truncate_msg,
+                                )
+                                status_reported = True
+                                # _conversation_history 由 core.handle_response_discarded
+                                # 在 RESPONSE_LENGTH_TRUNCATED 分支 append
+                                # （self.session 即本 OmniOfflineClient，二者共享同一
+                                # 个 _conversation_history 列表）。这里只维护内部
+                                # 重复检测列表。
+                                await self._check_repetition(recovery_text)
+                                assistant_message = recovery_text
+                                guard_exhausted = True
+                                break
+
+                            final_message = json.dumps(
+                                {"code": "RESPONSE_TOO_LONG"}
+                                if discard_reason and "length>" in discard_reason
+                                else {"code": "RESPONSE_INVALID"}
+                            )
                             await self._notify_response_discarded(
                                 discard_reason or "guard",
                                 guard_attempt,
-                                self.max_response_rerolls,
-                                will_retry,
-                                failure_message
+                                total_attempts,
+                                False,
+                                final_message,
                             )
-                            
-                            if will_retry:
-                                logger.info(f"OmniOfflineClient: 响应被丢弃（{discard_reason}），第 {guard_attempt}/{self.max_response_rerolls} 次重试")
-                                continue
-                            
-                            logger.warning("OmniOfflineClient: guard 重试耗尽，放弃输出")
-                            if self.on_status_message:
-                                await self.on_status_message(final_message)
-                                status_reported = True
+                            status_reported = True
+                            # gibberish 或截不出句末 / 非 length 类 guard 失败 —
+                            # 走故障 placeholder 路径，core 会用 locale "fault"
+                            # 文案占住 history，避免下一轮 LLM 看到空助手轮次。
+                            logger.warning(
+                                "OmniOfflineClient: guard 重试耗尽 (reason=%s)，"
+                                "filter 输出走故障 placeholder",
+                                discard_reason,
+                            )
                             assistant_message = ""
                             guard_exhausted = True
                             break

@@ -682,8 +682,9 @@ async def translate_with_translatepy(text: str, source_lang: str, target_lang: s
             except Exception:
                 return None
         
-        # 如果文本太长（超过5000字符），分段翻译
-        max_chunk_size = 5000
+        # 如果文本太长，分段翻译
+        from config import TRANSLATION_CHUNK_MAX_CHARS_SHORT
+        max_chunk_size = TRANSLATION_CHUNK_MAX_CHARS_SHORT
         chunks = _split_text_into_chunks(text, max_chunk_size)
         
         if len(chunks) > 1:
@@ -877,8 +878,9 @@ async def translate_text(text: str, target_lang: str, source_lang: Optional[str]
             
             # 使用 asyncio.wait_for 实现超时机制
             async def _translate_internal():
-                # 如果文本太长（超过15k字符），分段翻译
-                max_chunk_size = 15000
+                # 如果文本太长，分段翻译
+                from config import TRANSLATION_CHUNK_MAX_CHARS_LONG
+                max_chunk_size = TRANSLATION_CHUNK_MAX_CHARS_LONG
                 chunks = _split_text_into_chunks(text, max_chunk_size)
                 
                 if len(chunks) > 1:
@@ -968,22 +970,28 @@ async def translate_text(text: str, target_lang: str, source_lang: Optional[str]
         llm = create_chat_llm(
             emotion_config['model'], emotion_config['base_url'],
             emotion_config['api_key'],
-            temperature=0.3, timeout=10.0,
+            timeout=10.0,
         )
 
         instruction = _loc(TRANSLATION_INSTRUCTION, lang).format(
             source_name=source_name, target_name=target_name)
         requirements = _loc(TRANSLATION_REQUIREMENTS, lang)
         system_prompt = f"{instruction}\n{TRANSLATION_WATERMARK_START}\n{requirements}\n{TRANSLATION_WATERMARK_END}"
-        
+
         messages = [
             SystemMessage(content=system_prompt),
             HumanMessage(content=text)
         ]
-        
+
         set_call_type("translation")
-        response = await llm.ainvoke(messages)
-        translated_text = response.content.strip()
+        # ad-hoc 客户端，每次请求新建 → 必须 aclose 释放底层 httpx 连接池，
+        # 与 memory/ 其它调用点的 try/finally 收尾对偶（缓存版客户端在
+        # TranslationService._llm_client 里复用，不走这条路径）。
+        try:
+            response = await llm.ainvoke(messages)
+            translated_text = response.content.strip()
+        finally:
+            await llm.aclose()
 
         logger.info(f"✅ [翻译服务] LLM翻译成功: {source_lang} -> {target_lang}")
         return translated_text, google_failed
@@ -1059,10 +1067,12 @@ class TranslationService:
             
             if self._llm_client is not None:
                 return self._llm_client
-            
+
+            from config import TRANSLATION_OUTPUT_MAX_TOKENS
             self._llm_client = create_chat_llm(
                 config['model'], config['base_url'], config['api_key'],
-                temperature=0.3, max_completion_tokens=2000, timeout=30.0,
+                max_completion_tokens=TRANSLATION_OUTPUT_MAX_TOKENS,
+                timeout=30.0,
             )
             
             return self._llm_client
@@ -1196,11 +1206,14 @@ class TranslationService:
 
             translated = response.content.strip()
             if not translated:
-                logger.warning(f"翻译服务：LLM返回空结果，使用原文: '{text[:50]}...'")
-                return text            
+                # 原文/译文都不写 logger
+                logger.warning(f"翻译服务：LLM返回空结果，使用原文 (text_len={len(text)})")
+                print(f"[翻译] LLM 空结果，原文: '{text[:50]}...'")
+                return text
             await self._save_to_cache(text, target_lang_normalized, translated)
-            
-            logger.debug(f"翻译服务：'{text[:50]}...' -> '{translated[:50]}...' ({target_lang})")
+
+            logger.debug(f"翻译服务：text_len={len(text)} -> translated_len={len(translated)} ({target_lang})")
+            print(f"[翻译] '{text[:50]}...' -> '{translated[:50]}...' ({target_lang})")
             return translated
             
         except Exception as e:

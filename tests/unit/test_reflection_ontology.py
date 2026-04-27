@@ -111,12 +111,21 @@ def test_validate_rejects_unknown_temporal_scope():
 
 
 def test_validate_rejects_overlong_text():
-    from memory.reflection import _validate_reflection_ontology
+    from memory.reflection import _validate_reflection_ontology, MAX_REFLECTION_TEXT_TOKENS
+    from utils.tokenize import count_tokens
+
+    # Build a string that comfortably exceeds the token cap regardless of
+    # tokenizer behaviour. CJK chars are ~0.7-1.5 tokens each under
+    # o200k_base, so 4× the cap in CJK chars is a safe margin.
+    overlong = "主" * (MAX_REFLECTION_TEXT_TOKENS * 4)
+    assert count_tokens(overlong) > MAX_REFLECTION_TEXT_TOKENS
+
     ok, reason = _validate_reflection_ontology(
-        "master", "preference", "current", "x" * 250,
+        "master", "preference", "current", overlong,
     )
     assert ok is False
     assert "text too long" in reason
+    assert "tokens" in reason
 
 
 def test_validate_tolerates_missing_optional_fields():

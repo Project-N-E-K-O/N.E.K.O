@@ -1346,12 +1346,12 @@
         var btnIcon = getMinimizeIcon();
         var ballIcon = ensureMinimizedBallIcon();
         if (button) {
-            button.setAttribute('aria-label', minimized ? getI18nText('chat.reactWindowRestore', '恢复新版聊天框') : getI18nText('chat.reactWindowMinimize', '最小化新版聊天框'));
+            button.setAttribute('aria-label', minimized ? getI18nText('chat.reactWindowRestore', '恢复聊天框') : getI18nText('chat.reactWindowMinimize', '最小化聊天框'));
             button.title = minimized ? getI18nText('chat.reactWindowRestoreShort', '恢复') : getI18nText('chat.reactWindowMinimizeShort', '最小化');
         }
         if (btnIcon) {
             btnIcon.src = minimized ? '/static/icons/expand_icon_on.png' : '/static/icons/expand_icon_off.png';
-            btnIcon.alt = minimized ? getI18nText('chat.reactWindowRestore', '恢复新版聊天框') : getI18nText('chat.reactWindowMinimize', '最小化新版聊天框');
+            btnIcon.alt = minimized ? getI18nText('chat.reactWindowRestore', '恢复聊天框') : getI18nText('chat.reactWindowMinimize', '最小化聊天框');
         }
         // 重置悬浮球图标到默认态（清除可能残留的 hover 图标）
         if (ballIcon) {
@@ -1378,7 +1378,7 @@
         ensureBundleLoaded()
             .then(function () {
                 if (!mountWindow()) {
-                    showToast(getI18nText('chat.reactWindowMountFailed', '新版聊天框挂载失败'), 3000);
+                    showToast(getI18nText('chat.reactWindowMountFailed', '聊天框挂载失败'), 3000);
                     return;
                 }
                 // closeWindow 已经会重置 minimized，所以到这里通常 minimized=false
@@ -1399,7 +1399,7 @@
             })
             .catch(function (error) {
                 console.error('[ReactChatWindow] open failed:', error);
-                showToast(getI18nText('chat.reactWindowLoadFailed', '新版聊天框资源加载失败'), 3500);
+                showToast(getI18nText('chat.reactWindowLoadFailed', '聊天框资源加载失败'), 3500);
             });
     }
 

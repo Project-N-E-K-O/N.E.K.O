@@ -171,6 +171,79 @@
         return { sentences: sentences, rest: rest };
     }
 
+    function isFullWidthJoinPunctuation(ch) {
+        return ch === '\u3001' || ch === '\u3002' || ch === '\uFF0C' || ch === '\uFF01' ||
+            ch === '\uFF1F' || ch === '\uFF1B' || ch === '\uFF1A' || ch === '\u2026' ||
+            ch === '\u201D' || ch === '\u2019' || ch === ')' || ch === ']' || ch === '}' ||
+            ch === '\uFF09' || ch === '\uFF3D' || ch === '\uFF5D' ||
+            ch === '\u3009' || ch === '\u300B' || ch === '\u300D' || ch === '\u300F' ||
+            ch === '\u3011' || ch === '\u3015' || ch === '\u3017' || ch === '\u3019' ||
+            ch === '\u301B' || ch === '\u301E' || ch === '\u301F';
+    }
+
+    function joinRealisticPendingPieces(pieces) {
+        var joined = '';
+        for (var i = 0; i < pieces.length; i++) {
+            var piece = normalizeGeminiText(pieces[i]).replace(/^\s+/, '').replace(/\s+$/, '');
+            if (!piece) continue;
+            if (!joined) {
+                joined = piece;
+                continue;
+            }
+            var prev = joined.replace(/\s+$/, '');
+            var prevLast = prev.charAt(prev.length - 1);
+            var nextFirst = piece.replace(/^\s+/, '').charAt(0);
+            var glue = (isFullWidthJoinPunctuation(prevLast) || isFullWidthJoinPunctuation(nextFirst)) ? '' : ' ';
+            joined = prev + glue + piece;
+        }
+        return joined;
+    }
+
+    function isMiddleSplitBoundary(text, index) {
+        var prev = text.charAt(index - 1);
+        var next = text.charAt(index);
+        return /\s/.test(prev) || /\s/.test(next) ||
+            isFullWidthJoinPunctuation(prev) ||
+            /[.!?;,]/.test(prev);
+    }
+
+    function splitRealisticTextNearMiddle(text) {
+        var normalized = normalizeGeminiText(text).replace(/^\s+/, '').replace(/\s+$/, '');
+        if (!normalized) return [];
+        if (normalized.length < 2) return [normalized];
+
+        var midpoint = Math.floor(normalized.length / 2);
+        var splitAt = midpoint;
+        for (var offset = 0; offset < normalized.length; offset++) {
+            var left = midpoint - offset;
+            var right = midpoint + offset;
+            if (left > 0 && left < normalized.length && isMiddleSplitBoundary(normalized, left)) {
+                splitAt = left;
+                break;
+            }
+            if (right > 0 && right < normalized.length && isMiddleSplitBoundary(normalized, right)) {
+                splitAt = right;
+                break;
+            }
+        }
+
+        var first = normalized.slice(0, splitAt).replace(/^\s+/, '').replace(/\s+$/, '');
+        var second = normalized.slice(splitAt).replace(/^\s+/, '').replace(/\s+$/, '');
+        if (!first || !second) return [normalized];
+        return [first, second];
+    }
+
+    function rebalanceRealisticQueueIfNeeded() {
+        var queue = window._realisticGeminiQueue;
+        if (!Array.isArray(queue) || queue.length <= 2) return;
+
+        var queueText = joinRealisticPendingPieces(queue);
+        var splitQueue = splitRealisticTextNearMiddle(queueText);
+        if (splitQueue.length > 0 && splitQueue.length <= queue.length) {
+            window._realisticGeminiQueue = splitQueue;
+        }
+    }
+
     // ======================== 合并模式检测 ========================
 
     function isMergeMessagesEnabled() {
@@ -522,6 +595,7 @@
             if (splitResult.sentences.length > 0) {
                 window._realisticGeminiQueue = window._realisticGeminiQueue || [];
                 window._realisticGeminiQueue.push.apply(window._realisticGeminiQueue, splitResult.sentences);
+                rebalanceRealisticQueueIfNeeded();
                 processRealisticQueue(window._realisticGeminiVersion || 0);
                 createdVisibleBubble = (window.currentTurnGeminiBubbles ? window.currentTurnGeminiBubbles.length : 0) > bubbleCountBefore;
             }

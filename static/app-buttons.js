@@ -897,7 +897,11 @@
             return mod.openImageImportPicker();
         });
         host.setOnComposerScreenshot(function () {
-            return mod.captureScreenshotToPendingList();
+            if (window.__NEKO_MULTI_WINDOW__ && window.nekoScreenshotProxy) {
+                window.nekoScreenshotProxy.request();
+            } else {
+                return mod.captureScreenshotToPendingList();
+            }
         });
         host.setOnComposerRemoveAttachment(function (attachmentId) {
             return mod.removePendingAttachmentById(attachmentId);
@@ -1915,31 +1919,31 @@
             }
         }
 
-        mod.captureScreenshotToPendingList = async function captureScreenshotToPendingList() {
-            // 桌面端优先级：
-            //   1) 主进程直接 desktopCapturer 捕获选中源（最可靠，绕开所有 Chromium 桌面捕获管线问题）
-            //   2) acquireOrReuseCachedStream（缓存流 / Electron chromeMediaSourceId / getDisplayMedia）
-            //   3) 后端 pyautogui（只能截主屏）
-            // isCachedStream 用于区分缓存流（绝不能关）与一次性流（finally 要关）。
+        /**
+         * 纯截图+裁剪逻辑，不操作 UI。
+         * 返回 { dataUrl, originalDataUrl, avatarPos }；用户取消裁剪时返回 null。
+         */
+        var _captureScreenshotDataUrlBusy = false;
+
+        mod.captureScreenshotDataUrl = async function captureScreenshotDataUrl() {
+            if (_captureScreenshotDataUrlBusy) {
+                console.warn('[截图] 截图流程进行中，忽略重复请求');
+                throw new Error('SCREENSHOT_BUSY');
+            }
+            _captureScreenshotDataUrlBusy = true;
             var acquiredStream = null;
             var isCachedStream = false;
-            var captureType = null; // 'screen' | 'viewport' | null — 用于 Avatar 坐标映射
+            var captureType = null;
 
             try {
-                screenshotButton.disabled = true;
-                window.showStatusToast(window.t ? window.t('app.capturing') : '\u6B63\u5728\u622A\u56FE...', 2000);
-
                 var dataUrl = null;
                 var width = 0, height = 0;
 
                 if (U.isMobile()) {
-                    // 移动端：沿用摄像头采集，永远是一次性流
                     try {
                         acquiredStream = await window.getMobileCameraStream();
                     } catch (mobileErr) {
                         console.warn('[截图] 移动端摄像头获取失败:', mobileErr);
-                        // 无条件抛出：保留原始错误 name（NotAllowedError / NotFoundError /
-                        // NotReadableError 等），让外层 catch 的分支能给出对应的本地化提示。
                         throw mobileErr;
                     }
                     if (acquiredStream) {
@@ -1948,16 +1952,10 @@
                             dataUrl = mframe.dataUrl;
                             width = mframe.width;
                             height = mframe.height;
-                            captureType = null; // 手机相机，Avatar 不在画面中
+                            captureType = null;
                         }
                     }
                 } else {
-                    // === 优先级 1：主进程直接捕获选中源 ===
-                    // 只要渲染器知道用户选了某个源，就让主进程用 desktopCapturer 的高分辨率缩略图
-                    // 对该源做一次静态快照。完全绕开 getUserMedia(chromeMediaSourceId) 和
-                    // getDisplayMedia + setDisplayMediaRequestHandler 这条 Chromium 桌面捕获管线
-                    // ——在 Electron 41 / Windows 11 + useSystemPicker:true 的组合下，这条管线对窗口
-                    // 源常常返回整个屏幕。主进程 desktopCapturer 则直接由平台原生 API 支持，可靠。
                     var selectedSourceId = S.selectedScreenSourceId;
                     if (selectedSourceId && window.electronDesktopCapturer
                         && typeof window.electronDesktopCapturer.captureSourceAsDataUrl === 'function') {
@@ -1966,21 +1964,14 @@
                             if (direct && direct.success && direct.dataUrl) {
                                 var scaled = await downscaleDataUrlTo720p(direct.dataUrl);
                                 dataUrl = scaled.dataUrl;
-                                // 以降采样后的实际尺寸为准；解码失败时 scaled.width/height 为 0，
-                                // 此时回退到主进程上报的原始尺寸，避免日志空值。
                                 width = scaled.width || direct.width || 0;
                                 height = scaled.height || direct.height || 0;
-                                // 主进程直接捕获：靠 sourceId 前缀区分 screen/window
                                 captureType = window.detectScreenshotCaptureType
                                     ? window.detectScreenshotCaptureType(null, selectedSourceId)
                                     : null;
                                 console.log('[截图] 主进程直接捕获成功:', selectedSourceId, width + 'x' + height);
                             } else if (direct && direct.error) {
                                 console.warn('[截图] 主进程直接捕获失败:', direct.error);
-                                // 主进程 desktopCapturer 说源不存在 → selectedSourceId 已失效
-                                // （窗口被关/HWND 变了）。立刻清掉，防止 Priority 2 的
-                                // acquireOrReuseCachedStream 再拿同一个死 ID 去跑 500ms
-                                // Electron getUserMedia 超时；下一次截图也能直接跳过 Priority 1。
                                 if (typeof window.maybeClearSourceOnNotFound === 'function') {
                                     window.maybeClearSourceOnNotFound(direct, '主进程 capture-source-as-dataurl Source not found');
                                 }
@@ -1990,10 +1981,8 @@
                         }
                     }
 
-                    // === 优先级 2：acquireOrReuseCachedStream 流路径 ===
                     if (!dataUrl && typeof window.acquireOrReuseCachedStream === 'function') {
                         try {
-                            // 用户手势上下文（点击截图按钮）→ allowPrompt:true，允许 getDisplayMedia
                             acquiredStream = await window.acquireOrReuseCachedStream({ allowPrompt: true });
                         } catch (acqErr) {
                             if (acqErr && acqErr.name === 'NotAllowedError') throw acqErr;
@@ -2002,7 +1991,6 @@
                         }
 
                         if (acquiredStream) {
-                            // 与全局缓存流等值比较 ⇒ acquireOrReuseCachedStream 新建的流一定写回 S.screenCaptureStream
                             isCachedStream = (acquiredStream === S.screenCaptureStream);
                             var frame = await window.captureFrameFromStream(acquiredStream, 0.8);
                             if (frame) {
@@ -2020,13 +2008,10 @@
                         }
                     }
 
-                    // === 优先级 3：后端 pyautogui（只能截主屏，且需 localhost）===
                     if (!dataUrl) {
                         try {
                             var backendResult = await window.fetchBackendScreenshot();
                             if (backendResult && backendResult.dataUrl) {
-                                // 后端 pyautogui 返回原生分辨率（2K/4K 显示器会超过 720p 上限），
-                                // 与主进程直接捕获路径保持一致，统一降采样到 MAX_SCREENSHOT_WIDTH/HEIGHT。
                                 var beScaled = await downscaleDataUrlTo720p(backendResult.dataUrl);
                                 dataUrl = beScaled.dataUrl;
                                 width = beScaled.width || 0;
@@ -2046,42 +2031,86 @@
                     console.log(window.t('console.screenshotSuccess'), width + 'x' + height);
                 }
 
-                // Capture avatar position at screenshot time, mapped to capture coordinate system.
-                // Only meaningful for the uncropped path — cropping invalidates the normalized coords.
                 var avatarPos = typeof window.getAvatarScreenPosition === 'function'
                     ? window.getAvatarScreenPosition(captureType) : null;
 
-                // Release one-time stream BEFORE opening crop overlay
-                // Only release if it's a one-time stream — cached streams are managed globally
                 if (!isCachedStream && acquiredStream instanceof MediaStream) {
                     acquiredStream.getTracks().forEach(function (track) {
                         try { track.stop(); } catch (e) { }
                     });
-                    acquiredStream = null; // prevent double-release in finally
+                    acquiredStream = null;
                 }
 
-                // Open crop overlay for region selection
-                if (window.appCrop && typeof window.appCrop.cropImage === 'function') {
-                    var croppedUrl = await window.appCrop.cropImage(dataUrl, {
-                        recaptureFn: function () { return recaptureWithoutNeko(); }
-                    });
-                    if (!croppedUrl) {
-                        // User cancelled cropping
-                        window.showStatusToast(window.t ? window.t('app.screenshotCancelled') : '\u5DF2\u53D6\u6D88\u622A\u56FE', 2000);
-                        return;
+                // 在显示裁剪 overlay 前隐藏其他 NEKO 窗口（如 Chat 窗口），
+                // 避免它们的 z-order 遮挡 Pet 窗口中的全屏裁剪界面。
+                var hiddenIds = null;
+                if (window.electronDesktopCapturer
+                    && typeof window.electronDesktopCapturer.hideNekoWindows === 'function') {
+                    try {
+                        var hideRes = await window.electronDesktopCapturer.hideNekoWindows();
+                        if (hideRes && Array.isArray(hideRes.hiddenIds)) {
+                            hiddenIds = hideRes.hiddenIds;
+                        }
+                    } catch (hideErr) {
+                        console.warn('[截图] 隐藏其他窗口失败:', hideErr);
                     }
-                    // 裁切后坐标系变了，Avatar 位置无效：不附带 avatar_position
-                    // （除非裁切图与原图相同 — 但我们无法从 appCrop API 判定，保守跳过）
-                    mod.addScreenshotToList(croppedUrl, croppedUrl === dataUrl ? avatarPos : null);
-                } else {
-                    // Fallback: no crop module available, add full screenshot with avatar position
-                    mod.addScreenshotToList(dataUrl, avatarPos);
                 }
-                window.showStatusToast(window.t ? window.t('app.screenshotAdded') : '\u622A\u56FE\u5DF2\u6DFB\u52A0\uFF0C\u70B9\u51FB\u53D1\u9001\u4E00\u8D77\u53D1\u9001', 3000);
 
+                try {
+                    if (window.appCrop && typeof window.appCrop.cropImage === 'function') {
+                        var croppedUrl = await window.appCrop.cropImage(dataUrl, {
+                            recaptureFn: function () { return recaptureWithoutNeko(); }
+                        });
+                        if (!croppedUrl) {
+                            return null;
+                        }
+                        return { dataUrl: croppedUrl, originalDataUrl: dataUrl, avatarPos: avatarPos };
+                    } else {
+                        return { dataUrl: dataUrl, originalDataUrl: dataUrl, avatarPos: avatarPos };
+                    }
+                } finally {
+                    if (hiddenIds && hiddenIds.length > 0
+                        && window.electronDesktopCapturer
+                        && typeof window.electronDesktopCapturer.restoreNekoWindows === 'function') {
+                        try {
+                            await window.electronDesktopCapturer.restoreNekoWindows(hiddenIds);
+                        } catch (restoreErr) {
+                            console.warn('[截图] 恢复其他窗口失败:', restoreErr);
+                        }
+                    }
+                }
+            } finally {
+                _captureScreenshotDataUrlBusy = false;
+                if (!isCachedStream && acquiredStream instanceof MediaStream) {
+                    try {
+                        acquiredStream.getTracks().forEach(function (track) {
+                            try { track.stop(); } catch (e) { }
+                        });
+                    } catch (e) { }
+                }
+            }
+        };
+        window.captureScreenshotDataUrl = mod.captureScreenshotDataUrl;
+
+        mod.captureScreenshotToPendingList = async function captureScreenshotToPendingList() {
+            try {
+                screenshotButton.disabled = true;
+                window.showStatusToast(window.t ? window.t('app.capturing') : '\u6B63\u5728\u622A\u56FE...', 2000);
+
+                var result = await mod.captureScreenshotDataUrl();
+                if (!result) {
+                    window.showStatusToast(window.t ? window.t('app.screenshotCancelled') : '\u5DF2\u53D6\u6D88\u622A\u56FE', 2000);
+                    return;
+                }
+
+                mod.addScreenshotToList(result.dataUrl, result.dataUrl === result.originalDataUrl ? result.avatarPos : null);
+                window.showStatusToast(window.t ? window.t('app.screenshotAdded') : '\u622A\u56FE\u5DF2\u6DFB\u52A0\uFF0C\u70B9\u51FB\u53D1\u9001\u4E00\u8D77\u53D1\u9001', 3000);
             } catch (err) {
                 console.error(window.t('console.screenshotFailed'), err);
 
+                if (err.message === 'SCREENSHOT_BUSY') {
+                    return;
+                }
                 var errorMsg = window.t ? window.t('app.screenshotFailed') : '\u622A\u56FE\u5931\u8D25';
                 if (err.message === 'UNSUPPORTED_API') {
                     errorMsg = window.t ? window.t('app.screenshotUnsupported') : '\u5F53\u524D\u6D4F\u89C8\u5668\u4E0D\u652F\u6301\u5C4F\u5E55\u622A\u56FE\u529F\u80FD';
@@ -2097,14 +2126,6 @@
 
                 window.showStatusToast(errorMsg, 5000);
             } finally {
-                // 只释放一次性流；缓存流由 acquireOrReuseCachedStream 体系管理，绝不能在这里停
-                if (!isCachedStream && acquiredStream instanceof MediaStream) {
-                    try {
-                        acquiredStream.getTracks().forEach(function (track) {
-                            try { track.stop(); } catch (e) { }
-                        });
-                    } catch (e) { }
-                }
                 screenshotButton.disabled = false;
             }
         };
