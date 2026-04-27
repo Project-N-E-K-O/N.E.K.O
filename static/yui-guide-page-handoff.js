@@ -1096,7 +1096,12 @@
 
         function handleTokenlessPluginDashboardMessage(data, detail) {
             var tokenObj = readHandoffToken();
-            if (tokenObj) return false;
+            var hasActivePluginDashboardToken = !!(
+                tokenObj
+                && !tokenObj.consumed
+                && tokenObj.target_page === 'plugin_dashboard'
+            );
+            if (hasActivePluginDashboardToken) return false;
 
             var sessionId = typeof data.sessionId === 'string' ? data.sessionId : '';
             var requestId = typeof data.requestId === 'string' ? data.requestId : '';

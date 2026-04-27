@@ -3613,15 +3613,23 @@
             }
         }
 
-        closePluginDashboardWindowIfCreatedByGuide(context) {
+        async closePluginDashboardWindowIfCreatedByGuide(context) {
             if (!this.pluginDashboardWindowCreatedByGuide) {
-                return;
+                return true;
             }
 
-            this.pluginDashboardWindowCreatedByGuide = false;
-            this.closeNamedWindow(PLUGIN_DASHBOARD_WINDOW_NAME).catch((error) => {
+            try {
+                const closed = await this.closeNamedWindow(PLUGIN_DASHBOARD_WINDOW_NAME);
+                if (closed) {
+                    this.pluginDashboardWindowCreatedByGuide = false;
+                    return true;
+                }
+                console.warn('[YuiGuide] ' + (context || '清理') + '时关闭插件面板失败');
+                return false;
+            } catch (error) {
                 console.warn('[YuiGuide] ' + (context || '清理') + '时关闭插件面板失败:', error);
-            });
+                return false;
+            }
         }
 
         async setAgentMasterEnabled(enabled) {
@@ -4435,10 +4443,7 @@
                 });
                 await dashboardNarrationPromise;
                 const pluginDashboardCompleted = await pluginDashboardPerformancePromise;
-                if (this.pluginDashboardWindowCreatedByGuide) {
-                    await this.closeNamedWindow(PLUGIN_DASHBOARD_WINDOW_NAME);
-                    this.pluginDashboardWindowCreatedByGuide = false;
-                }
+                await this.closePluginDashboardWindowIfCreatedByGuide('插件面板预览完成');
                 if (this.pluginDashboardHandoff && this.pluginDashboardHandoff.windowRef === dashboardWindow && typeof this.pluginDashboardHandoff.resolve === 'function') {
                     this.pluginDashboardHandoff.resolve(!!pluginDashboardCompleted);
                 }

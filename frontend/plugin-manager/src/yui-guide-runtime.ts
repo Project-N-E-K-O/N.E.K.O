@@ -1162,8 +1162,7 @@ class PluginDashboardGuideRuntime {
       const computed = window.getComputedStyle(htmlElement)
       const parsedRadius = Number.parseFloat(computed.borderTopLeftRadius || computed.borderRadius || '')
       if (Number.isFinite(parsedRadius) && parsedRadius > 0) {
-        const effectivePadding = Math.abs(padding)
-        radius = Math.max(MIN_SPOTLIGHT_RADIUS, parsedRadius + effectivePadding)
+        radius = Math.max(MIN_SPOTLIGHT_RADIUS, parsedRadius + padding)
       }
     } catch (_) {}
 
