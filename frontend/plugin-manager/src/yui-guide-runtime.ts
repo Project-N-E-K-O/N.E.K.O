@@ -2,6 +2,7 @@ import defaultGhostCursorUrl from '../../../static/assets/tutorial/ghost-cursor/
 import clickGhostCursorUrl from '../../../static/assets/tutorial/ghost-cursor/click-ghost-cursor.png'
 import { getLocale } from './i18n'
 import { getTrustedOpenerOrigin, useYuiTutorialBridge } from './composables/useYuiTutorialBridge'
+import router from './router'
 
 const START_EVENT = 'neko:yui-guide:plugin-dashboard:start'
 const READY_EVENT = 'neko:yui-guide:plugin-dashboard:ready'
@@ -9,6 +10,7 @@ const DONE_EVENT = 'neko:yui-guide:plugin-dashboard:done'
 const INTERRUPT_REQUEST_EVENT = 'neko:yui-guide:plugin-dashboard:interrupt-request'
 const INTERRUPT_ACK_EVENT = 'neko:yui-guide:plugin-dashboard:interrupt-ack'
 const LOCAL_TUTORIAL_START_EVENT = 'neko:plugin-dashboard-tutorial:start'
+const LOCAL_TUTORIAL_ACTION_EVENT = 'neko:plugin-tutorial:action'
 const GUIDE_AUDIO_BASE_URL = '/static/assets/tutorial/guide-audio/'
 const DEFAULT_GUIDE_LOCALE = 'zh'
 const HOME_YUI_GUIDE_FLOW_ID = 'home_yui_guide_v1'
@@ -81,9 +83,13 @@ type StartPayload = {
 }
 
 export type PluginDashboardLocalTutorialStep = {
-  targetId: string
+  targetId?: string
   title: string
   body: string
+  route?: string
+  action?: string
+  waitMs?: number
+  allowMissing?: boolean
   motion?: 'point' | 'ellipse' | 'click'
   durationMs?: number
 }
@@ -1481,6 +1487,26 @@ class PluginDashboardGuideRuntime {
     return document.querySelector(`[data-yui-guide-id="${CSS.escape(targetId)}"]`) as HTMLElement | null
   }
 
+  async prepareLocalTutorialStep(step: PluginDashboardLocalTutorialStep) {
+    const route = String(step.route || '').trim()
+    if (route && router.currentRoute.value.fullPath !== route) {
+      try {
+        await router.push(route)
+      } catch (_) {}
+      await wait(220)
+    }
+
+    const action = String(step.action || '').trim()
+    if (action) {
+      window.dispatchEvent(new CustomEvent(LOCAL_TUTORIAL_ACTION_EVENT, {
+        detail: { action },
+      }))
+      await wait(step.waitMs ?? 280)
+    } else if (step.waitMs && step.waitMs > 0) {
+      await wait(step.waitMs)
+    }
+  }
+
   interruptNarrationForResistance() {
     const narration = this.activeNarration
     if (!narration || narration.cancelled) {
@@ -1830,7 +1856,7 @@ class PluginDashboardGuideRuntime {
 
   async runLocalTutorial(sessionId: string, payload: PluginDashboardLocalTutorialPayload) {
     const steps = Array.isArray(payload.steps)
-      ? payload.steps.filter((step) => step && step.targetId && (step.title || step.body))
+      ? payload.steps.filter((step) => step && (step.targetId || step.route || step.action) && (step.title || step.body))
       : []
     if (steps.length === 0) {
       return
@@ -1857,11 +1883,19 @@ class PluginDashboardGuideRuntime {
           return
         }
 
+        await this.prepareLocalTutorialStep(step)
+        if (!isCurrent()) {
+          return
+        }
+
         const target = await this.waitForElement(() => this.resolveLocalGuideTarget(step), 2500)
         if (!isCurrent()) {
           return
         }
         if (!target) {
+          if (!step.allowMissing) {
+            await this.waitForSceneDelay(Math.max(900, step.durationMs || 1400), isCurrent)
+          }
           continue
         }
 

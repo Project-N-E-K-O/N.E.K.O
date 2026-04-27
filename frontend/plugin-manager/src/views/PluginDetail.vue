@@ -1,25 +1,27 @@
 <template>
-  <div class="plugin-detail">
+  <div class="plugin-detail" data-yui-guide-id="plugin-detail-page">
     <!-- Loading 状态 -->
     <div v-if="loading" class="loading-container">
       <el-icon class="is-loading" :size="32"><Loading /></el-icon>
       <span>{{ $t('common.loading') }}</span>
     </div>
 
-    <el-card v-else-if="plugin">
+    <el-card v-else-if="plugin" data-yui-guide-id="plugin-detail-card">
       <template #header>
-        <div class="card-header">
-          <div class="header-left">
-            <el-button :icon="ArrowLeft" @click="goBack">{{ $t('common.back') }}</el-button>
+        <div class="card-header" data-yui-guide-id="plugin-detail-header">
+          <div class="header-left" data-yui-guide-id="plugin-detail-title">
+            <el-button :icon="ArrowLeft" data-yui-guide-id="plugin-detail-back" @click="goBack">{{ $t('common.back') }}</el-button>
             <h2>{{ plugin.name }}</h2>
           </div>
-          <PluginActions :plugin-id="pluginId" />
+          <div data-yui-guide-id="plugin-detail-actions">
+            <PluginActions :plugin-id="pluginId" />
+          </div>
         </div>
       </template>
 
-      <el-tabs v-model="activeTab">
+      <el-tabs v-model="activeTab" data-yui-guide-id="plugin-detail-tabs">
         <el-tab-pane :label="$t('plugins.basicInfo')" name="info">
-          <div class="info-section">
+          <div class="info-section" data-yui-guide-id="plugin-detail-info">
             <el-descriptions :column="2" border>
               <el-descriptions-item :label="$t('plugins.id')">{{ plugin.id }}</el-descriptions-item>
               <el-descriptions-item :label="$t('plugins.version')">{{ plugin.version }}</el-descriptions-item>
@@ -73,19 +75,27 @@
         </el-tab-pane>
 
         <el-tab-pane :label="$t('plugins.entries')" name="entries">
-          <EntryList :entries="plugin.entries || []" :plugin-id="pluginId" :plugin-status="pluginStatus" />
+          <div data-yui-guide-id="plugin-detail-entries">
+            <EntryList :entries="plugin.entries || []" :plugin-id="pluginId" :plugin-status="pluginStatus" />
+          </div>
         </el-tab-pane>
 
         <el-tab-pane :label="$t('plugins.performance')" name="metrics">
-          <MetricsCard :plugin-id="pluginId" />
+          <div data-yui-guide-id="plugin-detail-metrics">
+            <MetricsCard :plugin-id="pluginId" />
+          </div>
         </el-tab-pane>
 
         <el-tab-pane :label="$t('plugins.config')" name="config">
-          <PluginConfigEditor :plugin-id="pluginId" />
+          <div data-yui-guide-id="plugin-detail-config">
+            <PluginConfigEditor :plugin-id="pluginId" />
+          </div>
         </el-tab-pane>
 
         <el-tab-pane :label="$t('plugins.logs')" name="logs">
-          <LogViewer :plugin-id="pluginId" />
+          <div data-yui-guide-id="plugin-detail-logs">
+            <LogViewer :plugin-id="pluginId" />
+          </div>
         </el-tab-pane>
       </el-tabs>
     </el-card>

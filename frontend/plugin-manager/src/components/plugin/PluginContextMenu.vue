@@ -12,6 +12,7 @@
             v-if="visible"
             ref="menuRef"
             class="context-menu"
+            data-yui-guide-id="plugin-list-context-menu"
             :style="menuStyle"
             @click.stop
             @contextmenu.prevent

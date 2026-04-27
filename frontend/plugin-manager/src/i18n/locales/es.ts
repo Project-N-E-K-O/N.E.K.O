@@ -441,6 +441,62 @@ export default {
       plugins: {
         title: 'Lista de plugins',
         body: 'Entra en Plugins a la izquierda para iniciar, detener, configurar plugins o revisar sus logs.'
+      },
+      pluginWorkbench: {
+        title: 'Área de plugins',
+        body: 'Aquí se reúnen plugins, adaptadores y extensiones para la gestión diaria.'
+      },
+      pluginFilters: {
+        title: 'Búsqueda y filtros',
+        body: 'Filtra por nombre, estado, tipo o reglas avanzadas cuando la lista crece.'
+      },
+      pluginLayout: {
+        title: 'Diseño de vista',
+        body: 'Cambia entre lista, una columna, dos columnas y vista compacta según tu pantalla.'
+      },
+      pluginContextMenu: {
+        title: 'Acciones con clic derecho',
+        body: 'Haz clic derecho en un plugin para abrir detalles, configuración, logs o acciones comunes.'
+      },
+      packageManager: {
+        title: 'Gestor de paquetes',
+        body: 'El gestor reutiliza tus filtros y selección para empaquetar, inspeccionar, verificar o descomprimir.'
+      },
+      packageOperations: {
+        title: 'Operaciones de paquete',
+        body: 'Elige modos de empaquetado, inspecciona paquetes o analiza bundles. El tutorial no ejecuta acciones peligrosas.'
+      },
+      pluginDetail: {
+        title: 'Detalles del plugin',
+        body: 'La página de detalle muestra metadatos, entradas, métricas, configuración y logs.'
+      },
+      pluginDetailActions: {
+        title: 'Acciones del detalle',
+        body: 'Las acciones superiores se aplican al plugin actual después de revisar sus detalles.'
+      },
+      runs: {
+        title: 'Ejecuciones',
+        body: 'Las ejecuciones muestran historial y estado en vivo de tareas de plugins.'
+      },
+      runsList: {
+        title: 'Lista de ejecuciones',
+        body: 'Selecciona una ejecución a la izquierda o actualiza para sincronizar registros recientes.'
+      },
+      runsDetail: {
+        title: 'Detalle de ejecución',
+        body: 'El panel muestra fase, progreso, errores y exportaciones; cancelar solo aparece si se puede cancelar.'
+      },
+      logs: {
+        title: 'Logs del servidor',
+        body: 'Los logs del servidor ayudan a revisar salida y errores del servicio de plugins.'
+      },
+      logToolbar: {
+        title: 'Filtros de logs',
+        body: 'Filtra por nivel, palabra clave y líneas, o cambia el desplazamiento automático.'
+      },
+      logList: {
+        title: 'Lista de logs',
+        body: 'Los logs muestran hora, origen, nivel y mensaje para depurar problemas de plugins.'
       }
     }
   }
