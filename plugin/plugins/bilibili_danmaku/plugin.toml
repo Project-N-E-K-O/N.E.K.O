@@ -17,7 +17,7 @@ supported = ">=0.1.0,<0.3.0"
 
 [plugin_runtime]
 enabled = true
-auto_start = true
+auto_start = false
 
 [plugin.store]
 enabled = false
