@@ -4170,6 +4170,7 @@ async def sync_workshop_character_cards() -> dict:
                                                 item_id,
                                             )
                                     except Exception as face_err:
+                                        error_count += 1
                                         logger.warning(
                                             "sync_workshop_character_cards: 回填角色卡封面或元数据失败 %s (物品 %s): %s",
                                             chara_name,
@@ -4282,6 +4283,7 @@ async def sync_workshop_character_cards() -> dict:
                                         item,
                                     )
                             except Exception as face_meta_err:
+                                error_count += 1
                                 logger.warning(
                                     "sync_workshop_character_cards: 补写角色卡封面或元数据失败 %s (物品 %s): %s",
                                     chara_name,
