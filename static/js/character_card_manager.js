@@ -5468,6 +5468,7 @@ function buildSteamTabContent(name, rawData, card, container) {
             </div>
         </div>`;
     live2dSection.appendChild(controlsDiv);
+    ensurePreviewPlaybackBindings();
     topRow.appendChild(live2dSection);
     layout.appendChild(topRow);
 
@@ -7417,11 +7418,45 @@ async function updatePreviewControlsAfterModelLoad(filesData) {
     const savedIdleAnimation = rawData._reserved?.avatar?.live2d?.idle_animation
         || rawData.avatar?.live2d?.idle_animation
         || rawData.live2d_idle_animation;
+    const availableMotionFiles = window._previewMotionFiles || [];
+    let initialMotionToPlay = '';
     if (savedIdleAnimation && motionSelect) {
-        const motionFiles = window._previewMotionFiles || [];
-        if (motionFiles.includes(savedIdleAnimation)) {
+        if (availableMotionFiles.includes(savedIdleAnimation)) {
             motionSelect.value = savedIdleAnimation;
+            initialMotionToPlay = savedIdleAnimation;
         }
+    }
+
+    if (!initialMotionToPlay && motionSelect && motionSelect.value) {
+        initialMotionToPlay = motionSelect.value;
+    }
+
+    if (!initialMotionToPlay && availableMotionFiles.length > 0) {
+        initialMotionToPlay = availableMotionFiles[0];
+        if (motionSelect) {
+            motionSelect.value = initialMotionToPlay;
+        }
+    }
+
+    const previewModelToAutoplay = currentPreviewModel;
+
+    if (live2dPreviewManager) {
+        live2dPreviewManager._userIdleAnimations = initialMotionToPlay
+            ? [String(initialMotionToPlay).split('/').pop()]
+            : [];
+    }
+
+    if (initialMotionToPlay && previewModelToAutoplay) {
+        requestAnimationFrame(() => {
+            if (
+                currentPreviewModel === previewModelToAutoplay
+                && live2dPreviewManager?.currentModel === previewModelToAutoplay
+                && motionSelect
+            ) {
+                motionSelect.value = initialMotionToPlay;
+                handlePreviewMotionPlay();
+            }
+        });
     }
 }
 
@@ -7856,48 +7891,55 @@ function updatePreviewControls(motionFiles, expressionFiles) {
 
     // 显示预览控件
     previewControls.style.display = '';
+
+    ensurePreviewPlaybackBindings();
 }
 
-// 播放预览动作
-const playMotionBtn = document.getElementById('preview-play-motion-btn');
-if (playMotionBtn) {
-    playMotionBtn.addEventListener('click', () => {
-        if (!currentPreviewModel) return;
+function handlePreviewMotionPlay() {
+    if (!currentPreviewModel) return;
 
-        const motionSelect = document.getElementById('preview-motion-select');
-        const motionFile = motionSelect.value;
-        if (!motionFile) return;
+    const motionSelect = document.getElementById('preview-motion-select');
+    const motionFile = motionSelect ? motionSelect.value : '';
+    if (!motionFile) return;
 
-        const motionIndex = (window._previewMotionFiles || []).indexOf(motionFile);
-        if (motionIndex < 0) return;
+    const motionIndex = (window._previewMotionFiles || []).indexOf(motionFile);
+    if (motionIndex < 0) return;
 
-        try {
-            currentPreviewModel.motion('PreviewAll', motionIndex, 3);
-        } catch (error) {
-            console.error('Failed to play motion:', error);
-            showMessage(window.t('live2d.playMotionFailed', { motion: motionFile }), 'error');
-        }
-    });
+    try {
+        currentPreviewModel.motion('PreviewAll', motionIndex, 3);
+    } catch (error) {
+        console.error('Failed to play motion:', error);
+        showMessage(window.t('live2d.playMotionFailed', { motion: motionFile }), 'error');
+    }
 }
 
-// 播放预览表情
-const playExpressionBtn = document.getElementById('preview-play-expression-btn');
-if (playExpressionBtn) {
-    playExpressionBtn.addEventListener('click', () => {
-        if (!currentPreviewModel) return;
+function handlePreviewExpressionPlay() {
+    if (!currentPreviewModel) return;
 
-        const expressionSelect = document.getElementById('preview-expression-select');
-        const expressionName = expressionSelect.value;
+    const expressionSelect = document.getElementById('preview-expression-select');
+    const expressionName = expressionSelect ? expressionSelect.value : '';
+    if (!expressionName) return;
 
-        if (!expressionName) return;
+    try {
+        currentPreviewModel.expression(expressionName);
+    } catch (error) {
+        console.error('Failed to play expression:', error);
+        showMessage(window.t('live2d.playExpressionFailed', { expression: expressionName }), 'error');
+    }
+}
 
-        try {
-            currentPreviewModel.expression(expressionName);
-        } catch (error) {
-            console.error('Failed to play expression:', error);
-            showMessage(window.t('live2d.playExpressionFailed', { expression: expressionName }), 'error');
-        }
-    });
+function ensurePreviewPlaybackBindings() {
+    const playMotionBtn = document.getElementById('preview-play-motion-btn');
+    if (playMotionBtn && playMotionBtn.dataset.previewMotionBound !== 'true') {
+        playMotionBtn.addEventListener('click', handlePreviewMotionPlay);
+        playMotionBtn.dataset.previewMotionBound = 'true';
+    }
+
+    const playExpressionBtn = document.getElementById('preview-play-expression-btn');
+    if (playExpressionBtn && playExpressionBtn.dataset.previewExpressionBound !== 'true') {
+        playExpressionBtn.addEventListener('click', handlePreviewExpressionPlay);
+        playExpressionBtn.dataset.previewExpressionBound = 'true';
+    }
 }
 
 // 注意事项标签功能
