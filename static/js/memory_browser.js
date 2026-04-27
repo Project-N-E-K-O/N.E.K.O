@@ -29,6 +29,14 @@
         recovery_required: 'memory.storageRecoveryRequired'
     };
 
+    // selection_required / recovery_required 这两种阻断态本身就需要用户在存储管理弹窗里
+    // 完成确认或重连。如果这里也禁用入口就会变成死锁：主内容被 limited-mode 挡着、
+    // 但唯一能解锁的按钮也按不动。
+    const RECOVERABLE_STORAGE_BLOCKING_REASONS = new Set([
+        'selection_required',
+        'recovery_required'
+    ]);
+
     function interpolateText(text, options) {
         const values = options && typeof options === 'object' ? options : {};
         return String(text || '').replace(/\{\{\s*([\w.-]+)\s*\}\}/g, function (match, name) {
@@ -161,7 +169,9 @@
 
         const manageBtn = document.getElementById('storage-location-manage-btn');
         if (manageBtn) {
-            manageBtn.disabled = state.loadFailed || !!state.blockingReason || !String(bootstrap.current_root || '').trim();
+            const blockingReason = String(state.blockingReason || '').trim();
+            const blockingNonRecoverable = blockingReason && !RECOVERABLE_STORAGE_BLOCKING_REASONS.has(blockingReason);
+            manageBtn.disabled = state.loadFailed || blockingNonRecoverable || !String(bootstrap.current_root || '').trim();
             manageBtn.title = manageBtn.disabled
                 ? translate('memory.storageManagementUnavailable', '当前存储位置暂不可用')
                 : '';
@@ -244,7 +254,9 @@
     function openStorageLocationManager() {
         const state = storageLocationState || {};
         const bootstrap = state.bootstrap || {};
-        if (state.loadFailed || state.blockingReason || !String(bootstrap.current_root || '').trim()) {
+        const blockingReason = String(state.blockingReason || '').trim();
+        const blockingNonRecoverable = blockingReason && !RECOVERABLE_STORAGE_BLOCKING_REASONS.has(blockingReason);
+        if (state.loadFailed || blockingNonRecoverable || !String(bootstrap.current_root || '').trim()) {
             setElementText('storage-location-status', translate('memory.storageManagementUnavailable', '当前存储位置暂不可用'));
             return;
         }
