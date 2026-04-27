@@ -52,6 +52,26 @@ function setControlInvalid(control, invalid) {
     control.removeAttribute('data-invalid');
   }
 }
+const __localState = new Map();
+function resolveInitialValue(initialValue) {
+  return typeof initialValue === 'function' ? initialValue() : initialValue;
+}
+function useLocalState(key, initialValue) {
+  const safeKey = String(key || 'default');
+  if (!__localState.has(safeKey)) {
+    __localState.set(safeKey, resolveInitialValue(initialValue));
+  }
+  const setValue = (next) => {
+    const previous = __localState.get(safeKey);
+    const value = typeof next === 'function' ? next(previous) : next;
+    __localState.set(safeKey, value);
+    if (typeof window.__NekoRenderHostedSurface === 'function') {
+      window.__NekoRenderHostedSurface();
+    }
+    return value;
+  };
+  return [__localState.get(safeKey), setValue];
+}
 
 function appendChild(parent, child) {
   if (child === null || child === undefined || child === false) return;
@@ -128,11 +148,15 @@ function KeyValue(props) {
 
 function DataTable(props) {
   const rows = Array.isArray(props.data) ? props.data : [];
+  const visibleRows = props.maxRows ? rows.slice(0, Number(props.maxRows)) : rows;
   const columns = props.columns || Object.keys(rows[0] || {});
   const selectedKey = props.selectedKey;
+  if (rows.length === 0) {
+    return EmptyState({ className: props.className || '', title: props.emptyText || '暂无数据' });
+  }
   return h('table', { className: 'neko-table ' + (props.className || '') },
     h('thead', null, h('tr', null, columns.map((column) => h('th', null, typeof column === 'string' ? column : column.label || column.key)))),
-    h('tbody', null, rows.map((row, index) => {
+    h('tbody', null, visibleRows.map((row, index) => {
       const rowKey = props.rowKey ? row?.[props.rowKey] : index;
       return h('tr', { className: selectedKey !== undefined && rowKey === selectedKey ? 'is-selected' : '', onClick: () => props.onSelect && props.onSelect(row, index) }, columns.map((column) => {
         const key = typeof column === 'string' ? column : column.key;
@@ -140,7 +164,11 @@ function DataTable(props) {
           if (column && typeof column === 'object' && typeof column.render === 'function') {
             return h('td', null, column.render(row, index));
           }
-          return h('td', null, row && row[key] !== undefined ? row[key] : '');
+          const value = row && row[key] !== undefined ? row[key] : '';
+          if (typeof value === 'boolean') {
+            return h('td', null, StatusBadge({ tone: value ? 'success' : 'warning', children: [value ? '是' : '否'] }));
+          }
+          return h('td', null, value);
         } catch (error) {
           reportHostedRuntimeError('DataTable.cell', error, { row: index, column: key });
           return h('td', null, createInlineError('单元格渲染失败', error, key));
@@ -277,6 +305,7 @@ function ActionForm(props) {
     return valid;
   }
   const formError = h('div', { className: 'neko-action-error', role: 'alert', hidden: true });
+  const formSuccess = h('div', { className: 'neko-action-success', role: 'status', hidden: true });
   const fields = Object.entries(properties).map(([key, fieldSchema]) => {
     const label = fieldSchema.title || fieldSchema.description || key;
     const help = fieldSchema.description && fieldSchema.description !== label ? fieldSchema.description : '';
@@ -307,14 +336,20 @@ function ActionForm(props) {
     onSubmit: async (event) => {
       const submitButton = event.currentTarget.querySelector('button[type="submit"]');
       clearErrors();
+      setInlineError(formSuccess, '');
       if (!validateForm()) {
         setInlineError(formError, '请先修正表单中的错误');
+        return;
+      }
+      const confirmMessage = action.confirm || props.confirm;
+      if (confirmMessage && !window.confirm(confirmMessage === true ? '确认执行该操作？' : String(confirmMessage))) {
         return;
       }
       try {
         if (submitButton) submitButton.disabled = true;
         const result = await api.call(action.entry_id || action.id, values);
         if (action.refresh_context !== false) await api.refresh();
+        setInlineError(formSuccess, props.successMessage || '操作已完成');
         if (typeof props.onResult === 'function') props.onResult(result);
       } catch (error) {
         reportHostedRuntimeError('ActionForm.submit', error, { action: action.id || action.entry_id });
@@ -324,7 +359,7 @@ function ActionForm(props) {
         if (submitButton) submitButton.disabled = false;
       }
     },
-    children: [formError, ...fields, Button({ tone: action.tone || 'primary', type: 'submit', children: [props.submitLabel || action.label || action.id || 'Submit'] })],
+    children: [formError, formSuccess, ...fields, Button({ tone: action.tone || 'primary', type: 'submit', children: [props.submitLabel || action.label || action.id || 'Submit'] })],
   });
 }
 
@@ -335,7 +370,24 @@ function Steps(props) { return h('div', { className: 'neko-stack' }, props.child
 function Step(props) { return h('div', { className: 'neko-step' }, h('span', { className: 'neko-step-index' }, props.index || ''), h('div', null, props.title ? h('h3', { className: 'neko-step-title' }, props.title) : null, props.children)); }
 function Tabs(props) {
   const tabs = props.items || [];
-  return h('div', { className: 'neko-tabs' }, h('div', { className: 'neko-tab-list' }, tabs.map((tab, index) => h('button', { className: 'neko-tab-button ' + (index === 0 ? 'is-active' : '') }, tab.label || tab.title || tab.id))), h('div', null, props.children || (tabs[0] && tabs[0].content)));
+  const defaultId = props.activeId || (tabs[0] && (tabs[0].id || String(0))) || 'tab-0';
+  const [activeId, setActiveId] = useLocalState(`tabs:${props.id || 'default'}`, defaultId);
+  const activeIndex = Math.max(0, tabs.findIndex((tab, index) => (tab.id || String(index)) === activeId));
+  const activeTab = tabs[activeIndex] || tabs[0];
+  return h('div', { className: 'neko-tabs ' + (props.className || '') },
+    h('div', { className: 'neko-tab-list' }, tabs.map((tab, index) => {
+      const tabId = tab.id || String(index);
+      return h('button', {
+        className: 'neko-tab-button ' + (tabId === activeId ? 'is-active' : ''),
+        type: 'button',
+        onClick: () => {
+          setActiveId(tabId);
+          if (typeof props.onChange === 'function') props.onChange(tabId, index);
+        },
+      }, tab.label || tab.title || tabId);
+    })),
+    h('div', { className: 'neko-tab-panel' }, props.children || (activeTab && activeTab.content))
+  );
 }
 function useI18n() { return { t, locale: __NEKO_PAYLOAD.locale }; }
 function t(key) { return key; }
@@ -387,6 +439,10 @@ function ActionButton(props) {
     onClick: async () => {
       try {
         setInlineError(errorNode, '');
+        const confirmMessage = props.confirm || action.confirm;
+        if (confirmMessage && !window.confirm(confirmMessage === true ? '确认执行该操作？' : String(confirmMessage))) {
+          return;
+        }
         button.disabled = true;
         const result = await api.call(actionId, props.values || props.args || {});
         if (action.refresh_context !== false && props.refresh !== false) await api.refresh();
@@ -431,6 +487,6 @@ Object.assign(NekoUiKit, {
   StatusBadge, StatCard, KeyValue, DataTable, Divider, Toolbar, ToolbarGroup,
   Alert, InlineError, EmptyState, List, Progress, JsonView, Field, Input, Select, Textarea,
   Switch, Form, ActionForm, CodeBlock, Tip, Warning, Steps, Step, Tabs, useI18n,
-  t, api, ActionButton, RefreshButton,
+  t, api, useLocalState, ActionButton, RefreshButton,
 });
 Object.assign(window, NekoUiKit);

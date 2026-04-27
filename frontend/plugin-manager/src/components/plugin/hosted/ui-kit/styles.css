@@ -129,12 +129,13 @@ body {
 .neko-field-label { color: var(--text); font-size: 13px; font-weight: 680; }
 .neko-field-required { margin-left: 4px; color: var(--danger); }
 .neko-field-help { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
-.neko-field-error, .neko-action-error {
+.neko-field-error, .neko-action-error, .neko-action-success {
   margin: 0;
-  color: var(--danger);
   font-size: 12px;
   line-height: 1.55;
 }
+.neko-field-error, .neko-action-error { color: var(--danger); }
+.neko-action-success { color: var(--success); }
 .neko-action-control { display: inline-grid; gap: 6px; align-items: start; }
 .neko-input, .neko-select, .neko-textarea {
   width: 100%;
@@ -162,6 +163,7 @@ body {
 .neko-tab-list { display: flex; gap: 8px; flex-wrap: wrap; }
 .neko-tab-button { border: 1px solid var(--border); background: var(--surface); color: var(--muted); border-radius: 999px; padding: 6px 11px; font: inherit; cursor: pointer; }
 .neko-tab-button.is-active { color: var(--primary); border-color: rgba(64,158,255,0.42); background: rgba(64,158,255,0.1); }
+.neko-tab-panel { min-width: 0; }
 .neko-step { display: grid; grid-template-columns: 28px minmax(0,1fr); gap: 10px; align-items: start; }
 .neko-step-index { width: 28px; height: 28px; display: inline-flex; align-items: center; justify-content: center; border-radius: 999px; background: rgba(64,158,255,0.12); color: var(--primary); font-weight: 760; }
 .neko-step-title { margin: 0 0 4px; font-weight: 720; }

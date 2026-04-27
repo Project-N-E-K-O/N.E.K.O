@@ -1,6 +1,3 @@
-/// <reference path="../../../sdk/plugin/ui_types/neko-plugin-ui.d.ts" />
-/** @jsx h */
-/** @jsxFrag Fragment */
 import {
   Page,
   Card,
@@ -29,12 +26,44 @@ import {
   Steps,
   Step,
 } from "@neko/plugin-ui"
+import type { HostedAction, PluginSurfaceProps } from "@neko/plugin-ui"
 
-export default function McpAdapterPanel({ plugin, state, entries, actions }) {
+type McpServerView = {
+  name?: string
+  transport?: string
+  connected?: boolean
+  tools_count?: number
+  error?: string | null
+}
+
+type McpPanelState = {
+  connected_servers?: number
+  total_servers?: number
+  total_tools?: number
+  servers?: McpServerView[]
+}
+
+type PluginEntryView = {
+  id?: string
+  name?: string
+  description?: string
+}
+
+const defaultImportJson = `{
+  "name": "example",
+  "transport": "stdio",
+  "command": "uvx",
+  "args": ["mcp-server-example"],
+  "enabled": true,
+  "auto_connect": true
+}`
+
+export default function McpAdapterPanel(props: PluginSurfaceProps<McpPanelState>) {
+  const { plugin, state, entries, actions } = props
   const safePlugin = plugin || {}
   const safeState = state || {}
-  const safeEntries = Array.isArray(entries) ? entries : []
-  const safeActions = Array.isArray(actions) ? actions : []
+  const safeEntries = Array.isArray(entries) ? entries as PluginEntryView[] : []
+  const safeActions = Array.isArray(actions) ? actions as HostedAction[] : []
   const servers = Array.isArray(safeState.servers) ? safeState.servers : []
   const connectedServers = servers.filter((server) => server.connected)
   const disconnectedServers = servers.filter((server) => !server.connected)
@@ -44,7 +73,8 @@ export default function McpAdapterPanel({ plugin, state, entries, actions }) {
   const disconnectServer = safeActions.find((action) => action.id === "disconnect_server")
   const removeServers = safeActions.find((action) => action.id === "remove_servers")
   const firstServer = servers[0]
-  let selectedServerName = firstServer?.name || ""
+  const [selectedServerName, setSelectedServerName] = props.useLocalState("selectedServerName", firstServer?.name || "")
+  const effectiveSelectedServerName = selectedServerName || firstServer?.name || ""
   const importErrorId = "mcp-adapter-import-error"
   const configExample = `[mcp_servers.example]
 transport = "stdio"
@@ -52,14 +82,7 @@ command = "uvx"
 args = ["mcp-server-example"]
 enabled = true
 auto_connect = true`
-  let importJson = `{
-  "name": "example",
-  "transport": "stdio",
-  "command": "uvx",
-  "args": ["mcp-server-example"],
-  "enabled": true,
-  "auto_connect": true
-}`
+  const [importJson, setImportJson] = props.useLocalState("importJson", defaultImportJson)
 
   const setImportError = (message) => {
     const node = document.getElementById(importErrorId)
@@ -76,8 +99,8 @@ auto_connect = true`
     }
     try {
       const payload = JSON.parse(importJson)
-      await api.call("add_server", payload)
-      await api.refresh()
+      await props.api.call("add_server", payload)
+      await props.api.refresh()
     } catch (error) {
       setImportError(error && error.message ? error.message : String(error))
     }
@@ -149,9 +172,9 @@ auto_connect = true`
             <DataTable
               data={servers}
               rowKey="name"
-              selectedKey={selectedServerName}
+              selectedKey={effectiveSelectedServerName}
               onSelect={(server) => {
-                selectedServerName = server?.name || ""
+                setSelectedServerName(server?.name || "")
               }}
               columns={[
                 { key: "name", label: "Server" },
@@ -162,14 +185,14 @@ auto_connect = true`
               ]}
             />
             <ButtonGroup>
-              {connectServer && selectedServerName ? (
-                <ActionButton action={connectServer} values={{ server_name: selectedServerName }} />
+              {connectServer && effectiveSelectedServerName ? (
+                <ActionButton action={connectServer} values={{ server_name: effectiveSelectedServerName }} />
               ) : null}
-              {disconnectServer && selectedServerName ? (
-                <ActionButton action={disconnectServer} values={{ server_name: selectedServerName }} />
+              {disconnectServer && effectiveSelectedServerName ? (
+                <ActionButton action={disconnectServer} values={{ server_name: effectiveSelectedServerName }} />
               ) : null}
-              {removeServers && selectedServerName ? (
-                <ActionButton action={removeServers} values={{ server_names: [selectedServerName] }} />
+              {removeServers && effectiveSelectedServerName ? (
+                <ActionButton action={removeServers} values={{ server_names: [effectiveSelectedServerName] }} />
               ) : null}
             </ButtonGroup>
             <Text>点击表格行选择 Server，再执行连接、断开或移除操作。</Text>
@@ -199,7 +222,7 @@ auto_connect = true`
             <Textarea
               value={importJson}
               onChange={(value) => {
-                importJson = value
+                setImportJson(value)
                 setImportError("")
               }}
             />

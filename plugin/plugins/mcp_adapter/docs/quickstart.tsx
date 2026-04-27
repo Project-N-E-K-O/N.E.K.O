@@ -1,6 +1,3 @@
-/// <reference path="../../../sdk/plugin/ui_types/neko-plugin-ui.d.ts" />
-/** @jsx h */
-/** @jsxFrag Fragment */
 import {
   Page,
   Card,
@@ -18,8 +15,16 @@ import {
   Divider,
   Alert,
 } from "@neko/plugin-ui"
+import type { PluginSurfaceProps } from "@neko/plugin-ui"
 
-export default function QuickstartGuide({ plugin, state }) {
+type McpGuideState = {
+  connected_servers?: number
+  total_servers?: number
+  total_tools?: number
+}
+
+export default function QuickstartGuide(props: PluginSurfaceProps<McpGuideState>) {
+  const { plugin, state } = props
   const safePlugin = plugin || {}
   const safeState = state || {}
   const connected = safeState.connected_servers || 0

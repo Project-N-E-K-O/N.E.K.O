@@ -5,7 +5,7 @@ import process from 'node:process'
 import ts from 'typescript'
 
 const repoRoot = resolve(new URL('../../../', import.meta.url).pathname)
-const typeDeclPath = join(repoRoot, 'plugin/sdk/plugin/ui_types/neko-plugin-ui.d.ts')
+const hostedUiGlobalsPath = join(repoRoot, 'plugin/sdk/hosted-ui/globals.d.ts')
 const surfaceKinds = ['panel', 'guide', 'docs']
 
 function parseTomlSurfaces(text) {
@@ -68,13 +68,13 @@ function createCheckFile(entryPath, tempDir, index, surface, tomlPath) {
   const prefixLines = 6
   writeFileSync(
     checkPath,
-    `/// <reference path="${typeDeclPath}" />\nimport * as NekoUi from "@neko/plugin-ui";\nconst { ${[
+    `/// <reference path="${hostedUiGlobalsPath}" />\nimport * as NekoUi from "@neko/plugin-ui";\nimport type { PluginSurfaceProps, HostedAction, JsonSchema, HostedApi } from "@neko/plugin-ui";\nconst { ${[
       'Page', 'Card', 'Section', 'Heading', 'Stack', 'Grid', 'Text', 'Button', 'ButtonGroup',
       'StatusBadge', 'StatCard', 'KeyValue', 'DataTable', 'Divider', 'Toolbar', 'ToolbarGroup',
       'Alert', 'EmptyState', 'List', 'Progress', 'JsonView', 'Field', 'Input', 'Select',
       'Textarea', 'Switch', 'Form', 'ActionButton', 'RefreshButton', 'ActionForm', 'InlineError', 'CodeBlock',
-      'Tip', 'Warning', 'Steps', 'Step', 'Tabs', 'useI18n',
-    ].join(', ')} } = NekoUi;\ndeclare const h: any;\ndeclare const Fragment: any;\ndeclare const api: { call(actionId: string, args?: Record<string, any>): Promise<any>; refresh(): Promise<any> };\n${stripped}\n`,
+      'Tip', 'Warning', 'Steps', 'Step', 'Tabs', 'useI18n', 'useLocalState',
+    ].join(', ')} } = NekoUi;\ndeclare const h: any;\ndeclare const Fragment: any;\n${stripped}\n`,
     'utf8',
   )
   return {
@@ -129,6 +129,9 @@ function main() {
         if (/\balert\s*\(/.test(readFileSync(entryPath, 'utf8'))) {
           warnings.push(`${entryPath} [${surfaceLabel(surface)}] - Prefer inline UI errors over alert(); use ActionForm/ActionButton onError or InlineError.`)
         }
+        if (/(^|[^\w.])api\./m.test(readFileSync(entryPath, 'utf8'))) {
+          errors.push(`${entryPath}:1:1 [${surfaceLabel(surface)}] - Use props.api from PluginSurfaceProps instead of the global api object.`)
+        }
       }
     }
 
@@ -145,6 +148,10 @@ function main() {
       module: ts.ModuleKind.ESNext,
       target: ts.ScriptTarget.ES2020,
       moduleResolution: ts.ModuleResolutionKind.Bundler,
+      baseUrl: repoRoot,
+      paths: {
+        '@neko/plugin-ui': ['plugin/sdk/hosted-ui'],
+      },
       noEmit: true,
       strict: false,
       skipLibCheck: true,

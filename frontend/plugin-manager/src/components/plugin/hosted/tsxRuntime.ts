@@ -93,8 +93,12 @@ export function buildHostedTsxDocument(options: BuildHostedTsxDocumentOptions) {
   <script>
     let __NEKO_PAYLOAD = ${payload};
 ${escapeScriptContent(uiKit.runtime)}
-    if (!window.NekoUiKit || typeof window.NekoUiKit.h !== 'function') {
-      throw new Error('N.E.K.O UI Kit failed to initialize.');
+    const __requiredUiKitApis = ['h', 'appendChild', 'useLocalState'];
+    if (!window.NekoUiKit || __requiredUiKitApis.some((name) => typeof window.NekoUiKit[name] !== 'function')) {
+      throw new Error('N.E.K.O UI Kit failed to initialize with the required hosted TSX APIs.');
+    }
+    if (!window.NekoUiKit.api || typeof window.NekoUiKit.api.call !== 'function' || typeof window.NekoUiKit.api.refresh !== 'function') {
+      throw new Error('N.E.K.O UI Kit failed to initialize the hosted API bridge.');
     }
     function __normalizeHostedPayload(context) {
       const next = context && typeof context === 'object' ? context : {};
@@ -122,6 +126,8 @@ ${escapeScriptContent(uiKit.runtime)}
         warnings: __NEKO_PAYLOAD.warnings,
         locale: __NEKO_PAYLOAD.locale,
         ...window.NekoUiKit,
+        api: window.NekoUiKit.api,
+        useLocalState: window.NekoUiKit.useLocalState,
       };
     }
     function __showHostedError(error) {
