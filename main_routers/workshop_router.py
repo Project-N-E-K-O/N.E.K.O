@@ -707,10 +707,9 @@ def _should_refresh_workshop_card_face(face_path: Path, meta_path: Path) -> bool
 
     origin = _read_card_face_origin(meta_path)
     if origin is None:
-        # 当 sidecar 缺失时，无法证明现有图片来源于工坊同步。
-        # 只有看起来已经像标准化工坊卡面的图片，才允许继续刷新；
-        # 其他情况一律保守保留，避免覆盖用户手动放入的自定义卡面。
-        return _is_workshop_card_face_normalized(face_path)
+        # sidecar 缺失时无法确认来源，保守地把现有卡面视为受保护资源，
+        # 避免覆盖用户手动放入或历史遗留的自定义 PNG。
+        return False
 
     if origin in {'self', 'imported'}:
         return False
