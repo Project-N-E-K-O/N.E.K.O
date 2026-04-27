@@ -1638,6 +1638,7 @@
         "newCatgirlSuccess": "新貓娘創建成功",
         "saveSuccess": "儲存成功",
         "switchSuccess": "切換成功",
+        "cannotSwitchInVoiceMode": "語音狀態下無法切換角色卡，請先關閉語音控制",
         "deleteError": "刪除貓娘時發生錯誤",
         "switchCard": "切換角色卡",
         "deleteCard": "刪除角色卡",

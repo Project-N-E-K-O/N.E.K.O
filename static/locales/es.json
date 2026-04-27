@@ -1660,6 +1660,7 @@
         "showHidden": "Mostrar ocultos",
         "switchCard": "Cambiar tarjeta",
         "switchSuccess": "Cambiado con éxito",
+        "cannotSwitchInVoiceMode": "No se puede cambiar de tarjeta mientras el control de voz está activo. Desactive el control de voz primero.",
         "tempSaveFailed": "Error al guardar temporalmente: {{error}}",
         "editCardFace": "Editar cara de la tarjeta"
     },

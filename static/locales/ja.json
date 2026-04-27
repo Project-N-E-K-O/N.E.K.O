@@ -1638,6 +1638,7 @@
         "newCatgirlSuccess": "新しいキャラクターが作成されました",
         "saveSuccess": "保存しました",
         "switchSuccess": "切り替えに成功しました",
+        "cannotSwitchInVoiceMode": "音声制御が有効な状态下ではカードを切り替えられません。音声制御を先にオフにしてください。",
         "deleteError": "キャラクターの削除中にエラーが発生しました",
         "switchCard": "カード切替",
         "deleteCard": "カード削除",

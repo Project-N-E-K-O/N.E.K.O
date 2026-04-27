@@ -1660,6 +1660,7 @@
         "showHidden": "Mostrar ocultos",
         "switchCard": "Trocar cartão",
         "switchSuccess": "Trocado com sucesso",
+        "cannotSwitchInVoiceMode": "Não é possível trocar de cartão enquanto o controle de voz estiver ativo. Desative o controle de voz primeiro.",
         "tempSaveFailed": "Falha ao salvar temporariamente: {{error}}",
         "editCardFace": "Editar rosto do cartão"
     },

@@ -3834,8 +3834,7 @@ function openCatgirlPanel(card, originEl) {
 
         const deleteBtn = document.createElement('button');
         deleteBtn.type = 'button';
-        deleteBtn.className = 'card-panel-action-btn delete-btn';
-        deleteBtn.disabled = isCurrentChara;
+        deleteBtn.className = 'card-panel-action-btn delete-btn' + (isCurrentChara ? ' disabled' : '');
         deleteBtn.title = isCurrentChara
             ? (window.t ? window.t('character.cannotDeleteCurrentCard') : '当前正在使用的角色卡无法删除，请先切换到其他角色卡')
             : (window.t ? window.t('character.deleteCard') : '删除角色卡');
@@ -3844,9 +3843,11 @@ function openCatgirlPanel(card, originEl) {
         deleteBtn.onclick = function (e) {
             e.stopPropagation();
             if (isCurrentChara) {
+                const msg = window.t ? window.t('character.cannotDeleteCurrentCard') : '当前正在使用的角色卡无法删除，请先切换到其他角色卡';
                 if (typeof showMessage === 'function') {
-                    showMessage(window.t ? window.t('character.cannotDeleteCurrentCard') : '当前正在使用的角色卡无法删除，请先切换到其他角色卡', 'error');
+                    showMessage(msg, 'error', 6000);
                 }
+                showAlertDialog(msg, { type: 'error' });
                 return;
             }
             workshopDeleteCatgirl(name);
@@ -5171,6 +5172,18 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
 
 // 切换猫娘
 async function workshopSwitchCatgirl(name) {
+    // 检查语音状态
+    try {
+        const voiceResp = await fetch(`/api/characters/catgirl/${encodeURIComponent(window._workshopCurrentCatgirl || '')}/voice_mode_status`);
+        const voiceData = await voiceResp.json();
+        if (voiceData.is_voice_mode) {
+            const msg = window.t ? window.t('character.cannotSwitchInVoiceMode') : '语音状态下无法切换角色卡，请先关闭语音控制';
+            showMessage(msg, 'error', 6000);
+            await showAlertDialog(msg, { type: 'error' });
+            return;
+        }
+    } catch (_) { /* 忽略 API 错误 */ }
+
     try {
         const response = await fetch('/api/characters/current_catgirl', {
             method: 'POST',
@@ -5195,7 +5208,9 @@ async function workshopSwitchCatgirl(name) {
 async function workshopDeleteCatgirl(name) {
     // 检查是否为当前猫娘
     if (name === window._workshopCurrentCatgirl) {
-        showMessage(window.t ? window.t('character.cannotDeleteCurrentCard') : '不能删除当前正在使用的角色卡', 'error');
+        const msg = window.t ? window.t('character.cannotDeleteCurrentCard') : '不能删除当前正在使用的角色卡';
+        showMessage(msg, 'error', 6000);
+        await showAlertDialog(msg, { type: 'error' });
         return;
     }
 
