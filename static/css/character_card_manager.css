@@ -2872,7 +2872,7 @@ left: 0;
 width: 100%;
 height: 100%;
 background: rgba(0, 0, 0, 0.5);
-z-index: 1000;
+z-index: 10000;
 justify-content: center;
 align-items: center;
 padding: 20px;
@@ -3001,6 +3001,15 @@ gap: 8px;
 }
 
 /* 上传到创意工坊模态框样式覆盖 */
+#uploadToWorkshopModal {
+z-index: 20000;
+}
+
+#cancelUploadModal,
+#duplicateUploadModal {
+z-index: 20010;
+}
+
 #uploadToWorkshopModal .modal-content {
 background: #e8f4fd;
 }
