@@ -215,36 +215,43 @@ def test_yui_guide_steps_registry_keeps_m1_to_m4_home_flow_contract():
         assert expected in source
 
 
+_YUI_RUNTIME_SCRIPTS = (
+    "yui-guide-steps.js",
+    "yui-guide-overlay.js",
+    "yui-guide-page-handoff.js",
+    "yui-guide-director.js",
+)
+
+
+def _script_tag_position(source: str, script_name: str) -> int:
+    """Find the position of a `<script src="/static/{script_name}...">` tag,
+    ignoring the `?v=...` cache-buster query string."""
+    needle = f'<script src="/static/{script_name}'
+    position = source.find(needle)
+    assert position != -1, f"missing script tag for {script_name}"
+    return position
+
+
 def test_home_template_loads_yui_runtime_stack_before_tutorial_manager():
     source = Path("templates/index.html").read_text(encoding="utf-8")
 
-    expected_order = [
-        '<script src="/static/yui-guide-steps.js?v=20260422-1"></script>',
-        '<script src="/static/yui-guide-overlay.js?v=20260422-6"></script>',
-        '<script src="/static/yui-guide-page-handoff.js?v=20260422-6"></script>',
-        '<script src="/static/yui-guide-director.js?v=20260422-6"></script>',
-        '<script src="/static/universal-tutorial-manager.js"></script>',
+    positions = [
+        _script_tag_position(source, name)
+        for name in (*_YUI_RUNTIME_SCRIPTS, "universal-tutorial-manager.js")
     ]
-
-    positions = [source.index(fragment) for fragment in expected_order]
     assert positions == sorted(positions)
 
 
 def test_target_page_templates_load_yui_runtime_stack_before_tutorial_manager():
-    expected_order = [
-        '<script src="/static/yui-guide-steps.js?v=20260422-1"></script>',
-        '<script src="/static/yui-guide-overlay.js?v=20260422-6"></script>',
-        '<script src="/static/yui-guide-page-handoff.js?v=20260422-6"></script>',
-        '<script src="/static/yui-guide-director.js?v=20260422-6"></script>',
-    ]
-
-    for template_path, tutorial_manager_script in (
-        ("templates/api_key_settings.html", '<script src="/static/universal-tutorial-manager.js?v=2"></script>'),
-        ("templates/memory_browser.html", '<script src="/static/universal-tutorial-manager.js?v=12"></script>'),
-        ("templates/steam_workshop_manager.html", '<script src="/static/universal-tutorial-manager.js"></script>'),
+    for template_path in (
+        "templates/api_key_settings.html",
+        "templates/memory_browser.html",
     ):
         source = Path(template_path).read_text(encoding="utf-8")
-        positions = [source.index(fragment) for fragment in (*expected_order, tutorial_manager_script)]
+        positions = [
+            _script_tag_position(source, name)
+            for name in (*_YUI_RUNTIME_SCRIPTS, "universal-tutorial-manager.js")
+        ]
         assert positions == sorted(positions), template_path
         assert '<link rel="stylesheet" href="/static/css/yui-guide.css">' in source
 
@@ -1422,6 +1429,233 @@ def test_cross_server_publish_no_http_fallback():
         "_publish_analyze_request_with_fallback still contains HTTP fallback"
     assert "/agent/analyze_request" not in func_src, \
         "_publish_analyze_request_with_fallback still targets HTTP endpoint"
+
+
+class _FakeInternalResponse:
+    def __init__(self, status, body):
+        self.status_code = status
+        self.text = body
+
+
+def _make_fake_internal_client(status, body, capture=None):
+    class FakeInternalClient:
+        async def post(self, url, **kwargs):
+            if capture is not None:
+                capture.append({"url": url, **kwargs})
+            return _FakeInternalResponse(status, body)
+
+    return FakeInternalClient
+
+
+async def test_cross_server_post_memory_server_success_and_url_encoding(monkeypatch):
+    """_post_memory_server should treat 2xx + JSON body as success and URL-encode names."""
+    from main_logic.cross_server import _post_memory_server
+
+    calls = []
+
+    monkeypatch.setattr(
+        "main_logic.cross_server.get_internal_http_client",
+        lambda: _make_fake_internal_client(
+            200,
+            json.dumps({"status": "cached", "count": 2}, ensure_ascii=False),
+            capture=calls,
+        )(),
+    )
+
+    ok, err_detail, payload = await _post_memory_server(
+        "cache",
+        "小天/测试",
+        [{"role": "user", "content": [{"type": "text", "text": "hi"}]}],
+        timeout_s=3.0,
+    )
+
+    assert ok is True
+    assert err_detail == ""
+    assert payload.get("status") == "cached"
+    assert calls
+    assert calls[0]["url"].endswith("/cache/%E5%B0%8F%E5%A4%A9%2F%E6%B5%8B%E8%AF%95")
+    assert "input_history" in calls[0]["json"]
+
+
+async def test_cross_server_post_memory_server_handles_http_non_2xx(monkeypatch):
+    """_post_memory_server should convert non-2xx response into explicit error detail."""
+    from main_logic.cross_server import _post_memory_server
+
+    monkeypatch.setattr(
+        "main_logic.cross_server.get_internal_http_client",
+        lambda: _make_fake_internal_client(502, "bad gateway")(),
+    )
+
+    ok, err_detail, payload = await _post_memory_server(
+        "cache",
+        "Tian",
+        [{"role": "user", "content": [{"type": "text", "text": "hi"}]}],
+        timeout_s=3.0,
+    )
+
+    assert ok is False
+    assert "HTTP 502" in err_detail
+    assert payload == {}
+
+
+async def test_cross_server_post_memory_server_handles_non_json_2xx(monkeypatch):
+    """_post_memory_server should fail loudly when body is non-JSON despite 2xx."""
+    from main_logic.cross_server import _post_memory_server
+
+    monkeypatch.setattr(
+        "main_logic.cross_server.get_internal_http_client",
+        lambda: _make_fake_internal_client(200, "<html>oops</html>")(),
+    )
+
+    ok, err_detail, payload = await _post_memory_server(
+        "cache",
+        "Tian",
+        [{"role": "user", "content": [{"type": "text", "text": "hi"}]}],
+        timeout_s=3.0,
+    )
+
+    assert ok is False
+    assert "non-JSON response" in err_detail
+    assert payload == {}
+
+
+async def test_cross_server_post_memory_server_handles_business_error(monkeypatch):
+    """_post_memory_server should return explicit error when memory_server returns status=error."""
+    from main_logic.cross_server import _post_memory_server
+
+    monkeypatch.setattr(
+        "main_logic.cross_server.get_internal_http_client",
+        lambda: _make_fake_internal_client(200, json.dumps({"status": "error", "message": "boom"}))(),
+    )
+
+    ok, err_detail, payload = await _post_memory_server(
+        "cache",
+        "Tian",
+        [{"role": "user", "content": [{"type": "text", "text": "hi"}]}],
+        timeout_s=3.0,
+    )
+
+    assert ok is False
+    assert err_detail == "boom"
+    assert payload.get("status") == "error"
+
+
+def test_cross_server_session_end_uses_settle_for_zero_remaining():
+    """session end must call /settle when everything was already /cache-synced."""
+    source = Path("main_logic/cross_server.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    assignments = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        for target in node.targets:
+            if isinstance(target, ast.Name) and target.id in {"_settle_endpoint", "_settle_payload"}:
+                assignments[target.id] = ast.dump(node.value, include_attributes=False)
+
+    assert assignments["_settle_endpoint"] == ast.dump(
+        ast.parse('"process" if remaining else "settle"', mode="eval").body,
+        include_attributes=False,
+    )
+    assert assignments["_settle_payload"] == ast.dump(
+        ast.parse("remaining if remaining else []", mode="eval").body,
+        include_attributes=False,
+    )
+
+
+def test_cross_server_memory_cache_failure_paths_are_selective():
+    """No warning-rate-limit helper should be reintroduced for memory cache writes."""
+    source = Path("main_logic/cross_server.py").read_text(encoding="utf-8")
+    assert "MEMORY_WRITE_WARN_WINDOW_S" not in source
+    assert "_warn_memory_write_issue_rate_limited" not in source
+
+
+def test_cross_server_memory_write_exception_classification():
+    from main_logic.cross_server import _is_expected_memory_write_exception
+    import aiohttp
+
+    assert _is_expected_memory_write_exception(asyncio.TimeoutError()) is True
+    assert _is_expected_memory_write_exception(aiohttp.ClientError("x")) is True
+    assert _is_expected_memory_write_exception(ConnectionError("x")) is True
+    assert _is_expected_memory_write_exception(OSError("x")) is True
+    assert _is_expected_memory_write_exception(ValueError("x")) is False
+
+
+def test_cross_server_memory_cache_exception_logs_warning_once_then_debug(monkeypatch):
+    import main_logic.cross_server as cs
+
+    warning_msgs = []
+    debug_msgs = []
+
+    monkeypatch.setattr(
+        cs.logger,
+        "warning",
+        lambda msg, *args, **kwargs: warning_msgs.append(msg % args if args else msg),
+    )
+    monkeypatch.setattr(
+        cs.logger,
+        "debug",
+        lambda msg, *args, **kwargs: debug_msgs.append(msg % args if args else msg),
+    )
+
+    health_state = {cs.MEMORY_CACHE_SCOPE_TURN_END: False}
+    cs._mark_memory_cache_exception("小天", cs.MEMORY_CACHE_SCOPE_TURN_END, asyncio.TimeoutError(), health_state)
+    cs._mark_memory_cache_exception("小天", cs.MEMORY_CACHE_SCOPE_TURN_END, asyncio.TimeoutError(), health_state)
+
+    assert len(warning_msgs) == 1
+    assert len(debug_msgs) == 1
+    assert "进入异常状态" in warning_msgs[0]
+    assert "持续" in debug_msgs[0]
+    assert health_state[cs.MEMORY_CACHE_SCOPE_TURN_END] is True
+
+
+def test_cross_server_unknown_memory_cache_exception_keeps_traceback(monkeypatch):
+    import main_logic.cross_server as cs
+
+    warning_calls = []
+    monkeypatch.setattr(
+        cs.logger,
+        "warning",
+        lambda msg, *args, **kwargs: warning_calls.append(
+            {"message": msg % args if args else msg, "kwargs": kwargs}
+        ),
+    )
+
+    health_state = {cs.MEMORY_CACHE_SCOPE_TURN_END: False}
+    cs._mark_memory_cache_exception("小天", cs.MEMORY_CACHE_SCOPE_TURN_END, ValueError("bad payload"), health_state)
+
+    assert len(warning_calls) == 1
+    assert "未知类型" in warning_calls[0]["message"]
+    assert warning_calls[0]["kwargs"].get("exc_info") is True
+
+
+def test_cross_server_memory_cache_business_failure_and_recovery(monkeypatch):
+    import main_logic.cross_server as cs
+
+    debug_msgs = []
+    info_msgs = []
+
+    monkeypatch.setattr(
+        cs.logger,
+        "debug",
+        lambda msg, *args, **kwargs: debug_msgs.append(msg % args if args else msg),
+    )
+    monkeypatch.setattr(
+        cs.logger,
+        "info",
+        lambda msg, *args, **kwargs: info_msgs.append(msg % args if args else msg),
+    )
+
+    health_state = {cs.MEMORY_CACHE_SCOPE_AVATAR: False}
+    cs._mark_memory_cache_business_failure("小天", cs.MEMORY_CACHE_SCOPE_AVATAR, "boom", health_state)
+    cs._mark_memory_cache_business_failure("小天", cs.MEMORY_CACHE_SCOPE_AVATAR, "boom2", health_state)
+    cs._mark_memory_cache_success("小天", cs.MEMORY_CACHE_SCOPE_AVATAR, health_state)
+    cs._mark_memory_cache_success("小天", cs.MEMORY_CACHE_SCOPE_AVATAR, health_state)
+
+    assert "进入失败状态" in debug_msgs[0]
+    assert "持续" in debug_msgs[1]
+    assert len(info_msgs) == 1
+    assert "已恢复" in info_msgs[0]
+    assert health_state[cs.MEMORY_CACHE_SCOPE_AVATAR] is False
 
 
 # ---------------------------------------------------------------------------

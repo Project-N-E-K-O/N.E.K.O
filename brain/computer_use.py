@@ -18,7 +18,7 @@ import threading
 import traceback
 from io import BytesIO
 from PIL import Image
-from config import get_agent_extra_body
+from config import get_agent_extra_body, COMPUTER_USE_MAX_TOKENS, LLM_PING_MAX_TOKENS
 from utils.config_manager import get_config_manager
 from utils.llm_client import create_chat_llm, ChatOpenAI
 from utils.logger_config import get_module_logger
@@ -453,7 +453,7 @@ class ComputerUseAdapter:
         self,
         max_steps: int = 50,
         max_image_history: int = 2,
-        max_tokens: int = 6000,
+        max_completion_tokens: int = COMPUTER_USE_MAX_TOKENS,
         thinking: bool = True,
     ):
         self.last_error: Optional[str] = None
@@ -464,7 +464,7 @@ class ComputerUseAdapter:
         self._done_event.set()  # initially "done" (no task running)
         self.max_steps = max_steps
         self.max_image_history = max_image_history
-        self.max_tokens = max_tokens
+        self.max_completion_tokens = max_completion_tokens
         self.thinking = thinking
 
         # Screen dimensions
@@ -555,12 +555,17 @@ class ComputerUseAdapter:
                     self._llm_client_sig = current_sig
                 extra = get_agent_extra_body(model) or {}
                 set_call_type("agent_cua")
-                resp = self._llm_client._client.chat.completions.create(
-                    model=model,
-                    messages=[{"role": "user", "content": "ok"}],
-                    max_completion_tokens=5,
-                    timeout=20,
+                # Pass per-call overrides into invoke_raw so they hit
+                # _params() locally instead of mutating self._llm_client —
+                # this ping runs from a background thread and the live
+                # _call_llm path uses self.max_completion_tokens=6000;
+                # writing the 5-token ping budget back to the instance
+                # would clip a concurrent real request to 5 tokens.
+                resp = self._llm_client.invoke_raw(
+                    [{"role": "user", "content": "ok"}],
+                    max_completion_tokens=LLM_PING_MAX_TOKENS,
                     extra_body=extra or None,
+                    timeout=20,
                 )
                 _ = resp.choices[0].message.content
                 self.init_ok = True
@@ -1019,10 +1024,15 @@ class ComputerUseAdapter:
                         ),
                     }
                 set_call_type("agent_cua")
-                resp = self._llm_client._client.chat.completions.create(
-                    model=model,
-                    messages=messages,
-                    max_completion_tokens=self.max_tokens,
+                # Per-call overrides via invoke_raw's **kwargs path: routes
+                # max_tokens vs max_completion_tokens through _params() by
+                # base_url, returns raw SDK response so reasoning_content
+                # stays accessible. No instance state mutation, so a
+                # background ping running concurrently can't clip this
+                # request's budget.
+                resp = self._llm_client.invoke_raw(
+                    messages,
+                    max_completion_tokens=self.max_completion_tokens,
                     extra_body=extra or None,
                 )
                 msg = resp.choices[0].message

@@ -177,12 +177,31 @@ async function loadPageConfig() {
     }
 }
 
-// 多窗口模式下，Chat 独立窗口（/chat）通过 IPC 从 Pet 窗口注入配置，不走 HTTP API。
-// Pet 窗口（/）虽然也设了 __NEKO_MULTI_WINDOW__，但它是主窗口，应走正常 HTTP 路径。
-if (window.__NEKO_MULTI_WINDOW__ && window.location.pathname === '/chat') {
-    window.pageConfigReady = new Promise(function (resolve) {
+let resolvePageConfigReady = null;
+window.pageConfigReady = new Promise(function (resolve) {
+    resolvePageConfigReady = resolve;
+});
+
+let pageConfigLoadStarted = false;
+let pageConfigLoadPromise = null;
+
+function resolvePageConfig(result) {
+    if (typeof resolvePageConfigReady === 'function') {
+        resolvePageConfigReady(result);
+        resolvePageConfigReady = null;
+    }
+    return result;
+}
+
+function startMultiWindowPageConfigLoad() {
+    return new Promise(function (resolve) {
+        var settled = false;
         // preload 通过 IPC 拿到 Pet 窗口的 lanlan_config 后派发此事件
-        window.addEventListener('neko:config-injected', function handler(event) {
+        var handler = function (event) {
+            if (settled) {
+                return;
+            }
+            settled = true;
             window.removeEventListener('neko:config-injected', handler);
             var d = (event && event.detail) || {};
             lanlan_config.lanlan_name = d.lanlan_name || '';
@@ -211,19 +230,49 @@ if (window.__NEKO_MULTI_WINDOW__ && window.location.pathname === '/chat') {
                 }
             }
             resolve(d);
-        });
+        };
+        window.addEventListener('neko:config-injected', handler);
         // 超时保护：5 秒后 fallback 到 HTTP API
         setTimeout(function () {
-            if (!lanlan_config.lanlan_name) {
-                console.warn('[主页] 多窗口 IPC 配置超时，fallback 到 API');
-                loadPageConfig().then(resolve);
+            if (settled) {
+                return;
             }
+            settled = true;
+            window.removeEventListener('neko:config-injected', handler);
+            console.warn('[主页] 多窗口 IPC 配置超时，fallback 到 API');
+            loadPageConfig().then(resolve);
         }, 5000);
     });
-} else {
-    // 标记配置是否已加载
-    window.pageConfigReady = loadPageConfig();
 }
+
+window.startPageConfigLoad = function startPageConfigLoad() {
+    if (pageConfigLoadStarted) {
+        return pageConfigLoadPromise || window.pageConfigReady;
+    }
+
+    pageConfigLoadStarted = true;
+    pageConfigLoadPromise = (async function () {
+        try {
+            // 存储位置首屏哨兵要先放行，再开始页面配置与主业务加载；
+            // 这样网页端启动更贴近“先意图捕获、后主界面”的受限启动语义。
+            if (window.__nekoStorageLocationStartupBarrier
+                && typeof window.__nekoStorageLocationStartupBarrier.then === 'function') {
+                await window.__nekoStorageLocationStartupBarrier;
+            }
+
+            if (window.__NEKO_MULTI_WINDOW__ && window.location.pathname === '/chat') {
+                return resolvePageConfig(await startMultiWindowPageConfigLoad());
+            }
+
+            return resolvePageConfig(await loadPageConfig());
+        } catch (error) {
+            console.warn('[主页] 页面配置加载失败，继续使用回退配置:', error);
+            return resolvePageConfig(false);
+        }
+    })();
+
+    return pageConfigLoadPromise;
+};
 
 // 对话区提示自动消失功能
 function initChatTooltipAutoHide() {

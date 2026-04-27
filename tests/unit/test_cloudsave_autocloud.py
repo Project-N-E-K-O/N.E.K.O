@@ -21,10 +21,15 @@ from utils.file_utils import atomic_write_json
 def _make_config_manager(tmp_root: Path):
     with patch.object(ConfigManager, "_get_documents_directory", return_value=tmp_root), patch.object(
         ConfigManager,
+        "_get_standard_data_directory_candidates",
+        return_value=[tmp_root],
+    ), patch.object(
+        ConfigManager,
         "get_legacy_app_root_candidates",
         return_value=[],
     ):
         config_manager = ConfigManager("N.E.K.O")
+    config_manager._get_standard_data_directory_candidates = lambda: [tmp_root]
     config_manager.get_legacy_app_root_candidates = lambda: []
     return config_manager
 

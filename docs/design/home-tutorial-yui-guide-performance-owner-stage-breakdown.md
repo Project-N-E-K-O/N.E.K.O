@@ -23,17 +23,17 @@
 - [home-tutorial-yui-guide-three-person-collaboration.md](./home-tutorial-yui-guide-three-person-collaboration.md)
 - [home-tutorial-yui-guide-preparation-freeze.md](./home-tutorial-yui-guide-preparation-freeze.md)
 - [home-tutorial-yui-guide-main-owner-stage-breakdown.md](./home-tutorial-yui-guide-main-owner-stage-breakdown.md)
-- [windows-mcp-uiautomation-integration.md](./windows-mcp-uiautomation-integration.md)
+- `windows-mcp-uiautomation-integration.md`
 
 同时还核对了当前代码中的真实锚点与运行时状态：
 
 - [static/universal-tutorial-manager.js](../../static/universal-tutorial-manager.js)
 - [static/yui-guide-steps.js](../../static/yui-guide-steps.js)
-- [templates/index.html](../../templates/index.html)
+- `templates/index.html`
 - [static/avatar-ui-popup.js](../../static/avatar-ui-popup.js)
 - [static/app-interpage.js](../../static/app-interpage.js)
 - [static/live2d-emotion.js](../../static/live2d-emotion.js)
-- [templates/viewer.html](../../templates/viewer.html)
+- `templates/viewer.html`
 
 ---
 
@@ -92,7 +92,7 @@
 
 这里要特别强调：
 
-- [windows-mcp-uiautomation-integration.md](./windows-mcp-uiautomation-integration.md) 描述的是 Agent 桌面自动化快车道
+- `windows-mcp-uiautomation-integration.md` 描述的是 Agent 桌面自动化快车道
 - 它不是 Yui 首页引导的执行器
 - 演出层只能做页面内 ghost cursor 和页面级视觉接管，不能借题发挥成真实桌面控制
 
@@ -127,7 +127,7 @@
 ### 5.3 不应直接长期占用
 
 - [static/universal-tutorial-manager.js](../../static/universal-tutorial-manager.js)
-- [templates/index.html](../../templates/index.html)
+- `templates/index.html`
 - [static/app-ui.js](../../static/app-ui.js)
 - [static/app-buttons.js](../../static/app-buttons.js)
 - [static/avatar-ui-popup.js](../../static/avatar-ui-popup.js)

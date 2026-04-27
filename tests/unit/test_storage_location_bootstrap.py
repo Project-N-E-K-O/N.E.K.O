@@ -1,0 +1,380 @@
+from pathlib import Path
+
+import pytest
+
+from utils import storage_location_bootstrap as storage_location_bootstrap_module
+from utils.config_manager import ConfigManager
+from utils.storage_layout import NEKO_STORAGE_ANCHOR_ROOT_ENV, NEKO_STORAGE_SELECTED_ROOT_ENV
+from utils.storage_location_bootstrap import (
+    build_storage_location_bootstrap_payload,
+    get_storage_startup_blocking_reason,
+    is_storage_startup_blocked,
+)
+from utils.storage_migration import (
+    create_pending_storage_migration,
+    delete_storage_migration,
+    run_pending_storage_migration,
+)
+from utils.storage_policy import save_storage_policy
+
+
+class _DummyConfigManager:
+    def __init__(self, tmp_path: Path, *, root_mode: str = "normal"):
+        self.app_name = "N.E.K.O"
+        self.app_docs_dir = tmp_path / "runtime" / self.app_name
+        self.app_docs_dir.mkdir(parents=True, exist_ok=True)
+        self._root_mode = root_mode
+
+        legacy_root = tmp_path / "legacy" / self.app_name
+        (legacy_root / "config").mkdir(parents=True, exist_ok=True)
+        (legacy_root / "config" / "user_preferences.json").write_text("{}", encoding="utf-8")
+        self._legacy_root = legacy_root
+
+    def _get_standard_data_directory_candidates(self):
+        return [self.app_docs_dir.parent]
+
+    def get_legacy_app_root_candidates(self):
+        return [self._legacy_root]
+
+    def load_root_state(self):
+        return {
+            "mode": self._root_mode,
+            "last_known_good_root": str(self.app_docs_dir),
+            "last_migration_result": "",
+        }
+
+
+def _make_config_manager(tmp_path: Path, documents_directory: Path):
+    standard_root = tmp_path / "anchor-base"
+    with pytest.MonkeyPatch.context() as mp:
+        mp.delenv(NEKO_STORAGE_SELECTED_ROOT_ENV, raising=False)
+        mp.delenv(NEKO_STORAGE_ANCHOR_ROOT_ENV, raising=False)
+        mp.setattr(
+            ConfigManager,
+            "_get_documents_directory",
+            lambda self: documents_directory,
+        )
+        mp.setattr(
+            ConfigManager,
+            "_get_standard_data_directory_candidates",
+            lambda self: [standard_root],
+        )
+        config_manager = ConfigManager("N.E.K.O")
+    # Preserve the same candidate list after __init__ so later calls stay deterministic.
+    config_manager._get_standard_data_directory_candidates = lambda: [standard_root]
+    return config_manager
+
+
+def _make_real_config_manager(tmp_path: Path):
+    return _make_config_manager(tmp_path, tmp_path / "runtime-parent")
+
+
+def _make_anchor_root_config_manager(tmp_path: Path):
+    return _make_config_manager(tmp_path, tmp_path / "anchor-base")
+
+
+@pytest.mark.unit
+def test_storage_location_bootstrap_payload_exposes_stage3_web_fields(tmp_path):
+    config_manager = _DummyConfigManager(tmp_path)
+
+    payload = build_storage_location_bootstrap_payload(config_manager)
+
+    assert payload["current_root"] == str(config_manager.app_docs_dir)
+    assert payload["recommended_root"] == str(config_manager.app_docs_dir)
+    assert payload["anchor_root"] == str(config_manager.app_docs_dir)
+    assert payload["cloudsave_root"] == str(config_manager.app_docs_dir / "cloudsave")
+    assert payload["legacy_sources"] == [str(config_manager._legacy_root)]
+    assert payload["selection_required"] is True
+    assert payload["migration_pending"] is False
+    assert payload["recovery_required"] is False
+    assert payload["blocking_reason"] == "selection_required"
+    assert payload["last_error_summary"] == ""
+    assert payload["poll_interval_ms"] == 1200
+    assert payload["stage"] == "stage3_web_restart"
+
+
+@pytest.mark.unit
+def test_storage_startup_blocking_reason_uses_readonly_path_without_legacy_scan_or_writes(tmp_path):
+    config_manager = _DummyConfigManager(tmp_path)
+
+    def fail_legacy_scan():
+        raise AssertionError("startup blocked check should not scan legacy sources")
+
+    def fail_root_state_write(_data):
+        raise AssertionError("startup blocked check should not write root_state")
+
+    config_manager.get_legacy_app_root_candidates = fail_legacy_scan
+    config_manager.save_root_state = fail_root_state_write
+
+    assert get_storage_startup_blocking_reason(config_manager) == "selection_required"
+    assert is_storage_startup_blocked(config_manager) is True
+
+
+@pytest.mark.unit
+def test_storage_location_bootstrap_payload_uses_configured_anchor_root(tmp_path):
+    config_manager = _DummyConfigManager(tmp_path)
+    config_manager.anchor_root = tmp_path / "canonical-anchor" / "N.E.K.O"
+    config_manager._get_standard_data_directory_candidates = lambda: [tmp_path / "wrong-anchor-base"]
+
+    payload = build_storage_location_bootstrap_payload(config_manager)
+
+    assert payload["recommended_root"] == str(config_manager.anchor_root.resolve())
+    assert payload["anchor_root"] == str(config_manager.anchor_root.resolve())
+    assert payload["cloudsave_root"] == str((config_manager.anchor_root / "cloudsave").resolve())
+
+
+@pytest.mark.unit
+def test_storage_location_config_manager_helper_ignores_storage_env(tmp_path, monkeypatch):
+    env_selected_root = tmp_path / "env-selected" / "N.E.K.O"
+    env_anchor_root = tmp_path / "env-anchor" / "N.E.K.O"
+    monkeypatch.setenv(NEKO_STORAGE_SELECTED_ROOT_ENV, str(env_selected_root))
+    monkeypatch.setenv(NEKO_STORAGE_ANCHOR_ROOT_ENV, str(env_anchor_root))
+
+    config_manager = _make_real_config_manager(tmp_path)
+
+    assert config_manager.app_docs_dir == (tmp_path / "runtime-parent" / "N.E.K.O")
+    assert config_manager.anchor_root == (tmp_path / "anchor-base" / "N.E.K.O").resolve()
+
+
+@pytest.mark.unit
+def test_storage_location_bootstrap_legacy_sources_dedupes_actual_and_display_current_root(tmp_path):
+    config_manager = _DummyConfigManager(tmp_path)
+    displayed_root = tmp_path / "offline-selected" / "N.E.K.O"
+    config_manager.reported_current_root = displayed_root
+    (config_manager.app_docs_dir / "config").mkdir(parents=True, exist_ok=True)
+    (config_manager.app_docs_dir / "config" / "characters.json").write_text("{}", encoding="utf-8")
+
+    config_manager.get_legacy_app_root_candidates = lambda: [
+        config_manager.app_docs_dir,
+        displayed_root,
+        config_manager._legacy_root,
+    ]
+
+    payload = build_storage_location_bootstrap_payload(config_manager)
+
+    assert payload["current_root"] == str(displayed_root.resolve())
+    assert payload["legacy_sources"] == [str(config_manager._legacy_root.resolve())]
+
+
+@pytest.mark.unit
+def test_storage_location_bootstrap_legacy_source_scan_is_best_effort(tmp_path, monkeypatch):
+    config_manager = _DummyConfigManager(tmp_path)
+    bad_root = tmp_path / "bad-legacy" / "N.E.K.O"
+    good_root = tmp_path / "good-legacy" / "N.E.K.O"
+    (good_root / "config").mkdir(parents=True, exist_ok=True)
+    (good_root / "config" / "characters.json").write_text("{}", encoding="utf-8")
+    config_manager.get_legacy_app_root_candidates = lambda: [bad_root, good_root]
+
+    def fake_has_user_content(path, *, config_manager):
+        if Path(path) == bad_root:
+            raise OSError("candidate unreadable")
+        return True
+
+    monkeypatch.setattr(storage_location_bootstrap_module, "runtime_root_has_user_content", fake_has_user_content)
+
+    payload = build_storage_location_bootstrap_payload(config_manager)
+
+    assert payload["legacy_sources"] == [str(good_root.resolve())]
+
+    config_manager.get_legacy_app_root_candidates = lambda: (_ for _ in ()).throw(OSError("scan failed"))
+    payload = build_storage_location_bootstrap_payload(config_manager)
+
+    assert payload["legacy_sources"] == []
+
+
+@pytest.mark.unit
+def test_storage_location_bootstrap_payload_uses_storage_policy_when_dev_override_disabled(tmp_path, monkeypatch):
+    config_manager = _DummyConfigManager(tmp_path)
+    save_storage_policy(
+        config_manager,
+        selected_root=config_manager.app_docs_dir,
+        selection_source="current",
+    )
+    monkeypatch.setattr(
+        storage_location_bootstrap_module,
+        "DEVELOPMENT_ALWAYS_REQUIRE_SELECTION",
+        False,
+    )
+
+    payload = build_storage_location_bootstrap_payload(config_manager)
+
+    assert payload["selection_required"] is False
+    assert payload["blocking_reason"] == ""
+
+
+@pytest.mark.unit
+def test_storage_location_bootstrap_payload_marks_recovery_state_even_when_first_run_selection_is_not_required(
+    tmp_path,
+    monkeypatch,
+):
+    config_manager = _DummyConfigManager(tmp_path, root_mode="deferred_init")
+    save_storage_policy(
+        config_manager,
+        selected_root=config_manager.app_docs_dir,
+        selection_source="current",
+    )
+    monkeypatch.setattr(
+        storage_location_bootstrap_module,
+        "DEVELOPMENT_ALWAYS_REQUIRE_SELECTION",
+        False,
+    )
+
+    payload = build_storage_location_bootstrap_payload(config_manager)
+
+    assert payload["selection_required"] is False
+    assert payload["recovery_required"] is True
+    assert payload["blocking_reason"] == "recovery_required"
+
+
+@pytest.mark.unit
+def test_storage_location_bootstrap_payload_marks_pending_migration_from_checkpoint(
+    tmp_path,
+    monkeypatch,
+):
+    config_manager = _DummyConfigManager(tmp_path)
+    save_storage_policy(
+        config_manager,
+        selected_root=config_manager.app_docs_dir,
+        selection_source="current",
+    )
+    create_pending_storage_migration(
+        config_manager,
+        source_root=config_manager.app_docs_dir,
+        target_root=tmp_path / "new-storage" / "N.E.K.O",
+        selection_source="recommended",
+    )
+    monkeypatch.setattr(
+        storage_location_bootstrap_module,
+        "DEVELOPMENT_ALWAYS_REQUIRE_SELECTION",
+        False,
+    )
+
+    payload = build_storage_location_bootstrap_payload(config_manager)
+
+    assert payload["selection_required"] is False
+    assert payload["migration_pending"] is True
+    assert payload["blocking_reason"] == "migration_pending"
+    assert payload["migration"]["status"] == "pending"
+
+
+@pytest.mark.unit
+def test_storage_location_bootstrap_payload_reports_unavailable_committed_root_during_recovery(
+    tmp_path,
+):
+    config_manager = _make_real_config_manager(tmp_path)
+    unavailable_selected_root = tmp_path / "offline-selected" / "N.E.K.O"
+    save_storage_policy(
+        config_manager,
+        selected_root=unavailable_selected_root,
+        selection_source="custom",
+    )
+
+    reloaded_manager = _make_anchor_root_config_manager(tmp_path)
+    payload = build_storage_location_bootstrap_payload(reloaded_manager)
+
+    assert payload["current_root"] == str(unavailable_selected_root.resolve())
+    assert payload["recommended_root"] == str((tmp_path / "anchor-base" / "N.E.K.O").resolve())
+    assert payload["recovery_required"] is True
+    assert payload["blocking_reason"] == "recovery_required"
+    assert "selected_root_unavailable:" in payload["last_error_summary"]
+
+
+@pytest.mark.unit
+def test_storage_location_bootstrap_last_error_uses_leading_result_token(tmp_path):
+    config_manager = _DummyConfigManager(tmp_path)
+    root_state = config_manager.load_root_state()
+    root_state["last_migration_result"] = "recovered:failed_migration:target_not_empty"
+    config_manager.load_root_state = lambda: dict(root_state)
+
+    payload = build_storage_location_bootstrap_payload(config_manager)
+
+    assert payload["last_error_summary"] == ""
+
+
+@pytest.mark.unit
+def test_storage_location_bootstrap_payload_marks_cleanup_pending_for_non_anchor_retained_root(tmp_path):
+    config_manager = _make_real_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+
+    (source_root / "config").mkdir(parents=True, exist_ok=True)
+    (source_root / "config" / "characters.json").write_text('{"current":"A"}', encoding="utf-8")
+
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    run_pending_storage_migration(config_manager)
+
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    payload = build_storage_location_bootstrap_payload(reloaded_manager)
+
+    assert payload["blocking_reason"] == ""
+    assert payload["legacy_cleanup_pending"] is True
+    assert payload["migration"]["status"] == "completed"
+    assert payload["migration"]["retained_source_root"] == str(source_root.resolve())
+    assert payload["migration"]["retained_source_mode"] == "manual_retention"
+    assert payload["migration"]["completed_at"]
+
+    root_state = reloaded_manager.load_root_state()
+    assert root_state["legacy_cleanup_pending"] is True
+
+
+@pytest.mark.unit
+def test_storage_location_bootstrap_keeps_cleanup_pending_when_checkpoint_is_missing(tmp_path):
+    config_manager = _make_real_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+
+    (source_root / "config").mkdir(parents=True, exist_ok=True)
+    (source_root / "config" / "characters.json").write_text('{"current":"A"}', encoding="utf-8")
+
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    run_pending_storage_migration(config_manager)
+    delete_storage_migration(config_manager)
+
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    root_state_before = reloaded_manager.load_root_state()
+    assert root_state_before["legacy_cleanup_pending"] is True
+    assert root_state_before["last_migration_backup"] == str(source_root.resolve())
+
+    payload = build_storage_location_bootstrap_payload(reloaded_manager)
+
+    assert payload["legacy_cleanup_pending"] is True
+    root_state_after = reloaded_manager.load_root_state()
+    assert root_state_after["legacy_cleanup_pending"] is True
+    assert root_state_after["last_migration_backup"] == str(source_root.resolve())
+
+
+@pytest.mark.unit
+def test_storage_location_bootstrap_payload_marks_cleanup_pending_when_retained_root_is_anchor_root(tmp_path):
+    config_manager = _make_anchor_root_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+
+    (source_root / "config").mkdir(parents=True, exist_ok=True)
+    (source_root / "config" / "characters.json").write_text('{"current":"A"}', encoding="utf-8")
+
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    run_pending_storage_migration(config_manager)
+
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    payload = build_storage_location_bootstrap_payload(reloaded_manager)
+
+    assert payload["legacy_cleanup_pending"] is True
+    assert payload["migration"]["retained_source_root"] == str(source_root.resolve())
+
+    root_state = reloaded_manager.load_root_state()
+    assert root_state["legacy_cleanup_pending"] is True

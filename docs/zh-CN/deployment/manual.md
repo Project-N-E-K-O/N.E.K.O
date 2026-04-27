@@ -17,6 +17,11 @@ cd N.E.K.O
 uv sync
 ```
 
+## 可选：本地嵌入模型
+
+向量记忆使用可选的本地 ONNX 模型资源。下载命令、目录布局以及 PyInstaller / Nuitka 打包说明见
+[`embedding-models.md`](embedding-models.md)。
+
 ## 构建前端
 
 项目在 `frontend/` 下有两个前端项目，运行前需要先构建。

@@ -17,6 +17,12 @@ cd N.E.K.O
 uv sync
 ```
 
+## Optional Local Embeddings
+
+Vector memory uses optional local ONNX assets. See
+[`embedding-models.md`](embedding-models.md) for the download command, expected
+directory layout, and packaging notes for PyInstaller/Nuitka builds.
+
 ## Build Frontend
 
 The project has two frontend projects under `frontend/` that must be built before running.

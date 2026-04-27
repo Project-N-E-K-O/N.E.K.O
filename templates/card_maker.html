@@ -4,20 +4,20 @@
     <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title data-i18n="cardExport.title">角色卡导出 - Project N.E.K.O.</title>
+    <title data-i18n="cardExport.title">卡面制作 - Project N.E.K.O.</title>
     <!-- VRM 光照默认值 -->
     <script>window.VRM_DEFAULT_LIGHTING=Object.freeze({{ vrm_defaults | tojson }});</script>
     <script src="/static/i18n-i18next.js"></script>
     <script src="/static/common_dialogs.js"></script>
     <link rel="stylesheet" href="/static/css/base.css">
-    <link rel="stylesheet" href="/static/css/card_export.css">
+    <link rel="stylesheet" href="/static/css/card_maker.css">
     <link rel="stylesheet" href="/static/css/dark-mode.css">
     <script src="/static/theme-manager.js"></script>
 </head>
 <body>
     <!-- 页面标题栏 - 支持拖动窗口 -->
     <div class="page-title-bar">
-        <h2 data-i18n="cardExport.title" data-text="角色卡导出">角色卡导出</h2>
+        <h2 data-i18n="cardExport.title" data-text="卡面制作">卡面制作</h2>
         <button id="back-btn" class="close-btn" data-i18n-title="cardExport.back" title="返回">
             <img src="/static/icons/close_button.png" data-i18n-alt="common.close" alt="关闭">
         </button>
@@ -195,6 +195,6 @@
     <script>window._cardExportPage = true;</script>
     <script src="/static/vrm-init.js"></script>
     <script src="/static/mmd-init.js"></script>
-    <script src="/static/js/card_export.js"></script>
+    <script src="/static/js/card_maker.js"></script>
 </body>
 </html>

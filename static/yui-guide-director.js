@@ -2431,7 +2431,30 @@
         }
 
         shouldNarrateInChat(stepId) {
-            return this.page === 'home' && typeof stepId === 'string' && !!stepId;
+            if (this.page !== 'home' || typeof stepId !== 'string' || !stepId) {
+                return false;
+            }
+            // Electron Pet 模式下聊天被拆到独立 BrowserWindow，preload-pet.js 把
+            // #react-chat-window-overlay 强制 inline display:none。这种环境下推到
+            // React 聊天窗的引导文案永不可见，必须回落到 overlay bubble 叙事。
+            if (this.isHomeChatExternalized()) {
+                return false;
+            }
+            return true;
+        }
+
+        isHomeChatExternalized() {
+            if (typeof document === 'undefined') {
+                return false;
+            }
+            const overlay = document.getElementById('react-chat-window-overlay');
+            if (!overlay) {
+                return false;
+            }
+            // CSS [hidden] 规则用 !important 控制可见性，不会写 inline style。
+            // 内联 display:none 仅由外部 preload（如 preload-pet.js）设置以永久
+            // 隐藏 Pet 窗口里嵌着的 React 聊天 overlay。
+            return overlay.style.display === 'none';
         }
 
         getSceneSpotlightTarget(stepId, performance) {
@@ -4631,6 +4654,21 @@
                 return null;
             }
 
+            // Electron Pet 模式下聊天 overlay 被永久隐藏，推到 React 聊天的消息
+            // 用户看不到。回落到 overlay bubble 显示文本（按钮选项不渲染——
+            // runChatIntroPrelude 里需要按钮的练习问候步骤已单独短路）。
+            if (this.isHomeChatExternalized()) {
+                try {
+                    this.overlay.showBubble(content, {
+                        title: this.getGuideAssistantName(),
+                        emotion: 'neutral'
+                    });
+                } catch (error) {
+                    console.warn('[YuiGuide] 兜底气泡展示失败:', error);
+                }
+                return null;
+            }
+
             const host = window.reactChatWindowHost;
             if (host && typeof host.appendMessage === 'function') {
                 const createdAt = Date.now();
@@ -5172,6 +5210,14 @@
                 return;
             }
 
+            // Electron Pet 模式：跳过 ensureChatVisible（聊天 overlay 被 preload 永久隐藏）、
+            // ghost cursor + 等输入框激活（无 autoplay 限制 + 输入框不可见无法点），
+            // 跳过练习问候按钮选择，直接进 sendIntroFollowups → takeover。
+            if (this.isHomeChatExternalized()) {
+                await this.runChatIntroPreludeExternalized(introStep);
+                return;
+            }
+
             this.introFlowStarted = true;
             this.overlay.hideBubble();
             this.overlay.hidePluginPreview();
@@ -5267,6 +5313,38 @@
                 return;
             }
             this.introFlowCompleted = true;
+        }
+
+        // Electron Pet 模式专用 prelude：聊天 overlay 被永久隐藏，无法走"输入框激活 +
+        // 聊天叙事 + 按钮选择"的标准路径。改为：仅用 overlay bubble 朗读 intro，
+        // 然后等同用户选择"暂时不聊天"，直接进 proactive + cat-paw 串场再交给 takeover。
+        async runChatIntroPreludeExternalized(introStep) {
+            this.introFlowStarted = true;
+            this.overlay.hideBubble();
+            this.overlay.hidePluginPreview();
+
+            const introText = this.resolvePerformanceBubbleText(introStep.performance);
+            if (introText) {
+                this.overlay.showBubble(introText, {
+                    title: this.getGuideAssistantName(),
+                    emotion: introStep.performance.emotion || 'neutral'
+                });
+            }
+            if (introStep.performance.emotion) {
+                this.emotionBridge.apply(introStep.performance.emotion);
+            }
+            await this.speakLineAndWait(introText || '', {
+                voiceKey: introStep.performance.voiceKey,
+                minDurationMs: 4200
+            });
+            if (this.isStopping()) {
+                return;
+            }
+
+            this.introChoicePending = false;
+            this.introClickActivated = true;
+            this.introFlowCompleted = true;
+            this.sendIntroFollowups({ includeProactive: true });
         }
 
         async startPrelude() {
@@ -5410,6 +5488,13 @@
                 if (bubbleText && shouldNarrateInChat) {
                     this.appendGuideChatMessage(bubbleText, {
                         textKey: performance.bubbleTextKey || ''
+                    });
+                } else if (bubbleText) {
+                    // Electron Pet 模式下 shouldNarrateInChat=false，否则文案只剩语音、无可见气泡。
+                    this.overlay.showBubble(bubbleText, {
+                        title: this.getGuideAssistantName(),
+                        emotion: performance.emotion || 'neutral',
+                        anchorRect: anchorRect
                     });
                 }
                 if (performance.emotion) {

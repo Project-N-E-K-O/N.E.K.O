@@ -1813,7 +1813,7 @@
                 }
                 // Replace the current history entry so closing the character manager
                 // does not bounce back into the cloud save page and create a loop.
-                window.location.replace('/chara_manager');
+                window.location.replace('/character_card_manager');
             });
         }
 

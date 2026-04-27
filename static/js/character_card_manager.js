@@ -41,11 +41,8 @@ function getWorkshopReservedFields() {
 
 function getWorkshopHiddenFields() {
     const cfg = _getReservedConfigOrFallback();
-    const keySystemFields = ['live2d', 'system_prompt', 'voice_id', 'live3d_sub_type', 'live2d_item_id', '_reserved', 'item_id', 'idleAnimation', 'idleAnimations', 'mmd_idle_animation', 'mmd_idle_animations'];
-    const presentSystemFields = cfg.all_reserved_fields.length > 0
-        ? keySystemFields.filter(field => cfg.all_reserved_fields.includes(field))
-        : keySystemFields;
-    return _uniqueFields([...presentSystemFields, ...getWorkshopReservedFields()]);
+    // 完全遵照角色管理：隐藏所有 system + workshop 保留字段
+    return _uniqueFields([...cfg.all_reserved_fields]);
 }
 
 function loadCharacterReservedFieldsConfig() {
@@ -59,72 +56,70 @@ function ensureReservedFieldsLoaded() {
     return _reservedFieldsReady || Promise.resolve();
 }
 
-// JavaScript控制的tooltip实现
+// 顶部 tab 按钮初始化（旧版自定义 tooltip 因为文本与按钮文字重复且定位有误已移除）
 document.addEventListener('DOMContentLoaded', function () {
     void loadCharacterReservedFieldsConfig();
-    const tabButtons = document.querySelectorAll('.tabs button');
 
-    // 创建tooltip元素
-    let tooltip = document.createElement('div');
-    tooltip.id = 'custom-tooltip';
-    tooltip.style.cssText = `
-        position: absolute;
-        background: rgba(0, 0, 0, 0.8);
-        color: white;
-        padding: 5px 10px;
-        border-radius: 4px;
-        font-size: 12px;
-        white-space: nowrap;
-        pointer-events: none;
-        z-index: 1000;
-        display: none;
-    `;
-    document.body.appendChild(tooltip);
-
-    // 为每个标签按钮添加事件监听
-    tabButtons.forEach(button => {
-        button.addEventListener('mouseenter', function (e) {
-                const tooltipText = button.textContent.trim();
-                if (!tooltipText) {
-                    return;
-                }
-
-            // 计算tooltip位置
-            const buttonRect = button.getBoundingClientRect();
-            const sidebarRect = document.getElementById('sidebar').getBoundingClientRect();
-
-            // 计算tooltip尺寸
-            tooltip.textContent = tooltipText;
-            tooltip.style.display = 'block';
-            const tooltipRect = tooltip.getBoundingClientRect();
-
-            // 确保tooltip在侧边栏内显示
-            let left = buttonRect.left + buttonRect.width / 2 - tooltipRect.width / 2;
-
-            // 检查并修正左侧位置
-            if (left < sidebarRect.left + 10) {
-                left = sidebarRect.left + 10;
-            }
-            // 检查并修正右侧位置
-            if (left + tooltipRect.width > sidebarRect.right - 10) {
-                left = sidebarRect.right - tooltipRect.width - 10;
-            }
-
-            // 设置tooltip位置
-            tooltip.style.left = left + 'px';
-            tooltip.style.top = (buttonRect.top - tooltipRect.height - 5) + 'px';
-        });
-
-        button.addEventListener('mouseleave', function () {
-            tooltip.style.display = 'none';
-        });
-
-        // 阻止默认的title提示
-        button.addEventListener('mouseover', function (e) {
-            e.preventDefault();
-        });
-    });
+    // 云存档管理按钮
+    const openCloudsaveManagerBtn = document.getElementById('open-cloudsave-manager-btn');
+    if (openCloudsaveManagerBtn) {
+        openCloudsaveManagerBtn.addEventListener('click', openCloudsaveManager);
+    }
 });
+
+// 构建云存档管理页 URL（带当前 UI 语言；角色名由云存档页内自行选择）
+function buildCloudsaveManagerUrl() {
+    const query = new URLSearchParams();
+    const currentUiLanguage = getCurrentUiLanguage();
+    if (currentUiLanguage) query.set('ui_lang', currentUiLanguage);
+    // 若页面上下文已有当前选中角色，也带上以便云存档页直接定位
+    if (typeof window._currentCatgirl === 'string' && window._currentCatgirl.trim()) {
+        query.set('lanlan_name', window._currentCatgirl.trim());
+    }
+    const qs = query.toString();
+    return qs ? '/cloudsave_manager?' + qs : '/cloudsave_manager';
+}
+
+// 打开云存档管理窗口（与 chara_manager.js 中的实现保持行为一致）
+function openCloudsaveManager() {
+    const url = buildCloudsaveManagerUrl();
+    const windowName = 'neko_cloudsave_manager';
+    const width = 1180;
+    const height = 860;
+    const left = Math.max(0, Math.floor((screen.width - width) / 2));
+    const top = Math.max(0, Math.floor((screen.height - height) / 2));
+    const features = `width=${width},height=${height},left=${left},top=${top},menubar=no,toolbar=no,location=no,status=no,resizable=yes,scrollbars=yes`;
+
+    const existingWindow = window._openedWindows && window._openedWindows[windowName];
+    if (existingWindow && !existingWindow.closed) {
+        try {
+            const targetUrl = new URL(url, window.location.origin).toString();
+            if (existingWindow.location.href !== targetUrl) {
+                existingWindow.location.href = targetUrl;
+            }
+            existingWindow.focus();
+            return;
+        } catch (error) {
+            console.warn('更新云存档管理窗口地址失败:', error);
+        }
+    }
+
+    const openedWindow = typeof window.openOrFocusWindow === 'function'
+        ? window.openOrFocusWindow(url, windowName, features)
+        : window.open(url, windowName, features);
+
+    if (openedWindow && !openedWindow.closed) {
+        if (!window._openedWindows || typeof window._openedWindows !== 'object') {
+            window._openedWindows = {};
+        }
+        window._openedWindows[windowName] = openedWindow;
+    }
+
+    if (!openedWindow) {
+        window.location.href = url;
+    }
+}
+window.openCloudsaveManager = openCloudsaveManager;
 
 // 响应式标签页处理
 function updateTabsLayout() {
@@ -311,40 +306,6 @@ function closeUploadModalOnOutsideClick(event) {
     }
 }
 
-// 本地物品区域切换功能
-function toggleLocalItemsSection() {
-    const localItemsSection = document.getElementById('local-items');
-    const toggleButton = document.getElementById('local-items-toggle-button');
-
-    // 确保本地物品内容标签页可见
-    const localItemsContent = document.getElementById('local-items-content');
-    if (localItemsContent && localItemsContent.style.display === 'none') {
-        switchTab('local-items-content');
-        return;
-    }
-
-    // 切换本地物品区域的显示/隐藏
-    if (localItemsSection && localItemsSection.style.display === 'none') {
-        // 先扫描本地物品
-        scanLocalItems();
-        localItemsSection.style.display = 'block';
-        if (toggleButton) {
-            toggleButton.textContent = window.t ? window.t('steam.localItemsHide') : '隐藏本地物品';
-        }
-        // 更新翻译，确保新显示的元素都能正确翻译
-        if (window.updatePageTexts) {
-            window.updatePageTexts();
-        }
-        // 平滑滚动到本地物品区域
-        localItemsSection.scrollIntoView({ behavior: 'smooth' });
-    } else if (localItemsSection) {
-        localItemsSection.style.display = 'none';
-        if (toggleButton) {
-            toggleButton.textContent = window.t ? window.t('steam.localItemsManage') : '管理本地物品';
-        }
-    }
-}
-
 // 标签页切换功能
 // 从localStorage加载同步数据并填充到创意工坊上传表单
 function applyWorkshopSyncData() {
@@ -382,75 +343,96 @@ function applyWorkshopSyncData() {
     }
 }
 
+// 视图切换防抖锁，防止动画期间重复点击
+let _viewSwitching = false;
+
 function switchTab(tabId, event) {
-    // 隐藏所有标签内容
-    const tabContents = document.querySelectorAll('.tab-content');
-    tabContents.forEach(content => {
-        content.style.display = 'none';
-    });
+    if (_viewSwitching) return;
 
-    // 移除所有标签按钮的活动状态
-    const tabButtons = document.querySelectorAll('.tab');
-    tabButtons.forEach(button => {
-        button.classList.remove('active');
-    });
-
-    // 为当前点击的标签按钮添加活动状态
-    if (event && event.target) {
-        const clickedButton = event.target;
-        clickedButton.classList.add('active');
-    } else {
-        // 非点击事件调用时，通过tabId找到对应的标签按钮
-        const matchingTab = Array.from(tabButtons).find(btn =>
-            btn.getAttribute('onclick') && btn.getAttribute('onclick').includes(tabId)
-        );
-        if (matchingTab) {
-            matchingTab.classList.add('active');
-        }
-    }
-
-    // 显示选中的标签内容
     const selectedTab = document.getElementById(tabId);
-    if (selectedTab) {
-        selectedTab.style.display = 'block';
-        // 更新翻译，确保新显示的元素都能正确翻译
-        if (window.updatePageTexts) {
-            window.updatePageTexts();
-        }
+    if (!selectedTab) return;
+
+    // 已经是激活状态，直接同步按钮高亮即可
+    const tabButtons = document.querySelectorAll('.tab');
+    if (selectedTab.classList.contains('active') && !selectedTab.classList.contains('tab-leaving')) {
+        tabButtons.forEach(btn => {
+            const onclick = btn.getAttribute('onclick') || '';
+            btn.classList.toggle('active', onclick.includes(tabId));
+        });
+        return;
     }
 
-    // 设置选中的标签按钮为活动状态（兼容旧的标签按钮）
-    tabButtons.forEach(button => {
-        if (button.getAttribute('onclick') && button.getAttribute('onclick').includes(tabId)) {
-            button.classList.add('active');
+    _viewSwitching = true;
+
+    // 同步按钮 active 状态（点击事件 / 编程调用都覆盖）
+    tabButtons.forEach(btn => {
+        const onclick = btn.getAttribute('onclick') || '';
+        btn.classList.toggle('active', onclick.includes(tabId));
+    });
+    if (event && event.currentTarget && event.currentTarget.classList) {
+        event.currentTarget.classList.add('active');
+    }
+    const sidebarButtons = document.querySelectorAll('.sidebar-tab-button');
+    sidebarButtons.forEach(btn => {
+        const onclick = btn.getAttribute('onclick') || '';
+        btn.classList.toggle('active', onclick.includes(tabId));
+    });
+
+    // 找到当前激活视图（要离场的）
+    const tabContents = document.querySelectorAll('.tab-content');
+    let leavingTab = null;
+    tabContents.forEach(content => {
+        if (content !== selectedTab && content.classList.contains('active')) {
+            leavingTab = content;
+        }
+        // 清理可能残留的内联 display（早期版本）
+        if (content !== selectedTab && content !== leavingTab) {
+            content.style.display = '';
+            content.classList.remove('active', 'tab-leaving', 'tab-entering');
         }
     });
 
-    // 设置侧边栏中对应的按钮为活动状态
-    const sidebarButtons = document.querySelectorAll('.sidebar-tab-button');
-    if (sidebarButtons.length > 0) {
-        sidebarButtons.forEach(button => {
-            if (button.getAttribute('onclick') && button.getAttribute('onclick').includes(tabId)) {
-                button.classList.add('active');
-            }
-        });
+    const finalize = () => {
+        _viewSwitching = false;
+    };
+
+    if (leavingTab && leavingTab !== selectedTab) {
+        // 旧视图执行 leaving 动画，新视图同步入场（重叠以遮住底层蓝色背景）
+        leavingTab.classList.remove('active');
+        leavingTab.classList.add('tab-leaving');
+
+        selectedTab.classList.add('active', 'tab-entering');
+        if (window.updatePageTexts) window.updatePageTexts();
+
+        // 旧视图保持原状作为底层；新视图自上而下"拉下帘幕"完全覆盖（500ms 与 CSS @keyframes viewCurtainReveal 时长一致）
+        setTimeout(() => {
+            leavingTab.classList.remove('tab-leaving');
+            leavingTab.style.display = '';
+        }, 520);
+        // 新视图入场结束
+        setTimeout(() => {
+            selectedTab.classList.remove('tab-entering');
+            finalize();
+        }, 520);
+    } else {
+        // 没有离场视图（首次或同 tab）：直接显示
+        selectedTab.classList.add('active');
+        if (window.updatePageTexts) window.updatePageTexts();
+        finalize();
     }
 
-    // 确保上传modal初始隐藏
+    // 上传 modal 初始隐藏
     const uploadModal = document.getElementById('uploadToWorkshopModal');
     if (uploadModal) {
         uploadModal.style.display = 'none';
     }
 
-    // 如果切换到角色卡页面，自动执行模型扫描，并更新当前选中的角色卡
+    // 切换到角色卡：自动扫描模型并恢复选中
     if (tabId === 'character-cards-content') {
         scanModels();
-
-        // 如果下拉选单已有选中的角色卡，触发更新
         const characterCardSelect = document.getElementById('character-card-select');
         const selectedId = characterCardSelect ? characterCardSelect.value : null;
         if (selectedId && window.characterCards) {
-            // 注意：select.value 返回字符串，card.id 可能是数字或字符串
             const selectedCard = window.characterCards.find(c => String(c.id) === selectedId);
             if (selectedCard) {
                 expandCharacterCardSection(selectedCard);
@@ -458,9 +440,9 @@ function switchTab(tabId, event) {
         }
     }
 
-    // 如果切换到本地物品页面，应用从localStorage加载的同步数据
-    if (tabId === 'local-items-content') {
-        applyWorkshopSyncData();
+// 订阅内容：检查 Steam 状态
+    if (tabId === 'subscriptions-content') {
+        checkSteamStatus();
     }
 }
 
@@ -507,52 +489,6 @@ async function selectFolderForInput(inputId) {
 }
 
 
-// 扫描本地物品 - 现在仅使用默认路径
-function scanLocalItems() {
-
-    // 显示扫描开始提示
-    const startMessage = showMessage(window.t ? window.t('steam.scanningWorkshop') : '正在扫描Workshop物品...', 'info');
-
-    // 调用API扫描本地文件夹中的物品
-    fetch('/api/steam/workshop/local-items/scan', {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({})
-    })
-        .then(response => {
-            if (!response.ok) {
-                throw new Error(`HTTP错误，状态码: ${response.status}`);
-            }
-            return response.json();
-        })
-        .then(data => {
-
-            if (data.success) {
-                // 获取本地物品列表
-                const localItems = data.local_items || [];
-                const publishedItems = data.published_items || [];
-
-                // 更新UI显示本地物品
-                displayLocalItems(localItems, publishedItems);
-
-                // 直接显示扫描完成提示，使用简单清晰的消息
-                const successMessage = window.t ? window.t('steam.scanComplete', { count: localItems.length }) : `扫描完成，共找到 ${localItems.length} 个物品`;
-
-                showToast(successMessage);
-
-            } else {
-                const errorMessage = window.t ? window.t('steam.scanFailed', { error: data.error || (window.t ? window.t('common.unknownError') : '未知错误') }) : `扫描失败: ${data.error || '未知错误'}`;
-                showMessage(errorMessage, 'error', 3000);
-            }
-        })
-        .catch(error => {
-            console.error('扫描本地物品失败:', error);
-            showMessage(window.t ? window.t('steam.workshopScanError', { error: error.message }) : `扫描时出错: ${error.message}`, 'error', 3000);
-        });
-}
-
 // 检查文件是否存在
 async function doesFileExist(filePath) {
     try {
@@ -590,186 +526,6 @@ async function findPreviewImage(folderPath) {
     }
 
     return null;
-}
-
-// 创意工坊物品对比
-async function compareLocalWithWorkshop(localItem) {
-    try {
-        // 获取已发布的创意工坊物品
-        const workshopItems = await getWorkshopItems();
-
-        // 比较名称
-        for (const workshopItem of workshopItems) {
-            if (areNamesSimilar(localItem.name, workshopItem.title)) {
-                return {
-                    exists: true,
-                    item: workshopItem,
-                    reason: '名称相似'
-                };
-            }
-        }
-    } catch (error) {
-        console.error('创意工坊对比失败:', error);
-    }
-
-    return { exists: false };
-}
-
-// 检查名称是否相似
-function areNamesSimilar(name1, name2) {
-    // 简单的相似度检查，可以根据需要改进
-    name1 = name1.toLowerCase().trim();
-    name2 = name2.toLowerCase().trim();
-
-    // 如果完全相同，直接返回true
-    if (name1 === name2) return true;
-
-    // 如果一个名称包含另一个名称
-    if (name1.includes(name2) || name2.includes(name1)) return true;
-
-    // 计算编辑距离（简单版本）
-    if (Math.abs(name1.length - name2.length) > 3) return false;
-
-    return false;
-}
-
-// 获取创意工坊物品列表
-async function getWorkshopItems() {
-    try {
-        const response = await fetch('/api/steam/workshop/subscribed-items');
-        const data = await response.json();
-        if (data.success) {
-            return data.items;
-        }
-    } catch (error) {
-        console.error('获取创意工坊物品失败:', error);
-    }
-    return [];
-}
-
-// 显示本地物品卡片
-function displayLocalItems(localItems, publishedItems) {
-    const itemsList = document.getElementById('local-items-list');
-
-    if (localItems.length === 0) {
-        const emptyMessage = window.t ? window.t('steam.no_local_items') : '在指定文件夹中未找到任何创意工坊物品';
-        itemsList.innerHTML = `
-            <div class="empty-state">
-                <p>${emptyMessage}</p>
-            </div>
-        `;
-        return;
-    }
-
-    // 创建物品卡片HTML
-    itemsList.innerHTML = localItems.map(item => {
-        // 检查该物品是否已发布到创意工坊
-        const isPublished = publishedItems.some(published =>
-            published.localId === item.id ||
-            (published.title && item.name &&
-                published.title.toLowerCase() === item.name.toLowerCase())
-        );
-
-        // 确定状态类和文本
-        let statusClass = 'status-error';
-        let statusText = window.t ? window.t('steam.status.unpublished') : '未发布';
-
-        if (isPublished) {
-            statusClass = 'status-published';
-            statusText = window.t ? window.t('steam.status.published') : '已发布';
-        }
-
-        // 生成预览图片URL或使用默认图片
-        // 使用图片代理API访问本地图片，避免浏览器安全限制
-        // 确保Windows路径中的反斜杠正确编码
-        const previewUrl = item.previewImage ? `/api/steam/proxy-image?image_path=${encodeURIComponent(item.previewImage.replace(/\\/g, '/'))}` : '../static/icons/Steam_icon_logo.png';
-
-        // 生成卡片HTML，对所有用户输入进行转义以防止XSS攻击
-        // 添加data-item-path属性用于后续检查上传标记文件
-    }).join('');
-
-    // 生成卡片后，检查每个物品的上传标记文件状态
-    checkUploadStatusForLocalItems();
-}
-
-// 检查本地物品的上传标记文件状态
-function checkUploadStatusForLocalItems() {
-    // 获取所有物品卡片
-    const itemCards = document.querySelectorAll('.workshop-card');
-
-    itemCards.forEach(card => {
-        const itemPath = card.getAttribute('data-item-path');
-        if (itemPath) {
-            // 调用后端API检查上传标记文件
-            fetch(`/api/steam/workshop/check-upload-status?item_path=${itemPath}`)
-                .then(response => {
-                    if (!response.ok) {
-                        throw new Error(`HTTP错误，状态码: ${response.status}`);
-                    }
-                    return response.json();
-                })
-                .then(data => {
-                    if (data.success && data.is_published) {
-                        // 如果存在上传标记文件，更新状态为已发布
-                        const statusBadge = card.querySelector('.status-badge');
-                        if (statusBadge) {
-                            statusBadge.className = 'status-badge status-published';
-                            statusBadge.textContent = window.t ? window.t('steam.status.published') : '已发布';
-                        }
-
-                        // 更新上传按钮状态为已发布
-                        const actionButton = card.querySelector('.card-actions button');
-                        if (actionButton) {
-                            actionButton.className = 'button button-disabled';
-                            actionButton.disabled = true;
-                            actionButton.textContent = window.t ? window.t('steam.status.published') : '已发布';
-                        }
-                    }
-                })
-                .catch(error => {
-                    console.error('检查上传标记文件失败:', error);
-                });
-        }
-    });
-}
-
-// 准备物品上传
-function prepareItemForUpload(itemId, folderPath) {
-    // 确保路径格式一致（将Windows反斜杠转换为正斜杠以便正确编码）
-    const normalizedPath = folderPath.replace(/\\/g, '/');
-    // 调用API获取物品详情
-    fetch(`/api/steam/workshop/local-items/${itemId}?folder_path=${encodeURIComponent(normalizedPath)}`)
-        .then(response => {
-            if (!response.ok) {
-                throw new Error(`HTTP错误，状态码: ${response.status}`);
-            }
-            return response.json();
-        })
-        .then(data => {
-            if (data.success) {
-                const item = data.item;
-
-                // 填充上传表单（title 现在是 div 元素）
-                document.getElementById('item-title').textContent = item.name || '';
-                document.getElementById('content-folder').value = item.path || '';
-
-                // 如果有预览图片，填充预览图片路径
-                if (item.previewImage) {
-                    document.getElementById('preview-image').value = item.previewImage;
-                }
-
-                // 切换到上传区域
-                toggleUploadSection();
-
-                showMessage(window.t ? window.t('steam.itemDetailsLoaded') : '物品详情加载成功', 'success');
-            } else {
-                showMessage(window.t ? window.t('steam.itemDetailsFailed', { error: data.error || (window.t ? window.t('common.unknownError') : '未知错误') }) : `物品详情加载失败: ${data.error || '未知错误'}`, 'error');
-            }
-        })
-        .catch(error => {
-            console.error('准备上传失败:', error);
-            showMessage(window.t ? window.t('steam.prepareUploadError', { error: error.message }) : `准备上传出错: ${error.message}`, 'error');
-        });
 }
 
 // 添加完整版本的formatDate函数（包含日期和时间）
@@ -1063,10 +819,8 @@ function showConfirmModal(message, confirmCallback, cancelCallback = null) {
 }
 
 function showMessage(message, type = 'info', duration = 3000) {
-    const messageArea = document.getElementById('message-area') || createMessageArea();
-    const messageElement = document.createElement('div');
-
-    // 创建消息容器（如果不存在）
+    // 统一为「导出角色卡」同款风格的居中顶部浮层卡片（非模态），
+    // 保证桌面端网页也能稳定显示。调用签名保持与旧版兼容。
     function createMessageArea() {
         const container = document.createElement('div');
         container.id = 'message-area';
@@ -1075,100 +829,89 @@ function showMessage(message, type = 'info', duration = 3000) {
         return container;
     }
 
-    // 消息类型和图标映射
-    const typeConfig = {
-        error: { className: 'error-message', icon: 'fa-exclamation-circle' },
-        warning: { className: 'warning-message', icon: 'fa-exclamation-triangle' },
-        success: { className: 'success-message', icon: 'fa-check-circle' },
-        info: { className: 'info-message', icon: 'fa-info-circle' }
-    };
+    const messageArea = document.getElementById('message-area') || createMessageArea();
 
-    // 获取当前消息类型的配置
-    const config = typeConfig[type] || typeConfig.info;
-
-    // 设置样式类
-    messageElement.className = config.className;
-
-    // 设置消息内容，添加图标和HTML转义
-    messageElement.innerHTML = `
-        <i class="fa ${config.icon}" style="margin-right: 8px;"></i>
-        <span>${escapeHtml(message)}</span>
-    `;
-
-    // 添加关闭按钮
-    const closeButton = document.createElement('span');
-    closeButton.className = 'message-close';
-    closeButton.innerHTML = '<i class="fa fa-times"></i>';
-    closeButton.onclick = () => messageElement.remove();
-    messageElement.appendChild(closeButton);
-
-    // 为错误消息添加详细信息支持
-    if (type === 'error' && typeof message === 'object') {
-        messageElement.title = JSON.stringify(message, null, 2);
-    }
-
-    // 添加消息
-    messageArea.appendChild(messageElement);
-
-    // 设置初始样式
-    messageElement.style.opacity = '0';
-    messageElement.style.transform = 'translateY(-10px)';
-    messageElement.style.transition = 'opacity 0.3s ease, transform 0.3s ease';
-    messageElement.style.display = 'flex';
-    messageElement.style.alignItems = 'center';
-    messageElement.style.padding = '10px 15px';
-    messageElement.style.marginBottom = '10px';
-    messageElement.style.borderRadius = '4px';
-    messageElement.style.position = 'relative';
-    messageElement.style.zIndex = '2147483647';
-
-    // 为不同类型设置背景色和前景色
-    const bgColors = { error: '#fde8e8', warning: '#fdf6e3', success: '#e3f7f1', info: '#e8f4fd' };
-    const fgColors = { error: '#d04848', warning: '#c47e00', success: '#1a8a5c', info: '#2d8ec9' };
-    messageElement.style.backgroundColor = bgColors[type] || '#f5f5f5';
-    messageElement.style.color = fgColors[type] || '#333';
-
-    // 设置消息显示动画
-    setTimeout(() => {
-        messageElement.style.opacity = '1';
-        messageElement.style.transform = 'translateY(0)';
-    }, 10);
-
-    // 确保消息区域在页面顶部且固定
+    // 布局：居中、顶部向下滑入，堆叠显示
     messageArea.style.position = 'fixed';
-    messageArea.style.top = '20px';
-    messageArea.style.right = '20px';
-    messageArea.style.maxWidth = '400px';
-    // 使用 int32 最大值，确保不会被 Jukebox(100010)、driver.js(100004)、
-    // crop-overlay(100040)、react-chat-window-overlay(100000) 等更高层 overlay 遮挡
+    messageArea.style.top = '24px';
+    messageArea.style.left = '50%';
+    messageArea.style.transform = 'translateX(-50%)';
+    messageArea.style.right = '';
+    messageArea.style.maxWidth = '90vw';
+    messageArea.style.width = 'auto';
     messageArea.style.zIndex = '2147483647';
     messageArea.style.display = 'flex';
     messageArea.style.flexDirection = 'column';
-    messageArea.style.alignItems = 'flex-end';
-    messageArea.style.boxShadow = '0 4px 12px rgba(0,0,0,0.15)'; // 添加阴影增强可见性
+    messageArea.style.alignItems = 'center';
+    messageArea.style.pointerEvents = 'none';
 
-    // 关闭按钮样式
-    closeButton.style.position = 'absolute';
-    closeButton.style.right = '10px';
-    closeButton.style.cursor = 'pointer';
-    closeButton.style.fontSize = '16px';
-    closeButton.style.border = 'none';
-    closeButton.style.background = 'none';
-    closeButton.style.padding = '2px 5px';
-    closeButton.style.borderRadius = '3px';
-    closeButton.onmouseover = function () { this.style.backgroundColor = 'rgba(0,0,0,0.1);' };
-    closeButton.onmouseout = function () { this.style.backgroundColor = 'transparent;' };
+    const typeConfig = {
+        error:   { icon: 'fa-exclamation-circle', accent: '#ff5a5a', grad: 'linear-gradient(135deg,#ff7a7a,#ff5a5a)' },
+        warning: { icon: 'fa-exclamation-triangle', accent: '#f0ad4e', grad: 'linear-gradient(135deg,#f6c266,#f0ad4e)' },
+        success: { icon: 'fa-check-circle', accent: '#58c38a', grad: 'linear-gradient(135deg,#6ec5a8,#58c38a)' },
+        info:    { icon: 'fa-info-circle', accent: '#40C5F1', grad: 'linear-gradient(135deg,#40C5F1,#5dd4f7)' },
+    };
+    const cfg = typeConfig[type] || typeConfig.info;
 
-    // 自动清除消息（如果指定了持续时间）
+    const card = document.createElement('div');
+    card.className = 'ccm-toast-card ccm-toast-' + type;
+    card.style.cssText = [
+        'background:#fff',
+        'border-radius:14px',
+        'padding:12px 18px',
+        'min-width:260px',
+        'max-width:min(560px, 90vw)',
+        'box-shadow:0 14px 40px rgba(0,0,0,0.18)',
+        'display:flex',
+        'align-items:flex-start',
+        'gap:10px',
+        'margin-bottom:10px',
+        'font-family:inherit',
+        'color:#333',
+        'font-size:13.5px',
+        'line-height:1.5',
+        'pointer-events:auto',
+        'border-left:4px solid ' + cfg.accent,
+        'opacity:0',
+        'transform:translateY(-8px)',
+        'transition:opacity 0.22s ease, transform 0.22s ease',
+    ].join(';');
+
+    const iconEl = document.createElement('i');
+    iconEl.className = 'fa ' + cfg.icon;
+    iconEl.style.cssText = 'color:' + cfg.accent + ';font-size:18px;margin-top:2px;flex-shrink:0';
+    card.appendChild(iconEl);
+
+    const body = document.createElement('div');
+    body.style.cssText = 'flex:1;min-width:0;word-break:break-word;white-space:pre-wrap';
+    body.textContent = (typeof message === 'string') ? message : String(message);
+    card.appendChild(body);
+
+    const closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.innerHTML = '<i class="fa fa-times"></i>';
+    closeBtn.style.cssText = 'background:transparent;border:none;color:#888;cursor:pointer;font-size:14px;padding:2px 4px;border-radius:4px;flex-shrink:0';
+    closeBtn.onmouseenter = () => { closeBtn.style.background = 'rgba(0,0,0,0.06)'; closeBtn.style.color = '#333'; };
+    closeBtn.onmouseleave = () => { closeBtn.style.background = 'transparent'; closeBtn.style.color = '#888'; };
+    const dismiss = () => {
+        card.style.opacity = '0';
+        card.style.transform = 'translateY(-8px)';
+        setTimeout(() => { if (card.parentNode) card.parentNode.removeChild(card); }, 220);
+    };
+    closeBtn.onclick = dismiss;
+    card.appendChild(closeBtn);
+
+    messageArea.appendChild(card);
+    requestAnimationFrame(() => {
+        card.style.opacity = '1';
+        card.style.transform = 'translateY(0)';
+    });
+
     if (duration > 0) {
-        setTimeout(() => {
-            messageElement.style.opacity = '0';
-            messageElement.style.transform = 'translateY(-10px)';
-            setTimeout(() => {
-                messageElement.remove();
-            }, 300);
-        }, duration);
+        setTimeout(dismiss, duration);
     }
+
+    return card;
 }
 
 // HTML转义函数
@@ -2672,14 +2415,8 @@ window.addEventListener('load', function () {
     }
     updateReferenceAudioDisplay();
 
-    // 检查Steam状态
-    checkSteamStatus();
-
     // 页面加载时自动加载订阅内容
     loadSubscriptions();
-
-    // 页面加载时自动扫描本地物品
-    scanLocalItems();
 
     // 页面加载时自动加载角色卡
     loadCharacterCards();
@@ -2887,11 +2624,2992 @@ async function loadCharacterCards() {
     // 将角色卡列表保存到全局变量（已使用window.characterCards，这里保持兼容）
     globalCharacterCards = window.characterCards || [];
 
+    // 获取当前猫娘
+    try {
+        const currentResp = await fetch('/api/characters/current_catgirl');
+        const currentData = await currentResp.json();
+        window._workshopCurrentCatgirl = currentData.current_catgirl || '';
+    } catch (e) {
+        window._workshopCurrentCatgirl = '';
+    }
+
+    // 预取已设置卡面的猫娘名单（避免逐个发起 404 请求）
+    await loadCardFaceNames();
+    // 预取卡面元数据（作者/创建时间/来源）
+    await loadCardMetas();
+
+    // 渲染卡片/列表视图
+    renderCharaCardsView();
+
     // 显示刷新成功消息
     if (window.characterCards && window.characterCards.length > 0) {
         showMessage(window.t ? window.t('steam.characterCardsRefreshed', { count: window.characterCards.length }) : `已刷新角色卡列表，共 ${window.characterCards.length} 个角色卡`, 'success');
     } else {
         showMessage(window.t ? window.t('steam.characterCardsRefreshedEmpty') : '已刷新角色卡列表，暂无角色卡', 'info');
+    }
+
+    // 同步加载主人档案和已隐藏猫娘列表
+    loadMasterProfile();
+    renderHiddenCatgirls();
+}
+
+// ===== 角色卡 卡片/列表 视图 =====
+
+// 已设置卡面的猫娘名集合（避免无卡面的 404 控制台噪声）
+window._cardFaceNames = window._cardFaceNames || new Set();
+async function loadCardFaceNames() {
+    try {
+        const resp = await fetch('/api/characters/card-faces');
+        if (!resp.ok) return;
+        const data = await resp.json();
+        if (data && data.success && Array.isArray(data.names)) {
+            window._cardFaceNames = new Set(data.names);
+        }
+    } catch (e) {
+        // 忽略，退化为不加载头像
+    }
+}
+
+// 卡面元数据缓存 { name: { author, origin, created_at, updated_at } }
+window._cardMetas = window._cardMetas || {};
+async function loadCardMetas() {
+    try {
+        const resp = await fetch('/api/characters/card-metas');
+        if (!resp.ok) return;
+        const data = await resp.json();
+        if (data && data.success && data.metas && typeof data.metas === 'object') {
+            window._cardMetas = data.metas;
+        }
+    } catch (e) {
+        // 忽略，退化为面板内单独请求
+    }
+}
+
+// 格式化 ISO 时间为本地化短字符串
+function _formatCardMetaTime(iso) {
+    if (!iso) return '';
+    try {
+        const d = new Date(iso);
+        if (isNaN(d.getTime())) return iso;
+        const y = d.getFullYear();
+        const m = String(d.getMonth() + 1).padStart(2, '0');
+        const day = String(d.getDate()).padStart(2, '0');
+        const hh = String(d.getHours()).padStart(2, '0');
+        const mm = String(d.getMinutes()).padStart(2, '0');
+        return `${y}-${m}-${day} ${hh}:${mm}`;
+    } catch (e) { return iso; }
+}
+
+// 渲染卡面信息块（作者、创建时间、来源）
+function renderCardMetaBlock(container, name, isNew, rawData) {
+    container.innerHTML = '';
+    if (isNew || !name) {
+        const placeholder = document.createElement('div');
+        placeholder.className = 'card-meta-placeholder';
+        placeholder.textContent = window.t ? window.t('character.cardNotCreated') : '尚未创建角色卡';
+        container.appendChild(placeholder);
+        return;
+    }
+
+    // 优先用缓存，否则惰性请求
+    let meta = window._cardMetas && window._cardMetas[name];
+    const draw = (m) => {
+        container.innerHTML = '';
+        const origin = (m && m.origin) || 'self';
+        const author = (m && m.author) || '';
+        const createdAt = (m && m.created_at) || '';
+
+        const title = document.createElement('div');
+        title.className = 'card-meta-title';
+        title.textContent = window.t ? window.t('character.cardMeta') : '卡面信息';
+        container.appendChild(title);
+
+        // 来源徽章
+        const originRow = document.createElement('div');
+        originRow.className = 'card-meta-row card-meta-origin';
+        const originLabel = document.createElement('span');
+        originLabel.className = 'card-meta-label';
+        originLabel.textContent = window.t ? window.t('character.cardOriginLabel') : '来源';
+        const originValue = document.createElement('span');
+        originValue.className = 'card-meta-origin-badge origin-' + origin;
+        const originKey = origin === 'imported' ? 'character.cardOriginImported'
+            : origin === 'steam' ? 'character.cardOriginSteam'
+                : 'character.cardOriginSelf';
+        const originText = window.t ? window.t(originKey) : (origin === 'imported' ? '导入' : origin === 'steam' ? '创意工坊' : '本地');
+        originValue.textContent = originText;
+        originRow.appendChild(originLabel);
+        originRow.appendChild(originValue);
+        container.appendChild(originRow);
+
+        // 作者（可编辑：仅 origin=self）
+        const authorRow = document.createElement('div');
+        authorRow.className = 'card-meta-row card-meta-author';
+        const authorLabel = document.createElement('span');
+        authorLabel.className = 'card-meta-label';
+        authorLabel.textContent = window.t ? window.t('character.cardAuthor') : '作者';
+        authorRow.appendChild(authorLabel);
+
+        if (origin === 'self') {
+            const authorInput = document.createElement('input');
+            authorInput.type = 'text';
+            authorInput.className = 'card-meta-author-input';
+            authorInput.value = author;
+            authorInput.maxLength = 64;
+            authorInput.placeholder = window.t ? window.t('character.cardAuthorPlaceholder') : '请输入作者';
+            let saving = false;
+            const saveAuthor = async () => {
+                if (saving) return;
+                const newVal = (authorInput.value || '').trim();
+                if (newVal === (author || '').trim()) return;
+                saving = true;
+                try {
+                    const resp = await fetch('/api/characters/catgirl/' + encodeURIComponent(name) + '/card-meta', {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ author: newVal })
+                    });
+                    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+                    const data = await resp.json();
+                    if (window._cardMetas) window._cardMetas[name] = data.meta || { ...m, author: newVal };
+                    showMessage(window.t ? window.t('character.cardAuthorUpdated') : '作者已更新', 'success');
+                } catch (e) {
+                    showMessage(window.t ? window.t('character.cardAuthorUpdateFailed') : '作者更新失败', 'error');
+                    authorInput.value = author;
+                } finally { saving = false; }
+            };
+            authorInput.addEventListener('blur', saveAuthor);
+            authorInput.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') { e.preventDefault(); authorInput.blur(); }
+            });
+            authorRow.appendChild(authorInput);
+        } else {
+            const authorValue = document.createElement('span');
+            authorValue.className = 'card-meta-value card-meta-readonly';
+            authorValue.textContent = author || '-';
+            authorValue.title = window.t ? window.t('character.cardAuthorReadonly') : '导入/工坊角色卡的作者不可修改';
+            authorRow.appendChild(authorValue);
+        }
+        container.appendChild(authorRow);
+
+        // 创建时间
+        if (createdAt) {
+            const timeRow = document.createElement('div');
+            timeRow.className = 'card-meta-row card-meta-time';
+            const timeLabel = document.createElement('span');
+            timeLabel.className = 'card-meta-label';
+            timeLabel.textContent = window.t ? window.t('character.cardCreatedAt') : '创建时间';
+            const timeValue = document.createElement('span');
+            timeValue.className = 'card-meta-value';
+            timeValue.textContent = _formatCardMetaTime(createdAt);
+            timeRow.appendChild(timeLabel);
+            timeRow.appendChild(timeValue);
+            container.appendChild(timeRow);
+        }
+    };
+
+    if (meta) {
+        draw(meta);
+    } else {
+        // 占位
+        const loading = document.createElement('div');
+        loading.className = 'card-meta-placeholder';
+        loading.textContent = '...';
+        container.appendChild(loading);
+        // 异步拉取
+        fetch('/api/characters/catgirl/' + encodeURIComponent(name) + '/card-meta')
+            .then(r => r.ok ? r.json() : null)
+            .then(data => {
+                if (data && data.meta) {
+                    if (window._cardMetas) window._cardMetas[name] = data.meta;
+                    draw(data.meta);
+                } else {
+                    draw(null);
+                }
+            })
+            .catch(() => draw(null));
+    }
+}
+
+// 从 PNG neKo 辅助块中提取 ZIP 数据
+function _extractNekoChunk(uint8Array) {
+    if (uint8Array.length < 8) return null;
+    if (uint8Array[0] !== 0x89 || uint8Array[1] !== 0x50 || uint8Array[2] !== 0x4E ||
+        uint8Array[3] !== 0x47 || uint8Array[4] !== 0x0D || uint8Array[5] !== 0x0A ||
+        uint8Array[6] !== 0x1A || uint8Array[7] !== 0x0A) {
+        return null;
+    }
+    const view = new DataView(uint8Array.buffer, uint8Array.byteOffset, uint8Array.byteLength);
+    let offset = 8;
+    while (offset + 12 <= uint8Array.length) {
+        const chunkLen = view.getUint32(offset, false);
+        if (chunkLen > 0x7FFFFFFF) return null;
+        const chunkEnd = offset + 12 + chunkLen;
+        if (chunkEnd > uint8Array.length) return null;
+        const t0 = uint8Array[offset + 4];
+        const t1 = uint8Array[offset + 5];
+        const t2 = uint8Array[offset + 6];
+        const t3 = uint8Array[offset + 7];
+        if (t0 === 0x6E && t1 === 0x65 && t2 === 0x4B && t3 === 0x6F) {
+            const dataStart = offset + 8;
+            return uint8Array.slice(dataStart, dataStart + chunkLen);
+        }
+        if (t0 === 0x49 && t1 === 0x45 && t2 === 0x4E && t3 === 0x44) break;
+        offset = chunkEnd;
+    }
+    return null;
+}
+
+async function handleImportCharacterCard(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+    event.target.value = '';
+
+    const isNekoFile = file.name.endsWith('.nekocfg');
+    const isPngFile = file.type.startsWith('image/') || file.name.endsWith('.png');
+    if (!isNekoFile && !isPngFile) {
+        showMessage(window.t ? window.t('character.importInvalidFile') : '请选择有效的PNG图片文件或.nekocfg设定文件', 'warning');
+        return;
+    }
+
+    const loadingText = window.t ? window.t('character.importingCard') : '正在导入角色卡...';
+    showMessage(loadingText, 'info');
+
+    try {
+        const arrayBuffer = await file.arrayBuffer();
+        let fileData;
+        if (isNekoFile) {
+            fileData = new Uint8Array(arrayBuffer);
+        } else {
+            const uint8Array = new Uint8Array(arrayBuffer);
+            fileData = _extractNekoChunk(uint8Array);
+            if (!fileData) {
+                // 回退：查找旧版 NEKOCHARA 标记
+                const marker = new TextEncoder().encode('NEKOCHARA\x00');
+                let markerIndex = -1;
+                for (let i = uint8Array.length - marker.length; i >= 0; i--) {
+                    let found = true;
+                    for (let j = 0; j < marker.length; j++) {
+                        if (uint8Array[i + j] !== marker[j]) { found = false; break; }
+                    }
+                    if (found) { markerIndex = i; break; }
+                }
+                if (markerIndex === -1 || markerIndex < 8) {
+                    throw new Error(window.t ? window.t('character.importNoMarker') : '该图片不是有效的角色卡文件');
+                }
+                const zipSizeBytes = uint8Array.slice(markerIndex - 8, markerIndex);
+                const zipSize = new DataView(zipSizeBytes.buffer).getUint32(0, true);
+                if (zipSize <= 0 || zipSize > uint8Array.length) {
+                    throw new Error(window.t ? window.t('character.importNoMarker') : '该图片不是有效的角色卡文件');
+                }
+                const zipStart = markerIndex - 8 - zipSize;
+                if (zipStart < 0 || zipStart + zipSize > markerIndex - 8) {
+                    throw new Error(window.t ? window.t('character.importNoMarker') : '该图片不是有效的角色卡文件');
+                }
+                fileData = uint8Array.slice(zipStart, markerIndex - 8);
+            }
+        }
+
+        const formData = new FormData();
+        const blob = new Blob([fileData], { type: isNekoFile ? 'application/octet-stream' : 'application/zip' });
+        formData.append('zip_file', blob, isNekoFile ? file.name : 'character_data.zip');
+        // 对于 PNG 载体，额外上传原始图片作为卡面回退（老角色卡兼容）
+        if (isPngFile) {
+            const pngBlob = new Blob([new Uint8Array(arrayBuffer)], { type: 'image/png' });
+            formData.append('card_image', pngBlob, file.name || 'card.png');
+        }
+
+        const response = await fetch('/api/characters/import-card', { method: 'POST', body: formData });
+        if (!response.ok) {
+            const errorData = await response.json().catch(() => ({ error: '导入失败' }));
+            throw new Error(errorData.error || `HTTP ${response.status}`);
+        }
+        const result = await response.json();
+
+        const successText = window.t ? window.t('character.importCardSuccess', { name: result.character_name }) : `角色卡 "${result.character_name}" 导入成功`;
+        showMessage(successText, 'success');
+
+        // 刷新角色卡列表（含 sidecar / 卡面 / 视图重新渲染）
+        if (typeof loadCharacterCards === 'function') {
+            await loadCharacterCards();
+        } else if (typeof loadCharacterData === 'function') {
+            await loadCharacterData();
+        }
+    } catch (error) {
+        console.error('导入角色卡失败:', error);
+        const errorText = window.t ? window.t('character.importCardFailed', { error: error.message }) : `导入角色卡失败: ${error.message}`;
+        showMessage(errorText, 'error');
+    }
+}
+
+// 绑定导入按钮（页面加载后）
+function _setupImportCardButton() {
+    const btn = document.getElementById('chara-import-btn');
+    const input = document.getElementById('chara-import-input');
+    if (btn && input && !btn._bound) {
+        btn._bound = true;
+        btn.addEventListener('click', () => input.click());
+        input.addEventListener('change', handleImportCharacterCard);
+    }
+}
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', _setupImportCardButton);
+} else {
+    _setupImportCardButton();
+}
+
+// ===== API 设置弹窗 =====
+const _API_KEY_ALLOWED_ORIGINS = [window.location.origin];
+function openApiKeySettings() {
+    const existingModal = document.getElementById('api-key-settings-modal');
+    if (existingModal) {
+        existingModal.style.display = 'block';
+        return;
+    }
+    const modal = document.createElement('div');
+    modal.id = 'api-key-settings-modal';
+    modal.style.cssText = 'position:fixed;left:0;top:0;width:100vw;height:100vh;background:rgba(0,0,0,0.4);z-index:9999';
+
+    const apiKeyMessageHandler = function (e) {
+        if (!_API_KEY_ALLOWED_ORIGINS.includes(e.origin)) return;
+        if (e.data && e.data.type === 'close_api_key_settings') {
+            const m = document.getElementById('api-key-settings-modal');
+            if (m && m.parentNode) m.parentNode.removeChild(m);
+            window.removeEventListener('message', apiKeyMessageHandler);
+        }
+    };
+
+    modal.onclick = function (e) {
+        if (e.target === modal) {
+            window.removeEventListener('message', apiKeyMessageHandler);
+            if (modal.parentNode) modal.parentNode.removeChild(modal);
+        }
+    };
+
+    const iframe = document.createElement('iframe');
+    iframe.src = '/api_key';
+    iframe.style.cssText = 'width:800px;height:720px;border:none;background:#fff;display:block;margin:50px auto;border-radius:8px';
+
+    window.addEventListener('message', apiKeyMessageHandler);
+    modal.appendChild(iframe);
+    document.body.appendChild(modal);
+}
+
+function _setupApiKeySettingsButton() {
+    const btn = document.getElementById('api-key-settings-btn');
+    if (btn && !btn._bound) {
+        btn._bound = true;
+        btn.addEventListener('click', openApiKeySettings);
+    }
+}
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', _setupApiKeySettingsButton);
+} else {
+    _setupApiKeySettingsButton();
+}
+
+// ===== 统一弹窗样式 =====
+// 与导出角色卡弹窗风格一致的通用 Confirm / Alert / Toast
+// 目的：在桌面端网页中也能稳定显示（替换老的 top-corner showMessage / 原生 confirm）。
+
+function _createManagerModal({ title, message, variant = 'info', buttons = [], dismissOnOverlay = true, icon = null }) {
+    return new Promise(resolve => {
+        const overlay = document.createElement('div');
+        overlay.className = 'ccm-modal-overlay';
+        overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:10002;display:flex;align-items:center;justify-content:center;animation:ccmFadeIn 0.18s ease';
+
+        const dialog = document.createElement('div');
+        dialog.style.cssText = 'background:#fff;border-radius:14px;padding:22px 26px 18px;min-width:340px;max-width:90vw;box-shadow:0 14px 40px rgba(0,0,0,0.25);font-family:inherit;animation:ccmSlideUp 0.22s ease';
+
+        const accentColor = {
+            info: '#40C5F1',
+            success: '#58c38a',
+            warning: '#f0ad4e',
+            error: '#ff5a5a',
+            danger: '#ff5a5a',
+        }[variant] || '#40C5F1';
+
+        if (title) {
+            const t = document.createElement('div');
+            t.style.cssText = 'font-size:16px;font-weight:700;color:#222;margin-bottom:8px;display:flex;align-items:center;gap:8px';
+            if (icon) {
+                const i = document.createElement('i');
+                i.className = 'fa ' + icon;
+                i.style.cssText = 'color:' + accentColor + ';font-size:16px';
+                t.appendChild(i);
+            }
+            const ts = document.createElement('span');
+            ts.textContent = title;
+            t.appendChild(ts);
+            dialog.appendChild(t);
+        }
+
+        if (message) {
+            const d = document.createElement('div');
+            d.style.cssText = 'font-size:13px;color:#555;margin-bottom:18px;line-height:1.5;white-space:pre-wrap;word-break:break-word';
+            d.textContent = message;
+            dialog.appendChild(d);
+        }
+
+        const footer = document.createElement('div');
+        footer.style.cssText = 'display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap';
+
+        const mkBtn = (label, btnVariant) => {
+            const b = document.createElement('button');
+            b.type = 'button';
+            b.textContent = label;
+            const base = 'padding:8px 16px;border-radius:10px;font-size:13px;font-weight:600;cursor:pointer;border:none;transition:filter 0.15s,transform 0.1s';
+            if (btnVariant === 'primary') {
+                b.style.cssText = base + ';background:linear-gradient(135deg,#40C5F1,#5dd4f7);color:#fff;box-shadow:0 2px 6px rgba(64,197,241,0.3)';
+            } else if (btnVariant === 'danger') {
+                b.style.cssText = base + ';background:linear-gradient(135deg,#ff7a7a,#ff5a5a);color:#fff;box-shadow:0 2px 6px rgba(255,90,90,0.3)';
+            } else {
+                b.style.cssText = base + ';background:#f3f5f7;color:#333';
+            }
+            b.onmouseenter = () => { b.style.filter = 'brightness(1.06)'; b.style.transform = 'translateY(-1px)'; };
+            b.onmouseleave = () => { b.style.filter = ''; b.style.transform = ''; };
+            return b;
+        };
+
+        const close = (value) => {
+            if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+            resolve(value);
+        };
+
+        (buttons || []).forEach(bt => {
+            const btn = mkBtn(bt.label, bt.variant || 'secondary');
+            btn.onclick = () => close(bt.value);
+            footer.appendChild(btn);
+        });
+
+        dialog.appendChild(footer);
+        overlay.appendChild(dialog);
+        if (dismissOnOverlay) {
+            overlay.onclick = (e) => { if (e.target === overlay) close(null); };
+        }
+        // ESC 关闭
+        const escHandler = (e) => {
+            if (e.key === 'Escape') { document.removeEventListener('keydown', escHandler); close(null); }
+        };
+        document.addEventListener('keydown', escHandler);
+
+        // 注入一次性动画 keyframes
+        if (!document.getElementById('ccm-modal-keyframes')) {
+            const st = document.createElement('style');
+            st.id = 'ccm-modal-keyframes';
+            st.textContent = '@keyframes ccmFadeIn{from{opacity:0}to{opacity:1}}@keyframes ccmSlideUp{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}@keyframes ccmSlideOut{from{opacity:1;transform:translateY(0)}to{opacity:0;transform:translateY(-8px)}}';
+            document.head.appendChild(st);
+        }
+
+        document.body.appendChild(overlay);
+    });
+}
+
+// 确认对话框（Promise<boolean>）
+function showConfirmDialog(message, options = {}) {
+    const title = options.title || (window.t ? window.t('common.confirm') : '确认');
+    const okText = options.okText || (window.t ? window.t('common.confirm') : '确认');
+    const cancelText = options.cancelText || (window.t ? window.t('common.cancel') : '取消');
+    const variant = options.danger ? 'danger' : 'info';
+    const icon = options.danger ? 'fa-exclamation-triangle' : 'fa-question-circle';
+    return _createManagerModal({
+        title,
+        message,
+        variant,
+        icon,
+        buttons: [
+            { label: cancelText, variant: 'secondary', value: false },
+            { label: okText, variant: options.danger ? 'danger' : 'primary', value: true },
+        ],
+    }).then(v => v === true);
+}
+
+// 提示对话框（Promise<void>，仅 OK 按钮）
+function showAlertDialog(message, options = {}) {
+    const typeMap = {
+        error:   { titleKey: 'common.error',   fallback: '错误', icon: 'fa-exclamation-circle', variant: 'error' },
+        warning: { titleKey: 'common.warning', fallback: '警告', icon: 'fa-exclamation-triangle', variant: 'warning' },
+        success: { titleKey: 'common.success', fallback: '成功', icon: 'fa-check-circle', variant: 'success' },
+        info:    { titleKey: 'common.alert',   fallback: '提示', icon: 'fa-info-circle', variant: 'info' },
+    };
+    const t = typeMap[options.type || 'info'];
+    const title = options.title || (window.t ? window.t(t.titleKey) : t.fallback);
+    const okText = options.okText || (window.t ? window.t('common.ok') : '确定');
+    return _createManagerModal({
+        title,
+        message,
+        variant: t.variant,
+        icon: t.icon,
+        buttons: [{ label: okText, variant: 'primary', value: true }],
+    });
+}
+
+// ===== 导出角色卡（弹窗：取消 / 仅导出设定 / 导出角色卡） =====
+function showExportOptionsModal(catgirlName) {
+    return new Promise(resolve => {
+        const overlay = document.createElement('div');
+        overlay.className = 'export-options-overlay';
+        overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:10001;display:flex;align-items:center;justify-content:center';
+
+        const dialog = document.createElement('div');
+        dialog.style.cssText = 'background:#fff;border-radius:14px;padding:22px 26px 18px;min-width:360px;max-width:90vw;box-shadow:0 14px 40px rgba(0,0,0,0.25);font-family:inherit';
+
+        const title = document.createElement('div');
+        title.style.cssText = 'font-size:16px;font-weight:700;color:#222;margin-bottom:8px';
+        title.textContent = (window.t ? window.t('character.exportOptions') : '导出角色卡');
+        dialog.appendChild(title);
+
+        const desc = document.createElement('div');
+        desc.style.cssText = 'font-size:13px;color:#555;margin-bottom:18px;line-height:1.5';
+        const descTpl = window.t ? window.t('character.exportOptionsDesc') : '请选择要导出的内容：';
+        desc.textContent = descTpl + ' 「' + catgirlName + '」';
+        dialog.appendChild(desc);
+
+        const footer = document.createElement('div');
+        footer.style.cssText = 'display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap';
+
+        const mkBtn = (label, variant) => {
+            const b = document.createElement('button');
+            b.type = 'button';
+            b.textContent = label;
+            const base = 'padding:8px 16px;border-radius:10px;font-size:13px;font-weight:600;cursor:pointer;border:none;transition:filter 0.15s,transform 0.1s';
+            if (variant === 'primary') {
+                b.style.cssText = base + ';background:linear-gradient(135deg,#40C5F1,#5dd4f7);color:#fff;box-shadow:0 2px 6px rgba(64,197,241,0.3)';
+            } else {
+                b.style.cssText = base + ';background:#f3f5f7;color:#333';
+            }
+            b.onmouseenter = () => { b.style.filter = 'brightness(1.06)'; b.style.transform = 'translateY(-1px)'; };
+            b.onmouseleave = () => { b.style.filter = ''; b.style.transform = ''; };
+            return b;
+        };
+
+        const cancelBtn = mkBtn(window.t ? window.t('common.cancel') : '取消', 'secondary');
+        cancelBtn.onclick = () => { close(); resolve(null); };
+        footer.appendChild(cancelBtn);
+
+        const settingsBtn = mkBtn(window.t ? window.t('character.exportSettingsOnly') : '仅导出设定', 'secondary');
+        settingsBtn.onclick = () => { close(); resolve('settings-only'); };
+        footer.appendChild(settingsBtn);
+
+        const fullBtn = mkBtn(window.t ? window.t('character.exportFull') : '导出角色卡', 'primary');
+        fullBtn.onclick = () => { close(); resolve('full'); };
+        footer.appendChild(fullBtn);
+
+        dialog.appendChild(footer);
+        overlay.appendChild(dialog);
+        overlay.onclick = (e) => { if (e.target === overlay) { close(); resolve(null); } };
+        document.body.appendChild(overlay);
+
+        function close() { if (overlay.parentNode) overlay.parentNode.removeChild(overlay); }
+    });
+}
+
+async function _downloadBlobAs(blob, filename, pickerType) {
+    // pickerType: { description, accept }，限制保存对话框文件类型
+    try {
+        if ('showSaveFilePicker' in window && pickerType) {
+            const fh = await window.showSaveFilePicker({ suggestedName: filename, types: [pickerType] });
+            const w = await fh.createWritable();
+            await w.write(blob);
+            await w.close();
+            return true;
+        }
+    } catch (err) {
+        if (err && err.name === 'AbortError') return false;
+        // 其它错误回退到 <a> 下载
+    }
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { if (a.parentNode) a.parentNode.removeChild(a); URL.revokeObjectURL(url); }, 0);
+    return true;
+}
+
+function _filenameFromContentDisposition(headerValue, fallback) {
+    if (!headerValue) return fallback;
+    const star = headerValue.match(/filename\*=UTF-8''([^;]+)/i);
+    if (star) {
+        try { return decodeURIComponent(star[1]); } catch (e) { /* fallthrough */ }
+    }
+    const m = headerValue.match(/filename="([^"]+)"/i);
+    if (m) return m[1];
+    return fallback;
+}
+
+async function exportCharacterCard(catgirlName) {
+    let mode;
+    try {
+        mode = await showExportOptionsModal(catgirlName);
+    } catch (e) {
+        return;
+    }
+    if (!mode) return;
+
+    const url = mode === 'settings-only'
+        ? `/api/characters/catgirl/${encodeURIComponent(catgirlName)}/export-settings`
+        : `/api/characters/catgirl/${encodeURIComponent(catgirlName)}/export`;
+    const fallbackName = mode === 'settings-only'
+        ? `${catgirlName}_设定.nekocfg`
+        : `${catgirlName}.png`;
+    const pickerType = mode === 'settings-only'
+        ? { description: 'NEKO 设定文件', accept: { 'application/octet-stream': ['.nekocfg'] } }
+        : { description: 'NEKO 角色卡 (PNG)', accept: { 'image/png': ['.png'] } };
+
+    const loadingText = window.t ? window.t('character.exportingCard') : '正在导出...';
+    showMessage(loadingText, 'info');
+    try {
+        const resp = await fetch(url, { method: 'GET' });
+        if (!resp.ok) {
+            const errData = await resp.json().catch(() => ({ error: `HTTP ${resp.status}` }));
+            throw new Error(errData.error || `HTTP ${resp.status}`);
+        }
+        const blob = await resp.blob();
+        const filename = _filenameFromContentDisposition(resp.headers.get('Content-Disposition'), fallbackName);
+        const ok = await _downloadBlobAs(blob, filename, pickerType);
+        if (ok) {
+            const successText = window.t ? window.t('character.exportCardSuccess') : '导出成功';
+            showMessage(successText, 'success');
+        }
+    } catch (error) {
+        console.error('导出角色卡失败:', error);
+        const errorText = window.t ? window.t('character.exportCardFailed', { error: error.message }) : `导出失败: ${error.message}`;
+        showMessage(errorText, 'error');
+    }
+}
+
+// 当前视图模式
+let charaCardsViewMode = localStorage.getItem('charaCardsViewMode') || 'card';
+
+// 切换视图
+function switchCharaCardsView(mode) {
+    if (charaCardsViewMode === mode) return;
+    charaCardsViewMode = mode;
+    localStorage.setItem('charaCardsViewMode', mode);
+    // 更新按钮状态
+    document.getElementById('chara-view-card-btn')?.classList.toggle('active', mode === 'card');
+    document.getElementById('chara-view-list-btn')?.classList.toggle('active', mode === 'list');
+
+    const container = document.getElementById('chara-cards-container');
+    if (container) {
+        // 退出动画
+        container.style.opacity = '0';
+        container.style.transform = 'scale(0.97)';
+        setTimeout(function () {
+            renderCharaCardsView();
+            // 入场动画
+            requestAnimationFrame(function () {
+                container.style.opacity = '1';
+                container.style.transform = 'scale(1)';
+            });
+        }, 200);
+    } else {
+        renderCharaCardsView();
+    }
+}
+window.switchCharaCardsView = switchCharaCardsView;
+
+// 搜索过滤
+let _charaSearchQuery = '';
+
+function filterCharaCards(query) {
+    _charaSearchQuery = (query || '').trim().toLowerCase();
+    renderCharaCardsView();
+}
+window.filterCharaCards = filterCharaCards;
+
+// 渲染角色卡视图
+function renderCharaCardsView() {
+    const container = document.getElementById('chara-cards-container');
+    if (!container) return;
+
+    let cards = window.characterCards || [];
+
+    // 应用搜索过滤
+    const hiddenKeys = getHiddenCatgirlKeys();
+
+    if (_charaSearchQuery) {
+        cards = cards.filter(card => {
+            const name = (card.originalName || card.name || '').toLowerCase();
+            return name.includes(_charaSearchQuery);
+        });
+    }
+
+    // 默认过滤掉隐藏的猫娘（除非开启显示已隐藏）
+    if (!window._showHiddenCatgirls) {
+        cards = cards.filter(card => !hiddenKeys.includes(card.originalName || card.name));
+    }
+
+    if (cards.length === 0) {
+        const hiddenArea = container.querySelector('#hidden-catgirl-area');
+        container.querySelectorAll('.chara-cards-grid, .chara-cards-list, .empty-state').forEach(el => el.remove());
+        const emptyDiv = document.createElement('div');
+        emptyDiv.className = 'empty-state';
+        emptyDiv.innerHTML = '<p>' + (window.t ? window.t('steam.noCharacterCards') : '暂无角色卡') + '</p>';
+        if (hiddenArea) {
+            container.insertBefore(emptyDiv, hiddenArea);
+        } else {
+            container.appendChild(emptyDiv);
+        }
+        return;
+    }
+
+    const currentCatgirl = window._workshopCurrentCatgirl || '';
+
+    if (charaCardsViewMode === 'card') {
+        renderCharaCardsGrid(container, cards, currentCatgirl, hiddenKeys);
+    } else {
+        renderCharaCardsList(container, cards, currentCatgirl, hiddenKeys);
+    }
+
+    // 恢复按钮激活状态
+    document.getElementById('chara-view-card-btn')?.classList.toggle('active', charaCardsViewMode === 'card');
+    document.getElementById('chara-view-list-btn')?.classList.toggle('active', charaCardsViewMode === 'list');
+}
+
+// 卡片视图渲染
+function renderCharaCardsGrid(container, cards, currentCatgirl, hiddenKeys) {
+    const grid = document.createElement('div');
+    grid.className = 'chara-cards-grid';
+
+    cards.forEach(card => {
+        const name = card.originalName || card.name;
+        const isCurrent = name === currentCatgirl;
+        const isHidden = (hiddenKeys || []).includes(name);
+
+        const item = document.createElement('div');
+        item.className = 'chara-card-item' + (isCurrent ? ' active' : '') + (isHidden ? ' hidden-catgirl-card' : '');
+        if (isHidden) item.style.opacity = '0.6';
+        item.style.cursor = 'pointer';
+        item.onclick = function (e) {
+            if (e.target.closest('.card-action-btn') || e.target.closest('.card-hide-corner')) return;
+            openCatgirlPanel(card, item);
+        };
+
+        // 左上角隐藏/显示按钮
+        if (!isCurrent) {
+            const cornerBtn = document.createElement('button');
+            cornerBtn.className = 'card-hide-corner';
+            cornerBtn.type = 'button';
+            if (isHidden) {
+                cornerBtn.title = window.t ? window.t('character.show') : '显示';
+                cornerBtn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>';
+                cornerBtn.onclick = function (e) {
+                    e.stopPropagation();
+                    workshopUnhideCatgirl(name);
+                };
+            } else {
+                cornerBtn.title = window.t ? window.t('character.hideCatgirl') : '隐藏猫娘';
+                cornerBtn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>';
+                cornerBtn.onclick = function (e) {
+                    e.stopPropagation();
+                    workshopHideCatgirl(name);
+                };
+            }
+            item.appendChild(cornerBtn);
+        }
+
+        // 角色卡图片
+        const avatar = document.createElement('div');
+        avatar.className = 'card-avatar';
+        const placeholderSpan = document.createElement('span');
+        placeholderSpan.className = 'card-avatar-placeholder';
+        placeholderSpan.textContent = window.t ? window.t('steam.noCardImage') : '暂未设置\n角色卡图片';
+        avatar.appendChild(placeholderSpan);
+
+        // 加载已有的卡面图片（仅在服务器侧确实存在时才请求，避免 404 噪声）
+        if (window._cardFaceNames && window._cardFaceNames.has(name)) {
+            const avatarImg = document.createElement('img');
+            avatarImg.className = 'card-face-img';
+            avatarImg.alt = name;
+            avatarImg.onload = () => {
+                placeholderSpan.style.display = 'none';
+                avatar.insertBefore(avatarImg, placeholderSpan);
+            };
+            avatarImg.src = `/api/characters/catgirl/${encodeURIComponent(name)}/card-face?t=${Date.now()}`;
+        }
+
+        item.appendChild(avatar);
+
+        // 名称
+        const nameDiv = document.createElement('div');
+        nameDiv.className = 'card-name';
+        nameDiv.textContent = name;
+        item.appendChild(nameDiv);
+
+        // 当前角色卡标记（胶囊 + 肇状图标）
+        if (isCurrent) {
+            const badge = document.createElement('span');
+            badge.className = 'card-badge';
+            badge.innerHTML = '<img src="/static/icons/paw_ui.png" class="card-badge-icon" alt="">'
+                + '<span>' + (window.t ? window.t('character.currentCard') : '当前角色卡') + '</span>';
+            item.appendChild(badge);
+        }
+
+        // 操作按钮
+        const actionsRow = document.createElement('div');
+        actionsRow.className = 'card-actions-row';
+
+        const switchBtn = document.createElement('button');
+        switchBtn.className = 'card-action-btn switch-btn';
+        switchBtn.title = window.t ? window.t('character.switchCard') : '切换角色卡';
+        switchBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>'
+            + '<span>' + (window.t ? window.t('character.switchCard') : '切换角色卡') + '</span>';
+        switchBtn.disabled = isCurrent;
+        switchBtn.onclick = function (e) {
+            e.stopPropagation();
+            workshopSwitchCatgirl(name);
+        };
+        actionsRow.appendChild(switchBtn);
+
+        const deleteBtn = document.createElement('button');
+        deleteBtn.className = 'card-action-btn delete-btn';
+        deleteBtn.title = window.t ? window.t('character.deleteCard') : '删除角色卡';
+        deleteBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>'
+            + '<span>' + (window.t ? window.t('character.deleteCard') : '删除角色卡') + '</span>';
+        deleteBtn.onclick = function (e) {
+            e.stopPropagation();
+            workshopDeleteCatgirl(name);
+        };
+        actionsRow.appendChild(deleteBtn);
+
+        item.appendChild(actionsRow);
+        grid.appendChild(item);
+    });
+
+    const hiddenArea = container.querySelector('#hidden-catgirl-area');
+    container.querySelectorAll('.chara-cards-grid, .chara-cards-list, .empty-state').forEach(el => el.remove());
+    if (hiddenArea) {
+        container.insertBefore(grid, hiddenArea);
+    } else {
+        container.appendChild(grid);
+    }
+}
+
+// 列表视图渲染
+function renderCharaCardsList(container, cards, currentCatgirl, hiddenKeys) {
+    const list = document.createElement('div');
+    list.className = 'chara-cards-list';
+
+    cards.forEach(card => {
+        const name = card.originalName || card.name;
+        const isCurrent = name === currentCatgirl;
+        const isHidden = (hiddenKeys || []).includes(name);
+
+        const item = document.createElement('div');
+        item.className = 'chara-list-item' + (isCurrent ? ' active' : '') + (isHidden ? ' hidden-catgirl-item' : '');
+        if (isHidden) item.style.opacity = '0.6';
+        item.style.cursor = 'pointer';
+        item.onclick = function (e) {
+            if (e.target.closest('.list-action-btn')) return;
+            openCatgirlPanel(card, item);
+        };
+
+        // 头像缩略图在列表视图中已移除（列表仅展示名称/状态/操作）
+
+        // 名称
+        const nameDiv = document.createElement('div');
+        nameDiv.className = 'list-name';
+        nameDiv.textContent = name;
+        item.appendChild(nameDiv);
+
+        // 当前角色卡标记
+        if (isCurrent) {
+            const badge = document.createElement('span');
+            badge.className = 'list-badge';
+            badge.innerHTML = '<img src="/static/icons/paw_ui.png" class="list-badge-icon" alt="">'
+                + '<span>' + (window.t ? window.t('character.currentCard') : '当前角色卡') + '</span>';
+            item.appendChild(badge);
+        }
+
+        // 操作按钮
+        const actions = document.createElement('div');
+        actions.className = 'list-actions';
+
+        const switchBtn = document.createElement('button');
+        switchBtn.className = 'list-action-btn switch-btn';
+        switchBtn.title = window.t ? window.t('character.switchCard') : '切换角色卡';
+        switchBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>'
+            + '<span class="list-action-label">' + (window.t ? window.t('character.switchCard') : '切换角色卡') + '</span>';
+        switchBtn.disabled = isCurrent;
+        switchBtn.onclick = function (e) {
+            e.stopPropagation();
+            workshopSwitchCatgirl(name);
+        };
+        actions.appendChild(switchBtn);
+
+        if (isHidden) {
+            const unhideBtn = document.createElement('button');
+            unhideBtn.className = 'list-action-btn';
+            unhideBtn.title = window.t ? window.t('character.show') : '显示';
+            unhideBtn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>'
+                + '<span class="list-action-label">' + (window.t ? window.t('character.show') : '显示') + '</span>';
+            unhideBtn.onclick = function (e) {
+                e.stopPropagation();
+                workshopUnhideCatgirl(name);
+            };
+            actions.appendChild(unhideBtn);
+        } else if (!isCurrent) {
+            const hideBtn = document.createElement('button');
+            hideBtn.className = 'list-action-btn';
+            hideBtn.title = window.t ? window.t('character.hideCatgirl') : '隐藏猫娘';
+            hideBtn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>'
+                + '<span class="list-action-label">' + (window.t ? window.t('character.hideCatgirl') : '隐藏') + '</span>';
+            hideBtn.onclick = function (e) {
+                e.stopPropagation();
+                workshopHideCatgirl(name);
+            };
+            actions.appendChild(hideBtn);
+        }
+
+        const deleteBtn = document.createElement('button');
+        deleteBtn.className = 'list-action-btn delete-btn';
+        deleteBtn.title = window.t ? window.t('character.deleteCard') : '删除角色卡';
+        deleteBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>'
+            + '<span class="list-action-label">' + (window.t ? window.t('character.deleteCard') : '删除角色卡') + '</span>';
+        deleteBtn.onclick = function (e) {
+            e.stopPropagation();
+            workshopDeleteCatgirl(name);
+        };
+        actions.appendChild(deleteBtn);
+
+        item.appendChild(actions);
+        list.appendChild(item);
+    });
+
+    const hiddenArea = container.querySelector('#hidden-catgirl-area');
+    container.querySelectorAll('.chara-cards-grid, .chara-cards-list, .empty-state').forEach(el => el.remove());
+    if (hiddenArea) {
+        container.insertBefore(list, hiddenArea);
+    } else {
+        container.appendChild(list);
+    }
+}
+
+// ===== 角色卡详情面板 =====
+
+let _catgirlPanelOpen = false;
+
+function openCatgirlPanel(card, originEl) {
+    if (_catgirlPanelOpen) return;
+    _catgirlPanelOpen = true;
+
+    const name = card ? (card.originalName || card.name) : null;
+    const rawData = card ? (card.rawData || {}) : {};
+    const isNew = !name;
+
+    // 创建遮罩层
+    const overlay = document.createElement('div');
+    overlay.className = 'catgirl-panel-overlay';
+    overlay.onclick = function (e) {
+        if (e.target === overlay) closeCatgirlPanel();
+    };
+
+    // 创建面板容器
+    const wrapper = document.createElement('div');
+    wrapper.className = 'catgirl-panel-wrapper card-only';
+    wrapper.id = 'catgirl-panel-wrapper';
+
+    // 设置动画起点
+    if (originEl) {
+        const rect = originEl.getBoundingClientRect();
+        const cx = rect.left + rect.width / 2;
+        const cy = rect.top + rect.height / 2;
+        wrapper.style.transformOrigin = cx + 'px ' + cy + 'px';
+    }
+
+    // 左侧：卡片预览
+    const leftSection = document.createElement('div');
+    leftSection.className = 'catgirl-panel-left';
+
+    const cardImage = document.createElement('div');
+    cardImage.className = 'catgirl-panel-card-image';
+    cardImage.setAttribute('data-edit-label', window.t ? window.t('character.editCardFace') : '✎ 编辑卡面');
+    const imgPlaceholder = document.createElement('span');
+    imgPlaceholder.className = 'card-avatar-placeholder';
+    imgPlaceholder.textContent = window.t ? window.t('steam.noCardImage') : '暂未设置\n角色卡图片';
+    cardImage.appendChild(imgPlaceholder);
+
+    // 加载已有的卡面图片（仅在服务器侧确实存在时才请求，避免 404 噪声）
+    if (name && window._cardFaceNames && window._cardFaceNames.has(name)) {
+        const cardFaceUrl = `/api/characters/catgirl/${encodeURIComponent(name)}/card-face`;
+        const img = document.createElement('img');
+        img.className = 'card-face-img';
+        img.alt = '角色卡面';
+        img.onload = () => {
+            imgPlaceholder.style.display = 'none';
+            cardImage.insertBefore(img, imgPlaceholder);
+        };
+        img.src = cardFaceUrl + '?t=' + Date.now();
+    }
+
+    // 点击卡面打开角色卡制作页面
+    cardImage.addEventListener('click', () => {
+        // 优先使用表单中当前填写的档案名（新建猫娘可能已临时保存）
+        const form = cardImage.closest('.catgirl-panel-wrapper')?.querySelector('form');
+        const currentName = form?.querySelector('[name="档案名"]')?.value || name;
+        if (!currentName) {
+            showMessage(window.t ? window.t('character.fillProfileNameFirst') : '请先填写猫娘档案名', 'warning');
+            return;
+        }
+        const makerUrl = `/card_maker?name=${encodeURIComponent(currentName)}&mode=maker`;
+        window.open(makerUrl, '_blank', 'width=1200,height=800');
+    });
+
+    // 监听角色卡制作页面的保存消息
+    const onCardFaceMessage = (event) => {
+        // 获取当前实际的档案名（新建猫娘时 name 为 null，需要从表单读取）
+        const form = cardImage.closest('.catgirl-panel-wrapper')?.querySelector('form');
+        const currentName = form?.querySelector('[name="档案名"]')?.value || name;
+        if (!currentName) return;
+
+        if (event.data && event.data.type === 'card-face-updated' && event.data.name === currentName) {
+            const ts = event.data.timestamp;
+            const newSrc = `/api/characters/catgirl/${encodeURIComponent(currentName)}/card-face?t=${ts}`;
+            // 更新缓存：标记该名字现在已有卡面
+            if (window._cardFaceNames) window._cardFaceNames.add(currentName);
+
+            // 更新面板卡面图片
+            let panelImg = cardImage.querySelector('.card-face-img');
+            if (!panelImg) {
+                panelImg = document.createElement('img');
+                panelImg.className = 'card-face-img';
+                panelImg.alt = '角色卡面';
+                cardImage.insertBefore(panelImg, imgPlaceholder);
+                imgPlaceholder.style.display = 'none';
+            }
+            panelImg.src = newSrc;
+
+            // 同步更新角色列表中的卡面
+            document.querySelectorAll('.chara-card-item').forEach(cardItem => {
+                const cardName = cardItem.querySelector('.card-name');
+                if (cardName && cardName.textContent === currentName) {
+                    const gridAvatar = cardItem.querySelector('.card-avatar');
+                    if (gridAvatar) {
+                        let gridImg = gridAvatar.querySelector('.card-face-img');
+                        const gridPlaceholder = gridAvatar.querySelector('.card-avatar-placeholder');
+                        if (!gridImg) {
+                            gridImg = document.createElement('img');
+                            gridImg.className = 'card-face-img';
+                            gridImg.alt = currentName;
+                            if (gridPlaceholder) {
+                                gridAvatar.insertBefore(gridImg, gridPlaceholder);
+                                gridPlaceholder.style.display = 'none';
+                            } else {
+                                gridAvatar.appendChild(gridImg);
+                            }
+                        }
+                        gridImg.src = newSrc;
+                    }
+                }
+            });
+        }
+    };
+    window.addEventListener('message', onCardFaceMessage);
+    // 面板关闭时清理监听器（利用MutationObserver）
+    const panelCleanupObserver = new MutationObserver(() => {
+        if (!document.contains(cardImage)) {
+            window.removeEventListener('message', onCardFaceMessage);
+            panelCleanupObserver.disconnect();
+        }
+    });
+    panelCleanupObserver.observe(document.body, { childList: true, subtree: true });
+
+    leftSection.appendChild(cardImage);
+
+    // === 卡面信息 ===
+    const metaBlock = document.createElement('div');
+    metaBlock.className = 'card-meta-block';
+    metaBlock.id = 'card-meta-block';
+    leftSection.appendChild(metaBlock);
+    renderCardMetaBlock(metaBlock, name, isNew, rawData);
+
+    // === 角色卡操作按钮（仅已存在的猫娘） ===
+    if (!isNew && name) {
+        const actions = document.createElement('div');
+        actions.className = 'card-panel-actions';
+
+        const exportBtn = document.createElement('button');
+        exportBtn.type = 'button';
+        exportBtn.className = 'card-panel-action-btn export-btn';
+        exportBtn.title = window.t ? window.t('character.exportCardOnly') : '导出角色卡';
+        exportBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>'
+            + '<span>' + (window.t ? window.t('character.exportCardOnly') : '导出') + '</span>';
+        exportBtn.onclick = function (e) {
+            e.stopPropagation();
+            exportCharacterCard(name);
+        };
+        actions.appendChild(exportBtn);
+
+        const switchBtn = document.createElement('button');
+        switchBtn.type = 'button';
+        switchBtn.className = 'card-panel-action-btn switch-btn';
+        const isCurrentChara = (window._workshopCurrentCatgirl || '') === name;
+        switchBtn.disabled = isCurrentChara;
+        switchBtn.title = window.t ? window.t('character.switchCard') : '切换角色卡';
+        switchBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>'
+            + '<span>' + (window.t ? window.t('character.switchCard') : '切换') + '</span>';
+        switchBtn.onclick = function (e) {
+            e.stopPropagation();
+            workshopSwitchCatgirl(name);
+        };
+        actions.appendChild(switchBtn);
+
+        const deleteBtn = document.createElement('button');
+        deleteBtn.type = 'button';
+        deleteBtn.className = 'card-panel-action-btn delete-btn';
+        deleteBtn.disabled = isCurrentChara;
+        deleteBtn.title = isCurrentChara
+            ? (window.t ? window.t('character.cannotDeleteCurrentCard') : '当前正在使用的角色卡无法删除，请先切换到其他角色卡')
+            : (window.t ? window.t('character.deleteCard') : '删除角色卡');
+        deleteBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>'
+            + '<span>' + (window.t ? window.t('character.deleteCard') : '删除') + '</span>';
+        deleteBtn.onclick = function (e) {
+            e.stopPropagation();
+            if (isCurrentChara) {
+                if (typeof showMessage === 'function') {
+                    showMessage(window.t ? window.t('character.cannotDeleteCurrentCard') : '当前正在使用的角色卡无法删除，请先切换到其他角色卡', 'error');
+                }
+                return;
+            }
+            workshopDeleteCatgirl(name);
+            // 删除会刷新列表，关闭面板
+            setTimeout(() => closeCatgirlPanel(), 300);
+        };
+        actions.appendChild(deleteBtn);
+
+        leftSection.appendChild(actions);
+    }
+
+    wrapper.appendChild(leftSection);
+
+    // 右侧：编辑表单
+    const rightSection = document.createElement('div');
+    rightSection.className = 'catgirl-panel-right';
+
+    // === 面板标题栏 ===
+    const headerBar = document.createElement('div');
+    headerBar.className = 'panel-header-bar';
+
+    const tabsContainer = document.createElement('div');
+    tabsContainer.className = 'panel-tabs';
+
+    // 滑动指示器
+    const indicator = document.createElement('div');
+    indicator.className = 'panel-tabs-indicator';
+    tabsContainer.appendChild(indicator);
+
+    // 设定标签
+    const settingsTab = document.createElement('button');
+    settingsTab.type = 'button';
+    settingsTab.className = 'panel-tab active';
+    settingsTab.dataset.tab = 'settings';
+    const settingsIcon = document.createElement('img');
+    settingsIcon.src = '/static/icons/set_on.png';
+    settingsIcon.className = 'panel-tab-icon';
+    settingsIcon.alt = '';
+    settingsTab.appendChild(settingsIcon);
+    settingsTab.appendChild(document.createTextNode(window.t ? window.t('character.settings') : '设定'));
+    tabsContainer.appendChild(settingsTab);
+
+    if (!isNew) {
+        // Steam 标签
+        const steamTab = document.createElement('button');
+        steamTab.type = 'button';
+        steamTab.className = 'panel-tab';
+        steamTab.dataset.tab = 'steam';
+        const steamIcon = document.createElement('img');
+        steamIcon.src = '/static/icons/Steam_icon_logo.png';
+        steamIcon.className = 'panel-tab-icon';
+        steamIcon.alt = '';
+        steamTab.appendChild(steamIcon);
+        steamTab.appendChild(document.createTextNode('Steam'));
+        tabsContainer.appendChild(steamTab);
+    }
+
+    headerBar.appendChild(tabsContainer);
+
+    // 关闭按钮（统一样式）
+    const closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.className = 'panel-close-btn';
+    closeBtn.title = window.t ? window.t('common.close') : '关闭';
+    const closeBtnImg = document.createElement('img');
+    closeBtnImg.src = '/static/icons/close_button.png';
+    closeBtnImg.alt = window.t ? window.t('common.close') : '关闭';
+    closeBtn.appendChild(closeBtnImg);
+    closeBtn.onclick = closeCatgirlPanel;
+    headerBar.appendChild(closeBtn);
+
+    rightSection.appendChild(headerBar);
+
+    // === 设定标签内容 ===
+    const settingsContent = document.createElement('div');
+    settingsContent.className = 'panel-tab-content panel-tab-settings active';
+    buildCatgirlDetailForm(name, rawData, isNew, settingsContent);
+    rightSection.appendChild(settingsContent);
+
+    // === Steam 标签内容 ===
+    if (!isNew) {
+        const steamContent = document.createElement('div');
+        steamContent.className = 'panel-tab-content panel-tab-steam';
+        rightSection.appendChild(steamContent);
+
+        // 标签切换逻辑（含滑动指示器 + 幕布转场）
+        const updateIndicator = function () {
+            const activeTab = tabsContainer.querySelector('.panel-tab.active');
+            if (activeTab && indicator) {
+                indicator.style.left = activeTab.offsetLeft + 'px';
+                indicator.style.width = activeTab.offsetWidth + 'px';
+            }
+        };
+
+        // 幕布转场特效
+        const CURTAIN_SCATTER_ICONS = [
+            '/static/icons/star.png',
+            '/static/icons/paw_ui.png',
+            '/static/icons/star.png',
+            '/static/icons/paw_ui.png'
+        ];
+        const spawnCurtainTransition = function (targetTabName, reverse) {
+            const curtain = document.createElement('div');
+            curtain.className = 'panel-transition-curtain' + (reverse ? ' curtain-reverse' : '');
+
+            // 幕布色块
+            const sweep = document.createElement('div');
+            sweep.className = 'curtain-sweep';
+            curtain.appendChild(sweep);
+
+            // 散落小图标（跟着幕布走）
+            for (let i = 0; i < 10; i++) {
+                const icon = document.createElement('img');
+                icon.className = 'curtain-icon';
+                icon.src = CURTAIN_SCATTER_ICONS[i % CURTAIN_SCATTER_ICONS.length];
+                const size = 18 + Math.random() * 20;
+                icon.style.width = size + 'px';
+                icon.style.height = size + 'px';
+                icon.style.top = (5 + Math.random() * 85) + '%';
+                icon.style.left = (5 + Math.random() * 85) + '%';
+                icon.style.animationDelay = (0.15 + i * 0.04) + 's';
+                sweep.appendChild(icon);
+            }
+
+            // 中央大图标 — 根据目标标签页显示不同图标
+            const centerIcon = document.createElement('img');
+            centerIcon.className = 'curtain-center-icon';
+            if (targetTabName === 'steam') {
+                centerIcon.src = '/static/icons/Steam_icon_logo.png';
+                centerIcon.style.width = '72px';
+                centerIcon.style.height = '72px';
+                centerIcon.style.background = 'white';
+                centerIcon.style.borderRadius = '50%';
+                centerIcon.style.padding = '4px';
+                centerIcon.style.boxShadow = '0 4px 16px rgba(0,100,200,0.25)';
+            } else {
+                centerIcon.src = '/static/icons/set_on.png';
+                centerIcon.style.width = '64px';
+                centerIcon.style.height = '64px';
+            }
+            centerIcon.style.animationDelay = '0.18s';
+            curtain.appendChild(centerIcon);
+
+            rightSection.appendChild(curtain);
+            setTimeout(function () { curtain.remove(); }, 900);
+        };
+
+        let _tabSwitching = false;
+
+        // 初始化指示器位置（等 DOM 渲染后）
+        requestAnimationFrame(updateIndicator);
+
+        headerBar.querySelectorAll('.panel-tab').forEach(tab => {
+            tab.addEventListener('click', function () {
+                if (_tabSwitching) return;
+                const targetTab = this.dataset.tab;
+                const currentActive = rightSection.querySelector('.panel-tab-content.active');
+                const targetClass = 'panel-tab-' + targetTab;
+                const target = rightSection.querySelector('.' + targetClass);
+                if (!target || target === currentActive) return;
+
+                // 计算动画方向：点击位于当前激活 tab 左侧的则反向动画
+                const allTabs = Array.from(headerBar.querySelectorAll('.panel-tab'));
+                const currentActiveTabBtn = headerBar.querySelector('.panel-tab.active');
+                const currentIdx = currentActiveTabBtn ? allTabs.indexOf(currentActiveTabBtn) : -1;
+                const targetIdx = allTabs.indexOf(this);
+                const reverseDirection = (currentIdx >= 0 && targetIdx >= 0 && targetIdx < currentIdx);
+
+                _tabSwitching = true;
+                headerBar.querySelectorAll('.panel-tab').forEach(t => t.classList.remove('active'));
+                this.classList.add('active');
+                updateIndicator();
+
+                // 根据当前激活状态切换设定齿轮图标 on/off
+                if (settingsIcon) {
+                    settingsIcon.src = (targetTab === 'settings')
+                        ? '/static/icons/set_on.png'
+                        : '/static/icons/set_off.png';
+                }
+
+                // 播放幕布转场
+                spawnCurtainTransition(targetTab, reverseDirection);
+
+                // 退出当前页 — absolute定位防止撑高容器
+                if (currentActive) {
+                    currentActive.classList.remove('active');
+                    currentActive.classList.add('tab-exit');
+                    if (reverseDirection) currentActive.classList.add('tab-reverse');
+                }
+
+                // 幕布扫过中央时切入新页
+                setTimeout(function () {
+                    if (currentActive) {
+                        currentActive.classList.remove('tab-exit');
+                        currentActive.classList.remove('tab-reverse');
+                    }
+                    target.classList.add('active', 'tab-enter');
+                    if (reverseDirection) target.classList.add('tab-reverse');
+
+                    // Steam 标签变为可见后，强制刷新模型预览尺寸并重新计算模型位置
+                    if (targetTab === 'steam') {
+                        requestAnimationFrame(function () {
+                            // Live2D resize + 重新应用模型设置
+                            if (live2dPreviewManager && live2dPreviewManager.pixi_app) {
+                                const l2dContainer = document.getElementById('live2d-preview-content');
+                                if (l2dContainer && l2dContainer.clientWidth > 0 && l2dContainer.clientHeight > 0) {
+                                    live2dPreviewManager.pixi_app.renderer.resize(l2dContainer.clientWidth, l2dContainer.clientHeight);
+                                    // 重新计算模型缩放和位置（修复在隐藏标签中加载导致的0尺寸问题）
+                                    if (live2dPreviewManager.currentModel) {
+                                        live2dPreviewManager.applyModelSettings(live2dPreviewManager.currentModel, {});
+                                        if (live2dPreviewManager.app && live2dPreviewManager.app.renderer) {
+                                            live2dPreviewManager.app.renderer.render(live2dPreviewManager.app.stage);
+                                        }
+                                    }
+                                }
+                            }
+                            // VRM resize
+                            const vrmContainer = document.getElementById('vrm-preview-container');
+                            if (vrmContainer && workshopVrmManager && workshopVrmManager.renderer) {
+                                workshopVrmManager.renderer.setSize(vrmContainer.clientWidth, vrmContainer.clientHeight);
+                            }
+                            // MMD resize
+                            const mmdContainer = document.getElementById('mmd-preview-container');
+                            if (mmdContainer && workshopMmdManager && workshopMmdManager.renderer) {
+                                workshopMmdManager.renderer.setSize(mmdContainer.clientWidth, mmdContainer.clientHeight);
+                            }
+                        });
+                    }
+
+                    // 入场动画结束后清理class
+                    setTimeout(function () {
+                        target.classList.remove('tab-enter');
+                        target.classList.remove('tab-reverse');
+                        _tabSwitching = false;
+                    }, 460);
+                }, 320);
+            });
+        });
+    } else {
+        // 单标签模式也初始化指示器
+        requestAnimationFrame(function () {
+            if (indicator && settingsTab) {
+                indicator.style.left = settingsTab.offsetLeft + 'px';
+                indicator.style.width = settingsTab.offsetWidth + 'px';
+            }
+        });
+    }
+
+    wrapper.appendChild(rightSection);
+
+    overlay.appendChild(wrapper);
+    document.body.appendChild(overlay);
+
+    // 动画 Phase 1: 卡面移动到中间
+    requestAnimationFrame(() => {
+        overlay.classList.add('active');
+        wrapper.classList.add('phase-center');
+        // Phase 2: 展开右侧表单
+        setTimeout(() => {
+            wrapper.classList.remove('phase-center');
+            wrapper.classList.add('phase-expand');
+
+            // 在展开动画刚开始时立即测量并调整 textarea 高度，
+            // 这样多行内容（>3 行）的输入框在展开过程中就直接呈现出
+            // 「带滚动条+左下圆角」的最终形态，不再出现展开后才变化的延迟感。
+            // 因为 phase-expand 仅做 opacity / translateX 过渡（宽度已是终态），
+            // textarea 的 scrollHeight 已可正确测量。
+            const _resizeAllPanelTextareas = () => {
+                const settingsForm = rightSection.querySelector('form');
+                if (!settingsForm) return;
+                settingsForm.querySelectorAll('textarea').forEach(ta => {
+                    ta.style.height = 'auto';
+                    const lineHeight = parseFloat(getComputedStyle(ta).lineHeight) || 20;
+                    const maxHeight = lineHeight * 3 + 10;
+                    const scrollHeight = ta.scrollHeight;
+                    ta.style.height = Math.min(scrollHeight, maxHeight) + 'px';
+                    const fieldRow = ta.closest('.field-row');
+                    if (fieldRow) {
+                        if (scrollHeight > maxHeight) {
+                            ta.style.overflowY = 'auto';
+                            fieldRow.classList.add('has-scrollbar');
+                        } else {
+                            ta.style.overflowY = 'hidden';
+                            fieldRow.classList.remove('has-scrollbar');
+                        }
+                    }
+                });
+            };
+            // 双 rAF 等一次 layout flush，再做测量
+            requestAnimationFrame(() => requestAnimationFrame(_resizeAllPanelTextareas));
+            // 兜底：动画结束后再测量一次（处理字体延迟加载等情况）
+            setTimeout(_resizeAllPanelTextareas, 500);
+
+            // 延迟初始化 Steam 标签页内容（等待面板展开动画完成后）
+            if (!isNew) {
+                setTimeout(() => {
+                    const steamContainer = rightSection.querySelector('.panel-tab-steam');
+                    if (steamContainer && !steamContainer.dataset.initialized) {
+                        steamContainer.dataset.initialized = 'true';
+                        buildSteamTabContent(name, rawData, card, steamContainer);
+                    }
+                }, 500);
+            }
+        }, 500);
+    });
+}
+window.openCatgirlPanel = openCatgirlPanel;
+
+function openNewCatgirlPanel() {
+    openCatgirlPanel(null, null);
+}
+window.openNewCatgirlPanel = openNewCatgirlPanel;
+
+function closeCatgirlPanel() {
+    const overlay = document.querySelector('.catgirl-panel-overlay');
+    if (!overlay) return;
+
+    // 清理模型预览资源（如果 Steam 标签页曾加载过）
+    try {
+        if (typeof disposeWorkshopVrm === 'function') disposeWorkshopVrm();
+        if (typeof disposeWorkshopMmd === 'function') disposeWorkshopMmd();
+        if (typeof clearLive2DPreview === 'function') clearLive2DPreview();
+    } catch (e) {
+        console.warn('[Panel] 清理预览资源时出错:', e);
+    }
+
+    const wrapper = overlay.querySelector('.catgirl-panel-wrapper');
+    if (wrapper) {
+        wrapper.classList.remove('phase-expand');
+        wrapper.classList.add('phase-center');
+    }
+
+    setTimeout(() => {
+        overlay.classList.remove('active');
+        if (wrapper) wrapper.classList.remove('phase-center');
+        setTimeout(() => {
+            overlay.remove();
+            _catgirlPanelOpen = false;
+        }, 400);
+    }, 300);
+}
+window.closeCatgirlPanel = closeCatgirlPanel;
+
+function buildCatgirlDetailForm(name, rawData, isNew, container) {
+    let cat = rawData || {};
+    let form = document.createElement('form');
+    form.id = name ? 'catgirl-form-' + name : 'catgirl-form-new';
+    form.style.padding = '0';
+    form._catgirlName = name;
+    form.onsubmit = function (e) { e.preventDefault(); };
+
+    // 档案名
+    const baseWrapper = document.createElement('div');
+    baseWrapper.className = 'field-row-wrapper';
+
+    const baseLabel = document.createElement('label');
+    const profileNameText = (window.t && typeof window.t === 'function') ? window.t('character.profileName') : '档案名';
+    const requiredText = (window.t && typeof window.t === 'function') ? window.t('character.required') : '*';
+    baseLabel.innerHTML = '<span data-i18n="character.profileName">' + profileNameText + '</span><span style="color:red" data-i18n="character.required">' + requiredText + '</span>';
+    baseWrapper.appendChild(baseLabel);
+
+    const fieldRow = document.createElement('div');
+    fieldRow.className = 'field-row';
+    const nameInput = document.createElement('input');
+    nameInput.type = 'text';
+    nameInput.name = '档案名';
+    nameInput.required = true;
+    nameInput.value = name || '';
+    if (!isNew) nameInput.readOnly = true;
+    // 新建猫娘时，名称变化后重置自动创建状态
+    if (isNew) {
+        nameInput.addEventListener('change', function () {
+            if (form._autoCreated && form._autoCreatedName !== nameInput.value.trim()) {
+                form._autoCreated = false;
+                form._autoCreatedName = '';
+            }
+        });
+    }
+    _panelAttachProfileNameLimiter(nameInput);
+    fieldRow.appendChild(nameInput);
+    baseWrapper.appendChild(fieldRow);
+
+    // 重命名按钮（非新建时显示）
+    if (!isNew) {
+        const renameBtn = document.createElement('button');
+        renameBtn.type = 'button';
+        renameBtn.className = 'btn sm';
+        renameBtn.id = 'rename-catgirl-btn';
+        renameBtn.style.marginLeft = '8px';
+        renameBtn.style.minWidth = '120px';
+        const renameText = (window.t && typeof window.t === 'function')
+            ? '<img src="/static/icons/edit.png" alt="" class="edit-icon"> <span data-i18n="character.rename">' + window.t('character.rename') + '</span>'
+            : '<img src="/static/icons/edit.png" alt="" class="edit-icon"> 修改名称';
+        renameBtn.innerHTML = renameText;
+        renameBtn.addEventListener('click', async function () {
+            let newName;
+            if (typeof showPrompt === 'function') {
+                newName = await showPrompt(
+                    window.t ? window.t('character.renamePrompt') : '请输入新的档案名',
+                    name,
+                    window.t ? window.t('character.renameTitle') : '修改名称'
+                );
+            } else {
+                newName = prompt(window.t ? window.t('character.renamePrompt') : '请输入新的档案名', name);
+            }
+            if (!newName || newName.trim() === '' || newName.trim() === name) return;
+            try {
+                const resp = await fetch('/api/characters/catgirl/' + encodeURIComponent(name) + '/rename', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ new_name: newName.trim() })
+                });
+                const result = await resp.json();
+                if (result.success) {
+                    closeCatgirlPanel();
+                    await loadCharacterCards();
+                    showMessage(window.t ? window.t('character.renameSuccess') : '重命名成功', 'success');
+                } else {
+                    const errMsg = result.error || (window.t ? window.t('character.renameFailed') : '重命名失败');
+                    if (typeof showAlert === 'function') {
+                        await showAlert(errMsg);
+                    } else {
+                        alert(errMsg);
+                    }
+                }
+            } catch (e) {
+                console.error('重命名失败:', e);
+                if (typeof showAlert === 'function') {
+                    await showAlert(window.t ? window.t('character.renameError') : '重命名时发生错误');
+                }
+            }
+        });
+        baseWrapper.appendChild(renameBtn);
+    }
+    form.appendChild(baseWrapper);
+
+    // 自定义字段
+    const ALL_RESERVED = typeof getWorkshopHiddenFields === 'function' ? ['档案名', ...getWorkshopHiddenFields()] : ['档案名'];
+    Object.keys(cat).forEach(k => {
+        if (ALL_RESERVED.includes(k)) return;
+        const val = cat[k];
+        if (val === null || val === undefined) return;
+
+        const wrapper = document.createElement('div');
+        wrapper.className = 'field-row-wrapper custom-row';
+
+        const deleteFieldText = (window.t && typeof window.t === 'function')
+            ? '<img src="/static/icons/delete.png" alt="" class="delete-icon"> <span data-i18n="character.deleteField">' + window.t('character.deleteField') + '</span>'
+            : '<img src="/static/icons/delete.png" alt="" class="delete-icon"> 删除设定';
+
+        const labelEl = document.createElement('label');
+        _panelSetFieldLabel(labelEl, k);
+        wrapper.appendChild(labelEl);
+
+        const fr = document.createElement('div');
+        fr.className = 'field-row';
+        const textareaEl = document.createElement('textarea');
+        textareaEl.name = k;
+        textareaEl.rows = 1;
+        textareaEl.placeholder = (window.t && typeof window.t === 'function')
+            ? window.t('character.detailDescriptionPlaceholder')
+            : '可输入详细描述';
+        textareaEl.value = cat[k];
+        fr.appendChild(textareaEl);
+        wrapper.appendChild(fr);
+
+        const delBtn = document.createElement('button');
+        delBtn.type = 'button';
+        delBtn.className = 'btn sm delete';
+        delBtn.innerHTML = deleteFieldText;
+        delBtn.addEventListener('click', function () {
+            wrapper.remove();
+            const sb = form.querySelector('#save-button');
+            const cb = form.querySelector('#cancel-button');
+            if (sb) sb.style.display = '';
+            if (cb) cb.style.display = '';
+        });
+        wrapper.appendChild(delBtn);
+
+        form.appendChild(wrapper);
+
+        // textarea自动调整高度
+        _panelAttachTextareaAutoResize(textareaEl);
+    });
+
+    // 新增设定按钮区
+    const addFieldArea = document.createElement('div');
+    addFieldArea.className = 'btn-area add-field-area';
+    addFieldArea.style.display = 'flex';
+    addFieldArea.style.alignItems = 'center';
+    addFieldArea.style.marginTop = '10px';
+    addFieldArea.style.marginBottom = '10px';
+    addFieldArea.style.gap = '12px';
+
+    const addFieldLabelPlaceholder = document.createElement('div');
+    addFieldLabelPlaceholder.style.minWidth = '80px';
+    addFieldLabelPlaceholder.style.flexShrink = '0';
+    addFieldArea.appendChild(addFieldLabelPlaceholder);
+
+    const addFieldSpacer = document.createElement('div');
+    addFieldSpacer.style.flex = '1';
+    addFieldArea.appendChild(addFieldSpacer);
+
+    const addFieldBtn = document.createElement('button');
+    addFieldBtn.type = 'button';
+    addFieldBtn.className = 'btn sm add';
+    addFieldBtn.id = 'panel-add-catgirl-field-btn';
+    addFieldBtn.style.minWidth = '120px';
+    const addFieldText = (window.t && typeof window.t === 'function')
+        ? '<img src="/static/icons/add.png" alt="" class="add-icon"> <span data-i18n="character.addField">' + window.t('character.addField') + '</span>'
+        : '<img src="/static/icons/add.png" alt="" class="add-icon"> 新增设定';
+    addFieldBtn.innerHTML = addFieldText;
+    addFieldBtn.onclick = async function () {
+        let key;
+        if (typeof showPrompt === 'function') {
+            key = await showPrompt(
+                window.t ? window.t('character.addCatgirlFieldPrompt') : '请输入新设定的名称（键名）',
+                '',
+                window.t ? window.t('character.addCatgirlFieldTitle') : '新增猫娘设定'
+            );
+        } else {
+            key = prompt(window.t ? window.t('character.addCatgirlFieldPrompt') : '请输入新设定的名称（键名）');
+        }
+        const FORBIDDEN = ALL_RESERVED;
+        if (!key || FORBIDDEN.includes(key)) return;
+        if (form.querySelector('[name="' + CSS.escape(key) + '"]')) {
+            if (typeof showAlert === 'function') {
+                await showAlert(window.t ? window.t('character.fieldExists') : '该设定已存在');
+            } else {
+                alert(window.t ? window.t('character.fieldExists') : '该设定已存在');
+            }
+            return;
+        }
+        const wrapper = document.createElement('div');
+        wrapper.className = 'field-row-wrapper custom-row';
+
+        const deleteFieldText = (window.t && typeof window.t === 'function')
+            ? '<img src="/static/icons/delete.png" alt="" class="delete-icon"> <span data-i18n="character.deleteField">' + window.t('character.deleteField') + '</span>'
+            : '<img src="/static/icons/delete.png" alt="" class="delete-icon"> 删除设定';
+
+        const labelEl = document.createElement('label');
+        _panelSetFieldLabel(labelEl, key);
+        wrapper.appendChild(labelEl);
+
+        const fr = document.createElement('div');
+        fr.className = 'field-row';
+        const textareaEl = document.createElement('textarea');
+        textareaEl.name = key;
+        textareaEl.rows = 1;
+        textareaEl.placeholder = (window.t && typeof window.t === 'function')
+            ? window.t('character.detailDescriptionPlaceholder')
+            : '可输入详细描述';
+        fr.appendChild(textareaEl);
+        wrapper.appendChild(fr);
+
+        const delBtn = document.createElement('button');
+        delBtn.type = 'button';
+        delBtn.className = 'btn sm delete';
+        delBtn.innerHTML = deleteFieldText;
+        delBtn.addEventListener('click', function () {
+            wrapper.remove();
+            if (saveButton) saveButton.style.display = '';
+            if (cancelButton) cancelButton.style.display = '';
+        });
+        wrapper.appendChild(delBtn);
+
+        form.insertBefore(wrapper, addFieldArea);
+        _panelAttachTextareaAutoResize(textareaEl);
+        if (!isNew && name) {
+            panelAttachAutoSaveListener(textareaEl, name);
+        }
+        if (saveButton) saveButton.style.display = '';
+        if (cancelButton) cancelButton.style.display = '';
+    };
+    addFieldArea.appendChild(addFieldBtn);
+    form.appendChild(addFieldArea);
+
+    // 进阶设定折叠
+    const fold = document.createElement('div');
+    fold.className = 'fold open';
+
+    const foldToggle = document.createElement('div');
+    foldToggle.className = 'fold-toggle';
+    const arrowSpan = document.createElement('img');
+    arrowSpan.className = 'arrow';
+    arrowSpan.src = '/static/icons/dropdown_arrow.png';
+    arrowSpan.alt = '';
+    arrowSpan.style.width = '32px';
+    arrowSpan.style.height = '32px';
+    arrowSpan.style.verticalAlign = 'middle';
+    arrowSpan.style.transition = 'transform 0.2s';
+    arrowSpan.style.transform = 'rotate(0deg)';
+    foldToggle.appendChild(arrowSpan);
+    foldToggle.appendChild(document.createTextNode(' '));
+    const toggleText = document.createTextNode(window.t ? window.t('character.advancedSettings') : '进阶设定');
+    foldToggle.appendChild(toggleText);
+    foldToggle.onclick = function () {
+        fold.classList.toggle('open');
+        arrowSpan.style.transform = fold.classList.contains('open') ? 'rotate(0deg)' : 'rotate(-90deg)';
+        // localStorage 持久化折叠状态
+        if (name) {
+            localStorage.setItem('catgirl_advanced_' + name, fold.classList.contains('open'));
+        }
+    };
+    fold.appendChild(foldToggle);
+
+    const foldContent = document.createElement('div');
+    foldContent.className = 'fold-content';
+
+    // 模型设定
+    const modelWrapper = document.createElement('div');
+    modelWrapper.className = 'field-row-wrapper';
+    const modelLabel = document.createElement('label');
+    modelLabel.textContent = window.t ? window.t('character.modelSettings') : '模型设定';
+    modelLabel.style.fontSize = '1rem';
+    modelWrapper.appendChild(modelLabel);
+
+    const modelLink = document.createElement('span');
+    modelLink.className = 'live2d-link';
+    modelLink.title = window.t ? window.t('character.manageModel') : '点击管理模型';
+    modelLink.style.color = '#40C5F1';
+    modelLink.style.cursor = 'pointer';
+    modelLink.style.textDecoration = 'underline';
+    modelLink.style.display = 'flex';
+    modelLink.style.alignItems = 'center';
+
+    // 辅助函数：检查模型路径是否有效
+    function validateModelPath(path) {
+        if (path === undefined || path === null) return '';
+        if (typeof path !== 'string') path = String(path);
+        const strValue = path.trim();
+        if (strValue === '' || strValue === 'undefined' || strValue === 'null') return '';
+        if (strValue.toLowerCase().includes('undefined') || strValue.toLowerCase().includes('null')) return '';
+        return strValue;
+    }
+
+    const modelType = cat['model_type'] || 'live2d';
+    const normalizedModelType = modelType === 'vrm' ? 'live3d' : modelType;
+    let modelDisplayText = '';
+
+    const mmdPath = validateModelPath(cat['mmd'])
+        || validateModelPath(cat['_reserved']?.avatar?.mmd?.model_path);
+    const vrmPath = validateModelPath(cat['vrm'])
+        || validateModelPath(cat['_reserved']?.avatar?.vrm?.model_path);
+    const live2dPath = validateModelPath(cat['live2d']);
+
+    const live3dSubType = String(
+        cat['_reserved']?.avatar?.live3d_sub_type || cat['live3d_sub_type'] || ''
+    ).trim().toLowerCase();
+
+    if (normalizedModelType === 'live3d' && live3dSubType === 'mmd' && mmdPath) {
+        modelDisplayText = (mmdPath.split(/[\\/]/).pop() || mmdPath).replace(/\.(pmx|pmd)$/i, '');
+    } else if (normalizedModelType === 'live3d' && live3dSubType === 'vrm' && vrmPath) {
+        modelDisplayText = (vrmPath.split(/[\\/]/).pop() || vrmPath).replace(/\.vrm$/i, '');
+    } else if (normalizedModelType === 'live3d' && mmdPath && !vrmPath) {
+        modelDisplayText = (mmdPath.split(/[\\/]/).pop() || mmdPath).replace(/\.(pmx|pmd)$/i, '');
+    } else if (normalizedModelType === 'live3d' && vrmPath) {
+        modelDisplayText = (vrmPath.split(/[\\/]/).pop() || vrmPath).replace(/\.vrm$/i, '');
+    } else if (live2dPath) {
+        modelDisplayText = live2dPath;
+    } else {
+        modelDisplayText = window.t ? window.t('character.modelNotSet') : '未设置';
+    }
+
+    modelLink.textContent = modelDisplayText || (window.t ? window.t('character.modelNotSet') : '未设置');
+    modelWrapper.appendChild(modelLink);
+    foldContent.appendChild(modelWrapper);
+
+    // 模型设定弹窗逻辑
+    modelLink.onclick = async function () {
+        const catgirlName = form.querySelector('[name="档案名"]').value;
+        if (!catgirlName) {
+            if (typeof showAlert === 'function') {
+                await showAlert(window.t ? window.t('character.fillProfileNameFirst') : '请先填写猫娘档案名，然后再设置模型');
+            }
+            return;
+        }
+        // 新建猫娘时，先临时保存（自动创建角色记录），确保模型管理器能正确关联
+        if (isNew && !form._autoCreated) {
+            try {
+                const tmpResp = await fetch('/api/characters/catgirl', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ '档案名': catgirlName })
+                });
+                if (tmpResp.ok) {
+                    form._autoCreated = true;
+                    form._autoCreatedName = catgirlName;
+                } else {
+                    const errData = await tmpResp.json().catch(() => ({}));
+                    showMessage((window.t ? window.t('character.tempSaveFailed', { error: errData.error || '' }) : '临时保存失败: ' + (errData.error || '')), 'error');
+                    return;
+                }
+            } catch (e) {
+                showMessage((window.t ? window.t('character.tempSaveFailed', { error: e.message }) : '临时保存失败: ' + e.message), 'error');
+                return;
+            }
+        }
+        const url = '/model_manager?lanlan_name=' + encodeURIComponent(catgirlName);
+        if (!window._openSettingsWindows) window._openSettingsWindows = {};
+        if (window._openSettingsWindows[url]) {
+            const existingWindow = window._openSettingsWindows[url];
+            if (existingWindow && !existingWindow.closed) {
+                existingWindow.focus();
+                return;
+            } else {
+                delete window._openSettingsWindows[url];
+            }
+        }
+        const popup = window.open(url, '_blank',
+            'toolbar=no,location=no,status=no,menubar=no,scrollbars=yes,resizable=yes,width=' + screen.availWidth + ',height=' + screen.availHeight + ',top=0,left=0');
+        if (!popup) {
+            if (typeof showAlert === 'function') await showAlert(window.t ? window.t('character.allowPopups') : '请允许弹窗！');
+            return;
+        }
+        window._openSettingsWindows[url] = popup;
+        popup.moveTo(0, 0);
+        popup.resizeTo(screen.availWidth, screen.availHeight);
+        const timer = setInterval(async () => {
+            if (popup.closed) {
+                clearInterval(timer);
+                if (window._openSettingsWindows[url] === popup) delete window._openSettingsWindows[url];
+                loadCharacterCards();
+                // 模型管理器关闭后，重新获取角色数据并更新模型显示名称
+                try {
+                    const resp = await fetch('/api/characters/');
+                    if (resp.ok) {
+                        const allData = await resp.json();
+                        const updatedCat = allData?.['猫娘']?.[catgirlName];
+                        if (!updatedCat) throw new Error('catgirl not found');
+                        const updModelType = updatedCat['model_type'] || 'live2d';
+                        const updNormType = updModelType === 'vrm' ? 'live3d' : updModelType;
+                        const updMmd = validateModelPath(updatedCat['mmd'])
+                            || validateModelPath(updatedCat['_reserved']?.avatar?.mmd?.model_path);
+                        const updVrm = validateModelPath(updatedCat['vrm'])
+                            || validateModelPath(updatedCat['_reserved']?.avatar?.vrm?.model_path);
+                        const updLive2d = validateModelPath(updatedCat['live2d']);
+                        const updSubType = String(
+                            updatedCat['_reserved']?.avatar?.live3d_sub_type || updatedCat['live3d_sub_type'] || ''
+                        ).trim().toLowerCase();
+                        let newDisplayText = '';
+                        if (updNormType === 'live3d' && updSubType === 'mmd' && updMmd) {
+                            newDisplayText = (updMmd.split(/[\\/]/).pop() || updMmd).replace(/\.(pmx|pmd)$/i, '');
+                        } else if (updNormType === 'live3d' && updSubType === 'vrm' && updVrm) {
+                            newDisplayText = (updVrm.split(/[\\/]/).pop() || updVrm).replace(/\.vrm$/i, '');
+                        } else if (updNormType === 'live3d' && updMmd && !updVrm) {
+                            newDisplayText = (updMmd.split(/[\\/]/).pop() || updMmd).replace(/\.(pmx|pmd)$/i, '');
+                        } else if (updNormType === 'live3d' && updVrm) {
+                            newDisplayText = (updVrm.split(/[\\/]/).pop() || updVrm).replace(/\.vrm$/i, '');
+                        } else if (updLive2d) {
+                            newDisplayText = updLive2d;
+                        }
+                        modelLink.textContent = newDisplayText || (window.t ? window.t('character.modelNotSet') : '未设置');
+                    }
+                } catch (e) {
+                    console.warn('[Panel] 更新模型显示名称失败:', e);
+                }
+            }
+        }, 500);
+    };
+
+    // 音色设定
+    const voiceWrapper = document.createElement('div');
+    voiceWrapper.className = 'field-row-wrapper';
+    const voiceLabel = document.createElement('label');
+    voiceLabel.textContent = window.t ? window.t('character.voiceSetting') : '音色设定';
+    voiceLabel.style.fontSize = '1rem';
+    voiceWrapper.appendChild(voiceLabel);
+
+    const voiceRow = document.createElement('div');
+    voiceRow.className = 'field-row';
+    voiceRow.style.overflow = 'visible';
+    voiceRow.style.position = 'relative';
+    voiceRow.style.alignItems = 'center';
+    voiceRow.style.flex = '0 0 auto';
+    voiceRow.style.width = 'auto';
+    voiceRow.style.minWidth = '200px';
+    voiceRow.style.maxWidth = '300px';
+    const voiceSelect = document.createElement('select');
+    voiceSelect.name = 'voice_id';
+    voiceSelect.className = 'form-control';
+    voiceSelect.style.flex = '0 0 auto';
+    voiceSelect.style.width = '100%';
+    voiceSelect.style.position = 'relative';
+    voiceSelect.style.zIndex = '1000';
+    voiceSelect.style.border = 'none';
+    voiceSelect.style.background = 'transparent';
+    voiceSelect.style.appearance = 'auto';
+    voiceSelect.style.alignSelf = 'stretch';
+    const defaultOption = document.createElement('option');
+    defaultOption.value = '';
+    defaultOption.textContent = window.t ? window.t('character.voiceNotSet') : '未指定音色';
+    voiceSelect.appendChild(defaultOption);
+    voiceRow.appendChild(voiceSelect);
+    voiceWrapper.appendChild(voiceRow);
+
+    // 注册新声音按钮
+    const registerVoiceBtn = document.createElement('button');
+    registerVoiceBtn.type = 'button';
+    registerVoiceBtn.className = 'btn sm';
+    registerVoiceBtn.style.marginLeft = '8px';
+    registerVoiceBtn.style.minWidth = '120px';
+    const registerVoiceText = (window.t && typeof window.t === 'function')
+        ? '<img src="/static/icons/sound.png" alt="" class="sound-icon"> <span data-i18n="character.registerNewVoice">' + window.t('character.registerNewVoice') + '</span>'
+        : '<img src="/static/icons/sound.png" alt="" class="sound-icon"> 注册新声音';
+    registerVoiceBtn.innerHTML = registerVoiceText;
+    registerVoiceBtn.addEventListener('click', async function () {
+        const catgirlName = form.querySelector('[name="档案名"]').value;
+        if (!catgirlName) {
+            if (typeof showAlert === 'function') {
+                await showAlert(window.t ? window.t('character.fillProfileNameFirstForVoice') : '请先填写猫娘档案名，然后再注册音色');
+            }
+            return;
+        }
+        if (typeof openVoiceClone === 'function') {
+            openVoiceClone(catgirlName);
+        } else {
+            const url = '/voice_clone?lanlan_name=' + encodeURIComponent(catgirlName);
+            const windowName = 'neko_voice_clone_' + encodeURIComponent(catgirlName || 'default');
+            const width = 700;
+            const height = 900;
+            const left = Math.max(0, Math.floor((screen.width - width) / 2));
+            const top = Math.max(0, Math.floor((screen.height - height) / 2));
+            const features = `width=${width},height=${height},left=${left},top=${top},menubar=no,toolbar=no,location=no,status=no,resizable=yes,scrollbars=yes`;
+            if (typeof window.openOrFocusWindow === 'function') {
+                window.openOrFocusWindow(url, windowName, features);
+            } else {
+                window.open(url, windowName, features);
+            }
+        }
+    });
+    voiceWrapper.appendChild(registerVoiceBtn);
+    foldContent.appendChild(voiceWrapper);
+
+    fold.appendChild(foldContent);
+    form.appendChild(fold);
+
+    // 操作按钮区
+    const btnArea = document.createElement('div');
+    btnArea.className = 'btn-area';
+    btnArea.style.display = 'flex';
+    btnArea.style.alignItems = 'center';
+    btnArea.style.marginTop = '10px';
+    btnArea.style.gap = '12px';
+
+    const labelPlaceholder = document.createElement('div');
+    labelPlaceholder.style.minWidth = '80px';
+    labelPlaceholder.style.flexShrink = '0';
+    btnArea.appendChild(labelPlaceholder);
+
+    const spacer = document.createElement('div');
+    spacer.style.flex = '1';
+    btnArea.appendChild(spacer);
+
+    const saveButton = document.createElement('button');
+    saveButton.type = 'button';
+    saveButton.id = 'save-button';
+    saveButton.className = 'btn sm';
+    saveButton.style.minWidth = '120px';
+    if (!isNew) saveButton.style.display = 'none';
+    saveButton.textContent = isNew
+        ? (window.t ? window.t('character.confirmNewCatgirl') : '确认新猫娘')
+        : (window.t ? window.t('character.saveChanges') : '保存修改');
+    saveButton.onclick = function () { saveCatgirlFromPanel(form, name, isNew); };
+    btnArea.appendChild(saveButton);
+
+    const cancelButton = document.createElement('button');
+    cancelButton.type = 'button';
+    cancelButton.id = 'cancel-button';
+    cancelButton.className = 'btn sm';
+    cancelButton.style.minWidth = '120px';
+    if (!isNew) cancelButton.style.display = 'none';
+    cancelButton.textContent = window.t ? window.t('character.cancel') : '取消';
+    cancelButton.onclick = function () {
+        if (saveButton) saveButton.style.display = 'none';
+        if (cancelButton) cancelButton.style.display = 'none';
+        if (isNew) {
+            closeCatgirlPanel();
+        } else {
+            const container = form.parentNode;
+            try {
+                buildCatgirlDetailForm(name, cat, false, container);
+            } catch (e) {
+                console.error('恢复猫娘数据失败:', e);
+                closeCatgirlPanel();
+            }
+        }
+    };
+    btnArea.appendChild(cancelButton);
+
+    form.appendChild(btnArea);
+    container.innerHTML = '';
+    container.appendChild(form);
+
+    // 绑定变化监听以显隐保存/取消按钮（新建猫娘始终显示）
+    if (!isNew) {
+        function showCatgirlActionButtons() {
+            if (saveButton) saveButton.style.display = '';
+            if (cancelButton) cancelButton.style.display = '';
+        }
+        form.querySelectorAll('input, textarea, select').forEach(input => {
+            input.addEventListener('change', showCatgirlActionButtons);
+            if (input.type === 'text' || input.tagName === 'TEXTAREA') {
+                input.addEventListener('input', showCatgirlActionButtons);
+            }
+        });
+        form.querySelectorAll('.btn.delete').forEach(btn => {
+            btn.addEventListener('click', showCatgirlActionButtons);
+        });
+    }
+
+    // 加载音色列表
+    const voicesLoadPromise = _loadPanelVoices(voiceSelect, String(cat['voice_id'] || '').trim());
+    form._voicesLoadPromise = voicesLoadPromise;
+    form._previousVoiceId = String(cat['voice_id'] || '').trim();
+    form._live2dModel = live2dPath;
+    form._modelType = normalizedModelType;
+
+    // 恢复进阶设定折叠状态
+    if (name) {
+        setTimeout(() => {
+            const savedState = localStorage.getItem('catgirl_advanced_' + name);
+            if (savedState === 'false') {
+                fold.classList.remove('open');
+                arrowSpan.style.transform = 'rotate(-90deg)';
+            }
+        }, 0);
+    }
+
+    // 初始化textarea自动调整
+    setTimeout(() => {
+        form.querySelectorAll('textarea').forEach(ta => _panelAttachTextareaAutoResize(ta));
+    }, 100);
+
+    // 为已存在猫娘的表单添加自动保存监听器（新建猫娘不启用，因为尚未创建记录）
+    if (!isNew && name) {
+        setTimeout(() => {
+            form.querySelectorAll('input, textarea').forEach(inp => {
+                if (inp.name && inp.name !== 'voice_id') {
+                    panelAttachAutoSaveListener(inp, name);
+                }
+            });
+        }, 150);
+    }
+}
+
+// 档案名输入限制器
+function _panelAttachProfileNameLimiter(input) {
+    if (!input) return;
+    const MAX_LEN = 50;
+    let composing = false;
+    input.addEventListener('compositionstart', () => { composing = true; });
+    input.addEventListener('compositionend', () => {
+        composing = false;
+        checkLen();
+    });
+    function checkLen() {
+        if (composing) return;
+        const fieldRow = input.closest('.field-row');
+        if (!fieldRow) return;
+        if (input.value.length > MAX_LEN) {
+            fieldRow.classList.add('profile-name-too-long');
+            let tip = fieldRow.querySelector('.profile-name-too-long-tip');
+            if (!tip) {
+                tip = document.createElement('span');
+                tip.className = 'profile-name-too-long-tip';
+                fieldRow.appendChild(tip);
+            }
+            tip.textContent = (window.t ? window.t('character.profileNameTooLong') : '档案名过长') + ' (' + input.value.length + '/' + MAX_LEN + ')';
+        } else {
+            fieldRow.classList.remove('profile-name-too-long');
+            const tip = fieldRow.querySelector('.profile-name-too-long-tip');
+            if (tip) tip.remove();
+        }
+    }
+    input.addEventListener('input', checkLen);
+}
+
+// label 设置（支持i18n + 超长title提示）
+function _panelSetFieldLabel(labelEl, key) {
+    const MAX_LABEL_LEN = 8;
+    let displayText = key;
+    if (window.t && typeof window.t === 'function') {
+        const translated = window.t('character.field.' + key);
+        if (translated && translated !== 'character.field.' + key) {
+            displayText = translated;
+        }
+    }
+    labelEl.textContent = displayText;
+    if (displayText.length > MAX_LABEL_LEN) {
+        labelEl.title = displayText;
+    }
+}
+
+// textarea自动调整高度（匹配原版逻辑：三行最大高度 + scrollbar类切换）
+function _panelAttachTextareaAutoResize(textarea) {
+    if (!textarea || textarea.dataset.autoResizeAttached) return;
+    textarea.dataset.autoResizeAttached = 'true';
+
+    function resize() {
+        textarea.style.height = 'auto';
+        const style = getComputedStyle(textarea);
+        const minHeight = parseInt(style.minHeight) || 30;
+
+        // 计算内容高度，考虑padding
+        const paddingTop = parseInt(style.paddingTop) || 0;
+        const paddingBottom = parseInt(style.paddingBottom) || 0;
+
+        const scrollHeight = textarea.scrollHeight;
+        const contentHeight = scrollHeight - paddingTop - paddingBottom;
+
+        // 三行高度的估算：line-height*3
+        const computedLineHeight = parseFloat(style.lineHeight);
+        const fontSize = parseFloat(style.fontSize) || 14;
+        const lineHeight = isNaN(computedLineHeight) ? fontSize * 1.2 : computedLineHeight;
+        const threeLinesHeight = lineHeight * 3;
+        const maxContentHeight = threeLinesHeight;
+        const newContentHeight = Math.min(maxContentHeight, contentHeight);
+        const newHeight = Math.max(minHeight, newContentHeight + paddingTop + paddingBottom);
+
+        textarea.style.height = newHeight + 'px';
+
+        // 根据内容是否超过三行来决定是否显示滚动条
+        const fieldRow = textarea.closest('.field-row');
+        if (fieldRow) {
+            if (contentHeight > maxContentHeight) {
+                textarea.style.overflowY = 'auto';
+                fieldRow.classList.add('has-scrollbar');
+            } else {
+                textarea.style.overflowY = 'hidden';
+                fieldRow.classList.remove('has-scrollbar');
+            }
+        }
+    }
+
+    textarea.addEventListener('input', resize);
+    textarea.addEventListener('focus', resize);
+    resize();
+}
+
+// 加载音色列表（完整复制原版逻辑）
+async function _loadPanelVoices(selectEl, currentVoiceId) {
+    const GSV_PREFIX = 'gsv:';
+
+    try {
+        const response = await fetch('/api/characters/voices');
+        if (!response.ok) return;
+        const data = await response.json();
+
+        if (data && data.voices) {
+            // 清空现有选项
+            while (selectEl.firstChild) selectEl.removeChild(selectEl.firstChild);
+            const defaultOption = document.createElement('option');
+            defaultOption.value = '';
+            defaultOption.textContent = window.t ? window.t('character.voiceNotSet') : '未指定音色';
+            selectEl.appendChild(defaultOption);
+
+            // 添加音色选项
+            const voiceOwners = data.voice_owners || {};
+            Object.entries(data.voices).forEach(function ([voiceId, voiceData]) {
+                const option = document.createElement('option');
+                option.value = voiceId;
+                // 显示名称：优先用 voice_owners，其次 voiceData.name，最后 voiceId
+                let displayName = voiceId;
+                if (voiceOwners[voiceId]) {
+                    displayName = voiceOwners[voiceId] + ' - ' + voiceId;
+                } else if (voiceData && voiceData.name) {
+                    displayName = voiceData.name;
+                }
+                option.textContent = displayName;
+                option.title = voiceId;
+                if (voiceId === currentVoiceId) option.selected = true;
+                selectEl.appendChild(option);
+            });
+
+            // 免费预设音色
+            if (data.free_voices && Object.keys(data.free_voices).length > 0) {
+                const freeGroup = document.createElement('optgroup');
+                const freeLabel = window.t ? window.t('character.freePresetVoices') : '免费预设音色';
+                freeGroup.label = '── ' + freeLabel + ' ──';
+                Object.entries(data.free_voices).forEach(function ([voiceKey, voiceId]) {
+                    const option = document.createElement('option');
+                    option.value = voiceId;
+                    option.textContent = window.t ? window.t('voice.freeVoice.' + voiceKey) : voiceKey;
+                    if (voiceId === currentVoiceId) option.selected = true;
+                    freeGroup.appendChild(option);
+                });
+                selectEl.appendChild(freeGroup);
+            }
+        }
+
+        // 加载 GPT-SoVITS 声音列表
+        await _loadPanelGsvVoices(selectEl, currentVoiceId);
+    } catch (e) {
+        console.warn('加载音色列表失败:', e);
+    }
+}
+
+// GPT-SoVITS 声音列表
+async function _loadPanelGsvVoices(selectEl, currentVoiceId) {
+    const GSV_PREFIX = 'gsv:';
+
+    function ensureGsvFallback() {
+        if (!currentVoiceId || !currentVoiceId.startsWith(GSV_PREFIX)) return;
+        if (selectEl.querySelector('option[value="' + CSS.escape(currentVoiceId) + '"]')) {
+            selectEl.value = currentVoiceId;
+            return;
+        }
+        let gsvGroup = selectEl.querySelector('optgroup[data-gsv-group="true"]');
+        if (!gsvGroup) {
+            gsvGroup = document.createElement('optgroup');
+            const gsvLabel = window.t ? window.t('character.gptsovitsVoices') : 'GPT-SoVITS 声音';
+            gsvGroup.label = '── ' + gsvLabel + ' ──';
+            gsvGroup.dataset.gsvGroup = 'true';
+            selectEl.appendChild(gsvGroup);
+        }
+        const fallbackOpt = document.createElement('option');
+        fallbackOpt.value = currentVoiceId;
+        fallbackOpt.textContent = currentVoiceId.substring(GSV_PREFIX.length) + ' (?)';
+        gsvGroup.appendChild(fallbackOpt);
+        selectEl.value = currentVoiceId;
+    }
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 3000);
+
+    try {
+        const resp = await fetch('/api/characters/custom_tts_voices', { signal: controller.signal });
+        clearTimeout(timeoutId);
+        const result = await resp.json();
+        if (result.success && Array.isArray(result.voices) && result.voices.length > 0) {
+            const gsvGroup = document.createElement('optgroup');
+            const gsvLabel = window.t ? window.t('character.gptsovitsVoices') : 'GPT-SoVITS 声音';
+            gsvGroup.label = '── ' + gsvLabel + ' ──';
+            gsvGroup.dataset.gsvGroup = 'true';
+            result.voices.forEach(function (v) {
+                const option = document.createElement('option');
+                option.value = v.voice_id;
+                option.textContent = v.name + (v.version ? ' (' + v.version + ')' : '');
+                if (v.description) option.title = v.description;
+                if (v.voice_id === currentVoiceId) option.selected = true;
+                gsvGroup.appendChild(option);
+            });
+            selectEl.appendChild(gsvGroup);
+            if (currentVoiceId && currentVoiceId.startsWith(GSV_PREFIX) && !selectEl.querySelector('option[value="' + CSS.escape(currentVoiceId) + '"]')) {
+                const fallbackOpt = document.createElement('option');
+                fallbackOpt.value = currentVoiceId;
+                fallbackOpt.textContent = currentVoiceId.substring(GSV_PREFIX.length) + ' (?)';
+                gsvGroup.appendChild(fallbackOpt);
+            }
+            if (currentVoiceId && currentVoiceId.startsWith(GSV_PREFIX)) {
+                selectEl.value = currentVoiceId;
+            }
+        }
+        ensureGsvFallback();
+    } catch (e) {
+        clearTimeout(timeoutId);
+        console.debug('GPT-SoVITS voices not available:', e.message);
+        ensureGsvFallback();
+    }
+}
+
+async function saveCatgirlFromPanel(form, originalName, isNew) {
+    // 防止重复提交
+    if (form.dataset.submitting === 'true') {
+        console.log('表单正在提交中，忽略重复提交');
+        return;
+    }
+    form.dataset.submitting = 'true';
+
+    try {
+        // 等待音色加载完成
+        if (form._voicesLoadPromise) {
+            await form._voicesLoadPromise;
+        }
+
+        const data = {};
+
+        // 收集表单数据
+        const nameInput = form.querySelector('input[name="档案名"]');
+        if (!nameInput || !nameInput.value.trim()) {
+            showMessage(window.t ? window.t('character.profileNameRequired') : '请输入档案名', 'error');
+            return;
+        }
+        data['档案名'] = nameInput.value.trim();
+
+        // 收集已有字段（通过 FormData 统一收集，跳过voice_id）
+        const fd = new FormData(form);
+        const selectedVoiceId = (form.querySelector('select[name="voice_id"]')?.value ?? '').trim();
+        const previousVoiceId = form._previousVoiceId || '';
+
+        for (const [k, v] of fd.entries()) {
+            if (k === 'voice_id') continue;
+            const normalizedValue = typeof v === 'string' ? v.trim() : v;
+            if (k && normalizedValue) {
+                data[k] = normalizedValue;
+            }
+        }
+
+        // 如果新建猫娘已被临时保存（自动创建），则改用 PUT 更新
+        const effectiveIsNew = isNew && !form._autoCreated;
+        const url = '/api/characters/catgirl' + (effectiveIsNew ? '' : '/' + encodeURIComponent(effectiveIsNew ? '' : (form._autoCreatedName || originalName)));
+        const response = await fetch(url, {
+            method: effectiveIsNew ? 'POST' : 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data)
+        });
+
+        if (!response.ok) {
+            const errorText = await response.text();
+            let errorMessage = errorText;
+            try {
+                const errorJson = JSON.parse(errorText);
+                if (errorJson.error) errorMessage = errorJson.error;
+            } catch (e) { /* keep original */ }
+            showMessage((window.t ? window.t('character.saveFailedWithError') : '保存失败: ') + errorMessage, 'error');
+            return;
+        }
+
+        const result = await response.json();
+        if (result.success === false) {
+            showMessage(result.error || (window.t ? window.t('character.saveFailed') : '保存失败'), 'error');
+            return;
+        }
+
+        // voice_id 通过专用接口更新
+        if (selectedVoiceId !== previousVoiceId) {
+            if (selectedVoiceId) {
+                try {
+                    const voiceResp = await fetch('/api/characters/catgirl/voice_id/' + encodeURIComponent(data['档案名']), {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ voice_id: selectedVoiceId })
+                    });
+                    const voiceResult = await voiceResp.json().catch(() => ({}));
+                    if (!voiceResp.ok || voiceResult.success === false) {
+                        const detail = (voiceResult && voiceResult.error) || (voiceResp.status + ' ' + voiceResp.statusText);
+                        showMessage(
+                            (window.t ? window.t('character.partialSaveVoiceFailed') : '角色已保存，但音色更新失败: ') + detail,
+                            'error'
+                        );
+                    }
+                } catch (voiceErr) {
+                    showMessage(
+                        (window.t ? window.t('character.partialSaveVoiceFailed') : '角色已保存，但音色更新失败: ') + (voiceErr.message || String(voiceErr)),
+                        'error'
+                    );
+                }
+            } else if (previousVoiceId) {
+                try {
+                    const clearResp = await fetch('/api/characters/catgirl/' + encodeURIComponent(data['档案名']) + '/unregister_voice', {
+                        method: 'POST'
+                    });
+                    const clearResult = await clearResp.json().catch(() => ({}));
+                    if (!clearResp.ok || clearResult.success === false) {
+                        const detail = (clearResult && clearResult.error) || (clearResp.status + ' ' + clearResp.statusText);
+                        showMessage(
+                            (window.t ? window.t('character.partialSaveVoiceFailed') : '角色已保存，但音色更新失败: ') + detail,
+                            'error'
+                        );
+                    }
+                } catch (clearErr) {
+                    showMessage(
+                        (window.t ? window.t('character.partialSaveVoiceFailed') : '角色已保存，但音色更新失败: ') + (clearErr.message || String(clearErr)),
+                        'error'
+                    );
+                }
+            }
+        }
+
+        // 保存 Live2D 待机动作（如果当前是 Live2D 模型且动作选择器有值）
+        if (!isNew && form._modelType === 'live2d' && form._live2dModel) {
+            const motionSelect = document.getElementById('preview-motion-select');
+            const idleAnimation = motionSelect ? (motionSelect.value || '') : '';
+            try {
+                const l2dResp = await fetch('/api/characters/catgirl/l2d/' + encodeURIComponent(data['档案名']), {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        model_type: 'live2d',
+                        live2d: form._live2dModel,
+                        live2d_idle_animation: idleAnimation
+                    })
+                });
+                const l2dResult = await l2dResp.json().catch(() => ({}));
+                if (!l2dResp.ok || l2dResult.success === false) {
+                    console.warn('[saveCatgirlFromPanel] 保存待机动作失败:', l2dResult.error || l2dResp.statusText);
+                }
+            } catch (l2dErr) {
+                console.warn('[saveCatgirlFromPanel] 保存待机动作请求失败:', l2dErr);
+            }
+        }
+
+        showMessage(isNew
+            ? (window.t ? window.t('character.newCatgirlSuccess') : '新猫娘创建成功')
+            : (window.t ? window.t('character.saveSuccess') : '保存成功'), 'success');
+        if (isNew) {
+            closeCatgirlPanel();
+        } else {
+            const container = form.parentNode;
+            const saveBtn = form.querySelector('#save-button');
+            const cancelBtn = form.querySelector('#cancel-button');
+            if (saveBtn) saveBtn.style.display = 'none';
+            if (cancelBtn) cancelBtn.style.display = 'none';
+            try {
+                const freshData = await loadCharacterData();
+                if (freshData && freshData['猫娘'] && freshData['猫娘'][data['档案名']]) {
+                    buildCatgirlDetailForm(data['档案名'], freshData['猫娘'][data['档案名']], false, container);
+                }
+            } catch (e) {
+                console.error('重新加载猫娘数据失败:', e);
+            }
+        }
+        await loadCharacterCards();
+    } catch (error) {
+        console.error('保存猫娘失败:', error);
+        showMessage(window.t ? window.t('character.saveError') : '保存时发生错误: ' + error.message, 'error');
+    } finally {
+        form.dataset.submitting = 'false';
+    }
+}
+
+// 切换猫娘
+async function workshopSwitchCatgirl(name) {
+    try {
+        const response = await fetch('/api/characters/current_catgirl', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ catgirl_name: name })
+        });
+        const result = await response.json();
+        if (result.success) {
+            window._workshopCurrentCatgirl = name;
+            renderCharaCardsView();
+            showMessage(window.t ? window.t('character.switchSuccess') : '切换成功', 'success');
+        } else {
+            showMessage(result.error || (window.t ? window.t('character.switchFailed') : '切换失败'), 'error');
+        }
+    } catch (error) {
+        console.error('切换猫娘失败:', error);
+        showMessage(window.t ? window.t('character.switchError') : '切换猫娘时发生错误', 'error');
+    }
+}
+
+// 删除猫娘
+async function workshopDeleteCatgirl(name) {
+    // 检查是否为当前猫娘
+    if (name === window._workshopCurrentCatgirl) {
+        showMessage(window.t ? window.t('character.cannotDeleteCurrentCard') : '不能删除当前正在使用的角色卡', 'error');
+        return;
+    }
+
+    // 检查是否只剩一只猫娘
+    try {
+        const resp = await fetch('/api/characters/', { cache: 'no-store' });
+        if (resp.ok) {
+            const allData = await resp.json();
+            const catgirls = allData?.['猫娘'] || {};
+            if (Object.keys(catgirls).length <= 1) {
+                showMessage(window.t ? window.t('character.onlyOneCatgirlLeft') : '只剩一只猫娘，无法删除！', 'error');
+                return;
+            }
+        }
+    } catch (e) {
+        // 如果检查失败，继续让用户尝试（后端也有保护）
+    }
+
+    // 确认删除
+    let confirmMsg;
+    if (window.t) {
+        const translated = window.t('character.confirmDeleteCard', { name: name });
+        confirmMsg = (translated && translated.includes('{name}'))
+            ? `确定要删除猫娘"${name}"？`
+            : (translated || `确定要删除猫娘"${name}"？`);
+    } else {
+        confirmMsg = `确定要删除猫娘"${name}"？`;
+    }
+
+    // 统一使用与「导出角色卡」同款风格的 Confirm 弹窗
+    const confirmTitle = window.t ? window.t('character.deleteCardTitle') : '删除角色卡';
+    const okText = window.t ? window.t('common.delete') : '删除';
+    const cancelText = window.t ? window.t('common.cancel') : '取消';
+    const confirmed = await showConfirmDialog(confirmMsg, {
+        title: confirmTitle,
+        okText,
+        cancelText,
+        danger: true,
+    });
+    if (!confirmed) return;
+
+    try {
+        await fetch('/api/characters/catgirl/' + encodeURIComponent(name), { method: 'DELETE' });
+        // 重新加载角色卡列表
+        await loadCharacterCards();
+    } catch (error) {
+        console.error('删除猫娘失败:', error);
+        showMessage(window.t ? window.t('character.deleteError') : '删除猫娘时发生错误', 'error');
+    }
+}
+
+// ====== 占位符环形3D文字 ======
+var GLITCH_TIMINGS = [
+    {dur:'4.8s',delay:'0s'},   {dur:'5.3s',delay:'1.2s'},
+    {dur:'4.5s',delay:'2.7s'}, {dur:'5.7s',delay:'0.4s'},
+    {dur:'4.2s',delay:'3.5s'}, {dur:'5.1s',delay:'1.8s'},
+    {dur:'4.9s',delay:'2.1s'}, {dur:'5.4s',delay:'0.9s'},
+    {dur:'4.6s',delay:'3.2s'},
+];
+var lastCustomRingText = null;
+
+function buildPreviewRing(customText) {
+    var container = document.getElementById('preview-ring-container');
+    if (!container) return;
+    var text;
+    if (customText && typeof customText === 'string') {
+        lastCustomRingText = customText;
+        text = customText;
+    } else if (lastCustomRingText) {
+        text = lastCustomRingText;
+    } else {
+        var key = 'steam.selectCharaToPreview';
+        var raw = (typeof window.t === 'function') ? window.t(key) : null;
+        text = (raw && raw !== key) ? raw : '请选择角色进行预览';
+    }
+    var base = Array.from(text);
+    var chars = base.concat(base).concat(base);
+
+    var groupSize = base.length;
+    var gapExtra = 0.3;
+    var totalSlots = chars.length + gapExtra * 3;
+
+    var placeholder = container.closest('.preview-placeholder');
+    var availH = placeholder ? placeholder.clientHeight : 0;
+    var availW = placeholder ? placeholder.clientWidth : 0;
+    var nominalRadius = Math.ceil(totalSlots * 50 / (2 * Math.PI));
+    var limits = [];
+    if (availH > 80) limits.push((availH - 50) * 0.65);
+    if (availW > 80) limits.push((availW - 50 - 42) / 2);
+    var containerDriven = limits.length ? Math.max(200, Math.min.apply(null, limits)) : 200;
+    var radius = Math.min(nominalRadius, containerDriven);
+
+    var arcPerSlot = radius * 2 * Math.PI / totalSlots;
+    var fontSize = Math.max(14, Math.min(42, Math.floor(arcPerSlot) - 4));
+    container.style.setProperty('--ring-char-size', fontSize + 'px');
+
+    var yComp = Math.round(radius * Math.sin(10 * Math.PI / 180) * -0.1);
+    var tiltDiv = container.closest('.preview-ring-tilt');
+    if (tiltDiv) {
+        tiltDiv.style.transform = 'translateY(' + yComp + 'px) rotateX(-10deg)';
+    }
+    container.innerHTML = '';
+    chars.forEach(function(ch, i) {
+        var group = Math.floor(i / groupSize);
+        var posInGroup = i % groupSize;
+        var slotIndex = group * (groupSize + gapExtra) + posInGroup;
+        var angle = (slotIndex / totalSlots) * 360;
+        var span = document.createElement('span');
+        span.className = 'ring-char';
+        span.textContent = ch;
+        span.setAttribute('data-char', ch);
+        var t = GLITCH_TIMINGS[i % GLITCH_TIMINGS.length];
+        span.style.setProperty('--gdur', t.dur);
+        span.style.setProperty('--gdelay', t.delay);
+        span.style.transform = 'rotateY(' + angle + 'deg) translateZ(' + radius + 'px)';
+        container.appendChild(span);
+    });
+}
+window.buildPreviewRing = buildPreviewRing;
+
+// ====== Steam 标签页内容构建 ======
+function buildSteamTabContent(name, rawData, card, container) {
+    container.innerHTML = '';
+
+    // 主布局容器
+    const layout = document.createElement('div');
+    layout.className = 'character-card-layout';
+    layout.id = 'character-card-layout';
+    layout.style.display = 'flex';
+
+    // ── 上方区域：角色卡信息 + Live2D预览 ──
+    const topRow = document.createElement('div');
+    topRow.className = 'character-card-top-row';
+
+    // 左上：角色卡信息
+    const infoSection = document.createElement('div');
+    infoSection.className = 'character-card-info-section';
+
+    const infoLogo = document.createElement('img');
+    infoLogo.src = '/static/icons/logo_show.png';
+    infoLogo.className = 'card-info-logo';
+    infoLogo.alt = '';
+    infoSection.appendChild(infoLogo);
+
+    // 标题区
+    const headerRow = document.createElement('div');
+    headerRow.className = 'card-info-header-row';
+    headerRow.innerHTML = `
+        <svg class="card-info-bg-hexagons" viewBox="-10 -10 370 310" xmlns="http://www.w3.org/2000/svg">
+            <defs><polygon id="hex-header-shape-p" points="25,5 75,5 100,48 75,91 25,91 0,48" fill="#8cd5ff" stroke="#8cd5ff" stroke-width="8" stroke-linejoin="round"/></defs>
+            <use href="#hex-header-shape-p" x="120" y="0" opacity="0.05"/>
+            <use href="#hex-header-shape-p" x="240" y="50" opacity="0.05"/>
+            <use href="#hex-header-shape-p" x="0" y="50" opacity="0.05"/>
+            <use href="#hex-header-shape-p" x="120" y="99" opacity="0.05"/>
+            <use href="#hex-header-shape-p" x="240" y="149" opacity="0.05"/>
+            <use href="#hex-header-shape-p" x="0" y="149" opacity="0.05"/>
+            <use href="#hex-header-shape-p" x="120" y="198" opacity="0.05"/>
+        </svg>
+        <div class="card-info-title-area">
+            <div class="card-info-header-text">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="white" xmlns="http://www.w3.org/2000/svg"><path d="M12 2 L14.5 9.5 L22 12 L14.5 14.5 L12 22 L9.5 14.5 L2 12 L9.5 9.5 Z" stroke="#7EC8E3" stroke-width="2" stroke-linejoin="round" fill="white"/></svg>
+                <span data-i18n="steam.cardInfoPreview">${window.t ? window.t('steam.cardInfoPreview') : '角色卡信息'}</span>
+            </div>
+            <img src="/static/icons/paw_ui.png" class="card-info-paw" alt="">
+        </div>`;
+    infoSection.appendChild(headerRow);
+
+    // 信息正文
+    const infoBody = document.createElement('div');
+    infoBody.className = 'card-info-body';
+    infoBody.innerHTML = `
+        <svg class="card-info-bg-hexagons" viewBox="-10 -10 370 310" xmlns="http://www.w3.org/2000/svg">
+            <defs><polygon id="hex-body-shape-p" points="25,5 75,5 100,48 75,91 25,91 0,48" fill="#8cd5ff" stroke="#8cd5ff" stroke-width="8" stroke-linejoin="round"/></defs>
+            <use href="#hex-body-shape-p" x="120" y="0" opacity="0.05"/>
+            <use href="#hex-body-shape-p" x="240" y="50" opacity="0.05"/>
+            <use href="#hex-body-shape-p" x="0" y="50" opacity="0.05"/>
+            <use href="#hex-body-shape-p" x="120" y="99" opacity="0.05"/>
+            <use href="#hex-body-shape-p" x="240" y="149" opacity="0.05"/>
+            <use href="#hex-body-shape-p" x="0" y="149" opacity="0.05"/>
+            <use href="#hex-body-shape-p" x="120" y="198" opacity="0.05"/>
+        </svg>
+        <div class="card-info-body-scroll">
+            <svg class="card-info-bg-stars" xmlns="http://www.w3.org/2000/svg">
+                <defs>
+                    <linearGradient id="card-star-gradient-p" x1="0%" y1="0%" x2="100%" y2="100%">
+                        <stop offset="0%" stop-color="#ffffff"/><stop offset="100%" stop-color="#8cd5ff"/>
+                    </linearGradient>
+                    <symbol id="card-rounded-star-p" viewBox="0 0 24 24">
+                        <path d="M 12 3 Q 12 12 21 12 Q 12 12 12 21 Q 12 12 3 12 Q 12 12 12 3 Z" fill="#ffffff" stroke="#ffffff" stroke-width="3.5" stroke-linejoin="round"/>
+                    </symbol>
+                    <pattern id="card-star-pattern-p" x="0" y="0" width="80" height="80" patternUnits="userSpaceOnUse">
+                        <use href="#card-rounded-star-p" x="5" y="5" width="15" height="15"/>
+                        <use href="#card-rounded-star-p" x="45" y="45" width="15" height="15"/>
+                    </pattern>
+                    <mask id="card-stars-mask-p"><rect width="100%" height="100%" fill="url(#card-star-pattern-p)"/></mask>
+                </defs>
+                <rect width="100%" height="100%" fill="url(#card-star-gradient-p)" mask="url(#card-stars-mask-p)"/>
+            </svg>
+            <div id="card-info-preview">
+                <div id="card-info-dynamic-content">
+                    <p style="color: #999; text-align: center;" data-i18n="steam.selectCharacterCard">${window.t ? window.t('steam.selectCharacterCard') : '请选择一个角色卡'}</p>
+                </div>
+            </div>
+        </div>`;
+    infoSection.appendChild(infoBody);
+    topRow.appendChild(infoSection);
+
+    // 右上：模型预览
+    const live2dSection = document.createElement('div');
+    live2dSection.className = 'character-card-live2d-section';
+
+    const previewTitle = document.createElement('h3');
+    previewTitle.id = 'model-preview-title';
+    previewTitle.setAttribute('data-i18n', 'steam.live2dPreview');
+    previewTitle.textContent = 'Live2D';
+    live2dSection.appendChild(previewTitle);
+
+    const previewContainer = document.createElement('div');
+    previewContainer.id = 'live2d-preview-container';
+
+    previewContainer.innerHTML = `
+        <div id="live2d-preview-content" style="flex: 1; position: relative; min-height: 0; pointer-events: none; background-color: transparent;">
+            <canvas id="live2d-preview-canvas" style="display: none; width: 100%; height: 100%; position: absolute; top: 0; left: 0; pointer-events: none;"></canvas>
+            <div id="vrm-preview-container" style="display: none; width: 100%; height: 100%; position: absolute; top: 0; left: 0;">
+                <canvas id="vrm-preview-canvas" style="width: 100%; height: 100%;"></canvas>
+            </div>
+            <div id="mmd-preview-container" style="display: none; width: 100%; height: 100%; position: absolute; top: 0; left: 0;">
+                <canvas id="mmd-preview-canvas" style="width: 100%; height: 100%;"></canvas>
+            </div>
+            <div class="preview-placeholder" style="display: flex; justify-content: center; align-items: center; height: 100%; position: relative; z-index: 1; background-color: transparent;">
+                <div class="preview-ring-perspective">
+                    <div class="preview-ring-tilt">
+                        <div id="preview-ring-container" class="preview-ring-container"></div>
+                    </div>
+                </div>
+            </div>
+            <div id="live2d-preview-overlay" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 100; pointer-events: auto;"></div>
+            <button id="live2d-refresh-btn" style="position: absolute; top: 10px; right: 10px; z-index: 101; width: 30px; height: 30px; border: none; border-radius: 50%; background-color: transparent; color: white; cursor: pointer; display: flex; justify-content: center; align-items: center; font-size: 16px; pointer-events: auto;" title="${window.t ? window.t('steam.refreshLive2DPreview') : '刷新Live2D预览'}" onclick="refreshLive2DPreview()">↻</button>
+        </div>`;
+    live2dSection.appendChild(previewContainer);
+
+    // 动作/表情控件
+    const controlsDiv = document.createElement('div');
+    controlsDiv.id = 'live2d-preview-controls';
+    controlsDiv.style.cssText = 'padding: 10px; background-color: #fff; border-top: 1px solid #e0e0e0; margin: 10px 10px 10px 10px; border-radius: 16px;';
+    controlsDiv.innerHTML = `
+        <div style="display: flex; gap: 10px; margin-bottom: 10px; flex-wrap: wrap;">
+            <div style="flex: 1; min-width: 150px;">
+                <select id="preview-motion-select" class="control-input" style="width: 100%;">
+                    <option value="" data-i18n="steam.selectMotion">${window.t ? window.t('steam.selectMotion') : '选择动作'}</option>
+                </select>
+                <div style="font-size: 11px; color: #888; margin-top: 3px; text-align: center;" data-i18n="character.idleMotionHint">${window.t ? window.t('character.idleMotionHint') : '保存角色时，当前选中的动作将被设为待机动作'}</div>
+            </div>
+            <div class="btn-play-wrapper">
+                <button id="preview-play-motion-btn" class="btn" disabled>
+                    <span data-i18n="steam.playMotion">${window.t ? window.t('steam.playMotion') : '播放动作'}</span>
+                </button>
+            </div>
+        </div>
+        <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+            <div style="flex: 1; min-width: 150px;">
+                <select id="preview-expression-select" class="control-input" style="width: 100%;">
+                    <option value="" data-i18n="steam.selectExpression">${window.t ? window.t('steam.selectExpression') : '选择表情'}</option>
+                </select>
+            </div>
+            <div class="btn-play-wrapper">
+                <button id="preview-play-expression-btn" class="btn" disabled>
+                    <span data-i18n="steam.playExpression">${window.t ? window.t('steam.playExpression') : '播放表情'}</span>
+                </button>
+            </div>
+        </div>`;
+    live2dSection.appendChild(controlsDiv);
+    topRow.appendChild(live2dSection);
+    layout.appendChild(topRow);
+
+    // ── 下方区域：描述 + 标签和按钮 ──
+    const bottomRow = document.createElement('div');
+    bottomRow.className = 'character-card-bottom-row';
+
+    // 左下：描述区域
+    const descSection = document.createElement('div');
+    descSection.className = 'character-card-description-section';
+
+    // 描述标题栏
+    const descHeader = document.createElement('div');
+    descHeader.className = 'description-header-row';
+    descHeader.innerHTML = `
+        <div class="description-title-area">
+            <div class="description-header-text">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="white" xmlns="http://www.w3.org/2000/svg"><path d="M12 2 L14.5 9.5 L22 12 L14.5 14.5 L12 22 L9.5 14.5 L2 12 L9.5 9.5 Z" stroke="#7EC8E3" stroke-width="2" stroke-linejoin="round" fill="white"/></svg>
+                <span data-i18n="steam.characterCardDescription">${window.t ? window.t('steam.characterCardDescription') : '描述'}</span>
+                <img src="/static/icons/paw_ui.png" class="description-paw" alt="">
+            </div>
+        </div>`;
+    descSection.appendChild(descHeader);
+
+    // 版权警告
+    const copyrightWarning = document.createElement('div');
+    copyrightWarning.id = 'copyright-warning';
+    copyrightWarning.style.cssText = 'display: none; padding: 8px; background-color: #f8d7da; border: 1px solid #f5c6cb; border-radius: 4px; color: #721c24; margin-bottom: 8px; margin-top: 8px;';
+    copyrightWarning.innerHTML = `<strong>⚠️</strong> <span data-i18n="steam.modelCopyrightIssue">${window.t ? window.t('steam.modelCopyrightIssue') : '您的角色形象存在版权问题，无法上传'}</span>`;
+    descSection.appendChild(copyrightWarning);
+
+    // 描述输入
+    const descGroup = document.createElement('div');
+    descGroup.className = 'control-group description-content';
+    const descTextarea = document.createElement('textarea');
+    descTextarea.id = 'character-card-description';
+    descTextarea.className = 'control-input';
+    descTextarea.style.cssText = 'white-space: pre-wrap; min-height: 100px; resize: none; overflow-y: auto;';
+    descTextarea.placeholder = window.t ? window.t('steam.placeholderCharacterDescription') : '输入角色描述...';
+    descTextarea.addEventListener('input', function () {
+        if (typeof updateCardPreview === 'function') updateCardPreview();
+    });
+    descGroup.appendChild(descTextarea);
+    descSection.appendChild(descGroup);
+
+    // Workshop 状态区域
+    const statusArea = document.createElement('div');
+    statusArea.id = 'workshop-status-area';
+    statusArea.style.cssText = 'display: none; padding: 8px; background-color: #e7f3ff; border: 1px solid #b3d7ff; border-radius: 4px; margin-top: 8px;';
+    statusArea.innerHTML = `
+        <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px;">
+            <div>
+                <strong style="color: #0066cc;">✅ <span data-i18n="steam.alreadyUploaded">${window.t ? window.t('steam.alreadyUploaded') : '已上传到创意工坊'}</span></strong>
+                <div style="font-size: 12px; color: #666; margin-top: 4px;">
+                    <span data-i18n="steam.uploadTime">${window.t ? window.t('steam.uploadTime') : '上传时间'}</span>：<span id="workshop-upload-time">-</span>
+                </div>
+                <div style="font-size: 12px; color: #666;">
+                    <span data-i18n="steam.workshopItemId">${window.t ? window.t('steam.workshopItemId') : '物品ID'}</span>：<span id="workshop-item-id">-</span>
+                </div>
+            </div>
+            <button class="btn btn-secondary btn-sm" onclick="showWorkshopSnapshot()" style="white-space: nowrap;">
+                📋 <span data-i18n="steam.viewSnapshot">${window.t ? window.t('steam.viewSnapshot') : '查看已上传版本'}</span>
+            </button>
+        </div>`;
+    descSection.appendChild(statusArea);
+    bottomRow.appendChild(descSection);
+
+    // 右下：标签和按钮区域
+    const tagsButtonsSection = document.createElement('div');
+    tagsButtonsSection.className = 'character-card-tags-buttons-section';
+
+    // 标签区域
+    const tagsArea = document.createElement('div');
+    tagsArea.className = 'character-card-tags-area';
+
+    const tagsLogo = document.createElement('img');
+    tagsLogo.src = '/static/icons/logo_show.png';
+    tagsLogo.className = 'card-info-logo';
+    tagsLogo.alt = '';
+    tagsArea.appendChild(tagsLogo);
+
+    // 标签标题栏
+    const tagsHeaderRow = document.createElement('div');
+    tagsHeaderRow.className = 'tags-header-row';
+    tagsHeaderRow.innerHTML = `
+        <div class="tags-title-area">
+            <div class="tags-header-text">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="white" xmlns="http://www.w3.org/2000/svg"><path d="M12 2 L14.5 9.5 L22 12 L14.5 14.5 L12 22 L9.5 14.5 L2 12 L9.5 9.5 Z" stroke="#7EC8E3" stroke-width="2" stroke-linejoin="round" fill="white"/></svg>
+                <span data-i18n="steam.characterCardTags">${window.t ? window.t('steam.characterCardTags') : '角色卡标签'}</span>
+            </div>
+            <img src="/static/icons/paw_ui.png" class="tags-paw" alt="">
+        </div>`;
+    tagsArea.appendChild(tagsHeaderRow);
+
+    // 标签输入
+    const tagsControlGroup = document.createElement('div');
+    tagsControlGroup.className = 'control-group tags-content';
+    const tagInput = document.createElement('input');
+    tagInput.type = 'text';
+    tagInput.id = 'character-card-tag-input';
+    tagInput.className = 'control-input';
+    tagInput.placeholder = window.t ? window.t('steam.tagsPlaceholderSpace') : '输入标签，按空格添加';
+
+    // 标签输入事件
+    tagInput.addEventListener('input', function (e) {
+        if (e.target.value.endsWith(' ') && e.target.value.trim() !== '') {
+            e.preventDefault();
+            if (typeof addTag === 'function') addTag(e.target.value.trim(), 'character-card');
+            e.target.value = '';
+        }
+    });
+    tagInput.addEventListener('keypress', function (e) {
+        if (e.key === 'Enter' && e.target.value.trim() !== '') {
+            e.preventDefault();
+            if (typeof addTag === 'function') addTag(e.target.value.trim(), 'character-card');
+            e.target.value = '';
+        }
+    });
+    tagsControlGroup.appendChild(tagInput);
+
+    const tagsWrapper = document.createElement('div');
+    tagsWrapper.id = 'character-card-tags-wrapper';
+    tagsWrapper.style.cssText = 'display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 15px; border: 2px solid #b3e5fc; border-radius: 50px; background-color: #fff; min-height: 40px; box-sizing: border-box; margin-top: 5px;';
+    const tagsContainer = document.createElement('div');
+    tagsContainer.className = 'tags-container';
+    tagsContainer.id = 'character-card-tags-container';
+    tagsWrapper.appendChild(tagsContainer);
+    tagsControlGroup.appendChild(tagsWrapper);
+    tagsArea.appendChild(tagsControlGroup);
+    tagsButtonsSection.appendChild(tagsArea);
+
+    // 无可上传模型警告
+    const noModelsWarning = document.createElement('div');
+    noModelsWarning.id = 'no-uploadable-models-warning';
+    noModelsWarning.style.cssText = 'display: none; padding: 10px; background-color: #fff3cd; border: 1px solid #ffc107; border-radius: 4px; color: #856404; font-size: 14px; margin-top: 15px;';
+    noModelsWarning.innerHTML = `<span data-i18n="steam.noUploadableModels">${window.t ? window.t('steam.noUploadableModels') : '没有可上传的模型，请先在角色管理页面创建自定义模型'}</span>`;
+    tagsButtonsSection.appendChild(noModelsWarning);
+
+    // 按钮行
+    const buttonsRow = document.createElement('div');
+    buttonsRow.className = 'character-card-buttons-row';
+
+    // 上传按钮
+    const uploadWrapper = document.createElement('div');
+    uploadWrapper.className = 'btn-wrapper';
+    const uploadBtn = document.createElement('button');
+    uploadBtn.id = 'upload-to-workshop-btn';
+    uploadBtn.className = 'btn';
+    uploadBtn.disabled = true;
+    uploadBtn.style.cssText = 'display: flex; align-items: center; justify-content: center; gap: 6px;';
+    uploadBtn.onclick = function () { if (typeof handleUploadToWorkshop === 'function') handleUploadToWorkshop(); };
+    const uploadIcon = document.createElement('img');
+    uploadIcon.src = '/static/icons/upload_icon.png';
+    uploadIcon.style.cssText = 'width: 34px; height: 34px;';
+    uploadBtn.appendChild(uploadIcon);
+    const uploadText = document.createElement('span');
+    uploadText.id = 'upload-btn-text';
+    uploadText.setAttribute('data-i18n', 'steam.uploadToWorkshop');
+    uploadText.textContent = window.t ? window.t('steam.uploadToWorkshop') : '上传到创意工坊';
+    uploadBtn.appendChild(uploadText);
+    uploadWrapper.appendChild(uploadBtn);
+    buttonsRow.appendChild(uploadWrapper);
+
+    // 在角色管理中编辑按钮
+    const editWrapper = document.createElement('div');
+    editWrapper.className = 'btn-wrapper';
+    const editBtn = document.createElement('button');
+    editBtn.className = 'btn';
+    editBtn.style.cssText = 'display: flex; align-items: center; justify-content: center; gap: 6px;';
+    editBtn.onclick = function () { window.location.href = '/character_card_manager'; };
+    const editIcon = document.createElement('img');
+    editIcon.src = '/static/icons/cat_icon.png';
+    editIcon.style.cssText = 'width: 34px; height: 34px;';
+    editBtn.appendChild(editIcon);
+    const editText = document.createElement('span');
+    editText.setAttribute('data-i18n', 'steam.editInCharaManager');
+    editText.textContent = window.t ? window.t('steam.editInCharaManager') : '在角色管理中编辑';
+    editBtn.appendChild(editText);
+    editWrapper.appendChild(editBtn);
+    buttonsRow.appendChild(editWrapper);
+
+    tagsButtonsSection.appendChild(buttonsRow);
+    bottomRow.appendChild(tagsButtonsSection);
+    layout.appendChild(bottomRow);
+
+    container.appendChild(layout);
+
+    // 初始化预览环形文字
+    requestAnimationFrame(function () {
+        buildPreviewRing();
+        requestAnimationFrame(buildPreviewRing);
+        var placeholder = container.querySelector('#live2d-preview-container .preview-placeholder');
+        if (placeholder && typeof ResizeObserver !== 'undefined') {
+            new ResizeObserver(buildPreviewRing).observe(placeholder);
+        }
+    });
+
+    // 使用 expandCharacterCardSection 填充数据
+    if (card) {
+        // 确保 card 有足够的信息
+        const cardForExpand = {
+            id: card.id || card.name || name,
+            name: name,
+            originalName: card.originalName || name,
+            rawData: rawData,
+            tags: card.tags || [],
+            description: card.description || ''
+        };
+
+        // 确保角色卡列表中包含该卡
+        if (window.characterCards) {
+            const existingIdx = window.characterCards.findIndex(c => c.id === cardForExpand.id);
+            if (existingIdx < 0) {
+                window.characterCards.push(cardForExpand);
+            }
+        }
+
+        expandCharacterCardSection(cardForExpand);
     }
 }
 
@@ -2956,12 +5674,14 @@ function expandCharacterCardSection(card) {
     let voiceId = rawData['voice_id'] || (rawData['voice'] && rawData['voice']['voice_id']);
 
     // 填充可编辑字段（Description 使用 textarea.value）
-    document.getElementById('character-card-description').value = description || '';
+    const descEl = document.getElementById('character-card-description');
+    if (descEl) descEl.value = description || '';
 
     // 存储当前角色卡的模型名称和类型供后续使用
     window.currentCharacterCardModel = (effectiveModelType !== 'live2d' && effectiveModelPath) ? effectiveModelPath : live2d;
     window.currentCharacterCardModelType = effectiveModelType;
     window.currentCharacterCardModelPath = effectiveModelPath;
+    window._currentCardRawData = rawData;
 
     // 检查模型是否可上传（检查是否来自static目录）
     const uploadButton = document.getElementById('upload-to-workshop-btn');
@@ -3055,25 +5775,31 @@ function expandCharacterCardSection(card) {
 
     // 更新标签
     const tagsContainer = document.getElementById('character-card-tags-container');
-    tagsContainer.innerHTML = '';
-    if (card.tags && card.tags.length > 0) {
-        card.tags.forEach(tag => {
-            const tagElement = document.createElement('span');
-            tagElement.className = 'tag';
-            tagElement.textContent = tag;
-            tagsContainer.appendChild(tagElement);
-        });
+    if (tagsContainer) {
+        tagsContainer.innerHTML = '';
+        if (card.tags && card.tags.length > 0) {
+            card.tags.forEach(tag => {
+                const tagElement = document.createElement('span');
+                tagElement.className = 'tag';
+                tagElement.textContent = tag;
+                tagsContainer.appendChild(tagElement);
+            });
+        }
     }
 
     // 显示角色卡区域
     const characterCardLayout = document.getElementById('character-card-layout');
-    characterCardLayout.style.display = 'flex';
-    requestAnimationFrame(() => {
-        updateCharacterCardTagScrollControls();
-    });
+    if (characterCardLayout) {
+        characterCardLayout.style.display = 'flex';
+        requestAnimationFrame(() => {
+            updateCharacterCardTagScrollControls();
+        });
 
-    // 滚动到角色卡区域
-    characterCardLayout.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        // 仅在非面板上下文中滚动到角色卡区域
+        if (!_catgirlPanelOpen) {
+            characterCardLayout.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+    }
 
     // 获取并显示 Workshop 状态
     fetchWorkshopStatus(card.name);
@@ -3536,9 +6262,6 @@ async function performUpload(data) {
                     }
 
                     // 步骤3: 打开填写信息窗口（modal）
-                    // 先确保本地物品标签页可见
-                    switchTab('local-items-content');
-                    // 然后显示上传表单区域
                     toggleUploadSection();
                 } else {
                     showMessage(window.t ? window.t('steam.prepareUploadFailedMessage', { error: result.error || (window.t ? window.t('common.unknownError') : '未知错误') }) : `准备上传失败: ${result.error || '未知错误'}`, 'error');
@@ -4307,7 +7030,7 @@ async function clearLive2DPreview(showModelNotSetMessage = false) {
 async function loadLive2DModelByName(modelName, modelInfo = null) {
     try {
         // 确保live2dPreviewManager已初始化
-        if (!live2dPreviewManager) {
+        if (!live2dPreviewManager || !live2dPreviewManager.pixi_app) {
             await initLive2DPreview();
         }
 
@@ -4362,6 +7085,7 @@ async function loadLive2DModelByName(modelName, modelInfo = null) {
         }
         const filesData = await filesRes.json();
         if (!filesData.success) throw new Error(window.t('live2d.modelFilesFetchFailed', '无法获取模型文件列表'));
+        window._previewMotionFiles = filesData.motion_files || [];
 
         // 2. Fetch model config
         let modelJsonUrl;
@@ -4504,6 +7228,18 @@ async function updatePreviewControlsAfterModelLoad(filesData) {
     } catch (error) {
         console.error('Failed to update preview controls:', error);
     }
+
+    // 恢复已保存的待机动作（如果存在）
+    const rawData = window._currentCardRawData || {};
+    const savedIdleAnimation = rawData._reserved?.avatar?.live2d?.idle_animation
+        || rawData.avatar?.live2d?.idle_animation
+        || rawData.live2d_idle_animation;
+    if (savedIdleAnimation && motionSelect) {
+        const motionFiles = window._previewMotionFiles || [];
+        if (motionFiles.includes(savedIdleAnimation)) {
+            motionSelect.value = savedIdleAnimation;
+        }
+    }
 }
 
 // 更新角色卡信息预览（动态渲染所有属性）
@@ -4632,9 +7368,12 @@ async function initLive2DPreview() {
         }
 
         // 避免重复初始化
-        if (live2dPreviewManager && live2dPreviewManager.currentModel) {
-            return; // 已经有模型加载，不需要重新初始化
+        if (live2dPreviewManager && live2dPreviewManager.pixi_app) {
+            return; // 已经正常初始化，不需要重新初始化
         }
+
+        // 清理可能存在的残缺实例
+        live2dPreviewManager = null;
 
         // 创建一个新的Live2DManager实例
         live2dPreviewManager = new Live2DManager();
@@ -4724,6 +7463,7 @@ async function initLive2DPreview() {
 
     } catch (error) {
         console.error('Failed to initialize Live2D preview:', error);
+        live2dPreviewManager = null;
         showMessage(window.t('steam.live2dInitFailed'), 'error');
     }
 }
@@ -4731,7 +7471,7 @@ async function initLive2DPreview() {
 // 从文件夹加载Live2D模型
 async function loadLive2DModelFromFolder(files) {
     try {
-        if (!live2dPreviewManager) {
+        if (!live2dPreviewManager || !live2dPreviewManager.pixi_app) {
             await initLive2DPreview();
         }
 
@@ -4894,10 +7634,10 @@ function updatePreviewControls(motionFiles, expressionFiles) {
         motionSelect.disabled = false;
         playMotionBtn.disabled = false;
 
-        // 添加动作选项
-        motionFiles.forEach((motionFile, index) => {
+        // 添加动作选项（value 使用文件名，便于直接作为 live2d_idle_animation）
+        motionFiles.forEach((motionFile) => {
             const option = document.createElement('option');
-            option.value = index;
+            option.value = motionFile;
             option.textContent = motionFile;
             motionSelect.appendChild(option);
         });
@@ -4945,15 +7685,17 @@ if (playMotionBtn) {
         if (!currentPreviewModel) return;
 
         const motionSelect = document.getElementById('preview-motion-select');
-        const motionIndex = parseInt(motionSelect.value);
+        const motionFile = motionSelect.value;
+        if (!motionFile) return;
 
-        if (isNaN(motionIndex)) return;
+        const motionIndex = (window._previewMotionFiles || []).indexOf(motionFile);
+        if (motionIndex < 0) return;
 
         try {
             currentPreviewModel.motion('PreviewAll', motionIndex, 3);
         } catch (error) {
             console.error('Failed to play motion:', error);
-            showMessage(window.t('live2d.playMotionFailed', { motion: motionIndex }), 'error');
+            showMessage(window.t('live2d.playMotionFailed', { motion: motionFile }), 'error');
         }
     });
 }
@@ -5156,6 +7898,601 @@ function selectPreviewImage() {
     // 触发文件选择对话框
     fileInput.click();
 }
+
+
+// ===================== 主人档案管理 =====================
+
+async function loadMasterProfile() {
+    try {
+        const resp = await fetch('/api/characters', { cache: 'no-store' });
+        if (!resp.ok) return;
+        const data = await resp.json();
+        const master = data?.['主人'] || {};
+        renderMasterForm(master);
+    } catch (e) {
+        console.error('加载主人档案失败:', e);
+    }
+}
+
+function renderMasterForm(master) {
+    const form = document.getElementById('master-form');
+    if (!form) return;
+    form.innerHTML = '';
+
+    // 档案名
+    const baseWrapper = document.createElement('div');
+    baseWrapper.className = 'field-row-wrapper';
+    const baseLabel = document.createElement('label');
+    const profileNameText = window.t ? window.t('character.profileName') : '档案名';
+    const requiredText = window.t ? window.t('character.required') : '*';
+    baseLabel.innerHTML = '<span data-i18n="character.profileName">' + profileNameText + '</span><span style="color:red" data-i18n="character.required">' + requiredText + '</span>';
+    baseWrapper.appendChild(baseLabel);
+
+    const fieldRow = document.createElement('div');
+    fieldRow.className = 'field-row';
+    const nameInput = document.createElement('input');
+    nameInput.type = 'text';
+    nameInput.name = '档案名';
+    nameInput.required = true;
+    nameInput.value = master['档案名'] || '';
+    nameInput.autocomplete = 'off';
+    fieldRow.appendChild(nameInput);
+    baseWrapper.appendChild(fieldRow);
+
+    // 重命名按钮
+    const renameBtn = document.createElement('button');
+    renameBtn.type = 'button';
+    renameBtn.className = 'btn sm';
+    renameBtn.style.minWidth = '70px';
+    const renameText = window.t ? window.t('character.rename') : '修改名称';
+    renameBtn.textContent = renameText;
+    renameBtn.onclick = renameMaster;
+    baseWrapper.appendChild(renameBtn);
+
+    form.appendChild(baseWrapper);
+
+    // 自定义字段
+    Object.keys(master).forEach(k => {
+        if (k === '档案名') return;
+        const wrapper = document.createElement('div');
+        wrapper.className = 'field-row-wrapper custom-row';
+
+        const label = document.createElement('label');
+        label.textContent = k;
+        wrapper.appendChild(label);
+
+        const row = document.createElement('div');
+        row.className = 'field-row';
+        const textarea = document.createElement('textarea');
+        textarea.name = k;
+        textarea.rows = 1;
+        textarea.value = master[k];
+        row.appendChild(textarea);
+        wrapper.appendChild(row);
+
+        const delBtn = document.createElement('button');
+        delBtn.type = 'button';
+        delBtn.className = 'btn sm delete';
+        const deleteText = window.t ? window.t('character.deleteField') : '删除设定';
+        delBtn.textContent = deleteText;
+        delBtn.onclick = function () { deleteMasterField(this); };
+        wrapper.appendChild(delBtn);
+
+        form.appendChild(wrapper);
+
+        // textarea自动调整
+        _panelAttachTextareaAutoResize(textarea);
+        // 自动保存和变化监听
+        attachAutoSaveListener(textarea, 'master');
+        textarea.addEventListener('input', showMasterActionButtons);
+        textarea.addEventListener('change', showMasterActionButtons);
+    });
+
+    // 按钮区
+    const btnArea = document.createElement('div');
+    btnArea.className = 'btn-area';
+    btnArea.style.display = 'flex';
+    btnArea.style.justifyContent = 'flex-end';
+    btnArea.style.gap = '6px';
+    btnArea.style.marginTop = '8px';
+
+    const addBtn = document.createElement('button');
+    addBtn.type = 'button';
+    addBtn.className = 'btn sm add';
+    const addText = window.t ? window.t('character.addMasterField') : '新增设定';
+    addBtn.textContent = addText;
+    addBtn.onclick = addMasterField;
+    btnArea.appendChild(addBtn);
+
+    const saveBtn = document.createElement('button');
+    saveBtn.type = 'button';
+    saveBtn.id = 'save-master-btn';
+    saveBtn.className = 'btn sm';
+    saveBtn.style.display = 'none';
+    const saveText = window.t ? window.t('character.saveMaster') : '保存主人设定';
+    saveBtn.textContent = saveText;
+    saveBtn.onclick = saveMasterForm;
+    btnArea.appendChild(saveBtn);
+
+    const cancelBtn = document.createElement('button');
+    cancelBtn.type = 'button';
+    cancelBtn.id = 'cancel-master-btn';
+    cancelBtn.className = 'btn sm';
+    cancelBtn.style.display = 'none';
+    const cancelText = window.t ? window.t('character.cancel') : '取消';
+    cancelBtn.textContent = cancelText;
+    cancelBtn.onclick = function () {
+        loadMasterProfile();
+    };
+    btnArea.appendChild(cancelBtn);
+
+    form.appendChild(btnArea);
+
+    // 为档案名输入框添加自动保存和变化监听
+    attachAutoSaveListener(nameInput, 'master');
+    nameInput.addEventListener('input', showMasterActionButtons);
+    nameInput.addEventListener('change', showMasterActionButtons);
+}
+
+function showMasterActionButtons() {
+    const form = document.getElementById('master-form');
+    if (!form) return;
+    const saveBtn = form.querySelector('#save-master-btn');
+    const cancelBtn = form.querySelector('#cancel-master-btn');
+    if (saveBtn) saveBtn.style.display = '';
+    if (cancelBtn) cancelBtn.style.display = '';
+}
+
+async function saveMasterForm() {
+    const form = document.getElementById('master-form');
+    if (!form) return;
+    const nameInput = form.querySelector('input[name="档案名"]');
+    if (!nameInput || !nameInput.value.trim()) {
+        showMessage(window.t ? window.t('character.profileNameRequired') : '档案名为必填项', 'error');
+        return;
+    }
+    const data = {};
+    for (const [k, v] of new FormData(form).entries()) {
+        if (k && v) data[k] = v;
+    }
+    try {
+        const resp = await fetch('/api/characters/master', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data)
+        });
+        if (resp.ok) {
+            showMessage(window.t ? window.t('character.saveMasterSuccess') : '保存主人设定成功', 'success');
+            await loadMasterProfile();
+        } else {
+            const err = await resp.text();
+            showMessage((window.t ? window.t('character.saveMasterError') : '保存失败') + ': ' + err, 'error');
+        }
+    } catch (e) {
+        showMessage(window.t ? window.t('character.saveMasterError') : '保存主人设定失败', 'error');
+    }
+}
+
+// 自动保存相关
+const _inputOriginalValues = new WeakMap();
+function storeOriginalValue(input) {
+    _inputOriginalValues.set(input, input.value);
+}
+function hasInputChanged(input) {
+    return _inputOriginalValues.get(input) !== input.value;
+}
+
+function attachAutoSaveListener(input, type, catgirlName) {
+    if (input.dataset.autoSaveAttached === 'true') return;
+    input.dataset.autoSaveAttached = 'true';
+    storeOriginalValue(input);
+    input.addEventListener('blur', function (e) {
+        if (!hasInputChanged(input)) return;
+        const relatedTarget = e.relatedTarget;
+        if (relatedTarget && (relatedTarget.closest('.btn.delete') || relatedTarget.closest('#cancel-button'))) return;
+        setTimeout(() => {
+            const activeEl = document.activeElement;
+            if (activeEl && (activeEl.closest('.btn.delete') || activeEl.closest('#cancel-button'))) return;
+            if (hasInputChanged(input)) {
+                if (type === 'master') {
+                    autoSaveMasterField(input);
+                } else if (type === 'catgirl' && catgirlName) {
+                    panelAutoSaveCatgirlField(input, catgirlName);
+                }
+            }
+        }, 0);
+    });
+}
+
+async function autoSaveMasterField(input) {
+    const form = input.closest('form');
+    if (!form || form.id !== 'master-form') return;
+    const fieldName = input.name;
+    if (!fieldName) return;
+    if (fieldName === '档案名' && !input.value.trim()) return;
+    const allData = {};
+    for (const [k, v] of new FormData(form).entries()) {
+        if (k && v) allData[k] = v;
+    }
+    if (!allData['档案名']) return;
+    try {
+        const resp = await fetch('/api/characters/master', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(allData)
+        });
+        if (resp.ok) {
+            storeOriginalValue(input);
+            const allInputs = form.querySelectorAll('input, textarea');
+            allInputs.forEach(inp => storeOriginalValue(inp));
+            const stillDirty = Array.from(allInputs).some(inp => hasInputChanged(inp));
+            if (!stillDirty) {
+                const saveBtn = form.querySelector('#save-master-btn');
+                const cancelBtn = form.querySelector('#cancel-master-btn');
+                if (saveBtn) saveBtn.style.display = 'none';
+                if (cancelBtn) cancelBtn.style.display = 'none';
+            }
+            showAutoSaveToast(window.t ? window.t('character.autoSaved') : '已自动保存设定');
+        }
+    } catch (e) {
+        console.error('自动保存主人字段失败:', e);
+    }
+}
+
+async function panelAutoSaveCatgirlField(input, catgirlName) {
+    if (!catgirlName) return;
+    const form = input.closest('form');
+    if (!form) return;
+    const fieldName = input.name;
+    if (!fieldName || fieldName === '档案名' || fieldName === 'voice_id') return;
+    const data = { '档案名': catgirlName };
+    const ALL_RESERVED_FIELDS = ['档案名', ...getWorkshopHiddenFields()];
+    const inputs = form.querySelectorAll('input, textarea');
+    inputs.forEach(inp => {
+        if (inp.name && !ALL_RESERVED_FIELDS.includes(inp.name) && inp.value) {
+            data[inp.name] = inp.value;
+        }
+    });
+    try {
+        const resp = await fetch('/api/characters/catgirl/' + encodeURIComponent(catgirlName), {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data)
+        });
+        if (resp.ok) {
+            storeOriginalValue(input);
+            const allInputs = form.querySelectorAll('input, textarea');
+            const sentFields = new Set(Object.keys(data));
+            allInputs.forEach(inp => {
+                if (inp.name && sentFields.has(inp.name)) {
+                    storeOriginalValue(inp);
+                }
+            });
+            const stillDirty = Array.from(allInputs).some(inp => hasInputChanged(inp));
+            if (!stillDirty) {
+                const saveBtn = form.querySelector('#save-button');
+                const cancelBtn = form.querySelector('#cancel-button');
+                if (saveBtn) saveBtn.style.display = 'none';
+                if (cancelBtn) cancelBtn.style.display = 'none';
+            }
+            showAutoSaveToast(window.t ? window.t('character.autoSaved') : '已自动保存设定');
+        }
+    } catch (e) {
+        console.error('自动保存猫娘字段失败:', e);
+    }
+}
+
+let _autoSaveToastTimer = null;
+let _autoSaveToastEl = null;
+function showAutoSaveToast(message) {
+    if (!_autoSaveToastEl) {
+        _autoSaveToastEl = document.createElement('div');
+        _autoSaveToastEl.className = 'auto-save-toast';
+        document.body.appendChild(_autoSaveToastEl);
+    }
+    _autoSaveToastEl.textContent = message;
+    _autoSaveToastEl.classList.add('visible');
+    if (_autoSaveToastTimer) clearTimeout(_autoSaveToastTimer);
+    _autoSaveToastTimer = setTimeout(() => {
+        if (_autoSaveToastEl) _autoSaveToastEl.classList.remove('visible');
+    }, 2000);
+}
+
+async function addMasterField() {
+    const form = document.getElementById('master-form');
+    if (!form) return;
+    let key = '';
+    if (typeof showPrompt === 'function') {
+        key = await showPrompt(
+            window.t ? window.t('character.addMasterFieldPrompt') : '请输入新设定的名称（键名）',
+            '',
+            window.t ? window.t('character.addMasterFieldTitle') : '新增主人设定'
+        );
+    } else {
+        key = prompt(window.t ? window.t('character.addMasterFieldPrompt') : '请输入新设定的名称（键名）');
+    }
+    if (!key || key === '档案名') return;
+    const exists = Array.from(form.querySelectorAll('textarea, input')).some(el => el.name === key);
+    if (exists) {
+        showMessage(window.t ? window.t('character.fieldExists') : '该设定已存在', 'error');
+        return;
+    }
+    const wrapper = document.createElement('div');
+    wrapper.className = 'field-row-wrapper custom-row';
+    const label = document.createElement('label');
+    label.textContent = key;
+    wrapper.appendChild(label);
+
+    const row = document.createElement('div');
+    row.className = 'field-row';
+    const textarea = document.createElement('textarea');
+    textarea.name = key;
+    textarea.rows = 1;
+    row.appendChild(textarea);
+    wrapper.appendChild(row);
+
+    const delBtn = document.createElement('button');
+    delBtn.type = 'button';
+    delBtn.className = 'btn sm delete';
+    delBtn.textContent = window.t ? window.t('character.deleteField') : '删除设定';
+    delBtn.onclick = function () { deleteMasterField(this); };
+    wrapper.appendChild(delBtn);
+
+    form.insertBefore(wrapper, form.querySelector('.btn-area'));
+    _panelAttachTextareaAutoResize(textarea);
+    attachAutoSaveListener(textarea, 'master');
+    textarea.addEventListener('input', showMasterActionButtons);
+    textarea.addEventListener('change', showMasterActionButtons);
+    textarea.focus();
+    showMasterActionButtons();
+}
+
+function deleteMasterField(btn) {
+    const wrapper = btn.parentNode;
+    const label = wrapper.querySelector('label');
+    if (label && label.textContent === (window.t ? window.t('character.profileName') : '档案名')) return;
+    wrapper.remove();
+    showMasterActionButtons();
+}
+
+async function renameMaster() {
+    const form = document.getElementById('master-form');
+    if (!form) return;
+    const nameInput = form.querySelector('input[name="档案名"]');
+    const oldName = nameInput?.value || '';
+    let newName;
+    if (typeof showPrompt === 'function') {
+        newName = await showPrompt(
+            window.t ? window.t('character.renamePrompt') : '请输入新的档案名',
+            oldName,
+            window.t ? window.t('character.renameTitle') : '修改名称'
+        );
+    } else {
+        newName = prompt(window.t ? window.t('character.renamePrompt') : '请输入新的档案名', oldName);
+    }
+    if (!newName || newName.trim() === '' || newName.trim() === oldName) return;
+    try {
+        const resp = await fetch('/api/characters/master/' + encodeURIComponent(oldName) + '/rename', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ new_name: newName.trim() })
+        });
+        const result = await resp.json();
+        if (result.success) {
+            showMessage(window.t ? window.t('character.renameSuccess') : '重命名成功', 'success');
+            await loadMasterProfile();
+        } else {
+            showMessage(result.error || (window.t ? window.t('character.renameFailed') : '重命名失败'), 'error');
+        }
+    } catch (e) {
+        showMessage(window.t ? window.t('character.renameError') : '重命名时发生错误', 'error');
+    }
+}
+
+function toggleMasterSection() {
+    const content = document.getElementById('master-profile-content');
+    const header = document.getElementById('master-profile-header');
+    if (!content || !header) return;
+    const isHidden = content.style.display === 'none';
+    content.style.display = isHidden ? 'block' : 'none';
+    header.classList.toggle('open', isHidden);
+    header.setAttribute('aria-expanded', isHidden ? 'true' : 'false');
+}
+
+// ===================== 隐藏猫娘 =====================
+
+function getHiddenCatgirlKeys() {
+    try {
+        const stored = localStorage.getItem('hidden_catgirls');
+        if (!stored) return [];
+        const parsed = JSON.parse(stored);
+        if (!Array.isArray(parsed)) return [];
+        return parsed.filter(x => typeof x === 'string');
+    } catch (e) {
+        return [];
+    }
+}
+
+async function workshopHideCatgirl(name) {
+    if (name === window._workshopCurrentCatgirl) {
+        showMessage(window.t ? window.t('character.cannotHideCurrentNeko') : '不能隐藏当前正在使用的猫娘', 'error');
+        return;
+    }
+    const hiddenKeys = getHiddenCatgirlKeys();
+    if (!hiddenKeys.includes(name)) {
+        hiddenKeys.push(name);
+        localStorage.setItem('hidden_catgirls', JSON.stringify(hiddenKeys));
+    }
+    renderCharaCardsView();
+    renderHiddenCatgirls();
+}
+
+function workshopUnhideCatgirl(name) {
+    const hiddenKeys = getHiddenCatgirlKeys();
+    const newKeys = hiddenKeys.filter(k => k !== name);
+    localStorage.setItem('hidden_catgirls', JSON.stringify(newKeys));
+    renderCharaCardsView();
+    renderHiddenCatgirls();
+}
+
+function renderHiddenCatgirls() {
+    const area = document.getElementById('hidden-catgirl-area');
+    const list = document.getElementById('hidden-catgirl-list');
+    const countSpan = document.getElementById('hidden-catgirl-count');
+    const toggleBtn = document.getElementById('toggle-hidden-btn');
+    if (!area || !list) return;
+
+    const hiddenKeys = getHiddenCatgirlKeys();
+
+    // 更新 toolbar 按钮显示状态
+    if (toggleBtn) {
+        toggleBtn.style.display = hiddenKeys.length > 0 ? 'inline-flex' : 'none';
+        const btnText = toggleBtn.querySelector('span');
+        if (btnText) {
+            btnText.textContent = window._showHiddenCatgirls
+                ? (window.t ? window.t('character.hideHidden') : '隐藏已隐藏')
+                : (window.t ? window.t('character.showHidden') : '显示已隐藏');
+        }
+        toggleBtn.classList.toggle('active', !!window._showHiddenCatgirls);
+    }
+
+    if (hiddenKeys.length === 0) {
+        area.style.display = 'none';
+        return;
+    }
+
+    area.style.display = 'block';
+    const hiddenText = window.t ? window.t('character.hiddenCatgirls') : '已隐藏猫娘';
+    if (countSpan) countSpan.textContent = hiddenText + ' (' + hiddenKeys.length + ')';
+
+    list.innerHTML = '';
+    hiddenKeys.forEach(key => {
+        const item = document.createElement('div');
+        item.className = 'hidden-catgirl-item';
+
+        const nameSpan = document.createElement('span');
+        nameSpan.className = 'catgirl-name';
+        nameSpan.textContent = key;
+        item.appendChild(nameSpan);
+
+        const unhideBtn = document.createElement('button');
+        unhideBtn.className = 'btn sm';
+        unhideBtn.style.background = '#40C5F1';
+        unhideBtn.style.minWidth = '60px';
+        unhideBtn.textContent = window.t ? window.t('character.show') : '显示';
+        unhideBtn.onclick = function () {
+            workshopUnhideCatgirl(key);
+        };
+        item.appendChild(unhideBtn);
+
+        list.appendChild(item);
+    });
+}
+
+function toggleHiddenCatgirlsHeader() {
+    const list = document.getElementById('hidden-catgirl-list');
+    const arrow = document.getElementById('hidden-catgirl-arrow');
+    const btn = document.querySelector('.hidden-catgirl-header-btn');
+    if (!list) return;
+    const isHidden = list.style.display === 'none';
+    list.style.display = isHidden ? 'block' : 'none';
+    if (arrow) arrow.classList.toggle('expanded', isHidden);
+    if (btn) btn.setAttribute('aria-expanded', isHidden ? 'true' : 'false');
+}
+
+function toggleShowHiddenCatgirls() {
+    window._showHiddenCatgirls = !window._showHiddenCatgirls;
+    renderCharaCardsView();
+    renderHiddenCatgirls();
+}
+
+// ===================== 面板自动保存（供 buildCatgirlDetailForm 调用） =====================
+
+function panelAttachAutoSaveListener(input, catgirlName) {
+    if (input.dataset.autoSaveAttached === 'true') return;
+    input.dataset.autoSaveAttached = 'true';
+    storeOriginalValue(input);
+    input.addEventListener('blur', function (e) {
+        if (!hasInputChanged(input)) return;
+        const relatedTarget = e.relatedTarget;
+        if (relatedTarget && (relatedTarget.closest('.btn.delete') || relatedTarget.closest('#cancel-button') || relatedTarget.closest('#rename-catgirl-btn'))) return;
+        setTimeout(() => {
+            const activeEl = document.activeElement;
+            if (activeEl && (activeEl.closest('.btn.delete') || activeEl.closest('#cancel-button') || activeEl.closest('#rename-catgirl-btn'))) return;
+            if (hasInputChanged(input)) {
+                panelAutoSaveCatgirlField(input, catgirlName);
+            }
+        }, 0);
+    });
+}
+
+// ===================== 云存档同步与生命周期 =====================
+
+function getCurrentUiLanguage() {
+    if (window.i18n && typeof window.i18n.language === 'string' && window.i18n.language.trim()) {
+        return window.i18n.language.trim();
+    }
+    const saved = localStorage.getItem('i18nextLng');
+    if (typeof saved === 'string' && saved.trim()) return saved.trim();
+    return '';
+}
+
+function hasUnsavedNewCatgirlDraft() {
+    const form = document.getElementById('catgirl-form-new');
+    if (!form) return false;
+    const nameInput = form.querySelector('input[name="档案名"]');
+    return !!(nameInput && nameInput.value && nameInput.value.trim());
+}
+
+const CLOUDSAVE_CHARACTER_SYNC_EVENT_KEY = 'neko_cloudsave_character_sync';
+const CLOUDSAVE_CHARACTER_SYNC_MESSAGE_TYPE = 'cloudsave_character_changed';
+const CLOUDSAVE_CHARACTER_SYNC_CHANNEL_NAME = 'neko_cloudsave_character_sync';
+
+function handleCloudsaveCharacterSync(data) {
+    if (!data || data.type !== CLOUDSAVE_CHARACTER_SYNC_MESSAGE_TYPE) return;
+    if (hasUnsavedNewCatgirlDraft()) {
+        console.log('[CharacterCardManager] Unsaved draft detected, deferring sync refresh');
+        return;
+    }
+    console.log('[CharacterCardManager] Received cloudsave sync:', data.action);
+    loadCharacterCards().catch(e => console.warn('Cloudsave sync refresh failed:', e));
+}
+
+(function initCloudsaveSync() {
+    if (typeof BroadcastChannel === 'function') {
+        try {
+            const channel = new BroadcastChannel(CLOUDSAVE_CHARACTER_SYNC_CHANNEL_NAME);
+            channel.onmessage = function (event) {
+                handleCloudsaveCharacterSync(event.data);
+            };
+        } catch (e) {
+            console.warn('BroadcastChannel init failed:', e);
+        }
+    }
+
+    window.addEventListener('storage', function (event) {
+        if (event.key !== CLOUDSAVE_CHARACTER_SYNC_EVENT_KEY) return;
+        try {
+            const data = JSON.parse(event.newValue);
+            handleCloudsaveCharacterSync(data);
+        } catch (e) {
+            console.warn('localStorage sync parse failed:', e);
+        }
+    });
+})();
+
+// sendBeacon 生命周期
+window.addEventListener('beforeunload', function () {
+    try {
+        navigator.sendBeacon('/api/beacon/shutdown');
+    } catch (e) { /* ignore */ }
+});
+
+window.addEventListener('unload', function () {
+    try {
+        navigator.sendBeacon('/api/beacon/shutdown');
+    } catch (e) { /* ignore */ }
+});
 
 // =========================================================================
 // 清理遗留记忆（Legacy Memory Cleanup）

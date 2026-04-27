@@ -9,7 +9,7 @@ Pages are rendered with Jinja2 on the server side. Templates are located in the 
 | Path | Template | Description |
 |------|----------|-------------|
 | `/` | `index.html` | Main chat interface with Live2D/VRM rendering |
-| `/chara_manager` | `chara_manager.html` | Character personality and settings editor |
+| `/character_card_manager` | `character_card_manager.html` | Character personality and settings editor |
 | `/api_key` | `api_key_settings.html` | API key configuration panel |
 | `/model_manager` | `model_manager.html` | Model browsing and management |
 | `/live2d_parameter_editor` | `live2d_parameter_editor.html` | Live2D model parameter fine-tuning |
@@ -17,7 +17,6 @@ Pages are rendered with Jinja2 on the server side. Templates are located in the 
 | `/vrm_emotion_manager` | `vrm_emotion_manager.html` | VRM emotion mapping |
 | `/voice_clone` | `voice_clone.html` | Voice cloning interface |
 | `/memory_browser` | `memory_browser.html` | Memory browsing and editing |
-| `/steam_workshop_manager` | `steam_workshop_manager.html` | Steam Workshop management |
 
 ## Dark mode
 

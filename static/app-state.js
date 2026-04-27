@@ -12,6 +12,11 @@
         MAX_MIC_GAIN_DB: 25,                 // 麦克风增益上限 (dB ≈ 18x)
         MIN_MIC_GAIN_DB: -5,                 // 麦克风增益下限 (dB ≈ 0.56x)
         DEFAULT_SPEAKER_VOLUME: 100,         // 扬声器默认音量
+        DEFAULT_SPATIAL_AUDIO_ENABLED: true, // 空间音频默认开启
+        SPATIAL_AUDIO_MIN_GAIN: 0.4,         // 副屏远端最低音量保底（防止猫娘飞远后听不见）
+        SPATIAL_AUDIO_FALLOFF_RATE: 0.35,    // 超出主屏后每个 refDist 衰减比例
+        SPATIAL_AUDIO_RAMP_SECONDS: 0.12,    // pan/gain 平滑过渡时长，避免突变 click
+        SPATIAL_AUDIO_POLL_MS: 500,          // 位置轮询周期（兜底，事件驱动为主）
         DEFAULT_PROACTIVE_CHAT_INTERVAL: 15, // 默认搭话间隔 (秒)
         DEFAULT_PROACTIVE_VISION_INTERVAL: 10, // 默认视觉间隔 (秒)
         MAX_SCREENSHOT_WIDTH: 1280,
@@ -40,6 +45,13 @@
         animationFrameId: null,
         seqCounter: 0,
         speakerVolume: 100,
+
+        // --- Audio (空间音频，多屏立体声 + 距离衰减) ---
+        spatialAudioEnabled: true,
+        spatialPannerNode: null,         // StereoPannerNode：水平 L/R 定位
+        spatialDistanceGainNode: null,   // GainNode：距离衰减
+        spatialPollTimer: null,          // 位置轮询 timer 句柄
+        spatialPrimaryDisplay: null,     // 缓存的主屏信息 { bounds, workArea }
 
         // --- Audio (打断/解码) ---
         interruptedSpeechId: null,

@@ -1159,6 +1159,58 @@
             speakerContainer.appendChild(speakerHint);
             leftColumn.appendChild(speakerContainer);
 
+            // ===== 左栏 1.2. 空间音频开关（多屏立体声 + 距离衰减）=====
+            var spatialContainer = document.createElement('div');
+            spatialContainer.style.padding = '8px 12px';
+
+            var spatialRow = document.createElement('div');
+            Object.assign(spatialRow.style, { display: 'flex', justifyContent: 'space-between', alignItems: 'center' });
+
+            var spatialLabel = document.createElement('span');
+            spatialLabel.textContent = window.t ? window.t('speaker.spatialAudioLabel') : '空间音频';
+            spatialLabel.setAttribute('data-i18n', 'speaker.spatialAudioLabel');
+            Object.assign(spatialLabel.style, { fontSize: '13px', color: 'var(--neko-popup-text)', fontWeight: '500' });
+
+            var spatialEnabled = (window.appSpatialAudio && typeof window.appSpatialAudio.getEnabled === 'function')
+                ? window.appSpatialAudio.getEnabled()
+                : !!S.spatialAudioEnabled;
+
+            var spatialToggle = document.createElement('label');
+            Object.assign(spatialToggle.style, { position: 'relative', display: 'inline-block', width: '36px', height: '20px', flexShrink: '0' });
+            var spatialInput = document.createElement('input');
+            spatialInput.type = 'checkbox';
+            spatialInput.checked = spatialEnabled;
+            Object.assign(spatialInput.style, { opacity: '0', width: '0', height: '0' });
+            var spatialSliderEl = document.createElement('span');
+            Object.assign(spatialSliderEl.style, { position: 'absolute', cursor: 'pointer', top: '0', left: '0', right: '0', bottom: '0', backgroundColor: spatialEnabled ? '#4f8cff' : '#ccc', borderRadius: '10px', transition: 'background-color 0.2s' });
+            var spatialKnob = document.createElement('span');
+            Object.assign(spatialKnob.style, { position: 'absolute', content: '""', height: '16px', width: '16px', left: spatialEnabled ? '18px' : '2px', bottom: '2px', backgroundColor: 'white', borderRadius: '50%', transition: 'left 0.2s' });
+            spatialSliderEl.appendChild(spatialKnob);
+            spatialToggle.appendChild(spatialInput);
+            spatialToggle.appendChild(spatialSliderEl);
+
+            spatialInput.addEventListener('change', function () {
+                var on = spatialInput.checked;
+                spatialSliderEl.style.backgroundColor = on ? '#4f8cff' : '#ccc';
+                spatialKnob.style.left = on ? '18px' : '2px';
+                if (window.appSpatialAudio && typeof window.appSpatialAudio.setEnabled === 'function') {
+                    window.appSpatialAudio.setEnabled(on);
+                } else {
+                    S.spatialAudioEnabled = on;
+                }
+            });
+
+            spatialRow.appendChild(spatialLabel);
+            spatialRow.appendChild(spatialToggle);
+            spatialContainer.appendChild(spatialRow);
+
+            var spatialHint = document.createElement('div');
+            spatialHint.textContent = window.t ? window.t('speaker.spatialAudioHint') : '根据猫娘窗口相对主屏的位置做立体声与距离衰减';
+            spatialHint.setAttribute('data-i18n', 'speaker.spatialAudioHint');
+            Object.assign(spatialHint.style, { fontSize: '11px', color: 'var(--neko-popup-text-sub)', marginTop: '6px' });
+            spatialContainer.appendChild(spatialHint);
+            leftColumn.appendChild(spatialContainer);
+
             // 分隔线
             var sep1 = document.createElement('div');
             Object.assign(sep1.style, { height: '1px', backgroundColor: 'var(--neko-popup-separator)', margin: '8px 0' });
