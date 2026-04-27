@@ -199,6 +199,13 @@ function Tabs(props) {
 function useI18n() { return { t, locale: __NEKO_PAYLOAD.locale }; }
 function t(key) { return key; }
 
+function refreshHostedPayload(context) {
+  if (typeof window.__NekoRefreshHostedPayload === 'function') {
+    return window.__NekoRefreshHostedPayload(context);
+  }
+  return context;
+}
+
 const __pendingRequests = new Map();
 window.addEventListener('message', (event) => {
   const data = event.data;
@@ -223,7 +230,10 @@ function requestHost(method, payload) {
 }
 const api = {
   call(actionId, args) { return requestHost('call', { actionId, args: args || {} }); },
-  refresh() { return requestHost('refresh', {}); },
+  async refresh() {
+    const context = await requestHost('refresh', {});
+    return refreshHostedPayload(context);
+  },
 };
 function ActionButton(props) {
   const action = props.action || {};
@@ -236,6 +246,7 @@ function ActionButton(props) {
       try {
         button.disabled = true;
         const result = await api.call(actionId, props.values || props.args || {});
+        if (action.refresh_context !== false && props.refresh !== false) await api.refresh();
         if (typeof props.onResult === 'function') props.onResult(result);
       } catch (error) {
         if (typeof props.onError === 'function') props.onError(error);
@@ -248,19 +259,24 @@ function ActionButton(props) {
   return button;
 }
 function RefreshButton(props) {
-  return Button({
+  let button = null;
+  button = Button({
     tone: props.tone || 'primary',
     onClick: async () => {
       try {
+        if (button) button.disabled = true;
         await api.refresh();
         if (typeof props.onRefresh === 'function') props.onRefresh();
       } catch (error) {
         if (typeof props.onError === 'function') props.onError(error);
         else alert(error && error.message ? error.message : String(error));
+      } finally {
+        if (button) button.disabled = false;
       }
     },
     children: [props.children || props.label || '刷新'],
   });
+  return button;
 }
 
 Object.assign(NekoUiKit, {

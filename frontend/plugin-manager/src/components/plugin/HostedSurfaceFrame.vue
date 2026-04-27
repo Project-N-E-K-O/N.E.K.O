@@ -187,7 +187,10 @@ async function handleHostedRequest(data: any) {
     if (method === 'call') {
       const actionId = String(data.payload?.actionId || '')
       const args = data.payload?.args && typeof data.payload.args === 'object' ? data.payload.args : {}
-      const result = await callPluginHostedSurfaceAction(props.pluginId, actionId, args)
+      const result = await callPluginHostedSurfaceAction(props.pluginId, actionId, args, {
+        kind: props.surface.kind,
+        id: props.surface.id,
+      })
       respond({ ok: true, result })
       return
     }

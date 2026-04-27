@@ -237,7 +237,10 @@ export function getPluginHostedSurfaceContext(pluginId: string, params: {
   })
 }
 
-export function callPluginHostedSurfaceAction(pluginId: string, actionId: string, args?: Record<string, any>): Promise<{
+export function callPluginHostedSurfaceAction(pluginId: string, actionId: string, args?: Record<string, any>, surface?: {
+  kind: PluginUiSurface['kind']
+  id: string
+}): Promise<{
   plugin_id: string
   action_id: string
   result: any
@@ -246,6 +249,8 @@ export function callPluginHostedSurfaceAction(pluginId: string, actionId: string
   const safeActionId = encodeURIComponent(actionId)
   return post(`/plugin/${safeId}/hosted-ui/action/${safeActionId}`, {
     args: args || {},
+    kind: surface?.kind,
+    surface_id: surface?.id,
   })
 }
 

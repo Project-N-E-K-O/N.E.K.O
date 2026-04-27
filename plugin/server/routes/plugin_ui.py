@@ -36,6 +36,8 @@ plugin_ui_query_service = PluginUiQueryService()
 
 class HostedUiActionRequest(BaseModel):
     args: dict[str, object] = Field(default_factory=dict)
+    kind: str = "panel"
+    surface_id: str = "main"
 
 async def _get_plugin_static_dir(plugin_id: str) -> Path | None:
     """获取插件的静态文件目录
@@ -250,6 +252,8 @@ async def plugin_hosted_ui_action(plugin_id: str, action_id: str, request: Hoste
             plugin_id,
             action_id=action_id,
             args=request.args,
+            kind=request.kind,
+            surface_id=request.surface_id,
         )
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)

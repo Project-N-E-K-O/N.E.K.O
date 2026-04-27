@@ -256,6 +256,64 @@ def _build_surfaces_sync(plugin_id: str, plugin_meta: Mapping[str, object]) -> t
     return surfaces, warnings
 
 
+def _find_surface(surfaces: list[dict[str, object]], *, kind: str, surface_id: str) -> dict[str, object] | None:
+    return next(
+        (
+            surface for surface in surfaces
+            if surface.get("kind") == kind and surface.get("id") == surface_id
+        ),
+        None,
+    )
+
+
+def _surface_context_id(surface: Mapping[str, object]) -> str:
+    context_id = surface.get("context")
+    if isinstance(context_id, str) and context_id.strip():
+        return context_id.strip()
+    surface_id = surface.get("id")
+    if isinstance(surface_id, str) and surface_id.strip():
+        return surface_id.strip()
+    return "main"
+
+
+def _surface_allows_action_call(surface: Mapping[str, object]) -> bool:
+    permissions = surface.get("permissions")
+    return isinstance(permissions, list) and "action:call" in permissions
+
+
+def _entry_ids_from_meta(plugin_meta: Mapping[str, object]) -> set[str]:
+    entries_obj = plugin_meta.get("entries")
+    if not isinstance(entries_obj, list):
+        entries_obj = plugin_meta.get("entries_preview")
+    return {
+        str(item.get("id"))
+        for item in entries_obj
+        if isinstance(item, Mapping) and item.get("id")
+    } if isinstance(entries_obj, list) else set()
+
+
+def _resolve_authorized_action_entry_id(
+    action_id: str,
+    *,
+    actions: list[object],
+    entry_ids: set[str],
+) -> str | None:
+    for raw_action in actions:
+        if not isinstance(raw_action, Mapping):
+            continue
+        exposed_id_obj = raw_action.get("id")
+        entry_id_obj = raw_action.get("entry_id")
+        exposed_id = str(exposed_id_obj) if exposed_id_obj else ""
+        entry_id = str(entry_id_obj) if entry_id_obj else ""
+        if action_id not in {exposed_id, entry_id}:
+            continue
+        if entry_id and entry_id in entry_ids:
+            return entry_id
+        if exposed_id and exposed_id in entry_ids:
+            return exposed_id
+    return None
+
+
 def _add_surface_route_actions(
     actions: list[dict[str, object]],
     seen_ids: set[str],
@@ -588,7 +646,15 @@ class PluginUiQueryService:
                 details={"plugin_id": plugin_id, "kind": kind, "surface_id": surface_id, "error_type": type(exc).__name__},
             ) from exc
 
-    async def call_surface_action(self, plugin_id: str, *, action_id: str, args: Mapping[str, object] | None) -> dict[str, object]:
+    async def call_surface_action(
+        self,
+        plugin_id: str,
+        *,
+        action_id: str,
+        args: Mapping[str, object] | None,
+        kind: str = "panel",
+        surface_id: str = "main",
+    ) -> dict[str, object]:
         try:
             plugin_meta = await asyncio.to_thread(_get_plugin_meta_sync, plugin_id)
             if plugin_meta is None:
@@ -598,15 +664,26 @@ class PluginUiQueryService:
                     status_code=404,
                     details={"plugin_id": plugin_id},
                 )
-            entries_obj = plugin_meta.get("entries")
-            if not isinstance(entries_obj, list):
-                entries_obj = plugin_meta.get("entries_preview")
-            entry_ids = {
-                str(item.get("id"))
-                for item in entries_obj
-                if isinstance(item, Mapping) and item.get("id")
-            } if isinstance(entries_obj, list) else set()
-            if action_id not in entry_ids:
+
+            surfaces, _warnings = _build_surfaces_sync(plugin_id, plugin_meta)
+            surface = _find_surface(surfaces, kind=kind, surface_id=surface_id)
+            if surface is None:
+                raise ServerDomainError(
+                    code="PLUGIN_UI_SURFACE_NOT_FOUND",
+                    message=f"UI surface '{kind}:{surface_id}' not found",
+                    status_code=404,
+                    details={"plugin_id": plugin_id, "kind": kind, "surface_id": surface_id},
+                )
+            if not _surface_allows_action_call(surface):
+                raise ServerDomainError(
+                    code="PLUGIN_UI_ACTION_FORBIDDEN",
+                    message=f"UI surface '{kind}:{surface_id}' is not allowed to call plugin actions",
+                    status_code=403,
+                    details={"plugin_id": plugin_id, "kind": kind, "surface_id": surface_id, "action_id": action_id},
+                )
+
+            entry_ids = _entry_ids_from_meta(plugin_meta)
+            if not entry_ids:
                 raise ServerDomainError(
                     code="PLUGIN_UI_ACTION_NOT_FOUND",
                     message=f"UI action '{action_id}' is not a plugin entry",
@@ -622,10 +699,44 @@ class PluginUiQueryService:
                     status_code=409,
                     details={"plugin_id": plugin_id},
                 )
-            result = await host.trigger(action_id, dict(args or {}))
+
+            actions: list[object] = []
+            if hasattr(host, "get_ui_context"):
+                try:
+                    ui_context_result = await host.get_ui_context(_surface_context_id(surface))
+                    if isinstance(ui_context_result, Mapping) and isinstance(ui_context_result.get("actions"), list):
+                        actions = list(ui_context_result["actions"])
+                except Exception as exc:
+                    raise ServerDomainError(
+                        code="PLUGIN_UI_CONTEXT_QUERY_FAILED",
+                        message="Failed to query plugin UI action context",
+                        status_code=500,
+                        details={
+                            "plugin_id": plugin_id,
+                            "kind": kind,
+                            "surface_id": surface_id,
+                            "action_id": action_id,
+                            "error_type": type(exc).__name__,
+                        },
+                    ) from exc
+
+            resolved_action_id = _resolve_authorized_action_entry_id(
+                action_id,
+                actions=actions,
+                entry_ids=entry_ids,
+            )
+            if resolved_action_id is None:
+                raise ServerDomainError(
+                    code="PLUGIN_UI_ACTION_FORBIDDEN",
+                    message=f"UI action '{action_id}' is not exposed by surface '{kind}:{surface_id}'",
+                    status_code=403,
+                    details={"plugin_id": plugin_id, "kind": kind, "surface_id": surface_id, "action_id": action_id},
+                )
+
+            result = await host.trigger(resolved_action_id, dict(args or {}))
             return {
                 "plugin_id": plugin_id,
-                "action_id": action_id,
+                "action_id": resolved_action_id,
                 "result": result,
             }
         except ServerDomainError:

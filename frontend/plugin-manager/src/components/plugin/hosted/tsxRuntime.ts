@@ -16,6 +16,14 @@ function escapeScriptContent(value: string) {
     .replace(/<!--/g, '<\\!--')
 }
 
+function escapeHtmlAttribute(value: string) {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+}
+
 function normalizeSource(source: string) {
   return source
     .replace(/^\s*import\s+[^;]+from\s+['"](?:@neko\/plugin-ui|neko:ui)['"];?\s*$/gm, '')
@@ -69,11 +77,12 @@ function buildPayload(options: BuildHostedTsxDocumentOptions) {
 
 export function buildHostedTsxDocument(options: BuildHostedTsxDocumentOptions) {
   const compiled = compileHostedTsx(options.source)
-  const payload = JSON.stringify(buildPayload(options))
+  const payload = escapeScriptContent(JSON.stringify(buildPayload(options)))
+  const locale = escapeHtmlAttribute(options.locale)
   const uiKit = buildUiKitBundle()
 
   return `<!doctype html>
-<html lang="${options.locale}">
+<html lang="${locale}">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -82,15 +91,27 @@ export function buildHostedTsxDocument(options: BuildHostedTsxDocumentOptions) {
 <body>
   <main id="root"></main>
   <script>
-    const __NEKO_PAYLOAD = ${payload};
+    let __NEKO_PAYLOAD = ${payload};
 ${escapeScriptContent(uiKit.runtime)}
     if (!window.NekoUiKit || typeof window.NekoUiKit.h !== 'function') {
       throw new Error('N.E.K.O UI Kit failed to initialize.');
     }
-    try {
-${escapeScriptContent(compiled)}
-      if (typeof __Panel !== 'function') throw new Error('Hosted TSX must export a default function component.');
-      const rendered = __Panel({
+    function __normalizeHostedPayload(context) {
+      const next = context && typeof context === 'object' ? context : {};
+      return {
+        plugin: next.plugin || __NEKO_PAYLOAD.plugin,
+        surface: next.surface || __NEKO_PAYLOAD.surface,
+        state: next.state && typeof next.state === 'object' ? next.state : {},
+        stateSchema: next.state_schema || next.stateSchema || null,
+        actions: Array.isArray(next.actions) ? next.actions : [],
+        entries: Array.isArray(next.entries) ? next.entries : [],
+        config: next.config || __NEKO_PAYLOAD.config,
+        warnings: Array.isArray(next.warnings) ? next.warnings : [],
+        locale: __NEKO_PAYLOAD.locale,
+      };
+    }
+    function __hostedProps() {
+      return {
         plugin: __NEKO_PAYLOAD.plugin,
         surface: __NEKO_PAYLOAD.surface,
         state: __NEKO_PAYLOAD.state,
@@ -101,12 +122,48 @@ ${escapeScriptContent(compiled)}
         warnings: __NEKO_PAYLOAD.warnings,
         locale: __NEKO_PAYLOAD.locale,
         ...window.NekoUiKit,
-      });
-      window.NekoUiKit.appendChild(document.getElementById('root'), rendered);
-    } catch (error) {
+      };
+    }
+    function __showHostedError(error) {
       const message = error && error.stack ? error.stack : String(error);
-      document.getElementById('root').appendChild(window.NekoUiKit.h('pre', { className: 'neko-error' }, message));
+      const root = document.getElementById('root');
+      if (root) root.replaceChildren(window.NekoUiKit.h('pre', { className: 'neko-error' }, message));
       parent.postMessage({ type: 'neko-hosted-surface-error', payload: { message } }, '*');
+    }
+    window.__NekoRefreshHostedPayload = function(context) {
+      __NEKO_PAYLOAD = __normalizeHostedPayload(context);
+      if (typeof window.__NekoRenderHostedSurface === 'function') {
+        window.__NekoRenderHostedSurface();
+      }
+      return __NEKO_PAYLOAD;
+    };
+    try {
+${escapeScriptContent(compiled)}
+      if (typeof __Panel !== 'function') throw new Error('Hosted TSX must export a default function component.');
+      let __renderVersion = 0;
+      window.__NekoRenderHostedSurface = function() {
+        const root = document.getElementById('root');
+        if (!root) return;
+        const version = ++__renderVersion;
+        root.replaceChildren();
+        try {
+          const rendered = __Panel(__hostedProps());
+          if (rendered && typeof rendered.then === 'function') {
+            rendered.then((resolved) => {
+              if (version !== __renderVersion) return;
+              root.replaceChildren();
+              window.NekoUiKit.appendChild(root, resolved);
+            }).catch(__showHostedError);
+            return;
+          }
+          window.NekoUiKit.appendChild(root, rendered);
+        } catch (error) {
+          __showHostedError(error);
+        }
+      };
+      window.__NekoRenderHostedSurface();
+    } catch (error) {
+      __showHostedError(error);
     }
   </script>
 </body>

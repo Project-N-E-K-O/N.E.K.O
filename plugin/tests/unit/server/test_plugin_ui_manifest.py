@@ -3,7 +3,12 @@ from __future__ import annotations
 from pathlib import Path
 
 from plugin.core.ui_manifest import normalize_plugin_ui_manifest
-from plugin.server.application.plugins.ui_query_service import _build_plugin_list_actions_from_meta, _build_surfaces_sync
+from plugin.server.application.plugins.ui_query_service import (
+    _build_plugin_list_actions_from_meta,
+    _build_surfaces_sync,
+    _resolve_authorized_action_entry_id,
+    _surface_allows_action_call,
+)
 
 
 def test_normalize_plugin_ui_manifest_panel_and_guide() -> None:
@@ -120,3 +125,18 @@ def test_surfaces_and_actions_use_manifest_and_static_compat(tmp_path: Path) -> 
     assert warnings == []
     assert [surface["kind"] for surface in surfaces] == ["panel", "guide"]
     assert {action["id"] for action in actions} == {"open_panel", "open_guide"}
+
+
+def test_surface_action_permission_and_authorized_entry_resolution() -> None:
+    assert _surface_allows_action_call({"permissions": ["state:read", "action:call"]})
+    assert not _surface_allows_action_call({"permissions": ["state:read"]})
+
+    actions = [
+        {"id": "restart", "entry_id": "restart_server"},
+        {"id": "connect_server", "entry_id": "connect_server"},
+    ]
+    entry_ids = {"restart_server", "connect_server", "hidden_entry"}
+
+    assert _resolve_authorized_action_entry_id("restart", actions=actions, entry_ids=entry_ids) == "restart_server"
+    assert _resolve_authorized_action_entry_id("connect_server", actions=actions, entry_ids=entry_ids) == "connect_server"
+    assert _resolve_authorized_action_entry_id("hidden_entry", actions=actions, entry_ids=entry_ids) is None

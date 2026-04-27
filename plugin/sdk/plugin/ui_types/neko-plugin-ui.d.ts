@@ -92,6 +92,7 @@ declare module "@neko/plugin-ui" {
     tone?: Tone
     values?: Record<string, any>
     args?: Record<string, any>
+    refresh?: boolean
     onResult?: (result: any) => void
     onError?: (error: Error) => void
   }): any
