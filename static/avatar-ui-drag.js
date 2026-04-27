@@ -619,17 +619,21 @@ Live2DManager.prototype.showPopup = function (buttonId, popup) {
             if (!indicator || !checkmark) return;
             const checkedColor = 'var(--neko-popup-accent, #44b7fe)';
 
+            const hovered = toggleItem.matches(':hover');
             if (checkbox.checked) {
                 indicator.style.backgroundColor = checkedColor;
                 indicator.style.borderColor = checkedColor;
                 checkmark.style.opacity = '1';
-                toggleItem.style.background = 'transparent';
             } else {
                 indicator.style.backgroundColor = 'transparent';
                 indicator.style.borderColor = '#ccc';
                 checkmark.style.opacity = '0';
-                toggleItem.style.background = 'transparent';
             }
+            toggleItem.style.background = hovered
+                ? (checkbox.checked
+                    ? 'var(--neko-popup-selected-hover, rgba(68,183,254,0.15))'
+                    : 'var(--neko-popup-hover-subtle, rgba(68,183,254,0.08))')
+                : 'transparent';
         };
 
         // 更新 merge messages checkbox 状态和视觉样式

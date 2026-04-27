@@ -1952,10 +1952,15 @@ function createSettingsToggleItem(manager, prefix, toggle) {
 
     const updateStyle = () => {
         const isChecked = checkbox.checked;
+        const hovered = toggleItem.matches(':hover');
         toggleItem.setAttribute('aria-checked', isChecked ? 'true' : 'false');
         indicator.setAttribute('aria-checked', isChecked ? 'true' : 'false');
         updateIndicatorStyle(isChecked);
-        toggleItem.style.background = 'transparent';
+        toggleItem.style.background = hovered
+            ? (isChecked
+                ? 'var(--neko-popup-selected-hover, rgba(68,183,254,0.15))'
+                : 'var(--neko-popup-hover-subtle, rgba(68,183,254,0.08))')
+            : 'transparent';
     };
 
     updateStyle();
@@ -1965,9 +1970,7 @@ function createSettingsToggleItem(manager, prefix, toggle) {
     toggleItem.appendChild(label);
 
     toggleItem.addEventListener('mouseenter', () => {
-        toggleItem.style.background = checkbox.checked
-            ? 'var(--neko-popup-selected-hover, rgba(68,183,254,0.15))'
-            : 'var(--neko-popup-hover-subtle, rgba(68,183,254,0.08))';
+        updateStyle();
     });
     toggleItem.addEventListener('mouseleave', () => {
         updateStyle();
