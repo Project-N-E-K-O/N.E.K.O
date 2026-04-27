@@ -6893,6 +6893,8 @@ async function disposeWorkshopMmd() {
 // 加载 VRM 模型预览
 async function loadVrmPreview(modelPath, rawData) {
     try {
+        cancelPendingLive2DPreviewLoads();
+
         // 先清理之前的 3D 预览
         await disposeWorkshopVrm();
         await disposeWorkshopMmd();
@@ -6993,6 +6995,8 @@ async function loadVrmPreview(modelPath, rawData) {
 // 加载 MMD 模型预览
 async function loadMmdPreview(modelPath, rawData) {
     try {
+        cancelPendingLive2DPreviewLoads();
+
         // 先清理之前的 3D 预览
         await disposeWorkshopVrm();
         await disposeWorkshopMmd();
