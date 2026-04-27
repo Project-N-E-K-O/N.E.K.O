@@ -9,6 +9,8 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
+from fastapi.testclient import TestClient
+
 
 def _role_state_from_session_managers(session_managers: dict) -> dict:
     """Build a role_state dict seeded with the given session_managers.
@@ -46,7 +48,20 @@ from utils.file_utils import atomic_write_json
 
 
 def _make_config_manager(tmp_root: Path):
-    with patch.object(ConfigManager, "_get_documents_directory", return_value=tmp_root), patch.object(
+    cleared_env = {
+        "NEKO_STORAGE_SELECTED_ROOT": "",
+        "NEKO_STORAGE_ANCHOR_ROOT": "",
+        "NEKO_STORAGE_CLOUDSAVE_ROOT": "",
+    }
+    with patch.dict("os.environ", cleared_env, clear=False), patch.object(
+        ConfigManager,
+        "_get_documents_directory",
+        return_value=tmp_root,
+    ), patch.object(
+        ConfigManager,
+        "_get_standard_data_directory_candidates",
+        return_value=[tmp_root],
+    ), patch.object(
         ConfigManager,
         "get_legacy_app_root_candidates",
         return_value=[],
@@ -149,6 +164,25 @@ def test_launcher_phase0_skips_import_when_cloud_snapshot_is_empty():
         assert event_import_result["action"] == "skipped"
         assert event_import_result["requested_reason"] == "launcher_phase0_prelaunch_import"
         assert "reason" not in event_import_result
+
+
+@pytest.mark.unit
+def test_launcher_phase0_skips_import_when_snapshot_is_already_applied():
+    with TemporaryDirectory() as td:
+        cm = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(cm)
+        _write_runtime_state(cm, character_name="已应用角色", recent_message="已应用快照")
+        export_cloudsave_character_unit(cm, "已应用角色")
+
+        result, emitted_events = _run_launcher_phase0(cm)
+
+        assert result["import_result"]["action"] == "skipped"
+        assert result["import_result"]["reason"] == "already_applied"
+        status = result["import_result"]["status"]
+        assert status["has_snapshot"] is True
+        assert status["runtime_has_user_content"] is True
+        assert status["last_applied_manifest_fingerprint"] == status["manifest_fingerprint"]
+        assert emitted_events[-1][0] == "cloudsave_bootstrap_ready"
 
 
 @pytest.mark.unit
@@ -272,7 +306,10 @@ def test_full_cloudsave_chain_runtime_snapshot_steam_cloud_and_manual_apply():
 async def test_main_server_manual_startup_performs_fallback_import_and_continues_boot():
     import main_server
 
-    fake_config_manager = SimpleNamespace(app_docs_dir=Path("/tmp/N.E.K.O"))
+    fake_config_manager = SimpleNamespace(
+        app_docs_dir=Path("/tmp/N.E.K.O"),
+        load_root_state=Mock(return_value={"mode": "normal"}),
+    )
     fake_import_result = {"success": True, "action": "imported"}
     mock_bootstrap = Mock()
     run_cloudsave_action = AsyncMock(return_value=fake_import_result)
@@ -292,23 +329,51 @@ async def test_main_server_manual_startup_performs_fallback_import_and_continues
         async def start(self):
             await bridge_start()
 
-    with patch.object(main_server, "_IS_MAIN_PROCESS", True), \
-         patch.object(main_server, "_config_manager", fake_config_manager), \
-         patch.object(main_server, "_run_cloudsave_manager_action", run_cloudsave_action), \
-         patch.object(main_server, "bootstrap_local_cloudsave_environment", mock_bootstrap), \
-         patch.object(main_server, "initialize_character_data", AsyncMock(return_value=None)) as mock_init_chars, \
-         patch.object(main_server, "_sync_memory_server_after_startup_import", AsyncMock(return_value=None)) as mock_sync_reload, \
-         patch.object(main_server, "set_root_mode", Mock(return_value={"mode": "normal"})) as mock_set_root_mode, \
-         patch.object(main_server, "initialize_steamworks", Mock(return_value=None)) as mock_init_steam, \
-         patch.object(main_server, "get_default_steam_info", Mock()) as mock_default_steam_info, \
-         patch.object(main_server, "_background_preload", _fake_background_preload), \
-         patch.object(main_server, "MainServerAgentBridge", _DummyBridge), \
-         patch.object(main_server, "set_main_bridge", Mock()) as mock_set_main_bridge, \
-         patch.object(main_server, "_init_and_mount_workshop", AsyncMock(return_value=None)) as mock_mount_workshop, \
-         patch("main_routers.shared_state.set_steamworks", Mock()) as mock_set_steamworks, \
-         patch("utils.token_tracker.install_hooks", Mock()), \
-         patch("utils.token_tracker.TokenTracker.get_instance", return_value=fake_tracker), \
-        patch("utils.language_utils.initialize_global_language", Mock(return_value="zh-CN")):
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patch.object(main_server, "_IS_MAIN_PROCESS", True))
+        stack.enter_context(patch.object(main_server, "_runtime_startup_init_completed", False))
+        stack.enter_context(patch.object(main_server, "_heavy_import_prewarm_started", False))
+        stack.enter_context(patch.object(main_server, "_preload_task", None))
+        stack.enter_context(patch.object(main_server, "agent_event_bridge", None))
+        stack.enter_context(patch.object(main_server, "_config_manager", fake_config_manager))
+        stack.enter_context(
+            patch.object(main_server, "get_storage_startup_blocking_reason", Mock(return_value=""))
+        )
+        stack.enter_context(patch.object(main_server, "_run_cloudsave_manager_action", run_cloudsave_action))
+        stack.enter_context(patch.object(main_server, "bootstrap_local_cloudsave_environment", mock_bootstrap))
+        mock_init_chars = stack.enter_context(
+            patch.object(main_server, "initialize_character_data", AsyncMock(return_value=None))
+        )
+        mock_sync_reload = stack.enter_context(
+            patch.object(main_server, "_sync_memory_server_after_startup_import", AsyncMock(return_value=None))
+        )
+        mock_set_root_mode = stack.enter_context(
+            patch.object(main_server, "set_root_mode", Mock(return_value={"mode": "normal"}))
+        )
+        mock_init_steam = stack.enter_context(
+            patch.object(main_server, "initialize_steamworks", Mock(return_value=None))
+        )
+        mock_default_steam_info = stack.enter_context(
+            patch.object(main_server, "get_default_steam_info", Mock())
+        )
+        stack.enter_context(patch.object(main_server, "_background_preload", _fake_background_preload))
+        stack.enter_context(patch.object(main_server, "MainServerAgentBridge", _DummyBridge))
+        mock_set_main_bridge = stack.enter_context(
+            patch.object(main_server, "set_main_bridge", Mock())
+        )
+        mock_mount_workshop = stack.enter_context(
+            patch.object(main_server, "_init_and_mount_workshop", AsyncMock(return_value=None))
+        )
+        mock_set_steamworks = stack.enter_context(
+            patch("main_routers.shared_state.set_steamworks", Mock())
+        )
+        stack.enter_context(patch("utils.token_tracker.install_hooks", Mock()))
+        stack.enter_context(
+            patch("utils.token_tracker.TokenTracker.get_instance", return_value=fake_tracker)
+        )
+        stack.enter_context(
+            patch("utils.language_utils.initialize_global_language", Mock(return_value="zh-CN"))
+        )
         await main_server.on_startup()
         await asyncio.sleep(0)
         mock_bootstrap.assert_called_once_with(fake_config_manager)
@@ -357,25 +422,330 @@ async def test_main_server_shutdown_does_not_reexport_runtime_into_cloudsave_sna
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_main_server_startup_does_not_mark_normal_when_character_init_fails():
+    import main_server
+
+    fake_config_manager = SimpleNamespace(
+        app_docs_dir=Path("/tmp/neko"),
+    )
+    run_cloudsave_action = AsyncMock(return_value={"success": True, "action": "imported"})
+    mock_set_root_mode = Mock()
+
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patch.object(main_server, "_runtime_startup_init_completed", False))
+        stack.enter_context(patch.object(main_server, "_config_manager", fake_config_manager))
+        stack.enter_context(patch.object(main_server, "_maybe_schedule_heavy_import_prewarm", Mock()))
+        stack.enter_context(patch.object(main_server, "_run_cloudsave_manager_action", run_cloudsave_action))
+        stack.enter_context(patch.object(main_server, "bootstrap_local_cloudsave_environment", Mock()))
+        stack.enter_context(
+            patch.object(main_server, "initialize_character_data", AsyncMock(side_effect=RuntimeError("character init failed")))
+        )
+        stack.enter_context(patch.object(main_server, "set_root_mode", mock_set_root_mode))
+
+        with pytest.raises(RuntimeError, match="character init failed"):
+            await main_server._ensure_main_server_runtime_initialized(reason="unit_test")
+
+    mock_set_root_mode.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_main_server_startup_aborts_when_root_mode_persist_fails():
     import main_server
 
-    fake_config_manager = SimpleNamespace(app_docs_dir=Path("/tmp/neko"))
+    fake_config_manager = SimpleNamespace(
+        app_docs_dir=Path("/tmp/neko"),
+        load_root_state=Mock(return_value={"mode": "normal"}),
+    )
     fake_import_result = {"success": True, "action": "imported"}
     run_cloudsave_action = AsyncMock(return_value=fake_import_result)
+    fake_tracker = SimpleNamespace(
+        start_periodic_save=Mock(),
+        record_app_start=Mock(),
+    )
+    bridge_start = AsyncMock(return_value=None)
 
-    with patch.object(main_server, "_IS_MAIN_PROCESS", True), \
-         patch.object(main_server, "_config_manager", fake_config_manager), \
-         patch.object(main_server, "_run_cloudsave_manager_action", run_cloudsave_action), \
-         patch.object(main_server, "bootstrap_local_cloudsave_environment", Mock()), \
-         patch.object(main_server, "set_root_mode", Mock(side_effect=RuntimeError("root write failed"))), \
-         patch.object(main_server, "initialize_character_data", AsyncMock(return_value=None)) as mock_init_chars, \
-         patch.object(main_server, "_sync_memory_server_after_startup_import", AsyncMock(return_value=None)) as mock_sync_reload:
+    async def _fake_background_preload():
+        return None
+
+    class _DummyBridge:
+        def __init__(self, on_agent_event):
+            self.on_agent_event = on_agent_event
+
+        async def start(self):
+            await bridge_start()
+
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patch.object(main_server, "_IS_MAIN_PROCESS", True))
+        stack.enter_context(patch.object(main_server, "_runtime_startup_init_completed", False))
+        stack.enter_context(patch.object(main_server, "_heavy_import_prewarm_started", False))
+        stack.enter_context(patch.object(main_server, "_preload_task", None))
+        stack.enter_context(patch.object(main_server, "agent_event_bridge", None))
+        stack.enter_context(patch.object(main_server, "_config_manager", fake_config_manager))
+        stack.enter_context(
+            patch.object(main_server, "get_storage_startup_blocking_reason", Mock(return_value=""))
+        )
+        stack.enter_context(patch.object(main_server, "_run_cloudsave_manager_action", run_cloudsave_action))
+        stack.enter_context(patch.object(main_server, "bootstrap_local_cloudsave_environment", Mock()))
+        stack.enter_context(
+            patch.object(main_server, "set_root_mode", Mock(side_effect=RuntimeError("root write failed")))
+        )
+        mock_init_chars = stack.enter_context(
+            patch.object(main_server, "initialize_character_data", AsyncMock(return_value=None))
+        )
+        mock_sync_reload = stack.enter_context(
+            patch.object(main_server, "_sync_memory_server_after_startup_import", AsyncMock(return_value=None))
+        )
+        mock_init_steam = stack.enter_context(
+            patch.object(main_server, "initialize_steamworks", Mock(return_value=None))
+        )
+        stack.enter_context(
+            patch.object(main_server, "get_default_steam_info", Mock())
+        )
+        stack.enter_context(patch.object(main_server, "_background_preload", _fake_background_preload))
+        stack.enter_context(patch.object(main_server, "MainServerAgentBridge", _DummyBridge))
+        stack.enter_context(
+            patch.object(main_server, "set_main_bridge", Mock())
+        )
+        mock_mount_workshop = stack.enter_context(
+            patch.object(main_server, "_init_and_mount_workshop", AsyncMock(return_value=None))
+        )
+        stack.enter_context(
+            patch("main_routers.shared_state.set_steamworks", Mock())
+        )
+        stack.enter_context(patch("utils.token_tracker.install_hooks", Mock()))
+        stack.enter_context(
+            patch("utils.token_tracker.TokenTracker.get_instance", return_value=fake_tracker)
+        )
+        stack.enter_context(
+            patch("utils.language_utils.initialize_global_language", Mock(return_value="zh-CN"))
+        )
         with pytest.raises(RuntimeError, match="failed to persist ROOT_MODE_NORMAL"):
             await main_server.on_startup()
 
-    mock_init_chars.assert_not_awaited()
-    mock_sync_reload.assert_not_awaited()
+    mock_init_chars.assert_awaited_once_with()
+    mock_sync_reload.assert_awaited_once_with(fake_import_result)
+    mock_init_steam.assert_called_once_with()
+    mock_mount_workshop.assert_awaited_once_with()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_main_server_startup_stays_limited_when_storage_barrier_is_blocking():
+    import main_server
+    from main_routers import shared_state
+
+    sentinel_templates = object()
+
+    with patch.dict(shared_state._state, {"templates": shared_state._UNSET}), \
+         patch.object(main_server, "_IS_MAIN_PROCESS", True), \
+         patch.object(main_server, "templates", sentinel_templates), \
+         patch.object(main_server, "role_state", {}), \
+         patch.object(main_server, "_config_manager", SimpleNamespace()), \
+         patch.object(main_server, "get_storage_startup_blocking_reason", Mock(return_value="selection_required")), \
+         patch.object(main_server, "_ensure_main_server_runtime_initialized", AsyncMock()) as mock_ensure_runtime:
+        await main_server.on_startup()
+        assert shared_state.get_templates() is sentinel_templates
+
+    mock_ensure_runtime.assert_not_awaited()
+
+
+@pytest.mark.unit
+def test_main_server_limited_mode_middleware_blocks_runtime_routes():
+    import main_server
+
+    with patch.object(main_server, "_IS_MAIN_PROCESS", False), \
+         patch.object(main_server, "_runtime_startup_init_completed", False), \
+         patch.object(main_server, "_main_runtime_limited_mode_enabled", True), \
+         patch.object(main_server, "_main_runtime_limited_mode_reason", "selection_required"):
+        with TestClient(main_server.app) as client:
+            blocked_response = client.get("/api/config/page_config")
+            health_response = client.get("/health")
+            steam_language_response = client.get("/api/config/steam_language")
+
+    assert blocked_response.status_code == 409
+    payload = blocked_response.json()
+    assert payload["error_code"] == "storage_startup_blocked"
+    assert payload["blocking_reason"] == "selection_required"
+    assert payload["limited_mode"] is True
+    assert health_response.status_code == 200
+    assert steam_language_response.status_code == 200
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_release_storage_startup_barrier_restores_memory_limited_mode_when_main_init_fails():
+    import main_server
+
+    init_error = RuntimeError("main init failed")
+    with patch.object(main_server, "_request_memory_server_continue_startup", AsyncMock(return_value=None)) as mock_continue, \
+         patch.object(main_server, "_ensure_main_server_runtime_initialized", AsyncMock(side_effect=init_error)) as mock_ensure, \
+         patch.object(main_server, "_request_memory_server_block_startup", AsyncMock(return_value=None)) as mock_block, \
+         patch.object(main_server, "_main_runtime_limited_mode_enabled", False), \
+         patch.object(main_server, "_main_runtime_limited_mode_reason", ""):
+        with pytest.raises(RuntimeError, match="main init failed"):
+            await main_server.release_storage_startup_barrier(reason="unit_test")
+        assert main_server._main_runtime_limited_mode_enabled is True
+        assert main_server._main_runtime_limited_mode_reason == "runtime_initialization_failed"
+
+    mock_continue.assert_awaited_once_with("unit_test")
+    mock_ensure.assert_awaited_once_with(reason="unit_test")
+    mock_block.assert_awaited_once_with("unit_test:main_server_init_failed")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_memory_server_continue_startup_preserves_409_blocking_payload():
+    import httpx
+    import main_server
+
+    payload = {
+        "ok": False,
+        "error_code": "storage_startup_blocked",
+        "blocking_reason": "migration_pending",
+    }
+
+    class _Client:
+        async def post(self, *args, **kwargs):
+            return httpx.Response(
+                409,
+                json=payload,
+                request=httpx.Request("POST", "http://127.0.0.1/internal/storage/startup/continue"),
+            )
+
+    with patch("utils.internal_http_client.get_internal_http_client", return_value=_Client()):
+        with pytest.raises(main_server.MemoryServerStartupBlocked) as exc_info:
+            await main_server._request_memory_server_continue_startup("unit_test")
+
+    assert exc_info.value.payload == payload
+    assert exc_info.value.blocking_reason == "migration_pending"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_memory_server_startup_stays_limited_when_storage_barrier_is_blocking():
+    import memory_server
+
+    with patch.object(memory_server, "_config_manager", SimpleNamespace()), \
+         patch.object(memory_server, "get_storage_startup_blocking_reason", Mock(return_value="selection_required")), \
+         patch.object(memory_server, "ensure_memory_server_runtime_initialized", AsyncMock()) as mock_ensure_runtime:
+        await memory_server.startup_event_handler()
+
+    mock_ensure_runtime.assert_not_awaited()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_memory_server_continue_startup_refuses_active_storage_barrier():
+    import memory_server
+
+    with patch.object(memory_server, "_config_manager", SimpleNamespace()), \
+         patch.object(memory_server, "get_storage_startup_blocking_reason", Mock(return_value="migration_pending")), \
+         patch.object(memory_server, "ensure_memory_server_runtime_initialized", AsyncMock()) as mock_ensure_runtime:
+        response = await memory_server.continue_storage_startup(None)
+
+    assert response.status_code == 409
+    payload = json.loads(response.body.decode("utf-8"))
+    assert payload["ok"] is False
+    assert payload["blocking_reason"] == "migration_pending"
+    mock_ensure_runtime.assert_not_awaited()
+
+
+@pytest.mark.unit
+def test_memory_server_limited_mode_middleware_blocks_runtime_routes():
+    import memory_server
+
+    with patch.object(memory_server, "_config_manager", SimpleNamespace()), \
+         patch.object(memory_server, "get_storage_startup_blocking_reason", Mock(return_value="selection_required")):
+        with TestClient(memory_server.app) as client:
+            response = client.get("/get_settings/小满")
+
+    assert response.status_code == 409
+    payload = response.json()
+    assert payload["error_code"] == "storage_startup_blocked"
+    assert payload["blocking_reason"] == "selection_required"
+    assert payload["limited_mode"] is True
+
+
+@pytest.mark.unit
+def test_memory_server_limited_mode_middleware_blocks_until_runtime_init_completes():
+    import memory_server
+
+    with patch.object(memory_server, "_config_manager", SimpleNamespace()), \
+         patch.object(memory_server, "_memory_runtime_init_completed", False), \
+         patch.object(memory_server, "get_storage_startup_blocking_reason", Mock(side_effect=["selection_required", ""])):
+        with TestClient(memory_server.app) as client:
+            response = client.get("/get_settings/小满")
+
+    assert response.status_code == 409
+    payload = response.json()
+    assert payload["error_code"] == "storage_startup_blocked"
+    assert payload["blocking_reason"] == "runtime_initializing"
+    assert payload["limited_mode"] is True
+
+
+@pytest.mark.unit
+def test_memory_server_block_startup_endpoint_restores_limited_mode():
+    import memory_server
+
+    with patch.object(memory_server, "_memory_runtime_init_completed", True), \
+         patch.object(memory_server, "_memory_storage_blocked_after_init", False), \
+         patch.object(memory_server, "get_storage_startup_blocking_reason", Mock(return_value="")):
+        with TestClient(memory_server.app) as client:
+            response = client.post(
+                "/internal/storage/startup/block",
+                json={"reason": "main_failed"},
+            )
+            blocked_response = client.get("/get_settings/小满")
+            runtime_completed_during_block = memory_server._memory_runtime_init_completed
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["limited_mode"] is True
+    assert payload["reason"] == "main_failed"
+    assert blocked_response.status_code == 409
+    assert blocked_response.json()["blocking_reason"] == "storage_startup_blocked_after_init"
+    assert runtime_completed_during_block is True
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_main_server_cancel_workshop_background_tasks_uses_public_api():
+    import main_server
+
+    calls = []
+    workshop_module = SimpleNamespace(
+        cancel_background_tasks=AsyncMock(side_effect=lambda *, timeout: calls.append(timeout)),
+        _ugc_warmup_task=None,
+        _ugc_sync_task=None,
+    )
+
+    with patch.object(main_server.importlib, "import_module", return_value=workshop_module):
+        await main_server._cancel_workshop_background_tasks(timeout=2.5)
+
+    assert calls == [2.5]
+    workshop_module.cancel_background_tasks.assert_awaited_once_with(timeout=2.5)
+
+
+@pytest.mark.unit
+def test_main_server_resets_sync_shutdown_events_after_startup_rollback():
+    import main_server
+
+    event = threading.Event()
+    event.set()
+    role_state = {
+        "小满": main_server.RoleState(
+            sync_message_queue=Queue(),
+            sync_shutdown_event=event,
+            websocket_lock=asyncio.Lock(),
+        )
+    }
+
+    with patch.object(main_server, "role_state", role_state):
+        main_server._reset_sync_connector_shutdown_events()
+
+    assert event.is_set() is False
 
 
 @pytest.mark.unit

@@ -30,6 +30,20 @@ MESSAGE_NAME_FIELDS = ("speaker", "author", "name", "character")
 
 
 def iter_character_memory_roots(config_manager) -> list[Path]:
+    """返回所有承载角色记忆的运行时根目录（去重、保持插入顺序）。
+
+    只返回当前激活的 runtime 路径：
+      - ``memory_dir``：当前运行时的 ``<app_docs>/memory``。
+      - ``project_memory_dir``：项目目录下的种子/默认 memory 位置。
+
+    历史遗留路径（``Documents\\N.E.K.O\\memory`` 等 CFA 回退或老版本写过
+    的根）**不**在此列。那类数据由以下两条路径单独处理，避免删除/清理
+    逻辑意外波及非运行时位置：
+
+      - 启动软迁移：``ConfigManager.migrate_legacy_documents_memory`` 只
+        把仍在 ``characters.json[猫娘]`` 的目录搬到 runtime。
+      - 手动清理按钮：创意工坊页面的"清理遗留记忆"扫描 + 勾选删除。
+    """
     roots: list[Path] = []
     seen: set[str] = set()
 
@@ -39,7 +53,10 @@ def iter_character_memory_roots(config_manager) -> list[Path]:
     ):
         if not raw_path:
             continue
-        root = Path(raw_path)
+        try:
+            root = Path(raw_path)
+        except Exception:
+            continue
         key = str(root)
         if key in seen:
             continue

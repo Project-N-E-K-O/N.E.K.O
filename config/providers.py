@@ -32,6 +32,7 @@ AGENT_USE_EXTRA_BODY = True
 MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
     # Qwen 系列
     "qwen-flash": EXTRA_BODY_OPENAI,
+    "qwen3.6-flash-2026-04-16": EXTRA_BODY_OPENAI,
     "qwen3-vl-plus-2025-09-23": EXTRA_BODY_OPENAI,
     "qwen3-vl-plus": EXTRA_BODY_OPENAI,
     "qwen3-vl-flash": EXTRA_BODY_OPENAI,

@@ -737,8 +737,18 @@ function retranslateCurrentSubtitle() {
     }
 }
 
-// 初始化字幕模块（DOM 就绪后绑定拖拽 & turn 事件）
-document.addEventListener('DOMContentLoaded', async function() {
+async function initSubtitleAfterStorageBarrier() {
+    if (typeof window.waitForStorageLocationStartupBarrier === 'function') {
+        try {
+            await window.waitForStorageLocationStartupBarrier();
+        } catch (_) {}
+    } else if (window.__nekoStorageLocationStartupBarrier
+        && typeof window.__nekoStorageLocationStartupBarrier.then === 'function') {
+        try {
+            await window.__nekoStorageLocationStartupBarrier;
+        } catch (_) {}
+    }
+
     initSubtitleHostUi();
     await getUserLanguage();
     syncSettingsPanel();
@@ -758,6 +768,11 @@ document.addEventListener('DOMContentLoaded', async function() {
             console.error('[App] 通用引导管理器初始化失败:', error);
         }
     }
+}
+
+// 初始化字幕模块（DOM 就绪后绑定拖拽 & turn 事件）
+document.addEventListener('DOMContentLoaded', function() {
+    initSubtitleAfterStorageBarrier();
 });
 
 // ======================== 外部桥接接口 ========================

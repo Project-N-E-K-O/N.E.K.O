@@ -33,6 +33,13 @@ from typing import TypedDict
 
 import httpx
 
+from config.prompts_proactive import (
+    HOLIDAY_HINT_TODAY,
+    HOLIDAY_HINT_SOON,
+    HOLIDAY_HINT_WEEK,
+    WEEKEND_HINT,
+)
+
 logger = logging.getLogger(__name__)
 
 # ── language → country code mapping ──────────────────────────────────
@@ -105,12 +112,15 @@ _FETCH_TIMEOUT = 10.0
 
 # ── 全局补充节日（所有国家共享，固定日期，API 可能不含） ──────────
 # 格式: (month, day, localName_dict)
+# Holiday display names below are *data*, not LLM prompts — they're returned
+# as HolidayEntry.localName for display. The dict-shape happens to match the
+# i18n-leak detector but the project convention exempts pure localized data.
 _GLOBAL_EXTRA_HOLIDAYS: list[tuple[int, int, dict[str, str]]] = [
-    (2, 14, {
+    (2, 14, {  # noqa: I18N_NOT_IN_CONFIG  # holiday display data, not LLM prompt
         'zh': '情人节', 'en': "Valentine's Day", 'ja': 'バレンタインデー',
         'ko': '발렌타인데이', 'ru': 'День святого Валентина',
     }),
-    (12, 25, {
+    (12, 25, {  # noqa: I18N_NOT_IN_CONFIG  # holiday display data, not LLM prompt
         'zh': '圣诞节', 'en': 'Christmas', 'ja': 'クリスマス',
         'ko': '크리스마스', 'ru': 'Рождество',
     }),
@@ -540,37 +550,8 @@ except Exception:
 #  High-level hint builder
 # =====================================================================
 
-_HOLIDAY_HINT_TODAY: dict[str, str] = {
-    'zh': '今天是{name}！这是一个特别的日子。',
-    'en': 'Today is {name}! It is a special day.',
-    'ja': '今日は{name}だ！特別な日だね。',
-    'ko': '오늘은 {name}이다! 특별한 날이야.',
-    'ru': 'Сегодня {name}! Это особенный день.',
-}
-
-_HOLIDAY_HINT_SOON: dict[str, str] = {
-    'zh': '再过{days}天就是{name}假期了，可以期待一下。',
-    'en': 'The {name} holiday is coming in {days} days — something to look forward to.',
-    'ja': 'あと{days}日で{name}の休日だ。楽しみだね。',
-    'ko': '{days}일 후면 {name} 연휴다. 기대되네.',
-    'ru': 'Через {days} дней начнутся праздники {name} — есть чего ждать.',
-}
-
-_HOLIDAY_HINT_WEEK: dict[str, str] = {
-    'zh': '这周就是{name}假期了哦。',
-    'en': 'The {name} holiday is coming up this week.',
-    'ja': '今週は{name}の休日がやってくるよ。',
-    'ko': '이번 주에 {name} 연휴가 다가오고 있어.',
-    'ru': 'На этой неделе начнутся праздники {name}.',
-}
-
-_WEEKEND_HINT: dict[str, str] = {
-    'zh': '今天是周末，好好放松吧。',
-    'en': 'It is the weekend — time to relax.',
-    'ja': '今日は週末だ。ゆっくり過ごしてね。',
-    'ko': '오늘은 주말이다. 푹 쉬어.',
-    'ru': 'Сегодня выходной — время отдохнуть.',
-}
+# Templates HOLIDAY_HINT_{TODAY,SOON,WEEK} and WEEKEND_HINT are imported
+# from config.prompts_proactive — see top of file.
 
 
 async def get_holiday_or_weekend_hint(lang: str, character: str) -> str | None:
@@ -590,23 +571,23 @@ async def get_holiday_or_weekend_hint(lang: str, character: str) -> str | None:
             return None
 
         name = proximity.period.display_name
-        lang_key = lang if lang in _HOLIDAY_HINT_TODAY else 'en'
+        lang_key = lang if lang in HOLIDAY_HINT_TODAY else 'en'
 
         if proximity.is_today:
-            tpl = _HOLIDAY_HINT_TODAY.get(lang_key, _HOLIDAY_HINT_TODAY['en'])
+            tpl = HOLIDAY_HINT_TODAY.get(lang_key, HOLIDAY_HINT_TODAY['en'])
             return tpl.format(name=name)
         elif proximity.days_away <= 3:
-            tpl = _HOLIDAY_HINT_SOON.get(lang_key, _HOLIDAY_HINT_SOON['en'])
+            tpl = HOLIDAY_HINT_SOON.get(lang_key, HOLIDAY_HINT_SOON['en'])
             return tpl.format(name=name, days=proximity.days_away)
         else:
-            tpl = _HOLIDAY_HINT_WEEK.get(lang_key, _HOLIDAY_HINT_WEEK['en'])
+            tpl = HOLIDAY_HINT_WEEK.get(lang_key, HOLIDAY_HINT_WEEK['en'])
             return tpl.format(name=name)
 
     # No holiday → check weekend
     if datetime.now().weekday() >= 5:
         if not try_consume_weekend(character):
             return None
-        return _WEEKEND_HINT.get(lang, _WEEKEND_HINT.get('en', ''))
+        return WEEKEND_HINT.get(lang, WEEKEND_HINT.get('en', ''))
 
     return None
 
@@ -644,15 +625,15 @@ def _has_weekend_budget(character: str) -> bool:
 def _build_holiday_hint_text(lang: str, proximity: HolidayProximity) -> str:
     """Build hint text from a proximity object (no side effects)."""
     name = proximity.period.display_name
-    lang_key = lang if lang in _HOLIDAY_HINT_TODAY else 'en'
+    lang_key = lang if lang in HOLIDAY_HINT_TODAY else 'en'
     if proximity.is_today:
-        tpl = _HOLIDAY_HINT_TODAY.get(lang_key, _HOLIDAY_HINT_TODAY['en'])
+        tpl = HOLIDAY_HINT_TODAY.get(lang_key, HOLIDAY_HINT_TODAY['en'])
         return tpl.format(name=name)
     elif proximity.days_away <= 3:
-        tpl = _HOLIDAY_HINT_SOON.get(lang_key, _HOLIDAY_HINT_SOON['en'])
+        tpl = HOLIDAY_HINT_SOON.get(lang_key, HOLIDAY_HINT_SOON['en'])
         return tpl.format(name=name, days=proximity.days_away)
     else:
-        tpl = _HOLIDAY_HINT_WEEK.get(lang_key, _HOLIDAY_HINT_WEEK['en'])
+        tpl = HOLIDAY_HINT_WEEK.get(lang_key, HOLIDAY_HINT_WEEK['en'])
         return tpl.format(name=name)
 
 
@@ -678,7 +659,7 @@ async def preview_holiday_or_weekend_hint(
     if datetime.now().weekday() >= 5:
         if not _has_weekend_budget(character):
             return None, None
-        text = _WEEKEND_HINT.get(lang, _WEEKEND_HINT.get('en', ''))
+        text = WEEKEND_HINT.get(lang, WEEKEND_HINT.get('en', ''))
         return text, ("weekend",)
 
     return None, None

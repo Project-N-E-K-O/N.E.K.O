@@ -10,8 +10,8 @@ LOCALE_DIR = PROJECT_ROOT / "static" / "locales"
 CLOUDSAVE_JS = PROJECT_ROOT / "static" / "js" / "cloudsave_manager.js"
 CLOUDSAVE_CSS = PROJECT_ROOT / "static" / "css" / "cloudsave_manager.css"
 CLOUDSAVE_TEMPLATE = PROJECT_ROOT / "templates" / "cloudsave_manager.html"
-CHARA_TEMPLATE = PROJECT_ROOT / "templates" / "chara_manager.html"
-CHARA_MANAGER_JS = PROJECT_ROOT / "static" / "js" / "chara_manager.js"
+CHARA_TEMPLATE = PROJECT_ROOT / "templates" / "character_card_manager.html"
+CHARA_MANAGER_JS = PROJECT_ROOT / "static" / "js" / "character_card_manager.js"
 I18N_JS = PROJECT_ROOT / "static" / "i18n-i18next.js"
 
 
@@ -40,6 +40,8 @@ def _extract_i18n_keys() -> set[str]:
     pattern = re.compile(r"(cloudsave\.[A-Za-z0-9_.]+|character\.[A-Za-z0-9_.]+)")
     for path in (CLOUDSAVE_JS, CLOUDSAVE_TEMPLATE, CHARA_TEMPLATE, CHARA_MANAGER_JS):
         keys.update(pattern.findall(path.read_text(encoding="utf-8")))
+    # 过滤掉以点结尾的动态键前缀（如 'character.field.' + key）
+    keys = {k for k in keys if not k.endswith('.')}
     return keys
 
 
@@ -417,8 +419,8 @@ def test_cloudsave_popup_url_carries_current_ui_language():
 def test_cloudsave_back_to_character_manager_replaces_history_entry():
     script = CLOUDSAVE_JS.read_text(encoding="utf-8")
 
-    assert "window.location.replace('/chara_manager');" in script
-    assert "window.location.href = '/chara_manager';" not in script
+    assert "window.location.replace('/character_card_manager');" in script
+    assert "window.location.href = '/character_card_manager';" not in script
 
 
 @pytest.mark.unit

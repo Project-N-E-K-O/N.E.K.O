@@ -31,14 +31,19 @@
 """
 from __future__ import annotations
 
+import asyncio
 import logging
+import threading
+import weakref
 from typing import Optional
 
 import httpx
 
 logger = logging.getLogger(__name__)
 
-_client: Optional[httpx.AsyncClient] = None
+_clients_by_loop: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, httpx.AsyncClient]" = weakref.WeakKeyDictionary()
+_fallback_client: Optional[httpx.AsyncClient] = None
+_clients_lock = threading.RLock()
 
 # 默认超时：与历史三个调用点中最宽松的对齐（5s）。调用方可以用
 # `client.get(url, timeout=...)` 针对单次请求覆盖。
@@ -46,36 +51,81 @@ _DEFAULT_TIMEOUT = 5.0
 
 
 def get_internal_http_client() -> httpx.AsyncClient:
-    """返回进程级共享的 AsyncClient。首次调用时懒初始化。
+    """返回当前事件循环专用的共享 AsyncClient。首次调用时懒初始化。
 
-    必须在事件循环内调用（AsyncClient 构造不依赖 loop，但 transport 第一次
-    请求时会绑定 loop）。
+    `httpx.AsyncClient` 的 transport 在首次请求时会和事件循环绑定。主服务与
+    同步连接器线程各自持有独立 loop，因此这里按 loop 隔离，避免跨线程/跨
+    loop 复用同一个连接池。
     """
-    global _client
-    if _client is None or _client.is_closed:
-        # verify=False 彻底跳过 SSLContext 初始化 —— 我们只用来访问
-        # 127.0.0.1 的内部服务，纯 http，不经过 TLS。
-        # trust_env=False 不读 HTTP_PROXY/NO_PROXY 等环境变量。
-        transport = httpx.AsyncHTTPTransport(verify=False, retries=0)
-        _client = httpx.AsyncClient(
-            timeout=_DEFAULT_TIMEOUT,
-            proxy=None,
-            trust_env=False,
-            transport=transport,
-        )
-        logger.debug("[internal_http_client] initialized shared AsyncClient (verify=False)")
-    return _client
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop is None:
+        global _fallback_client
+        with _clients_lock:
+            if _fallback_client is None or _fallback_client.is_closed:
+                _fallback_client = _create_internal_http_client()
+                logger.debug("[internal_http_client] initialized fallback AsyncClient (verify=False)")
+            return _fallback_client
+
+    with _clients_lock:
+        client = _clients_by_loop.get(loop)
+        if client is None or client.is_closed:
+            client = _create_internal_http_client()
+            _clients_by_loop[loop] = client
+            logger.debug("[internal_http_client] initialized loop-local AsyncClient (verify=False)")
+        return client
+
+
+def _create_internal_http_client() -> httpx.AsyncClient:
+    """创建 127.0.0.1 内部服务专用客户端。"""
+    # verify=False 彻底跳过 SSLContext 初始化 —— 我们只用来访问
+    # 127.0.0.1 的内部服务，纯 http，不经过 TLS。
+    # trust_env=False 不读 HTTP_PROXY/NO_PROXY 等环境变量。
+    transport = httpx.AsyncHTTPTransport(verify=False, retries=0)
+    return httpx.AsyncClient(
+        timeout=_DEFAULT_TIMEOUT,
+        proxy=None,
+        trust_env=False,
+        transport=transport,
+    )
+
+
+async def _close_client(client: httpx.AsyncClient, *, context: str) -> None:
+    if client.is_closed:
+        return
+    try:
+        await client.aclose()
+        logger.debug("[internal_http_client] %s AsyncClient closed", context)
+    except Exception as e:
+        logger.debug("[internal_http_client] close failed (%s): %s", context, e)
+
+
+async def aclose_internal_http_client_current_loop() -> None:
+    """关闭当前事件循环绑定的内部客户端。"""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+
+    with _clients_lock:
+        client = _clients_by_loop.pop(loop, None)
+    if client is not None:
+        await _close_client(client, context="loop-local")
 
 
 async def aclose_internal_http_client() -> None:
     """在 FastAPI shutdown 钩子中调用，释放连接池。"""
-    global _client
-    if _client is None:
-        return
-    if not _client.is_closed:
-        try:
-            await _client.aclose()
-            logger.debug("[internal_http_client] shared AsyncClient closed")
-        except Exception as e:
-            logger.debug(f"[internal_http_client] close failed: {e}")
-    _client = None
+    global _fallback_client
+    with _clients_lock:
+        clients = list(_clients_by_loop.items())
+        _clients_by_loop.clear()
+        fallback_client = _fallback_client
+        _fallback_client = None
+    for _loop, client in clients:
+        await _close_client(client, context="loop-local")
+
+    if fallback_client is not None:
+        await _close_client(fallback_client, context="fallback")

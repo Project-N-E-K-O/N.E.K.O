@@ -17,6 +17,7 @@
     <script src="/static/i18n-i18next.js"></script>
     <script src="/static/common_dialogs.js"></script>
     <link rel="stylesheet" href="/static/css/index.css">
+    <link rel="stylesheet" href="/static/css/storage-location.css">
     <link rel="stylesheet" href="/static/css/subtitle.css">
     <style>/* React chat adapter: hide old chat */
     #chat-container { display: none !important; visibility: hidden !important; }</style>
@@ -32,6 +33,7 @@
     <link rel="stylesheet" href="/static/libs/driver.min.css">
     <!-- 教程样式定制 -->
     <link rel="stylesheet" href="/static/css/tutorial-styles.css">
+    <link rel="stylesheet" href="/static/css/yui-guide.css?v=20260427-2">
     <!-- APlayer 库（本地） -->
     <link rel="stylesheet" href="/static/libs/APlayer.min.css">
     <script src="/static/libs/APlayer.min.js"></script>
@@ -54,6 +56,9 @@
 
     <!-- Status 气泡框 -->
     <div id="status-toast"></div>
+    <button type="button" id="restart-home-tutorial-btn" onclick="restartCurrentTutorial()">
+        重启新手教程
+    </button>
     <div id="chat-container">
         <div id="chat-header">
             <img src="/static/icons/chat_icon.png" data-i18n-alt="chat.title" alt="对话" style="width: 28px; height: 28px; object-fit: contain; margin-right: 6px; vertical-align: middle; image-rendering: -webkit-optimize-contrast; image-rendering: crisp-edges;">
@@ -83,7 +88,7 @@
                         <path d="M8 17.25v1.5h8v-1.5" />
                         <path d="M3.25 10.25h17.5" />
                     </svg>
-                    <span class="chat-header-btn-label" data-i18n="chat.reactWindowLabel">新版聊天框</span>
+                    <span class="chat-header-btn-label" data-i18n="chat.reactWindowLabel">聊天框</span>
                 </button>
             </div>
             <div id="chatContainer"></div>
@@ -196,7 +201,7 @@
                     <img src="/static/icons/fenxiang.svg" alt="" aria-hidden="true" width="20" height="20">
                 </button>
                 <button id="reactChatWindowMinimizeButton" type="button" data-i18n-aria="chat.reactWindowMinimize" data-i18n-title="chat.reactWindowMinimize">
-                    <img id="reactChatWindowMinimizeIcon" src="/static/icons/expand_icon_off.png" data-i18n-alt="chat.reactWindowMinimize" alt="最小化新版聊天框" width="32" height="32">
+                    <img id="reactChatWindowMinimizeIcon" src="/static/icons/expand_icon_off.png" data-i18n-alt="chat.reactWindowMinimize" alt="最小化聊天框" width="32" height="32">
                 </button>
                 <button id="reactChatWindowCloseButton" type="button" data-i18n-aria="chat.reactWindowClose" data-i18n-title="chat.reactWindowClose">×</button>
             </div>
@@ -272,6 +277,9 @@
         <canvas id="mmd-canvas"></canvas>
     </div>
 
+    <!-- 存储位置首屏哨兵需要尽早建立启动屏障，避免模型与主业务先行初始化 -->
+    <script src="/static/app-storage-location.js"></script>
+
     <!-- Live2D SDK 核心库 -->
     <script src="/static/libs/live2dcubismcore.min.js"></script>
     <!-- Live2D Cubism JS Framework -->
@@ -337,6 +345,7 @@
     <script src="/static/app-chat-avatar.js"></script>
     <script src="/static/app-chat-adapter.js"></script>
     <script src="/static/app-audio-playback.js"></script>
+    <script src="/static/app-spatial-audio.js"></script>
     <script src="/static/app-audio-capture.js"></script>
     <script src="/static/app-screen.js"></script>
     <script src="/static/app-crop.js"></script>
@@ -359,74 +368,12 @@
 
     <script src="/static/subtitle.js"></script>
 
-    <script>
-        window.pageConfigReady = (async function loadPageConfig() {
-            try {
-                const urlParams = new URLSearchParams(window.location.search);
-                const lanlanNameFromUrl = urlParams.get('lanlan_name') || '';
-                const apiUrl = lanlanNameFromUrl
-                    ? `/api/config/page_config?lanlan_name=${encodeURIComponent(lanlanNameFromUrl)}`
-                    : '/api/config/page_config';
-                const response = await fetch(apiUrl, {
-                    cache: 'no-store',
-                });
-                const data = await response.json();
-
-                if (data && data.success) {
-                    if (!window.lanlan_config || typeof window.lanlan_config !== 'object') {
-                        window.lanlan_config = {};
-                    }
-                    window.lanlan_config.lanlan_name = data.lanlan_name || lanlanNameFromUrl || window.lanlan_config.lanlan_name || '';
-                    window.lanlan_config.master_name = data.master_name || '';
-                    window.lanlan_config.master_profile_name = data.master_profile_name || '';
-                    window.lanlan_config.master_nickname = data.master_nickname || '';
-                    window.lanlan_config.master_display_name = data.master_display_name || data.master_nickname || data.master_name || '';
-                    window.master_name = data.master_name || '';
-                    window.master_profile_name = data.master_profile_name || '';
-                    window.master_nickname = data.master_nickname || '';
-                    window.master_display_name = data.master_display_name || data.master_nickname || data.master_name || '';
-                    return data;
-                }
-            } catch (error) {
-                console.warn('[Init] load page_config failed:', error);
-            }
-
-            if (!window.lanlan_config || typeof window.lanlan_config !== 'object') {
-                window.lanlan_config = {};
-            }
-            if (typeof window.lanlan_config.lanlan_name !== 'string' || window.lanlan_config.lanlan_name === '') {
-                try { window.lanlan_config.lanlan_name = new URLSearchParams(window.location.search).get('lanlan_name') || ''; } catch(_) { window.lanlan_config.lanlan_name = ''; }
-            }
-            if (typeof window.lanlan_config.master_name !== 'string') {
-                window.lanlan_config.master_name = '';
-            }
-            if (typeof window.lanlan_config.master_profile_name !== 'string') {
-                window.lanlan_config.master_profile_name = '';
-            }
-            if (typeof window.lanlan_config.master_nickname !== 'string') {
-                window.lanlan_config.master_nickname = '';
-            }
-            if (typeof window.lanlan_config.master_display_name !== 'string') {
-                window.lanlan_config.master_display_name = window.lanlan_config.master_nickname || window.lanlan_config.master_name || '';
-            }
-            if (typeof window.master_name !== 'string') {
-                window.master_name = window.lanlan_config.master_name || '';
-            }
-            if (typeof window.master_profile_name !== 'string') {
-                window.master_profile_name = window.lanlan_config.master_profile_name || '';
-            }
-            if (typeof window.master_nickname !== 'string') {
-                window.master_nickname = window.lanlan_config.master_nickname || '';
-            }
-            if (typeof window.master_display_name !== 'string') {
-                window.master_display_name = window.lanlan_config.master_display_name || window.master_nickname || window.master_name || '';
-            }
-            return null;
-        })();
-    </script>
-    
     <link rel="stylesheet" href="/static/css/touch-config.css">
     <script src="/static/touch-config.js"></script>
+    <script src="/static/yui-guide-steps.js?v=20260422-1"></script>
+    <script src="/static/yui-guide-overlay.js?v=20260422-6"></script>
+    <script src="/static/yui-guide-page-handoff.js?v=20260427-2"></script>
+    <script src="/static/yui-guide-director.js?v=20260427-2"></script>
     <!-- 通用教程管理器（支持所有页面） -->
     <script src="/static/universal-tutorial-manager.js"></script>
     <!-- 注意：初始化由 app.js 统一处理，避免重复初始化 -->
