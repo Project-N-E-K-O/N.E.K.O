@@ -8113,11 +8113,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         const noExpressionText = t('live2d.noExpression', '无表情');
 
         select.innerHTML = '';
-        const placeholderOption = document.createElement('option');
-        placeholderOption.value = '';
-        placeholderOption.textContent = defaultText;
-        placeholderOption.disabled = true;
-        select.appendChild(placeholderOption);
 
         if (type === 'motion') {
             const noMotionOption = document.createElement('option');
