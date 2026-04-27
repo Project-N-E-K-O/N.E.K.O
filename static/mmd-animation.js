@@ -454,7 +454,7 @@ class MMDAnimation {
             this._isCrossfading = true;
             this._blendWeight = 0.0;
             this._fadeElapsed = 0.0;
-            this._fadeDuration = Math.max(0, Math.min(fadeDuration, 1.0));
+            this._fadeDuration = Math.max(0, Math.min(fadeDuration));
             // 标记为快照模式——update() 中 outgoing 不跑 pipeline，直接用 _stopSnapshot
             this._snapshotCrossfade = true;
 
@@ -607,7 +607,7 @@ class MMDAnimation {
 
         console.log('[MMD Animation] 动画加载完成:', vmdUrl,
             hasStopSnapshot ? `(快照式 crossfade ${fadeDuration}s)` :
-            hasActiveAnimation && !immediate && !activeDisabled ? `(crossfade ${fadeDuration}s)` : '(直接加载)');
+                hasActiveAnimation && !immediate && !activeDisabled ? `(crossfade ${fadeDuration}s)` : '(直接加载)');
 
         return clip;
     }
@@ -629,7 +629,7 @@ class MMDAnimation {
                     v[i - 2] * v[i + 2] +
                     v[i - 1] * v[i + 3];
                 if (dot < 0) {
-                    v[i]     = -v[i];
+                    v[i] = -v[i];
                     v[i + 1] = -v[i + 1];
                     v[i + 2] = -v[i + 2];
                     v[i + 3] = -v[i + 3];
@@ -833,7 +833,7 @@ class MMDAnimation {
         this._isCrossfading = true;
         this._blendWeight = 0.0;
         this._fadeElapsed = 0.0;
-        this._fadeDuration = Math.max(0, Math.min(fadeDuration, 1.0)); // clamp to [0, 1.0]
+        this._fadeDuration = Math.max(0, Math.min(fadeDuration)); // clamp to [0, 1.0]
 
         // 通知物理系统准备过渡（当前为 no-op，crossfade 的平滑混合不需要冻结物理）
         // 保留此钩子供未来扩展（例如：物理冻结、阻尼调整等）
@@ -1164,11 +1164,11 @@ class MMDAnimation {
                     return;
                 }
                 // 不同 element，断开旧连接
-                try { this._audioSource.disconnect(); } catch (_) {}
+                try { this._audioSource.disconnect(); } catch (_) { }
                 this._audioSource = null;
             }
             if (this._analyser) {
-                try { this._analyser.disconnect(); } catch (_) {}
+                try { this._analyser.disconnect(); } catch (_) { }
                 this._analyser = null;
             }
 
@@ -1223,7 +1223,7 @@ class MMDAnimation {
         const average = count > 0 ? sum / count : 0;
         // 归一化到 0-1 范围
         const value = Math.min(1, Math.max(0, (average - 20) / 180));
-        
+
         if (window.DEBUG_AUDIO && value > 0.1) {
             console.log('[MMD Animation] getLipSyncValue:', value, 'average:', average);
         }
@@ -1233,10 +1233,10 @@ class MMDAnimation {
     // ═══════════════════ 兼容 VRMAnimation 的口型同步 API ═══════════════════
 
     startLipSync(analyser) {
-        console.log('[MMD Animation] startLipSync 被调用', { 
-            hasAnalyser: !!analyser, 
+        console.log('[MMD Animation] startLipSync 被调用', {
+            hasAnalyser: !!analyser,
             hasManager: !!this.manager,
-            hasExpression: !!this.manager.expression 
+            hasExpression: !!this.manager.expression
         });
         if (analyser) {
             this._analyser = analyser;
@@ -1553,7 +1553,7 @@ class MMDAnimation {
         this._analyser = null;
         this._ownsAnalyser = false;
         if (this._audioContext && this._audioContext.state !== 'closed') {
-            this._audioContext.close().catch(() => {});
+            this._audioContext.close().catch(() => { });
             this._audioContext = null;
         }
         this._lipSyncEnabled = false;
