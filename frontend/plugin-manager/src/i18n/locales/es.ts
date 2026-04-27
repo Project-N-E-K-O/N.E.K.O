@@ -251,6 +251,8 @@ export default {
       markdownPending: 'El renderizado de tutoriales Markdown estará disponible pronto',
       autoPending: 'Los paneles autogenerados estarán disponibles pronto',
       surfaceUnavailable: 'Surface no disponible',
+      surfaceEntryMissing: 'El archivo de entrada declarado por esta Surface no existe. Revisa la ruta entry en plugin.toml.',
+      surfaceWarnings: 'La declaración de UI del plugin necesita atención',
       hostedRuntimePending: 'El contenedor Vue reconoció esta Surface. Los renderizadores TSX, Markdown y Auto se conectarán en una fase posterior.'
     }
   },

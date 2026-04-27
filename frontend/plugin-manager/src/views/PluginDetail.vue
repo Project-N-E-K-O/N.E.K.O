@@ -22,6 +22,21 @@
       <el-tabs v-model="activeTab" data-yui-guide-id="plugin-detail-tabs">
         <el-tab-pane v-if="panelSurfaces.length > 0" :label="$t('plugins.ui.panel')" name="panel">
           <div class="surface-section" data-yui-guide-id="plugin-detail-panel">
+            <el-alert
+              v-if="surfaceWarnings.length > 0"
+              class="surface-warning"
+              type="warning"
+              show-icon
+              :closable="false"
+            >
+              <template #title>{{ $t('plugins.ui.surfaceWarnings') }}</template>
+              <ul class="surface-warning__list">
+                <li v-for="warning in surfaceWarnings" :key="`${warning.path}:${warning.code}:${warning.message}`">
+                  <code>{{ warning.path }}</code>
+                  <span>{{ warning.message }}</span>
+                </li>
+              </ul>
+            </el-alert>
             <el-tabs v-if="panelSurfaces.length > 1" v-model="activePanelSurfaceId" type="border-card">
               <el-tab-pane
                 v-for="surface in panelSurfaces"
@@ -38,6 +53,21 @@
 
         <el-tab-pane v-if="guideSurfaces.length > 0" :label="$t('plugins.ui.guide')" name="guide">
           <div class="surface-section" data-yui-guide-id="plugin-detail-guide">
+            <el-alert
+              v-if="surfaceWarnings.length > 0"
+              class="surface-warning"
+              type="warning"
+              show-icon
+              :closable="false"
+            >
+              <template #title>{{ $t('plugins.ui.surfaceWarnings') }}</template>
+              <ul class="surface-warning__list">
+                <li v-for="warning in surfaceWarnings" :key="`${warning.path}:${warning.code}:${warning.message}`">
+                  <code>{{ warning.path }}</code>
+                  <span>{{ warning.message }}</span>
+                </li>
+              </ul>
+            </el-alert>
             <el-tabs v-if="guideSurfaces.length > 1" v-model="activeGuideSurfaceId" type="border-card">
               <el-tab-pane
                 v-for="surface in guideSurfaces"
@@ -149,8 +179,8 @@ import PluginConfigEditor from '@/components/plugin/PluginConfigEditor.vue'
 import LogViewer from '@/components/logs/LogViewer.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
 import HostedSurfaceFrame from '@/components/plugin/HostedSurfaceFrame.vue'
-import { getPluginUiSurfaces } from '@/api/plugins'
-import type { PluginUiSurface } from '@/types/api'
+import { getPluginUiSurfaceInfo } from '@/api/plugins'
+import type { PluginUiSurface, PluginUiWarning } from '@/types/api'
 
 const route = useRoute()
 const router = useRouter()
@@ -160,6 +190,7 @@ const pluginId = computed(() => route.params.id as string)
 const activeTab = ref('info')
 const loading = ref(true)
 const surfaces = ref<PluginUiSurface[]>([])
+const surfaceWarnings = ref<PluginUiWarning[]>([])
 const activePanelSurfaceId = ref('')
 const activeGuideSurfaceId = ref('')
 const allowedTabs = new Set(['panel', 'guide', 'info', 'entries', 'metrics', 'config', 'logs'])
@@ -232,7 +263,9 @@ function syncSurfaceTabs() {
 }
 
 async function fetchSurfaces() {
-  surfaces.value = await getPluginUiSurfaces(pluginId.value)
+  const info = await getPluginUiSurfaceInfo(pluginId.value)
+  surfaces.value = info.surfaces
+  surfaceWarnings.value = info.warnings
   activePanelSurfaceId.value = ''
   activeGuideSurfaceId.value = ''
   syncSurfaceTabs()
@@ -317,6 +350,24 @@ watch(pluginId, async () => {
 
 .surface-section {
   padding: 16px 0;
+}
+
+.surface-warning {
+  margin-bottom: 14px;
+}
+
+.surface-warning__list {
+  margin: 6px 0 0;
+  padding-left: 18px;
+}
+
+.surface-warning__list li {
+  line-height: 1.7;
+}
+
+.surface-warning__list code {
+  margin-right: 8px;
+  color: var(--el-color-warning);
 }
 
 .bound-extensions {

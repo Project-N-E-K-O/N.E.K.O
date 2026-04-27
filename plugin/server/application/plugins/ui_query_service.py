@@ -18,6 +18,8 @@ _ALLOWED_PLUGIN_LIST_ACTION_BUILTINS = {
     "open_detail",
     "open_config",
     "open_logs",
+    "open_panel",
+    "open_guide",
     "start",
     "stop",
     "reload",
@@ -303,6 +305,46 @@ def _build_static_compat_surface(plugin_id: str, plugin_meta: Mapping[str, objec
     ).model_dump(exclude_none=True)
 
 
+def _build_surfaces_sync(plugin_id: str, plugin_meta: Mapping[str, object]) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+    surfaces = _build_manifest_surfaces(plugin_id, plugin_meta)
+    warnings = _normalize_warnings(plugin_meta.get("plugin_ui", {}).get("warnings") if isinstance(plugin_meta.get("plugin_ui"), Mapping) else None)
+    for surface in surfaces:
+        surface_warnings = surface.pop("_warnings", None)
+        warnings.extend(_normalize_warnings(surface_warnings))
+    seen = {(str(surface.get("kind")), str(surface.get("id"))) for surface in surfaces}
+    static_surface = _build_static_compat_surface(plugin_id, plugin_meta)
+    if static_surface is not None and ("panel", "main") not in seen:
+        surfaces.insert(0, static_surface)
+    return surfaces, warnings
+
+
+def _add_surface_route_actions(
+    actions: list[dict[str, object]],
+    seen_ids: set[str],
+    *,
+    plugin_id: str,
+    plugin_meta: Mapping[str, object],
+) -> None:
+    surfaces, _warnings = _build_surfaces_sync(plugin_id, plugin_meta)
+    has_panel = any(surface.get("kind") == "panel" for surface in surfaces)
+    has_guide = any(surface.get("kind") in {"guide", "docs"} for surface in surfaces)
+    safe_id = plugin_id.replace("/", "%2F")
+    if has_panel and "open_panel" not in seen_ids:
+        actions.append({
+            "id": "open_panel",
+            "kind": "route",
+            "target": f"/plugins/{safe_id}?tab=panel",
+        })
+        seen_ids.add("open_panel")
+    if has_guide and "open_guide" not in seen_ids:
+        actions.append({
+            "id": "open_guide",
+            "kind": "route",
+            "target": f"/plugins/{safe_id}?tab=guide",
+        })
+        seen_ids.add("open_guide")
+
+
 def _normalize_plugin_list_action(
     raw_action: object,
     *,
@@ -388,15 +430,7 @@ def _build_plugin_list_actions_from_meta(
             actions.append(normalized)
             seen_ids.add(action_id)
 
-    if _has_static_ui_from_meta(plugin_meta) and "open_ui" not in seen_ids:
-        actions.append(
-            {
-                "id": "open_ui",
-                "kind": "ui",
-                "target": f"/plugin/{plugin_id}/ui/",
-                "open_in": "new_tab",
-            }
-        )
+    _add_surface_route_actions(actions, seen_ids, plugin_id=plugin_id, plugin_meta=plugin_meta)
 
     return actions
 
@@ -413,15 +447,7 @@ class PluginUiQueryService:
                     details={"plugin_id": plugin_id},
                 )
 
-            surfaces = _build_manifest_surfaces(plugin_id, plugin_meta)
-            warnings = _normalize_warnings(plugin_meta.get("plugin_ui", {}).get("warnings") if isinstance(plugin_meta.get("plugin_ui"), Mapping) else None)
-            for surface in surfaces:
-                surface_warnings = surface.pop("_warnings", None)
-                warnings.extend(_normalize_warnings(surface_warnings))
-            seen = {(str(surface.get("kind")), str(surface.get("id"))) for surface in surfaces}
-            static_surface = _build_static_compat_surface(plugin_id, plugin_meta)
-            if static_surface is not None and ("panel", "main") not in seen:
-                surfaces.insert(0, static_surface)
+            surfaces, warnings = _build_surfaces_sync(plugin_id, plugin_meta)
 
             return {
                 "plugin_id": plugin_id,
@@ -442,6 +468,88 @@ class PluginUiQueryService:
                 message="Failed to query plugin UI surfaces",
                 status_code=500,
                 details={"plugin_id": plugin_id, "error_type": type(exc).__name__},
+            ) from exc
+
+    async def get_surface_source(self, plugin_id: str, *, kind: str, surface_id: str) -> dict[str, object]:
+        try:
+            plugin_meta = await asyncio.to_thread(_get_plugin_meta_sync, plugin_id)
+            if plugin_meta is None:
+                raise ServerDomainError(
+                    code="PLUGIN_NOT_FOUND",
+                    message=f"Plugin '{plugin_id}' not found",
+                    status_code=404,
+                    details={"plugin_id": plugin_id},
+                )
+
+            surfaces, warnings = _build_surfaces_sync(plugin_id, plugin_meta)
+            surface = next(
+                (
+                    item for item in surfaces
+                    if item.get("kind") == kind and item.get("id") == surface_id
+                ),
+                None,
+            )
+            if surface is None:
+                raise ServerDomainError(
+                    code="PLUGIN_UI_SURFACE_NOT_FOUND",
+                    message=f"UI surface '{kind}:{surface_id}' not found",
+                    status_code=404,
+                    details={"plugin_id": plugin_id, "kind": kind, "surface_id": surface_id},
+                )
+
+            mode = str(surface.get("mode") or "")
+            if mode not in {"hosted-tsx", "markdown"}:
+                raise ServerDomainError(
+                    code="PLUGIN_UI_SURFACE_SOURCE_UNAVAILABLE",
+                    message=f"UI surface '{kind}:{surface_id}' does not expose source",
+                    status_code=400,
+                    details={"plugin_id": plugin_id, "kind": kind, "surface_id": surface_id, "mode": mode},
+                )
+
+            entry_obj = surface.get("entry")
+            if not isinstance(entry_obj, str) or not entry_obj:
+                raise ServerDomainError(
+                    code="PLUGIN_UI_SURFACE_ENTRY_MISSING",
+                    message=f"UI surface '{kind}:{surface_id}' has no entry",
+                    status_code=400,
+                    details={"plugin_id": plugin_id, "kind": kind, "surface_id": surface_id},
+                )
+
+            entry_path = _resolve_entry_path(plugin_meta, entry_obj)
+            if entry_path is None or not entry_path.is_file():
+                raise ServerDomainError(
+                    code="PLUGIN_UI_SURFACE_ENTRY_NOT_FOUND",
+                    message=f"UI surface entry '{entry_obj}' was not found",
+                    status_code=404,
+                    details={"plugin_id": plugin_id, "entry": entry_obj},
+                )
+
+            source = await asyncio.to_thread(entry_path.read_text, encoding="utf-8")
+            return {
+                "plugin_id": plugin_id,
+                "kind": kind,
+                "surface_id": surface_id,
+                "mode": mode,
+                "entry": entry_obj,
+                "source": source,
+                "warnings": warnings,
+            }
+        except ServerDomainError:
+            raise
+        except (OSError, UnicodeError) as exc:
+            logger.error(
+                "get_surface_source failed: plugin_id={}, kind={}, surface_id={}, err_type={}, err={}",
+                plugin_id,
+                kind,
+                surface_id,
+                type(exc).__name__,
+                str(exc),
+            )
+            raise ServerDomainError(
+                code="PLUGIN_UI_SOURCE_READ_FAILED",
+                message="Failed to read plugin UI source",
+                status_code=500,
+                details={"plugin_id": plugin_id, "kind": kind, "surface_id": surface_id, "error_type": type(exc).__name__},
             ) from exc
 
     async def get_static_dir(self, plugin_id: str) -> Path | None:

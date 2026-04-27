@@ -251,6 +251,8 @@ export default {
       markdownPending: 'Markdown guide rendering is coming soon',
       autoPending: 'Auto-generated panels are coming soon',
       surfaceUnavailable: 'Surface unavailable',
+      surfaceEntryMissing: 'The entry file declared by this surface does not exist. Check the entry path in plugin.toml.',
+      surfaceWarnings: 'Plugin UI declaration needs attention',
       hostedRuntimePending: 'The Vue container recognized this surface. TSX, Markdown, and Auto renderers will be connected in a later phase.'
     }
   },

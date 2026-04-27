@@ -204,3 +204,20 @@ async def plugin_ui_surfaces(plugin_id: str):
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
     return JSONResponse(surfaces)
+
+
+@router.get("/plugin/{plugin_id}/hosted-ui/source")
+async def plugin_hosted_ui_source(plugin_id: str, kind: str = "panel", id: str = "main"):
+    """读取 hosted surface 源码。
+
+    当前仅用于 hosted-tsx / markdown 的只读 source MVP。
+    """
+    try:
+        source = await plugin_ui_query_service.get_surface_source(
+            plugin_id,
+            kind=kind,
+            surface_id=id,
+        )
+    except ServerDomainError as error:
+        raise_http_from_domain(error, logger=logger)
+    return JSONResponse(source)

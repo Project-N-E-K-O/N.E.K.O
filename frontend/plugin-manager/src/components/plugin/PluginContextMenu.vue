@@ -172,6 +172,10 @@ function resolveActionIcon(action: ResolvedPluginListAction) {
       return Setting
     case 'open_logs':
       return Document
+    case 'open_panel':
+      return FolderOpened
+    case 'open_guide':
+      return Document
     case 'start':
     case 'enable_extension':
       return VideoPlay

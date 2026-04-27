@@ -251,6 +251,8 @@ export default {
       markdownPending: 'Markdown チュートリアル表示は近日対応予定です',
       autoPending: '自動生成パネルは近日対応予定です',
       surfaceUnavailable: 'Surface は現在利用できません',
+      surfaceEntryMissing: 'この Surface が宣言したエントリーファイルが存在しません。plugin.toml の entry パスを確認してください。',
+      surfaceWarnings: 'プラグイン UI 宣言に確認が必要な問題があります',
       hostedRuntimePending: 'Vue コンテナはこの Surface を認識しています。TSX/Markdown/Auto レンダラーは後続フェーズで接続されます。'
     }
   },

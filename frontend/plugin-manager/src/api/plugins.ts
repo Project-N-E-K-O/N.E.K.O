@@ -9,6 +9,7 @@ import type {
   PluginMessage,
   PluginUiInfo,
   PluginUiSurface,
+  PluginUiWarning,
 } from '@/types/api'
 
 /**
@@ -140,14 +141,34 @@ function normalizeSurface(raw: any, fallbackKind: PluginUiSurface['kind'] = 'pan
  * 当前后端未实现时回退到现有 /ui-info，把 static UI 归一化为 panel surface。
  */
 export async function getPluginUiSurfaces(pluginId: string): Promise<PluginUiSurface[]> {
+  const result = await getPluginUiSurfaceInfo(pluginId)
+  return result.surfaces
+}
+
+export async function getPluginUiSurfaceInfo(pluginId: string): Promise<{
+  surfaces: PluginUiSurface[]
+  warnings: PluginUiWarning[]
+}> {
   const safeId = encodeURIComponent(pluginId)
   try {
-    const response = await get<{ surfaces?: any[] } | any[]>(`/plugin/${safeId}/surfaces`)
+    const response = await get<{ surfaces?: any[]; warnings?: any[] } | any[]>(`/plugin/${safeId}/surfaces`)
     const rawSurfaces = Array.isArray(response) ? response : response?.surfaces
+    const rawWarnings = Array.isArray(response) ? [] : response?.warnings
     if (Array.isArray(rawSurfaces)) {
-      return rawSurfaces
+      return {
+        surfaces: rawSurfaces
         .map((surface) => normalizeSurface(surface))
-        .filter((surface): surface is PluginUiSurface => !!surface)
+          .filter((surface): surface is PluginUiSurface => !!surface),
+        warnings: Array.isArray(rawWarnings)
+          ? rawWarnings
+            .filter((warning) => warning && typeof warning === 'object')
+            .map((warning) => ({
+              path: typeof warning.path === 'string' ? warning.path : 'plugin.ui',
+              code: typeof warning.code === 'string' ? warning.code : 'ui_manifest_warning',
+              message: typeof warning.message === 'string' ? warning.message : 'UI manifest warning',
+            }))
+          : [],
+      }
     }
   } catch {
     // Older plugin servers expose only /ui-info; fall through to compatibility mode.
@@ -160,22 +181,46 @@ export async function getPluginUiSurfaces(pluginId: string): Promise<PluginUiSur
   try {
     const info = await get<PluginUiInfo>(`/plugin/${safeId}/ui-info`)
     if (!info?.has_ui) {
-      return []
+      return { surfaces: [], warnings: [] }
     }
-    return [{
-      id: 'main',
-      kind: 'panel',
-      mode: 'static',
-      title: undefined,
-      entry: 'static/index.html',
-      url: info.ui_path || `/plugin/${safeId}/ui/`,
-      ui_path: info.ui_path || `/plugin/${safeId}/ui/`,
-      open_in: 'iframe',
-      available: true,
-    }]
+    return {
+      surfaces: [{
+        id: 'main',
+        kind: 'panel',
+        mode: 'static',
+        title: undefined,
+        entry: 'static/index.html',
+        url: info.ui_path || `/plugin/${safeId}/ui/`,
+        ui_path: info.ui_path || `/plugin/${safeId}/ui/`,
+        open_in: 'iframe',
+        available: true,
+      }],
+      warnings: [],
+    }
   } catch {
-    return []
+    return { surfaces: [], warnings: [] }
   }
+}
+
+export function getPluginHostedSurfaceSource(pluginId: string, params: {
+  kind: PluginUiSurface['kind']
+  id: string
+}): Promise<{
+  plugin_id: string
+  kind: string
+  surface_id: string
+  mode: string
+  entry: string
+  source: string
+  warnings?: PluginUiWarning[]
+}> {
+  const safeId = encodeURIComponent(pluginId)
+  return get(`/plugin/${safeId}/hosted-ui/source`, {
+    params: {
+      kind: params.kind,
+      id: params.id,
+    },
+  })
 }
 
 /**

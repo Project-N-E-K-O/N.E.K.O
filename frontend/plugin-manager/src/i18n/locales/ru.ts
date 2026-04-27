@@ -251,6 +251,8 @@ export default {
       markdownPending: 'Рендеринг Markdown-обучения скоро будет доступен',
       autoPending: 'Автоматические панели скоро будут доступны',
       surfaceUnavailable: 'Surface недоступен',
+      surfaceEntryMissing: 'Файл entry, указанный этим Surface, не найден. Проверьте путь entry в plugin.toml.',
+      surfaceWarnings: 'В объявлении UI плагина есть проблемы, требующие внимания',
       hostedRuntimePending: 'Vue-контейнер распознал этот Surface. TSX, Markdown и Auto рендереры будут подключены позже.'
     }
   },
