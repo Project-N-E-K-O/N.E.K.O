@@ -1562,6 +1562,8 @@
         "catgirlProfile": "貓娘檔案：進階設定包含Live2D形象、語音ID等。",
         "addCatgirl": "新增貓娘",
         "openCloudsaveManager": "雲存檔管理",
+        "noIdleMotion": "無動作",
+        "noExpression": "無表情",
         "switchCatgirl": "切換貓娘",
         "deleteCatgirl": "刪除貓娘",
         "hideCatgirl": "隱藏此貓娘",

@@ -1562,6 +1562,8 @@
         "catgirlProfile": "NEKO Profile: Advanced settings include Live2D model, Voice ID, etc.",
         "addCatgirl": "Add NEKO",
         "openCloudsaveManager": "Cloud Save Manager",
+        "noIdleMotion": "No motion",
+        "noExpression": "No expression",
         "switchCatgirl": "Switch NEKO",
         "deleteCatgirl": "Delete NEKO",
         "hideCatgirl": "Hide this NEKO",

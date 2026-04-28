@@ -1562,6 +1562,8 @@
         "catgirlProfile": "NEKO プロフィール: 高度な設定には Live2D モデル、ボイス ID などが含まれます。",
         "addCatgirl": "NEKO を追加",
         "openCloudsaveManager": "クラウドセーブ管理",
+        "noIdleMotion": "モーションなし",
+        "noExpression": "表情なし",
         "switchCatgirl": "NEKO を切り替え",
         "deleteCatgirl": "NEKO を削除",
         "hideCatgirl": "このNEKOを隠す",
