@@ -406,13 +406,17 @@ async def run_sync_connector(
     # 撞到旧 ws 上更长一段时间。
     HEARTBEAT_INTERVAL = 1.0
     IDLE_TIMEOUT = 10.0  # 没消息时仍每 10s 唤醒一次 ws 检查/重连
+    # 外层 loop 唤醒粒度必须 <= heartbeat 间隔，否则 idle 期 heartbeat / reconnect
+    # 检查仍要等 IDLE_TIMEOUT 才轮上一次——HEARTBEAT_INTERVAL 调到 1s 但 wait_for
+    # 还卡 10s 的话，注释里写的"~1s 探测窗口"就是空头支票。
+    LOOP_TICK = min(IDLE_TIMEOUT, HEARTBEAT_INTERVAL)
 
     try:
         while True:
             message = None
             try:
                 message = await asyncio.wait_for(
-                    message_queue.get(), timeout=IDLE_TIMEOUT
+                    message_queue.get(), timeout=LOOP_TICK
                 )
             except asyncio.TimeoutError:
                 # 超时 = 没消息：保持 message=None 走到下面 ws 维持段做周期性

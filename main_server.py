@@ -874,7 +874,12 @@ async def _init_character_resources(k: str, is_new_character: bool):
                         # done_callback 消化 task 的 exception，避免 ws 断开时
                         # asyncio 输出 "Task exception was never retrieved" 噪音；
                         # status 是 best-effort 降级路径，丢一条不影响主逻辑。
+                        # cancelled 态下 task.exception() 自身会 raise CancelledError，
+                        # 必须先用 task.cancelled() 早返回，否则 callback 自己又制造
+                        # 一条 "exception was never retrieved" 噪音。
                         def _swallow_status_send_exc(_t):
+                            if _t.cancelled():
+                                return
                             exc = _t.exception()
                             if exc is not None:
                                 logger.debug("status 回调 ws.send_text 失败（已忽略）: %s", exc)
