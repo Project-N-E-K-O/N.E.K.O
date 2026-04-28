@@ -1914,8 +1914,16 @@
                 return { canceled: true };
             }
             if (!normalized.success) {
+                var sourceCleared = false;
                 if (typeof window.maybeClearSourceOnNotFound === 'function') {
-                    window.maybeClearSourceOnNotFound(normalized, 'desktop region capture Source not found');
+                    sourceCleared = window.maybeClearSourceOnNotFound(
+                        normalized,
+                        'desktop region capture Source not found'
+                    );
+                }
+                if (sourceCleared) {
+                    console.info('[截图] 桌面框选源已失效，回退到既有截图链路');
+                    return null;
                 }
                 if (isDesktopRegionCaptureUnavailable(normalized)) {
                     console.info('[截图] 桌面框选接口声明不可用，回退到内置裁剪:', regionMethod.name);

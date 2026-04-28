@@ -9,11 +9,13 @@ from main_routers import system_router as system_router_module
 from main_routers.shared_state import init_shared_state
 
 
+SCREENSHOT_ENDPOINT = "/api/screenshot"
 INTERACTIVE_SCREENSHOT_ENDPOINT = "/api/screenshot/interactive"
 
 
 @pytest.fixture(autouse=True)
-def _reset_shared_state_after_test():
+def _reset_shared_state_after_test(monkeypatch):
+    monkeypatch.setattr(system_router_module, "AUTOSTART_CSRF_TOKEN", "test-csrf-token")
     yield
     init_shared_state(
         role_state={},
@@ -37,6 +39,24 @@ def _build_client():
     return TestClient(app)
 
 
+def _local_headers():
+    return {
+        "Origin": "http://testserver",
+        "X-CSRF-Token": "test-csrf-token",
+    }
+
+
+@pytest.mark.unit
+def test_backend_screenshot_rejects_missing_csrf_headers():
+    with _build_client() as client:
+        response = client.post(SCREENSHOT_ENDPOINT)
+
+    assert response.status_code == 403
+    payload = response.json()
+    assert payload["success"] is False
+    assert payload["error_code"] == "csrf_validation_failed"
+
+
 @pytest.mark.unit
 def test_interactive_screenshot_rejects_non_loopback_requests():
     with _build_client() as client, patch.object(
@@ -44,7 +64,7 @@ def test_interactive_screenshot_rejects_non_loopback_requests():
         "_is_loopback_request",
         return_value=False,
     ):
-        response = client.post(INTERACTIVE_SCREENSHOT_ENDPOINT)
+        response = client.post(INTERACTIVE_SCREENSHOT_ENDPOINT, headers=_local_headers())
 
     assert response.status_code == 403
     assert response.json()["error"] == "only available from localhost"
@@ -56,10 +76,10 @@ def test_interactive_screenshot_returns_unsupported_on_non_macos(monkeypatch):
     monkeypatch.setattr(system_router_module.sys, "platform", "linux")
 
     with _build_client() as client:
-        response = client.post(INTERACTIVE_SCREENSHOT_ENDPOINT)
+        response = client.post(INTERACTIVE_SCREENSHOT_ENDPOINT, headers=_local_headers())
 
     assert response.status_code == 501
-    assert "only supported on macOS" in response.json()["error"]
+    assert "only supported on macOS and Windows" in response.json()["error"]
 
 
 @pytest.mark.unit
@@ -73,7 +93,7 @@ def test_interactive_screenshot_returns_canceled_when_user_aborts(monkeypatch):
     )
 
     with _build_client() as client:
-        response = client.post(INTERACTIVE_SCREENSHOT_ENDPOINT)
+        response = client.post(INTERACTIVE_SCREENSHOT_ENDPOINT, headers=_local_headers())
 
     assert response.status_code == 200
     payload = response.json()
@@ -97,7 +117,52 @@ def test_interactive_screenshot_returns_cropped_image_data(monkeypatch):
     )
 
     with _build_client() as client:
-        response = client.post(INTERACTIVE_SCREENSHOT_ENDPOINT)
+        response = client.post(INTERACTIVE_SCREENSHOT_ENDPOINT, headers=_local_headers())
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is True
+    assert payload["interactive"] is True
+    assert payload["size"] > 0
+    assert payload["data"].startswith("data:image/jpeg;base64,")
+
+
+@pytest.mark.unit
+def test_interactive_screenshot_returns_canceled_when_windows_user_aborts(monkeypatch):
+    monkeypatch.setattr(system_router_module, "_is_loopback_request", lambda _request: True)
+    monkeypatch.setattr(system_router_module.sys, "platform", "win32")
+    monkeypatch.setattr(
+        system_router_module,
+        "_run_windows_interactive_screenshot",
+        lambda _path: (1, ""),
+    )
+
+    with _build_client() as client:
+        response = client.post(INTERACTIVE_SCREENSHOT_ENDPOINT, headers=_local_headers())
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is False
+    assert payload["canceled"] is True
+
+
+@pytest.mark.unit
+def test_interactive_screenshot_returns_windows_cropped_image_data(monkeypatch):
+    monkeypatch.setattr(system_router_module, "_is_loopback_request", lambda _request: True)
+    monkeypatch.setattr(system_router_module.sys, "platform", "win32")
+
+    def _fake_run(output_path: str):
+        Image.new("RGB", (90, 60), (220, 120, 40)).save(output_path, format="PNG")
+        return 0, ""
+
+    monkeypatch.setattr(
+        system_router_module,
+        "_run_windows_interactive_screenshot",
+        _fake_run,
+    )
+
+    with _build_client() as client:
+        response = client.post(INTERACTIVE_SCREENSHOT_ENDPOINT, headers=_local_headers())
 
     assert response.status_code == 200
     payload = response.json()

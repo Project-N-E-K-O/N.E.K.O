@@ -207,6 +207,19 @@
         });
 
         overlay.addEventListener('keydown', function (e) {
+            var target = e.target;
+            if (
+                target
+                && (
+                    target.tagName === 'BUTTON'
+                    || target.tagName === 'INPUT'
+                    || target.tagName === 'TEXTAREA'
+                    || target.tagName === 'SELECT'
+                    || target.isContentEditable
+                )
+            ) {
+                return;
+            }
             if (e.key === 'Escape') {
                 e.preventDefault();
                 cancelAll();
@@ -783,6 +796,7 @@
 
     // ======================== Public API ========================
     mod.cropImage = function cropImage(dataUrl, opts) {
+        var sessionResizeHandler = null;
         return new Promise(function (resolve) {
             ensureOverlay();
             if (resolvePromise) close(null);
@@ -811,9 +825,15 @@
             overlay.style.display = 'flex';
             overlay.tabIndex = -1;
             overlay.focus();
-            window.addEventListener('resize', onResize);
+            sessionResizeHandler = function () {
+                onResize();
+            };
+            window.addEventListener('resize', sessionResizeHandler);
         }).finally(function () {
-            window.removeEventListener('resize', onResize);
+            if (sessionResizeHandler) {
+                window.removeEventListener('resize', sessionResizeHandler);
+                sessionResizeHandler = null;
+            }
         });
     };
 
