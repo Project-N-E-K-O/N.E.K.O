@@ -302,6 +302,7 @@
         setStoragePreflightResult('', '');
         renderStorageRestartButton();
         modal.hidden = false;
+        document.body.classList.add('storage-location-memory-modal-open');
     }
 
     function closeStorageLocationManager() {
@@ -309,6 +310,7 @@
         if (modal) {
             modal.hidden = true;
         }
+        document.body.classList.remove('storage-location-memory-modal-open');
         const input = document.getElementById('storage-target-root-input');
         if (input) {
             input.disabled = false;
@@ -584,6 +586,7 @@
                 }
             } catch (_) {}
         }
+        document.body.classList.remove('storage-location-memory-modal-open');
         await showStandaloneStorageMaintenanceOverlay(payload);
     }
 

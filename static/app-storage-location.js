@@ -4,6 +4,7 @@
     var STORAGE_APP_FOLDER_NAME = 'N.E.K.O';
     var STORAGE_RESTART_MESSAGE_TYPE = 'storage_location_restart_initiated';
     var STORAGE_RESTART_CHANNEL = 'neko_storage_location_channel';
+    var STORAGE_COMPLETION_NOTICE_DISMISSED_KEY = 'neko.storageLocation.completionNoticeDismissedKey.v1';
     var STORAGE_RESTART_PAGE_ID = window.__nekoStorageLocationPageId || (
         'storage-location-' + Date.now() + '-' + Math.random().toString(36).slice(2)
     );
@@ -49,10 +50,9 @@
         completionTitle: null,
         completionTarget: null,
         completionRetained: null,
-        completionOpenTargetButton: null,
-        completionOpenRetainedButton: null,
         completionCleanupButton: null,
         externalMaintenanceNoticeKey: '',
+        selectionIntroView: null,
         selectionView: null,
         errorView: null,
         banner: null,
@@ -60,6 +60,7 @@
         customInput: null,
         pickFolderButton: null,
         useOtherButton: null,
+        selectionActions: null,
         previewPanel: null,
         previewText: null,
         previewEstimated: null,
@@ -121,6 +122,54 @@
         if (className) element.className = className;
         if (typeof text === 'string') element.textContent = text;
         return element;
+    }
+
+    function readStorageItem(key) {
+        try {
+            if (!window.localStorage) return '';
+            return String(window.localStorage.getItem(key) || '');
+        } catch (_) {
+            return '';
+        }
+    }
+
+    function writeStorageItem(key, value) {
+        try {
+            if (!window.localStorage) return;
+            window.localStorage.setItem(key, String(value || ''));
+        } catch (_) {}
+    }
+
+    function buildCompletionNoticeDismissKey(notice) {
+        if (!notice || typeof notice !== 'object') {
+            return '';
+        }
+        return JSON.stringify([
+            notice.completed_at,
+            notice.target_root,
+            notice.retained_root,
+            notice.source_root,
+            notice.selection_source
+        ].map(function (value) {
+            return String(value || '').trim();
+        }));
+    }
+
+    function isCompletionNoticeDismissed(notice) {
+        var key = buildCompletionNoticeDismissKey(notice);
+        return !!key && readStorageItem(STORAGE_COMPLETION_NOTICE_DISMISSED_KEY) === key;
+    }
+
+    function dismissCompletionNotice() {
+        if (state.completionNotice && state.completionNotice.completed === true) {
+            writeStorageItem(
+                STORAGE_COMPLETION_NOTICE_DISMISSED_KEY,
+                buildCompletionNoticeDismissKey(state.completionNotice)
+            );
+        }
+        if (state.completionCard) {
+            state.completionCard.hidden = true;
+        }
     }
 
     function trimPathTrailingSeparators(value) {
@@ -361,6 +410,7 @@
 
         state.loadingView.hidden = phase !== 'loading';
         state.maintenanceView.hidden = phase !== 'maintenance';
+        state.selectionIntroView.hidden = phase !== 'selection_intro';
         state.selectionView.hidden = phase !== 'selection_required';
         state.errorView.hidden = phase !== 'error';
     }
@@ -554,6 +604,9 @@
         if (state.previewPanel) {
             state.previewPanel.hidden = true;
         }
+        if (state.selectionActions) {
+            state.selectionActions.hidden = false;
+        }
     }
 
     function updateSelectionSummary() {
@@ -601,6 +654,26 @@
         setSelectionStatus('', false);
         if (state.customInput) state.customInput.focus();
         setPhase('selection_required');
+    }
+
+    function shouldShowSelectionIntro(bootstrapPayload) {
+        if (!shouldShowSelectionView(bootstrapPayload)) {
+            return false;
+        }
+        if (!bootstrapPayload || typeof bootstrapPayload !== 'object') {
+            return false;
+        }
+        var blockingReason = String(bootstrapPayload.blocking_reason || '').trim();
+        return blockingReason === 'selection_required'
+            || (!!bootstrapPayload.selection_required && !bootstrapPayload.recovery_required && !bootstrapPayload.migration_pending);
+    }
+
+    function continueFromSelectionIntro() {
+        updateSelectionSummary();
+        setPhase('selection_required');
+        if (state.customInput) {
+            state.customInput.focus();
+        }
     }
 
     function getDirectoryPickerStartPath() {
@@ -682,27 +755,6 @@
     function getHostBridge() {
         var host = window.nekoHost;
         return host && typeof host === 'object' ? host : null;
-    }
-
-    function canOpenPathWithHostBridge() {
-        var host = getHostBridge();
-        return !!(host && typeof host.openPath === 'function');
-    }
-
-    async function openPathWithHostBridge(targetPath) {
-        var host = getHostBridge();
-        if (!host || typeof host.openPath !== 'function') {
-            throw new Error(translate('storage.openDirectoryUnavailable', '当前环境不支持直接打开目录。'));
-        }
-
-        var result = await host.openPath({
-            path: targetPath
-        });
-        if (result && typeof result === 'object' && result.ok === false) {
-            throw new Error(
-                String(result.error || translate('storage.openDirectoryFailed', '打开目录失败。')).trim()
-            );
-        }
     }
 
     async function pickOtherDirectory() {
@@ -792,6 +844,9 @@
         }
         updateRestartPreviewPreflight(preflight);
         state.previewPanel.hidden = false;
+        if (state.selectionActions) {
+            state.selectionActions.hidden = true;
+        }
         return preflight;
     }
 
@@ -806,16 +861,6 @@
             return translate('storage.maintenanceWaitingStatus', '服务尚未恢复前，页面会继续停留在这里并自动重试连接。');
         }
 
-        var targetRoot = '';
-        if (statusPayload.migration && typeof statusPayload.migration === 'object') {
-            targetRoot = String(statusPayload.migration.target_root || '').trim();
-        }
-        if (!targetRoot && state.pendingSelection && state.pendingSelection.preflight) {
-            targetRoot = String(state.pendingSelection.preflight.target_root || '').trim();
-        }
-        if (targetRoot) {
-            return translate('storage.maintenanceTargetStatus', '目标路径已记录，正在等待服务关闭并恢复：') + ' ' + targetRoot;
-        }
         if (String(statusPayload.blocking_reason || '').trim() === 'recovery_required') {
             return translate('storage.recoveryRequired', '检测到需要恢复的存储状态，请先重新确认本次使用的存储位置。');
         }
@@ -849,7 +894,7 @@
                 case 'pending':
                     percent = 18;
                     activeIndex = 0;
-                    label = translate('storage.progressPending', '目标路径已记录，正在准备关闭当前实例');
+                    label = translate('storage.progressPending', '正在准备关闭当前实例');
                     break;
                 case 'preflight':
                     percent = 34;
@@ -946,9 +991,7 @@
 
         var card = createElement('section', 'storage-location-completion-card');
         card.hidden = true;
-        card.appendChild(buildStorageLocationCloseButton(function () {
-            card.hidden = true;
-        }));
+        card.appendChild(buildStorageLocationCloseButton(dismissCompletionNotice));
 
         var title = createElement('h3', 'storage-location-panel-title', translate('storage.completionTitle', '存储迁移已完成'));
         var pathList = createElement('div', 'storage-location-path-list');
@@ -959,20 +1002,6 @@
         pathList.appendChild(retainedItem);
 
         var actions = createElement('div', 'storage-location-actions');
-        var openTargetButton = createElement('button', 'storage-location-btn storage-location-btn--secondary', translate('storage.openActiveRoot', '打开当前目录'));
-        openTargetButton.type = 'button';
-        openTargetButton.addEventListener('click', function () {
-            openCompletionDirectory('target');
-        });
-        actions.appendChild(openTargetButton);
-
-        var openRetainedButton = createElement('button', 'storage-location-btn storage-location-btn--secondary', translate('storage.openRetainedRoot', '打开旧目录'));
-        openRetainedButton.type = 'button';
-        openRetainedButton.addEventListener('click', function () {
-            openCompletionDirectory('retained');
-        });
-        actions.appendChild(openRetainedButton);
-
         var cleanupButton = createElement('button', 'storage-location-btn storage-location-btn--primary', translate('storage.cleanupRetainedRoot', '清理旧数据目录'));
         cleanupButton.type = 'button';
         cleanupButton.addEventListener('click', cleanupRetainedSourceRoot);
@@ -980,8 +1009,6 @@
 
         state.completionCard = card;
         state.completionTitle = title;
-        state.completionOpenTargetButton = openTargetButton;
-        state.completionOpenRetainedButton = openRetainedButton;
         state.completionCleanupButton = cleanupButton;
 
         title.classList.add('storage-location-panel-title--with-close');
@@ -1064,12 +1091,16 @@
             }
             return;
         }
+        if (isCompletionNoticeDismissed(state.completionNotice)) {
+            if (state.completionCard) {
+                state.completionCard.hidden = true;
+            }
+            return;
+        }
 
         var card = buildCompletionNoticeCard();
         state.completionTarget.textContent = String(state.completionNotice.target_root || '').trim();
         state.completionRetained.textContent = String(state.completionNotice.retained_root || '').trim();
-        state.completionOpenTargetButton.hidden = !canOpenPathWithHostBridge() || !String(state.completionNotice.target_root || '').trim();
-        state.completionOpenRetainedButton.hidden = !canOpenPathWithHostBridge() || !String(state.completionNotice.retained_root || '').trim();
         state.completionCleanupButton.hidden = !state.completionNotice.cleanup_available;
         card.hidden = false;
     }
@@ -1113,43 +1144,6 @@
         }
 
         state.completionPollTimer = window.setTimeout(tick, 0);
-    }
-
-    async function openCompletionDirectory(kind) {
-        if (!state.completionNotice || state.completionNotice.completed !== true) {
-            return;
-        }
-
-        var isRetained = kind === 'retained';
-        var targetPath = String(
-            isRetained
-                ? state.completionNotice.retained_root || ''
-                : state.completionNotice.target_root || ''
-        ).trim();
-        if (!targetPath) {
-            return;
-        }
-
-        var button = isRetained ? state.completionOpenRetainedButton : state.completionOpenTargetButton;
-        if (button) {
-            button.disabled = true;
-        }
-
-        try {
-            await openPathWithHostBridge(targetPath);
-        } catch (error) {
-            console.warn('[storage-location] open directory failed', error);
-            if (typeof window.showStatusToast === 'function') {
-                window.showStatusToast(
-                    String((error && error.message) || error || translate('storage.openDirectoryFailed', '打开目录失败。')),
-                    4000
-                );
-            }
-        } finally {
-            if (button) {
-                button.disabled = false;
-            }
-        }
     }
 
     async function cleanupRetainedSourceRoot() {
@@ -1424,21 +1418,10 @@
     }
 
     function enterMaintenanceMode(payload) {
-        var migration = payload && payload.migration ? payload.migration : {};
-        var targetRoot = String(
-            migration.target_root
-            || payload.target_root
-            || payload.selected_root
-            || state.pendingSelection.path
-            || ''
-        ).trim();
-
         setMaintenanceCopy(
             translate('storage.maintenanceTitle', '正在优化存储布局...'),
             translateMaintenanceSubtitle(payload),
-            targetRoot
-                ? translate('storage.maintenanceTargetStatus', '目标路径已记录，正在等待服务关闭并恢复：') + ' ' + targetRoot
-                : buildMaintenanceStatusText(payload)
+            buildMaintenanceStatusText(payload)
         );
         applyMaintenanceProgress(payload || {});
         setPhase('maintenance');
@@ -1616,7 +1599,7 @@
 
     function buildSelectionView() {
         var view = createElement('section', 'storage-location-view');
-        var shell = createElement('div', 'storage-location-shell');
+        var shell = createElement('div', 'storage-location-shell storage-location-shell--selection');
 
         var hero = createElement('div', 'storage-location-hero');
         hero.appendChild(createElement('h2', 'storage-location-title', translate('storage.selectionTitle', '存储位置选择')));
@@ -1629,10 +1612,10 @@
 
         var grid = createElement('div', 'storage-location-grid');
 
-        var pathsPanel = createElement('section', 'storage-location-panel');
+        var pathsPanel = createElement('section', 'storage-location-panel storage-location-selection-panel');
         var pathList = createElement('div', 'storage-location-path-list');
 
-        var selectedPathItem = createElement('div', 'storage-location-path-item storage-location-path-item--recommended');
+        var selectedPathItem = createElement('div', 'storage-location-path-item storage-location-path-item--recommended storage-location-path-item--selection-input');
         selectedPathItem.appendChild(createElement('div', 'storage-location-label', translate('storage.selectedPath', '选择路径')));
         var inputRow = createElement('div', 'storage-location-input-row');
         var customInput = createElement('input', 'storage-location-input');
@@ -1667,7 +1650,7 @@
         grid.appendChild(pathsPanel);
         shell.appendChild(grid);
 
-        var actions = createElement('div', 'storage-location-actions');
+        var actions = createElement('div', 'storage-location-actions storage-location-selection-actions');
 
         var useOtherButton = registerActionButton(
             createElement('button', 'storage-location-btn storage-location-btn--primary', translate('storage.previewOther', '提交该位置'))
@@ -1685,16 +1668,17 @@
         actions.appendChild(currentButton);
 
         shell.appendChild(actions);
+        state.selectionActions = actions;
 
         var selectionStatus = createElement('p', 'storage-location-note');
         selectionStatus.hidden = true;
         state.selectionStatus = selectionStatus;
         shell.appendChild(selectionStatus);
 
-        var previewPanel = createElement('section', 'storage-location-panel');
+        var previewPanel = createElement('section', 'storage-location-panel storage-location-preview-panel');
         previewPanel.hidden = true;
         state.previewPanel = previewPanel;
-        var previewText = createElement('p', 'storage-location-note');
+        var previewText = createElement('p', 'storage-location-note storage-location-preview-note');
         state.previewText = previewText;
         previewPanel.appendChild(previewText);
 
@@ -1722,6 +1706,13 @@
         previewPanel.appendChild(previewBlocking);
 
         var previewActions = createElement('div', 'storage-location-restart-actions');
+        var backButton = registerActionButton(
+            createElement('button', 'storage-location-btn storage-location-btn--secondary', translate('common.back', '返回重新选择'))
+        );
+        backButton.type = 'button';
+        backButton.addEventListener('click', backToSelection);
+        previewActions.appendChild(backButton);
+
         var confirmRestartButton = registerActionButton(
             createElement('button', 'storage-location-btn storage-location-btn--primary', translate('storage.confirmRestart', '确认关闭并迁移'))
         );
@@ -1729,19 +1720,62 @@
         confirmRestartButton.addEventListener('click', requestRestart);
         state.previewConfirmButton = confirmRestartButton;
         previewActions.appendChild(confirmRestartButton);
-
-        var backButton = registerActionButton(
-            createElement('button', 'storage-location-btn storage-location-btn--secondary', translate('common.back', '返回重新选择'))
-        );
-        backButton.type = 'button';
-        backButton.addEventListener('click', backToSelection);
-        previewActions.appendChild(backButton);
         previewPanel.appendChild(previewActions);
         state.previewActions = previewActions;
         shell.appendChild(previewPanel);
 
         view.appendChild(shell);
         state.selectionView = view;
+        return view;
+    }
+
+    function buildSelectionIntroView() {
+        var view = createElement('section', 'storage-location-view');
+        view.hidden = true;
+
+        var shell = createElement('div', 'storage-location-shell storage-location-shell--intro');
+        var card = createElement('section', 'storage-location-intro-card');
+        var artwork = createElement('div', 'storage-location-intro-art');
+        var image = document.createElement('img');
+        image.className = 'storage-location-intro-image';
+        image.src = '/static/icons/small_easter_egg.png';
+        image.alt = translate('storage.selectionIntroImageAlt', 'N.E.K.O 存储位置迁移插图');
+        image.loading = 'eager';
+        artwork.appendChild(image);
+        card.appendChild(artwork);
+
+        var content = createElement('div', 'storage-location-intro-content');
+        var introText = createElement(
+            'p',
+            'storage-location-intro-text',
+            translate(
+                'storage.selectionIntroBody',
+                '喵呜～人类注意啦！为了让你的角色、记忆和设定更安全，我们把数据搬到更稳的专属小窝啦！再也不怕目录乱跑、权限捣乱弄丢数据咯～你可以继续用原来的窝，也可以给她们选个新的小窝哦！'
+            )
+        );
+        content.appendChild(introText);
+
+        var actions = createElement('div', 'storage-location-actions storage-location-intro-actions');
+        var pickNewButton = registerActionButton(
+            createElement('button', 'storage-location-btn storage-location-btn--primary storage-location-intro-button storage-location-intro-button--primary', translate('storage.selectionIntroPickNew', '选个新的小窝'))
+        );
+        pickNewButton.type = 'button';
+        pickNewButton.addEventListener('click', continueFromSelectionIntro);
+        actions.appendChild(pickNewButton);
+
+        var useCurrentButton = registerActionButton(
+            createElement('button', 'storage-location-btn storage-location-btn--secondary storage-location-intro-button storage-location-intro-button--secondary', translate('storage.selectionIntroUseCurrent', '保持不动'))
+        );
+        useCurrentButton.type = 'button';
+        useCurrentButton.addEventListener('click', continueWithCurrentPath);
+        actions.appendChild(useCurrentButton);
+        content.appendChild(actions);
+
+        card.appendChild(content);
+        shell.appendChild(card);
+
+        view.appendChild(shell);
+        state.selectionIntroView = view;
         return view;
     }
 
@@ -1866,6 +1900,7 @@
         modal.appendChild(buildStorageLocationCloseButton());
         modal.appendChild(buildLoadingView());
         modal.appendChild(buildMaintenanceView());
+        modal.appendChild(buildSelectionIntroView());
         modal.appendChild(buildSelectionView());
         modal.appendChild(buildErrorView());
 
@@ -1920,6 +1955,7 @@
         state.overlay = null;
         state.loadingView = null;
         state.maintenanceView = null;
+        state.selectionIntroView = null;
         state.selectionView = null;
         state.errorView = null;
         state.banner = null;
@@ -1927,6 +1963,7 @@
         state.customInput = null;
         state.pickFolderButton = null;
         state.useOtherButton = null;
+        state.selectionActions = null;
         state.previewPanel = null;
         state.previewText = null;
         state.previewEstimated = null;
@@ -1954,8 +1991,6 @@
         state.completionTitle = null;
         state.completionTarget = null;
         state.completionRetained = null;
-        state.completionOpenTargetButton = null;
-        state.completionOpenRetainedButton = null;
         state.completionCleanupButton = null;
 
         buildModalDom();
@@ -2070,7 +2105,7 @@
             }
             updateSelectionSummary();
             if (shouldShowSelectionView(state.bootstrap)) {
-                setPhase('selection_required');
+                setPhase(shouldShowSelectionIntro(state.bootstrap) ? 'selection_intro' : 'selection_required');
                 return;
             }
 

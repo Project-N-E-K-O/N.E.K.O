@@ -580,9 +580,62 @@ body .container-header {
     align-items: center;
     justify-content: center;
     padding: 24px;
-    background: rgba(23, 167, 255, 0.18);
-    -webkit-backdrop-filter: blur(4px);
-    backdrop-filter: blur(4px);
+    background: linear-gradient(145deg, rgba(232, 243, 255, 0.72), rgba(238, 246, 251, 0.84));
+    -webkit-backdrop-filter: blur(16px) saturate(1.08);
+    backdrop-filter: blur(16px) saturate(1.08);
+    isolation: isolate;
+    overflow: hidden;
+}
+
+body.storage-location-memory-modal-open {
+    overflow: hidden;
+}
+
+.storage-location-modal-backdrop::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    opacity: 0.34;
+    pointer-events: none;
+    background-image:
+        url("/static/icons/paw_ui.png"),
+        url("/static/icons/paw_ui.png"),
+        url("/static/icons/paw_ui.png"),
+        url("/static/icons/paw_ui.png"),
+        url("/static/icons/paw_ui.png"),
+        url("/static/icons/paw_ui.png"),
+        url("/static/icons/paw_ui.png"),
+        url("/static/icons/paw_ui.png"),
+        url("/static/icons/paw_ui.png"),
+        url("/static/icons/paw_ui.png"),
+        url("/static/icons/paw_ui.png");
+    background-repeat: no-repeat;
+    background-size:
+        128px 96px,
+        82px 62px,
+        104px 78px,
+        64px 48px,
+        92px 69px,
+        56px 42px,
+        74px 55px,
+        68px 51px,
+        112px 84px,
+        50px 38px,
+        118px 88px;
+    background-position:
+        8% 14%,
+        24% 78%,
+        83% 13%,
+        93% 72%,
+        62% 86%,
+        39% 12%,
+        14% 48%,
+        51% 54%,
+        91% 42%,
+        35% 92%,
+        74% 42%;
+    filter: saturate(1.2) contrast(1.05);
 }
 
 .storage-location-modal-backdrop[hidden] {
@@ -590,47 +643,129 @@ body .container-header {
 }
 
 .storage-location-modal-card {
+    position: relative;
+    z-index: 1;
+    isolation: isolate;
     width: min(560px, 100%);
-    max-height: min(720px, 90vh);
-    overflow-y: auto;
+    max-height: none;
+    overflow: hidden;
     box-sizing: border-box;
-    padding: 20px;
-    background: #fff;
-    border: 2px solid #b3e5fc;
+    padding: 24px;
+    background:
+        radial-gradient(circle at 12% 8%, rgba(114, 195, 255, 0.22), transparent 168px),
+        radial-gradient(circle at 96% 18%, rgba(255, 221, 145, 0.2), transparent 148px),
+        linear-gradient(180deg, rgba(253, 254, 255, 0.98), rgba(236, 247, 254, 0.98));
+    border: 1px solid rgba(97, 147, 190, 0.22);
     border-radius: 24px;
-    box-shadow: 0 18px 48px rgba(34, 179, 255, 0.22);
+    box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.72),
+        0 30px 84px rgba(28, 72, 113, 0.22);
+}
+
+.storage-location-modal-card::before {
+    content: "";
+    position: absolute;
+    inset: -12px;
+    z-index: 0;
+    opacity: 0.36;
+    pointer-events: none;
+    background-image:
+        url("/static/icons/paw_ui.png"),
+        url("/static/icons/paw_ui.png"),
+        url("/static/icons/paw_ui.png"),
+        url("/static/icons/paw_ui.png"),
+        url("/static/icons/paw_ui.png"),
+        url("/static/icons/paw_ui.png"),
+        url("/static/icons/paw_ui.png"),
+        url("/static/icons/paw_ui.png");
+    background-repeat: no-repeat;
+    background-size:
+        86px 65px,
+        58px 44px,
+        70px 52px,
+        48px 36px,
+        62px 47px,
+        52px 39px,
+        78px 58px,
+        42px 32px;
+    background-position:
+        92% 18%,
+        16% 96%,
+        76% 86%,
+        36% 12%,
+        96% 58%,
+        10% 38%,
+        52% 98%,
+        68% 28%;
+    mix-blend-mode: multiply;
+    filter: saturate(1.18) contrast(1.04);
+}
+
+.storage-location-modal-card::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    opacity: 0.24;
+    pointer-events: none;
+    background-image:
+        url("/static/icons/paw_ui.png"),
+        url("/static/icons/paw_ui.png"),
+        url("/static/icons/paw_ui.png"),
+        url("/static/icons/paw_ui.png");
+    background-repeat: no-repeat;
+    background-size:
+        112px 84px,
+        88px 66px,
+        66px 50px,
+        54px 40px;
+    background-position:
+        6% 8%,
+        88% 92%,
+        44% 78%,
+        82% 42%;
+    mix-blend-mode: multiply;
+    filter: saturate(1.18) contrast(1.04);
 }
 
 .storage-location-modal-head {
+    position: relative;
+    z-index: 1;
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 12px;
-    margin-bottom: 18px;
+    margin-bottom: 20px;
+    padding-right: 4px;
 }
 
 .storage-location-modal-head h3 {
     margin: 0;
-    color: #40C5F1;
-    font-size: 1.2rem;
+    color: #113b63;
+    font-size: 1.32rem;
+    font-weight: 800;
+    letter-spacing: -0.02em;
 }
 
 .storage-location-modal-close {
-    width: 36px;
-    height: 36px;
-    border: 2px solid #e3f4ff;
+    width: 34px;
+    height: 34px;
+    border: 1px solid rgba(91, 137, 180, 0.2);
     border-radius: 50%;
-    background: #fff;
-    color: #40C5F1;
+    background: rgba(255, 255, 255, 0.82);
+    color: rgba(20, 56, 93, 0.72);
     cursor: pointer;
     font-size: 1.4rem;
     line-height: 1;
-    transition: all 0.2s ease;
+    box-shadow: 0 10px 26px rgba(43, 91, 135, 0.1);
+    transition: transform 0.16s ease, background 0.16s ease, border-color 0.16s ease, color 0.16s ease;
 }
 
 .storage-location-modal-close:hover {
-    border-color: #40C5F1;
-    background: #f0f9ff;
+    transform: translateY(-1px);
+    border-color: rgba(59, 140, 221, 0.32);
+    background: rgba(255, 255, 255, 0.96);
+    color: #104c81;
 }
 
 .storage-location-restart-btn[hidden] {
@@ -644,7 +779,9 @@ body .container-header {
 }
 
 .storage-location-modal-body {
-    gap: 14px;
+    position: relative;
+    z-index: 1;
+    gap: 16px;
 }
 
 .storage-location-modal-field {
@@ -652,9 +789,9 @@ body .container-header {
 }
 
 .storage-location-modal-label {
-    color: #40C5F1;
+    color: rgba(20, 56, 93, 0.78);
     font-size: 0.9rem;
-    font-weight: 700;
+    font-weight: 800;
 }
 
 .storage-location-modal-value,
@@ -662,25 +799,62 @@ body .container-header {
 .storage-location-preflight-result {
     box-sizing: border-box;
     width: 100%;
-    padding: 12px 14px;
-    border: 2px solid #e3f4ff;
+    padding: 13px 15px;
+    border: 1px solid rgba(96, 159, 216, 0.2);
     border-radius: 16px;
-    background: #fff;
-    color: #268fb8;
+    background: rgba(255, 255, 255, 0.86);
+    color: #14385d;
     font-size: 0.9rem;
     line-height: 1.5;
     overflow-wrap: anywhere;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72);
 }
 
 .storage-location-target-input:focus {
     outline: none;
-    border-color: #40C5F1;
-    box-shadow: 0 0 0 3px rgba(64, 197, 241, 0.1);
+    border-color: rgba(54, 138, 221, 0.56);
+    box-shadow: 0 0 0 4px rgba(88, 164, 238, 0.14);
 }
 
 .storage-location-modal-actions {
     display: flex;
-    gap: 10px;
+    flex-wrap: wrap;
+    gap: 12px;
+    align-items: center;
+    justify-content: flex-end;
+}
+
+.storage-location-modal-actions .storage-location-open-btn,
+.storage-location-modal-actions .storage-location-restart-btn {
+    width: auto;
+    min-width: 138px;
+    min-height: 46px;
+    border-radius: 999px;
+    font-weight: 800;
+}
+
+.storage-location-modal-actions .storage-location-open-btn {
+    border: 1px solid rgba(96, 159, 216, 0.24);
+    background: rgba(244, 250, 255, 0.92);
+    color: #145287;
+}
+
+.storage-location-modal-actions .storage-location-open-btn:not(:disabled):hover {
+    border-color: rgba(59, 140, 221, 0.42);
+    background: rgba(255, 255, 255, 0.96);
+    box-shadow: 0 10px 24px rgba(49, 114, 175, 0.12);
+}
+
+.storage-location-modal-actions .storage-location-restart-btn {
+    border: 1px solid rgba(255, 255, 255, 0.62);
+    background: linear-gradient(135deg, rgba(76, 169, 255, 0.94), rgba(47, 150, 242, 0.92));
+    color: #f8fbff;
+    box-shadow: 0 14px 28px rgba(47, 143, 233, 0.22);
+}
+
+.storage-location-modal-actions .storage-location-restart-btn:not(:disabled):hover {
+    background: linear-gradient(135deg, rgba(92, 181, 255, 0.98), rgba(47, 150, 242, 0.96));
+    box-shadow: 0 16px 32px rgba(47, 143, 233, 0.28);
 }
 
 .storage-location-preflight-result:empty {
@@ -688,15 +862,125 @@ body .container-header {
 }
 
 .storage-location-preflight-result.is-error {
-    border-color: #ffcdd2;
-    background: #fff5f5;
-    color: #e74c3c;
+    border-color: rgba(215, 90, 90, 0.24);
+    background: rgba(255, 238, 238, 0.95);
+    color: #b54040;
 }
 
 .storage-location-preflight-result.is-success {
-    border-color: #b3e5fc;
-    background: #f0f9ff;
-    color: #268fb8;
+    border-color: rgba(79, 156, 230, 0.22);
+    background: linear-gradient(180deg, rgba(239, 247, 255, 0.98), rgba(228, 242, 255, 0.98));
+    color: #145287;
+}
+
+@media (max-width: 640px) {
+    .storage-location-modal-backdrop {
+        padding: 12px;
+    }
+
+    .storage-location-modal-card {
+        padding: 20px;
+    }
+
+    .storage-location-modal-actions,
+    .storage-location-modal-actions .storage-location-open-btn,
+    .storage-location-modal-actions .storage-location-restart-btn {
+        width: 100%;
+    }
+}
+
+[data-theme="dark"] .storage-location-modal-backdrop {
+    background: linear-gradient(145deg, rgba(8, 12, 20, 0.78), rgba(12, 18, 28, 0.86));
+}
+
+[data-theme="dark"] .storage-location-modal-backdrop::before,
+[data-theme="dark"] .storage-location-modal-card::before,
+[data-theme="dark"] .storage-location-modal-card::after {
+    opacity: 0.18;
+    mix-blend-mode: screen;
+}
+
+[data-theme="dark"] .storage-location-modal-card {
+    border-color: rgba(120, 170, 220, 0.18);
+    background: linear-gradient(180deg, rgba(28, 36, 50, 0.98), rgba(22, 30, 44, 0.98));
+    color: #e6eef7;
+    box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.05),
+        0 30px 84px rgba(0, 0, 0, 0.6);
+}
+
+[data-theme="dark"] .storage-location-modal-head h3 {
+    color: #f5f9ff;
+}
+
+[data-theme="dark"] .storage-location-modal-close {
+    background: rgba(40, 52, 72, 0.86);
+    border-color: rgba(140, 180, 220, 0.32);
+    color: #e6eef7;
+    box-shadow: 0 10px 26px rgba(0, 0, 0, 0.45);
+}
+
+[data-theme="dark"] .storage-location-modal-close:hover {
+    background: rgba(56, 72, 100, 0.96);
+    border-color: rgba(127, 196, 255, 0.6);
+    color: #ffffff;
+}
+
+[data-theme="dark"] .storage-location-modal-label {
+    color: #b3c2d8;
+}
+
+[data-theme="dark"] .storage-location-modal-value,
+[data-theme="dark"] .storage-location-target-input,
+[data-theme="dark"] .storage-location-preflight-result {
+    border-color: rgba(120, 170, 220, 0.32);
+    background: rgba(36, 48, 68, 0.92);
+    color: #e6eef7;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+[data-theme="dark"] .storage-location-target-input::placeholder {
+    color: #97a6bc;
+}
+
+[data-theme="dark"] .storage-location-target-input:focus {
+    border-color: rgba(127, 196, 255, 0.78);
+    box-shadow: 0 0 0 4px rgba(95, 177, 255, 0.2);
+}
+
+[data-theme="dark"] .storage-location-modal-actions .storage-location-open-btn {
+    border-color: rgba(120, 170, 220, 0.32);
+    background: rgba(40, 52, 72, 0.8);
+    color: #e6eef7;
+}
+
+[data-theme="dark"] .storage-location-modal-actions .storage-location-open-btn:not(:disabled):hover {
+    border-color: rgba(127, 196, 255, 0.6);
+    background: rgba(58, 76, 106, 0.92);
+    box-shadow: 0 10px 24px rgba(0, 0, 0, 0.45);
+}
+
+[data-theme="dark"] .storage-location-modal-actions .storage-location-restart-btn {
+    border-color: rgba(95, 177, 255, 0.55);
+    background: linear-gradient(135deg, rgba(76, 160, 246, 0.74), rgba(45, 128, 223, 0.72));
+    color: #ffffff;
+}
+
+[data-theme="dark"] .storage-location-modal-actions .storage-location-restart-btn:not(:disabled):hover {
+    border-color: rgba(127, 196, 255, 0.78);
+    background: linear-gradient(135deg, rgba(95, 177, 255, 0.82), rgba(58, 140, 234, 0.78));
+}
+
+[data-theme="dark"] .storage-location-preflight-result.is-error {
+    border-color: rgba(255, 110, 110, 0.5);
+    background: rgba(72, 24, 28, 0.6);
+    color: #ffb1b1;
+}
+
+[data-theme="dark"] .storage-location-preflight-result.is-success {
+    border-color: rgba(108, 174, 240, 0.36);
+    background: linear-gradient(180deg, rgba(36, 60, 92, 0.7), rgba(28, 50, 78, 0.7));
+    color: #cfe1f8;
 }
 
 /* 编辑器区域 */
