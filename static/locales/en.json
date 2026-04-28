@@ -1547,7 +1547,7 @@
         "cleanupRetainedRootDone": "The old data directory has been cleaned up. Only the new runtime directory remains.",
         "cleanupRetainedRootFailed": "Failed to clean up the old data directory. Please try again later.",
         "completionTitle": "Storage migration completed",
-        "confirmReconnect": "Confirm shutdown and reconnect path",
+        "confirmReconnect": "Confirm shutdown and reconnect to the original storage path",
         "confirmRestart": "Confirm shutdown and migrate",
         "confirmExistingTargetContent": "The target folder already contains N.E.K.O runtime data. If you continue, migration will replace same-name runtime data folders in the target. Other files in the target folder will be kept. Continue?",
         "currentPath": "Current path",

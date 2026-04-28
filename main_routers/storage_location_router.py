@@ -292,9 +292,26 @@ def _path_segments(path: Path) -> list[str]:
 
 
 def _is_cloud_sync_path_segment(segment: str) -> bool:
-    if segment in {"icloud drive", "google drive", "googledrive", "dropbox"}:
+    normalized_segment = str(segment or "").strip().lower()
+
+    def matches_client_folder(prefix: str) -> bool:
+        if normalized_segment == prefix:
+            return True
+        if not normalized_segment.startswith(prefix):
+            return False
+        suffix = normalized_segment[len(prefix) :].lstrip()
+        return bool(suffix) and suffix[0] in {"(", "-", "["}
+
+    if any(
+        matches_client_folder(prefix)
+        for prefix in ("icloud drive", "google drive", "googledrive", "dropbox")
+    ):
         return True
-    return segment == "onedrive" or segment.startswith("onedrive - ")
+    return (
+        normalized_segment == "onedrive"
+        or normalized_segment.startswith("onedrive - ")
+        or normalized_segment.startswith("onedrive (")
+    )
 
 
 def _collect_warning_codes(current_root: Path, target_root: Path) -> list[str]:

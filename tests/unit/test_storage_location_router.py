@@ -135,10 +135,28 @@ def test_collect_warning_codes_matches_cloud_sync_path_segments_only(tmp_path):
         false_positive_target,
     )
 
+    dropbox_backup_target = tmp_path / "dropbox_backup_restore" / "N.E.K.O"
+    assert "sync_folder" not in storage_location_router_module._collect_warning_codes(
+        current_root,
+        dropbox_backup_target,
+    )
+
     onedrive_target = tmp_path / "OneDrive - Example" / "N.E.K.O"
     assert "sync_folder" in storage_location_router_module._collect_warning_codes(
         current_root,
         onedrive_target,
+    )
+
+    dropbox_target = tmp_path / "Dropbox (Personal)" / "N.E.K.O"
+    assert "sync_folder" in storage_location_router_module._collect_warning_codes(
+        current_root,
+        dropbox_target,
+    )
+
+    google_drive_target = tmp_path / "Google Drive (Acme)" / "N.E.K.O"
+    assert "sync_folder" in storage_location_router_module._collect_warning_codes(
+        current_root,
+        google_drive_target,
     )
 
 
