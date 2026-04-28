@@ -391,21 +391,24 @@ class NekoCommandingMixin:
         enemy_hp_delta = enemy_hp_new - enemy_hp_old
         hand_changed_fast = len({tuple(s.get("hand_names") or []) for s in usable[: min(4, len(usable))]}) >= min(3, len(usable))
         aggressive = enemy_hp_delta < 0 and (incoming_attack > block or hp_delta < 0)
+        visible_fact = self._build_neko_review_visible_fact(latest)
+        card_praise = self._build_neko_review_card_praise(usable, enemy_hp_delta=enemy_hp_delta, incoming_attack=incoming_attack, block=block)
+        detail_hint = "".join(part for part in [visible_fact, card_praise] if part)
 
         if hand_changed_fast and len(usable) < 4:
-            message = "轻量牌感观察：刚才手牌、血量或状态变化较快，猫娘没有稳定看清每一张牌。只能按血量、格挡和敌人状态推测：本轮节奏偏激进，压血线效果不错，但防守可能需要更稳。建议主程序把该结论包装成轻量参考，而不是严格牌序审计。"
+            message = f"轻量牌感观察：刚才手牌、血量或状态变化较快，猫娘没有稳定看清每一张牌。{detail_hint}只能按血量、格挡和敌人状态推测：本轮节奏偏激进，压血线效果不错，但防守可能需要更稳。建议主程序把该结论包装成轻量参考，可以偶尔点名夸一张确实看到过的牌，而不是严格牌序审计。"
             status = "uncertain"
             confidence = "low"
         elif aggressive:
-            message = "轻量牌感观察：我只能根据最近看到的局面粗略判断。玩家这几手整体偏进攻，敌人血线压得不错，节奏感较好；但如果敌人本回合仍有较高来袭伤害，当前防御余量可能偏薄。建议主程序用陪玩口吻反馈：先肯定压血线做得好，再温和提醒下次先估算防御缺口，再决定是否全力打伤害。"
+            message = f"轻量牌感观察：我只能根据最近看到的局面粗略判断。玩家这几手整体偏进攻，敌人血线压得不错，节奏感较好；{detail_hint}但如果敌人本回合仍有较高来袭伤害，当前防御余量可能偏薄。建议主程序用陪玩口吻反馈：先肯定压血线做得好，可以偶尔带一句猫娘实际看到的血量、格挡、敌人意图或具体卡牌表现；再温和提醒下次先估算防御缺口，再决定是否全力打伤害。"
             status = "ok"
             confidence = "medium"
         elif incoming_attack > block:
-            message = "轻量牌感观察：最近局面显示敌人仍有来袭伤害，当前格挡可能覆盖不足。没有看到明显错误牌序，但建议主程序温和提醒用户优先核对防御缺口，再考虑输出。"
+            message = f"轻量牌感观察：最近局面显示敌人仍有来袭伤害，当前格挡可能覆盖不足。{detail_hint}没有看到明显错误牌序，但建议主程序温和提醒用户优先核对防御缺口，再考虑输出。"
             status = "ok"
             confidence = "medium"
         else:
-            message = "轻量牌感观察：最近几手没有暴露明显危险信号，血量和防御压力看起来可控。建议主程序先肯定整体节奏，再说明这只是基于最近快照的轻量参考，不是严格复盘。"
+            message = f"轻量牌感观察：最近几手没有暴露明显危险信号，血量和防御压力看起来可控。{detail_hint}建议主程序先肯定整体节奏，可以顺手夸一句具体牌打得不错，再说明这只是基于最近快照的轻量参考，不是严格复盘。"
             status = "ok"
             confidence = "medium"
         return {
@@ -419,5 +422,53 @@ class NekoCommandingMixin:
                 "incoming_attack": incoming_attack,
                 "block": block,
                 "hand_changed_fast": hand_changed_fast,
+                "visible_fact": visible_fact,
+                "card_praise": card_praise,
             },
         }
+
+    def _build_neko_review_visible_fact(self, latest: Dict[str, Any]) -> str:
+        hp = self._safe_int(latest.get("hp"), 0)
+        max_hp = self._safe_int(latest.get("max_hp"), 0)
+        block = self._safe_int(latest.get("block"), 0)
+        energy = self._safe_int(latest.get("energy"), 0)
+        enemies = latest.get("enemies") if isinstance(latest.get("enemies"), list) else []
+        enemy = next((item for item in enemies if isinstance(item, dict) and str(item.get("name") or "").strip()), None)
+        parts = []
+        if hp > 0 and max_hp > 0:
+            parts.append(f"玩家血量约{hp}/{max_hp}")
+        if block > 0:
+            parts.append(f"当前有{block}点格挡")
+        if energy > 0:
+            parts.append(f"还剩{energy}点能量")
+        if enemy:
+            enemy_name = str(enemy.get("name") or "敌人")
+            enemy_hp = self._safe_int(enemy.get("hp"), 0)
+            enemy_max_hp = self._safe_int(enemy.get("max_hp"), 0)
+            intent_value = self._safe_int(enemy.get("intent_value"), 0)
+            if enemy_hp > 0 and enemy_max_hp > 0:
+                parts.append(f"{enemy_name}血量约{enemy_hp}/{enemy_max_hp}")
+            if intent_value > 0:
+                parts.append(f"敌人来袭约{intent_value}点")
+        if not parts:
+            return ""
+        return "猫娘看到" + "，".join(parts[:3]) + "。"
+
+    def _build_neko_review_card_praise(self, snapshots: list[Dict[str, Any]], *, enemy_hp_delta: int, incoming_attack: int, block: int) -> str:
+        card_name = ""
+        for snapshot in snapshots:
+            hand_names = snapshot.get("hand_names") if isinstance(snapshot.get("hand_names"), list) else []
+            for name in hand_names:
+                normalized = str(name or "").strip()
+                if normalized:
+                    card_name = normalized
+                    break
+            if card_name:
+                break
+        if not card_name:
+            return ""
+        if enemy_hp_delta < 0:
+            return f"可以点名夸一句：你这个【{card_name}】打得不错，刚才确实把敌人血线往下压了。"
+        if block >= incoming_attack and incoming_attack > 0:
+            return f"可以点名夸一句：你这个【{card_name}】衔接得不错，防御压力处理得比较稳。"
+        return f"可以点名夸一句：你这个【{card_name}】用得还可以，整体节奏没有乱。"

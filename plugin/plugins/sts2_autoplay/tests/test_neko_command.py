@@ -198,6 +198,39 @@ def test_neko_command_autoplay_question_while_running_answers_from_game_context(
 
 
 @pytest.mark.unit
+def test_neko_review_observation_mentions_visible_fact_and_card_praise(service: CommandService) -> None:
+    snapshots = [
+        {
+            "hp": 42,
+            "max_hp": 80,
+            "block": 5,
+            "energy": 1,
+            "hand_names": ["打击", "防御"],
+            "enemies": [{"name": "史莱姆", "hp": 12, "max_hp": 40, "intent_value": 8}],
+        },
+        {
+            "hp": 45,
+            "max_hp": 80,
+            "block": 0,
+            "energy": 3,
+            "hand_names": ["打击", "防御"],
+            "enemies": [{"name": "史莱姆", "hp": 24, "max_hp": 40, "intent_value": 0}],
+        },
+    ]
+
+    observation = service._build_neko_review_observation(snapshots)
+
+    assert observation["status"] == "ok"
+    assert "猫娘看到" in observation["message"]
+    assert "玩家血量约42/80" in observation["message"]
+    assert "当前有5点格挡" in observation["message"]
+    assert "【打击】" in observation["message"]
+    assert "打得不错" in observation["message"]
+    assert observation["signals"]["visible_fact"]
+    assert observation["signals"]["card_praise"]
+
+
+@pytest.mark.unit
 def test_neko_command_unknown_is_conservative(service: CommandService) -> None:
     result = run(service.neko_command("你看着办"))
     assert result["intent"] == "unknown"

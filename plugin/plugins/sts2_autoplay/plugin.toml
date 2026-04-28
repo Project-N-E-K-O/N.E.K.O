@@ -1,6 +1,7 @@
 [plugin]
-name = "尖塔自动游玩"
-description = "连接本地尖塔 Agent 服务，读取尖塔局面并执行自动游玩控制。"
+name = "尖塔游戏陪玩插件"
+description = "连接本地尖塔 Agent 服务，读取尖塔局面并执行游玩控制。猫娘陪玩。可以自动代打，指定代打。目前只支持原版角色。"
+short_description = "尖塔游戏陪玩插件"
 version = "0.1.0"
 id = "sts2_autoplay"
 type = "plugin"
