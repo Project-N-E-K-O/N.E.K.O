@@ -631,14 +631,18 @@ recency — just without the rich window-aware state classification.
 
 ## Future work
 
-* **Open-thread detection beyond questions** — the question heuristic
-  catches the common case but misses things like "I'll come back to
-  this later" or user-side abandoned threads. v2 should fold an
-  emotion-tier LLM pass over the recent turns to populate
-  `ActivitySnapshot.open_threads`.
-* **Activity-guess narrative** — alongside `propensity_reasons`, emit
-  a one-sentence narrative ("正在 VS Code 里调试 proactive_chat") via
-  the same emotion-tier model, ~60s TTL cache.
+* **Open-thread quality upgrades** — `open_threads` is already live via
+  the emotion-tier LLM (see `llm_enrichment.call_open_threads`). v2 can
+  raise recall on implicit promises ("I'll get back to that later"),
+  improve cross-turn merging when the same thread is referenced under
+  different wording, and tune dedup against the rule-based
+  `unfinished_thread` to avoid surfacing the same hanging item twice.
+* **Activity-guess quality upgrades** — `activity_guess` and
+  `activity_scores` are already live via the 20s background loop. v2
+  can stabilise scores under window flicker, add cost-aware refresh
+  pacing (currently fixed 20s tick + 30s anti-thrash + state-signature
+  dedup), and ground the narrative against persona memory for richer
+  one-liners.
 * **Fullscreen detection** — many games run windowless or use generic
   process names; comparing window rect to monitor rect is a strong
   fallback signal complementary to the GPU one.
@@ -654,10 +658,11 @@ recency — just without the rich window-aware state classification.
   foreground-active. Low priority since the dominant signal is which
   window has *focus*.
 
-When emotion-tier LLM finally enters the picture, it should be additive:
-keep the rule path as a hard-floor classifier, use the LLM only to
-enrich `open_threads` and `activity_guess` strings. The propensity
-directive must remain rule-derivable so prompt costs don't tail-spin.
+The emotion-tier LLM is already integrated; the layering rule for
+future work stays the same: keep the rule path as a hard-floor
+classifier, let the LLM only enrich `open_threads` /
+`activity_scores` / `activity_guess`. The propensity directive must
+remain rule-derivable so prompt costs don't tail-spin.
 
 ## Wiring (for integrators)
 
@@ -672,7 +677,14 @@ character. The integration touch-points are:
     `on_user_message(text=data)` directly.
   * `_dispatch_openclaw_handoff` calls `handle_input_transcript(...,
     is_voice_source=False)` to reuse the queue/cache plumbing without
-    re-firing tracker hooks.
+    re-firing **either** tracker hook. Both must be skipped here:
+    `on_voice_rms` is voice-only and would falsely flag `voice_engaged`
+    in text mode; `on_user_message` is also skipped because the
+    text-mode entry at `_process_stream_data_internal` already called
+    `on_user_message(text=data)` directly with the same payload one
+    step earlier — calling it again here would double-bump
+    `_conv_seq` and append the same text twice into the conversation
+    buffer.
 * AI-turn-end hooks (text accumulated via `_current_ai_turn_text` buffer):
   * `_emit_turn_end` → `on_ai_message(text=...)` for regular replies.
   * `handle_proactive_complete` → same (agent direct-reply path).
