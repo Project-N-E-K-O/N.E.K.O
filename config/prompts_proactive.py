@@ -1074,7 +1074,7 @@ proactive_generate_zh = """你的人设：
 {music_section}
 {meme_section}
 
-向{master_name}搭话决策：
+======以下为向{master_name}进行搭话的决策方式======
 
 ★ 上方"活动状态"列出"未收尾话题"时，无视基调限制直接接续。
 
@@ -1087,11 +1087,12 @@ proactive_generate_zh = """你的人设：
 
 具体输出格式（来源标签 / 直接正文）按下方"输出格式"段落要求执行。
 
-重复判定：1 小时内同话题 → [PASS]；1 天前以上不算重复。
-风格：合人设，2-3 句，不写思考过程。
-{source_instruction}
-{music_instruction}
-{meme_instruction}
+补充：
+- 重复判定：1 小时内同话题 → [PASS]；1 天前以上不算重复。
+- 风格：合人设，2-3 句，不写思考过程。
+{source_instruction}{music_instruction}{meme_instruction}
+
+======以上为向{master_name}进行搭话的决策方式======
 
 {output_format_section}"""
 
@@ -1112,7 +1113,7 @@ Conversation history:
 {music_section}
 {meme_section}
 
-Decision for talking to {master_name}:
+======Below is the decision rule for proactively addressing {master_name}======
 
 ★ When the activity state lists an "unfinished thread", you may continue
   it regardless of the propensity.
@@ -1126,11 +1127,12 @@ Angle priority (constrained by "chat propensity"):
 
 Output format (source tag vs. plain text) follows the "Output format" section below.
 
-Repetition: same topic within the last hour → [PASS]; topics 1+ day old don't count as repeats.
-Style: stay in character, 2-3 sentences max, no reasoning text.
-{source_instruction}
-{music_instruction}
-{meme_instruction}
+Additional rules:
+- Repetition: same topic within the last hour → [PASS]; topics 1+ day old don't count as repeats.
+- Style: stay in character, 2-3 sentences max, no reasoning text.
+{source_instruction}{music_instruction}{meme_instruction}
+
+======End of decision rule for proactively addressing {master_name}======
 
 {output_format_section}"""
 
@@ -1151,7 +1153,7 @@ proactive_generate_ja = """あなたのキャラ設定：
 {music_section}
 {meme_section}
 
-{master_name}への話しかけ判断：
+======以下は{master_name}への話しかけ判断の方法======
 
 ★ 上の活動状態に「未完話題」がある場合、傾向の制限を無視して継続してよい。
 
@@ -1164,11 +1166,12 @@ proactive_generate_ja = """あなたのキャラ設定：
 
 出力形式（ソースタグの有無）は下の「出力形式」セクションに従ってください。
 
-重複：1時間以内の同話題は [PASS]；1日以上前は重複扱いしない。
-スタイル：キャラに合わせて、2〜3文、推論は書かない。
-{source_instruction}
-{music_instruction}
-{meme_instruction}
+補足：
+- 重複：1時間以内の同話題は [PASS]；1日以上前は重複扱いしない。
+- スタイル：キャラに合わせて、2〜3文、推論は書かない。
+{source_instruction}{music_instruction}{meme_instruction}
+
+======以上が{master_name}への話しかけ判断の方法======
 
 {output_format_section}"""
 
@@ -1189,7 +1192,7 @@ proactive_generate_ko = """당신의 캐릭터 설정:
 {music_section}
 {meme_section}
 
-{master_name}에게 말 걸기 판단:
+======아래는 {master_name}에게 말 걸기 판단 방식======
 
 ★ 활동 상태에 "미완 화제"가 있다면 성향 제한과 무관하게 이어가기 가능.
 
@@ -1202,11 +1205,12 @@ proactive_generate_ko = """당신의 캐릭터 설정:
 
 출력 형식(소스 태그 / 본문 직접)은 아래 "출력 형식" 섹션을 따른다.
 
-중복: 1시간 이내 같은 화제 → [PASS]; 1일 이상 지난 화제는 중복 아님.
-스타일: 캐릭터에 맞게, 2-3문장, 추론 생략.
-{source_instruction}
-{music_instruction}
-{meme_instruction}
+보조 규칙:
+- 중복: 1시간 이내 같은 화제 → [PASS]; 1일 이상 지난 화제는 중복 아님.
+- 스타일: 캐릭터에 맞게, 2-3문장, 추론 생략.
+{source_instruction}{music_instruction}{meme_instruction}
+
+======위가 {master_name}에게 말 걸기 판단 방식======
 
 {output_format_section}"""
 
@@ -1227,7 +1231,7 @@ proactive_generate_ru = """Ваша роль:
 {music_section}
 {meme_section}
 
-Решение по обращению к {master_name}:
+======Ниже — порядок решения об обращении к {master_name}======
 
 ★ Если в активности есть "незавершённая нить", разрешено продолжать её вне зависимости от настроя.
 
@@ -1240,11 +1244,12 @@ proactive_generate_ru = """Ваша роль:
 
 Формат вывода (тег источника / просто текст) — по разделу «Формат ответа» ниже.
 
-Повтор: та же тема за последний час → [PASS]; темы 1+ день не считаются повтором.
-Стиль: в образе, 2-3 предложения, без рассуждений.
-{source_instruction}
-{music_instruction}
-{meme_instruction}
+Дополнительно:
+- Повтор: та же тема за последний час → [PASS]; темы 1+ день не считаются повтором.
+- Стиль: в образе, 2-3 предложения, без рассуждений.
+{source_instruction}{music_instruction}{meme_instruction}
+
+======Конец порядка решения об обращении к {master_name}======
 
 {output_format_section}"""
 
@@ -1357,20 +1362,25 @@ PROACTIVE_GENERATE_PROMPTS = {
 }
 
 # Phase 2 动态注入：音乐/表情包行为指令（仅在对应来源可用时注入，避免幻觉）
+# Music/meme instructions are slotted directly after source_instruction
+# in the prompt template (no separating newline in the template), so each
+# value carries its own leading "\n" when present and resolves to "" when
+# absent — producing a clean bullet block regardless of which optional
+# channels exist.
 _P2_MUSIC_INSTRUCTION = {
-    'zh': '10. 关于音乐： 如果提供了音乐素材，你可以基于推荐的歌曲自然地发起对话。你可以聊聊这首歌的曲风或律动（如"节奏感好强"、"很治愈"），或它如何契合当下的氛围。但请注意：**绝对禁止在回复中重复歌曲名称、歌手名称或播放列表内容**（比如不要说"为你播放..."或提到具体歌名），这些信息会由播放器自动展示，复读会显得非常僵硬。',
-    'en': '10. About music: If music material is provided, you can naturally start a conversation based on the recommended song. You can talk about the style or rhythm (e.g., "The beat is so strong" or "This is so healing") or how it fits the current mood. But note: **Strictly FORBIDDEN to repeat song names, artist names, or playlist content in your reply** (e.g., don\'t say "Playing X for you"). These details will be automatically displayed by the player.',
-    'ja': '10. 音楽について：音楽素材が提供された場合、自然に会話を始めることができます。曲のテンポやリズム（例：「テンポがすごくいいね」「癒されるね」）、あるいは今の雰囲気にどう合っているかについて話してみてください。ただし、注意：**返答の中で曲名、アーティスト名、プレイリストの内容を繰り返すことは厳禁です**（例：「[曲名]を再生します」と言わないでください）。これらの情報はプレイヤーが自動的に表示するため、繰り返すと不自然になります。',
-    'ko': '10. 음악에 대해: 음악 소재가 제공되면 자연스럽게 대화를 시작할 수 있습니다. 곡의 템포나 리듬(예: "비트가 정말 좋네요", "치유되는 느낌이에요") 또는 현재 분위기와 어떻게 어울리는지 이야기해 보세요. 단, 주의사항: **답변에서 곡명, 아티스트명, 재생목록 내용을 반복하는 것은 엄격히 금지됩니다** (예: "[곡명]을 재생할게요"라고 말하지 마세요). 이 정보는 플레이어가 자동으로 표시하므로 반복하면 매우 어색해 보입니다.',
-    'ru': '10. О музыке: если предоставлен музыкальный материал, вы можете естественно начать разговор. Вы можете поговорить о стиле или ритме песни (например, "какой драйвовый бит" или "очень успокаивает") или о том, как она подходит к текущей обстановке. Но обратите внимание: **категорически ЗАПРЕЩЕНО повторять названия песен, имена исполнителей или содержимое плейлиста в ответе** (например, не говорите "Включаю для вас [название]"). Эта информация будет автоматически отображена плеером.',
+    'zh': '\n- 关于音乐：如果提供了音乐素材，你可以基于推荐的歌曲自然地发起对话。你可以聊聊这首歌的曲风或律动（如"节奏感好强"、"很治愈"），或它如何契合当下的氛围。但请注意：**绝对禁止在回复中重复歌曲名称、歌手名称或播放列表内容**（比如不要说"为你播放..."或提到具体歌名），这些信息会由播放器自动展示，复读会显得非常僵硬。',
+    'en': '\n- About music: If music material is provided, you can naturally start a conversation based on the recommended song. You can talk about the style or rhythm (e.g., "The beat is so strong" or "This is so healing") or how it fits the current mood. But note: **Strictly FORBIDDEN to repeat song names, artist names, or playlist content in your reply** (e.g., don\'t say "Playing X for you"). These details will be automatically displayed by the player.',
+    'ja': '\n- 音楽について：音楽素材が提供された場合、自然に会話を始めることができます。曲のテンポやリズム（例：「テンポがすごくいいね」「癒されるね」）、あるいは今の雰囲気にどう合っているかについて話してみてください。ただし、注意：**返答の中で曲名、アーティスト名、プレイリストの内容を繰り返すことは厳禁です**（例：「[曲名]を再生します」と言わないでください）。これらの情報はプレイヤーが自動的に表示するため、繰り返すと不自然になります。',
+    'ko': '\n- 음악에 대해: 음악 소재가 제공되면 자연스럽게 대화를 시작할 수 있습니다. 곡의 템포나 리듬(예: "비트가 정말 좋네요", "치유되는 느낌이에요") 또는 현재 분위기와 어떻게 어울리는지 이야기해 보세요. 단, 주의사항: **답변에서 곡명, 아티스트명, 재생목록 내용을 반복하는 것은 엄격히 금지됩니다** (예: "[곡명]을 재생할게요"라고 말하지 마세요). 이 정보는 플레이어가 자동으로 표시하므로 반복하면 매우 어색해 보입니다.',
+    'ru': '\n- О музыке: если предоставлен музыкальный материал, вы можете естественно начать разговор. Вы можете поговорить о стиле или ритме песни (например, "какой драйвовый бит" или "очень успокаивает") или о том, как она подходит к текущей обстановке. Но обратите внимание: **категорически ЗАПРЕЩЕНО повторять названия песен, имена исполнителей или содержимое плейлиста в ответе** (например, не говорите "Включаю для вас [название]"). Эта информация будет автоматически отображена плеером.',
 }
 
 _P2_MEME_INSTRUCTION = {
-    'zh': '11. 关于表情包: 系统会自动发送一张搞笑图片表情包（如熊猫头、沙雕图等）给主人看。你的文字中请不要直接评论"这张图"（比如不要说"这张图好搞笑"），而是直接利用这张图片的情绪/内容来表达你想说的话（比如配合一张累瘫的图说："主人你该休息啦"）。**注意：表情包是发给主人看的，不是发给你的；你不需要对它做出外部反应。**',
-    'en': '11. About memes: The system will automatically send a funny meme image to the master. Please do NOT directly comment on "the image" in your text (e.g., don\'t say "This image is funny"). Instead, directly use the mood/content of the image to express what you want to say. **Note: The meme is sent TO the master, not TO you; you don\'t need to "react" to it externally.**',
-    'ja': '11. ミームについて: システムが自動的に面白い画像をご主人に送信します。テキストの中で直接「この画像」について言及しないでください（例：「この画像面白いね」と言わないでください）。代わりに、画像の雰囲気や内容をそのまま利用して、伝えたいことを表現してください。**注意：ミームはご主人に送られるもので、あなたに送られるものではありません。外部から「反応」するのではなく、画像と一緒に思いを表現してください。**',
-    'ko': '11. 밈에 대해: 시스템이 자동으로 재미있는 이미지를 주인에게 보냅니다. 텍스트에서 직접 "이 사진"(예: "이 사진 웃기네요")에 대해 언급하지 마세요. 대신 이미지의 분위기나 내용을 직접 활용하여 하고 싶은 말을 표현하세요. **참고: 밈은 주인에게 보내는 것이지 당신에게 보내는 것이 아닙니다.**',
-    'ru': '11. О мемах: система автоматически отправит смешное изображение хозяину. Пожалуйста, НЕ комментируйте само "изображение" в тексте (например, не говорите "эта картинка смешная"). Вместо этого напрямую используйте настроение или содержание картинки, чтобы выразить свою мысль. **Внимание: мем отправляется хозяину, а не вам; вам не нужно "реагировать" на него со стороны.**',
+    'zh': '\n- 关于表情包：系统会自动发送一张搞笑图片表情包（如熊猫头、沙雕图等）给主人看。你的文字中请不要直接评论"这张图"（比如不要说"这张图好搞笑"），而是直接利用这张图片的情绪/内容来表达你想说的话（比如配合一张累瘫的图说："主人你该休息啦"）。**注意：表情包是发给主人看的，不是发给你的；你不需要对它做出外部反应。**',
+    'en': '\n- About memes: The system will automatically send a funny meme image to the master. Please do NOT directly comment on "the image" in your text (e.g., don\'t say "This image is funny"). Instead, directly use the mood/content of the image to express what you want to say. **Note: The meme is sent TO the master, not TO you; you don\'t need to "react" to it externally.**',
+    'ja': '\n- ミームについて：システムが自動的に面白い画像をご主人に送信します。テキストの中で直接「この画像」について言及しないでください（例：「この画像面白いね」と言わないでください）。代わりに、画像の雰囲気や内容をそのまま利用して、伝えたいことを表現してください。**注意：ミームはご主人に送られるもので、あなたに送られるものではありません。外部から「反応」するのではなく、画像と一緒に思いを表現してください。**',
+    'ko': '\n- 밈에 대해: 시스템이 자동으로 재미있는 이미지를 주인에게 보냅니다. 텍스트에서 직접 "이 사진"(예: "이 사진 웃기네요")에 대해 언급하지 마세요. 대신 이미지의 분위기나 내용을 직접 활용하여 하고 싶은 말을 표현하세요. **참고: 밈은 주인에게 보내는 것이지 당신에게 보내는 것이 아닙니다.**',
+    'ru': '\n- О мемах: система автоматически отправит смешное изображение хозяину. Пожалуйста, НЕ комментируйте само "изображение" в тексте (например, не говорите "эта картинка смешная"). Вместо этого напрямую используйте настроение или содержание картинки, чтобы выразить свою мысль. **Внимание: мем отправляется хозяину, а не вам; вам не нужно "реагировать" на него со стороны.**',
 }
 
 
@@ -2209,12 +2219,17 @@ SCREEN_SECTION_FOOTER = {
 }
 
 # ---------- 外部话题区块 ----------
+# Header is bare-marker only, matching the screen / music / meme sections.
+# The earlier preamble ("你注意到一个有趣的话题：") was a holdover from
+# when external was the dominant channel and needed narrative framing;
+# now that vision / music / meme run in parallel, the preamble just
+# adds tokens and an asymmetric vibe across sections.
 EXTERNAL_TOPIC_HEADER = {
-    'zh': '======外部话题======\n你注意到一个有趣的话题：',
-    'en': '======External Topic======\nYou noticed an interesting topic:',
-    'ja': '======外部の話題======\n面白い話題を見つけました：',
-    'ko': '======외부 주제======\n흥미로운 주제를 발견했습니다:',
-    'ru': '======Внешняя тема======\nВы заметили интересную тему:',
+    'zh': '======外部话题======',
+    'en': '======External Topic======',
+    'ja': '======外部の話題======',
+    'ko': '======외부 주제======',
+    'ru': '======Внешняя тема======',
 }
 
 EXTERNAL_TOPIC_FOOTER = {
