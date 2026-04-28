@@ -37,9 +37,17 @@ export type PluginUiSurfaceMode = 'static' | 'hosted-tsx' | 'markdown' | 'auto'
 
 export interface PluginListAction {
   id: string
-  kind: PluginListActionKind
+  entry_id?: string
+  kind?: PluginListActionKind
   label?: string
+  description?: string
+  input_schema?: JSONSchema
   icon?: string
+  tone?: string
+  group?: string | null
+  order?: number
+  confirm?: boolean | string
+  refresh_context?: boolean
   target?: string
   open_in?: 'new_tab' | 'same_tab'
   confirm_message?: string

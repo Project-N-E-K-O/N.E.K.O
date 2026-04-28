@@ -90,6 +90,26 @@ function nextDomAfter(vnode) {
   const dom = getDom(vnode);
   return dom ? dom.nextSibling : null;
 }
+function moveVNode(parentDom, vnode, anchor) {
+  if (!vnode) return;
+  const start = getDom(vnode);
+  if (!start) return;
+  const safeAnchor = anchor && anchor.parentNode === parentDom ? anchor : null;
+  if (vnode.endDom) {
+    if (vnode.endDom.nextSibling === safeAnchor) return;
+    let current = start;
+    const end = vnode.endDom;
+    while (current) {
+      const next = current.nextSibling;
+      safeInsert(parentDom, current, safeAnchor);
+      if (current === end) break;
+      current = next;
+    }
+    return;
+  }
+  if (start.parentNode === parentDom && start.nextSibling === safeAnchor) return;
+  if (start !== safeAnchor) safeInsert(parentDom, start, safeAnchor);
+}
 function setRef(ref, value) {
   if (!ref) return;
   try {
@@ -177,13 +197,13 @@ function reconcile(parentDom, oldVNode, newVNode, anchor) {
   if (newVNode.type === Fragment) {
     newVNode.dom = oldVNode.dom;
     newVNode.endDom = oldVNode.endDom;
-    patchChildren(parentDom, oldVNode.children || [], newVNode.children || [], oldVNode.dom ? oldVNode.dom.nextSibling : parentDom.firstChild);
+    patchChildren(parentDom, oldVNode.children || [], newVNode.children || [], oldVNode.endDom || null);
     return newVNode;
   }
   if (typeof newVNode.type === 'function') return patchComponent(parentDom, oldVNode, newVNode, anchor);
   const dom = newVNode.dom = oldVNode.dom;
   patchProps(dom, oldVNode.props || {}, newVNode.props || {});
-  patchChildren(dom, oldVNode.children || [], newVNode.children || [], dom.firstChild);
+  patchChildren(dom, oldVNode.children || [], newVNode.children || [], null);
   setRef(oldVNode.ref, null);
   setRef(newVNode.ref, dom);
   return newVNode;
@@ -230,7 +250,7 @@ function normalizeComponentResult(value) {
   if (value === null || value === undefined || value === false || value === true) return h(Fragment, null);
   return h(TextNode, { nodeValue: String(value) });
 }
-function patchChildren(parentDom, oldChildren, newChildren, startNode) {
+function patchChildren(parentDom, oldChildren, newChildren, endAnchor) {
   const oldKeyed = new Map();
   const oldUnkeyed = [];
   oldChildren.forEach((child) => {
@@ -238,18 +258,21 @@ function patchChildren(parentDom, oldChildren, newChildren, startNode) {
     else oldUnkeyed.push(child);
   });
   const used = new Set();
-  let unkeyedIndex = 0;
-  let referenceNode = startNode || parentDom.firstChild;
+  let unkeyedIndex = oldUnkeyed.length - 1;
+  let referenceNode = endAnchor && endAnchor.parentNode === parentDom ? endAnchor : null;
   const patchedChildren = [];
-  newChildren.forEach((newChild) => {
+  for (let index = newChildren.length - 1; index >= 0; index -= 1) {
+    const newChild = newChildren[index];
     let oldChild = null;
     if (newChild.key != null && oldKeyed.has(newChild.key)) oldChild = oldKeyed.get(newChild.key);
-    else oldChild = oldUnkeyed[unkeyedIndex++] || null;
+    else oldChild = oldUnkeyed[unkeyedIndex--] || null;
+    if (oldChild && !sameVNode(oldChild, newChild)) oldChild = null;
     if (oldChild) used.add(oldChild);
     const patched = reconcile(parentDom, oldChild, newChild, referenceNode);
-    referenceNode = nextDomAfter(patched) || referenceNode;
-    patchedChildren.push(patched);
-  });
+    moveVNode(parentDom, patched, referenceNode || null);
+    referenceNode = getDom(patched) || referenceNode;
+    patchedChildren.unshift(patched);
+  }
   oldChildren.forEach((oldChild) => {
     if (!used.has(oldChild)) unmount(oldChild);
   });
