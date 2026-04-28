@@ -1292,6 +1292,18 @@ def _format_recent_proactive_chats(lanlan_name: str, lang: str = 'zh') -> str:
 # inflate similarity scores against its own message. This buffer is read
 # only by _compute_source_weights to factor reminiscence into channel
 # weight decay alongside web/news/etc.
+#
+# Why 50 (not tied to PROACTIVE_CHAT_HISTORY_MAX=10): the two buffers serve
+# opposite sizing constraints. PROACTIVE_CHAT_HISTORY_MAX bounds *dedup*
+# memory (1h text-similarity check, 10 entries are plenty). This buffer
+# bounds *decay-signal completeness* — _compute_source_weights walks every
+# timestamp inside the _SOURCE_WEIGHT_WINDOW (=1h) for the exponential
+# decay sum, so the maxlen MUST be larger than the worst-case usage count
+# in that window or oldest entries get evicted and the channel under-
+# counts. 50 leaves ~5× safety margin for high-cadence proactive cycles.
+# Kept as a private module constant alongside the other _SOURCE_WEIGHT_*
+# tunables (_SOURCE_WEIGHT_DECAY_LAMBDA / _K / _FLOOR / _WINDOW) — it's
+# tied to that model's calibration, not a user-facing config knob.
 _REMINISCENCE_USAGE_MAX = 50
 _reminiscence_usage_history: dict[str, deque[float]] = {}
 
