@@ -1962,13 +1962,21 @@ class LLMSessionManager:
                     while time.time() - start_time < timeout:
                         # worker 线程已死亡则无需继续等待
                         if not self.tts_thread.is_alive():
-                            # 尝试取出可能的 ready(False) 信号
-                            try:
-                                msg = self.tts_response_queue.get_nowait()
+                            # 抽干此刻队列：__ready__ 用于决定本次等待结果，
+                            # 其他消息（如承载 NO_RETRY 错误码的 __error__）放回队列，
+                            # 让稍后启动的 tts_response_handler 处理，避免错误码丢失。
+                            _requeue: list = []
+                            while True:
+                                try:
+                                    msg = self.tts_response_queue.get_nowait()
+                                except Empty:
+                                    break
                                 if isinstance(msg, tuple) and len(msg) == 2 and msg[0] == "__ready__":
                                     tts_ready = msg[1]
-                            except Empty:
-                                pass
+                                else:
+                                    _requeue.append(msg)
+                            for _m in _requeue:
+                                self.tts_response_queue.put(_m)
                             if not tts_ready:
                                 logger.error("❌ TTS Worker 线程已退出，无法继续等待")
                             break
