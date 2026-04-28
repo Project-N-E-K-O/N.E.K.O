@@ -2068,6 +2068,11 @@ async def update_catgirl(name: str, request: Request):
     except Exception as e:
         logger.warning(f"解析更新猫娘请求体失败: {e}")
         return JSONResponse({'success': False, 'error': '请求体必须是合法的JSON格式'}, status_code=400)
+    if not isinstance(raw_data, dict):
+        return JSONResponse(
+            {'success': False, 'error': '请求体必须是 JSON 对象'},
+            status_code=400,
+        )
     if not raw_data:
         return JSONResponse({'success': False, 'error': '无数据'}, status_code=400)
 

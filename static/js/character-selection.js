@@ -700,7 +700,7 @@ class CharacterSelection {
             const newPersonality = voiceMapping.personality_i18n
                 ? getI18nOrFallback(voiceMapping.personality_i18n, voiceMapping.personality)
                 : voiceMapping.personality;
-            const parts = targetData['性格'] ? targetData['性格'].split(/[，,、]/) : [];
+            const currentPersonality = String(targetData['性格'] || '').trim();
             // 兼容旧数据：用旧 personality 值查找（包含中文原文和当前语言翻译），用新值替换
             const oldPersonalityValues = Object.values(CHARACTER_VOICE_MAPPING).flatMap(m => {
                 const vals = [m.personality];
@@ -709,18 +709,20 @@ class CharacterSelection {
                     if (translated !== m.personality) vals.push(translated);
                 }
                 return vals;
-            }).concat(LEGACY_PERSONALITY_VALUES);
-            const existingIdx = parts.findIndex(p => oldPersonalityValues.includes(p.trim()));
+            }).concat(LEGACY_PERSONALITY_VALUES)
+                .map(value => String(value || '').trim())
+                .filter(Boolean)
+                .sort((a, b) => b.length - a.length);
+            const existingPersonality = oldPersonalityValues.find(value => currentPersonality.includes(value));
             let personality;
-            if (existingIdx !== -1) {
-                // 人设选择曾写入过性格，直接覆盖
-                parts[existingIdx] = newPersonality;
-                personality = parts.join('，');
-            } else if (!parts.includes(newPersonality)) {
+            if (existingPersonality) {
+                // 人设选择曾写入过性格，直接在完整文案中替换，避免被逗号切碎。
+                personality = currentPersonality.replace(existingPersonality, newPersonality);
+            } else if (currentPersonality && !currentPersonality.includes(newPersonality)) {
                 // 纯用户自定义性格，追加到末尾
-                personality = parts.length > 0 ? `${targetData['性格']}，${newPersonality}` : newPersonality;
+                personality = `${currentPersonality}，${newPersonality}`;
             } else {
-                personality = targetData['性格'];
+                personality = currentPersonality || newPersonality;
             }
             // 4. 更新角色设定（包含性格、口癖、爱好、雷点、隐藏设定、一句话台词和音色）
             console.log('[CharacterSelection] 更新角色设定...');
