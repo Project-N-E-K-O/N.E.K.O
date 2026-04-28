@@ -398,7 +398,10 @@ GAME_TITLE_KEYWORDS: list = [
     ('StarCraft II', ['StarCraft II', 'StarCraft 2', '星际争霸II', '星海爭霸II', 'スタークラフト II', '스타크래프트 II'], 'competitive', 'strategy'),
     ('Overwatch 2', ['Overwatch 2', 'Overwatch', '守望先锋', '鬥陣特攻', 'オーバーウォッチ 2', '오버워치 2'], 'competitive', 'fps'),
     ('Call of Duty', ['Call of Duty', 'COD', 'Modern Warfare', 'Black Ops', 'Warzone', '使命召唤', '決勝時刻', 'コール オブ デューティ', '콜 오브 듀티'], 'competitive', 'fps'),
-    ('Battlefield 2042', ['Battlefield 2042', 'Battlefield V', 'Battlefield 1', '战地2042', '戰地風雲2042', 'バトルフィールド'], 'competitive', 'fps'),
+    # Family-name canonical so per-year `user_game_overrides` keys map
+    # consistently — bundling BFV / BF1 / BF2042 under "Battlefield 2042"
+    # would block users from targeting other titles in the series.
+    ('Battlefield', ['Battlefield 2042', 'Battlefield V', 'Battlefield 1', '战地2042', '戰地風雲2042', 'バトルフィールド'], 'competitive', 'fps'),
     ('Rainbow Six Siege', ['Rainbow Six Siege', 'R6 Siege', '彩虹六号', '虹彩六號', 'レインボーシックス シージ', '레인보우 식스 시즈'], 'competitive', 'fps'),
     ('Destiny 2', ['Destiny 2', '命运2', '天命 2', 'デスティニー 2'], 'casual', 'fps'),
     ('Escape from Tarkov', ['Escape from Tarkov', 'EFT', '逃离塔科夫', '逃離塔科夫', 'エスケープフロムタルコフ'], 'competitive', 'fps'),
@@ -545,13 +548,15 @@ GAME_TITLE_KEYWORDS: list = [
     ('Forza Horizon 5', ['Forza Horizon 5', 'FH5', '极限竞速：地平线5', '極限競速：地平線5'], 'casual', 'racing'),
     ('Forza Horizon 4', ['Forza Horizon 4', 'FH4', '极限竞速：地平线4'], 'casual', 'racing'),
     ('Forza Motorsport', ['Forza Motorsport', '极限竞速', '極限競速'], 'competitive', 'racing'),
-    ('F1 24', ['F1 24', 'F1 25', 'F1 23'], 'competitive', 'racing'),
+    # Family-name canonical so per-year overrides remain addressable
+    ('F1', ['F1 25', 'F1 24', 'F1 23'], 'competitive', 'racing'),
     ('Gran Turismo 7', ['Gran Turismo 7', 'GT7', 'グランツーリスモ7'], 'casual', 'racing'),
     ('iRacing', ['iRacing'], 'competitive', 'racing'),
     ('Assetto Corsa', ['Assetto Corsa', '神力科莎'], 'casual', 'racing'),
     ('Assetto Corsa Competizione', ['Assetto Corsa Competizione', 'ACC'], 'competitive', 'racing'),
     ('EA Sports FC', ['EA Sports FC', 'FIFA', 'EA SPORTS FC 25', 'FC 25', 'EA SPORTS FC 24'], 'competitive', 'sports'),
-    ('NBA 2K25', ['NBA 2K25', 'NBA 2K24', 'NBA 2K23', 'NBA 2K'], 'competitive', 'sports'),
+    # Family-name canonical so per-year overrides remain addressable
+    ('NBA 2K', ['NBA 2K25', 'NBA 2K24', 'NBA 2K23', 'NBA 2K'], 'competitive', 'sports'),
     ('Rocket League', ['Rocket League'], 'competitive', 'sports'),
 
     # ============================================================
