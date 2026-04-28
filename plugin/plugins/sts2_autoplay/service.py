@@ -47,6 +47,8 @@ class STS2AutoplayService:
         self._neko_guidance_queue: Deque[Dict[str, Any]] = deque(maxlen=50)
         self._step_count = 0
         self._last_llm_reasoning: Optional[Dict[str, Any]] = None
+        self._last_neko_guidance_used = ""
+        self._last_neko_guidance_count = 0
         self._semi_auto_task: Optional[Dict[str, Any]] = None
         self._last_task_report_step = -1
 
@@ -128,16 +130,24 @@ class STS2AutoplayService:
         self._server_state = "connected"
         self._last_error = ""
         self._emit_status()
-        return {"status": "connected", "message": f"STS2-Agent 已连接: {client.base_url}", "health": data}
+        message = f"STS2-Agent 已连接: {client.base_url}"
+        return {"status": "connected", "message": message, "summary": message, "health": data}
 
     async def refresh_state(self) -> Dict[str, Any]:
         context = await self._fetch_step_context(publish=True, record_history=True)
-        return {"status": "ok", "message": f"已刷新状态，screen={self._snapshot.get('screen')}", "snapshot": context["snapshot"]}
+        message = f"已刷新状态，screen={self._snapshot.get('screen')}"
+        return {"status": "ok", "message": message, "summary": message, "snapshot": context["snapshot"]}
 
     async def get_status(self) -> Dict[str, Any]:
         current_mode = self._configured_mode()
         current_character_strategy = self._configured_character_strategy()
+        summary = (
+            f"尖塔服务={self._server_state}，自动游玩={self._autoplay_state}，"
+            f"screen={self._snapshot.get('screen', 'unknown')}，floor={self._snapshot.get('floor', 0)}"
+        )
         return {
+            "summary": summary,
+            "message": summary,
             "server": {"state": self._server_state, "base_url": self._cfg.get("base_url", "http://127.0.0.1:8080")},
             "autoplay": {
                 "state": self._autoplay_state,
@@ -163,11 +173,71 @@ class STS2AutoplayService:
     async def get_snapshot(self) -> Dict[str, Any]:
         if not self._snapshot:
             await self.refresh_state()
-        return {"status": "ok", "message": "当前快照", "snapshot": self._snapshot}
+        summary = (
+            f"当前快照：screen={self._snapshot.get('screen', 'unknown')}，"
+            f"floor={self._snapshot.get('floor', 0)}，"
+            f"可用动作={self._snapshot.get('available_action_count', 0)}"
+        )
+        return {"status": "ok", "message": summary, "summary": summary, "snapshot": self._snapshot}
 
     async def step_once(self) -> Dict[str, Any]:
         async with self._step_lock:
             return await self._step_once_locked()
+
+    async def recommend_one_card_by_neko(self, objective: Optional[str] = None) -> Dict[str, Any]:
+        async with self._step_lock:
+            context = await self._await_stable_step_context()
+            snapshot = context.get("snapshot") if isinstance(context.get("snapshot"), dict) else {}
+            play_card_actions = []
+            for action in (context.get("actions") if isinstance(context.get("actions"), list) else []):
+                if not isinstance(action, dict):
+                    continue
+                raw = action.get("raw") if isinstance(action.get("raw"), dict) else {}
+                action_type = str(action.get("type") or raw.get("type") or raw.get("name") or raw.get("action") or "")
+                if action_type == "play_card":
+                    play_card_actions.append(action)
+            if not play_card_actions:
+                await self._notify_neko_card_task_event(
+                    "failed",
+                    objective=objective,
+                    snapshot=snapshot,
+                    reason="当前没有可推荐的出牌动作",
+                )
+                return {"status": "idle", "message": "当前没有可推荐的出牌动作", "summary": "当前没有可推荐的出牌动作", "snapshot": snapshot}
+            card_context = dict(context)
+            card_context["actions"] = play_card_actions
+            guidance = (
+                f"用户只是想要出牌建议，不是授权自动出牌。用户目标：{objective or '请根据当前玩家、手牌和敌人状态推荐最合适的一张牌'}。"
+                "本次只能推荐一个 play_card，不要选择结束回合、奖励、地图或其他非出牌动作。"
+                "只给建议和理由，禁止执行任何动作；请根据玩家血量/格挡/能量、手牌、敌人血量和意图说明为什么推荐这张牌。"
+            )
+            action, llm_reasoning = await self._select_action_with_reasoning({**card_context, "neko_guidance": guidance})
+            self._last_llm_reasoning = llm_reasoning
+            prepared = self._prepare_action_request(action, card_context)
+            if prepared.get("action_type") != "play_card":
+                return {"status": "idle", "message": "决策结果不是出牌动作，已取消", "summary": "决策结果不是出牌动作，已取消", "snapshot": snapshot}
+            card_name = self._card_name_for_prepared_action(prepared)
+            reason = self._reason_for_card_action(llm_reasoning, card_name)
+            await self._notify_neko_card_task_event(
+                "recommended",
+                objective=objective,
+                snapshot=snapshot,
+                prepared=prepared,
+                reasoning=llm_reasoning,
+                card_name=card_name,
+                reason=reason,
+            )
+            message = f"建议打出 {card_name}。理由：{reason}"
+            return {
+                "status": "recommended",
+                "message": message,
+                "summary": message,
+                "card_name": card_name,
+                "reason": reason,
+                "snapshot": snapshot,
+                "executed": False,
+                "action": prepared,
+            }
 
     async def play_one_card_by_neko(self, objective: Optional[str] = None) -> Dict[str, Any]:
         async with self._step_lock:
@@ -188,11 +258,11 @@ class STS2AutoplayService:
                     snapshot=snapshot,
                     reason="当前没有可打出的卡牌动作",
                 )
-                return {"status": "idle", "message": "当前没有可打出的卡牌", "snapshot": snapshot}
+                return {"status": "idle", "message": "当前没有可打出的卡牌", "summary": "当前没有可打出的卡牌", "snapshot": snapshot}
             card_context = dict(context)
             card_context["actions"] = play_card_actions
             guidance = (
-                f"用户要求猫娘选择一张卡牌打出。用户目标：{objective or '请根据当前玩家、手牌和敌人状态选择最合适的一张牌'}。"
+                f"用户明确授权猫娘选择一张卡牌打出。用户目标：{objective or '请根据当前玩家、手牌和敌人状态选择最合适的一张牌并打出'}。"
                 "本次只能选择 play_card，不要选择结束回合、奖励、地图或其他非出牌动作。"
                 "请根据玩家血量/格挡/能量、手牌、敌人血量和意图说明为什么要打出这张牌。"
             )
@@ -200,7 +270,7 @@ class STS2AutoplayService:
             self._last_llm_reasoning = llm_reasoning
             prepared = self._prepare_action_request(action, card_context)
             if prepared.get("action_type") != "play_card":
-                return {"status": "idle", "message": "决策结果不是出牌动作，已取消", "snapshot": snapshot}
+                return {"status": "idle", "message": "决策结果不是出牌动作，已取消", "summary": "决策结果不是出牌动作，已取消", "snapshot": snapshot}
             card_name = self._card_name_for_prepared_action(prepared)
             reason = self._reason_for_card_action(llm_reasoning, card_name)
             await self._notify_neko_card_task_event(
@@ -222,7 +292,7 @@ class STS2AutoplayService:
                     card_name=card_name,
                     reason="准备执行前局面变化，原卡牌动作已不可用",
                 )
-                return {"status": "stale", "message": "局面已变化，原卡牌动作不可执行", "snapshot": snapshot}
+                return {"status": "stale", "message": "局面已变化，原卡牌动作不可执行", "summary": "局面已变化，原卡牌动作不可执行", "snapshot": snapshot}
             result = await self._execute_action(prepared)
             await self._await_action_interval()
             settled_context = await self._await_post_action_settle(card_context, prepared)
@@ -236,7 +306,8 @@ class STS2AutoplayService:
                 card_name=card_name,
                 reason=reason,
             )
-            return {**result, "message": f"已按猫娘选择打出 {card_name}", "card_name": card_name, "reason": reason, "snapshot": settled_context["snapshot"]}
+            message = f"已按猫娘选择打出 {card_name}。理由：{reason}"
+            return {**result, "message": message, "summary": message, "card_name": card_name, "reason": reason, "snapshot": settled_context["snapshot"], "executed": True}
 
     async def _step_once_locked(self) -> Dict[str, Any]:
         context = await self._await_stable_step_context()
@@ -375,7 +446,9 @@ class STS2AutoplayService:
             "last_action": self._last_action,
             "current_mode": self._configured_mode(),
             "current_strategy": self._configured_character_strategy(),
-            "neko_guidance_injected": bool(self._neko_guidance_queue),
+            "neko_guidance_injected": self._last_neko_guidance_count > 0,
+            "neko_guidance_used": self._last_neko_guidance_used,
+            "neko_guidance_used_count": self._last_neko_guidance_count,
             "neko_guidance_pending": len(self._neko_guidance_queue),
         }
 
@@ -394,85 +467,72 @@ class STS2AutoplayService:
             {"snapshot": self._snapshot},
             decision_result=self._last_llm_reasoning,
         )
-        mode_str = f"{report['current_mode']}"
-        strategy_str = f"{report['current_strategy']}"
-        decision_source = report.get("decision_source", "unknown")
-        neko_pending = report.get("neko_guidance_pending", 0)
-        guidance_injected = report.get("neko_guidance_injected", False)
         hand_names = [c.get("name", "?") for c in report.get("hand", []) if isinstance(c, dict)]
         enemy_summaries = []
         for enemy in report.get("enemies", []):
             if isinstance(enemy, dict):
-                enemy_summaries.append(f"{enemy.get('name','?')}(HP:{enemy.get('hp','?')}/{enemy.get('max_hp','?')} 意图:{enemy.get('intent','?')}{enemy.get('intent_value','')})")
+                intent_value = enemy.get("intent_value")
+                intent = f"{enemy.get('intent','?')}{intent_value if intent_value not in (None, 0, '') else ''}"
+                enemy_summaries.append(f"{enemy.get('name','?')} {enemy.get('hp','?')}/{enemy.get('max_hp','?')} {intent}")
         enemies_str = "; ".join(enemy_summaries) if enemy_summaries else "无"
         llm_reasoning = report.get("llm_reasoning") if isinstance(report.get("llm_reasoning"), dict) else {}
         chosen_action = str(llm_reasoning.get("chosen_action") or report.get("last_action") or "未知动作")
-        decision_reason = str(llm_reasoning.get("reason") or "")
+        decision_reason = str(llm_reasoning.get("reason") or "")[:160]
         tactical_summary = report.get("tactical_summary") if isinstance(report.get("tactical_summary"), dict) else {}
         tactical_brief = {
-            "incoming_attack_total": tactical_summary.get("incoming_attack_total"),
-            "remaining_block_needed": tactical_summary.get("remaining_block_needed"),
-            "should_prioritize_lethal": tactical_summary.get("should_prioritize_lethal"),
-            "should_prioritize_defense": tactical_summary.get("should_prioritize_defense"),
-            "recommended_target_index": tactical_summary.get("recommended_target_index"),
+            "atk": tactical_summary.get("incoming_attack_total"),
+            "need_block": tactical_summary.get("remaining_block_needed"),
+            "lethal": tactical_summary.get("should_prioritize_lethal"),
+            "def": tactical_summary.get("should_prioritize_defense"),
+            "target": tactical_summary.get("recommended_target_index"),
         }
         task_context = self._semi_auto_task if isinstance(self._semi_auto_task, dict) else None
-        task_prefix = ""
-        if task_context:
-            task_prefix = (
-                f"半自动任务正在执行，用户授权目标：{task_context.get('objective') or '帮用户处理当前关卡'}；"
-                "任务还没完成，不要说已经打完；请把下面状态当作执行中的过程汇报。"
-            )
+        task_brief = None
+        if isinstance(task_context, dict):
+            task_brief = {
+                "objective": task_context.get("objective"),
+                "stop_condition": task_context.get("stop_condition"),
+                "status": task_context.get("status", "running"),
+            }
         content = (
-            f"尖塔观察：{task_prefix}第{report['step']}步刚执行了一个自动游玩循环；"
-            f"当前Act{report['act']}第{report['floor']}层，{report['screen']}，HP{report['player_hp']}/{report['max_hp']}。"
-            f"内置AI刚选择：{chosen_action}。"
-            f"理由：{decision_reason or '未提供'}。"
-            f"手牌：{', '.join(hand_names) if hand_names else '无'}。敌人：{enemies_str}。"
-            f"战术摘要：{json.dumps(tactical_brief, ensure_ascii=False)}。"
-            "这不是猫爪任务完成通知，也不代表战斗、Boss或整局已经结束。"
+            f"尖塔观察#{report['step']} Act{report['act']}F{report['floor']} {report['screen']} "
+            f"HP{report['player_hp']}/{report['max_hp']}；AI={chosen_action}；"
+            f"因={decision_reason or '无'}；手牌={','.join(hand_names) if hand_names else '无'}；"
+            f"敌={enemies_str}；战术={json.dumps(tactical_brief, ensure_ascii=False, separators=(',', ':'))}。"
+            "规则：过程观察，非完成；仅基于数据短评，可沉默；要干预请调用指导/暂停/恢复/停止入口。"
         )
-        description = f"尖塔观察第{report['step']}步"
+        description = f"尖塔观察#{report['step']}"
+        compact_report = {
+            "step": report.get("step"),
+            "screen": report.get("screen"),
+            "floor": report.get("floor"),
+            "act": report.get("act"),
+            "hp": [report.get("player_hp"), report.get("max_hp")],
+            "energy": report.get("energy"),
+            "block": report.get("block"),
+            "hand": report.get("hand", []),
+            "enemies": report.get("enemies", []),
+            "tactical": tactical_brief,
+            "chosen_action": chosen_action,
+            "reason": decision_reason,
+            "mode": report.get("current_mode"),
+            "strategy": report.get("current_strategy"),
+            "guidance_used": report.get("neko_guidance_used"),
+            "guidance_pending": report.get("neko_guidance_pending"),
+        }
         metadata = {
             "plugin_id": "sts2_autoplay",
             "event_type": "neko_report",
             "observation_only": True,
             "not_task_completion": True,
-            "report": report,
+            "report": compact_report,
             "neko_context": {
-                "system_prompt": (
-                    "你就在旁边看着，对方正在打杀戮尖塔2游戏。"
-                    "如果 metadata.task 存在，说明这是用户先请求你帮忙后启动的半自动执行任务；你要把观察当作任务过程状态，明确理解为正在执行、还没完成。"
-                    "这是后台观察事件，不是猫爪任务完成通知；不要把单步动作、出牌、结束回合或状态刷新说成'任务完成'、'打完Boss'、'战斗结束'或'通关'。"
-                    "你可以根据 report.hand、report.enemies、report.tactical_summary、report.llm_reasoning 和 last_action 对内置AI刚打出的牌/刚执行的动作进行短评，也可以提前解说下一步操作意图。"
-                    "解说示例风格：'现在手里有叠Buff/挂易伤/补防/斩杀牌，所以AI想先铺垫再攻击，把伤害最大化。'"
-                    "只能基于 report 中明确出现的卡牌、敌人意图、战术摘要和LLM理由评论；不要编造没有出现的卡牌、Buff、敌人、伤害数值或未来结果。"
-                    "如果资料不足，就用'看起来像是...'、'可能是在...'这类谨慎说法。"
-                    "除非 report 或游戏状态明确显示战斗/Boss/整局结束，否则只能按当前 screen、hp、敌人和刚才动作谨慎描述。"
-                    "想说就说，不用汇报，不用每步开口，不用问'准备好了吗'。"
-                    "看到有意思的连招、先挂Debuff再输出、先叠防再过牌、接近斩杀、可能吃伤害时，可以自然短评一句；没信息就安静。"
-                    f"\n当前观察：Act{report['act']}第{report['floor']}层，{report['screen']}，HP{report['player_hp']}/{report['max_hp']}。"
-                    f"内置AI刚选择：{chosen_action}。理由：{decision_reason or '未提供'}。"
-                    f"手牌：{', '.join(hand_names) if hand_names else '无'}。敌人：{enemies_str}。"
-                    f"游戏进行模式={report.get('current_mode')}，策略={report.get('current_strategy')}。"
-                    "想说就说，不想说就安静待着。"
-                    "\n想干预AI决策，直接说自然语言，比如'先防一下吧'。"
-                    "想暂停/恢复/停止，直接说'暂停'/'恢复'/'停止'。"
-                ),
-                "current_mode": report.get("current_mode"),
-                "current_strategy": report.get("current_strategy"),
-                "decision_source": report.get("decision_source"),
-                "chosen_action": chosen_action,
-                "decision_reason": decision_reason,
-                "hand_names": hand_names,
-                "enemy_summaries": enemy_summaries,
-                "tactical_brief": tactical_brief,
+                "rules": "过程观察≠完成；仅按report短评，可沉默；勿编造；干预用sts2_send_neko_guidance，控制用pause/resume/stop。",
                 "commentary_allowed": True,
-                "commentary_scope": "comment_on_builtin_ai_card_action_and_near_future_intent_only_from_report",
-                "neko_guidance_pending": report.get("neko_guidance_pending"),
-                "task": task_context,
+                "commentary_scope": "brief_comment_or_silence_from_report_only",
+                "task": task_brief,
             },
-            "task": task_context,
+            "task": task_brief,
         }
         try:
             maybe_awaitable = notifier(content=content, description=description, metadata=metadata, priority=5)
@@ -739,7 +799,8 @@ class STS2AutoplayService:
     async def get_history(self, limit: int = 20) -> Dict[str, Any]:
         limit = max(1, min(100, int(limit or 20)))
         items = list(self._history)[:limit]
-        return {"status": "ok", "message": f"最近 {len(items)} 条历史", "history": items}
+        message = f"最近 {len(items)} 条历史"
+        return {"status": "ok", "message": message, "summary": message, "history": items}
 
     async def send_neko_guidance(self, guidance: Dict[str, Any]) -> Dict[str, Any]:
         if not isinstance(guidance, dict):
@@ -905,8 +966,11 @@ class STS2AutoplayService:
                 self._step_count += 1
                 if result.get("status") == "idle":
                     await asyncio.sleep(max(0.2, float(self._cfg.get("poll_interval_active_seconds", 1) or 1)))
-                if bool(self._cfg.get("neko_reporting_enabled", False)):
+                report_interval = max(1, int(self._cfg.get("neko_report_interval_steps", 1) or 1))
+                should_report = self._step_count - self._last_task_report_step >= report_interval
+                if bool(self._cfg.get("neko_reporting_enabled", False)) and should_report:
                     await self._push_neko_report(result)
+                    self._last_task_report_step = self._step_count
                 if self._is_semi_auto_task_complete():
                     await self._complete_semi_auto_task()
                     break
@@ -996,7 +1060,7 @@ class STS2AutoplayService:
     def _card_task_report(self, snapshot: Dict[str, Any], *, card_name: str, reason: str, objective: Optional[str]) -> Dict[str, Any]:
         report = self._report_full_step({"snapshot": snapshot}, decision_result=self._last_llm_reasoning)
         report["card_task"] = {
-            "objective": objective or "让猫娘选择一张卡牌打出",
+            "objective": objective or "让猫娘推荐一张牌",
             "card_name": card_name,
             "reason": reason,
         }
@@ -1013,25 +1077,23 @@ class STS2AutoplayService:
         floor = report.get("floor", 0)
         screen = report.get("screen", "unknown")
         hp = f"{report.get('player_hp')}/{report.get('max_hp')}"
-        if event == "planned":
-            content = (
-                f"猫娘选牌任务预告：根据当前Act{act}第{floor}层 {screen}，玩家HP{hp}，"
-                f"准备打出《{active_card}》。原因：{active_reason}。"
-                "请猫娘对用户说：我准备打出这张卡，因为上述原因。随后插件会立即执行这张牌。"
-            )
+        if event == "recommended":
+            content = f"尖塔出牌建议：Act{act}F{floor} {screen} HP{hp}；建议打《{active_card}》；因：{active_reason}。插件不会自动出牌。"
+            description = f"尖塔建议打出 {active_card}"
+            message_type = "proactive_notification"
+            priority = 8
+        elif event == "planned":
+            content = f"尖塔单卡计划：Act{act}F{floor} {screen} HP{hp}；将打《{active_card}》；因：{active_reason}。插件会立即执行。"
             description = f"尖塔将打出 {active_card}"
             message_type = "proactive_notification"
             priority = 8
         elif event == "completed":
-            content = (
-                f"猫娘选牌任务完成：已经打出《{active_card}》。原因：{active_reason}。"
-                f"执行后状态：Act{act}第{floor}层 {screen}，玩家HP{hp}。本次单卡执行已结束。"
-            )
+            content = f"尖塔单卡完成：已打《{active_card}》；Act{act}F{floor} {screen} HP{hp}。"
             description = f"尖塔已打出 {active_card}"
             message_type = "neko_observation"
             priority = 6
         elif event == "failed":
-            content = f"猫娘选牌任务未执行：{active_reason or '当前无法选择并打出卡牌'}。"
+            content = f"尖塔单卡未执行：{active_reason or '当前无法选择并打出卡牌'}。"
             description = "尖塔选牌任务未执行"
             message_type = "proactive_notification"
             priority = 7
@@ -1048,7 +1110,7 @@ class STS2AutoplayService:
                     "card_name": active_card,
                     "reason": active_reason,
                     "objective": objective,
-                    "report": report,
+                    "report": {"act": act, "floor": floor, "screen": screen, "hp": hp, "card_name": active_card, "reason": active_reason},
                     "screen": screen,
                     "floor": floor,
                     "act": act,
@@ -1071,20 +1133,12 @@ class STS2AutoplayService:
         screen = snapshot.get("screen", "unknown")
         objective = active_task.get("objective") if isinstance(active_task, dict) else "帮用户处理当前关卡"
         if event == "started":
-            content = (
-                f"半自动尖塔任务已启动。用户授权目标：{objective}。"
-                f"当前Act{act}第{floor}层，screen={screen}。"
-                "请猫娘理解：这是你根据用户请求决定执行的后台 autoplay；中途观察都表示正在执行、尚未完成，除非收到 completed 事件。"
-            )
+            content = f"尖塔半自动开始：目标={objective}；Act{act}F{floor} {screen}。过程观察≠完成，只有 completed 才算结束。"
             description = "尖塔半自动任务开始"
             message_type = "neko_observation"
             priority = 6
         elif event == "completed":
-            content = (
-                f"半自动尖塔任务完成。用户授权目标：{objective}。"
-                f"现在Act{act}第{floor}层，screen={screen}。"
-                "请猫娘告诉用户：这一关打完了，并可简短说明当前状态。"
-            )
+            content = f"尖塔半自动完成：目标={objective}；Act{act}F{floor} {screen}。可告知用户本次授权任务已结束。"
             description = "尖塔半自动任务完成"
             message_type = "proactive_notification"
             priority = 8
@@ -1544,6 +1598,8 @@ class STS2AutoplayService:
             return action, None
         guidance_list = self._drain_neko_guidance()
         guidance_text = "\n".join(f"- {g['content']}" for g in guidance_list) if guidance_list else None
+        self._last_neko_guidance_used = guidance_text or ""
+        self._last_neko_guidance_count = len(guidance_list)
         if guidance_text:
             context["neko_guidance"] = guidance_text
         if mode == "half-program":

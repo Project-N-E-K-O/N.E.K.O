@@ -996,8 +996,23 @@ class DirectTaskExecutor:
 
         return UnifiedChannelDecision()
 
+    @staticmethod
+    def _is_plugin_entry_agent_hidden(entry: Any) -> bool:
+        """Return True when an entry should be hidden from automatic Agent routing."""
+        if not isinstance(entry, dict):
+            return False
+        meta = entry.get("metadata")
+        if not isinstance(meta, dict):
+            return False
+        for key in ("agent_auto", "agent_exposed", "llm_exposed"):
+            if key in meta and meta.get(key) is False:
+                return True
+        if meta.get("agent_hidden") is True:
+            return True
+        return False
+
     def _find_plugin_entry(self, plugins: Any, plugin_id: str, preferred_entry: str) -> tuple[Optional[dict], Optional[dict]]:
-        """Find a plugin and a usable entry, falling back to the first declared entry."""
+        """Find a plugin and a usable entry, falling back to the first Agent-visible declared entry."""
         iterable = plugins.items() if isinstance(plugins, dict) else enumerate(plugins)
         for _, plugin in iterable:
             if not isinstance(plugin, dict) or plugin.get("id") != plugin_id:
@@ -1006,10 +1021,14 @@ class DirectTaskExecutor:
             if not isinstance(entries, list):
                 return plugin, None
             for entry in entries:
-                if isinstance(entry, dict) and entry.get("id") == preferred_entry:
+                if (
+                    isinstance(entry, dict)
+                    and entry.get("id") == preferred_entry
+                    and not self._is_plugin_entry_agent_hidden(entry)
+                ):
                     return plugin, entry
             for entry in entries:
-                if isinstance(entry, dict) and entry.get("id"):
+                if isinstance(entry, dict) and entry.get("id") and not self._is_plugin_entry_agent_hidden(entry):
                     return plugin, entry
             return plugin, None
         return None, None
@@ -1032,6 +1051,8 @@ class DirectTaskExecutor:
                 try:
                     for e in entries:
                         try:
+                            if self._is_plugin_entry_agent_hidden(e):
+                                continue
                             eid = e.get("id") if isinstance(e, dict) else getattr(e, "id", None)
                             edesc = e.get("description", "") if isinstance(e, dict) else getattr(e, "description", "")
                             if not eid:

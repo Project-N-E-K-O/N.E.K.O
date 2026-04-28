@@ -339,6 +339,29 @@ def test_task_executor_format_messages_mentions_image_attachments():
     assert "LATEST_USER_REQUEST: 帮我看看这张图哪里报错了 [Attached images: 1]" in output
 
 
+def test_task_executor_hides_agent_auto_disabled_plugin_entries():
+    from brain.task_executor import DirectTaskExecutor
+
+    executor = object.__new__(DirectTaskExecutor)
+    plugins = [
+        {
+            "id": "sts2_autoplay",
+            "description": "尖塔插件",
+            "entries": [
+                {"id": "sts2_get_snapshot", "description": "获取快照", "metadata": {"agent_auto": False}},
+                {"id": "sts2_start_autoplay", "description": "开启尖塔游玩"},
+            ],
+        }
+    ]
+
+    desc = "\n".join(executor._build_plugin_desc_lines(plugins))
+    assert "sts2_get_snapshot" not in desc
+    assert "sts2_start_autoplay" in desc
+    plugin, entry = executor._find_plugin_entry(plugins, "sts2_autoplay", "sts2_get_snapshot")
+    assert plugin is plugins[0]
+    assert entry["id"] == "sts2_start_autoplay"
+
+
 def test_agent_server_user_turn_fingerprint_includes_attachments():
     source = Path("agent_server.py").read_text(encoding="utf-8")
     tree = ast.parse(source)

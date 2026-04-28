@@ -71,21 +71,21 @@ class STS2AutoplayPlugin(NekoPluginBase):
                 return "\n".join(lines) + ("\n" if text.endswith("\n") else "")
         raise SdkError(f"plugin.toml 中未找到配置项: {key}")
 
-    @plugin_entry(id="sts2_health_check", name="检查尖塔服务", description="检查本地尖塔 Agent 服务健康状态。", llm_result_fields=["summary"], input_schema={"type": "object", "properties": {}})
+    @plugin_entry(id="sts2_health_check", name="检查尖塔服务", description="检查本地尖塔 Agent 服务健康状态。仅在用户明确要求检查尖塔服务健康时调用。", llm_result_fields=["summary"], input_schema={"type": "object", "properties": {}}, metadata={"agent_auto": False})
     async def sts2_health_check(self, **_):
         try:
             return Ok(await self._service.health_check())
         except Exception as e:
             return Err(str(e))
 
-    @plugin_entry(id="sts2_refresh_state", name="刷新尖塔状态", description="强制刷新一次当前尖塔游戏状态。", llm_result_fields=["summary"], input_schema={"type": "object", "properties": {}})
+    @plugin_entry(id="sts2_refresh_state", name="刷新尖塔状态", description="强制刷新一次当前尖塔游戏状态。仅在用户明确要求刷新尖塔状态时调用。", llm_result_fields=["summary"], input_schema={"type": "object", "properties": {}}, metadata={"agent_auto": False})
     async def sts2_refresh_state(self, **_):
         try:
             return Ok(await self._service.refresh_state())
         except Exception as e:
             return Err(str(e))
 
-    @plugin_entry(id="sts2_get_status", name="获取尖塔状态", description="获取尖塔连接状态、自动游玩状态和最近错误。", llm_result_fields=["summary"], input_schema={"type": "object", "properties": {}})
+    @plugin_entry(id="sts2_get_status", name="获取尖塔状态", description="获取尖塔连接状态、自动游玩状态和最近错误。仅在用户明确要求查看尖塔状态时调用。", llm_result_fields=["summary"], input_schema={"type": "object", "properties": {}}, metadata={"agent_auto": False})
     async def sts2_get_status(self, **_):
         try:
             payload = await self._service.get_status()
@@ -96,7 +96,7 @@ class STS2AutoplayPlugin(NekoPluginBase):
         except Exception as e:
             return Err(str(e))
 
-    @plugin_entry(id="sts2_get_snapshot", name="获取尖塔快照", description="获取最近缓存的尖塔游戏快照和合法动作。", llm_result_fields=["summary"], input_schema={"type": "object", "properties": {}})
+    @plugin_entry(id="sts2_get_snapshot", name="获取尖塔快照", description="获取最近缓存的尖塔游戏快照和合法动作。仅在用户明确要求查看尖塔快照或合法动作时调用。", llm_result_fields=["summary"], input_schema={"type": "object", "properties": {}}, metadata={"agent_auto": False})
     async def sts2_get_snapshot(self, **_):
         try:
             payload = await self._service.get_snapshot()
@@ -112,7 +112,15 @@ class STS2AutoplayPlugin(NekoPluginBase):
         except Exception as e:
             return Err(str(e))
 
-    @plugin_entry(id="sts2_play_one_card_by_neko", name="猫娘选择并打出一张牌", description="当用户让猫娘选择卡牌打出时调用：插件会读取玩家/手牌/敌人状态，选择一张 play_card，先告诉猫娘将要打出的卡牌和理由，然后执行并结束。", llm_result_fields=["summary"], input_schema={"type": "object", "properties": {"objective": {"type": "string", "description": "用户授权目标，例如：帮我选一张牌打出去"}}})
+    @plugin_entry(id="sts2_recommend_one_card_by_neko", name="猫娘推荐一张牌", description="当用户询问杀戮尖塔当前打哪张牌好、帮忙看看出牌建议时调用：插件只会读取玩家/手牌/敌人状态并推荐一张 play_card，说明理由，不会自动打出卡牌。", llm_result_fields=["summary"], input_schema={"type": "object", "properties": {"objective": {"type": "string", "description": "用户咨询目标，例如：帮我看看当前打哪张牌好"}}})
+    async def sts2_recommend_one_card_by_neko(self, objective: Optional[str] = None, **_):
+        try:
+            payload = await self._service.recommend_one_card_by_neko(objective=objective)
+            return await self.finish(data=payload, reply=False, message=str(payload.get("summary") or ""))
+        except Exception as e:
+            return Err(str(e))
+
+    @plugin_entry(id="sts2_play_one_card_by_neko", name="猫娘选择并打出一张牌", description="仅当用户明确授权插件实际操作、自动打出、代打或说帮我选一张牌打出去时调用：插件会读取玩家/手牌/敌人状态，选择一张 play_card，先通知将要打出的卡牌和理由，然后执行出牌。用户只是问打哪张牌好、想要建议时不要调用本入口，应调用 sts2_recommend_one_card_by_neko。", llm_result_fields=["summary"], input_schema={"type": "object", "properties": {"objective": {"type": "string", "description": "用户授权目标，例如：帮我选一张牌打出去"}}})
     async def sts2_play_one_card_by_neko(self, objective: Optional[str] = None, **_):
         try:
             payload = await self._service.play_one_card_by_neko(objective=objective)
@@ -152,7 +160,7 @@ class STS2AutoplayPlugin(NekoPluginBase):
         except Exception as e:
             return Err(str(e))
 
-    @plugin_entry(id="sts2_get_history", name="获取尖塔历史", description="获取最近尖塔动作和状态历史。", llm_result_fields=["summary"], input_schema={"type": "object", "properties": {"limit": {"type": "integer", "default": 20}}})
+    @plugin_entry(id="sts2_get_history", name="获取尖塔历史", description="获取最近尖塔动作和状态历史。仅在用户明确要求查看尖塔历史时调用。", llm_result_fields=["summary"], input_schema={"type": "object", "properties": {"limit": {"type": "integer", "default": 20}}}, metadata={"agent_auto": False})
     async def sts2_get_history(self, limit: int = 20, **_):
         try:
             return Ok(await self._service.get_history(limit=limit))

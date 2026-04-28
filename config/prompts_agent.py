@@ -259,6 +259,8 @@ USER_PLUGIN_SYSTEM_PROMPT = {
 }}
 
 非常重要：
+- 只有当用户最新请求明确要求执行插件能力、控制外部服务、查询插件状态/数据，或明确授权插件行动时，才设置 has_task=true。
+- 不要因为插件调用“可能有帮助”、后台 turn_end 分析、普通闲聊、用户未明确授权、或 AI 已经提到某个功能，就主动调用插件。
 - 如果 has_task 和 can_execute 都为 true，entry_id 是必需的。
 - 如果 has_task/can_execute 为 true 时 entry_id 缺失或为 null，响应将被视为不可执行。
 - 严格匹配：plugin_id 和 entry_id 是代码标识符。你必须从上面的可用插件列表中原样复制它们（区分大小写、逐字符匹配）。不要发明、缩写或改写它们。如果找不到完全匹配，设置 can_execute=false。
@@ -300,6 +302,8 @@ OUTPUT FORMAT (strict JSON):
 }}
 
 VERY IMPORTANT:
+- Set has_task=true only when the user's latest request explicitly asks to use a plugin capability, control an external service, query plugin status/data, or clearly authorizes plugin action.
+- Do not invoke a plugin just because it might be helpful, because of background turn_end analysis, during casual chat, without explicit user authorization, or because the AI mentioned a feature.
 - If has_task and can_execute are true, entry_id is REQUIRED.
 - If entry_id is missing or null when has_task/can_execute are true, the response will be treated as non-executable.
 - STRICT MATCHING: plugin_id and entry_id are code identifiers. You MUST copy them EXACTLY (case-sensitive, character-for-character) from the AVAILABLE PLUGINS list above. Do NOT invent, abbreviate, or paraphrase them. If you cannot find an exact match, set can_execute=false.

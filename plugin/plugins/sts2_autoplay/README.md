@@ -208,11 +208,11 @@ my_strategy
 | --- | --- | --- |
 | `llm_frontend_output_enabled` | `true` | 是否把自动游玩动作/错误主动推送到前端。 |
 | `llm_frontend_output_probability` | `0.15` | 普通动作推送概率，范围会收敛到 `0.0 ~ 1.0`。错误会强制推送。 |
-| `neko_reporting_enabled` | `true` | 是否推送更完整的猫娘观察报告。 |
-| `neko_report_interval_steps` | `1` | 预留的汇报步数间隔配置。 |
+| `neko_reporting_enabled` | `true` | 是否推送猫娘观察报告。 |
+| `neko_report_interval_steps` | `1` | 每隔多少个自动游玩步骤推送一次观察报告，至少为 `1`。 |
 | `neko_guidance_max_queue` | `50` | 猫娘软指导队列最大长度。 |
 
-猫娘观察报告会携带 `report`、`neko_context`、`task` 等 metadata，供前端或对话逻辑判断这是“过程观察”，不是任务完成通知。
+猫娘观察报告会携带精简后的 `report`、`neko_context`、`task` 等 metadata，供前端或对话逻辑判断这是“过程观察”，不是任务完成通知。为节省用户 token，推送内容只保留当前动作、血量、手牌、敌人、战术摘要、已消费指导和任务摘要。
 
 ### 安全保护与自主动作
 
@@ -435,7 +435,7 @@ sts2_send_neko_guidance
 
 ## 前端推送事件
 
-插件会通过宿主的消息通道推送以下几类事件：
+插件会通过宿主的消息通道推送以下几类事件。除任务开始/完成、错误和单卡预告外，普通观察会尽量使用短文本和精简 metadata，以减少用户 token 消耗。
 
 | 事件类型 | 说明 |
 | --- | --- |
@@ -449,7 +449,7 @@ sts2_send_neko_guidance
 | `semi_auto_task_completed` | 半自动任务完成。 |
 | `neko_autonomous_action` | 系统自主暂停、减速或恢复。 |
 
-注意：`neko_report` 是过程观察，不是任务完成通知。前端或对话逻辑不应把单步动作、出牌、结束回合或状态刷新说成“任务完成”“打完 Boss”“战斗结束”或“通关”。
+注意：`neko_report` 是过程观察，不是任务完成通知。前端或对话逻辑不应把单步动作、出牌、结束回合或状态刷新说成“任务完成”“打完 Boss”“战斗结束”或“通关”。如果猫娘要影响下一轮决策，应调用 `sts2_send_neko_guidance`；如果要硬控制流程，应调用暂停、恢复或停止入口。
 
 ## 常见排查
 
