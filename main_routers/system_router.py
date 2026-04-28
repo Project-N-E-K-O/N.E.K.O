@@ -420,6 +420,12 @@ def _is_interactive_screenshot_canceled(platform_name: str, returncode: int, std
     return returncode == 1 and not normalized_stderr
 
 
+def _json_no_store_response(content: dict, status_code: int = 200) -> JSONResponse:
+    response = JSONResponse(content, status_code=status_code)
+    _set_no_store_headers(response)
+    return response
+
+
 def _derive_system_lifecycle_state(storage_bootstrap: dict[str, Any]) -> str:
     if not isinstance(storage_bootstrap, dict):
         return "starting"
@@ -2906,15 +2912,16 @@ async def backend_screenshot(request: Request):
         error_defaults={"success": False},
     )
     if validation_error is not None:
+        _set_no_store_headers(validation_error)
         return validation_error
 
     if not _is_loopback_request(request):
-        return JSONResponse({"success": False, "error": "only available from localhost"}, status_code=403)
+        return _json_no_store_response({"success": False, "error": "only available from localhost"}, status_code=403)
 
     try:
         import pyautogui
     except ImportError:
-        return JSONResponse({"success": False, "error": "pyautogui not installed"}, status_code=501)
+        return _json_no_store_response({"success": False, "error": "pyautogui not installed"}, status_code=501)
 
     try:
         def _capture_rgb_screenshot():
@@ -2934,7 +2941,10 @@ async def backend_screenshot(request: Request):
                 extrema = thumb.getextrema()  # ((min_r, max_r), (min_g, max_g), (min_b, max_b))
                 if all(mx <= 1 for _, mx in extrema):
                     logger.warning("后端截图检测到全黑图片，可能缺少 Screen Recording 权限")
-                    return JSONResponse({"success": False, "error": "screenshot is blank (Screen Recording permission may be denied)"}, status_code=403)
+                    return _json_no_store_response(
+                        {"success": False, "error": "screenshot is blank (Screen Recording permission may be denied)"},
+                        status_code=403,
+                    )
             except Exception:
                 logger.debug("macOS blank-screen detection failed, skipping check", exc_info=True)
 
@@ -2943,10 +2953,10 @@ async def backend_screenshot(request: Request):
         )
         b64 = base64.b64encode(jpg_bytes).decode('utf-8')
         data_url = f"data:image/jpeg;base64,{b64}"
-        return JSONResponse({"success": True, "data": data_url, "size": len(jpg_bytes)})
+        return _json_no_store_response({"success": True, "data": data_url, "size": len(jpg_bytes)})
     except Exception as e:
         logger.error(f"后端截图失败: {e}")
-        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+        return _json_no_store_response({"success": False, "error": str(e)}, status_code=500)
 
 
 @router.post('/screenshot/interactive')
@@ -2964,17 +2974,21 @@ async def backend_interactive_screenshot(request: Request):
         error_defaults={"success": False},
     )
     if validation_error is not None:
+        _set_no_store_headers(validation_error)
         return validation_error
 
     if not _is_loopback_request(request):
-        return JSONResponse({"success": False, "error": "only available from localhost"}, status_code=403)
+        return _json_no_store_response({"success": False, "error": "only available from localhost"}, status_code=403)
 
     if sys.platform == "darwin":
         runner = _run_macos_interactive_screenshot
     elif sys.platform == "win32":
         runner = _run_windows_interactive_screenshot
     else:
-        return JSONResponse({"success": False, "error": "interactive screenshot is only supported on macOS and Windows"}, status_code=501)
+        return _json_no_store_response(
+            {"success": False, "error": "interactive screenshot is only supported on macOS and Windows"},
+            status_code=501,
+        )
 
     fd, tmp_path = tempfile.mkstemp(prefix="neko-interactive-shot-", suffix=".png")
     os.close(fd)
@@ -2990,7 +3004,7 @@ async def backend_interactive_screenshot(request: Request):
 
         if _is_interactive_screenshot_canceled(sys.platform, returncode, stderr, file_size):
             logger.info("系统原生交互截图已取消(returncode=%s, stderr=%s)", returncode, stderr)
-            return JSONResponse({"success": False, "canceled": True}, status_code=200)
+            return _json_no_store_response({"success": False, "canceled": True}, status_code=200)
 
         if file_size <= 0:
             error_message = str(stderr or "").strip() or f"interactive screenshot failed with returncode {returncode}"
@@ -2999,13 +3013,13 @@ async def backend_interactive_screenshot(request: Request):
                 returncode,
                 stderr,
             )
-            return JSONResponse(
+            return _json_no_store_response(
                 {"success": False, "canceled": False, "error": error_message},
                 status_code=500,
             )
 
         data_url, jpg_size = await asyncio.to_thread(_image_path_to_jpeg_data_url, tmp_path)
-        return JSONResponse({
+        return _json_no_store_response({
             "success": True,
             "data": data_url,
             "size": jpg_size,
@@ -3013,10 +3027,10 @@ async def backend_interactive_screenshot(request: Request):
         })
     except FileNotFoundError as e:
         logger.warning("系统原生交互截图不可用: %s", e)
-        return JSONResponse({"success": False, "error": str(e)}, status_code=501)
+        return _json_no_store_response({"success": False, "error": str(e)}, status_code=501)
     except Exception as e:
         logger.error(f"系统原生交互截图失败: {e}")
-        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+        return _json_no_store_response({"success": False, "error": str(e)}, status_code=500)
     finally:
         try:
             if os.path.exists(tmp_path):

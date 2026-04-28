@@ -62,6 +62,7 @@ def test_backend_screenshot_rejects_missing_csrf_headers():
     payload = response.json()
     assert payload["success"] is False
     assert payload["error_code"] == "csrf_validation_failed"
+    assert response.headers["Cache-Control"] == "no-store, no-cache, must-revalidate, max-age=0"
 
 
 @pytest.mark.unit
@@ -171,6 +172,7 @@ def test_interactive_screenshot_returns_cropped_image_data(monkeypatch):
     assert payload["interactive"] is True
     assert payload["size"] > 0
     assert payload["data"].startswith("data:image/jpeg;base64,")
+    assert response.headers["Cache-Control"] == "no-store, no-cache, must-revalidate, max-age=0"
 
 
 @pytest.mark.unit
