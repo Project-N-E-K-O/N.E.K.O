@@ -79,6 +79,18 @@ def test_interactive_screenshot_rejects_non_loopback_requests():
 
 
 @pytest.mark.unit
+def test_interactive_screenshot_does_not_require_csrf_headers(monkeypatch):
+    monkeypatch.setattr(system_router_module, "_is_loopback_request", lambda _request: True)
+    monkeypatch.setattr(system_router_module.sys, "platform", "linux")
+
+    with _build_client() as client:
+        response = client.post(INTERACTIVE_SCREENSHOT_ENDPOINT)
+
+    assert response.status_code == 501
+    assert "only supported on macOS and Windows" in response.json()["error"]
+
+
+@pytest.mark.unit
 def test_interactive_screenshot_returns_unsupported_on_non_macos(monkeypatch):
     monkeypatch.setattr(system_router_module, "_is_loopback_request", lambda _request: True)
     monkeypatch.setattr(system_router_module.sys, "platform", "linux")

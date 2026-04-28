@@ -2972,15 +2972,9 @@ async def backend_interactive_screenshot(request: Request):
       - Windows: 本地全桌面遮罩框选
     返回用户选区的 JPEG DataURL。
     安全限制：仅允许来自 loopback 地址的请求。
+    说明：截图动作本身发生在本机，本地取消/失败由本地实现判断；
+    这里不再复用本地 mutation 的 CSRF/origin 校验链路。
     """
-    validation_error = _validate_local_mutation_request(
-        request,
-        error_defaults={"success": False},
-    )
-    if validation_error is not None:
-        _set_no_store_headers(validation_error)
-        return validation_error
-
     if not _is_loopback_request(request):
         return _json_no_store_response({"success": False, "error": "only available from localhost"}, status_code=403)
 
