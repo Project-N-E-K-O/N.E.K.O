@@ -410,6 +410,9 @@ async def run_sync_connector(
                     message_queue.get(), timeout=IDLE_TIMEOUT
                 )
             except asyncio.TimeoutError:
+                # 超时 = 没消息：保持 message=None 走到下面 ws 维持段做周期性
+                # reconnect/heartbeat 检查。这条路径在 idle 期每 IDLE_TIMEOUT
+                # 触发一次，不打日志否则会变成稳定噪音。
                 pass
 
             if message is not None:
