@@ -576,16 +576,12 @@ def format_activity_state_section(snap: 'ActivitySnapshot', lang: str = 'zh') ->
 
     # Header: append a degraded marker when OS signals aren't available.
     # Tells the proactive AI not to over-trust window/idle-derived state.
+    # Marker text lives in config/prompts_activity.py (multi-lang dict
+    # convention — kept out of regular code per the prompt-hygiene linter).
     header = labels['header']
     if not snap.os_signals_available:
-        marker_by_lang = {
-            'zh': '（远程模式·无屏幕信号）',
-            'en': '(remote / no screen signal)',
-            'ja': '（リモートモード・画面信号なし）',
-            'ko': '(원격 모드 · 화면 신호 없음)',
-            'ru': '(удалённый режим · нет экранных сигналов)',
-        }
-        header = header + ' ' + marker_by_lang.get(L, marker_by_lang['en'])
+        from config.prompts_activity import OS_DEGRADED_MARKER
+        header = header + ' ' + OS_DEGRADED_MARKER.get(L, OS_DEGRADED_MARKER['en'])
     lines: list[str] = [header]
 
     # Line 1: state + propensity directive on a single line.

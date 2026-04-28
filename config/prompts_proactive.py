@@ -1076,14 +1076,16 @@ proactive_generate_zh = """你的人设：
 
 向{master_name}搭话决策：
 
-★ 上方"活动状态"列出"未收尾话题"时，无视基调限制直接 [CHAT] 接续。
+★ 上方"活动状态"列出"未收尾话题"时，无视基调限制直接接续。
 
 切入点优先级（受"搭话倾向"约束）：
-1. 上轮挂着没收尾的话题 → [CHAT] 接续
-2. "记忆线索"里 1 天前以上的旧话题 → [CHAT] 自然带出
-3. 屏幕值得说一句 → [CHAT]
-4. 外部素材贴合氛围 → 对应标签
+1. 上轮挂着没收尾的话题 → 接续
+2. "记忆线索"里 1 天前以上的旧话题 → 自然带出
+3. 屏幕值得说一句
+4. 外部素材贴合氛围
 5. 没切入点 → [PASS]
+
+具体输出格式（来源标签 / 直接正文）按下方"输出格式"段落要求执行。
 
 重复判定：1 小时内同话题 → [PASS]；1 天前以上不算重复。
 风格：合人设，2-3 句，不写思考过程。
@@ -1113,14 +1115,16 @@ Conversation history:
 Decision for talking to {master_name}:
 
 ★ When the activity state lists an "unfinished thread", you may continue
-  it with [CHAT] regardless of the propensity.
+  it regardless of the propensity.
 
 Angle priority (constrained by "chat propensity"):
-1. Unfinished thread from last turn → [CHAT] continue
-2. A "Memory cues" topic 1+ day old → [CHAT] bring it up naturally
-3. Something on screen worth a remark → [CHAT]
-4. External material (news / music / meme) that fits the mood → matching tag
+1. Unfinished thread from last turn → continue it
+2. A "Memory cues" topic 1+ day old → bring it up naturally
+3. Something on screen worth a remark
+4. External material (news / music / meme) that fits the mood
 5. No natural angle → [PASS]
+
+Output format (source tag vs. plain text) follows the "Output format" section below.
 
 Repetition: same topic within the last hour → [PASS]; topics 1+ day old don't count as repeats.
 Style: stay in character, 2-3 sentences max, no reasoning text.
@@ -1149,14 +1153,16 @@ proactive_generate_ja = """あなたのキャラ設定：
 
 {master_name}への話しかけ判断：
 
-★ 上の活動状態に「未完話題」がある場合、傾向の制限を無視して [CHAT] で続けてよい。
+★ 上の活動状態に「未完話題」がある場合、傾向の制限を無視して継続してよい。
 
 切り口優先度（「話しかけ傾向」の制約下で）：
-1. 前回未収のスレッド → [CHAT] で続ける
-2. 「記憶の手がかり」の1日以上前の古い話題 → [CHAT] で自然に出す
-3. 画面に一言コメントできる → [CHAT]
-4. 外部素材が雰囲気に合う → 該当タグ
+1. 前回未収のスレッド → 継続
+2. 「記憶の手がかり」の1日以上前の古い話題 → 自然に出す
+3. 画面に一言コメントできる
+4. 外部素材が雰囲気に合う
 5. 切り口なし → [PASS]
+
+出力形式（ソースタグの有無）は下の「出力形式」セクションに従ってください。
 
 重複：1時間以内の同話題は [PASS]；1日以上前は重複扱いしない。
 スタイル：キャラに合わせて、2〜3文、推論は書かない。
@@ -1185,14 +1191,16 @@ proactive_generate_ko = """당신의 캐릭터 설정:
 
 {master_name}에게 말 걸기 판단:
 
-★ 활동 상태에 "미완 화제"가 있다면 성향 제한과 무관하게 [CHAT]로 이어가기 가능.
+★ 활동 상태에 "미완 화제"가 있다면 성향 제한과 무관하게 이어가기 가능.
 
 접점 우선순위 ("말 걸기 성향" 제약 하):
-1. 지난 대화의 미완 스레드 → [CHAT] 이어가기
-2. "기억 단서"의 1일 이상 지난 화제 → [CHAT] 자연스럽게 꺼내기
-3. 화면에 한마디 → [CHAT]
-4. 외부 소재가 분위기에 맞음 → 해당 태그
+1. 지난 대화의 미완 스레드 → 이어가기
+2. "기억 단서"의 1일 이상 지난 화제 → 자연스럽게 꺼내기
+3. 화면에 한마디
+4. 외부 소재가 분위기에 맞음
 5. 접점 없음 → [PASS]
+
+출력 형식(소스 태그 / 본문 직접)은 아래 "출력 형식" 섹션을 따른다.
 
 중복: 1시간 이내 같은 화제 → [PASS]; 1일 이상 지난 화제는 중복 아님.
 스타일: 캐릭터에 맞게, 2-3문장, 추론 생략.
@@ -1221,14 +1229,16 @@ proactive_generate_ru = """Ваша роль:
 
 Решение по обращению к {master_name}:
 
-★ Если в активности есть "незавершённая нить", разрешено продолжать её через [CHAT] вне зависимости от настроя.
+★ Если в активности есть "незавершённая нить", разрешено продолжать её вне зависимости от настроя.
 
 Приоритет подходов (с учётом "настроя к беседе"):
-1. Незавершённая нить из прошлого хода → [CHAT] продолжить
-2. Тема из "Подсказок памяти" давностью 1+ день → [CHAT] ввести естественно
-3. Что-то на экране стоит реплики → [CHAT]
-4. Внешний материал к настроению → нужный тег
+1. Незавершённая нить из прошлого хода → продолжить
+2. Тема из "Подсказок памяти" давностью 1+ день → ввести естественно
+3. Что-то на экране стоит реплики
+4. Внешний материал к настроению
 5. Нет захода → [PASS]
+
+Формат вывода (тег источника / просто текст) — по разделу «Формат ответа» ниже.
 
 Повтор: та же тема за последний час → [PASS]; темы 1+ день не считаются повтором.
 Стиль: в образе, 2-3 предложения, без рассуждений.

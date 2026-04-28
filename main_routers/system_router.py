@@ -1286,6 +1286,28 @@ def _format_recent_proactive_chats(lanlan_name: str, lang: str = 'zh') -> str:
     return f"\n{header}\n" + "\n".join(lines) + f"\n{footer}\n"
 
 
+# Reminiscence usage buffer — separate from _proactive_chat_history because
+# the latter feeds dedup / similarity checks (_format_recent_proactive_chats /
+# _is_similar_to_recent_proactive_chat) and any double-recording there would
+# inflate similarity scores against its own message. This buffer is read
+# only by _compute_source_weights to factor reminiscence into channel
+# weight decay alongside web/news/etc.
+_REMINISCENCE_USAGE_MAX = 50
+_reminiscence_usage_history: dict[str, deque[float]] = {}
+
+
+def _record_reminiscence_usage(lanlan_name: str) -> None:
+    """Record one reminiscence usage timestamp for source-weight decay.
+
+    Kept separate from ``_record_proactive_chat`` to avoid polluting
+    the dedup / similarity history (which compares the proactive
+    response text against past entries by channel-agnostic match).
+    """
+    if lanlan_name not in _reminiscence_usage_history:
+        _reminiscence_usage_history[lanlan_name] = deque(maxlen=_REMINISCENCE_USAGE_MAX)
+    _reminiscence_usage_history[lanlan_name].append(time.time())
+
+
 def _record_proactive_chat(lanlan_name: str, message: str, channel: str = ''):
     """
     记录一次成功的主动搭话（附带来源通道）
@@ -1425,6 +1447,19 @@ def _compute_source_weights(
                 continue
             if ch in raw_scores:
                 raw_scores[ch] += math.exp(-_SOURCE_WEIGHT_DECAY_LAMBDA * age)
+
+    # Reminiscence usage lives in a separate buffer (kept out of
+    # _proactive_chat_history to avoid polluting dedup / similarity
+    # checks). Inject its decayed-frequency contribution here so the
+    # weight calculation treats it on the same footing as web/news/etc.
+    if 'reminiscence' in raw_scores:
+        rem_buf = _reminiscence_usage_history.get(lanlan_name)
+        if rem_buf:
+            for ts in rem_buf:
+                age = now - ts
+                if age > _SOURCE_WEIGHT_WINDOW:
+                    continue
+                raw_scores['reminiscence'] += math.exp(-_SOURCE_WEIGHT_DECAY_LAMBDA * age)
 
     # freshness: 使用越多 → raw 越高 → freshness 越低
     freshness: dict[str, float] = {}
@@ -4128,13 +4163,15 @@ async def proactive_chat(request: Request):
 
         # 记录主动搭话
         _record_proactive_chat(lanlan_name, response_text, primary_channel)
-        # Reminiscence channel：当本轮 surfaced 了 pending reflection（即使 AI 最终
-        # 没用 [CHAT] 而是用了 [WEB] 标签，followup 还是出现在了 prompt 里）就额外
-        # 记一次 reminiscence 用量，让 _compute_source_weights 把它当作"已使用"
-        # channel 来衰减。和 primary_channel 同时记，频率统计是各 channel 独立累加，
-        # 所以两条 entry 不冲突。
+        # Reminiscence usage：本轮 surfaced 了 pending reflection（不管 AI 最终
+        # 用了什么标签，followup 都出现在 prompt 里）→ 记一次 reminiscence 用量。
+        # 用独立 buffer (_reminiscence_usage_history) 而不是把同一条 message
+        # 二次写进 _proactive_chat_history——后者还驱动 _format_recent_proactive_chats
+        # 和 _is_similar_to_recent_proactive_chat，二次写会让 dedup / 相似度
+        # 检查把这条 proactive 跟自己撞上、虚高 score。_compute_source_weights
+        # 直接读这个独立 buffer 把 reminiscence 当一档 channel 衰减。
         if _surfaced_reflection_ids:
-            _record_proactive_chat(lanlan_name, response_text, 'reminiscence')
+            _record_reminiscence_usage(lanlan_name)
 
         # Unfinished-thread 跟进计数：本轮 snapshot 里有未收尾话题就 +1。无论 AI
         # 实际有没有用这个 override（它可能选了别的素材），都计为一次"我们给过

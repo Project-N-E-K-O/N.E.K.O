@@ -110,12 +110,15 @@ class UserActivityTracker:
         self._user_msg_buffer: deque[tuple[float, str]] = deque(maxlen=_CONV_BUFFER_MAXLEN)
         self._ai_msg_buffer: deque[tuple[float, str]] = deque(maxlen=_CONV_BUFFER_MAXLEN)
 
-        # open_threads cache. ``_user_msg_seq`` increments on every
-        # ``on_user_message`` call; ``_open_threads_computed_at_seq``
-        # records the seq at the moment of the last successful compute.
-        # When seqs match, the cache is fresh; mismatch → kickoff is
-        # allowed to spawn a new compute.
-        self._user_msg_seq: int = 0
+        # open_threads cache. ``_conv_seq`` increments on EITHER side of
+        # the conversation moving (``on_user_message`` OR ``on_ai_message``)
+        # — open threads can be opened by AI promises and abandoned
+        # mid-sentences from either party, not just user replies.
+        # ``_open_threads_computed_at_seq`` records the seq at the
+        # moment of the last successful compute. When seqs match, the
+        # cache is fresh; mismatch → kickoff is allowed to spawn a new
+        # compute.
+        self._conv_seq: int = 0
         self._open_threads_cache: list[str] = []
         self._open_threads_computed_at_seq: int = -1
         self._open_threads_task: asyncio.Task | None = None
@@ -146,12 +149,12 @@ class UserActivityTracker:
         Drives the focused_work `recent_input` heuristic, the
         ``seconds_since_user_msg`` field, and (when ``text`` is given)
         the conversation buffer the emotion-tier LLM enrichment reads
-        from. Also bumps ``_user_msg_seq`` so the next
+        from. Also bumps ``_conv_seq`` so the next
         ``kickoff_open_threads_compute`` call knows the cache is stale.
         """
         ts = now if now is not None else time.time()
         self._sm.update_user_message(now=ts)
-        self._user_msg_seq += 1
+        self._conv_seq += 1
         if text:
             self._user_msg_buffer.append((ts, text.strip()[:1000]))
 
@@ -172,6 +175,11 @@ class UserActivityTracker:
         self._sm.update_ai_message(text=text, now=ts)
         if text:
             self._ai_msg_buffer.append((ts, text.strip()[:1000]))
+            # AI also opens threads (promises, abandoned mid-sentences) →
+            # bump _conv_seq so kickoff_open_threads_compute will recompute.
+            # Empty / no-text turns (errors / silenced) skip the bump,
+            # since nothing in the buffer changed.
+            self._conv_seq += 1
 
     def mark_unfinished_thread_used(self) -> None:
         """Record that a proactive emission just used the override slot.
@@ -298,7 +306,11 @@ class UserActivityTracker:
         ``get_snapshot``.
         """
         ts = now if now is not None else time.time()
-        sys_snap = self._collector.snapshot()
+        # Use _select_system_snapshot to honour frontend-pushed signals
+        # exactly like the async path — otherwise remote deployments
+        # would silently fall back to the local (server-side) collector
+        # in sync callers.
+        sys_snap = self._select_system_snapshot(ts)
         self._sm.update_system(sys_snap)
         self._sm.update_window(observation_from_system(sys_snap), now=ts)
         snap = self._sm.get_snapshot(now=ts)
@@ -327,7 +339,7 @@ class UserActivityTracker:
           * If a previous task is still running → skip (don't queue).
           * If conversation buffers are empty → skip (nothing to score).
         """
-        if self._open_threads_computed_at_seq == self._user_msg_seq:
+        if self._open_threads_computed_at_seq == self._conv_seq:
             return
         if self._open_threads_task is not None and not self._open_threads_task.done():
             return
@@ -341,7 +353,7 @@ class UserActivityTracker:
     async def _do_open_threads_compute(self, lang: str) -> None:
         """One-shot LLM call. Updates cache only on parse success."""
         from main_logic.activity.llm_enrichment import call_open_threads
-        seen_seq = self._user_msg_seq
+        seen_seq = self._conv_seq
         try:
             result = await call_open_threads(
                 user_msgs=list(self._user_msg_buffer),
@@ -373,7 +385,7 @@ class UserActivityTracker:
         Failures are silent — the previous cache stays in place until
         the next tick succeeds.
         """
-        last_user_seq = -1
+        last_conv_seq = -1
         while True:
             try:
                 await asyncio.sleep(_ACTIVITY_GUESS_TICK_SECONDS)
@@ -412,7 +424,7 @@ class UserActivityTracker:
                         if rule_snap.active_window else None),
                     idle_bucket,
                 )
-                if sig == self._activity_guess_state_sig and self._user_msg_seq == last_user_seq:
+                if sig == self._activity_guess_state_sig and self._conv_seq == last_conv_seq:
                     continue
 
                 from utils.language_utils import get_global_language
@@ -433,7 +445,7 @@ class UserActivityTracker:
                 self._activity_guess_cache = result.get('guess', '') or ''
                 self._activity_guess_state_sig = sig
                 self._activity_guess_at = ts
-                last_user_seq = self._user_msg_seq
+                last_conv_seq = self._conv_seq
             except asyncio.CancelledError:
                 return
             except Exception as e:

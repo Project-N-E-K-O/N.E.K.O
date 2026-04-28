@@ -1,10 +1,16 @@
 # User Activity Tracker
 
-Status: **v1 (rules-only)** — implemented in `main_logic/activity/`. Authored
-during the proactive-chat overhaul. Subsequent contributors may freely
-extend keyword tables, add signal sources, or bolt on an emotion-tier LLM
-description layer; the public surface (`UserActivityTracker.get_snapshot`)
-is the contract that should not change without a follow-up doc.
+Status: **v1 (rules-primary, LLM advisory)** — implemented in
+`main_logic/activity/`. Authored during the proactive-chat overhaul.
+The rule-based state machine is the authority for all gating
+decisions (propensity / source filtering); an emotion-tier LLM is
+called on a 20s cadence + on-demand for the
+``activity_scores / activity_guess / open_threads`` enrichment fields,
+which are advisory context only. Failures of the LLM degrade silently
+to rule-only behaviour. Subsequent contributors may freely extend
+keyword tables, add signal sources, or tune the LLM enrichment; the
+public surface (`UserActivityTracker.get_snapshot`) is the contract
+that should not change without a follow-up doc.
 
 ## Why this exists
 
@@ -21,12 +27,22 @@ Two failure modes resulted:
    chat windows.
 
 The tracker injects a structured snapshot of *what the user is doing
-right now* (best-effort guess, no LLM) into Phase 2 of proactive chat,
-so the prompt can shape behaviour by user state rather than blanket
-rules. The snapshot is heuristic and side-channel: window titles,
-foreground process, system idle time, CPU, voice RMS, conversation
-timestamps. No LLM in v1 — the whole point is to push the keyword and
-rule layer until it's good before reaching for a model.
+right now* into Phase 2 of proactive chat, so the prompt can shape
+behaviour by user state rather than blanket rules. The snapshot
+combines:
+
+* **Rule-derived signals** (state, propensity, reasons, dwell, idle,
+  unfinished_thread, etc.) — pure heuristic, no LLM. Window titles,
+  foreground process, CPU, voice RMS, conversation timestamps go in,
+  one of nine states comes out.
+* **Emotion-tier LLM enrichment** (activity_scores, activity_guess,
+  open_threads) — advisory only, cached, fail-silent. Lets the
+  proactive AI see soft cross-state scores and a one-sentence
+  narrative when the cheap rules can't capture nuance.
+
+The rules path is authoritative: propensity and source filtering are
+always rule-derived. LLM enrichment never gates anything; it just adds
+context the proactive prompt can choose to weigh.
 
 ## Public surface
 
@@ -165,10 +181,18 @@ others.
 
 **Per-character (event-driven, zero cost)**
 
-* `on_user_message()` — driven from `core.handle_new_message`. Feeds
-  `seconds_since_user_msg` and the focused-work "recent input" check.
-* `on_ai_message()` — driven at AI turn end. Surfaced as
-  `seconds_since_ai_msg`.
+* `on_user_message(text=...)` — driven from two sites in `main_logic/core.py`:
+  the voice-mode `handle_input_transcript` path and the text-mode
+  WebSocket entry inside `_process_stream_data_internal`. Both pass the
+  user's input text. Feeds `seconds_since_user_msg`, the focused-work
+  "recent input" check, and the conversation buffer that emotion-tier
+  LLM enrichment reads. Bumps `_conv_seq` so `open_threads` cache
+  invalidates.
+* `on_ai_message(text=...)` — driven at AI turn end from `_emit_turn_end`
+  (regular replies), `handle_proactive_complete` (agent direct-reply path),
+  and `finish_proactive_delivery` (`/api/proactive_chat` success path).
+  Surfaces as `seconds_since_ai_msg`, runs the question heuristic for
+  `unfinished_thread`, also bumps `_conv_seq`.
 * `on_voice_mode(active)` — driven at voice session start/stop.
 * `on_voice_rms()` — driven from VAD / RMS-threshold detection. The
   state machine treats voice as engaged only with a recent RMS within
@@ -636,11 +660,22 @@ The tracker is owned by `LLMSessionManager` (`main_logic/core.py`) per
 character. The integration touch-points are:
 
 * Constructor: `self._activity_tracker = UserActivityTracker(self.lanlan_name)`.
-* `handle_new_message` user branch → `self._activity_tracker.on_user_message()`.
-* AI turn-end (in TTS finalisation or text-stream completion) →
-  `self._activity_tracker.on_ai_message()`.
+* User-message hooks (text passed in):
+  * `handle_input_transcript` (voice mode, with `is_voice_source=True`) →
+    `on_voice_rms()` + `on_user_message(text=transcript)` when transcript non-empty.
+  * Text-mode WebSocket entry inside `_process_stream_data_internal` →
+    `on_user_message(text=data)` directly.
+  * `_dispatch_openclaw_handoff` calls `handle_input_transcript(...,
+    is_voice_source=False)` to reuse the queue/cache plumbing without
+    re-firing tracker hooks.
+* AI-turn-end hooks (text accumulated via `_current_ai_turn_text` buffer):
+  * `_emit_turn_end` → `on_ai_message(text=...)` for regular replies.
+  * `handle_proactive_complete` → same (agent direct-reply path).
+  * `finish_proactive_delivery` → same (`/api/proactive_chat` success path).
 * Voice session start/stop → `on_voice_mode(True/False)`.
-* RMS / VAD threshold breach (in audio capture) → `on_voice_rms()`.
+* RMS / VAD threshold breach (currently driven from
+  `handle_input_transcript`'s voice path; future: real RMS callback) →
+  `on_voice_rms()`.
 
 Phase 1 of `proactive_chat` calls `await mgr._activity_tracker.get_snapshot()`
 once near the top of the flow. The result is passed to Phase 2's prompt

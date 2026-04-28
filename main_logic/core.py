@@ -1035,20 +1035,40 @@ class LLMSessionManager:
             else:
                 pass  # websocket未连接时忽略
 
-    async def handle_input_transcript(self, transcript: str):
-        """输入转录回调：同步转录文本到消息队列和缓存，并发送到前端显示"""
+    async def handle_input_transcript(self, transcript: str, *, is_voice_source: bool = True):
+        """输入转录回调：同步转录文本到消息队列和缓存，并发送到前端显示
+
+        ``is_voice_source`` defaults to True for the realtime-client
+        callbacks (genuine VAD-captured speech). Text-mode call sites
+        that reuse this function for non-voice paths (e.g. openclaw
+        handoff at ``_dispatch_openclaw_handoff``) pass False so that:
+          - voice_rms is NOT marked (no fake voice_engaged state)
+          - on_user_message is skipped here (the text-mode entry has
+            already called it directly with the input data — calling
+            twice would double-bump _conv_seq and add the text to the
+            buffer twice)
+        """
         # 更新用户活动时间戳（用于主动搭话检测）
         self.last_user_activity_time = time.time()
-        # transcript 到达 → VAD 在窗口内捕捉到声音，标记 voice RMS 活跃；
-        # 即使转录为空（VAD 误触发或转录失败）也算一次"用户在发声"，
-        # 维持 voice_engaged 状态。
-        self._activity_tracker.on_voice_rms()
-        # 仅非空转录才算"用户消息"：on_user_message 会清掉 unfinished_thread、
-        # bump _user_msg_seq（让 open_threads 缓存失效）、把文本进 buffer 给
-        # emotion-tier LLM 用——空 transcript 这些副作用都不该触发。
-        if transcript.strip():
-            self._activity_tracker.on_user_message(text=transcript)
-            self._session_turn_count += 1
+        if is_voice_source:
+            # transcript 到达 → VAD 在窗口内捕捉到声音，标记 voice RMS 活跃；
+            # 即使转录为空（VAD 误触发或转录失败）也算一次"用户在发声"，
+            # 维持 voice_engaged 状态。
+            self._activity_tracker.on_voice_rms()
+            # 仅非空转录才算"用户消息"：on_user_message 会清掉 unfinished_thread、
+            # bump _conv_seq（让 open_threads 缓存失效）、把文本进 buffer 给
+            # emotion-tier LLM 用——空 transcript 这些副作用都不该触发。
+            if transcript.strip():
+                self._activity_tracker.on_user_message(text=transcript)
+                self._session_turn_count += 1
+        else:
+            # Non-voice reuse of this method (e.g. openclaw text handoff).
+            # Skip activity-tracker hooks entirely — the text-mode entry
+            # at `_process_stream_data_internal` has already recorded the
+            # user message. We still need the queue/cache plumbing below
+            # to work normally, so just bypass the tracker block.
+            if transcript.strip():
+                self._session_turn_count += 1
 
         # 推送到同步消息队列
         self.sync_message_queue.put({"type": "user", "data": {"input_type": "transcript", "data": transcript.strip()}})
@@ -2804,7 +2824,10 @@ class LLMSessionManager:
         if not sent:
             return False
 
-        await self.handle_input_transcript(user_text)
+        # Text mode → voice tracker hooks would lie. Pass is_voice_source=False
+        # so on_voice_rms / on_user_message aren't fired again (text-mode entry
+        # already called on_user_message directly with this same data).
+        await self.handle_input_transcript(user_text, is_voice_source=False)
         pending_images = getattr(self.session, "_pending_images", None)
         if isinstance(pending_images, list):
             pending_images.clear()
@@ -3004,6 +3027,14 @@ class LLMSessionManager:
             # 但本处 lock 内 sid 已校验过，commit 本身安全。
             await self.state.fire(SessionEvent.PROACTIVE_COMMITTING)
             await self.send_lanlan_response(full_text, is_first_chunk=True, turn_id=commit_sid)
+
+            # Flush per-turn AI-text buffer to activity tracker. The regular
+            # /api/proactive_chat path doesn't call handle_proactive_complete
+            # (only the agent-direct-reply path in main_server.py does), so
+            # without this the buffer would carry the proactive text forward
+            # and contaminate the next user-initiated turn's AI message.
+            self._activity_tracker.on_ai_message(text=self._current_ai_turn_text or None)
+            self._current_ai_turn_text = ''
 
             if self.session and hasattr(self.session, '_conversation_history'):
                 self.session._conversation_history.append(AIMessage(content=full_text))
