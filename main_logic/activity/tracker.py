@@ -448,22 +448,38 @@ class UserActivityTracker:
                 from utils.language_utils import get_global_language
                 lang = get_global_language() or 'zh'
 
+                # In-flight guard — capture conv_seq + buffer snapshots
+                # before the LLM call. Same pattern as
+                # ``_do_open_threads_compute``: if a new user/AI message
+                # arrives during the await, the result reflects pre-message
+                # state and must not overwrite caches built on the newer
+                # buffer. Discarding here lets the next tick recompute
+                # against the up-to-date state.
+                seen_conv_seq = self._conv_seq
+                user_msgs_snapshot = list(self._user_msg_buffer)
+                ai_msgs_snapshot = list(self._ai_msg_buffer)
                 signals = self._snapshot_signals_for_llm(rule_snap)
                 from main_logic.activity.llm_enrichment import call_activity_guess
                 result = await call_activity_guess(
                     snapshot_signals=signals,
                     rule_state=rule_snap.state,
-                    user_msgs=list(self._user_msg_buffer),
-                    ai_msgs=list(self._ai_msg_buffer),
+                    user_msgs=user_msgs_snapshot,
+                    ai_msgs=ai_msgs_snapshot,
                     lang=lang,
                 )
                 if result is None:
+                    continue
+                if self._conv_seq != seen_conv_seq:
+                    logger.debug(
+                        '[%s] activity_guess result discarded: conv_seq advanced from %d to %d during LLM call',
+                        self.lanlan_name, seen_conv_seq, self._conv_seq,
+                    )
                     continue
                 self._activity_scores_cache = result.get('scores', {}) or {}
                 self._activity_guess_cache = result.get('guess', '') or ''
                 self._activity_guess_state_sig = sig
                 self._activity_guess_at = ts
-                last_conv_seq = self._conv_seq
+                last_conv_seq = seen_conv_seq
             except asyncio.CancelledError:
                 return
             except Exception as e:

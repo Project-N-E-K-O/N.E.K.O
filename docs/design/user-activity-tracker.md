@@ -145,13 +145,13 @@ Dataflow:
                        └─────────────┬─────────────────┘
                                      │ ActivitySnapshot
                                      ▼
-                       ┌────────────────────────────┐
-                       │ proactive_chat (Phase 1+2) │
-                       │  - bypass unified LLM if    │
-                       │    propensity == screen_only│
-                       │  - inject state section into│
-                       │    Phase 2 system prompt    │
-                       └─────────────────────────────┘
+                       ┌────────────────────────────────────────┐
+                       │ proactive_chat (Phase 1+2)             │
+                       │  - bypass unified LLM if propensity ==  │
+                       │    restricted_screen_only               │
+                       │  - inject state section into Phase 2    │
+                       │    system prompt                        │
+                       └────────────────────────────────────────┘
 ```
 
 ## Signal sources (all heuristic, all rules)
@@ -476,9 +476,14 @@ omits unrendered fields. No load-bearing path depends on enrichment.
 
 * `open_threads`: lazy / on-demand. The proactive_chat code path calls
   `tracker.kickoff_open_threads_compute(lang=...)` near the top of
-  Phase 1, in parallel with source-fetch tasks. Cache invalidates on
-  the next user message (tracked via `_user_msg_seq`); within a single
-  invalidation window, repeated kickoffs are no-ops.
+  Phase 1, in parallel with source-fetch tasks. Freshness is keyed by
+  a unified conversation revision (`_conv_seq`, bumped by both
+  `on_user_message` and `on_ai_message` — AI-side promises and abandoned
+  mid-sentences open new threads too). Within the same revision,
+  repeated kickoffs are no-ops. The compute task captures `_conv_seq`
+  before the LLM call and discards its result if the seq advanced
+  during the await — preventing stale completions from overwriting
+  caches built on a newer buffer.
 
   By the time Phase 2 reads `get_snapshot`, the cache is either fresh
   (LLM came back fast enough) or still on the previous value (LLM
@@ -677,11 +682,20 @@ character. The integration touch-points are:
   `handle_input_transcript`'s voice path; future: real RMS callback) →
   `on_voice_rms()`.
 
-Phase 1 of `proactive_chat` calls `await mgr._activity_tracker.get_snapshot()`
-once near the top of the flow. The result is passed to Phase 2's prompt
-builder. When `propensity == 'restricted_screen_only'`, Phase 1 may
-short-circuit the unified-LLM call entirely (saving a model invocation)
-because no external sources will be admitted.
+Phase 1 of `proactive_chat` takes an early snapshot via
+`await mgr._activity_tracker.get_snapshot()` for gating decisions
+(state, propensity, propensity_reasons, unfinished_thread). When
+`propensity == 'restricted_screen_only'`, Phase 1 may short-circuit
+the unified-LLM call entirely (saving a model invocation) because no
+external sources will be admitted.
+
+Just before Phase 2 prompt rendering, the route fetches a fresh snapshot
+again and uses `dataclasses.replace()` to splice the latest enrichment
+fields (`activity_scores`, `activity_guess`, `open_threads`) onto the
+early snapshot. This dual-snapshot pattern keeps gating decisions
+consistent (no mid-Phase-1 state drift invalidating
+restricted_screen_only filtering) while letting `kickoff_open_threads_compute`
+results computed during Phase 1 actually reach the same round's prompt.
 
 App shutdown should call `await get_system_signal_collector().stop()`
 to cleanly cancel the polling task. Without it the asyncio task
