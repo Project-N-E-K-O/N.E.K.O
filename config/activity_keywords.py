@@ -101,12 +101,21 @@ ActivityCategory = Literal[
                    # records, etc.) never leaves the process.
     'own_app',     # The N.E.K.O / catgirl app itself in foreground.
                    # Tracker treats as "no new window data this tick" —
-                   # window observation is NOT updated, GPU fallback is
-                   # suppressed, dwell timer keeps running on whatever
-                   # the user was doing before opening the catgirl. Avoids
-                   # the recursive feedback where "user is looking at the
-                   # catgirl app" feeds back into the catgirl's chat
-                   # decisions.
+                   # window observation is NOT updated and the previous
+                   # window's dwell timer is FROZEN: state machine
+                   # records ``_own_app_freeze_started_at`` on entry and,
+                   # on the next non-own_app observation, advances
+                   # ``_current_window_started_at`` by the freeze
+                   # duration so dwell only counts non-own-app time.
+                   # GPU fallback gaming is intentionally NOT
+                   # short-circuited during own_app foreground —
+                   # catgirl Live2D/VRM rendering typically lands below
+                   # the gaming threshold, and a high-GPU app the user
+                   # was already running in the background continues to
+                   # be the user's "real activity" worth classifying.
+                   # Avoids the recursive feedback where "user is
+                   # looking at the catgirl app" feeds back into the
+                   # catgirl's chat decisions.
 ]
 
 
@@ -228,9 +237,16 @@ PRIVATE_PROCESS_NAMES: list[str] = [
 # === OWN-APP EXCLUSION (second-highest priority, after private) ===
 #
 # The N.E.K.O / catgirl app itself. When in foreground, the tracker
-# treats this as "no fresh window data" — observation is NOT updated,
-# GPU fallback is suppressed (the app's own GPU usage during model
-# rendering would otherwise look like gaming), dwell timer freezes.
+# treats this as "no fresh window data" — observation is NOT updated
+# and the previous window's dwell timer is FROZEN: state machine
+# records ``_own_app_freeze_started_at`` on entry and on the next
+# non-own_app observation advances ``_current_window_started_at`` by
+# the freeze duration, so a brief glance at the catgirl can't push the
+# previously-foreground app past dwell thresholds (e.g. focused_work's
+# 90s). GPU fallback gaming is intentionally NOT short-circuited
+# during own_app foreground (catgirl Live2D/VRM typically lands below
+# the threshold; a high-GPU app the user was running in the
+# background remains their "real activity" worth classifying).
 # Avoids the recursive feedback where "user is looking at the catgirl"
 # becomes a signal the catgirl uses to decide whether to chat.
 #
@@ -358,7 +374,10 @@ GAME_TITLE_KEYWORDS: list = [
     ('Counter-Strike 2', ['Counter-Strike 2', 'CS2', 'Counter Strike', '反恐精英2', 'カウンターストライク 2', '카운터 스트라이크 2'], 'competitive', 'fps'),
     ('Dota 2', ['Dota 2', 'DOTA2', 'DOTA', '刀塔2', 'ドータ2'], 'competitive', 'moba'),
     ('PUBG: Battlegrounds', ['PUBG', 'PlayerUnknown', '绝地求生', '絕地求生', 'PUBG: バトルグラウンズ', '배틀그라운드'], 'competitive', 'fps'),
-    ('Apex Legends', ['Apex Legends', 'Apex', '英雄', 'エーペックスレジェンズ', '에이펙스 레전드'], 'competitive', 'fps'),
+    # `英雄` was originally an alias here but was too generic — pure-CJK
+    # substring match would hit any title containing the two characters
+    # (e.g. "魔兽世界·英雄之路", news articles, blog posts). Removed.
+    ('Apex Legends', ['Apex Legends', 'Apex', 'エーペックスレジェンズ', '에이펙스 레전드'], 'competitive', 'fps'),
     ('Fortnite', ['Fortnite', '堡垒之夜', '堡壘之夜', 'フォートナイト', '포트나이트'], 'competitive', 'fps'),
     ('Grand Theft Auto V', ['Grand Theft Auto V', 'GTA V', 'GTA5', 'GTAV', '侠盗猎车手V', '俠盜獵車手V', 'グランド・セフト・オート V'], 'varied', 'action'),
     ('Red Dead Redemption 2', ['Red Dead Redemption 2', 'RDR2', '荒野大镖客2', '碧血狂殺2', 'レッド・デッド・リデンプション2', '레드 데드 리뎀션 2'], 'immersive', 'rpg'),
@@ -468,7 +487,10 @@ GAME_TITLE_KEYWORDS: list = [
     ('Don’t Starve Together', ['Don’t Starve', "Don't Starve Together", '饥荒', '飢荒', 'ドント・スターブ'], 'casual', 'sim'),
     ('Phasmophobia', ['Phasmophobia', '恐鬼症'], 'immersive', 'horror'),
     ('Lethal Company', ['Lethal Company', '致命公司'], 'casual', 'horror'),
-    ('REPO', ['R.E.P.O.', 'R.E.P.O', 'REPO'], 'casual', 'horror'),
+    # Bare `REPO` removed — _make_needle word-boundary match would hit
+    # common dev-tool titles like "repo - Visual Studio Code" before the
+    # WORK_TITLE_KEYWORDS table could classify them. Dotted forms only.
+    ('REPO', ['R.E.P.O.', 'R.E.P.O'], 'casual', 'horror'),
     ('Content Warning', ['Content Warning'], 'casual', 'horror'),
     ('Pals', ['Palworld', '幻兽帕鲁', '幻獸帕魯', 'パルワールド', '팰월드'], 'casual', 'action'),
     ('Manor Lords', ['Manor Lords', '庄园领主', '莊園領主']),
@@ -2798,8 +2820,12 @@ def _build_title_table() -> list[tuple[Needle, ClassifyResult]]:
 
     Privacy and own-app come first by design — privacy must short-circuit
     all classification (the tracker bypasses caching downstream), and
-    own-app must short-circuit gaming-by-GPU (catgirl rendering its own
-    Live2D/VRM looks like gaming load otherwise).
+    own-app must surface as a distinct category so the state machine
+    can apply its dwell-freeze book-keeping (record entry time, advance
+    ``_current_window_started_at`` on exit so own-app time doesn't
+    inflate the previous window's dwell). GPU fallback gaming is NOT
+    short-circuited during own-app foreground: the user's real activity
+    (whatever was running in the background) keeps its classification.
     """
     table: list[tuple[Needle, ClassifyResult]] = []
 

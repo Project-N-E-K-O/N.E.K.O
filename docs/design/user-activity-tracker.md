@@ -122,10 +122,11 @@ Defaults are derived from `(state, intensity, genre)` in
 | `gaming + varied` / untagged | 0.0 |
 | Non-gaming states | 0.0 |
 
-User overrides via `activity_preferences.json::skip_probability_overrides`
-take precedence — set `1.0` for "fully silent during this combo" or
-`0.0` to disable. Keys are intensity-only (`competitive`) or
-intensity_genre joined with underscore (`immersive_horror`).
+User overrides via `user_preferences.json`'s
+`__global_conversation__::activity::skip_probability_overrides` take
+precedence — set `1.0` for "fully silent during this combo" or `0.0`
+to disable. Keys are intensity-only (`competitive`) or intensity_genre
+joined with underscore (`immersive_horror`).
 
 The `unfinished_thread` guard means an open AI question still gets its
 follow-up window even at `skip_probability=1.0`. Promise-keeping trumps
@@ -247,14 +248,20 @@ over.
   remain hardcoded in `state_machine.py` as the fallback when an entry
   is missing or invalid (positive numbers only; bad values silently
   dropped).
-* **user_app_overrides** — process-name keyed, lowercased. Patches the
-  classifier result before state derivation. Cannot demote `private` or
-  `own_app` static-DB hits (privacy guarantee).
+* **user_app_overrides** — process-name keyed, lowercased. **Additive
+  only**: fires only when the static DB returned `unknown`. Cannot
+  rewrite stable static classifications (e.g. `Code.exe → work/ide`
+  cannot be flipped to `entertainment` via override). Cannot demote
+  `private` or `own_app` static-DB hits (privacy / catgirl-app
+  guarantee).
 * **user_title_overrides** — title-substring keyed, lowercased. Same
-  rules as app overrides; only fires when static DB returns `unknown`.
-* **user_game_overrides** — canonical-name keyed (case-sensitive).
-  Patches `(intensity, genre)` on top of an existing gaming
-  classification.
+  additive rule as app overrides — fires only when the static DB
+  returned `unknown`.
+* **user_game_overrides** — canonical-name keyed (case-sensitive). The
+  one exception to the additive rule: it patches `(intensity, genre)`
+  on top of an existing gaming classification (doesn't change
+  category/subcategory/canonical, only refines intensity / genre tags
+  within gaming).
 * **skip_probability_overrides** — float in [0, 1] per intensity[_genre]
   combo. Beats default lookups; out-of-range values are clamped.
 

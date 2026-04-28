@@ -922,9 +922,14 @@ class ActivityStateMachine:
         # supplementary context, never gates a state).
         if sys_snap and sys_snap.cpu_avg_30s > 70:
             reasons.append(('high_cpu', {'cpu_percent': int(sys_snap.cpu_avg_30s)}))
+        # Boundary: matches the classifier's ``>=`` at line 809 so a GPU
+        # value sitting exactly on the threshold gets the explanatory
+        # reason whenever it gets the gaming-by-GPU classification.
+        # Otherwise the prompt would see "user is gaming" without the
+        # GPU evidence sentence, which reads inconsistent.
         if (
             sys_snap and sys_snap.gpu_utilization is not None
-            and sys_snap.gpu_utilization > self._gaming_gpu_threshold_percent
+            and sys_snap.gpu_utilization >= self._gaming_gpu_threshold_percent
         ):
             reasons.append(('high_gpu', {'gpu_percent': int(sys_snap.gpu_utilization)}))
 

@@ -180,7 +180,7 @@ class ActivitySnapshot:
     # active, the round is skipped entirely (no LLM call, no source fetch).
     # Default 0 means "always proceed". Defaults are derived from
     # (state, intensity, genre) by the state machine; user overrides via
-    # ``activity_preferences.json::skip_probability_overrides`` can tune
+    # ``user_preferences.json::__global_conversation__::activity::skip_probability_overrides`` can tune
     # them per-combo. Setting 1.0 = fully silent for that combo (user
     # opt-in "don't talk at all during X"); 0.0 = no skip, just rely on
     # propensity.
@@ -406,7 +406,7 @@ def derive_skip_probability(
     """Pick the skip probability for the current activity context.
 
     ``overrides`` is the user's per-combo dict from
-    ``activity_preferences.json::skip_probability_overrides``. Keys are
+    ``user_preferences.json::__global_conversation__::activity::skip_probability_overrides``. Keys are
     string combos like ``'competitive'`` (any genre), ``'immersive_horror'``
     (intensity_genre with underscore), or ``'casual'``. Override values
     in [0, 1] take precedence over defaults.
