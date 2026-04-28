@@ -70,7 +70,7 @@ from utils.api_config_loader import get_free_voices
 from utils.language_utils import normalize_language_code, get_global_language, get_global_language_full
 import threading
 from threading import Thread
-from queue import Queue
+from queue import Queue, Empty
 from uuid import uuid4
 import numpy as np
 import soxr
@@ -1960,43 +1960,53 @@ class LLMSessionManager:
                     timeout = 12.0  # 最多等待12秒
                     _last_tts_log = 0.0
                     while time.time() - start_time < timeout:
-                        try:
-                            # 非阻塞检查队列
-                            if not self.tts_response_queue.empty():
-                                msg = self.tts_response_queue.get_nowait()
-                                # 检查是否是就绪信号
-                                if isinstance(msg, tuple) and len(msg) == 2 and msg[0] == "__ready__":
-                                    tts_ready = msg[1]
-                                    if tts_ready:
-                                        logger.info(f"✅ TTS进程已就绪 (用时: {time.time() - start_time:.2f}秒)")
-                                    else:
-                                        logger.error("❌ TTS进程初始化失败")
-                                    break
-                                else:
-                                    # 不是就绪信号，放回队列
-                                    self.tts_response_queue.put(msg)
-                                    break
-                        except: # noqa
-                            pass
                         # worker 线程已死亡则无需继续等待
                         if not self.tts_thread.is_alive():
-                            # 尝试取出可能的 ready(False) 信号
-                            try:
-                                msg = self.tts_response_queue.get_nowait()
+                            # 抽干此刻队列：__ready__ 用于决定本次等待结果，
+                            # 其他消息（如承载 NO_RETRY 错误码的 __error__）放回队列，
+                            # 让稍后启动的 tts_response_handler 处理，避免错误码丢失。
+                            _requeue: list = []
+                            while True:
+                                try:
+                                    msg = self.tts_response_queue.get_nowait()
+                                except Empty:
+                                    break
                                 if isinstance(msg, tuple) and len(msg) == 2 and msg[0] == "__ready__":
                                     tts_ready = msg[1]
-                            except: # noqa
-                                pass
+                                else:
+                                    _requeue.append(msg)
+                            for _m in _requeue:
+                                self.tts_response_queue.put(_m)
                             if not tts_ready:
                                 logger.error("❌ TTS Worker 线程已退出，无法继续等待")
                             break
-                        # 每约2秒输出一次诊断日志，便于定位卡在哪一阶段
-                        _elapsed = time.time() - start_time
-                        if _elapsed - _last_tts_log >= 2.0:
-                            _last_tts_log = _elapsed
-                            logger.info(f"[语音会话诊断] TTS 就绪等待中... 已等待 {_elapsed:.1f}秒 / {timeout}秒")
-                        # 小睡眠避免忙等
-                        await asyncio.sleep(0.05)
+                        remaining = timeout - (time.time() - start_time)
+                        # 单次阻塞窗口封顶 2 秒，保证 worker 死亡探测与诊断日志能及时触发
+                        poll_window = min(remaining, 2.0)
+                        if poll_window <= 0:
+                            break
+                        try:
+                            msg = await asyncio.to_thread(
+                                self.tts_response_queue.get, True, poll_window
+                            )
+                        except Empty:
+                            # 每约2秒输出一次诊断日志，便于定位卡在哪一阶段
+                            _elapsed = time.time() - start_time
+                            if _elapsed - _last_tts_log >= 2.0:
+                                _last_tts_log = _elapsed
+                                logger.info(f"[语音会话诊断] TTS 就绪等待中... 已等待 {_elapsed:.1f}秒 / {timeout}秒")
+                            continue
+                        if isinstance(msg, tuple) and len(msg) == 2 and msg[0] == "__ready__":
+                            tts_ready = msg[1]
+                            if tts_ready:
+                                logger.info(f"✅ TTS进程已就绪 (用时: {time.time() - start_time:.2f}秒)")
+                            else:
+                                logger.error("❌ TTS进程初始化失败")
+                            break
+                        else:
+                            # 不是就绪信号，放回队列后退出（与旧行为一致）
+                            self.tts_response_queue.put(msg)
+                            break
 
                     if not tts_ready:
                         if time.time() - start_time >= timeout:
