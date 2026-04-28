@@ -336,7 +336,7 @@ def _mark_memory_cache_exception(
 
 
 async def run_sync_connector(
-    message_queue,
+    message_queue: asyncio.Queue,
     lanlan_name,
     sync_server_url=f"ws://127.0.0.1:{MONITOR_SERVER_PORT}",
     config=None,
@@ -399,7 +399,12 @@ async def run_sync_connector(
     }
 
     last_heartbeat_at = 0.0
-    HEARTBEAT_INTERVAL = 10.0  # 主动 heartbeat 节流间隔
+    # 节流后的应用层 heartbeat 间隔。原因不是省 CPU（aiohttp ws_connect(heartbeat=10)
+    # 已经在底层做了 ping/pong），而是控制 send-fail → ws=None → 下一轮 reconnect
+    # 这条链路的检测延迟。1s 在 idle 期足够安静（远低于改造前 50Hz），同时把
+    # 断线检测窗口锁在 ~1s。设太大（比如 10s）会让 idle→burst 切换时第一波消息
+    # 撞到旧 ws 上更长一段时间。
+    HEARTBEAT_INTERVAL = 1.0
     IDLE_TIMEOUT = 10.0  # 没消息时仍每 10s 唤醒一次 ws 检查/重连
 
     try:
@@ -948,12 +953,18 @@ async def run_sync_connector(
             _safe_close(sync_session), _safe_close(binary_session), _safe_close(bullet_session),
             return_exceptions=True,
         )
-        for rdr in (sync_reader, binary_reader, bullet_reader):
-            if rdr is not None:
-                try:
-                    rdr.cancel()
-                except Exception:
-                    pass
+        # cancel reader task 后必须 await，否则 task 在 loop 关闭时还 pending
+        # 会触发 "Task was destroyed but it is pending!" 告警。keep_reader 内部
+        # 已经处理 CancelledError → break，所以 gather(return_exceptions=True)
+        # 会安静地收掉 cancel 副作用。
+        readers = [r for r in (sync_reader, binary_reader, bullet_reader) if r is not None]
+        for rdr in readers:
+            try:
+                rdr.cancel()
+            except Exception:
+                pass
+        if readers:
+            await asyncio.gather(*readers, return_exceptions=True)
         # 注意：不在这里调用 aclose_internal_http_client_current_loop()。
         # 旧版子进程/独立线程拥有自己的 event loop，其 http client 也是 per-loop
         # 缓存的，退出时需要 close。现在合并到主 loop，client 由主代码共享，

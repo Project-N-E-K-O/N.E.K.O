@@ -744,8 +744,9 @@ def test_main_server_resets_sync_shutdown_events_after_startup_rollback():
     }
 
     with patch.object(main_server, "role_state", role_state):
-        # 不抛异常即视为通过；旧版会清 threading.Event，新版无状态可清
-        main_server._reset_sync_connector_shutdown_events()
+        # 不抛异常即视为通过；旧版会清 threading.Event，新版无状态可清。
+        # 显式断言返回值为 None，未来若改成有副作用返回时能更早暴露。
+        assert main_server._reset_sync_connector_shutdown_events() is None
 
 
 @pytest.mark.unit

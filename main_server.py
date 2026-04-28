@@ -337,8 +337,17 @@ class RoleState:
       websocket_router / _init_character_resources 后续赋值。
 
     历史字段：``sync_shutdown_event: ThreadEvent`` 和 ``sync_process: Thread``
-    在 cross_server 合并到主 event loop 后已删除（不再起独立线程）。生命周期
-    改由 ``sync_task: asyncio.Task`` 管理，shutdown 走 ``task.cancel()``。
+    在 cross_server 合并到主 event loop 后语义上已删除（不再起独立线程）。
+    生命周期改由 ``sync_task: asyncio.Task`` 管理，shutdown 走 ``task.cancel()``。
+
+    但 ``main_routers/shared_state.py`` 的 ``_RoleStateFieldView`` 仍为
+    ``sync_shutdown_event`` / ``sync_process`` 暴露 dict-like 视图（``get_sync_shutdown_event()``
+    / ``get_sync_process()`` 公共 router API）。视图的 ``__getitem__`` 用
+    ``getattr(rs, field)``（不带 default），如果字段不存在会 ``AttributeError``。
+    保留这两个 ``Optional[Any] = None`` 占位字段维护 shim 的"永远空字典"语义：
+    ``__contains__`` 看到 None 返回 False、``__getitem__`` 走 ``raise KeyError``，
+    所有调用者得到一致的空状态而不是崩溃。这两个字段不再被赋值，未来如果
+    确认外部确无依赖再清。
     """
     sync_message_queue: _SyncMessageQueue
     websocket_lock: asyncio.Lock
@@ -347,6 +356,9 @@ class RoleState:
     # 用 Any 而非 core.LLMSessionManager：避免 dataclass 运行时求值 annotation
     # 时踩到 forward-ref / 循环引用边界
     session_manager: Optional[Any] = None
+    # 仅为 main_routers/shared_state.py 的 legacy field-view 提供占位；永远 None
+    sync_shutdown_event: Optional[Any] = None
+    sync_process: Optional[Any] = None
 
 
 # 角色名 -> RoleState 的主存储；所有 per-k 同步资源都通过它访问
@@ -859,8 +871,16 @@ async def _init_character_resources(k: str, is_new_character: bool):
                         # cross_server 现在和我们在同一个主 loop 上，回调
                         # 也是从主 loop 同步调用的——直接 create_task 即可，
                         # 不再需要 run_coroutine_threadsafe。
+                        # done_callback 消化 task 的 exception，避免 ws 断开时
+                        # asyncio 输出 "Task exception was never retrieved" 噪音；
+                        # status 是 best-effort 降级路径，丢一条不影响主逻辑。
+                        def _swallow_status_send_exc(_t):
+                            exc = _t.exception()
+                            if exc is not None:
+                                logger.debug("status 回调 ws.send_text 失败（已忽略）: %s", exc)
                         try:
-                            asyncio.create_task(ws.send_text(data))
+                            _t = asyncio.create_task(ws.send_text(data))
+                            _t.add_done_callback(_swallow_status_send_exc)
                         except RuntimeError:
                             # 极端情况：当前没有 running loop（理论上不会发生
                             # 在 cross_server 调用路径上，但兜底）。回退到旧
