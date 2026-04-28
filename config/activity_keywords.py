@@ -142,7 +142,7 @@ BROWSER_PROCESS_NAMES: tuple[str, ...] = (
 # ====================================================================
 
 
-# === GAMES (294 titles / 226 process names / 22 launchers) ===
+# === GAMES (294 titles / 218 process names / 41 launcher processes) ===
 
 # (canonical_name, [aliases including all known localized titles])
 # Aliases match against window-title substrings, case-insensitive.
@@ -769,7 +769,7 @@ GAME_LAUNCHER_PROCESS_NAMES: list[str] = [
     'SquareEnixBootstrapper.exe',
 ]
 
-# === WORK / PRODUCTIVITY (257 titles / 272 processes / 147 domains) ===
+# === WORK / PRODUCTIVITY (257 titles / 265 processes / 147 domains) ===
 
 # (canonical_name, [title aliases], category)
 WORK_TITLE_KEYWORDS: list[tuple[str, list[str], str]] = [
@@ -1524,7 +1524,7 @@ WORK_BROWSER_DOMAIN_KEYWORDS: list[tuple[str, str]] = [
     ('codespaces', 'ide_web'),  # GitHub Codespaces
 ]
 
-# === ENTERTAINMENT (282 titles / 56 processes / 267 domains) ===
+# === ENTERTAINMENT (282 titles / 48 processes / 267 domains) ===
 
 # Title keywords (web tabs + native clients).
 # Format: (display_name, [keyword variants], subcategory)

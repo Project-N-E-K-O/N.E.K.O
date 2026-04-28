@@ -118,9 +118,10 @@ main_logic/activity/
                            20s activity_guess background loop
 
 config/
-└── activity_keywords.py   Keyword library (~2700 lines): 943 title rows,
-                           692 process names, 64 launchers, 518 browser domains,
-                           plus classifier helpers
+└── activity_keywords.py   Keyword library (~2700 lines): 965 title rows,
+                           627 process names, 41 launcher processes, 518
+                           browser domains, plus classifier helpers and an
+                           import-time dedup assertion
 ```
 
 Dataflow:
@@ -352,6 +353,29 @@ Always supply localised aliases for the title (EN / 简 / 繁 / JP / KR
 where applicable). Process names should only be added when verified —
 fabricated executables degrade matching quality. When unsure, keep
 just the title row.
+
+**Process-name dedup invariant.** A given executable name must appear
+in exactly one of the five process pools (`GAME_PROCESS_NAMES`,
+`GAME_LAUNCHER_PROCESS_NAMES`, `WORK_PROCESS_NAMES`,
+`COMMUNICATION_PROCESS_NAMES`, `ENTERTAINMENT_PROCESS_NAMES`), and
+only once within that pool (case-insensitive). Two reasons:
+
+* `_build_process_table` iterates the pools in priority order
+  (game > launcher > work > comm > ent), so a launcher accidentally
+  duplicated into `GAME_PROCESS_NAMES` gets the worse classification
+  and bypasses the state machine's intentional carve-out at
+  `state_machine.py:506` ("browsing the Steam store ≠ playing").
+* `_make_needle` lower-cases everything, so listing both `MATLAB.exe`
+  and `matlab.exe` just bloats the lookup table.
+
+`_assert_no_process_dups()` runs at module import and fails loudly on
+both intra-pool and cross-pool duplicates. Bad merges surface in CI
+rather than silently mis-classifying activity.
+
+When the same exe name is genuinely shared by two products
+(`Origin.exe` is both EA's launcher and OriginLab's plotting tool),
+pick the wider-deployment side and rely on a more-specific name
+(`Origin64.exe`) for the niche side.
 
 To add a new work app subcategory: pick from the existing set
 (`ide`, `note`, `office`, `pdf`, `design`, `3d_cad`, `gamedev`,
