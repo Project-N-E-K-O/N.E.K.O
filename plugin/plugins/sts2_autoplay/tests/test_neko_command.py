@@ -10,8 +10,10 @@ from typing import Any
 import pytest
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-STS2_PACKAGE_DIR = PROJECT_ROOT / "plugin" / "plugins" / "sts2_autoplay"
+PROJECT_ROOT = Path(__file__).resolve().parents[4]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+STS2_PACKAGE_DIR = Path(__file__).resolve().parents[1]
 
 
 def load_service_class():
@@ -75,24 +77,29 @@ class CommandService(STS2AutoplayService):
         self._autoplay_state = "running"
         return {"status": "running", "message": "尖塔半自动任务已启动"}
 
-    async def pause_autoplay(self) -> dict[str, Any]:
-        self.called.append(("pause_autoplay", None))
+    async def pause_autoplay(self, reason: str = "用户请求暂停") -> dict[str, Any]:
+        self.called.append(("pause_autoplay", reason))
         self._autoplay_state = "paused"
-        return {"status": "paused", "message": "尖塔已暂停"}
+        return {"status": "paused", "message": "尖塔已暂停", "reason": reason}
 
     async def resume_autoplay(self) -> dict[str, Any]:
         self.called.append(("resume_autoplay", None))
         self._autoplay_state = "running"
         return {"status": "running", "message": "尖塔已恢复"}
 
-    async def stop_autoplay(self) -> dict[str, Any]:
-        self.called.append(("stop_autoplay", None))
+    async def stop_autoplay(self, reason: str = "用户请求停止") -> dict[str, Any]:
+        self.called.append(("stop_autoplay", reason))
         self._autoplay_state = "idle"
-        return {"status": "idle", "message": "尖塔已停止"}
+        return {"status": "idle", "message": "尖塔已停止", "reason": reason}
 
     async def send_neko_guidance(self, guidance: dict[str, Any]) -> dict[str, Any]:
         self.called.append(("send_neko_guidance", guidance))
         return {"status": "ok", "message": "猫娘指导已入队"}
+
+
+    async def answer_autoplay_question_by_neko(self, question: str) -> dict[str, Any]:
+        self.called.append(("answer_autoplay_question_by_neko", question))
+        return {"status": "answered", "summary": "我在根据局面解释打法", "executed": False, "observation_only": True}
 
 
 @pytest.fixture()
@@ -177,7 +184,17 @@ def test_neko_command_pause_has_priority(service: CommandService) -> None:
     result = run(service.neko_command("暂停一下，先防"))
     assert result["intent"] == "pause"
     assert result["executed"] is False
-    assert service.called == [("pause_autoplay", None)]
+    assert service.called == [("pause_autoplay", "用户请求暂停")]
+
+
+@pytest.mark.unit
+def test_neko_command_autoplay_question_while_running_answers_from_game_context(service: CommandService) -> None:
+    service._autoplay_state = "running"
+    result = run(service.neko_command("这打的也不怎么样啊"))
+    assert result["intent"] == "autoplay_question"
+    assert result["executed"] is False
+    assert result["observation_only"] is True
+    assert service.called == [("answer_autoplay_question_by_neko", "这打的也不怎么样啊")]
 
 
 @pytest.mark.unit

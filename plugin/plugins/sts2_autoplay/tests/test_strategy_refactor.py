@@ -7,8 +7,8 @@ from typing import Any
 import pytest
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-STS2_DIR = PROJECT_ROOT / "plugin" / "plugins" / "sts2_autoplay"
+PROJECT_ROOT = Path(__file__).resolve().parents[4]
+STS2_DIR = Path(__file__).resolve().parents[1]
 STRATEGY_NAMES = ["defect", "ironclad", "silent_hunter", "necrobinder", "regent"]
 
 

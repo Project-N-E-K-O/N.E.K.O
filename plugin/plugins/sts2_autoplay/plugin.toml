@@ -7,7 +7,7 @@ type = "plugin"
 entry = "plugin.plugins.sts2_autoplay:STS2AutoplayPlugin"
 
 [plugin.author]
-name = "ZhaiJiu"
+name = "ZhaiJiu、N.E.K.O Team"
 
 [plugin.sdk]
 recommended = ">=0.1.0,<0.2.0"

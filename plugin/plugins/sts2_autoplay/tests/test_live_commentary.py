@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import sys
 import time
@@ -10,8 +11,10 @@ from typing import Any
 import pytest
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-STS2_DIR = PROJECT_ROOT / "plugin" / "plugins" / "sts2_autoplay"
+PROJECT_ROOT = Path(__file__).resolve().parents[4]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+STS2_DIR = Path(__file__).resolve().parents[1]
 
 
 def load_service_class():
@@ -180,3 +183,44 @@ def test_live_commentary_event_scenes_for_combat_end_key_relic_and_route_chosen(
     route = build_commentary(service, report=base_report(screen="map", in_combat=False, floor=7), action="choose_map_node")
     assert route["scene"] == "route_chosen"
     assert "路线" in route["text"]
+
+
+@pytest.mark.unit
+def test_autonomous_low_hp_pause_notifies_main_program() -> None:
+    notifications: list[dict[str, Any]] = []
+
+    async def notifier(**kwargs: Any) -> None:
+        notifications.append(kwargs)
+
+    service = STS2AutoplayService(DummyLogger(), lambda status: None, frontend_notifier=notifier)
+    service._cfg = {"neko_auto_low_hp_threshold": 0.3}
+    service._autoplay_state = "running"
+    service._snapshot = {
+        "screen": "combat",
+        "floor": 3,
+        "act": 1,
+        "raw_state": {
+            "combat": {
+                "turn": 2,
+                "player": {"hp": 10, "max_hp": 50},
+            }
+        },
+    }
+
+    action = service._assess_neko_autonomous_action(prev_screen="combat")
+    assert action == {"action": "pause", "reason": "low_hp", "hp_ratio": 0.2}
+
+    asyncio.run(service._execute_autonomous_action(action))
+
+    assert service._paused is True
+    assert service._autoplay_state == "paused"
+    assert len(notifications) == 1
+    notification = notifications[0]
+    assert notification["message_type"] == "proactive_notification"
+    assert notification["priority"] == 9
+    assert "血量过低" in notification["content"]
+    assert "需要用户确认" in notification["content"]
+    assert notification["metadata"]["event_type"] == "neko_autonomous_action"
+    assert notification["metadata"]["reason"] == "low_hp"
+    assert notification["metadata"]["reason_label"] == "血量过低"
+    assert notification["metadata"]["requires_user_attention"] is True
