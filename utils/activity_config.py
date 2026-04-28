@@ -388,6 +388,14 @@ def _parse_app_overrides(raw: Any) -> dict[str, _AppOverride]:
             sub = None
         if canon is not None and not isinstance(canon, str):
             canon = None
+        # Fall back to the user's override key when no explicit canonical
+        # was supplied, matching the docstring contract on _AppOverride.
+        # This keeps the canonical stable across the loader → state machine
+        # → snapshot path: downstream displays the user's intended
+        # identifier rather than the raw foreground process basename or
+        # full window title.
+        if canon is None:
+            canon = k
         out[k.lower()] = _AppOverride(
             category=cat,
             subcategory=sub,

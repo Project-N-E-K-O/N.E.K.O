@@ -431,6 +431,17 @@ class ActivityStateMachine:
         # detects the 5-minute window has expired.
         self._unfinished_thread: dict | None = None
 
+        # Own-app dwell freeze. When the catgirl app is in the foreground,
+        # ``update_window`` early-returns so the previous app stays the
+        # active window — but the previous app's dwell timer would
+        # otherwise keep ticking, so a brief glance at the catgirl could
+        # artificially push the prior window past dwell thresholds (e.g.
+        # focused_work's 90s). On entering own_app we record the freeze
+        # start; on the next non-own-app observation we advance
+        # ``_current_window_started_at`` by the freeze duration, so dwell
+        # only counts time the user spent on non-own-app windows.
+        self._own_app_freeze_started_at: float | None = None
+
     # ── update inputs ────────────────────────────────────────────
 
     def update_window(self, obs: WindowObservation | None, *, now: float | None = None) -> None:
@@ -457,7 +468,22 @@ class ActivityStateMachine:
         ts = now if now is not None else time.time()
 
         if obs.category == 'own_app':
-            return  # transparent — no window update, no history entry
+            # Transparent: previous window stays the active observation.
+            # Record the freeze entry time so the next non-own-app
+            # observation can subtract own-app time from dwell.
+            if self._own_app_freeze_started_at is None:
+                self._own_app_freeze_started_at = ts
+            return
+
+        # Resume from own-app freeze: advance the dwell start by the
+        # time spent in own_app so the previous (or new) window's dwell
+        # only counts non-own-app time. Done unconditionally on the
+        # first non-own-app observation following an own_app stretch —
+        # if this observation is a category change, the assignment to
+        # _current_window_started_at below will overwrite it (harmless).
+        if self._own_app_freeze_started_at is not None:
+            self._current_window_started_at += (ts - self._own_app_freeze_started_at)
+            self._own_app_freeze_started_at = None
 
         if obs.category == 'private':
             # Sanitize: keep category + canonical (user/AI sees just
@@ -475,11 +501,20 @@ class ActivityStateMachine:
             )
 
         prev = self._current_window
+        # Include intensity / genre in the equivalence check: when a user
+        # hot-reloads ``user_game_overrides`` while the same game stays
+        # foreground, the new observation has identical
+        # category/subcategory/canonical but different intensity/genre.
+        # Without these in the check, the collapse logic treats it as
+        # "same window" → propensity / skip_probability / tone keep
+        # using the old tags until the user actually switches windows.
         same = (
             prev is not None
             and prev.category == obs.category
             and prev.subcategory == obs.subcategory
             and (prev.canonical or '') == (obs.canonical or '')
+            and prev.intensity == obs.intensity
+            and prev.genre == obs.genre
         )
         if not same:
             self._current_window = obs
@@ -533,14 +568,17 @@ class ActivityStateMachine:
 
         Called by the proactive chat path after a successful emission
         when the snapshot's ``unfinished_thread`` was active. Once the
-        counter reaches ``UNFINISHED_THREAD_MAX_FOLLOWUPS``, subsequent
-        snapshots will hide the thread from the prompt — so the AI gets
-        at most that many follow-up attempts without a user reply.
+        counter reaches ``self._unfinished_thread_max_followups``,
+        subsequent snapshots will hide the thread from the prompt — so
+        the AI gets at most that many follow-up attempts without a user
+        reply. Honors the per-instance threshold loaded from
+        ``ActivityPreferences.thresholds`` rather than the module
+        constant, so user tuning actually takes effect here.
         """
         if self._unfinished_thread is None:
             return
         self._unfinished_thread['follow_up_count'] += 1
-        if self._unfinished_thread['follow_up_count'] >= UNFINISHED_THREAD_MAX_FOLLOWUPS:
+        if self._unfinished_thread['follow_up_count'] >= self._unfinished_thread_max_followups:
             # Cap reached — drop entirely so we don't keep allocating
             # state for a thread that can no longer be surfaced.
             self._unfinished_thread = None

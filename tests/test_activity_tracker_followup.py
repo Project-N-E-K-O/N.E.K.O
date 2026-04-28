@@ -504,3 +504,164 @@ def test_tracker_picks_up_fresh_prefs_via_refresh_hook():
         assert obs2.canonical == 'SomeUnknownApp'
     finally:
         _cache.prefs = original
+
+
+# ── update_window collapse: intensity/genre must invalidate (CR Major) ─
+
+
+def test_update_window_collapses_on_canonical_but_invalidates_on_intensity_change():
+    """Hot-reloaded ``user_game_overrides`` must propagate immediately.
+
+    When the user is in a tagged game (e.g. League of Legends, default
+    competitive moba) and edits ``user_game_overrides`` to flip it to
+    ``casual``, the next observation has identical
+    category/subcategory/canonical but a NEW intensity. The collapse
+    logic must treat this as a window state change so propensity /
+    skip_probability / tone re-derive against the new intensity.
+    """
+    prefs = ActivityPreferences()
+    sm = ActivityStateMachine(prefs=prefs)
+
+    sn = _sys_snap(title='League of Legends', process='LeagueClient.exe')
+    sm.update_system(sn)
+    sm.update_window(observation_from_system(sn, prefs))
+    snap1 = sm.get_snapshot()
+    assert snap1.game_intensity == 'competitive'
+    assert snap1.tone == 'terse'
+
+    # Hot-reload: user override flips LoL to casual
+    new_prefs = ActivityPreferences(
+        user_game_overrides={
+            'League of Legends': _GameOverride(intensity='casual'),
+        },
+    )
+    sm._prefs = new_prefs
+    sm.update_window(observation_from_system(sn, new_prefs))
+    snap2 = sm.get_snapshot()
+    assert snap2.game_intensity == 'casual', (
+        'collapse logic must include intensity in same-check; '
+        f'got {snap2.game_intensity}'
+    )
+    assert snap2.propensity == 'open'   # casual unlocks open propensity
+    assert snap2.tone == 'playful'
+
+
+# ── unfinished_thread max_followups respects threshold (CR Major) ─────
+
+
+def test_mark_unfinished_thread_used_honors_threshold_override():
+    """When prefs set max_followups=3, the cap retires the thread on the
+    third call (not the second — the module constant default)."""
+    prefs = ActivityPreferences(
+        thresholds={'unfinished_thread_max_followups': 3.0},
+    )
+    sm = ActivityStateMachine(prefs=prefs)
+    # Trip the question heuristic so an unfinished thread opens
+    sm.update_ai_message(text='主人，你今天准备做什么呢?')
+    assert sm._unfinished_thread is not None
+    assert sm._unfinished_thread['follow_up_count'] == 0
+
+    sm.mark_unfinished_thread_used()
+    assert sm._unfinished_thread is not None
+    assert sm._unfinished_thread['follow_up_count'] == 1
+
+    sm.mark_unfinished_thread_used()
+    assert sm._unfinished_thread is not None  # still alive at 2/3
+    assert sm._unfinished_thread['follow_up_count'] == 2
+
+    sm.mark_unfinished_thread_used()
+    # Hits the threshold (3) — record retired
+    assert sm._unfinished_thread is None, (
+        'threshold override 3 must retire on the 3rd usage, not 2 (module constant)'
+    )
+
+
+# ── own_app dwell freeze (CR Major) ───────────────────────────────────
+
+
+def test_own_app_freezes_dwell_timer_on_previous_window():
+    """Brief glance at the catgirl app must NOT artificially extend
+    the previous window's dwell.
+
+    Scenario: user is in VS Code for 60s (below 90s focused_work
+    threshold). They glance at N.E.K.O for 40s, then return to VS Code.
+    Without the dwell freeze, total elapsed at return is 100s, which
+    would trip focused_work even though actual VS Code time is only
+    60s + ε. With the freeze, dwell-on-VS-Code at return ≈ 60s, still
+    below threshold (correct).
+    """
+    prefs = ActivityPreferences()
+    sm = ActivityStateMachine(prefs=prefs)
+
+    base = time.time()
+
+    # t=0: VS Code first observation
+    work = _sys_snap(title='proactive_chat.py - VS Code', process='Code.exe', ts=base)
+    sm.update_system(work)
+    sm.update_window(observation_from_system(work, prefs), now=base)
+    sm.update_user_message(now=base)
+
+    # t=80: still in VS Code, dwell ≈ 80s (below 90s threshold)
+    sm.update_user_message(now=base + 80)
+    snap_pre = sm.get_snapshot(now=base + 80)
+    assert snap_pre.state in ('idle', 'focused_work')  # boundary case
+
+    # t=85-130: 45s detour to N.E.K.O — own_app foreground
+    own = _sys_snap(title='Project N.E.K.O', process='Xiao8.exe', ts=base + 85)
+    sm.update_system(own)
+    sm.update_window(observation_from_system(own, prefs), now=base + 85)
+    # Multiple polls during own_app stretch (only first matters for freeze)
+    sm.update_window(observation_from_system(own, prefs), now=base + 100)
+    sm.update_window(observation_from_system(own, prefs), now=base + 120)
+
+    # t=130: return to VS Code. Dwell-on-Code should be ~85s (= 80 + ε
+    # before detour, then resumed), NOT 130s. Since 85 < 90, focused_work
+    # must NOT have tripped from the brief detour alone.
+    work_resume = _sys_snap(title='proactive_chat.py - VS Code', process='Code.exe', ts=base + 130)
+    sm.update_system(work_resume)
+    sm.update_window(observation_from_system(work_resume, prefs), now=base + 130)
+    sm.update_user_message(now=base + 130)
+    snap_post = sm.get_snapshot(now=base + 132)
+
+    # Dwell should be roughly equivalent to time spent in VS Code only
+    # (80 + 2 ≈ 82s), not full elapsed (132s). Threshold 90 not yet hit.
+    dwell = base + 132 - sm._current_window_started_at
+    assert dwell < 90, (
+        f'dwell freeze must subtract own_app time; got {dwell:.1f}s '
+        f'(would be ~132 without the freeze)'
+    )
+
+
+# ── canonical fallback in loader (CR Minor) ───────────────────────────
+
+
+def test_loader_canonical_falls_back_to_override_key(tmp_path):
+    """Doc says canonical defaults to override key when missing — verify."""
+    from utils.activity_config import (
+        _GLOBAL_CONVERSATION_KEY, _load_from_file,
+    )
+    pref_file = tmp_path / 'user_preferences.json'
+    import json
+    pref_file.write_text(
+        json.dumps([{
+            'model_path': _GLOBAL_CONVERSATION_KEY,
+            'activity': {
+                'user_app_overrides': {
+                    'MyCorpApp.exe': {'category': 'work'},  # no canonical
+                },
+                'user_title_overrides': {
+                    'MyDashboard': {'category': 'work'},     # no canonical
+                },
+            },
+        }]),
+        encoding='utf-8',
+    )
+    prefs = _load_from_file(str(pref_file))
+    assert prefs is not None
+    # App override key gets lowercased for dict storage; canonical
+    # preserves the original-case key value.
+    assert 'mycorpapp.exe' in prefs.user_app_overrides
+    assert prefs.user_app_overrides['mycorpapp.exe'].canonical == 'MyCorpApp.exe'
+    # Title override falls back the same way
+    assert 'mydashboard' in prefs.user_title_overrides
+    assert prefs.user_title_overrides['mydashboard'].canonical == 'MyDashboard'
