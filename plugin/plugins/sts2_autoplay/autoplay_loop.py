@@ -11,7 +11,7 @@ from typing import Any, Awaitable, Dict, Optional
 class AutoplayLoopMixin:
     async def start_autoplay(self, objective: Optional[str] = None, stop_condition: str = "current_floor") -> Dict[str, Any]:
         if self._autoplay_task and not self._autoplay_task.done():
-            return {"status": "running", "message": "尖塔半自动任务已在运行", "task": self._semi_auto_task}
+            return {"status": "running", "message": "尖塔半自动任务已在运行", "task": self._semi_auto_task, "executed": False}
 
         if objective or bool(self._cfg.get("semi_auto_autoplay", True)):
             self._semi_auto_task = self._build_semi_auto_task(objective=objective, stop_condition=stop_condition)
@@ -21,7 +21,7 @@ class AutoplayLoopMixin:
         self._autoplay_state = "running"
         self._autoplay_task = asyncio.create_task(self._autoplay_loop())
         self._emit_status()
-        return {"status": "running", "message": "尖塔半自动任务已启动", "task": self._semi_auto_task}
+        return {"status": "running", "message": "尖塔半自动任务已启动", "task": self._semi_auto_task, "executed": True}
 
     async def pause_autoplay(self, reason: str = "用户请求暂停") -> Dict[str, Any]:
         task = dict(self._semi_auto_task) if isinstance(self._semi_auto_task, dict) else None
@@ -69,7 +69,7 @@ class AutoplayLoopMixin:
             return {"status": "error", "message": "guidance 必须是字典"}
         if not guidance.get("content"):
             return {"status": "error", "message": "guidance.content 不能为空"}
-        max_queue = int(self._cfg.get("neko_guidance_max_queue", 50) or 50)
+        max_queue = max(1, int(self._cfg.get("neko_guidance_max_queue", 50) or 50))
         step_value = guidance.get("step")
         try:
             guidance_step = self._step_count if step_value is None else int(step_value)
@@ -89,7 +89,12 @@ class AutoplayLoopMixin:
         while not self._shutdown:
             try:
                 await self.refresh_state()
+                recovered = self._server_state != "connected" or bool(self._last_error)
                 self._consecutive_errors = 0
+                self._server_state = "connected"
+                self._last_error = ""
+                if recovered:
+                    self._emit_status()
             except Exception as exc:
                 self._consecutive_errors += 1
                 self._server_state = "degraded" if self._consecutive_errors < int(self._cfg.get("max_consecutive_errors", 3) or 3) else "disconnected"
@@ -159,7 +164,10 @@ class AutoplayLoopMixin:
         if stop_condition in {"manual", "none"}:
             return False
         if stop_condition in {"combat", "current_combat"}:
-            return bool(task.get("start_screen") == "combat" and not in_combat and screen != "combat")
+            if in_combat or screen == "combat":
+                task["has_entered_combat"] = True
+                return False
+            return bool(task.get("has_entered_combat") and screen != "combat")
         if current_floor > start_floor:
             return True
         if task.get("start_screen") == "combat" and not in_combat and screen in {"reward", "map", "event", "shop", "rest", "treasure"}:

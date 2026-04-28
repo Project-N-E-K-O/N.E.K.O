@@ -130,7 +130,7 @@ class GameContextAnalyzer:
             str(raw_state.get("screen") or "").strip().lower(),
             str(raw_state.get("screen_type") or "").strip().lower(),
         }
-        if any(keyword in candidate for candidate in text_candidates for keyword in {"char", "character", "player select", "select"} if candidate):
+        if any(keyword in candidate for candidate in text_candidates for keyword in {"char", "character", "player select", "character select", "player_select", "character_select"} if candidate):
             return True
         for action in context.get("actions", []):
             if not isinstance(action, dict):
