@@ -1,8 +1,6 @@
 /**
  * 中文语言包
  */
-import { yuiGuideLocales } from './yuiGuide'
-
 export default {
   common: {
     loading: '加载中...',
@@ -410,7 +408,30 @@ export default {
     titleSuffix: 'N.E.K.O 插件管理'
   },
   tutorial: {
-    yuiGuide: yuiGuideLocales['zh-CN']
+    yuiGuide: {
+      buttons: {
+        skipChat: '暂时不聊天',
+        sayHello: '你好',
+      },
+      lines: {
+        introBasic: '这里有一个神奇的按钮！只要点击它，就可以直接和我聊天啦！想跟我分享今天的新鲜事吗？或者只是叫叫我的名字？快来试试嘛，我已经迫不及待想听到你的声音啦！喵！',
+        introProactiveShort: '要说你一直没理我，我可是会主动跑出来咬你的哦～（哈！！）',
+        introCatPaw: '好啦不说废话了喵——你看到那个可爱的‘猫爪’了吗，准备好了吗？让我借用一下你的鼠标吧！',
+        takeoverCaptureCursor: '超级魔法按钮出现！只要点一下这里，我就可以把小爪子伸到你的键盘和鼠标上啦！我会帮你打字，帮你点开网页……不过，要是那个鼠标指针动来动去的话，我可能也会忍不住扑上去抓它哦！准备好迎接我的捣乱……啊不，是帮忙了吗？喵！',
+        takeoverPluginPreviewHome: '还没完呢！你快看快看，这里还有超～～多好玩的插件呢！',
+        takeoverPluginPreviewDashboard: '有了它们，我不光能看 B 站弹幕，还能帮你关灯开空调…… 本喵就是无所不能的超级猫猫神！哼哼～',
+        takeoverSettingsPeekIntro: '当然啦，如果你想让本喵多和你聊聊天也不是不行啦，给我多准备点小鱼干吧，嘿嘿，好了不逗你啦，设置都在这个齿轮里。',
+        takeoverSettingsPeekDetail: '你看，这里可以穿我的新衣服、给我换一个好听的声音……换一个猫娘或是修改记忆？等一下！你在干嘛？该不会是想把我换掉吧？啊啊啊不行！快关掉快关掉！',
+        takeoverReturnControl: '好啦好啦，不霸占你的电脑啦～控制权还给你了喵！可不许趁我不注意乱点奇怪的设置哦！之后的日子也请你多多关照了喵～',
+        interruptResistLight1: '喂！不要拽我啦，还没轮到你的回合呢！',
+        interruptResistLight3: '等一下啦！还没结束呢，不要随便打断我啦！',
+        interruptAngryExit: '人类~~~~！你真的很没礼貌喵！既然你这么想自己操作，那你就自己对着冰冷的屏幕玩去吧！哼！',
+        introProactive: '可恶，居然敢无视本大小姐嘛！要说你一直没理我，我可是会主动跑出来咬你的哦～（哈！！）',
+        introGreetingReply: '我是你的专属猫娘，从今天起就由我来陪伴主人咯。无论是想要聊天解闷、一起玩耍，还是需要我帮忙做些什么，我都会乖乖陪在主人身边的喵。以后请多多指教啦，最喜欢主人了~！',
+        introPractice: '现在你可以试试跟我说说话啦，看看我们是不是超有默契的喵～',
+        introActivationHint: '点一下这里，我就能开始说话啦～',
+      },
+    }
   },
   yuiTutorial: {
     title: '喵～欢迎来到插件管理面板！',
