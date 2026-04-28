@@ -1113,7 +1113,7 @@ Conversation history:
 {music_section}
 {meme_section}
 
-======Below is the decision rule for proactively addressing {master_name}======
+======以下为向{master_name}进行搭话的决策方式======
 
 ★ When the activity state lists an "unfinished thread", you may continue it regardless of the propensity.
 
@@ -1131,7 +1131,7 @@ Additional rules:
 - Style: stay in character, 2-3 sentences max, no reasoning text.
 {source_instruction}{music_instruction}{meme_instruction}
 
-======End of decision rule for proactively addressing {master_name}======
+======以上为向{master_name}进行搭话的决策方式======
 
 {output_format_section}"""
 
@@ -1152,7 +1152,7 @@ proactive_generate_ja = """あなたのキャラ設定：
 {music_section}
 {meme_section}
 
-======以下は{master_name}への話しかけ判断の方法======
+======以下为向{master_name}进行搭话的决策方式======
 
 ★ 上の活動状態に「未完話題」がある場合、傾向の制限を無視して継続してよい。
 
@@ -1170,7 +1170,7 @@ proactive_generate_ja = """あなたのキャラ設定：
 - スタイル：キャラに合わせて、2〜3文、推論は書かない。
 {source_instruction}{music_instruction}{meme_instruction}
 
-======以上が{master_name}への話しかけ判断の方法======
+======以上为向{master_name}进行搭话的决策方式======
 
 {output_format_section}"""
 
@@ -1191,7 +1191,7 @@ proactive_generate_ko = """당신의 캐릭터 설정:
 {music_section}
 {meme_section}
 
-======아래는 {master_name}에게 말 걸기 판단 방식======
+======以下为向{master_name}进行搭话的决策方式======
 
 ★ 활동 상태에 "미완 화제"가 있다면 성향 제한과 무관하게 이어가기 가능.
 
@@ -1209,7 +1209,7 @@ proactive_generate_ko = """당신의 캐릭터 설정:
 - 스타일: 캐릭터에 맞게, 2-3문장, 추론 생략.
 {source_instruction}{music_instruction}{meme_instruction}
 
-======위가 {master_name}에게 말 걸기 판단 방식======
+======以上为向{master_name}进行搭话的决策方式======
 
 {output_format_section}"""
 
@@ -1230,7 +1230,7 @@ proactive_generate_ru = """Ваша роль:
 {music_section}
 {meme_section}
 
-======Ниже — порядок решения об обращении к {master_name}======
+======以下为向{master_name}进行搭话的决策方式======
 
 ★ Если в активности есть "незавершённая нить", разрешено продолжать её вне зависимости от настроя.
 
@@ -1248,7 +1248,7 @@ proactive_generate_ru = """Ваша роль:
 - Стиль: в образе, 2-3 предложения, без рассуждений.
 {source_instruction}{music_instruction}{meme_instruction}
 
-======Конец порядка решения об обращении к {master_name}======
+======以上为向{master_name}进行搭话的决策方式======
 
 {output_format_section}"""
 
@@ -1963,11 +1963,11 @@ def get_proactive_format_sections(has_screen: bool, has_web: bool, has_music: bo
 
     # ── i18n 素材片段 ──────────────────────────────────────────────
     _material_labels = {
-        'zh': {'screen': '屏幕内容', 'web': '外部话题', 'music': '音乐推荐', 'meme': '表情包'},
-        'en': {'screen': 'screen content', 'web': 'external topics', 'music': 'music recommendations', 'meme': 'meme'},
-        'ja': {'screen': '画面の内容', 'web': '外部話題', 'music': '音楽のおすすめ', 'meme': 'ミーム'},
-        'ko': {'screen': '화면 내용', 'web': '외부 화제', 'music': '음악 추천', 'meme': '밈'},
-        'ru': {'screen': 'содержимое экрана', 'web': 'внешние темы', 'music': 'музыкальные рекомендации', 'meme': 'мем'},
+        'zh': {'screen': '屏幕内容', 'web': '网络话题', 'music': '音乐推荐', 'meme': '表情包'},
+        'en': {'screen': 'screen content', 'web': 'web topics', 'music': 'music recommendations', 'meme': 'meme'},
+        'ja': {'screen': '画面の内容', 'web': 'ウェブ話題', 'music': '音楽のおすすめ', 'meme': 'ミーム'},
+        'ko': {'screen': '화면 내용', 'web': '웹 화제', 'music': '음악 추천', 'meme': '밈'},
+        'ru': {'screen': 'содержимое экрана', 'web': 'веб-темы', 'music': 'музыкальные рекомендации', 'meme': 'мем'},
     }
 
     _combine_template = {
@@ -2217,26 +2217,31 @@ SCREEN_SECTION_FOOTER = {
     'ru': '======Конец содержимого экрана======',
 }
 
-# ---------- 外部话题区块 ----------
+# ---------- 网络话题区块 ----------
 # Header is bare-marker only, matching the screen / music / meme sections.
 # The earlier preamble ("你注意到一个有趣的话题：") was a holdover from
-# when external was the dominant channel and needed narrative framing;
+# when this was the dominant external channel and needed narrative framing;
 # now that vision / music / meme run in parallel, the preamble just
 # adds tokens and an asymmetric vibe across sections.
+#
+# Renamed from "外部话题" → "网络话题" / "Web Topic" — the channel
+# specifically pulls from web sources (news / video / social), and
+# the prompt elsewhere already groups vision / music / meme as
+# "external material" too, so the bare "external" label was ambiguous.
 EXTERNAL_TOPIC_HEADER = {
-    'zh': '======外部话题======',
-    'en': '======External Topic======',
-    'ja': '======外部の話題======',
-    'ko': '======외부 주제======',
-    'ru': '======Внешняя тема======',
+    'zh': '======网络话题======',
+    'en': '======Web Topic======',
+    'ja': '======ウェブ話題======',
+    'ko': '======웹 화제======',
+    'ru': '======Веб-тема======',
 }
 
 EXTERNAL_TOPIC_FOOTER = {
-    'zh': '======外部话题结束======',
-    'en': '======External Topic End======',
-    'ja': '======外部話題ここまで======',
-    'ko': '======외부 주제 끝======',
-    'ru': '======Конец внешней темы======',
+    'zh': '======网络话题结束======',
+    'en': '======Web Topic End======',
+    'ja': '======ウェブ話題ここまで======',
+    'ko': '======웹 화제 끝======',
+    'ru': '======Конец веб-темы======',
 }
 
 # ---------- 音乐推荐素材区块 ----------

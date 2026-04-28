@@ -960,7 +960,7 @@ _proactive_chat_history: dict[str, deque] = {}
 _proactive_topic_history: dict[str, deque] = {}
 
 _RECENT_CHAT_MAX_AGE_SECONDS = 3600  # 1小时内的搭话记录
-_RECENT_TOPIC_MAX_AGE_SECONDS = 3600  # 1小时内避免重复外部话题
+_RECENT_TOPIC_MAX_AGE_SECONDS = 3600  # 1小时内避免重复网络话题
 _PROACTIVE_SIMILARITY_THRESHOLD = 0.94  # 高阈值，尽量避免误杀
 _PHASE1_FETCH_PER_SOURCE = PROACTIVE_PHASE1_FETCH_PER_SOURCE  # Phase 1 每个信息源固定抓取条数
 _PHASE1_TOTAL_TOPIC_TARGET = PROACTIVE_PHASE1_TOTAL_TOPICS  # Phase 1 输入给筛选模型的总候选目标条数
@@ -3766,7 +3766,7 @@ async def proactive_chat(request: Request):
         else:
             print(f"[{lanlan_name}] Phase 2 无截图或无 vision 模型，跳过屏幕分析")
         
-        # 构建外部话题段（web 通道）
+        # 构建网络话题段（web 通道）
         external_section = ""
         if web_topic:
             el = _loc(EXTERNAL_TOPIC_HEADER, proactive_lang)
