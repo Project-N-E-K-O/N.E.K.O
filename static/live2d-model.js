@@ -192,7 +192,7 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
         console.warn('模型正在加载中，跳过重复加载请求:', modelPath);
         return Promise.reject(new Error('Model is already loading. Please wait for the current operation to complete.'));
     }
-    
+
     // 设置加载锁
     this._isLoadingModel = true;
     const loadToken = ++this._activeLoadToken;
