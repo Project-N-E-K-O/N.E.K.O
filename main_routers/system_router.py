@@ -402,6 +402,15 @@ def _image_path_to_jpeg_data_url(image_path: str) -> tuple[str, int]:
     return f"data:image/jpeg;base64,{b64}", len(jpg_bytes)
 
 
+def _is_interactive_screenshot_canceled(returncode: int, stderr: str, file_size: int) -> bool:
+    if file_size > 0:
+        return False
+    normalized_stderr = str(stderr or "").strip()
+    if returncode == 0:
+        return True
+    return returncode == 1 and not normalized_stderr
+
+
 def _derive_system_lifecycle_state(storage_bootstrap: dict[str, Any]) -> str:
     if not isinstance(storage_bootstrap, dict):
         return "starting"
@@ -2974,13 +2983,21 @@ async def backend_interactive_screenshot(request: Request):
         file_exists = os.path.exists(tmp_path)
         file_size = os.path.getsize(tmp_path) if file_exists else 0
 
-        if returncode != 0 and file_size <= 0:
+        if _is_interactive_screenshot_canceled(returncode, stderr, file_size):
             logger.info("系统原生交互截图已取消(returncode=%s, stderr=%s)", returncode, stderr)
             return JSONResponse({"success": False, "canceled": True}, status_code=200)
 
         if file_size <= 0:
-            logger.info("系统原生交互截图未生成文件，按取消处理")
-            return JSONResponse({"success": False, "canceled": True}, status_code=200)
+            error_message = str(stderr or "").strip() or f"interactive screenshot failed with returncode {returncode}"
+            logger.warning(
+                "系统原生交互截图失败且未生成文件(returncode=%s, stderr=%s)",
+                returncode,
+                stderr,
+            )
+            return JSONResponse(
+                {"success": False, "canceled": False, "error": error_message},
+                status_code=500,
+            )
 
         data_url, jpg_size = await asyncio.to_thread(_image_path_to_jpeg_data_url, tmp_path)
         return JSONResponse({

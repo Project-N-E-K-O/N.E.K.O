@@ -2100,8 +2100,9 @@
                             return null;
                         }
                         if (interactiveBackendResult && interactiveBackendResult.dataUrl) {
+                            var interactiveScaled = await downscaleDataUrlTo720p(interactiveBackendResult.dataUrl);
                             return {
-                                dataUrl: interactiveBackendResult.dataUrl,
+                                dataUrl: (interactiveScaled && interactiveScaled.dataUrl) || interactiveBackendResult.dataUrl,
                                 originalDataUrl: interactiveBackendResult.dataUrl,
                                 avatarPos: null
                             };

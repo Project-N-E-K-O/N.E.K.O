@@ -102,6 +102,26 @@ def test_interactive_screenshot_returns_canceled_when_user_aborts(monkeypatch):
 
 
 @pytest.mark.unit
+def test_interactive_screenshot_returns_failure_for_runtime_errors(monkeypatch):
+    monkeypatch.setattr(system_router_module, "_is_loopback_request", lambda _request: True)
+    monkeypatch.setattr(system_router_module.sys, "platform", "win32")
+    monkeypatch.setattr(
+        system_router_module,
+        "_run_windows_interactive_screenshot",
+        lambda _path: (2, "boom"),
+    )
+
+    with _build_client() as client:
+        response = client.post(INTERACTIVE_SCREENSHOT_ENDPOINT, headers=_local_headers())
+
+    assert response.status_code == 500
+    payload = response.json()
+    assert payload["success"] is False
+    assert payload["canceled"] is False
+    assert payload["error"] == "boom"
+
+
+@pytest.mark.unit
 def test_interactive_screenshot_returns_cropped_image_data(monkeypatch):
     monkeypatch.setattr(system_router_module, "_is_loopback_request", lambda _request: True)
     monkeypatch.setattr(system_router_module.sys, "platform", "darwin")

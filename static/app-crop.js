@@ -207,6 +207,11 @@
         });
 
         overlay.addEventListener('keydown', function (e) {
+            if (e.key === 'Escape') {
+                e.preventDefault();
+                cancelAll();
+                return;
+            }
             var target = e.target;
             if (
                 target
@@ -218,11 +223,6 @@
                     || target.isContentEditable
                 )
             ) {
-                return;
-            }
-            if (e.key === 'Escape') {
-                e.preventDefault();
-                cancelAll();
                 return;
             }
             if ((e.key === 'Delete' || e.key === 'Backspace') && sel) {
