@@ -7,9 +7,10 @@
 2. 启动兰兰/猫娘系统，并确认前端通知通道可用。
    - 期望结果：系统可接收插件汇报事件，且不会阻塞 autoplay 流程。
 3. 检查 `plugin.toml` 中所有 `neko_*` 配置项。
-   - 必填项存在且格式正确。
-   - 开关类配置使用布尔值。
-   - URL、端口、token 等连接配置与当前运行环境一致。
+   - 当前配置项包括：`neko_reporting_enabled`、`neko_report_interval_steps`、`neko_commentary_enabled`、`neko_commentary_probability`、`neko_commentary_min_interval_seconds`、`neko_critical_commentary_always`、`neko_guidance_max_queue`、`neko_auto_low_hp_threshold`、`neko_auto_safe_hp_threshold`、`neko_auto_dangerous_attack_threshold`、`neko_auto_resume_after_low_hp`、`neko_desperate_enabled`、`neko_desperate_hp_threshold`、`neko_maximize_enabled`、`neko_synergy_enabled`。
+   - 必填项存在且格式正确：开关类配置使用布尔值，概率/阈值类配置为 0~1 浮点数，间隔/队列/伤害阈值类配置为正数。
+   - `neko_commentary_probability`、`neko_commentary_min_interval_seconds` 与当前测试期望一致；若需要稳定触发实况短评，可临时将概率设为 `1.0` 且降低冷却间隔。
+   - URL、端口等连接配置与当前运行环境一致；当前 `neko_*` 配置项不包含 URL、端口、token。
 4. 若任一前置条件失败，先停止测试并修复环境问题，再执行后续 autoplay 测试。
 
 ***
@@ -240,13 +241,40 @@ neko_synergy_enabled = true
 
 ***
 
-## 六、Guidance 队列测试
+## 六、Neko 实况短评测试
+
+```toml
+neko_commentary_enabled = true
+neko_commentary_probability = 0.65
+neko_commentary_min_interval_seconds = 4
+neko_critical_commentary_always = true
+```
+
+### 6.1 开关与概率
+
+| 步骤 | 操作 | 预期 |
+| -- | -- | -- |
+| 1 | 设置 `neko_commentary_enabled=false` | `neko_report` 仍推送，但 `live_commentary.should_speak=false` |
+| 2 | 设置 `neko_commentary_enabled=true` 且 `neko_commentary_probability=1.0` | 普通场景短评稳定触发 |
+| 3 | 设置 `neko_commentary_probability=0.0` | 非关键场景短评被概率抑制 |
+
+### 6.2 冷却与关键场景
+
+| 步骤 | 操作 | 预期 |
+| -- | -- | -- |
+| 1 | 连续触发同一低优先级场景，间隔小于 `neko_commentary_min_interval_seconds` | 后续短评被冷却抑制 |
+| 2 | 低 HP、斩杀、敌方高伤等高/关键优先级场景，且 `neko_critical_commentary_always=true` | 可绕过概率限制触发短评 |
+| 3 | 战斗结束、获得关键遗物、选择路线等事件场景 | 同一楼层同类事件只短评一次 |
+
+***
+
+## 七、Guidance 队列测试
 
 ```toml
 neko_guidance_max_queue = 50
 ```
 
-### 6.1 入队
+### 7.1 入队
 
 | 步骤 | 操作                 | 预期                                                           |
 | -- | ------------------ | ------------------------------------------------------------ |
@@ -254,7 +282,7 @@ neko_guidance_max_queue = 50
 | 2  | 发送第 51 条           | 队列满，最早一条被挤出                                                  |
 | 3  | 空 content 发送       | 返回 `{"status": "error", "message": "guidance.content 不能为空"}` |
 
-### 6.2 消费
+### 7.2 消费
 
 | 步骤 | 操作                         | 预期                      |
 | -- | -------------------------- | ----------------------- |
@@ -264,12 +292,16 @@ neko_guidance_max_queue = 50
 
 ***
 
-## 七、配置项汇总
+## 八、配置项汇总
 
 ```toml
 # ====== Nekoneko 自主监督 ======
 neko_reporting_enabled = true           # 是否推送每步报告
 neko_report_interval_steps = 1          # 汇报间隔（步）
+neko_commentary_enabled = true           # 是否生成/推送每步实况短评
+neko_commentary_probability = 0.65       # 普通场景短评触发概率（0~1）
+neko_commentary_min_interval_seconds = 4 # 同类短评最小间隔（秒）
+neko_critical_commentary_always = true   # 高/关键优先级短评是否绕过概率限制
 neko_guidance_max_queue = 50             # guidance 队列最大长度
 
 # ====== 自主风险判断 ======
@@ -289,7 +321,7 @@ neko_synergy_enabled = true
 
 ***
 
-## 八、日志分析指南
+## 九、日志分析指南
 
 ### 8.1 决策来源识别
 
@@ -331,7 +363,7 @@ decision: half-program-heuristic-fallback  → LLM失败回退
 
 ***
 
-## 九、回归测试
+## 十、回归测试
 
 每次代码更新后，确认以下功能不受影响：
 
@@ -345,7 +377,7 @@ decision: half-program-heuristic-fallback  → LLM失败回退
 
 ***
 
-## 十、已知局限
+## 十一、已知局限
 
 1. **充能球（Orb）叠层未追踪**：`Dualcast + Lightning Orb` 的协同收益估算不精确
 2. **敌方 Buff 层数未精确计算**：只判断存在性，不区分 1 层/2 层
