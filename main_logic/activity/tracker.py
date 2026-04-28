@@ -76,14 +76,19 @@ def _privacy_mode_active() -> bool:
     """用户是否开启了隐私模式。开启时整个 tracker 应当短路。
 
     存储在前端 ``proactiveVisionEnabled`` 的反面（详见 utils.preferences）。
-    任何异常一律返回 False —— 隐私模式应是用户主动选择的"加锁"，
-    config 读不出来就当没开，而不是把 tracker 锁死。
+    异常路径 fail-closed：任何读取异常一律按"隐私模式开启"处理，宁可
+    短期内 tracker 不可用，也不能让"读不出来"等价于"用户没开隐私"。
+    正常的"用户没开隐私"路径走 ``is_privacy_mode_enabled`` 返回 False，
+    不进 except 分支。
     """
     try:
         from utils.preferences import is_privacy_mode_enabled
         return is_privacy_mode_enabled()
-    except Exception:
-        return False
+    except Exception as e:
+        logger.warning(
+            'privacy mode check failed, defaulting to enabled (fail-closed): %s', e,
+        )
+        return True
 
 
 class UserActivityTracker:

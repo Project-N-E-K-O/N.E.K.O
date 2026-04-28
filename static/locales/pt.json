@@ -2564,7 +2564,7 @@
         },
         "step14": {
             "title": "🔒 Modo Privacidade",
-            "desc": "Quando o Modo Privacidade está desativado, seu Neko olhará sua tela de vez em quando por conta própria, ao contrário do Screen Share que é transmitido continuamente durante as sessões de voz. Ajuste o intervalo aqui ~"
+            "desc": "Quando o Modo Privacidade está desativado, seu Neko olhará sua tela de vez em quando por conta própria, ao contrário do Compartilhamento de tela que é transmitido continuamente durante as sessões de voz. Ajuste o intervalo aqui ~"
         },
         "step15": {
             "title": "👤 Gerenciador de personagens",

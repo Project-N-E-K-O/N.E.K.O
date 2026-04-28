@@ -3269,8 +3269,13 @@ async def proactive_chat(request: Request):
         from utils.preferences import ais_privacy_mode_enabled
         try:
             privacy_mode = await ais_privacy_mode_enabled()
-        except Exception:
-            privacy_mode = False
+        except Exception as _pm_err:
+            # fail-closed：读不出来按隐私开启处理。正常"用户没开隐私"是
+            # ais_privacy_mode_enabled 返回 False，不进这个 except。
+            logger.warning(
+                f"[{lanlan_name}] privacy mode check failed, defaulting to enabled: {_pm_err}",
+            )
+            privacy_mode = True
         if privacy_mode:
             print(f"[{lanlan_name}] 隐私模式开启，跳过 activity tracker，按无限制策略搭话")
             activity_snapshot = None

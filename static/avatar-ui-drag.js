@@ -680,8 +680,11 @@ Live2DManager.prototype.showPopup = function (buttonId, popup) {
         }
 
         // 更新 proactive vision checkbox 状态和视觉样式
+        // 注意：UI 是"隐私模式"，underlying 变量 proactiveVisionEnabled 语义相反，
+        // 故 checked = !proactiveVisionEnabled。和 avatar-ui-popup.js 里 toggle
+        // 配置 inverted: true 对齐。
         if (proactiveVisionCheckbox && typeof window.proactiveVisionEnabled !== 'undefined') {
-            const newChecked = window.proactiveVisionEnabled;
+            const newChecked = !window.proactiveVisionEnabled;
             if (proactiveVisionCheckbox.checked !== newChecked) {
                 proactiveVisionCheckbox.checked = newChecked;
             }
