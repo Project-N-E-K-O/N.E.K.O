@@ -531,14 +531,15 @@ GAME_PROCESS_NAMES: list[str] = [
     'Wuthering Waves.exe', 'Client-Win64-Shipping.exe',
     'PGR.exe',
     # Tencent / NetEase desktop clients
-    'TenioDL.exe',
+    # NB: Tencent's WeGame / TenioDL launchers belong in
+    # GAME_LAUNCHER_PROCESS_NAMES, not here — browsing the launcher
+    # store isn't "playing".
     'NarakaBladepoint.exe', 'NarakaBladepoint-Win64-Shipping.exe',
     'IdentityV.exe',
     'onmyoji.exe',
     'LeagueClient.exe', 'LeagueClientUx.exe', 'League of Legends.exe',
     'VALORANT.exe', 'VALORANT-Win64-Shipping.exe',
     'TFT.exe',
-    'wegame.exe', 'WeGameLauncher.exe',
     # Steam top global
     'cs2.exe',
     'dota2.exe',
@@ -562,13 +563,17 @@ GAME_PROCESS_NAMES: list[str] = [
     'Hearthstone.exe',
     'SC2.exe',
     'Overwatch.exe',
-    'Battle.net.exe',
+    # Battle.net.exe is the Blizzard launcher — listed in
+    # GAME_LAUNCHER_PROCESS_NAMES instead.
     'destiny2.exe',
     'EscapeFromTarkov.exe',
     'PathOfExile.exe', 'PathOfExile_x64.exe', 'PathOfExileSteam.exe', 'PathOfExile_x64Steam.exe',
     'PathOfExile2.exe', 'PathOfExile2_x64.exe',
     # FF / SE / Capcom / Sega
-    'ffxiv_dx11.exe', 'ffxivlauncher.exe', 'ffxivboot.exe',
+    # ffxivlauncher.exe is the FFXIV launcher — listed in
+    # GAME_LAUNCHER_PROCESS_NAMES instead. ffxivboot.exe stays here
+    # because it's the in-game boot loader, not the launcher UI.
+    'ffxiv_dx11.exe', 'ffxivboot.exe',
     'ff7remake_.exe',
     'ffxvi.exe',
     'MonsterHunterWilds.exe',
@@ -583,15 +588,17 @@ GAME_PROCESS_NAMES: list[str] = [
     'granblue_fantasy_relink.exe',
     'NieRAutomata.exe',
     'NieR Replicant ver.1.22474487139.exe',
-    're4.exe', 'RE4.exe',
-    're8.exe', 'RE8.exe',
+    're4.exe',
+    're8.exe',
     're2.exe',
     're3.exe',
     'DevilMayCry5.exe', 'DMC5.exe',
     'DD2.exe',
     # Korean / Asian MMO
     'LOSTARK.exe',
-    'MapleStory.exe', 'NGM.exe',
+    # NGM.exe (Nexon Game Manager) is a launcher — listed in
+    # GAME_LAUNCHER_PROCESS_NAMES instead.
+    'MapleStory.exe',
     'BlackDesert64.exe',
     'TL.exe',  # Throne and Liberty
     # Western multiplayer & sandbox
@@ -751,7 +758,7 @@ GAME_LAUNCHER_PROCESS_NAMES: list[str] = [
     'Launcher.exe',  # Rockstar/Hoyo (generic — kept because verified for both)
     'WindowsStore.exe', 'WinStore.App.exe',
     'Amazon Games.exe', 'Amazon Games UI.exe',
-    'HYP.exe', 'launcher.exe',  # HoYoPlay
+    'HYP.exe',  # HoYoPlay (generic 'Launcher.exe' is covered above)
     'WeGame.exe', 'WeGameLauncher.exe', 'TenioDL.exe',
     'BethesdaNetLauncher.exe',
     'Nexon.exe', 'NGM.exe',
@@ -1119,7 +1126,6 @@ WORK_PROCESS_NAMES: list[tuple[str, str]] = [
     ('Logseq.exe', 'note'),
     ('Joplin.exe', 'note'),
     ('OneNote.exe', 'note'),
-    ('ONENOTE.EXE', 'note'),
     ('Evernote.exe', 'note'),
     ('anytype.exe', 'note'),
     ('Capacities.exe', 'note'),
@@ -1137,7 +1143,7 @@ WORK_PROCESS_NAMES: list[tuple[str, str]] = [
     ('WINWORD.EXE', 'office'),
     ('EXCEL.EXE', 'office'),
     ('POWERPNT.EXE', 'office'),
-    ('OUTLOOK.EXE', 'office'),
+    # OUTLOOK.EXE is email — listed in COMMUNICATION_PROCESS_NAMES instead.
     ('MSACCESS.EXE', 'office'),
     ('WINPROJ.EXE', 'office'),
     ('MSPUB.EXE', 'office'),
@@ -1177,7 +1183,6 @@ WORK_PROCESS_NAMES: list[tuple[str, str]] = [
     ('Adobe Premiere Pro.exe', 'design'),
     ('AfterFX.exe', 'design'),
     ('Lightroom.exe', 'design'),
-    ('lightroom.exe', 'design'),
     ('Adobe XD.exe', 'design'),
     ('Animate.exe', 'design'),
     ('Audition.exe', 'design'),
@@ -1199,7 +1204,6 @@ WORK_PROCESS_NAMES: list[tuple[str, str]] = [
     ('Pixelmator Pro.exe', 'design'),
     ('CLIPStudioPaint.exe', 'design'),
     ('PaintDotNet.exe', 'design'),
-    ('paintdotnet.exe', 'design'),
     ('sai.exe', 'design'),
     ('sai2.exe', 'design'),
 
@@ -1208,7 +1212,6 @@ WORK_PROCESS_NAMES: list[tuple[str, str]] = [
     ('blender-launcher.exe', '3d_cad'),
     ('maya.exe', '3d_cad'),
     ('3dsmax.exe', '3d_cad'),
-    ('CINEMA 4D.exe', '3d_cad'),
     ('Cinema 4D.exe', '3d_cad'),
     ('modo.exe', '3d_cad'),
     ('houdini.exe', '3d_cad'),
@@ -1256,7 +1259,6 @@ WORK_PROCESS_NAMES: list[tuple[str, str]] = [
 
     # Scientific
     ('MATLAB.exe', 'science'),
-    ('matlab.exe', 'science'),
     ('Mathematica.exe', 'science'),
     ('WolframKernel.exe', 'science'),
     ('octave.exe', 'science'),
@@ -1273,7 +1275,11 @@ WORK_PROCESS_NAMES: list[tuple[str, str]] = [
     ('StataSE-64.exe', 'science'),
     ('eviews.exe', 'science'),
     ('Origin64.exe', 'science'),
-    ('Origin.exe', 'science'),
+    # Origin.exe is genuinely ambiguous — both EA's launcher and
+    # OriginLab's plotting tool ship under that name. EA Origin is
+    # massively more common, so the bare name lives in
+    # GAME_LAUNCHER_PROCESS_NAMES; OriginLab users on the modern
+    # 64-bit build (Origin64.exe) still classify as work.
     ('Prism.exe', 'science'),
     ('LabVIEW.exe', 'science'),
     ('Multisim.exe', 'science'),
@@ -1879,24 +1885,20 @@ ENTERTAINMENT_PROCESS_NAMES: list[tuple[str, str]] = [
     ('twitch.exe', 'live'),
     ('streamlabs obs.exe', 'live'),
     # Comic / ebook readers
+    # NB: SumatraPDF defaults to PDF reading (typically work docs);
+    # listed in WORK_PROCESS_NAMES instead.
     ('kindle.exe', 'ebook'),
     ('calibre.exe', 'ebook'),
     ('calibre-ebook-viewer.exe', 'ebook'),
-    ('sumatrapdf.exe', 'ebook'),
     ('weread.exe', 'ebook'),                # 微信读书
     ('digitaleditions.exe', 'ebook'),
     ('kobo.exe', 'ebook'),
     ('hamster ebook converter.exe', 'ebook'),
-    # Social / messaging
-    ('discord.exe', 'social'),
-    ('telegram.exe', 'social'),
-    ('whatsapp.exe', 'social'),
-    ('line.exe', 'social'),
-    ('kakaotalk.exe', 'social'),
+    # Social / messaging — Discord / Telegram / WhatsApp / LINE /
+    # KakaoTalk are IM apps and live in COMMUNICATION_PROCESS_NAMES;
+    # only Weibo (a microblog with feed-like consumption) stays here.
     ('weibo.exe', 'social'),
-    # Mixed launchers (entertainment-leaning)
-    ('steam.exe', 'social'),
-    ('steamwebhelper.exe', 'social'),
+    # Steam launcher / web helper live in GAME_LAUNCHER_PROCESS_NAMES.
 ]
 
 # Domain substrings inside browser window titles.
@@ -2699,6 +2701,74 @@ def _build_domain_table() -> list[tuple[Needle, ClassifyResult]]:
 
     return table
 
+
+def _assert_no_process_dups() -> None:
+    """Catch process-name duplicates — both intra-pool and cross-pool.
+
+    Cross-pool: a name in both ``GAME_PROCESS_NAMES`` and
+    ``GAME_LAUNCHER_PROCESS_NAMES`` silently lands in whichever list
+    ``_build_process_table`` iterates first (game), and the state
+    machine then promotes it to the ``gaming`` state — even though the
+    architectural intent is that launchers stay in ``casual_browsing``
+    (browsing the Steam store ≠ playing). The same pitfall applies
+    across game / work / communication / entertainment process pools:
+    a single executable name cannot legitimately mean two different
+    things.
+
+    Intra-pool: ``_make_needle`` lower-cases all ASCII process names,
+    so listing both ``MATLAB.exe`` and ``matlab.exe`` compiles to two
+    identical needles that bloat the lookup table without changing any
+    match behaviour. The check also catches genuine accidental
+    re-listings.
+
+    Fails loudly at import so a bad merge surfaces in CI rather than
+    quietly mis-classifying user activity.
+    """
+    pools_raw: dict[str, list[str]] = {
+        'game':     list(GAME_PROCESS_NAMES),
+        'launcher': list(GAME_LAUNCHER_PROCESS_NAMES),
+        'work':     [p for p, _ in WORK_PROCESS_NAMES],
+        'comm':     [p for p, _ in COMMUNICATION_PROCESS_NAMES],
+        'ent':      [p for p, _ in ENTERTAINMENT_PROCESS_NAMES],
+    }
+    pools_lc: dict[str, list[str]] = {
+        name: [p.lower() for p in items] for name, items in pools_raw.items()
+    }
+
+    issues: list[str] = []
+
+    # Intra-pool: case-fold collisions inside one list.
+    for name, lc_items in pools_lc.items():
+        seen: dict[str, int] = {}
+        dupes: list[str] = []
+        for lc in lc_items:
+            seen[lc] = seen.get(lc, 0) + 1
+            if seen[lc] == 2:
+                dupes.append(lc)
+        if dupes:
+            issues.append(f'intra-pool {name}: {", ".join(sorted(dupes))}')
+
+    # Cross-pool: same name in two different category lists.
+    pool_sets = {name: set(items) for name, items in pools_lc.items()}
+    pool_items = list(pool_sets.items())
+    for i, (name_a, set_a) in enumerate(pool_items):
+        for name_b, set_b in pool_items[i + 1:]:
+            shared = sorted(set_a & set_b)
+            if shared:
+                issues.append(
+                    f'cross-pool {name_a} ↔ {name_b}: {", ".join(shared)}',
+                )
+
+    if issues:
+        raise AssertionError(
+            'activity_keywords process-name pools have duplicates '
+            '(case-insensitive lookup makes case-fold variants redundant; '
+            'a single exe cannot belong to two activity categories): '
+            + ' | '.join(issues),
+        )
+
+
+_assert_no_process_dups()
 
 _TITLE_TABLE = _build_title_table()
 _PROCESS_TABLE = _build_process_table()
