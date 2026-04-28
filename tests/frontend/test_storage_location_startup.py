@@ -173,6 +173,48 @@ def test_storage_location_overlay_blocks_page_config_until_current_path_confirme
 
 
 @pytest.mark.frontend
+def test_storage_location_close_requests_app_shutdown_while_startup_is_blocked(
+    mock_page: Page,
+    running_server: str,
+):
+    page = mock_page
+    exit_requests = {"count": 0}
+    _mock_selection_required_state(page)
+    page.add_init_script(
+        """
+        window.__nekoHostCloseCalls = 0;
+        window.nekoHost = {
+            closeWindow: async () => {
+                window.__nekoHostCloseCalls += 1;
+                return { ok: true };
+            },
+        };
+        """
+    )
+
+    def handle_exit(route):
+        exit_requests["count"] += 1
+        assert route.request.headers.get("x-neko-storage-action") == "exit"
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps({"ok": True, "result": "shutdown_initiated"}),
+        )
+
+    page.route("**/api/storage/location/exit", handle_exit)
+    page.goto(f"{running_server}/", wait_until="domcontentloaded")
+
+    expect(page.locator("#storage-location-overlay")).to_be_visible(timeout=15_000)
+    expect(page.locator(".storage-location-intro-card")).to_be_visible(timeout=15_000)
+
+    page.locator(".storage-location-modal > .storage-location-close").click()
+    page.wait_for_function("() => window.__nekoHostCloseCalls === 1", timeout=10_000)
+
+    assert exit_requests["count"] == 1
+    assert _page_config_state(page) == "pending"
+
+
+@pytest.mark.frontend
 def test_storage_location_overlay_blocks_independent_startup_requests_while_barrier_is_pending(
     mock_page: Page,
     running_server: str,

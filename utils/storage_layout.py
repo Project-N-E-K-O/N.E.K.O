@@ -11,6 +11,14 @@ NEKO_STORAGE_ANCHOR_ROOT_ENV = "NEKO_STORAGE_ANCHOR_ROOT"
 NEKO_STORAGE_CLOUDSAVE_ROOT_ENV = "NEKO_STORAGE_CLOUDSAVE_ROOT"
 
 
+def _set_or_clear_env(target_env: dict[str, str], key: str, value: Any) -> None:
+    normalized_value = str(value or "").strip()
+    if normalized_value:
+        target_env[key] = normalized_value
+    else:
+        target_env.pop(key, None)
+
+
 def build_storage_layout(
     *,
     selected_root: Path | str,
@@ -33,9 +41,9 @@ def export_storage_layout_to_env(
     environ: dict[str, str] | None = None,
 ) -> dict[str, str]:
     target_env = environ if environ is not None else os.environ
-    target_env[NEKO_STORAGE_SELECTED_ROOT_ENV] = str(layout.get("selected_root") or "").strip()
-    target_env[NEKO_STORAGE_ANCHOR_ROOT_ENV] = str(layout.get("anchor_root") or "").strip()
-    target_env[NEKO_STORAGE_CLOUDSAVE_ROOT_ENV] = str(layout.get("cloudsave_root") or "").strip()
+    _set_or_clear_env(target_env, NEKO_STORAGE_SELECTED_ROOT_ENV, layout.get("selected_root"))
+    _set_or_clear_env(target_env, NEKO_STORAGE_ANCHOR_ROOT_ENV, layout.get("anchor_root"))
+    _set_or_clear_env(target_env, NEKO_STORAGE_CLOUDSAVE_ROOT_ENV, layout.get("cloudsave_root"))
     return target_env
 
 

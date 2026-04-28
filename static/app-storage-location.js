@@ -219,7 +219,42 @@
         return normalized;
     }
 
-    async function requestHostWindowClose() {
+    function shouldRequestAppShutdownBeforeClose() {
+        if (state.phase === 'selection_intro'
+            || state.phase === 'selection_required'
+            || state.phase === 'maintenance'
+            || state.phase === 'error') {
+            return true;
+        }
+        return shouldBlockMainUi(state.bootstrap);
+    }
+
+    async function requestStorageLocationAppShutdown() {
+        var response = await fetch('/api/storage/location/exit', {
+            method: 'POST',
+            cache: 'no-store',
+            headers: {
+                'Accept': 'application/json',
+                'X-Neko-Storage-Action': 'exit'
+            }
+        });
+
+        var payload = null;
+        try {
+            payload = await response.json();
+        } catch (_) {}
+
+        if (!response.ok || !payload || payload.ok !== true) {
+            throw new Error(
+                extractResponseError(
+                    payload,
+                    translate('storage.restartUnavailable', '当前实例暂时无法执行受控关闭，请稍后重试。')
+                )
+            );
+        }
+    }
+
+    async function closeHostWindowOnly() {
         var host = window.nekoHost || {};
         if (host && typeof host.closeWindow === 'function') {
             try {
@@ -231,6 +266,18 @@
         try {
             window.close();
         } catch (_) {}
+    }
+
+    async function requestHostWindowClose() {
+        if (state.submitting) return;
+        if (shouldRequestAppShutdownBeforeClose()) {
+            try {
+                await requestStorageLocationAppShutdown();
+            } catch (error) {
+                console.warn('[storage-location] app shutdown request before close failed', error);
+            }
+        }
+        await closeHostWindowOnly();
     }
 
     function buildStorageLocationCloseButton(onClick) {
