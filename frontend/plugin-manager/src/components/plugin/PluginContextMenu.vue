@@ -201,10 +201,25 @@ function focusAction(index: number) {
     return
   }
   focusedActionIndex.value = index
+  syncFocusedElement()
+}
+
+function syncFocusedElement() {
+  nextTick(() => {
+    const items = menuRef.value?.querySelectorAll<HTMLElement>('[role="menuitem"]')
+    items?.forEach((item) => {
+      item.tabIndex = item.dataset.actionIndex === String(focusedActionIndex.value) ? 0 : -1
+    })
+    const target = focusedActionIndex.value < 0
+      ? menuRef.value
+      : menuRef.value?.querySelector<HTMLElement>(`[data-action-index="${focusedActionIndex.value}"]`)
+    target?.focus()
+  })
 }
 
 function focusFirstAction() {
   focusedActionIndex.value = enabledActionIndexes.value[0] ?? -1
+  syncFocusedElement()
 }
 
 function moveFocus(delta: number) {
@@ -219,10 +234,7 @@ function moveFocus(delta: number) {
     ? 0
     : (currentPosition + delta + indexes.length) % indexes.length
   focusedActionIndex.value = indexes[nextPosition] ?? -1
-  nextTick(() => {
-    const target = menuRef.value?.querySelector<HTMLElement>(`[data-action-index="${focusedActionIndex.value}"]`)
-    target?.focus()
-  })
+  syncFocusedElement()
 }
 
 function handleKeydown(event: KeyboardEvent) {
@@ -258,6 +270,7 @@ function handleKeydown(event: KeyboardEvent) {
     event.preventDefault()
     const indexes = enabledActionIndexes.value
     focusedActionIndex.value = indexes[indexes.length - 1] ?? -1
+    syncFocusedElement()
     return
   }
 
@@ -283,7 +296,6 @@ watch(
     if (props.visible) {
       nextTick(() => {
         focusFirstAction()
-        menuRef.value?.focus()
       })
     }
   },

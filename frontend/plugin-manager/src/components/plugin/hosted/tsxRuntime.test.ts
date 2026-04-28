@@ -198,6 +198,23 @@ describe('hosted TSX document runtime', () => {
     expect(root.querySelector('h1')?.textContent).toBe('Title Mika')
   })
 
+  it('strips multiline and side-effect UI kit imports before executing TSX', () => {
+    const { root } = executeHostedDocument(`
+      import {
+        Page,
+        Text,
+      } from "@neko/plugin-ui"
+      import "@neko/plugin-ui"
+
+      export default function Panel() {
+        return <Page title="Imported"><Text>ok</Text></Page>
+      }
+    `)
+
+    expect(root.textContent).toContain('Imported')
+    expect(root.textContent).toContain('ok')
+  })
+
   it('bridges api.call and api.refresh through parent postMessage', async () => {
     const { root, messages } = executeHostedDocument(`
       export default function Panel(props) {

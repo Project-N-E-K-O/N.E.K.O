@@ -173,8 +173,11 @@ def normalize_manifest_surface(
                 add_warning(f"permissions[{perm_index}]", "unknown_permission", f"Unknown permission '{permission}'.")
                 continue
             normalized_permissions.append(permission)
-    else:
+    elif permissions is None:
         normalized_permissions = default_permissions(kind)
+    else:
+        add_warning("permissions", "invalid_permissions", "permissions must be an array of strings; using no permissions.")
+        normalized_permissions = []
 
     normalized: dict[str, Any] = {
         "id": surface_id.strip(),

@@ -253,6 +253,7 @@ export default {
       surfaceUnavailable: 'Surface недоступен',
       surfaceEntryMissing: 'Файл entry, указанный этим Surface, не найден. Проверьте путь entry в plugin.toml.',
       surfaceWarnings: 'В объявлении UI плагина есть проблемы, требующие внимания',
+      controlError: 'Ошибка элемента управления UI плагина',
       hostedRuntimePending: 'Vue-контейнер распознал этот Surface. TSX, Markdown и Auto рендереры будут подключены позже.'
     }
   },

@@ -399,8 +399,8 @@ def _add_surface_route_actions(
     plugin_meta: Mapping[str, object],
 ) -> None:
     surfaces, _warnings = _build_surfaces_sync(plugin_id, plugin_meta)
-    has_panel = any(surface.get("kind") == "panel" for surface in surfaces)
-    has_guide = any(surface.get("kind") in {"guide", "docs"} for surface in surfaces)
+    has_panel = any(surface.get("kind") == "panel" and surface.get("available") is not False for surface in surfaces)
+    has_guide = any(surface.get("kind") in {"guide", "docs"} and surface.get("available") is not False for surface in surfaces)
     safe_id = plugin_id.replace("/", "%2F")
     if has_panel and "open_panel" not in seen_ids:
         actions.append({

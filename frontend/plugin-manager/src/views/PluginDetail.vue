@@ -194,6 +194,7 @@ const surfaceWarnings = ref<PluginUiWarning[]>([])
 const activePanelSurfaceId = ref('')
 const activeGuideSurfaceId = ref('')
 const allowedTabs = new Set(['panel', 'guide', 'info', 'entries', 'metrics', 'config', 'logs'])
+let currentSurfaceLoadId = 0
 
 const plugin = computed(() => {
   return pluginStore.pluginsWithStatus.find(p => p.id === pluginId.value)
@@ -273,9 +274,22 @@ function openLogsTab() {
 }
 
 async function fetchSurfaces() {
-  const info = await getPluginUiSurfaceInfo(pluginId.value)
-  surfaces.value = info.surfaces
-  surfaceWarnings.value = info.warnings
+  const loadId = ++currentSurfaceLoadId
+  const currentPluginId = pluginId.value
+  try {
+    const info = await getPluginUiSurfaceInfo(currentPluginId)
+    if (loadId !== currentSurfaceLoadId || currentPluginId !== pluginId.value) return
+    surfaces.value = info.surfaces
+    surfaceWarnings.value = info.warnings
+  } catch (caught: any) {
+    if (loadId !== currentSurfaceLoadId || currentPluginId !== pluginId.value) return
+    surfaces.value = []
+    surfaceWarnings.value = [{
+      path: 'plugin.ui',
+      code: 'surface_query_failed',
+      message: caught?.response?.data?.detail || caught?.message || String(caught),
+    }]
+  }
   activePanelSurfaceId.value = ''
   activeGuideSurfaceId.value = ''
   syncSurfaceTabs()

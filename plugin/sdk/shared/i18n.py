@@ -48,13 +48,13 @@ def locale_candidates(locale: str | None, default_locale: str | None = None) -> 
     add(locale)
     if locale and "-" in locale:
         add(locale.split("-", 1)[0])
-    if locale and str(locale).strip().lower() == "zh":
+    locale_lower = str(locale or "").strip().lower()
+    if locale_lower == "zh" or locale_lower.startswith("zh-") or locale_lower.startswith("zh_"):
         add("zh-CN")
     add(default_locale)
     if default_locale and "-" in default_locale:
         add(default_locale.split("-", 1)[0])
     add(DEFAULT_LOCALE)
-    add("zh-CN")
     return candidates
 
 
@@ -130,7 +130,7 @@ def load_plugin_i18n_from_meta(plugin_meta: Mapping[str, object]) -> PluginI18n:
         return PluginI18n()
 
     try:
-        plugin_dir = Path(config_path_obj).parent
+        plugin_dir = Path(config_path_obj).parent.resolve()
     except Exception:
         return PluginI18n()
 
@@ -142,8 +142,13 @@ def load_plugin_i18n_from_meta(plugin_meta: Mapping[str, object]) -> PluginI18n:
     locales_dir_name = str(locales_dir_obj).strip() if isinstance(locales_dir_obj, str) and locales_dir_obj.strip() else DEFAULT_LOCALES_DIR
 
     locales_dir = Path(locales_dir_name)
-    if not locales_dir.is_absolute():
-        locales_dir = plugin_dir / locales_dir
+    if locales_dir.is_absolute():
+        return PluginI18n(default_locale=default_locale)
+    try:
+        locales_dir = (plugin_dir / locales_dir).resolve()
+        locales_dir.relative_to(plugin_dir)
+    except Exception:
+        return PluginI18n(default_locale=default_locale)
     return load_plugin_i18n_from_dir(locales_dir, default_locale=default_locale)
 
 

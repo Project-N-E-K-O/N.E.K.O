@@ -5,16 +5,6 @@ import sys
 import types
 from types import SimpleNamespace
 
-markdownify_stub = types.ModuleType("markdownify")
-markdownify_stub.markdownify = lambda html, **_kwargs: str(html)
-sys.modules.setdefault("markdownify", markdownify_stub)
-
-bs4_stub = types.ModuleType("bs4")
-bs4_stub.BeautifulSoup = lambda html, *_args, **_kwargs: SimpleNamespace(body=None, __str__=lambda: str(html))
-sys.modules.setdefault("bs4", bs4_stub)
-
-from plugin.plugins.mcp_adapter import MCPAdapterPlugin
-
 
 class _Logger:
     def info(self, *_args, **_kwargs) -> None:
@@ -32,7 +22,8 @@ class _Config:
         return self.payload
 
 
-def _plugin_stub() -> MCPAdapterPlugin:
+def _plugin_stub():
+    MCPAdapterPlugin = _load_mcp_adapter_plugin()
     plugin = object.__new__(MCPAdapterPlugin)
     plugin._shutdown = False
     plugin._clients = {}
@@ -44,6 +35,18 @@ def _plugin_stub() -> MCPAdapterPlugin:
     plugin.config = _Config({})
     plugin.ctx = SimpleNamespace(logger=_Logger())
     return plugin
+
+
+def _load_mcp_adapter_plugin():
+    markdownify_stub = types.ModuleType("markdownify")
+    markdownify_stub.markdownify = lambda html, **_kwargs: str(html)
+    bs4_stub = types.ModuleType("bs4")
+    bs4_stub.BeautifulSoup = lambda html, *_args, **_kwargs: SimpleNamespace(body=None, __str__=lambda: str(html))
+    sys.modules["markdownify"] = markdownify_stub
+    sys.modules["bs4"] = bs4_stub
+    from plugin.plugins.mcp_adapter import MCPAdapterPlugin
+
+    return MCPAdapterPlugin
 
 
 def test_remove_cancels_pending_and_active_connect_task() -> None:
@@ -73,6 +76,7 @@ def test_remove_cancels_pending_and_active_connect_task() -> None:
 
 def test_connect_server_skips_removed_server_before_start() -> None:
     async def scenario() -> None:
+        MCPAdapterPlugin = _load_mcp_adapter_plugin()
         plugin = _plugin_stub()
         plugin._servers_config = {}
 
@@ -91,6 +95,7 @@ def test_connect_server_skips_removed_server_before_start() -> None:
 
 def test_pending_auto_connect_is_scheduled_lazily() -> None:
     async def scenario() -> None:
+        MCPAdapterPlugin = _load_mcp_adapter_plugin()
         plugin = _plugin_stub()
         started = asyncio.Event()
 
@@ -115,6 +120,7 @@ def test_pending_auto_connect_is_scheduled_lazily() -> None:
 
 def test_remove_servers_cancels_connect_task_and_persists_without_server() -> None:
     async def scenario() -> None:
+        MCPAdapterPlugin = _load_mcp_adapter_plugin()
         plugin = _plugin_stub()
         plugin._servers_config = {"example": {"transport": "stdio", "command": "uvx"}}
         plugin.config = _Config({"mcp_servers": {"example": {"transport": "stdio", "command": "uvx"}}})

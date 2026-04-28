@@ -253,6 +253,7 @@ export default {
       surfaceUnavailable: 'Surface 暂不可用',
       surfaceEntryMissing: '该 Surface 声明的入口文件不存在，请检查 plugin.toml 中的 entry 路径。',
       surfaceWarnings: '插件 UI 声明存在需要处理的问题',
+      controlError: '插件界面控件错误',
       hostedRuntimePending: '前端容器已经识别到该 Surface。TSX/Markdown/Auto 渲染器会在后续阶段接入。'
     }
   },

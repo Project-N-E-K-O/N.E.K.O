@@ -469,6 +469,8 @@ function useEffect(effect, deps) {
   }
 }
 function useLayoutEffect(effect, deps) {
+  // MVP note: hosted UI runs layout effects on the normal effect queue.
+  // Do not depend on React's pre-paint layout timing semantics here.
   return useEffect(effect, deps);
 }
 function flushEffects() {
@@ -957,9 +959,10 @@ function interpolateI18n(text, params) {
 }
 function t(key, params) {
   const safeKey = String(key || '');
-  const payload = __NEKO_PAYLOAD.i18n && typeof __NEKO_PAYLOAD.i18n === 'object' ? __NEKO_PAYLOAD.i18n : {};
+  const hostedPayload = typeof window.__NEKO_PAYLOAD === 'object' && window.__NEKO_PAYLOAD ? window.__NEKO_PAYLOAD : {};
+  const payload = hostedPayload.i18n && typeof hostedPayload.i18n === 'object' ? hostedPayload.i18n : {};
   const messages = payload.messages && typeof payload.messages === 'object' ? payload.messages : {};
-  for (const candidate of localeCandidates(__NEKO_PAYLOAD.locale, payload.default_locale)) {
+  for (const candidate of localeCandidates(hostedPayload.locale, payload.default_locale)) {
     const bundle = messages[candidate];
     if (bundle && typeof bundle[safeKey] === 'string') {
       return interpolateI18n(bundle[safeKey], params);
@@ -968,7 +971,10 @@ function t(key, params) {
   if (params && typeof params.defaultValue === 'string') return interpolateI18n(params.defaultValue, params);
   return safeKey;
 }
-function useI18n() { return { t, locale: __NEKO_PAYLOAD.locale }; }
+function useI18n() {
+  const hostedPayload = typeof window.__NEKO_PAYLOAD === 'object' && window.__NEKO_PAYLOAD ? window.__NEKO_PAYLOAD : {};
+  return { t, locale: hostedPayload.locale || 'en' };
+}
 
 function refreshHostedPayload(context) {
   if (typeof window.__NekoRefreshHostedPayload === 'function') {

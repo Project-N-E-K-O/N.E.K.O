@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import process from 'node:process'
@@ -38,19 +38,27 @@ function inferMode(entry) {
 
 function findPluginTomls(targets) {
   const result = []
-  for (const target of targets.length > 0 ? targets : ['plugin/plugins']) {
-    const abs = isAbsolute(target) ? target : join(repoRoot, target)
-    if (!existsSync(abs)) continue
-    if (abs.endsWith('plugin.toml')) {
+  const visit = (abs) => {
+    if (!existsSync(abs)) return
+    const stat = statSync(abs)
+    if (stat.isFile() && abs.endsWith('plugin.toml')) {
       result.push(abs)
-      continue
+      return
     }
-    const candidate = join(abs, 'plugin.toml')
-    if (existsSync(candidate)) {
-      result.push(candidate)
+    if (!stat.isDirectory()) return
+    const direct = join(abs, 'plugin.toml')
+    if (existsSync(direct)) {
+      result.push(direct)
+    }
+    for (const entry of readdirSync(abs, { withFileTypes: true })) {
+      if (entry.isDirectory()) visit(join(abs, entry.name))
     }
   }
-  return result
+  for (const target of targets.length > 0 ? targets : ['plugin/plugins']) {
+    const abs = isAbsolute(target) ? target : join(repoRoot, target)
+    visit(abs)
+  }
+  return Array.from(new Set(result))
 }
 
 function surfaceLabel(surface) {
@@ -63,7 +71,9 @@ function hasDefaultExport(source) {
 
 function createCheckFile(entryPath, tempDir, index, surface, tomlPath) {
   const source = readFileSync(entryPath, 'utf8')
-  const stripped = source.replace(/^\s*import\s+[^;]+from\s+['"](?:@neko\/plugin-ui|neko:ui)['"];?\s*$/gm, '')
+  const stripped = source
+    .replace(/^\s*import[\s\S]*?from\s+['"](?:@neko\/plugin-ui|neko:ui)['"]\s*;?\s*/gm, '')
+    .replace(/^\s*import\s+['"](?:@neko\/plugin-ui|neko:ui)['"]\s*;?\s*/gm, '')
   const checkPath = join(tempDir, `surface-${index}.tsx`)
   const prefixLines = 6
   writeFileSync(

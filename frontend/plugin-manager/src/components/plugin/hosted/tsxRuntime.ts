@@ -93,6 +93,7 @@ export function buildHostedTsxDocument(options: BuildHostedTsxDocumentOptions) {
   <main id="root"></main>
   <script>
     let __NEKO_PAYLOAD = ${payload};
+    window.__NEKO_PAYLOAD = __NEKO_PAYLOAD;
 ${escapeScriptContent(uiKit.runtime)}
     const __requiredUiKitApis = ['h', 'render', 'useLocalState'];
     if (!window.NekoUiKit || __requiredUiKitApis.some((name) => typeof window.NekoUiKit[name] !== 'function')) {
@@ -158,6 +159,7 @@ ${escapeScriptContent(uiKit.runtime)}
     }
     window.__NekoRefreshHostedPayload = function(context) {
       __NEKO_PAYLOAD = __normalizeHostedPayload(context);
+      window.__NEKO_PAYLOAD = __NEKO_PAYLOAD;
       if (typeof window.__NekoRenderHostedSurface === 'function') {
         window.__NekoRenderHostedSurface();
       }

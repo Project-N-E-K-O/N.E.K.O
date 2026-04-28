@@ -91,6 +91,27 @@ def test_normalize_plugin_ui_manifest_warnings_for_invalid_fields() -> None:
     assert "invalid_permission" in warning_codes
 
 
+def test_invalid_permissions_shape_does_not_fall_back_to_default_permissions() -> None:
+    conf = {
+        "plugin": {
+            "ui": {
+                "panel": [
+                    {
+                        "entry": "ui/panel.tsx",
+                        "permissions": "action:call",
+                    }
+                ],
+            }
+        }
+    }
+
+    manifest = normalize_plugin_ui_manifest(conf, plugin_id="demo")
+
+    assert manifest is not None
+    assert manifest["panel"][0]["permissions"] == []
+    assert {item["code"] for item in manifest["warnings"]} == {"invalid_permissions"}
+
+
 def test_surfaces_and_actions_use_manifest_and_static_compat(tmp_path: Path) -> None:
     plugin_dir = tmp_path / "demo"
     static_dir = plugin_dir / "static"
@@ -125,6 +146,35 @@ def test_surfaces_and_actions_use_manifest_and_static_compat(tmp_path: Path) -> 
     assert warnings == []
     assert [surface["kind"] for surface in surfaces] == ["panel", "guide"]
     assert {action["id"] for action in actions} == {"open_panel", "open_guide"}
+
+
+def test_unavailable_surfaces_do_not_get_route_actions(tmp_path: Path) -> None:
+    plugin_dir = tmp_path / "demo"
+    plugin_dir.mkdir()
+    config_path = plugin_dir / "plugin.toml"
+    config_path.write_text("[plugin]\nid='demo'\n", encoding="utf-8")
+    plugin_ui = normalize_plugin_ui_manifest(
+        {
+            "plugin": {
+                "ui": {
+                    "panel": [{"id": "main", "mode": "hosted-tsx", "entry": "ui/missing.tsx"}],
+                    "guide": [{"id": "quickstart", "mode": "hosted-tsx", "entry": "docs/missing.tsx"}],
+                }
+            }
+        },
+        plugin_id="demo",
+    )
+    meta = {
+        "id": "demo",
+        "config_path": str(config_path),
+        "plugin_ui": plugin_ui,
+    }
+
+    surfaces, _warnings = _build_surfaces_sync("demo", meta)
+    actions = _build_plugin_list_actions_from_meta("demo", meta)
+
+    assert all(surface["available"] is False for surface in surfaces)
+    assert actions == []
 
 
 def test_surface_action_permission_and_authorized_entry_resolution() -> None:

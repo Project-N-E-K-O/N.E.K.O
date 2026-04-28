@@ -124,7 +124,7 @@ const placeholderText = computed(() => {
 })
 
 const runtimeErrorTitle = computed(() => {
-  return runtimeErrorFatal.value ? t('plugins.ui.loadError') : '插件界面控件错误'
+  return runtimeErrorFatal.value ? t('plugins.ui.loadError') : t('plugins.ui.controlError')
 })
 
 function escapeHtml(value: string) {
@@ -259,6 +259,8 @@ function handleLoad() {
 }
 
 function handleError() {
+  loading.value = false
+  error.value = t('plugins.ui.loadError')
   emit('error', t('plugins.ui.loadError'))
 }
 

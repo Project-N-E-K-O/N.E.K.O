@@ -655,10 +655,22 @@ def _plugin_process_runner(
         ui_context_map: Dict[str, Any] = {}
 
         def _get_ui_context_meta(member: Any) -> dict[str, Any] | None:
-            meta = getattr(member, UI_CONTEXT_META_ATTR, None)
-            if meta is None and hasattr(member, "__func__"):
-                meta = getattr(member.__func__, UI_CONTEXT_META_ATTR, None)
-            return dict(meta) if isinstance(meta, dict) else None
+            candidates: list[Any] = [member]
+            if hasattr(member, "__func__"):
+                candidates.append(member.__func__)
+            current = getattr(member, "__wrapped__", None)
+            seen: set[int] = set()
+            while current is not None and id(current) not in seen:
+                seen.add(id(current))
+                candidates.append(current)
+                if hasattr(current, "__func__"):
+                    candidates.append(current.__func__)
+                current = getattr(current, "__wrapped__", None)
+            for candidate in candidates:
+                meta = getattr(candidate, UI_CONTEXT_META_ATTR, None)
+                if isinstance(meta, dict):
+                    return dict(meta)
+            return None
 
         def _rebuild_ui_context_map() -> None:
             ui_context_map.clear()

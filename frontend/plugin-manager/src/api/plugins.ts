@@ -171,7 +171,11 @@ export async function getPluginUiSurfaceInfo(pluginId: string): Promise<{
           : [],
       }
     }
-  } catch {
+  } catch (caught: any) {
+    const status = caught?.response?.status
+    if (status !== 404 && status !== 405) {
+      throw caught
+    }
     // Older plugin servers expose only /ui-info; fall through to compatibility mode.
   }
 
@@ -198,8 +202,12 @@ export async function getPluginUiSurfaceInfo(pluginId: string): Promise<{
       }],
       warnings: [],
     }
-  } catch {
-    return { surfaces: [], warnings: [] }
+  } catch (caught: any) {
+    const status = caught?.response?.status
+    if (status === 404) {
+      return { surfaces: [], warnings: [] }
+    }
+    throw caught
   }
 }
 

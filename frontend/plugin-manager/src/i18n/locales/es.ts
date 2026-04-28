@@ -253,6 +253,7 @@ export default {
       surfaceUnavailable: 'Surface no disponible',
       surfaceEntryMissing: 'El archivo de entrada declarado por esta Surface no existe. Revisa la ruta entry en plugin.toml.',
       surfaceWarnings: 'La declaración de UI del plugin necesita atención',
+      controlError: 'Error de control de la UI del plugin',
       hostedRuntimePending: 'El contenedor Vue reconoció esta Surface. Los renderizadores TSX, Markdown y Auto se conectarán en una fase posterior.'
     }
   },
