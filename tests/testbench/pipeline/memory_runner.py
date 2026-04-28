@@ -523,13 +523,13 @@ async def _preview_recent_compress(
         except Exception as exc:
             warnings.append(f"摘要模型返回非 JSON, 解析失败: {exc}")
             parsed = {}
-        if isinstance(parsed, dict) and "对话摘要" in parsed:
-            summary_text = str(parsed["对话摘要"]).strip()
+        if isinstance(parsed, dict) and "summary" in parsed:
+            summary_text = str(parsed["summary"]).strip()
         elif isinstance(parsed, str) and parsed:
             summary_text = parsed.strip()
-            warnings.append("摘要模型返回纯字符串 (非标准 {'对话摘要': ...} 格式), 已按单段处理.")
+            warnings.append("摘要模型返回纯字符串 (非标准 {'summary': ...} 格式), 已按单段处理.")
         else:
-            warnings.append("摘要模型返回内容缺少 '对话摘要' 字段. 原始返回片段已截断.")
+            warnings.append("摘要模型返回内容缺少 'summary' 字段. 原始返回片段已截断.")
             summary_text = raw[:200] if raw else ""
         try:
             update_last_llm_wire_reply(session, reply_chars=len(raw))
