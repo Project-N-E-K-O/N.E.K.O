@@ -1139,10 +1139,15 @@ PROACTIVE_PHASE1_FETCH_PER_SOURCE = 10
 - 用途：fetch_news_content / fetch_video_content 等的 limit 参数统一值。
 - 上游：外部 web/news/video 抓取结果。"""
 
-PROACTIVE_PHASE1_TOTAL_TOPICS = 20
+PROACTIVE_PHASE1_TOTAL_TOPICS = 12
 """Phase 1 输入给筛选 LLM 的候选话题总数。
 - 用途：从所有 source 合并后去重，截到此数后送 LLM 筛选。
-- 上游：cap 后的 fetch 结果汇总。"""
+- 上游：cap 后的 fetch 结果汇总。
+- 设计依据：原值 20。早期 external 是主要信号源，候选池开得很大。
+  Phase 2 引入 vision / music / meme / reminiscence 等并行通道后，
+  external 的相对权重下降——筛选 LLM 多看 8 条边际候选无助于挑出更
+  好的 top-1，反而让 Phase 1 prompt 一次跑过 2k tokens 上限。下调到
+  12 仍给筛选 LLM 充分多样性，且单次调用 token 减半左右。"""
 
 PROACTIVE_EXTERNAL_PER_ITEM_MAX_TOKENS = 200
 """Phase 2 外部内容（news/video/social/meme 等）单条 token 上限。
@@ -1152,11 +1157,15 @@ PROACTIVE_EXTERNAL_PER_ITEM_MAX_TOKENS = 200
 - 设计依据：单条 200 token 已足够 LLM 知道"这是什么"，详细信息靠
   Phase 2 LLM 自行总结。"""
 
-PROACTIVE_EXTERNAL_TOTAL_MAX_TOKENS = 2000
-"""Phase 2 外部内容拼合后的总 token 上限。
+PROACTIVE_EXTERNAL_TOTAL_MAX_TOKENS = 1500
+"""Phase 1 外部候选拼合后的总 token 上限（Phase 2 实际只看 top-1）。
 - 用途：所有 selected web items 序列化后，再做一次总和截断。
 - 上游：cap 后的 external_section 文本。
-- 设计依据：留出主对话流的 5k 总预算给 character_prompt + memory + 历史。"""
+- 设计依据：跟 PROACTIVE_PHASE1_TOTAL_TOPICS 同步下调。原值 2000 是
+  20 候选 × 200 token 留的硬顶；候选数收到 12 之后，1500 已留出
+  ~250 token 富余，超出仍兜底截断。Phase 2 generate prompt 实际只
+  把 Phase 1 选中的单条 web_topic（~50-100 token）放进
+  external_section，本字段约束的是 Phase 1 的 prompt 大小。"""
 
 PROACTIVE_PHASE2_OUTPUT_MAX_TOKENS = 300
 """Phase 2 流式输出的 abort fence。

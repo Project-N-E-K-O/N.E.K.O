@@ -1822,6 +1822,128 @@
             document.documentElement.style.visibility = saved.visibility || '';
         }
 
+        function getDesktopRegionCaptureMethod() {
+            if (!window.electronDesktopCapturer) return null;
+            var bridge = window.electronDesktopCapturer;
+            var names = [
+                'beginDesktopRegionSelection',
+                'captureDesktopRegion',
+                'captureDesktopRegionAsDataUrl',
+                'captureSelectedRegion',
+                'startDesktopSelectionCapture'
+            ];
+            for (var i = 0; i < names.length; i++) {
+                var name = names[i];
+                if (typeof bridge[name] === 'function') {
+                    return { name: name, fn: bridge[name].bind(bridge) };
+                }
+            }
+            return null;
+        }
+
+        function isDesktopRegionCaptureUnavailable(errorLike) {
+            if (!errorLike) return false;
+            var code = errorLike.code || '';
+            if (code === 'ENOSYS' || code === 'UNSUPPORTED_API') return true;
+            var message = String(errorLike.message || errorLike.error || errorLike.reason || '').toLowerCase();
+            return message.indexOf('not implemented') !== -1
+                || message.indexOf('not supported') !== -1
+                || message.indexOf('unsupported') !== -1
+                || message.indexOf('unavailable') !== -1;
+        }
+
+        function normalizeDesktopRegionCaptureResult(raw) {
+            if (!raw) return null;
+            if (typeof raw === 'string') {
+                return { success: true, dataUrl: raw, originalDataUrl: raw };
+            }
+            if (raw.canceled || raw.cancelled) {
+                return { canceled: true };
+            }
+            if (raw.success === false) {
+                return {
+                    success: false,
+                    error: raw.error || raw.message || 'DESKTOP_REGION_CAPTURE_FAILED',
+                    code: raw.code || null
+                };
+            }
+            if (raw.dataUrl) {
+                return {
+                    success: true,
+                    dataUrl: raw.dataUrl,
+                    originalDataUrl: raw.originalDataUrl || raw.dataUrl,
+                    avatarPos: raw.avatarPos || raw.avatarPosition || null,
+                    captureType: raw.captureType || 'desktop-region',
+                    width: raw.width || 0,
+                    height: raw.height || 0
+                };
+            }
+            return null;
+        }
+
+        async function captureDesktopRegionDirectly() {
+            var regionMethod = getDesktopRegionCaptureMethod();
+            if (!regionMethod) return null;
+
+            var selectedSourceId = S.selectedScreenSourceId || null;
+            var payload = {
+                sourceId: selectedSourceId,
+                hideNeko: true,
+                returnDataUrl: true,
+                includeOriginalDataUrl: true
+            };
+
+            var raw = null;
+            try {
+                raw = await regionMethod.fn(payload);
+            } catch (err) {
+                if (isDesktopRegionCaptureUnavailable(err)) {
+                    console.info('[截图] 桌面框选接口当前不可用，回退到内置裁剪:', regionMethod.name);
+                    return null;
+                }
+                throw err;
+            }
+
+            var normalized = normalizeDesktopRegionCaptureResult(raw);
+            if (!normalized) {
+                console.warn('[截图] 桌面框选接口返回了无法识别的结果，回退到内置裁剪:', regionMethod.name, raw);
+                return null;
+            }
+            if (normalized.canceled) {
+                console.log('[截图] 用户取消了桌面框选');
+                return { canceled: true };
+            }
+            if (!normalized.success) {
+                var sourceCleared = false;
+                if (typeof window.maybeClearSourceOnNotFound === 'function') {
+                    sourceCleared = window.maybeClearSourceOnNotFound(
+                        normalized,
+                        'desktop region capture Source not found'
+                    );
+                }
+                if (sourceCleared) {
+                    console.info('[截图] 桌面框选源已失效，回退到既有截图链路');
+                    return null;
+                }
+                if (isDesktopRegionCaptureUnavailable(normalized)) {
+                    console.info('[截图] 桌面框选接口声明不可用，回退到内置裁剪:', regionMethod.name);
+                    return null;
+                }
+                throw new Error(normalized.error || 'DESKTOP_REGION_CAPTURE_FAILED');
+            }
+
+            var scaled = await downscaleDataUrlTo720p(normalized.dataUrl);
+            console.log('[截图] 桌面框选捕获成功:', regionMethod.name, (scaled.width || normalized.width || 0) + 'x' + (scaled.height || normalized.height || 0));
+            return {
+                dataUrl: scaled.dataUrl,
+                originalDataUrl: normalized.originalDataUrl || normalized.dataUrl,
+                avatarPos: normalized.avatarPos || null,
+                captureType: normalized.captureType || 'desktop-region',
+                width: scaled.width || normalized.width || 0,
+                height: scaled.height || normalized.height || 0
+            };
+        }
+
         async function recaptureWithoutNeko() {
             // Priority 0 (Electron PC): 主进程原子化路径 — 一次 IPC 完成
             //   隐藏所有 NEKO 窗口 → 等合成 → desktopCapturer 抓图 → 恢复窗口。
@@ -1972,6 +2094,33 @@
                         }
                     }
                 } else {
+                    if (typeof window.fetchBackendInteractiveScreenshot === 'function') {
+                        var interactiveBackendResult = await window.fetchBackendInteractiveScreenshot();
+                        if (interactiveBackendResult && interactiveBackendResult.canceled) {
+                            return null;
+                        }
+                        if (interactiveBackendResult && interactiveBackendResult.dataUrl) {
+                            var interactiveScaled = await downscaleDataUrlTo720p(interactiveBackendResult.dataUrl);
+                            return {
+                                dataUrl: (interactiveScaled && interactiveScaled.dataUrl) || interactiveBackendResult.dataUrl,
+                                originalDataUrl: interactiveBackendResult.dataUrl,
+                                avatarPos: null
+                            };
+                        }
+                    }
+
+                    var desktopRegionResult = await captureDesktopRegionDirectly();
+                    if (desktopRegionResult) {
+                        if (desktopRegionResult.canceled) {
+                            return null;
+                        }
+                        return {
+                            dataUrl: desktopRegionResult.dataUrl,
+                            originalDataUrl: desktopRegionResult.originalDataUrl || desktopRegionResult.dataUrl,
+                            avatarPos: desktopRegionResult.avatarPos || null
+                        };
+                    }
+
                     var selectedSourceId = S.selectedScreenSourceId;
                     if (selectedSourceId && window.electronDesktopCapturer
                         && typeof window.electronDesktopCapturer.captureSourceAsDataUrl === 'function') {
