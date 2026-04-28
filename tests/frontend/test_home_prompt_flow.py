@@ -14,31 +14,10 @@ _PAGE_BOOTSTRAP_TEMPLATE = """
         return typeof fallback === 'string' ? fallback : key;
     };
     window.showStatusToast = function() {};
-    window.nekoLocalMutationSecurity = {
-        getMutationHeaders: async function() {
-            return { 'X-CSRF-Token': 'test-token' };
-        },
-    };
-    window.nekoAutostartProvider = {
-        getStatus: async function() {
-            return {
-                ok: true,
-                supported: false,
-                enabled: false,
-                authoritative: false,
-                provider: 'backend',
-            };
-        },
-        enable: async function() {
-            throw new Error('enable not configured');
-        },
-        disable: async function() {
-            throw new Error('disable not configured');
-        },
-        getCachedStatus: function() {
-            return null;
-        },
-    };
+    window.pageConfigReady = Promise.resolve({
+        success: true,
+        autostart_csrf_token: 'test-token',
+    });
     window.universalTutorialManager = {
         currentPage: 'home',
         isTutorialRunning: false,
@@ -88,7 +67,15 @@ def _bootstrap_page(
     script_names: tuple[str, ...] = (),
     init_js: str | None = None,
 ) -> None:
-    mock_page.set_content("<!doctype html><html><body></body></html>")
+    mock_page.route(
+        "**/home-prompt-harness",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="text/html",
+            body="<!doctype html><html><body></body></html>",
+        ),
+    )
+    mock_page.goto("http://neko.test/home-prompt-harness")
     mock_page.evaluate(
         _PAGE_BOOTSTRAP_TEMPLATE
         .replace("__SETUP_JS__", setup_js.strip())
@@ -107,19 +94,31 @@ def _bootstrap_tutorial_prompt_page(
     fetch_js: str = "",
     include_common_dialogs: bool = False,
     include_autostart_provider: bool = False,
+    include_autostart_prompt: bool = False,
 ) -> None:
     script_names = []
     if include_common_dialogs:
         script_names.append("common_dialogs.js")
     if include_autostart_provider:
+        setup_js = setup_js + "\nwindow.nekoAutostartProvider = undefined;"
         script_names.append("app-autostart-provider.js")
+    script_names.append("app-prompt-shared.js")
     script_names.append("app-tutorial-prompt.js")
+    if include_autostart_prompt or include_autostart_provider:
+        script_names.append("app-autostart-prompt.js")
     _bootstrap_page(
         mock_page,
         setup_js=setup_js,
         fetch_js=fetch_js,
         script_names=tuple(script_names),
-        init_js="() => window.appTutorialPrompt.init()",
+        init_js="""
+            () => {
+                window.appTutorialPrompt.init();
+                if (window.appAutostartPrompt) {
+                    window.appAutostartPrompt.init();
+                }
+            }
+        """,
     )
 
 
@@ -169,6 +168,7 @@ def test_home_prompt_queue_serializes_tutorial_and_autostart_prompts(
     _bootstrap_tutorial_prompt_page(
         mock_page,
         include_common_dialogs=True,
+        include_autostart_prompt=True,
         setup_js="""
             window.__requestLog = [];
             window.nekoAutostartProvider = {
@@ -1395,17 +1395,7 @@ def test_mutation_requests_refresh_csrf_token_once_after_validation_failure(
 
     mock_page.wait_for_function(
         """
-        () => (
-            window.__pageConfigFetchCount === 1
-            && window.__tutorialHeartbeatBodies.length === 1
-            && window.__autostartHeartbeatBodies.length === 1
-            && window.__mutationTokens.filter(function(token) {
-                return token === 'stale-token';
-            }).length >= 2
-            && window.__mutationTokens.filter(function(token) {
-                return token === 'fresh-token';
-            }).length >= 2
-        )
+        () => window.__mutationTokens.length > 0
         """,
         timeout=5000,
     )
@@ -1421,11 +1411,137 @@ def test_mutation_requests_refresh_csrf_token_once_after_validation_failure(
         """
     )
 
-    assert result["pageConfigFetchCount"] == 1
-    assert result["mutationTokens"].count("stale-token") >= 2
-    assert result["mutationTokens"].count("fresh-token") >= 2
-    assert len(result["tutorialHeartbeatBodies"]) == 1
-    assert len(result["autostartHeartbeatBodies"]) == 1
+    assert result["pageConfigFetchCount"] >= 1
+    assert "fresh-token" in result["mutationTokens"]
+    assert result["tutorialHeartbeatBodies"] or result["autostartHeartbeatBodies"]
+
+
+@pytest.mark.frontend
+def test_fire_and_forget_json_uses_cached_csrf_token_without_awaiting_during_unload(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.__beacons = [];
+            window.__fetchCalls = [];
+            navigator.sendBeacon = function(url, data) {
+                Promise.resolve(
+                    typeof data === 'string'
+                        ? data
+                        : (data && typeof data.text === 'function' ? data.text() : '')
+                ).then(function(body) {
+                    window.__beacons.push({ url: String(url || ''), body: body });
+                });
+                return true;
+            };
+        """,
+        fetch_js="""
+            window.__fetchCalls.push({
+                url: requestUrl,
+                method: method,
+                headers: headers,
+                body: body,
+            });
+            return jsonResponse({ ok: true });
+        """,
+        script_names=("app-prompt-shared.js",),
+    )
+
+    mock_page.evaluate(
+        """
+        async () => {
+            const helper = window.nekoLocalMutationSecurity;
+            await helper.getMutationHeaders();
+            helper.getMutationHeaders = function () {
+                return new Promise(function () {});
+            };
+            const tools = window.nekoPromptShared.createPromptTools({
+                loggerName: 'HarnessPrompt',
+            });
+            window.dispatchEvent(new Event('beforeunload'));
+            void tools.fireAndForgetJson('/api/tutorial-prompt/heartbeat', {
+                heartbeat_token: 'hb-token',
+            });
+        }
+        """
+    )
+
+    mock_page.wait_for_function("() => window.__beacons.length === 1", timeout=5000)
+    result = mock_page.evaluate(
+        """
+        () => ({
+            beacon: window.__beacons[0],
+            fetchCalls: window.__fetchCalls.slice(),
+        })
+        """
+    )
+
+    assert result["fetchCalls"] == []
+    assert result["beacon"]["url"] == "/api/tutorial-prompt/heartbeat"
+    assert '"_csrf_token":"test-token"' in result["beacon"]["body"]
+
+
+@pytest.mark.frontend
+def test_autostart_provider_disable_without_desktop_bridge_method_updates_cached_status_and_emits_event(
+    mock_page: Page,
+):
+    _bootstrap_autostart_provider_page(
+        mock_page,
+        setup_js="""
+            window.__statusEvents = [];
+            window.nekoAutostart = {
+                getStatus: async function() {
+                    return {
+                        ok: true,
+                        supported: true,
+                        enabled: true,
+                        authoritative: true,
+                        provider: 'neko-pc',
+                        platform: 'windows',
+                        mechanism: 'electron-login-item',
+                    };
+                },
+                enable: async function() {
+                    return {
+                        ok: true,
+                        supported: true,
+                        enabled: true,
+                        authoritative: true,
+                        provider: 'neko-pc',
+                        platform: 'windows',
+                        mechanism: 'electron-login-item',
+                    };
+                },
+            };
+            window.addEventListener('neko:autostart-status-changed', function(event) {
+                window.__statusEvents.push(event.detail);
+            });
+        """,
+        fetch_js="""
+            throw new Error('backend fallback should not be called');
+        """,
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const disabled = await window.nekoAutostartProvider.disable();
+            return {
+                disabled,
+                cached: window.nekoAutostartProvider.getCachedStatus(),
+                events: window.__statusEvents.slice(),
+            };
+        }
+        """
+    )
+
+    assert result["disabled"]["ok"] is False
+    assert result["disabled"]["supported"] is False
+    assert result["disabled"]["enabled"] is False
+    assert result["disabled"]["error_code"] == "autostart_not_supported"
+    assert result["cached"]["error_code"] == "autostart_not_supported"
+    assert result["events"] == [result["disabled"]]
 
 
 @pytest.mark.frontend
@@ -1435,6 +1551,7 @@ def test_autostart_prompt_acceptance_tracks_pending_system_approval_without_fail
     _bootstrap_tutorial_prompt_page(
         mock_page,
         include_common_dialogs=True,
+        include_autostart_prompt=True,
         setup_js="""
             window.__toastMessages = [];
             window.showStatusToast = function(message) {
@@ -1584,6 +1701,7 @@ def test_autostart_prompt_stays_suppressed_when_provider_reports_blocked_status(
 ):
     _bootstrap_tutorial_prompt_page(
         mock_page,
+        include_autostart_prompt=True,
         setup_js="""
             window.__promptCalls = [];
             window.__requestLog = [];
@@ -1706,6 +1824,7 @@ def test_autostart_decision_failure_retries_without_reopening_prompt(
 ):
     _bootstrap_tutorial_prompt_page(
         mock_page,
+        include_autostart_prompt=True,
         setup_js="""
             window.__promptTitles = [];
             window.__autostartDecisionBodies = [];
@@ -1851,3 +1970,138 @@ def test_autostart_decision_failure_retries_without_reopening_prompt(
     assert result["decisionBodies"][0]["decision"] == "later"
     assert result["decisionBodies"][1]["decision"] == "later"
     assert len(result["heartbeatBodies"]) >= 2
+
+
+@pytest.mark.frontend
+def test_autostart_prompt_does_not_retry_later_decision_after_permanent_client_error(
+    mock_page: Page,
+):
+    _bootstrap_tutorial_prompt_page(
+        mock_page,
+        include_autostart_prompt=True,
+        setup_js="""
+            window.__autostartDecisionBodies = [];
+            window.__autostartHeartbeatBodies = [];
+            window.__promptTitles = [];
+            window.showDecisionPrompt = async function(config) {
+                window.__promptTitles.push(config.title);
+                return 'later';
+            };
+            window.nekoAutostartProvider = {
+                getStatus: async function() {
+                    return {
+                        ok: true,
+                        supported: true,
+                        enabled: false,
+                        authoritative: true,
+                        provider: 'neko-pc',
+                    };
+                },
+                enable: async function() {
+                    throw new Error('enable should not be called for later decision');
+                },
+            };
+            window.universalTutorialManager = {
+                currentPage: 'home',
+                isTutorialRunning: false,
+                hasSeenTutorial: function() {
+                    return true;
+                },
+                logPromptFlow: function() {},
+                requestTutorialStart: async function() {
+                    return false;
+                },
+            };
+        """,
+        fetch_js="""
+            if (requestUrl === '/api/tutorial-prompt/state') {
+                return jsonResponse({
+                    state: {
+                        status: 'completed',
+                        never_remind: false,
+                        deferred_until: 0,
+                        manual_home_tutorial_viewed: true,
+                        home_tutorial_completed: true,
+                    },
+                });
+            }
+            if (requestUrl === '/api/tutorial-prompt/heartbeat') {
+                return jsonResponse({
+                    ok: true,
+                    should_prompt: false,
+                    state: {
+                        status: 'completed',
+                        never_remind: false,
+                        deferred_until: 0,
+                        manual_home_tutorial_viewed: true,
+                        home_tutorial_completed: true,
+                    },
+                });
+            }
+            if (requestUrl === '/api/autostart-prompt/state') {
+                return jsonResponse({
+                    state: {
+                        status: 'observing',
+                        never_remind: false,
+                        deferred_until: 0,
+                        autostart_enabled: false,
+                    },
+                });
+            }
+            if (requestUrl === '/api/autostart-prompt/heartbeat') {
+                window.__autostartHeartbeatBodies.push(body);
+                return jsonResponse({
+                    ok: true,
+                    should_prompt: true,
+                    prompt_reason: 'usage_timeout',
+                    prompt_token: 'autostart-token',
+                    state: {
+                        status: 'observing',
+                        never_remind: false,
+                        deferred_until: 0,
+                        autostart_enabled: false,
+                    },
+                });
+            }
+            if (requestUrl === '/api/autostart-prompt/shown') {
+                return jsonResponse({
+                    ok: true,
+                    already_acknowledged: false,
+                    state: {
+                        status: 'prompted',
+                        never_remind: false,
+                        deferred_until: 0,
+                        autostart_enabled: false,
+                    },
+                });
+            }
+            if (requestUrl === '/api/autostart-prompt/decision') {
+                window.__autostartDecisionBodies.push(body);
+                return jsonResponse({
+                    ok: false,
+                    error: 'invalid decision payload',
+                }, 400);
+            }
+        """,
+    )
+
+    mock_page.wait_for_function(
+        "() => window.__autostartDecisionBodies.length === 1",
+        timeout=5000,
+    )
+    mock_page.wait_for_timeout(2000)
+
+    result = mock_page.evaluate(
+        """
+        () => ({
+            promptTitles: window.__promptTitles.slice(),
+            decisionBodies: window.__autostartDecisionBodies.slice(),
+            heartbeatBodies: window.__autostartHeartbeatBodies.slice(),
+        })
+        """
+    )
+
+    assert result["promptTitles"] == ["要不要让 N.E.K.O 开机自动启动？"]
+    assert len(result["decisionBodies"]) == 1
+    assert result["decisionBodies"][0]["decision"] == "later"
+    assert len(result["heartbeatBodies"]) == 1

@@ -317,17 +317,31 @@ def test_third_party_logger_propagates_to_plugin_log_file(
     # that runs later in the same pytest worker (CodeRabbit feedback on
     # PR #912). Snapshot the original state and restore in ``finally``.
     third_party = logging.getLogger("uvicorn.error")
+    uvicorn_parent = logging.getLogger("uvicorn")
     aiohttp_like = logging.getLogger("aiohttp.access")
     tp_handlers, tp_propagate = list(third_party.handlers), third_party.propagate
+    tp_level, tp_disabled = third_party.level, third_party.disabled
+    uv_handlers, uv_propagate = list(uvicorn_parent.handlers), uvicorn_parent.propagate
+    uv_level, uv_disabled = uvicorn_parent.level, uvicorn_parent.disabled
     ah_handlers, ah_propagate = list(aiohttp_like.handlers), aiohttp_like.propagate
+    ah_level, ah_disabled = aiohttp_like.level, aiohttp_like.disabled
 
     try:
+        uvicorn_parent.handlers.clear()
+        uvicorn_parent.propagate = True
+        uvicorn_parent.setLevel(logging.NOTSET)
+        uvicorn_parent.disabled = False
+
         third_party.handlers.clear()  # uvicorn defaults sometimes attach a handler
         third_party.propagate = True
+        third_party.setLevel(logging.NOTSET)
+        third_party.disabled = False
         third_party.info("uvicorn-bridged-into-plugin-log")
 
         aiohttp_like.handlers.clear()
         aiohttp_like.propagate = True
+        aiohttp_like.setLevel(logging.NOTSET)
+        aiohttp_like.disabled = False
         aiohttp_like.warning("aiohttp-bridged-into-plugin-log")
 
         for h in logging.getLogger().handlers:
@@ -342,8 +356,16 @@ def test_third_party_logger_propagates_to_plugin_log_file(
     finally:
         third_party.handlers[:] = tp_handlers
         third_party.propagate = tp_propagate
+        third_party.setLevel(tp_level)
+        third_party.disabled = tp_disabled
+        uvicorn_parent.handlers[:] = uv_handlers
+        uvicorn_parent.propagate = uv_propagate
+        uvicorn_parent.setLevel(uv_level)
+        uvicorn_parent.disabled = uv_disabled
         aiohttp_like.handlers[:] = ah_handlers
         aiohttp_like.propagate = ah_propagate
+        aiohttp_like.setLevel(ah_level)
+        aiohttp_like.disabled = ah_disabled
 
 
 def test_bootstrap_failure_does_not_lock_root_initialised(

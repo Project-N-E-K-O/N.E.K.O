@@ -221,9 +221,13 @@ def _get_allowed_local_origins(request: Request) -> set[str]:
 def _validate_local_mutation_request(
     request: Request,
     *,
+    payload: dict[str, Any] | None = None,
     error_defaults: dict[str, Any] | None = None,
 ) -> JSONResponse | None:
     csrf_token = request.headers.get(_AUTOSTART_CSRF_HEADER, "")
+    if not csrf_token and payload:
+        body_token = payload.get("_csrf_token")
+        csrf_token = body_token if isinstance(body_token, str) else ""
     has_valid_csrf = bool(
         csrf_token
         and AUTOSTART_CSRF_TOKEN
@@ -771,11 +775,11 @@ async def get_tutorial_prompt_state():
 @router.post("/tutorial-prompt/heartbeat")
 async def post_tutorial_prompt_heartbeat(request: Request):
     """记录主页空闲与互动状态，并判断是否需要提示新手引导。"""
-    validation_error = _validate_local_mutation_request(request)
+    payload = await _read_json_object(request)
+    validation_error = _validate_local_mutation_request(request, payload=payload)
     if validation_error is not None:
         return validation_error
 
-    payload = await _read_json_object(request)
     return process_tutorial_prompt_heartbeat(payload, config_manager=get_config_manager())
 
 
@@ -818,11 +822,11 @@ async def get_autostart_prompt_state():
 @router.post("/autostart-prompt/heartbeat")
 async def post_autostart_prompt_heartbeat(request: Request):
     """记录主页空闲与互动状态，并判断是否需要提示开机自启动。"""
-    validation_error = _validate_local_mutation_request(request)
+    payload = await _read_json_object(request)
+    validation_error = _validate_local_mutation_request(request, payload=payload)
     if validation_error is not None:
         return validation_error
 
-    payload = await _read_json_object(request)
     return process_autostart_prompt_heartbeat(payload, config_manager=get_config_manager())
 
 
