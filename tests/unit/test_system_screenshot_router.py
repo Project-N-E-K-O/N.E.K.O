@@ -187,6 +187,46 @@ def test_interactive_screenshot_requires_csrf_when_origin_present(monkeypatch):
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    "header_name, header_value",
+    [
+        ("Origin", "null"),       # sandboxed iframe / file:// / data:
+        ("Origin", "ftp://x"),    # 非 http(s) scheme，归一化会变空
+        ("Referer", "null"),
+    ],
+)
+def test_interactive_screenshot_blocks_browser_requests_with_unparseable_origin(
+    monkeypatch, header_name, header_value
+):
+    """`Origin: null` 等归一化后为空的浏览器请求必须仍走 CSRF 校验，不能旁路。"""
+    monkeypatch.setattr(system_router_module, "_is_loopback_request", lambda _request: True)
+    monkeypatch.setattr(system_router_module.sys, "platform", "darwin")
+
+    def _should_not_run(_path):
+        raise AssertionError(
+            "interactive screenshot must not run when Origin/Referer header is "
+            "present but unparseable — that's a sandboxed iframe / file:// CSRF vector"
+        )
+
+    monkeypatch.setattr(
+        system_router_module,
+        "_run_macos_interactive_screenshot",
+        _should_not_run,
+    )
+
+    with _build_client() as client:
+        response = client.post(
+            INTERACTIVE_SCREENSHOT_ENDPOINT,
+            headers={header_name: header_value},
+        )
+
+    assert response.status_code == 403
+    payload = response.json()
+    assert payload["success"] is False
+    assert payload["error_code"] == "csrf_validation_failed"
+
+
+@pytest.mark.unit
 def test_interactive_screenshot_passes_with_valid_csrf_and_origin(monkeypatch):
     """合法本地前端：带 Origin + CSRF token，应当通过校验进入 runner。"""
     monkeypatch.setattr(system_router_module, "_is_loopback_request", lambda _request: True)

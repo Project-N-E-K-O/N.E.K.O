@@ -3005,7 +3005,10 @@ async def backend_interactive_screenshot(request: Request):
     if not _is_loopback_request(request):
         return _json_no_store_response({"success": False, "error": "only available from localhost"}, status_code=403)
 
-    if _get_request_origin(request):
+    # 用原始 header 是否存在来判断"这是不是浏览器请求"，而不是 _get_request_origin 的归一化结果。
+    # 后者会把 `Origin: null`（sandboxed iframe / file:// / data:）和无效 `Referer` 归一成空串，
+    # 让恶意页面可以通过 sandboxed iframe 故意送 `Origin: null` 来绕过 CSRF 校验。
+    if request.headers.get("origin") is not None or request.headers.get("referer") is not None:
         validation_error = _validate_local_mutation_request(
             request,
             error_defaults={"success": False},
