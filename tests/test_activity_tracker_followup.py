@@ -407,7 +407,7 @@ def test_private_survives_stale_returning_window():
 def test_loader_keeps_last_good_prefs_on_parse_failure(tmp_path, monkeypatch):
     """A mid-edit corrupted JSON must NOT wipe previously cached overrides."""
     from utils.activity_config import (
-        _CacheState, _GLOBAL_CONVERSATION_KEY, _load_from_file,
+        _GLOBAL_CONVERSATION_KEY, _load_from_file,
     )
 
     # Round 1: write a valid file with overrides
