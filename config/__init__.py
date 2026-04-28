@@ -1182,11 +1182,6 @@ PROACTIVE_CHAT_HISTORY_MAX = 10
 - 用途：每个 lanlan 维护的最近主动搭话记录，用于 1h 内去重。
 - 上游：proactive 触发的搭话事件。"""
 
-PROACTIVE_TOPIC_HISTORY_MAX = 100
-"""_proactive_topic_history deque maxlen。
-- 用途：每个 lanlan 维护的最近话题去重队列。
-- 上游：proactive 选中的话题 key。"""
-
 EMOTION_ANALYSIS_MAX_TOKENS = 40
 """情感分析 LLM 的 max_completion_tokens。
 - 用途：返回情感标签 + score 等短输出。
@@ -1456,7 +1451,6 @@ __all__ = [
     'PROACTIVE_PHASE2_GENERATE_MAX_TOKENS',
     'PROACTIVE_PHASE1_UNIFIED_MAX_TOKENS',
     'PROACTIVE_CHAT_HISTORY_MAX',
-    'PROACTIVE_TOPIC_HISTORY_MAX',
     'EMOTION_ANALYSIS_MAX_TOKENS',
     'PLUGIN_USER_CONTEXT_MAX_ITEMS',
     'TRANSLATION_OUTPUT_MAX_TOKENS',
