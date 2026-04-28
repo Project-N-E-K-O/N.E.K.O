@@ -24,6 +24,9 @@
     var imgEl = null;
     var resolvePromise = null;
     var sourceDataUrl = null;
+    // 会话开始时的原始截图，"隐藏NEKO" 重截图只更新 sourceDataUrl，
+    // 这样切回"截图"页签可以恢复回最初的图，而不是停留在隐藏后的版本。
+    var originalDataUrl = null;
     var recaptureFn = null;
     var selectionBox = null;
     var selectionBadge = null;
@@ -268,6 +271,12 @@
         clearSelection();
         if (overlay) {
             overlay.focus();
+        }
+
+        if (tab === 'screenshot' && originalDataUrl && sourceDataUrl !== originalDataUrl) {
+            sourceDataUrl = originalDataUrl;
+            loadImage(originalDataUrl);
+            return;
         }
 
         if (tab === 'hideNeko' && recaptureFn) {
@@ -754,6 +763,7 @@
         sel = null;
         mode = MODE_NONE;
         sourceDataUrl = null;
+        originalDataUrl = null;
         recaptureFn = null;
         activeTab = 'screenshot';
         pointerPos = null;
@@ -810,6 +820,7 @@
             if (resolvePromise) close(null);
 
             sourceDataUrl = dataUrl;
+            originalDataUrl = dataUrl;
             resolvePromise = resolve;
             recaptureFn = (opts && opts.recaptureFn) || null;
 
