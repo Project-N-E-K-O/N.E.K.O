@@ -102,6 +102,25 @@ def test_interactive_screenshot_returns_canceled_when_user_aborts(monkeypatch):
 
 
 @pytest.mark.unit
+def test_interactive_screenshot_treats_macos_cancel_with_stderr_as_canceled(monkeypatch):
+    monkeypatch.setattr(system_router_module, "_is_loopback_request", lambda _request: True)
+    monkeypatch.setattr(system_router_module.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        system_router_module,
+        "_run_macos_interactive_screenshot",
+        lambda _path: (1, "User canceled."),
+    )
+
+    with _build_client() as client:
+        response = client.post(INTERACTIVE_SCREENSHOT_ENDPOINT, headers=_local_headers())
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is False
+    assert payload["canceled"] is True
+
+
+@pytest.mark.unit
 def test_interactive_screenshot_returns_failure_for_runtime_errors(monkeypatch):
     monkeypatch.setattr(system_router_module, "_is_loopback_request", lambda _request: True)
     monkeypatch.setattr(system_router_module.sys, "platform", "win32")
