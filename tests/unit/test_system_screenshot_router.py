@@ -1,4 +1,5 @@
 from unittest.mock import patch
+from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI
@@ -44,6 +45,12 @@ def _local_headers():
         "Origin": "http://testserver",
         "X-CSRF-Token": "test-csrf-token",
     }
+
+
+@pytest.mark.unit
+def test_is_loopback_request_accepts_ipv4_mapped_ipv6_loopback():
+    request = SimpleNamespace(client=SimpleNamespace(host="::ffff:127.0.0.1"))
+    assert system_router_module._is_loopback_request(request) is True
 
 
 @pytest.mark.unit
