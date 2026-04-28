@@ -2,9 +2,7 @@ import asyncio
 import importlib
 import json
 import os
-import threading
 from pathlib import Path
-from queue import Queue
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -16,20 +14,22 @@ from main_routers.shared_state import init_shared_state
 
 
 def _make_role_state_for_test(session_managers: dict) -> dict:
-    """Seed role_state with pre-existing session_managers (new post-#855 API).
+    """Seed role_state with pre-existing session_managers (post-#855 + cross_server async).
 
     The legacy 6-dict layout (sync_message_queue / sync_shutdown_event /
     session_manager / session_id / sync_process / websocket_locks) was
-    consolidated into RoleState on main. Tests that only care about
-    seeding session_manager construct stub RoleState entries with live
-    Queue / Event / asyncio.Lock so adapters don't crash on attribute access.
+    consolidated into RoleState on main. ``sync_shutdown_event`` /
+    ``sync_process`` were further removed when cross_server moved from
+    daemon thread to a main-loop ``asyncio.Task`` (now ``sync_task``).
+    Tests that only care about seeding session_manager construct stub
+    RoleState entries with live Queue / asyncio.Lock so adapters don't
+    crash on attribute access.
     """
     # Import lazily to avoid circular import at module load time
-    from main_server import RoleState
+    from main_server import RoleState, _SyncMessageQueue
     return {
         name: RoleState(
-            sync_message_queue=Queue(),
-            sync_shutdown_event=threading.Event(),
+            sync_message_queue=_SyncMessageQueue(),
             websocket_lock=asyncio.Lock(),
             session_manager=session_manager,
         )

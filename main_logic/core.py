@@ -4300,15 +4300,20 @@ class LLMSessionManager:
             logger.error(f"💥 WS Send Response Error: {e}")
 
     async def tts_response_handler(self):
-        import queue as _queue_mod
         q = self.tts_response_queue
         logger.info(f"🎧 tts_response_handler started (queue id={id(q):#x})")
         while True:
             try:
-                try:
-                    data = q.get_nowait()
-                except _queue_mod.Empty:
-                    await asyncio.sleep(0.01)
+                # 阻塞 get 挂在线程池里，无消息时主 event loop 完全沉默；
+                # 取消时 except CancelledError 分支会 push 哨兵唤醒线程池里那个
+                # 仍在 q.get() 上的线程，避免线程泄漏。
+                data = await asyncio.to_thread(q.get)
+
+                # 处理 cancel 时为唤醒泄漏线程而 push 的哨兵。同一个 handler 实例
+                # 不会在 cancel 之后继续运行（CancelledError 已 raise），所以这里
+                # 只是为了在 handler 被替换后，新 handler（绑同一 queue）若意外
+                # 读到旧 handler 留下的哨兵也能正确忽略。
+                if isinstance(data, tuple) and len(data) == 2 and data[0] == "__handler_exit__":
                     continue
 
                 if isinstance(data, tuple) and len(data) == 2:
@@ -4450,6 +4455,13 @@ class LLMSessionManager:
                 await self.send_speech(data)
             except asyncio.CancelledError:
                 logger.info("🎧 tts_response_handler cancelled")
+                # asyncio.to_thread 取消后，线程池里那个 thread 仍阻塞在 q.get()。
+                # push 哨兵唤醒它返回，避免线程泄漏（线程持有 queue ref，整个 queue
+                # 也会被一起留住）。put_nowait 失败不影响主流程。
+                try:
+                    q.put_nowait(("__handler_exit__", None))
+                except Exception:
+                    pass
                 raise
             except Exception as e:
                 logger.error(f"💥 tts_response_handler error (will retry): {e}")
