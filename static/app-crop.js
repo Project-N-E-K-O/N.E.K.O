@@ -156,10 +156,12 @@
 
         crosshairX = document.createElement('div');
         crosshairX.className = 'crop-crosshair crop-crosshair-x';
+        crosshairX.style.display = 'none';
         workspace.appendChild(crosshairX);
 
         crosshairY = document.createElement('div');
         crosshairY.className = 'crop-crosshair crop-crosshair-y';
+        crosshairY.style.display = 'none';
         workspace.appendChild(crosshairY);
 
         pointerBadge = document.createElement('div');
