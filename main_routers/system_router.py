@@ -4120,6 +4120,14 @@ async def proactive_chat(request: Request):
                 "message": f"[{lanlan_name}] 播放中推荐拦截触发，动作已取消"
             }))
 
+        # _of_none output-format 路径明确指示 AI"不带 source tag"，所以 AI 真正
+        # 跟进 unfinished thread 时输出可能完全没有标签。落到这里又非 abort/empty,
+        # 说明 Phase 2 实际产出了文本——按 CHAT 兜底，让下游 build_proactive_response
+        # 把 primary_channel 设为 'chat'，否则 mark_unfinished_thread_used 会把这一
+        # 类合法跟进当作"没用 override"漏掉，2 次配额被静默绕过。
+        if not source_tag and full_text.strip():
+            source_tag = 'CHAT'
+
         # 使用纯函数构建响应
         primary_channel, source_links = build_proactive_response(source_tag, {
             'lanlan_name': lanlan_name,
