@@ -958,11 +958,10 @@ async def run_sync_connector(
         # 已经处理 CancelledError → break，所以 gather(return_exceptions=True)
         # 会安静地收掉 cancel 副作用。
         readers = [r for r in (sync_reader, binary_reader, bullet_reader) if r is not None]
+        # asyncio.Task.cancel() 不抛异常（返回 bool），所以这里不需要 try/except
+        # 包裹——旧线程版本的过度防御代码已删除。
         for rdr in readers:
-            try:
-                rdr.cancel()
-            except Exception:
-                pass
+            rdr.cancel()
         if readers:
             await asyncio.gather(*readers, return_exceptions=True)
         # 注意：不在这里调用 aclose_internal_http_client_current_loop()。
