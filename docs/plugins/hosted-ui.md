@@ -1,10 +1,27 @@
 # Hosted Plugin UI with TSX
 
-Hosted UI lets a plugin render an interactive panel or guide inside the Plugin Manager. The plugin provides state and actions from Python, while the UI is written as online-compiled TSX or simple Markdown.
+If your plugin needs a visible UI in the Plugin Manager, start here.
 
-Use this when your plugin needs a settings panel, a tool/server dashboard, action buttons, localized text, or a read-only guide page.
+Hosted UI is the recommended path for new plugin panels and guide pages. You keep the backend in Python, then describe the frontend as either:
 
-## When to use each UI mode
+- **Hosted TSX** for interactive panels.
+- **Markdown** for simple read-only docs.
+
+You do not need to build a separate frontend bundle. TSX is loaded from the plugin directory and compiled by the Plugin Manager at runtime.
+
+## Current recommendation
+
+Use Hosted UI when your plugin needs:
+
+- a settings or management panel
+- buttons that call plugin entries
+- tables, forms, filters, and status cards
+- a quickstart or guide page
+- plugin-local i18n
+
+Keep static UI only when you need a fully custom legacy page or you already have a standalone HTML/CSS/JS UI.
+
+## Choose the right surface
 
 | Need | Recommended mode |
 |------|------------------|
@@ -15,7 +32,7 @@ Use this when your plugin needs a settings panel, a tool/server dashboard, actio
 
 Hosted TSX is the preferred mode for new interactive plugin UI. Static UI remains available for compatibility.
 
-## File layout
+## Minimal example layout
 
 ```text
 plugin/plugins/my_plugin/
@@ -27,7 +44,7 @@ plugin/plugins/my_plugin/
   i18n/zh-CN.json
 ```
 
-## Declare surfaces in `plugin.toml`
+## 1. Declare surfaces in `plugin.toml`
 
 ```toml
 [plugin]
@@ -58,7 +75,7 @@ entry = "docs/quickstart.md"
 permissions = ["state:read"]
 ```
 
-### Surface fields
+### What these fields mean
 
 | Field | Meaning |
 |-------|---------|
@@ -77,7 +94,7 @@ Mode is inferred from the entry extension:
 | `.md`, `.mdx` | `markdown` |
 | `.html`, `.htm` | `static` |
 
-## Provide context and actions in Python
+## 2. Provide context and actions in Python
 
 ```python
 from plugin.sdk.plugin import (
@@ -125,15 +142,15 @@ class MyPlugin(NekoPluginBase):
         return Ok({"message": f"Refreshed {item_id}"})
 ```
 
-Key points:
+This gives the UI two things:
 
-- `@ui.context(id="dashboard")` returns the `props.state` payload for TSX.
-- `@ui.action(...)` exposes an entry to the current surface.
+- `@ui.context(id="dashboard")` returns the `props.state` payload.
+- `@ui.action(...)` exposes a backend entry as a UI action.
 - `@plugin_entry(...)` is still the callable backend entry and the LLM-visible tool metadata.
 - `tr(...)` declares a plugin-local i18n key with an English default.
 - `refresh_context=True` asks the hosted UI to refresh context after the action succeeds.
 
-## Build a TSX panel
+## 3. Build a TSX panel
 
 ```tsx
 import {
@@ -186,9 +203,13 @@ export default function Panel(props: PluginSurfaceProps<State>) {
 }
 ```
 
-Hosted TSX is compiled online. Do not import npm packages from the TSX file. Import only from `@neko/plugin-ui` or use global values provided by the host.
+Hosted TSX is compiled online. Keep imports simple:
 
-## Add plugin i18n files
+- Use `@neko/plugin-ui` for components, hooks, and types.
+- Do not import npm packages from plugin TSX.
+- Keep business logic in Python; use TSX for UI state and interaction.
+
+## 4. Add plugin i18n files
 
 `i18n/en.json`:
 
@@ -241,7 +262,7 @@ Fallback order:
 
 Only Chinese locales fall back to `zh-CN`; non-Chinese locales do not leak Chinese text by default.
 
-## Markdown guide surfaces
+## 5. Add a Markdown guide if needed
 
 For a read-only guide, use a Markdown file:
 
@@ -269,7 +290,7 @@ Not supported:
 - scripts
 - MDX components
 
-## `PluginSurfaceProps`
+## API quick reference: `PluginSurfaceProps`
 
 | Prop | Type | Description |
 |------|------|-------------|
@@ -286,7 +307,7 @@ Not supported:
 | `api` | `HostedApi` | Action and refresh bridge |
 | `useLocalState` | hook | iframe-local state persisted across context refresh |
 
-## `HostedApi`
+## API quick reference: `HostedApi`
 
 ```ts
 type HostedApi = {
