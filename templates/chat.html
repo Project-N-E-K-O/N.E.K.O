@@ -74,6 +74,23 @@
             position: relative !important;
             top: -2px !important;
         }
+        body.yui-guide-chat-buttons-disabled #react-chat-window-shell button {
+            pointer-events: none !important;
+        }
+        body.yui-guide-chat-buttons-disabled #react-chat-window-shell .composer-panel,
+        body.yui-guide-chat-buttons-disabled #react-chat-window-shell .composer-input-shell,
+        body.yui-guide-chat-buttons-disabled #react-chat-window-shell .composer-input,
+        body.yui-guide-chat-buttons-disabled #text-input-area,
+        body.yui-guide-chat-buttons-disabled #textInputBox,
+        body.yui-guide-chat-buttons-disabled #neko-resize-handle,
+        body.yui-guide-chat-buttons-disabled #react-chat-window-shell .react-chat-resize-edge {
+            pointer-events: none !important;
+        }
+        body.yui-guide-chat-buttons-disabled #react-chat-window-shell .composer-input,
+        body.yui-guide-chat-buttons-disabled #textInputBox {
+            caret-color: transparent !important;
+            user-select: none !important;
+        }
         /* Chat 字体优化（覆盖 6 语：中简/繁/英/日/韩/俄） */
         #react-chat-window-root {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter',

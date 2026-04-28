@@ -8,6 +8,7 @@ import { getLocale } from './i18n'
 const START_EVENT = 'neko:yui-guide:plugin-dashboard:start'
 const READY_EVENT = 'neko:yui-guide:plugin-dashboard:ready'
 const DONE_EVENT = 'neko:yui-guide:plugin-dashboard:done'
+const NARRATION_FINISHED_EVENT = 'neko:yui-guide:plugin-dashboard:narration-finished'
 const INTERRUPT_REQUEST_EVENT = 'neko:yui-guide:plugin-dashboard:interrupt-request'
 const INTERRUPT_ACK_EVENT = 'neko:yui-guide:plugin-dashboard:interrupt-ack'
 const HANDOFF_STORAGE_KEY = 'neko_yui_guide_handoff_token'
@@ -154,6 +155,7 @@ type ActiveNarration = {
   text: string
   voiceKey?: keyof typeof GUIDE_AUDIO_BY_KEY
   audioUrl?: string
+  resumeAudioOffsetMs: number
   interrupted: boolean
   cancelled: boolean
   playVersion: number
@@ -297,7 +299,7 @@ function cacheGuideAudioDuration(audioSrc: string, durationSeconds: number) {
   }
 }
 
-function playGuideAudioWithPromise(audioSrc: string, minimumDurationMs: number) {
+function playGuideAudioWithPromise(audioSrc: string, minimumDurationMs: number, startAtMs = 0) {
   const normalizedAudioSrc = typeof audioSrc === 'string' ? audioSrc.trim() : ''
   if (!normalizedAudioSrc) {
     return Promise.reject(new Error('missing_audio_src'))
@@ -306,6 +308,7 @@ function playGuideAudioWithPromise(audioSrc: string, minimumDurationMs: number) 
   return new Promise<void>((resolve, reject) => {
     let settled = false
     const audio = new Audio(normalizedAudioSrc)
+    const initialTimeSeconds = Math.max(0, startAtMs / 1000)
     const cacheKey = getGuideAudioDurationCacheKey(normalizedAudioSrc)
     let resolveMetadataDuration: ((durationMs: number) => void) | null = null
     let metadataTimerId: number | null = null
@@ -375,6 +378,14 @@ function playGuideAudioWithPromise(audioSrc: string, minimumDurationMs: number) 
         ? Math.round(audio.duration * 1000)
         : 0
       cacheGuideAudioDuration(normalizedAudioSrc, audio.duration)
+      if (initialTimeSeconds > 0) {
+        try {
+          const maxSeek = Number.isFinite(audio.duration) && audio.duration > 0
+            ? Math.max(0, audio.duration - 0.05)
+            : initialTimeSeconds
+          audio.currentTime = Math.min(initialTimeSeconds, maxSeek)
+        } catch (_) {}
+      }
       finishMetadataDuration(durationMs)
     }
     audio.onended = () => finish(true)
@@ -535,6 +546,7 @@ function speakTextWithPromise(
   options?: {
     voiceKey?: keyof typeof GUIDE_AUDIO_BY_KEY
     audioUrl?: string
+    startAtMs?: number
   },
 ): Promise<void> {
   const content = typeof text === 'string' ? text.trim() : ''
@@ -544,8 +556,13 @@ function speakTextWithPromise(
 
   const minDurationMs = estimateSpeechDurationMs(content)
   const localAudioSrc = resolveGuideAudioSrc(options?.voiceKey, options?.audioUrl)
+  const startAtMs = Number.isFinite(options?.startAtMs) ? Math.max(0, Math.round(options?.startAtMs as number)) : 0
   if (localAudioSrc) {
+<<<<<<< HEAD
     return playGuideAudioWithPromise(localAudioSrc, minDurationMs).catch(() => {
+=======
+    return playGuideAudioWithPromise(localAudioSrc, minDurationMs, startAtMs).catch(() => {
+>>>>>>> b092e560 (feat: 同步 YUI 教程资源并切换默认模型)
       return wait(minDurationMs)
     })
   }
@@ -625,8 +642,10 @@ function injectStyle() {
       inset: 0;
       width: 100%;
       height: 100%;
-      opacity: 1;
-      transition: opacity 180ms ease;
+      display: none !important;
+      opacity: 0 !important;
+      visibility: hidden !important;
+      transition: none !important;
     }
 
     #${ROOT_ID} .yui-guide-plugin-interaction-shield {
@@ -862,6 +881,7 @@ class PluginDashboardGuideRuntime {
   running = false
   interruptsEnabled = false
   scenePausedForResistance = false
+  homeNarrationFinished = false
   angryExitTriggered = false
   interruptCount = 0
   interruptAccelerationStreak = 0
@@ -871,6 +891,7 @@ class PluginDashboardGuideRuntime {
   resistanceCursorTimer: number | null = null
   narrationResumeTimer: number | null = null
   scenePauseResolvers: Array<() => void> = []
+  homeNarrationResolvers: Array<() => void> = []
   cursorMotionToken = 0
   cursorReactionInFlight = false
   cursorTransitionActive = false
@@ -980,6 +1001,8 @@ class PluginDashboardGuideRuntime {
     root.id = ROOT_ID
 
     const backdrop = createSvgElement('svg', 'yui-guide-plugin-backdrop')
+    ;(backdrop as unknown as { hidden?: boolean }).hidden = true
+    backdrop.style.display = 'none'
     const defs = createSvgElement('defs')
     const mask = createSvgElement('mask')
     mask.id = BACKDROP_MASK_ID
@@ -996,7 +1019,7 @@ class PluginDashboardGuideRuntime {
     backdropCutout.style.display = 'none'
 
     const backdropFill = createSvgElement('rect', 'yui-guide-plugin-backdrop-fill')
-    backdropFill.setAttribute('fill', 'rgba(3, 7, 18, 0.76)')
+    backdropFill.setAttribute('fill', 'transparent')
     backdropFill.setAttribute('mask', `url(#${BACKDROP_MASK_ID})`)
 
     mask.appendChild(backdropBase)
@@ -1093,6 +1116,8 @@ class PluginDashboardGuideRuntime {
       textKey: string
       voiceKey: keyof typeof GUIDE_AUDIO_BY_KEY
       interruptCount: number
+      x?: number
+      y?: number
     },
   ) {
     if (!window.opener || window.opener.closed) {
@@ -1211,7 +1236,11 @@ class PluginDashboardGuideRuntime {
   }
 
   updateBackdropCutout(spotlightRect: SpotlightRect | null) {
-    if (!this.backdropCutout) {
+    if (!this.backdropCutout || this.backdrop) {
+      if (this.backdrop) {
+        ;(this.backdrop as unknown as { hidden?: boolean }).hidden = true
+        this.backdrop.style.display = 'none'
+      }
       return
     }
 
@@ -1571,6 +1600,7 @@ class PluginDashboardGuideRuntime {
     options?: {
       voiceKey?: keyof typeof GUIDE_AUDIO_BY_KEY
       audioUrl?: string
+      startAtMs?: number
     },
   ) {
     await speakTextWithPromise(text, options)
@@ -1607,6 +1637,33 @@ class PluginDashboardGuideRuntime {
     })
   }
 
+  markHomeNarrationFinished(sessionId: string) {
+    if (!this.isCurrentRun(sessionId) || this.homeNarrationFinished) {
+      return
+    }
+
+    this.homeNarrationFinished = true
+    const resolvers = this.homeNarrationResolvers.slice()
+    this.homeNarrationResolvers = []
+    resolvers.forEach((resolve) => {
+      try {
+        resolve()
+      } catch (_) {}
+    })
+  }
+
+  waitForHomeNarrationFinished(sessionId: string, isCurrent?: () => boolean) {
+    if (this.homeNarrationFinished) {
+      return Promise.resolve(true)
+    }
+
+    return new Promise<boolean>((resolve) => {
+      this.homeNarrationResolvers.push(() => {
+        resolve(!isCurrent || isCurrent())
+      })
+    })
+  }
+
   clearNarrationResumeTimer() {
     if (this.narrationResumeTimer !== null) {
       window.clearTimeout(this.narrationResumeTimer)
@@ -1638,6 +1695,7 @@ class PluginDashboardGuideRuntime {
     void this.speakLine(narration.text, {
       voiceKey: narration.voiceKey,
       audioUrl: narration.audioUrl,
+      startAtMs: narration.resumeAudioOffsetMs,
     }).then(() => {
       if (
         this.activeNarration !== narration
@@ -1650,6 +1708,7 @@ class PluginDashboardGuideRuntime {
         return
       }
 
+      narration.resumeAudioOffsetMs = 0
       this.activeNarration = null
       try {
         narration.resolve()
@@ -1684,6 +1743,7 @@ class PluginDashboardGuideRuntime {
         text: content,
         voiceKey: options?.voiceKey,
         audioUrl: options?.audioUrl,
+        resumeAudioOffsetMs: 0,
         interrupted: false,
         cancelled: false,
         playVersion: 0,
@@ -1703,6 +1763,9 @@ class PluginDashboardGuideRuntime {
       return true
     }
 
+    narration.resumeAudioOffsetMs = currentGuideAudio && Number.isFinite(currentGuideAudio.currentTime)
+      ? Math.max(0, Math.round(currentGuideAudio.currentTime * 1000))
+      : 0
     narration.interrupted = true
     this.clearNarrationResumeTimer()
     stopCurrentGuideSpeech()
@@ -1981,6 +2044,8 @@ class PluginDashboardGuideRuntime {
       textKey,
       voiceKey,
       interruptCount: this.interruptCount,
+      x,
+      y,
     })
     if (!isSameSession()) {
       return
@@ -2046,6 +2111,13 @@ class PluginDashboardGuideRuntime {
     this.scenePauseResolvers = []
     this.scenePausedForResistance = false
     pauseResolvers.forEach((resolve) => {
+      try {
+        resolve()
+      } catch (_) {}
+    })
+    const narrationResolvers = this.homeNarrationResolvers.slice()
+    this.homeNarrationResolvers = []
+    narrationResolvers.forEach((resolve) => {
       try {
         resolve()
       } catch (_) {}
@@ -2121,6 +2193,7 @@ class PluginDashboardGuideRuntime {
     this.activeSessionId = ''
     this.interruptsEnabled = false
     this.scenePausedForResistance = false
+    this.homeNarrationFinished = false
     this.angryExitTriggered = false
     this.interruptCount = 0
     this.interruptAccelerationStreak = 0
@@ -2135,6 +2208,7 @@ class PluginDashboardGuideRuntime {
     this.pendingInterruptAck = null
     this.clearPreactivationTimeout()
     this.scenePauseResolvers = []
+    this.homeNarrationResolvers = []
   }
 
   async run(sessionId: string, payload: StartPayload) {
@@ -2149,6 +2223,7 @@ class PluginDashboardGuideRuntime {
     this.interruptCount = Number.isFinite(payload.interruptCount)
       ? Math.max(0, Math.floor(payload.interruptCount as number))
       : 0
+    this.homeNarrationFinished = false
     const isCurrent = () => this.isCurrentRun(sessionId)
     this.activateOverlayShell()
     window.addEventListener('resize', this.boundRefreshSpotlight, true)
@@ -2280,7 +2355,9 @@ class PluginDashboardGuideRuntime {
         return
       }
     }
-    await speechPromise
+    if (!(await this.waitForHomeNarrationFinished(sessionId, isCurrent))) {
+      return
+    }
     if (!isCurrent()) {
       return
     }
@@ -2309,6 +2386,14 @@ export function initPluginDashboardYuiGuideRuntime() {
   window.addEventListener('message', (event: MessageEvent) => {
     const data = event.data
     if (!data || typeof data !== 'object') {
+      return
+    }
+
+    if (data.type === NARRATION_FINISHED_EVENT && isAllowedOpenerEvent(event)) {
+      const sessionId = typeof data.sessionId === 'string' ? data.sessionId : ''
+      if (sessionId) {
+        runtime.markHomeNarrationFinished(sessionId)
+      }
       return
     }
 

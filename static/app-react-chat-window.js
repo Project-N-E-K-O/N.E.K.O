@@ -88,7 +88,8 @@
         var body = document.body;
         if (!body) return false;
         return body.classList.contains('yui-guide-home-driver-hidden')
-            || body.classList.contains('yui-taking-over');
+            || body.classList.contains('yui-taking-over')
+            || body.classList.contains('yui-guide-chat-buttons-disabled');
     }
 
     function getMinimizeButton() {

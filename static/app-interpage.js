@@ -1410,6 +1410,18 @@
                         }
                         break;
                     }
+                    case 'yui_guide_append_chat_message': {
+                        if (window.location.pathname !== '/chat') break;
+                        if (window.reactChatWindowHost && typeof window.reactChatWindowHost.appendMessage === 'function') {
+                            window.reactChatWindowHost.appendMessage(event.data.message || null);
+                        }
+                        break;
+                    }
+                    case 'yui_guide_set_chat_buttons_disabled': {
+                        if (window.location.pathname !== '/chat' || !document.body) break;
+                        applyYuiGuideChatLockState(event.data.disabled !== false);
+                        break;
+                    }
                     case 'request_avatar_capture': {
                         if (window.location.pathname === '/chat') break;
                         var captureLanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
@@ -1459,6 +1471,81 @@
         }
     } catch (e) {
         console.log('[BroadcastChannel] 初始化失败，将使用 postMessage 后备方案:', e);
+    }
+
+    function applyYuiGuideChatLockState(disabled) {
+        if (!document.body) {
+            return;
+        }
+
+        var locked = disabled !== false;
+        document.body.classList.toggle('yui-guide-chat-buttons-disabled', locked);
+
+        var activeElement = document.activeElement;
+        if (
+            locked
+            && activeElement
+            && typeof activeElement.closest === 'function'
+            && activeElement.closest('#react-chat-window-shell, #text-input-area')
+            && typeof activeElement.blur === 'function'
+        ) {
+            activeElement.blur();
+        }
+
+        var readonlyTargets = document.querySelectorAll(
+            '#react-chat-window-shell textarea, '
+            + '#react-chat-window-shell input, '
+            + '#text-input-area textarea, '
+            + '#text-input-area input'
+        );
+        readonlyTargets.forEach(function (element) {
+            if (!element || !('readOnly' in element)) {
+                return;
+            }
+
+            if (locked) {
+                if (!element.hasAttribute('data-yui-guide-prev-readonly')) {
+                    element.setAttribute('data-yui-guide-prev-readonly', element.readOnly ? 'true' : 'false');
+                }
+                element.readOnly = true;
+                return;
+            }
+
+            var prevReadOnly = element.getAttribute('data-yui-guide-prev-readonly');
+            if (prevReadOnly !== null) {
+                element.readOnly = prevReadOnly === 'true';
+                element.removeAttribute('data-yui-guide-prev-readonly');
+            } else {
+                element.readOnly = false;
+            }
+        });
+
+        var contentEditableTargets = document.querySelectorAll(
+            '#react-chat-window-shell [contenteditable=\"true\"], '
+            + '#react-chat-window-shell [contenteditable=\"plaintext-only\"]'
+        );
+        contentEditableTargets.forEach(function (element) {
+            if (!element || typeof element.getAttribute !== 'function') {
+                return;
+            }
+
+            if (locked) {
+                if (!element.hasAttribute('data-yui-guide-prev-contenteditable')) {
+                    element.setAttribute(
+                        'data-yui-guide-prev-contenteditable',
+                        element.getAttribute('contenteditable') || 'true'
+                    );
+                }
+                element.setAttribute('contenteditable', 'false');
+                return;
+            }
+
+            var prevContentEditable = element.getAttribute('data-yui-guide-prev-contenteditable');
+            if (prevContentEditable !== null) {
+                element.setAttribute('contenteditable', prevContentEditable);
+                element.removeAttribute('data-yui-guide-prev-contenteditable');
+            }
+        });
     }
 
     // =====================================================================

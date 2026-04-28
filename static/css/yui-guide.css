@@ -22,14 +22,21 @@ body.yui-guide-home-driver-hidden .driver-highlight {
 .yui-guide-backdrop {
   position: fixed;
   inset: 0;
+<<<<<<< HEAD
   display: none !important;
   opacity: 0;
   transition: opacity 180ms ease;
 }
 
 .yui-guide-backdrop {
+=======
+>>>>>>> b092e560 (feat: 同步 YUI 教程资源并切换默认模型)
   width: 100%;
   height: 100%;
+  display: none !important;
+  opacity: 0 !important;
+  visibility: hidden !important;
+  transition: none !important;
 }
 
 .yui-guide-backdrop-cutout {
@@ -43,7 +50,7 @@ body.yui-guide-home-driver-hidden .driver-highlight {
 }
 
 .yui-guide-backdrop.is-visible {
-  opacity: 1;
+  opacity: 0 !important;
 }
 
 .yui-guide-spotlight-frame {
@@ -63,7 +70,7 @@ body.yui-guide-home-driver-hidden .driver-highlight {
 
 .yui-guide-spotlight-frame.is-visible {
   opacity: 1;
-  animation: yui-guide-chat-pulse 1.5s ease-in-out infinite;
+  animation: yui-guide-spotlight-scale-pulse 1.5s ease-in-out infinite;
 }
 
 .yui-guide-spotlight-chrome {
@@ -168,7 +175,7 @@ body.yui-guide-home-driver-hidden .driver-highlight {
 
 .yui-guide-spotlight-circle-skin {
   display: none;
-  inset: -18px;
+  inset: -19px -18px -17px -18px;
   background-image: url('/static/assets/tutorial/highlight/circle-highlight.png');
 }
 
@@ -180,11 +187,13 @@ body.yui-guide-home-driver-hidden .driver-highlight {
   z-index: 1;
 }
 
-.yui-guide-spotlight-frame.is-circular-mask {
+.yui-guide-spotlight-frame.is-circular-mask,
+.yui-guide-spotlight-frame.is-circle-image {
   box-shadow: none !important;
 }
 
-.yui-guide-spotlight-frame.is-circular-mask.is-visible {
+.yui-guide-spotlight-frame.is-circular-mask.is-visible,
+.yui-guide-spotlight-frame.is-circle-image.is-visible {
   animation: none !important;
   animation-name: none !important;
   box-shadow: none !important;
@@ -193,11 +202,16 @@ body.yui-guide-home-driver-hidden .driver-highlight {
 .yui-guide-spotlight-frame.is-circular-mask .yui-guide-spotlight-chrome,
 .yui-guide-spotlight-frame.is-circular-mask .yui-guide-spotlight-ear-left,
 .yui-guide-spotlight-frame.is-circular-mask .yui-guide-spotlight-ear-right,
-.yui-guide-spotlight-frame.is-circular-mask .yui-guide-spotlight-paw {
+.yui-guide-spotlight-frame.is-circular-mask .yui-guide-spotlight-paw,
+.yui-guide-spotlight-frame.is-circle-image .yui-guide-spotlight-chrome,
+.yui-guide-spotlight-frame.is-circle-image .yui-guide-spotlight-ear-left,
+.yui-guide-spotlight-frame.is-circle-image .yui-guide-spotlight-ear-right,
+.yui-guide-spotlight-frame.is-circle-image .yui-guide-spotlight-paw {
   display: none;
 }
 
-.yui-guide-spotlight-frame.is-circular-mask .yui-guide-spotlight-circle-skin {
+.yui-guide-spotlight-frame.is-circular-mask .yui-guide-spotlight-circle-skin,
+.yui-guide-spotlight-frame.is-circle-image .yui-guide-spotlight-circle-skin {
   display: block;
 }
 
@@ -207,7 +221,9 @@ body.yui-guide-home-driver-hidden .driver-highlight {
     0 0 0 5px rgba(161, 228, 255, 0.72),
     0 14px 28px rgba(147, 214, 255, 0.18) !important;
   border-radius: 16px !important;
-  animation: yui-guide-chat-pulse 1.5s ease-in-out infinite;
+  scale: 1;
+  transform-origin: center;
+  animation: yui-guide-spotlight-scale-pulse 1.5s ease-in-out infinite;
 }
 
 .yui-guide-bubble {
@@ -518,6 +534,17 @@ body.yui-taking-over #react-chat-window-root .composer-input:focus-visible {
   100% {
     opacity: 1;
     transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes yui-guide-spotlight-scale-pulse {
+  0%,
+  100% {
+    scale: 1;
+  }
+
+  50% {
+    scale: 1.02;
   }
 }
 
