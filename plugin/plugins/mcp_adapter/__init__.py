@@ -1223,6 +1223,10 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         self.ctx.logger.info(
             f"MCP Adapter started with {len(self._clients)} connected servers; pending {len(self._pending_auto_connect)} auto-connect task(s)"
         )
+
+    async def _on_command_loop_start(self) -> None:
+        """Schedule startup auto-connect tasks once the long-lived command loop is active."""
+        self._schedule_pending_auto_connects()
     
     async def _on_tool_register(
         self,

@@ -161,7 +161,7 @@ function executeHostedDocument(source: string, context: PluginUiContext = baseCo
     locale: 'en',
   })
 
-  window.eval(extractScript(html))
+  new Function(extractScript(html)).call(window)
   return {
     root: document.getElementById('root')!,
     messages,

@@ -32,7 +32,7 @@ function installRuntime() {
     },
   }
   window.NekoUiKit = undefined
-  window.eval(runtimeSource)
+  new Function(runtimeSource).call(window)
   return window.NekoUiKit
 }
 

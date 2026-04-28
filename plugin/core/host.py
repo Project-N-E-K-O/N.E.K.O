@@ -1215,6 +1215,14 @@ def _plugin_process_runner(
 
         async def _async_command_loop():
             poll_ms = int(QUEUE_GET_TIMEOUT * 1000)
+            on_command_loop_start = getattr(instance, "_on_command_loop_start", None)
+            if callable(on_command_loop_start):
+                try:
+                    result = on_command_loop_start()
+                    if inspect.isawaitable(result):
+                        await result
+                except Exception:
+                    logger.exception("[Plugin Process] _on_command_loop_start failed")
 
             while True:
                 try:

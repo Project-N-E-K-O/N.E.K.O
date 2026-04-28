@@ -118,6 +118,29 @@ def test_pending_auto_connect_is_scheduled_lazily() -> None:
     asyncio.run(scenario())
 
 
+def test_command_loop_start_schedules_pending_auto_connects() -> None:
+    async def scenario() -> None:
+        plugin = _plugin_stub()
+        started = asyncio.Event()
+
+        async def fake_connect(server_name: str, server_cfg: dict[str, object], timeout: float) -> bool:
+            started.set()
+            await asyncio.sleep(60)
+            return True
+
+        plugin._connect_server = fake_connect  # type: ignore[method-assign]
+        plugin._pending_auto_connect["example"] = ({"transport": "stdio"}, 30.0)
+
+        await plugin._on_command_loop_start()
+
+        await started.wait()
+        assert "example" not in plugin._pending_auto_connect
+        assert "example" in plugin._connect_tasks
+        assert plugin._cancel_connect_task("example")
+
+    asyncio.run(scenario())
+
+
 def test_remove_servers_cancels_connect_task_and_persists_without_server() -> None:
     async def scenario() -> None:
         MCPAdapterPlugin = _load_mcp_adapter_plugin()
