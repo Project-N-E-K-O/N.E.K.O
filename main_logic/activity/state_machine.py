@@ -216,20 +216,29 @@ def _apply_user_overrides(
     over static DB). Game overrides MERGE on top — they don't change
     category/subcategory/canonical, only intensity/genre.
 
-    Privacy and own_app are special: they always come from the static DB
-    (the user shouldn't be able to mark KeePass as "work" — that defeats
-    the privacy guarantee). When the static DB result is already
-    ``private`` or ``own_app``, app/title overrides are SKIPPED so a
-    user override of "work" on KeePass.exe doesn't downgrade the privacy
-    classification. Game intensity/genre overrides are still applied
-    (those don't change category, only refine within gaming).
+    Override priority is **additive**, not overriding: app/title overrides
+    only fire when the static keyword DB returned ``unknown``. They
+    classify what the DB missed; they don't rewrite stable DB hits.
+    Privacy / own_app classifications are also locked, so a user override
+    of "work" on KeePass.exe stays as ``private``. Game
+    intensity/genre overrides are the one exception — they patch within
+    an existing gaming classification (don't change category, only
+    refine intensity/genre tags) and run regardless of static-locked
+    status because they're a different axis.
     """
-    # Privacy + own-app guarantee — skip app/title overrides if the
-    # static DB already nailed this as one of those special categories.
+    # Privacy + own-app guarantee — those are static-DB-only categories.
+    # User overrides can't promote OR demote them (suppressed below).
     static_locked = result.category in ('private', 'own_app')
 
-    # User app overrides — keyed by lowercased process name
-    if not static_locked and prefs.user_app_overrides and sys_snap.process_name:
+    # User app overrides — keyed by lowercased process name. Only fire
+    # when static result is 'unknown' (consistent with title overrides
+    # and the additive design rule).
+    if (
+        result.category == 'unknown'
+        and not static_locked
+        and prefs.user_app_overrides
+        and sys_snap.process_name
+    ):
         key = sys_snap.process_name.lower()
         # Try exact basename match (handles full paths)
         basename = key.replace('\\', '/').rsplit('/', 1)[-1]
@@ -242,7 +251,7 @@ def _apply_user_overrides(
             )
 
     # User title overrides — keyed by lowercased title substring.
-    # Same locked-categories guarantee.
+    # Same additive rule as app overrides.
     if (
         result.category == 'unknown'
         and not static_locked
@@ -903,10 +912,20 @@ class ActivityStateMachine:
             reasons.append(('state_private', {}))
 
         # CPU / GPU augmentations — appended only when notably high so
-        # we don't add noise to the typical case.
+        # we don't add noise to the typical case. GPU threshold reuses
+        # ``self._gaming_gpu_threshold_percent`` so the reason text and
+        # the gaming-by-GPU classifier always agree on "is GPU notable";
+        # otherwise a user lifting / lowering the gaming threshold would
+        # see prompt explanations disagree with state decisions.
+        # CPU reason stays at the hardcoded 70 — there's no per-instance
+        # CPU threshold to thread through (CPU only ever shows up as
+        # supplementary context, never gates a state).
         if sys_snap and sys_snap.cpu_avg_30s > 70:
             reasons.append(('high_cpu', {'cpu_percent': int(sys_snap.cpu_avg_30s)}))
-        if sys_snap and sys_snap.gpu_utilization is not None and sys_snap.gpu_utilization > 60:
+        if (
+            sys_snap and sys_snap.gpu_utilization is not None
+            and sys_snap.gpu_utilization > self._gaming_gpu_threshold_percent
+        ):
             reasons.append(('high_gpu', {'gpu_percent': int(sys_snap.gpu_utilization)}))
 
         return reasons

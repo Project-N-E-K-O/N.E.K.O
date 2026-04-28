@@ -194,6 +194,33 @@ def test_user_app_override_patches_unknown():
     assert snap.active_window.canonical == 'MyCorpApp'
 
 
+def test_user_app_override_does_not_rewrite_stable_static_classification():
+    """User app override fires ONLY when static classifier returned 'unknown'.
+
+    Symmetric with title-override behaviour: overrides are additive
+    (they classify what the static DB missed), they don't rewrite a
+    stable DB hit. Otherwise a user typo / mistaken category in the
+    override dict could quietly break classification of a well-known app.
+    """
+    prefs = ActivityPreferences(
+        user_app_overrides={
+            'code.exe': _AppOverride(category='entertainment', canonical='Code'),
+        },
+    )
+    sm = ActivityStateMachine(prefs=prefs)
+    # Code.exe is in the static DB as work/ide; user override should be ignored.
+    sn = _sys_snap(title='proactive_chat.py - Visual Studio Code', process='Code.exe')
+    sm.update_system(sn)
+    sm.update_window(observation_from_system(sn, prefs))
+
+    snap = sm.get_snapshot()
+    assert snap.active_window is not None
+    assert snap.active_window.category == 'work', (
+        'static DB hit (Code.exe → work) must not be rewritten by user override; '
+        f'got category={snap.active_window.category}'
+    )
+
+
 def test_user_app_override_cannot_unmask_private():
     """User can't override KeePass to 'work' — privacy guarantee survives."""
     prefs = ActivityPreferences(
@@ -639,6 +666,48 @@ def test_own_app_freezes_dwell_timer_on_previous_window():
 
 
 # ── canonical fallback in loader (CR Minor) ───────────────────────────
+
+
+def test_high_gpu_reason_uses_threshold_override():
+    """``high_gpu`` reason must respect the same threshold as gaming-by-GPU.
+
+    If the user lifts ``gaming_gpu_threshold_percent`` to 85, GPU at 70
+    should NOT trigger gaming-by-GPU AND should NOT emit ``high_gpu``
+    reason — both are 'is the GPU notable right now?' decisions and
+    mustn't disagree.
+    """
+    prefs = ActivityPreferences(
+        thresholds={'gaming_gpu_threshold_percent': 85.0},
+    )
+    sm = ActivityStateMachine(prefs=prefs)
+    # GPU at 70 — between default 60 and overridden 85. With the fix,
+    # neither classifier nor reason emitter should flag it.
+    sn = _sys_snap(title='SomeUnknownApp', process='Other.exe', gpu=70.0)
+    sm.update_system(sn)
+    sm.update_window(observation_from_system(sn, prefs))
+    sm.update_user_message()
+
+    snap = sm.get_snapshot()
+    reason_codes = [r[0] for r in snap.propensity_reasons]
+    assert 'high_gpu' not in reason_codes, (
+        f'high_gpu reason must respect user threshold (85%); '
+        f'got reasons={reason_codes} for GPU=70%'
+    )
+    assert snap.state != 'gaming', (
+        f'gaming-by-GPU must respect threshold (85%); got state={snap.state}'
+    )
+
+    # Now push GPU above the override — both should fire
+    sn2 = _sys_snap(title='SomeUnknownApp', process='Other.exe', gpu=90.0)
+    sm.update_system(sn2)
+    sm.update_window(observation_from_system(sn2, prefs))
+
+    snap2 = sm.get_snapshot()
+    reason_codes2 = [r[0] for r in snap2.propensity_reasons]
+    assert 'high_gpu' in reason_codes2, (
+        f'high_gpu reason should fire above override threshold (85%); '
+        f'got reasons={reason_codes2} for GPU=90%'
+    )
 
 
 def test_loader_canonical_falls_back_to_override_key(tmp_path):
