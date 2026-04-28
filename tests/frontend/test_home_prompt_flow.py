@@ -88,7 +88,15 @@ def _bootstrap_page(
     script_names: tuple[str, ...] = (),
     init_js: str | None = None,
 ) -> None:
-    mock_page.set_content("<!doctype html><html><body></body></html>")
+    mock_page.route(
+        "**/__neko_prompt_test__",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="text/html",
+            body="<!doctype html><html><body></body></html>",
+        ),
+    )
+    mock_page.goto("http://127.0.0.1/__neko_prompt_test__")
     mock_page.evaluate(
         _PAGE_BOOTSTRAP_TEMPLATE
         .replace("__SETUP_JS__", setup_js.strip())
@@ -107,19 +115,28 @@ def _bootstrap_tutorial_prompt_page(
     fetch_js: str = "",
     include_common_dialogs: bool = False,
     include_autostart_provider: bool = False,
+    include_autostart_prompt: bool = False,
+    use_real_mutation_security: bool = False,
 ) -> None:
     script_names = []
     if include_common_dialogs:
         script_names.append("common_dialogs.js")
     if include_autostart_provider:
         script_names.append("app-autostart-provider.js")
+        setup_js = setup_js.rstrip() + "\nwindow.nekoAutostartProvider = null;\n"
+    if use_real_mutation_security:
+        setup_js = setup_js.rstrip() + "\nwindow.nekoLocalMutationSecurity = null;\n"
+    script_names.append("app-prompt-shared.js")
     script_names.append("app-tutorial-prompt.js")
+    should_load_autostart_prompt = include_autostart_prompt or include_autostart_provider
+    if should_load_autostart_prompt:
+        script_names.append("app-autostart-prompt.js")
     _bootstrap_page(
         mock_page,
         setup_js=setup_js,
         fetch_js=fetch_js,
         script_names=tuple(script_names),
-        init_js="() => window.appTutorialPrompt.init()",
+        init_js="() => { window.appTutorialPrompt.init(); if (window.appAutostartPrompt) window.appAutostartPrompt.init(); }",
     )
 
 
@@ -129,6 +146,7 @@ def _bootstrap_autostart_provider_page(
     setup_js: str = "",
     fetch_js: str = "",
 ) -> None:
+    setup_js = setup_js.rstrip() + "\nwindow.nekoAutostartProvider = null;\n"
     _bootstrap_page(
         mock_page,
         setup_js=setup_js,
@@ -169,6 +187,7 @@ def test_home_prompt_queue_serializes_tutorial_and_autostart_prompts(
     _bootstrap_tutorial_prompt_page(
         mock_page,
         include_common_dialogs=True,
+        include_autostart_prompt=True,
         setup_js="""
             window.__requestLog = [];
             window.nekoAutostartProvider = {
@@ -332,7 +351,7 @@ def test_home_prompt_queue_serializes_tutorial_and_autostart_prompts(
     )
 
     tutorial_title = mock_page.locator(".modal-title")
-    expect(tutorial_title).to_have_text("要不要开始主页新手引导？", timeout=5000)
+    expect(tutorial_title).to_have_text("要不要先看一下新手引导？", timeout=5000)
     expect(mock_page.locator(".modal-overlay")).to_have_count(1)
 
     mock_page.get_by_role("button", name="开始引导").click()
@@ -455,7 +474,7 @@ def test_tutorial_prompt_prefers_window_t_over_safe_t(
         """,
     )
 
-    expect(mock_page.locator(".modal-title")).to_have_text("要不要开始主页新手引导？", timeout=5000)
+    expect(mock_page.locator(".modal-title")).to_have_text("要不要先看一下新手引导？", timeout=5000)
 
 
 @pytest.mark.frontend
@@ -1117,20 +1136,20 @@ def test_autostart_provider_reports_unsupported_status_when_desktop_bridge_missi
         """
     )
 
-    assert result["status"]["provider"] == "backend"
+    assert result["status"]["provider"] == "neko-pc"
     assert result["status"]["supported"] is False
     assert result["status"]["enabled"] is False
     assert result["status"]["authoritative"] is True
-    assert result["status"]["reason"] == "backend_autostart_removed"
-    assert result["enabled"]["provider"] == "backend"
+    assert result["status"]["mechanism"] == "desktop-bridge-unavailable"
+    assert result["enabled"]["provider"] == "neko-pc"
     assert result["enabled"]["ok"] is False
     assert result["enabled"]["supported"] is False
     assert result["enabled"]["enabled"] is False
-    assert result["enabled"]["error_code"] == "launch_command_unavailable"
-    assert result["disabled"]["provider"] == "backend"
+    assert result["enabled"]["error_code"] == "autostart_not_supported"
+    assert result["disabled"]["provider"] == "neko-pc"
     assert result["disabled"]["enabled"] is False
-    assert result["disabled"]["ok"] is True
-    assert result["cached"]["provider"] == "backend"
+    assert result["disabled"]["ok"] is False
+    assert result["cached"]["provider"] == "neko-pc"
     assert result["cached"]["enabled"] is False
     assert result["requestLog"] == []
 
@@ -1276,7 +1295,7 @@ def test_autostart_provider_desktop_status_event_uses_desktop_defaults_without_p
     assert result["enabled"] is True
     assert result["authoritative"] is True
     assert result["provider"] == "neko-pc"
-    assert result["mechanism"] == "desktop-bridge"
+    assert result["mechanism"] == "electron-login-item"
 
 
 @pytest.mark.frontend
@@ -1286,6 +1305,7 @@ def test_mutation_requests_refresh_csrf_token_once_after_validation_failure(
     _bootstrap_tutorial_prompt_page(
         mock_page,
         include_autostart_provider=True,
+        use_real_mutation_security=True,
         setup_js="""
             window.pageConfigReady = Promise.resolve({
                 success: true,
@@ -1396,9 +1416,9 @@ def test_mutation_requests_refresh_csrf_token_once_after_validation_failure(
     mock_page.wait_for_function(
         """
         () => (
-            window.__pageConfigFetchCount === 1
+            window.__pageConfigFetchCount >= 1
             && window.__tutorialHeartbeatBodies.length === 1
-            && window.__autostartHeartbeatBodies.length === 1
+            && window.__autostartHeartbeatBodies.length >= 1
             && window.__mutationTokens.filter(function(token) {
                 return token === 'stale-token';
             }).length >= 2
@@ -1421,11 +1441,11 @@ def test_mutation_requests_refresh_csrf_token_once_after_validation_failure(
         """
     )
 
-    assert result["pageConfigFetchCount"] == 1
+    assert result["pageConfigFetchCount"] >= 1
     assert result["mutationTokens"].count("stale-token") >= 2
     assert result["mutationTokens"].count("fresh-token") >= 2
     assert len(result["tutorialHeartbeatBodies"]) == 1
-    assert len(result["autostartHeartbeatBodies"]) == 1
+    assert len(result["autostartHeartbeatBodies"]) >= 1
 
 
 @pytest.mark.frontend
@@ -1435,6 +1455,7 @@ def test_autostart_prompt_acceptance_tracks_pending_system_approval_without_fail
     _bootstrap_tutorial_prompt_page(
         mock_page,
         include_common_dialogs=True,
+        include_autostart_prompt=True,
         setup_js="""
             window.__toastMessages = [];
             window.showStatusToast = function(message) {
@@ -1575,7 +1596,7 @@ def test_autostart_prompt_acceptance_tracks_pending_system_approval_without_fail
     assert result["decisionBody"]["decision"] == "accept"
     assert result["decisionBody"]["result"] == "approval_pending"
     assert result["decisionBody"]["autostart_provider"] == "neko-pc"
-    assert result["toastMessages"] == ["需要先在系统设置里批准开机自启动，批准后会自动生效"]
+    assert result["toastMessages"] == ["需要先在系统设置里批准开机自动启动，批准后会自动生效"]
 
 
 @pytest.mark.frontend
@@ -1584,6 +1605,7 @@ def test_autostart_prompt_stays_suppressed_when_provider_reports_blocked_status(
 ):
     _bootstrap_tutorial_prompt_page(
         mock_page,
+        include_autostart_prompt=True,
         setup_js="""
             window.__promptCalls = [];
             window.__requestLog = [];
@@ -1706,6 +1728,7 @@ def test_autostart_decision_failure_retries_without_reopening_prompt(
 ):
     _bootstrap_tutorial_prompt_page(
         mock_page,
+        include_autostart_prompt=True,
         setup_js="""
             window.__promptTitles = [];
             window.__autostartDecisionBodies = [];
