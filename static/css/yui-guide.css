@@ -22,6 +22,7 @@ body.yui-guide-home-driver-hidden .driver-highlight {
 .yui-guide-backdrop {
   position: fixed;
   inset: 0;
+  display: none !important;
   opacity: 0;
   transition: opacity 180ms ease;
 }

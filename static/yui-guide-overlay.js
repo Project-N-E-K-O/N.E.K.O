@@ -7,6 +7,7 @@
     const EXTRA_SPOTLIGHT_ENTRY_COUNT = 6;
     const DEFAULT_SPOTLIGHT_PADDING = 6;
     const BACKDROP_CUTOUT_INSET = 4;
+    const BACKDROP_DIM_ENABLED = false;
 
     function createElement(tagName, className) {
         const element = document.createElement(tagName);
@@ -515,7 +516,12 @@
 
             if (this.backdrop) {
                 this.syncBackdropViewport();
-                if (persistentMaskRect || actionMaskRect || secondaryActionMaskRect || extraMaskRects.length > 0) {
+                if (BACKDROP_DIM_ENABLED && (
+                    persistentMaskRect
+                    || actionMaskRect
+                    || secondaryActionMaskRect
+                    || extraMaskRects.length > 0
+                )) {
                     this.backdrop.hidden = false;
                     this.backdrop.classList.add('is-visible');
                 } else {
