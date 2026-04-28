@@ -85,7 +85,13 @@
         }
 
         document.querySelectorAll('#live2d-floating-buttons, #live2d-lock-icon, #live2d-return-button-container')
-            .forEach(function (el) { el.remove(); });
+            .forEach(function (el) {
+                if (window._removeNekoFloatingButtonsElement) {
+                    window._removeNekoFloatingButtonsElement(el);
+                } else {
+                    el.remove();
+                }
+            });
     }
 
     /**
@@ -97,7 +103,13 @@
             return;
         }
         document.querySelectorAll('#vrm-floating-buttons, #vrm-lock-icon, #vrm-return-button-container')
-            .forEach(function (el) { el.remove(); });
+            .forEach(function (el) {
+                if (window._removeNekoFloatingButtonsElement) {
+                    window._removeNekoFloatingButtonsElement(el);
+                } else {
+                    el.remove();
+                }
+            });
     }
 
     /**
@@ -109,7 +121,13 @@
             return;
         }
         document.querySelectorAll('#mmd-floating-buttons, #mmd-lock-icon, #mmd-return-button-container')
-            .forEach(function (el) { el.remove(); });
+            .forEach(function (el) {
+                if (window._removeNekoFloatingButtonsElement) {
+                    window._removeNekoFloatingButtonsElement(el);
+                } else {
+                    el.remove();
+                }
+            });
     }
 
     function markMMDCanvasLoadingSession(canvas, loadingSessionId) {

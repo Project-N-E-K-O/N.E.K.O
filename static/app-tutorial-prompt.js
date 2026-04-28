@@ -194,9 +194,6 @@
             if (response && response.tutorial_run_token) {
                 state.tutorialRunToken = response.tutorial_run_token;
             }
-            if (flowStep === 'tutorial-started-persisted' && response && response.ok !== false) {
-                state.pendingTutorialStartPayload = null;
-            }
             if (requestOptions.clearRunTokenOnSuccess && response && response.ok) {
                 state.tutorialRunToken = null;
             }
@@ -406,6 +403,22 @@
         try {
             clearHeartbeatSnapshot();
 
+            if (state.pendingTutorialStartPayload && !state.pendingTutorialStartPersistence) {
+                const retryPersistence = persistTutorialLifecycle(
+                    '/api/tutorial-prompt/tutorial-started',
+                    state.pendingTutorialStartPayload,
+                    'tutorial-started-persisted'
+                );
+                state.pendingTutorialStartPersistence = retryPersistence;
+                const retryResponse = await retryPersistence;
+                if (retryResponse && retryResponse.ok !== false) {
+                    state.pendingTutorialStartPayload = null;
+                }
+                if (state.pendingTutorialStartPersistence === retryPersistence) {
+                    state.pendingTutorialStartPersistence = null;
+                }
+            }
+
             data = await requestJson(HEARTBEAT_ENDPOINT, {
                 method: 'POST',
                 json: payload,
@@ -433,21 +446,6 @@
         try {
             if (data && data.should_prompt) {
                 await maybeShowPrompt(data.prompt_token);
-            }
-            if (state.pendingTutorialStartPayload && !state.pendingTutorialStartPersistence) {
-                const retryPayload = Object.assign({}, state.pendingTutorialStartPayload);
-                const retryPersistence = persistTutorialLifecycle(
-                    '/api/tutorial-prompt/tutorial-started',
-                    retryPayload,
-                    'tutorial-started-persisted'
-                );
-                state.pendingTutorialStartPersistence = retryPersistence;
-                void retryPersistence.finally(function () {
-                    if (state.pendingTutorialStartPersistence === retryPersistence) {
-                        state.pendingTutorialStartPersistence = null;
-                    }
-                });
-                await retryPersistence;
             }
         } catch (error) {
             console.warn('[TutorialPrompt] failed to render tutorial prompt:', error);
@@ -597,14 +595,14 @@
         logFlow('prompt-open', { token: shortPromptToken(promptToken) });
         try {
             const decision = await window.showDecisionPrompt({
-                title: translate('tutorialPrompt.title', '要不要先看一下新手引导？'),
+                title: translate('tutorialPrompt.title', '要不要开始主页新手引导？'),
                 message: translate(
                     'tutorialPrompt.message',
-                    '看起来你刚刚打开 N.E.K.O，还没有开始操作。要不要先带你快速认识一下主页里的核心功能？'
+                    '我可以带你快速认识主页上的核心入口，用最短路径上手 N.E.K.O。'
                 ),
                 note: translate(
                     'tutorialPrompt.note',
-                    '引导会从主页开始，介绍常用按钮和交互入口。'
+                    '整个过程随时都可以跳过，也可以之后再从记忆浏览里重新打开。'
                 ),
                 dismissValue: null,
                 closeOnClickOutside: false,
@@ -776,14 +774,19 @@
                     ? state.promptDrivenTutorialToken
                     : undefined,
             };
-            state.pendingTutorialStartPayload = Object.assign({}, startPayload);
+            state.pendingTutorialStartPayload = startPayload;
             const startPersistence = persistTutorialLifecycle(
                 '/api/tutorial-prompt/tutorial-started',
                 startPayload,
                 'tutorial-started-persisted'
             );
             state.pendingTutorialStartPersistence = startPersistence;
-            void startPersistence.finally(function () {
+            void startPersistence.then(function (response) {
+                if (response && response.ok !== false) {
+                    state.pendingTutorialStartPayload = null;
+                }
+                return response;
+            }).finally(function () {
                 if (state.pendingTutorialStartPersistence === startPersistence) {
                     state.pendingTutorialStartPersistence = null;
                 }

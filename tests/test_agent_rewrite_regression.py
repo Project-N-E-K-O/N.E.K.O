@@ -151,40 +151,6 @@ async def test_main_agent_router_plugin_dashboard_redirect_ignores_empty_v_query
     assert response.headers["location"] == _expected_plugin_dashboard_location()
 
 
-@pytest.mark.asyncio
-async def test_main_agent_router_plugin_dashboard_redirect_keeps_only_v_query():
-    from config import USER_PLUGIN_SERVER_PORT
-    from main_routers.agent_router import redirect_plugin_dashboard
-
-    request = Request({
-        "type": "http",
-        "method": "GET",
-        "path": "/api/agent/user_plugin/dashboard",
-        "headers": [],
-        "query_string": b"v=abc123&yui_guide=1&handoff=token",
-    })
-    response = await redirect_plugin_dashboard(request)
-
-    assert response.headers["location"] == f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}/ui?v=abc123"
-
-
-@pytest.mark.asyncio
-async def test_main_agent_router_plugin_dashboard_redirect_ignores_empty_v_query():
-    from config import USER_PLUGIN_SERVER_PORT
-    from main_routers.agent_router import redirect_plugin_dashboard
-
-    request = Request({
-        "type": "http",
-        "method": "GET",
-        "path": "/api/agent/user_plugin/dashboard",
-        "headers": [],
-        "query_string": b"v=&yui_guide=1",
-    })
-    response = await redirect_plugin_dashboard(request)
-
-    assert response.headers["location"] == f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}/ui"
-
-
 def test_agent_server_expected_event_driven_endpoints_exist():
     paths = _route_paths_from_decorators("agent_server.py", "app")
     for expected in {
@@ -279,18 +245,6 @@ def test_yui_guide_steps_registry_keeps_m1_to_m4_home_flow_contract():
         assert expected in source
 
 
-def test_home_yui_prelude_keeps_all_intro_scenes_even_when_driver_steps_map_them():
-    source = Path("static/universal-tutorial-manager.js").read_text(encoding="utf-8")
-
-    for expected in (
-        "const introSceneIds = pageOrder.filter(stepId => (",
-        "if (this.getYuiGuidePageKey(page) === 'home' && this.isYuiGuideEnabledForPage(page)) {",
-        "return introSceneIds;",
-        "return introSceneIds.filter(stepId => !mappedSceneIds.has(stepId));",
-    ):
-        assert expected in source
-
-
 _YUI_RUNTIME_SCRIPTS = (
     "yui-guide-steps.js",
     "yui-guide-overlay.js",
@@ -305,6 +259,14 @@ def _script_tag_position(source: str, script_name: str) -> int:
     needle = f'<script src="/static/{script_name}'
     position = source.find(needle)
     assert position != -1, f"missing script tag for {script_name}"
+    return position
+
+
+def _stylesheet_tag_position(source: str, stylesheet_name: str) -> int:
+    """Find a stylesheet link while allowing cache-buster query strings."""
+    needle = f'<link rel="stylesheet" href="/static/css/{stylesheet_name}'
+    position = source.find(needle)
+    assert position != -1, f"missing stylesheet link for {stylesheet_name}"
     return position
 
 
@@ -329,7 +291,7 @@ def test_target_page_templates_load_yui_runtime_stack_before_tutorial_manager():
             for name in (*_YUI_RUNTIME_SCRIPTS, "universal-tutorial-manager.js")
         ]
         assert positions == sorted(positions), template_path
-        assert '<link rel="stylesheet" href="/static/css/yui-guide.css' in source
+        _stylesheet_tag_position(source, "yui-guide.css")
 
 
 def test_universal_tutorial_manager_normalizes_api_key_handoff_and_resume_scene_mappings():
@@ -644,7 +606,7 @@ def test_agent_server_openclaw_sender_id_prefers_latest_user_identity():
             break
     assert fn_src is not None
 
-    ns = {"AGENT_HISTORY_TURNS": 20}
+    ns = {"AGENT_HISTORY_TURNS": 8}
     exec("from typing import Any\n" + fn_src, ns)
     resolver = ns["_resolve_openclaw_sender_id"]
 

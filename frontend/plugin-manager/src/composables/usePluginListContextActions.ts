@@ -115,6 +115,10 @@ export function usePluginListContextActions() {
         return t('plugins.config')
       case 'open_logs':
         return t('plugins.logs')
+      case 'open_panel':
+        return t('plugins.ui.panel')
+      case 'open_guide':
+        return t('plugins.ui.guide')
       case 'start':
         return t('plugins.start')
       case 'stop':
@@ -158,6 +162,8 @@ export function usePluginListContextActions() {
       case 'open_detail':
       case 'open_config':
       case 'open_logs':
+      case 'open_panel':
+      case 'open_guide':
         return {
           key: 'navigation',
           label: t('plugins.contextSections.navigation'),
@@ -251,6 +257,12 @@ export function usePluginListContextActions() {
         return
       case 'open_logs':
         await router.push({ path: `/plugins/${safeId}`, query: { tab: 'logs' } })
+        return
+      case 'open_panel':
+        await router.push({ path: `/plugins/${safeId}`, query: { tab: 'panel' } })
+        return
+      case 'open_guide':
+        await router.push({ path: `/plugins/${safeId}`, query: { tab: 'guide' } })
         return
       case 'start':
         await pluginStore.start(plugin.id)

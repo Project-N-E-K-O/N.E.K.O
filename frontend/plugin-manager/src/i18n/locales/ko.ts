@@ -74,7 +74,9 @@ export default {
     sdkVersion: 'SDK 버전',
     updateTime: '업데이트 시간',
     noMetricsData: '성능 데이터 없음',
-    failedToLoadServerInfo: '서버 정보를 불러오지 못했습니다'
+    failedToLoadServerInfo: '서버 정보를 불러오지 못했습니다',
+    startTutorial: '튜토리얼 가이드',
+    tutorialHint: '플러그인 관리자가 처음이라면 여기를 눌러 빠르게 둘러보자냥.'
   },
   plugins: {
     title: '플러그인 목록',
@@ -240,9 +242,19 @@ export default {
     },
     ui: {
       open: 'UI 열기',
+      panel: '패널',
+      guide: '튜토리얼',
       loading: '플러그인 UI 로딩 중...',
       loadError: '플러그인 UI를 불러오지 못했습니다',
-      noUI: '이 플러그인에는 사용자 정의 UI가 없습니다'
+      noUI: '이 플러그인에는 사용자 정의 UI가 없습니다',
+      hostedTsxPending: 'Hosted TSX 렌더링은 곧 지원됩니다',
+      markdownPending: 'Markdown 튜토리얼 렌더링은 곧 지원됩니다',
+      autoPending: '자동 생성 패널은 곧 지원됩니다',
+      surfaceUnavailable: 'Surface를 사용할 수 없습니다',
+      surfaceEntryMissing: '이 Surface가 선언한 엔트리 파일이 없습니다. plugin.toml의 entry 경로를 확인해 주세요.',
+      surfaceWarnings: '플러그인 UI 선언에 확인이 필요한 문제가 있습니다',
+      controlError: '플러그인 UI 컨트롤 오류',
+      hostedRuntimePending: 'Vue 컨테이너가 이 Surface를 인식했습니다. TSX/Markdown/Auto 렌더러는 이후 단계에서 연결됩니다.'
     }
   },
   metrics: {
@@ -417,6 +429,85 @@ export default {
     welcome: '여기가 모든 플러그인을 관리하는 곳이야! 플러그인을 보고, 실행하고, 설정해서 나를 더 강력하게 만들어줘~',
     hint: '천천히 둘러보고 다 봤으면 아래 버튼을 눌러줘~',
     complete: '다 봤어 냐~',
-    dismiss: '나중에 볼게'
+    dismiss: '나중에 볼게',
+    keyboardSkipHint: 'Enter 또는 Space를 누르면 다음 단계로 넘어가. 각 단계 시작 0.5초 후부터 동작해.',
+    steps: {
+      start: {
+        title: '여기서 시작',
+        body: '이 버튼으로 언제든 플러그인 관리자 튜토리얼을 다시 볼 수 있어. 내가 먼저 튀어나오진 않는다냥.'
+      },
+      stats: {
+        title: '플러그인 개요',
+        body: '전체, 실행 중, 정지됨, 충돌한 플러그인 수를 한눈에 확인할 수 있어.'
+      },
+      metrics: {
+        title: '성능 모니터링',
+        body: '플러그인 서비스의 CPU, 메모리, 스레드, 활성 플러그인 상태를 보여줘.'
+      },
+      server: {
+        title: '서버 정보',
+        body: 'SDK 버전, 플러그인 수, 업데이트 시간을 확인해서 서비스 상태를 볼 수 있어.'
+      },
+      plugins: {
+        title: '플러그인 목록',
+        body: '플러그인 시작, 정지, 설정, 로그 확인은 왼쪽의 플러그인 관리에서 하면 된다냥.'
+      },
+      pluginWorkbench: {
+        title: '플러그인 관리 작업대',
+        body: '여기에서 플러그인, 어댑터, 확장을 한곳에서 관리할 수 있어.'
+      },
+      pluginFilters: {
+        title: '검색과 필터',
+        body: '이름, 상태, 유형, 고급 규칙으로 플러그인을 빠르게 찾을 수 있어.'
+      },
+      pluginLayout: {
+        title: '보기 레이아웃',
+        body: '목록, 한 줄, 두 줄, 콤팩트 표시를 화면에 맞게 바꿀 수 있어.'
+      },
+      pluginContextMenu: {
+        title: '우클릭 작업',
+        body: '플러그인을 우클릭하면 상세, 설정, 로그를 열거나 시작, 정지, 리로드를 실행할 수 있어.'
+      },
+      packageManager: {
+        title: '패키지 관리',
+        body: '현재 필터와 선택을 재사용해서 패키징, 검사, 검증, 압축 해제를 할 수 있어.'
+      },
+      packageOperations: {
+        title: '패키지 작업',
+        body: '패키징 모드, 검사, 압축 해제, 번들 분석을 선택할 수 있어. 위험한 작업은 자동 실행하지 않아.'
+      },
+      pluginDetail: {
+        title: '플러그인 상세',
+        body: '상세 페이지에서는 메타 정보, 엔트리, 성능, 설정, 로그를 확인할 수 있어.'
+      },
+      pluginDetailActions: {
+        title: '상세 페이지 작업',
+        body: '오른쪽 위 작업은 현재 플러그인에 대한 빠른 작업이야.'
+      },
+      runs: {
+        title: '실행 기록',
+        body: '실행 기록은 플러그인 엔트리 작업의 히스토리와 상태를 보여줘.'
+      },
+      runsList: {
+        title: '실행 목록',
+        body: '왼쪽 목록에서 실행을 선택하고 새로고침으로 최신 기록을 동기화할 수 있어.'
+      },
+      runsDetail: {
+        title: '실행 상세',
+        body: '오른쪽에는 단계, 진행률, 오류, 내보낸 결과가 표시돼.'
+      },
+      logs: {
+        title: '서버 로그',
+        body: '서버 로그에서는 플러그인 서비스 자체의 출력과 오류를 확인할 수 있어.'
+      },
+      logToolbar: {
+        title: '로그 필터',
+        body: '레벨, 키워드, 줄 수로 로그를 필터링하고 자동 스크롤을 바꿀 수 있어.'
+      },
+      logList: {
+        title: '로그 목록',
+        body: '시간, 출처, 레벨, 메시지를 보고 플러그인 문제를 추적할 수 있어.'
+      }
+    }
   }
 }

@@ -330,7 +330,7 @@ DEFAULT_LANLAN_TEMPLATE = {
                 "asset_source": "local",
                 "asset_source_id": "",
                 "live2d": {
-                    "model_path": "yui_default/yui_default.model3.json",
+                    "model_path": "mao_pro/mao_pro.model3.json",
                 },
                 "vrm": {
                     "model_path": "",
@@ -807,9 +807,9 @@ EVIDENCE_ARCHIVE_THRESHOLD = -2.0    # score ≤ -2 → archive_candidate
 # 强力记忆 OFF（powerful_memory_enabled=False）时的 time-driven fallback 阈值。
 # pre-RFC 行为：不靠 evidence_score，纯按 reflection 年龄推进 lifecycle，零
 # LLM 成本。pre-RFC 用 3 天，但实测过激（"3 天没否认 != 用户认可"）；这里
-# 拉到 14 天给用户更长窗口主动反驳。
-WEAK_MEMORY_AUTO_CONFIRM_DAYS = 14   # pending → confirmed (按 created_at 计)
-WEAK_MEMORY_AUTO_PROMOTE_DAYS = 14   # confirmed → promoted (按 confirmed_at 计)
+# 拉到 7 天给用户更长窗口主动反驳。
+WEAK_MEMORY_AUTO_CONFIRM_DAYS = 7   # pending → confirmed (按 created_at 计)
+WEAK_MEMORY_AUTO_PROMOTE_DAYS = 7   # confirmed → promoted (按 confirmed_at 计)
 
 # §3.5.3 归档相关（sub_zero_days 计数 + 分片大小上限）
 EVIDENCE_ARCHIVE_DAYS = 14           # sub_zero 累计达此天数 → 真正归档
@@ -1139,10 +1139,15 @@ PROACTIVE_PHASE1_FETCH_PER_SOURCE = 10
 - 用途：fetch_news_content / fetch_video_content 等的 limit 参数统一值。
 - 上游：外部 web/news/video 抓取结果。"""
 
-PROACTIVE_PHASE1_TOTAL_TOPICS = 20
+PROACTIVE_PHASE1_TOTAL_TOPICS = 12
 """Phase 1 输入给筛选 LLM 的候选话题总数。
 - 用途：从所有 source 合并后去重，截到此数后送 LLM 筛选。
-- 上游：cap 后的 fetch 结果汇总。"""
+- 上游：cap 后的 fetch 结果汇总。
+- 设计依据：原值 20。早期 external 是主要信号源，候选池开得很大。
+  Phase 2 引入 vision / music / meme / reminiscence 等并行通道后，
+  external 的相对权重下降——筛选 LLM 多看 8 条边际候选无助于挑出更
+  好的 top-1，反而让 Phase 1 prompt 一次跑过 2k tokens 上限。下调到
+  12 仍给筛选 LLM 充分多样性，且单次调用 token 减半左右。"""
 
 PROACTIVE_EXTERNAL_PER_ITEM_MAX_TOKENS = 200
 """Phase 2 外部内容（news/video/social/meme 等）单条 token 上限。
@@ -1152,11 +1157,15 @@ PROACTIVE_EXTERNAL_PER_ITEM_MAX_TOKENS = 200
 - 设计依据：单条 200 token 已足够 LLM 知道"这是什么"，详细信息靠
   Phase 2 LLM 自行总结。"""
 
-PROACTIVE_EXTERNAL_TOTAL_MAX_TOKENS = 2000
-"""Phase 2 外部内容拼合后的总 token 上限。
+PROACTIVE_EXTERNAL_TOTAL_MAX_TOKENS = 1500
+"""Phase 1 外部候选拼合后的总 token 上限（Phase 2 实际只看 top-1）。
 - 用途：所有 selected web items 序列化后，再做一次总和截断。
 - 上游：cap 后的 external_section 文本。
-- 设计依据：留出主对话流的 5k 总预算给 character_prompt + memory + 历史。"""
+- 设计依据：跟 PROACTIVE_PHASE1_TOTAL_TOPICS 同步下调。原值 2000 是
+  20 候选 × 200 token 留的硬顶；候选数收到 12 之后，1500 已留出
+  ~250 token 富余，超出仍兜底截断。Phase 2 generate prompt 实际只
+  把 Phase 1 选中的单条 web_topic（~50-100 token）放进
+  external_section，本字段约束的是 Phase 1 的 prompt 大小。"""
 
 PROACTIVE_PHASE2_OUTPUT_MAX_TOKENS = 300
 """Phase 2 流式输出的 abort fence。

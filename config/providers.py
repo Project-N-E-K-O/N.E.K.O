@@ -40,6 +40,7 @@ MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
     "qwen3.6-plus": EXTRA_BODY_OPENAI,
     "qwen-plus": EXTRA_BODY_OPENAI,
     "deepseek-ai/DeepSeek-V3.2": EXTRA_BODY_OPENAI,
+    "deepseek-ai/DeepSeek-V4-Flash": EXTRA_BODY_OPENAI,
     # GLM 系列
     "glm-4.5-air": EXTRA_BODY_CLAUDE,
     "glm-4.6v-flash": EXTRA_BODY_CLAUDE,

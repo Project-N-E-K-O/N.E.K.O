@@ -2,8 +2,10 @@
     'use strict';
 
     const DESKTOP_PROVIDER_NAME = 'neko-pc';
+    const BACKEND_PROVIDER_NAME = 'backend';
     const UNSUPPORTED_MECHANISM = 'desktop-bridge-unavailable';
     const AUTOSTART_NOT_SUPPORTED_ERROR = 'autostart_not_supported';
+    const LAUNCH_COMMAND_UNAVAILABLE_ERROR = 'launch_command_unavailable';
     let cachedStatus = null;
 
     function getNavigatorPlatform() {
@@ -49,27 +51,6 @@
         return normalized;
     }
 
-    function publishStatus(result) {
-        if (!result || typeof result !== 'object') {
-            return result;
-        }
-        cachedStatus = Object.assign({}, result);
-        try {
-            window.dispatchEvent(new CustomEvent('neko:autostart-status-changed', {
-                detail: cachedStatus
-            }));
-        } catch (_) {}
-        return result;
-    }
-
-    window.addEventListener('neko:autostart-status-changed', function (event) {
-        const detail = event && event.detail;
-        if (!detail || typeof detail !== 'object') {
-            return;
-        }
-        cachedStatus = normalizeResult(detail, cachedStatus || getDesktopDefaults());
-    });
-
     function getDesktopDefaults() {
         return {
             ok: true,
@@ -94,61 +75,113 @@
         }, overrides || {}), getDesktopDefaults());
     }
 
+    function buildBackendRemovedResult(overrides) {
+        return normalizeResult(Object.assign({
+            ok: true,
+            supported: false,
+            enabled: false,
+            authoritative: true,
+            provider: BACKEND_PROVIDER_NAME,
+            reason: 'backend_autostart_removed',
+            platform: getNavigatorPlatform(),
+        }, overrides || {}), {
+            ok: true,
+            supported: false,
+            enabled: false,
+            provider: BACKEND_PROVIDER_NAME,
+            platform: getNavigatorPlatform(),
+            mechanism: '',
+            authoritative: true,
+        });
+    }
+
+    function rememberStatus(result) {
+        cachedStatus = result ? Object.assign({}, result) : null;
+        return result;
+    }
+
+    function emitStatusChanged(result) {
+        if (!result || typeof window.dispatchEvent !== 'function') {
+            return;
+        }
+        window.dispatchEvent(new CustomEvent('neko:autostart-status-changed', {
+            detail: Object.assign({}, result),
+        }));
+    }
+
     function getStatus() {
         const bridge = getDesktopBridge();
         if (!bridge) {
-            return Promise.resolve(publishStatus(buildUnsupportedDesktopResult()));
+            return Promise.resolve(rememberStatus(buildBackendRemovedResult()));
         }
 
         return Promise.resolve().then(function () {
             return bridge.getStatus();
         }).then(function (result) {
-            return publishStatus(normalizeResult(result, getDesktopDefaults()));
+            return rememberStatus(normalizeResult(result, getDesktopDefaults()));
         });
     }
 
     function enable() {
         const bridge = getDesktopBridge();
         if (!bridge) {
-            return Promise.resolve(publishStatus(buildUnsupportedDesktopResult({
+            return Promise.resolve(rememberStatus(buildBackendRemovedResult({
                 ok: false,
-                error: AUTOSTART_NOT_SUPPORTED_ERROR,
-                error_code: AUTOSTART_NOT_SUPPORTED_ERROR,
+                error: LAUNCH_COMMAND_UNAVAILABLE_ERROR,
+                error_code: LAUNCH_COMMAND_UNAVAILABLE_ERROR,
             })));
         }
 
         return Promise.resolve().then(function () {
             return bridge.enable();
         }).then(function (result) {
-            return publishStatus(normalizeResult(result, getDesktopDefaults()));
+            const normalized = rememberStatus(normalizeResult(result, getDesktopDefaults()));
+            emitStatusChanged(normalized);
+            return normalized;
         });
     }
 
     function disable() {
         const bridge = getDesktopBridge();
         if (!bridge) {
-            return Promise.resolve(publishStatus(buildUnsupportedDesktopResult({
-                ok: false,
-                error: AUTOSTART_NOT_SUPPORTED_ERROR,
-                error_code: AUTOSTART_NOT_SUPPORTED_ERROR,
+            return Promise.resolve(rememberStatus(buildBackendRemovedResult({
+                ok: true,
+                enabled: false,
             })));
         }
         if (typeof bridge.disable !== 'function') {
             // 和无桥接分支保持对象契约一致：老版本 PC 暴露 enable 但没 disable 时，
             // 调用方同样能按 provider 响应对象路径处理，不会被迫走 .catch。
-            return Promise.resolve(publishStatus(buildUnsupportedDesktopResult({
+            const unsupported = rememberStatus(buildUnsupportedDesktopResult({
                 ok: false,
                 error: AUTOSTART_NOT_SUPPORTED_ERROR,
                 error_code: AUTOSTART_NOT_SUPPORTED_ERROR,
-            })));
+            }));
+            emitStatusChanged(unsupported);
+            return Promise.resolve(unsupported);
         }
 
         return Promise.resolve().then(function () {
             return bridge.disable();
         }).then(function (result) {
-            return publishStatus(normalizeResult(result, getDesktopDefaults()));
+            const normalized = rememberStatus(normalizeResult(result, getDesktopDefaults()));
+            emitStatusChanged(normalized);
+            return normalized;
         });
     }
+
+    function getCachedStatus() {
+        return cachedStatus ? Object.assign({}, cachedStatus) : null;
+    }
+
+    window.addEventListener('neko:autostart-status-changed', function (event) {
+        const detail = event && event.detail;
+        if (!detail || typeof detail !== 'object') {
+            return;
+        }
+        const defaults = detail.provider ? (cachedStatus || getDesktopDefaults()) : getDesktopDefaults();
+        cachedStatus = normalizeResult(detail, defaults);
+    });
 
     const existingProvider = window.nekoAutostartProvider;
     if (
@@ -163,8 +196,6 @@
         getStatus: getStatus,
         enable: enable,
         disable: disable,
-        getCachedStatus: function () {
-            return cachedStatus ? Object.assign({}, cachedStatus) : null;
-        },
+        getCachedStatus: getCachedStatus,
     };
 })();

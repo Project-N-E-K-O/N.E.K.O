@@ -39,6 +39,7 @@ from plugin.server.infrastructure.config_resolver import resolve_plugin_config_f
 from plugin.server.infrastructure.runtime_overrides import get_runtime_override
 from plugin.core.state import state
 from plugin._types.models import PluginMeta, PluginAuthor, PluginDependency
+from plugin.core.ui_manifest import normalize_plugin_ui_manifest
 from plugin.settings import (
     BUILTIN_PLUGIN_CONFIG_ROOT,
     PLUGIN_ENABLE_ID_CONFLICT_CHECK,
@@ -86,6 +87,11 @@ class PluginContext:
     enabled: bool
     auto_start: bool
     python_requirements: List[str] = field(default_factory=list)
+
+
+def _extract_plugin_ui_config(conf: Dict[str, Any], *, plugin_id: str, logger: Any) -> Optional[Dict[str, Any]]:
+    _ = logger
+    return normalize_plugin_ui_manifest(conf, plugin_id=plugin_id)
 
 
 # Mapping from (plugin_id, entry_id) -> actual python method name on the instance.
@@ -652,6 +658,7 @@ def _build_plugin_meta(
     dependencies: Optional[List[PluginDependency]] = None,
     input_schema: Optional[Dict[str, Any]] = None,
     host_plugin_id: Optional[str] = None,
+    plugin_ui: Optional[Dict[str, Any]] = None,
 ) -> PluginMeta:
     """统一构建 PluginMeta，消除 disabled / extension / normal 三处重复。"""
     author_data = pdata.get("author")
@@ -678,7 +685,7 @@ def _build_plugin_meta(
         short_desc = truncate_to_tokens(short_desc, 200)
     passive = parse_bool_config(pdata.get("passive"), default=False)
 
-    return PluginMeta(
+    meta = PluginMeta(
         id=pid,
         name=pdata.get("name", pid),
         type=pdata.get("type", "plugin"),
@@ -697,6 +704,16 @@ def _build_plugin_meta(
         dependencies=dependencies or [],
         host_plugin_id=host_plugin_id,
     )
+    if plugin_ui is not None:
+        setattr(meta, "plugin_ui", plugin_ui)
+    i18n_config = pdata.get("i18n")
+    if not isinstance(i18n_config, dict):
+        i18n_config = {}
+    setattr(meta, "i18n", {
+        "default_locale": str(i18n_config.get("default_locale") or "en"),
+        "locales_dir": str(i18n_config.get("locales_dir") or "i18n"),
+    })
+    return meta
 
 
 def _extract_entries_preview(pid: str, cls: type, conf: dict, pdata: dict) -> List[Dict[str, Any]]:
@@ -753,13 +770,22 @@ def _extract_entries_preview(pid: str, cls: type, conf: dict, pdata: dict) -> Li
             seen.add(eid)
 
             input_schema = _to_dict(getattr(event_meta, "input_schema", {}) or {})
+            name_obj = getattr(event_meta, "name", None)
+            description_obj = getattr(event_meta, "description", None)
+            return_message_obj = getattr(event_meta, "return_message", None)
+            if name_obj is None:
+                name_obj = ""
+            if description_obj is None:
+                description_obj = ""
+            if return_message_obj is None:
+                return_message_obj = ""
             entry_preview: Dict[str, Any] = {
                     "id": eid,
-                    "name": str(getattr(event_meta, "name", "") or ""),
-                    "description": str(getattr(event_meta, "description", "") or ""),
+                    "name": name_obj if isinstance(name_obj, (str, dict)) else str(name_obj),
+                    "description": description_obj if isinstance(description_obj, (str, dict)) else str(description_obj),
                     "event_key": f"{pid}.{eid}",
                     "input_schema": input_schema,
-                    "return_message": str(getattr(event_meta, "return_message", "") or ""),
+                    "return_message": return_message_obj if isinstance(return_message_obj, (str, dict)) else str(return_message_obj),
                     "event_type": str(getattr(event_meta, "event_type", "plugin_entry") or "plugin_entry"),
                     "kind": str(getattr(event_meta, "kind", "action") or "action"),
                     "auto_start": bool(getattr(event_meta, "auto_start", False)),
@@ -789,8 +815,8 @@ def _extract_entries_preview(pid: str, cls: type, conf: dict, pdata: dict) -> Li
                 results.append(
                     {
                         "id": eid,
-                        "name": str(ent.get("name") or ""),
-                        "description": str(ent.get("description") or ""),
+                        "name": ent.get("name") if isinstance(ent.get("name"), (str, dict)) else str(ent.get("name") or ""),
+                        "description": ent.get("description") if isinstance(ent.get("description"), (str, dict)) else str(ent.get("description") or ""),
                         "event_key": f"{pid}.{eid}",
                         "input_schema": _to_dict(ent.get("input_schema") or {}),
                         "return_message": "",
@@ -1376,6 +1402,7 @@ def _load_disabled_plugin(
         sdk_untested_str=ctx.sdk_untested_str,
         sdk_conflicts_list=ctx.sdk_conflicts_list,
         dependencies=ctx.dependencies,
+        plugin_ui=_extract_plugin_ui_config(ctx.conf, plugin_id=ctx.pid, logger=logger),
     )
     
     resolved_id = register_plugin(
@@ -1459,6 +1486,7 @@ def _register_failed_plugin(
         sdk_untested_str=ctx.sdk_untested_str,
         sdk_conflicts_list=ctx.sdk_conflicts_list,
         dependencies=ctx.dependencies,
+        plugin_ui=_extract_plugin_ui_config(ctx.conf, plugin_id=pid, logger=logger),
     )
 
     resolved_id = register_plugin(
@@ -1515,6 +1543,7 @@ def _load_extension_plugin(
         sdk_conflicts_list=ctx.sdk_conflicts_list,
         dependencies=ctx.dependencies,
         host_plugin_id=host_pid,
+        plugin_ui=_extract_plugin_ui_config(ctx.conf, plugin_id=ctx.pid, logger=logger),
     )
     
     resolved_id = register_plugin(
@@ -1615,6 +1644,7 @@ def _load_adapter_plugin(
         sdk_untested_str=ctx.sdk_untested_str,
         sdk_conflicts_list=ctx.sdk_conflicts_list,
         dependencies=ctx.dependencies,
+        plugin_ui=_extract_plugin_ui_config(ctx.conf, plugin_id=pid, logger=logger),
     )
     
     # 创建进程宿主
@@ -2099,6 +2129,7 @@ def load_plugins_from_roots(
             sdk_conflicts_list=sdk_conflicts_list,
             dependencies=dependencies,
             input_schema=getattr(cls, "input_schema", {}) or {"type": "object", "properties": {}},
+            plugin_ui=_extract_plugin_ui_config(conf, plugin_id=pid, logger=logger),
         )
         
         # 在调用 register_plugin 之前，验证 host 是否还在 plugin_hosts 中。

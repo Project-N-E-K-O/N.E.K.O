@@ -74,7 +74,9 @@ export default {
     sdkVersion: 'SDKバージョン',
     updateTime: '更新時間',
     noMetricsData: 'パフォーマンスデータなし',
-    failedToLoadServerInfo: 'サーバー情報の読み込みに失敗しました'
+    failedToLoadServerInfo: 'サーバー情報の読み込みに失敗しました',
+    startTutorial: 'チュートリアル',
+    tutorialHint: 'プラグイン管理が初めて？ここを押せば案内するにゃ。'
   },
   plugins: {
     title: 'プラグイン一覧',
@@ -240,9 +242,19 @@ export default {
     },
     ui: {
       open: 'UIを開く',
+      panel: 'パネル',
+      guide: 'チュートリアル',
       loading: 'プラグインUIを読み込み中...',
       loadError: 'プラグインUIの読み込みに失敗しました',
-      noUI: 'このプラグインにはカスタムUIがありません'
+      noUI: 'このプラグインにはカスタムUIがありません',
+      hostedTsxPending: 'Hosted TSX レンダリングは近日対応予定です',
+      markdownPending: 'Markdown チュートリアル表示は近日対応予定です',
+      autoPending: '自動生成パネルは近日対応予定です',
+      surfaceUnavailable: 'Surface は現在利用できません',
+      surfaceEntryMissing: 'この Surface が宣言したエントリーファイルが存在しません。plugin.toml の entry パスを確認してください。',
+      surfaceWarnings: 'プラグイン UI 宣言に確認が必要な問題があります',
+      controlError: 'プラグイン UI コントロールエラー',
+      hostedRuntimePending: 'Vue コンテナはこの Surface を認識しています。TSX/Markdown/Auto レンダラーは後続フェーズで接続されます。'
     }
   },
   metrics: {
@@ -417,6 +429,85 @@ export default {
     welcome: 'ここがすべてのプラグインを管理する場所だよ！プラグインを見たり、起動したり、設定したりして、もっとすごい猫猫神にしてね～',
     hint: 'ゆっくり見てね、終わったら下のボタンを押して教えてにゃ～',
     complete: '見終わったにゃ～',
-    dismiss: 'また今度'
+    dismiss: 'また今度',
+    keyboardSkipHint: 'Enter または Space で次へ進みます。各ステップ開始から 0.5 秒後に有効になります。',
+    steps: {
+      start: {
+        title: 'ここから開始',
+        body: 'このボタンでいつでもプラグイン管理の案内をもう一度見られるよ。勝手には出てこないにゃ。'
+      },
+      stats: {
+        title: 'プラグイン概要',
+        body: '合計、実行中、停止中、クラッシュしたプラグイン数をここで一目で確認できるよ。'
+      },
+      metrics: {
+        title: 'パフォーマンス監視',
+        body: 'CPU、メモリ、スレッド、アクティブなプラグイン数など、サービス全体の状態を確認できるよ。'
+      },
+      server: {
+        title: 'サーバー情報',
+        body: 'SDK バージョン、プラグイン数、更新時間を見て、サービスが正常か確認できるよ。'
+      },
+      plugins: {
+        title: 'プラグイン一覧',
+        body: '起動、停止、設定、ログ確認は左側のプラグイン管理から入ってね。'
+      },
+      pluginWorkbench: {
+        title: 'プラグイン管理ワークベンチ',
+        body: 'ここではプラグイン、アダプター、拡張をまとめて確認できるよ。'
+      },
+      pluginFilters: {
+        title: '検索とフィルター',
+        body: '名前、状態、種類、詳細ルールでプラグインを絞り込めるよ。'
+      },
+      pluginLayout: {
+        title: '表示レイアウト',
+        body: 'リスト、1列、2列、コンパクト表示を画面に合わせて切り替えられるよ。'
+      },
+      pluginContextMenu: {
+        title: '右クリック操作',
+        body: '右クリックで詳細、設定、ログを開いたり、起動・停止・再読み込みができるよ。'
+      },
+      packageManager: {
+        title: 'パッケージ管理',
+        body: '現在の絞り込みや選択を使って、パッケージ化、検査、検証、展開ができるよ。'
+      },
+      packageOperations: {
+        title: 'パッケージ操作',
+        body: 'ここで打包モード、検査、展開、統合パック分析を選べるよ。危険な操作は自動実行しないよ。'
+      },
+      pluginDetail: {
+        title: 'プラグイン詳細',
+        body: '詳細ページではメタ情報、エントリー、性能、設定、ログを確認できるよ。'
+      },
+      pluginDetailActions: {
+        title: '詳細ページの操作',
+        body: '右上の操作は現在のプラグインに対するショートカットだよ。'
+      },
+      runs: {
+        title: '実行記録',
+        body: '実行記録ではプラグインタスクの履歴と現在状態を確認できるよ。'
+      },
+      runsList: {
+        title: '実行リスト',
+        body: '左側で実行を選択し、更新ボタンで最新の記録を同期できるよ。'
+      },
+      runsDetail: {
+        title: '実行詳細',
+        body: '右側には段階、進捗、エラー、エクスポート内容が表示されるよ。'
+      },
+      logs: {
+        title: 'サーバーログ',
+        body: 'サーバーログではプラグインサービス自体の出力やエラーを確認できるよ。'
+      },
+      logToolbar: {
+        title: 'ログフィルター',
+        body: 'レベル、キーワード、行数で絞り込み、自動スクロールも切り替えられるよ。'
+      },
+      logList: {
+        title: 'ログ一覧',
+        body: '時刻、発生元、レベル、メッセージを見て問題の原因を探せるよ。'
+      }
+    }
   }
 }

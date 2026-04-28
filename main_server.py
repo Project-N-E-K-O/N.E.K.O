@@ -94,8 +94,6 @@ try:
     from main_logic import core as core, cross_server as cross_server # noqa
     from main_logic.agent_event_bus import MainServerAgentBridge, notify_analyze_ack, set_main_bridge # noqa
     from fastapi.templating import Jinja2Templates # noqa
-    from threading import Thread, Event as ThreadEvent # noqa
-    from queue import Queue, Empty as QueueEmpty # noqa
     from dataclasses import dataclass # noqa
     from typing import Any, Optional # noqa
 except Exception as e:
@@ -302,6 +300,25 @@ async def _request_memory_server_block_startup(reason: str = "") -> None:
     except Exception as e:
         raise RuntimeError(f"failed to restore memory_server limited-mode startup: {e}") from e
 
+class _SyncMessageQueue(asyncio.Queue):
+    """``asyncio.Queue`` with sync ``put()`` aliased to ``put_nowait()``.
+
+    ``sync_message_queue`` 历史上是 ``queue.Queue``（线程安全），生产端在
+    core.py / system_router.py 等 14+ 处用同步 ``q.put(item)`` 调用。
+    cross_server 改成主 loop 上的 ``asyncio.Task`` 后，message_queue 切到
+    ``asyncio.Queue``。原生 ``asyncio.Queue.put`` 是 coroutine，原 sync 调用
+    会变成"未 await 的 coroutine"——既不入队也产生 RuntimeWarning。
+
+    覆盖 ``put`` 为 sync alias 到 ``put_nowait`` 保持向后兼容：sync_message_queue
+    全部 unbounded（无 maxsize），``put_nowait`` 永远不会因满而 raise，所以
+    替换在语义上等价。
+    """
+
+    def put(self, item):  # type: ignore[override]
+        # 故意 sync override：原 asyncio.Queue.put 是 coroutine。
+        self.put_nowait(item)
+
+
 @dataclass
 class RoleState:
     """单个 catgirl 的 per-k 运行态容器。
@@ -312,95 +329,118 @@ class RoleState:
     见 issue #857 / PR #855 review。
 
     不变量：
-    - sync_message_queue / sync_shutdown_event / websocket_lock 在
-      _ensure_character_slots 一次性构造，之后**永不替换**。特别是
-      websocket_lock —— 替换会让已经 ``async with`` 进来的协程阻塞在一把
-      孤立的旧 Lock 上；如果任何逻辑需要整体重建 role_state[k]，必须
-      把旧 lock 原样传过去。
-    - session_id / sync_process / session_manager 初始为 None，分别由
+    - sync_message_queue / websocket_lock 在 _ensure_character_slots
+      一次性构造，之后**永不替换**。特别是 websocket_lock —— 替换会让已经
+      ``async with`` 进来的协程阻塞在一把孤立的旧 Lock 上；如果任何逻辑
+      需要整体重建 role_state[k]，必须把旧 lock 原样传过去。
+    - session_id / sync_task / session_manager 初始为 None，分别由
       websocket_router / _init_character_resources 后续赋值。
+
+    历史字段：``sync_shutdown_event: ThreadEvent`` 和 ``sync_process: Thread``
+    在 cross_server 合并到主 event loop 后语义上已删除（不再起独立线程）。
+    生命周期改由 ``sync_task: asyncio.Task`` 管理，shutdown 走 ``task.cancel()``。
+
+    但 ``main_routers/shared_state.py`` 的 ``_RoleStateFieldView`` 仍为
+    ``sync_shutdown_event`` / ``sync_process`` 暴露 dict-like 视图（``get_sync_shutdown_event()``
+    / ``get_sync_process()`` 公共 router API）。视图的 ``__getitem__`` 用
+    ``getattr(rs, field)``（不带 default），如果字段不存在会 ``AttributeError``。
+    保留这两个 ``Optional[Any] = None`` 占位字段维护 shim 的"永远空字典"语义：
+    ``__contains__`` 看到 None 返回 False、``__getitem__`` 走 ``raise KeyError``，
+    所有调用者得到一致的空状态而不是崩溃。这两个字段不再被赋值，未来如果
+    确认外部确无依赖再清。
     """
-    sync_message_queue: Queue
-    sync_shutdown_event: ThreadEvent
+    sync_message_queue: _SyncMessageQueue
     websocket_lock: asyncio.Lock
     session_id: Optional[str] = None
-    sync_process: Optional[Thread] = None
+    sync_task: Optional[asyncio.Task] = None
     # 用 Any 而非 core.LLMSessionManager：避免 dataclass 运行时求值 annotation
     # 时踩到 forward-ref / 循环引用边界
     session_manager: Optional[Any] = None
+    # 仅为 main_routers/shared_state.py 的 legacy field-view 提供占位；永远 None
+    sync_shutdown_event: Optional[Any] = None
+    sync_process: Optional[Any] = None
 
 
 # 角色名 -> RoleState 的主存储；所有 per-k 同步资源都通过它访问
 role_state: dict[str, RoleState] = {}
 
 
-def _iter_sync_connector_threads():
-    """迭代所有仍然存活的同步连接器线程（按 role_state 为准）。"""
+def _iter_sync_connector_tasks():
+    """迭代所有仍然存活的同步连接器 task（按 role_state 为准）。"""
     for name, rs in role_state.items():
-        thread = rs.sync_process
-        if thread is None:
+        task = rs.sync_task
+        if task is None:
             continue
-        yield name, thread
+        yield name, task
 
 
 def _signal_sync_connectors_shutdown(*, log: bool = True) -> None:
+    """取消所有同步连接器 task。task.cancel() 是同步、幂等、loop 关闭后亦无害的，
+    所以 atexit 二次调用安全。"""
     if log:
-        logger.info("正在关闭同步线程...")
+        logger.info("正在关闭同步连接器 task...")
     for rs in role_state.values():
         try:
-            rs.sync_shutdown_event.set()
+            task = rs.sync_task
+            if task is not None and not task.done():
+                task.cancel()
         except Exception as e:
-            logger.debug(f"设置同步关闭事件失败: {e}", exc_info=True)
+            logger.debug(f"取消同步连接器 task 失败: {e}", exc_info=True)
 
 
-async def join_sync_connector_threads(timeout: float = 3.0) -> list[str]:
-    """并行 join 所有同步连接器线程，返回在 timeout 内仍未退出的线程名。
+async def join_sync_connector_tasks(timeout: float = 3.0) -> list[str]:
+    """并行 await 所有同步连接器 task，返回在 timeout 内未结束的角色名。
 
-    N 个角色串行 join 会把最坏墙钟放大成 N * timeout；gather + to_thread
-    让每个 join 在自己的线程里跑，墙钟收敛到单个 timeout。
+    通常调用前已经 ``_signal_sync_connectors_shutdown`` 取消过；这里只是等
+    各 task 走完 finally cleanup（关闭 ws/session/reader）。
     """
     wait_timeout = max(0.0, float(timeout))
-    targets = list(_iter_sync_connector_threads())
+    targets = list(_iter_sync_connector_tasks())
     if not targets:
         return []
 
-    async def _join_one(name: str, thread) -> str | None:
+    async def _wait_one(name: str, task: asyncio.Task) -> str | None:
         try:
-            await asyncio.to_thread(thread.join, wait_timeout)
-        except Exception as e:
-            logger.debug(f"等待同步连接器线程 {name} 退出时出错: {e}", exc_info=True)
+            await asyncio.wait_for(asyncio.shield(task), timeout=wait_timeout)
+        except asyncio.TimeoutError:
+            return name
+        except asyncio.CancelledError:
+            # task 正常 cancel 走完 finally 后会 raise CancelledError
             return None
-        return name if thread.is_alive() else None
+        except Exception as e:
+            logger.debug(f"同步连接器 task {name} 退出时抛异常: {e}", exc_info=True)
+            return None
+        return None
 
     results = await asyncio.gather(
-        *(_join_one(name, thread) for name, thread in targets),
+        *(_wait_one(name, task) for name, task in targets),
         return_exceptions=False,
     )
-    alive_threads = [name for name in results if name]
+    pending = [name for name in results if name]
 
-    if alive_threads:
+    if pending:
         logger.warning(
-            "以下同步连接器线程未在 %.1fs 内退出: %s",
+            "以下同步连接器 task 未在 %.1fs 内退出: %s",
             wait_timeout,
-            ", ".join(alive_threads),
+            ", ".join(pending),
         )
-    return alive_threads
+    return pending
+
+
+# 兼容别名：旧名 join_sync_connector_threads 在文件内有调用，先保留 alias 减小 diff
+join_sync_connector_threads = join_sync_connector_tasks
 
 
 def cleanup(*, log: bool = True):
-    """通知所有同步线程停止。log=False 用于 atexit 二次触发时抑制重复日志。"""
+    """通知所有同步连接器 task 停止。log=False 用于 atexit 二次触发时抑制重复日志。"""
     _signal_sync_connectors_shutdown(log=log)
 
 
 def _reset_sync_connector_shutdown_events() -> None:
-    for rs in role_state.values():
-        try:
-            thread = rs.sync_process
-            if thread is not None and thread.is_alive():
-                continue
-            rs.sync_shutdown_event.clear()
-        except Exception as exc:
-            logger.debug("重置同步关闭事件失败: %s", exc, exc_info=True)
+    """已是空实现：旧版用 ThreadEvent.clear() 让下次启动可以复用线程槽位；
+    现在 task 模式下没有可重置的状态——已死的 task 会被 ``_init_character_resources``
+    检测后直接 ``asyncio.create_task`` 重启。保留函数名以避免修改众多调用点。"""
+    return
 
 
 # 只在主进程中注册 cleanup 函数，防止子进程退出时执行清理
@@ -706,17 +746,20 @@ async def _refresh_character_globals():
 
 
 def _ensure_character_slots(k: str) -> bool:
-    """为单个 catgirl 预备 per-k 同步资源槽位。返回是否为新建角色（决定后续要不要强制启动线程）。
+    """为单个 catgirl 预备 per-k 同步资源槽位。返回是否为新建角色（决定后续要不要强制启动 task）。
 
     纯内存的原子操作：要么 role_state[k] 已经存在（什么都不做），要么一次性
-    把 queue / shutdown_event / websocket_lock 三件全部填好。避免旧代码里
-    6 张 dict 用两种不同 sentinel（sync_message_queue vs websocket_locks）
-    各自判断 "角色是否已有槽位" 造成的半初始化风险。
+    把 queue / websocket_lock 两件全部填好。避免旧代码里 6 张 dict 用两种不同
+    sentinel（sync_message_queue vs websocket_locks）各自判断 "角色是否已有
+    槽位" 造成的半初始化风险。
+
+    注：``asyncio.Queue`` 在 Python 3.10+ 创建时不需要 running loop；
+    本函数虽然是 sync，但调用链上来自 ``initialize_character_data`` /
+    ``_init_character_resources`` 等 async 上下文，loop 可用。
     """
     if k not in role_state:
         role_state[k] = RoleState(
-            sync_message_queue=Queue(),
-            sync_shutdown_event=ThreadEvent(),
+            sync_message_queue=_SyncMessageQueue(),
             websocket_lock=asyncio.Lock(),
         )
         logger.info(f"为角色 {k} 初始化新资源")
@@ -725,10 +768,10 @@ def _ensure_character_slots(k: str) -> bool:
 
 
 async def _init_character_resources(k: str, is_new_character: bool):
-    """为单个 catgirl 完成 session_manager 更新 + 同步连接器线程检查/重启。
+    """为单个 catgirl 完成 session_manager 更新 + 同步连接器 task 检查/重启。
 
     依赖 module globals: master_name, lanlan_prompt, lanlan_basic_config（调用方负责先刷新）。
-    写入 per-k 槽位: role_state[k].session_manager / sync_process —— 不同 k 之间
+    写入 per-k 槽位: role_state[k].session_manager / sync_task —— 不同 k 之间
     不共享状态，可安全并行。
     """
     rs = role_state[k]  # 调用方必须先 _ensure_character_slots，保证这里可直接索引
@@ -804,89 +847,110 @@ async def _init_character_resources(k: str, is_new_character: bool):
 
             rs.session_manager = new_mgr
 
-    # 检查并启动同步连接器线程
-    # 如果是新角色，或者线程不存在/已停止，需要启动线程
-    need_start_thread = False
+    # 检查并启动同步连接器 task
+    # 如果是新角色，或者 task 不存在/已结束，需要启动
+    need_start_task = False
     if is_new_character:
-        need_start_thread = True
-    elif rs.sync_process is None:
-        need_start_thread = True
-    elif hasattr(rs.sync_process, 'is_alive') and not await asyncio.to_thread(rs.sync_process.is_alive):
-        need_start_thread = True
-        try:
-            await asyncio.to_thread(rs.sync_process.join, timeout=0.1)
-        except Exception:
-            # 注意不要写成 bare except：to_thread 是 cancellation point，
-            # 如果 catch 了 BaseException 会吞掉 asyncio.CancelledError
-            pass
+        need_start_task = True
+    elif rs.sync_task is None or rs.sync_task.done():
+        need_start_task = True
 
-    if need_start_thread:
+    if need_start_task:
         try:
-            if rs.sync_shutdown_event.is_set():
-                rs.sync_shutdown_event.clear()
             _char_name = k
+
             def _make_status_cb(char_name):
                 def _cb(msg):
                     mgr = _get_session_manager(char_name)
                     if not mgr:
                         return
-                    loop = _server_loop
-                    if loop is None or loop.is_closed():
-                        return
                     ws = mgr.websocket
                     if ws and hasattr(ws, 'client_state') and ws.client_state == ws.client_state.CONNECTED:
                         import json as _json
                         data = _json.dumps({"type": "status", "message": msg})
-                        asyncio.run_coroutine_threadsafe(ws.send_text(data), loop)
+                        # cross_server 现在和我们在同一个主 loop 上，回调
+                        # 也是从主 loop 同步调用的——直接 create_task 即可，
+                        # 不再需要 run_coroutine_threadsafe。
+                        # done_callback 消化 task 的 exception，避免 ws 断开时
+                        # asyncio 输出 "Task exception was never retrieved" 噪音；
+                        # status 是 best-effort 降级路径，丢一条不影响主逻辑。
+                        # cancelled 态下 task.exception() 自身会 raise CancelledError，
+                        # 必须先用 task.cancelled() 早返回，否则 callback 自己又制造
+                        # 一条 "exception was never retrieved" 噪音。
+                        def _swallow_status_send_exc(_t):
+                            if _t.cancelled():
+                                return
+                            exc = _t.exception()
+                            if exc is not None:
+                                logger.debug("status 回调 ws.send_text 失败（已忽略）: %s", exc)
+                        try:
+                            _t = asyncio.create_task(ws.send_text(data))
+                            _t.add_done_callback(_swallow_status_send_exc)
+                        except RuntimeError:
+                            # 极端情况：当前没有 running loop（理论上不会发生
+                            # 在 cross_server 调用路径上，但兜底）。回退到旧
+                            # 跨 loop 路径。
+                            loop = _server_loop
+                            if loop is not None and not loop.is_closed():
+                                asyncio.run_coroutine_threadsafe(ws.send_text(data), loop)
                 return _cb
+
             _status_cb = _make_status_cb(_char_name)
 
-            new_thread = Thread(
-                target=cross_server.sync_connector_process,
-                args=(rs.sync_message_queue, rs.sync_shutdown_event, k, f"ws://127.0.0.1:{MONITOR_SERVER_PORT}", {'bullet': False, 'monitor': True}, _status_cb),
-                daemon=True,
-                name=f"SyncConnector-{k}"
+            new_task = asyncio.create_task(
+                cross_server.run_sync_connector(
+                    rs.sync_message_queue,
+                    k,
+                    f"ws://127.0.0.1:{MONITOR_SERVER_PORT}",
+                    {'bullet': False, 'monitor': True},
+                    _status_cb,
+                ),
+                name=f"SyncConnector-{k}",
             )
-            rs.sync_process = new_thread
-            new_thread.start()
-            logger.info(f"✅ 已为角色 {k} 启动同步连接器线程 ({new_thread.name})")
-            await asyncio.sleep(0.1)  # 线程启动更快，减少等待时间
-            # 与上面 is_alive 检查保持一致，走 to_thread 避免任何潜在阻塞
-            if not await asyncio.to_thread(new_thread.is_alive):
-                logger.error(f"❌ 同步连接器线程 {k} ({new_thread.name}) 启动后立即退出！")
-            else:
-                logger.info(f"✅ 同步连接器线程 {k} ({new_thread.name}) 正在运行")
+            rs.sync_task = new_task
+            logger.info(f"✅ 已为角色 {k} 启动同步连接器 task ({new_task.get_name()})")
         except Exception as e:
-            logger.error(f"❌ 启动角色 {k} 的同步连接器线程失败: {e}", exc_info=True)
+            logger.error(f"❌ 启动角色 {k} 的同步连接器 task 失败: {e}", exc_info=True)
 
 
 async def _stop_character_thread(k: str):
-    """停止单个 catgirl 的同步连接器线程（最多 3s join）。dict 清理留给调用方顺序做。"""
+    """停止单个 catgirl 的同步连接器 task（最多 3s 等待 cleanup）。dict 清理留给调用方顺序做。
+
+    函数名保留 ``_thread`` 后缀以避免修改众多调用点；现在底层是 ``asyncio.Task``。
+    """
     rs = role_state.get(k)
-    if rs is None or rs.sync_process is None:
+    if rs is None or rs.sync_task is None:
         return
+    task = rs.sync_task
     try:
-        logger.info(f"正在停止角色 {k} 的同步连接器线程...")
-        rs.sync_shutdown_event.set()
-        await asyncio.to_thread(rs.sync_process.join, timeout=3)  # 等待线程正常结束
-        if await asyncio.to_thread(rs.sync_process.is_alive):
-            logger.warning(f"⚠️ 同步连接器线程 {k} 未能在超时内停止，将作为daemon线程自动清理")
+        logger.info(f"正在停止角色 {k} 的同步连接器 task...")
+        if not task.done():
+            task.cancel()
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=3.0)
+        except asyncio.TimeoutError:
+            logger.warning(f"⚠️ 同步连接器 task {k} 未能在 3s 内退出，放任其自行结束")
+        except asyncio.CancelledError:
+            # cancel 后 await 抛 CancelledError 是正常路径
+            pass
+        except Exception as e:
+            logger.debug(f"同步连接器 task {k} 退出时异常: {e}", exc_info=True)
         else:
-            logger.info(f"✅ 已停止角色 {k} 的同步连接器线程")
+            logger.info(f"✅ 已停止角色 {k} 的同步连接器 task")
     except Exception as e:
-        logger.warning(f"停止角色 {k} 的同步连接器线程时出错: {e}")
+        logger.warning(f"停止角色 {k} 的同步连接器 task 时出错: {e}")
 
 
 def _cleanup_character_dicts(k: str):
-    """同步清理单个 catgirl 的 per-k 槽位。调用前确保对应线程已停或超时。"""
+    """同步清理单个 catgirl 的 per-k 槽位。调用前确保对应 task 已停或超时。"""
     rs = role_state.get(k)
     if rs is None:
         return
-    # 清理队列（queue.Queue 没有 close/join_thread 方法）
+    # 清理队列（asyncio.Queue 也没有 close/join_thread 方法，drain 即可）
     try:
         while not rs.sync_message_queue.empty():
             rs.sync_message_queue.get_nowait()
-    except QueueEmpty:
+    except asyncio.QueueEmpty:
         # while empty + get_nowait 本身是 racy idiom：另一线程可能先 drain 掉，
         # 导致 get_nowait 抛 Empty。这里 role_state[k] 即将被 del 掉，忽略无害。
         pass

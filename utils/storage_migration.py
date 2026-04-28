@@ -487,6 +487,12 @@ def run_pending_storage_migration(
             for entry_name, expected_snapshot in source_snapshots.items():
                 actual_snapshot = _snapshot_path(target_root / entry_name)
                 if actual_snapshot != expected_snapshot:
+                    logger.warning(
+                        "Storage migration verification failed for %s: expected=%s actual=%s",
+                        entry_name,
+                        expected_snapshot,
+                        actual_snapshot,
+                    )
                     raise StorageMigrationError(
                         "verification_failed",
                         f"迁移校验失败：{entry_name} 未完整复制到目标路径。",

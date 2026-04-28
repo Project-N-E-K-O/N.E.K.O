@@ -38,7 +38,8 @@
         onAvatarInteraction: null,
         onAvatarToolStateChange: null,
         pendingRollbackDrafts: Object.create(null),
-        rollbackDraft: ''
+        rollbackDraft: '',
+        _toolCursorResetKey: ''
     };
 
     var MOBILE_MAX_HEIGHT_RATIO = 0.85;
@@ -407,6 +408,7 @@
             composerAttachments: state.composerAttachments,
             rollbackDraft: state.rollbackDraft || undefined,
             _rollbackKey: state._rollbackKey || undefined,
+            _toolCursorResetKey: state._toolCursorResetKey || undefined,
             composerHidden: state.composerHidden,
             onMessageAction: handleMessageAction,
             onComposerImportImage: handleComposerImportImage,
@@ -989,6 +991,11 @@
 
     function setComposerHidden(hidden) {
         state.composerHidden = !!hidden;
+        renderWindow();
+    }
+
+    function deactivateToolCursor() {
+        state._toolCursorResetKey = 'tcr-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6);
         renderWindow();
     }
 
@@ -1914,6 +1921,7 @@
         setMessages: setMessages,
         setComposerAttachments: setComposerAttachments,
         setComposerHidden: setComposerHidden,
+        deactivateToolCursor: deactivateToolCursor,
         appendMessage: appendMessage,
         updateMessage: updateMessage,
         removeMessage: removeMessage,

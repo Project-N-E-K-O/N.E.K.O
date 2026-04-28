@@ -6,6 +6,178 @@
  *   AvatarButtonMixin.apply(XXXManager.prototype, 'xxx', { options });
  */
 
+// 浮动按钮入场动画（错位级联滑入 + 淡入；从上往下）。
+// 退场不做动画 —— 直接 display:none，因为浏览器在 microtask 拦截前已 commit
+// display:none 到下一帧渲染流程，可靠的退场需要改大量调用点，权衡之下放弃。
+function _ensureFloatingButtonsAnimationStyles() {
+    if (document.getElementById('neko-floating-buttons-animation-styles')) return;
+    const style = document.createElement('style');
+    style.id = 'neko-floating-buttons-animation-styles';
+    // 入场延迟梯度：第一个子元素 0ms（顶部最先到达，往下级联）
+    let staggerCss = '';
+    for (let i = 1; i <= 8; i++) {
+        const enterDelay = (i - 1) * 70;
+        staggerCss += `.neko-floating-buttons-animating[data-anim-state="entering"] > *:nth-child(${i}) { animation-delay: ${enterDelay}ms; }\n`;
+    }
+    staggerCss += `.neko-floating-buttons-animating[data-anim-state="entering"] > *:nth-child(n+9) { animation-delay: 560ms; }\n`;
+
+    style.textContent = `
+        @keyframes nekoFloatingBtnIn {
+            0%   { opacity: 0; transform: translate3d(0, -16px, 0) scale(0.82); }
+            60%  { opacity: 1; transform: translate3d(0, 2px, 0)  scale(1.04); }
+            100% { opacity: 1; transform: translate3d(0, 0, 0)    scale(1);    }
+        }
+        .neko-floating-buttons-animating > * {
+            will-change: opacity, transform;
+        }
+        .neko-floating-buttons-animating[data-anim-state="entering"] > * {
+            animation: nekoFloatingBtnIn 0.42s cubic-bezier(0.22, 1.0, 0.36, 1) both;
+        }
+        @media (prefers-reduced-motion: reduce) {
+            .neko-floating-buttons-animating[data-anim-state="entering"] > * {
+                animation-duration: 0.01ms;
+            }
+        }
+        ${staggerCss}
+    `;
+    document.head.appendChild(style);
+}
+
+function _cleanupFloatingButtonsEntrance(container) {
+    if (!container) return;
+    if (container._nekoEntranceTimer) {
+        clearTimeout(container._nekoEntranceTimer);
+        container._nekoEntranceTimer = null;
+    }
+    if (typeof container._nekoRestoreDisplayHooks === 'function') {
+        try { container._nekoRestoreDisplayHooks(); } catch (_) {}
+        container._nekoRestoreDisplayHooks = null;
+    }
+    container.classList.remove('neko-floating-buttons-animating');
+    container.removeAttribute('data-anim-state');
+    container._nekoPlayEntrance = null;
+}
+
+function _removeFloatingButtonsElement(el) {
+    if (!el) return;
+    _cleanupFloatingButtonsEntrance(el);
+    if (el._nekoVisibilityObserver) {
+        try { el._nekoVisibilityObserver.disconnect(); } catch (_) {}
+        el._nekoVisibilityObserver = null;
+    }
+    el.remove();
+}
+
+function _setupFloatingButtonsEntranceHooks(container) {
+    _ensureFloatingButtonsAnimationStyles();
+
+    const styleDecl = container.style;
+
+    const findDisplayDescriptor = () => {
+        let proto = styleDecl;
+        while (proto) {
+            const descriptor = Object.getOwnPropertyDescriptor(proto, 'display');
+            if (descriptor) return descriptor;
+            proto = Object.getPrototypeOf(proto);
+        }
+        return null;
+    };
+
+    const displayDescriptor = findDisplayDescriptor();
+    const originalSetProperty = styleDecl.setProperty;
+    const originalRemoveProperty = styleDecl.removeProperty;
+    const readDisplay = () => {
+        if (displayDescriptor && displayDescriptor.get) {
+            return displayDescriptor.get.call(styleDecl);
+        }
+        return styleDecl.getPropertyValue('display');
+    };
+    const writeDisplay = (value) => {
+        if (displayDescriptor && displayDescriptor.set) {
+            displayDescriptor.set.call(styleDecl, value);
+        } else {
+            originalSetProperty.call(styleDecl, 'display', value);
+        }
+    };
+
+    const clearAnim = () => {
+        if (container._nekoEntranceTimer) {
+            clearTimeout(container._nekoEntranceTimer);
+            container._nekoEntranceTimer = null;
+        }
+        container.classList.remove('neko-floating-buttons-animating');
+        container.removeAttribute('data-anim-state');
+    };
+
+    const playEntrance = () => {
+        if (!container.children.length) return;
+        clearAnim();
+        container.classList.add('neko-floating-buttons-animating');
+        container.setAttribute('data-anim-state', 'entering');
+        // 强制 reflow，确保 keyframes 重新触发
+        void container.offsetWidth;
+        const childCount = Math.min(container.children.length, 8);
+        const totalMs = (childCount - 1) * 70 + 420 + 80;
+        container._nekoEntranceTimer = setTimeout(() => {
+            if (container.getAttribute('data-anim-state') === 'entering') {
+                clearAnim();
+            }
+        }, totalMs);
+    };
+
+    const maybePlayAfterDisplayChange = (prev) => {
+        const cur = readDisplay();
+        if (cur === prev) return;
+        if (cur !== 'none' && prev === 'none') {
+            playEntrance();
+        }
+        lastDisplay = cur;
+    };
+
+    let lastDisplay = readDisplay() || 'none';
+
+    try {
+        Object.defineProperty(styleDecl, 'display', {
+            configurable: true,
+            enumerable: displayDescriptor ? displayDescriptor.enumerable : true,
+            get: readDisplay,
+            set: (value) => {
+                const prev = readDisplay();
+                writeDisplay(value);
+                maybePlayAfterDisplayChange(prev);
+            }
+        });
+    } catch (_) {
+        container._nekoPlayEntrance = playEntrance;
+        return;
+    }
+
+    styleDecl.setProperty = function(name, value, priority) {
+        const isDisplay = String(name).toLowerCase() === 'display';
+        const prev = isDisplay ? readDisplay() : null;
+        const result = originalSetProperty.call(this, name, value, priority);
+        if (isDisplay) maybePlayAfterDisplayChange(prev);
+        return result;
+    };
+    styleDecl.removeProperty = function(name) {
+        const isDisplay = String(name).toLowerCase() === 'display';
+        const prev = isDisplay ? readDisplay() : null;
+        const result = originalRemoveProperty.call(this, name);
+        if (isDisplay) maybePlayAfterDisplayChange(prev);
+        return result;
+    };
+
+    container._nekoPlayEntrance = playEntrance;
+    container._nekoRestoreDisplayHooks = () => {
+        try { delete styleDecl.display; } catch (_) {}
+        styleDecl.setProperty = originalSetProperty;
+        styleDecl.removeProperty = originalRemoveProperty;
+    };
+}
+
+window._removeNekoFloatingButtonsElement = _removeFloatingButtonsElement;
+window._cleanupNekoFloatingButtonsEntrance = _cleanupFloatingButtonsEntrance;
+
 const AvatarButtonMixin = {
     /**
      * 应用按钮 mixin 到指定的 Manager 类
@@ -57,9 +229,11 @@ const AvatarButtonMixin = {
                 this._returnButtonDragHandlers = null;
             }
 
-            // 清理旧 DOM（自身类型）
+            // 清理旧 DOM（自身类型）—— 先清理旧容器上的入场动画状态，避免定时器残留
             document.querySelectorAll(`#${options.containerElementId}, #${options.lockIconId}, #${options.returnContainerId}`)
-                .forEach(el => el.remove());
+                .forEach(el => {
+                    _removeFloatingButtonsElement(el);
+                });
             if (options.excludeLiveD2Elements && options.excludeLiveD2Elements.length > 0) {
                 options.excludeLiveD2Elements.forEach(selector => {
                     document.querySelectorAll(selector).forEach(el => el.remove());
@@ -76,7 +250,9 @@ const AvatarButtonMixin = {
             allButtonIds.forEach(id => {
                 if (selfIds.indexOf(id) === -1) {
                     const el = document.getElementById(id);
-                    if (el) el.remove();
+                    if (el) {
+                        _removeFloatingButtonsElement(el);
+                    }
                 }
             });
 
@@ -145,6 +321,9 @@ const AvatarButtonMixin = {
             ['pointerdown', 'pointermove', 'pointerup', 'mousedown', 'mousemove', 'mouseup', 'touchstart', 'touchmove', 'touchend', 'click'].forEach(evt => {
                 buttonsContainer.addEventListener(evt, stopContainerEvent);
             });
+
+            // 挂入场动画触发器（仅监听 display 'none' → 可见，不观察定位 style 更新）
+            _setupFloatingButtonsEntranceHooks(buttonsContainer);
 
             return buttonsContainer;
         };
@@ -830,9 +1009,9 @@ const AvatarButtonMixin = {
                 this._uiUpdateLoopId = null;
             }
 
-            // 移除 DOM 元素
+            // 移除 DOM 元素（先清理自己的入场动画状态）
             document.querySelectorAll(`#${opts.containerElementId}, #${opts.lockIconId}, #${opts.returnContainerId}`)
-                .forEach(el => el.remove());
+                .forEach(el => _removeFloatingButtonsElement(el));
 
             // 移除侧边面板
             document.querySelectorAll(`[data-neko-sidepanel-owner^="${opts.popupPrefix}-popup-"]`).forEach(panel => {

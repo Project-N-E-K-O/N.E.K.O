@@ -74,7 +74,9 @@ export default {
     sdkVersion: 'SDK Version',
     updateTime: 'Update Time',
     noMetricsData: 'No Performance Data',
-    failedToLoadServerInfo: 'Failed to load server info'
+    failedToLoadServerInfo: 'Failed to load server info',
+    startTutorial: 'Tutorial Guide',
+    tutorialHint: 'New to the plugin manager? Tap here and I will show you around.'
   },
   plugins: {
     title: 'Plugins',
@@ -240,9 +242,19 @@ export default {
     },
     ui: {
       open: 'Open UI',
+      panel: 'Panel',
+      guide: 'Guide',
       loading: 'Loading plugin UI...',
       loadError: 'Failed to load plugin UI',
-      noUI: 'This plugin has no custom UI'
+      noUI: 'This plugin has no custom UI',
+      hostedTsxPending: 'Hosted TSX rendering is coming soon',
+      markdownPending: 'Markdown guide rendering is coming soon',
+      autoPending: 'Auto-generated panels are coming soon',
+      surfaceUnavailable: 'Surface unavailable',
+      surfaceEntryMissing: 'The entry file declared by this surface does not exist. Check the entry path in plugin.toml.',
+      surfaceWarnings: 'Plugin UI declaration needs attention',
+      controlError: 'Plugin UI control error',
+      hostedRuntimePending: 'The Vue container recognized this surface. TSX, Markdown, and Auto renderers will be connected in a later phase.'
     }
   },
   metrics: {
@@ -417,6 +429,85 @@ export default {
     welcome: 'This is where you manage all your plugins, nya~ You can browse, launch, and tweak them to make me even more powerful!',
     hint: 'Take your time and poke around a little, then tap the button below when you\'re done~',
     complete: 'All done, meow~',
-    dismiss: 'Maybe later~'
+    dismiss: 'Maybe later~',
+    keyboardSkipHint: 'Press Enter or Space for the next step. This becomes active 0.5 seconds after each step starts.',
+    steps: {
+      start: {
+        title: 'Start Here',
+        body: 'Use this button whenever you want to replay the plugin manager tour. I will not pop up on my own, nya.'
+      },
+      stats: {
+        title: 'Plugin Overview',
+        body: 'These cards show total, running, stopped, and crashed plugins so you can read the current state at a glance.'
+      },
+      metrics: {
+        title: 'Performance Monitor',
+        body: 'This area shows CPU, memory, threads, and active plugin counts for the plugin service.'
+      },
+      server: {
+        title: 'Server Info',
+        body: 'Here you can check the SDK version, plugin count, and update time to confirm the service is healthy.'
+      },
+      plugins: {
+        title: 'Plugin List',
+        body: 'Go to Plugin Management on the left to start, stop, configure plugins, or inspect plugin logs.'
+      },
+      pluginWorkbench: {
+        title: 'Plugin Workbench',
+        body: 'This is the main workspace for plugins, adapters, and extensions.'
+      },
+      pluginFilters: {
+        title: 'Search and Filters',
+        body: 'Filter plugins by name, state, type, or advanced rules when the list gets busy.'
+      },
+      pluginLayout: {
+        title: 'View Layout',
+        body: 'Switch between list, single, double, and compact layouts to fit your screen.'
+      },
+      pluginContextMenu: {
+        title: 'Right-click Actions',
+        body: 'Right-click a plugin to open details, config, logs, or run common start, stop, and reload actions.'
+      },
+      packageManager: {
+        title: 'Package Manager',
+        body: 'The package manager reuses your current filters and selections for packing, checking, verifying, and unpacking.'
+      },
+      packageOperations: {
+        title: 'Package Operations',
+        body: 'Choose pack modes, inspect packages, unpack, or analyze bundles here. The tutorial will not run dangerous actions.'
+      },
+      pluginDetail: {
+        title: 'Plugin Details',
+        body: 'The detail page contains metadata, entries, metrics, configuration, and logs for one plugin.'
+      },
+      pluginDetailActions: {
+        title: 'Detail Actions',
+        body: 'The top-right actions apply to the current plugin after you have checked its details.'
+      },
+      runs: {
+        title: 'Runs',
+        body: 'Runs show execution history and live status for plugin entry tasks.'
+      },
+      runsList: {
+        title: 'Run List',
+        body: 'Select a run on the left, or refresh the list to sync the latest records.'
+      },
+      runsDetail: {
+        title: 'Run Details',
+        body: 'The detail panel shows stage, progress, errors, and exports. Cancel only appears for cancellable runs.'
+      },
+      logs: {
+        title: 'Server Logs',
+        body: 'Server logs help you inspect output and errors from the plugin service itself.'
+      },
+      logToolbar: {
+        title: 'Log Filters',
+        body: 'Filter by level, keyword, and line count, or toggle auto-scroll from this toolbar.'
+      },
+      logList: {
+        title: 'Log List',
+        body: 'Logs show time, source, level, and message, making this the first stop for debugging plugin issues.'
+      }
+    }
   }
 }
