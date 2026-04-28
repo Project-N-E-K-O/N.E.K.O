@@ -1190,7 +1190,10 @@ NEGATIVE_KEYWORDS_I18N: dict[str, frozenset[str]] = {
         "drop the subject", "drop it", "not this again",
         "shut up", "let it go", "move on", "enough of this",
         # Annoyance (implies "end this topic")
-        "hate", "annoying", "annoyed", "frustrating", "frustrated",
+        # `hate` must stay multi-word — bare "hate" is a substring of common
+        # words like "whatever" and would fire false positives every turn.
+        "i hate", "hate this", "hate that", "hate it", "hate when",
+        "annoying", "annoyed", "frustrating", "frustrated",
         "sick of",
     ]),
     'ja': frozenset([
