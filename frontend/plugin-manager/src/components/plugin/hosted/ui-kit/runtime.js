@@ -948,11 +948,11 @@ function localeCandidates(locale, fallbackLocale) {
   };
   add(locale);
   if (locale && String(locale).includes('-')) add(String(locale).split('-')[0]);
-  if (String(locale || '').trim().toLowerCase() === 'zh') add('zh-CN');
+  const localeLower = String(locale || '').trim().toLowerCase();
+  if (localeLower === 'zh' || localeLower.startsWith('zh-') || localeLower.startsWith('zh_')) add('zh-CN');
   add(fallbackLocale);
   if (fallbackLocale && String(fallbackLocale).includes('-')) add(String(fallbackLocale).split('-')[0]);
   add('en');
-  add('zh-CN');
   return candidates;
 }
 function interpolateI18n(text, params) {

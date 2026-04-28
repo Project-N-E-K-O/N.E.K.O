@@ -12,14 +12,128 @@ const surfaceKinds = ['panel', 'guide', 'docs']
 function parseTomlSurfaces(text) {
   const surfaces = []
   let current = null
+  let inPluginUi = false
+  let pendingInline = null
+
+  const stripComment = (line) => {
+    let quote = null
+    for (let index = 0; index < line.length; index += 1) {
+      const char = line[index]
+      if (quote) {
+        if (char === quote && line[index - 1] !== '\\') quote = null
+        continue
+      }
+      if (char === '"' || char === "'") {
+        quote = char
+        continue
+      }
+      if (char === '#') return line.slice(0, index)
+    }
+    return line
+  }
+
+  const bracketDelta = (line) => {
+    let quote = null
+    let delta = 0
+    for (let index = 0; index < line.length; index += 1) {
+      const char = line[index]
+      if (quote) {
+        if (char === quote && line[index - 1] !== '\\') quote = null
+        continue
+      }
+      if (char === '"' || char === "'") {
+        quote = char
+      } else if (char === '[') {
+        delta += 1
+      } else if (char === ']') {
+        delta -= 1
+      }
+    }
+    return delta
+  }
+
+  const splitInlineFields = (body) => {
+    const fields = []
+    let quote = null
+    let bracketDepth = 0
+    let start = 0
+    for (let index = 0; index < body.length; index += 1) {
+      const char = body[index]
+      if (quote) {
+        if (char === quote && body[index - 1] !== '\\') quote = null
+        continue
+      }
+      if (char === '"' || char === "'") {
+        quote = char
+      } else if (char === '[') {
+        bracketDepth += 1
+      } else if (char === ']') {
+        bracketDepth -= 1
+      } else if (char === ',' && bracketDepth === 0) {
+        fields.push(body.slice(start, index).trim())
+        start = index + 1
+      }
+    }
+    fields.push(body.slice(start).trim())
+    return fields.filter(Boolean)
+  }
+
+  const parseInlineTable = (body, kind) => {
+    const surface = { kind }
+    for (const field of splitInlineFields(body)) {
+      const match = field.match(/^([A-Za-z0-9_-]+)\s*=\s*"((?:\\.|[^"])*)"$/)
+      if (match) surface[match[1]] = match[2].replace(/\\"/g, '"')
+    }
+    return surface
+  }
+
+  const addInlineSurfaces = (kind, rawValue) => {
+    const textValue = rawValue.trim()
+    const tablePattern = /\{([^{}]*)\}/g
+    let match
+    while ((match = tablePattern.exec(textValue)) !== null) {
+      surfaces.push(parseInlineTable(match[1], kind))
+    }
+  }
+
   for (const rawLine of text.split(/\r?\n/)) {
-    const line = rawLine.split('#', 1)[0].trim()
+    const lineWithoutComment = stripComment(rawLine)
+    if (pendingInline) {
+      pendingInline.value += `\n${lineWithoutComment}`
+      pendingInline.depth += bracketDelta(lineWithoutComment)
+      if (pendingInline.depth <= 0) {
+        addInlineSurfaces(pendingInline.kind, pendingInline.value)
+        pendingInline = null
+      }
+      continue
+    }
+    const line = lineWithoutComment.trim()
     if (!line) continue
+    const tableHeaderMatch = line.match(/^\[([^\]]+)\]$/)
+    if (tableHeaderMatch) {
+      inPluginUi = tableHeaderMatch[1] === 'plugin.ui'
+      current = null
+    }
     const tableMatch = line.match(/^\[\[plugin\.ui\.(panel|guide|docs)\]\]$/)
     if (tableMatch) {
+      inPluginUi = false
       current = { kind: tableMatch[1] }
       surfaces.push(current)
       continue
+    }
+    if (inPluginUi) {
+      const inlineMatch = line.match(/^(panel|guide|docs)\s*=\s*(.+)$/)
+      if (inlineMatch) {
+        const kind = inlineMatch[1]
+        const value = inlineMatch[2]
+        const depth = bracketDelta(value)
+        if (depth > 0) {
+          pendingInline = { kind, value, depth }
+        } else {
+          addInlineSurfaces(kind, value)
+        }
+        continue
+      }
     }
     const keyValueMatch = line.match(/^([A-Za-z0-9_-]+)\s*=\s*"(.*)"$/)
     if (current && keyValueMatch) {

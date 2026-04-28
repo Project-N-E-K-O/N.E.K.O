@@ -47,6 +47,7 @@ plugin/plugins/my_plugin/
 ## 1. 在 `plugin.toml` 声明界面
 
 ```toml
+# 默认插件元数据。每个插件都需要，不是 Hosted UI 专属写法。
 [plugin]
 id = "my_plugin"
 name = "My Plugin"
@@ -54,23 +55,32 @@ description = "A plugin with a hosted UI"
 version = "0.1.0"
 entry = "plugin.plugins.my_plugin:MyPlugin"
 
+# 推荐：需要多语言时配置。建议以 "en" 作为基准语言。
 [plugin.i18n]
 default_locale = "en"
 locales_dir = "i18n"
 
+# Hosted UI 开关。只有插件要暴露界面时才需要。
 [plugin.ui]
 enabled = true
 
+# 交互式面板。需要按钮、表单、表格时使用。
 [[plugin.ui.panel]]
 id = "main"
 title = "My Plugin"
+# 必需：.tsx 后缀会选择 Hosted TSX 模式。
 entry = "ui/panel.tsx"
+# 面板需要读取 Python 状态时必需。必须匹配 @ui.context(id=...)。
 context = "dashboard"
+# 需要调用 action 时必需。只读面板可以去掉 action:call。
+# 面板需要读取 props.config 时再加 config:read。
 permissions = ["state:read", "action:call"]
 
+# 可选教程页。只是展示说明文档时，用 Markdown 最轻。
 [[plugin.ui.guide]]
 id = "quickstart"
 title = "Quickstart"
+# 必需：.md 后缀会选择 Markdown 模式。
 entry = "docs/quickstart.md"
 permissions = ["state:read"]
 ```
@@ -84,7 +94,7 @@ permissions = ["state:read"]
 | `title` | 显示标题 |
 | `entry` | 相对插件目录的文件路径 |
 | `context` | Python 侧 `@ui.context(id=...)` 的上下文 ID |
-| `permissions` | surface 能力，例如 `state:read`、`action:call` |
+| `permissions` | surface 能力，例如 `state:read`、`config:read`、`action:call` |
 
 模式会根据 `entry` 后缀自动推断：
 
@@ -98,34 +108,43 @@ permissions = ["state:read"]
 
 ```python
 from plugin.sdk.plugin import (
-    NekoPluginBase,
-    neko_plugin,
-    plugin_entry,
-    ui,
-    tr,
-    Ok,
+    NekoPluginBase,  # 默认插件基类。
+    neko_plugin,     # 默认插件发现装饰器。
+    plugin_entry,    # 默认后端 entry，也是 LLM 可见工具。
+    ui,              # Hosted UI 装饰器：context 和 action。
+    tr,              # 推荐：声明插件本地 i18n 引用。
+    Ok,              # 推荐：成功结果辅助函数。
 )
 
 
+# 普通 Python 插件必需。
 @neko_plugin
 class MyPlugin(NekoPluginBase):
+    # Hosted UI：surface 需要 props.state 时必需。
+    # id 必须匹配 plugin.toml 里的 context = "dashboard"。
     @ui.context(id="dashboard")
     async def dashboard(self):
+        # 这个对象会进入 TSX 面板的 props.state。
         return {
             "items": [
                 {"id": "demo", "status": "ready"},
             ],
         }
 
+    # Hosted UI：把这个插件 entry 暴露给当前 surface。
+    # 推荐：用 tr(...)，这样 label 可以被 i18n/*.json 翻译。
     @ui.action(
         label=tr("actions.refresh.label", default="Refresh"),
         tone="primary",
+        # 推荐：会修改状态的 action 成功后自动刷新 props.state。
         refresh_context=True,
     )
+    # 可调用后端 entry 必需。Hosted UI 最终调用的是它。
     @plugin_entry(
         id="refresh_item",
         name=tr("entries.refresh.name", default="Refresh Item"),
         description=tr("entries.refresh.description", default="Refresh an item."),
+        # 推荐：schema 会用于表单、参数提示和 LLM 工具元数据。
         input_schema={
             "type": "object",
             "properties": {
@@ -136,6 +155,7 @@ class MyPlugin(NekoPluginBase):
             },
             "required": ["item_id"],
         },
+        # 可选：告诉 LLM 侧重点关注哪些返回字段。
         llm_result_fields=["message"],
     )
     async def refresh_item(self, item_id: str, **_):
@@ -153,6 +173,8 @@ class MyPlugin(NekoPluginBase):
 ## 3. 编写 TSX 面板
 
 ```tsx
+// Hosted UI 专属：组件、hooks、类型都从 @neko/plugin-ui 导入。
+// 插件 TSX 文件不要导入 npm 包。
 import {
   Page,
   Card,
@@ -163,6 +185,7 @@ import {
 } from "@neko/plugin-ui"
 import type { HostedAction, PluginSurfaceProps } from "@neko/plugin-ui"
 
+// 推荐：给 Python context 返回值加类型，TSX 里更不容易写错。
 type Item = {
   id: string
   status: string
@@ -172,14 +195,22 @@ type State = {
   items?: Item[]
 }
 
+// 必需：Hosted TSX 必须 default export 一个函数组件。
 export default function Panel(props: PluginSurfaceProps<State>) {
+  // Hosted UI 提供：
+  // - t：插件本地翻译函数
+  // - state：@ui.context(...) 的返回值
+  // - actions：@ui.action(...) 暴露的动作
   const { t, state, actions } = props
+
+  // 推荐：通过 action id 查找动作，不在 TSX 里硬编码展示文本。
   const refresh = actions.find((action) => action.id === "refresh_item") as HostedAction | undefined
 
   return (
     <Page title={props.plugin.name} subtitle={t("panel.subtitle")}>
       <Card title={t("panel.items")}>
         <Stack>
+          {/* 推荐：简单表格优先使用 UI Kit 组件。 */}
           <DataTable
             data={state.items || []}
             rowKey="id"
@@ -189,6 +220,7 @@ export default function Panel(props: PluginSurfaceProps<State>) {
             ]}
           />
 
+          {/* 推荐快捷写法：它会调用 entry，并在 refresh_context=true 时刷新 context。 */}
           {refresh ? (
             <ActionButton action={refresh} values={{ item_id: "demo" }}>
               {t("actions.refresh.label")}
@@ -244,11 +276,15 @@ Hosted TSX 会在线编译。导入规则尽量保持简单：
 Python 和 TSX 共用同一套 key：
 
 ```python
+# Python 声明侧：在装饰器和 schema 里用 tr(...)。
 tr("actions.refresh.label", default="Refresh")
+
+# Python 运行时：适合插件代码自己生成消息时使用。
 self.i18n.t("messages.done", default="Done")
 ```
 
 ```tsx
+// TSX 运行时：所有可见 UI 文本优先用 props.t(...)。
 props.t("panel.subtitle")
 props.t("item.count", { count: 3 })
 ```
@@ -270,6 +306,8 @@ fallback 顺序：
 [[plugin.ui.guide]]
 id = "quickstart"
 title = "Quickstart"
+# .md 会选择简单 Markdown 渲染器。除非教程页需要 Python 状态，
+# 否则不需要额外声明 @ui.context(...)。
 entry = "docs/quickstart.md"
 permissions = ["state:read"]
 ```
@@ -300,7 +338,7 @@ permissions = ["state:read"]
 | `stateSchema` | `JsonSchema \| null` | 可选状态 schema |
 | `actions` | `HostedAction[]` | `@ui.action` 暴露的动作 |
 | `entries` | `Record<string, any>[]` | 插件入口列表 |
-| `config` | `{ schema, value, readonly }` | 插件配置快照 |
+| `config` | `{ schema, value, readonly }` | 允许 `config:read` 时提供只读插件配置快照 |
 | `warnings` | `Array<{ path, code, message }>` | UI 声明告警 |
 | `locale` | `string` | 当前 UI locale |
 | `t` | `(key, params?) => string` | 插件本地翻译函数 |
@@ -391,6 +429,7 @@ type HostedApi = {
 示例：
 
 ```tsx
+// 推荐：初次渲染后还要加载额外数据时使用。
 const tools = useAsync(() => props.api.call("list_tools"), [])
 
 if (tools.loading) return <Text>Loading...</Text>
@@ -430,12 +469,15 @@ Hosted TSX 不是完整 React。它有意提供一个较小的运行时。
 运行完整 hosted UI 检查：
 
 ```bash
+# 在仓库根目录运行：包含类型检查、TSX 检查、hosted 测试、
+# 浏览器 E2E、Python 编译检查和相关 pytest。
 scripts/check-hosted-ui.sh
 ```
 
 常用单项：
 
 ```bash
+# 只跑前端相关检查。
 cd frontend/plugin-manager
 npm run check-hosted-tsx -- plugin/plugins/my_plugin
 npm run test:hosted

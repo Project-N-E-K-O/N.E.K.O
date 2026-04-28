@@ -47,6 +47,7 @@ plugin/plugins/my_plugin/
 ## 1. Declare surfaces in `plugin.toml`
 
 ```toml
+# Default plugin metadata. Required for every plugin, not specific to Hosted UI.
 [plugin]
 id = "my_plugin"
 name = "My Plugin"
@@ -54,23 +55,32 @@ description = "A plugin with a hosted UI"
 version = "0.1.0"
 entry = "plugin.plugins.my_plugin:MyPlugin"
 
+# Recommended when UI text should be translated. Keep "en" as the baseline.
 [plugin.i18n]
 default_locale = "en"
 locales_dir = "i18n"
 
+# Hosted UI switch. Required only when this plugin exposes surfaces.
 [plugin.ui]
 enabled = true
 
+# Interactive panel. Required when the plugin needs buttons, forms, or tables.
 [[plugin.ui.panel]]
 id = "main"
 title = "My Plugin"
+# Required: .tsx selects Hosted TSX mode.
 entry = "ui/panel.tsx"
+# Required when the panel reads Python state. Must match @ui.context(id=...).
 context = "dashboard"
+# Required for action buttons. Remove action:call for read-only panels.
+# Add config:read if the panel needs props.config.
 permissions = ["state:read", "action:call"]
 
+# Optional guide page. Use Markdown when the page is just documentation.
 [[plugin.ui.guide]]
 id = "quickstart"
 title = "Quickstart"
+# Required: .md selects Markdown mode.
 entry = "docs/quickstart.md"
 permissions = ["state:read"]
 ```
@@ -84,7 +94,7 @@ permissions = ["state:read"]
 | `title` | Display title |
 | `entry` | File path relative to the plugin directory |
 | `context` | Python `@ui.context(id=...)` provider used by this surface |
-| `permissions` | Surface capabilities, such as `state:read` and `action:call` |
+| `permissions` | Surface capabilities, such as `state:read`, `config:read`, and `action:call` |
 
 Mode is inferred from the entry extension:
 
@@ -98,34 +108,43 @@ Mode is inferred from the entry extension:
 
 ```python
 from plugin.sdk.plugin import (
-    NekoPluginBase,
-    neko_plugin,
-    plugin_entry,
-    ui,
-    tr,
-    Ok,
+    NekoPluginBase,  # Default plugin base class.
+    neko_plugin,     # Default decorator for plugin discovery.
+    plugin_entry,    # Default backend entry and LLM-visible tool.
+    ui,              # Hosted UI decorators: context and action.
+    tr,              # Recommended: plugin-local i18n reference.
+    Ok,              # Recommended result helper for successful entries.
 )
 
 
+# Required for a normal Python plugin.
 @neko_plugin
 class MyPlugin(NekoPluginBase):
+    # Hosted UI: required when a surface needs props.state.
+    # The id must match plugin.toml: context = "dashboard".
     @ui.context(id="dashboard")
     async def dashboard(self):
+        # This object becomes props.state in the TSX panel.
         return {
             "items": [
                 {"id": "demo", "status": "ready"},
             ],
         }
 
+    # Hosted UI: expose this plugin entry to the current surface.
+    # Recommended: use tr(...) so the same label can be translated in i18n/*.json.
     @ui.action(
         label=tr("actions.refresh.label", default="Refresh"),
         tone="primary",
+        # Recommended for state-changing actions: refresh props.state after success.
         refresh_context=True,
     )
+    # Required for a callable backend entry. Hosted UI calls this entry.
     @plugin_entry(
         id="refresh_item",
         name=tr("entries.refresh.name", default="Refresh Item"),
         description=tr("entries.refresh.description", default="Refresh an item."),
+        # Recommended: schema drives forms, validation hints, and LLM tool metadata.
         input_schema={
             "type": "object",
             "properties": {
@@ -136,6 +155,7 @@ class MyPlugin(NekoPluginBase):
             },
             "required": ["item_id"],
         },
+        # Optional: tells the LLM-facing layer which result fields matter.
         llm_result_fields=["message"],
     )
     async def refresh_item(self, item_id: str, **_):
@@ -153,6 +173,8 @@ This gives the UI two things:
 ## 3. Build a TSX panel
 
 ```tsx
+// Hosted UI only: import components, hooks, and types from @neko/plugin-ui.
+// Do not import npm packages from a plugin TSX file.
 import {
   Page,
   Card,
@@ -163,6 +185,7 @@ import {
 } from "@neko/plugin-ui"
 import type { HostedAction, PluginSurfaceProps } from "@neko/plugin-ui"
 
+// Recommended: type the Python context payload for safer TSX.
 type Item = {
   id: string
   status: string
@@ -172,14 +195,22 @@ type State = {
   items?: Item[]
 }
 
+// Required: Hosted TSX must export a default function component.
 export default function Panel(props: PluginSurfaceProps<State>) {
+  // Provided by Hosted UI:
+  // - t: plugin-local translator
+  // - state: result from @ui.context(...)
+  // - actions: entries exposed by @ui.action(...)
   const { t, state, actions } = props
+
+  // Recommended: locate actions by id instead of hardcoding labels in TSX.
   const refresh = actions.find((action) => action.id === "refresh_item") as HostedAction | undefined
 
   return (
     <Page title={props.plugin.name} subtitle={t("panel.subtitle")}>
       <Card title={t("panel.items")}>
         <Stack>
+          {/* Recommended UI Kit component for simple tabular state. */}
           <DataTable
             data={state.items || []}
             rowKey="id"
@@ -189,6 +220,8 @@ export default function Panel(props: PluginSurfaceProps<State>) {
             ]}
           />
 
+          {/* Recommended shortcut. It calls the entry and refreshes context when
+              the action has refresh_context=true. */}
           {refresh ? (
             <ActionButton action={refresh} values={{ item_id: "demo" }}>
               {t("actions.refresh.label")}
@@ -244,11 +277,15 @@ Hosted TSX is compiled online. Keep imports simple:
 Use the same keys from Python and TSX:
 
 ```python
+# Python declarations: use tr(...) in decorators and schemas.
 tr("actions.refresh.label", default="Refresh")
+
+# Python runtime: useful for messages produced by plugin code.
 self.i18n.t("messages.done", default="Done")
 ```
 
 ```tsx
+// TSX runtime: use props.t(...) for visible UI text.
 props.t("panel.subtitle")
 props.t("item.count", { count: 3 })
 ```
@@ -270,6 +307,8 @@ For a read-only guide, use a Markdown file:
 [[plugin.ui.guide]]
 id = "quickstart"
 title = "Quickstart"
+# .md selects the simple Markdown renderer. No Python context is required
+# unless this guide needs state from @ui.context(...).
 entry = "docs/quickstart.md"
 permissions = ["state:read"]
 ```
@@ -300,7 +339,7 @@ Not supported:
 | `stateSchema` | `JsonSchema \| null` | Optional schema for `state` |
 | `actions` | `HostedAction[]` | Actions exposed by `@ui.action` |
 | `entries` | `Record<string, any>[]` | Plugin entries |
-| `config` | `{ schema, value, readonly }` | Plugin config snapshot |
+| `config` | `{ schema, value, readonly }` | Read-only plugin config snapshot when `config:read` is allowed |
 | `warnings` | `Array<{ path, code, message }>` | Surface warnings |
 | `locale` | `string` | Current UI locale |
 | `t` | `(key, params?) => string` | Plugin-local translator |
@@ -391,6 +430,7 @@ type HostedApi = {
 Example:
 
 ```tsx
+// Recommended for extra data that is loaded after initial render.
 const tools = useAsync(() => props.api.call("list_tools"), [])
 
 if (tools.loading) return <Text>Loading...</Text>
@@ -430,12 +470,15 @@ Not supported:
 Run the full hosted UI check:
 
 ```bash
+# From the repository root: runs type checks, TSX checks, hosted tests,
+# browser E2E, Python compile checks, and relevant pytest cases.
 scripts/check-hosted-ui.sh
 ```
 
 Useful subcommands:
 
 ```bash
+# Frontend-only checks.
 cd frontend/plugin-manager
 npm run check-hosted-tsx -- plugin/plugins/my_plugin
 npm run test:hosted

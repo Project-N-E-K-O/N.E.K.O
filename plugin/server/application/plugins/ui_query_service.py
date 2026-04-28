@@ -285,6 +285,11 @@ def _surface_allows_action_call(surface: Mapping[str, object]) -> bool:
     return isinstance(permissions, list) and "action:call" in permissions
 
 
+def _surface_has_permission(surface: Mapping[str, object], permission: str) -> bool:
+    permissions = surface.get("permissions")
+    return isinstance(permissions, list) and permission in permissions
+
+
 def _normalize_translations(raw: object, *, path: Path) -> dict[str, object]:
     if not isinstance(raw, Mapping):
         raise ServerDomainError(
@@ -664,10 +669,35 @@ class PluginUiQueryService:
                 entries_obj = plugin_meta.get("entries_preview")
             entries = [dict(item) for item in entries_obj if isinstance(item, Mapping)] if isinstance(entries_obj, list) else []
 
+            action_allowed = _surface_has_permission(surface, "action:call")
+            state_allowed = _surface_has_permission(surface, "state:read")
+            config_allowed = _surface_has_permission(surface, "config:read")
             actions_obj = plugin_meta.get("list_actions")
-            actions = [dict(item) for item in actions_obj if isinstance(item, Mapping)] if isinstance(actions_obj, list) else []
+            actions = [dict(item) for item in actions_obj if isinstance(item, Mapping)] if action_allowed and isinstance(actions_obj, list) else []
 
-            config_schema = plugin_meta.get("input_schema") if isinstance(plugin_meta.get("input_schema"), Mapping) else {"type": "object", "properties": {}}
+            config_snapshot: dict[str, object] = {
+                "schema": {"type": "object", "additionalProperties": True},
+                "value": {},
+                "readonly": True,
+            }
+            if config_allowed:
+                try:
+                    from plugin.server.application.config import ConfigQueryService
+
+                    config_payload = await ConfigQueryService().get_plugin_config(plugin_id=plugin_id)
+                    config_value = config_payload.get("config")
+                    config_snapshot["value"] = dict(config_value) if isinstance(config_value, Mapping) else {}
+                    if isinstance(config_payload.get("last_modified"), str):
+                        config_snapshot["last_modified"] = config_payload["last_modified"]
+                    if isinstance(config_payload.get("profiles_state"), Mapping):
+                        config_snapshot["profiles_state"] = dict(config_payload["profiles_state"])  # type: ignore[arg-type]
+                except Exception as exc:
+                    warnings.append(PluginUiWarning(
+                        path=f"plugin.ui.{kind}.{surface_id}.config",
+                        code="config_read_failed",
+                        message=f"Failed to load plugin config snapshot: {exc}",
+                    ).model_dump())
+
             state_payload: object = {}
             state_schema: object = None
             context_id = surface.get("context")
@@ -679,10 +709,11 @@ class PluginUiQueryService:
                 try:
                     ui_context_result = await host.get_ui_context(str(context_id))
                     if isinstance(ui_context_result, Mapping):
-                        state_payload = ui_context_result.get("state", {})
-                        state_schema = ui_context_result.get("state_schema")
+                        if state_allowed:
+                            state_payload = ui_context_result.get("state", {})
+                            state_schema = ui_context_result.get("state_schema")
                         context_actions = ui_context_result.get("actions")
-                        if isinstance(context_actions, list):
+                        if action_allowed and isinstance(context_actions, list):
                             actions = [
                                 dict(item)
                                 for item in context_actions
@@ -707,11 +738,7 @@ class PluginUiQueryService:
                 "state_schema": state_schema,
                 "actions": actions,
                 "entries": entries,
-                "config": {
-                    "schema": config_schema,
-                    "value": {},
-                    "readonly": True,
-                },
+                "config": config_snapshot,
                 "warnings": warnings,
                 "i18n": {
                     "locale": resolved_locale,
