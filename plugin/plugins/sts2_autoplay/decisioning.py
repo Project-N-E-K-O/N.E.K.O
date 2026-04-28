@@ -65,7 +65,7 @@ class DecisioningMixin:
                     resolved_target = target_index
                 else:
                     resolved_target = self._safe_int(valid_targets[0])
-                action = self._action_for_card(play_card_actions, card, resolved_target)
+                action = self._action_for_card(play_card_actions, card, target_index=resolved_target)
                 if action is not None:
                     self.logger.info(f"[sts2_autoplay][desperate] selected attack card={card.get('name')} damage={self._combat_analyzer._card_total_damage_value(card, combat, target_index=resolved_target, strategy_constraints=strategy_constraints)} target={resolved_target}")
                     return action
@@ -249,7 +249,7 @@ class DecisioningMixin:
                         best_target = None
             if best_card is None or best_benefit < -999990.0:
                 break
-            action = self._action_for_card(play_card_actions, best_card, best_target)
+            action = self._action_for_card(play_card_actions, best_card, target_index=best_target)
             if action is None:
                 remaining.pop(best_idx)
                 continue
@@ -264,7 +264,7 @@ class DecisioningMixin:
         if not best_sequence:
             return None
         first_card, first_target = best_sequence[0]
-        chosen_action = self._action_for_card(play_card_actions, first_card, first_target)
+        chosen_action = self._action_for_card(play_card_actions, first_card, target_index=first_target)
         self.logger.info(
             f"[sts2_autoplay][maximize] energy={remaining_energy} sequence={[(c[0].get('name'), c[1]) for c in best_sequence]} "
             f"lethal:{bool(tactical.get('should_prioritize_lethal'))} def:{bool(tactical.get('should_prioritize_defense'))} "

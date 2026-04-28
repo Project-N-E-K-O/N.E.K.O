@@ -13,9 +13,8 @@ class AutoplayLoopMixin:
         if self._autoplay_task and not self._autoplay_task.done():
             return {"status": "running", "message": "尖塔半自动任务已在运行", "task": self._semi_auto_task, "executed": False}
 
-        if objective or bool(self._cfg.get("semi_auto_autoplay", True)):
-            self._semi_auto_task = self._build_semi_auto_task(objective=objective, stop_condition=stop_condition)
-            await self._notify_neko_task_event("started")
+        self._semi_auto_task = self._build_semi_auto_task(objective=objective, stop_condition=stop_condition)
+        await self._notify_neko_task_event("started")
 
         self._paused = False
         self._autoplay_state = "running"
@@ -75,7 +74,7 @@ class AutoplayLoopMixin:
             guidance_step = self._step_count if step_value is None else int(step_value)
         except Exception:
             guidance_step = self._step_count
-        if len(self._neko_guidance_queue) >= max_queue:
+        while len(self._neko_guidance_queue) >= max_queue:
             self._neko_guidance_queue.popleft()
         self._neko_guidance_queue.append({
             "content": str(guidance.get("content", "")),

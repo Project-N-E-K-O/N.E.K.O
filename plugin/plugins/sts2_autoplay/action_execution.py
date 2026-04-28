@@ -83,15 +83,34 @@ class ActionExecutionMixin:
         if not self._action_requires_index(action_type, raw):
             return allowed
         if action_type == "discard_potion":
-            allowed["option_index"] = [int(potion.get("index", 0)) for potion in self._potions(context) if bool(potion.get("can_discard"))]
+            option_indices = [
+                self._safe_int(potion.get("index"), None)
+                for potion in self._potions(context)
+                if bool(potion.get("can_discard"))
+            ]
+            allowed["option_index"] = [index for index in option_indices if index is not None]
         elif action_type == "use_potion":
-            allowed["option_index"] = [int(potion.get("index", 0)) for potion in self._potions(context) if bool(potion.get("can_use"))]
+            option_indices = [
+                self._safe_int(potion.get("index"), None)
+                for potion in self._potions(context)
+                if bool(potion.get("can_use"))
+            ]
+            allowed["option_index"] = [index for index in option_indices if index is not None]
         elif action_type == "play_card":
             combat = self._combat_state(context)
             hand = combat.get("hand") if isinstance(combat.get("hand"), list) else []
             playable_cards = [card for card in hand if isinstance(card, dict) and bool(card.get("playable"))]
-            allowed["card_index"] = [int(card.get("index", 0)) for card in playable_cards]
-            target_values = sorted({int(target) for card in playable_cards for target in (card.get("valid_target_indices") if isinstance(card.get("valid_target_indices"), list) else [])})
+            card_indices = [self._safe_int(card.get("index"), None) for card in playable_cards]
+            allowed["card_index"] = [index for index in card_indices if index is not None]
+            target_values = sorted({
+                target_index
+                for card in playable_cards
+                for target_index in [
+                    self._safe_int(target, None)
+                    for target in (card.get("valid_target_indices") if isinstance(card.get("valid_target_indices"), list) else [])
+                ]
+                if target_index is not None
+            })
             if target_values:
                 allowed["target_index"] = target_values
         elif action_type in {"choose_map_node", "choose_treasure_relic", "choose_event_option", "choose_rest_option", "select_deck_card", "choose_reward_card", "buy_card", "buy_relic", "buy_potion", "claim_reward"}:
@@ -146,8 +165,6 @@ class ActionExecutionMixin:
 
     def _extract_generic_option_indices(self, raw: dict[str, Any]) -> list[int]:
         indices: list[int] = []
-        if bool(raw.get("requires_index")):
-            indices.append(0)
         for candidate in self._context_analyzer._iter_option_candidates(raw):
             if not isinstance(candidate, list):
                 continue

@@ -354,13 +354,15 @@ class NekoCommandingMixin:
                 continue
             raw_intent = enemy.get("intent")
             intent = raw_intent if isinstance(raw_intent, dict) else {}
+            intent_type = str(intent.get("type") or raw_intent or "")
             enemy_summaries.append({
                 "name": str(enemy.get("name") or ""),
                 "hp": self._safe_int(enemy.get("hp")),
                 "max_hp": self._safe_int(enemy.get("max_hp")),
                 "block": self._safe_int(enemy.get("block")),
-                "intent": str(intent.get("type") or raw_intent or ""),
+                "intent": intent_type,
                 "intent_value": self._safe_int(intent.get("value") if intent.get("value") is not None else enemy.get("intent_value")),
+                "attack_value": self._enemy_intent_attack_total(enemy),
             })
         return {
             "time": timestamp,
@@ -390,7 +392,7 @@ class NekoCommandingMixin:
         oldest = usable[-1]
         hp_delta = self._safe_int(latest.get("hp"), 0) - self._safe_int(oldest.get("hp"), 0)
         block = self._safe_int(latest.get("block"), 0)
-        incoming_attack = sum(max(0, self._safe_int(enemy.get("intent_value"), 0)) for enemy in (latest.get("enemies") if isinstance(latest.get("enemies"), list) else []))
+        incoming_attack = sum(max(0, self._review_enemy_attack_value(enemy)) for enemy in (latest.get("enemies") if isinstance(latest.get("enemies"), list) else []))
         enemy_hp_old = sum(max(0, self._safe_int(enemy.get("hp"), 0)) for enemy in (oldest.get("enemies") if isinstance(oldest.get("enemies"), list) else []))
         enemy_hp_new = sum(max(0, self._safe_int(enemy.get("hp"), 0)) for enemy in (latest.get("enemies") if isinstance(latest.get("enemies"), list) else []))
         enemy_hp_delta = enemy_hp_new - enemy_hp_old
@@ -450,14 +452,24 @@ class NekoCommandingMixin:
             enemy_name = str(enemy.get("name") or "敌人")
             enemy_hp = self._safe_int(enemy.get("hp"), 0)
             enemy_max_hp = self._safe_int(enemy.get("max_hp"), 0)
-            intent_value = self._safe_int(enemy.get("intent_value"), 0)
+            attack_value = self._review_enemy_attack_value(enemy)
             if enemy_hp > 0 and enemy_max_hp > 0:
                 parts.append(f"{enemy_name}血量约{enemy_hp}/{enemy_max_hp}")
-            if intent_value > 0:
-                parts.append(f"敌人来袭约{intent_value}点")
+            if attack_value > 0:
+                parts.append(f"敌人来袭约{attack_value}点")
         if not parts:
             return ""
         return "猫娘看到" + "，".join(parts[:3]) + "。"
+
+    def _review_enemy_attack_value(self, enemy: Any) -> int:
+        if not isinstance(enemy, dict):
+            return 0
+        if "attack_value" in enemy:
+            return self._safe_int(enemy.get("attack_value"), 0)
+        intent = str(enemy.get("intent") or "").strip().lower()
+        if any(token in intent for token in {"attack", "attacking", "damage", "打", "攻击", "来袭"}):
+            return self._safe_int(enemy.get("intent_value"), 0)
+        return 0
 
     def _build_neko_review_card_praise(self, snapshots: list[Dict[str, Any]], *, enemy_hp_delta: int, incoming_attack: int, block: int) -> str:
         card_name = ""
