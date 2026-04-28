@@ -478,6 +478,45 @@
     }
     mod.fetchBackendScreenshot = fetchBackendScreenshot;
 
+    /**
+     * 后端系统原生交互截图：触发操作系统级的全桌面框选截图。
+     * 仅适合用户手势触发的场景（如点击聊天截图按钮）。
+     * @returns {Promise<{dataUrl: string|null, status: number|null, canceled?: boolean, error?: string|null}>}
+     */
+    async function fetchBackendInteractiveScreenshot() {
+        var h = window.location.hostname;
+        if (h !== 'localhost' && h !== '127.0.0.1' && h !== '0.0.0.0') {
+            return { dataUrl: null, status: null, canceled: false, error: null };
+        }
+        try {
+            var resp = await fetch('/api/screenshot/interactive', { method: 'POST' });
+            var json = null;
+            try {
+                json = await resp.json();
+            } catch (_) {
+                json = null;
+            }
+            if (json && json.canceled) {
+                console.log('[截图] 系统原生交互截图已取消');
+                return { dataUrl: null, status: resp.status, canceled: true, error: null };
+            }
+            if (resp.ok && json && json.success && json.data) {
+                console.log('[截图] 系统原生交互截图成功,', json.size, 'bytes');
+                return { dataUrl: json.data, status: resp.status, canceled: false, error: null };
+            }
+            return {
+                dataUrl: null,
+                status: resp.status,
+                canceled: false,
+                error: (json && json.error) ? json.error : null
+            };
+        } catch (e) {
+            console.warn('[截图] 系统原生交互截图请求失败:', e);
+            return { dataUrl: null, status: null, canceled: false, error: e && e.message ? e.message : null };
+        }
+    }
+    mod.fetchBackendInteractiveScreenshot = fetchBackendInteractiveScreenshot;
+
     // ======================== stopScreening ========================
     function stopScreening() {
         if (S.videoSenderInterval) {
@@ -1510,6 +1549,7 @@
     window.captureFrameFromStream = captureFrameFromStream;
     window.acquireOrReuseCachedStream = acquireOrReuseCachedStream;
     window.fetchBackendScreenshot = fetchBackendScreenshot;
+    window.fetchBackendInteractiveScreenshot = fetchBackendInteractiveScreenshot;
     window.getMobileCameraStream = getMobileCameraStream;
     window.startScreenVideoStreaming = startScreenVideoStreaming;
     window.stopScreening = stopScreening;
