@@ -402,12 +402,14 @@ def _image_path_to_jpeg_data_url(image_path: str) -> tuple[str, int]:
     return f"data:image/jpeg;base64,{b64}", len(jpg_bytes)
 
 
-def _is_interactive_screenshot_canceled(returncode: int, stderr: str, file_size: int) -> bool:
+def _is_interactive_screenshot_canceled(platform_name: str, returncode: int, stderr: str, file_size: int) -> bool:
     if file_size > 0:
         return False
     normalized_stderr = str(stderr or "").strip()
     if returncode == 0:
         return True
+    if platform_name == "darwin":
+        return returncode == 1
     return returncode == 1 and not normalized_stderr
 
 
@@ -2979,7 +2981,7 @@ async def backend_interactive_screenshot(request: Request):
         file_exists = os.path.exists(tmp_path)
         file_size = os.path.getsize(tmp_path) if file_exists else 0
 
-        if _is_interactive_screenshot_canceled(returncode, stderr, file_size):
+        if _is_interactive_screenshot_canceled(sys.platform, returncode, stderr, file_size):
             logger.info("系统原生交互截图已取消(returncode=%s, stderr=%s)", returncode, stderr)
             return JSONResponse({"success": False, "canceled": True}, status_code=200)
 
