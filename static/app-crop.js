@@ -553,11 +553,11 @@
     }
 
     function onPointerMove(e) {
+        if (!canvas || !overlay || overlay.style.display === 'none') return;
         var pos = getPointerPos(e);
         pointerPos = pos;
         if (mode === MODE_NONE) {
             // Update cursor based on hover
-            if (!canvas || !overlay || overlay.style.display === 'none') return;
             var h = hitTestHandle(pos.x, pos.y);
             if (h) {
                 canvas.style.cursor = getCursorForHandle(h);
