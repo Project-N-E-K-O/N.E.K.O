@@ -319,13 +319,18 @@ class UniversalTutorialManager {
 
     getYuiGuidePreludeSceneIds(page = this.currentPage, validSteps = this.cachedValidSteps) {
         const pageOrder = this.getYuiGuidePageOrder(page);
+        const introSceneIds = pageOrder.filter(stepId => (
+            typeof stepId === 'string' &&
+            stepId.startsWith('intro_')
+        ));
+
+        if (this.getYuiGuidePageKey(page) === 'home' && this.isYuiGuideEnabledForPage(page)) {
+            return introSceneIds;
+        }
+
         const mappedSceneIds = new Set(this.getYuiGuideMappedSceneIds(validSteps));
 
-        return pageOrder.filter(stepId => (
-            typeof stepId === 'string' &&
-            stepId.startsWith('intro_') &&
-            !mappedSceneIds.has(stepId)
-        ));
+        return introSceneIds.filter(stepId => !mappedSceneIds.has(stepId));
     }
 
     getYuiGuideSceneIdForStep(stepConfig) {

@@ -53,7 +53,7 @@
         "requiresApproval": "Approve auto launch in your system settings first. It will take effect after approval."
     },
     "tutorialPrompt": {
-        "title": "Want to start the home tutorial?",
+        "title": "Want to take a quick look at the tutorial?",
         "message": "I can quickly show you the main entry points on the home screen so you can get started with N.E.K.O right away.",
         "note": "You can skip it at any time, or reopen it later from Memory Browser.",
         "startNow": "Start tutorial",

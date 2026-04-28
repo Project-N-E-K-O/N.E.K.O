@@ -53,7 +53,7 @@
         "requiresApproval": "Aprove primeiro o início automático nas configurações do sistema. Entrará em vigor após aprovação."
     },
     "tutorialPrompt": {
-        "title": "Quer começar o tutorial em casa?",
+        "title": "Quer dar uma olhada rápida no tutorial?",
         "message": "Posso mostrar rapidamente os principais pontos de entrada na tela inicial para que você possa começar a usar o N.E.K.O imediatamente.",
         "note": "Você pode ignorá-lo a qualquer momento ou reabri-lo mais tarde no Memory Browser.",
         "startNow": "Iniciar tutorial",
