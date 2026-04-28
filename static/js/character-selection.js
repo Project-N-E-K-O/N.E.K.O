@@ -453,8 +453,16 @@ class CharacterSelection {
                 ''
             );
             greetingText.classList.add('typing');
-            await this.typeText(greetingText, greeting);
-            greetingText.classList.remove('typing');
+            try {
+                await this.typeText(greetingText, greeting);
+            } catch (error) {
+                if (error?.message !== 'Typing cancelled') {
+                    console.warn('[CharacterSelection] 打字动画失败:', error);
+                }
+                return;
+            } finally {
+                greetingText.classList.remove('typing');
+            }
         } else {
             console.warn('[CharacterSelection] playGreeting: 元素 #greeting-text 不存在');
         }
