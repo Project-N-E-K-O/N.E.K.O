@@ -592,13 +592,19 @@ function useConfirm() {
     const opts = typeof options === 'string' ? { message: options } : (options || {});
     const host = document.createElement('div');
     document.body.appendChild(host);
+    const rootSnapshot = currentRoot;
+    const renderPortal = (vnode) => {
+      const previousRoot = currentRoot;
+      render(vnode, host);
+      currentRoot = rootSnapshot || previousRoot;
+    };
     return new Promise((resolve) => {
       const close = (value) => {
-        render(null, host);
+        renderPortal(null);
         host.remove();
         resolve(value);
       };
-      render(h(ConfirmDialog, {
+      renderPortal(h(ConfirmDialog, {
         open: true,
         title: opts.title || 'Confirm',
         message: opts.message || '',
@@ -607,7 +613,7 @@ function useConfirm() {
         cancelLabel: opts.cancelLabel || 'Cancel',
         onConfirm: () => close(true),
         onCancel: () => close(false),
-      }), host);
+      }));
     });
   }, []);
 }

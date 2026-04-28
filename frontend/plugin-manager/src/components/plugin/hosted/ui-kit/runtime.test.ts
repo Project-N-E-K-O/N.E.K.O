@@ -504,10 +504,13 @@ describe('hosted ui runtime', () => {
 
   it('confirms through useConfirm', async () => {
     let confirm!: (options: any) => Promise<boolean>
+    let setCount!: (value: number) => number
 
     function App() {
       confirm = ui.useConfirm()
-      return ui.h('button', { id: 'open', onClick: () => confirm({ title: 'Delete', message: 'Really?', tone: 'danger' }) }, 'open')
+      const [count, updateCount] = ui.useState(0)
+      setCount = updateCount
+      return ui.h('button', { id: 'open', onClick: () => confirm({ title: 'Delete', message: 'Really?', tone: 'danger' }) }, String(count))
     }
 
     ui.render(ui.h(App, null), root)
@@ -515,6 +518,9 @@ describe('hosted ui runtime', () => {
     expect(document.querySelector('.neko-modal')?.textContent).toContain('Really?')
     fireEvent.click(Array.from(document.querySelectorAll('button')).find((button) => button.textContent === 'Confirm')!)
     await expect(promise).resolves.toBe(true)
+    setCount(1)
+    await flushMicrotasks()
+    expect(root.querySelector('#open')?.textContent).toBe('1')
   })
 
   it('manages form helpers and debounced state', async () => {

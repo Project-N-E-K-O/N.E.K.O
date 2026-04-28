@@ -130,7 +130,7 @@ function mcpContext(): PluginUiContext {
   }
 }
 
-function executeHostedDocument(source: string, context: PluginUiContext = baseContext()) {
+function executeHostedDocument(source: string, context: PluginUiContext = baseContext(), refreshContext: PluginUiContext = context) {
   const messages: any[] = []
   document.documentElement.innerHTML = '<head></head><body><main id="root"></main></body>'
   window.confirm = vi.fn(() => true)
@@ -144,7 +144,7 @@ function executeHostedDocument(source: string, context: PluginUiContext = baseCo
               type: 'neko-hosted-surface-response',
               requestId: message.requestId,
               ok: true,
-              result: message.method === 'refresh' ? context : { ok: true },
+              result: message.method === 'refresh' ? refreshContext : { ok: true },
             },
           }))
         }
@@ -239,20 +239,24 @@ describe('hosted TSX document runtime', () => {
   })
 
   it('keeps local input state when api.refresh updates hosted payload', async () => {
+    const initialContext = baseContext()
+    initialContext.state = { version: 'before' }
     const nextContext = baseContext()
-    nextContext.state = { refreshed: true }
+    nextContext.state = { version: 'after' }
     const { root } = executeHostedDocument(`
       export default function Panel(props) {
         const [name, setName] = props.useLocalState("draft", "")
         return (
           <section>
+            <output id="version">{props.state.version || "none"}</output>
             <input id="draft" value={name} onInput={(event) => setName(event.target.value)} />
             <button id="refresh" onClick={() => props.api.refresh()}>refresh</button>
           </section>
         )
       }
-    `, nextContext)
+    `, initialContext, nextContext)
 
+    expect(root.querySelector('#version')?.textContent).toBe('before')
     const input = root.querySelector<HTMLInputElement>('#draft')!
     input.focus()
     input.value = 'keep me'
@@ -265,6 +269,7 @@ describe('hosted TSX document runtime', () => {
     expect(root.querySelector('#draft')).toBe(input)
     expect(document.activeElement).toBe(input)
     expect(input.value).toBe('keep me')
+    expect(root.querySelector('#version')?.textContent).toBe('after')
   })
 
   it('renders the real MCP panel fixture without losing form focus during edits', async () => {
