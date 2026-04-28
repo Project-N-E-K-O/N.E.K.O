@@ -6848,6 +6848,13 @@ async function disposeStaleWorkshopPreviewManager(manager, type) {
         }
     } catch (e) {
         console.warn(`[Workshop ${String(type || '').toUpperCase()}] 清理过期预览实例失败:`, e);
+    } finally {
+        if (type === 'vrm' && workshopVrmManager === manager) {
+            workshopVrmManager = null;
+        }
+        if (type === 'mmd' && workshopMmdManager === manager) {
+            workshopMmdManager = null;
+        }
     }
 }
 
@@ -7139,6 +7146,8 @@ async function loadVrmPreview(modelPath, rawData) {
         }
     } catch (error) {
         console.error('[Workshop VRM] 加载预览失败:', error);
+        await disposeStaleWorkshopPreviewManager(localVrmManager, 'vrm');
+        currentPreviewModel = null;
         showMessage(window.t ? window.t('steam.vrmPreviewFailed') || 'VRM 模型预览加载失败' : 'VRM 模型预览加载失败', 'error');
     }
 }
@@ -7250,6 +7259,8 @@ async function loadMmdPreview(modelPath, rawData) {
         }
     } catch (error) {
         console.error('[Workshop MMD] 加载预览失败:', error);
+        await disposeStaleWorkshopPreviewManager(localMmdManager, 'mmd');
+        currentPreviewModel = null;
         showMessage(window.t ? window.t('steam.mmdPreviewFailed') || 'MMD 模型预览加载失败' : 'MMD 模型预览加载失败', 'error');
     }
 }
