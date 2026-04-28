@@ -1411,15 +1411,41 @@
                         break;
                     }
                     case 'yui_guide_append_chat_message': {
-                        if (window.location.pathname !== '/chat') break;
+                        if (!isStandaloneChatPage()) break;
                         if (window.reactChatWindowHost && typeof window.reactChatWindowHost.appendMessage === 'function') {
                             window.reactChatWindowHost.appendMessage(event.data.message || null);
                         }
                         break;
                     }
                     case 'yui_guide_set_chat_buttons_disabled': {
-                        if (window.location.pathname !== '/chat' || !document.body) break;
+                        if (!isStandaloneChatPage() || !document.body) break;
                         applyYuiGuideChatLockState(event.data.disabled !== false);
+                        break;
+                    }
+                    case 'yui_guide_set_chat_spotlight': {
+                        if (!isStandaloneChatPage() || !document.body) break;
+                        applyYuiGuideChatSpotlight(event.data.kind || '');
+                        break;
+                    }
+                    case 'yui_guide_chat_ready': {
+                        if (isStandaloneChatPage()) break;
+                        window.dispatchEvent(new CustomEvent('neko:yui-guide:external-chat-ready', {
+                            detail: {
+                                timestamp: event.data.timestamp || Date.now()
+                            }
+                        }));
+                        break;
+                    }
+                    case 'yui_guide_request_termination': {
+                        window.dispatchEvent(new CustomEvent('neko:yui-guide:remote-termination-request', {
+                            detail: {
+                                sourcePage: event.data.sourcePage || '',
+                                targetPage: event.data.targetPage || '',
+                                reason: event.data.reason || 'skip',
+                                tutorialReason: event.data.tutorialReason || 'skip',
+                                timestamp: event.data.timestamp || Date.now()
+                            }
+                        }));
                         break;
                     }
                     case 'request_avatar_capture': {
@@ -1548,6 +1574,93 @@
         });
     }
 
+
+    function isStandaloneChatPage() {
+        var pathname = (window.location && window.location.pathname) || '';
+        return pathname === '/chat' || pathname === '/chat/';
+    }
+
+    var yuiGuideChatSpotlightKind = '';
+    var yuiGuideChatSpotlightTimer = 0;
+
+    function getYuiGuideChatSpotlightElement() {
+        return document.getElementById('yui-guide-chat-spotlight');
+    }
+
+    function getYuiGuideChatSpotlightTarget(kind) {
+        if (!kind || typeof document === 'undefined') {
+            return null;
+        }
+
+        if (kind === 'input') {
+            return document.querySelector('#react-chat-window-root .composer-panel')
+                || document.querySelector('#react-chat-window-root .composer-input-shell')
+                || document.getElementById('text-input-area');
+        }
+
+        if (kind === 'window') {
+            return document.getElementById('react-chat-window-shell');
+        }
+
+        return null;
+    }
+
+    function clearYuiGuideChatSpotlightTracking() {
+        if (yuiGuideChatSpotlightTimer) {
+            window.clearInterval(yuiGuideChatSpotlightTimer);
+            yuiGuideChatSpotlightTimer = 0;
+        }
+    }
+
+    function updateYuiGuideChatSpotlight(kind) {
+        var spotlight = getYuiGuideChatSpotlightElement();
+        if (!spotlight) {
+            return;
+        }
+
+        var target = getYuiGuideChatSpotlightTarget(kind);
+        var rect = target && typeof target.getBoundingClientRect === 'function'
+            ? target.getBoundingClientRect()
+            : null;
+
+        if (!rect || rect.width <= 0 || rect.height <= 0) {
+            spotlight.hidden = true;
+            spotlight.classList.remove('is-visible', 'is-window', 'is-input');
+            return;
+        }
+
+        var padding = kind === 'window' ? 10 : 8;
+        var radius = kind === 'window' ? 26 : 18;
+        spotlight.hidden = false;
+        spotlight.classList.remove('is-window', 'is-input');
+        spotlight.classList.add(kind === 'window' ? 'is-window' : 'is-input');
+        spotlight.classList.add('is-visible');
+        spotlight.style.left = Math.round(rect.left - padding) + 'px';
+        spotlight.style.top = Math.round(rect.top - padding) + 'px';
+        spotlight.style.width = Math.round(rect.width + padding * 2) + 'px';
+        spotlight.style.height = Math.round(rect.height + padding * 2) + 'px';
+        spotlight.style.borderRadius = radius + 'px';
+    }
+
+    function applyYuiGuideChatSpotlight(kind) {
+        yuiGuideChatSpotlightKind = typeof kind === 'string' ? kind : '';
+        clearYuiGuideChatSpotlightTracking();
+
+        if (!yuiGuideChatSpotlightKind) {
+            var spotlight = getYuiGuideChatSpotlightElement();
+            if (spotlight) {
+                spotlight.hidden = true;
+                spotlight.classList.remove('is-visible', 'is-window', 'is-input');
+            }
+            return;
+        }
+
+        updateYuiGuideChatSpotlight(yuiGuideChatSpotlightKind);
+        yuiGuideChatSpotlightTimer = window.setInterval(function () {
+            updateYuiGuideChatSpotlight(yuiGuideChatSpotlightKind);
+        }, 120);
+    }
+
     // =====================================================================
     // Cross-window handoff event forwarding via BroadcastChannel
     // =====================================================================
@@ -1584,7 +1697,7 @@
     });
 
     // Chat 窗口初始化时，向 Pet 窗口请求当前已缓存的头像
-    if (window.location.pathname === '/chat' && nekoBroadcastChannel) {
+    if (isStandaloneChatPage() && nekoBroadcastChannel) {
         var initialLanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
         var postAvatarRequest = function () {
             nekoBroadcastChannel.postMessage({
@@ -1594,6 +1707,10 @@
             });
         };
         postAvatarRequest();
+        nekoBroadcastChannel.postMessage({
+            action: 'yui_guide_chat_ready',
+            timestamp: Date.now()
+        });
         // 配置可能尚未注入（lanlan_name 为空），等 IPC 注入后补发一次
         if (!initialLanlanName) {
             window.addEventListener('neko:config-injected', postAvatarRequest, { once: true });

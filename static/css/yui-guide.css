@@ -22,15 +22,6 @@ body.yui-guide-home-driver-hidden .driver-highlight {
 .yui-guide-backdrop {
   position: fixed;
   inset: 0;
-<<<<<<< HEAD
-  display: none !important;
-  opacity: 0;
-  transition: opacity 180ms ease;
-}
-
-.yui-guide-backdrop {
-=======
->>>>>>> b092e560 (feat: 同步 YUI 教程资源并切换默认模型)
   width: 100%;
   height: 100%;
   display: none !important;

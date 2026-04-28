@@ -8,9 +8,11 @@ import { getLocale } from './i18n'
 const START_EVENT = 'neko:yui-guide:plugin-dashboard:start'
 const READY_EVENT = 'neko:yui-guide:plugin-dashboard:ready'
 const DONE_EVENT = 'neko:yui-guide:plugin-dashboard:done'
+const TERMINATE_EVENT = 'neko:yui-guide:plugin-dashboard:terminate'
 const NARRATION_FINISHED_EVENT = 'neko:yui-guide:plugin-dashboard:narration-finished'
 const INTERRUPT_REQUEST_EVENT = 'neko:yui-guide:plugin-dashboard:interrupt-request'
 const INTERRUPT_ACK_EVENT = 'neko:yui-guide:plugin-dashboard:interrupt-ack'
+const SKIP_REQUEST_EVENT = 'neko:yui-guide:plugin-dashboard:skip-request'
 const HANDOFF_STORAGE_KEY = 'neko_yui_guide_handoff_token'
 const HANDOFF_TOKEN_VERSION = 1
 const PREACTIVATE_CLEANUP_MS = 8000
@@ -140,6 +142,7 @@ type StartPayload = {
   interruptCount?: number
   narrationDurationMs?: number
   narrationStartedAtMs?: number
+  skipButtonScreenRect?: ScreenRect | null
 }
 
 type SpotlightRect = {
@@ -149,6 +152,13 @@ type SpotlightRect = {
   height: number
   radius: number
   padding: number
+}
+
+type ScreenRect = {
+  left: number
+  top: number
+  right: number
+  bottom: number
 }
 
 type ActiveNarration = {
@@ -558,11 +568,7 @@ function speakTextWithPromise(
   const localAudioSrc = resolveGuideAudioSrc(options?.voiceKey, options?.audioUrl)
   const startAtMs = Number.isFinite(options?.startAtMs) ? Math.max(0, Math.round(options?.startAtMs as number)) : 0
   if (localAudioSrc) {
-<<<<<<< HEAD
-    return playGuideAudioWithPromise(localAudioSrc, minDurationMs).catch(() => {
-=======
     return playGuideAudioWithPromise(localAudioSrc, minDurationMs, startAtMs).catch(() => {
->>>>>>> b092e560 (feat: 同步 YUI 教程资源并切换默认模型)
       return wait(minDurationMs)
     })
   }
@@ -898,14 +904,29 @@ class PluginDashboardGuideRuntime {
   activeNarration: ActiveNarration | null = null
   pendingInterruptAck: PendingInterruptAck | null = null
   preactivationTimeoutId: number | null = null
+  homeSkipButtonScreenRect: ScreenRect | null = null
+  lastForwardedSkipAt = 0
+  lastForwardedSkipScreenX = NaN
+  lastForwardedSkipScreenY = NaN
   boundPointerMoveHandler = (event: PointerEvent | MouseEvent) => {
     this.handleInterrupt(event)
   }
   boundPointerDownHandler = (event: PointerEvent | MouseEvent) => {
+    if (this.forwardHomeSkipClick(event)) {
+      return
+    }
     this.onPointerDown(event)
   }
   boundInteractionGuard = (event: Event) => {
     if (!this.running || !event || (event as { isTrusted?: boolean }).isTrusted === false) {
+      return
+    }
+
+    if (
+      typeof window.MouseEvent !== 'undefined'
+      && event instanceof window.MouseEvent
+      && this.forwardHomeSkipClick(event)
+    ) {
       return
     }
 
@@ -1217,6 +1238,70 @@ class PluginDashboardGuideRuntime {
       radius,
       padding,
     }
+  }
+
+  forwardHomeSkipClick(event: PointerEvent | MouseEvent) {
+    if (!this.running || !event || event.isTrusted === false || !this.activeSessionId) {
+      return false
+    }
+
+    const rect = this.homeSkipButtonScreenRect
+    if (!rect) {
+      return false
+    }
+
+    const screenX = Number.isFinite(event.screenX) ? Number(event.screenX) : NaN
+    const screenY = Number.isFinite(event.screenY) ? Number(event.screenY) : NaN
+    if (!Number.isFinite(screenX) || !Number.isFinite(screenY)) {
+      return false
+    }
+
+    if (
+      screenX < rect.left
+      || screenX > rect.right
+      || screenY < rect.top
+      || screenY > rect.bottom
+    ) {
+      return false
+    }
+
+    const now = Date.now()
+    if (
+      (now - this.lastForwardedSkipAt) < 700
+      && Math.abs(screenX - this.lastForwardedSkipScreenX) <= 2
+      && Math.abs(screenY - this.lastForwardedSkipScreenY) <= 2
+    ) {
+      if (typeof event.preventDefault === 'function') {
+        event.preventDefault()
+      }
+      if (typeof event.stopImmediatePropagation === 'function') {
+        event.stopImmediatePropagation()
+      }
+      if (typeof event.stopPropagation === 'function') {
+        event.stopPropagation()
+      }
+      return true
+    }
+
+    if (typeof event.preventDefault === 'function') {
+      event.preventDefault()
+    }
+    if (typeof event.stopImmediatePropagation === 'function') {
+      event.stopImmediatePropagation()
+    }
+    if (typeof event.stopPropagation === 'function') {
+      event.stopPropagation()
+    }
+
+    this.lastForwardedSkipAt = now
+    this.lastForwardedSkipScreenX = screenX
+    this.lastForwardedSkipScreenY = screenY
+    this.notify(SKIP_REQUEST_EVENT, this.activeSessionId, {
+      source: 'plugin_dashboard',
+      screenX,
+      screenY,
+    })
+    return true
   }
 
   syncBackdropViewport() {
@@ -2154,6 +2239,9 @@ class PluginDashboardGuideRuntime {
       this.resistanceCursorTimer = null
     }
     this.clearPendingInterruptAck(false)
+    this.lastForwardedSkipAt = 0
+    this.lastForwardedSkipScreenX = NaN
+    this.lastForwardedSkipScreenY = NaN
     window.removeEventListener('resize', this.boundRefreshSpotlight, true)
     window.removeEventListener('scroll', this.boundRefreshSpotlight, true)
     window.removeEventListener('pointermove', this.boundPointerMoveHandler, true)
@@ -2207,6 +2295,7 @@ class PluginDashboardGuideRuntime {
     this.activeNarration = null
     this.pendingInterruptAck = null
     this.clearPreactivationTimeout()
+    this.homeSkipButtonScreenRect = null
     this.scenePauseResolvers = []
     this.homeNarrationResolvers = []
   }
@@ -2223,6 +2312,18 @@ class PluginDashboardGuideRuntime {
     this.interruptCount = Number.isFinite(payload.interruptCount)
       ? Math.max(0, Math.floor(payload.interruptCount as number))
       : 0
+    this.homeSkipButtonScreenRect = payload.skipButtonScreenRect
+      && Number.isFinite(payload.skipButtonScreenRect.left)
+      && Number.isFinite(payload.skipButtonScreenRect.top)
+      && Number.isFinite(payload.skipButtonScreenRect.right)
+      && Number.isFinite(payload.skipButtonScreenRect.bottom)
+      ? {
+          left: Math.round(payload.skipButtonScreenRect.left),
+          top: Math.round(payload.skipButtonScreenRect.top),
+          right: Math.round(payload.skipButtonScreenRect.right),
+          bottom: Math.round(payload.skipButtonScreenRect.bottom),
+        }
+      : null
     this.homeNarrationFinished = false
     const isCurrent = () => this.isCurrentRun(sessionId)
     this.activateOverlayShell()
@@ -2386,6 +2487,21 @@ export function initPluginDashboardYuiGuideRuntime() {
   window.addEventListener('message', (event: MessageEvent) => {
     const data = event.data
     if (!data || typeof data !== 'object') {
+      return
+    }
+
+    if (data.type === TERMINATE_EVENT && isAllowedOpenerEvent(event)) {
+      const sessionId = typeof data.sessionId === 'string' ? data.sessionId : ''
+      if (sessionId && runtime.activeSessionId && sessionId !== runtime.activeSessionId) {
+        return
+      }
+
+      runtime.cleanup()
+      if (data.closeWindow !== false) {
+        try {
+          window.close()
+        } catch (_) {}
+      }
       return
     }
 

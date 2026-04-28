@@ -578,25 +578,7 @@
 
             if (this.backdrop) {
                 this.syncBackdropViewport();
-<<<<<<< HEAD
-                if (BACKDROP_DIM_ENABLED && (
-                    persistentMaskRect
-                    || actionMaskRect
-                    || secondaryActionMaskRect
-                    || extraMaskRects.length > 0
-                )) {
-                    this.backdrop.hidden = false;
-                    this.backdrop.classList.add('is-visible');
-                } else {
-                    this.backdrop.hidden = true;
-                    this.backdrop.classList.remove('is-visible');
-                }
-                this.updateBackdropCutout(this.backdropPersistentCutout, persistentMaskRect);
-                this.updateBackdropCutout(this.backdropActionCutout, actionMaskRect);
-                this.updateBackdropCutout(this.backdropSecondaryActionCutout, secondaryActionMaskRect);
-=======
                 this.hideBackdrop();
->>>>>>> b092e560 (feat: 同步 YUI 教程资源并切换默认模型)
             }
 
             const getFrameVariantFromElement = (element) => {

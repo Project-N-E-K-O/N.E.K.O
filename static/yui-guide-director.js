@@ -187,9 +187,11 @@
     const PLUGIN_DASHBOARD_HANDOFF_EVENT = 'neko:yui-guide:plugin-dashboard:start';
     const PLUGIN_DASHBOARD_READY_EVENT = 'neko:yui-guide:plugin-dashboard:ready';
     const PLUGIN_DASHBOARD_DONE_EVENT = 'neko:yui-guide:plugin-dashboard:done';
+    const PLUGIN_DASHBOARD_TERMINATE_EVENT = 'neko:yui-guide:plugin-dashboard:terminate';
     const PLUGIN_DASHBOARD_NARRATION_FINISHED_EVENT = 'neko:yui-guide:plugin-dashboard:narration-finished';
     const PLUGIN_DASHBOARD_INTERRUPT_REQUEST_EVENT = 'neko:yui-guide:plugin-dashboard:interrupt-request';
     const PLUGIN_DASHBOARD_INTERRUPT_ACK_EVENT = 'neko:yui-guide:plugin-dashboard:interrupt-ack';
+    const PLUGIN_DASHBOARD_SKIP_REQUEST_EVENT = 'neko:yui-guide:plugin-dashboard:skip-request';
     const DEFAULT_TUTORIAL_MODEL_MANAGER_LANLAN_NAME = 'ATLS';
     const GUIDE_AUDIO_BASE_URL = '/static/assets/tutorial/guide-audio/';
     const INTRO_ACTIVATION_HINT_KEY = 'tutorial.yuiGuide.lines.introActivationHint';
@@ -298,10 +300,8 @@
     }
 
     const GUIDE_AUDIO_FILE_OVERRIDES_BY_KEY = Object.freeze({
-        intro_basic: guideAudioFilesForAllLocales('想要找我的时候，随时在这里打字或者发语音都能召唤本喵哦！.mp3'),
         intro_proactive: guideAudioFilesForAllLocales('可恶，居然敢无视本大小姐嘛！要说你一直没理我，我可是会主动跑出来咬你的哦～（哈！！）.mp3'),
-        intro_cat_paw: guideAudioFilesForAllLocales('好啦！不说废话了喵——你看到那个可爱的‘猫爪’了吗，准备好了吗？让我借用一下你的鼠标吧！.mp3'),
-        takeover_capture_cursor: guideAudioFilesForAllLocales('嘿咻！可算逮住你的鼠标了喵～.mp3')
+        intro_cat_paw: guideAudioFilesForAllLocales('好啦！不说废话了喵——你看到那个可爱的‘猫爪’了吗，准备好了吗？让我借用一下你的鼠标吧！.mp3')
     });
 
     function guideAudioSrc(key) {
@@ -1322,9 +1322,12 @@
             this.restoreHiddenCursorAfterResistance = false;
             this.pageHideHandler = this.onPageHide.bind(this);
             this.tutorialEndHandler = this.onTutorialEndEvent.bind(this);
+            this.externalChatReadyHandler = this.onExternalChatReady.bind(this);
+            this.remoteTerminationRequestHandler = this.onRemoteTerminationRequest.bind(this);
             this.messageHandler = this.onWindowMessage.bind(this);
             this.skipButtonClickHandler = this.onSkipButtonClick.bind(this);
             this.interactionGuardHandler = this.onInteractionGuard.bind(this);
+            this.externalizedChatSpotlightKind = '';
 
             if (this.page === 'home') {
                 document.body.classList.add('yui-guide-home-driver-hidden');
@@ -1333,6 +1336,8 @@
 
             window.addEventListener('keydown', this.keydownHandler, true);
             window.addEventListener('pagehide', this.pageHideHandler, true);
+            window.addEventListener('neko:yui-guide:external-chat-ready', this.externalChatReadyHandler, true);
+            window.addEventListener('neko:yui-guide:remote-termination-request', this.remoteTerminationRequestHandler, true);
             window.addEventListener('neko:yui-guide:tutorial-end', this.tutorialEndHandler, true);
             window.addEventListener('message', this.messageHandler, true);
             document.addEventListener('pointerdown', this.interactionGuardHandler, true);
@@ -2540,6 +2545,45 @@
             }
         }
 
+        setExternalizedChatSpotlight(kind) {
+            if (this.page !== 'home' || !this.isHomeChatExternalized()) {
+                return;
+            }
+
+            this.externalizedChatSpotlightKind = typeof kind === 'string' ? kind : '';
+
+            const channel = window.appInterpage && window.appInterpage.nekoBroadcastChannel;
+            if (!channel || typeof channel.postMessage !== 'function') {
+                return;
+            }
+
+            try {
+                channel.postMessage({
+                    action: 'yui_guide_set_chat_spotlight',
+                    kind: typeof kind === 'string' ? kind : '',
+                    timestamp: Date.now()
+                });
+            } catch (error) {
+                console.warn('[YuiGuide] 同步独立聊天窗高亮失败:', error);
+            }
+        }
+
+        clearExternalizedChatFx() {
+            this.externalizedChatSpotlightKind = '';
+            this.setExternalizedChatSpotlight('');
+        }
+
+        onExternalChatReady() {
+            if (this.destroyed || this.page !== 'home' || !this.isHomeChatExternalized()) {
+                return;
+            }
+
+            this.setExternalizedChatButtonsDisabled(true);
+            if (this.externalizedChatSpotlightKind) {
+                this.setExternalizedChatSpotlight(this.externalizedChatSpotlightKind);
+            }
+        }
+
         getSceneSpotlightTarget(stepId, performance) {
             const selector = (performance && (performance.cursorTarget || this.currentStep && this.currentStep.anchor))
                 || (this.currentStep && this.currentStep.anchor)
@@ -2596,6 +2640,11 @@
         }
 
         highlightChatWindow() {
+            if (this.isHomeChatExternalized()) {
+                this.setExternalizedChatSpotlight('window');
+                return;
+            }
+
             const target = this.getChatWindowTarget() || this.getChatInputTarget();
             if (!target) {
                 return;
@@ -4674,7 +4723,7 @@
             }
         }
 
-        waitForPluginDashboardPerformance(windowRef, payload) {
+        async waitForPluginDashboardPerformance(windowRef, payload) {
             if (!windowRef || windowRef.closed) {
                 return Promise.resolve(false);
             }
@@ -4683,12 +4732,15 @@
                 this.pluginDashboardHandoff.reject(new Error('plugin-dashboard handoff superseded'));
             }
 
+            const skipButtonScreenRect = await this.getSkipButtonScreenRect();
+
             return new Promise((resolve, reject) => {
                 this.pluginDashboardLastInterruptRequestId = '';
                 const sessionId = 'plugin-dashboard-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
                 const startedAt = Date.now();
                 const handoffPayload = Object.assign({}, payload || {}, {
-                    interruptCount: Math.max(0, Math.floor(Number.isFinite(this.interruptCount) ? this.interruptCount : 0))
+                    interruptCount: Math.max(0, Math.floor(Number.isFinite(this.interruptCount) ? this.interruptCount : 0)),
+                    skipButtonScreenRect: skipButtonScreenRect
                 });
                 const preloadTimeoutMs = 15000;
                 const executionTimeoutMs = clamp(
@@ -4794,6 +4846,107 @@
             }
         }
 
+        notifyPluginDashboardTerminationRequested(reason) {
+            const handoff = this.pluginDashboardHandoff;
+            const windowRef = handoff && handoff.windowRef ? handoff.windowRef : null;
+            if (!handoff || !windowRef || windowRef.closed || !handoff.sessionId) {
+                return false;
+            }
+
+            try {
+                windowRef.postMessage({
+                    type: PLUGIN_DASHBOARD_TERMINATE_EVENT,
+                    sessionId: handoff.sessionId,
+                    reason: typeof reason === 'string' && reason.trim() ? reason.trim() : 'skip',
+                    closeWindow: true
+                }, '*');
+                return true;
+            } catch (error) {
+                console.warn('[YuiGuide] 向插件面板发送 terminate 失败:', error);
+                return false;
+            }
+        }
+
+        async getGuideHostWindowBounds() {
+            const bridge = window.nekoPetDrag;
+            if (!bridge || typeof bridge.getBounds !== 'function') {
+                return null;
+            }
+
+            try {
+                const bounds = await Promise.race([
+                    Promise.resolve(bridge.getBounds()),
+                    new Promise((resolve) => window.setTimeout(() => resolve(null), 180))
+                ]);
+                if (!bounds || typeof bounds !== 'object') {
+                    return null;
+                }
+
+                const x = Number(bounds.x);
+                const y = Number(bounds.y);
+                const width = Number(bounds.width);
+                const height = Number(bounds.height);
+                if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(width) || !Number.isFinite(height)) {
+                    return null;
+                }
+
+                return {
+                    x: Math.round(x),
+                    y: Math.round(y),
+                    width: Math.round(width),
+                    height: Math.round(height)
+                };
+            } catch (_) {
+                return null;
+            }
+        }
+
+        async getSkipButtonScreenRect() {
+            const skipButton = document.getElementById('neko-tutorial-skip-btn');
+            if (!skipButton || typeof skipButton.getBoundingClientRect !== 'function') {
+                return null;
+            }
+
+            const rect = skipButton.getBoundingClientRect();
+            if (!(rect.width > 0) || !(rect.height > 0)) {
+                return null;
+            }
+
+            const hostBounds = await this.getGuideHostWindowBounds();
+            const rawScreenLeft = hostBounds && Number.isFinite(hostBounds.x)
+                ? hostBounds.x
+                : Number.isFinite(Number(window.screenX))
+                ? Number(window.screenX)
+                : Number(window.screenLeft);
+            const rawScreenTop = hostBounds && Number.isFinite(hostBounds.y)
+                ? hostBounds.y
+                : Number.isFinite(Number(window.screenY))
+                ? Number(window.screenY)
+                : Number(window.screenTop);
+            const screenLeft = Number.isFinite(rawScreenLeft) ? rawScreenLeft : 0;
+            const screenTop = Number.isFinite(rawScreenTop) ? rawScreenTop : 0;
+            const hitPadding = 16;
+
+            return {
+                left: Math.round(screenLeft + rect.left - hitPadding),
+                top: Math.round(screenTop + rect.top - hitPadding),
+                right: Math.round(screenLeft + rect.right + hitPadding),
+                bottom: Math.round(screenTop + rect.bottom + hitPadding)
+            };
+        }
+
+        setPluginDashboardSkipBypassEnabled(enabled) {
+            if (this.page !== 'home') {
+                return;
+            }
+
+            window.dispatchEvent(new CustomEvent('neko:yui-guide:plugin-dashboard-skip-bypass', {
+                detail: {
+                    enabled: enabled === true
+                }
+            }));
+        }
+
         async runPluginDashboardPreviewScene(step, runId) {
             this.highlightChatWindow();
             const stepBubbleText = this.resolvePerformanceBubbleText(step && step.performance);
@@ -4806,7 +4959,6 @@
                     voiceKey: step.performance.voiceKey || 'takeover_plugin_preview_home'
                 }).catch(() => {});
             }
-            const originalAgentSwitches = this.takeoverOriginalAgentSwitches || await this.getAgentSwitchSnapshot();
             this.pluginDashboardWindowCreatedByGuide = false;
             let agentSwitchesRolledBack = false;
             const rollbackAgentSwitches = async () => {
@@ -4827,15 +4979,9 @@
                         return false;
                     }
                 };
-                if (typeof originalAgentSwitches.agentMaster === 'boolean') {
-                    restoreResults.push(await restoreSwitch('agent-master', () => this.setAgentMasterEnabled(originalAgentSwitches.agentMaster)));
-                }
-                if (typeof originalAgentSwitches.keyboardControl === 'boolean') {
-                    restoreResults.push(await restoreSwitch('computer_use_enabled', () => this.setAgentFlagEnabled('computer_use_enabled', originalAgentSwitches.keyboardControl)));
-                }
-                if (typeof originalAgentSwitches.userPlugin === 'boolean') {
-                    restoreResults.push(await restoreSwitch('user_plugin_enabled', () => this.setAgentFlagEnabled('user_plugin_enabled', originalAgentSwitches.userPlugin)));
-                }
+                restoreResults.push(await restoreSwitch('agent-master', () => this.setAgentMasterEnabled(false)));
+                restoreResults.push(await restoreSwitch('computer_use_enabled', () => this.setAgentFlagEnabled('computer_use_enabled', false)));
+                restoreResults.push(await restoreSwitch('user_plugin_enabled', () => this.setAgentFlagEnabled('user_plugin_enabled', false)));
                 const restoredAll = restoreResults.every(Boolean);
                 if (restoredAll) {
                     agentSwitchesRolledBack = true;
@@ -4857,6 +5003,7 @@
                     return;
                 }
                 let dashboardWindow = launchResult.pluginDashboardWindow;
+                this.setPluginDashboardSkipBypassEnabled(true);
 
                 this.overlay.clearActionSpotlight();
                 this.overlay.clearPersistentSpotlight();
@@ -4935,6 +5082,7 @@
                 }
                 this.overlay.clearActionSpotlight();
             } finally {
+                this.setPluginDashboardSkipBypassEnabled(false);
                 await rollbackAgentSwitches();
             }
         }
@@ -4942,10 +5090,14 @@
         async runSettingsPeekScene(step, performance, runId) {
             this.customSecondarySpotlightTarget = null;
             const settingsButton = this.resolveElement(performance.cursorTarget || step.anchor);
-            this.setSpotlightGeometryHint(settingsButton, {
+            const settingsSpotlightTarget = this.getFloatingButtonShell(settingsButton) || settingsButton;
+            this.setSpotlightGeometryHint(settingsSpotlightTarget, {
                 padding: 4,
                 geometry: 'circle'
             });
+            if (settingsSpotlightTarget) {
+                this.addRetainedExtraSpotlight(settingsSpotlightTarget);
+            }
             const introText = this.resolvePerformanceBubbleText(performance);
             await this.closeAgentPanel();
             this.clearPreciseHighlights();
@@ -5030,6 +5182,7 @@
                 this.clearSceneExtraSpotlights();
                 this.clearVirtualSpotlight('settings-character-children-bundle');
                 this.clearVirtualSpotlight('settings-entry-bundle');
+                this.removeRetainedExtraSpotlight(settingsSpotlightTarget);
                 this.clearPreciseHighlights();
                 this.customSecondarySpotlightTarget = null;
                 this.overlay.clearActionSpotlight();
@@ -5493,6 +5646,11 @@
             const inputBox = this.resolveElement('#react-chat-window-root .composer-input')
                 || this.resolveElement('#textInputBox');
 
+            if (this.isHomeChatExternalized()) {
+                this.setExternalizedChatSpotlight('window');
+                return;
+            }
+
             if (!target) {
                 return;
             }
@@ -5674,6 +5832,7 @@
             this.setCurrentScene('intro_basic', null);
             this.overlay.hideBubble();
             this.overlay.hidePluginPreview();
+            this.setExternalizedChatSpotlight('window');
 
             this.enableInterrupts(introStep);
             await this.playIntroGreetingReply();
@@ -6370,6 +6529,10 @@
             this.terminationRequested = true;
             this.beginTerminationVisualCleanup();
             const finalReason = tutorialReason || reason || 'skip';
+            this.notifyPluginDashboardTerminationRequested(finalReason);
+            this.closePluginDashboardWindowIfCreatedByGuide('终止请求').catch((error) => {
+                console.warn('[YuiGuide] 终止请求时关闭插件面板失败:', error);
+            });
             if (this.tutorialManager && typeof this.tutorialManager.requestTutorialDestroy === 'function') {
                 this.tutorialManager.requestTutorialDestroy(finalReason);
             } else {
@@ -6389,6 +6552,7 @@
             this.destroyed = true;
             this.terminationRequested = true;
             this.resumeCurrentSceneAfterResistance();
+            this.clearExternalizedChatFx();
             this.setExternalizedChatButtonsDisabled(false);
             if (this.page === 'home') {
                 document.body.classList.remove('yui-guide-home-driver-hidden');
@@ -6415,6 +6579,7 @@
             this.closeManagedPanels().catch((error) => {
                 console.warn('[YuiGuide] 销毁时关闭首页面板失败:', error);
             });
+            this.notifyPluginDashboardTerminationRequested(this.lastTutorialEndReason || 'destroy');
             this.closePluginDashboardWindowIfCreatedByGuide('销毁');
             if (typeof window.handleShowMainUI === 'function') {
                 try {
@@ -6430,6 +6595,8 @@
             this.overlay.destroy();
             window.removeEventListener('keydown', this.keydownHandler, true);
             window.removeEventListener('pagehide', this.pageHideHandler, true);
+            window.removeEventListener('neko:yui-guide:external-chat-ready', this.externalChatReadyHandler, true);
+            window.removeEventListener('neko:yui-guide:remote-termination-request', this.remoteTerminationRequestHandler, true);
             window.removeEventListener('neko:yui-guide:tutorial-end', this.tutorialEndHandler, true);
             window.removeEventListener('message', this.messageHandler, true);
             document.removeEventListener('pointerdown', this.interactionGuardHandler, true);
@@ -6528,6 +6695,24 @@
 
             this.lastTutorialEndReason = detail.reason || null;
             this.destroy();
+        }
+
+        onRemoteTerminationRequest(event) {
+            if (this.destroyed) {
+                return;
+            }
+
+            const detail = event && event.detail ? event.detail : null;
+            if (!detail) {
+                return;
+            }
+
+            const targetPage = typeof detail.targetPage === 'string' ? detail.targetPage.trim() : '';
+            if (targetPage && targetPage !== this.page) {
+                return;
+            }
+
+            this.requestTermination(detail.reason || 'skip', detail.tutorialReason || 'skip');
         }
 
         async handlePluginDashboardInterruptRequest(event, handoff, data) {
@@ -6634,6 +6819,14 @@
 
             if (data.type === PLUGIN_DASHBOARD_INTERRUPT_REQUEST_EVENT) {
                 void this.handlePluginDashboardInterruptRequest(event, handoff, data);
+                return;
+            }
+
+            if (data.type === PLUGIN_DASHBOARD_SKIP_REQUEST_EVENT) {
+                if (data.sessionId && handoff.sessionId && data.sessionId !== handoff.sessionId) {
+                    return;
+                }
+                this.skip('skip', 'skip');
                 return;
             }
 
