@@ -1186,9 +1186,6 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         # 初始化 Adapter 基类
         await self.adapter_startup()
         
-        # 注册静态 UI
-        self.register_static_ui("static")
-        
         # 加载配置
         config = await self.config.dump()
         servers_config = config.get("mcp_servers", {})
