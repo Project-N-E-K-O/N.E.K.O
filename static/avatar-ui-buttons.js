@@ -6,6 +6,88 @@
  *   AvatarButtonMixin.apply(XXXManager.prototype, 'xxx', { options });
  */
 
+// 浮动按钮入场动画（错位级联滑入 + 淡入；从上往下）。
+// 退场不做动画 —— 直接 display:none，因为浏览器在 microtask 拦截前已 commit
+// display:none 到下一帧渲染流程，可靠的退场需要改大量调用点，权衡之下放弃。
+function _ensureFloatingButtonsAnimationStyles() {
+    if (document.getElementById('neko-floating-buttons-animation-styles')) return;
+    const style = document.createElement('style');
+    style.id = 'neko-floating-buttons-animation-styles';
+    // 入场延迟梯度：第一个子元素 0ms（顶部最先到达，往下级联）
+    let staggerCss = '';
+    for (let i = 1; i <= 8; i++) {
+        const enterDelay = (i - 1) * 70;
+        staggerCss += `.neko-floating-buttons-animating[data-anim-state="entering"] > *:nth-child(${i}) { animation-delay: ${enterDelay}ms; }\n`;
+    }
+    staggerCss += `.neko-floating-buttons-animating[data-anim-state="entering"] > *:nth-child(n+9) { animation-delay: 560ms; }\n`;
+
+    style.textContent = `
+        @keyframes nekoFloatingBtnIn {
+            0%   { opacity: 0; transform: translate3d(0, -16px, 0) scale(0.82); }
+            60%  { opacity: 1; transform: translate3d(0, 2px, 0)  scale(1.04); }
+            100% { opacity: 1; transform: translate3d(0, 0, 0)    scale(1);    }
+        }
+        .neko-floating-buttons-animating > * {
+            will-change: opacity, transform;
+        }
+        .neko-floating-buttons-animating[data-anim-state="entering"] > * {
+            animation: nekoFloatingBtnIn 0.42s cubic-bezier(0.22, 1.0, 0.36, 1) both;
+        }
+        @media (prefers-reduced-motion: reduce) {
+            .neko-floating-buttons-animating[data-anim-state="entering"] > * {
+                animation-duration: 0.01ms;
+            }
+        }
+        ${staggerCss}
+    `;
+    document.head.appendChild(style);
+}
+
+function _setupFloatingButtonsEntranceObserver(container) {
+    _ensureFloatingButtonsAnimationStyles();
+
+    let lastDisplay = container.style.display || 'none';
+    let entranceTimer = null;
+
+    const clearAnim = () => {
+        if (entranceTimer) {
+            clearTimeout(entranceTimer);
+            entranceTimer = null;
+        }
+        container.classList.remove('neko-floating-buttons-animating');
+        container.removeAttribute('data-anim-state');
+    };
+
+    const playEntrance = () => {
+        if (!container.children.length) return;
+        clearAnim();
+        container.classList.add('neko-floating-buttons-animating');
+        container.setAttribute('data-anim-state', 'entering');
+        // 强制 reflow，确保 keyframes 重新触发
+        void container.offsetWidth;
+        const childCount = Math.min(container.children.length, 8);
+        const totalMs = (childCount - 1) * 70 + 420 + 80;
+        entranceTimer = setTimeout(() => {
+            if (container.getAttribute('data-anim-state') === 'entering') {
+                clearAnim();
+            }
+        }, totalMs);
+    };
+
+    const observer = new MutationObserver(() => {
+        const cur = container.style.display;
+        if (cur === lastDisplay) return;
+        // 仅在 'none' → 可见的转换上播入场；其它转换（包括 → 'none'）不动作
+        if (cur !== 'none' && lastDisplay === 'none') {
+            playEntrance();
+        }
+        lastDisplay = cur;
+    });
+    observer.observe(container, { attributes: true, attributeFilter: ['style'] });
+
+    container._nekoVisibilityObserver = observer;
+}
+
 const AvatarButtonMixin = {
     /**
      * 应用按钮 mixin 到指定的 Manager 类
@@ -57,9 +139,15 @@ const AvatarButtonMixin = {
                 this._returnButtonDragHandlers = null;
             }
 
-            // 清理旧 DOM（自身类型）
+            // 清理旧 DOM（自身类型）—— 先断开旧容器上的 visibility observer，避免泄漏
             document.querySelectorAll(`#${options.containerElementId}, #${options.lockIconId}, #${options.returnContainerId}`)
-                .forEach(el => el.remove());
+                .forEach(el => {
+                    if (el._nekoVisibilityObserver) {
+                        try { el._nekoVisibilityObserver.disconnect(); } catch (_) {}
+                        el._nekoVisibilityObserver = null;
+                    }
+                    el.remove();
+                });
             if (options.excludeLiveD2Elements && options.excludeLiveD2Elements.length > 0) {
                 options.excludeLiveD2Elements.forEach(selector => {
                     document.querySelectorAll(selector).forEach(el => el.remove());
@@ -76,7 +164,13 @@ const AvatarButtonMixin = {
             allButtonIds.forEach(id => {
                 if (selfIds.indexOf(id) === -1) {
                     const el = document.getElementById(id);
-                    if (el) el.remove();
+                    if (el) {
+                        if (el._nekoVisibilityObserver) {
+                            try { el._nekoVisibilityObserver.disconnect(); } catch (_) {}
+                            el._nekoVisibilityObserver = null;
+                        }
+                        el.remove();
+                    }
                 }
             });
 
@@ -145,6 +239,9 @@ const AvatarButtonMixin = {
             ['pointerdown', 'pointermove', 'pointerup', 'mousedown', 'mousemove', 'mouseup', 'touchstart', 'touchmove', 'touchend', 'click'].forEach(evt => {
                 buttonsContainer.addEventListener(evt, stopContainerEvent);
             });
+
+            // 挂入场动画观察者（监听 display 'none' → 可见 触发入场动画）
+            _setupFloatingButtonsEntranceObserver(buttonsContainer);
 
             return buttonsContainer;
         };
@@ -830,7 +927,12 @@ const AvatarButtonMixin = {
                 this._uiUpdateLoopId = null;
             }
 
-            // 移除 DOM 元素
+            // 移除 DOM 元素（先断开自己的 visibility observer）
+            const _selfContainer = document.getElementById(opts.containerElementId);
+            if (_selfContainer && _selfContainer._nekoVisibilityObserver) {
+                try { _selfContainer._nekoVisibilityObserver.disconnect(); } catch (_) {}
+                _selfContainer._nekoVisibilityObserver = null;
+            }
             document.querySelectorAll(`#${opts.containerElementId}, #${opts.lockIconId}, #${opts.returnContainerId}`)
                 .forEach(el => el.remove());
 
