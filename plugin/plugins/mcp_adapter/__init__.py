@@ -690,12 +690,13 @@ class MCPClient:
                 self.process = None
                 self.reader = None
                 self.tools = []
-                return
             try:
-                await asyncio.wait_for(self.process.wait(), timeout=5.0)
+                if self.process is not None:
+                    await asyncio.wait_for(self.process.wait(), timeout=5.0)
             except asyncio.TimeoutError:
                 try:
-                    self.process.kill()
+                    if self.process is not None:
+                        self.process.kill()
                 except ProcessLookupError:
                     pass
             self.process = None
@@ -1746,6 +1747,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         timeout: float = 30.0
     ) -> bool:
         """连接到单个 MCP server"""
+        client: MCPClient | None = None
         try:
             if server_name not in self._servers_config:
                 self.ctx.logger.info(f"Skip connecting removed MCP server '{server_name}'")
@@ -1818,7 +1820,13 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
                     "error": "Connection failed",
                 }
                 return False
-                
+        except asyncio.CancelledError:
+            if client is not None and self._clients.get(server_name) is not client:
+                try:
+                    await client.disconnect()
+                except Exception:
+                    pass
+            raise
         except Exception as e:
             self.ctx.logger.exception(f"Failed to connect to MCP server '{server_name}': {e}")
             self._server_states[server_name] = {

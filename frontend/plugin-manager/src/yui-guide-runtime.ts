@@ -1933,8 +1933,14 @@ class PluginDashboardGuideRuntime {
     if (route && router.currentRoute.value.fullPath !== route) {
       try {
         await router.push(route)
-      } catch (_) {}
+      } catch (error) {
+        console.error(`[YuiGuide] Failed to navigate to route: ${route}`, error)
+        throw error
+      }
       await wait(220)
+      if (router.currentRoute.value.fullPath !== route) {
+        throw new Error(`Yui guide route mismatch: expected ${route}, got ${router.currentRoute.value.fullPath}`)
+      }
     }
 
     const action = String(step.action || '').trim()
@@ -2334,8 +2340,10 @@ class PluginDashboardGuideRuntime {
           return
         }
         if (!target) {
+          this.clearSpotlight()
+          this.hideLocalGuideCard()
           if (!step.allowMissing) {
-            await this.waitForSceneDelay(Math.max(900, step.durationMs || 1400), isCurrent)
+            throw new Error(`Missing tutorial target: ${step.targetId || step.route || step.action || '(unknown)'}`)
           }
           continue
         }

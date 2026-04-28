@@ -770,9 +770,15 @@ def _extract_entries_preview(pid: str, cls: type, conf: dict, pdata: dict) -> Li
             seen.add(eid)
 
             input_schema = _to_dict(getattr(event_meta, "input_schema", {}) or {})
-            name_obj = getattr(event_meta, "name", "") or ""
-            description_obj = getattr(event_meta, "description", "") or ""
-            return_message_obj = getattr(event_meta, "return_message", "") or ""
+            name_obj = getattr(event_meta, "name", None)
+            description_obj = getattr(event_meta, "description", None)
+            return_message_obj = getattr(event_meta, "return_message", None)
+            if name_obj is None:
+                name_obj = ""
+            if description_obj is None:
+                description_obj = ""
+            if return_message_obj is None:
+                return_message_obj = ""
             entry_preview: Dict[str, Any] = {
                     "id": eid,
                     "name": name_obj if isinstance(name_obj, (str, dict)) else str(name_obj),

@@ -1,10 +1,11 @@
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import process from 'node:process'
 import ts from 'typescript'
 
-const repoRoot = resolve(new URL('../../../', import.meta.url).pathname)
+const repoRoot = resolve(fileURLToPath(new URL('../../../', import.meta.url)))
 const hostedUiGlobalsPath = join(repoRoot, 'plugin/sdk/hosted-ui/globals.d.ts')
 const surfaceKinds = ['panel', 'guide', 'docs']
 
