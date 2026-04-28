@@ -843,33 +843,33 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
             except Exception as e:
                 logger.warning(f"获取模型信息失败: {e}")
         
-        # 回退机制：如果没有找到模型，使用默认的mao_pro
+        # 回退机制：如果没有找到模型，使用默认的 yui_default
         if not live2d_model_name or not model_info:
-            logger.info(f"猫娘 {catgirl_name} 未设置Live2D模型，回退到默认模型 mao_pro")
-            live2d_model_name = 'mao_pro'
+            logger.info(f"猫娘 {catgirl_name} 未设置Live2D模型，回退到默认模型 yui_default")
+            live2d_model_name = 'yui_default'
             try:
-                # 先从完整的模型列表中查找mao_pro
+                # 先从完整的模型列表中查找 yui_default
                 all_models = find_models()
-                matching_model = next((m for m in all_models if m['name'] == 'mao_pro'), None)
+                matching_model = next((m for m in all_models if m['name'] == 'yui_default'), None)
                 
                 if matching_model:
                     model_info = matching_model.copy()
                     model_info['is_fallback'] = True
                 else:
                     # 如果找不到，回退到原来的逻辑
-                    model_dir, url_prefix = find_model_directory('mao_pro')
+                    model_dir, url_prefix = find_model_directory('yui_default')
                     if model_dir and os.path.exists(model_dir):
                         model_files = [f for f in os.listdir(model_dir) if f.endswith('.model3.json')]
                         if model_files:
                             model_file = model_files[0]
-                            model_path = f'{url_prefix}/mao_pro/{model_file}'
+                            model_path = f'{url_prefix}/yui_default/{model_file}'
                             model_info = {
-                                'name': 'mao_pro',
+                                'name': 'yui_default',
                                 'path': model_path,
                                 'is_fallback': True  # 标记这是回退模型
                             }
             except Exception as e:
-                logger.error(f"获取默认模型mao_pro失败: {e}")
+                logger.error(f"获取默认模型 yui_default 失败: {e}")
         
         if model_info and isinstance(model_info.get('path'), str):
             model_info['path'] = encode_url_path(model_info['path'])
@@ -3779,8 +3779,8 @@ async def export_catgirl_card(name: str):
                             live2d_name = live2d_name.split('/')[-1]
 
                         # 检查是否是默认模型
-                        if live2d_name == 'mao_pro':
-                            logger.info(f'猫娘 {name} 使用的是默认模型 mao_pro，跳过模型打包')
+                        if live2d_name == 'yui_default':
+                            logger.info(f'猫娘 {name} 使用的是默认模型 yui_default，跳过模型打包')
                         else:
                             # 查找模型目录
                             model_dir, _ = find_model_directory(live2d_name)
@@ -4852,7 +4852,7 @@ async def export_catgirl_with_portrait(
                     live2d_path = get_reserved(catgirl_data, 'avatar', 'live2d', 'model_path', default='')
                     if live2d_path and live2d_path.strip():
                         live2d_name = live2d_path.split('/')[0] if '/' in live2d_path else live2d_path.replace('.model3.json', '')
-                        if live2d_name and live2d_name != 'mao_pro':
+                        if live2d_name and live2d_name != 'yui_default':
                             model_dir, _ = find_model_directory(live2d_name)
                             if model_dir and os.path.exists(model_dir):
                                 if is_user_imported_model(model_dir, _config_manager):

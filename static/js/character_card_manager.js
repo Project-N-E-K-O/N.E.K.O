@@ -151,11 +151,11 @@ function closeModalOnOutsideClick(event) {
     }
 }
 
-// 检查当前模型是否为默认模型（mao_pro）
+// 检查当前模型是否为默认模型（yui_default）
 function isDefaultModel() {
     // 使用保存的角色卡模型名称
     const currentModel = window.currentCharacterCardModel || '';
-    return currentModel === 'mao_pro';
+    return currentModel === 'yui_default';
 }
 
 // 更新上传按钮状态（不再依赖model-select元素）
@@ -6250,9 +6250,9 @@ async function handleUploadToWorkshop() {
             fullCharaData['voice_id'] = voiceId;
         }
 
-        // 设置默认模型（排除mao_pro）- 仅限 Live2D 模型类型
-        if (currentModelType === 'live2d' && (!selectedModelName || selectedModelName === 'mao_pro')) {
-            const validModels = availableModels.filter(model => model.name !== 'mao_pro');
+        // 设置默认模型（排除 yui_default）- 仅限 Live2D 模型类型
+        if (currentModelType === 'live2d' && (!selectedModelName || selectedModelName === 'yui_default')) {
+            const validModels = availableModels.filter(model => model.name !== 'yui_default');
             if (validModels.length > 0) {
                 selectedModelName = validModels[0].name;
             } else if (availableModels.length > 0) {

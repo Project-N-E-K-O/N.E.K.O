@@ -609,6 +609,31 @@ class UniversalTutorialManager {
     requestTutorialDestroy(reason = 'destroy') {
         this.setTutorialEndReason(reason);
 
+        const yuiGuidePageKey = this.isYuiGuideEnabledForPage()
+            ? this.getYuiGuidePageKey()
+            : '';
+        if (yuiGuidePageKey && yuiGuidePageKey !== 'home') {
+            const channel = window.appInterpage && window.appInterpage.nekoBroadcastChannel;
+            if (channel && typeof channel.postMessage === 'function') {
+                try {
+                    channel.postMessage({
+                        action: 'yui_guide_request_termination',
+                        sourcePage: yuiGuidePageKey,
+                        targetPage: 'home',
+                        reason: reason || 'skip',
+                        tutorialReason: reason || 'skip',
+                        timestamp: Date.now()
+                    });
+                } catch (error) {
+                    console.warn('[Tutorial] 广播 Yui Guide 跨页终止请求失败:', error);
+                }
+            }
+        }
+
+        if (this.isYuiGuideEnabledForPage()) {
+            this.notifyYuiGuideTutorialEnd(reason);
+        }
+
         if (this.driver) {
             this.driver.destroy();
             return;

@@ -43,6 +43,16 @@
         if (!frame.querySelector('.yui-guide-spotlight-chrome')) {
             frame.appendChild(createElement('div', 'yui-guide-spotlight-chrome'));
         }
+        if (!frame.querySelector('.yui-guide-spotlight-circle-skin')) {
+            frame.appendChild(createElement('div', 'yui-guide-spotlight-circle-skin'));
+        }
+    }
+
+    function ensureSpotlightImageDecorations(frame) {
+        if (!frame) {
+            return;
+        }
+
         if (!frame.querySelector('.yui-guide-spotlight-ear-left')) {
             frame.appendChild(createElement('div', 'yui-guide-spotlight-decoration yui-guide-spotlight-ear-left'));
         }
@@ -52,8 +62,42 @@
         if (!frame.querySelector('.yui-guide-spotlight-paw')) {
             frame.appendChild(createElement('div', 'yui-guide-spotlight-decoration yui-guide-spotlight-paw'));
         }
-        if (!frame.querySelector('.yui-guide-spotlight-circle-skin')) {
-            frame.appendChild(createElement('div', 'yui-guide-spotlight-circle-skin'));
+    }
+
+    function removeSpotlightImageDecorations(frame) {
+        if (!frame || typeof frame.querySelectorAll !== 'function') {
+            return;
+        }
+
+        frame.querySelectorAll(
+            '.yui-guide-spotlight-ear-left, .yui-guide-spotlight-ear-right, .yui-guide-spotlight-paw'
+        ).forEach((element) => {
+            if (element && element.parentNode) {
+                element.parentNode.removeChild(element);
+            }
+        });
+    }
+
+    function applySpotlightFrameDecorationMode(frame, useCircleImage) {
+        if (!frame) {
+            return;
+        }
+
+        const chrome = frame.querySelector('.yui-guide-spotlight-chrome');
+        const circleSkin = frame.querySelector('.yui-guide-spotlight-circle-skin');
+
+        if (useCircleImage) {
+            removeSpotlightImageDecorations(frame);
+        } else {
+            ensureSpotlightImageDecorations(frame);
+        }
+
+        if (chrome && chrome.style) {
+            chrome.style.display = useCircleImage ? 'none' : '';
+        }
+
+        if (circleSkin && circleSkin.style) {
+            circleSkin.style.display = useCircleImage ? 'block' : '';
         }
     }
 
@@ -344,6 +388,24 @@
             });
         }
 
+        hideBackdrop() {
+            if (!this.backdrop) {
+                return;
+            }
+
+            this.backdrop.hidden = true;
+            this.backdrop.classList.remove('is-visible');
+            this.updateBackdropCutout(this.backdropPersistentCutout, null);
+            this.updateBackdropCutout(this.backdropActionCutout, null);
+            this.updateBackdropCutout(this.backdropSecondaryActionCutout, null);
+            this.extraSpotlightEntries.forEach((entry) => {
+                if (!entry) {
+                    return;
+                }
+                this.updateBackdropCutout(entry.cutout, null);
+            });
+        }
+
         getSpotlightRect(element) {
             if (!element || typeof element.getBoundingClientRect !== 'function') {
                 return null;
@@ -358,7 +420,6 @@
             const padding = paddingValue == null ? DEFAULT_SPOTLIGHT_PADDING : paddingValue;
             const rawWidth = Math.max(0, Math.round(rect.width));
             const rawHeight = Math.max(0, Math.round(rect.height));
-            const rawMinEdge = Math.min(rawWidth, rawHeight);
             const radiusOverride = readSpotlightNumberAttr(element, 'data-yui-guide-spotlight-radius');
             const geometryHint = typeof element.getAttribute === 'function'
                 ? (element.getAttribute('data-yui-guide-spotlight-geometry') || '').trim().toLowerCase()
@@ -366,7 +427,6 @@
             const rawRadius = radiusOverride != null
                 ? Math.max(0, radiusOverride)
                 : Math.max(0, this.getSpotlightRadius(element, padding) - padding);
-            const sizeTolerance = Math.max(8, Math.round(rawMinEdge * 0.12));
             const left = Math.max(0, Math.floor(rect.left - padding));
             const top = Math.max(0, Math.floor(rect.top - padding));
             const right = Math.min(window.innerWidth, Math.ceil(rect.right + padding));
@@ -374,10 +434,7 @@
             const width = Math.max(0, right - left);
             const height = Math.max(0, bottom - top);
             const radius = this.getSpotlightRadius(element, padding);
-            const isCircular = geometryHint === 'circle'
-                && rawMinEdge > 0
-                && Math.abs(rawWidth - rawHeight) <= sizeTolerance
-                && rawRadius >= ((rawMinEdge / 2) - 4);
+            const isCircular = geometryHint === 'circle';
 
             return {
                 left: left,
@@ -463,19 +520,24 @@
             const normalizedOptions = options || {};
             const allowMask = normalizedOptions.allowMask !== false;
             const variant = normalizedOptions.variant || '';
+            const forceCircleImage = variant === 'circle-image';
 
             if (!spotlightRect) {
                 frame.hidden = true;
                 frame.classList.remove('is-visible');
                 frame.classList.remove('is-circular-mask');
+                frame.classList.remove('is-circle-image');
                 frame.classList.remove('is-thin-variant');
+                applySpotlightFrameDecorationMode(frame, false);
                 return;
             }
 
             frame.hidden = false;
             frame.classList.add('is-visible');
             frame.classList.toggle('is-circular-mask', !!spotlightRect.isCircular && allowMask);
+            frame.classList.toggle('is-circle-image', forceCircleImage);
             frame.classList.toggle('is-thin-variant', variant === 'thin');
+            applySpotlightFrameDecorationMode(frame, !!spotlightRect.isCircular || forceCircleImage);
             frame.style.left = spotlightRect.left + 'px';
             frame.style.top = spotlightRect.top + 'px';
             frame.style.width = spotlightRect.width + 'px';
@@ -516,31 +578,31 @@
 
             if (this.backdrop) {
                 this.syncBackdropViewport();
-                if (BACKDROP_DIM_ENABLED && (
-                    persistentMaskRect
-                    || actionMaskRect
-                    || secondaryActionMaskRect
-                    || extraMaskRects.length > 0
-                )) {
-                    this.backdrop.hidden = false;
-                    this.backdrop.classList.add('is-visible');
-                } else {
-                    this.backdrop.hidden = true;
-                    this.backdrop.classList.remove('is-visible');
-                }
-                this.updateBackdropCutout(this.backdropPersistentCutout, persistentMaskRect);
-                this.updateBackdropCutout(this.backdropActionCutout, actionMaskRect);
-                this.updateBackdropCutout(this.backdropSecondaryActionCutout, secondaryActionMaskRect);
+                this.hideBackdrop();
             }
 
+            const getFrameVariantFromElement = (element) => {
+                if (!element || typeof element.getAttribute !== 'function') {
+                    return '';
+                }
+                const geometry = (element.getAttribute('data-yui-guide-spotlight-geometry') || '').trim().toLowerCase();
+                if (geometry === 'circle') {
+                    return 'circle-image';
+                }
+                return element.getAttribute('data-yui-guide-spotlight-variant') || '';
+            };
+
             this.updateSpotlightFrame(this.persistentSpotlightFrame, persistentRect, {
-                allowMask: true
+                allowMask: true,
+                variant: getFrameVariantFromElement(this.persistentHighlightedElement)
             });
             this.updateSpotlightFrame(this.actionSpotlightFrame, actionRect, {
-                allowMask: true
+                allowMask: true,
+                variant: getFrameVariantFromElement(this.actionHighlightedElement)
             });
             this.updateSpotlightFrame(this.secondaryActionSpotlightFrame, secondaryActionRect, {
-                allowMask: true
+                allowMask: true,
+                variant: getFrameVariantFromElement(this.secondaryActionHighlightedElement)
             });
             extraRects.forEach((rect, index) => {
                 const entry = this.ensureExtraSpotlightEntry(index);
@@ -549,9 +611,7 @@
                 }
                 const maskRect = rect || null;
                 const sourceElement = this.extraSpotlightElements[index] || null;
-                const variant = sourceElement && typeof sourceElement.getAttribute === 'function'
-                    ? sourceElement.getAttribute('data-yui-guide-spotlight-variant')
-                    : '';
+                const variant = getFrameVariantFromElement(sourceElement);
                 this.updateBackdropCutout(entry.cutout, maskRect);
                 this.updateSpotlightFrame(entry.frame, rect || null, {
                     allowMask: true,
@@ -749,18 +809,8 @@
             this.syncHighlightedElementClasses();
 
             if (this.backdrop) {
-                this.backdrop.hidden = true;
-                this.backdrop.classList.remove('is-visible');
+                this.hideBackdrop();
             }
-            this.updateBackdropCutout(this.backdropPersistentCutout, null);
-            this.updateBackdropCutout(this.backdropActionCutout, null);
-            this.updateBackdropCutout(this.backdropSecondaryActionCutout, null);
-            this.extraSpotlightEntries.forEach((entry) => {
-                if (!entry) {
-                    return;
-                }
-                this.updateBackdropCutout(entry.cutout, null);
-            });
             this.updateSpotlightFrame(this.persistentSpotlightFrame, null);
             this.updateSpotlightFrame(this.actionSpotlightFrame, null);
             this.updateSpotlightFrame(this.secondaryActionSpotlightFrame, null);

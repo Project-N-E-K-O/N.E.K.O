@@ -35,7 +35,7 @@
         #react-chat-window-backdrop { display: none !important; }
         #react-chat-window-shell:not(.is-minimized):not(.is-collapsing):not(.is-expanding) {
             position: fixed !important;
-            inset: 20px !important;
+            inset: 40px 25px 25px 20px !important;
             width: auto !important; height: auto !important;
             max-width: none !important; max-height: none !important;
             transform: none !important;
@@ -73,6 +73,161 @@
         #reactChatWindowCloseButton {
             position: relative !important;
             top: -2px !important;
+        }
+        body.yui-guide-chat-buttons-disabled #react-chat-window-shell button {
+            pointer-events: none !important;
+        }
+        body.yui-guide-chat-buttons-disabled #react-chat-window-shell .composer-panel,
+        body.yui-guide-chat-buttons-disabled #react-chat-window-shell .composer-input-shell,
+        body.yui-guide-chat-buttons-disabled #react-chat-window-shell .composer-input,
+        body.yui-guide-chat-buttons-disabled #text-input-area,
+        body.yui-guide-chat-buttons-disabled #textInputBox,
+        body.yui-guide-chat-buttons-disabled #neko-resize-handle,
+        body.yui-guide-chat-buttons-disabled #react-chat-window-shell .react-chat-resize-edge {
+            pointer-events: none !important;
+        }
+        body.yui-guide-chat-buttons-disabled #react-chat-window-shell .composer-input,
+        body.yui-guide-chat-buttons-disabled #textInputBox {
+            caret-color: transparent !important;
+            user-select: none !important;
+        }
+        @keyframes yui-guide-chat-window-pulse {
+            0%, 100% { transform: scale(1); }
+            50% { transform: scale(1.014); }
+        }
+        @keyframes yui-guide-chat-input-pulse {
+            0%, 100% { transform: scale(1); }
+            50% { transform: scale(1.01); }
+        }
+        #yui-guide-chat-spotlight {
+            position: fixed;
+            left: 0;
+            top: 0;
+            width: 0;
+            height: 0;
+            border-radius: 18px;
+            pointer-events: none;
+            z-index: 100055;
+            opacity: 0;
+            overflow: visible;
+            isolation: isolate;
+            transform-origin: center center;
+            transition: opacity 140ms ease;
+        }
+        #yui-guide-chat-spotlight .yui-guide-chat-spotlight-chrome,
+        #yui-guide-chat-spotlight .yui-guide-chat-spotlight-ear-left,
+        #yui-guide-chat-spotlight .yui-guide-chat-spotlight-ear-right,
+        #yui-guide-chat-spotlight .yui-guide-chat-spotlight-paw {
+            position: absolute;
+            pointer-events: none;
+            background-position: center;
+            background-repeat: no-repeat;
+            background-size: contain;
+        }
+        #yui-guide-chat-spotlight .yui-guide-chat-spotlight-chrome {
+            inset: 3px;
+            border-radius: inherit;
+            background: linear-gradient(180deg, rgba(84, 133, 255, 0.09), rgba(89, 211, 255, 0.03));
+            box-shadow:
+                0 0 0 1px rgba(214, 243, 255, 0.72),
+                0 0 18px rgba(104, 194, 255, 0.56),
+                0 0 34px rgba(87, 136, 255, 0.26),
+                inset 0 0 16px rgba(131, 214, 255, 0.16);
+        }
+        #yui-guide-chat-spotlight .yui-guide-chat-spotlight-chrome::before {
+            content: '';
+            position: absolute;
+            inset: 0;
+            padding: 2px;
+            border-radius: inherit;
+            --yui-guide-chat-spotlight-corner-size: min(34%, 138px);
+            --yui-guide-chat-spotlight-border-gap: min(68%, 144px);
+            background:
+                linear-gradient(rgba(39, 89, 228, 0.98), rgba(39, 89, 228, 0.98)) top center / calc(100% - var(--yui-guide-chat-spotlight-border-gap)) 2px no-repeat,
+                linear-gradient(rgba(39, 89, 228, 0.98), rgba(39, 89, 228, 0.98)) bottom center / calc(100% - var(--yui-guide-chat-spotlight-border-gap)) 2px no-repeat,
+                linear-gradient(90deg, rgba(39, 89, 228, 0.98), rgba(39, 89, 228, 0.98)) left center / 2px calc(100% - var(--yui-guide-chat-spotlight-border-gap)) no-repeat,
+                linear-gradient(90deg, rgba(39, 89, 228, 0.98), rgba(39, 89, 228, 0.98)) right center / 2px calc(100% - var(--yui-guide-chat-spotlight-border-gap)) no-repeat,
+                radial-gradient(circle at top left,
+                    rgba(235, 249, 255, 0.98) 0,
+                    rgba(186, 231, 255, 0.98) 13%,
+                    rgba(76, 137, 255, 0.95) 52%,
+                    rgba(39, 89, 228, 0.98) 96%,
+                    transparent 100%
+                ) top left / var(--yui-guide-chat-spotlight-corner-size) var(--yui-guide-chat-spotlight-corner-size) no-repeat,
+                radial-gradient(circle at top right,
+                    rgba(235, 249, 255, 0.98) 0,
+                    rgba(186, 231, 255, 0.98) 13%,
+                    rgba(76, 137, 255, 0.95) 52%,
+                    rgba(39, 89, 228, 0.98) 96%,
+                    transparent 100%
+                ) top right / var(--yui-guide-chat-spotlight-corner-size) var(--yui-guide-chat-spotlight-corner-size) no-repeat,
+                radial-gradient(circle at bottom right,
+                    rgba(235, 249, 255, 0.98) 0,
+                    rgba(186, 231, 255, 0.98) 13%,
+                    rgba(76, 137, 255, 0.95) 52%,
+                    rgba(39, 89, 228, 0.98) 96%,
+                    transparent 100%
+                ) bottom right / var(--yui-guide-chat-spotlight-corner-size) var(--yui-guide-chat-spotlight-corner-size) no-repeat,
+                radial-gradient(circle at bottom left,
+                    rgba(235, 249, 255, 0.98) 0,
+                    rgba(186, 231, 255, 0.98) 13%,
+                    rgba(76, 137, 255, 0.95) 52%,
+                    rgba(39, 89, 228, 0.98) 96%,
+                    transparent 100%
+                ) bottom left / var(--yui-guide-chat-spotlight-corner-size) var(--yui-guide-chat-spotlight-corner-size) no-repeat;
+            -webkit-mask:
+                linear-gradient(#000 0 0) content-box,
+                linear-gradient(#000 0 0);
+            -webkit-mask-composite: xor;
+            mask:
+                linear-gradient(#000 0 0) content-box,
+                linear-gradient(#000 0 0);
+            mask-composite: exclude;
+        }
+        #yui-guide-chat-spotlight.is-visible {
+            opacity: 1;
+        }
+        #yui-guide-chat-spotlight.is-window {
+            animation: yui-guide-chat-window-pulse 1.5s ease-in-out infinite;
+        }
+        #yui-guide-chat-spotlight.is-input {
+            animation: yui-guide-chat-input-pulse 1.5s ease-in-out infinite;
+        }
+        #yui-guide-chat-spotlight .yui-guide-chat-spotlight-ear-left {
+            top: -29px;
+            left: 2px;
+            width: 94.5px;
+            height: 40.5px;
+            background-image: url('/static/assets/tutorial/highlight/left-cat-ear.png');
+        }
+        #yui-guide-chat-spotlight .yui-guide-chat-spotlight-ear-right {
+            top: -30px;
+            right: 2px;
+            width: 94.5px;
+            height: 40.5px;
+            background-image: url('/static/assets/tutorial/highlight/right-cat-ear.png');
+        }
+        #yui-guide-chat-spotlight .yui-guide-chat-spotlight-paw {
+            right: -18px;
+            bottom: -11px;
+            width: 51px;
+            height: 51px;
+            background-image: url('/static/assets/tutorial/highlight/cat-paw.png');
+            filter: drop-shadow(0 0 8px rgba(119, 211, 255, 0.58));
+        }
+        #yui-guide-chat-spotlight.is-window .yui-guide-chat-spotlight-chrome {
+            box-shadow:
+                0 0 0 1px rgba(214, 243, 255, 0.72),
+                0 0 22px rgba(104, 194, 255, 0.62),
+                0 0 42px rgba(87, 136, 255, 0.3),
+                inset 0 0 18px rgba(131, 214, 255, 0.18);
+        }
+        #yui-guide-chat-spotlight.is-input .yui-guide-chat-spotlight-chrome {
+            box-shadow:
+                0 0 0 1px rgba(214, 243, 255, 0.72),
+                0 0 16px rgba(104, 194, 255, 0.52),
+                0 0 28px rgba(87, 136, 255, 0.22),
+                inset 0 0 12px rgba(131, 214, 255, 0.14);
         }
         /* Chat 字体优化（覆盖 6 语：中简/繁/英/日/韩/俄） */
         #react-chat-window-root {
@@ -347,6 +502,12 @@
 <body class="electron-chat-window subtitle-web-host">
 
     <div id="status-toast"></div>
+    <div id="yui-guide-chat-spotlight" hidden>
+        <div class="yui-guide-chat-spotlight-chrome"></div>
+        <div class="yui-guide-chat-spotlight-ear-left"></div>
+        <div class="yui-guide-chat-spotlight-ear-right"></div>
+        <div class="yui-guide-chat-spotlight-paw"></div>
+    </div>
 
     <!-- 空壳 DOM：防止 app-ui.js / app-websocket.js 中 getElementById 返回 null -->
     <div id="live2d-container" style="display:none;"><canvas id="live2d-canvas"></canvas></div>

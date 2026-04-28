@@ -8,8 +8,11 @@ import { getLocale } from './i18n'
 const START_EVENT = 'neko:yui-guide:plugin-dashboard:start'
 const READY_EVENT = 'neko:yui-guide:plugin-dashboard:ready'
 const DONE_EVENT = 'neko:yui-guide:plugin-dashboard:done'
+const TERMINATE_EVENT = 'neko:yui-guide:plugin-dashboard:terminate'
+const NARRATION_FINISHED_EVENT = 'neko:yui-guide:plugin-dashboard:narration-finished'
 const INTERRUPT_REQUEST_EVENT = 'neko:yui-guide:plugin-dashboard:interrupt-request'
 const INTERRUPT_ACK_EVENT = 'neko:yui-guide:plugin-dashboard:interrupt-ack'
+const SKIP_REQUEST_EVENT = 'neko:yui-guide:plugin-dashboard:skip-request'
 const HANDOFF_STORAGE_KEY = 'neko_yui_guide_handoff_token'
 const HANDOFF_TOKEN_VERSION = 1
 const PREACTIVATE_CLEANUP_MS = 8000
@@ -139,6 +142,7 @@ type StartPayload = {
   interruptCount?: number
   narrationDurationMs?: number
   narrationStartedAtMs?: number
+  skipButtonScreenRect?: ScreenRect | null
 }
 
 type SpotlightRect = {
@@ -150,10 +154,18 @@ type SpotlightRect = {
   padding: number
 }
 
+type ScreenRect = {
+  left: number
+  top: number
+  right: number
+  bottom: number
+}
+
 type ActiveNarration = {
   text: string
   voiceKey?: keyof typeof GUIDE_AUDIO_BY_KEY
   audioUrl?: string
+  resumeAudioOffsetMs: number
   interrupted: boolean
   cancelled: boolean
   playVersion: number
@@ -297,7 +309,7 @@ function cacheGuideAudioDuration(audioSrc: string, durationSeconds: number) {
   }
 }
 
-function playGuideAudioWithPromise(audioSrc: string, minimumDurationMs: number) {
+function playGuideAudioWithPromise(audioSrc: string, minimumDurationMs: number, startAtMs = 0) {
   const normalizedAudioSrc = typeof audioSrc === 'string' ? audioSrc.trim() : ''
   if (!normalizedAudioSrc) {
     return Promise.reject(new Error('missing_audio_src'))
@@ -306,6 +318,7 @@ function playGuideAudioWithPromise(audioSrc: string, minimumDurationMs: number) 
   return new Promise<void>((resolve, reject) => {
     let settled = false
     const audio = new Audio(normalizedAudioSrc)
+    const initialTimeSeconds = Math.max(0, startAtMs / 1000)
     const cacheKey = getGuideAudioDurationCacheKey(normalizedAudioSrc)
     let resolveMetadataDuration: ((durationMs: number) => void) | null = null
     let metadataTimerId: number | null = null
@@ -375,6 +388,14 @@ function playGuideAudioWithPromise(audioSrc: string, minimumDurationMs: number) 
         ? Math.round(audio.duration * 1000)
         : 0
       cacheGuideAudioDuration(normalizedAudioSrc, audio.duration)
+      if (initialTimeSeconds > 0) {
+        try {
+          const maxSeek = Number.isFinite(audio.duration) && audio.duration > 0
+            ? Math.max(0, audio.duration - 0.05)
+            : initialTimeSeconds
+          audio.currentTime = Math.min(initialTimeSeconds, maxSeek)
+        } catch (_) {}
+      }
       finishMetadataDuration(durationMs)
     }
     audio.onended = () => finish(true)
@@ -535,6 +556,7 @@ function speakTextWithPromise(
   options?: {
     voiceKey?: keyof typeof GUIDE_AUDIO_BY_KEY
     audioUrl?: string
+    startAtMs?: number
   },
 ): Promise<void> {
   const content = typeof text === 'string' ? text.trim() : ''
@@ -544,8 +566,9 @@ function speakTextWithPromise(
 
   const minDurationMs = estimateSpeechDurationMs(content)
   const localAudioSrc = resolveGuideAudioSrc(options?.voiceKey, options?.audioUrl)
+  const startAtMs = Number.isFinite(options?.startAtMs) ? Math.max(0, Math.round(options?.startAtMs as number)) : 0
   if (localAudioSrc) {
-    return playGuideAudioWithPromise(localAudioSrc, minDurationMs).catch(() => {
+    return playGuideAudioWithPromise(localAudioSrc, minDurationMs, startAtMs).catch(() => {
       return wait(minDurationMs)
     })
   }
@@ -625,8 +648,10 @@ function injectStyle() {
       inset: 0;
       width: 100%;
       height: 100%;
-      opacity: 1;
-      transition: opacity 180ms ease;
+      display: none !important;
+      opacity: 0 !important;
+      visibility: hidden !important;
+      transition: none !important;
     }
 
     #${ROOT_ID} .yui-guide-plugin-interaction-shield {
@@ -862,6 +887,7 @@ class PluginDashboardGuideRuntime {
   running = false
   interruptsEnabled = false
   scenePausedForResistance = false
+  homeNarrationFinished = false
   angryExitTriggered = false
   interruptCount = 0
   interruptAccelerationStreak = 0
@@ -871,20 +897,36 @@ class PluginDashboardGuideRuntime {
   resistanceCursorTimer: number | null = null
   narrationResumeTimer: number | null = null
   scenePauseResolvers: Array<() => void> = []
+  homeNarrationResolvers: Array<() => void> = []
   cursorMotionToken = 0
   cursorReactionInFlight = false
   cursorTransitionActive = false
   activeNarration: ActiveNarration | null = null
   pendingInterruptAck: PendingInterruptAck | null = null
   preactivationTimeoutId: number | null = null
+  homeSkipButtonScreenRect: ScreenRect | null = null
+  lastForwardedSkipAt = 0
+  lastForwardedSkipScreenX = NaN
+  lastForwardedSkipScreenY = NaN
   boundPointerMoveHandler = (event: PointerEvent | MouseEvent) => {
     this.handleInterrupt(event)
   }
   boundPointerDownHandler = (event: PointerEvent | MouseEvent) => {
+    if (this.forwardHomeSkipClick(event)) {
+      return
+    }
     this.onPointerDown(event)
   }
   boundInteractionGuard = (event: Event) => {
     if (!this.running || !event || (event as { isTrusted?: boolean }).isTrusted === false) {
+      return
+    }
+
+    if (
+      typeof window.MouseEvent !== 'undefined'
+      && event instanceof window.MouseEvent
+      && this.forwardHomeSkipClick(event)
+    ) {
       return
     }
 
@@ -980,6 +1022,8 @@ class PluginDashboardGuideRuntime {
     root.id = ROOT_ID
 
     const backdrop = createSvgElement('svg', 'yui-guide-plugin-backdrop')
+    ;(backdrop as unknown as { hidden?: boolean }).hidden = true
+    backdrop.style.display = 'none'
     const defs = createSvgElement('defs')
     const mask = createSvgElement('mask')
     mask.id = BACKDROP_MASK_ID
@@ -996,7 +1040,7 @@ class PluginDashboardGuideRuntime {
     backdropCutout.style.display = 'none'
 
     const backdropFill = createSvgElement('rect', 'yui-guide-plugin-backdrop-fill')
-    backdropFill.setAttribute('fill', 'rgba(3, 7, 18, 0.76)')
+    backdropFill.setAttribute('fill', 'transparent')
     backdropFill.setAttribute('mask', `url(#${BACKDROP_MASK_ID})`)
 
     mask.appendChild(backdropBase)
@@ -1093,6 +1137,8 @@ class PluginDashboardGuideRuntime {
       textKey: string
       voiceKey: keyof typeof GUIDE_AUDIO_BY_KEY
       interruptCount: number
+      x?: number
+      y?: number
     },
   ) {
     if (!window.opener || window.opener.closed) {
@@ -1194,6 +1240,70 @@ class PluginDashboardGuideRuntime {
     }
   }
 
+  forwardHomeSkipClick(event: PointerEvent | MouseEvent) {
+    if (!this.running || !event || event.isTrusted === false || !this.activeSessionId) {
+      return false
+    }
+
+    const rect = this.homeSkipButtonScreenRect
+    if (!rect) {
+      return false
+    }
+
+    const screenX = Number.isFinite(event.screenX) ? Number(event.screenX) : NaN
+    const screenY = Number.isFinite(event.screenY) ? Number(event.screenY) : NaN
+    if (!Number.isFinite(screenX) || !Number.isFinite(screenY)) {
+      return false
+    }
+
+    if (
+      screenX < rect.left
+      || screenX > rect.right
+      || screenY < rect.top
+      || screenY > rect.bottom
+    ) {
+      return false
+    }
+
+    const now = Date.now()
+    if (
+      (now - this.lastForwardedSkipAt) < 700
+      && Math.abs(screenX - this.lastForwardedSkipScreenX) <= 2
+      && Math.abs(screenY - this.lastForwardedSkipScreenY) <= 2
+    ) {
+      if (typeof event.preventDefault === 'function') {
+        event.preventDefault()
+      }
+      if (typeof event.stopImmediatePropagation === 'function') {
+        event.stopImmediatePropagation()
+      }
+      if (typeof event.stopPropagation === 'function') {
+        event.stopPropagation()
+      }
+      return true
+    }
+
+    if (typeof event.preventDefault === 'function') {
+      event.preventDefault()
+    }
+    if (typeof event.stopImmediatePropagation === 'function') {
+      event.stopImmediatePropagation()
+    }
+    if (typeof event.stopPropagation === 'function') {
+      event.stopPropagation()
+    }
+
+    this.lastForwardedSkipAt = now
+    this.lastForwardedSkipScreenX = screenX
+    this.lastForwardedSkipScreenY = screenY
+    this.notify(SKIP_REQUEST_EVENT, this.activeSessionId, {
+      source: 'plugin_dashboard',
+      screenX,
+      screenY,
+    })
+    return true
+  }
+
   syncBackdropViewport() {
     const width = Math.max(1, Math.round(window.innerWidth || 0))
     const height = Math.max(1, Math.round(window.innerHeight || 0))
@@ -1211,7 +1321,11 @@ class PluginDashboardGuideRuntime {
   }
 
   updateBackdropCutout(spotlightRect: SpotlightRect | null) {
-    if (!this.backdropCutout) {
+    if (!this.backdropCutout || this.backdrop) {
+      if (this.backdrop) {
+        ;(this.backdrop as unknown as { hidden?: boolean }).hidden = true
+        this.backdrop.style.display = 'none'
+      }
       return
     }
 
@@ -1571,6 +1685,7 @@ class PluginDashboardGuideRuntime {
     options?: {
       voiceKey?: keyof typeof GUIDE_AUDIO_BY_KEY
       audioUrl?: string
+      startAtMs?: number
     },
   ) {
     await speakTextWithPromise(text, options)
@@ -1607,6 +1722,33 @@ class PluginDashboardGuideRuntime {
     })
   }
 
+  markHomeNarrationFinished(sessionId: string) {
+    if (!this.isCurrentRun(sessionId) || this.homeNarrationFinished) {
+      return
+    }
+
+    this.homeNarrationFinished = true
+    const resolvers = this.homeNarrationResolvers.slice()
+    this.homeNarrationResolvers = []
+    resolvers.forEach((resolve) => {
+      try {
+        resolve()
+      } catch (_) {}
+    })
+  }
+
+  waitForHomeNarrationFinished(sessionId: string, isCurrent?: () => boolean) {
+    if (this.homeNarrationFinished) {
+      return Promise.resolve(true)
+    }
+
+    return new Promise<boolean>((resolve) => {
+      this.homeNarrationResolvers.push(() => {
+        resolve(!isCurrent || isCurrent())
+      })
+    })
+  }
+
   clearNarrationResumeTimer() {
     if (this.narrationResumeTimer !== null) {
       window.clearTimeout(this.narrationResumeTimer)
@@ -1638,6 +1780,7 @@ class PluginDashboardGuideRuntime {
     void this.speakLine(narration.text, {
       voiceKey: narration.voiceKey,
       audioUrl: narration.audioUrl,
+      startAtMs: narration.resumeAudioOffsetMs,
     }).then(() => {
       if (
         this.activeNarration !== narration
@@ -1650,6 +1793,7 @@ class PluginDashboardGuideRuntime {
         return
       }
 
+      narration.resumeAudioOffsetMs = 0
       this.activeNarration = null
       try {
         narration.resolve()
@@ -1684,6 +1828,7 @@ class PluginDashboardGuideRuntime {
         text: content,
         voiceKey: options?.voiceKey,
         audioUrl: options?.audioUrl,
+        resumeAudioOffsetMs: 0,
         interrupted: false,
         cancelled: false,
         playVersion: 0,
@@ -1703,6 +1848,9 @@ class PluginDashboardGuideRuntime {
       return true
     }
 
+    narration.resumeAudioOffsetMs = currentGuideAudio && Number.isFinite(currentGuideAudio.currentTime)
+      ? Math.max(0, Math.round(currentGuideAudio.currentTime * 1000))
+      : 0
     narration.interrupted = true
     this.clearNarrationResumeTimer()
     stopCurrentGuideSpeech()
@@ -1981,6 +2129,8 @@ class PluginDashboardGuideRuntime {
       textKey,
       voiceKey,
       interruptCount: this.interruptCount,
+      x,
+      y,
     })
     if (!isSameSession()) {
       return
@@ -2050,6 +2200,13 @@ class PluginDashboardGuideRuntime {
         resolve()
       } catch (_) {}
     })
+    const narrationResolvers = this.homeNarrationResolvers.slice()
+    this.homeNarrationResolvers = []
+    narrationResolvers.forEach((resolve) => {
+      try {
+        resolve()
+      } catch (_) {}
+    })
     document.documentElement.classList.remove('yui-guide-plugin-dashboard-running')
     document.documentElement.removeAttribute('data-yui-guide-spotlight-padding')
     document.documentElement.classList.remove('yui-taking-over')
@@ -2082,6 +2239,9 @@ class PluginDashboardGuideRuntime {
       this.resistanceCursorTimer = null
     }
     this.clearPendingInterruptAck(false)
+    this.lastForwardedSkipAt = 0
+    this.lastForwardedSkipScreenX = NaN
+    this.lastForwardedSkipScreenY = NaN
     window.removeEventListener('resize', this.boundRefreshSpotlight, true)
     window.removeEventListener('scroll', this.boundRefreshSpotlight, true)
     window.removeEventListener('pointermove', this.boundPointerMoveHandler, true)
@@ -2121,6 +2281,7 @@ class PluginDashboardGuideRuntime {
     this.activeSessionId = ''
     this.interruptsEnabled = false
     this.scenePausedForResistance = false
+    this.homeNarrationFinished = false
     this.angryExitTriggered = false
     this.interruptCount = 0
     this.interruptAccelerationStreak = 0
@@ -2134,7 +2295,9 @@ class PluginDashboardGuideRuntime {
     this.activeNarration = null
     this.pendingInterruptAck = null
     this.clearPreactivationTimeout()
+    this.homeSkipButtonScreenRect = null
     this.scenePauseResolvers = []
+    this.homeNarrationResolvers = []
   }
 
   async run(sessionId: string, payload: StartPayload) {
@@ -2149,6 +2312,19 @@ class PluginDashboardGuideRuntime {
     this.interruptCount = Number.isFinite(payload.interruptCount)
       ? Math.max(0, Math.floor(payload.interruptCount as number))
       : 0
+    this.homeSkipButtonScreenRect = payload.skipButtonScreenRect
+      && Number.isFinite(payload.skipButtonScreenRect.left)
+      && Number.isFinite(payload.skipButtonScreenRect.top)
+      && Number.isFinite(payload.skipButtonScreenRect.right)
+      && Number.isFinite(payload.skipButtonScreenRect.bottom)
+      ? {
+          left: Math.round(payload.skipButtonScreenRect.left),
+          top: Math.round(payload.skipButtonScreenRect.top),
+          right: Math.round(payload.skipButtonScreenRect.right),
+          bottom: Math.round(payload.skipButtonScreenRect.bottom),
+        }
+      : null
+    this.homeNarrationFinished = false
     const isCurrent = () => this.isCurrentRun(sessionId)
     this.activateOverlayShell()
     window.addEventListener('resize', this.boundRefreshSpotlight, true)
@@ -2280,7 +2456,9 @@ class PluginDashboardGuideRuntime {
         return
       }
     }
-    await speechPromise
+    if (!(await this.waitForHomeNarrationFinished(sessionId, isCurrent))) {
+      return
+    }
     if (!isCurrent()) {
       return
     }
@@ -2309,6 +2487,29 @@ export function initPluginDashboardYuiGuideRuntime() {
   window.addEventListener('message', (event: MessageEvent) => {
     const data = event.data
     if (!data || typeof data !== 'object') {
+      return
+    }
+
+    if (data.type === TERMINATE_EVENT && isAllowedOpenerEvent(event)) {
+      const sessionId = typeof data.sessionId === 'string' ? data.sessionId : ''
+      if (sessionId && runtime.activeSessionId && sessionId !== runtime.activeSessionId) {
+        return
+      }
+
+      runtime.cleanup()
+      if (data.closeWindow !== false) {
+        try {
+          window.close()
+        } catch (_) {}
+      }
+      return
+    }
+
+    if (data.type === NARRATION_FINISHED_EVENT && isAllowedOpenerEvent(event)) {
+      const sessionId = typeof data.sessionId === 'string' ? data.sessionId : ''
+      if (sessionId) {
+        runtime.markHomeNarrationFinished(sessionId)
+      }
       return
     }
 
