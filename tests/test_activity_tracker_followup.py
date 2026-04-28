@@ -29,6 +29,7 @@ from main_logic.activity.system_signals import SystemSnapshot
 from utils.activity_config import (
     ActivityPreferences,
     _AppOverride,
+    _cache,
     _GameOverride,
 )
 
@@ -493,14 +494,13 @@ def test_tracker_picks_up_fresh_prefs_via_refresh_hook():
     )
 
     # Simulate the loader returning a different cached object
-    import utils.activity_config as ac_mod
-    original = ac_mod._cache.prefs
+    original = _cache.prefs
     try:
-        ac_mod._cache.prefs = new_prefs
+        _cache.prefs = new_prefs
         tracker._refresh_prefs()
         # Now classify with the post-swap prefs
         obs2 = observation_from_system(sn, tracker._sm._prefs)
         assert obs2.category == 'work'
         assert obs2.canonical == 'SomeUnknownApp'
     finally:
-        ac_mod._cache.prefs = original
+        _cache.prefs = original
