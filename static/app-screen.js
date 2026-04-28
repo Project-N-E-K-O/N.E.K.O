@@ -451,6 +451,62 @@
     }
     mod.acquireOrReuseCachedStream = acquireOrReuseCachedStream;
 
+    async function buildLocalSecureHeaders() {
+        var helper = window.nekoLocalMutationSecurity;
+        if (!helper || typeof helper.getMutationHeaders !== 'function') {
+            return {};
+        }
+        try {
+            return await helper.getMutationHeaders();
+        } catch (e) {
+            console.warn('[截图] 获取本地安全请求头失败:', e);
+            return {};
+        }
+    }
+
+    async function isLocalCsrfFailure(resp) {
+        if (!resp || resp.status !== 403) return false;
+        try {
+            var cloned = typeof resp.clone === 'function' ? resp.clone() : resp;
+            var payload = await cloned.json();
+            return !!(payload && payload.error_code === 'csrf_validation_failed');
+        } catch (_) {
+            return false;
+        }
+    }
+
+    async function secureLocalScreenshotFetch(url, options) {
+        var helper = window.nekoLocalMutationSecurity;
+        var requestOptions = options || {};
+        var baseHeaders = Object.assign({}, requestOptions.headers);
+
+        async function send(headers) {
+            return fetch(url, {
+                method: requestOptions.method || 'POST',
+                headers: headers,
+                body: requestOptions.body,
+                cache: requestOptions.cache,
+            });
+        }
+
+        var headers = Object.assign({}, baseHeaders, await buildLocalSecureHeaders());
+        var resp = await send(headers);
+        if (
+            await isLocalCsrfFailure(resp)
+            && helper
+            && typeof helper.refreshToken === 'function'
+        ) {
+            try {
+                await helper.refreshToken();
+                headers = Object.assign({}, baseHeaders, await buildLocalSecureHeaders());
+                resp = await send(headers);
+            } catch (e) {
+                console.warn('[截图] 刷新本地安全 token 失败:', e);
+            }
+        }
+        return resp;
+    }
+
     // ======================== fetchBackendScreenshot ========================
     /**
      * 后端截图兜底：当前端所有屏幕捕获 API 均失败时，请求后端用 pyautogui 截取本机屏幕。
@@ -463,7 +519,7 @@
             return { dataUrl: null, status: null };
         }
         try {
-            var resp = await fetch('/api/screenshot');
+            var resp = await secureLocalScreenshotFetch('/api/screenshot', { method: 'POST' });
             if (!resp.ok) return { dataUrl: null, status: resp.status };
             var json = await resp.json();
             if (json.success && json.data) {
@@ -489,7 +545,7 @@
             return { dataUrl: null, status: null, canceled: false, error: null };
         }
         try {
-            var resp = await fetch('/api/screenshot/interactive', { method: 'POST' });
+            var resp = await secureLocalScreenshotFetch('/api/screenshot/interactive', { method: 'POST' });
             var json = null;
             try {
                 json = await resp.json();

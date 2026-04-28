@@ -153,6 +153,242 @@ def _run_macos_interactive_screenshot(output_path: str) -> tuple[int, str]:
     return completed.returncode, (completed.stderr or "").strip()
 
 
+def _set_windows_process_dpi_awareness() -> None:
+    try:
+        ctypes = __import__("ctypes")
+        try:
+            ctypes.windll.shcore.SetProcessDpiAwareness(2)
+            return
+        except Exception:
+            pass
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
+def _get_windows_virtual_screen_geometry() -> tuple[int, int, int, int]:
+    ctypes = __import__("ctypes")
+    user32 = ctypes.windll.user32
+    sm_xvirtualscreen = 76
+    sm_yvirtualscreen = 77
+    sm_cxvirtualscreen = 78
+    sm_cyvirtualscreen = 79
+
+    left = int(user32.GetSystemMetrics(sm_xvirtualscreen))
+    top = int(user32.GetSystemMetrics(sm_yvirtualscreen))
+    width = int(user32.GetSystemMetrics(sm_cxvirtualscreen))
+    height = int(user32.GetSystemMetrics(sm_cyvirtualscreen))
+
+    if width <= 0 or height <= 0:
+        raise RuntimeError("virtual screen metrics unavailable")
+    return left, top, width, height
+
+
+def _run_windows_interactive_screenshot(output_path: str) -> tuple[int, str]:
+    try:
+        import tkinter as tk
+        from PIL import ImageGrab
+    except Exception as exc:
+        raise RuntimeError(f"Windows interactive screenshot dependencies unavailable: {exc}") from exc
+
+    _set_windows_process_dpi_awareness()
+    screen_left, screen_top, screen_width, screen_height = _get_windows_virtual_screen_geometry()
+
+    result: dict[str, Any] = {
+        "bbox": None,
+        "canceled": True,
+        "error": "",
+    }
+
+    root = None
+    try:
+        root = tk.Tk()
+        root.overrideredirect(True)
+        root.attributes("-topmost", True)
+        try:
+            root.attributes("-alpha", 0.22)
+        except Exception:
+            pass
+        try:
+            root.configure(bg="black")
+        except Exception:
+            pass
+        root.geometry(f"{screen_width}x{screen_height}{screen_left:+d}{screen_top:+d}")
+        root.lift()
+        root.focus_force()
+
+        canvas = tk.Canvas(root, cursor="crosshair", highlightthickness=0, bd=0, bg="black")
+        canvas.pack(fill="both", expand=True)
+
+        state = {
+            "start_x": 0,
+            "start_y": 0,
+            "current_x": 0,
+            "current_y": 0,
+            "dragging": False,
+            "rect_id": None,
+            "cross_v_id": None,
+            "cross_h_id": None,
+        }
+
+        def _screen_point(event: Any) -> tuple[int, int]:
+            x = int(screen_left + canvas.canvasx(event.x))
+            y = int(screen_top + canvas.canvasy(event.y))
+            return x, y
+
+        def _clear_guides() -> None:
+            for key in ("rect_id", "cross_v_id", "cross_h_id"):
+                item_id = state.get(key)
+                if item_id:
+                    try:
+                        canvas.delete(item_id)
+                    except Exception:
+                        pass
+                    state[key] = None
+
+        def _draw_guides() -> None:
+            local_x1 = state["start_x"] - screen_left
+            local_y1 = state["start_y"] - screen_top
+            local_x2 = state["current_x"] - screen_left
+            local_y2 = state["current_y"] - screen_top
+
+            x1, x2 = sorted((int(local_x1), int(local_x2)))
+            y1, y2 = sorted((int(local_y1), int(local_y2)))
+
+            if state["cross_v_id"]:
+                canvas.coords(state["cross_v_id"], local_x2, 0, local_x2, screen_height)
+            else:
+                state["cross_v_id"] = canvas.create_line(
+                    local_x2, 0, local_x2, screen_height,
+                    fill="#ffffff",
+                    dash=(4, 4),
+                    width=1,
+                )
+
+            if state["cross_h_id"]:
+                canvas.coords(state["cross_h_id"], 0, local_y2, screen_width, local_y2)
+            else:
+                state["cross_h_id"] = canvas.create_line(
+                    0, local_y2, screen_width, local_y2,
+                    fill="#ffffff",
+                    dash=(4, 4),
+                    width=1,
+                )
+
+            if state["dragging"]:
+                if state["rect_id"]:
+                    canvas.coords(state["rect_id"], x1, y1, x2, y2)
+                else:
+                    state["rect_id"] = canvas.create_rectangle(
+                        x1, y1, x2, y2,
+                        outline="#4cc2ff",
+                        width=2,
+                        fill="#ffffff",
+                        stipple="gray25",
+                    )
+
+        def _on_press(event: Any) -> None:
+            x, y = _screen_point(event)
+            state["start_x"] = x
+            state["start_y"] = y
+            state["current_x"] = x
+            state["current_y"] = y
+            state["dragging"] = True
+            _draw_guides()
+
+        def _on_drag(event: Any) -> None:
+            x, y = _screen_point(event)
+            state["current_x"] = max(screen_left, min(screen_left + screen_width, x))
+            state["current_y"] = max(screen_top, min(screen_top + screen_height, y))
+            _draw_guides()
+
+        def _finish_selection() -> None:
+            left = max(screen_left, min(state["start_x"], state["current_x"]))
+            top = max(screen_top, min(state["start_y"], state["current_y"]))
+            right = min(screen_left + screen_width, max(state["start_x"], state["current_x"]))
+            bottom = min(screen_top + screen_height, max(state["start_y"], state["current_y"]))
+
+            if (right - left) < 4 or (bottom - top) < 4:
+                result["bbox"] = None
+                result["canceled"] = True
+            else:
+                result["bbox"] = (left, top, right, bottom)
+                result["canceled"] = False
+
+            try:
+                root.quit()
+            except Exception:
+                pass
+
+        def _on_release(event: Any) -> None:
+            if not state["dragging"]:
+                return
+            _on_drag(event)
+            state["dragging"] = False
+            _finish_selection()
+
+        def _on_cancel(_event: Any = None) -> None:
+            result["bbox"] = None
+            result["canceled"] = True
+            try:
+                root.quit()
+            except Exception:
+                pass
+
+        def _on_motion(event: Any) -> None:
+            if state["dragging"]:
+                return
+            x, y = _screen_point(event)
+            state["current_x"] = x
+            state["current_y"] = y
+            _draw_guides()
+
+        canvas.bind("<ButtonPress-1>", _on_press)
+        canvas.bind("<B1-Motion>", _on_drag)
+        canvas.bind("<ButtonRelease-1>", _on_release)
+        canvas.bind("<Motion>", _on_motion)
+        root.bind("<Escape>", _on_cancel)
+        root.bind("<Button-3>", _on_cancel)
+        root.bind("<FocusOut>", lambda _event: root.after(10, root.lift))
+
+        root.update_idletasks()
+        root.mainloop()
+
+        bbox = result.get("bbox")
+        if result.get("canceled") or not bbox:
+            return 1, ""
+
+        root.withdraw()
+        root.update_idletasks()
+        time.sleep(0.12)
+
+        full_image = ImageGrab.grab(all_screens=True)
+        crop_box = (
+            int(bbox[0] - screen_left),
+            int(bbox[1] - screen_top),
+            int(bbox[2] - screen_left),
+            int(bbox[3] - screen_top),
+        )
+        cropped = full_image.crop(crop_box)
+        cropped.save(output_path, format="PNG")
+        return 0, ""
+    except Exception as exc:
+        return 2, str(exc)
+    finally:
+        if root is not None:
+            try:
+                _clear_guides()
+            except Exception:
+                pass
+            try:
+                root.destroy()
+            except Exception:
+                pass
+
+
 def _image_path_to_jpeg_data_url(image_path: str) -> tuple[str, int]:
     with Image.open(image_path) as shot:
         if shot.mode in ("RGBA", "LA", "P"):
@@ -2641,12 +2877,19 @@ async def get_window_title_api():
         return JSONResponse({"success": False, "window_title": None})
 
 
-@router.get('/screenshot')
+@router.post('/screenshot')
 async def backend_screenshot(request: Request):
     """
     后端截图兜底：当前端所有屏幕捕获 API 都失败时，由后端用 pyautogui 截取本机屏幕。
     安全限制：仅允许来自 loopback 地址的请求。返回 JPEG base64 DataURL。
     """
+    validation_error = _validate_local_mutation_request(
+        request,
+        error_defaults={"success": False},
+    )
+    if validation_error is not None:
+        return validation_error
+
     if not _is_loopback_request(request):
         return JSONResponse({"success": False, "error": "only available from localhost"}, status_code=403)
 
@@ -2692,14 +2935,28 @@ async def backend_screenshot(request: Request):
 async def backend_interactive_screenshot(request: Request):
     """
     系统原生交互截图：优先给聊天截图按钮使用。
-    当前实现使用 macOS `screencapture` 的系统级框选能力，返回用户选区的 JPEG DataURL。
+    当前实现:
+      - macOS: `screencapture` 系统级框选
+      - Windows: 本地全桌面遮罩框选
+    返回用户选区的 JPEG DataURL。
     安全限制：仅允许来自 loopback 地址的请求。
     """
+    validation_error = _validate_local_mutation_request(
+        request,
+        error_defaults={"success": False},
+    )
+    if validation_error is not None:
+        return validation_error
+
     if not _is_loopback_request(request):
         return JSONResponse({"success": False, "error": "only available from localhost"}, status_code=403)
 
-    if sys.platform != "darwin":
-        return JSONResponse({"success": False, "error": "interactive screenshot is only supported on macOS"}, status_code=501)
+    if sys.platform == "darwin":
+        runner = _run_macos_interactive_screenshot
+    elif sys.platform == "win32":
+        runner = _run_windows_interactive_screenshot
+    else:
+        return JSONResponse({"success": False, "error": "interactive screenshot is only supported on macOS and Windows"}, status_code=501)
 
     fd, tmp_path = tempfile.mkstemp(prefix="neko-interactive-shot-", suffix=".png")
     os.close(fd)
@@ -2709,7 +2966,7 @@ async def backend_interactive_screenshot(request: Request):
         except FileNotFoundError:
             pass
 
-        returncode, stderr = await asyncio.to_thread(_run_macos_interactive_screenshot, tmp_path)
+        returncode, stderr = await asyncio.to_thread(runner, tmp_path)
         file_exists = os.path.exists(tmp_path)
         file_size = os.path.getsize(tmp_path) if file_exists else 0
 
