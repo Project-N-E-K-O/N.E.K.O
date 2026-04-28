@@ -415,8 +415,12 @@ async def run_sync_connector(
         while True:
             message = None
             try:
+                # check_async_blocking.py 用纯名字启发式（``*_queue.get()`` 一律拍），
+                # 类型标注不影响判断；这里 message_queue 实际是 ``asyncio.Queue``，
+                # ``.get()`` 返回 coroutine 由 wait_for 调度，不会阻塞 event loop。
                 message = await asyncio.wait_for(
-                    message_queue.get(), timeout=LOOP_TICK
+                    message_queue.get(),  # noqa: ASYNC_BLOCK — asyncio.Queue, not queue.Queue
+                    timeout=LOOP_TICK,
                 )
             except asyncio.TimeoutError:
                 # 超时 = 没消息：保持 message=None 走到下面 ws 维持段做周期性
