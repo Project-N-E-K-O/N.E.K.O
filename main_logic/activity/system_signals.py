@@ -229,8 +229,11 @@ class SystemSignalCollector:
         if self._psutil is not None:
             try:
                 self._psutil.cpu_percent(interval=None)
-            except Exception:
-                pass
+            except Exception as e:
+                # Priming is purely an optimisation — losing it just means
+                # the first tick reports 0.0 CPU; the next tick recovers.
+                # Don't block start() on it.
+                logger.debug('psutil CPU prime failed: %s', e)
 
         # Run one tick eagerly so the first ``snapshot()`` after
         # ``start()`` returns real data, not the SystemSnapshot defaults.
@@ -256,8 +259,14 @@ class SystemSignalCollector:
         self._task.cancel()
         try:
             await self._task
-        except (asyncio.CancelledError, Exception):
+        except asyncio.CancelledError:
+            # Expected — we just cancelled it.
             pass
+        except Exception as e:
+            # The poll loop already swallows per-tick errors; reaching here
+            # means something at task-level escaped (rare). Log and move on
+            # rather than letting shutdown propagate it.
+            logger.debug('SystemSignalCollector task exit error: %s', e)
         self._task = None
 
     def snapshot(self) -> SystemSnapshot:
@@ -364,16 +373,18 @@ class SystemSignalCollector:
         """Seconds since the last keyboard/mouse input, system-wide."""
         if self._ctypes_user32 is None or not _IS_WINDOWS:
             return None
-        import ctypes
-        from ctypes import wintypes
+        # Single ``from ctypes import ...`` to keep the linter happy and
+        # avoid mixing ``import ctypes`` with ``from ctypes import wintypes``
+        # at the same scope.
+        from ctypes import Structure, byref, sizeof, wintypes
 
-        class LASTINPUTINFO(ctypes.Structure):
+        class LASTINPUTINFO(Structure):
             _fields_ = [('cbSize', wintypes.UINT), ('dwTime', wintypes.DWORD)]
 
         info = LASTINPUTINFO()
-        info.cbSize = ctypes.sizeof(LASTINPUTINFO)
+        info.cbSize = sizeof(LASTINPUTINFO)
         try:
-            if not self._ctypes_user32.GetLastInputInfo(ctypes.byref(info)):
+            if not self._ctypes_user32.GetLastInputInfo(byref(info)):
                 return None
             tick_now = self._ctypes_user32.GetTickCount()
             # GetTickCount wraps every ~49.7 days; the wraparound arithmetic
@@ -471,13 +482,12 @@ class SystemSignalCollector:
         if not _IS_WINDOWS or self._ctypes_user32 is None or self._psutil is None:
             return None
         try:
-            import ctypes
-            from ctypes import wintypes
+            from ctypes import byref, wintypes
             hwnd = self._ctypes_user32.GetForegroundWindow()
             if not hwnd:
                 return None
             pid = wintypes.DWORD()
-            self._ctypes_user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            self._ctypes_user32.GetWindowThreadProcessId(hwnd, byref(pid))
             if pid.value == 0:
                 return None
             return self._psutil.Process(pid.value).name()
