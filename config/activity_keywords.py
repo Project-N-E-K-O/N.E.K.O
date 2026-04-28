@@ -238,7 +238,15 @@ PRIVATE_PROCESS_NAMES: list[str] = [
 # the Windows desktop build) and known sibling executables shipped
 # alongside it.
 OWN_APP_TITLE_KEYWORDS: list[tuple[str, list[str]]] = [
-    ('N.E.K.O', ['N.E.K.O', 'NEKO', 'Project N.E.K.O', 'Project NEKO']),
+    # Aliases must be DISTINCTIVE — `_make_needle` does word-boundary
+    # matching, so a generic alias like ``NEKO`` would match any
+    # standalone "Neko" in unrelated titles ("Neko Atsume", random
+    # browser tabs about cats, etc.) and false-positive into our
+    # special own_app branch (window dropped, dwell frozen, GPU
+    # fallback suppressed). Keep only the dotted form; ``Project N.E.K.O``
+    # is similarly safe because the literal string with dots almost
+    # never appears outside this app.
+    ('N.E.K.O', ['N.E.K.O', 'Project N.E.K.O']),
     ('Xiao8',   ['Xiao8', '小八']),
     # The launcher window briefly surfaces "projectneko_server" as its
     # console title before settling on the main UI; catch that too.

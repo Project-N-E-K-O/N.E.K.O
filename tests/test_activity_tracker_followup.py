@@ -18,7 +18,6 @@ import time
 import pytest
 
 from main_logic.activity.snapshot import (
-    ActivitySnapshot,
     derive_skip_probability,
     derive_tone,
 )
@@ -361,3 +360,147 @@ def test_skip_probability_specific_combo_beats_intensity_only():
     assert derive_skip_probability(
         'gaming', game_intensity='immersive', game_genre='rpg', overrides=overrides,
     ) == pytest.approx(0.4)
+
+
+# ── Privacy + stale_returning regression (Codex P1) ─────────────────
+
+
+def test_private_survives_stale_returning_window():
+    """Privacy lockdown must NOT downgrade to greeting_window when the
+    stale-returning sticky window happens to be active.
+
+    Scenario: user was away (15+ min idle), returns, opens KeePass as
+    their first action. Without the fix, ``effective_state`` would be
+    ``stale_returning`` → propensity ``greeting_window`` → proactive
+    chat would run and could even nudge a reminisce, while the user
+    is staring at password manager. Privacy must win.
+    """
+    prefs = ActivityPreferences()
+    sm = ActivityStateMachine(prefs=prefs)
+
+    # Simulate "user was away" then returns → open KeePass
+    base = time.time()
+    away_snap = _sys_snap(idle=20 * 60, ts=base)
+    sm.update_system(away_snap)
+    sm.get_snapshot(now=base)  # state machine sees away
+
+    # User returns, opens KeePass within the stale_recovery window
+    return_ts = base + 10
+    keepass = _sys_snap(title='KeePass - vault.kdbx', process='KeePass.exe', idle=2.0, ts=return_ts)
+    sm.update_system(keepass)
+    sm.update_window(observation_from_system(keepass, prefs), now=return_ts)
+
+    snap = sm.get_snapshot(now=return_ts)
+    assert snap.state == 'private', (
+        'Stale-recovery window must NOT override private state; '
+        f'got {snap.state}'
+    )
+    assert snap.propensity == 'closed', (
+        f'private must keep closed propensity (got {snap.propensity})'
+    )
+
+
+# ── Loader robustness (Codex P2) ────────────────────────────────────
+
+
+def test_loader_keeps_last_good_prefs_on_parse_failure(tmp_path, monkeypatch):
+    """A mid-edit corrupted JSON must NOT wipe previously cached overrides."""
+    from utils.activity_config import (
+        _CacheState, _GLOBAL_CONVERSATION_KEY, _load_from_file,
+    )
+
+    # Round 1: write a valid file with overrides
+    pref_file = tmp_path / 'user_preferences.json'
+    import json
+    pref_file.write_text(
+        json.dumps([{
+            'model_path': _GLOBAL_CONVERSATION_KEY,
+            'activity': {
+                'thresholds': {'away_idle_seconds': 300},
+                'user_app_overrides': {
+                    'mycorp.exe': {'category': 'work'},
+                },
+            },
+        }]),
+        encoding='utf-8',
+    )
+    p1 = _load_from_file(str(pref_file))
+    assert p1 is not None
+    assert p1.thresholds == {'away_idle_seconds': 300.0}
+    assert 'mycorp.exe' in p1.user_app_overrides
+
+    # Round 2: corrupt the file (simulating mid-edit save)
+    pref_file.write_text('{ malformed json without closing', encoding='utf-8')
+    p2 = _load_from_file(str(pref_file))
+    assert p2 is None, 'parse failure must signal None, not return defaults'
+
+
+def test_loader_returns_defaults_when_no_activity_section(tmp_path):
+    """Successfully parsed file without activity section returns defaults
+    (NOT None — that's reserved for parse failures)."""
+    from utils.activity_config import (
+        _GLOBAL_CONVERSATION_KEY, _load_from_file,
+    )
+    pref_file = tmp_path / 'user_preferences.json'
+    import json
+    pref_file.write_text(
+        json.dumps([{
+            'model_path': _GLOBAL_CONVERSATION_KEY,
+            'proactiveChatEnabled': True,
+            # No 'activity' field
+        }]),
+        encoding='utf-8',
+    )
+    p = _load_from_file(str(pref_file))
+    assert p is not None
+    assert isinstance(p, ActivityPreferences)
+    assert p.thresholds == {}
+    assert p.user_app_overrides == {}
+
+
+# ── Hot-reload (Codex P2) ───────────────────────────────────────────
+
+
+def test_tracker_picks_up_fresh_prefs_via_refresh_hook():
+    """``UserActivityTracker._refresh_prefs`` swaps in updated prefs.
+
+    The state machine stores prefs at __init__, so a long-lived session
+    won't see edits unless someone refreshes. This test calls the
+    refresh hook directly with a new prefs object and verifies the
+    state machine starts honouring the new override.
+    """
+    from main_logic.activity.tracker import UserActivityTracker
+    from main_logic.activity.system_signals import (
+        SystemSignalCollector, get_system_signal_collector,
+    )
+
+    # Round 1 — empty prefs, nothing classified
+    initial_prefs = ActivityPreferences()
+    tracker = UserActivityTracker(
+        lanlan_name='_test_hot_reload',
+        collector=get_system_signal_collector(),  # singleton fine; we don't start it
+    )
+    tracker._sm = ActivityStateMachine(prefs=initial_prefs)
+    sn = _sys_snap(title='SomeUnknownApp', process='SomeUnknownApp.exe')
+    obs = observation_from_system(sn, tracker._sm._prefs)
+    assert obs.category == 'unknown', f'unknown app should classify as unknown, got {obs.category}'
+
+    # Round 2 — bring in fresh prefs with override; tracker swaps in
+    new_prefs = ActivityPreferences(
+        user_app_overrides={
+            'someunknownapp.exe': _AppOverride(category='work', subcategory='office', canonical='SomeUnknownApp'),
+        },
+    )
+
+    # Simulate the loader returning a different cached object
+    import utils.activity_config as ac_mod
+    original = ac_mod._cache.prefs
+    try:
+        ac_mod._cache.prefs = new_prefs
+        tracker._refresh_prefs()
+        # Now classify with the post-swap prefs
+        obs2 = observation_from_system(sn, tracker._sm._prefs)
+        assert obs2.category == 'work'
+        assert obs2.canonical == 'SomeUnknownApp'
+    finally:
+        ac_mod._cache.prefs = original

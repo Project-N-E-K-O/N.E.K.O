@@ -47,6 +47,7 @@ from main_logic.activity.state_machine import (
 from main_logic.activity.system_signals import (
     SystemSignalCollector, SystemSnapshot, get_system_signal_collector,
 )
+from utils.activity_config import get_activity_preferences
 
 logger = logging.getLogger(__name__)
 
@@ -303,6 +304,7 @@ class UserActivityTracker:
         user's secret context never reaches the model.
         """
         await self._ensure_collector_started()
+        self._refresh_prefs()
 
         ts = now if now is not None else time.time()
 
@@ -346,6 +348,7 @@ class UserActivityTracker:
         play. Enrichment caches are merged in the same way as
         ``get_snapshot``, with the same private-state suppression.
         """
+        self._refresh_prefs()
         ts = now if now is not None else time.time()
         # Use _select_system_snapshot to honour frontend-pushed signals
         # exactly like the async path — otherwise remote deployments
@@ -564,6 +567,29 @@ class UserActivityTracker:
             except Exception as e:
                 # Stay alive — one bad tick shouldn't kill the loop.
                 logger.debug('[%s] activity_guess loop tick failed: %s', self.lanlan_name, e)
+
+    def _refresh_prefs(self) -> None:
+        """Pick up live edits to ``user_preferences.json::activity``.
+
+        The preferences loader has its own mtime-based 30s cache, so this
+        is cheap (one lock acquisition + identity compare in the common
+        path). When the cache reloads, we swap the new prefs into the
+        state machine so override lookups (``user_app_overrides`` /
+        ``user_title_overrides`` / ``user_game_overrides`` /
+        ``skip_probability_overrides``) reflect the user's current
+        config without requiring a session restart.
+
+        Threshold values (``away_idle_seconds``, etc.) are intentionally
+        NOT re-derived: those are read into instance attributes at
+        ``ActivityStateMachine.__init__`` and stay frozen for the
+        session. Treating thresholds as session-stable while overrides
+        are live is the deliberate split — thresholds are tuning
+        constants people set once, overrides are how users react to a
+        misclassification right now.
+        """
+        fresh = get_activity_preferences()
+        if fresh is not self._sm._prefs:
+            self._sm._prefs = fresh
 
     def _select_system_snapshot(self, now: float) -> SystemSnapshot:
         """Pick external (frontend-pushed) snapshot when fresh, else local.

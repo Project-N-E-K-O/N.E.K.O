@@ -570,9 +570,19 @@ class ActivityStateMachine:
 
         # Apply stale_returning override AFTER the bookkeeping so the
         # underlying state still advances (we want to know what state
-        # they "really" entered, just expose the stale window for prompt)
+        # they "really" entered, just expose the stale window for prompt).
+        # Two states are exempt:
+        #   * 'away' — obviously, we're transitioning OUT of away
+        #   * 'private' — privacy lockdown must remain ``closed``, not
+        #     downgrade to ``greeting_window``. If the user comes back
+        #     from being away with a password manager still foreground,
+        #     proactive chat must still hard-skip.
         effective_state: ActivityState = self._current_state
-        if ts < self._stale_returning_until and self._current_state != 'away':
+        if (
+            ts < self._stale_returning_until
+            and self._current_state != 'away'
+            and self._current_state != 'private'
+        ):
             effective_state = 'stale_returning'
 
         # Game tag pass-through is needed to resolve propensity for gaming

@@ -4,47 +4,55 @@ Reads the ``activity`` sub-dict from ``user_preferences.json``'s
 ``__global_conversation__`` entry — see
 ``utils/preferences.py:GLOBAL_CONVERSATION_KEY`` for the file shape.
 
-Schema (all fields optional; missing fields fall through to code defaults
-in ``main_logic/activity/state_machine.py``):
+The on-disk file is always a JSON ARRAY whose entries are dicts; one
+entry has ``model_path == "__global_conversation__"`` and holds the
+global settings. The activity sub-dict lives there:
 
-```
-{
-  "model_path": "__global_conversation__",
-  ... existing global settings ...
-  "activity": {
-    "thresholds": {
-      "away_idle_seconds": 900,
-      "stale_recovery_seconds": 60,
-      "voice_active_window_seconds": 8,
-      "focused_work_min_dwell_seconds": 90,
-      "focused_work_recent_input_seconds": 300,
-      "casual_browsing_min_dwell_seconds": 30,
-      "window_switch_transition_threshold": 5,
-      "window_history_lookback_seconds": 300,
-      "transition_recent_window_seconds": 30,
-      "unfinished_thread_window_seconds": 300,
-      "unfinished_thread_max_followups": 2,
-      "gaming_gpu_threshold_percent": 60,
-      "gaming_gpu_max_idle_seconds": 60
-    },
-    "user_app_overrides": {
-      "MyCompanyApp.exe": {"category": "work", "subcategory": "office", "canonical": "MyCompanyApp"},
-      "OurGameLauncher.exe": {"category": "gaming", "subcategory": "game"}
-    },
-    "user_title_overrides": {
-      "MyCustomTitle": {"category": "work", "subcategory": "office", "canonical": "Custom"}
-    },
-    "user_game_overrides": {
-      "Elden Ring": {"intensity": "casual", "genre": "rpg"}
-    },
-    "skip_probability_overrides": {
-      "competitive": 0.5,
-      "immersive_horror": 1.0,
-      "casual": 0.0
+```json
+[
+  {
+    "model_path": "__global_conversation__",
+    "proactiveChatEnabled": true,
+    "...other existing global settings...": "...",
+    "activity": {
+      "thresholds": {
+        "away_idle_seconds": 900,
+        "stale_recovery_seconds": 60,
+        "voice_active_window_seconds": 8,
+        "focused_work_min_dwell_seconds": 90,
+        "focused_work_recent_input_seconds": 300,
+        "casual_browsing_min_dwell_seconds": 30,
+        "window_switch_transition_threshold": 5,
+        "window_history_lookback_seconds": 300,
+        "transition_recent_window_seconds": 30,
+        "unfinished_thread_window_seconds": 300,
+        "unfinished_thread_max_followups": 2,
+        "gaming_gpu_threshold_percent": 60,
+        "gaming_gpu_max_idle_seconds": 60
+      },
+      "user_app_overrides": {
+        "MyCompanyApp.exe": {"category": "work", "subcategory": "office", "canonical": "MyCompanyApp"},
+        "OurGameLauncher.exe": {"category": "gaming", "subcategory": "game"}
+      },
+      "user_title_overrides": {
+        "MyCustomTitle": {"category": "work", "subcategory": "office", "canonical": "Custom"}
+      },
+      "user_game_overrides": {
+        "Elden Ring": {"intensity": "casual", "genre": "rpg"}
+      },
+      "skip_probability_overrides": {
+        "competitive": 0.5,
+        "immersive_horror": 1.0,
+        "casual": 0.0
+      }
     }
-  }
-}
+  },
+  {"model_path": "...some 3D model path...", "...": "..."}
+]
 ```
+
+All fields are optional; missing entries fall through to code defaults
+in ``main_logic/activity/state_machine.py``.
 
 Why a separate loader (not reusing
 ``utils/preferences.load_global_conversation_settings``):
@@ -88,8 +96,24 @@ _VALID_GENRES = frozenset({
     'fps', 'moba', 'rpg', 'sim', 'horror', 'racing', 'rhythm',
     'strategy', 'sports', 'party', 'action', 'misc',
 })
+
+# Categories users may target via ``user_app_overrides`` /
+# ``user_title_overrides``. ``private`` and ``own_app`` are intentionally
+# EXCLUDED — those are static-keyword-only categories with security /
+# correctness contracts that user-supplied overrides shouldn't be able
+# to forge:
+#   * ``private`` — privacy lockdown comes with extra guarantees
+#     (window data scrubbed, LLM enrichment bypassed). The state machine
+#     additionally treats static-DB private hits as "locked" so user
+#     overrides can't downgrade them. Letting users mint NEW private
+#     entries via override would be confusing — accept it here, but
+#     state_machine's private-locked semantics only apply to static-DB
+#     hits, so the override would never actually trigger the privacy
+#     bypass. Reject at load time so the asymmetry doesn't surprise.
+#   * ``own_app`` — same reasoning. The catgirl-app exclusion is a
+#     codebase invariant, not a user setting.
 _VALID_CATEGORIES = frozenset({
-    'gaming', 'work', 'entertainment', 'communication', 'private', 'own_app',
+    'gaming', 'work', 'entertainment', 'communication',
 })
 
 
@@ -143,12 +167,39 @@ class ActivityPreferences:
 
 
 # ── Module-level cache ────────────────────────────────────────────────
+#
+# Bundled into one mutable holder rather than four module-level globals
+# so each cache update is an attribute write — this way the cross-call
+# state is structurally explicit, and intra-function flow analysis (e.g.
+# CodeQL's "unused global" rule) doesn't keep flagging the assignments
+# as dead just because they aren't read again in the same function body.
+
+
+class _CacheState:
+    """Cross-invocation cache for ``get_activity_preferences``.
+
+    Single-instance holder. ``prefs`` always returns the most recently
+    successfully loaded value (or the all-defaults fallback). The other
+    three fields gate when to skip an expensive reload.
+    """
+
+    __slots__ = ('prefs', 'fetched_at', 'path', 'mtime')
+
+    def __init__(self) -> None:
+        self.prefs: ActivityPreferences = ActivityPreferences()
+        self.fetched_at: float = 0.0
+        self.path: str | None = None
+        self.mtime: float | None = None
+
+    def reset_metadata(self) -> None:
+        """Force the next ``get_activity_preferences`` call to re-read the file."""
+        self.fetched_at = 0.0
+        self.path = None
+        self.mtime = None
+
 
 _cache_lock = threading.Lock()
-_cached_prefs: ActivityPreferences = ActivityPreferences()
-_cached_at: float = 0.0
-_cached_path: str | None = None
-_cached_mtime: float | None = None
+_cache = _CacheState()
 
 
 def get_activity_preferences() -> ActivityPreferences:
@@ -159,22 +210,21 @@ def get_activity_preferences() -> ActivityPreferences:
     object; on parse failure the cache stays on its previous value (or
     defaults if there's never been a successful load).
     """
-    global _cached_prefs, _cached_at, _cached_path, _cached_mtime
     now = time.time()
     with _cache_lock:
         if (
-            _cached_at
-            and now - _cached_at < _PREFERENCES_RELOAD_INTERVAL_SECONDS
+            _cache.fetched_at
+            and now - _cache.fetched_at < _PREFERENCES_RELOAD_INTERVAL_SECONDS
         ):
-            return _cached_prefs
+            return _cache.prefs
 
         path = _resolve_preferences_path()
         if path is None:
-            _cached_prefs = ActivityPreferences()
-            _cached_at = now
-            _cached_path = None
-            _cached_mtime = None
-            return _cached_prefs
+            _cache.prefs = ActivityPreferences()
+            _cache.fetched_at = now
+            _cache.path = None
+            _cache.mtime = None
+            return _cache.prefs
 
         try:
             mtime = os.path.getmtime(path)
@@ -183,15 +233,27 @@ def get_activity_preferences() -> ActivityPreferences:
 
         # If the path AND mtime are unchanged, skip the parse and just
         # advance the freshness timestamp.
-        if path == _cached_path and mtime == _cached_mtime and mtime is not None:
-            _cached_at = now
-            return _cached_prefs
+        if path == _cache.path and mtime == _cache.mtime and mtime is not None:
+            _cache.fetched_at = now
+            return _cache.prefs
 
         prefs = _load_from_file(path)
-        _cached_prefs = prefs
-        _cached_at = now
-        _cached_path = path
-        _cached_mtime = mtime
+        if prefs is None:
+            # Parse / read failed (file mid-edit, malformed JSON, etc).
+            # Keep the previously cached prefs intact rather than wiping
+            # them with defaults — a transient bad write shouldn't
+            # silently disable all the user's overrides until the next
+            # successful save. Advance ``fetched_at`` so we don't retry
+            # on every call; let the next mtime change trigger a real
+            # reload.
+            _cache.fetched_at = now
+            _cache.path = path
+            _cache.mtime = mtime
+            return _cache.prefs
+        _cache.prefs = prefs
+        _cache.fetched_at = now
+        _cache.path = path
+        _cache.mtime = mtime
         return prefs
 
 
@@ -200,11 +262,8 @@ def invalidate_activity_preferences_cache() -> None:
 
     Useful for tests + post-settings-UI-write hooks.
     """
-    global _cached_at, _cached_path, _cached_mtime
     with _cache_lock:
-        _cached_at = 0.0
-        _cached_path = None
-        _cached_mtime = None
+        _cache.reset_metadata()
 
 
 def _resolve_preferences_path() -> str | None:
@@ -227,23 +286,36 @@ def _resolve_preferences_path() -> str | None:
     return None
 
 
-def _load_from_file(path: str) -> ActivityPreferences:
+def _load_from_file(path: str) -> ActivityPreferences | None:
     """Read user_preferences.json and extract the ``activity`` sub-dict.
 
-    Returns ``ActivityPreferences()`` (all defaults) on any error or if
-    the activity section is absent. Validation is best-effort — invalid
-    entries inside the section are silently dropped without rejecting
-    the rest of the section. We never want a typo to wedge the tracker.
+    Returns:
+      * ``ActivityPreferences()`` (all defaults) when the file parses
+        successfully but has no activity section — a legitimate "user
+        hasn't configured anything" state.
+      * Parsed ``ActivityPreferences`` when the activity section is
+        present.
+      * ``None`` when the read or JSON parse FAILED — caller's contract
+        is to keep the previous cached value rather than overwriting
+        with defaults. Distinguishing parse-failure from
+        no-activity-section is what prevents a transient corrupt write
+        from wiping the user's overrides.
+
+    Validation is best-effort within the activity section — invalid
+    entries inside it are silently dropped without rejecting the rest.
+    We never want a typo to wedge the tracker.
     """
     try:
         with open(path, 'r', encoding='utf-8') as f:
             data = json.load(f)
     except Exception as e:
         logger.debug('activity_config: failed to read %s: %s', path, e)
-        return ActivityPreferences()
+        return None
 
     if not isinstance(data, list):
-        # Legacy dict-shaped preferences file — no global entry to look at.
+        # Legacy dict-shaped preferences file — no global entry to look at,
+        # but the file IS valid (just an old shape). Treat as "no activity
+        # section configured" → defaults.
         return ActivityPreferences()
 
     activity_dict: dict | None = None

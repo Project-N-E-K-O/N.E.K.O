@@ -526,6 +526,18 @@ def format_activity_state_section(snap: 'ActivitySnapshot', lang: str = 'zh') ->
     """
     if snap is None:
         return ''
+    # Defense in depth: when propensity is ``closed`` (currently emitted
+    # only by ``private`` state) emit nothing. Proactive chat already
+    # short-circuits on ``closed`` before reaching this formatter, but
+    # other consumers (debug logging, future side panels, prompt
+    # snapshotters) might pass a closed snapshot through. Rendering
+    # state name / reason templates / msg-recency / cached enrichment
+    # for a private snapshot would leak the fact that the user just
+    # opened a sensitive app — and potentially residual cached context
+    # from before that app opened. Empty string everywhere is the only
+    # leak-free contract.
+    if snap.propensity == 'closed':
+        return ''
     L = _normalize_lang(lang)
     labels = ACTIVITY_STATE_SECTION_LABELS.get(L, ACTIVITY_STATE_SECTION_LABELS['en'])
     state_label = ACTIVITY_STATE_LABELS.get(L, ACTIVITY_STATE_LABELS['en']).get(
