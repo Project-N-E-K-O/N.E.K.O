@@ -6616,6 +6616,10 @@
                 return;
             }
 
+            if (this.hasOpenSystemDialog()) {
+                return;
+            }
+
             event.stopPropagation();
             this.skip('escape', 'skip');
         }
@@ -6649,12 +6653,39 @@
             return false;
         }
 
+        isSystemDialogInteractionTarget(target) {
+            if (!target || typeof target.closest !== 'function') {
+                return false;
+            }
+
+            return !!target.closest([
+                '#prominent-notice-overlay',
+                '.modal-overlay',
+                '.modal-dialog',
+                '.storage-location-completion-card',
+                '#storage-location-overlay',
+                '.storage-location-modal'
+            ].join(', '));
+        }
+
+        hasOpenSystemDialog() {
+            return !!document.querySelector([
+                '#prominent-notice-overlay',
+                '.modal-overlay',
+                '.storage-location-completion-card:not([hidden])',
+                '#storage-location-overlay:not([hidden])'
+            ].join(', '));
+        }
+
         onInteractionGuard(event) {
             if (this.destroyed || this.page !== 'home' || !event || event.isTrusted === false) {
                 return;
             }
 
-            if (this.isAllowedTutorialInteractionTarget(event.target)) {
+            if (
+                this.isAllowedTutorialInteractionTarget(event.target)
+                || this.isSystemDialogInteractionTarget(event.target)
+            ) {
                 return;
             }
 

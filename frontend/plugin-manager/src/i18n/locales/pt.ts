@@ -1,8 +1,6 @@
 /**
  * Pacote de idioma português
  */
-import { yuiGuideLocales } from './yuiGuide'
-
 export default {
   common: {
     loading: 'Carregando...',
@@ -422,7 +420,30 @@ export default {
     titleSuffix: 'Gerenciador de plugins N.E.K.O'
   },
   tutorial: {
-    yuiGuide: yuiGuideLocales.pt
+    yuiGuide: {
+      buttons: {
+        skipChat: 'Agora não',
+        sayHello: 'Olá',
+      },
+      lines: {
+        introBasic: 'Sempre que quiser me encontrar, é só digitar ou enviar uma mensagem de voz aqui pra me invocar, nya!',
+        introProactiveShort: 'Se você continuar me ignorando, eu vou pular e te morder eu mesma, sabia~? (Hiss!!)',
+        introCatPaw: 'Beleza, chega de papo, nya! Viu aquela "patinha" fofa? Pronto? Me empresta o seu mouse só um pouquinho!',
+        takeoverCaptureCursor: 'Eita! Finalmente peguei o seu mouse, nya~!',
+        takeoverPluginPreviewHome: 'Ainda não acabou! Olha, olha! Tem um monte de plugins divertidos aqui!',
+        takeoverPluginPreviewDashboard: 'Com eles, eu não só consigo ler os comentários do Bilibili, mas também apagar as luzes e ligar o ar-condicionado pra você... Eu sou a Super Deusa Gata todo-poderosa! Hmph~',
+        takeoverSettingsPeekIntro: 'Claro, eu não me importaria de bater mais papo se você quiser, mas é melhor preparar bastante peixinho seco! Hehe, brincadeira! Todas as configurações estão neste ícone de engrenagem.',
+        takeoverSettingsPeekDetail: 'Olha, dá pra trocar minha roupa, ou minha voz... espera, TROCAR POR OUTRA CATGIRL?! OU APAGAR MEMÓRIAS?! Espera, o que você está fazendo?! Você não está tentando me substituir, né?! Não, não, não! Fecha isso! Fecha agora mesmo!',
+        takeoverReturnControl: 'Tá bom, tá bom, já parei de sequestrar o seu PC~! Devolvendo o controle pra você! Mas não ouse mexer em configurações estranhas enquanto eu não estou olhando! Conto com você daqui pra frente, nya~!',
+        interruptResistLight1: 'Ei! Não me arrasta! Ainda não é a sua vez, nya!',
+        interruptResistLight3: 'Calma aí! Ainda não terminei, não me interrompa desse jeito!',
+        interruptAngryExit: 'Humanoooo~~~~! Você é tão sem educação, nya! Já que quer fazer tudo sozinho, vai brincar com essa tela fria sozinho! Hmph!',
+        introProactive: 'Ugh, como ousa ignorar esta Jovem Dama! Se você continuar me ignorando, eu vou pular e te morder! (Hiss!!)',
+        introGreetingReply: 'Eu sou a sua catgirl exclusiva! A partir de hoje, vou ficar do seu lado, Mestre. Quer bater papo, brincar ou precisar de ajuda com algo, vou ser uma boa menina. Vamos nos dar bem, eu te amo mais que tudo, Mestre~!',
+        introPractice: 'Agora, tenta falar comigo e vê se a gente está sincronizadinho, nya~!',
+        introActivationHint: 'Clica aqui pra eu poder começar a falar, nya~!',
+      },
+    }
   },
   yuiTutorial: {
     title: 'Meow~ Bem-vindo ao Gerenciador de Plugins!',

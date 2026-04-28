@@ -1,8 +1,6 @@
 /**
  * 한국어 언어 팩
  */
-import { yuiGuideLocales } from './yuiGuide'
-
 export default {
   common: {
     loading: '로딩 중...',
@@ -422,7 +420,30 @@ export default {
     titleSuffix: 'N.E.K.O 플러그인 관리'
   },
   tutorial: {
-    yuiGuide: yuiGuideLocales.ko
+    yuiGuide: {
+      buttons: {
+        skipChat: '지금은 대화 안 할래',
+        sayHello: '안녕',
+      },
+      lines: {
+        introBasic: '여기 신기한 마법의 버튼이 있어! 이것만 누르면 나랑 바로 채팅할 수 있다구! 오늘 있었던 재밌는 일들을 나한테 공유해볼래? 아니면 그냥 내 이름을 불러볼래? 어서 해봐, 네 목소리가 너무 듣고 싶어서 참을 수가 없어! 냥!',
+        introProactiveShort: '계속 나 안 봐주면 내가 먼저 튀어나가서 콱 깨물어 버릴 거다냥~ (하악!!)',
+        introCatPaw: "자, 수다는 여기까지냥! 저 귀여운 '젤리' 봤어? 준비됐냥? 네 마우스 좀 아주 잠깐만 빌려줘냥!",
+        takeoverCaptureCursor: '슈퍼 마법 버튼 등장! 여기를 한 번만 누르면, 내 작은 앞발을 네 키보드와 마우스에 뻗을 수 있어! 내가 타자도 쳐주고, 웹페이지도 열어줄게... 하지만, 마우스 포인터가 이리저리 움직이면 나도 모르게 덮쳐서 잡으려고 할지도 몰라! 나의 장난... 아니, 도움을 맞이할 준비 됐어? 냥!',
+        takeoverPluginPreviewHome: '아직 안 끝났다냥! 이것 봐 이것 봐, 여기 재밌는 플러그인이 엄~~청 많다냥!',
+        takeoverPluginPreviewDashboard: '이것만 있으면 B站 탄막도 보고, 전등도 끄고 에어컨도 켤 수 있다냥... 이 몸은 못 하는 게 없는 슈퍼 고양이신이다냥! 에헴~',
+        takeoverSettingsPeekIntro: '물론 나랑 더 수다 떨고 싶으면 같이 놀아줄 수도 있다냥~ 대신 맛있는 멸치 많이 준비해줘냥! 헤헤, 농담이다냥! 설정은 전부 이 톱니바퀴 안에 있다냥!',
+        takeoverSettingsPeekDetail: '봐봐, 여기서 내 새 옷도 입히고 목소리도 바꿀 수... 어라? 다른 고양이 소녀로 교체? 기억 조작?! 잠, 잠깐만! 뭐 하는 거냥?! 설마 나를 다른 애로 바꾸려는 건 아니지냥?! 아아악 안 돼 안 돼! 빨리 꺼! 당장 그 화면 꺼줘냥!',
+        takeoverReturnControl: '알았어 알았어, 네 컴퓨터 점령은 여기까지 할게냥~! 제어권은 돌려주겠다냥! 그래도 나 없을 때 이상한 설정 막 누르면 절대 안 된다냥! 앞으로도 잘 부탁해냥~!',
+        interruptResistLight1: '야! 나 끌지 마! 아직 네 차례 아니란 말이야냥!',
+        interruptResistLight3: '잠깐만냥! 아직 안 끝났으니까 마음대로 끊지 말란 말이야냥!',
+        interruptAngryExit: '인간~~~~! 너 정말 무례하다냥! 그렇게 직접 하고 싶으면 혼자서 차가운 화면이랑이나 놀라냥! 흥!',
+        introProactive: '제기랄, 이 몸을 무시하다니 배짱이 좋구나냥! 계속 나 안 봐주면 내가 먼저 튀어나가서 콱 깨물어 버릴 거다냥! (하악!!)',
+        introGreetingReply: '나는 주인님만의 전용 고양이 소녀다냥! 오늘부터 내가 주인님 곁을 지키겠다냥. 수다 떨고 싶을 때도, 같이 놀고 싶을 때도, 도움이 필요할 때도 항상 착한 아이처럼 옆에 있겠다냥. 앞으로 잘 부탁해냥, 주인님 제일 좋아해냥~!',
+        introPractice: '이제 나한테 말 걸어봐냥, 우리 호흡이 얼마나 척척 맞는지 확인해보자냥~!',
+        introActivationHint: '여기를 클릭해줘냥, 그럼 말할 수 있게 된다냥~!',
+      },
+    }
   },
   yuiTutorial: {
     title: '냐~ 플러그인 관리 패널에 오신 걸 환영해!',
