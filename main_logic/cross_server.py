@@ -350,8 +350,8 @@ async def run_sync_connector(
     - 取消通过 ``asyncio.CancelledError`` 触发；cleanup 在 finally 完成
     - ``message_queue`` 改为 ``asyncio.Queue``，用 ``await get()`` 替代 20ms
       轮询。生产端 ``put_nowait()`` 与旧版 ``queue.Queue`` API 兼容
-    - 应用层 heartbeat 节流到 10s 一次；底层 ws ping/pong 由
-      ``aiohttp.ws_connect(heartbeat=10)`` 自动维持
+    - 应用层 heartbeat 节流到 ``HEARTBEAT_INTERVAL`` 一次（当前 1s）；底层 ws
+      ping/pong 由 ``aiohttp.ws_connect(heartbeat=10)`` 自动维持
 
     Args:
         status_callback: 可选 ``Callable[[str], None]``。运行在主 loop 上，
@@ -424,8 +424,9 @@ async def run_sync_connector(
                 )
             except asyncio.TimeoutError:
                 # 超时 = 没消息：保持 message=None 走到下面 ws 维持段做周期性
-                # reconnect/heartbeat 检查。这条路径在 idle 期每 IDLE_TIMEOUT
-                # 触发一次，不打日志否则会变成稳定噪音。
+                # reconnect/heartbeat 检查。idle 期每 LOOP_TICK 触发一次（当前
+                # 1s，由 min(IDLE_TIMEOUT, HEARTBEAT_INTERVAL) 决定）；不打日志
+                # 否则会变成稳定噪音。
                 pass
 
             if message is not None:
