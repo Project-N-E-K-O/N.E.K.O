@@ -3781,9 +3781,30 @@ async def proactive_chat(request: Request):
 
         # 把活动快照渲染成 prompt 段。snapshot 缺失时退化为空串——decision frame
         # 里的 A) 看「用户当前状态」分支会自动走到"其它状态：所有切入点都可用"。
+        #
+        # 重要：渲染前重拉一次 tracker enrichment 缓存（activity_scores /
+        # activity_guess / open_threads）。kickoff_open_threads_compute 是在
+        # Phase 1 起点 fire-and-forget 跑的，结果会在 Phase 1 进行中陆续落到
+        # 缓存里——早期捕获的 activity_snapshot 看不到这些更新。专门并行起来
+        # 就是为了本轮就用。决策性字段（state / propensity / propensity_reasons /
+        # unfinished_thread）仍取自早期 snapshot，避免 Phase 1 中途 state 变化
+        # 导致 gating 决策（restricted_screen_only 收紧 enabled_modes 等）和最终
+        # prompt 不一致。
         if activity_snapshot is not None:
+            from dataclasses import replace as _dc_replace
             from main_logic.activity import format_activity_state_section
-            state_section = format_activity_state_section(activity_snapshot, proactive_lang)
+            try:
+                fresh_enrich = await mgr._activity_tracker.get_snapshot()
+                display_snap = _dc_replace(
+                    activity_snapshot,
+                    activity_scores=fresh_enrich.activity_scores,
+                    activity_guess=fresh_enrich.activity_guess,
+                    open_threads=fresh_enrich.open_threads,
+                )
+            except Exception as _enrich_err:
+                logger.debug(f"[{lanlan_name}] fresh enrichment fetch failed: {_enrich_err}")
+                display_snap = activity_snapshot
+            state_section = format_activity_state_section(display_snap, proactive_lang)
         else:
             state_section = ''
 

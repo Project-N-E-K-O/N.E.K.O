@@ -1039,14 +1039,15 @@ class LLMSessionManager:
         """输入转录回调：同步转录文本到消息队列和缓存，并发送到前端显示"""
         # 更新用户活动时间戳（用于主动搭话检测）
         self.last_user_activity_time = time.time()
-        # 用户刚说完一段话：activity tracker 记一笔用户消息 + 语音 RMS 活跃。
-        # transcript 到达说明用户在 VAD 窗口内说过话——比起追加纯 RMS 数据流，
-        # 在这里打点已经足够把 voice_engaged 状态稳定撑起来。
-        # text 同时进 buffer 给 emotion-tier LLM 做 open_threads / activity_guess。
-        self._activity_tracker.on_user_message(text=transcript)
+        # transcript 到达 → VAD 在窗口内捕捉到声音，标记 voice RMS 活跃；
+        # 即使转录为空（VAD 误触发或转录失败）也算一次"用户在发声"，
+        # 维持 voice_engaged 状态。
         self._activity_tracker.on_voice_rms()
-        # 递增轮次计数器（仅计非空转录，避免噪声/静默误触发记忆整理）
+        # 仅非空转录才算"用户消息"：on_user_message 会清掉 unfinished_thread、
+        # bump _user_msg_seq（让 open_threads 缓存失效）、把文本进 buffer 给
+        # emotion-tier LLM 用——空 transcript 这些副作用都不该触发。
         if transcript.strip():
+            self._activity_tracker.on_user_message(text=transcript)
             self._session_turn_count += 1
 
         # 推送到同步消息队列
