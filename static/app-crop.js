@@ -5,7 +5,8 @@
  *       confirm (✓) saves to clipboard + returns dataUrl, cancel (×) clears selection,
  *       top-bar "取消" or right-click exits entirely.
  *
- * Supports: drag to create selection, move selection, resize via corner/edge handles.
+ * Supports: drag to create selection, move selection, resize via corner/edge handles,
+ *           keyboard nudging (arrows), Enter confirm, Delete clear.
  *
  * Exports: window.appCrop
  *   - cropImage(dataUrl, opts) → Promise<string|null>
@@ -24,9 +25,16 @@
     var resolvePromise = null;
     var sourceDataUrl = null;
     var recaptureFn = null;
+    var selectionBox = null;
+    var selectionBadge = null;
+    var crosshairX = null;
+    var crosshairY = null;
+    var pointerBadge = null;
     // 单调递增 token：防止旧 recaptureFn 异步返回时把结果灌进新一轮 crop 会话，
     // 或在 finally 里把新会话刚显示的"隐藏NEKO"按钮文案/disabled 状态错误重置。
     var recaptureRunId = 0;
+    var renderQueued = false;
+    var pointerPos = null;
 
     // Selection rectangle (canvas coords, always normalized: x,y = top-left)
     var sel = null; // { x, y, w, h } or null
@@ -80,18 +88,6 @@
         overlay.setAttribute('aria-modal', 'true');
         overlay.style.display = 'none';
 
-        // Background image
-        imgEl = document.createElement('img');
-        imgEl.className = 'crop-bg-image';
-        imgEl.draggable = false;
-        overlay.appendChild(imgEl);
-
-        // Canvas
-        canvas = document.createElement('canvas');
-        canvas.className = 'crop-canvas';
-        overlay.appendChild(canvas);
-        ctx = canvas.getContext('2d');
-
         // ---- Top bar ----
         topBar = document.createElement('div');
         topBar.className = 'crop-topbar';
@@ -118,6 +114,58 @@
         topBar.appendChild(tabHideNeko);
         topBar.appendChild(tabCancel);
         overlay.appendChild(topBar);
+
+        // ---- Workspace ----
+        var workspace = document.createElement('div');
+        workspace.className = 'crop-workspace';
+        overlay.appendChild(workspace);
+
+        // Background image
+        imgEl = document.createElement('img');
+        imgEl.className = 'crop-bg-image';
+        imgEl.draggable = false;
+        workspace.appendChild(imgEl);
+
+        // Canvas
+        canvas = document.createElement('canvas');
+        canvas.className = 'crop-canvas';
+        workspace.appendChild(canvas);
+        ctx = canvas.getContext('2d');
+
+        selectionBox = document.createElement('div');
+        selectionBox.className = 'crop-selection-box';
+        selectionBox.setAttribute('aria-hidden', 'true');
+        selectionBox.style.display = 'none';
+        for (var i = 0; i < 4; i++) {
+            var gridLine = document.createElement('div');
+            gridLine.className = 'crop-selection-grid-line ' + (i < 2 ? 'h' + (i + 1) : 'v' + (i - 1));
+            selectionBox.appendChild(gridLine);
+        }
+        var handleNames = ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'];
+        for (var j = 0; j < handleNames.length; j++) {
+            var handleEl = document.createElement('div');
+            handleEl.className = 'crop-selection-handle ' + handleNames[j];
+            selectionBox.appendChild(handleEl);
+        }
+        workspace.appendChild(selectionBox);
+
+        selectionBadge = document.createElement('div');
+        selectionBadge.className = 'crop-selection-badge';
+        selectionBadge.style.display = 'none';
+        workspace.appendChild(selectionBadge);
+
+        crosshairX = document.createElement('div');
+        crosshairX.className = 'crop-crosshair crop-crosshair-x';
+        workspace.appendChild(crosshairX);
+
+        crosshairY = document.createElement('div');
+        crosshairY.className = 'crop-crosshair crop-crosshair-y';
+        workspace.appendChild(crosshairY);
+
+        pointerBadge = document.createElement('div');
+        pointerBadge.className = 'crop-pointer-badge';
+        pointerBadge.style.display = 'none';
+        workspace.appendChild(pointerBadge);
 
         // ---- Floating action buttons (✓ / ×) ----
         actionBtns = document.createElement('div');
@@ -146,6 +194,8 @@
         canvas.addEventListener('mousedown', onPointerDown);
         document.addEventListener('mousemove', onPointerMove);
         document.addEventListener('mouseup', onPointerUp);
+        canvas.addEventListener('mouseleave', onPointerLeave);
+        canvas.addEventListener('dblclick', onDoubleClick);
         canvas.addEventListener('touchstart', onTouchStart, { passive: false });
         document.addEventListener('touchmove', onTouchMove, { passive: false });
         document.addEventListener('touchend', onTouchEnd);
@@ -157,7 +207,38 @@
         });
 
         overlay.addEventListener('keydown', function (e) {
-            if (e.key === 'Escape') cancelAll();
+            if (e.key === 'Escape') {
+                e.preventDefault();
+                cancelAll();
+                return;
+            }
+            if ((e.key === 'Delete' || e.key === 'Backspace') && sel) {
+                e.preventDefault();
+                clearSelection();
+                return;
+            }
+            if ((e.key === 'Enter' || e.key === 'NumpadEnter') && sel) {
+                e.preventDefault();
+                confirmCrop();
+                return;
+            }
+            if (!sel) return;
+            var step = e.shiftKey ? 10 : 1;
+            var handled = true;
+            if (e.key === 'ArrowLeft') {
+                moveSelectionBy(-step, 0);
+            } else if (e.key === 'ArrowRight') {
+                moveSelectionBy(step, 0);
+            } else if (e.key === 'ArrowUp') {
+                moveSelectionBy(0, -step);
+            } else if (e.key === 'ArrowDown') {
+                moveSelectionBy(0, step);
+            } else {
+                handled = false;
+            }
+            if (handled) {
+                e.preventDefault();
+            }
         });
 
         document.body.appendChild(overlay);
@@ -196,13 +277,9 @@
     }
 
     // ======================== Coordinate helpers ========================
-    function getTopBarHeight() {
-        return (topBar && topBar.offsetHeight) || 40;
-    }
-
     function computeImgMetrics() {
         var overlayW = overlay.clientWidth;
-        var overlayH = overlay.clientHeight - getTopBarHeight();
+        var overlayH = overlay.clientHeight;
         var natW = imgEl.naturalWidth;
         var natH = imgEl.naturalHeight;
         imgNaturalWidth = natW;
@@ -221,7 +298,7 @@
             imgEl.style.width = imgDisplayWidth + 'px';
             imgEl.style.height = imgDisplayHeight + 'px';
             imgEl.style.left = imgDisplayLeft + 'px';
-            imgEl.style.top = (imgDisplayTop + getTopBarHeight()) + 'px';
+            imgEl.style.top = imgDisplayTop + 'px';
         }
     }
 
@@ -234,6 +311,22 @@
     function getPointerPos(e) {
         var rect = canvas.getBoundingClientRect();
         return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    }
+
+    function clampPointToImage(x, y) {
+        var right = imgDisplayLeft + imgDisplayWidth;
+        var bottom = imgDisplayTop + imgDisplayHeight;
+        return {
+            x: Math.max(imgDisplayLeft, Math.min(right, x)),
+            y: Math.max(imgDisplayTop, Math.min(bottom, y))
+        };
+    }
+
+    function isPointWithinImage(x, y) {
+        return x >= imgDisplayLeft
+            && x <= imgDisplayLeft + imgDisplayWidth
+            && y >= imgDisplayTop
+            && y <= imgDisplayTop + imgDisplayHeight;
     }
 
     function clampSel(s) {
@@ -310,87 +403,97 @@
         // Border
         ctx.strokeStyle = '#44b7fe';
         ctx.lineWidth = 2;
-        ctx.setLineDash([6, 3]);
+        ctx.setLineDash([8, 4]);
         ctx.strokeRect(cs.x, cs.y, cs.w, cs.h);
         ctx.setLineDash([]);
+    }
 
-        // Corner + edge handles
-        drawHandles(cs);
+    // ======================== Action buttons position ========================
+    function updateSelectionUI() {
+        if (!selectionBox || !selectionBadge || !actionBtns) return;
+        if (!sel) {
+            selectionBox.style.display = 'none';
+            selectionBadge.style.display = 'none';
+            actionBtns.style.display = 'none';
+            return;
+        }
+        var cs = clampSel(sel);
+        if (!cs) {
+            selectionBox.style.display = 'none';
+            selectionBadge.style.display = 'none';
+            actionBtns.style.display = 'none';
+            return;
+        }
 
-        // Dimension label
+        selectionBox.style.display = 'block';
+        selectionBox.style.left = cs.x + 'px';
+        selectionBox.style.top = cs.y + 'px';
+        selectionBox.style.width = cs.w + 'px';
+        selectionBox.style.height = cs.h + 'px';
+
         var c1 = canvasToImage(cs.x, cs.y);
         var c2 = canvasToImage(cs.x + cs.w, cs.y + cs.h);
         var cropW = Math.round(Math.abs(c2.x - c1.x));
         var cropH = Math.round(Math.abs(c2.y - c1.y));
-        if (cropW > 0 && cropH > 0) {
-            var label = cropW + ' \u00D7 ' + cropH;
-            ctx.font = '12px sans-serif';
-            var m = ctx.measureText(label);
-            var lx = cs.x + cs.w / 2 - m.width / 2 - 4;
-            var ly = cs.y + cs.h + 20;
-            if (ly > h - 30) ly = cs.y - 10;
-
-            ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
-            var rw = m.width + 8, rh = 20, rx = lx, ry = ly - 14, rr = 4;
-            ctx.beginPath();
-            if (ctx.roundRect) {
-                ctx.roundRect(rx, ry, rw, rh, rr);
-            } else {
-                ctx.moveTo(rx + rr, ry);
-                ctx.lineTo(rx + rw - rr, ry);
-                ctx.arcTo(rx + rw, ry, rx + rw, ry + rr, rr);
-                ctx.lineTo(rx + rw, ry + rh - rr);
-                ctx.arcTo(rx + rw, ry + rh, rx + rw - rr, ry + rh, rr);
-                ctx.lineTo(rx + rr, ry + rh);
-                ctx.arcTo(rx, ry + rh, rx, ry + rh - rr, rr);
-                ctx.lineTo(rx, ry + rr);
-                ctx.arcTo(rx, ry, rx + rr, ry, rr);
-                ctx.closePath();
-            }
-            ctx.fill();
-            ctx.fillStyle = '#fff';
-            ctx.fillText(label, lx + 4, ly);
-        }
-    }
-
-    function drawHandles(s) {
-        var hs = HANDLE_SIZE;
-        ctx.fillStyle = '#44b7fe';
-        var pts = [
-            [s.x, s.y], [s.x + s.w, s.y],
-            [s.x, s.y + s.h], [s.x + s.w, s.y + s.h],
-            [s.x + s.w / 2, s.y], [s.x + s.w / 2, s.y + s.h],
-            [s.x, s.y + s.h / 2], [s.x + s.w, s.y + s.h / 2]
-        ];
-        for (var i = 0; i < pts.length; i++) {
-            ctx.fillRect(pts[i][0] - hs / 2, pts[i][1] - hs / 2, hs, hs);
-        }
-    }
-
-    // ======================== Action buttons position ========================
-    function positionActionBtns() {
-        if (!sel || !actionBtns) { actionBtns.style.display = 'none'; return; }
-        var cs = clampSel(sel);
-        if (!cs) { actionBtns.style.display = 'none'; return; }
+        selectionBadge.textContent = cropW + ' × ' + cropH;
+        selectionBadge.style.display = 'block';
+        selectionBadge.style.left = cs.x + 'px';
+        selectionBadge.style.top = Math.max(12, cs.y - 36) + 'px';
 
         actionBtns.style.display = 'flex';
-        var canvasRect = canvas.getBoundingClientRect();
-        var btnW = actionBtns.offsetWidth || 72;
-        var btnH = actionBtns.offsetHeight || 32;
-
-        var left = canvasRect.left + cs.x + cs.w - btnW;
-        var top = canvasRect.top + cs.y + cs.h + 6;
+        var btnW = actionBtns.offsetWidth || 92;
+        var btnH = actionBtns.offsetHeight || 40;
+        var left = cs.x + cs.w - btnW;
+        var top = cs.y + cs.h + 12;
 
         // If overflows bottom, put above selection
-        if (top + btnH > window.innerHeight - 10) {
-            top = canvasRect.top + cs.y - btnH - 6;
+        if (top + btnH > overlay.clientHeight - 12) {
+            top = cs.y - btnH - 12;
         }
         // Clamp to viewport
-        if (left < 4) left = 4;
-        if (left + btnW > window.innerWidth - 4) left = window.innerWidth - btnW - 4;
+        if (left < 12) left = 12;
+        if (left + btnW > overlay.clientWidth - 12) left = overlay.clientWidth - btnW - 12;
+        if (top < 12) top = 12;
 
         actionBtns.style.left = left + 'px';
         actionBtns.style.top = top + 'px';
+    }
+
+    function updatePointerUI() {
+        if (!crosshairX || !crosshairY || !pointerBadge) return;
+        if (!pointerPos || !isPointWithinImage(pointerPos.x, pointerPos.y)) {
+            crosshairX.style.display = 'none';
+            crosshairY.style.display = 'none';
+            pointerBadge.style.display = 'none';
+            return;
+        }
+
+        var showCrosshair = !sel || mode === MODE_NEW;
+        crosshairX.style.display = showCrosshair ? 'block' : 'none';
+        crosshairY.style.display = showCrosshair ? 'block' : 'none';
+        pointerBadge.style.display = showCrosshair ? 'block' : 'none';
+
+        if (!showCrosshair) {
+            return;
+        }
+
+        crosshairX.style.top = pointerPos.y + 'px';
+        crosshairY.style.left = pointerPos.x + 'px';
+        var imgPoint = canvasToImage(pointerPos.x, pointerPos.y);
+        pointerBadge.textContent = Math.max(0, Math.round(imgPoint.x)) + ', ' + Math.max(0, Math.round(imgPoint.y));
+        pointerBadge.style.left = Math.min(overlay.clientWidth - 88, pointerPos.x + 18) + 'px';
+        pointerBadge.style.top = Math.max(12, pointerPos.y - 34) + 'px';
+    }
+
+    function requestRender() {
+        if (renderQueued) return;
+        renderQueued = true;
+        requestAnimationFrame(function () {
+            renderQueued = false;
+            drawOverlay();
+            updateSelectionUI();
+            updatePointerUI();
+        });
     }
 
     // ======================== Pointer events ========================
@@ -398,6 +501,7 @@
         if (e.button === 2) return; // right-click handled by contextmenu
         e.preventDefault();
         var pos = getPointerPos(e);
+        pointerPos = pos;
 
         // 1. Check handle hit
         var handle = hitTestHandle(pos.x, pos.y);
@@ -420,19 +524,21 @@
         }
 
         // 3. New selection
+        var startPos = clampPointToImage(pos.x, pos.y);
         mode = MODE_NEW;
-        dragStartX = pos.x;
-        dragStartY = pos.y;
-        sel = { x: pos.x, y: pos.y, w: 0, h: 0 };
+        dragStartX = startPos.x;
+        dragStartY = startPos.y;
+        sel = { x: startPos.x, y: startPos.y, w: 0, h: 0 };
         hideActionBtns();
-        drawOverlay();
+        requestRender();
     }
 
     function onPointerMove(e) {
+        var pos = getPointerPos(e);
+        pointerPos = pos;
         if (mode === MODE_NONE) {
             // Update cursor based on hover
             if (!canvas || !overlay || overlay.style.display === 'none') return;
-            var pos = getPointerPos(e);
             var h = hitTestHandle(pos.x, pos.y);
             if (h) {
                 canvas.style.cursor = getCursorForHandle(h);
@@ -441,11 +547,11 @@
             } else {
                 canvas.style.cursor = 'crosshair';
             }
+            requestRender();
             return;
         }
 
         e.preventDefault();
-        var pos = getPointerPos(e);
         var dx = pos.x - dragStartX;
         var dy = pos.y - dragStartY;
 
@@ -467,16 +573,17 @@
             sel = resizeSel(dragOrigSel, resizeHandle, dx, dy);
         }
 
-        drawOverlay();
+        requestRender();
     }
 
     function onPointerUp(e) {
         if (mode === MODE_NONE) return;
         var prevMode = mode;
         mode = MODE_NONE;
+        var pos = getPointerPos(e);
+        pointerPos = pos;
 
         if (prevMode === MODE_NEW) {
-            var pos = getPointerPos(e);
             sel = normRect(dragStartX, dragStartY, pos.x, pos.y);
         }
 
@@ -487,9 +594,23 @@
             hideActionBtns();
         } else {
             sel = cs;
-            positionActionBtns();
         }
-        drawOverlay();
+        requestRender();
+    }
+
+    function onPointerLeave() {
+        if (mode !== MODE_NONE) return;
+        pointerPos = null;
+        updatePointerUI();
+    }
+
+    function onDoubleClick(e) {
+        if (!sel) return;
+        var pos = getPointerPos(e);
+        if (hitTestInside(pos.x, pos.y)) {
+            e.preventDefault();
+            confirmCrop();
+        }
     }
 
     // Touch adapters
@@ -530,6 +651,21 @@
         return { x: x, y: y, w: w, h: h };
     }
 
+    function moveSelectionBy(dx, dy) {
+        if (!sel) return;
+        sel = {
+            x: sel.x + dx,
+            y: sel.y + dy,
+            w: sel.w,
+            h: sel.h
+        };
+        if (sel.x < imgDisplayLeft) sel.x = imgDisplayLeft;
+        if (sel.y < imgDisplayTop) sel.y = imgDisplayTop;
+        if (sel.x + sel.w > imgDisplayLeft + imgDisplayWidth) sel.x = imgDisplayLeft + imgDisplayWidth - sel.w;
+        if (sel.y + sel.h > imgDisplayTop + imgDisplayHeight) sel.y = imgDisplayTop + imgDisplayHeight - sel.h;
+        requestRender();
+    }
+
     // ======================== Actions ========================
     function hideActionBtns() {
         if (actionBtns) actionBtns.style.display = 'none';
@@ -539,7 +675,7 @@
         sel = null;
         mode = MODE_NONE;
         hideActionBtns();
-        drawOverlay();
+        requestRender();
     }
 
     function cropToDataUrl() {
@@ -599,7 +735,13 @@
         sourceDataUrl = null;
         recaptureFn = null;
         activeTab = 'screenshot';
+        pointerPos = null;
         hideActionBtns();
+        if (selectionBox) selectionBox.style.display = 'none';
+        if (selectionBadge) selectionBadge.style.display = 'none';
+        if (pointerBadge) pointerBadge.style.display = 'none';
+        if (crosshairX) crosshairX.style.display = 'none';
+        if (crosshairY) crosshairY.style.display = 'none';
 
         if (resolvePromise) {
             var fn = resolvePromise;
@@ -615,12 +757,12 @@
         computeImgMetrics();
         sel = null;
         hideActionBtns();
-        drawOverlay();
+        requestRender();
     }
 
     function sizeCanvas() {
         canvas.width = overlay.clientWidth;
-        canvas.height = overlay.clientHeight - getTopBarHeight();
+        canvas.height = overlay.clientHeight;
     }
 
     // ======================== Image loading ========================
@@ -630,7 +772,7 @@
             computeImgMetrics();
             sel = null;
             hideActionBtns();
-            drawOverlay();
+            requestRender();
             overlay.focus();
         };
         imgEl.onerror = function () {

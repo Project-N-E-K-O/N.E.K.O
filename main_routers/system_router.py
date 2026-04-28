@@ -17,6 +17,9 @@ import difflib
 import math
 import re
 import secrets
+import shutil
+import subprocess
+import tempfile
 import time
 from collections import deque
 from io import BytesIO
@@ -30,6 +33,7 @@ from utils.llm_client import SystemMessage, HumanMessage, create_chat_llm
 from utils.tokenize import count_tokens
 import ssl
 import httpx
+from PIL import Image
 
 # Phase 2 proactive output ceiling. The model occasionally runs off; this
 # fence cuts the stream and aborts TTS once the running output exceeds the
@@ -129,6 +133,37 @@ def _set_no_store_headers(response: Response) -> None:
     response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     response.headers["Pragma"] = "no-cache"
     response.headers["Expires"] = "0"
+
+
+def _is_loopback_request(request: Request) -> bool:
+    client_host = request.client.host if request.client else ""
+    return client_host in ("127.0.0.1", "::1", "localhost")
+
+
+def _run_macos_interactive_screenshot(output_path: str) -> tuple[int, str]:
+    cmd = shutil.which("screencapture")
+    if not cmd:
+        raise FileNotFoundError("screencapture not found")
+    completed = subprocess.run(
+        [cmd, "-i", "-s", "-x", output_path],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return completed.returncode, (completed.stderr or "").strip()
+
+
+def _image_path_to_jpeg_data_url(image_path: str) -> tuple[str, int]:
+    with Image.open(image_path) as shot:
+        if shot.mode in ("RGBA", "LA", "P"):
+            shot = shot.convert("RGB")
+        jpg_bytes = compress_screenshot(
+            shot,
+            target_h=COMPRESS_TARGET_HEIGHT,
+            quality=COMPRESS_JPEG_QUALITY,
+        )
+    b64 = base64.b64encode(jpg_bytes).decode("utf-8")
+    return f"data:image/jpeg;base64,{b64}", len(jpg_bytes)
 
 
 def _derive_system_lifecycle_state(storage_bootstrap: dict[str, Any]) -> str:
@@ -2612,8 +2647,7 @@ async def backend_screenshot(request: Request):
     后端截图兜底：当前端所有屏幕捕获 API 都失败时，由后端用 pyautogui 截取本机屏幕。
     安全限制：仅允许来自 loopback 地址的请求。返回 JPEG base64 DataURL。
     """
-    client_host = request.client.host if request.client else ''
-    if client_host not in ('127.0.0.1', '::1', 'localhost'):
+    if not _is_loopback_request(request):
         return JSONResponse({"success": False, "error": "only available from localhost"}, status_code=403)
 
     try:
@@ -2652,6 +2686,60 @@ async def backend_screenshot(request: Request):
     except Exception as e:
         logger.error(f"后端截图失败: {e}")
         return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+
+
+@router.post('/screenshot/interactive')
+async def backend_interactive_screenshot(request: Request):
+    """
+    系统原生交互截图：优先给聊天截图按钮使用。
+    当前实现使用 macOS `screencapture` 的系统级框选能力，返回用户选区的 JPEG DataURL。
+    安全限制：仅允许来自 loopback 地址的请求。
+    """
+    if not _is_loopback_request(request):
+        return JSONResponse({"success": False, "error": "only available from localhost"}, status_code=403)
+
+    if sys.platform != "darwin":
+        return JSONResponse({"success": False, "error": "interactive screenshot is only supported on macOS"}, status_code=501)
+
+    fd, tmp_path = tempfile.mkstemp(prefix="neko-interactive-shot-", suffix=".png")
+    os.close(fd)
+    try:
+        try:
+            os.unlink(tmp_path)
+        except FileNotFoundError:
+            pass
+
+        returncode, stderr = await asyncio.to_thread(_run_macos_interactive_screenshot, tmp_path)
+        file_exists = os.path.exists(tmp_path)
+        file_size = os.path.getsize(tmp_path) if file_exists else 0
+
+        if returncode != 0 and file_size <= 0:
+            logger.info("系统原生交互截图已取消(returncode=%s, stderr=%s)", returncode, stderr)
+            return JSONResponse({"success": False, "canceled": True}, status_code=200)
+
+        if file_size <= 0:
+            logger.info("系统原生交互截图未生成文件，按取消处理")
+            return JSONResponse({"success": False, "canceled": True}, status_code=200)
+
+        data_url, jpg_size = await asyncio.to_thread(_image_path_to_jpeg_data_url, tmp_path)
+        return JSONResponse({
+            "success": True,
+            "data": data_url,
+            "size": jpg_size,
+            "interactive": True,
+        })
+    except FileNotFoundError as e:
+        logger.warning("系统原生交互截图不可用: %s", e)
+        return JSONResponse({"success": False, "error": str(e)}, status_code=501)
+    except Exception as e:
+        logger.error(f"系统原生交互截图失败: {e}")
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+    finally:
+        try:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except Exception:
+            logger.debug("清理交互截图临时文件失败: %s", tmp_path, exc_info=True)
 
 
 # ================================================================
