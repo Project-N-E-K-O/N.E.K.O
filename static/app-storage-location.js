@@ -2,6 +2,16 @@
     if (window.appStorageLocation) return;
 
     var STORAGE_APP_FOLDER_NAME = 'N.E.K.O';
+    var STORAGE_RESTART_MESSAGE_TYPE = 'storage_location_restart_initiated';
+    var STORAGE_RESTART_CHANNEL = 'neko_storage_location_channel';
+    var STORAGE_RESTART_PAGE_ID = window.__nekoStorageLocationPageId || (
+        'storage-location-' + Date.now() + '-' + Math.random().toString(36).slice(2)
+    );
+    window.__nekoStorageLocationPageId = STORAGE_RESTART_PAGE_ID;
+    var autoStart = !(
+        document.currentScript
+        && document.currentScript.getAttribute('data-storage-location-auto-start') === 'false'
+    );
 
     var STORAGE_I18N_EN = {
         badge: 'Storage Location',
@@ -470,6 +480,7 @@
         completionOpenTargetButton: null,
         completionOpenRetainedButton: null,
         completionCleanupButton: null,
+        externalMaintenanceNoticeKey: '',
         selectionView: null,
         errorView: null,
         banner: null,
@@ -1951,6 +1962,46 @@
         startMaintenancePolling();
     }
 
+    function enterExternalMaintenanceMode(payload) {
+        var normalizedPayload = payload && typeof payload === 'object' ? payload : {};
+        var migration = normalizedPayload.migration && typeof normalizedPayload.migration === 'object'
+            ? normalizedPayload.migration
+            : {};
+        var targetRoot = String(
+            normalizedPayload.target_root
+            || normalizedPayload.selected_root
+            || migration.target_root
+            || ''
+        ).trim();
+        var noticeKey = [
+            String(normalizedPayload.result || '').trim(),
+            String(normalizedPayload.restart_mode || '').trim(),
+            targetRoot
+        ].join('|');
+        if (noticeKey && noticeKey === state.externalMaintenanceNoticeKey && state.phase === 'maintenance') {
+            return;
+        }
+
+        buildModalDom();
+        clearCompletionNoticePolling();
+        state.externalMaintenanceNoticeKey = noticeKey;
+        state.maintenancePollPromise = null;
+        state.pendingSelection.path = targetRoot;
+        state.pendingSelection.source = String(normalizedPayload.selection_source || 'custom').trim();
+        state.pendingSelection.preflight = extractPreflightDetails(normalizedPayload, targetRoot);
+        enterMaintenanceMode(normalizedPayload);
+    }
+
+    function handleExternalStorageRestartMessage(message) {
+        if (!message || typeof message !== 'object' || message.type !== STORAGE_RESTART_MESSAGE_TYPE) {
+            return;
+        }
+        if (message.sender_id && message.sender_id === STORAGE_RESTART_PAGE_ID) {
+            return;
+        }
+        enterExternalMaintenanceMode(message.payload || {});
+    }
+
     function confirmExistingTargetContentForRestart(preflight) {
         return window.confirm(existingTargetConfirmationText());
     }
@@ -2741,12 +2792,32 @@
         refreshCompletionNotice: function () {
             return checkReadyStateCompletionNotice();
         },
+        enterExternalMaintenanceMode: enterExternalMaintenanceMode,
+        STORAGE_RESTART_MESSAGE_TYPE: STORAGE_RESTART_MESSAGE_TYPE,
+        STORAGE_RESTART_CHANNEL: STORAGE_RESTART_CHANNEL,
     };
 
-    window.waitForStorageLocationStartupBarrier = function waitForStorageLocationStartupBarrier() {
-        return init();
-    };
+    window.addEventListener('message', function (event) {
+        if (event.origin !== window.location.origin) return;
+        handleExternalStorageRestartMessage(event.data);
+    });
 
-    window.__nekoStorageLocationStartupBarrier = init();
-    scheduleEarlyInit();
+    try {
+        if (typeof BroadcastChannel !== 'undefined') {
+            var storageRestartChannel = new BroadcastChannel(STORAGE_RESTART_CHANNEL);
+            storageRestartChannel.onmessage = function (event) {
+                handleExternalStorageRestartMessage(event.data);
+            };
+        }
+    } catch (error) {
+        console.warn('[storage-location] restart channel setup failed', error);
+    }
+
+    if (autoStart) {
+        window.waitForStorageLocationStartupBarrier = function waitForStorageLocationStartupBarrier() {
+            return init();
+        };
+        window.__nekoStorageLocationStartupBarrier = init();
+        scheduleEarlyInit();
+    }
 })();

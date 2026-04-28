@@ -5,23 +5,7 @@
 
 window.AgentHUD = window.AgentHUD || {};
 
-var PLUGIN_DASHBOARD_FIRST_VISIT_STORAGE_KEY = 'neko_plugin_dashboard_first_visit_completed';
 var PLUGIN_DASHBOARD_REDIRECT_URL = '/api/agent/user_plugin/dashboard';
-var PLUGIN_DASHBOARD_FIRST_VISIT_URL = `${PLUGIN_DASHBOARD_REDIRECT_URL}?yui_guide=1`;
-
-function hasSeenPluginDashboardFirstVisit() {
-    try {
-        return window.localStorage.getItem(PLUGIN_DASHBOARD_FIRST_VISIT_STORAGE_KEY) === '1';
-    } catch (_) {
-        return false;
-    }
-}
-
-function markPluginDashboardFirstVisitSeen() {
-    try {
-        window.localStorage.setItem(PLUGIN_DASHBOARD_FIRST_VISIT_STORAGE_KEY, '1');
-    } catch (_) {}
-}
 
 function appendCacheBuster(url) {
     var separator = typeof url === 'string' && url.indexOf('?') >= 0 ? '&' : '?';
@@ -231,7 +215,6 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
                     labelFallback: '管理面板',
                     icon: '⚙',
                     url: PLUGIN_DASHBOARD_REDIRECT_URL,
-                    firstVisitUrl: PLUGIN_DASHBOARD_FIRST_VISIT_URL,
                     windowName: 'neko_plugin_dashboard',
                     forceReloadOnReuse: true
                 }
@@ -304,12 +287,11 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
                 const left = Math.max(0, Math.floor((screen.width - width) / 2));
                 const top = Math.max(0, Math.floor((screen.height - height) / 2));
                 const features = `width=${width},height=${height},left=${left},top=${top},menubar=no,toolbar=no,location=no,status=no,resizable=yes,scrollbars=yes`;
-                const rawUrl = actionConfig.actionId === 'management-panel' && !hasSeenPluginDashboardFirstVisit()
-                    ? (actionConfig.firstVisitUrl || actionConfig.url)
-                    : actionConfig.url;
+                const rawUrl = actionConfig.url;
+                const absoluteUrl = new URL(rawUrl, document.baseURI || window.location.href).toString();
                 const targetUrl = actionConfig.forceReloadOnReuse
-                    ? appendCacheBuster(rawUrl)
-                    : rawUrl;
+                    ? appendCacheBuster(absoluteUrl)
+                    : absoluteUrl;
                 const existingWindow = window._openedWindows && window._openedWindows[actionConfig.windowName];
                 let openedWindow = null;
                 if (actionConfig.forceReloadOnReuse && existingWindow && !existingWindow.closed) {
@@ -324,9 +306,6 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
                     openedWindow = window.openOrFocusWindow(targetUrl, actionConfig.windowName, features);
                 } else {
                     openedWindow = window.open(targetUrl, actionConfig.windowName, features);
-                }
-                if (actionConfig.actionId === 'management-panel' && openedWindow && !openedWindow.closed) {
-                    markPluginDashboardFirstVisitSeen();
                 }
                 setTimeout(() => { isOpening = false; }, 500);
             });

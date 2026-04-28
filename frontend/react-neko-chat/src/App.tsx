@@ -613,6 +613,7 @@ export default function App({
   const resolvedTranslateAriaLabel = translateButtonAriaLabel || translateButtonLabel;
   const emojiButtonAriaLabel = i18n('chat.emojiButtonAriaLabel', 'Emoji');
   const toolIconsAriaLabel = i18n('chat.toolIconsAriaLabel', 'Tool icons');
+  const clearCursorToolAriaLabel = i18n('chat.clearCursorToolAriaLabel', '恢复鼠标');
   const overflowMenuAriaLabel = i18n('chat.composerOverflowMenu', '更多工具');
   const effectiveCursorVariant = resolveEffectiveCursorVariant(
     activeCursorToolId,
@@ -632,7 +633,7 @@ export default function App({
     && supportsDesktopFinePointer()
     && !isElectronMultiWindow;
   const shouldRenderLocalDesktopCursorOverlay = shouldUseLocalDesktopCursorOverlay
-    && (!isElectronMultiWindow || isCursorInsideHostWindow);
+    && isCursorInsideHostWindow;
   const shouldRenderAvatarRangeOverlay = isCursorOverAvatarRange && !isCursorOverCompactCursorZone;
   const avatarCursorOverlayActive = !!activeToolItem
     && activeCursorToolId !== 'hammer'
@@ -1208,7 +1209,7 @@ export default function App({
       return;
     }
 
-    if (isElectronMultiWindow && !isCursorInsideHostWindow) {
+    if ((shouldUseLocalDesktopCursorOverlay || isElectronMultiWindow) && !isCursorInsideHostWindow) {
       root.classList.remove('neko-tool-cursor-active');
       root.style.removeProperty('--neko-chat-tool-cursor');
       return;
@@ -1330,6 +1331,21 @@ export default function App({
           aria-hidden="true"
         />
       </button>
+      {activeToolItem ? (
+        <button
+          className="composer-tool-clear-btn"
+          type="button"
+          aria-label={clearCursorToolAriaLabel}
+          title={clearCursorToolAriaLabel}
+          onClick={(event) => {
+            event.stopPropagation();
+            setActiveCursorToolId(null);
+            setToolMenuOpen(false);
+          }}
+        >
+          <span aria-hidden="true">×</span>
+        </button>
+      ) : null}
       {toolMenuOpen ? (
         <div
           id="composer-tool-popover"

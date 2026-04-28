@@ -36,6 +36,7 @@ except ImportError:  # pragma: no cover
 from plugin._types.events import EventHandler, EventMeta, EVENT_META_ATTR
 from plugin._types.version import SDK_VERSION
 from plugin.server.infrastructure.config_resolver import resolve_plugin_config_from_path
+from plugin.server.infrastructure.runtime_overrides import get_runtime_override
 from plugin.core.state import state
 from plugin._types.models import PluginMeta, PluginAuthor, PluginDependency
 from plugin.core.ui_manifest import normalize_plugin_ui_manifest
@@ -1047,7 +1048,20 @@ def _parse_single_plugin_config(
     if isinstance(runtime_cfg, dict):
         enabled_val = parse_bool_config(runtime_cfg.get("enabled"), default=True)
         auto_start_val = parse_bool_config(runtime_cfg.get("auto_start"), default=True)
-    
+
+    # 应用用户级运行时开关覆盖（来自 plugin_runtime_overrides.json，
+    # 由 plugin manager UI 的 disable/enable 按钮写入；与 manifest 默认值的
+    # 关系是 manifest -> profile overlay -> user override，user override 最后生效）
+    override = get_runtime_override(str(pid))
+    if override is not None and override != enabled_val:
+        logger.info(
+            "Plugin {} runtime_enabled overridden by user preference: {} -> {}",
+            pid,
+            enabled_val,
+            override,
+        )
+        enabled_val = override
+
     if not enabled_val:
         logger.info(
             "Plugin {} is disabled by plugin_runtime.enabled=false; will register for visibility only (no runtime load)",
@@ -1234,12 +1248,13 @@ def _build_extension_map(
         if not host_pid:
             continue
         
-        # 检查是否启用
-        runtime_cfg = ctx.conf.get("plugin_runtime")
-        if isinstance(runtime_cfg, dict):
-            if not parse_bool_config(runtime_cfg.get("enabled"), default=True):
-                continue
-        
+        # 用 ctx.enabled 而不是直接重读 conf —— 前者已包含 manifest 默认值
+        # 之上叠加的 user override（plugin_runtime_overrides.json），重读 conf
+        # 会绕过 override，导致初始 host 注入清单和 state.plugins.runtime_enabled
+        # 不一致。
+        if not ctx.enabled:
+            continue
+
         extension_map.setdefault(host_pid, []).append({
             "ext_id": ctx.pid,
             "ext_entry": ctx.entry,

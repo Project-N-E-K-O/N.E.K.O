@@ -11,19 +11,19 @@ Handles agent-related endpoints including:
 
 import time
 from pathlib import Path
+from urllib.parse import urlencode
 
 from utils.logger_config import get_module_logger
 from fastapi import APIRouter, Body, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 import httpx
 from .shared_state import get_session_manager, get_config_manager, get_templates
-from config import TOOL_SERVER_PORT, USER_PLUGIN_SERVER_PORT
+from config import TOOL_SERVER_PORT, USER_PLUGIN_BASE
 from main_logic.agent_event_bus import publish_session_event
 
 router = APIRouter(prefix="/api/agent", tags=["agent"])
 logger = get_module_logger(__name__, "Main")
 TOOL_SERVER_BASE = f"http://127.0.0.1:{TOOL_SERVER_PORT}"
-USER_PLUGIN_BASE = f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}"
 _HTTP_CLIENT: httpx.AsyncClient | None = None
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 _OPENCLAW_GUIDE_PATH = _PROJECT_ROOT / "docs" / "zh-CN" / "guide" / "openclaw_guide.md"
@@ -303,11 +303,12 @@ async def proxy_mcp_availability():
 
 @router.get('/user_plugin/dashboard')
 async def redirect_plugin_dashboard(request: Request):
-    target = f"{USER_PLUGIN_BASE}/ui"
-    qs = str(request.url.query) if request.url.query else ''
-    if qs:
-        target = f"{target}?{qs}"
-    return RedirectResponse(target)
+    target_url = f"{USER_PLUGIN_BASE}/ui"
+    if "v" in request.query_params:
+        v = request.query_params["v"].strip()
+        if v:
+            target_url = f"{target_url}?{urlencode({'v': v})}"
+    return RedirectResponse(target_url)
 
 
 @router.get('/openclaw/guide', response_class=HTMLResponse)

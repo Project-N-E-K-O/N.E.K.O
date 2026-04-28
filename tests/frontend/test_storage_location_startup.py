@@ -538,7 +538,6 @@ def test_storage_location_restart_confirmation_enters_maintenance_page_and_recov
     expect(maintenance_progress).to_be_visible(timeout=10_000)
     assert int(maintenance_progress.get_attribute("aria-valuenow") or "0") >= 10
     assert _page_config_state(page) == "pending"
-
     expect(page.locator("#storage-location-overlay")).to_be_hidden(timeout=15_000)
     page.wait_for_function(
         """
@@ -551,6 +550,102 @@ def test_storage_location_restart_confirmation_enters_maintenance_page_and_recov
         }
         """,
         timeout=15_000,
+    )
+
+
+@pytest.mark.frontend
+def test_storage_location_external_restart_notice_reuses_maintenance_overlay(
+    mock_page: Page,
+    running_server: str,
+    tmp_path,
+):
+    page = mock_page
+    target_root = str((tmp_path / "memory-page-target" / "N.E.K.O").resolve())
+
+    page.route(
+        "**/api/system/status",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(
+                {
+                    "ok": True,
+                    "status": "ready",
+                    "ready": True,
+                    "storage": {
+                        "selection_required": False,
+                        "migration_pending": False,
+                        "recovery_required": False,
+                        "blocking_reason": "",
+                        "last_error_summary": "",
+                        "stage": "external_restart_notice",
+                    },
+                },
+                ensure_ascii=False,
+            ),
+        ),
+    )
+    page.route(
+        "**/api/storage/location/status",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(
+                {
+                    "ok": True,
+                    "ready": False,
+                    "status": "maintenance",
+                    "lifecycle_state": "maintenance",
+                    "migration_stage": "pending",
+                    "maintenance_message": "当前实例即将关闭，数据会在关闭后迁移并自动重启。",
+                    "poll_interval_ms": 500,
+                    "effective_root": "/tmp/runtime/N.E.K.O",
+                    "last_error_summary": "",
+                    "blocking_reason": "migration_pending",
+                    "storage": {
+                        "selection_required": False,
+                        "migration_pending": True,
+                        "recovery_required": False,
+                        "stage": "external_restart_notice",
+                    },
+                    "migration": {
+                        "status": "pending",
+                        "target_root": target_root,
+                    },
+                },
+                ensure_ascii=False,
+            ),
+        ),
+    )
+
+    page.goto(f"{running_server}/", wait_until="domcontentloaded")
+    expect(page.locator("#storage-location-overlay")).to_be_hidden(timeout=10_000)
+
+    page.evaluate(
+        """(targetRoot) => {
+            window.postMessage({
+                type: 'storage_location_restart_initiated',
+                payload: {
+                    ok: true,
+                    result: 'restart_initiated',
+                    restart_mode: 'migrate_after_shutdown',
+                    selected_root: targetRoot,
+                    target_root: targetRoot,
+                    migration: {
+                        status: 'pending',
+                        target_root: targetRoot
+                    }
+                }
+            }, window.location.origin);
+        }""",
+        target_root,
+    )
+
+    expect(page.get_by_role("heading", name="正在优化存储布局...")).to_be_visible(timeout=10_000)
+    expect(page.locator('[role="progressbar"]')).to_be_visible(timeout=10_000)
+    page.wait_for_function(
+        "() => document.body.classList.contains('storage-location-modal-open')",
+        timeout=10_000,
     )
 
 
