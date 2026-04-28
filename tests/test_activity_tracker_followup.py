@@ -630,6 +630,12 @@ def test_own_app_freezes_dwell_timer_on_previous_window():
         f'dwell freeze must subtract own_app time; got {dwell:.1f}s '
         f'(would be ~132 without the freeze)'
     )
+    # Same assertion expressed at the state-machine API level: the brief
+    # own_app detour must NOT cause focused_work to fire on return.
+    assert snap_post.state != 'focused_work', (
+        f'dwell freeze should keep state below focused_work threshold '
+        f'after a 45s own_app detour; got {snap_post.state}'
+    )
 
 
 # ── canonical fallback in loader (CR Minor) ───────────────────────────
