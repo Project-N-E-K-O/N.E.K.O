@@ -119,6 +119,28 @@ function setRef(ref, value) {
     reportHostedRuntimeError('ref', error);
   }
 }
+function ensureCompositionGuard(dom) {
+  if (!dom || dom.__nekoCompositionGuarded) return;
+  const tagName = String(dom.tagName || '').toLowerCase();
+  if (tagName !== 'input' && tagName !== 'textarea') return;
+  dom.__nekoCompositionGuarded = true;
+  dom.addEventListener('compositionstart', () => { dom.__nekoComposing = true; });
+  dom.addEventListener('compositionend', () => { dom.__nekoComposing = false; });
+}
+function isComposingControl(node) {
+  return !!(node && node.__nekoComposing);
+}
+function isSafeUrl(value) {
+  const text = String(value || '').trim();
+  if (!text) return true;
+  if (text.startsWith('#') || text.startsWith('/') || text.startsWith('./') || text.startsWith('../')) return true;
+  try {
+    const url = new URL(text, window.location.href);
+    return ['http:', 'https:', 'mailto:'].includes(url.protocol);
+  } catch (_) {
+    return false;
+  }
+}
 function safeInsert(parentDom, node, anchor) {
   const safeAnchor = anchor && anchor.parentNode === parentDom ? anchor : null;
   parentDom.insertBefore(node, safeAnchor);
@@ -182,6 +204,7 @@ function mount(parentDom, vnode, anchor) {
   if (typeof vnode.type === 'function') return mountComponent(parentDom, vnode, anchor);
   const dom = document.createElement(vnode.type);
   vnode.dom = dom;
+  ensureCompositionGuard(dom);
   patchProps(dom, {}, vnode.props || {});
   vnode.children.forEach((child) => mount(dom, child, null));
   safeInsert(parentDom, dom, anchor || null);
@@ -230,6 +253,7 @@ function reconcile(parentDom, oldVNode, newVNode, anchor) {
   }
   if (typeof newVNode.type === 'function') return patchComponent(parentDom, oldVNode, newVNode, anchor);
   const dom = newVNode.dom = oldVNode.dom;
+  ensureCompositionGuard(dom);
   patchProps(dom, oldVNode.props || {}, newVNode.props || {});
   patchChildren(dom, oldVNode.children || [], newVNode.children || [], null);
   setRef(oldVNode.ref, null);
@@ -237,10 +261,13 @@ function reconcile(parentDom, oldVNode, newVNode, anchor) {
   return newVNode;
 }
 function mountComponent(parentDom, vnode, anchor) {
-  const instance = { vnode, child: null, hooks: [], hookIndex: 0, parentDom, anchor };
+  const instance = { vnode, child: null, hooks: [], hookIndex: 0, parentDom, anchor, parentInstance: currentInstance, boundary: null };
   vnode.instance = instance;
   const child = renderComponent(instance);
+  const previous = currentInstance;
+  currentInstance = instance;
   instance.child = mount(parentDom, child, anchor);
+  currentInstance = previous;
   vnode.dom = getDom(instance.child);
   vnode.endDom = instance.child && instance.child.endDom;
   return vnode;
@@ -252,7 +279,10 @@ function patchComponent(parentDom, oldVNode, newVNode, anchor) {
   instance.parentDom = parentDom;
   instance.anchor = anchor;
   const child = renderComponent(instance);
+  const previous = currentInstance;
+  currentInstance = instance;
   instance.child = reconcile(parentDom, instance.child, child, anchor);
+  currentInstance = previous;
   newVNode.dom = getDom(instance.child);
   newVNode.endDom = instance.child && instance.child.endDom;
   return newVNode;
@@ -265,11 +295,24 @@ function renderComponent(instance) {
     const props = { ...(instance.vnode.props || {}) };
     return normalizeComponentResult(instance.vnode.type(props));
   } catch (error) {
+    const boundary = findErrorBoundary(instance);
+    if (boundary && typeof boundary.onError === 'function') {
+      boundary.onError(error);
+      return h(Fragment, null);
+    }
     reportHostedRuntimeError('component.render', error, { component: instance.vnode.type.name || 'Anonymous' });
     return createInlineError(`Component ${instance.vnode.type.name || 'Anonymous'} render failed`, error);
   } finally {
     currentInstance = previous;
   }
+}
+function findErrorBoundary(instance) {
+  let cursor = instance;
+  while (cursor) {
+    if (cursor.boundary) return cursor.boundary;
+    cursor = cursor.parentInstance;
+  }
+  return null;
 }
 function normalizeComponentResult(value) {
   if (value && value.__vnode === true) return value;
@@ -331,7 +374,15 @@ function setProp(dom, name, oldValue, newValue) {
     if (newValue) dom.addEventListener(eventName, newValue);
     return;
   }
+  if (name === 'dangerouslySetInnerHTML' || name === 'innerHTML' || name === 'srcdoc') {
+    return;
+  }
+  if ((name === 'href' || name === 'src') && !isSafeUrl(newValue)) {
+    dom.removeAttribute(name);
+    return;
+  }
   if (name === 'value' && 'value' in dom) {
+    if (isComposingControl(dom)) return;
     const value = newValue == null ? '' : String(newValue);
     if (dom.value !== value) dom.value = value;
     return;
@@ -558,6 +609,14 @@ function useConfirm() {
     });
   }, []);
 }
+function ErrorBoundary(props) {
+  const [error, setError] = useState(null);
+  if (error) {
+    if (typeof props.fallback === 'function') return props.fallback(error, () => setError(null));
+    return props.fallback || InlineError({ title: props.title || 'Render error', error });
+  }
+  return h(BoundarySlot, { onError: setError }, props.children);
+}
 
 function Page(props) {
   return h('div', { className: 'neko-page' },
@@ -623,11 +682,23 @@ function Divider() { return h('div', { className: 'neko-divider' }); }
 function Toolbar(props) { return h('div', { className: 'neko-toolbar ' + (props.className || '') }, props.children); }
 function ToolbarGroup(props) { return h('div', { className: 'neko-toolbar-group ' + (props.className || '') }, props.children); }
 function Alert(props) { return h('div', { className: 'neko-alert ' + (props.className || ''), 'data-tone': props.tone || 'primary' }, props.children || props.message); }
+function BoundarySlot(props) {
+  if (currentInstance) currentInstance.boundary = { onError: props.onError };
+  return props.children;
+}
 function InlineError(props) { return createInlineError(props.title || '错误', props.error || props.message || props.children, props.details); }
 function EmptyState(props) { return h('div', { className: 'neko-empty ' + (props.className || '') }, props.title ? h('div', { className: 'neko-empty-title' }, props.title) : null, props.description ? h('div', null, props.description) : props.children); }
 function Modal(props) {
   if (!props.open) return null;
   const closeOnBackdrop = props.closeOnBackdrop !== false;
+  useEffect(() => {
+    if (!props.open || typeof props.onClose !== 'function') return undefined;
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape') props.onClose();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [props.open, props.onClose]);
   return h('div', {
     className: 'neko-modal-backdrop ' + (props.className || ''),
     role: 'presentation',
@@ -682,8 +753,8 @@ function Field(props) {
     error ? h('p', { className: 'neko-field-error', role: 'alert' }, error) : null
   );
 }
-function Input(props) { return h('input', { className: 'neko-input ' + (props.className || ''), value: props.value || '', placeholder: props.placeholder || '', 'aria-invalid': props.invalid || props.error ? 'true' : undefined, 'data-invalid': props.invalid || props.error ? 'true' : undefined, onInput: (event) => props.onChange && props.onChange(event.target.value) }); }
-function Textarea(props) { return h('textarea', { className: 'neko-textarea ' + (props.className || ''), value: props.value || '', placeholder: props.placeholder || '', 'aria-invalid': props.invalid || props.error ? 'true' : undefined, 'data-invalid': props.invalid || props.error ? 'true' : undefined, onInput: (event) => props.onChange && props.onChange(event.target.value) }); }
+function Input(props) { return h('input', { className: 'neko-input ' + (props.className || ''), value: props.value || '', placeholder: props.placeholder || '', 'aria-invalid': props.invalid || props.error ? 'true' : undefined, 'data-invalid': props.invalid || props.error ? 'true' : undefined, onCompositionStart: (event) => { event.target.__nekoComposing = true; }, onCompositionEnd: (event) => { event.target.__nekoComposing = false; if (props.onChange) props.onChange(event.target.value); }, onInput: (event) => props.onChange && props.onChange(event.target.value) }); }
+function Textarea(props) { return h('textarea', { className: 'neko-textarea ' + (props.className || ''), value: props.value || '', placeholder: props.placeholder || '', 'aria-invalid': props.invalid || props.error ? 'true' : undefined, 'data-invalid': props.invalid || props.error ? 'true' : undefined, onCompositionStart: (event) => { event.target.__nekoComposing = true; }, onCompositionEnd: (event) => { event.target.__nekoComposing = false; if (props.onChange) props.onChange(event.target.value); }, onInput: (event) => props.onChange && props.onChange(event.target.value) }); }
 function Select(props) {
   const options = props.options || [];
   return h('select', { className: 'neko-select ' + (props.className || ''), value: props.value || '', 'aria-invalid': props.invalid || props.error ? 'true' : undefined, 'data-invalid': props.invalid || props.error ? 'true' : undefined, onChange: (event) => props.onChange && props.onChange(event.target.value) },
@@ -1006,7 +1077,7 @@ function AsyncBlock(props) {
 Object.assign(NekoUiKit, {
   appendChild, render, h, Fragment, Page, Card, Section, Heading, Stack, Grid, Text, Button, ButtonGroup,
   StatusBadge, StatCard, KeyValue, DataTable, Divider, Toolbar, ToolbarGroup,
-  Alert, InlineError, EmptyState, Modal, ConfirmDialog, List, Progress, JsonView, Field, Input, Select, Textarea,
+  Alert, InlineError, ErrorBoundary, EmptyState, Modal, ConfirmDialog, List, Progress, JsonView, Field, Input, Select, Textarea,
   Switch, Form, ActionForm, AsyncBlock, CodeBlock, Tip, Warning, Steps, Step, Tabs, useI18n,
   t, api, useState, useReducer, useEffect, useLayoutEffect, useMemo, useCallback, useRef, useLocalState,
   useDebounce, useDebouncedState, useForm, useAsync, showToast, useToast, useConfirm, ActionButton, RefreshButton,

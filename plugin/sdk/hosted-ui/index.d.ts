@@ -109,6 +109,7 @@ export function Toolbar(props: CommonProps): any
 export function ToolbarGroup(props: CommonProps): any
 export function Alert(props: CommonProps & { tone?: Tone; message?: any }): any
 export function InlineError(props: CommonProps & { title?: any; message?: any; error?: any; details?: any }): any
+export function ErrorBoundary(props: CommonProps & { fallback?: any | ((error: Error, reset: () => void) => any); title?: any }): any
 export function EmptyState(props: CommonProps & { title?: any; description?: any }): any
 export function Modal(props: CommonProps & { open?: boolean; title?: any; footer?: any; closeOnBackdrop?: boolean; onClose?: () => void }): any
 export function ConfirmDialog(props: CommonProps & { open?: boolean; title?: any; message?: any; tone?: Tone; confirmLabel?: any; cancelLabel?: any; closeOnBackdrop?: boolean; onConfirm?: () => void; onCancel?: () => void }): any

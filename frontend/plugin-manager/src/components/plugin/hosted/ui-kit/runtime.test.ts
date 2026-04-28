@@ -548,4 +548,71 @@ describe('hosted ui runtime', () => {
     expect(root.querySelector('#search')?.textContent).toBe('abc')
     vi.useRealTimers()
   })
+
+  it('keeps value patch away during IME composition', async () => {
+    let force!: (value: string) => string
+
+    function App() {
+      const [value, setValue] = ui.useState('初')
+      force = setValue
+      return ui.h('input', { id: 'ime', value, onChange: setValue })
+    }
+
+    ui.render(ui.h(App, null), root)
+    const input = root.querySelector<HTMLInputElement>('#ime')!
+    input.focus()
+    fireEvent.compositionStart(input)
+    input.value = '初稿'
+    force('other')
+    await flushMicrotasks()
+
+    expect(input.value).toBe('初稿')
+    fireEvent.compositionEnd(input)
+    await flushMicrotasks()
+    expect(input.value).toBe('初稿')
+  })
+
+  it('blocks dangerous html and javascript URLs', () => {
+    ui.render(ui.h('a', {
+      id: 'link',
+      href: 'javascript:alert(1)',
+      dangerouslySetInnerHTML: { __html: '<strong>bad</strong>' },
+    }, 'safe'), root)
+
+    const link = root.querySelector<HTMLAnchorElement>('#link')!
+    expect(link.getAttribute('href')).toBeNull()
+    expect(link.innerHTML).toBe('safe')
+  })
+
+  it('catches child render errors with ErrorBoundary', async () => {
+    function Broken() {
+      throw new Error('broken')
+    }
+
+    function App() {
+      return ui.h(ui.ErrorBoundary, {
+        fallback: (error: Error) => ui.h('span', { id: 'fallback' }, error.message),
+      }, ui.h(Broken, null))
+    }
+
+    ui.render(ui.h(App, null), root)
+    await flushMicrotasks()
+    expect(root.querySelector('#fallback')?.textContent).toBe('broken')
+  })
+
+  it('closes modal with Escape', async () => {
+    let setOpen!: (value: boolean) => boolean
+
+    function App() {
+      const [open, updateOpen] = ui.useState(true)
+      setOpen = updateOpen
+      return ui.h(ui.Modal, { open, title: 'Dialog', onClose: () => setOpen(false) }, 'content')
+    }
+
+    ui.render(ui.h(App, null), root)
+    expect(document.querySelector('.neko-modal')).not.toBeNull()
+    fireEvent.keyDown(window, { key: 'Escape' })
+    await flushMicrotasks()
+    expect(document.querySelector('.neko-modal')).toBeNull()
+  })
 })
