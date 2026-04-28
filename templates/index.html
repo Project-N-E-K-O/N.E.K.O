@@ -377,6 +377,187 @@
     <!-- 通用教程管理器（支持所有页面） -->
     <script src="/static/universal-tutorial-manager.js"></script>
     <!-- 注意：初始化由 app.js 统一处理，避免重复初始化 -->
+
+    <!-- 角色甄选 Overlay 容器（visibility:hidden 防止 CSS 加载前 FOUC，由入口脚本在 CSS 就绪后移除） -->
+    <div id="character-selection-overlay" class="character-overlay" style="visibility: hidden;">
+        <button id="skip-btn" class="skip-button" data-i18n="memory.characterSelection.skip">跳过</button>
+
+        <div id="stage-2" class="character-stage active">
+            <div class="cards-container">
+                <h2 class="cards-title" data-i18n="memory.characterSelection.chooseTitle">你眼中的我是什么样的呢~</h2>
+
+                <div class="cards-grid">
+                    <div class="character-card" data-id="intellectual_healer" role="button" tabindex="0" aria-pressed="false">
+                        <div class="card-icon">(=^w^=)</div>
+                        <h3 class="card-name" data-i18n="memory.characterSelection.intellectual_healer.name">经典元气猫娘</h3>
+                        <p class="card-desc" data-i18n="memory.characterSelection.intellectual_healer.desc">元气满满，永远把你放在第一位</p>
+                    </div>
+
+                    <div class="character-card" data-id="tsundere_neko" role="button" tabindex="0" aria-pressed="false">
+                        <div class="card-icon">ε٩(๑&gt; ₃ &lt;)۶з</div>
+                        <h3 class="card-name" data-i18n="memory.characterSelection.tsundere_neko.name">傲娇毒舌小猫</h3>
+                        <p class="card-desc" data-i18n="memory.characterSelection.tsundere_neko.desc">嘴硬心软，吐槽里藏着偏爱</p>
+                    </div>
+
+                    <div class="character-card" data-id="efficiency_expert" role="button" tabindex="0" aria-pressed="false">
+                        <div class="card-icon">(=^-ω-^=)</div>
+                        <h3 class="card-name" data-i18n="memory.characterSelection.efficiency_expert.name">优雅全能管家</h3>
+                        <p class="card-desc" data-i18n="memory.characterSelection.efficiency_expert.desc">稳妥周全，永远先你一步安排好</p>
+                    </div>
+                </div>
+
+                <p class="cards-hint" data-i18n="memory.characterSelection.chooseHint">改变主意了也没关系，设置里随时可以「回溯」~</p>
+            </div>
+        </div>
+
+        <div id="stage-3" class="character-stage">
+            <div class="greeting-modal">
+                <div class="modal-content">
+                    <div class="character-avatar" id="greeting-avatar">😺</div>
+                    <h2 class="greeting-title" id="greeting-title" data-i18n="memory.characterSelection.connectingTitle">时空穿越中——</h2>
+                    <p class="greeting-text" id="greeting-text"></p>
+                    <button id="confirm-greeting-btn" class="confirm-btn" style="display: none;" data-i18n="memory.characterSelection.confirmGreeting">
+                        确认
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        (function() {
+            const CHARACTER_SELECTION_COMPLETED_KEY = 'neko_character_selection_completed';
+            const HOME_TUTORIAL_KEYS = ['home_yui_v1', 'home'];
+            const completed = localStorage.getItem(CHARACTER_SELECTION_COMPLETED_KEY);
+            const overlay = document.getElementById('character-selection-overlay');
+            let launchStarted = false;
+            let tutorialCompleteHandler = null;
+
+            function removeOverlay() {
+                if (!overlay) return;
+                overlay.style.display = 'none';
+                overlay.remove();
+            }
+
+            function handleCharacterSelectionError(err) {
+                console.error('[CharacterSelection] Initialization error:', err);
+                removeOverlay();
+                document.dispatchEvent(new Event('characterSelectionLoadFailed'));
+            }
+
+            function hasCompletedHomeTutorial() {
+                return HOME_TUTORIAL_KEYS.some(function(pageKey) {
+                    const storageKey = typeof window.getTutorialStorageKeyForPage === 'function'
+                        ? window.getTutorialStorageKeyForPage(pageKey)
+                        : ('neko_tutorial_' + pageKey);
+                    return localStorage.getItem(storageKey) === 'true';
+                });
+            }
+
+            async function waitForStorageBarrier() {
+                if (typeof window.waitForStorageLocationStartupBarrier === 'function') {
+                    try {
+                        await window.waitForStorageLocationStartupBarrier();
+                    } catch (error) {
+                        console.warn('[CharacterSelection] waitForStorageLocationStartupBarrier failed:', error);
+                    }
+                    return;
+                }
+
+                if (window.__nekoStorageLocationStartupBarrier
+                    && typeof window.__nekoStorageLocationStartupBarrier.then === 'function') {
+                    try {
+                        await window.__nekoStorageLocationStartupBarrier;
+                    } catch (error) {
+                        console.warn('[CharacterSelection] __nekoStorageLocationStartupBarrier failed:', error);
+                    }
+                }
+            }
+
+            function launchCharacterSelection() {
+                if (launchStarted) return;
+                launchStarted = true;
+
+                if (tutorialCompleteHandler) {
+                    window.removeEventListener('neko:tutorial-completed', tutorialCompleteHandler);
+                    tutorialCompleteHandler = null;
+                }
+
+                if (!overlay) {
+                    return;
+                }
+
+                overlay.style.display = '';
+
+                const link = document.createElement('link');
+                link.rel = 'stylesheet';
+                link.href = '/static/css/character-selection.css';
+                link.onload = function() {
+                    if (overlay) overlay.style.visibility = '';
+                };
+                link.onerror = function() {
+                    if (overlay) overlay.style.visibility = '';
+                };
+                document.head.appendChild(link);
+
+                const script = document.createElement('script');
+                script.src = '/static/js/character-selection.js';
+                script.onload = function() {
+                    function startSelection() {
+                        try {
+                            const characterSelection = new window.CharacterSelection();
+                            characterSelection.start();
+                        } catch (err) {
+                            handleCharacterSelectionError(err);
+                        }
+                    }
+
+                    if (document.readyState === 'loading') {
+                        document.addEventListener('DOMContentLoaded', startSelection, { once: true });
+                    } else {
+                        startSelection();
+                    }
+                };
+                script.onerror = function() {
+                    handleCharacterSelectionError(new Error('Failed to load script'));
+                };
+                document.body.appendChild(script);
+            }
+
+            async function bootstrapCharacterSelectionFlow() {
+                if (completed === 'true') {
+                    removeOverlay();
+                    return;
+                }
+
+                if (overlay) {
+                    overlay.style.display = 'none';
+                }
+
+                await waitForStorageBarrier();
+
+                if (localStorage.getItem(CHARACTER_SELECTION_COMPLETED_KEY) === 'true') {
+                    removeOverlay();
+                    return;
+                }
+
+                if (hasCompletedHomeTutorial()) {
+                    launchCharacterSelection();
+                    return;
+                }
+
+                tutorialCompleteHandler = function(event) {
+                    if (!event || !event.detail || event.detail.page !== 'home') {
+                        return;
+                    }
+                    launchCharacterSelection();
+                };
+                window.addEventListener('neko:tutorial-completed', tutorialCompleteHandler);
+            }
+
+            void bootstrapCharacterSelectionFlow();
+        })();
+    </script>
 </body>
 
 </html>

@@ -2071,12 +2071,17 @@ async def update_catgirl(name: str, request: Request):
     if not raw_data:
         return JSONResponse({'success': False, 'error': '无数据'}, status_code=400)
 
-    # COMPAT(v1->v2): 兼容旧客户端仍通过通用接口提交 voice_id。
-    # 通用字段仍按保留字段规则过滤，voice_id 走独立检测与应用逻辑。
+    # COMPAT(v1->v2): 兼容旧客户端仍通过通用接口提交 voice_id / system_prompt。
+    # 通用字段仍按保留字段规则过滤，保留字段走独立检测与应用逻辑。
     voice_id_in_payload = 'voice_id' in raw_data
     requested_voice_id = ''
     if voice_id_in_payload:
         requested_voice_id = str(raw_data.get('voice_id') or '').strip()
+
+    system_prompt_in_payload = 'system_prompt' in raw_data
+    requested_system_prompt = ''
+    if system_prompt_in_payload:
+        requested_system_prompt = str(raw_data.get('system_prompt') or '')
 
     # 兼容前端自动修复：允许通过通用接口修改 model_type 保留字段。
     model_type_in_payload = 'model_type' in raw_data
@@ -2123,9 +2128,11 @@ async def update_catgirl(name: str, request: Request):
         if k != '档案名' and v:
             characters['猫娘'][name][k] = v
 
-    # 兼容旧接口：若请求中带有 voice_id，则同步写入保留字段。
+    # 兼容旧接口：若请求中带有 voice_id / system_prompt，则同步写入保留字段。
     if voice_id_in_payload:
         set_reserved(characters['猫娘'][name], 'voice_id', requested_voice_id)
+    if system_prompt_in_payload:
+        set_reserved(characters['猫娘'][name], 'system_prompt', requested_system_prompt)
 
     # 兼容前端自动修复：若请求中带有 model_type，则同步写入保留字段。
     if model_type_in_payload and requested_model_type:
@@ -2138,7 +2145,7 @@ async def update_catgirl(name: str, request: Request):
 
     # 显式记录被过滤的保留字段，避免“被吞掉”无感知。
     ignored_reserved_fields = sorted(
-        (set(raw_data.keys()) & CHARACTER_RESERVED_FIELD_SET) - {'voice_id', 'model_type'}
+        (set(raw_data.keys()) & CHARACTER_RESERVED_FIELD_SET) - {'voice_id', 'system_prompt', 'model_type'}
     )
     if ignored_reserved_fields:
         logger.info(

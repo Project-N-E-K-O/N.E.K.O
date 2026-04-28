@@ -30,7 +30,7 @@
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
     // 更新语言包内容时可以递增此值
-    const LOCALE_VERSION = '2026-04-22-1';
+    const LOCALE_VERSION = '2026-04-28-1';
 
     function getLanguageFromQuery() {
         try {
@@ -715,12 +715,14 @@
             resolveProviderName(params);
 
             const text = i18next.t(key, params);
+            const hasTranslation = text !== key;
 
-            if (text === key) {
+            if (!hasTranslation) {
                 // 只在开发模式下显示警告，避免控制台噪音
                 if (i18next.options.debug) {
                     console.warn(`[i18n] Translation key not found: ${key}`);
                 }
+                return;
             }
 
             // 特殊处理 title 标签

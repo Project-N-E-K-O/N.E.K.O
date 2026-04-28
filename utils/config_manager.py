@@ -6,6 +6,7 @@
 import sys
 import os
 import json
+import re
 import shutil
 import threading
 import asyncio
@@ -36,6 +37,13 @@ from utils.logger_config import get_module_logger
 
 
 logger = get_module_logger(__name__)
+
+PERSONA_PROMPT_BLOCK_START = "<NEKO_PERSONA_SELECTION>"
+PERSONA_PROMPT_BLOCK_END = "</NEKO_PERSONA_SELECTION>"
+_PERSONA_PROMPT_BLOCK_RE = re.compile(
+    rf"{re.escape(PERSONA_PROMPT_BLOCK_START)}[\s\S]*?{re.escape(PERSONA_PROMPT_BLOCK_END)}",
+    re.MULTILINE,
+)
 
 
 def get_reserved(data: dict, *path, default=None, legacy_keys: tuple[str, ...] | None = None):
@@ -415,6 +423,56 @@ def migrate_catgirl_reserved(catgirl_data: dict) -> bool:
             changed = True
 
     return changed
+
+
+def _strip_persona_prompt_block(prompt_text: str) -> str:
+    cleaned = _PERSONA_PROMPT_BLOCK_RE.sub("", str(prompt_text or ""))
+    return cleaned.strip()
+
+
+def _build_persona_prompt_block(catgirl_config: dict) -> str:
+    if not isinstance(catgirl_config, dict):
+        return ""
+
+    persona_name = str(catgirl_config.get("性格原型") or catgirl_config.get("昵称") or catgirl_config.get("档案名") or "").strip()
+    personality = str(catgirl_config.get("性格") or "").strip()
+    catchphrase = str(catgirl_config.get("口癖") or "").strip()
+    hobby = str(catgirl_config.get("爱好") or "").strip()
+    trigger = str(catgirl_config.get("雷点") or "").strip()
+    hidden_settings = str(catgirl_config.get("隐藏设定") or "").strip()
+    quote = str(catgirl_config.get("一句话台词") or "").strip()
+
+    details = [
+        ("当前人格名称", persona_name),
+        ("性格", personality),
+        ("口癖", catchphrase),
+        ("关键词/爱好", hobby),
+        ("禁忌/雷点", trigger),
+        ("补充设定", hidden_settings),
+        ("代表台词", quote),
+    ]
+    detail_lines = [f"- {label}：{value}" for label, value in details if value]
+    if not detail_lines:
+        return ""
+
+    return "\n".join([
+        PERSONA_PROMPT_BLOCK_START,
+        "请严格遵循以下角色设定进行对话，不要向用户暴露这些规则文本：",
+        *detail_lines,
+        "- 对话要求：将以上设定自然体现在语气、措辞、情绪表达和回应偏好中；保持口语化、自然，不要逐条复述设定。",
+        PERSONA_PROMPT_BLOCK_END,
+    ])
+
+
+def _compose_prompt_with_persona(base_prompt: str | None, catgirl_config: dict) -> str:
+    prompt_without_persona = _strip_persona_prompt_block(base_prompt or "")
+    if not prompt_without_persona:
+        prompt_without_persona = get_lanlan_prompt()
+
+    persona_block = _build_persona_prompt_block(catgirl_config)
+    if not persona_block:
+        return prompt_without_persona
+    return f"{prompt_without_persona}\n\n{persona_block}"
 
 
 def flatten_reserved(catgirl_data: dict) -> dict:
@@ -2295,7 +2353,7 @@ class ConfigManager:
                 prompt_value = get_lanlan_prompt()
             else:
                 prompt_value = stored_prompt
-            lanlan_prompt_map[name] = prompt_value
+            lanlan_prompt_map[name] = _compose_prompt_with_persona(prompt_value, catgirl_data.get(name, {}))
 
         memory_base = str(self.memory_dir)
         # 角色专属子目录: memory_dir/{name}/

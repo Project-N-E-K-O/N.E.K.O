@@ -4036,6 +4036,7 @@ class UniversalTutorialManager {
         TUTORIAL_PAGES.forEach(page => {
             this.getStorageKeysForPage(page).forEach(key => localStorage.removeItem(key));
         });
+        localStorage.removeItem('neko_character_selection_completed');
         this.markTutorialManualStartIntent('home');
         console.log('[Tutorial] 已重置所有页面引导');
         this.notifyTutorialResetForCurrentPageIfNeeded('all');
@@ -4047,6 +4048,13 @@ class UniversalTutorialManager {
     resetPageTutorial(pageKey) {
         if (pageKey === 'all') {
             this.resetAllTutorials();
+            return;
+        }
+
+        if (pageKey === 'character_selection') {
+            localStorage.removeItem('neko_character_selection_completed');
+            console.log('[Tutorial] 已重置页面引导:', pageKey);
+            this.notifyTutorialResetForCurrentPageIfNeeded(pageKey);
             return;
         }
 
@@ -4141,6 +4149,7 @@ function resetAllTutorials() {
     } else {
         // 如果管理器未初始化，直接清除 localStorage
         TUTORIAL_PAGES.forEach(page => { localStorage.removeItem(getTutorialStorageKeyForPage(page)); });
+        localStorage.removeItem('neko_character_selection_completed');
         localStorage.setItem(getTutorialManualIntentKeyForPage('home'), 'true');
     }
     alert(window.t ? window.t('memory.tutorialResetSuccess', '已重置所有引导，下次进入各页面时将重新显示引导。') : '已重置所有引导，下次进入各页面时将重新显示引导。');
@@ -4168,6 +4177,8 @@ function resetTutorialForPage(pageKey) {
             localStorage.removeItem(getTutorialStorageKeyForPage('model_manager_vrm'));
             localStorage.removeItem(getTutorialStorageKeyForPage('model_manager_mmd'));
             localStorage.removeItem(getTutorialStorageKeyForPage('model_manager_common'));
+        } else if (pageKey === 'character_selection') {
+            localStorage.removeItem('neko_character_selection_completed');
         } else {
             localStorage.removeItem(getTutorialStorageKeyForPage(pageKey));
         }
@@ -4192,7 +4203,8 @@ function resetTutorialForPage(pageKey) {
         'chara_manager': window.t ? window.t('memory.tutorialPageCharaManager', '角色管理') : '角色管理',
         'settings': window.t ? window.t('memory.tutorialPageSettings', 'API设置') : 'API设置',
         'voice_clone': window.t ? window.t('memory.tutorialPageVoiceClone', '语音克隆') : '语音克隆',
-        'memory_browser': window.t ? window.t('memory.tutorialPageMemoryBrowser', '记忆浏览') : '记忆浏览'
+        'memory_browser': window.t ? window.t('memory.tutorialPageMemoryBrowser', '记忆浏览') : '记忆浏览',
+        'character_selection': window.t ? window.t('memory.tutorialPageCharacterSelection', '初始人设') : '初始人设'
     };
     const pageName = pageNames[pageKey] || pageKey;
     // 使用带参数的 i18n 键，格式：已重置「{{pageName}}」的引导
