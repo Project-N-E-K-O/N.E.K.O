@@ -74,8 +74,10 @@ class CommandService(STS2AutoplayService):
 
     async def start_autoplay(self, objective: str | None = None, stop_condition: str = "current_floor") -> dict[str, Any]:
         self.called.append(("start_autoplay", {"objective": objective, "stop_condition": stop_condition}))
+        if objective == "自动打一下但是已经在运行":
+            return {"status": "running", "message": "尖塔半自动任务已在运行", "executed": False}
         self._autoplay_state = "running"
-        return {"status": "running", "message": "尖塔半自动任务已启动"}
+        return {"status": "running", "message": "尖塔半自动任务已启动", "executed": True}
 
     async def pause_autoplay(self, reason: str = "用户请求暂停") -> dict[str, Any]:
         self.called.append(("pause_autoplay", reason))
@@ -158,6 +160,14 @@ def test_neko_command_manual_autoplay_requires_confirmation(service: CommandServ
     assert result["needs_confirmation"] is True
     assert result["executed"] is False
     assert service.called == []
+
+
+@pytest.mark.unit
+def test_neko_command_start_autoplay_respects_result_executed_flag(service: CommandService) -> None:
+    result = run(service.neko_command("自动打一下但是已经在运行"))
+    assert result["intent"] == "start_autoplay"
+    assert result["executed"] is False
+    assert service.called == [("start_autoplay", {"objective": "自动打一下但是已经在运行", "stop_condition": "current_floor"})]
 
 
 @pytest.mark.unit

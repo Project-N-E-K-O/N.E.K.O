@@ -75,7 +75,7 @@ class NekoCommandingMixin:
                     needs_confirmation=True,
                 )
             result = await self.start_autoplay(objective=raw_command, stop_condition=stop_condition)
-            return self._wrap_neko_command_result("start_autoplay", "start_autoplay", result, executed=True)
+            return self._wrap_neko_command_result("start_autoplay", "start_autoplay", result, executed=bool(result.get("executed", result.get("status") == "running")) if isinstance(result, dict) else False)
 
         return self._wrap_neko_command_result(
             intent="unknown",

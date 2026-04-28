@@ -47,7 +47,20 @@ class DecisioningMixin:
             return None
         hand = combat.get("hand") if isinstance(combat.get("hand"), list) else []
         playable_cards = [c for c in hand if isinstance(c, dict) and bool(c.get("playable"))]
-        strategy_constraints = self._load_strategy_constraints(self._configured_character_strategy())
+        character_strategy = self._configured_character_strategy()
+        strategy_constraints = self._load_strategy_constraints(character_strategy)
+        tactical_summary = self._combat_analyzer.build_tactical_summary(combat, lambda _strategy: strategy_constraints, character_strategy)
+        if not bool(tactical_summary.get("should_prioritize_lethal")):
+            defensive_action = self._find_defensive_action(actions, combat, tactical_summary)
+            if defensive_action is not None:
+                self.logger.info("[sts2_autoplay][desperate] selected defensive action before non-lethal damage")
+                return defensive_action
+            block_card = self._best_playable_block_card(combat)
+            if block_card is not None:
+                action = self._action_for_card(play_card_actions, block_card)
+                if action is not None:
+                    self.logger.info(f"[sts2_autoplay][desperate] selected block card={block_card.get('name')} before non-lethal damage")
+                    return action
         attack_cards = []
         for card in playable_cards:
             card_type = str(card.get("card_type") or card.get("type") or "").strip().lower()
@@ -163,7 +176,7 @@ class DecisioningMixin:
         if any(k in text_blob for k in {"inflame", "力量", "strength"}):
             state["str_stacks"] = state.get("str_stacks", 0) + 2
 
-    def _calc_marginal_benefit(self, card: dict[str, Any], state: dict[str, Any], combat: dict[str, Any], tactical: dict[str, Any], strategy_constraints) -> float:
+    def _calc_marginal_benefit(self, card: dict[str, Any], state: dict[str, Any], combat: dict[str, Any], tactical: dict[str, Any], strategy_constraints, remaining_cards: Optional[list[dict[str, Any]]] = None) -> float:
         synergy_type = self._detect_card_synergy_type(card, combat)
         energy_cost = self._safe_int(card.get("cost"), 0)
         total_energy = self._safe_int(combat.get("player_energy"), 3)
@@ -181,7 +194,7 @@ class DecisioningMixin:
         synergy_boost = self._calc_synergy_boost(card, state, combat, strategy_constraints)
         benefit = 0.0
         if synergy_type in {"weaken", "vulnerable", "strength_boost"}:
-            benefit = self._calc_setup_synergy(card, [], combat, state, strategy_constraints) * 0.5
+            benefit = self._calc_setup_synergy(card, remaining_cards or [], combat, state, strategy_constraints) * 0.5
         elif synergy_type == "attack" and total_damage > 0:
             benefit = total_damage * (1.0 + synergy_boost) * 2.0
         elif synergy_type == "block" and block > 0:
@@ -232,7 +245,8 @@ class DecisioningMixin:
             best_target = None
             best_idx = -1
             for idx, card in enumerate(remaining):
-                benefit = self._calc_marginal_benefit(card, active_state, combat, tactical, strategy_constraints)
+                followup_cards = [candidate for candidate_index, candidate in enumerate(remaining) if candidate_index != idx]
+                benefit = self._calc_marginal_benefit(card, active_state, combat, tactical, strategy_constraints, remaining_cards=followup_cards)
                 if benefit > best_benefit:
                     best_benefit = benefit
                     best_card = card
