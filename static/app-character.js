@@ -349,7 +349,13 @@
                 if (effectiveModelType !== 'live2d') {
                     // 移除浮动按钮
                     const live2dButtons = document.getElementById('live2d-floating-buttons');
-                    if (live2dButtons) live2dButtons.remove();
+                    if (live2dButtons) {
+                        if (window._removeNekoFloatingButtonsElement) {
+                            window._removeNekoFloatingButtonsElement(live2dButtons);
+                        } else {
+                            live2dButtons.remove();
+                        }
+                    }
 
                     // 移除"请她回来"按钮
                     const live2dReturnBtn = document.getElementById('live2d-return-button-container');
@@ -409,7 +415,13 @@
                 }
                 if (effectiveModelType !== 'mmd') {
                     document.querySelectorAll('#mmd-floating-buttons, #mmd-lock-icon, #mmd-return-button-container')
-                        .forEach(el => el.remove());
+                        .forEach(el => {
+                            if (window._removeNekoFloatingButtonsElement) {
+                                window._removeNekoFloatingButtonsElement(el);
+                            } else {
+                                el.remove();
+                            }
+                        });
                 }
             } catch (e) {
                 console.warn('[猫娘切换] MMD 清理出错:', e);
