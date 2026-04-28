@@ -14,6 +14,7 @@ import sys
 import asyncio
 import base64
 import difflib
+import ipaddress
 import math
 import re
 import secrets
@@ -137,7 +138,13 @@ def _set_no_store_headers(response: Response) -> None:
 
 def _is_loopback_request(request: Request) -> bool:
     client_host = request.client.host if request.client else ""
-    return client_host in ("127.0.0.1", "::1", "localhost")
+    if client_host == "localhost":
+        return True
+    normalized_host = str(client_host or "").removeprefix("::ffff:")
+    try:
+        return ipaddress.ip_address(normalized_host).is_loopback
+    except ValueError:
+        return False
 
 
 def _run_macos_interactive_screenshot(output_path: str) -> tuple[int, str]:
