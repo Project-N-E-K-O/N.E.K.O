@@ -4059,16 +4059,9 @@ function openCatgirlPanel(card, originEl) {
                                     }
                                 }
                             }
-                            // VRM resize
-                            const vrmContainer = document.getElementById('vrm-preview-container');
-                            if (vrmContainer && workshopVrmManager && workshopVrmManager.renderer) {
-                                workshopVrmManager.renderer.setSize(vrmContainer.clientWidth, vrmContainer.clientHeight);
-                            }
-                            // MMD resize
-                            const mmdContainer = document.getElementById('mmd-preview-container');
-                            if (mmdContainer && workshopMmdManager && workshopMmdManager.renderer) {
-                                workshopMmdManager.renderer.setSize(mmdContainer.clientWidth, mmdContainer.clientHeight);
-                            }
+                            // VRM / MMD resize：同步 renderer、camera 和 OutlineEffect，避免只改 canvas 尺寸导致 3D 预览横向变形。
+                            syncWorkshop3DPreviewSize(workshopVrmManager, 'vrm-preview-canvas');
+                            syncWorkshop3DPreviewSize(workshopMmdManager, 'mmd-preview-canvas');
                         });
                     }
 
@@ -6976,6 +6969,41 @@ async function disposeWorkshopMmd() {
     hideAll3DPreviews();
 }
 
+function syncWorkshop3DPreviewSize(manager, canvasId) {
+    if (!manager || !manager.renderer) return false;
+
+    const previewContent = document.getElementById('live2d-preview-content');
+    const canvas = canvasId ? document.getElementById(canvasId) : (manager.renderer.domElement || null);
+    const rect = previewContent ? previewContent.getBoundingClientRect() : null;
+    const w = Math.max(1, Math.round(rect?.width || previewContent?.clientWidth || canvas?.clientWidth || 0));
+    const h = Math.max(1, Math.round(rect?.height || previewContent?.clientHeight || canvas?.clientHeight || 0));
+    if (w <= 1 || h <= 1) return false;
+
+    if (canvas) {
+        canvas.style.width = '100%';
+        canvas.style.height = '100%';
+        canvas.width = Math.round(w * (window.devicePixelRatio || 1));
+        canvas.height = Math.round(h * (window.devicePixelRatio || 1));
+    }
+
+    manager.renderer.setSize(w, h, false);
+    if (manager.camera) {
+        manager.camera.aspect = w / h;
+        manager.camera.updateProjectionMatrix();
+    }
+    if (manager.effect && typeof manager.effect.setSize === 'function') {
+        manager.effect.setSize(w, h);
+    }
+    return true;
+}
+
+function scheduleWorkshop3DPreviewResize(manager, canvasId) {
+    requestAnimationFrame(() => {
+        syncWorkshop3DPreviewSize(manager, canvasId);
+        requestAnimationFrame(() => syncWorkshop3DPreviewSize(manager, canvasId));
+    });
+}
+
 // 加载 VRM 模型预览
 async function loadVrmPreview(modelPath, rawData) {
     try {
@@ -7040,19 +7068,9 @@ async function loadVrmPreview(modelPath, rawData) {
             vrmContainerEl.style.zIndex = '10';
         }
 
-        // 按预览区域实际尺寸重设渲染器大小
+        // 按预览区域实际尺寸同步 renderer / camera / effect，避免 CSS 尺寸和 WebGL 后备尺寸不一致。
         const previewContent = document.getElementById('live2d-preview-content');
-        if (previewContent && workshopVrmManager.renderer) {
-            const w = previewContent.clientWidth;
-            const h = previewContent.clientHeight;
-            if (w > 0 && h > 0) {
-                workshopVrmManager.renderer.setSize(w, h);
-                if (workshopVrmManager.camera) {
-                    workshopVrmManager.camera.aspect = w / h;
-                    workshopVrmManager.camera.updateProjectionMatrix();
-                }
-            }
-        }
+        syncWorkshop3DPreviewSize(workshopVrmManager, 'vrm-preview-canvas');
 
         // 允许 3D 交互：临时启用预览区域的 pointer-events
         if (previewContent) previewContent.style.pointerEvents = 'auto';
@@ -7071,6 +7089,7 @@ async function loadVrmPreview(modelPath, rawData) {
         });
 
         if (result) {
+            scheduleWorkshop3DPreviewResize(workshopVrmManager, 'vrm-preview-canvas');
             console.log('[Workshop VRM] 模型预览加载成功');
             showMessage(window.t ? window.t('steam.vrmPreviewLoaded') || 'VRM 模型预览已加载' : 'VRM 模型预览已加载', 'success');
         }
@@ -7141,19 +7160,9 @@ async function loadMmdPreview(modelPath, rawData) {
             mmdContainerEl.style.zIndex = '10';
         }
 
-        // 按预览区域实际尺寸重设渲染器大小
+        // 按预览区域实际尺寸同步 renderer / camera / effect，避免 CSS 尺寸和 WebGL 后备尺寸不一致。
         const previewContent = document.getElementById('live2d-preview-content');
-        if (previewContent && workshopMmdManager.renderer) {
-            const w = previewContent.clientWidth;
-            const h = previewContent.clientHeight;
-            if (w > 0 && h > 0) {
-                workshopMmdManager.renderer.setSize(w, h);
-                if (workshopMmdManager.camera) {
-                    workshopMmdManager.camera.aspect = w / h;
-                    workshopMmdManager.camera.updateProjectionMatrix();
-                }
-            }
-        }
+        syncWorkshop3DPreviewSize(workshopMmdManager, 'mmd-preview-canvas');
 
         // 允许 3D 交互：临时启用预览区域的 pointer-events
         if (previewContent) previewContent.style.pointerEvents = 'auto';
@@ -7164,6 +7173,7 @@ async function loadMmdPreview(modelPath, rawData) {
         const modelInfo = await workshopMmdManager.loadModel(modelPath);
 
         if (modelInfo) {
+            scheduleWorkshop3DPreviewResize(workshopMmdManager, 'mmd-preview-canvas');
             // 如果有 idle 动画，尝试加载
             const idleAnimation = rawData?.['mmd_idle_animation'] || '';
             if (idleAnimation && typeof workshopMmdManager.loadAnimation === 'function') {
