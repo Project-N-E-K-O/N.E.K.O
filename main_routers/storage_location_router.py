@@ -1096,7 +1096,11 @@ async def post_storage_location_exit(request: Request, response: Response):
     config_manager = _get_storage_config_manager()
     bootstrap_payload = build_storage_location_bootstrap_payload(config_manager)
     blocking_reason = str(bootstrap_payload.get("blocking_reason") or "").strip()
-    if blocking_reason not in STORAGE_STARTUP_BLOCKING_REASONS:
+    root_mode = str((config_manager.load_root_state() or {}).get("mode") or "").strip()
+    if (
+        blocking_reason not in STORAGE_STARTUP_BLOCKING_REASONS
+        and root_mode != ROOT_MODE_MAINTENANCE_READONLY
+    ):
         response.status_code = 409
         return {
             "ok": False,

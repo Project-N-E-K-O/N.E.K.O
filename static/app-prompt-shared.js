@@ -234,6 +234,14 @@
     // ---------------------------------------------------------------------
     const CSRF_HEADER_NAME = 'X-CSRF-Token';
     const PAGE_CONFIG_URL = '/api/config/page_config';
+    let pageUnloadStarted = false;
+
+    function markPageUnloadStarted() {
+        pageUnloadStarted = true;
+    }
+
+    window.addEventListener('beforeunload', markPageUnloadStarted, true);
+    window.addEventListener('pagehide', markPageUnloadStarted, true);
 
     function extractAutostartCsrfToken(source) {
         if (!source || typeof source !== 'object') {
@@ -333,6 +341,10 @@
             return refreshPromise;
         }
 
+        function peekCachedToken() {
+            return cachedToken || '';
+        }
+
         async function getMutationHeaders() {
             const token = await getToken();
             const headers = {};
@@ -344,6 +356,7 @@
 
         return {
             getMutationHeaders: getMutationHeaders,
+            peekCachedToken: peekCachedToken,
             refreshToken: refreshToken,
         };
     }
@@ -458,6 +471,33 @@
             return false;
         }
 
+        async function buildHttpError(response) {
+            const status = Number(response && response.status) || 0;
+            const error = new Error('HTTP ' + status);
+            error.status = status;
+            error.code = status ? ('http_' + status) : '';
+            try {
+                const cloned = typeof response.clone === 'function' ? response.clone() : response;
+                const body = await cloned.json();
+                if (body && typeof body === 'object') {
+                    if (body.error) {
+                        error.message = String(body.error);
+                    }
+                    if (body.error_code) {
+                        error.code = String(body.error_code);
+                    }
+                    error.responseBody = body;
+                }
+            } catch (_) {
+                // Best-effort structured error enrichment only.
+            }
+            return error;
+        }
+
+        function isUnloadContext() {
+            return pageUnloadStarted || document.visibilityState === 'hidden';
+        }
+
         async function requestJson(url, options) {
             const requestOptions = options || {};
             const hasJsonBody = Object.prototype.hasOwnProperty.call(requestOptions, 'json');
@@ -495,7 +535,7 @@
             }
 
             if (!response.ok) {
-                throw new Error('HTTP ' + response.status);
+                throw await buildHttpError(response);
             }
             return response.json();
         }
@@ -504,9 +544,15 @@
             let beaconPayload = payload || {};
             try {
                 const helper = window.nekoLocalMutationSecurity;
-                if (helper && typeof helper.getMutationHeaders === 'function') {
-                    const headers = await helper.getMutationHeaders();
-                    const token = headers && headers[CSRF_HEADER_NAME];
+                if (helper) {
+                    let token = '';
+                    if (typeof helper.peekCachedToken === 'function') {
+                        token = helper.peekCachedToken();
+                    }
+                    if (!token && !isUnloadContext() && typeof helper.getMutationHeaders === 'function') {
+                        const headers = await helper.getMutationHeaders();
+                        token = headers && headers[CSRF_HEADER_NAME];
+                    }
                     if (token) {
                         beaconPayload = Object.assign({}, beaconPayload, { _csrf_token: token });
                     }

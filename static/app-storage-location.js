@@ -275,6 +275,7 @@
                 await requestStorageLocationAppShutdown();
             } catch (error) {
                 console.warn('[storage-location] app shutdown request before close failed', error);
+                return;
             }
         }
         await closeHostWindowOnly();

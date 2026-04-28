@@ -392,6 +392,28 @@ def test_memory_browser_storage_picker_preflights_selected_directory(mock_page: 
 
 
 @pytest.mark.frontend
+def test_memory_browser_storage_picker_preserves_root_parent_directory(mock_page: Page, running_server: str, seed_memory_file):
+    _install_ready_memory_browser_routes(mock_page, seed_memory_file)
+
+    mock_page.add_init_script(
+        """
+        window.nekoHost = {
+            pickDirectory: async () => {
+                return { cancelled: false, selected_root: '/' };
+            }
+        };
+        """
+    )
+
+    mock_page.goto(f"{running_server}/memory_browser")
+    mock_page.wait_for_selector("#memory-file-list button.cat-btn", state="attached", timeout=10000)
+    mock_page.locator("#storage-location-manage-btn").click()
+    mock_page.locator("#storage-location-pick-btn").click()
+
+    expect(mock_page.locator("#storage-target-root-input")).to_have_value("/N.E.K.O", timeout=5000)
+
+
+@pytest.mark.frontend
 def test_memory_browser_open_current_root_uses_host_bridge(mock_page: Page, running_server: str, seed_memory_file):
     """Opening current storage root should call the desktop host bridge when present."""
     _install_ready_memory_browser_routes(mock_page, seed_memory_file)

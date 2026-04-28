@@ -584,7 +584,8 @@ body .container-header {
     -webkit-backdrop-filter: blur(16px) saturate(1.08);
     backdrop-filter: blur(16px) saturate(1.08);
     isolation: isolate;
-    overflow: hidden;
+    overflow-x: hidden;
+    overflow-y: auto;
 }
 
 body.storage-location-memory-modal-open {
@@ -647,8 +648,10 @@ body.storage-location-memory-modal-open {
     z-index: 1;
     isolation: isolate;
     width: min(560px, 100%);
-    max-height: none;
-    overflow: hidden;
+    max-height: calc(100vh - 48px);
+    overflow-x: hidden;
+    overflow-y: auto;
+    overscroll-behavior: contain;
     box-sizing: border-box;
     padding: 24px;
     background:
@@ -880,6 +883,7 @@ body.storage-location-memory-modal-open {
 
     .storage-location-modal-card {
         padding: 20px;
+        max-height: calc(100vh - 24px);
     }
 
     .storage-location-modal-actions,

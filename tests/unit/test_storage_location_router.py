@@ -345,6 +345,37 @@ def test_storage_location_exit_ignores_ready_storage_state(tmp_path):
 
 
 @pytest.mark.unit
+def test_storage_location_exit_allows_maintenance_readonly_shutdown(tmp_path):
+    config_manager = _DummyConfigManager(tmp_path)
+    shutdown_calls = []
+    save_storage_policy(
+        config_manager,
+        selected_root=config_manager.app_docs_dir,
+        selection_source="current",
+        anchor_root=config_manager.anchor_root,
+    )
+    config_manager.save_root_state({
+        "mode": ROOT_MODE_MAINTENANCE_READONLY,
+        "last_known_good_root": str(config_manager.app_docs_dir),
+        "last_migration_result": "restart_pending:test",
+        "last_migration_source": str(config_manager.app_docs_dir),
+    })
+
+    with _build_client(config_manager, request_app_shutdown=lambda: shutdown_calls.append("shutdown")) as client:
+        response = client.post(
+            "/api/storage/location/exit",
+            headers={"X-Neko-Storage-Action": "exit"},
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "ok": True,
+        "result": "shutdown_initiated",
+    }
+    assert shutdown_calls == ["shutdown"]
+
+
+@pytest.mark.unit
 def test_storage_location_select_same_path_rolls_back_when_startup_release_fails(tmp_path):
     config_manager = _DummyConfigManager(tmp_path)
     previous_root_state = config_manager.load_root_state()

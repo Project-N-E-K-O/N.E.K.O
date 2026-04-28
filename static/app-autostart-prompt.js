@@ -140,6 +140,65 @@
         state.autostartStatusUpdatedAt = Date.now();
     }
 
+    function isTransientError(error) {
+        const status = Number(error && error.status);
+        if (Number.isFinite(status)) {
+            if (status >= 500) {
+                return true;
+            }
+            if (status >= 400 && status <= 499) {
+                return false;
+            }
+        }
+
+        const code = String((error && error.code) || '').toLowerCase();
+        if (
+            code === 'timeout'
+            || code === 'network_error'
+            || code === 'networkerror'
+            || code === 'failed_to_fetch'
+            || code === 'aborterror'
+        ) {
+            return true;
+        }
+        if (/^http_4\d\d$/.test(code)) {
+            return false;
+        }
+        if (/^http_5\d\d$/.test(code)) {
+            return true;
+        }
+
+        const message = String((error && error.message) || error || '').toLowerCase();
+        if (!message) {
+            return false;
+        }
+        if (
+            message.includes('failed to fetch')
+            || message.includes('networkerror')
+            || message.includes('network request failed')
+            || message.includes('load failed')
+            || message.includes('timeout')
+            || message.includes('timed out')
+            || message.includes('econnreset')
+            || message.includes('econnrefused')
+            || message.includes('eai_again')
+            || message.includes('offline')
+        ) {
+            return true;
+        }
+        const httpStatusMatch = message.match(/\bhttp\s+(\d{3})\b/i);
+        if (httpStatusMatch) {
+            const httpStatus = Number(httpStatusMatch[1]);
+            if (httpStatus >= 500) {
+                return true;
+            }
+            if (httpStatus >= 400 && httpStatus <= 499) {
+                return false;
+            }
+        }
+        return false;
+    }
+
     let autostartChangedListenerInstalled = false;
 
     function handleAutostartStatusChanged(event) {
@@ -186,9 +245,13 @@
                 status: response && response.state ? response.state.status : null,
             });
         } catch (error) {
-            state.pendingDecisionPayload = payload || null;
-            scheduleFastHeartbeat();
-            console.warn('[AutostartPrompt] failed to persist decision:', error);
+            if (isTransientError(error)) {
+                state.pendingDecisionPayload = payload || null;
+                scheduleFastHeartbeat();
+                console.warn('[AutostartPrompt] failed to persist decision, will retry:', error);
+                return;
+            }
+            console.warn('[AutostartPrompt] failed to persist decision permanently; not retrying:', error);
         }
     }
 

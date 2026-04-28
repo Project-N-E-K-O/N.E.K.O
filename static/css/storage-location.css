@@ -28,7 +28,8 @@ body.storage-location-modal-open #storage-location-overlay * {
     backdrop-filter: blur(16px) saturate(1.08);
     -webkit-backdrop-filter: blur(16px) saturate(1.08);
     isolation: isolate;
-    overflow: hidden;
+    overflow-x: hidden;
+    overflow-y: auto;
 }
 
 .storage-location-overlay::before {
@@ -74,8 +75,10 @@ body.storage-location-modal-open #storage-location-overlay * {
     z-index: 1;
     isolation: isolate;
     width: min(960px, calc(100vw - 32px));
-    max-height: none;
-    overflow: visible;
+    max-height: calc(100vh - 48px);
+    overflow-x: hidden;
+    overflow-y: auto;
+    overscroll-behavior: contain;
     border-radius: 22px;
     border: 1px solid rgba(97, 147, 190, 0.22);
     background:
@@ -979,6 +982,10 @@ body.storage-location-modal-open #storage-location-overlay * {
 @media (max-width: 640px) {
     .storage-location-overlay {
         padding: 12px;
+    }
+
+    .storage-location-modal {
+        max-height: calc(100vh - 24px);
     }
 
     .storage-location-shell {

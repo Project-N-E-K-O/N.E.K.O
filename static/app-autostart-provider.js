@@ -152,11 +152,13 @@
         if (typeof bridge.disable !== 'function') {
             // 和无桥接分支保持对象契约一致：老版本 PC 暴露 enable 但没 disable 时，
             // 调用方同样能按 provider 响应对象路径处理，不会被迫走 .catch。
-            return Promise.resolve(buildUnsupportedDesktopResult({
+            const unsupported = rememberStatus(buildUnsupportedDesktopResult({
                 ok: false,
                 error: AUTOSTART_NOT_SUPPORTED_ERROR,
                 error_code: AUTOSTART_NOT_SUPPORTED_ERROR,
             }));
+            emitStatusChanged(unsupported);
+            return Promise.resolve(unsupported);
         }
 
         return Promise.resolve().then(function () {

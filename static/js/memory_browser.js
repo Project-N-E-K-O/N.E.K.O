@@ -89,15 +89,16 @@
     }
 
     function normalizeStorageRootForDisplay(pathText) {
-        const normalized = String(pathText || '').trim().replace(/[\\/]+$/, '');
-        if (!normalized || pathEndsWithAppFolder(normalized)) {
-            return normalized;
-        }
-        if (normalized === '/') {
+        const original = String(pathText || '').trim();
+        if (original === '/') {
             return '/' + STORAGE_APP_FOLDER_NAME;
         }
-        if (/^[A-Za-z]:\\$/.test(normalized)) {
-            return normalized + STORAGE_APP_FOLDER_NAME;
+        if (/^[A-Za-z]:\\$/.test(original)) {
+            return original + STORAGE_APP_FOLDER_NAME;
+        }
+        const normalized = original.replace(/[\\/]+$/, '');
+        if (!normalized || pathEndsWithAppFolder(original)) {
+            return normalized;
         }
         const separator = normalized.lastIndexOf('\\') > normalized.lastIndexOf('/') ? '\\' : '/';
         return normalized + separator + STORAGE_APP_FOLDER_NAME;
