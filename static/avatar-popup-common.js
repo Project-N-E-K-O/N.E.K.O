@@ -69,6 +69,11 @@
                 panel._hoverCollapseTimer = null;
             }
             // 立即隐藏 + 彻底清除位置状态，不留任何残影
+            if (panel._expandFrameId) {
+                cancelAnimationFrame(panel._expandFrameId);
+                panel._expandFrameId = null;
+            }
+            panel._visibilityRevision = (panel._visibilityRevision || 0) + 1;
             panel.style.transition = 'none';
             panel.style.opacity = '0';
             panel.style.display = 'none';

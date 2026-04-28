@@ -1394,31 +1394,108 @@ function createSidePanelContainer(manager, prefix, options = {}) {
     });
     container.addEventListener('click', stopEventPropagation);
 
+    const positionContainerFromAnchor = () => {
+        const anchor = container._anchorElement;
+        if (!anchor) {
+            return false;
+        }
+        const anchorRect = anchor.getBoundingClientRect();
+        if (!anchorRect || anchorRect.width <= 0 || anchorRect.height <= 0) {
+            return false;
+        }
+
+        if (window.AvatarPopupUI && typeof window.AvatarPopupUI.positionSidePanel === 'function') {
+            window.AvatarPopupUI.positionSidePanel(container, anchor);
+        }
+
+        const rect = container.getBoundingClientRect();
+        const horizontalGap = rect
+            ? Math.max(0, anchorRect.left - rect.right, rect.left - anchorRect.right)
+            : Infinity;
+        const verticalGap = rect
+            ? Math.max(0, anchorRect.top - rect.bottom, rect.top - anchorRect.bottom)
+            : Infinity;
+        const nearAnchor = (
+            horizontalGap <= Math.max(420, rect.width + anchorRect.width + 80)
+            && verticalGap <= Math.max(220, rect.height + anchorRect.height + 80)
+        );
+        if (
+            rect
+            && rect.width > 0
+            && rect.height > 0
+            && rect.right > 0
+            && rect.bottom > 0
+            && rect.left < window.innerWidth
+            && rect.top < window.innerHeight
+            && nearAnchor
+            && (container.style.left || container.style.right || container.style.top)
+        ) {
+            return true;
+        }
+
+        const edgeMargin = 8;
+        const gap = 12;
+        const panelW = container.offsetWidth || rect.width || 180;
+        const panelH = container.offsetHeight || rect.height || 40;
+        const placeLeft = anchorRect.left >= (window.innerWidth / 2);
+        let left = placeLeft
+            ? anchorRect.left - gap - panelW
+            : anchorRect.right + gap;
+        let top = anchorRect.top;
+
+        left = Math.max(edgeMargin, Math.min(left, window.innerWidth - edgeMargin - panelW));
+        top = Math.max(edgeMargin, Math.min(top, window.innerHeight - 60 - panelH));
+        container.style.left = `${left}px`;
+        container.style.right = 'auto';
+        container.style.top = `${top}px`;
+        container.style.transform = placeLeft ? 'translateX(6px)' : 'translateX(-6px)';
+        return true;
+    };
+
     container._expand = () => {
-        if (container.style.display === 'flex' && container.style.opacity !== '0') return;
+        const alreadyVisible = container.style.display === 'flex' && container.style.opacity !== '0';
+        const visibilityRevision = (container._visibilityRevision || 0) + 1;
+        container._visibilityRevision = visibilityRevision;
+        if (container._expandFrameId) {
+            cancelAnimationFrame(container._expandFrameId);
+            container._expandFrameId = null;
+        }
         if (container._collapseTimeout) { clearTimeout(container._collapseTimeout); container._collapseTimeout = null; }
         if (container._interactionGuardTimer) { clearTimeout(container._interactionGuardTimer); container._interactionGuardTimer = null; }
 
         container.style.display = 'flex';
-        container.style.pointerEvents = 'none';
-        const savedTransition = container.style.transition;
-        container.style.transition = 'none';
-        container.style.opacity = '0';
-        container.style.left = '';
-        container.style.right = '';
-        container.style.top = '';
-        container.style.transform = '';
-        void container.offsetHeight;
-        container.style.transition = savedTransition;
-
-        const anchor = container._anchorElement;
-        if (anchor && window.AvatarPopupUI && window.AvatarPopupUI.positionSidePanel) {
-            window.AvatarPopupUI.positionSidePanel(container, anchor);
+        container.style.pointerEvents = alreadyVisible ? 'auto' : 'none';
+        if (!alreadyVisible) {
+            const savedTransition = container.style.transition;
+            container.style.transition = 'none';
+            container.style.opacity = '0';
+            container.style.left = '';
+            container.style.right = '';
+            container.style.top = '';
+            container.style.transform = '';
+            void container.offsetHeight;
+            container.style.transition = savedTransition;
+        }
+        const positioned = positionContainerFromAnchor();
+        if (!positioned) {
+            container.style.opacity = '0';
+            container.style.display = 'none';
+            container.style.pointerEvents = 'none';
+            container._visibilityRevision = visibilityRevision + 1;
+            return false;
         }
 
-        requestAnimationFrame(() => {
+        container._expandFrameId = requestAnimationFrame(() => {
+            container._expandFrameId = null;
+            if (container._visibilityRevision !== visibilityRevision || container.style.display === 'none') {
+                return;
+            }
             container.style.opacity = '1';
             container.style.transform = 'translateX(0)';
+            if (alreadyVisible) {
+                container.style.pointerEvents = 'auto';
+                return;
+            }
             const interactionGuardDelay = getInteractionGuardDelay();
             if (interactionGuardDelay > 0) {
                 container._interactionGuardTimer = setTimeout(() => {
@@ -1429,17 +1506,26 @@ function createSidePanelContainer(manager, prefix, options = {}) {
                 container.style.pointerEvents = 'auto';
             }
         });
+        return true;
     };
 
     container._collapse = () => {
         if (container.style.display === 'none') return;
+        container._visibilityRevision = (container._visibilityRevision || 0) + 1;
+        const visibilityRevision = container._visibilityRevision;
+        if (container._expandFrameId) {
+            cancelAnimationFrame(container._expandFrameId);
+            container._expandFrameId = null;
+        }
         if (container._collapseTimeout) { clearTimeout(container._collapseTimeout); container._collapseTimeout = null; }
         if (container._interactionGuardTimer) { clearTimeout(container._interactionGuardTimer); container._interactionGuardTimer = null; }
         container.style.pointerEvents = 'none';
         container.style.opacity = '0';
         container.style.transform = container.dataset.goLeft === 'true' ? 'translateX(6px)' : 'translateX(-6px)';
         container._collapseTimeout = setTimeout(() => {
-            if (container.style.opacity === '0') container.style.display = 'none';
+            if (container._visibilityRevision === visibilityRevision && container.style.opacity === '0') {
+                container.style.display = 'none';
+            }
             container._collapseTimeout = null;
         }, AVATAR_POPUP_ANIMATION_DURATION_MS);
     };
