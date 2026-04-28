@@ -37,6 +37,8 @@ export type HostedI18n = {
 }
 
 export type LocalStateSetter<T> = (next: T | ((previous: T) => T)) => T
+export type StateSetter<T> = (next: T | ((previous: T) => T)) => T
+export type RefObject<T> = { current: T }
 
 export type PluginSurfaceProps<State = Record<string, any>> = {
   plugin: Record<string, any>
@@ -76,7 +78,10 @@ export function Heading(props: CommonProps & { as?: string }): any
 export function Stack(props: CommonProps & { gap?: number }): any
 export function Grid(props: CommonProps & { cols?: number; gap?: number }): any
 export function Text(props: CommonProps): any
-export function Button(props: CommonProps & { tone?: Tone; variant?: Tone; type?: string; onClick?: () => void | Promise<void> }): any
+export function h(type: any, props: any, ...children: any[]): any
+export const Fragment: any
+export function render(vnode: any, container: Element): void
+export function Button(props: CommonProps & { tone?: Tone; variant?: Tone; type?: string; disabled?: boolean; onClick?: () => void | Promise<void> }): any
 export function ButtonGroup(props: CommonProps): any
 export function StatusBadge(props: CommonProps & { tone?: Tone; status?: Tone | string; label?: any }): any
 export function StatCard(props: CommonProps & { label?: any; value?: any }): any
@@ -126,4 +131,11 @@ export function Steps(props: CommonProps): any
 export function Step(props: CommonProps & { index?: any; title?: any }): any
 export function Tabs(props: CommonProps & { id?: string; activeId?: string; items?: Array<{ id?: string; label?: any; title?: any; content?: any }>; onChange?: (id: string, index: number) => void }): any
 export function useI18n(): { t: (key: string, params?: Record<string, any>) => string; locale: string }
+export function useState<T>(initialValue: T | (() => T)): [T, StateSetter<T>]
+export function useReducer<S, A>(reducer: (state: S, action: A) => S, initialArg: S, init?: (value: S) => S): [S, (action: A) => void]
+export function useEffect(effect: () => void | (() => void), deps?: any[]): void
+export function useLayoutEffect(effect: () => void | (() => void), deps?: any[]): void
+export function useMemo<T>(factory: () => T, deps?: any[]): T
+export function useCallback<T extends (...args: any[]) => any>(callback: T, deps?: any[]): T
+export function useRef<T>(initialValue: T): RefObject<T>
 export function useLocalState<T>(key: string, initialValue: T | (() => T)): [T, LocalStateSetter<T>]

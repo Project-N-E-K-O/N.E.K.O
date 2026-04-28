@@ -94,7 +94,7 @@ export function buildHostedTsxDocument(options: BuildHostedTsxDocumentOptions) {
   <script>
     let __NEKO_PAYLOAD = ${payload};
 ${escapeScriptContent(uiKit.runtime)}
-    const __requiredUiKitApis = ['h', 'appendChild', 'useLocalState'];
+    const __requiredUiKitApis = ['h', 'render', 'useLocalState'];
     if (!window.NekoUiKit || __requiredUiKitApis.some((name) => typeof window.NekoUiKit[name] !== 'function')) {
       throw new Error('N.E.K.O UI Kit failed to initialize with the required hosted TSX APIs.');
     }
@@ -144,7 +144,7 @@ ${escapeScriptContent(uiKit.runtime)}
         console.error('[plugin-ui] fatal surface render error', { ...meta, message, error });
       } catch (_) {}
       const root = document.getElementById('root');
-      if (root) root.replaceChildren(window.NekoUiKit.h('div', { className: 'neko-error', role: 'alert' },
+      if (root) window.NekoUiKit.render(window.NekoUiKit.h('div', { className: 'neko-error', role: 'alert' },
         window.NekoUiKit.h('strong', null, '插件界面渲染失败'),
         window.NekoUiKit.h('pre', null, message),
         window.NekoUiKit.h('div', { className: 'neko-error-actions' },
@@ -153,7 +153,7 @@ ${escapeScriptContent(uiKit.runtime)}
           window.NekoUiKit.h('button', { className: 'neko-button', type: 'button', onClick: () => parent.postMessage({ type: 'neko-hosted-surface-open-logs', payload: meta }, '*') }, '查看日志')
         ),
         window.NekoUiKit.h('div', { className: 'neko-error-meta' }, JSON.stringify(meta))
-      ));
+      ), root);
       parent.postMessage({ type: 'neko-hosted-surface-error', payload: { message, fatal: true, scope: 'surface.render', details: meta } }, '*');
     }
     window.__NekoRefreshHostedPayload = function(context) {
@@ -171,18 +171,8 @@ ${escapeScriptContent(compiled)}
         const root = document.getElementById('root');
         if (!root) return;
         const version = ++__renderVersion;
-        root.replaceChildren();
         try {
-          const rendered = __Panel(__hostedProps());
-          if (rendered && typeof rendered.then === 'function') {
-            rendered.then((resolved) => {
-              if (version !== __renderVersion) return;
-              root.replaceChildren();
-              window.NekoUiKit.appendChild(root, resolved);
-            }).catch(__showHostedError);
-            return;
-          }
-          window.NekoUiKit.appendChild(root, rendered);
+          window.NekoUiKit.render(window.NekoUiKit.h(__Panel, __hostedProps()), root);
         } catch (error) {
           __showHostedError(error);
         }

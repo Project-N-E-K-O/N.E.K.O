@@ -3,7 +3,15 @@ name = "MCP Adapter"
 type = "adapter"
 description = "MCP (Model Context Protocol) Router - Connect to MCP servers and expose their tools as NEKO entries"
 short_description = "Connect to MCP servers and expose their tools as NEKO plugin entries. Gateway mode for external tool integration."
-keywords = ["mcp", "MCP", "tool", "server", "gateway", "adapter", "protocol"]
+keywords = [
+    "mcp",
+    "MCP",
+    "tool",
+    "server",
+    "gateway",
+    "adapter",
+    "protocol",
+]
 version = "0.1.0"
 id = "mcp_adapter"
 entry = "plugin.plugins.mcp_adapter:MCPAdapterPlugin"
@@ -21,16 +29,16 @@ supported = ">=0.1.0,<0.3.0"
 
 [plugin.ui]
 enabled = true
-
-[[plugin.ui.panel]]
-title = "MCP Adapter"
-entry = "ui/panel.tsx"
-context = "dashboard"
+panel = [
+    { title = "MCP Adapter", entry = "ui/panel.tsx", context = "dashboard" },
+]
 
 [[plugin.ui.guide]]
 title = "MCP Adapter Quickstart"
 entry = "docs/quickstart.tsx"
-permissions = ["state:read"]
+permissions = [
+    "state:read",
+]
 
 [plugin_runtime]
 enabled = true

@@ -657,7 +657,7 @@ class MCPClient:
         """断开连接"""
         self._shutdown = True
         self.connected = False
-        
+
         if self._stderr_task:
             self._stderr_task.cancel()
             try:
@@ -684,11 +684,20 @@ class MCPClient:
             self.writer = None
         
         if self.process:
-            self.process.terminate()
+            try:
+                self.process.terminate()
+            except ProcessLookupError:
+                self.process = None
+                self.reader = None
+                self.tools = []
+                return
             try:
                 await asyncio.wait_for(self.process.wait(), timeout=5.0)
             except asyncio.TimeoutError:
-                self.process.kill()
+                try:
+                    self.process.kill()
+                except ProcessLookupError:
+                    pass
             self.process = None
         
         self.reader = None
@@ -1106,7 +1115,8 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         super().__init__(ctx)
         self._clients: Dict[str, MCPClient] = {}
         self._server_states: Dict[str, Dict[str, object]] = {}
-        self._connect_task: Optional[asyncio.Task] = None
+        self._connect_tasks: Dict[str, asyncio.Task] = {}
+        self._pending_auto_connect: Dict[str, tuple[Dict[str, object], float]] = {}
         self._reconnect_tasks: Dict[str, asyncio.Task] = {}
         self._shutdown = False
         # 重连配置缓存
@@ -1126,6 +1136,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
 
     @ui.context(id="dashboard", title="MCP Adapter 管理面板")
     async def get_dashboard_ui_context(self) -> McpPanelState:
+        self._schedule_pending_auto_connects()
         servers: list[McpServerView] = []
         seen: set[str] = set()
         for name, client in self._clients.items():
@@ -1195,7 +1206,8 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         # 先初始化 Gateway Core 组件（需要在连接服务器之前，因为 _register_mcp_tools 依赖它）
         self._init_gateway_core()
         
-        # 连接所有启用的 servers
+        # Schedule enabled servers in the background. Startup must stay responsive
+        # so hosted UI context/actions can be served immediately.
         for server_name, server_cfg in servers_config.items():
             if not isinstance(server_cfg, dict):
                 continue
@@ -1204,10 +1216,15 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
                 self.ctx.logger.info(f"Skipping disabled MCP server: {server_name}")
                 continue
             
-            await self._connect_server(server_name, server_cfg, connect_timeout)
+            self._pending_auto_connect[server_name] = (server_cfg, connect_timeout)
+            self._server_states[server_name] = {
+                **self._server_states.get(server_name, {}),
+                "connected": False,
+                "error": "Auto-connect pending",
+            }
         
         self.ctx.logger.info(
-            f"MCP Adapter started with {len(self._clients)} connected servers"
+            f"MCP Adapter started with {len(self._clients)} connected servers; pending {len(self._pending_auto_connect)} auto-connect task(s)"
         )
     
     async def _on_tool_register(
@@ -1551,6 +1568,15 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
             return False
         task.cancel()
         return True
+
+    def _cancel_connect_task(self, server_name: str) -> bool:
+        task = self._connect_tasks.pop(server_name, None)
+        cancelled = False
+        if task is not None and not task.done():
+            task.cancel()
+            cancelled = True
+        self._pending_auto_connect.pop(server_name, None)
+        return cancelled
     
     async def _unregister_mcp_tools(self, server_name: str) -> None:
         """
@@ -1562,13 +1588,59 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         """
         if self._route_engine:
             await self._route_engine.unregister_server_tools(server_name)
+
+    def _schedule_pending_auto_connects(self) -> None:
+        for server_name, (server_cfg, timeout) in list(self._pending_auto_connect.items()):
+            if self._schedule_connect_server(server_name, server_cfg, timeout):
+                self._pending_auto_connect.pop(server_name, None)
+
+    def _schedule_connect_server(self, server_name: str, server_cfg: Dict[str, object], timeout: float) -> bool:
+        if self._shutdown:
+            return False
+        if server_name in self._clients:
+            return False
+        existing = self._connect_tasks.get(server_name)
+        if existing is not None and not existing.done():
+            return False
+
+        self._server_states[server_name] = {
+            **self._server_states.get(server_name, {}),
+            "connected": False,
+            "error": "Connecting...",
+        }
+
+        async def _runner() -> None:
+            try:
+                await self._connect_server(server_name, server_cfg, timeout)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self.ctx.logger.exception(f"Background connect failed for MCP server '{server_name}': {exc}")
+                self._server_states[server_name] = {
+                    **self._server_states.get(server_name, {}),
+                    "connected": False,
+                    "error": str(exc),
+                }
+            finally:
+                current = self._connect_tasks.get(server_name)
+                if current is asyncio.current_task():
+                    self._connect_tasks.pop(server_name, None)
+
+        self._connect_tasks[server_name] = asyncio.create_task(_runner())
+        return True
     
     @lifecycle(id="shutdown")
     async def on_shutdown(self):
         """插件关闭时断开所有连接"""
         self.ctx.logger.info("MCP Adapter shutting down...")
         self._shutdown = True
-        
+
+        self._pending_auto_connect.clear()
+
+        for task in self._connect_tasks.values():
+            task.cancel()
+        self._connect_tasks.clear()
+
         # 取消所有重连任务
         for task in self._reconnect_tasks.values():
             task.cancel()
@@ -1674,6 +1746,9 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
     ) -> bool:
         """连接到单个 MCP server"""
         try:
+            if server_name not in self._servers_config:
+                self.ctx.logger.info(f"Skip connecting removed MCP server '{server_name}'")
+                return False
             timeout = self._coerce_timeout(timeout, 30.0)
             # 提取配置字段并进行类型转换
             transport_raw = server_cfg.get("transport", "stdio")
@@ -1709,6 +1784,10 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
             client.set_disconnect_callback(self._on_server_disconnect)
             
             if await client.connect(timeout=timeout):
+                if server_name not in self._servers_config:
+                    await client.disconnect()
+                    self.ctx.logger.info(f"Discarded connection for removed MCP server '{server_name}'")
+                    return False
                 self._clients[server_name] = client
                 client._reconnect_attempts = 0  # 重置重连计数
                 
@@ -1843,14 +1922,11 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         server_cfg = servers_config[server_name]
         adapter_config = config.get("mcp_adapter", {})
         timeout = self._coerce_timeout(adapter_config.get("connect_timeout", 30), 30.0)
-        
-        if await self._connect_server(server_name, server_cfg, timeout):
-            return Ok({
-                "message": f"Connected to server '{server_name}'",
-                "tools_count": len(self._clients[server_name].tools),
-            })
-        else:
-            return Err(SdkError(f"Failed to connect to server '{server_name}'"))
+        scheduled = self._schedule_connect_server(server_name, server_cfg, timeout)
+        return Ok({
+            "message": f"Connection {'scheduled' if scheduled else 'already pending'} for server '{server_name}'",
+            "connecting": scheduled or server_name in self._connect_tasks,
+        })
     
     @ui.action(label=tr("actions.disconnect.label", default="Disconnect"), tone="warning", group="server", order=20, refresh_context=True)
     @plugin_entry(
@@ -1978,12 +2054,12 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
                 if auto_connect and enabled and name not in self._clients:
                     adapter_config = config.get("mcp_adapter", {})
                     timeout_val = self._coerce_timeout(adapter_config.get("connect_timeout", 30), 30.0)
-                    if await self._connect_server(name, server_cfg, timeout_val):
-                        return Ok({
-                            "message": f"Server '{name}' already exists and is now connected",
-                            "tools_count": len(self._clients[name].tools),
-                            "already_exists": True,
-                        })
+                    scheduled = self._schedule_connect_server(name, server_cfg, timeout_val)
+                    return Ok({
+                        "message": f"Server '{name}' already exists; connection {'scheduled' if scheduled else 'already pending'}",
+                        "already_exists": True,
+                        "connecting": scheduled or name in self._connect_tasks,
+                    })
                 return Ok({
                     "message": f"Server '{name}' already exists",
                     "already_exists": True,
@@ -2007,17 +2083,12 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         if auto_connect and enabled:
             adapter_config = config.get("mcp_adapter", {})
             timeout_val = self._coerce_timeout(adapter_config.get("connect_timeout", 30), 30.0)
-            
-            if await self._connect_server(name, server_cfg, timeout_val):
-                return Ok({
-                    "message": f"Added and connected to server '{name}'",
-                    "tools_count": len(self._clients[name].tools),
-                })
-            else:
-                return Ok({
-                    "message": f"Added server '{name}' but connection failed",
-                    "connected": False,
-                })
+            self._schedule_connect_server(name, server_cfg, timeout_val)
+            return Ok({
+                "message": f"Added server '{name}' and scheduled connection",
+                "connected": False,
+                "connecting": True,
+            })
         
         return Ok({"message": f"Added server '{name}'"})
     
@@ -2052,6 +2123,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
                 not_found.append(name)
                 continue
 
+            self._cancel_connect_task(name)
             self._cancel_reconnect_task(name)
             
             # 如果已连接，先断开

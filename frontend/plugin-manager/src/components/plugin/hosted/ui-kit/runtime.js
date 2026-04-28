@@ -1,6 +1,14 @@
 const NekoUiKit = {};
 window.NekoUiKit = NekoUiKit;
 
+const Fragment = Symbol('NekoFragment');
+const TextNode = Symbol('NekoText');
+let currentInstance = null;
+let currentRoot = null;
+let effectQueue = [];
+let renderQueued = false;
+const __localState = new Map();
+
 function formatErrorMessage(error) {
   if (!error) return 'Unknown error';
   if (typeof error === 'string') return error;
@@ -9,74 +17,56 @@ function formatErrorMessage(error) {
 }
 function reportHostedRuntimeError(scope, error, details) {
   const message = formatErrorMessage(error);
-  try {
-    console.error('[plugin-ui]', scope, { message, details, error });
-  } catch (_) {}
+  try { console.error('[plugin-ui]', scope, { message, details, error }); } catch (_) {}
   try {
     parent.postMessage({ type: 'neko-hosted-surface-error', payload: { message, scope, details: details || {}, fatal: false } }, '*');
   } catch (_) {}
 }
 function createInlineError(title, error, details) {
-  const box = document.createElement('div');
-  box.className = 'neko-inline-error';
-  box.setAttribute('role', 'alert');
-  const heading = document.createElement('strong');
-  heading.className = 'neko-inline-error-title';
-  heading.textContent = title || '组件渲染失败';
-  const message = document.createElement('pre');
-  message.className = 'neko-inline-error-message';
-  message.textContent = formatErrorMessage(error);
-  box.appendChild(heading);
-  box.appendChild(message);
-  if (details) {
-    const meta = document.createElement('span');
-    meta.className = 'neko-inline-error-meta';
-    meta.textContent = String(details);
-    box.appendChild(meta);
-  }
-  return box;
+  return h('div', { className: 'neko-inline-error', role: 'alert' },
+    h('strong', { className: 'neko-inline-error-title' }, title || 'Render error'),
+    h('pre', { className: 'neko-inline-error-message' }, formatErrorMessage(error)),
+    details ? h('span', { className: 'neko-inline-error-meta' }, String(details)) : null
+  );
 }
-function setInlineError(node, error) {
-  if (!node) return;
-  const message = error ? formatErrorMessage(error) : '';
-  node.textContent = message;
-  node.hidden = !message;
-}
-function setControlInvalid(control, invalid) {
-  if (!control || typeof control.setAttribute !== 'function') return;
-  if (invalid) {
-    control.setAttribute('aria-invalid', 'true');
-    control.setAttribute('data-invalid', 'true');
-  } else {
-    control.removeAttribute('aria-invalid');
-    control.removeAttribute('data-invalid');
-  }
-}
-const __localState = new Map();
 function resolveInitialValue(initialValue) {
   return typeof initialValue === 'function' ? initialValue() : initialValue;
 }
-function useLocalState(key, initialValue) {
-  const safeKey = String(key || 'default');
-  if (!__localState.has(safeKey)) {
-    __localState.set(safeKey, resolveInitialValue(initialValue));
+function normalizeChild(child, out) {
+  if (child === null || child === undefined || child === false || child === true) return;
+  if (Array.isArray(child)) {
+    child.forEach((item) => normalizeChild(item, out));
+    return;
   }
-  const setValue = (next) => {
-    const previous = __localState.get(safeKey);
-    const value = typeof next === 'function' ? next(previous) : next;
-    __localState.set(safeKey, value);
-    if (typeof window.__NekoRenderHostedSurface === 'function') {
-      window.__NekoRenderHostedSurface();
-    }
-    return value;
-  };
-  return [__localState.get(safeKey), setValue];
+  if (child && typeof child === 'object' && child.__vnode === true) {
+    out.push(child);
+    return;
+  }
+  out.push({ __vnode: true, type: TextNode, props: { nodeValue: String(child) }, key: null, ref: null, children: [], dom: null });
 }
-
+function normalizeChildren(children) {
+  const out = [];
+  children.forEach((child) => normalizeChild(child, out));
+  return out;
+}
+function h(type, props, ...children) {
+  props = props || {};
+  const key = props.key == null ? null : props.key;
+  const ref = props.ref || null;
+  const nextProps = { ...props };
+  delete nextProps.key;
+  delete nextProps.ref;
+  if (children.length > 0) nextProps.children = children;
+  return { __vnode: true, type, props: nextProps, key, ref, children: normalizeChildren(children), dom: null, instance: null };
+}
 function appendChild(parent, child) {
   if (child === null || child === undefined || child === false) return;
   if (Array.isArray(child)) {
     child.forEach((nested) => appendChild(parent, nested));
+    return;
+  }
+  if (child && child.__vnode === true) {
+    mount(parent, child, null);
     return;
   }
   if (child instanceof Node) {
@@ -85,38 +75,329 @@ function appendChild(parent, child) {
   }
   parent.appendChild(document.createTextNode(String(child)));
 }
-
-function h(type, props, ...children) {
-  props = props || {};
-  if (typeof type === 'function') {
-    try {
-      return type({ ...props, children });
-    } catch (error) {
-      reportHostedRuntimeError('component.render', error, { component: type.name || 'Anonymous' });
-      return createInlineError(`组件 ${type.name || 'Anonymous'} 渲染失败`, error);
+function sameVNode(a, b) {
+  return !!a && !!b && a.type === b.type && a.key === b.key;
+}
+function getDom(vnode) {
+  if (!vnode) return null;
+  if (vnode.dom) return vnode.dom;
+  if (vnode.instance && vnode.instance.child) return getDom(vnode.instance.child);
+  return null;
+}
+function nextDomAfter(vnode) {
+  if (!vnode) return null;
+  if (vnode.endDom) return vnode.endDom.nextSibling;
+  const dom = getDom(vnode);
+  return dom ? dom.nextSibling : null;
+}
+function setRef(ref, value) {
+  if (!ref) return;
+  try {
+    if (typeof ref === 'function') ref(value);
+    else ref.current = value;
+  } catch (error) {
+    reportHostedRuntimeError('ref', error);
+  }
+}
+function safeInsert(parentDom, node, anchor) {
+  const safeAnchor = anchor && anchor.parentNode === parentDom ? anchor : null;
+  parentDom.insertBefore(node, safeAnchor);
+}
+function render(vnode, container) {
+  currentRoot = { vnode, container };
+  container.__nekoVNode = reconcile(container, container.__nekoVNode || null, vnode, null);
+  flushEffects();
+}
+function scheduleRender() {
+  if (renderQueued) return;
+  renderQueued = true;
+  queueMicrotask(() => {
+    renderQueued = false;
+    if (currentRoot) render(currentRoot.vnode, currentRoot.container);
+  });
+}
+function mount(parentDom, vnode, anchor) {
+  if (!vnode) return null;
+  if (vnode.type === TextNode) {
+    vnode.dom = document.createTextNode(vnode.props.nodeValue || '');
+    safeInsert(parentDom, vnode.dom, anchor || null);
+    return vnode;
+  }
+  if (vnode.type === Fragment) {
+    vnode.dom = document.createComment('neko-fragment-start');
+    vnode.endDom = document.createComment('neko-fragment-end');
+    safeInsert(parentDom, vnode.dom, anchor || null);
+    safeInsert(parentDom, vnode.endDom, anchor || null);
+    vnode.children.forEach((child) => mount(parentDom, child, vnode.endDom));
+    return vnode;
+  }
+  if (typeof vnode.type === 'function') return mountComponent(parentDom, vnode, anchor);
+  const dom = document.createElement(vnode.type);
+  vnode.dom = dom;
+  patchProps(dom, {}, vnode.props || {});
+  vnode.children.forEach((child) => mount(dom, child, null));
+  safeInsert(parentDom, dom, anchor || null);
+  setRef(vnode.ref, dom);
+  return vnode;
+}
+function unmount(vnode) {
+  if (!vnode) return;
+  if (vnode.instance) {
+    vnode.instance.hooks.forEach((hook) => {
+      if (hook && typeof hook.cleanup === 'function') {
+        try { hook.cleanup(); } catch (error) { reportHostedRuntimeError('effect.cleanup', error); }
+      }
+    });
+    unmount(vnode.instance.child);
+    return;
+  }
+  vnode.children && vnode.children.forEach(unmount);
+  setRef(vnode.ref, null);
+  const dom = getDom(vnode);
+  if (dom && dom.parentNode) dom.parentNode.removeChild(dom);
+  if (vnode.endDom && vnode.endDom.parentNode) vnode.endDom.parentNode.removeChild(vnode.endDom);
+}
+function reconcile(parentDom, oldVNode, newVNode, anchor) {
+  if (!newVNode) {
+    unmount(oldVNode);
+    return null;
+  }
+  if (!oldVNode) return mount(parentDom, newVNode, anchor);
+  if (!sameVNode(oldVNode, newVNode)) {
+    const dom = getDom(oldVNode);
+    const mounted = mount(parentDom, newVNode, dom || anchor);
+    unmount(oldVNode);
+    return mounted;
+  }
+  if (newVNode.type === TextNode) {
+    const dom = newVNode.dom = oldVNode.dom;
+    if (dom && dom.nodeValue !== newVNode.props.nodeValue) dom.nodeValue = newVNode.props.nodeValue;
+    return newVNode;
+  }
+  if (newVNode.type === Fragment) {
+    newVNode.dom = oldVNode.dom;
+    newVNode.endDom = oldVNode.endDom;
+    patchChildren(parentDom, oldVNode.children || [], newVNode.children || [], oldVNode.dom ? oldVNode.dom.nextSibling : parentDom.firstChild);
+    return newVNode;
+  }
+  if (typeof newVNode.type === 'function') return patchComponent(parentDom, oldVNode, newVNode, anchor);
+  const dom = newVNode.dom = oldVNode.dom;
+  patchProps(dom, oldVNode.props || {}, newVNode.props || {});
+  patchChildren(dom, oldVNode.children || [], newVNode.children || [], dom.firstChild);
+  setRef(oldVNode.ref, null);
+  setRef(newVNode.ref, dom);
+  return newVNode;
+}
+function mountComponent(parentDom, vnode, anchor) {
+  const instance = { vnode, child: null, hooks: [], hookIndex: 0, parentDom, anchor };
+  vnode.instance = instance;
+  const child = renderComponent(instance);
+  instance.child = mount(parentDom, child, anchor);
+  vnode.dom = getDom(instance.child);
+  vnode.endDom = instance.child && instance.child.endDom;
+  return vnode;
+}
+function patchComponent(parentDom, oldVNode, newVNode, anchor) {
+  const instance = oldVNode.instance;
+  newVNode.instance = instance;
+  instance.vnode = newVNode;
+  instance.parentDom = parentDom;
+  instance.anchor = anchor;
+  const child = renderComponent(instance);
+  instance.child = reconcile(parentDom, instance.child, child, anchor);
+  newVNode.dom = getDom(instance.child);
+  newVNode.endDom = instance.child && instance.child.endDom;
+  return newVNode;
+}
+function renderComponent(instance) {
+  const previous = currentInstance;
+  currentInstance = instance;
+  instance.hookIndex = 0;
+  try {
+    const props = { ...(instance.vnode.props || {}) };
+    if (instance.vnode.children && instance.vnode.children.length > 0) props.children = instance.vnode.children;
+    return normalizeComponentResult(instance.vnode.type(props));
+  } catch (error) {
+    reportHostedRuntimeError('component.render', error, { component: instance.vnode.type.name || 'Anonymous' });
+    return createInlineError(`Component ${instance.vnode.type.name || 'Anonymous'} render failed`, error);
+  } finally {
+    currentInstance = previous;
+  }
+}
+function normalizeComponentResult(value) {
+  if (value && value.__vnode === true) return value;
+  if (Array.isArray(value)) return h(Fragment, null, value);
+  if (value === null || value === undefined || value === false || value === true) return h(Fragment, null);
+  return h(TextNode, { nodeValue: String(value) });
+}
+function patchChildren(parentDom, oldChildren, newChildren, startNode) {
+  const oldKeyed = new Map();
+  const oldUnkeyed = [];
+  oldChildren.forEach((child) => {
+    if (child && child.key != null) oldKeyed.set(child.key, child);
+    else oldUnkeyed.push(child);
+  });
+  const used = new Set();
+  let unkeyedIndex = 0;
+  let referenceNode = startNode || parentDom.firstChild;
+  const patchedChildren = [];
+  newChildren.forEach((newChild) => {
+    let oldChild = null;
+    if (newChild.key != null && oldKeyed.has(newChild.key)) oldChild = oldKeyed.get(newChild.key);
+    else oldChild = oldUnkeyed[unkeyedIndex++] || null;
+    if (oldChild) used.add(oldChild);
+    const patched = reconcile(parentDom, oldChild, newChild, referenceNode);
+    referenceNode = nextDomAfter(patched) || referenceNode;
+    patchedChildren.push(patched);
+  });
+  oldChildren.forEach((oldChild) => {
+    if (!used.has(oldChild)) unmount(oldChild);
+  });
+  newChildren.length = 0;
+  patchedChildren.forEach((child) => newChildren.push(child));
+}
+function patchProps(dom, oldProps, newProps) {
+  Object.keys(oldProps).forEach((name) => {
+    if (name === 'children') return;
+    if (!(name in newProps)) setProp(dom, name, oldProps[name], undefined);
+  });
+  Object.keys(newProps).forEach((name) => {
+    if (name === 'children') return;
+    if (oldProps[name] !== newProps[name]) setProp(dom, name, oldProps[name], newProps[name]);
+  });
+}
+function setProp(dom, name, oldValue, newValue) {
+  if (name === 'className') name = 'class';
+  if (name === 'style') {
+    const oldStyle = oldValue || {};
+    const newStyle = newValue || {};
+    Object.keys(oldStyle).forEach((key) => { if (!(key in newStyle)) dom.style[key] = ''; });
+    Object.keys(newStyle).forEach((key) => { dom.style[key] = newStyle[key] == null ? '' : String(newStyle[key]); });
+    return;
+  }
+  if (name.startsWith('on') && typeof (oldValue || newValue) === 'function') {
+    const eventName = name.slice(2).toLowerCase();
+    if (oldValue) dom.removeEventListener(eventName, oldValue);
+    if (newValue) dom.addEventListener(eventName, newValue);
+    return;
+  }
+  if (name === 'value' && 'value' in dom) {
+    const value = newValue == null ? '' : String(newValue);
+    if (dom.value !== value) dom.value = value;
+    return;
+  }
+  if (name === 'checked' && 'checked' in dom) {
+    dom.checked = !!newValue;
+    return;
+  }
+  if ((name === 'disabled' || name === 'hidden' || name === 'multiple' || name === 'readOnly' || name === 'readonly') && name in dom) {
+    dom[name === 'readonly' ? 'readOnly' : name] = !!newValue;
+    if (!newValue) dom.removeAttribute(name);
+    else dom.setAttribute(name, '');
+    return;
+  }
+  if (name === 'selected' && 'selected' in dom) {
+    dom.selected = !!newValue;
+    return;
+  }
+  if (name === 'class' && newValue !== undefined && newValue !== null && newValue !== false) {
+    dom.setAttribute('class', String(newValue));
+    return;
+  }
+  if (name === 'defaultValue' || name === 'defaultChecked') {
+    const prop = name === 'defaultValue' ? 'defaultValue' : 'defaultChecked';
+    dom[prop] = newValue == null ? '' : newValue;
+    return;
+  }
+  if (newValue === undefined || newValue === null || newValue === false) {
+    dom.removeAttribute(name);
+    return;
+  }
+  if (newValue === true) dom.setAttribute(name, '');
+  else dom.setAttribute(name, String(newValue));
+}
+function depsChanged(oldDeps, deps) {
+  if (!deps) return true;
+  if (!oldDeps || !deps || oldDeps.length !== deps.length) return true;
+  return deps.some((dep, index) => !Object.is(dep, oldDeps[index]));
+}
+function useState(initial) {
+  if (!currentInstance) throw new Error('useState must be called inside a component');
+  const instance = currentInstance;
+  const index = instance.hookIndex++;
+  if (!instance.hooks[index]) instance.hooks[index] = { state: resolveInitialValue(initial) };
+  const setState = (next) => {
+    const hook = instance.hooks[index];
+    const value = typeof next === 'function' ? next(hook.state) : next;
+    if (Object.is(value, hook.state)) return hook.state;
+    hook.state = value;
+    scheduleRender();
+    return value;
+  };
+  return [instance.hooks[index].state, setState];
+}
+function useReducer(reducer, initialArg, init) {
+  const [state, setState] = useState(() => init ? init(initialArg) : initialArg);
+  const dispatch = (action) => setState((previous) => reducer(previous, action));
+  return [state, dispatch];
+}
+function useRef(initialValue) {
+  const [ref] = useState(() => ({ current: initialValue }));
+  return ref;
+}
+function useMemo(factory, deps) {
+  if (!currentInstance) throw new Error('useMemo must be called inside a component');
+  const index = currentInstance.hookIndex++;
+  const hook = currentInstance.hooks[index];
+  if (!hook || depsChanged(hook.deps, deps)) {
+    currentInstance.hooks[index] = { value: factory(), deps };
+  }
+  return currentInstance.hooks[index].value;
+}
+function useCallback(callback, deps) {
+  return useMemo(() => callback, deps);
+}
+function useEffect(effect, deps) {
+  if (!currentInstance) throw new Error('useEffect must be called inside a component');
+  const instance = currentInstance;
+  const index = instance.hookIndex++;
+  const hook = instance.hooks[index];
+  if (!hook || depsChanged(hook.deps, deps)) {
+    instance.hooks[index] = { ...hook, deps, effect };
+    effectQueue.push({ instance, index });
+  }
+}
+function useLayoutEffect(effect, deps) {
+  return useEffect(effect, deps);
+}
+function flushEffects() {
+  const queue = effectQueue;
+  effectQueue = [];
+  queue.forEach(({ instance, index }) => {
+    const hook = instance.hooks[index];
+    if (!hook || typeof hook.effect !== 'function') return;
+    if (typeof hook.cleanup === 'function') {
+      try { hook.cleanup(); } catch (error) { reportHostedRuntimeError('effect.cleanup', error); }
     }
-  }
-  const element = document.createElement(type);
-  for (const [key, value] of Object.entries(props)) {
-    if (key === 'children' || value === undefined || value === null || value === false) continue;
-    if (key === 'className') element.setAttribute('class', String(value));
-    else if (key === 'style' && value && typeof value === 'object') Object.assign(element.style, value);
-    else if (key.startsWith('on') && typeof value === 'function') element.addEventListener(key.slice(2).toLowerCase(), value);
-    else if (value === true) element.setAttribute(key, '');
-    else element.setAttribute(key, String(value));
-  }
-  children.forEach((child) => {
     try {
-      appendChild(element, child);
+      const cleanup = hook.effect();
+      hook.cleanup = typeof cleanup === 'function' ? cleanup : undefined;
     } catch (error) {
-      reportHostedRuntimeError('dom.appendChild', error, { element: type });
-      element.appendChild(createInlineError('子节点挂载失败', error));
+      reportHostedRuntimeError('effect', error);
     }
   });
-  return element;
 }
-
-function Fragment(props) { return props.children || []; }
+function useLocalState(key, initialValue) {
+  const safeKey = String(key || 'default');
+  if (!__localState.has(safeKey)) __localState.set(safeKey, resolveInitialValue(initialValue));
+  const [value, setValue] = useState(__localState.get(safeKey));
+  const update = (next) => setValue((previous) => {
+    const value = typeof next === 'function' ? next(previous) : next;
+    __localState.set(safeKey, value);
+    return value;
+  });
+  return [value, update];
+}
 
 function Page(props) {
   return h('div', { className: 'neko-page' },
@@ -137,7 +418,7 @@ function Heading(props) { return h(props.as || 'h2', { className: 'neko-heading 
 function Stack(props) { return h('div', { className: 'neko-stack ' + (props.className || ''), style: { '--stack-gap': props.gap ? String(props.gap) + 'px' : undefined } }, props.children); }
 function Grid(props) { return h('div', { className: 'neko-grid ' + (props.className || ''), style: { '--grid-cols': props.cols || 2, '--grid-gap': props.gap ? String(props.gap) + 'px' : undefined } }, props.children); }
 function Text(props) { return h('p', { className: 'neko-text' }, props.children); }
-function Button(props) { return h('button', { className: 'neko-button ' + (props.className || ''), 'data-tone': props.tone || props.variant || 'primary', type: props.type || 'button', onClick: props.onClick }, props.children); }
+function Button(props) { return h('button', { className: 'neko-button ' + (props.className || ''), 'data-tone': props.tone || props.variant || 'primary', type: props.type || 'button', disabled: props.disabled, onClick: props.onClick }, props.children); }
 function ButtonGroup(props) { return h('div', { className: 'neko-button-group ' + (props.className || '') }, props.children); }
 function StatusBadge(props) { return h('span', { className: 'neko-badge ' + (props.className || ''), 'data-tone': props.tone || props.status || 'primary' }, props.children || props.label || props.status || props.tone); }
 function StatCard(props) { return h('div', { className: 'neko-stat ' + (props.className || '') }, h('span', { className: 'neko-stat-label' }, props.label), h('strong', { className: 'neko-stat-value' }, props.value)); }
@@ -283,37 +564,36 @@ function ActionForm(props) {
   const schema = action.input_schema || {};
   const properties = schema.properties || {};
   const requiredFields = Array.isArray(schema.required) ? schema.required : [];
-  const values = {};
-  const fieldErrorNodes = {};
-  const fieldControls = {};
-  Object.keys(properties).forEach((key) => { values[key] = defaultValueForSchema(properties[key]); });
-  function setFieldError(key, error) {
-    setInlineError(fieldErrorNodes[key], error);
-    setControlInvalid(fieldControls[key], !!error);
-  }
-  function clearErrors() {
-    Object.keys(fieldErrorNodes).forEach((key) => setFieldError(key, ''));
-    setInlineError(formError, '');
-  }
-  function validateForm() {
+  const [values, setValues] = useState(() => {
+    const initial = {};
+    Object.keys(properties).forEach((key) => { initial[key] = defaultValueForSchema(properties[key]); });
+    return initial;
+  });
+  const [fieldErrors, setFieldErrors] = useState({});
+  const [formError, setFormError] = useState('');
+  const [formSuccess, setFormSuccess] = useState('');
+  const [loading, setLoading] = useState(false);
+  function validateForm(nextValues) {
     let valid = true;
+    const errors = {};
     Object.entries(properties).forEach(([key, fieldSchema]) => {
-      const error = validateValueForSchema(key, values[key], fieldSchema, requiredFields.includes(key));
-      setFieldError(key, error);
+      const error = validateValueForSchema(key, nextValues[key], fieldSchema, requiredFields.includes(key));
+      if (error) errors[key] = error;
       if (error) valid = false;
     });
+    setFieldErrors(errors);
     return valid;
   }
-  const formError = h('div', { className: 'neko-action-error', role: 'alert', hidden: true });
-  const formSuccess = h('div', { className: 'neko-action-success', role: 'status', hidden: true });
   const fields = Object.entries(properties).map(([key, fieldSchema]) => {
     const label = fieldSchema.title || fieldSchema.description || key;
     const help = fieldSchema.description && fieldSchema.description !== label ? fieldSchema.description : '';
     const required = requiredFields.includes(key);
     const onChange = (value) => {
-      values[key] = parseValueForSchema(value, fieldSchema);
-      setFieldError(key, '');
-      setInlineError(formError, '');
+      const parsed = parseValueForSchema(value, fieldSchema);
+      setValues((previous) => ({ ...previous, [key]: parsed }));
+      setFieldErrors((previous) => ({ ...previous, [key]: '' }));
+      setFormError('');
+      setFormSuccess('');
     };
     let control;
     if (Array.isArray(fieldSchema.enum)) {
@@ -325,41 +605,41 @@ function ActionForm(props) {
     } else {
       control = Input({ value: values[key], onChange });
     }
-    fieldControls[key] = control instanceof HTMLLabelElement ? control.querySelector('input,select,textarea') : control;
-    const field = Field({ label, help, required, children: [control] });
-    const errorNode = h('p', { className: 'neko-field-error', role: 'alert', hidden: true });
-    fieldErrorNodes[key] = errorNode;
-    field.appendChild(errorNode);
-    return field;
+    return Field({ label, help, required, error: fieldErrors[key], children: [control] });
   });
   return Form({
     onSubmit: async (event) => {
-      const submitButton = event.currentTarget.querySelector('button[type="submit"]');
-      clearErrors();
-      setInlineError(formSuccess, '');
-      if (!validateForm()) {
-        setInlineError(formError, '请先修正表单中的错误');
+      event.preventDefault();
+      setFormError('');
+      setFormSuccess('');
+      if (!validateForm(values)) {
+        setFormError('Please fix the form errors first');
         return;
       }
       const confirmMessage = action.confirm || props.confirm;
-      if (confirmMessage && !window.confirm(confirmMessage === true ? '确认执行该操作？' : String(confirmMessage))) {
+      if (confirmMessage && !window.confirm(confirmMessage === true ? 'Run this action?' : String(confirmMessage))) {
         return;
       }
       try {
-        if (submitButton) submitButton.disabled = true;
+        setLoading(true);
         const result = await api.call(action.entry_id || action.id, values);
         if (action.refresh_context !== false) await api.refresh();
-        setInlineError(formSuccess, props.successMessage || '操作已完成');
+        setFormSuccess(props.successMessage || 'Action completed');
         if (typeof props.onResult === 'function') props.onResult(result);
       } catch (error) {
         reportHostedRuntimeError('ActionForm.submit', error, { action: action.id || action.entry_id });
-        setInlineError(formError, error);
+        setFormError(formatErrorMessage(error));
         if (typeof props.onError === 'function') props.onError(error);
       } finally {
-        if (submitButton) submitButton.disabled = false;
+        setLoading(false);
       }
     },
-    children: [formError, formSuccess, ...fields, Button({ tone: action.tone || 'primary', type: 'submit', children: [props.submitLabel || action.label || action.id || 'Submit'] })],
+    children: [
+      formError ? h('div', { className: 'neko-action-error', role: 'alert' }, formError) : null,
+      formSuccess ? h('div', { className: 'neko-action-success', role: 'status' }, formSuccess) : null,
+      ...fields,
+      Button({ tone: action.tone || 'primary', type: 'submit', disabled: loading, children: [props.submitLabel || action.label || action.id || 'Submit'] }),
+    ],
   });
 }
 
@@ -467,61 +747,65 @@ function ActionButton(props) {
   const action = props.action || {};
   const actionId = props.actionId || action.entry_id || action.id;
   const label = props.label || action.label || actionId;
-  const errorNode = h('div', { className: 'neko-action-error', role: 'alert', hidden: true });
-  const button = h('button', {
-    className: 'neko-button ' + (props.className || ''),
-    'data-tone': props.tone || action.tone || 'primary',
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+  const button = Button({
+    className: props.className || '',
+    tone: props.tone || action.tone || 'primary',
+    disabled: loading,
+    children: props.children || label,
     onClick: async () => {
       try {
-        setInlineError(errorNode, '');
+        setError('');
         const confirmMessage = props.confirm || action.confirm;
-        if (confirmMessage && !window.confirm(confirmMessage === true ? '确认执行该操作？' : String(confirmMessage))) {
+        if (confirmMessage && !window.confirm(confirmMessage === true ? 'Run this action?' : String(confirmMessage))) {
           return;
         }
-        button.disabled = true;
+        setLoading(true);
         const result = await api.call(actionId, props.values || props.args || {});
         if (action.refresh_context !== false && props.refresh !== false) await api.refresh();
         if (typeof props.onResult === 'function') props.onResult(result);
       } catch (error) {
         reportHostedRuntimeError('ActionButton.click', error, { action: actionId });
-        setInlineError(errorNode, error);
+        setError(formatErrorMessage(error));
         if (typeof props.onError === 'function') props.onError(error);
       } finally {
-        button.disabled = false;
+        setLoading(false);
       }
     },
-  }, props.children || label);
-  return h('div', { className: 'neko-action-control' }, button, errorNode);
+  });
+  return h('div', { className: 'neko-action-control' }, button, error ? h('div', { className: 'neko-action-error', role: 'alert' }, error) : null);
 }
 function RefreshButton(props) {
-  let button = null;
-  const errorNode = h('div', { className: 'neko-action-error', role: 'alert', hidden: true });
-  button = Button({
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+  const button = Button({
     tone: props.tone || 'primary',
+    disabled: loading,
     onClick: async () => {
       try {
-        setInlineError(errorNode, '');
-        if (button) button.disabled = true;
+        setError('');
+        setLoading(true);
         await api.refresh();
         if (typeof props.onRefresh === 'function') props.onRefresh();
       } catch (error) {
         reportHostedRuntimeError('RefreshButton.click', error);
-        setInlineError(errorNode, error);
+        setError(formatErrorMessage(error));
         if (typeof props.onError === 'function') props.onError(error);
       } finally {
-        if (button) button.disabled = false;
+        setLoading(false);
       }
     },
     children: [props.children || props.label || '刷新'],
   });
-  return h('div', { className: 'neko-action-control' }, button, errorNode);
+  return h('div', { className: 'neko-action-control' }, button, error ? h('div', { className: 'neko-action-error', role: 'alert' }, error) : null);
 }
 
 Object.assign(NekoUiKit, {
-  appendChild, h, Fragment, Page, Card, Section, Heading, Stack, Grid, Text, Button, ButtonGroup,
+  appendChild, render, h, Fragment, Page, Card, Section, Heading, Stack, Grid, Text, Button, ButtonGroup,
   StatusBadge, StatCard, KeyValue, DataTable, Divider, Toolbar, ToolbarGroup,
   Alert, InlineError, EmptyState, List, Progress, JsonView, Field, Input, Select, Textarea,
   Switch, Form, ActionForm, CodeBlock, Tip, Warning, Steps, Step, Tabs, useI18n,
-  t, api, useLocalState, ActionButton, RefreshButton,
+  t, api, useState, useReducer, useEffect, useLayoutEffect, useMemo, useCallback, useRef, useLocalState, ActionButton, RefreshButton,
 });
 Object.assign(window, NekoUiKit);

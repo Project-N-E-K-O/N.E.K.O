@@ -73,7 +73,8 @@ function createCheckFile(entryPath, tempDir, index, surface, tomlPath) {
       'StatusBadge', 'StatCard', 'KeyValue', 'DataTable', 'Divider', 'Toolbar', 'ToolbarGroup',
       'Alert', 'EmptyState', 'List', 'Progress', 'JsonView', 'Field', 'Input', 'Select',
       'Textarea', 'Switch', 'Form', 'ActionButton', 'RefreshButton', 'ActionForm', 'InlineError', 'CodeBlock',
-      'Tip', 'Warning', 'Steps', 'Step', 'Tabs', 'useI18n', 'useLocalState',
+      'Tip', 'Warning', 'Steps', 'Step', 'Tabs', 'useI18n',
+      'useState', 'useReducer', 'useEffect', 'useLayoutEffect', 'useMemo', 'useCallback', 'useRef', 'useLocalState',
     ].join(', ')} } = NekoUi;\ndeclare const h: any;\ndeclare const Fragment: any;\n${stripped}\n`,
     'utf8',
   )
