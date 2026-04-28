@@ -693,6 +693,23 @@ class LLMSessionManager:
                     if is_first_chunk and self.tts_thread and not self.tts_thread.is_alive():
                         self._respawn_tts_worker()
 
+    def _flush_ai_turn_text_to_tracker(self) -> None:
+        """Flush the per-turn AI text buffer into the activity tracker.
+
+        Called from each AI-turn-end exit point — there are three:
+          - ``_emit_turn_end`` for regular replies (and truncate-recovery)
+          - ``handle_proactive_complete`` for the agent direct-reply path
+          - ``finish_proactive_delivery`` for /api/proactive_chat success
+
+        The tracker runs the question heuristic over the text and (when
+        text is non-empty) bumps ``_conv_seq`` for open_threads cache
+        invalidation. Empty / None text is fine — it just updates the
+        timestamp without opening an unfinished_thread or invalidating
+        the cache.
+        """
+        self._activity_tracker.on_ai_message(text=self._current_ai_turn_text or None)
+        self._current_ai_turn_text = ''
+
     async def handle_proactive_complete(self, content_committed: bool = True):
         """Lightweight completion for proactive (agent callback) replies.
 
@@ -704,14 +721,11 @@ class LLMSessionManager:
         if not content_committed:
             logger.debug("[%s] handle_proactive_complete: no content committed, skipping completion flush", self.lanlan_name)
             return
-        # Activity tracker：proactive 也算 AI 在说话。和 _emit_turn_end 对称，
-        # 让 seconds_since_ai_msg 不分主动/被动。proactive 文本同样走过
+        # Activity tracker flush：proactive 也算 AI 在说话。和 _emit_turn_end
+        # 对称，让 seconds_since_ai_msg 不分主动/被动。proactive 文本同样走过
         # send_lanlan_response（finish_proactive_delivery 内部会调），所以
-        # _current_ai_turn_text 已经累加好；直接交给 tracker 做问号检测。
-        self._activity_tracker.on_ai_message(
-            text=self._current_ai_turn_text or None,
-        )
-        self._current_ai_turn_text = ''
+        # _current_ai_turn_text 已经累加好。
+        self._flush_ai_turn_text_to_tracker()
         if self.use_tts and self.tts_thread and self.tts_thread.is_alive():
             try:
                 await self._request_tts_done_for_turn("handle_proactive_complete")
@@ -752,13 +766,10 @@ class LLMSessionManager:
                 await self.websocket.send_json(ws_msg)
         except Exception as e:
             logger.error(f"💥 WS Send Turn End Error: {e}")
-        # Activity tracker：AI 刚结束一轮（普通完成 + truncate-recovery 都走这里）。
-        # text 用于 unfinished_thread 检测——tracker 跑问号启发式决定要不要开
-        # 5min 跟进窗口；为 None 时不开窗，但仍更新 seconds_since_ai_msg。
-        self._activity_tracker.on_ai_message(
-            text=self._current_ai_turn_text or None,
-        )
-        self._current_ai_turn_text = ''
+        # Activity tracker flush：AI 刚结束一轮（普通完成 + truncate-recovery 都
+        # 走这里）。text 用于 unfinished_thread 检测——tracker 跑问号启发式决定
+        # 要不要开 5min 跟进窗口；为 None 时不开窗，但仍更新 seconds_since_ai_msg。
+        self._flush_ai_turn_text_to_tracker()
 
     async def handle_response_complete(self):
         """Qwen完成回调：用于处理Core API的响应完成事件，包含TTS和热切换逻辑"""
@@ -3033,8 +3044,7 @@ class LLMSessionManager:
             # (only the agent-direct-reply path in main_server.py does), so
             # without this the buffer would carry the proactive text forward
             # and contaminate the next user-initiated turn's AI message.
-            self._activity_tracker.on_ai_message(text=self._current_ai_turn_text or None)
-            self._current_ai_turn_text = ''
+            self._flush_ai_turn_text_to_tracker()
 
             if self.session and hasattr(self.session, '_conversation_history'):
                 self.session._conversation_history.append(AIMessage(content=full_text))

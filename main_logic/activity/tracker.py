@@ -351,7 +351,16 @@ class UserActivityTracker:
         )
 
     async def _do_open_threads_compute(self, lang: str) -> None:
-        """One-shot LLM call. Updates cache only on parse success."""
+        """One-shot LLM call. Updates cache only on parse success.
+
+        In-flight guard: capture ``_conv_seq`` before the LLM call;
+        re-check on completion. If new conversation events arrived
+        while we were waiting (rev advanced), the result was computed
+        from a stale buffer view — discard it. ``_open_threads_computed_at_seq``
+        stays at its previous value, so the next ``kickoff`` will see
+        the seq mismatch and trigger a fresh compute against the
+        current buffer.
+        """
         from main_logic.activity.llm_enrichment import call_open_threads
         seen_seq = self._conv_seq
         try:
@@ -366,6 +375,15 @@ class UserActivityTracker:
         if result is None:
             # LLM/parse failure — keep old cache intact, don't bump seq
             # so the next kickoff retries.
+            return
+        if self._conv_seq != seen_seq:
+            # New user/AI message arrived during the LLM call. Our
+            # result reflects pre-message state — discard rather than
+            # let it shadow the up-to-date buffer until the next tick.
+            logger.debug(
+                '[%s] open_threads result discarded: seq advanced from %d to %d during LLM call',
+                self.lanlan_name, seen_seq, self._conv_seq,
+            )
             return
         self._open_threads_cache = result
         self._open_threads_computed_at_seq = seen_seq
