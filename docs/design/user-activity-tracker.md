@@ -99,7 +99,7 @@ Phase 2 prompt rewrites map these directives into language directives
 
 ## Architecture
 
-```
+```text
 main_logic/activity/
 ├── __init__.py            Public exports (UserActivityTracker, snapshot types)
 ├── snapshot.py            ActivitySnapshot / WindowObservation / Propensity types,
@@ -125,7 +125,7 @@ config/
 
 Dataflow:
 
-```
+```text
                 ┌────────────────────────────┐
                 │ SystemSignalCollector      │
                 │  (process singleton)       │
@@ -285,7 +285,7 @@ channel decay) should suppress external sources during transitions.
 
 Snapshot during a coding session:
 
-```
+```text
 state: focused_work | propensity: restricted_screen_only
 state_age_seconds: 0.0 (just classified)
 previous_state: idle
@@ -308,7 +308,7 @@ material entirely.
 
 Snapshot during casual browsing on Bilibili:
 
-```
+```text
 state: casual_browsing | propensity: open
 propensity_reasons: ['浏览娱乐：bilibili.com']
 active_window: bilibili.com (entertainment/video), is_browser=True
@@ -322,7 +322,7 @@ gentle reminisce about something from a few days ago.
 
 Snapshot 30 seconds after returning from being away 20 min:
 
-```
+```text
 state: stale_returning | propensity: greeting_window
 propensity_reasons: ['用户刚从离开状态回来']
 state_age_seconds: 28
