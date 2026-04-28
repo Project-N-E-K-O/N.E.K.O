@@ -4185,11 +4185,15 @@ async def proactive_chat(request: Request):
         if _surfaced_reflection_ids:
             _record_reminiscence_usage(lanlan_name)
 
-        # Unfinished-thread 跟进计数：本轮 snapshot 里有未收尾话题就 +1。无论 AI
-        # 实际有没有用这个 override（它可能选了别的素材），都计为一次"我们给过
-        # 它机会跟进"——这是保守 throttle，避免 AI 反复忽略 override 也耗光配额；
-        # 计数到 UNFINISHED_THREAD_MAX_FOLLOWUPS 后 tracker 自动停止暴露这条。
-        if _has_unfinished_thread:
+        # Unfinished-thread 跟进计数：仅当 AI 本轮真的产出 [CHAT]（即没有选
+        # WEB/MUSIC/MEME 这类外部素材）时才 +1。早先版本是"snapshot 里有未收尾
+        # 话题就计数"，理由是想防"AI 反复忽略 override 也烧光配额"——但
+        # UNFINISHED_THREAD_WINDOW_SECONDS=300 的自动过期已经兜底了 thread 的总
+        # 暴露时间，再多算曝光只会让两次外部素材轮把真正的续接配额提前烧光。
+        # source_tag == 'CHAT' / primary_channel == 'chat' 是 build_proactive_response
+        # 后唯一可靠的 "AI 走了文本路径" 信号；无 tag 但出过文本时上游会兜底
+        # 设成 CHAT。[PASS] 已在 4079 早 return，不会走到这里。
+        if _has_unfinished_thread and (source_tag == 'CHAT' or primary_channel == 'chat'):
             try:
                 mgr._activity_tracker.mark_unfinished_thread_used()
                 print(f"[{lanlan_name}] 跟进未收尾话题：mark_used")
