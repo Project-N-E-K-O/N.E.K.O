@@ -1,0 +1,189 @@
+from __future__ import annotations
+
+import asyncio
+import importlib
+import sys
+import types
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+STS2_PACKAGE_DIR = PROJECT_ROOT / "plugin" / "plugins" / "sts2_autoplay"
+
+
+def load_service_class():
+    for name, path in {
+        "plugin": PROJECT_ROOT / "plugin",
+        "plugin.plugins": PROJECT_ROOT / "plugin" / "plugins",
+        "plugin.plugins.sts2_autoplay": STS2_PACKAGE_DIR,
+    }.items():
+        if name not in sys.modules:
+            module = types.ModuleType(name)
+            module.__path__ = [str(path)]
+            sys.modules[name] = module
+    return importlib.import_module("plugin.plugins.sts2_autoplay.service").STS2AutoplayService
+
+
+STS2AutoplayService = load_service_class()
+
+
+class DummyLogger:
+    def warning(self, message: Any, *args: Any, **kwargs: Any) -> None:
+        pass
+
+    def error(self, message: Any, *args: Any, **kwargs: Any) -> None:
+        pass
+
+    def info(self, message: Any, *args: Any, **kwargs: Any) -> None:
+        pass
+
+
+class CommandService(STS2AutoplayService):
+    def __init__(self) -> None:
+        super().__init__(DummyLogger(), lambda payload: None)
+        self.called: list[tuple[str, Any]] = []
+
+    async def health_check(self) -> dict[str, Any]:
+        self.called.append(("health_check", None))
+        return {"status": "connected", "message": "已连接"}
+
+    async def refresh_state(self) -> dict[str, Any]:
+        self.called.append(("refresh_state", None))
+        return {"status": "ok", "message": "已刷新"}
+
+    async def get_snapshot(self) -> dict[str, Any]:
+        self.called.append(("get_snapshot", None))
+        return {"status": "ok", "message": "当前局面"}
+
+    async def recommend_one_card_by_neko(self, objective: str | None = None) -> dict[str, Any]:
+        self.called.append(("recommend_one_card_by_neko", objective))
+        return {"status": "recommended", "summary": "建议打一张牌", "executed": False}
+
+    async def play_one_card_by_neko(self, objective: str | None = None) -> dict[str, Any]:
+        self.called.append(("play_one_card_by_neko", objective))
+        return {"status": "ok", "summary": "已打出一张牌", "executed": True}
+
+    async def step_once(self) -> dict[str, Any]:
+        self.called.append(("step_once", None))
+        return {"status": "ok", "summary": "已执行一步"}
+
+    async def start_autoplay(self, objective: str | None = None, stop_condition: str = "current_floor") -> dict[str, Any]:
+        self.called.append(("start_autoplay", {"objective": objective, "stop_condition": stop_condition}))
+        self._autoplay_state = "running"
+        return {"status": "running", "message": "尖塔半自动任务已启动"}
+
+    async def pause_autoplay(self) -> dict[str, Any]:
+        self.called.append(("pause_autoplay", None))
+        self._autoplay_state = "paused"
+        return {"status": "paused", "message": "尖塔已暂停"}
+
+    async def resume_autoplay(self) -> dict[str, Any]:
+        self.called.append(("resume_autoplay", None))
+        self._autoplay_state = "running"
+        return {"status": "running", "message": "尖塔已恢复"}
+
+    async def stop_autoplay(self) -> dict[str, Any]:
+        self.called.append(("stop_autoplay", None))
+        self._autoplay_state = "idle"
+        return {"status": "idle", "message": "尖塔已停止"}
+
+    async def send_neko_guidance(self, guidance: dict[str, Any]) -> dict[str, Any]:
+        self.called.append(("send_neko_guidance", guidance))
+        return {"status": "ok", "message": "猫娘指导已入队"}
+
+
+@pytest.fixture()
+def service() -> CommandService:
+    return CommandService()
+
+
+def run(coro):
+    return asyncio.run(coro)
+
+
+@pytest.mark.unit
+def test_neko_command_advice_does_not_execute(service: CommandService) -> None:
+    result = run(service.neko_command("这回合怎么打"))
+    assert result["intent"] == "advice"
+    assert result["executed"] is False
+    assert service.called == [("recommend_one_card_by_neko", "这回合怎么打")]
+
+
+@pytest.mark.unit
+def test_neko_command_play_one_card_requires_explicit_wording(service: CommandService) -> None:
+    result = run(service.neko_command("帮我打一张牌"))
+    assert result["intent"] == "play_one_card"
+    assert result["executed"] is True
+    assert service.called == [("play_one_card_by_neko", "帮我打一张牌")]
+
+
+@pytest.mark.unit
+def test_neko_command_step_once(service: CommandService) -> None:
+    result = run(service.neko_command("执行一步"))
+    assert result["intent"] == "step_once"
+    assert result["executed"] is True
+    assert service.called == [("step_once", None)]
+
+
+@pytest.mark.unit
+def test_neko_command_autoplay_current_floor_by_default(service: CommandService) -> None:
+    result = run(service.neko_command("帮我打这一关"))
+    assert result["intent"] == "start_autoplay"
+    assert result["executed"] is True
+    assert service.called == [("start_autoplay", {"objective": "帮我打这一关", "stop_condition": "current_floor"})]
+
+
+@pytest.mark.unit
+def test_neko_command_autoplay_current_combat(service: CommandService) -> None:
+    result = run(service.neko_command("打完这场战斗"))
+    assert result["intent"] == "start_autoplay"
+    assert result["executed"] is True
+    assert service.called == [("start_autoplay", {"objective": "打完这场战斗", "stop_condition": "current_combat"})]
+
+
+@pytest.mark.unit
+def test_neko_command_manual_autoplay_requires_confirmation(service: CommandService) -> None:
+    result = run(service.neko_command("一直托管"))
+    assert result["intent"] == "manual_autoplay_confirmation"
+    assert result["needs_confirmation"] is True
+    assert result["executed"] is False
+    assert service.called == []
+
+
+@pytest.mark.unit
+def test_neko_command_guidance_when_autoplay_running(service: CommandService) -> None:
+    service._autoplay_state = "running"
+    result = run(service.neko_command("先防一下，别贪"))
+    assert result["intent"] == "guidance"
+    assert result["executed"] is False
+    assert service.called[0][0] == "send_neko_guidance"
+    assert service.called[0][1]["content"] == "先防一下，别贪"
+
+
+@pytest.mark.unit
+def test_neko_command_guidance_degrades_to_advice_when_not_running(service: CommandService) -> None:
+    result = run(service.neko_command("先防一下，别贪"))
+    assert result["intent"] == "unknown"
+    assert result["needs_confirmation"] is True
+    assert service.called == []
+
+
+@pytest.mark.unit
+def test_neko_command_pause_has_priority(service: CommandService) -> None:
+    service._autoplay_state = "running"
+    result = run(service.neko_command("暂停一下，先防"))
+    assert result["intent"] == "pause"
+    assert result["executed"] is False
+    assert service.called == [("pause_autoplay", None)]
+
+
+@pytest.mark.unit
+def test_neko_command_unknown_is_conservative(service: CommandService) -> None:
+    result = run(service.neko_command("你看着办"))
+    assert result["intent"] == "unknown"
+    assert result["needs_confirmation"] is True
+    assert result["executed"] is False
+    assert service.called == []

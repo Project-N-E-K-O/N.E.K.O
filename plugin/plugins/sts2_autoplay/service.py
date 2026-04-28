@@ -51,6 +51,10 @@ class STS2AutoplayService:
         self._last_neko_guidance_count = 0
         self._semi_auto_task: Optional[Dict[str, Any]] = None
         self._last_task_report_step = -1
+        self._last_neko_commentary_at = 0.0
+        self._last_neko_commentary_scene = ""
+        self._last_neko_event_scene = ""
+        self._last_neko_event_floor = -1
 
     _MODE_ALIASES = {
         "full-program": "full-program",
@@ -76,6 +80,77 @@ class STS2AutoplayService:
     }
 
     _DEFAULT_CHARACTER_STRATEGY = "defect"
+
+    _COMMENTARY_STYLES = {
+        "defect": {"tone": "理性", "prefix": "数据看起来", "suffix": "喵"},
+        "ironclad": {"tone": "稳健", "prefix": "稳住节奏", "suffix": "喵"},
+        "silent_hunter": {"tone": "灵巧", "prefix": "节奏很关键", "suffix": "喵"},
+        "necrobinder": {"tone": "冷静", "prefix": "资源要算清楚", "suffix": "喵"},
+        "regent": {"tone": "从容", "prefix": "局势还在掌控中", "suffix": "喵"},
+    }
+
+    _COMMENTARY_TEMPLATES = {
+        "critical_hp": [
+            "{prefix}，血量只剩 {hp}/{max_hp} 了，先别慌，我会优先保命和叠甲{suffix}。",
+            "{prefix}，现在是危险血线 {hp}/{max_hp}，我们先把生存放第一位{suffix}。",
+        ],
+        "low_hp": [
+            "{prefix}，现在血量偏低，{hp}/{max_hp}，这回合要稳一点{suffix}。",
+            "{prefix}，血量不太健康了，先少掉血最重要{suffix}。",
+        ],
+        "lethal": [
+            "{prefix}，看到斩杀机会了！这波可以优先找输出，把敌人收掉{suffix}。",
+            "{prefix}，敌人血线已经露出来了，我们可以尝试收尾{suffix}。",
+        ],
+        "incoming_attack": [
+            "{prefix}，敌人这回合大概要打 {incoming_attack} 点，还差 {remaining_block} 点防御，先叠甲会更稳{suffix}。",
+            "{prefix}，来袭伤害有 {incoming_attack} 点，当前防御缺口是 {remaining_block}，别硬吃{suffix}。",
+        ],
+        "defense": [
+            "{prefix}，这回合防守收益更高，我会尽量减少掉血{suffix}。",
+            "{prefix}，先把防线架起来，后面再找输出窗口{suffix}。",
+        ],
+        "combat": [
+            "{prefix}，我在看这手牌：{hand_text}。下一步倾向于{action_hint}{reason_text}{suffix}。",
+            "{prefix}，手里有 {hand_text}，我会按当前局面选择{action_hint}{suffix}。",
+        ],
+        "reward": [
+            "{prefix}，奖励界面到了，我们看看有没有适合当前构筑的好牌或资源{suffix}。",
+            "{prefix}，战利品来了，先挑最能补强构筑的选项{suffix}。",
+        ],
+        "shop": [
+            "{prefix}，商店到了，先看关键遗物，再考虑删牌和补强{suffix}。",
+            "{prefix}，商店资源要精打细算，别急着花光金币{suffix}。",
+        ],
+        "rest": [
+            "{prefix}，休息点到了，先评估血量，再决定休息还是强化{suffix}。",
+            "{prefix}，这里可以喘口气，我们按血量决定最稳选择{suffix}。",
+        ],
+        "event": [
+            "{prefix}，事件选项到了，我会优先避开高风险损血{suffix}。",
+            "{prefix}，事件要看收益和代价，咱们稳一点判断{suffix}。",
+        ],
+        "map": [
+            "{prefix}，路线选择到了，我会优先考虑安全节点和关键资源{suffix}。",
+            "{prefix}，接下来挑路线，尽量平衡风险和成长{suffix}。",
+        ],
+        "combat_end": [
+            "{prefix}，战斗结束啦，打得不错，接下来看看奖励怎么拿{suffix}。",
+            "{prefix}，这一场收下了，先整理资源再继续前进{suffix}。",
+        ],
+        "key_relic": [
+            "{prefix}，看到关键遗物了，这可能会改变后续构筑方向{suffix}。",
+            "{prefix}，这个遗物值得认真考虑，可能是本局节奏点{suffix}。",
+        ],
+        "route_chosen": [
+            "{prefix}，路线已经推进了，我们按这个节奏继续走{suffix}。",
+            "{prefix}，路线选择完成，接下来注意资源和血量管理{suffix}。",
+        ],
+        "general": [
+            "{prefix}，我在旁边看着战况，有危险会及时提醒你{suffix}。",
+            "{prefix}，当前局面还可以，我会继续陪你盯着{suffix}。",
+        ],
+    }
 
     @property
     def _strategies_dir(self) -> Path:
@@ -183,6 +258,115 @@ class STS2AutoplayService:
     async def step_once(self) -> Dict[str, Any]:
         async with self._step_lock:
             return await self._step_once_locked()
+
+    async def neko_command(self, command: str, scope: str = "auto", confirm: bool = False) -> Dict[str, Any]:
+        raw_command = str(command or "").strip()
+        normalized_scope = str(scope or "auto").strip().lower() or "auto"
+        if not raw_command:
+            return self._wrap_neko_command_result(
+                intent="unknown",
+                action="clarify",
+                result={"status": "clarify", "message": "请告诉我你想让我看局面、给建议，还是实际操作。"},
+                executed=False,
+                needs_confirmation=True,
+            )
+        text = self._normalize_neko_command_text(raw_command)
+
+        if normalized_scope in {"control", "auto"}:
+            if self._neko_text_has_any(text, ["停了吧", "别打了", "停止", "结束托管", "停止托管", "终止", "stop"]):
+                return self._wrap_neko_command_result("stop", "stop_autoplay", await self.stop_autoplay(), executed=False)
+            if self._neko_text_has_any(text, ["暂停", "先停", "等一下", "别动", "pause"]):
+                return self._wrap_neko_command_result("pause", "pause_autoplay", await self.pause_autoplay(), executed=False)
+            if self._neko_text_has_any(text, ["继续", "恢复", "接着打", "resume"]):
+                return self._wrap_neko_command_result("resume", "resume_autoplay", await self.resume_autoplay(), executed=False)
+
+        if normalized_scope in {"status", "auto"} and self._neko_text_has_any(text, ["健康", "连上", "连接", "health"]):
+            return self._wrap_neko_command_result("health", "health_check", await self.health_check(), executed=False)
+        if normalized_scope in {"status", "auto"} and self._neko_text_has_any(text, ["刷新"]):
+            return self._wrap_neko_command_result("refresh_state", "refresh_state", await self.refresh_state(), executed=False)
+        if normalized_scope in {"status", "auto"} and self._neko_text_has_any(text, ["状态", "情况", "局面", "快照", "合法动作", "现在什么"]):
+            return self._wrap_neko_command_result("snapshot", "get_snapshot", await self.get_snapshot(), executed=False)
+
+        if normalized_scope == "guidance" or (normalized_scope == "auto" and self._autoplay_state in {"running", "paused"} and self._is_neko_guidance_text(text)):
+            if self._autoplay_state in {"running", "paused"}:
+                result = await self.send_neko_guidance({"content": raw_command, "step": self._step_count, "type": "soft_guidance"})
+                return self._wrap_neko_command_result("guidance", "send_neko_guidance", result, executed=False)
+            result = await self.recommend_one_card_by_neko(objective=raw_command)
+            return self._wrap_neko_command_result("advice", "recommend_one_card_by_neko", result, executed=False)
+
+        if normalized_scope == "advice" or (normalized_scope == "auto" and self._is_neko_advice_text(text)):
+            result = await self.recommend_one_card_by_neko(objective=raw_command)
+            return self._wrap_neko_command_result("advice", "recommend_one_card_by_neko", result, executed=False)
+
+        if normalized_scope == "one_card" or (normalized_scope == "auto" and self._is_neko_play_one_card_text(text)):
+            result = await self.play_one_card_by_neko(objective=raw_command)
+            return self._wrap_neko_command_result("play_one_card", "play_one_card_by_neko", result, executed=True)
+
+        if normalized_scope == "one_action" or (normalized_scope == "auto" and self._is_neko_step_once_text(text)):
+            result = await self.step_once()
+            return self._wrap_neko_command_result("step_once", "step_once", result, executed=True)
+
+        if normalized_scope == "autoplay" or (normalized_scope == "auto" and self._is_neko_autoplay_text(text)):
+            stop_condition = self._infer_neko_stop_condition(text)
+            if stop_condition == "manual" and not confirm:
+                return self._wrap_neko_command_result(
+                    intent="manual_autoplay_confirmation",
+                    action="clarify",
+                    result={"status": "confirm_required", "message": "持续托管需要确认。你可以说“确认持续托管”，或改成只帮你打一层/打一场。"},
+                    executed=False,
+                    needs_confirmation=True,
+                )
+            result = await self.start_autoplay(objective=raw_command, stop_condition=stop_condition)
+            return self._wrap_neko_command_result("start_autoplay", "start_autoplay", result, executed=True)
+
+        return self._wrap_neko_command_result(
+            intent="unknown",
+            action="clarify",
+            result={"status": "clarify", "message": "我不确定你是想只要建议，还是要我实际操作。为了安全，我先不动牌。"},
+            executed=False,
+            needs_confirmation=True,
+        )
+
+    def _wrap_neko_command_result(self, intent: str, action: str, result: Dict[str, Any], *, executed: bool, needs_confirmation: bool = False) -> Dict[str, Any]:
+        summary = str(result.get("summary") or result.get("message") or "") if isinstance(result, dict) else ""
+        return {
+            "status": result.get("status", "ok") if isinstance(result, dict) else "ok",
+            "intent": intent,
+            "action": action,
+            "executed": executed,
+            "needs_confirmation": needs_confirmation,
+            "message": summary,
+            "summary": summary,
+            "result": result,
+        }
+
+    def _normalize_neko_command_text(self, command: str) -> str:
+        return re.sub(r"\s+", "", str(command or "").lower())
+
+    def _neko_text_has_any(self, text: str, needles: list[str]) -> bool:
+        return any(self._normalize_neko_command_text(needle) in text for needle in needles)
+
+    def _is_neko_guidance_text(self, text: str) -> bool:
+        return self._neko_text_has_any(text, ["先防", "防一下", "保命", "别贪", "优先输出", "能斩就斩", "斩杀", "省资源", "别乱花", "稳一点"])
+
+    def _is_neko_advice_text(self, text: str) -> bool:
+        return self._neko_text_has_any(text, ["怎么打", "打哪张", "哪张牌", "建议", "看看", "分析", "怎么办", "怎么出"])
+
+    def _is_neko_play_one_card_text(self, text: str) -> bool:
+        return self._neko_text_has_any(text, ["打一张牌", "出一张", "选一张牌打出去", "帮我打一张", "帮我出一张", "直接出一张"])
+
+    def _is_neko_step_once_text(self, text: str) -> bool:
+        return self._neko_text_has_any(text, ["打一步", "执行一步", "操作一下", "走一步"])
+
+    def _is_neko_autoplay_text(self, text: str) -> bool:
+        return self._neko_text_has_any(text, ["打这一关", "打一关", "打一层", "打完这场", "自动打", "托管", "代打"])
+
+    def _infer_neko_stop_condition(self, text: str) -> str:
+        if self._neko_text_has_any(text, ["这场", "战斗"]):
+            return "current_combat"
+        if self._neko_text_has_any(text, ["一直", "持续", "无限", "手动停止"]):
+            return "manual"
+        return "current_floor"
 
     async def recommend_one_card_by_neko(self, objective: Optional[str] = None) -> Dict[str, Any]:
         async with self._step_lock:
@@ -494,11 +678,21 @@ class STS2AutoplayService:
                 "stop_condition": task_context.get("stop_condition"),
                 "status": task_context.get("status", "running"),
             }
+        live_commentary = self._build_neko_live_commentary(
+            report=report,
+            hand_names=hand_names,
+            enemies_str=enemies_str,
+            chosen_action=chosen_action,
+            decision_reason=decision_reason,
+            tactical_brief=tactical_brief,
+        )
+        commentary_text = str(live_commentary.get("text") or "")
         content = (
             f"尖塔观察#{report['step']} Act{report['act']}F{report['floor']} {report['screen']} "
             f"HP{report['player_hp']}/{report['max_hp']}；AI={chosen_action}；"
             f"因={decision_reason or '无'}；手牌={','.join(hand_names) if hand_names else '无'}；"
             f"敌={enemies_str}；战术={json.dumps(tactical_brief, ensure_ascii=False, separators=(',', ':'))}。"
+            f"猫娘实况={commentary_text or '本次保持安静陪伴'}。"
             "规则：过程观察，非完成；仅基于数据短评，可沉默；要干预请调用指导/暂停/恢复/停止入口。"
         )
         description = f"尖塔观察#{report['step']}"
@@ -530,17 +724,194 @@ class STS2AutoplayService:
                 "rules": "过程观察≠完成；仅按report短评，可沉默；勿编造；干预用sts2_send_neko_guidance，控制用pause/resume/stop。",
                 "commentary_allowed": True,
                 "commentary_scope": "brief_comment_or_silence_from_report_only",
+                "mood": live_commentary.get("mood"),
+                "urgency": live_commentary.get("urgency"),
+                "commentary_style": live_commentary.get("style"),
+                "should_speak": live_commentary.get("should_speak"),
                 "task": task_brief,
             },
+            "live_commentary": live_commentary,
             "task": task_brief,
         }
         try:
-            maybe_awaitable = notifier(content=content, description=description, metadata=metadata, priority=5)
+            priority = self._safe_int(live_commentary.get("priority"), 5) if live_commentary.get("should_speak") else 5
+            maybe_awaitable = notifier(content=content, description=description, metadata=metadata, priority=priority)
             if isinstance(maybe_awaitable, Awaitable):
                 await maybe_awaitable
         except Exception as exc:
             self.logger.warning(f"neko report push failed: {exc}")
 
+    def _build_neko_live_commentary(self, *, report: Dict[str, Any], hand_names: list[str], enemies_str: str, chosen_action: str, decision_reason: str, tactical_brief: Dict[str, Any]) -> Dict[str, Any]:
+        enabled = bool(self._cfg.get("neko_commentary_enabled", True))
+        hp = self._safe_int(report.get("player_hp"), 0)
+        max_hp = max(1, self._safe_int(report.get("max_hp"), 1))
+        hp_ratio = hp / max_hp
+        incoming_attack = self._safe_int(tactical_brief.get("atk"), 0)
+        remaining_block = self._safe_int(tactical_brief.get("need_block"), 0)
+        lethal = bool(tactical_brief.get("lethal"))
+        should_defend = bool(tactical_brief.get("def"))
+        screen = str(report.get("screen") or "unknown")
+        in_combat = bool(report.get("in_combat"))
+        floor = self._safe_int(report.get("floor"), -1)
+        scene = "general"
+        mood = "陪伴"
+        urgency = "low"
+        priority = 5
+        interrupt = False
+        action_hint = self._humanize_action_for_commentary(chosen_action)
+        event_scene = self._detect_neko_event_commentary_scene(report=report, chosen_action=chosen_action)
+
+        if in_combat and hp_ratio <= max(0.0, min(1.0, float(self._cfg.get("neko_desperate_hp_threshold", 0.2) or 0.2))):
+            scene = "critical_hp"
+            mood = "担心但镇定"
+            urgency = "critical"
+            priority = 9
+            interrupt = True
+        elif in_combat and hp_ratio <= max(0.0, min(1.0, float(self._cfg.get("neko_auto_low_hp_threshold", 0.3) or 0.3))):
+            scene = "low_hp"
+            mood = "关心"
+            urgency = "high"
+            priority = 8
+        elif in_combat and lethal:
+            scene = "lethal"
+            mood = "兴奋"
+            urgency = "high"
+            priority = 8
+        elif in_combat and incoming_attack > 0 and remaining_block > 0:
+            scene = "incoming_attack"
+            mood = "提醒"
+            urgency = "medium" if incoming_attack < 20 else "high"
+            priority = 7 if incoming_attack >= 20 else 6
+        elif in_combat and should_defend:
+            scene = "defense"
+            mood = "谨慎"
+            urgency = "medium"
+            priority = 6
+        elif in_combat:
+            scene = "combat"
+            mood = "专注"
+            urgency = "low"
+        elif event_scene:
+            scene = event_scene
+            if scene == "combat_end":
+                mood = "开心"
+                priority = 7
+            elif scene == "key_relic":
+                mood = "认真"
+                priority = 7
+            elif scene == "route_chosen":
+                mood = "从容"
+                priority = 6
+        elif screen in {"card_reward", "reward", "combat_reward"}:
+            scene = "reward"
+            mood = "开心"
+        elif screen in {"shop", "rest", "event", "map"}:
+            scene = screen
+            mood = "陪伴"
+
+        style = self._commentary_style_for_strategy()
+        hand_text = "、".join(hand_names[:3]) if hand_names else "当前手牌"
+        reason_text = f"，理由是{decision_reason}" if decision_reason else ""
+        text = self._render_neko_commentary_template(
+            scene,
+            prefix=style["prefix"],
+            suffix=style["suffix"],
+            tone=style["tone"],
+            hp=hp,
+            max_hp=max_hp,
+            incoming_attack=incoming_attack,
+            remaining_block=remaining_block,
+            hand_text=hand_text,
+            action_hint=action_hint,
+            reason_text=reason_text,
+            enemies=enemies_str,
+        )
+
+        should_speak = enabled and self._should_emit_neko_commentary(scene=scene, urgency=urgency)
+        if should_speak:
+            now = time.time()
+            self._last_neko_commentary_at = now
+            self._last_neko_commentary_scene = scene
+            if event_scene:
+                self._last_neko_event_scene = event_scene
+                self._last_neko_event_floor = floor
+        else:
+            text = ""
+        return {
+            "enabled": enabled,
+            "should_speak": should_speak,
+            "text": text,
+            "scene": scene,
+            "mood": mood,
+            "urgency": urgency,
+            "style": f"猫娘实时陪伴短评，简短、温柔、只基于战况数据；当前角色倾向={style['tone']}",
+            "tone": style["tone"],
+            "character_strategy": self._configured_character_strategy(),
+            "priority": priority,
+            "tts": should_speak,
+            "interrupt": interrupt and should_speak,
+            "cooldown_seconds": float(self._cfg.get("neko_commentary_min_interval_seconds", 4) or 4),
+            "source": "sts2_autoplay_live_commentary",
+            "action_hint": action_hint,
+            "enemies": enemies_str,
+        }
+
+    def _commentary_style_for_strategy(self) -> Dict[str, str]:
+        strategy = self._configured_character_strategy()
+        style = self._COMMENTARY_STYLES.get(strategy) or self._COMMENTARY_STYLES[self._DEFAULT_CHARACTER_STRATEGY]
+        return {"tone": str(style.get("tone") or "温柔"), "prefix": str(style.get("prefix") or "我看了看"), "suffix": str(style.get("suffix") or "喵")}
+
+    def _render_neko_commentary_template(self, scene: str, **values: Any) -> str:
+        templates = self._COMMENTARY_TEMPLATES.get(scene) or self._COMMENTARY_TEMPLATES["general"]
+        return random.choice(templates).format(**values)
+
+    def _detect_neko_event_commentary_scene(self, *, report: Dict[str, Any], chosen_action: str) -> Optional[str]:
+        screen = str(report.get("screen") or "unknown").lower()
+        action = str(chosen_action or "").lower()
+        floor = self._safe_int(report.get("floor"), -1)
+        previous_scene = self._last_neko_commentary_scene
+        combat_scenes = {"combat", "critical_hp", "low_hp", "lethal", "incoming_attack", "defense"}
+        signature_floor = floor if floor >= 0 else -1
+
+        if (screen in {"reward", "card_reward", "combat_reward"} or "claim_reward" in action) and previous_scene in combat_scenes:
+            if not (self._last_neko_event_scene == "combat_end" and self._last_neko_event_floor == signature_floor):
+                return "combat_end"
+        if screen in {"treasure", "relic_reward"} or "relic" in action:
+            if not (self._last_neko_event_scene == "key_relic" and self._last_neko_event_floor == signature_floor):
+                return "key_relic"
+        if "choose_map_node" in action or "map" in action or "proceed" in action:
+            if not (self._last_neko_event_scene == "route_chosen" and self._last_neko_event_floor == signature_floor):
+                return "route_chosen"
+        return None
+
+    def _should_emit_neko_commentary(self, *, scene: str, urgency: str) -> bool:
+        if not bool(self._cfg.get("neko_commentary_enabled", True)):
+            return False
+        critical_always = bool(self._cfg.get("neko_critical_commentary_always", True))
+        if critical_always and urgency in {"critical", "high"}:
+            return True
+        now = time.time()
+        min_interval = max(0.0, float(self._cfg.get("neko_commentary_min_interval_seconds", 4) or 4))
+        if now - self._last_neko_commentary_at < min_interval and scene == self._last_neko_commentary_scene:
+            return False
+        probability = self._clamp_probability(self._cfg.get("neko_commentary_probability", 0.65))
+        return random.random() <= probability
+
+    def _humanize_action_for_commentary(self, action: str) -> str:
+        text = str(action or "继续观察")
+        lowered = text.lower()
+        if "end_turn" in lowered or "end turn" in lowered:
+            return "结束回合"
+        if "play_card" in lowered:
+            return "打出关键牌"
+        if "choose" in lowered or "pick" in lowered:
+            return "做出选择"
+        if "potion" in lowered:
+            return "使用药水"
+        if "map" in lowered or "proceed" in lowered:
+            return "推进路线"
+        return text[:40]
+ 
     async def _fetch_step_context(self, *, publish: bool = False, record_history: bool = False) -> Dict[str, Any]:
         client = self._require_client()
         state_payload = await client.get_state()

@@ -40,7 +40,6 @@ import pytest
 import os
 import threading
 import time
-import uvicorn
 import json
 import logging
 import socket
@@ -472,6 +471,7 @@ def mock_memory_server():
     except (httpx.HTTPError, OSError) as exc:
         logger.debug("Memory server readiness check failed, starting mock server: %s", exc)
 
+    uvicorn = pytest.importorskip("uvicorn", reason="server fixture requires uvicorn")
     config = uvicorn.Config(app, host="127.0.0.1", port=memory_port, log_level="error")
     server = uvicorn.Server(config)
 
@@ -506,6 +506,7 @@ def running_server(clean_user_data_dir, mock_memory_server):
 
     from main_server import app
 
+    uvicorn = pytest.importorskip("uvicorn", reason="running_server fixture requires uvicorn")
     config = uvicorn.Config(app, host="127.0.0.1", port=test_port, log_level="error")
     server = uvicorn.Server(config)
 
