@@ -441,7 +441,7 @@ describe('App', () => {
         id: 'hammer',
         cursorImagePath: '/static/icons/chat_hammer1_cursor.png',
         cursorHotspotX: 50,
-        cursorHotspotY: 48,
+        cursorHotspotY: 54,
       }),
     }));
   });
@@ -457,7 +457,84 @@ describe('App', () => {
 
     const overlay = container.querySelector('.avatar-cursor-overlay');
     expect(overlay).not.toBeNull();
-    expect((overlay as HTMLDivElement).style.transform).toBe('translate3d(201px, 280px, 0)');
+    expect((overlay as HTMLDivElement).style.transform).toBe('translate3d(201px, 274px, 0)');
+  });
+
+  it('clears the tool cursor when the composer is hidden for voice mode', () => {
+    const { container, rerender } = render(<App />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
+    fireEvent.click(screen.getByRole('button', { name: '猫爪' }));
+
+    expect(container.querySelector('.avatar-cursor-overlay')).not.toBeNull();
+    expect(document.documentElement).toHaveClass('neko-tool-cursor-active');
+
+    rerender(<App composerHidden />);
+
+    expect(container.querySelector('.avatar-cursor-overlay')).toBeNull();
+    expect(document.documentElement).not.toHaveClass('neko-tool-cursor-active');
+    expect(document.documentElement.style.getPropertyValue('--neko-chat-tool-cursor')).toBe('');
+    expect(document.documentElement.style.getPropertyValue('cursor')).toBe('auto');
+  });
+
+  it('clears the tool cursor when the host issues a reset key', () => {
+    const { container, rerender } = render(<App />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
+    fireEvent.click(screen.getByRole('button', { name: '猫爪' }));
+
+    expect(container.querySelector('.avatar-cursor-overlay')).not.toBeNull();
+    expect(document.documentElement).toHaveClass('neko-tool-cursor-active');
+
+    rerender(<App _toolCursorResetKey="voice-mode-reset-1" />);
+
+    expect(container.querySelector('.avatar-cursor-overlay')).toBeNull();
+    expect(document.documentElement).not.toHaveClass('neko-tool-cursor-active');
+    expect(document.documentElement.style.getPropertyValue('--neko-chat-tool-cursor')).toBe('');
+    expect(document.documentElement.style.getPropertyValue('cursor')).toBe('auto');
+  });
+
+  it('preserves the outside-window cursor state when the host resets a tool cursor', () => {
+    const onAvatarToolStateChange = vi.fn();
+    const { rerender } = render(<App onAvatarToolStateChange={onAvatarToolStateChange} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
+    fireEvent.click(screen.getByRole('button', { name: '猫爪' }));
+
+    onAvatarToolStateChange.mockClear();
+    fireEvent.blur(window);
+    expect(onAvatarToolStateChange).toHaveBeenLastCalledWith(expect.objectContaining({
+      active: true,
+      toolId: 'fist',
+      insideHostWindow: false,
+    }));
+
+    onAvatarToolStateChange.mockClear();
+    rerender(<App onAvatarToolStateChange={onAvatarToolStateChange} _toolCursorResetKey="voice-mode-reset-2" />);
+
+    expect(onAvatarToolStateChange).toHaveBeenCalledWith(expect.objectContaining({
+      active: false,
+      toolId: null,
+      insideHostWindow: false,
+    }));
+  });
+
+  it('marks the cursor back inside the host when clearing a tool from the composer', () => {
+    const onAvatarToolStateChange = vi.fn();
+    render(<App onAvatarToolStateChange={onAvatarToolStateChange} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
+    fireEvent.click(screen.getByRole('button', { name: '猫爪' }));
+    fireEvent.blur(window);
+
+    onAvatarToolStateChange.mockClear();
+    fireEvent.click(screen.getByRole('button', { name: '恢复鼠标' }));
+
+    expect(onAvatarToolStateChange).toHaveBeenCalledWith(expect.objectContaining({
+      active: false,
+      toolId: null,
+      insideHostWindow: true,
+    }));
   });
 
   it('restores the native cursor while desktop system UI owns focus', () => {
@@ -474,6 +551,7 @@ describe('App', () => {
     expect(container.querySelector('.avatar-cursor-overlay')).toBeNull();
     expect(document.documentElement).not.toHaveClass('neko-tool-cursor-active');
     expect(document.documentElement.style.getPropertyValue('--neko-chat-tool-cursor')).toBe('');
+    expect(document.documentElement.style.getPropertyValue('cursor')).toBe('auto');
 
     fireEvent.pointerMove(window, { clientX: 180, clientY: 260 });
 

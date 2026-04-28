@@ -14,7 +14,7 @@
     <link rel="stylesheet" href="/static/css/index.css">
     <link rel="stylesheet" href="/static/css/subtitle.css">
     <link rel="stylesheet" href="/static/css/dark-mode.css">
-    <link rel="stylesheet" href="/static/react/neko-chat/neko-chat-window.css">
+    <link rel="stylesheet" href="/static/react/neko-chat/neko-chat-window.css?v={{ react_chat_asset_version }}">
     <script src="/static/theme-manager.js"></script>
     <link rel="stylesheet" href="/static/libs/APlayer.min.css">
     <script src="/static/libs/APlayer.min.js"></script>
@@ -524,14 +524,14 @@
     <script src="/static/app-agent.js"></script>
     <script src="/static/app-character.js"></script>
     <script src="/static/app-websocket.js"></script>
-    <script src="/static/app-buttons.js"></script>
+    <script src="/static/app-buttons.js?v={{ react_chat_asset_version }}"></script>
     <script src="/static/app.js"></script>
     <script src="/static/subtitle.js"></script>
 
     <!-- React Chat（与 index.html 相同的 bundle + 初始化器）-->
-    <script src="/static/react/neko-chat/neko-chat-window.iife.js"></script>
-    <script src="/static/app-react-chat-window.js"></script>
-    <script src="/static/app-chat-adapter.js"></script>
+    <script src="/static/react/neko-chat/neko-chat-window.iife.js?v={{ react_chat_asset_version }}"></script>
+    <script src="/static/app-react-chat-window.js?v={{ react_chat_asset_version }}"></script>
+    <script src="/static/app-chat-adapter.js?v={{ react_chat_asset_version }}"></script>
     <script src="/static/app-chat-export.js"></script>
 
     <script>

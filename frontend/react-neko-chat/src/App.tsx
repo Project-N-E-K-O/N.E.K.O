@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef, type CSSProperties } from 'react';
+import { useState, useEffect, useMemo, useRef, useCallback, type CSSProperties } from 'react';
 import MessageList from './MessageList';
 import { i18n } from './i18n';
 import {
@@ -59,7 +59,7 @@ const toolIconItems: ToolIconItem[] = [
     cursorImagePathAlt: '/static/icons/chat_sugar2_cursor.png',
     menuIconScale: 1.18,
     cursorHotspotX: 27,
-    cursorHotspotY: 40,
+    cursorHotspotY: 46,
   },
   {
     id: 'fist',
@@ -70,7 +70,7 @@ const toolIconItems: ToolIconItem[] = [
     cursorImagePath: '/static/icons/cat_claw1_cursor.png',
     cursorImagePathAlt: '/static/icons/cat_claw2_cursor.png',
     cursorHotspotX: 39,
-    cursorHotspotY: 40,
+    cursorHotspotY: 46,
   },
   {
     id: 'hammer',
@@ -86,7 +86,7 @@ const toolIconItems: ToolIconItem[] = [
     menuIconOffsetXAlt: 1,
     menuIconOffsetYAlt: -1,
     cursorHotspotX: 50,
-    cursorHotspotY: 48,
+    cursorHotspotY: 54,
   },
 ];
 
@@ -340,6 +340,22 @@ function isElectronMultiWindowHost(): boolean {
     && (window as Window & { __NEKO_MULTI_WINDOW__?: boolean }).__NEKO_MULTI_WINDOW__ === true;
 }
 
+function clearForcedNativeCursorFallback() {
+  if (typeof document === 'undefined') return;
+  const root = document.documentElement;
+  root.style.removeProperty('cursor');
+  document.body?.style.removeProperty('cursor');
+}
+
+function clearGlobalToolCursorState() {
+  if (typeof document === 'undefined') return;
+  const root = document.documentElement;
+  root.classList.remove('neko-tool-cursor-active');
+  root.style.removeProperty('--neko-chat-tool-cursor');
+  root.style.setProperty('cursor', 'auto', 'important');
+  document.body?.style.setProperty('cursor', 'auto', 'important');
+}
+
 function isElementVisible(elementId: string): boolean {
   const element = document.getElementById(elementId);
   if (!element) return false;
@@ -551,6 +567,7 @@ export default function App({
   onTranslateToggle,
   rollbackDraft,
   _rollbackKey,
+  _toolCursorResetKey,
 }: ChatWindowProps) {
   const [draft, setDraft] = useState('');
   const [toolMenuOpen, setToolMenuOpen] = useState(false);
@@ -594,7 +611,16 @@ export default function App({
   const [floatingFistDrops, setFloatingFistDrops] = useState<FloatingFistDrop[]>([]);
   const submittingRef = useRef(false);
   const lastRollbackKeyRef = useRef('');
+  const lastToolCursorResetKeyRef = useRef('');
   const canSubmit = draft.trim().length > 0 || composerAttachments.length > 0;
+  const clearActiveCursorToolSelection = useCallback(() => {
+    clearGlobalToolCursorState();
+    latestPointerTargetRef.current = null;
+    setActiveCursorToolId(null);
+    setToolMenuOpen(false);
+    setIsCursorOverAvatarRange(false);
+    setIsCursorOverCompactCursorZone(false);
+  }, []);
 
   // Rollback draft when host signals a RESPONSE_TOO_LONG error
   // Use _rollbackKey for dedup — it changes on every rollbackLastDraft() call
@@ -608,6 +634,13 @@ export default function App({
       }
     }
   }, [rollbackDraft, _rollbackKey, draft]);
+
+  useEffect(() => {
+    if (_toolCursorResetKey && _toolCursorResetKey !== lastToolCursorResetKeyRef.current) {
+      lastToolCursorResetKeyRef.current = _toolCursorResetKey;
+      clearActiveCursorToolSelection();
+    }
+  }, [_toolCursorResetKey, clearActiveCursorToolSelection]);
   const resolvedImportImageAriaLabel = importImageButtonAriaLabel || importImageButtonLabel;
   const resolvedScreenshotAriaLabel = screenshotButtonAriaLabel || screenshotButtonLabel;
   const resolvedTranslateAriaLabel = translateButtonAriaLabel || translateButtonLabel;
@@ -1110,7 +1143,6 @@ export default function App({
     if (!activeCursorToolId) {
       setIsCursorOverAvatarRange(false);
       setIsCursorOverCompactCursorZone(false);
-      setIsCursorInsideHostWindow(true);
       return;
     }
 
@@ -1203,25 +1235,23 @@ export default function App({
     const root = document.documentElement;
     let cancelled = false;
 
-    if (!activeCursorToolId) {
-      root.classList.remove('neko-tool-cursor-active');
-      root.style.removeProperty('--neko-chat-tool-cursor');
+    if (!activeCursorToolId || composerHidden) {
+      clearGlobalToolCursorState();
       return;
     }
 
     if ((shouldUseLocalDesktopCursorOverlay || isElectronMultiWindow) && !isCursorInsideHostWindow) {
-      root.classList.remove('neko-tool-cursor-active');
-      root.style.removeProperty('--neko-chat-tool-cursor');
+      clearGlobalToolCursorState();
       return;
     }
 
     const selected = toolIconItems.find(item => item.id === activeCursorToolId);
     if (!selected) {
-      root.classList.remove('neko-tool-cursor-active');
-      root.style.removeProperty('--neko-chat-tool-cursor');
+      clearGlobalToolCursorState();
       return;
     }
 
+    clearForcedNativeCursorFallback();
     root.classList.add('neko-tool-cursor-active');
 
     const applyResolvedCursor = async () => {
@@ -1242,7 +1272,7 @@ export default function App({
     return () => {
       cancelled = true;
     };
-  }, [activeCursorToolId, avatarToolCacheState, effectiveCursorVariant, isCursorInsideHostWindow, isCursorOverAvatarRange, isCursorOverCompactCursorZone, isElectronMultiWindow, shouldUseLocalDesktopCursorOverlay]);
+  }, [activeCursorToolId, composerHidden, avatarToolCacheState, effectiveCursorVariant, isCursorInsideHostWindow, isCursorOverAvatarRange, isCursorOverCompactCursorZone, isElectronMultiWindow, shouldUseLocalDesktopCursorOverlay]);
 
   useEffect(() => {
     if (!activeToolItem) return;
@@ -1265,10 +1295,22 @@ export default function App({
     );
   }, [hammerCursorOverlayActive, hammerSwingPhase]);
 
+  useEffect(() => {
+    if (composerHidden && activeCursorToolId) {
+      clearActiveCursorToolSelection();
+    }
+  }, [activeCursorToolId, composerHidden]);
+
+  useEffect(() => {
+    function handleDeactivate() {
+      clearActiveCursorToolSelection();
+    }
+    window.addEventListener('neko:deactivate-tool-cursor', handleDeactivate);
+    return () => window.removeEventListener('neko:deactivate-tool-cursor', handleDeactivate);
+  }, []);
+
   useEffect(() => () => {
-    const root = document.documentElement;
-    root.classList.remove('neko-tool-cursor-active');
-    root.style.removeProperty('--neko-chat-tool-cursor');
+    clearGlobalToolCursorState();
   }, []);
 
   function submitDraft() {
@@ -1339,6 +1381,7 @@ export default function App({
           title={clearCursorToolAriaLabel}
           onClick={(event) => {
             event.stopPropagation();
+            setIsCursorInsideHostWindow(true);
             setActiveCursorToolId(null);
             setToolMenuOpen(false);
           }}
@@ -1373,6 +1416,7 @@ export default function App({
                   y: event.clientY,
                 };
                 latestPointerTargetRef.current = event.currentTarget;
+                setIsCursorInsideHostWindow(true);
                 setIsCursorOverCompactCursorZone(true);
                 setIsCursorOverAvatarRange(isPointerWithinAvatarRange(event.clientX, event.clientY, avatarToolCacheState));
                 if (activeCursorToolId === item.id) {

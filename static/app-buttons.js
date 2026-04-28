@@ -984,6 +984,22 @@
                 await new Promise(function (resolve) { setTimeout(resolve, 1500); });
             }
 
+            // Deactivate tool cursor mode (lollipop/cat paw/hammer)
+            // Prefer the React host cleanup path so cursor teardown stays in one place.
+            if (window.reactChatWindowHost && typeof window.reactChatWindowHost.deactivateToolCursor === 'function') {
+                window.reactChatWindowHost.deactivateToolCursor();
+            } else {
+                window.dispatchEvent(new CustomEvent('neko:deactivate-tool-cursor'));
+                var _body = document.body;
+                var _root = document.documentElement;
+                _root.style.setProperty('cursor', 'auto', 'important');
+                if (_body) {
+                    _body.style.setProperty('cursor', 'auto', 'important');
+                }
+                _root.classList.remove('neko-tool-cursor-active');
+                _root.style.removeProperty('--neko-chat-tool-cursor');
+            }
+
             // Hide text input area (desktop only) + React composer + IPC
             var textInputArea = document.getElementById('text-input-area');
             if (!U.isMobile()) {
