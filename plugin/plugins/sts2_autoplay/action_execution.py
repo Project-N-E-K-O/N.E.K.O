@@ -95,11 +95,7 @@ class ActionExecutionMixin:
             if target_values:
                 allowed["target_index"] = target_values
         elif action_type in {"choose_map_node", "choose_treasure_relic", "choose_event_option", "choose_rest_option", "select_deck_card", "choose_reward_card", "buy_card", "buy_relic", "buy_potion", "claim_reward"}:
-            option_indices = [option["index"] for option in self._card_reward_options(raw, context)]
-            if not option_indices:
-                option_indices = [option["index"] for option in self._character_selection_options(raw, context)]
-            if not option_indices:
-                option_indices = self._extract_generic_option_indices(raw)
+            option_indices = self._known_option_indices_for_action(action_type, raw, context)
             if option_indices:
                 allowed["option_index"] = option_indices
         else:
@@ -124,6 +120,29 @@ class ActionExecutionMixin:
             "use_potion",
             "play_card",
         }
+
+    def _known_option_indices_for_action(self, action_type: str, raw: dict[str, Any], context: dict[str, Any]) -> list[int]:
+        if action_type == "buy_card":
+            option_indices = [option["index"] for option in self._shop_card_options(context)]
+        elif action_type == "buy_relic":
+            option_indices = [option["index"] for option in self._shop_relic_options(context)]
+        elif action_type == "buy_potion":
+            option_indices = [option["index"] for option in self._shop_potion_options(context)]
+        else:
+            option_indices = [option["index"] for option in self._card_reward_options(raw, context)]
+            if not option_indices:
+                option_indices = [option["index"] for option in self._character_selection_options(raw, context)]
+        if not option_indices:
+            option_indices = self._extract_generic_option_indices(raw)
+        deduped: list[int] = []
+        for value in option_indices:
+            try:
+                normalized_value = int(value)
+            except Exception:
+                continue
+            if normalized_value not in deduped:
+                deduped.append(normalized_value)
+        return deduped
 
     def _extract_generic_option_indices(self, raw: dict[str, Any]) -> list[int]:
         indices: list[int] = []
@@ -313,10 +332,13 @@ class ActionExecutionMixin:
                     preferred_option_index = self._find_preferred_shop_potion_index(context)
                 if preferred_option_index is None:
                     preferred_option_index = self._find_preferred_character_option_index(raw, context)
-                chosen_option_index = preferred_option_index if preferred_option_index is not None else 0
-                if allowed_option_indices and int(chosen_option_index) not in allowed_option_indices:
-                    chosen_option_index = allowed_option_indices[0]
-                kwargs["option_index"] = chosen_option_index
+                if preferred_option_index is not None:
+                    chosen_option_index = preferred_option_index
+                    if allowed_option_indices and int(chosen_option_index) not in allowed_option_indices:
+                        chosen_option_index = allowed_option_indices[0]
+                    kwargs["option_index"] = chosen_option_index
+                elif allowed_option_indices:
+                    kwargs["option_index"] = allowed_option_indices[0]
             elif action_type == "use_potion":
                 kwargs["option_index"] = self._find_usable_potion_index(context)
             elif action_type == "play_card":
@@ -429,6 +451,15 @@ class ActionExecutionMixin:
 
     def _character_selection_options(self, raw: dict[str, Any], context: dict[str, Any]) -> list[dict[str, Any]]:
         return self._context_analyzer._character_selection_options(raw, context)
+
+    def _shop_card_options(self, context: dict[str, Any]) -> list[dict[str, Any]]:
+        return self._context_analyzer._shop_card_options(context)
+
+    def _shop_relic_options(self, context: dict[str, Any]) -> list[dict[str, Any]]:
+        return self._context_analyzer._shop_relic_options(context)
+
+    def _shop_potion_options(self, context: dict[str, Any]) -> list[dict[str, Any]]:
+        return self._context_analyzer._shop_potion_options(context)
 
     def _extract_character_options(self, candidate: Any) -> list[dict[str, Any]]:
         return self._context_analyzer._extract_character_options(candidate)

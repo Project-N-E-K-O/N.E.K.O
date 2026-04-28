@@ -217,7 +217,7 @@ class GameContextAnalyzer:
             str(raw_state.get("screen") or "").strip().lower(),
             str(raw_state.get("screen_type") or "").strip().lower(),
         }
-        if any(keyword in candidate for candidate in screen_candidates for keyword in {"reward", "card reward", "card", "combat reward"} if candidate):
+        if any(keyword in candidate for candidate in screen_candidates for keyword in {"reward", "card reward", "combat reward"} if candidate):
             return True
         return bool(self._card_reward_options(raw, context))
 

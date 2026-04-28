@@ -58,11 +58,11 @@ class NekoCommandingMixin:
 
         if normalized_scope == "one_card" or (normalized_scope == "auto" and self._is_neko_play_one_card_text(text)):
             result = await self.play_one_card_by_neko(objective=raw_command)
-            return self._wrap_neko_command_result("play_one_card", "play_one_card_by_neko", result, executed=True)
+            return self._wrap_neko_command_result("play_one_card", "play_one_card_by_neko", result, executed=bool(result.get("executed", False)) if isinstance(result, dict) else False)
 
         if normalized_scope == "one_action" or (normalized_scope == "auto" and self._is_neko_step_once_text(text)):
             result = await self.step_once()
-            return self._wrap_neko_command_result("step_once", "step_once", result, executed=True)
+            return self._wrap_neko_command_result("step_once", "step_once", result, executed=bool(result.get("executed", result.get("status") == "ok")) if isinstance(result, dict) else False)
 
         if normalized_scope == "autoplay" or (normalized_scope == "auto" and self._is_neko_autoplay_text(text)):
             stop_condition = self._infer_neko_stop_condition(text)
@@ -88,11 +88,12 @@ class NekoCommandingMixin:
     def _wrap_neko_command_result(self, intent: str, action: str, result: Dict[str, Any], *, executed: bool, needs_confirmation: bool = False) -> Dict[str, Any]:
         summary = str(result.get("summary") or result.get("message") or "") if isinstance(result, dict) else ""
         observation_only = bool(result.get("observation_only", False)) if isinstance(result, dict) else False
+        effective_executed = bool(result.get("executed", executed)) if isinstance(result, dict) else executed
         return {
             "status": result.get("status", "ok") if isinstance(result, dict) else "ok",
             "intent": intent,
             "action": action,
-            "executed": executed,
+            "executed": effective_executed,
             "needs_confirmation": needs_confirmation,
             "observation_only": observation_only,
             "message": summary,

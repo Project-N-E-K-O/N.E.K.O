@@ -300,7 +300,7 @@ class STS2AutoplayService(
         await self._await_action_interval()
         settled_context = await self._await_post_action_settle(context, prepared)
         self._publish_snapshot(settled_context["snapshot"], record_history=True)
-        return {**result, "snapshot": settled_context["snapshot"]}
+        return {**result, "snapshot": settled_context["snapshot"], "executed": True}
 
 
     async def set_mode(self, mode: str) -> Dict[str, Any]:
