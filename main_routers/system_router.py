@@ -2994,12 +2994,25 @@ async def backend_interactive_screenshot(request: Request):
       - macOS: `screencapture` 系统级框选
       - Windows: 本地全桌面遮罩框选
     返回用户选区的 JPEG DataURL。
-    安全限制：仅允许来自 loopback 地址的请求。
-    说明：截图动作本身发生在本机，本地取消/失败由本地实现判断；
-    这里不再复用本地 mutation 的 CSRF/origin 校验链路。
+    安全限制：
+      - 仅允许来自 loopback 地址的请求；
+      - 只要请求带 `Origin` 或 `Referer`（即来自浏览器），仍然要走
+        本地 mutation 的 CSRF/origin 校验，避免任意页面通过 localhost
+        盲 POST 触发原生框选 UI 这种 localhost CSRF；
+      - 没有 `Origin`/`Referer` 的纯服务端 loopback 调用允许跳过 CSRF，
+        保留给 curl / 本地脚本 / 测试用。
     """
     if not _is_loopback_request(request):
         return _json_no_store_response({"success": False, "error": "only available from localhost"}, status_code=403)
+
+    if _get_request_origin(request):
+        validation_error = _validate_local_mutation_request(
+            request,
+            error_defaults={"success": False},
+        )
+        if validation_error is not None:
+            _set_no_store_headers(validation_error)
+            return validation_error
 
     if _is_remote_backend_deployment():
         return _json_no_store_response(

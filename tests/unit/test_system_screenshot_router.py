@@ -138,15 +138,75 @@ def test_interactive_screenshot_rejects_non_loopback_requests():
 
 
 @pytest.mark.unit
-def test_interactive_screenshot_does_not_require_csrf_headers(monkeypatch):
+def test_interactive_screenshot_skips_csrf_when_no_origin_or_referer(monkeypatch):
+    """纯服务端 loopback 调用（无 Origin/Referer）不需要 CSRF 头。"""
     monkeypatch.setattr(system_router_module, "_is_loopback_request", lambda _request: True)
-    monkeypatch.setattr(system_router_module.sys, "platform", "linux")
+    monkeypatch.setattr(system_router_module.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        system_router_module,
+        "_run_macos_interactive_screenshot",
+        lambda _path: (1, ""),
+    )
 
     with _build_client() as client:
+        # No Origin / Referer / CSRF — should pass CSRF gate and reach the runner.
         response = client.post(INTERACTIVE_SCREENSHOT_ENDPOINT)
 
-    assert response.status_code == 501
-    assert "only supported on macOS and Windows" in response.json()["error"]
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is False
+    assert payload["canceled"] is True
+
+
+@pytest.mark.unit
+def test_interactive_screenshot_requires_csrf_when_origin_present(monkeypatch):
+    """带 Origin 的浏览器请求必须通过 CSRF/origin 校验，否则 localhost CSRF。"""
+    monkeypatch.setattr(system_router_module, "_is_loopback_request", lambda _request: True)
+    monkeypatch.setattr(system_router_module.sys, "platform", "darwin")
+
+    def _should_not_run(_path):
+        raise AssertionError("interactive screenshot must not run when CSRF check fails")
+
+    monkeypatch.setattr(
+        system_router_module,
+        "_run_macos_interactive_screenshot",
+        _should_not_run,
+    )
+
+    with _build_client() as client:
+        # 模拟跨站页面：有 Origin（浏览器自动塞），但既无 CSRF token，origin 也不在白名单里。
+        response = client.post(
+            INTERACTIVE_SCREENSHOT_ENDPOINT,
+            headers={"Origin": "https://evil.example"},
+        )
+
+    assert response.status_code == 403
+    payload = response.json()
+    assert payload["success"] is False
+    assert payload["error_code"] == "csrf_validation_failed"
+
+
+@pytest.mark.unit
+def test_interactive_screenshot_passes_with_valid_csrf_and_origin(monkeypatch):
+    """合法本地前端：带 Origin + CSRF token，应当通过校验进入 runner。"""
+    monkeypatch.setattr(system_router_module, "_is_loopback_request", lambda _request: True)
+    monkeypatch.setattr(system_router_module.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        system_router_module,
+        "_run_macos_interactive_screenshot",
+        lambda _path: (1, ""),
+    )
+
+    with _build_client() as client:
+        response = client.post(
+            INTERACTIVE_SCREENSHOT_ENDPOINT,
+            headers=_local_headers(),
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is False
+    assert payload["canceled"] is True
 
 
 @pytest.mark.unit
