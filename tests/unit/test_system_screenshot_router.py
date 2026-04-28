@@ -54,6 +54,65 @@ def test_is_loopback_request_accepts_ipv4_mapped_ipv6_loopback():
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("env_name", ["NEKO_ACTIVITY_TRACKER_REMOTE", "ACTIVITY_TRACKER_REMOTE"])
+@pytest.mark.parametrize("env_value", ["1", "true", "TRUE", "yes", "on"])
+def test_is_remote_backend_deployment_truthy(monkeypatch, env_name, env_value):
+    monkeypatch.delenv("NEKO_ACTIVITY_TRACKER_REMOTE", raising=False)
+    monkeypatch.delenv("ACTIVITY_TRACKER_REMOTE", raising=False)
+    monkeypatch.setenv(env_name, env_value)
+    assert system_router_module._is_remote_backend_deployment() is True
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("env_value", ["", "0", "false", "no", "off", "anything-else"])
+def test_is_remote_backend_deployment_falsy(monkeypatch, env_value):
+    monkeypatch.delenv("NEKO_ACTIVITY_TRACKER_REMOTE", raising=False)
+    monkeypatch.delenv("ACTIVITY_TRACKER_REMOTE", raising=False)
+    if env_value:
+        monkeypatch.setenv("NEKO_ACTIVITY_TRACKER_REMOTE", env_value)
+    assert system_router_module._is_remote_backend_deployment() is False
+
+
+@pytest.mark.unit
+def test_backend_screenshot_blocked_when_backend_marked_remote(monkeypatch):
+    monkeypatch.setattr(system_router_module, "_is_loopback_request", lambda _request: True)
+    monkeypatch.setenv("NEKO_ACTIVITY_TRACKER_REMOTE", "1")
+
+    with _build_client() as client:
+        response = client.post(SCREENSHOT_ENDPOINT, headers=_local_headers())
+
+    assert response.status_code == 501
+    payload = response.json()
+    assert payload["success"] is False
+    assert "remote" in payload["error"].lower()
+    assert response.headers["Cache-Control"] == "no-store, no-cache, must-revalidate, max-age=0"
+
+
+@pytest.mark.unit
+def test_interactive_screenshot_blocked_when_backend_marked_remote(monkeypatch):
+    monkeypatch.setattr(system_router_module, "_is_loopback_request", lambda _request: True)
+    monkeypatch.setattr(system_router_module.sys, "platform", "darwin")
+    monkeypatch.setenv("ACTIVITY_TRACKER_REMOTE", "true")
+
+    def _should_not_run(_path):
+        raise AssertionError("interactive screenshot must not run when backend is remote")
+
+    monkeypatch.setattr(
+        system_router_module,
+        "_run_macos_interactive_screenshot",
+        _should_not_run,
+    )
+
+    with _build_client() as client:
+        response = client.post(INTERACTIVE_SCREENSHOT_ENDPOINT, headers=_local_headers())
+
+    assert response.status_code == 501
+    payload = response.json()
+    assert payload["success"] is False
+    assert "remote" in payload["error"].lower()
+
+
+@pytest.mark.unit
 def test_backend_screenshot_rejects_missing_csrf_headers():
     with _build_client() as client:
         response = client.post(SCREENSHOT_ENDPOINT)

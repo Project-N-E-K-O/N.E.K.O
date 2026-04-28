@@ -147,6 +147,23 @@ def _is_loopback_request(request: Request) -> bool:
         return False
 
 
+def _is_remote_backend_deployment() -> bool:
+    """``NEKO_ACTIVITY_TRACKER_REMOTE`` / ``ACTIVITY_TRACKER_REMOTE`` 兜底开关。
+
+    /screenshot 和 /screenshot/interactive 都是在后端机器上抓屏的，部署到
+    远程服务器时抓出来的是服务器自己的桌面而不是用户的。loopback 校验
+    会被反向代理 / 隧道绕过，这条环境变量是运维显式声明"后端不在用户本机"
+    的硬开关，命中就直接拒绝本地截图。
+
+    用法和 PR #1015 的活动追踪器保持一致，避免再发明一套部署变量。
+    """
+    for key in ("NEKO_ACTIVITY_TRACKER_REMOTE", "ACTIVITY_TRACKER_REMOTE"):
+        raw = os.getenv(key, "").strip().lower()
+        if raw in ("1", "true", "yes", "on"):
+            return True
+    return False
+
+
 def _run_macos_interactive_screenshot(output_path: str) -> tuple[int, str]:
     cmd = shutil.which("screencapture")
     if not cmd:
@@ -2922,6 +2939,12 @@ async def backend_screenshot(request: Request):
     if not _is_loopback_request(request):
         return _json_no_store_response({"success": False, "error": "only available from localhost"}, status_code=403)
 
+    if _is_remote_backend_deployment():
+        return _json_no_store_response(
+            {"success": False, "error": "backend is configured as remote (NEKO_ACTIVITY_TRACKER_REMOTE); local screenshot disabled"},
+            status_code=501,
+        )
+
     try:
         import pyautogui
     except ImportError:
@@ -2977,6 +3000,12 @@ async def backend_interactive_screenshot(request: Request):
     """
     if not _is_loopback_request(request):
         return _json_no_store_response({"success": False, "error": "only available from localhost"}, status_code=403)
+
+    if _is_remote_backend_deployment():
+        return _json_no_store_response(
+            {"success": False, "error": "backend is configured as remote (NEKO_ACTIVITY_TRACKER_REMOTE); local interactive screenshot disabled"},
+            status_code=501,
+        )
 
     if sys.platform == "darwin":
         runner = _run_macos_interactive_screenshot
