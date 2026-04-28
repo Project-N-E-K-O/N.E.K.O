@@ -264,6 +264,9 @@
         tabScreenshot.classList.toggle('crop-tab-active', tab === 'screenshot');
         tabHideNeko.classList.toggle('crop-tab-active', tab === 'hideNeko');
         clearSelection();
+        if (overlay) {
+            overlay.focus();
+        }
 
         if (tab === 'hideNeko' && recaptureFn) {
             var runId = ++recaptureRunId;
@@ -513,6 +516,9 @@
     function onPointerDown(e) {
         if (e.button === 2) return; // right-click handled by contextmenu
         e.preventDefault();
+        if (overlay) {
+            overlay.focus();
+        }
         var pos = getPointerPos(e);
         pointerPos = pos;
 
