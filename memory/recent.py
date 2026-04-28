@@ -377,9 +377,9 @@ class CompressedRecentHistoryManager:
                 if match:
                     response_content = match.group(1).strip()
                 summary_json = robust_json_loads(response_content)
-                # 从JSON字典中提取对话摘要，假设摘要存储在名为'key'的键下
-                if '对话摘要' in summary_json:
-                    raw_summary = summary_json['对话摘要']
+                # 从 JSON 字典中提取对话摘要，key 与 prompt 模板里约定的一致
+                if 'summary' in summary_json:
+                    raw_summary = summary_json['summary']
                     # Qwen 偶尔返回 list/dict 而不是字符串；强制 str-ify 后再喂
                     # acount_tokens（不然会抛 TypeError 把整轮压缩流程崩掉）。
                     summary = (
@@ -446,9 +446,17 @@ class CompressedRecentHistoryManager:
                 if match:
                     response_content = match.group(1).strip()
                 summary_json = robust_json_loads(response_content)
-                # 从JSON字典中提取对话摘要，假设摘要存储在名为'key'的键下
-                if '对话摘要' in summary_json:
-                    summary_text = str(summary_json['对话摘要']).strip()
+                # 从 JSON 字典中提取对话摘要，key 与 prompt 模板里约定的一致
+                if 'summary' in summary_json:
+                    raw_summary = summary_json['summary']
+                    # Stage-2 归一化和 Stage-1 ([memory/recent.py:382](memory/recent.py:382))
+                    # 保持一致：非字符串走 json.dumps(ensure_ascii=False) 而非
+                    # str()，避免 list/dict 落到 Python repr (单引号) 漂移持久化
+                    # 文本与 token 计量。
+                    summary_text = (
+                        raw_summary.strip() if isinstance(raw_summary, str)
+                        else json.dumps(raw_summary, ensure_ascii=False)
+                    )
                     # 命中 stage2_cap → LLM 输出可能停在句子中段（如逗号 / 短语）。
                     # 回溯到最后一个句末标点（. ! ? 。！？… \n），保证持久化的
                     # 摘要语义边界完整。如果根本没找到句末标点（极端短文本），
@@ -614,11 +622,15 @@ class CompressedRecentHistoryManager:
                 # 解析JSON响应
                 review_result = robust_json_loads(response_content)
 
-                if not (isinstance(review_result, dict) and '修正说明' in review_result and '修正后的对话' in review_result):
+                if not (
+                    isinstance(review_result, dict)
+                    and 'explanation' in review_result
+                    and isinstance(review_result.get('corrected_dialogue'), list)
+                ):
                     print(f"❌ 审阅响应格式错误：{response_content}")
                     return ('failed', None)
 
-                print(f"记忆整理结果：{review_result['修正说明']}")
+                print(f"记忆整理结果：{review_result['explanation']}")
 
                 # 将修正后的对话转换回消息格式。SystemMessage 类型由 compress
                 # 产生（summary 备忘录），review 不应该输出，丢弃以保护压缩边界。
@@ -631,7 +643,9 @@ class CompressedRecentHistoryManager:
                 # prompt build / fingerprint 比对的 content[:50] 截取）会拿到非
                 # 字符串数据炸掉。
                 corrected_messages = []
-                for msg_data in review_result['修正后的对话']:
+                for msg_data in review_result['corrected_dialogue']:
+                    if not isinstance(msg_data, dict):
+                        continue
                     role = msg_data.get('role', 'user')
                     content = msg_data.get('content', '')
 
@@ -670,7 +684,7 @@ class CompressedRecentHistoryManager:
 
                 take_count = min(capacity, len(corrected_messages))
                 if take_count == 0:
-                    # corrected 为空（罕见：LLM 返回空"修正后的对话"），等价于
+                    # corrected 为空（罕见：LLM 返回空 corrected_dialogue），等价于
                     # 整段删除 review 范围。视为白 review 让下轮重建锚点；不去
                     # 写盘也不更新 fingerprint（避免 anchor 漂移到非 review 区）。
                     print(f"⚠️ {lanlan_name} review 输出为空，按白 review 处理")
