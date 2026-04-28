@@ -123,9 +123,37 @@ function safeInsert(parentDom, node, anchor) {
   const safeAnchor = anchor && anchor.parentNode === parentDom ? anchor : null;
   parentDom.insertBefore(node, safeAnchor);
 }
+function captureFocusState() {
+  const active = document.activeElement;
+  if (!active || active === document.body || active === document.documentElement) {
+    return null;
+  }
+  const state = { active, start: null, end: null, direction: null };
+  try {
+    if ('selectionStart' in active && 'selectionEnd' in active) {
+      state.start = active.selectionStart;
+      state.end = active.selectionEnd;
+      state.direction = active.selectionDirection || 'none';
+    }
+  } catch (_) {}
+  return state;
+}
+function restoreFocusState(state) {
+  if (!state || !state.active || !state.active.isConnected) return;
+  try {
+    if (document.activeElement !== state.active && typeof state.active.focus === 'function') {
+      state.active.focus({ preventScroll: true });
+    }
+    if (state.start !== null && typeof state.active.setSelectionRange === 'function') {
+      state.active.setSelectionRange(state.start, state.end, state.direction || 'none');
+    }
+  } catch (_) {}
+}
 function render(vnode, container) {
+  const focusState = captureFocusState();
   currentRoot = { vnode, container };
   container.__nekoVNode = reconcile(container, container.__nekoVNode || null, vnode, null);
+  restoreFocusState(focusState);
   flushEffects();
 }
 function scheduleRender() {
