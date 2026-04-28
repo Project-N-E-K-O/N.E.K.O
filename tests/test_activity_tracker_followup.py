@@ -150,23 +150,51 @@ def test_own_app_does_not_replace_window_observation():
     assert snap_during.state == 'focused_work'
 
 
-def test_own_app_suppresses_gpu_fallback_gaming():
-    """Catgirl rendering its own Live2D/VRM should NOT trip gaming-by-GPU."""
+def test_own_app_preserves_previous_window_for_gpu_fallback():
+    """own_app foreground keeps prev window's classification active.
+
+    Critically, own_app does NOT suppress gaming-by-GPU on the prev
+    window — if the user had an unknown high-GPU game running and
+    briefly tabs to N.E.K.O, their real activity is still that game
+    and the classification should reflect it. The own_app contract is
+    "freeze dwell + don't replace the observation", not "disable
+    background classification".
+    """
     prefs = ActivityPreferences()
     sm = ActivityStateMachine(prefs=prefs)
 
-    # High GPU + own app foreground — would normally trip gaming-by-GPU
-    # if ``unknown`` category, but own_app is filtered upstream so the
-    # GPU fallback branch never sees this observation.
+    # Step 1: unknown high-GPU app (an indie game not in keyword DB).
+    # GPU fallback should fire and classify as gaming.
+    indie = _sys_snap(title='SomeIndieGame', process='IndieGame.exe', gpu=85.0)
+    sm.update_system(indie)
+    sm.update_window(observation_from_system(indie, prefs))
+    sm.update_user_message()
+    snap_pre = sm.get_snapshot()
+    assert snap_pre.state == 'gaming', (
+        f'GPU fallback should classify unknown high-GPU + active user as gaming; '
+        f'got {snap_pre.state}'
+    )
+
+    # Step 2: brief glance at N.E.K.O. Prev observation must NOT be
+    # replaced; gaming-by-GPU continues to fire on the prev window data.
     own = _sys_snap(title='N.E.K.O', process='projectneko_server.exe', gpu=85.0)
     sm.update_system(own)
     sm.update_window(observation_from_system(own, prefs))
-    sm.update_user_message()
-    snap = sm.get_snapshot()
+    snap_during = sm.get_snapshot()
 
-    # Without any prior observation, default state is 'idle' — the key
-    # assertion is "NOT gaming".
-    assert snap.state != 'gaming'
+    assert snap_during.active_window is not None
+    # ``canonical`` is None for unknown-category observations (the
+    # static DB had nothing); compare process_name which IS preserved.
+    assert snap_during.active_window.process_name == 'IndieGame.exe', (
+        'own_app must not replace prev window observation; '
+        f'got process_name={snap_during.active_window.process_name}'
+    )
+    assert snap_during.active_window.category == 'unknown'
+    assert snap_during.state == 'gaming', (
+        "own_app must NOT short-circuit prev window's gaming-by-GPU classification — "
+        "user's real activity (the indie game) is what matters; "
+        f'got {snap_during.state}'
+    )
 
 
 # ── #4 User app overrides ───────────────────────────────────────────
