@@ -959,6 +959,40 @@ def test_storage_location_pick_directory_uses_windows_native_picker_first(tmp_pa
 
 
 @pytest.mark.unit
+def test_windows_powershell_directory_picker_uses_topmost_owner(tmp_path):
+    selected_root = str((tmp_path / "picked-win").resolve())
+
+    with patch.object(
+        storage_location_router_module,
+        "_resolve_executable_name",
+        return_value="powershell.exe",
+    ), patch.object(
+        storage_location_router_module.shutil,
+        "which",
+        return_value="powershell.exe",
+    ), patch.object(
+        storage_location_router_module.subprocess,
+        "run",
+        return_value=storage_location_router_module.subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=selected_root + "\n",
+            stderr="",
+        ),
+    ) as run_mock:
+        result = storage_location_router_module._pick_directory_via_powershell(
+            start_path=str(tmp_path)
+        )
+
+    assert result == selected_root
+    command = run_mock.call_args.args[0]
+    script = command[-1]
+    assert "$owner.TopMost = $true" in script
+    assert "[System.Windows.Forms.Application]::DoEvents()" in script
+    assert "$result = $dialog.ShowDialog($owner)" in script
+
+
+@pytest.mark.unit
 def test_storage_location_pick_directory_falls_back_to_tkinter_when_linux_native_dialog_unavailable(tmp_path):
     with patch.object(storage_location_router_module.sys, "platform", "linux"):
         with patch.object(

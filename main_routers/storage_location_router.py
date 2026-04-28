@@ -538,13 +538,26 @@ def _pick_directory_via_powershell(*, start_path: str) -> str:
     escaped_start_path = start_path.replace("'", "''")
     script = """
 Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+$owner = New-Object System.Windows.Forms.Form
+$owner.Text = 'N.E.K.O'
+$owner.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen
+$owner.Size = New-Object System.Drawing.Size(1, 1)
+$owner.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedToolWindow
+$owner.ShowInTaskbar = $false
+$owner.Opacity = 0
+$owner.TopMost = $true
 $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
 $dialog.Description = '请选择存储位置目录'
 $dialog.ShowNewFolderButton = $true
 if ('{start_path}') {{
     $dialog.SelectedPath = '{start_path}'
 }}
-$result = $dialog.ShowDialog()
+$owner.Show()
+$owner.Activate()
+$owner.BringToFront()
+[System.Windows.Forms.Application]::DoEvents()
+$result = $dialog.ShowDialog($owner)
 if ($result -eq [System.Windows.Forms.DialogResult]::OK) {{
     Write-Output $dialog.SelectedPath
     exit 0
@@ -658,6 +671,8 @@ def _pick_directory_via_tkinter(*, start_path: str) -> str:
         root.withdraw()
         try:
             root.attributes("-topmost", True)
+            root.lift()
+            root.focus_force()
         except Exception:
             pass
         root.update_idletasks()
