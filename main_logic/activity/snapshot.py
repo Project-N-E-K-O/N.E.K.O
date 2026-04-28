@@ -38,14 +38,73 @@ ActivityState = Literal[
     'voice_engaged',       # Voice mode and recent RMS / VAD activity
     'idle',                # At the computer but no clear activity bucket
     'transitioning',       # Recent rapid window switches / mode change
+    'private',             # Sensitive app foreground — DO NOT classify or
+                           # cache. Propensity hard-pinned to ``closed`` so
+                           # proactive chat skips the round entirely. The
+                           # tracker also bypasses LLM enrichment + buffers
+                           # so the user's secret never leaves the process.
 ]
 
 
 Propensity = Literal[
-    'closed',                   # Reserved; not currently emitted (away no longer = PASS)
+    'closed',                   # Hard skip — do not surface anything. Currently
+                                # emitted only by ``private`` state (privacy
+                                # blacklist hit). All other states stay open
+                                # in some form so the AI keeps a baseline of
+                                # presence; ``closed`` is reserved for
+                                # "user's screen is showing something we
+                                # promised not to look at".
     'restricted_screen_only',   # Only allow screen-derived chatter; no externals/no reminisce
     'open',                     # Default: any channel allowed
     'greeting_window',          # Stale-returning / first-contact: encourage reminiscence
+]
+
+
+# Tone modifier — a style hint orthogonal to propensity. Propensity says
+# *what kind of source* the AI may draw from; tone says *how to deliver
+# it*. Phase 2 prompt renders the tone hint as a single line so the AI
+# can adapt voice without changing source filtering.
+#
+# Six tones, deliberately vivid (one-line prompt hint each, see
+# ``ACTIVITY_TONE_HINTS`` in ``config/prompts_activity.py``):
+#   * ``terse``   — competitive games, rhythm games: short, low-intrusion
+#   * ``hushed``  — horror games: deliberately quiet, atmospheric
+#   * ``mellow``  — immersive RPG / story-driven: relaxed in-the-moment
+#   * ``playful`` — casual gaming, casual_browsing: light, joke-friendly
+#   * ``warm``    — voice / chatting / stale_returning: conversational
+#   * ``concise`` — focused_work / idle / default: short, professional
+#
+# ``silent`` is intentionally not a tone — silencing the AI is the
+# ``skip_probability`` mechanism's job (probabilistic gate before any
+# tone matters), and conflating "voice" with "presence" muddies both.
+ActivityTone = Literal[
+    'terse',
+    'hushed',
+    'mellow',
+    'playful',
+    'warm',
+    'concise',
+]
+
+
+# Game intensity / genre tags (only meaningful when state == 'gaming').
+# ``intensity`` drives propensity + skip_probability defaults; ``genre``
+# refines tone selection (horror → hushed, sim → playful, etc.).
+GameIntensity = Literal[
+    'competitive',  # Multi-player adversarial; interruption causes mistakes
+    'casual',       # Pause-anytime, no momentum cost (sim, idle, party)
+    'immersive',    # Single-player narrative; interruption breaks flow
+    'varied',       # Default — unclassified, indie, mod-heavy, gray zone
+]
+
+
+# Genre tags are a free-form-ish string but with a recommended vocabulary
+# below. Code never branches on the exact value; only ``horror`` is
+# called out for its tone override. New genres can be added in
+# ``activity_keywords`` without state-machine changes.
+GameGenre = Literal[
+    'fps', 'moba', 'rpg', 'sim', 'horror', 'racing', 'rhythm',
+    'strategy', 'sports', 'party', 'action', 'misc',
 ]
 
 
@@ -57,13 +116,21 @@ class WindowObservation:
 
     Held inside ``ActivitySnapshot`` only as the most recent observation;
     the rolling history lives in ``UserActivityTracker``'s buffer.
+
+    ``intensity`` / ``genre`` are populated only for games that were
+    tagged in the keyword DB or via ``user_game_overrides``. Both
+    ``None`` for non-games and untagged games — state machine treats
+    those as ``intensity='varied' / genre='misc'`` by convention
+    (conservative fallback, same behaviour as PR #1015).
     """
     process_name: str | None
     title: str | None
-    category: str            # 'gaming' | 'work' | 'entertainment' | 'communication' | 'unknown'
+    category: str            # 'gaming' | 'work' | 'entertainment' | 'communication' | 'unknown' | 'private' | 'own_app'
     subcategory: str | None  # e.g. 'ide' / 'video' / 'im' / 'game'
     canonical: str | None    # e.g. 'VS Code'
     is_browser: bool
+    intensity: str | None = None  # GameIntensity-shaped, only when category='gaming' subcategory='game'
+    genre: str | None = None      # GameGenre-shaped, same gating
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,6 +173,34 @@ class ActivitySnapshot:
 
     # --- Propensity (prompt directive) ---
     propensity: Propensity
+
+    # --- Skip probability (independent gate before any source filtering) ---
+    # ``skip_probability`` is rolled by the proactive_chat router at Phase 1
+    # entry — if random() < skip_probability AND no unfinished_thread is
+    # active, the round is skipped entirely (no LLM call, no source fetch).
+    # Default 0 means "always proceed". Defaults are derived from
+    # (state, intensity, genre) by the state machine; user overrides via
+    # ``activity_preferences.json::skip_probability_overrides`` can tune
+    # them per-combo. Setting 1.0 = fully silent for that combo (user
+    # opt-in "don't talk at all during X"); 0.0 = no skip, just rely on
+    # propensity.
+    #
+    # The unfinished_thread guard means the AI's open questions still get
+    # follow-up windows even in high-skip states — interrupting yourself
+    # mid-thread is rude even when you're trying to be quiet.
+    skip_probability: float = 0.0
+
+    # --- Tone modifier (style hint, orthogonal to propensity) ---
+    # See ``ActivityTone`` doc for the six values. Default ``concise``
+    # is the safe fallback — short, professional, won't surprise.
+    tone: ActivityTone = 'concise'
+
+    # --- Game classification (only meaningful when state == 'gaming') ---
+    # Both None for non-gaming states. ``intensity`` drives propensity
+    # + skip_probability; ``genre`` refines tone (horror → hushed). User
+    # can override per-game via ``user_game_overrides`` in preferences.
+    game_intensity: GameIntensity | None = None
+    game_genre: GameGenre | None = None
     # Structured reasons: each entry is ``(code, params)`` where ``code``
     # is a reason key looked up in ``ACTIVITY_REASON_TEMPLATES`` (in
     # ``config/prompts_activity.py``) and ``params`` is a dict
@@ -188,12 +283,154 @@ _STATE_TO_PROPENSITY: dict[ActivityState, Propensity] = {
     'transitioning':    'open',                    # User said: transitioning still allows screen;
                                                    # external sources just get a small weight cut
                                                    # (handled in source-weight layer, not propensity)
+    'private':          'closed',                  # Sensitive app foreground — hard skip.
 }
 
 
 def state_to_propensity(state: ActivityState) -> Propensity:
     """Map an ``ActivityState`` to its prompt-level propensity directive."""
     return _STATE_TO_PROPENSITY.get(state, 'open')
+
+
+def derive_propensity(
+    state: ActivityState,
+    *,
+    game_intensity: GameIntensity | None = None,
+    game_genre: GameGenre | None = None,
+) -> Propensity:
+    """Pick the propensity, allowing game intensity to override the default.
+
+    The base mapping in ``_STATE_TO_PROPENSITY`` collapses all gaming
+    states to ``restricted_screen_only`` (PR #1015 behaviour). When the
+    state machine has more information (intensity tagged in the keyword
+    DB or via user override), this function refines:
+
+      * ``casual`` gaming → ``open``  (animal crossing / stardew —
+                                       chatting while playing is fine)
+      * ``competitive`` / ``immersive`` / ``varied`` / untagged →
+        keep the default (``restricted_screen_only``); skip_probability
+        and tone do the further differentiation.
+
+    Genre is currently a tone-axis only (no genre flips propensity);
+    parameter is accepted for symmetry with ``derive_tone`` /
+    ``derive_skip_probability`` and forward compatibility.
+    """
+    if state == 'gaming' and game_intensity == 'casual':
+        return 'open'
+    return state_to_propensity(state)
+
+
+# ── State + game tag → tone derivation ─────────────────────────────
+#
+# Tone is a single-axis style hint, derived from the combination of
+# state and (when gaming) intensity/genre. Kept here rather than in the
+# state machine because it's a pure mapping — no time/state evolution.
+# Tests can pin the table directly.
+#
+# Override priority (highest → lowest):
+#   1. state == 'voice_engaged'    → 'warm'  (voice flow trumps everything)
+#   2. state == 'private'          → 'concise' (won't be rendered anyway —
+#                                              propensity=closed gates first)
+#   3. state == 'gaming':
+#       intensity=competitive       → 'terse'
+#       intensity=immersive,
+#         genre=horror              → 'hushed'
+#       intensity=immersive,
+#         genre=other               → 'mellow'
+#       intensity=casual            → 'playful'
+#       intensity=varied / None     → 'concise' (conservative fallback)
+#   4. state == 'casual_browsing'  → 'playful'
+#   5. state == 'chatting'         → 'warm'
+#   6. state == 'stale_returning'  → 'warm' (greeting moment)
+#   7. state == 'focused_work'     → 'concise'
+#   8. state in {idle, transitioning, away} → 'concise' (default)
+def derive_tone(
+    state: ActivityState,
+    *,
+    game_intensity: GameIntensity | None = None,
+    game_genre: GameGenre | None = None,
+) -> ActivityTone:
+    """Pick the tone hint for the current activity context.
+
+    Pure function of inputs — no I/O, no time. Called from the state
+    machine on every snapshot construction, and from tests directly.
+    """
+    if state == 'voice_engaged':
+        return 'warm'
+    if state == 'private':
+        # Won't be rendered (closed propensity skips proactive entirely),
+        # but we return a value to keep the type total.
+        return 'concise'
+    if state == 'gaming':
+        if game_intensity == 'competitive':
+            return 'terse'
+        if game_intensity == 'immersive':
+            if game_genre == 'horror':
+                return 'hushed'
+            return 'mellow'
+        if game_intensity == 'casual':
+            return 'playful'
+        # game_intensity in {'varied', None}
+        return 'concise'
+    if state in ('casual_browsing',):
+        return 'playful'
+    if state in ('chatting', 'stale_returning'):
+        return 'warm'
+    # focused_work / idle / transitioning / away
+    return 'concise'
+
+
+# ── Default skip_probability for gaming subtypes ───────────────────
+#
+# Source: design doc + user direction (concise: competitive, immersive
+# horror are the only two non-zero defaults; casual/immersive_rpg/varied
+# all stay at 0). User can shift via ``skip_probability_overrides``
+# in preferences. Keys are gaming-only; non-gaming states always have
+# default 0 (skip is not a propensity-strength choice for non-game).
+_DEFAULT_GAMING_SKIP_PROB: dict[tuple[GameIntensity, str | None], float] = {
+    ('competitive', None):     0.3,   # Any competitive game (genre doesn't refine further)
+    ('immersive',   'horror'): 0.3,   # Atmospheric tension — interruption breaks immersion
+    ('immersive',   None):     0.0,   # RPG / story — propensity already restricts to screen
+    ('casual',      None):     0.0,   # Pause-anytime
+    ('varied',      None):     0.0,   # Unknown — don't make conservative guess any noisier
+}
+
+
+def derive_skip_probability(
+    state: ActivityState,
+    *,
+    game_intensity: GameIntensity | None = None,
+    game_genre: GameGenre | None = None,
+    overrides: dict[str, float] | None = None,
+) -> float:
+    """Pick the skip probability for the current activity context.
+
+    ``overrides`` is the user's per-combo dict from
+    ``activity_preferences.json::skip_probability_overrides``. Keys are
+    string combos like ``'competitive'`` (any genre), ``'immersive_horror'``
+    (intensity_genre with underscore), or ``'casual'``. Override values
+    in [0, 1] take precedence over defaults.
+    """
+    if state != 'gaming' or game_intensity is None:
+        return 0.0
+
+    # User override lookup — try most specific (intensity_genre) first
+    if overrides:
+        if game_genre and game_intensity != 'varied':
+            key_specific = f'{game_intensity}_{game_genre}'
+            if key_specific in overrides:
+                v = overrides[key_specific]
+                return max(0.0, min(1.0, float(v)))
+        if game_intensity in overrides:
+            v = overrides[game_intensity]
+            return max(0.0, min(1.0, float(v)))
+
+    # Default lookup — try genre-specific first, then intensity-only.
+    if game_genre and game_intensity != 'varied':
+        key = (game_intensity, game_genre)
+        if key in _DEFAULT_GAMING_SKIP_PROB:
+            return _DEFAULT_GAMING_SKIP_PROB[key]
+    return _DEFAULT_GAMING_SKIP_PROB.get((game_intensity, None), 0.0)
 
 
 # ── Localized strings for prompt injection ─────────────────────────
@@ -211,6 +448,7 @@ from config.prompts_activity import (
     ACTIVITY_REASON_TEMPLATES,
     ACTIVITY_STATE_LABELS,
     ACTIVITY_STATE_SECTION_LABELS,
+    ACTIVITY_TONE_HINTS,
     OS_DEGRADED_MARKER,
 )
 
@@ -309,6 +547,18 @@ def format_activity_state_section(snap: 'ActivitySnapshot', lang: str = 'zh') ->
 
     # Line 1: state + propensity directive on a single line.
     lines.append(f"{snap.state}（{state_label}）→ {propensity_directive}")
+
+    # Line 1.5: tone hint (style modifier orthogonal to propensity).
+    # Skip rendering when the state would already be silenced (closed)
+    # or when tone is the safe default ``concise`` — saves a token line
+    # in the common case where there's nothing notable to say about
+    # voice. Renders as a single line: "口吻：{hint}".
+    if snap.propensity != 'closed' and snap.tone != 'concise':
+        tone_hints = ACTIVITY_TONE_HINTS.get(L, ACTIVITY_TONE_HINTS['en'])
+        tone_text = tone_hints.get(snap.tone)
+        if tone_text:
+            tone_label = labels.get('tone_label', 'tone')
+            lines.append(f"{tone_label}: {tone_text}")
 
     # Line 2: rule reasons (skip if empty — happens for unknown states).
     if snap.propensity_reasons:

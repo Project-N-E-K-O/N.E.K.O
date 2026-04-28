@@ -274,6 +274,7 @@ ACTIVITY_STATE_LABELS: dict[str, dict[str, str]] = {
         'voice_engaged':   '语音对话中',
         'idle':            '空闲',
         'transitioning':   '切换状态中',
+        'private':         '隐私应用前台',
     },
     'en': {
         'away':            'away',
@@ -285,6 +286,7 @@ ACTIVITY_STATE_LABELS: dict[str, dict[str, str]] = {
         'voice_engaged':   'voice conversation',
         'idle':            'idle',
         'transitioning':   'transitioning',
+        'private':         'private app foreground',
     },
     'ja': {
         'away':            '離席',
@@ -296,6 +298,7 @@ ACTIVITY_STATE_LABELS: dict[str, dict[str, str]] = {
         'voice_engaged':   'ボイス会話中',
         'idle':            'アイドル',
         'transitioning':   '状態切替中',
+        'private':         'プライベートアプリ前面',
     },
     'ko': {
         'away':            '자리 비움',
@@ -307,6 +310,7 @@ ACTIVITY_STATE_LABELS: dict[str, dict[str, str]] = {
         'voice_engaged':   '음성 대화 중',
         'idle':            '유휴',
         'transitioning':   '상태 전환 중',
+        'private':         '비공개 앱 전면',
     },
     'ru': {
         'away':            'отсутствует',
@@ -318,6 +322,70 @@ ACTIVITY_STATE_LABELS: dict[str, dict[str, str]] = {
         'voice_engaged':   'голосовая беседа',
         'idle':            'простой',
         'transitioning':   'смена контекста',
+        'private':         'приватное приложение в фокусе',
+    },
+}
+
+
+# ── Tone hints (single-line style modifier) ─────────────────────────
+#
+# Tone is orthogonal to propensity: propensity decides *what kind of
+# source* the AI may draw from, tone decides *how to deliver it*. The
+# Phase 2 prompt renders tone as one extra line:
+#
+#     口吻：短句优先，不延展话题，避免动作描写
+#
+# Tones and when they fire (see ``derive_tone`` in
+# ``main_logic/activity/snapshot.py`` for the full table):
+#
+#   * ``terse``   — competitive games, rhythm games
+#   * ``hushed``  — immersive horror games
+#   * ``mellow``  — immersive RPG / story-driven games
+#   * ``playful`` — casual gaming, casual_browsing
+#   * ``warm``    — voice / chatting / stale_returning
+#   * ``concise`` — focused_work / idle / default (rendered nothing —
+#                   format_activity_state_section skips when concise to
+#                   save a line in the common case)
+ACTIVITY_TONE_HINTS: dict[str, dict[str, str]] = {
+    'zh': {
+        'terse':   '短句优先，不延展话题，避免动作描写',
+        'hushed':  '轻声细语，配合氛围克制说话',
+        'mellow':  '慢节奏放松陪伴，不丢专业术语进来',
+        'playful': '闲适带点小俏皮，可以开玩笑',
+        'warm':    '自然对话，回应感强',
+        'concise': '不啰嗦，专业克制',
+    },
+    'en': {
+        'terse':   'short sentences first; do not extend topics; avoid action narration',
+        'hushed':  'soft and quiet, restrained to match the atmosphere',
+        'mellow':  'slow-paced, relaxed companionship; no jargon dumps',
+        'playful': 'easygoing with a touch of mischief; jokes welcome',
+        'warm':    'natural conversation, responsive in tone',
+        'concise': 'no fluff, professional and restrained',
+    },
+    'ja': {
+        'terse':   '短文優先・話題を広げない・動作描写を避ける',
+        'hushed':  '小声で控えめに、雰囲気に合わせて',
+        'mellow':  'ゆったりした寄り添い、専門用語は出さない',
+        'playful': 'のんびりしつつ少し茶目っ気、冗談 OK',
+        'warm':    '自然な会話、反応性高め',
+        'concise': '冗長なし、控えめでプロフェッショナル',
+    },
+    'ko': {
+        'terse':   '짧은 문장 우선, 화제 확장 금지, 동작 묘사 자제',
+        'hushed':  '낮은 목소리로, 분위기에 맞게 절제',
+        'mellow':  '느긋한 동행, 전문 용어는 자제',
+        'playful': '편안하게 약간 장난스럽게, 농담도 OK',
+        'warm':    '자연스러운 대화, 반응성 높게',
+        'concise': '군더더기 없이, 절제된 전문성',
+    },
+    'ru': {
+        'terse':   'короткие фразы; не расширять тему; без описаний действий',
+        'hushed':  'тихо и сдержанно, в тон атмосфере',
+        'mellow':  'неспешное сопровождение, без жаргона',
+        'playful': 'непринуждённо и слегка игриво, шутки уместны',
+        'warm':    'естественный разговор, отзывчивая интонация',
+        'concise': 'без воды, сдержанно и профессионально',
     },
 }
 
@@ -395,6 +463,7 @@ ACTIVITY_REASON_TEMPLATES: dict[str, dict[str, str]] = {
         'state_chatting':        '前台聊天：{app}',
         'state_transitioning':   '近期窗口频繁切换',
         'state_idle':            '在电脑前但无明显任务',
+        'state_private':         '前台是隐私应用——不分类、不缓存',
         'high_cpu':              'CPU 30s 均值 {cpu_percent}%',
         'high_gpu':              'GPU 利用率 {gpu_percent}%',
         'gaming_by_gpu':         'GPU 持续高负载（怀疑未识别的游戏）',
@@ -409,6 +478,7 @@ ACTIVITY_REASON_TEMPLATES: dict[str, dict[str, str]] = {
         'state_chatting':        'foreground chat: {app}',
         'state_transitioning':   'rapid window switching recently',
         'state_idle':            'at the computer but no clear task',
+        'state_private':         'private app in foreground — not classifying / caching',
         'high_cpu':              'CPU 30s avg {cpu_percent}%',
         'high_gpu':              'GPU utilization {gpu_percent}%',
         'gaming_by_gpu':         'sustained high GPU (likely unrecognized game)',
@@ -423,6 +493,7 @@ ACTIVITY_REASON_TEMPLATES: dict[str, dict[str, str]] = {
         'state_chatting':        'フォアグラウンドチャット：{app}',
         'state_transitioning':   '最近のウィンドウ切替が頻繁',
         'state_idle':            'PC前にいるが明確な作業なし',
+        'state_private':         'プライベートアプリ前面——分類もキャッシュもしない',
         'high_cpu':              'CPU 30秒平均 {cpu_percent}%',
         'high_gpu':              'GPU 使用率 {gpu_percent}%',
         'gaming_by_gpu':         'GPU 高負荷継続（未識別のゲームの可能性）',
@@ -437,6 +508,7 @@ ACTIVITY_REASON_TEMPLATES: dict[str, dict[str, str]] = {
         'state_chatting':        '전경 채팅: {app}',
         'state_transitioning':   '최근 창 전환 빈번',
         'state_idle':            'PC 앞에 있으나 명확한 작업 없음',
+        'state_private':         '비공개 앱 전면 — 분류/캐시하지 않음',
         'high_cpu':              'CPU 30초 평균 {cpu_percent}%',
         'high_gpu':              'GPU 사용률 {gpu_percent}%',
         'gaming_by_gpu':         'GPU 고부하 지속 (미식별 게임 의심)',
@@ -451,6 +523,7 @@ ACTIVITY_REASON_TEMPLATES: dict[str, dict[str, str]] = {
         'state_chatting':        'переписка на переднем плане: {app}',
         'state_transitioning':   'недавно частая смена окон',
         'state_idle':            'за компьютером без явной задачи',
+        'state_private':         'приватное приложение в фокусе — не классифицируем / не кэшируем',
         'high_cpu':              'CPU средн. 30с {cpu_percent}%',
         'high_gpu':              'загрузка GPU {gpu_percent}%',
         'gaming_by_gpu':         'устойчиво высокая GPU (вероятно нераспознанная игра)',
@@ -497,6 +570,7 @@ ACTIVITY_STATE_SECTION_LABELS: dict[str, dict[str, str]] = {
         'activity_scores_label': '评估',
         'activity_guess_label': '叙述',
         'open_threads_label': '开放话题',
+        'tone_label': '口吻',
         'time_user_ai_fmt': '{time} | 用户 {user} | AI {ai}',
         'time_user_only_fmt': '{time} | 用户 {user}',
         'time_only_fmt': '{time}',
@@ -517,6 +591,7 @@ ACTIVITY_STATE_SECTION_LABELS: dict[str, dict[str, str]] = {
         'activity_scores_label': 'scores',
         'activity_guess_label': 'narrative',
         'open_threads_label': 'open threads',
+        'tone_label': 'tone',
         'time_user_ai_fmt': '{time} | user msg {user} ago | AI {ai} ago',
         'time_user_only_fmt': '{time} | user msg {user} ago',
         'time_only_fmt': '{time}',
@@ -537,6 +612,7 @@ ACTIVITY_STATE_SECTION_LABELS: dict[str, dict[str, str]] = {
         'activity_scores_label': '評価',
         'activity_guess_label': '叙述',
         'open_threads_label': '保留話題',
+        'tone_label': '口調',
         'time_user_ai_fmt': '{time} | ユーザー {user} | AI {ai}',
         'time_user_only_fmt': '{time} | ユーザー {user}',
         'time_only_fmt': '{time}',
@@ -557,6 +633,7 @@ ACTIVITY_STATE_SECTION_LABELS: dict[str, dict[str, str]] = {
         'activity_scores_label': '평가',
         'activity_guess_label': '서술',
         'open_threads_label': '보류 화제',
+        'tone_label': '말투',
         'time_user_ai_fmt': '{time} | 사용자 {user} | AI {ai}',
         'time_user_only_fmt': '{time} | 사용자 {user}',
         'time_only_fmt': '{time}',
@@ -577,6 +654,7 @@ ACTIVITY_STATE_SECTION_LABELS: dict[str, dict[str, str]] = {
         'activity_scores_label': 'оценки',
         'activity_guess_label': 'описание',
         'open_threads_label': 'открытые нити',
+        'tone_label': 'тон',
         'time_user_ai_fmt': '{time} | польз. {user} назад | AI {ai} назад',
         'time_user_only_fmt': '{time} | польз. {user} назад',
         'time_only_fmt': '{time}',

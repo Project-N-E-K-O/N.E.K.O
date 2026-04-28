@@ -71,7 +71,8 @@ for all fields.
 |---|---|---|---|
 | `away` | System idle ≥ 15 min | `open` | Normal proactive — frontend backoff handles frequency |
 | `stale_returning` | Just back from `away` (≤ 60s window) | `greeting_window` | Encourage greeting, allow 1d+ reminiscence |
-| `gaming` | Game window in foreground (subcategory='game') | `restricted_screen_only` | Only screen-derived chatter; no externals, no reminisce |
+| `private` | Sensitive app (password mgr / banking / wallet) foreground | `closed` | Hard skip — no LLM, no enrichment, no buffer caching |
+| `gaming` | Game window in foreground (subcategory='game') | `restricted_screen_only` *or* `open` (casual intensity) | Intensity / genre refines further (see "Game intensity & genre" below) |
 | `focused_work` | Work window + ≥ 90s dwell + recent input | `restricted_screen_only` | Same as gaming |
 | `casual_browsing` | Entertainment window + ≥ 30s dwell | `open` | Encourage external material |
 | `chatting` | Communication app in foreground | `open` | Allow externals, careful with screen comments |
@@ -85,17 +86,185 @@ the existing frontend backoff curve in `static/app-proactive.js`),
 not "don't speak". The greeting machinery in `core.py:trigger_greeting`
 uses a separate path on first reconnect.
 
+The `own_app` keyword category (catgirl app foreground) is handled at
+the observation layer — see "Own-app exclusion" below. It never
+produces a state, just a no-op tick.
+
 ## Propensity directives (what Phase 2 sees)
 
 | Propensity | Allowed channels | Recommended emphasis |
 |---|---|---|
-| `closed` | (reserved; no longer emitted) | — |
+| `closed` | None — hard skip | Used only by `private` state; proactive Phase 1 short-circuits before any LLM call |
 | `restricted_screen_only` | Screen only | Avoid duplication with last 1h; no externals; no reminiscence |
 | `open` | All channels | Reminiscence and externals both available |
 | `greeting_window` | All channels | Encourage gentle greeting + 1d+ reminiscence |
 
 Phase 2 prompt rewrites map these directives into language directives
 (see `config/prompts_proactive.py` for the post-revision prompt).
+
+## Skip probability (probabilistic gate, distinct from propensity)
+
+`ActivitySnapshot.skip_probability` is rolled at proactive Phase 1 entry
+*before any other gating* — if `random() < skip_probability` and there's
+no unfinished thread to follow up on, the round is skipped entirely
+(no LLM, no source fetch, no prompt assembly). Default 0 means "always
+proceed".
+
+Defaults are derived from `(state, intensity, genre)` in
+`derive_skip_probability()`:
+
+| Combo | Default skip |
+|---|---|
+| `gaming + competitive` (any genre) | 0.3 |
+| `gaming + immersive + horror` | 0.3 |
+| `gaming + immersive` (other genre) | 0.0 |
+| `gaming + casual` | 0.0 |
+| `gaming + varied` / untagged | 0.0 |
+| Non-gaming states | 0.0 |
+
+User overrides via `activity_preferences.json::skip_probability_overrides`
+take precedence — set `1.0` for "fully silent during this combo" or
+`0.0` to disable. Keys are intensity-only (`competitive`) or
+intensity_genre joined with underscore (`immersive_horror`).
+
+The `unfinished_thread` guard means an open AI question still gets its
+follow-up window even at `skip_probability=1.0`. Promise-keeping trumps
+silence; the existing 2-followup hard cap prevents harassment.
+
+## Tone modifier (style hint, orthogonal to propensity)
+
+`ActivitySnapshot.tone` is a single-axis style hint that controls *how*
+the AI delivers its message. Six tones, derived in `derive_tone()`:
+
+| Tone | When | Prompt hint (zh) |
+|---|---|---|
+| `terse` | competitive games / rhythm | "短句优先，不延展话题，避免动作描写" |
+| `hushed` | immersive horror | "轻声细语，配合氛围克制说话" |
+| `mellow` | immersive RPG / story | "慢节奏放松陪伴，不丢专业术语进来" |
+| `playful` | casual gaming / casual_browsing | "闲适带点小俏皮，可以开玩笑" |
+| `warm` | voice / chatting / stale_returning | "自然对话，回应感强" |
+| `concise` | focused_work / idle / default | "不啰嗦，专业克制" |
+
+Rendered by `format_activity_state_section` as one extra line:
+
+```
+口吻：短句优先，不延展话题，避免动作描写
+```
+
+`concise` (the safe fallback) and any tone under `propensity=closed`
+are NOT rendered — saves a token line in the common case.
+
+`silent` is intentionally not a tone. Silencing the AI is the
+`skip_probability` mechanism's job; conflating "voice" with "presence"
+muddies both axes.
+
+## Game intensity & genre
+
+Game-keyword rows in `config/activity_keywords.py::GAME_TITLE_KEYWORDS`
+support two shapes:
+
+```python
+# Legacy 2-tuple (untagged — falls through to varied/None)
+('Some Indie Game', ['Some Indie Game', 'SIG'])
+
+# New 4-tuple (tagged)
+('League of Legends', ['LoL', '英雄联盟'], 'competitive', 'moba')
+```
+
+`intensity` (`competitive` / `casual` / `immersive` / `varied`) drives
+propensity + skip_probability. `genre` (`fps` / `moba` / `rpg` / `sim` /
+`horror` / `racing` / `rhythm` / `strategy` / `sports` / `party` /
+`action` / `misc`) refines tone — the only genre-specific branch is
+`horror` triggering the `hushed` tone.
+
+User overrides (`user_game_overrides` in preferences) patch
+intensity/genre on top of static-DB classification by canonical name —
+useful for "I'm playing Elden Ring chill, not sweaty" style flips.
+
+The retag is incremental: top ~70 well-known games are tagged at the
+moment this doc was written; long-tail entries stay 2-tuple and behave
+identically to PR #1015's single `gaming → restricted_screen_only`
+bucket.
+
+## Privacy blacklist
+
+`PRIVATE_TITLE_KEYWORDS` and `PRIVATE_PROCESS_NAMES` in
+`config/activity_keywords.py` list password managers (KeePass /
+1Password / Bitwarden / etc), authenticator apps, and crypto wallets.
+A match emits `state='private', propensity='closed'`. The state
+machine sanitizes the observation (clears title + process_name from the
+snapshot's `active_window`) and the tracker bypasses LLM enrichment +
+suppresses background `activity_guess` ticks while in this state. Net
+effect: sensitive context never reaches the prompt or any model API.
+
+User app/title overrides cannot demote a static-DB privacy hit.
+Game intensity/genre overrides still apply (no privacy implication).
+
+## Own-app exclusion
+
+`OWN_APP_TITLE_KEYWORDS` and `OWN_APP_PROCESS_NAMES` cover the catgirl
+app's own windows (`projectneko_server.exe`, `Xiao8.exe`,
+`lanlan_frd.exe`, plus titles `N.E.K.O` / `Xiao8` / `小八` / `Project
+N.E.K.O`). When the catgirl app is foreground, the tracker treats the
+tick as "no fresh window data" — observation is dropped, dwell timer
+freezes, GPU fallback gaming doesn't trip on the catgirl's own
+Live2D / VRM rendering. Avoids the recursive feedback where "user is
+looking at the catgirl" itself becomes an input the catgirl reasons
+over.
+
+## User overrides & externalized config
+
+`utils/activity_config.py` reads the `activity` sub-dict from
+`user_preferences.json::__global_conversation__`:
+
+```json
+{
+  "model_path": "__global_conversation__",
+  "activity": {
+    "thresholds": {
+      "away_idle_seconds": 600,
+      "focused_work_min_dwell_seconds": 60
+    },
+    "user_app_overrides": {
+      "MyCorpApp.exe": {"category": "work", "subcategory": "office", "canonical": "MyCorpApp"}
+    },
+    "user_title_overrides": {
+      "MyCustomDashboard": {"category": "work", "subcategory": "office"}
+    },
+    "user_game_overrides": {
+      "Elden Ring": {"intensity": "casual"}
+    },
+    "skip_probability_overrides": {
+      "competitive":      0.5,
+      "immersive_horror": 1.0
+    }
+  }
+}
+```
+
+* **thresholds** — every state-machine constant (away_idle_seconds,
+  focused_work_min_dwell_seconds, etc.) can be tuned. Code defaults
+  remain hardcoded in `state_machine.py` as the fallback when an entry
+  is missing or invalid (positive numbers only; bad values silently
+  dropped).
+* **user_app_overrides** — process-name keyed, lowercased. Patches the
+  classifier result before state derivation. Cannot demote `private` or
+  `own_app` static-DB hits (privacy guarantee).
+* **user_title_overrides** — title-substring keyed, lowercased. Same
+  rules as app overrides; only fires when static DB returns `unknown`.
+* **user_game_overrides** — canonical-name keyed (case-sensitive).
+  Patches `(intensity, genre)` on top of an existing gaming
+  classification.
+* **skip_probability_overrides** — float in [0, 1] per intensity[_genre]
+  combo. Beats default lookups; out-of-range values are clamped.
+
+Cache: file is read at most once per 30s with mtime-based
+invalidation. Edits to the JSON take effect on the next reload tick.
+`invalidate_activity_preferences_cache()` is exposed for tests + for
+explicit reload after a settings UI write.
+
+There's no save path for the activity sub-dict yet — users hand-edit
+the JSON. Add a settings-UI write path when a UI lands.
 
 ## Architecture
 

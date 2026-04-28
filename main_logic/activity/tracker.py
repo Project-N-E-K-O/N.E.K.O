@@ -297,7 +297,10 @@ class UserActivityTracker:
         (a one-shot ``await`` on first call). Subsequent calls are
         effectively synchronous. The returned snapshot has cached
         emotion-tier enrichment fields (``activity_scores``,
-        ``activity_guess``, ``open_threads``) merged in.
+        ``activity_guess``, ``open_threads``) merged in — except when
+        the resolved state is ``private``, in which case enrichment
+        is suppressed (LLM input + cached output both bypassed) so the
+        user's secret context never reaches the model.
         """
         await self._ensure_collector_started()
 
@@ -305,9 +308,25 @@ class UserActivityTracker:
 
         sys_snap = self._select_system_snapshot(ts)
         self._sm.update_system(sys_snap)
-        self._sm.update_window(observation_from_system(sys_snap), now=ts)
+        self._sm.update_window(
+            observation_from_system(sys_snap, self._sm._prefs),
+            now=ts,
+        )
 
         snap = self._sm.get_snapshot(now=ts)
+        if snap.state == 'private':
+            # Privacy lockdown — explicitly empty enrichment fields rather
+            # than splicing in caches built from earlier (non-private)
+            # state. Even though state machine drops the title/process
+            # at update_window, the cached enrichment narrative might
+            # still reference what the user was doing 30s ago, which
+            # could leak intent ("master is logging into bank...").
+            return dc_replace(
+                snap,
+                activity_scores={},
+                activity_guess='',
+                open_threads=[],
+            )
         # Patch in emotion-tier enrichment caches. ``snap`` is a frozen
         # dataclass; ``replace`` returns a new instance without mutating
         # the original. Callers always get a self-consistent snapshot.
@@ -325,7 +344,7 @@ class UserActivityTracker:
         the collector-start guard — callers must ensure collection is
         running, or accept that ``SystemSnapshot`` defaults will be in
         play. Enrichment caches are merged in the same way as
-        ``get_snapshot``.
+        ``get_snapshot``, with the same private-state suppression.
         """
         ts = now if now is not None else time.time()
         # Use _select_system_snapshot to honour frontend-pushed signals
@@ -334,8 +353,18 @@ class UserActivityTracker:
         # in sync callers.
         sys_snap = self._select_system_snapshot(ts)
         self._sm.update_system(sys_snap)
-        self._sm.update_window(observation_from_system(sys_snap), now=ts)
+        self._sm.update_window(
+            observation_from_system(sys_snap, self._sm._prefs),
+            now=ts,
+        )
         snap = self._sm.get_snapshot(now=ts)
+        if snap.state == 'private':
+            return dc_replace(
+                snap,
+                activity_scores={},
+                activity_guess='',
+                open_threads=[],
+            )
         return dc_replace(
             snap,
             activity_scores=dict(self._activity_scores_cache),
@@ -355,14 +384,22 @@ class UserActivityTracker:
         on its previous value (potentially empty), which the prompt
         formatter renders or omits accordingly.
 
-        Idempotent in three useful ways:
+        Idempotent in four useful ways:
+          * If the rule state is currently ``private`` → skip (no LLM
+            calls during privacy lockdown — even the conversation
+            buffer might reference sensitive context that was just
+            mentioned).
           * If the cache seq matches the current user-message seq, no
             new user has spoken since last compute → skip.
           * If a previous task is still running → skip (don't queue).
           * If conversation buffers are empty → skip (nothing to score).
         """
-        # 隐私模式下整个 enrichment 通路都关掉。
-        if _privacy_mode_active():
+        # Two privacy gates, OR'd: user-toggled "privacy mode" disables
+        # the entire tracker (PR #1024); static-DB ``private`` state means
+        # a sensitive app (KeePass etc) is foreground right now even while
+        # the user has the tracker on. Either condition skips enrichment
+        # — cheap O(1) checks, safe under sync callers.
+        if _privacy_mode_active() or self._sm._current_state == 'private':
             return
         if self._open_threads_computed_at_seq == self._conv_seq:
             return
@@ -446,11 +483,22 @@ class UserActivityTracker:
                 ts = time.time()
                 sys_snap = self._select_system_snapshot(ts)
                 self._sm.update_system(sys_snap)
-                self._sm.update_window(observation_from_system(sys_snap), now=ts)
+                self._sm.update_window(
+                    observation_from_system(sys_snap, self._sm._prefs),
+                    now=ts,
+                )
                 rule_snap = self._sm.get_snapshot(now=ts)
 
                 # Bail on away — nothing useful to narrate.
                 if rule_snap.state == 'away':
+                    continue
+
+                # Bail on private — explicitly do NOT send sensitive app
+                # context (or even surrounding conversation) to the
+                # emotion-tier LLM. Existing cached values stay frozen
+                # until the user leaves the private app; on resume the
+                # state-signature dedup will refresh naturally.
+                if rule_snap.state == 'private':
                     continue
 
                 # Anti-thrash: respect the minimum refresh interval.
