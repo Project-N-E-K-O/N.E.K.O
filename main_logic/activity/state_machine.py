@@ -577,9 +577,9 @@ class ActivityStateMachine:
         """Build structured reasons for the chosen state.
 
         Each reason is ``(code, params)`` — the code maps to a localized
-        template inside ``snapshot._REASON_TEMPLATES``, and the params
-        are interpolated at format time. State-machine code stays
-        language-agnostic; the prompt formatter renders.
+        template inside ``config.prompts_activity.ACTIVITY_REASON_TEMPLATES``,
+        and the params are interpolated at format time. State-machine
+        code stays language-agnostic; the prompt formatter renders.
         """
         reasons: list[tuple[str, dict]] = []
         win = self._current_window
