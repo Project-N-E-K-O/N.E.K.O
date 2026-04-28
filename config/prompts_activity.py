@@ -482,8 +482,8 @@ ACTIVITY_REASON_TEMPLATES: dict[str, dict[str, str]] = {
 
 ACTIVITY_STATE_SECTION_LABELS: dict[str, dict[str, str]] = {
     'zh': {
-        'header': '===活动状态===',
-        'footer': '===状态结束===',
+        'header': '======活动状态======',
+        'footer': '======状态结束======',
         'never': '无',
         'seconds_ago_fmt': '{seconds:.0f}s前',
         'minutes_ago_fmt': '{minutes:.0f}min前',
@@ -502,8 +502,8 @@ ACTIVITY_STATE_SECTION_LABELS: dict[str, dict[str, str]] = {
         'time_only_fmt': '{time}',
     },
     'en': {
-        'header': '===Activity===',
-        'footer': '===End===',
+        'header': '======Activity======',
+        'footer': '======End======',
         'never': '-',
         'seconds_ago_fmt': '{seconds:.0f}s',
         'minutes_ago_fmt': '{minutes:.0f}min',
@@ -522,8 +522,8 @@ ACTIVITY_STATE_SECTION_LABELS: dict[str, dict[str, str]] = {
         'time_only_fmt': '{time}',
     },
     'ja': {
-        'header': '===活動状態===',
-        'footer': '===終わり===',
+        'header': '======活動状態======',
+        'footer': '======終わり======',
         'never': '無',
         'seconds_ago_fmt': '{seconds:.0f}秒前',
         'minutes_ago_fmt': '{minutes:.0f}分前',
@@ -542,8 +542,8 @@ ACTIVITY_STATE_SECTION_LABELS: dict[str, dict[str, str]] = {
         'time_only_fmt': '{time}',
     },
     'ko': {
-        'header': '===활동 상태===',
-        'footer': '===끝===',
+        'header': '======활동 상태======',
+        'footer': '======끝======',
         'never': '없음',
         'seconds_ago_fmt': '{seconds:.0f}초 전',
         'minutes_ago_fmt': '{minutes:.0f}분 전',
@@ -562,8 +562,8 @@ ACTIVITY_STATE_SECTION_LABELS: dict[str, dict[str, str]] = {
         'time_only_fmt': '{time}',
     },
     'ru': {
-        'header': '===Активность===',
-        'footer': '===Конец===',
+        'header': '======Активность======',
+        'footer': '======Конец======',
         'never': '-',
         'seconds_ago_fmt': '{seconds:.0f}с',
         'minutes_ago_fmt': '{minutes:.0f}мин',
