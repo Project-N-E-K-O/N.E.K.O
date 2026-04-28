@@ -92,6 +92,34 @@ class LLMStrategy:
         corrected = llm_methods.try_parse_llm_json(response_text)
         return corrected if isinstance(corrected, dict) else None
 
+    def _validated_action_type(self, validated: Dict[str, Any], fallback: str = "") -> str:
+        raw = validated.get("raw") if isinstance(validated.get("raw"), dict) else {}
+        return str(validated.get("type") or raw.get("type") or raw.get("name") or raw.get("action") or fallback or "")
+
+    def _validated_action_kwargs(self, validated: Dict[str, Any]) -> Dict[str, Any]:
+        raw = validated.get("raw") if isinstance(validated.get("raw"), dict) else {}
+        ignored_keys = {"type", "name", "label", "description", "requires_target", "requires_index", "shop_remove_selection"}
+        return {
+            key: value
+            for key, value in raw.items()
+            if key not in ignored_keys and not (key == "action" and isinstance(value, dict))
+        }
+
+    def _build_validated_decision_reasoning(self, payload: Dict[str, Any], decision: Dict[str, Any], validated: Dict[str, Any]) -> Dict[str, Any]:
+        chosen_action = self._validated_action_type(validated, str(decision.get("action_type") or ""))
+        chosen_kwargs = self._validated_action_kwargs(validated)
+        original_kwargs = decision.get("kwargs") if isinstance(decision.get("kwargs"), dict) else {}
+        return {
+            "situation_summary": payload.get("snapshot", {}).get("screen", "") if isinstance(payload.get("snapshot"), dict) else "",
+            "primary_goal": "",
+            "candidate_actions": [a.get("action_type") for a in payload.get("legal_actions", []) if isinstance(a, dict)],
+            "chosen_action": chosen_action,
+            "chosen_kwargs": chosen_kwargs,
+            "original_action": str(decision.get("action_type") or ""),
+            "original_kwargs": dict(original_kwargs),
+            "reason": str(decision.get("reason") or ""),
+        }
+
     async def select_action_full_model(self, context: Dict[str, Any], cfg: Dict[str, Any], configured_character_strategy, strategy_prompt_for_llm, build_llm_decision_payload, build_full_model_reasoning_messages, build_full_model_checked_context, build_full_model_final_messages, parse_llm_reasoning_response, parse_llm_decision_response, validate_llm_decision, invoke_llm_json, try_parse_llm_json, await_stable_step_context, llm_methods) -> Optional[Dict[str, Any]]:
         self.logger.info("[sts2_autoplay][full-model] stage1 reasoning start")
         strategy_prompt = strategy_prompt_for_llm(configured_character_strategy())
@@ -314,13 +342,7 @@ class LLMStrategy:
         validated = validate_llm_decision(decision, context)
         if validated is None:
             return None
-        reasoning = {
-            "situation_summary": payload.get("snapshot", {}).get("screen", ""),
-            "primary_goal": "",
-            "candidate_actions": [a.get("action_type") for a in payload.get("legal_actions", [])],
-            "chosen_action": decision.get("action_type", ""),
-            "reason": decision.get("reason", ""),
-        }
+        reasoning = self._build_validated_decision_reasoning(payload, decision, validated)
         return validated, reasoning
 
     async def select_action_full_model_and_reasoning(self, context: Dict[str, Any], cfg: Dict[str, Any], configured_character_strategy, strategy_prompt_for_llm, build_llm_decision_payload, build_full_model_reasoning_messages, build_full_model_checked_context, build_full_model_final_messages, parse_llm_reasoning_response, parse_llm_decision_response, validate_llm_decision, invoke_llm_json, try_parse_llm_json, await_stable_step_context, llm_methods) -> Optional[Tuple[Dict[str, Any], Optional[Dict[str, Any]]]]:
@@ -352,8 +374,16 @@ class LLMStrategy:
         if validated is None:
             self.logger.warning("[sts2_autoplay][full-model] stage2 final decision rejected by validator")
             return None
+        final_reasoning = dict(reasoning)
+        final_reasoning.update({
+            "chosen_action": self._validated_action_type(validated, str(decision.get("action_type") or "")),
+            "chosen_kwargs": self._validated_action_kwargs(validated),
+            "original_action": str(decision.get("action_type") or ""),
+            "original_kwargs": dict(decision.get("kwargs") if isinstance(decision.get("kwargs"), dict) else {}),
+            "reason": str(decision.get("reason") or reasoning.get("primary_goal") or ""),
+        })
         self.logger.info("[sts2_autoplay][full-model] stage2 final decision validated")
-        return validated, reasoning
+        return validated, final_reasoning
 
     def build_full_model_reasoning_messages(self, payload: Dict[str, Any], strategy_prompt: Optional[str], guidance: Optional[str] = None) -> List[Dict[str, Any]]:
         messages = [

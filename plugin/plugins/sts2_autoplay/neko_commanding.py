@@ -245,6 +245,9 @@ class NekoCommandingMixin:
                     reason="准备执行前局面变化，原卡牌动作已不可用",
                 )
                 return {"status": "stale", "message": "局面已变化，原卡牌动作不可执行", "summary": "局面已变化，原卡牌动作不可执行", "snapshot": snapshot}
+            prepared = revalidated
+            card_name = self._card_name_for_prepared_action(prepared)
+            reason = self._reason_for_card_action(llm_reasoning, card_name)
             result = await self._execute_action(prepared)
             await self._await_action_interval()
             settled_context = await self._await_post_action_settle(card_context, prepared)

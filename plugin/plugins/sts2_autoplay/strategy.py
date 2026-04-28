@@ -175,6 +175,9 @@ class HeuristicSelector:
                 weighted_action = selector_methods._select_weighted_play_card(actions, combat, tactical_summary, attack_weight=1, defense_weight=2)
                 if weighted_action is not None:
                     return weighted_action
+        if not actions:
+            self.logger.warning("[sts2_autoplay][heuristic] no legal actions available for selection")
+            return None
         preferred_order = [
             "confirm_modal",
             "dismiss_modal",
@@ -694,8 +697,9 @@ class HeuristicSelector:
                     score += bonus
                     constraint_hits.append(f"{category}:{label}")
         conditional_bucket = constraints.get("conditional") if isinstance(constraints.get("conditional"), dict) else {}
-        for label, cards in conditional_bucket.items():
-            if any(any(card in text for text in texts) for card in cards if isinstance(card, str)):
+        for label, entry in conditional_bucket.items():
+            aliases = self._constraint_aliases(entry)
+            if self._matches_constraint_alias(texts, aliases):
                 score += 10
                 constraint_hits.append(f"conditional:{label}")
         if any("状态" in text for text in texts) and not selector_methods._defect_has_card(context, {"压缩", "recycle"}):

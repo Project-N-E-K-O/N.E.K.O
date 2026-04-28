@@ -10,11 +10,13 @@ from typing import Any, Awaitable, Dict, Optional
 
 class AutoplayLoopMixin:
     async def start_autoplay(self, objective: Optional[str] = None, stop_condition: str = "current_floor") -> Dict[str, Any]:
+        if self._autoplay_task and not self._autoplay_task.done():
+            return {"status": "running", "message": "尖塔半自动任务已在运行", "task": self._semi_auto_task}
+
         if objective or bool(self._cfg.get("semi_auto_autoplay", True)):
             self._semi_auto_task = self._build_semi_auto_task(objective=objective, stop_condition=stop_condition)
             await self._notify_neko_task_event("started")
-        if self._autoplay_task and not self._autoplay_task.done():
-            return {"status": "running", "message": "尖塔半自动任务已在运行", "task": self._semi_auto_task}
+
         self._paused = False
         self._autoplay_state = "running"
         self._autoplay_task = asyncio.create_task(self._autoplay_loop())

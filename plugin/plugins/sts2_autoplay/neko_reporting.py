@@ -9,6 +9,12 @@ from typing import Any, Awaitable, Dict, Optional
 
 
 class NekoReportingMixin:
+    def _first_present(self, *values: Any) -> Any:
+        for value in values:
+            if value is not None:
+                return value
+        return None
+
     def _report_full_step(self, context: Dict[str, Any], *, decision_result: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         snapshot = context.get("snapshot") if isinstance(context.get("snapshot"), dict) else {}
         raw_state = snapshot.get("raw_state") if isinstance(snapshot.get("raw_state"), dict) else {}
@@ -205,7 +211,7 @@ class NekoReportingMixin:
         }
         try:
             priority = self._safe_int(live_commentary.get("priority"), 5) if live_commentary.get("should_speak") else 5
-            maybe_awaitable = notifier(content=content, description=description, metadata=metadata, priority=priority)
+            maybe_awaitable = notifier(content=content, description=description, metadata=metadata, priority=priority, message_type="neko_observation")
             if isinstance(maybe_awaitable, Awaitable):
                 await maybe_awaitable
         except Exception as exc:
@@ -587,8 +593,8 @@ class NekoReportingMixin:
         screen = snapshot.get("screen") or prev_screen or ""
         floor = self._safe_int(snapshot.get("floor"))
         act = self._safe_int(snapshot.get("act") or 1)
-        current_hp = self._safe_int(player.get("hp") or raw_state.get("current_hp") or run.get("current_hp") or run.get("hp"))
-        max_hp = self._safe_int(player.get("max_hp") or raw_state.get("max_hp") or run.get("max_hp") or 1)
+        current_hp = self._safe_int(self._first_present(player.get("hp"), raw_state.get("current_hp"), run.get("current_hp"), run.get("hp")))
+        max_hp = self._safe_int(self._first_present(player.get("max_hp"), raw_state.get("max_hp"), run.get("max_hp"), 1))
         if max_hp <= 0:
             max_hp = 1
         hp_ratio = current_hp / max_hp
@@ -603,14 +609,11 @@ class NekoReportingMixin:
         was_boss_screen = prev_screen == "combat" and floor >= boss_floor if prev_screen else False
         incoming_attack = self._safe_int(combat.get("enemy_intent", {}).get("value") if isinstance(combat.get("enemy_intent"), dict) else 0)
         if incoming_attack <= 0:
-            enemy_intent_value = 0
-            for enemy in (combat.get("enemies") if isinstance(combat.get("enemies"), list) else []):
-                if isinstance(enemy, dict):
-                    intent = enemy.get("intent") if isinstance(enemy.get("intent"), dict) else {}
-                    enemy_intent_value = self._safe_int(intent.get("value") if isinstance(intent, dict) else enemy.get("intent_value") or 0)
-                    if enemy_intent_value > 0:
-                        break
-            incoming_attack = enemy_intent_value
+            incoming_attack = sum(
+                self._enemy_intent_attack_total(enemy)
+                for enemy in (combat.get("enemies") if isinstance(combat.get("enemies"), list) else [])
+                if isinstance(enemy, dict)
+            )
 
         player_block = self._combat_player_block(combat)
         remaining_damage = max(0, incoming_attack - player_block)
@@ -663,7 +666,8 @@ class NekoReportingMixin:
             self._emit_status()
         elif action_type == "slow_down":
             original_interval = self._cfg.get("action_interval_seconds", 1.5)
-            self._cfg["_neko_auto_saved_action_interval"] = original_interval
+            if "_neko_auto_saved_action_interval" not in self._cfg:
+                self._cfg["_neko_auto_saved_action_interval"] = original_interval
             self._cfg["action_interval_seconds"] = max(original_interval, 3.0)
             self.logger.info(f"[sts2_autoplay][neko-auto] slow_down: interval {original_interval} -> 3.0")
         elif action_type == "resume":

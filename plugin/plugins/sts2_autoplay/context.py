@@ -164,8 +164,12 @@ class GameContextAnalyzer:
                 option_index = item.get("option_index")
                 if option_index is None:
                     option_index = item.get("index", idx)
+                try:
+                    normalized_index = int(option_index)
+                except Exception:
+                    continue
                 option = {
-                    "index": int(option_index),
+                    "index": normalized_index,
                     "texts": self._character_option_texts(item),
                 }
                 if option["texts"]:
@@ -175,8 +179,11 @@ class GameContextAnalyzer:
             nested_keys = ("options", "choices", "characters", "items")
             for key in nested_keys:
                 nested = candidate.get(key)
-                if isinstance(nested, list):
-                    return self._extract_character_options(nested)
+                if not isinstance(nested, list):
+                    continue
+                options = self._extract_character_options(nested)
+                if options:
+                    return options
         return []
 
     def _character_option_texts(self, item: Dict[str, Any]) -> Set[str]:
@@ -266,8 +273,12 @@ class GameContextAnalyzer:
                 option_index = item.get("option_index")
                 if option_index is None:
                     option_index = item.get("index", idx)
+                try:
+                    normalized_index = int(option_index)
+                except Exception:
+                    continue
                 option = {
-                    "index": int(option_index),
+                    "index": normalized_index,
                     "texts": texts,
                     "raw": item,
                 }
@@ -276,8 +287,11 @@ class GameContextAnalyzer:
         if isinstance(candidate, dict):
             for key in ("options", "choices", "cards", "card_options", "items", "rewards"):
                 nested = candidate.get(key)
-                if isinstance(nested, list):
-                    return self._extract_card_reward_options(nested)
+                if not isinstance(nested, list):
+                    continue
+                options = self._extract_card_reward_options(nested)
+                if options:
+                    return options
         return []
 
     def _card_option_texts(self, item: Dict[str, Any]) -> Set[str]:
@@ -352,7 +366,11 @@ class GameContextAnalyzer:
             if not texts:
                 continue
             option_index = item.get("index", idx)
-            options.append({"index": int(option_index), "texts": texts, "raw": item})
+            try:
+                normalized_index = int(option_index)
+            except Exception:
+                continue
+            options.append({"index": normalized_index, "texts": texts, "raw": item})
         return options
 
     def _shop_relic_options(self, context: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -378,7 +396,11 @@ class GameContextAnalyzer:
             if not texts:
                 continue
             option_index = item.get("index", idx)
-            options.append({"index": int(option_index), "texts": texts, "raw": item})
+            try:
+                normalized_index = int(option_index)
+            except Exception:
+                continue
+            options.append({"index": normalized_index, "texts": texts, "raw": item})
         return options
 
     def _defect_has_card(self, context: Dict[str, Any], names: Set[str]) -> bool:

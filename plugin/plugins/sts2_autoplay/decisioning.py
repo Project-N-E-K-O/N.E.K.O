@@ -25,14 +25,11 @@ class DecisioningMixin:
         desperate_hp_threshold = max(0.0, min(1.0, float(self._cfg.get("neko_desperate_hp_threshold", 0.2))))
         if hp_ratio > desperate_hp_threshold:
             return False
-        incoming_attack = 0
-        for enemy in (combat.get("enemies") if isinstance(combat.get("enemies"), list) else []):
-            if not isinstance(enemy, dict):
-                continue
-            intent = enemy.get("intent") if isinstance(enemy.get("intent"), dict) else {}
-            val = self._safe_int(intent.get("value") if isinstance(intent, dict) else enemy.get("intent_value") or 0)
-            if val > incoming_attack:
-                incoming_attack = val
+        incoming_attack = sum(
+            self._enemy_intent_attack_total(enemy)
+            for enemy in (combat.get("enemies") if isinstance(combat.get("enemies"), list) else [])
+            if isinstance(enemy, dict)
+        )
         player_block = self._combat_player_block(combat)
         remaining = max(0, incoming_attack - player_block)
         if remaining > 0 and current_hp <= remaining:

@@ -184,6 +184,8 @@ class ActionExecutionMixin:
                     self.logger.warning(f"LLM 决策参数越界: {decision}")
                     return None
                 normalized_kwargs[key] = normalized_value
+            if action_type == "play_card" and not self._validate_play_card_target_combo(normalized_kwargs, context, decision):
+                return None
             if action_type in {"choose_reward_card", "select_deck_card"} and "option_index" not in normalized_kwargs:
                 fallback_kwargs = self._normalize_action_kwargs(action_type, raw, context)
                 fallback_option_index = fallback_kwargs.get("option_index")
@@ -209,6 +211,46 @@ class ActionExecutionMixin:
             return validated
         self.logger.warning(f"LLM 决策动作不在当前合法动作中: {decision}")
         return None
+
+    def _validate_play_card_target_combo(self, normalized_kwargs: dict[str, int], context: dict[str, Any], decision: dict[str, Any]) -> bool:
+        card_index = normalized_kwargs.get("card_index")
+        if card_index is None:
+            return True
+
+        combat = self._combat_state(context)
+        hand = combat.get("hand") if isinstance(combat.get("hand"), list) else []
+        selected_card = None
+        for card in hand:
+            if not isinstance(card, dict) or not bool(card.get("playable")):
+                continue
+            if self._safe_int(card.get("index"), -1) == card_index:
+                selected_card = card
+                break
+        if selected_card is None:
+            self.logger.warning(f"LLM 决策卡牌不可打出: {decision}")
+            return False
+
+        valid_targets = selected_card.get("valid_target_indices") if isinstance(selected_card.get("valid_target_indices"), list) else []
+        normalized_valid_targets = [self._safe_int(target, -1) for target in valid_targets]
+        if not normalized_valid_targets:
+            normalized_kwargs.pop("target_index", None)
+            return True
+
+        target_index = normalized_kwargs.get("target_index")
+        if target_index is None:
+            fallback_target = self._find_card_target_index(context, card_index)
+            normalized_fallback_target = self._safe_int(fallback_target, -9999)
+            if fallback_target is not None and normalized_fallback_target in normalized_valid_targets:
+                normalized_kwargs["target_index"] = normalized_fallback_target
+                return True
+            self.logger.warning(f"LLM 决策缺少卡牌目标: {decision}")
+            return False
+
+        if self._safe_int(target_index, -9999) not in normalized_valid_targets:
+            self.logger.warning(f"LLM 决策卡牌目标组合非法: {decision}")
+            return False
+        normalized_kwargs["target_index"] = self._safe_int(target_index)
+        return True
 
     async def _execute_action(self, prepared: dict[str, Any]) -> Dict[str, Any]:
         client = self._require_client()
