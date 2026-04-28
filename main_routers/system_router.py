@@ -1054,6 +1054,7 @@ async def _ensure_source_history_loaded() -> None:
                     if p >= PROACTIVE_SOURCE_FORGET_P:
                         _source_history[h] = entry
         except FileNotFoundError:
+            # 首次运行 / 全新机器：尚无历史文件，按空历史继续
             pass
         except Exception as e:
             logger.warning(
