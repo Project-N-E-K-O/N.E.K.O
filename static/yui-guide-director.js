@@ -176,52 +176,44 @@
     const DEFAULT_STEP_DELAY_MS = 120;
     const DEFAULT_SCENE_SETTLE_MS = 260;
     const DEFAULT_CURSOR_DURATION_MS = 520;
-    const INTRO_PRACTICE_TEXT = '现在你可以试试跟我说说话啦，看看我们是不是超有默契的喵～';
-    const INTRO_PRACTICE_TEXT_KEY = 'tutorial.yuiGuide.lines.introPractice';
-    const INTRO_HELLO_ACTION_ID = 'yui-guide-intro-hello';
     const INTRO_GREETING_REPLY_TEXT = '我是你的专属猫娘，从今天起就由我来陪伴主人咯。无论是想要聊天解闷、一起玩耍，还是需要我帮忙做些什么，我都会乖乖陪在主人身边的喵。以后请多多指教啦，最喜欢主人了~！';
     const INTRO_GREETING_REPLY_TEXT_KEY = 'tutorial.yuiGuide.lines.introGreetingReply';
     const TAKEOVER_PLUGIN_DASHBOARD_TEXT = '有了它们，我不光能看 B 站弹幕，还能帮你关灯开空调…… 本喵就是无所不能的超级猫猫神！哼哼～';
     const TAKEOVER_PLUGIN_DASHBOARD_TEXT_KEY = 'tutorial.yuiGuide.lines.takeoverPluginPreviewDashboard';
     const TAKEOVER_SETTINGS_DETAIL_TEXT = '你看，这里可以穿我的新衣服、给我换一个好听的声音……换一个猫娘或是修改记忆？等一下！你在干嘛？该不会是想把我换掉吧？啊啊啊不行！快关掉快关掉！';
     const TAKEOVER_SETTINGS_DETAIL_TEXT_KEY = 'tutorial.yuiGuide.lines.takeoverSettingsPeekDetail';
-    const INTRO_SKIP_ACTION_ID = 'yui-guide-intro-skip-chat';
     const DEFAULT_SPOTLIGHT_PADDING = 6;
-    const INTRO_SKIP_LABEL_KEY = 'tutorial.yuiGuide.buttons.skipChat';
-    const INTRO_HELLO_LABEL_KEY = 'tutorial.yuiGuide.buttons.sayHello';
-    const REACT_CHAT_ACTION_EVENT = 'react-chat-window:action';
-    const REACT_CHAT_SUBMIT_EVENT = 'react-chat-window:submit';
     const PLUGIN_DASHBOARD_WINDOW_NAME = 'plugin_dashboard';
     const PLUGIN_DASHBOARD_HANDOFF_EVENT = 'neko:yui-guide:plugin-dashboard:start';
     const PLUGIN_DASHBOARD_READY_EVENT = 'neko:yui-guide:plugin-dashboard:ready';
     const PLUGIN_DASHBOARD_DONE_EVENT = 'neko:yui-guide:plugin-dashboard:done';
+    const PLUGIN_DASHBOARD_NARRATION_FINISHED_EVENT = 'neko:yui-guide:plugin-dashboard:narration-finished';
     const PLUGIN_DASHBOARD_INTERRUPT_REQUEST_EVENT = 'neko:yui-guide:plugin-dashboard:interrupt-request';
     const PLUGIN_DASHBOARD_INTERRUPT_ACK_EVENT = 'neko:yui-guide:plugin-dashboard:interrupt-ack';
     const DEFAULT_TUTORIAL_MODEL_MANAGER_LANLAN_NAME = 'ATLS';
     const GUIDE_AUDIO_BASE_URL = '/static/assets/tutorial/guide-audio/';
     const INTRO_ACTIVATION_HINT_KEY = 'tutorial.yuiGuide.lines.introActivationHint';
     const INTRO_ACTIVATION_HINT = '点一下这里，我就能开始说话啦～';
+    const GUIDE_EXPRESSION_TRACKS_BY_VOICE_KEY = Object.freeze({
+        intro_greeting_reply: Object.freeze(['sbx', 'xxy', 'z1']),
+        intro_basic: Object.freeze(['swz', 'z1']),
+        takeover_capture_cursor: Object.freeze(['szhs', 'syhs']),
+        takeover_plugin_preview_home: Object.freeze(['by']),
+        takeover_plugin_preview_dashboard: Object.freeze(['syhs']),
+        takeover_settings_peek_intro: Object.freeze(['xxy']),
+        takeover_settings_peek_detail: Object.freeze(['sbx']),
+        takeover_return_control: Object.freeze([]),
+        interrupt_resist_light_1: Object.freeze(['__random_z2_z3__']),
+        interrupt_resist_light_3: Object.freeze(['__random_z2_z3__']),
+        interrupt_angry_exit: Object.freeze(['__random_z2_z3__'])
+    });
     const GUIDE_AUDIO_FILES_BY_KEY = Object.freeze({
         intro_basic: {
-            zh: '想要找我的时候，随时在这里打字或者发语音都能召唤本喵哦！.mp3',
-            ja: '想要找我的时候，随时在这里打字或者发语音都能召唤本喵哦！.mp3',
-            en: '想要找我的时候，随时在这里打字或者发语音都能召唤本喵哦！.mp3',
-            ko: '想要找我的时候，随时在这里打字或者发语音都能召唤本喵哦！.mp3',
-            ru: '想要找我的时候，随时在这里打字或者发语音都能召唤本喵哦！.mp3'
-        },
-        intro_practice: {
-            zh: '现在你可以试试跟我说说话啦，看看我们是不是超有默契的喵～.mp3',
-            ja: '现在你可以试试跟我说说话啦，看看我们是不是超有默契的喵～.mp3',
-            en: '现在你可以试试跟我说说话啦，看看我们是不是超有默契的喵～.mp3',
-            ko: '现在你可以试试跟我说说话啦，看看我们是不是超有默契的喵～.mp3',
-            ru: '现在你可以试试跟我说说话啦，看看我们是不是超有默契的喵～.mp3'
-        },
-        intro_proactive: {
-            zh: '可恶，居然敢无视本大小姐嘛！要说你一直没理我，我可是会主动跑出来咬你的哦～（哈！！）.mp3',
-            ja: '可恶，居然敢无视本大小姐嘛！要说你一直没理我，我可是会主动跑出来咬你的哦～（哈！！）.mp3',
-            en: '可恶，居然敢无视本大小姐嘛！要说你一直没理我，我可是会主动跑出来咬你的哦～（哈！！）.mp3',
-            ko: '可恶，居然敢无视本大小姐嘛！要说你一直没理我，我可是会主动跑出来咬你的哦～（哈！！）.mp3',
-            ru: '可恶，居然敢无视本大小姐嘛！要说你一直没理我，我可是会主动跑出来咬你的哦～（哈！！）.mp3'
+            zh: '这里有一个神奇的按钮！只要点击它，就可以直接和我聊天啦！想跟我分享今天的新鲜事吗？或者只是叫叫我的名字？快来试试嘛，我已经迫不及待想听到你的声音啦！喵！.mp3',
+            ja: '这里有一个神奇的按钮！只要点击它，就可以直接和我聊天啦！想跟我分享今天的新鲜事吗？或者只是叫叫我的名字？快来试试嘛，我已经迫不及待想听到你的声音啦！喵！.mp3',
+            en: '这里有一个神奇的按钮！只要点击它，就可以直接和我聊天啦！想跟我分享今天的新鲜事吗？或者只是叫叫我的名字？快来试试嘛，我已经迫不及待想听到你的声音啦！喵！.mp3',
+            ko: '这里有一个神奇的按钮！只要点击它，就可以直接和我聊天啦！想跟我分享今天的新鲜事吗？或者只是叫叫我的名字？快来试试嘛，我已经迫不及待想听到你的声音啦！喵！.mp3',
+            ru: '这里有一个神奇的按钮！只要点击它，就可以直接和我聊天啦！想跟我分享今天的新鲜事吗？或者只是叫叫我的名字？快来试试嘛，我已经迫不及待想听到你的声音啦！喵！.mp3'
         },
         intro_greeting_reply: {
             zh: '我是你的专属猫娘，从今天起就由我来陪伴主人咯。无论是想要聊天解闷、一起玩耍，还是需要我帮忙做些什么，我都会乖乖陪在主人身边的喵。以后请多多指教啦，最喜欢主人了~！.mp3',
@@ -230,19 +222,12 @@
             ko: '我是你的专属猫娘，从今天起就由我来陪伴主人咯。无论是想要聊天解闷、一起玩耍，还是需要我帮忙做些什么，我都会乖乖陪在主人身边的喵。以后请多多指教啦，最喜欢主人了~！.mp3',
             ru: '我是你的专属猫娘，从今天起就由我来陪伴主人咯。无论是想要聊天解闷、一起玩耍，还是需要我帮忙做些什么，我都会乖乖陪在主人身边的喵。以后请多多指教啦，最喜欢主人了~！.mp3'
         },
-        intro_cat_paw: {
-            zh: '好啦！不说废话了喵——你看到那个可爱的‘猫爪’了吗，准备好了吗？让我借用一下你的鼠标吧！.mp3',
-            ja: '好啦！不说废话了喵——你看到那个可爱的‘猫爪’了吗，准备好了吗？让我借用一下你的鼠标吧！.mp3',
-            en: '好啦！不说废话了喵——你看到那个可爱的‘猫爪’了吗，准备好了吗？让我借用一下你的鼠标吧！.mp3',
-            ko: '好啦！不说废话了喵——你看到那个可爱的‘猫爪’了吗，准备好了吗？让我借用一下你的鼠标吧！.mp3',
-            ru: '好啦！不说废话了喵——你看到那个可爱的‘猫爪’了吗，准备好了吗？让我借用一下你的鼠标吧！.mp3'
-        },
         takeover_capture_cursor: {
-            zh: '嘿咻！可算逮住你的鼠标了喵～.mp3',
-            ja: '嘿咻！可算逮住你的鼠标了喵～.mp3',
-            en: '嘿咻！可算逮住你的鼠标了喵～.mp3',
-            ko: '嘿咻！可算逮住你的鼠标了喵～.mp3',
-            ru: '嘿咻！可算逮住你的鼠标了喵～.mp3'
+            zh: '超级魔法按钮出现！只要点一下这里，我就可以把小爪子伸到你的键盘和鼠标上啦！我会帮你打字，帮你点开网页……不过，要是那个鼠标指针动来动去的话，我可能也会忍不住扑上去抓它哦！准备好迎接我的捣乱……啊不，是帮忙了吗？喵！.mp3',
+            ja: '超级魔法按钮出现！只要点一下这里，我就可以把小爪子伸到你的键盘和鼠标上啦！我会帮你打字，帮你点开网页……不过，要是那个鼠标指针动来动去的话，我可能也会忍不住扑上去抓它哦！准备好迎接我的捣乱……啊不，是帮忙了吗？喵！.mp3',
+            en: '超级魔法按钮出现！只要点一下这里，我就可以把小爪子伸到你的键盘和鼠标上啦！我会帮你打字，帮你点开网页……不过，要是那个鼠标指针动来动去的话，我可能也会忍不住扑上去抓它哦！准备好迎接我的捣乱……啊不，是帮忙了吗？喵！.mp3',
+            ko: '超级魔法按钮出现！只要点一下这里，我就可以把小爪子伸到你的键盘和鼠标上啦！我会帮你打字，帮你点开网页……不过，要是那个鼠标指针动来动去的话，我可能也会忍不住扑上去抓它哦！准备好迎接我的捣乱……啊不，是帮忙了吗？喵！.mp3',
+            ru: '超级魔法按钮出现！只要点一下这里，我就可以把小爪子伸到你的键盘和鼠标上啦！我会帮你打字，帮你点开网页……不过，要是那个鼠标指针动来动去的话，我可能也会忍不住扑上去抓它哦！准备好迎接我的捣乱……啊不，是帮忙了吗？喵！.mp3'
         },
         takeover_plugin_preview_home: {
             zh: '还没完呢！你快看快看，这里还有超～～多好玩的插件呢！.mp3',
@@ -317,8 +302,10 @@
     }
 
     const TAKEOVER_CAPTURE_SELECTORS = Object.freeze({
+        voiceControl: '[alt="语音控制"]',
         catPaw: '[alt="猫爪"]',
         agentMaster: '#${p}-toggle-agent-master',
+        keyboardControl: '#${p}-toggle-agent-keyboard',
         userPlugin: '#${p}-toggle-agent-user-plugin',
         managementPanel: 'div#neko-sidepanel-action-agent-user-plugin-management-panel'
     });
@@ -333,10 +320,6 @@
     }
 
     const GUIDE_AUDIO_CUES_BY_KEY = Object.freeze({
-        intro_cat_paw: Object.freeze({
-            baseDurationMs: 9102,
-            captureCursorPrelude: 6000
-        }),
         takeover_settings_peek_intro: Object.freeze({
             baseDurationMs: 11877,
             openSettingsPanel: 9000
@@ -344,13 +327,6 @@
     });
 
     const GUIDE_AUDIO_DURATIONS_BY_KEY = Object.freeze({
-        intro_cat_paw: Object.freeze({
-            zh: 9102,
-            ja: 10697,
-            en: 7737,
-            ko: 10217,
-            ru: 9497
-        }),
         takeover_plugin_preview_home: Object.freeze({
             zh: 6583,
             ja: 8297,
@@ -375,10 +351,8 @@
     });
 
     const GUIDE_DEBUG_ZH_TEXT_BY_KEY = Object.freeze({
-        'tutorial.yuiGuide.lines.introBasic': '想要找我的时候，随时在这里打字或者发语音都能召唤本喵哦！',
-        'tutorial.yuiGuide.lines.introProactive': '可恶，居然敢无视本大小姐嘛！要说你一直没理我，我可是会主动跑出来咬你的哦～（哈！！）',
-        'tutorial.yuiGuide.lines.introCatPaw': '好啦不说废话了喵——你看到那个可爱的‘猫爪’了吗，准备好了吗？让我借用一下你的鼠标吧！',
-        'tutorial.yuiGuide.lines.takeoverCaptureCursor': '嘿咻！可算逮住你的鼠标了喵～',
+        'tutorial.yuiGuide.lines.introBasic': '这里有一个神奇的按钮！只要点击它，就可以直接和我聊天啦！想跟我分享今天的新鲜事吗？或者只是叫叫我的名字？快来试试嘛，我已经迫不及待想听到你的声音啦！喵！',
+        'tutorial.yuiGuide.lines.takeoverCaptureCursor': '超级魔法按钮出现！只要点一下这里，我就可以把小爪子伸到你的键盘和鼠标上啦！我会帮你打字，帮你点开网页……不过，要是那个鼠标指针动来动去的话，我可能也会忍不住扑上去抓它哦！准备好迎接我的捣乱……啊不，是帮忙了吗？喵！',
         'tutorial.yuiGuide.lines.takeoverPluginPreviewHome': '还没完呢！你快看快看，这里还有超～～多好玩的插件呢！',
         'tutorial.yuiGuide.lines.takeoverPluginPreviewDashboard': '有了它们，我不光能看 B 站弹幕，还能帮你关灯开空调…… 本喵就是无所不能的超级猫猫神！哼哼～',
         'tutorial.yuiGuide.lines.takeoverSettingsPeekIntro': '当然啦，如果你想让本喵多和你聊聊天也不是不行啦，给我多准备点小鱼干吧，嘿嘿，好了不逗你啦，设置都在这个齿轮里。',
@@ -387,8 +361,7 @@
         'tutorial.yuiGuide.lines.interruptResistLight1': '喂！不要拽我啦，还没轮到你的回合呢！',
         'tutorial.yuiGuide.lines.interruptResistLight3': '等一下啦！还没结束呢，不要随便打断我啦！',
         'tutorial.yuiGuide.lines.interruptAngryExit': '人类~~~~！你真的很没礼貌喵！既然你这么想自己操作，那你就自己对着冰冷的屏幕玩去吧！哼！',
-        'tutorial.yuiGuide.lines.introGreetingReply': '我是你的专属猫娘，从今天起就由我来陪伴主人咯。无论是想要聊天解闷、一起玩耍，还是需要我帮忙做些什么，我都会乖乖陪在主人身边的喵。以后请多多指教啦，最喜欢主人了~！',
-        'tutorial.yuiGuide.lines.introPractice': '现在你可以试试跟我说说话啦，看看我们是不是超有默契的喵～'
+        'tutorial.yuiGuide.lines.introGreetingReply': '我是你的专属猫娘，从今天起就由我来陪伴主人咯。无论是想要聊天解闷、一起玩耍，还是需要我帮忙做些什么，我都会乖乖陪在主人身边的喵。以后请多多指教啦，最喜欢主人了~！'
     });
 
     function getGuideAudioCueConfig(voiceKey) {
@@ -1064,89 +1037,11 @@
                         }
                     } catch (_) {}
 
-                    console.warn('[YuiGuide] 本地教程语音播放失败，回退 TTS:', normalizedOptions.voiceKey, error);
+                    console.warn('[YuiGuide] 本地教程语音播放失败，回退为静默等待:', normalizedOptions.voiceKey, error);
                 }
             }
 
-            if (!this.enabled || typeof SpeechSynthesisUtterance === 'undefined' || !window.speechSynthesis) {
-                await wait(fallbackDurationMs);
-                return;
-            }
-
-            await this.ensureVoicesReady();
-
-            return new Promise((resolve) => {
-                let settled = false;
-                const finish = () => {
-                    if (settled) {
-                        return;
-                    }
-                    settled = true;
-                    if (this.currentFallbackTimer) {
-                        window.clearTimeout(this.currentFallbackTimer);
-                        this.currentFallbackTimer = null;
-                    }
-                    if (this.currentUtterance === utterance) {
-                        this.currentUtterance = null;
-                    }
-                    if (this.currentFinish === finish) {
-                        this.currentFinish = null;
-                    }
-                    resolve();
-                };
-
-                const utterance = new SpeechSynthesisUtterance(message);
-                utterance.lang = guideSpeechLang();
-                utterance.rate = 1.02;
-                utterance.pitch = 1.05;
-                utterance.volume = 0.9;
-
-                try {
-                    const voices = window.speechSynthesis.getVoices();
-                    if (Array.isArray(voices) && voices.length > 0) {
-                        let bestVoice = null;
-                        let bestScore = -1;
-                        voices.forEach((voice) => {
-                            const score = scoreSpeechVoice(voice);
-                            if (score > bestScore) {
-                                bestScore = score;
-                                bestVoice = voice;
-                            }
-                        });
-                        if (bestVoice) {
-                            utterance.voice = bestVoice;
-                        }
-                    }
-                } catch (error) {
-                    console.warn('[YuiGuide] 选择系统语音失败:', error);
-                }
-
-                utterance.onboundary = (event) => {
-                    if (typeof normalizedOptions.onBoundary === 'function') {
-                        try {
-                            normalizedOptions.onBoundary(event);
-                        } catch (error) {
-                            console.warn('[YuiGuide] 语音边界回调失败:', error);
-                        }
-                    }
-                };
-                utterance.onend = finish;
-                utterance.onerror = finish;
-                this.currentUtterance = utterance;
-                this.currentFinish = finish;
-                this.currentFallbackTimer = window.setTimeout(
-                    finish,
-                    Math.max(fallbackDurationMs, 3000)
-                );
-
-                try {
-                    window.speechSynthesis.cancel();
-                    window.speechSynthesis.speak(utterance);
-                } catch (error) {
-                    console.warn('[YuiGuide] 播放系统语音失败，回退为静默等待:', error);
-                    finish();
-                }
-            });
+            await wait(fallbackDurationMs);
         }
     }
 
@@ -1160,6 +1055,26 @@
                 window.LanLan1.setEmotion(emotion);
             } catch (error) {
                 console.warn('[YuiGuide] 设置情绪失败:', error);
+            }
+        }
+
+        playExpression(expressionId) {
+            const normalizedExpressionId = typeof expressionId === 'string' ? expressionId.trim() : '';
+            if (!normalizedExpressionId || !window.live2dManager || !window.live2dManager.currentModel) {
+                return;
+            }
+
+            if (typeof window.live2dManager.playExpression !== 'function') {
+                return;
+            }
+
+            try {
+                window.live2dManager.playExpression(
+                    '__tutorial__',
+                    'expressions/' + normalizedExpressionId + '.exp3.json'
+                );
+            } catch (error) {
+                console.warn('[YuiGuide] 播放教程表情失败:', normalizedExpressionId, error);
             }
         }
 
@@ -1359,13 +1274,8 @@
             this.lastTutorialEndReason = null;
             this.introFlowStarted = false;
             this.introFlowCompleted = false;
-            this.introClickActivated = false;
             this.awaitingIntroActivation = false;
             this._introActivationResolve = null;
-            this.introChoicePending = false;
-            this.introPracticeMessageId = null;
-            this.introThirdMessageTimer = null;
-            this.introReplyPollTimer = null;
             this.takeoverFlowStarted = false;
             this.takeoverFlowCompleted = false;
             this.takeoverFlowPromise = null;
@@ -1374,21 +1284,23 @@
             this.narrationResumeTimer = null;
             this.scenePausedForResistance = false;
             this.scenePauseResolvers = [];
-            this.chatIntroCleanupFns = [];
             this.virtualSpotlights = new Map();
             this.preciseHighlightElements = new Set();
             this.spotlightVariantElements = new Set();
             this.spotlightGeometryHintElements = new Set();
             this.retainedExtraSpotlightElements = [];
             this.sceneExtraSpotlightElements = [];
+            this.expressionTrackToken = 0;
             this.pluginDashboardHandoff = null;
             this.pluginDashboardLastInterruptRequestId = '';
             this.pluginDashboardWindowCreatedByGuide = false;
+            this.takeoverOriginalAgentSwitches = null;
             this.customSecondarySpotlightTarget = null;
             this.keydownHandler = this.onKeyDown.bind(this);
             this.pointerMoveHandler = this.onPointerMove.bind(this);
             this.pointerDownHandler = this.onPointerDown.bind(this);
             this.resistanceCursorTimer = null;
+            this.restoreHiddenCursorAfterResistance = false;
             this.pageHideHandler = this.onPageHide.bind(this);
             this.tutorialEndHandler = this.onTutorialEndEvent.bind(this);
             this.messageHandler = this.onWindowMessage.bind(this);
@@ -1397,6 +1309,7 @@
 
             if (this.page === 'home') {
                 document.body.classList.add('yui-guide-home-driver-hidden');
+                this.setExternalizedChatButtonsDisabled(true);
             }
 
             window.addEventListener('keydown', this.keydownHandler, true);
@@ -1547,6 +1460,100 @@
             return translateGuideText(textKey, fallbackText);
         }
 
+        getGuideExpressionTrack(voiceKey) {
+            const normalizedVoiceKey = typeof voiceKey === 'string' ? voiceKey.trim() : '';
+            if (!normalizedVoiceKey) {
+                return null;
+            }
+
+            if (!Object.prototype.hasOwnProperty.call(GUIDE_EXPRESSION_TRACKS_BY_VOICE_KEY, normalizedVoiceKey)) {
+                return null;
+            }
+
+            return GUIDE_EXPRESSION_TRACKS_BY_VOICE_KEY[normalizedVoiceKey];
+        }
+
+        hasGuideExpressionTrack(voiceKey) {
+            return Array.isArray(this.getGuideExpressionTrack(voiceKey));
+        }
+
+        cancelGuideExpressionTrack() {
+            this.expressionTrackToken += 1;
+        }
+
+        resolveGuideExpressionId(expressionId) {
+            const normalizedExpressionId = typeof expressionId === 'string' ? expressionId.trim() : '';
+            if (!normalizedExpressionId) {
+                return '';
+            }
+
+            if (normalizedExpressionId === '__random_z2_z3__') {
+                return Math.random() < 0.5 ? 'z2' : 'z3';
+            }
+
+            return normalizedExpressionId;
+        }
+
+        playGuideExpression(expressionId) {
+            const resolvedExpressionId = this.resolveGuideExpressionId(expressionId);
+            if (!resolvedExpressionId) {
+                return;
+            }
+
+            this.emotionBridge.playExpression(resolvedExpressionId);
+        }
+
+        async runGuideExpressionTrack(text, options) {
+            const normalizedOptions = options || {};
+            const track = this.getGuideExpressionTrack(normalizedOptions.voiceKey);
+            this.cancelGuideExpressionTrack();
+            const trackToken = this.expressionTrackToken;
+
+            if (!Array.isArray(track)) {
+                return;
+            }
+
+            if (track.length === 0) {
+                this.emotionBridge.clear();
+                return;
+            }
+
+            const durationMs = this.getGuideVoiceDurationMs(normalizedOptions.voiceKey, resolveGuideLocale())
+                || estimateSpeechDurationMs(text || '');
+            const segmentDurationMs = Math.max(240, Math.round(durationMs / Math.max(1, track.length)));
+
+            for (let index = 0; index < track.length; index += 1) {
+                if (trackToken !== this.expressionTrackToken || this.isStopping()) {
+                    return;
+                }
+
+                this.playGuideExpression(track[index]);
+                if (index >= (track.length - 1)) {
+                    return;
+                }
+
+                const continued = await this.waitForSceneDelay(segmentDurationMs);
+                if (!continued || trackToken !== this.expressionTrackToken || this.isStopping()) {
+                    return;
+                }
+            }
+        }
+
+        async speakGuideLine(text, options) {
+            const content = typeof text === 'string' ? text.trim() : '';
+            const normalizedOptions = options || {};
+
+            if (!content) {
+                this.cancelGuideExpressionTrack();
+                return;
+            }
+
+            await Promise.all([
+                this.speakLineAndWait(content, normalizedOptions),
+                this.runGuideExpressionTrack(content, normalizedOptions)
+            ]);
+        }
+
         resolvePerformanceBubbleText(performance) {
             const normalizedPerformance = performance || {};
             return this.resolveGuideCopy(
@@ -1567,13 +1574,6 @@
             return fallbacks.map((fallbackText, index) => {
                 return this.resolveGuideCopy(keys[index] || '', fallbackText);
             });
-        }
-
-        getIntroChoiceLabels() {
-            return {
-                skipChat: this.resolveGuideCopy(INTRO_SKIP_LABEL_KEY, '暂时不聊天'),
-                sayHello: this.resolveGuideCopy(INTRO_HELLO_LABEL_KEY, '你好')
-            };
         }
 
         getElementRect(element) {
@@ -1695,6 +1695,7 @@
 
                 element.removeAttribute('data-yui-guide-spotlight-padding');
                 element.removeAttribute('data-yui-guide-spotlight-radius');
+                element.removeAttribute('data-yui-guide-spotlight-geometry');
             });
             this.spotlightGeometryHintElements.clear();
         }
@@ -1707,6 +1708,9 @@
             const normalizedOptions = options || {};
             const padding = Number.isFinite(normalizedOptions.padding) ? normalizedOptions.padding : null;
             const radius = Number.isFinite(normalizedOptions.radius) ? normalizedOptions.radius : null;
+            const geometry = typeof normalizedOptions.geometry === 'string'
+                ? normalizedOptions.geometry.trim().toLowerCase()
+                : '';
 
             if (padding !== null) {
                 element.setAttribute('data-yui-guide-spotlight-padding', String(padding));
@@ -1718,6 +1722,12 @@
                 element.setAttribute('data-yui-guide-spotlight-radius', String(radius));
             } else {
                 element.removeAttribute('data-yui-guide-spotlight-radius');
+            }
+
+            if (geometry) {
+                element.setAttribute('data-yui-guide-spotlight-geometry', geometry);
+            } else {
+                element.removeAttribute('data-yui-guide-spotlight-geometry');
             }
 
             this.spotlightGeometryHintElements.add(element);
@@ -2168,32 +2178,8 @@
             };
         }
 
-        clearIntroFlow(preserveSpotlight) {
-            if (this.introThirdMessageTimer) {
-                window.clearTimeout(this.introThirdMessageTimer);
-                this.introThirdMessageTimer = null;
-            }
-
-            if (this.introReplyPollTimer) {
-                window.clearTimeout(this.introReplyPollTimer);
-                this.introReplyPollTimer = null;
-            }
-
-            this.introChoicePending = false;
-            this.introPracticeMessageId = null;
-
-            while (this.chatIntroCleanupFns.length > 0) {
-                const cleanup = this.chatIntroCleanupFns.pop();
-                try {
-                    cleanup();
-                } catch (error) {
-                    console.warn('[YuiGuide] 清理 intro flow 监听器失败:', error);
-                }
-            }
-
-            if (!preserveSpotlight) {
-                this.overlay.clearSpotlight();
-            }
+        clearIntroFlow() {
+            this.overlay.clearSpotlight();
         }
 
         waitForElement(resolveElement, timeoutMs) {
@@ -2497,12 +2483,6 @@
             if (this.page !== 'home' || typeof stepId !== 'string' || !stepId) {
                 return false;
             }
-            // Electron Pet 模式下聊天被拆到独立 BrowserWindow，preload-pet.js 把
-            // #react-chat-window-overlay 强制 inline display:none。这种环境下推到
-            // React 聊天窗的引导文案永不可见，必须回落到 overlay bubble 叙事。
-            if (this.isHomeChatExternalized()) {
-                return false;
-            }
             return true;
         }
 
@@ -2518,6 +2498,27 @@
             // 内联 display:none 仅由外部 preload（如 preload-pet.js）设置以永久
             // 隐藏 Pet 窗口里嵌着的 React 聊天 overlay。
             return overlay.style.display === 'none';
+        }
+
+        setExternalizedChatButtonsDisabled(disabled) {
+            if (this.page !== 'home' || !this.isHomeChatExternalized()) {
+                return;
+            }
+
+            const channel = window.appInterpage && window.appInterpage.nekoBroadcastChannel;
+            if (!channel || typeof channel.postMessage !== 'function') {
+                return;
+            }
+
+            try {
+                channel.postMessage({
+                    action: 'yui_guide_set_chat_buttons_disabled',
+                    disabled: disabled !== false,
+                    timestamp: Date.now()
+                });
+            } catch (error) {
+                console.warn('[YuiGuide] 同步独立聊天窗按钮禁用状态失败:', error);
+            }
         }
 
         getSceneSpotlightTarget(stepId, performance) {
@@ -2991,8 +2992,9 @@
             }
 
             const playbackSnapshot = this.voiceQueue.capturePlaybackSnapshot();
-            narration.resumeAudioOffsetMs = playbackSnapshot && playbackSnapshot.mode === 'audio'
-                ? playbackSnapshot.currentTimeMs
+            narration.resumeAudioOffsetMs = playbackSnapshot
+                && Number.isFinite(playbackSnapshot.currentTimeMs)
+                ? Math.max(0, playbackSnapshot.currentTimeMs)
                 : 0;
 
             narration.interrupted = true;
@@ -3076,7 +3078,7 @@
                 this.overlay.hideBubble();
             }
 
-            if (performance.emotion) {
+            if (performance.emotion && !this.hasGuideExpressionTrack(performance.voiceKey)) {
                 this.emotionBridge.apply(performance.emotion);
             }
         }
@@ -3143,6 +3145,32 @@
                 outDurationMs: 90,
                 backDurationMs: 180
             });
+        }
+
+        shouldAllowInterruptDuringCurrentScene() {
+            if (!this.interruptsEnabled || this.destroyed || this.angryExitTriggered) {
+                return false;
+            }
+
+            if (
+                this.page === 'home'
+                && this.currentSceneId === 'takeover_plugin_preview'
+                && this.pluginDashboardHandoff
+                && this.pluginDashboardHandoff.windowRef
+                && !this.pluginDashboardHandoff.windowRef.closed
+            ) {
+                return false;
+            }
+
+            if (this.page !== 'home') {
+                return true;
+            }
+
+            if (this.currentSceneId === 'intro_basic') {
+                return this.introFlowStarted && !this.isStopping();
+            }
+
+            return !!this.currentSceneId;
         }
 
         // Dev B boundary: Director only talks to this API surface.
@@ -3388,6 +3416,7 @@
         async getAgentSwitchSnapshot() {
             const fallbackSnapshot = {
                 agentMaster: this.readAgentToggleChecked('agent-master'),
+                keyboardControl: this.readAgentToggleChecked('agent-keyboard'),
                 userPlugin: this.readAgentToggleChecked('agent-user-plugin')
             };
             const controller = typeof AbortController === 'function'
@@ -3417,6 +3446,9 @@
                     agentMaster: typeof data.analyzer_enabled === 'boolean'
                         ? data.analyzer_enabled
                         : (typeof flags.agent_enabled === 'boolean' ? flags.agent_enabled : fallbackSnapshot.agentMaster),
+                    keyboardControl: typeof flags.computer_use_enabled === 'boolean'
+                        ? flags.computer_use_enabled
+                        : fallbackSnapshot.keyboardControl,
                     userPlugin: typeof flags.user_plugin_enabled === 'boolean'
                         ? flags.user_plugin_enabled
                         : fallbackSnapshot.userPlugin
@@ -4048,6 +4080,297 @@
             return !!(await normalized.action());
         }
 
+        getVoiceControlButtonTarget() {
+            return this.getFloatingButtonShell(
+                this.getFallbackFloatingButton('mic')
+                || this.resolveElement(this.expandSelector(TAKEOVER_CAPTURE_SELECTORS.voiceControl))
+            );
+        }
+
+        async runIntroVoiceControlButtonShowcase(voiceKey, fallbackText) {
+            this.highlightChatWindow();
+            const voiceControlButton = this.getVoiceControlButtonTarget();
+            if (!voiceControlButton) {
+                return;
+            }
+
+            this.setSpotlightGeometryHint(voiceControlButton, {
+                padding: 4,
+                geometry: 'circle'
+            });
+            this.overlay.activateSpotlight(voiceControlButton);
+
+            if (!this.cursor.hasPosition()) {
+                const introTarget = this.getChatInputTarget() || this.getChatWindowTarget();
+                const introRect = this.getElementRect(introTarget);
+                if (introRect) {
+                    this.cursor.showAt(
+                        introRect.left + introRect.width / 2,
+                        introRect.top + introRect.height / 2
+                    );
+                } else {
+                    const origin = this.getDefaultCursorOrigin();
+                    this.cursor.showAt(origin.x, origin.y);
+                }
+            }
+
+            const narrationDurationMs = this.getGuideVoiceDurationMs(voiceKey, resolveGuideLocale())
+                || estimateSpeechDurationMs(fallbackText || '');
+            const moveDurationMs = clamp(Math.round(narrationDurationMs * 0.16), 900, 2200);
+            await this.moveCursorToElement(voiceControlButton, moveDurationMs);
+        }
+
+        async runTakeoverKeyboardControlSequence(step, performance, runId) {
+            const timingScale = this.getGuideVoiceTimingScale(performance && performance.voiceKey);
+            const scaleSceneMs = (value, minValue, maxValue) => {
+                const baseValue = Number.isFinite(value) ? value : 0;
+                const scaledValue = Math.round(baseValue * timingScale);
+                return clamp(
+                    scaledValue,
+                    Number.isFinite(minValue) ? minValue : 40,
+                    Number.isFinite(maxValue) ? maxValue : Math.max(
+                        Number.isFinite(minValue) ? minValue : 40,
+                        scaledValue
+                    )
+                );
+            };
+            const guardFailed = () => runId !== this.sceneRunId || this.isStopping();
+
+            const catPawButton = await this.waitForVisibleTarget([
+                () => this.getFloatingButtonShell(this.getFallbackFloatingButton('agent')),
+                () => this.getFloatingButtonShell(this.resolveElement((performance && performance.cursorTarget) || '')),
+                () => this.getFloatingButtonShell(this.resolveElement(step && step.anchor ? step.anchor : '')),
+                () => this.getFloatingButtonShell(this.queryDocumentSelector(this.expandSelector(TAKEOVER_CAPTURE_SELECTORS.catPaw)))
+            ], 2200);
+            if (!catPawButton || guardFailed()) {
+                return false;
+            }
+            this.setSpotlightGeometryHint(catPawButton, {
+                padding: 4,
+                geometry: 'circle'
+            });
+
+            const openedAgentPanel = await this.performHighlightedApiClick({
+                target: catPawButton,
+                durationMs: scaleSceneMs(1500, 900, 2600),
+                runId: runId,
+                action: () => this.openAgentPanel()
+            });
+            if (!openedAgentPanel || guardFailed()) {
+                return false;
+            }
+
+            const agentMasterToggle = await this.waitForElement(() => {
+                const toggleItem = this.getAgentToggleElement('agent-master');
+                return this.getElementRect(toggleItem) ? toggleItem : null;
+            }, 4000);
+            if (!agentMasterToggle || guardFailed()) {
+                return false;
+            }
+
+            const enabledAgentMaster = await this.performHighlightedApiClick({
+                target: agentMasterToggle,
+                durationMs: scaleSceneMs(1200, 760, 2200),
+                runId: runId,
+                action: async () => {
+                    const enabled = await this.setAgentMasterEnabled(true);
+                    if (!enabled) {
+                        return false;
+                    }
+                    return !!(await this.waitForAgentToggleState('agent-master', true, 1800));
+                }
+            });
+            if (!enabledAgentMaster || guardFailed()) {
+                return false;
+            }
+
+            if (!(await this.waitForSceneDelay(scaleSceneMs(240, 120, 600))) || guardFailed()) {
+                return false;
+            }
+
+            const keyboardToggle = await this.waitForElement(() => {
+                const toggleItem = this.getAgentToggleElement('agent-keyboard');
+                return this.getElementRect(toggleItem) ? toggleItem : null;
+            }, 2400);
+            if (!keyboardToggle || guardFailed()) {
+                return false;
+            }
+
+            const enabledKeyboardControl = await this.performHighlightedApiClick({
+                target: keyboardToggle,
+                durationMs: scaleSceneMs(1250, 800, 2200),
+                runId: runId,
+                action: async () => {
+                    const enabled = await this.setAgentFlagEnabled('computer_use_enabled', true);
+                    if (!enabled) {
+                        return false;
+                    }
+                    return !!(await this.waitForAgentToggleState('agent-keyboard', true, 1800));
+                }
+            });
+            if (!enabledKeyboardControl || guardFailed()) {
+                return false;
+            }
+
+            await this.waitForSceneDelay(scaleSceneMs(180, 80, 420));
+            this.overlay.clearActionSpotlight();
+            return !guardFailed();
+        }
+
+        async runPluginDashboardLaunchSequence(step, performance, runId) {
+            const timingScale = this.getGuideVoiceTimingScale(performance && performance.voiceKey);
+            const scaleSceneMs = (value, minValue, maxValue) => {
+                const baseValue = Number.isFinite(value) ? value : 0;
+                const scaledValue = Math.round(baseValue * timingScale);
+                return clamp(
+                    scaledValue,
+                    Number.isFinite(minValue) ? minValue : 40,
+                    Number.isFinite(maxValue) ? maxValue : Math.max(
+                        Number.isFinite(minValue) ? minValue : 40,
+                        scaledValue
+                    )
+                );
+            };
+            const guardFailed = () => runId !== this.sceneRunId || this.isStopping();
+
+            if (!(await this.openAgentPanel()) || guardFailed()) {
+                return null;
+            }
+
+            const pluginToggle = await this.waitForElement(() => {
+                const toggleItem = this.getAgentToggleElement('agent-user-plugin');
+                return this.getElementRect(toggleItem) ? toggleItem : null;
+            }, 2200);
+            if (!pluginToggle || guardFailed()) {
+                return null;
+            }
+
+            const enabledUserPlugin = await this.performHighlightedApiClick({
+                target: pluginToggle,
+                durationMs: scaleSceneMs(1300, 820, 2300),
+                runId: runId,
+                action: async () => {
+                    const enabled = await this.setAgentFlagEnabled('user_plugin_enabled', true);
+                    if (!enabled) {
+                        return false;
+                    }
+                    return !!(await this.waitForAgentToggleState('agent-user-plugin', true, 1800));
+                }
+            });
+            if (!enabledUserPlugin || guardFailed()) {
+                return null;
+            }
+
+            if (!(await this.waitForSceneDelay(scaleSceneMs(180, 80, 420))) || guardFailed()) {
+                return null;
+            }
+
+            this.hoverElement(pluginToggle);
+            const managementButton = await this.ensureAgentSidePanelActionVisible(
+                'agent-user-plugin',
+                'management-panel',
+                2600
+            );
+            if (!managementButton || guardFailed()) {
+                return null;
+            }
+
+            const stableManagementButton = await this.waitForStableElementRect(
+                managementButton,
+                scaleSceneMs(320, 160, 760)
+            );
+            const managementMovementTarget = stableManagementButton || managementButton;
+            if (!managementMovementTarget || guardFailed()) {
+                return null;
+            }
+
+            const managementButtonRect = this.getElementRect(managementButton);
+            const managementSpotlightTarget = managementButtonRect
+                ? this.createVirtualSpotlight('plugin-management-entry', {
+                    left: Math.max(0, managementButtonRect.left - 14),
+                    top: managementButtonRect.top,
+                    right: Math.min(window.innerWidth, managementButtonRect.right + 14),
+                    bottom: managementButtonRect.bottom
+                }, {
+                    padding: DEFAULT_SPOTLIGHT_PADDING,
+                    radius: 18
+                })
+                : managementButton;
+
+            this.overlay.activateSpotlight(managementSpotlightTarget);
+            if (!(await this.waitForSceneDelay(scaleSceneMs(60, 40, 180))) || guardFailed()) {
+                return null;
+            }
+
+            const movedToManagementButton = await this.moveCursorToTrackedElement(
+                managementMovementTarget,
+                scaleSceneMs(1900, 1200, 3200),
+                {
+                    recheckDelayMs: scaleSceneMs(180, 80, 420)
+                }
+            );
+            if (!movedToManagementButton || guardFailed()) {
+                return null;
+            }
+
+            if (!(await this.waitForSceneDelay(scaleSceneMs(90, 40, 220))) || guardFailed()) {
+                return null;
+            }
+
+            await this.clickCursorAndWait(scaleSceneMs(180, 90, 420));
+            const existingPluginDashboardWindow = await this.waitForOpenedWindow(PLUGIN_DASHBOARD_WINDOW_NAME, 120);
+            const hadPluginDashboard = !!(existingPluginDashboardWindow && !existingPluginDashboardWindow.closed);
+            await this.clickAgentSidePanelAction('agent-user-plugin', 'management-panel', {
+                keepMainUIVisible: true
+            });
+
+            let pluginDashboardWindow = null;
+            if (hadPluginDashboard) {
+                try {
+                    existingPluginDashboardWindow.location.reload();
+                    pluginDashboardWindow = await this.waitForOpenedWindow(PLUGIN_DASHBOARD_WINDOW_NAME, 6000);
+                    this.pluginDashboardWindowCreatedByGuide = false;
+                } catch (error) {
+                    console.warn('[YuiGuide] 刷新已有插件面板失败:', error);
+                    pluginDashboardWindow = await this.openPluginDashboardWindow({
+                        keepMainUIVisible: true
+                    });
+                    if (!pluginDashboardWindow || pluginDashboardWindow.closed) {
+                        pluginDashboardWindow = await this.waitForOpenedWindow(PLUGIN_DASHBOARD_WINDOW_NAME, 6000);
+                    }
+                    this.pluginDashboardWindowCreatedByGuide = !!(pluginDashboardWindow && !pluginDashboardWindow.closed);
+                    if (pluginDashboardWindow && !pluginDashboardWindow.closed) {
+                        try {
+                            existingPluginDashboardWindow.close();
+                        } catch (closeError) {
+                            console.warn('[YuiGuide] 关闭旧插件面板失败:', closeError);
+                        }
+                    }
+                }
+            } else {
+                pluginDashboardWindow = await this.waitForOpenedWindow(PLUGIN_DASHBOARD_WINDOW_NAME, 6000);
+                this.pluginDashboardWindowCreatedByGuide = !!(pluginDashboardWindow && !pluginDashboardWindow.closed);
+            }
+
+            if (
+                (!pluginDashboardWindow || pluginDashboardWindow.closed)
+                && runId === this.sceneRunId
+                && !this.destroyed
+                && !this.angryExitTriggered
+            ) {
+                pluginDashboardWindow = await this.openPluginDashboardWindow({
+                    keepMainUIVisible: true
+                });
+                this.pluginDashboardWindowCreatedByGuide = !!(pluginDashboardWindow && !pluginDashboardWindow.closed);
+            }
+
+            return {
+                pluginDashboardWindow: pluginDashboardWindow,
+                pluginToggle: pluginToggle,
+                managementSpotlightTarget: managementSpotlightTarget
+            };
+        }
+
         async runPluginPreviewHomeExitSequence(targets, runId, scaleSceneMs) {
             const normalizedTargets = targets || {};
             const delay = async (value, minValue, maxValue) => {
@@ -4131,7 +4454,8 @@
                 return null;
             }
             this.setSpotlightGeometryHint(catPawButton, {
-                padding: 4
+                padding: 4,
+                geometry: 'circle'
             });
 
             try {
@@ -4434,6 +4758,23 @@
             });
         }
 
+        notifyPluginDashboardNarrationFinished() {
+            const handoff = this.pluginDashboardHandoff;
+            const windowRef = handoff && handoff.windowRef ? handoff.windowRef : null;
+            if (!handoff || !windowRef || windowRef.closed || !handoff.sessionId) {
+                return;
+            }
+
+            try {
+                windowRef.postMessage({
+                    type: PLUGIN_DASHBOARD_NARRATION_FINISHED_EVENT,
+                    sessionId: handoff.sessionId
+                }, '*');
+            } catch (error) {
+                console.warn('[YuiGuide] 向插件面板发送 narration finished 失败:', error);
+            }
+        }
+
         async runPluginDashboardPreviewScene(step, runId) {
             this.highlightChatWindow();
             const stepBubbleText = this.resolvePerformanceBubbleText(step && step.performance);
@@ -4442,11 +4783,11 @@
                 this.appendGuideChatMessage(stepBubbleText, {
                     textKey: step && step.performance ? step.performance.bubbleTextKey : ''
                 });
-                homeNarrationPromise = this.speakLineAndWait(stepBubbleText, {
+                homeNarrationPromise = this.speakGuideLine(stepBubbleText, {
                     voiceKey: step.performance.voiceKey || 'takeover_plugin_preview_home'
                 }).catch(() => {});
             }
-            const originalAgentSwitches = await this.getAgentSwitchSnapshot();
+            const originalAgentSwitches = this.takeoverOriginalAgentSwitches || await this.getAgentSwitchSnapshot();
             this.pluginDashboardWindowCreatedByGuide = false;
             let agentSwitchesRolledBack = false;
             const rollbackAgentSwitches = async () => {
@@ -4470,6 +4811,9 @@
                 if (typeof originalAgentSwitches.agentMaster === 'boolean') {
                     restoreResults.push(await restoreSwitch('agent-master', () => this.setAgentMasterEnabled(originalAgentSwitches.agentMaster)));
                 }
+                if (typeof originalAgentSwitches.keyboardControl === 'boolean') {
+                    restoreResults.push(await restoreSwitch('computer_use_enabled', () => this.setAgentFlagEnabled('computer_use_enabled', originalAgentSwitches.keyboardControl)));
+                }
                 if (typeof originalAgentSwitches.userPlugin === 'boolean') {
                     restoreResults.push(await restoreSwitch('user_plugin_enabled', () => this.setAgentFlagEnabled('user_plugin_enabled', originalAgentSwitches.userPlugin)));
                 }
@@ -4481,7 +4825,7 @@
             };
 
             try {
-                let dashboardWindow = await this.runTakeoverCaptureActionSequence(
+                let launchResult = await this.runPluginDashboardLaunchSequence(
                     step,
                     (step && step.performance) || {},
                     runId
@@ -4490,9 +4834,13 @@
                 if (runId !== this.sceneRunId || this.isStopping()) {
                     return;
                 }
-                if (!dashboardWindow) {
+                if (!launchResult || !launchResult.pluginDashboardWindow) {
                     return;
                 }
+                let dashboardWindow = launchResult.pluginDashboardWindow;
+
+                this.overlay.clearActionSpotlight();
+                this.overlay.clearPersistentSpotlight();
 
                 const dashboardText = this.resolveGuideCopy(
                     TAKEOVER_PLUGIN_DASHBOARD_TEXT_KEY,
@@ -4514,6 +4862,7 @@
                     pluginPanelClosed = true;
                     this.collapseAgentSidePanel('agent-user-plugin');
                     this.clearVirtualSpotlight('plugin-management-entry');
+                    this.stopHoverElement(launchResult.pluginToggle || null);
                     await this.closeAgentPanel().catch(() => {});
                 };
                 const dashboardVoiceKey = 'takeover_plugin_preview_dashboard';
@@ -4523,13 +4872,16 @@
                 const dashboardNarrationDurationMs = this.getGuideVoiceDurationMs(dashboardVoiceKey, resolveGuideLocale())
                     || estimateSpeechDurationMs(dashboardText);
                 const dashboardNarrationStartedAtMs = Date.now();
-                const dashboardNarrationPromise = this.speakLineAndWait(dashboardText, {
+                const dashboardNarrationPromise = this.speakGuideLine(dashboardText, {
                     voiceKey: dashboardVoiceKey
-                }).catch(() => {}).finally(() => closePluginPreviewPanel());
+                }).catch(() => {}).finally(() => {
+                    this.notifyPluginDashboardNarrationFinished();
+                    return closePluginPreviewPanel();
+                });
 
                 const pluginDashboardPerformancePromise = this.waitForPluginDashboardPerformance(dashboardWindow, {
                     line: dashboardText,
-                    closeOnDone: true,
+                    closeOnDone: false,
                     narrationDurationMs: dashboardNarrationDurationMs,
                     voiceKey: dashboardVoiceKey,
                     audioUrl: dashboardAudioUrl,
@@ -4572,7 +4924,8 @@
             this.customSecondarySpotlightTarget = null;
             const settingsButton = this.resolveElement(performance.cursorTarget || step.anchor);
             this.setSpotlightGeometryHint(settingsButton, {
-                padding: 4
+                padding: 4,
+                geometry: 'circle'
             });
             const introText = this.resolvePerformanceBubbleText(performance);
             await this.closeAgentPanel();
@@ -4586,11 +4939,11 @@
                     textKey: performance.bubbleTextKey || ''
                 });
             }
-            if (performance.emotion) {
+            if (performance.emotion && !this.hasGuideExpressionTrack(performance.voiceKey || 'takeover_settings_peek_intro')) {
                 this.emotionBridge.apply(performance.emotion);
             }
 
-            const introNarrationPromise = this.speakLineAndWait(introText || '', {
+            const introNarrationPromise = this.speakGuideLine(introText || '', {
                 voiceKey: performance.voiceKey || 'takeover_settings_peek_intro'
             });
             if (!(await this.waitForNarrationCue(
@@ -4638,6 +4991,55 @@
             if (!appearanceItem || !voiceCloneItem || runId !== this.sceneRunId || this.isStopping()) {
                 return;
             }
+
+            const detailText = this.resolveGuideCopy(
+                TAKEOVER_SETTINGS_DETAIL_TEXT_KEY,
+                TAKEOVER_SETTINGS_DETAIL_TEXT
+            );
+            this.appendGuideChatMessage(detailText, {
+                textKey: TAKEOVER_SETTINGS_DETAIL_TEXT_KEY
+            });
+
+            let settingsPeekHighlightsCleared = false;
+            let settingsPanelClosed = false;
+            const clearSettingsPeekHighlights = () => {
+                if (settingsPeekHighlightsCleared) {
+                    return;
+                }
+
+                settingsPeekHighlightsCleared = true;
+                this.clearSceneExtraSpotlights();
+                this.clearVirtualSpotlight('settings-character-children-bundle');
+                this.clearVirtualSpotlight('settings-entry-bundle');
+                this.clearPreciseHighlights();
+                this.customSecondarySpotlightTarget = null;
+                this.overlay.clearActionSpotlight();
+                if (!this.isStopping()) {
+                    this.highlightChatWindow();
+                }
+            };
+            const closeSettingsPeekPanel = async () => {
+                if (settingsPanelClosed || runId !== this.sceneRunId || this.isStopping()) {
+                    return;
+                }
+
+                settingsPanelClosed = true;
+                this.collapseCharacterSettingsSidePanel();
+                await this.closeSettingsPanel().catch(() => {});
+                this.forceHideManagedPanel('settings');
+            };
+            const narrationPromise = this.speakGuideLine(detailText, {
+                voiceKey: 'takeover_settings_peek_detail'
+            }).finally(() => {
+                if (runId !== this.sceneRunId || this.isStopping()) {
+                    return;
+                }
+
+                this.collapseCharacterSettingsSidePanel();
+                clearSettingsPeekHighlights();
+                return closeSettingsPeekPanel();
+            });
+
             this.overlay.clearActionSpotlight();
 
             if (characterMenu) {
@@ -4692,54 +5094,6 @@
             if (runId !== this.sceneRunId || this.isStopping()) {
                 return;
             }
-
-            const detailText = this.resolveGuideCopy(
-                TAKEOVER_SETTINGS_DETAIL_TEXT_KEY,
-                TAKEOVER_SETTINGS_DETAIL_TEXT
-            );
-            this.appendGuideChatMessage(detailText, {
-                textKey: TAKEOVER_SETTINGS_DETAIL_TEXT_KEY
-            });
-
-            let settingsPeekHighlightsCleared = false;
-            let settingsPanelClosed = false;
-            const clearSettingsPeekHighlights = () => {
-                if (settingsPeekHighlightsCleared) {
-                    return;
-                }
-
-                settingsPeekHighlightsCleared = true;
-                this.clearSceneExtraSpotlights();
-                this.clearVirtualSpotlight('settings-character-children-bundle');
-                this.clearVirtualSpotlight('settings-entry-bundle');
-                this.clearPreciseHighlights();
-                this.customSecondarySpotlightTarget = null;
-                this.overlay.clearActionSpotlight();
-                if (!this.isStopping()) {
-                    this.highlightChatWindow();
-                }
-            };
-            const closeSettingsPeekPanel = async () => {
-                if (settingsPanelClosed || runId !== this.sceneRunId || this.isStopping()) {
-                    return;
-                }
-
-                settingsPanelClosed = true;
-                this.collapseCharacterSettingsSidePanel();
-                await this.closeSettingsPanel().catch(() => {});
-                this.forceHideManagedPanel('settings');
-            };
-            const narrationPromise = this.speakLineAndWait(detailText, {
-                voiceKey: 'takeover_settings_peek_detail'
-            }).finally(() => {
-                if (runId !== this.sceneRunId || this.isStopping()) {
-                    return;
-                }
-
-                this.collapseCharacterSettingsSidePanel();
-                clearSettingsPeekHighlights();
-                return closeSettingsPeekPanel();
-            });
 
             const cycleMs = 7000;
             const ellipseAbortCheck = () => this.destroyed || this.angryExitTriggered || settingsPeekHighlightsCleared;
@@ -4831,6 +5185,7 @@
 
             this.takeoverFlowStarted = true;
             this.takeoverFlowPromise = (async () => {
+                this.takeoverOriginalAgentSwitches = await this.getAgentSwitchSnapshot();
                 await this.playManagedScene('takeover_capture_cursor', {
                     source: 'auto-takeover'
                 });
@@ -4871,12 +5226,14 @@
                     source: 'auto-takeover'
                 });
                 this.takeoverFlowCompleted = true;
+                this.takeoverOriginalAgentSwitches = null;
                 if (this.isStopping()) {
                     return;
                 }
                 this.requestTermination('complete', 'complete');
             })().catch((error) => {
                 console.error('[YuiGuide] 接管主流程执行失败:', error);
+                this.takeoverOriginalAgentSwitches = null;
             });
 
             return this.takeoverFlowPromise;
@@ -5008,10 +5365,84 @@
                 return null;
             }
 
-            // Electron Pet 模式下聊天 overlay 被永久隐藏，推到 React 聊天的消息
-            // 用户看不到。回落到 overlay bubble 显示文本（按钮选项不渲染——
-            // runChatIntroPrelude 里需要按钮的练习问候步骤已单独短路）。
+            const createdAt = Date.now();
+            let time = '';
+
+            try {
+                time = new Date(createdAt).toLocaleTimeString([], {
+                    hour: '2-digit',
+                    minute: '2-digit'
+                });
+            } catch (_) {}
+
+            const message = {
+                id: 'yui-guide-' + createdAt + '-' + Math.random().toString(36).slice(2, 8),
+                role: 'assistant',
+                author: this.getGuideAssistantName(),
+                time: time,
+                createdAt: createdAt,
+                avatarUrl: this.getGuideAssistantAvatarUrl(),
+                blocks: [{
+                    type: 'text',
+                    text: content
+                }],
+                status: 'sent'
+            };
+
+            if (Array.isArray(normalizedOptions.buttons) && normalizedOptions.buttons.length > 0) {
+                message.blocks.push({
+                    type: 'buttons',
+                    buttons: normalizedOptions.buttons.map(function (button) {
+                        if (!button || typeof button !== 'object') {
+                            return null;
+                        }
+
+                        return {
+                            id: button.id,
+                            label: button.label,
+                            action: button.action,
+                            variant: button.variant,
+                            disabled: !!button.disabled,
+                            payload: button.payload || undefined
+                        };
+                    }).filter(Boolean)
+                });
+            }
+
+            if (Array.isArray(normalizedOptions.actions) && normalizedOptions.actions.length > 0) {
+                message.actions = normalizedOptions.actions.map(function (action) {
+                    if (!action || typeof action !== 'object') {
+                        return null;
+                    }
+
+                    return {
+                        id: action.id,
+                        label: action.label,
+                        action: action.action,
+                        variant: action.variant,
+                        disabled: !!action.disabled,
+                        payload: action.payload || undefined
+                    };
+                }).filter(Boolean);
+            }
+
+            // Electron Pet 模式下首页聊天被拆到独立 /chat 窗口，这里优先通过
+            // BroadcastChannel 把教程消息转发过去；只有转发失败时才回落到 overlay。
             if (this.isHomeChatExternalized()) {
+                const channel = window.appInterpage && window.appInterpage.nekoBroadcastChannel;
+                if (channel && typeof channel.postMessage === 'function') {
+                    try {
+                        channel.postMessage({
+                            action: 'yui_guide_append_chat_message',
+                            message: message,
+                            timestamp: createdAt
+                        });
+                        return message;
+                    } catch (error) {
+                        console.warn('[YuiGuide] 转发教程消息到独立聊天窗失败:', error);
+                    }
+                }
+
                 try {
                     this.overlay.showBubble(content, {
                         title: this.getGuideAssistantName(),
@@ -5025,67 +5456,6 @@
 
             const host = window.reactChatWindowHost;
             if (host && typeof host.appendMessage === 'function') {
-                const createdAt = Date.now();
-                let time = '';
-
-                try {
-                    time = new Date(createdAt).toLocaleTimeString([], {
-                        hour: '2-digit',
-                        minute: '2-digit'
-                    });
-                } catch (_) {}
-
-                const message = {
-                    id: 'yui-guide-' + createdAt + '-' + Math.random().toString(36).slice(2, 8),
-                    role: 'assistant',
-                    author: this.getGuideAssistantName(),
-                    time: time,
-                    createdAt: createdAt,
-                    avatarUrl: this.getGuideAssistantAvatarUrl(),
-                    blocks: [{
-                        type: 'text',
-                        text: content
-                    }],
-                    status: 'sent'
-                };
-
-                if (Array.isArray(normalizedOptions.buttons) && normalizedOptions.buttons.length > 0) {
-                    message.blocks.push({
-                        type: 'buttons',
-                        buttons: normalizedOptions.buttons.map(function (button) {
-                            if (!button || typeof button !== 'object') {
-                                return null;
-                            }
-
-                            return {
-                                id: button.id,
-                                label: button.label,
-                                action: button.action,
-                                variant: button.variant,
-                                disabled: !!button.disabled,
-                                payload: button.payload || undefined
-                            };
-                        }).filter(Boolean)
-                    });
-                }
-
-                if (Array.isArray(normalizedOptions.actions) && normalizedOptions.actions.length > 0) {
-                    message.actions = normalizedOptions.actions.map(function (action) {
-                        if (!action || typeof action !== 'object') {
-                            return null;
-                        }
-
-                        return {
-                            id: action.id,
-                            label: action.label,
-                            action: action.action,
-                            variant: action.variant,
-                            disabled: !!action.disabled,
-                            payload: action.payload || undefined
-                        };
-                    }).filter(Boolean);
-                }
-
                 const appendedMessage = host.appendMessage(message);
                 this.scrollChatToBottom();
                 return appendedMessage;
@@ -5097,56 +5467,6 @@
             }
 
             return null;
-        }
-
-        getGuideChatMessage(messageId) {
-            const host = window.reactChatWindowHost;
-            if (!host || typeof host.getState !== 'function' || !messageId) {
-                return null;
-            }
-
-            try {
-                const snapshot = host.getState();
-                const messages = snapshot && Array.isArray(snapshot.messages) ? snapshot.messages : [];
-                return messages.find(function (message) {
-                    return message && String(message.id) === String(messageId);
-                }) || null;
-            } catch (error) {
-                console.warn('[YuiGuide] 读取引导消息失败:', error);
-                return null;
-            }
-        }
-
-        updateGuideChatMessage(messageId, patch) {
-            const host = window.reactChatWindowHost;
-            if (!host || typeof host.updateMessage !== 'function' || !messageId) {
-                return null;
-            }
-
-            try {
-                return host.updateMessage(messageId, patch || {});
-            } catch (error) {
-                console.warn('[YuiGuide] 更新引导消息失败:', error);
-                return null;
-            }
-        }
-
-        clearGuideChatMessageActions(messageId) {
-            if (!messageId) {
-                return null;
-            }
-
-            const existingMessage = this.getGuideChatMessage(messageId);
-            const nextBlocks = existingMessage && Array.isArray(existingMessage.blocks)
-                ? existingMessage.blocks.filter(function (block) {
-                    return block && block.type !== 'buttons';
-                })
-                : undefined;
-
-            return this.updateGuideChatMessage(messageId, {
-                blocks: nextBlocks,
-                actions: []
-            });
         }
 
         focusAndHighlightChatInput(spotlightTarget) {
@@ -5181,377 +5501,21 @@
             }
         }
 
-        attachChatIntroActivation() {
-            const actionHandler = (event) => {
-                if (this.destroyed || !this.introChoicePending) {
-                    return;
-                }
-
-                const detail = event && event.detail ? event.detail : null;
-                const message = detail && detail.message ? detail.message : null;
-                const action = detail && detail.action ? detail.action : null;
-                const messageId = message && message.id ? String(message.id) : '';
-                const actionId = action && action.id ? String(action.id) : '';
-                const actionName = action && action.action ? String(action.action) : '';
-
-                if (!messageId || messageId !== this.introPracticeMessageId) {
-                    return;
-                }
-
-                if (actionId !== INTRO_SKIP_ACTION_ID && actionName !== INTRO_SKIP_ACTION_ID) {
-                    if (actionId === INTRO_HELLO_ACTION_ID || actionName === INTRO_HELLO_ACTION_ID) {
-                        this.resolveChatIntroChoice('chat');
-                    }
-                    return;
-                }
-
-                this.resolveChatIntroChoice('skip');
-            };
-
-            const submitHandler = (event) => {
-                if (this.destroyed || !this.introChoicePending) {
-                    return;
-                }
-
-                const detail = event && event.detail ? event.detail : null;
-                const text = detail && typeof detail.text === 'string' ? detail.text : '';
-                if (!text.trim()) {
-                    return;
-                }
-
-                this.resolveChatIntroChoice('chat', {
-                    submittedAt: Date.now()
-                });
-            };
-
-            window.addEventListener(REACT_CHAT_ACTION_EVENT, actionHandler, true);
-            window.addEventListener(REACT_CHAT_SUBMIT_EVENT, submitHandler, true);
-            this.chatIntroCleanupFns.push(() => {
-                window.removeEventListener(REACT_CHAT_ACTION_EVENT, actionHandler, true);
-            });
-            this.chatIntroCleanupFns.push(() => {
-                window.removeEventListener(REACT_CHAT_SUBMIT_EVENT, submitHandler, true);
-            });
-        }
-
-        waitForFirstAssistantReplyAfter(submittedAt) {
-            const replyStartAt = Number.isFinite(submittedAt) ? submittedAt : Date.now();
-            const maxWaitMs = 120000;
-
-            return new Promise((resolve) => {
-                const startedAt = Date.now();
-                const initialHost = window.reactChatWindowHost;
-                const initialSnapshot = initialHost && typeof initialHost.getState === 'function'
-                    ? initialHost.getState()
-                    : null;
-                const knownAssistantMessageIds = new Set(
-                    initialSnapshot && Array.isArray(initialSnapshot.messages)
-                        ? initialSnapshot.messages.reduce((ids, message) => {
-                            if (!message || message.role !== 'assistant') {
-                                return ids;
-                            }
-                            const messageId = typeof message.id === 'string' ? message.id : '';
-                            if (messageId && messageId.indexOf('yui-guide-') !== 0) {
-                                ids.push(messageId);
-                            }
-                            return ids;
-                        }, [])
-                        : []
-                );
-                let seenReplyMessage = null;
-                let settled = false;
-                let replyTurnId = null;
-                let replyTurnStartedAt = 0;
-                let replyTurnEnded = false;
-                let replySpeechStarted = false;
-
-                const finish = (replyMessage) => {
-                    if (settled) {
-                        return;
-                    }
-                    settled = true;
-                    window.removeEventListener('neko-assistant-turn-start', handleAssistantTurnStart, true);
-                    window.removeEventListener('neko-assistant-speech-start', handleAssistantSpeechStart, true);
-                    window.removeEventListener('neko-assistant-speech-end', handleAssistantSpeechEnd, true);
-                    window.removeEventListener('neko-assistant-turn-end', handleAssistantTurnEnd, true);
-                    if (this.introReplyPollTimer) {
-                        window.clearTimeout(this.introReplyPollTimer);
-                        this.introReplyPollTimer = null;
-                    }
-                    resolve(replyMessage || seenReplyMessage || null);
-                };
-
-                const handleAssistantTurnStart = (event) => {
-                    const detail = event && event.detail ? event.detail : null;
-                    const turnId = detail && detail.turnId ? String(detail.turnId) : '';
-                    const timestamp = detail && Number.isFinite(detail.timestamp)
-                        ? detail.timestamp
-                        : Date.now();
-                    if (!turnId) {
-                        return;
-                    }
-                    if (timestamp < replyStartAt) {
-                        return;
-                    }
-                    if (replyTurnId && replyTurnId !== turnId) {
-                        return;
-                    }
-                    replyTurnId = turnId;
-                    replyTurnStartedAt = timestamp;
-                };
-
-                const handleAssistantSpeechStart = (event) => {
-                    const detail = event && event.detail ? event.detail : null;
-                    const turnId = detail && detail.turnId ? String(detail.turnId) : '';
-                    const timestamp = detail && Number.isFinite(detail.timestamp)
-                        ? detail.timestamp
-                        : Date.now();
-                    if (!turnId || timestamp < replyStartAt) {
-                        return;
-                    }
-                    if (replyTurnId && replyTurnId !== turnId) {
-                        return;
-                    }
-                    replyTurnId = turnId;
-                    replySpeechStarted = true;
-                };
-
-                const handleAssistantSpeechEnd = (event) => {
-                    const detail = event && event.detail ? event.detail : null;
-                    const turnId = detail && detail.turnId ? String(detail.turnId) : '';
-                    const timestamp = detail && Number.isFinite(detail.timestamp)
-                        ? detail.timestamp
-                        : Date.now();
-                    if (!turnId || timestamp < replyStartAt) {
-                        return;
-                    }
-                    if (replyTurnId && turnId !== replyTurnId) {
-                        return;
-                    }
-                    replyTurnId = turnId;
-                    finish(seenReplyMessage || null);
-                };
-
-                const handleAssistantTurnEnd = (event) => {
-                    const detail = event && event.detail ? event.detail : null;
-                    const turnId = detail && detail.turnId ? String(detail.turnId) : '';
-                    const timestamp = detail && Number.isFinite(detail.timestamp)
-                        ? detail.timestamp
-                        : Date.now();
-                    if (!turnId || timestamp < replyStartAt) {
-                        return;
-                    }
-                    if (replyTurnId && turnId !== replyTurnId) {
-                        return;
-                    }
-                    if (replyTurnStartedAt && timestamp < replyTurnStartedAt) {
-                        return;
-                    }
-                    replyTurnId = turnId;
-                    replyTurnEnded = true;
-                    if (!replySpeechStarted && seenReplyMessage && seenReplyMessage.status === 'sent') {
-                        finish(seenReplyMessage);
-                    }
-                };
-
-                window.addEventListener('neko-assistant-turn-start', handleAssistantTurnStart, true);
-                window.addEventListener('neko-assistant-speech-start', handleAssistantSpeechStart, true);
-                window.addEventListener('neko-assistant-speech-end', handleAssistantSpeechEnd, true);
-                window.addEventListener('neko-assistant-turn-end', handleAssistantTurnEnd, true);
-
-                const poll = () => {
-                    if (this.isStopping()) {
-                        finish(null);
-                        return;
-                    }
-
-                    const host = window.reactChatWindowHost;
-                    const snapshot = host && typeof host.getState === 'function'
-                        ? host.getState()
-                        : null;
-                    const messages = snapshot && Array.isArray(snapshot.messages)
-                        ? snapshot.messages
-                        : [];
-
-                    const replyMessage = messages.find((message) => {
-                        if (!message || message.role !== 'assistant') {
-                            return false;
-                        }
-
-                        const messageId = typeof message.id === 'string' ? message.id : '';
-                        if (messageId.indexOf('yui-guide-') === 0) {
-                            return false;
-                        }
-
-                        if (knownAssistantMessageIds.has(messageId)) {
-                            return false;
-                        }
-
-                        const createdAt = Number.isFinite(message.createdAt) ? message.createdAt : 0;
-                        if (createdAt < replyStartAt) {
-                            return false;
-                        }
-
-                        return true;
-                    }) || null;
-
-                    if (replyMessage) {
-                        seenReplyMessage = replyMessage;
-                        if (replyTurnEnded && !replySpeechStarted && replyMessage.status === 'sent') {
-                            finish(replyMessage);
-                            return;
-                        }
-                    }
-
-                    if ((Date.now() - startedAt) >= maxWaitMs) {
-                        finish(seenReplyMessage);
-                        return;
-                    }
-
-                    this.introReplyPollTimer = window.setTimeout(poll, 280);
-                };
-
-                poll();
-            });
-        }
-
-        resolveChatIntroChoice(mode, options) {
-            if (this.isStopping() || !this.introChoicePending) {
+        async playIntroGreetingReply() {
+            const greetingReplyText = this.resolveGuideCopy(
+                INTRO_GREETING_REPLY_TEXT_KEY,
+                INTRO_GREETING_REPLY_TEXT
+            );
+            if (!greetingReplyText) {
                 return;
             }
 
-            const normalizedMode = mode === 'chat' ? 'chat' : 'skip';
-            const promptMessageId = this.introPracticeMessageId;
-
-            this.introChoicePending = false;
-            this.introClickActivated = true;
-            this.introFlowCompleted = true;
-
-            if (promptMessageId) {
-                this.clearGuideChatMessageActions(promptMessageId);
-            }
-
-            this.cancelActiveNarration();
-            this.clearIntroFlow(true);
-            this.highlightChatWindow();
-
-            if (normalizedMode === 'chat') {
-                (async () => {
-                    const greetingReplyText = this.resolveGuideCopy(
-                        INTRO_GREETING_REPLY_TEXT_KEY,
-                        INTRO_GREETING_REPLY_TEXT
-                    );
-                    this.appendGuideChatMessage(greetingReplyText, {
-                        textKey: INTRO_GREETING_REPLY_TEXT_KEY
-                    });
-                    this.emotionBridge.apply('happy');
-                    await this.speakLineAndWait(greetingReplyText, {
-                        voiceKey: 'intro_greeting_reply'
-                    });
-                    if (this.isStopping()) {
-                        return;
-                    }
-
-                    if (!this.cursor.hasPosition()) {
-                        const origin = this.getDefaultCursorOrigin();
-                        this.cursor.showAt(origin.x, origin.y);
-                    }
-
-                    this.sendIntroFollowups({
-                        includeProactive: false
-                    });
-                })().catch((error) => {
-                    console.warn('[YuiGuide] 播放问候分支失败:', error);
-                });
-                return;
-            }
-
-            this.sendIntroFollowups({
-                includeProactive: true
+            this.appendGuideChatMessage(greetingReplyText, {
+                textKey: INTRO_GREETING_REPLY_TEXT_KEY
             });
-        }
-
-        sendIntroFollowups(options) {
-            const proactiveStep = this.getStep('intro_proactive');
-            const catPawStep = this.getStep('intro_cat_paw');
-            const normalizedOptions = options || {};
-            const includeProactive = normalizedOptions.includeProactive !== false;
-            const catPawDelayMs = includeProactive ? 0 : 280;
-
-            (async () => {
-                if (includeProactive && proactiveStep && proactiveStep.performance) {
-                    const proactiveText = this.resolvePerformanceBubbleText(proactiveStep.performance);
-                    this.appendGuideChatMessage(proactiveText, {
-                        textKey: proactiveStep.performance.bubbleTextKey || ''
-                    });
-                    if (proactiveStep.performance.emotion) {
-                        this.emotionBridge.apply(proactiveStep.performance.emotion);
-                    }
-                    await this.speakLineAndWait(proactiveText, {
-                        voiceKey: proactiveStep.performance.voiceKey
-                    });
-                    if (this.isStopping()) {
-                        return;
-                    }
-                    if (!this.cursor.hasPosition()) {
-                        const origin = this.getDefaultCursorOrigin();
-                        this.cursor.showAt(origin.x, origin.y);
-                    }
-                }
-                if (this.isStopping()) {
-                    return;
-                }
-
-                if (catPawDelayMs > 0) {
-                    await new Promise((resolve) => {
-                        this.introThirdMessageTimer = window.setTimeout(() => {
-                            this.introThirdMessageTimer = null;
-                            resolve();
-                        }, catPawDelayMs);
-                    });
-                }
-
-                if (this.isStopping()) {
-                    return;
-                }
-
-                if (catPawStep && catPawStep.performance) {
-                    const catPawText = this.resolvePerformanceBubbleText(catPawStep.performance);
-                    this.appendGuideChatMessage(catPawText, {
-                        textKey: catPawStep.performance.bubbleTextKey || ''
-                    });
-                    if (catPawStep.performance.emotion) {
-                        this.emotionBridge.apply(catPawStep.performance.emotion);
-                    }
-                    await Promise.all([
-                        this.speakLineAndWait(catPawText, {
-                            voiceKey: catPawStep.performance.voiceKey
-                        }),
-                        (async () => {
-                            if (!(await this.waitForNarrationCue(
-                                catPawStep.performance.voiceKey,
-                                'captureCursorPrelude'
-                            ))) {
-                                return;
-                            }
-                            if (this.isStopping()) {
-                                return;
-                            }
-                            await this.performCaptureCursorPrelude(3000);
-                        })()
-                    ]);
-                }
-
-                if (this.isStopping()) {
-                    return;
-                }
-                this.introFlowCompleted = true;
-                await wait(320);
-                if (this.isStopping()) {
-                    return;
-                }
-                await this.runTakeoverMainFlow();
-            })();
+            await this.speakGuideLine(greetingReplyText, {
+                voiceKey: 'intro_greeting_reply'
+            });
         }
 
         async runChatIntroPrelude() {
@@ -5564,15 +5528,15 @@
                 return;
             }
 
-            // Electron Pet 模式：跳过 ensureChatVisible（聊天 overlay 被 preload 永久隐藏）、
-            // ghost cursor + 等输入框激活（无 autoplay 限制 + 输入框不可见无法点），
-            // 跳过练习问候按钮选择，直接进 sendIntroFollowups → takeover。
+            // Electron Pet 模式：聊天 overlay 被 preload 永久隐藏，因此跳过首页输入框激活；
+            // 但后续旁白、语音控制按钮演示和接管主流程仍继续执行。
             if (this.isHomeChatExternalized()) {
                 await this.runChatIntroPreludeExternalized(introStep);
                 return;
             }
 
             this.introFlowStarted = true;
+            this.setCurrentScene('intro_basic', null);
             this.overlay.hideBubble();
             this.overlay.hidePluginPreview();
             await this.ensureChatVisible();
@@ -5608,9 +5572,16 @@
                     this._introActivationResolve = resolve;
                 });
                 this.overlay.hideBubble();
+                this.overlay.setTakingOver(true);
                 this.cursor.wobble();
                 await wait(200);
             }
+            if (this.isStopping()) {
+                return;
+            }
+
+            this.enableInterrupts(introStep);
+            await this.playIntroGreetingReply();
             if (this.isStopping()) {
                 return;
             }
@@ -5619,86 +5590,75 @@
             this.appendGuideChatMessage(introText, {
                 textKey: introStep.performance.bubbleTextKey || ''
             });
-            if (introStep.performance.emotion) {
+            if (introStep.performance.emotion && !this.hasGuideExpressionTrack(introStep.performance.voiceKey)) {
                 this.emotionBridge.apply(introStep.performance.emotion);
             }
-            await this.speakLineAndWait(introText, {
-                voiceKey: introStep.performance.voiceKey,
-                minDurationMs: 4200
-            });
+            await Promise.all([
+                this.speakGuideLine(introText, {
+                    voiceKey: introStep.performance.voiceKey,
+                    minDurationMs: 4200
+                }),
+                this.runIntroVoiceControlButtonShowcase(
+                    introStep.performance.voiceKey,
+                    introText
+                ).catch(() => {})
+            ]);
             if (this.isStopping()) {
                 return;
             }
 
-            this.highlightChatWindow();
             await wait(240);
             if (this.isStopping()) {
                 return;
             }
-
-            const introChoiceLabels = this.getIntroChoiceLabels();
-            const practiceText = this.resolveGuideCopy(INTRO_PRACTICE_TEXT_KEY, INTRO_PRACTICE_TEXT);
-            const practiceMessage = this.appendGuideChatMessage(practiceText, {
-                textKey: INTRO_PRACTICE_TEXT_KEY,
-                buttons: [{
-                    id: INTRO_SKIP_ACTION_ID,
-                    label: introChoiceLabels.skipChat,
-                    action: INTRO_SKIP_ACTION_ID,
-                    variant: 'secondary',
-                    disabled: false
-                }, {
-                    id: INTRO_HELLO_ACTION_ID,
-                    label: introChoiceLabels.sayHello,
-                    action: INTRO_HELLO_ACTION_ID,
-                    variant: 'primary',
-                    disabled: false
-                }]
-            });
-            this.introPracticeMessageId = practiceMessage && practiceMessage.id
-                ? String(practiceMessage.id)
-                : null;
-            this.introChoicePending = true;
-            this.attachChatIntroActivation();
-            await this.speakLineAndWait(practiceText, {
-                voiceKey: 'intro_practice',
-                minDurationMs: 3600
-            });
-            if (this.isStopping()) {
-                return;
-            }
             this.introFlowCompleted = true;
+            this.overlay.clearActionSpotlight();
+            await this.runTakeoverMainFlow();
         }
 
-        // Electron Pet 模式专用 prelude：聊天 overlay 被永久隐藏，无法走"输入框激活 +
-        // 聊天叙事 + 按钮选择"的标准路径。改为：仅用 overlay bubble 朗读 intro，
-        // 然后等同用户选择"暂时不聊天"，直接进 proactive + cat-paw 串场再交给 takeover。
+        // Electron Pet 模式专用 prelude：聊天输入框不在首页窗口里，
+        // 因此跳过首页点击激活，但后续旁白与高亮演示照常执行。
         async runChatIntroPreludeExternalized(introStep) {
             this.introFlowStarted = true;
+            this.setCurrentScene('intro_basic', null);
             this.overlay.hideBubble();
             this.overlay.hidePluginPreview();
 
-            const introText = this.resolvePerformanceBubbleText(introStep.performance);
-            if (introText) {
-                this.overlay.showBubble(introText, {
-                    title: this.getGuideAssistantName(),
-                    emotion: introStep.performance.emotion || 'neutral'
-                });
-            }
-            if (introStep.performance.emotion) {
-                this.emotionBridge.apply(introStep.performance.emotion);
-            }
-            await this.speakLineAndWait(introText || '', {
-                voiceKey: introStep.performance.voiceKey,
-                minDurationMs: 4200
-            });
+            this.enableInterrupts(introStep);
+            await this.playIntroGreetingReply();
             if (this.isStopping()) {
                 return;
             }
 
-            this.introChoicePending = false;
-            this.introClickActivated = true;
+            const introText = this.resolvePerformanceBubbleText(introStep.performance);
+            if (introText) {
+                this.appendGuideChatMessage(introText, {
+                    textKey: introStep.performance.bubbleTextKey || ''
+                });
+            }
+            if (introStep.performance.emotion && !this.hasGuideExpressionTrack(introStep.performance.voiceKey)) {
+                this.emotionBridge.apply(introStep.performance.emotion);
+            }
+            await Promise.all([
+                this.speakGuideLine(introText || '', {
+                    voiceKey: introStep.performance.voiceKey,
+                    minDurationMs: 4200
+                }),
+                this.runIntroVoiceControlButtonShowcase(
+                    introStep.performance.voiceKey,
+                    introText || ''
+                ).catch(() => {})
+            ]);
+            if (this.isStopping()) {
+                return;
+            }
+
             this.introFlowCompleted = true;
-            this.sendIntroFollowups({ includeProactive: true });
+            if (this.isStopping()) {
+                return;
+            }
+            this.overlay.clearActionSpotlight();
+            await this.runTakeoverMainFlow();
         }
 
         async startPrelude() {
@@ -5721,13 +5681,6 @@
 
         async enterStep(stepId, context) {
             if (this.destroyed || !stepId) {
-                return;
-            }
-
-            if ((stepId === 'intro_proactive' || stepId === 'intro_cat_paw') && this.introFlowStarted) {
-                this.currentSceneId = stepId;
-                this.currentStep = this.getStep(stepId);
-                this.currentContext = context || null;
                 return;
             }
 
@@ -5794,10 +5747,7 @@
                 || stepId === 'takeover_settings_peek'
             );
             const shouldNarrateDuringMove = stepId === 'takeover_capture_cursor';
-            const shouldKeepInterruptsEnabled = (
-                performance.interruptible !== false
-                && (isTakeoverScene || stepId === 'intro_cat_paw')
-            );
+            const shouldKeepInterruptsEnabled = performance.interruptible !== false && isTakeoverScene;
             const shouldOpenPanelAfterNarration = (
                 stepId === 'takeover_plugin_preview'
                 || stepId === 'takeover_settings_peek'
@@ -5816,7 +5766,9 @@
             }
 
             const persistentSpotlightTarget = this.getSceneSpotlightTarget(stepId, performance);
-            if (persistentSpotlightTarget) {
+            if (stepId === 'takeover_return_control') {
+                this.overlay.clearPersistentSpotlight();
+            } else if (persistentSpotlightTarget) {
                 this.overlay.setPersistentSpotlight(persistentSpotlightTarget);
             }
 
@@ -5826,7 +5778,8 @@
                 && (stepId === 'takeover_capture_cursor' || stepId === 'takeover_plugin_preview')
             ) {
                 this.setSpotlightGeometryHint(actionSpotlightTarget, {
-                    padding: 4
+                    padding: 4,
+                    geometry: 'circle'
                 });
             }
             if (actionSpotlightTarget) {
@@ -5847,26 +5800,22 @@
                 this.highlightChatWindow();
                 this.enableInterrupts(step);
 
-                if (bubbleText && shouldNarrateInChat) {
+                if (bubbleText) {
                     this.appendGuideChatMessage(bubbleText, {
                         textKey: performance.bubbleTextKey || ''
                     });
-                } else if (bubbleText) {
-                    // Electron Pet 模式下 shouldNarrateInChat=false，否则文案只剩语音、无可见气泡。
-                    this.overlay.showBubble(bubbleText, {
-                        title: this.getGuideAssistantName(),
-                        emotion: performance.emotion || 'neutral',
-                        anchorRect: anchorRect
-                    });
                 }
-                if (performance.emotion) {
+                if (performance.emotion && !this.hasGuideExpressionTrack(performance.voiceKey)) {
                     this.emotionBridge.apply(performance.emotion);
                 }
 
-                await this.speakLineAndWait(bubbleText || '', {
-                    voiceKey: performance.voiceKey,
-                    minDurationMs: 4000
-                });
+                await Promise.all([
+                    this.speakGuideLine(bubbleText || '', {
+                        voiceKey: performance.voiceKey,
+                        minDurationMs: 4000
+                    }).catch(() => {}),
+                    this.runTakeoverKeyboardControlSequence(step, performance, runId)
+                ]);
                 if (runId !== this.sceneRunId || this.destroyed || this.angryExitTriggered) {
                     return;
                 }
@@ -5909,7 +5858,7 @@
                 this.overlay.hideBubble();
             }
 
-            if (performance.emotion && !shouldNarrateAfterMove) {
+            if (performance.emotion && !shouldNarrateAfterMove && !this.hasGuideExpressionTrack(performance.voiceKey)) {
                 this.emotionBridge.apply(performance.emotion);
             }
 
@@ -5958,7 +5907,7 @@
                 });
             }
 
-            if (performance.emotion && shouldNarrateDuringMove) {
+            if (performance.emotion && shouldNarrateDuringMove && !this.hasGuideExpressionTrack(performance.voiceKey)) {
                 this.emotionBridge.apply(performance.emotion);
             }
 
@@ -5969,7 +5918,7 @@
                     });
                     this.overlay.hideBubble();
                 }
-                narrationPromise = this.speakLineAndWait(bubbleText || '', {
+                narrationPromise = this.speakGuideLine(bubbleText || '', {
                     voiceKey: performance.voiceKey
                 });
             }
@@ -6016,7 +5965,7 @@
                 this.overlay.hideBubble();
             }
 
-            if (performance.emotion && shouldNarrateAfterMove) {
+            if (performance.emotion && shouldNarrateAfterMove && !this.hasGuideExpressionTrack(performance.voiceKey)) {
                 this.emotionBridge.apply(performance.emotion);
             }
 
@@ -6027,7 +5976,7 @@
                     });
                     this.overlay.hideBubble();
                 }
-                await this.speakLineAndWait(bubbleText || '', {
+                await this.speakGuideLine(bubbleText || '', {
                     voiceKey: performance.voiceKey
                 });
                 if (runId !== this.sceneRunId || this.destroyed) {
@@ -6046,7 +5995,8 @@
                 if (runId !== this.sceneRunId || this.destroyed) {
                     return;
                 }
-                this.highlightChatWindow();
+                this.overlay.clearPersistentSpotlight();
+                this.overlay.clearActionSpotlight();
                 const centerPoint = this.getViewportCenter();
                 await this.waitForSceneDelay(140);
                 if (runId !== this.sceneRunId || this.destroyed) {
@@ -6159,7 +6109,7 @@
                 return;
             }
 
-            if (!document.body.classList.contains('yui-taking-over')) {
+            if (!this.shouldAllowInterruptDuringCurrentScene()) {
                 return;
             }
 
@@ -6243,30 +6193,39 @@
             this.playLightResistance(x, y);
         }
 
-        playLightResistance(x, y) {
+        playLightResistance(x, y, options) {
             if (this.scenePausedForResistance) {
-                return;
+                return Promise.resolve();
             }
 
-            // 对抗机制触发时真实鼠标显示 3 秒
-            if (this.resistanceCursorTimer) {
-                window.clearTimeout(this.resistanceCursorTimer);
-            }
-            document.documentElement.style.cursor = '';
-            document.body.style.cursor = '';
-            document.body.classList.add('yui-resistance-cursor-reveal');
-            this.resistanceCursorTimer = window.setTimeout(() => {
-                this.resistanceCursorTimer = null;
-                document.body.classList.remove('yui-resistance-cursor-reveal');
-                if (!this.destroyed && !this.angryExitTriggered) {
-                    document.documentElement.style.cursor = 'none';
-                    document.body.style.cursor = 'none';
+            const suppressCursorReaction = !!(options && options.suppressCursorReaction);
+            const suppressCursorReveal = !!(options && options.suppressCursorReveal);
+
+            if (!suppressCursorReveal) {
+                // 对抗机制触发时真实鼠标显示 3 秒
+                if (this.resistanceCursorTimer) {
+                    window.clearTimeout(this.resistanceCursorTimer);
                 }
-            }, 3000);
+                this.restoreHiddenCursorAfterResistance = document.body.classList.contains('yui-taking-over')
+                    || document.documentElement.style.cursor === 'none'
+                    || document.body.style.cursor === 'none';
+                document.documentElement.style.cursor = '';
+                document.body.style.cursor = '';
+                document.body.classList.add('yui-resistance-cursor-reveal');
+                this.resistanceCursorTimer = window.setTimeout(() => {
+                    this.resistanceCursorTimer = null;
+                    document.body.classList.remove('yui-resistance-cursor-reveal');
+                    if (!this.destroyed && !this.angryExitTriggered && this.restoreHiddenCursorAfterResistance) {
+                        document.documentElement.style.cursor = 'none';
+                        document.body.style.cursor = 'none';
+                    }
+                    this.restoreHiddenCursorAfterResistance = false;
+                }, 3000);
+            }
 
             const resistanceStep = this.getStep('interrupt_resist_light');
             if (!resistanceStep) {
-                return;
+                return Promise.resolve();
             }
 
             const performance = resistanceStep.performance || {};
@@ -6287,12 +6246,21 @@
                     ? 'tutorial.yuiGuide.lines.interruptResistLight3'
                     : 'tutorial.yuiGuide.lines.interruptResistLight1'
             });
-            this.emotionBridge.apply(performance.emotion || 'surprised');
-            Promise.all([
+            if (!this.hasGuideExpressionTrack(resistanceVoiceKeys[resistanceVoiceIndex] || '')) {
+                this.emotionBridge.apply(performance.emotion || 'surprised');
+            }
+            const cursorResistancePromise = suppressCursorReaction
+                ? Promise.resolve()
+                : this.cursor.resistTo(x, y);
+            const resistanceVoiceKey = resistanceVoiceKeys[resistanceVoiceIndex] || '';
+            return Promise.all([
                 this.voiceQueue.speak(message, {
-                    voiceKey: resistanceVoiceKeys[resistanceVoiceIndex] || ''
+                    voiceKey: resistanceVoiceKey
                 }),
-                this.cursor.resistTo(x, y)
+                cursorResistancePromise,
+                this.runGuideExpressionTrack(message, {
+                    voiceKey: resistanceVoiceKey
+                })
             ]).finally(() => {
                 this.resumeCurrentSceneAfterResistance();
                 const narration = this.activeNarration;
@@ -6325,8 +6293,10 @@
             this.appendGuideChatMessage(bubbleText || '人类~~~~！你真的很没礼貌喵！', {
                 textKey: performance.bubbleTextKey || ''
             });
-            this.emotionBridge.apply(performance.emotion || 'angry');
-            await this.speakLineAndWait(bubbleText || '', {
+            if (!this.hasGuideExpressionTrack(performance.voiceKey)) {
+                this.emotionBridge.apply(performance.emotion || 'angry');
+            }
+            await this.speakGuideLine(bubbleText || '', {
                 voiceKey: performance.voiceKey
             });
             if (this.destroyed) {
@@ -6363,6 +6333,7 @@
             this.destroyed = true;
             this.terminationRequested = true;
             this.resumeCurrentSceneAfterResistance();
+            this.setExternalizedChatButtonsDisabled(false);
             if (this.page === 'home') {
                 document.body.classList.remove('yui-guide-home-driver-hidden');
             }
@@ -6370,6 +6341,7 @@
                 this.pluginDashboardHandoff.resolve(false);
             }
             this.cancelActiveNarration();
+            this.cancelGuideExpressionTrack();
             this.clearIntroFlow();
             this.clearSceneTimers();
             this.disableInterrupts();
@@ -6451,22 +6423,7 @@
                 }
             }
 
-            if (!this.introChoicePending) {
-                return false;
-            }
-
-            const button = target.closest('button.message-action-button');
-            if (!button) {
-                return false;
-            }
-
-            const buttonLabel = typeof button.textContent === 'string'
-                ? button.textContent.replace(/\s+/g, '').trim()
-                : '';
-            const introChoiceLabels = this.getIntroChoiceLabels();
-            return [introChoiceLabels.skipChat, introChoiceLabels.sayHello].some((label) => {
-                return label.replace(/\s+/g, '').trim() === buttonLabel;
-            });
+            return false;
         }
 
         onInteractionGuard(event) {
@@ -6550,17 +6507,39 @@
             this.pluginDashboardLastInterruptRequestId = requestId;
 
             const detail = data.detail && typeof data.detail === 'object' ? data.detail : {};
+            const kind = typeof detail.kind === 'string' ? detail.kind : '';
             const text = typeof detail.text === 'string' ? detail.text : '';
             const textKey = typeof detail.textKey === 'string' ? detail.textKey : '';
             const voiceKey = typeof detail.voiceKey === 'string' ? detail.voiceKey : '';
             const resolvedText = this.resolveGuideCopy(textKey, text);
             const interruptCount = Number.isFinite(detail.interruptCount) ? Math.max(0, Math.floor(detail.interruptCount)) : null;
+            const x = Number.isFinite(detail.x) ? detail.x : null;
+            const y = Number.isFinite(detail.y) ? detail.y : null;
 
             if (interruptCount !== null) {
                 this.interruptCount = Math.max(
                     Math.max(0, Math.floor(Number.isFinite(this.interruptCount) ? this.interruptCount : 0)),
                     interruptCount
                 );
+            }
+
+            if (kind === 'interrupt_angry_exit') {
+                postAck();
+                await this.abortAsAngryExit('pointer_interrupt');
+                return;
+            }
+
+            if (kind === 'interrupt_resist_light' && x !== null && y !== null) {
+                try {
+                    await this.playLightResistance(x, y, {
+                        suppressCursorReaction: true,
+                        suppressCursorReveal: true
+                    });
+                } catch (error) {
+                    console.warn('[YuiGuide] 执行插件面板轻微抵抗失败:', error);
+                }
+                postAck();
+                return;
             }
 
             if (resolvedText) {
@@ -6571,7 +6550,7 @@
 
             if (resolvedText) {
                 try {
-                    await this.speakLineAndWait(resolvedText, {
+                    await this.speakGuideLine(resolvedText, {
                         voiceKey: voiceKey
                     });
                 } catch (error) {
