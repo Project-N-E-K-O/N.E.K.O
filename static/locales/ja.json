@@ -2153,7 +2153,7 @@
             "ru": "Русский"
         },
         "interval": {
-            "chatIntervalBase": "基本間隔",
+            "chatIntervalBase": "感知間隔",
             "visionInterval": "読取間隔"
         },
         "toggles": {
@@ -2161,9 +2161,9 @@
             "mergeMessages": "メッセージ結合",
             "avatarReactionBubble": "表情バブル",
             "proactiveChat": "自発的会話",
-            "proactiveVision": "自発的視覚",
+            "proactiveVision": "プライバシーモード",
             "proactiveVisionChat": "画面共有",
-            "proactiveVisionChatTooltip": "自発的会話と自発的視覚の両方を有効にする必要があります",
+            "proactiveVisionChatTooltip": "自発的会話を有効にし、プライバシーモードを無効にする必要があります",
             "proactiveNewsChat": "ニュースサイト",
             "proactiveNewsChatTooltip": "トレンド話題を使用してチャット",
             "proactiveVideoChat": "動画サイト",
@@ -2563,8 +2563,8 @@
             "desc": "ネコが自発的に会話を開始。頻度をここで調整~"
         },
         "step14": {
-            "title": "👀 プロアクティブビジョン",
-            "desc": "音声セッション中にリアルタイムで配信する画面共有とは異なり、プロアクティブビジョンを有効にするとネコが時々自分から画面をチラッと見ます。間隔をここで調整~"
+            "title": "🔒 プライバシーモード",
+            "desc": "プライバシーモードをオフにすると、ネコが時々自分から画面をチラッと見ます。音声セッション中にリアルタイムで配信する画面共有とは異なります。間隔をここで調整~"
         },
         "step15": {
             "title": "👤 キャラクターマネージャー",

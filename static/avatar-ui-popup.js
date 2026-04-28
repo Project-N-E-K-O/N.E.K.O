@@ -336,7 +336,7 @@ function createSettingsPopupContent(manager, prefix, popup) {
     // 4. 主动搭话和自主视觉（角色设置已移至分隔线下方的导航菜单区域）
     const settingsToggles = [
         { id: 'proactive-chat', label: window.t ? window.t('settings.toggles.proactiveChat') : '主动搭话', labelKey: 'settings.toggles.proactiveChat', storageKey: 'proactiveChatEnabled', hasInterval: true, intervalKey: 'proactiveChatInterval', defaultInterval: 15 },
-        { id: 'proactive-vision', label: window.t ? window.t('settings.toggles.proactiveVision') : '自主视觉', labelKey: 'settings.toggles.proactiveVision', storageKey: 'proactiveVisionEnabled', hasInterval: true, intervalKey: 'proactiveVisionInterval', defaultInterval: 15 }
+        { id: 'proactive-vision', label: window.t ? window.t('settings.toggles.proactiveVision') : '隐私模式', labelKey: 'settings.toggles.proactiveVision', storageKey: 'proactiveVisionEnabled', hasInterval: true, intervalKey: 'proactiveVisionInterval', defaultInterval: 15, inverted: true }
     ];
 
     settingsToggles.forEach(toggle => {
@@ -1589,7 +1589,7 @@ function createIntervalControl(manager, prefix, toggle) {
     });
 
     const labelKey = toggle.id === 'proactive-chat' ? 'settings.interval.chatIntervalBase' : 'settings.interval.visionInterval';
-    const defaultLabel = toggle.id === 'proactive-chat' ? '基础间隔' : '读取间隔';
+    const defaultLabel = toggle.id === 'proactive-chat' ? '感知间隔' : '读取间隔';
     const labelText = document.createElement('span');
     labelText.textContent = window.t ? window.t(labelKey) : defaultLabel;
     labelText.setAttribute('data-i18n', labelKey);
@@ -1907,7 +1907,7 @@ function createSettingsToggleItem(manager, prefix, toggle) {
     } else if (toggle.id === 'proactive-chat' && typeof window.proactiveChatEnabled !== 'undefined') {
         checkbox.checked = window.proactiveChatEnabled;
     } else if (toggle.id === 'proactive-vision' && typeof window.proactiveVisionEnabled !== 'undefined') {
-        checkbox.checked = window.proactiveVisionEnabled;
+        checkbox.checked = toggle.inverted ? !window.proactiveVisionEnabled : window.proactiveVisionEnabled;
     } else if (toggle.id === 'fullscreen-tracking' && typeof window.live2dFullscreenTrackingEnabled !== 'undefined') {
         checkbox.checked = window.live2dFullscreenTrackingEnabled;
     }
@@ -2012,11 +2012,12 @@ function createSettingsToggleItem(manager, prefix, toggle) {
                 window.stopProactiveChatSchedule();
             }
         } else if (toggle.id === 'proactive-vision') {
-            window.proactiveVisionEnabled = isChecked;
+            const visionEnabled = toggle.inverted ? !isChecked : isChecked;
+            window.proactiveVisionEnabled = visionEnabled;
             if (typeof window.saveNEKOSettings === 'function') {
                 window.saveNEKOSettings();
             }
-            if (isChecked) {
+            if (visionEnabled) {
                 if (typeof window.acquireProactiveVisionStream === 'function') {
                     window.acquireProactiveVisionStream();
                 }

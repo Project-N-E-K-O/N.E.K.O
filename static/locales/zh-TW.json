@@ -2153,7 +2153,7 @@
             "ru": "Русский"
         },
         "interval": {
-            "chatIntervalBase": "聊天間隔基準",
+            "chatIntervalBase": "感知間隔",
             "visionInterval": "視覺間隔"
         },
         "toggles": {
@@ -2161,9 +2161,9 @@
             "mergeMessages": "閤並消息",
             "avatarReactionBubble": "表情氣泡",
             "proactiveChat": "主動搭話",
-            "proactiveVision": "自主視覺",
+            "proactiveVision": "隱私模式",
             "proactiveVisionChat": "螢幕分享",
-            "proactiveVisionChatTooltip": "需同時開啟主動搭話和自主視覺",
+            "proactiveVisionChatTooltip": "需開啟主動搭話且關閉隱私模式",
             "proactiveNewsChat": "新聞網站",
             "proactiveNewsChatTooltip": "使用熱議話題進行搭話",
             "proactiveVideoChat": "影片網站",
@@ -2563,8 +2563,8 @@
             "desc": "開啟後貓娘會主動發起對話，頻率可在此調整~"
         },
         "step14": {
-            "title": "👀 自主視覺",
-            "desc": "與語音對話中即時傳輸的螢幕分享不同，開啟自主視覺後貓娘會時不時自己看一眼妳的螢幕。間隔可在此調整~"
+            "title": "🔒 隱私模式",
+            "desc": "關閉隱私模式後，貓娘會時不時自己看一眼你的螢幕，與語音對話中即時傳輸的螢幕分享不同。間隔可在此調整~"
         },
         "step15": {
             "title": "👤 角色管理",

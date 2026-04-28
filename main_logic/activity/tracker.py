@@ -72,6 +72,20 @@ _ACTIVITY_GUESS_MIN_REFRESH_SECONDS = 30.0
 _EXTERNAL_SIGNAL_TTL_SECONDS = 30.0
 
 
+def _privacy_mode_active() -> bool:
+    """用户是否开启了隐私模式。开启时整个 tracker 应当短路。
+
+    存储在前端 ``proactiveVisionEnabled`` 的反面（详见 utils.preferences）。
+    任何异常一律返回 False —— 隐私模式应是用户主动选择的"加锁"，
+    config 读不出来就当没开，而不是把 tracker 锁死。
+    """
+    try:
+        from utils.preferences import is_privacy_mode_enabled
+        return is_privacy_mode_enabled()
+    except Exception:
+        return False
+
+
 class UserActivityTracker:
     """Per-character activity inference engine.
 
@@ -155,7 +169,10 @@ class UserActivityTracker:
         ts = now if now is not None else time.time()
         self._sm.update_user_message(now=ts)
         self._conv_seq += 1
-        if text:
+        # 隐私模式：让用户消息文本直接不进 buffer，避免在切回非隐私模式时
+        # 旧数据被 enrichment LLM 二次曝光。state machine 的时间戳还要更新
+        # （下游 idle / focused_work 判定依赖），文本扔了即可。
+        if text and not _privacy_mode_active():
             self._user_msg_buffer.append((ts, text.strip()[:1000]))
 
     def on_ai_message(self, *, text: str | None = None, now: float | None = None) -> None:
@@ -173,7 +190,7 @@ class UserActivityTracker:
         """
         ts = now if now is not None else time.time()
         self._sm.update_ai_message(text=text, now=ts)
-        if text:
+        if text and not _privacy_mode_active():
             self._ai_msg_buffer.append((ts, text.strip()[:1000]))
             # AI also opens threads (promises, abandoned mid-sentences) →
             # bump _conv_seq so kickoff_open_threads_compute will recompute.
@@ -339,6 +356,9 @@ class UserActivityTracker:
           * If a previous task is still running → skip (don't queue).
           * If conversation buffers are empty → skip (nothing to score).
         """
+        # 隐私模式下整个 enrichment 通路都关掉。
+        if _privacy_mode_active():
+            return
         if self._open_threads_computed_at_seq == self._conv_seq:
             return
         if self._open_threads_task is not None and not self._open_threads_task.done():
@@ -409,6 +429,12 @@ class UserActivityTracker:
                 await asyncio.sleep(_ACTIVITY_GUESS_TICK_SECONDS)
             except asyncio.CancelledError:
                 return
+
+            # 隐私模式：本 tick 不读窗口/进程，也不调 LLM，直接进入下一轮。
+            # 缓存自然衰减（保留最后一次值，proactive_chat 那边 snapshot 已被
+            # gating 成 None，缓存不会被消费）。
+            if _privacy_mode_active():
+                continue
 
             try:
                 # Pull a fresh snapshot to compare against.

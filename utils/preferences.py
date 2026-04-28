@@ -346,6 +346,23 @@ async def aload_global_conversation_settings() -> Dict[str, Any]:
     return await asyncio.to_thread(load_global_conversation_settings)
 
 
+def is_privacy_mode_enabled() -> bool:
+    """前端"隐私模式"开关是否开启。
+
+    内部存储字段为 ``proactiveVisionEnabled``（True=允许自主视觉），
+    隐私模式是它的反面。未同步时默认 False（与前端首次启动行为一致：
+    隐私模式默认关，自主视觉默认开）。
+    """
+    settings = load_global_conversation_settings()
+    return not settings.get('proactiveVisionEnabled', True)
+
+
+async def ais_privacy_mode_enabled() -> bool:
+    """异步版 ``is_privacy_mode_enabled``。"""
+    settings = await aload_global_conversation_settings()
+    return not settings.get('proactiveVisionEnabled', True)
+
+
 def save_global_conversation_settings(settings: Dict[str, Any]) -> bool:
     """
     保存全局对话设置（写入 user_preferences.json 的全局条目）

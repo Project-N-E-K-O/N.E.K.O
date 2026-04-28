@@ -3257,13 +3257,31 @@ async def proactive_chat(request: Request):
         # 在 enabled_modes 解析之前拉一次，因为 propensity 可能需要把
         # enabled_modes 收紧到只剩 vision（restricted_screen_only 状态）。
         # 详见 docs/design/user-activity-tracker.md。
+        #
+        # 隐私模式：用户开了"隐私模式"开关 → 临时禁用整个 user-activity-tracker，
+        # 回退到 PR #1015 之前的无限制策略。snapshot 留 None，下游所有 gating
+        # 都已在 PR #1015 设计时按 "snapshot is not None" 写过 fallback：
+        #   - propensity 收紧（restricted_screen_only）→ 不触发
+        #   - 反思/回忆 _allow_reminiscence → 默认放开
+        #   - state_section 渲染 → 输出空串
+        #   - mark_unfinished_thread_used → 不计数
+        # 所以这里把 snapshot 直接设 None 就够，等价于"tracker 不存在"。
+        from utils.preferences import ais_privacy_mode_enabled
         try:
-            activity_snapshot = await mgr._activity_tracker.get_snapshot()
-            print(f"[{lanlan_name}] activity snapshot: state={activity_snapshot.state} "
-                  f"propensity={activity_snapshot.propensity} reasons={activity_snapshot.propensity_reasons}")
-        except Exception as _act_err:
-            logger.warning(f"[{lanlan_name}] activity snapshot fetch failed: {_act_err}; falling back to open propensity")
+            privacy_mode = await ais_privacy_mode_enabled()
+        except Exception:
+            privacy_mode = False
+        if privacy_mode:
+            print(f"[{lanlan_name}] 隐私模式开启，跳过 activity tracker，按无限制策略搭话")
             activity_snapshot = None
+        else:
+            try:
+                activity_snapshot = await mgr._activity_tracker.get_snapshot()
+                print(f"[{lanlan_name}] activity snapshot: state={activity_snapshot.state} "
+                      f"propensity={activity_snapshot.propensity} reasons={activity_snapshot.propensity_reasons}")
+            except Exception as _act_err:
+                logger.warning(f"[{lanlan_name}] activity snapshot fetch failed: {_act_err}; falling back to open propensity")
+                activity_snapshot = None
 
         # ========== 解析 enabled_modes ==========
         enabled_modes = data.get('enabled_modes', [])

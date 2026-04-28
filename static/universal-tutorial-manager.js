@@ -1526,8 +1526,8 @@ class UniversalTutorialManager {
             {
                 element: `#${p}-toggle-proactive-vision`,
                 popover: {
-                    title: window.t ? window.t('tutorial.step14.title', '👀 自主视觉') : '👀 自主视觉',
-                    description: window.t ? window.t('tutorial.step14.desc', '与语音会话中实时传输的屏幕分享不同，开启自主视觉后猫娘会时不时自己看一眼你的屏幕。间隔可在此调整~') : '与语音会话中实时传输的屏幕分享不同，开启自主视觉后猫娘会时不时自己看一眼你的屏幕。间隔可在此调整~',
+                    title: window.t ? window.t('tutorial.step14.title', '🔒 隐私模式') : '🔒 隐私模式',
+                    description: window.t ? window.t('tutorial.step14.desc', '关闭隐私模式后，猫娘会时不时自己看一眼你的屏幕，与语音会话中实时传输的屏幕分享不同。间隔可在此调整~') : '关闭隐私模式后，猫娘会时不时自己看一眼你的屏幕，与语音会话中实时传输的屏幕分享不同。间隔可在此调整~',
                 },
                 disableActiveInteraction: true
             },
