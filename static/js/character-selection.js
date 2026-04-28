@@ -96,11 +96,19 @@ class CharacterSelection {
         this._maxActiveStar = 50;   // 防爆炸：限制最多 50 个星星
         // 保存 mouseup 处理器引用，便于清理
         this._handleMouseUp = () => this._onMouseUp();
+        this._handleVisibilityChange = () => {
+            if (document.hidden) {
+                this._onMouseUp();
+            }
+        };
         // 保存 stage 监听器引用，便于清理（防止内存泄漏）
         this._stageMouseDownHandlers = new Map();
         this._stageMouseMoveHandlers = new Map();
         // 用于取消打字 Promise（防止内存泄漏）
         this._typeAbort = null;
+        this._previouslyFocusedElement = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+        this._handleOverlayKeydown = (event) => this._trapFocus(event);
+        this._handleDocumentFocusIn = (event) => this._redirectBackgroundFocus(event);
         this.init();
     }
 
@@ -108,6 +116,8 @@ class CharacterSelection {
         this._applyStaticI18n();
         // i18n 就绪或语言切换后重新翻译（overlay 是动态注入的，不会被 updatePageTexts 扫到）
         window.addEventListener('localechange', this._onLocaleChange);
+        this.overlay?.addEventListener('keydown', this._handleOverlayKeydown);
+        document.addEventListener('focusin', this._handleDocumentFocusIn, true);
         this.bindEvents();
     }
 
@@ -130,6 +140,7 @@ class CharacterSelection {
     start() {
         // 入口方法，overlay 已经在 HTML 中默认显示，默认从人格挑选开始
         this.goToStage(2);
+        this._focusStageEntry();
         console.log('[CharacterSelection] 角色甄选流程启动');
     }
     bindEvents() {
@@ -192,7 +203,7 @@ class CharacterSelection {
         document.addEventListener('mouseup', this._handleMouseUp);
         // 补充：窗口失焦或切换标签时也应清理，防止在窗口外释放鼠标导致状态残留
         window.addEventListener('blur', this._handleMouseUp);
-        document.addEventListener('visibilitychange', this._handleMouseUp);
+        document.addEventListener('visibilitychange', this._handleVisibilityChange);
     }
     
     _onMouseUp() {
@@ -244,42 +255,105 @@ class CharacterSelection {
     }
     
     createClickStars(event) {
-        const clickX = event.clientX;
-        const clickY = event.clientY;
-        
-        // 生成2-3个星星（较少）
-        const starCount = Math.floor(Math.random() * 2) + 2;
-        for (let i = 0; i < starCount; i++) {
-            // 检查是否超过限制
-            if (this._activeStarCount >= this._maxActiveStar) {
-                break;
+        this.createClickStarsAtPosition(event.clientX, event.clientY);
+    }
+
+    _getFocusableElements() {
+        if (!this.overlay) return [];
+        return Array.from(this.overlay.querySelectorAll(
+            'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), ' +
+            'textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+        )).filter((element) => {
+            if (!(element instanceof HTMLElement)) return false;
+            if (element.hidden) return false;
+            const style = window.getComputedStyle(element);
+            return style.display !== 'none' && style.visibility !== 'hidden';
+        });
+    }
+
+    _getStagePrimaryFocusable() {
+        if (!this.overlay) return null;
+        if (this.currentStage === 3) {
+            const confirmBtn = document.getElementById('confirm-greeting-btn');
+            if (confirmBtn instanceof HTMLElement && !confirmBtn.disabled && confirmBtn.style.display !== 'none') {
+                return confirmBtn;
             }
-            
-            const star = document.createElement('div');
-            star.className = 'click-star';
-            star.textContent = '✦';
-            star.style.left = clickX + 'px';
-            star.style.top = clickY + 'px';
-            
-            // 随机分散方向
-            const angle = (Math.PI * 2 / starCount) * i + (Math.random() - 0.5) * 0.8;
-            const distance = 60 + Math.random() * 80;
-            const tx = Math.cos(angle) * distance;
-            const ty = Math.sin(angle) * distance;
-            
-            star.style.setProperty('--tx', tx + 'px');
-            star.style.setProperty('--ty', ty + 'px');
-            
-            document.body.appendChild(star);
-            this._activeStarCount++;  // 递增计数
-            
-            // 动画完成后移除
-            setTimeout(() => {
-                star.remove();
-                this._activeStarCount--;  // 递减计数
-            }, 1600);
+            return this.overlay;
+        }
+        const selectedCard = this.overlay.querySelector('.character-card.selected');
+        if (selectedCard instanceof HTMLElement) {
+            return selectedCard;
+        }
+        const firstCard = this.overlay.querySelector('.character-card');
+        if (firstCard instanceof HTMLElement) {
+            return firstCard;
+        }
+        const skipBtn = document.getElementById('skip-btn');
+        return skipBtn instanceof HTMLElement ? skipBtn : this.overlay;
+    }
+
+    _focusStageEntry(preventScroll = true) {
+        const target = this._getStagePrimaryFocusable();
+        if (target && typeof target.focus === 'function') {
+            try {
+                target.focus({ preventScroll });
+            } catch (_error) {
+                target.focus();
+            }
         }
     }
+
+    _updateDialogSemantics() {
+        if (!this.overlay) return;
+        if (this.currentStage === 3) {
+            this.overlay.setAttribute('aria-labelledby', 'greeting-title');
+            this.overlay.setAttribute('aria-describedby', 'greeting-text');
+            return;
+        }
+        this.overlay.setAttribute('aria-labelledby', 'character-selection-title');
+        this.overlay.setAttribute('aria-describedby', 'character-selection-hint');
+    }
+
+    _trapFocus(event) {
+        if (!this.isOpen || event.key !== 'Tab') {
+            return;
+        }
+        const focusable = this._getFocusableElements();
+        if (!focusable.length) {
+            event.preventDefault();
+            this._focusStageEntry();
+            return;
+        }
+
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        const active = document.activeElement;
+
+        if (event.shiftKey) {
+            if (active === first || !this.overlay.contains(active)) {
+                event.preventDefault();
+                last.focus();
+            }
+            return;
+        }
+
+        if (active === last) {
+            event.preventDefault();
+            first.focus();
+        }
+    }
+
+    _redirectBackgroundFocus(event) {
+        if (!this.isOpen || !this.overlay) {
+            return;
+        }
+        const target = event.target;
+        if (target instanceof Node && this.overlay.contains(target)) {
+            return;
+        }
+        this._focusStageEntry();
+    }
+
     goToStage(stageNumber) {
         console.log(`[CharacterSelection] 切换到阶段 ${stageNumber}`);
         // 隐藏当前阶段
@@ -293,6 +367,8 @@ class CharacterSelection {
             targetStage.classList.add('active');
         }
         this.currentStage = stageNumber;
+        this._updateDialogSemantics();
+        this._focusStageEntry();
         
         if (stageNumber === 3) {
             // 触发问候动画
@@ -382,6 +458,7 @@ class CharacterSelection {
         if (confirmBtn) {
             confirmBtn.style.display = 'inline-block';
             confirmBtn.disabled = false;
+            this._focusStageEntry();
         } else {
             console.warn('[CharacterSelection] playGreeting: 元素 #confirm-greeting-btn 不存在');
         }
@@ -658,7 +735,9 @@ class CharacterSelection {
         // 清除 mouseup 监听器（防止监听器堆积）
         document.removeEventListener('mouseup', this._handleMouseUp);
         window.removeEventListener('blur', this._handleMouseUp);
-        document.removeEventListener('visibilitychange', this._handleMouseUp);
+        document.removeEventListener('visibilitychange', this._handleVisibilityChange);
+        document.removeEventListener('focusin', this._handleDocumentFocusIn, true);
+        this.overlay?.removeEventListener('keydown', this._handleOverlayKeydown);
         // 清理 stage 上的 mousedown/mousemove 监听器（防止内存泄漏）
         this._stageMouseDownHandlers.forEach((handler, stage) => {
             stage.removeEventListener('mousedown', handler);
@@ -681,6 +760,13 @@ class CharacterSelection {
                 if (this.overlay) {
                     this.overlay.remove();
                     this.overlay = null;
+                }
+                if (this._previouslyFocusedElement && document.contains(this._previouslyFocusedElement)) {
+                    try {
+                        this._previouslyFocusedElement.focus({ preventScroll: true });
+                    } catch (_error) {
+                        this._previouslyFocusedElement.focus();
+                    }
                 }
                 console.log('[CharacterSelection] Overlay 已移除，进入主页');
             }, 300);

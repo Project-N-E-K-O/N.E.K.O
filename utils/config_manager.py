@@ -426,21 +426,33 @@ def migrate_catgirl_reserved(catgirl_data: dict) -> bool:
 
 
 def _strip_persona_prompt_block(prompt_text: str) -> str:
+    """Remove the generated persona block from a prompt string."""
     cleaned = _PERSONA_PROMPT_BLOCK_RE.sub("", str(prompt_text or ""))
     return cleaned.strip()
 
 
+def _sanitize_persona_field(value: object) -> str:
+    """Normalize persona free text and strip reserved block markers."""
+    text = str(value or "").strip()
+    text = text.replace(PERSONA_PROMPT_BLOCK_START, "")
+    text = text.replace(PERSONA_PROMPT_BLOCK_END, "")
+    return text.strip()
+
+
 def _build_persona_prompt_block(catgirl_config: dict) -> str:
+    """Build the runtime persona block from catgirl config fields."""
     if not isinstance(catgirl_config, dict):
         return ""
 
-    persona_name = str(catgirl_config.get("性格原型") or catgirl_config.get("昵称") or catgirl_config.get("档案名") or "").strip()
-    personality = str(catgirl_config.get("性格") or "").strip()
-    catchphrase = str(catgirl_config.get("口癖") or "").strip()
-    hobby = str(catgirl_config.get("爱好") or "").strip()
-    trigger = str(catgirl_config.get("雷点") or "").strip()
-    hidden_settings = str(catgirl_config.get("隐藏设定") or "").strip()
-    quote = str(catgirl_config.get("一句话台词") or "").strip()
+    persona_name = _sanitize_persona_field(
+        catgirl_config.get("性格原型") or catgirl_config.get("昵称") or catgirl_config.get("档案名")
+    )
+    personality = _sanitize_persona_field(catgirl_config.get("性格"))
+    catchphrase = _sanitize_persona_field(catgirl_config.get("口癖"))
+    hobby = _sanitize_persona_field(catgirl_config.get("爱好"))
+    trigger = _sanitize_persona_field(catgirl_config.get("雷点"))
+    hidden_settings = _sanitize_persona_field(catgirl_config.get("隐藏设定"))
+    quote = _sanitize_persona_field(catgirl_config.get("一句话台词"))
 
     details = [
         ("当前人格名称", persona_name),
@@ -465,6 +477,7 @@ def _build_persona_prompt_block(catgirl_config: dict) -> str:
 
 
 def _compose_prompt_with_persona(base_prompt: str | None, catgirl_config: dict) -> str:
+    """Append the generated persona block to the current base prompt."""
     prompt_without_persona = _strip_persona_prompt_block(base_prompt or "")
     if not prompt_without_persona:
         prompt_without_persona = get_lanlan_prompt()

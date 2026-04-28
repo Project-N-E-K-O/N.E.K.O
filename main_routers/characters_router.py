@@ -2081,7 +2081,16 @@ async def update_catgirl(name: str, request: Request):
     system_prompt_in_payload = 'system_prompt' in raw_data
     requested_system_prompt = ''
     if system_prompt_in_payload:
-        requested_system_prompt = str(raw_data.get('system_prompt') or '')
+        raw_system_prompt = raw_data.get('system_prompt')
+        if raw_system_prompt is None:
+            requested_system_prompt = ''
+        elif isinstance(raw_system_prompt, str):
+            requested_system_prompt = raw_system_prompt
+        else:
+            return JSONResponse(
+                {'success': False, 'error': 'system_prompt 必须是字符串或 null'},
+                status_code=400,
+            )
 
     # 兼容前端自动修复：允许通过通用接口修改 model_type 保留字段。
     model_type_in_payload = 'model_type' in raw_data

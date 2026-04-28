@@ -379,12 +379,20 @@
     <!-- 注意：初始化由 app.js 统一处理，避免重复初始化 -->
 
     <!-- 角色甄选 Overlay 容器（visibility:hidden 防止 CSS 加载前 FOUC，由入口脚本在 CSS 就绪后移除） -->
-    <div id="character-selection-overlay" class="character-overlay" style="visibility: hidden;">
+    <div
+        id="character-selection-overlay"
+        class="character-overlay"
+        style="visibility: hidden;"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="character-selection-title"
+        aria-describedby="character-selection-hint"
+        tabindex="-1">
         <button id="skip-btn" class="skip-button" data-i18n="memory.characterSelection.skip">跳过</button>
 
         <div id="stage-2" class="character-stage active">
             <div class="cards-container">
-                <h2 class="cards-title" data-i18n="memory.characterSelection.chooseTitle">你眼中的我是什么样的呢~</h2>
+                <h2 id="character-selection-title" class="cards-title" data-i18n="memory.characterSelection.chooseTitle">你眼中的我是什么样的呢~</h2>
 
                 <div class="cards-grid">
                     <div class="character-card" data-id="intellectual_healer" role="button" tabindex="0" aria-pressed="false">
@@ -406,7 +414,7 @@
                     </div>
                 </div>
 
-                <p class="cards-hint" data-i18n="memory.characterSelection.chooseHint">改变主意了也没关系，设置里随时可以「回溯」~</p>
+                <p id="character-selection-hint" class="cards-hint" data-i18n="memory.characterSelection.chooseHint">改变主意了也没关系，设置里随时可以「回溯」~</p>
             </div>
         </div>
 
@@ -427,11 +435,20 @@
     <script>
         (function() {
             const CHARACTER_SELECTION_COMPLETED_KEY = 'neko_character_selection_completed';
+            const CHARACTER_SELECTION_ASSET_VERSION = window.APP_VERSION || '20260428-2';
             const HOME_TUTORIAL_KEYS = ['home_yui_v1', 'home'];
             const completed = localStorage.getItem(CHARACTER_SELECTION_COMPLETED_KEY);
             const overlay = document.getElementById('character-selection-overlay');
             let launchStarted = false;
             let tutorialCompleteHandler = null;
+
+            function withAssetVersion(url) {
+                if (!CHARACTER_SELECTION_ASSET_VERSION) {
+                    return url;
+                }
+                const joiner = url.includes('?') ? '&' : '?';
+                return `${url}${joiner}v=${encodeURIComponent(CHARACTER_SELECTION_ASSET_VERSION)}`;
+            }
 
             function removeOverlay() {
                 if (!overlay) return;
@@ -491,7 +508,7 @@
 
                 const link = document.createElement('link');
                 link.rel = 'stylesheet';
-                link.href = '/static/css/character-selection.css';
+                link.href = withAssetVersion('/static/css/character-selection.css');
                 link.onload = function() {
                     if (overlay) overlay.style.visibility = '';
                 };
@@ -501,7 +518,7 @@
                 document.head.appendChild(link);
 
                 const script = document.createElement('script');
-                script.src = '/static/js/character-selection.js';
+                script.src = withAssetVersion('/static/js/character-selection.js');
                 script.onload = function() {
                     function startSelection() {
                         try {
