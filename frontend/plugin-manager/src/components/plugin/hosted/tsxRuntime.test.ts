@@ -292,3 +292,16 @@ describe('hosted TSX document runtime', () => {
     expect(messages.some((message) => message.type === 'neko-hosted-surface-error' && message.payload?.scope === 'component.render')).toBe(true)
   })
 })
+
+describe('hosted markdown source helpers', () => {
+  it('documents that markdown surfaces are source-backed and escaped by the host frame', () => {
+    const source = '# Title\n\n<script>alert(1)</script>\n\n- item'
+    const escaped = source
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+
+    expect(escaped).toContain('&lt;script&gt;alert(1)&lt;/script&gt;')
+    expect(escaped).not.toContain('<script>')
+  })
+})

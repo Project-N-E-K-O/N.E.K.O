@@ -213,6 +213,8 @@ export function getPluginHostedSurfaceSource(pluginId: string, params: {
   mode: string
   entry: string
   source: string
+  source_locale?: string
+  translations?: Record<string, Record<string, string>>
   warnings?: PluginUiWarning[]
 }> {
   const safeId = encodeURIComponent(pluginId)

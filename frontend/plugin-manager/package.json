@@ -12,9 +12,10 @@
     "preview": "vite preview",
     "build-only": "vite build",
     "type-check": "vue-tsc --build",
-    "test:hosted": "vitest run src/components/plugin/hosted",
-    "test:hosted:watch": "vitest src/components/plugin/hosted",
-    "check:hosted": "npm run type-check && npm run check-hosted-tsx && npm run test:hosted",
+    "test:hosted": "vitest run src/components/plugin/hosted --exclude \"src/components/plugin/hosted/e2e/**\"",
+    "test:hosted:e2e": "playwright test",
+    "test:hosted:watch": "vitest src/components/plugin/hosted --exclude \"src/components/plugin/hosted/e2e/**\"",
+    "check:hosted": "npm run type-check && npm run check-hosted-tsx && npm run test:hosted && npm run test:hosted:e2e",
     "check-hosted-tsx": "node scripts/check-hosted-tsx.mjs",
     "lint": "eslint . --fix --cache",
     "format": "prettier --write src/"
@@ -36,6 +37,7 @@
     "vue-router": "^4.4.5"
   },
   "devDependencies": {
+    "@playwright/test": "^1.59.1",
     "@testing-library/dom": "^10.4.1",
     "@tsconfig/node22": "^22.0.2",
     "@types/node": "^22.0.0",

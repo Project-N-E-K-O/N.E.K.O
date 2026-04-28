@@ -7,6 +7,7 @@ cd "$ROOT_DIR/frontend/plugin-manager"
 npm run type-check
 npm run check-hosted-tsx -- plugin/plugins/mcp_adapter
 npm run test:hosted
+npm run test:hosted:e2e
 
 cd "$ROOT_DIR"
 python -m py_compile plugin/plugins/mcp_adapter/__init__.py
