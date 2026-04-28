@@ -432,4 +432,120 @@ describe('hosted ui runtime', () => {
     expect(root.querySelector('[data-part="one:a"]')).toBe(oneA)
     expect(root.querySelector('[data-part="one:b"]')).toBe(oneB)
   })
+
+  it('loads async data and reloads with useAsync', async () => {
+    let resolveLoad!: (value: string) => void
+    let reload!: () => void
+    const loader = vi.fn(() => new Promise<string>((resolve) => { resolveLoad = resolve }))
+
+    function App() {
+      const state = ui.useAsync(loader, [])
+      reload = state.reload
+      if (state.loading) return ui.h('span', { id: 'status' }, 'loading')
+      if (state.error) return ui.h('span', { id: 'status' }, 'error')
+      return ui.h('button', { id: 'status', onClick: reload }, state.data)
+    }
+
+    ui.render(ui.h(App, null), root)
+    expect(root.querySelector('#status')?.textContent).toBe('loading')
+    await flushMicrotasks()
+    resolveLoad('ready')
+    await flushMicrotasks()
+    expect(root.querySelector('#status')?.textContent).toBe('ready')
+
+    fireEvent.click(root.querySelector('#status')!)
+    await flushMicrotasks()
+    expect(loader).toHaveBeenCalledTimes(2)
+  })
+
+  it('renders AsyncBlock fallback, data, and error state', async () => {
+    let resolveLoad!: (value: string) => void
+    let shouldFail = false
+    const load = vi.fn(() => new Promise<string>((resolve, reject) => {
+      resolveLoad = resolve
+      if (shouldFail) reject(new Error('failed'))
+    }))
+
+    function App() {
+      return ui.h(ui.AsyncBlock, {
+        load,
+        fallback: ui.h('span', { id: 'fallback' }, 'loading'),
+        error: (error: Error) => ui.h('span', { id: 'error' }, error.message),
+      }, (data: string) => ui.h('span', { id: 'data' }, data))
+    }
+
+    ui.render(ui.h(App, null), root)
+    expect(root.querySelector('#fallback')?.textContent).toBe('loading')
+    await flushMicrotasks()
+    resolveLoad('loaded')
+    await flushMicrotasks()
+    await flushMicrotasks()
+    expect(root.querySelector('#data')?.textContent).toBe('loaded')
+
+    shouldFail = true
+    ui.render(ui.h(App, { key: 'fail' }), root)
+    await flushMicrotasks()
+    await flushMicrotasks()
+    await flushMicrotasks()
+    expect(root.querySelector('#error')?.textContent).toBe('failed')
+  })
+
+  it('shows toast notifications and removes them', () => {
+    vi.useFakeTimers()
+    const remove = ui.showToast ? ui.showToast('Saved', { tone: 'success', timeout: 100 }) : ui.useToast().success('Saved', { timeout: 100 })
+    const toast = document.querySelector('.neko-toast')!
+    expect(toast.textContent).toBe('Saved')
+    expect(toast.getAttribute('data-tone')).toBe('success')
+    vi.advanceTimersByTime(100)
+    expect(document.querySelector('.neko-toast')).toBeNull()
+    remove()
+    vi.useRealTimers()
+  })
+
+  it('confirms through useConfirm', async () => {
+    let confirm!: (options: any) => Promise<boolean>
+
+    function App() {
+      confirm = ui.useConfirm()
+      return ui.h('button', { id: 'open', onClick: () => confirm({ title: 'Delete', message: 'Really?', tone: 'danger' }) }, 'open')
+    }
+
+    ui.render(ui.h(App, null), root)
+    const promise = confirm({ title: 'Delete', message: 'Really?', tone: 'danger' })
+    expect(document.querySelector('.neko-modal')?.textContent).toContain('Really?')
+    fireEvent.click(Array.from(document.querySelectorAll('button')).find((button) => button.textContent === 'Confirm')!)
+    await expect(promise).resolves.toBe(true)
+  })
+
+  it('manages form helpers and debounced state', async () => {
+    vi.useFakeTimers()
+    let formApi: any
+    let setSearch!: (value: string) => string
+
+    function App() {
+      formApi = ui.useForm({ name: '', enabled: false })
+      const [search, updateSearch, debounced] = ui.useDebouncedState('', 50)
+      setSearch = updateSearch
+      return ui.h('section', null,
+        ui.h('input', { id: 'name', ...formApi.field('name') }),
+        ui.h('input', { id: 'enabled', type: 'checkbox', ...formApi.checkbox('enabled') }),
+        ui.h('output', { id: 'search', 'data-value': search }, debounced),
+      )
+    }
+
+    ui.render(ui.h(App, null), root)
+    formApi.setField('name', 'Neko')
+    formApi.setField('enabled', true)
+    setSearch('abc')
+    await flushMicrotasks()
+
+    expect(root.querySelector<HTMLInputElement>('#name')!.value).toBe('Neko')
+    expect(root.querySelector<HTMLInputElement>('#enabled')!.checked).toBe(true)
+    expect(root.querySelector('#search')?.textContent).toBe('')
+
+    vi.advanceTimersByTime(50)
+    await flushMicrotasks()
+    expect(root.querySelector('#search')?.textContent).toBe('abc')
+    vi.useRealTimers()
+  })
 })

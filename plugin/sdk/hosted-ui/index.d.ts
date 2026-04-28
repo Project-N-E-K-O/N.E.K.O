@@ -39,6 +39,15 @@ export type HostedI18n = {
 export type LocalStateSetter<T> = (next: T | ((previous: T) => T)) => T
 export type StateSetter<T> = (next: T | ((previous: T) => T)) => T
 export type RefObject<T> = { current: T }
+export type AsyncState<T> = { loading: boolean; error: any; data: T | undefined; reload: () => any }
+export type FormState<T extends Record<string, any>> = {
+  values: T
+  setValues: (next: T | ((previous: T) => T)) => T
+  setField: <K extends keyof T>(name: K, value: T[K]) => T
+  field: <K extends keyof T>(name: K) => { value: T[K]; onChange: (value: T[K]) => T }
+  checkbox: <K extends keyof T>(name: K) => { checked: boolean; onChange: (value: boolean) => T }
+  reset: (next?: T | (() => T)) => T
+}
 
 export type PluginSurfaceProps<State = Record<string, any>> = {
   plugin: Record<string, any>
@@ -101,6 +110,8 @@ export function ToolbarGroup(props: CommonProps): any
 export function Alert(props: CommonProps & { tone?: Tone; message?: any }): any
 export function InlineError(props: CommonProps & { title?: any; message?: any; error?: any; details?: any }): any
 export function EmptyState(props: CommonProps & { title?: any; description?: any }): any
+export function Modal(props: CommonProps & { open?: boolean; title?: any; footer?: any; closeOnBackdrop?: boolean; onClose?: () => void }): any
+export function ConfirmDialog(props: CommonProps & { open?: boolean; title?: any; message?: any; tone?: Tone; confirmLabel?: any; cancelLabel?: any; closeOnBackdrop?: boolean; onConfirm?: () => void; onCancel?: () => void }): any
 export function List<T = any>(props: CommonProps & { items?: T[]; render?: (item: T, index: number) => any }): any
 export function Progress(props: CommonProps & { label?: any; value?: number }): any
 export function JsonView(props: CommonProps & { data?: any; value?: any }): any
@@ -124,6 +135,7 @@ export function ActionButton(props: CommonProps & {
 }): any
 export function RefreshButton(props: CommonProps & { label?: any; tone?: Tone; onRefresh?: () => void; onError?: (error: Error) => void }): any
 export function ActionForm(props: CommonProps & { action?: HostedAction; submitLabel?: any; successMessage?: any; onResult?: (result: any) => void; onError?: (error: Error) => void }): any
+export function AsyncBlock<T = any>(props: CommonProps & { load: () => Promise<T> | T; deps?: any[]; fallback?: any; loadingText?: any; error?: any | ((error: any, reload: () => any) => any); errorTitle?: any }): any
 export function CodeBlock(props: CommonProps): any
 export function Tip(props: CommonProps): any
 export function Warning(props: CommonProps): any
@@ -139,3 +151,16 @@ export function useMemo<T>(factory: () => T, deps?: any[]): T
 export function useCallback<T extends (...args: any[]) => any>(callback: T, deps?: any[]): T
 export function useRef<T>(initialValue: T): RefObject<T>
 export function useLocalState<T>(key: string, initialValue: T | (() => T)): [T, LocalStateSetter<T>]
+export function useDebounce<T>(value: T, delay?: number): T
+export function useDebouncedState<T>(initialValue: T, delay?: number): [T, StateSetter<T>, T]
+export function useForm<T extends Record<string, any>>(initialValues: T | (() => T)): FormState<T>
+export function useAsync<T>(loader: () => Promise<T> | T, deps?: any[]): AsyncState<T>
+export function showToast(message: any, options?: { tone?: Tone; timeout?: number } | Tone): () => void
+export function useToast(): {
+  show: (message: any, options?: { tone?: Tone; timeout?: number } | Tone) => () => void
+  info: (message: any, options?: { timeout?: number }) => () => void
+  success: (message: any, options?: { timeout?: number }) => () => void
+  warning: (message: any, options?: { timeout?: number }) => () => void
+  error: (message: any, options?: { timeout?: number }) => () => void
+}
+export function useConfirm(): (options: string | { title?: any; message?: any; tone?: Tone; confirmLabel?: any; cancelLabel?: any }) => Promise<boolean>

@@ -263,7 +263,6 @@ function renderComponent(instance) {
   instance.hookIndex = 0;
   try {
     const props = { ...(instance.vnode.props || {}) };
-    if (instance.vnode.children && instance.vnode.children.length > 0) props.children = instance.vnode.children;
     return normalizeComponentResult(instance.vnode.type(props));
   } catch (error) {
     reportHostedRuntimeError('component.render', error, { component: instance.vnode.type.name || 'Anonymous' });
@@ -449,6 +448,116 @@ function useLocalState(key, initialValue) {
   });
   return [value, update];
 }
+function useDebounce(value, delay) {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebounced(value), Math.max(0, Number(delay || 0)));
+    return () => window.clearTimeout(timer);
+  }, [value, delay]);
+  return debounced;
+}
+function useDebouncedState(initialValue, delay) {
+  const [value, setValue] = useState(initialValue);
+  return [value, setValue, useDebounce(value, delay)];
+}
+function useForm(initialValues) {
+  const initialRef = useRef(null);
+  if (initialRef.current === null) initialRef.current = resolveInitialValue(initialValues) || {};
+  const [values, setValues] = useState(() => ({ ...initialRef.current }));
+  const setField = (name, value) => setValues((previous) => ({ ...previous, [name]: value }));
+  const field = (name) => ({
+    value: values[name] ?? '',
+    onChange: (value) => setField(name, value),
+  });
+  const checkbox = (name) => ({
+    checked: !!values[name],
+    onChange: (value) => setField(name, !!value),
+  });
+  const reset = (nextValues) => {
+    const resolved = nextValues === undefined ? initialRef.current : resolveInitialValue(nextValues);
+    return setValues({ ...(resolved || {}) });
+  };
+  return { values, setValues, setField, field, checkbox, reset };
+}
+function useAsync(loader, deps) {
+  const [version, setVersion] = useState(0);
+  const [state, setState] = useState({ loading: true, error: null, data: undefined });
+  const reload = useCallback(() => setVersion((value) => value + 1), []);
+  useEffect(() => {
+    let active = true;
+    setState((previous) => ({ ...previous, loading: true, error: null }));
+    Promise.resolve()
+      .then(() => loader())
+      .then((data) => {
+        if (active) setState({ loading: false, error: null, data });
+      })
+      .catch((error) => {
+        if (active) setState({ loading: false, error, data: undefined });
+      });
+    return () => { active = false; };
+  }, [...(Array.isArray(deps) ? deps : []), version]);
+  return { ...state, reload };
+}
+function ensureToastRoot() {
+  let root = document.getElementById('neko-toast-root');
+  if (!root) {
+    root = document.createElement('div');
+    root.id = 'neko-toast-root';
+    root.className = 'neko-toast-root';
+    document.body.appendChild(root);
+  }
+  return root;
+}
+function showToast(message, options) {
+  const opts = typeof options === 'string' ? { tone: options } : (options || {});
+  const item = document.createElement('div');
+  item.className = 'neko-toast';
+  item.setAttribute('data-tone', opts.tone || 'info');
+  item.textContent = formatErrorMessage(message);
+  ensureToastRoot().appendChild(item);
+  const timeout = opts.timeout === undefined ? 3000 : Number(opts.timeout);
+  let removed = false;
+  const remove = () => {
+    if (removed) return;
+    removed = true;
+    item.remove();
+  };
+  if (timeout > 0) window.setTimeout(remove, timeout);
+  return remove;
+}
+function useToast() {
+  return useMemo(() => ({
+    show: showToast,
+    info: (message, options) => showToast(message, { ...(options || {}), tone: 'info' }),
+    success: (message, options) => showToast(message, { ...(options || {}), tone: 'success' }),
+    warning: (message, options) => showToast(message, { ...(options || {}), tone: 'warning' }),
+    error: (message, options) => showToast(message, { ...(options || {}), tone: 'danger' }),
+  }), []);
+}
+function useConfirm() {
+  return useCallback((options) => {
+    const opts = typeof options === 'string' ? { message: options } : (options || {});
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    return new Promise((resolve) => {
+      const close = (value) => {
+        render(null, host);
+        host.remove();
+        resolve(value);
+      };
+      render(h(ConfirmDialog, {
+        open: true,
+        title: opts.title || 'Confirm',
+        message: opts.message || '',
+        tone: opts.tone || 'primary',
+        confirmLabel: opts.confirmLabel || 'Confirm',
+        cancelLabel: opts.cancelLabel || 'Cancel',
+        onConfirm: () => close(true),
+        onCancel: () => close(false),
+      }), host);
+    });
+  }, []);
+}
 
 function Page(props) {
   return h('div', { className: 'neko-page' },
@@ -516,6 +625,38 @@ function ToolbarGroup(props) { return h('div', { className: 'neko-toolbar-group 
 function Alert(props) { return h('div', { className: 'neko-alert ' + (props.className || ''), 'data-tone': props.tone || 'primary' }, props.children || props.message); }
 function InlineError(props) { return createInlineError(props.title || '错误', props.error || props.message || props.children, props.details); }
 function EmptyState(props) { return h('div', { className: 'neko-empty ' + (props.className || '') }, props.title ? h('div', { className: 'neko-empty-title' }, props.title) : null, props.description ? h('div', null, props.description) : props.children); }
+function Modal(props) {
+  if (!props.open) return null;
+  const closeOnBackdrop = props.closeOnBackdrop !== false;
+  return h('div', {
+    className: 'neko-modal-backdrop ' + (props.className || ''),
+    role: 'presentation',
+    onClick: (event) => {
+      if (closeOnBackdrop && event.target === event.currentTarget && typeof props.onClose === 'function') props.onClose();
+    },
+  },
+    h('div', { className: 'neko-modal', role: 'dialog', 'aria-modal': 'true', 'aria-label': props.title || 'Dialog' },
+      props.title ? h('div', { className: 'neko-modal-header' }, h('h2', { className: 'neko-modal-title' }, props.title)) : null,
+      h('div', { className: 'neko-modal-body' }, props.children),
+      props.footer ? h('div', { className: 'neko-modal-footer' }, props.footer) : null
+    )
+  );
+}
+function ConfirmDialog(props) {
+  return Modal({
+    open: props.open,
+    title: props.title,
+    onClose: props.onCancel,
+    closeOnBackdrop: props.closeOnBackdrop,
+    children: [
+      props.message ? h('p', { className: 'neko-text' }, props.message) : props.children,
+    ],
+    footer: h('div', { className: 'neko-button-group' },
+      Button({ tone: 'default', onClick: props.onCancel, children: [props.cancelLabel || 'Cancel'] }),
+      Button({ tone: props.tone || 'primary', onClick: props.onConfirm, children: [props.confirmLabel || 'Confirm'] })
+    ),
+  });
+}
 function List(props) {
   const items = Array.isArray(props.items) ? props.items : [];
   return h('div', { className: 'neko-list ' + (props.className || '') }, props.children || items.map((item, index) => {
@@ -851,12 +992,23 @@ function RefreshButton(props) {
   });
   return h('div', { className: 'neko-action-control' }, button, error ? h('div', { className: 'neko-action-error', role: 'alert' }, error) : null);
 }
+function AsyncBlock(props) {
+  const state = useAsync(props.load, props.deps || []);
+  if (state.loading) return props.fallback || h('p', { className: 'neko-text' }, props.loadingText || 'Loading...');
+  if (state.error) {
+    if (typeof props.error === 'function') return props.error(state.error, state.reload);
+    return props.error || InlineError({ title: props.errorTitle || 'Failed to load', error: state.error });
+  }
+  const child = Array.isArray(props.children) && props.children.length === 1 ? props.children[0] : props.children;
+  return typeof child === 'function' ? child(state.data, state.reload) : child;
+}
 
 Object.assign(NekoUiKit, {
   appendChild, render, h, Fragment, Page, Card, Section, Heading, Stack, Grid, Text, Button, ButtonGroup,
   StatusBadge, StatCard, KeyValue, DataTable, Divider, Toolbar, ToolbarGroup,
-  Alert, InlineError, EmptyState, List, Progress, JsonView, Field, Input, Select, Textarea,
-  Switch, Form, ActionForm, CodeBlock, Tip, Warning, Steps, Step, Tabs, useI18n,
-  t, api, useState, useReducer, useEffect, useLayoutEffect, useMemo, useCallback, useRef, useLocalState, ActionButton, RefreshButton,
+  Alert, InlineError, EmptyState, Modal, ConfirmDialog, List, Progress, JsonView, Field, Input, Select, Textarea,
+  Switch, Form, ActionForm, AsyncBlock, CodeBlock, Tip, Warning, Steps, Step, Tabs, useI18n,
+  t, api, useState, useReducer, useEffect, useLayoutEffect, useMemo, useCallback, useRef, useLocalState,
+  useDebounce, useDebouncedState, useForm, useAsync, showToast, useToast, useConfirm, ActionButton, RefreshButton,
 });
 Object.assign(window, NekoUiKit);

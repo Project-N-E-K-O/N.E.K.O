@@ -7,3 +7,6 @@ declare const useLayoutEffect: (effect: () => void | (() => void), deps?: any[])
 declare const useMemo: <T>(factory: () => T, deps?: any[]) => T
 declare const useCallback: <T extends (...args: any[]) => any>(callback: T, deps?: any[]) => T
 declare const useRef: <T>(initialValue: T) => { current: T }
+declare const useDebounce: <T>(value: T, delay?: number) => T
+declare const useDebouncedState: <T>(initialValue: T, delay?: number) => [T, (next: T | ((previous: T) => T)) => T, T]
+declare const useAsync: <T>(loader: () => Promise<T> | T, deps?: any[]) => { loading: boolean; error: any; data: T | undefined; reload: () => any }

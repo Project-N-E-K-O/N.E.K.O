@@ -28,6 +28,10 @@ import {
   CodeBlock,
   Steps,
   Step,
+  useForm,
+  useToast,
+  useConfirm,
+  useDebouncedState,
 } from "@neko/plugin-ui"
 import type { HostedAction, PluginSurfaceProps } from "@neko/plugin-ui"
 
@@ -53,6 +57,18 @@ type PluginEntryView = {
   description?: string
 }
 
+type ImportServerConfig = {
+  name?: unknown
+  transport?: unknown
+  type?: unknown
+  command?: unknown
+  args?: unknown
+  url?: unknown
+  env?: unknown
+  enabled?: unknown
+  autoConnect?: unknown
+}
+
 const defaultImportJson = `{
   "name": "example",
   "transport": "stdio",
@@ -71,6 +87,7 @@ const emptyServerForm = {
   env: "",
   autoConnect: true,
 }
+type ServerFormValues = typeof emptyServerForm
 
 const transportOptions = [
   { value: "stdio", label: "stdio" },
@@ -106,21 +123,36 @@ enabled = true
 auto_connect = true`
   const [importJson, setImportJson] = props.useLocalState("importJson", defaultImportJson)
   const [importAutoConnect, setImportAutoConnect] = props.useLocalState("importAutoConnect", true)
-  const [serverForm, setServerForm] = props.useLocalState("serverForm", emptyServerForm)
+  const serverForm = useForm(emptyServerForm)
   const [formMessage, setFormMessage] = props.useLocalState("serverFormMessage", "")
   const [formMessageTone, setFormMessageTone] = props.useLocalState("serverFormMessageTone", "danger")
+  const [filterText, setFilterText, debouncedFilter] = useDebouncedState("", 180)
+  const toast = useToast()
+  const confirm = useConfirm()
 
   const selectedNames = selectedServerNames.filter((name) => servers.some((server) => server.name === name))
   const effectiveActionServerName = selectedNames[0] || effectiveSelectedServerName
+  const normalizedFilter = String(debouncedFilter || "").trim().toLowerCase()
+  const filteredEntries = normalizedFilter
+    ? safeEntries.filter((entry) => [entry.id, entry.name, entry.description].some((value) => String(value || "").toLowerCase().includes(normalizedFilter)))
+    : safeEntries
+  const visibleServers = normalizedFilter
+    ? servers.filter((server) => [
+        server.name,
+        server.transport,
+        server.error,
+        ...(Array.isArray(server.tools) ? server.tools.map((tool) => `${tool.name || ""} ${tool.description || ""}`) : []),
+      ].some((value) => String(value || "").toLowerCase().includes(normalizedFilter)))
+    : servers
 
-  const updateServerForm = (patch) => {
-    setServerForm((previous) => ({ ...previous, ...patch }))
+  const updateServerForm = <K extends keyof ServerFormValues>(patch: Pick<ServerFormValues, K>) => {
+    (Object.keys(patch) as K[]).forEach((key) => serverForm.setField(key, patch[key]))
     setFormMessage("")
   }
 
   const parseArgs = (value) => String(value || "").split(",").map((item) => item.trim()).filter(Boolean)
 
-  const buildServerPayload = (server, autoConnectOverride?) => {
+  const buildServerPayload = (server: Partial<ServerFormValues> | ImportServerConfig, autoConnectOverride?: boolean) => {
     const name = String(server.name || "").trim()
     const transport = String(server.transport || "stdio").trim() || "stdio"
     if (!name) throw new Error(t("panel.form.errors.nameRequired"))
@@ -129,7 +161,7 @@ auto_connect = true`
       transport,
       auto_connect: autoConnectOverride === undefined ? !!server.autoConnect : !!autoConnectOverride,
     }
-    if (server.enabled !== undefined) payload.enabled = !!server.enabled
+    if ("enabled" in server && server.enabled !== undefined) payload.enabled = !!server.enabled
     if (transport === "stdio") {
       const command = String(server.command || "").trim()
       if (!command) throw new Error(t("panel.form.errors.commandRequired"))
@@ -149,7 +181,7 @@ auto_connect = true`
     return payload
   }
 
-  const parseMcpConfig = (jsonText) => {
+  const parseMcpConfig = (jsonText: string): ImportServerConfig[] => {
     const data = JSON.parse(jsonText)
     const serverList = Array.isArray(data)
       ? data
@@ -161,7 +193,7 @@ auto_connect = true`
           }))
 
     return serverList
-      .filter((server) => server && typeof server === "object")
+      .filter((server): server is ImportServerConfig => !!server && typeof server === "object")
       .map((server) => {
         const type = String(server.type || server.transport || "").trim()
         const typeMap = {
@@ -231,15 +263,17 @@ auto_connect = true`
       return
     }
     try {
-      const payload = buildServerPayload(serverForm)
+      const payload = buildServerPayload(serverForm.values)
       await props.api.call("add_server", payload)
       await props.api.refresh()
-      setServerForm(emptyServerForm)
+      serverForm.reset()
       setFormMessageTone("success")
       setFormMessage(t("panel.form.added", { name: payload.name }))
+      toast.success(t("panel.form.added", { name: payload.name }))
     } catch (error) {
       setFormMessageTone("danger")
       setFormMessage(error && error.message ? error.message : String(error))
+      toast.error(error && error.message ? error.message : String(error))
     }
   }
 
@@ -256,9 +290,18 @@ auto_connect = true`
 
   const removeSelectedServers = async () => {
     if (!removeServers || selectedNames.length === 0) return
+    const accepted = await confirm({
+      title: t("panel.servers.removeConfirmTitle"),
+      message: t("panel.servers.removeConfirmMessage", { count: selectedNames.length }),
+      tone: "danger",
+      confirmLabel: t("panel.servers.removeConfirmAction"),
+      cancelLabel: t("panel.servers.removeConfirmCancel"),
+    })
+    if (!accepted) return
     await props.api.call("remove_servers", { server_names: selectedNames })
     setSelectedServerNames([])
     await props.api.refresh()
+    toast.success(t("panel.servers.removed", { count: selectedNames.length }))
   }
 
   return (
@@ -277,6 +320,12 @@ auto_connect = true`
           <RefreshButton>{t("panel.actions.refresh")}</RefreshButton>
         </ToolbarGroup>
       </Toolbar>
+
+      <Card title={t("panel.filter.title")}>
+        <Field label={t("panel.filter.label")} help={t("panel.filter.help")}>
+          <Input value={filterText} placeholder={t("panel.filter.placeholder")} onChange={setFilterText} />
+        </Field>
+      </Card>
 
       <Grid cols={4}>
         <StatCard label={t("panel.stats.configuredServers")} value={safeState.total_servers || 0} />
@@ -322,10 +371,10 @@ auto_connect = true`
       </Grid>
 
       <Card title="MCP Servers">
-        {servers.length > 0 ? (
+        {visibleServers.length > 0 ? (
           <Stack>
             <DataTable
-              data={servers}
+              data={visibleServers}
               rowKey="name"
               selectedKey={effectiveActionServerName}
               onSelect={(server) => {
@@ -373,7 +422,7 @@ auto_connect = true`
                 <Button tone="danger" onClick={removeSelectedServers}>{t("panel.servers.removeSelected", { count: selectedNames.length })}</Button>
               ) : null}
             </ButtonGroup>
-            <Text>{t("panel.servers.selectionHint")}</Text>
+            <Text>{normalizedFilter ? t("panel.filter.serverResult", { count: visibleServers.length }) : t("panel.servers.selectionHint")}</Text>
           </Stack>
         ) : (
           <EmptyState
@@ -389,29 +438,29 @@ auto_connect = true`
           {addServer ? (
             <Stack>
               <Field label={t("panel.form.name")} required>
-                <Input value={serverForm.name} placeholder="my_server" onChange={(value) => updateServerForm({ name: value })} />
+                <Input value={serverForm.values.name} placeholder="my_server" onChange={(value) => updateServerForm({ name: value })} />
               </Field>
               <Field label={t("panel.form.transport")} required>
-                <Select value={serverForm.transport} options={transportOptions} onChange={(value) => updateServerForm({ transport: value })} />
+                <Select value={serverForm.values.transport} options={transportOptions} onChange={(value) => updateServerForm({ transport: value })} />
               </Field>
-              {serverForm.transport === "stdio" ? (
+              {serverForm.values.transport === "stdio" ? (
                 <>
                   <Field label={t("panel.form.command")} required>
-                    <Input value={serverForm.command} placeholder="uvx" onChange={(value) => updateServerForm({ command: value })} />
+                    <Input value={serverForm.values.command} placeholder="uvx" onChange={(value) => updateServerForm({ command: value })} />
                   </Field>
                   <Field label={t("panel.form.args")} help={t("panel.form.argsHelp")}>
-                    <Input value={serverForm.args} placeholder="mcp-server-example, /tmp" onChange={(value) => updateServerForm({ args: value })} />
+                    <Input value={serverForm.values.args} placeholder="mcp-server-example, /tmp" onChange={(value) => updateServerForm({ args: value })} />
                   </Field>
                 </>
               ) : (
                 <Field label={t("panel.form.url")} required>
-                  <Input value={serverForm.url} placeholder="https://example.com/mcp" onChange={(value) => updateServerForm({ url: value })} />
+                  <Input value={serverForm.values.url} placeholder="https://example.com/mcp" onChange={(value) => updateServerForm({ url: value })} />
                 </Field>
               )}
               <Field label={t("panel.form.env")} help={t("panel.form.envHelp")}>
-                <Textarea value={serverForm.env} placeholder='{"TOKEN":"..."}' onChange={(value) => updateServerForm({ env: value })} />
+                <Textarea value={serverForm.values.env} placeholder='{"TOKEN":"..."}' onChange={(value) => updateServerForm({ env: value })} />
               </Field>
-              <Switch checked={serverForm.autoConnect} label={t("panel.form.autoConnect")} onChange={(value) => updateServerForm({ autoConnect: value })} />
+              <Switch checked={serverForm.values.autoConnect} label={t("panel.form.autoConnect")} onChange={(value) => updateServerForm({ autoConnect: value })} />
               <Button tone="success" onClick={addServerFromForm}>{t("panel.addServer.submit")}</Button>
             </Stack>
           ) : (
@@ -455,7 +504,7 @@ auto_connect = true`
 
       <Card title={t("panel.entries.title")}>
         <DataTable
-          data={safeEntries.slice(0, 12)}
+          data={filteredEntries.slice(0, 12)}
           columns={[
             { key: "id", label: t("panel.entries.columns.id") },
             { key: "name", label: t("panel.entries.columns.name") },
@@ -463,7 +512,7 @@ auto_connect = true`
           ]}
         />
         <Divider />
-        <Tip>{t("panel.entries.tip")}</Tip>
+        <Tip>{normalizedFilter ? t("panel.filter.entryResult", { count: filteredEntries.length }) : t("panel.entries.tip")}</Tip>
       </Card>
 
       <Warning>
