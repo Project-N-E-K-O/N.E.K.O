@@ -176,6 +176,24 @@ body.storage-location-modal-open #storage-location-overlay * {
     gap: 6px;
 }
 
+.storage-location-path-item--inline {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    min-width: 0;
+}
+
+.storage-location-path-item--inline .storage-location-label {
+    flex: 0 0 auto;
+}
+
+.storage-location-path-item--inline .storage-location-path {
+    min-width: 0;
+    overflow-x: auto;
+    white-space: nowrap;
+    word-break: normal;
+}
+
 .storage-location-path-item--recommended {
     padding: 14px 16px;
     border-radius: 16px;

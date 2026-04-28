@@ -45,6 +45,12 @@ def _make_mgr() -> LLMSessionManager:
     mgr.sync_message_queue = Queue()
     mgr._enqueue_tts_text_chunk = MagicMock()
     mgr._respawn_tts_worker = MagicMock()
+    mgr._tts_markdown_stripper = MagicMock()
+    mgr._tts_markdown_stripper.flush.return_value = ""
+    mgr._tts_bracket_stripper = MagicMock()
+    mgr._tts_bracket_stripper.feed.side_effect = lambda text: text
+    mgr._tts_bracket_stripper.flush.return_value = ""
+    mgr._tts_norm_speech_id = None
     mgr.send_lanlan_response = AsyncMock()
     # 状态机：finish_proactive_delivery / handle_new_message 会 fire 事件，
     # 所以测试 mgr 也要有真实 SM 实例（轻量、无外部依赖）。

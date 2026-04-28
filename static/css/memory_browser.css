@@ -512,7 +512,7 @@ body .container-header {
 }
 
 .storage-location-restart-btn {
-    background: linear-gradient(135deg, #ff8a65 0%, #ff5252 100%);
+    background: linear-gradient(135deg, #40C5F1 0%, #2187ea 100%);
     border: none;
     color: #fff;
 }
@@ -537,9 +537,9 @@ body .container-header {
 }
 
 .storage-location-restart-btn:not(:disabled):hover {
-    background: linear-gradient(135deg, #ff9b78 0%, #ff6464 100%);
+    background: linear-gradient(135deg, #5dd2f6 0%, #2f96f2 100%);
     transform: translateY(-1px);
-    box-shadow: 0 4px 12px rgba(255, 82, 82, 0.25);
+    box-shadow: 0 4px 12px rgba(47, 150, 242, 0.28);
 }
 
 .storage-location-manage-btn:not(:disabled):active,

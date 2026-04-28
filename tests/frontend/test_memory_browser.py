@@ -262,7 +262,9 @@ def test_memory_browser_storage_bootstrap_blocks_memory_apis(mock_page: Page, ru
     expect(mock_page.locator("#storage-location-status")).to_contain_text("存储位置", timeout=5000)
     expect(mock_page.locator("#memory-chat-edit .memory-limited-state")).to_be_visible()
     expect(mock_page.locator("#review-toggle-checkbox")).to_be_disabled()
-    expect(mock_page.locator("#storage-location-manage-btn")).to_be_disabled()
+    # Recoverable storage states keep the management entry enabled so the user
+    # can resolve selection/recovery without leaving limited mode.
+    expect(mock_page.locator("#storage-location-manage-btn")).to_be_enabled()
 
     assert "/api/storage/location/bootstrap" in requested_paths
     assert not any("/api/memory/recent_files" in path for path in requested_paths)
@@ -270,8 +272,8 @@ def test_memory_browser_storage_bootstrap_blocks_memory_apis(mock_page: Page, ru
 
 
 @pytest.mark.frontend
-def test_memory_browser_storage_preflight_modal_waits_for_restart_confirmation(mock_page: Page, running_server: str, seed_memory_file):
-    """Preflight should not call restart until the user confirms migration."""
+def test_memory_browser_storage_combined_restart_reports_preflight_blocking(mock_page: Page, running_server: str, seed_memory_file):
+    """The combined restart button should stop after preflight when the target is blocked."""
     requested_paths = []
     _install_ready_memory_browser_routes(mock_page, seed_memory_file)
 
@@ -288,13 +290,13 @@ def test_memory_browser_storage_preflight_modal_waits_for_restart_confirmation(m
                 "target_root": "/tmp/stage2-target/N.E.K.O",
                 "estimated_required_bytes": 1024,
                 "target_free_bytes": 4096,
-                "permission_ok": True,
+                "permission_ok": False,
                 "warning_codes": [],
                 "target_has_existing_content": False,
                 "requires_existing_target_confirmation": False,
                 "existing_target_confirmation_message": "",
-                "blocking_error_code": "",
-                "blocking_error_message": "",
+                "blocking_error_code": "target_not_writable",
+                "blocking_error_message": "目标路径当前不可写。",
             },
         )
 
@@ -312,12 +314,13 @@ def test_memory_browser_storage_preflight_modal_waits_for_restart_confirmation(m
     mock_page.locator("#storage-location-manage-btn").click()
     expect(mock_page.locator("#storage-location-modal")).to_be_visible()
     mock_page.locator("#storage-target-root-input").fill("/tmp/stage2-target")
+    expect(mock_page.locator("#storage-location-preflight-btn")).to_have_count(0)
 
     with mock_page.expect_response(lambda r: "/api/storage/location/preflight" in r.url and r.status == 200):
-        mock_page.locator("#storage-location-preflight-btn").click()
+        mock_page.locator("#storage-location-restart-btn").click()
 
-    expect(mock_page.locator("#storage-location-preflight-result")).to_contain_text("/tmp/stage2-target/N.E.K.O", timeout=5000)
-    expect(mock_page.locator("#storage-location-restart-btn")).to_be_visible()
+    expect(mock_page.locator("#storage-location-preflight-result")).to_contain_text("目标路径当前不可写", timeout=5000)
+    expect(mock_page.locator("#storage-location-restart-btn")).to_be_enabled()
     assert requested_paths == ["/api/storage/location/preflight"]
 
 
@@ -351,13 +354,13 @@ def test_memory_browser_storage_picker_preflights_selected_directory(mock_page: 
                 "target_root": "/tmp/picked-storage/N.E.K.O",
                 "estimated_required_bytes": 1024,
                 "target_free_bytes": 4096,
-                "permission_ok": True,
+                "permission_ok": False,
                 "warning_codes": [],
                 "target_has_existing_content": False,
                 "requires_existing_target_confirmation": False,
                 "existing_target_confirmation_message": "",
-                "blocking_error_code": "",
-                "blocking_error_message": "",
+                "blocking_error_code": "target_not_writable",
+                "blocking_error_message": "/tmp/picked-storage/N.E.K.O",
                 "selection_source": "custom",
             },
         )
@@ -369,7 +372,7 @@ def test_memory_browser_storage_picker_preflights_selected_directory(mock_page: 
     mock_page.locator("#storage-location-manage-btn").click()
     mock_page.locator("#storage-location-pick-btn").click()
 
-    expect(mock_page.locator("#storage-target-root-input")).to_have_value("/tmp/picked-storage", timeout=5000)
+    expect(mock_page.locator("#storage-target-root-input")).to_have_value("/tmp/picked-storage/N.E.K.O", timeout=5000)
     pick_options = mock_page.evaluate("window.__storagePickOptions")
     start_path = pick_options["startPath"]
     app_root = str(seed_memory_file.parents[2])
@@ -382,10 +385,10 @@ def test_memory_browser_storage_picker_preflights_selected_directory(mock_page: 
     )
 
     with mock_page.expect_response(lambda r: "/api/storage/location/preflight" in r.url and r.status == 200):
-        mock_page.locator("#storage-location-preflight-btn").click()
+        mock_page.locator("#storage-location-restart-btn").click()
 
     expect(mock_page.locator("#storage-location-preflight-result")).to_contain_text("/tmp/picked-storage/N.E.K.O", timeout=5000)
-    assert requests == [{"selected_root": "/tmp/picked-storage", "selection_source": "custom"}]
+    assert requests == [{"selected_root": "/tmp/picked-storage/N.E.K.O", "selection_source": "custom"}]
 
 
 @pytest.mark.frontend
@@ -540,13 +543,11 @@ def test_memory_browser_storage_restart_requires_preflight_and_confirms_existing
     mock_page.locator("#storage-target-root-input").fill("/tmp/stage3-target")
 
     with mock_page.expect_response(lambda r: "/api/storage/location/preflight" in r.url and r.status == 200):
-        mock_page.locator("#storage-location-preflight-btn").click()
-    with mock_page.expect_response(lambda r: "/api/storage/location/restart" in r.url and r.status == 200):
-        mock_page.locator("#storage-location-restart-btn").click()
+        with mock_page.expect_response(lambda r: "/api/storage/location/restart" in r.url and r.status == 200):
+            mock_page.locator("#storage-location-restart-btn").click()
 
     expect(mock_page.locator("#storage-location-preflight-result")).to_contain_text("关闭并迁移", timeout=5000)
     expect(mock_page.locator("#storage-location-pick-btn")).to_be_disabled()
-    expect(mock_page.locator("#storage-location-preflight-btn")).to_be_disabled()
     expect(mock_page.locator("#storage-target-root-input")).to_be_disabled()
     expect(mock_page.locator("#storage-location-restart-btn")).to_be_hidden()
     mock_page.wait_for_function("window.__storageRestartMessages.length === 1", timeout=5000)
@@ -563,6 +564,10 @@ def test_memory_browser_storage_restart_requires_preflight_and_confirms_existing
         "target_root": "/tmp/stage3-target/N.E.K.O",
     }
     assert requests[0][0] == "preflight"
+    assert requests[0][1] == {
+        "selected_root": "/tmp/stage3-target/N.E.K.O",
+        "selection_source": "custom",
+    }
     assert requests[1] == (
         "restart",
         {
@@ -572,6 +577,86 @@ def test_memory_browser_storage_restart_requires_preflight_and_confirms_existing
         },
     )
     mock_page.wait_for_function("window.__storageRestartClosed === true", timeout=5000)
+
+
+@pytest.mark.frontend
+def test_memory_browser_desktop_storage_restart_uses_host_close_window(
+    mock_page: Page,
+    running_server: str,
+    seed_memory_file,
+):
+    """Desktop host windows should close via the host bridge after restart is accepted."""
+    storage_status_requests = {"count": 0}
+    _install_ready_memory_browser_routes(mock_page, seed_memory_file)
+    mock_page.add_init_script(
+        """
+        window.__hostCloseWindowCalls = 0;
+        window.nekoHost = {
+            closeWindow: async () => {
+                window.__hostCloseWindowCalls += 1;
+                return { ok: true };
+            }
+        };
+        """
+    )
+
+    mock_page.route(
+        "**/api/storage/location/preflight",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            json={
+                "ok": True,
+                "result": "restart_required",
+                "restart_mode": "migrate_after_shutdown",
+                "selected_root": "/tmp/desktop-target/N.E.K.O",
+                "target_root": "/tmp/desktop-target/N.E.K.O",
+                "estimated_required_bytes": 1024,
+                "target_free_bytes": 4096,
+                "permission_ok": True,
+                "warning_codes": [],
+                "target_has_existing_content": False,
+                "requires_existing_target_confirmation": False,
+                "existing_target_confirmation_message": "",
+                "blocking_error_code": "",
+                "blocking_error_message": "",
+                "selection_source": "custom",
+            },
+        ),
+    )
+    mock_page.route(
+        "**/api/storage/location/restart",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            json={
+                "ok": True,
+                "result": "restart_initiated",
+                "restart_mode": "migrate_after_shutdown",
+                "selected_root": "/tmp/desktop-target/N.E.K.O",
+                "target_root": "/tmp/desktop-target/N.E.K.O",
+            },
+        ),
+    )
+
+    def handle_storage_status(route):
+        storage_status_requests["count"] += 1
+        route.fulfill(status=500, content_type="application/json", json={"ok": False})
+
+    mock_page.route("**/api/storage/location/status", handle_storage_status)
+
+    mock_page.goto(f"{running_server}/memory_browser")
+    mock_page.wait_for_selector("#memory-file-list button.cat-btn", state="attached", timeout=10000)
+    mock_page.locator("#storage-location-manage-btn").click()
+    mock_page.locator("#storage-target-root-input").fill("/tmp/desktop-target")
+
+    with mock_page.expect_response(lambda r: "/api/storage/location/preflight" in r.url and r.status == 200):
+        with mock_page.expect_response(lambda r: "/api/storage/location/restart" in r.url and r.status == 200):
+            mock_page.locator("#storage-location-restart-btn").click()
+
+    mock_page.wait_for_function("window.__hostCloseWindowCalls === 1", timeout=5000)
+    expect(mock_page.locator("#storage-location-overlay")).to_have_count(0)
+    assert storage_status_requests["count"] == 0
 
 
 @pytest.mark.frontend
@@ -650,9 +735,8 @@ def test_memory_browser_storage_restart_standalone_reuses_storage_maintenance_ov
     mock_page.locator("#storage-target-root-input").fill("/tmp/standalone-target")
 
     with mock_page.expect_response(lambda r: "/api/storage/location/preflight" in r.url and r.status == 200):
-        mock_page.locator("#storage-location-preflight-btn").click()
-    with mock_page.expect_response(lambda r: "/api/storage/location/restart" in r.url and r.status == 200):
-        mock_page.locator("#storage-location-restart-btn").click()
+        with mock_page.expect_response(lambda r: "/api/storage/location/restart" in r.url and r.status == 200):
+            mock_page.locator("#storage-location-restart-btn").click()
 
     expect(mock_page.get_by_role("heading", name="正在优化存储布局...")).to_be_visible(timeout=10_000)
     expect(mock_page.locator("#storage-location-overlay")).to_be_visible(timeout=10_000)
@@ -775,9 +859,8 @@ def test_memory_browser_web_popup_restart_drives_opener_maintenance_overlay(mock
     memory_page.locator("#storage-location-manage-btn").click()
     memory_page.locator("#storage-target-root-input").fill("/tmp/web-popup-target")
     with memory_page.expect_response(lambda r: "/api/storage/location/preflight" in r.url and r.status == 200):
-        memory_page.locator("#storage-location-preflight-btn").click()
-    with memory_page.expect_response(lambda r: "/api/storage/location/restart" in r.url and r.status == 200):
-        memory_page.locator("#storage-location-restart-btn").click()
+        with memory_page.expect_response(lambda r: "/api/storage/location/restart" in r.url and r.status == 200):
+            memory_page.locator("#storage-location-restart-btn").click()
 
     expect(home_page.get_by_role("heading", name="正在优化存储布局...")).to_be_visible(timeout=10_000)
     expect(home_page.locator("#storage-location-overlay")).to_be_visible(timeout=10_000)

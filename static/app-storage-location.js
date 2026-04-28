@@ -13,435 +13,6 @@
         && document.currentScript.getAttribute('data-storage-location-auto-start') === 'false'
     );
 
-    var STORAGE_I18N_EN = {
-        badge: 'Storage Location',
-        bootstrapError: 'Failed to load storage initialization information. Please try again.',
-        blockingGeneric: 'The selected storage location cannot be used right now. Please choose another location or try again later.',
-        blockingInsufficientSpace: 'The target volume does not have enough free space for a safe migration.',
-        blockingTargetNotWritable: 'The target path is not writable, so migration cannot start.',
-        chooseOther: 'Choose another location',
-        cleanupRetainedRoot: 'Clean up old data directory',
-        cleanupRetainedRootConfirm: 'This will delete the retained old data directory and will not affect the new active directory. Continue?',
-        cleanupRetainedRootDone: 'The old data directory has been cleaned up. Only the new runtime directory remains.',
-        cleanupRetainedRootFailed: 'Failed to clean up the old data directory. Please try again later.',
-        completionMessage: 'The new runtime directory is active. The old data directory is still retained for manual cleanup.',
-        completionTitle: 'Storage migration completed',
-        confirmReconnect: 'Confirm shutdown and reconnect path',
-        confirmRestart: 'Confirm shutdown and migrate',
-        confirmExistingTargetContent: 'The target folder already contains N.E.K.O runtime data. If you continue, migration will replace same-name runtime data folders in the target. Other files in the target folder will be kept. Continue?',
-        currentPath: 'Current path',
-        customPathPlaceholder: 'Choose a parent folder; N.E.K.O will use its N.E.K.O subfolder',
-        customPreviewNotice: 'Backend confirmed that switching to this location requires closing the current instance, migrating data, and restarting automatically.',
-        dialogLabel: 'Storage location selection',
-        errorBadge: 'Load failed',
-        errorTitle: 'Storage startup information is temporarily unavailable',
-        estimatedPayload: 'Estimated data size',
-        legacyChoiceEmpty: 'No reusable legacy data folder was found. You can choose a folder or enter a path manually.',
-        loadingFetchBootstrapSubtitle: 'Preparing the storage location screen.',
-        loadingSubtitle: 'The main UI will continue after the storage state is confirmed.',
-        loadingTitle: 'Checking storage layout',
-        loadingWaitSubtitle: 'The main UI will continue after the storage state is confirmed.',
-        maintenanceClosingStatus: 'Waiting for the current instance to finish shutting down...',
-        maintenanceNote: 'A brief disconnect is expected. The page will reconnect automatically after the service recovers.',
-        maintenanceOfflineStatus: 'The connection is temporarily interrupted. Waiting for the service to recover. Please keep this page open.',
-        maintenanceReconnectStatus: 'Keep this page open. The home page will recover automatically.',
-        maintenanceReconnectSubtitle: 'The service is back. Reconnecting the app...',
-        maintenanceTargetStatus: 'Target path recorded. Waiting for shutdown and recovery:',
-        maintenanceTitle: 'Optimizing storage layout...',
-        maintenanceWaitingStatus: 'This page will stay here and retry automatically until the service recovers.',
-        maintenanceWaitingSubtitle: 'The current instance is about to close. Data will be migrated after shutdown and the service will restart automatically.',
-        migrationPending: 'An unfinished migration plan was detected. The home page will remain blocked until the service becomes usable again.',
-        noWarnings: 'No additional risk notes detected.',
-        otherPanelNote: 'You can reuse an existing data folder or choose a new folder for future runs.',
-        otherPanelTitle: 'Another location',
-        openActiveRoot: 'Open active directory',
-        openDirectoryFailed: 'Failed to open the directory.',
-        openDirectoryUnavailable: 'Opening directories is unavailable in this environment.',
-        openRetainedRoot: 'Open old directory',
-        pathOverview: 'Path overview',
-        permissionBlocked: 'Not writable',
-        permissionCheck: 'Write access',
-        permissionOk: 'Writable',
-        pickFolder: 'Choose folder',
-        pickFolderUnavailable: 'The system folder picker is unavailable. Please enter the path manually.',
-        pickFolderFailed: 'Failed to open the folder picker. Please enter the path manually.',
-        previewBoundary: 'The root will not hot-switch in this session, and the stable root will not be changed early. After confirmation, the backend will perform shutdown, any required migration, auto-restart, and final layout recovery in order.',
-        previewOther: 'Use this location',
-        previewStepClose: '1. The current instance will close first.',
-        previewStepMigrate: '2. After shutdown, the target layout will be restored; data will be migrated only when needed.',
-        previewStepRestart: '3. The app will restart automatically after that.',
-        previewStepRetain: '4. Old data is kept by default and will not be deleted automatically.',
-        previewTitle: 'This choice requires a shutdown and migration',
-        progressCommitting: 'Applying the new storage location',
-        progressCompleted: 'Migration completed. Recovering the service',
-        progressCopying: 'Migrating runtime data',
-        progressFailed: 'Migration did not complete. Waiting for recovery handling',
-        progressPending: 'Target path recorded. Preparing to shut down the current instance',
-        progressPreflight: 'Checking the target location and preparing migration',
-        progressRebindPreflight: 'Preparing to reconnect the original storage location',
-        progressRebinding: 'Shutting down the current instance and reconnecting the original path',
-        progressRecovered: 'The service is back. Reconnecting the page',
-        progressRetaining: 'Keeping the old data directory for later manual cleanup',
-        progressStepCommit: 'Verify and apply',
-        progressStepRecover: 'Recover service',
-        progressStepShutdown: 'Shut down current instance',
-        progressStepTransfer: 'Process storage directory',
-        progressVerifying: 'Verifying migration results',
-        progressWaitingShutdown: 'Waiting for the current instance to shut down safely',
-        rebindPreviewNotice: 'Backend confirmed that the original path is reachable again. The current instance will close and restart on that path. No runtime data will be copied this time.',
-        recommendedPath: 'Recommended path',
-        selectedPath: 'Selected path',
-        recommendedPreviewNotice: 'Backend confirmed that switching to the recommended location requires closing the current instance, migrating data, and restarting automatically.',
-        recoveryRequired: 'A recoverable storage state was detected. Confirm the storage location for this launch before continuing.',
-        recoverySourceUnavailable: 'The original data path is unavailable. Reconnect it or explicitly switch to the recommended default path.',
-        restartRequestFailed: 'Failed to start shutdown and migration preparation. Please try again later.',
-        restartRequestUnexpected: 'The shutdown and migration preparation API returned an unrecognized result.',
-        restartNotRequired: 'The target path is already the current path. Shutdown is not required.',
-        restartScheduleFailed: 'Failed to schedule the controlled shutdown. Please try again later.',
-        restartUnavailable: 'This instance cannot perform a controlled shutdown right now. Please try again later.',
-        retainedRoot: 'Old data directory',
-        retainedSourceCleanupFailed: 'Failed to clean up the old data directory. Please try again later.',
-        retainedSourceMismatch: 'The requested cleanup path does not match the retained directory. Please refresh and try again.',
-        retainedSourceNotFound: 'There is no retained old data directory to clean up.',
-        selectPathRequired: 'Please provide a target path first.',
-        selectedRootInsideState: 'This location is inside N.E.K.O runtime state and cannot be used as the storage root.',
-        selectedRootUnavailable: 'The selected storage path is still unavailable. Restore that path before trying again.',
-        selectionSubmitFailed: 'Failed to submit the storage location choice. Please try again later.',
-        selectionSubmitUnexpected: 'The storage location selection API returned an unrecognized result.',
-        selectionSubtitle: 'The app is open. Confirm the storage location on this page before continuing.',
-        selectionTitle: 'Storage location selection',
-        sourceLabel: 'Source path',
-        statusUnexpected: 'The storage maintenance status API returned an unrecognized result.',
-        storageBootstrapBlocking: 'Storage still needs recovery or migration, so this session cannot continue yet.',
-        targetNotEmpty: 'The target already contains runtime data. Confirm the target before migration.',
-        systemStatusUnavailable: 'The local service status could not be confirmed. Please try again.',
-        systemStatusUnexpected: 'The storage startup status API returned an unrecognized result.',
-        targetFreeSpace: 'Free space on target volume',
-        targetLabel: 'Target path',
-        unknownBytes: 'Not estimated yet',
-        useCurrent: 'Keep current path',
-        useLegacyPath: 'Use this legacy data path',
-        useRecommended: 'Use recommended location',
-        warningExternalVolume: 'The target path is on an external or mounted volume. Stability depends on whether the volume stays available.',
-        warningNetworkShare: 'The target path is on a network share. Connection instability may affect migration reliability.',
-        warningSummary: 'Risk notes',
-        warningSymlink: 'The target path goes through a symlink or equivalent redirect. Please confirm the actual destination.',
-        warningSyncFolder: 'The target path is inside a sync folder. Sync software may interfere during migration.',
-        warningTargetHasExistingContent: 'The target already contains runtime data. A second confirmation is required before migration starts.'
-    };
-
-    var STORAGE_I18N_ZH_CN = {
-        badge: '存储位置',
-        bootstrapError: '无法读取存储位置初始化信息，请重试。',
-        blockingGeneric: '当前无法使用所选存储位置，请换一个位置或稍后重试。',
-        blockingInsufficientSpace: '目标卷剩余空间不足，无法安全执行关闭后的迁移。',
-        blockingTargetNotWritable: '目标路径当前不可写，无法开始关闭后的迁移流程。',
-        chooseOther: '选择其他位置',
-        cleanupRetainedRoot: '清理旧数据目录',
-        cleanupRetainedRootConfirm: '这会删除当前保留的旧数据目录，且不会影响当前已经生效的新目录。要继续吗？',
-        cleanupRetainedRootDone: '旧数据目录已清理，当前仅保留新的运行目录。',
-        cleanupRetainedRootFailed: '清理旧数据目录失败，请稍后重试。',
-        completionMessage: '新的运行目录已经生效，旧数据目录目前仍保留，是否清理由你手动决定。',
-        completionTitle: '存储迁移已完成',
-        confirmReconnect: '确认关闭并重连路径',
-        confirmRestart: '确认关闭并迁移',
-        confirmExistingTargetContent: '目标文件夹已经包含 N.E.K.O 运行时数据。继续后，迁移会覆盖目标中的同名运行时数据目录，目标目录里的其他文件会保留。确认继续吗？',
-        currentPath: '当前路径',
-        customPathPlaceholder: '选择一个父目录，应用会使用其中的 N.E.K.O 子文件夹',
-        customPreviewNotice: '后端已确认：如果后续改用这个位置，需要先关闭当前实例，再迁移数据并自动重启。',
-        dialogLabel: '存储位置选择',
-        errorBadge: '读取失败',
-        errorTitle: '暂时无法读取存储位置引导信息',
-        estimatedPayload: '预计迁移体量',
-        legacyChoiceEmpty: '未检测到可直接复用的旧数据目录，可直接选择文件夹或手动输入路径。',
-        loadingFetchBootstrapSubtitle: '正在准备存储位置选择页面。',
-        loadingSubtitle: '主业务界面会在存储状态确认完成后再继续加载。',
-        loadingTitle: '正在确认存储布局状态',
-        loadingWaitSubtitle: '主业务界面会在存储状态确认完成后再继续加载。',
-        maintenanceClosingStatus: '正在等待当前实例完成关闭...',
-        maintenanceNote: '连接短暂中断属于正常现象。页面会在服务恢复后自动重新连接。',
-        maintenanceOfflineStatus: '连接已暂时中断，正在等待服务恢复。请不要关闭当前页面。',
-        maintenanceReconnectStatus: '请保持当前页面打开，主页会自动恢复。',
-        maintenanceReconnectSubtitle: '检测到服务已经恢复，正在重新连接应用。',
-        maintenanceTargetStatus: '目标路径已记录，正在等待服务关闭并恢复：',
-        maintenanceTitle: '正在优化存储布局...',
-        maintenanceWaitingStatus: '服务尚未恢复前，页面会继续停留在这里并自动重试连接。',
-        maintenanceWaitingSubtitle: '当前实例即将关闭，数据会在关闭后迁移并自动重启。',
-        migrationPending: '检测到尚未完成的迁移计划。当前主页会继续保持阻断，直到服务恢复到可继续状态。',
-        noWarnings: '当前未检测到需要额外提示的风险项。',
-        otherPanelNote: '你可以直接复用旧数据目录，也可以选择一个新的文件夹作为后续运行位置。',
-        otherPanelTitle: '其他位置',
-        openActiveRoot: '打开当前目录',
-        openDirectoryFailed: '打开目录失败。',
-        openDirectoryUnavailable: '当前环境不支持直接打开目录。',
-        openRetainedRoot: '打开旧目录',
-        pathOverview: '路径总览',
-        permissionBlocked: '当前不可写',
-        permissionCheck: '目标路径写入权限',
-        permissionOk: '当前可写',
-        pickFolder: '选择文件夹',
-        pickFolderUnavailable: '当前系统目录选择器不可用，请手动输入路径。',
-        pickFolderFailed: '打开文件夹选择器失败，请手动输入路径。',
-        previewBoundary: '当前不会在本会话里热切根，也不会提前把稳定根改成新路径。确认后会由后端按设计顺序完成关闭、必要迁移、自动重启与最终布局恢复。',
-        previewOther: '提交该位置',
-        previewStepClose: '1. 当前实例会先关闭。',
-        previewStepMigrate: '2. 关闭后会恢复目标存储布局；必要时再迁移数据。',
-        previewStepRestart: '3. 迁移完成后会自动重启。',
-        previewStepRetain: '4. 旧数据默认不会自动删除。',
-        previewTitle: '该选择需要后续关闭并迁移',
-        progressCommitting: '正在提交新的存储位置',
-        progressCompleted: '迁移已完成，正在恢复服务',
-        progressCopying: '正在迁移运行时数据',
-        progressFailed: '迁移未能完成，正在等待恢复处理',
-        progressPending: '目标路径已记录，正在准备关闭当前实例',
-        progressPreflight: '正在检查目标位置并准备迁移',
-        progressRebindPreflight: '正在准备重连原始存储位置',
-        progressRebinding: '正在关闭当前实例并重连原始路径',
-        progressRecovered: '服务已恢复，正在重新连接页面',
-        progressRetaining: '正在保留旧数据目录以便后续手动清理',
-        progressStepCommit: '校验并生效',
-        progressStepRecover: '恢复服务',
-        progressStepShutdown: '关闭当前实例',
-        progressStepTransfer: '处理存储目录',
-        progressVerifying: '正在校验迁移结果',
-        progressWaitingShutdown: '正在等待当前实例安全关闭',
-        rebindPreviewNotice: '后端已确认：原路径已经可以重新连接。后续会关闭当前实例并自动重启到该路径，本次不会复制运行时数据。',
-        recommendedPath: '推荐路径',
-        selectedPath: '选择路径',
-        recommendedPreviewNotice: '后端已确认：如果后续改用推荐位置，需要先关闭当前实例，再迁移数据并自动重启。',
-        recoveryRequired: '检测到需要恢复的存储状态，请先重新确认本次使用的存储位置。',
-        recoverySourceUnavailable: '原始数据路径当前不可用。请先重连原路径，或显式切回推荐默认路径继续当前会话。',
-        restartRequestFailed: '启动关闭与迁移准备失败，请稍后重试。',
-        restartRequestUnexpected: '关闭与迁移准备接口返回了未识别的结果。',
-        restartNotRequired: '目标路径与当前路径一致，不需要关闭当前实例。',
-        restartScheduleFailed: '受控关闭启动失败，请稍后重试。',
-        restartUnavailable: '当前实例暂时无法执行受控关闭，请稍后重试。',
-        retainedRoot: '旧数据目录',
-        retainedSourceCleanupFailed: '清理旧数据保留目录失败，请稍后重试。',
-        retainedSourceMismatch: '请求的清理路径与当前保留目录不一致，请刷新后重试。',
-        retainedSourceNotFound: '当前没有可清理的旧数据保留目录。',
-        selectPathRequired: '请先提供目标路径。',
-        selectedRootInsideState: '该位置位于 N.E.K.O 运行时状态目录内，不能作为存储根目录。',
-        selectedRootUnavailable: '原始数据路径当前仍不可用，请先恢复该路径后再重试。',
-        selectionSubmitFailed: '提交存储位置选择失败，请稍后重试。',
-        selectionSubmitUnexpected: '存储位置选择接口返回了未识别的结果。',
-        selectionSubtitle: '应用已经正常打开。接下来请先在当前页面内确认存储位置，再继续使用。',
-        selectionTitle: '存储位置选择',
-        sourceLabel: '原始路径',
-        statusUnexpected: '存储维护状态接口返回了未识别的结果。',
-        storageBootstrapBlocking: '当前存储状态仍需恢复或迁移，暂时不能继续当前会话。',
-        targetNotEmpty: '目标路径已经包含运行时数据，请确认目标目录后再继续迁移。',
-        systemStatusUnavailable: '暂时无法确认本地服务状态，请重试。',
-        systemStatusUnexpected: '存储启动状态接口返回了未识别的结果。',
-        targetFreeSpace: '目标卷剩余空间',
-        targetLabel: '目标路径',
-        unknownBytes: '暂未估算',
-        useCurrent: '保持当前路径',
-        useLegacyPath: '使用该旧数据路径',
-        useRecommended: '使用推荐位置',
-        warningExternalVolume: '目标路径位于外置卷或挂载卷，稳定性取决于卷是否持续可用。',
-        warningNetworkShare: '目标路径位于网络共享目录，连接波动可能影响迁移稳定性。',
-        warningSummary: '额外风险提示',
-        warningSymlink: '目标路径命中了符号链接或等价重定向目录，请确认真实落点正确。',
-        warningSyncFolder: '目标路径位于同步盘目录，迁移期间可能受到同步程序干扰。',
-        warningTargetHasExistingContent: '目标路径已经包含运行时数据，开始迁移前需要二次确认。'
-    };
-
-    function cloneTranslations(base, overrides) {
-        var cloned = {};
-        Object.keys(base).forEach(function (key) {
-            cloned[key] = base[key];
-        });
-        Object.keys(overrides || {}).forEach(function (key) {
-            cloned[key] = overrides[key];
-        });
-        return cloned;
-    }
-
-    var STORAGE_I18N_ZH_TW = cloneTranslations(STORAGE_I18N_ZH_CN, {
-        badge: '存儲位置',
-        chooseOther: '選擇其他位置',
-        cleanupRetainedRoot: '清理舊資料目錄',
-        cleanupRetainedRootConfirm: '這會刪除目前保留的舊資料目錄，且不會影響目前已生效的新目錄。要繼續嗎？',
-        cleanupRetainedRootDone: '舊資料目錄已清理，目前僅保留新的執行目錄。',
-        cleanupRetainedRootFailed: '清理舊資料目錄失敗，請稍後重試。',
-        completionMessage: '新的執行目錄已生效，舊資料目錄目前仍保留，你可以稍後再決定是否清理。',
-        completionTitle: '存儲遷移已完成',
-        confirmReconnect: '確認關閉並重連路徑',
-        confirmRestart: '確認關閉並遷移',
-        confirmExistingTargetContent: '目標資料夾已經包含 N.E.K.O 執行時資料。繼續後，遷移會覆蓋目標中的同名執行時資料目錄，目標目錄裡的其他檔案會保留。確認繼續嗎？',
-        currentPath: '當前路徑',
-        customPathPlaceholder: '選擇一個父目錄，應用會使用其中的 N.E.K.O 子資料夾',
-        errorTitle: '暫時無法讀取存儲位置引導資訊',
-        estimatedPayload: '預計遷移體量',
-        legacyChoiceEmpty: '未檢測到可直接沿用的舊資料目錄，可直接選擇資料夾或手動輸入路徑。',
-        loadingFetchBootstrapSubtitle: '正在準備存儲位置選擇頁面。',
-        loadingSubtitle: '主業務介面會在存儲狀態確認完成後再繼續載入。',
-        loadingTitle: '正在確認存儲布局狀態',
-        loadingWaitSubtitle: '主業務介面會在存儲狀態確認完成後再繼續載入。',
-        maintenanceClosingStatus: '正在等待當前實例完成關閉...',
-        maintenanceNote: '連線短暫中斷屬於正常現象。頁面會在服務恢復後自動重新連線。',
-        maintenanceOfflineStatus: '連線已暫時中斷，正在等待服務恢復。請不要關閉目前頁面。',
-        maintenanceReconnectStatus: '請保持目前頁面開啟，首頁會自動恢復。',
-        maintenanceReconnectSubtitle: '檢測到服務已恢復，正在重新連線應用。',
-        maintenanceTargetStatus: '目標路徑已記錄，正在等待服務關閉並恢復：',
-        maintenanceTitle: '正在優化存儲布局...',
-        maintenanceWaitingStatus: '服務尚未恢復前，頁面會繼續停留在這裡並自動重試連線。',
-        maintenanceWaitingSubtitle: '當前實例即將關閉，資料會在關閉後遷移並自動重啟。',
-        migrationPending: '檢測到尚未完成的遷移計畫。目前首頁會繼續保持阻斷，直到服務恢復到可繼續狀態。',
-        noWarnings: '目前未檢測到需要額外提示的風險項。',
-        otherPanelNote: '你可以直接沿用舊資料目錄，也可以選擇新的資料夾作為後續執行位置。',
-        otherPanelTitle: '其他位置',
-        openActiveRoot: '開啟目前目錄',
-        openDirectoryFailed: '開啟目錄失敗。',
-        openDirectoryUnavailable: '目前環境不支援直接開啟目錄。',
-        openRetainedRoot: '開啟舊目錄',
-        pathOverview: '路徑總覽',
-        permissionBlocked: '目前不可寫',
-        permissionCheck: '目標路徑寫入權限',
-        permissionOk: '目前可寫',
-        pickFolder: '選擇資料夾',
-        pickFolderFailed: '開啟資料夾選擇器失敗，請手動輸入路徑。',
-        pickFolderUnavailable: '目前系統資料夾選擇器不可用，請手動輸入路徑。',
-        previewBoundary: '目前不會在本次會話裡熱切根，也不會提前把穩定根改成新路徑。確認後會由後端按設計順序完成關閉、必要遷移、自動重啟與最終布局恢復。',
-        previewOther: '提交此位置',
-        previewStepClose: '1. 當前實例會先關閉。',
-        previewStepMigrate: '2. 關閉後會恢復目標存儲布局；必要時再遷移資料。',
-        previewStepRestart: '3. 遷移完成後會自動重啟。',
-        previewStepRetain: '4. 舊資料預設不會自動刪除。',
-        previewTitle: '此選擇需要後續關閉並遷移',
-        progressCommitting: '正在提交新的存儲位置',
-        progressCompleted: '遷移已完成，正在恢復服務',
-        progressCopying: '正在遷移執行時資料',
-        progressFailed: '遷移未能完成，正在等待恢復處理',
-        progressPending: '目標路徑已記錄，正在準備關閉當前實例',
-        progressPreflight: '正在檢查目標位置並準備遷移',
-        progressRebindPreflight: '正在準備重連原始存儲位置',
-        progressRebinding: '正在關閉當前實例並重連原始路徑',
-        progressRecovered: '服務已恢復，正在重新連線頁面',
-        progressRetaining: '正在保留舊資料目錄以便後續手動清理',
-        progressStepCommit: '校驗並生效',
-        progressStepRecover: '恢復服務',
-        progressStepShutdown: '關閉當前實例',
-        progressStepTransfer: '處理存儲目錄',
-        progressVerifying: '正在校驗遷移結果',
-        progressWaitingShutdown: '正在等待當前實例安全關閉',
-        rebindPreviewNotice: '後端已確認：原路徑已可以重新連線。後續會關閉當前實例並自動重啟到該路徑，本次不會複製執行時資料。',
-        recommendedPath: '建議路徑',
-        selectedPath: '選擇路徑',
-        recommendedPreviewNotice: '後端已確認：如果後續改用建議位置，需要先關閉當前實例，再遷移資料並自動重啟。',
-        recoveryRequired: '檢測到需要恢復的存儲狀態，請先重新確認本次使用的存儲位置。',
-        recoverySourceUnavailable: '原始資料路徑目前不可用。請先重新連接原路徑，或明確切回建議預設路徑繼續目前會話。',
-        restartRequestFailed: '啟動關閉與遷移準備失敗，請稍後重試。',
-        restartRequestUnexpected: '關閉與遷移準備介面返回了未識別的結果。',
-        restartNotRequired: '目標路徑與目前路徑一致，不需要關閉目前實例。',
-        restartScheduleFailed: '受控關閉啟動失敗，請稍後重試。',
-        restartUnavailable: '目前實例暫時無法執行受控關閉，請稍後重試。',
-        retainedRoot: '舊資料目錄',
-        retainedSourceCleanupFailed: '清理舊資料保留目錄失敗，請稍後重試。',
-        retainedSourceMismatch: '請求的清理路徑與目前保留目錄不一致，請重新整理後再試。',
-        retainedSourceNotFound: '目前沒有可清理的舊資料保留目錄。',
-        selectPathRequired: '請先提供目標路徑。',
-        selectedRootInsideState: '該位置位於 N.E.K.O 執行時狀態目錄內，不能作為存儲根目錄。',
-        selectedRootUnavailable: '原始資料路徑目前仍不可用，請先恢復該路徑後再試。',
-        selectionSubmitFailed: '提交存儲位置選擇失敗，請稍後重試。',
-        selectionSubmitUnexpected: '存儲位置選擇介面返回了未識別的結果。',
-        selectionSubtitle: '應用已正常開啟。接下來請先在目前頁面內確認存儲位置，再繼續使用。',
-        selectionTitle: '存儲位置選擇',
-        sourceLabel: '原始路徑',
-        statusUnexpected: '存儲維護狀態介面返回了未識別的結果。',
-        storageBootstrapBlocking: '目前存儲狀態仍需恢復或遷移，暫時不能繼續目前會話。',
-        targetNotEmpty: '目標路徑已經包含執行時資料，請確認目標目錄後再繼續遷移。',
-        systemStatusUnavailable: '暫時無法確認本地服務狀態，請重試。',
-        systemStatusUnexpected: '存儲啟動狀態介面返回了未識別的結果。',
-        targetFreeSpace: '目標卷剩餘空間',
-        targetLabel: '目標路徑',
-        unknownBytes: '暫未估算',
-        useCurrent: '保持當前路徑',
-        useLegacyPath: '使用此舊資料路徑',
-        useRecommended: '使用建議位置',
-        warningExternalVolume: '目標路徑位於外接卷或掛載卷，穩定性取決於該卷是否持續可用。',
-        warningNetworkShare: '目標路徑位於網路共享目錄，連線波動可能影響遷移穩定性。',
-        warningSummary: '額外風險提示',
-        warningSymlink: '目標路徑命中了符號連結或等價重導向目錄，請確認實際落點正確。',
-        warningSyncFolder: '目標路徑位於同步碟目錄，遷移期間可能受到同步程式干擾。',
-        warningTargetHasExistingContent: '目標路徑已經包含執行時資料，開始遷移前需要二次確認。'
-    });
-
-    var STORAGE_I18N_RESOURCES = {
-        en: STORAGE_I18N_EN,
-        ja: STORAGE_I18N_EN,
-        ko: STORAGE_I18N_EN,
-        ru: STORAGE_I18N_EN,
-        'zh-CN': STORAGE_I18N_ZH_CN,
-        'zh-TW': STORAGE_I18N_ZH_TW
-    };
-
-    var storageTranslationsRegistered = false;
-
-    function resolveStorageLocale(language) {
-        var normalized = String(language || '').trim();
-        if (!normalized) return 'en';
-        if (STORAGE_I18N_RESOURCES[normalized]) return normalized;
-
-        var lower = normalized.toLowerCase();
-        if (lower === 'zh-tw' || lower === 'zh-hk' || lower === 'zh-mo') return 'zh-TW';
-        if (lower.indexOf('zh') === 0) return 'zh-CN';
-        if (lower.indexOf('ja') === 0) return 'ja';
-        if (lower.indexOf('ko') === 0) return 'ko';
-        if (lower.indexOf('ru') === 0) return 'ru';
-        return 'en';
-    }
-
-    function isI18nReady() {
-        return !!(
-            window.i18next
-            && window.i18next.isInitialized === true
-        );
-    }
-
-    function getCurrentLanguage() {
-        if (isI18nReady()) {
-            if (typeof window.i18next.resolvedLanguage === 'string' && window.i18next.resolvedLanguage) {
-                return window.i18next.resolvedLanguage;
-            }
-            if (typeof window.i18next.language === 'string' && window.i18next.language) {
-                return window.i18next.language;
-            }
-        }
-        if (typeof window.currentLanguage === 'string' && window.currentLanguage) {
-            return window.currentLanguage;
-        }
-        if (document && document.documentElement && document.documentElement.lang) {
-            return document.documentElement.lang;
-        }
-        return '';
-    }
-
-    function registerStorageTranslations() {
-        if (storageTranslationsRegistered) return;
-        if (!isI18nReady() || typeof window.i18next.addResourceBundle !== 'function') return;
-
-        Object.keys(STORAGE_I18N_RESOURCES).forEach(function (locale) {
-            window.i18next.addResourceBundle(
-                locale,
-                'translation',
-                { storage: STORAGE_I18N_RESOURCES[locale] },
-                true,
-                true
-            );
-        });
-        storageTranslationsRegistered = true;
-    }
-
-    function getInlineStorageTranslation(key) {
-        if (String(key || '').indexOf('storage.') !== 0) return '';
-        var shortKey = String(key || '').slice('storage.'.length);
-        var locale = resolveStorageLocale(getCurrentLanguage());
-        var bundle = STORAGE_I18N_RESOURCES[locale] || STORAGE_I18N_EN;
-        return String(bundle[shortKey] || STORAGE_I18N_EN[shortKey] || '').trim();
-    }
-
     var state = {
         initialized: false,
         initPromise: null,
@@ -476,7 +47,6 @@
         completionNotice: null,
         completionCard: null,
         completionTitle: null,
-        completionMessage: null,
         completionTarget: null,
         completionRetained: null,
         completionOpenTargetButton: null,
@@ -530,29 +100,18 @@
     state.startupDecision = createDeferred();
 
     function translate(key, fallback) {
-        var normalizedKey = String(key || '');
-        var storageKey = normalizedKey.indexOf('storage.') === 0;
-
-        if (!storageKey || isI18nReady()) {
-            registerStorageTranslations();
-            try {
-                if (typeof window.safeT === 'function') {
-                    var safeTranslated = window.safeT(key, fallback);
-                    if (typeof safeTranslated === 'string' && safeTranslated && safeTranslated !== key) {
-                        return safeTranslated;
-                    }
+        try {
+            if (typeof window.safeT === 'function') {
+                var safeTranslated = window.safeT(key, fallback);
+                if (typeof safeTranslated === 'string' && safeTranslated && safeTranslated !== key) {
+                    return safeTranslated;
                 }
-                if (typeof window.t === 'function') {
-                    var translated = window.t(key, { defaultValue: fallback });
-                    if (typeof translated === 'string' && translated && translated !== key) return translated;
-                }
-            } catch (_) {}
-        }
-
-        if (storageKey && isI18nReady()) {
-            var inlineTranslation = getInlineStorageTranslation(key);
-            if (inlineTranslation) return inlineTranslation;
-        }
+            }
+            if (typeof window.t === 'function') {
+                var translated = window.t(key, { defaultValue: fallback });
+                if (typeof translated === 'string' && translated && translated !== key) return translated;
+            }
+        } catch (_) {}
 
         return fallback || key;
     }
@@ -1005,6 +564,7 @@
 
         if (state.currentPath) {
             state.currentPath.textContent = currentRoot;
+            state.currentPath.title = currentRoot;
         }
         if (state.customInput && !String(state.customInput.value || '').trim()) {
             state.customInput.value = recommendedRoot;
@@ -1391,7 +951,6 @@
         }));
 
         var title = createElement('h3', 'storage-location-panel-title', translate('storage.completionTitle', '存储迁移已完成'));
-        var message = createElement('p', 'storage-location-note', translate('storage.completionMessage', '新的运行目录已经生效，旧数据目录目前仍保留，是否清理由你手动决定。'));
         var pathList = createElement('div', 'storage-location-path-list');
 
         var targetItem = buildInfoPathRow(translate('storage.targetLabel', '当前生效路径'), 'completionTarget');
@@ -1421,7 +980,6 @@
 
         state.completionCard = card;
         state.completionTitle = title;
-        state.completionMessage = message;
         state.completionOpenTargetButton = openTargetButton;
         state.completionOpenRetainedButton = openRetainedButton;
         state.completionCleanupButton = cleanupButton;
@@ -1429,7 +987,6 @@
         title.classList.add('storage-location-panel-title--with-close');
         title.classList.add('storage-location-completion-drag-handle');
         card.appendChild(title);
-        card.appendChild(message);
         card.appendChild(pathList);
         card.appendChild(actions);
         document.body.appendChild(card);
@@ -1509,7 +1066,6 @@
         }
 
         var card = buildCompletionNoticeCard();
-        state.completionMessage.textContent = translate('storage.completionMessage', '新的运行目录已经生效，旧数据目录目前仍保留，是否清理由你手动决定。');
         state.completionTarget.textContent = String(state.completionNotice.target_root || '').trim();
         state.completionRetained.textContent = String(state.completionNotice.retained_root || '').trim();
         state.completionOpenTargetButton.hidden = !canOpenPathWithHostBridge() || !String(state.completionNotice.target_root || '').trim();
@@ -2074,7 +1630,6 @@
         var grid = createElement('div', 'storage-location-grid');
 
         var pathsPanel = createElement('section', 'storage-location-panel');
-        pathsPanel.appendChild(createElement('h3', 'storage-location-panel-title', translate('storage.pathOverview', '路径总览')));
         var pathList = createElement('div', 'storage-location-path-list');
 
         var selectedPathItem = createElement('div', 'storage-location-path-item storage-location-path-item--recommended');
@@ -2103,7 +1658,11 @@
         inputRow.appendChild(pickFolderButton);
         selectedPathItem.appendChild(inputRow);
         pathList.appendChild(selectedPathItem);
-        pathList.appendChild(buildInfoPathRow(translate('storage.currentPath', '当前路径'), 'currentPath'));
+        pathList.appendChild(buildInfoPathRow(
+            translate('storage.currentPath', '当前路径'),
+            'currentPath',
+            'storage-location-path-item--inline'
+        ));
         pathsPanel.appendChild(pathList);
         grid.appendChild(pathsPanel);
         shell.appendChild(grid);
@@ -2260,13 +1819,6 @@
         hero.appendChild(maintenanceSubtitle);
         shell.appendChild(hero);
         shell.appendChild(maintenanceProgress);
-        shell.appendChild(
-            createElement(
-                'p',
-                'storage-location-note',
-                translate('storage.maintenanceNote', '连接短暂中断属于正常现象。页面会在服务恢复后自动重新连接。')
-            )
-        );
         view.appendChild(shell);
 
         state.maintenanceView = view;
@@ -2400,7 +1952,6 @@
         }
         state.completionCard = null;
         state.completionTitle = null;
-        state.completionMessage = null;
         state.completionTarget = null;
         state.completionRetained = null;
         state.completionOpenTargetButton = null;

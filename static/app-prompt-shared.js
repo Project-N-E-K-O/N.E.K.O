@@ -500,8 +500,22 @@
             return response.json();
         }
 
-        function fireAndForgetJson(url, payload) {
-            const body = JSON.stringify(payload || {});
+        async function fireAndForgetJson(url, payload) {
+            let beaconPayload = payload || {};
+            try {
+                const helper = window.nekoLocalMutationSecurity;
+                if (helper && typeof helper.getMutationHeaders === 'function') {
+                    const headers = await helper.getMutationHeaders();
+                    const token = headers && headers[CSRF_HEADER_NAME];
+                    if (token) {
+                        beaconPayload = Object.assign({}, beaconPayload, { _csrf_token: token });
+                    }
+                }
+            } catch (error) {
+                console.warn('[' + loggerName + '] getMutationHeaders for sendBeacon failed:', error);
+            }
+
+            const body = JSON.stringify(beaconPayload);
             try {
                 if (navigator.sendBeacon && typeof Blob === 'function') {
                     const queued = navigator.sendBeacon(

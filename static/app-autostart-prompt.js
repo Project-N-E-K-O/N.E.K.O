@@ -44,6 +44,7 @@
         autostartStatusAuthoritative: false,
         autostartProvider: '',
         autostartStatusUpdatedAt: 0,
+        pendingDecisionPayload: null,
     };
 
     const shortPromptToken = promptTools.shortToken;
@@ -160,10 +161,12 @@
                 platform: detail.platform,
                 mechanism: detail.mechanism,
             });
+            scheduleFastHeartbeat();
             return;
         }
         // detail 不完整：仅清零时间戳，下一次 ensureAutostartStatusFresh 会重新 poll。
         state.autostartStatusUpdatedAt = 0;
+        scheduleFastHeartbeat();
     }
 
     async function postDecision(payload) {
@@ -172,6 +175,7 @@
                 method: 'POST',
                 json: payload,
             });
+            state.pendingDecisionPayload = null;
             if (response && response.state) {
                 applyServerState(response.state, 'decision');
             }
@@ -182,6 +186,8 @@
                 status: response && response.state ? response.state.status : null,
             });
         } catch (error) {
+            state.pendingDecisionPayload = payload || null;
+            scheduleFastHeartbeat();
             console.warn('[AutostartPrompt] failed to persist decision:', error);
         }
     }
@@ -311,7 +317,7 @@
         } catch (_) {
             return {
                 supported: state.autostartSupported,
-                enabled: false,
+                enabled: state.autostartEnabled,
                 authoritative: false,
                 provider: state.autostartProvider,
             };
@@ -393,6 +399,11 @@
             state.pendingChatTurns = 0;
             state.pendingVoiceSessions = 0;
 
+            if (state.pendingDecisionPayload) {
+                const pendingPayload = state.pendingDecisionPayload;
+                await postDecision(pendingPayload);
+            }
+
             const data = await requestJson('/api/autostart-prompt/heartbeat', {
                 method: 'POST',
                 json: payload,
@@ -459,6 +470,25 @@
     async function handlePromptAcceptance(promptToken) {
         try {
             const response = await enableAutostart();
+            if (response && response.requires_approval) {
+                await postDecision({
+                    decision: 'accept',
+                    result: 'approval_pending',
+                    autostart_provider: response && response.provider,
+                    prompt_token: promptToken,
+                });
+                if (typeof window.showStatusToast === 'function') {
+                    window.showStatusToast(
+                        translate(
+                            'autostartPrompt.requiresApproval',
+                            '需要先在系统设置里批准开机自启动，批准后会自动生效'
+                        ),
+                        3500
+                    );
+                }
+                scheduleFastHeartbeat();
+                return;
+            }
             if (!response || response.enabled !== true) {
                 throw new Error(
                     response && response.error

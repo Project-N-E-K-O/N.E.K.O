@@ -134,7 +134,7 @@ def test_storage_location_overlay_blocks_page_config_until_current_path_confirme
     page.goto(f"{running_server}/", wait_until="domcontentloaded")
 
     overlay = page.locator("#storage-location-overlay")
-    selection_title = page.get_by_role("heading", name="请选择本次运行使用的存储位置")
+    selection_title = page.get_by_role("heading", name="存储位置选择")
     keep_current_button = page.get_by_role("button", name="保持当前路径")
 
     expect(overlay).to_be_visible(timeout=15_000)
@@ -191,7 +191,7 @@ def test_storage_location_overlay_blocks_independent_startup_requests_while_barr
     page.goto(f"{running_server}/", wait_until="domcontentloaded")
 
     overlay = page.locator("#storage-location-overlay")
-    selection_title = page.get_by_role("heading", name="请选择本次运行使用的存储位置")
+    selection_title = page.get_by_role("heading", name="存储位置选择")
 
     expect(overlay).to_be_visible(timeout=15_000)
     expect(selection_title).to_be_visible(timeout=15_000)
@@ -233,13 +233,12 @@ def test_storage_location_selection_view_hides_internal_paths_and_supports_folde
 
     page.goto(f"{running_server}/", wait_until="domcontentloaded")
 
-    expect(page.get_by_role("heading", name="请选择本次运行使用的存储位置")).to_be_visible(timeout=15_000)
+    expect(page.get_by_role("heading", name="存储位置选择")).to_be_visible(timeout=15_000)
     assert page.locator("text=固定锚点目录").count() == 0
     assert page.locator("text=固定 cloudsave 目录").count() == 0
     assert page.locator("text=已检测到的旧数据目录").count() == 0
     assert page.locator("text=本阶段提示").count() == 0
 
-    page.get_by_role("button", name="选择其他位置").click()
     assert page.locator("text=应用会使用其中独立的 N.E.K.O 子文件夹").count() == 0
     page.get_by_role("button", name="选择文件夹").click()
 
@@ -247,6 +246,44 @@ def test_storage_location_selection_view_hides_internal_paths_and_supports_folde
     submit_other_button = page.get_by_role("button", name="提交该位置")
     expect(custom_input).to_have_value(picked_root, timeout=10_000)
     expect(submit_other_button).to_be_enabled(timeout=10_000)
+
+
+@pytest.mark.frontend
+def test_storage_location_desktop_picker_normalizes_parent_directory_before_submit(
+    mock_page: Page,
+    running_server: str,
+    tmp_path,
+):
+    page = mock_page
+    picked_parent = str((tmp_path / "desktop-picked-root").resolve())
+    picked_root = str((tmp_path / "desktop-picked-root" / "N.E.K.O").resolve())
+    _mock_selection_required_state(page)
+    page.add_init_script(
+        """
+        window.nekoHost = {
+            pickDirectory: async (options) => {
+                window.__storagePickOptions = options;
+                return { cancelled: false, selected_root: %s };
+            }
+        };
+        """
+        % json.dumps(picked_parent)
+    )
+    page.route(
+        "**/api/storage/location/pick-directory",
+        lambda route: route.fulfill(
+            status=500,
+            content_type="application/json",
+            body='{"ok": false, "error": "backend picker should not be used when host picker succeeds"}',
+        ),
+    )
+
+    page.goto(f"{running_server}/", wait_until="domcontentloaded")
+    page.get_by_role("button", name="选择文件夹").click()
+
+    custom_input = page.locator(".storage-location-input")
+    expect(custom_input).to_have_value(picked_root, timeout=10_000)
+    assert page.evaluate("window.__storagePickOptions && window.__storagePickOptions.title") == "选择文件夹"
 
 
 @pytest.mark.frontend
@@ -280,11 +317,10 @@ def test_storage_location_overlay_keeps_page_config_blocked_on_restart_required_
     page.goto(f"{running_server}/", wait_until="domcontentloaded")
 
     overlay = page.locator("#storage-location-overlay")
-    selection_title = page.get_by_role("heading", name="请选择本次运行使用的存储位置")
-    choose_other_button = page.get_by_role("button", name="选择其他位置")
+    selection_title = page.get_by_role("heading", name="存储位置选择")
     submit_other_button = page.get_by_role("button", name="提交该位置")
     custom_input = page.locator(".storage-location-input")
-    preview_title = page.get_by_role("heading", name="该选择需要后续关闭并迁移")
+    preview_note = page.locator("text=更改存储位置会先关闭当前实例")
 
     expect(overlay).to_be_visible(timeout=15_000)
     expect(selection_title).to_be_visible(timeout=15_000)
@@ -292,13 +328,12 @@ def test_storage_location_overlay_keeps_page_config_blocked_on_restart_required_
     _arm_page_config_resolution_probe(page)
     assert _page_config_state(page) == "pending"
 
-    choose_other_button.click()
     expect(custom_input).to_be_visible(timeout=5_000)
 
     custom_input.fill(str(tmp_path / "alt-storage"))
     submit_other_button.click()
 
-    expect(preview_title).to_be_visible(timeout=10_000)
+    expect(preview_note).to_be_visible(timeout=10_000)
     assert select_requests[-1]["selected_root"] == str(target_root.resolve())
     assert _page_config_state(page) == "pending"
 
@@ -519,14 +554,12 @@ def test_storage_location_restart_confirmation_enters_maintenance_page_and_recov
 
     page.goto(f"{running_server}/", wait_until="domcontentloaded")
 
-    choose_other_button = page.get_by_role("button", name="选择其他位置")
     submit_other_button = page.get_by_role("button", name="提交该位置")
     confirm_restart_button = page.get_by_role("button", name="确认关闭并迁移")
     custom_input = page.locator(".storage-location-input")
     maintenance_title = page.get_by_role("heading", name="正在优化存储布局...")
     maintenance_progress = page.locator('[role="progressbar"]')
 
-    choose_other_button.click()
     expect(custom_input).to_be_visible(timeout=5_000)
     custom_input.fill(str(tmp_path / "alt-storage" / "N.E.K.O"))
     submit_other_button.click()
@@ -719,7 +752,6 @@ def test_storage_location_existing_target_requires_second_confirmation_before_re
     page.on("dialog", lambda dialog: dialog.accept())
 
     page.goto(f"{running_server}/", wait_until="domcontentloaded")
-    page.get_by_role("button", name="选择其他位置").click()
     page.locator(".storage-location-input").fill(str(tmp_path / "existing-target"))
     page.get_by_role("button", name="提交该位置").click()
 
@@ -831,7 +863,7 @@ def test_storage_location_pending_migration_refresh_stays_on_maintenance_page_in
 
     overlay = page.locator("#storage-location-overlay")
     maintenance_title = page.get_by_role("heading", name="正在优化存储布局...")
-    selection_title = page.get_by_role("heading", name="请选择本次运行使用的存储位置")
+    selection_title = page.get_by_role("heading", name="存储位置选择")
 
     expect(overlay).to_be_visible(timeout=15_000)
     expect(maintenance_title).to_be_visible(timeout=15_000)
@@ -900,7 +932,7 @@ def test_storage_location_overlay_stays_open_for_recovery_required_state_even_if
     page.goto(f"{running_server}/", wait_until="domcontentloaded")
 
     overlay = page.locator("#storage-location-overlay")
-    selection_title = page.get_by_role("heading", name="请选择本次运行使用的存储位置")
+    selection_title = page.get_by_role("heading", name="存储位置选择")
 
     expect(overlay).to_be_visible(timeout=15_000)
     expect(selection_title).to_be_visible(timeout=15_000)
