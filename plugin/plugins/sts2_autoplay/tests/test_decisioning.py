@@ -200,3 +200,42 @@ def test_marginal_benefit_uses_remaining_cards_for_setup_synergy() -> None:
     with_followup = service._calc_marginal_benefit(bash, state, combat, tactical, {}, remaining_cards=[strike])
 
     assert with_followup > without_followup
+
+
+@pytest.mark.unit
+def test_desperate_uses_tactical_target_for_lethal() -> None:
+    service = DecisionService()
+    strike = {"index": 0, "name": "打击", "type": "attack", "card_type": "attack", "playable": True, "damage": 12, "valid_target_indices": [0, 1]}
+    actions = [{"type": "play_card", "raw": {"card_index": 0}}]
+    context = combat_context([strike], enemy_hp=30)
+    context["snapshot"]["raw_state"]["combat"]["enemies"] = [
+        {"index": 0, "hp": 30, "intent_attack": 0},
+        {"index": 1, "hp": 10, "intent_attack": 0},
+    ]
+
+    selected = service._select_desperate_action(actions, context)
+
+    assert selected is not None
+    assert selected["raw"]["target_index"] == 1
+
+
+@pytest.mark.unit
+def test_desperate_attack_allows_cards_without_targets() -> None:
+    service = DecisionService()
+    aoe = {"index": 0, "name": "顺劈斩", "type": "attack", "card_type": "attack", "playable": True, "damage": 12, "valid_target_indices": []}
+    actions = [{"type": "play_card", "raw": {"card_index": 0}}]
+
+    selected = service._select_desperate_action(actions, combat_context([aoe], enemy_hp=10, incoming=0))
+
+    assert selected is not None
+    assert selected["raw"]["card_index"] == 0
+    assert "target_index" not in selected["raw"]
+
+
+@pytest.mark.unit
+def test_synergy_boost_reads_vulnerable_from_debuffs() -> None:
+    service = DecisionService()
+    strike = {"index": 0, "name": "打击", "type": "attack", "card_type": "attack", "playable": True}
+    combat = {"enemies": [{"index": 0, "hp": 30, "debuffs": [{"id": "vulnerable"}]}]}
+
+    assert service._calc_synergy_boost(strike, {}, combat, {}) > 0

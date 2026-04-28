@@ -33,7 +33,10 @@ class AutoplayLoopMixin:
 
     async def resume_autoplay(self) -> Dict[str, Any]:
         if self._autoplay_task is None or self._autoplay_task.done():
-            return await self.start_autoplay()
+            task = self._semi_auto_task if isinstance(self._semi_auto_task, dict) else None
+            objective = task.get("objective") if task else None
+            stop_condition = str(task.get("stop_condition") or "current_floor") if task else "current_floor"
+            return await self.start_autoplay(objective=objective, stop_condition=stop_condition)
         self._paused = False
         self._autoplay_state = "running"
         self._emit_status()
@@ -169,7 +172,7 @@ class AutoplayLoopMixin:
             return bool(task.get("has_entered_combat") and screen != "combat")
         if current_floor > start_floor:
             return True
-        if task.get("start_screen") == "combat" and not in_combat and screen in {"reward", "map", "event", "shop", "rest", "treasure"}:
+        if stop_condition in {"combat", "current_combat"} and task.get("start_screen") == "combat" and not in_combat and screen in {"reward", "map", "event", "shop", "rest", "treasure"}:
             return True
         return False
 

@@ -69,19 +69,27 @@ class DecisioningMixin:
                 if card_type == "attack" or (card_type == "skill" and damage > 0):
                     attack_cards.append((card, damage))
         attack_cards.sort(key=lambda x: x[1], reverse=True)
-        target_index = self._safe_int(combat.get("recommended_target_index"))
+        target_index = self._safe_int(tactical_summary.get("recommended_target_index"), None)
         for card, _ in attack_cards:
             valid_targets = card.get("valid_target_indices") if isinstance(card.get("valid_target_indices"), list) else []
-            if valid_targets:
-                resolved_target = None
-                if target_index is not None and target_index in [self._safe_int(t) for t in valid_targets]:
+            normalized_valid_targets: list[int] = []
+            for target in valid_targets:
+                try:
+                    normalized_target = int(target)
+                except Exception:
+                    continue
+                if normalized_target not in normalized_valid_targets:
+                    normalized_valid_targets.append(normalized_target)
+            resolved_target = None
+            if normalized_valid_targets:
+                if target_index is not None and target_index in normalized_valid_targets:
                     resolved_target = target_index
                 else:
-                    resolved_target = self._safe_int(valid_targets[0])
-                action = self._action_for_card(play_card_actions, card, target_index=resolved_target)
-                if action is not None:
-                    self.logger.info(f"[sts2_autoplay][desperate] selected attack card={card.get('name')} damage={self._combat_analyzer._card_total_damage_value(card, combat, target_index=resolved_target, strategy_constraints=strategy_constraints)} target={resolved_target}")
-                    return action
+                    resolved_target = normalized_valid_targets[0]
+            action = self._action_for_card(play_card_actions, card, target_index=resolved_target)
+            if action is not None:
+                self.logger.info(f"[sts2_autoplay][desperate] selected attack card={card.get('name')} damage={self._combat_analyzer._card_total_damage_value(card, combat, target_index=resolved_target, strategy_constraints=strategy_constraints)} target={resolved_target}")
+                return action
         return None
 
     def _detect_card_synergy_type(self, card: dict[str, Any], combat: dict[str, Any]) -> str:
@@ -130,11 +138,13 @@ class DecisioningMixin:
                 continue
             buffs = enemy.get("buffs") if isinstance(enemy.get("buffs"), list) else []
             debuffs = enemy.get("debuffs") if isinstance(enemy.get("debuffs"), list) else []
-            for b in buffs:
-                if isinstance(b, dict) and str(b.get("id") or "").lower() in {"vulnerable", "易伤"}:
+            for b in buffs + debuffs:
+                if not isinstance(b, dict):
+                    continue
+                effect_id = str(b.get("id") or b.get("name") or "").lower()
+                if effect_id in {"vulnerable", "易伤"}:
                     enemy_vulnerable = True
-            for b in debuffs:
-                if isinstance(b, dict) and str(b.get("id") or "").lower() in {"weak", "虚弱", "弱化"}:
+                if effect_id in {"weak", "虚弱", "弱化"}:
                     enemy_weak = True
         simulated_vulnerable = self._safe_int(active_state.get("vulnerable_stacks"), 0) > 0
         simulated_weak = self._safe_int(active_state.get("weaken_stacks"), 0) > 0

@@ -220,8 +220,6 @@ class ActionExecutionMixin:
                     self.logger.warning(f"LLM 决策参数越界: {decision}")
                     return None
                 normalized_kwargs[key] = normalized_value
-            if action_type == "play_card" and not self._validate_play_card_target_combo(normalized_kwargs, context, decision):
-                return None
             if action_type in {"choose_reward_card", "select_deck_card"} and "option_index" not in normalized_kwargs:
                 fallback_kwargs = self._normalize_action_kwargs(action_type, raw, context)
                 fallback_option_index = fallback_kwargs.get("option_index")
@@ -230,11 +228,21 @@ class ActionExecutionMixin:
                     normalized_kwargs["option_index"] = int(fallback_option_index)
             if self._action_requires_index(action_type, raw) and not normalized_kwargs:
                 fallback_kwargs = self._normalize_action_kwargs(action_type, raw, context)
-                normalized_kwargs = {
-                    key: int(value)
-                    for key, value in fallback_kwargs.items()
-                    if key in allowed_kwargs
-                }
+                fallback_normalized: dict[str, int] = {}
+                for key, value in fallback_kwargs.items():
+                    if key not in allowed_kwargs:
+                        continue
+                    try:
+                        normalized_value = int(value)
+                    except Exception:
+                        continue
+                    allowed_values = allowed_kwargs.get(key, [])
+                    if allowed_values and normalized_value not in allowed_values:
+                        continue
+                    fallback_normalized[key] = normalized_value
+                normalized_kwargs = fallback_normalized
+            if action_type == "play_card" and not self._validate_play_card_target_combo(normalized_kwargs, context, decision):
+                return None
             validated = dict(action)
             validated_raw = dict(raw)
             validated_raw.update(normalized_kwargs)
@@ -262,7 +270,14 @@ class ActionExecutionMixin:
             return False
 
         valid_targets = selected_card.get("valid_target_indices") if isinstance(selected_card.get("valid_target_indices"), list) else []
-        normalized_valid_targets = [self._safe_int(target, -1) for target in valid_targets]
+        normalized_valid_targets: list[int] = []
+        for target in valid_targets:
+            try:
+                normalized_target = int(target)
+            except Exception:
+                continue
+            if normalized_target not in normalized_valid_targets:
+                normalized_valid_targets.append(normalized_target)
         if not normalized_valid_targets:
             normalized_kwargs.pop("target_index", None)
             return True
