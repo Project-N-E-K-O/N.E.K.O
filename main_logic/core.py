@@ -383,6 +383,17 @@ class LLMSessionManager:
         # 用户活动时间戳：用于主动搭话检测最近是否有用户输入
         self.last_user_activity_time = None  # float timestamp or None
 
+        # 用户活动 tracker：把窗口/进程/CPU/idle/语音/对话信号聚合成结构化
+        # ActivitySnapshot，供 proactive_chat Phase 1/2 决策搭话倾向。
+        # 详见 docs/design/user-activity-tracker.md。
+        from main_logic.activity import UserActivityTracker
+        self._activity_tracker = UserActivityTracker(lanlan_name)
+
+        # AI 当前轮文本 buffer：每个 send_lanlan_response chunk 累加，turn end
+        # 时连同 on_ai_message 一起喂给 tracker。后者用末尾文本判断是否问问号
+        # → 触发 unfinished_thread 机制（5 分钟内允许至多 2 次跟进）。
+        self._current_ai_turn_text: str = ''
+
         # 事件驱动状态机：收口 "谁占用当前 turn" 的所有信号，供 proactive 流水线
         # 零成本（O(1) 读）频繁询问 is_proactive_preempted。事件发射点分布在
         # handle_new_message / stream_text 入口 / prepare_proactive_delivery /
@@ -611,6 +622,9 @@ class LLMSessionManager:
         await self._clear_tts_pipeline()
         self._tts_done_queued_for_turn = False  # 新轮次重置 TTS 结束信号标记
         self._tts_done_pending_until_ready = False
+        # 新一轮开始：清空上一轮 AI 文本累加器（即使上轮 turn end 已清过，
+        # proactive abort 等异常路径可能漏清，新轮次起点重置最稳）
+        self._current_ai_turn_text = ''
 
         await self.send_user_activity()
 
@@ -690,6 +704,14 @@ class LLMSessionManager:
         if not content_committed:
             logger.debug("[%s] handle_proactive_complete: no content committed, skipping completion flush", self.lanlan_name)
             return
+        # Activity tracker：proactive 也算 AI 在说话。和 _emit_turn_end 对称，
+        # 让 seconds_since_ai_msg 不分主动/被动。proactive 文本同样走过
+        # send_lanlan_response（finish_proactive_delivery 内部会调），所以
+        # _current_ai_turn_text 已经累加好；直接交给 tracker 做问号检测。
+        self._activity_tracker.on_ai_message(
+            text=self._current_ai_turn_text or None,
+        )
+        self._current_ai_turn_text = ''
         if self.use_tts and self.tts_thread and self.tts_thread.is_alive():
             try:
                 await self._request_tts_done_for_turn("handle_proactive_complete")
@@ -730,6 +752,13 @@ class LLMSessionManager:
                 await self.websocket.send_json(ws_msg)
         except Exception as e:
             logger.error(f"💥 WS Send Turn End Error: {e}")
+        # Activity tracker：AI 刚结束一轮（普通完成 + truncate-recovery 都走这里）。
+        # text 用于 unfinished_thread 检测——tracker 跑问号启发式决定要不要开
+        # 5min 跟进窗口；为 None 时不开窗，但仍更新 seconds_since_ai_msg。
+        self._activity_tracker.on_ai_message(
+            text=self._current_ai_turn_text or None,
+        )
+        self._current_ai_turn_text = ''
 
     async def handle_response_complete(self):
         """Qwen完成回调：用于处理Core API的响应完成事件，包含TTS和热切换逻辑"""
@@ -1010,6 +1039,12 @@ class LLMSessionManager:
         """输入转录回调：同步转录文本到消息队列和缓存，并发送到前端显示"""
         # 更新用户活动时间戳（用于主动搭话检测）
         self.last_user_activity_time = time.time()
+        # 用户刚说完一段话：activity tracker 记一笔用户消息 + 语音 RMS 活跃。
+        # transcript 到达说明用户在 VAD 窗口内说过话——比起追加纯 RMS 数据流，
+        # 在这里打点已经足够把 voice_engaged 状态稳定撑起来。
+        # text 同时进 buffer 给 emotion-tier LLM 做 open_threads / activity_guess。
+        self._activity_tracker.on_user_message(text=transcript)
+        self._activity_tracker.on_voice_rms()
         # 递增轮次计数器（仅计非空转录，避免噪声/静默误触发记忆整理）
         if transcript.strip():
             self._session_turn_count += 1
@@ -1106,6 +1141,10 @@ class LLMSessionManager:
         "未传"和"显式 None"，与单纯 ``request_id is None`` 检测不同。
         """
         text_clean = self.emotion_pattern.sub('', text)
+        # 累加到当前轮 AI 文本 buffer，turn end 时一并交给 activity tracker 做
+        # unfinished_thread 检测。emotion_pattern 已剥掉表情标签，但保留 <expr>
+        # 等可能的 markup——tracker 自己会做二次 strip。
+        self._current_ai_turn_text += text_clean
         effective_turn_id = turn_id or self.current_speech_id
         effective_request_id = (
             self._active_text_request_id
@@ -2232,7 +2271,12 @@ class LLMSessionManager:
             if self.session:
                 async with self.lock:
                     self.is_active = True
-                    
+
+                # Activity tracker：voice_engaged state 的硬前置就是 voice mode flag。
+                # 文本模式置 False 让 voice_engaged 永不触发；语音模式打开后由
+                # handle_input_transcript 的 on_voice_rms() 维持 8s 活跃窗口。
+                self._activity_tracker.on_voice_mode(input_mode == 'audio')
+
                 self.session_start_time = datetime.now()
                 self._session_turn_count = 0
 
@@ -3819,6 +3863,11 @@ class LLMSessionManager:
                     # 状态机：文本模式 stream_text 入口同样需要发射 USER_INPUT。
                     # handle_new_message 只在语音模式走到，这里是文本模式的对偶。
                     await self.state.fire(SessionEvent.USER_INPUT, sid=new_user_sid)
+                    # Activity tracker：文本模式真实用户输入。故意不在 handle_new_message
+                    # 里挂——后者也被 proactive abort 流程调用做清理（见
+                    # main_routers/system_router.py），那不算用户活动。
+                    # text 进 buffer 给 emotion-tier 用。
+                    self._activity_tracker.on_user_message(text=data if isinstance(data, str) else None)
 
                     should_handoff, openclaw_messages = await self._should_handoff_text_to_openclaw(data)
                     if should_handoff:
@@ -4083,7 +4132,10 @@ class LLMSessionManager:
             # 会穿过，产生孤儿 OmniRealtimeClient（silence_check_task/ws 泄漏）。
             if reset_starting_count:
                 self._starting_session_count = 0
-            
+
+            # Activity tracker：session 关闭，voice_engaged 不再可能触发。
+            self._activity_tracker.on_voice_mode(False)
+
             # Snapshot all mutable resource refs while holding the lock,
             # then operate only on locals to prevent killing newly created resources.
             main_session_ref = self.session

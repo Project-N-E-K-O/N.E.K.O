@@ -2781,7 +2781,19 @@ async def proactive_chat(request: Request):
             }
 
         print(f"[{lanlan_name}] 开始主动搭话流程（两阶段架构）...")
-        
+
+        # ========== 拉用户活动快照 ==========
+        # 在 enabled_modes 解析之前拉一次，因为 propensity 可能需要把
+        # enabled_modes 收紧到只剩 vision（restricted_screen_only 状态）。
+        # 详见 docs/design/user-activity-tracker.md。
+        try:
+            activity_snapshot = await mgr._activity_tracker.get_snapshot()
+            print(f"[{lanlan_name}] activity snapshot: state={activity_snapshot.state} "
+                  f"propensity={activity_snapshot.propensity} reasons={activity_snapshot.propensity_reasons}")
+        except Exception as _act_err:
+            logger.warning(f"[{lanlan_name}] activity snapshot fetch failed: {_act_err}; falling back to open propensity")
+            activity_snapshot = None
+
         # ========== 解析 enabled_modes ==========
         enabled_modes = data.get('enabled_modes', [])
         # 兼容旧版前端
@@ -2800,7 +2812,34 @@ async def proactive_chat(request: Request):
                 enabled_modes = ['personal']
             else:
                 enabled_modes = ['home']
-        
+
+        # 是否有 5 分钟内未收尾话题。若有，restricted_screen_only / sources 空
+        # 这两个早退分支都让步——AI 能基于 conversation history 接续旧话题，
+        # 不需要任何外部素材。
+        _has_unfinished_thread = (
+            activity_snapshot is not None
+            and activity_snapshot.unfinished_thread is not None
+        )
+
+        # restricted_screen_only：用户处于 gaming / focused_work，仅允许屏幕通道。
+        # 把 enabled_modes 收紧到只剩 vision。如果前端这一轮根本没启用 vision，
+        # 直接 pass —— 没东西可看，又不让聊外部，没必要继续。
+        # 例外：有未收尾话题（5min 内 AI 提的问题用户还没回）→ 即使没 vision
+        # 也允许跑下去，跟进上一个问题不需要外部素材。
+        if activity_snapshot is not None and activity_snapshot.propensity == 'restricted_screen_only':
+            if 'vision' in enabled_modes:
+                enabled_modes = ['vision']
+                print(f"[{lanlan_name}] propensity=restricted_screen_only, 收紧 enabled_modes 到仅 vision")
+            elif _has_unfinished_thread:
+                enabled_modes = []
+                print(f"[{lanlan_name}] propensity=restricted_screen_only 但有未收尾话题，允许 text-only 跟进")
+            else:
+                return await _end_proactive(JSONResponse({
+                    "success": True,
+                    "action": "pass",
+                    "message": f"user state={activity_snapshot.state} restricts proactive to screen-only, but vision not enabled this round",
+                }))
+
         print(f"[{lanlan_name}] 启用的搭话模式: {enabled_modes}")
         
         # ========== 0. 并行获取所有信息源内容（无 LLM） ==========
@@ -2925,11 +2964,16 @@ async def proactive_chat(request: Request):
             sources[mode] = content
         
         if not sources:
-            return await _end_proactive(JSONResponse({
-                "success": False,
-                "error": "所有信息源获取失败",
-                "action": "pass"
-            }, status_code=500))
+            # 例外：未收尾话题模式下 enabled_modes 可能本就被清空（restricted_screen_only
+            # + 无 vision），sources 必定为空但不应当 pass —— 让 Phase 2 拿对话
+            # 历史 + state_section 跑 text-only [CHAT] 跟进。
+            if not _has_unfinished_thread:
+                return await _end_proactive(JSONResponse({
+                    "success": False,
+                    "error": "所有信息源获取失败",
+                    "action": "pass"
+                }, status_code=500))
+            print(f"[{lanlan_name}] sources 为空但有未收尾话题，进入 text-only 跟进路径")
 
         # Phase 1 preempt check：信息源并行 fetch 完，正式进入 LLM 前先瞄一眼
         if mgr.state.is_proactive_preempted():
@@ -3005,41 +3049,59 @@ async def proactive_chat(request: Request):
         # ========== 3. 注入近期搭话记录 ==========
         proactive_chat_history_prompt = _format_recent_proactive_chats(lanlan_name, proactive_lang)
 
+        # 趁机把 open_threads 计算起来——和下面 Phase 1 unified LLM 调用并行。
+        # 缓存按用户消息序号失效；没新用户发言就 no-op 直接返回。Phase 2 读
+        # snapshot 时会拿到这次的结果（如果赶上了）；赶不上就用上一次的缓存。
+        try:
+            mgr._activity_tracker.kickoff_open_threads_compute(lang=proactive_lang)
+        except Exception as _ot_err:
+            logger.debug(f"[{lanlan_name}] kickoff_open_threads_compute failed: {_ot_err}")
+
         # ========== 3.5 反思 + 回调话题（通过 memory_server API） ==========
         # 认知框架：Facts → Reflection(pending) → 主动搭话自然提及 → 用户反馈 → Persona
+        #
+        # 用户在 gaming / focused_work 状态下不应自然回忆——会很尬。直接跳过整段
+        # （也省 reflect POST 的 15s timeout 风险）。stale_returning 反而欢迎回忆。
         followup_topics_prompt = ""
         _surfaced_reflection_ids = []  # 记录本次搭话提及了哪些 pending 反思
+        _allow_reminiscence = (
+            activity_snapshot is None
+            or activity_snapshot.propensity != 'restricted_screen_only'
+        )
+        if not _allow_reminiscence:
+            print(f"[{lanlan_name}] propensity=restricted_screen_only, 跳过反思/回忆话题获取")
         # 复用 internal_http_client 单例：proactive_chat 每次主动搭话都走此路径
-        try:
-            from utils.internal_http_client import get_internal_http_client
-            _mem_base = f"http://127.0.0.1:{MEMORY_SERVER_PORT}"
-            _mem_client = get_internal_http_client()
-            # 1. 自动状态迁移 + 反思合成（集中在 memory_server 进程内执行）
-            _reflect_resp = await _mem_client.post(
-                f"{_mem_base}/reflect/{lanlan_name}", timeout=15.0,
-            )
-            if _reflect_resp.status_code == 200:
-                _reflect_data = _reflect_resp.json()
-                if _reflect_data.get('auto_transitions'):
-                    print(f"[{lanlan_name}] 自动迁移 {_reflect_data['auto_transitions']} 条反思状态")
-                if _reflect_data.get('reflection'):
-                    print(f"[{lanlan_name}] 反思完成(pending): {_reflect_data['reflection']['text'][:50]}...")
+        if _allow_reminiscence:
+            try:
+                from utils.internal_http_client import get_internal_http_client
+                _mem_base = f"http://127.0.0.1:{MEMORY_SERVER_PORT}"
+                _mem_client = get_internal_http_client()
+                # 1. 自动状态迁移 + 反思合成（集中在 memory_server 进程内执行）
+                _reflect_resp = await _mem_client.post(
+                    f"{_mem_base}/reflect/{lanlan_name}", timeout=15.0,
+                )
+                if _reflect_resp.status_code == 200:
+                    _reflect_data = _reflect_resp.json()
+                    if _reflect_data.get('auto_transitions'):
+                        print(f"[{lanlan_name}] 自动迁移 {_reflect_data['auto_transitions']} 条反思状态")
+                    if _reflect_data.get('reflection'):
+                        print(f"[{lanlan_name}] 反思完成(pending): {_reflect_data['reflection']['text'][:50]}...")
 
-            # 2. 获取回调话题候选
-            _topics_resp = await _mem_client.get(
-                f"{_mem_base}/followup_topics/{lanlan_name}", timeout=5.0,
-            )
-            if _topics_resp.status_code == 200:
-                _followup_topics = _topics_resp.json().get('topics', [])
-                if _followup_topics:
-                    followup_topics_prompt = _loc(PROACTIVE_FOLLOWUP_HEADER, proactive_lang)
-                    for topic in _followup_topics:
-                        followup_topics_prompt += f"- {topic['text']}\n"
-                        if topic.get('id'):
-                            _surfaced_reflection_ids.append(topic['id'])
-                    print(f"[{lanlan_name}] 回调话题候选: {len(_followup_topics)} 条")
-        except Exception as e:
-            logger.debug(f"[{lanlan_name}] 反思/回调话题获取失败（不影响主流程）: {e}")
+                # 2. 获取回调话题候选
+                _topics_resp = await _mem_client.get(
+                    f"{_mem_base}/followup_topics/{lanlan_name}", timeout=5.0,
+                )
+                if _topics_resp.status_code == 200:
+                    _followup_topics = _topics_resp.json().get('topics', [])
+                    if _followup_topics:
+                        followup_topics_prompt = _loc(PROACTIVE_FOLLOWUP_HEADER, proactive_lang)
+                        for topic in _followup_topics:
+                            followup_topics_prompt += f"- {topic['text']}\n"
+                            if topic.get('id'):
+                                _surfaced_reflection_ids.append(topic['id'])
+                        print(f"[{lanlan_name}] 回调话题候选: {len(_followup_topics)} 条")
+            except Exception as e:
+                logger.debug(f"[{lanlan_name}] 反思/回调话题获取失败（不影响主流程）: {e}")
 
         # Phase 1 preempt check：reflection POST(15s) + followup GET(5s) 是又一段
         # 可能拖很久的 await 串，整段裸跑会让用户打断后继续跑完 LLM 配置和
@@ -3262,10 +3324,19 @@ async def proactive_chat(request: Request):
 
         # ============================================================
         # 来源动态权重过滤（vision / 已屏蔽的 music 不参与权重计算）
+        #
+        # ``reminiscence`` 作为虚拟 channel：当本轮已经从 memory_server 取到
+        # pending followup topics 时，把它放进权重计算池。和 web/news/music
+        # 一样按使用频率衰减——AI 连续多次"回忆"会让 reminiscence 进入
+        # suppressed 集合，本轮就跳过 followup_topics_prompt（per-reflection
+        # cooldown 在 reflection.py 那侧另算，这里是 channel 级别的兜底）。
         # ============================================================
         non_vision_modes = [m for m in enabled_modes if m != 'vision' and m in sources]
-        if non_vision_modes:
-            source_weights = _compute_source_weights(lanlan_name, non_vision_modes)
+        weight_candidates = list(non_vision_modes)
+        if _surfaced_reflection_ids:
+            weight_candidates.append('reminiscence')
+        if weight_candidates:
+            source_weights = _compute_source_weights(lanlan_name, weight_candidates)
             suppressed = _filter_sources_by_weight(source_weights)
             weight_str = ' '.join(f"{ch}={w:.3f}" for ch, w in source_weights.items())
             logger.debug(f"[{lanlan_name}] 来源权重: {weight_str} | 剔除: {suppressed or '无'}")
@@ -3276,6 +3347,13 @@ async def proactive_chat(request: Request):
                 music_content = None
             if 'meme' in suppressed:
                 meme_content = None
+            if 'reminiscence' in suppressed:
+                # 回忆 channel 被 throttle：清空 followup section 和 surfaced ids，
+                # Phase 2 prompt 看不到旧话题，本轮也不会调 record_surfaced。
+                if followup_topics_prompt:
+                    print(f"[{lanlan_name}] reminiscence channel suppressed by weight, dropping followup section")
+                followup_topics_prompt = ""
+                _surfaced_reflection_ids = []
 
             # 被剔除的 web 子通道不参与 merged_web_content（sources 已弹出，
             # 但 merged_web_content 已经构建完毕，需要重新构建）
@@ -3569,12 +3647,14 @@ async def proactive_chat(request: Request):
                 logger.warning(f"[{lanlan_name}] Phase 1 表情包数据为空，跳过表情包话题")
         
         if not phase1_topics and not vision_content:
-            print(f"[{lanlan_name}] Phase 1 所有通道均无可用话题")
-            return await _end_proactive(JSONResponse({
-                "success": True,
-                "action": "pass",
-                "message": "所有信息源筛选后均不值得搭话"
-            }))
+            if not _has_unfinished_thread:
+                print(f"[{lanlan_name}] Phase 1 所有通道均无可用话题")
+                return await _end_proactive(JSONResponse({
+                    "success": True,
+                    "action": "pass",
+                    "message": "所有信息源筛选后均不值得搭话"
+                }))
+            print(f"[{lanlan_name}] Phase 1 无话题但有未收尾话题，进入 text-only 跟进 Phase 2")
 
         # Phase 1 preempt check：topic assembly 完，进入 Phase 2 前最后一次瞄
         if mgr.state.is_proactive_preempted():
@@ -3698,12 +3778,22 @@ async def proactive_chat(request: Request):
         # 追加的音乐/表情包指令作为动态上下文注入 HumanMessage
         # 使用 enriched_memory_context（含回调话题）而非原始 memory_context
         phase2_memory_context = enriched_memory_context if followup_topics_prompt else memory_context
+
+        # 把活动快照渲染成 prompt 段。snapshot 缺失时退化为空串——decision frame
+        # 里的 A) 看「用户当前状态」分支会自动走到"其它状态：所有切入点都可用"。
+        if activity_snapshot is not None:
+            from main_logic.activity import format_activity_state_section
+            state_section = format_activity_state_section(activity_snapshot, proactive_lang)
+        else:
+            state_section = ''
+
         generate_prompt = get_proactive_generate_prompt(
             proactive_lang, music_playing_hint,
             has_music=bool(music_section), has_meme=bool(meme_section),
         ).format(
             character_prompt=character_prompt,
             inner_thoughts=inner_thoughts,
+            state_section=state_section,
             memory_context=phase2_memory_context,
             recent_chats_section=proactive_chat_history_prompt,
             screen_section=screen_section,
@@ -4017,6 +4107,24 @@ async def proactive_chat(request: Request):
 
         # 记录主动搭话
         _record_proactive_chat(lanlan_name, response_text, primary_channel)
+        # Reminiscence channel：当本轮 surfaced 了 pending reflection（即使 AI 最终
+        # 没用 [CHAT] 而是用了 [WEB] 标签，followup 还是出现在了 prompt 里）就额外
+        # 记一次 reminiscence 用量，让 _compute_source_weights 把它当作"已使用"
+        # channel 来衰减。和 primary_channel 同时记，频率统计是各 channel 独立累加，
+        # 所以两条 entry 不冲突。
+        if _surfaced_reflection_ids:
+            _record_proactive_chat(lanlan_name, response_text, 'reminiscence')
+
+        # Unfinished-thread 跟进计数：本轮 snapshot 里有未收尾话题就 +1。无论 AI
+        # 实际有没有用这个 override（它可能选了别的素材），都计为一次"我们给过
+        # 它机会跟进"——这是保守 throttle，避免 AI 反复忽略 override 也耗光配额；
+        # 计数到 UNFINISHED_THREAD_MAX_FOLLOWUPS 后 tracker 自动停止暴露这条。
+        if _has_unfinished_thread:
+            try:
+                mgr._activity_tracker.mark_unfinished_thread_used()
+                print(f"[{lanlan_name}] 跟进未收尾话题：mark_used")
+            except Exception as _ut_err:
+                logger.warning(f"[{lanlan_name}] mark_unfinished_thread_used failed: {_ut_err}")
 
         # 后台长期记忆维护（通过 memory_server API）：复用 internal_http_client 单例
         try:
