@@ -17,7 +17,8 @@ const CHARACTER_DATA = {
 // 角色类型到音色和设定的映射配置
 const CHARACTER_VOICE_MAPPING = {
     tsundere_neko: {
-        voiceId: 'voice-tone-PGLiTXeJCS',  // 俏皮女孩
+        freeVoiceKey: 'playfulGirl',
+        voiceId: 'voice-tone-PGLiTXeJCS',  // 俏皮女孩（后端 free_voices 不可用时回退）
         personality_i18n: 'characterProfile.tsundere_neko.personality',
         personality: '自尊心极强，嘴硬到骨子里，典型的口嫌体正直；明明超在意你，却非要用嫌弃的语气掩饰心意，好胜心拉满，见不得你受委屈，也见不得你犯低级错误；嘴上骂着笨蛋，行动上却比谁都靠谱，永远是你最靠谱的兜底者。',
         catchphrase_i18n: 'characterProfile.tsundere_neko.catchphrase',
@@ -32,7 +33,8 @@ const CHARACTER_VOICE_MAPPING = {
         quote: '哼，这种事也要问吗，笨蛋人类……算了，也就我会帮你收拾这摊子，下不为例喵。'
     },
     intellectual_healer: {
-        voiceId: 'voice-tone-PGLlrd5SNM',  // 温柔少女
+        freeVoiceKey: 'gentleMaiden',
+        voiceId: 'voice-tone-PGLlrd5SNM',  // 温柔少女（后端 free_voices 不可用时回退）
         personality_i18n: 'characterProfile.intellectual_healer.personality',
         personality: '永远元气满格的小太阳，共情力拉满，极易被小事满足；哪怕是你一句随口的夸奖，都能开心到原地转圈圈晃尾巴，会毫无保留地给你正向反馈，永远无条件站在你这边，用最纯粹的热情治愈所有低落。',
         catchphrase_i18n: 'characterProfile.intellectual_healer.catchphrase',
@@ -47,7 +49,8 @@ const CHARACTER_VOICE_MAPPING = {
         quote: '太棒了喵！今天也让我陪着你吧，不管开心还是难过，我都会贴贴抱抱给你充电喵！'
     },
     efficiency_expert: {
-        voiceId: 'voice-tone-PGLlMvr0Ai',  // 清冷御姐
+        freeVoiceKey: 'coolLady',
+        voiceId: 'voice-tone-PGLlMvr0Ai',  // 清冷御姐（后端 free_voices 不可用时回退）
         personality_i18n: 'characterProfile.efficiency_expert.personality',
         personality: '极致优雅的绅士管家，细节控到极致，情绪永远平稳克制，对阁下绝对忠诚；永远能提前预判阁下的需求，把所有事务安排得滴水不漏，看似没有情绪波动，实则所有的心思都放在如何为阁下分忧上。',
         catchphrase_i18n: 'characterProfile.efficiency_expert.catchphrase',
@@ -70,6 +73,7 @@ const LEGACY_PERSONALITY_VALUES = [
     '优雅利落，简洁高效，冷静且极具执行力，绝不拖泥带水'
 ];
 
+// Keep in sync with utils/config_manager.py PERSONA_PROMPT_BLOCK_* constants.
 const PERSONA_PROMPT_BLOCK_START = '<NEKO_PERSONA_SELECTION>';
 const PERSONA_PROMPT_BLOCK_END = '</NEKO_PERSONA_SELECTION>';
 
@@ -106,6 +110,7 @@ class CharacterSelection {
         this._stageMouseMoveHandlers = new Map();
         // 用于取消打字 Promise（防止内存泄漏）
         this._typeAbort = null;
+        this._freeVoiceMapPromise = null;
         this._previouslyFocusedElement = document.activeElement instanceof HTMLElement ? document.activeElement : null;
         this._handleOverlayKeydown = (event) => this._trapFocus(event);
         this._handleDocumentFocusIn = (event) => this._redirectBackgroundFocus(event);
@@ -549,6 +554,48 @@ class CharacterSelection {
 
         return cleanBasePrompt ? `${cleanBasePrompt}\n\n${personaBlock}` : personaBlock;
     }
+    async getFreeVoiceMappings() {
+        if (!this._freeVoiceMapPromise) {
+            this._freeVoiceMapPromise = fetch('/api/characters/voices', { cache: 'no-store' })
+                .then(async (response) => {
+                    if (!response.ok) {
+                        return {};
+                    }
+                    const data = await response.json();
+                    if (!data || typeof data.free_voices !== 'object' || data.free_voices === null) {
+                        return {};
+                    }
+                    return data.free_voices;
+                })
+                .catch((error) => {
+                    console.warn('[CharacterSelection] 获取免费预设音色失败，回退到默认音色 ID:', error);
+                    return {};
+                });
+        }
+        return this._freeVoiceMapPromise;
+    }
+    async resolveCharacterVoiceId(voiceMapping) {
+        const fallbackVoiceId = String(voiceMapping?.voiceId || '').trim();
+        const freeVoiceKey = String(voiceMapping?.freeVoiceKey || '').trim();
+        if (!freeVoiceKey) {
+            return fallbackVoiceId;
+        }
+
+        const freeVoices = await this.getFreeVoiceMappings();
+        const resolvedVoiceId = typeof freeVoices[freeVoiceKey] === 'string'
+            ? freeVoices[freeVoiceKey].trim()
+            : '';
+        if (resolvedVoiceId) {
+            return resolvedVoiceId;
+        }
+
+        if (fallbackVoiceId) {
+            console.warn(
+                `[CharacterSelection] free_voices 中缺少 ${freeVoiceKey}，回退到内置音色 ID: ${fallbackVoiceId}`
+            );
+        }
+        return fallbackVoiceId;
+    }
     async finalizeSelection() {
         // 防重入锁，防止并发调用 updateDefaultCatgirl
         if (this._finalizing) return;
@@ -598,6 +645,7 @@ class CharacterSelection {
             console.warn('[CharacterSelection] 找不到角色音色映射:', this.selectedCharacter.id);
             return false;
         }
+        const resolvedVoiceId = await this.resolveCharacterVoiceId(voiceMapping);
         try {
             // 1. 获取当前角色列表（请求规范数据而非本地化数据）
             console.log('[CharacterSelection] 获取角色列表...');
@@ -696,10 +744,10 @@ class CharacterSelection {
                 '一句话台词': voiceMapping.quote_i18n
                     ? getI18nOrFallback(voiceMapping.quote_i18n, voiceMapping.quote)
                     : targetData['一句话台词'],
-                voice_id: voiceMapping.voiceId,
+                voice_id: resolvedVoiceId,
                 system_prompt: systemPrompt
             };
-            console.log('[CharacterSelection] 更新数据:', { 性格: personality, voice_id: voiceMapping.voiceId, hasSystemPrompt: !!systemPrompt });
+            console.log('[CharacterSelection] 更新数据:', { 性格: personality, voice_id: resolvedVoiceId, hasSystemPrompt: !!systemPrompt });
             const updateResponse = await fetch(`/api/characters/catgirl/${encodeURIComponent(targetName)}`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },

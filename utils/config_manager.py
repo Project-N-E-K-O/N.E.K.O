@@ -38,6 +38,7 @@ from utils.logger_config import get_module_logger
 
 logger = get_module_logger(__name__)
 
+# Keep in sync with static/js/character-selection.js PERSONA_PROMPT_BLOCK_* constants.
 PERSONA_PROMPT_BLOCK_START = "<NEKO_PERSONA_SELECTION>"
 PERSONA_PROMPT_BLOCK_END = "</NEKO_PERSONA_SELECTION>"
 _PERSONA_PROMPT_BLOCK_RE = re.compile(

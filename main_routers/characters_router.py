@@ -2124,18 +2124,22 @@ async def update_catgirl(name: str, request: Request):
                 'available_voices': available_voices
             }, status_code=400)
 
-    # 只更新前端传来的普通字段，未传字段删除；保留字段始终交由专用接口管理
-    removed_fields = []
-    for k in characters['猫娘'][name]:
-        if k not in data and k not in CHARACTER_RESERVED_FIELD_SET:
-            removed_fields.append(k)
-    for k in removed_fields:
-        characters['猫娘'][name].pop(k)
+    mutable_field_names = {key for key in data if key != '档案名'}
+    if mutable_field_names:
+        # 只更新前端传来的普通字段，未传字段删除；保留字段始终交由专用接口管理。
+        # 当请求仅包含 voice_id / system_prompt / model_type 等保留字段时，跳过普通字段覆盖，
+        # 避免误删现有人设配置。
+        removed_fields = []
+        for k in characters['猫娘'][name]:
+            if k not in data and k not in CHARACTER_RESERVED_FIELD_SET:
+                removed_fields.append(k)
+        for k in removed_fields:
+            characters['猫娘'][name].pop(k)
 
-    # 更新普通字段
-    for k, v in data.items():
-        if k != '档案名' and v:
-            characters['猫娘'][name][k] = v
+        # 更新普通字段
+        for k, v in data.items():
+            if k != '档案名' and v:
+                characters['猫娘'][name][k] = v
 
     # 兼容旧接口：若请求中带有 voice_id / system_prompt，则同步写入保留字段。
     if voice_id_in_payload:
