@@ -296,7 +296,7 @@ class GameContextAnalyzer:
 
     def _card_option_texts(self, item: Dict[str, Any]) -> Set[str]:
         texts: Set[str] = set()
-        for key in ("label", "description", "name", "id", "card_id", "card_name", "title"):
+        for key in ("label", "description", "name", "id", "card_id", "card_name", "relic_name", "potion_name", "title"):
             value = item.get(key)
             if value is not None:
                 normalized = str(value).strip().lower()

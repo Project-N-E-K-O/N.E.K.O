@@ -70,11 +70,12 @@ class AutoplayLoopMixin:
         if not guidance.get("content"):
             return {"status": "error", "message": "guidance.content 不能为空"}
         max_queue = int(self._cfg.get("neko_guidance_max_queue", 50) or 50)
+        step_value = guidance.get("step")
         if len(self._neko_guidance_queue) >= max_queue:
             self._neko_guidance_queue.popleft()
         self._neko_guidance_queue.append({
             "content": str(guidance.get("content", "")),
-            "step": int(guidance.get("step", self._step_count)),
+            "step": self._step_count if step_value is None else int(step_value),
             "type": str(guidance.get("type", "soft_guidance")),
             "received_at": time.time(),
         })

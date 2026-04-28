@@ -351,14 +351,15 @@ class NekoCommandingMixin:
         for enemy in enemies[:4]:
             if not isinstance(enemy, dict):
                 continue
-            intent = enemy.get("intent") if isinstance(enemy.get("intent"), dict) else {}
+            raw_intent = enemy.get("intent")
+            intent = raw_intent if isinstance(raw_intent, dict) else {}
             enemy_summaries.append({
                 "name": str(enemy.get("name") or ""),
                 "hp": self._safe_int(enemy.get("hp")),
                 "max_hp": self._safe_int(enemy.get("max_hp")),
                 "block": self._safe_int(enemy.get("block")),
-                "intent": str(intent.get("type") or enemy.get("intent") or "") if isinstance(intent, dict) else str(enemy.get("intent") or ""),
-                "intent_value": self._safe_int(intent.get("value") if isinstance(intent, dict) else enemy.get("intent_value")),
+                "intent": str(intent.get("type") or raw_intent or ""),
+                "intent_value": self._safe_int(intent.get("value") if intent.get("value") is not None else enemy.get("intent_value")),
             })
         return {
             "time": timestamp,

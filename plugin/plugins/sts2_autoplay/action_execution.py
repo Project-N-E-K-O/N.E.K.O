@@ -201,12 +201,7 @@ class ActionExecutionMixin:
                 }
             validated = dict(action)
             validated_raw = dict(raw)
-            reward_option_index = normalized_kwargs.get("option_index") if action_type in {"choose_reward_card", "select_deck_card"} else None
-            if reward_option_index is not None:
-                validated_raw.pop("option_index", None)
             validated_raw.update(normalized_kwargs)
-            if reward_option_index is not None:
-                validated_raw.pop("option_index", None)
             validated["raw"] = validated_raw
             return validated
         self.logger.warning(f"LLM 决策动作不在当前合法动作中: {decision}")
@@ -310,6 +305,12 @@ class ActionExecutionMixin:
                 preferred_option_index = self._find_preferred_map_option_index(raw, context) if action_type == "choose_map_node" else None
                 if preferred_option_index is None and action_type == "claim_reward":
                     preferred_option_index = self._find_claimable_card_reward_index(context)
+                if preferred_option_index is None and action_type == "buy_card":
+                    preferred_option_index = self._find_preferred_shop_card_index(context)
+                if preferred_option_index is None and action_type == "buy_relic":
+                    preferred_option_index = self._find_preferred_shop_relic_index(context)
+                if preferred_option_index is None and action_type == "buy_potion":
+                    preferred_option_index = self._find_preferred_shop_potion_index(context)
                 if preferred_option_index is None:
                     preferred_option_index = self._find_preferred_character_option_index(raw, context)
                 chosen_option_index = preferred_option_index if preferred_option_index is not None else 0

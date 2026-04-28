@@ -123,9 +123,13 @@ class DecisioningMixin:
             for b in debuffs:
                 if isinstance(b, dict) and str(b.get("id") or "").lower() in {"weak", "虚弱", "弱化"}:
                     enemy_weak = True
-        if synergy_type == "weaken" and enemy_vulnerable:
+        simulated_vulnerable = self._safe_int(active_state.get("vulnerable_stacks"), 0) > 0
+        simulated_weak = self._safe_int(active_state.get("weaken_stacks"), 0) > 0
+        if synergy_type == "attack" and (enemy_vulnerable or simulated_vulnerable):
+            boost += 0.50
+        elif synergy_type == "weaken" and (enemy_vulnerable or simulated_vulnerable):
             boost += 0.25
-        elif synergy_type == "vulnerable" and enemy_weak:
+        elif synergy_type == "vulnerable" and (enemy_weak or simulated_weak):
             boost += 0.50
         elif synergy_type == "strength_boost":
             boost += player_str * 0.1
@@ -325,6 +329,15 @@ class DecisioningMixin:
     async def _select_action_with_reasoning(self, context: dict[str, Any]) -> tuple[dict[str, Any], Optional[dict[str, Any]]]:
         mode = self._configured_mode()
         actions = context.get("actions") if isinstance(context.get("actions"), list) else []
+        desperate_action = self._select_desperate_action(actions, context)
+        if desperate_action is not None:
+            self._log_action_decision("desperate-mode", desperate_action, context)
+            return desperate_action, None
+        if bool(self._cfg.get("neko_maximize_enabled", True)):
+            maximize_action = self._select_maximize_benefit_action(actions, context)
+            if maximize_action is not None:
+                self._log_action_decision("maximize-benefit", maximize_action, context)
+                return maximize_action, None
         preemptive_action = self._select_preemptive_program_action(actions, context)
         if preemptive_action is not None:
             self._log_action_decision(f"{mode}-program-preflight", preemptive_action, context)
