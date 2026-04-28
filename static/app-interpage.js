@@ -1246,6 +1246,61 @@
 
     var nekoBroadcastChannel = null;
     var _isRelayingYuiGuideHandoffSent = false;
+    var _pendingYuiGuideChatMessages = [];
+    var _yuiGuideChatFlushTimer = null;
+    var _yuiGuideChatFlushAttempts = 0;
+    var YUI_GUIDE_CHAT_FLUSH_MAX_ATTEMPTS = 50;
+
+    function scheduleYuiGuideChatMessageFlush(delay) {
+        if (_yuiGuideChatFlushTimer) return;
+        _yuiGuideChatFlushTimer = setTimeout(flushPendingYuiGuideChatMessages, typeof delay === 'number' ? delay : 0);
+    }
+
+    function flushPendingYuiGuideChatMessages() {
+        _yuiGuideChatFlushTimer = null;
+        if (!_pendingYuiGuideChatMessages.length) {
+            _yuiGuideChatFlushAttempts = 0;
+            return;
+        }
+
+        var host = window.reactChatWindowHost;
+        if (!host || typeof host.appendMessage !== 'function') {
+            if (_yuiGuideChatFlushAttempts < YUI_GUIDE_CHAT_FLUSH_MAX_ATTEMPTS) {
+                _yuiGuideChatFlushAttempts += 1;
+                scheduleYuiGuideChatMessageFlush(100);
+            } else {
+                console.warn('[YuiGuide] Chat host was not ready; dropped guide chat messages:', _pendingYuiGuideChatMessages.length);
+                _pendingYuiGuideChatMessages = [];
+                _yuiGuideChatFlushAttempts = 0;
+            }
+            return;
+        }
+
+        _yuiGuideChatFlushAttempts = 0;
+        var batch = _pendingYuiGuideChatMessages.splice(0);
+        batch.forEach(function (message) {
+            try {
+                host.appendMessage(message);
+            } catch (error) {
+                console.warn('[YuiGuide] Failed to append guide chat message:', error);
+            }
+        });
+
+        if (typeof host.openWindow === 'function') {
+            try {
+                host.openWindow();
+            } catch (error) {
+                console.warn('[YuiGuide] Failed to open guide chat window:', error);
+            }
+        }
+    }
+
+    function appendYuiGuideChatMessage(message) {
+        if (window.location.pathname !== '/chat') return;
+        if (!message || typeof message !== 'object') return;
+        _pendingYuiGuideChatMessages.push(message);
+        scheduleYuiGuideChatMessageFlush(0);
+    }
     try {
         if (typeof BroadcastChannel !== 'undefined') {
             nekoBroadcastChannel = new BroadcastChannel('neko_page_channel');
@@ -1295,6 +1350,10 @@
                                 vcTextInput.classList.remove('hidden');
                             }
                         }
+                        break;
+                    }
+                    case 'yui_guide_append_chat_message': {
+                        appendYuiGuideChatMessage(event.data.message);
                         break;
                     }
                     case 'avatar_updated': {

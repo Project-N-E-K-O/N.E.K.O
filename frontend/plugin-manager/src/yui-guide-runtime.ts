@@ -212,15 +212,6 @@ function resolveGuideLocale() {
   return DEFAULT_GUIDE_LOCALE
 }
 
-function resolveSpeechLang() {
-  const locale = resolveGuideLocale()
-  if (locale === 'ja') return 'ja-JP'
-  if (locale === 'en') return 'en-US'
-  if (locale === 'ko') return 'ko-KR'
-  if (locale === 'ru') return 'ru-RU'
-  return 'zh-CN'
-}
-
 function getAllowedOpenerOrigins() {
   const origins = new Set<string>(ALLOWED_OPENER_ORIGINS)
   const trustedOrigin = getTrustedOpenerOrigin()
@@ -555,52 +546,11 @@ function speakTextWithPromise(
   const localAudioSrc = resolveGuideAudioSrc(options?.voiceKey, options?.audioUrl)
   if (localAudioSrc) {
     return playGuideAudioWithPromise(localAudioSrc, minDurationMs).catch(() => {
-      return speakTextWithPromise(content)
+      return wait(minDurationMs)
     })
   }
 
-  if (typeof window.speechSynthesis === 'undefined' || typeof window.SpeechSynthesisUtterance === 'undefined') {
-    return wait(minDurationMs)
-  }
-
-  return new Promise<void>((resolve) => {
-    let settled = false
-    const utterance = new SpeechSynthesisUtterance(content)
-    utterance.lang = resolveSpeechLang()
-    utterance.rate = 1
-    utterance.pitch = 1.1
-
-    const finish = () => {
-      if (settled) {
-        return
-      }
-      settled = true
-      window.clearTimeout(timerId)
-      if (currentGuideSpeechStop === stop) {
-        currentGuideSpeechStop = null
-      }
-      resolve()
-    }
-
-    utterance.onend = finish
-    utterance.onerror = finish
-
-    const timerId = window.setTimeout(finish, minDurationMs + 1200)
-    const stop = () => {
-      try {
-        window.speechSynthesis.cancel()
-      } catch (_) {}
-      finish()
-    }
-    currentGuideSpeechStop = stop
-
-    try {
-      window.speechSynthesis.cancel()
-      window.speechSynthesis.speak(utterance)
-    } catch (_) {
-      finish()
-    }
-  })
+  return wait(minDurationMs)
 }
 
 function stopCurrentGuideSpeech() {
@@ -2274,15 +2224,18 @@ class PluginDashboardGuideRuntime {
       return
     }
 
-    const speechPromise = this.startNarration(payload.line || '', {
-      voiceKey: payload.voiceKey,
-      audioUrl: payload.audioUrl,
-    })
     const totalNarrationDurationMs = await resolveNarrationDurationMs(payload)
     const elapsedBeforeMotionMs = Number.isFinite(payload.narrationStartedAtMs)
       ? Math.max(0, Date.now() - Math.round(payload.narrationStartedAtMs as number))
       : 0
     const budgetMs = Math.max(0, totalNarrationDurationMs - elapsedBeforeMotionMs)
+    const homeNarrationAlreadyRunning = Number.isFinite(payload.narrationStartedAtMs)
+    const speechPromise = homeNarrationAlreadyRunning
+      ? wait(budgetMs)
+      : this.startNarration(payload.line || '', {
+        voiceKey: payload.voiceKey,
+        audioUrl: payload.audioUrl,
+      })
     const baseMoveToMainDurationMs = PLUGIN_DASHBOARD_MOVE_TO_MAIN_MS
     const baseScrollDownDurationMs = Math.round(PLUGIN_DASHBOARD_SCROLL_PHASE_MS / 2)
     const baseScrollUpDurationMs = PLUGIN_DASHBOARD_SCROLL_PHASE_MS - baseScrollDownDurationMs

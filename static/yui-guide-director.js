@@ -287,8 +287,27 @@
         }
     });
 
+    function guideAudioFilesForAllLocales(fileName) {
+        return Object.freeze({
+            zh: fileName,
+            ja: fileName,
+            en: fileName,
+            ko: fileName,
+            ru: fileName
+        });
+    }
+
+    const GUIDE_AUDIO_FILE_OVERRIDES_BY_KEY = Object.freeze({
+        intro_basic: guideAudioFilesForAllLocales('想要找我的时候，随时在这里打字或者发语音都能召唤本喵哦！.mp3'),
+        intro_proactive: guideAudioFilesForAllLocales('可恶，居然敢无视本大小姐嘛！要说你一直没理我，我可是会主动跑出来咬你的哦～（哈！！）.mp3'),
+        intro_cat_paw: guideAudioFilesForAllLocales('好啦！不说废话了喵——你看到那个可爱的‘猫爪’了吗，准备好了吗？让我借用一下你的鼠标吧！.mp3'),
+        takeover_capture_cursor: guideAudioFilesForAllLocales('嘿咻！可算逮住你的鼠标了喵～.mp3')
+    });
+
     function guideAudioSrc(key) {
-        const files = key && GUIDE_AUDIO_FILES_BY_KEY[key] ? GUIDE_AUDIO_FILES_BY_KEY[key] : null;
+        const files = key
+            ? (GUIDE_AUDIO_FILE_OVERRIDES_BY_KEY[key] || GUIDE_AUDIO_FILES_BY_KEY[key] || null)
+            : null;
         if (!files) {
             return '';
         }
@@ -5518,6 +5537,33 @@
             });
         }
 
+        async playRemainingIntroPreludeScenes(completedSceneId) {
+            const completed = typeof completedSceneId === 'string' ? completedSceneId : '';
+            const sceneIds = this.getPreludeSceneIds();
+            if (!Array.isArray(sceneIds) || sceneIds.length === 0) {
+                return true;
+            }
+
+            for (let index = 0; index < sceneIds.length; index += 1) {
+                const sceneId = sceneIds[index];
+                if (typeof sceneId !== 'string' || !sceneId || sceneId === completed) {
+                    continue;
+                }
+                if (this.isStopping()) {
+                    return false;
+                }
+
+                await this.playManagedScene(sceneId, {
+                    source: 'prelude'
+                });
+                if (this.isStopping()) {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
         async runChatIntroPrelude() {
             if (this.introFlowStarted || this.isStopping()) {
                 return;
@@ -5607,6 +5653,11 @@
                 return;
             }
 
+            const introScenesCompleted = await this.playRemainingIntroPreludeScenes('intro_basic');
+            if (!introScenesCompleted) {
+                return;
+            }
+
             await wait(240);
             if (this.isStopping()) {
                 return;
@@ -5650,6 +5701,11 @@
                 ).catch(() => {})
             ]);
             if (this.isStopping()) {
+                return;
+            }
+
+            const introScenesCompleted = await this.playRemainingIntroPreludeScenes('intro_basic');
+            if (!introScenesCompleted) {
                 return;
             }
 
