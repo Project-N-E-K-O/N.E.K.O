@@ -4,6 +4,7 @@
     const DESKTOP_PROVIDER_NAME = 'neko-pc';
     const UNSUPPORTED_MECHANISM = 'desktop-bridge-unavailable';
     const AUTOSTART_NOT_SUPPORTED_ERROR = 'autostart_not_supported';
+    let cachedStatus = null;
 
     function getNavigatorPlatform() {
         if (navigator.userAgentData && navigator.userAgentData.platform) {
@@ -48,6 +49,27 @@
         return normalized;
     }
 
+    function publishStatus(result) {
+        if (!result || typeof result !== 'object') {
+            return result;
+        }
+        cachedStatus = Object.assign({}, result);
+        try {
+            window.dispatchEvent(new CustomEvent('neko:autostart-status-changed', {
+                detail: cachedStatus
+            }));
+        } catch (_) {}
+        return result;
+    }
+
+    window.addEventListener('neko:autostart-status-changed', function (event) {
+        const detail = event && event.detail;
+        if (!detail || typeof detail !== 'object') {
+            return;
+        }
+        cachedStatus = normalizeResult(detail, cachedStatus || getDesktopDefaults());
+    });
+
     function getDesktopDefaults() {
         return {
             ok: true,
@@ -75,56 +97,56 @@
     function getStatus() {
         const bridge = getDesktopBridge();
         if (!bridge) {
-            return Promise.resolve(buildUnsupportedDesktopResult());
+            return Promise.resolve(publishStatus(buildUnsupportedDesktopResult()));
         }
 
         return Promise.resolve().then(function () {
             return bridge.getStatus();
         }).then(function (result) {
-            return normalizeResult(result, getDesktopDefaults());
+            return publishStatus(normalizeResult(result, getDesktopDefaults()));
         });
     }
 
     function enable() {
         const bridge = getDesktopBridge();
         if (!bridge) {
-            return Promise.resolve(buildUnsupportedDesktopResult({
+            return Promise.resolve(publishStatus(buildUnsupportedDesktopResult({
                 ok: false,
                 error: AUTOSTART_NOT_SUPPORTED_ERROR,
                 error_code: AUTOSTART_NOT_SUPPORTED_ERROR,
-            }));
+            })));
         }
 
         return Promise.resolve().then(function () {
             return bridge.enable();
         }).then(function (result) {
-            return normalizeResult(result, getDesktopDefaults());
+            return publishStatus(normalizeResult(result, getDesktopDefaults()));
         });
     }
 
     function disable() {
         const bridge = getDesktopBridge();
         if (!bridge) {
-            return Promise.resolve(buildUnsupportedDesktopResult({
+            return Promise.resolve(publishStatus(buildUnsupportedDesktopResult({
                 ok: false,
                 error: AUTOSTART_NOT_SUPPORTED_ERROR,
                 error_code: AUTOSTART_NOT_SUPPORTED_ERROR,
-            }));
+            })));
         }
         if (typeof bridge.disable !== 'function') {
             // 和无桥接分支保持对象契约一致：老版本 PC 暴露 enable 但没 disable 时，
             // 调用方同样能按 provider 响应对象路径处理，不会被迫走 .catch。
-            return Promise.resolve(buildUnsupportedDesktopResult({
+            return Promise.resolve(publishStatus(buildUnsupportedDesktopResult({
                 ok: false,
                 error: AUTOSTART_NOT_SUPPORTED_ERROR,
                 error_code: AUTOSTART_NOT_SUPPORTED_ERROR,
-            }));
+            })));
         }
 
         return Promise.resolve().then(function () {
             return bridge.disable();
         }).then(function (result) {
-            return normalizeResult(result, getDesktopDefaults());
+            return publishStatus(normalizeResult(result, getDesktopDefaults()));
         });
     }
 
@@ -141,5 +163,8 @@
         getStatus: getStatus,
         enable: enable,
         disable: disable,
+        getCachedStatus: function () {
+            return cachedStatus ? Object.assign({}, cachedStatus) : null;
+        },
     };
 })();

@@ -48,6 +48,7 @@
         promptDrivenTutorialToken: null,
         tutorialRunToken: null,
         pendingTutorialStartPersistence: null,
+        pendingTutorialStartPayload: null,
         userCohort: 'unknown',
     };
 
@@ -192,6 +193,9 @@
             }
             if (response && response.tutorial_run_token) {
                 state.tutorialRunToken = response.tutorial_run_token;
+            }
+            if (flowStep === 'tutorial-started-persisted' && response && response.ok !== false) {
+                state.pendingTutorialStartPayload = null;
             }
             if (requestOptions.clearRunTokenOnSuccess && response && response.ok) {
                 state.tutorialRunToken = null;
@@ -429,6 +433,21 @@
         try {
             if (data && data.should_prompt) {
                 await maybeShowPrompt(data.prompt_token);
+            }
+            if (state.pendingTutorialStartPayload && !state.pendingTutorialStartPersistence) {
+                const retryPayload = Object.assign({}, state.pendingTutorialStartPayload);
+                const retryPersistence = persistTutorialLifecycle(
+                    '/api/tutorial-prompt/tutorial-started',
+                    retryPayload,
+                    'tutorial-started-persisted'
+                );
+                state.pendingTutorialStartPersistence = retryPersistence;
+                void retryPersistence.finally(function () {
+                    if (state.pendingTutorialStartPersistence === retryPersistence) {
+                        state.pendingTutorialStartPersistence = null;
+                    }
+                });
+                await retryPersistence;
             }
         } catch (error) {
             console.warn('[TutorialPrompt] failed to render tutorial prompt:', error);
@@ -750,13 +769,19 @@
                 promptToken: shortPromptToken(state.promptDrivenTutorialToken || state.lastPromptTokenSeen),
                 tutorialRunToken: shortTutorialRunToken(state.tutorialRunToken),
             });
-            const startPersistence = persistTutorialLifecycle('/api/tutorial-prompt/tutorial-started', {
+            const startPayload = {
                 page: 'home',
                 source: event.detail.source || 'manual',
                 prompt_token: event.detail.source === 'idle_prompt'
                     ? state.promptDrivenTutorialToken
                     : undefined,
-            }, 'tutorial-started-persisted');
+            };
+            state.pendingTutorialStartPayload = Object.assign({}, startPayload);
+            const startPersistence = persistTutorialLifecycle(
+                '/api/tutorial-prompt/tutorial-started',
+                startPayload,
+                'tutorial-started-persisted'
+            );
             state.pendingTutorialStartPersistence = startPersistence;
             void startPersistence.finally(function () {
                 if (state.pendingTutorialStartPersistence === startPersistence) {
