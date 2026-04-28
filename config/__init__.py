@@ -807,9 +807,9 @@ EVIDENCE_ARCHIVE_THRESHOLD = -2.0    # score ≤ -2 → archive_candidate
 # 强力记忆 OFF（powerful_memory_enabled=False）时的 time-driven fallback 阈值。
 # pre-RFC 行为：不靠 evidence_score，纯按 reflection 年龄推进 lifecycle，零
 # LLM 成本。pre-RFC 用 3 天，但实测过激（"3 天没否认 != 用户认可"）；这里
-# 拉到 14 天给用户更长窗口主动反驳。
-WEAK_MEMORY_AUTO_CONFIRM_DAYS = 14   # pending → confirmed (按 created_at 计)
-WEAK_MEMORY_AUTO_PROMOTE_DAYS = 14   # confirmed → promoted (按 confirmed_at 计)
+# 拉到 7 天给用户更长窗口主动反驳。
+WEAK_MEMORY_AUTO_CONFIRM_DAYS = 7   # pending → confirmed (按 created_at 计)
+WEAK_MEMORY_AUTO_PROMOTE_DAYS = 7   # confirmed → promoted (按 confirmed_at 计)
 
 # §3.5.3 归档相关（sub_zero_days 计数 + 分片大小上限）
 EVIDENCE_ARCHIVE_DAYS = 14           # sub_zero 累计达此天数 → 真正归档

@@ -132,9 +132,9 @@
       "name": "硅基流动",
       "description": "性价比高，支持Agent模式，不支持自定义语音",
       "openrouter_url": "https://api.siliconflow.cn/v1",
-      "conversation_model": "deepseek-ai/DeepSeek-V3.2",
-      "summary_model": "inclusionAI/Ling-flash-2.0",
-      "correction_model": "deepseek-ai/DeepSeek-V3.2",
+      "conversation_model": "deepseek-ai/DeepSeek-V4-Flash",
+      "summary_model": "deepseek-ai/DeepSeek-V4-Flash",
+      "correction_model": "deepseek-ai/DeepSeek-V4-Flash",
       "emotion_model": "inclusionAI/Ling-mini-2.0",
       "vision_model": "Qwen/Qwen3-VL-235B-A22B-Instruct",
       "agent_model": "zai-org/GLM-4.6V"
@@ -168,12 +168,12 @@
       "name": "DeepSeek",
       "description": "性价比极高，推理能力强，不支持自定义语音",
       "openrouter_url": "https://api.deepseek.com/v1",
-      "conversation_model": "deepseek-chat",
-      "summary_model": "deepseek-chat",
-      "correction_model": "deepseek-chat",
-      "emotion_model": "deepseek-chat",
-      "vision_model": "deepseek-chat",
-      "agent_model": "deepseek-reasoner"
+      "conversation_model": "deepseek-v4-pro",
+      "summary_model": "deepseek-v4-flash",
+      "correction_model": "deepseek-v4-pro",
+      "emotion_model": "deepseek-v4-flash",
+      "vision_model": "",
+      "agent_model": "deepseek-v4-pro"
     },
     "doubao": {
       "key": "doubao",
@@ -241,8 +241,8 @@
       "description": "模型聚合平台，支持数百种模型，国内版不支持",
       "openrouter_url": "https://openrouter.ai/api/v1",
       "conversation_model": "google/gemini-2.5-flash",
-      "summary_model": "deepseek/deepseek-v3.2",
-      "correction_model": "deepseek/deepseek-v3.2",
+      "summary_model": "deepseek/deepseek-v4-flash",
+      "correction_model": "deepseek/deepseek-v4-flash",
       "emotion_model": "qwen/qwen3.5-9b",
       "vision_model": "google/gemini-2.5-flash",
       "agent_model": "google/gemini-3-flash-preview"
