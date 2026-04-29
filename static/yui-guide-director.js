@@ -5853,6 +5853,9 @@
             this.overlay.hideBubble();
             this.overlay.hidePluginPreview();
             await this.ensureChatVisible();
+            if (this.isStopping()) {
+                return;
+            }
             this.focusAndHighlightChatInput(this.getChatInputTarget());
 
             // Ghost cursor 出现 + 气泡引导用户点击输入框（解锁 autoplay）
@@ -5884,6 +5887,10 @@
                 await new Promise((resolve) => {
                     this._introActivationResolve = resolve;
                 });
+                this._introActivationResolve = null;
+                if (this.isStopping()) {
+                    return;
+                }
                 this.overlay.hideBubble();
                 this.overlay.setTakingOver(true);
                 this.cursor.wobble();

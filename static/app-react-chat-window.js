@@ -44,7 +44,7 @@
 
     var MOBILE_MAX_HEIGHT_RATIO = 0.85;
     var MOBILE_MESSAGE_MIN_HEIGHT = 60;
-    var DESKTOP_DEFAULT_LEFT_MARGIN = 24;
+    var DESKTOP_DEFAULT_LEFT_RATIO = 0.05;
     var MOBILE_MIN_HEIGHT = 150;
     var MOBILE_HEIGHT_STORAGE_KEY = 'neko.reactChatWindow.mobileHeight';
     var mobileUserHeight = 0; // 用户手动设置的手机端高度（0 = 自动）
@@ -581,7 +581,7 @@
         if (!shell || isMobileWidth()) return;
 
         var rect = shell.getBoundingClientRect();
-        var left = Math.max(0, DESKTOP_DEFAULT_LEFT_MARGIN);
+        var left = Math.max(0, Math.round(window.innerWidth * DESKTOP_DEFAULT_LEFT_RATIO));
         var top = Math.max(0, Math.round((window.innerHeight - rect.height) / 2));
         applyPosition(left, top);
         persistPosition(left, top);
