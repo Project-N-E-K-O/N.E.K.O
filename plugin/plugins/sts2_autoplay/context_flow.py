@@ -69,6 +69,9 @@ class ContextFlowMixin:
             raw.get("name"),
         )
 
+    def _kwargs_signature(self, kwargs: dict[str, Any]) -> tuple[tuple[str, Any], ...]:
+        return tuple(sorted((str(key), value) for key, value in kwargs.items()))
+
     def _state_signature(self, snapshot: dict[str, Any]) -> tuple[Any, ...]:
         raw_state = snapshot.get("raw_state") if isinstance(snapshot.get("raw_state"), dict) else {}
         combat = raw_state.get("combat") if isinstance(raw_state.get("combat"), dict) else {}
@@ -168,6 +171,7 @@ class ContextFlowMixin:
             "action_type": action_type,
             "kwargs": kwargs,
             "fingerprint": self._action_fingerprint(action),
+            "kwargs_signature": self._kwargs_signature(kwargs),
             "context_signature": context["signature"],
             "context": context,
         }
@@ -213,9 +217,21 @@ class ContextFlowMixin:
         if not any(self._action_fingerprint(action) == prepared["fingerprint"] for action in actions if isinstance(action, dict)):
             return None
         latest = await self._fetch_step_context()
-        if any(self._action_fingerprint(action) == prepared["fingerprint"] for action in latest["actions"] if isinstance(action, dict)):
-            return prepared
-        return None
+        matching_action = next(
+            (action for action in latest["actions"] if isinstance(action, dict) and self._action_fingerprint(action) == prepared["fingerprint"]),
+            None,
+        )
+        if matching_action is None:
+            return None
+        raw = matching_action.get("raw") if isinstance(matching_action.get("raw"), dict) else {}
+        action_type = str(prepared.get("action_type") or "")
+        template_raw = dict(raw)
+        if action_type in {"choose_reward_card", "select_deck_card"}:
+            template_raw.pop("option_index", None)
+        kwargs = self._normalize_action_kwargs(action_type, template_raw, latest)
+        if self._kwargs_signature(kwargs) != prepared.get("kwargs_signature"):
+            return None
+        return {**prepared, "action": matching_action, "kwargs": kwargs, "context": latest, "context_signature": latest["signature"]}
 
     async def _await_action_interval(self) -> None:
         delay = max(0.0, float(self._cfg.get("action_interval_seconds", 0.5) or 0.5))

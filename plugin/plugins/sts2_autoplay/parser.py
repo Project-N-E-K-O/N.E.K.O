@@ -239,6 +239,23 @@ class StrategyParser:
         if isinstance(items, str):
             values = [item.strip().lower() for item in re.split(r"[,，、]", items) if item.strip()]
             return {"items": values, "conditions": []} if with_conditions else values
+        if isinstance(items, dict):
+            raw_items = items.get("items", items.get("aliases", items.get("keywords", [])))
+            normalized_items = self._normalize_constraint_items(raw_items)
+            values = list(dict.fromkeys(str(item).strip().lower() for item in normalized_items if str(item).strip()))
+            conditions: list[str] = []
+            for raw_condition in (items.get("condition"), items.get("description")):
+                if raw_condition:
+                    condition = str(raw_condition).strip()
+                    if condition and condition not in conditions:
+                        conditions.append(condition)
+            raw_conditions = items.get("conditions", [])
+            if isinstance(raw_conditions, list):
+                for condition_item in raw_conditions:
+                    condition = str(condition_item).strip()
+                    if condition and condition not in conditions:
+                        conditions.append(condition)
+            return {"items": values, "conditions": conditions} if with_conditions else values
         if isinstance(items, list):
             values: list[str] = []
             conditions: list[str] = []

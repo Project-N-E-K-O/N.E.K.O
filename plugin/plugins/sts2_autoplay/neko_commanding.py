@@ -256,6 +256,18 @@ class NekoCommandingMixin:
             card_name = self._card_name_for_prepared_action(prepared)
             reason = self._reason_for_card_action(llm_reasoning, card_name)
             result = await self._execute_action(prepared)
+            if result.get("status") != "ok":
+                failure_reason = str(result.get("message") or result.get("error") or "动作执行失败")
+                await self._notify_neko_card_task_event(
+                    "failed",
+                    objective=objective,
+                    snapshot=snapshot,
+                    prepared=prepared,
+                    reasoning=llm_reasoning,
+                    card_name=card_name,
+                    reason=failure_reason,
+                )
+                return {**result, "message": failure_reason, "summary": failure_reason, "card_name": card_name, "reason": reason, "snapshot": snapshot, "executed": False}
             await self._await_action_interval()
             settled_context = await self._await_post_action_settle(card_context, prepared)
             self._publish_snapshot(settled_context["snapshot"], record_history=True)

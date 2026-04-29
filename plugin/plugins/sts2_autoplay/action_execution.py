@@ -483,7 +483,7 @@ class ActionExecutionMixin:
             return None
         actions = context.get("actions") if isinstance(context.get("actions"), list) else []
         has_select_deck_card = any(
-            isinstance(action, dict) and str(action.get("type") or "") == "select_deck_card"
+            isinstance(action, Mapping) and _action_type_from(action) == "select_deck_card"
             for action in actions
         )
         if not has_select_deck_card:

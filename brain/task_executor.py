@@ -1050,12 +1050,14 @@ class DirectTaskExecutor:
             for _, p in iterable:
                 pid = p.get("id") if isinstance(p, dict) else getattr(p, "id", None)
                 desc = p.get("description", "") if isinstance(p, dict) else getattr(p, "description", "")
-                entries = p.get("entries", []) if isinstance(p, dict) else getattr(p, "entries", []) or []
                 if not pid:
+                    continue
+                visible_entries = self._agent_visible_plugin_entries(p)
+                if not visible_entries:
                     continue
                 entry_lines = []
                 try:
-                    for e in self._agent_visible_plugin_entries(p):
+                    for e in visible_entries:
                         try:
                             eid = e.get("id") if isinstance(e, dict) else getattr(e, "id", None)
                             edesc = e.get("description", "") if isinstance(e, dict) else getattr(e, "description", "")
@@ -1084,7 +1086,9 @@ class DirectTaskExecutor:
                             continue
                 except Exception:
                     entry_lines = []
-                entry_desc = "; ".join(entry_lines) if entry_lines else "(no Agent-visible entries)"
+                if not entry_lines:
+                    continue
+                entry_desc = "; ".join(entry_lines)
                 lines.append(f"- {pid}: {desc} | entries: [{entry_desc}]")
         except Exception:
             pass
@@ -1368,7 +1372,8 @@ class DirectTaskExecutor:
                         if not pid:
                             continue
                         eids = [str(e.get("id")) for e in self._agent_visible_plugin_entries(p) if e.get("id")]
-                        valid_entries_map[pid] = eids
+                        if eids:
+                            valid_entries_map[pid] = eids
                 except Exception:
                     valid_entries_map = {}
 
@@ -1438,9 +1443,13 @@ class DirectTaskExecutor:
                         decision["can_execute"] = False
                         decision["reason"] = "entry_id missing"
                     elif not final_eid:
-                        # Plugin has no declared entries — fall back to default 'run'
-                        final_eid = "run"
-                        decision["entry_id"] = "run"
+                        logger.warning(
+                            "[UserPlugin Assessment] Final check: no Agent-visible entry for plugin_id=%s, forcing can_execute=false",
+                            final_pid,
+                        )
+                        final_can = False
+                        decision["can_execute"] = False
+                        decision["reason"] = "no_agent_visible_entries"
                     elif valid_entries_map and valid_entries_map.get(final_pid) and final_eid not in valid_entries_map[final_pid]:
                         logger.warning("[UserPlugin Assessment] Final check: entry_id '%s' still invalid for plugin '%s', forcing can_execute=false", final_eid, final_pid)
                         final_can = False
@@ -1798,9 +1807,38 @@ class DirectTaskExecutor:
                 reason=reason or "Plugin not found"
             )
 
+        declared_entries = plugin_meta.get("entries", []) if isinstance(plugin_meta, dict) else []
+        has_declared_entries = isinstance(declared_entries, list) and bool(declared_entries)
+        known_entries = [str(e.get("id")) for e in self._agent_visible_plugin_entries(plugin_meta) if e.get("id")]
+        if has_declared_entries and not known_entries:
+            return TaskResult(
+                task_id=task_id,
+                has_task=True,
+                task_description=task_description,
+                execution_method='user_plugin',
+                success=False,
+                error=f"Plugin {plugin_id} has no Agent-visible entries",
+                tool_name=plugin_id,
+                tool_args=plugin_args,
+                entry_id=plugin_entry_id,
+                reason=reason or "no_agent_visible_entries",
+            )
+        if has_declared_entries and not plugin_entry_id:
+            return TaskResult(
+                task_id=task_id,
+                has_task=True,
+                task_description=task_description,
+                execution_method='user_plugin',
+                success=False,
+                error=f"entry_id is required for plugin '{plugin_id}'. Available: {known_entries}",
+                tool_name=plugin_id,
+                tool_args=plugin_args,
+                entry_id=plugin_entry_id,
+                reason=reason or "entry_id_missing",
+            )
+
         # Strict entry_id validation: only allow case-insensitive exact match as minor tolerance.
         if plugin_entry_id and plugin_meta:
-            known_entries = [str(e.get("id")) for e in self._agent_visible_plugin_entries(plugin_meta) if e.get("id")]
             if known_entries and plugin_entry_id not in known_entries:
                 # Only tolerate case-insensitive exact match (e.g. "Run" vs "run")
                 ci_matches = [e for e in known_entries if e.lower() == plugin_entry_id.lower()]
@@ -1860,10 +1898,11 @@ class DirectTaskExecutor:
 
             run_wait_timeout = _compute_run_wait_timeout(effective_entry_timeout)
 
+            resolved_entry_id = plugin_entry_id or "run"
             run_body: Dict[str, Any] = {
                 "task_id": task_id,
                 "plugin_id": plugin_id,
-                "entry_id": plugin_entry_id or "run",
+                "entry_id": resolved_entry_id,
                 "args": safe_args,
             }
 
@@ -1935,7 +1974,7 @@ class DirectTaskExecutor:
                 "run_id": run_id,
                 "run_token": run_token,
                 "expires_at": expires_at,
-                "entry_id": plugin_entry_id or "run",
+                "entry_id": resolved_entry_id,
                 "run_status": completion.get("status"),
                 "run_success": run_success,
                 "run_data": completion.get("data"),

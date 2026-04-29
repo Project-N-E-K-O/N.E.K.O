@@ -36,8 +36,8 @@ def _compat_asyncio_run(main, *, debug=None, loop_factory=None):
 asyncio.runners.Runner.run = _nested_runner_run
 asyncio.run = _compat_asyncio_run
 
-import pytest
 import os
+import sys
 import threading
 import time
 import json
@@ -46,9 +46,10 @@ import socket
 from unittest.mock import patch
 from pathlib import Path
 
-# Add project root to sys.path if needed, or rely on pytest pythonpath
-import sys
+# Add project root to sys.path before importing project-local test helpers.
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+import pytest
 
 from tests.utils.llm_judger import LLMJudger
 

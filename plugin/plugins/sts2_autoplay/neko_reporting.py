@@ -124,9 +124,13 @@ class NekoReportingMixin:
         notifier = self._frontend_notifier
         if notifier is None:
             return
+        result_context = step_result.get("context") if isinstance(step_result.get("context"), dict) else {}
+        result_snapshot = step_result.get("snapshot") if isinstance(step_result.get("snapshot"), dict) else None
+        if result_snapshot is None and isinstance(result_context.get("snapshot"), dict):
+            result_snapshot = result_context.get("snapshot")
         report = self._report_full_step(
-            {"snapshot": self._snapshot},
-            decision_result=self._last_llm_reasoning,
+            {"snapshot": result_snapshot if isinstance(result_snapshot, dict) else self._snapshot},
+            decision_result=step_result.get("reasoning") if isinstance(step_result.get("reasoning"), dict) else self._last_llm_reasoning,
         )
         hand_names = [c.get("name", "?") for c in report.get("hand", []) if isinstance(c, dict)]
         enemy_summaries = []
@@ -667,10 +671,13 @@ class NekoReportingMixin:
             self._emit_status()
         elif action_type == "slow_down":
             original_interval = self._cfg.get("action_interval_seconds", 1.5)
+            slowed_interval = max(float(original_interval or 1.5), 3.0)
+            if float(original_interval or 1.5) >= 3.0:
+                return
             if "_neko_auto_saved_action_interval" not in self._cfg:
                 self._cfg["_neko_auto_saved_action_interval"] = original_interval
-            self._cfg["action_interval_seconds"] = max(original_interval, 3.0)
-            self.logger.info(f"[sts2_autoplay][neko-auto] slow_down: interval {original_interval} -> 3.0")
+            self._cfg["action_interval_seconds"] = slowed_interval
+            self.logger.info(f"[sts2_autoplay][neko-auto] slow_down: interval {original_interval} -> {slowed_interval}")
         elif action_type == "resume":
             self._paused = False
             self._autoplay_state = "running"

@@ -13,6 +13,11 @@ class AutoplayLoopMixin:
         if self._autoplay_task and not self._autoplay_task.done():
             return {"status": "running", "message": "尖塔半自动任务已在运行", "task": self._semi_auto_task, "executed": False}
 
+        try:
+            await self.refresh_state()
+        except Exception as exc:
+            self.logger.warning(f"启动尖塔半自动前刷新状态失败，将延迟初始化起点: {exc}")
+
         self._semi_auto_task = self._build_semi_auto_task(objective=objective, stop_condition=stop_condition)
         await self._notify_neko_task_event("started")
 
@@ -141,6 +146,8 @@ class AutoplayLoopMixin:
     def _build_semi_auto_task(self, *, objective: Optional[str], stop_condition: str) -> Dict[str, Any]:
         snapshot = self._snapshot if isinstance(self._snapshot, dict) else {}
         normalized_stop = str(stop_condition or "current_floor").strip() or "current_floor"
+        start_floor = self._safe_int(snapshot.get("floor"), None) if snapshot.get("floor") is not None else None
+        start_act = self._safe_int(snapshot.get("act"), None) if snapshot.get("act") is not None else None
         return {
             "mode": "semi_auto",
             "objective": str(objective or "用户请求猫娘帮忙处理当前关卡").strip(),
@@ -148,8 +155,8 @@ class AutoplayLoopMixin:
             "started_at": time.time(),
             "start_step": self._step_count,
             "start_screen": snapshot.get("screen"),
-            "start_floor": self._safe_int(snapshot.get("floor")),
-            "start_act": self._safe_int(snapshot.get("act") or 1),
+            "start_floor": start_floor,
+            "start_act": start_act,
             "status": "running",
         }
 
@@ -159,6 +166,11 @@ class AutoplayLoopMixin:
         if not isinstance(task, dict) or not snapshot:
             return False
         stop_condition = str(task.get("stop_condition") or "current_floor")
+        if task.get("start_floor") is None and snapshot.get("floor") is not None:
+            task["start_floor"] = self._safe_int(snapshot.get("floor"))
+            task["start_act"] = self._safe_int(snapshot.get("act"), None) if snapshot.get("act") is not None else None
+            task["start_screen"] = task.get("start_screen") or snapshot.get("screen")
+            return False
         start_floor = self._safe_int(task.get("start_floor"))
         current_floor = self._safe_int(snapshot.get("floor"))
         screen = self._normalized_screen_name(snapshot)

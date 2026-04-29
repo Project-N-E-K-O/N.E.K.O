@@ -231,10 +231,27 @@ class CombatAnalyzer:
                 continue
             if not self._card_matches_estimator(card, entry):
                 continue
-            source = str(entry.get("source") or "").strip().lower()
-            if source == "orb_evoke_and_channel":
-                damage += self._card_orb_damage_value(card, combat=combat, target_index=target_index, estimator=entry)
+            damage += self._card_estimator_damage_value(
+                card,
+                combat=combat,
+                target_index=target_index,
+                estimator=entry,
+            )
         return damage
+
+    def _card_estimator_damage_value(self, card: Dict[str, Any], *, combat: Optional[Dict[str, Any]] = None, target_index: Any = None, estimator: Optional[Dict[str, Any]] = None) -> int:
+        if not isinstance(estimator, dict):
+            return 0
+        source = str(estimator.get("source") or "").strip().lower()
+        if source == "orb_evoke_and_channel":
+            return self._card_orb_damage_value(card, combat=combat, target_index=target_index, estimator=estimator)
+        if source in {"base_damage", "card_damage", "attack_damage"}:
+            return self._card_damage_value(card) * self._card_hits_value(card)
+        if source in {"fixed", "flat", "static"}:
+            return self._safe_int(estimator.get("damage"), 0)
+        if source in {"poison", "dot", "status_damage"}:
+            return self._safe_int(estimator.get("damage"), 0)
+        return self._safe_int(estimator.get("damage"), 0)
 
     def _card_matches_estimator(self, card: Dict[str, Any], estimator: Dict[str, Any]) -> bool:
         keywords = estimator.get("keywords") if isinstance(estimator.get("keywords"), list) else []

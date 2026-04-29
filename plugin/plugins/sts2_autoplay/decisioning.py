@@ -85,6 +85,8 @@ class DecisioningMixin:
                     attack_cards.append((card, damage))
         attack_cards.sort(key=lambda x: x[1], reverse=True)
         target_index = self._safe_int(tactical_summary.get("recommended_target_index"), None)
+        enemies = combat.get("enemies") if isinstance(combat.get("enemies"), list) else []
+        prioritize_lethal = bool(tactical_summary.get("should_prioritize_lethal"))
         for card, _ in attack_cards:
             valid_targets = card.get("valid_target_indices") if isinstance(card.get("valid_target_indices"), list) else []
             normalized_valid_targets: list[int] = []
@@ -101,11 +103,25 @@ class DecisioningMixin:
                     resolved_target = target_index
                 else:
                     resolved_target = normalized_valid_targets[0]
+            damage = self._combat_analyzer._card_total_damage_value(card, combat, target_index=resolved_target, strategy_constraints=strategy_constraints)
+            if prioritize_lethal:
+                target_enemy = next(
+                    (enemy for enemy in enemies if isinstance(enemy, dict) and resolved_target is not None and self._safe_int(enemy.get("index"), None) == resolved_target),
+                    None,
+                )
+                if target_enemy is None and len(enemies) == 1 and isinstance(enemies[0], dict):
+                    target_enemy = enemies[0]
+                if target_enemy is None:
+                    continue
+                effective_hp = self._enemy_hp_value(target_enemy) + self._enemy_block_value(target_enemy)
+                if damage < effective_hp:
+                    continue
             action = self._action_for_card(play_card_actions, card, target_index=resolved_target)
             if action is not None:
-                self.logger.info(f"[sts2_autoplay][desperate] selected attack card={card.get('name')} damage={self._combat_analyzer._card_total_damage_value(card, combat, target_index=resolved_target, strategy_constraints=strategy_constraints)} target={resolved_target}")
+                self.logger.info(f"[sts2_autoplay][desperate] selected attack card={card.get('name')} damage={damage} target={resolved_target}")
                 return action
-        return None
+        defensive_action = self._find_defensive_action(actions, combat, tactical_summary)
+        return defensive_action
 
     def _detect_card_synergy_type(self, card: dict[str, Any], combat: dict[str, Any]) -> str:
         card_type = str(card.get("card_type") or card.get("type") or "").strip().lower()
@@ -119,7 +135,7 @@ class DecisioningMixin:
             return "weaken"
         if any(k in text_blob for k in {"vulnerable", "易伤", "vuln"}):
             return "vulnerable"
-        if any(k in text_blob for k in {"inflame", "strength_up", "充能", "strength", "力量"}):
+        if any(k in text_blob for k in {"inflame", "strength_up", "strength", "力量"}):
             return "strength_boost"
         if any(k in text_blob for k in {"metallicize", "金属化", "护甲每回合"}):
             return "block_boost"
@@ -405,10 +421,8 @@ class DecisioningMixin:
             action = self._select_action_heuristic(actions, context=context)
             self._log_action_decision("heuristic", action, context)
             return action, None
-        guidance_list = self._drain_neko_guidance()
+        guidance_list = list(self._neko_guidance_queue)
         guidance_text = "\n".join(f"- {g['content']}" for g in guidance_list) if guidance_list else None
-        self._last_neko_guidance_used = guidance_text or ""
-        self._last_neko_guidance_count = len(guidance_list)
         if guidance_text:
             context["neko_guidance"] = guidance_text
         if mode == "half-program":
@@ -416,6 +430,9 @@ class DecisioningMixin:
                 result = await self._select_action_with_llm_and_reasoning(self._configured_character_strategy(), context, neko_guidance=guidance_text)
                 if result is not None:
                     action, reasoning = result
+                    self._drain_neko_guidance()
+                    self._last_neko_guidance_used = guidance_text or ""
+                    self._last_neko_guidance_count = len(guidance_list)
                     self._log_action_decision("half-program-llm", action, context)
                     return action, reasoning
             except Exception as exc:
@@ -428,6 +445,9 @@ class DecisioningMixin:
                 result = await self._select_action_full_model_and_reasoning(context, neko_guidance=guidance_text)
                 if result is not None:
                     action, reasoning = result
+                    self._drain_neko_guidance()
+                    self._last_neko_guidance_used = guidance_text or ""
+                    self._last_neko_guidance_count = len(guidance_list)
                     self._log_action_decision("full-model", action, context)
                     return action, reasoning
             except Exception as exc:
@@ -436,6 +456,9 @@ class DecisioningMixin:
                 result = await self._select_action_with_llm_and_reasoning(self._configured_character_strategy(), context, neko_guidance=guidance_text)
                 if result is not None:
                     action, reasoning = result
+                    self._drain_neko_guidance()
+                    self._last_neko_guidance_used = guidance_text or ""
+                    self._last_neko_guidance_count = len(guidance_list)
                     self._log_action_decision("full-model-half-program-fallback", action, context)
                     return action, reasoning
             except Exception as exc:

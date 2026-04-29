@@ -716,7 +716,8 @@ class HeuristicSelector:
         for category, bonus in (("required", 36), ("high_priority", 22), ("low_priority", -20)):
             bucket = constraints.get(category) if isinstance(constraints.get(category), dict) else {}
             for label, cards in bucket.items():
-                if any(any(card in text for text in texts) for card in cards if isinstance(card, str)):
+                aliases = self._constraint_aliases(cards)
+                if self._matches_constraint_alias(texts, aliases):
                     score += bonus
                     constraint_hits.append(f"{category}:{label}")
         conditional_bucket = constraints.get("conditional") if isinstance(constraints.get("conditional"), dict) else {}

@@ -362,6 +362,26 @@ def test_task_executor_hides_agent_auto_disabled_plugin_entries():
     assert entry["id"] == "sts2_start_autoplay"
 
 
+def test_task_executor_skips_plugin_with_only_agent_hidden_entries():
+    from brain.task_executor import DirectTaskExecutor
+
+    executor = object.__new__(DirectTaskExecutor)
+    plugins = [
+        {
+            "id": "sts2_autoplay",
+            "description": "尖塔插件",
+            "entries": [
+                {"id": "sts2_get_snapshot", "description": "获取快照", "metadata": {"agent_auto": False}},
+            ],
+        }
+    ]
+
+    assert executor._build_plugin_desc_lines(plugins) == []
+    plugin, entry = executor._find_plugin_entry(plugins, "sts2_autoplay", "sts2_get_snapshot")
+    assert plugin is plugins[0]
+    assert entry is None
+
+
 def test_agent_server_user_turn_fingerprint_includes_attachments():
     source = Path("agent_server.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
