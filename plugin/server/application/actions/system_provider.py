@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from plugin.logging_config import get_logger
+from plugin.sdk.shared.i18n import load_plugin_i18n_from_meta, resolve_i18n_refs
 from plugin.server.domain.action_models import ActionDescriptor
 
 logger = get_logger("server.application.actions.system_provider")
@@ -57,9 +58,28 @@ def _has_static_ui(meta: dict[str, Any]) -> bool:
     return p.is_dir() and (p / index_file).is_file()
 
 
+def _resolve_default_locale() -> str:
+    try:
+        from utils.language_utils import get_global_language_full
+
+        return str(get_global_language_full() or "en")
+    except Exception:
+        return "en"
+
+
+def _resolve_plugin_i18n(value: object, plugin_meta: Mapping[str, object], *, locale: str | None = None) -> object:
+    return resolve_i18n_refs(
+        value,
+        load_plugin_i18n_from_meta(plugin_meta),
+        locale=locale or _resolve_default_locale(),
+    )
+
+
 def _get_entries_for_plugin(
     plugin_id: str,
     handlers_snapshot: dict[str, Any],
+    plugin_meta: Mapping[str, object] | None = None,
+    locale: str | None = None,
 ) -> list[dict[str, Any]]:
     """Extract entry info dicts for *plugin_id* from the event_handlers snapshot."""
     entries: list[dict[str, Any]] = []
@@ -88,7 +108,7 @@ def _get_entries_for_plugin(
         is_quick = bool(getattr(meta, "quick_action", False)) if meta else False
         qa_config = getattr(meta, "quick_action_config", None) if meta else None
 
-        entries.append({
+        entry_dict: dict[str, Any] = {
             "id": entry_id,
             "name": entry_name,
             "kind": entry_kind,
@@ -97,7 +117,12 @@ def _get_entries_for_plugin(
             "quick_action": is_quick,
             "quick_action_icon": getattr(qa_config, "icon", None) if qa_config else None,
             "quick_action_priority": getattr(qa_config, "priority", 0) if qa_config else 0,
-        })
+        }
+        if plugin_meta is not None:
+            resolved = _resolve_plugin_i18n(entry_dict, plugin_meta, locale=locale)
+            if isinstance(resolved, dict):
+                entry_dict = resolved
+        entries.append(entry_dict)
 
     return entries
 
@@ -127,14 +152,15 @@ def _collect_system_actions_sync(
         if not isinstance(meta_raw, Mapping):
             continue
         meta: dict[str, Any] = dict(meta_raw)
-        plugin_name = str(meta.get("name") or pid)
+        plugin_name_obj = _resolve_plugin_i18n(meta.get("name") or pid, meta)
+        plugin_name = str(plugin_name_obj or pid)
         is_running = pid in hosts_snapshot
 
         # ── Entry actions (running plugins only) ──
         # Only non-service entries are exposed as user-facing commands.
         # Services are background processes managed via the admin dashboard.
         if is_running:
-            entries = _get_entries_for_plugin(pid, handlers_snapshot)
+            entries = _get_entries_for_plugin(pid, handlers_snapshot, plugin_meta=meta)
             for entry in entries:
                 entry_kind = entry.get("kind", "action")
 

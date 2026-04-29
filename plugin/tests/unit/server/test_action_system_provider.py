@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import threading
+import json
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -25,10 +26,11 @@ def _make_plugin_meta(
 
 def _make_handler(
     entry_id: str,
-    name: str = "",
+    name: object = "",
     kind: str = "action",
     enabled: bool = True,
-    description: str = "",
+    description: object = "",
+    input_schema: dict[str, object] | None = None,
 ) -> Any:
     """Create a fake event handler with meta attributes."""
     from types import SimpleNamespace
@@ -39,7 +41,7 @@ def _make_handler(
         kind=kind,
         description=description,
         metadata={"enabled": enabled},
-        input_schema=None,
+        input_schema=input_schema,
     )
     return SimpleNamespace(meta=meta)
 
@@ -184,6 +186,51 @@ class TestCollectSystemActions:
         actions = self._collect(state)
         entry = [a for a in actions if "entry:" in a.action_id][0]
         assert entry.category == "Demo Plugin"
+
+    def test_entry_i18n_refs_are_resolved_for_command_palette(self, tmp_path: Path) -> None:
+        plugin_dir = tmp_path / "demo"
+        locales_dir = plugin_dir / "locales"
+        locales_dir.mkdir(parents=True)
+        (plugin_dir / "plugin.toml").write_text("[plugin]\nid='demo'\n", encoding="utf-8")
+        (locales_dir / "en.json").write_text(
+            json.dumps({
+                "plugin.name": "Localized Demo",
+                "entries.run.name": "Localized Run",
+                "entries.run.description": "Localized description",
+                "fields.value": "Localized value field",
+            }),
+            encoding="utf-8",
+        )
+        state = _FakeState(
+            plugins={"demo": _make_plugin_meta(
+                name={"$i18n": "plugin.name", "default": "Demo"},
+                config_path=str(plugin_dir / "plugin.toml"),
+                i18n={"default_locale": "en", "locales_dir": "locales"},
+            )},
+            hosts={"demo": object()},
+            handlers={"demo.run": _make_handler(
+                "run",
+                name={"$i18n": "entries.run.name", "default": "Run"},
+                description={"$i18n": "entries.run.description", "default": "Run description"},
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "value": {
+                            "type": "string",
+                            "description": {"$i18n": "fields.value", "default": "Value"},
+                        },
+                    },
+                },
+            )},
+        )
+
+        actions = self._collect(state)
+        entry = [a for a in actions if "entry:" in a.action_id][0]
+        assert entry.category == "Localized Demo"
+        assert entry.label == "Localized Run"
+        assert entry.description == "Localized description"
+        assert entry.input_schema is not None
+        assert entry.input_schema["properties"]["value"]["description"] == "Localized value field"
 
 
 @pytest.mark.plugin_unit
