@@ -19,7 +19,10 @@ class AutoplayLoopMixin:
             self.logger.warning(f"启动尖塔半自动前刷新状态失败，将延迟初始化起点: {exc}")
 
         self._semi_auto_task = self._build_semi_auto_task(objective=objective, stop_condition=stop_condition)
-        await self._notify_neko_task_event("started")
+        try:
+            await self._notify_neko_task_event("started")
+        except Exception as exc:
+            self.logger.warning(f"任务启动通知失败，不影响任务执行: {exc}")
 
         self._paused = False
         self._autoplay_state = "running"
@@ -35,7 +38,10 @@ class AutoplayLoopMixin:
         if self._autoplay_state == "running":
             self._autoplay_state = "paused"
         self._emit_status()
-        await self._notify_neko_task_event("paused", task=task, reason=reason)
+        try:
+            await self._notify_neko_task_event("paused", task=task, reason=reason)
+        except Exception as exc:
+            self.logger.warning(f"任务暂停通知失败: {exc}")
         return {"status": "paused", "message": "尖塔已暂停", "reason": reason}
 
     async def resume_autoplay(self) -> Dict[str, Any]:
@@ -64,7 +70,10 @@ class AutoplayLoopMixin:
             self._autoplay_task = None
         self._autoplay_state = "idle"
         self._emit_status()
-        await self._notify_neko_task_event("stopped", task=task, reason=reason)
+        try:
+            await self._notify_neko_task_event("stopped", task=task, reason=reason)
+        except Exception as exc:
+            self.logger.warning(f"任务停止通知失败: {exc}")
         return {"status": "idle", "message": "尖塔已停止", "reason": reason}
 
     async def get_history(self, limit: int = 20) -> Dict[str, Any]:
@@ -81,10 +90,11 @@ class AutoplayLoopMixin:
             return {"status": "error", "message": "guidance 必须是字典"}
         if not guidance.get("content"):
             return {"status": "error", "message": "guidance.content 不能为空"}
+        _GUIDANCE_DEQUE_HARD_LIMIT = 50
         try:
-            max_queue = max(1, int(self._cfg.get("neko_guidance_max_queue", 50) or 50))
+            max_queue = min(_GUIDANCE_DEQUE_HARD_LIMIT, max(1, int(self._cfg.get("neko_guidance_max_queue", 50) or 50)))
         except (ValueError, TypeError):
-            max_queue = 50
+            max_queue = _GUIDANCE_DEQUE_HARD_LIMIT
         step_value = guidance.get("step")
         try:
             guidance_step = self._step_count if step_value is None else int(step_value)
