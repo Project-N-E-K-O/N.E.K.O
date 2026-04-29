@@ -31,7 +31,9 @@ from config import (
     TASK_ERROR_MAX_TOKENS,
     AGENT_HISTORY_TURNS,
     EXCEPTION_TEXT_MAX_CHARS,
+    ERROR_MESSAGE_MAX_CHARS,
     TASK_TRACKER_DETAIL_MAX_CHARS,
+    TASK_TRACKER_INJECT_DETAIL_MAX_CHARS,
     USER_NOTIFICATION_REASON_MAX_CHARS,
     USER_NOTIFICATION_ERROR_MAX_CHARS,
 )
@@ -271,7 +273,7 @@ class AgentTaskTracker:
             kind = r["kind"]
             method = r["method"]
             desc = _sanitize(r.get("desc", ""), TASK_DETAIL_MAX_TOKENS)
-            detail = _sanitize(r.get("detail", ""), 300)
+            detail = _sanitize(r.get("detail", ""), TASK_TRACKER_INJECT_DETAIL_MAX_CHARS)
             if kind == "assigned":
                 line = f"[ASSIGNED] method={method} | {desc}"
             elif kind == "completed":
@@ -2032,7 +2034,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                 task_id=str(result.task_id or ""),
                                 success=False,
                                 summary=_rp_phrase('openclaw_failed', _rp_lang(None)),
-                                error_message=str(nk_result.get("error") or "")[:EXCEPTION_TEXT_MAX_CHARS],
+                                error_message=str(nk_result.get("error") or "")[:ERROR_MESSAGE_MAX_CHARS],
                             )
                     except Exception as e:
                         logger.exception("[OpenClaw] magic command dispatch failed: %s", e)
@@ -2043,7 +2045,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                 task_id=str(result.task_id or ""),
                                 success=False,
                                 summary=_rp_phrase('openclaw_dispatch_failed', _rp_lang(None)),
-                                error_message=str(e)[:EXCEPTION_TEXT_MAX_CHARS],
+                                error_message=str(e)[:ERROR_MESSAGE_MAX_CHARS],
                             )
                         except Exception:
                             pass
@@ -2140,7 +2142,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                 task_id=str(result.task_id or ""),
                                 success=False,
                                 summary=_rp_phrase('openclaw_failed', _rp_lang(None)),
-                                error_message=str(nk_result.get("error") or "")[:EXCEPTION_TEXT_MAX_CHARS],
+                                error_message=str(nk_result.get("error") or "")[:ERROR_MESSAGE_MAX_CHARS],
                             )
                         await _emit_main_event(
                             "task_update",
@@ -2214,7 +2216,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                 task_id=str(result.task_id or ""),
                                 success=False,
                                 summary=_rp_phrase('openclaw_dispatch_failed', _rp_lang(None)),
-                                error_message=str(e)[:EXCEPTION_TEXT_MAX_CHARS],
+                                error_message=str(e)[:ERROR_MESSAGE_MAX_CHARS],
                             )
                         except Exception:
                             pass
