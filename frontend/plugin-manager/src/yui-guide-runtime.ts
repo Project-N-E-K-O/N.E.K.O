@@ -191,6 +191,10 @@ type ScreenRect = {
   top: number
   right: number
   bottom: number
+  coordinateSpace?: string
+  platform?: 'windows' | 'macos' | 'linux' | 'web' | string
+  devicePixelRatio?: number
+  hitPadding?: number
 }
 
 type ActiveNarration = {
@@ -711,17 +715,17 @@ function injectStyle() {
   const style = document.createElement('style')
   style.id = `${ROOT_ID}-style`
   style.textContent = `
-    html.yui-guide-plugin-dashboard-running,
-    html.yui-guide-plugin-dashboard-running *,
-    body.yui-guide-plugin-dashboard-running,
-    body.yui-guide-plugin-dashboard-running * {
-      cursor: none !important;
-    }
-
-    html.yui-taking-over,
-    html.yui-taking-over *,
-    body.yui-taking-over,
-    body.yui-taking-over * {
+    #${ROOT_ID},
+    #${ROOT_ID} .yui-guide-plugin-backdrop,
+    #${ROOT_ID} .yui-guide-plugin-backdrop *,
+    #${ROOT_ID} .yui-guide-plugin-interaction-shield,
+    #${ROOT_ID} .yui-guide-plugin-spotlight,
+    #${ROOT_ID} .yui-guide-plugin-cursor-shell,
+    #${ROOT_ID} .yui-guide-plugin-cursor,
+    html.yui-guide-plugin-dashboard-running [data-yui-cursor-hidden="true"],
+    body.yui-guide-plugin-dashboard-running [data-yui-cursor-hidden="true"],
+    html.yui-taking-over [data-yui-cursor-hidden="true"],
+    body.yui-taking-over [data-yui-cursor-hidden="true"] {
       cursor: none !important;
     }
 
@@ -729,6 +733,27 @@ function injectStyle() {
     html.yui-taking-over.yui-resistance-cursor-reveal *,
     body.yui-taking-over.yui-resistance-cursor-reveal,
     body.yui-taking-over.yui-resistance-cursor-reveal * {
+      cursor: auto !important;
+    }
+
+    html.yui-guide-plugin-dashboard-running button,
+    html.yui-guide-plugin-dashboard-running a[href],
+    html.yui-guide-plugin-dashboard-running input,
+    html.yui-guide-plugin-dashboard-running select,
+    html.yui-guide-plugin-dashboard-running textarea,
+    html.yui-guide-plugin-dashboard-running summary,
+    html.yui-guide-plugin-dashboard-running [role="button"],
+    html.yui-guide-plugin-dashboard-running [role="link"],
+    html.yui-guide-plugin-dashboard-running [tabindex]:not([tabindex="-1"]),
+    body.yui-guide-plugin-dashboard-running button,
+    body.yui-guide-plugin-dashboard-running a[href],
+    body.yui-guide-plugin-dashboard-running input,
+    body.yui-guide-plugin-dashboard-running select,
+    body.yui-guide-plugin-dashboard-running textarea,
+    body.yui-guide-plugin-dashboard-running summary,
+    body.yui-guide-plugin-dashboard-running [role="button"],
+    body.yui-guide-plugin-dashboard-running [role="link"],
+    body.yui-guide-plugin-dashboard-running [tabindex]:not([tabindex="-1"]) {
       cursor: auto !important;
     }
 
@@ -1342,6 +1367,22 @@ class PluginDashboardGuideRuntime {
     }
   }
 
+  getHomeSkipForwardingTolerance(rect: ScreenRect) {
+    const platform = String(rect.platform || '').toLowerCase()
+    const coordinateSpace = String(rect.coordinateSpace || '').toLowerCase()
+    const rawPadding = Number(rect.hitPadding)
+    const basePadding = Number.isFinite(rawPadding) ? Math.max(0, rawPadding) : 0
+    if (coordinateSpace === 'electron-window-bounds') {
+      if (platform === 'linux') return Math.max(8, Math.round(basePadding * 0.35))
+      if (platform === 'macos') return Math.max(6, Math.round(basePadding * 0.25))
+      return Math.max(4, Math.round(basePadding * 0.2))
+    }
+    if (platform === 'linux') return 18
+    if (platform === 'macos') return 14
+    if (platform === 'windows') return 10
+    return 6
+  }
+
   forwardHomeSkipClick(event: PointerEvent | MouseEvent) {
     if (!this.running || !event || !this.activeSessionId) {
       return false
@@ -1358,11 +1399,12 @@ class PluginDashboardGuideRuntime {
       return false
     }
 
+    const tolerance = this.getHomeSkipForwardingTolerance(rect)
     if (
-      screenX < rect.left
-      || screenX > rect.right
-      || screenY < rect.top
-      || screenY > rect.bottom
+      screenX < rect.left - tolerance
+      || screenX > rect.right + tolerance
+      || screenY < rect.top - tolerance
+      || screenY > rect.bottom + tolerance
     ) {
       return false
     }
@@ -1402,6 +1444,8 @@ class PluginDashboardGuideRuntime {
       source: 'plugin_dashboard',
       screenX,
       screenY,
+      coordinateSpace: rect.coordinateSpace || '',
+      platform: rect.platform || '',
     })
     return true
   }
@@ -2464,6 +2508,10 @@ class PluginDashboardGuideRuntime {
           top: Math.round(payload.skipButtonScreenRect.top),
           right: Math.round(payload.skipButtonScreenRect.right),
           bottom: Math.round(payload.skipButtonScreenRect.bottom),
+          coordinateSpace: payload.skipButtonScreenRect.coordinateSpace,
+          platform: payload.skipButtonScreenRect.platform,
+          devicePixelRatio: payload.skipButtonScreenRect.devicePixelRatio,
+          hitPadding: payload.skipButtonScreenRect.hitPadding,
         }
       : null
     this.homeNarrationFinished = false

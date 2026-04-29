@@ -397,13 +397,34 @@ body.yui-guide-home-driver-hidden .driver-highlight {
   animation: yui-guide-cursor-wobble 620ms ease;
 }
 
-body.yui-taking-over,
-body.yui-taking-over * {
+body.yui-taking-over .yui-guide-overlay,
+body.yui-taking-over .yui-guide-stage,
+body.yui-taking-over .yui-guide-backdrop,
+body.yui-taking-over .yui-guide-backdrop *,
+body.yui-taking-over .yui-guide-spotlight-frame,
+body.yui-taking-over .yui-guide-precise-highlight,
+body.yui-taking-over .yui-guide-bubble,
+body.yui-taking-over .yui-guide-preview,
+body.yui-taking-over .yui-guide-preview-card,
+body.yui-taking-over .yui-guide-cursor-shell,
+body.yui-taking-over .yui-guide-cursor,
+body.yui-taking-over [data-yui-cursor-hidden="true"] {
   cursor: none !important;
 }
 
 body.yui-taking-over #neko-tutorial-skip-btn,
-body.yui-taking-over #neko-tutorial-skip-btn * {
+body.yui-taking-over #neko-tutorial-skip-btn *,
+body.yui-taking-over [data-yui-skip-control],
+body.yui-taking-over [data-yui-emergency-exit],
+body.yui-taking-over button,
+body.yui-taking-over a[href],
+body.yui-taking-over input,
+body.yui-taking-over select,
+body.yui-taking-over textarea,
+body.yui-taking-over summary,
+body.yui-taking-over [role="button"],
+body.yui-taking-over [role="link"],
+body.yui-taking-over [tabindex]:not([tabindex="-1"]) {
   cursor: auto !important;
 }
 

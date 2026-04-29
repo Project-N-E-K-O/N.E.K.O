@@ -3872,7 +3872,12 @@
 
             if (api && typeof api.openPage === 'function') {
                 try {
-                    return await api.openPage('http://127.0.0.1:48916/ui/', 'plugin_dashboard', '', options || null);
+                    return await api.openPage(
+                        new URL('/ui/', this.getPluginDashboardExpectedOrigin()).toString(),
+                        'plugin_dashboard',
+                        '',
+                        options || null
+                    );
                 } catch (error) {
                     console.warn('[YuiGuide] openPage(plugin_dashboard) 失败:', error);
                 }
@@ -4852,10 +4857,15 @@
                     12000,
                     42000
                 );
-                const targetOrigin = '*';
+                const targetOrigin = this.getPluginDashboardExpectedOrigin();
+                if (!targetOrigin) {
+                    resolve(false);
+                    return;
+                }
                 const handoff = {
                     sessionId: sessionId,
                     windowRef: windowRef,
+                    targetOrigin: targetOrigin,
                     ready: false,
                     readyAt: 0,
                     resolve: (result) => {
@@ -4944,7 +4954,7 @@
                 windowRef.postMessage({
                     type: PLUGIN_DASHBOARD_NARRATION_FINISHED_EVENT,
                     sessionId: handoff.sessionId
-                }, '*');
+                }, handoff.targetOrigin || this.getPluginDashboardExpectedOrigin());
             } catch (error) {
                 console.warn('[YuiGuide] 向插件面板发送 narration finished 失败:', error);
             }
@@ -4963,12 +4973,37 @@
                     sessionId: handoff.sessionId,
                     reason: typeof reason === 'string' && reason.trim() ? reason.trim() : 'skip',
                     closeWindow: true
-                }, '*');
+                }, handoff.targetOrigin || this.getPluginDashboardExpectedOrigin());
                 return true;
             } catch (error) {
                 console.warn('[YuiGuide] 向插件面板发送 terminate 失败:', error);
                 return false;
             }
+        }
+
+        detectDesktopPlatform() {
+            const rawPlatform = (
+                (navigator.userAgentData && navigator.userAgentData.platform)
+                || navigator.platform
+                || navigator.userAgent
+                || ''
+            ).toString().toLowerCase();
+            if (rawPlatform.includes('mac')) return 'macos';
+            if (rawPlatform.includes('win')) return 'windows';
+            if (rawPlatform.includes('linux') || rawPlatform.includes('x11')) return 'linux';
+            return 'web';
+        }
+
+        getSkipButtonHitPadding(platform, boundsSource) {
+            if (boundsSource === 'electron-window-bounds') {
+                if (platform === 'macos') return 28;
+                if (platform === 'linux') return 32;
+                return 20;
+            }
+            if (platform === 'macos') return 36;
+            if (platform === 'linux') return 44;
+            if (platform === 'windows') return 28;
+            return 18;
         }
 
         async getGuideHostWindowBounds() {
@@ -4998,7 +5033,8 @@
                     x: Math.round(x),
                     y: Math.round(y),
                     width: Math.round(width),
-                    height: Math.round(height)
+                    height: Math.round(height),
+                    source: 'electron-window-bounds'
                 };
             } catch (_) {
                 return null;
@@ -5016,6 +5052,7 @@
                 return null;
             }
 
+            const platform = this.detectDesktopPlatform();
             const hostBounds = await this.getGuideHostWindowBounds();
             const rawScreenLeft = hostBounds && Number.isFinite(hostBounds.x)
                 ? hostBounds.x
@@ -5029,13 +5066,20 @@
                 : Number(window.screenTop);
             const screenLeft = Number.isFinite(rawScreenLeft) ? rawScreenLeft : 0;
             const screenTop = Number.isFinite(rawScreenTop) ? rawScreenTop : 0;
-            const hitPadding = 16;
+            const boundsSource = hostBounds && hostBounds.source
+                ? hostBounds.source
+                : 'browser-screen-origin';
+            const hitPadding = this.getSkipButtonHitPadding(platform, boundsSource);
 
             return {
                 left: Math.round(screenLeft + rect.left - hitPadding),
                 top: Math.round(screenTop + rect.top - hitPadding),
                 right: Math.round(screenLeft + rect.right + hitPadding),
-                bottom: Math.round(screenTop + rect.bottom + hitPadding)
+                bottom: Math.round(screenTop + rect.bottom + hitPadding),
+                coordinateSpace: boundsSource,
+                platform: platform,
+                devicePixelRatio: Number.isFinite(Number(window.devicePixelRatio)) ? Number(window.devicePixelRatio) : 1,
+                hitPadding: hitPadding
             };
         }
 
@@ -6880,9 +6924,9 @@
             }
 
             const windowRef = handoff && handoff.windowRef ? handoff.windowRef : null;
-            const targetOrigin = event && typeof event.origin === 'string' && event.origin
-                ? event.origin
-                : '*';
+            const targetOrigin = handoff && handoff.targetOrigin
+                ? handoff.targetOrigin
+                : this.getPluginDashboardExpectedOrigin();
             const postAck = () => {
                 if (!windowRef || windowRef.closed) {
                     return;
@@ -6970,7 +7014,7 @@
             if (!handoff || !handoff.windowRef || event.source !== handoff.windowRef) {
                 return;
             }
-            const expectedOrigin = this.getPluginDashboardExpectedOrigin();
+            const expectedOrigin = handoff.targetOrigin || this.getPluginDashboardExpectedOrigin();
             if (expectedOrigin && event.origin !== expectedOrigin) {
                 return;
             }
