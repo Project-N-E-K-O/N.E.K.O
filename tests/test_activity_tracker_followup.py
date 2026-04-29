@@ -13,6 +13,7 @@ to avoid touching the real user_preferences.json, and feeds a fabricated
 
 from __future__ import annotations
 
+import asyncio
 import time
 
 import pytest
@@ -300,13 +301,11 @@ def test_user_app_override_cannot_unmask_private():
     sm.update_window(observation_from_system(sn, prefs))
 
     snap = sm.get_snapshot()
-    # Override DOES change the WindowObservation (user said so), but
-    # classification then runs through static DB first via the keyword
-    # match — except in our current implementation user override wins.
-    # The intentional behaviour: keyword DB hit is checked FIRST, then
-    # user override patches. So static private match wins. Confirm.
-    # NOTE: depending on implementation order this may be the inverse;
-    # the test pins the safer (privacy-preserving) ordering.
+    # Contract: user_app_overrides / user_title_overrides are additive-only —
+    # they only fire when the static keyword DB returned ``unknown``
+    # (`result.category == 'unknown'`). On a static private hit the override
+    # is suppressed by the `static_locked` guard in `_apply_user_overrides`,
+    # so a "work" override on KeePass.exe stays as `private`.
     assert snap.state == 'private', (
         'User app override must not be allowed to demote a privacy-DB hit'
     )
@@ -696,6 +695,22 @@ def test_tracker_picks_up_fresh_prefs_via_refresh_hook():
             'public get_snapshot_sync must call _refresh_prefs to swap '
             'in fresh cached prefs; if a future refactor removes that '
             'call, live sessions will stop hot-reloading user overrides'
+        )
+
+        # Async path parity — the same contract must hold for the async
+        # public entry. Reset the in-memory prefs to the sentinel and
+        # leave the loader cache pointing at new_prefs, then await
+        # get_snapshot() and assert the swap happened. Without this,
+        # an async-path refactor could silently strip _refresh_prefs
+        # while the sync test stays green.
+        tracker._sm._prefs = sentinel_prefs
+        _cache.prefs = new_prefs
+        asyncio.run(tracker.get_snapshot())
+        assert tracker._sm._prefs is new_prefs, (
+            'public async get_snapshot must call _refresh_prefs to swap '
+            'in fresh cached prefs; if a future refactor removes that '
+            'call from the async entry, live sessions will stop '
+            'hot-reloading user overrides'
         )
     finally:
         _cache.prefs = original
