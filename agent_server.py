@@ -921,6 +921,33 @@ def _now_iso() -> str:
     return datetime.utcnow().isoformat() + "Z"
 
 
+def _resolve_delivery_mode(result: Optional[Dict]) -> str:
+    """Return the effective delivery mode declared by a plugin's finish envelope.
+
+    Reads ``result.meta.agent.delivery`` (canonical, three-state string) with
+    fallback to legacy ``result.meta.agent.reply`` (bool). Returns one of
+    ``"proactive" | "passive" | "silent"``. Default = ``"proactive"`` (the
+    main AI is interrupted to announce the result).
+    """
+    if not isinstance(result, dict):
+        return "proactive"
+    meta = result.get("meta")
+    if not isinstance(meta, dict):
+        return "proactive"
+    agent = meta.get("agent")
+    if not isinstance(agent, dict):
+        return "proactive"
+    raw = agent.get("delivery")
+    if isinstance(raw, str) and raw in ("proactive", "passive", "silent"):
+        return raw
+    if isinstance(raw, bool):
+        return "proactive" if raw else "silent"
+    reply_obj = agent.get("reply")
+    if isinstance(reply_obj, bool):
+        return "proactive" if reply_obj else "silent"
+    return "proactive"
+
+
 async def _emit_task_result(
     lanlan_name: Optional[str],
     *,
@@ -931,14 +958,26 @@ async def _emit_task_result(
     detail: str = "",
     error_message: str = "",
     direct_reply: bool = False,
+    status: Optional[str] = None,
+    source_kind: Optional[str] = None,
+    source_name: Optional[str] = None,
+    delivery_mode: str = "proactive",
 ) -> None:
-    """Emit a structured task_result event to main_server."""
-    if success:
-        status = "completed"
-    elif detail:
-        status = "partial"
-    else:
-        status = "failed"
+    """Emit a structured task_result event to main_server.
+
+    Status, source_kind, source_name and delivery_mode propagate to the
+    callback queue and drive the i18n outer-template rendering in
+    main_logic. ``status`` defaults to ``completed`` / ``partial`` / ``failed``
+    based on (success, detail) when not explicitly passed; pass ``"cancelled"``
+    for user/system cancellation.
+    """
+    if status is None:
+        if success:
+            status = "completed"
+        elif detail:
+            status = "partial"
+        else:
+            status = "failed"
     # tiktoken token-based limits（同 main_logic 的语义分组）：
     # summary 是 LLM-facing 摘要（group B "longer reflective blurb"）
     # detail 是前端 HUD 展示用的较长版本（group G "large tool result"）
@@ -965,6 +1004,9 @@ async def _emit_task_result(
         detail=_detail_t,
         error_message=_error_t,
         direct_reply=direct_reply,
+        source_kind=source_kind or "",
+        source_name=source_name or "",
+        delivery_mode=delivery_mode,
         timestamp=_now_iso(),
     )
 
@@ -989,16 +1031,12 @@ def _lookup_llm_result_fields(plugin_id: str, entry_id: Optional[str]) -> Option
 
 
 def _is_reply_suppressed(result: Optional[Dict]) -> bool:
-    """检查插件是否通过 meta.agent.reply=False 显式抑制回复。"""
-    if not isinstance(result, dict):
-        return False
-    meta = result.get("meta")
-    if not isinstance(meta, dict):
-        return False
-    agent = meta.get("agent")
-    if not isinstance(agent, dict):
-        return False
-    return agent.get("reply") is False
+    """Backward-compat shim: returns True iff delivery mode is "silent".
+
+    Prefer :func:`_resolve_delivery_mode` for new code — it returns the full
+    three-state value.
+    """
+    return _resolve_delivery_mode(result) == "silent"
 
 def _check_agent_api_gate() -> Dict[str, Any]:
     """统一 Agent API 门槛检查。"""
@@ -1722,8 +1760,11 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                             plugin_message=_plugin_msg,
                             error=_error_to_pass,
                         )
-                        # 检查插件是否通过 meta.agent.reply=False 抑制回复
-                        _suppress_reply = _is_reply_suppressed(up_result.result if isinstance(up_result.result, dict) else None)
+                        # Resolve plugin's declared delivery mode (proactive/passive/silent).
+                        # silent → skip task_result emit entirely; the rest reach
+                        # main_server which routes proactive vs passive scheduling.
+                        _delivery_mode = _resolve_delivery_mode(up_result.result if isinstance(up_result.result, dict) else None)
+                        _suppress_reply = _delivery_mode == "silent"
                         # 检查插件是否返回 deferred 标志（如备忘提醒：调度成功但提醒尚未触发）
                         is_deferred = isinstance(run_data, dict) and run_data.get("deferred") is True
                         # Update task_registry（deferred 任务保持 running，不写 terminal 状态）
@@ -1757,18 +1798,23 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                             )
                             logger.info(f"[TaskExecutor] ✅ UserPlugin completed: {plugin_id}")
                             if not _suppress_reply:
-                                _lang = _rp_lang(None)
                                 display_id = await _get_plugin_display_id(plugin_id)
-                                summary = _rp_phrase('plugin_done_with', _lang, id=display_id, detail=detail) if detail else _rp_phrase('plugin_done', _lang, id=display_id)
+                                # summary is now plain detail; the LLM-facing
+                                # i18n wrap (来自插件「X」的任务{status}…) lives
+                                # in main_logic via SYSTEM_NOTIFICATION_PROACTIVE
+                                # + SOURCE_DESCRIPTORS + TASK_STATUS_PHRASES.
                                 try:
                                     await _emit_task_result(
                                         lanlan_name,
                                         channel="user_plugin",
                                         task_id=str(up_result.task_id or ""),
                                         success=True,
-                                        summary=summary,
+                                        summary=detail,
                                         detail=detail,
                                         direct_reply=False,
+                                        source_kind="plugin",
+                                        source_name=display_id,
+                                        delivery_mode=_delivery_mode,
                                     )
                                 except Exception as emit_err:
                                     logger.debug("[TaskExecutor] emit task_result(success) failed: task_id=%s plugin_id=%s error=%s", up_result.task_id, plugin_id, emit_err)
@@ -1780,17 +1826,23 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                             )
                             logger.warning(f"[TaskExecutor] ❌ UserPlugin failed: {up_result.error}")
                             if not _suppress_reply:
-                                _lang = _rp_lang(None)
                                 try:
                                     display_id = await _get_plugin_display_id(plugin_id)
-                                    _fail_summary = _rp_phrase('plugin_failed_with', _lang, id=display_id, detail=detail) if detail else _rp_phrase('plugin_failed', _lang, id=display_id)
+                                    _err_text = (detail or str(up_result.error or "")).strip()
+                                    # summary 不再套 plugin_failed_with；状态由
+                                    # main_logic 的外层 SYSTEM_NOTIFICATION_PROACTIVE
+                                    # （+ status="failed" → "执行失败"）表达。
                                     await _emit_task_result(
                                         lanlan_name,
                                         channel="user_plugin",
                                         task_id=str(up_result.task_id or ""),
                                         success=False,
-                                        summary=_fail_summary,
-                                        error_message=(detail or str(up_result.error or "")),
+                                        summary=_err_text,
+                                        detail=_err_text,
+                                        error_message=_err_text,
+                                        source_kind="plugin",
+                                        source_name=display_id,
+                                        delivery_mode=_delivery_mode,
                                     )
                                 except Exception as emit_err:
                                     logger.debug("[TaskExecutor] emit task_result(failed) failed: task_id=%s plugin_id=%s error=%s", up_result.task_id, plugin_id, emit_err)
@@ -1818,13 +1870,19 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                             detail=cancel_msg[:200], success=False, cancelled=True,
                         )
                         try:
+                            display_id = await _get_plugin_display_id(plugin_id)
                             await _emit_task_result(
                                 lanlan_name,
                                 channel="user_plugin",
                                 task_id=str(result.task_id or ""),
                                 success=False,
-                                summary=_rp_phrase('plugin_cancelled', _rp_lang(None)),
+                                summary=cancel_msg,
+                                detail=cancel_msg,
                                 error_message=cancel_msg,
+                                status="cancelled",
+                                source_kind="plugin",
+                                source_name=display_id,
+                                delivery_mode="proactive",
                             )
                         except Exception as emit_err:
                             logger.debug("[TaskExecutor] emit task_result(cancelled) failed: task_id=%s error=%s", result.task_id, emit_err)
@@ -3058,25 +3116,33 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
                     plugin_message=_plugin_msg,
                     error=_error_to_pass,
                 )
-                _suppress_reply = _is_reply_suppressed(res.result if isinstance(res.result, dict) else None)
+                _delivery_mode = _resolve_delivery_mode(res.result if isinstance(res.result, dict) else None)
+                _suppress_reply = _delivery_mode == "silent"
                 if not _suppress_reply:
                     if not res.success:
                         info["error"] = _tt((detail or str(res.error or "")), TASK_ERROR_MAX_TOKENS)
-                    _lang = _rp_lang(None)
                     display_id = await _get_plugin_display_id(plugin_id)
+                    # summary = plain detail; status/source rendering handled in main_logic.
                     if res.success:
-                        summary = _rp_phrase('plugin_done_with', _lang, id=display_id, detail=detail) if detail else _rp_phrase('plugin_done', _lang, id=display_id)
+                        _summary_text = detail
+                        _detail_text = detail
+                        _err_text = ""
                     else:
-                        summary = _rp_phrase('plugin_failed_with', _lang, id=display_id, detail=detail) if detail else _rp_phrase('plugin_failed', _lang, id=display_id)
+                        _err_text = (detail or str(res.error or "")).strip()
+                        _summary_text = _err_text
+                        _detail_text = _err_text
                     await _emit_task_result(
                         lanlan_name,
                         channel="user_plugin",
                         task_id=task_id,
                         success=res.success,
-                        summary=summary,
-                        detail=detail if res.success else "",
-                        error_message=(detail or str(res.error or "")) if not res.success else "",
+                        summary=_summary_text,
+                        detail=_detail_text,
+                        error_message=_err_text,
                         direct_reply=False,
+                        source_kind="plugin",
+                        source_name=display_id,
+                        delivery_mode=_delivery_mode,
                     )
                 elif not res.success:
                     info["error"] = _tt((detail or str(res.error or "")), TASK_ERROR_MAX_TOKENS)
@@ -3087,13 +3153,19 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
             if not info.get("error"):
                 info["error"] = "Cancelled by shutdown"
             try:
+                display_id = await _get_plugin_display_id(plugin_id)
                 await _emit_task_result(
                     lanlan_name,
                     channel="user_plugin",
                     task_id=task_id,
                     success=False,
-                    summary=_rp_phrase('plugin_cancelled_id', _rp_lang(None), id=plugin_id),
+                    summary="cancelled",
+                    detail="cancelled",
                     error_message="cancelled",
+                    status="cancelled",
+                    source_kind="plugin",
+                    source_name=display_id,
+                    delivery_mode="proactive",
                 )
             except Exception as emit_err:
                 logger.debug("[Plugin] emit task_result(cancelled) failed: task_id=%s plugin_id=%s error=%s", task_id, plugin_id, emit_err)
@@ -3113,13 +3185,20 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
             )
             print(f"[Plugin] Direct execute raw error (task_id={task_id}, plugin_id={plugin_id}):\n{_tb.format_exc()}")
             try:
+                display_id = await _get_plugin_display_id(plugin_id)
+                _exc_text = str(e)[:500]
                 await _emit_task_result(
                     lanlan_name,
                     channel="user_plugin",
                     task_id=task_id,
                     success=False,
-                    summary=_rp_phrase('plugin_exception', _rp_lang(None), id=plugin_id, err=str(e)[:200]),
-                    error_message=str(e)[:500],
+                    summary=_exc_text,
+                    detail=_exc_text,
+                    error_message=_exc_text,
+                    status="failed",
+                    source_kind="plugin",
+                    source_name=display_id,
+                    delivery_mode="proactive",
                 )
             except Exception as emit_err:
                 logger.debug("[Plugin] emit task_result(exception) failed: task_id=%s plugin_id=%s error=%s", task_id, plugin_id, emit_err)

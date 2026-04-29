@@ -138,6 +138,23 @@ class ProactiveBridge:
                         if not content:
                             continue
 
+                        # Resolve delivery mode from metadata.agent.delivery
+                        # (canonical) or metadata.agent.reply (deprecated bool
+                        # alias). Default = "proactive" (push interrupts to
+                        # announce); plugin authors may override per-call.
+                        # Silent stays in proactive_bridge — main_server's
+                        # event-bus dispatcher applies the silent skip alongside
+                        # the same gate task_result uses.
+                        agent_meta = metadata.get("agent") if isinstance(metadata.get("agent"), dict) else {}
+                        delivery_mode = "proactive"
+                        raw_delivery = agent_meta.get("delivery")
+                        if isinstance(raw_delivery, str) and raw_delivery in ("proactive", "passive", "silent"):
+                            delivery_mode = raw_delivery
+                        elif isinstance(raw_delivery, bool):
+                            delivery_mode = "proactive" if raw_delivery else "silent"
+                        elif isinstance(agent_meta.get("reply"), bool):
+                            delivery_mode = "proactive" if agent_meta["reply"] else "silent"
+
                         proactive_event = {
                             "event_type": "proactive_message",
                             "lanlan_name": metadata.get("target_lanlan") or None,
@@ -148,6 +165,9 @@ class ProactiveBridge:
                             "task_id": metadata.get("task_id", ""),
                             "success": True,
                             "status": "completed",
+                            "delivery_mode": delivery_mode,
+                            "source_kind": "plugin",
+                            "source_name": plugin_id or "",
                             "timestamp": payload.get("time", ""),
                         }
                     

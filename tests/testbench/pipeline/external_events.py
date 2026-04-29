@@ -1269,30 +1269,55 @@ def _build_agent_callback_instruction_bundle(
 ) -> Optional[_InstructionBundle]:
     """Build the agent_callback instruction bundle. Returns ``None`` if
     callbacks are empty (caller → ``reason="empty_callbacks"``).
+
+    Mirrors the production drain path in ``main_logic.core``: synthesizes
+    callback dicts (status=completed, source_kind=system) and renders via
+    ``_build_callback_instruction`` so the testbench wire matches the
+    grouped-by-source/status outer template the real LLM sees.
     """
-    from config.prompts_sys import AGENT_CALLBACK_NOTIFICATION
+    from config.prompts_sys import SYSTEM_NOTIFICATION_PASSIVE, _loc
+    from main_logic.core import _build_callback_instruction
 
     _full_lang, short_lang = _resolve_language(session)
 
     raw_items = payload.get("callbacks") if isinstance(payload, dict) else None
     if not isinstance(raw_items, list):
         raw_items = []
-    items: list[str] = []
+    callbacks: list[dict[str, Any]] = []
     for item in raw_items:
         if isinstance(item, str) and item.strip():
-            items.append(item.strip())
+            callbacks.append({
+                "status": "completed",
+                "source_kind": "system",
+                "source_name": "",
+                "summary": item.strip(),
+                "detail": item.strip(),
+            })
         elif isinstance(item, dict):
             text = item.get("text") or item.get("summary") or ""
             text = str(text or "").strip()
             if text:
-                items.append(text)
+                callbacks.append({
+                    "status": item.get("status") or "completed",
+                    "source_kind": item.get("source_kind") or "system",
+                    "source_name": item.get("source_name") or "",
+                    "summary": text,
+                    "detail": str(item.get("detail") or text),
+                })
 
-    if not items:
+    if not callbacks:
         return None
 
-    prefix = AGENT_CALLBACK_NOTIFICATION.get(short_lang, AGENT_CALLBACK_NOTIFICATION["en"])
-    template_raw = prefix
-    instruction = prefix + "\n".join(f"- {t}" for t in items)
+    # Use passive=True to mirror the next-user-turn drain semantics that
+    # this simulator was originally built around.
+    instruction = _build_callback_instruction(
+        callbacks,
+        lang=short_lang,
+        lanlan_name=getattr(session, "lanlan_name", "") or "",
+        master_name=getattr(session, "master_name", "") or "",
+        passive=True,
+    )
+    template_raw = _loc(SYSTEM_NOTIFICATION_PASSIVE, short_lang)
     return _InstructionBundle(
         template_raw=template_raw,
         instruction_final=instruction,
