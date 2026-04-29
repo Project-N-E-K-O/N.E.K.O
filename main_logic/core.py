@@ -46,11 +46,122 @@ from config.prompts_sys import (
     AGENT_TASK_STATUS_RUNNING, AGENT_TASK_STATUS_QUEUED,
     AGENT_TASKS_HEADER, AGENT_TASKS_NOTICE,
     CONTEXT_SUMMARY_READY,
-    SYSTEM_NOTIFICATION_TASKS_DONE,
+    SYSTEM_NOTIFICATION_PROACTIVE,
+    SYSTEM_NOTIFICATION_PASSIVE,
+    SOURCE_DESCRIPTORS,
+    TASK_STATUS_PHRASES,
+    TASK_ACTION_PHRASES,
     CONTEXT_SUMMARY_TASK_HEADER, CONTEXT_SUMMARY_TASK_FOOTER,
-    AGENT_CALLBACK_NOTIFICATION,
     RESULT_PARSER_PHRASES,
 )
+
+
+# 内部 item 渲染时的视觉标记。状态信息已在外层 SYSTEM_NOTIFICATION_PROACTIVE
+# 表达，emoji 仅作快速视觉识别用。
+_STATUS_EMOJI = {
+    "completed": "✅",
+    "partial": "⚠️",
+    "failed": "❌",
+    "cancelled": "🚫",
+}
+
+
+def _format_callback_source(cb: dict, lang: str) -> str:
+    """Render an agent_task_callback's source as user-facing text in ``lang``.
+
+    Reads ``cb["source_kind"]`` (one of SOURCE_DESCRIPTORS keys) and
+    ``cb["source_name"]`` (free-form string used as ``{name}`` slot). Falls
+    back to the ``unknown`` descriptor for missing/unrecognized kinds.
+    """
+    kind = (cb.get("source_kind") or "unknown").strip()
+    descriptor = SOURCE_DESCRIPTORS.get(kind) or SOURCE_DESCRIPTORS["unknown"]
+    name = (cb.get("source_name") or "").strip()
+    return _loc(descriptor, lang).format(name=name)
+
+
+def _render_callback_inner_item(cb: dict, lang: str) -> str:
+    """Render one callback as a single inline string for the LLM prompt.
+
+    Returns ``""`` when there is genuinely nothing to convey (both summary
+    and detail empty); the caller can then drop the line and rely on the
+    outer header alone to express that something happened.
+    """
+    summary = (cb.get("summary") or "").strip()
+    detail = (cb.get("detail") or "").strip()
+    text = summary or detail
+    if not text:
+        return ""
+    status = cb.get("status") or "completed"
+    emoji = _STATUS_EMOJI.get(status, "•")
+    line = f"{emoji} {text}"
+    if summary and detail and detail != summary and len(detail) > len(summary):
+        label = _loc(RESULT_PARSER_PHRASES["detail_result"], lang)
+        line += f"\n{label}{detail}"
+    return line
+
+
+def _build_callback_instruction(
+    callbacks,
+    *,
+    lang: str,
+    lanlan_name: str,
+    master_name: str,
+    passive: bool = False,
+) -> str:
+    """Render a list of agent_task_callbacks into the LLM injection string.
+
+    Groups by ``(delivery_mode/passive flag, status, source_kind, source_name)``
+    so each group can pick the right outer template (PROACTIVE vs PASSIVE)
+    and slot in the right status/action phrases.
+    """
+    if not callbacks:
+        return ""
+    from collections import OrderedDict
+
+    grouped: "OrderedDict[tuple, list]" = OrderedDict()
+    for cb in callbacks:
+        # passive=True call = drain path; treat all as passive regardless
+        # of per-callback delivery_mode.
+        cb_passive = passive or (cb.get("delivery_mode") == "passive")
+        key = (
+            cb_passive,
+            cb.get("status") or "completed",
+            cb.get("source_kind") or "unknown",
+            (cb.get("source_name") or ""),
+        )
+        grouped.setdefault(key, []).append(cb)
+
+    parts: list[str] = []
+    for (cb_passive, status, _src_kind, _src_name), cbs in grouped.items():
+        source_text = _format_callback_source(cbs[0], lang)
+        if cb_passive:
+            header = _loc(SYSTEM_NOTIFICATION_PASSIVE, lang).format(source=source_text)
+        else:
+            status_phrase = _loc(
+                TASK_STATUS_PHRASES.get(status) or TASK_STATUS_PHRASES["completed"],
+                lang,
+            )
+            action_phrase = _loc(
+                TASK_ACTION_PHRASES.get(status) or TASK_ACTION_PHRASES["completed"],
+                lang,
+            )
+            header = _loc(SYSTEM_NOTIFICATION_PROACTIVE, lang).format(
+                source=source_text,
+                status_phrase=status_phrase,
+                action_phrase=action_phrase,
+                name=lanlan_name,
+                master=master_name,
+            )
+        items = [_render_callback_inner_item(cb, lang) for cb in cbs]
+        items = [s for s in items if s]
+        if items:
+            parts.append(header + "\n".join(items))
+        else:
+            # No item text — outer header alone (e.g. "task X failed") still
+            # tells the AI that something happened. Strip trailing newline so
+            # the joined output is clean.
+            parts.append(header.rstrip())
+    return "\n\n".join(parts)
 from config.prompts_avatar_interaction import (
     _normalize_avatar_interaction_payload,
     _build_avatar_interaction_instruction,
@@ -3260,39 +3371,49 @@ class LLMSessionManager:
         if not self.pending_agent_callbacks:
             return
 
-        # Build the instruction from all pending callbacks
-        items: list[str] = []
-        for cb in self.pending_agent_callbacks:
-            status = cb.get("status", "completed")
-            summary = (cb.get("summary") or "").strip()
-            if not summary:
-                continue
-            tag = "✅" if status == "completed" else ("⚠️" if status == "partial" else "❌")
-            detail = (cb.get("detail") or "").strip()
-            if detail and detail != summary and len(detail) > len(summary):
-                _cb_lang = normalize_language_code(getattr(self, 'user_language', '') or '', format='short') or get_global_language()
-                detail_label = _loc(RESULT_PARSER_PHRASES['detail_result'], _cb_lang)
-                items.append(f"{tag} {summary}\n{detail_label}{detail}")
-            else:
-                items.append(f"{tag} {summary}")
-
-        if not items:
-            self.pending_agent_callbacks.clear()
-            self.pending_extra_replies.clear()
+        # Hard delivery contract: trigger_agent_callbacks ONLY consumes
+        # proactive callbacks. Passive ones must remain in the queue and
+        # surface only at the next user turn via drain_agent_callbacks_for_llm.
+        # Without this filter, a passive callback enqueued earlier would get
+        # piggy-backed onto any later proactive trigger — silently breaking
+        # ``delivery="passive"``'s "don't interrupt" promise.
+        proactive_cbs = [
+            cb for cb in self.pending_agent_callbacks
+            if cb.get("delivery_mode") != "passive"
+        ]
+        if not proactive_cbs:
+            logger.debug(
+                "[%s] trigger_agent_callbacks: queue has only passive callbacks (n=%d); deferring to next user turn",
+                self.lanlan_name, len(self.pending_agent_callbacks),
+            )
             return
 
-        # Voice mode 走 hot-swap，不进 SM proactive 流水线
+        # Voice mode 走 hot-swap，不进 SM proactive 流水线。Drop only the
+        # proactive cbs from the queue; passive cbs stay for the next drain.
         if isinstance(self.session, OmniRealtimeClient):
-            self.pending_agent_callbacks.clear()
+            self.pending_agent_callbacks = [
+                cb for cb in self.pending_agent_callbacks
+                if cb.get("delivery_mode") == "passive"
+            ]
             logger.debug("[%s] trigger_agent_callbacks: voice mode, deferring to hot-swap", self.lanlan_name)
             return
 
         _lang = normalize_language_code(self.user_language, format='short')
-        instruction = (
-            _loc(SYSTEM_NOTIFICATION_TASKS_DONE, _lang).format(name=self.lanlan_name, master=self.master_name)
-            + "\n".join(items)
+        # Render via _build_callback_instruction on the proactive subset only.
+        # Note: this never returns "" while ``proactive_cbs`` is non-empty —
+        # the renderer always emits at least the per-group outer header even
+        # for callbacks with empty summary/detail. So no empty-instruction
+        # early-return is needed (and the previous version incorrectly cleared
+        # ``pending_extra_replies`` along the way, which is voice-hot-swap
+        # state belonging to a different consumer).
+        instruction = _build_callback_instruction(
+            proactive_cbs,
+            lang=_lang,
+            lanlan_name=self.lanlan_name,
+            master_name=self.master_name,
+            passive=False,
         )
-        callbacks_snapshot = list(self.pending_agent_callbacks)
+        callbacks_snapshot = list(proactive_cbs)
 
         # 原子 check-and-claim：若另一路 proactive（router/greeting）在跑或 AI
         # 正在为用户回复，SM 拒绝本次投递，callbacks 留在 pending 下轮重试。
@@ -3356,7 +3477,9 @@ class LLMSessionManager:
             # 更新字数限制（可能用户在对话期间修改了设置）
             if hasattr(self.session, 'update_max_response_length'):
                 self.session.update_max_response_length(self._get_text_guard_max_length())
-            self.pending_agent_callbacks.clear()
+            # NOTE: queue mutation moved to caller (trigger_agent_callbacks
+            # extracts the proactive subset before claim). Do NOT clear
+            # pending_agent_callbacks here — passive cbs would also get wiped.
             # per-task contextvar：prompt_ephemeral 回调链里 handle_text_data
             # 识别本路径 chunk 并在 sid 被用户抢走后丢弃
             _sid_token = _proactive_expected_sid.set(proactive_sid)
@@ -3366,6 +3489,10 @@ class LLMSessionManager:
                 _proactive_expected_sid.reset(_sid_token)
             logger.debug("[%s] trigger_agent_callbacks: prompt_ephemeral delivered=%s", self.lanlan_name, delivered)
             if delivered:
+                # pending_extra_replies parallels pending_agent_callbacks but
+                # is voice-mode-only state. Wiping it on text delivery is the
+                # pre-existing behavior — voice hot-swap that races in after
+                # text-mode delivery would have nothing to inject anyway.
                 self.pending_extra_replies.clear()
             else:
                 self.pending_agent_callbacks.extend(callbacks_snapshot)
@@ -3534,27 +3661,25 @@ class LLMSessionManager:
         Clears pending_agent_callbacks (NOT pending_extra_replies, which is
         consumed separately by the voice-mode hot-swap path).
         Returns an empty string if there are no callbacks.
+
+        Renders with the same grouped/source-aware logic as
+        :meth:`trigger_agent_callbacks` but in passive mode — so the resulting
+        string already includes its own outer header (PASSIVE for delivery
+        ``"passive"`` callbacks, PROACTIVE for any "proactive" ones that
+        ended up here because the SM denied the claim earlier). The caller
+        therefore should NOT prepend an additional notification template.
         """
         if not self.pending_agent_callbacks:
             return ""
         try:
             _lang = normalize_language_code(getattr(self, 'user_language', '') or '', format='short') or get_global_language()
-            lines: list[str] = []
-            for cb in self.pending_agent_callbacks:
-                status = cb.get("status", "completed")
-                summary = (cb.get("summary") or "").strip()
-                detail = (cb.get("detail") or "").strip()
-                if status == "completed":
-                    tag = _loc(RESULT_PARSER_PHRASES['task_completed'], _lang)
-                elif status == "partial":
-                    tag = _loc(RESULT_PARSER_PHRASES['task_partial'], _lang)
-                else:
-                    tag = _loc(RESULT_PARSER_PHRASES['task_failed_tag'], _lang)
-                lines.append(f"{tag} {summary}")
-                if detail and detail != summary:
-                    prefix = _loc(RESULT_PARSER_PHRASES['detail_prefix'], _lang)
-                    lines.append(f"{prefix}{detail[:300]}")
-            return "\n".join(lines)
+            return _build_callback_instruction(
+                self.pending_agent_callbacks,
+                lang=_lang,
+                lanlan_name=getattr(self, "lanlan_name", "") or "",
+                master_name=getattr(self, "master_name", "") or "",
+                passive=False,
+            )
         finally:
             self.pending_agent_callbacks.clear()
 
@@ -3935,9 +4060,10 @@ class LLMSessionManager:
                         try:
                             ctx = self.drain_agent_callbacks_for_llm()
                             if ctx:
-                                await self.session.prompt_ephemeral(
-                                    _loc(AGENT_CALLBACK_NOTIFICATION, normalize_language_code(self.user_language, format='short')) + ctx,
-                                )
+                                # ``ctx`` already includes its own grouped
+                                # SYSTEM_NOTIFICATION_PROACTIVE / PASSIVE outer
+                                # headers per (status, source). No extra wrap.
+                                await self.session.prompt_ephemeral(ctx)
                                 # prompt_ephemeral 通过 on_proactive_done → handle_proactive_complete
                                 # 发送 (None, None) 并置 _tts_done_queued_for_turn = True。
                                 # 对于 qwen-tts 的 server_commit 模式，需要为主回复生成新的

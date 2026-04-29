@@ -11,7 +11,11 @@ from pathlib import Path
 from typing import Any, Protocol, cast
 
 from .bus_context import SdkBusContext, ensure_sdk_bus_context
-from .finish import build_finish_envelope, normalize_structured_data
+from .finish import (
+    build_finish_envelope,
+    normalize_delivery,
+    normalize_structured_data,
+)
 from .result_contract import contract_from_meta, validate_reply_payload
 from .types import LoggerLike, Metadata, PluginContextProtocol
 
@@ -100,7 +104,7 @@ class SdkContext:
     def _normalize_export_metadata(
         metadata: dict[str, object] | None,
         *,
-        reply: bool | None,
+        delivery: str | None,
     ) -> dict[str, object] | None:
         normalized: dict[str, object] = {}
         if isinstance(metadata, dict):
@@ -108,7 +112,7 @@ class SdkContext:
                 if isinstance(key_obj, str):
                     normalized[key_obj] = value
 
-        if reply is None:
+        if delivery is None:
             return normalized if metadata is not None else None
 
         raw_agent_meta = normalized.get("agent")
@@ -117,21 +121,44 @@ class SdkContext:
             for key_obj, value in raw_agent_meta.items():
                 if isinstance(key_obj, str):
                     agent_meta[key_obj] = value
-        agent_meta["reply"] = bool(reply)
-        if reply and "include" not in agent_meta:
+        agent_meta["delivery"] = delivery
+        agent_meta["reply"] = delivery != "silent"
+        if delivery != "silent" and "include" not in agent_meta:
             agent_meta["include"] = True
         normalized["agent"] = agent_meta
         return normalized
 
     @staticmethod
-    def _metadata_reply_flag(metadata: Mapping[str, object] | None) -> bool | None:
+    def _metadata_delivery(metadata: Mapping[str, object] | None) -> str | None:
+        """Read ``agent.delivery`` (or legacy ``agent.reply`` bool) from metadata.
+
+        Mirrors the priority rules of
+        :func:`plugin.sdk.shared.core.finish.normalize_delivery`: if
+        ``agent.delivery`` is present (any value, valid or not), it owns the
+        decision; we don't fall through to ``agent.reply``. ``delivery`` can
+        be a str (preferred) or a bool (very old call sites). Invalid values
+        fall back to default delivery. Only when ``delivery`` is absent
+        entirely do we consult ``reply``.
+        """
         if not isinstance(metadata, Mapping):
             return None
         raw_agent_meta = metadata.get("agent")
         if not isinstance(raw_agent_meta, Mapping):
             return None
+        if "delivery" in raw_agent_meta:
+            delivery_obj = raw_agent_meta["delivery"]
+            if isinstance(delivery_obj, str):
+                return normalize_delivery(delivery_obj)
+            if isinstance(delivery_obj, bool):
+                return normalize_delivery(delivery_obj)
+            # delivery key was set but invalid type — fall back to default
+            # (don't let agent.reply quietly override an explicit-but-invalid
+            # delivery).
+            return normalize_delivery(None, None)
         reply_obj = raw_agent_meta.get("reply")
-        return reply_obj if isinstance(reply_obj, bool) else None
+        if isinstance(reply_obj, bool):
+            return normalize_delivery(None, reply_obj)
+        return None
 
     def _current_entry_meta(self) -> object | None:
         getter = getattr(self._host_ctx, "get_current_entry_meta", None)
@@ -277,13 +304,27 @@ class SdkContext:
         description: str | None = None,
         label: str | None = None,
         metadata: dict[str, object] | None = None,
+        delivery: str | bool | None = None,
         reply: bool | None = None,
         timeout: float = 5.0,
     ) -> object:
-        normalized_metadata = self._normalize_export_metadata(metadata, reply=reply)
-        reply_requested = reply if reply is not None else self._metadata_reply_flag(normalized_metadata)
+        # ``delivery`` (3-state) is canonical; ``reply`` (bool) is a deprecated
+        # alias kept for backward compatibility. None of either ⇒ leave the
+        # caller-provided metadata.agent.* untouched (or ``None`` when no
+        # metadata at all was supplied) — we still need a concrete
+        # ``delivery_mode`` for the contract-validation gate below, so we
+        # fall back to metadata-derived value or the default.
+        resolved: str | None = None
+        if delivery is not None or reply is not None:
+            resolved = normalize_delivery(delivery, reply)
+        normalized_metadata = self._normalize_export_metadata(metadata, delivery=resolved)
+        delivery_mode = (
+            resolved
+            or self._metadata_delivery(normalized_metadata)
+            or normalize_delivery(None, None)  # default = "proactive"
+        )
         normalized_json_data = normalize_structured_data(json_data) if json_data is not None else None
-        if reply_requested is True:
+        if delivery_mode != "silent":
             payload: object = normalized_json_data if export_type == "json" else text if export_type == "text" else None
             self._validate_reply_payload(payload, export_type=export_type)
         return await self._host_ctx.export_push_async(
@@ -305,17 +346,31 @@ class SdkContext:
         self,
         *,
         data: object = None,
-        reply: bool = True,
+        delivery: str | bool | None = None,
+        reply: bool | None = None,
         message: str = "",
         trace_id: str | None = None,
         meta: dict[str, object] | None = None,
     ) -> Any:
+        """Wrap ``data`` into a finish envelope.
+
+        ``delivery`` controls how the result reaches the main AI:
+            - ``"proactive"`` (default): start a turn immediately and have the
+              character report it.
+            - ``"passive"``: write into context but don't interrupt; the next
+              user turn will carry it.
+            - ``"silent"``: skip the LLM channel entirely (HUD/task_update
+              still fires).
+        ``reply`` is the deprecated bool alias (``True``→proactive,
+        ``False``→silent). When both are provided ``delivery`` wins.
+        """
         normalized_data = normalize_structured_data(data)
-        if reply:
+        resolved = normalize_delivery(delivery, reply)
+        if resolved != "silent":
             self._validate_reply_payload(normalized_data, export_type="json")
         return build_finish_envelope(
             data=normalized_data,
-            reply=reply,
+            delivery=resolved,
             message=message,
             trace_id=trace_id,
             meta=meta,
@@ -335,7 +390,21 @@ class SdkContext:
         unsafe: bool = False,
         fast_mode: bool = False,
         target_lanlan: str | None = None,
+        delivery: str | bool | None = None,
+        reply: bool | None = None,
     ) -> object:
+        """Push a notification to the main AI.
+
+        ``delivery`` matches the semantics of :meth:`finish` — defaults to
+        ``"proactive"`` (the AI is interrupted to announce the message). Pass
+        ``delivery="passive"`` for a quiet, carry-on-next-turn notification.
+        ``reply`` is a deprecated bool alias.
+        """
+        # Non-None delivery/reply ⇒ stamp metadata.agent.delivery so the host
+        # bridge picks it up. Untouched metadata stays as the caller passed it.
+        if delivery is not None or reply is not None:
+            resolved = normalize_delivery(delivery, reply)
+            metadata = self._normalize_export_metadata(metadata, delivery=resolved)
         return self._host_ctx.push_message(
             source=source,
             message_type=message_type,

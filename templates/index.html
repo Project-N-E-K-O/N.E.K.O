@@ -361,6 +361,7 @@
     <script src="/static/app-autostart-provider.js"></script>
     <script src="/static/app-tutorial-prompt.js"></script>
     <script src="/static/app-autostart-prompt.js"></script>
+    <script src="/static/js/character_personality_onboarding.js"></script>
     <script src="/static/app.js"></script>
     <script src="/static/react/neko-chat/neko-chat-window.iife.js?v={{ react_chat_asset_version }}"></script>
     <script src="/static/app-react-chat-window.js?v={{ react_chat_asset_version }}"></script>
@@ -376,6 +377,16 @@
     <script src="/static/yui-guide-director.js?v=20260427-2"></script>
     <!-- 通用教程管理器（支持所有页面） -->
     <script src="/static/universal-tutorial-manager.js"></script>
+    <script>
+        document.addEventListener('DOMContentLoaded', function () {
+            if (window.CharacterPersonalityOnboarding &&
+                typeof window.CharacterPersonalityOnboarding.bootstrap === 'function') {
+                window.CharacterPersonalityOnboarding.bootstrap().catch(error => {
+                    console.warn('[CharacterPersonalityOnboarding] bootstrap failed:', error);
+                });
+            }
+        });
+    </script>
     <!-- 注意：初始化由 app.js 统一处理，避免重复初始化 -->
 </body>
 

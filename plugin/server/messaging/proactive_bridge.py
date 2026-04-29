@@ -138,6 +138,33 @@ class ProactiveBridge:
                         if not content:
                             continue
 
+                        # Resolve delivery mode from metadata.agent.delivery
+                        # (canonical) or metadata.agent.reply (deprecated bool
+                        # alias). Default = "proactive" (push interrupts to
+                        # announce); plugin authors may override per-call.
+                        # Silent stays in proactive_bridge — main_server's
+                        # event-bus dispatcher applies the silent skip alongside
+                        # the same gate task_result uses.
+                        #
+                        # Priority: if ``agent.delivery`` is present (valid or
+                        # not) it owns the decision — invalid values fall back
+                        # to default ("proactive") rather than letting the
+                        # legacy ``reply`` bool quietly override (would let
+                        # ``delivery="typo", reply=False`` flip to "silent").
+                        agent_meta = metadata.get("agent") if isinstance(metadata.get("agent"), dict) else {}
+                        if "delivery" in agent_meta:
+                            raw_delivery = agent_meta["delivery"]
+                            if isinstance(raw_delivery, str) and raw_delivery in ("proactive", "passive", "silent"):
+                                delivery_mode = raw_delivery
+                            elif isinstance(raw_delivery, bool):
+                                delivery_mode = "proactive" if raw_delivery else "silent"
+                            else:
+                                delivery_mode = "proactive"  # invalid delivery — fall back to default
+                        elif isinstance(agent_meta.get("reply"), bool):
+                            delivery_mode = "proactive" if agent_meta["reply"] else "silent"
+                        else:
+                            delivery_mode = "proactive"
+
                         proactive_event = {
                             "event_type": "proactive_message",
                             "lanlan_name": metadata.get("target_lanlan") or None,
@@ -148,6 +175,12 @@ class ProactiveBridge:
                             "task_id": metadata.get("task_id", ""),
                             "success": True,
                             "status": "completed",
+                            "delivery_mode": delivery_mode,
+                            "source_kind": "plugin",
+                            # str() guard: upstream may set plugin_id to a non-string
+                            # (e.g. int id). Downstream main_logic renderer uses
+                            # ``.strip()``/``.format()`` which would raise on those.
+                            "source_name": str(plugin_id) if plugin_id else "",
                             "timestamp": payload.get("time", ""),
                         }
                     

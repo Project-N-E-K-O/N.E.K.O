@@ -356,17 +356,38 @@ self.register_static_ui("static")  # 提供 <plugin_dir>/static/index.html
 
 通知宿主任务完成。
 
-#### 回复控制
+#### 回复控制（`delivery`）
 
-`finish()` 的 `reply` 参数（默认 `True`）控制是否触发角色说话：
+`finish()` 和 `push_message()` 都接受 `delivery` 参数，控制结果如何到达主 AI。三档枚举，**默认 `"proactive"`**：
+
+| `delivery` | 是否进 LLM 上下文 | 是否立即起 turn 播报 | 前端 HUD/通知 |
+|---|---|---|---|
+| `"proactive"`（默认） | ✅ | ✅ 立即起 turn | ✅ |
+| `"passive"` | ✅ 写入上下文 | ❌ 不打断；下次用户发言时由 AI 自然提及 | ✅ |
+| `"silent"` | ❌ AI 不知情 | ❌ | ✅（只剩 task_update） |
 
 ```python
-# 正常：角色会播报结果
-return await self.finish(data={"summary": "天气晴朗"}, reply=True)
+# 正常：角色立即播报结果
+return await self.finish(data={"summary": "天气晴朗"})
+return await self.finish(data={"summary": "天气晴朗"}, delivery="proactive")
 
-# 静默：结果会记录但角色不说话
-return await self.finish(data={"summary": "天气晴朗"}, reply=False)
+# 安静通知：进上下文不打断；下次用户开口时 AI 顺嘴提一下
+return await self.finish(data={"summary": "番茄钟到点了"}, delivery="passive")
+
+# 完全静默：AI 不知情；前端只通过 task_update 看到任务终态（无浮窗/HUD 通知）
+return await self.finish(data={"summary": "..."}, delivery="silent")
 ```
+
+`push_message()` 同字段：
+
+```python
+# push_message 默认也是 proactive——会立刻打断用户、让 AI 起 turn 播报。
+# 如果只想做安静通知（后台来邮件、状态变化），显式传 passive。
+ctx.push_message(source=..., message_type="proactive_notification",
+                 content="收到一封新邮件", delivery="passive")
+```
+
+**向后兼容**：旧版 `reply=True/False` 仍可用——`reply=True` 等价于 `delivery="proactive"`，`reply=False` 等价于 `delivery="silent"`。两个参数同时传时以 `delivery` 为准。
 
 #### LLM 结果字段过滤
 
@@ -385,6 +406,29 @@ self.register_dynamic_entry(
     llm_result_fields=["summary"],
 )
 ```
+
+#### `push_message` 的 `message_type` 取值
+
+`ctx.push_message()` 接受的 `message_type` 包含两类：
+
+**基础载荷类型**——纯数据推送：
+
+| `message_type` | 必填字段 | 用途 |
+|---|---|---|
+| `text` | `content` | 文本消息 |
+| `url` | `content` | URL 链接 |
+| `binary` | `binary_data` | 内联二进制（小文件） |
+| `binary_url` | `binary_url` | 二进制文件 URL（大文件） |
+
+**系统语义类型**——触发主进程特定行为：
+
+| `message_type` | 消费端 | 用途 |
+|---|---|---|
+| `proactive_notification` | proactive_bridge → 主 AI | 推送一条消息给主 AI（同 `ctx.finish()` 的 task_result 通道；走 `delivery` 三态） |
+| `music_allowlist_add` | 前端 | 添加音乐播放域名白名单（参见 `register_music_domains`） |
+| `music_play_url` | 前端 | 直接播放一首歌（前端音乐组件） |
+
+新增 `message_type` 时记得同步 `plugin/_types/models.py` 的 `Literal` 定义和 `proactive_bridge.py` 的分发逻辑。
 
 ### 3.4 Result 类型：Ok / Err
 
@@ -453,12 +497,7 @@ value = await store.get("key")  # → {"count": 42}
 
 ### 3.7 消息类型
 
-| 类型 | 用途 |
-|------|------|
-| `text` | 纯文本消息 |
-| `url` | URL 链接 |
-| `binary` | 小型二进制数据（直接传输） |
-| `binary_url` | 大文件（通过 URL 引用） |
+`push_message()` 接受的 `message_type` 完整列表见 [3.3 节"`push_message` 的 `message_type` 取值"](#push_message-的-message_type-取值)：基础载荷类型（`text` / `url` / `binary` / `binary_url`）+ 系统语义类型（`proactive_notification` / `music_allowlist_add` / `music_play_url`）。
 
 ### 3.8 优先级
 

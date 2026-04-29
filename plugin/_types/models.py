@@ -154,13 +154,24 @@ class HealthCheckResponse(BaseModel):
 
 
 # 插件推送消息相关模型
+# message_type 涵盖：基础载荷（text/url/binary/binary_url）+ 系统语义类型
+# （proactive_notification → 经 proactive_bridge 转 proactive_message 注入主 AI；
+# music_allowlist_add / music_play_url → 注册音乐域名白名单 / 直接播放曲目，
+# 由前端而非主 AI 消费）。新加 message_type 时请同步 PluginPushMessage 的
+# Literal 定义、plugin/server/messaging/proactive_bridge.py 的分发逻辑、
+# 以及 plugin/PLUGIN_DEVELOPMENT_GUIDE.md 的取值表。
+
+
 class PluginPushMessageRequest(BaseModel):
     """插件推送消息请求（从插件进程发送到主进程）"""
     plugin_id: str
     source: str = Field(..., description="插件自己标明的来源")
     description: str = Field(default="", description="插件自己标明的描述")
     priority: int = Field(default=0, description="插件自己设定的优先级，数字越大优先级越高")
-    message_type: Literal["text", "url", "binary", "binary_url"] = Field(..., description="消息类型")
+    message_type: Literal[
+        "text", "url", "binary", "binary_url",
+        "proactive_notification", "music_allowlist_add", "music_play_url",
+    ] = Field(..., description="消息类型")
     content: Optional[str] = Field(default=None, description="文本内容或URL（当message_type为text或url时）")
     binary_data: Optional[bytes] = Field(default=None, description="二进制数据（当message_type为binary时，仅用于小文件）")
     binary_url: Optional[str] = Field(default=None, description="二进制文件的URL（当message_type为binary_url时）")
@@ -182,6 +193,24 @@ class PluginPushMessageRequest(BaseModel):
             if not isinstance(self.binary_url, str) or not self.binary_url:
                 raise ValueError("binary_url is required when message_type is 'binary_url'")
             return self
+        # System-semantic types: enforce payload requirements that
+        # proactive_bridge.py would otherwise silently drop, so plugin
+        # authors get an actionable error at push_message() call time
+        # instead of "successfully enqueued, no observable effect".
+        if mt == "proactive_notification":
+            if not isinstance(self.content, str) or not self.content.strip():
+                raise ValueError("content is required when message_type is 'proactive_notification'")
+            return self
+        if mt == "music_play_url":
+            url_obj = self.metadata.get("url") if isinstance(self.metadata, dict) else None
+            if not isinstance(url_obj, str) or not url_obj.strip():
+                raise ValueError("metadata.url (str) is required when message_type is 'music_play_url'")
+            return self
+        if mt == "music_allowlist_add":
+            domains_obj = self.metadata.get("domains") if isinstance(self.metadata, dict) else None
+            if not isinstance(domains_obj, list) or not domains_obj:
+                raise ValueError("metadata.domains (non-empty list) is required when message_type is 'music_allowlist_add'")
+            return self
         return self
 
 
@@ -191,7 +220,10 @@ class PluginPushMessage(BaseModel):
     source: str
     description: str
     priority: int
-    message_type: Literal["text", "url", "binary", "binary_url"]
+    message_type: Literal[
+        "text", "url", "binary", "binary_url",
+        "proactive_notification", "music_allowlist_add", "music_play_url",
+    ]
     content: Optional[str] = None
     binary_data: Optional[bytes] = None
     binary_url: Optional[str] = None

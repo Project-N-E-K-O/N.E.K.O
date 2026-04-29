@@ -4159,6 +4159,12 @@ async function closeCatgirlPanel() {
     if (overlay.dataset.closing === 'true') return;
     overlay.dataset.closing = 'true';
 
+    const currentForm = overlay.querySelector('form');
+    if (currentForm && currentForm._characterPersonalityUpdateHandler) {
+        window.removeEventListener('neko:character-personality-updated', currentForm._characterPersonalityUpdateHandler);
+        delete currentForm._characterPersonalityUpdateHandler;
+    }
+
     // 取消所有预览加载：包括尚未完成的 Live2D/VRM/MMD 异步加载，避免清理后又把预览建回来
     if (typeof cancelWorkshopPreviewLoads === 'function') {
         cancelWorkshopPreviewLoads();
@@ -4199,6 +4205,13 @@ async function closeCatgirlPanel() {
 window.closeCatgirlPanel = closeCatgirlPanel;
 
 function buildCatgirlDetailForm(name, rawData, isNew, container) {
+    const previousForm = container && typeof container.querySelector === 'function'
+        ? container.querySelector('form')
+        : null;
+    if (previousForm && previousForm._characterPersonalityUpdateHandler) {
+        window.removeEventListener('neko:character-personality-updated', previousForm._characterPersonalityUpdateHandler);
+    }
+
     let cat = rawData || {};
     let form = document.createElement('form');
     form.id = name ? 'catgirl-form-' + name : 'catgirl-form-new';
@@ -4431,6 +4444,138 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
     };
     addFieldArea.appendChild(addFieldBtn);
     form.appendChild(addFieldArea);
+
+    function readCharacterPersonalitySelection(characterData) {
+        const reserved = characterData && typeof characterData === 'object' ? characterData['_reserved'] : null;
+        const override = reserved && typeof reserved === 'object' ? reserved['persona_override'] : null;
+        const profile = override && typeof override.profile === 'object' ? override.profile : {};
+        const presetId = override && typeof override === 'object' ? String(override.preset_id || '').trim() : '';
+        const hasOverride = !!(override && presetId);
+        return {
+            hasOverride,
+            presetId,
+            profile,
+            displayName: hasOverride
+                ? String(profile['性格原型'] || presetId).trim()
+                : '',
+        };
+    }
+
+    function applyCharacterPersonalitySelection(selection) {
+        const reserved = cat['_reserved'] && typeof cat['_reserved'] === 'object'
+            ? cat['_reserved']
+            : (cat['_reserved'] = {});
+        if (!selection || selection.mode !== 'override') {
+            delete reserved['persona_override'];
+            if (!Object.keys(reserved).length) {
+                delete cat['_reserved'];
+            }
+            return;
+        }
+
+        reserved['persona_override'] = {
+            preset_id: String(selection.preset_id || '').trim(),
+            source: String(selection.source || '').trim(),
+            selected_at: String(selection.selected_at || '').trim(),
+            profile: selection.profile && typeof selection.profile === 'object'
+                ? { ...selection.profile }
+                : {},
+        };
+    }
+
+    function isPersonalityPanelAlive() {
+        if (!container || !container.isConnected) {
+            return false;
+        }
+        const overlay = typeof container.closest === 'function'
+            ? container.closest('.catgirl-panel-overlay')
+            : null;
+        return !!(overlay && overlay.isConnected && overlay.dataset.closing !== 'true');
+    }
+
+    const personalityWrapper = document.createElement('div');
+    personalityWrapper.className = 'field-row-wrapper';
+    const personalityLabel = document.createElement('label');
+    personalityLabel.textContent = window.t ? window.t('character.personalitySetting') : '人格设定';
+    personalityLabel.style.fontSize = '1rem';
+    personalityWrapper.appendChild(personalityLabel);
+
+    const personalityRow = document.createElement('div');
+    personalityRow.className = 'field-row';
+    const personalitySummary = document.createElement('div');
+    personalitySummary.style.flex = '1';
+    personalitySummary.style.padding = '0 12px';
+    personalitySummary.style.color = '#40C5F1';
+    personalitySummary.style.fontSize = '0.95rem';
+    personalitySummary.style.whiteSpace = 'nowrap';
+    personalitySummary.style.overflow = 'hidden';
+    personalitySummary.style.textOverflow = 'ellipsis';
+    const personalitySelection = readCharacterPersonalitySelection(cat);
+    personalitySummary.textContent = personalitySelection.hasOverride
+        ? personalitySelection.displayName
+        : (window.t ? window.t('character.personalityUseDefault') : '跟随角色卡默认设定');
+    personalityRow.appendChild(personalitySummary);
+    personalityWrapper.appendChild(personalityRow);
+
+    const personalitySelectBtn = document.createElement('button');
+    personalitySelectBtn.type = 'button';
+    personalitySelectBtn.className = 'btn sm';
+    personalitySelectBtn.style.marginLeft = '8px';
+    personalitySelectBtn.style.minWidth = '120px';
+    personalitySelectBtn.dataset.testid = 'character-personality-select';
+    personalitySelectBtn.textContent = window.t ? window.t('character.personalitySelect') : '选择人格';
+    personalitySelectBtn.disabled = !!isNew;
+    personalitySelectBtn.addEventListener('click', async function () {
+        if (isNew) {
+            return;
+        }
+        if (!window.CharacterPersonalityOnboarding || typeof window.CharacterPersonalityOnboarding.openFromSettings !== 'function') {
+            if (typeof showAlert === 'function') {
+                await showAlert(window.t ? window.t('character.personalityModuleUnavailable') : '人格选择模块尚未加载');
+            }
+            return;
+        }
+        await window.CharacterPersonalityOnboarding.openFromSettings(name);
+    });
+    personalityWrapper.appendChild(personalitySelectBtn);
+
+    const personalityClearBtn = document.createElement('button');
+    personalityClearBtn.type = 'button';
+    personalityClearBtn.className = 'btn sm delete';
+    personalityClearBtn.style.marginLeft = '8px';
+    personalityClearBtn.style.minWidth = '120px';
+    personalityClearBtn.dataset.testid = 'character-personality-clear';
+    personalityClearBtn.textContent = window.t ? window.t('character.personalityClear') : '恢复默认';
+    personalityClearBtn.disabled = !personalitySelection.hasOverride;
+    personalityClearBtn.addEventListener('click', async function () {
+        if (!name || personalityClearBtn.disabled) {
+            return;
+        }
+        try {
+            const response = await fetch(`/api/characters/character/${encodeURIComponent(name)}/persona-selection`, {
+                method: 'DELETE',
+            });
+            const result = await response.json();
+            if (!response.ok || !result.success) {
+                throw new Error(result && result.error ? result.error : `Request failed: ${response.status}`);
+            }
+            applyCharacterPersonalitySelection(result.selection);
+            if (isPersonalityPanelAlive()) {
+                buildCatgirlDetailForm(name, cat, false, container);
+            }
+            if (typeof loadCharacterCards === 'function') {
+                loadCharacterCards().catch(e => console.warn('刷新角色列表失败:', e));
+            }
+            showMessage(window.t ? window.t('character.personalityCleared') : '已恢复角色卡默认人格', 'success');
+        } catch (e) {
+            console.error('清除人格设定失败:', e);
+            if (typeof showAlert === 'function') {
+                await showAlert(window.t ? window.t('character.personalityClearFailed') : '清除人格设定失败');
+            }
+        }
+    });
+    personalityWrapper.appendChild(personalityClearBtn);
+    form.appendChild(personalityWrapper);
 
     // 进阶设定折叠
     const fold = document.createElement('div');
@@ -4748,6 +4893,35 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
     form.appendChild(btnArea);
     container.innerHTML = '';
     container.appendChild(form);
+
+    if (!isNew && name) {
+        const handleCharacterPersonalityUpdated = async function (event) {
+            const detail = event && event.detail ? event.detail : {};
+            if (String(detail.characterName || '').trim() !== name) {
+                return;
+            }
+            try {
+                const response = await fetch(`/api/characters/character/${encodeURIComponent(name)}/persona-selection`, {
+                    cache: 'no-store',
+                });
+                const result = await response.json();
+                if (!response.ok || !result.success) {
+                    throw new Error(result && result.error ? result.error : `Request failed: ${response.status}`);
+                }
+                applyCharacterPersonalitySelection(result.selection);
+                if (isPersonalityPanelAlive()) {
+                    buildCatgirlDetailForm(name, cat, false, container);
+                }
+                if (typeof loadCharacterCards === 'function') {
+                    loadCharacterCards().catch(e => console.warn('刷新角色列表失败:', e));
+                }
+            } catch (e) {
+                console.warn('刷新人格设定展示失败:', e);
+            }
+        };
+        form._characterPersonalityUpdateHandler = handleCharacterPersonalityUpdated;
+        window.addEventListener('neko:character-personality-updated', handleCharacterPersonalityUpdated);
+    }
 
     // 绑定变化监听以显隐保存/取消按钮（新建猫娘始终显示）
     if (!isNew) {
