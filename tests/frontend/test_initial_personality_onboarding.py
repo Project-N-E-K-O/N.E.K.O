@@ -615,6 +615,54 @@ def test_onboarding_confirm_dispatches_character_update_event(mock_page: Page):
 
 
 @pytest.mark.frontend
+def test_onboarding_confirm_preserves_event_detail_during_pending_back_navigation(mock_page: Page):
+    _bootstrap_page(mock_page)
+    mock_page.evaluate("() => { window.universalTutorialManager.isTutorialRunning = false; }")
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static" / "js" / "character_personality_onboarding.js"))
+
+    mock_page.evaluate(
+        """
+        () => {
+            window.__personalityEventDetail = null;
+            window.__releaseDelayedPersonaSelection = null;
+            const originalFetch = window.fetch.bind(window);
+            window.fetch = function(url, options) {
+                const requestUrl = String(url);
+                const method = String((options && options.method) || 'GET').toUpperCase();
+                const pathname = new URL(requestUrl, window.location.origin).pathname;
+                if (
+                    method === 'PUT' &&
+                    /^\\/api\\/characters\\/character\\/[^/]+\\/persona-selection$/.test(pathname)
+                ) {
+                    return new Promise((resolve) => {
+                        window.__releaseDelayedPersonaSelection = () => resolve(originalFetch(url, options));
+                    });
+                }
+                return originalFetch(url, options);
+            };
+            window.addEventListener('neko:character-personality-updated', (event) => {
+                window.__personalityEventDetail = event.detail;
+            });
+            window.CharacterPersonalityOnboarding.bootstrap();
+        }
+        """
+    )
+
+    mock_page.locator("[data-testid='character-personality-preset-classic_genki']").click()
+    mock_page.locator("[data-testid='character-personality-confirm']").click()
+    mock_page.wait_for_function("() => typeof window.__releaseDelayedPersonaSelection === 'function'")
+    mock_page.locator("[data-testid='character-personality-back']").click()
+    mock_page.evaluate("() => window.__releaseDelayedPersonaSelection()")
+    mock_page.wait_for_function("() => window.__personalityEventDetail !== null")
+
+    event_detail = mock_page.evaluate("() => window.__personalityEventDetail")
+    assert event_detail == {
+        "characterName": "小天",
+        "presetId": "classic_genki",
+    }
+
+
+@pytest.mark.frontend
 def test_manual_reselect_confirm_does_not_send_followup_delete(mock_page: Page):
     _bootstrap_page(mock_page)
     mock_page.evaluate(

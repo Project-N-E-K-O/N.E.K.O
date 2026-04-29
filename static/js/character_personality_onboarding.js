@@ -833,24 +833,27 @@
                 if (!this.currentCharacterName || !this.selectedPresetId || confirmButton.disabled) {
                     return;
                 }
+                const selectedPresetId = this.selectedPresetId;
+                const currentCharacterName = this.currentCharacterName;
+                const openReason = this.openReason;
                 confirmButton.disabled = true;
                 confirmButton.classList.add('success');
                 try {
                     await requestJson(
-                        `/api/characters/character/${encodeURIComponent(this.currentCharacterName)}/persona-selection`,
+                        `/api/characters/character/${encodeURIComponent(currentCharacterName)}/persona-selection`,
                         {
                             method: 'PUT',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({
-                                preset_id: this.selectedPresetId,
-                                source: this.openReason,
+                                preset_id: selectedPresetId,
+                                source: openReason,
                             }),
                         }
                     );
                     window.dispatchEvent(new CustomEvent('neko:character-personality-updated', {
                         detail: {
-                            characterName: this.currentCharacterName,
-                            presetId: this.selectedPresetId,
+                            characterName: currentCharacterName,
+                            presetId: selectedPresetId,
                         },
                     }));
                     this.hideOverlay();
