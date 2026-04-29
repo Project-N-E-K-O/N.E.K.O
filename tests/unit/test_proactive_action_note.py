@@ -197,10 +197,35 @@ def test_action_note_web_skips_music_recommendations_appended_at_tail():
 
 
 def test_action_note_web_subchannels_all_route_to_web_template():
-    """web/news/video/home/personal 这几个细粒度子通道共享 web 模板。"""
+    """web/news/video/home/personal/window 这几个细粒度子通道共享 web 模板。
+
+    集合必须与 ``main_routers/system_router.py:build_proactive_response`` 里
+    ``web_link.get('mode', 'web')`` 产出的 mode 同步（参见
+    PROACTIVE_SOURCE_LABELS keys）。漏 'window' 是 CodeRabbit review #1041
+    找出的回归 bug：window 通道会落到 chat fallback、被 music-first 优先级
+    误识别成"放歌"。
+    """
     link = {'title': 'foo', 'source': 'bar'}
-    for ch in ('web', 'news', 'video', 'home', 'personal'):
-        assert build_proactive_action_note(ch, [link], 'zh', master_name=MASTER) != ''
+    for ch in ('web', 'news', 'video', 'home', 'personal', 'window'):
+        note = build_proactive_action_note(ch, [link], 'zh', master_name=MASTER)
+        assert note != '', f'channel={ch} 漏到 fallback'
+        assert 'foo' in note and 'bar' in note
+
+
+def test_action_note_window_channel_with_music_recs_does_not_pick_music():
+    """关键回归（CodeRabbit review #1041 #2）：window 通道下，即便 source_links
+    里同时混进 music recs（_append_music_recommendations 仍可能把音乐 track
+    追加进 web/window 路径的 source_links），window note 也必须按 web 模板
+    出，不能被 music-first 优先级误识别成"放歌"。"""
+    links = [
+        {'title': '搜索结果', 'source': 'B站', 'mode': 'window'},
+        {'title': '稻香', 'artist': '周杰伦', 'source': '音乐推荐', 'type': 'music'},
+    ]
+    note = build_proactive_action_note('window', links, 'zh', master_name=MASTER)
+    assert '搜索结果' in note
+    assert 'B站' in note
+    assert '稻香' not in note  # music 不能抢走 window note
+    assert '周杰伦' not in note
 
 
 def test_action_note_uses_placeholder_for_missing_fields():
@@ -264,6 +289,26 @@ def test_action_note_normalizes_region_language_codes():
     # 兜底：归一化失败也不应回落英文 placeholder（"Unknown Artist"）
     note_ja_full = build_proactive_action_note('music', links, 'ja-JP', master_name=MASTER)
     assert 'Unknown Artist' not in note_ja_full
+
+
+def test_action_note_russian_master_fallback_stays_grammatically_consistent():
+    """回归（CodeRabbit review #1041 #1）：ru placeholders.master 是 'собеседника'
+    （genitive 形式），三条 ru 模板都用 'для + genitive' 介词结构（避免之前
+    'с {master}' instrumental 与 fallback genitive 冲突的 case mismatch）。
+    空名兜底必须给出语法自洽的句子，不能出现 'с собеседника' 这种 instrumental
+    介词配 genitive 名词的拼接错误。
+    """
+    music_links = [{'title': 'X', 'artist': 'Y', 'source': '音乐推荐', 'type': 'music'}]
+    meme_links = [{'title': 'M', 'source': 'src', 'type': 'meme'}]
+    web_links = [{'title': 'W', 'source': 'src'}]
+
+    for primary, links in (('music', music_links), ('meme', meme_links), ('web', web_links)):
+        note = build_proactive_action_note(primary, links, 'ru', master_name='')
+        # fallback 'собеседника' 出现在 для 之后是合法 genitive
+        assert 'собеседника' in note
+        # 不能出现 'с собеседника'（instrumental 介词 + genitive 名词的混搭）
+        assert ' с собеседника' not in note
+        assert ' с собеседника' not in note  # 防御 NBSP
 
 
 def test_action_note_collapses_multiline_title_into_single_line():

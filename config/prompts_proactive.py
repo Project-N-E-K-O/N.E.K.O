@@ -2865,7 +2865,11 @@ PROACTIVE_ACTION_NOTE_WEB: dict[str, str] = {
     'en': '[Shared with {master}: "{title}" (from {source})]',
     'ja': '[{master}にシェアした内容：『{title}』（{source} より）]',
     'ko': '[{master}에게 공유한 내용: 《{title}》 ({source} 출처)]',
-    'ru': '[Поделено с {master}: «{title}» (из {source})]',
+    # 俄语：三条 PROACTIVE_ACTION_NOTE_* 统一用 "для + genitive" 结构，与 placeholders
+    # 'master': 'собеседника'（genitive 形式）兼容；空名兜底直接得到合法俄语，真实
+    # 名字塞进 для 后不变格但 LLM 仍能正确理解。原 'с {master}'（instrumental 介词）
+    # 跟 fallback 的 genitive 形式不匹配，改成 для 让三条 ru 模板一致。
+    'ru': '[Поделено для {master}: «{title}» (из {source})]',
 }
 
 PROACTIVE_ACTION_NOTE_PLACEHOLDERS: dict[str, dict[str, str]] = {
@@ -2895,6 +2899,12 @@ def build_proactive_action_note(
     已经把 music tracks 追加进 source_links 并设了 is_music_used=True，用户
     那边实际听到了歌；不探测就会丢掉这条 "已放过" 元数据。优先级 music >
     meme > web，与前端通常的素材展示重要性一致。
+
+    web 子通道集合 ``{'web', 'news', 'video', 'home', 'personal', 'window'}``
+    与 ``main_routers/system_router.py:build_proactive_response`` 里
+    ``web_link.get('mode', 'web')`` 产出的 mode 集合保持同步——遗漏任何一个
+    会让对应通道走到末尾的 chat fallback、被 music-first 优先级误识别成
+    "放歌"，覆盖与本通道一致的 ``PROACTIVE_SOURCE_LABELS`` keys。
 
     vision 通道始终返回空：屏幕本身是用户那侧已有的画面，不是 AI 分享出去
     的素材，无需事件日志。
@@ -2994,7 +3004,7 @@ def build_proactive_action_note(
         return _try_music()
     if channel == 'meme':
         return _try_meme(allow_typeless_fallback=True)
-    if channel in {'web', 'news', 'video', 'home', 'personal'}:
+    if channel in {'web', 'news', 'video', 'home', 'personal', 'window'}:
         return _try_web()
 
     # chat / unknown / 空 / 其它未识别通道 —— 回退探测 source_links 实际素材，
