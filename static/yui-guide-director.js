@@ -4315,6 +4315,7 @@
                 padding: 4,
                 geometry: 'circle'
             });
+            this.addRetainedExtraSpotlight(catPawButton);
 
             const openedAgentPanel = await this.performHighlightedApiClick({
                 target: catPawButton,
@@ -4334,6 +4335,7 @@
                 return false;
             }
             const agentMasterSpotlight = createToggleSpotlightTarget('takeover-agent-master-toggle', agentMasterToggle);
+            this.addRetainedExtraSpotlight(agentMasterSpotlight);
 
             const enabledAgentMaster = await this.performHighlightedApiClick({
                 target: agentMasterSpotlight,
@@ -4363,6 +4365,8 @@
                 return false;
             }
             const keyboardToggleSpotlight = createToggleSpotlightTarget('takeover-keyboard-toggle', keyboardToggle);
+            this.addRetainedExtraSpotlight(keyboardToggleSpotlight);
+            this.removeRetainedExtraSpotlight(agentMasterSpotlight);
 
             const enabledKeyboardControl = await this.performHighlightedApiClick({
                 target: keyboardToggleSpotlight,
@@ -6137,6 +6141,10 @@
                     }).catch(() => {}),
                     this.runTakeoverKeyboardControlSequence(step, performance, runId)
                 ]);
+                this.clearRetainedExtraSpotlights();
+                this.clearVirtualSpotlight('takeover-agent-master-toggle');
+                this.clearVirtualSpotlight('takeover-keyboard-toggle');
+                this.overlay.clearActionSpotlight();
                 if (runId !== this.sceneRunId || this.destroyed || this.angryExitTriggered) {
                     return;
                 }
