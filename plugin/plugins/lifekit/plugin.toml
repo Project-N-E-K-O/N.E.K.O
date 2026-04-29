@@ -20,8 +20,25 @@ supported = ">=0.1.0,<0.3.0"
 
 [plugin.ui]
 enabled = true
-panel = [
-    { id = "main", title = "生活助手", entry = "ui/panel.tsx", context = "dashboard", permissions = ["state:read", "config:read", "action:call"] },
+
+[[plugin.ui.panel]]
+id = "main"
+title = "生活助手"
+entry = "ui/panel.tsx"
+context = "dashboard"
+permissions = [
+    "state:read",
+    "config:read",
+    "action:call",
+]
+
+[[plugin.ui.guide]]
+id = "quickstart"
+title = "生活助手教程"
+entry = "docs/quickstart.tsx"
+context = "dashboard"
+permissions = [
+    "state:read",
 ]
 
 [plugin_runtime]
