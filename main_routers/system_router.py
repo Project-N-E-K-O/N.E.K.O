@@ -83,11 +83,12 @@ from config.prompts_proactive import (
     get_proactive_music_failsafe_hint,
     get_proactive_music_strict_constraint,
     get_proactive_format_sections,
+    get_screen_section_header, get_screen_img_hint,
     RECENT_PROACTIVE_CHATS_HEADER, RECENT_PROACTIVE_CHATS_FOOTER,
     RECENT_PROACTIVE_TIME_LABELS, RECENT_PROACTIVE_CHANNEL_LABELS,
     BEGIN_GENERATE,
-    SCREEN_SECTION_HEADER, SCREEN_SECTION_FOOTER,
-    SCREEN_WINDOW_TITLE, SCREEN_IMG_HINT,
+    SCREEN_SECTION_FOOTER,
+    SCREEN_WINDOW_TITLE,
     EXTERNAL_TOPIC_HEADER, EXTERNAL_TOPIC_FOOTER,
     MUSIC_SECTION_HEADER, MUSIC_SECTION_FOOTER,
     MEME_SECTION_HEADER, MEME_SECTION_FOOTER,
@@ -4392,11 +4393,11 @@ async def proactive_chat(request: Request):
         # 构建屏幕内容段（vision 通道）
         screen_section = ""
         if screenshot_b64_for_phase2:
-            sl = _loc(SCREEN_SECTION_HEADER, proactive_lang)
+            sl = get_screen_section_header(master_name_current, proactive_lang)
             sf = _loc(SCREEN_SECTION_FOOTER, proactive_lang)
             vision_window = vision_content.get('window_title', '') if vision_content else ''
             window_line = _loc(SCREEN_WINDOW_TITLE, proactive_lang).format(window=vision_window) if vision_window else ""
-            hint = _loc(SCREEN_IMG_HINT, proactive_lang)
+            hint = get_screen_img_hint(master_name_current, proactive_lang)
             screen_section = f"{sl}\n{window_line}{hint}\n{sf}"
             print(f"[{lanlan_name}] Phase 2 将使用 vision 模型直接看截图")
         else:
@@ -4443,7 +4444,7 @@ async def proactive_chat(request: Request):
         music_playing_hint = ""
         if is_playing_music and current_track:
             track_name = current_track.get('name') or get_proactive_music_unknown_track_name(proactive_lang)
-            music_playing_hint = get_proactive_music_playing_hint(track_name, proactive_lang)
+            music_playing_hint = get_proactive_music_playing_hint(track_name, master_name_current, proactive_lang)
 
         # 静动分离：generate_prompt 作为静态 SystemMessage（可被缓存），
         # 追加的音乐/表情包指令作为动态上下文注入 HumanMessage
@@ -4482,6 +4483,7 @@ async def proactive_chat(request: Request):
         generate_prompt = get_proactive_generate_prompt(
             proactive_lang, music_playing_hint,
             has_music=bool(music_section), has_meme=bool(meme_section),
+            master_name=master_name_current,
         ).format(
             character_prompt=character_prompt,
             inner_thoughts=inner_thoughts,
@@ -4504,7 +4506,7 @@ async def proactive_chat(request: Request):
             )
             raw_data = music_content.get('raw_data', {}) if music_content else {}
             if raw_data.get('best_match', {}).get('status') == 'fuzzy':
-                dynamic_context_for_phase2 += get_proactive_music_failsafe_hint(proactive_lang)
+                dynamic_context_for_phase2 += get_proactive_music_failsafe_hint(master_name_current, proactive_lang)
 
         if is_playing_music:
             dynamic_context_for_phase2 += get_proactive_music_strict_constraint(proactive_lang)
