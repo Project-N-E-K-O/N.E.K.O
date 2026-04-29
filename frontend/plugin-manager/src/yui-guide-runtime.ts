@@ -25,6 +25,7 @@ const DEFAULT_INTERRUPT_ACCELERATION_THRESHOLD = 0.09
 const DEFAULT_INTERRUPT_ACCELERATION_STREAK = 3
 const DEFAULT_INTERRUPT_THROTTLE_MS = 500
 const SCRIPTED_MOTION_INTERRUPT_STREAK = 2
+const SCRIPTED_MOTION_INTERRUPT_WINDOW_MS = 220
 const DEFAULT_PASSIVE_RESISTANCE_DISTANCE = 10
 const DEFAULT_PASSIVE_RESISTANCE_SPEED_THRESHOLD = 0.2
 const DEFAULT_PASSIVE_RESISTANCE_INTERVAL_MS = 140
@@ -989,6 +990,8 @@ class PluginDashboardGuideRuntime {
   lastInterruptAt = 0
   lastPassiveResistanceAt = 0
   lastPointerPoint: { x: number; y: number; t: number; speed: number } | null = null
+  scriptedMotionInterruptDistance = 0
+  scriptedMotionInterruptWindowStartedAt = 0
   resistanceCursorTimer: number | null = null
   narrationResumeTimer: number | null = null
   scenePauseResolvers: Array<() => void> = []
@@ -1730,12 +1733,13 @@ class PluginDashboardGuideRuntime {
     const startedAt = performance.now()
     let pausedAt: number | null = null
     let pausedDurationMs = 0
+    const motionToken = ++this.cursorMotionToken
     this.cursorTransitionActive = true
 
     try {
       await new Promise<void>((resolve) => {
         const tick = (now: number) => {
-          if (isCurrent && !isCurrent()) {
+          if (motionToken !== this.cursorMotionToken || (isCurrent && !isCurrent())) {
             resolve()
             return
           }
@@ -1771,7 +1775,9 @@ class PluginDashboardGuideRuntime {
         window.requestAnimationFrame(tick)
       })
     } finally {
-      this.cursorTransitionActive = false
+      if (motionToken === this.cursorMotionToken) {
+        this.cursorTransitionActive = false
+      }
     }
   }
 
@@ -1792,6 +1798,8 @@ class PluginDashboardGuideRuntime {
     }
     this.scenePausedForResistance = true
     this.cancelCursorMotion()
+    this.scriptedMotionInterruptDistance = 0
+    this.scriptedMotionInterruptWindowStartedAt = 0
   }
 
   resumeCurrentSceneAfterResistance() {
@@ -2087,7 +2095,7 @@ class PluginDashboardGuideRuntime {
   }
 
   onPointerDown(event: MouseEvent) {
-    if (!event || event.isTrusted === false) {
+    if (!event) {
       return
     }
     const x = Number.isFinite(event.clientX) ? event.clientX : null
@@ -2102,6 +2110,8 @@ class PluginDashboardGuideRuntime {
       speed: 0,
     }
     this.interruptAccelerationStreak = 0
+    this.scriptedMotionInterruptDistance = 0
+    this.scriptedMotionInterruptWindowStartedAt = 0
   }
 
   handleInterrupt(event: MouseEvent) {
@@ -2111,7 +2121,6 @@ class PluginDashboardGuideRuntime {
       || this.scenePausedForResistance
       || !this.interruptsEnabled
       || !event
-      || event.isTrusted === false
     ) {
       return
     }
@@ -2157,15 +2166,31 @@ class PluginDashboardGuideRuntime {
     this.lastPointerPoint = { x, y, t: now, speed }
     this.maybePlayPassiveResistance(x, y, distance, speed, now)
 
-    if (distance < DEFAULT_INTERRUPT_DISTANCE) {
+    const isScriptedMotionInterrupt = this.cursorTransitionActive
+    let effectiveDistance = distance
+    if (isScriptedMotionInterrupt && distance < DEFAULT_INTERRUPT_DISTANCE) {
+      if (
+        this.scriptedMotionInterruptWindowStartedAt <= 0
+        || (now - this.scriptedMotionInterruptWindowStartedAt) > SCRIPTED_MOTION_INTERRUPT_WINDOW_MS
+      ) {
+        this.scriptedMotionInterruptWindowStartedAt = now
+        this.scriptedMotionInterruptDistance = 0
+      }
+      this.scriptedMotionInterruptDistance += distance
+      effectiveDistance = this.scriptedMotionInterruptDistance
+    }
+
+    if (effectiveDistance < DEFAULT_INTERRUPT_DISTANCE) {
       this.interruptAccelerationStreak = 0
       return
     }
+    this.scriptedMotionInterruptDistance = 0
+    this.scriptedMotionInterruptWindowStartedAt = 0
+
     if (speed < DEFAULT_INTERRUPT_SPEED_THRESHOLD) {
       this.interruptAccelerationStreak = 0
       return
     }
-    const isScriptedMotionInterrupt = this.cursorTransitionActive
     if (!isScriptedMotionInterrupt && acceleration < DEFAULT_INTERRUPT_ACCELERATION_THRESHOLD) {
       this.interruptAccelerationStreak = 0
       return
@@ -2185,6 +2210,7 @@ class PluginDashboardGuideRuntime {
     }
     this.lastInterruptAt = now
     this.interruptCount += 1
+    this.cancelCursorMotion()
 
     if (this.interruptCount >= 3) {
       void this.abortAsAngryExit()
@@ -2264,6 +2290,8 @@ class PluginDashboardGuideRuntime {
     this.interruptsEnabled = false
     this.cancelActiveNarration()
     this.cancelCursorMotion()
+    this.scriptedMotionInterruptDistance = 0
+    this.scriptedMotionInterruptWindowStartedAt = 0
     this.clearSpotlight()
     this.resetCursorVisualState()
     this.setAngryVisual(true)
@@ -2399,6 +2427,8 @@ class PluginDashboardGuideRuntime {
     this.lastInterruptAt = 0
     this.lastPassiveResistanceAt = 0
     this.lastPointerPoint = null
+    this.scriptedMotionInterruptDistance = 0
+    this.scriptedMotionInterruptWindowStartedAt = 0
     this.narrationResumeTimer = null
     this.cursorMotionToken = 0
     this.cursorReactionInFlight = false
