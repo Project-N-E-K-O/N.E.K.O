@@ -1027,6 +1027,101 @@ TASK_ERROR_MAX_TOKENS = 350
 - 用途：_emit_task_result 的 error 档位。
 - 上游：异常 stack / API 错误响应。"""
 
+# ---- Agent: defensive char-caps (NOT token caps) ----
+# 下面这些是"防御性 char-cap"——在异常文本 / cancel reason / plugin reply
+# 流入下游字段（summary / detail / error_message / tracker.detail / 前端
+# notification）之前的硬截。
+#
+# 为什么是 char 而不是 token：
+# - LLM-facing 字段（summary / detail / error_message / tracker.detail）
+#   真正的 prompt budget 在 _emit_task_result 内部用 TASK_*_MAX_TOKENS
+#   二次截断；外层 char-cap 只是为了避免把 MB 级原始字符串直接喂给
+#   tiktoken（编码本身就很慢）。
+# - 前端 agent_notification 字段是 toast / 错误面板展示，不进 LLM；
+#   token 精度无业务意义。
+#
+# 常量值分组（按"是否进 LLM 上下文"切）：
+#   进上下文（防御性 char-cap，下游再走 token-cap）：
+#     - EXCEPTION_TEXT_MAX_CHARS         = 500  → summary 字段、_exc_text
+#                                                / cancel_msg 等共享变量
+#     - ERROR_MESSAGE_MAX_CHARS          = 300  → error_message 字段直接 cap
+#     - TASK_TRACKER_DETAIL_MAX_CHARS    = 300  → tracker.record_completed
+#                                                .detail 字段（inject 时进
+#                                                LLM 的 system 消息）
+#     - TASK_TRACKER_INJECT_DETAIL_MAX_CHARS = 300 → tracker.inject 渲染
+#                                                detail 写进 LLM prompt
+#                                                的最终一次 char-cap
+#   不进上下文（前端展示）：
+#     - USER_NOTIFICATION_REASON_MAX_CHARS = 200  → agent_notification.text
+#     - USER_NOTIFICATION_ERROR_MAX_CHARS  = 500  → agent_notification
+#                                                  .error_message
+
+EXCEPTION_TEXT_MAX_CHARS = 500
+"""LLM-facing summary 字段 / 共享异常变量的防御性 char-cap。
+- 用途：
+  1. summary=reply[:N] / summary=_exc_text 等直接对 summary 字段的 char-cap。
+  2. cancel_msg = str(e)[:N] / _exc_text = str(e)[:N] 这类"一份截断给
+     summary/detail/error_message 三个字段共用"的局部变量。
+- 为什么是 char：tracebacks / API 错误体可能高达 MB，先 char-cap 再让
+  _emit_task_result 内部用 TASK_SUMMARY_MAX_TOKENS / TASK_LARGE_DETAIL_
+  MAX_TOKENS / TASK_ERROR_MAX_TOKENS 做精确 token 截，省去对整个原始
+  字符串做 tiktoken 编码的开销。
+- 与 ERROR_MESSAGE_MAX_CHARS 的关系：单纯 error_message 字段直接 char-cap
+  统一走 300（更紧）；本常量是变量级 / summary 级，500 给 summary 留点
+  余量；当 cancel_msg / _exc_text 这类已经 500 的变量再赋给 error_message
+  时，沿用变量截断结果，不再做二次截。"""
+
+ERROR_MESSAGE_MAX_CHARS = 300
+"""LLM-facing error_message 字段直接 char-cap。
+- 用途：error_message=str(e)[:N] / error_message=str(nk_result.get("error"))[:N]
+  这类直接对 error_message 字段的 char-cap（没有走中间共享变量的那种）。
+- 为什么是 char：和 EXCEPTION_TEXT_MAX_CHARS 同样是给下游 _emit_task_result
+  内部 TASK_ERROR_MAX_TOKENS（350 token）做防御性预处理。
+- 为什么和 EXCEPTION_TEXT_MAX_CHARS 数值不同：error_message 字段下游 token
+  budget 比 summary 紧（350 vs 400），300 char 能避免给 token-cap 留无效
+  空间，同时与 TASK_TRACKER_*_MAX_CHARS 对齐。"""
+
+TASK_TRACKER_DETAIL_MAX_CHARS = 300
+"""AgentTaskTracker.record_completed 的 detail 字段 char-cap。
+- 用途：失败 / 取消路径上 detail=str(e)[:N] / detail=cancel_msg[:N] /
+  detail=reply[:N] 等给 tracker 的 detail 字段做硬截。
+- 为什么是 char：tracker.detail 看似只进内存日志，但 AgentTaskTracker.
+  inject() 会把整段记录拼成 system 消息塞进 task_executor 的下次决策
+  messages（agent_server.py 中的 _task_tracker.inject(messages, lanlan)），
+  所以这条字段实际上会进 LLM 上下文。三层防御链路：
+    1. 入站 char-cap = 本常量（300）
+    2. record_completed 内部 _tt(detail, TASK_DETAIL_MAX_TOKENS)（200 token）
+    3. inject 渲染时再 char-cap = TASK_TRACKER_INJECT_DETAIL_MAX_CHARS（300）
+- 注意：成功路径上 OpenFang 已用 _tt(_track_detail, TASK_DETAIL_MAX_TOKENS)
+  走 token-cap，那条路径不在本常量管辖范围。"""
+
+TASK_TRACKER_INJECT_DETAIL_MAX_CHARS = 300
+"""AgentTaskTracker.inject 渲染 detail 进 LLM system 消息时的最终 char-cap。
+- 用途：agent_server.AgentTaskTracker.inject 内部 _sanitize(detail, N) 在把
+  每条 record 的 detail 拼进 [AGENT TASK TRACKING …] system 消息前做的
+  最后一次 char-cap。
+- 为什么是 char：进 LLM prompt 前的硬上限——已经被入站 char-cap +
+  record_completed 内 token-cap 处理过；这里再 char-cap 是渲染时为了让
+  单行长度可控。"""
+
+USER_NOTIFICATION_REASON_MAX_CHARS = 200
+"""agent_notification.text 内嵌 reason 片段的 char-cap。
+- 用途：DirectTaskExecutor 评估失败时把 reason 拼进面向前端 toast 的
+  text 字段（"⚠️ Agent评估失败: {reason[:N]}"）。
+- 为什么是 char：toast 容量小、不进 LLM。"""
+
+USER_NOTIFICATION_ERROR_MAX_CHARS = 500
+"""agent_notification.error_message 字段 char-cap（前端展示，不进 LLM）。
+- 用途：main_server EventBus 在转发 agent_notification 给前端 WS 时对
+  error_message 做的硬截；agent_server 评估失败 / 后台异常时也按此
+  cap reason / str(e) 写进 agent_notification.error_message。
+- 为什么是 char：纯前端展示字段，不进 LLM；和 USER_NOTIFICATION_REASON_
+  MAX_CHARS 数值不同（错误详情比 toast 文本宽容）。
+- 注意：本常量服务的是"前端 agent_notification 通道"的 error_message，
+  和 LLM-facing 的 ERROR_MESSAGE_MAX_CHARS（300）不是一回事——前者直
+  接灌 WS 帧给浏览器，后者是 _emit_task_result 字段经 callback 进
+  LLM prompt。"""
+
 AGENT_TASK_TRACKER_MAX_RECORDS = 50
 """AgentTaskTracker 最多保留的任务执行记录数。
 - 用途：deque-like 结构 maxlen，供 analyzer 去重 / 上下文交错排序。

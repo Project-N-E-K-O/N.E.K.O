@@ -2030,7 +2030,6 @@ async def update_character_persona_selection(name: str, request: Request):
     try:
         await config_manager.asave_characters(characters)
         await _clear_character_recent_history(config_manager, name)
-
         session_manager = get_session_manager()
         is_current_catgirl = (name == characters.get('当前猫娘', ''))
         if is_current_catgirl and name in session_manager and session_manager[name].is_active:

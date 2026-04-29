@@ -12,13 +12,13 @@ from utils.file_utils import atomic_write_json_async, read_json_async
 
 from plugin.sdk.plugin import (
     NekoPluginBase, neko_plugin, plugin_entry, lifecycle, timer_interval,
-    Ok, Err, SdkError, get_plugin_logger
+    ui, tr, Ok, Err, SdkError, get_plugin_logger
 )
 
 
-# ── 同步 helper（避免 async def 内直接调 subprocess 阻塞事件循环）────────────
+# ── 同步 helper（已禁用自动跳转，仅作备用）──────────────────────────────
 def _open_url_in_browser(url: str) -> None:
-    """在默认浏览器打开 URL（同步调用，仅供 asyncio.to_thread 使用）"""
+    """在系统默认浏览器中打开 URL（同步，通过 to_thread 调用）"""
     try:
         if sys.platform == "win32":
             subprocess.Popen(["cmd", "/c", "start", "", url], shell=False)
@@ -27,7 +27,7 @@ def _open_url_in_browser(url: str) -> None:
         else:
             subprocess.Popen(["xdg-open", url])
     except Exception:
-        raise   # 抛到调用方统一 catch
+        raise
 
 
 # 导入内嵌的 mijia_api
@@ -54,6 +54,61 @@ class MijiaPlugin(NekoPluginBase):
         self._lock = asyncio.Lock()
         self._background_tasks: set = set()  # 持有后台 Task 引用，防止被 GC 提前回收
 
+    # ========== Hosted UI ==========
+    @ui.context(id="dashboard", title="米家智能家居控制面板")
+    async def get_dashboard_context(self):
+        """为 Hosted UI 面板提供状态数据"""
+        logged_in = self.api is not None
+        homes = []
+        devices = []
+        scenes = []
+
+        if logged_in:
+            try:
+                # 获取家庭列表
+                raw_homes = await self.api.get_homes()
+                homes = [{"id": h.id, "name": h.name} for h in raw_homes if h.id]
+
+                # 获取设备列表（从缓存，需归属校验防止跨用户泄露）
+                cache_path = self.data_path("devices_cache.json")
+                if cache_path.exists():
+                    try:
+                        cached = await read_json_async(cache_path)
+                        cache_user_id = cached.get('user_id')
+                        current_user_id = self.api.credential.user_id if self.api.credential else None
+                        if not current_user_id or cache_user_id == current_user_id:
+                            devices = cached.get("devices", [])
+                        else:
+                            self.logger.debug(f"设备缓存归属不匹配(u={cache_user_id}→{current_user_id})，跳过")
+                    except Exception:
+                        pass
+
+                # 获取场景列表（从缓存，需归属校验防止跨用户泄露）
+                scenes_cache_path = self.data_path("scenes_cache.json")
+                if scenes_cache_path.exists():
+                    try:
+                        cached = await read_json_async(scenes_cache_path)
+                        cache_user_id = cached.get('user_id')
+                        current_user_id = self.api.credential.user_id if self.api.credential else None
+                        if not current_user_id or cache_user_id == current_user_id:
+                            scenes = cached.get("scenes", [])
+                        else:
+                            self.logger.debug(f"场景缓存归属不匹配(u={cache_user_id}→{current_user_id})，跳过")
+                    except Exception:
+                        pass
+            except Exception as e:
+                self.logger.warning(f"获取UI状态失败: {e}")
+
+        return {
+            "logged_in": logged_in,
+            "homes": homes,
+            "devices": devices,
+            "scenes": scenes,
+            "device_count": len(devices),
+            "scene_count": len(scenes),
+            "online_count": sum(1 for d in devices if d.get("is_online")),
+        }
+
     # ========== 生命周期 ==========
     @lifecycle(id="startup")
     async def on_startup(self, **_):
@@ -64,23 +119,10 @@ class MijiaPlugin(NekoPluginBase):
         self.credential_path = self.data_path("credential.json")
         self.logger.debug(f"凭据路径: {self.credential_path}")
 
-        # 检查是否首次启动（data 目录为空）
-        data_dir = self.data_path()
-        is_first_launch = not data_dir.exists() or not any(data_dir.iterdir())
-
-        # 首次启动：立即调度打开浏览器，完全不等待凭据加载
-        if is_first_launch and not _EMBEDDED_BY_AGENT:
-            self.logger.info("首次启动，立即打开配置页面")
-            task = asyncio.create_task(self._auto_open_config_page())
-            self._background_tasks.add(task)
-            task.add_done_callback(self._background_tasks.discard)
-        elif is_first_launch:
-            self.logger.info("首次启动但当前由 Agent 托管，跳过自动打开米家配置页面")
-        else:
-            # 有数据：后台静默加载凭据，不阻塞启动
-            task = asyncio.create_task(self._background_load_credential())
-            self._background_tasks.add(task)
-            task.add_done_callback(self._background_tasks.discard)
+        # 后台静默加载凭据，不阻塞启动
+        task = asyncio.create_task(self._background_load_credential())
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
 
         # 注册静态UI
         # register_static_ui 接受相对目录名，内部会拼接 self.config_dir / directory
@@ -119,14 +161,7 @@ class MijiaPlugin(NekoPluginBase):
         except Exception as e:
             self.logger.error(f"后台加载凭据失败: {e}")
 
-    async def _auto_open_config_page(self):
-        """打开浏览器配置页面（立即执行，无延迟）"""
-        url = "http://localhost:48916/plugin/mijia/ui/"
-        try:
-            await asyncio.to_thread(_open_url_in_browser, url)
-            self.logger.info(f"已自动打开配置页面: {url}")
-        except Exception as e:
-            self.logger.warning(f"自动打开配置页面失败: {e}")
+
 
     def _ensure_auth_service(self):
         """懒加载初始化认证服务（供手动入口调用，避免启动时阻塞）"""
@@ -183,6 +218,23 @@ class MijiaPlugin(NekoPluginBase):
         self.logger.info("配置变化，重新加载凭据")
         await self._reload_credential()
         return Ok({"reloaded": True})
+
+    @plugin_entry(
+        id="reload_credential",
+        name="重新加载凭据",
+        description="重新从文件加载米家凭据并初始化API，防止插件重载后凭据未及时加载导致显示未登录",
+        kind="action"
+    )
+    async def reload_credential(self, **_):
+        """重新加载凭据（供前端刷新状态前调用）"""
+        try:
+            await self._reload_credential()
+        except Exception as e:
+            self.logger.warning(f"reload_credential 失败: {e}")
+        return Ok({
+            "success": True,
+            "logged_in": self.api is not None,
+        })
 
     # ========== 凭据管理 ==========
     async def _load_credential(self) -> Optional[Credential]:
@@ -277,6 +329,7 @@ class MijiaPlugin(NekoPluginBase):
         except json.JSONDecodeError:
             return {}
 
+    @ui.action(label=tr("actions.login.label", default="扫码登录"), tone="primary", group="auth", order=10, refresh_context=True)
     @plugin_entry(
         id="start_qrcode_login",
         name="开始二维码登录",
@@ -389,6 +442,7 @@ class MijiaPlugin(NekoPluginBase):
 
     # ========== Web UI 端点（供前端调用） ==========
     
+    @ui.action(label=tr("actions.logout.label", default="登出"), tone="danger", group="auth", order=20, refresh_context=True)
     @plugin_entry(
         id="logout",
         name="登出",
@@ -465,6 +519,7 @@ class MijiaPlugin(NekoPluginBase):
             self.logger.exception("获取家庭列表失败")
             return Err(SdkError(f"获取家庭列表失败: {e}"))
 
+    @ui.action(label=tr("actions.refreshDevices.label", default="刷新设备"), tone="secondary", group="device", order=10, refresh_context=True)
     @plugin_entry(
         id="list_devices",
         name="获取设备列表",
@@ -704,7 +759,7 @@ class MijiaPlugin(NekoPluginBase):
 
         try:
             scenes = await self.api.get_scenes(home_id)
-            result = [{"id": s.get("id"), "name": s.get("name"), "status": s.get("status")} for s in scenes if s.get("id")]
+            result = [{"id": s.scene_id, "name": s.name} for s in scenes if s.scene_id]
 
             # 保存缓存（使用异步写入避免阻塞）
             try:
@@ -861,6 +916,7 @@ class MijiaPlugin(NekoPluginBase):
         
         return Ok({"success": True, "message": message, "devices": matched, "count": len(matched)})
 
+    @ui.action(label=tr("actions.smartControl.label", default="智能控制"), tone="success", group="control", order=10, refresh_context=True)
     @plugin_entry(
         id="smart_control",
         name="智能控制设备",
@@ -1061,6 +1117,7 @@ class MijiaPlugin(NekoPluginBase):
             self.logger.exception("调用设备操作失败")
             return Err(SdkError(f"调用设备操作失败: {e}"))
 
+    @ui.action(label=tr("actions.executeScene.label", default="执行场景"), tone="success", group="scene", order=10, refresh_context=True)
     @plugin_entry(
         id="execute_scene",
         name="执行智能场景",

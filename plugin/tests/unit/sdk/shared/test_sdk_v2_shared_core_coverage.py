@@ -144,15 +144,24 @@ def test_finish_helpers_normalize_meta_and_structured_data() -> None:
         "items": [1, [2, 3]],
         "payload": {"count": 4, "tags": ["x", "y"]},
     }
+    # ``reply=False`` is now the deprecated bool alias for
+    # ``delivery="silent"``; both fields are stamped (delivery is the new
+    # canonical value, reply stays as a back-compat bool). Caller-supplied
+    # agent.include is preserved as-is even in silent mode.
     assert envelope["meta"] == {
         "source": "test",
-        "agent": {"include": True, "reply": False},
+        "agent": {"include": True, "reply": False, "delivery": "silent"},
     }
 
 
 def test_finish_normalize_meta_replaces_non_mapping_agent_meta() -> None:
     envelope = core_finish.build_finish_envelope(data=None, meta={"agent": "bad"})
-    assert envelope["meta"] == {"agent": {"reply": True, "include": True}}
+    # Default delivery = "proactive" (no reply/delivery passed). reply mirrors
+    # delivery!=silent for back-compat, and include is auto-stamped because
+    # this is non-silent and the caller didn't supply one.
+    assert envelope["meta"] == {
+        "agent": {"delivery": "proactive", "reply": True, "include": True}
+    }
 
 
 def test_core_base_collect_entries_covers_router_collect_entries_and_iter_handler_edges() -> None:

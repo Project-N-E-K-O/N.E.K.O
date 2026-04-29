@@ -52,7 +52,7 @@ import httpx # noqa
 import time # noqa
 import signal # noqa
 from datetime import datetime, timezone # noqa
-from config import MAIN_SERVER_PORT, MONITOR_SERVER_PORT # noqa
+from config import MAIN_SERVER_PORT, MONITOR_SERVER_PORT, USER_NOTIFICATION_ERROR_MAX_CHARS # noqa
 from utils.cloudsave_autocloud import get_cloudsave_manager # noqa
 from utils.cloudsave_runtime import (
     CloudsaveDeadlineExceeded,
@@ -660,27 +660,70 @@ async def _handle_agent_event(event: dict):
 
                 # Build structured callback and enqueue for LLM injection
                 cb_status = event.get("status") or ("completed" if event.get("success", True) else "failed")
+                # delivery_mode controls how the callback reaches the LLM:
+                #   proactive (default): enqueue + immediately schedule trigger_agent_callbacks
+                #   passive            : enqueue only (next user turn will drain)
+                #   silent             : skip LLM channel entirely (frontend HUD still fires)
+                delivery_mode = (event.get("delivery_mode") or "proactive").strip()
+                if delivery_mode not in ("proactive", "passive", "silent"):
+                    delivery_mode = "proactive"
+                # Default source_kind from channel when caller didn't specify one.
+                # Plugin emit sites already pass explicit source_kind/source_name.
+                _channel = event.get("channel") or "unknown"
+                source_kind = (event.get("source_kind") or "").strip()
+                source_name = (event.get("source_name") or "").strip()
+                if not source_kind:
+                    if _channel == "user_plugin":
+                        source_kind = "plugin"
+                    elif _channel in ("computer_use", "cu"):
+                        source_kind = "cu"
+                    elif _channel in ("browser_use", "browser"):
+                        source_kind = "browser"
+                    elif _channel.startswith("plugin:"):
+                        source_kind = "plugin"
+                        if not source_name:
+                            source_name = _channel.split(":", 1)[1]
+                    else:
+                        source_kind = "system"
                 callback = {
                     "event": "agent_task_callback",
                     "task_id": event.get("task_id") or "",
-                    "channel": event.get("channel") or "unknown",
+                    "channel": _channel,
                     "status": cb_status,
                     "success": bool(event.get("success", True)),
                     "summary": event.get("summary") or text,
                     "detail": event.get("detail") or text,
                     "error_message": event.get("error_message") or "",
+                    "source_kind": source_kind,
+                    "source_name": source_name,
+                    "delivery_mode": delivery_mode,
                     "timestamp": event.get("timestamp") or "",
                 }
-                mgr.enqueue_agent_callback(callback)
-                logger.info("[EventBus] %s enqueued callback, scheduling trigger_agent_callbacks", event_type)
+                if delivery_mode != "silent":
+                    mgr.enqueue_agent_callback(callback)
+                    if delivery_mode == "passive":
+                        logger.info(
+                            "[EventBus] %s enqueued callback (passive); next user turn will carry it",
+                            event_type,
+                        )
+                    else:
+                        logger.info(
+                            "[EventBus] %s enqueued callback, scheduling trigger_agent_callbacks",
+                            event_type,
+                        )
 
-                # Create task with exception logging
-                async def _run_trigger_with_logging():
-                    try:
-                        await mgr.trigger_agent_callbacks()
-                    except Exception as e:
-                        logger.error("[EventBus] trigger_agent_callbacks task failed: %s", e)
-                mgr._pending_agent_callback_task = asyncio.create_task(_run_trigger_with_logging())
+                        # Create task with exception logging
+                        async def _run_trigger_with_logging():
+                            try:
+                                await mgr.trigger_agent_callbacks()
+                            except Exception as e:
+                                logger.error("[EventBus] trigger_agent_callbacks task failed: %s", e)
+                        mgr._pending_agent_callback_task = asyncio.create_task(_run_trigger_with_logging())
+                else:
+                    logger.info(
+                        "[EventBus] %s delivery=silent: skipping LLM channel (frontend HUD still fires)",
+                        event_type,
+                    )
                 ws = getattr(mgr, "websocket", None)
                 if _is_websocket_connected(ws):
                     try:
@@ -692,7 +735,7 @@ async def _handle_agent_event(event: dict):
                         }
                         err_msg = event.get("error_message") or ""
                         if err_msg:
-                            notif["error_message"] = err_msg[:500]
+                            notif["error_message"] = err_msg[:USER_NOTIFICATION_ERROR_MAX_CHARS]
                         await ws.send_json(notif)
                         # text 是面向前端的通知正文，不写 logger
                         logger.info("[EventBus] agent_notification sent to frontend (text_len=%d)", len(text))
@@ -713,7 +756,7 @@ async def _handle_agent_event(event: dict):
                     }
                     err_msg = event.get("error_message") or ""
                     if err_msg:
-                        notif["error_message"] = err_msg[:500]
+                        notif["error_message"] = err_msg[:USER_NOTIFICATION_ERROR_MAX_CHARS]
                     await ws.send_json(notif)
                 except Exception as e:
                     logger.debug("[EventBus] agent_notification send failed: %s", e)
