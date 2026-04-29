@@ -41,14 +41,16 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from config.activity_keywords import (
-    classify_browser_title, classify_window_title, is_browser_process,
+    ClassifyResult, classify_browser_title, classify_window_title,
+    classify_process_name, is_browser_process,
 )
 
 from main_logic.activity.snapshot import (
-    ActivitySnapshot, ActivityState, UnfinishedThread, WindowObservation,
-    state_to_propensity,
+    ActivitySnapshot, ActivityState, GameGenre, GameIntensity, UnfinishedThread,
+    WindowObservation, derive_propensity, derive_skip_probability, derive_tone,
 )
 from main_logic.activity.system_signals import SystemSnapshot
+from utils.activity_config import ActivityPreferences, get_activity_preferences
 
 
 # ── Tunables ────────────────────────────────────────────────────────
@@ -196,13 +198,101 @@ def _hour_to_period(hour: int) -> str:
     return 'night'
 
 
-def observation_from_system(sys_snap: SystemSnapshot) -> WindowObservation | None:
+def _apply_user_overrides(
+    result: ClassifyResult,
+    sys_snap: SystemSnapshot,
+    prefs: ActivityPreferences,
+) -> ClassifyResult:
+    """Patch a base classifier result with user-supplied overrides.
+
+    Override semantics are **additive**, not overriding:
+
+      * ``user_app_overrides`` (process-name, case-insensitive) and
+        ``user_title_overrides`` (title-substring, case-insensitive) only
+        fire when the static keyword DB returned ``unknown``. They
+        classify what the DB missed; they never rewrite stable DB hits.
+      * Privacy / own_app classifications are locked — a user override
+        of "work" on KeePass.exe stays as ``private``.
+      * ``user_game_overrides`` is the one exception: it patches
+        intensity/genre on top of an existing gaming classification
+        (never changes category/subcategory/canonical) and runs
+        regardless of static-locked status because it's a different axis.
+    """
+    # Privacy + own-app guarantee — those are static-DB-only categories.
+    # User overrides can't promote OR demote them (suppressed below).
+    static_locked = result.category in ('private', 'own_app')
+
+    # User app overrides — keyed by lowercased process name. Only fire
+    # when static result is 'unknown' (consistent with title overrides
+    # and the additive design rule).
+    if (
+        result.category == 'unknown'
+        and not static_locked
+        and prefs.user_app_overrides
+        and sys_snap.process_name
+    ):
+        key = sys_snap.process_name.lower()
+        # Try exact basename match (handles full paths)
+        basename = key.replace('\\', '/').rsplit('/', 1)[-1]
+        ov = prefs.user_app_overrides.get(basename) or prefs.user_app_overrides.get(key)
+        if ov is not None:
+            result = ClassifyResult(
+                category=ov.category,
+                subcategory=ov.subcategory,
+                canonical=ov.canonical or sys_snap.process_name,
+            )
+
+    # User title overrides — keyed by lowercased title substring.
+    # Same additive rule as app overrides.
+    if (
+        result.category == 'unknown'
+        and not static_locked
+        and prefs.user_title_overrides
+        and sys_snap.window_title
+    ):
+        title_low = sys_snap.window_title.lower()
+        for needle, ov in prefs.user_title_overrides.items():
+            if needle in title_low:
+                result = ClassifyResult(
+                    category=ov.category,
+                    subcategory=ov.subcategory,
+                    canonical=ov.canonical or sys_snap.window_title,
+                )
+                break
+
+    # Game intensity/genre override — patches on top of an existing
+    # gaming classification. Keyed by canonical name (case-sensitive)
+    # to match the keyword DB.
+    if (
+        result.category == 'gaming'
+        and result.subcategory == 'game'
+        and result.canonical
+        and prefs.user_game_overrides
+    ):
+        ov = prefs.user_game_overrides.get(result.canonical)
+        if ov is not None:
+            result = ClassifyResult(
+                category=result.category,
+                subcategory=result.subcategory,
+                canonical=result.canonical,
+                intensity=ov.intensity if ov.intensity is not None else result.intensity,
+                genre=ov.genre if ov.genre is not None else result.genre,
+            )
+
+    return result
+
+
+def observation_from_system(
+    sys_snap: SystemSnapshot,
+    prefs: ActivityPreferences | None = None,
+) -> WindowObservation | None:
     """Build a ``WindowObservation`` from a raw ``SystemSnapshot``.
 
     Browser windows are routed to the domain table first (page URL/title
     is more telling than the bare browser name) with title-table
     fallback for branded SaaS apps where the title surfaces the app name
-    rather than the domain (e.g. "Notion").
+    rather than the domain (e.g. "Notion"). User overrides from
+    ``ActivityPreferences`` apply on top of the static keyword DB.
     """
     if sys_snap.window_title is None and sys_snap.process_name is None:
         return None
@@ -213,12 +303,24 @@ def observation_from_system(sys_snap: SystemSnapshot) -> WindowObservation | Non
         if result.category == 'unknown':
             # Fallback: title-only classification (Notion, Figma, etc.)
             result = classify_window_title(sys_snap.window_title)
+            # Privacy guard: a title-only ``private`` hit from inside a
+            # browser is almost always a false positive — marketing
+            # page ("Bitwarden Pricing"), docs ("KeePass User Guide"),
+            # blog posts about password managers, etc. Native private
+            # apps surface via the process_name match below; only those
+            # should drive the privacy lockdown. Demote the browser-tab
+            # title hit to ``unknown`` so we don't kill enrichment +
+            # proactive chat over what could be reading-about-security.
+            if result.category == 'private':
+                result = ClassifyResult('unknown', None, None)
     else:
         # Non-browser: try title first, then process name as fallback.
         result = classify_window_title(sys_snap.window_title)
         if result.category == 'unknown':
-            from config.activity_keywords import classify_process_name
             result = classify_process_name(sys_snap.process_name)
+
+    if prefs is not None:
+        result = _apply_user_overrides(result, sys_snap, prefs)
 
     return WindowObservation(
         process_name=sys_snap.process_name,
@@ -227,6 +329,8 @@ def observation_from_system(sys_snap: SystemSnapshot) -> WindowObservation | Non
         subcategory=result.subcategory,
         canonical=result.canonical,
         is_browser=is_browser,
+        intensity=result.intensity,
+        genre=result.genre,
     )
 
 
@@ -257,7 +361,76 @@ class ActivityStateMachine:
         snap = sm.get_snapshot(now=time.time())
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, prefs: ActivityPreferences | None = None) -> None:
+        # Resolve preferences once at construction. Threshold overrides are
+        # applied as instance attributes; user override dicts stay live on
+        # ``self._prefs`` for runtime lookup (the loader has its own
+        # mtime-based cache, so re-fetching from prefs every call is fine).
+        if prefs is None:
+            prefs = get_activity_preferences()
+        self._prefs = prefs
+        self._away_idle_seconds = prefs.thresholds.get(
+            'away_idle_seconds', AWAY_IDLE_SECONDS,
+        )
+        self._stale_recovery_seconds = prefs.thresholds.get(
+            'stale_recovery_seconds', STALE_RECOVERY_SECONDS,
+        )
+        self._voice_active_window_seconds = prefs.thresholds.get(
+            'voice_active_window_seconds', VOICE_ACTIVE_WINDOW_SECONDS,
+        )
+        self._focused_work_min_dwell_seconds = prefs.thresholds.get(
+            'focused_work_min_dwell_seconds', FOCUSED_WORK_MIN_DWELL_SECONDS,
+        )
+        self._focused_work_recent_input_seconds = prefs.thresholds.get(
+            'focused_work_recent_input_seconds', FOCUSED_WORK_RECENT_INPUT_SECONDS,
+        )
+        self._casual_browsing_min_dwell_seconds = prefs.thresholds.get(
+            'casual_browsing_min_dwell_seconds', CASUAL_BROWSING_MIN_DWELL_SECONDS,
+        )
+        # Count-shaped thresholds need integer semantics — bare ``int(...)``
+        # would silently truncate ``0.9`` → ``0`` or ``1.7`` → ``1``,
+        # producing surprising behaviour (transitioning never trips,
+        # unfinished_thread_max_followups gets capped at 1 instead of 2).
+        # ``_parse_thresholds`` only validates "positive number", not
+        # "integer", so a typo'd float in user_preferences.json reaches
+        # this point. Reject non-integer floats and fall back to the
+        # default rather than silently rounding.
+        def _int_threshold(name: str, default: int) -> int:
+            raw = prefs.thresholds.get(name)
+            if raw is None or isinstance(raw, bool):
+                return default
+            try:
+                if not float(raw).is_integer():
+                    return default
+            except (TypeError, ValueError):
+                return default
+            value = int(raw)
+            return value if value >= 1 else default
+
+        self._window_switch_transition_threshold = _int_threshold(
+            'window_switch_transition_threshold',
+            WINDOW_SWITCH_TRANSITION_THRESHOLD,
+        )
+        self._window_history_lookback_seconds = prefs.thresholds.get(
+            'window_history_lookback_seconds', WINDOW_HISTORY_LOOKBACK_SECONDS,
+        )
+        self._transition_recent_window_seconds = prefs.thresholds.get(
+            'transition_recent_window_seconds', TRANSITION_RECENT_WINDOW_SECONDS,
+        )
+        self._unfinished_thread_window_seconds = prefs.thresholds.get(
+            'unfinished_thread_window_seconds', UNFINISHED_THREAD_WINDOW_SECONDS,
+        )
+        self._unfinished_thread_max_followups = _int_threshold(
+            'unfinished_thread_max_followups',
+            UNFINISHED_THREAD_MAX_FOLLOWUPS,
+        )
+        self._gaming_gpu_threshold_percent = prefs.thresholds.get(
+            'gaming_gpu_threshold_percent', GAMING_GPU_THRESHOLD_PERCENT,
+        )
+        self._gaming_gpu_max_idle_seconds = prefs.thresholds.get(
+            'gaming_gpu_max_idle_seconds', GAMING_GPU_MAX_IDLE_SECONDS,
+        )
+
         self._current_state: ActivityState = 'idle'
         self._previous_state: ActivityState | None = None
         self._state_started_at: float = time.time()
@@ -291,6 +464,17 @@ class ActivityStateMachine:
         # detects the 5-minute window has expired.
         self._unfinished_thread: dict | None = None
 
+        # Own-app dwell freeze. When the catgirl app is in the foreground,
+        # ``update_window`` early-returns so the previous app stays the
+        # active window — but the previous app's dwell timer would
+        # otherwise keep ticking, so a brief glance at the catgirl could
+        # artificially push the prior window past dwell thresholds (e.g.
+        # focused_work's 90s). On entering own_app we record the freeze
+        # start; on the next non-own-app observation we advance
+        # ``_current_window_started_at`` by the freeze duration, so dwell
+        # only counts time the user spent on non-own-app windows.
+        self._own_app_freeze_started_at: float | None = None
+
     # ── update inputs ────────────────────────────────────────────
 
     def update_window(self, obs: WindowObservation | None, *, now: float | None = None) -> None:
@@ -299,17 +483,71 @@ class ActivityStateMachine:
         Identical-category consecutive observations are collapsed —
         the dwell timer keeps running. A category change (e.g.
         work → entertainment) starts a fresh dwell timer.
+
+        Special handling:
+          * ``own_app`` (catgirl app itself in foreground) — observation
+            is discarded entirely. Window tracking pretends nothing
+            happened so dwell on the previous app keeps accumulating
+            and GPU fallback gaming doesn't trip on the catgirl's own
+            Live2D / VRM rendering.
+          * ``private`` — observation IS recorded (state classifier
+            needs to see it to emit state='private'), but title /
+            process_name fields are scrubbed before storing so the
+            sensitive content never reaches downstream consumers
+            (prompt rendering, LLM enrichment, conversation buffers).
         """
         if obs is None:
             return
         ts = now if now is not None else time.time()
 
+        if obs.category == 'own_app':
+            # Transparent: previous window stays the active observation.
+            # Record the freeze entry time so the next non-own-app
+            # observation can subtract own-app time from dwell.
+            if self._own_app_freeze_started_at is None:
+                self._own_app_freeze_started_at = ts
+            return
+
+        # Resume from own-app freeze: advance the dwell start by the
+        # time spent in own_app so the previous (or new) window's dwell
+        # only counts non-own-app time. Done unconditionally on the
+        # first non-own-app observation following an own_app stretch —
+        # if this observation is a category change, the assignment to
+        # _current_window_started_at below will overwrite it (harmless).
+        if self._own_app_freeze_started_at is not None:
+            self._current_window_started_at += (ts - self._own_app_freeze_started_at)
+            self._own_app_freeze_started_at = None
+
+        if obs.category == 'private':
+            # Sanitize: keep category + canonical (user/AI sees just
+            # "private app foreground"), drop title/process — those are
+            # the leaky bits.
+            obs = WindowObservation(
+                process_name=None,
+                title=None,
+                category='private',
+                subcategory=None,
+                canonical=obs.canonical or '[private]',
+                is_browser=False,
+                intensity=None,
+                genre=None,
+            )
+
         prev = self._current_window
+        # Include intensity / genre in the equivalence check: when a user
+        # hot-reloads ``user_game_overrides`` while the same game stays
+        # foreground, the new observation has identical
+        # category/subcategory/canonical but different intensity/genre.
+        # Without these in the check, the collapse logic treats it as
+        # "same window" → propensity / skip_probability / tone keep
+        # using the old tags until the user actually switches windows.
         same = (
             prev is not None
             and prev.category == obs.category
             and prev.subcategory == obs.subcategory
             and (prev.canonical or '') == (obs.canonical or '')
+            and prev.intensity == obs.intensity
+            and prev.genre == obs.genre
         )
         if not same:
             self._current_window = obs
@@ -363,14 +601,17 @@ class ActivityStateMachine:
 
         Called by the proactive chat path after a successful emission
         when the snapshot's ``unfinished_thread`` was active. Once the
-        counter reaches ``UNFINISHED_THREAD_MAX_FOLLOWUPS``, subsequent
-        snapshots will hide the thread from the prompt — so the AI gets
-        at most that many follow-up attempts without a user reply.
+        counter reaches ``self._unfinished_thread_max_followups``,
+        subsequent snapshots will hide the thread from the prompt — so
+        the AI gets at most that many follow-up attempts without a user
+        reply. Honors the per-instance threshold loaded from
+        ``ActivityPreferences.thresholds`` rather than the module
+        constant, so user tuning actually takes effect here.
         """
         if self._unfinished_thread is None:
             return
         self._unfinished_thread['follow_up_count'] += 1
-        if self._unfinished_thread['follow_up_count'] >= UNFINISHED_THREAD_MAX_FOLLOWUPS:
+        if self._unfinished_thread['follow_up_count'] >= self._unfinished_thread_max_followups:
             # Cap reached — drop entirely so we don't keep allocating
             # state for a thread that can no longer be surfaced.
             self._unfinished_thread = None
@@ -394,27 +635,59 @@ class ActivityStateMachine:
             self._previous_state = self._current_state
             # Stale-recovery trigger: leaving 'away' for anything else.
             if self._current_state == 'away' and new_state != 'away':
-                self._stale_returning_until = ts + STALE_RECOVERY_SECONDS
+                self._stale_returning_until = ts + self._stale_recovery_seconds
             self._current_state = new_state
             self._state_started_at = ts
 
         # Apply stale_returning override AFTER the bookkeeping so the
         # underlying state still advances (we want to know what state
-        # they "really" entered, just expose the stale window for prompt)
+        # they "really" entered, just expose the stale window for prompt).
+        # Two states are exempt:
+        #   * 'away' — obviously, we're transitioning OUT of away
+        #   * 'private' — privacy lockdown must remain ``closed``, not
+        #     downgrade to ``greeting_window``. If the user comes back
+        #     from being away with a password manager still foreground,
+        #     proactive chat must still hard-skip.
         effective_state: ActivityState = self._current_state
-        if ts < self._stale_returning_until and self._current_state != 'away':
+        if (
+            ts < self._stale_returning_until
+            and self._current_state != 'away'
+            and self._current_state != 'private'
+        ):
             effective_state = 'stale_returning'
 
-        propensity = state_to_propensity(effective_state)
+        # Game tag pass-through is needed to resolve propensity for gaming
+        # subtypes (casual → open). Compute it here BEFORE the propensity
+        # lookup; the full assignment to game_intensity / game_genre
+        # comes after active_window resolution below.
+        _pre_intensity: GameIntensity | None = None
+        _pre_genre: GameGenre | None = None
+        if (
+            effective_state == 'gaming'
+            and self._current_window is not None
+        ):
+            _pre_intensity = self._current_window.intensity  # type: ignore[assignment]
+            _pre_genre = self._current_window.genre  # type: ignore[assignment]
+
+        propensity = derive_propensity(
+            effective_state,
+            game_intensity=_pre_intensity,
+            game_genre=_pre_genre,
+        )
         reasons = self._build_propensity_reasons(effective_state, ts)
 
-        # Window observation summary
+        # Window observation summary. For ``private`` state we redact
+        # active_window entirely — even the sanitized canonical we kept
+        # internally for state-machine bookkeeping shouldn't ride out
+        # to the prompt or LLM enrichment.
         active_window = self._current_window
+        if effective_state == 'private':
+            active_window = None
 
         # Switch rate over the lookback window
         switch_rate = sum(
             1 for entry in self._window_history
-            if ts - entry.timestamp <= WINDOW_HISTORY_LOOKBACK_SECONDS
+            if ts - entry.timestamp <= self._window_history_lookback_seconds
         )
 
         sys_snap = self._latest_system
@@ -431,7 +704,7 @@ class ActivityStateMachine:
 
         voice_recent = (
             self._voice_mode_active
-            and (ts - self._voice_last_rms_at) < VOICE_ACTIVE_WINDOW_SECONDS
+            and (ts - self._voice_last_rms_at) < self._voice_active_window_seconds
         )
 
         # Time context
@@ -439,25 +712,45 @@ class ActivityStateMachine:
         period = _hour_to_period(local.hour)
 
         transitioned_recently = (
-            ts - self._state_started_at <= TRANSITION_RECENT_WINDOW_SECONDS
+            ts - self._state_started_at <= self._transition_recent_window_seconds
             and self._previous_state is not None
         )
 
-        # Unfinished thread: surface it if still within the 5-min window
+        # Unfinished thread: surface it if still within the window
         # and under the follow-up cap. Past the window, retire the record
         # so future ticks don't keep evaluating the same expired data.
         unfinished = None
         if self._unfinished_thread is not None:
             age = ts - self._unfinished_thread['started_at']
-            if age > UNFINISHED_THREAD_WINDOW_SECONDS:
+            if age > self._unfinished_thread_window_seconds:
                 self._unfinished_thread = None
-            elif self._unfinished_thread['follow_up_count'] < UNFINISHED_THREAD_MAX_FOLLOWUPS:
+            elif self._unfinished_thread['follow_up_count'] < self._unfinished_thread_max_followups:
                 unfinished = UnfinishedThread(
                     text=self._unfinished_thread['tail'],
                     age_seconds=age,
                     follow_up_count=self._unfinished_thread['follow_up_count'],
-                    max_follow_ups=UNFINISHED_THREAD_MAX_FOLLOWUPS,
+                    max_follow_ups=self._unfinished_thread_max_followups,
                 )
+
+        # Game tags are resolved earlier (pre-propensity); reuse them
+        # here for the snapshot fields. Active_window may have been
+        # redacted by the private branch — but private and gaming are
+        # mutually exclusive states, so nothing's lost.
+        game_intensity: GameIntensity | None = _pre_intensity
+        game_genre: GameGenre | None = _pre_genre
+
+        # Tone + skip probability — pure derivation from above.
+        tone = derive_tone(
+            effective_state,
+            game_intensity=game_intensity,
+            game_genre=game_genre,
+        )
+        skip_probability = derive_skip_probability(
+            effective_state,
+            game_intensity=game_intensity,
+            game_genre=game_genre,
+            overrides=self._prefs.skip_probability_overrides or None,
+        )
 
         return ActivitySnapshot(
             state=effective_state,
@@ -467,6 +760,10 @@ class ActivityStateMachine:
             stale_returning=(ts < self._stale_returning_until and self._current_state != 'away'),
             propensity=propensity,
             propensity_reasons=reasons,
+            skip_probability=skip_probability,
+            tone=tone,
+            game_intensity=game_intensity,
+            game_genre=game_genre,
             system_idle_seconds=idle_seconds,
             cpu_avg_30s=cpu_avg,
             cpu_instant=cpu_now,
@@ -491,25 +788,34 @@ class ActivityStateMachine:
 
         # 1. away — system-wide input idle dominates everything else.
         # OS idle is the only signal that survives the user walking away.
-        if sys_snap is not None and sys_snap.idle_seconds >= AWAY_IDLE_SECONDS:
+        # ``private`` deliberately does NOT win here: a privacy-app
+        # window left open while the user walked away is just an idle
+        # situation; nobody's looking at the secrets right now.
+        if sys_snap is not None and sys_snap.idle_seconds >= self._away_idle_seconds:
             return 'away'
 
-        # 2. voice_engaged — voice mode + recent RMS activity is the
+        # 2. private — sensitive app foreground, user actively present.
+        # Wins above voice/gaming/work/etc so the AI never proactively
+        # speaks while the password manager / banking app is up.
+        win = self._current_window
+        if win is not None and win.category == 'private':
+            return 'private'
+
+        # 3. voice_engaged — voice mode + recent RMS activity is the
         # strongest "in active conversation" signal we have.
         if (
             self._voice_mode_active
-            and (now - self._voice_last_rms_at) < VOICE_ACTIVE_WINDOW_SECONDS
+            and (now - self._voice_last_rms_at) < self._voice_active_window_seconds
         ):
             return 'voice_engaged'
 
-        # 3. gaming — actual game (subcategory='game') in foreground.
+        # 4. gaming — actual game (subcategory='game') in foreground.
         # Launchers ('subcategory'='launcher') are intentionally NOT here:
         # browsing the Steam store doesn't mean "playing".
-        win = self._current_window
         if win is not None and win.category == 'gaming' and win.subcategory == 'game':
             return 'gaming'
 
-        # 3b. gaming-by-GPU fallback. Catches small / indie / new titles
+        # 4b. gaming-by-GPU fallback. Catches small / indie / new titles
         # not yet in the keyword DB. Gates:
         #   - active window category MUST be 'unknown' — never override
         #     work/communication/entertainment classifications, those are
@@ -518,55 +824,58 @@ class ActivityStateMachine:
         #   - User actually present (input within last minute) — long-idle
         #     high GPU is usually background rendering or AFK farming, not
         #     active engagement we should hesitate to interrupt.
+        # Own-app foreground was already filtered upstream in update_window
+        # (no observation recorded), so the catgirl's own GPU usage doesn't
+        # reach this branch.
         if (
             win is not None and win.category == 'unknown'
             and sys_snap is not None and sys_snap.gpu_utilization is not None
-            and sys_snap.gpu_utilization >= GAMING_GPU_THRESHOLD_PERCENT
-            and sys_snap.idle_seconds <= GAMING_GPU_MAX_IDLE_SECONDS
+            and sys_snap.gpu_utilization >= self._gaming_gpu_threshold_percent
+            and sys_snap.idle_seconds <= self._gaming_gpu_max_idle_seconds
         ):
             return 'gaming'
 
-        # 4. focused_work — work-category window with sustained dwell AND
+        # 5. focused_work — work-category window with sustained dwell AND
         # recent input. The combo is what filters out "left VS Code open
         # while watching YouTube in another monitor" cases.
         if win is not None and win.category == 'work':
             dwell = now - self._current_window_started_at
             recent_input = (
                 self._last_user_msg_at is not None
-                and (now - self._last_user_msg_at) <= FOCUSED_WORK_RECENT_INPUT_SECONDS
+                and (now - self._last_user_msg_at) <= self._focused_work_recent_input_seconds
             )
             recent_system_active = (
                 sys_snap is not None
-                and sys_snap.idle_seconds < FOCUSED_WORK_RECENT_INPUT_SECONDS
+                and sys_snap.idle_seconds < self._focused_work_recent_input_seconds
             )
-            if dwell >= FOCUSED_WORK_MIN_DWELL_SECONDS and (recent_input or recent_system_active):
+            if dwell >= self._focused_work_min_dwell_seconds and (recent_input or recent_system_active):
                 return 'focused_work'
 
-        # 5. casual_browsing — entertainment dominates with reasonable dwell.
+        # 6. casual_browsing — entertainment dominates with reasonable dwell.
         if win is not None and win.category == 'entertainment':
             dwell = now - self._current_window_started_at
-            if dwell >= CASUAL_BROWSING_MIN_DWELL_SECONDS:
+            if dwell >= self._casual_browsing_min_dwell_seconds:
                 return 'casual_browsing'
 
-        # 6. chatting — communication app in foreground. We deliberately
+        # 7. chatting — communication app in foreground. We deliberately
         # do NOT gate on "low CPU" per the user's instruction (signal
         # too unreliable). A short dwell is fine — chat windows are
         # small, often briefly raised to read a message.
         if win is not None and win.category == 'communication':
             return 'chatting'
 
-        # 7. transitioning — no clear category dominates AND there's been
+        # 8. transitioning — no clear category dominates AND there's been
         # a flurry of window switches recently. Note this still produces
         # ``open`` propensity (per user clarification — screen channel
         # always allowed); only the source-weight layer should care.
         switches = sum(
             1 for entry in self._window_history
-            if now - entry.timestamp <= WINDOW_HISTORY_LOOKBACK_SECONDS
+            if now - entry.timestamp <= self._window_history_lookback_seconds
         )
-        if switches >= WINDOW_SWITCH_TRANSITION_THRESHOLD:
+        if switches >= self._window_switch_transition_threshold:
             return 'transitioning'
 
-        # 8. idle — at the computer (not away) but no clear bucket.
+        # 9. idle — at the computer (not away) but no clear bucket.
         return 'idle'
 
     # ── reason strings (for prompt + debugging) ──────────────────
@@ -623,12 +932,29 @@ class ActivityStateMachine:
             reasons.append(('state_transitioning', {}))
         elif state == 'idle':
             reasons.append(('state_idle', {}))
+        elif state == 'private':
+            reasons.append(('state_private', {}))
 
         # CPU / GPU augmentations — appended only when notably high so
-        # we don't add noise to the typical case.
+        # we don't add noise to the typical case. GPU threshold reuses
+        # ``self._gaming_gpu_threshold_percent`` so the reason text and
+        # the gaming-by-GPU classifier always agree on "is GPU notable";
+        # otherwise a user lifting / lowering the gaming threshold would
+        # see prompt explanations disagree with state decisions.
+        # CPU reason stays at the hardcoded 70 — there's no per-instance
+        # CPU threshold to thread through (CPU only ever shows up as
+        # supplementary context, never gates a state).
         if sys_snap and sys_snap.cpu_avg_30s > 70:
             reasons.append(('high_cpu', {'cpu_percent': int(sys_snap.cpu_avg_30s)}))
-        if sys_snap and sys_snap.gpu_utilization is not None and sys_snap.gpu_utilization > 60:
+        # Boundary: matches the classifier's ``>=`` at line 809 so a GPU
+        # value sitting exactly on the threshold gets the explanatory
+        # reason whenever it gets the gaming-by-GPU classification.
+        # Otherwise the prompt would see "user is gaming" without the
+        # GPU evidence sentence, which reads inconsistent.
+        if (
+            sys_snap and sys_snap.gpu_utilization is not None
+            and sys_snap.gpu_utilization >= self._gaming_gpu_threshold_percent
+        ):
             reasons.append(('high_gpu', {'gpu_percent': int(sys_snap.gpu_utilization)}))
 
         return reasons

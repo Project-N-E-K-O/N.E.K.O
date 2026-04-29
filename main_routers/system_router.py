@@ -3381,10 +3381,61 @@ async def proactive_chat(request: Request):
             try:
                 activity_snapshot = await mgr._activity_tracker.get_snapshot()
                 print(f"[{lanlan_name}] activity snapshot: state={activity_snapshot.state} "
-                      f"propensity={activity_snapshot.propensity} reasons={activity_snapshot.propensity_reasons}")
+                      f"propensity={activity_snapshot.propensity} reasons={activity_snapshot.propensity_reasons} "
+                      f"skip_prob={activity_snapshot.skip_probability:.2f} tone={activity_snapshot.tone}")
             except Exception as _act_err:
                 logger.warning(f"[{lanlan_name}] activity snapshot fetch failed: {_act_err}; falling back to open propensity")
                 activity_snapshot = None
+
+        # ========== Hard short-circuit: propensity=closed ==========
+        # ``private`` state pins propensity to ``closed`` (see
+        # main_logic/activity/snapshot.py). Skip everything — no LLM,
+        # no source fetch, no prompt assembly. The user is in a
+        # password manager / banking app / etc and we promised not to
+        # look. Bypassed for the unfinished_thread override is
+        # deliberate: if the AI just asked a question, hanging on it
+        # mid-private is rude. closed > thread.
+        if activity_snapshot is not None and activity_snapshot.propensity == 'closed':
+            print(f"[{lanlan_name}] propensity=closed (state={activity_snapshot.state}), 跳过本轮 proactive")
+            return await _end_proactive(JSONResponse({
+                "success": True,
+                "action": "pass",
+                "message": f"user state={activity_snapshot.state} → closed (privacy lockdown)",
+            }))
+
+        # ========== Probabilistic skip (intensity-driven gate) ==========
+        # ``skip_probability`` is rolled BEFORE we burn LLM cost.
+        # Default 0 for non-gaming and varied gaming, so this only
+        # kicks in for tagged competitive / immersive-horror gaming
+        # — or whatever combos the user has dialed up via
+        # preferences.json::skip_probability_overrides.
+        #
+        # The unfinished_thread guard means open threads still get
+        # follow-ups even at skip=1.0: if the AI promised to come
+        # back to something, we honour that promise regardless of
+        # how silenced the user wanted us. The thread mechanism's
+        # 2-followup hard cap already prevents harassment.
+        if (
+            activity_snapshot is not None
+            and activity_snapshot.skip_probability > 0
+            and activity_snapshot.unfinished_thread is None
+        ):
+            import random as _random
+            if _random.random() < activity_snapshot.skip_probability:
+                print(
+                    f"[{lanlan_name}] skip_probability={activity_snapshot.skip_probability:.2f} "
+                    f"rolled (state={activity_snapshot.state} intensity={activity_snapshot.game_intensity} "
+                    f"genre={activity_snapshot.game_genre})，本轮跳过"
+                )
+                return await _end_proactive(JSONResponse({
+                    "success": True,
+                    "action": "pass",
+                    "message": (
+                        f"probabilistic skip: state={activity_snapshot.state} "
+                        f"intensity={activity_snapshot.game_intensity} "
+                        f"skip_prob={activity_snapshot.skip_probability:.2f}"
+                    ),
+                }))
 
         # ========== 解析 enabled_modes ==========
         enabled_modes = data.get('enabled_modes', [])
