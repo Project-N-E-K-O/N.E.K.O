@@ -1817,10 +1817,11 @@ class DirectTaskExecutor:
                 reason=reason or "Plugin not found"
             )
 
-        declared_entries = plugin_meta.get("entries", []) if isinstance(plugin_meta, dict) else []
-        has_declared_entries = isinstance(declared_entries, list) and bool(declared_entries)
+        raw_entries = plugin_meta.get("entries") if isinstance(plugin_meta, dict) else None
+        entries_field_exists = isinstance(raw_entries, list)
+        has_declared_entries = entries_field_exists and bool(raw_entries)
         known_entries = [str(e.get("id")) for e in self._agent_visible_plugin_entries(plugin_meta) if e.get("id")]
-        if has_declared_entries and not known_entries:
+        if entries_field_exists and not known_entries:
             return TaskResult(
                 task_id=task_id,
                 has_task=True,
@@ -1833,7 +1834,7 @@ class DirectTaskExecutor:
                 entry_id=plugin_entry_id,
                 reason=reason or "no_agent_visible_entries",
             )
-        if has_declared_entries and not plugin_entry_id:
+        if entries_field_exists and not plugin_entry_id:
             return TaskResult(
                 task_id=task_id,
                 has_task=True,

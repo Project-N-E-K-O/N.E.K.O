@@ -130,7 +130,7 @@ class HeuristicSelector:
     def __init__(self, logger) -> None:
         self.logger = logger
 
-    def _safe_int(self, value: Any, default: int = 0) -> int:
+    def _safe_int(self, value: Any, default: Any = 0) -> Any:
         try:
             if value is None:
                 return default
@@ -665,7 +665,6 @@ class HeuristicSelector:
             "go for the eyes": 90,
             "go_for_the_eyes": 90,
             "污秽攻击": 74,
-            "gunk up": 74,
             "gunk up": 74,
             "压缩": 88,
             "recycle": 88,

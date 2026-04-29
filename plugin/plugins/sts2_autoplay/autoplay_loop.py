@@ -106,7 +106,11 @@ class AutoplayLoopMixin:
                     self._emit_status()
             except Exception as exc:
                 self._consecutive_errors += 1
-                self._server_state = "degraded" if self._consecutive_errors < int(self._cfg.get("max_consecutive_errors", 3) or 3) else "disconnected"
+                try:
+                    max_errors = int(self._cfg.get("max_consecutive_errors", 3) or 3)
+                except (ValueError, TypeError):
+                    max_errors = 3
+                self._server_state = "degraded" if self._consecutive_errors < max_errors else "disconnected"
                 self._last_error = str(exc)
                 self._emit_status()
             try:
