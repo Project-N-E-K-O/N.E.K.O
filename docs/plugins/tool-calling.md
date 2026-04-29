@@ -85,8 +85,10 @@ carries the details.
 { "role": null, "source": "my_plugin" }
 ```
 
-When `source` is empty everything gets cleared; with a source only that
-source's registrations are removed.
+`source` is **required** (≥1 char). The HTTP endpoint only supports
+clearing by source — sending an empty `source` returns 422. If you need
+"clear all" semantics, either iterate per-source or call the in-process
+`mgr.clear_tools()` (which accepts `source=None`).
 
 ### `GET /api/tools[?role=<name>]`
 
@@ -123,8 +125,14 @@ Or on failure:
 { "output": null, "is_error": true, "error": "city not found" }
 ```
 
-`output` may be any JSON (dict / list / string / number); main_server
-passes the entire body to the LLM as `ToolResult.output`. When
+**How `output` is extracted**: main_server calls
+`body.get("output", body)` — when the response body contains an
+`output` key its value is fed to the LLM; otherwise the whole body is
+treated as the output. **Always wrap your result in
+`{"output": ...}`**, or metadata like `is_error` / `error` will appear
+side-by-side with your real result and confuse the model.
+
+`output` itself may be any JSON (dict / list / string / number). When
 `is_error: true` is set, the LLM sees the failure and may skip the tool
 or pick another one.
 
@@ -241,8 +249,8 @@ mgr.register_tool(ToolDefinition(
     name="get_weather",
     description="Look up the weather in a given city",
     parameters={...},
-    handler=handle_get_weather,   # in-process callable
-    source="my_extension",
+    handler=handle_get_weather,             # in-process callable
+    metadata={"source": "my_extension"},    # source goes into metadata
 ))
 ```
 
