@@ -215,6 +215,32 @@ def test_get_character_data_strips_legacy_persona_block_but_keeps_custom_system_
 
 
 @pytest.mark.unit
+def test_get_character_data_strips_legacy_persona_block_without_override():
+    with TemporaryDirectory() as td:
+        config_manager = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(config_manager)
+
+        characters = config_manager.load_characters()
+        current_name = characters["当前猫娘"]
+        characters["猫娘"][current_name].setdefault("_reserved", {})["system_prompt"] = (
+            "You are a reserved fox spirit.\n\n"
+            "<NEKO_PERSONA_SELECTION>\n"
+            "- 当前人格名称：傲娇毒舌小猫\n"
+            "- 代表台词：哼，这种事也要问吗，笨蛋人类。\n"
+            "</NEKO_PERSONA_SELECTION>\n\n"
+            "Always speak softly about moonlight."
+        )
+        config_manager.save_characters(characters)
+
+        _, _, _, _, _, prompt_map, _, _, _ = config_manager.get_character_data()
+
+        assert "reserved fox spirit" in prompt_map[current_name]
+        assert "moonlight" in prompt_map[current_name]
+        assert "<NEKO_PERSONA_SELECTION>" not in prompt_map[current_name]
+        assert "笨蛋人类" not in prompt_map[current_name]
+
+
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_character_persona_routes_save_clear_and_track_onboarding_state():
     with TemporaryDirectory() as td:
@@ -543,3 +569,85 @@ async def test_character_persona_routes_reject_invalid_json_and_normalize_non_ob
                 "success": False,
                 "error": "无效的人格预设",
             }
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_update_character_persona_selection_rolls_back_if_recent_clear_fails():
+    with TemporaryDirectory() as td:
+        config_manager = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(config_manager)
+
+        async def _noop(*args, **kwargs):
+            return None
+
+        with patch("utils.config_manager._config_manager", config_manager):
+            init_shared_state(
+                role_state={},
+                steamworks=None,
+                templates=None,
+                config_manager=config_manager,
+                logger=None,
+                initialize_character_data=_noop,
+                switch_current_catgirl_fast=_noop,
+                init_one_catgirl=_noop,
+                remove_one_catgirl=_noop,
+            )
+
+            router_module = importlib.reload(importlib.import_module("main_routers.characters_router"))
+            current_name = config_manager.load_characters()["当前猫娘"]
+
+            async def _boom(*args, **kwargs):
+                raise RuntimeError("recent clear failed")
+
+            with patch.object(router_module, "_clear_character_recent_history", _boom):
+                with pytest.raises(RuntimeError, match="recent clear failed"):
+                    await router_module.update_character_persona_selection(
+                        current_name,
+                        _DummyRequest({"preset_id": "classic_genki", "source": "manual_reselect"}),
+                    )
+
+            saved_reserved = config_manager.load_characters()["猫娘"][current_name].get("_reserved", {})
+            assert "persona_override" not in saved_reserved
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_clear_character_persona_selection_rolls_back_if_recent_clear_fails():
+    with TemporaryDirectory() as td:
+        config_manager = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(config_manager)
+
+        async def _noop(*args, **kwargs):
+            return None
+
+        with patch("utils.config_manager._config_manager", config_manager):
+            init_shared_state(
+                role_state={},
+                steamworks=None,
+                templates=None,
+                config_manager=config_manager,
+                logger=None,
+                initialize_character_data=_noop,
+                switch_current_catgirl_fast=_noop,
+                init_one_catgirl=_noop,
+                remove_one_catgirl=_noop,
+            )
+
+            router_module = importlib.reload(importlib.import_module("main_routers.characters_router"))
+            current_name = config_manager.load_characters()["当前猫娘"]
+
+            await router_module.update_character_persona_selection(
+                current_name,
+                _DummyRequest({"preset_id": "classic_genki", "source": "manual_reselect"}),
+            )
+
+            async def _boom(*args, **kwargs):
+                raise RuntimeError("recent clear failed")
+
+            with patch.object(router_module, "_clear_character_recent_history", _boom):
+                with pytest.raises(RuntimeError, match="recent clear failed"):
+                    await router_module.clear_character_persona_selection(current_name)
+
+            saved_reserved = config_manager.load_characters()["猫娘"][current_name].get("_reserved", {})
+            assert saved_reserved["persona_override"]["preset_id"] == "classic_genki"

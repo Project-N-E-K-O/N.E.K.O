@@ -17,13 +17,15 @@
 
     function translate(key, fallback, options) {
         if (typeof window.t === 'function') {
-            if (options && typeof options === 'object') {
-                return window.t(key, {
+            const translated = options && typeof options === 'object'
+                ? window.t(key, {
                     ...options,
                     defaultValue: fallback,
-                });
+                })
+                : window.t(key, fallback);
+            if (translated && translated !== key) {
+                return translated;
             }
-            return window.t(key, fallback);
         }
         const template = fallback || key;
         return options && typeof options === 'object'

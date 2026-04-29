@@ -196,15 +196,17 @@ def test_memory_browser_current_personality_reset_requests_home_reselect(
     mock_page.goto(f"{running_server}/memory_browser")
     mock_page.wait_for_selector("#tutorial-reset-select", timeout=10000)
     mock_page.select_option("#tutorial-reset-select", "current_personality")
-    dialog_messages = []
+    with mock_page.expect_response(
+        lambda r: "/api/characters/persona-reselect-current" in r.url
+        and r.request.method == "POST"
+        and r.status == 200
+    ):
+        with mock_page.expect_event("dialog") as dialog_info:
+            mock_page.locator("#tutorial-reset-btn").click()
 
-    def handle_dialog(dialog):
-        dialog_messages.append(dialog.message)
-        dialog.accept()
-
-    mock_page.once("dialog", handle_dialog)
-    mock_page.locator("#tutorial-reset-btn").click()
-    mock_page.wait_for_timeout(200)
+    dialog = dialog_info.value
+    dialog_messages = [dialog.message]
+    dialog.accept()
 
     assert request_log == [{
         "url": f"{running_server}/api/characters/persona-reselect-current",

@@ -221,16 +221,12 @@ def _resolve_effective_character_prompt(character_payload: dict) -> str:
         default=None,
         legacy_keys=("system_prompt",),
     )
-    override = _get_persona_override(character_payload)
-
     if stored_prompt is None or is_default_prompt(stored_prompt):
         return get_lanlan_prompt()
 
     # 旧版人格功能会把整段模板化人格 prompt 直接写进 system_prompt。
-    # 当当前角色已经有新的 persona_override 时，这类历史 prompt 必须让位，
-    # 否则模型会同时吃到“旧毒舌整段规则 + 新人格补充 guidance”，
-    # 最终仍然偏向旧人格。
-    if isinstance(override, dict) and _has_generated_persona_selection_prompt(stored_prompt):
+    # 不论当前是否仍保留 persona_override，这类历史片段都不应继续直接喂给模型。
+    if _has_generated_persona_selection_prompt(stored_prompt):
         cleaned_prompt = strip_generated_persona_selection_prompt(stored_prompt)
         return cleaned_prompt or get_lanlan_prompt()
 

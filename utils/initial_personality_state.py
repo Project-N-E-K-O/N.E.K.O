@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,6 +22,8 @@ VALID_INITIAL_PERSONALITY_STATUSES = {
     "completed",
     "skipped",
 }
+
+_INITIAL_PERSONALITY_STATE_LOCK = threading.RLock()
 
 
 def _normalize_state(raw_state: object) -> dict:
@@ -73,14 +76,15 @@ def mark_initial_personality_state(
     config_manager=None,
     now_iso: str | None = None,
 ) -> dict:
-    state = load_initial_personality_state(config_manager)
-    state["status"] = str(status or "").strip().lower()
-    state["handled_at"] = (
-        str(now_iso).strip()
-        if now_iso
-        else datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-    )
-    return save_initial_personality_state(state, config_manager)
+    with _INITIAL_PERSONALITY_STATE_LOCK:
+        state = load_initial_personality_state(config_manager)
+        state["status"] = str(status or "").strip().lower()
+        state["handled_at"] = (
+            str(now_iso).strip()
+            if now_iso
+            else datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        )
+        return save_initial_personality_state(state, config_manager)
 
 
 def mark_manual_personality_reselect(
@@ -89,18 +93,20 @@ def mark_manual_personality_reselect(
     config_manager=None,
     now_iso: str | None = None,
 ) -> dict:
-    state = load_initial_personality_state(config_manager)
-    state["manual_reselect_character_name"] = str(character_name or "").strip()
-    state["manual_reselect_requested_at"] = (
-        str(now_iso).strip()
-        if now_iso
-        else datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-    )
-    return save_initial_personality_state(state, config_manager)
+    with _INITIAL_PERSONALITY_STATE_LOCK:
+        state = load_initial_personality_state(config_manager)
+        state["manual_reselect_character_name"] = str(character_name or "").strip()
+        state["manual_reselect_requested_at"] = (
+            str(now_iso).strip()
+            if now_iso
+            else datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        )
+        return save_initial_personality_state(state, config_manager)
 
 
 def clear_manual_personality_reselect(*, config_manager=None) -> dict:
-    state = load_initial_personality_state(config_manager)
-    state["manual_reselect_character_name"] = ""
-    state["manual_reselect_requested_at"] = ""
-    return save_initial_personality_state(state, config_manager)
+    with _INITIAL_PERSONALITY_STATE_LOCK:
+        state = load_initial_personality_state(config_manager)
+        state["manual_reselect_character_name"] = ""
+        state["manual_reselect_requested_at"] = ""
+        return save_initial_personality_state(state, config_manager)

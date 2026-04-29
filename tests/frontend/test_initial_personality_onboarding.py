@@ -57,12 +57,16 @@ def _bootstrap_page(mock_page: Page) -> None:
 
                 if (requestUrl === '/api/characters/persona-onboarding-state') {
                     if (method === 'POST') {
+                        const nextStatus = (body && typeof body.status === 'string')
+                            ? body.status
+                            : window.__personaOnboardingState.status;
+                        window.__personaOnboardingState = {
+                            ...window.__personaOnboardingState,
+                            status: nextStatus,
+                        };
                         return new Response(JSON.stringify({
                             success: true,
-                            state: {
-                                ...window.__personaOnboardingState,
-                                status: body.status,
-                            },
+                            state: window.__personaOnboardingState,
                         }), {
                             status: 200,
                             headers: { 'Content-Type': 'application/json' },
@@ -594,6 +598,56 @@ def test_onboarding_preview_streams_selected_personality_copy(mock_page: Page):
 
 
 @pytest.mark.frontend
+def test_onboarding_translate_falls_back_when_window_t_returns_raw_key(mock_page: Page):
+    _bootstrap_page(mock_page)
+    mock_page.evaluate(
+        """
+        () => {
+            window.universalTutorialManager.isTutorialRunning = false;
+            window.t = function(key) {
+                return key;
+            };
+        }
+        """
+    )
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static" / "js" / "character_personality_onboarding.js"))
+
+    mock_page.evaluate(
+        """
+        () => {
+            window.CharacterPersonalityOnboarding.bootstrap();
+        }
+        """
+    )
+
+    expect(mock_page.locator("[data-role='title']")).to_have_text("你想让我变成哪种陪着你的样子喵？")
+    expect(mock_page.locator("[data-testid='character-personality-skip']")).to_have_text("先跳过喵")
+    expect(mock_page.locator("[data-role='current-character']")).to_have_text("小天")
+
+
+@pytest.mark.frontend
+def test_onboarding_state_post_mock_persists_updated_status(mock_page: Page):
+    _bootstrap_page(mock_page)
+
+    persisted_status = mock_page.evaluate(
+        """
+        async () => {
+            await window.fetch('/api/characters/persona-onboarding-state', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ status: 'completed' }),
+            });
+            const response = await window.fetch('/api/characters/persona-onboarding-state');
+            const payload = await response.json();
+            return payload.state.status;
+        }
+        """
+    )
+
+    assert persisted_status == "completed"
+
+
+@pytest.mark.frontend
 def test_onboarding_uses_i18n_copy_for_user_visible_text(mock_page: Page):
     _bootstrap_page(mock_page)
     mock_page.evaluate(
@@ -851,3 +905,64 @@ def test_character_panel_personality_select_opens_onboarding(mock_page: Page, ru
 
     mock_page.locator("[data-testid='character-personality-select']").click()
     assert mock_page.evaluate("() => window.__openedPersonalityFor") == "测试角色"
+
+
+@pytest.mark.frontend
+def test_character_panel_close_removes_personality_update_listener(mock_page: Page, running_server: str):
+    mock_page.goto(f"{running_server}/character_card_manager")
+    mock_page.wait_for_load_state("networkidle")
+    mock_page.wait_for_selector("body")
+
+    fetch_count = mock_page.evaluate(
+        """
+        async () => {
+            window.cancelWorkshopPreviewLoads = () => {};
+            window.disposeWorkshopVrm = async () => {};
+            window.disposeWorkshopMmd = async () => {};
+            window.destroyLive2DPreviewContext = async () => {};
+
+            let personaSelectionFetches = 0;
+            const originalFetch = window.fetch.bind(window);
+            window.fetch = async function(url, options) {
+                const requestUrl = String(url);
+                if (requestUrl.includes('/api/characters/character/') && requestUrl.endsWith('/persona-selection')) {
+                    personaSelectionFetches += 1;
+                    return new Response(JSON.stringify({
+                        success: true,
+                        selection: { mode: 'default', preset_id: '', profile: {} }
+                    }), {
+                        status: 200,
+                        headers: { 'Content-Type': 'application/json' },
+                    });
+                }
+                return originalFetch(url, options);
+            };
+
+            const overlay = document.createElement('div');
+            overlay.className = 'catgirl-panel-overlay active';
+            const wrapper = document.createElement('div');
+            wrapper.className = 'catgirl-panel-wrapper';
+            const host = document.createElement('div');
+            host.id = 'personality-panel-host-close';
+            wrapper.appendChild(host);
+            overlay.appendChild(wrapper);
+            document.body.appendChild(overlay);
+
+            buildCatgirlDetailForm('测试角色', {
+                '档案名': '测试角色',
+                '昵称': '测试',
+            }, false, host);
+
+            await closeCatgirlPanel();
+
+            window.dispatchEvent(new CustomEvent('neko:character-personality-updated', {
+                detail: { characterName: '测试角色', presetId: 'classic_genki' }
+            }));
+
+            await new Promise(resolve => setTimeout(resolve, 50));
+            return personaSelectionFetches;
+        }
+        """
+    )
+
+    assert fetch_count == 0

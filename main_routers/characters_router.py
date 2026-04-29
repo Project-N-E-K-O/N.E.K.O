@@ -164,6 +164,10 @@ async def _clear_character_recent_history(config_manager, character_name: str) -
     await atomic_write_json_async(recent_path, [], ensure_ascii=False, indent=2)
 
 
+async def _rollback_character_persona_selection_change(config_manager, previous_characters: dict) -> None:
+    await config_manager.asave_characters(previous_characters)
+
+
 def _derive_live2d_model_name(model_ref: str) -> str:
     raw_ref = str(model_ref or "").strip()
     if not raw_ref:
@@ -2020,13 +2024,18 @@ async def update_character_persona_selection(name: str, request: Request):
     if override_payload is None:
         return JSONResponse({'success': False, 'error': '无效的人格预设'}, status_code=400)
 
+    previous_characters = copy.deepcopy(characters)
     set_reserved(character_payload, "persona_override", override_payload)
     _clear_stale_generated_persona_prompt(character_payload)
-    await config_manager.asave_characters(characters)
-    await _clear_character_recent_history(config_manager, name)
+    try:
+        await config_manager.asave_characters(characters)
+        await _clear_character_recent_history(config_manager, name)
 
-    initialize_one_character = get_init_one_catgirl()
-    await initialize_one_character(name, is_new=False)
+        initialize_one_character = get_init_one_catgirl()
+        await initialize_one_character(name, is_new=False)
+    except Exception:
+        await _rollback_character_persona_selection_change(config_manager, previous_characters)
+        raise
 
     return {
         "success": True,
@@ -2042,13 +2051,18 @@ async def clear_character_persona_selection(name: str):
     if not isinstance(character_payload, dict):
         return JSONResponse({'success': False, 'error': '角色不存在'}, status_code=404)
 
+    previous_characters = copy.deepcopy(characters)
     delete_reserved(character_payload, "persona_override")
     _clear_stale_generated_persona_prompt(character_payload)
-    await config_manager.asave_characters(characters)
-    await _clear_character_recent_history(config_manager, name)
+    try:
+        await config_manager.asave_characters(characters)
+        await _clear_character_recent_history(config_manager, name)
 
-    initialize_one_character = get_init_one_catgirl()
-    await initialize_one_character(name, is_new=False)
+        initialize_one_character = get_init_one_catgirl()
+        await initialize_one_character(name, is_new=False)
+    except Exception:
+        await _rollback_character_persona_selection_change(config_manager, previous_characters)
+        raise
 
     return {
         "success": True,

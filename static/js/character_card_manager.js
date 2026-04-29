@@ -4159,6 +4159,12 @@ async function closeCatgirlPanel() {
     if (overlay.dataset.closing === 'true') return;
     overlay.dataset.closing = 'true';
 
+    const currentForm = overlay.querySelector('form');
+    if (currentForm && currentForm._characterPersonalityUpdateHandler) {
+        window.removeEventListener('neko:character-personality-updated', currentForm._characterPersonalityUpdateHandler);
+        delete currentForm._characterPersonalityUpdateHandler;
+    }
+
     // 取消所有预览加载：包括尚未完成的 Live2D/VRM/MMD 异步加载，避免清理后又把预览建回来
     if (typeof cancelWorkshopPreviewLoads === 'function') {
         cancelWorkshopPreviewLoads();
