@@ -3425,6 +3425,21 @@ class LLMSessionManager:
             )
             return
 
+        # Drop only the snapshot cbs from the queue once we have the SM
+        # claim — keep both pre-existing passive cbs and any callbacks
+        # that another task enqueued during the ``await try_start_proactive``
+        # window (``enqueue_agent_callback`` is sync + lock-free, so this race
+        # window is real). Filtering by ``delivery_mode == "passive"`` would
+        # wipe such fresh proactive cbs since ``callbacks_snapshot`` only
+        # restores pre-claim entries on exception. preempt / not-delivered /
+        # exception 路径靠 ``extend(callbacks_snapshot)`` 把本次 snapshot
+        # 放回队列，保证投递失败不会丢消息。
+        snapshot_ids = {id(cb) for cb in callbacks_snapshot}
+        self.pending_agent_callbacks = [
+            cb for cb in self.pending_agent_callbacks
+            if id(cb) not in snapshot_ids
+        ]
+
         try:
             if isinstance(self.session, OmniOfflineClient):
                 await self._deliver_agent_callbacks_text(instruction, callbacks_snapshot)
