@@ -41,6 +41,16 @@ def _rebase_path_if_under_root(value: Any, *, source_root: Path, target_root: Pa
     if paths_equal(original_path, source_root):
         return str(target_root)
     if not _is_relative_to(original_path, source_root):
+        if isinstance(value, str) and "\\" in raw_value:
+            try:
+                slash_normalized_path = normalize_runtime_root(raw_value.replace("\\", "/"))
+            except Exception:
+                return value
+            if paths_equal(slash_normalized_path, source_root):
+                return str(target_root)
+            if not _is_relative_to(slash_normalized_path, source_root):
+                return value
+            return str(target_root / slash_normalized_path.relative_to(source_root))
         return value
 
     return str(target_root / original_path.relative_to(source_root))

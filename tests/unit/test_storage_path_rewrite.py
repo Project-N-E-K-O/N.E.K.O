@@ -1,3 +1,5 @@
+from pathlib import PurePosixPath
+
 import pytest
 
 from utils.storage_path_rewrite import rebase_runtime_bound_workshop_config_paths
@@ -98,3 +100,29 @@ def test_rebase_runtime_bound_workshop_config_paths_accepts_path_values(tmp_path
     )
 
     assert rewritten["default_workshop_folder"] == str(target_root / "workshop")
+
+
+@pytest.mark.unit
+def test_rebase_runtime_bound_workshop_config_paths_handles_backslash_paths_on_posix(monkeypatch):
+    from utils import storage_path_rewrite as rewrite_module
+
+    def posix_normalize(value):
+        return PurePosixPath(str(value))
+
+    def posix_paths_equal(left, right):
+        return PurePosixPath(str(left)) == PurePosixPath(str(right))
+
+    monkeypatch.setattr(rewrite_module, "normalize_runtime_root", posix_normalize)
+    monkeypatch.setattr(rewrite_module, "paths_equal", posix_paths_equal)
+
+    rewritten = rewrite_module.rebase_runtime_bound_workshop_config_paths(
+        {
+            "default_workshop_folder": r"/home/neko/.local/share/N.E.K.O\workshop",
+            "user_workshop_folder": r"/home/neko/.local/share/N.E.K.O\workshop\cached",
+        },
+        source_root="/home/neko/.local/share/N.E.K.O",
+        target_root="/mnt/data/N.E.K.O",
+    )
+
+    assert rewritten["default_workshop_folder"] == "/mnt/data/N.E.K.O/workshop"
+    assert rewritten["user_workshop_folder"] == "/mnt/data/N.E.K.O/workshop/cached"

@@ -2548,7 +2548,7 @@ let characterCardLoadSequence = 0;
 
 function waitForCharacterCardModelScanBudget(scanPromise) {
     const eventual = Promise.resolve(scanPromise)
-        .then(() => true)
+        .then(scanCompleted => scanCompleted === true)
         .catch(error => {
             console.warn('角色卡模型扫描失败，先渲染角色列表:', error);
             return false;
@@ -2563,7 +2563,7 @@ function waitForCharacterCardModelScanBudget(scanPromise) {
         };
 
         window.setTimeout(() => finish(false), CHARACTER_CARD_MODEL_SCAN_RENDER_BUDGET_MS);
-        eventual.then(scanCompleted => finish(scanCompleted));
+        eventual.then(scanCompleted => finish(scanCompleted === true));
     });
 }
 
@@ -6593,10 +6593,12 @@ async function scanModels() {
             console.warn('更新 Live2D 模型选择按钮文字失败:', e);
         }
 
+        return true;
 
     } catch (error) {
         console.error('扫描模型失败:', error);
         showMessage(window.t ? window.t('steam.modelScanError') : '扫描模型失败', 'error');
+        return false;
     }
 }
 
