@@ -20,6 +20,7 @@ from typing import Any
 from config import CHARACTER_RESERVED_FIELDS, DEFAULT_CONFIG_DATA
 from utils.character_name import PROFILE_NAME_MAX_UNITS, validate_character_name
 from utils.file_utils import atomic_write_json
+from utils.storage_path_rewrite import rebase_runtime_bound_workshop_config_paths
 
 
 logger = logging.getLogger(__name__)
@@ -1020,6 +1021,12 @@ def _stage_merged_runtime_configs(config_manager, *, source_root: Path, target_r
         if source_payload is None and target_payload is None:
             continue
         merged_payload = _deep_merge_json_dicts(source_payload, target_payload)
+        if filename == "workshop_config.json":
+            merged_payload = rebase_runtime_bound_workshop_config_paths(
+                merged_payload,
+                source_root=source_root,
+                target_root=target_root,
+            )
         atomic_write_json(config_dir / filename, merged_payload, ensure_ascii=False, indent=2)
 
 

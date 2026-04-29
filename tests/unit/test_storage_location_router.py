@@ -1,4 +1,5 @@
 import asyncio
+import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -20,6 +21,7 @@ from utils.storage_migration import (
     save_storage_migration,
 )
 from utils.storage_policy import get_storage_policy_path, load_storage_policy, save_storage_policy
+from utils.file_utils import atomic_write_json
 
 
 class _DummyConfigManager:
@@ -1477,6 +1479,16 @@ def test_storage_location_status_exposes_completed_migration_notice(tmp_path):
 
     (source_root / "config").mkdir(parents=True, exist_ok=True)
     (source_root / "config" / "characters.json").write_text('{"current":"A"}', encoding="utf-8")
+    atomic_write_json(
+        source_root / "config" / "workshop_config.json",
+        {
+            "default_workshop_folder": str(source_root / "workshop"),
+            "user_workshop_folder": str(source_root / "workshop" / "cached"),
+            "user_mod_folder": str(tmp_path / "external-mods"),
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
 
     create_pending_storage_migration(
         config_manager,
@@ -1504,6 +1516,11 @@ def test_storage_location_status_exposes_completed_migration_notice(tmp_path):
     assert payload["completion_notice"]["target_root"] == str(target_root.resolve())
     assert payload["completion_notice"]["retained_root"] == str(source_root.resolve())
     assert payload["completion_notice"]["cleanup_available"] is True
+
+    migrated_workshop_config = json.loads((target_root / "config" / "workshop_config.json").read_text(encoding="utf-8"))
+    assert migrated_workshop_config["default_workshop_folder"] == str((target_root / "workshop").resolve())
+    assert migrated_workshop_config["user_workshop_folder"] == str((target_root / "workshop" / "cached").resolve())
+    assert migrated_workshop_config["user_mod_folder"] == str(tmp_path / "external-mods")
 
 
 @pytest.mark.unit

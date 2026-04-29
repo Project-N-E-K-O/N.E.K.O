@@ -2526,6 +2526,9 @@ function syncTitleDataText() {
 async function loadCharacterData() {
     try {
         const resp = await fetch('/api/characters/');
+        if (!resp.ok) {
+            throw new Error(`HTTP ${resp.status}`);
+        }
         return await resp.json();
     } catch (error) {
         console.error('加载角色数据失败:', error);
@@ -2540,8 +2543,118 @@ let globalCharacterCards = [];
 // 全局变量：当前打开的角色卡ID（用于模态框操作）
 let currentCharacterCardId = null;
 
+const CHARACTER_CARD_MODEL_SCAN_RENDER_BUDGET_MS = 2500;
+let characterCardLoadSequence = 0;
+
+function waitForCharacterCardModelScanBudget(scanPromise) {
+    return new Promise(resolve => {
+        let settled = false;
+        const finish = value => {
+            if (settled) return;
+            settled = true;
+            resolve(value);
+        };
+
+        window.setTimeout(() => finish(false), CHARACTER_CARD_MODEL_SCAN_RENDER_BUDGET_MS);
+        Promise.resolve(scanPromise)
+            .then(() => finish(true))
+            .catch(error => {
+                console.warn('角色卡模型扫描失败，先渲染角色列表:', error);
+                finish(false);
+            });
+    });
+}
+
+async function appendCharacterSettingsCardsFromModels(idCounter) {
+    let nextId = idCounter;
+    for (const model of availableModels) {
+        try {
+            // 调用API获取模型文件列表
+            const response = await fetch(`/api/live2d/model_files/${model.name}`);
+            if (response.ok) {
+                const data = await response.json();
+                if (data.success) {
+                    // 检查是否有*.chara.json格式的角色卡文件
+                    const jsonFiles = data.json_files || [];
+                    const characterSettingsFiles = jsonFiles.filter(file =>
+                        file.endsWith('.chara.json')
+                    );
+
+                    // 如果找到character_settings文件，解析并添加到角色卡列表
+                    for (const file of characterSettingsFiles) {
+                        try {
+                            // 获取完整的文件内容
+                            // 构建正确的文件URL - 从模型配置文件路径推断
+                            const modelJsonUrl = model.path;
+                            const modelRootUrl = modelJsonUrl.substring(0, modelJsonUrl.lastIndexOf('/') + 1);
+                            const fileUrl = modelRootUrl + file;
+
+                            const fileResponse = await fetch(fileUrl);
+                            if (fileResponse.ok) {
+                                const jsonData = await fileResponse.json();
+                                // 检查是否包含"type": "character_settings"
+                                if (jsonData && jsonData.type === 'character_settings') {
+                                    window.characterCards.push({
+                                        id: nextId++,
+                                        name: jsonData.name || `${model.name}_settings`,
+                                        description: jsonData.description || (window.t ? window.t('steam.characterSettingsFile') : '角色设置文件'),
+                                        tags: jsonData.tags || [],
+                                        rawData: jsonData  // 保存原始数据，方便详情页使用
+                                    });
+                                }
+                            }
+                        } catch (fileError) {
+                            console.error(`解析文件${file}失败:`, fileError);
+                        }
+                    }
+                }
+            }
+        } catch (error) {
+            console.error(`获取模型${model.name}文件列表失败:`, error);
+        }
+    }
+    return nextId;
+}
+
+function refreshCharacterCardSelectOptions() {
+    const characterCardSelect = document.getElementById('character-card-select');
+
+    if (!characterCardSelect) {
+        return;
+    }
+
+    // 清空现有选项（保留第一个默认选项）
+    while (characterCardSelect.options.length > 1) {
+        characterCardSelect.remove(1);
+    }
+
+    if (window.characterCards && window.characterCards.length > 0) {
+        // 填充下拉选项
+        window.characterCards.forEach(card => {
+            const option = document.createElement('option');
+            option.value = card.id;
+            option.text = card.name;
+            characterCardSelect.add(option);
+        });
+
+        // 添加change事件监听器
+        characterCardSelect.onchange = function () {
+            const selectedId = this.value;
+            if (selectedId) {
+                // 注意：select.value 返回字符串，card.id 可能是数字或字符串，使用 == 进行宽松比较
+                const selectedCard = window.characterCards.find(c => String(c.id) === selectedId);
+                if (selectedCard) {
+                    expandCharacterCardSection(selectedCard);
+                }
+            }
+        };
+    }
+}
+
 // 加载角色卡列表
 async function loadCharacterCards() {
+    const loadSequence = ++characterCardLoadSequence;
+
     // 显示加载状态
     const characterCardsList = document.getElementById('character-cards-list');
     if (characterCardsList) {
@@ -2556,8 +2669,9 @@ async function loadCharacterCards() {
     const characterData = await loadCharacterData();
     if (!characterData) return;
 
-    // 调用scanModels()获取可用模型列表
-    await scanModels();
+    // 模型扫描可能受 Linux 新存储根、创意工坊目录或 Steam 状态影响变慢。
+    // 角色列表不应被模型扫描阻塞；扫描完成后再用于预览/上传等增强能力。
+    const modelScanPromise = scanModels();
 
     // 转换角色数据为角色卡格式（定义为全局变量，供其他函数使用）
     window.characterCards = [];
@@ -2614,88 +2728,11 @@ async function loadCharacterCards() {
         console.error('从character_cards文件夹加载角色卡失败:', error);
     }
 
-    // 扫描模型文件夹中的character_settings JSON文件（兼容旧格式）
-    for (const model of availableModels) {
-        try {
-            // 调用API获取模型文件列表
-            const response = await fetch(`/api/live2d/model_files/${model.name}`);
-            if (response.ok) {
-                const data = await response.json();
-                if (data.success) {
-                    // 检查是否有*.chara.json格式的角色卡文件
-                    const jsonFiles = data.json_files || [];
-                    const characterSettingsFiles = jsonFiles.filter(file =>
-                        file.endsWith('.chara.json')
-                    );
-
-                    // 如果找到character_settings文件，解析并添加到角色卡列表
-                    for (const file of characterSettingsFiles) {
-                        try {
-                            // 获取完整的文件内容
-                            // 构建正确的文件URL - 从模型配置文件路径推断
-                            const modelJsonUrl = model.path;
-                            const modelRootUrl = modelJsonUrl.substring(0, modelJsonUrl.lastIndexOf('/') + 1);
-                            const fileUrl = modelRootUrl + file;
-
-                            const fileResponse = await fetch(fileUrl);
-                            if (fileResponse.ok) {
-                                const jsonData = await fileResponse.json();
-                                // 检查是否包含"type": "character_settings"
-                                if (jsonData && jsonData.type === 'character_settings') {
-                                    window.characterCards.push({
-                                        id: idCounter++,
-                                        name: jsonData.name || `${model.name}_settings`,
-                                            description: jsonData.description || (window.t ? window.t('steam.characterSettingsFile') : '角色设置文件'),
-                                        tags: jsonData.tags || [],
-                                        rawData: jsonData  // 保存原始数据，方便详情页使用
-                                    });
-                                }
-                            }
-                        } catch (fileError) {
-                            console.error(`解析文件${file}失败:`, fileError);
-                        }
-                    }
-                }
-            }
-        } catch (error) {
-            console.error(`获取模型${model.name}文件列表失败:`, error);
-        }
-    }
+    // 扫描模型文件夹中的 character_settings JSON 文件仅用于旧格式兼容，不能阻塞角色管理主列表。
+    const characterSettingsStartId = idCounter;
 
     // 渲染角色卡列表（改为下拉选单）
-    const characterCardSelect = document.getElementById('character-card-select');
-
-    if (characterCardSelect) {
-        // 清空现有选项（保留第一个默认选项）
-        while (characterCardSelect.options.length > 1) {
-            characterCardSelect.remove(1);
-        }
-
-        if (window.characterCards && window.characterCards.length > 0) {
-            // 填充下拉选项
-            window.characterCards.forEach(card => {
-                const option = document.createElement('option');
-                option.value = card.id;
-                option.text = card.name;
-                characterCardSelect.add(option);
-            });
-
-            // 添加change事件监听器
-            characterCardSelect.onchange = function () {
-                const selectedId = this.value;
-                if (selectedId) {
-                    // 注意：select.value 返回字符串，card.id 可能是数字或字符串，使用 == 进行宽松比较
-                    const selectedCard = window.characterCards.find(c => String(c.id) === selectedId);
-                    if (selectedCard) {
-                        expandCharacterCardSection(selectedCard);
-                    }
-                }
-            };
-
-        } else {
-            // 没有角色卡时，也可以保留默认选项或者显示无
-        }
-    }
+    refreshCharacterCardSelectOptions();
 
     // 将角色卡列表保存到全局变量（已使用window.characterCards，这里保持兼容）
     globalCharacterCards = window.characterCards || [];
@@ -2727,6 +2764,24 @@ async function loadCharacterCards() {
     // 同步加载主人档案和已隐藏猫娘列表
     loadMasterProfile();
     renderHiddenCatgirls();
+
+    waitForCharacterCardModelScanBudget(modelScanPromise)
+        .then(modelScanCompleted => {
+            if (!modelScanCompleted) {
+                return null;
+            }
+            return appendCharacterSettingsCardsFromModels(characterSettingsStartId)
+                .then(nextId => {
+                    if (loadSequence !== characterCardLoadSequence || nextId === characterSettingsStartId) {
+                        return;
+                    }
+                    globalCharacterCards = window.characterCards || [];
+                    refreshCharacterCardSelectOptions();
+                });
+        })
+        .catch(error => {
+            console.warn('角色卡旧格式兼容扫描失败，已保留主列表:', error);
+        });
 }
 
 // ===== 角色卡 卡片/列表 视图 =====
@@ -6834,7 +6889,7 @@ function cancelWorkshopPreviewLoads() {
 }
 
 function isWorkshopPreviewLoadCurrent(generation) {
-    return generation === _workshopPreviewGeneration && !!document.querySelector('.catgirl-panel-overlay');
+    return generation === _workshopPreviewGeneration && !!document.getElementById('live2d-preview-content');
 }
 
 async function disposeStaleWorkshopPreviewManager(manager, type) {

@@ -182,7 +182,12 @@ def test_bootstrap_imports_legacy_root_after_seed_migration(tmp_path):
     atomic_write_json(legacy_config_dir / "characters.json", legacy_characters, ensure_ascii=False, indent=2)
     atomic_write_json(legacy_config_dir / "user_preferences.json", [{"model_path": "/legacy.model3.json", "scale": {"x": 2, "y": 2}}], ensure_ascii=False, indent=2)
     atomic_write_json(legacy_config_dir / "voice_storage.json", {"legacy_bucket": {"voice_a": {"name": "旧音色"}}}, ensure_ascii=False, indent=2)
-    atomic_write_json(legacy_config_dir / "workshop_config.json", {"default_workshop_folder": "/legacy/workshop"}, ensure_ascii=False, indent=2)
+    atomic_write_json(
+        legacy_config_dir / "workshop_config.json",
+        {"default_workshop_folder": str(legacy_root / "workshop")},
+        ensure_ascii=False,
+        indent=2,
+    )
     atomic_write_json(legacy_config_dir / "core_config.json", {"recent_memory_auto_review": False}, ensure_ascii=False, indent=2)
     atomic_write_json(legacy_memory_dir / "recent.json", [{"role": "user", "content": "旧记忆"}], ensure_ascii=False, indent=2)
     (legacy_root / "live2d" / "legacy_model").mkdir(parents=True, exist_ok=True)
@@ -209,6 +214,8 @@ def test_bootstrap_imports_legacy_root_after_seed_migration(tmp_path):
     assert Path(cm.get_config_path("user_preferences.json")).is_file()
     assert Path(cm.get_config_path("voice_storage.json")).is_file()
     assert Path(cm.get_config_path("workshop_config.json")).is_file()
+    migrated_workshop_config = json.loads(Path(cm.get_config_path("workshop_config.json")).read_text(encoding="utf-8"))
+    assert migrated_workshop_config["default_workshop_folder"] == str(cm.workshop_dir)
     assert Path(cm.get_config_path("core_config.json")).is_file()
     assert (cm.live2d_dir / "legacy_model" / "legacy_model.model3.json").is_file()
     assert cm.root_state_path.is_file()
