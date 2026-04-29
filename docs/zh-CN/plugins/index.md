@@ -85,4 +85,5 @@ plugin/plugins/
 - [Hosted UI](./hosted-ui) — 构建 TSX 面板和 Markdown 教程页
 - [示例](./examples) — 完整的可运行示例
 - [高级主题](./advanced) — 扩展、适配器、跨插件调用、钩子
+- [LLM 工具调用](./tool-calling) — 注册插件功能给 LLM 在对话中调用
 - [最佳实践](./best-practices) — 错误处理、测试、代码组织

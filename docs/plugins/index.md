@@ -85,4 +85,5 @@ plugin/plugins/
 - [Hosted UI](./hosted-ui) — Build TSX panels and Markdown guides
 - [Examples](./examples) — Complete working examples
 - [Advanced Topics](./advanced) — Extensions, Adapters, cross-plugin calls, hooks
+- [LLM Tool Calling](./tool-calling) — Register plugin functions for the LLM to invoke during conversations
 - [Best Practices](./best-practices) — Error handling, testing, code organization
