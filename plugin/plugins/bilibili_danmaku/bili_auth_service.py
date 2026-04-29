@@ -132,10 +132,26 @@ class BiliAuthService:
                 raise RuntimeError("登录成功，但保存加密凭据失败。")
             await self._credential_reloader()
             self.clear_qr_session()
+
+            # Fetch user info to return username
+            username = ""
+            try:
+                from bilibili_api import user as user_module
+                uid = int(getattr(cred, "dedeuserid", 0) or 0)
+                if uid > 0:
+                    # Reload credential to get fresh one
+                    fresh_cred = await self._credential_provider()
+                    user_info = await user_module.User(uid=uid, credential=fresh_cred).get_user_info()
+                    username = user_info.get("name", "")
+            except Exception as exc:
+                if self.logger:
+                    self.logger.warning(f"登录后获取用户信息失败: {exc}")
+
             return {
                 "status": "done",
                 "message": "登录成功！凭据已加密保存，现在可以使用所有B站功能了",
                 "uid": payload["DedeUserID"],
+                "username": username,
                 "has_buvid3": bool(payload["buvid3"]),
             }
         return {
