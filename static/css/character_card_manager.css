@@ -5722,6 +5722,7 @@ margin-top: 10px;
 }
 
 [data-theme="dark"] .section-card,
+[data-theme="dark"] #character-cards-content .section-card:first-child,
 [data-theme="dark"] #subscriptions-content .section-card .section-header,
 [data-theme="dark"] .tab-contents .section-header {
     background: #18222c;
@@ -5854,16 +5855,28 @@ margin-top: 10px;
 [data-theme="dark"] .chara-search-wrapper .control-input,
 [data-theme="dark"] .control-input,
 [data-theme="dark"] .control-select,
-[data-theme="dark"] #sort-subscription {
-    background-color: #1f2a36;
-    border-color: rgba(125, 211, 252, 0.34);
-    color: #e6edf3;
+[data-theme="dark"] #sort-subscription,
+[data-theme="dark"] #subscriptions-content .control-input,
+[data-theme="dark"] #character-cards-content .control-input:not(textarea),
+[data-theme="dark"] #character-cards-content #character-card-description,
+[data-theme="dark"] #character-card-tags-wrapper {
+    background-color: #1f2a36 !important;
+    border-color: rgba(125, 211, 252, 0.34) !important;
+    color: #e6edf3 !important;
+}
+
+[data-theme="dark"] #character-cards-content #character-card-description {
+    background: transparent !important;
 }
 
 [data-theme="dark"] .chara-search-wrapper .control-input::placeholder,
 [data-theme="dark"] .control-input::placeholder,
-[data-theme="dark"] textarea.control-input::placeholder {
-    color: #7a8da3;
+[data-theme="dark"] textarea.control-input::placeholder,
+[data-theme="dark"] #subscriptions-content .control-input::placeholder,
+[data-theme="dark"] #character-cards-content .control-input:not(textarea)::placeholder,
+[data-theme="dark"] #character-card-description::placeholder,
+[data-theme="dark"] #character-card-tag-input::placeholder {
+    color: #7a8da3 !important;
 }
 
 [data-theme="dark"] .chara-cards-view-toggle {
@@ -6205,14 +6218,24 @@ margin-top: 10px;
 
 [data-theme="dark"] .modal-content,
 [data-theme="dark"] .modal-body,
-[data-theme="dark"] .modal-footer {
+[data-theme="dark"] .modal-footer,
+[data-theme="dark"] #uploadToWorkshopModal .modal-content,
+[data-theme="dark"] #uploadToWorkshopModal .modal-footer,
+[data-theme="dark"] #cancelUploadModal .modal-content,
+[data-theme="dark"] #cancelUploadModal .modal-footer,
+[data-theme="dark"] #duplicateUploadModal .modal-content,
+[data-theme="dark"] #duplicateUploadModal .modal-footer {
     background: #1f2a36;
     color: #e6edf3;
     border-color: rgba(125, 211, 252, 0.16);
 }
 
-[data-theme="dark"] .modal-header {
+[data-theme="dark"] .modal-header,
+[data-theme="dark"] #uploadToWorkshopModal .modal-header,
+[data-theme="dark"] #cancelUploadModal .modal-header,
+[data-theme="dark"] #duplicateUploadModal .modal-header {
     background: #18222c;
+    color: #e6edf3;
     border-color: rgba(125, 211, 252, 0.16);
 }
 

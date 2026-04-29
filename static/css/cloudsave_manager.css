@@ -573,7 +573,7 @@ body .container-header {
     color: var(--cloudsave-muted);
 }
 
-[data-theme="dark"] {
+:root[data-theme="dark"] {
     --cloudsave-panel: #18222c;
     --cloudsave-panel-soft: #1f2a36;
     --cloudsave-panel-warm: rgba(79, 58, 19, 0.4);
@@ -582,8 +582,9 @@ body .container-header {
     --cloudsave-shadow: 0 12px 30px rgba(0, 0, 0, 0.34);
 }
 
-[data-theme="dark"] html,
-[data-theme="dark"] body {
+html[data-theme="dark"],
+body[data-theme="dark"],
+:root[data-theme="dark"] body {
     background: #121820;
     color: #e6edf3;
 }
