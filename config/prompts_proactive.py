@@ -2912,13 +2912,23 @@ def build_proactive_action_note(
     if channel == 'vision':
         return ''
 
+    # 归一化 language：caller 通常已经传短码（zh/en/ja/ko/ru），但区域标签
+    # （zh-CN / ja-JP 等）应被映射到对应短码，否则 placeholders 和 _loc 会双双
+    # 落英文兜底，丢失本地化。下面 .format() 用 lang_key 而不是原始 language。
+    lang_key = _normalize_prompt_language(language)
     placeholders = PROACTIVE_ACTION_NOTE_PLACEHOLDERS.get(
-        language, PROACTIVE_ACTION_NOTE_PLACEHOLDERS['en']
+        lang_key, PROACTIVE_ACTION_NOTE_PLACEHOLDERS['en']
     )
-    master = str(master_name or '').strip() or placeholders['master']
+    # action_note 是单行元数据，必须强制压成一行。title/source/master_name 任一
+    # 含 \n/\r/\t 都会让 _conversation_history 里那条 AIMessage 的 content 多
+    # 出几行结构，下游 LLM context 渲染容易把 note 误当成正常对话内容。
+    def _single_line(value) -> str:
+        return ' '.join(str(value or '').split())
+
+    master = _single_line(master_name) or placeholders['master']
 
     def _safe(value, fallback_key: str) -> str:
-        s = str(value or '').strip()
+        s = _single_line(value)
         return s or placeholders[fallback_key]
 
     def _is_music(link: dict) -> bool:
@@ -2934,7 +2944,7 @@ def build_proactive_action_note(
         )
         if not track:
             return ''
-        return _loc(PROACTIVE_ACTION_NOTE_MUSIC, language).format(
+        return _loc(PROACTIVE_ACTION_NOTE_MUSIC, lang_key).format(
             master=master,
             title=_safe(track.get('title'), 'title'),
             artist=_safe(track.get('artist'), 'artist'),
@@ -2958,7 +2968,7 @@ def build_proactive_action_note(
             )
         if not meme:
             return ''
-        return _loc(PROACTIVE_ACTION_NOTE_MEME, language).format(
+        return _loc(PROACTIVE_ACTION_NOTE_MEME, lang_key).format(
             master=master,
             title=_safe(meme.get('title'), 'title'),
             source=_safe(meme.get('source'), 'source'),
@@ -2974,7 +2984,7 @@ def build_proactive_action_note(
         )
         if not link:
             return ''
-        return _loc(PROACTIVE_ACTION_NOTE_WEB, language).format(
+        return _loc(PROACTIVE_ACTION_NOTE_WEB, lang_key).format(
             master=master,
             title=_safe(link.get('title'), 'title'),
             source=_safe(link.get('source'), 'source'),

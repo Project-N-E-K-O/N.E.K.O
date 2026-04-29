@@ -100,6 +100,10 @@ def smooth_curve(keys, neutral):
     t_start, _ = keys[0]
     t_end, _ = keys[-1]
     duration = t_end - t_start
+    if duration <= 0:
+        # 退化时间轴（首尾时间相同）：直接钉回中性位，避免 dt=0 触发除零
+        # 让整批 motion 处理中断。
+        return [(t_start, neutral), (t_end, neutral)]
     n_samples = max(2, int(round(duration * SAMPLE_HZ)) + 1)
     dt = duration / (n_samples - 1)
     raw = [piecewise_linear(keys, t_start + i * dt) for i in range(n_samples)]

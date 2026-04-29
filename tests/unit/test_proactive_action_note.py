@@ -250,6 +250,40 @@ def test_action_note_unknown_language_falls_back_to_english():
     assert 'X' in note and 'Y' in note
 
 
+def test_action_note_normalizes_region_language_codes():
+    """回归（CodeRabbit review #1041）：caller 传区域标签（zh-CN / ja-JP / en-US 等）
+    时，placeholders 和 _loc 都要走对应短码模板，不能双双落到英文兜底导致丢失
+    本地化。生产 caller 通常已经传短码，但这是防御性护栏。"""
+    links = [{'title': 'X', 'artist': 'Y', 'source': '音乐推荐', 'type': 'music'}]
+    note_full = build_proactive_action_note('music', links, 'zh-CN', master_name=MASTER)
+    note_short = build_proactive_action_note('music', links, 'zh', master_name=MASTER)
+    # 区域标签和短码应得到等价的中文模板输出
+    assert note_full == note_short
+    # 兜底：归一化失败也不应回落英文 placeholder（"Unknown Artist"）
+    note_ja_full = build_proactive_action_note('music', links, 'ja-JP', master_name=MASTER)
+    assert 'Unknown Artist' not in note_ja_full
+
+
+def test_action_note_collapses_multiline_title_into_single_line():
+    """回归（CodeRabbit review #1041）：action_note 是单行元数据，title/artist/source/
+    master_name 任一含 \\n / \\r / \\t 时必须强制压成一行；否则 AIMessage.content
+    被破坏成多行，下游 LLM context 渲染会把 note 误当对话内容。"""
+    links = [{
+        'title': '稻香\n副标题',
+        'artist': '周杰伦\t',
+        'source': '音乐推荐',
+        'type': 'music',
+    }]
+    note = build_proactive_action_note('music', links, 'zh', master_name=f'小明\r\n')
+    assert '\n' not in note
+    assert '\r' not in note
+    assert '\t' not in note
+    # 关键内容仍保留（空白被折叠成单空格）
+    assert '稻香' in note and '副标题' in note
+    assert '周杰伦' in note
+    assert '小明' in note
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # finish_proactive_delivery(action_note=...) —— action_note 只进历史
 # ─────────────────────────────────────────────────────────────────────────────

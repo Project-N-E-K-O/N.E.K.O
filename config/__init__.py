@@ -324,6 +324,13 @@ DEFAULT_MASTER_TEMPLATE = {
     "昵称": "哥哥",
 }
 
+# 默认 Live2D 模型名（不带后缀的目录/文件 stem）。
+# DEFAULT_LANLAN_TEMPLATE.live2d.model_path 与 main_routers/characters_router.py
+# 里"未设置 Live2D 模型时的回退"逻辑共享这个常量，避免两处漂移。新增/替换默认
+# 模型只需要改这一处。
+DEFAULT_LIVE2D_MODEL_NAME = "yui-origin"
+DEFAULT_LIVE2D_MODEL_PATH = f"{DEFAULT_LIVE2D_MODEL_NAME}/{DEFAULT_LIVE2D_MODEL_NAME}.model3.json"
+
 DEFAULT_LANLAN_TEMPLATE = {
     "test": {
         "性别": "女",
@@ -337,7 +344,7 @@ DEFAULT_LANLAN_TEMPLATE = {
                 "asset_source": "local",
                 "asset_source_id": "",
                 "live2d": {
-                    "model_path": "yui-origin/yui-origin.model3.json",
+                    "model_path": DEFAULT_LIVE2D_MODEL_PATH,
                 },
                 "vrm": {
                     "model_path": "",
