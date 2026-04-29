@@ -2636,6 +2636,9 @@ function refreshCharacterCardSelectOptions() {
         return;
     }
 
+    // 保留当前选中值，重建后再恢复，避免异步补卡时把用户已选项清掉
+    const previousValue = characterCardSelect.value;
+
     // 清空现有选项（保留第一个默认选项）
     while (characterCardSelect.options.length > 1) {
         characterCardSelect.remove(1);
@@ -2661,6 +2664,10 @@ function refreshCharacterCardSelectOptions() {
                 }
             }
         };
+
+        if (previousValue && Array.from(characterCardSelect.options).some(option => option.value === previousValue)) {
+            characterCardSelect.value = previousValue;
+        }
     }
 }
 
