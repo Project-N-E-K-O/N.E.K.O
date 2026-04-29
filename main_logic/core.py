@@ -1522,9 +1522,12 @@ class LLMSessionManager:
         active/pending session 上的 tools 已经是最新的，不会出现"返回 ok
         但下一次 model 调用还看不到工具"的窗口。串行化由 ``_tool_sync_lock``
         保证：连续多个并发 register 不会让 wire 上的 session.update 乱序。
+
+        ⚠️ ``raise_on_failure=True``：如果 wire 上 session.update 真的失败
+        了，把异常往上抛，避免 HTTP /api/tools 回 ok=true 假成功。
         """
         self.tool_registry.register(tool, replace=replace)
-        await self._sync_tools_to_active_session()
+        await self._sync_tools_to_active_session(raise_on_failure=True)
 
     def unregister_tool(self, name: str) -> bool:
         existed = self.tool_registry.unregister(name)
@@ -1535,7 +1538,7 @@ class LLMSessionManager:
     async def unregister_tool_and_sync(self, name: str) -> bool:
         existed = self.tool_registry.unregister(name)
         if existed:
-            await self._sync_tools_to_active_session()
+            await self._sync_tools_to_active_session(raise_on_failure=True)
         return existed
 
     def list_tools(self) -> list[str]:
@@ -1550,7 +1553,7 @@ class LLMSessionManager:
     async def clear_tools_and_sync(self, *, source: str | None = None) -> int:
         n = self.tool_registry.clear(source=source)
         if n > 0:
-            await self._sync_tools_to_active_session()
+            await self._sync_tools_to_active_session(raise_on_failure=True)
         return n
 
     async def _on_tool_call(self, call: ToolCall) -> ToolResult:
@@ -1560,7 +1563,7 @@ class LLMSessionManager:
         """
         return await self.tool_registry.execute(call)
 
-    async def _sync_tools_to_active_session(self) -> None:
+    async def _sync_tools_to_active_session(self, *, raise_on_failure: bool = False) -> None:
         """把 registry 当前状态同步给所有活跃的 client。
 
         覆盖：
@@ -1589,7 +1592,9 @@ class LLMSessionManager:
                 targets.append(self.pending_session)
             if not targets:
                 return
+            errors: list[str] = []
             for sess in targets:
+                role = "pending" if sess is self.pending_session else "active"
                 try:
                     if hasattr(sess, "set_tools"):
                         sess.set_tools(defs)
@@ -1598,11 +1603,13 @@ class LLMSessionManager:
                     if isinstance(sess, OmniRealtimeClient) and sess.ws is not None:
                         await sess.apply_tools_to_session()
                 except Exception as e:
-                    logger.warning(
-                        "⚠️ Tool sync to %s session failed: %s",
-                        "pending" if sess is self.pending_session else "active",
-                        e,
-                    )
+                    err_text = f"{role}: {type(e).__name__}: {e}"
+                    logger.warning("⚠️ Tool sync to %s session failed: %s", role, e)
+                    errors.append(err_text)
+            if errors and raise_on_failure:
+                # 给 ``*_and_sync`` 调用方一个明确信号：wire 上没真生效，
+                # 让 HTTP /api/tools 不要回 ok=true 假成功。
+                raise RuntimeError("tool sync failed: " + "; ".join(errors))
 
     def _bind_session_lifecycle_callbacks(self, session):
         """Bind lifecycle callbacks with closure-captured session reference.

@@ -726,7 +726,7 @@ class OmniOfflineClient:
                 err_msg = str(e).lower()
                 if (
                     ("tool" in err_msg or "function" in err_msg)
-                    and ("not support" in err_msg or "unsupported" in err_msg or "invalid" in err_msg)
+                    and ("not support" in err_msg or "not_support" in err_msg or "unsupported" in err_msg or "invalid" in err_msg)
                 ):
                     raise _GenaiToolsUnsupported(
                         f"generate_content_stream rejected tools: {e}"
@@ -804,7 +804,7 @@ class OmniOfflineClient:
                 # 之类的 transient）原样 raise，让上层临时 fallback，下一轮再试。
                 if (
                     ("tool" in err_msg or "function" in err_msg)
-                    and ("not support" in err_msg or "unsupported" in err_msg or "invalid" in err_msg)
+                    and ("not support" in err_msg or "not_support" in err_msg or "unsupported" in err_msg or "invalid" in err_msg)
                 ):
                     raise _GenaiToolsUnsupported(f"genai stream rejected tools: {e}") from e
                 raise

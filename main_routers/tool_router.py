@@ -258,21 +258,53 @@ async def unregister_tool(req: ToolUnregisterRequest) -> Dict[str, Any]:
     targets = _resolve_target_managers(req.role)
     removed_any = False
     affected: List[str] = []
+    failed: List[Dict[str, str]] = []
     for mgr in targets:
-        # _and_sync 版本：等 session 同步完成再返回，与 register 端点对偶。
-        if await mgr.unregister_tool_and_sync(req.name):
-            removed_any = True
-            affected.append(getattr(mgr, "lanlan_name", "?"))
-    return {"ok": True, "removed": removed_any, "name": req.name, "affected_roles": affected}
+        role_name = getattr(mgr, "lanlan_name", "?")
+        try:
+            # _and_sync 版本：等 session 同步完成再返回，与 register 端点对偶。
+            if await mgr.unregister_tool_and_sync(req.name):
+                removed_any = True
+                affected.append(role_name)
+        except Exception as e:
+            # 单角色 sync 失败不能让整个跨角色请求 500 —— 调用方需要拿到
+            # 已成功的 role 列表来推断状态。
+            err_text = f"{type(e).__name__}: {e}"
+            logger.warning("unregister_tool on %s failed: %s", role_name, err_text)
+            failed.append({"role": role_name, "error": err_text})
+    return {
+        "ok": not failed or removed_any,
+        "removed": removed_any,
+        "name": req.name,
+        "affected_roles": affected,
+        "failed_roles": failed,
+    }
 
 
 @router.post("/clear")
 async def clear_tools(req: ToolClearRequest) -> Dict[str, Any]:
     targets = _resolve_target_managers(req.role)
     total = 0
+    affected: List[str] = []
+    failed: List[Dict[str, str]] = []
     for mgr in targets:
-        total += await mgr.clear_tools_and_sync(source=req.source)
-    return {"ok": True, "removed": total, "source": req.source}
+        role_name = getattr(mgr, "lanlan_name", "?")
+        try:
+            n = await mgr.clear_tools_and_sync(source=req.source)
+            total += n
+            if n > 0:
+                affected.append(role_name)
+        except Exception as e:
+            err_text = f"{type(e).__name__}: {e}"
+            logger.warning("clear_tools on %s failed: %s", role_name, err_text)
+            failed.append({"role": role_name, "error": err_text})
+    return {
+        "ok": not failed or total > 0,
+        "removed": total,
+        "source": req.source,
+        "affected_roles": affected,
+        "failed_roles": failed,
+    }
 
 
 @router.get("")

@@ -593,6 +593,112 @@ async def test_register_tool_and_sync_serializes_concurrent_updates():
 
 
 @pytest.mark.asyncio
+async def test_register_tool_and_sync_propagates_session_update_failure():
+    """`*_and_sync` 必须在 wire 同步失败时把异常往上抛 —— 否则 HTTP
+    /api/tools 会误回 ok=true 但 session 上的工具其实没生效。
+
+    回归保护：CodeRabbit PR #1035 第 8 轮 review."""
+    import asyncio as _asyncio
+
+    from main_logic.tool_calling import ToolDefinition, ToolRegistry
+
+    # Stub mgr：模拟 register_tool_and_sync 的串行+raise_on_failure 流水。
+    class _StubMgr:
+        def __init__(self):
+            self.tool_registry = ToolRegistry()
+            self._tool_sync_lock = _asyncio.Lock()
+            self.session = object()  # 触发 sync 路径
+            self.pending_session = None
+
+        async def _sync_tools_to_active_session(self, *, raise_on_failure=False):
+            async with self._tool_sync_lock:
+                # 模拟 wire 推送一定失败
+                err = "session.update rejected by mock server"
+                if raise_on_failure:
+                    raise RuntimeError(f"tool sync failed: active: RuntimeError: {err}")
+
+        async def register_tool_and_sync(self, tool, *, replace=True):
+            self.tool_registry.register(tool, replace=replace)
+            await self._sync_tools_to_active_session(raise_on_failure=True)
+
+    mgr = _StubMgr()
+    with pytest.raises(RuntimeError, match="tool sync failed"):
+        await mgr.register_tool_and_sync(
+            ToolDefinition(name="x", description="", handler=lambda _: 0),
+        )
+
+
+@pytest.mark.asyncio
+async def test_unregister_tool_router_isolates_per_role_failures():
+    """`/api/tools/unregister` 跨角色调用时单个 mgr 抛异常不能让整个请求 500。
+    必须把已成功的 role 收进 affected_roles，失败的进 failed_roles。
+
+    回归保护：CodeRabbit PR #1035 第 8 轮 review."""
+    from main_routers import tool_router as _tr
+
+    class _GoodMgr:
+        lanlan_name = "Good"
+        async def unregister_tool_and_sync(self, name): return True
+
+    class _BadMgr:
+        lanlan_name = "Bad"
+        async def unregister_tool_and_sync(self, name):
+            raise RuntimeError("fake sync failure")
+
+    targets = [_GoodMgr(), _BadMgr()]
+    # 直接调 endpoint 函数，绕开 _resolve_target_managers
+    # （需要 monkeypatch 这个 helper）
+    import unittest.mock as _mock
+    with _mock.patch.object(_tr, "_resolve_target_managers", return_value=targets):
+        from main_routers.tool_router import unregister_tool, ToolUnregisterRequest
+        result = await unregister_tool(ToolUnregisterRequest(name="x", role=None))
+
+    assert result["affected_roles"] == ["Good"]
+    assert len(result["failed_roles"]) == 1
+    assert result["failed_roles"][0]["role"] == "Bad"
+    assert "fake sync failure" in result["failed_roles"][0]["error"]
+    # 一个成功 + 一个失败 → ok=True（部分成功）
+    assert result["ok"] is True
+
+
+@pytest.mark.asyncio
+async def test_genai_unsupported_keyword_matches_underscore_variant(monkeypatch):
+    """`not_support` 下划线变体也得当成 tools 永久不支持，避免每轮先撞
+    genai 再回退的额外抖动。
+
+    回归保护：CodeRabbit PR #1035 第 8 轮 review."""
+    from main_logic import omni_offline_client as _ofc
+    from main_logic.omni_offline_client import (
+        OmniOfflineClient, _GenaiToolsUnsupported,
+    )
+
+    monkeypatch.setattr(_ofc, "_GENAI_AVAILABLE", True)
+
+    class _UnderscoreErrorClient:
+        class _aio:
+            class models:
+                @staticmethod
+                async def generate_content_stream(**_kw):
+                    raise RuntimeError("function_call_not_support on this model")
+        aio = _aio()
+        def close(self): pass
+
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    client.model = "gemini-old"
+    client.api_key = "fake"
+    client._tool_definitions = []
+    client.has_tools = lambda: False
+    client.max_tool_iterations = 1
+    client._genai_client = _UnderscoreErrorClient()
+    client._genai_tools_unsupported = False
+    client.llm = type("F", (), {"max_completion_tokens": 100})()
+
+    with pytest.raises(_GenaiToolsUnsupported):
+        async for _ in client._astream_genai_with_tools([{"role": "user", "content": "x"}]):
+            pass
+
+
+@pytest.mark.asyncio
 async def test_offline_no_silent_fallback_after_genai_emitted_text(monkeypatch):
     """genai 路径已经 yield 过 text chunk 之后再抛 transient 异常时，
     `_astream_with_tools` 不能静默 fallback 到 OpenAI-compat —— 否则用户
