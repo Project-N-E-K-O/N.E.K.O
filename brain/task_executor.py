@@ -1180,6 +1180,8 @@ class DirectTaskExecutor:
 
         # Pre-filter: only keep plugins that have at least one Agent-visible entry.
         # This prevents hidden-entry-only plugins from leaking into Stage 1 (BM25 / keyword / coarse-screen).
+        # Keep the full list for valid_entries_map so error reasons can distinguish "no visible entries" from "not found".
+        all_plugin_list = list(plugin_list)
         pre_filter_count = len(plugin_list)
         plugin_list = [p for p in plugin_list if self._agent_visible_plugin_entries(p)]
         if pre_filter_count != len(plugin_list):
@@ -1373,11 +1375,11 @@ class DirectTaskExecutor:
                 d_pid = decision.get("plugin_id")
                 d_eid = decision.get("entry_id") or decision.get("plugin_entry_id") or decision.get("event_id")
 
-                # Build lookup from plugins param (always, so final validation can use it)
+                # Build lookup from ALL plugins (including pre-filtered ones) so error reasons
+                # can distinguish "no visible entries" from "plugin not found".
                 valid_entries_map: Dict[str, List[str]] = {}
                 try:
-                    p_iter = plugins.items() if isinstance(plugins, dict) else enumerate(plugins)
-                    for _, p in p_iter:
+                    for p in all_plugin_list:
                         pid = p.get("id") if isinstance(p, dict) else None
                         if not pid:
                             continue

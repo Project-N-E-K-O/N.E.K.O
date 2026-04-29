@@ -122,7 +122,7 @@ class AutoplayLoopMixin:
             try:
                 interval = float(self._cfg.get("poll_interval_active_seconds", 1) if self._autoplay_state == "running" else self._cfg.get("poll_interval_idle_seconds", 3))
             except (ValueError, TypeError):
-                interval = 1.0
+                interval = 1.0 if self._autoplay_state == "running" else 3.0
             await asyncio.sleep(max(0.1, interval))
 
     async def _autoplay_loop(self) -> None:
