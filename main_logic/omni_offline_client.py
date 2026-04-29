@@ -482,8 +482,17 @@ class OmniOfflineClient:
     def set_tools(self, tool_definitions: Optional[List[ToolDefinition]]) -> None:
         """Replace the active tool list. Takes effect on the next
         ``stream_text`` / ``prompt_ephemeral`` call. Pass ``None`` or
-        ``[]`` to disable tools entirely."""
+        ``[]`` to disable tools entirely.
+
+        ⚠️ 顺手清掉 ``_genai_tools_unsupported``：这个旗标一旦因为旧工具集
+        触发 ``GenerateContentConfig rejected`` / 类似 unsupported 异常被
+        flip 成 ``True``，整条 session 后续永远不再尝试 native genai 路径。
+        既然 caller 把工具列表换了（典型场景：热卸载坏 schema 工具），就该
+        给 genai 路径一次重新尝试的机会，否则只能等到下次 ``connect()``
+        / ``switch_model()`` 重置才能恢复。
+        """
         self._tool_definitions = list(tool_definitions or [])
+        self._genai_tools_unsupported = False
 
     def set_tool_call_handler(self, handler: Optional[OnToolCallCallback]) -> None:
         """Plug in (or replace) the callback that executes tool calls."""
@@ -667,10 +676,16 @@ class OmniOfflineClient:
                 # ChatOpenAI is the right import even though we're outside
                 # ChatOpenAI — `collect_tool_calls` is a staticmethod.
                 from utils.llm_client import ChatOpenAI as _ChatOpenAI
+                from utils.llm_client import LLMStreamChunk as _LLMStreamChunk
                 calls = _ChatOpenAI.collect_tool_calls(deltas_per_chunk)
                 await self._execute_and_append_openai_tool_calls(
                     messages, calls, assistant_text=streamed_text_buffer,
                 )
+                # 通知上游 ``stream_text``：本轮的 pre-tool text + tool_calls
+                # 已经写进 history（assistant turn）。stream_text 据此清空
+                # final-segment buffer，避免之后 append 的 final AIMessage
+                # 把同一段 pre-tool 文本第二次写进 history。
+                yield _LLMStreamChunk(content="", tool_round_persisted=True)
                 continue
             return
         logger.warning(
@@ -884,6 +899,10 @@ class OmniOfflineClient:
                         "name": tc_name,
                         "content": result.output_as_json_string(),
                     })
+                # Sentinel：与 OpenAI 路径对偶，告诉上游 stream_text 把
+                # final-segment buffer 清掉（pre-tool 文本已被持久化进
+                # assistant turn 的 content 字段）。
+                yield LLMStreamChunk(content="", tool_round_persisted=True)
                 # Loop again to let the model produce a final answer.
                 if not had_text:
                     continue
@@ -1132,10 +1151,12 @@ class OmniOfflineClient:
             for attempt in range(max_retries):
                 try:
                     assistant_message = ""
+                    assistant_message_total = ""
                     guard_attempt = 0
                     while guard_attempt <= self.max_response_rerolls:
                         self._is_responding = True
-                        assistant_message = ""
+                        assistant_message = ""           # 仅最后一段未持久化的 text，用于 final AIMessage append
+                        assistant_message_total = ""     # 全轮累积，用于 _check_repetition / 长度 guard
                         is_first_chunk = True
                         pipe_count = 0  # 围栏：追踪 | 字符的出现次数
                         fence_triggered = False  # 围栏是否已触发
@@ -1158,6 +1179,21 @@ class OmniOfflineClient:
                             if hasattr(chunk, 'response_metadata') and chunk.response_metadata:
                                 if 'token_usage' in chunk.response_metadata or 'usage' in chunk.response_metadata:
                                     logger.debug(f"🔍 [Meta] {chunk.response_metadata}")
+                            # tool 轮 sentinel：``_astream_*_with_tools`` 已把
+                            # pre-tool 文本 + tool_calls + tool result inline
+                            # 写进 history。重置 final-segment buffer 防止
+                            # 之后 append 的 AIMessage 把同一段 pre-tool 文本
+                            # 第二次写进 history。``_total`` 不重置——重复检测
+                            # / token 长度 guard 仍要看完整一轮的实际文本量。
+                            if getattr(chunk, "tool_round_persisted", False):
+                                assistant_message = ""
+                                # 重置围栏 / prefix buffer：下一段是新的语义
+                                # 单元（模型基于 tool 结果重新出文本），不应
+                                # 复用之前的 fence / prefix 状态。
+                                pipe_count = 0
+                                prefix_buffer = ""
+                                prefix_checked = not bool(self._prefix_buffer_size)
+                                continue
                             if not self._is_responding:
                                 break
 
@@ -1204,12 +1240,16 @@ class OmniOfflineClient:
 
                                 if truncated_content and truncated_content.strip():
                                     assistant_message += truncated_content
+                                    assistant_message_total += truncated_content
                                     if self.on_text_delta:
                                         await self.on_text_delta(truncated_content, is_first_chunk)
                                     is_first_chunk = False
 
                                     if self.enable_response_guard:
-                                        current_length = count_tokens(assistant_message)
+                                        # 长度 guard 看完整一轮（含 pre-tool）的 token 量，
+                                        # 不能只看 final-segment，否则 tool 轮前长篇大论 +
+                                        # tool 轮后短短一句也能逃过 guard。
+                                        current_length = count_tokens(assistant_message_total)
                                         if current_length > self.max_response_length:
                                             guard_triggered = True
                                             discard_reason = f"length>{self.max_response_length}"
@@ -1366,8 +1406,14 @@ class OmniOfflineClient:
                         # 此处不再手动调用 TokenTracker.record() 避免双重计数。
 
                         if assistant_message:
+                            # final AIMessage 只写未被 inline 持久化的最后一段
+                            # （pre-tool 文本已经在前面 ``assistant.tool_calls.content``
+                            # 里了，再 append 一次会双写历史）。
                             self._conversation_history.append(AIMessage(content=assistant_message))
-                            await self._check_repetition(assistant_message)
+                        # 重复检测看完整一轮文本（含 pre-tool），与人类用户感知
+                        # 的"这一轮 AI 说了什么"一致。
+                        if assistant_message_total:
+                            await self._check_repetition(assistant_message_total)
                         break
                     
                     if guard_exhausted:

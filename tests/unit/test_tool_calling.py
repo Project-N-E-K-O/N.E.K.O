@@ -1063,6 +1063,112 @@ async def test_offline_genai_path_drops_empty_name_function_calls(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_set_tools_resets_genai_unsupported_flag():
+    """set_tools 必须清掉 _genai_tools_unsupported —— 否则旧工具集触发
+    schema reject 后，热卸载坏工具也不会让 genai 路径恢复。
+
+    回归保护：CodeRabbit PR #1035 第 12 轮 review."""
+    from main_logic.omni_offline_client import OmniOfflineClient
+    from main_logic.tool_calling import ToolDefinition
+
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    client._tool_definitions = [
+        ToolDefinition(name="bad", description="", handler=lambda _: 0),
+    ]
+    client._genai_tools_unsupported = True  # 模拟旧工具触发过 schema reject
+
+    # 热卸载坏工具
+    client.set_tools([])
+    assert client._genai_tools_unsupported is False, (
+        "set_tools 替换工具列表后必须清掉 unsupported 旗标，否则永远走不回 genai 路径"
+    )
+
+    # 再注册新工具时也必须重置（caller 可能传新的）
+    client._genai_tools_unsupported = True
+    client.set_tools([ToolDefinition(name="good", description="", handler=lambda _: 0)])
+    assert client._genai_tools_unsupported is False
+
+
+@pytest.mark.asyncio
+async def test_stream_text_does_not_double_write_pretool_text(monkeypatch):
+    """stream_text 在 _astream_with_tools 内 inline 持久化了 tool 轮（含
+    pre-tool text + tool_calls + tool result）之后，final AIMessage append
+    必须只包含 post-tool 文本——否则 pre-tool 文本被双写进 history（一份
+    在 assistant.tool_calls.content，一份在 final AIMessage.content）。
+
+    回归保护：CodeRabbit PR #1035 第 12 轮 review."""
+    from utils.llm_client import LLMStreamChunk, AIMessage, SystemMessage
+    from main_logic.omni_offline_client import OmniOfflineClient
+
+    async def _astream_simulating_tool_round(self, messages, **overrides):
+        # 工具轮的 pre-tool 文本
+        yield LLMStreamChunk(content="正在查询，")
+        # _astream_*_with_tools 在 inline 持久化时会做的事：把 tool 轮 append 进 history
+        messages.append({
+            "role": "assistant",
+            "content": "正在查询，",
+            "tool_calls": [{"id": "c1", "type": "function",
+                            "function": {"name": "get_weather", "arguments": "{}"}}],
+        })
+        messages.append({
+            "role": "tool", "tool_call_id": "c1", "name": "get_weather",
+            "content": '{"t":22}',
+        })
+        # 通知上游 final-segment 该清掉
+        yield LLMStreamChunk(content="", tool_round_persisted=True)
+        # post-tool 文本（最终回复）
+        yield LLMStreamChunk(content="22 度。")
+
+    monkeypatch.setattr(OmniOfflineClient, "_astream_with_tools", _astream_simulating_tool_round)
+
+    text_emitted: list = []
+    async def fake_text_delta(text, is_first): text_emitted.append(text)
+    async def noop(*_a, **_kw): pass
+
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    client.lanlan_name = "T"
+    client.master_name = "M"
+    client._prefix_buffer_size = 0
+    client._conversation_history = [SystemMessage(content="sys")]
+    client._pending_images = []
+    client._is_responding = False
+    client._recent_responses = []
+    client._repetition_threshold = 0.8
+    client._max_recent_responses = 3
+    client.max_response_length = 9999
+    client.max_response_rerolls = 0
+    client.enable_response_guard = False
+    client.vision_model = ""
+    client.model = "x"
+    client.on_text_delta = fake_text_delta
+    client.on_input_transcript = noop
+    client.on_response_done = noop
+    client.on_response_discarded = None
+    client.on_status_message = None
+    client.on_repetition_detected = None
+
+    await client.stream_text("天气如何")
+
+    # 用户看到的完整 text：pre-tool + post-tool
+    assert "".join(text_emitted) == "正在查询，22 度。"
+
+    # 关键断言：history 里 pre-tool 文本不能被双写
+    history = client._conversation_history
+    # 期望结构：[system, user, assistant{content:"正在查询，", tool_calls:[...]}, tool, final-AIMessage]
+    assistant_with_tool = next(
+        m for m in history if isinstance(m, dict) and m.get("role") == "assistant" and m.get("tool_calls")
+    )
+    assert assistant_with_tool["content"] == "正在查询，"
+    final_ai = history[-1]
+    assert isinstance(final_ai, AIMessage)
+    # final AIMessage 不该包含已经持久化的 pre-tool 文本
+    assert "正在查询" not in final_ai.content, (
+        f"pre-tool 文本被双写进 history 了！final AIMessage.content={final_ai.content!r}"
+    )
+    assert final_ai.content == "22 度。"
+
+
+@pytest.mark.asyncio
 async def test_offline_iteration_cap_breaks_runaway_loop():
     """If the model keeps requesting tools forever, we stop after
     ``max_tool_iterations`` LLM calls instead of looping indefinitely."""

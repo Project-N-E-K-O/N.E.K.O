@@ -151,6 +151,14 @@ class LLMStreamChunk:
     # ``"tool_calls"`` / ``"content_filter"`` / None. ``"tool_calls"`` signals
     # the caller should run the tool then continue the conversation.
     finish_reason: str | None = None
+    # ``OmniOfflineClient`` tool-loop sentinel：``_astream_*_with_tools`` 在
+    # 把当前 tool 轮（assistant tool_calls + tool result）inline 写进 history
+    # 后会 yield 一个 ``LLMStreamChunk(content="", tool_round_persisted=True)``。
+    # ``stream_text`` 看到就把 final-segment buffer 清掉，避免之后
+    # ``_conversation_history.append(AIMessage(content=...))`` 把 pre-tool
+    # 文本第二次写进 history（pre-tool 文本已经在 ``assistant.tool_calls.content``
+    # 里了）。
+    tool_round_persisted: bool = False
 
 
 @dataclass
