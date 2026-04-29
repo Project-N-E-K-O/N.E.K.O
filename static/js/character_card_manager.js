@@ -4483,6 +4483,16 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
         };
     }
 
+    function isPersonalityPanelAlive() {
+        if (!container || !container.isConnected) {
+            return false;
+        }
+        const overlay = typeof container.closest === 'function'
+            ? container.closest('.catgirl-panel-overlay')
+            : null;
+        return !!(overlay && overlay.isConnected && overlay.dataset.closing !== 'true');
+    }
+
     const personalityWrapper = document.createElement('div');
     personalityWrapper.className = 'field-row-wrapper';
     const personalityLabel = document.createElement('label');
@@ -4550,7 +4560,9 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
                 throw new Error(result && result.error ? result.error : `Request failed: ${response.status}`);
             }
             applyCharacterPersonalitySelection(result.selection);
-            buildCatgirlDetailForm(name, cat, false, container);
+            if (isPersonalityPanelAlive()) {
+                buildCatgirlDetailForm(name, cat, false, container);
+            }
             if (typeof loadCharacterCards === 'function') {
                 loadCharacterCards().catch(e => console.warn('刷新角色列表失败:', e));
             }
@@ -4897,7 +4909,9 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
                     throw new Error(result && result.error ? result.error : `Request failed: ${response.status}`);
                 }
                 applyCharacterPersonalitySelection(result.selection);
-                buildCatgirlDetailForm(name, cat, false, container);
+                if (isPersonalityPanelAlive()) {
+                    buildCatgirlDetailForm(name, cat, false, container);
+                }
                 if (typeof loadCharacterCards === 'function') {
                     loadCharacterCards().catch(e => console.warn('刷新角色列表失败:', e));
                 }

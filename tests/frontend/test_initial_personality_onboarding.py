@@ -365,6 +365,35 @@ def test_onboarding_does_not_treat_tutorial_prompt_fetch_failure_as_settled(mock
 
 
 @pytest.mark.frontend
+def test_onboarding_started_state_waits_without_busy_fetch_loop(mock_page: Page):
+    _bootstrap_page(mock_page)
+    mock_page.evaluate(
+        """
+        () => {
+            window.universalTutorialManager.isTutorialRunning = false;
+            window.__tutorialPromptState = 'started';
+        }
+        """
+    )
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static" / "js" / "character_personality_onboarding.js"))
+
+    mock_page.evaluate(
+        """
+        () => {
+            window.CharacterPersonalityOnboarding.bootstrap();
+        }
+        """
+    )
+
+    mock_page.wait_for_timeout(350)
+    const_requests = mock_page.evaluate(
+        "() => window.__requestLog.filter((entry) => entry.url === '/api/tutorial-prompt/state').length"
+    )
+    assert const_requests <= 3
+    expect(mock_page.locator("[data-testid='character-personality-overlay']")).to_have_count(0)
+
+
+@pytest.mark.frontend
 def test_onboarding_restores_pointer_events_for_clickable_overlay(mock_page: Page):
     _bootstrap_page(mock_page)
     mock_page.add_style_tag(path=str(PROJECT_ROOT / "static" / "css" / "character_personality_onboarding.css"))
@@ -1107,3 +1136,78 @@ def test_character_panel_close_removes_personality_update_listener(mock_page: Pa
     )
 
     assert fetch_count == 0
+
+
+@pytest.mark.frontend
+def test_character_panel_close_drops_late_personality_refresh_callback(mock_page: Page, running_server: str):
+    mock_page.goto(f"{running_server}/character_card_manager")
+    mock_page.wait_for_load_state("networkidle")
+    mock_page.wait_for_selector("body")
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            window.cancelWorkshopPreviewLoads = () => {};
+            window.disposeWorkshopVrm = async () => {};
+            window.disposeWorkshopMmd = async () => {};
+            window.destroyLive2DPreviewContext = async () => {};
+
+            let resolveFetch;
+            let personaSelectionFetches = 0;
+            const originalFetch = window.fetch.bind(window);
+            window.fetch = function(url, options) {
+                const requestUrl = String(url);
+                if (requestUrl.includes('/api/characters/character/') && requestUrl.endsWith('/persona-selection')) {
+                    personaSelectionFetches += 1;
+                    return new Promise((resolve) => {
+                        resolveFetch = () => resolve(new Response(JSON.stringify({
+                            success: true,
+                            selection: { mode: 'default', preset_id: '', profile: {} }
+                        }), {
+                            status: 200,
+                            headers: { 'Content-Type': 'application/json' },
+                        }));
+                    });
+                }
+                return originalFetch(url, options);
+            };
+
+            const overlay = document.createElement('div');
+            overlay.className = 'catgirl-panel-overlay active';
+            const wrapper = document.createElement('div');
+            wrapper.className = 'catgirl-panel-wrapper';
+            const host = document.createElement('div');
+            host.id = 'personality-panel-host-race';
+            wrapper.appendChild(host);
+            overlay.appendChild(wrapper);
+            document.body.appendChild(overlay);
+
+            buildCatgirlDetailForm('测试角色', {
+                '档案名': '测试角色',
+                '昵称': '测试',
+            }, false, host);
+
+            window.dispatchEvent(new CustomEvent('neko:character-personality-updated', {
+                detail: { characterName: '测试角色', presetId: 'classic_genki' }
+            }));
+
+            await new Promise(resolve => setTimeout(resolve, 20));
+            await closeCatgirlPanel();
+            resolveFetch();
+            await new Promise(resolve => setTimeout(resolve, 80));
+
+            window.dispatchEvent(new CustomEvent('neko:character-personality-updated', {
+                detail: { characterName: '测试角色', presetId: 'classic_genki' }
+            }));
+            await new Promise(resolve => setTimeout(resolve, 50));
+
+            return {
+                personaSelectionFetches,
+                hostConnected: host.isConnected,
+            };
+        }
+        """
+    )
+
+    assert result["personaSelectionFetches"] == 1
+    assert result["hostConnected"] is False

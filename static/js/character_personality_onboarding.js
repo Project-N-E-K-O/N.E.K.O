@@ -223,7 +223,9 @@
                 }
 
                 if (status === 'started') {
-                    await this.waitForTutorialCompletion();
+                    await new Promise((resolve) => {
+                        window.setTimeout(resolve, TUTORIAL_PROMPT_POLL_INTERVAL_MS);
+                    });
                     continue;
                 }
 
