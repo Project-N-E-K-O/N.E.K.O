@@ -1325,6 +1325,8 @@
             this.retainedExtraSpotlightElements = [];
             this.sceneExtraSpotlightElements = [];
             this.expressionTrackToken = 0;
+            this.activeGuideEmotion = '';
+            this.activeGuideExpressionId = '';
             this.pluginDashboardHandoff = null;
             this.pluginDashboardLastInterruptRequestId = '';
             this.pluginDashboardWindowCreatedByGuide = false;
@@ -1539,7 +1541,63 @@
                 return;
             }
 
+            this.activeGuideEmotion = '';
+            this.activeGuideExpressionId = resolvedExpressionId;
             this.emotionBridge.playExpression(resolvedExpressionId);
+        }
+
+        applyGuideEmotion(emotion) {
+            const normalizedEmotion = typeof emotion === 'string' ? emotion.trim() : '';
+            if (!normalizedEmotion) {
+                return;
+            }
+
+            this.activeGuideExpressionId = '';
+            this.activeGuideEmotion = normalizedEmotion;
+            this.emotionBridge.apply(normalizedEmotion);
+        }
+
+        clearGuidePresentation() {
+            this.activeGuideEmotion = '';
+            this.activeGuideExpressionId = '';
+            this.emotionBridge.clear();
+        }
+
+        captureCurrentGuidePresentationSnapshot() {
+            if (this.activeGuideExpressionId) {
+                return {
+                    expressionId: this.activeGuideExpressionId,
+                    emotion: ''
+                };
+            }
+
+            if (this.activeGuideEmotion) {
+                return {
+                    expressionId: '',
+                    emotion: this.activeGuideEmotion
+                };
+            }
+
+            return null;
+        }
+
+        restoreGuidePresentationSnapshot(snapshot) {
+            if (!snapshot) {
+                return false;
+            }
+
+            if (snapshot.expressionId) {
+                this.playGuideExpression(snapshot.expressionId);
+                return true;
+            }
+
+            if (snapshot.emotion) {
+                this.applyGuideEmotion(snapshot.emotion);
+                return true;
+            }
+
+            this.clearGuidePresentation();
+            return true;
         }
 
         async runGuideExpressionTrack(text, options) {
@@ -1553,7 +1611,7 @@
             }
 
             if (track.length === 0) {
-                this.emotionBridge.clear();
+                this.clearGuidePresentation();
                 return;
             }
 
@@ -2609,7 +2667,11 @@
             }
 
             if (stepId === 'intro_basic' && !this.introFlowCompleted) {
-                return this.getChatInputTarget() || null;
+                if (this.awaitingIntroActivation) {
+                    return this.getChatInputTarget() || null;
+                }
+
+                return this.getChatWindowTarget() || this.getChatInputTarget() || null;
             }
 
             if (stepId === 'takeover_settings_peek') {
@@ -3167,7 +3229,7 @@
             }
 
             if (performance.emotion && !this.hasGuideExpressionTrack(performance.voiceKey)) {
-                this.emotionBridge.apply(performance.emotion);
+                this.applyGuideEmotion(performance.emotion);
             }
         }
 
@@ -4223,6 +4285,22 @@
                 );
             };
             const guardFailed = () => runId !== this.sceneRunId || this.isStopping();
+            const createToggleSpotlightTarget = (key, element) => {
+                const rect = this.getElementRect(element);
+                if (!rect) {
+                    return element;
+                }
+
+                return this.createVirtualSpotlight(key, {
+                    left: Math.max(0, rect.left - 8),
+                    top: Math.max(0, rect.top - 4),
+                    right: Math.min(window.innerWidth, rect.right + 8),
+                    bottom: Math.min(window.innerHeight, rect.bottom + 4)
+                }, {
+                    padding: 4,
+                    radius: 18
+                });
+            };
 
             const catPawButton = await this.waitForVisibleTarget([
                 () => this.getFloatingButtonShell(this.getFallbackFloatingButton('agent')),
@@ -4255,9 +4333,10 @@
             if (!agentMasterToggle || guardFailed()) {
                 return false;
             }
+            const agentMasterSpotlight = createToggleSpotlightTarget('takeover-agent-master-toggle', agentMasterToggle);
 
             const enabledAgentMaster = await this.performHighlightedApiClick({
-                target: agentMasterToggle,
+                target: agentMasterSpotlight,
                 durationMs: scaleSceneMs(1200, 760, 2200),
                 runId: runId,
                 action: async () => {
@@ -4283,9 +4362,10 @@
             if (!keyboardToggle || guardFailed()) {
                 return false;
             }
+            const keyboardToggleSpotlight = createToggleSpotlightTarget('takeover-keyboard-toggle', keyboardToggle);
 
             const enabledKeyboardControl = await this.performHighlightedApiClick({
-                target: keyboardToggle,
+                target: keyboardToggleSpotlight,
                 durationMs: scaleSceneMs(1250, 800, 2200),
                 runId: runId,
                 action: async () => {
@@ -4301,7 +4381,6 @@
             }
 
             await this.waitForSceneDelay(scaleSceneMs(180, 80, 420));
-            this.overlay.clearActionSpotlight();
             return !guardFailed();
         }
 
@@ -5133,7 +5212,7 @@
                 });
             }
             if (performance.emotion && !this.hasGuideExpressionTrack(performance.voiceKey || 'takeover_settings_peek_intro')) {
-                this.emotionBridge.apply(performance.emotion);
+                this.applyGuideEmotion(performance.emotion);
             }
 
             const introNarrationPromise = this.speakGuideLine(introText || '', {
@@ -5686,6 +5765,9 @@
             }
 
             if (target) {
+                this.setSpotlightGeometryHint(target, {
+                    padding: DEFAULT_SPOTLIGHT_PADDING + 3
+                });
                 this.overlay.setPersistentSpotlight(target);
             }
 
@@ -5817,7 +5899,7 @@
                 textKey: introStep.performance.bubbleTextKey || ''
             });
             if (introStep.performance.emotion && !this.hasGuideExpressionTrack(introStep.performance.voiceKey)) {
-                this.emotionBridge.apply(introStep.performance.emotion);
+                this.applyGuideEmotion(introStep.performance.emotion);
             }
             await Promise.all([
                 this.speakGuideLine(introText, {
@@ -5869,7 +5951,7 @@
                 });
             }
             if (introStep.performance.emotion && !this.hasGuideExpressionTrack(introStep.performance.voiceKey)) {
-                this.emotionBridge.apply(introStep.performance.emotion);
+                this.applyGuideEmotion(introStep.performance.emotion);
             }
             await Promise.all([
                 this.speakGuideLine(introText || '', {
@@ -5994,6 +6076,8 @@
             this.overlay.setAngry(false);
             this.clearPreciseHighlights();
             this.clearSceneExtraSpotlights();
+            this.clearVirtualSpotlight('takeover-agent-master-toggle');
+            this.clearVirtualSpotlight('takeover-keyboard-toggle');
             if (stepId !== 'takeover_capture_cursor' && stepId !== 'takeover_plugin_preview') {
                 this.clearRetainedExtraSpotlights();
             }
@@ -6043,7 +6127,7 @@
                     });
                 }
                 if (performance.emotion && !this.hasGuideExpressionTrack(performance.voiceKey)) {
-                    this.emotionBridge.apply(performance.emotion);
+                    this.applyGuideEmotion(performance.emotion);
                 }
 
                 await Promise.all([
@@ -6096,7 +6180,7 @@
             }
 
             if (performance.emotion && !shouldNarrateAfterMove && !this.hasGuideExpressionTrack(performance.voiceKey)) {
-                this.emotionBridge.apply(performance.emotion);
+                this.applyGuideEmotion(performance.emotion);
             }
 
             const shouldIntroduceCursor = stepId === 'takeover_capture_cursor' && !this.cursor.hasPosition();
@@ -6145,7 +6229,7 @@
             }
 
             if (performance.emotion && shouldNarrateDuringMove && !this.hasGuideExpressionTrack(performance.voiceKey)) {
-                this.emotionBridge.apply(performance.emotion);
+                this.applyGuideEmotion(performance.emotion);
             }
 
             if (shouldNarrateDuringMove) {
@@ -6203,7 +6287,7 @@
             }
 
             if (performance.emotion && shouldNarrateAfterMove && !this.hasGuideExpressionTrack(performance.voiceKey)) {
-                this.emotionBridge.apply(performance.emotion);
+                this.applyGuideEmotion(performance.emotion);
             }
 
             if (!shouldNarrateDuringMove) {
@@ -6473,6 +6557,7 @@
             const message = voices.length > 0
                 ? voices[(this.interruptCount - 1) % voices.length]
                 : defaultResistanceText || '不要拽我啦，还没结束呢！';
+            const presentationSnapshot = this.captureCurrentGuidePresentationSnapshot();
 
             this.pauseCurrentSceneForResistance();
             this.interruptNarrationForResistance();
@@ -6484,7 +6569,7 @@
                     : 'tutorial.yuiGuide.lines.interruptResistLight1'
             });
             if (!this.hasGuideExpressionTrack(resistanceVoiceKeys[resistanceVoiceIndex] || '')) {
-                this.emotionBridge.apply(performance.emotion || 'surprised');
+                this.applyGuideEmotion(performance.emotion || 'surprised');
             }
             const cursorResistancePromise = suppressCursorReaction
                 ? Promise.resolve()
@@ -6500,6 +6585,7 @@
                 })
             ]).finally(() => {
                 this.resumeCurrentSceneAfterResistance();
+                this.restoreGuidePresentationSnapshot(presentationSnapshot);
                 const narration = this.activeNarration;
                 if (narration && narration.interrupted) {
                     this.scheduleNarrationResume();
@@ -6532,7 +6618,7 @@
                 textKey: performance.bubbleTextKey || ''
             });
             if (!this.hasGuideExpressionTrack(performance.voiceKey)) {
-                this.emotionBridge.apply(performance.emotion || 'angry');
+                this.applyGuideEmotion(performance.emotion || 'angry');
             }
             await this.speakGuideLine(bubbleText || '', {
                 voiceKey: performance.voiceKey
@@ -6599,7 +6685,7 @@
             this.clearAllExtraSpotlights();
             this.cleanupTutorialReturnButtons();
             this.customSecondarySpotlightTarget = null;
-            this.emotionBridge.clear();
+            this.clearGuidePresentation();
             this.closeManagedPanels().catch((error) => {
                 console.warn('[YuiGuide] 销毁时关闭首页面板失败:', error);
             });
