@@ -1529,21 +1529,40 @@ class LLMSessionManager:
         return await self.tool_registry.execute(call)
 
     async def _sync_tools_to_active_session(self) -> None:
-        """Push the current registry state to the live session, if any.
-        No-op for clients that don't support mid-session tool updates."""
-        sess = self.session
-        if sess is None:
-            return
+        """把 registry 当前状态同步给所有活跃的 client。
+
+        覆盖：
+        - ``self.session``：当前激活的主会话
+        - ``self.pending_session``：热切换预热中的会话（新猫娘建好但
+          还没正式 swap 的窗口）。如果不同步，热切换 swap 完成后
+          pending_session 接管前用户调 register_tool 注册的工具会丢失。
+
+        ``apply_tools_to_session`` 仅对 ``OmniRealtimeClient`` 且已 ws
+        connect 的实例有意义；offline 客户端只靠 ``set_tools`` 在下次
+        ``stream_text`` 取到新快照即可。
+        """
         defs = self.tool_registry.all()
-        try:
-            if hasattr(sess, "set_tools"):
-                sess.set_tools(defs)
-            if hasattr(sess, "set_tool_call_handler"):
-                sess.set_tool_call_handler(self._on_tool_call)
-            if isinstance(sess, OmniRealtimeClient):
-                await sess.apply_tools_to_session()
-        except Exception as e:
-            logger.warning("⚠️ Tool sync to active session failed: %s", e)
+        targets = []
+        if self.session is not None:
+            targets.append(self.session)
+        if self.pending_session is not None and self.pending_session is not self.session:
+            targets.append(self.pending_session)
+        if not targets:
+            return
+        for sess in targets:
+            try:
+                if hasattr(sess, "set_tools"):
+                    sess.set_tools(defs)
+                if hasattr(sess, "set_tool_call_handler"):
+                    sess.set_tool_call_handler(self._on_tool_call)
+                if isinstance(sess, OmniRealtimeClient) and sess.ws is not None:
+                    await sess.apply_tools_to_session()
+            except Exception as e:
+                logger.warning(
+                    "⚠️ Tool sync to %s session failed: %s",
+                    "pending" if sess is self.pending_session else "active",
+                    e,
+                )
 
     def _bind_session_lifecycle_callbacks(self, session):
         """Bind lifecycle callbacks with closure-captured session reference.

@@ -444,7 +444,15 @@ class ChatOpenAI:
         ``tool_call_deltas`` field of every chunk in the order yielded.
 
         Multiple parallel calls are kept distinct via ``index`` (the OpenAI
-        Chat Completions schema guarantees one ``index`` per call)."""
+        Chat Completions schema guarantees one ``index`` per call).
+
+        ⚠️ 空 ``name`` 的聚合槽位会被丢弃 —— SDK bug / 流提前中断 / 部分
+        小模型偶发产出的残缺碎片，如果不过滤直接写进 ``tool_calls`` 历史，
+        下一轮调用会被 server 以 schema invalid 拒掉。这里直接 drop，
+        让上层走"模型这一轮没成功调用任何工具"的常规分支。
+        """
+        import logging as _logging
+        _logger = _logging.getLogger(__name__)
         merged: dict[int, dict] = {}
         for fragments in deltas_per_chunk:
             if not fragments:
@@ -462,6 +470,13 @@ class ChatOpenAI:
         out: list[ToolCallAggregate] = []
         for idx in sorted(merged.keys()):
             slot = merged[idx]
+            if not slot["name"]:
+                _logger.warning(
+                    "ChatOpenAI.collect_tool_calls: dropping fragment with empty name "
+                    "(idx=%d, id=%r) — likely a streaming SDK glitch",
+                    idx, slot.get("id"),
+                )
+                continue
             out.append(ToolCallAggregate(
                 index=idx,
                 id=slot["id"],

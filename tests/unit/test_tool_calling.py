@@ -122,6 +122,26 @@ def test_registry_specs_for_dialect_shapes():
 # 2. ChatOpenAI.collect_tool_calls
 # ---------------------------------------------------------------------------
 
+def test_collect_tool_calls_drops_empty_name_fragments():
+    """SDK 偶发流出无 name 的残缺 tool_call，必须丢弃，否则会污染
+    tool_calls 历史导致下一轮 server schema reject。
+
+    回归保护：CodeRabbit PR #1035 反馈。"""
+    from utils.llm_client import ChatOpenAI
+
+    deltas_per_chunk = [
+        # call 0：完整
+        [{"index": 0, "id": "ok", "function": {"name": "good_tool", "arguments": "{}"}}],
+        # call 1：name 缺失（id 也缺）—— 该被丢弃
+        [{"index": 1, "function": {"arguments": "{}"}}],
+        # call 2：仅 arguments 进来，name 始终为空—— 该被丢弃
+        [{"index": 2, "function": {"arguments": "{\"x\":1}"}}],
+    ]
+    out = ChatOpenAI.collect_tool_calls(deltas_per_chunk)
+    assert len(out) == 1
+    assert out[0].name == "good_tool"
+
+
 def test_collect_tool_calls_merges_fragments():
     from utils.llm_client import ChatOpenAI
 

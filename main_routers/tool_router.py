@@ -86,7 +86,10 @@ class ToolRegisterRequest(BaseModel):
     callback_url: str = Field(..., min_length=1)
     role: Optional[str] = None  # None = global
     source: str = "external"
-    timeout_seconds: float = 30.0
+    # 上下界保护：误填超大值会让单次工具调用阻塞整条 tool-call 路径，
+    # 模型轮也会被卡住；超过 5 分钟的同步工具应该改成 plugin 自己拆任务
+    # 而不是把 main_server 长期 hold 住。
+    timeout_seconds: float = Field(default=30.0, gt=0.0, le=300.0)
 
 
 class ToolUnregisterRequest(BaseModel):

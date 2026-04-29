@@ -494,6 +494,11 @@ class OmniOfflineClient:
         tool calls, then one tool-role message per call carrying the
         result JSON. Both shapes follow the OpenAI Chat Completions spec
         so the next astream invocation sees a valid history."""
+        # 防御性过滤：``ChatOpenAI.collect_tool_calls`` 已会丢弃空 name 槽位，
+        # 但万一调用方直接构造（或上游聚合实现替换），这里再兜一层 ——
+        # tool_calls 历史中混入空 name 会被下一轮 server schema reject，
+        # 整条会话连带挂掉。
+        calls = [c for c in calls if (getattr(c, "name", "") or "").strip()]
         if not calls:
             return
         messages.append({
