@@ -578,8 +578,16 @@ class OmniOfflineClient:
         - Otherwise: ``_astream_openai_with_tools``.
         """
         if self._use_genai_sdk and not self._genai_tools_unsupported:
+            # 跟踪本轮 Gemini 路径是否已经把 text chunk yield 给上游。如果
+            # 已经吐过文本，再 fallback 到 OpenAI-compat 会让用户在同一轮
+            # 看到"半截 Gemini 文本 + 一份 OpenAI 重新生成的文本"拼接，
+            # 必须把异常向上 raise，让 stream_text 的 retry/discard 流程
+            # 触发"清空气泡 + 通知 response_discarded"的标准处理。
+            genai_emitted_text = False
             try:
                 async for chunk in self._astream_genai_with_tools(messages, **overrides):
+                    if getattr(chunk, "content", None):
+                        genai_emitted_text = True
                     yield chunk
                 return
             except _GenaiToolsUnsupported as e:
@@ -588,12 +596,22 @@ class OmniOfflineClient:
                     e,
                 )
                 self._genai_tools_unsupported = True
+                if genai_emitted_text:
+                    # 已吐文本：保留永久禁用旗标，但本轮不静默拼接，
+                    # 让上游 retry 路径基于 attempt+1 重新走（下次会直接
+                    # 进 OpenAI-compat，因为 _genai_tools_unsupported=True）。
+                    raise
             except Exception as e:
                 # Don't break user requests on transient genai SDK errors —
                 # log loudly and fall through. ``_genai_tools_unsupported``
                 # stays False so the next turn retries genai (transient
                 # 5xx / 429 shouldn't permanently downgrade).
                 logger.error("genai SDK path errored, falling back this turn: %s", e)
+                if genai_emitted_text:
+                    # 同上：已吐过文本不能再静默 fallback，向上 raise 让 retry
+                    # 流程清空气泡后基于 attempt+1 重试（下一次仍会先尝试
+                    # genai，因为 transient 不翻 _genai_tools_unsupported）。
+                    raise
         async for chunk in self._astream_openai_with_tools(messages, **overrides):
             yield chunk
 

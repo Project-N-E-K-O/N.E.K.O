@@ -593,6 +593,87 @@ async def test_register_tool_and_sync_serializes_concurrent_updates():
 
 
 @pytest.mark.asyncio
+async def test_offline_no_silent_fallback_after_genai_emitted_text(monkeypatch):
+    """genai 路径已经 yield 过 text chunk 之后再抛 transient 异常时，
+    `_astream_with_tools` 不能静默 fallback 到 OpenAI-compat —— 否则用户
+    在同一轮看到"半截 Gemini + 一份 OpenAI 重新生成"双流拼接。必须 raise
+    让 stream_text 的 retry/discard 流程清空气泡后重试。
+
+    回归保护：CodeRabbit PR #1035 第 7 轮 review."""
+    from main_logic import omni_offline_client as _ofc
+    from main_logic.omni_offline_client import OmniOfflineClient
+    from utils.llm_client import LLMStreamChunk
+
+    monkeypatch.setattr(_ofc, "_GENAI_AVAILABLE", True)
+
+    async def _genai_yields_then_raises(self, messages, **overrides):
+        # 先吐两块文本，然后抛 transient 异常
+        yield LLMStreamChunk(content="让我查一下，")
+        yield LLMStreamChunk(content="稍等。")
+        raise RuntimeError("HTTP 503 transient")
+
+    async def _openai_should_not_run(self, messages, **overrides):
+        # 如果到这里，说明发生了我们要避免的双流拼接
+        yield LLMStreamChunk(content="OPENAI_FALLBACK_TEXT_SHOULD_NOT_APPEAR")
+        raise AssertionError("OpenAI fallback ran after genai emitted text — bug regression")
+
+    monkeypatch.setattr(OmniOfflineClient, "_astream_genai_with_tools", _genai_yields_then_raises)
+    monkeypatch.setattr(OmniOfflineClient, "_astream_openai_with_tools", _openai_should_not_run)
+
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    client._use_genai_sdk = True
+    client._genai_tools_unsupported = False
+
+    yielded = []
+    with pytest.raises(RuntimeError, match="503"):
+        async for ch in client._astream_with_tools([{"role": "user", "content": "x"}]):
+            yielded.append(ch.content)
+
+    # 应该确实 yield 出了 genai 已吐的文本，然后异常向上 raise
+    assert "让我查一下，" in yielded
+    assert "稍等。" in yielded
+    # OpenAI fallback 文本不应该出现
+    assert not any("OPENAI_FALLBACK" in (s or "") for s in yielded)
+
+
+@pytest.mark.asyncio
+async def test_offline_silent_fallback_when_genai_did_not_emit(monkeypatch):
+    """对偶：genai 路径还没 yield 过任何文本就抛 transient 异常时，
+    `_astream_with_tools` 仍然应该静默 fallback 到 OpenAI-compat 兜底——
+    用户感知不到失败，体验最佳。"""
+    from main_logic import omni_offline_client as _ofc
+    from main_logic.omni_offline_client import OmniOfflineClient
+    from utils.llm_client import LLMStreamChunk
+
+    monkeypatch.setattr(_ofc, "_GENAI_AVAILABLE", True)
+
+    async def _genai_raises_immediately(self, messages, **overrides):
+        # 关键：还没 yield 任何东西就抛
+        if False:
+            yield  # make it a generator
+        raise RuntimeError("HTTP 503 transient before any chunk")
+
+    async def _openai_emits(self, messages, **overrides):
+        yield LLMStreamChunk(content="OpenAI fallback OK")
+
+    monkeypatch.setattr(OmniOfflineClient, "_astream_genai_with_tools", _genai_raises_immediately)
+    monkeypatch.setattr(OmniOfflineClient, "_astream_openai_with_tools", _openai_emits)
+
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    client._use_genai_sdk = True
+    client._genai_tools_unsupported = False
+
+    yielded = []
+    async for ch in client._astream_with_tools([{"role": "user", "content": "x"}]):
+        yielded.append(ch.content)
+
+    # 没 yield 过 → 静默 fallback，用户拿到 OpenAI 路径的文本
+    assert yielded == ["OpenAI fallback OK"]
+    # transient 不翻 _genai_tools_unsupported
+    assert client._genai_tools_unsupported is False
+
+
+@pytest.mark.asyncio
 async def test_offline_genai_tools_unsupported_error_correctly_disables_path(monkeypatch):
     """与上一条对偶：当 genai 真的报"tools not supported"时，必须被包装成
     `_GenaiToolsUnsupported`，让 `_astream_with_tools` 翻 `_genai_tools_unsupported`
