@@ -227,22 +227,27 @@ def test_yui_guide_steps_registry_keeps_m1_to_m4_home_flow_contract():
         "'takeover_return_control'",
         "'handoff_api_key'",
         "'handoff_memory_browser'",
-        "'handoff_steam_workshop'",
         "'handoff_plugin_dashboard'",
         "steps.handoff_api_key.navigation.resumeScene = 'api_key_intro';",
         "steps.handoff_memory_browser.navigation.resumeScene = 'memory_browser_intro';",
-        "steps.handoff_steam_workshop.navigation.resumeScene = 'steam_workshop_intro';",
         "steps.handoff_plugin_dashboard.navigation.resumeScene = 'plugin_dashboard_landing';",
         "steps.plugin_dashboard_landing = createBaseStep('plugin_dashboard_landing', 'plugin_dashboard', '#plugin-list');",
         "steps.api_key_intro = createBaseStep('api_key_intro', 'api_key', '#coreApiSelect-dropdown-trigger');",
         "steps.memory_browser_intro = createBaseStep('memory_browser_intro', 'memory_browser', '#memory-file-list');",
-        "steps.steam_workshop_intro = createBaseStep('steam_workshop_intro', 'steam_workshop', '#workshop-tabs');",
         "api_key: ['api_key_intro']",
         "memory_browser: ['memory_browser_intro']",
-        "steam_workshop: ['steam_workshop_intro']",
         "plugin_dashboard: ['plugin_dashboard_landing']",
     ):
         assert expected in source
+
+    for removed in (
+        "'handoff_steam_workshop'",
+        "steps.handoff_steam_workshop",
+        "steps.steam_workshop_intro",
+        "steam_workshop: ['steam_workshop_intro']",
+        "/steam_workshop_manager",
+    ):
+        assert removed not in source
 
 
 _YUI_RUNTIME_SCRIPTS = (
@@ -294,6 +299,18 @@ def test_target_page_templates_load_yui_runtime_stack_before_tutorial_manager():
         _stylesheet_tag_position(source, "yui-guide.css")
 
 
+def test_home_yui_guide_does_not_route_to_steam_workshop():
+    yui_source = Path("static/yui-guide-steps.js").read_text(encoding="utf-8")
+    tutorial_source = Path("static/universal-tutorial-manager.js").read_text(encoding="utf-8")
+    paths = _route_paths_from_decorators("main_routers/pages_router.py", "router")
+
+    assert "/steam_workshop_manager" not in paths
+    assert "handoff_steam_workshop" not in yui_source
+    assert "/steam_workshop_manager" not in yui_source
+    assert "yuiGuideSceneId: 'handoff_steam_workshop'" not in tutorial_source
+    assert "#${p}-menu-steam-workshop" not in tutorial_source
+
+
 def test_universal_tutorial_manager_normalizes_api_key_handoff_and_resume_scene_mappings():
     source = Path("static/universal-tutorial-manager.js").read_text(encoding="utf-8")
 
@@ -304,7 +321,6 @@ def test_universal_tutorial_manager_normalizes_api_key_handoff_and_resume_scene_
         "applyYuiGuideResumeScene(validSteps)",
         "yuiGuideSceneId: 'api_key_intro'",
         "yuiGuideSceneId: 'memory_browser_intro'",
-        "yuiGuideSceneId: 'steam_workshop_intro'",
     ):
         assert expected in source
 

@@ -8,12 +8,13 @@
         'home',
         'api_key',
         'memory_browser',
-        'steam_workshop',
         'plugin_dashboard'
     ]);
 
     const HOME_SCENE_ORDER = Object.freeze([
         'intro_basic',
+        'intro_proactive',
+        'intro_cat_paw',
         'takeover_capture_cursor',
         'takeover_plugin_preview',
         'takeover_settings_peek',
@@ -22,7 +23,6 @@
         'interrupt_angry_exit',
         'handoff_api_key',
         'handoff_memory_browser',
-        'handoff_steam_workshop',
         'handoff_plugin_dashboard'
     ]);
 
@@ -89,6 +89,32 @@
     steps.intro_basic.performance.interruptible = true;
     steps.intro_basic.interrupts.mode = 'theatrical_abort';
     steps.intro_basic.interrupts.resetOnStepAdvance = false;
+
+    steps.intro_proactive = createBaseStep('intro_proactive', 'home', '#${p}-toggle-proactive-chat');
+    steps.intro_proactive.tutorial.title = '主动搭话';
+    steps.intro_proactive.tutorial.description = '介绍主动搭话开关。';
+    steps.intro_proactive.performance.bubbleText = '可恶，居然敢无视本大小姐嘛！要说你一直没理我，我可是会主动跑出来咬你的哦～（哈！！）';
+    steps.intro_proactive.performance.bubbleTextKey = 'tutorial.yuiGuide.lines.introProactive';
+    steps.intro_proactive.performance.voiceKey = 'intro_proactive';
+    steps.intro_proactive.performance.emotion = 'surprised';
+    steps.intro_proactive.performance.cursorAction = 'wobble';
+    steps.intro_proactive.performance.cursorTarget = '#${p}-toggle-proactive-chat';
+    steps.intro_proactive.performance.interruptible = true;
+    steps.intro_proactive.interrupts.mode = 'theatrical_abort';
+    steps.intro_proactive.interrupts.resetOnStepAdvance = false;
+
+    steps.intro_cat_paw = createBaseStep('intro_cat_paw', 'home', '#${p}-btn-agent');
+    steps.intro_cat_paw.tutorial.title = '猫爪入口';
+    steps.intro_cat_paw.tutorial.description = '介绍 OpenClaw/猫爪面板入口。';
+    steps.intro_cat_paw.performance.bubbleText = '好啦不说废话了喵——你看到那个可爱的‘猫爪’了吗，准备好了吗？让我借用一下你的鼠标吧！';
+    steps.intro_cat_paw.performance.bubbleTextKey = 'tutorial.yuiGuide.lines.introCatPaw';
+    steps.intro_cat_paw.performance.voiceKey = 'intro_cat_paw';
+    steps.intro_cat_paw.performance.emotion = 'happy';
+    steps.intro_cat_paw.performance.cursorAction = 'wobble';
+    steps.intro_cat_paw.performance.cursorTarget = '#${p}-btn-agent';
+    steps.intro_cat_paw.performance.interruptible = true;
+    steps.intro_cat_paw.interrupts.mode = 'theatrical_abort';
+    steps.intro_cat_paw.interrupts.resetOnStepAdvance = false;
 
     steps.takeover_capture_cursor = createBaseStep('takeover_capture_cursor', 'home', '#${p}-btn-agent');
     steps.takeover_capture_cursor.tutorial.title = '键鼠控制介绍';
@@ -197,17 +223,6 @@
     steps.handoff_memory_browser.navigation.windowName = 'memory_browser';
     steps.handoff_memory_browser.navigation.resumeScene = 'memory_browser_intro';
 
-    steps.handoff_steam_workshop = createBaseStep('handoff_steam_workshop', 'home', '#${p}-menu-steam-workshop');
-    steps.handoff_steam_workshop.tutorial.title = '接力到创意工坊';
-    steps.handoff_steam_workshop.tutorial.description = '从首页接力到创意工坊页。';
-    steps.handoff_steam_workshop.tutorial.autoAdvance = true;
-    steps.handoff_steam_workshop.performance.voiceKey = 'handoff_steam_workshop';
-    steps.handoff_steam_workshop.performance.cursorAction = 'click';
-    steps.handoff_steam_workshop.performance.cursorTarget = '#${p}-menu-steam-workshop';
-    steps.handoff_steam_workshop.navigation.openUrl = '/steam_workshop_manager';
-    steps.handoff_steam_workshop.navigation.windowName = 'steam_workshop';
-    steps.handoff_steam_workshop.navigation.resumeScene = 'steam_workshop_intro';
-
     steps.handoff_plugin_dashboard = createBaseStep('handoff_plugin_dashboard', 'home', '#${p}-btn-agent');
     steps.handoff_plugin_dashboard.tutorial.title = '接力到插件面板';
     steps.handoff_plugin_dashboard.tutorial.description = '从首页接力到插件 dashboard，再转入 /ui。';
@@ -246,20 +261,10 @@
     steps.memory_browser_intro.performance.cursorAction = 'wobble';
     steps.memory_browser_intro.performance.cursorTarget = '#memory-file-list';
 
-    steps.steam_workshop_intro = createBaseStep('steam_workshop_intro', 'steam_workshop', '#workshop-tabs');
-    steps.steam_workshop_intro.tutorial.title = '创意工坊入口';
-    steps.steam_workshop_intro.tutorial.description = '从首页接力后，先确认创意工坊分区入口。';
-    steps.steam_workshop_intro.performance.bubbleText = '这里就是创意工坊管理页，先从上面的分区开始，我带你看订阅内容和角色卡。';
-    steps.steam_workshop_intro.performance.voiceKey = 'steam_workshop_intro';
-    steps.steam_workshop_intro.performance.emotion = 'happy';
-    steps.steam_workshop_intro.performance.cursorAction = 'wobble';
-    steps.steam_workshop_intro.performance.cursorTarget = '#workshop-tabs';
-
     const sceneOrder = {
         home: HOME_SCENE_ORDER.slice(),
         api_key: ['api_key_intro'],
         memory_browser: ['memory_browser_intro'],
-        steam_workshop: ['steam_workshop_intro'],
         plugin_dashboard: ['plugin_dashboard_landing']
     };
 
