@@ -269,12 +269,14 @@ def test_action_note_localizes_template_per_language():
 
 
 def test_action_note_unknown_language_falls_back_to_english():
-    """_loc 静默回退：未翻译语言（如 'es'）走英文模板。"""
+    """_loc 静默回退：未翻译语言（如 'es'）走英文模板。
+
+    断言与 'en' 输出**完全等价**（不只是 master_name/title/artist 包含），
+    否则误回退到别的本地化也能 pass。"""
     links = [{'title': 'X', 'artist': 'Y', 'source': '音乐推荐', 'type': 'music'}]
-    note = build_proactive_action_note('music', links, 'es', master_name=MASTER)
-    # 走英文模板，但 master_name 仍按传入展开
-    assert MASTER in note
-    assert 'X' in note and 'Y' in note
+    note_es = build_proactive_action_note('music', links, 'es', master_name=MASTER)
+    note_en = build_proactive_action_note('music', links, 'en', master_name=MASTER)
+    assert note_es == note_en
 
 
 def test_action_note_normalizes_region_language_codes():
@@ -416,6 +418,18 @@ async def test_finish_proactive_delivery_empty_action_note_unchanged():
         mgr2, "纯聊天内容", expected_speech_id="s", action_note=None,
     )
     assert mgr2.session._conversation_history[0].content == "纯聊天内容"
+
+    # 纯空白（含换行/Tab）也应等同空：finish 内 action_note.strip() == '' 走
+    # no-op。钉死这个契约——避免未来漏 strip() 让"几个空白字符"作为 note 行
+    # 污染 _conversation_history。
+    mgr3 = _make_mgr()
+    mgr3.current_speech_id = "s"
+    mgr3.session = MagicMock()
+    mgr3.session._conversation_history = []
+    await LLMSessionManager.finish_proactive_delivery(
+        mgr3, "纯聊天内容", expected_speech_id="s", action_note=" \n\t ",
+    )
+    assert mgr3.session._conversation_history[0].content == "纯聊天内容"
 
 
 @pytest.mark.asyncio
