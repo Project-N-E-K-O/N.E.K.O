@@ -1419,7 +1419,7 @@ class PluginDashboardGuideRuntime {
   }
 
   updateBackdropCutout(spotlightRect: SpotlightRect | null) {
-    if (!this.backdropCutout || this.backdrop) {
+    if (!this.backdropCutout) {
       if (this.backdrop) {
         ;(this.backdrop as unknown as { hidden?: boolean }).hidden = true
         this.backdrop.style.display = 'none'
@@ -2369,9 +2369,6 @@ class PluginDashboardGuideRuntime {
       } catch (_) {}
       currentGuideAudio = null
     }
-    try {
-      window.speechSynthesis?.cancel()
-    } catch (_) {}
     this.cancelActiveNarration()
     if (this.resistanceCursorTimer !== null) {
       window.clearTimeout(this.resistanceCursorTimer)
@@ -2636,6 +2633,7 @@ class PluginDashboardLocalTutorialRunner {
   shieldClickHandler: ((event: Event) => void) | null = null
   keydownHandler: ((event: KeyboardEvent) => void) | null = null
   advanceResolver: (() => void) | null = null
+  cancelResolvers: Array<() => void> = []
   advanceEnabled = false
 
   async start(options: StartPluginDashboardTutorialOptions) {
@@ -2672,7 +2670,7 @@ class PluginDashboardLocalTutorialRunner {
         await this.runStep(step)
       }
     } catch (error) {
-      this.cancelled = true
+      this.requestCancel()
       console.warn('[PluginDashboardLocalTutorialRunner] 教程步骤执行失败:', error)
     } finally {
       this.cleanup()
@@ -2737,8 +2735,7 @@ class PluginDashboardLocalTutorialRunner {
     skipButton.style.fontWeight = '600'
     skipButton.style.cursor = 'pointer'
     skipButton.addEventListener('click', () => {
-      this.cancelled = true
-      this.resolveAdvance()
+      this.requestCancel()
     })
 
     footer.appendChild(hintEl)
@@ -2790,6 +2787,46 @@ class PluginDashboardLocalTutorialRunner {
     }
   }
 
+  requestCancel() {
+    this.cancelled = true
+    this.advanceEnabled = false
+    this.runtime.cancelCursorMotion()
+    this.resolveAdvance()
+    const resolvers = this.cancelResolvers.slice()
+    this.cancelResolvers = []
+    resolvers.forEach((resolve) => {
+      try {
+        resolve()
+      } catch (_) {}
+    })
+  }
+
+  waitForCancelOrTimeout(delayMs: number) {
+    if (this.cancelled) {
+      return Promise.resolve(false)
+    }
+
+    return new Promise<boolean>((resolve) => {
+      let settled = false
+      let timeoutId: number | null = null
+      const finish = (completed: boolean) => {
+        if (settled) {
+          return
+        }
+        settled = true
+        if (timeoutId !== null) {
+          window.clearTimeout(timeoutId)
+          timeoutId = null
+        }
+        this.cancelResolvers = this.cancelResolvers.filter((resolver) => resolver !== cancel)
+        resolve(completed && !this.cancelled)
+      }
+      const cancel = () => finish(false)
+      this.cancelResolvers.push(cancel)
+      timeoutId = window.setTimeout(() => finish(true), Math.max(0, Math.round(delayMs)))
+    })
+  }
+
   async navigate(route?: string) {
     const targetRoute = String(route || '').trim()
     if (!targetRoute) {
@@ -2827,12 +2864,14 @@ class PluginDashboardLocalTutorialRunner {
     }
 
     const startedAt = Date.now()
-    while ((Date.now() - startedAt) < timeoutMs) {
+    while (!this.cancelled && (Date.now() - startedAt) < timeoutMs) {
       const element = document.querySelector(`[data-yui-guide-id="${targetId}"]`) as HTMLElement | null
       if (element) {
         return element
       }
-      await wait(80)
+      if (!(await this.waitForCancelOrTimeout(80))) {
+        return null
+      }
     }
 
     return null
@@ -2878,9 +2917,9 @@ class PluginDashboardLocalTutorialRunner {
 
     await this.dispatchAction(step.action)
     if (step.waitMs && step.waitMs > 0) {
-      await wait(step.waitMs)
+      await this.waitForCancelOrTimeout(step.waitMs)
     } else if (step.action) {
-      await wait(120)
+      await this.waitForCancelOrTimeout(120)
     }
     if (this.cancelled) {
       return
@@ -2939,9 +2978,7 @@ class PluginDashboardLocalTutorialRunner {
   }
 
   cleanup() {
-    this.cancelled = true
-    this.advanceEnabled = false
-    this.resolveAdvance()
+    this.requestCancel()
 
     if (this.runtime.interactionShield && this.shieldClickHandler) {
       this.runtime.interactionShield.removeEventListener('click', this.shieldClickHandler)
