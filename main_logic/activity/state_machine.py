@@ -205,26 +205,18 @@ def _apply_user_overrides(
 ) -> ClassifyResult:
     """Patch a base classifier result with user-supplied overrides.
 
-    Override priority (highest → lowest):
-      1. ``user_app_overrides`` — process-name match (case-insensitive)
-      2. ``user_title_overrides`` — title-substring match (case-insensitive)
-      3. Static keyword DB result (already in ``result``)
-      4. ``user_game_overrides`` — patches intensity/genre on the
-         resolved canonical (only when category ends up as 'gaming')
+    Override semantics are **additive**, not overriding:
 
-    App / title overrides REPLACE the keyword classification (user wins
-    over static DB). Game overrides MERGE on top — they don't change
-    category/subcategory/canonical, only intensity/genre.
-
-    Override priority is **additive**, not overriding: app/title overrides
-    only fire when the static keyword DB returned ``unknown``. They
-    classify what the DB missed; they don't rewrite stable DB hits.
-    Privacy / own_app classifications are also locked, so a user override
-    of "work" on KeePass.exe stays as ``private``. Game
-    intensity/genre overrides are the one exception — they patch within
-    an existing gaming classification (don't change category, only
-    refine intensity/genre tags) and run regardless of static-locked
-    status because they're a different axis.
+      * ``user_app_overrides`` (process-name, case-insensitive) and
+        ``user_title_overrides`` (title-substring, case-insensitive) only
+        fire when the static keyword DB returned ``unknown``. They
+        classify what the DB missed; they never rewrite stable DB hits.
+      * Privacy / own_app classifications are locked — a user override
+        of "work" on KeePass.exe stays as ``private``.
+      * ``user_game_overrides`` is the one exception: it patches
+        intensity/genre on top of an existing gaming classification
+        (never changes category/subcategory/canonical) and runs
+        regardless of static-locked status because it's a different axis.
     """
     # Privacy + own-app guarantee — those are static-DB-only categories.
     # User overrides can't promote OR demote them (suppressed below).
