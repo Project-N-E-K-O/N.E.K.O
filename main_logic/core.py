@@ -3434,7 +3434,11 @@ class LLMSessionManager:
             self.master_name,
             raw,
         )
-        memory_meta = _build_avatar_interaction_memory_meta(getattr(self, "user_language", None), raw)
+        memory_meta = _build_avatar_interaction_memory_meta(
+            getattr(self, "user_language", None),
+            raw,
+            self.master_name,
+        )
         memory_note = memory_meta["memory_note"]
         delivered = False
 

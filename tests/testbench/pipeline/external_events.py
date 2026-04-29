@@ -1238,7 +1238,7 @@ def _build_avatar_instruction_bundle(
             ),
         ))
 
-    meta = _build_avatar_interaction_memory_meta(full_lang, normalized)
+    meta = _build_avatar_interaction_memory_meta(full_lang, normalized, master_name)
     memory_note = str(meta.get("memory_note") or "")
     dedupe_key = str(meta.get("memory_dedupe_key") or normalized["tool_id"])
     dedupe_rank = int(meta.get("memory_dedupe_rank") or 1)
