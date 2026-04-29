@@ -4,7 +4,8 @@ import importlib
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -380,6 +381,105 @@ async def test_character_persona_selection_change_clears_stale_recent_history():
             clear_result = await router_module.clear_character_persona_selection(current_name)
             assert clear_result["success"] is True
             assert json.loads(recent_path.read_text(encoding="utf-8")) == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_update_character_persona_selection_restarts_active_current_session():
+    with TemporaryDirectory() as td:
+        config_manager = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(config_manager)
+
+        async def _noop(*args, **kwargs):
+            return None
+
+        current_name = config_manager.load_characters()["当前猫娘"]
+        current_session = SimpleNamespace(
+            is_active=True,
+            websocket=object(),
+            end_session=AsyncMock(),
+        )
+        role_state = {
+            current_name: SimpleNamespace(session_manager=current_session),
+        }
+        init_one_catgirl = AsyncMock()
+
+        with patch("utils.config_manager._config_manager", config_manager):
+            init_shared_state(
+                role_state=role_state,
+                steamworks=None,
+                templates=None,
+                config_manager=config_manager,
+                logger=None,
+                initialize_character_data=_noop,
+                switch_current_catgirl_fast=_noop,
+                init_one_catgirl=init_one_catgirl,
+                remove_one_catgirl=_noop,
+            )
+
+            router_module = importlib.reload(importlib.import_module("main_routers.characters_router"))
+            with patch.object(router_module, "send_reload_page_notice", AsyncMock(return_value=True)) as reload_notice:
+                save_result = await router_module.update_character_persona_selection(
+                    current_name,
+                    _DummyRequest({"preset_id": "classic_genki", "source": "manual_reselect"}),
+                )
+
+        assert save_result["success"] is True
+        reload_notice.assert_awaited_once_with(current_session, "人格设定已更新，页面即将刷新")
+        current_session.end_session.assert_awaited_once_with(by_server=True)
+        init_one_catgirl.assert_awaited_once_with(current_name, is_new=False)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_clear_character_persona_selection_restarts_active_current_session():
+    with TemporaryDirectory() as td:
+        config_manager = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(config_manager)
+
+        async def _noop(*args, **kwargs):
+            return None
+
+        current_name = config_manager.load_characters()["当前猫娘"]
+        current_session = SimpleNamespace(
+            is_active=True,
+            websocket=object(),
+            end_session=AsyncMock(),
+        )
+        role_state = {
+            current_name: SimpleNamespace(session_manager=current_session),
+        }
+        init_one_catgirl = AsyncMock()
+
+        with patch("utils.config_manager._config_manager", config_manager):
+            init_shared_state(
+                role_state=role_state,
+                steamworks=None,
+                templates=None,
+                config_manager=config_manager,
+                logger=None,
+                initialize_character_data=_noop,
+                switch_current_catgirl_fast=_noop,
+                init_one_catgirl=init_one_catgirl,
+                remove_one_catgirl=_noop,
+            )
+
+            router_module = importlib.reload(importlib.import_module("main_routers.characters_router"))
+            await router_module.update_character_persona_selection(
+                current_name,
+                _DummyRequest({"preset_id": "classic_genki", "source": "manual_reselect"}),
+            )
+
+            current_session.end_session.reset_mock()
+            init_one_catgirl.reset_mock()
+
+            with patch.object(router_module, "send_reload_page_notice", AsyncMock(return_value=True)) as reload_notice:
+                clear_result = await router_module.clear_character_persona_selection(current_name)
+
+        assert clear_result["success"] is True
+        reload_notice.assert_awaited_once_with(current_session, "人格设定已更新，页面即将刷新")
+        current_session.end_session.assert_awaited_once_with(by_server=True)
+        init_one_catgirl.assert_awaited_once_with(current_name, is_new=False)
 
 
 @pytest.mark.unit

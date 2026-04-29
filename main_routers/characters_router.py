@@ -2031,6 +2031,15 @@ async def update_character_persona_selection(name: str, request: Request):
         await config_manager.asave_characters(characters)
         await _clear_character_recent_history(config_manager, name)
 
+        session_manager = get_session_manager()
+        is_current_catgirl = (name == characters.get('当前猫娘', ''))
+        if is_current_catgirl and name in session_manager and session_manager[name].is_active:
+            await send_reload_page_notice(session_manager[name], "人格设定已更新，页面即将刷新")
+            try:
+                await session_manager[name].end_session(by_server=True)
+            except Exception as e:
+                logger.error(f"结束 session 时出错: {e}")
+
         initialize_one_character = get_init_one_catgirl()
         await initialize_one_character(name, is_new=False)
         if source == "manual_reselect":
@@ -2068,6 +2077,15 @@ async def clear_character_persona_selection(name: str):
     try:
         await config_manager.asave_characters(characters)
         await _clear_character_recent_history(config_manager, name)
+
+        session_manager = get_session_manager()
+        is_current_catgirl = (name == characters.get('当前猫娘', ''))
+        if is_current_catgirl and name in session_manager and session_manager[name].is_active:
+            await send_reload_page_notice(session_manager[name], "人格设定已更新，页面即将刷新")
+            try:
+                await session_manager[name].end_session(by_server=True)
+            except Exception as e:
+                logger.error(f"结束 session 时出错: {e}")
 
         initialize_one_character = get_init_one_catgirl()
         await initialize_one_character(name, is_new=False)
