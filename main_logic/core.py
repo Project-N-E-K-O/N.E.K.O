@@ -3939,6 +3939,16 @@ class LLMSessionManager:
             self.session_start_time = datetime.now()
             self._session_turn_count = 0
 
+            # promote 之后立刻把 registry 最新状态推过去 —— swap 序列里
+            # ``self.pending_session → 局部 new_session → self.session``
+            # 跨了几个 await，期间 register_tool 触发的 _sync 可能既赶不上
+            # pending_session（已被挪走置 None）也赶不上 self.session
+            # （还没赋值），导致 promote 后新 session 缺了那次注册的工具。
+            try:
+                await self._sync_tools_to_active_session()
+            except Exception as _sync_err:
+                logger.warning("⚠️ final swap post-promote tool sync failed: %s", _sync_err)
+
             # 验证新session的WebSocket是否仍然有效（可能在swap过程中被服务器断开）
             if isinstance(self.session, OmniRealtimeClient) and not self.session.ws:
                 # 旧session已关闭无法回滚，抛出异常让 except 块走重建流程

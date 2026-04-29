@@ -688,10 +688,23 @@ class OmniOfflineClient:
                     config=config,
                 )
             except Exception as e:
-                # 上层会保留 _genai_tools_unsupported=False（transient），
-                # 但本轮 fallback 到 OpenAI-compat 上去（模型/key 错误也会
-                # 在那条路径上以同样方式炸出）。
-                raise _GenaiToolsUnsupported(f"generate_content_stream failed: {e}") from e
+                # ⚠️ 不要把所有异常都包成 _GenaiToolsUnsupported！
+                # ``_astream_with_tools`` 的 except 分支会在捕到 _GenaiToolsUnsupported
+                # 时永久翻 ``_genai_tools_unsupported=True``，导致 transient
+                # 错误（429/5xx/网络抖动/auth 临时失败）让整个 session 后续都
+                # 退化到 OpenAI-compat（且 OpenAI-compat 不支持 Gemini 工具）。
+                # 只在错误消息里明确出现 tools 相关关键字时才认定是 SDK/模型
+                # 不支持工具，其余异常直接 raise 给上层 ``except Exception``
+                # —— 那条分支只本轮 fallback，下一轮还会重试 genai 路径。
+                err_msg = str(e).lower()
+                if (
+                    ("tool" in err_msg or "function" in err_msg)
+                    and ("not support" in err_msg or "unsupported" in err_msg or "invalid" in err_msg)
+                ):
+                    raise _GenaiToolsUnsupported(
+                        f"generate_content_stream rejected tools: {e}"
+                    ) from e
+                raise
 
             # Per-iteration accumulators.
             collected_tool_calls: list = []  # list of (id, name, args_dict, raw_args_str)

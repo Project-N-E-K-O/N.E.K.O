@@ -348,6 +348,88 @@ async def test_offline_switch_model_recomputes_genai_routing(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_offline_genai_transient_error_does_not_disable_tools(monkeypatch):
+    """genai SDK 网络/鉴权抖动（429 / 5xx / timeout / auth）不应该被包装成
+    `_GenaiToolsUnsupported`，否则单次 transient 错误会让整个 session 永久
+    退化到 OpenAI-compat 路径，工具调用永久失效。
+
+    回归保护：CodeRabbit PR #1035 第 4 轮 review."""
+    from main_logic import omni_offline_client as _ofc
+    from main_logic.omni_offline_client import (
+        OmniOfflineClient, _GenaiToolsUnsupported,
+    )
+
+    monkeypatch.setattr(_ofc, "_GENAI_AVAILABLE", True)
+
+    class _BoomClient:
+        class _aio:
+            class models:
+                @staticmethod
+                async def generate_content_stream(**_kw):
+                    # 模拟 5xx server error —— 与 tools 无关
+                    raise RuntimeError("HTTP 503 Service Unavailable: upstream timeout")
+
+        aio = _aio()
+
+        def close(self): pass
+
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    client.model = "gemini-2.5-flash"
+    client.api_key = "fake"
+    client._tool_definitions = []
+    client.on_tool_call = None
+    client.has_tools = lambda: False  # bypass tools check
+    client.max_tool_iterations = 1
+    client._genai_client = _BoomClient()
+    client._genai_tools_unsupported = False
+    client.llm = type("F", (), {"max_completion_tokens": 100})()
+
+    # 期望：transient 错误以原异常 raise 出来，不包成 _GenaiToolsUnsupported
+    with pytest.raises(RuntimeError, match="503"):
+        async for _ in client._astream_genai_with_tools([{"role": "user", "content": "x"}]):
+            pass
+
+
+@pytest.mark.asyncio
+async def test_offline_genai_tools_unsupported_error_correctly_disables_path(monkeypatch):
+    """与上一条对偶：当 genai 真的报"tools not supported"时，必须被包装成
+    `_GenaiToolsUnsupported`，让 `_astream_with_tools` 翻 `_genai_tools_unsupported`
+    并 fallback 到 OpenAI-compat 路径。"""
+    from main_logic import omni_offline_client as _ofc
+    from main_logic.omni_offline_client import (
+        OmniOfflineClient, _GenaiToolsUnsupported,
+    )
+
+    monkeypatch.setattr(_ofc, "_GENAI_AVAILABLE", True)
+
+    class _ToolsRejectClient:
+        class _aio:
+            class models:
+                @staticmethod
+                async def generate_content_stream(**_kw):
+                    raise RuntimeError("function declarations are not supported on this model")
+
+        aio = _aio()
+
+        def close(self): pass
+
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    client.model = "gemini-old"
+    client.api_key = "fake"
+    client._tool_definitions = []
+    client.on_tool_call = None
+    client.has_tools = lambda: False
+    client.max_tool_iterations = 1
+    client._genai_client = _ToolsRejectClient()
+    client._genai_tools_unsupported = False
+    client.llm = type("F", (), {"max_completion_tokens": 100})()
+
+    with pytest.raises(_GenaiToolsUnsupported):
+        async for _ in client._astream_genai_with_tools([{"role": "user", "content": "x"}]):
+            pass
+
+
+@pytest.mark.asyncio
 async def test_offline_iteration_cap_breaks_runaway_loop():
     """If the model keeps requesting tools forever, we stop after
     ``max_tool_iterations`` LLM calls instead of looping indefinitely."""
