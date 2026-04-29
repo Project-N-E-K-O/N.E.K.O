@@ -59,8 +59,18 @@ def _expect_storage_migration_has_no_scrollbars(page: Page) -> None:
             const overlay = document.querySelector('#storage-location-overlay');
             const modal = document.querySelector('.storage-location-modal');
             const activeView = document.querySelector('.storage-location-view:not([hidden])');
-            if (!overlay || !modal || !activeView) {
-                return false;
+            const missing = [];
+            if (!overlay) {
+                missing.push('overlay');
+            }
+            if (!modal) {
+                missing.push('modal');
+            }
+            if (!activeView) {
+                missing.push('activeView');
+            }
+            if (missing.length) {
+                return { ok: false, missing };
             }
             const overlayStyle = getComputedStyle(overlay);
             const modalStyle = getComputedStyle(modal);
@@ -74,19 +84,29 @@ def _expect_storage_migration_has_no_scrollbars(page: Page) -> None:
                 scrollHeight: element.scrollHeight,
             });
             return {
+                ok: true,
                 overlay: toMetrics(overlay, overlayStyle),
                 modal: toMetrics(modal, modalStyle),
-                view: toMetrics(activeView, viewStyle),
+                activeView: toMetrics(activeView, viewStyle),
             };
         }
         """
     )
-    assert metrics
-    for name, item in metrics.items():
-        assert item["overflowX"] == "hidden", (name, item)
-        assert item["overflowY"] == "hidden", (name, item)
-        assert item["scrollWidth"] <= item["clientWidth"] + 1, (name, item)
-        assert item["scrollHeight"] <= item["clientHeight"] + 1, (name, item)
+    assert metrics.get("ok"), {"missing": metrics.get("missing"), "metrics": metrics}
+    for name in ("overlay", "modal", "activeView"):
+        item = metrics[name]
+        assert item["overflowX"] == "hidden", {"element": name, "metric": "overflowX", "metrics": item}
+        assert item["overflowY"] == "hidden", {"element": name, "metric": "overflowY", "metrics": item}
+        assert item["scrollWidth"] <= item["clientWidth"] + 1, {
+            "element": name,
+            "metric": "scrollWidth",
+            "metrics": item,
+        }
+        assert item["scrollHeight"] <= item["clientHeight"] + 1, {
+            "element": name,
+            "metric": "scrollHeight",
+            "metrics": item,
+        }
 
 
 def _mock_selection_required_state(
