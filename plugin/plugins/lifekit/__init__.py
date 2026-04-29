@@ -22,6 +22,8 @@ from plugin.sdk.plugin import (
     neko_plugin,
     plugin_entry,
     lifecycle,
+    ui,
+    tr,
     Ok,
     Err,
     SdkError,
@@ -97,8 +99,6 @@ class LifeKitPlugin(NekoPluginBase):
         # 从主干查询全局语言
         lang = await self.fetch_user_language(timeout=3.0)
         self._resolve_locale()
-        # 注册 Web UI（地点管理面板）
-        self.register_static_ui("static")
         self.logger.info(
             "LifeKitPlugin started, locale={}, host_lang={}, store={}",
             self._i18n.locale, lang or "(none)", self.store.enabled,
@@ -286,20 +286,59 @@ class LifeKitPlugin(NekoPluginBase):
             self.logger.debug("Failed to read saved locations", exc_info=True)
             return None
 
+    async def _load_saved_locations_for_ui(self) -> list[Dict[str, Any]]:
+        """Return saved locations for the Hosted UI dashboard."""
+        if not self.store.enabled:
+            return []
+        try:
+            result = await self.store.get("saved_locations", [])
+            locations = result.value if hasattr(result, "value") else result
+            return [dict(item) for item in locations if isinstance(item, dict)] if isinstance(locations, list) else []
+        except Exception:
+            self.logger.debug("Failed to read saved locations for UI", exc_info=True)
+            return []
+
+    @ui.context(id="dashboard", title=tr("panel.title", default="LifeKit"))
+    async def get_dashboard_ui_context(self) -> dict[str, Any]:
+        locations = await self._load_saved_locations_for_ui()
+        return {
+            "config": dict(self._cfg),
+            "locations": locations,
+            "location_count": len(locations),
+            "default_location": next((dict(item) for item in locations if item.get("is_default")), None),
+            "store_enabled": bool(self.store.enabled),
+            "locale": self._i18n.locale,
+        }
+
     # ── 配置读写（供 Web UI 调用）──
 
+    @ui.action(
+        label=tr("actions.getConfig.label", default="Get config"),
+        icon="⚙️",
+        group="config",
+        order=10,
+        refresh_context=False,
+    )
     @plugin_entry(
         id="get_config",
-        name="获取配置",
-        description="获取生活助手当前配置。",
+        name=tr("entries.getConfig.name", default="获取配置"),
+        description=tr("entries.getConfig.description", default="获取生活助手当前配置。"),
     )
     async def get_config_entry(self, **_):
         return Ok(dict(self._cfg))
 
+    @ui.action(
+        label=tr("actions.updateConfig.label", default="Save config"),
+        icon="💾",
+        tone="success",
+        group="config",
+        order=20,
+        refresh_context=True,
+    )
     @plugin_entry(
         id="update_config",
-        name="更新配置",
-        description="更新生活助手配置字段。",
+        name=tr("entries.updateConfig.name", default="更新配置"),
+        description=tr("entries.updateConfig.description", default="更新生活助手配置字段。"),
         input_schema={
             "type": "object",
             "properties": {

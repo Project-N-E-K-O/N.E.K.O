@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from typing import Any, Dict, List
 
-from plugin.sdk.plugin import plugin_entry, Ok, Err, SdkError
+from plugin.sdk.plugin import plugin_entry, ui, tr, Ok, Err, SdkError
 from plugin.sdk.shared.core.router import PluginRouter
 
 from .._api import geocode_city
@@ -64,18 +64,26 @@ class LocationsRouter(PluginRouter):
         locations = await self._load()
         return Ok({"count": len(locations), "locations": locations})
 
+    @ui.action(
+        label=tr("actions.addLocation.label", default="Add location"),
+        icon="➕",
+        tone="success",
+        group="locations",
+        order=10,
+        refresh_context=True,
+    )
     @plugin_entry(
         id="add_location",
-        name="添加常用地点",
-        description="添加一个常用地点。提供标签和城市名，自动获取坐标。",
+        name=tr("entries.addLocation.name", default="添加常用地点"),
+        description=tr("entries.addLocation.description", default="添加一个常用地点。提供标签和城市名，自动获取坐标。"),
         llm_result_fields=["message"],
         input_schema={
             "type": "object",
             "properties": {
-                "label": {"type": "string", "description": "地点标签（如：家、公司）"},
-                "city": {"type": "string", "description": "城市名"},
-                "address": {"type": "string", "description": "具体地址（可选）", "default": ""},
-                "set_default": {"type": "boolean", "description": "是否设为默认地点", "default": False},
+                "label": {"type": "string", "description": tr("fields.locationLabel.description", default="地点标签（如：家、公司）")},
+                "city": {"type": "string", "description": tr("fields.city.description", default="城市名")},
+                "address": {"type": "string", "description": tr("fields.address.description", default="具体地址（可选）"), "default": ""},
+                "set_default": {"type": "boolean", "description": tr("fields.setDefault.description", default="是否设为默认地点"), "default": False},
             },
             "required": ["label", "city"],
         },
@@ -126,15 +134,24 @@ class LocationsRouter(PluginRouter):
 
         return Ok({"message": f"已添加地点: {new_loc['label']} ({new_loc['city']})", "location": new_loc})
 
+    @ui.action(
+        label=tr("actions.removeLocation.label", default="Remove location"),
+        icon="🗑️",
+        tone="danger",
+        group="locations",
+        order=30,
+        confirm=tr("actions.removeLocation.confirm", default="Remove this saved location?"),
+        refresh_context=True,
+    )
     @plugin_entry(
         id="remove_location",
-        name="删除常用地点",
-        description="按 ID 或标签删除一个常用地点。",
+        name=tr("entries.removeLocation.name", default="删除常用地点"),
+        description=tr("entries.removeLocation.description", default="按 ID 或标签删除一个常用地点。"),
         llm_result_fields=["message"],
         input_schema={
             "type": "object",
             "properties": {
-                "location_id": {"type": "string", "description": "地点 ID 或标签"},
+                "location_id": {"type": "string", "description": tr("fields.locationId.description", default="地点 ID 或标签")},
             },
             "required": ["location_id"],
         },
@@ -155,15 +172,23 @@ class LocationsRouter(PluginRouter):
             return Err(SdkError("保存失败"))
         return Ok({"message": f"已删除地点: {key}", "remaining": len(locations)})
 
+    @ui.action(
+        label=tr("actions.setDefaultLocation.label", default="Set default"),
+        icon="⭐",
+        tone="primary",
+        group="locations",
+        order=20,
+        refresh_context=True,
+    )
     @plugin_entry(
         id="set_default_location",
-        name="设置默认地点",
-        description="将指定地点设为默认（查天气时优先使用）。",
+        name=tr("entries.setDefaultLocation.name", default="设置默认地点"),
+        description=tr("entries.setDefaultLocation.description", default="将指定地点设为默认（查天气时优先使用）。"),
         llm_result_fields=["message"],
         input_schema={
             "type": "object",
             "properties": {
-                "location_id": {"type": "string", "description": "地点 ID 或标签"},
+                "location_id": {"type": "string", "description": tr("fields.locationId.description", default="地点 ID 或标签")},
             },
             "required": ["location_id"],
         },
