@@ -9,6 +9,12 @@ from typing import Any, Awaitable, Dict, Optional
 
 
 class DecisioningMixin:
+    def _first_present(self, *values: Any, default: Any = None) -> Any:
+        for value in values:
+            if value is not None:
+                return value
+        return default
+
     def _is_desperate_situation(self, context: dict[str, Any]) -> bool:
         if not bool(self._cfg.get("neko_desperate_enabled", True)):
             return False
@@ -17,8 +23,8 @@ class DecisioningMixin:
         combat = raw_state.get("combat") if isinstance(raw_state.get("combat"), dict) else {}
         player = combat.get("player") if isinstance(combat.get("player"), dict) else {}
         run = raw_state.get("run") if isinstance(raw_state.get("run"), dict) else {}
-        current_hp = self._safe_int(player.get("hp") or raw_state.get("current_hp") or run.get("current_hp") or run.get("hp"))
-        max_hp = self._safe_int(player.get("max_hp") or raw_state.get("max_hp") or run.get("max_hp") or 1)
+        current_hp = self._safe_int(self._first_present(player.get("hp"), raw_state.get("current_hp"), run.get("current_hp"), run.get("hp")))
+        max_hp = self._safe_int(self._first_present(player.get("max_hp"), raw_state.get("max_hp"), run.get("max_hp"), default=1))
         if max_hp <= 0:
             max_hp = 1
         hp_ratio = current_hp / max_hp
@@ -249,7 +255,7 @@ class DecisioningMixin:
         remaining = list(playable_cards)
         best_sequence: list[tuple[dict[str, Any], Optional[int]]] = []
         sim_energy = remaining_energy
-        while remaining and sim_energy > 0:
+        while remaining:
             best_card = None
             best_benefit = -999999.0
             best_target = None
@@ -283,8 +289,6 @@ class DecisioningMixin:
             active_state["energy"] = sim_energy
             self._apply_setup_effect(best_card, active_state, combat)
             remaining.pop(best_idx)
-            if remaining_energy_cost > 0 and sim_energy <= 0:
-                break
         if not best_sequence:
             return None
         first_card, first_target = best_sequence[0]
@@ -620,9 +624,9 @@ class DecisioningMixin:
                 "act": snapshot.get("act"),
                 "in_combat": snapshot.get("in_combat"),
                 "character": snapshot.get("character"),
-                "turn": combat.get("turn") or raw_state.get("turn"),
-                "player_hp": player.get("hp") or run.get("current_hp") or run.get("hp"),
-                "max_hp": player.get("max_hp") or run.get("max_hp"),
+                "turn": self._first_present(combat.get("turn"), raw_state.get("turn")),
+                "player_hp": self._first_present(player.get("hp"), run.get("current_hp"), run.get("hp")),
+                "max_hp": self._first_present(player.get("max_hp"), run.get("max_hp")),
                 "gold": run.get("gold"),
                 "energy": player.get("energy"),
             },

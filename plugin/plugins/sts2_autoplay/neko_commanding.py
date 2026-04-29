@@ -9,6 +9,12 @@ from typing import Any, Awaitable, Dict, Optional
 
 
 class NekoCommandingMixin:
+    def _first_present(self, *values: Any) -> Any:
+        for value in values:
+            if value is not None:
+                return value
+        return None
+
     async def neko_command(self, command: str, scope: str = "auto", confirm: bool = False) -> Dict[str, Any]:
         raw_command = str(command or "").strip()
         normalized_scope = str(scope or "auto").strip().lower() or "auto"
@@ -371,11 +377,11 @@ class NekoCommandingMixin:
             "floor": snapshot.get("floor", 0),
             "act": snapshot.get("act", 0),
             "in_combat": bool(snapshot.get("in_combat", False)),
-            "turn": self._safe_int(combat.get("turn") or raw_state.get("turn"), 0),
-            "hp": self._safe_int(player.get("hp") or run.get("current_hp") or run.get("hp"), 0),
-            "max_hp": self._safe_int(player.get("max_hp") or run.get("max_hp"), 0),
+            "turn": self._safe_int(self._first_present(combat.get("turn"), raw_state.get("turn")), 0),
+            "hp": self._safe_int(self._first_present(player.get("hp"), run.get("current_hp"), run.get("hp")), 0),
+            "max_hp": self._safe_int(self._first_present(player.get("max_hp"), run.get("max_hp")), 0),
             "block": self._combat_player_block(combat),
-            "energy": self._safe_int(player.get("energy") if player else combat.get("player_energy"), 0),
+            "energy": self._safe_int(self._first_present(player.get("energy") if player else None, combat.get("player_energy")), 0),
             "hand_names": [str(card.get("name") or card.get("card_name") or "") for card in hand[:10] if isinstance(card, dict)],
             "enemy_count": len(enemy_summaries),
             "enemies": enemy_summaries,

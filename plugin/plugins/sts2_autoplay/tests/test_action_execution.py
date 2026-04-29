@@ -41,7 +41,7 @@ class DummyContextAnalyzer:
         return context["snapshot"]["raw_state"]["combat"]
 
     def _iter_option_candidates(self, raw: dict[str, Any]):
-        return []
+        return raw.get("options", [])
 
 
 class ActionService(ActionExecutionMixin):
@@ -111,3 +111,75 @@ def test_validate_play_card_target_combo_filters_dirty_valid_targets() -> None:
 
     assert service._validate_play_card_target_combo(normalized_kwargs, context, {"action_type": "play_card", "kwargs": {}}) is True
     assert "target_index" not in normalized_kwargs
+
+
+@pytest.mark.unit
+def test_validate_llm_decision_fills_missing_play_card_card_index_when_target_present() -> None:
+    service = ActionService()
+    hand = [
+        {"index": 0, "name": "打击", "playable": True, "valid_target_indices": [0]},
+    ]
+    actions = [{"type": "play_card", "raw": {"type": "play_card", "requires_index": True}}]
+    context = combat_context(hand, actions, fallback_card_index=0)
+
+    validated = service._validate_llm_decision({"action_type": "play_card", "kwargs": {"target_index": 0}}, context)
+
+    assert validated is not None
+    assert validated["raw"]["card_index"] == 0
+    assert validated["raw"]["target_index"] == 0
+
+
+@pytest.mark.unit
+def test_validate_llm_decision_rejects_play_card_without_card_index_when_fallback_unavailable() -> None:
+    service = ActionService()
+    hand = [
+        {"index": 0, "name": "打击", "playable": True, "valid_target_indices": [0]},
+    ]
+    actions = [{"type": "play_card", "raw": {"type": "play_card", "requires_index": True}}]
+    context = combat_context(hand, actions, fallback_card_index=99)
+
+    assert service._validate_llm_decision({"action_type": "play_card", "kwargs": {"target_index": 0}}, context) is None
+
+
+@pytest.mark.unit
+def test_unknown_index_action_does_not_expose_blind_default_index() -> None:
+    service = ActionService()
+    raw = {"type": "unknown_index_action", "requires_index": True}
+    context = combat_context([], [])
+
+    assert service._allowed_kwargs_impl("unknown_index_action", raw, context) == {}
+
+
+@pytest.mark.unit
+def test_unknown_index_action_does_not_fill_blind_default_index() -> None:
+    service = ActionService()
+    raw = {"type": "unknown_index_action", "requires_index": True}
+    context = combat_context([], [])
+
+    assert service._normalize_action_kwargs("unknown_index_action", raw, context) == {}
+
+
+@pytest.mark.unit
+def test_unknown_index_action_exposes_generic_candidate_indices() -> None:
+    service = ActionService()
+    raw = {
+        "type": "unknown_index_action",
+        "requires_index": True,
+        "options": [[{"index": 2}, {"option_index": "4"}, {"label": "fallback index"}]],
+    }
+    context = combat_context([], [])
+
+    assert service._allowed_kwargs_impl("unknown_index_action", raw, context) == {"index": [2, 4]}
+
+
+@pytest.mark.unit
+def test_unknown_index_action_fills_first_generic_candidate_index() -> None:
+    service = ActionService()
+    raw = {
+        "type": "unknown_index_action",
+        "requires_index": True,
+        "options": [[{"index": 2}, {"index": 4}]],
+    }
+    context = combat_context([], [])
+
+    assert service._normalize_action_kwargs("unknown_index_action", raw, context) == {"options": [[{"index": 2}, {"index": 4}]], "index": 2}

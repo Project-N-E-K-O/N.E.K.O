@@ -17,6 +17,12 @@ class GameContextAnalyzer:
         except Exception:
             return default
 
+    def _first_present(self, *values: Any) -> Any:
+        for value in values:
+            if value is not None:
+                return value
+        return None
+
     def _normalized_screen_name(self, snapshot: Dict[str, Any]) -> str:
         raw_state = snapshot.get("raw_state") if isinstance(snapshot.get("raw_state"), dict) else {}
         screen = snapshot.get("screen") or raw_state.get("screen") or raw_state.get("screen_type") or ""
@@ -74,12 +80,12 @@ class GameContextAnalyzer:
         raw_action = action.get("raw") if isinstance(action, dict) and isinstance(action.get("raw"), dict) else {}
         choices = self._extract_generic_option_descriptions(raw_action)
         return {
-            "current_hp": raw_state.get("current_hp") or run.get("current_hp") or run.get("hp"),
-            "max_hp": raw_state.get("max_hp") or run.get("max_hp"),
+            "current_hp": self._first_present(raw_state.get("current_hp"), run.get("current_hp"), run.get("hp")),
+            "max_hp": self._first_present(raw_state.get("max_hp"), run.get("max_hp")),
             "gold": run.get("gold"),
-            "floor": snapshot.get("floor") or raw_state.get("floor") or raw_state.get("act_floor"),
-            "act": snapshot.get("act") or raw_state.get("act"),
-            "boss": raw_state.get("boss") or run.get("boss"),
+            "floor": self._first_present(snapshot.get("floor"), raw_state.get("floor"), raw_state.get("act_floor")),
+            "act": self._first_present(snapshot.get("act"), raw_state.get("act")),
+            "boss": self._first_present(raw_state.get("boss"), run.get("boss")),
             "available_nodes": choices,
             "raw_map": map_state,
         }

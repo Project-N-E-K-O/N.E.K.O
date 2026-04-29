@@ -90,12 +90,12 @@ class NekoReportingMixin:
             "screen": snapshot.get("screen", "unknown"),
             "floor": snapshot.get("floor", 0),
             "act": snapshot.get("act", 0),
-            "player_hp": player.get("hp") or run.get("current_hp") or run.get("hp"),
-            "max_hp": player.get("max_hp") or run.get("max_hp"),
+            "player_hp": self._first_present(player.get("hp"), run.get("current_hp"), run.get("hp")),
+            "max_hp": self._first_present(player.get("max_hp"), run.get("max_hp")),
             "gold": run.get("gold"),
             "in_combat": snapshot.get("in_combat", False),
-            "turn": combat.get("turn") or raw_state.get("turn", 1),
-            "energy": player.get("energy") if player else combat.get("player_energy"),
+            "turn": self._first_present(combat.get("turn"), raw_state.get("turn"), 1),
+            "energy": self._first_present(player.get("energy") if player else None, combat.get("player_energy")),
             "block": self._combat_player_block(combat),
             "hand": hand_summary,
             "potions": potions_summary,
@@ -592,7 +592,7 @@ class NekoReportingMixin:
         player = combat.get("player") if isinstance(combat.get("player"), dict) else {}
         screen = snapshot.get("screen") or prev_screen or ""
         floor = self._safe_int(snapshot.get("floor"))
-        act = self._safe_int(snapshot.get("act") or 1)
+        act = self._safe_int(self._first_present(snapshot.get("act"), 1))
         current_hp = self._safe_int(self._first_present(player.get("hp"), raw_state.get("current_hp"), run.get("current_hp"), run.get("hp")))
         max_hp = self._safe_int(self._first_present(player.get("max_hp"), raw_state.get("max_hp"), run.get("max_hp"), 1))
         if max_hp <= 0:
@@ -643,8 +643,8 @@ class NekoReportingMixin:
             raw_state = self._snapshot.get("raw_state") if isinstance(self._snapshot.get("raw_state"), dict) else {}
             run = raw_state.get("run") if isinstance(raw_state.get("run"), dict) else {}
             combat = raw_state.get("combat") if isinstance(raw_state.get("combat"), dict) else {}
-            turn = self._safe_int(combat.get("turn") or raw_state.get("turn") or 1)
-            act = self._safe_int(self._snapshot.get("act") or run.get("act") or act)
+            turn = self._safe_int(self._first_present(combat.get("turn"), raw_state.get("turn"), 1))
+            act = self._safe_int(self._first_present(self._snapshot.get("act"), run.get("act"), act))
         reason_labels = {
             "low_hp": "血量过低",
             "boss_combat": "Boss 战斗",

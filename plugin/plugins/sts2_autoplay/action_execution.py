@@ -118,7 +118,9 @@ class ActionExecutionMixin:
             if option_indices:
                 allowed["option_index"] = option_indices
         else:
-            allowed["index"] = [0]
+            generic_indices = self._extract_generic_option_indices(raw)
+            if generic_indices:
+                allowed["index"] = generic_indices
         return allowed
 
     def _action_requires_index(self, action_type: str, raw: dict[str, Any]) -> bool:
@@ -226,11 +228,11 @@ class ActionExecutionMixin:
                 allowed_option_indices = allowed_kwargs.get("option_index", [])
                 if fallback_option_index is not None and (not allowed_option_indices or int(fallback_option_index) in allowed_option_indices):
                     normalized_kwargs["option_index"] = int(fallback_option_index)
-            if self._action_requires_index(action_type, raw) and not normalized_kwargs:
+            if self._action_requires_index(action_type, raw) and (not normalized_kwargs or (action_type == "play_card" and "card_index" not in normalized_kwargs)):
                 fallback_kwargs = self._normalize_action_kwargs(action_type, raw, context)
                 fallback_normalized: dict[str, int] = {}
                 for key, value in fallback_kwargs.items():
-                    if key not in allowed_kwargs:
+                    if key not in allowed_kwargs or key in normalized_kwargs:
                         continue
                     try:
                         normalized_value = int(value)
@@ -240,7 +242,10 @@ class ActionExecutionMixin:
                     if allowed_values and normalized_value not in allowed_values:
                         continue
                     fallback_normalized[key] = normalized_value
-                normalized_kwargs = fallback_normalized
+                normalized_kwargs.update(fallback_normalized)
+            if action_type == "play_card" and "card_index" not in normalized_kwargs:
+                self.logger.warning(f"LLM 决策缺少卡牌索引: {decision}")
+                return None
             if action_type == "play_card" and not self._validate_play_card_target_combo(normalized_kwargs, context, decision):
                 return None
             validated = dict(action)
@@ -379,7 +384,9 @@ class ActionExecutionMixin:
                 if target_index is not None:
                     kwargs["target_index"] = target_index
             else:
-                kwargs["index"] = 0
+                generic_indices = self._extract_generic_option_indices(raw)
+                if generic_indices:
+                    kwargs["index"] = generic_indices[0]
         return kwargs
 
     def _find_shop_remove_card_index_for_selection(self, context: dict[str, Any]) -> Optional[int]:
