@@ -746,7 +746,7 @@ class MijiaPlugin(NekoPluginBase):
 
         try:
             scenes = await self.api.get_scenes(home_id)
-            result = [{"id": s.scene_id, "name": s.name, "status": getattr(s, "status", None)} for s in scenes if s.scene_id]
+            result = [{"id": s.scene_id, "name": s.name} for s in scenes if s.scene_id]
 
             # 保存缓存（使用异步写入避免阻塞）
             try:
