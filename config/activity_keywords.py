@@ -81,6 +81,8 @@ __all__ = [
     'ENTERTAINMENT_DOMAIN_KEYWORDS',
     'COMMUNICATION_TITLE_KEYWORDS', 'COMMUNICATION_PROCESS_NAMES',
     'COMMUNICATION_DOMAIN_KEYWORDS',
+    'PRIVATE_TITLE_KEYWORDS', 'PRIVATE_PROCESS_NAMES',
+    'OWN_APP_TITLE_KEYWORDS', 'OWN_APP_PROCESS_NAMES',
     # Classifier
     'ActivityCategory', 'ClassifyResult',
     'classify_window_title', 'classify_process_name', 'classify_browser_title',
@@ -92,6 +94,28 @@ __all__ = [
 
 ActivityCategory = Literal[
     'gaming', 'work', 'entertainment', 'communication', 'unknown',
+    'private',     # Highest priority — sensitive app foreground.
+                   # State machine maps to state='private', propensity='closed',
+                   # tracker bypasses LLM enrichment + buffers entirely so
+                   # the user's secret (password manager, banking, health
+                   # records, etc.) never leaves the process.
+    'own_app',     # The N.E.K.O / catgirl app itself in foreground.
+                   # Tracker treats as "no new window data this tick" —
+                   # window observation is NOT updated and the previous
+                   # window's dwell timer is FROZEN: state machine
+                   # records ``_own_app_freeze_started_at`` on entry and,
+                   # on the next non-own_app observation, advances
+                   # ``_current_window_started_at`` by the freeze
+                   # duration so dwell only counts non-own-app time.
+                   # GPU fallback gaming is intentionally NOT
+                   # short-circuited during own_app foreground —
+                   # catgirl Live2D/VRM rendering typically lands below
+                   # the gaming threshold, and a high-GPU app the user
+                   # was already running in the background continues to
+                   # be the user's "real activity" worth classifying.
+                   # Avoids the recursive feedback where "user is
+                   # looking at the catgirl app" feeds back into the
+                   # catgirl's chat decisions.
 ]
 
 
@@ -103,10 +127,20 @@ class ClassifyResult:
     subcategory and canonical are the specifics, kept for downstream UX
     (e.g. logging "user is in VS Code" vs. "user is in some IDE").
     ``unknown`` results have both detail fields set to ``None``.
+
+    ``intensity`` and ``genre`` are populated only for ``category='gaming'``
+    with ``subcategory='game'`` (actual games, not launchers). They drive
+    propensity / skip_probability / tone derivation in the state machine.
+    Both stay ``None`` for non-gaming results and for games not yet
+    tagged in the keyword DB (state machine treats unspecified as
+    ``intensity='varied'`` / ``genre='misc'`` — conservative fallback,
+    same behaviour as PR #1015 single-bucket gaming).
     """
     category: ActivityCategory
     subcategory: str | None
     canonical: str | None
+    intensity: str | None = None    # 'competitive' | 'casual' | 'immersive' | 'varied' | None
+    genre: str | None = None        # 'fps' | 'moba' | 'rpg' | 'sim' | 'horror' | ... | None
 
 
 _UNKNOWN = ClassifyResult('unknown', None, None)
@@ -142,61 +176,191 @@ BROWSER_PROCESS_NAMES: tuple[str, ...] = (
 # ====================================================================
 
 
+# === PRIVACY BLACKLIST (highest classification priority) ===
+#
+# When any of these match the active window title or process name, the
+# state machine emits state='private' with propensity='closed'. The
+# tracker additionally bypasses LLM enrichment and skips appending the
+# observation to conversation buffers — sensitive app text never leaves
+# the process. Privacy match short-circuits ALL other classification
+# rules (including own-app exclusion below), since these apps are by
+# definition more sensitive than any other category.
+#
+# Editorial rule: only list apps whose *primary purpose* is handling
+# user secrets (passwords, financial data, health records). Apps that
+# *might* show secrets in some flows (Slack with a payroll thread,
+# email with a 2FA code) are NOT private — that's the user's
+# responsibility to gate. We catch the unambiguous cases.
+#
+# Sources: vendor download pages + Wikipedia (cross-referenced for
+# verified executable names). NSFW / dating / chat-secret apps are
+# deliberately not in this list — that's a separate category the user
+# would handle via ``user_app_overrides`` if desired.
+PRIVATE_TITLE_KEYWORDS: list[tuple[str, list[str]]] = [
+    # Password managers
+    ('KeePass',     ['KeePass', 'KeePassXC', 'KeePassDX']),
+    ('1Password',   ['1Password']),
+    ('Bitwarden',   ['Bitwarden']),
+    ('LastPass',    ['LastPass']),
+    ('Dashlane',    ['Dashlane']),
+    ('Enpass',      ['Enpass']),
+    ('NordPass',    ['NordPass']),
+    ('RoboForm',    ['RoboForm']),
+    ('Proton Pass', ['Proton Pass', 'ProtonPass']),
+    # Authenticator apps (rare on desktop but exist)
+    ('Authy',       ['Authy Desktop', 'Authy']),
+    # Banking apps + crypto wallets (canonical names; broad match)
+    ('Ledger Live', ['Ledger Live']),
+    ('Trezor Suite',['Trezor Suite']),
+    ('Exodus',      ['Exodus Wallet']),
+    # Self-hosted secret stores
+    ('Vaultwarden', ['Vaultwarden']),
+]
+
+PRIVATE_PROCESS_NAMES: list[str] = [
+    'KeePass.exe',
+    'KeePassXC.exe',
+    '1Password.exe',
+    'Bitwarden.exe',
+    'LastPass.exe',
+    'Dashlane.exe',
+    'Enpass.exe',
+    'NordPass.exe',
+    'RoboForm.exe',
+    'authy.exe',
+    'ledger live.exe',
+    'Trezor Suite.exe',
+    'Exodus.exe',
+]
+
+
+# === OWN-APP EXCLUSION (second-highest priority, after private) ===
+#
+# The N.E.K.O / catgirl app itself. When in foreground, the tracker
+# treats this as "no fresh window data" — observation is NOT updated
+# and the previous window's dwell timer is FROZEN: state machine
+# records ``_own_app_freeze_started_at`` on entry and on the next
+# non-own_app observation advances ``_current_window_started_at`` by
+# the freeze duration, so a brief glance at the catgirl can't push the
+# previously-foreground app past dwell thresholds (e.g. focused_work's
+# 90s). GPU fallback gaming is intentionally NOT short-circuited
+# during own_app foreground (catgirl Live2D/VRM typically lands below
+# the threshold; a high-GPU app the user was running in the
+# background remains their "real activity" worth classifying).
+# Avoids the recursive feedback where "user is looking at the catgirl"
+# becomes a signal the catgirl uses to decide whether to chat.
+#
+# Process names from ``specs/launcher.spec`` (PyInstaller output for
+# the Windows desktop build) and known sibling executables shipped
+# alongside it.
+OWN_APP_TITLE_KEYWORDS: list[tuple[str, list[str]]] = [
+    # Aliases must be DISTINCTIVE — `_make_needle` does word-boundary
+    # matching, so a generic alias like ``NEKO`` would match any
+    # standalone "Neko" in unrelated titles ("Neko Atsume", random
+    # browser tabs about cats, etc.) and false-positive into our
+    # special own_app branch (window dropped, dwell frozen, GPU
+    # fallback suppressed). Keep only the dotted form; ``Project N.E.K.O``
+    # is similarly safe because the literal string with dots almost
+    # never appears outside this app.
+    ('N.E.K.O', ['N.E.K.O', 'Project N.E.K.O']),
+    ('Xiao8',   ['Xiao8', '小八']),
+    # The launcher window briefly surfaces "projectneko_server" as its
+    # console title before settling on the main UI; catch that too.
+    ('projectneko_server', ['projectneko_server']),
+    ('lanlan_frd', ['lanlan_frd']),
+]
+
+OWN_APP_PROCESS_NAMES: list[str] = [
+    'projectneko_server.exe',
+    'Xiao8.exe',
+    'lanlan_frd.exe',
+    # Source-install run paths — when devs run via uv / python directly
+    # the foreground process is python itself, but the title would be
+    # one of the matches above. We don't blacklist python.exe broadly
+    # (that would silence Jupyter, scripts, etc.) — title-only catches
+    # this case.
+]
+
+
 # === GAMES (294 titles / 218 process names / 41 launcher processes) ===
 
-# (canonical_name, [aliases including all known localized titles])
+# Game title keywords. Two shapes coexist as the intensity/genre retag
+# proceeds incrementally:
+#
+#   (canonical_name, [aliases])
+#   (canonical_name, [aliases], intensity, genre)
+#
+# Where ``intensity`` is one of 'competitive' / 'casual' / 'immersive' /
+# 'varied' (or None to fall through to state-machine ``varied`` default),
+# and ``genre`` is one of 'fps' / 'moba' / 'rpg' / 'sim' / 'horror' /
+# 'racing' / 'rhythm' / 'strategy' / 'sports' / 'party' / 'action' /
+# 'misc' (or None for ``misc`` default).
+#
+# Tagged games drive propensity / skip_probability / tone derivation:
+#
+#   competitive            → propensity=restricted_screen_only, skip 0.3,
+#                            tone=terse  (LoL team fight, CS round, etc.)
+#   immersive horror       → propensity=restricted_screen_only, skip 0.3,
+#                            tone=hushed (silent hill, RE2, etc.)
+#   immersive (other)      → propensity=restricted_screen_only, skip 0.0,
+#                            tone=mellow (RPG, story-driven)
+#   casual                 → propensity=open, skip 0.0, tone=playful
+#                            (animal crossing, stardew, idle/clicker)
+#   varied / untagged      → propensity=restricted_screen_only, skip 0.0,
+#                            tone=concise (PR #1015 single-bucket behavior)
+#
 # Aliases match against window-title substrings, case-insensitive.
-GAME_TITLE_KEYWORDS: list[tuple[str, list[str]]] = [
+GAME_TITLE_KEYWORDS: list = [
     # ============================================================
     # Hoyoverse / miHoYo
     # ============================================================
-    ('Genshin Impact', ['Genshin Impact', 'Genshin', '原神', '원신']),
-    ('Honkai: Star Rail', ['Honkai: Star Rail', 'Honkai Star Rail', 'Star Rail', '崩坏：星穹铁道', '崩壞：星穹鐵道', '崩壊：スターレイル', '붕괴: 스타레일']),
-    ('Honkai Impact 3rd', ['Honkai Impact 3rd', 'Honkai Impact', '崩坏3', '崩壊3rd', '붕괴3rd']),
-    ('Zenless Zone Zero', ['Zenless Zone Zero', 'ZenlessZoneZero', 'ZZZ', '绝区零', '絕區零', 'ゼンレスゾーンゼロ', '젠레스 존 제로']),
+    ('Genshin Impact', ['Genshin Impact', 'Genshin', '原神', '원신'], 'casual', 'rpg'),
+    ('Honkai: Star Rail', ['Honkai: Star Rail', 'Honkai Star Rail', 'Star Rail', '崩坏：星穹铁道', '崩壞：星穹鐵道', '崩壊：スターレイル', '붕괴: 스타레일'], 'casual', 'rpg'),
+    ('Honkai Impact 3rd', ['Honkai Impact 3rd', 'Honkai Impact', '崩坏3', '崩壊3rd', '붕괴3rd'], 'casual', 'action'),
+    ('Zenless Zone Zero', ['Zenless Zone Zero', 'ZenlessZoneZero', 'ZZZ', '绝区零', '絕區零', 'ゼンレスゾーンゼロ', '젠레스 존 제로'], 'casual', 'action'),
     ('Tears of Themis', ['Tears of Themis', '未定事件簿', '未定事件簿', '未定事件簿', '테르멘티스의 눈물']),
 
     # ============================================================
     # Tencent
     # ============================================================
-    ('Honor of Kings', ['Honor of Kings', '王者荣耀', '王者榮耀', 'オナー オブ キングス']),
-    ('Game for Peace / PUBG Mobile', ['Game for Peace', '和平精英', 'PUBG MOBILE', 'PUBGM']),
+    ('Honor of Kings', ['Honor of Kings', '王者荣耀', '王者榮耀', 'オナー オブ キングス'], 'competitive', 'moba'),
+    ('Game for Peace / PUBG Mobile', ['Game for Peace', '和平精英', 'PUBG MOBILE', 'PUBGM'], 'competitive', 'fps'),
     ('Dungeon & Fighter', ['Dungeon & Fighter', 'DNF', '地下城与勇士', '地下城與勇士', 'ダンジョン&ファイター', '던전앤파이터']),
     ('CrossFire', ['CrossFire', '穿越火线', '穿越火線', 'クロスファイア', '크로스파이어']),
-    ('League of Legends: Wild Rift', ['Wild Rift', 'LOL: Wild Rift', '英雄联盟手游', '英雄聯盟：激鬥峽谷', 'ワイルドリフト']),
-    ('Naraka: Bladepoint', ['Naraka: Bladepoint', 'Naraka', '永劫无间', '永劫無間', 'ナラカ: ブレードポイント', '나라카: 블레이드포인트']),
-    ('League of Legends', ['League of Legends', 'LoL', '英雄联盟', '英雄聯盟', 'リーグ・オブ・レジェンド', '리그 오브 레전드']),
-    ('Valorant', ['VALORANT', 'Valorant', '无畏契约', '特戰英豪', 'ヴァロラント', '발로란트']),
-    ('Teamfight Tactics', ['Teamfight Tactics', 'TFT', '云顶之弈', '聯盟戰棋', 'チームファイトタクティクス', '전략적 팀 전투']),
-    ('CrossFire HD', ['CrossFire HD', '穿越火线HD']),
-    ('QQ Speed', ['QQ Speed', 'QQ飞车', 'QQ飛車']),
-    ('Delta Force', ['Delta Force', '三角洲行动', '三角洲行動', 'デルタフォース']),
-    ('Arena Breakout', ['Arena Breakout', '暗区突围', '暗區突圍']),
+    ('League of Legends: Wild Rift', ['Wild Rift', 'LOL: Wild Rift', '英雄联盟手游', '英雄聯盟：激鬥峽谷', 'ワイルドリフト'], 'competitive', 'moba'),
+    ('Naraka: Bladepoint', ['Naraka: Bladepoint', 'Naraka', '永劫无间', '永劫無間', 'ナラカ: ブレードポイント', '나라카: 블레이드포인트'], 'competitive', 'action'),
+    ('League of Legends', ['League of Legends', 'LoL', '英雄联盟', '英雄聯盟', 'リーグ・オブ・レジェンド', '리그 오브 레전드'], 'competitive', 'moba'),
+    ('Valorant', ['VALORANT', 'Valorant', '无畏契约', '特戰英豪', 'ヴァロラント', '발로란트'], 'competitive', 'fps'),
+    ('Teamfight Tactics', ['Teamfight Tactics', 'TFT', '云顶之弈', '聯盟戰棋', 'チームファイトタクティクス', '전략적 팀 전투'], 'competitive', 'strategy'),
+    ('CrossFire HD', ['CrossFire HD', '穿越火线HD'], 'competitive', 'fps'),
+    ('QQ Speed', ['QQ Speed', 'QQ飞车', 'QQ飛車'], 'casual', 'racing'),
+    ('Delta Force', ['Delta Force', '三角洲行动', '三角洲行動', 'デルタフォース'], 'competitive', 'fps'),
+    ('Arena Breakout', ['Arena Breakout', '暗区突围', '暗區突圍'], 'competitive', 'fps'),
 
     # ============================================================
     # NetEase
     # ============================================================
-    ('Identity V', ['Identity V', '第五人格', 'IdentityV', 'アイデンティティV', '제5인격']),
-    ('Onmyoji', ['Onmyoji', '阴阳师', '陰陽師', '음양사']),
-    ('Justice Online', ['Justice Online', '逆水寒', 'Justice Mobile']),
-    ('Eggy Party', ['Eggy Party', '蛋仔派对', '蛋仔派對']),
-    ('Marvel Rivals', ['Marvel Rivals', '漫威争锋', '漫威爭鋒', 'マーベル ライバルズ', '마블 라이벌즈']),
-    ('Once Human', ['Once Human', '七日世界', '七日世界']),
-    ('Where Winds Meet', ['Where Winds Meet', '燕云十六声']),
+    ('Identity V', ['Identity V', '第五人格', 'IdentityV', 'アイデンティティV', '제5인격'], 'competitive', 'horror'),
+    ('Onmyoji', ['Onmyoji', '阴阳师', '陰陽師', '음양사'], 'casual', 'rpg'),
+    ('Justice Online', ['Justice Online', '逆水寒', 'Justice Mobile'], 'casual', 'rpg'),
+    ('Eggy Party', ['Eggy Party', '蛋仔派对', '蛋仔派對'], 'casual', 'party'),
+    ('Marvel Rivals', ['Marvel Rivals', '漫威争锋', '漫威爭鋒', 'マーベル ライバルズ', '마블 라이벌즈'], 'competitive', 'fps'),
+    ('Once Human', ['Once Human', '七日世界', '七日世界'], 'casual', 'action'),
+    ('Where Winds Meet', ['Where Winds Meet', '燕云十六声'], 'casual', 'rpg'),
 
     # ============================================================
     # miHoYo / Kuro / Bilibili / others (CN gacha & MMO)
     # ============================================================
-    ('Wuthering Waves', ['Wuthering Waves', '鸣潮', '鳴潮', 'ワザリングウェーブ', '명조']),
-    ('Punishing: Gray Raven', ['Punishing: Gray Raven', 'PGR', '战双帕弥什', '戰雙帕彌什', 'パニシング:グレイレイヴン', '퍼니싱: 그레이 레이븐']),
-    ('Path to Nowhere', ['Path to Nowhere', '无期迷途', '無期迷途']),
-    ('Arknights', ['Arknights', '明日方舟', 'アークナイツ', '명일방주']),
-    ('Azur Lane', ['Azur Lane', '碧蓝航线', '碧藍航線', 'アズールレーン', '벽람항로']),
-    ('Girls Frontline 2', ['Girls Frontline 2', 'Girls’ Frontline 2', '少女前线2', '少女前線2', 'ドールズフロントライン2']),
-    ('Reverse: 1999', ['Reverse: 1999', '重返未来：1999', '重返未來：1999', 'リバース：1999']),
-    ('Snowbreak: Containment Zone', ['Snowbreak', '尘白禁区', '塵白禁區']),
-    ('Infinity Nikki', ['Infinity Nikki', '无限暖暖', '無限暖暖', 'インフィニティニキ']),
-    ('Love and Deepspace', ['Love and Deepspace', '恋与深空', '戀與深空']),
+    ('Wuthering Waves', ['Wuthering Waves', '鸣潮', '鳴潮', 'ワザリングウェーブ', '명조'], 'casual', 'rpg'),
+    ('Punishing: Gray Raven', ['Punishing: Gray Raven', 'PGR', '战双帕弥什', '戰雙帕彌什', 'パニシング:グレイレイヴン', '퍼니싱: 그레이 레이븐'], 'casual', 'action'),
+    ('Path to Nowhere', ['Path to Nowhere', '无期迷途', '無期迷途'], 'casual', 'strategy'),
+    ('Arknights', ['Arknights', '明日方舟', 'アークナイツ', '명일방주'], 'casual', 'strategy'),
+    ('Azur Lane', ['Azur Lane', '碧蓝航线', '碧藍航線', 'アズールレーン', '벽람항로'], 'casual', 'sim'),
+    ('Girls Frontline 2', ['Girls Frontline 2', 'Girls’ Frontline 2', '少女前线2', '少女前線2', 'ドールズフロントライン2'], 'casual', 'rpg'),
+    ('Reverse: 1999', ['Reverse: 1999', '重返未来：1999', '重返未來：1999', 'リバース：1999'], 'casual', 'rpg'),
+    ('Snowbreak: Containment Zone', ['Snowbreak', '尘白禁区', '塵白禁區'], 'casual', 'fps'),
+    ('Infinity Nikki', ['Infinity Nikki', '无限暖暖', '無限暖暖', 'インフィニティニキ'], 'casual', 'sim'),
+    ('Love and Deepspace', ['Love and Deepspace', '恋与深空', '戀與深空'], 'casual', 'rpg'),
 
     # ============================================================
     # Xishanju / 西山居
@@ -207,59 +371,65 @@ GAME_TITLE_KEYWORDS: list[tuple[str, list[str]]] = [
     # ============================================================
     # Steam Top 100 - Western AAA / multiplayer
     # ============================================================
-    ('Counter-Strike 2', ['Counter-Strike 2', 'CS2', 'Counter Strike', '反恐精英2', 'カウンターストライク 2', '카운터 스트라이크 2']),
-    ('Dota 2', ['Dota 2', 'DOTA2', 'DOTA', '刀塔2', 'ドータ2']),
-    ('PUBG: Battlegrounds', ['PUBG', 'PlayerUnknown', '绝地求生', '絕地求生', 'PUBG: バトルグラウンズ', '배틀그라운드']),
-    ('Apex Legends', ['Apex Legends', 'Apex', '英雄', 'エーペックスレジェンズ', '에이펙스 레전드']),
-    ('Fortnite', ['Fortnite', '堡垒之夜', '堡壘之夜', 'フォートナイト', '포트나이트']),
-    ('Grand Theft Auto V', ['Grand Theft Auto V', 'GTA V', 'GTA5', 'GTAV', '侠盗猎车手V', '俠盜獵車手V', 'グランド・セフト・オート V']),
-    ('Red Dead Redemption 2', ['Red Dead Redemption 2', 'RDR2', '荒野大镖客2', '碧血狂殺2', 'レッド・デッド・リデンプション2', '레드 데드 리뎀션 2']),
-    ('Cyberpunk 2077', ['Cyberpunk 2077', 'Cyberpunk', '赛博朋克2077', '電馭叛客 2077', 'サイバーパンク 2077', '사이버펑크 2077']),
-    ('The Witcher 3', ['The Witcher 3', 'Witcher 3', '巫师3', '巫師3', 'ウィッチャー3', '위쳐 3']),
-    ('Elden Ring', ['Elden Ring', 'ELDEN RING', '艾尔登法环', '艾爾登法環', 'エルデンリング', '엘든 링']),
-    ('Sekiro', ['Sekiro', 'SEKIRO', '只狼', 'SEKIRO: SHADOWS DIE TWICE', 'SEKIRO：影逝二度', '隻狼', 'SEKIRO 影武者', '세키로']),
-    ('Dark Souls III', ['Dark Souls III', 'Dark Souls 3', '黑暗之魂3', 'ダークソウル III']),
-    ('Dark Souls Remastered', ['Dark Souls Remastered', 'Dark Souls: REMASTERED', '黑暗之魂 重制版']),
-    ('Bloodborne', ['Bloodborne', '血源', '血源詛咒', 'ブラッドボーン']),
-    ('Baldur’s Gate 3', ['Baldur’s Gate 3', "Baldur's Gate 3", 'BG3', '博德之门3', '柏德之門3', 'バルダーズ・ゲート3', '발더스 게이트 3']),
-    ('Helldivers 2', ['Helldivers 2', 'HELLDIVERS 2', '绝地潜兵2', '地獄潛者2', 'ヘルダイバー2', '헬다이버즈 2']),
-    ('Diablo IV', ['Diablo IV', 'Diablo 4', '暗黑破坏神IV', '暗黑破壞神IV', 'ディアブロ IV', '디아블로 IV']),
-    ('Diablo II Resurrected', ['Diablo II: Resurrected', 'Diablo 2 Resurrected', '暗黑破坏神II 重制版']),
-    ('Diablo III', ['Diablo III', 'Diablo 3', '暗黑破坏神3']),
-    ('World of Warcraft', ['World of Warcraft', 'WoW', '魔兽世界', '魔獸世界', 'ワールド・オブ・ウォークラフト', '월드 오브 워크래프트']),
-    ('Hearthstone', ['Hearthstone', '炉石传说', '爐石戰記', 'ハースストーン', '하스스톤']),
-    ('StarCraft II', ['StarCraft II', 'StarCraft 2', '星际争霸II', '星海爭霸II', 'スタークラフト II', '스타크래프트 II']),
-    ('Overwatch 2', ['Overwatch 2', 'Overwatch', '守望先锋', '鬥陣特攻', 'オーバーウォッチ 2', '오버워치 2']),
-    ('Call of Duty', ['Call of Duty', 'COD', 'Modern Warfare', 'Black Ops', 'Warzone', '使命召唤', '決勝時刻', 'コール オブ デューティ', '콜 오브 듀티']),
-    ('Battlefield 2042', ['Battlefield 2042', 'Battlefield V', 'Battlefield 1', '战地2042', '戰地風雲2042', 'バトルフィールド']),
-    ('Rainbow Six Siege', ['Rainbow Six Siege', 'R6 Siege', '彩虹六号', '虹彩六號', 'レインボーシックス シージ', '레인보우 식스 시즈']),
-    ('Destiny 2', ['Destiny 2', '命运2', '天命 2', 'デスティニー 2']),
-    ('Escape from Tarkov', ['Escape from Tarkov', 'EFT', '逃离塔科夫', '逃離塔科夫', 'エスケープフロムタルコフ']),
-    ('Path of Exile', ['Path of Exile', 'PoE', '流放之路', '流亡黯道', 'パス・オブ・エクサイル']),
-    ('Path of Exile 2', ['Path of Exile 2', 'PoE2', '流放之路2', '流亡黯道2']),
-    ('Grim Dawn', ['Grim Dawn', '恐怖黎明']),
-    ('Last Epoch', ['Last Epoch', '最后纪元', '最後紀元']),
+    ('Counter-Strike 2', ['Counter-Strike 2', 'CS2', 'Counter Strike', '反恐精英2', 'カウンターストライク 2', '카운터 스트라이크 2'], 'competitive', 'fps'),
+    ('Dota 2', ['Dota 2', 'DOTA2', 'DOTA', '刀塔2', 'ドータ2'], 'competitive', 'moba'),
+    ('PUBG: Battlegrounds', ['PUBG', 'PlayerUnknown', '绝地求生', '絕地求生', 'PUBG: バトルグラウンズ', '배틀그라운드'], 'competitive', 'fps'),
+    # `英雄` was originally an alias here but was too generic — pure-CJK
+    # substring match would hit any title containing the two characters
+    # (e.g. "魔兽世界·英雄之路", news articles, blog posts). Removed.
+    ('Apex Legends', ['Apex Legends', 'Apex', 'エーペックスレジェンズ', '에이펙스 레전드'], 'competitive', 'fps'),
+    ('Fortnite', ['Fortnite', '堡垒之夜', '堡壘之夜', 'フォートナイト', '포트나이트'], 'competitive', 'fps'),
+    ('Grand Theft Auto V', ['Grand Theft Auto V', 'GTA V', 'GTA5', 'GTAV', '侠盗猎车手V', '俠盜獵車手V', 'グランド・セフト・オート V'], 'varied', 'action'),
+    ('Red Dead Redemption 2', ['Red Dead Redemption 2', 'RDR2', '荒野大镖客2', '碧血狂殺2', 'レッド・デッド・リデンプション2', '레드 데드 리뎀션 2'], 'immersive', 'rpg'),
+    ('Cyberpunk 2077', ['Cyberpunk 2077', 'Cyberpunk', '赛博朋克2077', '電馭叛客 2077', 'サイバーパンク 2077', '사이버펑크 2077'], 'immersive', 'rpg'),
+    ('The Witcher 3', ['The Witcher 3', 'Witcher 3', '巫师3', '巫師3', 'ウィッチャー3', '위쳐 3'], 'immersive', 'rpg'),
+    ('Elden Ring', ['Elden Ring', 'ELDEN RING', '艾尔登法环', '艾爾登法環', 'エルデンリング', '엘든 링'], 'immersive', 'rpg'),
+    ('Sekiro', ['Sekiro', 'SEKIRO', '只狼', 'SEKIRO: SHADOWS DIE TWICE', 'SEKIRO：影逝二度', '隻狼', 'SEKIRO 影武者', '세키로'], 'immersive', 'action'),
+    ('Dark Souls III', ['Dark Souls III', 'Dark Souls 3', '黑暗之魂3', 'ダークソウル III'], 'immersive', 'rpg'),
+    ('Dark Souls Remastered', ['Dark Souls Remastered', 'Dark Souls: REMASTERED', '黑暗之魂 重制版'], 'immersive', 'rpg'),
+    ('Bloodborne', ['Bloodborne', '血源', '血源詛咒', 'ブラッドボーン'], 'immersive', 'rpg'),
+    ('Baldur’s Gate 3', ['Baldur’s Gate 3', "Baldur's Gate 3", 'BG3', '博德之门3', '柏德之門3', 'バルダーズ・ゲート3', '발더스 게이트 3'], 'immersive', 'rpg'),
+    ('Helldivers 2', ['Helldivers 2', 'HELLDIVERS 2', '绝地潜兵2', '地獄潛者2', 'ヘルダイバー2', '헬다이버즈 2'], 'casual', 'fps'),
+    ('Diablo IV', ['Diablo IV', 'Diablo 4', '暗黑破坏神IV', '暗黑破壞神IV', 'ディアブロ IV', '디아블로 IV'], 'immersive', 'rpg'),
+    ('Diablo II Resurrected', ['Diablo II: Resurrected', 'Diablo 2 Resurrected', '暗黑破坏神II 重制版'], 'immersive', 'rpg'),
+    ('Diablo III', ['Diablo III', 'Diablo 3', '暗黑破坏神3'], 'immersive', 'rpg'),
+    ('World of Warcraft', ['World of Warcraft', 'WoW', '魔兽世界', '魔獸世界', 'ワールド・オブ・ウォークラフト', '월드 오브 워크래프트'], 'immersive', 'rpg'),
+    ('Hearthstone', ['Hearthstone', '炉石传说', '爐石戰記', 'ハースストーン', '하스스톤'], 'casual', 'strategy'),
+    ('StarCraft II', ['StarCraft II', 'StarCraft 2', '星际争霸II', '星海爭霸II', 'スタークラフト II', '스타크래프트 II'], 'competitive', 'strategy'),
+    ('Overwatch 2', ['Overwatch 2', 'Overwatch', '守望先锋', '鬥陣特攻', 'オーバーウォッチ 2', '오버워치 2'], 'competitive', 'fps'),
+    ('Call of Duty', ['Call of Duty', 'COD', 'Modern Warfare', 'Black Ops', 'Warzone', '使命召唤', '決勝時刻', 'コール オブ デューティ', '콜 오브 듀티'], 'competitive', 'fps'),
+    # Family-name canonical so per-year `user_game_overrides` keys map
+    # consistently — bundling BFV / BF1 / BF2042 under "Battlefield 2042"
+    # would block users from targeting other titles in the series.
+    ('Battlefield', ['Battlefield 2042', 'Battlefield V', 'Battlefield 1', '战地2042', '戰地風雲2042', 'バトルフィールド'], 'competitive', 'fps'),
+    ('Rainbow Six Siege', ['Rainbow Six Siege', 'R6 Siege', '彩虹六号', '虹彩六號', 'レインボーシックス シージ', '레인보우 식스 시즈'], 'competitive', 'fps'),
+    ('Destiny 2', ['Destiny 2', '命运2', '天命 2', 'デスティニー 2'], 'casual', 'fps'),
+    ('Escape from Tarkov', ['Escape from Tarkov', 'EFT', '逃离塔科夫', '逃離塔科夫', 'エスケープフロムタルコフ'], 'competitive', 'fps'),
+    ('Path of Exile', ['Path of Exile', 'PoE', '流放之路', '流亡黯道', 'パス・オブ・エクサイル'], 'immersive', 'rpg'),
+    ('Path of Exile 2', ['Path of Exile 2', 'PoE2', '流放之路2', '流亡黯道2'], 'immersive', 'rpg'),
+    ('Grim Dawn', ['Grim Dawn', '恐怖黎明'], 'immersive', 'rpg'),
+    ('Last Epoch', ['Last Epoch', '最后纪元', '最後紀元'], 'immersive', 'rpg'),
 
     # ============================================================
     # Japanese / SEA popular
     # ============================================================
-    ('Final Fantasy XIV', ['FINAL FANTASY XIV', 'FFXIV', 'FF14', '最终幻想XIV', '最終幻想XIV', 'ファイナルファンタジーXIV', '파이널 판타지 XIV']),
-    ('Final Fantasy VII Remake', ['FINAL FANTASY VII REMAKE', 'FF7 Remake', '最终幻想7 重制版', 'ファイナルファンタジーVII リメイク']),
-    ('Final Fantasy VII Rebirth', ['FINAL FANTASY VII REBIRTH', 'FF7 Rebirth', '最终幻想7 重生']),
-    ('Final Fantasy XVI', ['FINAL FANTASY XVI', 'FF16', '最终幻想XVI', 'ファイナルファンタジーXVI']),
-    ('Monster Hunter Wilds', ['Monster Hunter Wilds', 'MHWilds', '怪物猎人 荒野', '魔物獵人 荒野', 'モンスターハンター ワイルズ', '몬스터 헌터 와일즈']),
-    ('Monster Hunter World', ['Monster Hunter World', 'MHW', '怪物猎人：世界', '魔物獵人：世界', 'モンスターハンター：ワールド', '몬스터 헌터: 월드']),
-    ('Monster Hunter Rise', ['Monster Hunter Rise', 'MHRise', '怪物猎人 崛起', '魔物獵人 崛起', 'モンスターハンターライズ', '몬스터 헌터 라이즈']),
-    ('Persona 5 Royal', ['Persona 5 Royal', 'P5R', '女神异闻录5 皇家版', '女神異聞錄5 皇家版', 'ペルソナ5 ザ・ロイヤル', '페르소나 5 더 로열']),
-    ('Persona 3 Reload', ['Persona 3 Reload', 'P3R', '女神异闻录3 Reload', 'ペルソナ3 リロード']),
-    ('Persona 4 Golden', ['Persona 4 Golden', 'P4G', '女神异闻录4 黄金版', 'ペルソナ4 ザ・ゴールデン']),
-    ('Tekken 8', ['Tekken 8', 'TEKKEN 8', '铁拳8', '鐵拳8', '鉄拳8', '철권 8']),
-    ('Street Fighter 6', ['Street Fighter 6', 'SF6', '街头霸王6', '快打旋風6', 'ストリートファイター6', '스트리트 파이터 6']),
-    ('Guilty Gear Strive', ['Guilty Gear Strive', 'GGST', '罪恶装备 Strive', 'GUILTY GEAR -STRIVE-', '길티기어 스트라이브']),
+    ('Final Fantasy XIV', ['FINAL FANTASY XIV', 'FFXIV', 'FF14', '最终幻想XIV', '最終幻想XIV', 'ファイナルファンタジーXIV', '파이널 판타지 XIV'], 'immersive', 'rpg'),
+    ('Final Fantasy VII Remake', ['FINAL FANTASY VII REMAKE', 'FF7 Remake', '最终幻想7 重制版', 'ファイナルファンタジーVII リメイク'], 'immersive', 'rpg'),
+    ('Final Fantasy VII Rebirth', ['FINAL FANTASY VII REBIRTH', 'FF7 Rebirth', '最终幻想7 重生'], 'immersive', 'rpg'),
+    ('Final Fantasy XVI', ['FINAL FANTASY XVI', 'FF16', '最终幻想XVI', 'ファイナルファンタジーXVI'], 'immersive', 'rpg'),
+    ('Monster Hunter Wilds', ['Monster Hunter Wilds', 'MHWilds', '怪物猎人 荒野', '魔物獵人 荒野', 'モンスターハンター ワイルズ', '몬스터 헌터 와일즈'], 'immersive', 'action'),
+    ('Monster Hunter World', ['Monster Hunter World', 'MHW', '怪物猎人：世界', '魔物獵人：世界', 'モンスターハンター：ワールド', '몬스터 헌터: 월드'], 'immersive', 'action'),
+    ('Monster Hunter Rise', ['Monster Hunter Rise', 'MHRise', '怪物猎人 崛起', '魔物獵人 崛起', 'モンスターハンターライズ', '몬스터 헌터 라이즈'], 'immersive', 'action'),
+    ('Persona 5 Royal', ['Persona 5 Royal', 'P5R', '女神异闻录5 皇家版', '女神異聞錄5 皇家版', 'ペルソナ5 ザ・ロイヤル', '페르소나 5 더 로열'], 'immersive', 'rpg'),
+    ('Persona 3 Reload', ['Persona 3 Reload', 'P3R', '女神异闻录3 Reload', 'ペルソナ3 リロード'], 'immersive', 'rpg'),
+    ('Persona 4 Golden', ['Persona 4 Golden', 'P4G', '女神异闻录4 黄金版', 'ペルソナ4 ザ・ゴールデン'], 'immersive', 'rpg'),
+    ('Tekken 8', ['Tekken 8', 'TEKKEN 8', '铁拳8', '鐵拳8', '鉄拳8', '철권 8'], 'competitive', 'action'),
+    ('Street Fighter 6', ['Street Fighter 6', 'SF6', '街头霸王6', '快打旋風6', 'ストリートファイター6', '스트리트 파이터 6'], 'competitive', 'action'),
+    ('Guilty Gear Strive', ['Guilty Gear Strive', 'GGST', '罪恶装备 Strive', 'GUILTY GEAR -STRIVE-', '길티기어 스트라이브'], 'competitive', 'action'),
     ('Granblue Fantasy: Relink', ['Granblue Fantasy: Relink', 'GBF Relink', '碧蓝幻想 Relink', 'グランブルーファンタジー リリンク']),
     ('Granblue Fantasy Versus', ['Granblue Fantasy Versus', 'GBVS', 'グランブルーファンタジー ヴァーサス']),
-    ('NieR: Automata', ['NieR: Automata', 'NieR Automata', '尼尔：机械纪元', '尼爾：自動人形', 'ニーア オートマタ', '니어: 오토마타']),
-    ('NieR Replicant', ['NieR Replicant', '尼尔：人工生命', 'ニーア レプリカント']),
+    ('NieR: Automata', ['NieR: Automata', 'NieR Automata', '尼尔：机械纪元', '尼爾：自動人形', 'ニーア オートマタ', '니어: 오토마타'], 'immersive', 'action'),
+    ('NieR Replicant', ['NieR Replicant', '尼尔：人工生命', 'ニーア レプリカント'], 'immersive', 'action'),
     ('Atelier Ryza', ['Atelier Ryza', '莱莎的炼金工房', '萊莎的鍊金工房', 'アトリエ ライザ']),
     ('Atelier Yumia', ['Atelier Yumia', '尤米娅的炼金工房', 'アトリエ ユミア']),
     ('Ys X: Nordics', ['Ys X', 'Ys X: Nordics', '伊苏X', 'イースX']),
@@ -270,24 +440,24 @@ GAME_TITLE_KEYWORDS: list[tuple[str, list[str]]] = [
     ('Like a Dragon: Infinite Wealth', ['Like a Dragon: Infinite Wealth', 'Yakuza', '如龙8', '人中之龙8', '龍が如く8']),
     ('Yakuza 0', ['Yakuza 0', '人中之龙0', '龍が如く0']),
     ('Like a Dragon: Ishin', ['Like a Dragon: Ishin', '如龙 维新', '龍が如く 維新']),
-    ('Resident Evil 4 Remake', ['Resident Evil 4', 'RE4 Remake', '生化危机4 重制版', '惡靈古堡4 重製版', 'バイオハザード RE:4', '레지던트 이블 4']),
-    ('Resident Evil Village', ['Resident Evil Village', 'RE Village', '生化危机 村庄', 'バイオハザード ヴィレッジ']),
-    ('Resident Evil 2 Remake', ['Resident Evil 2', '生化危机2 重制版', 'バイオハザード RE:2']),
-    ('Resident Evil 3 Remake', ['Resident Evil 3', '生化危机3 重制版', 'バイオハザード RE:3']),
-    ('Devil May Cry 5', ['Devil May Cry 5', 'DMC5', '鬼泣5', '惡魔獵人5', 'デビル メイ クライ 5']),
-    ('Dragon’s Dogma 2', ['Dragon’s Dogma 2', "Dragon's Dogma 2", '龙之信条2', '龍族教義2', 'ドラゴンズドグマ2']),
+    ('Resident Evil 4 Remake', ['Resident Evil 4', 'RE4 Remake', '生化危机4 重制版', '惡靈古堡4 重製版', 'バイオハザード RE:4', '레지던트 이블 4'], 'immersive', 'horror'),
+    ('Resident Evil Village', ['Resident Evil Village', 'RE Village', '生化危机 村庄', 'バイオハザード ヴィレッジ'], 'immersive', 'horror'),
+    ('Resident Evil 2 Remake', ['Resident Evil 2', '生化危机2 重制版', 'バイオハザード RE:2'], 'immersive', 'horror'),
+    ('Resident Evil 3 Remake', ['Resident Evil 3', '生化危机3 重制版', 'バイオハザード RE:3'], 'immersive', 'horror'),
+    ('Devil May Cry 5', ['Devil May Cry 5', 'DMC5', '鬼泣5', '惡魔獵人5', 'デビル メイ クライ 5'], 'immersive', 'action'),
+    ('Dragon’s Dogma 2', ['Dragon’s Dogma 2', "Dragon's Dogma 2", '龙之信条2', '龍族教義2', 'ドラゴンズドグマ2'], 'immersive', 'rpg'),
     ('Pokemon', ['Pokemon', 'Pokémon', '宝可梦', '寶可夢', 'ポケモン', '포켓몬']),
     ('Splatoon', ['Splatoon', '斯普拉遁', '斯普拉遁', 'スプラトゥーン']),
     ('The Legend of Zelda', ['Legend of Zelda', 'Zelda', 'Tears of the Kingdom', 'Breath of the Wild', '塞尔达传说', '薩爾達傳說', 'ゼルダの伝説', '젤다의 전설']),
-    ('Black Myth: Wukong', ['Black Myth: Wukong', 'Black Myth Wukong', '黑神话：悟空', '黑神話：悟空', '黒神話：悟空', '검은 신화: 오공']),
+    ('Black Myth: Wukong', ['Black Myth: Wukong', 'Black Myth Wukong', '黑神话：悟空', '黑神話：悟空', '黒神話：悟空', '검은 신화: 오공'], 'immersive', 'action'),
 
     # ============================================================
     # Korean MMOs
     # ============================================================
-    ('Lost Ark', ['Lost Ark', 'LostArk', '失落的方舟', '命運方舟', 'ロストアーク', '로스트아크']),
-    ('MapleStory', ['MapleStory', 'Maple Story', '冒险岛', '新楓之谷', 'メイプルストーリー', '메이플스토리']),
-    ('Black Desert Online', ['Black Desert', 'Black Desert Online', 'BDO', '黑色沙漠', 'ブラックデザートオンライン', '검은사막']),
-    ('Throne and Liberty', ['Throne and Liberty', 'TL', 'THRONE AND LIBERTY', '王权与自由', '王權與自由', 'スローン&リバティ', '쓰론 앤 리버티']),
+    ('Lost Ark', ['Lost Ark', 'LostArk', '失落的方舟', '命運方舟', 'ロストアーク', '로스트아크'], 'casual', 'rpg'),
+    ('MapleStory', ['MapleStory', 'Maple Story', '冒险岛', '新楓之谷', 'メイプルストーリー', '메이플스토리'], 'casual', 'rpg'),
+    ('Black Desert Online', ['Black Desert', 'Black Desert Online', 'BDO', '黑色沙漠', 'ブラックデザートオンライン', '검은사막'], 'casual', 'rpg'),
+    ('Throne and Liberty', ['Throne and Liberty', 'TL', 'THRONE AND LIBERTY', '王权与自由', '王權與自由', 'スローン&リバティ', '쓰론 앤 리버티'], 'casual', 'rpg'),
     ('Blade & Soul', ['Blade & Soul', 'Blade and Soul', 'BnS', '剑灵', '劍靈', 'ブレイド アンド ソウル', '블레이드 앤 소울']),
     ('Lineage W', ['Lineage W', 'Lineage', '天堂W', 'リネージュW', '리니지W']),
     ('Lineage 2M', ['Lineage 2M', '天堂2M', '리니지2M']),
@@ -301,28 +471,33 @@ GAME_TITLE_KEYWORDS: list[tuple[str, list[str]]] = [
     # ============================================================
     # Western multiplayer / battle royale
     # ============================================================
-    ('Rocket League', ['Rocket League', '火箭联盟', '火箭聯盟', 'ロケットリーグ', '로켓 리그']),
-    ('Fall Guys', ['Fall Guys', '糖豆人', '糖豆人', 'フォールガイズ', '폴 가이즈']),
-    ('Among Us', ['Among Us', '我们之中', '在我们之中', 'アモングアス']),
-    ('Genshin', ['Genshin']),  # safety alias
-    ('Roblox', ['Roblox', '罗布乐思', '邏輯思維 Roblox', 'ロブロックス', '로블록스']),
-    ('Minecraft', ['Minecraft', '我的世界', 'マインクラフト', '마인크래프트']),
-    ('Terraria', ['Terraria', '泰拉瑞亚', '泰拉瑞亞', 'テラリア', '테라리아']),
-    ('Stardew Valley', ['Stardew Valley', '星露谷物语', '星露谷物語', 'スターデューバレー', '스타듀밸리']),
-    ('Hades', ['Hades', '哈迪斯', '黑帝斯', 'ハデス', '하데스']),
-    ('Hades II', ['Hades II', 'Hades 2', '哈迪斯2']),
-    ('Hollow Knight', ['Hollow Knight', '空洞骑士', '空洞騎士', 'ホロウナイト', '할로우 나이트']),
-    ('Hollow Knight: Silksong', ['Silksong', 'Hollow Knight: Silksong', '丝之歌', '絲之歌']),
-    ('Celeste', ['Celeste', '蔚蓝', '蔚藍', 'セレステ']),
-    ('Cuphead', ['Cuphead', '茶杯头', '茶杯頭', 'カップヘッド']),
-    ('Dead Cells', ['Dead Cells', '死亡细胞', '死亡細胞', 'デッドセルズ']),
-    ('Risk of Rain 2', ['Risk of Rain 2', '雨中冒险2']),
-    ('Don’t Starve Together', ['Don’t Starve', "Don't Starve Together", '饥荒', '飢荒', 'ドント・スターブ']),
-    ('Phasmophobia', ['Phasmophobia', '恐鬼症']),
-    ('Lethal Company', ['Lethal Company', '致命公司']),
-    ('REPO', ['R.E.P.O.', 'R.E.P.O', 'REPO']),
-    ('Content Warning', ['Content Warning']),
-    ('Pals', ['Palworld', '幻兽帕鲁', '幻獸帕魯', 'パルワールド', '팰월드']),
+    ('Rocket League', ['Rocket League', '火箭联盟', '火箭聯盟', 'ロケットリーグ', '로켓 리그'], 'competitive', 'sports'),
+    ('Fall Guys', ['Fall Guys', '糖豆人', '糖豆人', 'フォールガイズ', '폴 가이즈'], 'casual', 'party'),
+    ('Among Us', ['Among Us', '我们之中', '在我们之中', 'アモングアス'], 'casual', 'party'),
+    # 'Genshin' alone was a leftover safety-alias entry — already covered
+    # by the 'Genshin Impact' canonical above; first-match wins, so this
+    # tuple was unreachable. Removed.
+    ('Roblox', ['Roblox', '罗布乐思', '邏輯思維 Roblox', 'ロブロックス', '로블록스'], 'varied', 'party'),
+    ('Minecraft', ['Minecraft', '我的世界', 'マインクラフト', '마인크래프트'], 'varied', 'sim'),
+    ('Terraria', ['Terraria', '泰拉瑞亚', '泰拉瑞亞', 'テラリア', '테라리아'], 'casual', 'sim'),
+    ('Stardew Valley', ['Stardew Valley', '星露谷物语', '星露谷物語', 'スターデューバレー', '스타듀밸리'], 'casual', 'sim'),
+    ('Hades', ['Hades', '哈迪斯', '黑帝斯', 'ハデス', '하데스'], 'immersive', 'action'),
+    ('Hades II', ['Hades II', 'Hades 2', '哈迪斯2'], 'immersive', 'action'),
+    ('Hollow Knight', ['Hollow Knight', '空洞骑士', '空洞騎士', 'ホロウナイト', '할로우 나이트'], 'immersive', 'action'),
+    ('Hollow Knight: Silksong', ['Silksong', 'Hollow Knight: Silksong', '丝之歌', '絲之歌'], 'immersive', 'action'),
+    ('Celeste', ['Celeste', '蔚蓝', '蔚藍', 'セレステ'], 'immersive', 'action'),
+    ('Cuphead', ['Cuphead', '茶杯头', '茶杯頭', 'カップヘッド'], 'immersive', 'action'),
+    ('Dead Cells', ['Dead Cells', '死亡细胞', '死亡細胞', 'デッドセルズ'], 'casual', 'action'),
+    ('Risk of Rain 2', ['Risk of Rain 2', '雨中冒险2'], 'casual', 'action'),
+    ('Don’t Starve Together', ['Don’t Starve', "Don't Starve Together", '饥荒', '飢荒', 'ドント・スターブ'], 'casual', 'sim'),
+    ('Phasmophobia', ['Phasmophobia', '恐鬼症'], 'immersive', 'horror'),
+    ('Lethal Company', ['Lethal Company', '致命公司'], 'casual', 'horror'),
+    # Bare `REPO` removed — _make_needle word-boundary match would hit
+    # common dev-tool titles like "repo - Visual Studio Code" before the
+    # WORK_TITLE_KEYWORDS table could classify them. Dotted forms only.
+    ('REPO', ['R.E.P.O.', 'R.E.P.O'], 'casual', 'horror'),
+    ('Content Warning', ['Content Warning'], 'casual', 'horror'),
+    ('Pals', ['Palworld', '幻兽帕鲁', '幻獸帕魯', 'パルワールド', '팰월드'], 'casual', 'action'),
     ('Manor Lords', ['Manor Lords', '庄园领主', '莊園領主']),
     ('Banishers', ['Banishers: Ghosts of New Eden', 'Banishers']),
 
@@ -372,25 +547,29 @@ GAME_TITLE_KEYWORDS: list[tuple[str, list[str]]] = [
     # ============================================================
     # Racing / sports
     # ============================================================
-    ('Forza Horizon 5', ['Forza Horizon 5', 'FH5', '极限竞速：地平线5', '極限競速：地平線5']),
-    ('Forza Horizon 4', ['Forza Horizon 4', 'FH4', '极限竞速：地平线4']),
-    ('Forza Motorsport', ['Forza Motorsport', '极限竞速', '極限競速']),
-    ('F1 24', ['F1 24', 'F1 25', 'F1 23']),
-    ('Gran Turismo 7', ['Gran Turismo 7', 'GT7', 'グランツーリスモ7']),
-    ('iRacing', ['iRacing']),
-    ('Assetto Corsa', ['Assetto Corsa', '神力科莎']),
-    ('Assetto Corsa Competizione', ['Assetto Corsa Competizione', 'ACC']),
-    ('EA Sports FC', ['EA Sports FC', 'FIFA', 'EA SPORTS FC 25', 'FC 25', 'EA SPORTS FC 24']),
-    ('NBA 2K25', ['NBA 2K25', 'NBA 2K24', 'NBA 2K23', 'NBA 2K']),
-    ('Rocket League', ['Rocket League']),
+    ('Forza Horizon 5', ['Forza Horizon 5', 'FH5', '极限竞速：地平线5', '極限競速：地平線5'], 'casual', 'racing'),
+    ('Forza Horizon 4', ['Forza Horizon 4', 'FH4', '极限竞速：地平线4'], 'casual', 'racing'),
+    ('Forza Motorsport', ['Forza Motorsport', '极限竞速', '極限競速'], 'competitive', 'racing'),
+    # Family-name canonical so per-year overrides remain addressable
+    ('F1', ['F1 25', 'F1 24', 'F1 23'], 'competitive', 'racing'),
+    ('Gran Turismo 7', ['Gran Turismo 7', 'GT7', 'グランツーリスモ7'], 'casual', 'racing'),
+    ('iRacing', ['iRacing'], 'competitive', 'racing'),
+    ('Assetto Corsa', ['Assetto Corsa', '神力科莎'], 'casual', 'racing'),
+    ('Assetto Corsa Competizione', ['Assetto Corsa Competizione', 'ACC'], 'competitive', 'racing'),
+    ('EA Sports FC', ['EA Sports FC', 'FIFA', 'EA SPORTS FC 25', 'FC 25', 'EA SPORTS FC 24'], 'competitive', 'sports'),
+    # Family-name canonical so per-year overrides remain addressable
+    ('NBA 2K', ['NBA 2K25', 'NBA 2K24', 'NBA 2K23', 'NBA 2K'], 'competitive', 'sports'),
+    # Rocket League was duplicated here (same alias as the entry above
+    # in the Western multiplayer section); first-match wins so this was
+    # unreachable. Removed.
 
     # ============================================================
     # MOBA / shooter / extras
     # ============================================================
-    ('The Finals', ['The Finals', '最终决战', 'THE FINALS']),
-    ('XDefiant', ['XDefiant']),
-    ('Splitgate', ['Splitgate']),
-    ('Hunt: Showdown', ['Hunt: Showdown', '猎杀对决', '獵殺：對決']),
+    ('The Finals', ['The Finals', '最终决战', 'THE FINALS'], 'competitive', 'fps'),
+    ('XDefiant', ['XDefiant'], 'competitive', 'fps'),
+    ('Splitgate', ['Splitgate'], 'competitive', 'fps'),
+    ('Hunt: Showdown', ['Hunt: Showdown', '猎杀对决', '獵殺：對決'], 'competitive', 'fps'),
     ('Sea of Thieves', ['Sea of Thieves', '盗贼之海', '盜賊之海']),
     ('Halo Infinite', ['Halo Infinite', '光环：无限', '最後一戰：無限', 'ヘイロー インフィニット']),
     ('Halo: The Master Chief Collection', ['Halo MCC', 'Master Chief Collection']),
@@ -2625,18 +2804,58 @@ def _match(needle: Needle, text_lower: str) -> bool:
     return needle.search(text_lower) is not None
 
 
+def _unpack_game_row(row) -> tuple[str, list[str], str | None, str | None]:
+    """Accept either 2-tuple (legacy) or 4-tuple game keyword rows.
+
+    The schema is migrating from ``(canonical, [aliases])`` to
+    ``(canonical, [aliases], intensity, genre)`` — top games get the
+    intensity/genre tags that drive propensity / skip_probability /
+    tone, the long tail can stay 2-tuple and falls through to the
+    state machine's ``varied / misc`` defaults. Both shapes coexist
+    while the retag effort proceeds incrementally.
+    """
+    if len(row) == 4:
+        canonical, aliases, intensity, genre = row
+        return canonical, aliases, intensity, genre
+    canonical, aliases = row
+    return canonical, aliases, None, None
+
+
 def _build_title_table() -> list[tuple[Needle, ClassifyResult]]:
     """Window-title needles in priority order.
 
-    gaming launchers come AFTER game titles (a launcher window is a
-    weaker gaming signal than the game itself) but BEFORE work/etc so
-    that ``Steam`` doesn't get misclassified as work.
+    Priority (highest → lowest):
+      private  > own_app  > game > game_launcher > work > comm > ent
+
+    Privacy and own-app come first by design — privacy must short-circuit
+    all classification (the tracker bypasses caching downstream), and
+    own-app must surface as a distinct category so the state machine
+    can apply its dwell-freeze book-keeping (record entry time, advance
+    ``_current_window_started_at`` on exit so own-app time doesn't
+    inflate the previous window's dwell). GPU fallback gaming is NOT
+    short-circuited during own-app foreground: the user's real activity
+    (whatever was running in the background) keeps its classification.
     """
     table: list[tuple[Needle, ClassifyResult]] = []
 
-    for canonical, aliases in GAME_TITLE_KEYWORDS:
+    # PRIVATE — highest priority, always wins.
+    for canonical, aliases in PRIVATE_TITLE_KEYWORDS:
         for alias in aliases:
-            table.append((_make_needle(alias), ClassifyResult('gaming', 'game', canonical)))
+            table.append((_make_needle(alias), ClassifyResult('private', None, canonical)))
+
+    # OWN_APP — second priority. Beats gaming because the catgirl app's
+    # own GPU usage would otherwise trip gaming-by-GPU fallback.
+    for canonical, aliases in OWN_APP_TITLE_KEYWORDS:
+        for alias in aliases:
+            table.append((_make_needle(alias), ClassifyResult('own_app', None, canonical)))
+
+    for row in GAME_TITLE_KEYWORDS:
+        canonical, aliases, intensity, genre = _unpack_game_row(row)
+        for alias in aliases:
+            table.append((
+                _make_needle(alias),
+                ClassifyResult('gaming', 'game', canonical, intensity, genre),
+            ))
     for canonical, aliases in GAME_LAUNCHER_TITLE_KEYWORDS:
         for alias in aliases:
             table.append((_make_needle(alias), ClassifyResult('gaming', 'launcher', canonical)))
@@ -2661,6 +2880,12 @@ def _build_title_table() -> list[tuple[Needle, ClassifyResult]]:
 def _build_process_table() -> list[tuple[Needle, ClassifyResult]]:
     """Process-name needles in priority order. Same order as titles."""
     table: list[tuple[Needle, ClassifyResult]] = []
+
+    for proc in PRIVATE_PROCESS_NAMES:
+        table.append((_make_needle(proc), ClassifyResult('private', None, proc)))
+
+    for proc in OWN_APP_PROCESS_NAMES:
+        table.append((_make_needle(proc), ClassifyResult('own_app', None, proc)))
 
     for proc in GAME_PROCESS_NAMES:
         table.append((_make_needle(proc), ClassifyResult('gaming', 'game', proc)))
@@ -2725,6 +2950,8 @@ def _assert_no_process_dups() -> None:
     quietly mis-classifying user activity.
     """
     pools_raw: dict[str, list[str]] = {
+        'private':  list(PRIVATE_PROCESS_NAMES),
+        'own_app':  list(OWN_APP_PROCESS_NAMES),
         'game':     list(GAME_PROCESS_NAMES),
         'launcher': list(GAME_LAUNCHER_PROCESS_NAMES),
         'work':     [p for p, _ in WORK_PROCESS_NAMES],
