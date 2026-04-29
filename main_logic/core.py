@@ -3299,7 +3299,12 @@ class LLMSessionManager:
                 if self.tts_thread and not self.tts_thread.is_alive():
                     self._respawn_tts_worker()
 
-    async def finish_proactive_delivery(self, full_text: str, expected_speech_id: str | None = None) -> bool:
+    async def finish_proactive_delivery(
+        self,
+        full_text: str,
+        expected_speech_id: str | None = None,
+        action_note: str | None = None,
+    ) -> bool:
         """流式完成后收尾：一次性投递完整文本 + 记录历史 + TTS/turn end 信号。
 
         expected_speech_id: 若不为 None 且在进入 _proactive_write_lock 后与当前
@@ -3307,6 +3312,13 @@ class LLMSessionManager:
         接管本轮（stream_text 清了 queue + 换了 sid）。此时前端/history/TTS
         结束信号都必须跳过，否则 proactive 文本气泡会插在用户回复后面、
         history 被污染、TTS done 会误结束用户正在进行的回复。
+
+        action_note: 可选；非空时追加到 _conversation_history 里那条 AIMessage 的
+        content 尾部（仅历史可见，不进 send_lanlan_response、不进 TTS）。用来把
+        "本轮实际放了什么歌 / 分享了什么内容 / 来源在哪"作为元数据留给 LLM 下
+        一轮看到，避免用户反问"刚才放的什么"时 AI 完全不知道——只记得自己说
+        了什么，不记得自己做了什么。构造逻辑见
+        ``config.prompts_proactive.build_proactive_action_note``。
 
         返回 True 表示真正落库，False 表示因 sid 变化被跳过。调用方据此短路
         下游副作用（_record_proactive_chat / topic usage / surfaced reflection 等），
@@ -3339,7 +3351,15 @@ class LLMSessionManager:
             self._flush_ai_turn_text_to_tracker()
 
             if self.session and hasattr(self.session, '_conversation_history'):
-                self.session._conversation_history.append(AIMessage(content=full_text))
+                # action_note 只进历史，不进 send_lanlan_response（前端不展示）
+                # 也不进 TTS。空 full_text + 非空 note 的场景目前不会发生
+                # （proactive 不允许空文本），但写法上仍然兜底拼接。
+                history_text = full_text
+                if action_note:
+                    note = action_note.strip()
+                    if note:
+                        history_text = f"{full_text}\n{note}" if full_text else note
+                self.session._conversation_history.append(AIMessage(content=history_text))
 
             if self.use_tts and self.tts_thread and self.tts_thread.is_alive() and not self._tts_done_queued_for_turn:
                 try:

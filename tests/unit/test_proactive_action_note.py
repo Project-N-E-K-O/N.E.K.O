@@ -1,0 +1,301 @@
+"""主动搭话 action_note 元数据回写测试。
+
+覆盖两层契约：
+1. ``build_proactive_action_note``：根据 primary_channel + source_links 构造的
+   一行 [...] 注解，必须包含本轮实际投递的素材信息（歌名/艺人/来源），且在
+   素材缺失时返回空串而不是凭空编出"未知 - 未知"骚扰 LLM 上下文。模板里对人
+   的称呼一律用 master_name 实名展开，不写"主人"这类物化称呼。
+2. ``finish_proactive_delivery(action_note=...)``：注解只进
+   ``_conversation_history``（→ memory_context），不进 send_lanlan_response、
+   不进 TTS。
+"""
+import asyncio
+import os
+import sys
+from queue import Queue
+from unittest.mock import AsyncMock, MagicMock
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
+
+from config.prompts_proactive import build_proactive_action_note
+from main_logic.core import LLMSessionManager
+from main_logic.session_state import SessionStateMachine
+
+# 测试公用 master_name —— 任何字符串都行，关键是验证它会被原样展开进 note，
+# 而不是被替换成"主人/master/ご主人さま"等物化称呼。
+MASTER = "小明"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# build_proactive_action_note —— 纯函数行为
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_action_note_empty_when_no_source_links():
+    """source_links 为空（chat / vision / 没找到素材）→ 空串，不污染历史。"""
+    assert build_proactive_action_note('music', [], 'zh', master_name=MASTER) == ''
+    assert build_proactive_action_note('music', None, 'zh', master_name=MASTER) == ''
+
+
+def test_action_note_chat_channel_returns_empty():
+    """chat / vision / unknown 通道：AI 自己说的话已经在 full_text 里，
+    不需要再追加任何元数据。"""
+    links = [{'title': '随便', 'source': '系统'}]
+    assert build_proactive_action_note('chat', links, 'zh', master_name=MASTER) == ''
+    assert build_proactive_action_note('vision', links, 'zh', master_name=MASTER) == ''
+    assert build_proactive_action_note('unknown', links, 'zh', master_name=MASTER) == ''
+    assert build_proactive_action_note('', links, 'zh', master_name=MASTER) == ''
+
+
+def test_action_note_music_includes_title_and_artist():
+    links = [{
+        'title': '稻香',
+        'artist': '周杰伦',
+        'url': 'https://example.com/track',
+        'source': '音乐推荐',
+        'type': 'music',
+    }]
+    note = build_proactive_action_note('music', links, 'zh', master_name=MASTER)
+    assert '稻香' in note
+    assert '周杰伦' in note
+    assert MASTER in note
+    assert note.startswith('[') and note.endswith(']')
+
+
+def test_action_note_does_not_use_dehumanizing_terms():
+    """禁止字面量"主人 / master / ご主人さま / 주인 / хозяин"出现在注解里——这是
+    物化称呼，所有语言都必须用 master_name 实名展开。"""
+    links = [{'title': 'T', 'artist': 'A', 'source': '音乐推荐', 'type': 'music'}]
+    forbidden = ['主人', 'master', 'Master', 'ご主人', '주인', 'хозяин', 'Хозяин']
+    for lang in ('zh', 'en', 'ja', 'ko', 'ru'):
+        note = build_proactive_action_note('music', links, lang, master_name=MASTER)
+        for word in forbidden:
+            assert word not in note, f"lang={lang} note='{note}' 含物化称呼 '{word}'"
+
+
+def test_action_note_master_name_is_expanded_literally():
+    """master_name 应该原样展开进 note，不被替换或加前缀。"""
+    links = [{'title': 'T', 'artist': 'A', 'source': '音乐推荐', 'type': 'music'}]
+    for name in ('小明', 'Alice', 'mochi', '猫猫'):
+        note = build_proactive_action_note(
+            'music', links, 'zh', master_name=name,
+        )
+        assert name in note
+
+
+def test_action_note_music_skips_unrelated_links():
+    """primary_channel=music 但 source_links 里只有 web 链接（异常路径）→ 空串。
+    避免拿一个 web 标题当歌名编出"《某条新闻》— 未知艺术家"。"""
+    links = [{
+        'title': '某条新闻',
+        'url': 'https://news.example.com/x',
+        'source': 'B站',
+    }]
+    assert build_proactive_action_note('music', links, 'zh', master_name=MASTER) == ''
+
+
+def test_action_note_music_picks_music_link_among_others():
+    """source_links 里 web link 在前、music link 在后（fallback 路径常见），
+    music 通道仍要挑出 music 那条。"""
+    links = [
+        {'title': '一条新闻', 'source': '微博', 'type': 'web'},
+        {'title': '夜曲', 'artist': '周杰伦', 'source': '音乐推荐', 'type': 'music'},
+    ]
+    note = build_proactive_action_note('music', links, 'zh', master_name=MASTER)
+    assert '夜曲' in note
+    assert '周杰伦' in note
+    assert '新闻' not in note
+
+
+def test_action_note_meme_uses_title_and_source():
+    links = [{
+        'title': '猫猫表情包',
+        'url': 'https://example.com/m.gif',
+        'source': '微博',
+        'type': 'meme',
+    }]
+    note = build_proactive_action_note('meme', links, 'zh', master_name=MASTER)
+    assert '猫猫表情包' in note
+    assert '微博' in note
+    assert MASTER in note
+
+
+def test_action_note_meme_falls_back_when_type_missing():
+    """meme 通道但素材没填 type=meme（早期 fallback 链路），按非音乐链接兜底。"""
+    links = [{
+        'title': '一只柴犬',
+        'url': 'https://example.com/d.png',
+        'source': '微博',
+    }]
+    note = build_proactive_action_note('meme', links, 'zh', master_name=MASTER)
+    assert '一只柴犬' in note
+    assert '微博' in note
+
+
+def test_action_note_web_skips_music_recommendations_appended_at_tail():
+    """real-world：primary_channel=web 时，build_proactive_response 先放 web link，
+    随后 _append_music_recommendations 可能把音乐 rec 追加到 source_links 末尾
+    （music fallback 路径）。web 注解不能错挑成那条音乐项。"""
+    links = [
+        {'title': 'AI 大新闻', 'source': '36kr', 'mode': 'news'},
+        {'title': '《起风了》', 'artist': '吴青峰', 'source': '音乐推荐', 'type': 'music'},
+    ]
+    note = build_proactive_action_note('news', links, 'zh', master_name=MASTER)
+    assert 'AI 大新闻' in note
+    assert '36kr' in note
+    assert '起风了' not in note
+
+
+def test_action_note_web_subchannels_all_route_to_web_template():
+    """web/news/video/home/personal 这几个细粒度子通道共享 web 模板。"""
+    link = {'title': 'foo', 'source': 'bar'}
+    for ch in ('web', 'news', 'video', 'home', 'personal'):
+        assert build_proactive_action_note(ch, [link], 'zh', master_name=MASTER) != ''
+
+
+def test_action_note_uses_placeholder_for_missing_fields():
+    """title/artist/source 缺失时按本地化占位符兜底，不出现 'None'。"""
+    note = build_proactive_action_note(
+        'music',
+        [{'type': 'music', 'source': '音乐推荐'}],  # 缺 title + artist
+        'zh',
+        master_name=MASTER,
+    )
+    assert note != ''
+    assert 'None' not in note
+    assert '未命名' in note or '未知' in note
+
+
+def test_action_note_empty_master_falls_back_to_neutral_placeholder():
+    """master_name 传空时按本地化中性占位符兜底（"对方/them/相手/상대/собеседника"），
+    保证不出现"主人"等物化称呼。"""
+    links = [{'title': 'T', 'artist': 'A', 'source': '音乐推荐', 'type': 'music'}]
+    note_zh = build_proactive_action_note('music', links, 'zh', master_name='')
+    note_en = build_proactive_action_note('music', links, 'en', master_name='')
+    assert '主人' not in note_zh
+    assert 'master' not in note_en.lower()
+    assert '对方' in note_zh
+    assert 'them' in note_en
+
+
+def test_action_note_localizes_template_per_language():
+    """同一组数据按 language 走不同模板。"""
+    links = [{'title': 'Hello', 'artist': 'Adele', 'source': '音乐推荐', 'type': 'music'}]
+    zh = build_proactive_action_note('music', links, 'zh', master_name=MASTER)
+    en = build_proactive_action_note('music', links, 'en', master_name=MASTER)
+    ja = build_proactive_action_note('music', links, 'ja', master_name=MASTER)
+    # 各语言都包含 master_name + 标题 + 艺人
+    for note in (zh, en, ja):
+        assert MASTER in note
+        assert 'Hello' in note
+        assert 'Adele' in note
+    # 各语言模板应当不同（最起码不会三种语言输出相同字符串）
+    assert len({zh, en, ja}) == 3
+
+
+def test_action_note_unknown_language_falls_back_to_english():
+    """_loc 静默回退：未翻译语言（如 'es'）走英文模板。"""
+    links = [{'title': 'X', 'artist': 'Y', 'source': '音乐推荐', 'type': 'music'}]
+    note = build_proactive_action_note('music', links, 'es', master_name=MASTER)
+    # 走英文模板，但 master_name 仍按传入展开
+    assert MASTER in note
+    assert 'X' in note and 'Y' in note
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# finish_proactive_delivery(action_note=...) —— action_note 只进历史
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _make_mgr() -> LLMSessionManager:
+    """复用 test_proactive_sid_guard.py 的最小 manager 装配。"""
+    mgr = LLMSessionManager.__new__(LLMSessionManager)
+    mgr.use_tts = True
+    mgr.tts_cache_lock = asyncio.Lock()
+    mgr.lock = asyncio.Lock()
+    mgr._proactive_write_lock = asyncio.Lock()
+    mgr.tts_pending_chunks = []
+    mgr.tts_request_queue = Queue()
+    mgr.tts_response_queue = Queue()
+    mgr.tts_thread = MagicMock()
+    mgr.tts_thread.is_alive.return_value = True
+    mgr.tts_ready = True
+    mgr.current_speech_id = None
+    mgr._tts_done_queued_for_turn = False
+    mgr.lanlan_name = "Test"
+    mgr.session = None
+    mgr.websocket = None
+    mgr.sync_message_queue = Queue()
+    mgr._enqueue_tts_text_chunk = MagicMock()
+    mgr._respawn_tts_worker = MagicMock()
+    mgr._tts_markdown_stripper = MagicMock()
+    mgr._tts_markdown_stripper.flush.return_value = ""
+    mgr._tts_bracket_stripper = MagicMock()
+    mgr._tts_bracket_stripper.feed.side_effect = lambda text: text
+    mgr._tts_bracket_stripper.flush.return_value = ""
+    mgr._tts_norm_speech_id = None
+    mgr.send_lanlan_response = AsyncMock()
+    mgr.state = SessionStateMachine(lanlan_name="Test")
+    mgr._activity_tracker = MagicMock()
+    mgr._current_ai_turn_text = ''
+    return mgr
+
+
+async def test_finish_proactive_delivery_appends_action_note_to_history():
+    """action_note 非空 → AIMessage 内容尾部追加 \\n + note；send_lanlan_response
+    收到的仍是裸 full_text（前端不会展示这条元数据）。"""
+    mgr = _make_mgr()
+    mgr.current_speech_id = "s"
+    mgr.session = MagicMock()
+    mgr.session._conversation_history = []
+    note = f"[给{MASTER}放了《稻香》— 周杰伦]"
+
+    result = await LLMSessionManager.finish_proactive_delivery(
+        mgr, "给你放首歌～", expected_speech_id="s", action_note=note,
+    )
+
+    assert result is True
+    assert len(mgr.session._conversation_history) == 1
+    history_text = mgr.session._conversation_history[0].content
+    assert "给你放首歌～" in history_text
+    assert note in history_text
+    # 前端不能看到 note：send_lanlan_response 只收 full_text
+    sent_text = mgr.send_lanlan_response.call_args.args[0]
+    assert sent_text == "给你放首歌～"
+    assert note not in sent_text
+
+
+async def test_finish_proactive_delivery_empty_action_note_unchanged():
+    """action_note 为空串/None → 历史与原行为完全一致（不引入多余换行）。"""
+    mgr = _make_mgr()
+    mgr.current_speech_id = "s"
+    mgr.session = MagicMock()
+    mgr.session._conversation_history = []
+
+    await LLMSessionManager.finish_proactive_delivery(
+        mgr, "纯聊天内容", expected_speech_id="s", action_note="",
+    )
+    assert mgr.session._conversation_history[0].content == "纯聊天内容"
+
+    mgr2 = _make_mgr()
+    mgr2.current_speech_id = "s"
+    mgr2.session = MagicMock()
+    mgr2.session._conversation_history = []
+    await LLMSessionManager.finish_proactive_delivery(
+        mgr2, "纯聊天内容", expected_speech_id="s", action_note=None,
+    )
+    assert mgr2.session._conversation_history[0].content == "纯聊天内容"
+
+
+async def test_finish_proactive_delivery_action_note_skipped_on_sid_mismatch():
+    """sid 不匹配（用户已接管）时整轮 finish 短路，action_note 也不能漏写进历史。"""
+    mgr = _make_mgr()
+    mgr.current_speech_id = "s_user"
+    mgr.session = MagicMock()
+    mgr.session._conversation_history = []
+
+    result = await LLMSessionManager.finish_proactive_delivery(
+        mgr, "孤儿 proactive", expected_speech_id="s_proactive",
+        action_note=f"[给{MASTER}放了《X》— Y]",
+    )
+    assert result is False
+    assert mgr.session._conversation_history == []

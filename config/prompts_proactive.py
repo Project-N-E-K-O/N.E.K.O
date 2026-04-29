@@ -2834,3 +2834,137 @@ WEEKEND_HINT: dict[str, str] = {
     'ko': '오늘은 주말이다. 푹 쉬어.',
     'ru': 'Сегодня выходной — время отдохнуть.',
 }
+
+
+# ── Proactive action note (memory metadata appended to AI history) ──
+# 主动搭话完成时把"实际投递的素材"以一行 [...] 注解的形式追加到 AIMessage 文本里：
+# 放了哪首歌、分享了什么内容、来源是哪里。下一轮 LLM 拿到 memory_context 时
+# 就能看到这些事实，避免出现"刚才放的什么歌？""不知道，没记住"的违和感。
+#
+# 注解只进 _conversation_history（→ memory_context），不进 send_lanlan_response、
+# 不进 TTS — 用户不会在前端看到这一行；它只是给 AI 自己留的一份"行动日志"。
+
+PROACTIVE_ACTION_NOTE_MUSIC: dict[str, str] = {
+    'zh': '[给{master}放了《{title}》— {artist}]',
+    'en': '[Played for {master}: "{title}" by {artist}]',
+    'ja': '[{master}に再生した曲：『{title}』— {artist}]',
+    'ko': '[{master}에게 재생한 곡: 《{title}》 — {artist}]',
+    'ru': '[Для {master}: «{title}» — {artist}]',
+}
+
+PROACTIVE_ACTION_NOTE_MEME: dict[str, str] = {
+    'zh': '[给{master}分享了表情包：《{title}》（来自 {source}）]',
+    'en': '[Sent {master} a meme: "{title}" (from {source})]',
+    'ja': '[{master}に送ったスタンプ：『{title}』（{source} より）]',
+    'ko': '[{master}에게 보낸 짤: 《{title}》 ({source} 출처)]',
+    'ru': '[Отправлено для {master}: «{title}» (из {source})]',
+}
+
+PROACTIVE_ACTION_NOTE_WEB: dict[str, str] = {
+    'zh': '[给{master}分享了《{title}》（来自 {source}）]',
+    'en': '[Shared with {master}: "{title}" (from {source})]',
+    'ja': '[{master}にシェアした内容：『{title}』（{source} より）]',
+    'ko': '[{master}에게 공유한 내용: 《{title}》 ({source} 출처)]',
+    'ru': '[Поделено с {master}: «{title}» (из {source})]',
+}
+
+PROACTIVE_ACTION_NOTE_PLACEHOLDERS: dict[str, dict[str, str]] = {
+    'zh': {'title': '未命名', 'artist': '未知艺术家', 'source': '未知来源', 'master': '对方'},
+    'en': {'title': 'Untitled', 'artist': 'Unknown Artist', 'source': 'Unknown Source', 'master': 'them'},
+    'ja': {'title': '無題', 'artist': '不明なアーティスト', 'source': '不明な出典', 'master': '相手'},
+    'ko': {'title': '제목 없음', 'artist': '아티스트 미상', 'source': '출처 미상', 'master': '상대'},
+    'ru': {'title': 'Без названия', 'artist': 'Неизвестный исполнитель', 'source': 'Неизвестный источник', 'master': 'собеседника'},
+}
+
+
+def build_proactive_action_note(
+    primary_channel: str,
+    source_links: list[dict] | None,
+    language: str,
+    master_name: str,
+) -> str:
+    """根据本轮 proactive 实际投递的内容构造一条简短行动注解。
+
+    返回值会被追加到 AIMessage 内容尾部（_conversation_history），让 LLM 下一轮
+    能记得"自己刚才放了什么 / 分享了什么 / 来源是哪"。返回空串表示无元数据可记
+    （chat / vision / unknown 通道，或对应素材未成功 attach 时都走这条）。
+
+    格式按 primary_channel 分支：music 用 title+artist；meme/web 用 title+source。
+    模板里对人的称呼一律用 {master} 占位符，由调用方传入 master_name 展开成
+    用户实际设定的名字——避免出现"主人"这类物化称呼。
+
+    title/artist/source 任一缺失时按本地化占位符兜底，但只要 source_links 里
+    没有匹配本通道的条目就直接返回空串，避免凭空编出"未知 / 未知 / 未知"骚扰
+    LLM 上下文。
+    """
+    if not source_links:
+        return ''
+    channel = (primary_channel or '').strip().lower()
+    placeholders = PROACTIVE_ACTION_NOTE_PLACEHOLDERS.get(
+        language, PROACTIVE_ACTION_NOTE_PLACEHOLDERS['en']
+    )
+    master = str(master_name or '').strip() or placeholders['master']
+
+    def _safe(value, fallback_key: str) -> str:
+        s = str(value or '').strip()
+        return s or placeholders[fallback_key]
+
+    def _is_music(link: dict) -> bool:
+        return link.get('type') == 'music' or link.get('source') == '音乐推荐'
+
+    def _is_meme(link: dict) -> bool:
+        return str(link.get('type', '')).lower().startswith('meme')
+
+    if channel == 'music':
+        track = next(
+            (l for l in source_links if isinstance(l, dict) and _is_music(l)),
+            None,
+        )
+        if not track:
+            return ''
+        return _loc(PROACTIVE_ACTION_NOTE_MUSIC, language).format(
+            master=master,
+            title=_safe(track.get('title'), 'title'),
+            artist=_safe(track.get('artist'), 'artist'),
+        )
+
+    if channel == 'meme':
+        meme = next(
+            (l for l in source_links if isinstance(l, dict) and _is_meme(l)),
+            None,
+        )
+        # type 字段缺失时按 primary_channel 已声明 meme，回退到第一条非音乐链接
+        if not meme:
+            meme = next(
+                (
+                    l for l in source_links
+                    if isinstance(l, dict) and not _is_music(l)
+                ),
+                None,
+            )
+        if not meme:
+            return ''
+        return _loc(PROACTIVE_ACTION_NOTE_MEME, language).format(
+            master=master,
+            title=_safe(meme.get('title'), 'title'),
+            source=_safe(meme.get('source'), 'source'),
+        )
+
+    if channel in {'web', 'news', 'video', 'home', 'personal'}:
+        link = next(
+            (
+                l for l in source_links
+                if isinstance(l, dict) and not _is_music(l) and not _is_meme(l)
+            ),
+            None,
+        )
+        if not link:
+            return ''
+        return _loc(PROACTIVE_ACTION_NOTE_WEB, language).format(
+            master=master,
+            title=_safe(link.get('title'), 'title'),
+            source=_safe(link.get('source'), 'source'),
+        )
+
+    # chat / vision / unknown — 没有外部素材需要单独存证
+    return ''
