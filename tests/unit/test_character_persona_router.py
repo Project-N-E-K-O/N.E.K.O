@@ -394,9 +394,11 @@ async def test_update_character_persona_selection_restarts_active_current_sessio
             return None
 
         current_name = config_manager.load_characters()["当前猫娘"]
+        session_token = object()
         current_session = SimpleNamespace(
             is_active=True,
             websocket=object(),
+            session=session_token,
             end_session=AsyncMock(),
         )
         role_state = {
@@ -426,7 +428,73 @@ async def test_update_character_persona_selection_restarts_active_current_sessio
 
         assert save_result["success"] is True
         reload_notice.assert_awaited_once_with(current_session, "人格设定已更新，页面即将刷新")
-        current_session.end_session.assert_awaited_once_with(by_server=True)
+        current_session.end_session.assert_awaited_once_with(
+            by_server=True,
+            expected_session=session_token,
+        )
+        init_one_catgirl.assert_awaited_once_with(current_name, is_new=False)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_update_character_persona_selection_closes_original_session_when_reload_triggers_reconnect():
+    with TemporaryDirectory() as td:
+        config_manager = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(config_manager)
+
+        async def _noop(*args, **kwargs):
+            return None
+
+        current_name = config_manager.load_characters()["当前猫娘"]
+        old_session_token = object()
+        new_session_token = object()
+        current_session = SimpleNamespace(
+            is_active=True,
+            websocket=object(),
+            session=old_session_token,
+            end_session=AsyncMock(),
+        )
+        reconnected_session = SimpleNamespace(
+            is_active=True,
+            websocket=object(),
+            session=new_session_token,
+            end_session=AsyncMock(),
+        )
+        role_state = {
+            current_name: SimpleNamespace(session_manager=current_session),
+        }
+        init_one_catgirl = AsyncMock()
+
+        async def _reload_and_reconnect(*args, **kwargs):
+            role_state[current_name].session_manager = reconnected_session
+            return True
+
+        with patch("utils.config_manager._config_manager", config_manager):
+            init_shared_state(
+                role_state=role_state,
+                steamworks=None,
+                templates=None,
+                config_manager=config_manager,
+                logger=None,
+                initialize_character_data=_noop,
+                switch_current_catgirl_fast=_noop,
+                init_one_catgirl=init_one_catgirl,
+                remove_one_catgirl=_noop,
+            )
+
+            router_module = importlib.reload(importlib.import_module("main_routers.characters_router"))
+            with patch.object(router_module, "send_reload_page_notice", AsyncMock(side_effect=_reload_and_reconnect)):
+                save_result = await router_module.update_character_persona_selection(
+                    current_name,
+                    _DummyRequest({"preset_id": "classic_genki", "source": "manual_reselect"}),
+                )
+
+        assert save_result["success"] is True
+        current_session.end_session.assert_awaited_once_with(
+            by_server=True,
+            expected_session=old_session_token,
+        )
+        reconnected_session.end_session.assert_not_awaited()
         init_one_catgirl.assert_awaited_once_with(current_name, is_new=False)
 
 
@@ -441,9 +509,11 @@ async def test_clear_character_persona_selection_restarts_active_current_session
             return None
 
         current_name = config_manager.load_characters()["当前猫娘"]
+        session_token = object()
         current_session = SimpleNamespace(
             is_active=True,
             websocket=object(),
+            session=session_token,
             end_session=AsyncMock(),
         )
         role_state = {
@@ -478,7 +548,80 @@ async def test_clear_character_persona_selection_restarts_active_current_session
 
         assert clear_result["success"] is True
         reload_notice.assert_awaited_once_with(current_session, "人格设定已更新，页面即将刷新")
-        current_session.end_session.assert_awaited_once_with(by_server=True)
+        current_session.end_session.assert_awaited_once_with(
+            by_server=True,
+            expected_session=session_token,
+        )
+        init_one_catgirl.assert_awaited_once_with(current_name, is_new=False)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_clear_character_persona_selection_closes_original_session_when_reload_triggers_reconnect():
+    with TemporaryDirectory() as td:
+        config_manager = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(config_manager)
+
+        async def _noop(*args, **kwargs):
+            return None
+
+        current_name = config_manager.load_characters()["当前猫娘"]
+        old_session_token = object()
+        new_session_token = object()
+        current_session = SimpleNamespace(
+            is_active=True,
+            websocket=object(),
+            session=old_session_token,
+            end_session=AsyncMock(),
+        )
+        reconnected_session = SimpleNamespace(
+            is_active=True,
+            websocket=object(),
+            session=new_session_token,
+            end_session=AsyncMock(),
+        )
+        role_state = {
+            current_name: SimpleNamespace(session_manager=current_session),
+        }
+        init_one_catgirl = AsyncMock()
+
+        async def _reload_and_reconnect(*args, **kwargs):
+            role_state[current_name].session_manager = reconnected_session
+            return True
+
+        with patch("utils.config_manager._config_manager", config_manager):
+            init_shared_state(
+                role_state=role_state,
+                steamworks=None,
+                templates=None,
+                config_manager=config_manager,
+                logger=None,
+                initialize_character_data=_noop,
+                switch_current_catgirl_fast=_noop,
+                init_one_catgirl=init_one_catgirl,
+                remove_one_catgirl=_noop,
+            )
+
+            router_module = importlib.reload(importlib.import_module("main_routers.characters_router"))
+            await router_module.update_character_persona_selection(
+                current_name,
+                _DummyRequest({"preset_id": "classic_genki", "source": "manual_reselect"}),
+            )
+
+            current_session.end_session.reset_mock()
+            reconnected_session.end_session.reset_mock()
+            init_one_catgirl.reset_mock()
+            role_state[current_name].session_manager = current_session
+
+            with patch.object(router_module, "send_reload_page_notice", AsyncMock(side_effect=_reload_and_reconnect)):
+                clear_result = await router_module.clear_character_persona_selection(current_name)
+
+        assert clear_result["success"] is True
+        current_session.end_session.assert_awaited_once_with(
+            by_server=True,
+            expected_session=old_session_token,
+        )
+        reconnected_session.end_session.assert_not_awaited()
         init_one_catgirl.assert_awaited_once_with(current_name, is_new=False)
 
 

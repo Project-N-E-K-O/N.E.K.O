@@ -2032,10 +2032,12 @@ async def update_character_persona_selection(name: str, request: Request):
         await _clear_character_recent_history(config_manager, name)
         session_manager = get_session_manager()
         is_current_catgirl = (name == characters.get('当前猫娘', ''))
-        if is_current_catgirl and name in session_manager and session_manager[name].is_active:
-            await send_reload_page_notice(session_manager[name], "人格设定已更新，页面即将刷新")
+        mgr = session_manager[name] if is_current_catgirl and name in session_manager else None
+        expected_session = getattr(mgr, "session", None) if mgr and mgr.is_active else None
+        if expected_session is not None:
+            await send_reload_page_notice(mgr, "人格设定已更新，页面即将刷新")
             try:
-                await session_manager[name].end_session(by_server=True)
+                await mgr.end_session(by_server=True, expected_session=expected_session)
             except Exception as e:
                 logger.error(f"结束 session 时出错: {e}")
 
@@ -2079,10 +2081,12 @@ async def clear_character_persona_selection(name: str):
 
         session_manager = get_session_manager()
         is_current_catgirl = (name == characters.get('当前猫娘', ''))
-        if is_current_catgirl and name in session_manager and session_manager[name].is_active:
-            await send_reload_page_notice(session_manager[name], "人格设定已更新，页面即将刷新")
+        mgr = session_manager[name] if is_current_catgirl and name in session_manager else None
+        expected_session = getattr(mgr, "session", None) if mgr and mgr.is_active else None
+        if expected_session is not None:
+            await send_reload_page_notice(mgr, "人格设定已更新，页面即将刷新")
             try:
-                await session_manager[name].end_session(by_server=True)
+                await mgr.end_session(by_server=True, expected_session=expected_session)
             except Exception as e:
                 logger.error(f"结束 session 时出错: {e}")
 
