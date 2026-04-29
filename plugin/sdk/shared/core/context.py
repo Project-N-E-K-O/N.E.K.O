@@ -12,7 +12,6 @@ from typing import Any, Protocol, cast
 
 from .bus_context import SdkBusContext, ensure_sdk_bus_context
 from .finish import (
-    DEFAULT_DELIVERY,
     build_finish_envelope,
     normalize_delivery,
     normalize_structured_data,
