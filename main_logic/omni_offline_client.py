@@ -709,6 +709,10 @@ class OmniOfflineClient:
             # Per-iteration accumulators.
             collected_tool_calls: list = []  # list of (id, name, args_dict, raw_args_str)
             had_text = False
+            # 累积本轮已经 yield 给用户的 text，下面写 assistant 历史时
+            # 用作 ``content`` —— 否则下一轮 LLM 看到 ``content=""`` 会
+            # 不知道自己已经说过这部分话，可能重复或改口。
+            streamed_text_buffer = ""
             usage_emitted = False
 
             try:
@@ -739,6 +743,7 @@ class OmniOfflineClient:
                             ))
                         elif text:
                             had_text = True
+                            streamed_text_buffer += text
                             yield LLMStreamChunk(content=text)
                     # Usage metadata may arrive on the chunk.
                     usage_meta = getattr(chunk, "usage_metadata", None)
@@ -765,8 +770,15 @@ class OmniOfflineClient:
                             )
             except Exception as e:
                 err_msg = str(e).lower()
-                # Tools-related rejection => signal fallback path.
-                if "tool" in err_msg or "function" in err_msg:
+                # 与 generate_content_stream 调用本身的异常处理保持一致：
+                # 只有错误消息明确含 "tool/function" + "not_support/unsupported/
+                # invalid" 关键字组合时才认定 tools 不被 SDK / 模型支持，永久
+                # 翻盘退到 OpenAI-compat。其他流中异常（含 "function call timeout"
+                # 之类的 transient）原样 raise，让上层临时 fallback，下一轮再试。
+                if (
+                    ("tool" in err_msg or "function" in err_msg)
+                    and ("not support" in err_msg or "unsupported" in err_msg or "invalid" in err_msg)
+                ):
                     raise _GenaiToolsUnsupported(f"genai stream rejected tools: {e}") from e
                 raise
 
@@ -781,9 +793,13 @@ class OmniOfflineClient:
                     }
                     for i, (tc_id, tc_name, _args, tc_raw) in enumerate(collected_tool_calls)
                 ]
+                # 把本轮已经流给用户的 text 一起写进历史。Gemini 在同一 turn
+                # 里允许 text part 与 function_call part 并存；如果这里仍写
+                # ``content=""``，下一轮 LLM 看到的上下文会缺掉前半句，模型
+                # 会重复前缀或改口，最终持久化历史的顺序也跟真实生成顺序对不上。
                 messages.append({
                     "role": "assistant",
-                    "content": "",
+                    "content": streamed_text_buffer,
                     "tool_calls": tool_calls_dict,
                 })
                 for i, (tc_id, tc_name, tc_args, tc_raw) in enumerate(collected_tool_calls):

@@ -391,6 +391,118 @@ async def test_offline_genai_transient_error_does_not_disable_tools(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_offline_genai_streamed_text_persisted_with_tool_call(monkeypatch):
+    """同一 Gemini turn 里 text + function_call 并存时，写历史的 assistant
+    消息 content 必须包含本轮已流给用户的 text，否则下一轮 LLM 看不到自己
+    说过的前半句，会重复或改口。
+
+    回归保护：CodeRabbit PR #1035 第 5 轮 review."""
+    from main_logic import omni_offline_client as _ofc
+    from main_logic.omni_offline_client import OmniOfflineClient
+    from main_logic.tool_calling import ToolCall, ToolResult
+
+    monkeypatch.setattr(_ofc, "_GENAI_AVAILABLE", True)
+
+    # 构造一个 fake stream：单个 chunk 同时携带 text part + function_call part
+    class _Part:
+        def __init__(self, *, text=None, function_call=None):
+            self.text = text
+            self.function_call = function_call
+
+    class _FunctionCall:
+        def __init__(self, name, args, id_=""):
+            self.name = name
+            self.args = args
+            self.id = id_
+
+    class _Content:
+        def __init__(self, parts):
+            self.parts = parts
+
+    class _Candidate:
+        def __init__(self, content):
+            self.content = content
+
+    class _Chunk:
+        def __init__(self, candidates, usage=None):
+            self.candidates = candidates
+            self.usage_metadata = usage
+
+    async def _fake_stream():
+        yield _Chunk(candidates=[_Candidate(_Content([
+            _Part(text="让我查一下天气，"),
+            _Part(function_call=_FunctionCall("get_weather", {"city": "Tokyo"}, id_="c1")),
+        ]))])
+
+    class _StreamWrapper:
+        def __init__(self): self._gen = _fake_stream()
+        def __aiter__(self): return self
+        async def __anext__(self):
+            try:
+                return await self._gen.__anext__()
+            except StopAsyncIteration:
+                raise
+
+    call_count = [0]
+
+    class _FakeAioClient:
+        class models:
+            @staticmethod
+            async def generate_content_stream(**_kw):
+                call_count[0] += 1
+                if call_count[0] == 1:
+                    return _StreamWrapper()
+                # 第二轮（tool 已执行）：返回结尾文本
+                async def _fin():
+                    yield _Chunk(candidates=[_Candidate(_Content([
+                        _Part(text="Tokyo 现在 22°C 喵。"),
+                    ]))])
+                w = _StreamWrapper()
+                w._gen = _fin()
+                return w
+
+    class _FakeClient:
+        aio = _FakeAioClient()
+        def close(self): pass
+
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    client.model = "gemini-2.5-flash"
+    client.api_key = "fake"
+    client._tool_definitions = []
+    client.has_tools = lambda: False  # bypass; we still want function_call detected
+    client.max_tool_iterations = 3
+    client._genai_client = _FakeClient()
+    client._genai_tools_unsupported = False
+    client.llm = type("F", (), {"max_completion_tokens": 100})()
+
+    async def handler(call: ToolCall) -> ToolResult:
+        return ToolResult(call_id=call.call_id, name=call.name, output={"temp_c": 22})
+
+    client.on_tool_call = handler
+
+    messages = [{"role": "user", "content": "weather Tokyo"}]
+    out = []
+    async for ch in client._astream_genai_with_tools(messages):
+        if ch.content:
+            out.append(ch.content)
+
+    # 用户拿到的 text 应该是前半句 + 后半句
+    full_user_text = "".join(out)
+    assert "让我查一下天气" in full_user_text
+    assert "22°C" in full_user_text
+
+    # 历史里 tool_calls 那条 assistant 消息的 content 必须包含已 yield 的前半句
+    assistant_with_tool_calls = next(
+        m for m in messages
+        if isinstance(m, dict) and m.get("role") == "assistant" and m.get("tool_calls")
+    )
+    assert "让我查一下天气" in assistant_with_tool_calls["content"], (
+        "同轮先 yield text 再调工具时，写历史的 content 必须保留 streamed text，"
+        "否则下一轮 LLM 看不到自己已说过的前半句"
+    )
+
+
+@pytest.mark.asyncio
 async def test_offline_genai_tools_unsupported_error_correctly_disables_path(monkeypatch):
     """与上一条对偶：当 genai 真的报"tools not supported"时，必须被包装成
     `_GenaiToolsUnsupported`，让 `_astream_with_tools` 翻 `_genai_tools_unsupported`
