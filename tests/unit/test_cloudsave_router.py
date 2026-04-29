@@ -1352,8 +1352,8 @@ async def test_download_no_active_session_force_ignored():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_download_after_force_is_active_false():
-    """After force terminate, mgr.is_active should be False."""
+async def test_download_after_force_triggers_disconnect():
+    """force=true should trigger the active session disconnect before download."""
     with TemporaryDirectory() as td:
         mgr = _make_active_session_mgr()
         cm = _setup_force_test_env(Path(td), active_mgr=mgr)
@@ -1384,7 +1384,6 @@ async def test_download_after_force_is_active_false():
                     _DummyRequest({"overwrite": True, "backup_before_overwrite": True, "force": True}),
                 )
 
-        # disconnected_by_server → cleanup → end_session sets is_active=False
         mgr.disconnected_by_server.assert_awaited_once()
 
 

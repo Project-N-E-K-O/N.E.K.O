@@ -1005,7 +1005,10 @@ def test_windows_powershell_directory_picker_uses_topmost_owner(tmp_path):
     assert result == selected_root
     command = run_mock.call_args.args[0]
     script = command[-1]
+    assert "Add-Type -AssemblyName System.Drawing" in script
     assert "$owner.TopMost = $true" in script
+    assert "$owner.Activate()" in script
+    assert "$owner.BringToFront()" in script
     assert "[System.Windows.Forms.Application]::DoEvents()" in script
     assert "$result = $dialog.ShowDialog($owner)" in script
 
