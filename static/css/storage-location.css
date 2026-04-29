@@ -28,8 +28,7 @@ body.storage-location-modal-open #storage-location-overlay * {
     backdrop-filter: blur(16px) saturate(1.08);
     -webkit-backdrop-filter: blur(16px) saturate(1.08);
     isolation: isolate;
-    overflow-x: hidden;
-    overflow-y: auto;
+    overflow: hidden;
 }
 
 .storage-location-overlay::before {
@@ -76,8 +75,7 @@ body.storage-location-modal-open #storage-location-overlay * {
     isolation: isolate;
     width: min(960px, calc(100vw - 32px));
     max-height: calc(100vh - 48px);
-    overflow-x: hidden;
-    overflow-y: auto;
+    overflow: hidden;
     overscroll-behavior: contain;
     border-radius: 22px;
     border: 1px solid rgba(97, 147, 190, 0.22);
@@ -95,7 +93,7 @@ body.storage-location-modal-open #storage-location-overlay * {
 .storage-location-modal::before {
     content: "";
     position: absolute;
-    inset: -18px;
+    inset: 0;
     z-index: 0;
     opacity: 0.16;
     pointer-events: none;
@@ -121,7 +119,6 @@ body.storage-location-modal-open #storage-location-overlay * {
         34% 18%,
         54% 92%,
         88% 36%;
-    transform: rotate(-4deg);
 }
 
 .storage-location-close {
@@ -158,6 +155,8 @@ body.storage-location-modal-open #storage-location-overlay * {
 .storage-location-view {
     position: relative;
     z-index: 1;
+    max-height: calc(100vh - 48px);
+    overflow: hidden;
 }
 
 .storage-location-shell {
@@ -165,6 +164,7 @@ body.storage-location-modal-open #storage-location-overlay * {
     gap: 20px;
     padding: 32px;
     padding-right: 60px;
+    box-sizing: border-box;
 }
 
 .storage-location-shell--intro {
@@ -175,7 +175,7 @@ body.storage-location-modal-open #storage-location-overlay * {
 
 .storage-location-shell--selection {
     gap: 18px;
-    padding: 36px 44px 34px;
+    padding: 34px 44px 32px;
     padding-right: 60px;
 }
 

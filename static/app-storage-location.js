@@ -1805,17 +1805,17 @@
 
         var actions = createElement('div', 'storage-location-actions storage-location-intro-actions');
         var pickNewButton = registerActionButton(
-            createElement('button', 'storage-location-btn storage-location-btn--primary storage-location-intro-button storage-location-intro-button--primary', translate('storage.selectionIntroPickNew', '选个新的小窝'))
+            createElement('button', 'storage-location-btn storage-location-btn--primary storage-location-intro-button storage-location-intro-button--primary', translate('storage.selectionIntroPickNew', '使用专属小窝'))
         );
         pickNewButton.type = 'button';
-        pickNewButton.addEventListener('click', continueFromSelectionIntro);
+        pickNewButton.addEventListener('click', continueWithCurrentPath);
         actions.appendChild(pickNewButton);
 
         var useCurrentButton = registerActionButton(
-            createElement('button', 'storage-location-btn storage-location-btn--secondary storage-location-intro-button storage-location-intro-button--secondary', translate('storage.selectionIntroUseCurrent', '保持不动'))
+            createElement('button', 'storage-location-btn storage-location-btn--secondary storage-location-intro-button storage-location-intro-button--secondary', translate('storage.selectionIntroUseCurrent', '其他小窝'))
         );
         useCurrentButton.type = 'button';
-        useCurrentButton.addEventListener('click', continueWithCurrentPath);
+        useCurrentButton.addEventListener('click', continueFromSelectionIntro);
         actions.appendChild(useCurrentButton);
         content.appendChild(actions);
 
