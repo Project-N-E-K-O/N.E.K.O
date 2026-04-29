@@ -959,6 +959,110 @@ async def test_offline_openai_path_persists_streamed_text_with_tool_calls():
 
 
 @pytest.mark.asyncio
+async def test_offline_genai_path_drops_empty_name_function_calls(monkeypatch):
+    """与 OpenAI 路径的 collect_tool_calls 防御对偶：GenAI 路径流式收到空
+    name 的 function_call 时也必须丢弃，否则会用空 name 调 on_tool_call
+    并把非法 tool_calls 历史写回 messages，下一轮 generate_content_stream
+    被 schema reject。
+
+    回归保护：CodeRabbit PR #1035 第 11 轮 review."""
+    from main_logic import omni_offline_client as _ofc
+    from main_logic.omni_offline_client import OmniOfflineClient
+    from main_logic.tool_calling import ToolCall, ToolResult
+
+    monkeypatch.setattr(_ofc, "_GENAI_AVAILABLE", True)
+
+    # 构造 fake stream：一个 function_call 有 name，另一个 name 为空
+    class _Part:
+        def __init__(self, *, function_call=None, text=None):
+            self.text = text
+            self.function_call = function_call
+
+    class _FunctionCall:
+        def __init__(self, name, args, id_=""):
+            self.name = name
+            self.args = args
+            self.id = id_
+
+    class _Content:
+        def __init__(self, parts): self.parts = parts
+
+    class _Candidate:
+        def __init__(self, content): self.content = content
+
+    class _Chunk:
+        def __init__(self, candidates): self.candidates = candidates; self.usage_metadata = None
+
+    async def _fake_stream():
+        # 同 turn 里：1 个有效 function_call + 1 个 name 空的
+        yield _Chunk(candidates=[_Candidate(_Content([
+            _Part(function_call=_FunctionCall("good_tool", {"x": 1}, id_="c1")),
+            _Part(function_call=_FunctionCall("", {"y": 2}, id_="c_empty")),  # 该被 drop
+        ]))])
+
+    class _StreamWrapper:
+        def __init__(self): self._gen = _fake_stream()
+        def __aiter__(self): return self
+        async def __anext__(self):
+            return await self._gen.__anext__()
+
+    call_count = [0]
+    handler_calls: list = []
+
+    class _FakeAioClient:
+        class models:
+            @staticmethod
+            async def generate_content_stream(**_kw):
+                call_count[0] += 1
+                if call_count[0] == 1:
+                    return _StreamWrapper()
+                # 第 2 轮：tool 已执行，给个最终文本
+                async def _fin():
+                    yield _Chunk(candidates=[_Candidate(_Content([
+                        _Part(text="done")
+                    ]))])
+                w = _StreamWrapper()
+                w._gen = _fin()
+                return w
+
+    class _FakeClient:
+        aio = _FakeAioClient()
+        def close(self): pass
+
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    client.model = "gemini-2.5-flash"
+    client.api_key = "fake"
+    client._tool_definitions = []
+    client.has_tools = lambda: False
+    client.max_tool_iterations = 3
+    client._genai_client = _FakeClient()
+    client._genai_tools_unsupported = False
+    client.llm = type("F", (), {"max_completion_tokens": 100})()
+
+    async def handler(call: ToolCall) -> ToolResult:
+        handler_calls.append(call.name)
+        return ToolResult(call_id=call.call_id, name=call.name, output={"ok": True})
+
+    client.on_tool_call = handler
+
+    messages = [{"role": "user", "content": "x"}]
+    async for _ in client._astream_genai_with_tools(messages):
+        pass
+
+    # handler 只该被 good_tool 调用过，空 name 的被 drop
+    assert handler_calls == ["good_tool"], (
+        f"GenAI 路径必须 drop 空 name 的 function_call，实际 handler 收到：{handler_calls}"
+    )
+    # 写回 messages 的 assistant.tool_calls 也只能有 good_tool
+    assistant_with_tools = next(
+        m for m in messages
+        if isinstance(m, dict) and m.get("role") == "assistant" and m.get("tool_calls")
+    )
+    names = [tc["function"]["name"] for tc in assistant_with_tools["tool_calls"]]
+    assert names == ["good_tool"]
+
+
+@pytest.mark.asyncio
 async def test_offline_iteration_cap_breaks_runaway_loop():
     """If the model keeps requesting tools forever, we stop after
     ``max_tool_iterations`` LLM calls instead of looping indefinitely."""

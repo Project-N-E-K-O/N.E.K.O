@@ -778,6 +778,18 @@ class OmniOfflineClient:
                         text = getattr(part, "text", None) or ""
                         fn_call = getattr(part, "function_call", None)
                         if fn_call is not None:
+                            tc_name = (getattr(fn_call, "name", "") or "").strip()
+                            if not tc_name:
+                                # 与 OpenAI 路径对偶：空 name 的 function_call 是
+                                # SDK glitch / 流提前中断的产物，写进 messages 会
+                                # 让下一轮 generate_content_stream 收到无名
+                                # function_call 直接 schema reject。drop + warning。
+                                logger.warning(
+                                    "OmniOfflineClient(genai): dropping function_call "
+                                    "with empty name (id=%r)",
+                                    getattr(fn_call, "id", ""),
+                                )
+                                continue
                             args = dict(getattr(fn_call, "args", None) or {})
                             try:
                                 raw_args = json.dumps(args, ensure_ascii=False)
@@ -785,7 +797,7 @@ class OmniOfflineClient:
                                 raw_args = "{}"
                             collected_tool_calls.append((
                                 getattr(fn_call, "id", "") or "",
-                                getattr(fn_call, "name", "") or "",
+                                tc_name,
                                 args,
                                 raw_args,
                             ))
