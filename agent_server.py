@@ -1745,6 +1745,11 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                     await _emit_main_event("task_update", lanlan_name, task=task_payload)
 
                 async def _run_user_plugin_dispatch():
+                    # Default delivery mode; overridden after the plugin result
+                    # is parsed below. Cancel / exception branches read this so
+                    # they honor whatever the plugin already declared, not a
+                    # hard-coded "proactive" — see _resolve_delivery_mode call.
+                    _delivery_mode = "proactive"
                     try:
                         up_result = await Modules.task_executor._execute_user_plugin(
                             task_id=result.task_id,
@@ -1882,23 +1887,27 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                             desc=f"{plugin_id}.{entry_id}: {result.task_description or ''}",
                             detail=cancel_msg[:200], success=False, cancelled=True,
                         )
-                        try:
-                            display_id = await _get_plugin_display_id(plugin_id)
-                            await _emit_task_result(
-                                lanlan_name,
-                                channel="user_plugin",
-                                task_id=str(result.task_id or ""),
-                                success=False,
-                                summary=cancel_msg,
-                                detail=cancel_msg,
-                                error_message=cancel_msg,
-                                status="cancelled",
-                                source_kind="plugin",
-                                source_name=display_id,
-                                delivery_mode="proactive",
-                            )
-                        except Exception as emit_err:
-                            logger.debug("[TaskExecutor] emit task_result(cancelled) failed: task_id=%s error=%s", result.task_id, emit_err)
+                        # Honor plugin's resolved delivery mode if it had a chance
+                        # to run before cancel; default to "proactive" otherwise.
+                        # silent → skip the emit entirely (matches success path).
+                        if _delivery_mode != "silent":
+                            try:
+                                display_id = await _get_plugin_display_id(plugin_id)
+                                await _emit_task_result(
+                                    lanlan_name,
+                                    channel="user_plugin",
+                                    task_id=str(result.task_id or ""),
+                                    success=False,
+                                    summary=cancel_msg,
+                                    detail=cancel_msg,
+                                    error_message=cancel_msg,
+                                    status="cancelled",
+                                    source_kind="plugin",
+                                    source_name=display_id,
+                                    delivery_mode=_delivery_mode,
+                                )
+                            except Exception as emit_err:
+                                logger.debug("[TaskExecutor] emit task_result(cancelled) failed: task_id=%s error=%s", result.task_id, emit_err)
                         try:
                             await _emit_main_event(
                                 "task_update", lanlan_name,
@@ -1925,24 +1934,27 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                             desc=f"{plugin_id}.{entry_id}: {result.task_description or ''}",
                             detail=str(e)[:200], success=False,
                         )
-                        try:
-                            display_id = await _get_plugin_display_id(plugin_id)
-                            _exc_text = str(e)[:500]
-                            await _emit_task_result(
-                                lanlan_name,
-                                channel="user_plugin",
-                                task_id=str(result.task_id or ""),
-                                success=False,
-                                summary=_exc_text,
-                                detail=_exc_text,
-                                error_message=_exc_text,
-                                status="failed",
-                                source_kind="plugin",
-                                source_name=display_id,
-                                delivery_mode="proactive",
-                            )
-                        except Exception as emit_err:
-                            logger.debug("[TaskExecutor] emit task_result(dispatch_failed) failed: task_id=%s error=%s", result.task_id, emit_err)
+                        # Honor plugin's resolved delivery mode (if any); silent
+                        # plugins stay silent even on dispatch exception.
+                        if _delivery_mode != "silent":
+                            try:
+                                display_id = await _get_plugin_display_id(plugin_id)
+                                _exc_text = str(e)[:500]
+                                await _emit_task_result(
+                                    lanlan_name,
+                                    channel="user_plugin",
+                                    task_id=str(result.task_id or ""),
+                                    success=False,
+                                    summary=_exc_text,
+                                    detail=_exc_text,
+                                    error_message=_exc_text,
+                                    status="failed",
+                                    source_kind="plugin",
+                                    source_name=display_id,
+                                    delivery_mode=_delivery_mode,
+                                )
+                            except Exception as emit_err:
+                                logger.debug("[TaskExecutor] emit task_result(dispatch_failed) failed: task_id=%s error=%s", result.task_id, emit_err)
                         try:
                             await _emit_main_event(
                                 "task_update", lanlan_name,
@@ -3108,6 +3120,10 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
                 task_payload["step_total"] = step_total
             await _emit_main_event("task_update", lanlan_name, task=task_payload)
 
+        # Default delivery mode; overridden after the plugin result is parsed
+        # below. Cancel / exception branches read this so they honor whatever
+        # the plugin already declared, not a hard-coded "proactive".
+        _delivery_mode = "proactive"
         try:
             res = await Modules.task_executor.execute_user_plugin_direct(
                 task_id=task_id,
@@ -3177,23 +3193,27 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
             info["status"] = "cancelled"
             if not info.get("error"):
                 info["error"] = "Cancelled by shutdown"
-            try:
-                display_id = await _get_plugin_display_id(plugin_id)
-                await _emit_task_result(
-                    lanlan_name,
-                    channel="user_plugin",
-                    task_id=task_id,
-                    success=False,
-                    summary="cancelled",
-                    detail="cancelled",
-                    error_message="cancelled",
-                    status="cancelled",
-                    source_kind="plugin",
-                    source_name=display_id,
-                    delivery_mode="proactive",
-                )
-            except Exception as emit_err:
-                logger.debug("[Plugin] emit task_result(cancelled) failed: task_id=%s plugin_id=%s error=%s", task_id, plugin_id, emit_err)
+            # Honor plugin's resolved delivery mode if it had a chance to
+            # run before cancel; default to "proactive" otherwise. silent
+            # plugins stay silent.
+            if _delivery_mode != "silent":
+                try:
+                    display_id = await _get_plugin_display_id(plugin_id)
+                    await _emit_task_result(
+                        lanlan_name,
+                        channel="user_plugin",
+                        task_id=task_id,
+                        success=False,
+                        summary="cancelled",
+                        detail="cancelled",
+                        error_message="cancelled",
+                        status="cancelled",
+                        source_kind="plugin",
+                        source_name=display_id,
+                        delivery_mode=_delivery_mode,
+                    )
+                except Exception as emit_err:
+                    logger.debug("[Plugin] emit task_result(cancelled) failed: task_id=%s plugin_id=%s error=%s", task_id, plugin_id, emit_err)
             raise
         except Exception as e:
             if info.get("status") == "cancelled":
@@ -3209,24 +3229,27 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
                 task_id, plugin_id, type(e).__name__,
             )
             print(f"[Plugin] Direct execute raw error (task_id={task_id}, plugin_id={plugin_id}):\n{_tb.format_exc()}")
-            try:
-                display_id = await _get_plugin_display_id(plugin_id)
-                _exc_text = str(e)[:500]
-                await _emit_task_result(
-                    lanlan_name,
-                    channel="user_plugin",
-                    task_id=task_id,
-                    success=False,
-                    summary=_exc_text,
-                    detail=_exc_text,
-                    error_message=_exc_text,
-                    status="failed",
-                    source_kind="plugin",
-                    source_name=display_id,
-                    delivery_mode="proactive",
-                )
-            except Exception as emit_err:
-                logger.debug("[Plugin] emit task_result(exception) failed: task_id=%s plugin_id=%s error=%s", task_id, plugin_id, emit_err)
+            # Honor plugin's resolved delivery mode (if any); silent plugins
+            # stay silent even on dispatch exception.
+            if _delivery_mode != "silent":
+                try:
+                    display_id = await _get_plugin_display_id(plugin_id)
+                    _exc_text = str(e)[:500]
+                    await _emit_task_result(
+                        lanlan_name,
+                        channel="user_plugin",
+                        task_id=task_id,
+                        success=False,
+                        summary=_exc_text,
+                        detail=_exc_text,
+                        error_message=_exc_text,
+                        status="failed",
+                        source_kind="plugin",
+                        source_name=display_id,
+                        delivery_mode=_delivery_mode,
+                    )
+                except Exception as emit_err:
+                    logger.debug("[Plugin] emit task_result(exception) failed: task_id=%s plugin_id=%s error=%s", task_id, plugin_id, emit_err)
         finally:
             try:
                 await _emit_main_event(

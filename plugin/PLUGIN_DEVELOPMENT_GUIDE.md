@@ -497,12 +497,7 @@ value = await store.get("key")  # → {"count": 42}
 
 ### 3.7 消息类型
 
-| 类型 | 用途 |
-|------|------|
-| `text` | 纯文本消息 |
-| `url` | URL 链接 |
-| `binary` | 小型二进制数据（直接传输） |
-| `binary_url` | 大文件（通过 URL 引用） |
+`push_message()` 接受的 `message_type` 完整列表见 [3.3 节"`push_message` 的 `message_type` 取值"](#push_message-的-message_type-取值)：基础载荷类型（`text` / `url` / `binary` / `binary_url`）+ 系统语义类型（`proactive_notification` / `music_allowlist_add` / `music_play_url`）。
 
 ### 3.8 优先级
 
