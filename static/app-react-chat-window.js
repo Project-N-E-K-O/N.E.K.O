@@ -405,6 +405,7 @@
 
     var _fetchSeq = 0;
     var _savePrefsSeq = 0;
+    var _pendingPreferencesUpdate = false;
 
     function fetchChatActions() {
         var seq = ++_fetchSeq;
@@ -422,7 +423,9 @@
         .then(function (data) {
             if (seq !== _fetchSeq) return _cachedActions; // stale response
             _cachedActions = (data && data.actions) || [];
-            _cachedPreferences = (data && data.preferences) || { pinned: [], hidden: [], recent: [] };
+            if (!_pendingPreferencesUpdate) {
+                _cachedPreferences = (data && data.preferences) || { pinned: [], hidden: [], recent: [] };
+            }
             _actionsLoading = false;
             renderWindow();
             return _cachedActions;
@@ -473,6 +476,7 @@
     function saveChatActionPreferences(prefs) {
         var seq = ++_savePrefsSeq;
         var previousPreferences = _cachedPreferences;
+        _pendingPreferencesUpdate = true;
         _cachedPreferences = prefs;
         renderWindow();
         fetch('/chat/actions/preferences', {
@@ -482,9 +486,11 @@
             body: JSON.stringify(prefs)
         }).then(function (res) {
             if (!res.ok) throw new Error('HTTP ' + res.status);
+            if (seq === _savePrefsSeq) _pendingPreferencesUpdate = false;
         }).catch(function (err) {
             if (seq !== _savePrefsSeq) return;
             console.warn('[ReactChatWindow] saveChatActionPreferences failed, rolling back:', err);
+            _pendingPreferencesUpdate = false;
             _cachedPreferences = previousPreferences;
             renderWindow();
         });
@@ -1148,7 +1154,7 @@
             } else if (b.type === 'image' && b.url) {
                 msgBlocks.push({ type: 'image', url: b.url, alt: b.alt || '' });
             } else if (b.type === 'url' && b.url) {
-                msgBlocks.push({ type: 'link', url: b.url, text: b.title || b.url });
+                msgBlocks.push({ type: 'link', url: b.url, title: b.title || b.url });
             } else if (b.type === 'card' && b.title) {
                 var cardText = b.title;
                 if (b.data) {
@@ -1171,9 +1177,9 @@
                 var jsonLabel = b.label ? b.label + ':\n' : '';
                 msgBlocks.push({ type: 'text', text: jsonLabel + JSON.stringify(b.data, null, 2) });
             } else if (b.type === 'audio' && b.url) {
-                msgBlocks.push({ type: 'link', url: b.url, text: '🔊 ' + (b.title || 'Audio') });
+                msgBlocks.push({ type: 'link', url: b.url, title: '🔊 ' + (b.title || 'Audio') });
             } else if (b.type === 'video' && b.url) {
-                msgBlocks.push({ type: 'link', url: b.url, text: '🎬 ' + (b.title || 'Video') });
+                msgBlocks.push({ type: 'link', url: b.url, title: '🎬 ' + (b.title || 'Video') });
             }
         }
         if (msgBlocks.length === 0 && text) {

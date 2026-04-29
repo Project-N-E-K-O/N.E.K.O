@@ -8,7 +8,7 @@ from typing import Any, Dict, List
 from plugin.sdk.plugin import plugin_entry, ui, tr, Ok, Err, SdkError
 from plugin.sdk.shared.core.router import PluginRouter
 
-from .._api import geocode_city
+from .._api import GeocodeError, geocode_city
 
 _STORE_KEY = "saved_locations"
 
@@ -51,6 +51,14 @@ class LocationsRouter(PluginRouter):
                 plugin.logger.error("store.set failed: {}", result.error)
                 return False
         return True
+
+    def _new_location_id(self, locations: List[Dict[str, Any]]) -> str:
+        existing = {str(loc.get("id")) for loc in locations if loc.get("id")}
+        for _ in range(20):
+            candidate = uuid.uuid4().hex[:8]
+            if candidate not in existing:
+                return candidate
+        raise RuntimeError("failed to generate unique location id")
 
     # ── entries ──
 
@@ -101,7 +109,11 @@ class LocationsRouter(PluginRouter):
         # geocode
         try:
             geo = await geocode_city(city.strip(), locale=locale)
-        except Exception:
+        except GeocodeError as exc:
+            plugin.logger.warning("geocode failed for {}: {}", city, exc)
+            return Err(SdkError(f"无法定位城市: {city} ({exc.cause})"))
+        except Exception as exc:
+            plugin.logger.warning("geocode failed for {}: {}", city, exc)
             geo = None
         if not geo:
             return Err(SdkError(f"无法定位城市: {city}"))
@@ -114,7 +126,7 @@ class LocationsRouter(PluginRouter):
                 return Err(SdkError(f"标签 '{label}' 已存在"))
 
         new_loc: Dict[str, Any] = {
-            "id": uuid.uuid4().hex[:8],
+            "id": self._new_location_id(locations),
             "label": label.strip(),
             "city": geo["city"],
             "address": address.strip(),

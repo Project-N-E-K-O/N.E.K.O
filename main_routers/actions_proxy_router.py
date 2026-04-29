@@ -29,7 +29,11 @@ _PLUGIN_BASE = f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}"
 
 def _proxy_response(resp: httpx.Response):
     """Return upstream response with its original status code."""
-    return JSONResponse(status_code=resp.status_code, content=resp.json())
+    try:
+        content = resp.json()
+    except ValueError:
+        content = {"detail": resp.text}
+    return JSONResponse(status_code=resp.status_code, content=content)
 
 
 @router.get("/chat/actions")

@@ -865,8 +865,6 @@ def _extract_entries_preview(pid: str, cls: type, conf: dict, pdata: dict) -> Li
                         "metadata": _to_dict(getattr(event_meta, "metadata", {}) or {}),
                     })
     except Exception:
-        pass
-    except Exception:
         # Best-effort: preview must never break plugin listing.
         pass
 

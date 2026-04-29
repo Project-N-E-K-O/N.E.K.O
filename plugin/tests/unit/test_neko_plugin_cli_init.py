@@ -164,28 +164,6 @@ def test_generate_adapter_template(tmp_path: Path) -> None:
     assert "AdapterGatewayCore" in init_text
 
 
-# ---------------------------------------------------------------------------
-# CLI non-interactive mode
-# ---------------------------------------------------------------------------
-
-def test_cli_init_non_interactive(tmp_path: Path) -> None:
-    import cli as neko_plugin_cli
-
-    # Temporarily override plugins_root
-    target_plugins = tmp_path / "plugins"
-    target_plugins.mkdir()
-
-    exit_code = neko_plugin_cli.main([
-        "init", "cli_test_plugin",
-        "--no-interactive",
-        "--name", "CLI Test",
-        "--type", "plugin",
-    ])
-    # This will fail because it uses the real plugins_root, not tmp_path.
-    # That's expected — the non-interactive test via CLI needs the real path.
-    # We test the generator directly above instead.
-
-
 def test_non_interactive_extension_requires_interactive_host_id(tmp_path: Path, capsys) -> None:
     from argparse import Namespace
 

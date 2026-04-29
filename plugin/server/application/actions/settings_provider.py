@@ -249,7 +249,8 @@ def _collect_settings_actions_sync(
                 from plugin.config.service import load_plugin_config
                 config_data = load_plugin_config(pid, validate=False)
                 if isinstance(config_data, dict):
-                    section = config_data.get(toml_section)
+                    inner = config_data.get("config", config_data)
+                    section = inner.get(toml_section) if isinstance(inner, Mapping) else None
                     if isinstance(section, Mapping):
                         current_section = dict(section)
         except Exception as exc:

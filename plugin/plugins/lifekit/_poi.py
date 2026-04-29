@@ -59,33 +59,31 @@ class AMapPOI:
             "offset": str(min(limit, 25)),
             "sortrule": "distance",
         }
-        try:
-            async with httpx.AsyncClient(timeout=timeout) as c:
-                r = await c.get(url, params=params)
-                data = r.json()
-            if data.get("status") != "1":
-                return []
-            items: List[POIItem] = []
-            for poi in (data.get("pois") or []):
-                try:
-                    loc_str = poi.get("location", "")
-                    plon, plat = 0.0, 0.0
-                    if "," in loc_str:
-                        parts = loc_str.split(",")
-                        plon, plat = float(parts[0]), float(parts[1])
-                    items.append(POIItem(
-                        name=poi.get("name", ""),
-                        address=poi.get("address", "") if isinstance(poi.get("address"), str) else "",
-                        type_name=poi.get("type", "").split(";")[0] if poi.get("type") else "",
-                        distance_m=float(poi.get("distance", 0)),
-                        lat=plat, lon=plon,
-                        tel=poi.get("tel", "") if isinstance(poi.get("tel"), str) else "",
-                    ))
-                except (ValueError, TypeError, KeyError):
-                    continue
-            return items
-        except Exception:
-            return []
+        async with httpx.AsyncClient(timeout=timeout) as c:
+            r = await c.get(url, params=params)
+            r.raise_for_status()
+            data = r.json()
+        if data.get("status") != "1":
+            raise RuntimeError(data.get("info") or "AMap POI search failed")
+        items: List[POIItem] = []
+        for poi in (data.get("pois") or []):
+            try:
+                loc_str = poi.get("location", "")
+                plon, plat = 0.0, 0.0
+                if "," in loc_str:
+                    parts = loc_str.split(",")
+                    plon, plat = float(parts[0]), float(parts[1])
+                items.append(POIItem(
+                    name=poi.get("name", ""),
+                    address=poi.get("address", "") if isinstance(poi.get("address"), str) else "",
+                    type_name=poi.get("type", "").split(";")[0] if poi.get("type") else "",
+                    distance_m=float(poi.get("distance", 0)),
+                    lat=plat, lon=plon,
+                    tel=poi.get("tel", "") if isinstance(poi.get("tel"), str) else "",
+                ))
+            except (ValueError, TypeError, KeyError):
+                continue
+        return items
 
 
 # ── 百度 POI 搜索 ───────────────────────────────────────────────
@@ -112,32 +110,30 @@ class BaiduPOI:
             "coord_type": "1",  # input coords are WGS84
             "ret_coordtype": "gcj02ll",  # output in GCJ-02 (closest to WGS84 available from Baidu)
         }
-        try:
-            async with httpx.AsyncClient(timeout=timeout) as c:
-                r = await c.get(url, params=params)
-                data = r.json()
-            if data.get("status") != 0:
-                return []
-            items: List[POIItem] = []
-            for poi in (data.get("results") or []):
-                try:
-                    loc = poi.get("location", {})
-                    detail = poi.get("detail_info", {})
-                    items.append(POIItem(
-                        name=poi.get("name", ""),
-                        address=poi.get("address", ""),
-                        type_name=poi.get("detail_info", {}).get("tag", "") if isinstance(detail, dict) else "",
-                        distance_m=float(detail.get("distance", 0)) if isinstance(detail, dict) else 0,
-                        lat=float(loc.get("lat", 0)),
-                        lon=float(loc.get("lng", 0)),
-                        tel=detail.get("phone", "") if isinstance(detail, dict) else "",
-                        rating=str(detail.get("overall_rating", "")) if isinstance(detail, dict) else "",
-                    ))
-                except (ValueError, TypeError, KeyError):
-                    continue
-            return items
-        except Exception:
-            return []
+        async with httpx.AsyncClient(timeout=timeout) as c:
+            r = await c.get(url, params=params)
+            r.raise_for_status()
+            data = r.json()
+        if data.get("status") != 0:
+            raise RuntimeError(data.get("message") or "Baidu POI search failed")
+        items: List[POIItem] = []
+        for poi in (data.get("results") or []):
+            try:
+                loc = poi.get("location", {})
+                detail = poi.get("detail_info", {})
+                items.append(POIItem(
+                    name=poi.get("name", ""),
+                    address=poi.get("address", ""),
+                    type_name=poi.get("detail_info", {}).get("tag", "") if isinstance(detail, dict) else "",
+                    distance_m=float(detail.get("distance", 0)) if isinstance(detail, dict) else 0,
+                    lat=float(loc.get("lat", 0)),
+                    lon=float(loc.get("lng", 0)),
+                    tel=detail.get("phone", "") if isinstance(detail, dict) else "",
+                    rating=str(detail.get("overall_rating", "")) if isinstance(detail, dict) else "",
+                ))
+            except (ValueError, TypeError, KeyError):
+                continue
+        return items
 
 
 # ── Overpass (OpenStreetMap) POI 搜索 — 免费无 key ──────────────
@@ -186,38 +182,36 @@ class OverpassPOI:
         );
         out center {limit};
         """
-        try:
-            async with httpx.AsyncClient(timeout=timeout + 2) as c:
-                r = await c.post(
-                    "https://overpass-api.de/api/interpreter",
-                    data={"data": overpass_query},
-                )
-                data = r.json()
-            items: List[POIItem] = []
-            for el in (data.get("elements") or []):
-                try:
-                    tags = el.get("tags", {})
-                    name = tags.get("name", "")
-                    if not name:
-                        continue
-                    plat = float(el.get("lat") or el.get("center", {}).get("lat", 0))
-                    plon = float(el.get("lon") or el.get("center", {}).get("lon", 0))
-                    dist = haversine_km(lat, lon, plat, plon) * 1000 if plat and plon else 0
-                    addr_parts = [tags.get("addr:street", ""), tags.get("addr:housenumber", "")]
-                    items.append(POIItem(
-                        name=name,
-                        address=" ".join(p for p in addr_parts if p).strip(),
-                        type_name=tags.get("cuisine", tags.get("shop", tags.get("amenity", ""))),
-                        distance_m=dist,
-                        lat=plat, lon=plon,
-                        tel=tags.get("phone", ""),
-                    ))
-                except (ValueError, TypeError, KeyError):
+        async with httpx.AsyncClient(timeout=timeout + 2) as c:
+            r = await c.post(
+                "https://overpass-api.de/api/interpreter",
+                data={"data": overpass_query},
+            )
+            r.raise_for_status()
+            data = r.json()
+        items: List[POIItem] = []
+        for el in (data.get("elements") or []):
+            try:
+                tags = el.get("tags", {})
+                name = tags.get("name", "")
+                if not name:
                     continue
-            items.sort(key=lambda x: x.distance_m)
-            return items[:limit]
-        except Exception:
-            return []
+                plat = float(el.get("lat") or el.get("center", {}).get("lat", 0))
+                plon = float(el.get("lon") or el.get("center", {}).get("lon", 0))
+                dist = haversine_km(lat, lon, plat, plon) * 1000 if plat and plon else 0
+                addr_parts = [tags.get("addr:street", ""), tags.get("addr:housenumber", "")]
+                items.append(POIItem(
+                    name=name,
+                    address=" ".join(p for p in addr_parts if p).strip(),
+                    type_name=tags.get("cuisine", tags.get("shop", tags.get("amenity", ""))),
+                    distance_m=dist,
+                    lat=plat, lon=plon,
+                    tel=tags.get("phone", ""),
+                ))
+            except (ValueError, TypeError, KeyError):
+                continue
+        items.sort(key=lambda x: x.distance_m)
+        return items[:limit]
 
 
 # ── POI 搜索调度器 ──────────────────────────────────────────────

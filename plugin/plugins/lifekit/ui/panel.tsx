@@ -112,15 +112,19 @@ export default function LifeKitPanel(props: PluginSurfaceProps<LifeKitDashboardS
       toast.error(t("panel.errors.actionUnavailable"))
       return
     }
-    await props.api.call("update_config", {
-      default_city: configForm.values.default_city.trim(),
-      timezone: configForm.values.timezone.trim() || "Asia/Shanghai",
-      forecast_days: Number(configForm.values.forecast_days) || 3,
-      locale: configForm.values.locale,
-      force_locale: !!configForm.values.force_locale,
-    })
-    await props.api.refresh()
-    toast.success(t("panel.messages.configSaved"))
+    try {
+      await props.api.call("update_config", {
+        default_city: configForm.values.default_city.trim(),
+        timezone: configForm.values.timezone.trim() || "Asia/Shanghai",
+        forecast_days: Number(configForm.values.forecast_days) || 3,
+        locale: configForm.values.locale,
+        force_locale: !!configForm.values.force_locale,
+      })
+      await props.api.refresh()
+      toast.success(t("panel.messages.configSaved"))
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : String(err))
+    }
   }
 
   async function addLocation() {

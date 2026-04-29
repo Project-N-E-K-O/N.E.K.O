@@ -223,21 +223,24 @@ class LifeKitPlugin(NekoPluginBase):
             parts = tz.split("/")
             fallback_city = parts[-1].replace("_", " ") if len(parts) >= 2 else ""
         if fallback_city:
-            return await geocode_city(fallback_city, locale=self._i18n.locale)
+            try:
+                return await geocode_city(fallback_city, locale=self._i18n.locale)
+            except GeocodeError as exc:
+                self.logger.debug("Timezone fallback geocode failed: {}", exc)
+                return None
         return None
 
     # ── 共享：天气数据（LRU 缓存，供 routers 调用）──
 
     async def _get_weather_data(self, loc: Dict[str, Any]) -> tuple[Optional[Dict[str, Any]], str]:
         """获取天气数据。返回 (data, error_key)。"""
-        cache_key = f"{loc['lat']:.2f},{loc['lon']:.2f}"
         ttl = int(self._cfg.get("cache_ttl_seconds", 1800))
+        days = int(self._cfg.get("forecast_days", 3))
+        tz = str(self._cfg.get("timezone", "Asia/Shanghai"))
+        cache_key = f"{loc['lat']:.2f},{loc['lon']:.2f},days={days},tz={tz}"
         cached = self._cache.get(cache_key, ttl)
         if cached is not None:
             return cached, ""
-
-        days = int(self._cfg.get("forecast_days", 3))
-        tz = str(self._cfg.get("timezone", "Asia/Shanghai"))
         try:
             data = await fetch_forecast(loc["lat"], loc["lon"], days=days, tz=tz)
             self._cache.put(cache_key, data)
@@ -356,6 +359,29 @@ class LifeKitPlugin(NekoPluginBase):
         updates = {k: v for k, v in kwargs.items() if k in allowed and not k.startswith("_")}
         if not updates:
             return Err(SdkError("No valid fields to update"))
+        try:
+            if "forecast_days" in updates:
+                days = int(updates["forecast_days"])
+                if not 1 <= days <= 7:
+                    return Err(SdkError("forecast_days must be between 1 and 7"))
+                updates["forecast_days"] = days
+            if "cache_ttl_seconds" in updates:
+                ttl = int(updates["cache_ttl_seconds"])
+                if ttl < 0:
+                    return Err(SdkError("cache_ttl_seconds must be non-negative"))
+                updates["cache_ttl_seconds"] = ttl
+            if "force_locale" in updates:
+                updates["force_locale"] = bool(updates["force_locale"])
+            if "locale" in updates:
+                locale = str(updates["locale"])
+                if locale not in {"", "zh-CN", "zh-TW", "en"}:
+                    return Err(SdkError("locale must be one of: zh-CN, zh-TW, en"))
+                updates["locale"] = locale
+            for key in ("default_city", "timezone"):
+                if key in updates:
+                    updates[key] = str(updates[key])
+        except (TypeError, ValueError) as exc:
+            return Err(SdkError(f"Invalid config value: {exc}"))
         try:
             await self.config.update({"lifekit": updates})
             await self._reload_config()

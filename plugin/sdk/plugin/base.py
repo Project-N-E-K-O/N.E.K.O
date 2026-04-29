@@ -58,6 +58,33 @@ class NekoPluginBase(_SharedNekoPluginBase):
                 section_dict = dict(config_section) if isinstance(config_section, Mapping) else None
                 self._settings_instance = create_settings_safe(settings_cls, section_dict)
 
+    def _is_valid_chat_content_block(self, block: dict[str, Any]) -> bool:
+        block_type = block.get("type")
+        if not isinstance(block_type, str):
+            return False
+        if block_type == "text":
+            return isinstance(block.get("text"), str)
+        if block_type in {"image", "url", "audio", "video"}:
+            return isinstance(block.get("url"), str) and bool(block.get("url"))
+        if block_type == "card":
+            return isinstance(block.get("title"), str)
+        if block_type == "json":
+            label = block.get("label")
+            return label is None or isinstance(label, str)
+        if block_type == "table":
+            headers = block.get("headers")
+            rows = block.get("rows", [])
+            if not isinstance(headers, list) or any(not isinstance(h, (str, int, float)) for h in headers):
+                return False
+            if not isinstance(rows, list):
+                return False
+            return all(
+                isinstance(row, list)
+                and all(isinstance(cell, (str, int, float)) or cell is None for cell in row)
+                for row in rows
+            )
+        return False
+
     def _load_plugin_i18n(self) -> PluginI18n:
         meta: dict[str, object] = {"config_path": str(self.config_dir / "plugin.toml")}
         metadata = self.metadata
@@ -277,7 +304,13 @@ class NekoPluginBase(_SharedNekoPluginBase):
         """
         validated: list[dict[str, Any]] = []
         for block in blocks:
-            if not isinstance(block, dict) or "type" not in block:
+            if not isinstance(block, dict):
+                continue
+            if not self._is_valid_chat_content_block(block):
+                logger = getattr(self.ctx, "logger", None)
+                debug = getattr(logger, "debug", None)
+                if callable(debug):
+                    debug("Skipping invalid chat content block: {}", block.get("type"))
                 continue
             validated.append(block)
         if not validated:
