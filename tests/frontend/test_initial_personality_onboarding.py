@@ -142,6 +142,18 @@ def _bootstrap_page(mock_page: Page) -> None:
                 }
 
                 if (requestUrl === '/api/characters/character/%E5%B0%8F%E5%A4%A9/persona-selection' && method === 'PUT') {
+                    if (body && body.source === 'onboarding') {
+                        window.__personaOnboardingState = {
+                            ...window.__personaOnboardingState,
+                            status: 'completed',
+                        };
+                    } else if (body && body.source === 'manual_reselect') {
+                        window.__personaOnboardingState = {
+                            ...window.__personaOnboardingState,
+                            manual_reselect_character_name: '',
+                            manual_reselect_requested_at: '',
+                        };
+                    }
                     return new Response(JSON.stringify({
                         success: true,
                         selection: {
@@ -523,6 +535,65 @@ def test_onboarding_confirm_dispatches_character_update_event(mock_page: Page):
         "characterName": "小天",
         "presetId": "classic_genki",
     }
+
+    request_log = mock_page.evaluate("() => window.__requestLog")
+    assert sum(
+        1
+        for entry in request_log
+        if entry["url"] == "/api/characters/character/%E5%B0%8F%E5%A4%A9/persona-selection"
+        and entry["method"] == "PUT"
+    ) == 1
+    assert not any(
+        entry["url"] == "/api/characters/persona-onboarding-state"
+        and entry["method"] == "POST"
+        and entry["body"] == {"status": "completed"}
+        for entry in request_log
+    )
+
+
+@pytest.mark.frontend
+def test_manual_reselect_confirm_does_not_send_followup_delete(mock_page: Page):
+    _bootstrap_page(mock_page)
+    mock_page.evaluate(
+        """
+        () => {
+            window.universalTutorialManager.isTutorialRunning = false;
+            window.__tutorialPromptState = 'completed';
+            window.__personaOnboardingState = {
+                status: 'completed',
+                handled_at: '2026-04-29T12:00:00Z',
+                manual_reselect_character_name: '小天',
+                manual_reselect_requested_at: '2026-04-29T12:10:00Z',
+            };
+        }
+        """
+    )
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static" / "js" / "character_personality_onboarding.js"))
+
+    mock_page.evaluate(
+        """
+        () => {
+            window.CharacterPersonalityOnboarding.bootstrap();
+        }
+        """
+    )
+
+    mock_page.locator("[data-testid='character-personality-preset-classic_genki']").click()
+    mock_page.locator("[data-testid='character-personality-confirm']").click()
+    expect(mock_page.locator("[data-testid='character-personality-overlay']")).to_be_hidden()
+
+    request_log = mock_page.evaluate("() => window.__requestLog")
+    assert sum(
+        1
+        for entry in request_log
+        if entry["url"] == "/api/characters/character/%E5%B0%8F%E5%A4%A9/persona-selection"
+        and entry["method"] == "PUT"
+    ) == 1
+    assert not any(
+        entry["url"] == "/api/characters/persona-reselect-current"
+        and entry["method"] == "DELETE"
+        for entry in request_log
+    )
 
 
 @pytest.mark.frontend

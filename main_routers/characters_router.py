@@ -2033,6 +2033,17 @@ async def update_character_persona_selection(name: str, request: Request):
 
         initialize_one_character = get_init_one_catgirl()
         await initialize_one_character(name, is_new=False)
+        if source == "manual_reselect":
+            await asyncio.to_thread(
+                clear_manual_personality_reselect,
+                config_manager=config_manager,
+            )
+        elif source == "onboarding":
+            await asyncio.to_thread(
+                mark_initial_personality_state,
+                "completed",
+                config_manager=config_manager,
+            )
     except Exception:
         await _rollback_character_persona_selection_change(config_manager, previous_characters)
         raise

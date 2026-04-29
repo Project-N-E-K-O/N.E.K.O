@@ -836,17 +836,6 @@
                             }),
                         }
                     );
-                    if (this.openReason === 'manual_reselect') {
-                        await requestJson('/api/characters/persona-reselect-current', {
-                            method: 'DELETE',
-                        });
-                    } else if (this.openReason === 'onboarding') {
-                        await requestJson('/api/characters/persona-onboarding-state', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ status: 'completed' }),
-                        });
-                    }
                     window.dispatchEvent(new CustomEvent('neko:character-personality-updated', {
                         detail: {
                             characterName: this.currentCharacterName,

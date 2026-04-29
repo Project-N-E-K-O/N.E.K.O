@@ -298,7 +298,7 @@ async def test_character_persona_routes_save_clear_and_track_onboarding_state():
 
             onboarding_response = await router_module.get_persona_onboarding_state()
             onboarding_body = _parse_json_response(onboarding_response)
-            assert onboarding_body["state"]["status"] == "pending"
+            assert onboarding_body["state"]["status"] == "completed"
 
             update_onboarding_result = await router_module.set_persona_onboarding_state(
                 _DummyRequest({"status": "completed"}),
@@ -380,6 +380,57 @@ async def test_character_persona_selection_change_clears_stale_recent_history():
             clear_result = await router_module.clear_character_persona_selection(current_name)
             assert clear_result["success"] is True
             assert json.loads(recent_path.read_text(encoding="utf-8")) == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_update_character_persona_selection_finalizes_onboarding_and_manual_reselect_state():
+    with TemporaryDirectory() as td:
+        config_manager = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(config_manager)
+
+        async def _noop(*args, **kwargs):
+            return None
+
+        with patch("utils.config_manager._config_manager", config_manager):
+            init_shared_state(
+                role_state={},
+                steamworks=None,
+                templates=None,
+                config_manager=config_manager,
+                logger=None,
+                initialize_character_data=_noop,
+                switch_current_catgirl_fast=_noop,
+                init_one_catgirl=_noop,
+                remove_one_catgirl=_noop,
+            )
+
+            router_module = importlib.reload(importlib.import_module("main_routers.characters_router"))
+            current_name = config_manager.load_characters()["当前猫娘"]
+
+            onboarding_result = await router_module.update_character_persona_selection(
+                current_name,
+                _DummyRequest({"preset_id": "classic_genki", "source": "onboarding"}),
+            )
+            assert onboarding_result["success"] is True
+
+            onboarding_state = await router_module.get_persona_onboarding_state()
+            onboarding_body = _parse_json_response(onboarding_state)
+            assert onboarding_body["state"]["status"] == "completed"
+
+            pending_reselect = await router_module.request_current_character_persona_reselect()
+            assert pending_reselect["success"] is True
+            assert pending_reselect["state"]["manual_reselect_character_name"] == current_name
+
+            manual_reselect_result = await router_module.update_character_persona_selection(
+                current_name,
+                _DummyRequest({"preset_id": "elegant_butler", "source": "manual_reselect"}),
+            )
+            assert manual_reselect_result["success"] is True
+
+            finalized_state = await router_module.get_persona_onboarding_state()
+            finalized_body = _parse_json_response(finalized_state)
+            assert finalized_body["state"]["manual_reselect_character_name"] == ""
 
 
 @pytest.mark.unit
