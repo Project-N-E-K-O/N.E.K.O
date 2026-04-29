@@ -1130,7 +1130,8 @@ class OmniOfflineClient:
         # Retry策略：重试2次，间隔1秒、2秒
         max_retries = 3
         retry_delays = [1, 2]
-        assistant_message = ""
+        assistant_message = ""        # 仅最后一段未持久化的 text（final-segment）
+        assistant_message_total = ""  # 整轮累计（含 pre-tool），整轮级判定看它
         status_reported = False
         guard_exhausted = False
         
@@ -1283,11 +1284,13 @@ class OmniOfflineClient:
                                             break
                                 if flush_text and flush_text.strip():
                                     assistant_message += flush_text
+                                    assistant_message_total += flush_text
                                     if self.on_text_delta:
                                         await self.on_text_delta(flush_text, is_first_chunk)
                                     is_first_chunk = False
                                     if self.enable_response_guard:
-                                        current_length = count_tokens(assistant_message)
+                                        # 长度 guard 看整轮（含 pre-tool），与上方主累加块对偶
+                                        current_length = count_tokens(assistant_message_total)
                                         if current_length > self.max_response_length:
                                             guard_triggered = True
                                             discard_reason = f"length>{self.max_response_length}"
@@ -1338,9 +1341,12 @@ class OmniOfflineClient:
                             # 处但 cap 是 300）。
                             recovery_text = ""
                             if discard_reason and "length>" in discard_reason:
-                                if not _is_gibberish_response(assistant_message):
+                                # 整轮判定：gibberish / 截断必须看 _total，否则
+                                # tool 轮 sentinel 把 final-segment 清空之后整段
+                                # pre-tool 被忽略，明明很长却走 RESPONSE_TOO_LONG。
+                                if not _is_gibberish_response(assistant_message_total):
                                     capped = truncate_to_tokens(
-                                        assistant_message, self.max_response_length,
+                                        assistant_message_total, self.max_response_length,
                                     )
                                     recovery_text = _truncate_to_last_sentence_end(capped)
 
@@ -1348,7 +1354,7 @@ class OmniOfflineClient:
                                 logger.info(
                                     "OmniOfflineClient: guard 重试耗尽，截断至最后句末 "
                                     "(原 %d tokens → 截断后 %d tokens)",
-                                    count_tokens(assistant_message), count_tokens(recovery_text),
+                                    count_tokens(assistant_message_total), count_tokens(recovery_text),
                                 )
                                 truncate_msg = json.dumps({
                                     "code": "RESPONSE_LENGTH_TRUNCATED",
@@ -1418,10 +1424,13 @@ class OmniOfflineClient:
                     
                     if guard_exhausted:
                         break
-                    
-                    if assistant_message:
+
+                    # 整轮判定：本轮只要产生过任何文本（含 pre-tool）就算成功完成
+                    # retry 循环；用 final-segment 会让"max_tool_iterations 用尽
+                    # 时只剩 pre-tool 被持久化、没出 final 回复"的轮次被错误重试。
+                    if assistant_message_total:
                         break
-                            
+
                 except (APIConnectionError, InternalServerError, RateLimitError) as e:
                     error_type = type(e).__name__
                     error_str_lower = str(e).lower()
@@ -1451,9 +1460,10 @@ class OmniOfflineClient:
                     if attempt < max_retries - 1:
                         wait_time = retry_delays[attempt]
                         logger.warning(f"OmniOfflineClient: LLM调用失败 (尝试 {attempt + 1}/{max_retries})，{wait_time}秒后重试: {e}")
-                        # 如果 attempt 已经向前端吐过 chunk，通知前端清除废气泡，
-                        # 否则 retry 的新流会接在旧气泡后面，产生两段不同内容拼接。
-                        if assistant_message and self.on_response_discarded:
+                        # 整轮判定：本轮是否吐过任何文本到前端 —— 用 _total 才能
+                        # 覆盖 tool_round_persisted 已重置 final-segment 的场景。
+                        # 否则 pre-tool 文本残留在前端但 notify_discarded 漏触发。
+                        if assistant_message_total and self.on_response_discarded:
                             await self._notify_response_discarded(
                                 f"api_error:{error_type}",
                                 attempt + 1,
@@ -1462,6 +1472,7 @@ class OmniOfflineClient:
                                 message=None,
                             )
                         assistant_message = ""
+                        assistant_message_total = ""
                         await asyncio.sleep(wait_time)
                         continue
                     else:
@@ -1484,7 +1495,9 @@ class OmniOfflineClient:
                     # 在那。和 (APIConnectionError 等) 分支语义对偶，但
                     # 这条路径已经决定不再重试（break 在下面），所以
                     # ``will_retry=False``，并附带可读的错误码到前端。
-                    if assistant_message and self.on_response_discarded:
+                    # 整轮判定：用 _total，覆盖 tool_round_persisted 已重置
+                    # final-segment 但 pre-tool 文本仍在前端的场景。
+                    if assistant_message_total and self.on_response_discarded:
                         try:
                             await self._notify_response_discarded(
                                 f"text_gen_error:{type(e).__name__}",
@@ -1512,7 +1525,9 @@ class OmniOfflineClient:
         finally:
             self._is_responding = False
             
-            if not assistant_message and not guard_exhausted and not status_reported:
+            # 整轮判定：所有重试都没产生过任何文本（包括 pre-tool）才算 LLM_NO_RESPONSE。
+            # 用 final-segment 会让"tool 轮跑完了但模型没出 final 文本"的场景被错报。
+            if not assistant_message_total and not guard_exhausted and not status_reported:
                 logger.warning("OmniOfflineClient: 所有重试均未产生文本回复")
                 if self.on_status_message:
                     await self.on_status_message(json.dumps({"code": "LLM_NO_RESPONSE"}))
