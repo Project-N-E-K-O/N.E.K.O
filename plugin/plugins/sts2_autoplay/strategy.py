@@ -768,12 +768,14 @@ class HeuristicSelector:
         )
 
     def find_discardable_potion_index(self, context: Dict[str, Any], selector_methods) -> int:
+        """Return the index of a potion that can be discarded. Raises RuntimeError if none found."""
         potion_index = self._find_potion_index_by_flag(context, selector_methods, "can_discard")
         if potion_index is None:
             raise RuntimeError("当前没有可丢弃的药水")
         return potion_index
 
     def find_usable_potion_index(self, context: Dict[str, Any], selector_methods) -> int:
+        """Return the index of a potion that can be used. Raises RuntimeError if none found."""
         potion_index = self._find_potion_index_by_flag(context, selector_methods, "can_use")
         if potion_index is None:
             raise RuntimeError("当前没有可使用的药水")
@@ -804,6 +806,7 @@ class HeuristicSelector:
         )
 
     def find_playable_card_index(self, context: Dict[str, Any], selector_methods, combat_analyzer) -> int:
+        """Return the index of the best playable card. Raises RuntimeError if none found."""
         card_index = self._find_playable_card_index_or_none(context, selector_methods, combat_analyzer)
         if card_index is None:
             raise RuntimeError("当前没有可打出的卡牌")
