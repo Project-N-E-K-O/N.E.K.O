@@ -96,12 +96,10 @@ def should_skip_path(relative_path: Path, *, is_dir: bool, rules: PackRuleSet) -
 
     if any(part in rules.exclude_dirs for part in relative_path.parts):
         return True
+    if _matches_excluded_dir(relative_path, is_dir=is_dir, patterns=rules.exclude_dirs):
+        return True
 
     if is_dir:
-        if relative_path.name in rules.exclude_dirs:
-            return True
-        if _matches_any(path_str, rules.exclude_dirs):
-            return True
         return False
 
     if relative_path.name in rules.exclude_files:
@@ -123,6 +121,17 @@ def _matches_include(path_str: str, patterns: list[str]) -> bool:
 
 def _matches_any(path_str: str, patterns: list[str]) -> bool:
     return any(_match_pattern(path_str, pattern) for pattern in patterns)
+
+
+def _matches_excluded_dir(relative_path: Path, *, is_dir: bool, patterns: list[str]) -> bool:
+    if not patterns:
+        return False
+    parts = relative_path.parts if is_dir else relative_path.parts[:-1]
+    for index in range(len(parts)):
+        candidate = "/".join(parts[:index + 1])
+        if _matches_any(candidate, patterns):
+            return True
+    return False
 
 
 def _match_pattern(path_str: str, pattern: str) -> bool:

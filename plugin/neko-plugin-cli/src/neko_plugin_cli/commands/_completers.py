@@ -15,9 +15,10 @@ def _make_plugin_name_completer() -> dict[str, str]:
     """Completer that lists plugin directory names under plugins_root."""
     return {
         "bash": (
-            "$(command ls -1 \"${NEKO_PLUGINS_ROOT:-plugin/plugins}\" 2>/dev/null "
-            "| command grep -l plugin.toml -r --include=plugin.toml "
-            "| command sed 's|/plugin.toml||' | command xargs -I{} basename {} 2>/dev/null)"
+            "$(root=\"${NEKO_PLUGINS_ROOT:-plugin/plugins}\"; "
+            "for d in \"$root\"/*; do "
+            "[ -f \"$d/plugin.toml\" ] && basename \"$d\"; "
+            "done 2>/dev/null)"
         ),
         "zsh": "_files -W ${NEKO_PLUGINS_ROOT:-plugin/plugins} -/",
         "tcsh": "d",
@@ -28,7 +29,7 @@ def _make_package_file_completer() -> dict[str, str]:
     """Completer that matches .neko-plugin and .neko-bundle files."""
     return {
         "bash": "$(command ls -1 *.neko-plugin *.neko-bundle 2>/dev/null)",
-        "zsh": "_files -g '*.neko-plugin *.neko-bundle'",
+        "zsh": "_files -g '*.(neko-plugin|neko-bundle)'",
         "tcsh": "f",
     }
 

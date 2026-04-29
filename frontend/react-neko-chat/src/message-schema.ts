@@ -48,6 +48,37 @@ const composerAttachmentSchema = z.object({
   alt: z.string().optional(),
 });
 
+const commandItemSchema = z.object({
+  action_id: z.string().min(1),
+  type: z.enum(['instant', 'chat_inject', 'navigation']),
+  label: z.string(),
+  description: z.string(),
+  category: z.string(),
+  plugin_id: z.string(),
+  control: z.enum(['toggle', 'button', 'dropdown', 'number', 'slider', 'text', 'plugin_lifecycle', 'entry_toggle']).optional(),
+  current_value: z.unknown().optional(),
+  options: z.array(z.string()).optional(),
+  min: z.number().finite().optional(),
+  max: z.number().finite().optional(),
+  step: z.number().finite().optional(),
+  disabled: z.boolean().optional(),
+  inject_text: z.string().optional(),
+  input_schema: z.record(z.unknown()).optional(),
+  target: z.string().optional(),
+  open_in: z.enum(['new_tab', 'same_tab']).optional(),
+  keywords: z.array(z.string()).optional(),
+  icon: z.string().nullable().optional(),
+  priority: z.number().finite().optional(),
+  section: z.enum(['pinned', 'recent', 'commands']).nullable().optional(),
+  quick_action: z.boolean().optional(),
+}).strict();
+
+const commandPreferencesSchema = z.object({
+  pinned: z.array(z.string()),
+  hidden: z.array(z.string()),
+  recent: z.array(z.string()),
+}).strict();
+
 const avatarInteractionPayloadBaseSchema = z.object({
   interactionId: z.string().min(1),
   target: z.literal('avatar'),
@@ -209,21 +240,21 @@ export const chatWindowPropsSchema = z.object({
     .args()
     .returns(z.void())
     .optional(),
-  quickActions: z.array(z.record(z.unknown())).optional() as unknown as z.ZodOptional<z.ZodArray<z.ZodType<import('./CommandPalette').CommandItem>>>,
-  quickActionsPreferences: z.record(z.unknown()).optional() as unknown as z.ZodOptional<z.ZodType<import('./CommandPalette').UserPreferences>>,
+  quickActions: z.array(commandItemSchema).optional(),
+  quickActionsPreferences: commandPreferencesSchema.optional(),
   quickActionsLoading: z.boolean().optional(),
   onQuickActionExecute: z.function()
     .args(z.string(), z.unknown())
-    .returns(z.promise(z.union([z.record(z.unknown()), z.null()])))
-    .optional() as unknown as z.ZodOptional<z.ZodType<(actionId: string, value: unknown) => Promise<import('./CommandPalette').CommandItem | null>>>,
+    .returns(z.promise(z.union([commandItemSchema, z.null()])))
+    .optional(),
   onQuickActionsRequest: z.function()
     .args()
     .returns(z.void())
     .optional(),
   onQuickActionsPreferencesChange: z.function()
-    .args(z.record(z.unknown()))
+    .args(commandPreferencesSchema)
     .returns(z.void())
-    .optional() as unknown as z.ZodOptional<z.ZodType<(prefs: import('./CommandPalette').UserPreferences) => void>>,
+    .optional(),
 });
 
 export type ChatMessageRole = z.infer<typeof chatMessageSchema>['role'];

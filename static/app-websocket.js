@@ -1132,11 +1132,15 @@
                 // -------- plugin_chat_content --------
                 } else if (response.type === 'plugin_chat_content') {
                     if (window.reactChatWindowHost && typeof window.reactChatWindowHost.appendPluginContent === 'function') {
+                        var pluginContentTime = new Date(response.timestamp || Date.now());
+                        if (isNaN(pluginContentTime.getTime())) {
+                            pluginContentTime = new Date();
+                        }
                         window.reactChatWindowHost.appendPluginContent({
                             pluginId: response.plugin_id || 'plugin',
                             blocks: response.blocks || [],
                             text: response.text || '',
-                            timestamp: response.timestamp || new Date().toISOString(),
+                            timestamp: pluginContentTime.toISOString(),
                         });
                     }
 

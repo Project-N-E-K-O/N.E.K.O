@@ -17,6 +17,7 @@ from plugin.sdk.shared.core.base import NekoPluginBase as _SharedNekoPluginBase
 from plugin.sdk.shared.core.base import PluginMeta as _SharedPluginMeta
 from plugin.sdk.shared.core.events import EventHandler, EventMeta
 from plugin.sdk.shared.i18n import PluginI18n, load_plugin_i18n_from_meta
+from plugin.sdk.shared.models import Ok
 from plugin.sdk.shared.models.exceptions import EntryConflictError
 
 if TYPE_CHECKING:

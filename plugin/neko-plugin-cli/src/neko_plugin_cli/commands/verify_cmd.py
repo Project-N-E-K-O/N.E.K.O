@@ -28,7 +28,8 @@ def handle(args: argparse.Namespace) -> int:
         print(f"[FAIL] {package_path}: {exc}", file=sys.stderr)
         return 1
 
-    print(f"[OK] package={result.package_path}")
+    status = "[OK]" if result.payload_hash_verified is True else "[FAIL]"
+    print(f"{status} package={result.package_path}")
     print(f"  metadata_found={result.metadata_found}")
     print(f"  payload_hash={result.payload_hash}")
     print(f"  payload_hash_verified={result.payload_hash_verified}")

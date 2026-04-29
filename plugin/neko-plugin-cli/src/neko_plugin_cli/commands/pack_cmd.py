@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import sys
 from pathlib import Path
 
@@ -10,6 +11,8 @@ from ..core import pack_bundle, pack_plugin
 from ..paths import CliDefaults
 from ._completers import PLUGIN_NAME_COMPLETER
 from ._resolve import resolve_plugin_dirs
+
+_MAX_AUTO_BUNDLE_ID_LEN = 120
 
 
 def register(subparsers: argparse._SubParsersAction, *, defaults: CliDefaults) -> None:
@@ -45,7 +48,7 @@ def handle(args: argparse.Namespace) -> int:
 
 
 def _handle_bundle(args: argparse.Namespace, *, plugin_dirs: list[Path], target_dir: Path) -> int:
-    bundle_id = args.bundle_id or "__".join(sorted(item.name for item in plugin_dirs))
+    bundle_id = args.bundle_id or _build_auto_bundle_id(plugin_dirs)
     output_path = (
         Path(args.out).expanduser().resolve()
         if args.out
@@ -75,6 +78,15 @@ def _handle_bundle(args: argparse.Namespace, *, plugin_dirs: list[Path], target_
         print(f"  profile_file_count={result.profile_file_count}")
     print("Completed: packed=1, failed=0")
     return 0
+
+
+def _build_auto_bundle_id(plugin_dirs: list[Path]) -> str:
+    names = sorted(item.name for item in plugin_dirs)
+    bundle_id = "__".join(names)
+    if len(bundle_id.encode("utf-8")) <= _MAX_AUTO_BUNDLE_ID_LEN:
+        return bundle_id
+    digest = hashlib.sha256("\0".join(names).encode("utf-8")).hexdigest()[:12]
+    return f"bundle_{len(names)}plugins_{digest}"
 
 
 def _handle_single(args: argparse.Namespace, *, plugin_dirs: list[Path], target_dir: Path) -> int:

@@ -232,6 +232,15 @@ def test_plugin_entry_proxy_uses_end_user_locals_for_type_inference() -> None:
     assert meta.llm_result_fields == ["title"]
 
 
+def test_plugin_entry_proxy_forwards_quick_action_flag() -> None:
+    @dec.plugin.entry(quick_action=True)
+    async def run() -> str:
+        return "ready"
+
+    meta = getattr(run, dec.EVENT_META_ATTR)
+    assert meta.quick_action is True
+
+
 def test_plugin_entry_empty_id_rejected() -> None:
     with pytest.raises(ValueError, match="entry id must be non-empty"):
         dec.plugin_entry(id="   ")(lambda: None)

@@ -24,12 +24,7 @@ def load_plugin_source(plugin_dir: str | Path) -> PluginSource:
             f"See the package-format documentation for the required schema."
         )
 
-    try:
-        plugin_toml = load_toml(plugin_toml_path)
-    except Exception as exc:
-        raise ValueError(
-            f"failed to parse '{plugin_toml_path}': {exc}"
-        ) from exc
+    plugin_toml = load_toml(plugin_toml_path)
 
     plugin_table = require_table(plugin_toml, "plugin", plugin_toml_path)
     plugin_id = require_string(plugin_table, "id", plugin_toml_path)
@@ -41,12 +36,7 @@ def load_plugin_source(plugin_dir: str | Path) -> PluginSource:
     pyproject_toml: dict[str, object] | None = None
     resolved_pyproject_path: Path | None = None
     if pyproject_toml_path.is_file():
-        try:
-            pyproject_toml = load_toml(pyproject_toml_path)
-        except Exception as exc:
-            raise ValueError(
-                f"failed to parse '{pyproject_toml_path}': {exc}"
-            ) from exc
+        pyproject_toml = load_toml(pyproject_toml_path)
         resolved_pyproject_path = pyproject_toml_path
 
     return PluginSource(

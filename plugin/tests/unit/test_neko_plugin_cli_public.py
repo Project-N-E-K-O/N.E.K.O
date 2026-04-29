@@ -118,6 +118,15 @@ def test_pack_rules_apply_include_and_exclude() -> None:
     assert should_skip_path(Path("README.md"), is_dir=False, rules=rules) is True
 
 
+def test_pack_rules_exclude_dir_globs_apply_to_children() -> None:
+    rules = PackRuleSet(exclude_dirs=["test_*"])
+
+    assert should_skip_path(Path("test_data"), is_dir=True, rules=rules) is True
+    assert should_skip_path(Path("test_data/foo.py"), is_dir=False, rules=rules) is True
+    assert should_skip_path(Path("src/test_data/foo.py"), is_dir=False, rules=rules) is True
+    assert should_skip_path(Path("src/main.py"), is_dir=False, rules=rules) is False
+
+
 def test_pack_plugin_writes_expected_profile_and_skips_runtime_artifacts(tmp_path: Path) -> None:
     plugin_dir = _make_plugin_dir(tmp_path)
     package_path = tmp_path / "demo_plugin.neko-plugin"

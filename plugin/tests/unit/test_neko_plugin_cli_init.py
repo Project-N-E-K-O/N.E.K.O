@@ -61,6 +61,8 @@ def test_generate_quick_start_creates_expected_files(tmp_path: Path) -> None:
     assert "@neko_plugin" in init_text
     assert "def hello" in init_text
     assert "Hello, {name}" in init_text
+    assert "Err" not in init_text
+    assert "SdkError" not in init_text
 
 
 # ---------------------------------------------------------------------------
@@ -182,6 +184,31 @@ def test_cli_init_non_interactive(tmp_path: Path) -> None:
     # This will fail because it uses the real plugins_root, not tmp_path.
     # That's expected — the non-interactive test via CLI needs the real path.
     # We test the generator directly above instead.
+
+
+def test_non_interactive_extension_requires_interactive_host_id(tmp_path: Path, capsys) -> None:
+    from argparse import Namespace
+
+    from neko_plugin_cli.commands.init_cmd import _handle_non_interactive
+    from neko_plugin_cli.paths import CliDefaults
+
+    plugins_root = tmp_path / "plugins"
+    plugins_root.mkdir()
+    defaults = CliDefaults(
+        plugin_root=tmp_path,
+        target_dir=tmp_path / "target",
+        plugins_root=plugins_root,
+        profiles_root=tmp_path / "profiles",
+    )
+
+    exit_code = _handle_non_interactive(
+        Namespace(plugin_id="demo_ext", plugin_type="extension", name="Demo Extension"),
+        defaults=defaults,
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert "requires interactive setup" in captured.err
 
 
 def test_generate_roundtrip_pack_verify(tmp_path: Path) -> None:

@@ -616,12 +616,20 @@ async def _handle_agent_event(event: dict):
 
         elif event_type == "plugin_chat_content":
             # Plugin chat content: send directly to frontend WebSocket
+            if lanlan and not mgr:
+                logger.info(
+                    "[EventBus] plugin_chat_content dropped: no target session for lanlan=%s, plugin=%s",
+                    lanlan,
+                    event.get("plugin_id"),
+                )
+                return
             targets = [mgr] if mgr else [m for _, m in _iter_session_managers()]
             payload = {
                 "type": "plugin_chat_content",
                 "plugin_id": event.get("plugin_id", "plugin"),
                 "blocks": event.get("blocks", []),
                 "text": event.get("text", ""),
+                "timestamp": event.get("timestamp"),
             }
 
             async def _send_chat_content(target_mgr):

@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 import httpx
 
 from ._routing import haversine_km
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -237,6 +240,7 @@ class POIService:
         radius: int = 3000, limit: int = 10,
     ) -> POIResult:
         result = POIResult(query=query)
+        errors: list[str] = []
         for provider in self._providers:
             try:
                 items = await provider.search(query, lat, lon, radius=radius, limit=limit)
@@ -244,6 +248,11 @@ class POIService:
                     result.items = items
                     result.provider = provider.name
                     return result
-            except Exception:
+            except Exception as exc:
+                message = f"{provider.name}: {type(exc).__name__}: {exc}"
+                errors.append(message)
+                logger.debug("POI provider failed: %s", message, exc_info=True)
                 continue
+        if errors:
+            result.error = "; ".join(errors)
         return result

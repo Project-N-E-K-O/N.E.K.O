@@ -404,6 +404,7 @@
     /* ---- Quick Actions (chat plugin commands) ---- */
 
     var _fetchSeq = 0;
+    var _savePrefsSeq = 0;
 
     function fetchChatActions() {
         var seq = ++_fetchSeq;
@@ -470,6 +471,7 @@
     }
 
     function saveChatActionPreferences(prefs) {
+        var seq = ++_savePrefsSeq;
         var previousPreferences = _cachedPreferences;
         _cachedPreferences = prefs;
         renderWindow();
@@ -481,6 +483,7 @@
         }).then(function (res) {
             if (!res.ok) throw new Error('HTTP ' + res.status);
         }).catch(function (err) {
+            if (seq !== _savePrefsSeq) return;
             console.warn('[ReactChatWindow] saveChatActionPreferences failed, rolling back:', err);
             _cachedPreferences = previousPreferences;
             renderWindow();
@@ -1139,6 +1142,7 @@
         var msgBlocks = [];
         for (var i = 0; i < blocks.length; i++) {
             var b = blocks[i];
+            if (!b || typeof b !== 'object') continue;
             if (b.type === 'text' && b.text) {
                 msgBlocks.push({ type: 'text', text: b.text });
             } else if (b.type === 'image' && b.url) {
@@ -1154,11 +1158,12 @@
                     }
                 }
                 msgBlocks.push({ type: 'text', text: cardText });
-            } else if (b.type === 'table' && b.headers) {
-                var tableText = b.headers.join(' | ');
-                if (b.rows) {
+            } else if (b.type === 'table' && Array.isArray(b.headers)) {
+                var tableText = b.headers.map(String).join(' | ');
+                if (Array.isArray(b.rows)) {
                     for (var r = 0; r < Math.min(b.rows.length, 10); r++) {
-                        tableText += '\n' + b.rows[r].join(' | ');
+                        if (!Array.isArray(b.rows[r])) continue;
+                        tableText += '\n' + b.rows[r].map(String).join(' | ');
                     }
                 }
                 msgBlocks.push({ type: 'text', text: tableText });

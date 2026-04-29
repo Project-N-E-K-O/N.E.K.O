@@ -124,6 +124,7 @@ class PluginContext:
     _effective_config: Optional[Dict[str, Any]] = None
     _current_lanlan: Optional[str] = None
     _current_lang: Optional[str] = None  # 用户语言（由主干通过 _ctx.lang 下发）
+    _manual_lang_override: Optional[str] = None  # 插件手动覆盖的用户语言
 
     @property
     def bus(self) -> "BusHubProtocol":
@@ -720,14 +721,14 @@ class PluginContext:
         该值在每次 entry 触发时由 host 自动更新，也可通过
         ``set_user_language()`` 手动覆盖。
         """
-        return self._current_lang or ""
+        return self._manual_lang_override or self._current_lang or ""
 
     def set_user_language(self, lang: str) -> None:
         """手动设置用户语言（覆盖主干下发值）。
 
         传空字符串可清除覆盖，恢复为主干下发值。
         """
-        self._current_lang = str(lang).strip() if lang else None
+        self._manual_lang_override = str(lang).strip() if lang else None
 
     async def _run_update_async(
         self,

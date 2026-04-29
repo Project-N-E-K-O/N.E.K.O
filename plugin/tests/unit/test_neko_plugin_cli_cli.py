@@ -110,7 +110,21 @@ def test_cli_verify_fails_when_package_hash_is_tampered(
 
     assert exit_code == 1
     captured = capsys.readouterr()
+    assert "[FAIL] package=" in captured.out
+    assert "[OK] package=" not in captured.out
     assert "payload_hash_verified=False" in captured.out
+
+
+def test_cli_inspect_missing_package_reports_fail_without_traceback(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    exit_code = neko_plugin_cli.main(["inspect", str(tmp_path / "missing.neko-plugin")])
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert "[FAIL]" in captured.err
+    assert "Traceback" not in captured.err
 
 
 def test_cli_pack_bundle_and_inspect(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -142,3 +156,17 @@ def test_cli_pack_bundle_and_inspect(tmp_path: Path, capsys: pytest.CaptureFixtu
     assert "package_type=bundle" in captured.out
     assert "plugin_count=2" in captured.out
     assert "type=bundle" in captured.out
+
+
+def test_auto_bundle_id_falls_back_when_too_long(tmp_path: Path) -> None:
+    from neko_plugin_cli.commands.pack_cmd import _build_auto_bundle_id
+
+    plugin_dirs = [
+        tmp_path / ("plugin_" + str(index).zfill(2) + "_" + "x" * 40)
+        for index in range(8)
+    ]
+
+    bundle_id = _build_auto_bundle_id(plugin_dirs)
+
+    assert bundle_id.startswith("bundle_8plugins_")
+    assert len(bundle_id.encode("utf-8")) <= 120

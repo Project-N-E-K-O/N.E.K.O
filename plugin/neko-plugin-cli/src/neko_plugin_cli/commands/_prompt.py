@@ -88,23 +88,24 @@ def _fallback_text(message: str, *, default: str = "") -> str | None:
 
 
 def _fallback_select(message: str, choices: list[dict[str, str]], *, default: str | None) -> str | None:
-    print(f"{message}")
-    for i, c in enumerate(choices, 1):
-        marker = " (default)" if c["value"] == default else ""
-        print(f"  {i}. {c['name']}{marker}")
-    try:
-        raw = input("Enter number: ").strip()
-    except (EOFError, KeyboardInterrupt):
-        return None
-    if not raw and default:
-        return default
-    try:
-        idx = int(raw) - 1
-        if 0 <= idx < len(choices):
-            return choices[idx]["value"]
-    except ValueError:
-        pass
-    return default
+    while True:
+        print(f"{message}")
+        for i, c in enumerate(choices, 1):
+            marker = " (default)" if c["value"] == default else ""
+            print(f"  {i}. {c['name']}{marker}")
+        try:
+            raw = input("Enter number: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            return None
+        if not raw and default:
+            return default
+        try:
+            idx = int(raw) - 1
+            if 0 <= idx < len(choices):
+                return choices[idx]["value"]
+        except ValueError:
+            pass
+        print("Invalid choice, please try again.", file=sys.stderr)
 
 
 def _fallback_checkbox(message: str, choices: list[dict[str, str]], *, defaults: list[str] | None) -> list[str] | None:

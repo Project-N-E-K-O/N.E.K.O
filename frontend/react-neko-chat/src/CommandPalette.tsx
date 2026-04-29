@@ -48,6 +48,8 @@ export interface CommandPaletteProps {
   onClose: () => void;
 }
 
+const MAX_RECENT_ACTIONS = 12;
+
 /* ================================================================== */
 /*  Helpers                                                            */
 /* ================================================================== */
@@ -687,6 +689,12 @@ export default function CommandPalette({
       if (updated) {
         setLocalItems(prev => prev.map(a => (a.action_id === updated.action_id ? updated : a)));
       }
+      const nextPrefs = {
+        ...localPrefs,
+        recent: [actionId, ...localPrefs.recent.filter(id => id !== actionId)].slice(0, MAX_RECENT_ACTIONS),
+      };
+      setLocalPrefs(nextPrefs);
+      onPreferencesChange(nextPrefs);
       pushToast('success', `${label}: ${i18n('commandPalette.success', '成功')}`);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -697,7 +705,7 @@ export default function CommandPalette({
     } finally {
       setLoadingMap(m => ({ ...m, [actionId]: false }));
     }
-  }, [onExecute, localItems, pushToast]);
+  }, [onExecute, onPreferencesChange, localItems, localPrefs, pushToast]);
 
   const handleInject = useCallback((text: string) => {
     onInjectText(text);
@@ -747,7 +755,18 @@ export default function CommandPalette({
     } else if (filterTab === 'settings') {
       filtered = visible.filter(isSettingsItem).sort(sortByPriority);
     } else {
-      filtered = [...visible].sort(sortByPriority);
+      const pinnedIds = new Set(localPrefs.pinned);
+      const recentIds = new Set(localPrefs.recent);
+      const pinned = localPrefs.pinned
+        .map(id => visible.find(a => a.action_id === id))
+        .filter((a): a is CommandItem => a !== undefined);
+      const recent = localPrefs.recent
+        .map(id => visible.find(a => a.action_id === id))
+        .filter((a): a is CommandItem => a !== undefined && !pinnedIds.has(a.action_id));
+      const rest = visible
+        .filter(a => !pinnedIds.has(a.action_id) && !recentIds.has(a.action_id))
+        .sort(sortByPriority);
+      filtered = [...pinned, ...recent, ...rest];
     }
 
     return { displayItems: filtered, hasResults: filtered.length > 0 };

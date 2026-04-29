@@ -127,6 +127,9 @@ def _handle_interactive(args: argparse.Namespace, *, defaults: CliDefaults) -> i
         if not host_plugin_id:
             print("[FAIL] extension type requires a host plugin ID", file=sys.stderr)
             return 1
+        if not _PLUGIN_ID_RE.fullmatch(host_plugin_id):
+            print(f"[FAIL] invalid host plugin ID: '{host_plugin_id}'", file=sys.stderr)
+            return 1
         host_prefix = ask_text("路由前缀 (Route Prefix)", default="") or ""
 
     # Features
@@ -178,10 +181,15 @@ def _handle_non_interactive(args: argparse.Namespace, *, defaults: CliDefaults) 
         print(f"[FAIL] directory already exists: {target_dir}", file=sys.stderr)
         return 1
 
+    plugin_type = args.plugin_type or "plugin"
+    if plugin_type == "extension":
+        print("[FAIL] --type extension requires interactive setup for host plugin ID", file=sys.stderr)
+        return 1
+
     spec = PluginSpec(
         plugin_id=plugin_id,
         name=args.name or plugin_id,
-        plugin_type=args.plugin_type or "plugin",
+        plugin_type=plugin_type,
         quick_start=True,
         features=["lifecycle", "entry_point"],
     )

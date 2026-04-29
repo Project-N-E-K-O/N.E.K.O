@@ -20,12 +20,12 @@ def register(subparsers: argparse._SubParsersAction, *, defaults: CliDefaults) -
 
 def handle(args: argparse.Namespace) -> int:
     defaults: CliDefaults = args._defaults
-    package_path = resolve_package_path(args.package, defaults=defaults)
 
     try:
+        package_path = resolve_package_path(args.package, defaults=defaults)
         result = inspect_package(package_path)
     except Exception as exc:
-        print(f"[FAIL] {package_path}: {exc}", file=sys.stderr)
+        print(f"[FAIL] {args.package}: {exc}", file=sys.stderr)
         return 1
 
     print(f"[OK] package={result.package_path}")

@@ -146,7 +146,7 @@ def _render_quick_start_init(spec: PluginSpec) -> str:
     return f'''from typing import Any
 from plugin.sdk.plugin import (
     NekoPluginBase, neko_plugin, plugin_entry, lifecycle,
-    Ok, Err, SdkError,
+    Ok,
 )
 
 
@@ -185,7 +185,7 @@ class {spec.class_name}(NekoPluginBase):
 
 
 def _render_plugin_init(spec: PluginSpec) -> str:
-    imports = ["NekoPluginBase", "neko_plugin", "Ok", "Err", "SdkError"]
+    imports = ["NekoPluginBase", "neko_plugin", "Ok"]
     decorators_needed: list[str] = []
 
     if "lifecycle" in spec.features or "entry_point" in spec.features:
@@ -309,7 +309,7 @@ def _render_plugin_init(spec: PluginSpec) -> str:
 def _render_extension_init(spec: PluginSpec) -> str:
     return f'''from plugin.sdk.extension import (
     NekoExtensionBase, extension, extension_entry,
-    Ok, Err,
+    Ok,
 )
 
 
@@ -325,7 +325,7 @@ class {spec.class_name}(NekoExtensionBase):
 
 def _render_adapter_init(spec: PluginSpec) -> str:
     return f'''from typing import Any
-from plugin.sdk.plugin import neko_plugin, plugin_entry, lifecycle, Ok, Err, SdkError
+from plugin.sdk.plugin import neko_plugin, plugin_entry, lifecycle, Ok
 from plugin.sdk.adapter import AdapterGatewayCore, NekoAdapterPlugin
 
 

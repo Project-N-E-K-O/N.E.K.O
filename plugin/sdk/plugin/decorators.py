@@ -269,6 +269,7 @@ class _PluginDecorators:
         llm_result_model: type | None = None,
         fields: type | None = None,
         metadata: dict[str, object] | None = None,
+        quick_action: bool = False,
     ) -> Callable[[F], F]:
         declaration_locals = _capture_declaration_locals()
         return plugin_entry(
@@ -286,6 +287,7 @@ class _PluginDecorators:
             llm_result_model=llm_result_model,
             fields=fields,
             metadata=metadata,
+            quick_action=quick_action,
             _localns=declaration_locals,
         )
 

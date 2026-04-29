@@ -95,6 +95,7 @@ class LocationsRouter(PluginRouter):
             return Err(SdkError("城市不能为空"))
 
         plugin = self.main_plugin
+        plugin._resolve_locale()
         locale = plugin._i18n.locale
 
         # geocode
