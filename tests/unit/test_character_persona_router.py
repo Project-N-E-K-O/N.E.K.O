@@ -483,13 +483,18 @@ async def test_update_character_persona_selection_closes_original_session_when_r
             )
 
             router_module = importlib.reload(importlib.import_module("main_routers.characters_router"))
-            with patch.object(router_module, "send_reload_page_notice", AsyncMock(side_effect=_reload_and_reconnect)):
+            with patch.object(
+                router_module,
+                "send_reload_page_notice",
+                AsyncMock(side_effect=_reload_and_reconnect),
+            ) as reload_notice:
                 save_result = await router_module.update_character_persona_selection(
                     current_name,
                     _DummyRequest({"preset_id": "classic_genki", "source": "manual_reselect"}),
                 )
 
         assert save_result["success"] is True
+        reload_notice.assert_awaited_once_with(current_session, "人格设定已更新，页面即将刷新")
         current_session.end_session.assert_awaited_once_with(
             by_server=True,
             expected_session=old_session_token,
@@ -613,10 +618,15 @@ async def test_clear_character_persona_selection_closes_original_session_when_re
             init_one_catgirl.reset_mock()
             role_state[current_name].session_manager = current_session
 
-            with patch.object(router_module, "send_reload_page_notice", AsyncMock(side_effect=_reload_and_reconnect)):
+            with patch.object(
+                router_module,
+                "send_reload_page_notice",
+                AsyncMock(side_effect=_reload_and_reconnect),
+            ) as reload_notice:
                 clear_result = await router_module.clear_character_persona_selection(current_name)
 
         assert clear_result["success"] is True
+        reload_notice.assert_awaited_once_with(current_session, "人格设定已更新，页面即将刷新")
         current_session.end_session.assert_awaited_once_with(
             by_server=True,
             expected_session=old_session_token,
