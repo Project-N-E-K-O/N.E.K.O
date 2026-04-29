@@ -13,6 +13,8 @@ import asyncio
 import os
 import sys
 from queue import Queue
+
+import pytest
 from unittest.mock import AsyncMock, MagicMock
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
@@ -323,6 +325,7 @@ def _make_mgr() -> LLMSessionManager:
     return mgr
 
 
+@pytest.mark.asyncio
 async def test_finish_proactive_delivery_appends_action_note_to_history():
     """action_note 非空 → AIMessage 内容尾部追加 \\n + note；send_lanlan_response
     收到的仍是裸 full_text（前端不会展示这条元数据）。"""
@@ -347,6 +350,7 @@ async def test_finish_proactive_delivery_appends_action_note_to_history():
     assert note not in sent_text
 
 
+@pytest.mark.asyncio
 async def test_finish_proactive_delivery_empty_action_note_unchanged():
     """action_note 为空串/None → 历史与原行为完全一致（不引入多余换行）。"""
     mgr = _make_mgr()
@@ -369,6 +373,7 @@ async def test_finish_proactive_delivery_empty_action_note_unchanged():
     assert mgr2.session._conversation_history[0].content == "纯聊天内容"
 
 
+@pytest.mark.asyncio
 async def test_finish_proactive_delivery_action_note_skipped_on_sid_mismatch():
     """sid 不匹配（用户已接管）时整轮 finish 短路，action_note 也不能漏写进历史。"""
     mgr = _make_mgr()
