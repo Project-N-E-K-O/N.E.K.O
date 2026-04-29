@@ -90,11 +90,11 @@ class AutoplayLoopMixin:
             return {"status": "error", "message": "guidance 必须是字典"}
         if not guidance.get("content"):
             return {"status": "error", "message": "guidance.content 不能为空"}
-        _GUIDANCE_DEQUE_HARD_LIMIT = 50
+        _guidance_hard_limit = getattr(self._neko_guidance_queue, "maxlen", None) or 50
         try:
-            max_queue = min(_GUIDANCE_DEQUE_HARD_LIMIT, max(1, int(self._cfg.get("neko_guidance_max_queue", 50) or 50)))
+            max_queue = min(_guidance_hard_limit, max(1, int(self._cfg.get("neko_guidance_max_queue", 50) or 50)))
         except (ValueError, TypeError):
-            max_queue = _GUIDANCE_DEQUE_HARD_LIMIT
+            max_queue = _guidance_hard_limit
         step_value = guidance.get("step")
         try:
             guidance_step = self._step_count if step_value is None else int(step_value)
@@ -123,7 +123,7 @@ class AutoplayLoopMixin:
             except Exception as exc:
                 self._consecutive_errors += 1
                 try:
-                    max_errors = int(self._cfg.get("max_consecutive_errors", 3) or 3)
+                    max_errors = max(1, int(self._cfg.get("max_consecutive_errors", 3) or 3))
                 except (ValueError, TypeError):
                     max_errors = 3
                 self._server_state = "degraded" if self._consecutive_errors < max_errors else "disconnected"
@@ -184,8 +184,14 @@ class AutoplayLoopMixin:
             task = dict(self._semi_auto_task) if isinstance(self._semi_auto_task, dict) else None
             self._autoplay_state = "error"
             self._last_error = str(exc)
-            await self._maybe_emit_frontend_message(event_type="error", detail=str(exc), snapshot=self._snapshot, priority=7, force=True)
-            await self._notify_neko_task_event("error", task=task, reason=str(exc))
+            try:
+                await self._maybe_emit_frontend_message(event_type="error", detail=str(exc), snapshot=self._snapshot, priority=7, force=True)
+            except Exception as notify_exc:
+                self.logger.warning(f"终态前端通知失败: {notify_exc}")
+            try:
+                await self._notify_neko_task_event("error", task=task, reason=str(exc))
+            except Exception as notify_exc:
+                self.logger.warning(f"终态任务事件通知失败: {notify_exc}")
             self._emit_status()
 
     def _build_semi_auto_task(self, *, objective: Optional[str], stop_condition: str) -> Dict[str, Any]:
@@ -244,7 +250,10 @@ class AutoplayLoopMixin:
         task["completed_at"] = time.time()
         task["completed_step"] = self._step_count
         self._semi_auto_task = None
-        await self._notify_neko_task_event("completed", task=task)
+        try:
+            await self._notify_neko_task_event("completed", task=task)
+        except Exception as notify_exc:
+            self.logger.warning(f"任务完成通知失败: {notify_exc}")
         self._paused = False
         self._autoplay_state = "idle"
         self._emit_status()

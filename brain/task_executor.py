@@ -1820,7 +1820,6 @@ class DirectTaskExecutor:
 
         raw_entries = plugin_meta.get("entries") if isinstance(plugin_meta, dict) else None
         entries_field_exists = isinstance(raw_entries, list)
-        has_declared_entries = entries_field_exists and bool(raw_entries)
         known_entries = [str(e.get("id")) for e in self._agent_visible_plugin_entries(plugin_meta) if e.get("id")]
         if entries_field_exists and not known_entries:
             return TaskResult(
