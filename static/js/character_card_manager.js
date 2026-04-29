@@ -6790,16 +6790,14 @@ async function scanModels(loadSequence) {
         }
 
         // 提交到全局变量（用于角色卡加载，包括static目录的模型）
+        // 注意：6 个全局必须无条件覆写到本轮结果，VRM/MMD 子扫描失败时落 [] 而非沿用旧值；
+        // 否则 tab 切换路径里如果 VRM/MMD 端点偶发失败，会保留上一轮的 stale 列表造成假阳性
         window.allModels = models;
         availableModels = uploadableModels;
-        if (scannedAllVrmModels) {
-            window.allVrmModels = scannedAllVrmModels;
-            availableVrmModels = nextAvailableVrmModels;
-        }
-        if (scannedAllMmdModels) {
-            window.allMmdModels = scannedAllMmdModels;
-            availableMmdModels = nextAvailableMmdModels;
-        }
+        window.allVrmModels = scannedAllVrmModels || [];
+        availableVrmModels = nextAvailableVrmModels || [];
+        window.allMmdModels = scannedAllMmdModels || [];
+        availableMmdModels = nextAvailableMmdModels || [];
 
         // 触发模型扫描完成事件，通知其他组件刷新 UI（具有容错能力）
         try {
