@@ -838,10 +838,17 @@ class HeuristicSelector:
         if valid_targets:
             preferred_target = selector_methods._safe_int(target_index, -9999)
             resolved_target_index = preferred_target if target_index is not None and preferred_target in normalized_targets else selector_methods._safe_int(valid_targets[0])
-        play_action = _actions_by_type(actions).get("play_card")
+        card_index = selector_methods._safe_int(card.get("index"))
+        play_action = next(
+            (a for a in actions if isinstance(a, dict) and str(a.get("type") or "") == "play_card"
+             and isinstance(a.get("raw"), dict) and selector_methods._safe_int(a["raw"].get("card_index"), None) == card_index),
+            None,
+        )
+        if play_action is None:
+            play_action = _actions_by_type(actions).get("play_card")
         if not isinstance(play_action, dict):
             return None
-        updates = {"card_index": selector_methods._safe_int(card.get("index"))}
+        updates = {"card_index": card_index}
         if resolved_target_index is not None:
             updates["target_index"] = resolved_target_index
         return _with_raw_updates(play_action, updates)

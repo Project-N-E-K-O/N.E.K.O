@@ -28,6 +28,8 @@ class AutoplayLoopMixin:
         return {"status": "running", "message": "尖塔半自动任务已启动", "task": self._semi_auto_task, "executed": True}
 
     async def pause_autoplay(self, reason: str = "用户请求暂停") -> Dict[str, Any]:
+        if self._autoplay_task is None or self._autoplay_task.done():
+            return {"status": "idle", "message": "没有运行中的尖塔半自动任务", "executed": False}
         task = dict(self._semi_auto_task) if isinstance(self._semi_auto_task, dict) else None
         self._paused = True
         if self._autoplay_state == "running":

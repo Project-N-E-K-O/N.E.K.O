@@ -319,10 +319,10 @@ class CombatAnalyzer:
             return 0
         damage = 0
         channel_counts = self._channel_orb_counts(texts)
-        for orb_type, count in channel_counts.items():
-            if count <= 0:
-                continue
-            damage += count * self._orb_damage_on_evoke(orbs[0], target_index=None)
+        total_channels = sum(max(0, c) for c in channel_counts.values())
+        evicted_count = min(total_channels, len(orbs))
+        for i in range(evicted_count):
+            damage += self._orb_damage_on_evoke(orbs[i], target_index=None)
         return damage
 
     def _combat_orbs_full(self, orbs: List[Dict[str, Any]]) -> bool:

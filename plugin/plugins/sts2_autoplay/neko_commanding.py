@@ -501,9 +501,13 @@ class NekoCommandingMixin:
             if card_name:
                 break
         if not card_name:
+            if enemy_hp_delta < 0:
+                return "可以泛泛夸一句：刚才这波打得不错，确实把敌人血线往下压了。"
+            if block >= incoming_attack and incoming_attack > 0:
+                return "可以泛泛夸一句：防御衔接得不错，压力处理得比较稳。"
             return ""
         if enemy_hp_delta < 0:
             return f"可以点名夸一句：你这个【{card_name}】打得不错，刚才确实把敌人血线往下压了。"
         if block >= incoming_attack and incoming_attack > 0:
             return f"可以点名夸一句：你这个【{card_name}】衔接得不错，防御压力处理得比较稳。"
-        return f"可以点名夸一句：你这个【{card_name}】用得还可以，整体节奏没有乱。"
+        return ""

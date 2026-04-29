@@ -628,6 +628,10 @@ class NekoReportingMixin:
             return {"action": "slow_down", "reason": "boss_combat", "floor": floor}
         if (not already_slowed and incoming_attack >= dangerous_attack_threshold and remaining_damage > 0 and screen == "combat" and self._autoplay_state == "running"):
             return {"action": "slow_down", "reason": "dangerous_combat", "incoming_attack": incoming_attack, "remaining_damage": remaining_damage}
+        if already_slowed and "_neko_auto_saved_action_interval" in self._cfg and self._autoplay_state == "running":
+            danger_gone = (not is_boss_screen) and (incoming_attack < dangerous_attack_threshold or remaining_damage <= 0 or screen != "combat")
+            if danger_gone:
+                return {"action": "restore_speed", "reason": "danger_passed"}
 
         safe_hp_threshold = max(0.0, min(1.0, float(self._cfg.get("neko_auto_safe_hp_threshold", 0.5))))
         resume_after_low_hp = bool(self._cfg.get("neko_auto_resume_after_low_hp", True))
@@ -656,6 +660,7 @@ class NekoReportingMixin:
             "boss_combat": "Boss 战斗",
             "dangerous_combat": "危险战斗",
             "hp_recovered": "血量已恢复",
+            "danger_passed": "危险已解除",
         }
         reason_label = reason_labels.get(str(reason), str(reason or "未知原因"))
         hp_ratio = action.get("hp_ratio")
@@ -664,6 +669,7 @@ class NekoReportingMixin:
             "pause": f"尖塔自动运行已暂停：检测到{reason_label}{hp_text}，需要用户确认后再继续。（Act{act} Floor{floor} {screen} 回合{turn}）",
             "slow_down": f"尖塔自动运行已减速：检测到{reason_label}，等待用户关注。（Act{act} Floor{floor} {screen} 回合{turn}）",
             "resume": "尖塔自动运行已自主恢复：血量已回到安全线。",
+            "restore_speed": f"尖塔自动运行已恢复正常速度：{reason_label}。（Act{act} Floor{floor} {screen}）",
         }
         if action_type == "pause":
             self._paused = True
@@ -679,6 +685,12 @@ class NekoReportingMixin:
                 self._cfg["_neko_auto_saved_action_interval"] = original_interval
             self._cfg["action_interval_seconds"] = slowed_interval
             self.logger.info(f"[sts2_autoplay][neko-auto] slow_down: interval {original_interval} -> {slowed_interval}")
+        elif action_type == "restore_speed":
+            saved_interval = self._cfg.get("_neko_auto_saved_action_interval")
+            if saved_interval is not None:
+                self._cfg["action_interval_seconds"] = float(saved_interval)
+                self._cfg.pop("_neko_auto_saved_action_interval", None)
+                self.logger.info(f"[sts2_autoplay][neko-auto] restore_speed: interval restored to {saved_interval}")
         elif action_type == "resume":
             self._paused = False
             self._autoplay_state = "running"

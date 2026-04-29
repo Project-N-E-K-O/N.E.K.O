@@ -46,6 +46,7 @@ _REWARDISH_ACTION_TYPES = frozenset({
 _RAW_ACTION_METADATA_KEYS = frozenset({
     "type",
     "name",
+    "action",
     "label",
     "description",
     "requires_target",
@@ -251,10 +252,13 @@ class ActionExecutionMixin:
 
     def _validate_llm_decision_impl(self, decision: JsonObject, context: JsonObject) -> Optional[JsonObject]:
         action_type = str(decision.get("action_type") or "").strip()
-        kwargs = _mapping_or_empty(decision.get("kwargs"))
-        if not action_type or not isinstance(decision.get("kwargs"), Mapping):
+        raw_kwargs = decision.get("kwargs")
+        if raw_kwargs is None:
+            raw_kwargs = {}
+        if not action_type or not isinstance(raw_kwargs, Mapping):
             self.logger.warning(f"LLM 决策格式非法: {decision}")
             return None
+        kwargs = _mapping_or_empty(raw_kwargs)
 
         actions = [action for action in _list_or_empty(context.get("actions")) if isinstance(action, Mapping)]
         matching_action = next((action for action in actions if _action_type_from(action) == action_type), None)
