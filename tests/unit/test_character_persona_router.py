@@ -49,6 +49,11 @@ class _DummyRequest:
         return self._payload
 
 
+class _InvalidJsonRequest:
+    async def json(self):
+        raise ValueError("invalid json")
+
+
 def _parse_json_response(response):
     if isinstance(response, dict):
         return response
@@ -161,6 +166,51 @@ def test_get_character_data_keeps_custom_system_prompt_when_override_exists():
 
         assert character_data[current_name]["性格原型"] == "经典元气猫娘"
         assert "reserved fox spirit" in prompt_map[current_name]
+        assert "energetic, affectionate cat companion" in prompt_map[current_name]
+
+
+@pytest.mark.unit
+def test_get_character_data_strips_legacy_persona_block_but_keeps_custom_system_prompt():
+    with TemporaryDirectory() as td:
+        config_manager = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(config_manager)
+
+        characters = config_manager.load_characters()
+        current_name = characters["当前猫娘"]
+        characters["猫娘"][current_name].setdefault("_reserved", {}).update({
+            "system_prompt": (
+                "You are a reserved fox spirit.\n\n"
+                "<NEKO_PERSONA_SELECTION>\n"
+                "- 当前人格名称：傲娇毒舌小猫\n"
+                "- 代表台词：哼，这种事也要问吗，笨蛋人类。\n"
+                "</NEKO_PERSONA_SELECTION>\n\n"
+                "Always speak softly about moonlight."
+            ),
+            "persona_override": {
+                "preset_id": "classic_genki",
+                "source": "manual_reselect",
+                "selected_at": "2026-04-29T12:00:00Z",
+                "prompt_guidance": "Speak like an energetic, affectionate cat companion.",
+                "profile": {
+                    "性格原型": "经典元气猫娘",
+                    "性格": "永远元气满格的小太阳",
+                    "口癖": "太棒了喵！",
+                    "爱好": "陪伴、温暖",
+                    "雷点": "冷漠敷衍",
+                    "隐藏设定": "情感价值优先",
+                    "一句话台词": "今天也让我陪着你吧。",
+                },
+            },
+        })
+        config_manager.save_characters(characters)
+
+        _, _, _, character_data, _, prompt_map, _, _, _ = config_manager.get_character_data()
+
+        assert character_data[current_name]["性格原型"] == "经典元气猫娘"
+        assert "reserved fox spirit" in prompt_map[current_name]
+        assert "moonlight" in prompt_map[current_name]
+        assert "<NEKO_PERSONA_SELECTION>" not in prompt_map[current_name]
+        assert "笨蛋人类" not in prompt_map[current_name]
         assert "energetic, affectionate cat companion" in prompt_map[current_name]
 
 
@@ -362,3 +412,134 @@ async def test_character_persona_selection_routes_remove_stale_generated_system_
             assert clear_result["success"] is True
             cleared_reserved = config_manager.load_characters()["猫娘"][current_name].get("_reserved", {})
             assert "system_prompt" not in cleared_reserved
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_character_persona_selection_routes_preserve_custom_system_prompt_around_legacy_block():
+    with TemporaryDirectory() as td:
+        config_manager = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(config_manager)
+
+        async def _noop(*args, **kwargs):
+            return None
+
+        with patch("utils.config_manager._config_manager", config_manager):
+            init_shared_state(
+                role_state={},
+                steamworks=None,
+                templates=None,
+                config_manager=config_manager,
+                logger=None,
+                initialize_character_data=_noop,
+                switch_current_catgirl_fast=_noop,
+                init_one_catgirl=_noop,
+                remove_one_catgirl=_noop,
+            )
+
+            router_module = importlib.reload(importlib.import_module("main_routers.characters_router"))
+
+            current_name = config_manager.load_characters()["当前猫娘"]
+            characters = config_manager.load_characters()
+            characters["猫娘"][current_name].setdefault("_reserved", {})["system_prompt"] = (
+                "You are a reserved fox spirit.\n\n"
+                "<NEKO_PERSONA_SELECTION>\n"
+                "- 当前人格名称：傲娇毒舌小猫\n"
+                "- 代表台词：哼，这种事也要问吗，笨蛋人类。\n"
+                "</NEKO_PERSONA_SELECTION>\n\n"
+                "Always speak softly about moonlight."
+            )
+            config_manager.save_characters(characters)
+
+            save_result = await router_module.update_character_persona_selection(
+                current_name,
+                _DummyRequest({"preset_id": "elegant_butler", "source": "manual_reselect"}),
+            )
+            assert save_result["success"] is True
+            saved_reserved = config_manager.load_characters()["猫娘"][current_name].get("_reserved", {})
+            assert saved_reserved["system_prompt"] == (
+                "You are a reserved fox spirit.\n\n"
+                "Always speak softly about moonlight."
+            )
+
+            characters = config_manager.load_characters()
+            characters["猫娘"][current_name].setdefault("_reserved", {})["system_prompt"] = (
+                "You are a reserved fox spirit.\n\n"
+                "<NEKO_PERSONA_SELECTION>\n"
+                "- 当前人格名称：经典元气猫娘\n"
+                "- 代表台词：太棒了喵！\n"
+                "</NEKO_PERSONA_SELECTION>\n\n"
+                "Always speak softly about moonlight."
+            )
+            config_manager.save_characters(characters)
+
+            clear_result = await router_module.clear_character_persona_selection(current_name)
+            assert clear_result["success"] is True
+            cleared_reserved = config_manager.load_characters()["猫娘"][current_name].get("_reserved", {})
+            assert cleared_reserved["system_prompt"] == (
+                "You are a reserved fox spirit.\n\n"
+                "Always speak softly about moonlight."
+            )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_character_persona_routes_reject_invalid_json_and_normalize_non_object_payloads():
+    with TemporaryDirectory() as td:
+        config_manager = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(config_manager)
+
+        async def _noop(*args, **kwargs):
+            return None
+
+        with patch("utils.config_manager._config_manager", config_manager):
+            init_shared_state(
+                role_state={},
+                steamworks=None,
+                templates=None,
+                config_manager=config_manager,
+                logger=None,
+                initialize_character_data=_noop,
+                switch_current_catgirl_fast=_noop,
+                init_one_catgirl=_noop,
+                remove_one_catgirl=_noop,
+            )
+
+            router_module = importlib.reload(importlib.import_module("main_routers.characters_router"))
+            current_name = config_manager.load_characters()["当前猫娘"]
+
+            invalid_onboarding = await router_module.set_persona_onboarding_state(_InvalidJsonRequest())
+            invalid_onboarding_body = _parse_json_response(invalid_onboarding)
+            assert invalid_onboarding.status_code == 400
+            assert invalid_onboarding_body == {
+                "success": False,
+                "error": "请求体必须是合法的JSON格式",
+            }
+
+            non_object_onboarding = await router_module.set_persona_onboarding_state(
+                _DummyRequest(["completed"]),
+            )
+            assert non_object_onboarding["success"] is True
+            assert non_object_onboarding["state"]["status"] == "pending"
+
+            invalid_selection = await router_module.update_character_persona_selection(
+                current_name,
+                _InvalidJsonRequest(),
+            )
+            invalid_selection_body = _parse_json_response(invalid_selection)
+            assert invalid_selection.status_code == 400
+            assert invalid_selection_body == {
+                "success": False,
+                "error": "请求体必须是合法的JSON格式",
+            }
+
+            non_object_selection = await router_module.update_character_persona_selection(
+                current_name,
+                _DummyRequest(["classic_genki"]),
+            )
+            non_object_selection_body = _parse_json_response(non_object_selection)
+            assert non_object_selection.status_code == 400
+            assert non_object_selection_body == {
+                "success": False,
+                "error": "无效的人格预设",
+            }

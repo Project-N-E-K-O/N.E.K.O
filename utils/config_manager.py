@@ -6,6 +6,7 @@
 import sys
 import os
 import json
+import re
 import shutil
 import threading
 import asyncio
@@ -197,6 +198,22 @@ def _has_generated_persona_selection_prompt(prompt_text: object) -> bool:
     return "<NEKO_PERSONA_SELECTION>" in prompt_text
 
 
+def strip_generated_persona_selection_prompt(prompt_text: object) -> str | None:
+    if not isinstance(prompt_text, str):
+        return None
+    if not _has_generated_persona_selection_prompt(prompt_text):
+        return prompt_text
+
+    cleaned_prompt = re.sub(
+        r"\s*<NEKO_PERSONA_SELECTION>.*?</NEKO_PERSONA_SELECTION>\s*",
+        "\n\n",
+        prompt_text,
+        flags=re.DOTALL,
+    )
+    cleaned_prompt = re.sub(r"\n{3,}", "\n\n", cleaned_prompt).strip()
+    return cleaned_prompt
+
+
 def _resolve_effective_character_prompt(character_payload: dict) -> str:
     stored_prompt = get_reserved(
         character_payload,
@@ -214,7 +231,8 @@ def _resolve_effective_character_prompt(character_payload: dict) -> str:
     # 否则模型会同时吃到“旧毒舌整段规则 + 新人格补充 guidance”，
     # 最终仍然偏向旧人格。
     if isinstance(override, dict) and _has_generated_persona_selection_prompt(stored_prompt):
-        return get_lanlan_prompt()
+        cleaned_prompt = strip_generated_persona_selection_prompt(stored_prompt)
+        return cleaned_prompt or get_lanlan_prompt()
 
     return stored_prompt
 

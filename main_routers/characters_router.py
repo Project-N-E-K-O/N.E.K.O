@@ -43,7 +43,13 @@ from utils.character_memory import (
     list_character_memory_paths,
     rename_character_memory_storage,
 )
-from utils.config_manager import get_reserved, set_reserved, delete_reserved, flatten_reserved
+from utils.config_manager import (
+    delete_reserved,
+    flatten_reserved,
+    get_reserved,
+    set_reserved,
+    strip_generated_persona_selection_prompt,
+)
 from utils.audio import normalize_voice_clone_api_audio, validate_audio_file
 from utils.character_name import PROFILE_NAME_MAX_UNITS, validate_character_name
 from utils.initial_personality_state import (
@@ -132,7 +138,19 @@ def _clear_stale_generated_persona_prompt(character_payload: dict) -> None:
         legacy_keys=("system_prompt",),
     )
     if _has_generated_persona_selection_prompt(stored_prompt):
-        delete_reserved(character_payload, "system_prompt")
+        cleaned_prompt = strip_generated_persona_selection_prompt(stored_prompt)
+        if cleaned_prompt:
+            set_reserved(character_payload, "system_prompt", cleaned_prompt)
+        else:
+            delete_reserved(character_payload, "system_prompt")
+
+
+async def _read_json_object_or_400(request: Request):
+    try:
+        payload = await request.json()
+    except Exception:
+        return None, JSONResponse({'success': False, 'error': '请求体必须是合法的JSON格式'}, status_code=400)
+    return payload if isinstance(payload, dict) else {}, None
 
 
 async def _clear_character_recent_history(config_manager, character_name: str) -> None:
@@ -1915,7 +1933,9 @@ async def get_persona_onboarding_state():
 
 @router.post('/persona-onboarding-state')
 async def set_persona_onboarding_state(request: Request):
-    payload = await request.json()
+    payload, error_response = await _read_json_object_or_400(request)
+    if error_response is not None:
+        return error_response
     config_manager = get_config_manager()
     state = await asyncio.to_thread(
         mark_initial_personality_state,
@@ -1976,7 +1996,9 @@ async def get_character_persona_selection(name: str):
 
 @router.put('/character/{name}/persona-selection')
 async def update_character_persona_selection(name: str, request: Request):
-    payload = await request.json()
+    payload, error_response = await _read_json_object_or_400(request)
+    if error_response is not None:
+        return error_response
     preset_id = str((payload or {}).get("preset_id") or "").strip()
     source = str((payload or {}).get("source") or "").strip()
     preset = get_persona_preset(preset_id)
