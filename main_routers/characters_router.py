@@ -1906,9 +1906,10 @@ async def list_persona_presets_route():
 @router.get('/persona-onboarding-state')
 async def get_persona_onboarding_state():
     config_manager = get_config_manager()
+    state = await asyncio.to_thread(load_initial_personality_state, config_manager)
     return _json_no_store_response({
         "success": True,
-        "state": load_initial_personality_state(config_manager),
+        "state": state,
     })
 
 
@@ -1916,7 +1917,8 @@ async def get_persona_onboarding_state():
 async def set_persona_onboarding_state(request: Request):
     payload = await request.json()
     config_manager = get_config_manager()
-    state = mark_initial_personality_state(
+    state = await asyncio.to_thread(
+        mark_initial_personality_state,
         str((payload or {}).get("status") or "").strip(),
         config_manager=config_manager,
     )
@@ -1934,7 +1936,8 @@ async def request_current_character_persona_reselect():
     if not current_character_name:
         return JSONResponse({'success': False, 'error': '当前没有可用角色'}, status_code=400)
 
-    state = mark_manual_personality_reselect(
+    state = await asyncio.to_thread(
+        mark_manual_personality_reselect,
         current_character_name,
         config_manager=config_manager,
     )
@@ -1947,7 +1950,10 @@ async def request_current_character_persona_reselect():
 @router.delete('/persona-reselect-current')
 async def clear_current_character_persona_reselect():
     config_manager = get_config_manager()
-    state = clear_manual_personality_reselect(config_manager=config_manager)
+    state = await asyncio.to_thread(
+        clear_manual_personality_reselect,
+        config_manager=config_manager,
+    )
     return {
         "success": True,
         "state": state,
