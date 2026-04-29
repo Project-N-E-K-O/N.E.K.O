@@ -166,3 +166,74 @@ def test_generate_prompt_does_not_dehumanize_when_no_meme() -> None:
             lang, music_playing_hint='', has_music=False, has_meme=False, master_name=MASTER,
         )
         _assert_no_forbidden(prompt, ctx=f"generate_prompt lang={lang} has_meme=False")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 大括号转义 —— 防御 master_name 含 ``{`` / ``}`` 的边界 case
+#
+# generate_prompt 和 music_playing_hint 走的是"helper 内先 .format(master=...)、
+# 拼回 prompt 后 system_router 再整体 .format()"的双层路径。helper 第一次 format
+# 时把 master_name 字面量原样注入，**不会** escape 它含的花括号；外层第二次
+# .format() 看到 ``{B}`` 这种残留就会 KeyError，proactive 直接 abort。Codex
+# review #1043 (r3164599879 / r3164599885) 抓的就是这两条 P1。
+# ─────────────────────────────────────────────────────────────────────────────
+
+WEIRD_MASTER = 'A{B}'  # 含双括号的"用户起的怪名字"
+
+
+def _simulate_outer_format(generate_prompt: str, music_playing_hint: str = '') -> str:
+    """模拟 system_router.py L4485 的整体 .format(...)，验证不会 KeyError。"""
+    return generate_prompt.format(
+        character_prompt='<char>',
+        inner_thoughts='<inner>',
+        state_section='<state>',
+        memory_context='<mem>',
+        recent_chats_section='<recent>',
+        screen_section='<screen>',
+        external_section='<ext>',
+        music_section='<music>',
+        meme_section='<meme>',
+        master_name=WEIRD_MASTER,
+        source_instruction='<src>',
+        output_format_section='<out>',
+    )
+
+
+@pytest.mark.parametrize('lang', LOCALES)
+def test_generate_prompt_with_braced_master_survives_outer_format(lang: str) -> None:
+    """master_name='A{B}' 时 helper 必须把 master 值的花括号 escape，外层 .format
+    才不会把残留 ``{B}`` 当占位符 KeyError。修完后最终字符串里应该有字面量 ``A{B}``。"""
+    prompt = get_proactive_generate_prompt(
+        lang, music_playing_hint='', has_music=False, has_meme=True,
+        master_name=WEIRD_MASTER,
+    )
+    final = _simulate_outer_format(prompt)
+    assert WEIRD_MASTER in final, f"lang={lang} 字面量 {WEIRD_MASTER!r} 丢失：{final!r}"
+
+
+@pytest.mark.parametrize('lang', LOCALES)
+def test_music_playing_hint_with_braced_master_survives_outer_format(lang: str) -> None:
+    """zh 模板含 {master} 占位符，master_name='A{B}' 时 helper 要 escape；
+    其它 locale 模板没 {master}，但传同样的 master_name 也不应 raise。
+    music_playing_hint 在 system_router 里被拼回 generate_prompt 内层、走整体 .format()。"""
+    hint = get_proactive_music_playing_hint('Some Track', WEIRD_MASTER, lang)
+    prompt = get_proactive_generate_prompt(
+        lang, music_playing_hint=hint, has_music=False, has_meme=False,
+        master_name=WEIRD_MASTER,
+    )
+    final = _simulate_outer_format(prompt)
+    if lang == 'zh':
+        assert WEIRD_MASTER in final, f"lang={lang} hint 内字面量 {WEIRD_MASTER!r} 丢失"
+
+
+@pytest.mark.parametrize('lang', LOCALES)
+def test_music_playing_hint_with_braced_track_name_survives_outer_format(lang: str) -> None:
+    """歌名带 ``{`` / ``}``（如 'Bohemian {Rhapsody}'）时 helper 也要 escape，
+    否则同样会让外层 .format() KeyError。这是 master 修法的对照回归。"""
+    weird_track = 'Bohemian {Rhapsody}'
+    hint = get_proactive_music_playing_hint(weird_track, MASTER, lang)
+    prompt = get_proactive_generate_prompt(
+        lang, music_playing_hint=hint, has_music=False, has_meme=False, master_name=MASTER,
+    )
+    final = _simulate_outer_format(prompt)
+    assert weird_track in final, f"lang={lang} 歌名 {weird_track!r} 丢失：{final!r}"

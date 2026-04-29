@@ -1300,6 +1300,21 @@ def _resolve_master_for_template(master_name: str | None, lang_key: str) -> str:
     )['master']
 
 
+def _escape_format_braces(value: str) -> str:
+    """把字符串里的 ``{`` / ``}`` 双倍转义，让它在后续 str.format() 里被当字面量。
+
+    用于"先在 helper 里 .format(master=...) 展开本地 {master} 占位符、再把
+    结果拼回外层模板交给外层 .format() 处理"的双层 format 路径。如果 master_name
+    本身含 `{` `}`（用户起的怪名字 "A{B}"），第一次 .format 会原样塞入字面量
+    `A{B}`，但第二次 .format 会把它当成新的 `{B}` 占位符并 KeyError。
+
+    本 helper 在第一次 .format 前对 master 值做 ``{`` → ``{{`` / ``}`` → ``}}``
+    转义，第一次 .format 后字符串里就是 ``A{{B}}``；第二次 .format 把 ``{{`` /
+    ``}}`` 还原为 ``{`` / ``}``，最终输出 ``A{B}`` 字面量，且不会被误解析。
+    """
+    return value.replace('{', '{{').replace('}', '}}')
+
+
 PROACTIVE_CHAT_PROMPTS = {
     'zh': {
         'home': proactive_chat_prompt,
@@ -1967,8 +1982,12 @@ def get_proactive_generate_prompt(lang: str = 'zh', music_playing_hint: str = ""
     # meme_instr 含 {master} 占位符，需要在拼回外层 prompt 之前展开掉。否则它会
     # 流到 main_routers/system_router.py 的整体 .format(master_name=..., ...) 那里，
     # 而那一步只传 master_name 不传 master，会触发 KeyError。
+    # master_name 含 `{` / `}`（异常但合法的用户输入，例如 "A{B}"）时必须先转义，
+    # 否则第一次 .format 把字面量 `{B}` 注进 meme_instr，外层 .format 会再次解析
+    # 这个字面量并报 KeyError。Codex review #1043 r3164599879 抓的就是这条。
     if meme_instr:
-        meme_instr = meme_instr.format(master=_resolve_master_for_template(master_name, lang_key))
+        master_value = _escape_format_braces(_resolve_master_for_template(master_name, lang_key))
+        meme_instr = meme_instr.format(master=master_value)
     prompt = prompt.replace('{music_instruction}', music_instr).replace('{meme_instruction}', meme_instr)
 
     if music_playing_hint:
@@ -2539,15 +2558,16 @@ def get_proactive_music_playing_hint(track_name: str, master_name: str | None = 
     """
     获取“正在放歌”的提示语。zh 模板含 {master} 占位符，由本函数展开成用户名或本地化
     中性兜底（避免"主人"）；其它语言模板暂无 {master}，多余 kwarg 会被 .format 忽略。
+
+    本函数返回值会被 system_router 拼到 generate_prompt 末尾、再走整体 .format()，
+    所以 track_name 和 master_name 都需要先 escape `{` / `}`，否则用户起的怪
+    歌名/怪用户名会让外层 .format() KeyError（Codex review #1043 r3164599885）。
     """
     lang_key = _normalize_prompt_language(lang)
     template = PROACTIVE_MUSIC_PLAYING_HINT.get(lang_key, PROACTIVE_MUSIC_PLAYING_HINT.get('en', PROACTIVE_MUSIC_PLAYING_HINT['zh']))
-    # 对歌名中的花括号进行转义，防止后续整体 prompt.format() 时触发 KeyError
-    safe_track_name = track_name.replace('{', '{{').replace('}', '}}')
-    return template.format(
-        track_name=safe_track_name,
-        master=_resolve_master_for_template(master_name, lang_key),
-    )
+    safe_track_name = _escape_format_braces(track_name)
+    safe_master = _escape_format_braces(_resolve_master_for_template(master_name, lang_key))
+    return template.format(track_name=safe_track_name, master=safe_master)
 
 
 def get_proactive_music_failsafe_hint(master_name: str | None = None, lang: str = 'zh') -> str:
