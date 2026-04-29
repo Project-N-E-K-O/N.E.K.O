@@ -1572,7 +1572,7 @@
         "cleanupRetainedRootDone": "O diretório de dados antigo foi limpo. Agora só resta o novo diretório de execução.",
         "cleanupRetainedRootFailed": "Não foi possível limpar o diretório de dados antigo. Tente novamente mais tarde.",
         "completionTitle": "Migração de armazenamento concluída",
-        "confirmReconnect": "Confirmar fechamento e reconexão do caminho",
+        "confirmReconnect": "Confirmar fechamento e reconexão ao caminho de armazenamento original",
         "confirmRestart": "Confirmar fechamento e migração",
         "confirmExistingTargetContent": "A pasta de destino já contém dados de execução do N.E.K.O. Se você continuar, a migração substituirá as pastas de dados de execução com o mesmo nome no destino. Os outros arquivos serão mantidos. Continuar?",
         "currentPath": "Caminho atual",

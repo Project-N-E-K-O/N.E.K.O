@@ -1572,7 +1572,7 @@
         "cleanupRetainedRootDone": "古いデータ用フォルダーを削除しました。現在は新しい実行フォルダーだけが残っています。",
         "cleanupRetainedRootFailed": "古いデータ用フォルダーの削除に失敗しました。しばらくしてからもう一度お試しください。",
         "completionTitle": "ストレージ移行が完了しました",
-        "confirmReconnect": "終了して元のパスに再接続する",
+        "confirmReconnect": "終了して元の保存場所に再接続する",
         "confirmRestart": "終了して移行する",
         "confirmExistingTargetContent": "保存先のフォルダーには、すでに N.E.K.O の実行データがあります。このまま続けると、移行時に同名の実行データ用フォルダーが置き換えられます。それ以外のファイルは残ります。続けますか？",
         "currentPath": "現在のパス",

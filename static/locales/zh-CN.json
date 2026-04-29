@@ -1572,7 +1572,7 @@
         "cleanupRetainedRootDone": "旧数据目录已清理，当前仅保留新的运行目录。",
         "cleanupRetainedRootFailed": "清理旧数据目录失败，请稍后重试。",
         "completionTitle": "存储迁移已完成",
-        "confirmReconnect": "确认关闭并重连路径",
+        "confirmReconnect": "确认关闭并重连原存储路径",
         "confirmRestart": "确认关闭并迁移",
         "confirmExistingTargetContent": "目标文件夹已经包含 N.E.K.O 运行时数据。继续后，迁移会覆盖目标中的同名运行时数据目录，目标目录里的其他文件会保留。确认继续吗？",
         "currentPath": "当前路径",

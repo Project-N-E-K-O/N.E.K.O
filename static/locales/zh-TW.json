@@ -1572,7 +1572,7 @@
         "cleanupRetainedRootDone": "舊資料目錄已清理，目前僅保留新的執行目錄。",
         "cleanupRetainedRootFailed": "清理舊資料目錄失敗，請稍後重試。",
         "completionTitle": "存儲遷移已完成",
-        "confirmReconnect": "確認關閉並重連路徑",
+        "confirmReconnect": "確認關閉並重連原始儲存路徑",
         "confirmRestart": "確認關閉並遷移",
         "confirmExistingTargetContent": "目標資料夾已經包含 N.E.K.O 執行時資料。繼續後，遷移會覆蓋目標中的同名執行時資料目錄，目標目錄裡的其他檔案會保留。確認繼續嗎？",
         "currentPath": "當前路徑",

@@ -1572,7 +1572,7 @@
         "cleanupRetainedRootDone": "이전 데이터 디렉터리를 정리했습니다. 이제 새 실행 디렉터리만 남아 있습니다.",
         "cleanupRetainedRootFailed": "이전 데이터 디렉터리를 정리하지 못했습니다. 잠시 후 다시 시도해 주세요.",
         "completionTitle": "저장소 이전이 완료되었습니다",
-        "confirmReconnect": "종료 후 경로 다시 연결 확인",
+        "confirmReconnect": "종료 후 원래 저장 경로 다시 연결 확인",
         "confirmRestart": "종료 후 이전 확인",
         "confirmExistingTargetContent": "대상 폴더에 이미 N.E.K.O 실행 데이터가 들어 있습니다. 계속하면 대상에 있는 같은 이름의 실행 데이터 폴더를 덮어쓰고, 그 밖의 파일은 그대로 유지합니다. 계속할까요?",
         "currentPath": "현재 경로",
