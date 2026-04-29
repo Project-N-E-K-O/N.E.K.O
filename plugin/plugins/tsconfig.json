@@ -1,0 +1,5 @@
+{
+  "extends": "../sdk/hosted-ui/tsconfig.json",
+  "include": ["**/*.tsx"],
+  "files": ["../sdk/hosted-ui/globals.d.ts"]
+}

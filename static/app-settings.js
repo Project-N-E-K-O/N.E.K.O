@@ -335,8 +335,8 @@
                 S.avatarReactionBubbleEnabled = settings.avatarReactionBubbleEnabled ?? true;
                 S.proactiveChatInterval = settings.proactiveChatInterval ?? C.DEFAULT_PROACTIVE_CHAT_INTERVAL;
                 S.proactiveVisionInterval = settings.proactiveVisionInterval ?? C.DEFAULT_PROACTIVE_VISION_INTERVAL;
-                // 字数限制设置（默认350字）
-                S.textGuardMaxLength = settings.textGuardMaxLength ?? 350;
+                // 回复 token 上限（默认 300 tiktoken tokens；0 = 无限制）
+                S.textGuardMaxLength = settings.textGuardMaxLength ?? 300;
                 window.textGuardMaxLength = S.textGuardMaxLength;
                 // 画质设置
                 S.renderQuality = settings.renderQuality ?? 'medium';
@@ -408,9 +408,9 @@
                 // 首次启动默认开启音乐/meme搭话
                 S.proactiveMusicEnabled = true;
                 S.proactiveMemeEnabled = true;
-                // 首次启动默认字数限制为350
-                S.textGuardMaxLength = 350;
-                window.textGuardMaxLength = 350;
+                // 首次启动默认 token 上限 300（tiktoken o200k_base）
+                S.textGuardMaxLength = 300;
+                window.textGuardMaxLength = 300;
 
                 console.log('未找到保存的设置，使用默认值');
                 window.cursorFollowPerformanceLevel = U.mapRenderQualityToFollowPerf(S.renderQuality);
@@ -426,8 +426,8 @@
         } catch (error) {
             console.error('加载本地设置失败:', error);
             // 出错时也要确保全局变量被初始化
-            S.textGuardMaxLength = 350;
-            window.textGuardMaxLength = 350;
+            S.textGuardMaxLength = 300;
+            window.textGuardMaxLength = 300;
             window.cursorFollowPerformanceLevel = U.mapRenderQualityToFollowPerf(S.renderQuality);
             window.mouseTrackingEnabled = true;
             window.live2dFullscreenTrackingEnabled = false;

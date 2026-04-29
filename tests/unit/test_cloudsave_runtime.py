@@ -1,4 +1,5 @@
 import copy
+import contextlib
 import json
 import shutil
 import sqlite3
@@ -24,6 +25,11 @@ def _make_config_manager(
         patch.object(ConfigManager, "_get_documents_directory", return_value=tmp_path),
         patch.object(
             ConfigManager,
+            "_get_standard_data_directory_candidates",
+            return_value=[tmp_path],
+        ),
+        patch.object(
+            ConfigManager,
             "get_legacy_app_root_candidates",
             return_value=list(legacy_candidates),
         ),
@@ -31,15 +37,14 @@ def _make_config_manager(
     if platform is not None:
         patchers.append(patch("utils.config_manager.sys.platform", platform))
 
-    with patchers[0], patchers[1]:
-        if len(patchers) == 2:
-            config_manager = ConfigManager("N.E.K.O")
-            config_manager.get_legacy_app_root_candidates = lambda: list(legacy_candidates)
-            return config_manager
-        with patchers[2]:
-            config_manager = ConfigManager("N.E.K.O")
-            config_manager.get_legacy_app_root_candidates = lambda: list(legacy_candidates)
-            return config_manager
+    with contextlib.ExitStack() as stack:
+        for patcher in patchers:
+            stack.enter_context(patcher)
+        config_manager = ConfigManager("N.E.K.O")
+
+    config_manager.get_legacy_app_root_candidates = lambda: list(legacy_candidates)
+    config_manager._get_standard_data_directory_candidates = lambda: [tmp_path]
+    return config_manager
 
 
 def _write_runtime_state(cm, *, character_name="小满"):
@@ -88,6 +93,32 @@ def _write_runtime_state(cm, *, character_name="小满"):
     atomic_write_json(workshop_model_dir / "example.model3.json", {"Version": 3}, ensure_ascii=False, indent=2)
 
     return characters
+
+
+@pytest.mark.unit
+def test_resolve_managed_target_path_rejects_traversal(tmp_path):
+    from utils.cloudsave_runtime import _resolve_managed_target_path
+
+    cm = _make_config_manager(tmp_path)
+
+    with pytest.raises(ValueError):
+        _resolve_managed_target_path(cm, "anchor/../../outside.txt")
+    with pytest.raises(ValueError):
+        _resolve_managed_target_path(cm, "/absolute/outside.txt")
+
+    resolved = _resolve_managed_target_path(cm, "runtime/config/characters.json")
+    assert resolved == (cm.app_docs_dir / "config" / "characters.json").resolve(strict=False)
+
+
+@pytest.mark.unit
+def test_managed_target_relative_path_prefers_nested_anchor_root(tmp_path):
+    from utils.cloudsave_runtime import _managed_target_relative_path
+
+    cm = _make_config_manager(tmp_path)
+    cm.anchor_root = cm.app_docs_dir / "anchor" / "N.E.K.O"
+    target_path = cm.anchor_root / "state" / "storage_policy.json"
+
+    assert _managed_target_relative_path(cm, target_path) == Path("anchor/state/storage_policy.json")
 
 
 def _add_runtime_character(cm, character_name: str, *, recent_text: str) -> None:
@@ -534,6 +565,91 @@ def test_bootstrap_recovers_stale_blocking_mode(tmp_path):
 
     assert result["root_state"]["mode"] == "normal"
     assert result["root_state"]["last_migration_result"] == f"recovered_stale_mode:{ROOT_MODE_BOOTSTRAP_IMPORTING}"
+
+
+@pytest.mark.unit
+def test_bootstrap_preserves_deferred_init_mode(tmp_path):
+    cm = _make_config_manager(tmp_path)
+
+    from utils.cloudsave_runtime import ROOT_MODE_DEFERRED_INIT, bootstrap_local_cloudsave_environment
+
+    cm.ensure_cloudsave_state_files()
+    root_state = cm.load_root_state()
+    unavailable_root = tmp_path / "offline-selected" / "N.E.K.O"
+    root_state["mode"] = ROOT_MODE_DEFERRED_INIT
+    root_state["current_root"] = str(unavailable_root)
+    root_state["last_known_good_root"] = str(unavailable_root)
+    root_state["last_migration_result"] = f"selected_root_unavailable:{unavailable_root}"
+    cm.save_root_state(root_state)
+
+    result = bootstrap_local_cloudsave_environment(cm)
+
+    assert result["root_state"]["mode"] == ROOT_MODE_DEFERRED_INIT
+    assert result["root_state"]["current_root"] == str(unavailable_root)
+    assert result["root_state"]["last_known_good_root"] == str(unavailable_root)
+    assert result["root_state"]["last_migration_result"] == f"selected_root_unavailable:{unavailable_root}"
+
+
+@pytest.mark.unit
+def test_bootstrap_preserves_restart_pending_maintenance_mode(tmp_path):
+    cm = _make_config_manager(tmp_path)
+    anchor_base = tmp_path / "anchor-base"
+    anchor_base.mkdir(parents=True, exist_ok=True)
+    cm._get_standard_data_directory_candidates = lambda: [anchor_base]
+
+    from utils.cloudsave_runtime import (
+        ROOT_MODE_MAINTENANCE_READONLY,
+        bootstrap_local_cloudsave_environment,
+        set_root_mode,
+    )
+    from utils.storage_migration import create_pending_storage_migration
+
+    create_pending_storage_migration(
+        cm,
+        source_root=cm.app_docs_dir,
+        target_root=tmp_path / "target-root" / "N.E.K.O",
+        selection_source="custom",
+    )
+    set_root_mode(
+        cm,
+        ROOT_MODE_MAINTENANCE_READONLY,
+        last_migration_source=str(cm.app_docs_dir),
+        last_migration_result=f"restart_pending:{tmp_path / 'target-root' / 'N.E.K.O'}",
+    )
+
+    result = bootstrap_local_cloudsave_environment(cm)
+
+    assert result["root_state"]["mode"] == ROOT_MODE_MAINTENANCE_READONLY
+    assert result["root_state"]["last_migration_result"].startswith("restart_pending:")
+
+
+@pytest.mark.unit
+def test_write_blocking_recovery_fails_closed_when_migration_checkpoint_cannot_load(tmp_path):
+    cm = _make_config_manager(tmp_path)
+
+    from utils import cloudsave_runtime as cloudsave_runtime_module
+    from utils.cloudsave_runtime import ROOT_MODE_MAINTENANCE_READONLY
+
+    root_state = {
+        "mode": ROOT_MODE_MAINTENANCE_READONLY,
+        "last_migration_result": "restart_pending_missing_marker",
+    }
+
+    with patch("utils.storage_migration.load_storage_migration", side_effect=OSError("unreadable")):
+        assert cloudsave_runtime_module._should_preserve_write_blocking_mode(cm, root_state) is True
+
+
+@pytest.mark.unit
+def test_should_write_root_mode_normal_after_startup_only_when_mode_is_normal():
+    from utils.cloudsave_runtime import (
+        ROOT_MODE_DEFERRED_INIT,
+        ROOT_MODE_MAINTENANCE_READONLY,
+        should_write_root_mode_normal_after_startup,
+    )
+
+    assert should_write_root_mode_normal_after_startup({"mode": "normal"}) is True
+    assert should_write_root_mode_normal_after_startup({"mode": ROOT_MODE_DEFERRED_INIT}) is False
+    assert should_write_root_mode_normal_after_startup({"mode": ROOT_MODE_MAINTENANCE_READONLY}) is False
 
 
 @pytest.mark.unit

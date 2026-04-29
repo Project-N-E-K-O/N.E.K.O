@@ -50,6 +50,7 @@ import logging # noqa
 import atexit # noqa
 import httpx # noqa
 import time # noqa
+import signal # noqa
 from datetime import datetime, timezone # noqa
 from config import MAIN_SERVER_PORT, MONITOR_SERVER_PORT # noqa
 from utils.cloudsave_autocloud import get_cloudsave_manager # noqa
@@ -61,8 +62,10 @@ from utils.cloudsave_runtime import (
     is_write_fence_active,
     maintenance_error_payload,
     set_root_mode,
+    should_write_root_mode_normal_after_startup,
 )
 from utils.config_manager import get_config_manager, get_reserved # noqa
+from utils.storage_location_bootstrap import get_storage_startup_blocking_reason
 # 将日志初始化提前，确保导入阶段异常也能落盘
 from utils.logger_config import setup_logging # noqa: E402
 from utils.ssl_env_diagnostics import probe_ssl_environment, write_ssl_diagnostic # noqa: E402
@@ -85,13 +88,12 @@ if _IS_MAIN_PROCESS:
         )
 
 try:
-    from fastapi import FastAPI # noqa
+    from fastapi import FastAPI, Request # noqa
+    from fastapi.responses import JSONResponse # noqa
     from fastapi.staticfiles import StaticFiles # noqa
     from main_logic import core as core, cross_server as cross_server # noqa
     from main_logic.agent_event_bus import MainServerAgentBridge, notify_analyze_ack, set_main_bridge # noqa
     from fastapi.templating import Jinja2Templates # noqa
-    from threading import Thread, Event as ThreadEvent # noqa
-    from queue import Queue, Empty as QueueEmpty # noqa
     from dataclasses import dataclass # noqa
     from typing import Any, Optional # noqa
 except Exception as e:
@@ -240,6 +242,83 @@ async def _request_memory_server_shutdown() -> None:
     except Exception as e:
         logger.warning(f"向memory_server发送关闭信号时出错: {e}")
 
+
+class MemoryServerStartupBlocked(RuntimeError):
+    def __init__(self, payload: dict):
+        self.payload = dict(payload)
+        self.blocking_reason = str(self.payload.get("blocking_reason") or "").strip()
+        super().__init__(f"memory_server startup still blocked: {self.payload!r}")
+
+
+async def _request_memory_server_continue_startup(reason: str = "") -> None:
+    """Release memory_server from limited mode after the storage barrier is accepted."""
+    try:
+        from config import MEMORY_SERVER_PORT
+        from utils.internal_http_client import get_internal_http_client
+
+        client = get_internal_http_client()
+        response = await client.post(
+            f"http://127.0.0.1:{MEMORY_SERVER_PORT}/internal/storage/startup/continue",
+            json={"reason": reason},
+            timeout=60.0,
+        )
+        if response.status_code == 409:
+            try:
+                payload = response.json()
+            except Exception:
+                payload = {"ok": False, "blocking_reason": "", "error": response.text}
+            if isinstance(payload, dict) and payload.get("ok") is False and payload.get("blocking_reason"):
+                raise MemoryServerStartupBlocked(payload)
+            response.raise_for_status()
+
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict) or payload.get("ok") is not True:
+            raise RuntimeError(f"memory_server continue-startup returned unexpected payload: {payload!r}")
+    except MemoryServerStartupBlocked:
+        raise
+    except Exception as e:
+        raise RuntimeError(f"failed to release memory_server limited-mode startup: {e}") from e
+
+
+async def _request_memory_server_block_startup(reason: str = "") -> None:
+    """Return memory_server to limited mode when main_server cannot finish startup."""
+    try:
+        from config import MEMORY_SERVER_PORT
+        from utils.internal_http_client import get_internal_http_client
+
+        client = get_internal_http_client()
+        response = await client.post(
+            f"http://127.0.0.1:{MEMORY_SERVER_PORT}/internal/storage/startup/block",
+            json={"reason": reason},
+            timeout=10.0,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict) or payload.get("ok") is not True:
+            raise RuntimeError(f"memory_server block-startup returned unexpected payload: {payload!r}")
+    except Exception as e:
+        raise RuntimeError(f"failed to restore memory_server limited-mode startup: {e}") from e
+
+class _SyncMessageQueue(asyncio.Queue):
+    """``asyncio.Queue`` with sync ``put()`` aliased to ``put_nowait()``.
+
+    ``sync_message_queue`` 历史上是 ``queue.Queue``（线程安全），生产端在
+    core.py / system_router.py 等 14+ 处用同步 ``q.put(item)`` 调用。
+    cross_server 改成主 loop 上的 ``asyncio.Task`` 后，message_queue 切到
+    ``asyncio.Queue``。原生 ``asyncio.Queue.put`` 是 coroutine，原 sync 调用
+    会变成"未 await 的 coroutine"——既不入队也产生 RuntimeWarning。
+
+    覆盖 ``put`` 为 sync alias 到 ``put_nowait`` 保持向后兼容：sync_message_queue
+    全部 unbounded（无 maxsize），``put_nowait`` 永远不会因满而 raise，所以
+    替换在语义上等价。
+    """
+
+    def put(self, item):  # type: ignore[override]
+        # 故意 sync override：原 asyncio.Queue.put 是 coroutine。
+        self.put_nowait(item)
+
+
 @dataclass
 class RoleState:
     """单个 catgirl 的 per-k 运行态容器。
@@ -250,84 +329,119 @@ class RoleState:
     见 issue #857 / PR #855 review。
 
     不变量：
-    - sync_message_queue / sync_shutdown_event / websocket_lock 在
-      _ensure_character_slots 一次性构造，之后**永不替换**。特别是
-      websocket_lock —— 替换会让已经 ``async with`` 进来的协程阻塞在一把
-      孤立的旧 Lock 上；如果任何逻辑需要整体重建 role_state[k]，必须
-      把旧 lock 原样传过去。
-    - session_id / sync_process / session_manager 初始为 None，分别由
+    - sync_message_queue / websocket_lock 在 _ensure_character_slots
+      一次性构造，之后**永不替换**。特别是 websocket_lock —— 替换会让已经
+      ``async with`` 进来的协程阻塞在一把孤立的旧 Lock 上；如果任何逻辑
+      需要整体重建 role_state[k]，必须把旧 lock 原样传过去。
+    - session_id / sync_task / session_manager 初始为 None，分别由
       websocket_router / _init_character_resources 后续赋值。
+
+    历史字段：``sync_shutdown_event: ThreadEvent`` 和 ``sync_process: Thread``
+    在 cross_server 合并到主 event loop 后语义上已删除（不再起独立线程）。
+    生命周期改由 ``sync_task: asyncio.Task`` 管理，shutdown 走 ``task.cancel()``。
+
+    但 ``main_routers/shared_state.py`` 的 ``_RoleStateFieldView`` 仍为
+    ``sync_shutdown_event`` / ``sync_process`` 暴露 dict-like 视图（``get_sync_shutdown_event()``
+    / ``get_sync_process()`` 公共 router API）。视图的 ``__getitem__`` 用
+    ``getattr(rs, field)``（不带 default），如果字段不存在会 ``AttributeError``。
+    保留这两个 ``Optional[Any] = None`` 占位字段维护 shim 的"永远空字典"语义：
+    ``__contains__`` 看到 None 返回 False、``__getitem__`` 走 ``raise KeyError``，
+    所有调用者得到一致的空状态而不是崩溃。这两个字段不再被赋值，未来如果
+    确认外部确无依赖再清。
     """
-    sync_message_queue: Queue
-    sync_shutdown_event: ThreadEvent
+    sync_message_queue: _SyncMessageQueue
     websocket_lock: asyncio.Lock
     session_id: Optional[str] = None
-    sync_process: Optional[Thread] = None
+    sync_task: Optional[asyncio.Task] = None
     # 用 Any 而非 core.LLMSessionManager：避免 dataclass 运行时求值 annotation
     # 时踩到 forward-ref / 循环引用边界
     session_manager: Optional[Any] = None
+    # 仅为 main_routers/shared_state.py 的 legacy field-view 提供占位；永远 None
+    sync_shutdown_event: Optional[Any] = None
+    sync_process: Optional[Any] = None
 
 
 # 角色名 -> RoleState 的主存储；所有 per-k 同步资源都通过它访问
 role_state: dict[str, RoleState] = {}
 
 
-def _iter_sync_connector_threads():
-    """迭代所有仍然存活的同步连接器线程（按 role_state 为准）。"""
+def _iter_sync_connector_tasks():
+    """迭代所有仍然存活的同步连接器 task（按 role_state 为准）。"""
     for name, rs in role_state.items():
-        thread = rs.sync_process
-        if thread is None:
+        task = rs.sync_task
+        if task is None:
             continue
-        yield name, thread
+        yield name, task
 
 
 def _signal_sync_connectors_shutdown(*, log: bool = True) -> None:
+    """取消所有同步连接器 task。task.cancel() 是同步、幂等、loop 关闭后亦无害的，
+    所以 atexit 二次调用安全。"""
     if log:
-        logger.info("正在关闭同步线程...")
+        logger.info("正在关闭同步连接器 task...")
     for rs in role_state.values():
         try:
-            rs.sync_shutdown_event.set()
+            task = rs.sync_task
+            if task is not None and not task.done():
+                task.cancel()
         except Exception as e:
-            logger.debug(f"设置同步关闭事件失败: {e}", exc_info=True)
+            logger.debug(f"取消同步连接器 task 失败: {e}", exc_info=True)
 
 
-async def join_sync_connector_threads(timeout: float = 3.0) -> list[str]:
-    """并行 join 所有同步连接器线程，返回在 timeout 内仍未退出的线程名。
+async def join_sync_connector_tasks(timeout: float = 3.0) -> list[str]:
+    """并行 await 所有同步连接器 task，返回在 timeout 内未结束的角色名。
 
-    N 个角色串行 join 会把最坏墙钟放大成 N * timeout；gather + to_thread
-    让每个 join 在自己的线程里跑，墙钟收敛到单个 timeout。
+    通常调用前已经 ``_signal_sync_connectors_shutdown`` 取消过；这里只是等
+    各 task 走完 finally cleanup（关闭 ws/session/reader）。
     """
     wait_timeout = max(0.0, float(timeout))
-    targets = list(_iter_sync_connector_threads())
+    targets = list(_iter_sync_connector_tasks())
     if not targets:
         return []
 
-    async def _join_one(name: str, thread) -> str | None:
+    async def _wait_one(name: str, task: asyncio.Task) -> str | None:
         try:
-            await asyncio.to_thread(thread.join, wait_timeout)
-        except Exception as e:
-            logger.debug(f"等待同步连接器线程 {name} 退出时出错: {e}", exc_info=True)
+            await asyncio.wait_for(asyncio.shield(task), timeout=wait_timeout)
+        except asyncio.TimeoutError:
+            return name
+        except asyncio.CancelledError:
+            # task 正常 cancel 走完 finally 后会 raise CancelledError
             return None
-        return name if thread.is_alive() else None
+        except Exception as e:
+            logger.debug(f"同步连接器 task {name} 退出时抛异常: {e}", exc_info=True)
+            return None
+        return None
 
     results = await asyncio.gather(
-        *(_join_one(name, thread) for name, thread in targets),
+        *(_wait_one(name, task) for name, task in targets),
         return_exceptions=False,
     )
-    alive_threads = [name for name in results if name]
+    pending = [name for name in results if name]
 
-    if alive_threads:
+    if pending:
         logger.warning(
-            "以下同步连接器线程未在 %.1fs 内退出: %s",
+            "以下同步连接器 task 未在 %.1fs 内退出: %s",
             wait_timeout,
-            ", ".join(alive_threads),
+            ", ".join(pending),
         )
-    return alive_threads
+    return pending
+
+
+# 兼容别名：旧名 join_sync_connector_threads 在文件内有调用，先保留 alias 减小 diff
+join_sync_connector_threads = join_sync_connector_tasks
 
 
 def cleanup(*, log: bool = True):
-    """通知所有同步线程停止。log=False 用于 atexit 二次触发时抑制重复日志。"""
+    """通知所有同步连接器 task 停止。log=False 用于 atexit 二次触发时抑制重复日志。"""
     _signal_sync_connectors_shutdown(log=log)
+
+
+def _reset_sync_connector_shutdown_events() -> None:
+    """已是空实现：旧版用 ThreadEvent.clear() 让下次启动可以复用线程槽位；
+    现在 task 模式下没有可重置的状态——已死的 task 会被 ``_init_character_resources``
+    检测后直接 ``asyncio.create_task`` 重启。保留函数名以避免修改众多调用点。"""
+    return
+
 
 # 只在主进程中注册 cleanup 函数，防止子进程退出时执行清理
 # log=False：on_shutdown 已经打印过 "正在清理资源..."，atexit 补一刀时不重复 log
@@ -562,7 +676,9 @@ async def _handle_agent_event(event: dict):
                         except Exception as e:
                             logger.warning("[EventBus] direct task_result turn_end failed: %s", e)
                     if delivered:
-                        logger.info("[EventBus] direct task_result reply delivered: %.60s", detail_text[:60])
+                        # detail_text 是面向用户的回复内容，不写 logger
+                        logger.info("[EventBus] direct task_result reply delivered (detail_len=%d)", len(detail_text))
+                        print(f"[EventBus] direct task_result reply: {detail_text[:60]}")
                         return
 
                 # Build structured callback and enqueue for LLM injection
@@ -601,7 +717,9 @@ async def _handle_agent_event(event: dict):
                         if err_msg:
                             notif["error_message"] = err_msg[:500]
                         await ws.send_json(notif)
-                        logger.info("[EventBus] agent_notification sent to frontend: %.60s", text[:60])
+                        # text 是面向前端的通知正文，不写 logger
+                        logger.info("[EventBus] agent_notification sent to frontend (text_len=%d)", len(text))
+                        print(f"[EventBus] agent_notification text: {text[:60]}")
                     except Exception as e:
                         logger.warning("[EventBus] agent_notification WS send failed: %s", e)
                 else:
@@ -651,17 +769,20 @@ async def _refresh_character_globals():
 
 
 def _ensure_character_slots(k: str) -> bool:
-    """为单个 catgirl 预备 per-k 同步资源槽位。返回是否为新建角色（决定后续要不要强制启动线程）。
+    """为单个 catgirl 预备 per-k 同步资源槽位。返回是否为新建角色（决定后续要不要强制启动 task）。
 
     纯内存的原子操作：要么 role_state[k] 已经存在（什么都不做），要么一次性
-    把 queue / shutdown_event / websocket_lock 三件全部填好。避免旧代码里
-    6 张 dict 用两种不同 sentinel（sync_message_queue vs websocket_locks）
-    各自判断 "角色是否已有槽位" 造成的半初始化风险。
+    把 queue / websocket_lock 两件全部填好。避免旧代码里 6 张 dict 用两种不同
+    sentinel（sync_message_queue vs websocket_locks）各自判断 "角色是否已有
+    槽位" 造成的半初始化风险。
+
+    注：``asyncio.Queue`` 在 Python 3.10+ 创建时不需要 running loop；
+    本函数虽然是 sync，但调用链上来自 ``initialize_character_data`` /
+    ``_init_character_resources`` 等 async 上下文，loop 可用。
     """
     if k not in role_state:
         role_state[k] = RoleState(
-            sync_message_queue=Queue(),
-            sync_shutdown_event=ThreadEvent(),
+            sync_message_queue=_SyncMessageQueue(),
             websocket_lock=asyncio.Lock(),
         )
         logger.info(f"为角色 {k} 初始化新资源")
@@ -670,10 +791,10 @@ def _ensure_character_slots(k: str) -> bool:
 
 
 async def _init_character_resources(k: str, is_new_character: bool):
-    """为单个 catgirl 完成 session_manager 更新 + 同步连接器线程检查/重启。
+    """为单个 catgirl 完成 session_manager 更新 + 同步连接器 task 检查/重启。
 
     依赖 module globals: master_name, lanlan_prompt, lanlan_basic_config（调用方负责先刷新）。
-    写入 per-k 槽位: role_state[k].session_manager / sync_process —— 不同 k 之间
+    写入 per-k 槽位: role_state[k].session_manager / sync_task —— 不同 k 之间
     不共享状态，可安全并行。
     """
     rs = role_state[k]  # 调用方必须先 _ensure_character_slots，保证这里可直接索引
@@ -749,87 +870,110 @@ async def _init_character_resources(k: str, is_new_character: bool):
 
             rs.session_manager = new_mgr
 
-    # 检查并启动同步连接器线程
-    # 如果是新角色，或者线程不存在/已停止，需要启动线程
-    need_start_thread = False
+    # 检查并启动同步连接器 task
+    # 如果是新角色，或者 task 不存在/已结束，需要启动
+    need_start_task = False
     if is_new_character:
-        need_start_thread = True
-    elif rs.sync_process is None:
-        need_start_thread = True
-    elif hasattr(rs.sync_process, 'is_alive') and not await asyncio.to_thread(rs.sync_process.is_alive):
-        need_start_thread = True
-        try:
-            await asyncio.to_thread(rs.sync_process.join, timeout=0.1)
-        except Exception:
-            # 注意不要写成 bare except：to_thread 是 cancellation point，
-            # 如果 catch 了 BaseException 会吞掉 asyncio.CancelledError
-            pass
+        need_start_task = True
+    elif rs.sync_task is None or rs.sync_task.done():
+        need_start_task = True
 
-    if need_start_thread:
+    if need_start_task:
         try:
             _char_name = k
+
             def _make_status_cb(char_name):
                 def _cb(msg):
                     mgr = _get_session_manager(char_name)
                     if not mgr:
                         return
-                    loop = _server_loop
-                    if loop is None or loop.is_closed():
-                        return
                     ws = mgr.websocket
                     if ws and hasattr(ws, 'client_state') and ws.client_state == ws.client_state.CONNECTED:
                         import json as _json
                         data = _json.dumps({"type": "status", "message": msg})
-                        asyncio.run_coroutine_threadsafe(ws.send_text(data), loop)
+                        # cross_server 现在和我们在同一个主 loop 上，回调
+                        # 也是从主 loop 同步调用的——直接 create_task 即可，
+                        # 不再需要 run_coroutine_threadsafe。
+                        # done_callback 消化 task 的 exception，避免 ws 断开时
+                        # asyncio 输出 "Task exception was never retrieved" 噪音；
+                        # status 是 best-effort 降级路径，丢一条不影响主逻辑。
+                        # cancelled 态下 task.exception() 自身会 raise CancelledError，
+                        # 必须先用 task.cancelled() 早返回，否则 callback 自己又制造
+                        # 一条 "exception was never retrieved" 噪音。
+                        def _swallow_status_send_exc(_t):
+                            if _t.cancelled():
+                                return
+                            exc = _t.exception()
+                            if exc is not None:
+                                logger.debug("status 回调 ws.send_text 失败（已忽略）: %s", exc)
+                        try:
+                            _t = asyncio.create_task(ws.send_text(data))
+                            _t.add_done_callback(_swallow_status_send_exc)
+                        except RuntimeError:
+                            # 极端情况：当前没有 running loop（理论上不会发生
+                            # 在 cross_server 调用路径上，但兜底）。回退到旧
+                            # 跨 loop 路径。
+                            loop = _server_loop
+                            if loop is not None and not loop.is_closed():
+                                asyncio.run_coroutine_threadsafe(ws.send_text(data), loop)
                 return _cb
+
             _status_cb = _make_status_cb(_char_name)
 
-            new_thread = Thread(
-                target=cross_server.sync_connector_process,
-                args=(rs.sync_message_queue, rs.sync_shutdown_event, k, f"ws://127.0.0.1:{MONITOR_SERVER_PORT}", {'bullet': False, 'monitor': True}, _status_cb),
-                daemon=True,
-                name=f"SyncConnector-{k}"
+            new_task = asyncio.create_task(
+                cross_server.run_sync_connector(
+                    rs.sync_message_queue,
+                    k,
+                    f"ws://127.0.0.1:{MONITOR_SERVER_PORT}",
+                    {'bullet': False, 'monitor': True},
+                    _status_cb,
+                ),
+                name=f"SyncConnector-{k}",
             )
-            rs.sync_process = new_thread
-            new_thread.start()
-            logger.info(f"✅ 已为角色 {k} 启动同步连接器线程 ({new_thread.name})")
-            await asyncio.sleep(0.1)  # 线程启动更快，减少等待时间
-            # 与上面 is_alive 检查保持一致，走 to_thread 避免任何潜在阻塞
-            if not await asyncio.to_thread(new_thread.is_alive):
-                logger.error(f"❌ 同步连接器线程 {k} ({new_thread.name}) 启动后立即退出！")
-            else:
-                logger.info(f"✅ 同步连接器线程 {k} ({new_thread.name}) 正在运行")
+            rs.sync_task = new_task
+            logger.info(f"✅ 已为角色 {k} 启动同步连接器 task ({new_task.get_name()})")
         except Exception as e:
-            logger.error(f"❌ 启动角色 {k} 的同步连接器线程失败: {e}", exc_info=True)
+            logger.error(f"❌ 启动角色 {k} 的同步连接器 task 失败: {e}", exc_info=True)
 
 
 async def _stop_character_thread(k: str):
-    """停止单个 catgirl 的同步连接器线程（最多 3s join）。dict 清理留给调用方顺序做。"""
+    """停止单个 catgirl 的同步连接器 task（最多 3s 等待 cleanup）。dict 清理留给调用方顺序做。
+
+    函数名保留 ``_thread`` 后缀以避免修改众多调用点；现在底层是 ``asyncio.Task``。
+    """
     rs = role_state.get(k)
-    if rs is None or rs.sync_process is None:
+    if rs is None or rs.sync_task is None:
         return
+    task = rs.sync_task
     try:
-        logger.info(f"正在停止角色 {k} 的同步连接器线程...")
-        rs.sync_shutdown_event.set()
-        await asyncio.to_thread(rs.sync_process.join, timeout=3)  # 等待线程正常结束
-        if await asyncio.to_thread(rs.sync_process.is_alive):
-            logger.warning(f"⚠️ 同步连接器线程 {k} 未能在超时内停止，将作为daemon线程自动清理")
+        logger.info(f"正在停止角色 {k} 的同步连接器 task...")
+        if not task.done():
+            task.cancel()
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=3.0)
+        except asyncio.TimeoutError:
+            logger.warning(f"⚠️ 同步连接器 task {k} 未能在 3s 内退出，放任其自行结束")
+        except asyncio.CancelledError:
+            # cancel 后 await 抛 CancelledError 是正常路径
+            pass
+        except Exception as e:
+            logger.debug(f"同步连接器 task {k} 退出时异常: {e}", exc_info=True)
         else:
-            logger.info(f"✅ 已停止角色 {k} 的同步连接器线程")
+            logger.info(f"✅ 已停止角色 {k} 的同步连接器 task")
     except Exception as e:
-        logger.warning(f"停止角色 {k} 的同步连接器线程时出错: {e}")
+        logger.warning(f"停止角色 {k} 的同步连接器 task 时出错: {e}")
 
 
 def _cleanup_character_dicts(k: str):
-    """同步清理单个 catgirl 的 per-k 槽位。调用前确保对应线程已停或超时。"""
+    """同步清理单个 catgirl 的 per-k 槽位。调用前确保对应 task 已停或超时。"""
     rs = role_state.get(k)
     if rs is None:
         return
-    # 清理队列（queue.Queue 没有 close/join_thread 方法）
+    # 清理队列（asyncio.Queue 也没有 close/join_thread 方法，drain 即可）
     try:
         while not rs.sync_message_queue.empty():
             rs.sync_message_queue.get_nowait()
-    except QueueEmpty:
+    except asyncio.QueueEmpty:
         # while empty + get_nowait 本身是 racy idiom：另一线程可能先 drain 掉，
         # 导致 get_nowait 抛 Empty。这里 role_state[k] 即将被 del 掉，忽略无害。
         pass
@@ -934,11 +1078,93 @@ lock = asyncio.Lock()
 # --- FastAPI App Setup ---
 app = FastAPI()
 
+_main_runtime_limited_mode_enabled = False
+_main_runtime_limited_mode_reason = ""
+_MAIN_LIMITED_MODE_ALLOWED_EXACT_PATHS = {
+    "/",
+    "/health",
+    "/favicon.ico",
+    "/api/beacon/shutdown",
+    "/api/config/steam_language",
+    "/api/system/status",
+}
+_MAIN_LIMITED_MODE_ALLOWED_PAGE_PATHS = {
+    "/l2d",
+    "/model_manager",
+    "/live2d_parameter_editor",
+    "/soccer_demo",
+    "/live2d_emotion_manager",
+    "/vrm_emotion_manager",
+    "/mmd_emotion_manager",
+    "/voice_clone",
+    "/api_key",
+    "/chara_manager",
+    "/character_card_manager",
+    "/cloudsave_manager",
+    "/memory_browser",
+    "/cookies_login",
+    "/chat",
+    "/subtitle",
+    "/agenthud",
+    "/card_maker",
+    "/jukebox",
+    "/jukebox/manager",
+    "/toast",
+}
+_MAIN_LIMITED_MODE_ALLOWED_PREFIXES = (
+    "/static/",
+    "/api/storage/location/",
+)
+
+
+def _enable_main_storage_limited_mode(reason: str) -> None:
+    global _main_runtime_limited_mode_enabled, _main_runtime_limited_mode_reason
+    _main_runtime_limited_mode_enabled = True
+    _main_runtime_limited_mode_reason = str(reason or "runtime_initializing").strip() or "runtime_initializing"
+
+
+def _disable_main_storage_limited_mode() -> None:
+    global _main_runtime_limited_mode_enabled, _main_runtime_limited_mode_reason
+    _main_runtime_limited_mode_enabled = False
+    _main_runtime_limited_mode_reason = ""
+
+
+def _is_main_limited_mode_allowed_path(path: str, method: str) -> bool:
+    if path in _MAIN_LIMITED_MODE_ALLOWED_EXACT_PATHS:
+        return True
+    if path in _MAIN_LIMITED_MODE_ALLOWED_PAGE_PATHS and method in {"GET", "HEAD"}:
+        return True
+    return any(path == prefix.rstrip("/") or path.startswith(prefix) for prefix in _MAIN_LIMITED_MODE_ALLOWED_PREFIXES)
+
+
+@app.middleware("http")
+async def main_storage_limited_mode_guard(request: Request, call_next):
+    if _runtime_startup_init_completed or not _main_runtime_limited_mode_enabled:
+        return await call_next(request)
+
+    if _is_main_limited_mode_allowed_path(request.url.path, request.method):
+        return await call_next(request)
+
+    blocking_reason = _main_runtime_limited_mode_reason or "runtime_initializing"
+    logger.info(
+        "[Main] limited-mode blocks request path=%s reason=%s",
+        request.url.path,
+        blocking_reason,
+    )
+    return JSONResponse(
+        status_code=409,
+        content={
+            "ok": False,
+            "error_code": "storage_startup_blocked",
+            "blocking_reason": blocking_reason,
+            "limited_mode": True,
+            "error": "Main server 正处于存储受限启动状态，请等待存储位置选择、迁移或恢复完成。",
+        },
+    )
+
 
 @app.exception_handler(MaintenanceModeError)
 async def handle_maintenance_mode_error(_request, exc: MaintenanceModeError):
-    from fastapi.responses import JSONResponse
-
     return JSONResponse(status_code=409, content=maintenance_error_payload(exc))
 
 
@@ -978,6 +1204,12 @@ if _IS_MAIN_PROCESS:
         if os.path.exists(_writable_live2d_path):
             app.mount("/user_live2d_local", CustomStaticFiles(directory=_writable_live2d_path), name="user_live2d_local")
             logger.info(f"已挂载本地Live2D目录(CFA回退): {_writable_live2d_path}")
+            if _config_manager.is_windows_cfa_fallback_active:
+                logger.info(
+                    "检测到 Windows CFA 读写分离模式：Live2D 读取目录=%s，写入目录=%s",
+                    _serve_live2d_path,
+                    _writable_live2d_path,
+                )
 
     # 挂载VRM动画目录（static/vrm/animation） 必须第一个挂载
     vrm_animation_path = str(_config_manager.vrm_animation_dir)
@@ -1031,6 +1263,7 @@ from main_routers.memory_router import router as memory_router # noqa
 from main_routers.mmd_router import router as mmd_router # noqa
 from main_routers.music_router import router as music_router # noqa
 from main_routers.pages_router import router as pages_router # noqa
+from main_routers.storage_location_router import router as storage_location_router # noqa
 from main_routers.system_router import router as system_router # noqa
 from main_routers.vrm_router import router as vrm_router # noqa
 from main_routers.websocket_router import router as websocket_router # noqa
@@ -1038,21 +1271,6 @@ from main_routers.workshop_router import router as workshop_router # noqa
 from main_routers.cookies_login_router import router as cookies_login_router # noqa
 from main_routers.actions_proxy_router import router as actions_proxy_router # noqa
 from main_routers.shared_state import init_shared_state # noqa
-
-# 初始化共享状态，供各路由访问
-# 注意：steamworks 会在 startup 事件中初始化后更新
-if _IS_MAIN_PROCESS:
-    init_shared_state(
-        role_state=role_state,
-        steamworks=None,  # 延迟初始化，会在 startup 事件中设置
-        templates=templates,
-        config_manager=_config_manager,
-        logger=logger,
-        initialize_character_data=initialize_character_data,
-        switch_current_catgirl_fast=switch_current_catgirl_fast,
-        init_one_catgirl=init_one_catgirl,
-        remove_one_catgirl=remove_one_catgirl,
-    )
 
 
 # ── 健康检查 / 指纹端点 ──────────────────────────────────────────
@@ -1091,6 +1309,7 @@ app.include_router(jukebox_router)
 app.include_router(workshop_router)
 app.include_router(memory_router)
 app.include_router(cloudsave_router)
+app.include_router(storage_location_router)
 # 注意：pages_router 含 /{lanlan_name} 兜底路由，应最后挂载
 app.include_router(websocket_router)
 app.include_router(agent_router)
@@ -1102,6 +1321,9 @@ app.include_router(pages_router)  # 兜底路由需最后挂载
 
 # 后台预加载任务
 _preload_task: asyncio.Task = None
+_runtime_startup_init_lock = asyncio.Lock()
+_runtime_startup_init_completed = False
+_heavy_import_prewarm_started = False
 
 
 async def _background_preload():
@@ -1253,13 +1475,302 @@ async def _sync_memory_server_after_startup_import(import_result):
         logger.warning(f"Steam Auto-Cloud startup import could not sync memory_server: {e}")
 
 
+async def _prewarm_heavy_imports():
+    import importlib
+
+    for mod in ("dashscope", "dashscope.audio.tts_v2"):
+        try:
+            await asyncio.to_thread(importlib.import_module, mod)
+            logger.debug(f"[prewarm] imported {mod}")
+        except Exception as e:
+            logger.debug(f"[prewarm] import {mod} failed (ignored): {e}")
+
+
+def _maybe_schedule_heavy_import_prewarm() -> None:
+    global _heavy_import_prewarm_started
+    if _heavy_import_prewarm_started:
+        return
+    _heavy_import_prewarm_started = True
+    asyncio.create_task(_prewarm_heavy_imports())
+
+
+async def _cancel_task_if_running(task: asyncio.Task | None, *, name: str, timeout: float = 1.0) -> None:
+    if task is None:
+        return
+    if task.done():
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            logger.debug("%s task finished with error during startup rollback: %s", name, exc, exc_info=True)
+        return
+
+    task.cancel()
+    try:
+        await asyncio.wait_for(task, timeout=timeout)
+    except asyncio.CancelledError:
+        logger.debug("%s task cancelled during startup rollback", name)
+    except asyncio.TimeoutError:
+        logger.warning("%s task did not stop within %.1fs during startup rollback", name, timeout)
+    except Exception as exc:
+        logger.debug("%s task cleanup failed during startup rollback: %s", name, exc, exc_info=True)
+
+
+async def _cancel_workshop_background_tasks(*, timeout: float) -> None:
+    try:
+        _wr = importlib.import_module("main_routers.workshop_router")
+    except Exception as exc:
+        logger.debug("workshop task cleanup skipped: %s", exc, exc_info=True)
+        return
+
+    cancel_background_tasks = getattr(_wr, "cancel_background_tasks", None)
+    if callable(cancel_background_tasks):
+        await cancel_background_tasks(timeout=timeout)
+        return
+
+    for task_attr in ("_ugc_warmup_task", "_ugc_sync_task"):
+        task = getattr(_wr, task_attr, None)
+        await _cancel_task_if_running(task, name=f"workshop {task_attr}", timeout=timeout)
+        if getattr(_wr, task_attr, None) is task:
+            setattr(_wr, task_attr, None)
+
+
+async def _cancel_workshop_background_tasks_for_startup_rollback() -> None:
+    await _cancel_workshop_background_tasks(timeout=1.0)
+
+
+async def _rollback_partial_main_runtime_startup() -> None:
+    global steamworks, _preload_task, agent_event_bridge
+
+    await _cancel_task_if_running(_preload_task, name="preload", timeout=1.0)
+    _preload_task = None
+
+    await _cancel_workshop_background_tasks_for_startup_rollback()
+
+    if agent_event_bridge is not None:
+        bridge = agent_event_bridge
+        agent_event_bridge = None
+        try:
+            await bridge.stop()
+        except Exception as exc:
+            logger.debug("Agent event bridge rollback failed: %s", exc, exc_info=True)
+        try:
+            set_main_bridge(None)
+        except Exception as exc:
+            logger.debug("Agent event bridge reference rollback failed: %s", exc, exc_info=True)
+
+    try:
+        from main_routers.shared_state import set_steamworks
+
+        set_steamworks(None)
+    except Exception as exc:
+        logger.debug("Steamworks shared-state rollback failed: %s", exc, exc_info=True)
+    steamworks = None
+
+    try:
+        cleanup(log=False)
+        await join_sync_connector_threads(1.0)
+    except Exception as exc:
+        logger.debug("Sync connector rollback failed: %s", exc, exc_info=True)
+    finally:
+        _reset_sync_connector_shutdown_events()
+
+
+async def _ensure_main_server_runtime_initialized(*, reason: str) -> bool:
+    global steamworks, _preload_task, agent_event_bridge, _runtime_startup_init_completed
+
+    if _runtime_startup_init_completed:
+        return False
+
+    async with _runtime_startup_init_lock:
+        if _runtime_startup_init_completed:
+            return False
+
+        try:
+            _maybe_schedule_heavy_import_prewarm()
+
+            bootstrap_local_cloudsave_environment(_config_manager)
+            import_result = None
+            try:
+                import_result = await _run_cloudsave_manager_action(
+                    "import_if_needed",
+                    reason="main_server_startup",
+                    budget_seconds=10.0,
+                )
+                logger.info("Steam Auto-Cloud startup import: %s", import_result)
+            except CloudsaveDeadlineExceeded:
+                logger.warning(
+                    "Steam Auto-Cloud startup import exceeded 10.0s budget before applying runtime changes; continuing with local runtime state"
+                )
+            except Exception as e:
+                logger.warning(f"Steam Auto-Cloud startup import failed: {e}")
+
+            await initialize_character_data()
+            await _sync_memory_server_after_startup_import(import_result)
+
+            logger.info("正在初始化 Steamworks...")
+            steamworks = initialize_steamworks()
+
+            from main_routers.shared_state import set_steamworks
+
+            set_steamworks(steamworks)
+            get_default_steam_info()
+
+            _preload_task = asyncio.create_task(_background_preload())
+            try:
+                agent_event_bridge = MainServerAgentBridge(on_agent_event=_handle_agent_event)
+                await agent_event_bridge.start()
+                set_main_bridge(agent_event_bridge)
+            except Exception as e:
+                logger.warning(f"Agent event bridge startup failed: {e}")
+
+            await _init_and_mount_workshop()
+
+            if steamworks:
+                _wr = importlib.import_module("main_routers.workshop_router")
+
+                async def _warmup_only():
+                    try:
+                        await warmup_ugc_cache()
+                    except Exception as e:
+                        logger.warning(f"UGC 缓存预热失败: {e}")
+
+                async def _sync_characters_only():
+                    max_fence_retries = 15
+                    retry_interval_seconds = 2
+                    for attempt in range(1, max_fence_retries + 1):
+                        if not is_write_fence_active(_config_manager):
+                            break
+                        logger.info(
+                            "创意工坊角色卡同步检测到维护态写围栏，等待解除后重试 (%s/%s)",
+                            attempt,
+                            max_fence_retries,
+                        )
+                        await asyncio.sleep(retry_interval_seconds)
+                    else:
+                        logger.info("创意工坊角色卡同步等待维护态解除超时，30s 后重新排队重试")
+
+                        async def _retry_sync_after_delay():
+                            try:
+                                await asyncio.sleep(30)
+                                await _sync_characters_only()
+                            except Exception as retry_exc:
+                                logger.warning(f"创意工坊角色卡同步重试任务失败: {retry_exc}")
+
+                        _wr._ugc_sync_task = asyncio.create_task(_retry_sync_after_delay())
+                        return
+                    if _wr._ugc_warmup_task is not None:
+                        try:
+                            await asyncio.wait_for(asyncio.shield(_wr._ugc_warmup_task), timeout=20)
+                        except asyncio.TimeoutError:
+                            logger.warning("等待 UGC 预热任务超时（20s），继续角色卡同步")
+                        except Exception as e:
+                            logger.debug(f"等待 UGC 预热任务时异常（不影响角色卡同步）: {e}")
+                    try:
+                        sync_result = await sync_workshop_character_cards()
+                        if sync_result["added"] > 0:
+                            logger.info(f"✅ 创意工坊角色卡同步完成：新增 {sync_result['added']} 个，跳过 {sync_result['skipped']} 个")
+                        else:
+                            logger.info("创意工坊角色卡同步完成：无新增角色卡")
+                    except Exception as e:
+                        logger.warning(f"创意工坊角色卡同步失败（不影响启动）: {e}")
+
+                _wr._ugc_warmup_task = asyncio.create_task(_warmup_only())
+                _wr._ugc_sync_task = asyncio.create_task(_sync_characters_only())
+
+            try:
+                from utils.token_tracker import TokenTracker, install_hooks
+
+                install_hooks()
+                TokenTracker.get_instance().start_periodic_save()
+                TokenTracker.get_instance().record_app_start()
+                logger.info("Token usage tracker initialized")
+            except Exception as e:
+                logger.warning(f"Token tracker initialization failed (non-critical): {e}")
+
+            logger.info("Startup 初始化完成，后台正在预加载音频模块... (reason=%s)", reason)
+
+            try:
+                from utils.language_utils import initialize_global_language
+
+                global_lang = initialize_global_language()
+                logger.info(f"全局语言初始化完成: {global_lang}")
+            except Exception as e:
+                logger.warning(f"全局语言初始化失败（不影响启动）: {e}")
+
+            current_root_state = _config_manager.load_root_state()
+            if should_write_root_mode_normal_after_startup(current_root_state):
+                try:
+                    set_root_mode(
+                        _config_manager,
+                        ROOT_MODE_NORMAL,
+                        current_root=str(_config_manager.app_docs_dir),
+                        last_known_good_root=str(_config_manager.app_docs_dir),
+                        last_successful_boot_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                    )
+                except Exception as e:
+                    logger.error("写入 main_server 启动成功标记失败，启动不会标记为成功: %s", e)
+                    raise RuntimeError("main_server failed to persist ROOT_MODE_NORMAL state") from e
+            else:
+                logger.info(
+                    "跳过 ROOT_MODE_NORMAL 写入，当前仍处于阻断态: %s",
+                    current_root_state.get("mode") or ROOT_MODE_NORMAL,
+                )
+
+            _runtime_startup_init_completed = True
+            _disable_main_storage_limited_mode()
+            return True
+        except Exception:
+            _runtime_startup_init_completed = False
+            if _main_runtime_limited_mode_enabled:
+                _enable_main_storage_limited_mode("runtime_initialization_failed")
+            await _rollback_partial_main_runtime_startup()
+            raise
+
+
+async def release_storage_startup_barrier(*, reason: str = "storage_selection_continue_current_session") -> dict[str, Any]:
+    await _request_memory_server_continue_startup(reason)
+    try:
+        initialized = await _ensure_main_server_runtime_initialized(reason=reason)
+    except Exception:
+        _enable_main_storage_limited_mode("runtime_initialization_failed")
+        try:
+            await _request_memory_server_block_startup(f"{reason}:main_server_init_failed")
+        except Exception as revert_exc:
+            logger.warning(
+                "main_server 初始化失败后恢复 memory_server limited-mode 失败: %s",
+                revert_exc,
+                exc_info=True,
+            )
+        raise
+    _disable_main_storage_limited_mode()
+    return {
+        "ok": True,
+        "initialized": bool(initialized),
+    }
+
+
 # Startup 事件：延迟初始化 Steamworks 和全局语言
 @app.on_event("startup")
 async def on_startup():
     """服务器启动时执行的初始化操作"""
     if _IS_MAIN_PROCESS:
-        global steamworks, _preload_task, agent_event_bridge, _server_loop
+        global _server_loop
         _server_loop = asyncio.get_running_loop()
+        init_shared_state(
+            role_state=role_state,
+            steamworks=steamworks,
+            templates=templates,
+            config_manager=_config_manager,
+            logger=logger,
+            initialize_character_data=initialize_character_data,
+            switch_current_catgirl_fast=switch_current_catgirl_fast,
+            init_one_catgirl=init_one_catgirl,
+            remove_one_catgirl=remove_one_catgirl,
+            request_app_shutdown=lambda: asyncio.create_task(request_application_shutdown_async()),
+            release_storage_startup_barrier=release_storage_startup_barrier,
+        )
         # asyncio 的慢回调告警只在 loop debug 模式下输出。默认关闭，
         # 需要排查事件循环停顿时设 NEKO_DEBUG_ASYNC=1 启用（会略微增加每 callback 开销）。
         if os.environ.get("NEKO_DEBUG_ASYNC") == "1":
@@ -1286,151 +1797,16 @@ async def on_startup():
             asyncio.create_task(_event_loop_heartbeat())
             logger.info("[asyncio] heartbeat enabled (stalls > 300ms will be logged)")
 
-        # 预热重量级模块导入，避免 TTS worker 线程第一次启动时在
-        # 工作线程里触发同步 import 阻塞事件循环（实测 dashscope
-        # 首次 import 会吃 GIL 3-7 秒，导致此期间 /new_dialog 响应
-        # 解析无法及时完成，表现为 "memory 服务响应超时"）。
-        # 放 to_thread 里跑，不阻塞 startup 本身。
-        async def _prewarm_heavy_imports():
-            import importlib
-            for mod in ("dashscope", "dashscope.audio.tts_v2"):
-                try:
-                    await asyncio.to_thread(importlib.import_module, mod)
-                    logger.debug(f"[prewarm] imported {mod}")
-                except Exception as e:
-                    logger.debug(f"[prewarm] import {mod} failed (ignored): {e}")
-        asyncio.create_task(_prewarm_heavy_imports())
-
-        # ── Steam Auto-Cloud 启动导入 + 角色数据初始化 ─────────────
-        # 先 bootstrap 再 import，保证导入时序稳定；任何异常都不中断启动
-        # 但会阻止持久化 ROOT_MODE_NORMAL 标记
-        bootstrap_local_cloudsave_environment(_config_manager)
-        import_result = None
-        try:
-            import_result = await _run_cloudsave_manager_action(
-                "import_if_needed",
-                reason="main_server_startup",
-                budget_seconds=10.0,
+        blocking_reason = get_storage_startup_blocking_reason(_config_manager)
+        if blocking_reason:
+            _enable_main_storage_limited_mode(blocking_reason)
+            logger.info(
+                "检测到存储启动阻断态，main_server 先保持 limited-mode，等待网页端放行: %s",
+                blocking_reason,
             )
-            logger.info("Steam Auto-Cloud startup import: %s", import_result)
-        except CloudsaveDeadlineExceeded:
-            logger.warning(
-                "Steam Auto-Cloud startup import exceeded 10.0s budget before applying runtime changes; continuing with local runtime state"
-            )
-        except Exception as e:
-            logger.warning(f"Steam Auto-Cloud startup import failed: {e}")
-        try:
-            set_root_mode(
-                _config_manager,
-                ROOT_MODE_NORMAL,
-                current_root=str(_config_manager.app_docs_dir),
-                last_known_good_root=str(_config_manager.app_docs_dir),
-                last_successful_boot_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-            )
-        except Exception as e:
-            logger.error("写入 main_server 启动成功标记失败，已中止后续启动写盘初始化: %s", e)
-            raise RuntimeError("main_server failed to persist ROOT_MODE_NORMAL state") from e
-        await initialize_character_data()
-        await _sync_memory_server_after_startup_import(import_result)
+            return
 
-        logger.info("正在初始化 Steamworks...")
-        steamworks = initialize_steamworks()
-        
-        # 更新 shared_state 中的 steamworks 引用
-        from main_routers.shared_state import set_steamworks
-        set_steamworks(steamworks)
-        
-        # 尝试获取 Steam 信息
-        get_default_steam_info()
-        
-        # 在后台异步预加载音频模块（不阻塞服务器启动）
-        # 注意：不需要等待机制，Python import lock 会自动处理并发
-        _preload_task = asyncio.create_task(_background_preload())
-        # 启动 agent_server <-> main_server 的 ZeroMQ 事件桥接
-        try:
-            agent_event_bridge = MainServerAgentBridge(on_agent_event=_handle_agent_event)
-            await agent_event_bridge.start()
-            set_main_bridge(agent_event_bridge)
-        except Exception as e:
-            logger.warning(f"Agent event bridge startup failed: {e}")
-        await _init_and_mount_workshop()
-        
-        # 后台预热 UGC 缓存 + 同步角色卡（分别独立任务，互不阻塞）
-        if steamworks:
-            _wr = importlib.import_module("main_routers.workshop_router")
-            
-            async def _warmup_only():
-                """仅预热 UGC 缓存"""
-                try:
-                    await warmup_ugc_cache()
-                except Exception as e:
-                    logger.warning(f"UGC 缓存预热失败: {e}")
-            
-            async def _sync_characters_only():
-                """等待预热完成后同步角色卡"""
-                max_fence_retries = 15
-                retry_interval_seconds = 2
-                for attempt in range(1, max_fence_retries + 1):
-                    if not is_write_fence_active(_config_manager):
-                        break
-                    logger.info(
-                        "创意工坊角色卡同步检测到维护态写围栏，等待解除后重试 (%s/%s)",
-                        attempt,
-                        max_fence_retries,
-                    )
-                    await asyncio.sleep(retry_interval_seconds)
-                else:
-                    logger.info("创意工坊角色卡同步等待维护态解除超时，30s 后重新排队重试")
-
-                    async def _retry_sync_after_delay():
-                        try:
-                            await asyncio.sleep(30)
-                            await _sync_characters_only()
-                        except Exception as retry_exc:
-                            logger.warning(f"创意工坊角色卡同步重试任务失败: {retry_exc}")
-
-                    _wr._ugc_sync_task = asyncio.create_task(_retry_sync_after_delay())
-                    return
-                # 先等预热完成，角色卡同步依赖订阅物品列表
-                if _wr._ugc_warmup_task is not None:
-                    try:
-                        await asyncio.wait_for(asyncio.shield(_wr._ugc_warmup_task), timeout=20)
-                    except asyncio.TimeoutError:
-                        logger.warning("等待 UGC 预热任务超时（20s），继续角色卡同步")
-                    except Exception as e:
-                        logger.debug(f"等待 UGC 预热任务时异常（不影响角色卡同步）: {e}")
-                try:
-                    sync_result = await sync_workshop_character_cards()
-                    if sync_result["added"] > 0:
-                        logger.info(f"✅ 创意工坊角色卡同步完成：新增 {sync_result['added']} 个，跳过 {sync_result['skipped']} 个")
-                    else:
-                        logger.info("创意工坊角色卡同步完成：无新增角色卡")
-                except Exception as e:
-                    logger.warning(f"创意工坊角色卡同步失败（不影响启动）: {e}")
-            
-            # _ugc_warmup_task 仅引用预热任务，等待它不会被角色卡同步阻塞
-            _wr._ugc_warmup_task = asyncio.create_task(_warmup_only())
-            _wr._ugc_sync_task = asyncio.create_task(_sync_characters_only())
-        
-        # 初始化全局 LLM Token 用量追踪器
-        try:
-            from utils.token_tracker import TokenTracker, install_hooks
-            install_hooks()
-            TokenTracker.get_instance().start_periodic_save()
-            TokenTracker.get_instance().record_app_start()
-            logger.info("Token usage tracker initialized")
-        except Exception as e:
-            logger.warning(f"Token tracker initialization failed (non-critical): {e}")
-
-        logger.info("Startup 初始化完成，后台正在预加载音频模块...")
-
-        # 初始化全局语言变量（优先级：Steam设置 > 系统设置）
-        try:
-            from utils.language_utils import initialize_global_language
-            global_lang = initialize_global_language()
-            logger.info(f"全局语言初始化完成: {global_lang}")
-        except Exception as e:
-            logger.warning(f"全局语言初始化失败: {e}，将使用默认值")
+        await _ensure_main_server_runtime_initialized(reason="startup")
 
 
 @app.on_event("shutdown")
@@ -1626,14 +2002,55 @@ def get_start_config():
         return app.state.start_config
     return {
         "browser_mode_enabled": False,
-        "browser_page": "chara_manager",
+        "browser_page": "character_card_manager",
         "shutdown_memory_server_on_exit": False,
+        "request_runtime_shutdown": None,
         'server': None
     }
 
 def set_start_config(config):
     """设置启动配置到 app.state"""
     app.state.start_config = config
+
+
+async def request_application_shutdown_async():
+    """Request an application-level shutdown compatible with both launcher modes."""
+    current_config = get_start_config()
+    request_runtime_shutdown = current_config.get("request_runtime_shutdown")
+    if callable(request_runtime_shutdown):
+        try:
+            await asyncio.sleep(0.5)
+            result = request_runtime_shutdown()
+            if inspect.isawaitable(result):
+                await result
+            return
+        except Exception as exc:
+            logger.error("触发运行时级应用关闭失败: %s", exc, exc_info=True)
+
+    if current_config.get("server") is not None:
+        await shutdown_server_async()
+        return
+
+    launcher_pid_raw = os.environ.get("NEKO_LAUNCHER_PID", "").strip()
+    if os.name != "nt" and launcher_pid_raw:
+        try:
+            launcher_pid = int(launcher_pid_raw)
+        except ValueError:
+            launcher_pid = 0
+
+        if launcher_pid > 0 and launcher_pid != os.getpid():
+            loop = asyncio.get_running_loop()
+
+            def _request_launcher_shutdown() -> None:
+                try:
+                    os.kill(launcher_pid, signal.SIGTERM)
+                except Exception as exc:
+                    logger.error("触发 launcher 级关闭失败: %s", exc)
+
+            loop.call_later(1.0, _request_launcher_shutdown)
+            return
+
+    await shutdown_server_async()
 
 
 async def _init_and_mount_workshop():
@@ -1687,23 +2104,7 @@ async def shutdown_server_async():
         logger.info("正在关闭服务器...")
 
         # 取消后台创意工坊任务，避免残留协程
-        try:
-            _wr = importlib.import_module("main_routers.workshop_router")
-            _SHUTDOWN_TASK_TIMEOUT = 5  # 等待后台任务结束的超时秒数
-            for task_attr in ('_ugc_warmup_task', '_ugc_sync_task'):
-                task = getattr(_wr, task_attr, None)
-                if task and not task.done():
-                    task.cancel()
-                    try:
-                        await asyncio.wait_for(task, timeout=_SHUTDOWN_TASK_TIMEOUT)
-                    except asyncio.TimeoutError:
-                        logger.warning(f"后台任务 {task_attr} 在 {_SHUTDOWN_TASK_TIMEOUT}s 内未结束，跳过等待")
-                    except asyncio.CancelledError:
-                        logger.debug(f"后台任务 {task_attr} 已取消")
-                    except Exception as e:
-                        logger.debug(f"后台任务 {task_attr} 取消时异常: {e}")
-        except Exception as e:
-            logger.debug(f"取消创意工坊后台任务时出错: {e}")
+        await _cancel_workshop_background_tasks(timeout=5.0)
         # HEAD: memory_server shutdown signal moved into on_shutdown via
         # _request_memory_server_shutdown() to share internal_http_client pool
 
@@ -1831,7 +2232,7 @@ if __name__ == "__main__":
     parser.add_argument("--open-browser",   action="store_true",
                         help="启动后是否打开浏览器并监控它")
     parser.add_argument("--page",           type=str, default="",
-                        choices=["index", "chara_manager", "api_key", ""],
+                        choices=["index", "character_card_manager", "api_key", ""],
                         help="要打开的页面路由（不含域名和端口）")
     args = parser.parse_args()
 

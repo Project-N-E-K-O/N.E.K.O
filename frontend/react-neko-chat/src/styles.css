@@ -1307,6 +1307,39 @@ button * {
   background: rgba(68, 183, 254, 0.18);
 }
 
+.composer-tool-clear-btn {
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.92);
+  border-radius: 999px;
+  background: #44b7fe;
+  color: #fff;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  box-shadow: 0 2px 6px rgba(35, 116, 190, 0.28);
+  transition: background 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.composer-tool-clear-btn:hover {
+  background: #229ceb;
+  transform: scale(1.08);
+  box-shadow: 0 3px 8px rgba(35, 116, 190, 0.34);
+}
+
+.composer-tool-clear-btn span {
+  transform: translateY(-0.5px);
+}
+
 .composer-tool-btn:disabled {
   opacity: 0.45;
   cursor: not-allowed;
@@ -1325,6 +1358,141 @@ button * {
   line-height: 1;
   user-select: none;
   padding: 0 2px;
+}
+
+/* ===== Composer overflow ··· menu (compact 模式下右 3 按钮折叠) ===== */
+
+/* normal 模式的右 3 按钮容器：宽屏 → compact 切换或反之时整体淡入。
+   用 flex 包装保持原 gap 间距与 normal 模式视觉一致。 */
+.composer-tools-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  animation: composerToolsExpand 0.26s cubic-bezier(0.2, 0.85, 0.2, 1.05) both;
+}
+
+/* 内部 3 个按钮叠加微小入场延迟，营造序列展开感 */
+.composer-tools-right > .composer-translate-btn {
+  animation: composerToolItemEnter 0.32s cubic-bezier(0.2, 0.85, 0.2, 1.05) 0.04s both;
+}
+.composer-tools-right > .composer-tool-btn:not(.composer-translate-btn):not(.composer-emoji-btn) {
+  animation: composerToolItemEnter 0.32s cubic-bezier(0.2, 0.85, 0.2, 1.05) 0.08s both;
+}
+.composer-tools-right > .composer-tool-menu {
+  animation: composerToolItemEnter 0.32s cubic-bezier(0.2, 0.85, 0.2, 1.05) 0.12s both;
+}
+
+@keyframes composerToolsExpand {
+  from {
+    opacity: 0;
+    transform: translateX(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes composerToolItemEnter {
+  from {
+    opacity: 0;
+    transform: scale(0.7);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.composer-overflow-menu {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  /* 切到 compact 时 ··· 按钮的入场动画 */
+  animation: composerOverflowBtnEnter 0.28s cubic-bezier(0.2, 0.85, 0.2, 1.1) both;
+}
+
+@keyframes composerOverflowBtnEnter {
+  from {
+    opacity: 0;
+    transform: scale(0.5) rotate(-45deg);
+  }
+  60% {
+    opacity: 1;
+    transform: scale(1.06) rotate(0);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) rotate(0);
+  }
+}
+
+/* 用户偏好减少动画时跳过过渡 */
+@media (prefers-reduced-motion: reduce) {
+  .composer-tools-right,
+  .composer-tools-right > *,
+  .composer-overflow-menu,
+  .composer-overflow-popover {
+    animation: none !important;
+  }
+}
+
+.composer-overflow-btn {
+  color: #4a6478;
+}
+
+.composer-overflow-btn svg {
+  width: 20px;
+  height: 20px;
+  pointer-events: none;
+}
+
+.composer-overflow-btn.is-active {
+  background: rgba(68, 183, 254, 0.18);
+}
+
+/* 折叠面板：从 ··· 按钮上方弹出（输入栏在底部，向下会出窗口）。
+   3 个按钮垂直堆叠，保持 32×32 尺寸，hover 区域不变。 */
+.composer-overflow-popover {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 6px);
+  z-index: 9;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 6px;
+  /* 0.85 而非 0.96：让 backdrop-filter blur 有可见底色可虚化，
+     真正出现毛玻璃效果而不是浪费一层合成开销喵～ */
+  background: rgba(255, 255, 255, 0.85);
+  border: 1px solid rgba(127, 144, 170, 0.18);
+  border-radius: 12px;
+  box-shadow:
+    0 8px 24px rgba(0, 0, 0, 0.12),
+    0 2px 6px rgba(0, 0, 0, 0.06);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  animation: composerOverflowAppear 0.18s cubic-bezier(0.2, 0.9, 0.2, 1.05) both;
+  transform-origin: bottom right;
+}
+
+@keyframes composerOverflowAppear {
+  from {
+    opacity: 0;
+    transform: translateY(4px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* 折叠面板内的工具菜单包装（emoji 子弹窗仍向上弹出，不受影响） */
+.composer-overflow-popover .composer-tool-menu {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .composer-icon-popover {
@@ -1843,8 +2011,33 @@ button * {
   background: rgba(68, 183, 254, 0.26);
 }
 
+[data-theme="dark"] .composer-tool-clear-btn {
+  border-color: rgba(28, 28, 46, 0.92);
+  box-shadow: 0 2px 7px rgba(0, 0, 0, 0.44);
+}
+
 [data-theme="dark"] .composer-tool-divider {
   color: rgba(255, 255, 255, 0.15);
+}
+
+[data-theme="dark"] .composer-overflow-btn {
+  color: rgba(255, 255, 255, 0.7);
+}
+
+[data-theme="dark"] .composer-overflow-btn.is-active {
+  background: rgba(68, 183, 254, 0.26);
+}
+
+[data-theme="dark"] .composer-overflow-popover {
+  /* 0.78 而非 0.96：与浅色模式对齐，base 规则的 backdrop-filter blur(12px)
+     是级联继承下来的，太高 alpha 会让 blur 看不见还白吃 GPU 合成开销喵。
+     色温也微调到 (38,38,58)，对齐 .chat-body / .composer-input-shell 的蓝灰调子，
+     避免纯灰底色和下方输入栏色温脱节。 */
+  background: rgba(38, 38, 58, 0.78);
+  border-color: rgba(255, 255, 255, 0.08);
+  box-shadow:
+    0 8px 24px rgba(0, 0, 0, 0.5),
+    0 2px 6px rgba(0, 0, 0, 0.3);
 }
 
 [data-theme="dark"] .composer-icon-popover {

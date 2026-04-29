@@ -14,7 +14,7 @@
     <link rel="stylesheet" href="/static/css/index.css">
     <link rel="stylesheet" href="/static/css/subtitle.css">
     <link rel="stylesheet" href="/static/css/dark-mode.css">
-    <link rel="stylesheet" href="/static/react/neko-chat/neko-chat-window.css">
+    <link rel="stylesheet" href="/static/react/neko-chat/neko-chat-window.css?v={{ react_chat_asset_version }}">
     <script src="/static/theme-manager.js"></script>
     <link rel="stylesheet" href="/static/libs/APlayer.min.css">
     <script src="/static/libs/APlayer.min.js"></script>
@@ -431,7 +431,7 @@
                     <img src="/static/icons/fenxiang.svg" alt="" aria-hidden="true" width="20" height="20">
                 </button>
                 <button id="reactChatWindowMinimizeButton" type="button" data-i18n-aria="chat.reactWindowMinimize" data-i18n-title="chat.reactWindowMinimize">
-                    <img id="reactChatWindowMinimizeIcon" src="/static/icons/expand_icon_off.png" data-i18n-alt="chat.reactWindowMinimize" alt="最小化新版聊天框" width="32" height="32">
+                    <img id="reactChatWindowMinimizeIcon" src="/static/icons/expand_icon_off.png" data-i18n-alt="chat.reactWindowMinimize" alt="最小化聊天框" width="32" height="32">
                 </button>
                 <button id="reactChatWindowCloseButton" type="button" data-i18n-aria="chat.reactWindowClose" data-i18n-title="chat.reactWindowClose">×</button>
             </div>
@@ -514,23 +514,24 @@
     <script src="/static/app-chat.js"></script>
     <script src="/static/app-chat-avatar.js"></script>
     <script src="/static/app-audio-playback.js"></script>
+    <script src="/static/app-spatial-audio.js"></script>
     <script src="/static/app-audio-capture.js"></script>
-    <script src="/static/app-screen.js"></script>
-    <script src="/static/app-crop.js"></script>
+    <script src="/static/app-screen.js?v=20260428-ss2"></script>
+    <script src="/static/app-crop.js?v=20260428-ss2"></script>
     <script src="/static/app-interpage.js"></script>
     <script src="/static/app-proactive.js"></script>
     <script src="/static/app-settings.js"></script>
     <script src="/static/app-agent.js"></script>
     <script src="/static/app-character.js"></script>
     <script src="/static/app-websocket.js"></script>
-    <script src="/static/app-buttons.js"></script>
+    <script src="/static/app-buttons.js?v={{ react_chat_asset_version }}"></script>
     <script src="/static/app.js"></script>
     <script src="/static/subtitle.js"></script>
 
     <!-- React Chat（与 index.html 相同的 bundle + 初始化器）-->
-    <script src="/static/react/neko-chat/neko-chat-window.iife.js"></script>
-    <script src="/static/app-react-chat-window.js"></script>
-    <script src="/static/app-chat-adapter.js"></script>
+    <script src="/static/react/neko-chat/neko-chat-window.iife.js?v={{ react_chat_asset_version }}"></script>
+    <script src="/static/app-react-chat-window.js?v={{ react_chat_asset_version }}"></script>
+    <script src="/static/app-chat-adapter.js?v={{ react_chat_asset_version }}"></script>
     <script src="/static/app-chat-export.js"></script>
 
     <script>
@@ -966,6 +967,40 @@
         })();
 
         console.log('[Chat Standalone] ready');
+
+        // ===== 截图结果监听（多窗口模式下 Pet 窗口代为全屏截图裁剪后回传）=====
+        window.addEventListener('neko:screenshot-result', function(e) {
+            var result = e.detail;
+            if (result && result.dataUrl) {
+                // 优先写入旧版 pending list DOM，再由 syncPendingComposerAttachments
+                // 自动同步到 React Chat，确保 legacy sendTextPayloadInternal 和 React 都读到同一套数据。
+                if (typeof window.addScreenshotToList === 'function') {
+                    window.addScreenshotToList(result.dataUrl);
+                } else if (window.reactChatWindowHost) {
+                    var state = window.reactChatWindowHost.getState();
+                    var attachments = (state && state.composerAttachments) ? state.composerAttachments.slice() : [];
+                    attachments.push({
+                        id: 'screenshot-' + Date.now(),
+                        url: result.dataUrl,
+                        alt: (typeof window.t === 'function' ? window.t('chat.pendingImageAlt', { index: attachments.length + 1 }) : '') || ('图片 ' + (attachments.length + 1))
+                    });
+                    window.reactChatWindowHost.setComposerAttachments(attachments);
+                }
+                if (typeof window.showStatusToast === 'function') {
+                    window.showStatusToast(
+                        typeof window.t === 'function' ? window.t('app.screenshotAdded') : '\u622A\u56FE\u5DF2\u6DFB\u52A0\uFF0C\u70B9\u51FB\u53D1\u9001\u4E00\u8D77\u53D1\u9001',
+                        3000
+                    );
+                }
+            } else if (result && result.error) {
+                if (typeof window.showStatusToast === 'function') {
+                    window.showStatusToast(
+                        (typeof window.t === 'function' ? window.t('app.screenshotFailed') : '\u622A\u56FE\u5931\u8D25') + (result.error ? ': ' + result.error : ''),
+                        5000
+                    );
+                }
+            }
+        });
     })();
     </script>
 </body>

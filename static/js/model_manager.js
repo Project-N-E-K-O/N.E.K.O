@@ -4290,13 +4290,16 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             try {
                 // 等待 MMD 模块加载
-                if (!window.mmdModuleLoaded && !window.MMDManager) {
+                // 注意：必须等 mmdModuleLoaded 为 true，不能只检查 MMDManager 是否存在。
+                // 并行加载时 MMDManager 可能先于 MMDAnimation 定义，
+                // 此时 new MMDManager() 的 _initModules 会跳过 animationModule。
+                if (!window.mmdModuleLoaded) {
                     showStatusForMMDLoadingSession(mmdCanvas, loadingSessionId, t('mmd.moduleLoading', '正在加载MMD模块...'), 0);
                     if (window._waitForMMDModules) {
                         await window._waitForMMDModules(8000);
                     } else {
                         await new Promise((resolve, reject) => {
-                            if (window.MMDManager || window.mmdModuleLoaded) return resolve();
+                            if (window.mmdModuleLoaded) return resolve();
                             const failedModules = window._mmdModulesFailed || window.mmdModulesFailed;
                             if (failedModules) {
                                 const modules = Array.isArray(failedModules) ? failedModules.join(', ') : failedModules;
@@ -4971,35 +4974,31 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     /**
-     * 冻结 MMD 物理以渡过待机动作切换。MMD 无 crossfade，loadAnimation 一步就把骨架姿态
-     * 推到新动画的 t=0，MMDPhysics 会把单帧大位移积分成高速冲击 → 头发/裙摆飞甩。
-     * 若用户本来就关闭了物理则保持现状（saved=null 表示无需恢复，避免覆盖用户设置）。
+     * 冻结 MMD 物理以渡过待机动作切换。
+     *
+     * 【012 crossfade 后更新】：crossfade 系统提供骨骼级平滑混合，物理系统不再看到
+     * 单帧大位移，因此 freeze/reset/unfreeze 机制不再需要。
+     * 保留函数签名以兼容调用方，但内部改为 no-op。
+     *
+     * 旧行为（已移除）：禁用物理 → 250ms 后 physics.reset() → 恢复物理。
+     * 问题：physics.reset() 清零惯性状态，反而导致物理跳变。
      */
     function _freezeMmdIdlePhysics() {
-        if (_idleMmdPhysicsRestoreTimer.mmd) {
-            clearTimeout(_idleMmdPhysicsRestoreTimer.mmd);
-            _idleMmdPhysicsRestoreTimer.mmd = null;
-        }
-        const mmd = window.mmdManager;
-        if (!mmd || !mmd.currentModel) return;
-        if (_idleMmdPhysicsSavedState.mmd === null && mmd.enablePhysics) {
-            _idleMmdPhysicsSavedState.mmd = true;
-        }
-        mmd.enablePhysics = false;
+        // no-op: crossfade 的平滑骨骼混合不需要冻结物理
     }
 
     /**
      * 把 MMDPhysics 初始态对齐到当前骨架姿态，再按 savedState 恢复 enablePhysics。
-     * 不 reset 直接开物理，旧模拟状态会撞上新骨架姿态（正是这个机制想避免的）。
+     *
+     * 【012 crossfade 后更新】：不再调用 physics.reset()。
+     * crossfade 期间骨骼逐帧平滑变化，物理系统自然跟随，无需重置。
+     * physics.reset() 会清零惯性状态导致跳变——正是我们要消除的问题。
+     * 仅恢复 enablePhysics 状态（如果之前被冻结过）。
      */
     function _alignAndRestoreMmdIdlePhysics() {
         try {
             const mmd = window.mmdManager;
-            const model = mmd?.currentModel;
-            if (model?.physics && typeof model.physics.reset === 'function') {
-                if (model.mesh) model.mesh.updateMatrixWorld(true);
-                try { model.physics.reset(); } catch (e) { /* noop */ }
-            }
+            // 恢复物理启用状态（兼容旧的 freeze 调用）
             if (_idleMmdPhysicsSavedState.mmd === true && mmd) {
                 mmd.enablePhysics = true;
             }
@@ -5009,7 +5008,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     }
 
-    /** 延迟 IDLE_MMD_PHYSICS_RESTORE_MS 让 mixer 把新动画首帧应用到骨架，再对齐 MMDPhysics 并解冻。 */
+    /** 延迟恢复物理启用状态。
+     * 【012 crossfade 后更新】：不再需要延迟——crossfade 是平滑的，
+     * 但保留延迟机制以防万一（恢复 enablePhysics 是幂等的）。
+     */
     function _scheduleRestoreMmdIdlePhysics() {
         if (_idleMmdPhysicsRestoreTimer.mmd) {
             clearTimeout(_idleMmdPhysicsRestoreTimer.mmd);
@@ -5302,7 +5304,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         // VRM 侧：crossfade + 跨 clip 同半球对齐（_alignClipToCurrentPose）已经把骨骼
         // 逐帧位移稀释到无害范围，SpringBone/LookAt 都不会被单帧跳变激发，无需冻结物理。
-        // MMD 侧：loadAnimation 一步落位，仍需 freeze → reset → unfreeze 以防飞甩。
+        // MMD 侧：012 crossfade 系统同样提供骨骼级平滑混合，物理不再看到单帧跳变。
+        // _freezeMmdIdlePhysics 已改为 no-op，保留调用以兼容流程。
         let mmdFrozen = false;
         if (type === 'mmd') {
             _freezeMmdIdlePhysics();
@@ -5409,10 +5412,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             // 视觉渐显：仅 VRM 走这条路径。playVRMAAnimation 已 await 返回，currentAction
             // 已是新 action，立即淡入即可。失败分支（played=false）也淡入还原，防止模型永久不可见。
             //
-            // MMD 不走 visual fade（原因见 fade-out 处注释）。头发/裙摆 physics.reset
-            // 瞬间的跳变本身由 _freezeMmdIdlePhysics / _scheduleRestoreMmdIdlePhysics
-            // 的冻结窗口覆盖：冻结期间物理完全不推进，reset 在窗口末端执行后解冻，用户不会看到
-            // 物理飞甩，也就不需要用视觉 fade 掩盖。
+            // MMD 不走 visual fade（原因见 fade-out 处注释）。012 crossfade 系统提供骨骼级
+            // 平滑混合，物理系统自然跟随，不需要 freeze/reset/unfreeze 也不需要视觉遮盖。
             if (type === 'vrm') {
                 _fadeAlpha('vrm', 1, IDLE_VRM_VISUAL_FADE_IN_MS);
             }
@@ -8112,11 +8113,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         const noExpressionText = t('live2d.noExpression', '无表情');
 
         select.innerHTML = '';
-        const placeholderOption = document.createElement('option');
-        placeholderOption.value = '';
-        placeholderOption.textContent = defaultText;
-        placeholderOption.disabled = true;
-        select.appendChild(placeholderOption);
 
         if (type === 'motion') {
             const noMotionOption = document.createElement('option');

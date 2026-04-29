@@ -257,14 +257,16 @@ class ModelProfiler {
         if (!manager) return null;
 
         // 检测模型类型
-        const isMMD = manager.constructor?.name === 'MMDManager' || !!manager.core;
-        const isVRM = manager.constructor?.name === 'VRMManager' || !!manager._cursorFollow;
+        const ctorName = manager.constructor?.name || '';
+        const currentModel = manager.currentModel || null;
+        const isVRM = ctorName === 'VRMManager' || !!manager._cursorFollow || !!currentModel?.vrm;
+        const isMMD = ctorName === 'MMDManager' || !!currentModel?.mesh;
 
         let snap;
-        if (isMMD) {
-            snap = this._snapshotMMD(manager);
-        } else if (isVRM) {
+        if (isVRM) {
             snap = this._snapshotVRM(manager);
+        } else if (isMMD) {
+            snap = this._snapshotMMD(manager);
         } else {
             snap = { type: 'unknown', error: '无法识别的管理器类型' };
         }
@@ -411,10 +413,11 @@ class ModelProfiler {
             return snap;
         }
         snap.loaded = true;
+        snap.name = model.url || model.name || '(unknown)';
 
         // VRM 模型信息
-        const vrm = model;
-        const scene = vrm.scene || vrm;
+        const vrm = model.vrm || model;
+        const scene = vrm.scene || model.scene || vrm;
 
         // 遍历场景统计几何信息
         let totalVertices = 0;

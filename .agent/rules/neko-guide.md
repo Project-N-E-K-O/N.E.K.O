@@ -7,9 +7,14 @@ trigger: always_on
 ## 基本规则
 
 - 使用 i18n 支持国际化，目前支持 en.json、ja.json、ko.json、zh-CN.json、zh-TW.json、ru.json 六种。每次改 i18n 字符串时必须同步更新全部 6 个 locale 文件，只改部分会被打回。
+- **后端 Python 多语言字符串一律落在 `config/prompts_*.py`**：无论是平铺 `dict[str, str]` 还是嵌套 `dict[str, dict[K, str]]`，凡键里出现 `'zh' / 'en' / 'ja' / 'ko' / 'ru'` 的语言映射，都必须放在 `config/prompts_*` 下。`scripts/check_prompt_hygiene.py` 只抓平铺结构，但规范是"加新语言时一次扫 `config/` 即可补全"——嵌套 dict 即使 lint 没抓也算技术债，需自觉搬迁。新增后端模块若有翻译需求，直接在 `config/prompts_<topic>.py` 加新模块或复用已有模块（如 `prompts_activity.py`、`prompts_proactive.py`、`prompts_memory.py`）。
 - 使用 `uv run` 来运行本项目的任何 Python 程序（pytest、脚本等），不要直接用系统 Python。原因：pyproject.toml 限制了 Python 版本（<3.13），uv 会自动选择合适版本并管理虚拟环境。
 - 任何涉及用户隐私（原始对话）的 log 只能用 `print` 输出，不得使用 `logger`。
 - 翻译 system prompt 时，即使出于其他原因也应当保留 `======以上为`，这是一个水印。
+- **辅助 LLM 调用约定（memory/ + utils/）**：
+  - **不下发 `temperature`**：所有 `utils.llm_client.create_chat_llm` / `ChatOpenAI` 及其包装 helper 一律不传 `temperature=...`，默认 `None` 表示"不写进请求体"。理由：(1) 兼容 o1/o3/gpt-5-thinking/Claude extended-thinking；(2) 各 task 自定温度会引入难复现的回归。守门：`scripts/check_no_temperature.py`（CI 见 `.github/workflows/analyze.yml`）。
+  - **模型从 tier 拿，不 hardcoded fallback**：每个 LLM 调用都通过 `config_manager.get_model_api_config(<tier>)` 拿 model/base_url/api_key 三件套。不要再写 `api_config.get('model', SETTING_PROPOSER_MODEL)` 这类 fallback——`SETTING_PROPOSER_MODEL` / `SETTING_VERIFIER_MODEL` 已于 2026-04 退环境。tier 未配好时让 API 直接拒绝，比静默回退到 qwen-max 更安全。
+  - **memory 子模块按职责选 tier**：fact extraction / signal detection / reflection synthesis / fact dedup / recall rerank 走 `summary`；recent.review + persona.correction + promotion merge 走 `correction`。不要为单点新增 hardcoded 模型名。
 
 ## 代码风格
 

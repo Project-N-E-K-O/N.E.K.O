@@ -1,0 +1,22 @@
+{
+  "_purpose": "背景LLM系统增强配置模板（三件套架构：LLMClient + GuidanceOrchestrator + TimeWindowAggregator + UserProfileTracker）",
+  "_note": "本文件在 background_llm.enabled=true 时生效，由 _init_background_llm 读取",
+  "_model_hint": "如需使用 DeepSeek 思考模式（工具调用），请设置 cloud.model 为 deepseek-reasoner",
+  "background_llm": {
+    "enabled": true,
+    "_comment_enabled": "是否启用背景LLM系统，开启后将使用LLM生成引导词推送给AI",
+    "cloud": {
+      "url": "https://api.deepseek.com",
+      "model": "deepseek-v4-flash",
+      "api_key": ""
+    },
+    "window_size": 15,
+    "_comment_window_size": "时间窗口大小（秒），与主配置 interval_seconds 联动",
+    "max_samples": 30,
+    "_comment_max_samples": "每次推送最多采样的弹幕条数，超出时随机采样",
+    "knowledge_context": "",
+    "_comment_knowledge_context": "注入LLM Prompt的专属知识库内容（主播人设、口头禅、常见梗等）",
+    "user_profile": "",
+    "prompt_template": ""
+  }
+}

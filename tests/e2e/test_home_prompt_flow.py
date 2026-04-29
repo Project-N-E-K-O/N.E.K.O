@@ -14,7 +14,7 @@ from utils.config_manager import get_config_manager
 from utils.tutorial_prompt_state import save_tutorial_prompt_state
 
 
-TUTORIAL_PROMPT_TITLE = "要不要先看一下新手引导？"
+TUTORIAL_PROMPT_TITLE = "要不要开始主页新手引导？"
 AUTOSTART_PROMPT_TITLE = "要不要让 N.E.K.O 开机自动启动？"
 LATER_BUTTON_TEXT = "稍后再说"
 

@@ -507,11 +507,20 @@ def flatten_reserved(catgirl_data: dict) -> dict:
 class ConfigManager:
     """配置文件管理器"""
     _agent_quota_lock = threading.Lock()
+    _selected_root_unavailable_recovery_override_roots: set[str] = set()
     _free_agent_daily_limit = 300 # 免费配额并非只在本地实施，本地计算是为了减少无效请求、节约网络带宽。
     ROOT_STATE_VERSION = 1
     CLOUDSAVE_LOCAL_STATE_VERSION = 1
     CHARACTER_TOMBSTONES_STATE_VERSION = 1
-    
+
+    @property
+    def selected_root(self):
+        return self.committed_selected_root
+
+    @selected_root.setter
+    def selected_root(self, value):
+        self.committed_selected_root = value
+
     def __init__(self, app_name=None):
         """
         初始化配置管理器
@@ -523,13 +532,19 @@ class ConfigManager:
         # 检测是否在子进程中，子进程静默初始化（通过 main_server.py 设置的环境变量）
         self._verbose = '_NEKO_MAIN_SERVER_INITIALIZED' not in os.environ
         self.docs_dir = self._get_documents_directory()
+        default_app_docs_dir = self.docs_dir / self.app_name
 
         # CFA (Windows 受控文件夹访问/反勒索防护) 检测：
         # 如果原始 Documents 路径可读但不可写，记住它以便从中读取用户数据（模型等）
         first_readable_non_writable = getattr(self, '_first_non_writable_readable_candidate', None)
-        if (first_readable_non_writable is not None
-                and first_readable_non_writable != self.docs_dir):
+        self._cfa_fallback_write_docs_dir = None
+        if (
+            sys.platform == "win32"
+            and first_readable_non_writable is not None
+            and first_readable_non_writable != self.docs_dir
+        ):
             self._readable_docs_dir = first_readable_non_writable
+            self._cfa_fallback_write_docs_dir = self.docs_dir
             print("⚠ WARNING [ConfigManager] 文档目录不可写（可能受Windows安全策略/反勒索防护保护）!", file=sys.stderr)
             print(f"⚠ WARNING [ConfigManager] 原始文档路径(只读): {first_readable_non_writable}", file=sys.stderr)
             print(f"⚠ WARNING [ConfigManager] 回退写入路径: {self.docs_dir}", file=sys.stderr)
@@ -537,7 +552,86 @@ class ConfigManager:
         else:
             self._readable_docs_dir = None
 
-        self.app_docs_dir = self.docs_dir / self.app_name
+        resolved_app_docs_dir = default_app_docs_dir
+        resolved_anchor_root = default_app_docs_dir
+        committed_selected_root = default_app_docs_dir
+        recovery_committed_root_unavailable = False
+        default_anchor_root = None
+        try:
+            from utils.storage_policy import (
+                compute_anchor_root,
+                is_runtime_root_available,
+                load_storage_policy,
+                normalize_runtime_root,
+                paths_equal,
+            )
+
+            env_selected_root = os.environ.get("NEKO_STORAGE_SELECTED_ROOT", "").strip()
+            env_anchor_root = os.environ.get("NEKO_STORAGE_ANCHOR_ROOT", "").strip()
+            default_anchor_root = compute_anchor_root(self, current_root=default_app_docs_dir)
+            resolved_anchor_root = default_anchor_root
+            policy_anchor_root = normalize_runtime_root(env_anchor_root or default_anchor_root)
+            policy = load_storage_policy(self, anchor_root=policy_anchor_root)
+
+            if env_selected_root:
+                resolved_app_docs_dir = normalize_runtime_root(env_selected_root)
+                resolved_anchor_root = normalize_runtime_root(env_anchor_root or default_anchor_root)
+                committed_selected_root = resolved_app_docs_dir
+                if isinstance(policy, dict):
+                    first_run_completed = bool(policy.get("first_run_completed"))
+                    selected_root_value = str(policy.get("selected_root") or "").strip()
+                    if selected_root_value:
+                        committed_selected_root = normalize_runtime_root(selected_root_value)
+                    anchor_root_value = str(policy.get("anchor_root") or "").strip()
+                    if anchor_root_value and not env_anchor_root:
+                        resolved_anchor_root = normalize_runtime_root(anchor_root_value)
+                    if (
+                        first_run_completed
+                        and paths_equal(resolved_app_docs_dir, resolved_anchor_root)
+                        and not paths_equal(committed_selected_root, resolved_anchor_root)
+                        and not is_runtime_root_available(committed_selected_root)
+                    ):
+                        recovery_committed_root_unavailable = True
+            else:
+                if env_anchor_root:
+                    resolved_anchor_root = normalize_runtime_root(env_anchor_root)
+                if isinstance(policy, dict):
+                    first_run_completed = bool(policy.get("first_run_completed"))
+                    selected_root_value = str(policy.get("selected_root") or "").strip()
+                    if selected_root_value:
+                        committed_selected_root = normalize_runtime_root(selected_root_value)
+                        resolved_app_docs_dir = committed_selected_root
+                        if not env_anchor_root:
+                            resolved_anchor_root = normalize_runtime_root(
+                                str(policy.get("anchor_root") or "").strip() or default_anchor_root
+                            )
+                        if (
+                            first_run_completed
+                            and not paths_equal(committed_selected_root, resolved_anchor_root)
+                            and not is_runtime_root_available(committed_selected_root)
+                        ):
+                            resolved_app_docs_dir = resolved_anchor_root
+                            recovery_committed_root_unavailable = True
+        except Exception as e:
+            logger.warning(
+                "Failed to resolve storage policy paths; falling back to default runtime root: %s",
+                e,
+                exc_info=True,
+            )
+            resolved_app_docs_dir = default_app_docs_dir
+            if default_anchor_root is not None:
+                resolved_anchor_root = default_anchor_root
+            committed_selected_root = resolved_app_docs_dir
+
+        self.app_docs_dir = resolved_app_docs_dir
+        self.committed_selected_root = committed_selected_root
+        self.anchor_root = resolved_anchor_root
+        self.reported_current_root = (
+            self.committed_selected_root if recovery_committed_root_unavailable else self.app_docs_dir
+        )
+        self.recovery_committed_root_unavailable = recovery_committed_root_unavailable
+        self.recovery_committed_root_unavailable_override = False
+        self.docs_dir = self.app_docs_dir.parent
         self.config_dir = self.app_docs_dir / "config"
         self.memory_dir = self.app_docs_dir / "memory"
         self.plugins_dir = self.app_docs_dir / "plugins"
@@ -552,6 +646,7 @@ class ConfigManager:
         self._steam_workshop_path = None
         self._user_workshop_folder_persisted = False
         self.chara_dir = self.app_docs_dir / "character_cards"
+        self.card_faces_dir = self.app_docs_dir / "card_faces"
         self._workshop_config_lock = threading.Lock()
 
         self._characters_cache: dict | None = None
@@ -564,10 +659,28 @@ class ConfigManager:
         self.project_config_dir = self._get_project_config_directory()
         self.project_memory_dir = self._get_project_memory_directory()
 
+        if self.recovery_committed_root_unavailable:
+            try:
+                self._persist_selected_root_unavailable_recovery_state()
+                self.__class__._selected_root_unavailable_recovery_override_roots.discard(
+                    str(self.committed_selected_root)
+                )
+            except Exception as e:
+                self.recovery_committed_root_unavailable_override = True
+                self.__class__._selected_root_unavailable_recovery_override_roots.add(
+                    str(self.committed_selected_root)
+                )
+                logger.warning(
+                    "Failed to persist selected-root-unavailable recovery state; "
+                    "continuing with in-memory recovery flag: %s",
+                    e,
+                    exc_info=True,
+                )
+
     @property
     def cloudsave_dir(self) -> Path:
         """云存档导出根目录（运行时目录之外的规范化导出层）。"""
-        return self.app_docs_dir / "cloudsave"
+        return self.anchor_root / "cloudsave"
 
     @property
     def cloudsave_catalog_dir(self) -> Path:
@@ -604,17 +717,17 @@ class ConfigManager:
     @property
     def cloudsave_staging_dir(self) -> Path:
         """本地 staging 区，不进入云端同步白名单。"""
-        return self.app_docs_dir / ".cloudsave_staging"
+        return self.anchor_root / ".cloudsave_staging"
 
     @property
     def cloudsave_backups_dir(self) -> Path:
         """本地冲突备份池，显式放在 cloudsave/ 外避免后续误同步。"""
-        return self.app_docs_dir / "cloudsave_backups"
+        return self.anchor_root / "cloudsave_backups"
 
     @property
     def local_state_dir(self) -> Path:
         """本地状态目录，保存不进入云端的同步元数据。"""
-        return self.app_docs_dir / "state"
+        return self.anchor_root / "state"
 
     @property
     def root_state_path(self) -> Path:
@@ -627,6 +740,40 @@ class ConfigManager:
     @property
     def character_tombstones_state_path(self) -> Path:
         return self.local_state_dir / "character_tombstones.json"
+
+    def _build_selected_root_unavailable_recovery_state(self, state=None):
+        unavailable_root = str(self.committed_selected_root)
+        state = dict(state) if isinstance(state, dict) else {}
+        state["version"] = self.ROOT_STATE_VERSION
+        from utils.cloudsave_runtime import ROOT_MODE_DEFERRED_INIT
+
+        state["mode"] = ROOT_MODE_DEFERRED_INIT
+        state["current_root"] = unavailable_root
+        state["last_known_good_root"] = unavailable_root
+        if not str(state.get("last_migration_result") or "").strip():
+            state["last_migration_result"] = f"selected_root_unavailable:{unavailable_root}"
+        state.setdefault("last_migration_source", "")
+        state.setdefault("last_migration_backup", "")
+        state.setdefault("last_successful_boot_at", "")
+        state.setdefault("legacy_cleanup_pending", False)
+        return state
+
+    def _has_selected_root_unavailable_recovery_override(self) -> bool:
+        if not self.recovery_committed_root_unavailable:
+            return False
+        if bool(getattr(self, "recovery_committed_root_unavailable_override", False)):
+            return True
+        return str(self.committed_selected_root) in self.__class__._selected_root_unavailable_recovery_override_roots
+
+    def _persist_selected_root_unavailable_recovery_state(self):
+        state: dict = {}
+        try:
+            loaded = self._load_json_file(self.root_state_path, default_value={})
+            if isinstance(loaded, dict):
+                state = loaded
+        except Exception:
+            state = {}
+        self.save_root_state(self._build_selected_root_unavailable_recovery_state(state))
     
     def _log(self, msg):
         """仅在主进程中打印调试信息"""
@@ -935,6 +1082,15 @@ class ConfigManager:
         except Exception as e:
             print(f"Warning: Failed to create app directory {self.app_docs_dir}: {e}", file=sys.stderr)
             return False
+
+    def _ensure_anchor_root_directory(self):
+        """确保锚点目录存在（固定承载 cloudsave/state）。"""
+        try:
+            self.anchor_root.mkdir(parents=True, exist_ok=True)
+            return True
+        except Exception as e:
+            print(f"Warning: Failed to create anchor directory {self.anchor_root}: {e}", file=sys.stderr)
+            return False
     
     def ensure_config_directory(self):
         """确保我的文档下的config目录存在"""
@@ -997,11 +1153,44 @@ class ConfigManager:
 
         非 CFA 场景下返回 None（此时 live2d_dir 本身就指向 Documents）。
         """
-        if self._readable_docs_dir is not None:
+        if self.is_windows_cfa_fallback_active and self._readable_docs_dir is not None:
             p = self._readable_docs_dir / self.app_name / "live2d"
             if p.exists():
                 return p
         return None
+
+    @property
+    def is_windows_cfa_fallback_active(self) -> bool:
+        """是否处于 Windows CFA 读写分离模式。"""
+        if self._readable_docs_dir is None:
+            return False
+        write_docs_dir = getattr(self, "_cfa_fallback_write_docs_dir", None)
+        if write_docs_dir is None:
+            return False
+        current_write_docs_dir = Path(self.app_docs_dir).parent
+        return str(self._readable_docs_dir) != str(current_write_docs_dir) and str(write_docs_dir) == str(current_write_docs_dir)
+
+    def get_live2d_lookup_roots(self, *, prefer_writable: bool = True) -> list[Path]:
+        """返回 Live2D 查找路径（去重后）。
+
+        默认优先可写运行时目录，命中失败时回退到只读 legacy 目录，
+        避免 CFA 模式下“新导入模型存在但仍优先命中旧目录”。
+        """
+        readable = self.readable_live2d_dir
+        writable = Path(self.live2d_dir)
+        ordered_candidates = [writable, readable] if prefer_writable else [readable, writable]
+
+        roots: list[Path] = []
+        seen: set[str] = set()
+        for candidate in ordered_candidates:
+            if not candidate:
+                continue
+            normalized = os.path.normcase(os.path.normpath(str(candidate)))
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            roots.append(Path(candidate))
+        return roots
 
     def ensure_vrm_directory(self):
         """确保用户文档目录下的vrm目录和animation子目录存在"""
@@ -1043,6 +1232,25 @@ class ConfigManager:
             print(f"Warning: Failed to create character_cards directory: {e}", file=sys.stderr)
             return False
 
+    def ensure_card_faces_directory(self):
+        """确保我的文档下的card_faces目录存在"""
+        try:
+            if not self._ensure_app_docs_directory():
+                return False
+            self.card_faces_dir.mkdir(exist_ok=True)
+            return True
+        except Exception as e:
+            print(f"Warning: Failed to create card_faces directory: {e}", file=sys.stderr)
+            return False
+
+    def card_face_meta_path(self, name: str):
+        """返回猫娘卡面元数据 sidecar 文件路径（card_faces/{name}.json）。
+
+        不做存在性检查，调用方需自行处理。仅用于读写 sidecar 元数据
+        （作者、创建时间、来源等）。
+        """
+        return self.card_faces_dir / f"{name}.json"
+
     def ensure_cloudsave_structure(self):
         """确保本地 cloudsave 基础目录存在。
 
@@ -1050,7 +1258,7 @@ class ConfigManager:
         以便阶段 0 先落地路径与状态基础设施，不改变现有同步语义。
         """
         try:
-            if not self._ensure_app_docs_directory():
+            if not self._ensure_anchor_root_directory():
                 return False
 
             for directory in (
@@ -1074,7 +1282,7 @@ class ConfigManager:
     def ensure_local_state_directory(self):
         """确保本地状态目录存在。"""
         try:
-            if not self._ensure_app_docs_directory():
+            if not self._ensure_anchor_root_directory():
                 return False
             self.local_state_dir.mkdir(parents=True, exist_ok=True)
             return True
@@ -1090,8 +1298,10 @@ class ConfigManager:
             "current_root": str(self.app_docs_dir),
             "last_known_good_root": str(self.app_docs_dir),
             "last_migration_source": "",
+            "last_migration_backup": "",
             "last_migration_result": "",
             "last_successful_boot_at": "",
+            "legacy_cleanup_pending": False,
         }
 
     def build_default_cloudsave_local_state(self, *, client_id=None):
@@ -1133,7 +1343,10 @@ class ConfigManager:
         """加载 root_state；缺失时返回默认状态。"""
         if default_value is None:
             default_value = self.build_default_root_state()
-        return self._load_json_file(self.root_state_path, default_value)
+        state = self._load_json_file(self.root_state_path, default_value)
+        if self._has_selected_root_unavailable_recovery_override():
+            return self._build_selected_root_unavailable_recovery_state(state)
+        return state
 
     def save_root_state(self, data):
         """保存 root_state。"""
@@ -1355,6 +1568,232 @@ class ConfigManager:
                     print(f"Migrated memory directory: {item.name}")
         except Exception as e:
             print(f"Warning: Failed to migrate memory files: {e}", file=sys.stderr)
+
+    def migrate_legacy_documents_memory(self):
+        """
+        启动时对 legacy 根目录（``Documents\\N.E.K.O`` / CFA 原始只读路径等）
+        下的 ``memory/`` 仅做**软迁移**：把仍在 ``characters.json[猫娘]``
+        的角色目录搬到当前 runtime ``memory_dir``；runtime 已有同名目录则
+        保留 legacy 副本并打印 warning，绝不覆盖。
+
+        **未关联条目**（目录名不在 ``characters.json[猫娘]`` 的孤立记忆）
+        不在本方法处理范围内，完全交由创意工坊页面的"清理遗留记忆"按钮
+        走 ``/api/memory/legacy/scan`` + ``purge`` 由用户主动勾选删除。
+
+        该方法应在 ``migrate_config_files`` / ``migrate_memory_files`` 之后
+        调用，此时 ``characters.json`` 已就位。任何失败只打日志不抛异常，
+        绝不阻塞启动流程。
+        """
+        try:
+            # get_legacy_app_root_candidates 已排除当前 app_docs_dir，且去重
+            legacy_roots = list(self.get_legacy_app_root_candidates() or [])
+        except Exception as exc:
+            self._log(
+                f"[ConfigManager] migrate_legacy_documents_memory: 获取 legacy roots 失败: {exc}"
+            )
+            return
+
+        # CFA 回退场景：_readable_docs_dir 是只读原 Documents，也要纳入。
+        # 只读根意味着 rmtree 永远失败、target 永远存在，下面会基于
+        # readonly_legacy_roots 跳过 rmtree 并静默 target_exists 噪音，
+        # 避免每次启动都打"清理失败/已存在"的重复日志。
+        readonly_legacy_roots: set[str] = set()
+        readable_docs = getattr(self, "_readable_docs_dir", None)
+        if readable_docs:
+            try:
+                extra = Path(readable_docs) / self.app_name
+                extra_str = str(extra)
+                if all(extra_str != str(existing) for existing in legacy_roots):
+                    legacy_roots.append(extra)
+                readonly_legacy_roots.add(extra_str)
+            except Exception:
+                pass
+
+        if not legacy_roots:
+            return
+
+        try:
+            characters = self.load_characters()
+        except Exception as exc:
+            self._log(
+                f"[ConfigManager] migrate_legacy_documents_memory: 加载 characters.json 失败: {exc}"
+            )
+            return
+
+        # characters.json 是用户可写边界；"猫娘" 字段若被损坏成 list / 字符串等
+        # 非空但非 dict 的值，.keys() 会抛 AttributeError 并被外层吞掉。
+        catgirl_map = characters.get("猫娘")
+        if not isinstance(catgirl_map, dict):
+            if catgirl_map is not None:
+                self._log(
+                    f"[ConfigManager] migrate_legacy_documents_memory: "
+                    f"characters.json 中猫娘字段类型异常 "
+                    f"({type(catgirl_map).__name__})，跳过本次软迁移"
+                )
+            else:
+                self._log(
+                    "[ConfigManager] migrate_legacy_documents_memory: "
+                    "characters.json 中无猫娘字段，跳过本次软迁移"
+                )
+            return
+
+        known_characters = set(catgirl_map.keys())
+        if not known_characters:
+            # characters.json 异常/为空时无从判断哪些应当迁移，直接退出。
+            self._log(
+                "[ConfigManager] migrate_legacy_documents_memory: "
+                "characters.json 中无角色，跳过本次软迁移"
+            )
+            return
+
+        # 分项计数便于运维排查"到底为什么没迁"。隐藏/下划线前缀、未关联角色
+        # 这两类 skip 是正常 no-op，不单独计数。
+        migrated_count = 0
+        target_exists_count = 0  # runtime 已存在同名目录，保留 legacy 副本
+        non_dir_count = 0  # 命中角色名但条目不是目录（反常，需关注）
+        failed_count = 0  # copytree/rename 失败
+
+        def _legacy_error_summary(exc: BaseException) -> str:
+            """
+            把异常压成脱敏字符串：只保留类名 + errno + strerror，
+            绝不打印 OSError/PermissionError 自带的 filename 参数（那会
+            暴露 Documents 用户名 + 角色目录名）。
+            """
+            if isinstance(exc, OSError):
+                parts = [type(exc).__name__]
+                if exc.errno is not None:
+                    parts.append(f"errno={exc.errno}")
+                strerror = getattr(exc, "strerror", None)
+                if strerror:
+                    parts.append(f"reason={strerror}")
+                return " ".join(parts)
+            return type(exc).__name__
+
+        # 日志脱敏策略：所有 self._log 绝不包含完整 legacy 路径 / 角色目录名 /
+        # 用户 Documents 路径，只打 root 序号 + 计数 + 条目类型。这些日志可能
+        # 被收集到日志文件或遥测，泄露用户本地信息不值当。
+        for legacy_root_index, legacy_root in enumerate(legacy_roots, start=1):
+            source_is_readonly = str(legacy_root) in readonly_legacy_roots
+            try:
+                legacy_memory = Path(legacy_root) / "memory"
+            except Exception:
+                continue
+            if not legacy_memory.exists() or not legacy_memory.is_dir():
+                continue
+            # 保护：绝不处理 runtime memory 自身（防御性重复检查）
+            try:
+                if legacy_memory.resolve() == Path(self.memory_dir).resolve():
+                    continue
+            except Exception:
+                pass
+
+            # Per-root 兜底：权限错误或 I/O 错误不应中断后续 legacy roots 的迁移
+            try:
+                legacy_entries = list(legacy_memory.iterdir())
+            except Exception as exc:
+                self._log(
+                    f"[ConfigManager] 枚举 legacy memory 根 #{legacy_root_index} "
+                    f"失败，跳过该根: {_legacy_error_summary(exc)}"
+                )
+                continue
+
+            for entry in legacy_entries:
+                try:
+                    entry_name = entry.name
+                    # 只过滤真正的隐藏条目（dot-file），其它形态的合法性交给
+                    # known_characters 裁定——用户如果把角色命名为 "_foo"，
+                    # 之前的 "_" 前缀黑名单会直接把它当临时条目静默跳过。
+                    if entry_name.startswith("."):
+                        continue
+
+                    # 未关联条目交给手动清理按钮，此处不做任何操作
+                    if entry_name not in known_characters:
+                        continue
+
+                    # runtime 角色记忆期望是目录结构（memory_dir/{name}/time_indexed.db
+                    # 等）；同名普通文件会占位并阻断后续写入，必须跳过。
+                    if not entry.is_dir():
+                        non_dir_count += 1
+                        self._log(
+                            f"[ConfigManager] legacy memory 根 #{legacy_root_index}: "
+                            f"命中角色名的条目不是目录（类型异常），跳过自动软迁移"
+                        )
+                        continue
+
+                    target = self.memory_dir / entry_name
+                    # target.exists() 对断链软链接返回 False（跟随软链找不到目标），
+                    # 但 os.replace 会直接覆盖该软链接，违反"绝不覆盖 runtime 已有
+                    # 目标"的语义。is_symlink() 不跟随，把断链也当成"已存在"。
+                    if target.exists() or target.is_symlink():
+                        # 只读根（如 CFA _readable_docs_dir）上的源永远删不掉，
+                        # target 存在是上一次成功迁移后的常态；静默跳过以免每次
+                        # 启动都打"已存在"日志噪音。可写根仍正常计数 + 打日志。
+                        if not source_is_readonly:
+                            target_exists_count += 1
+                            self._log(
+                                f"[ConfigManager] legacy memory 根 #{legacy_root_index}: "
+                                f"目标已存在于 runtime，保留 legacy 副本避免覆盖"
+                            )
+                        continue
+                    # 跨盘 shutil.move 退化为 copy 时若半途失败，target 可能已
+                    # 存在但不完整，下次启动会被 target.exists() 跳过。改为
+                    # "复制到同父级临时路径 → 原子 rename → best-effort 清源"。
+                    temp_target = target.parent / f".{entry_name}.migrating-{uuid.uuid4().hex}"
+                    try:
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        # symlinks=False：跟随 legacy 源里的软链，把实际内容拷到
+                        # runtime。若保留软链（symlinks=True），legacy 里用户手动
+                        # 创建的、指向 memory_dir 外部的链接会让 runtime 的
+                        # memory_dir/{name}/time_indexed.db 写入逃出边界。
+                        shutil.copytree(str(entry), str(temp_target), symlinks=False)
+                        os.replace(str(temp_target), str(target))
+                        # 只读根（CFA _readable_docs_dir）上根本不可写，rmtree
+                        # 永远会抛 PermissionError。成功迁移后直接跳过清源，
+                        # 避免每次启动都打一遍"legacy 源清理失败"日志。
+                        if not source_is_readonly:
+                            try:
+                                shutil.rmtree(str(entry))
+                            except Exception as cleanup_exc:
+                                self._log(
+                                    f"[ConfigManager] legacy memory 根 #{legacy_root_index}: "
+                                    f"已复制到 runtime，但 legacy 源清理失败，保留 legacy 副本: "
+                                    f"{_legacy_error_summary(cleanup_exc)}"
+                                )
+                        migrated_count += 1
+                        self._log(
+                            f"[ConfigManager] legacy memory 根 #{legacy_root_index}: "
+                            f"已迁移 1 个条目到 runtime"
+                        )
+                    except Exception as exc:
+                        failed_count += 1
+                        # 清理可能残留的临时目录/文件，避免下次启动误判
+                        try:
+                            if temp_target.exists():
+                                if temp_target.is_dir():
+                                    shutil.rmtree(str(temp_target), ignore_errors=True)
+                                else:
+                                    temp_target.unlink()
+                        except Exception:
+                            pass
+                        self._log(
+                            f"[ConfigManager] legacy memory 根 #{legacy_root_index}: "
+                            f"迁移条目失败: {_legacy_error_summary(exc)}"
+                        )
+                except Exception as exc:
+                    failed_count += 1
+                    self._log(
+                        f"[ConfigManager] legacy memory 根 #{legacy_root_index}: "
+                        f"处理条目时出错: {_legacy_error_summary(exc)}"
+                    )
+
+        if migrated_count or target_exists_count or non_dir_count or failed_count:
+            self._log(
+                f"[ConfigManager] legacy memory 软迁移汇总: "
+                f"迁移 {migrated_count} 个, "
+                f"目标已存在跳过 {target_exists_count} 个, "
+                f"非目录跳过 {non_dir_count} 个, "
+                f"失败 {failed_count} 个"
+            )
     
     # --- Character configuration helpers ---
 
@@ -2252,7 +2691,8 @@ class ConfigManager:
         else:
             config['DISABLE_TTS'] = False
 
-        # 文本模式回复长度守卫上限（字/词数，超限会丢弃并重试）
+        # 文本模式回复长度守卫上限（tiktoken o200k_base tokens，超限触发 reroll；
+        # reroll 耗尽后回退到最后一个句末标点截断后落定）
         try:
             config['TEXT_GUARD_MAX_LENGTH'] = int(core_cfg.get('textGuardMaxLength', 300))
             if config['TEXT_GUARD_MAX_LENGTH'] <= 0:
@@ -2661,6 +3101,8 @@ class ConfigManager:
             "memory_dir": str(self.memory_dir),
             "plugins_dir": str(self.plugins_dir),
             "live2d_dir": str(self.live2d_dir),
+            "readable_live2d_dir": str(self.readable_live2d_dir) if self.readable_live2d_dir else "",
+            "windows_cfa_fallback_active": self.is_windows_cfa_fallback_active,
             "workshop_dir": str(self.workshop_dir),
             "chara_dir": str(self.chara_dir),
             "cloudsave_dir": str(self.cloudsave_dir),
@@ -2901,10 +3343,28 @@ def _ensure_config_manager_migrated():
     global _config_manager_migrated
     if _config_manager is None or _config_manager_migrated:
         return _config_manager
+    if bool(getattr(_config_manager, "recovery_committed_root_unavailable", False)):
+        return _config_manager
     # 统一在首次真正需要运行时配置时再迁移，允许启动 phase-0
     # 先基于“尚未注入默认配置的运行根”判断是否需要导入云快照。
     _config_manager.migrate_config_files()
     _config_manager.migrate_memory_files()
+    # 在 config/memory 基础迁移完成后，对遗留 Documents/AppData 路径下的
+    # N.E.K.O/memory 做一次性软迁移：只迁移已关联角色的条目，未关联条目
+    # 留给前端 legacy cleanup UI 手动清理（不在启动时自动清除）。
+    # 失败只打日志不抛异常，绝不阻塞启动。
+    try:
+        _config_manager.migrate_legacy_documents_memory()
+    except Exception as exc:
+        # "shouldn't happen" 路径（方法内部已吞所有异常），但 OSError 的 str(exc)
+        # 带 filename 会泄露 Documents 用户名，只打类名避免绕过脱敏。
+        try:
+            _config_manager._log(
+                f"[ConfigManager] migrate_legacy_documents_memory 抛异常（已忽略）: "
+                f"{type(exc).__name__}"
+            )
+        except Exception:
+            pass
     _config_manager_migrated = True
     return _config_manager
 

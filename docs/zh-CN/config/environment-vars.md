@@ -44,11 +44,6 @@
 | `NEKO_CORRECTION_MODEL` | `qwen-max` | 文本纠错模型 |
 | `NEKO_EMOTION_MODEL` | `qwen-turbo` / `qwen-flash` | 情感分析模型 |
 | `NEKO_VISION_MODEL` | `qwen3-vl-plus-2025-09-23` | 视觉/图像理解模型 |
-| `NEKO_ROUTER_MODEL` | `qwen-plus` | 记忆路由模型 |
-| `NEKO_SEMANTIC_MODEL` | `text-embedding-v4` | 向量嵌入模型 |
-| `NEKO_RERANKER_MODEL` | `qwen-plus` | 搜索重排模型 |
-| `NEKO_SETTING_PROPOSER_MODEL` | `qwen-max` | 设定更新提议模型 |
-| `NEKO_SETTING_VERIFIER_MODEL` | `qwen-max` | 设定更新验证模型 |
 
 ## 服务 URL
 

@@ -88,8 +88,8 @@ def on_event(
 def plugin_entry(
     *,
     id: str | None = None,
-    name: str | None = None,
-    description: str = "",
+    name: object | None = None,
+    description: object = "",
     input_schema: dict[str, object] | None = None,
     params: type | None = None,
     kind: EntryKind = "action",
@@ -256,8 +256,8 @@ class _PluginDecorators:
     def entry(
         *,
         id: str | None = None,
-        name: str | None = None,
-        description: str = "",
+        name: object | None = None,
+        description: object = "",
         input_schema: dict[str, object] | None = None,
         params: type | None = None,
         kind: EntryKind = "action",

@@ -2,33 +2,34 @@ import asyncio
 import importlib
 import json
 import os
-import threading
 from pathlib import Path
-from queue import Queue
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from PIL import Image
 
 from main_routers.shared_state import init_shared_state
 
 
 def _make_role_state_for_test(session_managers: dict) -> dict:
-    """Seed role_state with pre-existing session_managers (new post-#855 API).
+    """Seed role_state with pre-existing session_managers (post-#855 + cross_server async).
 
     The legacy 6-dict layout (sync_message_queue / sync_shutdown_event /
     session_manager / session_id / sync_process / websocket_locks) was
-    consolidated into RoleState on main. Tests that only care about
-    seeding session_manager construct stub RoleState entries with live
-    Queue / Event / asyncio.Lock so adapters don't crash on attribute access.
+    consolidated into RoleState on main. ``sync_shutdown_event`` /
+    ``sync_process`` were further removed when cross_server moved from
+    daemon thread to a main-loop ``asyncio.Task`` (now ``sync_task``).
+    Tests that only care about seeding session_manager construct stub
+    RoleState entries with live Queue / asyncio.Lock so adapters don't
+    crash on attribute access.
     """
     # Import lazily to avoid circular import at module load time
-    from main_server import RoleState
+    from main_server import RoleState, _SyncMessageQueue
     return {
         name: RoleState(
-            sync_message_queue=Queue(),
-            sync_shutdown_event=threading.Event(),
+            sync_message_queue=_SyncMessageQueue(),
             websocket_lock=asyncio.Lock(),
             session_manager=session_manager,
         )
@@ -45,6 +46,10 @@ from utils.cloudsave_runtime import (
 def _make_config_manager(tmp_root: Path):
     with patch.object(ConfigManager, "_get_documents_directory", return_value=tmp_root), patch.object(
         ConfigManager,
+        "_get_standard_data_directory_candidates",
+        return_value=[tmp_root],
+    ), patch.object(
+        ConfigManager,
         "get_legacy_app_root_candidates",
         return_value=[],
     ), patch.object(
@@ -53,6 +58,7 @@ def _make_config_manager(tmp_root: Path):
         return_value=tmp_root,
     ):
         config_manager = ConfigManager("N.E.K.O")
+    config_manager._get_standard_data_directory_candidates = lambda: [tmp_root]
     config_manager.get_legacy_app_root_candidates = lambda: []
     config_manager.project_memory_dir = tmp_root / "memory" / "store"
     return config_manager
@@ -646,6 +652,280 @@ async def test_deleted_workshop_character_is_not_restored_by_startup_sync():
             current_characters = cm.load_characters()
             assert "工坊角色" not in current_characters.get("猫娘", {})
             assert current_characters["当前猫娘"] == initial_name
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_sync_workshop_character_cards_skips_save_when_maintenance_fence_turns_on():
+    with TemporaryDirectory() as td:
+        cm = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(cm)
+
+        async def _noop_init():
+            return None
+
+        async def _noop_any(*args, **kwargs):
+            return None
+
+        with patch("utils.config_manager._config_manager", cm):
+            init_shared_state(
+                role_state={},
+                steamworks=None,
+                templates=None,
+                config_manager=cm,
+                logger=None,
+                initialize_character_data=_noop_init,
+                switch_current_catgirl_fast=_noop_any,
+                init_one_catgirl=_noop_any,
+                remove_one_catgirl=_noop_any,
+            )
+
+            workshop_router_module = reload_module("main_routers.workshop_router")
+
+            installed_folder = Path(td) / "mock_workshop_maintenance_item"
+            installed_folder.mkdir(parents=True, exist_ok=True)
+            (installed_folder / "角色卡.chara.json").write_text(
+                json.dumps({"档案名": "维护态工坊角色", "昵称": "来自工坊"}, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+
+            maintenance_error = MaintenanceModeError(
+                "maintenance_readonly",
+                operation="save",
+                target="characters.json",
+            )
+            assert_saved_mock = AsyncMock(side_effect=maintenance_error)
+
+            with patch.object(
+                workshop_router_module,
+                "get_subscribed_workshop_items",
+                AsyncMock(
+                    return_value={
+                        "success": True,
+                        "items": [
+                            {
+                                "publishedFileId": "123456",
+                                "installedFolder": str(installed_folder),
+                            }
+                        ],
+                    }
+                ),
+            ), patch.object(cm, "asave_characters", assert_saved_mock):
+                sync_result = await workshop_router_module.sync_workshop_character_cards()
+
+            assert sync_result == {
+                "added": 0,
+                "backfilled_faces": 0,
+                "skipped": 0,
+                "errors": 0,
+                "blocked_by_write_fence": True,
+            }
+            assert_saved_mock.assert_awaited_once()
+            assert "维护态工坊角色" not in cm.load_characters().get("猫娘", {})
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_sync_workshop_character_cards_skips_face_writes_when_maintenance_fence_turns_on_mid_scan():
+    with TemporaryDirectory() as td:
+        cm = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(cm)
+
+        async def _noop_init():
+            return None
+
+        async def _noop_any(*args, **kwargs):
+            return None
+
+        with patch("utils.config_manager._config_manager", cm):
+            init_shared_state(
+                role_state={},
+                steamworks=None,
+                templates=None,
+                config_manager=cm,
+                logger=None,
+                initialize_character_data=_noop_init,
+                switch_current_catgirl_fast=_noop_any,
+                init_one_catgirl=_noop_any,
+                remove_one_catgirl=_noop_any,
+            )
+
+            workshop_router_module = reload_module("main_routers.workshop_router")
+
+            installed_folder = Path(td) / "mock_workshop_face_fence_item"
+            installed_folder.mkdir(parents=True, exist_ok=True)
+            (installed_folder / "角色卡.chara.json").write_text(
+                json.dumps({"档案名": "围栏封面角色", "昵称": "来自工坊"}, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            Image.new("RGBA", (1024, 1024), (80, 160, 220, 255)).save(installed_folder / "preview.png")
+
+            fence_states = iter([False, True])
+
+            def _fake_write_fence(_config_mgr):
+                return next(fence_states, True)
+
+            with patch.object(
+                workshop_router_module,
+                "get_subscribed_workshop_items",
+                AsyncMock(
+                    return_value={
+                        "success": True,
+                        "items": [
+                            {
+                                "publishedFileId": "123456",
+                                "installedFolder": str(installed_folder),
+                            }
+                        ],
+                    }
+                ),
+            ), patch.object(workshop_router_module, "is_write_fence_active", side_effect=_fake_write_fence):
+                sync_result = await workshop_router_module.sync_workshop_character_cards()
+
+            assert sync_result == {
+                "added": 0,
+                "backfilled_faces": 0,
+                "skipped": 0,
+                "errors": 0,
+                "blocked_by_write_fence": True,
+            }
+            assert "围栏封面角色" not in cm.load_characters().get("猫娘", {})
+            assert not (cm.card_faces_dir / "围栏封面角色.png").exists()
+            assert not cm.card_face_meta_path("围栏封面角色").exists()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_sync_workshop_character_cards_counts_errors_when_new_face_backfill_fails():
+    with TemporaryDirectory() as td:
+        cm = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(cm)
+
+        async def _noop_init():
+            return None
+
+        async def _noop_any(*args, **kwargs):
+            return None
+
+        with patch("utils.config_manager._config_manager", cm):
+            init_shared_state(
+                role_state={},
+                steamworks=None,
+                templates=None,
+                config_manager=cm,
+                logger=None,
+                initialize_character_data=_noop_init,
+                switch_current_catgirl_fast=_noop_any,
+                init_one_catgirl=_noop_any,
+                remove_one_catgirl=_noop_any,
+            )
+
+            workshop_router_module = reload_module("main_routers.workshop_router")
+
+            installed_folder = Path(td) / "mock_workshop_face_error_item"
+            installed_folder.mkdir(parents=True, exist_ok=True)
+            (installed_folder / "角色卡.chara.json").write_text(
+                json.dumps({"档案名": "封面失败角色", "昵称": "来自工坊"}, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+
+            with patch.object(
+                workshop_router_module,
+                "get_subscribed_workshop_items",
+                AsyncMock(
+                    return_value={
+                        "success": True,
+                        "items": [
+                            {
+                                "publishedFileId": "123456",
+                                "installedFolder": str(installed_folder),
+                            }
+                        ],
+                    }
+                ),
+            ), patch.object(
+                workshop_router_module,
+                "_ensure_workshop_card_face_from_preview",
+                side_effect=RuntimeError("preview render failed"),
+            ):
+                sync_result = await workshop_router_module.sync_workshop_character_cards()
+
+            assert sync_result["added"] == 1
+            assert sync_result["errors"] == 1
+            assert "封面失败角色" in cm.load_characters().get("猫娘", {})
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_sync_workshop_character_cards_counts_errors_when_existing_face_backfill_fails():
+    with TemporaryDirectory() as td:
+        cm = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(cm)
+
+        async def _noop_init():
+            return None
+
+        async def _noop_any(*args, **kwargs):
+            return None
+
+        with patch("utils.config_manager._config_manager", cm):
+            init_shared_state(
+                role_state={},
+                steamworks=None,
+                templates=None,
+                config_manager=cm,
+                logger=None,
+                initialize_character_data=_noop_init,
+                switch_current_catgirl_fast=_noop_any,
+                init_one_catgirl=_noop_any,
+                remove_one_catgirl=_noop_any,
+            )
+
+            workshop_router_module = reload_module("main_routers.workshop_router")
+
+            characters = cm.load_characters()
+            characters.setdefault("猫娘", {})["已有工坊角色"] = {
+                "昵称": "已存在",
+                "_reserved": {
+                    "character_origin": {
+                        "source": "steam_workshop",
+                        "source_id": "123456",
+                    }
+                },
+            }
+            cm.save_characters(characters, bypass_write_fence=True)
+
+            installed_folder = Path(td) / "mock_workshop_existing_face_error_item"
+            installed_folder.mkdir(parents=True, exist_ok=True)
+            (installed_folder / "角色卡.chara.json").write_text(
+                json.dumps({"档案名": "已有工坊角色", "昵称": "来自工坊"}, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+
+            with patch.object(
+                workshop_router_module,
+                "get_subscribed_workshop_items",
+                AsyncMock(
+                    return_value={
+                        "success": True,
+                        "items": [
+                            {
+                                "publishedFileId": "123456",
+                                "installedFolder": str(installed_folder),
+                            }
+                        ],
+                    }
+                ),
+            ), patch.object(
+                workshop_router_module,
+                "_ensure_workshop_card_face_from_preview",
+                side_effect=RuntimeError("preview render failed"),
+            ):
+                sync_result = await workshop_router_module.sync_workshop_character_cards()
+
+            assert sync_result["added"] == 0
+            assert sync_result["skipped"] >= 1
+            assert sync_result["errors"] == 1
 
 
 @pytest.mark.unit

@@ -39,12 +39,15 @@
         onComposerRemoveAttachment: null,
         onComposerSubmit: null,
         onAvatarInteraction: null,
+        onAvatarToolStateChange: null,
         pendingRollbackDrafts: Object.create(null),
-        rollbackDraft: ''
+        rollbackDraft: '',
+        _toolCursorResetKey: ''
     };
 
     var MOBILE_MAX_HEIGHT_RATIO = 0.85;
     var MOBILE_MESSAGE_MIN_HEIGHT = 60;
+    var DESKTOP_DEFAULT_LEFT_MARGIN = 24;
     var MOBILE_MIN_HEIGHT = 150;
     var MOBILE_HEIGHT_STORAGE_KEY = 'neko.reactChatWindow.mobileHeight';
     var mobileUserHeight = 0; // 用户手动设置的手机端高度（0 = 自动）
@@ -83,6 +86,13 @@
 
     function getHeader() {
         return $('react-chat-window-drag-handle');
+    }
+
+    function isYuiGuideDragLocked() {
+        var body = document.body;
+        if (!body) return false;
+        return body.classList.contains('yui-guide-home-driver-hidden')
+            || body.classList.contains('yui-taking-over');
     }
 
     function getMinimizeButton() {
@@ -488,6 +498,7 @@
             composerAttachments: state.composerAttachments,
             rollbackDraft: state.rollbackDraft || undefined,
             _rollbackKey: state._rollbackKey || undefined,
+            _toolCursorResetKey: state._toolCursorResetKey || undefined,
             composerHidden: state.composerHidden,
             onMessageAction: handleMessageAction,
             onComposerImportImage: handleComposerImportImage,
@@ -495,6 +506,7 @@
             onComposerRemoveAttachment: handleComposerRemoveAttachment,
             onComposerSubmit: handleComposerSubmit,
             onAvatarInteraction: handleAvatarInteraction,
+            onAvatarToolStateChange: handleAvatarToolStateChange,
             onJukeboxClick: handleJukeboxClick,
             onAvatarGeneratorClick: handleAvatarGeneratorClick,
             onTranslateToggle: handleTranslateToggle,
@@ -666,12 +678,12 @@
         shell.style.transform = 'none';
     }
 
-    function centerWindow() {
+    function positionWindowAtLeftMiddle() {
         var shell = getShell();
         if (!shell || isMobileWidth()) return;
 
         var rect = shell.getBoundingClientRect();
-        var left = Math.max(0, Math.round((window.innerWidth - rect.width) / 2));
+        var left = Math.max(0, DESKTOP_DEFAULT_LEFT_MARGIN);
         var top = Math.max(0, Math.round((window.innerHeight - rect.height) / 2));
         applyPosition(left, top);
         persistPosition(left, top);
@@ -706,7 +718,7 @@
         if (stored) {
             applyPosition(stored.left, stored.top);
         } else {
-            centerWindow();
+            positionWindowAtLeftMiddle();
         }
     }
 
@@ -812,6 +824,20 @@
         }
 
         dispatchHostEvent('avatar-interaction', detail);
+    }
+
+    function handleAvatarToolStateChange(payload) {
+        var detail = payload || {};
+
+        if (typeof state.onAvatarToolStateChange === 'function') {
+            try {
+                state.onAvatarToolStateChange(detail);
+            } catch (error) {
+                console.error('[ReactChatWindow] onAvatarToolStateChange failed:', error);
+            }
+        }
+
+        dispatchHostEvent('avatar-tool-state', detail);
     }
 
     function handleComposerImportImage() {
@@ -1067,6 +1093,11 @@
 
     function setComposerHidden(hidden) {
         state.composerHidden = !!hidden;
+        renderWindow();
+    }
+
+    function deactivateToolCursor() {
+        state._toolCursorResetKey = 'tcr-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6);
         renderWindow();
     }
 
@@ -1484,12 +1515,12 @@
         var btnIcon = getMinimizeIcon();
         var ballIcon = ensureMinimizedBallIcon();
         if (button) {
-            button.setAttribute('aria-label', minimized ? getI18nText('chat.reactWindowRestore', '恢复新版聊天框') : getI18nText('chat.reactWindowMinimize', '最小化新版聊天框'));
+            button.setAttribute('aria-label', minimized ? getI18nText('chat.reactWindowRestore', '恢复聊天框') : getI18nText('chat.reactWindowMinimize', '最小化聊天框'));
             button.title = minimized ? getI18nText('chat.reactWindowRestoreShort', '恢复') : getI18nText('chat.reactWindowMinimizeShort', '最小化');
         }
         if (btnIcon) {
             btnIcon.src = minimized ? '/static/icons/expand_icon_on.png' : '/static/icons/expand_icon_off.png';
-            btnIcon.alt = minimized ? getI18nText('chat.reactWindowRestore', '恢复新版聊天框') : getI18nText('chat.reactWindowMinimize', '最小化新版聊天框');
+            btnIcon.alt = minimized ? getI18nText('chat.reactWindowRestore', '恢复聊天框') : getI18nText('chat.reactWindowMinimize', '最小化聊天框');
         }
         // 重置悬浮球图标到默认态（清除可能残留的 hover 图标）
         if (ballIcon) {
@@ -1516,7 +1547,7 @@
         ensureBundleLoaded()
             .then(function () {
                 if (!mountWindow()) {
-                    showToast(getI18nText('chat.reactWindowMountFailed', '新版聊天框挂载失败'), 3000);
+                    showToast(getI18nText('chat.reactWindowMountFailed', '聊天框挂载失败'), 3000);
                     return;
                 }
                 // Fetch quick actions when window becomes visible
@@ -1539,7 +1570,7 @@
             })
             .catch(function (error) {
                 console.error('[ReactChatWindow] open failed:', error);
-                showToast(getI18nText('chat.reactWindowLoadFailed', '新版聊天框资源加载失败'), 3500);
+                showToast(getI18nText('chat.reactWindowLoadFailed', '聊天框资源加载失败'), 3500);
             });
     }
 
@@ -1572,6 +1603,12 @@
         overlay.hidden = true;
         document.body.classList.remove('react-chat-window-open');
         clearMobileContentCap();
+        handleAvatarToolStateChange({
+            active: false,
+            toolId: null,
+            tool: null,
+            timestamp: Date.now()
+        });
     }
 
     var CLICK_THRESHOLD = 5; // px – 移动距离低于此值视为点击
@@ -1579,6 +1616,7 @@
     function startDrag(clientX, clientY) {
         var shell = getShell();
         if (!shell) return;
+        if (isYuiGuideDragLocked()) return;
 
         var rect = shell.getBoundingClientRect();
         dragState = {
@@ -1595,6 +1633,11 @@
 
     function updateDrag(clientX, clientY) {
         if (!dragState) return;
+        if (isYuiGuideDragLocked()) {
+            // 教程接管期强制中断拖拽：抑制后续 toggleMinimized，避免最小化球被误展开
+            stopDrag({ suppressClick: true });
+            return;
+        }
 
         var dx = clientX - dragState.startClientX;
         var dy = clientY - dragState.startClientY;
@@ -1608,8 +1651,9 @@
         applyPosition(clamped.left, clamped.top);
     }
 
-    function stopDrag() {
+    function stopDrag(options) {
         if (!dragState) return;
+        var opts = options || {};
 
         var wasMoved = dragState.moved;
 
@@ -1629,7 +1673,8 @@
         document.body.classList.remove('react-chat-window-dragging');
 
         // 最小化状态下，未发生拖拽移动 → 视为点击，恢复窗口
-        if (minimized && !wasMoved) {
+        // 但 suppressClick=true（如教程接管强制中断）时不触发，避免误展开
+        if (minimized && !wasMoved && !opts.suppressClick) {
             toggleMinimized();
         }
     }
@@ -1698,6 +1743,8 @@
     function startResize(clientX, clientY, direction) {
         var shell = getShell();
         if (!shell) return;
+        // 教程接管期禁止 resize，否则用户拉伸会让教程锚点和高亮错位
+        if (isYuiGuideDragLocked()) return;
         // 手机端仅允许向上拖动调整高度（北侧边缘）
         if (isMobileWidth() && direction !== 'n') return;
         if (minimized) return;
@@ -1718,6 +1765,11 @@
 
     function updateResize(clientX, clientY) {
         if (!resizeState) return;
+        // 教程接管期强制中断 resize，与 updateDrag 的 lock 行为对称
+        if (isYuiGuideDragLocked()) {
+            stopResize();
+            return;
+        }
 
         var shell = getShell();
         if (!shell) return;
@@ -2018,10 +2070,24 @@
         });
     }
 
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', init);
-    } else {
+    async function initAfterStorageBarrier() {
+        if (typeof window.waitForStorageLocationStartupBarrier === 'function') {
+            try {
+                await window.waitForStorageLocationStartupBarrier();
+            } catch (_) {}
+        } else if (window.__nekoStorageLocationStartupBarrier
+            && typeof window.__nekoStorageLocationStartupBarrier.then === 'function') {
+            try {
+                await window.__nekoStorageLocationStartupBarrier;
+            } catch (_) {}
+        }
         init();
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', initAfterStorageBarrier);
+    } else {
+        initAfterStorageBarrier();
     }
 
     window.reactChatWindowHost = {
@@ -2032,6 +2098,7 @@
         setMessages: setMessages,
         setComposerAttachments: setComposerAttachments,
         setComposerHidden: setComposerHidden,
+        deactivateToolCursor: deactivateToolCursor,
         appendMessage: appendMessage,
         appendPluginContent: appendPluginContent,
         updateMessage: updateMessage,
@@ -2055,6 +2122,9 @@
         },
         setOnAvatarInteraction: function (handler) {
             state.onAvatarInteraction = typeof handler === 'function' ? handler : null;
+        },
+        setOnAvatarToolStateChange: function (handler) {
+            state.onAvatarToolStateChange = typeof handler === 'function' ? handler : null;
         },
         rollbackLastDraft: rollbackLastDraft,
         clearPendingRollbackDraft: clearPendingRollbackDraft,

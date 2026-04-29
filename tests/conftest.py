@@ -335,11 +335,18 @@ def clean_user_data_dir(tmp_path_factory):
     # Save original state
     original_docs_dir = cm.docs_dir
     original_app_docs_dir = cm.app_docs_dir
+    original_anchor_root = cm.anchor_root
+    original_selected_root = cm.selected_root
+    original_committed_selected_root = cm.committed_selected_root
+    original_reported_current_root = cm.reported_current_root
+    original_recovery_committed_root_unavailable = cm.recovery_committed_root_unavailable
     original_config_dir = cm.config_dir
     original_memory_dir = cm.memory_dir
     original_live2d_dir = cm.live2d_dir
     original_vrm_dir = cm.vrm_dir
     original_vrm_animation_dir = cm.vrm_animation_dir
+    original_mmd_dir = cm.mmd_dir
+    original_mmd_animation_dir = cm.mmd_animation_dir
     original_workshop_dir = cm.workshop_dir
     original_chara_dir = cm.chara_dir
     original_project_config_dir = cm.project_config_dir
@@ -352,22 +359,54 @@ def clean_user_data_dir(tmp_path_factory):
     import shutil
     if cm.app_docs_dir.exists():
         new_app_docs_dir = Path(tmp_path) / "N.E.K.O"
-        shutil.copytree(str(cm.app_docs_dir), str(new_app_docs_dir), dirs_exist_ok=True)
+        shutil.copytree(
+            str(cm.app_docs_dir),
+            str(new_app_docs_dir),
+            dirs_exist_ok=True,
+            # Chromium / Electron 运行时可能遗留 SingletonSocket / SingletonLock 等特殊文件，
+            # 这些文件既不属于用户数据，也会在 macOS 上导致 copytree 失败。
+            ignore=shutil.ignore_patterns("Singleton*"),
+        )
     
     cm.app_docs_dir = cm.docs_dir / "N.E.K.O"
     cm.app_docs_dir.mkdir(parents=True, exist_ok=True)
+    cm.anchor_root = cm.app_docs_dir
+    cm.selected_root = cm.app_docs_dir
+    cm.committed_selected_root = cm.app_docs_dir
+    cm.reported_current_root = cm.app_docs_dir
+    cm.recovery_committed_root_unavailable = False
     
     cm.config_dir = cm.app_docs_dir / "config"
     cm.memory_dir = cm.app_docs_dir / "memory"
     cm.live2d_dir = cm.app_docs_dir / "live2d"
     cm.vrm_dir = cm.app_docs_dir / "vrm"
     cm.vrm_animation_dir = cm.vrm_dir / "animation"
+    cm.mmd_dir = cm.app_docs_dir / "mmd"
+    cm.mmd_animation_dir = cm.mmd_dir / "animation"
     cm.workshop_dir = cm.app_docs_dir / "workshop"
     cm.chara_dir = cm.app_docs_dir / "character_cards"
+    cm.mmd_dir.mkdir(parents=True, exist_ok=True)
+    cm.mmd_animation_dir.mkdir(parents=True, exist_ok=True)
     
     # Update project dirs to mimic app/config separation or point to temp if needed
     cm.project_config_dir = cm.config_dir
     cm.project_memory_dir = cm.memory_dir
+
+    # Keep browser/e2e tests isolated from the developer machine's real
+    # storage bootstrap state. The session temp root should start as a ready
+    # app root unless a test explicitly mocks a blocked storage state.
+    from utils.storage_policy import save_storage_policy
+
+    save_storage_policy(
+        None,
+        selected_root=cm.app_docs_dir,
+        anchor_root=cm.anchor_root,
+        selection_source="test",
+    )
+    cm.save_root_state(cm.build_default_root_state())
+    storage_migration_path = cm.local_state_dir / "storage_migration.json"
+    if storage_migration_path.exists():
+        storage_migration_path.unlink()
 
     # Also patch the class method for any NEW instances that might be created
     patcher = patch("utils.config_manager.ConfigManager._get_documents_directory", return_value=tmp_path)
@@ -383,11 +422,18 @@ def clean_user_data_dir(tmp_path_factory):
         # Restore original state
         cm.docs_dir = original_docs_dir
         cm.app_docs_dir = original_app_docs_dir
+        cm.anchor_root = original_anchor_root
+        cm.selected_root = original_selected_root
+        cm.committed_selected_root = original_committed_selected_root
+        cm.reported_current_root = original_reported_current_root
+        cm.recovery_committed_root_unavailable = original_recovery_committed_root_unavailable
         cm.config_dir = original_config_dir
         cm.memory_dir = original_memory_dir
         cm.live2d_dir = original_live2d_dir
         cm.vrm_dir = original_vrm_dir
         cm.vrm_animation_dir = original_vrm_animation_dir
+        cm.mmd_dir = original_mmd_dir
+        cm.mmd_animation_dir = original_mmd_animation_dir
         cm.workshop_dir = original_workshop_dir
         cm.chara_dir = original_chara_dir
         cm.project_config_dir = original_project_config_dir

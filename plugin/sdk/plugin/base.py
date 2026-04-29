@@ -6,11 +6,17 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+try:
+    import tomllib
+except ImportError:  # pragma: no cover
+    import tomli as tomllib  # type: ignore[no-redef]
+
 from plugin.sdk.shared.constants import EVENT_META_ATTR, NEKO_PLUGIN_META_ATTR, NEKO_PLUGIN_TAG
 from plugin.sdk.shared.core.base import DEFAULT_PLUGIN_VERSION as _DEFAULT_PLUGIN_VERSION
 from plugin.sdk.shared.core.base import NekoPluginBase as _SharedNekoPluginBase
 from plugin.sdk.shared.core.base import PluginMeta as _SharedPluginMeta
 from plugin.sdk.shared.core.events import EventHandler, EventMeta
+from plugin.sdk.shared.i18n import PluginI18n, load_plugin_i18n_from_meta
 from plugin.sdk.shared.models.exceptions import EntryConflictError
 
 if TYPE_CHECKING:
@@ -34,6 +40,7 @@ class NekoPluginBase(_SharedNekoPluginBase):
         self.plugins = Plugins(self.ctx)
         self._memory_client = None
         self._system_info_client = None
+        self.i18n = self._load_plugin_i18n()
         self._static_ui_config: dict[str, Any] | None = None
         self._list_actions: list[dict[str, Any]] = []
         self._dynamic_entries: dict[str, dict[str, Any]] = {}
@@ -49,6 +56,28 @@ class NekoPluginBase(_SharedNekoPluginBase):
                 config_section = self.effective_config.get(toml_section)
                 section_dict = dict(config_section) if isinstance(config_section, Mapping) else None
                 self._settings_instance = create_settings_safe(settings_cls, section_dict)
+
+    def _load_plugin_i18n(self) -> PluginI18n:
+        meta: dict[str, object] = {"config_path": str(self.config_dir / "plugin.toml")}
+        metadata = self.metadata
+        if isinstance(metadata.get("i18n"), Mapping):
+            meta["i18n"] = dict(metadata["i18n"])  # type: ignore[arg-type]
+            config_path_obj = metadata.get("config_path")
+            if isinstance(config_path_obj, (str, Path)):
+                meta["config_path"] = str(config_path_obj)
+            return load_plugin_i18n_from_meta(meta)
+
+        config_path = getattr(self.ctx, "config_path", None)
+        if isinstance(config_path, (str, Path)):
+            meta["config_path"] = str(config_path)
+            try:
+                with Path(config_path).open("rb") as stream:
+                    plugin_section = tomllib.load(stream).get("plugin")
+                if isinstance(plugin_section, Mapping) and isinstance(plugin_section.get("i18n"), Mapping):
+                    meta["i18n"] = dict(plugin_section["i18n"])  # type: ignore[arg-type]
+            except Exception:
+                pass
+        return load_plugin_i18n_from_meta(meta)
 
     @property
     def plugin_id(self) -> str:

@@ -283,8 +283,9 @@ class ModelProfilerUI {
     _toggleDebugHelper(type, btn) {
         const manager = this.getManager?.();
         if (!manager) return;
-        const mmd = manager.currentModel;
-        if (!mmd || !mmd.mesh) return;
+        const currentModel = manager.currentModel;
+        const mmd = currentModel?.mesh ? currentModel : null;
+        const vrm = currentModel?.vrm || (currentModel?.scene && !currentModel?.mesh ? currentModel : null);
         const scene = manager.scene;
         if (!scene) return;
 
@@ -305,6 +306,10 @@ class ModelProfilerUI {
         let helper = null;
         try {
             if (type.startsWith('physics-')) {
+                if (!mmd || !mmd.mesh) {
+                    console.warn('[Profiler] 当前模型不支持物理刚体可视化');
+                    return;
+                }
                 const modeMap = { 'physics-kinematic': 0, 'physics-dynamic': 1, 'physics-mixed': 2 };
                 const colorMap = { 'physics-kinematic': 0xFF6B35, 'physics-dynamic': 0xE040FB, 'physics-mixed': 0x448AFF };
                 helper = this._createPhysicsWireframes(mmd, modeMap[type], colorMap[type]);
@@ -318,7 +323,12 @@ class ModelProfilerUI {
             } else if (type === 'skeleton') {
                 const THREE = window.THREE;
                 if (THREE?.SkeletonHelper) {
-                    helper = new THREE.SkeletonHelper(mmd.mesh);
+                    const skeletonTarget = mmd?.mesh || vrm?.scene || null;
+                    if (!skeletonTarget) {
+                        console.warn('[Profiler] 当前模型未找到可用骨骼节点');
+                        return;
+                    }
+                    helper = new THREE.SkeletonHelper(skeletonTarget);
                     helper.visible = true;
                 } else {
                     console.warn('[Profiler] SkeletonHelper 不可用');

@@ -148,15 +148,21 @@ function showStatus(message, type = 'info') {
         return;
     }
 
+    // 清除之前的自动隐藏定时器，避免新消息被旧定时器提前关闭
+    if (showStatus._hideTimer) {
+        clearTimeout(showStatus._hideTimer);
+        showStatus._hideTimer = null;
+    }
+
     statusDiv.textContent = message;
     statusDiv.className = `status ${type}`;
     statusDiv.style.display = 'block';
 
-    if (type === 'success') {
-        setTimeout(() => {
-            statusDiv.style.display = 'none';
-        }, 3000);
-    }
+    const delay = type === 'error' ? 5000 : 3000;
+    showStatus._hideTimer = setTimeout(() => {
+        statusDiv.style.display = 'none';
+        showStatus._hideTimer = null;
+    }, delay);
 }
 
 function showCurrentApiKey(message, rawKey = '', hasKey = false) {
@@ -2411,7 +2417,7 @@ const ConnectivityManager = {
      * @returns {{ key: string, url: string, providerType: string }} 解析结果
      */
     resolveEffectiveKey(context) {
-        const result = { key: '', url: '', providerType: 'openai_compatible', providerKey: '', providerScope: '' };
+        const result = { key: '', url: '', providerType: 'openai_compatible', providerKey: '', providerScope: '', cacheId: '' };
 
         if (!context || !context.type) return result;
 
@@ -2436,6 +2442,7 @@ const ConnectivityManager = {
                 result.key = getRealKey(apiKeyInput);
                 result.providerType = 'websocket';
             }
+            result.cacheId = (result.key || result.url) ? ('core|' + (result.key || result.url)) : '';
             return result;
         }
 
@@ -2461,6 +2468,7 @@ const ConnectivityManager = {
                 }
                 result.providerType = 'openai_compatible';
             }
+            result.cacheId = (result.key || result.url) ? ('assist|' + (result.key || result.url)) : '';
             return result;
         }
 
@@ -2526,9 +2534,11 @@ const ConnectivityManager = {
                 }
             }
 
+            result.cacheId = result.key || result.url;
             return result;
         }
 
+        result.cacheId = result.key || result.url;
         return result;
     },
 
@@ -2587,7 +2597,7 @@ const ConnectivityManager = {
      * @returns {Promise<{success: boolean, error?: string, error_code?: string}>}
      */
     async testKey(params) {
-        const { provider_key, provider_scope, url, api_key: apiKey, model, provider_type: providerType, is_free: isFree } = params;
+        const { provider_key, provider_scope, url, api_key: apiKey, model, provider_type: providerType, is_free: isFree, cache_id: cacheId } = params;
         console.log('[ConnectivityManager] testKey called:', {
             provider_key: provider_key || '(custom)',
             provider_scope: provider_scope || '(none)',
@@ -2595,14 +2605,15 @@ const ConnectivityManager = {
             hasKey: !!apiKey,
             model: model || '(default)',
         });
-        // 取消同一 Key 的前一次未完成请求
-        const cacheKey = `${provider_key || url}|${apiKey || ''}`;
-        if (this._abortControllers[cacheKey]) {
-            this._abortControllers[cacheKey].abort();
+        // 取消同一 cacheId 的前一次未完成请求（使用 scoped cacheId 避免不同上下文互相干扰）
+        if (cacheId && this._abortControllers[cacheId]) {
+            this._abortControllers[cacheId].abort();
         }
 
         const controller = new AbortController();
-        this._abortControllers[cacheKey] = controller;
+        if (cacheId) {
+            this._abortControllers[cacheId] = controller;
+        }
 
         // 前端 15 秒超时
         const timeoutId = setTimeout(() => controller.abort(), 15000);
@@ -2631,8 +2642,8 @@ const ConnectivityManager = {
 
             clearTimeout(timeoutId);
             // Only delete if map still points to this controller (avoid race with newer request)
-            if (this._abortControllers[cacheKey] === controller) {
-                delete this._abortControllers[cacheKey];
+            if (cacheId && this._abortControllers[cacheId] === controller) {
+                delete this._abortControllers[cacheId];
             }
 
             if (!response.ok) {
@@ -2651,8 +2662,8 @@ const ConnectivityManager = {
             };
         } catch (err) {
             clearTimeout(timeoutId);
-            if (this._abortControllers[cacheKey] === controller) {
-                delete this._abortControllers[cacheKey];
+            if (cacheId && this._abortControllers[cacheId] === controller) {
+                delete this._abortControllers[cacheId];
             }
 
             if (err.name === 'AbortError') {
@@ -2681,7 +2692,7 @@ const ConnectivityManager = {
         const coreSelect = document.getElementById('coreApiSelect');
         const coreIsFree = coreSelect && coreSelect.value === 'free';
         const coreResult = this.resolveEffectiveKey({ type: 'core' });
-        const coreCacheId = coreResult.key || coreResult.url;
+        const coreCacheId = coreResult.cacheId;
         console.log('[ConnectivityManager] testAll - core resolved:', { hasUrl: !!coreResult.url, hasKey: !!coreResult.key, providerType: coreResult.providerType });
         if (coreCacheId && !(coreResult.key && coreResult.key !== 'free-access' && isFreeVersionText(coreResult.key))) {
             if (!keyConfigs[coreCacheId]) {
@@ -2696,7 +2707,7 @@ const ConnectivityManager = {
         const assistSelect = document.getElementById('assistApiSelect');
         const assistIsFree = assistSelect && assistSelect.value === 'free';
         const assistResult = this.resolveEffectiveKey({ type: 'assist' });
-        const assistCacheId = assistResult.key || assistResult.url;
+        const assistCacheId = assistResult.cacheId;
         if (assistCacheId && !keyConfigs[assistCacheId]) {
             keyConfigs[assistCacheId] = {
                 provider_key: assistResult.providerKey, provider_scope: assistResult.providerScope,
@@ -2709,7 +2720,7 @@ const ConnectivityManager = {
         if (enableCustomApi && enableCustomApi.checked) {
             CONNECTIVITY_TESTABLE_TYPES.forEach(mt => {
                 const customResult = this.resolveEffectiveKey({ type: 'custom', modelType: mt });
-                const customCacheId = customResult.key || customResult.url;
+                const customCacheId = customResult.cacheId;
                 if (customCacheId && !keyConfigs[customCacheId]) {
                     const providerSel = document.getElementById(`${mt}ModelProvider`);
                     const provider = providerSel ? providerSel.value : '';
@@ -2739,7 +2750,7 @@ const ConnectivityManager = {
 
         // 并发测试所有唯一配置
         const testPromises = Object.entries(keyConfigs).map(async ([cacheId, config]) => {
-            const result = await this.testKey(config);
+            const result = await this.testKey({ ...config, cache_id: cacheId });
             if (result.success) {
                 this.keyStatusMap[cacheId] = LightStatus.CONNECTED;
                 this.keyErrorMap[cacheId] = null;
@@ -2811,7 +2822,7 @@ const ConnectivityManager = {
         if (enableCustomApi && enableCustomApi.checked) {
             CONNECTIVITY_TESTABLE_TYPES.forEach(mt => {
                 const customResult = this.resolveEffectiveKey({ type: 'custom', modelType: mt });
-                const cacheId = customResult.key || customResult.url;
+                const cacheId = customResult.cacheId;
                 if (cacheId && !keyConfigs[cacheId]) {
                     const providerSel = document.getElementById(`${mt}ModelProvider`);
                     const provider = providerSel ? providerSel.value : '';
@@ -2842,7 +2853,7 @@ const ConnectivityManager = {
 
         // 并发测试
         const testPromises = Object.entries(keyConfigs).map(async ([cacheId, config]) => {
-            const result = await this.testKey(config);
+            const result = await this.testKey({ ...config, cache_id: cacheId });
             if (result.success) {
                 this.keyStatusMap[cacheId] = LightStatus.CONNECTED;
                 this.keyErrorMap[cacheId] = null;
@@ -2913,8 +2924,8 @@ function initConnectivityLights() {
         const key = resolved.key;
         const url = resolved.url;
 
-        // 用于注册和缓存的标识：优先用 key，无 key 时用 URL（本地服务场景）
-        const cacheId = key || url;
+        // 用于注册和缓存的标识：使用带作用域前缀的 cacheId，避免不同测试上下文互相污染
+        const cacheId = resolved.cacheId;
 
         if (!cacheId || (key && key !== 'free-access' && isFreeVersionText(key))) {
             // 无 key 且无 URL → 灰色（真正的未配置）
@@ -2993,26 +3004,27 @@ function initConnectivityLights() {
             coreTestBtn.disabled = true;
             coreTestBtn.classList.add('testing');
             const resolved = ConnectivityManager.resolveEffectiveKey({ type: 'core' });
-            if (resolved.key) {
+            if (resolved.cacheId) {
                 const coreSelect = document.getElementById('coreApiSelect');
                 const isFree = coreSelect && coreSelect.value === 'free';
-                ConnectivityManager.keyStatusMap[resolved.key] = LightStatus.TESTING;
-                ConnectivityManager.keyErrorMap[resolved.key] = null;
-                ConnectivityManager.syncLightsForKey(resolved.key);
-                ConnectivityManager.syncErrorDisplaysForKey(resolved.key);
+                ConnectivityManager.keyStatusMap[resolved.cacheId] = LightStatus.TESTING;
+                ConnectivityManager.keyErrorMap[resolved.cacheId] = null;
+                ConnectivityManager.syncLightsForKey(resolved.cacheId);
+                ConnectivityManager.syncErrorDisplaysForKey(resolved.cacheId);
                 const result = await ConnectivityManager.testKey({
                     provider_key: resolved.providerKey, provider_scope: resolved.providerScope,
-                    url: resolved.url, api_key: resolved.key, provider_type: resolved.providerType, is_free: isFree
+                    url: resolved.url, api_key: resolved.key, provider_type: resolved.providerType, is_free: isFree,
+                    cache_id: resolved.cacheId
                 });
                 if (result.success) {
-                    ConnectivityManager.keyStatusMap[resolved.key] = LightStatus.CONNECTED;
-                    ConnectivityManager.keyErrorMap[resolved.key] = null;
+                    ConnectivityManager.keyStatusMap[resolved.cacheId] = LightStatus.CONNECTED;
+                    ConnectivityManager.keyErrorMap[resolved.cacheId] = null;
                 } else {
-                    ConnectivityManager.keyStatusMap[resolved.key] = LightStatus.FAILED;
-                    ConnectivityManager.keyErrorMap[resolved.key] = { error_code: result.error_code || 'unknown', error: result.error || '' };
+                    ConnectivityManager.keyStatusMap[resolved.cacheId] = LightStatus.FAILED;
+                    ConnectivityManager.keyErrorMap[resolved.cacheId] = { error_code: result.error_code || 'unknown', error: result.error || '' };
                 }
-                ConnectivityManager.syncLightsForKey(resolved.key);
-                ConnectivityManager.syncErrorDisplaysForKey(resolved.key);
+                ConnectivityManager.syncLightsForKey(resolved.cacheId);
+                ConnectivityManager.syncErrorDisplaysForKey(resolved.cacheId);
             }
             coreTestBtn.classList.remove('testing');
             coreTestBtn.disabled = false;
@@ -3043,26 +3055,27 @@ function initConnectivityLights() {
             assistTestBtn.disabled = true;
             assistTestBtn.classList.add('testing');
             const resolved = ConnectivityManager.resolveEffectiveKey({ type: 'assist' });
-            if (resolved.key) {
+            if (resolved.cacheId) {
                 const assistSelect = document.getElementById('assistApiSelect');
                 const isFree = assistSelect && assistSelect.value === 'free';
-                ConnectivityManager.keyStatusMap[resolved.key] = LightStatus.TESTING;
-                ConnectivityManager.keyErrorMap[resolved.key] = null;
-                ConnectivityManager.syncLightsForKey(resolved.key);
-                ConnectivityManager.syncErrorDisplaysForKey(resolved.key);
+                ConnectivityManager.keyStatusMap[resolved.cacheId] = LightStatus.TESTING;
+                ConnectivityManager.keyErrorMap[resolved.cacheId] = null;
+                ConnectivityManager.syncLightsForKey(resolved.cacheId);
+                ConnectivityManager.syncErrorDisplaysForKey(resolved.cacheId);
                 const result = await ConnectivityManager.testKey({
                     provider_key: resolved.providerKey, provider_scope: resolved.providerScope,
-                    url: resolved.url, api_key: resolved.key, provider_type: resolved.providerType, is_free: isFree
+                    url: resolved.url, api_key: resolved.key, provider_type: resolved.providerType, is_free: isFree,
+                    cache_id: resolved.cacheId
                 });
                 if (result.success) {
-                    ConnectivityManager.keyStatusMap[resolved.key] = LightStatus.CONNECTED;
-                    ConnectivityManager.keyErrorMap[resolved.key] = null;
+                    ConnectivityManager.keyStatusMap[resolved.cacheId] = LightStatus.CONNECTED;
+                    ConnectivityManager.keyErrorMap[resolved.cacheId] = null;
                 } else {
-                    ConnectivityManager.keyStatusMap[resolved.key] = LightStatus.FAILED;
-                    ConnectivityManager.keyErrorMap[resolved.key] = { error_code: result.error_code || 'unknown', error: result.error || '' };
+                    ConnectivityManager.keyStatusMap[resolved.cacheId] = LightStatus.FAILED;
+                    ConnectivityManager.keyErrorMap[resolved.cacheId] = { error_code: result.error_code || 'unknown', error: result.error || '' };
                 }
-                ConnectivityManager.syncLightsForKey(resolved.key);
-                ConnectivityManager.syncErrorDisplaysForKey(resolved.key);
+                ConnectivityManager.syncLightsForKey(resolved.cacheId);
+                ConnectivityManager.syncErrorDisplaysForKey(resolved.cacheId);
             }
             assistTestBtn.classList.remove('testing');
             assistTestBtn.disabled = false;

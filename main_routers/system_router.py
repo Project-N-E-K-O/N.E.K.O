@@ -14,12 +14,19 @@ import sys
 import asyncio
 import base64
 import difflib
+import hashlib
+import ipaddress
 import math
+import random
 import re
 import secrets
+import shutil
+import subprocess
+import tempfile
 import time
 from collections import deque
 from io import BytesIO
+from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlsplit
 
@@ -27,8 +34,22 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
 from openai import APIConnectionError, InternalServerError, RateLimitError
 from utils.llm_client import SystemMessage, HumanMessage, create_chat_llm
+from utils.tokenize import count_tokens
 import ssl
 import httpx
+from PIL import Image
+
+# Phase 2 proactive output ceiling. The model occasionally runs off; this
+# fence cuts the stream and aborts TTS once the running output exceeds the
+# token budget. We use sync `count_tokens` here on purpose:
+#   - At fence time `full_text` is < 1 KB (we abort at 300 tokens ≈ 400 CJK
+#     chars); tiktoken Rust encode of that size is sub-millisecond.
+#   - tiktoken's Rust core releases the GIL inside `encode`, so a sync call
+#     does NOT block other coroutines' IO callbacks for any meaningful time.
+#   - `asyncio.to_thread` adds ~0.1 ms scheduling overhead per call (warmed
+#     thread pool) — 3-4× the actual encode work. Across a 30-chunk stream
+#     that's a few milliseconds saved per turn, but more importantly avoids
+#     the cold-start case where the first thread hop can take much longer.
 from cachetools import TTLCache
 
 from .shared_state import get_steamworks, get_config_manager, get_sync_message_queue, get_session_manager
@@ -38,6 +59,19 @@ from config import (
     AUTOSTART_CSRF_TOKEN,
     MEMORY_SERVER_PORT,
     get_extra_body,
+    PROACTIVE_PHASE1_FETCH_PER_SOURCE,
+    PROACTIVE_PHASE1_TOTAL_TOPICS,
+    PROACTIVE_EXTERNAL_PER_ITEM_MAX_TOKENS,
+    PROACTIVE_EXTERNAL_TOTAL_MAX_TOKENS,
+    PROACTIVE_PHASE2_OUTPUT_MAX_TOKENS as PHASE2_OUTPUT_MAX_TOKENS,
+    PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
+    PROACTIVE_PHASE1_UNIFIED_MAX_TOKENS,
+    PROACTIVE_CHAT_HISTORY_MAX,
+    PROACTIVE_SOURCE_HARD_SKIP_SECONDS,
+    PROACTIVE_SOURCE_HALF_LIFE_BY_KIND,
+    PROACTIVE_SOURCE_HALF_LIFE_DEFAULT,
+    PROACTIVE_SOURCE_FORGET_P,
+    EMOTION_ANALYSIS_MAX_TOKENS,
 )
 from config.prompts_sys import _loc
 from config.prompts_emotion import get_outward_emotion_analysis_prompt
@@ -61,6 +95,7 @@ from config.prompts_proactive import (
     PROACTIVE_MUSIC_TAG_INSTRUCTIONS,
     MUSIC_SEARCH_RESULT_TEXTS,
 )
+from utils.file_utils import atomic_write_json_async, read_json
 from utils.workshop_utils import get_workshop_path
 from utils.screenshot_utils import (
     compress_screenshot,
@@ -93,10 +128,341 @@ from utils.tutorial_prompt_state import (
     record_tutorial_started,
     record_tutorial_completed,
 )
+from utils.storage_location_bootstrap import build_storage_location_bootstrap_payload
+from utils.config_manager import get_config_manager as get_runtime_config_manager
+from config import APP_NAME
 
 router = APIRouter(prefix="/api", tags=["system"])
 logger = get_module_logger(__name__, "Main")
 _AUTOSTART_CSRF_HEADER = "X-CSRF-Token"
+
+
+def _set_no_store_headers(response: Response) -> None:
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+
+
+def _is_loopback_request(request: Request) -> bool:
+    client_host = request.client.host if request.client else ""
+    if client_host == "localhost":
+        return True
+    normalized_host = str(client_host or "").removeprefix("::ffff:")
+    try:
+        return ipaddress.ip_address(normalized_host).is_loopback
+    except ValueError:
+        return False
+
+
+def _is_remote_backend_deployment() -> bool:
+    """``NEKO_ACTIVITY_TRACKER_REMOTE`` / ``ACTIVITY_TRACKER_REMOTE`` 兜底开关。
+
+    /screenshot 和 /screenshot/interactive 都是在后端机器上抓屏的，部署到
+    远程服务器时抓出来的是服务器自己的桌面而不是用户的。loopback 校验
+    会被反向代理 / 隧道绕过，这条环境变量是运维显式声明"后端不在用户本机"
+    的硬开关，命中就直接拒绝本地截图。
+
+    用法和 PR #1015 的活动追踪器保持一致，避免再发明一套部署变量。
+    """
+    for key in ("NEKO_ACTIVITY_TRACKER_REMOTE", "ACTIVITY_TRACKER_REMOTE"):
+        raw = os.getenv(key, "").strip().lower()
+        if raw in ("1", "true", "yes", "on"):
+            return True
+    return False
+
+
+def _run_macos_interactive_screenshot(output_path: str) -> tuple[int, str]:
+    cmd = shutil.which("screencapture")
+    if not cmd:
+        raise FileNotFoundError("screencapture not found")
+    completed = subprocess.run(
+        [cmd, "-i", "-s", "-x", output_path],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return completed.returncode, (completed.stderr or "").strip()
+
+
+def _set_windows_process_dpi_awareness() -> None:
+    try:
+        ctypes = __import__("ctypes")
+        try:
+            ctypes.windll.shcore.SetProcessDpiAwareness(2)
+            return
+        except Exception:
+            pass
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
+def _get_windows_virtual_screen_geometry() -> tuple[int, int, int, int]:
+    ctypes = __import__("ctypes")
+    user32 = ctypes.windll.user32
+    sm_xvirtualscreen = 76
+    sm_yvirtualscreen = 77
+    sm_cxvirtualscreen = 78
+    sm_cyvirtualscreen = 79
+
+    left = int(user32.GetSystemMetrics(sm_xvirtualscreen))
+    top = int(user32.GetSystemMetrics(sm_yvirtualscreen))
+    width = int(user32.GetSystemMetrics(sm_cxvirtualscreen))
+    height = int(user32.GetSystemMetrics(sm_cyvirtualscreen))
+
+    if width <= 0 or height <= 0:
+        raise RuntimeError("virtual screen metrics unavailable")
+    return left, top, width, height
+
+
+def _run_windows_interactive_screenshot(output_path: str) -> tuple[int, str]:
+    try:
+        import tkinter as tk
+        from PIL import ImageGrab
+    except Exception as exc:
+        raise RuntimeError(f"Windows interactive screenshot dependencies unavailable: {exc}") from exc
+
+    _set_windows_process_dpi_awareness()
+    screen_left, screen_top, screen_width, screen_height = _get_windows_virtual_screen_geometry()
+
+    result: dict[str, Any] = {
+        "bbox": None,
+        "canceled": True,
+        "error": "",
+    }
+
+    root = None
+    try:
+        root = tk.Tk()
+        root.overrideredirect(True)
+        root.attributes("-topmost", True)
+        try:
+            root.attributes("-alpha", 0.22)
+        except Exception:
+            pass
+        try:
+            root.configure(bg="black")
+        except Exception:
+            pass
+        root.geometry(f"{screen_width}x{screen_height}{screen_left:+d}{screen_top:+d}")
+        root.lift()
+        root.focus_force()
+
+        canvas = tk.Canvas(root, cursor="crosshair", highlightthickness=0, bd=0, bg="black")
+        canvas.pack(fill="both", expand=True)
+
+        state = {
+            "start_x": 0,
+            "start_y": 0,
+            "current_x": 0,
+            "current_y": 0,
+            "dragging": False,
+            "rect_id": None,
+            "cross_v_id": None,
+            "cross_h_id": None,
+        }
+
+        def _screen_point(event: Any) -> tuple[int, int]:
+            x = int(screen_left + canvas.canvasx(event.x))
+            y = int(screen_top + canvas.canvasy(event.y))
+            return x, y
+
+        def _clear_guides() -> None:
+            for key in ("rect_id", "cross_v_id", "cross_h_id"):
+                item_id = state.get(key)
+                if item_id:
+                    try:
+                        canvas.delete(item_id)
+                    except Exception:
+                        pass
+                    state[key] = None
+
+        def _draw_guides() -> None:
+            local_x1 = state["start_x"] - screen_left
+            local_y1 = state["start_y"] - screen_top
+            local_x2 = state["current_x"] - screen_left
+            local_y2 = state["current_y"] - screen_top
+
+            x1, x2 = sorted((int(local_x1), int(local_x2)))
+            y1, y2 = sorted((int(local_y1), int(local_y2)))
+
+            if state["cross_v_id"]:
+                canvas.coords(state["cross_v_id"], local_x2, 0, local_x2, screen_height)
+            else:
+                state["cross_v_id"] = canvas.create_line(
+                    local_x2, 0, local_x2, screen_height,
+                    fill="#ffffff",
+                    dash=(4, 4),
+                    width=1,
+                )
+
+            if state["cross_h_id"]:
+                canvas.coords(state["cross_h_id"], 0, local_y2, screen_width, local_y2)
+            else:
+                state["cross_h_id"] = canvas.create_line(
+                    0, local_y2, screen_width, local_y2,
+                    fill="#ffffff",
+                    dash=(4, 4),
+                    width=1,
+                )
+
+            if state["dragging"]:
+                if state["rect_id"]:
+                    canvas.coords(state["rect_id"], x1, y1, x2, y2)
+                else:
+                    state["rect_id"] = canvas.create_rectangle(
+                        x1, y1, x2, y2,
+                        outline="#4cc2ff",
+                        width=2,
+                        fill="#ffffff",
+                        stipple="gray25",
+                    )
+
+        def _on_press(event: Any) -> None:
+            x, y = _screen_point(event)
+            state["start_x"] = x
+            state["start_y"] = y
+            state["current_x"] = x
+            state["current_y"] = y
+            state["dragging"] = True
+            _draw_guides()
+
+        def _on_drag(event: Any) -> None:
+            x, y = _screen_point(event)
+            state["current_x"] = max(screen_left, min(screen_left + screen_width, x))
+            state["current_y"] = max(screen_top, min(screen_top + screen_height, y))
+            _draw_guides()
+
+        def _finish_selection() -> None:
+            left = max(screen_left, min(state["start_x"], state["current_x"]))
+            top = max(screen_top, min(state["start_y"], state["current_y"]))
+            right = min(screen_left + screen_width, max(state["start_x"], state["current_x"]))
+            bottom = min(screen_top + screen_height, max(state["start_y"], state["current_y"]))
+
+            if (right - left) < 4 or (bottom - top) < 4:
+                result["bbox"] = None
+                result["canceled"] = True
+            else:
+                result["bbox"] = (left, top, right, bottom)
+                result["canceled"] = False
+
+            try:
+                root.quit()
+            except Exception:
+                pass
+
+        def _on_release(event: Any) -> None:
+            if not state["dragging"]:
+                return
+            _on_drag(event)
+            state["dragging"] = False
+            _finish_selection()
+
+        def _on_cancel(_event: Any = None) -> None:
+            result["bbox"] = None
+            result["canceled"] = True
+            try:
+                root.quit()
+            except Exception:
+                pass
+
+        def _on_motion(event: Any) -> None:
+            if state["dragging"]:
+                return
+            x, y = _screen_point(event)
+            state["current_x"] = x
+            state["current_y"] = y
+            _draw_guides()
+
+        canvas.bind("<ButtonPress-1>", _on_press)
+        canvas.bind("<B1-Motion>", _on_drag)
+        canvas.bind("<ButtonRelease-1>", _on_release)
+        canvas.bind("<Motion>", _on_motion)
+        root.bind("<Escape>", _on_cancel)
+        root.bind("<Button-3>", _on_cancel)
+        root.bind("<FocusOut>", lambda _event: root.after(10, root.lift))
+
+        root.update_idletasks()
+        root.mainloop()
+
+        bbox = result.get("bbox")
+        if result.get("canceled") or not bbox:
+            return 1, ""
+
+        root.withdraw()
+        root.update_idletasks()
+        time.sleep(0.12)
+
+        full_image = ImageGrab.grab(all_screens=True)
+        crop_box = (
+            int(bbox[0] - screen_left),
+            int(bbox[1] - screen_top),
+            int(bbox[2] - screen_left),
+            int(bbox[3] - screen_top),
+        )
+        cropped = full_image.crop(crop_box)
+        cropped.save(output_path, format="PNG")
+        return 0, ""
+    except Exception as exc:
+        return 2, str(exc)
+    finally:
+        if root is not None:
+            try:
+                _clear_guides()
+            except Exception:
+                pass
+            try:
+                root.destroy()
+            except Exception:
+                pass
+
+
+def _image_path_to_jpeg_data_url(image_path: str) -> tuple[str, int]:
+    with Image.open(image_path) as shot:
+        if shot.mode in ("RGBA", "LA", "P"):
+            shot = shot.convert("RGB")
+        jpg_bytes = compress_screenshot(
+            shot,
+            target_h=COMPRESS_TARGET_HEIGHT,
+            quality=COMPRESS_JPEG_QUALITY,
+        )
+    b64 = base64.b64encode(jpg_bytes).decode("utf-8")
+    return f"data:image/jpeg;base64,{b64}", len(jpg_bytes)
+
+
+def _is_interactive_screenshot_canceled(platform_name: str, returncode: int, stderr: str, file_size: int) -> bool:
+    if file_size > 0:
+        return False
+    normalized_stderr = str(stderr or "").strip()
+    if returncode == 0:
+        return True
+    if platform_name == "darwin":
+        return returncode == 1
+    return returncode == 1 and not normalized_stderr
+
+
+def _json_no_store_response(content: dict, status_code: int = 200) -> JSONResponse:
+    response = JSONResponse(content, status_code=status_code)
+    _set_no_store_headers(response)
+    return response
+
+
+def _derive_system_lifecycle_state(storage_bootstrap: dict[str, Any]) -> str:
+    if not isinstance(storage_bootstrap, dict):
+        return "starting"
+
+    if (
+        bool(storage_bootstrap.get("selection_required"))
+        or bool(storage_bootstrap.get("migration_pending"))
+        or bool(storage_bootstrap.get("recovery_required"))
+        or bool(str(storage_bootstrap.get("blocking_reason") or "").strip())
+    ):
+        return "migration_required"
+
+    return "ready"
 
 
 def _build_public_error_response(
@@ -149,6 +515,15 @@ def _get_request_origin(request: Request) -> str:
     return _normalize_origin_value(request.headers.get("referer"))
 
 
+def _get_system_config_manager():
+    try:
+        return get_config_manager()
+    except RuntimeError:
+        # The storage bootstrap sentinel must keep working during limited startup
+        # even if main_server shared_state is not fully published yet.
+        return get_runtime_config_manager(APP_NAME, migrate=False)
+
+
 def _get_allowed_local_origins(request: Request) -> set[str]:
     allowed_origins = {
         normalized_origin
@@ -165,9 +540,13 @@ def _get_allowed_local_origins(request: Request) -> set[str]:
 def _validate_local_mutation_request(
     request: Request,
     *,
+    payload: dict[str, Any] | None = None,
     error_defaults: dict[str, Any] | None = None,
 ) -> JSONResponse | None:
     csrf_token = request.headers.get(_AUTOSTART_CSRF_HEADER, "")
+    if not csrf_token and payload:
+        body_token = payload.get("_csrf_token")
+        csrf_token = body_token if isinstance(body_token, str) else ""
     has_valid_csrf = bool(
         csrf_token
         and AUTOSTART_CSRF_TOKEN
@@ -221,6 +600,47 @@ async def _read_json_object(request: Request) -> dict[str, object]:
         return {}
 
     return payload if isinstance(payload, dict) else {}
+
+
+@router.get("/system/status")
+async def get_system_status(response: Response):
+    """Return a lightweight readiness snapshot for the web bootstrap sentinel."""
+    _set_no_store_headers(response)
+
+    try:
+        config_manager = _get_system_config_manager()
+        storage_bootstrap = build_storage_location_bootstrap_payload(config_manager)
+        lifecycle_state = _derive_system_lifecycle_state(storage_bootstrap)
+        return {
+            "ok": True,
+            "status": lifecycle_state,
+            "ready": lifecycle_state == "ready",
+            "storage": {
+                "selection_required": bool(storage_bootstrap.get("selection_required")),
+                "migration_pending": bool(storage_bootstrap.get("migration_pending")),
+                "recovery_required": bool(storage_bootstrap.get("recovery_required")),
+                "legacy_cleanup_pending": bool(storage_bootstrap.get("legacy_cleanup_pending")),
+                "blocking_reason": str(storage_bootstrap.get("blocking_reason") or ""),
+                "last_error_summary": str(storage_bootstrap.get("last_error_summary") or ""),
+                "stage": storage_bootstrap.get("stage") or "",
+            },
+        }
+    except Exception as exc:
+        logger.warning("system status probe unavailable during startup: %s", exc)
+        return {
+            "ok": True,
+            "status": "starting",
+            "ready": False,
+            "storage": {
+                "selection_required": False,
+                "migration_pending": False,
+                "recovery_required": False,
+                "legacy_cleanup_pending": False,
+                "blocking_reason": "",
+                "last_error_summary": "",
+                "stage": "",
+            },
+        }
 
 
 # 统一的表情包图源白名单由 utils.meme_fetcher 维护，本文件仅用于引入
@@ -674,11 +1094,11 @@ async def get_tutorial_prompt_state():
 @router.post("/tutorial-prompt/heartbeat")
 async def post_tutorial_prompt_heartbeat(request: Request):
     """记录主页空闲与互动状态，并判断是否需要提示新手引导。"""
-    validation_error = _validate_local_mutation_request(request)
+    payload = await _read_json_object(request)
+    validation_error = _validate_local_mutation_request(request, payload=payload)
     if validation_error is not None:
         return validation_error
 
-    payload = await _read_json_object(request)
     return process_tutorial_prompt_heartbeat(payload, config_manager=get_config_manager())
 
 
@@ -721,11 +1141,11 @@ async def get_autostart_prompt_state():
 @router.post("/autostart-prompt/heartbeat")
 async def post_autostart_prompt_heartbeat(request: Request):
     """记录主页空闲与互动状态，并判断是否需要提示开机自启动。"""
-    validation_error = _validate_local_mutation_request(request)
+    payload = await _read_json_object(request)
+    validation_error = _validate_local_mutation_request(request, payload=payload)
     if validation_error is not None:
         return validation_error
 
-    payload = await _read_json_object(request)
     return process_autostart_prompt_heartbeat(payload, config_manager=get_config_manager())
 
 
@@ -856,13 +1276,145 @@ async def get_changelog(since: str = "", lang: str = ""):
 # --- 主动搭话近期记录暂存区 ---
 # {lanlan_name: deque([(timestamp, message), ...], maxlen=10)}
 _proactive_chat_history: dict[str, deque] = {}
-_proactive_topic_history: dict[str, deque] = {}
 
 _RECENT_CHAT_MAX_AGE_SECONDS = 3600  # 1小时内的搭话记录
-_RECENT_TOPIC_MAX_AGE_SECONDS = 3600  # 1小时内避免重复外部话题
 _PROACTIVE_SIMILARITY_THRESHOLD = 0.94  # 高阈值，尽量避免误杀
-_PHASE1_FETCH_PER_SOURCE = 10  # Phase 1 每个信息源固定抓取条数
-_PHASE1_TOTAL_TOPIC_TARGET = 20  # Phase 1 输入给筛选模型的总候选目标条数
+_PHASE1_FETCH_PER_SOURCE = PROACTIVE_PHASE1_FETCH_PER_SOURCE  # Phase 1 每个信息源固定抓取条数
+_PHASE1_TOTAL_TOPIC_TARGET = PROACTIVE_PHASE1_TOTAL_TOPICS  # Phase 1 输入给筛选模型的总候选目标条数
+
+# --- 全局来源衰减历史（跨角色 / 持久化）---
+# 主动搭话消费过的 web / music / image 链接进入这里，按 URL hash 索引。
+# 5h 内硬 skip（p_skip=1），其后按 kind 各自半衰期指数衰减；p_skip 低于阈值
+# 时直接遗忘。所有 IO 走 asyncio.to_thread / atomic_write_json_async，过滤
+# 路径只读 dict + RNG，不阻塞 event loop。
+# （衰减参数定义在 config/__init__.py 与项目其他 budget 常量统一维护）
+_SOURCE_HISTORY_FILENAME = "proactive_source_history.json"
+_SOURCE_HISTORY_SCHEMA_VERSION = 1
+
+_source_history: dict[str, dict[str, Any]] = {}
+_source_history_lock = asyncio.Lock()
+_source_history_loaded = False
+
+
+def _source_history_path() -> Path:
+    return Path(get_config_manager().memory_dir) / _SOURCE_HISTORY_FILENAME
+
+
+def _source_hash(url: str = '', fallback_title: str = '') -> str:
+    """URL 优先，否则归一化 title 兜底。空字符串表示"无法稳定标识"。"""
+    norm = (url or '').strip().lower().rstrip('/')
+    if norm:
+        return hashlib.sha256(norm.encode('utf-8')).hexdigest()
+    title_norm = re.sub(r'\s+', ' ', (fallback_title or '').strip().lower())
+    if title_norm:
+        return hashlib.sha256(('t::' + title_norm).encode('utf-8')).hexdigest()
+    return ''
+
+
+def _half_life_for(kind: str) -> float:
+    return PROACTIVE_SOURCE_HALF_LIFE_BY_KIND.get(kind, PROACTIVE_SOURCE_HALF_LIFE_DEFAULT)
+
+
+def _source_skip_probability(age: float, half_life: float) -> float:
+    if age < PROACTIVE_SOURCE_HARD_SKIP_SECONDS:
+        return 1.0
+    decay_age = age - PROACTIVE_SOURCE_HARD_SKIP_SECONDS
+    return 0.5 ** (decay_age / half_life)
+
+
+def _should_skip_source(url_hash: str) -> bool:
+    """同步纯内存判定，O(1)，可在同步 picking loop 中直接调用。"""
+    if not url_hash:
+        return False
+    entry = _source_history.get(url_hash)
+    if not entry:
+        return False
+    age = time.time() - entry.get('ts', 0.0)
+    p = _source_skip_probability(age, _half_life_for(entry.get('kind', 'web')))
+    if p >= 1.0:
+        return True
+    if p <= 0.0:
+        return False
+    return random.random() < p
+
+
+async def _ensure_source_history_loaded() -> None:
+    """惰性加载，幂等。文件读取放进线程池，不阻塞 event loop。"""
+    global _source_history_loaded
+    if _source_history_loaded:
+        return
+    async with _source_history_lock:
+        if _source_history_loaded:
+            return
+        path = _source_history_path()
+        try:
+            data = await asyncio.to_thread(read_json, path)
+            entries = data.get('entries') if isinstance(data, dict) else None
+            if isinstance(entries, dict):
+                # 加载时顺便丢掉早已遗忘阈值之下的条目
+                now = time.time()
+                for h, entry in entries.items():
+                    if not isinstance(entry, dict):
+                        continue
+                    age = now - float(entry.get('ts', 0.0) or 0.0)
+                    p = _source_skip_probability(
+                        age, _half_life_for(entry.get('kind', 'web'))
+                    )
+                    if p >= PROACTIVE_SOURCE_FORGET_P:
+                        _source_history[h] = entry
+        except FileNotFoundError:
+            # 首次运行 / 全新机器：尚无历史文件，按空历史继续
+            pass
+        except Exception as e:
+            logger.warning(
+                f"加载 {_SOURCE_HISTORY_FILENAME} 失败，按空历史处理: {type(e).__name__}: {e}"
+            )
+        _source_history_loaded = True
+
+
+async def _record_source_used(
+    *,
+    url: str,
+    kind: str,
+    title: str = '',
+) -> None:
+    """成功消费 source 后调用：更新内存表 → prune → 异步落盘。
+
+    并发记录由 asyncio.Lock 串行化；落盘走 atomic_write_json_async（线程池
+    内 fsync + os.replace），主协程不会被磁盘 IO 卡住。
+    """
+    h = _source_hash(url, title)
+    if not h:
+        return
+    snapshot: dict[str, Any] | None = None
+    async with _source_history_lock:
+        _source_history[h] = {
+            "ts": time.time(),
+            "kind": kind,
+            "title": (title or '')[:80],
+        }
+        # 顺手 prune：写盘前剔除已遗忘条目，文件体积自然有界
+        now = time.time()
+        forget = [
+            hh for hh, entry in _source_history.items()
+            if _source_skip_probability(
+                now - float(entry.get('ts', 0.0) or 0.0),
+                _half_life_for(entry.get('kind', 'web'))
+            ) < PROACTIVE_SOURCE_FORGET_P
+        ]
+        for hh in forget:
+            _source_history.pop(hh, None)
+        snapshot = {
+            "v": _SOURCE_HISTORY_SCHEMA_VERSION,
+            "entries": dict(_source_history),
+        }
+    try:
+        await atomic_write_json_async(_source_history_path(), snapshot)
+    except Exception as e:
+        # 写盘失败不影响主流程：下一次 record 会整文件重写覆盖
+        logger.warning(
+            f"落盘 {_SOURCE_HISTORY_FILENAME} 失败: {type(e).__name__}: {e}"
+        )
 
 # --- 来源动态权重系统 ---
 _SOURCE_WEIGHT_DECAY_LAMBDA = 0.002   # 指数衰减系数，半衰期 ≈ 5.8 分钟
@@ -1185,6 +1737,40 @@ def _format_recent_proactive_chats(lanlan_name: str, lang: str = 'zh') -> str:
     return f"\n{header}\n" + "\n".join(lines) + f"\n{footer}\n"
 
 
+# Reminiscence usage buffer — separate from _proactive_chat_history because
+# the latter feeds dedup / similarity checks (_format_recent_proactive_chats /
+# _is_similar_to_recent_proactive_chat) and any double-recording there would
+# inflate similarity scores against its own message. This buffer is read
+# only by _compute_source_weights to factor reminiscence into channel
+# weight decay alongside web/news/etc.
+#
+# Why 50 (not tied to PROACTIVE_CHAT_HISTORY_MAX=10): the two buffers serve
+# opposite sizing constraints. PROACTIVE_CHAT_HISTORY_MAX bounds *dedup*
+# memory (1h text-similarity check, 10 entries are plenty). This buffer
+# bounds *decay-signal completeness* — _compute_source_weights walks every
+# timestamp inside the _SOURCE_WEIGHT_WINDOW (=1h) for the exponential
+# decay sum, so the maxlen MUST be larger than the worst-case usage count
+# in that window or oldest entries get evicted and the channel under-
+# counts. 50 leaves ~5× safety margin for high-cadence proactive cycles.
+# Kept as a private module constant alongside the other _SOURCE_WEIGHT_*
+# tunables (_SOURCE_WEIGHT_DECAY_LAMBDA / _K / _FLOOR / _WINDOW) — it's
+# tied to that model's calibration, not a user-facing config knob.
+_REMINISCENCE_USAGE_MAX = 50
+_reminiscence_usage_history: dict[str, deque[float]] = {}
+
+
+def _record_reminiscence_usage(lanlan_name: str) -> None:
+    """Record one reminiscence usage timestamp for source-weight decay.
+
+    Kept separate from ``_record_proactive_chat`` to avoid polluting
+    the dedup / similarity history (which compares the proactive
+    response text against past entries by channel-agnostic match).
+    """
+    if lanlan_name not in _reminiscence_usage_history:
+        _reminiscence_usage_history[lanlan_name] = deque(maxlen=_REMINISCENCE_USAGE_MAX)
+    _reminiscence_usage_history[lanlan_name].append(time.time())
+
+
 def _record_proactive_chat(lanlan_name: str, message: str, channel: str = ''):
     """
     记录一次成功的主动搭话（附带来源通道）
@@ -1198,7 +1784,7 @@ def _record_proactive_chat(lanlan_name: str, message: str, channel: str = ''):
     - channel: 来源通道（可选，默认 'vision'）
     """
     if lanlan_name not in _proactive_chat_history:
-        _proactive_chat_history[lanlan_name] = deque(maxlen=10)
+        _proactive_chat_history[lanlan_name] = deque(maxlen=PROACTIVE_CHAT_HISTORY_MAX)
     _proactive_chat_history[lanlan_name].append((time.time(), message, channel))
 
 
@@ -1243,47 +1829,6 @@ def _is_similar_to_recent_proactive_chat(lanlan_name: str, message: str) -> tupl
     return False, best
 
 
-def _build_topic_dedup_key(topic_title: str = '', topic_source: str = '', topic_url: str = '') -> str:
-    """
-    构建话题去重键，优先使用 URL（更稳定）；没有 URL 时退化到 source+title。
-    """
-    url = (topic_url or '').strip().lower()
-    if url:
-        return f"url::{url}"
-    source = re.sub(r'\s+', ' ', (topic_source or '').strip().lower())
-    title = re.sub(r'\s+', ' ', (topic_title or '').strip().lower())
-    if title:
-        return f"st::{source}::{title}"
-    return ''
-
-
-def _is_recent_topic_used(lanlan_name: str, topic_key: str) -> bool:
-    """
-    判断某个话题 key 是否在近期已被使用。
-    """
-    if not topic_key:
-        return False
-    history = _proactive_topic_history.get(lanlan_name)
-    if not history:
-        return False
-    now = time.time()
-    for ts, old_key in history:
-        if now - ts < _RECENT_TOPIC_MAX_AGE_SECONDS and old_key == topic_key:
-            return True
-    return False
-
-
-def _record_topic_usage(lanlan_name: str, topic_key: str):
-    """
-    记录一次话题 key 使用。
-    """
-    if not topic_key:
-        return
-    if lanlan_name not in _proactive_topic_history:
-        _proactive_topic_history[lanlan_name] = deque(maxlen=100)
-    _proactive_topic_history[lanlan_name].append((time.time(), topic_key))
-
-
 def _compute_source_weights(
     lanlan_name: str,
     candidate_channels: list[str],
@@ -1324,6 +1869,19 @@ def _compute_source_weights(
                 continue
             if ch in raw_scores:
                 raw_scores[ch] += math.exp(-_SOURCE_WEIGHT_DECAY_LAMBDA * age)
+
+    # Reminiscence usage lives in a separate buffer (kept out of
+    # _proactive_chat_history to avoid polluting dedup / similarity
+    # checks). Inject its decayed-frequency contribution here so the
+    # weight calculation treats it on the same footing as web/news/etc.
+    if 'reminiscence' in raw_scores:
+        rem_buf = _reminiscence_usage_history.get(lanlan_name)
+        if rem_buf:
+            for ts in rem_buf:
+                age = now - ts
+                if age > _SOURCE_WEIGHT_WINDOW:
+                    continue
+                raw_scores['reminiscence'] += math.exp(-_SOURCE_WEIGHT_DECAY_LAMBDA * age)
 
     # freshness: 使用越多 → raw 越高 → freshness 越低
     freshness: dict[str, float] = {}
@@ -1673,7 +2231,7 @@ async def emotion_analysis(request: Request):
             api_key,
             temperature=0.3,
             # Gemini 模型可能返回 markdown 格式，需要更多 token
-            max_completion_tokens=40,
+            max_completion_tokens=EMOTION_ANALYSIS_MAX_TOKENS,
         )
         async with llm:
             result = await llm.ainvoke(messages)
@@ -2509,20 +3067,33 @@ async def get_window_title_api():
         return JSONResponse({"success": False, "window_title": None})
 
 
-@router.get('/screenshot')
+@router.post('/screenshot')
 async def backend_screenshot(request: Request):
     """
     后端截图兜底：当前端所有屏幕捕获 API 都失败时，由后端用 pyautogui 截取本机屏幕。
     安全限制：仅允许来自 loopback 地址的请求。返回 JPEG base64 DataURL。
     """
-    client_host = request.client.host if request.client else ''
-    if client_host not in ('127.0.0.1', '::1', 'localhost'):
-        return JSONResponse({"success": False, "error": "only available from localhost"}, status_code=403)
+    validation_error = _validate_local_mutation_request(
+        request,
+        error_defaults={"success": False},
+    )
+    if validation_error is not None:
+        _set_no_store_headers(validation_error)
+        return validation_error
+
+    if not _is_loopback_request(request):
+        return _json_no_store_response({"success": False, "error": "only available from localhost"}, status_code=403)
+
+    if _is_remote_backend_deployment():
+        return _json_no_store_response(
+            {"success": False, "error": "backend is configured as remote (NEKO_ACTIVITY_TRACKER_REMOTE); local screenshot disabled"},
+            status_code=501,
+        )
 
     try:
         import pyautogui
     except ImportError:
-        return JSONResponse({"success": False, "error": "pyautogui not installed"}, status_code=501)
+        return _json_no_store_response({"success": False, "error": "pyautogui not installed"}, status_code=501)
 
     try:
         def _capture_rgb_screenshot():
@@ -2542,7 +3113,10 @@ async def backend_screenshot(request: Request):
                 extrema = thumb.getextrema()  # ((min_r, max_r), (min_g, max_g), (min_b, max_b))
                 if all(mx <= 1 for _, mx in extrema):
                     logger.warning("后端截图检测到全黑图片，可能缺少 Screen Recording 权限")
-                    return JSONResponse({"success": False, "error": "screenshot is blank (Screen Recording permission may be denied)"}, status_code=403)
+                    return _json_no_store_response(
+                        {"success": False, "error": "screenshot is blank (Screen Recording permission may be denied)"},
+                        status_code=403,
+                    )
             except Exception:
                 logger.debug("macOS blank-screen detection failed, skipping check", exc_info=True)
 
@@ -2551,10 +3125,106 @@ async def backend_screenshot(request: Request):
         )
         b64 = base64.b64encode(jpg_bytes).decode('utf-8')
         data_url = f"data:image/jpeg;base64,{b64}"
-        return JSONResponse({"success": True, "data": data_url, "size": len(jpg_bytes)})
+        return _json_no_store_response({"success": True, "data": data_url, "size": len(jpg_bytes)})
     except Exception as e:
         logger.error(f"后端截图失败: {e}")
-        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+        return _json_no_store_response({"success": False, "error": str(e)}, status_code=500)
+
+
+@router.post('/screenshot/interactive')
+async def backend_interactive_screenshot(request: Request):
+    """
+    系统原生交互截图：优先给聊天截图按钮使用。
+    当前实现:
+      - macOS: `screencapture` 系统级框选
+      - Windows: 本地全桌面遮罩框选
+    返回用户选区的 JPEG DataURL。
+    安全限制：
+      - 仅允许来自 loopback 地址的请求；
+      - 只要请求带 `Origin` 或 `Referer`（即来自浏览器），仍然要走
+        本地 mutation 的 CSRF/origin 校验，避免任意页面通过 localhost
+        盲 POST 触发原生框选 UI 这种 localhost CSRF；
+      - 没有 `Origin`/`Referer` 的纯服务端 loopback 调用允许跳过 CSRF，
+        保留给 curl / 本地脚本 / 测试用。
+    """
+    if not _is_loopback_request(request):
+        return _json_no_store_response({"success": False, "error": "only available from localhost"}, status_code=403)
+
+    # 用原始 header 是否存在来判断"这是不是浏览器请求"，而不是 _get_request_origin 的归一化结果。
+    # 后者会把 `Origin: null`（sandboxed iframe / file:// / data:）和无效 `Referer` 归一成空串，
+    # 让恶意页面可以通过 sandboxed iframe 故意送 `Origin: null` 来绕过 CSRF 校验。
+    if request.headers.get("origin") is not None or request.headers.get("referer") is not None:
+        validation_error = _validate_local_mutation_request(
+            request,
+            error_defaults={"success": False},
+        )
+        if validation_error is not None:
+            _set_no_store_headers(validation_error)
+            return validation_error
+
+    if _is_remote_backend_deployment():
+        return _json_no_store_response(
+            {"success": False, "error": "backend is configured as remote (NEKO_ACTIVITY_TRACKER_REMOTE); local interactive screenshot disabled"},
+            status_code=501,
+        )
+
+    if sys.platform == "darwin":
+        runner = _run_macos_interactive_screenshot
+    elif sys.platform == "win32":
+        runner = _run_windows_interactive_screenshot
+    else:
+        return _json_no_store_response(
+            {"success": False, "error": "interactive screenshot is only supported on macOS and Windows"},
+            status_code=501,
+        )
+
+    fd, tmp_path = tempfile.mkstemp(prefix="neko-interactive-shot-", suffix=".png")
+    os.close(fd)
+    try:
+        try:
+            os.unlink(tmp_path)
+        except FileNotFoundError:
+            pass
+
+        returncode, stderr = await asyncio.to_thread(runner, tmp_path)
+        file_exists = os.path.exists(tmp_path)
+        file_size = os.path.getsize(tmp_path) if file_exists else 0
+
+        if _is_interactive_screenshot_canceled(sys.platform, returncode, stderr, file_size):
+            logger.info("系统原生交互截图已取消(returncode=%s, stderr=%s)", returncode, stderr)
+            return _json_no_store_response({"success": False, "canceled": True}, status_code=200)
+
+        if file_size <= 0:
+            error_message = str(stderr or "").strip() or f"interactive screenshot failed with returncode {returncode}"
+            logger.warning(
+                "系统原生交互截图失败且未生成文件(returncode=%s, stderr=%s)",
+                returncode,
+                stderr,
+            )
+            return _json_no_store_response(
+                {"success": False, "canceled": False, "error": error_message},
+                status_code=500,
+            )
+
+        data_url, jpg_size = await asyncio.to_thread(_image_path_to_jpeg_data_url, tmp_path)
+        return _json_no_store_response({
+            "success": True,
+            "data": data_url,
+            "size": jpg_size,
+            "interactive": True,
+        })
+    except FileNotFoundError as e:
+        logger.warning("系统原生交互截图不可用: %s", e)
+        return _json_no_store_response({"success": False, "error": str(e)}, status_code=501)
+    except Exception as e:
+        logger.error(f"系统原生交互截图失败: {e}")
+        return _json_no_store_response({"success": False, "error": str(e)}, status_code=500)
+    finally:
+        try:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except Exception:
+            logger.debug("清理交互截图临时文件失败: %s", tmp_path, exc_info=True)
 
 
 # ================================================================
@@ -2680,7 +3350,93 @@ async def proactive_chat(request: Request):
             }
 
         print(f"[{lanlan_name}] 开始主动搭话流程（两阶段架构）...")
-        
+
+        # ========== 拉用户活动快照 ==========
+        # 在 enabled_modes 解析之前拉一次，因为 propensity 可能需要把
+        # enabled_modes 收紧到只剩 vision（restricted_screen_only 状态）。
+        # 详见 docs/design/user-activity-tracker.md。
+        #
+        # 隐私模式：用户开了"隐私模式"开关 → 临时禁用整个 user-activity-tracker，
+        # 回退到 PR #1015 之前的无限制策略。snapshot 留 None，下游所有 gating
+        # 都已在 PR #1015 设计时按 "snapshot is not None" 写过 fallback：
+        #   - propensity 收紧（restricted_screen_only）→ 不触发
+        #   - 反思/回忆 _allow_reminiscence → 默认放开
+        #   - state_section 渲染 → 输出空串
+        #   - mark_unfinished_thread_used → 不计数
+        # 所以这里把 snapshot 直接设 None 就够，等价于"tracker 不存在"。
+        from utils.preferences import ais_privacy_mode_enabled
+        try:
+            privacy_mode = await ais_privacy_mode_enabled()
+        except Exception as _pm_err:
+            # fail-closed：读不出来按隐私开启处理。正常"用户没开隐私"是
+            # ais_privacy_mode_enabled 返回 False，不进这个 except。
+            logger.warning(
+                f"[{lanlan_name}] privacy mode check failed, defaulting to enabled: {_pm_err}",
+            )
+            privacy_mode = True
+        if privacy_mode:
+            print(f"[{lanlan_name}] 隐私模式开启，跳过 activity tracker，按无限制策略搭话")
+            activity_snapshot = None
+        else:
+            try:
+                activity_snapshot = await mgr._activity_tracker.get_snapshot()
+                print(f"[{lanlan_name}] activity snapshot: state={activity_snapshot.state} "
+                      f"propensity={activity_snapshot.propensity} reasons={activity_snapshot.propensity_reasons} "
+                      f"skip_prob={activity_snapshot.skip_probability:.2f} tone={activity_snapshot.tone}")
+            except Exception as _act_err:
+                logger.warning(f"[{lanlan_name}] activity snapshot fetch failed: {_act_err}; falling back to open propensity")
+                activity_snapshot = None
+
+        # ========== Hard short-circuit: propensity=closed ==========
+        # ``private`` state pins propensity to ``closed`` (see
+        # main_logic/activity/snapshot.py). Skip everything — no LLM,
+        # no source fetch, no prompt assembly. The user is in a
+        # password manager / banking app / etc and we promised not to
+        # look. Bypassed for the unfinished_thread override is
+        # deliberate: if the AI just asked a question, hanging on it
+        # mid-private is rude. closed > thread.
+        if activity_snapshot is not None and activity_snapshot.propensity == 'closed':
+            print(f"[{lanlan_name}] propensity=closed (state={activity_snapshot.state}), 跳过本轮 proactive")
+            return await _end_proactive(JSONResponse({
+                "success": True,
+                "action": "pass",
+                "message": f"user state={activity_snapshot.state} → closed (privacy lockdown)",
+            }))
+
+        # ========== Probabilistic skip (intensity-driven gate) ==========
+        # ``skip_probability`` is rolled BEFORE we burn LLM cost.
+        # Default 0 for non-gaming and varied gaming, so this only
+        # kicks in for tagged competitive / immersive-horror gaming
+        # — or whatever combos the user has dialed up via
+        # preferences.json::skip_probability_overrides.
+        #
+        # The unfinished_thread guard means open threads still get
+        # follow-ups even at skip=1.0: if the AI promised to come
+        # back to something, we honour that promise regardless of
+        # how silenced the user wanted us. The thread mechanism's
+        # 2-followup hard cap already prevents harassment.
+        if (
+            activity_snapshot is not None
+            and activity_snapshot.skip_probability > 0
+            and activity_snapshot.unfinished_thread is None
+        ):
+            import random as _random
+            if _random.random() < activity_snapshot.skip_probability:
+                print(
+                    f"[{lanlan_name}] skip_probability={activity_snapshot.skip_probability:.2f} "
+                    f"rolled (state={activity_snapshot.state} intensity={activity_snapshot.game_intensity} "
+                    f"genre={activity_snapshot.game_genre})，本轮跳过"
+                )
+                return await _end_proactive(JSONResponse({
+                    "success": True,
+                    "action": "pass",
+                    "message": (
+                        f"probabilistic skip: state={activity_snapshot.state} "
+                        f"intensity={activity_snapshot.game_intensity} "
+                        f"skip_prob={activity_snapshot.skip_probability:.2f}"
+                    ),
+                }))
+
         # ========== 解析 enabled_modes ==========
         enabled_modes = data.get('enabled_modes', [])
         # 兼容旧版前端
@@ -2699,9 +3455,40 @@ async def proactive_chat(request: Request):
                 enabled_modes = ['personal']
             else:
                 enabled_modes = ['home']
-        
+
+        # 是否有 5 分钟内未收尾话题。若有，restricted_screen_only / sources 空
+        # 这两个早退分支都让步——AI 能基于 conversation history 接续旧话题，
+        # 不需要任何外部素材。
+        _has_unfinished_thread = (
+            activity_snapshot is not None
+            and activity_snapshot.unfinished_thread is not None
+        )
+
+        # restricted_screen_only：用户处于 gaming / focused_work，仅允许屏幕通道。
+        # 把 enabled_modes 收紧到只剩 vision。如果前端这一轮根本没启用 vision，
+        # 直接 pass —— 没东西可看，又不让聊外部，没必要继续。
+        # 例外：有未收尾话题（5min 内 AI 提的问题用户还没回）→ 即使没 vision
+        # 也允许跑下去，跟进上一个问题不需要外部素材。
+        if activity_snapshot is not None and activity_snapshot.propensity == 'restricted_screen_only':
+            if 'vision' in enabled_modes:
+                enabled_modes = ['vision']
+                print(f"[{lanlan_name}] propensity=restricted_screen_only, 收紧 enabled_modes 到仅 vision")
+            elif _has_unfinished_thread:
+                enabled_modes = []
+                print(f"[{lanlan_name}] propensity=restricted_screen_only 但有未收尾话题，允许 text-only 跟进")
+            else:
+                return await _end_proactive(JSONResponse({
+                    "success": True,
+                    "action": "pass",
+                    "message": f"user state={activity_snapshot.state} restricts proactive to screen-only, but vision not enabled this round",
+                }))
+
         print(f"[{lanlan_name}] 启用的搭话模式: {enabled_modes}")
-        
+
+        # 全局 source 衰减历史：进入 picking 前确保已惰性加载到内存（首次为线程池
+        # IO，后续是 O(1) flag 检查）。同步 picking loop 后续直接读 dict。
+        await _ensure_source_history_loaded()
+
         # ========== 0. 并行获取所有信息源内容（无 LLM） ==========
         screenshot_data = data.get('screenshot_data')
         has_screenshot = bool(screenshot_data) and isinstance(screenshot_data, str)
@@ -2824,11 +3611,16 @@ async def proactive_chat(request: Request):
             sources[mode] = content
         
         if not sources:
-            return await _end_proactive(JSONResponse({
-                "success": False,
-                "error": "所有信息源获取失败",
-                "action": "pass"
-            }, status_code=500))
+            # 例外：未收尾话题模式下 enabled_modes 可能本就被清空（restricted_screen_only
+            # + 无 vision），sources 必定为空但不应当 pass —— 让 Phase 2 拿对话
+            # 历史 + state_section 跑 text-only [CHAT] 跟进。
+            if not _has_unfinished_thread:
+                return await _end_proactive(JSONResponse({
+                    "success": False,
+                    "error": "所有信息源获取失败",
+                    "action": "pass"
+                }, status_code=500))
+            print(f"[{lanlan_name}] sources 为空但有未收尾话题，进入 text-only 跟进路径")
 
         # Phase 1 preempt check：信息源并行 fetch 完，正式进入 LLM 前先瞄一眼
         if mgr.state.is_proactive_preempted():
@@ -2904,41 +3696,59 @@ async def proactive_chat(request: Request):
         # ========== 3. 注入近期搭话记录 ==========
         proactive_chat_history_prompt = _format_recent_proactive_chats(lanlan_name, proactive_lang)
 
+        # 趁机把 open_threads 计算起来——和下面 Phase 1 unified LLM 调用并行。
+        # 缓存按用户消息序号失效；没新用户发言就 no-op 直接返回。Phase 2 读
+        # snapshot 时会拿到这次的结果（如果赶上了）；赶不上就用上一次的缓存。
+        try:
+            mgr._activity_tracker.kickoff_open_threads_compute(lang=proactive_lang)
+        except Exception as _ot_err:
+            logger.debug(f"[{lanlan_name}] kickoff_open_threads_compute failed: {_ot_err}")
+
         # ========== 3.5 反思 + 回调话题（通过 memory_server API） ==========
         # 认知框架：Facts → Reflection(pending) → 主动搭话自然提及 → 用户反馈 → Persona
+        #
+        # 用户在 gaming / focused_work 状态下不应自然回忆——会很尬。直接跳过整段
+        # （也省 reflect POST 的 15s timeout 风险）。stale_returning 反而欢迎回忆。
         followup_topics_prompt = ""
         _surfaced_reflection_ids = []  # 记录本次搭话提及了哪些 pending 反思
+        _allow_reminiscence = (
+            activity_snapshot is None
+            or activity_snapshot.propensity != 'restricted_screen_only'
+        )
+        if not _allow_reminiscence:
+            print(f"[{lanlan_name}] propensity=restricted_screen_only, 跳过反思/回忆话题获取")
         # 复用 internal_http_client 单例：proactive_chat 每次主动搭话都走此路径
-        try:
-            from utils.internal_http_client import get_internal_http_client
-            _mem_base = f"http://127.0.0.1:{MEMORY_SERVER_PORT}"
-            _mem_client = get_internal_http_client()
-            # 1. 自动状态迁移 + 反思合成（集中在 memory_server 进程内执行）
-            _reflect_resp = await _mem_client.post(
-                f"{_mem_base}/reflect/{lanlan_name}", timeout=15.0,
-            )
-            if _reflect_resp.status_code == 200:
-                _reflect_data = _reflect_resp.json()
-                if _reflect_data.get('auto_transitions'):
-                    print(f"[{lanlan_name}] 自动迁移 {_reflect_data['auto_transitions']} 条反思状态")
-                if _reflect_data.get('reflection'):
-                    print(f"[{lanlan_name}] 反思完成(pending): {_reflect_data['reflection']['text'][:50]}...")
+        if _allow_reminiscence:
+            try:
+                from utils.internal_http_client import get_internal_http_client
+                _mem_base = f"http://127.0.0.1:{MEMORY_SERVER_PORT}"
+                _mem_client = get_internal_http_client()
+                # 1. 自动状态迁移 + 反思合成（集中在 memory_server 进程内执行）
+                _reflect_resp = await _mem_client.post(
+                    f"{_mem_base}/reflect/{lanlan_name}", timeout=15.0,
+                )
+                if _reflect_resp.status_code == 200:
+                    _reflect_data = _reflect_resp.json()
+                    if _reflect_data.get('auto_transitions'):
+                        print(f"[{lanlan_name}] 自动迁移 {_reflect_data['auto_transitions']} 条反思状态")
+                    if _reflect_data.get('reflection'):
+                        print(f"[{lanlan_name}] 反思完成(pending): {_reflect_data['reflection']['text'][:50]}...")
 
-            # 2. 获取回调话题候选
-            _topics_resp = await _mem_client.get(
-                f"{_mem_base}/followup_topics/{lanlan_name}", timeout=5.0,
-            )
-            if _topics_resp.status_code == 200:
-                _followup_topics = _topics_resp.json().get('topics', [])
-                if _followup_topics:
-                    followup_topics_prompt = _loc(PROACTIVE_FOLLOWUP_HEADER, proactive_lang)
-                    for topic in _followup_topics:
-                        followup_topics_prompt += f"- {topic['text']}\n"
-                        if topic.get('id'):
-                            _surfaced_reflection_ids.append(topic['id'])
-                    print(f"[{lanlan_name}] 回调话题候选: {len(_followup_topics)} 条")
-        except Exception as e:
-            logger.debug(f"[{lanlan_name}] 反思/回调话题获取失败（不影响主流程）: {e}")
+                # 2. 获取回调话题候选
+                _topics_resp = await _mem_client.get(
+                    f"{_mem_base}/followup_topics/{lanlan_name}", timeout=5.0,
+                )
+                if _topics_resp.status_code == 200:
+                    _followup_topics = _topics_resp.json().get('topics', [])
+                    if _followup_topics:
+                        followup_topics_prompt = _loc(PROACTIVE_FOLLOWUP_HEADER, proactive_lang)
+                        for topic in _followup_topics:
+                            followup_topics_prompt += f"- {topic['text']}\n"
+                            if topic.get('id'):
+                                _surfaced_reflection_ids.append(topic['id'])
+                        print(f"[{lanlan_name}] 回调话题候选: {len(_followup_topics)} 条")
+            except Exception as e:
+                logger.debug(f"[{lanlan_name}] 反思/回调话题获取失败（不影响主流程）: {e}")
 
         # Phase 1 preempt check：reflection POST(15s) + followup GET(5s) 是又一段
         # 可能拖很久的 await 串，整段裸跑会让用户打断后继续跑完 LLM 配置和
@@ -2976,7 +3786,8 @@ async def proactive_chat(request: Request):
                 "detail": str(e)
             }, status_code=500))
 
-        def _make_llm(temperature: float = 1.0, max_tokens: int = 1536,
+        def _make_llm(temperature: float = 1.0,
+                      max_completion_tokens: int = PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
                       use_vision: bool = False, disable_thinking: bool = True):
             """
             创建 LLM 实例。use_vision=True 时使用 vision 模型；disable_thinking=False 时不注入 extra_body。
@@ -2987,16 +3798,18 @@ async def proactive_chat(request: Request):
                 m, bu, ak = correction_model, correction_base_url, correction_api_key
             kw: dict = dict(
                 temperature=temperature,
-                max_completion_tokens=max_tokens,
+                max_completion_tokens=max_completion_tokens,
                 streaming=True,
             )
             if not disable_thinking:
                 kw["extra_body"] = None  # skip auto-resolved extra_body
             return create_chat_llm(m, bu, ak, **kw)
-        
+
         async def _llm_call_with_retry(
             system_prompt: str, label: str, *,
-            temperature: float = 1.0, max_tokens: int = 1024, timeout: float = 16.0,
+            temperature: float = 1.0,
+            max_completion_tokens: int = PROACTIVE_PHASE1_UNIFIED_MAX_TOKENS,
+            timeout: float = 16.0,
             use_vision: bool = False, disable_thinking: bool = True,
             image_b64: str = '',
             dynamic_context: str = '',
@@ -3024,8 +3837,10 @@ async def proactive_chat(request: Request):
             for attempt in range(max_retries):
                 try:
                     # 使用 async with 确保 ChatOpenAI (AsyncOpenAI) 实例被正确关闭
-                    async with _make_llm(temperature=temperature, max_tokens=max_tokens,
-                                        use_vision=use_vision, disable_thinking=disable_thinking) as llm:
+                    async with _make_llm(temperature=temperature,
+                                        max_completion_tokens=max_completion_tokens,
+                                        use_vision=use_vision,
+                                        disable_thinking=disable_thinking) as llm:
                         response = await asyncio.wait_for(
                             llm.ainvoke(messages),
                             timeout=timeout
@@ -3078,11 +3893,11 @@ async def proactive_chat(request: Request):
                 selected_links: list[dict] = []
                 for link in links:
                     title = link.get('title', '')
-                    source = link.get('source', '')
                     url = link.get('url', '')
-                    key = _build_topic_dedup_key(topic_title=title, topic_source=source, topic_url=url)
+                    key = _source_hash(url, title)
                     if key:
-                        if key in seen_topic_keys or _is_recent_topic_used(lanlan_name, key):
+                        # 跨会话衰减 skip：5h 硬窗口，之后按 web 半衰期概率瞬移到下一条
+                        if key in seen_topic_keys or _should_skip_source(key):
                             continue
                         seen_topic_keys.add(key)
                     # 给 link 打上来源 mode 标记，用于细粒度 channel 记录
@@ -3097,6 +3912,7 @@ async def proactive_chat(request: Request):
                     remaining_total -= len(selected_links)
                     lines = []
                     for idx, item in enumerate(selected_links, start=1):
+                        from utils.tokenize import truncate_to_tokens as _ttt
                         title = item.get('title', '').strip()
                         if not title:
                             continue
@@ -3108,7 +3924,10 @@ async def proactive_chat(request: Request):
                         if url:
                             suffix.append(f"URL: {url}")
                         ext = (" | " + " | ".join(suffix)) if suffix else ""
-                        lines.append(f"{idx}. {title}{ext}")
+                        # 单条外部内容截到 PROACTIVE_EXTERNAL_PER_ITEM_MAX_TOKENS，
+                        # 防止个别 title/url 异常长撑爆 prompt。
+                        item_line = _ttt(f"{idx}. {title}{ext}", PROACTIVE_EXTERNAL_PER_ITEM_MAX_TOKENS)
+                        lines.append(item_line)
                     if lines:
                         parts.append(f"--- {label} ---\n" + "\n".join(lines))
                         continue
@@ -3119,9 +3938,18 @@ async def proactive_chat(request: Request):
                     if compact_lines:
                         fallback_lines = compact_lines[:remaining_total]
                         if fallback_lines:
+                            from utils.tokenize import truncate_to_tokens as _ttt
+                            fallback_lines = [
+                                _ttt(ln, PROACTIVE_EXTERNAL_PER_ITEM_MAX_TOKENS)
+                                for ln in fallback_lines
+                            ]
                             parts.append(f"--- {label} ---\n" + "\n".join(fallback_lines))
                             remaining_total -= len(fallback_lines)
-            merged_web_content = "\n\n".join(parts)
+            from utils.tokenize import truncate_to_tokens as _ttt
+            # 兜底总和截断：防止 20 source × 200 token = 4k 超过 2k 总预算
+            merged_web_content = _ttt(
+                "\n\n".join(parts), PROACTIVE_EXTERNAL_TOTAL_MAX_TOKENS
+            )
         
         # Phase 1 结果收集
         phase1_topics: list[tuple[str, str]] = []  # [(channel, topic_summary), ...]
@@ -3143,10 +3971,19 @@ async def proactive_chat(request: Request):
 
         # ============================================================
         # 来源动态权重过滤（vision / 已屏蔽的 music 不参与权重计算）
+        #
+        # ``reminiscence`` 作为虚拟 channel：当本轮已经从 memory_server 取到
+        # pending followup topics 时，把它放进权重计算池。和 web/news/music
+        # 一样按使用频率衰减——AI 连续多次"回忆"会让 reminiscence 进入
+        # suppressed 集合，本轮就跳过 followup_topics_prompt（per-reflection
+        # cooldown 在 reflection.py 那侧另算，这里是 channel 级别的兜底）。
         # ============================================================
         non_vision_modes = [m for m in enabled_modes if m != 'vision' and m in sources]
-        if non_vision_modes:
-            source_weights = _compute_source_weights(lanlan_name, non_vision_modes)
+        weight_candidates = list(non_vision_modes)
+        if _surfaced_reflection_ids:
+            weight_candidates.append('reminiscence')
+        if weight_candidates:
+            source_weights = _compute_source_weights(lanlan_name, weight_candidates)
             suppressed = _filter_sources_by_weight(source_weights)
             weight_str = ' '.join(f"{ch}={w:.3f}" for ch, w in source_weights.items())
             logger.debug(f"[{lanlan_name}] 来源权重: {weight_str} | 剔除: {suppressed or '无'}")
@@ -3157,6 +3994,13 @@ async def proactive_chat(request: Request):
                 music_content = None
             if 'meme' in suppressed:
                 meme_content = None
+            if 'reminiscence' in suppressed:
+                # 回忆 channel 被 throttle：清空 followup section 和 surfaced ids，
+                # Phase 2 prompt 看不到旧话题，本轮也不会调 record_surfaced。
+                if followup_topics_prompt:
+                    print(f"[{lanlan_name}] reminiscence channel suppressed by weight, dropping followup section")
+                followup_topics_prompt = ""
+                _surfaced_reflection_ids = []
 
             # 被剔除的 web 子通道不参与 merged_web_content（sources 已弹出，
             # 但 merged_web_content 已经构建完毕，需要重新构建）
@@ -3181,11 +4025,10 @@ async def proactive_chat(request: Request):
                         selected_links_2: list[dict] = []
                         for link in links:
                             title = link.get('title', '')
-                            source_name = link.get('source', '')
                             url = link.get('url', '')
-                            key = _build_topic_dedup_key(topic_title=title, topic_source=source_name, topic_url=url)
+                            key = _source_hash(url, title)
                             if key:
-                                if key in seen_topic_keys_2 or _is_recent_topic_used(lanlan_name, key):
+                                if key in seen_topic_keys_2 or _should_skip_source(key):
                                     continue
                                 seen_topic_keys_2.add(key)
                             if 'mode' not in link:
@@ -3196,6 +4039,7 @@ async def proactive_chat(request: Request):
                         if selected_links_2:
                             remaining_total_2 -= len(selected_links_2)
                             lines = []
+                            from utils.tokenize import truncate_to_tokens as _ttt2
                             for idx, item in enumerate(selected_links_2, start=1):
                                 t = item.get('title', '').strip()
                                 if not t:
@@ -3208,10 +4052,17 @@ async def proactive_chat(request: Request):
                                 if u:
                                     suffix.append(f"URL: {u}")
                                 ext = (" | " + " | ".join(suffix)) if suffix else ""
-                                lines.append(f"{idx}. {t}{ext}")
+                                # 同上路径，单条 cap
+                                lines.append(_ttt2(
+                                    f"{idx}. {t}{ext}",
+                                    PROACTIVE_EXTERNAL_PER_ITEM_MAX_TOKENS,
+                                ))
                             if lines:
                                 parts.append(f"--- {label} ---\n" + "\n".join(lines))
-                    merged_web_content = "\n\n".join(parts)
+                    from utils.tokenize import truncate_to_tokens as _ttt3
+                    merged_web_content = _ttt3(
+                        "\n\n".join(parts), PROACTIVE_EXTERNAL_TOTAL_MAX_TOKENS
+                    )
                 else:
                     merged_web_content = ""
                     all_web_links = []
@@ -3265,13 +4116,16 @@ async def proactive_chat(request: Request):
         web_parsed = unified_parsed.get('web')
         if web_parsed and web_parsed.get('title'):
             matched = _lookup_link_by_title(web_parsed.get('title', ''), all_web_links)
-            topic_key = _build_topic_dedup_key(
-                topic_title=web_parsed.get('title', ''),
-                topic_source=web_parsed.get('source', ''),
-                topic_url=(matched.get('url', '') if matched else ''),
+            topic_key = _source_hash(
+                matched.get('url', '') if matched else '',
+                web_parsed.get('title', ''),
             )
-            if topic_key and _is_recent_topic_used(lanlan_name, topic_key):
-                print(f"[{lanlan_name}] Phase 1 话题去重命中，跳过: {web_parsed.get('title','')[:60]}")
+            # matched 的链接已经在 picking 阶段过了一次 _should_skip_source，
+            # 这里再 roll 等于让等效 p_skip = 1-(1-p)^2，违背单次半衰期模型。
+            # 仅对未匹配（LLM 幻觉的 title-only 候选）兜底再判一次。
+            needs_recheck = bool(topic_key) and matched is None
+            if needs_recheck and _should_skip_source(topic_key):
+                print(f"[{lanlan_name}] Phase 1 title-only 话题命中衰减，跳过: {web_parsed.get('title','')[:60]}")
             else:
                 if matched:
                     selected_web_link = {
@@ -3280,10 +4134,12 @@ async def proactive_chat(request: Request):
                         'source': web_parsed.get('source', matched.get('source', '')),
                         'mode': matched.get('mode', 'web'),  # 保留细粒度 mode
                     }
-                    selected_web_topic_key = topic_key
                     print(f"[{lanlan_name}] Phase 1 链接预匹配成功: {matched.get('title','')[:60]}")
                 else:
                     print(f"[{lanlan_name}] Phase 1 未在 web_links 中匹配到标题: {web_parsed.get('title','')[:60]}")
+                # 不论 matched 与否，都把 topic_key 留下来供 Phase 2 后落盘 ——
+                # 哪怕只有 title 也参与衰减历史，避免同样的标题被反复 surface
+                selected_web_topic_key = topic_key
                 # 用 web_parsed 的 summary 或原始文本作为 topic
                 web_topic_text = web_parsed.get('summary', web_parsed.get('title', ''))
                 phase1_topics.append(('web', web_topic_text.strip()))
@@ -3365,28 +4221,53 @@ async def proactive_chat(request: Request):
                     print(f"[{lanlan_name}] 成功获取 {len(result_p1.get('data', []))} 个表情包 (来源: {result_p1.get('source', '?')})")
 
         # ============================================================
-        # 音乐话题组装（去重 + 暂存链接）
+        # 音乐话题组装（遍历候选 → 衰减 skip → 暂存链接）
+        # 与 web/meme 对偶：超取 N 条后逐条概率 skip，遇命中瞬移到下一条。
+        # 全部命中则清空 music_content 让通道整体降级。
         # ============================================================
         if music_content and music_content.get('formatted_content'):
             music_topic = music_content['formatted_content']
             if music_topic:
                 music_tracks = music_content.get('raw_data', {}).get('data', [])
                 if music_tracks:
-                    first_track = music_tracks[0]
-                    track_name = first_track.get('name', '')
-                    track_artist = first_track.get('artist', '')
-                    track_url = first_track.get('url', '')
-                    track_cover = first_track.get('cover', '')
-                    music_topic_key = _build_topic_dedup_key(
-                        topic_title=f"{track_name} - {track_artist}",
-                        topic_source='music',
-                        topic_url=track_url
-                    )
-                    if _is_recent_topic_used(lanlan_name, music_topic_key):
-                        print(f"[{lanlan_name}]- Phase 1 音乐话题去重命中，跳过: {track_name}")
-                        music_content = None  # 彻底清空，防止去重后的残留数据泄漏到 fallback 逻辑
+                    picked_track: dict | None = None
+                    picked_key: str = ''
+                    for candidate_track in music_tracks:
+                        track_url = candidate_track.get('url', '')
+                        track_name = candidate_track.get('name', '')
+                        track_artist = candidate_track.get('artist', '')
+                        candidate_key = _source_hash(
+                            track_url, f"{track_name} - {track_artist}"
+                        )
+                        if candidate_key and _should_skip_source(candidate_key):
+                            print(f"[{lanlan_name}]- Phase 1 音乐候选去重命中，跳过: {track_name}")
+                            continue
+                        picked_track = candidate_track
+                        picked_key = candidate_key
+                        break
+                    if picked_track is None:
+                        print(f"[{lanlan_name}]- Phase 1 所有音乐候选均被衰减 skip，整体清空通道")
+                        music_content = None
                     else:
-                        logger.debug(f"[{lanlan_name}]- Phase 1 音乐话题已添加: {music_topic[:100]}...")
+                        # 选中非首条时，把 raw_data['data'] 砍到 picked 起始位置并重 format —
+                        # 否则 music_topic 文本仍以被 skip 掉的首条为头条，与
+                        # selected_music_link 的归因脱节，下游 _append_music_recommendations
+                        # 也会把已 skip 的首条作为推荐项暴露给前端。
+                        picked_idx = music_tracks.index(picked_track)
+                        if picked_idx > 0:
+                            raw = music_content.get('raw_data') or {}
+                            raw_trimmed = {**raw, 'data': music_tracks[picked_idx:]}
+                            new_topic = _format_music_content(raw_trimmed, proactive_lang)
+                            if new_topic:
+                                music_topic = new_topic
+                                music_content['formatted_content'] = music_topic
+                                music_content['raw_data'] = raw_trimmed
+                        track_name = picked_track.get('name', '')
+                        track_artist = picked_track.get('artist', '')
+                        track_url = picked_track.get('url', '')
+                        track_cover = picked_track.get('cover', '')
+                        logger.debug(f"[{lanlan_name}]- Phase 1 音乐话题已添加 (topic_len={len(music_topic)})")
+                        print(f"[{lanlan_name}]- Phase 1 音乐话题: {music_topic[:100]}")
                         selected_music_link = {
                             'title': track_name,
                             'artist': track_artist,
@@ -3395,10 +4276,11 @@ async def proactive_chat(request: Request):
                             'source': '音乐推荐',
                             'type': 'music'
                         }
-                        selected_music_topic_key = music_topic_key
+                        selected_music_topic_key = picked_key
                         phase1_topics.append(('music', music_topic))
                 else:
-                    logger.debug(f"[{lanlan_name}] Phase 1 音乐话题已添加: {music_topic[:100]}...")
+                    logger.debug(f"[{lanlan_name}] Phase 1 音乐话题已添加 (topic_len={len(music_topic)})")
+                    print(f"[{lanlan_name}] Phase 1 音乐话题: {music_topic[:100]}")
                     phase1_topics.append(('music', music_topic))
 
         # ============================================================
@@ -3413,13 +4295,9 @@ async def proactive_chat(request: Request):
                     if not meme_url:
                         continue  # 跳过无 URL 的候选
                     meme_source = candidate_meme.get('source', '表情包')
-                    meme_topic_key = _build_topic_dedup_key(
-                        topic_title=meme_title,
-                        topic_source=meme_source,
-                        topic_url=meme_url
-                    )
-                    if meme_topic_key and _is_recent_topic_used(lanlan_name, meme_topic_key):
-                        logger.debug(f"[{lanlan_name}]- Phase 1 表情包话题去重命中，跳过: {meme_title[:30]}")
+                    meme_topic_key = _source_hash(meme_url, meme_title)
+                    if meme_topic_key and _should_skip_source(meme_topic_key):
+                        logger.debug(f"[{lanlan_name}]- Phase 1 表情包候选去重命中，跳过: {meme_title[:30]}")
                         continue
                     single_meme_topic = f"发现一个很有意思的[表情包]：'{meme_title}' (来自 {meme_source})"
                     logger.debug(f"[{lanlan_name}]- Phase 1 表情包话题已添加 (限额1张): {single_meme_topic}")
@@ -3439,12 +4317,14 @@ async def proactive_chat(request: Request):
                 logger.warning(f"[{lanlan_name}] Phase 1 表情包数据为空，跳过表情包话题")
         
         if not phase1_topics and not vision_content:
-            print(f"[{lanlan_name}] Phase 1 所有通道均无可用话题")
-            return await _end_proactive(JSONResponse({
-                "success": True,
-                "action": "pass",
-                "message": "所有信息源筛选后均不值得搭话"
-            }))
+            if not _has_unfinished_thread:
+                print(f"[{lanlan_name}] Phase 1 所有通道均无可用话题")
+                return await _end_proactive(JSONResponse({
+                    "success": True,
+                    "action": "pass",
+                    "message": "所有信息源筛选后均不值得搭话"
+                }))
+            print(f"[{lanlan_name}] Phase 1 无话题但有未收尾话题，进入 text-only 跟进 Phase 2")
 
         # Phase 1 preempt check：topic assembly 完，进入 Phase 2 前最后一次瞄
         if mgr.state.is_proactive_preempted():
@@ -3521,7 +4401,7 @@ async def proactive_chat(request: Request):
         else:
             print(f"[{lanlan_name}] Phase 2 无截图或无 vision 模型，跳过屏幕分析")
         
-        # 构建外部话题段（web 通道）
+        # 构建网络话题段（web 通道）
         external_section = ""
         if web_topic:
             el = _loc(EXTERNAL_TOPIC_HEADER, proactive_lang)
@@ -3568,12 +4448,43 @@ async def proactive_chat(request: Request):
         # 追加的音乐/表情包指令作为动态上下文注入 HumanMessage
         # 使用 enriched_memory_context（含回调话题）而非原始 memory_context
         phase2_memory_context = enriched_memory_context if followup_topics_prompt else memory_context
+
+        # 把活动快照渲染成 prompt 段。snapshot 缺失时退化为空串——decision frame
+        # 里的 A) 看「用户当前状态」分支会自动走到"其它状态：所有切入点都可用"。
+        #
+        # 重要：渲染前重拉一次 tracker enrichment 缓存（activity_scores /
+        # activity_guess / open_threads）。kickoff_open_threads_compute 是在
+        # Phase 1 起点 fire-and-forget 跑的，结果会在 Phase 1 进行中陆续落到
+        # 缓存里——早期捕获的 activity_snapshot 看不到这些更新。专门并行起来
+        # 就是为了本轮就用。决策性字段（state / propensity / propensity_reasons /
+        # unfinished_thread）仍取自早期 snapshot，避免 Phase 1 中途 state 变化
+        # 导致 gating 决策（restricted_screen_only 收紧 enabled_modes 等）和最终
+        # prompt 不一致。
+        if activity_snapshot is not None:
+            from dataclasses import replace as _dc_replace
+            from main_logic.activity import format_activity_state_section
+            try:
+                fresh_enrich = await mgr._activity_tracker.get_snapshot()
+                display_snap = _dc_replace(
+                    activity_snapshot,
+                    activity_scores=fresh_enrich.activity_scores,
+                    activity_guess=fresh_enrich.activity_guess,
+                    open_threads=fresh_enrich.open_threads,
+                )
+            except Exception as _enrich_err:
+                logger.debug(f"[{lanlan_name}] fresh enrichment fetch failed: {_enrich_err}")
+                display_snap = activity_snapshot
+            state_section = format_activity_state_section(display_snap, proactive_lang)
+        else:
+            state_section = ''
+
         generate_prompt = get_proactive_generate_prompt(
             proactive_lang, music_playing_hint,
             has_music=bool(music_section), has_meme=bool(meme_section),
         ).format(
             character_prompt=character_prompt,
             inner_thoughts=inner_thoughts,
+            state_section=state_section,
             memory_context=phase2_memory_context,
             recent_chats_section=proactive_chat_history_prompt,
             screen_section=screen_section,
@@ -3675,8 +4586,10 @@ async def proactive_chat(request: Request):
                         print(f"[{lanlan_name}] Phase 2 fence 触发 (pipe_count={pipe_count})，abort")
                         aborted = True
                         return True
-            if len(full_text) + len(text) > 400:
-                print(f"[{lanlan_name}] Phase 2 长度超限 ({len(full_text)+len(text)} > 400)，abort")
+            # sync count_tokens — see PHASE2_OUTPUT_MAX_TOKENS docstring
+            n_tokens = count_tokens(full_text + text)
+            if n_tokens > PHASE2_OUTPUT_MAX_TOKENS:
+                print(f"[{lanlan_name}] Phase 2 长度超限 ({n_tokens} > {PHASE2_OUTPUT_MAX_TOKENS} tokens)，abort")
                 aborted = True
                 return True
             full_text += text
@@ -3686,7 +4599,8 @@ async def proactive_chat(request: Request):
         try:
             async with asyncio.timeout(25.0):
                 # 使用 async with 确保 ChatOpenAI 正确关闭
-                async with _make_llm(temperature=1.0, max_tokens=1536,
+                async with _make_llm(temperature=1.0,
+                                    max_completion_tokens=PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
                                     use_vision=phase2_use_vision, disable_thinking=True) as llm:
                     async for chunk in llm.astream(messages):
                         # Phase 2 preempt check：每 chunk 顶端做 O(1) 状态机读，
@@ -3792,7 +4706,9 @@ async def proactive_chat(request: Request):
             }))
         
         response_text = full_text.strip()
-        logger.debug(f"[{lanlan_name}] Phase 2 流式完成 (vision={phase2_use_vision}): {response_text[:120]}...")
+        # 不要把 proactive 原文写进 logger（会进日志文件 / 遥测）；只记元数据。
+        # 完整原文通过 print 给开发者本地查看。
+        logger.debug(f"[{lanlan_name}] Phase 2 流式完成 (vision={phase2_use_vision}, len={len(response_text)} chars)")
         print(f"\n[PROACTIVE-DEBUG] Phase 2 STREAM output: {response_text[:200]}...\n")
 
         has_music_topic = 'music' in active_channels
@@ -3826,6 +4742,14 @@ async def proactive_chat(request: Request):
                 "action": "pass",
                 "message": f"[{lanlan_name}] 播放中推荐拦截触发，动作已取消"
             }))
+
+        # _of_none output-format 路径明确指示 AI"不带 source tag"，所以 AI 真正
+        # 跟进 unfinished thread 时输出可能完全没有标签。落到这里又非 abort/empty,
+        # 说明 Phase 2 实际产出了文本——按 CHAT 兜底，让下游 build_proactive_response
+        # 把 primary_channel 设为 'chat'，否则 mark_unfinished_thread_used 会把这一
+        # 类合法跟进当作"没用 override"漏掉，2 次配额被静默绕过。
+        if not source_tag and full_text.strip():
+            source_tag = 'CHAT'
 
         # 使用纯函数构建响应
         primary_channel, source_links = build_proactive_response(source_tag, {
@@ -3882,6 +4806,30 @@ async def proactive_chat(request: Request):
 
         # 记录主动搭话
         _record_proactive_chat(lanlan_name, response_text, primary_channel)
+        # Reminiscence usage：本轮 surfaced 了 pending reflection（不管 AI 最终
+        # 用了什么标签，followup 都出现在 prompt 里）→ 记一次 reminiscence 用量。
+        # 用独立 buffer (_reminiscence_usage_history) 而不是把同一条 message
+        # 二次写进 _proactive_chat_history——后者还驱动 _format_recent_proactive_chats
+        # 和 _is_similar_to_recent_proactive_chat，二次写会让 dedup / 相似度
+        # 检查把这条 proactive 跟自己撞上、虚高 score。_compute_source_weights
+        # 直接读这个独立 buffer 把 reminiscence 当一档 channel 衰减。
+        if _surfaced_reflection_ids:
+            _record_reminiscence_usage(lanlan_name)
+
+        # Unfinished-thread 跟进计数：仅当 AI 本轮真的产出 [CHAT]（即没有选
+        # WEB/MUSIC/MEME 这类外部素材）时才 +1。早先版本是"snapshot 里有未收尾
+        # 话题就计数"，理由是想防"AI 反复忽略 override 也烧光配额"——但
+        # UNFINISHED_THREAD_WINDOW_SECONDS=300 的自动过期已经兜底了 thread 的总
+        # 暴露时间，再多算曝光只会让两次外部素材轮把真正的续接配额提前烧光。
+        # source_tag == 'CHAT' / primary_channel == 'chat' 是 build_proactive_response
+        # 后唯一可靠的 "AI 走了文本路径" 信号；无 tag 但出过文本时上游会兜底
+        # 设成 CHAT。[PASS] 已在 4079 早 return，不会走到这里。
+        if _has_unfinished_thread and (source_tag == 'CHAT' or primary_channel == 'chat'):
+            try:
+                mgr._activity_tracker.mark_unfinished_thread_used()
+                print(f"[{lanlan_name}] 跟进未收尾话题：mark_used")
+            except Exception as _ut_err:
+                logger.warning(f"[{lanlan_name}] mark_unfinished_thread_used failed: {_ut_err}")
 
         # 后台长期记忆维护（通过 memory_server API）：复用 internal_http_client 单例
         try:
@@ -3927,17 +4875,41 @@ async def proactive_chat(request: Request):
                 for link in source_links if link
             )
 
-        if selected_web_topic_key and _is_link_selected(selected_web_link):
-            _record_topic_usage(lanlan_name, selected_web_topic_key)
-            print(f"[{lanlan_name}] 已记录 Web 话题去重: {selected_web_topic_key[:60]}")
-            
+        # title-only 的 web topic（LLM 在 over-fetch 列表外编出来的标题）也写入衰减历史，
+        # 否则下一轮可能再次被 surface。matched 时仍按链接是否成功登卡（_is_link_selected）
+        # 把关；非 matched 时绕过链接卡片检查。
+        if selected_web_topic_key and (
+            selected_web_link is None or _is_link_selected(selected_web_link)
+        ):
+            _wl = selected_web_link or {}
+            _web_title_dbg = (
+                _wl.get('title', '')
+                or (web_parsed.get('title', '') if web_parsed else '')
+            )
+            await _record_source_used(
+                url=_wl.get('url', '') or '',
+                kind='web',
+                title=_web_title_dbg,
+            )
+            print(f"[{lanlan_name}] 已记录 Web source 衰减历史: {selected_web_topic_key[:16]}")
+
         if selected_music_topic_key and (is_music_used or _is_link_selected(selected_music_link)):
-            _record_topic_usage(lanlan_name, selected_music_topic_key)
-            print(f"[{lanlan_name}] 已记录音乐话题去重: {selected_music_topic_key}")
-            
+            _ml = selected_music_link or {}
+            _music_title_dbg = f"{_ml.get('title', '')} - {_ml.get('artist', '')}".strip(' -')
+            await _record_source_used(
+                url=_ml.get('url', '') or '',
+                kind='music',
+                title=_music_title_dbg,
+            )
+            print(f"[{lanlan_name}] 已记录音乐 source 衰减历史: {selected_music_topic_key[:16]}")
+
         if selected_meme_topic_key and _is_link_selected(selected_meme_link):
-            _record_topic_usage(lanlan_name, selected_meme_topic_key)
-            print(f"[{lanlan_name}] 已记录表情包话题去重: {selected_meme_topic_key[:60]}")
+            await _record_source_used(
+                url=(selected_meme_link or {}).get('url', '') or '',
+                kind='image',
+                title=(selected_meme_link or {}).get('title', '') or '',
+            )
+            print(f"[{lanlan_name}] 已记录表情包 source 衰减历史: {selected_meme_topic_key[:16]}")
 
         return await _end_proactive(JSONResponse({
             "success": True,

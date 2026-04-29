@@ -396,6 +396,72 @@
         [data-theme="dark"] .qr-collapse-btn:hover {
             background: #047857;
         }
+
+        /* ============================================================ */
+        /* 无障碍 + 滚动条 暗色补丁                                      */
+        /* 这个页面没有加载全局 dark-mode.css，且若干文字色直接以 inline */
+        /* style 写在 HTML 里（line 453, 464），需用 !important 覆盖。   */
+        /* ============================================================ */
+
+        /* 视口滚动条（Chromium 121+ 用 scrollbar-color，更早版本用 webkit 伪元素）*/
+        [data-theme="dark"],
+        [data-theme="dark"] body,
+        [data-theme="dark"] .dashboard-wrapper,
+        [data-theme="dark"] * {
+            scrollbar-color: rgba(255, 255, 255, 0.22) rgba(0, 0, 0, 0.25) !important;
+        }
+
+        [data-theme="dark"] ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+        [data-theme="dark"] ::-webkit-scrollbar-track {
+            background: rgba(0, 0, 0, 0.25);
+            border-radius: 4px;
+        }
+        [data-theme="dark"] ::-webkit-scrollbar-thumb {
+            background: rgba(255, 255, 255, 0.22);
+            border-radius: 4px;
+        }
+        [data-theme="dark"] ::-webkit-scrollbar-thumb:hover {
+            background: rgba(255, 255, 255, 0.4);
+        }
+
+        /* 顶部标题：white on #2d3748 ≈13:1 (AAA)，显式设置避免被任何继承覆盖 */
+        [data-theme="dark"] .container-header h2 {
+            color: #ffffff;
+        }
+
+        /* "安全加密存储至本地文件" 复选框 label 是 inline style="color:#475569"
+           暗色下完全不可读，提到 #cbd5e0 (≈9:1, AAA) */
+        [data-theme="dark"] label[for="encrypt-toggle"] {
+            color: #cbd5e0 !important;
+        }
+
+        /* "本地状态监控" h3 是 inline style="color:#334155;border-top:1px dashed #cbd5e1" */
+        [data-theme="dark"] #status-area > h3 {
+            color: #e2e8f0 !important;
+            border-top-color: #4a5568 !important;
+        }
+
+        /* 动态字段右侧描述 span（"Core identity credential (Required)" 等）
+           使用 .field-group label > .desc，无独立颜色，需保证可读 */
+        [data-theme="dark"] .field-group label .desc {
+            color: #94a3b8;
+            font-weight: 400;
+        }
+
+        /* 必填星号 .req-star —— 红色在暗色下要稍微提亮 */
+        [data-theme="dark"] .req-star {
+            color: #f87171;
+        }
+
+        /* QR 登录区背景 / 文字（JS 注入了 background:#f8fafc 浅色面板） */
+        [data-theme="dark"] #QRLogin > div[style*="background: #f8fafc"],
+        [data-theme="dark"] #QRLogin > div[style*="background:#f8fafc"] {
+            background: #2d3748 !important;
+            border-color: #4a5568 !important;
+        }
     </style>
 </head>
 <body>

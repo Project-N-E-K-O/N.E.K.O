@@ -8,6 +8,7 @@ import {
   type ComposerSubmitPayload,
   type ComposerAttachment,
   type AvatarInteractionPayload,
+  type AvatarToolStatePayload,
 } from './message-schema';
 import CommandPalette, { type CommandItem, type UserPreferences } from './CommandPalette';
 
@@ -18,6 +19,7 @@ export type ChatWindowProps = ChatWindowSchemaProps & {
   onComposerRemoveAttachment?: (attachmentId: ComposerAttachment['id']) => void;
   onComposerSubmit?: (payload: ComposerSubmitPayload) => void;
   onAvatarInteraction?: (payload: AvatarInteractionPayload) => void;
+  onAvatarToolStateChange?: (payload: AvatarToolStatePayload) => void;
   onJukeboxClick?: () => void;
   onTranslateToggle?: () => void;
   quickActions?: CommandItem[];
@@ -29,9 +31,10 @@ export type ChatWindowProps = ChatWindowSchemaProps & {
 };
 
 const defaultMessages: ChatMessage[] = [];
+type AvatarToolId = AvatarInteractionPayload['toolId'];
 
 type ToolIconItem = {
-  id: string;
+  id: AvatarToolId;
   labelKey: string;
   labelFallback: string;
   iconImagePath: string;
@@ -63,7 +66,7 @@ const toolIconItems: ToolIconItem[] = [
     cursorImagePathAlt: '/static/icons/chat_sugar2_cursor.png',
     menuIconScale: 1.18,
     cursorHotspotX: 27,
-    cursorHotspotY: 40,
+    cursorHotspotY: 46,
   },
   {
     id: 'fist',
@@ -74,7 +77,7 @@ const toolIconItems: ToolIconItem[] = [
     cursorImagePath: '/static/icons/cat_claw1_cursor.png',
     cursorImagePathAlt: '/static/icons/cat_claw2_cursor.png',
     cursorHotspotX: 39,
-    cursorHotspotY: 40,
+    cursorHotspotY: 46,
   },
   {
     id: 'hammer',
@@ -90,7 +93,7 @@ const toolIconItems: ToolIconItem[] = [
     menuIconOffsetXAlt: 1,
     menuIconOffsetYAlt: -1,
     cursorHotspotX: 50,
-    cursorHotspotY: 48,
+    cursorHotspotY: 54,
   },
 ];
 
@@ -145,7 +148,7 @@ const compactCursorZoneSelector = [
 type CursorVariant = 'primary' | 'secondary' | 'tertiary';
 type ToolCursorVariantState = Record<string, CursorVariant>;
 type InteractionIntensity = NonNullable<AvatarInteractionPayload['intensity']>;
-type AvatarInteractionToolId = AvatarInteractionPayload['toolId'];
+type AvatarInteractionToolId = AvatarToolId;
 type AvatarTouchZone = 'ear' | 'head' | 'face' | 'body';
 type AvatarInteractionPayloadByTool = {
   [K in AvatarInteractionToolId]: Extract<AvatarInteractionPayload, { toolId: K }>;
@@ -337,6 +340,27 @@ function supportsDesktopFinePointer(): boolean {
   } catch {
     return true;
   }
+}
+
+function isElectronMultiWindowHost(): boolean {
+  return typeof window !== 'undefined'
+    && (window as Window & { __NEKO_MULTI_WINDOW__?: boolean }).__NEKO_MULTI_WINDOW__ === true;
+}
+
+function clearForcedNativeCursorFallback() {
+  if (typeof document === 'undefined') return;
+  const root = document.documentElement;
+  root.style.removeProperty('cursor');
+  document.body?.style.removeProperty('cursor');
+}
+
+function clearGlobalToolCursorState() {
+  if (typeof document === 'undefined') return;
+  const root = document.documentElement;
+  root.classList.remove('neko-tool-cursor-active');
+  root.style.removeProperty('--neko-chat-tool-cursor');
+  root.style.setProperty('cursor', 'auto', 'important');
+  document.body?.style.setProperty('cursor', 'auto', 'important');
 }
 
 function isElementVisible(elementId: string): boolean {
@@ -545,6 +569,7 @@ export default function App({
   onComposerRemoveAttachment,
   onComposerSubmit,
   onAvatarInteraction,
+  onAvatarToolStateChange,
   onJukeboxClick,
   onTranslateToggle,
   quickActions,
@@ -555,19 +580,26 @@ export default function App({
   onQuickActionsPreferencesChange,
   rollbackDraft,
   _rollbackKey,
+  _toolCursorResetKey,
 }: ChatWindowProps) {
   const [draft, setDraft] = useState('');
   const [toolMenuOpen, setToolMenuOpen] = useState(false);
   const [quickActionsPanelOpen, setQuickActionsPanelOpen] = useState<boolean>(false);
   const [quickActionsSlashMode, setQuickActionsSlashMode] = useState(false);
+  // 当 composer-bottom-bar 宽度 < 阈值时，把右侧工具按钮折叠成 ··· 菜单
+  const [isCompactComposer, setIsCompactComposer] = useState(false);
+  const [overflowMenuOpen, setOverflowMenuOpen] = useState(false);
   const [activeCursorToolId, setActiveCursorToolId] = useState<string | null>(null);
   const [avatarRangeCursorVariants, setAvatarRangeCursorVariants] = useState<ToolCursorVariantState>(() => createDefaultToolCursorVariantState());
   const [outsideRangeCursorVariants, setOutsideRangeCursorVariants] = useState<ToolCursorVariantState>(() => createDefaultToolCursorVariantState());
   const [isCursorOverAvatarRange, setIsCursorOverAvatarRange] = useState(false);
   const [isCursorOverCompactCursorZone, setIsCursorOverCompactCursorZone] = useState(false);
+  const [isCursorInsideHostWindow, setIsCursorInsideHostWindow] = useState(true);
   const [hammerSwingPhase, setHammerSwingPhase] = useState<'idle' | 'windup' | 'swing' | 'impact' | 'recover'>('idle');
   const [isInnerHammerEasterEggActive, setIsInnerHammerEasterEggActive] = useState(false);
   const toolMenuRef = useRef<HTMLDivElement | null>(null);
+  const composerBottomBarRef = useRef<HTMLDivElement | null>(null);
+  const overflowMenuRef = useRef<HTMLDivElement | null>(null);
   const avatarCursorOverlayRef = useRef<HTMLDivElement | null>(null);
   const hammerCursorOverlayRef = useRef<HTMLDivElement | null>(null);
   const hammerSwingTimeoutIdsRef = useRef<number[]>([]);
@@ -595,7 +627,16 @@ export default function App({
   const submittingRef = useRef(false);
   const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const lastRollbackKeyRef = useRef('');
+  const lastToolCursorResetKeyRef = useRef('');
   const canSubmit = draft.trim().length > 0 || composerAttachments.length > 0;
+  const clearActiveCursorToolSelection = useCallback(() => {
+    clearGlobalToolCursorState();
+    latestPointerTargetRef.current = null;
+    setActiveCursorToolId(null);
+    setToolMenuOpen(false);
+    setIsCursorOverAvatarRange(false);
+    setIsCursorOverCompactCursorZone(false);
+  }, []);
 
   // Rollback draft when host signals a RESPONSE_TOO_LONG error
   // Use _rollbackKey for dedup — it changes on every rollbackLastDraft() call
@@ -609,11 +650,20 @@ export default function App({
       }
     }
   }, [rollbackDraft, _rollbackKey, draft]);
+
+  useEffect(() => {
+    if (_toolCursorResetKey && _toolCursorResetKey !== lastToolCursorResetKeyRef.current) {
+      lastToolCursorResetKeyRef.current = _toolCursorResetKey;
+      clearActiveCursorToolSelection();
+    }
+  }, [_toolCursorResetKey, clearActiveCursorToolSelection]);
   const resolvedImportImageAriaLabel = importImageButtonAriaLabel || importImageButtonLabel;
   const resolvedScreenshotAriaLabel = screenshotButtonAriaLabel || screenshotButtonLabel;
   const resolvedTranslateAriaLabel = translateButtonAriaLabel || translateButtonLabel;
   const emojiButtonAriaLabel = i18n('chat.emojiButtonAriaLabel', 'Emoji');
   const toolIconsAriaLabel = i18n('chat.toolIconsAriaLabel', 'Tool icons');
+  const clearCursorToolAriaLabel = i18n('chat.clearCursorToolAriaLabel', '恢复鼠标');
+  const overflowMenuAriaLabel = i18n('chat.composerOverflowMenu', '更多工具');
   const effectiveCursorVariant = resolveEffectiveCursorVariant(
     activeCursorToolId,
     avatarRangeCursorVariants,
@@ -627,13 +677,18 @@ export default function App({
   const activeToolImagePaths = activeToolItem
     ? resolveToolImagePaths(activeToolItem, avatarRangeCursorVariant)
     : null;
-  const shouldUseDesktopCursorOverlay = !!activeToolItem && supportsDesktopFinePointer();
+  const isElectronMultiWindow = isElectronMultiWindowHost();
+  const shouldUseLocalDesktopCursorOverlay = !!activeToolItem
+    && supportsDesktopFinePointer()
+    && !isElectronMultiWindow;
+  const shouldRenderLocalDesktopCursorOverlay = shouldUseLocalDesktopCursorOverlay
+    && isCursorInsideHostWindow;
   const shouldRenderAvatarRangeOverlay = isCursorOverAvatarRange && !isCursorOverCompactCursorZone;
   const avatarCursorOverlayActive = !!activeToolItem
     && activeCursorToolId !== 'hammer'
-    && shouldUseDesktopCursorOverlay;
+    && shouldRenderLocalDesktopCursorOverlay;
   const avatarCursorOverlayCompact = avatarCursorOverlayActive && !shouldRenderAvatarRangeOverlay;
-  const hammerCursorOverlayActive = activeCursorToolId === 'hammer' && shouldUseDesktopCursorOverlay;
+  const hammerCursorOverlayActive = activeCursorToolId === 'hammer' && shouldRenderLocalDesktopCursorOverlay;
   const hammerCursorOverlayCompact = hammerCursorOverlayActive && !shouldRenderAvatarRangeOverlay;
   const hammerCursorOverlayMotionActive = hammerSwingPhase !== 'idle';
   const hammerCompactImagePaths = hammerToolItem
@@ -663,6 +718,12 @@ export default function App({
   const selectedEmojiButtonAriaLabel = activeToolItem
     ? `${emojiButtonAriaLabel}: ${activeToolLabel}`
     : emojiButtonAriaLabel;
+  const isCursorWithinAvatarToolRange = isCursorInsideHostWindow
+    && isCursorOverAvatarRange
+    && !isCursorOverCompactCursorZone;
+  const avatarToolImageKind = activeToolItem
+    ? (isCursorWithinAvatarToolRange ? 'icon' : 'cursor')
+    : 'cursor';
 
   useEffect(() => {
     draftRef.current = draft;
@@ -671,6 +732,56 @@ export default function App({
   useEffect(() => {
     avatarInteractionCallbackRef.current = onAvatarInteraction;
   }, [onAvatarInteraction]);
+
+  useEffect(() => {
+    if (!onAvatarToolStateChange) return;
+
+    const outsideRangeVariant = activeCursorToolId
+      ? (outsideRangeCursorVariants[activeCursorToolId] ?? 'primary')
+      : 'primary';
+    const textContext = sanitizeInteractionTextContext(draft);
+
+    onAvatarToolStateChange({
+      active: !!activeToolItem,
+      toolId: activeToolItem?.id ?? null,
+      variant: effectiveCursorVariant,
+      avatarRangeVariant: avatarRangeCursorVariant,
+      outsideRangeVariant,
+      imageKind: avatarToolImageKind,
+      withinAvatarRange: isCursorWithinAvatarToolRange,
+      overCompactZone: isCursorOverCompactCursorZone,
+      insideHostWindow: isCursorInsideHostWindow,
+      tool: activeToolItem
+        ? {
+          id: activeToolItem.id,
+          label: getToolItemLabel(activeToolItem),
+          iconImagePath: activeToolItem.iconImagePath,
+          iconImagePathAlt: activeToolItem.iconImagePathAlt,
+          iconImagePathAlt2: activeToolItem.iconImagePathAlt2,
+          cursorImagePath: activeToolItem.cursorImagePath,
+          cursorImagePathAlt: activeToolItem.cursorImagePathAlt,
+          cursorImagePathAlt2: activeToolItem.cursorImagePathAlt2,
+          cursorHotspotX: activeToolItem.cursorHotspotX,
+          cursorHotspotY: activeToolItem.cursorHotspotY,
+          menuIconScale: activeToolItem.menuIconScale,
+        }
+        : null,
+      textContext,
+      timestamp: Date.now(),
+    });
+  }, [
+    activeCursorToolId,
+    activeToolItem,
+    avatarRangeCursorVariant,
+    draft,
+    effectiveCursorVariant,
+    avatarToolImageKind,
+    isCursorInsideHostWindow,
+    isCursorOverCompactCursorZone,
+    isCursorWithinAvatarToolRange,
+    onAvatarToolStateChange,
+    outsideRangeCursorVariants,
+  ]);
 
   function clearHammerSwingAnimation() {
     hammerSwingTimeoutIdsRef.current.forEach(timeoutId => window.clearTimeout(timeoutId));
@@ -829,6 +940,47 @@ export default function App({
       document.removeEventListener('keydown', closeMenuOnEscape);
     };
   }, [toolMenuOpen]);
+
+  // 监听 composer-bottom-bar 宽度，决定是否进入 compact 折叠模式
+  useEffect(() => {
+    const target = composerBottomBarRef.current;
+    if (!target || typeof ResizeObserver === 'undefined') return;
+    // 阈值：低于此宽度时把右侧 3 个工具按钮折叠成 ··· 菜单。
+    // 5 按钮 + 4 分隔 + 发送按钮 + 间距，约 260px 起就开始拥挤。
+    const COMPACT_THRESHOLD = 360;
+    const observer = new ResizeObserver(entries => {
+      for (const entry of entries) {
+        setIsCompactComposer(entry.contentRect.width < COMPACT_THRESHOLD);
+      }
+    });
+    observer.observe(target);
+    return () => observer.disconnect();
+  }, []);
+
+  // 退出折叠模式时关闭 ··· 菜单
+  useEffect(() => {
+    if (!isCompactComposer) setOverflowMenuOpen(false);
+  }, [isCompactComposer]);
+
+  // ··· 菜单的外部点击 / Esc 关闭
+  useEffect(() => {
+    if (!overflowMenuOpen) return;
+    const closeOnOutsideClick = (event: MouseEvent) => {
+      const node = overflowMenuRef.current;
+      if (!node) return;
+      if (node.contains(event.target as Node)) return;
+      setOverflowMenuOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setOverflowMenuOpen(false);
+    };
+    document.addEventListener('mousedown', closeOnOutsideClick);
+    document.addEventListener('keydown', closeOnEscape);
+    return () => {
+      document.removeEventListener('mousedown', closeOnOutsideClick);
+      document.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [overflowMenuOpen]);
 
   useEffect(() => {
     if (!activeCursorToolId) return;
@@ -1020,6 +1172,7 @@ export default function App({
     };
 
     const handlePointerMove = (event: PointerEvent) => {
+      setIsCursorInsideHostWindow(true);
       latestPointerPositionRef.current = { x: event.clientX, y: event.clientY };
       latestPointerTargetRef.current = event.target;
       if (frameId) return;
@@ -1040,15 +1193,45 @@ export default function App({
       });
     };
 
-    const clearCursorRangeState = () => {
+    const hideLocalCursorOverlay = () => {
       clearAvatarBoundsCache(avatarToolCacheState);
       latestPointerTargetRef.current = null;
       setIsCursorOverAvatarRange(false);
       setIsCursorOverCompactCursorZone(false);
+      setIsCursorInsideHostWindow(false);
+    };
+
+    const isPointerOutsideViewport = (event: MouseEvent | PointerEvent) => (
+      event.clientX <= 0
+      || event.clientY <= 0
+      || event.clientX >= window.innerWidth
+      || event.clientY >= window.innerHeight
+    );
+
+    const handleMouseOut = (event: MouseEvent) => {
+      if (event.relatedTarget !== null) return;
+      if (!isPointerOutsideViewport(event)) return;
+      hideLocalCursorOverlay();
+    };
+
+    const handlePointerOut = (event: PointerEvent) => {
+      if (event.relatedTarget !== null) return;
+      if (!isPointerOutsideViewport(event)) return;
+      hideLocalCursorOverlay();
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.hidden) {
+        hideLocalCursorOverlay();
+      }
     };
 
     window.addEventListener('pointermove', handlePointerMove, { passive: true, capture: true });
-    window.addEventListener('blur', clearCursorRangeState);
+    document.addEventListener('mouseleave', hideLocalCursorOverlay);
+    window.addEventListener('pointerout', handlePointerOut, true);
+    window.addEventListener('mouseout', handleMouseOut, true);
+    window.addEventListener('blur', hideLocalCursorOverlay);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
 
     return () => {
       if (frameId) {
@@ -1056,7 +1239,11 @@ export default function App({
       }
       clearAvatarBoundsCache(avatarToolCacheState);
       window.removeEventListener('pointermove', handlePointerMove, true);
-      window.removeEventListener('blur', clearCursorRangeState);
+      document.removeEventListener('mouseleave', hideLocalCursorOverlay);
+      window.removeEventListener('pointerout', handlePointerOut, true);
+      window.removeEventListener('mouseout', handleMouseOut, true);
+      window.removeEventListener('blur', hideLocalCursorOverlay);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
   }, [activeCursorToolId]);
 
@@ -1064,24 +1251,28 @@ export default function App({
     const root = document.documentElement;
     let cancelled = false;
 
-    if (!activeCursorToolId) {
-      root.classList.remove('neko-tool-cursor-active');
-      root.style.removeProperty('--neko-chat-tool-cursor');
+    if (!activeCursorToolId || composerHidden) {
+      clearGlobalToolCursorState();
+      return;
+    }
+
+    if ((shouldUseLocalDesktopCursorOverlay || isElectronMultiWindow) && !isCursorInsideHostWindow) {
+      clearGlobalToolCursorState();
       return;
     }
 
     const selected = toolIconItems.find(item => item.id === activeCursorToolId);
     if (!selected) {
-      root.classList.remove('neko-tool-cursor-active');
-      root.style.removeProperty('--neko-chat-tool-cursor');
+      clearGlobalToolCursorState();
       return;
     }
 
+    clearForcedNativeCursorFallback();
     root.classList.add('neko-tool-cursor-active');
 
     const applyResolvedCursor = async () => {
       let cursorValue: string;
-      if (shouldUseDesktopCursorOverlay) {
+      if (shouldUseLocalDesktopCursorOverlay || isElectronMultiWindow) {
         cursorValue = 'none';
       } else if (isCursorOverAvatarRange && !isCursorOverCompactCursorZone) {
         cursorValue = resolveCursorValue(selected, effectiveCursorVariant);
@@ -1097,7 +1288,7 @@ export default function App({
     return () => {
       cancelled = true;
     };
-  }, [activeCursorToolId, avatarToolCacheState, effectiveCursorVariant, isCursorOverAvatarRange, isCursorOverCompactCursorZone, shouldUseDesktopCursorOverlay]);
+  }, [activeCursorToolId, composerHidden, avatarToolCacheState, effectiveCursorVariant, isCursorInsideHostWindow, isCursorOverAvatarRange, isCursorOverCompactCursorZone, isElectronMultiWindow, shouldUseLocalDesktopCursorOverlay]);
 
   useEffect(() => {
     if (!activeToolItem) return;
@@ -1120,10 +1311,22 @@ export default function App({
     );
   }, [hammerCursorOverlayActive, hammerSwingPhase]);
 
+  useEffect(() => {
+    if (composerHidden && activeCursorToolId) {
+      clearActiveCursorToolSelection();
+    }
+  }, [activeCursorToolId, composerHidden]);
+
+  useEffect(() => {
+    function handleDeactivate() {
+      clearActiveCursorToolSelection();
+    }
+    window.addEventListener('neko:deactivate-tool-cursor', handleDeactivate);
+    return () => window.removeEventListener('neko:deactivate-tool-cursor', handleDeactivate);
+  }, []);
+
   useEffect(() => () => {
-    const root = document.documentElement;
-    root.classList.remove('neko-tool-cursor-active');
-    root.style.removeProperty('--neko-chat-tool-cursor');
+    clearGlobalToolCursorState();
   }, []);
 
   const handleQuickActionInjectText = useCallback((text: string) => {
@@ -1173,6 +1376,149 @@ export default function App({
       requestAnimationFrame(() => { submittingRef.current = false; });
     }
   }
+
+  // 右侧工具按钮：在 compact 与 normal 两种布局中复用同一份 JSX，
+  // 既避免重复，也保证 ref/事件绑定在两种模式下行为一致。
+  const translateButtonNode = (
+    <button
+      className={`composer-tool-btn composer-translate-btn${translateEnabled ? ' is-active' : ''}`}
+      type="button"
+      aria-label={resolvedTranslateAriaLabel}
+      aria-pressed={translateEnabled}
+      title={translateButtonLabel}
+      onClick={() => onTranslateToggle?.()}
+    >
+      <img src="/static/icons/translate_icon.png" alt="" aria-hidden="true" />
+    </button>
+  );
+
+  const quickActionsButtonNode = (
+    <button
+      className={`composer-tool-btn${quickActionsPanelOpen ? ' is-active' : ''}`}
+      type="button"
+      aria-label={i18n('chat.quickActionsAriaLabel', '快捷操作')}
+      title={i18n('chat.quickActionsLabel', '快捷操作')}
+      aria-pressed={quickActionsPanelOpen}
+      aria-expanded={quickActionsPanelOpen}
+      onClick={() => {
+        const willOpen = !quickActionsPanelOpen;
+        setQuickActionsPanelOpen(willOpen);
+        setOverflowMenuOpen(false);
+        if (willOpen) {
+          setQuickActionsSlashMode(false);
+          if (onQuickActionsRequest) onQuickActionsRequest();
+        }
+      }}
+    >
+      <img src="/static/icons/quick_actions_icon.png" alt="" aria-hidden="true" />
+    </button>
+  );
+
+  const jukeboxButtonNode = (
+    <button
+      className="composer-tool-btn"
+      type="button"
+      aria-label={jukeboxButtonAriaLabel}
+      title={jukeboxButtonLabel}
+      onClick={() => onJukeboxClick?.()}
+    >
+      <img src="/static/icons/jukebox_icon.png" alt="" aria-hidden="true" />
+    </button>
+  );
+
+  const emojiToolMenuNode = (
+    <div className="composer-tool-menu" ref={toolMenuRef}>
+      <button
+        className={`composer-tool-btn composer-emoji-btn${toolMenuOpen ? ' is-active' : ''}`}
+        type="button"
+        aria-label={selectedEmojiButtonAriaLabel}
+        title={selectedEmojiButtonAriaLabel}
+        aria-controls={toolMenuOpen ? 'composer-tool-popover' : undefined}
+        aria-expanded={toolMenuOpen}
+        onClick={() => setToolMenuOpen(open => !open)}
+      >
+        <img
+          src={activeToolMenuVisual?.imagePath || '/static/icons/emoji_icon.png'}
+          style={activeToolItem ? {
+            transform: `translate(${activeToolMenuVisual?.offsetX ?? 0}px, ${activeToolMenuVisual?.offsetY ?? 0}px) scale(${activeToolItem.menuIconScale ?? 1})`,
+          } : undefined}
+          alt=""
+          aria-hidden="true"
+        />
+      </button>
+      {activeToolItem ? (
+        <button
+          className="composer-tool-clear-btn"
+          type="button"
+          aria-label={clearCursorToolAriaLabel}
+          title={clearCursorToolAriaLabel}
+          onClick={(event) => {
+            event.stopPropagation();
+            setIsCursorInsideHostWindow(true);
+            setActiveCursorToolId(null);
+            setToolMenuOpen(false);
+          }}
+        >
+          <span aria-hidden="true">×</span>
+        </button>
+      ) : null}
+      {toolMenuOpen ? (
+        <div
+          id="composer-tool-popover"
+          className="composer-icon-popover"
+          role="group"
+          aria-label={toolIconsAriaLabel}
+        >
+          {toolIconItems.map(item => {
+            const itemLabel = getToolItemLabel(item);
+            const menuVariant = activeCursorToolId === item.id
+              ? effectiveCursorVariant
+              : 'primary';
+            const menuVisual = resolveMenuIconVisual(item, menuVariant);
+            return (
+            <button
+              key={item.id}
+              className={`composer-icon-button${activeCursorToolId === item.id ? ' is-active' : ''}`}
+              type="button"
+              aria-pressed={activeCursorToolId === item.id}
+              aria-label={itemLabel}
+              title={itemLabel}
+              onClick={(event) => {
+                latestPointerPositionRef.current = {
+                  x: event.clientX,
+                  y: event.clientY,
+                };
+                latestPointerTargetRef.current = event.currentTarget;
+                setIsCursorInsideHostWindow(true);
+                setIsCursorOverCompactCursorZone(true);
+                setIsCursorOverAvatarRange(isPointerWithinAvatarRange(event.clientX, event.clientY, avatarToolCacheState));
+                if (activeCursorToolId === item.id) {
+                  setActiveCursorToolId(null);
+                  setToolMenuOpen(false);
+                  return;
+                }
+                setAvatarRangeCursorVariants(prev => ({ ...prev, [item.id]: 'primary' }));
+                setOutsideRangeCursorVariants(prev => ({ ...prev, [item.id]: 'primary' }));
+                setActiveCursorToolId(item.id);
+                setToolMenuOpen(false);
+              }}
+            >
+              <img
+                className="composer-icon-button-image"
+                src={menuVisual.imagePath}
+                style={{
+                  transform: `translate(${menuVisual.offsetX}px, ${menuVisual.offsetY}px) scale(${item.menuIconScale ?? 1})`,
+                }}
+                alt=""
+                aria-hidden="true"
+              />
+            </button>
+            );
+          })}
+        </div>
+      ) : null}
+    </div>
+  );
 
   return (
     <main className="app-shell">
@@ -1365,7 +1711,7 @@ export default function App({
                   }
                 }}
               />
-              <div className="composer-bottom-bar">
+              <div className="composer-bottom-bar" ref={composerBottomBarRef}>
                 <div className="composer-bottom-tools" aria-label={composerToolsAriaLabel}>
                   <button
                     className="composer-tool-btn"
@@ -1386,121 +1732,58 @@ export default function App({
                   >
                     <img src="/static/icons/screenshot_new_icon.png" alt="" aria-hidden="true" />
                   </button>
-                  <span className="composer-tool-divider" aria-hidden="true">|</span>
-                  <button
-                    className={`composer-tool-btn composer-translate-btn${translateEnabled ? ' is-active' : ''}`}
-                    type="button"
-                    aria-label={resolvedTranslateAriaLabel}
-                    aria-pressed={translateEnabled}
-                    title={translateButtonLabel}
-                    onClick={() => onTranslateToggle?.()}
-                  >
-                    <img src="/static/icons/translate_icon.png" alt="" aria-hidden="true" />
-                  </button>
-                  <span className="composer-tool-divider" aria-hidden="true">|</span>
-                  <button
-                    className={`composer-tool-btn${quickActionsPanelOpen ? ' is-active' : ''}`}
-                    type="button"
-                    aria-label={i18n('chat.quickActionsAriaLabel', '快捷操作')}
-                    title={i18n('chat.quickActionsLabel', '快捷操作')}
-                    aria-pressed={quickActionsPanelOpen}
-                    aria-expanded={quickActionsPanelOpen}
-                    onClick={() => {
-                      const willOpen = !quickActionsPanelOpen;
-                      setQuickActionsPanelOpen(willOpen);
-                      if (willOpen) {
-                        setQuickActionsSlashMode(false);
-                        if (onQuickActionsRequest) onQuickActionsRequest();
-                      }
-                    }}
-                  >
-                    <img src="/static/icons/quick_actions_icon.png" alt="" aria-hidden="true" />
-                  </button>
-                  <span className="composer-tool-divider" aria-hidden="true">|</span>
-                  <button
-                    className="composer-tool-btn"
-                    type="button"
-                    aria-label={jukeboxButtonAriaLabel}
-                    title={jukeboxButtonLabel}
-                    onClick={() => onJukeboxClick?.()}
-                  >
-                    <img src="/static/icons/jukebox_icon.png" alt="" aria-hidden="true" />
-                  </button>
-                  <span className="composer-tool-divider" aria-hidden="true">|</span>
-                  <div className="composer-tool-menu" ref={toolMenuRef}>
-                    <button
-                      className={`composer-tool-btn composer-emoji-btn${toolMenuOpen ? ' is-active' : ''}`}
-                      type="button"
-                      aria-label={selectedEmojiButtonAriaLabel}
-                      title={selectedEmojiButtonAriaLabel}
-                      aria-controls={toolMenuOpen ? 'composer-tool-popover' : undefined}
-                      aria-expanded={toolMenuOpen}
-                      onClick={() => setToolMenuOpen(open => !open)}
-                    >
-                      <img
-                        src={activeToolMenuVisual?.imagePath || '/static/icons/emoji_icon.png'}
-                        style={activeToolItem ? {
-                          transform: `translate(${activeToolMenuVisual?.offsetX ?? 0}px, ${activeToolMenuVisual?.offsetY ?? 0}px) scale(${activeToolItem.menuIconScale ?? 1})`,
-                        } : undefined}
-                        alt=""
-                        aria-hidden="true"
-                      />
-                    </button>
-                    {toolMenuOpen ? (
-                      <div
-                        id="composer-tool-popover"
-                        className="composer-icon-popover"
-                        role="group"
-                        aria-label={toolIconsAriaLabel}
-                      >
-                        {toolIconItems.map(item => {
-                          const itemLabel = getToolItemLabel(item);
-                          const menuVariant = activeCursorToolId === item.id
-                            ? effectiveCursorVariant
-                            : 'primary';
-                          const menuVisual = resolveMenuIconVisual(item, menuVariant);
-                          return (
-                          <button
-                            key={item.id}
-                            className={`composer-icon-button${activeCursorToolId === item.id ? ' is-active' : ''}`}
-                            type="button"
-                            aria-pressed={activeCursorToolId === item.id}
-                            aria-label={itemLabel}
-                            title={itemLabel}
-                            onClick={(event) => {
-                              latestPointerPositionRef.current = {
-                                x: event.clientX,
-                                y: event.clientY,
-                              };
-                              latestPointerTargetRef.current = event.currentTarget;
-                              setIsCursorOverCompactCursorZone(true);
-                              setIsCursorOverAvatarRange(isPointerWithinAvatarRange(event.clientX, event.clientY, avatarToolCacheState));
-                              if (activeCursorToolId === item.id) {
-                                setActiveCursorToolId(null);
-                                setToolMenuOpen(false);
-                                return;
-                              }
-                              setAvatarRangeCursorVariants(prev => ({ ...prev, [item.id]: 'primary' }));
-                              setOutsideRangeCursorVariants(prev => ({ ...prev, [item.id]: 'primary' }));
-                              setActiveCursorToolId(item.id);
-                              setToolMenuOpen(false);
-                            }}
+                  {!isCompactComposer ? (
+                    <div className="composer-tools-right" key="composer-tools-expanded">
+                      <span className="composer-tool-divider" aria-hidden="true">|</span>
+                      {translateButtonNode}
+                      <span className="composer-tool-divider" aria-hidden="true">|</span>
+                      {quickActionsButtonNode}
+                      <span className="composer-tool-divider" aria-hidden="true">|</span>
+                      {jukeboxButtonNode}
+                      <span className="composer-tool-divider" aria-hidden="true">|</span>
+                      {emojiToolMenuNode}
+                    </div>
+                  ) : (
+                    <>
+                      <span className="composer-tool-divider" aria-hidden="true">|</span>
+                      <div className="composer-overflow-menu" key="composer-tools-collapsed" ref={overflowMenuRef}>
+                        <button
+                          className={`composer-tool-btn composer-overflow-btn${overflowMenuOpen ? ' is-active' : ''}`}
+                          type="button"
+                          aria-label={overflowMenuAriaLabel}
+                          title={overflowMenuAriaLabel}
+                          aria-haspopup="true"
+                          aria-expanded={overflowMenuOpen}
+                          onClick={() => setOverflowMenuOpen(open => !open)}
+                        >
+                          <svg
+                            width="20"
+                            height="20"
+                            viewBox="0 0 24 24"
+                            fill="currentColor"
+                            aria-hidden="true"
+                            focusable="false"
                           >
-                            <img
-                              className="composer-icon-button-image"
-                              src={menuVisual.imagePath}
-                              style={{
-                                transform: `translate(${menuVisual.offsetX}px, ${menuVisual.offsetY}px) scale(${item.menuIconScale ?? 1})`,
-                              }}
-                              alt=""
-                              aria-hidden="true"
-                            />
-                          </button>
-                          );
-                        })}
+                            <circle cx="6" cy="12" r="2" />
+                            <circle cx="12" cy="12" r="2" />
+                            <circle cx="18" cy="12" r="2" />
+                          </svg>
+                        </button>
+                        {overflowMenuOpen ? (
+                          <div
+                            className="composer-overflow-popover"
+                            role="group"
+                            aria-label={overflowMenuAriaLabel}
+                          >
+                            {translateButtonNode}
+                            {quickActionsButtonNode}
+                            {jukeboxButtonNode}
+                            {emojiToolMenuNode}
+                          </div>
+                        ) : null}
                       </div>
-                    ) : null}
-                  </div>
+                    </>
+                  )}
                 </div>
                 <button className="send-button-circle" type="submit" aria-label={sendButtonLabel} disabled={!canSubmit}>
                   <img src="/static/icons/send_new_icon.png" alt="" aria-hidden="true" />

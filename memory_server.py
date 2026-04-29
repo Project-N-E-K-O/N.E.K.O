@@ -59,8 +59,10 @@ from utils.cloudsave_runtime import (
     bootstrap_local_cloudsave_environment,
     maintenance_error_payload,
     set_root_mode,
+    should_write_root_mode_normal_after_startup,
 )
 from utils.config_manager import get_config_manager
+from utils.storage_location_bootstrap import get_storage_startup_blocking_reason
 from pydantic import BaseModel
 import re
 import asyncio
@@ -80,7 +82,61 @@ from utils.time_format import format_elapsed as _format_elapsed
 class HistoryRequest(BaseModel):
     input_history: str
 
+
+class ContinueStorageStartupRequest(BaseModel):
+    reason: str = ""
+
 app = FastAPI()
+_STORAGE_LIMITED_MODE_ALLOWED_PATHS = {
+    "/health",
+    "/shutdown",
+    "/internal/storage/startup/continue",
+    "/internal/storage/startup/block",
+}
+
+
+@app.middleware("http")
+async def storage_limited_mode_guard(request: Request, call_next):
+    if _memory_runtime_init_completed and not _memory_storage_blocked_after_init:
+        return await call_next(request)
+
+    if request.url.path in _STORAGE_LIMITED_MODE_ALLOWED_PATHS:
+        return await call_next(request)
+
+    blocking_reason = get_storage_startup_blocking_reason(_config_manager)
+    if blocking_reason or _memory_storage_blocked_after_init:
+        blocking_reason = blocking_reason or "storage_startup_blocked_after_init"
+        logger.info(
+            "[Memory] limited-mode blocks request path=%s reason=%s",
+            request.url.path,
+            blocking_reason,
+        )
+        return JSONResponse(
+            status_code=409,
+            content={
+                "ok": False,
+                "error_code": "storage_startup_blocked",
+                "blocking_reason": blocking_reason,
+                "limited_mode": True,
+                "error": "Memory server 正处于存储受限启动状态，请等待存储位置选择、迁移或恢复完成。",
+            },
+        )
+    runtime_blocking_reason = "runtime_initializing"
+    logger.info(
+        "[Memory] limited-mode blocks request path=%s reason=%s",
+        request.url.path,
+        runtime_blocking_reason,
+    )
+    return JSONResponse(
+        status_code=409,
+        content={
+            "ok": False,
+            "error_code": "storage_startup_blocked",
+            "blocking_reason": runtime_blocking_reason,
+            "limited_mode": True,
+            "error": "Memory server 正处于存储受限启动状态，请等待存储位置选择、迁移或恢复完成。",
+        },
+    )
 
 
 @app.exception_handler(MaintenanceModeError)
@@ -130,9 +186,25 @@ outbox: Outbox | None = None
 event_log: EventLog | None = None
 reconciler: Reconciler | None = None
 
+# memory-enhancements P2: vector embedding warmup + backfill worker.
+# Lazily constructed in startup hook; held at module scope so
+# /process / /renew handlers can call notify_first_process() to
+# unblock the warmup wait early. None when vectors are disabled or
+# the worker bootstrap raised.
+embedding_warmup_worker = None
+# memory-enhancements P2: fact vector dedup resolver. Shares the
+# FactStore with the embedding worker (worker enqueues candidates,
+# the idle-maintenance loop resolves them). None when bootstrap
+# fails or the embedding service is permanently disabled.
+fact_dedup_resolver = None
+
 # 用于保护重新加载操作的锁
 _reload_lock = asyncio.Lock()
 _deferred_time_managers: list[TimeIndexedMemory] = []
+_memory_runtime_init_lock = asyncio.Lock()
+_memory_runtime_init_completed = False
+_memory_storage_blocked_after_init = False
+_memory_background_tasks_started = False
 
 
 def _defer_time_manager_cleanup(manager: TimeIndexedMemory | None) -> None:
@@ -156,7 +228,7 @@ async def reload_memory_components():
     atomic_write_json 保证单次写原子，极端 last-writer-wins 场景下最多
     损失一次 cursor 推进——下一轮 tick 即恢复。
     """
-    global recent_history_manager, settings_manager, time_manager, fact_store, persona_manager, reflection_engine, cursor_store, outbox, event_log, reconciler
+    global recent_history_manager, settings_manager, time_manager, fact_store, persona_manager, reflection_engine, cursor_store, outbox, event_log, reconciler, fact_dedup_resolver
     async with _reload_lock:
         logger.info("[MemoryServer] 开始重新加载记忆组件配置...")
         old_time_manager = time_manager
@@ -175,6 +247,26 @@ async def reload_memory_components():
             new_outbox = Outbox()
             new_reconciler = Reconciler(new_event_log)
             _register_evidence_handlers(new_reconciler, new_persona, new_reflection)
+            # P2 step 2: rebind the existing fact_dedup_resolver to the
+            # NEW FactStore in place rather than constructing a new
+            # resolver. Going via rebind_fact_store preserves the
+            # per-character ``_alocks`` dict, so a mid-reload
+            # ``aresolve`` still in flight on the old instance and a
+            # fresh ``aenqueue_candidates`` arriving on the new
+            # instance serialise on the same asyncio.Lock (CodeRabbit
+            # PR-956 Major; Codex PR-957 P2). Falls back to fresh
+            # construction only if there was no prior resolver
+            # (extremely cold-path during reload — startup never ran).
+            try:
+                from memory.fact_dedup import FactDedupResolver
+                if fact_dedup_resolver is not None:
+                    fact_dedup_resolver.rebind_fact_store(new_facts)
+                    new_fact_dedup_resolver = fact_dedup_resolver
+                else:
+                    new_fact_dedup_resolver = FactDedupResolver(new_facts)
+            except Exception as e:
+                logger.warning(f"[MemoryServer] reload: fact_dedup_resolver 重建失败: {e}")
+                new_fact_dedup_resolver = None
 
             # 然后原子性地交换引用
             recent_history_manager = new_recent
@@ -187,6 +279,7 @@ async def reload_memory_components():
             outbox = new_outbox
             event_log = new_event_log
             reconciler = new_reconciler
+            fact_dedup_resolver = new_fact_dedup_resolver
 
             if old_time_manager is not None and old_time_manager is not new_time:
                 _defer_time_manager_cleanup(old_time_manager)
@@ -229,6 +322,10 @@ enable_shutdown = False
 # 全局变量用于管理correction任务
 correction_tasks = {}  # {lanlan_name: asyncio.Task}
 correction_cancel_flags = {}  # {lanlan_name: asyncio.Event}
+# Phase C: 防 spawn 竞态——/process /renew /settle / IdleMaint 都共用 maybe_spawn_review，
+# 多入口同时进 gate 检查会有 in-flight check → spawn 之间的 await 窗口；用 per-name lock
+# 串行化 gate+spawn 这一段，确保同名角色至多一个 review 在跑。
+_review_spawn_locks: dict[str, asyncio.Lock] = {}
 # 每角色结算锁：首轮摘要期间阻塞 /new_dialog，确保热切换后读到最新数据
 _settle_locks: dict[str, asyncio.Lock] = {}
 # 强引用注册表：防止 fire-and-forget task 被 GC
@@ -236,11 +333,23 @@ _BACKGROUND_TASKS: set[asyncio.Task] = set()
 
 # ── 空闲维护相关 ────────────────────────────────────────────────────
 _last_activity_time: datetime = datetime.now()            # 最后一次对话活动时间
-IDLE_CHECK_INTERVAL = 40             # 空闲检查轮询间隔（秒，正常阶段）
-IDLE_CHECK_INTERVAL_STARTUP = 10     # 启动阶段高频轮询间隔
+IDLE_CHECK_INTERVAL = 40             # 空闲检查轮询间隔（秒）
 IDLE_THRESHOLD = 10                  # 多少秒无活动视为空闲（匹配最低 proactive 间隔）
-REVIEW_MIN_INTERVAL = 300            # review（correction）最短间隔（秒）
-REVIEW_SKIP_HISTORY_LEN = 8          # 历史不足此数的角色跳过 review / correction
+REVIEW_MIN_INTERVAL = 30             # review 最短间隔（秒）。配合 active 时 ×2 + 消息门 双重限流
+REVIEW_SKIP_HISTORY_LEN = 8          # 历史不足此数的角色跳过 review
+MIN_NEW_MSGS_FOR_REVIEW = 5          # 自上次 review cutoff 起累积 ≥ N 条 user msg 才允许触发新一轮
+
+# ── 启动错峰 initial_delay（避免首轮全部撞 startup + interval 同一时刻） ──
+# 每个循环首次执行时间 = startup + 该 delay；之后按各自 INTERVAL 周期跑。
+# 设计原则：archive sweep 用最长 INTERVAL (3600s) 但很多用户不到 1h 就退出，
+# 必须显著前移；rebuttal/auto_promote 同 300s 间隔但不能同时跑，错开 60s；
+# IdleMaint/Signal 已经间隔短，仅给 startup tasks (cloudsave / outbox replay /
+# migration) 一点喘息空间。EmbeddingWarmupWorker 自带 30s warmup gate，不在此处。
+_INITIAL_DELAY_IDLE_MAINT = 20       # IdleMaint 首次 (原 10s startup 高频已废)
+_INITIAL_DELAY_SIGNAL = 60           # Signal extraction 首次 (原 40s)
+_INITIAL_DELAY_REBUTTAL = 100        # Rebuttal 首次 (原 300s)
+_INITIAL_DELAY_AUTO_PROMOTE = 150    # Auto-promote 首次 (原 300s, 错开 rebuttal 50s)
+_INITIAL_DELAY_ARCHIVE = 250         # Archive sweep 首次 (原 3600s, 大幅前移确保短会话用户也能跑到)
 
 # ── 持久化维护状态（跨重启保留 review_clean 标记） ──────────────────
 _maint_state: dict[str, dict] = {}   # {角色名: {"review_clean": bool, "last_review_ts": str}}
@@ -304,7 +413,7 @@ async def _ais_review_enabled() -> bool:
     """检查配置中 correction/review 是否启用（走异步 IO）。"""
     from utils.file_utils import read_json_async
     try:
-        config_path = str(_config_manager.get_config_path('core_config.json'))
+        config_path = str(_config_manager.get_runtime_config_path('core_config.json'))
         if not await asyncio.to_thread(os.path.exists, config_path):
             return True
         config_data = await read_json_async(config_path)
@@ -313,6 +422,62 @@ async def _ais_review_enabled() -> bool:
     except Exception as e:
         logger.debug(f"[IdleMaint] 读取 review 开关配置失败，默认启用: {e}")
     return True
+
+
+async def _ais_powerful_memory_enabled() -> bool:
+    """检查"强力记忆"是否启用——controls evidence-RFC 引入的全部新 LLM 路径。
+
+    关闭时只保留 RFC 之前的基础流水线（Stage-1 fact 抽取 / reflection synthesize
+    / recent compress+review / recall reranker / 主动搭话回应的 check_feedback）
+    + time-driven promote fallback。关后可省 ~40-50% token。
+
+    持久化到 ``core_config.json`` 的 ``powerful_memory_enabled`` 字段，缺失默
+    认 True（保兼容）。每次需要时再开 read_json_async，不缓存——和
+    ``_ais_review_enabled`` 同款热加载，无需重启即生效。
+    """
+    from utils.file_utils import read_json_async
+    try:
+        config_path = str(_config_manager.get_runtime_config_path('core_config.json'))
+        if not await asyncio.to_thread(os.path.exists, config_path):
+            return True
+        config_data = await read_json_async(config_path)
+        if isinstance(config_data, dict) and not config_data.get('powerful_memory_enabled', True):
+            return False
+    except Exception as e:
+        logger.debug(f"[Memory] 读取强力记忆开关配置失败，默认启用: {e}")
+    return True
+
+
+async def _reset_confirmed_at_for_all_characters() -> int:
+    """开→关 migration：所有角色的 confirmed reflection 重置 confirmed_at 锚点。
+
+    被 main_routers/memory_router.py 的 update_powerful_memory_config 调用——
+    只在 prev=True, new=False 切换时跑。让 time-driven fallback 走完整 14 天
+    计时，避免"刚关就立刻批量 promote 旧 confirmed"的体验断层。
+
+    返回真实迁移条目数。**对不可恢复失败（reflection_engine 未初始化 / 角色
+    列表加载失败）一律 raise**，让 caller endpoint 区分"真实 0 条"（角色都
+    loaded 但没需要重置的）vs"根本没跑"（早期失败）。CodeRabbit PR #997
+    feedback：之前两条早期失败路径都返回 0 → endpoint 包装成 ok=true,
+    count=0 → 上游 memory_router 误判成功 → 落盘 powerful_memory_enabled=False
+    → 旧 confirmed_at 永久漏迁移。
+    """
+    if reflection_engine is None:
+        raise RuntimeError(
+            "reflection_engine 未初始化（memory_server limited-mode 或 startup 未完成）"
+        )
+    character_data = await _config_manager.aload_characters()
+    catgirl_names = list(character_data.get('猫娘', {}).keys())
+    # 角色列表为空（没配过猫娘）是合法的"0 条要迁移" case，正常返回 0。
+    total = 0
+    for name in catgirl_names:
+        try:
+            count = await reflection_engine.areset_confirmed_at_to_now(name)
+            total += count
+        except Exception as e:
+            # 单角色失败不致命——记录后继续。最终 count 反映成功的 N 条。
+            logger.warning(f"[Memory] migration {name} 重置失败（其他角色继续）: {e}")
+    return total
 
 
 def _touch_activity() -> None:
@@ -385,7 +550,7 @@ OutboxHandler = Callable[[str, dict], Awaitable[None]]
 _OUTBOX_HANDLERS: dict[str, OutboxHandler] = {}
 
 # 启动期补跑 fan-out 并发上限：防止 24h 停机后的 outbox 洪水冲击 LLM 后端。
-_REPLAY_CONCURRENCY = 4
+_REPLAY_CONCURRENCY = 2
 _replay_semaphore: asyncio.Semaphore | None = None  # 懒构造（event loop-bound）
 
 
@@ -526,19 +691,77 @@ async def shutdown_memory_server():
         logger.error(f"处理关闭信号时出错: {e}")
         return {"status": "error", "message": str(e)}
 
-REBUTTAL_CHECK_INTERVAL = 300  # 5 分钟
+REBUTTAL_CHECK_INTERVAL = 180  # 3 分钟
 REBUTTAL_FIRST_RUN_LOOKBACK_HOURS = 1  # 首次启动 / 时钟回拨兜底回扫窗口
+# Drain pattern: 一次最多处理 N 条 user 消息，避免高频用户场景下 prompt 爆炸。
+# 多余的留到下一轮（cursor 推进到第 N 条的 timestamp，不丢消息）。
+REBUTTAL_DRAIN_BATCH_LIMIT = 20
+# 读 SQL 时的硬上限——bound memory，防止 1h fallback 把整张表拉进来。
+# 200 行通常包含 50-100 条 user 消息，足以喂多次 drain。
+REBUTTAL_SQL_ROW_LIMIT = 200
+
+
+def _coerce_db_ts(ts) -> datetime | None:
+    """归一化 SQL 行里的 timestamp 字段为 datetime。
+
+    SQLAlchemy + SQLite 在某些 driver 配置下返回字符串而非 datetime；与
+    memory/timeindex.py:get_last_conversation_time 同款归一化。返回 None
+    表示无法解析（caller 应跳过此行而不是把 None 写进 cursor）。
+    """
+    if isinstance(ts, datetime):
+        return ts
+    if isinstance(ts, str):
+        try:
+            return datetime.fromisoformat(ts)
+        except ValueError:
+            try:
+                return datetime.strptime(ts, "%Y-%m-%d %H:%M:%S.%f")
+            except ValueError:
+                return None
+    return None
+
+
+def _extract_user_messages_with_ts_from_rows(rows: list) -> list[tuple[str, datetime]]:
+    """从 time_indexed SQL 查询结果中提取 (用户消息文本, timestamp) 元组。
+
+    rows: [(timestamp, session_id, message_json), ...] (ASC ordered by ts)
+    message_json 是 langchain SQLChatMessageHistory 存储的 JSON 字符串。
+    content 可能是 str 或 list[{type, text}]。
+
+    返回的 list 按 ts ASC 排序，caller 可基于 last item 的 ts 推 cursor。
+    timestamp 通过 _coerce_db_ts 归一化为 datetime 对象（SQL driver 可能
+    返回 str）；解析失败的行会被跳过。
+    """
+    out: list[tuple[str, datetime]] = []
+    for ts_raw, _, msg_json in rows:
+        ts = _coerce_db_ts(ts_raw)
+        if ts is None:
+            continue
+        try:
+            msg = json.loads(msg_json) if isinstance(msg_json, str) else msg_json
+            if isinstance(msg, dict) and msg.get('type') == 'human':
+                content = msg.get('data', {}).get('content', '')
+                if isinstance(content, str):
+                    if content.strip():
+                        out.append((content, ts))
+                elif isinstance(content, list):
+                    for part in content:
+                        if isinstance(part, dict) and part.get('type') == 'text':
+                            text_val = part.get('text', '')
+                            if text_val.strip():
+                                out.append((text_val, ts))
+        except (json.JSONDecodeError, TypeError):
+            continue
+    return out
 
 
 def _extract_user_messages_from_rows(rows: list) -> list[str]:
-    """从 time_indexed SQL 查询结果中提取用户消息文本。
+    """从 time_indexed SQL 查询结果中提取用户消息文本（legacy text-only 视图）。
 
-    rows: [(session_id, message_json), ...]
-    message_json 是 langchain SQLChatMessageHistory 存储的 JSON 字符串。
-    content 可能是 str 或 list[{type, text}]，与 _extract_user_messages 对齐。
+    rows: [(timestamp, session_id, message_json), ...]
     """
     user_msgs = []
-    for _, msg_json in rows:
+    for _, _, msg_json in rows:
         try:
             msg = json.loads(msg_json) if isinstance(msg_json, str) else msg_json
             if isinstance(msg, dict) and msg.get('type') == 'human':
@@ -613,21 +836,59 @@ async def _periodic_rebuttal_loop():
 
     游标持久化（P0 修复）：`CURSOR_REBUTTAL_CHECKED_UNTIL` 写入 cursors.json，
     关机→重启后从磁盘读取，消灭"默认只回扫 1 小时导致关机期间反驳丢失"的缺陷。
+
+    首轮启动延迟 _INITIAL_DELAY_REBUTTAL 秒（与其他后台循环错峰）。
     """
+    await asyncio.sleep(_INITIAL_DELAY_REBUTTAL)
     while True:
-        await asyncio.sleep(REBUTTAL_CHECK_INTERVAL)
+        # 强力记忆关 → rebuttal LLM 整段停（这是 evidence-RFC 引入的最贵
+        # 周期 LLM 之一，每 180s 一次开 thinking 跑 drain）。关闭后用户的
+        # 反驳信号经由 per-turn check_feedback (主动搭话回应) 仍能进 evidence。
+        #
+        # 关态推进 cursor 到 now：否则重新开启时 _resolve_rebuttal_start_time
+        # 拿到的是关闭前的旧 cursor，下一轮会把关闭期间积攒的所有 user msg
+        # 整段补处理（极大 prompt + 大量 LLM 调用）。"关时不跑" 应等价于
+        # "关时已 noop 处理完"——重开后从 now 重新累积，不回补。
+        if not await _ais_powerful_memory_enabled():
+            try:
+                character_data = await _config_manager.aload_characters()
+                catgirl_names = list(character_data.get('猫娘', {}).keys())
+                cursor_now = datetime.now()
+                for name in catgirl_names:
+                    try:
+                        await cursor_store.aset_cursor(
+                            name, CURSOR_REBUTTAL_CHECKED_UNTIL, cursor_now,
+                        )
+                    except Exception as cursor_e:
+                        # 单角色 cursor 推进失败不致命——下一轮再试，最坏
+                        # 是该角色重开时多扫一段窗口，不影响其他角色。
+                        logger.debug(
+                            f"[Rebuttal] {name}: 关态 cursor 推进失败: {cursor_e}"
+                        )
+            except Exception as e:
+                logger.debug(f"[Rebuttal] 关态 cursor 推进 batch 失败: {e}")
+            await asyncio.sleep(REBUTTAL_CHECK_INTERVAL)
+            continue
+
         try:
             character_data = await _config_manager.aload_characters()
             catgirl_names = list(character_data.get('猫娘', {}).keys())
         except Exception as e:
             logger.debug(f"[Rebuttal] 加载角色列表失败: {e}")
+            await asyncio.sleep(REBUTTAL_CHECK_INTERVAL)
             continue
 
         now = datetime.now()
 
         async def _check_one_rebuttal(name: str):
             """单个 catgirl 的反驳检查。各角色互相独立，外层 gather 并行。
-            内部对 feedbacks 仍串行 areject_promotion（同 reflection 不能并发处理）。"""
+            内部对 feedbacks 仍串行 areject_promotion（同 reflection 不能并发处理）。
+
+            Drain 模式：每轮最多处理 ``REBUTTAL_DRAIN_BATCH_LIMIT`` (=20) 条
+            user 消息，cursor 推进到第 N 条的 timestamp。背压期（高频对话用户
+            或 1h fallback）下分多个 tick 排干，每次 LLM prompt 大小受控；
+            消息不丢（cursor 严格按已处理位置推进）。
+            """
             try:
                 confirmed = await reflection_engine.aget_confirmed_reflections(name)
                 if not confirmed:
@@ -642,6 +903,7 @@ async def _periodic_rebuttal_loop():
                 start_time = await _resolve_rebuttal_start_time(name, now)
                 rows = await time_manager.aretrieve_original_by_timeframe(
                     name, start_time, now,
+                    limit_rows=REBUTTAL_SQL_ROW_LIMIT,
                 )
                 if not rows:
                     await cursor_store.aset_cursor(
@@ -649,12 +911,44 @@ async def _periodic_rebuttal_loop():
                     )
                     return
 
-                user_msgs = _extract_user_messages_from_rows(rows)
-                if not user_msgs:
-                    await cursor_store.aset_cursor(
-                        name, CURSOR_REBUTTAL_CHECKED_UNTIL, now,
-                    )
+                # 提取 (msg, ts) 元组（ASC by ts；ts 已归一化为 datetime）
+                user_msgs_with_ts = _extract_user_messages_with_ts_from_rows(rows)
+                if not user_msgs_with_ts:
+                    # 窗口里只有 AI 消息或无 user 内容 → 推进 cursor 到 SQL 截
+                    # 取的最后一行 ts（如果命中 LIMIT 还有更多行）或 now（清空了）
+                    last_row_ts = _coerce_db_ts(rows[-1][0])
+                    if len(rows) >= REBUTTAL_SQL_ROW_LIMIT and last_row_ts is not None:
+                        await cursor_store.aset_cursor(
+                            name, CURSOR_REBUTTAL_CHECKED_UNTIL, last_row_ts,
+                        )
+                    else:
+                        # 既然没命中 LIMIT，窗口已经全部扫过；直接推到 now。
+                        # last_row_ts 解析失败也走这条（保守 fallback）。
+                        await cursor_store.aset_cursor(
+                            name, CURSOR_REBUTTAL_CHECKED_UNTIL, now,
+                        )
                     return
+
+                # Drain 取前 N 条 user msg。然后扩展 batch 把和 batch 末位
+                # 共享同 ts 的后续 user msg 也吸收进来——因为 SQL 用
+                # ``timestamp BETWEEN`` (inclusive)，cursor 推进到 batch[-1].ts
+                # 后下一轮会把同 ts 的行原样重读。如果不扩展，多条同 ts 的
+                # user msg 在 batch 边界被切，会出现"只处理一部分，剩下的下
+                # 轮当 batch 边界又被切"的死循环（``store_conversation`` 一
+                # 批 message 共享 timestamp，所以同 ts 多条很常见）。
+                # 扩展受 SQL 行 LIMIT 兜底，不会无界增长。
+                batch = user_msgs_with_ts[:REBUTTAL_DRAIN_BATCH_LIMIT]
+                if len(user_msgs_with_ts) > len(batch):
+                    boundary_ts = batch[-1][1]
+                    extend_idx = len(batch)
+                    while (
+                        extend_idx < len(user_msgs_with_ts)
+                        and user_msgs_with_ts[extend_idx][1] == boundary_ts
+                    ):
+                        extend_idx += 1
+                    if extend_idx > len(batch):
+                        batch = user_msgs_with_ts[:extend_idx]
+                user_msgs = [m for m, _ in batch]
 
                 # 复用 check_feedback 判断反驳
                 feedbacks = await reflection_engine.check_feedback_for_confirmed(
@@ -665,9 +959,33 @@ async def _periodic_rebuttal_loop():
                     logger.warning(f"[Rebuttal] {name}: 反驳检查失败，保留游标待重试")
                     return
 
-                # 成功才推进游标并持久化
+                # 成功才推进游标并持久化。Drain 推进规则：
+                # - 还有 user msgs 在本次 read 内未处理（batch 已扩展含所有
+                #   同 ts，所以剩余的 ts 一定 > batch[-1].ts）
+                #   → cursor 推到第一个未处理 user msg 的 ts（next read 的
+                #     BETWEEN 起点，包含该行不会重处理因为它本来就 unprocessed）
+                # - SQL 命中 LIMIT 但 user msgs 全处理 → cursor 推到最后一行 ts
+                #   (next read 会重读 same-ts cluster 但 LLM 调用幂等无害)
+                # - 全干净 → cursor 推到 now
+                more_user_msgs = len(user_msgs_with_ts) > len(batch)
+                hit_sql_limit = len(rows) >= REBUTTAL_SQL_ROW_LIMIT
+                if more_user_msgs:
+                    new_cursor = user_msgs_with_ts[len(batch)][1]
+                    logger.info(
+                        f"[Rebuttal] {name}: drain 处理 {len(batch)} 条，"
+                        f"cursor 推进到下一未处理 user msg ts，下轮续"
+                    )
+                elif hit_sql_limit:
+                    last_row_ts = _coerce_db_ts(rows[-1][0])
+                    new_cursor = last_row_ts if last_row_ts is not None else now
+                    logger.info(
+                        f"[Rebuttal] {name}: drain 处理 {len(batch)} 条 user msg，"
+                        f"SQL 命中 LIMIT，cursor 推进到最后一行 ts，下轮续"
+                    )
+                else:
+                    new_cursor = now
                 await cursor_store.aset_cursor(
-                    name, CURSOR_REBUTTAL_CHECKED_UNTIL, now,
+                    name, CURSOR_REBUTTAL_CHECKED_UNTIL, new_cursor,
                 )
                 for fb in feedbacks:
                     if isinstance(fb, dict) and fb.get('feedback') == 'denied':
@@ -684,8 +1002,10 @@ async def _periodic_rebuttal_loop():
                 return_exceptions=True,
             )
 
+        await asyncio.sleep(REBUTTAL_CHECK_INTERVAL)
 
-AUTO_PROMOTE_CHECK_INTERVAL = 300  # 5 分钟
+
+AUTO_PROMOTE_CHECK_INTERVAL = 180  # 3 分钟（与 rebuttal 同步，覆盖同样级别的状态变化）
 
 async def _periodic_auto_promote_loop():
     """定期执行 auto_promote_stale：pending→confirmed→promoted 状态迁移。
@@ -697,21 +1017,34 @@ async def _periodic_auto_promote_loop():
 
     Per-character 用 asyncio.gather 并行——每个角色内部仍是顺序操作
     （锁串行），但跨角色可以打满。
+
+    首轮启动延迟 _INITIAL_DELAY_AUTO_PROMOTE 秒（与其他后台循环错峰）。
     """
+    await asyncio.sleep(_INITIAL_DELAY_AUTO_PROMOTE)
     while True:
-        await asyncio.sleep(AUTO_PROMOTE_CHECK_INTERVAL)
         try:
             character_data = await _config_manager.aload_characters()
             catgirl_names = list(character_data.get('猫娘', {}).keys())
         except Exception as e:
             logger.debug(f"[AutoPromote] 加载角色列表失败: {e}")
+            await asyncio.sleep(AUTO_PROMOTE_CHECK_INTERVAL)
             continue
+
+        powerful = await _ais_powerful_memory_enabled()
 
         async def _promote_one(name: str):
             try:
-                transitions = await reflection_engine.aauto_promote_stale(name)
+                if powerful:
+                    # score-driven + merge LLM (current evidence-RFC 路径)
+                    transitions = await reflection_engine.aauto_promote_stale(name)
+                else:
+                    # 强力记忆关：time-driven 直接 aadd_fact，零 LLM
+                    transitions = await reflection_engine.aauto_promote_time_driven(name)
                 if transitions:
-                    logger.info(f"[AutoPromote] {name}: {transitions} 条状态迁移")
+                    logger.info(
+                        f"[AutoPromote] {name}: {transitions} 条状态迁移"
+                        f"({'score+merge' if powerful else 'time-driven'})"
+                    )
             except Exception as e:
                 logger.debug(f"[AutoPromote] {name}: 处理失败: {e}")
 
@@ -721,115 +1054,128 @@ async def _periodic_auto_promote_loop():
                 return_exceptions=True,
             )
 
+        await asyncio.sleep(AUTO_PROMOTE_CHECK_INTERVAL)
+
 
 async def _periodic_idle_maintenance_loop():
     """定期检查系统是否空闲，空闲时自动执行记忆维护任务。
 
-    启动阶段以 IDLE_CHECK_INTERVAL_STARTUP(10s) 高频轮询，尽快捕获启动后的
-    首个空闲窗口执行维护（用户上次强制退出导致的未完成任务在这里收尾）。
-    首轮维护完成或 recent_memory_auto_review 被禁用后恢复 IDLE_CHECK_INTERVAL(40s)。
+    首次执行延迟 _INITIAL_DELAY_IDLE_MAINT 秒（让 startup 期 cloudsave / outbox
+    replay / migration 任务先消化），之后每 IDLE_CHECK_INTERVAL 秒轮询一次。
 
     每轮为每个角色依次执行：
     1. 历史记录压缩 — 有需要就跑（history > max_history_length）
-    2. Persona 矛盾审视 — 有需要就跑（pending corrections 非空，history >= 8）
-    3. 记忆整理 review — review_clean 则跳过；受 REVIEW_MIN_INTERVAL 最短间隔；history < 8 跳过
+    1b. Fact 向量去重 — 有需要就跑（vectors 启用且 pending dedup 队列非空）
+    2. Persona 矛盾审视 — 有需要就跑（pending corrections 非空）；不受 recent_memory_auto_review
+       开关或 REVIEW_SKIP_HISTORY_LEN 影响：persona corrections 不读 recent history，是独立的
+       矛盾消解管线，不应被 review 开关一刀切。
+    3. 记忆整理 review — review_clean 则跳过；受 REVIEW_MIN_INTERVAL 最短间隔；
+       history < REVIEW_SKIP_HISTORY_LEN 或 review_enabled 关闭则跳过。
     """
-    startup_phase = True
+    await asyncio.sleep(_INITIAL_DELAY_IDLE_MAINT)
     while True:
-        await asyncio.sleep(IDLE_CHECK_INTERVAL_STARTUP if startup_phase else IDLE_CHECK_INTERVAL)
-
-        # correction 被禁用 → 无需高频轮询
-        if startup_phase and not await _ais_review_enabled():
-            startup_phase = False
-
-        if not _is_idle():
-            continue
-
         try:
-            character_data = await _config_manager.aload_characters()
-            catgirl_names = list(character_data.get('猫娘', {}).keys())
-        except Exception as e:
-            logger.debug(f"[IdleMaint] 加载角色列表失败: {e}")
-            continue
-
-        review_enabled = await _ais_review_enabled()
-
-        for name in catgirl_names:
-            # 每处理一个角色前重新检查空闲，一旦变忙立即退出
             if not _is_idle():
-                logger.debug("[IdleMaint] 检测到新活动，中断本轮维护")
-                break
+                continue
 
             try:
-                history = await recent_history_manager.aget_recent_history(name)
-                history_len = len(history)
-
-                # ── 子任务1: 历史记录压缩（有需要就跑，不受全局开关控制） ──
-                if history_len > recent_history_manager.max_history_length:
-                    logger.info(
-                        f"[IdleMaint] {name}: 历史记录过长 ({history_len} > "
-                        f"{recent_history_manager.max_history_length})，触发压缩"
-                    )
-                    try:
-                        # 传空消息列表仅触发压缩逻辑
-                        await recent_history_manager.update_history([], name, detailed=True)
-                        logger.info(f"[IdleMaint] {name}: 历史记录压缩完成")
-                    except Exception as e:
-                        logger.warning(f"[IdleMaint] {name}: 历史记录压缩失败: {e}")
-
-                # 历史不足 REVIEW_SKIP_HISTORY_LEN 条，或全局开关关闭 → 跳过矛盾审视和 review
-                if history_len < REVIEW_SKIP_HISTORY_LEN or not review_enabled:
-                    continue
-
-                # ── 子任务2: Persona 矛盾审视（有需要就跑） ──
-                if not _is_idle():
-                    break
-                try:
-                    pending_corrections = await persona_manager.aload_pending_corrections(name)
-                    if pending_corrections:
-                        logger.info(
-                            f"[IdleMaint] {name}: 发现 {len(pending_corrections)} 条未处理的 persona 矛盾，触发审视"
-                        )
-                        resolved = await persona_manager.resolve_corrections(name)
-                        if resolved:
-                            logger.info(f"[IdleMaint] {name}: 审视了 {resolved} 条 persona 矛盾")
-                except Exception as e:
-                    logger.warning(f"[IdleMaint] {name}: persona 矛盾审视失败: {e}")
-
-                # ── 子任务3: 记忆整理 review ──
-                if not _is_idle():
-                    break
-                # 已 review 且没有新对话 → 跳过
-                if _is_review_clean(name):
-                    continue
-                # 已有 review 任务在跑 → 跳过
-                if name in correction_tasks and not correction_tasks[name].done():
-                    continue
-                # 最短间隔限制
-                last_review = _maint_state.get(name, {}).get('last_review_ts')
-                if last_review:
-                    try:
-                        elapsed = (datetime.now() - datetime.fromisoformat(last_review)).total_seconds()
-                        if elapsed < REVIEW_MIN_INTERVAL:
-                            continue
-                    except (ValueError, TypeError):
-                        logger.debug(f"[IdleMaint] {name}: last_review_ts 格式无效，视为未 review 过")
-                logger.info(f"[IdleMaint] {name}: 空闲期间执行记忆整理")
-                try:
-                    cancel_event = asyncio.Event()
-                    correction_cancel_flags[name] = cancel_event
-                    task = asyncio.create_task(_run_review_in_background(name))
-                    correction_tasks[name] = task
-                except Exception as e:
-                    logger.warning(f"[IdleMaint] {name}: 记忆整理启动失败: {e}")
-
+                character_data = await _config_manager.aload_characters()
+                catgirl_names = list(character_data.get('猫娘', {}).keys())
             except Exception as e:
-                logger.debug(f"[IdleMaint] {name}: 处理失败，跳过: {e}")
+                logger.debug(f"[IdleMaint] 加载角色列表失败: {e}")
+                continue
 
-        # 首轮维护完成 → 恢复正常轮询间隔
-        if startup_phase:
-            startup_phase = False
-            logger.info("[IdleMaint] 启动阶段结束，恢复正常轮询间隔")
+            # 强力记忆开关 → 控制 1b (fact_dedup) 和 2 (persona corrections)
+            # 是否跑。子任务 1 (history 压缩) 和 3 (recent.review) 是 RFC 之
+            # 前的基础设施，永远跑。本轮快照一次，跨角色复用。
+            powerful_enabled = await _ais_powerful_memory_enabled()
+
+            for name in catgirl_names:
+                # 每处理一个角色前重新检查空闲，一旦变忙立即退出
+                if not _is_idle():
+                    logger.debug("[IdleMaint] 检测到新活动，中断本轮维护")
+                    break
+
+                try:
+                    history = await recent_history_manager.aget_recent_history(name)
+                    history_len = len(history)
+
+                    # ── 子任务1: 历史记录压缩（有需要就跑，不受全局开关控制） ──
+                    if history_len > recent_history_manager.max_history_length:
+                        logger.info(
+                            f"[IdleMaint] {name}: 历史记录过长 ({history_len} > "
+                            f"{recent_history_manager.max_history_length})，触发压缩"
+                        )
+                        try:
+                            # 传空消息列表仅触发压缩逻辑
+                            await recent_history_manager.update_history([], name, detailed=True)
+                            logger.info(f"[IdleMaint] {name}: 历史记录压缩完成")
+                        except Exception as e:
+                            logger.warning(f"[IdleMaint] {name}: 历史记录压缩失败: {e}")
+
+                    # ── 子任务1b: Fact 向量去重（P2 step 2） ──
+                    # Runs *before* the review-gate so a character with
+                    # short history still gets paraphrase consolidation
+                    # (Codex PR-957 P2). The embedding worker enqueued
+                    # candidate paraphrase pairs after the last fact-sweep;
+                    # resolve them here via a single LLM call.
+                    # fact_dedup_resolver is None when vectors are disabled
+                    # or bootstrap failed — legacy hash + FTS5 dedup
+                    # remains the entire dedup pipeline in that case.
+                    # 强力记忆关 → 整段跳过（向量去重是 evidence-RFC 后期引入的）
+                    if powerful_enabled and fact_dedup_resolver is not None:
+                        if not _is_idle():
+                            break
+                        try:
+                            pending_dedup = await fact_dedup_resolver.aload_pending(name)
+                            if pending_dedup:
+                                logger.info(
+                                    f"[IdleMaint] {name}: 发现 {len(pending_dedup)} 对未处理的 fact 候选去重，触发 LLM 审视"
+                                )
+                                resolved = await fact_dedup_resolver.aresolve(name)
+                                if resolved:
+                                    logger.info(
+                                        f"[IdleMaint] {name}: 完成 {resolved} 对 fact 去重决策"
+                                    )
+                        except Exception as e:
+                            logger.warning(f"[IdleMaint] {name}: fact 向量去重失败: {e}")
+
+                    # ── 子任务2: Persona 矛盾审视（强力记忆关时跳过） ──
+                    # resolve_corrections 由 evidence-RFC 引入；矛盾队列的产生路
+                    # 径（aadd_fact 的 keyword overlap heuristic 触发 _aqueue_correction）
+                    # 在强力记忆关时仍可能产生（time-driven aadd_fact 也走启发式检查），
+                    # 但消化路径 LLM 整批审视成本高，关时不跑。queue 会累积，
+                    # 等用户重开强力记忆时一次性消化。
+                    if powerful_enabled:
+                        if not _is_idle():
+                            break
+                        try:
+                            pending_corrections = await persona_manager.aload_pending_corrections(name)
+                            if pending_corrections:
+                                logger.info(
+                                    f"[IdleMaint] {name}: 发现 {len(pending_corrections)} 条未处理的 persona 矛盾，触发审视"
+                                )
+                                resolved = await persona_manager.resolve_corrections(name)
+                                if resolved:
+                                    logger.info(f"[IdleMaint] {name}: 审视了 {resolved} 条 persona 矛盾")
+                        except Exception as e:
+                            logger.warning(f"[IdleMaint] {name}: persona 矛盾审视失败: {e}")
+
+                    # ── 子任务3: 记忆整理 review ──
+                    # Phase C: gate 逻辑全部集中到 maybe_spawn_review，IdleMaint
+                    # 不再做单点门禁。spawn 函数内部自查 review_enabled / 历史长度
+                    # / min_interval / 新消息门 / in-flight，不过门就 skip。
+                    if not _is_idle():
+                        break
+                    try:
+                        await maybe_spawn_review(name)
+                    except Exception as e:
+                        logger.warning(f"[IdleMaint] {name}: 记忆整理启动失败: {e}")
+
+                except Exception as e:
+                    logger.debug(f"[IdleMaint] {name}: 处理失败，跳过: {e}")
+        finally:
+            await asyncio.sleep(IDLE_CHECK_INTERVAL)
 
 
 # memory-evidence-rfc §3.3.6 Reconciler handlers live in
@@ -1023,15 +1369,19 @@ async def _periodic_archive_sweep_loop():
     Per-character iteration is parallel (`asyncio.gather`) — each
     character has independent files + locks; one slow char must not
     block another.
+
+    首轮启动延迟 _INITIAL_DELAY_ARCHIVE 秒（远小于 INTERVAL=3600s，确保
+    短会话用户也能跑到一次归档；之后按 INTERVAL 周期跑）。
     """
     from memory.evidence import maybe_mark_sub_zero
+    await asyncio.sleep(_INITIAL_DELAY_ARCHIVE)
     while True:
-        await asyncio.sleep(EVIDENCE_ARCHIVE_SWEEP_INTERVAL_SECONDS)
         try:
             character_data = await _config_manager.aload_characters()
             catgirl_names = list(character_data.get('猫娘', {}).keys())
         except Exception as e:
             logger.debug(f"[ArchiveSweep] 加载角色列表失败: {e}")
+            await asyncio.sleep(EVIDENCE_ARCHIVE_SWEEP_INTERVAL_SECONDS)
             continue
 
         now = datetime.now()
@@ -1142,6 +1492,8 @@ async def _periodic_archive_sweep_loop():
                 *(_sweep_one(name) for name in catgirl_names),
                 return_exceptions=True,
             )
+
+        await asyncio.sleep(EVIDENCE_ARCHIVE_SWEEP_INTERVAL_SECONDS)
 
 
 # ── memory-evidence-rfc §3.4.3: background signal extraction loop ───
@@ -1277,14 +1629,44 @@ async def _adispatch_evidence_signals(
 
 async def _periodic_signal_extraction_loop():
     """每 EVIDENCE_SIGNAL_CHECK_INTERVAL_SECONDS 轮询，满足触发条件时对每个
-    catgirl 跑 Stage-1 + Stage-2 + signal dispatch（RFC §3.4.3）。"""
+    catgirl 跑 Stage-1 + Stage-2 + signal dispatch（RFC §3.4.3）。
+
+    首轮启动延迟 _INITIAL_DELAY_SIGNAL 秒（与其他后台循环错峰）。
+    """
+    await asyncio.sleep(_INITIAL_DELAY_SIGNAL)
     while True:
-        await asyncio.sleep(EVIDENCE_SIGNAL_CHECK_INTERVAL_SECONDS)
+        # 强力记忆关 → Stage-1 + Stage-2 evidence 抽取整段停。这是 evidence-RFC
+        # 引入的 token 大头（每 40s 轮询一次，trigger 时跑 Stage-1 + Stage-2 两
+        # 个 LLM 调用，Stage-2 还开 thinking）。关闭后 evidence_score 不再变化，
+        # confirmed/promoted 走 time-driven fallback。
+        #
+        # 关态推进 last_check_ts 到 now（同 rebuttal 处的理由）：避免重开后
+        # 把关闭期间的所有 user msg 当成"积压"一次性塞进 Stage-1+Stage-2 prompt。
+        if not await _ais_powerful_memory_enabled():
+            try:
+                character_data = await _config_manager.aload_characters()
+                catgirl_names = list(character_data.get('猫娘', {}).keys())
+                cursor_now = datetime.now()
+                for name in catgirl_names:
+                    try:
+                        _signal_check_mark_done(name, cursor_now)
+                    except Exception as cursor_e:
+                        # 单角色 last_check_ts 推进失败不致命——同 rebuttal
+                        # 处的理由，下一轮再试。
+                        logger.debug(
+                            f"[SignalLoop] {name}: 关态 cursor 推进失败: {cursor_e}"
+                        )
+            except Exception as e:
+                logger.debug(f"[SignalLoop] 关态 cursor 推进 batch 失败: {e}")
+            await asyncio.sleep(EVIDENCE_SIGNAL_CHECK_INTERVAL_SECONDS)
+            continue
+
         try:
             character_data = await _config_manager.aload_characters()
             catgirl_names = list(character_data.get('猫娘', {}).keys())
         except Exception as e:
             logger.debug(f"[SignalLoop] 加载角色列表失败: {e}")
+            await asyncio.sleep(EVIDENCE_SIGNAL_CHECK_INTERVAL_SECONDS)
             continue
 
         now = datetime.now()
@@ -1320,7 +1702,7 @@ async def _periodic_signal_extraction_loop():
                 messages = convert_to_messages(json.dumps(message_dicts))
 
                 try:
-                    persisted, signals = await fact_store.aextract_facts_and_detect_signals(
+                    persisted, signals, batch_fact_ids = await fact_store.aextract_facts_and_detect_signals(
                         name, messages,
                         reflection_engine=reflection_engine,
                         persona_manager=persona_manager,
@@ -1347,6 +1729,13 @@ async def _periodic_signal_extraction_loop():
                         f"[SignalLoop] {name}: dispatch {len(signals)} 个 evidence 信号"
                     )
 
+                # Drain checkpoint：dispatch 全部成功（含 signals=[] 即 LLM
+                # 看过没关联）才 mark batch processed。任何 aapply 失败保留
+                # signal_processed=False 让下轮 idle 重试这批 fact，避免
+                # 把没落地的 signal 永久跳过（CodeRabbit fingerprint c755101c）。
+                if dispatch_ok and batch_fact_ids:
+                    await fact_store.amark_signal_processed(name, batch_fact_ids)
+
                 if not dispatch_ok:
                     logger.warning(
                         f"[SignalLoop] {name}: dispatch 有失败，保留 cursor 下轮重试"
@@ -1371,6 +1760,8 @@ async def _periodic_signal_extraction_loop():
                 *(_signal_check_one(name) for name in catgirl_names),
                 return_exceptions=True,
             )
+
+        await asyncio.sleep(EVIDENCE_SIGNAL_CHECK_INTERVAL_SECONDS)
 
 
 # ── memory-evidence-rfc §3.4.5: negative-keyword hook helpers ───────
@@ -1400,8 +1791,18 @@ async def _amaybe_trigger_negative_keyword_hook(
     if not observations:
         return
 
-    user_msg_text = "\n".join(user_messages[-3:])
-    obs_text = "\n".join(f"[{o['id']}] {o.get('text', '')}" for o in observations)
+    from config import (
+        NEGATIVE_KEYWORD_CHECK_CONTEXT_ITEMS,
+        EVIDENCE_PER_OBSERVATION_MAX_TOKENS,
+        EVIDENCE_OBSERVATIONS_TOTAL_MAX_TOKENS,
+    )
+    from utils.tokenize import truncate_to_tokens
+    user_msg_text = "\n".join(user_messages[-NEGATIVE_KEYWORD_CHECK_CONTEXT_ITEMS:])
+    obs_text = "\n".join(
+        f"[{o['id']}] {truncate_to_tokens(o.get('text', '') or '', EVIDENCE_PER_OBSERVATION_MAX_TOKENS)}"
+        for o in observations
+    )
+    obs_text = truncate_to_tokens(obs_text, EVIDENCE_OBSERVATIONS_TOTAL_MAX_TOKENS)
     prompt = get_negative_target_check_prompt(lang) \
         .replace('{USER_MESSAGES}', user_msg_text) \
         .replace('{OBSERVATIONS}', obs_text)
@@ -1410,7 +1811,6 @@ async def _amaybe_trigger_negative_keyword_hook(
         prompt, lanlan_name,
         tier=EVIDENCE_NEGATIVE_TARGET_MODEL_TIER,
         call_type="memory_negative_target_check",
-        temperature=0.1,
         max_retries=2,
     )
     if parsed is None or not isinstance(parsed, dict):
@@ -1454,156 +1854,258 @@ async def _amaybe_trigger_negative_keyword_hook(
         )
 
 
+async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
+    global recent_history_manager, settings_manager, time_manager, fact_store
+    global persona_manager, reflection_engine, cursor_store, outbox, event_log, reconciler
+    global embedding_warmup_worker, fact_dedup_resolver
+    global _memory_runtime_init_completed, _memory_background_tasks_started
+
+    if _memory_runtime_init_completed:
+        return False
+
+    async with _memory_runtime_init_lock:
+        if _memory_runtime_init_completed:
+            return False
+
+        bootstrap_ok = False
+        try:
+            bootstrap_local_cloudsave_environment(_config_manager)
+            bootstrap_ok = True
+        except Exception as e:
+            logger.warning(f"[Memory] cloudsave 环境 bootstrap 失败，后续 cloudsave 相关操作可能降级: {e}")
+
+        try:
+            from memory import migrate_to_character_dirs
+
+            _config_manager.ensure_memory_directory()
+            _char_data = await _config_manager.aload_characters()
+            _catgirl_names = list(_char_data.get('猫娘', {}).keys())
+            await asyncio.to_thread(migrate_to_character_dirs, _config_manager.memory_dir, _catgirl_names)
+        except Exception as _e:
+            logger.warning(f"[Memory] 目录迁移失败: {_e}")
+
+        recent_history_manager = CompressedRecentHistoryManager()
+        settings_manager = ImportantSettingsManager()
+        time_manager = TimeIndexedMemory(recent_history_manager)
+        fact_store = FactStore(time_indexed_memory=time_manager)
+        event_log = EventLog()
+        persona_manager = PersonaManager(event_log=event_log)
+        reflection_engine = ReflectionEngine(fact_store, persona_manager, event_log=event_log)
+        cursor_store = CursorStore()
+        outbox = Outbox()
+        reconciler = Reconciler(event_log)
+        _register_evidence_handlers(reconciler, persona_manager, reflection_engine)
+
+        try:
+            from utils.token_tracker import TokenTracker, install_hooks
+
+            install_hooks()
+            TokenTracker.get_instance().start_periodic_save()
+            TokenTracker.get_instance().record_app_start()
+        except Exception as e:
+            logger.warning(f"[Memory] Token tracker init failed: {e}")
+
+        await _aload_maint_state()
+
+        catgirl_names: list[str] = []
+        try:
+            character_data = await _config_manager.aload_characters()
+            catgirl_names = list(character_data.get('猫娘', {}).keys())
+            if catgirl_names:
+                results = await asyncio.gather(
+                    *(persona_manager.aensure_persona(n) for n in catgirl_names),
+                    return_exceptions=True,
+                )
+                for name, result in zip(catgirl_names, results):
+                    if isinstance(result, Exception):
+                        logger.warning(
+                            f"[Memory] Persona 迁移检查失败: {name}: {result}",
+                            exc_info=result,
+                        )
+            logger.info(f"[Memory] Persona 迁移检查完成，角色数: {len(catgirl_names)}")
+        except Exception as e:
+            logger.warning(f"[Memory] Persona 迁移检查失败: {e}")
+
+        try:
+            await _replay_pending_outbox()
+        except Exception as e:
+            logger.warning(f"[Outbox] 启动补跑顶层失败: {e}")
+
+        async def _reconcile_one(n: str):
+            try:
+                applied = await reconciler.areconcile(n)
+                if applied:
+                    logger.info(f"[Memory] reconciler {n}: 重放 {applied} 条事件")
+            except Exception as e:
+                logger.warning(f"[Memory] reconciler {n} replay 失败: {e}")
+
+        if catgirl_names:
+            await asyncio.gather(
+                *(_reconcile_one(n) for n in catgirl_names),
+                return_exceptions=True,
+            )
+
+        async def _migrate_one(n: str):
+            try:
+                await _aone_shot_migration_if_needed(n)
+            except Exception as e:
+                logger.warning(f"[Memory] {n} evidence 迁移失败: {e}")
+            try:
+                await _aone_shot_archive_migration_if_needed(n)
+            except Exception as e:
+                logger.warning(f"[Memory] {n} archive 迁移失败: {e}")
+
+        if catgirl_names:
+            await asyncio.gather(
+                *(_migrate_one(n) for n in catgirl_names),
+                return_exceptions=True,
+            )
+
+        if bootstrap_ok:
+            current_root_state = _config_manager.load_root_state()
+            if should_write_root_mode_normal_after_startup(current_root_state):
+                try:
+                    set_root_mode(
+                        _config_manager,
+                        ROOT_MODE_NORMAL,
+                        current_root=str(_config_manager.app_docs_dir),
+                        last_known_good_root=str(_config_manager.app_docs_dir),
+                        last_successful_boot_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                    )
+                except Exception as e:
+                    logger.warning(f"[Memory] 写入启动成功标记失败: {e}")
+            else:
+                logger.info(
+                    "[Memory] 跳过 ROOT_MODE_NORMAL 写入，当前仍处于阻断态: %s",
+                    current_root_state.get("mode") or ROOT_MODE_NORMAL,
+                )
+        else:
+            logger.warning("[Memory] 跳过 ROOT_MODE_NORMAL 写入：cloudsave bootstrap 未成功")
+
+        if not _memory_background_tasks_started:
+            _spawn_background_task(_periodic_rebuttal_loop())
+            _spawn_background_task(_periodic_auto_promote_loop())
+            _spawn_background_task(_periodic_idle_maintenance_loop())
+            if EVIDENCE_SIGNAL_CHECK_ENABLED:
+                _spawn_background_task(_periodic_signal_extraction_loop())
+            _spawn_background_task(_periodic_archive_sweep_loop())
+            _memory_background_tasks_started = True
+
+        # memory-enhancements P2: vector embedding warmup + backfill worker.
+        # The worker is optional; startup should continue if vectors are
+        # unavailable or its bootstrap fails.
+        try:
+            from memory.embedding_worker import EmbeddingWarmupWorker
+            from memory.fact_dedup import FactDedupResolver
+            from config import VECTORS_WARMUP_DELAY_SECONDS
+
+            def _current_catgirl_names() -> list[str]:
+                try:
+                    data = _config_manager.load_characters()
+                    return list((data or {}).get('猫娘', {}).keys())
+                except Exception:
+                    return list(catgirl_names)
+
+            fact_dedup_resolver = FactDedupResolver(fact_store)
+
+            embedding_warmup_worker = EmbeddingWarmupWorker(
+                get_persona_manager=lambda: persona_manager,
+                get_reflection_engine=lambda: reflection_engine,
+                get_fact_store=lambda: fact_store,
+                get_character_names=_current_catgirl_names,
+                warmup_delay_seconds=VECTORS_WARMUP_DELAY_SECONDS,
+                get_dedup_resolver=lambda: fact_dedup_resolver,
+            )
+            embedding_warmup_worker.start()
+        except Exception as e:
+            logger.warning(f"[Memory] embedding worker bootstrap failed: {e}")
+            embedding_warmup_worker = None
+            fact_dedup_resolver = None
+
+        _memory_runtime_init_completed = True
+        logger.info("[Memory] 运行态初始化完成 (reason=%s)", reason or "manual")
+        return True
+
+
 @app.on_event("startup")
 async def startup_event_handler():
     """应用启动时初始化"""
-    global recent_history_manager, settings_manager, time_manager, fact_store, persona_manager, reflection_engine, cursor_store, outbox, event_log, reconciler
+    blocking_reason = get_storage_startup_blocking_reason(_config_manager)
+    if blocking_reason:
+        logger.info(
+            "[Memory] 检测到存储启动阻断态，先保持 limited-mode，等待网页端放行: %s",
+            blocking_reason,
+        )
+        return
 
-    # ── 步骤 1：bootstrap cloudsave 目录 ──────────────────────────
-    # 磁盘满/只读 FS 等场景会 raise OSError；降级为 warning 后继续，
-    # set_root_mode(NORMAL) 只在 bootstrap 成功时写入。bootstrap 内部的
-    # import_legacy_runtime_root_if_needed 可能把 legacy 扁平布局文件带进 target root，
-    # 所以 migrate 必须在 bootstrap 之后运行。
-    bootstrap_ok = False
-    try:
-        bootstrap_local_cloudsave_environment(_config_manager)
-        bootstrap_ok = True
-    except Exception as e:
-        logger.warning(f"[Memory] cloudsave 环境 bootstrap 失败，后续 cloudsave 相关操作可能降级: {e}")
+    await ensure_memory_server_runtime_initialized(reason="startup")
 
-    # ── 步骤 2：目录结构迁移 ───────────────────────────────────
-    # 必须在 bootstrap 之后（拿到可能的 legacy 扁平文件）、组件实例化之前（组件只读 per-character 路径）。
-    try:
-        from memory import migrate_to_character_dirs
-        _config_manager.ensure_memory_directory()
-        _char_data = await _config_manager.aload_characters()
-        _catgirl_names = list(_char_data.get('猫娘', {}).keys())
-        await asyncio.to_thread(migrate_to_character_dirs, _config_manager.memory_dir, _catgirl_names)
-    except Exception as _e:
-        logger.warning(f"[Memory] 目录迁移失败: {_e}")
 
-    # ── 步骤 3：组件实例化 ──────────────────────────────────
-    recent_history_manager = CompressedRecentHistoryManager()
-    settings_manager = ImportantSettingsManager()  # 保留兼容，逐步迁移
-    time_manager = TimeIndexedMemory(recent_history_manager)
-    fact_store = FactStore(time_indexed_memory=time_manager)
-    event_log = EventLog()
-    persona_manager = PersonaManager(event_log=event_log)
-    reflection_engine = ReflectionEngine(fact_store, persona_manager, event_log=event_log)
-    cursor_store = CursorStore()
-    outbox = Outbox()
-    reconciler = Reconciler(event_log)
-    _register_evidence_handlers(reconciler, persona_manager, reflection_engine)
-
-    try:
-        from utils.token_tracker import TokenTracker, install_hooks
-        install_hooks()
-        TokenTracker.get_instance().start_periodic_save()
-        TokenTracker.get_instance().record_app_start()
-    except Exception as e:
-        logger.warning(f"[Memory] Token tracker init failed: {e}")
-
-    # 加载持久化维护状态（review_clean 标记等）
-    await _aload_maint_state()
-
-    # 自动迁移 settings → persona（如 persona 文件不存在）
-    # 注：目录结构迁移已在模块级完成（在组件实例化之前）
-    try:
-        character_data = await _config_manager.aload_characters()
-        catgirl_names = list(character_data.get('猫娘', {}).keys())
-        # 各角色的 persona 文件互相独立，并行迁移检查避免 N 倍串行磁盘 IO。
-        # return_exceptions=True：避免 fail-fast 取消其它角色正在写盘的协程，
-        # 造成 persona 文件半写入；出错的角色单独记日志。
-        if catgirl_names:
-            results = await asyncio.gather(
-                *(persona_manager.aensure_persona(n) for n in catgirl_names),
-                return_exceptions=True,
-            )
-            for name, result in zip(catgirl_names, results):
-                if isinstance(result, Exception):
-                    logger.warning(
-                        f"[Memory] Persona 迁移检查失败: {name}: {result}",
-                        exc_info=result,
-                    )
-        logger.info(f"[Memory] Persona 迁移检查完成，角色数: {len(catgirl_names)}")
-    except Exception as e:
-        logger.warning(f"[Memory] Persona 迁移检查失败: {e}")
-
-    # P1.c 启动补跑：扫 outbox 里仍 pending 的 op（进程上次被 kill 时未完成的
-    # extract_facts 等），幂等重跑。_replay_pending_outbox 内部已容错，不阻塞
-    # 主启动链路。
-    try:
-        await _replay_pending_outbox()
-    except Exception as e:
-        logger.warning(f"[Outbox] 启动补跑顶层失败: {e}")
-
-    if bootstrap_ok:
-        try:
-            set_root_mode(
-                _config_manager,
-                ROOT_MODE_NORMAL,
-                current_root=str(_config_manager.app_docs_dir),
-                last_known_good_root=str(_config_manager.app_docs_dir),
-                last_successful_boot_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-            )
-        except Exception as e:
-            logger.warning(f"[Memory] 写入启动成功标记失败: {e}")
-    else:
-        logger.warning("[Memory] 跳过 ROOT_MODE_NORMAL 写入：cloudsave bootstrap 未成功")
-
-    # memory-evidence-rfc §3.3.4: reconciler 启动期补跑 —— 崩溃后把未 apply
-    # 的 evidence / persona / reflection 事件重放到 view。per-character 独
-    # 立（各自有独立 event_log 锁 + 独立文件），并行 replay 把 N×IO 的墙
-    # 钟压成 max，同时 return_exceptions 保证一个角色的失败不带倒其他。
-    async def _reconcile_one(n: str):
-        try:
-            applied = await reconciler.areconcile(n)
-            if applied:
-                logger.info(f"[Memory] reconciler {n}: 重放 {applied} 条事件")
-        except Exception as e:
-            logger.warning(f"[Memory] reconciler {n} replay 失败: {e}")
-
-    if catgirl_names:
-        await asyncio.gather(
-            *(_reconcile_one(n) for n in catgirl_names),
-            return_exceptions=True,
+@app.post("/internal/storage/startup/continue")
+async def continue_storage_startup(payload: ContinueStorageStartupRequest | None = None):
+    global _memory_storage_blocked_after_init
+    blocking_reason = get_storage_startup_blocking_reason(_config_manager)
+    if blocking_reason:
+        return JSONResponse(
+            status_code=409,
+            content={
+                "ok": False,
+                "error_code": "storage_startup_blocked",
+                "blocking_reason": blocking_reason,
+                "error": "当前存储状态仍需选择、迁移或恢复，暂时不能释放 memory server 启动闸门。",
+            },
         )
 
-    # memory-evidence-rfc §5: 一次性迁移种子 —— 给旧 reflection / persona 补
-    # 上 evidence 字段，失败静默（不阻塞 startup）。各角色 marker 独立、
-    # 互不依赖，并行。
-    # PR-2 加：同步触发 §3.5.5 的旧 flat reflections_archive.json → 分片
-    # 目录迁移。两个 migration 都自带 idempotent guard，无依赖关系。
-    async def _migrate_one(n: str):
-        try:
-            await _aone_shot_migration_if_needed(n)
-        except Exception as e:
-            logger.warning(f"[Memory] {n} evidence 迁移失败: {e}")
-        try:
-            await _aone_shot_archive_migration_if_needed(n)
-        except Exception as e:
-            logger.warning(f"[Memory] {n} archive 迁移失败: {e}")
-
-    if catgirl_names:
-        await asyncio.gather(
-            *(_migrate_one(n) for n in catgirl_names),
-            return_exceptions=True,
+    try:
+        initialized = await ensure_memory_server_runtime_initialized(
+            reason=str(getattr(payload, "reason", "") or "storage_selection_continue_current_session"),
+        )
+        _memory_storage_blocked_after_init = False
+        return {
+            "ok": True,
+            "initialized": bool(initialized),
+        }
+    except Exception as e:
+        logger.error(f"[Memory] 释放 limited-mode 启动失败: {e}", exc_info=True)
+        return JSONResponse(
+            status_code=500,
+            content={
+                "ok": False,
+                "error": str(e),
+            },
         )
 
-    # 启动定期后台任务
-    _spawn_background_task(_periodic_rebuttal_loop())
-    _spawn_background_task(_periodic_auto_promote_loop())
 
-    # 空闲时自动维护记忆（压缩、矛盾审视、review）
-    _spawn_background_task(_periodic_idle_maintenance_loop())
+@app.post("/internal/storage/startup/block")
+async def block_storage_startup(payload: ContinueStorageStartupRequest | None = None):
+    global _memory_storage_blocked_after_init
+    reason = str(getattr(payload, "reason", "") or "").strip()
+    _memory_storage_blocked_after_init = True
+    logger.warning("[Memory] limited-mode restored after main_server startup failure: %s", reason or "-")
+    return {
+        "ok": True,
+        "limited_mode": True,
+        "reason": reason,
+    }
 
-    # memory-evidence-rfc §3.4.3: 信号抽取后台循环（Stage-1 + Stage-2 + dispatch）
-    if EVIDENCE_SIGNAL_CHECK_ENABLED:
-        _spawn_background_task(_periodic_signal_extraction_loop())
 
-    # memory-evidence-rfc §3.5: archive 扫描后台循环（sub_zero_days
-    # 增量 + 满阈值归档），独立于 evidence signal 抽取。
-    _spawn_background_task(_periodic_archive_sweep_loop())
+@app.post("/internal/memory/reset_confirmed_at")
+async def internal_reset_confirmed_at():
+    """强力记忆 ON→OFF migration：重置所有角色 confirmed reflection 的
+    confirmed_at 锚点到 now。
+
+    main_routers/memory_router.py 通过 HTTP 触发本端点——helper
+    ``_reset_confirmed_at_for_all_characters`` 依赖本进程内的
+    ``reflection_engine`` 全局，必须在 memory_server 进程跑才能拿到正确的
+    实例（main_server 进程虽然能 import memory_server 模块，但那是个 fresh
+    副本，``reflection_engine`` 是 None，调用会成 no-op）。
+    """
+    try:
+        count = await _reset_confirmed_at_for_all_characters()
+        return {"ok": True, "count": count}
+    except Exception as e:
+        logger.warning(f"[Memory] reset_confirmed_at migration 失败: {e}")
+        return {"ok": False, "error": str(e), "count": 0}
 
 
 @app.on_event("shutdown")
@@ -1615,6 +2117,13 @@ async def shutdown_event_handler():
         TokenTracker.get_instance().save()
     except Exception:
         pass
+    # P2 vector worker: kick off stop() as a task before we touch the
+    # reload lock so its bounded 2s wait overlaps with manager cleanup
+    # below instead of serializing in front of it.
+    worker_stop_task: asyncio.Task | None = None
+    if embedding_warmup_worker is not None:
+        worker_stop_task = asyncio.create_task(embedding_warmup_worker.stop())
+
     managers_to_cleanup: list[TimeIndexedMemory] = []
     async with _reload_lock:
         managers_to_cleanup.extend(_deferred_time_managers)
@@ -1622,47 +2131,179 @@ async def shutdown_event_handler():
         # time_manager 在 startup 钩子里才实例化；若启动过程中就触发 shutdown 可能为 None
         if time_manager is not None and all(existing is not time_manager for existing in managers_to_cleanup):
             managers_to_cleanup.append(time_manager)
-    for manager in managers_to_cleanup:
+
+    async def _cleanup_one(m: TimeIndexedMemory) -> None:
         try:
-            manager.cleanup()
+            await asyncio.to_thread(m.cleanup)
         except Exception as cleanup_exc:
             logger.warning("[MemoryServer] 延迟释放 SQLite 引擎失败: %s", cleanup_exc)
+
+    async def _await_worker_stop() -> None:
+        try:
+            await worker_stop_task  # type: ignore[arg-type]
+        except Exception as e:
+            logger.warning(f"[Memory] embedding worker stop 失败: {e}")
+
+    shutdown_coros: list = [_cleanup_one(m) for m in managers_to_cleanup]
+    if worker_stop_task is not None:
+        shutdown_coros.append(_await_worker_stop())
+    if shutdown_coros:
+        await asyncio.gather(*shutdown_coros)
     logger.info("Memory server已关闭")
 
 
-async def _run_review_in_background(lanlan_name: str):
-    """在后台运行review_history，支持取消"""
-    global correction_tasks, correction_cancel_flags
-    
-    # 获取该角色的取消标志
-    cancel_event = correction_cancel_flags.get(lanlan_name)
-    if not cancel_event:
+def _get_review_spawn_lock(name: str) -> asyncio.Lock:
+    """惰性 per-name asyncio.Lock，串行化 gate+spawn 检查。"""
+    lock = _review_spawn_locks.get(name)
+    if lock is None:
+        lock = asyncio.Lock()
+        _review_spawn_locks[name] = lock
+    return lock
+
+
+def _count_new_user_msgs_since_last_review(name: str, current_history: list) -> float:
+    """数自上次 review cutoff 起 history 里的 user msg 数。
+
+    白 review（fingerprint=None）→ 视为足够多放行。
+    fingerprint 在 current 里找不到（被压缩 / 清空）→ 同样视为足够多放行
+    （应当尽快重 review 重建 fingerprint）。
+    """
+    from memory.recent import _find_fingerprint_position
+    fp = _maint_state.get(name, {}).get('last_reviewed_cutoff_tail')
+    if not fp:
+        return float('inf')
+    cutoff_idx = _find_fingerprint_position(current_history, fp)
+    if cutoff_idx is None:
+        return float('inf')
+    return sum(
+        1 for m in current_history[cutoff_idx + 1:]
+        if getattr(m, 'type', '') == 'human'
+    )
+
+
+async def maybe_spawn_review(name: str) -> None:
+    """统一 review 触发入口（Phase C）。
+
+    /process /renew /settle / IdleMaint 都调这一个函数。本身**不**取消任何
+    在跑的 review——看到 in-flight 直接 skip 本次 spawn。由 spawn 锁串行化
+    gate+spawn 防多入口竞态。
+
+    Gates（任一不过都 skip）：
+    1. 已有 review 在跑（in-flight）
+    2. ``review_enabled``（``recent_memory_auto_review`` flag）
+    3. 历史长度 < ``REVIEW_SKIP_HISTORY_LEN``
+    4. 距上次 review 完成 < ``REVIEW_MIN_INTERVAL``（活跃时 ×2）
+    5. 自上次 review cutoff 起累积 user msg < ``MIN_NEW_MSGS_FOR_REVIEW``
+    """
+    async with _get_review_spawn_lock(name):
+        # Gate 1: in-flight
+        existing = correction_tasks.get(name)
+        if existing is not None and not existing.done():
+            return
+        # Gate 2: review_enabled
+        if not await _ais_review_enabled():
+            return
+        # 拉 history（gate 3/5 + 后续做 snapshot 都需要）
+        try:
+            history = await recent_history_manager.aget_recent_history(name)
+        except Exception as e:
+            logger.debug(f"[Review/spawn] {name}: 拉 history 失败: {e}")
+            return
+        # Gate 3: history 长度
+        if len(history) < REVIEW_SKIP_HISTORY_LEN:
+            return
+        # Gate 4: min interval (active doubled)
+        last_review = _maint_state.get(name, {}).get('last_review_ts')
+        if last_review:
+            try:
+                elapsed = (datetime.now() - datetime.fromisoformat(last_review)).total_seconds()
+                effective_min = REVIEW_MIN_INTERVAL * (2 if not _is_idle() else 1)
+                if elapsed < effective_min:
+                    return
+            except (ValueError, TypeError):
+                # last_review_ts 格式损坏（旧版本字段 / 手改文件 / 编码错误）→
+                # 视为"从未 review 过"，不阻塞触发；继续走 gate 5（新消息门）。
+                # 下次 review 成功后会用合法 ISO 字符串覆写。
+                pass
+        # Gate 5: 够多新 user 消息
+        if _count_new_user_msgs_since_last_review(name, history) < MIN_NEW_MSGS_FOR_REVIEW:
+            return
+        # 全过 → spawn
+        logger.info(f"[Review/spawn] {name}: 触发 review (history_len={len(history)})")
         cancel_event = asyncio.Event()
-        correction_cancel_flags[lanlan_name] = cancel_event
-    
+        correction_cancel_flags[name] = cancel_event
+        snapshot = list(history)  # 浅拷贝即可，消息对象不可变
+        # 把 cancel_event 显式传给后台 task（不再依靠 finally 时再从 dict 拿），
+        # 这样 task 自己持有的 event 引用不会被并发的新 spawn 覆盖。
+        task = asyncio.create_task(_run_review_in_background(name, snapshot, cancel_event))
+        correction_tasks[name] = task
+
+
+async def _run_review_in_background(
+    lanlan_name: str, snapshot: list, cancel_event: asyncio.Event,
+):
+    """在后台运行 review_history，支持取消。
+
+    Phase C 改动：
+    - snapshot + cancel_event 由 caller 拍下传入（task 自己持有引用）
+    - review_history 返回 (status, fingerprint) tuple：
+        ('patched', new_fp) → 成功 patch；new_fp 是 patch 后 new_history 末尾
+                              的 K 条 fingerprint，**必须**用这个新 fingerprint
+                              （review 可能改写过末尾 K 条里的任一条，
+                              ``build_review_fingerprint(snapshot)`` 是旧的）
+        ('white', None)    → cutoff 失配 / 整段丢弃
+        ('failed', None)   → LLM 失败 / 被取消 / 格式错误
+
+    白 review 处理（CodeRabbit Issue #1 修复）：
+    - **不**更新 last_review_ts → 下轮 gate 4 视为"距上次 review 时间已久"
+      → 配合 fingerprint=None → MIN_NEW_MSGS gate 视为 ∞ → 下次 /process
+      立即重 review，重建锚点。这才符合"白 review = 锚点丢失，应尽快重建"
+      的用户原意。
+
+    清理（CodeRabbit Issue #2 修复）：
+    - finally 按 task/event 身份比对再 pop/clear，避免并发新 spawn 写入的
+      条目被误删。理论上 spawn lock + asyncio finally 同步语义已经排除了
+      race，但身份检查是廉价的防御。
+    """
     try:
-        # 直接异步调用review_history方法
-        success = await recent_history_manager.review_history(lanlan_name, cancel_event)
-        if success:
+        result = await recent_history_manager.review_history(
+            lanlan_name, snapshot, cancel_event=cancel_event,
+        )
+        # 兼容意外的返回类型，统一解包
+        if isinstance(result, tuple) and len(result) == 2:
+            status, fingerprint = result
+        else:
+            status, fingerprint = ('failed', None)
+
+        state = _maint_state.setdefault(lanlan_name, {})
+        if status == 'patched':
             logger.info(f"✅ {lanlan_name} 的记忆整理任务完成")
-            # 仅在 review 实际成功修正并保存时标记 clean + 记录时间
-            state = _maint_state.setdefault(lanlan_name, {})
             state['review_clean'] = True
             state['last_review_ts'] = datetime.now().isoformat()
+            state['last_reviewed_cutoff_tail'] = fingerprint
+            await _asave_maint_state()
+        elif status == 'white':
+            logger.info(
+                f"⚠️ {lanlan_name} 白 review（cutoff 失配），fingerprint 清空、不刷 ts，允许立即重试"
+            )
+            state['last_reviewed_cutoff_tail'] = None
+            # 故意不更新 last_review_ts：让下轮 gate 4 用旧 ts（通常已过 30/60s）
+            # 直接放行，配合 fingerprint=None 触发 gate 5 的 ∞ 通行 → 立即重 review。
             await _asave_maint_state()
         else:
-            logger.info(f"ℹ️ {lanlan_name} 的记忆整理未执行（被跳过或条件不满足）")
+            logger.info(f"ℹ️ {lanlan_name} 的记忆整理未执行（被跳过或失败）")
     except asyncio.CancelledError:
         logger.info(f"⚠️ {lanlan_name} 的记忆整理任务被取消")
     except Exception as e:
         logger.error(f"❌ {lanlan_name} 的记忆整理任务出错: {e}")
     finally:
-        # 清理任务记录
-        if lanlan_name in correction_tasks:
-            del correction_tasks[lanlan_name]
-        # 重置取消标志
-        if lanlan_name in correction_cancel_flags:
-            correction_cancel_flags[lanlan_name].clear()
+        # 按 task/event 身份比对再清理：如果并发的新 spawn 已经写入了新 task /
+        # 新 event，本 task 不应该把它们清掉。
+        current_task = asyncio.current_task()
+        if correction_tasks.get(lanlan_name) is current_task:
+            correction_tasks.pop(lanlan_name, None)
+        if correction_cancel_flags.get(lanlan_name) is cancel_event:
+            correction_cancel_flags.pop(lanlan_name, None)
 
 def _extract_ai_response(messages: list) -> str:
     """从消息列表中提取最后一条 AI 回复的文本。"""
@@ -1705,20 +2346,35 @@ async def api_reflect(lanlan_name: str):
     absorbed 标记竞态问题。
     """
     lanlan_name = validate_lanlan_name(lanlan_name)
-    auto_transitions = 0
     reflection_result = None
-    try:
-        auto_transitions = await reflection_engine.aauto_promote_stale(lanlan_name)
-    except Exception as e:
-        logger.debug(f"[ReflectAPI] {lanlan_name}: auto_promote_stale 失败: {e}")
+    # auto_promote_stale 改 fire-and-forget：开 thinking 后 promote_merge 单
+    # 调用可能 30-90s，串行多个 confirmed reflection 累计能超 client 15s
+    # timeout。periodic auto_promote loop 每 180s 跑一次会兜底，本端点不
+    # 等也安全。caller (system_router) 仅用 auto_transitions 打 log，丢失
+    # 计数无功能影响。
+    _spawn_background_task(_safe_auto_promote(lanlan_name))
     try:
         reflection_result = await reflection_engine.reflect(lanlan_name)
     except Exception as e:
         logger.debug(f"[ReflectAPI] {lanlan_name}: reflect 失败: {e}")
     return {
         "reflection": reflection_result,
-        "auto_transitions": auto_transitions,
+        "auto_transitions": 0,  # fire-and-forget，本调用不返回真实计数
     }
+
+
+async def _safe_auto_promote(lanlan_name: str) -> None:
+    """fire-and-forget 包装，吞 reflection_engine.aauto_promote_* 的异常。
+
+    根据强力记忆开关二选一：开 → score-driven + merge LLM；关 → time-driven。
+    """
+    try:
+        if await _ais_powerful_memory_enabled():
+            await reflection_engine.aauto_promote_stale(lanlan_name)
+        else:
+            await reflection_engine.aauto_promote_time_driven(lanlan_name)
+    except Exception as e:
+        logger.debug(f"[ReflectAPI] {lanlan_name}: 后台 auto_promote 失败: {e}")
 
 
 @app.get("/followup_topics/{lanlan_name}")
@@ -1767,6 +2423,10 @@ async def _extract_facts_and_check_feedback(messages: list, lanlan_name: str):
         # Best-effort counter bump; a failure here only delays the next
         # signal-extraction cycle — not worth interrupting conversation flow.
         logger.debug(f"[MemoryServer] signal-check turn counter 更新失败: {e}")
+
+    # 强力记忆开关——本轮 evidence-related 路径的 gate（promote/negative-keyword/
+    # corrections）。check_feedback 自身仍跑（主动搭话回应是核心 channel）。
+    powerful_enabled = await _ais_powerful_memory_enabled()
 
     try:
         # 1. 事实提取（legacy flow；真正的 Stage-1+Stage-2 走
@@ -1850,35 +2510,43 @@ async def _extract_facts_and_check_feedback(messages: list, lanlan_name: str):
                                 f"{rid}，此次 denial 未转入 status: {e}"
                             )
 
-                # 让后续 score 扫描把 pending→confirmed 推进
+                # 让后续扫描把 pending→confirmed 推进。强力记忆决定走哪条：
+                #   开 → score-driven + merge LLM
+                #   关 → time-driven (14 天 confirm + 14 天 promote, 零 LLM)
                 try:
-                    await reflection_engine.aauto_promote_stale(lanlan_name)
+                    if powerful_enabled:
+                        await reflection_engine.aauto_promote_stale(lanlan_name)
+                    else:
+                        await reflection_engine.aauto_promote_time_driven(lanlan_name)
                 except Exception as e:
                     logger.debug(
-                        f"[MemoryServer] {lanlan_name}: auto_promote_stale 失败: {e}"
+                        f"[MemoryServer] {lanlan_name}: auto_promote 失败: {e}"
                     )
     except Exception as e:
         logger.warning(f"[MemoryServer] 反馈检查失败: {e}")
 
-    try:
-        # 3.5 负面关键词 hook（§3.4.5）——命中就派个异步小 LLM 任务
-        if user_msgs:
-            from utils.language_utils import get_global_language
-            _spawn_background_task(
-                _amaybe_trigger_negative_keyword_hook(
-                    lanlan_name, user_msgs, get_global_language(),
+    if powerful_enabled:
+        try:
+            # 3.5 负面关键词 hook（§3.4.5）——命中就派个异步小 LLM 任务
+            # 强力记忆关 → 整段不跑（这是 evidence-RFC 引入的额外 LLM 路径）
+            if user_msgs:
+                from utils.language_utils import get_global_language
+                _spawn_background_task(
+                    _amaybe_trigger_negative_keyword_hook(
+                        lanlan_name, user_msgs, get_global_language(),
+                    )
                 )
-            )
-    except Exception as e:
-        logger.debug(f"[MemoryServer] 负面关键词 hook 派发失败: {e}")
+        except Exception as e:
+            logger.debug(f"[MemoryServer] 负面关键词 hook 派发失败: {e}")
 
-    try:
-        # 4. 审视矛盾队列（如果有 pending corrections）
-        resolved = await persona_manager.resolve_corrections(lanlan_name)
-        if resolved:
-            logger.info(f"[MemoryServer] {lanlan_name}: 审视了 {resolved} 条 persona 矛盾")
-    except Exception as e:
-        logger.warning(f"[MemoryServer] 矛盾审视失败: {e}")
+        try:
+            # 4. 审视矛盾队列（如果有 pending corrections）
+            # 强力记忆关 → 不跑 LLM 批量审视（corrections queue 累积，等重开消化）
+            resolved = await persona_manager.resolve_corrections(lanlan_name)
+            if resolved:
+                logger.info(f"[MemoryServer] {lanlan_name}: 审视了 {resolved} 条 persona 矛盾")
+        except Exception as e:
+            logger.warning(f"[MemoryServer] 矛盾审视失败: {e}")
 
 
 async def _outbox_extract_facts_handler(lanlan_name: str, payload: dict) -> None:
@@ -1932,6 +2600,12 @@ async def cache_conversation(request: HistoryRequest, lanlan_name: str):
 async def process_conversation(request: HistoryRequest, lanlan_name: str):
     lanlan_name = validate_lanlan_name(lanlan_name)
     _touch_activity()
+    # P2 vector warmup: first /process is the cheapest "frontend ready"
+    # signal we have — by the time the user sends a real conversation
+    # turn, greeting and prominent drain are over. notify_first_process
+    # is a setflag, not async, so it doesn't add latency to /process.
+    if embedding_warmup_worker is not None:
+        embedding_warmup_worker.notify_first_process()
     global correction_tasks
     try:
         # 检查角色是否存在于配置中，如果不存在则记录信息但继续处理（允许新角色）
@@ -1957,19 +2631,11 @@ async def process_conversation(request: HistoryRequest, lanlan_name: str):
         # 异步事实提取（不阻塞返回，失败静默跳过）
         await _spawn_outbox_extract_facts(lanlan_name, input_history)
 
-        # 在后台启动review_history任务
-        if lanlan_name in correction_tasks and not correction_tasks[lanlan_name].done():
-            # 如果已有任务在运行，取消它
-            correction_tasks[lanlan_name].cancel()
-            try:
-                await correction_tasks[lanlan_name]
-            except asyncio.CancelledError:
-                pass
-        
-        # 启动新的review任务
-        task = asyncio.create_task(_run_review_in_background(lanlan_name))
-        correction_tasks[lanlan_name] = task
-        
+        # Phase C: 不再 cancel-and-restart review；让 maybe_spawn_review 在新消息
+        # 门 + min_interval + in-flight 多重 gate 后决定起或不起。在跑的 review
+        # 跑完会自行 patch 当前 history 末尾的可改区，新消息保留不动。
+        await maybe_spawn_review(lanlan_name)
+
         return {"status": "processed"}
     except Exception as e:
         logger.error(f"处理对话历史失败: {e}")
@@ -1979,6 +2645,10 @@ async def process_conversation(request: HistoryRequest, lanlan_name: str):
 async def process_conversation_for_renew(request: HistoryRequest, lanlan_name: str):
     lanlan_name = validate_lanlan_name(lanlan_name)
     _touch_activity()
+    # Same warmup hint as /process: /renew is also a "user actively
+    # using the app" signal, so it counts as the unblock event.
+    if embedding_warmup_worker is not None:
+        embedding_warmup_worker.notify_first_process()
     global correction_tasks
     try:
         # 检查角色是否存在于配置中，如果不存在则记录信息但继续处理（允许新角色）
@@ -2004,19 +2674,9 @@ async def process_conversation_for_renew(request: HistoryRequest, lanlan_name: s
         # 异步事实提取
         await _spawn_outbox_extract_facts(lanlan_name, input_history)
 
-        # 在后台启动review_history任务
-        if lanlan_name in correction_tasks and not correction_tasks[lanlan_name].done():
-            # 如果已有任务在运行，取消它
-            correction_tasks[lanlan_name].cancel()
-            try:
-                await correction_tasks[lanlan_name]
-            except asyncio.CancelledError:
-                pass
-        
-        # 启动新的review任务
-        task = asyncio.create_task(_run_review_in_background(lanlan_name))
-        correction_tasks[lanlan_name] = task
-        
+        # Phase C: 见 /process 的注释——不再 cancel-and-restart。
+        await maybe_spawn_review(lanlan_name)
+
         return {"status": "processed"}
     except Exception as e:
         return {"status": "error", "message": str(e)}
@@ -2048,14 +2708,8 @@ async def settle_conversation(request: HistoryRequest, lanlan_name: str):
         if input_history:
             await _spawn_outbox_extract_facts(lanlan_name, input_history)
 
-        if lanlan_name in correction_tasks and not correction_tasks[lanlan_name].done():
-            correction_tasks[lanlan_name].cancel()
-            try:
-                await correction_tasks[lanlan_name]
-            except asyncio.CancelledError:
-                pass
-        task = asyncio.create_task(_run_review_in_background(lanlan_name))
-        correction_tasks[lanlan_name] = task
+        # Phase C: 见 /process 的注释——不再 cancel-and-restart。
+        await maybe_spawn_review(lanlan_name)
 
         return {"status": "settled"}
     except Exception as e:

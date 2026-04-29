@@ -24,12 +24,12 @@ The memory server provides endpoints for:
 
 ## Models used
 
-| Task | Default model |
-|------|---------------|
-| Embeddings | `text-embedding-v4` |
-| Summarization | `qwen-plus` (SUMMARY_MODEL) |
-| Routing | `qwen-plus` (ROUTER_MODEL) |
-| Reranking | `qwen-plus` (RERANKER_MODEL) |
+| Task | Source |
+|------|--------|
+| Embeddings | Local ONNX model bundled under `data/embedding_models/<profile>/` (see `memory/embeddings.py::EmbeddingService`) |
+| Fact extraction / signal detection / reflection / promotion merge / fact dedup / recall rerank | Tier `summary` (`get_model_api_config('summary')`) |
+| History review / persona correction | Tier `correction` (`get_model_api_config('correction')`) |
+| Negative-target keyword check | Tier `emotion` |
 
 ## Communication
 

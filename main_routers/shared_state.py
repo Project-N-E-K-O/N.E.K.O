@@ -46,6 +46,8 @@ _state = {
     'switch_current_catgirl_fast': _UNSET,  # Fast path for current-catgirl switch
     'init_one_catgirl': _UNSET,             # Fast path for add/update single catgirl
     'remove_one_catgirl': _UNSET,           # Fast path for delete single catgirl
+    'request_app_shutdown': None,
+    'release_storage_startup_barrier': None,
 }
 
 
@@ -148,6 +150,8 @@ def init_shared_state(
     switch_current_catgirl_fast=None,
     init_one_catgirl=None,
     remove_one_catgirl=None,
+    request_app_shutdown=None,
+    release_storage_startup_barrier=None,
 ):
     """Initialize shared state from main_server.py.
 
@@ -165,6 +169,8 @@ def init_shared_state(
     _state['switch_current_catgirl_fast'] = switch_current_catgirl_fast
     _state['init_one_catgirl'] = init_one_catgirl
     _state['remove_one_catgirl'] = remove_one_catgirl
+    _state['request_app_shutdown'] = request_app_shutdown
+    _state['release_storage_startup_barrier'] = release_storage_startup_barrier
 
     # Pre-build adapter views (legacy API).
     # Note: legacy dict was named "websocket_locks" (plural) but the consolidated
@@ -270,6 +276,26 @@ def get_logger():
     """Get the logger dictionary."""
     _check_initialized('logger')
     return _state['logger']
+
+
+def get_request_app_shutdown():
+    """Get the optional shared callback used to schedule app shutdown."""
+    return _state.get('request_app_shutdown')
+
+
+def set_request_app_shutdown(callback) -> None:
+    """Set the shared app-shutdown callback after startup."""
+    _state['request_app_shutdown'] = callback
+
+
+def get_release_storage_startup_barrier():
+    """Get the optional callback used to release limited-mode startup."""
+    return _state.get('release_storage_startup_barrier')
+
+
+def set_release_storage_startup_barrier(callback) -> None:
+    """Set the shared callback that completes deferred runtime startup."""
+    _state['release_storage_startup_barrier'] = callback
 
 
 def get_initialize_character_data():

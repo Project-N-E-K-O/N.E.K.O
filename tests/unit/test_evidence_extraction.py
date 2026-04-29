@@ -227,7 +227,7 @@ async def test_stage2_failure_keeps_facts_drops_signals(tmp_path):
 
     with patch.object(fs, '_allm_call_with_retries',
                        new=AsyncMock(side_effect=_staged)):
-        facts, signals = await fs.aextract_facts_and_detect_signals(
+        facts, signals, batch_ids = await fs.aextract_facts_and_detect_signals(
             "小天", [_FakeMessage("主人喜欢咖啡")],
             reflection_engine=fake_ref, persona_manager=fake_persona,
         )
@@ -236,8 +236,11 @@ async def test_stage2_failure_keeps_facts_drops_signals(tmp_path):
     assert len(facts) == 1
     stored = await fs.aload_facts("小天")
     assert len(stored) == 1
-    # Stage-2 failed — signals empty, but facts retained
+    # Stage-2 failed — signals empty, batch_ids empty (no checkpoint), but facts retained
     assert signals == []
+    assert batch_ids == []
+    # signal_processed must remain False so next idle tick retries this batch
+    assert not stored[0].get('signal_processed', False)
 
 
 # ── importance < 5 facts are now stored (§3.1.3) ─────────────────────

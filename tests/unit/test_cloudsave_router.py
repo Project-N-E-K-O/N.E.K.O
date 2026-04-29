@@ -3,9 +3,7 @@ import importlib
 import sys
 import json
 import shutil
-import threading
 from pathlib import Path
-from queue import Queue
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -18,11 +16,10 @@ from main_routers.shared_state import init_shared_state
 
 def _make_role_state_for_test(session_managers: dict) -> dict:
     """See tests/unit/test_character_memory_regression.py for rationale."""
-    from main_server import RoleState
+    from main_server import RoleState, _SyncMessageQueue
     return {
         name: RoleState(
-            sync_message_queue=Queue(),
-            sync_shutdown_event=threading.Event(),
+            sync_message_queue=_SyncMessageQueue(),
             websocket_lock=asyncio.Lock(),
             session_manager=session_manager,
         )
@@ -49,9 +46,14 @@ def _make_config_manager(tmp_root: Path):
         ConfigManager,
         "get_legacy_app_root_candidates",
         return_value=[],
+    ), patch.object(
+        ConfigManager,
+        "_get_standard_data_directory_candidates",
+        return_value=[tmp_root],
     ):
         config_manager = ConfigManager("N.E.K.O")
     config_manager.get_legacy_app_root_candidates = lambda: []
+    config_manager._get_standard_data_directory_candidates = lambda: [tmp_root]
     return config_manager
 
 

@@ -1,7 +1,7 @@
 <template>
-  <div class="package-manager" :class="{ 'package-manager--embedded': embedded }">
-    <div class="toolbar-row" :class="{ 'toolbar-row--embedded': embedded }">
-      <div v-if="embedded" class="embedded-heading">
+  <div class="package-manager" :class="{ 'package-manager--embedded': embedded }" data-yui-guide-id="package-manager-root">
+    <div class="toolbar-row" :class="{ 'toolbar-row--embedded': embedded }" data-yui-guide-id="package-manager-toolbar">
+      <div v-if="embedded" class="embedded-heading" data-yui-guide-id="package-manager-heading">
         <div class="embedded-heading__copy">
           <span class="embedded-heading__title">包管理</span>
           <span class="embedded-heading__hint">复用左侧插件列表的筛选、多选和分类结果</span>
@@ -23,7 +23,7 @@
       </el-button>
     </div>
 
-    <div class="main-grid" :class="{ 'main-grid--embedded': embedded }">
+    <div class="main-grid" :class="{ 'main-grid--embedded': embedded }" data-yui-guide-id="package-manager-grid">
       <PluginSelectorPanel
         v-if="!embedded"
         :loading="pluginsLoading"
@@ -53,8 +53,8 @@
         @update:layout-mode="layoutMode = $event"
       />
 
-      <div class="content-stack">
-        <div v-if="embedded" class="embedded-selection-summary">
+      <div class="content-stack" data-yui-guide-id="package-manager-content">
+        <div v-if="embedded" class="embedded-selection-summary" data-yui-guide-id="package-manager-selection-summary">
           <el-tag size="small" type="primary">已选 {{ selectedPluginIds.length }}</el-tag>
           <el-tag size="small" type="info">可打包 {{ selectablePlugins.length }}</el-tag>
           <span class="embedded-selection-summary__text">
@@ -62,7 +62,7 @@
           </span>
         </div>
 
-        <el-card class="operations-card">
+        <el-card class="operations-card" data-yui-guide-id="package-manager-operations">
           <template #header>
             <div class="card-header">
               <span>包管理</span>
@@ -217,6 +217,7 @@
           </el-tabs>
         </el-card>
 
+        <div data-yui-guide-id="package-manager-archives">
         <PackageArchiveListPanel
           :loading="packagesLoading"
           :total-count="localPackages.length"
@@ -231,6 +232,7 @@
           @prepare-unpack="prepareUnpackPackage"
           @update:package-filter-type="packageFilterType = $event"
         />
+        </div>
       </div>
     </div>
 
