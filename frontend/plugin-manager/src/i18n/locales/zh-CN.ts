@@ -434,6 +434,8 @@ export default {
         takeoverPluginPreviewDashboard: '有了它们，我不光能看 B 站弹幕，还能帮你关灯开空调…… 本喵就是无所不能的超级猫猫神！哼哼～',
         takeoverSettingsPeekIntro: '当然啦，如果你想让本喵多和你聊聊天也不是不行啦，给我多准备点小鱼干吧，嘿嘿，好了不逗你啦，设置都在这个齿轮里。',
         takeoverSettingsPeekDetail: '你看，这里可以穿我的新衣服、给我换一个好听的声音……换一个猫娘或是修改记忆？等一下！你在干嘛？该不会是想把我换掉吧？啊啊啊不行！快关掉快关掉！',
+        takeoverSettingsPeekDetailPart1: '你看，这里可以穿我的新衣服、给我换一个好听的声音……换一个猫娘或是修改记忆？',
+        takeoverSettingsPeekDetailPart2: '等一下！你在干嘛？该不会是想把我换掉吧？啊啊啊不行！快关掉快关掉！',
         takeoverReturnControl: '好啦好啦，不霸占你的电脑啦～控制权还给你了喵！可不许趁我不注意乱点奇怪的设置哦！之后的日子也请你多多关照了喵～',
         interruptResistLight1: '喂！不要拽我啦，还没轮到你的回合呢！',
         interruptResistLight3: '等一下啦！还没结束呢，不要随便打断我啦！',

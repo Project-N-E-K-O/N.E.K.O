@@ -180,8 +180,12 @@
     const INTRO_GREETING_REPLY_TEXT_KEY = 'tutorial.yuiGuide.lines.introGreetingReply';
     const TAKEOVER_PLUGIN_DASHBOARD_TEXT = '有了它们，我不光能看 B 站弹幕，还能帮你关灯开空调…… 本喵就是无所不能的超级猫猫神！哼哼～';
     const TAKEOVER_PLUGIN_DASHBOARD_TEXT_KEY = 'tutorial.yuiGuide.lines.takeoverPluginPreviewDashboard';
-    const TAKEOVER_SETTINGS_DETAIL_TEXT = '你看，这里可以穿我的新衣服、给我换一个好听的声音……换一个猫娘或是修改记忆？等一下！你在干嘛？该不会是想把我换掉吧？啊啊啊不行！快关掉快关掉！';
+    const TAKEOVER_SETTINGS_DETAIL_TEXT_PART_1 = '你看，这里可以穿我的新衣服、给我换一个好听的声音……换一个猫娘或是修改记忆？';
+    const TAKEOVER_SETTINGS_DETAIL_TEXT_PART_2 = '等一下！你在干嘛？该不会是想把我换掉吧？啊啊啊不行！快关掉快关掉！';
+    const TAKEOVER_SETTINGS_DETAIL_TEXT = TAKEOVER_SETTINGS_DETAIL_TEXT_PART_1 + TAKEOVER_SETTINGS_DETAIL_TEXT_PART_2;
     const TAKEOVER_SETTINGS_DETAIL_TEXT_KEY = 'tutorial.yuiGuide.lines.takeoverSettingsPeekDetail';
+    const TAKEOVER_SETTINGS_DETAIL_TEXT_PART_1_KEY = 'tutorial.yuiGuide.lines.takeoverSettingsPeekDetailPart1';
+    const TAKEOVER_SETTINGS_DETAIL_TEXT_PART_2_KEY = 'tutorial.yuiGuide.lines.takeoverSettingsPeekDetailPart2';
     const DEFAULT_SPOTLIGHT_PADDING = 6;
     const PLUGIN_DASHBOARD_WINDOW_NAME = 'plugin_dashboard';
     const PLUGIN_DASHBOARD_HANDOFF_EVENT = 'neko:yui-guide:plugin-dashboard:start';
@@ -357,6 +361,10 @@
         takeover_settings_peek_intro: Object.freeze({
             baseDurationMs: 11877,
             openSettingsPanel: 9000
+        }),
+        takeover_settings_peek_detail: Object.freeze({
+            baseDurationMs: 13923,
+            showSecondLine: 7450
         })
     });
 
@@ -381,6 +389,13 @@
             en: 9338,
             ko: 11360,
             ru: 10697
+        }),
+        takeover_settings_peek_detail: Object.freeze({
+            zh: 13923,
+            ja: 24514,
+            en: 15497,
+            ko: 21600,
+            ru: 14937
         })
     });
 
@@ -391,6 +406,8 @@
         'tutorial.yuiGuide.lines.takeoverPluginPreviewDashboard': '有了它们，我不光能看 B 站弹幕，还能帮你关灯开空调…… 本喵就是无所不能的超级猫猫神！哼哼～',
         'tutorial.yuiGuide.lines.takeoverSettingsPeekIntro': '当然啦，如果你想让本喵多和你聊聊天也不是不行啦，给我多准备点小鱼干吧，嘿嘿，好了不逗你啦，设置都在这个齿轮里。',
         'tutorial.yuiGuide.lines.takeoverSettingsPeekDetail': '你看，这里可以穿我的新衣服、给我换一个好听的声音……换一个猫娘或是修改记忆？等一下！你在干嘛？该不会是想把我换掉吧？啊啊啊不行！快关掉快关掉！',
+        'tutorial.yuiGuide.lines.takeoverSettingsPeekDetailPart1': '你看，这里可以穿我的新衣服、给我换一个好听的声音……换一个猫娘或是修改记忆？',
+        'tutorial.yuiGuide.lines.takeoverSettingsPeekDetailPart2': '等一下！你在干嘛？该不会是想把我换掉吧？啊啊啊不行！快关掉快关掉！',
         'tutorial.yuiGuide.lines.takeoverReturnControl': '好啦好啦，不霸占你的电脑啦～控制权还给你了喵！可不许趁我不注意乱点奇怪的设置哦！之后的日子也请你多多关照了喵～',
         'tutorial.yuiGuide.lines.interruptResistLight1': '喂！不要拽我啦，还没轮到你的回合呢！',
         'tutorial.yuiGuide.lines.interruptResistLight3': '等一下啦！还没结束呢，不要随便打断我啦！',
@@ -5317,12 +5334,38 @@
                 TAKEOVER_SETTINGS_DETAIL_TEXT_KEY,
                 TAKEOVER_SETTINGS_DETAIL_TEXT
             );
-            this.appendGuideChatMessage(detailText, {
-                textKey: TAKEOVER_SETTINGS_DETAIL_TEXT_KEY
+            const detailTextPart1 = this.resolveGuideCopy(
+                TAKEOVER_SETTINGS_DETAIL_TEXT_PART_1_KEY,
+                TAKEOVER_SETTINGS_DETAIL_TEXT_PART_1
+            );
+            const detailTextPart2 = this.resolveGuideCopy(
+                TAKEOVER_SETTINGS_DETAIL_TEXT_PART_2_KEY,
+                TAKEOVER_SETTINGS_DETAIL_TEXT_PART_2
+            );
+            this.appendGuideChatMessage(detailTextPart1 || detailText, {
+                textKey: detailTextPart1
+                    ? TAKEOVER_SETTINGS_DETAIL_TEXT_PART_1_KEY
+                    : TAKEOVER_SETTINGS_DETAIL_TEXT_KEY
             });
 
             let settingsPeekHighlightsCleared = false;
             let settingsPanelClosed = false;
+            let settingsDetailSecondLineDisplayed = false;
+            const appendSettingsDetailSecondLine = () => {
+                if (
+                    settingsDetailSecondLineDisplayed
+                    || runId !== this.sceneRunId
+                    || this.isStopping()
+                    || !detailTextPart2
+                ) {
+                    return;
+                }
+
+                settingsDetailSecondLineDisplayed = true;
+                this.appendGuideChatMessage(detailTextPart2, {
+                    textKey: TAKEOVER_SETTINGS_DETAIL_TEXT_PART_2_KEY
+                });
+            };
             const clearSettingsPeekHighlights = () => {
                 if (settingsPeekHighlightsCleared) {
                     return;
@@ -5353,6 +5396,7 @@
             const narrationPromise = this.speakGuideLine(detailText, {
                 voiceKey: 'takeover_settings_peek_detail'
             }).finally(() => {
+                appendSettingsDetailSecondLine();
                 if (runId !== this.sceneRunId || this.isStopping()) {
                     return;
                 }
@@ -5361,6 +5405,16 @@
                 clearSettingsPeekHighlights();
                 return closeSettingsPeekPanel();
             });
+            const secondLineDisplayPromise = (async () => {
+                if (!(await this.waitForNarrationCue(
+                    'takeover_settings_peek_detail',
+                    'showSecondLine'
+                ))) {
+                    return;
+                }
+
+                appendSettingsDetailSecondLine();
+            })();
 
             this.overlay.clearActionSpotlight();
 
@@ -5440,7 +5494,7 @@
                 }
             })();
 
-            await Promise.all([narrationPromise, actionPromise]);
+            await Promise.all([narrationPromise, actionPromise, secondLineDisplayPromise]);
             if (runId !== this.sceneRunId || this.isStopping()) {
                 return;
             }
