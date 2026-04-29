@@ -8,6 +8,8 @@
         "cancel": "취소",
         "confirm": "확인",
         "next": "다음",
+        "back": "뒤로",
+        "retry": "다시 시도",
         "ok": "알았어",
         "delete": "삭제",
         "edit": "편집",
@@ -40,7 +42,8 @@
         "toneMappingCineon": "Cineon",
         "toneMappingACESFilmic": "ACES Filmic",
         "toneMappingAgX": "AgX",
-        "toneMappingNeutral": "Neutral"
+        "toneMappingNeutral": "Neutral",
+        "loadFailed": "로드 실패"
     },
     "autostartPrompt": {
         "title": "N.E.K.O를 시작 시 자동 실행할까요?",
@@ -213,6 +216,12 @@
         "voiceReferencePrefixPlaceholder": "영문자와 숫자만, 최대 10자",
         "voiceReferenceLanguage": "참고 음성 언어",
         "voiceReferenceProviderHint": "권장 제공자",
+        "voiceReferenceInvalidFormat": "참조 음성은 mp3 또는 wav 형식만 지원합니다",
+        "voiceReferenceTooLarge": "참조 음성 크기는 20MB 이하여야 합니다",
+        "voiceReferenceWriting": "참조 음성을 쓰는 중...",
+        "voiceReferenceUploadFailed": "참조 음성 업로드 실패",
+        "voiceReferenceCleanupFailed": "참조 음성 정리 실패",
+        "voiceReferenceTempOnlySkipped": "참조 음성은 캐릭터 카드 패키징 후 생성된 Workshop 임시 폴더에서만 업로드할 수 있어 이 샘플은 건너뛰었습니다.",
         "uploadTip": "\"로컬 항목 관리\"에서 항목을 선택하여 경로를 자동으로 채우거나 콘텐츠 폴더 및 미리보기 이미지의 전체 경로를 수동으로 입력할 수 있습니다.",
         "search": "검색:",
         "uploadSuccess": "업로드가 성공했습니다!",
@@ -1124,7 +1133,7 @@
         "modelListLoaded": "모델 목록이 성공적으로 로드되었습니다.",
         "modelListLoadFailed": "모델 목록을 로드하지 못했습니다.",
         "cannotSaveNoCharacter": "저장할 수 없습니다: 캐릭터 이름이 지정되지 않았습니다.",
-        "modelSettingsSaved": "저장된 모델 설정: {{name}} -> {{model}}",
+        "modelSettingsSaved": "모델 설정이 저장되었습니다",
         "saveFailed": "저장 실패: {{error}}",
         "saveModelSettingsFailed": "모델 설정을 저장하지 못했습니다.",
         "modelLoadSuccess": "모델 {{model}}이(가) 성공적으로 로드되었습니다.",
@@ -1235,7 +1244,8 @@
             "deleteSuccess": "{{count}}개의 VMD 애니메이션 삭제 성공",
             "deleteFailed": "삭제 실패: {{count}}개의 애니메이션",
             "deleteSelectedCount": "선택 삭제 ({{count}})",
-            "deletePartialSuccess": "{{count}}개의 VMD 애니메이션 삭제 성공, {{failed}}개 실패"
+            "deletePartialSuccess": "{{count}}개의 VMD 애니메이션 삭제 성공, {{failed}}개 실패",
+            "playFailed": "애니메이션 재생 실패"
         },
         "modelFilesFetchFailed": "모델 파일 목록을 가져오지 못했습니다.",
         "modelConfigFetchFailed": "모델 구성을 가져오지 못했습니다: {{status}}",
@@ -1257,7 +1267,8 @@
             "selectFirst": "먼저 표현식을 선택하세요.",
             "playing": "표현식 재생: {{name}}",
             "reset": "표현식 재설정",
-            "builtInOnly": "VRM 표현은 일반적으로 모델에 내장되어 있으며 별도로 업로드할 수 없습니다."
+            "builtInOnly": "VRM 표현은 일반적으로 모델에 내장되어 있으며 별도로 업로드할 수 없습니다.",
+            "stopped": "표정이 중지되었습니다"
         },
         "selectFolder": "폴더 선택",
         "vrmUpload": {
@@ -1298,13 +1309,14 @@
             "parametersSavePartialFailed": "저장 실패: {{errors}}",
             "parametersSaveFailed": "저장 실패: {{error}}",
             "emptyHint": "여기엔 아무것도 없어요!",
-            "foundYou": "찾았다!"
+            "foundYou": "찾았다!",
+            "loadFailed": "로드 실패",
+            "modelNotFound": "모델을 찾을 수 없습니다",
+            "cannotGetModelFiles": "모델 파일을 가져올 수 없습니다",
+            "cannotGetModelConfig": "모델 설정을 가져올 수 없습니다",
+            "modelDirectorySaveFailed": "모델 디렉터리 파일 저장 실패",
+            "userPreferencesSaveFailed": "사용자 기본 설정 저장 실패"
         },
-        "modelDirectorySaveFailed": "파일 저장 실패",
-        "userPreferencesSaveFailed": "기본 설정 저장 실패",
-        "modelNotFound": "모델을 찾을 수 없음",
-        "cannotGetModelFiles": "모델 파일을 가져올 수 없습니다.",
-        "cannotGetModelConfig": "모델 구성을 가져올 수 없습니다.",
         "deleteModelTitle": "가져온 모델 삭제",
         "deleteWarning": "다음은 가져온 모든 모델을 나열합니다. 삭제할 모델을 선택할 수 있습니다. 참고: 이 작업은 취소할 수 없습니다.",
         "deleteModel": "가져온 모델 삭제",
@@ -1338,7 +1350,20 @@
             "saveFailed": "감정 매핑을 저장하지 못했습니다.",
             "noModelSelected": "먼저 모델을 선택하세요."
         },
-        "noExpressionFiles": "표정 파일 없음"
+        "noExpressionFiles": "표정 파일 없음",
+        "pixiInitFailed": "PIXI 초기화 실패: {{error}}",
+        "switchDisplayFailed": "표시 모드 전환 실패: {{error}}",
+        "modelSavedLightingAndMmdFailed": "모델 설정은 저장되었지만 조명 및 MMD 설정 저장에 실패했습니다",
+        "modelSavedLightingFailed": "모델 설정은 저장되었지만 조명 설정 저장에 실패했습니다",
+        "modelSavedMmdSettingsFailed": "모델 설정은 저장되었지만 MMD 설정 저장에 실패했습니다",
+        "modelSettingsSavedWithLighting": "모델 및 조명 설정이 저장되었습니다",
+        "vrmModuleTimeout": "VRM 모듈 로드 시간이 초과되었습니다. 페이지를 새로고침해 주세요.",
+        "loading": "모델 목록 로드 중...",
+        "loadFailed": "로드 실패",
+        "motionStopped": "동작이 중지되었습니다",
+        "expressionCleared": "표정이 지워졌습니다",
+        "cannotDeleteBoundModel": "현재 사용 중인 모델은 삭제할 수 없습니다",
+        "modelInUse": "사용 중"
     },
     "voice": {
         "title": "음성 등록",
@@ -2112,6 +2137,8 @@
         },
         "error": {
             "providerUnavailable": "클라우드 저장 제공자를 현재 사용할 수 없습니다.",
+            "invalidJsonBody": "요청 본문 JSON을 해석하지 못했습니다.",
+            "invalidBooleanParameter": "{{parameter}} 매개변수는 불리언 값이어야 합니다.",
             "activeSessionBlocked": "이 캐릭터에는 활성 세션이 있습니다. 다운로드 전에 세션을 중지하세요.",
             "memoryServerReleaseFailed": "덮어쓰기 전에 로컬 메모리 핸들을 해제하지 못했습니다. 나중에 다시 시도해 주세요.",
             "localCharacterNotFound": "로컬 캐릭터를 찾을 수 없습니다.",
@@ -2347,7 +2374,8 @@
             "selectHint": "대기 동작 선택",
             "selectedCount": "{{count}}개 선택됨",
             "changed": "대기 애니메이션이 변경되었습니다: {{name}}",
-            "changeFailed": "대기 애니메이션 변경 실패"
+            "changeFailed": "대기 애니메이션 변경 실패",
+            "stopped": "대기 애니메이션이 중지되었습니다"
         },
         "settingsTitle": "VRM 모델 설정",
         "cursorFollow": {
@@ -2395,7 +2423,8 @@
             "selectHint": "대기 동작 선택",
             "selectedCount": "{{count}}개 선택됨",
             "changed": "대기 애니메이션이 변경되었습니다",
-            "changeFailed": "대기 애니메이션 변경에 실패했습니다"
+            "changeFailed": "대기 애니메이션 변경에 실패했습니다",
+            "stopped": "대기 애니메이션이 중지되었습니다"
         },
         "managerInitFailed": "MMD 관리자 초기화에 실패했습니다",
         "moduleLoading": "MMD 모듈을 로드하는 중...",
@@ -3114,7 +3143,8 @@
             "sad": "슬픔 (Sad)",
             "angry": "화남 (Angry)",
             "surprised": "놀람 (Surprised)"
-        }
+        },
+        "configLoadFailed": "설정 로드 실패"
     },
     "mmdEmotionManager": {
         "title": "MMD 감정 매핑 관리자 - Project N.E.K.O.",

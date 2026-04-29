@@ -171,6 +171,14 @@
             key: 'cloudsave.error.localReloadFailedRolledBack',
             fallback: 'The download was applied, but local reload failed.',
         },
+        INVALID_JSON_BODY: {
+            key: 'cloudsave.error.invalidJsonBody',
+            fallback: 'Invalid JSON request body.',
+        },
+        INVALID_PARAMETER: {
+            key: 'cloudsave.error.invalidBooleanParameter',
+            fallback: 'Invalid parameter: {{parameter}} must be boolean.',
+        },
     };
 
     function getPreferredCharacterName() {
@@ -497,15 +505,25 @@
     }
 
     function translateErrorPayload(payload, fallbackMessage) {
+        const params = {
+            name: (payload && payload.character_name) || '',
+            message: (payload && (payload.message || payload.error)) || fallbackMessage || '',
+            ...(
+                payload && payload.message_params && typeof payload.message_params === 'object'
+                    ? payload.message_params
+                    : {}
+            ),
+        };
+
+        if (payload && payload.message_key) {
+            return translate(payload.message_key, fallbackMessage || payload.message || payload.error || '', params);
+        }
+
         const code = payload && payload.code;
         if (!code || !ERROR_MESSAGES[code]) {
             return fallbackMessage || '';
         }
 
-        const params = {
-            name: payload.character_name || '',
-            message: payload.message || payload.error || fallbackMessage || '',
-        };
         return translate(ERROR_MESSAGES[code].key, ERROR_MESSAGES[code].fallback, params);
     }
 

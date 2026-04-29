@@ -8,6 +8,8 @@
         "cancel": "キャンセル",
         "confirm": "確認",
         "next": "次へ",
+        "back": "戻る",
+        "retry": "再試行",
         "ok": "OK",
         "delete": "削除",
         "edit": "編集",
@@ -40,7 +42,8 @@
         "toneMappingCineon": "Cineon",
         "toneMappingACESFilmic": "ACES Filmic",
         "toneMappingAgX": "AgX",
-        "toneMappingNeutral": "Neutral"
+        "toneMappingNeutral": "Neutral",
+        "loadFailed": "読み込みに失敗しました"
     },
     "autostartPrompt": {
         "title": "N.E.K.O を起動時に自動起動しますか？",
@@ -213,6 +216,12 @@
         "voiceReferencePrefixPlaceholder": "英数字のみ、最大10文字",
         "voiceReferenceLanguage": "参考音声の言語",
         "voiceReferenceProviderHint": "推奨プロバイダー",
+        "voiceReferenceInvalidFormat": "参照音声は mp3 または wav 形式のみ対応しています",
+        "voiceReferenceTooLarge": "参照音声は 20MB 以下にしてください",
+        "voiceReferenceWriting": "参照音声を書き込み中...",
+        "voiceReferenceUploadFailed": "参照音声のアップロードに失敗しました",
+        "voiceReferenceCleanupFailed": "参照音声のクリーンアップに失敗しました",
+        "voiceReferenceTempOnlySkipped": "参照音声は、キャラクターカードをパッケージ化した Workshop 一時フォルダーからのみアップロードできます。このサンプルはスキップしました。",
         "uploadTip": "「ローカルアイテム管理」でアイテムを選択するとパスが自動入力されます。または、コンテンツフォルダとプレビュー画像のフルパスを手動で入力してください。",
         "search": "検索:",
         "uploadSuccess": "アップロード成功！",
@@ -1124,7 +1133,7 @@
         "modelListLoaded": "モデルリストを読み込みました",
         "modelListLoadFailed": "モデルリストの読み込みに失敗しました",
         "cannotSaveNoCharacter": "保存不可: キャラクター名が指定されていません",
-        "modelSettingsSaved": "モデル設定を保存: {{name}} -> {{model}}",
+        "modelSettingsSaved": "モデル設定を保存しました",
         "saveFailed": "保存失敗: {{error}}",
         "saveModelSettingsFailed": "モデル設定の保存に失敗しました",
         "modelLoadSuccess": "モデル {{model}} の読み込み成功",
@@ -1235,7 +1244,8 @@
             "deleteSuccess": "{{count}}個のVMDアニメーションを削除しました",
             "deleteFailed": "削除に失敗しました: {{count}}個のアニメーション",
             "deleteSelectedCount": "選択を削除 ({{count}})",
-            "deletePartialSuccess": "{{count}}個のVMDアニメーションを削除、{{failed}}個失敗"
+            "deletePartialSuccess": "{{count}}個のVMDアニメーションを削除、{{failed}}個失敗",
+            "playFailed": "アニメーションの再生に失敗しました"
         },
         "modelFilesFetchFailed": "モデルファイルリスト取得失敗",
         "modelConfigFetchFailed": "モデル設定取得失敗: {{status}}",
@@ -1257,7 +1267,8 @@
             "selectFirst": "まず表情を選択してください",
             "playing": "表情再生中: {{name}}",
             "reset": "表情リセット",
-            "builtInOnly": "VRM表情は通常モデル内蔵のためアップロード不可"
+            "builtInOnly": "VRM表情は通常モデル内蔵のためアップロード不可",
+            "stopped": "表情を停止しました"
         },
         "selectFolder": "フォルダ選択",
         "vrmUpload": {
@@ -1298,13 +1309,14 @@
             "parametersSavePartialFailed": "一部の保存に失敗: {{errors}}",
             "parametersSaveFailed": "保存に失敗しました: {{error}}",
             "emptyHint": "ここには何もありません！",
-            "foundYou": "見つけた！"
+            "foundYou": "見つけた！",
+            "loadFailed": "読み込みに失敗しました",
+            "modelNotFound": "モデルが見つかりません",
+            "cannotGetModelFiles": "モデルファイルを取得できません",
+            "cannotGetModelConfig": "モデル設定を取得できません",
+            "modelDirectorySaveFailed": "モデルディレクトリファイルの保存に失敗しました",
+            "userPreferencesSaveFailed": "ユーザー設定の保存に失敗しました"
         },
-        "modelDirectorySaveFailed": "ファイル保存失敗",
-        "userPreferencesSaveFailed": "設定保存失敗",
-        "modelNotFound": "モデルが見つかりません",
-        "cannotGetModelFiles": "モデルファイル取得不可",
-        "cannotGetModelConfig": "モデル設定取得不可",
         "deleteModelTitle": "インポート済みモデルの削除",
         "deleteWarning": "インポートしたモデルの一覧です。削除すると元に戻せません。",
         "deleteModel": "インポート済みモデルを削除",
@@ -1338,7 +1350,20 @@
             "saveFailed": "感情マッピング設定の保存に失敗しました",
             "noModelSelected": "まずモデルを選択してください"
         },
-        "noExpressionFiles": "表情ファイルがありません"
+        "noExpressionFiles": "表情ファイルがありません",
+        "pixiInitFailed": "PIXI の初期化に失敗しました: {{error}}",
+        "switchDisplayFailed": "表示モードの切り替えに失敗しました: {{error}}",
+        "modelSavedLightingAndMmdFailed": "モデル設定を保存しましたが、ライティングと MMD 設定の保存に失敗しました",
+        "modelSavedLightingFailed": "モデル設定を保存しましたが、ライティング設定の保存に失敗しました",
+        "modelSavedMmdSettingsFailed": "モデル設定を保存しましたが、MMD 設定の保存に失敗しました",
+        "modelSettingsSavedWithLighting": "モデルとライティング設定を保存しました",
+        "vrmModuleTimeout": "VRM モジュールの読み込みがタイムアウトしました。ページを再読み込みしてください",
+        "loading": "モデルリストを読み込み中...",
+        "loadFailed": "読み込みに失敗しました",
+        "motionStopped": "モーションを停止しました",
+        "expressionCleared": "表情をクリアしました",
+        "cannotDeleteBoundModel": "現在使用中のモデルは削除できません",
+        "modelInUse": "使用中"
     },
     "voice": {
         "title": "ボイス登録",
@@ -2112,6 +2137,8 @@
         },
         "error": {
             "providerUnavailable": "クラウドセーブ提供元は現在利用できません。",
+            "invalidJsonBody": "リクエスト本文の JSON 解析に失敗しました。",
+            "invalidBooleanParameter": "パラメーター {{parameter}} は真偽値である必要があります。",
             "activeSessionBlocked": "このキャラクターにはアクティブなセッションがあります。ダウンロード前に停止してください。",
             "memoryServerReleaseFailed": "上書き前のローカルメモリハンドル解放に失敗しました。後でもう一度お試しください。",
             "localCharacterNotFound": "ローカルキャラクターが見つかりません。",
@@ -2347,7 +2374,8 @@
             "selectHint": "待機モーションを選択",
             "selectedCount": "{{count}} 件選択中",
             "changed": "待機アニメーションを切り替えました: {{name}}",
-            "changeFailed": "待機アニメーションの切り替えに失敗しました"
+            "changeFailed": "待機アニメーションの切り替えに失敗しました",
+            "stopped": "待機アニメーションを停止しました"
         },
         "settingsTitle": "VRM モデル設定",
         "cursorFollow": {
@@ -2395,7 +2423,8 @@
             "selectHint": "待機モーションを選択",
             "selectedCount": "{{count}} 件選択中",
             "changed": "待機アニメーションが変更されました",
-            "changeFailed": "待機アニメーションの変更に失敗しました"
+            "changeFailed": "待機アニメーションの変更に失敗しました",
+            "stopped": "待機アニメーションを停止しました"
         },
         "managerInitFailed": "MMD マネージャーの初期化に失敗しました",
         "moduleLoading": "MMD モジュールを読み込み中...",
@@ -3114,7 +3143,8 @@
             "sad": "悲しい (Sad)",
             "angry": "怒り (Angry)",
             "surprised": "驚き (Surprised)"
-        }
+        },
+        "configLoadFailed": "設定の読み込みに失敗しました"
     },
     "mmdEmotionManager": {
         "title": "MMD 感情マッピング管理 - Project N.E.K.O.",

@@ -8,6 +8,8 @@
         "cancel": "Cancel",
         "confirm": "Confirm",
         "next": "Next",
+        "back": "Back",
+        "retry": "Retry",
         "ok": "OK",
         "delete": "Delete",
         "edit": "Edit",
@@ -40,7 +42,8 @@
         "toneMappingCineon": "Cineon",
         "toneMappingACESFilmic": "ACES Filmic",
         "toneMappingAgX": "AgX",
-        "toneMappingNeutral": "Neutral"
+        "toneMappingNeutral": "Neutral",
+        "loadFailed": "Load failed"
     },
     "autostartPrompt": {
         "title": "Want N.E.K.O to launch at startup?",
@@ -213,6 +216,12 @@
         "voiceReferencePrefixPlaceholder": "Letters and numbers only, up to 10 characters",
         "voiceReferenceLanguage": "Reference voice language",
         "voiceReferenceProviderHint": "Recommended provider",
+        "voiceReferenceInvalidFormat": "Reference voice only supports mp3 or wav files",
+        "voiceReferenceTooLarge": "Reference voice must be 20MB or smaller",
+        "voiceReferenceWriting": "Writing reference voice...",
+        "voiceReferenceUploadFailed": "Reference voice upload failed",
+        "voiceReferenceCleanupFailed": "Reference voice cleanup failed",
+        "voiceReferenceTempOnlySkipped": "Reference voice can only be uploaded from the packaged Workshop temp folder, so this sample was skipped.",
         "uploadTip": "You can select items in \"Manage Local Items\" to auto-fill paths, or manually enter the full paths for content folder and preview image.",
         "search": "Search:",
         "uploadSuccess": "Upload Successful!",
@@ -1124,7 +1133,7 @@
         "modelListLoaded": "Model list loaded successfully",
         "modelListLoadFailed": "Failed to load model list",
         "cannotSaveNoCharacter": "Cannot save: character name not specified",
-        "modelSettingsSaved": "Model settings saved: {{name}} -> {{model}}",
+        "modelSettingsSaved": "Model settings saved",
         "saveFailed": "Save failed: {{error}}",
         "saveModelSettingsFailed": "Failed to save model settings",
         "modelLoadSuccess": "Model {{model}} loaded successfully",
@@ -1235,7 +1244,8 @@
             "deleteSuccess": "Successfully deleted {{count}} VMD animation(s)",
             "deleteFailed": "Failed to delete: {{count}} animation(s)",
             "deleteSelectedCount": "Delete Selected ({{count}})",
-            "deletePartialSuccess": "Successfully deleted {{count}} VMD animation(s), {{failed}} failed"
+            "deletePartialSuccess": "Successfully deleted {{count}} VMD animation(s), {{failed}} failed",
+            "playFailed": "Failed to play animation"
         },
         "modelFilesFetchFailed": "Failed to fetch model files list",
         "modelConfigFetchFailed": "Failed to fetch model config: {{status}}",
@@ -1257,7 +1267,8 @@
             "selectFirst": "Please select an expression first",
             "playing": "Playing expression: {{name}}",
             "reset": "Reset expression",
-            "builtInOnly": "VRM expressions are typically built into the model and cannot be uploaded separately"
+            "builtInOnly": "VRM expressions are typically built into the model and cannot be uploaded separately",
+            "stopped": "Expression stopped"
         },
         "selectFolder": "Select Folder",
         "vrmUpload": {
@@ -1298,13 +1309,14 @@
             "parametersSavePartialFailed": "Save failed: {{errors}}",
             "parametersSaveFailed": "Save failed: {{error}}",
             "emptyHint": "Nothing in here!",
-            "foundYou": "You found me!"
+            "foundYou": "You found me!",
+            "loadFailed": "Load failed",
+            "modelNotFound": "Model not found",
+            "cannotGetModelFiles": "Cannot get model files",
+            "cannotGetModelConfig": "Cannot get model config",
+            "modelDirectorySaveFailed": "Failed to save model directory file",
+            "userPreferencesSaveFailed": "Failed to save user preferences"
         },
-        "modelDirectorySaveFailed": "File save failed",
-        "userPreferencesSaveFailed": "Prefs save failed",
-        "modelNotFound": "Model not found",
-        "cannotGetModelFiles": "Cannot get model files",
-        "cannotGetModelConfig": "Cannot get model config",
         "deleteModelTitle": "Delete Imported Models",
         "deleteWarning": "The following lists all models you have imported. You can select models to delete. Note: This action cannot be undone.",
         "deleteModel": "Delete Imported Models",
@@ -1338,7 +1350,20 @@
             "saveFailed": "Failed to save emotion mapping",
             "noModelSelected": "Please select a model first"
         },
-        "noExpressionFiles": "No expression files"
+        "noExpressionFiles": "No expression files",
+        "pixiInitFailed": "PIXI initialization failed: {{error}}",
+        "switchDisplayFailed": "Failed to switch display mode: {{error}}",
+        "modelSavedLightingAndMmdFailed": "Model settings saved, but lighting and MMD settings failed to save",
+        "modelSavedLightingFailed": "Model settings saved, but lighting settings failed to save",
+        "modelSavedMmdSettingsFailed": "Model settings saved, but MMD settings failed to save",
+        "modelSettingsSavedWithLighting": "Model and lighting settings saved",
+        "vrmModuleTimeout": "VRM module loading timed out. Please refresh and try again.",
+        "loading": "Loading model list...",
+        "loadFailed": "Load failed",
+        "motionStopped": "Motion stopped",
+        "expressionCleared": "Expression cleared",
+        "cannotDeleteBoundModel": "Cannot delete the model currently in use",
+        "modelInUse": "In use"
     },
     "voice": {
         "title": "Voice Registration",
@@ -2112,6 +2137,8 @@
         },
         "error": {
             "providerUnavailable": "Cloud save provider is currently unavailable.",
+            "invalidJsonBody": "Invalid JSON request body.",
+            "invalidBooleanParameter": "Invalid parameter: {{parameter}} must be boolean.",
             "activeSessionBlocked": "This character has an active session. Stop the session before downloading.",
             "memoryServerReleaseFailed": "Failed to release the local memory handle before overwrite. Please try again later.",
             "localCharacterNotFound": "The local character could not be found.",
@@ -2347,7 +2374,8 @@
             "selectHint": "Select Idle Animations",
             "selectedCount": "{{count}} selected",
             "changed": "Idle animation changed: {{name}}",
-            "changeFailed": "Failed to change idle animation"
+            "changeFailed": "Failed to change idle animation",
+            "stopped": "Idle animation stopped"
         },
         "settingsTitle": "VRM Model Settings",
         "cursorFollow": {
@@ -2395,7 +2423,8 @@
             "selectHint": "Select Idle Animations",
             "selectedCount": "{{count}} selected",
             "changed": "Idle animation changed",
-            "changeFailed": "Failed to change idle animation"
+            "changeFailed": "Failed to change idle animation",
+            "stopped": "Idle animation stopped"
         },
         "managerInitFailed": "MMD manager initialization failed",
         "moduleLoading": "Loading MMD modules...",
@@ -3114,7 +3143,8 @@
             "sad": "Sad",
             "angry": "Angry",
             "surprised": "Surprised"
-        }
+        },
+        "configLoadFailed": "Failed to load configuration"
     },
     "mmdEmotionManager": {
         "title": "MMD Emotion Mapping Manager - Project N.E.K.O.",

@@ -8,6 +8,8 @@
         "cancel": "取消",
         "confirm": "确认",
         "next": "下一个",
+        "back": "返回",
+        "retry": "重试",
         "ok": "确定",
         "delete": "删除",
         "edit": "编辑",
@@ -40,7 +42,8 @@
         "toneMappingCineon": "Cineon",
         "toneMappingACESFilmic": "ACES Filmic",
         "toneMappingAgX": "AgX",
-        "toneMappingNeutral": "Neutral"
+        "toneMappingNeutral": "Neutral",
+        "loadFailed": "加载失败"
     },
     "autostartPrompt": {
         "title": "要不要让 N.E.K.O 开机自动启动？",
@@ -213,6 +216,12 @@
         "voiceReferencePrefixPlaceholder": "英文字母和数字，最多10位",
         "voiceReferenceLanguage": "参考语音语言",
         "voiceReferenceProviderHint": "服务商建议",
+        "voiceReferenceInvalidFormat": "参考语音只支持 mp3 或 wav 格式",
+        "voiceReferenceTooLarge": "参考语音大小不能超过 20MB",
+        "voiceReferenceWriting": "正在写入参考语音...",
+        "voiceReferenceUploadFailed": "参考语音上传失败",
+        "voiceReferenceCleanupFailed": "参考语音清理失败",
+        "voiceReferenceTempOnlySkipped": "参考语音当前仅支持角色卡打包后的工坊临时目录上传，已跳过该样本。",
         "uploadTip": "您可以在\"管理本地物品\"中选择物品自动填充路径，也可以直接手动输入内容文件夹和预览图片的完整路径。",
         "search": "搜索：",
         "uploadSuccess": "上传成功！",
@@ -1124,7 +1133,7 @@
         "modelListLoaded": "模型列表加载成功",
         "modelListLoadFailed": "加载模型列表失败",
         "cannotSaveNoCharacter": "无法保存：未指定角色名称",
-        "modelSettingsSaved": "已保存模型设置: {{name}} -> {{model}}",
+        "modelSettingsSaved": "已保存模型设置",
         "saveFailed": "保存失败: {{error}}",
         "saveModelSettingsFailed": "保存模型设置失败",
         "modelLoadSuccess": "模型 {{model}} 加载成功",
@@ -1235,7 +1244,8 @@
             "deleteSuccess": "成功删除 {{count}} 个VMD动画",
             "deleteFailed": "删除失败: {{count}} 个动画",
             "deleteSelectedCount": "删除选中 ({{count}})",
-            "deletePartialSuccess": "成功删除 {{count}} 个VMD动画，{{failed}} 个失败"
+            "deletePartialSuccess": "成功删除 {{count}} 个VMD动画，{{failed}} 个失败",
+            "playFailed": "播放动画失败"
         },
         "modelFilesFetchFailed": "无法获取模型文件列表",
         "modelConfigFetchFailed": "无法获取模型配置: {{status}}",
@@ -1257,7 +1267,8 @@
             "selectFirst": "请先选择一个表情",
             "playing": "正在播放表情: {{name}}",
             "reset": "重置表情",
-            "builtInOnly": "VRM表情通常是模型内置的，无法单独上传"
+            "builtInOnly": "VRM表情通常是模型内置的，无法单独上传",
+            "stopped": "表情已停止"
         },
         "selectFolder": "选择文件夹",
         "vrmUpload": {
@@ -1298,13 +1309,14 @@
             "parametersSavePartialFailed": "参数保存部分失败: {{errors}}",
             "parametersSaveFailed": "参数保存失败: {{error}}",
             "emptyHint": "里面什么也没有！",
-            "foundYou": "你找到我了！"
+            "foundYou": "你找到我了！",
+            "loadFailed": "加载失败",
+            "modelNotFound": "模型不存在",
+            "cannotGetModelFiles": "无法获取模型文件",
+            "cannotGetModelConfig": "无法获取模型配置",
+            "modelDirectorySaveFailed": "模型目录文件保存失败",
+            "userPreferencesSaveFailed": "用户偏好设置保存失败"
         },
-        "modelDirectorySaveFailed": "模型目录文件保存失败",
-        "userPreferencesSaveFailed": "用户偏好设置保存失败",
-        "modelNotFound": "模型不存在",
-        "cannotGetModelFiles": "无法获取模型文件",
-        "cannotGetModelConfig": "无法获取模型配置",
         "deleteModelTitle": "删除已导入模型",
         "deleteWarning": "以下列出了所有已导入的用户模型。请选择要删除的模型。注意：此操作不可恢复。",
         "deleteModel": "删除已导入模型",
@@ -1338,7 +1350,20 @@
             "saveFailed": "保存情感映射配置失败",
             "noModelSelected": "请先选择一个模型"
         },
-        "noExpressionFiles": "没有表情文件"
+        "noExpressionFiles": "没有表情文件",
+        "pixiInitFailed": "PIXI 初始化失败: {{error}}",
+        "switchDisplayFailed": "切换显示模式失败: {{error}}",
+        "modelSavedLightingAndMmdFailed": "已保存模型设置，光照和 MMD 设置保存失败",
+        "modelSavedLightingFailed": "已保存模型设置，光照设置保存失败",
+        "modelSavedMmdSettingsFailed": "已保存模型设置，MMD 设置保存失败",
+        "modelSettingsSavedWithLighting": "已保存模型和光照设置",
+        "vrmModuleTimeout": "VRM 模块加载超时，请刷新页面重试",
+        "loading": "正在加载模型列表...",
+        "loadFailed": "加载失败",
+        "motionStopped": "动作已停止",
+        "expressionCleared": "表情已清除",
+        "cannotDeleteBoundModel": "无法删除当前正在使用的模型",
+        "modelInUse": "使用中"
     },
     "voice": {
         "title": "音色注册",
@@ -2112,6 +2137,8 @@
         },
         "error": {
             "providerUnavailable": "云存档提供方当前不可用。",
+            "invalidJsonBody": "请求体 JSON 解析失败。",
+            "invalidBooleanParameter": "参数 {{parameter}} 必须为布尔值。",
             "activeSessionBlocked": "该角色存在活跃会话，请先停止会话后再下载。",
             "memoryServerReleaseFailed": "下载覆盖前释放本地记忆句柄失败，请稍后重试。",
             "localCharacterNotFound": "未找到本地角色。",
@@ -2347,7 +2374,8 @@
             "selectHint": "选择待机动作",
             "selectedCount": "已选 {{count}} 个",
             "changed": "待机动作已切换: {{name}}",
-            "changeFailed": "切换待机动作失败"
+            "changeFailed": "切换待机动作失败",
+            "stopped": "待机动作已停止"
         },
         "settingsTitle": "VRM 模型设置",
         "cursorFollow": {
@@ -2395,7 +2423,8 @@
             "selectHint": "选择待机动作",
             "selectedCount": "已选 {{count}} 个",
             "changed": "待机动作已切换",
-            "changeFailed": "切换待机动作失败"
+            "changeFailed": "切换待机动作失败",
+            "stopped": "待机动作已停止"
         },
         "managerInitFailed": "MMD 管理器初始化失败",
         "moduleLoading": "正在加载MMD模块...",
@@ -3114,7 +3143,8 @@
             "sad": "悲伤 (Sad)",
             "angry": "生气 (Angry)",
             "surprised": "惊讶 (Surprised)"
-        }
+        },
+        "configLoadFailed": "配置加载失败"
     },
     "mmdEmotionManager": {
         "title": "MMD 情感映射管理器 - Project N.E.K.O.",

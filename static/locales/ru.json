@@ -8,6 +8,8 @@
         "cancel": "Отмена",
         "confirm": "Подтвердить",
         "next": "Далее",
+        "back": "Назад",
+        "retry": "Повторить",
         "ok": "ОК",
         "delete": "Удалить",
         "edit": "Редактировать",
@@ -40,7 +42,8 @@
         "toneMappingCineon": "Cineon",
         "toneMappingACESFilmic": "ACES Filmic",
         "toneMappingAgX": "AgX",
-        "toneMappingNeutral": "Нейтральная"
+        "toneMappingNeutral": "Нейтральная",
+        "loadFailed": "Ошибка загрузки"
     },
     "autostartPrompt": {
         "title": "Включить автозапуск N.E.K.O. при входе в систему?",
@@ -213,6 +216,12 @@
         "voiceReferencePrefixPlaceholder": "Только латинские буквы и цифры, не более 10 символов",
         "voiceReferenceLanguage": "Язык эталонного голоса",
         "voiceReferenceProviderHint": "Рекомендуемый провайдер",
+        "voiceReferenceInvalidFormat": "Референсный голос поддерживает только файлы mp3 или wav",
+        "voiceReferenceTooLarge": "Референсный голос должен быть не больше 20 МБ",
+        "voiceReferenceWriting": "Запись референсного голоса...",
+        "voiceReferenceUploadFailed": "Не удалось загрузить референсный голос",
+        "voiceReferenceCleanupFailed": "Не удалось очистить референсный голос",
+        "voiceReferenceTempOnlySkipped": "Референсный голос можно загрузить только из временной папки Workshop, созданной при упаковке карточки персонажа, поэтому этот образец пропущен.",
         "uploadTip": "Вы можете выбрать предметы в «Управлении локальными предметами» для автозаполнения путей, или ввести полные пути к папке содержимого и изображению предпросмотра вручную.",
         "search": "Поиск:",
         "uploadSuccess": "Загрузка успешна!",
@@ -1124,7 +1133,7 @@
         "modelListLoaded": "Список моделей загружен успешно",
         "modelListLoadFailed": "Не удалось загрузить список моделей",
         "cannotSaveNoCharacter": "Невозможно сохранить: имя персонажа не указано",
-        "modelSettingsSaved": "Настройки модели сохранены: {{name}} -> {{model}}",
+        "modelSettingsSaved": "Настройки модели сохранены",
         "saveFailed": "Ошибка сохранения: {{error}}",
         "saveModelSettingsFailed": "Не удалось сохранить настройки модели",
         "modelLoadSuccess": "Модель {{model}} загружена успешно",
@@ -1235,7 +1244,8 @@
             "deleteSuccess": "Успешно удалено {{count}} VMD анимаций",
             "deleteFailed": "Ошибка удаления: {{count}} анимаций",
             "deleteSelectedCount": "Удалить выбранные ({{count}})",
-            "deletePartialSuccess": "Успешно удалено {{count}} VMD анимаций, {{failed}} с ошибкой"
+            "deletePartialSuccess": "Успешно удалено {{count}} VMD анимаций, {{failed}} с ошибкой",
+            "playFailed": "Не удалось воспроизвести анимацию"
         },
         "modelFilesFetchFailed": "Не удалось получить список файлов модели",
         "modelConfigFetchFailed": "Не удалось получить конфигурацию модели: {{status}}",
@@ -1257,7 +1267,8 @@
             "selectFirst": "Сначала выберите выражение",
             "playing": "Воспроизведение выражения: {{name}}",
             "reset": "Сброс выражения",
-            "builtInOnly": "Выражения VRM обычно встроены в модель и не могут быть загружены отдельно"
+            "builtInOnly": "Выражения VRM обычно встроены в модель и не могут быть загружены отдельно",
+            "stopped": "Выражение остановлено"
         },
         "selectFolder": "Выбрать папку",
         "vrmUpload": {
@@ -1298,13 +1309,14 @@
             "parametersSavePartialFailed": "Ошибка сохранения: {{errors}}",
             "parametersSaveFailed": "Ошибка сохранения: {{error}}",
             "emptyHint": "Здесь ничего нет!",
-            "foundYou": "Ты нашёл меня!"
+            "foundYou": "Ты нашёл меня!",
+            "loadFailed": "Ошибка загрузки",
+            "modelNotFound": "Модель не найдена",
+            "cannotGetModelFiles": "Невозможно получить файлы модели",
+            "cannotGetModelConfig": "Невозможно получить конфигурацию модели",
+            "modelDirectorySaveFailed": "Не удалось сохранить файл каталога модели",
+            "userPreferencesSaveFailed": "Не удалось сохранить пользовательские настройки"
         },
-        "modelDirectorySaveFailed": "Ошибка сохранения файла",
-        "userPreferencesSaveFailed": "Ошибка сохранения настроек",
-        "modelNotFound": "Модель не найдена",
-        "cannotGetModelFiles": "Невозможно получить файлы модели",
-        "cannotGetModelConfig": "Невозможно получить конфигурацию модели",
         "deleteModelTitle": "Удаление импортированных моделей",
         "deleteWarning": "Ниже перечислены все импортированные модели. Вы можете выбрать модели для удаления. Внимание: это действие необратимо.",
         "deleteModel": "Удалить импортированные модели",
@@ -1338,7 +1350,20 @@
             "saveFailed": "Не удалось сохранить маппинг эмоций",
             "noModelSelected": "Сначала выберите модель"
         },
-        "noExpressionFiles": "Нет файлов выражений"
+        "noExpressionFiles": "Нет файлов выражений",
+        "pixiInitFailed": "Не удалось инициализировать PIXI: {{error}}",
+        "switchDisplayFailed": "Не удалось переключить режим отображения: {{error}}",
+        "modelSavedLightingAndMmdFailed": "Настройки модели сохранены, но настройки освещения и MMD сохранить не удалось",
+        "modelSavedLightingFailed": "Настройки модели сохранены, но настройки освещения сохранить не удалось",
+        "modelSavedMmdSettingsFailed": "Настройки модели сохранены, но настройки MMD сохранить не удалось",
+        "modelSettingsSavedWithLighting": "Настройки модели и освещения сохранены",
+        "vrmModuleTimeout": "Время загрузки модуля VRM истекло. Обновите страницу и попробуйте снова.",
+        "loading": "Загрузка списка моделей...",
+        "loadFailed": "Ошибка загрузки",
+        "motionStopped": "Анимация остановлена",
+        "expressionCleared": "Выражение очищено",
+        "cannotDeleteBoundModel": "Нельзя удалить модель, которая сейчас используется",
+        "modelInUse": "Используется"
     },
     "voice": {
         "title": "Регистрация голоса",
@@ -2112,6 +2137,8 @@
         },
         "error": {
             "providerUnavailable": "Провайдер облачного сохранения сейчас недоступен.",
+            "invalidJsonBody": "Недопустимое JSON-тело запроса.",
+            "invalidBooleanParameter": "Параметр {{parameter}} должен быть логическим.",
             "activeSessionBlocked": "У этого персонажа есть активная сессия. Остановите её перед загрузкой из облака.",
             "memoryServerReleaseFailed": "Не удалось освободить локальный дескриптор памяти перед перезаписью. Попробуйте позже.",
             "localCharacterNotFound": "Локальный персонаж не найден.",
@@ -2347,7 +2374,8 @@
             "selectHint": "Выберите анимации ожидания",
             "selectedCount": "Выбрано: {{count}}",
             "changed": "Анимация покоя изменена: {{name}}",
-            "changeFailed": "Не удалось изменить анимацию покоя"
+            "changeFailed": "Не удалось изменить анимацию покоя",
+            "stopped": "Анимация ожидания остановлена"
         },
         "settingsTitle": "Настройки VRM модели",
         "cursorFollow": {
@@ -2395,7 +2423,8 @@
             "selectHint": "Выберите анимации ожидания",
             "selectedCount": "Выбрано: {{count}}",
             "changed": "Анимация ожидания изменена",
-            "changeFailed": "Не удалось изменить анимацию ожидания"
+            "changeFailed": "Не удалось изменить анимацию ожидания",
+            "stopped": "Анимация ожидания остановлена"
         },
         "managerInitFailed": "Не удалось инициализировать менеджер MMD",
         "moduleLoading": "Загрузка модулей MMD...",
@@ -3114,7 +3143,8 @@
             "sad": "Грусть",
             "angry": "Злость",
             "surprised": "Удивление"
-        }
+        },
+        "configLoadFailed": "Не удалось загрузить конфигурацию"
     },
     "mmdEmotionManager": {
         "title": "Менеджер маппинга эмоций MMD — Project N.E.K.O.",
