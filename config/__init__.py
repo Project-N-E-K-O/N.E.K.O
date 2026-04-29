@@ -1027,6 +1027,56 @@ TASK_ERROR_MAX_TOKENS = 350
 - 用途：_emit_task_result 的 error 档位。
 - 上游：异常 stack / API 错误响应。"""
 
+# ---- Agent: defensive char-caps (NOT token caps) ----
+# 下面这些是"防御性 char-cap"——在异常文本 / cancel reason / plugin reply
+# 流入下游字段（summary / detail / error_message / tracker.detail / 前端
+# notification）之前的硬截。
+#
+# 为什么是 char 而不是 token：
+# - LLM-facing 字段（summary / detail / error_message）真正的 prompt
+#   budget 在 _emit_task_result 内部用 TASK_*_MAX_TOKENS 二次截断；外层
+#   char-cap 只是为了避免把 MB 级原始字符串直接喂给 tiktoken（编码本身
+#   就很慢）。
+# - tracker.detail 进的是内存日志（去重 / 上下文交错），不直接进 LLM
+#   prompt；char 精度足够。
+# - 前端 agent_notification 字段是 toast / 错误面板展示，不进 LLM；
+#   token 精度无业务意义。
+
+EXCEPTION_TEXT_MAX_CHARS = 500
+"""异常 / 取消 / 插件 reply 等长字符串进入 LLM-facing 字段前的防御性
+char-cap。
+- 用途：str(e)[:N]、cancel_msg = str(e)[:N]、reply[:N] 在塞进
+  _emit_task_result 的 summary / detail / error_message 之前做的硬截。
+- 为什么是 char：tracebacks / API 错误体可能高达 MB，先 char-cap 再让
+  _emit_task_result 内部用 TASK_SUMMARY_MAX_TOKENS / TASK_LARGE_DETAIL_
+  MAX_TOKENS / TASK_ERROR_MAX_TOKENS 做精确 token 截，省去对整个原始
+  字符串做 tiktoken 编码的开销。
+- 上游：异常文本、CancelledError msg、openclaw reply 原文。"""
+
+TASK_TRACKER_DETAIL_MAX_CHARS = 200
+"""AgentTaskTracker.record_completed 的 detail 字段 char-cap。
+- 用途：失败 / 取消路径上 detail=str(e)[:N] / detail=cancel_msg[:N] /
+  detail=reply[:N] 等给 tracker 的 detail 字段做硬截。
+- 为什么是 char：tracker 记录只进内存日志（analyzer 去重 + 上下文交错
+  排序），不直接进 LLM prompt——200 char 足够人/规则判重，不需要 token
+  精度，也省一次 tiktoken 编码。
+- 注意：成功路径上 OpenFang 已用 _tt(_track_detail, TASK_DETAIL_MAX_TOKENS)
+  走 token-cap（见 agent_server.py），那条路径不在本常量管辖范围。"""
+
+USER_NOTIFICATION_REASON_MAX_CHARS = 200
+"""agent_notification.text 内嵌 reason 片段的 char-cap。
+- 用途：DirectTaskExecutor 评估失败时把 reason 拼进面向前端 toast 的
+  text 字段（"⚠️ Agent评估失败: {reason[:N]}"）。
+- 为什么是 char：toast 容量小、不进 LLM。"""
+
+USER_NOTIFICATION_ERROR_MAX_CHARS = 500
+"""agent_notification.error_message 字段 char-cap。
+- 用途：main_server EventBus 在转发 task_result / agent_notification 给
+  前端 WS 时对 error_message 做的硬截；agent_server 评估失败时也按此
+  cap reason 写进 error_message。
+- 为什么是 char：纯前端展示字段，不进 LLM；和 USER_NOTIFICATION_REASON_
+  MAX_CHARS 数值不同（错误详情比 toast 文本宽容）。"""
+
 AGENT_TASK_TRACKER_MAX_RECORDS = 50
 """AgentTaskTracker 最多保留的任务执行记录数。
 - 用途：deque-like 结构 maxlen，供 analyzer 去重 / 上下文交错排序。

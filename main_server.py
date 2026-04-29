@@ -52,7 +52,7 @@ import httpx # noqa
 import time # noqa
 import signal # noqa
 from datetime import datetime, timezone # noqa
-from config import MAIN_SERVER_PORT, MONITOR_SERVER_PORT # noqa
+from config import MAIN_SERVER_PORT, MONITOR_SERVER_PORT, USER_NOTIFICATION_ERROR_MAX_CHARS # noqa
 from utils.cloudsave_autocloud import get_cloudsave_manager # noqa
 from utils.cloudsave_runtime import (
     CloudsaveDeadlineExceeded,
@@ -735,7 +735,7 @@ async def _handle_agent_event(event: dict):
                         }
                         err_msg = event.get("error_message") or ""
                         if err_msg:
-                            notif["error_message"] = err_msg[:500]
+                            notif["error_message"] = err_msg[:USER_NOTIFICATION_ERROR_MAX_CHARS]
                         await ws.send_json(notif)
                         # text 是面向前端的通知正文，不写 logger
                         logger.info("[EventBus] agent_notification sent to frontend (text_len=%d)", len(text))
@@ -756,7 +756,7 @@ async def _handle_agent_event(event: dict):
                     }
                     err_msg = event.get("error_message") or ""
                     if err_msg:
-                        notif["error_message"] = err_msg[:500]
+                        notif["error_message"] = err_msg[:USER_NOTIFICATION_ERROR_MAX_CHARS]
                     await ws.send_json(notif)
                 except Exception as e:
                     logger.debug("[EventBus] agent_notification send failed: %s", e)

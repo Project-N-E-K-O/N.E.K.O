@@ -30,6 +30,10 @@ from config import (
     TASK_DETAIL_MAX_TOKENS,
     TASK_ERROR_MAX_TOKENS,
     AGENT_HISTORY_TURNS,
+    EXCEPTION_TEXT_MAX_CHARS,
+    TASK_TRACKER_DETAIL_MAX_CHARS,
+    USER_NOTIFICATION_REASON_MAX_CHARS,
+    USER_NOTIFICATION_ERROR_MAX_CHARS,
 )
 from utils.config_manager import get_config_manager
 from utils.tokenize import truncate_to_tokens as _tt
@@ -1566,10 +1570,10 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                 logger.warning("[TaskExecutor] Assessment failed: %s", reason)
                 await _emit_main_event(
                     "agent_notification", lanlan_name,
-                    text=f"⚠️ Agent评估失败: {reason[:200]}",
+                    text=f"⚠️ Agent评估失败: {reason[:USER_NOTIFICATION_REASON_MAX_CHARS]}",
                     source="brain",
                     status="error",
-                    error_message=reason[:500],
+                    error_message=reason[:USER_NOTIFICATION_ERROR_MAX_CHARS],
                 )
             else:
                 logger.debug("[TaskExecutor] No actionable task found")
@@ -1877,7 +1881,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                             except Exception as emit_err:
                                 logger.debug("[TaskExecutor] emit task_update(terminal) failed: task_id=%s plugin_id=%s error=%s", result.task_id, plugin_id, emit_err)
                     except asyncio.CancelledError as e:
-                        cancel_msg = str(e)[:500] if str(e) else "cancelled"
+                        cancel_msg = str(e)[:EXCEPTION_TEXT_MAX_CHARS] if str(e) else "cancelled"
                         _reg = Modules.task_registry.get(result.task_id)
                         if _reg:
                             _reg["status"] = "cancelled"
@@ -1885,7 +1889,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                         _task_tracker.record_completed(
                             lanlan_name, task_id=result.task_id, method="user_plugin",
                             desc=f"{plugin_id}.{entry_id}: {result.task_description or ''}",
-                            detail=cancel_msg[:200], success=False, cancelled=True,
+                            detail=cancel_msg[:TASK_TRACKER_DETAIL_MAX_CHARS], success=False, cancelled=True,
                         )
                         # Honor plugin's resolved delivery mode if it had a chance
                         # to run before cancel; default to "proactive" otherwise.
@@ -1932,14 +1936,14 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                         _task_tracker.record_completed(
                             lanlan_name, task_id=result.task_id, method="user_plugin",
                             desc=f"{plugin_id}.{entry_id}: {result.task_description or ''}",
-                            detail=str(e)[:200], success=False,
+                            detail=str(e)[:TASK_TRACKER_DETAIL_MAX_CHARS], success=False,
                         )
                         # Honor plugin's resolved delivery mode (if any); silent
                         # plugins stay silent even on dispatch exception.
                         if _delivery_mode != "silent":
                             try:
                                 display_id = await _get_plugin_display_id(plugin_id)
-                                _exc_text = str(e)[:500]
+                                _exc_text = str(e)[:EXCEPTION_TEXT_MAX_CHARS]
                                 await _emit_task_result(
                                     lanlan_name,
                                     channel="user_plugin",
@@ -2017,7 +2021,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                 channel="openclaw",
                                 task_id=str(result.task_id or ""),
                                 success=True,
-                                summary=reply[:500] if reply else _rp_phrase('openclaw_done', _rp_lang(None)),
+                                summary=reply[:EXCEPTION_TEXT_MAX_CHARS] if reply else _rp_phrase('openclaw_done', _rp_lang(None)),
                                 detail=reply,
                                 direct_reply=direct_reply,
                             )
@@ -2028,7 +2032,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                 task_id=str(result.task_id or ""),
                                 success=False,
                                 summary=_rp_phrase('openclaw_failed', _rp_lang(None)),
-                                error_message=str(nk_result.get("error") or "")[:500],
+                                error_message=str(nk_result.get("error") or "")[:EXCEPTION_TEXT_MAX_CHARS],
                             )
                     except Exception as e:
                         logger.exception("[OpenClaw] magic command dispatch failed: %s", e)
@@ -2039,7 +2043,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                 task_id=str(result.task_id or ""),
                                 success=False,
                                 summary=_rp_phrase('openclaw_dispatch_failed', _rp_lang(None)),
-                                error_message=str(e)[:500],
+                                error_message=str(e)[:EXCEPTION_TEXT_MAX_CHARS],
                             )
                         except Exception:
                             pass
@@ -2117,7 +2121,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                         _task_tracker.record_completed(
                             lanlan_name, task_id=result.task_id, method="openclaw",
                             desc=result.task_description or instruction or "",
-                            detail=reply[:200] if reply else "", success=success,
+                            detail=reply[:TASK_TRACKER_DETAIL_MAX_CHARS] if reply else "", success=success,
                         )
                         if success:
                             await _emit_task_result(
@@ -2125,7 +2129,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                 channel="openclaw",
                                 task_id=str(result.task_id or ""),
                                 success=True,
-                                summary=reply[:500] if reply else _rp_phrase('openclaw_done', _rp_lang(None)),
+                                summary=reply[:EXCEPTION_TEXT_MAX_CHARS] if reply else _rp_phrase('openclaw_done', _rp_lang(None)),
                                 detail=reply,
                                 direct_reply=direct_reply,
                             )
@@ -2136,7 +2140,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                 task_id=str(result.task_id or ""),
                                 success=False,
                                 summary=_rp_phrase('openclaw_failed', _rp_lang(None)),
-                                error_message=str(nk_result.get("error") or "")[:500],
+                                error_message=str(nk_result.get("error") or "")[:EXCEPTION_TEXT_MAX_CHARS],
                             )
                         await _emit_main_event(
                             "task_update",
@@ -2152,7 +2156,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                             },
                         )
                     except asyncio.CancelledError as e:
-                        cancel_msg = str(e)[:500] if str(e) else "cancelled"
+                        cancel_msg = str(e)[:EXCEPTION_TEXT_MAX_CHARS] if str(e) else "cancelled"
                         _reg = Modules.task_registry.get(result.task_id)
                         if _reg:
                             _reg["status"] = "cancelled"
@@ -2160,7 +2164,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                         _task_tracker.record_completed(
                             lanlan_name, task_id=result.task_id, method="openclaw",
                             desc=result.task_description or instruction or "",
-                            detail=cancel_msg[:200], success=False, cancelled=True,
+                            detail=cancel_msg[:TASK_TRACKER_DETAIL_MAX_CHARS], success=False, cancelled=True,
                         )
                         try:
                             await _emit_task_result(
@@ -2201,7 +2205,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                         _task_tracker.record_completed(
                             lanlan_name, task_id=result.task_id, method="openclaw",
                             desc=result.task_description or instruction or "",
-                            detail=str(e)[:200], success=False,
+                            detail=str(e)[:TASK_TRACKER_DETAIL_MAX_CHARS], success=False,
                         )
                         try:
                             await _emit_task_result(
@@ -2210,7 +2214,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                 task_id=str(result.task_id or ""),
                                 success=False,
                                 summary=_rp_phrase('openclaw_dispatch_failed', _rp_lang(None)),
-                                error_message=str(e)[:500],
+                                error_message=str(e)[:EXCEPTION_TEXT_MAX_CHARS],
                             )
                         except Exception:
                             pass
@@ -2300,7 +2304,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                         _task_tracker.record_completed(
                             lanlan_name, task_id=bu_task_id, method="browser_use",
                             desc=result.task_description or "",
-                            detail=bu_parsed[:200] if bu_parsed else "", success=success,
+                            detail=bu_parsed[:TASK_TRACKER_DETAIL_MAX_CHARS] if bu_parsed else "", success=success,
                         )
                         bu_info["status"] = "completed" if success else "failed"
                         bu_info["end_time"] = _now_iso()
@@ -2327,13 +2331,13 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                         except Exception as emit_err:
                             logger.debug("[BrowserUse] emit task_update(terminal) failed: task_id=%s error=%s", bu_task_id, emit_err)
                     except asyncio.CancelledError as e:
-                        cancel_msg = str(e)[:500] if str(e) else "cancelled"
+                        cancel_msg = str(e)[:EXCEPTION_TEXT_MAX_CHARS] if str(e) else "cancelled"
                         bu_info["status"] = "cancelled"
                         bu_info["error"] = cancel_msg
                         bu_session.complete_task(cancel_msg, success=False)
                         _task_tracker.record_completed(
                             lanlan_name, task_id=bu_task_id, method="browser_use",
-                            desc=result.task_description or "", detail=cancel_msg[:200], success=False, cancelled=True,
+                            desc=result.task_description or "", detail=cancel_msg[:TASK_TRACKER_DETAIL_MAX_CHARS], success=False, cancelled=True,
                         )
                         try:
                             await _emit_task_result(
@@ -2369,7 +2373,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                         bu_info["end_time"] = _now_iso()
                         _task_tracker.record_completed(
                             lanlan_name, task_id=bu_task_id, method="browser_use",
-                            desc=result.task_description or "", detail=str(e)[:200], success=False,
+                            desc=result.task_description or "", detail=str(e)[:TASK_TRACKER_DETAIL_MAX_CHARS], success=False,
                         )
                         bu_info["error"] = _tt(str(e), TASK_ERROR_MAX_TOKENS)
                         bu_session.complete_task(str(e), success=False)
@@ -2544,7 +2548,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                             except Exception as emit_err:
                                 logger.debug("[OpenFang] emit task_update(terminal) failed: task_id=%s error=%s", of_task_id, emit_err)
                         except asyncio.CancelledError as e:
-                            cancel_msg = str(e)[:500] if str(e) else "cancelled"
+                            cancel_msg = str(e)[:EXCEPTION_TEXT_MAX_CHARS] if str(e) else "cancelled"
                             # Best-effort remote cancel
                             try:
                                 if Modules.openfang:
@@ -2557,7 +2561,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                             of_session.complete_task(cancel_msg, success=False)
                             _task_tracker.record_completed(
                                 lanlan_name, task_id=of_task_id, method="openfang",
-                                desc=result.task_description or "", detail=cancel_msg[:200], success=False, cancelled=True,
+                                desc=result.task_description or "", detail=cancel_msg[:TASK_TRACKER_DETAIL_MAX_CHARS], success=False, cancelled=True,
                             )
                             try:
                                 await _emit_task_result(
@@ -2590,7 +2594,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                             of_session.complete_task(str(e), success=False)
                             _task_tracker.record_completed(
                                 lanlan_name, task_id=of_task_id, method="openfang",
-                                desc=result.task_description or "", detail=str(e)[:200], success=False,
+                                desc=result.task_description or "", detail=str(e)[:TASK_TRACKER_DETAIL_MAX_CHARS], success=False,
                             )
                             try:
                                 await _emit_task_result(
@@ -2635,7 +2639,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                 text=f"💥 Agent后台任务异常: {type(e).__name__}: {e}",
                 source="brain",
                 status="error",
-                error_message=str(e)[:500],
+                error_message=str(e)[:USER_NOTIFICATION_ERROR_MAX_CHARS],
             )
         except Exception:
             logger.debug("[TaskExecutor] emit notification failed", exc_info=True)
@@ -3234,7 +3238,7 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
             if _delivery_mode != "silent":
                 try:
                     display_id = await _get_plugin_display_id(plugin_id)
-                    _exc_text = str(e)[:500]
+                    _exc_text = str(e)[:EXCEPTION_TEXT_MAX_CHARS]
                     await _emit_task_result(
                         lanlan_name,
                         channel="user_plugin",
