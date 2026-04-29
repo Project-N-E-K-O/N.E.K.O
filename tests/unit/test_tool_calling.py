@@ -743,6 +743,77 @@ async def test_offline_no_silent_fallback_after_genai_emitted_text(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_stream_text_notifies_discarded_when_partial_text_then_error(monkeypatch):
+    """stream_text 通用 except Exception 分支必须识别"已吐文本但失败"
+    的场景，调用 _notify_response_discarded 让前端清空半截气泡——否则
+    用户会看到一段被中断的文本永远停在那。这是 _astream_with_tools
+    新契约 (genai_emitted_text 后 raise) 真正生效的关键。
+
+    回归保护：CodeRabbit PR #1035 第 9 轮 review."""
+    from main_logic import omni_offline_client as _ofc
+    from main_logic.omni_offline_client import OmniOfflineClient
+    from utils.llm_client import HumanMessage, LLMStreamChunk, SystemMessage
+
+    monkeypatch.setattr(_ofc, "_GENAI_AVAILABLE", True)
+
+    async def _astream_partial_then_raise(self, messages, **overrides):
+        yield LLMStreamChunk(content="正在查询天气，")
+        raise RuntimeError("transient API failure mid-stream")
+
+    monkeypatch.setattr(OmniOfflineClient, "_astream_with_tools", _astream_partial_then_raise)
+
+    discarded_calls: list = []
+    text_emitted: list = []
+
+    async def fake_notify_discarded(reason, attempt, max_attempts, will_retry, message=None):
+        discarded_calls.append({
+            "reason": reason, "attempt": attempt, "max_attempts": max_attempts,
+            "will_retry": will_retry, "message": message,
+        })
+
+    async def fake_text_delta(text, is_first):
+        text_emitted.append(text)
+
+    async def fake_done():
+        pass
+
+    async def fake_status(_msg):
+        pass
+
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    client.lanlan_name = "Test"
+    client.master_name = "M"
+    client._prefix_buffer_size = 0
+    client._conversation_history = [SystemMessage(content="sys")]
+    client._pending_images = []
+    client._is_responding = False
+    client._recent_responses = []
+    client._repetition_threshold = 0.8
+    client._max_recent_responses = 3
+    client.max_response_length = 300
+    client.max_response_rerolls = 0
+    client.enable_response_guard = False  # 简化逻辑：直接走 except 分支
+    client.vision_model = ""
+    client.model = "gemini-2.5-flash"
+    client.on_text_delta = fake_text_delta
+    client.on_input_transcript = None
+    client.on_response_done = fake_done
+    client.on_response_discarded = fake_notify_discarded
+    client.on_status_message = fake_status
+    client.on_repetition_detected = None
+
+    await client.stream_text("天气怎么样")
+
+    # 断言已吐文本到前端
+    assert "正在查询天气，" in "".join(text_emitted)
+    # 关键：响应被丢弃通知必须调用过，让前端清空半截气泡
+    assert len(discarded_calls) >= 1, "已吐文本后必须 notify_response_discarded 让前端清空气泡"
+    last = discarded_calls[-1]
+    assert "text_gen_error" in last["reason"]
+    assert last["will_retry"] is False  # 通用 except 不再重试
+
+
+@pytest.mark.asyncio
 async def test_offline_silent_fallback_when_genai_did_not_emit(monkeypatch):
     """对偶：genai 路径还没 yield 过任何文本就抛 transient 异常时，
     `_astream_with_tools` 仍然应该静默 fallback 到 OpenAI-compat 兜底——

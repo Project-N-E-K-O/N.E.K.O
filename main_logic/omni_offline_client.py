@@ -1398,7 +1398,35 @@ class OmniOfflineClient:
                 except Exception as e:
                     error_msg = f"💥 文本生成异常: {type(e).__name__}: {e}"
                     logger.error(error_msg)
-                    if self.on_status_message:
+                    # 如果本轮已经向前端吐过文本（典型场景：genai 路径在
+                    # _astream_with_tools 已吐文本后再抛 transient/tools-
+                    # unsupported，被显式 raise 上来），必须通知前端清空
+                    # 那截半截气泡，否则用户会看到一段被中断的文本永远停
+                    # 在那。和 (APIConnectionError 等) 分支语义对偶，但
+                    # 这条路径已经决定不再重试（break 在下面），所以
+                    # ``will_retry=False``，并附带可读的错误码到前端。
+                    if assistant_message and self.on_response_discarded:
+                        try:
+                            await self._notify_response_discarded(
+                                f"text_gen_error:{type(e).__name__}",
+                                attempt + 1,
+                                max_retries,
+                                will_retry=False,
+                                message=json.dumps({
+                                    "code": "TEXT_GEN_ERROR_AFTER_PARTIAL",
+                                    "details": {
+                                        "error_type": type(e).__name__,
+                                        "error": str(e),
+                                    },
+                                }),
+                            )
+                            status_reported = True
+                        except Exception as _notify_err:
+                            logger.warning(
+                                "通知 response_discarded(after partial) 失败: %s",
+                                _notify_err,
+                            )
+                    if not status_reported and self.on_status_message:
                         await self.on_status_message(json.dumps({"code": "TEXT_GEN_ERROR", "details": {"error_type": type(e).__name__, "error": str(e)}}))
                         status_reported = True
                     break
