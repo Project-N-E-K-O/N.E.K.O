@@ -114,7 +114,8 @@ class StrategyParser:
 
     def _strategy_sections_for_constraints(self, prompt: str) -> str:
         headings = self._parse_strategy_heading_sections(prompt)
-        supported_detail_titles = (
+        supported_section_titles = (
+            "程序约束",
             "战斗偏好",
             "战斗估算",
             "估算规则",
@@ -133,20 +134,19 @@ class StrategyParser:
             "高优先",
             "必需",
         )
+        supported_detail_titles = tuple(title for title in supported_section_titles if title != "程序约束")
         lines: list[str] = []
         for section in headings:
             title = str(section.get("title") or "")
-            lines.extend(section.get("body_lines", []))
+            include_section_body = any(token in title for token in supported_section_titles)
+            if include_section_body:
+                lines.append(f"### {title}")
+                lines.extend(section.get("body_lines", []))
             for detail in section.get("details", []):
                 detail_title = str(detail.get("title") or "")
                 if any(token in detail_title for token in supported_detail_titles):
                     lines.append(f"#### {detail_title}")
                     lines.extend(detail.get("body_lines", []))
-            if title == "战斗" and section.get("body_lines"):
-                for detail in section.get("details", []):
-                    detail_title = str(detail.get("title") or "")
-                    if any(token in detail_title for token in {"战斗偏好", "战斗估算", "估算规则"}):
-                        continue
         return "\n".join(lines).strip()
 
     def _parse_strategy_heading_sections(self, prompt: str) -> list[Dict[str, Any]]:

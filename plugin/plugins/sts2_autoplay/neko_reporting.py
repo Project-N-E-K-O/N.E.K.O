@@ -623,9 +623,10 @@ class NekoReportingMixin:
         player_block = self._combat_player_block(combat)
         remaining_damage = max(0, incoming_attack - player_block)
         dangerous_attack_threshold = self._safe_int(self._cfg.get("neko_auto_dangerous_attack_threshold", 20))
-        if is_boss_screen and not was_boss_screen and self._autoplay_state == "running":
+        already_slowed = float(self._cfg.get("action_interval_seconds", 1.5) or 1.5) >= 3.0 or "_neko_auto_saved_action_interval" in self._cfg
+        if not already_slowed and is_boss_screen and not was_boss_screen and self._autoplay_state == "running":
             return {"action": "slow_down", "reason": "boss_combat", "floor": floor}
-        if (incoming_attack >= dangerous_attack_threshold and remaining_damage > 0 and screen == "combat" and self._autoplay_state == "running"):
+        if (not already_slowed and incoming_attack >= dangerous_attack_threshold and remaining_damage > 0 and screen == "combat" and self._autoplay_state == "running"):
             return {"action": "slow_down", "reason": "dangerous_combat", "incoming_attack": incoming_attack, "remaining_damage": remaining_damage}
 
         safe_hp_threshold = max(0.0, min(1.0, float(self._cfg.get("neko_auto_safe_hp_threshold", 0.5))))

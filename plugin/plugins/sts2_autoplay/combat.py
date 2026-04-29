@@ -249,8 +249,18 @@ class CombatAnalyzer:
             return self._card_damage_value(card) * self._card_hits_value(card)
         if source in {"fixed", "flat", "static"}:
             return self._safe_int(estimator.get("damage"), 0)
-        if source in {"poison", "dot", "status_damage"}:
-            return self._safe_int(estimator.get("damage"), 0)
+        if source in {"poison", "poison_damage", "dot", "status_damage"}:
+            return max(
+                self._safe_int(estimator.get("damage"), 0),
+                self._safe_int(estimator.get("poison"), 0),
+                self._safe_int(estimator.get("value"), 0),
+            )
+        if source in {"star", "stars", "star_damage"}:
+            return max(
+                self._safe_int(estimator.get("damage"), 0),
+                self._safe_int(estimator.get("stars"), 0),
+                self._safe_int(estimator.get("value"), 0),
+            )
         return self._safe_int(estimator.get("damage"), 0)
 
     def _card_matches_estimator(self, card: Dict[str, Any], estimator: Dict[str, Any]) -> bool:

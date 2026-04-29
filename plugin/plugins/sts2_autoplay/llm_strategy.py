@@ -150,29 +150,6 @@ class LLMStrategy:
         self.logger.info("[sts2_autoplay][full-model] stage2 final decision validated")
         return validated
 
-    def build_full_model_reasoning_messages(self, payload: Dict[str, Any], strategy_prompt: Optional[str]) -> List[Dict[str, Any]]:
-        messages = [
-            {
-                "role": "system",
-                "content": "你是 sts2_autoplay 的全模型推理阶段。你只能分析当前局面、说明目标与候选动作，不要直接输出最终执行动作。只输出 JSON。",
-            },
-        ]
-        if strategy_prompt:
-            messages.append({
-                "role": "system",
-                "content": f"以下是当前角色策略文档，请在推理时参考：\n\n{strategy_prompt}",
-            })
-        messages.append({
-            "role": "user",
-            "content": (
-                "请基于当前局面进行推理，只输出一个 JSON 对象，格式如下：\n"
-                '{"situation_summary":"...","primary_goal":"...","candidate_actions":[],"risks":[],"checks_requested":[]}\n'
-                "不要输出最终动作，也不要输出 markdown。\n"
-                f"reasoning_context = {json.dumps(payload, ensure_ascii=False)}"
-            ),
-        })
-        return messages
-
     async def parse_llm_reasoning_response(self, raw_text: str, messages: List[Dict[str, Any]], llm_methods) -> Optional[Dict[str, Any]]:
         parsed = llm_methods.try_parse_llm_json(raw_text)
         if not isinstance(parsed, dict):

@@ -121,7 +121,15 @@ class DecisioningMixin:
                 self.logger.info(f"[sts2_autoplay][desperate] selected attack card={card.get('name')} damage={damage} target={resolved_target}")
                 return action
         defensive_action = self._find_defensive_action(actions, combat, tactical_summary)
-        return defensive_action
+        if defensive_action is not None:
+            return defensive_action
+        block_card = self._best_playable_block_card(combat)
+        if block_card is not None:
+            action = self._action_for_card(play_card_actions, block_card)
+            if action is not None:
+                self.logger.info(f"[sts2_autoplay][desperate] selected block card={block_card.get('name')} after no lethal target")
+                return action
+        return None
 
     def _detect_card_synergy_type(self, card: dict[str, Any], combat: dict[str, Any]) -> str:
         card_type = str(card.get("card_type") or card.get("type") or "").strip().lower()
