@@ -63,3 +63,38 @@ def test_rebase_runtime_bound_workshop_config_paths_rewrites_source_root_itself(
     )
 
     assert rewritten["default_workshop_folder"] == str(target_root)
+
+
+@pytest.mark.unit
+def test_rebase_runtime_bound_workshop_config_paths_preserves_non_path_values(tmp_path):
+    source_root = tmp_path / "old-root" / "N.E.K.O"
+    target_root = tmp_path / "new-root" / "N.E.K.O"
+    payload = {
+        "default_workshop_folder": None,
+        "user_workshop_folder": False,
+        "steam_workshop_path": 0,
+        "user_mod_folder": ["not", "a", "path"],
+    }
+
+    rewritten = rebase_runtime_bound_workshop_config_paths(
+        payload,
+        source_root=source_root,
+        target_root=target_root,
+    )
+
+    assert rewritten is payload
+    assert rewritten == payload
+
+
+@pytest.mark.unit
+def test_rebase_runtime_bound_workshop_config_paths_accepts_path_values(tmp_path):
+    source_root = tmp_path / "old-root" / "N.E.K.O"
+    target_root = tmp_path / "new-root" / "N.E.K.O"
+
+    rewritten = rebase_runtime_bound_workshop_config_paths(
+        {"default_workshop_folder": source_root / "workshop"},
+        source_root=source_root,
+        target_root=target_root,
+    )
+
+    assert rewritten["default_workshop_folder"] == str(target_root / "workshop")

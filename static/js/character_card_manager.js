@@ -2547,26 +2547,29 @@ const CHARACTER_CARD_MODEL_SCAN_RENDER_BUDGET_MS = 2500;
 let characterCardLoadSequence = 0;
 
 function waitForCharacterCardModelScanBudget(scanPromise) {
+    const eventual = Promise.resolve(scanPromise)
+        .then(() => true)
+        .catch(error => {
+            console.warn('角色卡模型扫描失败，先渲染角色列表:', error);
+            return false;
+        });
+
     return new Promise(resolve => {
         let settled = false;
-        const finish = value => {
+        const finish = inTime => {
             if (settled) return;
             settled = true;
-            resolve(value);
+            resolve({ inTime, eventual });
         };
 
         window.setTimeout(() => finish(false), CHARACTER_CARD_MODEL_SCAN_RENDER_BUDGET_MS);
-        Promise.resolve(scanPromise)
-            .then(() => finish(true))
-            .catch(error => {
-                console.warn('角色卡模型扫描失败，先渲染角色列表:', error);
-                finish(false);
-            });
+        eventual.then(scanCompleted => finish(scanCompleted));
     });
 }
 
-async function appendCharacterSettingsCardsFromModels(idCounter) {
+async function collectCharacterSettingsCardsFromModels(idCounter) {
     let nextId = idCounter;
+    const newCards = [];
     for (const model of availableModels) {
         try {
             // 调用API获取模型文件列表
@@ -2594,7 +2597,7 @@ async function appendCharacterSettingsCardsFromModels(idCounter) {
                                 const jsonData = await fileResponse.json();
                                 // 检查是否包含"type": "character_settings"
                                 if (jsonData && jsonData.type === 'character_settings') {
-                                    window.characterCards.push({
+                                    newCards.push({
                                         id: nextId++,
                                         name: jsonData.name || `${model.name}_settings`,
                                         description: jsonData.description || (window.t ? window.t('steam.characterSettingsFile') : '角色设置文件'),
@@ -2613,7 +2616,17 @@ async function appendCharacterSettingsCardsFromModels(idCounter) {
             console.error(`获取模型${model.name}文件列表失败:`, error);
         }
     }
-    return nextId;
+    return { cards: newCards, nextId };
+}
+
+function mergeCharacterSettingsCardsFromModels(loadSequence, discovered) {
+    const cards = discovered?.cards || [];
+    if (loadSequence !== characterCardLoadSequence || cards.length === 0) {
+        return;
+    }
+    window.characterCards = (window.characterCards || []).concat(cards);
+    globalCharacterCards = window.characterCards || [];
+    refreshCharacterCardSelectOptions();
 }
 
 function refreshCharacterCardSelectOptions() {
@@ -2766,18 +2779,23 @@ async function loadCharacterCards() {
     renderHiddenCatgirls();
 
     waitForCharacterCardModelScanBudget(modelScanPromise)
-        .then(modelScanCompleted => {
-            if (!modelScanCompleted) {
+        .then(scanBudget => {
+            const appendAfterScan = () => collectCharacterSettingsCardsFromModels(characterSettingsStartId)
+                .then(discovered => mergeCharacterSettingsCardsFromModels(loadSequence, discovered));
+
+            scanBudget.eventual.then(scanCompleted => {
+                if (scanBudget.inTime || !scanCompleted) {
+                    return null;
+                }
+                return appendAfterScan();
+            }).catch(error => {
+                console.warn('角色卡旧格式兼容延迟扫描失败，已保留主列表:', error);
+            });
+
+            if (!scanBudget.inTime) {
                 return null;
             }
-            return appendCharacterSettingsCardsFromModels(characterSettingsStartId)
-                .then(nextId => {
-                    if (loadSequence !== characterCardLoadSequence || nextId === characterSettingsStartId) {
-                        return;
-                    }
-                    globalCharacterCards = window.characterCards || [];
-                    refreshCharacterCardSelectOptions();
-                });
+            return appendAfterScan();
         })
         .catch(error => {
             console.warn('角色卡旧格式兼容扫描失败，已保留主列表:', error);

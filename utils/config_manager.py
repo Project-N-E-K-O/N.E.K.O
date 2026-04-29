@@ -3265,18 +3265,18 @@ class ConfigManager:
             if os.path.exists(config_path):
                 with open(config_path, 'r', encoding='utf-8') as f:
                     config = json.load(f)
-                    config = self._rebase_workshop_config_after_storage_migration(config)
-                    logger.debug(f"成功加载workshop配置: {config}")
-                    return config
+                config = self._rebase_workshop_config_after_storage_migration(config)
+                logger.debug(f"成功加载workshop配置: {config}")
+                return config
             else:
                 # 配置不存在时直接返回默认值，避免只读查询链路隐式写入配置文件。
                 with self._workshop_config_lock:
                     if os.path.exists(config_path):
                         with open(config_path, 'r', encoding='utf-8') as f:
                             config = json.load(f)
-                            config = self._rebase_workshop_config_after_storage_migration(config)
-                            logger.debug(f"成功加载workshop配置: {config}")
-                            return config
+                        config = self._rebase_workshop_config_after_storage_migration(config)
+                        logger.debug(f"成功加载workshop配置: {config}")
+                        return config
 
                     default_config = {
                         "default_workshop_folder": str(self.workshop_dir),

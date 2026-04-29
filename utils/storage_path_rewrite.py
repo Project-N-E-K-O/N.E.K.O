@@ -23,20 +23,25 @@ def _is_relative_to(path: Path, parent: Path) -> bool:
         return False
 
 
-def _rebase_path_if_under_root(value: Any, *, source_root: Path, target_root: Path) -> str:
-    raw_value = str(value or "").strip()
+def _rebase_path_if_under_root(value: Any, *, source_root: Path, target_root: Path) -> Any:
+    if value is None:
+        return None
+    if not isinstance(value, (str, Path)):
+        return value
+
+    raw_value = str(value).strip()
     if not raw_value:
-        return raw_value
+        return value
 
     try:
         original_path = normalize_runtime_root(raw_value)
     except Exception:
-        return raw_value
+        return value
 
     if paths_equal(original_path, source_root):
         return str(target_root)
     if not _is_relative_to(original_path, source_root):
-        return raw_value
+        return value
 
     return str(target_root / original_path.relative_to(source_root))
 
@@ -70,7 +75,7 @@ def rebase_runtime_bound_workshop_config_paths(
             source_root=normalized_source_root,
             target_root=normalized_target_root,
         )
-        if next_value != previous_value:
+        if isinstance(next_value, str) and next_value != previous_value:
             updated_payload[field_name] = next_value
             changed = True
 

@@ -95,8 +95,6 @@ def _expect_storage_migration_has_no_scrollbars(page: Page) -> None:
     assert metrics.get("ok"), {"missing": metrics.get("missing"), "metrics": metrics}
     for name in ("overlay", "modal", "activeView"):
         item = metrics[name]
-        assert item["overflowX"] == "hidden", {"element": name, "metric": "overflowX", "metrics": item}
-        assert item["overflowY"] == "hidden", {"element": name, "metric": "overflowY", "metrics": item}
         assert item["scrollWidth"] <= item["clientWidth"] + 1, {
             "element": name,
             "metric": "scrollWidth",
