@@ -154,13 +154,27 @@ class HealthCheckResponse(BaseModel):
 
 
 # 插件推送消息相关模型
+# message_type 涵盖：基础载荷（text/url/binary/binary_url）+ 系统语义类型
+# （proactive_notification → 经 proactive_bridge 转 proactive_message 注入主 AI；
+# music_allowlist_add / music_play_url → 注册音乐域名白名单 / 直接播放曲目，
+# 由前端而非主 AI 消费）。新加 message_type 时请同步 plugin/server/messaging/
+# proactive_bridge.py 与 plugin/PLUGIN_DEVELOPMENT_GUIDE.md。
+_PLUGIN_PUSH_MESSAGE_TYPES = (
+    "text", "url", "binary", "binary_url",
+    "proactive_notification", "music_allowlist_add", "music_play_url",
+)
+
+
 class PluginPushMessageRequest(BaseModel):
     """插件推送消息请求（从插件进程发送到主进程）"""
     plugin_id: str
     source: str = Field(..., description="插件自己标明的来源")
     description: str = Field(default="", description="插件自己标明的描述")
     priority: int = Field(default=0, description="插件自己设定的优先级，数字越大优先级越高")
-    message_type: Literal["text", "url", "binary", "binary_url"] = Field(..., description="消息类型")
+    message_type: Literal[
+        "text", "url", "binary", "binary_url",
+        "proactive_notification", "music_allowlist_add", "music_play_url",
+    ] = Field(..., description="消息类型")
     content: Optional[str] = Field(default=None, description="文本内容或URL（当message_type为text或url时）")
     binary_data: Optional[bytes] = Field(default=None, description="二进制数据（当message_type为binary时，仅用于小文件）")
     binary_url: Optional[str] = Field(default=None, description="二进制文件的URL（当message_type为binary_url时）")
@@ -191,7 +205,10 @@ class PluginPushMessage(BaseModel):
     source: str
     description: str
     priority: int
-    message_type: Literal["text", "url", "binary", "binary_url"]
+    message_type: Literal[
+        "text", "url", "binary", "binary_url",
+        "proactive_notification", "music_allowlist_add", "music_play_url",
+    ]
     content: Optional[str] = None
     binary_data: Optional[bytes] = None
     binary_url: Optional[str] = None

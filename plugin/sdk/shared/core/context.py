@@ -130,15 +130,31 @@ class SdkContext:
 
     @staticmethod
     def _metadata_delivery(metadata: Mapping[str, object] | None) -> str | None:
-        """Read ``agent.delivery`` (or legacy ``agent.reply`` bool) from metadata."""
+        """Read ``agent.delivery`` (or legacy ``agent.reply`` bool) from metadata.
+
+        Mirrors the priority rules of
+        :func:`plugin.sdk.shared.core.finish.normalize_delivery`: if
+        ``agent.delivery`` is present (any value, valid or not), it owns the
+        decision; we don't fall through to ``agent.reply``. ``delivery`` can
+        be a str (preferred) or a bool (very old call sites). Invalid values
+        fall back to default delivery. Only when ``delivery`` is absent
+        entirely do we consult ``reply``.
+        """
         if not isinstance(metadata, Mapping):
             return None
         raw_agent_meta = metadata.get("agent")
         if not isinstance(raw_agent_meta, Mapping):
             return None
-        delivery_obj = raw_agent_meta.get("delivery")
-        if isinstance(delivery_obj, str):
-            return normalize_delivery(delivery_obj)
+        if "delivery" in raw_agent_meta:
+            delivery_obj = raw_agent_meta["delivery"]
+            if isinstance(delivery_obj, str):
+                return normalize_delivery(delivery_obj)
+            if isinstance(delivery_obj, bool):
+                return normalize_delivery(delivery_obj)
+            # delivery key was set but invalid type — fall back to default
+            # (don't let agent.reply quietly override an explicit-but-invalid
+            # delivery).
+            return normalize_delivery(None, None)
         reply_obj = raw_agent_meta.get("reply")
         if isinstance(reply_obj, bool):
             return normalize_delivery(None, reply_obj)

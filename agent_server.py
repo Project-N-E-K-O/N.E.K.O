@@ -928,6 +928,12 @@ def _resolve_delivery_mode(result: Optional[Dict]) -> str:
     fallback to legacy ``result.meta.agent.reply`` (bool). Returns one of
     ``"proactive" | "passive" | "silent"``. Default = ``"proactive"`` (the
     main AI is interrupted to announce the result).
+
+    Priority: when ``agent.delivery`` is present (any value, valid or not) it
+    owns the decision — invalid values fall back to ``"proactive"`` rather
+    than letting ``agent.reply`` quietly override. This avoids
+    ``delivery="typo", reply=False`` silently flipping to ``"silent"``.
+    Mirrors :func:`plugin.sdk.shared.core.finish.normalize_delivery`.
     """
     if not isinstance(result, dict):
         return "proactive"
@@ -937,11 +943,14 @@ def _resolve_delivery_mode(result: Optional[Dict]) -> str:
     agent = meta.get("agent")
     if not isinstance(agent, dict):
         return "proactive"
-    raw = agent.get("delivery")
-    if isinstance(raw, str) and raw in ("proactive", "passive", "silent"):
-        return raw
-    if isinstance(raw, bool):
-        return "proactive" if raw else "silent"
+    if "delivery" in agent:
+        raw = agent["delivery"]
+        if isinstance(raw, str) and raw in ("proactive", "passive", "silent"):
+            return raw
+        if isinstance(raw, bool):
+            return "proactive" if raw else "silent"
+        # delivery key was set but invalid — don't fall through to reply.
+        return "proactive"
     reply_obj = agent.get("reply")
     if isinstance(reply_obj, bool):
         return "proactive" if reply_obj else "silent"
@@ -1917,13 +1926,20 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                             detail=str(e)[:200], success=False,
                         )
                         try:
+                            display_id = await _get_plugin_display_id(plugin_id)
+                            _exc_text = str(e)[:500]
                             await _emit_task_result(
                                 lanlan_name,
                                 channel="user_plugin",
                                 task_id=str(result.task_id or ""),
                                 success=False,
-                                summary='插件任务分发失败',
-                                error_message=str(e)[:500],
+                                summary=_exc_text,
+                                detail=_exc_text,
+                                error_message=_exc_text,
+                                status="failed",
+                                source_kind="plugin",
+                                source_name=display_id,
+                                delivery_mode="proactive",
                             )
                         except Exception as emit_err:
                             logger.debug("[TaskExecutor] emit task_result(dispatch_failed) failed: task_id=%s error=%s", result.task_id, emit_err)

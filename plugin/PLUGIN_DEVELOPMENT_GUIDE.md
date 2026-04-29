@@ -407,6 +407,29 @@ self.register_dynamic_entry(
 )
 ```
 
+#### `push_message` 的 `message_type` 取值
+
+`ctx.push_message()` 接受的 `message_type` 包含两类：
+
+**基础载荷类型**——纯数据推送：
+
+| `message_type` | 必填字段 | 用途 |
+|---|---|---|
+| `text` | `content` | 文本消息 |
+| `url` | `content` | URL 链接 |
+| `binary` | `binary_data` | 内联二进制（小文件） |
+| `binary_url` | `binary_url` | 二进制文件 URL（大文件） |
+
+**系统语义类型**——触发主进程特定行为：
+
+| `message_type` | 消费端 | 用途 |
+|---|---|---|
+| `proactive_notification` | proactive_bridge → 主 AI | 推送一条消息给主 AI（同 `ctx.finish()` 的 task_result 通道；走 `delivery` 三态） |
+| `music_allowlist_add` | 前端 | 添加音乐播放域名白名单（参见 `register_music_domains`） |
+| `music_play_url` | 前端 | 直接播放一首歌（前端音乐组件） |
+
+新增 `message_type` 时记得同步 `plugin/_types/models.py` 的 `Literal` 定义和 `proactive_bridge.py` 的分发逻辑。
+
 ### 3.4 Result 类型：Ok / Err
 
 SDK 使用 Rust 风格的 Result 类型进行错误处理，替代传统异常：
