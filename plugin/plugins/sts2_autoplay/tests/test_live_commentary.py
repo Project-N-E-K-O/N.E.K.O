@@ -96,8 +96,10 @@ def test_live_commentary_low_hp_uses_high_urgency_and_strategy_style() -> None:
     assert commentary["should_speak"] is True
     assert commentary["scene"] == "low_hp"
     assert commentary["urgency"] == "high"
-    assert commentary["tone"] == "稳健"
-    assert commentary["character_strategy"] == "ironclad"
+    assert commentary["mood"] == "关心"
+    assert commentary["priority"] == 8
+    assert commentary["interrupt"] is False
+    assert commentary["action_hint"] == "打出关键牌"
     assert any(token in commentary["text"] for token in {"20/80", "血量", "少掉血"})
     assert any(token in commentary["text"] for token in {"稳住节奏", "血量", "少掉血"})
 
@@ -164,7 +166,8 @@ def test_live_commentary_throttles_repeated_low_urgency_scene() -> None:
     assert commentary["should_speak"] is False
     assert commentary["scene"] == "combat"
     assert commentary["text"] == ""
-    assert commentary["tts"] is False
+    assert commentary["interrupt"] is False
+    assert commentary["action_hint"] == "打出关键牌"
 
 
 @pytest.mark.unit

@@ -505,9 +505,9 @@ def running_server(clean_user_data_dir, mock_memory_server):
     """
     test_port = _get_runtime_test_port("MAIN_SERVER_PORT")
 
-    from main_server import app
-
     uvicorn = pytest.importorskip("uvicorn", reason="running_server fixture requires uvicorn")
+
+    from main_server import app
     config = uvicorn.Config(app, host="127.0.0.1", port=test_port, log_level="error")
     server = uvicorn.Server(config)
 

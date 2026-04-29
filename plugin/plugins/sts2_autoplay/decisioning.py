@@ -358,55 +358,67 @@ class DecisioningMixin:
 
     async def _select_action(self, context: dict[str, Any]) -> dict[str, Any]:
         mode = self._configured_mode()
-        actions = context.get("actions") if isinstance(context.get("actions"), list) else []
-        desperate_action = self._select_desperate_action(actions, context)
+        guidance_list = list(self._neko_guidance_queue)
+        guidance_text = "\n".join(f"- {g['content']}" for g in guidance_list) if guidance_list else None
+        decision_context = {**context, "neko_guidance": guidance_text} if guidance_text else context
+        actions = decision_context.get("actions") if isinstance(decision_context.get("actions"), list) else []
+        desperate_action = self._select_desperate_action(actions, decision_context)
         if desperate_action is not None:
-            self._log_action_decision("desperate-mode", desperate_action, context)
+            self._log_action_decision("desperate-mode", desperate_action, decision_context)
             return desperate_action
         if bool(self._cfg.get("neko_maximize_enabled", True)):
-            maximize_action = self._select_maximize_benefit_action(actions, context)
+            maximize_action = self._select_maximize_benefit_action(actions, decision_context)
             if maximize_action is not None:
-                self._log_action_decision("maximize-benefit", maximize_action, context)
+                self._log_action_decision("maximize-benefit", maximize_action, decision_context)
                 return maximize_action
-        preemptive_action = self._select_preemptive_program_action(actions, context)
+        preemptive_action = self._select_preemptive_program_action(actions, decision_context)
         if preemptive_action is not None:
-            self._log_action_decision(f"{mode}-program-preflight", preemptive_action, context)
+            self._log_action_decision(f"{mode}-program-preflight", preemptive_action, decision_context)
             return preemptive_action
         if mode == "full-program":
-            action = self._select_action_heuristic(actions, context=context)
-            self._log_action_decision("heuristic", action, context)
+            action = self._select_action_heuristic(actions, context=decision_context)
+            self._log_action_decision("heuristic", action, decision_context)
             return action
         if mode == "half-program":
             try:
-                action = await self._select_action_with_llm(self._configured_character_strategy(), context)
+                action = await self._select_action_with_llm(self._configured_character_strategy(), decision_context)
                 if action is not None:
-                    self._log_action_decision("half-program-llm", action, context)
+                    self._drain_neko_guidance()
+                    self._last_neko_guidance_used = guidance_text or ""
+                    self._last_neko_guidance_count = len(guidance_list)
+                    self._log_action_decision("half-program-llm", action, decision_context)
                     return action
             except Exception as exc:
                 self.logger.warning(f"半程序模式决策失败，回退全程序: {exc}")
-            action = self._select_action_heuristic(actions, context=context)
-            self._log_action_decision("half-program-heuristic-fallback", action, context)
+            action = self._select_action_heuristic(actions, context=decision_context)
+            self._log_action_decision("half-program-heuristic-fallback", action, decision_context)
             return action
         if mode == "full-model":
             try:
-                action = await self._select_action_full_model(context)
+                action = await self._select_action_full_model(decision_context)
                 if action is not None:
-                    self._log_action_decision("full-model", action, context)
+                    self._drain_neko_guidance()
+                    self._last_neko_guidance_used = guidance_text or ""
+                    self._last_neko_guidance_count = len(guidance_list)
+                    self._log_action_decision("full-model", action, decision_context)
                     return action
             except Exception as exc:
                 self.logger.warning(f"全模型模式决策失败，回退半程序: {exc}")
             try:
-                action = await self._select_action_with_llm(self._configured_character_strategy(), context)
+                action = await self._select_action_with_llm(self._configured_character_strategy(), decision_context)
                 if action is not None:
-                    self._log_action_decision("full-model-half-program-fallback", action, context)
+                    self._drain_neko_guidance()
+                    self._last_neko_guidance_used = guidance_text or ""
+                    self._last_neko_guidance_count = len(guidance_list)
+                    self._log_action_decision("full-model-half-program-fallback", action, decision_context)
                     return action
             except Exception as exc:
                 self.logger.warning(f"全模型回退半程序失败，继续回退全程序: {exc}")
-            action = self._select_action_heuristic(actions, context=context)
-            self._log_action_decision("full-model-heuristic-fallback", action, context)
+            action = self._select_action_heuristic(actions, context=decision_context)
+            self._log_action_decision("full-model-heuristic-fallback", action, decision_context)
             return action
-        action = self._select_action_heuristic(actions, context=context)
-        self._log_action_decision("heuristic", action, context)
+        action = self._select_action_heuristic(actions, context=decision_context)
+        self._log_action_decision("heuristic", action, decision_context)
         return action
 
     async def _select_action_with_reasoning(self, context: dict[str, Any]) -> tuple[dict[str, Any], Optional[dict[str, Any]]]:

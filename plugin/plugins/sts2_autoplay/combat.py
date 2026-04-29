@@ -52,7 +52,7 @@ class CombatAnalyzer:
             if not isinstance(item, dict):
                 continue
             intent_type = str(item.get("intent_type") or item.get("type") or item.get("intent") or "").strip().lower()
-            if intent_type and "attack" not in intent_type and "攻击" not in intent_type:
+            if intent_type and "attack" not in intent_type and "hit" not in intent_type and "攻击" not in intent_type:
                 continue
             total_damage = self._first_numeric_value(item.get("total_damage"))
             if total_damage is not None:
@@ -87,7 +87,7 @@ class CombatAnalyzer:
                 hits_value = 1 if hits_key is None else max(1, self._safe_int(self._first_numeric_value(intent.get(hits_key)), 1))
                 return max(0, damage_value * hits_value)
         elif isinstance(intent, str):
-            if "attack" not in intent.lower() and "攻击" not in intent:
+            if "attack" not in intent.lower() and "hit" not in intent.lower() and "攻击" not in intent:
                 return 0
             numbers = [self._safe_int(match) for match in re.findall(r"\d+", intent)]
             if numbers:

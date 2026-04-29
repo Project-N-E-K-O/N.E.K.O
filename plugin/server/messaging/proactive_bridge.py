@@ -159,9 +159,10 @@ class ProactiveBridge:
                         except Exception:
                             content = str(raw_content or "").strip()
 
-                        description = str(metadata.get("description") or "").strip()
+                        description = str(payload.get("description") or metadata.get("description") or "").strip()
                         content = str(content or "").strip()
-                        if not content and not description:
+                        detail = content or description
+                        if not detail:
                             continue
 
                         proactive_event = {
@@ -169,7 +170,7 @@ class ProactiveBridge:
                             "lanlan_name": metadata.get("target_lanlan") or None,
                             "text": content,
                             "summary": description or content[:50],
-                            "detail": content,
+                            "detail": detail,
                             "channel": f"plugin:{plugin_id}" if plugin_id else "plugin",
                             "metadata": metadata,
                             "task_id": metadata.get("task_id", ""),

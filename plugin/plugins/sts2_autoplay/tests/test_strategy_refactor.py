@@ -128,7 +128,12 @@ def test_strategy_constraints_parse_non_empty_structured_buckets(parser: Any, st
     assert constraints["map_preferences"]
     assert constraints["combat_preferences"]
     assert constraints["combat_estimators"]
-    assert constraints["shop_preferences"]["card"]
+    card_preferences = constraints["shop_preferences"]["card"]
+    assert any(
+        values
+        for values in card_preferences.values()
+        if isinstance(values, (list, dict, set, tuple))
+    )
 
 
 @pytest.mark.unit

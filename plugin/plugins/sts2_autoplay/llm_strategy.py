@@ -39,7 +39,7 @@ class LLMStrategy:
             headers["Authorization"] = f"Bearer {api_key}"
         set_call_type("agent")
         timeout = httpx.Timeout(float(cfg.get("request_timeout_seconds", 15) or 15), connect=10.0)
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
             response = await client.post(target_url, json=payload, headers=headers)
             response.raise_for_status()
             data = response.json()
@@ -124,7 +124,8 @@ class LLMStrategy:
         self.logger.info("[sts2_autoplay][full-model] stage1 reasoning start")
         strategy_prompt = strategy_prompt_for_llm(configured_character_strategy())
         reasoning_payload = build_llm_decision_payload(context, character_strategy=configured_character_strategy())
-        reasoning_messages = build_full_model_reasoning_messages(reasoning_payload, strategy_prompt)
+        guidance_content = reasoning_payload.pop("neko_guidance", None)
+        reasoning_messages = build_full_model_reasoning_messages(reasoning_payload, strategy_prompt, guidance=guidance_content)
         reasoning_text = await invoke_llm_json(reasoning_messages, cfg)
         reasoning = await parse_llm_reasoning_response(reasoning_text, messages=reasoning_messages, llm_methods=llm_methods)
         if reasoning is None:
@@ -134,6 +135,7 @@ class LLMStrategy:
         checked_context, program_checks = await build_full_model_checked_context(context, reasoning, configured_character_strategy, build_llm_decision_payload, await_stable_step_context, llm_methods)
         self.logger.info("[sts2_autoplay][full-model] program check complete")
         final_payload = build_llm_decision_payload(checked_context, character_strategy=configured_character_strategy())
+        final_payload.pop("neko_guidance", None)
         final_payload["model_reasoning"] = reasoning
         final_payload["program_checks"] = program_checks
         final_messages = build_full_model_final_messages(final_payload, strategy_prompt)
@@ -231,6 +233,7 @@ class LLMStrategy:
             return None
         combat = context.get("snapshot", {}).get("raw_state", {}).get("combat", {}) if isinstance(context.get("snapshot"), dict) else {}
         payload = build_llm_decision_payload(context, character_strategy=strategy)
+        guidance_content = payload.pop("neko_guidance", None)
         messages = [
             {
                 "role": "system",
@@ -240,6 +243,10 @@ class LLMStrategy:
                     "绝不能编造不存在的动作、索引或参数。输出必须是 JSON，不要输出 markdown 或额外解释。"
                 ),
             },
+            *([{
+                "role": "system",
+                "content": f"猫娘（监督者）的指导意见：{guidance_content}",
+            }] if guidance_content else []),
             {
                 "role": "system",
                 "content": f"以下是当前策略文档，请严格遵守：\n\n{strategy_prompt}",

@@ -115,7 +115,14 @@ class AutoplayLoopMixin:
         try:
             while not self._shutdown:
                 if self._paused:
+                    autonomous = self._assess_neko_autonomous_action(prev_screen)
+                    if autonomous:
+                        try:
+                            await self._execute_autonomous_action(autonomous)
+                        except Exception as exc:
+                            self.logger.warning(f"猫娘暂停态自主动作失败，跳过本轮: {exc}")
                     await asyncio.sleep(0.2)
+                    prev_screen = self._snapshot.get("screen") if self._snapshot else None
                     continue
                 result = await self.step_once()
                 self._step_count += 1
@@ -124,14 +131,20 @@ class AutoplayLoopMixin:
                 report_interval = max(1, int(self._cfg.get("neko_report_interval_steps", 1) or 1))
                 should_report = self._step_count - self._last_task_report_step >= report_interval
                 if bool(self._cfg.get("neko_reporting_enabled", False)) and should_report:
-                    await self._push_neko_report(result)
-                    self._last_task_report_step = self._step_count
+                    try:
+                        await self._push_neko_report(result)
+                        self._last_task_report_step = self._step_count
+                    except Exception as exc:
+                        self.logger.warning(f"猫娘观察汇报失败，跳过本轮: {exc}")
                 if self._is_semi_auto_task_complete():
                     await self._complete_semi_auto_task()
                     break
                 autonomous = self._assess_neko_autonomous_action(prev_screen)
                 if autonomous:
-                    await self._execute_autonomous_action(autonomous)
+                    try:
+                        await self._execute_autonomous_action(autonomous)
+                    except Exception as exc:
+                        self.logger.warning(f"猫娘自主动作失败，跳过本轮: {exc}")
                 prev_screen = self._snapshot.get("screen") if self._snapshot else None
         except asyncio.CancelledError:
             raise

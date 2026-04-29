@@ -326,7 +326,7 @@ my_strategy
 `stop_condition` 支持：
 
 - `current_floor`：当前楼层完成或进入下一层后结束。
-- `current_combat` / `combat`：如果从战斗开始，则当前战斗结束后结束。
+- `current_combat` / `combat`：任务期间只要进入过战斗，随后离开战斗后结束。
 - `manual` / `none`：不自动完成，需要手动停止。
 
 启动后插件会创建半自动任务上下文，并向前端推送任务开始事件。任务完成时会推送 `semi_auto_task_completed`。
@@ -534,7 +534,7 @@ sts2_send_neko_guidance
 检查 `stop_condition`：
 
 - 如果是 `manual` / `none`，任务不会自动完成，需要调用 `sts2_stop_autoplay`。
-- 如果是 `current_combat`，只有从战斗界面启动并离开战斗后才会完成。
+- 如果是 `current_combat`，任务期间只要进入过战斗，随后离开战斗后就会完成。
 - 如果是 `current_floor`，通常在当前楼层完成或进入下一层后完成。
 
 可以调用 `sts2_get_status` 查看 `autoplay.task`。

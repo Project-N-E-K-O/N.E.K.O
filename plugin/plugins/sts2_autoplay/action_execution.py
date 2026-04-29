@@ -434,12 +434,14 @@ class ActionExecutionMixin:
         allowed_option_indices = self._allowed_kwargs_impl(action_type, raw, context).get("option_index", [])
         preferred_option_index = self._preferred_option_index_for_action(action_type, raw, context)
         chosen_option_index = _first_allowed_or_preferred(preferred_option_index, allowed_option_indices)
+        has_explicit_index = "option_index" in kwargs or "index" in kwargs or "card_index" in kwargs
+        uses_potion_heuristic = action_type in {"discard_potion", "use_potion"}
 
-        if chosen_option_index is not None and "option_index" not in kwargs and "index" not in kwargs and "card_index" not in kwargs:
+        if chosen_option_index is not None and not has_explicit_index and not uses_potion_heuristic:
             kwargs["option_index"] = chosen_option_index
             return kwargs
 
-        if "option_index" not in kwargs and "index" not in kwargs and "card_index" not in kwargs and self._action_requires_index(action_type, raw):
+        if not has_explicit_index and self._action_requires_index(action_type, raw):
             if action_type == "discard_potion":
                 kwargs["option_index"] = self._find_discardable_potion_index(context)
             elif action_type == "use_potion":

@@ -148,10 +148,13 @@ class ContextFlowMixin:
             context = await self._fetch_step_context(publish=(attempt == 0), record_history=(attempt == 0))
             last_context = context
             if previous is not None and context["signature"] == previous["signature"]:
+                self._publish_snapshot(context["snapshot"], record_history=(attempt != 0))
                 return context
             if self._is_actionable_context(context) and not self._is_transitional_context(context):
+                self._publish_snapshot(context["snapshot"], record_history=(attempt != 0))
                 return context
             if not self._is_transitional_context(context) and attempt == attempts - 1:
+                self._publish_snapshot(context["snapshot"], record_history=(attempt != 0))
                 return context
             previous = context
             if attempt < attempts - 1:
@@ -247,10 +250,15 @@ class ContextFlowMixin:
                 await asyncio.sleep(delay)
             context = await self._fetch_step_context()
             last_context = context
+            prepared_action_still_available = any(
+                self._action_fingerprint(action) == prepared["fingerprint"]
+                for action in context["actions"]
+                if isinstance(action, dict)
+            )
             if context["signature"] != before_context["signature"]:
-                if not self._is_transitional_context(context):
+                if not self._is_transitional_context(context) and not prepared_action_still_available:
                     return context
                 continue
-            if not any(self._action_fingerprint(action) == prepared["fingerprint"] for action in context["actions"] if isinstance(action, dict)):
+            if not prepared_action_still_available:
                 return context
         return last_context

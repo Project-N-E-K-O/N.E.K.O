@@ -224,7 +224,7 @@ class HeuristicSelector:
         selected["raw"] = selected_raw
         return selected
 
-    def select_action_heuristic(self, actions: List[Dict[str, Any]], context: Dict[str, Any], selector_methods, analyzer_methods, combat_analyzer) -> Dict[str, Any]:
+    def select_action_heuristic(self, actions: List[Dict[str, Any]], context: Dict[str, Any], selector_methods, analyzer_methods, combat_analyzer) -> Optional[Dict[str, Any]]:
         reward_action = selector_methods._select_reward_action_heuristic(actions, context)
         if reward_action is not None:
             return reward_action

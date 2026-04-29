@@ -1012,8 +1012,10 @@ class DirectTaskExecutor:
         return False
 
     def _agent_visible_plugin_entries(self, plugin: Any) -> list[dict]:
-        """Return entries that are explicitly available to automatic Agent routing."""
-        entries = plugin.get("entries") if isinstance(plugin, dict) else getattr(plugin, "entries", [])
+        """Return entries that are available to automatic Agent routing."""
+        entries = plugin.get("entries") if isinstance(plugin, dict) else getattr(plugin, "entries", None)
+        if entries is None:
+            return [{"id": "run", "description": "Default plugin entry"}]
         if not isinstance(entries, list):
             return []
         return [
@@ -1933,7 +1935,7 @@ class DirectTaskExecutor:
                         error="Invalid /runs response (non-JSON)",
                         tool_name=plugin_id,
                         tool_args=plugin_args,
-                        entry_id=plugin_entry_id,
+                        entry_id=resolved_entry_id,
                         reason=reason or "run_invalid_response",
                     )
 
@@ -1954,7 +1956,7 @@ class DirectTaskExecutor:
                     error="Invalid /runs response (missing run_id/run_token)",
                     tool_name=plugin_id,
                     tool_args=plugin_args,
-                    entry_id=plugin_entry_id,
+                    entry_id=resolved_entry_id,
                     reason=reason or "run_invalid_response",
                 )
 
@@ -1994,7 +1996,7 @@ class DirectTaskExecutor:
                 error=completion.get("error") if not run_success else None,
                 tool_name=plugin_id,
                 tool_args=plugin_args,
-                entry_id=plugin_entry_id,
+                entry_id=resolved_entry_id,
                 reason=reason or ("run_succeeded" if run_success else "run_failed"),
             )
         except Exception as e:
@@ -2011,7 +2013,7 @@ class DirectTaskExecutor:
                 error=str(e),
                 tool_name=plugin_id,
                 tool_args=plugin_args,
-                entry_id=plugin_entry_id,
+                entry_id=plugin_entry_id or "run",
                 reason=reason or "run_failed",
             )
 
