@@ -2695,6 +2695,17 @@ function refreshCharacterCardSelectOptions() {
 async function loadCharacterCards() {
     const loadSequence = ++characterCardLoadSequence;
 
+    // 新一轮加载先失效上一轮的模型扫描缓存：scanModels 现在 fire-and-forget，
+    // 若新一轮扫描卡住/失败，本应基于过期清单判断上传可用性会出现假阳性。
+    // 清空后扫描完成前 UI 会显示"无可用模型"，是诚实的 loading 信号；
+    // refreshExpandedCardAfterScan 在扫描完成后会按当前展开卡重渲染恢复正常状态。
+    availableModels = [];
+    availableVrmModels = [];
+    availableMmdModels = [];
+    window.allModels = [];
+    window.allVrmModels = [];
+    window.allMmdModels = [];
+
     // 显示加载状态
     const characterCardsList = document.getElementById('character-cards-list');
     if (characterCardsList) {
