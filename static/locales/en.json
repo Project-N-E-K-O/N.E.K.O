@@ -1350,7 +1350,6 @@
             "saveFailed": "Failed to save emotion mapping",
             "noModelSelected": "Please select a model first"
         },
-        "noExpressionFiles": "No expression files",
         "pixiInitFailed": "PIXI initialization failed: {{error}}",
         "switchDisplayFailed": "Failed to switch display mode: {{error}}",
         "modelSavedLightingAndMmdFailed": "Model settings saved, but lighting and MMD settings failed to save",

@@ -1350,7 +1350,6 @@
             "saveFailed": "감정 매핑을 저장하지 못했습니다.",
             "noModelSelected": "먼저 모델을 선택하세요."
         },
-        "noExpressionFiles": "표정 파일 없음",
         "pixiInitFailed": "PIXI 초기화 실패: {{error}}",
         "switchDisplayFailed": "표시 모드 전환 실패: {{error}}",
         "modelSavedLightingAndMmdFailed": "모델 설정은 저장되었지만 조명 및 MMD 설정 저장에 실패했습니다",

@@ -1350,7 +1350,6 @@
             "saveFailed": "保存情感映射配置失败",
             "noModelSelected": "请先选择一个模型"
         },
-        "noExpressionFiles": "没有表情文件",
         "pixiInitFailed": "PIXI 初始化失败: {{error}}",
         "switchDisplayFailed": "切换显示模式失败: {{error}}",
         "modelSavedLightingAndMmdFailed": "已保存模型设置，光照和 MMD 设置保存失败",

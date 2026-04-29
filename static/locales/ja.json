@@ -1350,7 +1350,6 @@
             "saveFailed": "感情マッピング設定の保存に失敗しました",
             "noModelSelected": "まずモデルを選択してください"
         },
-        "noExpressionFiles": "表情ファイルがありません",
         "pixiInitFailed": "PIXI の初期化に失敗しました: {{error}}",
         "switchDisplayFailed": "表示モードの切り替えに失敗しました: {{error}}",
         "modelSavedLightingAndMmdFailed": "モデル設定を保存しましたが、ライティングと MMD 設定の保存に失敗しました",

@@ -1244,7 +1244,7 @@
             "deleteSuccess": "Animações {{count}} VMD excluídas com sucesso",
             "deleteFailed": "Falha ao excluir: animações {{count}}",
             "deleteSelectedCount": "Excluir selecionado ({{count}})",
-            "deletePartialSuccess": "Animações VMD {{count}} excluídas com sucesso, {{failed}} falhou",
+            "deletePartialSuccess": "{{count}} animações VMD excluídas com sucesso e {{failed}} não foram excluídas",
             "playFailed": "Falha ao reproduzir animação"
         },
         "modelFilesFetchFailed": "Falha ao buscar lista de arquivos de modelo",
@@ -1350,7 +1350,6 @@
             "saveFailed": "Falha ao salvar o mapeamento emocional",
             "noModelSelected": "Selecione um modelo primeiro"
         },
-        "noExpressionFiles": "Nenhum arquivo de expressão",
         "pixiInitFailed": "Falha ao inicializar PIXI: {{error}}",
         "switchDisplayFailed": "Falha ao alternar o modo de exibição: {{error}}",
         "modelSavedLightingAndMmdFailed": "Configurações do modelo salvas, mas as configurações de iluminação e MMD falharam",
@@ -2374,7 +2373,7 @@
             "selectHint": "Selecione animações inativas",
             "selectedCount": "{{count}} selecionado",
             "changed": "Animação inativa alterada: {{name}}",
-            "changeFailed": "Falha ao alterar a animação inativa",
+            "changeFailed": "Falha ao alterar a animação ociosa",
             "stopped": "Animação ociosa interrompida"
         },
         "settingsTitle": "Configurações do modelo VRM",
@@ -2423,7 +2422,7 @@
             "selectHint": "Selecione animações inativas",
             "selectedCount": "{{count}} selecionado",
             "changed": "Animação inativa alterada",
-            "changeFailed": "Falha ao alterar a animação inativa",
+            "changeFailed": "Falha ao alterar a animação ociosa",
             "stopped": "Animação ociosa interrompida"
         },
         "managerInitFailed": "Falha na inicialização do gerenciador MMD",

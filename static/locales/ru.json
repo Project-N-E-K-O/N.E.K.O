@@ -1350,7 +1350,6 @@
             "saveFailed": "Не удалось сохранить маппинг эмоций",
             "noModelSelected": "Сначала выберите модель"
         },
-        "noExpressionFiles": "Нет файлов выражений",
         "pixiInitFailed": "Не удалось инициализировать PIXI: {{error}}",
         "switchDisplayFailed": "Не удалось переключить режим отображения: {{error}}",
         "modelSavedLightingAndMmdFailed": "Настройки модели сохранены, но настройки освещения и MMD сохранить не удалось",

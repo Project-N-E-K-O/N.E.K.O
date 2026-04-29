@@ -1350,7 +1350,6 @@
             "saveFailed": "No se pudo guardar el mapeo de emociones",
             "noModelSelected": "Por favor seleccione un modelo primero"
         },
-        "noExpressionFiles": "Sin archivos de expresión",
         "pixiInitFailed": "Error al inicializar PIXI: {{error}}",
         "switchDisplayFailed": "Error al cambiar el modo de visualización: {{error}}",
         "modelSavedLightingAndMmdFailed": "Configuración del modelo guardada, pero no se guardaron la iluminación ni la configuración MMD",
