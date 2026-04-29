@@ -890,6 +890,75 @@ async def test_offline_genai_tools_unsupported_error_correctly_disables_path(mon
 
 
 @pytest.mark.asyncio
+async def test_offline_openai_path_persists_streamed_text_with_tool_calls():
+    """OpenAI-compat 路径同 turn 先 yield text 再进 tool_calls 时，写历史的
+    assistant 消息 content 必须保留 streamed text，与 Gemini 路径对偶。
+    某些 OpenAI-compat provider（GLM-text、Qwen-text 等）真会出现这种流。
+
+    回归保护：CodeRabbit PR #1035 第 10 轮 review."""
+    from utils.llm_client import LLMStreamChunk
+    from main_logic.omni_offline_client import OmniOfflineClient
+    from main_logic.tool_calling import ToolCall, ToolDefinition, ToolResult
+
+    async def get_weather(args):
+        return {"temp_c": 22}
+
+    tool_def = ToolDefinition(
+        name="get_weather", description="weather",
+        parameters={"type": "object", "properties": {"city": {"type": "string"}}},
+        handler=get_weather,
+    )
+
+    # 第 1 次 LLM 调用：先吐文字，然后给 tool_call，最后 finish=tool_calls
+    chunks_call_1 = [
+        LLMStreamChunk(content="让我查一下，", finish_reason=None),
+        LLMStreamChunk(content="稍等。", finish_reason=None),
+        LLMStreamChunk(
+            content="",
+            tool_call_deltas=[{
+                "index": 0, "id": "call_w", "type": "function",
+                "function": {"name": "get_weather", "arguments": '{"city":"Paris"}'},
+            }],
+            finish_reason=None,
+        ),
+        LLMStreamChunk(content="", finish_reason="tool_calls"),
+    ]
+    # 第 2 次：tool 已执行，模型出最终文本
+    chunks_call_2 = [
+        LLMStreamChunk(content="22°C in Paris.", finish_reason="stop"),
+    ]
+
+    fake_llm = _FakeLLM([chunks_call_1, chunks_call_2])
+
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    client.llm = fake_llm
+    client._tool_definitions = [tool_def]
+    client.max_tool_iterations = 4
+    client._use_genai_sdk = False
+    client._genai_tools_unsupported = False
+
+    async def handler(call: ToolCall) -> ToolResult:
+        return ToolResult(call_id=call.call_id, name=call.name, output={"temp_c": 22})
+
+    client.on_tool_call = handler
+
+    messages = [{"role": "user", "content": "weather Paris"}]
+    out_chunks = []
+    async for ch in client._astream_with_tools(messages):
+        out_chunks.append(ch)
+
+    # 找写历史的 assistant w/ tool_calls 那条
+    assistant_with_tools = next(
+        m for m in messages
+        if isinstance(m, dict) and m.get("role") == "assistant" and m.get("tool_calls")
+    )
+    assert "让我查一下，稍等。" in assistant_with_tools["content"], (
+        "OpenAI-compat 路径 assistant.tool_calls 历史必须保留 streamed text，"
+        "否则下一轮 LLM 看不到自己已说过的前半句"
+    )
+
+
+@pytest.mark.asyncio
 async def test_offline_iteration_cap_breaks_runaway_loop():
     """If the model keeps requesting tools forever, we stop after
     ``max_tool_iterations`` LLM calls instead of looping indefinitely."""

@@ -500,12 +500,24 @@ class OmniOfflineClient:
             return None
         return [t.to_openai_chat() for t in self._tool_definitions]
 
-    async def _execute_and_append_openai_tool_calls(self, messages, calls) -> None:
+    async def _execute_and_append_openai_tool_calls(
+        self,
+        messages,
+        calls,
+        assistant_text: str = "",
+    ) -> None:
         """Run each tool call through ``on_tool_call`` and mutate
         ``messages`` in place: append one assistant turn announcing all
         tool calls, then one tool-role message per call carrying the
         result JSON. Both shapes follow the OpenAI Chat Completions spec
-        so the next astream invocation sees a valid history."""
+        so the next astream invocation sees a valid history.
+
+        ``assistant_text`` 写进 assistant turn 的 ``content``。OpenAI Chat
+        Completions 协议允许同一 turn 既有 ``content`` 又有 ``tool_calls``，
+        某些 OpenAI-compat provider 会"先吐文字再进 tool_calls"。和 Gemini
+        路径的 streamed_text_buffer 一样，这条 text 必须一起写进历史，否则
+        下一轮上下文丢前缀，模型重复 / 改口。
+        """
         # 防御性过滤：``ChatOpenAI.collect_tool_calls`` 已会丢弃空 name 槽位，
         # 但万一调用方直接构造（或上游聚合实现替换），这里再兜一层 ——
         # tool_calls 历史中混入空 name 会被下一轮 server schema reject，
@@ -515,7 +527,7 @@ class OmniOfflineClient:
             return
         messages.append({
             "role": "assistant",
-            "content": "",
+            "content": assistant_text or "",
             "tool_calls": [
                 {
                     "id": c.id or f"call_{i}",
@@ -631,7 +643,14 @@ class OmniOfflineClient:
         for tool_iter in range(self.max_tool_iterations):
             deltas_per_chunk: list = []
             finish_reason: Optional[str] = None
+            # 累积本轮已 yield 给上游的 text，下面 finish_reason=tool_calls
+            # 时一起写进 assistant 历史。OpenAI Chat Completions 协议允许同
+            # 一 turn 既有 content 又有 tool_calls；某些兼容 provider 真会
+            # 先吐文字再进 tool_calls。和 Gemini 路径完全对偶。
+            streamed_text_buffer = ""
             async for chunk in self.llm.astream(messages, **overrides):
+                if getattr(chunk, "content", None):
+                    streamed_text_buffer += chunk.content
                 if chunk.tool_call_deltas:
                     deltas_per_chunk.append(chunk.tool_call_deltas)
                 if chunk.finish_reason:
@@ -649,7 +668,9 @@ class OmniOfflineClient:
                 # ChatOpenAI — `collect_tool_calls` is a staticmethod.
                 from utils.llm_client import ChatOpenAI as _ChatOpenAI
                 calls = _ChatOpenAI.collect_tool_calls(deltas_per_chunk)
-                await self._execute_and_append_openai_tool_calls(messages, calls)
+                await self._execute_and_append_openai_tool_calls(
+                    messages, calls, assistant_text=streamed_text_buffer,
+                )
                 continue
             return
         logger.warning(
