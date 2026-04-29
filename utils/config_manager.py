@@ -6,6 +6,7 @@
 import sys
 import os
 import json
+import re
 import shutil
 import threading
 import asyncio
@@ -31,6 +32,7 @@ from utils.api_config_loader import (
 from utils.custom_tts_adapter import check_custom_tts_voice_allowed
 from utils.file_utils import atomic_write_json
 from utils.logger_config import get_module_logger
+from utils.persona_presets import PERSONA_OVERRIDE_FIELDS
 
 # Workshop配置相关常量 - 将在ConfigManager实例化时使用self.workshop_dir
 
@@ -134,6 +136,101 @@ def delete_reserved(data: dict, *path) -> bool:
         data.pop("_reserved", None)
 
     return True
+
+
+def _normalize_persona_override_profile(raw_profile: object) -> dict[str, str]:
+    if not isinstance(raw_profile, dict):
+        return {}
+
+    profile: dict[str, str] = {}
+    for field in PERSONA_OVERRIDE_FIELDS:
+        value = str(raw_profile.get(field) or "").strip()
+        if value:
+            profile[field] = value
+    return profile
+
+
+def _get_persona_override(character_payload: dict) -> dict | None:
+    if not isinstance(character_payload, dict):
+        return None
+
+    reserved = character_payload.get("_reserved")
+    if not isinstance(reserved, dict):
+        return None
+
+    override = reserved.get("persona_override")
+    if not isinstance(override, dict):
+        return None
+
+    return override
+
+
+def _build_effective_character_payload(character_payload: dict) -> dict:
+    if not isinstance(character_payload, dict):
+        return {}
+
+    effective_payload = deepcopy(character_payload)
+    override = _get_persona_override(character_payload)
+    if not isinstance(override, dict):
+        return effective_payload
+
+    profile = _normalize_persona_override_profile(override.get("profile"))
+    for field, value in profile.items():
+        effective_payload[field] = value
+    return effective_payload
+
+
+def _append_persona_guidance_to_prompt(prompt_text: str, character_payload: dict) -> str:
+    override = _get_persona_override(character_payload)
+    if not isinstance(override, dict):
+        return prompt_text
+
+    guidance = str(override.get("prompt_guidance") or "").strip()
+    if not guidance:
+        return prompt_text
+
+    return f"{prompt_text}\n\nAdditional role guidance: {guidance}"
+
+
+def _has_generated_persona_selection_prompt(prompt_text: object) -> bool:
+    if not isinstance(prompt_text, str):
+        return False
+    return "<NEKO_PERSONA_SELECTION>" in prompt_text
+
+
+def strip_generated_persona_selection_prompt(prompt_text: object) -> str | None:
+    if not isinstance(prompt_text, str):
+        return None
+    if not _has_generated_persona_selection_prompt(prompt_text):
+        return prompt_text
+
+    cleaned_prompt = re.sub(
+        r"\s*<NEKO_PERSONA_SELECTION>.*?</NEKO_PERSONA_SELECTION>\s*",
+        "\n\n",
+        prompt_text,
+        flags=re.DOTALL,
+    )
+    cleaned_prompt = re.sub(r"\n{3,}", "\n\n", cleaned_prompt).strip()
+    return cleaned_prompt
+
+
+def _resolve_effective_character_prompt(character_payload: dict) -> str:
+    stored_prompt = get_reserved(
+        character_payload,
+        "system_prompt",
+        default=None,
+        legacy_keys=("system_prompt",),
+    )
+    if stored_prompt is None or is_default_prompt(stored_prompt):
+        return get_lanlan_prompt()
+
+    # 旧版人格功能会把整段模板化人格 prompt 直接写进 system_prompt。
+    # 不论当前是否仍保留 persona_override，这类历史片段都不应继续直接喂给模型。
+    if _has_generated_persona_selection_prompt(stored_prompt):
+        cleaned_prompt = strip_generated_persona_selection_prompt(stored_prompt)
+        return cleaned_prompt or get_lanlan_prompt()
+
+    return stored_prompt
 
 
 def _legacy_live2d_to_model_path(legacy_live2d: str) -> str:
@@ -2256,8 +2353,8 @@ class ConfigManager:
         master_basic_config = character_data.get('主人', {})
         master_name = master_basic_config.get('档案名', defaults['主人']['档案名'])
 
-        catgirl_data = character_data.get('猫娘') or deepcopy(defaults['猫娘'])
-        catgirl_names = list(catgirl_data.keys())
+        raw_character_data = character_data.get('猫娘') or deepcopy(defaults['猫娘'])
+        catgirl_names = list(raw_character_data.keys())
 
         current_catgirl = character_data.get('当前猫娘', '')
         if current_catgirl and current_catgirl in catgirl_names:
@@ -2283,19 +2380,17 @@ class ConfigManager:
                         self._characters_dirty = True
 
         name_mapping = {'human': master_name, 'system': "SYSTEM_MESSAGE"}
+        effective_character_data = {
+            name: _build_effective_character_payload(raw_character_data.get(name, {}))
+            for name in catgirl_names
+        }
         lanlan_prompt_map = {}
         for name in catgirl_names:
-            stored_prompt = get_reserved(
-                catgirl_data.get(name, {}),
-                'system_prompt',
-                default=None,
-                legacy_keys=('system_prompt',),
+            prompt_value = _resolve_effective_character_prompt(raw_character_data.get(name, {}))
+            lanlan_prompt_map[name] = _append_persona_guidance_to_prompt(
+                prompt_value,
+                raw_character_data.get(name, {}),
             )
-            if stored_prompt is None or is_default_prompt(stored_prompt):
-                prompt_value = get_lanlan_prompt()
-            else:
-                prompt_value = stored_prompt
-            lanlan_prompt_map[name] = prompt_value
 
         memory_base = str(self.memory_dir)
         # 角色专属子目录: memory_dir/{name}/
@@ -2308,7 +2403,7 @@ class ConfigManager:
             master_name,
             her_name,
             master_basic_config,
-            catgirl_data,
+            effective_character_data,
             name_mapping,
             lanlan_prompt_map,
             time_store,

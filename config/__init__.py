@@ -71,6 +71,13 @@ def get_character_reserved_fields() -> tuple[str, ...]:
 RESERVED_FIELD_SCHEMA = {
     "voice_id": str,
     "system_prompt": str,
+    "persona_override": {
+        "preset_id": str,
+        "selected_at": str,
+        "source": str,
+        "prompt_guidance": str,
+        "profile": dict,
+    },
     "character_origin": {
         "source": str,
         "source_id": str,
