@@ -396,17 +396,41 @@ async def test_offline_iteration_cap_breaks_runaway_loop():
 # 4. OmniRealtimeClient wire-format helpers
 # ---------------------------------------------------------------------------
 
-def test_realtime_tools_for_step_uses_nested_function_shape():
+def _make_rt_client(api_type: str, *, tool_name: str = "x", tool_kwargs=None):
+    """Build a partially-initialized OmniRealtimeClient for wire-format
+    tests. Bypasses ``__init__`` and only sets the fields the wire path
+    reads, plus a fake ``send_event`` that just appends to a list.
+
+    Returns ``(client, sent)`` where ``sent`` is the captured event list.
+    """
     from main_logic.omni_realtime_client import OmniRealtimeClient
     from main_logic.tool_calling import ToolDefinition
 
     client = OmniRealtimeClient.__new__(OmniRealtimeClient)
+    client._api_type = api_type
+    client._is_gemini = False
+    client._gemini_session = None
+    client.ws = object()  # any non-None — triggers the "connected" branch
+    client._fatal_error_occurred = False
+    tk = tool_kwargs or {}
     client._tool_definitions = [ToolDefinition(
-        name="x", description="d",
-        parameters={"type": "object", "properties": {}},
-        handler=lambda _: None,
+        name=tool_name,
+        description=tk.get("description", ""),
+        parameters=tk.get("parameters", {"type": "object", "properties": {}}),
+        handler=lambda _: 0,
     )]
-    client.on_tool_call = lambda _c: None  # truthy, so has_tools() == True
+    client.on_tool_call = lambda _c: None  # truthy → has_tools() == True
+    sent: list = []
+
+    async def fake_send_event(ev, _sent=sent):
+        _sent.append(ev)
+
+    client.send_event = fake_send_event
+    return client, sent
+
+
+def test_realtime_tools_for_step_uses_nested_function_shape():
+    client, _ = _make_rt_client("step", tool_kwargs={"description": "d"})
     out = client._tools_for_step()
     assert out == [{
         "type": "function",
@@ -415,15 +439,7 @@ def test_realtime_tools_for_step_uses_nested_function_shape():
 
 
 def test_realtime_tools_for_openai_realtime_is_flat():
-    from main_logic.omni_realtime_client import OmniRealtimeClient
-    from main_logic.tool_calling import ToolDefinition
-
-    client = OmniRealtimeClient.__new__(OmniRealtimeClient)
-    client._tool_definitions = [ToolDefinition(
-        name="x", description="d", parameters={"type": "object", "properties": {}},
-        handler=lambda _: None,
-    )]
-    client.on_tool_call = lambda _c: None
+    client, _ = _make_rt_client("gpt", tool_kwargs={"description": "d"})
     out = client._tools_for_openai_realtime()
     assert out == [{"type": "function", "name": "x", "description": "d",
                     "parameters": {"type": "object", "properties": {}}}]
@@ -432,16 +448,14 @@ def test_realtime_tools_for_openai_realtime_is_flat():
 def test_realtime_tools_for_qwen_uses_nested_function_shape():
     """Qwen-Omni-Realtime 的 schema 与 StepFun 一致（嵌套 function 形），
     跟 GLM/OpenAI Realtime 的 flat 形不同。这是 Aliyun 文档明确的形状。"""
-    from main_logic.omni_realtime_client import OmniRealtimeClient
-    from main_logic.tool_calling import ToolDefinition
-
-    client = OmniRealtimeClient.__new__(OmniRealtimeClient)
-    client._tool_definitions = [ToolDefinition(
-        name="get_weather", description="天气",
-        parameters={"type": "object", "properties": {"city": {"type": "string"}}},
-        handler=lambda _: None,
-    )]
-    client.on_tool_call = lambda _c: None
+    client, _ = _make_rt_client(
+        "qwen",
+        tool_name="get_weather",
+        tool_kwargs={
+            "description": "天气",
+            "parameters": {"type": "object", "properties": {"city": {"type": "string"}}},
+        },
+    )
     out = client._tools_for_qwen()
     assert out == [{
         "type": "function",
@@ -458,23 +472,9 @@ async def test_realtime_glm_tool_result_must_not_carry_call_id():
     """GLM 协议：function_call_arguments.done 不返回 call_id（我们合成
     了 glm_<rid>_<idx> 用于内部追踪），且回传 function_call_output 时
     服务端不接受 call_id 字段。这条测试保证 wire 上不外泄合成的伪 id。"""
-    from main_logic.omni_realtime_client import OmniRealtimeClient
     from main_logic.tool_calling import ToolResult
 
-    client = OmniRealtimeClient.__new__(OmniRealtimeClient)
-    client._api_type = "glm"
-    client._fatal_error_occurred = True  # 阻止真正发包；只验构造逻辑
-    sent = []
-
-    async def fake_send_event(ev):
-        sent.append(ev)
-
-    client.send_event = fake_send_event
-
-    # 强制绕过 _fatal_error_occurred 检查 —— 直接 patch send_event 已避开
-    # WebSocket，但 _send_tool_result_openai_realtime 自己不查 fatal flag,
-    # 所以这里安全。
-    client._fatal_error_occurred = False
+    client, sent = _make_rt_client("glm")
     await client._send_tool_result_openai_realtime(ToolResult(
         call_id="glm_resp123_0",  # 内部合成的伪 id
         name="phoneCall",
@@ -497,20 +497,10 @@ async def test_realtime_glm_tool_result_must_not_carry_call_id():
 @pytest.mark.asyncio
 async def test_realtime_qwen_tool_result_carries_call_id():
     """Qwen / OpenAI gpt / StepFun：必须回传 call_id，server 用它绑回 function_call。"""
-    from main_logic.omni_realtime_client import OmniRealtimeClient
     from main_logic.tool_calling import ToolResult
 
     for api in ("qwen", "gpt", "step", "free"):
-        client = OmniRealtimeClient.__new__(OmniRealtimeClient)
-        client._api_type = api
-        client._fatal_error_occurred = False
-        sent = []
-
-        async def fake_send_event(ev, _sent=sent):
-            _sent.append(ev)
-
-        client.send_event = fake_send_event
-
+        client, sent = _make_rt_client(api)
         await client._send_tool_result_openai_realtime(ToolResult(
             call_id="call_abc",
             name="get_weather",
@@ -526,24 +516,7 @@ async def test_realtime_qwen_tool_result_carries_call_id():
 async def test_realtime_apply_tools_to_session_glm_includes_turn_detection():
     """GLM 文档要求：ServerVAD 时更新 tools 必须同时传入 turn_detection，
     否则服务端可能把 turn_detection reset 成默认。"""
-    from main_logic.omni_realtime_client import OmniRealtimeClient
-    from main_logic.tool_calling import ToolDefinition
-
-    client = OmniRealtimeClient.__new__(OmniRealtimeClient)
-    client._api_type = "glm"
-    client._is_gemini = False
-    client._gemini_session = None
-    client.ws = object()  # 任意非空，触发"已连接"分支
-    client._fatal_error_occurred = False
-    client._tool_definitions = [ToolDefinition(name="x", description="", handler=lambda _: 0)]
-    client.on_tool_call = lambda _c: None
-    sent = []
-
-    async def fake_send_event(ev, _sent=sent):
-        _sent.append(ev)
-
-    client.send_event = fake_send_event
-
+    client, sent = _make_rt_client("glm")
     await client.apply_tools_to_session()
     # update_session 实际上是 send_event({type:"session.update", session:...})
     assert len(sent) == 1
@@ -559,24 +532,7 @@ async def test_realtime_apply_tools_to_session_glm_includes_turn_detection():
 async def test_realtime_apply_tools_to_session_qwen_disables_enable_search():
     """Qwen-Omni-Realtime: tools 与 enable_search 互斥；注册了自定义工具时
     必须显式 enable_search=False，否则服务端会拒绝 session.update。"""
-    from main_logic.omni_realtime_client import OmniRealtimeClient
-    from main_logic.tool_calling import ToolDefinition
-
-    client = OmniRealtimeClient.__new__(OmniRealtimeClient)
-    client._api_type = "qwen"
-    client._is_gemini = False
-    client._gemini_session = None
-    client.ws = object()
-    client._fatal_error_occurred = False
-    client._tool_definitions = [ToolDefinition(name="x", description="", handler=lambda _: 0)]
-    client.on_tool_call = lambda _c: None
-    sent = []
-
-    async def fake_send_event(ev, _sent=sent):
-        _sent.append(ev)
-
-    client.send_event = fake_send_event
-
+    client, sent = _make_rt_client("qwen")
     await client.apply_tools_to_session()
     sess = sent[0]["session"]
     assert sess.get("enable_search") is False, (
@@ -592,24 +548,7 @@ async def test_realtime_apply_tools_to_session_qwen_disables_enable_search():
 async def test_realtime_apply_tools_to_session_step_keeps_web_search():
     """StepFun apply_tools 必须保留内置 web_search 工具，否则 server 会把
     用户 disable web_search 的状态当作 mid-session 撤销，影响其他对话功能。"""
-    from main_logic.omni_realtime_client import OmniRealtimeClient
-    from main_logic.tool_calling import ToolDefinition
-
-    client = OmniRealtimeClient.__new__(OmniRealtimeClient)
-    client._api_type = "step"
-    client._is_gemini = False
-    client._gemini_session = None
-    client.ws = object()
-    client._fatal_error_occurred = False
-    client._tool_definitions = [ToolDefinition(name="x", description="", handler=lambda _: 0)]
-    client.on_tool_call = lambda _c: None
-    sent = []
-
-    async def fake_send_event(ev, _sent=sent):
-        _sent.append(ev)
-
-    client.send_event = fake_send_event
-
+    client, sent = _make_rt_client("step")
     await client.apply_tools_to_session()
     tools = sent[0]["session"]["tools"]
     assert any(t.get("type") == "web_search" for t in tools)
