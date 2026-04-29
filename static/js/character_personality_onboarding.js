@@ -182,8 +182,11 @@
         }
 
         isTutorialPromptSettled(state) {
+            if (!state || typeof state !== 'object') {
+                return false;
+            }
             const status = this.normalizeTutorialPromptStatus(state);
-            if (!status || status === 'completed' || status === 'deferred' || status === 'never' || status === 'error') {
+            if (status === 'completed' || status === 'deferred' || status === 'never' || status === 'error') {
                 return true;
             }
             if (status === 'started') {
@@ -208,6 +211,12 @@
                 }
 
                 const tutorialPromptState = await this.fetchTutorialPromptState();
+                if (!tutorialPromptState) {
+                    await new Promise((resolve) => {
+                        window.setTimeout(resolve, TUTORIAL_PROMPT_POLL_INTERVAL_MS);
+                    });
+                    continue;
+                }
                 const status = this.normalizeTutorialPromptStatus(tutorialPromptState);
                 if (this.isTutorialPromptSettled(tutorialPromptState)) {
                     return;

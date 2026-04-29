@@ -40,6 +40,7 @@ def _bootstrap_page(mock_page: Page) -> None:
             };
             window.__tutorialPromptState = 'completed';
             window.__tutorialPromptStatePayload = null;
+            window.__tutorialPromptFetchFailuresRemaining = 0;
             window.__personaOnboardingState = {
                 status: 'pending',
                 manual_reselect_character_name: '',
@@ -112,6 +113,10 @@ def _bootstrap_page(mock_page: Page) -> None:
                     }
 
                 if (requestUrl === '/api/tutorial-prompt/state') {
+                    if (window.__tutorialPromptFetchFailuresRemaining > 0) {
+                        window.__tutorialPromptFetchFailuresRemaining -= 1;
+                        throw new Error('tutorial prompt unavailable');
+                    }
                     const payload = window.__tutorialPromptStatePayload;
                     return new Response(JSON.stringify({
                         success: true,
@@ -327,6 +332,35 @@ def test_onboarding_does_not_preempt_new_user_tutorial_prompt_flow(mock_page: Pa
         """
     )
 
+    expect(mock_page.locator("[data-testid='character-personality-overlay']")).to_be_visible()
+
+
+@pytest.mark.frontend
+def test_onboarding_does_not_treat_tutorial_prompt_fetch_failure_as_settled(mock_page: Page):
+    _bootstrap_page(mock_page)
+    mock_page.evaluate(
+        """
+        () => {
+            window.universalTutorialManager.isTutorialRunning = false;
+            window.__tutorialPromptFetchFailuresRemaining = 2;
+            window.__tutorialPromptState = 'completed';
+        }
+        """
+    )
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static" / "js" / "character_personality_onboarding.js"))
+
+    mock_page.evaluate(
+        """
+        () => {
+            window.CharacterPersonalityOnboarding.bootstrap();
+        }
+        """
+    )
+
+    mock_page.wait_for_timeout(200)
+    expect(mock_page.locator("[data-testid='character-personality-overlay']")).to_have_count(0)
+
+    mock_page.wait_for_function("() => window.__tutorialPromptFetchFailuresRemaining === 0")
     expect(mock_page.locator("[data-testid='character-personality-overlay']")).to_be_visible()
 
 
@@ -976,6 +1010,42 @@ def test_character_panel_personality_select_opens_onboarding(mock_page: Page, ru
 
     mock_page.locator("[data-testid='character-personality-select']").click()
     assert mock_page.evaluate("() => window.__openedPersonalityFor") == "测试角色"
+
+
+@pytest.mark.frontend
+def test_new_character_panel_disables_personality_select_until_saved(mock_page: Page, running_server: str):
+    mock_page.goto(f"{running_server}/character_card_manager")
+    mock_page.wait_for_load_state("networkidle")
+    mock_page.wait_for_selector("body")
+
+    mock_page.evaluate(
+        """
+        () => {
+            window.__openedPersonalityFor = '';
+            window.CharacterPersonalityOnboarding = {
+                openFromSettings(characterName) {
+                    window.__openedPersonalityFor = characterName;
+                }
+            };
+
+            const host = document.createElement('div');
+            host.id = 'personality-panel-host-new';
+            document.body.appendChild(host);
+
+            buildCatgirlDetailForm(null, {
+                '档案名': '',
+                '昵称': '',
+            }, true, host);
+        }
+        """
+    )
+
+    select_button = mock_page.locator("[data-testid='character-personality-select']")
+    expect(select_button).to_be_visible()
+    expect(select_button).to_be_disabled()
+
+    select_button.click(force=True)
+    assert mock_page.evaluate("() => window.__openedPersonalityFor") == ""
 
 
 @pytest.mark.frontend

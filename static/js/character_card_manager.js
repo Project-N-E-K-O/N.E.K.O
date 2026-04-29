@@ -4514,7 +4514,11 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
     personalitySelectBtn.style.minWidth = '120px';
     personalitySelectBtn.dataset.testid = 'character-personality-select';
     personalitySelectBtn.textContent = window.t ? window.t('character.personalitySelect') : '选择人格';
+    personalitySelectBtn.disabled = !!isNew;
     personalitySelectBtn.addEventListener('click', async function () {
+        if (isNew) {
+            return;
+        }
         if (!window.CharacterPersonalityOnboarding || typeof window.CharacterPersonalityOnboarding.openFromSettings !== 'function') {
             if (typeof showAlert === 'function') {
                 await showAlert(window.t ? window.t('character.personalityModuleUnavailable') : '人格选择模块尚未加载');
