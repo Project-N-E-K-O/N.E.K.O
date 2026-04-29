@@ -1404,8 +1404,6 @@
     if (!force && statusRefreshPromise) return statusRefreshPromise;
     statusRefreshPromise = (async () => {
       try {
-        // 先重新加载凭据（防止解密失败导致状态一直是 False）
-        await callPlugin('reload_credential', {});
         const data = await callPlugin('get_status', {});
         renderStatus(data);
         return data;

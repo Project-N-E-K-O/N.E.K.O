@@ -17,16 +17,17 @@ from plugin.sdk.plugin import (
 
 
 # ── 同步 helper（已禁用自动跳转，仅作备用）──────────────────────────────
-# def _open_url_in_browser(url: str) -> None:
-#     try:
-#         if sys.platform == "win32":
-#             subprocess.Popen(["cmd", "/c", "start", "", url], shell=False)
-#         elif sys.platform == "darwin":
-#             subprocess.Popen(["open", url])
-#         else:
-#             subprocess.Popen(["xdg-open", url])
-#     except Exception:
-#         raise
+def _open_url_in_browser(url: str) -> None:
+    """在系统默认浏览器中打开 URL（同步，通过 to_thread 调用）"""
+    try:
+        if sys.platform == "win32":
+            subprocess.Popen(["cmd", "/c", "start", "", url], shell=False)
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", url])
+        else:
+            subprocess.Popen(["xdg-open", url])
+    except Exception:
+        raise
 
 
 # 导入内嵌的 mijia_api

@@ -637,9 +637,9 @@
         document.getElementById('refreshScenesBtn').addEventListener('click', () => loadScenes(true));
         document.getElementById('controlBtn').addEventListener('click', sendControlCommand);
         document.getElementById('clearControlBtn').addEventListener('click', clearControlInput);
-        // 支持回车键发送
-        document.getElementById('controlInput').addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') sendControlCommand();
+        // 支持回车键发送（跳过输入法组合态，防止中文选词时误触发）
+        document.getElementById('controlInput').addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && !e.isComposing) sendControlCommand();
         });
         loadStatus();
     });

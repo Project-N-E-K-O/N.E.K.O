@@ -2073,10 +2073,12 @@ class BiliDanmakuPlugin(NekoPluginBase):
                     old_uid = self._master_bili_uid
                     old_name = self._master_bili_name
                     self._master_bili_uid = uid_int
-                    self._master_bili_name = username
+                    # 只在 username 非空时更新，避免把已有名称覆盖成空串
+                    if username:
+                        self._master_bili_name = username
                     self._refresh_logged_in_master_conflict()
                     await self._save_plugin_config()
-                    self.logger.info(f"登录用户已写入 config: uid={uid_int}, name={username} (原 uid={old_uid}, name={old_name})")
+                    self.logger.info(f"登录用户已写入 config: uid={uid_int}, name={self._master_bili_name} (原 uid={old_uid}, name={old_name})")
             return self._bili_ok(result)
         except Exception as e:
             return self._bili_err(e)
