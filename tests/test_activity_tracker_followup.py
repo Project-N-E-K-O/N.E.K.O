@@ -63,11 +63,19 @@ def _sys_snap(
     ('KeePass - vault.kdbx', 'KeePass.exe'),
     ('1Password 8', '1Password.exe'),
     ('Bitwarden', 'Bitwarden.exe'),
-    ('Vaultwarden Web Vault', 'chrome.exe'),  # title-only match
     ('Ledger Live - Portfolio', 'Ledger Live.exe'),
 ])
 def test_privacy_classification_emits_private_state(title, process):
-    """Sensitive apps classify as state='private', propensity='closed'."""
+    """Sensitive apps classify as state='private', propensity='closed'.
+
+    Native apps only — title-based ``private`` classification fired
+    inside a browser process gets demoted to ``unknown`` (see
+    ``observation_from_system``) to avoid false-positives on marketing
+    pages, docs, and HN posts about password managers. So
+    Vaultwarden-via-chrome.exe is intentionally NOT in this list any
+    more; covered separately by
+    ``test_private_title_in_browser_does_not_trigger_lockdown``.
+    """
     prefs = ActivityPreferences()
     sm = ActivityStateMachine(prefs=prefs)
     sn = _sys_snap(title=title, process=process)
@@ -120,6 +128,36 @@ def test_private_state_yields_to_away():
 
     snap = sm.get_snapshot()
     assert snap.state == 'away'
+
+
+@pytest.mark.parametrize('title,process', [
+    ('Bitwarden Pricing | Best Password Manager - Bitwarden', 'chrome.exe'),
+    ('KeePass User Guide - Documentation', 'firefox.exe'),
+    ('1Password vs LastPass - blog comparison', 'msedge.exe'),
+    ('Why I switched to Vaultwarden — Hacker News', 'brave.exe'),
+])
+def test_private_title_in_browser_does_not_trigger_lockdown(title, process):
+    """Browser tabs about password managers (marketing pages, docs,
+    blog posts, HN comments) MUST NOT trip the privacy lockdown.
+
+    Native private apps catch via ``PRIVATE_PROCESS_NAMES`` (process
+    match in ``observation_from_system``); the title-only path inside
+    a browser is too noisy and would silence proactive chat over
+    "user is reading about KeePass". Only real running password
+    managers should drive the lockdown.
+    """
+    prefs = ActivityPreferences()
+    sm = ActivityStateMachine(prefs=prefs)
+    sn = _sys_snap(title=title, process=process)
+    sm.update_system(sn)
+    sm.update_window(observation_from_system(sn, prefs))
+    sm.update_user_message()
+
+    snap = sm.get_snapshot()
+    assert snap.state != 'private', (
+        f"browser tab {title!r} (process={process}) must NOT classify "
+        f"as 'private'; got state={snap.state}"
+    )
 
 
 # ── #4 Own-app exclusion (N.E.K.O / Xiao8) ──────────────────────────

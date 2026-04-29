@@ -311,6 +311,16 @@ def observation_from_system(
         if result.category == 'unknown':
             # Fallback: title-only classification (Notion, Figma, etc.)
             result = classify_window_title(sys_snap.window_title)
+            # Privacy guard: a title-only ``private`` hit from inside a
+            # browser is almost always a false positive — marketing
+            # page ("Bitwarden Pricing"), docs ("KeePass User Guide"),
+            # blog posts about password managers, etc. Native private
+            # apps surface via the process_name match below; only those
+            # should drive the privacy lockdown. Demote the browser-tab
+            # title hit to ``unknown`` so we don't kill enrichment +
+            # proactive chat over what could be reading-about-security.
+            if result.category == 'private':
+                result = ClassifyResult('unknown', None, None)
     else:
         # Non-browser: try title first, then process name as fallback.
         result = classify_window_title(sys_snap.window_title)
