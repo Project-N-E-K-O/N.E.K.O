@@ -3,6 +3,9 @@
  * 依赖: live2d-core.js (提供 Live2DManager 类和 window.LIPSYNC_PARAMS)
  */
 
+// lipsync 强制覆盖 motion mouth 参数的阈值：mouthValue 高于此值时强制写入，否则让位给 motion 自带的嘴部关键帧
+const LIPSYNC_OVERRIDE_THRESHOLD = 0.001;
+
 // 缓动函数集合（用于眨眼、口型等动画的平滑过渡）
 const Easing = {
     linear: (t) => t,
@@ -1485,8 +1488,8 @@ Live2DManager.prototype.installMouthOverride = function() {
                         } catch (_) {}
                     }
 
-                    // 口型参数：仅当 Motion 未接管时写入
-                    if (!this._isMouthDrivenByMotion) {
+                    // 口型参数：lipsync 在响（mouthValue > 0）时强制覆盖 motion；静默时让位给 motion 自带的嘴部动画
+                    if (!this._isMouthDrivenByMotion || this.mouthValue > LIPSYNC_OVERRIDE_THRESHOLD) {
                         for (const [id, idx] of Object.entries(mouthParamIndices)) {
                             try {
                                 coreModel.setParameterValueByIndex(idx, this.mouthValue);
@@ -1594,8 +1597,8 @@ Live2DManager.prototype.installMouthOverride = function() {
         try {
             // === 注入点 2（渲染前）：口型 + 眨眼 ===
             // 这是渲染前的最后一步，强制命令，绝对优先级
-            // 口型参数（仅当 Motion 未接管时）
-            if (!this._isMouthDrivenByMotion) {
+            // 口型参数：lipsync 在响（mouthValue > 0）时强制覆盖 motion；静默时让位给 motion 自带的嘴部动画
+            if (!this._isMouthDrivenByMotion || this.mouthValue > LIPSYNC_OVERRIDE_THRESHOLD) {
                 for (const [id, idx] of Object.entries(mouthParamIndices)) {
                     try {
                         currentCoreModel.setParameterValueByIndex(idx, this.mouthValue);
