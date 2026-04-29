@@ -183,3 +183,14 @@ def test_unknown_index_action_fills_first_generic_candidate_index() -> None:
     context = combat_context([], [])
 
     assert service._normalize_action_kwargs("unknown_index_action", raw, context) == {"options": [[{"index": 2}, {"index": 4}]], "index": 2}
+
+
+@pytest.mark.unit
+def test_shop_remove_selection_uses_shop_remove_index_when_flagged() -> None:
+    service = ActionService()
+    raw = {"type": "select_deck_card", "shop_remove_selection": True}
+    context = combat_context([], [], shop_remove_index=7)
+    service._find_shop_remove_card_index_for_selection = lambda ctx: ctx.get("shop_remove_index")
+    service._find_preferred_card_option_index = lambda raw_action, ctx: 1
+
+    assert service._normalize_action_kwargs("select_deck_card", raw, context) == {"option_index": 7}

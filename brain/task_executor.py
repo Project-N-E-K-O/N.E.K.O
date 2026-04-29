@@ -1011,25 +1011,31 @@ class DirectTaskExecutor:
             return True
         return False
 
+    def _agent_visible_plugin_entries(self, plugin: Any) -> list[dict]:
+        """Return entries that are explicitly available to automatic Agent routing."""
+        entries = plugin.get("entries") if isinstance(plugin, dict) else getattr(plugin, "entries", [])
+        if not isinstance(entries, list):
+            return []
+        return [
+            entry
+            for entry in entries
+            if isinstance(entry, dict)
+            and entry.get("id")
+            and not self._is_plugin_entry_agent_hidden(entry)
+        ]
+
     def _find_plugin_entry(self, plugins: Any, plugin_id: str, preferred_entry: str) -> tuple[Optional[dict], Optional[dict]]:
         """Find a plugin and a usable entry, falling back to the first Agent-visible declared entry."""
         iterable = plugins.items() if isinstance(plugins, dict) else enumerate(plugins)
         for _, plugin in iterable:
             if not isinstance(plugin, dict) or plugin.get("id") != plugin_id:
                 continue
-            entries = plugin.get("entries") or []
-            if not isinstance(entries, list):
-                return plugin, None
-            for entry in entries:
-                if (
-                    isinstance(entry, dict)
-                    and entry.get("id") == preferred_entry
-                    and not self._is_plugin_entry_agent_hidden(entry)
-                ):
+            visible_entries = self._agent_visible_plugin_entries(plugin)
+            for entry in visible_entries:
+                if entry.get("id") == preferred_entry:
                     return plugin, entry
-            for entry in entries:
-                if isinstance(entry, dict) and entry.get("id") and not self._is_plugin_entry_agent_hidden(entry):
-                    return plugin, entry
+            if visible_entries:
+                return plugin, visible_entries[0]
             return plugin, None
         return None, None
 
@@ -1049,10 +1055,8 @@ class DirectTaskExecutor:
                     continue
                 entry_lines = []
                 try:
-                    for e in entries:
+                    for e in self._agent_visible_plugin_entries(p):
                         try:
-                            if self._is_plugin_entry_agent_hidden(e):
-                                continue
                             eid = e.get("id") if isinstance(e, dict) else getattr(e, "id", None)
                             edesc = e.get("description", "") if isinstance(e, dict) else getattr(e, "description", "")
                             if not eid:
@@ -1080,7 +1084,7 @@ class DirectTaskExecutor:
                             continue
                 except Exception:
                     entry_lines = []
-                entry_desc = "; ".join(entry_lines) if entry_lines else "(default 'run' entry)"
+                entry_desc = "; ".join(entry_lines) if entry_lines else "(no Agent-visible entries)"
                 lines.append(f"- {pid}: {desc} | entries: [{entry_desc}]")
         except Exception:
             pass
@@ -1363,11 +1367,7 @@ class DirectTaskExecutor:
                         pid = p.get("id") if isinstance(p, dict) else None
                         if not pid:
                             continue
-                        eids = []
-                        for e in (p.get("entries") or []) if isinstance(p, dict) else []:
-                            eid = e.get("id") if isinstance(e, dict) else None
-                            if eid:
-                                eids.append(eid)
+                        eids = [str(e.get("id")) for e in self._agent_visible_plugin_entries(p) if e.get("id")]
                         valid_entries_map[pid] = eids
                 except Exception:
                     valid_entries_map = {}
@@ -1800,11 +1800,7 @@ class DirectTaskExecutor:
 
         # Strict entry_id validation: only allow case-insensitive exact match as minor tolerance.
         if plugin_entry_id and plugin_meta:
-            known_entries = []
-            for e in (plugin_meta.get("entries") or []):
-                eid = e.get("id") if isinstance(e, dict) else None
-                if eid:
-                    known_entries.append(eid)
+            known_entries = [str(e.get("id")) for e in self._agent_visible_plugin_entries(plugin_meta) if e.get("id")]
             if known_entries and plugin_entry_id not in known_entries:
                 # Only tolerate case-insensitive exact match (e.g. "Run" vs "run")
                 ci_matches = [e for e in known_entries if e.lower() == plugin_entry_id.lower()]

@@ -25,14 +25,16 @@ import pytest
 @pytest.fixture(autouse=True)
 def _reset_shared_state():
     shared_state = sys.modules.get("main_routers.shared_state")
-    snapshot = None if shared_state is None else dict(shared_state._state)
+    had_shared_state = shared_state is not None
+    snapshot = dict(shared_state._state) if had_shared_state else {}
 
     try:
         yield
     finally:
         shared_state = sys.modules.get("main_routers.shared_state")
-        if shared_state is None or snapshot is None:
+        if shared_state is None:
             return
 
         shared_state._state.clear()
-        shared_state._state.update(snapshot)
+        if had_shared_state:
+            shared_state._state.update(snapshot)

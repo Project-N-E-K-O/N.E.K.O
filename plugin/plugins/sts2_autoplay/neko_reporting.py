@@ -51,14 +51,15 @@ class NekoReportingMixin:
         for enemy in enemies:
             if not isinstance(enemy, dict):
                 continue
-            intent = enemy.get("intent") if isinstance(enemy.get("intent"), dict) else {}
+            raw_intent = enemy.get("intent")
+            intent = raw_intent if isinstance(raw_intent, dict) else {}
             enemies_summary.append({
                 "name": str(enemy.get("name") or ""),
                 "hp": self._safe_int(enemy.get("hp")),
                 "max_hp": self._safe_int(enemy.get("max_hp")),
                 "block": self._safe_int(enemy.get("block")),
-                "intent": str(intent.get("type") or "") if isinstance(intent, dict) else str(enemy.get("intent") or ""),
-                "intent_value": self._safe_int(intent.get("value") if isinstance(intent, dict) else enemy.get("intent_value")),
+                "intent": str(intent.get("type") or intent.get("intent") or "") if isinstance(raw_intent, dict) else str(raw_intent or ""),
+                "intent_value": self._safe_int(intent.get("value") if isinstance(raw_intent, dict) else enemy.get("intent_value")),
                 "buffs": [
                     {"id": str(b.get("id") or ""), "name": str(b.get("name") or ""), "stacks": self._safe_int(b.get("stacks"))}
                     for b in (enemy.get("buffs") if isinstance(enemy.get("buffs"), list) else [])
@@ -72,7 +73,7 @@ class NekoReportingMixin:
             })
 
         character_strategy = self._configured_character_strategy()
-        strategy_constraints = self._load_strategy_constraints(character_strategy)
+        strategy_constraints = self._safe_strategy_constraints(character_strategy)
         tactical_summary = self._combat_analyzer.build_tactical_summary(combat, lambda s: strategy_constraints, character_strategy)
 
         llm_reasoning = {}

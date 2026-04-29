@@ -33,10 +33,10 @@ class AutoplayLoopMixin:
 
     async def resume_autoplay(self) -> Dict[str, Any]:
         if self._autoplay_task is None or self._autoplay_task.done():
-            task = self._semi_auto_task if isinstance(self._semi_auto_task, dict) else None
-            objective = task.get("objective") if task else None
-            stop_condition = str(task.get("stop_condition") or "current_floor") if task else "current_floor"
-            return await self.start_autoplay(objective=objective, stop_condition=stop_condition)
+            self._paused = False
+            self._autoplay_state = "idle"
+            self._emit_status()
+            return {"status": "idle", "message": "没有可恢复的尖塔半自动任务", "executed": False}
         self._paused = False
         self._autoplay_state = "running"
         self._emit_status()

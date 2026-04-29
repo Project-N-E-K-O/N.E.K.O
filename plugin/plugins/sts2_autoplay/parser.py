@@ -372,7 +372,7 @@ class StrategyParser:
         else:
             section = self._strategy_sections_for_constraints(prompt or "")
             if not section:
-                return {}
+                return constraints
         current_category = ""
         current_shop_type = ""
         for raw_line in section.splitlines():

@@ -60,8 +60,8 @@ python -m pytest plugin/plugins/sts2_autoplay/tests -q
 | -- | ------------------------- | ----------------------------------------- |
 | 1  | 调用 `sts2_start_autoplay`  | autoplay 启动，`_autoplay_state` = `running` |
 | 2  | 调用 `sts2_pause_autoplay`  | autoplay 暂停，`_paused` = `True`            |
-| 3  | 调用 `sts2_resume_autoplay` | autoplay 恢复，`_paused` = `False`           |
-| 4  | 调用 `sts2_stop_autoplay`   | autoplay 停止，`_shutdown` = `True`          |
+| 3  | 调用 `sts2_resume_autoplay` | 后台任务仍存在时恢复，`_paused` = `False`；后台任务不存在时返回 `idle` 且不隐式重启 |
+| 4  | 调用 `sts2_stop_autoplay`   | autoplay 停止并清除半自动任务，`_autoplay_state` = `idle` |
 
 ### 1.2 日志确认
 

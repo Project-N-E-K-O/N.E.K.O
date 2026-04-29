@@ -137,7 +137,7 @@ class NekoCommandingMixin:
         return self._neko_text_has_any(text, ["打这一关", "打一关", "打一层", "打完这场", "自动打", "托管", "代打"])
 
     def _infer_neko_stop_condition(self, text: str) -> str:
-        if self._neko_text_has_any(text, ["这场", "战斗"]):
+        if self._neko_text_has_any(text, ["这场战斗", "当前战斗", "本场战斗", "打完这场", "只打这场", "这一场"]):
             return "current_combat"
         if self._neko_text_has_any(text, ["一直", "持续", "无限", "手动停止"]):
             return "manual"

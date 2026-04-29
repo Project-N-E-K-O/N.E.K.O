@@ -133,9 +133,9 @@ description: "Design and implement neko-supervised autoplay for sts2_autoplay pl
 
 ### 4. plugin.toml 改动
 
-- `catgirl_reporting_enabled`：bool，是否开启猫娘汇报
-- `catgirl_report_interval_steps`：int，每 N 步强制汇报（方案 C 建议 N=1）
-- `catgirl_guidance_max_queue`：int，guidance 队列最大长度
+- `neko_reporting_enabled`：bool，是否开启猫娘汇报
+- `neko_report_interval_steps`：int，每 N 步强制汇报（方案 C 建议 N=1）
+- `neko_guidance_max_queue`：int，guidance 队列最大长度
 - `llm_frontend_output_probability`：建议调高或设为 1.0（确保每步都推）
 
 ## 关键设计决策

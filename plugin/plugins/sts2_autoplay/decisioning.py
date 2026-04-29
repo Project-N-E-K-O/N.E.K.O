@@ -15,6 +15,15 @@ class DecisioningMixin:
                 return value
         return default
 
+    def _safe_strategy_constraints(self, strategy: Optional[str] = None) -> dict[str, Any]:
+        active_strategy = strategy or self._configured_character_strategy()
+        try:
+            constraints = self._load_strategy_constraints(active_strategy)
+        except RuntimeError as exc:
+            self.logger.warning(f"加载策略约束失败，使用空约束: strategy={active_strategy}, error={exc}")
+            return {}
+        return constraints if isinstance(constraints, dict) else {}
+
     def _is_desperate_situation(self, context: dict[str, Any]) -> bool:
         if not bool(self._cfg.get("neko_desperate_enabled", True)):
             return False
@@ -54,7 +63,7 @@ class DecisioningMixin:
         hand = combat.get("hand") if isinstance(combat.get("hand"), list) else []
         playable_cards = [c for c in hand if isinstance(c, dict) and bool(c.get("playable"))]
         character_strategy = self._configured_character_strategy()
-        strategy_constraints = self._load_strategy_constraints(character_strategy)
+        strategy_constraints = self._safe_strategy_constraints(character_strategy)
         tactical_summary = self._combat_analyzer.build_tactical_summary(combat, lambda _strategy: strategy_constraints, character_strategy)
         if not bool(tactical_summary.get("should_prioritize_lethal")):
             defensive_action = self._find_defensive_action(actions, combat, tactical_summary)
@@ -156,13 +165,26 @@ class DecisioningMixin:
         simulated_weak = self._safe_int(active_state.get("weaken_stacks"), 0) > 0
         if synergy_type == "attack" and (enemy_vulnerable or simulated_vulnerable):
             boost += 0.50
-        elif synergy_type == "weaken" and (enemy_vulnerable or simulated_vulnerable):
+        elif synergy_type == "weaken" and (enemy_weak or simulated_weak):
             boost += 0.25
-        elif synergy_type == "vulnerable" and (enemy_weak or simulated_weak):
+        elif synergy_type == "vulnerable" and (enemy_vulnerable or simulated_vulnerable):
             boost += 0.50
         elif synergy_type == "strength_boost":
             boost += player_str * 0.1
         return boost
+
+    def _calc_weaken_defense_synergy(self, active_state: dict[str, Any], combat: dict[str, Any]) -> float:
+        incoming = sum(
+            self._enemy_intent_attack_total(enemy)
+            for enemy in (combat.get("enemies") if isinstance(combat.get("enemies"), list) else [])
+            if isinstance(enemy, dict)
+        )
+        current_block = self._safe_int(active_state.get("block"), 0)
+        remaining_needed = max(0, incoming - current_block)
+        if remaining_needed <= 0:
+            return 0.0
+        prevented_damage = max(1, int(incoming * 0.25))
+        return float(min(remaining_needed, prevented_damage))
 
     def _calc_setup_synergy(self, setup_card: dict[str, Any], remaining_cards: list[dict[str, Any]], combat: dict[str, Any], active_state: dict[str, Any], strategy_constraints) -> float:
         synergy_type = self._detect_card_synergy_type(setup_card, combat)
@@ -170,12 +192,17 @@ class DecisioningMixin:
         if synergy_type in {"weaken", "vulnerable", "strength_boost", "block_boost"}:
             sim_state = dict(active_state)
             self._apply_setup_effect(setup_card, sim_state, combat)
+            block_bonus = self._safe_int(sim_state.get("block_boost"), 0)
+            if synergy_type == "weaken":
+                total_synergy += self._calc_weaken_defense_synergy(active_state, combat) * 2.0
             for rem_card in remaining_cards:
                 rem_type = self._detect_card_synergy_type(rem_card, combat)
                 if rem_type == "attack" or (rem_type == "orb_evoke" and "lightning" in str(rem_card.get("name") or "").lower()):
                     boost = self._calc_synergy_boost(rem_card, sim_state, combat, strategy_constraints)
                     dmg = self._combat_analyzer._card_total_damage_value(rem_card, combat, strategy_constraints=strategy_constraints)
                     total_synergy += dmg * boost
+                elif rem_type == "block" and block_bonus > 0:
+                    total_synergy += min(block_bonus, self._combat_analyzer._card_block_value(rem_card))
         elif synergy_type in {"draw", "orb_channel"}:
             extra_energy = 1
             extra_damage = extra_energy * 10
@@ -191,6 +218,8 @@ class DecisioningMixin:
             state["vulnerable_stacks"] = state.get("vulnerable_stacks", 0) + 1
         if any(k in text_blob for k in {"inflame", "力量", "strength"}):
             state["str_stacks"] = state.get("str_stacks", 0) + 2
+        if any(k in text_blob for k in {"metallicize", "金属化", "护甲每回合"}):
+            state["block_boost"] = state.get("block_boost", 0) + 3
 
     def _calc_marginal_benefit(self, card: dict[str, Any], state: dict[str, Any], combat: dict[str, Any], tactical: dict[str, Any], strategy_constraints, remaining_cards: Optional[list[dict[str, Any]]] = None) -> float:
         synergy_type = self._detect_card_synergy_type(card, combat)
@@ -209,7 +238,7 @@ class DecisioningMixin:
         total_damage = damage + orb_damage
         synergy_boost = self._calc_synergy_boost(card, state, combat, strategy_constraints)
         benefit = 0.0
-        if synergy_type in {"weaken", "vulnerable", "strength_boost"}:
+        if synergy_type in {"weaken", "vulnerable", "strength_boost", "block_boost"}:
             benefit = self._calc_setup_synergy(card, remaining_cards or [], combat, state, strategy_constraints) * 0.5
         elif synergy_type == "attack" and total_damage > 0:
             benefit = total_damage * (1.0 + synergy_boost) * 2.0
@@ -242,7 +271,7 @@ class DecisioningMixin:
         if not play_card_actions:
             return None
         character_strategy = self._configured_character_strategy()
-        strategy_constraints = self._load_strategy_constraints(character_strategy)
+        strategy_constraints = self._safe_strategy_constraints(character_strategy)
         tactical = self._combat_analyzer.build_tactical_summary(combat, lambda s: strategy_constraints, character_strategy)
         remaining_energy = self._safe_int(combat.get("player_energy"), 3)
         active_state: dict[str, Any] = {
@@ -251,6 +280,7 @@ class DecisioningMixin:
             "weaken_stacks": 0,
             "vulnerable_stacks": 0,
             "block": self._combat_analyzer._combat_player_block(combat),
+            "block_boost": 0,
         }
         remaining = list(playable_cards)
         best_sequence: list[tuple[dict[str, Any], Optional[int]]] = []
@@ -277,7 +307,7 @@ class DecisioningMixin:
                             best_target = self._safe_int(valid_targets[0])
                     else:
                         best_target = None
-            if best_card is None or best_benefit < -999990.0:
+            if best_card is None or best_benefit < -999990.0 or (best_sequence and best_benefit <= 0):
                 break
             action = self._action_for_card(play_card_actions, best_card, target_index=best_target)
             if action is None:
@@ -287,6 +317,7 @@ class DecisioningMixin:
             remaining_energy_cost = self._safe_int(best_card.get("cost"), 0)
             sim_energy -= remaining_energy_cost
             active_state["energy"] = sim_energy
+            active_state["block"] = active_state.get("block", 0) + self._combat_analyzer._card_block_value(best_card)
             self._apply_setup_effect(best_card, active_state, combat)
             remaining.pop(best_idx)
         if not best_sequence:
@@ -502,9 +533,8 @@ class DecisioningMixin:
         return self._heuristic_selector.find_defensive_action(actions, combat, tactical_summary, self, self._combat_analyzer)
 
     def _best_playable_damage_card(self, combat: dict[str, Any], *, target_index: Any = None, strategy_constraints=None) -> Optional[dict[str, Any]]:
-        if strategy_constraints is None:
-            strategy_constraints = self._load_strategy_constraints(self._configured_character_strategy())
-        return self._combat_analyzer._best_playable_damage_card(combat, target_index=target_index, strategy_constraints=strategy_constraints)
+        resolved_constraints = strategy_constraints if strategy_constraints is not None else self._safe_strategy_constraints(self._configured_character_strategy())
+        return self._combat_analyzer._best_playable_damage_card(combat, target_index=target_index, strategy_constraints=resolved_constraints)
 
     def _best_playable_block_card(self, combat: dict[str, Any]) -> Optional[dict[str, Any]]:
         return self._combat_analyzer._best_playable_block_card(combat)
@@ -614,10 +644,11 @@ class DecisioningMixin:
         player = combat.get("player") if isinstance(combat.get("player"), dict) else {}
         run = raw_state.get("run") if isinstance(raw_state.get("run"), dict) else {}
         resolved_strategy = character_strategy or self._configured_character_strategy()
+        strategy_constraints = self._safe_strategy_constraints(resolved_strategy)
         payload = {
             "mode": self._configured_mode(),
             "character_strategy": resolved_strategy,
-            "strategy_constraints": self._load_strategy_constraints(resolved_strategy),
+            "strategy_constraints": strategy_constraints,
             "snapshot": {
                 "screen": snapshot.get("screen"),
                 "floor": snapshot.get("floor"),
@@ -630,8 +661,8 @@ class DecisioningMixin:
                 "gold": run.get("gold"),
                 "energy": player.get("energy"),
             },
-            "combat": self._combat_analyzer.sanitize_combat_for_prompt(combat, lambda s: self._load_strategy_constraints(s or resolved_strategy), resolved_strategy),
-            "tactical_summary": self._combat_analyzer.build_tactical_summary(combat, lambda s: self._load_strategy_constraints(s or resolved_strategy), resolved_strategy),
+            "combat": self._combat_analyzer.sanitize_combat_for_prompt(combat, lambda _strategy: strategy_constraints, resolved_strategy),
+            "tactical_summary": self._combat_analyzer.build_tactical_summary(combat, lambda _strategy: strategy_constraints, resolved_strategy),
             "map_summary": self._context_analyzer._build_map_summary(context),
             "legal_actions": [self._describe_legal_action(action, context) for action in context.get("actions", []) if isinstance(action, dict)],
             "neko_guidance": context.get("neko_guidance"),

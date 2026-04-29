@@ -65,7 +65,7 @@ def run(coro):
 
 
 @pytest.mark.unit
-def test_resume_autoplay_preserves_existing_task_semantics_when_restarting() -> None:
+def test_resume_autoplay_without_background_task_returns_idle_without_restarting() -> None:
     service = LoopService()
     service._semi_auto_task = {
         "objective": "打完这场战斗",
@@ -74,8 +74,10 @@ def test_resume_autoplay_preserves_existing_task_semantics_when_restarting() -> 
 
     result = run(service.resume_autoplay())
 
-    assert result["status"] == "running"
-    assert service.started == [{"objective": "打完这场战斗", "stop_condition": "current_combat"}]
+    assert result["status"] == "idle"
+    assert result["executed"] is False
+    assert service._autoplay_state == "idle"
+    assert service.started == []
 
 
 @pytest.mark.unit

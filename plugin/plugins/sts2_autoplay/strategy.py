@@ -1,7 +1,79 @@
 from __future__ import annotations
 
-import re
-from typing import Any, Callable, Dict, List, Optional, Set
+from dataclasses import dataclass
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
+
+
+Action = Dict[str, Any]
+JsonObject = Dict[str, Any]
+ScoreDetails = Dict[str, Any]
+
+
+@dataclass(frozen=True)
+class ShopSelectionRule:
+    action_type: str
+    index_finder_name: str
+
+
+PREFERRED_ACTION_ORDER: Tuple[str, ...] = (
+    "confirm_modal",
+    "dismiss_modal",
+    "choose_event_option",
+    "proceed",
+    "choose_map_node",
+    "choose_treasure_relic",
+    "play_card",
+    "end_turn",
+    "use_potion",
+    "discard_potion",
+)
+
+SHOP_SELECTION_RULES: Tuple[ShopSelectionRule, ...] = (
+    ShopSelectionRule("buy_card", "_find_preferred_shop_card_index"),
+    ShopSelectionRule("buy_relic", "_find_preferred_shop_relic_index"),
+    ShopSelectionRule("buy_potion", "_find_preferred_shop_potion_index"),
+)
+
+STRATEGY_SCORE_RULES: Tuple[Tuple[str, int], ...] = (
+    ("required", 36),
+    ("high_priority", 22),
+    ("conditional", 10),
+    ("low_priority", -20),
+)
+
+
+def _safe_mapping(value: Any) -> JsonObject:
+    return value if isinstance(value, dict) else {}
+
+
+def _action_type(action: Mapping[str, Any]) -> str:
+    raw = _safe_mapping(action.get("raw"))
+    return str(action.get("type") or raw.get("type") or raw.get("name") or raw.get("action") or "")
+
+
+def _actions_by_type(actions: Sequence[Action]) -> Dict[str, Action]:
+    return {
+        action_type: action
+        for action in actions
+        if isinstance(action, dict) and (action_type := _action_type(action))
+    }
+
+
+def _with_raw_updates(action: Action, updates: Mapping[str, Any], *, action_type: Optional[str] = None) -> Action:
+    raw = _safe_mapping(action.get("raw"))
+    selected = dict(action)
+    selected_raw = {**raw, **dict(updates)}
+    if action_type is not None:
+        selected["type"] = action_type
+        selected_raw["name"] = action_type
+        selected_raw["type"] = action_type
+    selected["raw"] = selected_raw
+    return selected
+
+
+def _best_scored_option(options: Sequence[JsonObject], score_of: Callable[[JsonObject], int]) -> Optional[Tuple[JsonObject, int]]:
+    scored_options = ((option, score_of(option)) for option in options if isinstance(option, dict))
+    return max(scored_options, key=lambda item: item[1], default=None)
 
 
 class HeuristicSelector:
@@ -63,7 +135,7 @@ class HeuristicSelector:
             if value is None:
                 return default
             return int(value)
-        except Exception:
+        except (TypeError, ValueError):
             return default
 
     def _option_texts(self, option: Dict[str, Any]) -> Set[str]:
@@ -87,29 +159,31 @@ class HeuristicSelector:
             return []
         return [str(item).strip().lower() for item in items if str(item).strip()]
 
-    def _matches_constraint_alias(self, texts: Set[str], aliases: List[str]) -> bool:
-        return any(alias in text for text in texts for alias in aliases)
+    def _matched_constraint_aliases(self, texts: Set[str], aliases: Iterable[str]) -> List[str]:
+        return [alias for alias in aliases if any(alias in text for text in texts)]
 
-    def _score_constraint_bucket(self, *, texts: Set[str], bucket: Dict[str, Any], category: str, bonus: int, strategy: str, scene: str, candidate: str) -> Dict[str, Any]:
-        score = 0
+    def _matches_constraint_alias(self, texts: Set[str], aliases: List[str]) -> bool:
+        return bool(self._matched_constraint_aliases(texts, aliases))
+
+    def _score_constraint_bucket(self, *, texts: Set[str], bucket: Dict[str, Any], category: str, bonus: int, strategy: str, scene: str, candidate: str) -> ScoreDetails:
         hits: List[Dict[str, Any]] = []
         if not isinstance(bucket, dict):
-            return {"score": score, "hits": hits}
+            return {"score": 0, "hits": hits}
         for label, entry in bucket.items():
             aliases = self._constraint_aliases(entry)
-            if not aliases or not self._matches_constraint_alias(texts, aliases):
+            matched_aliases = self._matched_constraint_aliases(texts, aliases)
+            if not matched_aliases:
                 continue
-            score += bonus
             hits.append({
                 "strategy": strategy,
                 "scene": scene,
                 "candidate": candidate,
                 "category": category,
                 "label": str(label),
-                "matched_aliases": [alias for alias in aliases if any(alias in text for text in texts)],
+                "matched_aliases": matched_aliases,
                 "score_delta": bonus,
             })
-        return {"score": score, "hits": hits}
+        return {"score": bonus * len(hits), "hits": hits}
 
     def _strategy_constraints(self, selector_methods, strategy: Optional[str] = None) -> Dict[str, Any]:
         active_strategy = strategy or selector_methods._configured_character_strategy()
@@ -160,7 +234,9 @@ class HeuristicSelector:
         combat = analyzer_methods._combat_state(context)
         if combat:
             selector_methods._log_combat_block_fields(context)
-        tactical_summary = combat_analyzer.build_tactical_summary(combat, selector_methods._load_strategy_constraints, selector_methods._configured_character_strategy()) if combat else {}
+        strategy = selector_methods._configured_character_strategy()
+        strategy_constraints = self._strategy_constraints(selector_methods, strategy)
+        tactical_summary = combat_analyzer.build_tactical_summary(combat, lambda _strategy: strategy_constraints, strategy) if combat else {}
         if combat:
             has_lethal = bool(tactical_summary.get("lethal_targets"))
             should_prioritize_defense = bool(tactical_summary.get("should_prioritize_defense"))
@@ -178,27 +254,21 @@ class HeuristicSelector:
         if not actions:
             self.logger.warning("[sts2_autoplay][heuristic] no legal actions available for selection")
             return None
-        preferred_order = [
-            "confirm_modal",
-            "dismiss_modal",
-            "choose_event_option",
-            "proceed",
-            "choose_map_node",
-            "choose_treasure_relic",
-            "play_card",
-            "end_turn",
-            "use_potion",
-            "discard_potion",
-        ]
-        for action_type in preferred_order:
-            for action in actions:
-                if str(action.get("type") or "") == action_type:
-                    return action
-        for action in actions:
-            action_type = str(action.get("type") or "")
-            if action_type and action_type not in {"wait", "noop"}:
-                return action
-        return actions[0]
+        actions_by_type = _actions_by_type(actions)
+        preferred_action = next(
+            (actions_by_type[action_type] for action_type in PREFERRED_ACTION_ORDER if action_type in actions_by_type),
+            None,
+        )
+        if preferred_action is not None:
+            return preferred_action
+        return next(
+            (
+                action
+                for action in actions
+                if isinstance(action, dict) and (action_type := _action_type(action)) and action_type not in {"wait", "noop"}
+            ),
+            actions[0],
+        )
 
     def select_shop_action_heuristic(self, actions: List[Dict[str, Any]], context: Dict[str, Any], selector_methods) -> Optional[Dict[str, Any]]:
         snapshot = context.get("snapshot") if isinstance(context.get("snapshot"), dict) else {}
@@ -206,44 +276,22 @@ class HeuristicSelector:
             return None
         raw_state = snapshot.get("raw_state") if isinstance(snapshot.get("raw_state"), dict) else {}
         shop = raw_state.get("shop") if isinstance(raw_state.get("shop"), dict) else {}
-        buy_card_action = next((action for action in actions if isinstance(action, dict) and str(action.get("type") or "") == "buy_card"), None)
-        if isinstance(buy_card_action, dict):
-            preferred_shop_card_index = selector_methods._find_preferred_shop_card_index(context)
-            if preferred_shop_card_index is not None:
-                selected = dict(buy_card_action)
-                raw = buy_card_action.get("raw") if isinstance(buy_card_action.get("raw"), dict) else {}
-                selected_raw = dict(raw)
-                selected_raw["option_index"] = preferred_shop_card_index
-                selected["raw"] = selected_raw
-                return selected
-        buy_relic_action = next((action for action in actions if isinstance(action, dict) and str(action.get("type") or "") == "buy_relic"), None)
-        if isinstance(buy_relic_action, dict):
-            preferred_shop_relic_index = selector_methods._find_preferred_shop_relic_index(context)
-            if preferred_shop_relic_index is not None:
-                selected = dict(buy_relic_action)
-                raw = buy_relic_action.get("raw") if isinstance(buy_relic_action.get("raw"), dict) else {}
-                selected_raw = dict(raw)
-                selected_raw["option_index"] = preferred_shop_relic_index
-                selected["raw"] = selected_raw
-                return selected
-        buy_potion_action = next((action for action in actions if isinstance(action, dict) and str(action.get("type") or "") == "buy_potion"), None)
-        if isinstance(buy_potion_action, dict):
-            preferred_shop_potion_index = selector_methods._find_preferred_shop_potion_index(context)
-            if preferred_shop_potion_index is not None:
-                selected = dict(buy_potion_action)
-                raw = buy_potion_action.get("raw") if isinstance(buy_potion_action.get("raw"), dict) else {}
-                selected_raw = dict(raw)
-                selected_raw["option_index"] = preferred_shop_potion_index
-                selected["raw"] = selected_raw
-                return selected
+        actions_by_type = _actions_by_type(actions)
+        for rule in SHOP_SELECTION_RULES:
+            action = actions_by_type.get(rule.action_type)
+            if not isinstance(action, dict):
+                continue
+            preferred_index = getattr(selector_methods, rule.index_finder_name)(context)
+            if preferred_index is not None:
+                return _with_raw_updates(action, {"option_index": preferred_index})
         remove_action = selector_methods._select_shop_remove_action(actions, context, shop)
         if remove_action is not None:
             return remove_action
-        return next((action for action in actions if isinstance(action, dict) and str(action.get("type") or "") == "close_shop_inventory"), None)
+        return actions_by_type.get("close_shop_inventory")
 
     def select_weighted_play_card(self, actions: List[Dict[str, Any]], combat: Dict[str, Any], tactical_summary: Dict[str, Any], *, attack_weight: int, defense_weight: int, selector_methods, combat_analyzer) -> Optional[Dict[str, Any]]:
         target_index = tactical_summary.get("recommended_target_index")
-        strategy_constraints = selector_methods._load_strategy_constraints(selector_methods._configured_character_strategy())
+        strategy_constraints = self._strategy_constraints(selector_methods)
         best_attack_card = combat_analyzer._best_playable_damage_card(combat, target_index=target_index, strategy_constraints=strategy_constraints)
         best_block_card = combat_analyzer._best_playable_block_card(combat)
         best_attack_damage = combat_analyzer._card_total_damage_value(best_attack_card, combat=combat, target_index=target_index, strategy_constraints=strategy_constraints) if isinstance(best_attack_card, dict) else 0
@@ -299,12 +347,7 @@ class HeuristicSelector:
                 context,
             ).get("option_index", [])
             if not claim_allowed or claim_card_index in claim_allowed:
-                selected = dict(claim_action)
-                raw = claim_action.get("raw") if isinstance(claim_action.get("raw"), dict) else {}
-                selected_raw = dict(raw)
-                selected_raw["option_index"] = claim_card_index
-                selected["raw"] = selected_raw
-                return selected
+                return _with_raw_updates(claim_action, {"option_index": claim_card_index})
         reward_action = reward_actions[0]
         raw = reward_action.get("raw") if isinstance(reward_action.get("raw"), dict) else {}
         if not selector_methods._is_card_reward_context(raw, context):
@@ -316,16 +359,11 @@ class HeuristicSelector:
         reward_action_type = str(reward_action.get("type") or "")
         if reward_action_type in {"claim_reward", "collect_rewards_and_proceed"} and options:
             promoted_label = "choose_reward_card"
-            selected = dict(reward_action)
-            selected_raw = dict(raw)
-            selected["type"] = promoted_label
-            selected_raw["name"] = promoted_label
-            selected_raw["type"] = promoted_label
-            selected["raw"] = selected_raw
-            return selected
+            updates = {"option_index": preferred_option_index} if preferred_option_index is not None else {}
+            return _with_raw_updates(reward_action, updates, action_type=promoted_label)
         if preferred_option_index is None:
             return None
-        return reward_action
+        return _with_raw_updates(reward_action, {"option_index": preferred_option_index})
 
     def select_shop_remove_action(self, actions: List[Dict[str, Any]], context: Dict[str, Any], shop: Dict[str, Any], selector_methods) -> Optional[Dict[str, Any]]:
         card_removal = shop.get("card_removal") if isinstance(shop.get("card_removal"), dict) else {}
@@ -337,47 +375,40 @@ class HeuristicSelector:
         remove_index = selector_methods._find_shop_remove_card_index(context)
         if remove_index is None:
             return None
-        selected = dict(remove_action)
-        raw = remove_action.get("raw") if isinstance(remove_action.get("raw"), dict) else {}
-        selected_raw = dict(raw)
-        selected_raw["option_index"] = remove_index
-        selected_raw["shop_remove_selection"] = True
-        selected["raw"] = selected_raw
-        return selected
+        return _with_raw_updates(remove_action, {"option_index": remove_index, "shop_remove_selection": True})
+
+    def _find_best_option_index(self, options: Sequence[JsonObject], score_of: Callable[[JsonObject], int], threshold: int) -> Optional[int]:
+        selected = _best_scored_option(options, score_of)
+        if selected is None:
+            return None
+        best_option, best_score = selected
+        if best_score < threshold:
+            return None
+        return self._safe_int(best_option.get("index"), None)
 
     def find_preferred_shop_card_index(self, context: Dict[str, Any], selector_methods) -> Optional[int]:
         shop_cards = selector_methods._shop_card_options(context)
         if not shop_cards:
             return None
-        best_option: Optional[Dict[str, Any]] = None
-        best_score: Optional[int] = None
-        for option in shop_cards:
-            details = selector_methods._score_strategy_card_option_details(option, context)
-            score = details.get("score", 0)
-            if selector_methods._configured_character_strategy() == "defect":
-                score += selector_methods._score_defect_card_option(option, context)
-            if best_score is None or score > best_score:
-                best_option = option
-                best_score = score
-        threshold = 90 if selector_methods._configured_character_strategy() == "defect" else 22
-        if best_option is None or best_score is None or best_score < threshold:
-            return None
-        return int(best_option["index"])
+        strategy = selector_methods._configured_character_strategy()
+        threshold = 90 if strategy == "defect" else 22
+
+        def score_of(option: JsonObject) -> int:
+            strategy_score = selector_methods._score_strategy_card_option_details(option, context).get("score", 0)
+            defect_score = selector_methods._score_defect_card_option(option, context) if strategy == "defect" else 0
+            return self._safe_int(strategy_score, 0) + self._safe_int(defect_score, 0)
+
+        return self._find_best_option_index(shop_cards, score_of, threshold)
 
     def find_preferred_shop_relic_index(self, context: Dict[str, Any], selector_methods) -> Optional[int]:
         shop_relics = selector_methods._shop_relic_options(context)
         if not shop_relics:
             return None
-        best_option: Optional[Dict[str, Any]] = None
-        best_score: Optional[int] = None
-        for option in shop_relics:
-            score = selector_methods._score_shop_named_option(option, context, "relic")
-            if best_score is None or score > best_score:
-                best_option = option
-                best_score = score
-        if best_option is None or best_score is None or best_score < 22:
-            return None
-        return int(best_option["index"])
+        return self._find_best_option_index(
+            shop_relics,
+            lambda option: self._safe_int(selector_methods._score_shop_named_option(option, context, "relic"), 0),
+            22,
+        )
 
     def find_preferred_shop_potion_index(self, context: Dict[str, Any], selector_methods) -> Optional[int]:
         shop_potions = selector_methods._shop_potion_options(context)
@@ -386,16 +417,11 @@ class HeuristicSelector:
         potion_slots = selector_methods._potion_slots(context)
         if potion_slots > 0 and len(selector_methods._potions(context)) >= potion_slots:
             return None
-        best_option: Optional[Dict[str, Any]] = None
-        best_score: Optional[int] = None
-        for option in shop_potions:
-            score = selector_methods._score_shop_named_option(option, context, "potion")
-            if best_score is None or score > best_score:
-                best_option = option
-                best_score = score
-        if best_option is None or best_score is None or best_score < 22:
-            return None
-        return int(best_option["index"])
+        return self._find_best_option_index(
+            shop_potions,
+            lambda option: self._safe_int(selector_methods._score_shop_named_option(option, context, "potion"), 0),
+            22,
+        )
 
     def find_shop_remove_card_index(self, context: Dict[str, Any], selector_methods) -> Optional[int]:
         deck = selector_methods._run_deck_cards(context)
@@ -439,10 +465,7 @@ class HeuristicSelector:
         return not bool(card.get("unremovable") or card.get("cannot_remove"))
 
     def shop_unremovable_card_aliases(self, selector_methods) -> Set[str]:
-        try:
-            constraints = selector_methods._load_strategy_constraints(selector_methods._configured_character_strategy())
-        except RuntimeError:
-            return set()
+        constraints = self._strategy_constraints(selector_methods)
         shop_preferences = constraints.get("shop_preferences") if isinstance(constraints, dict) else {}
         card_preferences = shop_preferences.get("card") if isinstance(shop_preferences, dict) else {}
         unremovable = card_preferences.get("unremovable") if isinstance(card_preferences, dict) else {}
@@ -497,7 +520,7 @@ class HeuristicSelector:
         candidate = str(option.get("name") or option.get("card_name") or option.get("relic_name") or option.get("potion_name") or option.get("index") or "")
         score = 0
         hits: List[Dict[str, Any]] = []
-        for category, bonus in (("required", 36), ("high_priority", 22), ("conditional", 10), ("low_priority", -20)):
+        for category, bonus in STRATEGY_SCORE_RULES:
             entries = bucket.get(category) if isinstance(bucket, dict) and isinstance(bucket.get(category), dict) else {}
             result = self._score_constraint_bucket(
                 texts=texts,
@@ -593,7 +616,7 @@ class HeuristicSelector:
 
     def score_defect_card_option_details(self, option: Dict[str, Any], context: Dict[str, Any], selector_methods) -> Dict[str, Any]:
         texts = option.get("texts") if isinstance(option.get("texts"), set) else set()
-        constraints = selector_methods._load_strategy_constraints("defect") if selector_methods._configured_character_strategy() == "defect" else {}
+        constraints = self._strategy_constraints(selector_methods, "defect") if selector_methods._configured_character_strategy() == "defect" else {}
         score = 0
         base_score = 0
         constraint_hits: List[str] = []
@@ -733,70 +756,91 @@ class HeuristicSelector:
                 return option["index"]
         return None
 
+    def _find_potion_index_by_flag(self, context: Dict[str, Any], selector_methods, flag: str) -> Optional[int]:
+        return next(
+            (
+                self._safe_int(potion.get("index", 0), 0)
+                for potion in selector_methods._potions(context)
+                if isinstance(potion, dict) and bool(potion.get(flag))
+            ),
+            None,
+        )
+
     def find_discardable_potion_index(self, context: Dict[str, Any], selector_methods) -> int:
-        for potion in selector_methods._potions(context):
-            if bool(potion.get("can_discard")):
-                return int(potion.get("index", 0))
-        raise RuntimeError("当前没有可丢弃的药水")
+        potion_index = self._find_potion_index_by_flag(context, selector_methods, "can_discard")
+        if potion_index is None:
+            raise RuntimeError("当前没有可丢弃的药水")
+        return potion_index
 
     def find_usable_potion_index(self, context: Dict[str, Any], selector_methods) -> int:
-        for potion in selector_methods._potions(context):
-            if bool(potion.get("can_use")):
-                return int(potion.get("index", 0))
-        raise RuntimeError("当前没有可使用的药水")
+        potion_index = self._find_potion_index_by_flag(context, selector_methods, "can_use")
+        if potion_index is None:
+            raise RuntimeError("当前没有可使用的药水")
+        return potion_index
+
+    def _find_playable_card_index_or_none(self, context: Dict[str, Any], selector_methods, combat_analyzer) -> Optional[int]:
+        combat = selector_methods._combat_state(context)
+        if not isinstance(combat, dict):
+            return None
+        strategy = selector_methods._configured_character_strategy()
+        strategy_constraints = self._strategy_constraints(selector_methods, strategy)
+        tactical_summary = combat_analyzer.build_tactical_summary(combat, lambda _strategy: strategy_constraints, strategy)
+        target_index = tactical_summary.get("recommended_target_index")
+        best_damage_card = combat_analyzer._best_playable_damage_card(combat, target_index=target_index, strategy_constraints=strategy_constraints)
+        if isinstance(best_damage_card, dict):
+            return self._safe_int(best_damage_card.get("index", 0), 0)
+        best_block_card = combat_analyzer._best_playable_block_card(combat)
+        if isinstance(best_block_card, dict):
+            return self._safe_int(best_block_card.get("index", 0), 0)
+        hand = combat.get("hand") if isinstance(combat.get("hand"), list) else []
+        return next(
+            (
+                self._safe_int(card.get("index", 0), 0)
+                for card in hand
+                if isinstance(card, dict) and bool(card.get("playable"))
+            ),
+            None,
+        )
 
     def find_playable_card_index(self, context: Dict[str, Any], selector_methods, combat_analyzer) -> int:
-        combat = selector_methods._combat_state(context)
-        tactical_summary = combat_analyzer.build_tactical_summary(combat, selector_methods._load_strategy_constraints, selector_methods._configured_character_strategy())
-        target_index = tactical_summary.get("recommended_target_index")
-        best_damage_card = combat_analyzer._best_playable_damage_card(combat, target_index=target_index)
-        if best_damage_card is not None:
-            return int(best_damage_card.get("index", 0))
-        best_block_card = combat_analyzer._best_playable_block_card(combat)
-        if best_block_card is not None:
-            return int(best_block_card.get("index", 0))
-        hand = combat.get("hand") if isinstance(combat.get("hand"), list) else []
-        for card in hand:
-            if isinstance(card, dict) and bool(card.get("playable")):
-                return int(card.get("index", 0))
-        raise RuntimeError("当前没有可打出的卡牌")
+        card_index = self._find_playable_card_index_or_none(context, selector_methods, combat_analyzer)
+        if card_index is None:
+            raise RuntimeError("当前没有可打出的卡牌")
+        return card_index
 
     def find_card_target_index(self, context: Dict[str, Any], card_index: int, selector_methods, combat_analyzer) -> Optional[int]:
         combat = selector_methods._combat_state(context)
-        tactical_summary = combat_analyzer.build_tactical_summary(combat, selector_methods._load_strategy_constraints, selector_methods._configured_character_strategy())
+        if not isinstance(combat, dict):
+            return None
+        strategy = selector_methods._configured_character_strategy()
+        strategy_constraints = self._strategy_constraints(selector_methods, strategy)
+        tactical_summary = combat_analyzer.build_tactical_summary(combat, lambda _strategy: strategy_constraints, strategy)
         preferred_target = tactical_summary.get("recommended_target_index")
         hand = combat.get("hand") if isinstance(combat.get("hand"), list) else []
         for card in hand:
-            if not isinstance(card, dict) or int(card.get("index", -1)) != card_index:
+            if not isinstance(card, dict) or self._safe_int(card.get("index", -1), -1) != card_index:
                 continue
             valid_target_indices = card.get("valid_target_indices") if isinstance(card.get("valid_target_indices"), list) else []
-            if preferred_target is not None and selector_methods._safe_int(preferred_target, -9999) in [selector_methods._safe_int(target, -1) for target in valid_target_indices]:
-                return int(preferred_target)
+            normalized_targets = {selector_methods._safe_int(target, -1) for target in valid_target_indices}
+            normalized_preferred_target = selector_methods._safe_int(preferred_target, -9999)
+            if preferred_target is not None and normalized_preferred_target in normalized_targets:
+                return normalized_preferred_target
             if valid_target_indices:
-                return int(valid_target_indices[0])
+                return selector_methods._safe_int(valid_target_indices[0], 0)
             return None
         return None
 
     def action_for_card(self, actions: List[Dict[str, Any]], card: Dict[str, Any], target_index: Any, selector_methods) -> Optional[Dict[str, Any]]:
         valid_targets = card.get("valid_target_indices") if isinstance(card.get("valid_target_indices"), list) else []
+        normalized_targets = {selector_methods._safe_int(target, -1) for target in valid_targets}
         resolved_target_index: Optional[int] = None
         if valid_targets:
-            if target_index is not None and selector_methods._safe_int(target_index, -9999) in [selector_methods._safe_int(target, -1) for target in valid_targets]:
-                resolved_target_index = selector_methods._safe_int(target_index)
-            else:
-                resolved_target_index = selector_methods._safe_int(valid_targets[0])
-        for action in actions:
-            if not isinstance(action, dict):
-                continue
-            raw = action.get("raw") if isinstance(action.get("raw"), dict) else {}
-            action_type = str(action.get("type") or raw.get("type") or raw.get("name") or raw.get("action") or "")
-            if action_type != "play_card":
-                continue
-            selected = dict(action)
-            selected_raw = dict(raw)
-            selected_raw["card_index"] = selector_methods._safe_int(card.get("index"))
-            if resolved_target_index is not None:
-                selected_raw["target_index"] = resolved_target_index
-            selected["raw"] = selected_raw
-            return selected
-        return None
+            preferred_target = selector_methods._safe_int(target_index, -9999)
+            resolved_target_index = preferred_target if target_index is not None and preferred_target in normalized_targets else selector_methods._safe_int(valid_targets[0])
+        play_action = _actions_by_type(actions).get("play_card")
+        if not isinstance(play_action, dict):
+            return None
+        updates = {"card_index": selector_methods._safe_int(card.get("index"))}
+        if resolved_target_index is not None:
+            updates["target_index"] = resolved_target_index
+        return _with_raw_updates(play_action, updates)

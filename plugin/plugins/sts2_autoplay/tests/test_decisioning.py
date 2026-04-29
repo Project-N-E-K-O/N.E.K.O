@@ -34,12 +34,13 @@ DecisioningMixin = load_decisioning_mixin()
 class DummyLogger:
     def __init__(self) -> None:
         self.infos: list[str] = []
+        self.warnings: list[str] = []
 
     def info(self, message: Any, *args: Any, **kwargs: Any) -> None:
         self.infos.append(str(message))
 
     def warning(self, message: Any, *args: Any, **kwargs: Any) -> None:
-        pass
+        self.warnings.append(str(message))
 
 
 class DummyLlmStrategy:
@@ -90,7 +91,13 @@ class DummyCombatAnalyzer:
         return int(combat.get("player_block", 0) or 0)
 
     def sanitize_combat_for_prompt(self, combat: dict[str, Any], strategy_constraints_loader, character_strategy: str | None = None) -> dict[str, Any]:
-        return combat
+        payload = dict(combat)
+        payload["loaded_strategy_constraints"] = strategy_constraints_loader(character_strategy)
+        return payload
+
+    def _best_playable_damage_card(self, combat: dict[str, Any], *, target_index: Any = None, strategy_constraints=None) -> dict[str, Any] | None:
+        playable = [card for card in combat.get("hand", []) if isinstance(card, dict) and bool(card.get("playable"))]
+        return max(playable, key=lambda card: self._card_total_damage_value(card, combat, target_index=target_index, strategy_constraints=strategy_constraints), default=None)
 
     def _best_playable_block_card(self, combat: dict[str, Any]) -> dict[str, Any] | None:
         playable = [card for card in combat.get("hand", []) if isinstance(card, dict) and bool(card.get("playable"))]
@@ -117,6 +124,8 @@ class DecisionService(DecisioningMixin):
         return "defect"
 
     def _load_strategy_constraints(self, strategy: str) -> dict[str, Any]:
+        if self._cfg.get("raise_strategy_constraints"):
+            raise RuntimeError("broken constraints")
         return {}
 
     def _combat_state(self, context: dict[str, Any]) -> dict[str, Any]:
@@ -283,6 +292,29 @@ def test_llm_decision_payload_preserves_zero_player_hp() -> None:
 
 
 @pytest.mark.unit
+def test_llm_decision_payload_uses_empty_constraints_when_strategy_loading_fails() -> None:
+    service = DecisionService()
+    service._cfg["raise_strategy_constraints"] = True
+    context = combat_context([], hp=10, max_hp=20, incoming=0)
+
+    payload = service._build_llm_decision_payload(context)
+
+    assert payload["strategy_constraints"] == {}
+    assert payload["combat"]["loaded_strategy_constraints"] == {}
+    assert any("加载策略约束失败" in message for message in service.logger.warnings)
+
+
+@pytest.mark.unit
+def test_best_playable_damage_card_uses_empty_constraints_when_strategy_loading_fails() -> None:
+    service = DecisionService()
+    service._cfg["raise_strategy_constraints"] = True
+    combat = {"hand": [{"index": 0, "playable": True, "damage": 1}]}
+
+    assert service._best_playable_damage_card(combat) == {"index": 0, "playable": True, "damage": 1}
+    assert any("加载策略约束失败" in message for message in service.logger.warnings)
+
+
+@pytest.mark.unit
 def test_maximize_considers_zero_cost_cards_at_zero_energy() -> None:
     service = DecisionService()
     zap = {"index": 0, "name": "电击", "type": "attack", "card_type": "attack", "playable": True, "cost": 0, "damage": 5, "valid_target_indices": [0]}
@@ -313,3 +345,37 @@ def test_maximize_continues_to_zero_cost_cards_after_spending_last_energy() -> N
 
     assert selected is not None
     assert "电击" in service.logger.infos[-1]
+
+
+@pytest.mark.unit
+def test_setup_synergy_weaken_reads_enemy_weak_not_vulnerable() -> None:
+    service = DecisionService()
+    weak_setup = {"index": 0, "name": "致虚弱", "type": "skill", "card_type": "skill", "playable": True, "cost": 1, "description": "给予虚弱"}
+    strike = {"index": 1, "name": "打击", "type": "attack", "card_type": "attack", "playable": True, "cost": 1, "damage": 12, "valid_target_indices": [0]}
+    combat = {"player_energy": 3, "player_block": 0, "hand": [weak_setup, strike], "enemies": [{"index": 0, "hp": 40, "debuffs": [{"id": "weak"}]}]}
+    tactical = {"recommended_target_index": 0, "incoming_attack_total": 0}
+    state = {"energy": 3, "block": 0, "str_stacks": 0, "weaken_stacks": 0, "vulnerable_stacks": 0}
+
+    benefit = service._calc_marginal_benefit(weak_setup, state, combat, tactical, {}, remaining_cards=[strike])
+
+    assert benefit == -15.0
+    assert service._calc_synergy_boost(weak_setup, state, combat, {}) > 0
+
+
+@pytest.mark.unit
+def test_maximize_accumulates_block_after_selected_card() -> None:
+    service = DecisionService()
+    big_defend = {"index": 0, "name": "大防御", "type": "skill", "card_type": "skill", "playable": True, "cost": 1, "block": 8}
+    small_defend = {"index": 1, "name": "小防御", "type": "skill", "card_type": "skill", "playable": True, "cost": 1, "block": 3}
+    strike = {"index": 2, "name": "打击", "type": "attack", "card_type": "attack", "playable": True, "cost": 1, "damage": 6, "valid_target_indices": [0]}
+    actions = [
+        {"type": "play_card", "raw": {"card_index": 0}},
+        {"type": "play_card", "raw": {"card_index": 1}},
+        {"type": "play_card", "raw": {"card_index": 2}},
+    ]
+
+    selected = service._select_maximize_benefit_action(actions, combat_context([big_defend, small_defend, strike], energy=3, incoming=8, enemy_hp=30))
+
+    assert selected is not None
+    assert selected["raw"]["card_index"] == 0
+    assert "小防御" not in service.logger.infos[-1]
