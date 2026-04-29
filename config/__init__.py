@@ -337,7 +337,7 @@ DEFAULT_LANLAN_TEMPLATE = {
                 "asset_source": "local",
                 "asset_source_id": "",
                 "live2d": {
-                    "model_path": "mao_pro/mao_pro.model3.json",
+                    "model_path": "yui-origin/yui-origin.model3.json",
                 },
                 "vrm": {
                     "model_path": "",
