@@ -141,6 +141,29 @@ class LLMStreamChunk:
     content: str
     usage_metadata: dict | None = None
     response_metadata: dict | None = None
+    # Streamed tool_calls fragment (OpenAI Chat Completions schema):
+    # ``[{"index": 0, "id": "...", "type": "function",
+    #     "function": {"name": "...", "arguments": "<json fragment>"}}]``
+    # Multiple chunks may carry the same ``index`` — callers must
+    # accumulate ``function.arguments`` strings before JSON-parsing.
+    tool_call_deltas: list[dict] | None = None
+    # Reason the model finished this stream segment: ``"stop"`` / ``"length"`` /
+    # ``"tool_calls"`` / ``"content_filter"`` / None. ``"tool_calls"`` signals
+    # the caller should run the tool then continue the conversation.
+    finish_reason: str | None = None
+
+
+@dataclass
+class ToolCallAggregate:
+    """Fully-assembled tool call after streaming finished.
+
+    Built by ``ChatOpenAI.collect_tool_calls()`` from the per-index
+    fragments yielded across ``LLMStreamChunk.tool_call_deltas``."""
+
+    index: int
+    id: str
+    name: str
+    arguments: str  # JSON string; caller decides whether to ``json.loads``
 
 
 # ────────────────────────────────────────────────────────────────
@@ -148,7 +171,11 @@ class LLMStreamChunk:
 # ────────────────────────────────────────────────────────────────
 
 def _normalize_messages(messages: Any) -> list[dict]:
-    """Convert various message formats to openai-compatible dicts."""
+    """Convert various message formats to openai-compatible dicts.
+
+    ``BaseMessage`` 子类透传 ``tool_calls`` / ``tool_call_id`` 字段（如果存在）
+    给 OpenAI Chat Completions —— 这两个字段是 tool calling 多轮对话回填时
+    必须的：assistant 角色带 tool_calls + tool 角色带 tool_call_id。"""
     if isinstance(messages, str):
         return [{"role": "user", "content": messages}]
     out: list[dict] = []
@@ -163,7 +190,16 @@ def _normalize_messages(messages: Any) -> list[dict]:
             else:
                 out.append(msg)
         elif isinstance(msg, BaseMessage):
-            out.append(msg.to_openai())
+            base = msg.to_openai()
+            # Tool-calling round-trip fields — only attach when present so we
+            # don't pollute non-tool conversations with empty arrays.
+            tool_calls = getattr(msg, "tool_calls", None)
+            if tool_calls:
+                base["tool_calls"] = tool_calls
+            tool_call_id = getattr(msg, "tool_call_id", None)
+            if tool_call_id:
+                base["tool_call_id"] = tool_call_id
+            out.append(base)
         elif hasattr(msg, "type") and hasattr(msg, "content"):
             role = _TYPE_TO_ROLE.get(msg.type, msg.type)
             out.append({"role": role, "content": msg.content})
@@ -195,10 +231,17 @@ class ChatOpenAI:
         request_timeout: float | None = None,
         default_headers: dict | None = None,
         enable_cache_control: bool = False,
+        tools: list[dict] | None = None,
+        tool_choice: str | dict | None = None,
         **_kwargs: Any,
     ):
         self.model = model
         self.base_url = base_url
+        # Tool-calling defaults baked into instance; per-call ``overrides``
+        # in ``_params()`` can still substitute a different list (e.g. when
+        # the caller wants to suppress tools mid-conversation).
+        self.tools = list(tools) if tools else None
+        self.tool_choice = tool_choice
         # 项目级硬性约定：不再下发 temperature。default=None → 不写进请求体，
         # 由模型端自定。o1/o3/gpt-5-thinking/Claude extended-thinking 等拒绝该
         # 参数的模型可以直通；普通模型也走它们自己的默认值，避免不同 task 之间
@@ -261,6 +304,18 @@ class ChatOpenAI:
         extra_body = overrides.pop("extra_body", self.extra_body)
         if extra_body:
             p["extra_body"] = extra_body
+        # Tool calling: per-call overrides take priority over instance default
+        # so callers can disable tools (``tools=[]`` 或 ``tools=None``) for
+        # special turns（如 prompt_ephemeral 中明确不要工具）。
+        tools = overrides.pop("tools", self.tools)
+        if tools:
+            p["tools"] = tools
+            tool_choice = overrides.pop("tool_choice", self.tool_choice)
+            if tool_choice is not None:
+                p["tool_choice"] = tool_choice
+        else:
+            # Don't leak tool_choice without tools — some endpoints 400 on it.
+            overrides.pop("tool_choice", None)
         if stream:
             p["stream_options"] = {"include_usage": True}
         # Anything else the caller passed (e.g. timeout, logit_bias) goes
@@ -330,13 +385,49 @@ class ChatOpenAI:
 
     # --- async streaming ---
 
-    async def astream(self, messages: Any) -> AsyncIterator[LLMStreamChunk]:
-        stream = await self._aclient.chat.completions.create(**self._params(messages, stream=True))
+    async def astream(self, messages: Any, **overrides: Any) -> AsyncIterator[LLMStreamChunk]:
+        """Stream chunks. Yields:
+
+        - text-content chunks (``content`` non-empty)
+        - tool_calls fragments (``tool_call_deltas`` non-None) — caller
+          accumulates ``[].function.arguments`` per ``index`` until the
+          chunk with ``finish_reason == "tool_calls"`` arrives, then runs
+          the tools and appends a fresh assistant + tool turn before
+          calling ``astream`` again.
+        - terminal usage chunk
+        """
+        stream = await self._aclient.chat.completions.create(
+            **self._params(messages, stream=True, **overrides)
+        )
         async for chunk in stream:
-            delta = chunk.choices[0].delta if chunk.choices else None
+            choice = chunk.choices[0] if chunk.choices else None
+            delta = choice.delta if choice else None
             content = delta.content if delta and delta.content else ""
-            if content:
-                yield LLMStreamChunk(content=content)
+            tool_call_deltas: list[dict] | None = None
+            if delta is not None:
+                raw_tool_calls = getattr(delta, "tool_calls", None) or []
+                if raw_tool_calls:
+                    tool_call_deltas = []
+                    for tc in raw_tool_calls:
+                        # SDK objects → plain dicts. ``index`` ties fragments
+                        # of the same call together across chunks.
+                        fn = getattr(tc, "function", None)
+                        tool_call_deltas.append({
+                            "index": getattr(tc, "index", 0),
+                            "id": getattr(tc, "id", "") or "",
+                            "type": getattr(tc, "type", "function") or "function",
+                            "function": {
+                                "name": getattr(fn, "name", "") if fn else "",
+                                "arguments": getattr(fn, "arguments", "") if fn else "",
+                            },
+                        })
+            finish_reason = getattr(choice, "finish_reason", None) if choice else None
+            if content or tool_call_deltas or finish_reason:
+                yield LLMStreamChunk(
+                    content=content,
+                    tool_call_deltas=tool_call_deltas,
+                    finish_reason=finish_reason,
+                )
             # Terminal chunk with usage info (stream_options={"include_usage": True})
             if chunk.usage is not None:
                 usage_dict = chunk.usage.model_dump()
@@ -345,6 +436,39 @@ class ChatOpenAI:
                     usage_metadata=usage_dict,
                     response_metadata={"token_usage": usage_dict},
                 )
+
+    @staticmethod
+    def collect_tool_calls(deltas_per_chunk: list[list[dict] | None]) -> list[ToolCallAggregate]:
+        """Combine per-chunk tool_call deltas (in arrival order) into the
+        final list of completed tool calls. Caller passes the
+        ``tool_call_deltas`` field of every chunk in the order yielded.
+
+        Multiple parallel calls are kept distinct via ``index`` (the OpenAI
+        Chat Completions schema guarantees one ``index`` per call)."""
+        merged: dict[int, dict] = {}
+        for fragments in deltas_per_chunk:
+            if not fragments:
+                continue
+            for frag in fragments:
+                idx = int(frag.get("index", 0))
+                slot = merged.setdefault(idx, {"id": "", "name": "", "arguments": ""})
+                if frag.get("id"):
+                    slot["id"] = frag["id"]
+                fn = frag.get("function") or {}
+                if fn.get("name"):
+                    slot["name"] = fn["name"]
+                if fn.get("arguments"):
+                    slot["arguments"] += fn["arguments"]
+        out: list[ToolCallAggregate] = []
+        for idx in sorted(merged.keys()):
+            slot = merged[idx]
+            out.append(ToolCallAggregate(
+                index=idx,
+                id=slot["id"],
+                name=slot["name"],
+                arguments=slot["arguments"],
+            ))
+        return out
 
     # --- resource management ---
 
@@ -384,6 +508,8 @@ def create_chat_llm(
     timeout: float | None = None,
     extra_body: Any = _SENTINEL,
     model_kwargs: dict | None = None,
+    tools: list[dict] | None = None,
+    tool_choice: str | dict | None = None,
     **kw: Any,
 ) -> ChatOpenAI:
     """Create a ChatOpenAI with automatic provider-specific configuration.
@@ -438,6 +564,8 @@ def create_chat_llm(
         timeout=timeout,
         extra_body=extra_body,
         model_kwargs=model_kwargs,
+        tools=tools,
+        tool_choice=tool_choice,
         **cache_kw,
         **kw,
     )

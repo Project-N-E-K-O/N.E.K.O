@@ -4,12 +4,43 @@ import asyncio
 import json
 import re
 import time
-from typing import Optional, Callable, Dict, Any, Awaitable
+from typing import Optional, Callable, Dict, Any, Awaitable, List
 from utils.llm_client import SystemMessage, HumanMessage, AIMessage, create_chat_llm
 from openai import APIConnectionError, InternalServerError, RateLimitError
 from utils.frontend_utils import calculate_text_similarity
 from utils.tokenize import count_tokens, truncate_to_tokens
 from config import OMNI_RECENT_RESPONSES_MAX
+from main_logic.tool_calling import (
+    OnToolCallCallback,
+    ToolCall,
+    ToolDefinition,
+    ToolResult,
+    parse_arguments_json,
+)
+
+# Lazy-import flag for google-genai (offline Gemini path). The SDK is already
+# imported by omni_realtime_client at module load; we duplicate the guard
+# here so the offline client can degrade gracefully if it isn't available.
+try:
+    from google import genai as _genai
+    from google.genai import types as _genai_types
+    _GENAI_AVAILABLE = True
+except Exception:  # pragma: no cover — environment-specific
+    _genai = None
+    _genai_types = None
+    _GENAI_AVAILABLE = False
+
+
+# Hostname / model fragments that indicate the request should go through
+# google-genai SDK directly (the OpenAI-compat Gemini endpoint silently
+# drops the ``tools`` field, so tools fundamentally do not work there).
+# 用户明确说：lanlan.app 国际版走的是 OpenAI-compat Gemini，所以那个 base_url
+# 不在这里——它只能走 fallback 路径，工具不可用，已留 TODO。
+_GENAI_NATIVE_BASE_URL_HINTS = (
+    "generativelanguage.googleapis.com",
+    "aiplatform.googleapis.com",
+)
+_GENAI_NATIVE_MODEL_HINTS = ("gemini",)
 
 # Sentence-final terminators used to recover from a length-overflow when
 # rerolls have been exhausted. Commas, semicolons, and colons are NOT
@@ -103,6 +134,172 @@ def _strip_nonverbal_directives(text: str) -> str:
         return ""
     return _NONVERBAL_DIRECTIVE_PATTERN.sub("", text)
 
+
+class _GenaiToolsUnsupported(Exception):
+    """Raised by the genai SDK path when tool support is unavailable
+    (SDK missing, model rejected, etc.) so the caller can fall back to
+    the OpenAI-compat path with tools silently disabled."""
+
+
+def _genai_messages_to_contents(
+    messages: list,
+) -> tuple[Optional[str], list]:
+    """Translate this client's ``_conversation_history`` into the
+    ``(system_instruction, contents)`` tuple expected by google-genai
+    ``generate_content_stream``.
+
+    - SystemMessage → goes to ``system_instruction`` (genai keeps it
+      out of ``contents``; first-system-message wins).
+    - HumanMessage / AIMessage / dicts (assistant w/ tool_calls, tool
+      role) → ``Content`` entries.
+
+    Plain dicts with role=assistant + tool_calls are translated to
+    ``Content(role="model", parts=[Part(function_call=...)])``; role=tool
+    becomes ``Content(role="user", parts=[Part(function_response=...)])``.
+    """
+    if not _GENAI_AVAILABLE:
+        raise _GenaiToolsUnsupported("google-genai SDK not importable")
+    types = _genai_types
+    system_instruction: Optional[str] = None
+    contents: list = []
+
+    for msg in messages:
+        # ---- BaseMessage objects (existing path) --------------------
+        if isinstance(msg, SystemMessage):
+            if system_instruction is None:
+                system_instruction = msg.content if isinstance(msg.content, str) else str(msg.content)
+            else:
+                system_instruction += "\n" + (msg.content if isinstance(msg.content, str) else str(msg.content))
+            continue
+        if isinstance(msg, HumanMessage):
+            parts = _genai_parts_from_content(msg.content)
+            contents.append(types.Content(role="user", parts=parts))
+            continue
+        if isinstance(msg, AIMessage):
+            parts = _genai_parts_from_content(msg.content)
+            contents.append(types.Content(role="model", parts=parts))
+            continue
+        # ---- Plain dict path (tool-calling history) -----------------
+        if isinstance(msg, dict):
+            role = msg.get("role")
+            if role == "system":
+                txt = msg.get("content", "")
+                if isinstance(txt, str):
+                    system_instruction = (system_instruction + "\n" + txt) if system_instruction else txt
+                continue
+            if role == "assistant":
+                tool_calls = msg.get("tool_calls") or []
+                if tool_calls:
+                    parts = []
+                    for tc in tool_calls:
+                        fn = tc.get("function") or {}
+                        try:
+                            args = json.loads(fn.get("arguments") or "{}") if isinstance(fn.get("arguments"), str) else (fn.get("arguments") or {})
+                        except json.JSONDecodeError:
+                            args = {"_raw": fn.get("arguments") or ""}
+                        parts.append(types.Part(function_call=types.FunctionCall(
+                            id=tc.get("id") or "",
+                            name=fn.get("name") or "",
+                            args=args,
+                        )))
+                    contents.append(types.Content(role="model", parts=parts))
+                else:
+                    parts = _genai_parts_from_content(msg.get("content", ""))
+                    contents.append(types.Content(role="model", parts=parts))
+                continue
+            if role == "tool":
+                # Best-effort: parse the JSON content back into a dict for
+                # ``response`` since genai expects a structured response.
+                raw_out = msg.get("content", "")
+                try:
+                    parsed = json.loads(raw_out) if isinstance(raw_out, str) else raw_out
+                except json.JSONDecodeError:
+                    parsed = {"result": raw_out}
+                if not isinstance(parsed, dict):
+                    parsed = {"result": parsed}
+                contents.append(types.Content(role="user", parts=[
+                    types.Part.from_function_response(
+                        name=msg.get("name") or msg.get("tool_call_id") or "tool",
+                        response=parsed,
+                    )
+                ]))
+                continue
+            if role == "user":
+                parts = _genai_parts_from_content(msg.get("content", ""))
+                contents.append(types.Content(role="user", parts=parts))
+                continue
+        # Fallback: stringify
+        contents.append(types.Content(
+            role="user",
+            parts=[types.Part(text=str(getattr(msg, "content", msg)))],
+        ))
+    return system_instruction, contents
+
+
+def _genai_parts_from_content(content: Any) -> list:
+    """Render a ``BaseMessage.content`` value as a list of
+    ``types.Part``. Strings become ``Part(text=...)``; multimodal lists
+    (the ``[{type:image_url, image_url:{url:"data:image/jpeg;base64,..."}}, {type:text, text:...}]``
+    shape that ``stream_text`` builds for vision) become a mix of
+    ``inline_data`` parts and ``text`` parts."""
+    types = _genai_types
+    if isinstance(content, str):
+        return [types.Part(text=content)]
+    if isinstance(content, list):
+        parts: list = []
+        for entry in content:
+            if not isinstance(entry, dict):
+                parts.append(types.Part(text=str(entry)))
+                continue
+            etype = entry.get("type")
+            if etype == "text":
+                parts.append(types.Part(text=entry.get("text") or ""))
+            elif etype == "image_url":
+                url = (entry.get("image_url") or {}).get("url") or ""
+                if url.startswith("data:image/"):
+                    try:
+                        header, b64 = url.split(",", 1)
+                        mime = header.split(";")[0].split(":", 1)[-1] or "image/jpeg"
+                        import base64 as _b64
+                        parts.append(types.Part.from_bytes(
+                            data=_b64.b64decode(b64), mime_type=mime,
+                        ))
+                    except Exception:
+                        parts.append(types.Part(text=f"[image dropped: {entry.get('image_url')}]"))
+                else:
+                    parts.append(types.Part(text=f"[image url unsupported: {url}]"))
+            else:
+                parts.append(types.Part(text=json.dumps(entry, ensure_ascii=False)))
+        return parts or [types.Part(text="")]
+    return [types.Part(text=str(content))]
+
+
+def _should_use_genai_sdk(model: str, base_url: str | None) -> bool:
+    """Decide whether to route this Gemini-flavoured offline call through
+    the native google-genai SDK (which supports tool calling) instead of
+    the OpenAI-compat endpoint (which silently drops ``tools``).
+
+    Returns True only when:
+      1. ``google-genai`` is importable in the running env, AND
+      2. base_url points at Google's native Gemini endpoint OR
+         the model name contains "gemini" AND base_url is empty/None
+         (i.e. caller wants direct genai with no proxy).
+
+    Explicitly excluded: lanlan.app's international free proxy uses
+    Gemini under the hood but exposes only the OpenAI-compat surface, so
+    its base_url ('lanlan.app') stays on the OpenAI path. Tools won't
+    work there until the proxy is upgraded — see TODO in core.py.
+    """
+    if not _GENAI_AVAILABLE:
+        return False
+    bl = (base_url or "").lower()
+    ml = (model or "").lower()
+    if any(h in bl for h in _GENAI_NATIVE_BASE_URL_HINTS):
+        return True
+    if not bl and any(h in ml for h in _GENAI_NATIVE_MODEL_HINTS):
+        return True
+    return False
+
 class OmniOfflineClient:
     """
     A client for text-based chat that mimics the interface of OmniRealtimeClient.
@@ -160,7 +357,10 @@ class OmniOfflineClient:
         extra_event_handlers: Optional[Dict[str, Callable[[Dict[str, Any]], Awaitable[None]]]] = None,
         max_response_length: Optional[int] = None,
         lanlan_name: str = "",
-        master_name: str = ""
+        master_name: str = "",
+        on_tool_call: Optional[OnToolCallCallback] = None,
+        tool_definitions: Optional[List[ToolDefinition]] = None,
+        max_tool_iterations: int = 6,
     ):
         # Use base_url directly without conversion
         self.base_url = base_url
@@ -206,6 +406,17 @@ class OmniOfflineClient:
             temperature=1.0, streaming=True, max_retries=0,
             max_completion_tokens=_budget_to_max_tokens(self.max_response_length),
         )
+
+        # ── Tool calling state ────────────────────────────────────────
+        # ``tool_definitions`` is the canonical list (ToolDefinition objects);
+        # the wire-format snapshots are rebuilt from it on each request so
+        # callers can mutate the list (register/unregister) between turns.
+        self.on_tool_call: Optional[OnToolCallCallback] = on_tool_call
+        self._tool_definitions: List[ToolDefinition] = list(tool_definitions or [])
+        self.max_tool_iterations = max(1, int(max_tool_iterations))
+        self._use_genai_sdk = _should_use_genai_sdk(self.model, self.base_url)
+        self._genai_client = None  # initialized lazily inside _stream_text_genai
+        self._genai_tools_unsupported = False  # set True if genai path falls back at runtime
         
         # State management
         self._is_responding = False
@@ -227,6 +438,333 @@ class OmniOfflineClient:
         # 质量守卫回调：由 core.py 设置，用于通知前端清理气泡
         # （max_response_length / max_response_rerolls / enable_response_guard
         # 已经在创建 self.llm 之前初始化，因为 _budget_to_max_tokens 用得到。）
+
+    # ------------------------------------------------------------------
+    # Tool calling configuration
+    # ------------------------------------------------------------------
+
+    def set_tools(self, tool_definitions: Optional[List[ToolDefinition]]) -> None:
+        """Replace the active tool list. Takes effect on the next
+        ``stream_text`` / ``prompt_ephemeral`` call. Pass ``None`` or
+        ``[]`` to disable tools entirely."""
+        self._tool_definitions = list(tool_definitions or [])
+
+    def set_tool_call_handler(self, handler: Optional[OnToolCallCallback]) -> None:
+        """Plug in (or replace) the callback that executes tool calls."""
+        self.on_tool_call = handler
+
+    def has_tools(self) -> bool:
+        return bool(self._tool_definitions) and self.on_tool_call is not None
+
+    def _openai_tools_payload(self) -> Optional[List[dict]]:
+        """OpenAI Chat Completions ``tools`` param — nested under
+        ``function``. Returns ``None`` when the caller hasn't enabled
+        tools, so ``_params`` skips both ``tools`` and ``tool_choice``."""
+        if not self.has_tools():
+            return None
+        return [t.to_openai_chat() for t in self._tool_definitions]
+
+    async def _execute_and_append_openai_tool_calls(self, messages, calls) -> None:
+        """Run each tool call through ``on_tool_call`` and mutate
+        ``messages`` in place: append one assistant turn announcing all
+        tool calls, then one tool-role message per call carrying the
+        result JSON. Both shapes follow the OpenAI Chat Completions spec
+        so the next astream invocation sees a valid history."""
+        if not calls:
+            return
+        messages.append({
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": c.id or f"call_{i}",
+                    "type": "function",
+                    "function": {
+                        "name": c.name,
+                        "arguments": c.arguments or "{}",
+                    },
+                }
+                for i, c in enumerate(calls)
+            ],
+        })
+        for i, c in enumerate(calls):
+            tool_call = ToolCall(
+                name=c.name,
+                arguments=parse_arguments_json(c.arguments),
+                call_id=c.id or f"call_{i}",
+                raw_arguments=c.arguments or "",
+            )
+            handler = self.on_tool_call
+            if handler is None:
+                # No handler — surface a structured error back so the
+                # model can apologize / abort gracefully.
+                result = ToolResult(
+                    call_id=tool_call.call_id, name=tool_call.name,
+                    output={"error": "no on_tool_call handler bound"},
+                    is_error=True, error_message="no on_tool_call handler bound",
+                )
+            else:
+                try:
+                    result = await handler(tool_call)
+                except Exception as e:
+                    logger.exception("OmniOfflineClient: on_tool_call '%s' raised", c.name)
+                    result = ToolResult(
+                        call_id=tool_call.call_id, name=tool_call.name,
+                        output={"error": f"{type(e).__name__}: {e}"},
+                        is_error=True, error_message=str(e),
+                    )
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tool_call.call_id,
+                "content": result.output_as_json_string(),
+            })
+
+    async def _astream_with_tools(self, messages, **overrides):
+        """Polymorphic streaming entry point. Yields ``LLMStreamChunk``
+        objects (text + finish_reason); tool calls are intercepted and
+        executed transparently — caller never sees ``tool_call_deltas``.
+
+        Routing:
+        - Native Gemini (``_use_genai_sdk``): dispatches to
+          ``_astream_genai_with_tools`` and on tools-related failures sets
+          ``_genai_tools_unsupported`` so subsequent calls degrade to the
+          OpenAI-compat path (where tools won't work — that's the
+          documented lanlan.app/free trade-off).
+        - Otherwise: ``_astream_openai_with_tools``.
+        """
+        if self._use_genai_sdk and not self._genai_tools_unsupported:
+            try:
+                async for chunk in self._astream_genai_with_tools(messages, **overrides):
+                    yield chunk
+                return
+            except _GenaiToolsUnsupported as e:
+                logger.warning(
+                    "genai SDK declined tools (%s) — falling back to OpenAI-compat (tools disabled)",
+                    e,
+                )
+                self._genai_tools_unsupported = True
+            except Exception as e:
+                # Don't break user requests on transient genai SDK errors —
+                # log loudly and fall through. ``_genai_tools_unsupported``
+                # stays False so the next turn retries genai (transient
+                # 5xx / 429 shouldn't permanently downgrade).
+                logger.error("genai SDK path errored, falling back this turn: %s", e)
+        async for chunk in self._astream_openai_with_tools(messages, **overrides):
+            yield chunk
+
+    async def _astream_openai_with_tools(self, messages, **overrides):
+        """OpenAI Chat Completions tool loop. Streams text chunks; on
+        ``finish_reason == "tool_calls"`` runs the tools, appends the
+        results to ``messages``, and re-invokes — up to
+        ``self.max_tool_iterations`` total LLM calls."""
+        tools_payload = self._openai_tools_payload()
+        if tools_payload:
+            overrides.setdefault("tools", tools_payload)
+        else:
+            # Belt-and-suspenders: never leak tool_choice without tools.
+            overrides.pop("tool_choice", None)
+            overrides.pop("tools", None)
+
+        for tool_iter in range(self.max_tool_iterations):
+            deltas_per_chunk: list = []
+            finish_reason: Optional[str] = None
+            async for chunk in self.llm.astream(messages, **overrides):
+                if chunk.tool_call_deltas:
+                    deltas_per_chunk.append(chunk.tool_call_deltas)
+                if chunk.finish_reason:
+                    finish_reason = chunk.finish_reason
+                # 永远 yield 文本 chunk —— 即便是 tool-only turn 也可能在
+                # finish_reason=tool_calls 之前 emit usage chunk 和空 content。
+                yield chunk
+            if (
+                finish_reason == "tool_calls"
+                and deltas_per_chunk
+                and tools_payload
+                and self.on_tool_call is not None
+            ):
+                # ChatOpenAI is the right import even though we're outside
+                # ChatOpenAI — `collect_tool_calls` is a staticmethod.
+                from utils.llm_client import ChatOpenAI as _ChatOpenAI
+                calls = _ChatOpenAI.collect_tool_calls(deltas_per_chunk)
+                await self._execute_and_append_openai_tool_calls(messages, calls)
+                continue
+            return
+        logger.warning(
+            "OmniOfflineClient: tool iteration cap %d reached, stopping",
+            self.max_tool_iterations,
+        )
+
+    async def _astream_genai_with_tools(self, messages, **overrides):
+        """google-genai streaming with tool support. Yields
+        ``LLMStreamChunk``-shaped objects so the caller can be agnostic
+        to which path delivered the stream.
+
+        Tool calls (``part.function_call``) are aggregated within the
+        current generation, then executed via ``on_tool_call``; the
+        result is appended to ``messages`` (as a plain dict in the
+        OpenAI-style "assistant w/ tool_calls" + "tool role" shape so
+        the SAME history works for both genai and OpenAI-compat paths
+        on subsequent turns) and ``generate_content_stream`` is
+        re-invoked.
+
+        Raises ``_GenaiToolsUnsupported`` if the SDK or this model
+        cannot handle tools — caller falls back to OpenAI-compat."""
+        from utils.llm_client import LLMStreamChunk
+        if not _GENAI_AVAILABLE:
+            raise _GenaiToolsUnsupported("google-genai SDK not importable")
+        types = _genai_types
+
+        # Lazy client init — re-use across turns.
+        if self._genai_client is None:
+            try:
+                self._genai_client = _genai.Client(api_key=self.api_key or None)
+            except Exception as e:
+                raise _GenaiToolsUnsupported(f"genai.Client init failed: {e}") from e
+
+        # Build tools once per session (registry is identity-stable
+        # across iterations within one stream_text call).
+        tools_payload: list = []
+        if self.has_tools():
+            decls = [t.to_gemini_function_declaration() for t in self._tool_definitions]
+            tools_payload = [types.Tool(function_declarations=decls)]
+
+        # max_completion_tokens semantics: same intent as OpenAI path.
+        gen_config_kw: dict = {}
+        if self.llm is not None and self.llm.max_completion_tokens:
+            gen_config_kw["max_output_tokens"] = int(self.llm.max_completion_tokens)
+        if tools_payload:
+            gen_config_kw["tools"] = tools_payload
+
+        for tool_iter in range(self.max_tool_iterations):
+            system_instruction, contents = _genai_messages_to_contents(messages)
+            cfg_kw = dict(gen_config_kw)
+            if system_instruction:
+                cfg_kw["system_instruction"] = system_instruction
+            try:
+                config = types.GenerateContentConfig(**cfg_kw)
+            except Exception as e:
+                raise _GenaiToolsUnsupported(f"GenerateContentConfig rejected: {e}") from e
+
+            try:
+                stream = await self._genai_client.aio.models.generate_content_stream(
+                    model=self.model,
+                    contents=contents,
+                    config=config,
+                )
+            except Exception as e:
+                # 上层会保留 _genai_tools_unsupported=False（transient），
+                # 但本轮 fallback 到 OpenAI-compat 上去（模型/key 错误也会
+                # 在那条路径上以同样方式炸出）。
+                raise _GenaiToolsUnsupported(f"generate_content_stream failed: {e}") from e
+
+            # Per-iteration accumulators.
+            collected_tool_calls: list = []  # list of (id, name, args_dict, raw_args_str)
+            had_text = False
+            usage_emitted = False
+
+            try:
+                async for chunk in stream:
+                    candidates = getattr(chunk, "candidates", None) or []
+                    if not candidates:
+                        continue
+                    cand = candidates[0]
+                    cand_content = getattr(cand, "content", None)
+                    parts = getattr(cand_content, "parts", None) or []
+                    for part in parts:
+                        # Skip thinking parts (Gemini 2.5+ thinking models).
+                        if getattr(part, "thought", False):
+                            continue
+                        text = getattr(part, "text", None) or ""
+                        fn_call = getattr(part, "function_call", None)
+                        if fn_call is not None:
+                            args = dict(getattr(fn_call, "args", None) or {})
+                            try:
+                                raw_args = json.dumps(args, ensure_ascii=False)
+                            except (TypeError, ValueError):
+                                raw_args = "{}"
+                            collected_tool_calls.append((
+                                getattr(fn_call, "id", "") or "",
+                                getattr(fn_call, "name", "") or "",
+                                args,
+                                raw_args,
+                            ))
+                        elif text:
+                            had_text = True
+                            yield LLMStreamChunk(content=text)
+                    # Usage metadata may arrive on the chunk.
+                    usage_meta = getattr(chunk, "usage_metadata", None)
+                    if usage_meta is not None and not usage_emitted:
+                        try:
+                            usage_dict = {
+                                "prompt_tokens": getattr(usage_meta, "prompt_token_count", 0) or 0,
+                                "completion_tokens": getattr(usage_meta, "candidates_token_count", 0) or 0,
+                                "total_tokens": getattr(usage_meta, "total_token_count", 0) or 0,
+                            }
+                            yield LLMStreamChunk(
+                                content="",
+                                usage_metadata=usage_dict,
+                                response_metadata={"token_usage": usage_dict},
+                            )
+                            usage_emitted = True
+                        except Exception:
+                            pass
+            except Exception as e:
+                err_msg = str(e).lower()
+                # Tools-related rejection => signal fallback path.
+                if "tool" in err_msg or "function" in err_msg:
+                    raise _GenaiToolsUnsupported(f"genai stream rejected tools: {e}") from e
+                raise
+
+            if collected_tool_calls and self.on_tool_call is not None:
+                # Execute tools, append a unified assistant + tool history (dict shape
+                # accepted by both paths), then continue tool-iteration loop.
+                tool_calls_dict = [
+                    {
+                        "id": tc_id or f"call_{i}",
+                        "type": "function",
+                        "function": {"name": tc_name, "arguments": tc_raw},
+                    }
+                    for i, (tc_id, tc_name, _args, tc_raw) in enumerate(collected_tool_calls)
+                ]
+                messages.append({
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": tool_calls_dict,
+                })
+                for i, (tc_id, tc_name, tc_args, tc_raw) in enumerate(collected_tool_calls):
+                    tool_call = ToolCall(
+                        name=tc_name,
+                        arguments=tc_args,
+                        call_id=tc_id or f"call_{i}",
+                        raw_arguments=tc_raw,
+                    )
+                    try:
+                        result = await self.on_tool_call(tool_call)
+                    except Exception as e:
+                        logger.exception("OmniOfflineClient(genai): on_tool_call '%s' raised", tc_name)
+                        result = ToolResult(
+                            call_id=tool_call.call_id, name=tc_name,
+                            output={"error": f"{type(e).__name__}: {e}"},
+                            is_error=True, error_message=str(e),
+                        )
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call.call_id,
+                        "name": tc_name,
+                        "content": result.output_as_json_string(),
+                    })
+                # Loop again to let the model produce a final answer.
+                if not had_text:
+                    continue
+                # Edge case: model emitted text AND tool calls — text already
+                # streamed to the user. Continue to next iter to give the
+                # model a chance to follow up after seeing tool results.
+                continue
+            return
+        logger.warning(
+            "OmniOfflineClient(genai): tool iteration cap %d reached",
+            self.max_tool_iterations,
+        )
 
     def update_max_response_length(self, max_length: int) -> None:
         """更新回复 token 上限（用户可能在对话期间修改设置）。
@@ -455,7 +993,13 @@ class OmniOfflineClient:
                         prefix_buffer = ""
                         prefix_checked = not bool(self._prefix_buffer_size)
 
-                        async for chunk in self.llm.astream(self._conversation_history):
+                        # Tool-aware streaming: ``_astream_with_tools`` runs
+                        # the multi-turn tool loop inside (executing tools and
+                        # appending results to ``_conversation_history`` IN
+                        # PLACE). The yielded chunks are exactly the same
+                        # shape as raw ``self.llm.astream``, so the existing
+                        # prefix/fence/length-guard logic below is untouched.
+                        async for chunk in self._astream_with_tools(self._conversation_history):
                             if hasattr(chunk, 'usage_metadata') and chunk.usage_metadata:
                                 chunk_usage = chunk.usage_metadata
                                 logger.debug(f"🔍 [Usage] {chunk_usage}")
@@ -917,7 +1461,9 @@ class OmniOfflineClient:
         try:
             self._is_responding = True
             set_call_type("proactive")
-            async for chunk in self.llm.astream(messages_to_send):
+            # 主动搭话同样走 tool-aware streaming —— agent 注入的 stage
+            # direction 也可能让模型决定调用工具（比如 "讲一下今天天气"）。
+            async for chunk in self._astream_with_tools(messages_to_send):
                 if hasattr(chunk, 'usage_metadata') and chunk.usage_metadata:
                     chunk_usage = chunk.usage_metadata
                     logger.debug(f"🔍 [Usage-Proactive] {chunk_usage}")

@@ -30,6 +30,12 @@ from utils.screenshot_utils import process_screen_data, overlay_avatar_annotatio
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic.omni_offline_client import OmniOfflineClient
 from main_logic.tts_client import get_tts_worker, dummy_tts_worker, TTS_PROVIDER_REGISTRY
+from main_logic.tool_calling import (
+    ToolCall,
+    ToolDefinition,
+    ToolRegistry,
+    ToolResult,
+)
 from utils.llm_client import AIMessage
 from main_logic.session_state import SessionStateMachine, SessionEvent
 from utils.preferences import load_global_conversation_settings, aload_global_conversation_settings
@@ -527,6 +533,15 @@ class LLMSessionManager:
         self._last_avatar_interaction_speak_at = 0
         self.avatar_interaction_cooldown_ms = 600
         self.avatar_interaction_speak_cooldown_ms = 1500
+
+        # ── Unified tool calling registry ─────────────────────────────
+        # 通过 ``register_tool`` / ``unregister_tool`` 公共方法对外开放。
+        # 同进程内的 callback / agent_bridge 走 local handler，跨进程的
+        # plugin / agent_server 走 ``remote_dispatcher``（由 main_routers/
+        # tool_router.py 在 main_server 启动时绑定 HTTP 转发器）。
+        # 同一份 registry 同时给 offline 和 realtime client 使用，所以
+        # 切换会话时不需要重新注册。
+        self.tool_registry = ToolRegistry()
         # 下一次 handle_response_complete 发出的 turn end 要携带的 meta。
         # 在 handle_avatar_interaction 等需要标记特殊轮次的入口里设置，
         # 由 handle_response_complete 读取并清空。比独立的
@@ -1473,6 +1488,63 @@ class LLMSessionManager:
         except Exception as e:
             logger.error(f"处理重复度检测时出错: {e}")
 
+    # ------------------------------------------------------------------
+    # Tool calling — public API for agent_server / plugins
+    # ------------------------------------------------------------------
+
+    def register_tool(self, tool: ToolDefinition, *, replace: bool = True) -> None:
+        """Register a tool with the unified registry.
+
+        - ``tool.handler`` 是 in-process callable（推荐）— 同进程的 agent_bridge
+          / 内置功能用这条路径。
+        - ``tool.handler is None`` 时调用会被路由到 ``ToolRegistry`` 的
+          ``remote_dispatcher``，用于跨进程 plugin / agent_server。后者
+          由 main_server 启动时挂上（HTTP 转发到对应 plugin）。
+        如果当前 session 已建立，会立即把更新后的 tools list 推给 session
+        （仅 OpenAI Realtime / GLM / Step / 各家 offline 支持 mid-session 更新）。
+        """
+        self.tool_registry.register(tool, replace=replace)
+        self._fire_task(self._sync_tools_to_active_session())
+
+    def unregister_tool(self, name: str) -> bool:
+        existed = self.tool_registry.unregister(name)
+        if existed:
+            self._fire_task(self._sync_tools_to_active_session())
+        return existed
+
+    def list_tools(self) -> list[str]:
+        return self.tool_registry.names()
+
+    def clear_tools(self, *, source: str | None = None) -> int:
+        n = self.tool_registry.clear(source=source)
+        if n > 0:
+            self._fire_task(self._sync_tools_to_active_session())
+        return n
+
+    async def _on_tool_call(self, call: ToolCall) -> ToolResult:
+        """Bridge invoked by both clients when the model emits a tool
+        call. Just forwards to the registry; the registry is process-
+        global and outlives any single session.
+        """
+        return await self.tool_registry.execute(call)
+
+    async def _sync_tools_to_active_session(self) -> None:
+        """Push the current registry state to the live session, if any.
+        No-op for clients that don't support mid-session tool updates."""
+        sess = self.session
+        if sess is None:
+            return
+        defs = self.tool_registry.all()
+        try:
+            if hasattr(sess, "set_tools"):
+                sess.set_tools(defs)
+            if hasattr(sess, "set_tool_call_handler"):
+                sess.set_tool_call_handler(self._on_tool_call)
+            if isinstance(sess, OmniRealtimeClient):
+                await sess.apply_tools_to_session()
+        except Exception as e:
+            logger.warning("⚠️ Tool sync to active session failed: %s", e)
+
     def _bind_session_lifecycle_callbacks(self, session):
         """Bind lifecycle callbacks with closure-captured session reference.
         
@@ -2291,6 +2363,11 @@ class LLMSessionManager:
             
                 # Create into a LOCAL variable — not self.session yet
                 new_session = None
+                # Snapshot the registry once per session create so the
+                # tools list seen by the wire matches what the registry
+                # held at connect time. ``set_tools`` keeps it live for
+                # later mutations.
+                _initial_tool_defs = self.tool_registry.all()
                 if input_mode == 'text':
                     conversation_config = self._config_manager.get_model_api_config('conversation')
                     vision_config = self._config_manager.get_model_api_config('vision')
@@ -2311,7 +2388,9 @@ class LLMSessionManager:
                         on_status_message=self.send_status,
                         max_response_length=guard_max_length,
                         lanlan_name=self.lanlan_name,
-                        master_name=self.master_name
+                        master_name=self.master_name,
+                        on_tool_call=self._on_tool_call,
+                        tool_definitions=_initial_tool_defs,
                     )
                     new_session.on_proactive_done = self.handle_proactive_complete
                 else:
@@ -2320,7 +2399,7 @@ class LLMSessionManager:
                         base_url=realtime_config.get('base_url', ''),
                         api_key=realtime_config['api_key'],
                         model=realtime_config['model'],
-                        voice=self.voice_id if self._is_free_preset_voice and self.core_api_type == 'free' 
+                        voice=self.voice_id if self._is_free_preset_voice and self.core_api_type == 'free'
                             and 'lanlan.tech' in realtime_config.get('base_url', '') else None,
                         on_text_delta=self.handle_text_data,
                         on_audio_delta=self.handle_audio_data,
@@ -2332,7 +2411,9 @@ class LLMSessionManager:
                         on_silence_timeout=self.handle_silence_timeout,
                         on_status_message=self.send_status,
                         on_repetition_detected=self.handle_repetition_detected,
-                        api_type=self.core_api_type
+                        api_type=self.core_api_type,
+                        on_tool_call=self._on_tool_call,
+                        tool_definitions=_initial_tool_defs,
                     )
                     # Apply user's noise reduction preference to the AudioProcessor
                     nr_enabled = (await aload_global_conversation_settings()).get('noiseReductionEnabled', True)
@@ -2684,6 +2765,9 @@ class LLMSessionManager:
                 logger.info(f"🔄 热切换准备: voice_id已更新: '{old_voice_id}' -> '{self.voice_id}'")
             
             # 根据input_mode创建对应类型的pending session
+            # 复用 main session 的 ToolRegistry 状态（registry 是 manager 级，
+            # 跨 session 持久），保证热切换前后工具集合保持一致。
+            _pending_tool_defs = self.tool_registry.all()
             if self.input_mode == 'text':
                 # 文本模式：使用 OmniOfflineClient
                 conversation_config = self._config_manager.get_model_api_config('conversation')
@@ -2706,7 +2790,9 @@ class LLMSessionManager:
                     on_status_message=self.send_status,
                     max_response_length=guard_max_length,
                     lanlan_name=self.lanlan_name,
-                    master_name=self.master_name
+                    master_name=self.master_name,
+                    on_tool_call=self._on_tool_call,
+                    tool_definitions=_pending_tool_defs,
                 )
                 self.pending_session.on_proactive_done = self.handle_proactive_complete
                 logger.info("🔄 热切换准备: 创建文本模式 OmniOfflineClient")
@@ -2729,7 +2815,9 @@ class LLMSessionManager:
                     on_silence_timeout=self.handle_silence_timeout,
                     on_status_message=self.send_status,
                     on_repetition_detected=self.handle_repetition_detected,
-                    api_type=self.core_api_type
+                    api_type=self.core_api_type,
+                    on_tool_call=self._on_tool_call,
+                    tool_definitions=_pending_tool_defs,
                 )
                 # Apply user's noise reduction preference to the AudioProcessor
                 nr_enabled = (await aload_global_conversation_settings()).get('noiseReductionEnabled', True)
