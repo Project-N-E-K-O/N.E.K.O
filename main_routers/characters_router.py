@@ -43,9 +43,15 @@ from utils.character_memory import (
     list_character_memory_paths,
     rename_character_memory_storage,
 )
-from utils.config_manager import get_reserved, set_reserved, flatten_reserved
+from utils.config_manager import get_reserved, set_reserved, delete_reserved, flatten_reserved
 from utils.audio import normalize_voice_clone_api_audio, validate_audio_file
 from utils.character_name import PROFILE_NAME_MAX_UNITS, validate_character_name
+from utils.initial_personality_state import (
+    clear_manual_personality_reselect,
+    load_initial_personality_state,
+    mark_manual_personality_reselect,
+    mark_initial_personality_state,
+)
 from utils.voice_clone import (
     MinimaxVoiceCloneClient,
     MinimaxVoiceCloneError,
@@ -64,6 +70,11 @@ from utils.file_utils import atomic_write_json_async, read_json_async
 from utils.frontend_utils import find_models, find_model_directory, is_user_imported_model
 from utils.language_utils import normalize_language_code
 from utils.logger_config import get_module_logger
+from utils.persona_presets import (
+    build_persona_override_payload,
+    get_persona_preset,
+    list_persona_presets,
+)
 from utils.url_utils import encode_url_path
 from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable
 from config import MEMORY_SERVER_PORT, TFLINK_UPLOAD_URL, CHARACTER_RESERVED_FIELDS
@@ -84,6 +95,55 @@ def _json_no_store_response(content, *, status_code: int = 200):
             "Pragma": "no-cache",
         },
     )
+
+
+def _build_persona_selection_payload(character_payload: dict) -> dict:
+    override = get_reserved(character_payload, "persona_override", default=None)
+    if not isinstance(override, dict):
+        return {
+            "mode": "default",
+            "preset_id": "",
+            "source": "",
+            "selected_at": "",
+            "profile": {},
+        }
+
+    profile = override.get("profile")
+    return {
+        "mode": "override",
+        "preset_id": str(override.get("preset_id") or "").strip(),
+        "source": str(override.get("source") or "").strip(),
+        "selected_at": str(override.get("selected_at") or "").strip(),
+        "profile": dict(profile) if isinstance(profile, dict) else {},
+    }
+
+
+def _has_generated_persona_selection_prompt(prompt_text: object) -> bool:
+    return isinstance(prompt_text, str) and "<NEKO_PERSONA_SELECTION>" in prompt_text
+
+
+def _clear_stale_generated_persona_prompt(character_payload: dict) -> None:
+    if not isinstance(character_payload, dict):
+        return
+    stored_prompt = get_reserved(
+        character_payload,
+        "system_prompt",
+        default=None,
+        legacy_keys=("system_prompt",),
+    )
+    if _has_generated_persona_selection_prompt(stored_prompt):
+        delete_reserved(character_payload, "system_prompt")
+
+
+async def _clear_character_recent_history(config_manager, character_name: str) -> None:
+    recent_path = Path(config_manager.memory_dir) / character_name / "recent.json"
+    assert_cloudsave_writable(
+        config_manager,
+        operation="save",
+        target=f"memory/{character_name}/recent.json",
+    )
+    await asyncio.to_thread(recent_path.parent.mkdir, parents=True, exist_ok=True)
+    await atomic_write_json_async(recent_path, [], ensure_ascii=False, indent=2)
 
 
 def _derive_live2d_model_name(model_ref: str) -> str:
@@ -1833,6 +1893,139 @@ async def get_current_catgirl():
     characters = await _config_manager.aload_characters()
     current_catgirl = characters.get('当前猫娘', '')
     return _json_no_store_response({'current_catgirl': current_catgirl})
+
+
+@router.get('/persona-presets')
+async def list_persona_presets_route():
+    return _json_no_store_response({
+        "success": True,
+        "presets": list_persona_presets(),
+    })
+
+
+@router.get('/persona-onboarding-state')
+async def get_persona_onboarding_state():
+    config_manager = get_config_manager()
+    return _json_no_store_response({
+        "success": True,
+        "state": load_initial_personality_state(config_manager),
+    })
+
+
+@router.post('/persona-onboarding-state')
+async def set_persona_onboarding_state(request: Request):
+    payload = await request.json()
+    config_manager = get_config_manager()
+    state = mark_initial_personality_state(
+        str((payload or {}).get("status") or "").strip(),
+        config_manager=config_manager,
+    )
+    return {
+        "success": True,
+        "state": state,
+    }
+
+
+@router.post('/persona-reselect-current')
+async def request_current_character_persona_reselect():
+    config_manager = get_config_manager()
+    characters = await config_manager.aload_characters()
+    current_character_name = str(characters.get('当前猫娘') or '').strip()
+    if not current_character_name:
+        return JSONResponse({'success': False, 'error': '当前没有可用角色'}, status_code=400)
+
+    state = mark_manual_personality_reselect(
+        current_character_name,
+        config_manager=config_manager,
+    )
+    return {
+        "success": True,
+        "state": state,
+    }
+
+
+@router.delete('/persona-reselect-current')
+async def clear_current_character_persona_reselect():
+    config_manager = get_config_manager()
+    state = clear_manual_personality_reselect(config_manager=config_manager)
+    return {
+        "success": True,
+        "state": state,
+    }
+
+
+@router.get('/character/{name}/persona-selection')
+async def get_character_persona_selection(name: str):
+    config_manager = get_config_manager()
+    characters = await config_manager.aload_characters()
+    character_payload = (characters.get('猫娘') or {}).get(name)
+    if not isinstance(character_payload, dict):
+        return JSONResponse({'success': False, 'error': '角色不存在'}, status_code=404)
+
+    return _json_no_store_response({
+        "success": True,
+        "selection": _build_persona_selection_payload(character_payload),
+    })
+
+
+@router.put('/character/{name}/persona-selection')
+async def update_character_persona_selection(name: str, request: Request):
+    payload = await request.json()
+    preset_id = str((payload or {}).get("preset_id") or "").strip()
+    source = str((payload or {}).get("source") or "").strip()
+    preset = get_persona_preset(preset_id)
+    if preset is None:
+        return JSONResponse({'success': False, 'error': '无效的人格预设'}, status_code=400)
+
+    config_manager = get_config_manager()
+    characters = await config_manager.aload_characters()
+    character_payload = (characters.get('猫娘') or {}).get(name)
+    if not isinstance(character_payload, dict):
+        return JSONResponse({'success': False, 'error': '角色不存在'}, status_code=404)
+
+    selected_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    override_payload = build_persona_override_payload(
+        preset_id,
+        source=source,
+        selected_at=selected_at,
+    )
+    if override_payload is None:
+        return JSONResponse({'success': False, 'error': '无效的人格预设'}, status_code=400)
+
+    set_reserved(character_payload, "persona_override", override_payload)
+    _clear_stale_generated_persona_prompt(character_payload)
+    await config_manager.asave_characters(characters)
+    await _clear_character_recent_history(config_manager, name)
+
+    initialize_one_character = get_init_one_catgirl()
+    await initialize_one_character(name, is_new=False)
+
+    return {
+        "success": True,
+        "selection": _build_persona_selection_payload(character_payload),
+    }
+
+
+@router.delete('/character/{name}/persona-selection')
+async def clear_character_persona_selection(name: str):
+    config_manager = get_config_manager()
+    characters = await config_manager.aload_characters()
+    character_payload = (characters.get('猫娘') or {}).get(name)
+    if not isinstance(character_payload, dict):
+        return JSONResponse({'success': False, 'error': '角色不存在'}, status_code=404)
+
+    delete_reserved(character_payload, "persona_override")
+    _clear_stale_generated_persona_prompt(character_payload)
+    await config_manager.asave_characters(characters)
+    await _clear_character_recent_history(config_manager, name)
+
+    initialize_one_character = get_init_one_catgirl()
+    await initialize_one_character(name, is_new=False)
+
+    return {
+        "success": True,
+        "selection": _build_persona_selection_payload(character_payload),
+    }
 
 @router.post('/current_catgirl')
 async def set_current_catgirl(request: Request):
