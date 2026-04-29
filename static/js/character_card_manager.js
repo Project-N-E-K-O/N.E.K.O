@@ -2567,10 +2567,15 @@ function waitForCharacterCardModelScanBudget(scanPromise) {
     });
 }
 
-async function collectCharacterSettingsCardsFromModels(idCounter) {
+async function collectCharacterSettingsCardsFromModels(idCounter, loadSequence) {
     let nextId = idCounter;
     const newCards = [];
     for (const model of availableModels) {
+        // 每个模型外层 fetch 前先校验序列号；旧轮被新一轮 loadCharacterCards 抢占后立刻早退，
+        // 避免在大目录下继续打 model_files / *.chara.json 的废请求拖慢最新一轮 I/O
+        if (loadSequence !== undefined && loadSequence !== characterCardLoadSequence) {
+            return { cards: newCards, nextId };
+        }
         try {
             // 调用API获取模型文件列表
             const response = await fetch(`/api/live2d/model_files/${model.name}`);
@@ -2585,6 +2590,9 @@ async function collectCharacterSettingsCardsFromModels(idCounter) {
 
                     // 如果找到character_settings文件，解析并添加到角色卡列表
                     for (const file of characterSettingsFiles) {
+                        if (loadSequence !== undefined && loadSequence !== characterCardLoadSequence) {
+                            return { cards: newCards, nextId };
+                        }
                         try {
                             // 获取完整的文件内容
                             // 构建正确的文件URL - 从模型配置文件路径推断
@@ -2799,7 +2807,7 @@ async function loadCharacterCards() {
 
     waitForCharacterCardModelScanBudget(modelScanPromise)
         .then(scanBudget => {
-            const appendAfterScan = () => collectCharacterSettingsCardsFromModels(characterSettingsStartId)
+            const appendAfterScan = () => collectCharacterSettingsCardsFromModels(characterSettingsStartId, loadSequence)
                 .then(discovered => mergeCharacterSettingsCardsFromModels(loadSequence, discovered));
 
             scanBudget.eventual.then(scanCompleted => {
