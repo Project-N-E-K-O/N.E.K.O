@@ -167,7 +167,10 @@ class ProactiveBridge:
                             "status": "completed",
                             "delivery_mode": delivery_mode,
                             "source_kind": "plugin",
-                            "source_name": plugin_id or "",
+                            # str() guard: upstream may set plugin_id to a non-string
+                            # (e.g. int id). Downstream main_logic renderer uses
+                            # ``.strip()``/``.format()`` which would raise on those.
+                            "source_name": str(plugin_id) if plugin_id else "",
                             "timestamp": payload.get("time", ""),
                         }
                     

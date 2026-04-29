@@ -1832,6 +1832,9 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                     # summary 不再套 plugin_failed_with；状态由
                                     # main_logic 的外层 SYSTEM_NOTIFICATION_PROACTIVE
                                     # （+ status="failed" → "执行失败"）表达。
+                                    # 显式传 status="failed"，否则 _emit_task_result
+                                    # 看到 success=False + 非空 detail 会默认推到
+                                    # "partial"，把单纯失败误标成"部分完成"。
                                     await _emit_task_result(
                                         lanlan_name,
                                         channel="user_plugin",
@@ -1840,6 +1843,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                         summary=_err_text,
                                         detail=_err_text,
                                         error_message=_err_text,
+                                        status="failed",
                                         source_kind="plugin",
                                         source_name=display_id,
                                         delivery_mode=_delivery_mode,
@@ -3123,14 +3127,18 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
                         info["error"] = _tt((detail or str(res.error or "")), TASK_ERROR_MAX_TOKENS)
                     display_id = await _get_plugin_display_id(plugin_id)
                     # summary = plain detail; status/source rendering handled in main_logic.
+                    # 失败情况下显式传 status="failed"，避免 _emit_task_result 把
+                    # success=False+非空 detail 默认推到 "partial"（"部分完成"）。
                     if res.success:
                         _summary_text = detail
                         _detail_text = detail
                         _err_text = ""
+                        _explicit_status = None
                     else:
                         _err_text = (detail or str(res.error or "")).strip()
                         _summary_text = _err_text
                         _detail_text = _err_text
+                        _explicit_status = "failed"
                     await _emit_task_result(
                         lanlan_name,
                         channel="user_plugin",
@@ -3140,6 +3148,7 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
                         detail=_detail_text,
                         error_message=_err_text,
                         direct_reply=False,
+                        status=_explicit_status,
                         source_kind="plugin",
                         source_name=display_id,
                         delivery_mode=_delivery_mode,

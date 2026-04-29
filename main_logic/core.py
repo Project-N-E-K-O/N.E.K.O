@@ -3371,29 +3371,49 @@ class LLMSessionManager:
         if not self.pending_agent_callbacks:
             return
 
-        # Voice mode 走 hot-swap，不进 SM proactive 流水线
+        # Hard delivery contract: trigger_agent_callbacks ONLY consumes
+        # proactive callbacks. Passive ones must remain in the queue and
+        # surface only at the next user turn via drain_agent_callbacks_for_llm.
+        # Without this filter, a passive callback enqueued earlier would get
+        # piggy-backed onto any later proactive trigger — silently breaking
+        # ``delivery="passive"``'s "don't interrupt" promise.
+        proactive_cbs = [
+            cb for cb in self.pending_agent_callbacks
+            if cb.get("delivery_mode") != "passive"
+        ]
+        if not proactive_cbs:
+            logger.debug(
+                "[%s] trigger_agent_callbacks: queue has only passive callbacks (n=%d); deferring to next user turn",
+                self.lanlan_name, len(self.pending_agent_callbacks),
+            )
+            return
+
+        # Voice mode 走 hot-swap，不进 SM proactive 流水线。Drop only the
+        # proactive cbs from the queue; passive cbs stay for the next drain.
         if isinstance(self.session, OmniRealtimeClient):
-            self.pending_agent_callbacks.clear()
+            self.pending_agent_callbacks = [
+                cb for cb in self.pending_agent_callbacks
+                if cb.get("delivery_mode") == "passive"
+            ]
             logger.debug("[%s] trigger_agent_callbacks: voice mode, deferring to hot-swap", self.lanlan_name)
             return
 
         _lang = normalize_language_code(self.user_language, format='short')
-        # Render via _build_callback_instruction: groups callbacks by
-        # (delivery_mode, status, source_kind, source_name) and slots in the
-        # right outer header (PROACTIVE for non-passive, PASSIVE for passive
-        # ones that landed here because the user issued a turn before drain).
+        # Render via _build_callback_instruction on the proactive subset only.
+        # Note: this never returns "" while ``proactive_cbs`` is non-empty —
+        # the renderer always emits at least the per-group outer header even
+        # for callbacks with empty summary/detail. So no empty-instruction
+        # early-return is needed (and the previous version incorrectly cleared
+        # ``pending_extra_replies`` along the way, which is voice-hot-swap
+        # state belonging to a different consumer).
         instruction = _build_callback_instruction(
-            self.pending_agent_callbacks,
+            proactive_cbs,
             lang=_lang,
             lanlan_name=self.lanlan_name,
             master_name=self.master_name,
             passive=False,
         )
-        if not instruction:
-            self.pending_agent_callbacks.clear()
-            self.pending_extra_replies.clear()
-            return
-        callbacks_snapshot = list(self.pending_agent_callbacks)
+        callbacks_snapshot = list(proactive_cbs)
 
         # 原子 check-and-claim：若另一路 proactive（router/greeting）在跑或 AI
         # 正在为用户回复，SM 拒绝本次投递，callbacks 留在 pending 下轮重试。
@@ -3457,7 +3477,9 @@ class LLMSessionManager:
             # 更新字数限制（可能用户在对话期间修改了设置）
             if hasattr(self.session, 'update_max_response_length'):
                 self.session.update_max_response_length(self._get_text_guard_max_length())
-            self.pending_agent_callbacks.clear()
+            # NOTE: queue mutation moved to caller (trigger_agent_callbacks
+            # extracts the proactive subset before claim). Do NOT clear
+            # pending_agent_callbacks here — passive cbs would also get wiped.
             # per-task contextvar：prompt_ephemeral 回调链里 handle_text_data
             # 识别本路径 chunk 并在 sid 被用户抢走后丢弃
             _sid_token = _proactive_expected_sid.set(proactive_sid)
@@ -3467,6 +3489,10 @@ class LLMSessionManager:
                 _proactive_expected_sid.reset(_sid_token)
             logger.debug("[%s] trigger_agent_callbacks: prompt_ephemeral delivered=%s", self.lanlan_name, delivered)
             if delivered:
+                # pending_extra_replies parallels pending_agent_callbacks but
+                # is voice-mode-only state. Wiping it on text delivery is the
+                # pre-existing behavior — voice hot-swap that races in after
+                # text-mode delivery would have nothing to inject anyway.
                 self.pending_extra_replies.clear()
             else:
                 self.pending_agent_callbacks.extend(callbacks_snapshot)

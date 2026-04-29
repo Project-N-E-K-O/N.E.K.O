@@ -374,7 +374,7 @@ return await self.finish(data={"summary": "天气晴朗"}, delivery="proactive")
 # 安静通知：进上下文不打断；下次用户开口时 AI 顺嘴提一下
 return await self.finish(data={"summary": "番茄钟到点了"}, delivery="passive")
 
-# 完全静默：仅写前端 HUD，AI 不知情
+# 完全静默：AI 不知情；前端只通过 task_update 看到任务终态（无浮窗/HUD 通知）
 return await self.finish(data={"summary": "..."}, delivery="silent")
 ```
 

@@ -37,14 +37,20 @@ def normalize_delivery(
         - ``delivery=False`` → ``"silent"``
         - ``reply=True``  → ``"proactive"``
         - ``reply=False`` → ``"silent"``
-    When both are provided ``delivery`` wins. Anything unknown falls back to
-    :data:`DEFAULT_DELIVERY`.
+    Priority: when ``delivery`` is provided (even if invalid) it owns the
+    decision — invalid values fall back to :data:`DEFAULT_DELIVERY` rather
+    than letting ``reply`` quietly override. This avoids
+    ``delivery="typo", reply=False`` silently flipping to ``"silent"``.
+    Only when ``delivery is None`` do we consult ``reply``.
     """
-    if isinstance(delivery, str):
-        if delivery in DELIVERY_MODES:
+    if delivery is not None:
+        if isinstance(delivery, str) and delivery in DELIVERY_MODES:
             return delivery
-    elif isinstance(delivery, bool):
-        return "proactive" if delivery else "silent"
+        if isinstance(delivery, bool):
+            return "proactive" if delivery else "silent"
+        # delivery was specified but invalid type/value → don't fall through
+        # to reply (the caller intended to set delivery, not reply).
+        return DEFAULT_DELIVERY
     if isinstance(reply, bool):
         return "proactive" if reply else "silent"
     return DEFAULT_DELIVERY

@@ -295,14 +295,20 @@ class SdkContext:
         # ``delivery`` (3-state) is canonical; ``reply`` (bool) is a deprecated
         # alias kept for backward compatibility. None of either ⇒ leave the
         # caller-provided metadata.agent.* untouched (or ``None`` when no
-        # metadata at all was supplied).
+        # metadata at all was supplied) — we still need a concrete
+        # ``delivery_mode`` for the contract-validation gate below, so we
+        # fall back to metadata-derived value or the default.
         resolved: str | None = None
         if delivery is not None or reply is not None:
             resolved = normalize_delivery(delivery, reply)
         normalized_metadata = self._normalize_export_metadata(metadata, delivery=resolved)
-        delivery_mode = resolved or self._metadata_delivery(normalized_metadata)
+        delivery_mode = (
+            resolved
+            or self._metadata_delivery(normalized_metadata)
+            or normalize_delivery(None, None)  # default = "proactive"
+        )
         normalized_json_data = normalize_structured_data(json_data) if json_data is not None else None
-        if delivery_mode is not None and delivery_mode != "silent":
+        if delivery_mode != "silent":
             payload: object = normalized_json_data if export_type == "json" else text if export_type == "text" else None
             self._validate_reply_payload(payload, export_type=export_type)
         return await self._host_ctx.export_push_async(
