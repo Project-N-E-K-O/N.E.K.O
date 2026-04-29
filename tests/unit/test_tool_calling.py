@@ -295,15 +295,19 @@ async def test_offline_openai_path_runs_tool_then_text():
 
 
 @pytest.mark.asyncio
-async def test_offline_switch_model_recomputes_genai_routing():
+async def test_offline_switch_model_recomputes_genai_routing(monkeypatch):
     """switch_model 切到不同 endpoint 后必须重新计算 _use_genai_sdk，
     并清空 _genai_client，否则会沿用旧 conversation 的路由判断。
 
-    回归保护：Codex P1 反馈，PR #1035。"""
-    from main_logic.omni_offline_client import OmniOfflineClient, _GENAI_AVAILABLE
+    回归保护：Codex P1 反馈，PR #1035。
 
-    if not _GENAI_AVAILABLE:
-        pytest.skip("google-genai SDK not installed in this env")
+    本测试只验状态切换的纯逻辑——monkeypatch ``_GENAI_AVAILABLE=True``
+    让 ``_should_use_genai_sdk`` 在没装 google-genai 的 CI 上也能跑出
+    ``True`` 分支，避免环境不全时这条回归保护被静默 skip 掉。"""
+    from main_logic import omni_offline_client as _ofc
+    from main_logic.omni_offline_client import OmniOfflineClient
+
+    monkeypatch.setattr(_ofc, "_GENAI_AVAILABLE", True)
 
     # 建 client：conversation 走 OpenAI，vision_base_url 指向 Gemini native endpoint。
     client = OmniOfflineClient.__new__(OmniOfflineClient)

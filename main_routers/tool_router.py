@@ -48,15 +48,24 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 import httpx
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from main_logic.tool_calling import ToolCall, ToolDefinition, ToolResult
+from main_routers.cookies_login_router import verify_local_access
 from utils.logger_config import get_module_logger
 
 from .shared_state import get_session_manager
 
-router = APIRouter(prefix="/api/tools", tags=["tools"])
+# 这些端点能改运行时状态（注册/卸载工具、配置 callback_url），如果服务被
+# 暴露到 LAN 上不加保护就成了任意远程工具转发器。复用 cookies_login_router
+# 里已有的 verify_local_access：仅允许 127.0.0.1 / ::1 / localhost，本地之外
+# 的请求一律 403。
+router = APIRouter(
+    prefix="/api/tools",
+    tags=["tools"],
+    dependencies=[Depends(verify_local_access)],
+)
 logger = get_module_logger(__name__, "Main")
 
 # Shared HTTP client for plugin callbacks. Created lazily so we don't
@@ -211,13 +220,33 @@ async def register_tool(req: ToolRegisterRequest) -> Dict[str, Any]:
         },
     )
     affected: List[str] = []
+    failed: List[Dict[str, str]] = []
     for mgr in targets:
+        role_name = getattr(mgr, "lanlan_name", "?")
         try:
             mgr.register_tool(tool, replace=True)
-            affected.append(getattr(mgr, "lanlan_name", "?"))
+            affected.append(role_name)
         except Exception as e:
-            logger.warning("register_tool to mgr=%s failed: %s", mgr, e)
-    return {"ok": True, "registered": req.name, "affected_roles": affected}
+            err_text = f"{type(e).__name__}: {e}"
+            logger.warning("register_tool to %s failed: %s", role_name, err_text)
+            failed.append({"role": role_name, "error": err_text})
+    # 全失败 → ok=False，让插件知道注册没生效（之前永远 ok=True 会让插件
+    # 误以为工具已经可用，下次 model 调用工具才会运行时报错）。
+    # 部分成功 → ok=True 但带 failed_roles，让调用方按需处理（比如重试该 role）。
+    if not affected:
+        return {
+            "ok": False,
+            "registered": req.name,
+            "affected_roles": [],
+            "failed_roles": failed,
+            "error": "no role accepted the registration",
+        }
+    return {
+        "ok": True,
+        "registered": req.name,
+        "affected_roles": affected,
+        "failed_roles": failed,
+    }
 
 
 @router.post("/unregister")

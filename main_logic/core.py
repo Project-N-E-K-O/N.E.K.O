@@ -2476,6 +2476,16 @@ class LLMSessionManager:
                     # 还会 +1 session_start_failure_count 并向前端发 SESSION_START_FAILED。
                     return _START_LLM_CONCURRENT_ABORTED
 
+                # 关 race 的最后一道闸：构造时拍了一次 registry 快照塞进 client，
+                # 但 connect() 期间若有 register_tool / unregister_tool 发生，前面
+                # 那次异步 _sync_tools_to_active_session 可能找不到 self.session
+                # （它当时还是 None / 旧 session）。这里 self.session 已就位，
+                # 重新 sync 一次，让 wire 上的 tools 与 registry 保持最终一致。
+                try:
+                    await self._sync_tools_to_active_session()
+                except Exception as _sync_err:
+                    logger.warning("⚠️ start_llm_session: post-connect tool sync failed: %s", _sync_err)
+
                 logger.info("✅ LLM Session 已连接")
                 logger.info(f"[语音会话诊断] LLM 连接并 connect 完成 (耗时: {time.time() - _llm_create_start:.2f}秒)")
                 print(initial_prompt)  #只在控制台显示，不输出到日志文件
@@ -2864,8 +2874,15 @@ class LLMSessionManager:
             self._bind_session_lifecycle_callbacks(self.pending_session)
             await self.pending_session.connect(initial_prompt, native_audio = not self.use_tts)
 
+            # 同主 session 路径：热切换的 pending_session 也要在 connect 后
+            # 补一次 sync，覆盖 connect 期间发生的 register/unregister race。
+            try:
+                await self._sync_tools_to_active_session()
+            except Exception as _sync_err:
+                logger.warning("⚠️ pending_session post-connect tool sync failed: %s", _sync_err)
+
             if self.pending_session_warmed_up_event:
-                self.pending_session_warmed_up_event.set() 
+                self.pending_session_warmed_up_event.set()
 
         except asyncio.CancelledError:
             logger.error("💥 BG Prep Stage 1: Task cancelled.")

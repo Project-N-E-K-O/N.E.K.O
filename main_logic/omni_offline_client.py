@@ -237,13 +237,16 @@ def _genai_messages_to_contents(
                             if fn_name:
                                 break
                 if not fn_name:
-                    # 实在找不到——记 warning 并用占位，不要塞 call_xxx 给 Gemini。
+                    # 实在找不到 —— 一个不匹配原 function_call.name 的占位
+                    # （比如 "unknown_tool"）只会让 Gemini 拿到一个永远找不到
+                    # 对应 function_call 的孤儿 tool result，效果跟不发一样
+                    # 还要白费一轮 token。直接跳过这条 malformed message。
                     logger.warning(
-                        "genai message conversion: tool message missing name, "
-                        "tool_call_id=%s — using placeholder 'unknown_tool'",
+                        "genai message conversion: dropping tool message with no "
+                        "resolvable function name, tool_call_id=%s",
                         msg.get("tool_call_id"),
                     )
-                    fn_name = "unknown_tool"
+                    continue
                 contents.append(types.Content(role="user", parts=[
                     types.Part.from_function_response(name=fn_name, response=parsed)
                 ]))
@@ -889,9 +892,21 @@ class OmniOfflineClient:
             self.base_url = base_url
             self.api_key = api_key
             # 路由旗标随之刷新；旧 _genai_client 抛弃（若 api_key 变了它已失效）。
+            # genai.Client 内部持有 httpx 连接池——直接 = None 靠 GC 回收虽不
+            # 是 leak，但提早 close() 能马上释放底层连接（SDK 没暴露 aclose，
+            # close 是同步方法，放进 to_thread 不阻事件循环）。
+            old_genai = self._genai_client
             self._use_genai_sdk = _should_use_genai_sdk(self.model, self.base_url)
             self._genai_client = None
             self._genai_tools_unsupported = False
+            if old_genai is not None and hasattr(old_genai, "close"):
+                try:
+                    await asyncio.to_thread(old_genai.close)
+                except Exception as _close_err:
+                    logger.warning(
+                        "switch_model: old genai client close failed: %s",
+                        _close_err,
+                    )
             try:
                 await old_llm.aclose()
             except Exception as e:
@@ -1630,4 +1645,13 @@ class OmniOfflineClient:
             except Exception as e:
                 logger.warning(f"OmniOfflineClient.close: aclose failed: {e}")
             self.llm = None
+        # 同 switch_model：genai.Client 持有 httpx 连接池，关掉它的
+        # 同步 close()（SDK 没暴露 aclose，放 to_thread 不阻事件循环）。
+        if self._genai_client is not None and hasattr(self._genai_client, "close"):
+            try:
+                await asyncio.to_thread(self._genai_client.close)
+            except Exception as e:
+                logger.warning(f"OmniOfflineClient.close: genai client close failed: {e}")
+            self._genai_client = None
+        self._genai_tools_unsupported = False
         logger.info("OmniOfflineClient closed")
