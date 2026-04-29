@@ -105,16 +105,23 @@ class DecisioningMixin:
                     resolved_target = normalized_valid_targets[0]
             damage = self._combat_analyzer._card_total_damage_value(card, combat, target_index=resolved_target, strategy_constraints=strategy_constraints)
             if prioritize_lethal:
+                is_aoe_or_no_target = not normalized_valid_targets
                 target_enemy = next(
                     (enemy for enemy in enemies if isinstance(enemy, dict) and resolved_target is not None and self._safe_int(enemy.get("index"), None) == resolved_target),
                     None,
                 )
                 if target_enemy is None and len(enemies) == 1 and isinstance(enemies[0], dict):
                     target_enemy = enemies[0]
-                if target_enemy is None:
+                if target_enemy is None and is_aoe_or_no_target:
+                    can_kill_any = any(
+                        isinstance(enemy, dict) and damage >= (self._enemy_hp_value(enemy) + self._enemy_block_value(enemy))
+                        for enemy in enemies
+                    )
+                    if not can_kill_any:
+                        continue
+                elif target_enemy is None:
                     continue
-                effective_hp = self._enemy_hp_value(target_enemy) + self._enemy_block_value(target_enemy)
-                if damage < effective_hp:
+                elif damage < (self._enemy_hp_value(target_enemy) + self._enemy_block_value(target_enemy)):
                     continue
             action = self._action_for_card(play_card_actions, card, target_index=resolved_target)
             if action is not None:
@@ -356,26 +363,40 @@ class DecisioningMixin:
         )
         return chosen_action
 
-    async def _select_action(self, context: dict[str, Any]) -> dict[str, Any]:
-        mode = self._configured_mode()
+    def _build_guidance_context(self, context: dict[str, Any]) -> tuple[dict[str, Any], list, Optional[str]]:
+        """Merge queued guidance with any caller-provided guidance, return (decision_context, guidance_list, guidance_text)."""
         guidance_list = list(self._neko_guidance_queue)
         guidance_text = "\n".join(f"- {g['content']}" for g in guidance_list) if guidance_list else None
-        decision_context = {**context, "neko_guidance": guidance_text} if guidance_text else context
+        caller_guidance = context.get("neko_guidance")
+        if caller_guidance and guidance_text:
+            merged = f"{caller_guidance}\n{guidance_text}"
+        else:
+            merged = guidance_text or caller_guidance or None
+        decision_context = {**context, "neko_guidance": merged} if merged else context
+        return decision_context, guidance_list, merged
+
+    async def _select_action(self, context: dict[str, Any]) -> dict[str, Any]:
+        mode = self._configured_mode()
+        decision_context, guidance_list, guidance_text = self._build_guidance_context(context)
         actions = decision_context.get("actions") if isinstance(decision_context.get("actions"), list) else []
         desperate_action = self._select_desperate_action(actions, decision_context)
         if desperate_action is not None:
+            self._drain_neko_guidance()
             self._log_action_decision("desperate-mode", desperate_action, decision_context)
             return desperate_action
         if bool(self._cfg.get("neko_maximize_enabled", True)):
             maximize_action = self._select_maximize_benefit_action(actions, decision_context)
             if maximize_action is not None:
+                self._drain_neko_guidance()
                 self._log_action_decision("maximize-benefit", maximize_action, decision_context)
                 return maximize_action
         preemptive_action = self._select_preemptive_program_action(actions, decision_context)
         if preemptive_action is not None:
+            self._drain_neko_guidance()
             self._log_action_decision(f"{mode}-program-preflight", preemptive_action, decision_context)
             return preemptive_action
         if mode == "full-program":
+            self._drain_neko_guidance()
             action = self._select_action_heuristic(actions, context=decision_context)
             self._log_action_decision("heuristic", action, decision_context)
             return action
@@ -423,24 +444,26 @@ class DecisioningMixin:
 
     async def _select_action_with_reasoning(self, context: dict[str, Any]) -> tuple[dict[str, Any], Optional[dict[str, Any]]]:
         mode = self._configured_mode()
-        guidance_list = list(self._neko_guidance_queue)
-        guidance_text = "\n".join(f"- {g['content']}" for g in guidance_list) if guidance_list else None
-        decision_context = {**context, "neko_guidance": guidance_text} if guidance_text else context
+        decision_context, guidance_list, guidance_text = self._build_guidance_context(context)
         actions = decision_context.get("actions") if isinstance(decision_context.get("actions"), list) else []
         desperate_action = self._select_desperate_action(actions, decision_context)
         if desperate_action is not None:
+            self._drain_neko_guidance()
             self._log_action_decision("desperate-mode", desperate_action, decision_context)
             return desperate_action, None
         if bool(self._cfg.get("neko_maximize_enabled", True)):
             maximize_action = self._select_maximize_benefit_action(actions, decision_context)
             if maximize_action is not None:
+                self._drain_neko_guidance()
                 self._log_action_decision("maximize-benefit", maximize_action, decision_context)
                 return maximize_action, None
         preemptive_action = self._select_preemptive_program_action(actions, decision_context)
         if preemptive_action is not None:
+            self._drain_neko_guidance()
             self._log_action_decision(f"{mode}-program-preflight", preemptive_action, decision_context)
             return preemptive_action, None
         if mode == "full-program":
+            self._drain_neko_guidance()
             action = self._select_action_heuristic(actions, context=decision_context)
             self._log_action_decision("heuristic", action, decision_context)
             return action, None

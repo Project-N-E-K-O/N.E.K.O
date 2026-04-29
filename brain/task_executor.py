@@ -1382,8 +1382,7 @@ class DirectTaskExecutor:
                         if not pid:
                             continue
                         eids = [str(e.get("id")) for e in self._agent_visible_plugin_entries(p) if e.get("id")]
-                        if eids:
-                            valid_entries_map[pid] = eids
+                        valid_entries_map[pid] = eids
                 except Exception:
                     valid_entries_map = {}
 
@@ -1847,6 +1846,10 @@ class DirectTaskExecutor:
                 entry_id=plugin_entry_id,
                 reason=reason or "entry_id_missing",
             )
+
+        # Normalize entry_id to string (LLM may return int)
+        if isinstance(plugin_entry_id, int):
+            plugin_entry_id = str(plugin_entry_id)
 
         # Strict entry_id validation: only allow case-insensitive exact match as minor tolerance.
         if plugin_entry_id and plugin_meta:

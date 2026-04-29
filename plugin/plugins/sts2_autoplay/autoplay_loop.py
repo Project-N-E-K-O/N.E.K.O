@@ -68,7 +68,10 @@ class AutoplayLoopMixin:
         return {"status": "idle", "message": "尖塔已停止", "reason": reason}
 
     async def get_history(self, limit: int = 20) -> Dict[str, Any]:
-        limit = max(1, min(100, int(limit or 20)))
+        try:
+            limit = max(1, min(100, int(limit or 20)))
+        except (ValueError, TypeError):
+            limit = 20
         items = list(self._history)[:limit]
         message = f"最近 {len(items)} 条历史"
         return {"status": "ok", "message": message, "summary": message, "history": items}
@@ -136,8 +139,15 @@ class AutoplayLoopMixin:
                 result = await self.step_once()
                 self._step_count += 1
                 if result.get("status") == "idle":
-                    await asyncio.sleep(max(0.2, float(self._cfg.get("poll_interval_active_seconds", 1) or 1)))
-                report_interval = max(1, int(self._cfg.get("neko_report_interval_steps", 1) or 1))
+                    try:
+                        idle_sleep = max(0.2, float(self._cfg.get("poll_interval_active_seconds", 1) or 1))
+                    except (ValueError, TypeError):
+                        idle_sleep = 1.0
+                    await asyncio.sleep(idle_sleep)
+                try:
+                    report_interval = max(1, int(self._cfg.get("neko_report_interval_steps", 1) or 1))
+                except (ValueError, TypeError):
+                    report_interval = 1
                 should_report = self._step_count - self._last_task_report_step >= report_interval
                 if bool(self._cfg.get("neko_reporting_enabled", False)) and should_report:
                     try:

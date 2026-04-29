@@ -210,7 +210,7 @@ class HeuristicSelector:
         selected = selector_methods._select_shop_remove_action(actions, context, shop)
         if selected is not None:
             return selected
-        remove_action = next((action for action in actions if isinstance(action, dict) and str(action.get("type") or "") == "select_deck_card"), None)
+        remove_action = next((action for action in actions if isinstance(action, dict) and _action_type(action) == "select_deck_card"), None)
         if not isinstance(remove_action, dict):
             return None
         remove_index = selector_methods._find_shop_remove_card_index(context)
@@ -329,14 +329,14 @@ class HeuristicSelector:
     def select_reward_action_heuristic(self, actions: List[Dict[str, Any]], context: Dict[str, Any], selector_methods) -> Optional[Dict[str, Any]]:
         reward_actions = [
             action for action in actions
-            if isinstance(action, dict) and str(action.get("type") or "") in {"choose_reward_card", "select_deck_card", "claim_reward", "collect_rewards_and_proceed"}
+            if isinstance(action, dict) and _action_type(action) in {"choose_reward_card", "select_deck_card", "claim_reward", "collect_rewards_and_proceed"}
         ]
         if not reward_actions:
             return None
         raw_by_type = {
-            str(action.get("type") or ""): action
+            _action_type(action): action
             for action in reward_actions
-            if str(action.get("type") or "")
+            if _action_type(action)
         }
         claim_card_index = selector_methods._find_claimable_card_reward_index(context)
         claim_action = raw_by_type.get("claim_reward")
@@ -356,11 +356,11 @@ class HeuristicSelector:
         if options:
             selector_methods._log_card_reward_options(options, context)
         preferred_option_index = selector_methods._find_preferred_card_option_index(raw, context)
-        reward_action_type = str(reward_action.get("type") or "")
+        reward_action_type = _action_type(reward_action)
         if reward_action_type in {"claim_reward", "collect_rewards_and_proceed"} and options:
-            promoted_label = "choose_reward_card"
-            updates = {"option_index": preferred_option_index} if preferred_option_index is not None else {}
-            return _with_raw_updates(reward_action, updates, action_type=promoted_label)
+            if preferred_option_index is None:
+                return None
+            return _with_raw_updates(reward_action, {"option_index": preferred_option_index}, action_type="choose_reward_card")
         if preferred_option_index is None:
             return None
         return _with_raw_updates(reward_action, {"option_index": preferred_option_index})
@@ -369,7 +369,7 @@ class HeuristicSelector:
         card_removal = shop.get("card_removal") if isinstance(shop.get("card_removal"), dict) else {}
         if not bool(card_removal.get("available")) or not bool(card_removal.get("enough_gold")):
             return None
-        remove_action = next((action for action in actions if isinstance(action, dict) and str(action.get("type") or "") == "select_deck_card"), None)
+        remove_action = next((action for action in actions if isinstance(action, dict) and _action_type(action) == "select_deck_card"), None)
         if not isinstance(remove_action, dict):
             return None
         remove_index = selector_methods._find_shop_remove_card_index(context)
@@ -465,17 +465,16 @@ class HeuristicSelector:
         return not bool(card.get("unremovable") or card.get("cannot_remove"))
 
     def shop_unremovable_card_aliases(self, selector_methods) -> Set[str]:
+        """Return all card aliases marked as unremovable in strategy constraints."""
         constraints = self._strategy_constraints(selector_methods)
         shop_preferences = constraints.get("shop_preferences") if isinstance(constraints, dict) else {}
         card_preferences = shop_preferences.get("card") if isinstance(shop_preferences, dict) else {}
         unremovable = card_preferences.get("unremovable") if isinstance(card_preferences, dict) else {}
         aliases: Set[str] = set()
-        for items in unremovable.values() if isinstance(unremovable, dict) else []:
-            if not isinstance(items, list):
-                continue
-            for item in items:
-                if isinstance(item, str) and item.strip():
-                    aliases.add(item.strip().lower())
+        for label, entry in (unremovable.items() if isinstance(unremovable, dict) else []):
+            for alias in self._constraint_aliases(entry):
+                if alias:
+                    aliases.add(alias)
         return aliases
 
     def shop_remove_priority(self, card: Dict[str, Any], selector_methods) -> int:
