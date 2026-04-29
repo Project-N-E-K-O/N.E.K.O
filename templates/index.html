@@ -14,29 +14,29 @@
     <!-- VRM 光照默认值：从后端注入，保证在所有 JS 之前同步可用 -->
     <script>window.VRM_DEFAULT_LIGHTING=Object.freeze({{ vrm_defaults | tojson }});</script>
     <!-- i18next 加载器（统一处理 CDN 加载和初始化） -->
-    <script src="/static/i18n-i18next.js"></script>
-    <script src="/static/common_dialogs.js"></script>
-    <link rel="stylesheet" href="/static/css/index.css">
-    <link rel="stylesheet" href="/static/css/storage-location.css">
-    <link rel="stylesheet" href="/static/css/subtitle.css">
+    <script src="/static/i18n-i18next.js?v={{ static_asset_version }}"></script>
+    <script src="/static/common_dialogs.js?v={{ static_asset_version }}"></script>
+    <link rel="stylesheet" href="/static/css/index.css?v={{ static_asset_version }}">
+    <link rel="stylesheet" href="/static/css/storage-location.css?v={{ static_asset_version }}">
+    <link rel="stylesheet" href="/static/css/subtitle.css?v={{ static_asset_version }}">
     <style>/* React chat adapter: hide old chat */
     #chat-container { display: none !important; visibility: hidden !important; }</style>
-    <link rel="stylesheet" href="/static/react/neko-chat/neko-chat-window.css">
-    <link rel="stylesheet" href="/static/css/avatar-reaction-bubble.css">
+    <link rel="stylesheet" href="/static/react/neko-chat/neko-chat-window.css?v={{ static_asset_version }}">
+    <link rel="stylesheet" href="/static/css/avatar-reaction-bubble.css?v={{ static_asset_version }}">
     <!-- 暗色模式样式 -->
-    <link rel="stylesheet" href="/static/css/dark-mode.css">
+    <link rel="stylesheet" href="/static/css/dark-mode.css?v={{ static_asset_version }}">
     <!-- 主题管理器（尽早加载以避免闪烁） -->
-    <script src="/static/theme-manager.js"></script>
+    <script src="/static/theme-manager.js?v={{ static_asset_version }}"></script>
 
     <!-- Driver.js 新手引导库 (本地实现 - 无需 CDN) -->
-    <script src="/static/libs/driver.min.js"></script>
-    <link rel="stylesheet" href="/static/libs/driver.min.css">
+    <script src="/static/libs/driver.min.js?v={{ static_asset_version }}"></script>
+    <link rel="stylesheet" href="/static/libs/driver.min.css?v={{ static_asset_version }}">
     <!-- 教程样式定制 -->
-    <link rel="stylesheet" href="/static/css/tutorial-styles.css">
-    <link rel="stylesheet" href="/static/css/yui-guide.css?v=20260428-1">
+    <link rel="stylesheet" href="/static/css/tutorial-styles.css?v={{ static_asset_version }}">
+    <link rel="stylesheet" href="/static/css/yui-guide.css?v={{ static_asset_version }}">
     <!-- APlayer 库（本地） -->
-    <link rel="stylesheet" href="/static/libs/APlayer.min.css">
-    <script src="/static/libs/APlayer.min.js"></script>
+    <link rel="stylesheet" href="/static/libs/APlayer.min.css?v={{ static_asset_version }}">
+    <script src="/static/libs/APlayer.min.js?v={{ static_asset_version }}"></script>
 </head>
 
 <body class="subtitle-web-host">
@@ -278,27 +278,27 @@
     </div>
 
     <!-- 存储位置首屏哨兵需要尽早建立启动屏障，避免模型与主业务先行初始化 -->
-    <script src="/static/app-storage-location.js"></script>
+    <script src="/static/app-storage-location.js?v={{ static_asset_version }}"></script>
 
     <!-- Live2D SDK 核心库 -->
-    <script src="/static/libs/live2dcubismcore.min.js"></script>
+    <script src="/static/libs/live2dcubismcore.min.js?v={{ static_asset_version }}"></script>
     <!-- Live2D Cubism JS Framework -->
-    <script src="/static/libs/live2d.min.js"></script>
-    <script src="/static/libs/pixi.min.js"></script>
-    <script src="/static/libs/index.min.js"></script>
-    <script src="/static/libs/ogg-opus-decoder.min.js"></script>
-    <script src="/static/live2d-core.js"></script>
-    <script src="/static/live2d-emotion.js"></script>
-    <script src="/static/live2d-model.js"></script>
-    <script src="/static/live2d-interaction.js"></script>
-    <script src="/static/avatar-popup-common.js?v=20260428-2"></script>
-    <script src="/static/avatar-ui-popup.js?v=20260428-2"></script>
-    <script src="/static/avatar-ui-popup-config.js"></script>
-    <script src="/static/avatar-ui-buttons.js"></script>
-    <script src="/static/live2d-ui-buttons.js"></script>
-    <script src="/static/common-ui-hud.js"></script>
-    <script src="/static/avatar-ui-drag.js"></script>
-    <script src="/static/live2d-init.js"></script>
+    <script src="/static/libs/live2d.min.js?v={{ static_asset_version }}"></script>
+    <script src="/static/libs/pixi.min.js?v={{ static_asset_version }}"></script>
+    <script src="/static/libs/index.min.js?v={{ static_asset_version }}"></script>
+    <script src="/static/libs/ogg-opus-decoder.min.js?v={{ static_asset_version }}"></script>
+    <script src="/static/live2d-core.js?v={{ static_asset_version }}"></script>
+    <script src="/static/live2d-emotion.js?v={{ static_asset_version }}"></script>
+    <script src="/static/live2d-model.js?v={{ static_asset_version }}"></script>
+    <script src="/static/live2d-interaction.js?v={{ static_asset_version }}"></script>
+    <script src="/static/avatar-popup-common.js?v={{ static_asset_version }}"></script>
+    <script src="/static/avatar-ui-popup.js?v={{ static_asset_version }}"></script>
+    <script src="/static/avatar-ui-popup-config.js?v={{ static_asset_version }}"></script>
+    <script src="/static/avatar-ui-buttons.js?v={{ static_asset_version }}"></script>
+    <script src="/static/live2d-ui-buttons.js?v={{ static_asset_version }}"></script>
+    <script src="/static/common-ui-hud.js?v={{ static_asset_version }}"></script>
+    <script src="/static/avatar-ui-drag.js?v={{ static_asset_version }}"></script>
+    <script src="/static/live2d-init.js?v={{ static_asset_version }}"></script>
 
     <!-- Three.js 核心库和importmap（用于ES6模块导入）-->
     <script type="importmap">
@@ -309,7 +309,7 @@
             "@pixiv/three-vrm": "/static/libs/three-vrm.module.min.js",
             "@pixiv/three-vrm-animation": "/static/libs/three-vrm-animation.module.js",
             "@moeru/three-mmd": "/static/libs/three-mmd.module.js",
-            "@moeru/three-mmd-physics-ammo": "/static/libs/three-mmd-physics-ammo.module.js?v=23",
+            "@moeru/three-mmd-physics-ammo": "/static/libs/three-mmd-physics-ammo.module.js?v={{ static_asset_version }}",
             "ammojs-typed": "/static/libs/ammojs-typed.module.js"
         }
     }
@@ -323,59 +323,59 @@
         window.dispatchEvent(new CustomEvent('three-ready'));
     </script>
 
-    <script type="module" src="/static/js/APlayer/main.js"></script>
-    <script src="/static/music_ui.js"></script>
-    <script src="/static/Jukebox.js"></script>
-    <script src="/static/js/index.js"></script>
-    <script src="/static/common_ui.js"></script>
-    <script src="/static/vrm-init.js"></script>
-    <script src="/static/mmd-init.js"></script>
-    <script src="/static/avatar-portrait.js"></script>
-    <script src="/static/character-card-portrait.js"></script>
-    <script src="/static/achievement_manager.js"></script>
-    <script src="/static/js/agent_ui_v2.js"></script>
-    <script src="/static/ogg-opus-decoder-wrapper.js"></script>
+    <script type="module" src="/static/js/APlayer/main.js?v={{ static_asset_version }}"></script>
+    <script src="/static/music_ui.js?v={{ static_asset_version }}"></script>
+    <script src="/static/Jukebox.js?v={{ static_asset_version }}"></script>
+    <script src="/static/js/index.js?v={{ static_asset_version }}"></script>
+    <script src="/static/common_ui.js?v={{ static_asset_version }}"></script>
+    <script src="/static/vrm-init.js?v={{ static_asset_version }}"></script>
+    <script src="/static/mmd-init.js?v={{ static_asset_version }}"></script>
+    <script src="/static/avatar-portrait.js?v={{ static_asset_version }}"></script>
+    <script src="/static/character-card-portrait.js?v={{ static_asset_version }}"></script>
+    <script src="/static/achievement_manager.js?v={{ static_asset_version }}"></script>
+    <script src="/static/js/agent_ui_v2.js?v={{ static_asset_version }}"></script>
+    <script src="/static/ogg-opus-decoder-wrapper.js?v={{ static_asset_version }}"></script>
 
     <!-- app 解构模块 -->
-    <script src="/static/subtitle-shared.js"></script>
-    <script src="/static/app-state.js"></script>
-    <script src="/static/app-ui.js"></script>
-    <script src="/static/app-chat-text-utils.js"></script>
-    <script src="/static/app-chat.js"></script>
-    <script src="/static/app-chat-avatar.js"></script>
-    <script src="/static/app-chat-adapter.js"></script>
-    <script src="/static/app-audio-playback.js"></script>
-    <script src="/static/app-spatial-audio.js"></script>
-    <script src="/static/app-audio-capture.js"></script>
-    <script src="/static/app-screen.js"></script>
-    <script src="/static/app-crop.js"></script>
-    <script src="/static/app-interpage.js?v=20260428-1"></script>
-    <script src="/static/app-proactive.js"></script>
-    <script src="/static/app-settings.js"></script>
-    <script src="/static/avatar-reaction-bubble.js"></script>
-    <script src="/static/app-agent.js"></script>
-    <script src="/static/app-character.js"></script>
-    <script src="/static/app-websocket.js"></script>
-    <script src="/static/app-buttons.js"></script>
-    <script src="/static/app-prompt-shared.js"></script>
-    <script src="/static/app-autostart-provider.js?v=20260428-1"></script>
-    <script src="/static/app-tutorial-prompt.js?v=20260428-1"></script>
-    <script src="/static/app-autostart-prompt.js?v=20260428-1"></script>
-    <script src="/static/app.js"></script>
-    <script src="/static/react/neko-chat/neko-chat-window.iife.js"></script>
-    <script src="/static/app-react-chat-window.js"></script>
-    <script src="/static/app-chat-export.js"></script>
+    <script src="/static/subtitle-shared.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-state.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-ui.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-chat-text-utils.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-chat.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-chat-avatar.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-chat-adapter.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-audio-playback.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-spatial-audio.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-audio-capture.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-screen.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-crop.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-interpage.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-proactive.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-settings.js?v={{ static_asset_version }}"></script>
+    <script src="/static/avatar-reaction-bubble.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-agent.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-character.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-websocket.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-buttons.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-prompt-shared.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-autostart-provider.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-tutorial-prompt.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-autostart-prompt.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app.js?v={{ static_asset_version }}"></script>
+    <script src="/static/react/neko-chat/neko-chat-window.iife.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-react-chat-window.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-chat-export.js?v={{ static_asset_version }}"></script>
 
-    <script src="/static/subtitle.js"></script>
+    <script src="/static/subtitle.js?v={{ static_asset_version }}"></script>
 
-    <link rel="stylesheet" href="/static/css/touch-config.css">
-    <script src="/static/touch-config.js"></script>
-    <script src="/static/yui-guide-steps.js?v=20260422-1"></script>
-    <script src="/static/yui-guide-overlay.js?v=20260428-1"></script>
-    <script src="/static/yui-guide-page-handoff.js?v=20260427-2"></script>
-    <script src="/static/yui-guide-director.js?v=20260429-3"></script>
+    <link rel="stylesheet" href="/static/css/touch-config.css?v={{ static_asset_version }}">
+    <script src="/static/touch-config.js?v={{ static_asset_version }}"></script>
+    <script src="/static/yui-guide-steps.js?v={{ static_asset_version }}"></script>
+    <script src="/static/yui-guide-overlay.js?v={{ static_asset_version }}"></script>
+    <script src="/static/yui-guide-page-handoff.js?v={{ static_asset_version }}"></script>
+    <script src="/static/yui-guide-director.js?v={{ static_asset_version }}"></script>
     <!-- 通用教程管理器（支持所有页面） -->
-    <script src="/static/universal-tutorial-manager.js?v=20260428-3"></script>
+    <script src="/static/universal-tutorial-manager.js?v={{ static_asset_version }}"></script>
     <!-- 注意：初始化由 app.js 统一处理，避免重复初始化 -->
 </body>
 

@@ -348,7 +348,9 @@ function playGuideAudioWithPromise(audioSrc: string, minimumDurationMs: number, 
 
   return new Promise<void>((resolve, reject) => {
     let settled = false
-    const audio = new Audio(normalizedAudioSrc)
+    let playbackStarted = false
+    let seekFallbackTimer: number | null = null
+    const audio = new Audio()
     const initialTimeSeconds = Math.max(0, startAtMs / 1000)
     const cacheKey = getGuideAudioDurationCacheKey(normalizedAudioSrc)
     let resolveMetadataDuration: ((durationMs: number) => void) | null = null
@@ -388,6 +390,10 @@ function playGuideAudioWithPromise(audioSrc: string, minimumDurationMs: number, 
       }
       settled = true
       finishMetadataDuration(0)
+      if (seekFallbackTimer !== null) {
+        window.clearTimeout(seekFallbackTimer)
+        seekFallbackTimer = null
+      }
       window.clearTimeout(timerId)
       if (currentGuideAudioTimer === timerId) {
         currentGuideAudioTimer = null
@@ -401,6 +407,7 @@ function playGuideAudioWithPromise(audioSrc: string, minimumDurationMs: number, 
       audio.onended = null
       audio.onerror = null
       audio.onloadedmetadata = null
+      audio.onseeked = null
       if (success) {
         resolve()
         return
@@ -413,21 +420,80 @@ function playGuideAudioWithPromise(audioSrc: string, minimumDurationMs: number, 
     }, maxWaitMs)
     currentGuideAudioTimer = timerId
 
+    const beginPlayback = () => {
+      if (settled || playbackStarted) {
+        return
+      }
+      playbackStarted = true
+      try {
+        const playback = audio.play()
+        if (playback && typeof playback.then === 'function') {
+          playback.catch((error: unknown) => finish(false, error))
+        }
+      } catch (error) {
+        finish(false, error)
+      }
+    }
+
     audio.preload = 'auto'
     audio.onloadedmetadata = () => {
       const durationMs = Number.isFinite(audio.duration) && audio.duration > 0
         ? Math.round(audio.duration * 1000)
         : 0
       cacheGuideAudioDuration(normalizedAudioSrc, audio.duration)
+      finishMetadataDuration(durationMs)
+      if (settled) {
+        return
+      }
       if (initialTimeSeconds > 0) {
+        const maxSeek = Number.isFinite(audio.duration) && audio.duration > 0
+          ? Math.max(0, audio.duration - 0.05)
+          : initialTimeSeconds
+        const targetTime = Math.min(initialTimeSeconds, maxSeek)
+
+        if (targetTime > 0.01) {
+          audio.onseeked = () => {
+            audio.onseeked = null
+            if (seekFallbackTimer !== null) {
+              window.clearTimeout(seekFallbackTimer)
+              seekFallbackTimer = null
+            }
+            beginPlayback()
+          }
+          seekFallbackTimer = window.setTimeout(() => {
+            seekFallbackTimer = null
+            audio.onseeked = null
+            beginPlayback()
+          }, 250)
+
+          try {
+            audio.currentTime = targetTime
+          } catch (_) {
+            if (seekFallbackTimer !== null) {
+              window.clearTimeout(seekFallbackTimer)
+              seekFallbackTimer = null
+            }
+            audio.onseeked = null
+            beginPlayback()
+            return
+          }
+
+          if (Math.abs(audio.currentTime - targetTime) <= 0.01) {
+            if (seekFallbackTimer !== null) {
+              window.clearTimeout(seekFallbackTimer)
+              seekFallbackTimer = null
+            }
+            audio.onseeked = null
+            beginPlayback()
+          }
+          return
+        }
+
         try {
-          const maxSeek = Number.isFinite(audio.duration) && audio.duration > 0
-            ? Math.max(0, audio.duration - 0.05)
-            : initialTimeSeconds
-          audio.currentTime = Math.min(initialTimeSeconds, maxSeek)
+          audio.currentTime = 0
         } catch (_) {}
       }
-      finishMetadataDuration(durationMs)
+      beginPlayback()
     }
     audio.onended = () => finish(true)
     audio.onerror = () => finish(false, new Error('guide_audio_error'))
@@ -441,10 +507,8 @@ function playGuideAudioWithPromise(audioSrc: string, minimumDurationMs: number, 
     currentGuideSpeechStop = stop
 
     try {
-      const playback = audio.play()
-      if (playback && typeof playback.then === 'function') {
-        playback.catch((error: unknown) => finish(false, error))
-      }
+      audio.src = normalizedAudioSrc
+      audio.load()
     } catch (error) {
       finish(false, error)
     }
@@ -2459,6 +2523,11 @@ class PluginDashboardGuideRuntime {
         voiceKey: payload.voiceKey,
         audioUrl: payload.audioUrl,
       })
+    if (!homeNarrationAlreadyRunning) {
+      void speechPromise.finally(() => {
+        this.markHomeNarrationFinished(sessionId)
+      })
+    }
     const baseMoveToMainDurationMs = PLUGIN_DASHBOARD_MOVE_TO_MAIN_MS
     const baseScrollDownDurationMs = Math.round(PLUGIN_DASHBOARD_SCROLL_PHASE_MS / 2)
     const baseScrollUpDurationMs = PLUGIN_DASHBOARD_SCROLL_PHASE_MS - baseScrollDownDurationMs
@@ -2572,6 +2641,9 @@ class PluginDashboardLocalTutorialRunner {
 
         await this.runStep(step)
       }
+    } catch (error) {
+      this.cancelled = true
+      console.warn('[PluginDashboardLocalTutorialRunner] 教程步骤执行失败:', error)
     } finally {
       this.cleanup()
     }
@@ -2789,7 +2861,7 @@ class PluginDashboardLocalTutorialRunner {
       if (step.allowMissing) {
         return
       }
-      return
+      throw new Error(`[PluginDashboardLocalTutorialRunner] Missing target for step: ${step.targetId || '(unknown)'}`)
     }
 
     if (this.titleEl) {
@@ -2926,6 +2998,7 @@ export function initPluginDashboardYuiGuideRuntime() {
 
     const startPayload = (data.payload || {}) as StartPayload
 
+    activeLocalTutorialRunner?.cleanup()
     receivedStartMessage = true
     runtime.run(sessionId, startPayload).catch(() => {
       if (!runtime.isCurrentRun(sessionId)) {

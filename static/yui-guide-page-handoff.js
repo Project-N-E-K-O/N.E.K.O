@@ -37,7 +37,6 @@
 
     var _activeWindows = {};
     var _activeTimers = {};
-    var _pluginDashboardCompleteDeprecatedWarned = false;
 
     function syncMainUIVisibility() {
         var hasOpenWindow = Object.keys(_activeWindows).some(function (key) {
@@ -197,11 +196,6 @@
     var HANDOFF_TOKEN_TTL_MS = 5 * 60 * 1000;
     var HANDOFF_FLOW_ID = 'home_yui_guide_v1';
     var DEFAULT_PLUGIN_DASHBOARD_ORIGIN = 'http://127.0.0.1:48916';
-    var PLUGIN_DASHBOARD_DONE_EVENT = 'neko:yui-guide:plugin-dashboard:done';
-    var PLUGIN_DASHBOARD_INTERRUPT_REQUEST_EVENT = 'neko:yui-guide:plugin-dashboard:interrupt-request';
-    var PLUGIN_DASHBOARD_INTERRUPT_ACK_EVENT = 'neko:yui-guide:plugin-dashboard:interrupt-ack';
-    var _processedPluginDashboardCompletionTokens = {};
-
     function generateTokenId() {
         return 'h_' + Date.now().toString(36) + '_' + Math.random().toString(36).substring(2, 10);
     }
@@ -1028,137 +1022,6 @@
         }));
     }
 
-    /**
-     * @deprecated Plugin dashboard guide handoff now uses
-     * neko:yui-guide:plugin-dashboard:start and
-     * neko:yui-guide:plugin-dashboard:interrupt-ack messages.
-     */
-    function listenPluginDashboardComplete(onComplete, onInterrupt) {
-        var callbacks = typeof onComplete === 'object' && onComplete
-            ? onComplete
-            : {
-                onComplete: onComplete,
-                onInterrupt: onInterrupt
-            };
-        var completeCallback = typeof callbacks.onComplete === 'function' ? callbacks.onComplete : null;
-        var interruptCallback = typeof callbacks.onInterrupt === 'function' ? callbacks.onInterrupt : null;
-        if (!completeCallback && !interruptCallback) return function () {};
-        if (!_pluginDashboardCompleteDeprecatedWarned) {
-            _pluginDashboardCompleteDeprecatedWarned = true;
-            console.warn('[YuiGuideHandoff] listenPluginDashboardComplete 已弃用，请改用 neko:yui-guide:plugin-dashboard:start / neko:yui-guide:plugin-dashboard:interrupt-ack 消息流程。');
-        }
-
-        function pruneProcessedMessages() {
-            Object.keys(_processedPluginDashboardCompletionTokens).forEach(function (processedToken) {
-                if ((Date.now() - _processedPluginDashboardCompletionTokens[processedToken]) > HANDOFF_TOKEN_TTL_MS) {
-                    delete _processedPluginDashboardCompletionTokens[processedToken];
-                }
-            });
-        }
-
-        function markProcessed(messageKey) {
-            if (!messageKey) return false;
-            pruneProcessedMessages();
-            if (_processedPluginDashboardCompletionTokens[messageKey]) {
-                return false;
-            }
-            _processedPluginDashboardCompletionTokens[messageKey] = Date.now();
-            return true;
-        }
-
-        function isTrustedPluginDashboardMessage(event) {
-            var expectedOrigin = getPluginDashboardExpectedOrigin();
-            if (!expectedOrigin || event.origin !== expectedOrigin) {
-                return false;
-            }
-
-            var fullName = normalizeWindowName('plugin_dashboard');
-            var trackedWindow = (_activeWindows && _activeWindows[fullName])
-                || (window._openedWindows && window._openedWindows[fullName])
-                || null;
-            if (trackedWindow) {
-                if (trackedWindow.closed) {
-                    return false;
-                }
-                return event.source === trackedWindow;
-            }
-
-            if (!window.opener || window.opener.closed) {
-                return false;
-            }
-            return event.source === window.opener;
-        }
-
-        function handleTokenBackedComplete(data, detail) {
-            if (data.type !== 'neko:yui-guide:plugin-dashboard-complete') return false;
-            var flowId = detail.flow_id || detail.flow || '';
-            var tokenId = detail.handoff_token || detail.token || '';
-            var tokenObj = readHandoffToken();
-            if (!tokenObj || !tokenId) return true;
-            if (flowId !== (tokenObj.flow_id || HANDOFF_FLOW_ID)) return true;
-            if (tokenId !== tokenObj.token) return true;
-            if (!markProcessed('legacy:' + tokenId)) return true;
-
-            if (completeCallback) {
-                completeCallback(detail);
-            }
-            return true;
-        }
-
-        function handleTokenlessPluginDashboardMessage(data, detail) {
-            var tokenObj = readHandoffToken();
-            var hasActivePluginDashboardToken = !!(
-                tokenObj
-                && !tokenObj.consumed
-                && tokenObj.target_page === 'plugin_dashboard'
-            );
-            var isTokenHandoffMessage = !!(
-                data.type === 'neko:yui-guide:plugin-dashboard-complete'
-                || detail.handoff_token
-                || detail.token
-            );
-            if (hasActivePluginDashboardToken && isTokenHandoffMessage) return false;
-
-            var sessionId = typeof data.sessionId === 'string' ? data.sessionId : '';
-            var requestId = typeof data.requestId === 'string' ? data.requestId : '';
-            if (!sessionId) return false;
-            if (data.type === PLUGIN_DASHBOARD_DONE_EVENT) {
-                if (!markProcessed('done:' + sessionId)) return true;
-                if (completeCallback) {
-                    completeCallback(Object.assign({}, detail, {
-                        sessionId: sessionId
-                    }));
-                }
-                return true;
-            }
-            if (data.type === PLUGIN_DASHBOARD_INTERRUPT_REQUEST_EVENT || data.type === PLUGIN_DASHBOARD_INTERRUPT_ACK_EVENT) {
-                if (!interruptCallback) return true;
-                if (!requestId) return true;
-                if (!markProcessed('interrupt:' + data.type + ':' + requestId)) return true;
-                interruptCallback(Object.assign({}, detail, {
-                    sessionId: sessionId,
-                    requestId: requestId,
-                    type: data.type
-                }));
-                return true;
-            }
-            return false;
-        }
-
-        function handler(event) {
-            if (!event.data || typeof event.data !== 'object') return;
-            if (!isTrustedPluginDashboardMessage(event)) return;
-            var detail = event.data.detail || {};
-            if (handleTokenBackedComplete(event.data, detail)) return;
-            handleTokenlessPluginDashboardMessage(event.data, detail);
-        }
-
-        window.addEventListener('message', handler);
-        return function () {
-            window.removeEventListener('message', handler);
-        };
-    }
-
     function openModelManagerPage(lanlanName) {
         var name = typeof lanlanName === 'string' && lanlanName.trim()
             ? lanlanName.trim()
@@ -1296,7 +1159,6 @@
         getPluginDashboardExpectedOrigin: getPluginDashboardExpectedOrigin,
         openPageWithHandoff: openPageWithHandoff,
         openPluginDashboard: openPluginDashboard,
-        listenPluginDashboardComplete: listenPluginDashboardComplete,
         openModelManagerPage: openModelManagerPage,
         waitForWindowOpen: waitForWindowOpen,
         closeWindow: closeWindow
