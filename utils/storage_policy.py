@@ -137,6 +137,9 @@ def load_storage_policy(
         payload = read_json(policy_path)
     except FileNotFoundError:
         return default
+    except Exception as exc:
+        logger.warning("Failed to read storage_policy: %s", exc)
+        return default
 
     if not isinstance(payload, dict):
         logger.warning("storage_policy payload is not a dict: %s", policy_path)

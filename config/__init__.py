@@ -218,6 +218,7 @@ TOOL_SERVER_PORT = _read_port_env("TOOL_SERVER_PORT", 48915)
 USER_PLUGIN_SERVER_PORT = _read_port_env("USER_PLUGIN_SERVER_PORT", 48916)
 AGENT_MQ_PORT = _read_port_env("AGENT_MQ_PORT", 48917)
 MAIN_AGENT_EVENT_PORT = _read_port_env("MAIN_AGENT_EVENT_PORT", 48918)
+USER_PLUGIN_BASE = f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}"
 
 # OpenFang Agent 执行后端端口 (由 Electron 并行启动，端口写入 port_config.json)
 OPENFANG_PORT = _read_port_env("OPENFANG_PORT", 50051)
@@ -803,6 +804,13 @@ EVIDENCE_CONFIRMED_THRESHOLD = 1.0   # score ≥ 1 → confirmed
 EVIDENCE_PROMOTED_THRESHOLD = 2.0    # score ≥ 2 → promoted
 EVIDENCE_ARCHIVE_THRESHOLD = -2.0    # score ≤ -2 → archive_candidate
 
+# 强力记忆 OFF（powerful_memory_enabled=False）时的 time-driven fallback 阈值。
+# pre-RFC 行为：不靠 evidence_score，纯按 reflection 年龄推进 lifecycle，零
+# LLM 成本。pre-RFC 用 3 天，但实测过激（"3 天没否认 != 用户认可"）；这里
+# 拉到 7 天给用户更长窗口主动反驳。
+WEAK_MEMORY_AUTO_CONFIRM_DAYS = 7   # pending → confirmed (按 created_at 计)
+WEAK_MEMORY_AUTO_PROMOTE_DAYS = 7   # confirmed → promoted (按 confirmed_at 计)
+
 # §3.5.3 归档相关（sub_zero_days 计数 + 分片大小上限）
 EVIDENCE_ARCHIVE_DAYS = 14           # sub_zero 累计达此天数 → 真正归档
 ARCHIVE_FILE_MAX_ENTRIES = 500       # 归档分片文件单文件最大 entry 数
@@ -1131,10 +1139,15 @@ PROACTIVE_PHASE1_FETCH_PER_SOURCE = 10
 - 用途：fetch_news_content / fetch_video_content 等的 limit 参数统一值。
 - 上游：外部 web/news/video 抓取结果。"""
 
-PROACTIVE_PHASE1_TOTAL_TOPICS = 20
+PROACTIVE_PHASE1_TOTAL_TOPICS = 12
 """Phase 1 输入给筛选 LLM 的候选话题总数。
 - 用途：从所有 source 合并后去重，截到此数后送 LLM 筛选。
-- 上游：cap 后的 fetch 结果汇总。"""
+- 上游：cap 后的 fetch 结果汇总。
+- 设计依据：原值 20。早期 external 是主要信号源，候选池开得很大。
+  Phase 2 引入 vision / music / meme / reminiscence 等并行通道后，
+  external 的相对权重下降——筛选 LLM 多看 8 条边际候选无助于挑出更
+  好的 top-1，反而让 Phase 1 prompt 一次跑过 2k tokens 上限。下调到
+  12 仍给筛选 LLM 充分多样性，且单次调用 token 减半左右。"""
 
 PROACTIVE_EXTERNAL_PER_ITEM_MAX_TOKENS = 200
 """Phase 2 外部内容（news/video/social/meme 等）单条 token 上限。
@@ -1144,11 +1157,15 @@ PROACTIVE_EXTERNAL_PER_ITEM_MAX_TOKENS = 200
 - 设计依据：单条 200 token 已足够 LLM 知道"这是什么"，详细信息靠
   Phase 2 LLM 自行总结。"""
 
-PROACTIVE_EXTERNAL_TOTAL_MAX_TOKENS = 2000
-"""Phase 2 外部内容拼合后的总 token 上限。
+PROACTIVE_EXTERNAL_TOTAL_MAX_TOKENS = 1500
+"""Phase 1 外部候选拼合后的总 token 上限（Phase 2 实际只看 top-1）。
 - 用途：所有 selected web items 序列化后，再做一次总和截断。
 - 上游：cap 后的 external_section 文本。
-- 设计依据：留出主对话流的 5k 总预算给 character_prompt + memory + 历史。"""
+- 设计依据：跟 PROACTIVE_PHASE1_TOTAL_TOPICS 同步下调。原值 2000 是
+  20 候选 × 200 token 留的硬顶；候选数收到 12 之后，1500 已留出
+  ~250 token 富余，超出仍兜底截断。Phase 2 generate prompt 实际只
+  把 Phase 1 选中的单条 web_topic（~50-100 token）放进
+  external_section，本字段约束的是 Phase 1 的 prompt 大小。"""
 
 PROACTIVE_PHASE2_OUTPUT_MAX_TOKENS = 300
 """Phase 2 流式输出的 abort fence。
@@ -1174,10 +1191,27 @@ PROACTIVE_CHAT_HISTORY_MAX = 10
 - 用途：每个 lanlan 维护的最近主动搭话记录，用于 1h 内去重。
 - 上游：proactive 触发的搭话事件。"""
 
-PROACTIVE_TOPIC_HISTORY_MAX = 100
-"""_proactive_topic_history deque maxlen。
-- 用途：每个 lanlan 维护的最近话题去重队列。
-- 上游：proactive 选中的话题 key。"""
+PROACTIVE_SOURCE_HARD_SKIP_SECONDS = 5 * 3600
+"""主动搭话 source 衰减历史的硬窗口（p_skip=1.0）。
+- 用途：5h 内同一 URL 必跳，超过后按 kind 半衰期指数衰减。
+- 上游：system_router._should_skip_source。"""
+
+PROACTIVE_SOURCE_HALF_LIFE_BY_KIND: dict[str, float] = {
+    'web': 3 * 86400.0,
+    'image': 3 * 86400.0,
+    'music': 1 * 86400.0,
+}
+"""硬窗口外按 kind 各自的 p_skip 半衰期（秒）。
+- web/image：3d（新闻 / 表情包重复成本相对低，慢慢复活）
+- music：1d（曲库小，更频繁轮转）
+- 用途：system_router._half_life_for 查表。"""
+
+PROACTIVE_SOURCE_HALF_LIFE_DEFAULT = 3 * 86400.0
+"""未在 _BY_KIND 命中时的兜底半衰期。"""
+
+PROACTIVE_SOURCE_FORGET_P = 0.05
+"""p_skip 跌破此阈值即从衰减历史中遗忘（让文件体积自然有界）。
+- 当前参数下：music ≈ 4.5d 后遗忘，web/image ≈ 13d 后遗忘。"""
 
 EMOTION_ANALYSIS_MAX_TOKENS = 40
 """情感分析 LLM 的 max_completion_tokens。
@@ -1323,6 +1357,7 @@ __all__ = [
     'COMMENTER_SERVER_PORT',
     'TOOL_SERVER_PORT',
     'USER_PLUGIN_SERVER_PORT',
+    'USER_PLUGIN_BASE',
     'AGENT_MQ_PORT',
     'MAIN_AGENT_EVENT_PORT',
     'INSTANCE_ID',
@@ -1375,6 +1410,8 @@ __all__ = [
     # Memory evidence mechanism (RFC: docs/design/memory-evidence-rfc.md)
     'EVIDENCE_CONFIRMED_THRESHOLD',
     'EVIDENCE_PROMOTED_THRESHOLD',
+    'WEAK_MEMORY_AUTO_CONFIRM_DAYS',
+    'WEAK_MEMORY_AUTO_PROMOTE_DAYS',
     'EVIDENCE_ARCHIVE_THRESHOLD',
     'EVIDENCE_ARCHIVE_DAYS',
     'ARCHIVE_FILE_MAX_ENTRIES',
@@ -1445,7 +1482,10 @@ __all__ = [
     'PROACTIVE_PHASE2_GENERATE_MAX_TOKENS',
     'PROACTIVE_PHASE1_UNIFIED_MAX_TOKENS',
     'PROACTIVE_CHAT_HISTORY_MAX',
-    'PROACTIVE_TOPIC_HISTORY_MAX',
+    'PROACTIVE_SOURCE_HARD_SKIP_SECONDS',
+    'PROACTIVE_SOURCE_HALF_LIFE_BY_KIND',
+    'PROACTIVE_SOURCE_HALF_LIFE_DEFAULT',
+    'PROACTIVE_SOURCE_FORGET_P',
     'EMOTION_ANALYSIS_MAX_TOKENS',
     'PLUGIN_USER_CONTEXT_MAX_ITEMS',
     'TRANSLATION_OUTPUT_MAX_TOKENS',

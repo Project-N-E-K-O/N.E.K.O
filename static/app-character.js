@@ -349,7 +349,13 @@
                 if (effectiveModelType !== 'live2d') {
                     // 移除浮动按钮
                     const live2dButtons = document.getElementById('live2d-floating-buttons');
-                    if (live2dButtons) live2dButtons.remove();
+                    if (live2dButtons) {
+                        if (window._removeNekoFloatingButtonsElement) {
+                            window._removeNekoFloatingButtonsElement(live2dButtons);
+                        } else {
+                            live2dButtons.remove();
+                        }
+                    }
 
                     // 移除"请她回来"按钮
                     const live2dReturnBtn = document.getElementById('live2d-return-button-container');
@@ -360,24 +366,29 @@
                 }
 
                 if (window.live2dManager) {
-                    // 1. 清理模型
-                    if (window.live2dManager.currentModel) {
+                    // 1. 使用 Live2DManager 的统一清理入口。
+                    // 只 destroy currentModel 会绕过 removeModel() 中的 ticker 回调、鼠标跟踪、
+                    // idle motion 定时器、浮动按钮 ticker 等清理逻辑；这些残留会在 PIXI ticker
+                    // 每帧继续运行，角色卡切换几次后表现为持续低 FPS。
+                    if (typeof window.live2dManager.removeModel === 'function') {
+                        await window.live2dManager.removeModel({ skipCloseWindows: true });
+                    } else if (window.live2dManager.currentModel) {
+                        // 兼容兜底：旧版本没有 removeModel 时仍尽量销毁模型。
                         if (typeof window.live2dManager.currentModel.destroy === 'function') {
-                            window.live2dManager.currentModel.destroy();
+                            window.live2dManager.currentModel.destroy({ children: true });
                         }
                         window.live2dManager.currentModel = null;
                     }
 
-                    // 2. 停止ticker（但保留 pixi_app，以便后续重启）
+                    // 2. 停止 ticker（但保留 pixi_app，以便 Live2D 分支加载完成后重启）。
+                    // removeModel() 为了让空舞台保持可恢复会重启 ticker；切到非 Live2D 时必须再次停掉。
                     if (window.live2dManager.pixi_app && window.live2dManager.pixi_app.ticker) {
-                        // 只有在切换到非 Live2D 模型时才停止 ticker
-                        // 如果切换到 Live2D，ticker 会在加载新模型后重启
                         if (effectiveModelType !== 'live2d') {
                             window.live2dManager.pixi_app.ticker.stop();
                         }
                     }
 
-                    // 3. 清理舞台（但不销毁pixi_app）
+                    // 3. 清理舞台残留（但不销毁 pixi_app）
                     if (window.live2dManager.pixi_app && window.live2dManager.pixi_app.stage) {
                         window.live2dManager.pixi_app.stage.removeChildren();
                     }
@@ -409,7 +420,13 @@
                 }
                 if (effectiveModelType !== 'mmd') {
                     document.querySelectorAll('#mmd-floating-buttons, #mmd-lock-icon, #mmd-return-button-container')
-                        .forEach(el => el.remove());
+                        .forEach(el => {
+                            if (window._removeNekoFloatingButtonsElement) {
+                                window._removeNekoFloatingButtonsElement(el);
+                            } else {
+                                el.remove();
+                            }
+                        });
                 }
             } catch (e) {
                 console.warn('[猫娘切换] MMD 清理出错:', e);

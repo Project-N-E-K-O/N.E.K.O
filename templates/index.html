@@ -21,7 +21,7 @@
     <link rel="stylesheet" href="/static/css/subtitle.css">
     <style>/* React chat adapter: hide old chat */
     #chat-container { display: none !important; visibility: hidden !important; }</style>
-    <link rel="stylesheet" href="/static/react/neko-chat/neko-chat-window.css">
+    <link rel="stylesheet" href="/static/react/neko-chat/neko-chat-window.css?v={{ react_chat_asset_version }}">
     <link rel="stylesheet" href="/static/css/avatar-reaction-bubble.css">
     <!-- 暗色模式样式 -->
     <link rel="stylesheet" href="/static/css/dark-mode.css">
@@ -33,7 +33,7 @@
     <link rel="stylesheet" href="/static/libs/driver.min.css">
     <!-- 教程样式定制 -->
     <link rel="stylesheet" href="/static/css/tutorial-styles.css">
-    <link rel="stylesheet" href="/static/css/yui-guide.css">
+    <link rel="stylesheet" href="/static/css/yui-guide.css?v=20260427-2">
     <!-- APlayer 库（本地） -->
     <link rel="stylesheet" href="/static/libs/APlayer.min.css">
     <script src="/static/libs/APlayer.min.js"></script>
@@ -56,6 +56,9 @@
 
     <!-- Status 气泡框 -->
     <div id="status-toast"></div>
+    <button type="button" id="restart-home-tutorial-btn" onclick="restartCurrentTutorial()">
+        重启新手教程
+    </button>
     <div id="chat-container">
         <div id="chat-header">
             <img src="/static/icons/chat_icon.png" data-i18n-alt="chat.title" alt="对话" style="width: 28px; height: 28px; object-fit: contain; margin-right: 6px; vertical-align: middle; image-rendering: -webkit-optimize-contrast; image-rendering: crisp-edges;">
@@ -340,12 +343,12 @@
     <script src="/static/app-chat-text-utils.js"></script>
     <script src="/static/app-chat.js"></script>
     <script src="/static/app-chat-avatar.js"></script>
-    <script src="/static/app-chat-adapter.js"></script>
+    <script src="/static/app-chat-adapter.js?v={{ react_chat_asset_version }}"></script>
     <script src="/static/app-audio-playback.js"></script>
     <script src="/static/app-spatial-audio.js"></script>
     <script src="/static/app-audio-capture.js"></script>
-    <script src="/static/app-screen.js"></script>
-    <script src="/static/app-crop.js"></script>
+    <script src="/static/app-screen.js?v=20260428-ss2"></script>
+    <script src="/static/app-crop.js?v=20260428-ss2"></script>
     <script src="/static/app-interpage.js"></script>
     <script src="/static/app-proactive.js"></script>
     <script src="/static/app-settings.js"></script>
@@ -353,14 +356,14 @@
     <script src="/static/app-agent.js"></script>
     <script src="/static/app-character.js"></script>
     <script src="/static/app-websocket.js"></script>
-    <script src="/static/app-buttons.js"></script>
+    <script src="/static/app-buttons.js?v={{ react_chat_asset_version }}"></script>
     <script src="/static/app-prompt-shared.js"></script>
     <script src="/static/app-autostart-provider.js"></script>
     <script src="/static/app-tutorial-prompt.js"></script>
     <script src="/static/app-autostart-prompt.js"></script>
     <script src="/static/app.js"></script>
-    <script src="/static/react/neko-chat/neko-chat-window.iife.js"></script>
-    <script src="/static/app-react-chat-window.js"></script>
+    <script src="/static/react/neko-chat/neko-chat-window.iife.js?v={{ react_chat_asset_version }}"></script>
+    <script src="/static/app-react-chat-window.js?v={{ react_chat_asset_version }}"></script>
     <script src="/static/app-chat-export.js"></script>
 
     <script src="/static/subtitle.js"></script>
@@ -369,8 +372,8 @@
     <script src="/static/touch-config.js"></script>
     <script src="/static/yui-guide-steps.js?v=20260422-1"></script>
     <script src="/static/yui-guide-overlay.js?v=20260422-6"></script>
-    <script src="/static/yui-guide-page-handoff.js?v=20260422-9"></script>
-    <script src="/static/yui-guide-director.js?v=20260422-7"></script>
+    <script src="/static/yui-guide-page-handoff.js?v=20260427-2"></script>
+    <script src="/static/yui-guide-director.js?v=20260427-2"></script>
     <!-- 通用教程管理器（支持所有页面） -->
     <script src="/static/universal-tutorial-manager.js"></script>
     <!-- 注意：初始化由 app.js 统一处理，避免重复初始化 -->

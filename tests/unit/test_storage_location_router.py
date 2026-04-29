@@ -19,7 +19,7 @@ from utils.storage_migration import (
     run_pending_storage_migration,
     save_storage_migration,
 )
-from utils.storage_policy import get_storage_policy_path, load_storage_policy
+from utils.storage_policy import get_storage_policy_path, load_storage_policy, save_storage_policy
 
 
 class _DummyConfigManager:
@@ -123,6 +123,23 @@ def test_storage_location_target_content_probe_uses_public_runtime_helper(tmp_pa
         assert storage_location_router_module._target_root_has_user_content(target_root, config_manager) is True
 
     helper.assert_called_once_with(target_root, config_manager=config_manager)
+
+
+@pytest.mark.unit
+def test_collect_warning_codes_matches_cloud_sync_path_segments_only(tmp_path):
+    current_root = tmp_path / "current" / "N.E.K.O"
+
+    false_positive_target = tmp_path / "onedrive_backup_restore" / "N.E.K.O"
+    assert "sync_folder" not in storage_location_router_module._collect_warning_codes(
+        current_root,
+        false_positive_target,
+    )
+
+    onedrive_target = tmp_path / "OneDrive - Example" / "N.E.K.O"
+    assert "sync_folder" in storage_location_router_module._collect_warning_codes(
+        current_root,
+        onedrive_target,
+    )
 
 
 @pytest.mark.unit
@@ -252,6 +269,113 @@ def test_storage_location_select_same_path_releases_limited_startup_barrier(tmp_
 
 
 @pytest.mark.unit
+def test_storage_location_exit_requests_application_shutdown(tmp_path):
+    config_manager = _DummyConfigManager(tmp_path)
+    shutdown_calls = []
+
+    async def request_app_shutdown():
+        shutdown_calls.append("shutdown")
+
+    with _build_client(config_manager, request_app_shutdown=request_app_shutdown) as client:
+        response = client.post(
+            "/api/storage/location/exit",
+            headers={"X-Neko-Storage-Action": "exit"},
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "ok": True,
+        "result": "shutdown_initiated",
+    }
+    assert shutdown_calls == ["shutdown"]
+
+
+@pytest.mark.unit
+def test_storage_location_exit_reports_unavailable_without_shutdown_callback(tmp_path):
+    config_manager = _DummyConfigManager(tmp_path)
+
+    with _build_client(config_manager) as client:
+        response = client.post(
+            "/api/storage/location/exit",
+            headers={"X-Neko-Storage-Action": "exit"},
+        )
+
+    assert response.status_code == 503
+    payload = response.json()
+    assert payload["ok"] is False
+    assert payload["error_code"] == "restart_unavailable"
+
+
+@pytest.mark.unit
+def test_storage_location_exit_requires_storage_action_header(tmp_path):
+    config_manager = _DummyConfigManager(tmp_path)
+    shutdown_calls = []
+
+    with _build_client(config_manager, request_app_shutdown=lambda: shutdown_calls.append("shutdown")) as client:
+        response = client.post("/api/storage/location/exit")
+
+    assert response.status_code == 403
+    payload = response.json()
+    assert payload["ok"] is False
+    assert payload["error_code"] == "storage_exit_forbidden"
+    assert shutdown_calls == []
+
+
+@pytest.mark.unit
+def test_storage_location_exit_ignores_ready_storage_state(tmp_path):
+    config_manager = _DummyConfigManager(tmp_path)
+    shutdown_calls = []
+    save_storage_policy(
+        config_manager,
+        selected_root=config_manager.app_docs_dir,
+        selection_source="current",
+    )
+
+    with _build_client(config_manager, request_app_shutdown=lambda: shutdown_calls.append("shutdown")) as client:
+        response = client.post(
+            "/api/storage/location/exit",
+            headers={"X-Neko-Storage-Action": "exit"},
+        )
+
+    assert response.status_code == 409
+    payload = response.json()
+    assert payload["ok"] is False
+    assert payload["error_code"] == "storage_exit_not_required"
+    assert shutdown_calls == []
+
+
+@pytest.mark.unit
+def test_storage_location_exit_allows_maintenance_readonly_shutdown(tmp_path):
+    config_manager = _DummyConfigManager(tmp_path)
+    shutdown_calls = []
+    save_storage_policy(
+        config_manager,
+        selected_root=config_manager.app_docs_dir,
+        selection_source="current",
+        anchor_root=config_manager.anchor_root,
+    )
+    config_manager.save_root_state({
+        "mode": ROOT_MODE_MAINTENANCE_READONLY,
+        "last_known_good_root": str(config_manager.app_docs_dir),
+        "last_migration_result": "restart_pending:test",
+        "last_migration_source": str(config_manager.app_docs_dir),
+    })
+
+    with _build_client(config_manager, request_app_shutdown=lambda: shutdown_calls.append("shutdown")) as client:
+        response = client.post(
+            "/api/storage/location/exit",
+            headers={"X-Neko-Storage-Action": "exit"},
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "ok": True,
+        "result": "shutdown_initiated",
+    }
+    assert shutdown_calls == ["shutdown"]
+
+
+@pytest.mark.unit
 def test_storage_location_select_same_path_rolls_back_when_startup_release_fails(tmp_path):
     config_manager = _DummyConfigManager(tmp_path)
     previous_root_state = config_manager.load_root_state()
@@ -332,6 +456,257 @@ def test_storage_location_select_custom_parent_targets_app_subdirectory(tmp_path
     assert payload["target_root"] == str(expected_root.resolve())
     assert payload["blocking_error_code"] == ""
     assert payload["target_has_existing_content"] is False
+
+
+@pytest.mark.unit
+def test_storage_location_preflight_different_path_is_side_effect_free(tmp_path, monkeypatch):
+    config_manager = _DummyConfigManager(tmp_path)
+    target_root = tmp_path / "new-storage" / "N.E.K.O"
+    release_calls = []
+    shutdown_calls = {"count": 0}
+    monkeypatch.setattr(
+        storage_location_bootstrap_module,
+        "DEVELOPMENT_ALWAYS_REQUIRE_SELECTION",
+        False,
+    )
+    policy_payload = save_storage_policy(
+        config_manager,
+        selected_root=config_manager.app_docs_dir,
+        selection_source="current",
+        anchor_root=config_manager.anchor_root,
+    )
+    previous_root_state = config_manager.load_root_state()
+
+    async def release_storage_startup_barrier(*, reason: str):
+        release_calls.append(reason)
+
+    def request_app_shutdown():
+        shutdown_calls["count"] += 1
+
+    with _build_client(
+        config_manager,
+        request_app_shutdown=request_app_shutdown,
+        release_storage_startup_barrier=release_storage_startup_barrier,
+    ) as client:
+        response = client.post(
+            "/api/storage/location/preflight",
+            json={
+                "selected_root": str(target_root),
+                "selection_source": "recommended",
+            },
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["result"] == "restart_required"
+    assert payload["restart_mode"] == "migrate_after_shutdown"
+    assert payload["selected_root"] == str(target_root.resolve())
+    assert payload["target_root"] == str(target_root.resolve())
+    assert payload["permission_ok"] is True
+    assert payload["blocking_error_code"] == ""
+
+    assert load_storage_policy(config_manager) == policy_payload
+    assert config_manager.load_root_state() == previous_root_state
+    assert not get_storage_migration_path(config_manager).exists()
+    assert release_calls == []
+    assert shutdown_calls["count"] == 0
+
+
+@pytest.mark.unit
+def test_storage_location_preflight_same_path_does_not_continue_current_session(tmp_path, monkeypatch):
+    config_manager = _DummyConfigManager(tmp_path)
+    release_calls = []
+    monkeypatch.setattr(
+        storage_location_bootstrap_module,
+        "DEVELOPMENT_ALWAYS_REQUIRE_SELECTION",
+        False,
+    )
+    policy_payload = save_storage_policy(
+        config_manager,
+        selected_root=config_manager.app_docs_dir,
+        selection_source="current",
+        anchor_root=config_manager.anchor_root,
+    )
+    previous_root_state = config_manager.load_root_state()
+
+    async def release_storage_startup_barrier(*, reason: str):
+        release_calls.append(reason)
+
+    with _build_client(
+        config_manager,
+        release_storage_startup_barrier=release_storage_startup_barrier,
+    ) as client:
+        response = client.post(
+            "/api/storage/location/preflight",
+            json={
+                "selected_root": str(config_manager.app_docs_dir),
+                "selection_source": "current",
+            },
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["result"] == "restart_not_required"
+    assert payload["selected_root"] == str(config_manager.app_docs_dir.resolve())
+    assert payload["target_root"] == str(config_manager.app_docs_dir.resolve())
+
+    assert load_storage_policy(config_manager) == policy_payload
+    assert config_manager.load_root_state() == previous_root_state
+    assert not get_storage_migration_path(config_manager).exists()
+    assert release_calls == []
+
+
+@pytest.mark.unit
+def test_storage_location_preflight_existing_target_content_requires_confirmation(tmp_path, monkeypatch):
+    config_manager = _DummyConfigManager(tmp_path)
+    selected_parent = tmp_path / "custom-storage-parent"
+    target_root = selected_parent / "N.E.K.O"
+    (target_root / "config").mkdir(parents=True)
+    (target_root / "config" / "characters.json").write_text('{"existing": true}', encoding="utf-8")
+    monkeypatch.setattr(
+        storage_location_bootstrap_module,
+        "DEVELOPMENT_ALWAYS_REQUIRE_SELECTION",
+        False,
+    )
+    save_storage_policy(
+        config_manager,
+        selected_root=config_manager.app_docs_dir,
+        selection_source="current",
+        anchor_root=config_manager.anchor_root,
+    )
+
+    with _build_client(config_manager) as client:
+        response = client.post(
+            "/api/storage/location/preflight",
+            json={
+                "selected_root": str(selected_parent),
+                "selection_source": "custom",
+                "confirm_existing_target_content": True,
+            },
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["result"] == "restart_required"
+    assert payload["selected_root"] == str(target_root.resolve())
+    assert payload["target_has_existing_content"] is True
+    assert payload["requires_existing_target_confirmation"] is True
+    assert "覆盖目标中的同名运行时数据目录" in payload["existing_target_confirmation_message"]
+    assert not get_storage_migration_path(config_manager).exists()
+
+
+@pytest.mark.unit
+def test_storage_location_preflight_rejects_bootstrap_blocking_without_releasing_barrier(tmp_path):
+    config_manager = _DummyConfigManager(tmp_path)
+    release_calls = []
+
+    async def release_storage_startup_barrier(*, reason: str):
+        release_calls.append(reason)
+
+    with _build_client(
+        config_manager,
+        release_storage_startup_barrier=release_storage_startup_barrier,
+    ) as client:
+        response = client.post(
+            "/api/storage/location/preflight",
+            json={
+                "selected_root": str(tmp_path / "new-storage" / "N.E.K.O"),
+                "selection_source": "custom",
+            },
+        )
+
+    assert response.status_code == 409
+    payload = response.json()
+    assert payload["ok"] is False
+    assert payload["error_code"] == "storage_bootstrap_blocking"
+    assert payload["blocking_reason"] == "selection_required"
+    assert load_storage_policy(config_manager) is None
+    assert not get_storage_migration_path(config_manager).exists()
+    assert release_calls == []
+
+
+@pytest.mark.unit
+def test_storage_location_preflight_rejects_existing_pending_migration(tmp_path, monkeypatch):
+    config_manager = _DummyConfigManager(tmp_path)
+    target_root = tmp_path / "new-storage" / "N.E.K.O"
+    monkeypatch.setattr(
+        storage_location_bootstrap_module,
+        "DEVELOPMENT_ALWAYS_REQUIRE_SELECTION",
+        False,
+    )
+    save_storage_policy(
+        config_manager,
+        selected_root=config_manager.app_docs_dir,
+        selection_source="current",
+        anchor_root=config_manager.anchor_root,
+    )
+    migration_payload = create_pending_storage_migration(
+        config_manager,
+        source_root=config_manager.app_docs_dir,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+
+    with _build_client(config_manager) as client:
+        response = client.post(
+            "/api/storage/location/preflight",
+            json={
+                "selected_root": str(tmp_path / "other-storage" / "N.E.K.O"),
+                "selection_source": "custom",
+            },
+        )
+
+    assert response.status_code == 409
+    payload = response.json()
+    assert payload["ok"] is False
+    assert payload["error_code"] == "migration_already_pending"
+    assert payload["blocking_reason"] == "migration_pending"
+    assert load_storage_migration(config_manager) == migration_payload
+
+
+@pytest.mark.unit
+def test_storage_location_preflight_rejects_maintenance_readonly_state(tmp_path, monkeypatch):
+    config_manager = _DummyConfigManager(tmp_path)
+    monkeypatch.setattr(
+        storage_location_bootstrap_module,
+        "DEVELOPMENT_ALWAYS_REQUIRE_SELECTION",
+        False,
+    )
+    save_storage_policy(
+        config_manager,
+        selected_root=config_manager.app_docs_dir,
+        selection_source="current",
+        anchor_root=config_manager.anchor_root,
+    )
+    previous_policy = load_storage_policy(config_manager)
+    config_manager.save_root_state({
+        "mode": ROOT_MODE_MAINTENANCE_READONLY,
+        "last_known_good_root": str(config_manager.app_docs_dir),
+        "last_migration_result": "restart_pending:test",
+        "last_migration_source": str(config_manager.app_docs_dir),
+    })
+    previous_root_state = config_manager.load_root_state()
+
+    with _build_client(config_manager) as client:
+        response = client.post(
+            "/api/storage/location/preflight",
+            json={
+                "selected_root": str(tmp_path / "new-storage" / "N.E.K.O"),
+                "selection_source": "custom",
+            },
+        )
+
+    assert response.status_code == 409
+    payload = response.json()
+    assert payload["ok"] is False
+    assert payload["error_code"] == "migration_already_pending"
+    assert payload["blocking_reason"] == "maintenance_readonly"
+    assert load_storage_policy(config_manager) == previous_policy
+    assert config_manager.load_root_state() == previous_root_state
+    assert not get_storage_migration_path(config_manager).exists()
 
 
 @pytest.mark.unit
@@ -438,6 +813,51 @@ def test_storage_location_pick_directory_returns_selected_root(tmp_path):
     assert payload["ok"] is True
     assert payload["cancelled"] is False
     assert payload["selected_root"] == selected_root
+
+
+@pytest.mark.unit
+def test_storage_location_open_current_opens_only_current_root(tmp_path):
+    config_manager = _DummyConfigManager(tmp_path)
+    opened_paths = []
+
+    def fake_open_path(path):
+        opened_paths.append(Path(path))
+
+    with patch.object(
+        storage_location_router_module,
+        "_open_path_in_file_manager",
+        side_effect=fake_open_path,
+    ):
+        with _build_client(config_manager) as client:
+            response = client.post("/api/storage/location/open-current")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["current_root"] == str(config_manager.app_docs_dir.resolve())
+    assert opened_paths == [config_manager.app_docs_dir.resolve()]
+
+
+@pytest.mark.unit
+def test_storage_location_open_current_reports_unavailable(tmp_path):
+    config_manager = _DummyConfigManager(tmp_path)
+
+    with patch.object(
+        storage_location_router_module,
+        "_open_path_in_file_manager",
+        side_effect=storage_location_router_module._OpenStorageRootUnavailable(
+            "open_storage_root_unavailable",
+            "当前环境暂不支持直接打开目录。",
+        ),
+    ):
+        with _build_client(config_manager) as client:
+            response = client.post("/api/storage/location/open-current")
+
+    assert response.status_code == 503
+    payload = response.json()
+    assert payload["ok"] is False
+    assert payload["error_code"] == "open_storage_root_unavailable"
+    assert payload["current_root"] == str(config_manager.app_docs_dir.resolve())
 
 
 @pytest.mark.unit

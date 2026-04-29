@@ -8,6 +8,8 @@ from __future__ import annotations
 from . import base as _base
 from . import decorators as _decorators
 from . import runtime as _runtime
+from . import ui as ui
+from plugin.sdk.shared.i18n import PluginI18n, tr
 
 # --- Base ---
 NEKO_PLUGIN_META_ATTR = _base.NEKO_PLUGIN_META_ATTR
@@ -74,6 +76,9 @@ __all__ = [
     "around_entry",
     "replace_entry",
     "plugin",
+    "ui",
+    "PluginI18n",
+    "tr",
     # Result
     "Ok",
     "Err",

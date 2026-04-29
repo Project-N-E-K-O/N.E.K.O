@@ -87,6 +87,38 @@ class PluginDependency(BaseModel):
 
 
 PluginType = Literal["plugin", "extension", "script", "adapter"]
+PluginUiSurfaceKind = Literal["panel", "guide", "docs"]
+PluginUiSurfaceMode = Literal["static", "hosted-tsx", "markdown", "auto"]
+PluginUiOpenIn = Literal["iframe", "new_tab", "same_tab"]
+
+
+class PluginUiSurface(BaseModel):
+    """A normalized plugin UI surface declaration."""
+    id: str
+    kind: PluginUiSurfaceKind
+    mode: PluginUiSurfaceMode
+    title: Optional[str] = None
+    entry: Optional[str] = None
+    url: Optional[str] = None
+    ui_path: Optional[str] = None
+    open_in: Optional[PluginUiOpenIn] = None
+    context: Optional[str] = None
+    permissions: List[str] = Field(default_factory=list)
+    available: bool = True
+
+
+class PluginUiWarning(BaseModel):
+    """Structured UI manifest warning for developer-facing diagnostics."""
+    path: str
+    code: str
+    message: str
+
+
+class PluginUiSurfacesResponse(BaseModel):
+    """Normalized plugin UI surfaces response."""
+    plugin_id: str
+    surfaces: List[PluginUiSurface] = Field(default_factory=list)
+    warnings: List[PluginUiWarning] = Field(default_factory=list)
 
 
 class PluginMeta(BaseModel):
@@ -108,6 +140,8 @@ class PluginMeta(BaseModel):
     author: Optional[PluginAuthor] = None
     dependencies: List[PluginDependency] = Field(default_factory=list)
     host_plugin_id: Optional[str] = None  # extension 类型的宿主插件 ID
+    plugin_ui: Optional[Dict[str, Any]] = None
+    i18n: Optional[Dict[str, Any]] = None
 
 
 class HealthCheckResponse(BaseModel):

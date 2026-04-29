@@ -5,6 +5,8 @@
     const SVG_NS = 'http://www.w3.org/2000/svg';
     const BACKDROP_MASK_ID = ROOT_ID + '-mask';
     const EXTRA_SPOTLIGHT_ENTRY_COUNT = 6;
+    const DEFAULT_SPOTLIGHT_PADDING = 6;
+    const BACKDROP_CUTOUT_INSET = 4;
 
     function createElement(tagName, className) {
         const element = document.createElement(tagName);
@@ -20,6 +22,38 @@
             element.setAttribute('class', className);
         }
         return element;
+    }
+
+    function readSpotlightNumberAttr(element, attributeName) {
+        if (!element || typeof element.getAttribute !== 'function' || !attributeName) {
+            return null;
+        }
+
+        const rawValue = element.getAttribute(attributeName);
+        const value = Number.parseFloat(rawValue || '');
+        return Number.isFinite(value) ? value : null;
+    }
+
+    function ensureSpotlightFrameDecorations(frame) {
+        if (!frame) {
+            return;
+        }
+
+        if (!frame.querySelector('.yui-guide-spotlight-chrome')) {
+            frame.appendChild(createElement('div', 'yui-guide-spotlight-chrome'));
+        }
+        if (!frame.querySelector('.yui-guide-spotlight-ear-left')) {
+            frame.appendChild(createElement('div', 'yui-guide-spotlight-decoration yui-guide-spotlight-ear-left'));
+        }
+        if (!frame.querySelector('.yui-guide-spotlight-ear-right')) {
+            frame.appendChild(createElement('div', 'yui-guide-spotlight-decoration yui-guide-spotlight-ear-right'));
+        }
+        if (!frame.querySelector('.yui-guide-spotlight-paw')) {
+            frame.appendChild(createElement('div', 'yui-guide-spotlight-decoration yui-guide-spotlight-paw'));
+        }
+        if (!frame.querySelector('.yui-guide-spotlight-circle-skin')) {
+            frame.appendChild(createElement('div', 'yui-guide-spotlight-circle-skin'));
+        }
     }
 
     class YuiGuideOverlay {
@@ -115,14 +149,17 @@
                 const persistentSpotlightFrame = createElement('div', 'yui-guide-spotlight-frame yui-guide-spotlight-frame-persistent');
                 persistentSpotlightFrame.hidden = true;
                 persistentSpotlightFrame.setAttribute('data-yui-cursor-hidden', 'true');
+                ensureSpotlightFrameDecorations(persistentSpotlightFrame);
 
                 const actionSpotlightFrame = createElement('div', 'yui-guide-spotlight-frame yui-guide-spotlight-frame-action');
                 actionSpotlightFrame.hidden = true;
                 actionSpotlightFrame.setAttribute('data-yui-cursor-hidden', 'true');
+                ensureSpotlightFrameDecorations(actionSpotlightFrame);
 
                 const secondaryActionSpotlightFrame = createElement('div', 'yui-guide-spotlight-frame yui-guide-spotlight-frame-action yui-guide-spotlight-frame-action-secondary');
                 secondaryActionSpotlightFrame.hidden = true;
                 secondaryActionSpotlightFrame.setAttribute('data-yui-cursor-hidden', 'true');
+                ensureSpotlightFrameDecorations(secondaryActionSpotlightFrame);
 
                 for (let index = 0; index < EXTRA_SPOTLIGHT_ENTRY_COUNT; index += 1) {
                     const cutout = createSvgElement(
@@ -141,6 +178,7 @@
                     frame.hidden = true;
                     frame.setAttribute('data-yui-cursor-hidden', 'true');
                     frame.setAttribute('data-yui-guide-extra-index', String(index));
+                    ensureSpotlightFrameDecorations(frame);
                     stage.appendChild(frame);
 
                     extraSpotlightEntries.push({ cutout: cutout, frame: frame });
@@ -207,6 +245,9 @@
                 this.persistentSpotlightFrame = root.querySelector('.yui-guide-spotlight-frame-persistent');
                 this.actionSpotlightFrame = root.querySelector('.yui-guide-spotlight-frame-action');
                 this.secondaryActionSpotlightFrame = root.querySelector('.yui-guide-spotlight-frame-action-secondary');
+                ensureSpotlightFrameDecorations(this.persistentSpotlightFrame);
+                ensureSpotlightFrameDecorations(this.actionSpotlightFrame);
+                ensureSpotlightFrameDecorations(this.secondaryActionSpotlightFrame);
                 this.bubble = root.querySelector('.yui-guide-bubble');
                 this.bubbleTitle = root.querySelector('.yui-guide-bubble-title');
                 this.bubbleBody = root.querySelector('.yui-guide-bubble-body');
@@ -220,6 +261,7 @@
                 const frames = root.querySelectorAll('.yui-guide-spotlight-frame-extra');
                 const count = Math.max(cutouts.length, frames.length);
                 for (let index = 0; index < count; index += 1) {
+                    ensureSpotlightFrameDecorations(frames[index] || null);
                     this.extraSpotlightEntries.push({
                         cutout: cutouts[index] || null,
                         frame: frames[index] || null
@@ -311,18 +353,30 @@
                 return null;
             }
 
-            const padding = 12;
+            const paddingValue = readSpotlightNumberAttr(element, 'data-yui-guide-spotlight-padding');
+            const padding = paddingValue == null ? DEFAULT_SPOTLIGHT_PADDING : paddingValue;
+            const rawWidth = Math.max(0, Math.round(rect.width));
+            const rawHeight = Math.max(0, Math.round(rect.height));
+            const rawMinEdge = Math.min(rawWidth, rawHeight);
+            const radiusOverride = readSpotlightNumberAttr(element, 'data-yui-guide-spotlight-radius');
+            const geometryHint = typeof element.getAttribute === 'function'
+                ? (element.getAttribute('data-yui-guide-spotlight-geometry') || '').trim().toLowerCase()
+                : '';
+            const rawRadius = radiusOverride != null
+                ? Math.max(0, radiusOverride)
+                : Math.max(0, this.getSpotlightRadius(element, padding) - padding);
+            const sizeTolerance = Math.max(8, Math.round(rawMinEdge * 0.12));
             const left = Math.max(0, Math.floor(rect.left - padding));
             const top = Math.max(0, Math.floor(rect.top - padding));
             const right = Math.min(window.innerWidth, Math.ceil(rect.right + padding));
             const bottom = Math.min(window.innerHeight, Math.ceil(rect.bottom + padding));
             const width = Math.max(0, right - left);
             const height = Math.max(0, bottom - top);
-            const radius = this.getSpotlightRadius(element);
-            const minEdge = Math.min(width, height);
-            const isCircular = minEdge > 0
-                && Math.abs(width - height) <= 18
-                && radius >= ((minEdge / 2) - 6);
+            const radius = this.getSpotlightRadius(element, padding);
+            const isCircular = geometryHint === 'circle'
+                && rawMinEdge > 0
+                && Math.abs(rawWidth - rawHeight) <= sizeTolerance
+                && rawRadius >= ((rawMinEdge / 2) - 4);
 
             return {
                 left: left,
@@ -332,20 +386,27 @@
                 width: width,
                 height: height,
                 radius: radius,
+                padding: padding,
                 isCircular: isCircular
             };
         }
 
-        getSpotlightRadius(element) {
+        getSpotlightRadius(element, padding) {
             if (!element || typeof window.getComputedStyle !== 'function') {
                 return 24;
+            }
+
+            const radiusPadding = Number.isFinite(padding) ? padding : DEFAULT_SPOTLIGHT_PADDING;
+            const radiusOverride = readSpotlightNumberAttr(element, 'data-yui-guide-spotlight-radius');
+            if (radiusOverride != null) {
+                return Math.max(0, radiusOverride);
             }
 
             try {
                 const computed = window.getComputedStyle(element);
                 const radius = parseFloat(computed.borderTopLeftRadius || computed.borderRadius || '');
                 if (Number.isFinite(radius) && radius > 0) {
-                    return radius + 12;
+                    return Math.max(0, radius + radiusPadding);
                 }
             } catch (_) {}
 
@@ -371,12 +432,26 @@
 
             cutout.hidden = false;
             cutout.style.removeProperty('display');
-            cutout.setAttribute('x', String(spotlightRect.left));
-            cutout.setAttribute('y', String(spotlightRect.top));
-            cutout.setAttribute('width', String(spotlightRect.width));
-            cutout.setAttribute('height', String(spotlightRect.height));
-            cutout.setAttribute('rx', String(spotlightRect.radius));
-            cutout.setAttribute('ry', String(spotlightRect.radius));
+            const maxInset = spotlightRect.padding == null
+                ? BACKDROP_CUTOUT_INSET
+                : Math.max(0, spotlightRect.padding);
+            const inset = Math.max(0, Math.min(
+                BACKDROP_CUTOUT_INSET,
+                maxInset,
+                Math.floor(spotlightRect.width / 2),
+                Math.floor(spotlightRect.height / 2)
+            ));
+            const x = spotlightRect.left + inset;
+            const y = spotlightRect.top + inset;
+            const width = Math.max(0, spotlightRect.width - (inset * 2));
+            const height = Math.max(0, spotlightRect.height - (inset * 2));
+            const radius = Math.max(0, spotlightRect.radius - inset);
+            cutout.setAttribute('x', String(x));
+            cutout.setAttribute('y', String(y));
+            cutout.setAttribute('width', String(width));
+            cutout.setAttribute('height', String(height));
+            cutout.setAttribute('rx', String(radius));
+            cutout.setAttribute('ry', String(radius));
         }
 
         updateSpotlightFrame(frame, spotlightRect, options) {
@@ -433,10 +508,10 @@
             const actionRect = this.getSpotlightRect(this.actionHighlightedElement);
             const secondaryActionRect = this.getSpotlightRect(this.secondaryActionHighlightedElement);
             const extraRects = this.extraSpotlightElements.map((element) => this.getSpotlightRect(element));
-            const persistentMaskRect = persistentRect && !persistentRect.isCircular ? persistentRect : null;
+            const persistentMaskRect = persistentRect || null;
             const actionMaskRect = actionRect || null;
             const secondaryActionMaskRect = secondaryActionRect || null;
-            const extraMaskRects = extraRects.filter(Boolean);
+            const extraMaskRects = extraRects.filter((rect) => !!rect);
 
             if (this.backdrop) {
                 this.syncBackdropViewport();
@@ -456,23 +531,24 @@
                 allowMask: true
             });
             this.updateSpotlightFrame(this.actionSpotlightFrame, actionRect, {
-                allowMask: false
+                allowMask: true
             });
             this.updateSpotlightFrame(this.secondaryActionSpotlightFrame, secondaryActionRect, {
-                allowMask: false
+                allowMask: true
             });
             extraRects.forEach((rect, index) => {
                 const entry = this.ensureExtraSpotlightEntry(index);
                 if (!entry) {
                     return;
                 }
+                const maskRect = rect || null;
                 const sourceElement = this.extraSpotlightElements[index] || null;
                 const variant = sourceElement && typeof sourceElement.getAttribute === 'function'
                     ? sourceElement.getAttribute('data-yui-guide-spotlight-variant')
                     : '';
-                this.updateBackdropCutout(entry.cutout, rect || null);
+                this.updateBackdropCutout(entry.cutout, maskRect);
                 this.updateSpotlightFrame(entry.frame, rect || null, {
-                    allowMask: false,
+                    allowMask: true,
                     variant: variant
                 });
             });

@@ -160,6 +160,7 @@ export const chatWindowPropsSchema = z.object({
   inputHint: z.string().optional(),
   rollbackDraft: z.string().optional(),
   _rollbackKey: z.string().optional(),
+  _toolCursorResetKey: z.string().optional(),
   jukeboxButtonLabel: z.string().optional(),
   jukeboxButtonAriaLabel: z.string().optional(),
   avatarGeneratorButtonLabel: z.string().optional(),

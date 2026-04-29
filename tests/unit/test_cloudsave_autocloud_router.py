@@ -23,6 +23,10 @@ def _fresh_cloudsave_router_module():
 def _make_config_manager(tmp_root: Path):
     with patch.object(ConfigManager, "_get_documents_directory", return_value=tmp_root), patch.object(
         ConfigManager,
+        "_get_standard_data_directory_candidates",
+        return_value=[tmp_root],
+    ), patch.object(
+        ConfigManager,
         "get_legacy_app_root_candidates",
         return_value=[],
     ):

@@ -21,6 +21,7 @@ import mimetypes
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel, Field
 from fastapi.responses import FileResponse, JSONResponse
 
 from plugin.logging_config import get_logger
@@ -31,6 +32,12 @@ from plugin.server.infrastructure.error_mapping import raise_http_from_domain
 router = APIRouter(tags=["plugin-ui"])
 logger = get_logger("server.routes.plugin_ui")
 plugin_ui_query_service = PluginUiQueryService()
+
+
+class HostedUiActionRequest(BaseModel):
+    args: dict[str, object] = Field(default_factory=dict)
+    kind: str = "panel"
+    surface_id: str = "main"
 
 async def _get_plugin_static_dir(plugin_id: str) -> Path | None:
     """获取插件的静态文件目录
@@ -190,3 +197,65 @@ async def plugin_ui_info(plugin_id: str):
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
     return JSONResponse(ui_info)
+
+
+@router.get("/plugin/{plugin_id}/surfaces")
+async def plugin_ui_surfaces(plugin_id: str):
+    """获取插件统一 UI Surface 列表。
+
+    LEGACY_STATIC_UI_COMPAT:
+    Existing static UI is normalized as a mode="static" panel surface.
+    """
+    try:
+        surfaces = await plugin_ui_query_service.get_surfaces(plugin_id)
+    except ServerDomainError as error:
+        raise_http_from_domain(error, logger=logger)
+    return JSONResponse(surfaces)
+
+
+@router.get("/plugin/{plugin_id}/hosted-ui/source")
+async def plugin_hosted_ui_source(plugin_id: str, kind: str = "panel", id: str = "main"):
+    """读取 hosted surface 源码。
+
+    当前仅用于 hosted-tsx / markdown 的只读 source MVP。
+    """
+    try:
+        source = await plugin_ui_query_service.get_surface_source(
+            plugin_id,
+            kind=kind,
+            surface_id=id,
+        )
+    except ServerDomainError as error:
+        raise_http_from_domain(error, logger=logger)
+    return JSONResponse(source)
+
+
+@router.get("/plugin/{plugin_id}/hosted-ui/context")
+async def plugin_hosted_ui_context(plugin_id: str, kind: str = "panel", id: str = "main", locale: str | None = None):
+    """获取 hosted surface 只读上下文。"""
+    try:
+        context = await plugin_ui_query_service.get_surface_context(
+            plugin_id,
+            kind=kind,
+            surface_id=id,
+            locale=locale,
+        )
+    except ServerDomainError as error:
+        raise_http_from_domain(error, logger=logger)
+    return JSONResponse(context)
+
+
+@router.post("/plugin/{plugin_id}/hosted-ui/action/{action_id}")
+async def plugin_hosted_ui_action(plugin_id: str, action_id: str, request: HostedUiActionRequest):
+    """执行 hosted surface 动作；第一版复用本插件 plugin_entry。"""
+    try:
+        result = await plugin_ui_query_service.call_surface_action(
+            plugin_id,
+            action_id=action_id,
+            args=request.args,
+            kind=request.kind,
+            surface_id=request.surface_id,
+        )
+    except ServerDomainError as error:
+        raise_http_from_domain(error, logger=logger)
+    return JSONResponse(result)

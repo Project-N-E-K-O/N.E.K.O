@@ -25,7 +25,7 @@ from datetime import datetime
 from websockets import exceptions as web_exceptions
 from fastapi import WebSocket, WebSocketDisconnect
 from utils.frontend_utils import contains_chinese, replace_blank, replace_corner_mark, remove_bracket, \
-    is_only_punctuation, TtsStreamNormalizer
+    is_only_punctuation, TtsStreamNormalizer, TtsBracketStripper, TtsMarkdownStripper
 from utils.screenshot_utils import process_screen_data, overlay_avatar_annotation
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic.omni_offline_client import OmniOfflineClient
@@ -70,7 +70,7 @@ from utils.api_config_loader import get_free_voices
 from utils.language_utils import normalize_language_code, get_global_language, get_global_language_full
 import threading
 from threading import Thread
-from queue import Queue
+from queue import Queue, Empty
 from uuid import uuid4
 import numpy as np
 import soxr
@@ -246,6 +246,14 @@ class LLMSessionManager:
         self._tts_stream_normalizer = TtsStreamNormalizer()
         self._tts_norm_speech_id: Optional[str] = None
         self._tts_normalize_enabled: bool = True  # 默认启用，_start_tts_thread 按 provider 类别覆盖
+        # 括号 / markdown 剥离器：朗读时不读括号内的旁白与 markdown 标记。
+        # 与 _tts_stream_normalizer 解耦——CJK 空格规范化是 provider 相关的
+        # （ws_bistream provider 关），但括号/markdown 剥离是 TTS 通用需求，
+        # 始终启用。两者串接顺序：normalizer → markdown → bracket，因为
+        # markdown 链接 ``[文本](url)`` 必须先剥成 ``文本`` 再交给 bracket，
+        # 否则 ``[`` ``]`` 会被 bracket 当成普通括号把链接文本一起吞掉。
+        self._tts_markdown_stripper = TtsMarkdownStripper()
+        self._tts_bracket_stripper = TtsBracketStripper()
         # 流式音频重采样器（24kHz→48kHz）- 维护内部状态避免 chunk 边界不连续
         self.audio_resampler = soxr.ResampleStream(24000, 48000, 1, dtype='float32')
         self.lock = asyncio.Lock()  # 使用异步锁替代同步锁
@@ -375,6 +383,17 @@ class LLMSessionManager:
         # 用户活动时间戳：用于主动搭话检测最近是否有用户输入
         self.last_user_activity_time = None  # float timestamp or None
 
+        # 用户活动 tracker：把窗口/进程/CPU/idle/语音/对话信号聚合成结构化
+        # ActivitySnapshot，供 proactive_chat Phase 1/2 决策搭话倾向。
+        # 详见 docs/design/user-activity-tracker.md。
+        from main_logic.activity import UserActivityTracker
+        self._activity_tracker = UserActivityTracker(lanlan_name)
+
+        # AI 当前轮文本 buffer：每个 send_lanlan_response chunk 累加，turn end
+        # 时连同 on_ai_message 一起喂给 tracker。后者用末尾文本判断是否问问号
+        # → 触发 unfinished_thread 机制（5 分钟内允许至多 2 次跟进）。
+        self._current_ai_turn_text: str = ''
+
         # 事件驱动状态机：收口 "谁占用当前 turn" 的所有信号，供 proactive 流水线
         # 零成本（O(1) 读）频繁询问 is_proactive_preempted。事件发射点分布在
         # handle_new_message / stream_text 入口 / prepare_proactive_delivery /
@@ -460,18 +479,31 @@ class LLMSessionManager:
         worker 退出）请继续用 ``tts_request_queue.put`` 直接发送，并在合适
         时机调用 ``_reset_tts_stream_normalizer``。
         """
+        # speech_id 切换时重置所有 stripper 状态（pending 内容属于上一轮，丢弃）
+        if speech_id != self._tts_norm_speech_id:
+            self._tts_stream_normalizer.reset()
+            self._tts_markdown_stripper.reset()
+            self._tts_bracket_stripper.reset()
+            self._tts_norm_speech_id = speech_id
+
         if self._tts_normalize_enabled:
-            if speech_id != self._tts_norm_speech_id:
-                self._tts_stream_normalizer.reset()
-                self._tts_norm_speech_id = speech_id
             text = self._tts_stream_normalizer.feed(text)
             if not text:
                 return
+        # markdown → bracket 顺序固定：链接先剥成文本再交给 bracket
+        text = self._tts_markdown_stripper.feed(text)
+        if not text:
+            return
+        text = self._tts_bracket_stripper.feed(text)
+        if not text:
+            return
         self.tts_request_queue.put((speech_id, text))
 
     def _reset_tts_stream_normalizer(self) -> None:
-        """清空 normalizer 状态。中断 / 轮次结束 / session 重建时调用。"""
+        """清空所有 TTS 文本 stripper 状态。中断 / 轮次结束 / session 重建时调用。"""
         self._tts_stream_normalizer.reset()
+        self._tts_markdown_stripper.reset()
+        self._tts_bracket_stripper.reset()
         self._tts_norm_speech_id = None
 
     def _request_tts_done_locked(self) -> str:
@@ -491,6 +523,18 @@ class LLMSessionManager:
         if not self.tts_ready or self.tts_pending_chunks:
             self._tts_done_pending_until_ready = True
             return "deferred"
+
+        # 把 markdown/bracket stripper 的 pending 兜底 emit：链 markdown.flush()
+        # → bracket.feed(...) → bracket.flush() 顺序，与 _enqueue_tts_text_chunk
+        # 的串接顺序一致。markdown.flush 把残留的孤立 marker 字符删掉再 emit；
+        # bracket.feed 处理任何残留括号字符；bracket.flush 直接 reset 不读
+        # 未闭合的括号内容。normalizer.flush 永远返回 ""，省略调用。
+        flushed = self._tts_markdown_stripper.flush()
+        if flushed:
+            flushed = self._tts_bracket_stripper.feed(flushed)
+        self._tts_bracket_stripper.flush()
+        if flushed and self._tts_norm_speech_id is not None:
+            self.tts_request_queue.put((self._tts_norm_speech_id, flushed))
 
         self.tts_request_queue.put((None, None))
         self._tts_done_queued_for_turn = True
@@ -578,6 +622,9 @@ class LLMSessionManager:
         await self._clear_tts_pipeline()
         self._tts_done_queued_for_turn = False  # 新轮次重置 TTS 结束信号标记
         self._tts_done_pending_until_ready = False
+        # 新一轮开始：清空上一轮 AI 文本累加器（即使上轮 turn end 已清过，
+        # proactive abort 等异常路径可能漏清，新轮次起点重置最稳）
+        self._current_ai_turn_text = ''
 
         await self.send_user_activity()
 
@@ -646,6 +693,23 @@ class LLMSessionManager:
                     if is_first_chunk and self.tts_thread and not self.tts_thread.is_alive():
                         self._respawn_tts_worker()
 
+    def _flush_ai_turn_text_to_tracker(self) -> None:
+        """Flush the per-turn AI text buffer into the activity tracker.
+
+        Called from each AI-turn-end exit point — there are three:
+          - ``_emit_turn_end`` for regular replies (and truncate-recovery)
+          - ``handle_proactive_complete`` for the agent direct-reply path
+          - ``finish_proactive_delivery`` for /api/proactive_chat success
+
+        The tracker runs the question heuristic over the text and (when
+        text is non-empty) bumps ``_conv_seq`` for open_threads cache
+        invalidation. Empty / None text is fine — it just updates the
+        timestamp without opening an unfinished_thread or invalidating
+        the cache.
+        """
+        self._activity_tracker.on_ai_message(text=self._current_ai_turn_text or None)
+        self._current_ai_turn_text = ''
+
     async def handle_proactive_complete(self, content_committed: bool = True):
         """Lightweight completion for proactive (agent callback) replies.
 
@@ -657,6 +721,11 @@ class LLMSessionManager:
         if not content_committed:
             logger.debug("[%s] handle_proactive_complete: no content committed, skipping completion flush", self.lanlan_name)
             return
+        # Activity tracker flush：proactive 也算 AI 在说话。和 _emit_turn_end
+        # 对称，让 seconds_since_ai_msg 不分主动/被动。proactive 文本同样走过
+        # send_lanlan_response（finish_proactive_delivery 内部会调），所以
+        # _current_ai_turn_text 已经累加好。
+        self._flush_ai_turn_text_to_tracker()
         if self.use_tts and self.tts_thread and self.tts_thread.is_alive():
             try:
                 await self._request_tts_done_for_turn("handle_proactive_complete")
@@ -697,6 +766,10 @@ class LLMSessionManager:
                 await self.websocket.send_json(ws_msg)
         except Exception as e:
             logger.error(f"💥 WS Send Turn End Error: {e}")
+        # Activity tracker flush：AI 刚结束一轮（普通完成 + truncate-recovery 都
+        # 走这里）。text 用于 unfinished_thread 检测——tracker 跑问号启发式决定
+        # 要不要开 5min 跟进窗口；为 None 时不开窗，但仍更新 seconds_since_ai_msg。
+        self._flush_ai_turn_text_to_tracker()
 
     async def handle_response_complete(self):
         """Qwen完成回调：用于处理Core API的响应完成事件，包含TTS和热切换逻辑"""
@@ -973,13 +1046,40 @@ class LLMSessionManager:
             else:
                 pass  # websocket未连接时忽略
 
-    async def handle_input_transcript(self, transcript: str):
-        """输入转录回调：同步转录文本到消息队列和缓存，并发送到前端显示"""
+    async def handle_input_transcript(self, transcript: str, *, is_voice_source: bool = True):
+        """输入转录回调：同步转录文本到消息队列和缓存，并发送到前端显示
+
+        ``is_voice_source`` defaults to True for the realtime-client
+        callbacks (genuine VAD-captured speech). Text-mode call sites
+        that reuse this function for non-voice paths (e.g. openclaw
+        handoff at ``_dispatch_openclaw_handoff``) pass False so that:
+          - voice_rms is NOT marked (no fake voice_engaged state)
+          - on_user_message is skipped here (the text-mode entry has
+            already called it directly with the input data — calling
+            twice would double-bump _conv_seq and add the text to the
+            buffer twice)
+        """
         # 更新用户活动时间戳（用于主动搭话检测）
         self.last_user_activity_time = time.time()
-        # 递增轮次计数器（仅计非空转录，避免噪声/静默误触发记忆整理）
-        if transcript.strip():
-            self._session_turn_count += 1
+        if is_voice_source:
+            # transcript 到达 → VAD 在窗口内捕捉到声音，标记 voice RMS 活跃；
+            # 即使转录为空（VAD 误触发或转录失败）也算一次"用户在发声"，
+            # 维持 voice_engaged 状态。
+            self._activity_tracker.on_voice_rms()
+            # 仅非空转录才算"用户消息"：on_user_message 会清掉 unfinished_thread、
+            # bump _conv_seq（让 open_threads 缓存失效）、把文本进 buffer 给
+            # emotion-tier LLM 用——空 transcript 这些副作用都不该触发。
+            if transcript.strip():
+                self._activity_tracker.on_user_message(text=transcript)
+                self._session_turn_count += 1
+        else:
+            # Non-voice reuse of this method (e.g. openclaw text handoff).
+            # Skip activity-tracker hooks entirely — the text-mode entry
+            # at `_process_stream_data_internal` has already recorded the
+            # user message. We still need the queue/cache plumbing below
+            # to work normally, so just bypass the tracker block.
+            if transcript.strip():
+                self._session_turn_count += 1
 
         # 推送到同步消息队列
         self.sync_message_queue.put({"type": "user", "data": {"input_type": "transcript", "data": transcript.strip()}})
@@ -1073,6 +1173,10 @@ class LLMSessionManager:
         "未传"和"显式 None"，与单纯 ``request_id is None`` 检测不同。
         """
         text_clean = self.emotion_pattern.sub('', text)
+        # 累加到当前轮 AI 文本 buffer，turn end 时一并交给 activity tracker 做
+        # unfinished_thread 检测。emotion_pattern 已剥掉表情标签，但保留 <expr>
+        # 等可能的 markup——tracker 自己会做二次 strip。
+        self._current_ai_turn_text += text_clean
         effective_turn_id = turn_id or self.current_speech_id
         effective_request_id = (
             self._active_text_request_id
@@ -1927,43 +2031,53 @@ class LLMSessionManager:
                     timeout = 12.0  # 最多等待12秒
                     _last_tts_log = 0.0
                     while time.time() - start_time < timeout:
-                        try:
-                            # 非阻塞检查队列
-                            if not self.tts_response_queue.empty():
-                                msg = self.tts_response_queue.get_nowait()
-                                # 检查是否是就绪信号
-                                if isinstance(msg, tuple) and len(msg) == 2 and msg[0] == "__ready__":
-                                    tts_ready = msg[1]
-                                    if tts_ready:
-                                        logger.info(f"✅ TTS进程已就绪 (用时: {time.time() - start_time:.2f}秒)")
-                                    else:
-                                        logger.error("❌ TTS进程初始化失败")
-                                    break
-                                else:
-                                    # 不是就绪信号，放回队列
-                                    self.tts_response_queue.put(msg)
-                                    break
-                        except: # noqa
-                            pass
                         # worker 线程已死亡则无需继续等待
                         if not self.tts_thread.is_alive():
-                            # 尝试取出可能的 ready(False) 信号
-                            try:
-                                msg = self.tts_response_queue.get_nowait()
+                            # 抽干此刻队列：__ready__ 用于决定本次等待结果，
+                            # 其他消息（如承载 NO_RETRY 错误码的 __error__）放回队列，
+                            # 让稍后启动的 tts_response_handler 处理，避免错误码丢失。
+                            _requeue: list = []
+                            while True:
+                                try:
+                                    msg = self.tts_response_queue.get_nowait()
+                                except Empty:
+                                    break
                                 if isinstance(msg, tuple) and len(msg) == 2 and msg[0] == "__ready__":
                                     tts_ready = msg[1]
-                            except: # noqa
-                                pass
+                                else:
+                                    _requeue.append(msg)
+                            for _m in _requeue:
+                                self.tts_response_queue.put(_m)
                             if not tts_ready:
                                 logger.error("❌ TTS Worker 线程已退出，无法继续等待")
                             break
-                        # 每约2秒输出一次诊断日志，便于定位卡在哪一阶段
-                        _elapsed = time.time() - start_time
-                        if _elapsed - _last_tts_log >= 2.0:
-                            _last_tts_log = _elapsed
-                            logger.info(f"[语音会话诊断] TTS 就绪等待中... 已等待 {_elapsed:.1f}秒 / {timeout}秒")
-                        # 小睡眠避免忙等
-                        await asyncio.sleep(0.05)
+                        remaining = timeout - (time.time() - start_time)
+                        # 单次阻塞窗口封顶 2 秒，保证 worker 死亡探测与诊断日志能及时触发
+                        poll_window = min(remaining, 2.0)
+                        if poll_window <= 0:
+                            break
+                        try:
+                            msg = await asyncio.to_thread(
+                                self.tts_response_queue.get, True, poll_window
+                            )
+                        except Empty:
+                            # 每约2秒输出一次诊断日志，便于定位卡在哪一阶段
+                            _elapsed = time.time() - start_time
+                            if _elapsed - _last_tts_log >= 2.0:
+                                _last_tts_log = _elapsed
+                                logger.info(f"[语音会话诊断] TTS 就绪等待中... 已等待 {_elapsed:.1f}秒 / {timeout}秒")
+                            continue
+                        if isinstance(msg, tuple) and len(msg) == 2 and msg[0] == "__ready__":
+                            tts_ready = msg[1]
+                            if tts_ready:
+                                logger.info(f"✅ TTS进程已就绪 (用时: {time.time() - start_time:.2f}秒)")
+                            else:
+                                logger.error("❌ TTS进程初始化失败")
+                            break
+                        else:
+                            # 不是就绪信号，放回队列后退出（与旧行为一致）
+                            self.tts_response_queue.put(msg)
+                            break
 
                     if not tts_ready:
                         if time.time() - start_time >= timeout:
@@ -2199,7 +2313,12 @@ class LLMSessionManager:
             if self.session:
                 async with self.lock:
                     self.is_active = True
-                    
+
+                # Activity tracker：voice_engaged state 的硬前置就是 voice mode flag。
+                # 文本模式置 False 让 voice_engaged 永不触发；语音模式打开后由
+                # handle_input_transcript 的 on_voice_rms() 维持 8s 活跃窗口。
+                self._activity_tracker.on_voice_mode(input_mode == 'audio')
+
                 self.session_start_time = datetime.now()
                 self._session_turn_count = 0
 
@@ -2726,7 +2845,10 @@ class LLMSessionManager:
         if not sent:
             return False
 
-        await self.handle_input_transcript(user_text)
+        # Text mode → voice tracker hooks would lie. Pass is_voice_source=False
+        # so on_voice_rms / on_user_message aren't fired again (text-mode entry
+        # already called on_user_message directly with this same data).
+        await self.handle_input_transcript(user_text, is_voice_source=False)
         pending_images = getattr(self.session, "_pending_images", None)
         if isinstance(pending_images, list):
             pending_images.clear()
@@ -2926,6 +3048,13 @@ class LLMSessionManager:
             # 但本处 lock 内 sid 已校验过，commit 本身安全。
             await self.state.fire(SessionEvent.PROACTIVE_COMMITTING)
             await self.send_lanlan_response(full_text, is_first_chunk=True, turn_id=commit_sid)
+
+            # Flush per-turn AI-text buffer to activity tracker. The regular
+            # /api/proactive_chat path doesn't call handle_proactive_complete
+            # (only the agent-direct-reply path in main_server.py does), so
+            # without this the buffer would carry the proactive text forward
+            # and contaminate the next user-initiated turn's AI message.
+            self._flush_ai_turn_text_to_tracker()
 
             if self.session and hasattr(self.session, '_conversation_history'):
                 self.session._conversation_history.append(AIMessage(content=full_text))
@@ -3786,6 +3915,11 @@ class LLMSessionManager:
                     # 状态机：文本模式 stream_text 入口同样需要发射 USER_INPUT。
                     # handle_new_message 只在语音模式走到，这里是文本模式的对偶。
                     await self.state.fire(SessionEvent.USER_INPUT, sid=new_user_sid)
+                    # Activity tracker：文本模式真实用户输入。故意不在 handle_new_message
+                    # 里挂——后者也被 proactive abort 流程调用做清理（见
+                    # main_routers/system_router.py），那不算用户活动。
+                    # text 进 buffer 给 emotion-tier 用。
+                    self._activity_tracker.on_user_message(text=data if isinstance(data, str) else None)
 
                     should_handoff, openclaw_messages = await self._should_handoff_text_to_openclaw(data)
                     if should_handoff:
@@ -4050,7 +4184,10 @@ class LLMSessionManager:
             # 会穿过，产生孤儿 OmniRealtimeClient（silence_check_task/ws 泄漏）。
             if reset_starting_count:
                 self._starting_session_count = 0
-            
+
+            # Activity tracker：session 关闭，voice_engaged 不再可能触发。
+            self._activity_tracker.on_voice_mode(False)
+
             # Snapshot all mutable resource refs while holding the lock,
             # then operate only on locals to prevent killing newly created resources.
             main_session_ref = self.session
@@ -4267,15 +4404,20 @@ class LLMSessionManager:
             logger.error(f"💥 WS Send Response Error: {e}")
 
     async def tts_response_handler(self):
-        import queue as _queue_mod
         q = self.tts_response_queue
         logger.info(f"🎧 tts_response_handler started (queue id={id(q):#x})")
         while True:
             try:
-                try:
-                    data = q.get_nowait()
-                except _queue_mod.Empty:
-                    await asyncio.sleep(0.01)
+                # 阻塞 get 挂在线程池里，无消息时主 event loop 完全沉默；
+                # 取消时 except CancelledError 分支会 push 哨兵唤醒线程池里那个
+                # 仍在 q.get() 上的线程，避免线程泄漏。
+                data = await asyncio.to_thread(q.get)
+
+                # 处理 cancel 时为唤醒泄漏线程而 push 的哨兵。同一个 handler 实例
+                # 不会在 cancel 之后继续运行（CancelledError 已 raise），所以这里
+                # 只是为了在 handler 被替换后，新 handler（绑同一 queue）若意外
+                # 读到旧 handler 留下的哨兵也能正确忽略。
+                if isinstance(data, tuple) and len(data) == 2 and data[0] == "__handler_exit__":
                     continue
 
                 if isinstance(data, tuple) and len(data) == 2:
@@ -4417,6 +4559,13 @@ class LLMSessionManager:
                 await self.send_speech(data)
             except asyncio.CancelledError:
                 logger.info("🎧 tts_response_handler cancelled")
+                # asyncio.to_thread 取消后，线程池里那个 thread 仍阻塞在 q.get()。
+                # push 哨兵唤醒它返回，避免线程泄漏（线程持有 queue ref，整个 queue
+                # 也会被一起留住）。put_nowait 失败不影响主流程。
+                try:
+                    q.put_nowait(("__handler_exit__", None))
+                except Exception:
+                    pass
                 raise
             except Exception as e:
                 logger.error(f"💥 tts_response_handler error (will retry): {e}")

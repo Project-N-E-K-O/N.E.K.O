@@ -617,15 +617,15 @@ class ReflectionEngine:
           4. 始终在末尾 amark_absorbed，确保 save 成功但 mark 失败后的
              重启补跑能真正把 facts 的 absorbed 置为 True。
 
-        并发（P2.a.2）：整个方法在角色级 asyncio.Lock 下串行，避免与
-        aauto_promote_stale / aconfirm_promotion 竞写 reflections.json。
+        并发（C3 重构 + thinking）：LLM 调用在锁外。锁仅守护"再 load → id
+        dedup → append → save"这一段几十毫秒的临界区。这样：
+          - LLM (90-120s with thinking) 期间不阻塞同角色其他 reflection 写
+            （aapply_signal / aauto_promote_stale 的 pending→confirmed 段 /
+             arecord_mentions / aget_followup_topics 等）
+          - 双写防御：rid 由 source_fact_ids 决定（确定性），并发 synth 拿同
+            一批 facts 算出同 rid，post-LLM 锁内 dedup append 兜住。失败一方
+            返回 [] 不污染 caller 视图。
         """
-        async with self._get_alock(lanlan_name):
-            return await self._synthesize_reflections_locked(lanlan_name)
-
-    async def _synthesize_reflections_locked(self, lanlan_name: str) -> list[dict]:
-        """synthesize_reflections 的内部实现。调用方必须已持有
-        self._get_alock(lanlan_name)。"""
         from config.prompts_memory import get_reflection_prompt
         from utils.language_utils import get_global_language
         from utils.llm_client import create_chat_llm
@@ -656,6 +656,8 @@ class ReflectionEngine:
 
         # 幂等 short-circuit：同一批 facts 的 reflection 已持久化 →
         # 不重复调 LLM，仅补跑 mark_absorbed（致命点 3 的重启补救路径）
+        # 注：这里是 lock-外的 advisory check，提早避免无谓 LLM；最终
+        # dedup 在 lock-内重做（防 LLM 期间并发写入）。
         existing_reflections = await self.aload_reflections(lanlan_name)
         existing = next((r for r in existing_reflections if r.get('id') == rid), None)
         if existing is not None:
@@ -678,14 +680,18 @@ class ReflectionEngine:
         try:
             set_call_type("memory_reflection")
             api_config = self._config_manager.get_model_api_config('summary')
-            # timeout=90: 持 reflection 锁，输出多字段 JSON ontology（reflection
-            # text + entity + relation_type + temporal_scope + subject）较长。
+            # timeout=120: 开 thinking 后输出多字段 JSON ontology（reflection
+            # text + entity + relation_type + temporal_scope + subject）+ 思考
+            # 过程，比简单分类长。LLM 在锁外，不阻塞同角色其他 reflection 写。
             # max_retries=0: 禁 SDK 自动重试（无业务 retry，单次即终态，外层
             # try/except 兜底返回 []）。
+            # extra_body=None: 显式开 thinking——synth 是创意+结构化合成，
+            # 思考能改善 ontology 字段的一致性和 reflection text 的质量。
             llm = create_chat_llm(
                 api_config['model'],
                 api_config['base_url'], api_config['api_key'],
-                timeout=90, max_retries=0,
+                timeout=120, max_retries=0,
+                extra_body=None,
             )
             try:
                 resp = await llm.ainvoke(prompt)
@@ -777,19 +783,22 @@ class ReflectionEngine:
             'subject': subject,
         })
 
-        # 再次 load：LLM 调用期间可能有并发 synth；用最新 list 做 id dedup 追加
-        reflections = await self.aload_reflections(lanlan_name)
-        created = False
-        if any(r.get('id') == rid for r in reflections):
-            logger.info(
-                f"[Reflection] {lanlan_name}: reflection {rid} 已被并发 synth 写入，跳过重复 append"
-            )
-        else:
-            reflections.append(reflection)
-            await self.asave_reflections(lanlan_name, reflections)
-            created = True
+        # ── LOCK 仅护住 re-load + dedup append + save ──
+        async with self._get_alock(lanlan_name):
+            # 再次 load：LLM 调用期间可能有并发 synth；用最新 list 做 id dedup 追加
+            reflections = await self.aload_reflections(lanlan_name)
+            created = False
+            if any(r.get('id') == rid for r in reflections):
+                logger.info(
+                    f"[Reflection] {lanlan_name}: reflection {rid} 已被并发 synth 写入，跳过重复 append"
+                )
+            else:
+                reflections.append(reflection)
+                await self.asave_reflections(lanlan_name, reflections)
+                created = True
 
         # 无条件 mark_absorbed：幂等，且覆盖 save 成功后但在此崩溃的补跑情况
+        # （fact_store 自己有锁，不需要在 reflection 锁内）
         await self._fact_store.amark_absorbed(lanlan_name, source_fact_ids)
 
         if not created:
@@ -1518,12 +1527,17 @@ class ReflectionEngine:
         try:
             set_call_type("memory_rebuttal_check")
             api_config = self._config_manager.get_model_api_config('summary')
-            # timeout=60: 周期性反驳扫描，后台跑无人等。
+            # timeout=90: 开 thinking 后判断"用户最近的话否定了哪条 confirmed
+            # reflection"——drain 模式下每批最多 20 条 user msg × 多条
+            # confirmed reflection，思考能改善误判（防止把 user 的反讽 / 情景
+            # 转换误标为否定）。完全后台无锁，没人等结果，安全开 thinking。
             # max_retries=0: 禁 SDK 自动重试，失败 cursor 不推进自然下轮重试。
+            # extra_body=None: 显式开 thinking。
             llm = create_chat_llm(
                 api_config['model'],
                 api_config['base_url'], api_config['api_key'],
-                timeout=60, max_retries=0,
+                timeout=90, max_retries=0,
+                extra_body=None,
             )
             try:
                 resp = await llm.ainvoke(prompt)
@@ -1767,6 +1781,164 @@ class ReflectionEngine:
                     lanlan_name, confirmed_ids, 'confirmed',
                 )
         return transitions
+
+    async def aauto_promote_time_driven(self, lanlan_name: str) -> int:
+        """Time-driven fallback for "强力记忆 OFF" 模式。
+
+        零 LLM 成本。仿 pre-RFC 行为，纯按 reflection 年龄推进 lifecycle：
+          - pending 满 ``WEAK_MEMORY_AUTO_CONFIRM_DAYS`` 天 (按 created_at 计)
+            → status='confirmed', confirmed_at=now, auto_confirmed=True
+          - confirmed 满 ``WEAK_MEMORY_AUTO_PROMOTE_DAYS`` 天 (按 confirmed_at
+            计) → 直接调 ``persona.aadd_fact`` 走简单合入路径，**不**走 merge
+            LLM。aadd_fact 的内部启发式去重 + 角色卡矛盾检查兜底。
+
+        Returns: pending→confirmed + confirmed→promoted 的总 transition 数。
+
+        与 ``aauto_promote_stale`` 互斥使用——caller 根据强力记忆开关二选一。
+        本方法不读 evidence_score，evidence 字段缺/0 完全无影响。
+        """
+        from config import (
+            WEAK_MEMORY_AUTO_CONFIRM_DAYS,
+            WEAK_MEMORY_AUTO_PROMOTE_DAYS,
+        )
+
+        from memory.persona import PersonaManager
+        async with self._get_alock(lanlan_name):
+            reflections = await self._aload_reflections_full(lanlan_name)
+            now = datetime.now()
+            transitions = 0
+            confirmed_ids: list[str] = []
+            promoted_ids: list[str] = []
+            denied_ids: list[str] = []
+
+            # Pass 1: pending → confirmed by created_at age
+            for r in reflections:
+                if r.get('status') != 'pending':
+                    continue
+                created_iso = r.get('created_at')
+                if not created_iso:
+                    continue
+                try:
+                    created = datetime.fromisoformat(created_iso)
+                except (ValueError, TypeError):
+                    continue
+                age_days = (now - created).total_seconds() / 86400
+                if age_days < WEAK_MEMORY_AUTO_CONFIRM_DAYS:
+                    continue
+                r['status'] = 'confirmed'
+                r['confirmed_at'] = now.isoformat()
+                r['auto_confirmed'] = True
+                rid = r.get('id')
+                if rid:
+                    confirmed_ids.append(rid)
+                transitions += 1
+                logger.info(
+                    f"[Reflection] {lanlan_name}: pending→confirmed "
+                    f"(time-driven, {int(age_days)}d): {r.get('text', '')[:50]}..."
+                )
+
+            # Pass 2: confirmed → promoted/denied by confirmed_at age
+            # 注：刚被 Pass 1 翻成 confirmed 的 confirmed_at = now，age = 0 不会
+            # 命中 14 天阈值——所以同一条 reflection 不会一轮内 pending→promoted。
+            for r in reflections:
+                if r.get('status') != 'confirmed':
+                    continue
+                confirmed_iso = r.get('confirmed_at')
+                if not confirmed_iso:
+                    continue
+                try:
+                    confirmed_at = datetime.fromisoformat(confirmed_iso)
+                except (ValueError, TypeError):
+                    continue
+                age_days = (now - confirmed_at).total_seconds() / 86400
+                if age_days < WEAK_MEMORY_AUTO_PROMOTE_DAYS:
+                    continue
+
+                # 直接走 persona.aadd_fact——pre-RFC 简单合入。三种返回：
+                #   FACT_ADDED → 把 reflection status 翻到 promoted
+                #   FACT_REJECTED_CARD → 翻到 denied (角色卡矛盾)
+                #   FACT_QUEUED_CORRECTION → 在强力记忆关时 corrections queue
+                #     不会被消化（resolve_corrections gate off），所以这里
+                #     reflection 留在 confirmed，下轮再试。属于已知的轻度
+                #     "记忆失活" case；rare（启发式 ratio ≥0.4 才命中）。
+                rid = r.get('id')
+                try:
+                    code = await self._persona_manager.aadd_fact(
+                        lanlan_name, r.get('text', ''),
+                        entity=r.get('entity', 'relationship'),
+                        source='reflection_time_driven',
+                        source_id=rid,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"[Promote] {lanlan_name}/{rid}: time-driven aadd_fact 失败: {e}"
+                    )
+                    continue
+
+                if code == PersonaManager.FACT_ADDED:
+                    r['status'] = 'promoted'
+                    r['promoted_at'] = now.isoformat()
+                    if rid:
+                        promoted_ids.append(rid)
+                    transitions += 1
+                    logger.info(
+                        f"[Reflection] {lanlan_name}: confirmed→promoted "
+                        f"(time-driven, {int(age_days)}d, no LLM): "
+                        f"{r.get('text', '')[:50]}..."
+                    )
+                elif code == PersonaManager.FACT_REJECTED_CARD:
+                    r['status'] = 'denied'
+                    r['denied_reason'] = 'rejected_by_persona_card_time_driven'
+                    if rid:
+                        denied_ids.append(rid)
+                    transitions += 1
+                    logger.info(
+                        f"[Reflection] {lanlan_name}: confirmed→denied "
+                        f"(time-driven, 角色卡矛盾): {rid}"
+                    )
+                # FACT_QUEUED_CORRECTION → 留在 confirmed，下轮再试
+
+            # 单次落盘：按完整 reflections 列表（含刚被翻成 promoted/denied 的
+            # 终态条目）保存。**不过滤 REFLECTION_TERMINAL_STATUSES**——上一
+            # 版 bug 是过滤后终态条目变成 inactive，被
+            # _prepare_save_reflections 当成 stale 不写主文件，导致 promoted/
+            # denied 翻转丢失。asave_reflections 内部 _prepare_save_reflections
+            # 会按 _REFLECTION_ARCHIVE_DAYS 自然把陈旧 terminal 移到 archive
+            # 分片，不需要这里再做过滤。
+            # 任何 transition（confirmed/promoted/denied）都触发 save——只 gate
+            # 在 promoted_ids 上会丢掉纯 FACT_REJECTED_CARD 批次的 denied 翻转。
+            if transitions:
+                await self.asave_reflections(lanlan_name, reflections)
+                handled_ids = confirmed_ids + promoted_ids + denied_ids
+                if handled_ids:
+                    await self._abatch_mark_surfaced_handled(
+                        lanlan_name, handled_ids, 'confirmed',
+                    )
+
+        return transitions
+
+    async def areset_confirmed_at_to_now(self, lanlan_name: str) -> int:
+        """开→关 migration：把所有 confirmed reflection 的 confirmed_at 重置
+        到 now，让 time-driven fallback 走完整的 14 天计时。
+
+        避免"用户开了一阵又关了，发现关了之后旧 confirmed 立刻 14 天到点
+        批量 promote"的体验断层。返回受影响条目数。
+        """
+        async with self._get_alock(lanlan_name):
+            reflections = await self._aload_reflections_full(lanlan_name)
+            now_iso = datetime.now().isoformat()
+            count = 0
+            for r in reflections:
+                if r.get('status') == 'confirmed':
+                    r['confirmed_at'] = now_iso
+                    count += 1
+            if count:
+                active = [
+                    r for r in reflections
+                    if r.get('status') not in REFLECTION_TERMINAL_STATUSES
+                ]
+                await self.asave_reflections(lanlan_name, active)
+        return count
 
     # ── Merge-on-promote (RFC §3.9) ───────────────────────────────────
 
@@ -2093,15 +2265,18 @@ class ReflectionEngine:
         api_config = self._config_manager.get_model_api_config(
             EVIDENCE_PROMOTION_MERGE_MODEL_TIER,
         )
-        # timeout=45: LLM 在 reflection 锁外，但 /process 末尾会同步等
-        # aauto_promote_stale 串行处理多个 reflection。每个 promote_merge
-        # prompt 决策短、输出短，应该 <10s 完成；45s 给 4-5x 裕度，超时即
-        # 触发已有 throttle/backoff 路径（EVIDENCE_PROMOTE_RETRY_BACKOFF_MINUTES）。
+        # timeout=90: 开 thinking 后 promote merge 决策（merge_into / promote_fresh /
+        # reject + target_id 选择 + 重写 merged_text）值得思考——后果不可逆
+        # （persona pollution），已有 throttle/backoff/dead-letter 兜底，开
+        # thinking 完全在收益侧。LLM 调用本身在锁外（pre/post 短临界区分别拿
+        # reflection 锁做 stamp 和 CAS），所以 90s 不阻塞同角色其他 reflection 写。
         # max_retries=0: 禁 SDK 自动重试，由 throttle/dead-letter 兜底。
+        # extra_body=None: 显式开 thinking。
         llm = create_chat_llm(
             api_config['model'],
             api_config['base_url'], api_config['api_key'],
-            timeout=45, max_retries=0,
+            timeout=90, max_retries=0,
+            extra_body=None,
         )
         try:
             resp = await llm.ainvoke(prompt)

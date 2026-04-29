@@ -598,10 +598,10 @@ if (characterCardTagInput) {
 }
 
 function updateCharacterCardTagScrollControls() {
-    const wrapper = document.getElementById('character-card-tags-wrapper');
-    const leftButton = document.getElementById('character-card-tags-scroll-left');
-    const rightButton = document.getElementById('character-card-tags-scroll-right');
-    if (!wrapper || !leftButton || !rightButton) return;
+    const controls = ensureCharacterCardTagScrollControls();
+    if (!controls) return;
+
+    const { wrapper, leftButton, rightButton } = controls;
 
     const hasOverflow = (wrapper.scrollWidth - wrapper.clientWidth) > 2;
     const atStart = wrapper.scrollLeft <= 2;
@@ -611,6 +611,79 @@ function updateCharacterCardTagScrollControls() {
     rightButton.classList.toggle('is-hidden', !hasOverflow);
     leftButton.disabled = !hasOverflow || atStart;
     rightButton.disabled = !hasOverflow || atEnd;
+}
+
+function createCharacterCardTagScrollButton(direction) {
+    const isLeft = direction < 0;
+    const button = document.createElement('button');
+    const labelKey = isLeft ? 'steam.scrollTagsLeftAriaLabel' : 'steam.scrollTagsRightAriaLabel';
+    const fallbackLabel = isLeft ? '向左滚动标签' : '向右滚动标签';
+
+    button.type = 'button';
+    button.id = isLeft ? 'character-card-tags-scroll-left' : 'character-card-tags-scroll-right';
+    button.className = 'tag-scroll-button is-hidden';
+    button.textContent = isLeft ? '<' : '>';
+    button.setAttribute('data-i18n-title', labelKey);
+    button.setAttribute('data-i18n-aria', labelKey);
+    button.setAttribute('title', window.t ? window.t(labelKey) : fallbackLabel);
+    button.setAttribute('aria-label', window.t ? window.t(labelKey) : fallbackLabel);
+    button.addEventListener('click', () => {
+        scrollCharacterCardTags(isLeft ? -1 : 1);
+    });
+
+    return button;
+}
+
+function ensureCharacterCardTagScrollControls() {
+    const wrapper = document.getElementById('character-card-tags-wrapper');
+    if (!wrapper) return null;
+
+    let shell = wrapper.parentElement && wrapper.parentElement.classList.contains('character-card-tags-scroll-shell')
+        ? wrapper.parentElement
+        : null;
+
+    if (!shell && wrapper.parentNode) {
+        shell = document.createElement('div');
+        shell.className = 'character-card-tags-scroll-shell';
+        wrapper.parentNode.insertBefore(shell, wrapper);
+        shell.appendChild(createCharacterCardTagScrollButton(-1));
+        shell.appendChild(wrapper);
+        shell.appendChild(createCharacterCardTagScrollButton(1));
+    }
+
+    if (!shell) return null;
+
+    let leftButton = shell.querySelector('#character-card-tags-scroll-left');
+    if (!leftButton) {
+        leftButton = createCharacterCardTagScrollButton(-1);
+        shell.insertBefore(leftButton, shell.firstChild || null);
+    }
+
+    let rightButton = shell.querySelector('#character-card-tags-scroll-right');
+    if (!rightButton) {
+        rightButton = createCharacterCardTagScrollButton(1);
+        shell.appendChild(rightButton);
+    }
+
+    if (wrapper.dataset.scrollControlsBound !== 'true') {
+        wrapper.addEventListener('scroll', updateCharacterCardTagScrollControls, { passive: true });
+
+        if (typeof ResizeObserver !== 'undefined') {
+            const tagsContainer = document.getElementById('character-card-tags-container');
+            const tagsResizeObserver = new ResizeObserver(() => {
+                updateCharacterCardTagScrollControls();
+            });
+            tagsResizeObserver.observe(wrapper);
+            if (tagsContainer) {
+                tagsResizeObserver.observe(tagsContainer);
+            }
+            wrapper._tagScrollResizeObserver = tagsResizeObserver;
+        }
+
+        wrapper.dataset.scrollControlsBound = 'true';
+    }
+
+    return { wrapper, leftButton, rightButton };
 }
 
 function scrollCharacterCardTags(direction) {
@@ -684,6 +757,7 @@ function addTag(tagText, type = '', locked = false) {
 
     if (type === 'character-card') {
         updateCharacterCardTagScrollControls();
+        requestAnimationFrame(updateCharacterCardTagScrollControls);
     }
 }
 
@@ -696,6 +770,7 @@ function removeTag(tagElement, type = '') {
 
     if (type === 'character-card') {
         updateCharacterCardTagScrollControls();
+        requestAnimationFrame(updateCharacterCardTagScrollControls);
     }
 }
 
@@ -2279,8 +2354,9 @@ async function autoScanAndAddWorkshopCharacterCards() {
             } else {
                 const syncResult = await syncResponse.json();
                 if (syncResult.success) {
-                    if (syncResult.added > 0) {
-                        console.log(`[工坊同步] 服务端同步完成：新增 ${syncResult.added} 个角色卡，跳过 ${syncResult.skipped} 个已存在`);
+                    const backfilledFaces = Number(syncResult.backfilled_faces || 0);
+                    if (syncResult.added > 0 || backfilledFaces > 0) {
+                        console.log(`[工坊同步] 服务端同步完成：新增 ${syncResult.added} 个角色卡，回填 ${backfilledFaces} 个封面，跳过 ${syncResult.skipped} 个已存在`);
                         // 刷新角色卡列表
                         loadCharacterCards();
                     } else {
@@ -3758,24 +3834,20 @@ function openCatgirlPanel(card, originEl) {
 
         const deleteBtn = document.createElement('button');
         deleteBtn.type = 'button';
-        deleteBtn.className = 'card-panel-action-btn delete-btn';
-        deleteBtn.disabled = isCurrentChara;
+        deleteBtn.className = 'card-panel-action-btn delete-btn' + (isCurrentChara ? ' disabled' : '');
         deleteBtn.title = isCurrentChara
             ? (window.t ? window.t('character.cannotDeleteCurrentCard') : '当前正在使用的角色卡无法删除，请先切换到其他角色卡')
             : (window.t ? window.t('character.deleteCard') : '删除角色卡');
         deleteBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>'
             + '<span>' + (window.t ? window.t('character.deleteCard') : '删除') + '</span>';
-        deleteBtn.onclick = function (e) {
+        deleteBtn.onclick = async function (e) {
             e.stopPropagation();
-            if (isCurrentChara) {
-                if (typeof showMessage === 'function') {
-                    showMessage(window.t ? window.t('character.cannotDeleteCurrentCard') : '当前正在使用的角色卡无法删除，请先切换到其他角色卡', 'error');
-                }
-                return;
+            // 不再用打开面板时快照的 isCurrentChara 拦截——workshopDeleteCatgirl 内部会用权威当前角色名做判断，
+            // 这样跨窗口切换、用户取消、后端拒绝等情况都会被正确处理，且只有真正删除成功后才关面板，避免提前关掉丢未保存改动
+            const deleted = await workshopDeleteCatgirl(name);
+            if (deleted) {
+                closeCatgirlPanel();
             }
-            workshopDeleteCatgirl(name);
-            // 删除会刷新列表，关闭面板
-            setTimeout(() => closeCatgirlPanel(), 300);
         };
         actions.appendChild(deleteBtn);
 
@@ -3981,22 +4053,15 @@ function openCatgirlPanel(card, originEl) {
                                     // 重新计算模型缩放和位置（修复在隐藏标签中加载导致的0尺寸问题）
                                     if (live2dPreviewManager.currentModel) {
                                         live2dPreviewManager.applyModelSettings(live2dPreviewManager.currentModel, {});
-                                        if (live2dPreviewManager.app && live2dPreviewManager.app.renderer) {
-                                            live2dPreviewManager.app.renderer.render(live2dPreviewManager.app.stage);
+                                        if (live2dPreviewManager.pixi_app && live2dPreviewManager.pixi_app.renderer) {
+                                            live2dPreviewManager.pixi_app.renderer.render(live2dPreviewManager.pixi_app.stage);
                                         }
                                     }
                                 }
                             }
-                            // VRM resize
-                            const vrmContainer = document.getElementById('vrm-preview-container');
-                            if (vrmContainer && workshopVrmManager && workshopVrmManager.renderer) {
-                                workshopVrmManager.renderer.setSize(vrmContainer.clientWidth, vrmContainer.clientHeight);
-                            }
-                            // MMD resize
-                            const mmdContainer = document.getElementById('mmd-preview-container');
-                            if (mmdContainer && workshopMmdManager && workshopMmdManager.renderer) {
-                                workshopMmdManager.renderer.setSize(mmdContainer.clientWidth, mmdContainer.clientHeight);
-                            }
+                            // VRM / MMD resize：同步 renderer、camera 和 OutlineEffect，避免只改 canvas 尺寸导致 3D 预览横向变形。
+                            syncWorkshop3DPreviewSize(workshopVrmManager, 'vrm-preview-canvas');
+                            syncWorkshop3DPreviewSize(workshopMmdManager, 'mmd-preview-canvas');
                         });
                     }
 
@@ -4065,14 +4130,18 @@ function openCatgirlPanel(card, originEl) {
             setTimeout(_resizeAllPanelTextareas, 500);
 
             // 延迟初始化 Steam 标签页内容（等待面板展开动画完成后）
+            // 用 overlay 持有 timer id，关闭时统一 clearTimeout，避免在 closing 期间重建预览
             if (!isNew) {
-                setTimeout(() => {
+                const steamInitTimer = setTimeout(() => {
+                    overlay._steamTabInitTimer = null;
+                    if (overlay.dataset.closing === 'true' || !overlay.isConnected) return;
                     const steamContainer = rightSection.querySelector('.panel-tab-steam');
                     if (steamContainer && !steamContainer.dataset.initialized) {
                         steamContainer.dataset.initialized = 'true';
                         buildSteamTabContent(name, rawData, card, steamContainer);
                     }
                 }, 500);
+                overlay._steamTabInitTimer = steamInitTimer;
             }
         }, 500);
     });
@@ -4084,15 +4153,32 @@ function openNewCatgirlPanel() {
 }
 window.openNewCatgirlPanel = openNewCatgirlPanel;
 
-function closeCatgirlPanel() {
+async function closeCatgirlPanel() {
     const overlay = document.querySelector('.catgirl-panel-overlay');
     if (!overlay) return;
+    if (overlay.dataset.closing === 'true') return;
+    overlay.dataset.closing = 'true';
 
-    // 清理模型预览资源（如果 Steam 标签页曾加载过）
+    // 取消所有预览加载：包括尚未完成的 Live2D/VRM/MMD 异步加载，避免清理后又把预览建回来
+    if (typeof cancelWorkshopPreviewLoads === 'function') {
+        cancelWorkshopPreviewLoads();
+    } else if (typeof cancelPendingLive2DPreviewLoads === 'function') {
+        cancelPendingLive2DPreviewLoads();
+    }
+
+    // 取消尚未触发的 Steam 标签页延迟初始化，避免在清理后又把预览建回来
+    if (overlay._steamTabInitTimer) {
+        clearTimeout(overlay._steamTabInitTimer);
+        overlay._steamTabInitTimer = null;
+    }
+
+    // 清理模型预览资源（如果 Steam 标签页曾加载过）；清理完成后再执行收起动画
     try {
-        if (typeof disposeWorkshopVrm === 'function') disposeWorkshopVrm();
-        if (typeof disposeWorkshopMmd === 'function') disposeWorkshopMmd();
-        if (typeof clearLive2DPreview === 'function') clearLive2DPreview();
+        const cleanupTasks = [];
+        if (typeof disposeWorkshopVrm === 'function') cleanupTasks.push(disposeWorkshopVrm());
+        if (typeof disposeWorkshopMmd === 'function') cleanupTasks.push(disposeWorkshopMmd());
+        if (typeof destroyLive2DPreviewContext === 'function') cleanupTasks.push(destroyLive2DPreviewContext());
+        await Promise.allSettled(cleanupTasks);
     } catch (e) {
         console.warn('[Panel] 清理预览资源时出错:', e);
     }
@@ -4103,14 +4189,12 @@ function closeCatgirlPanel() {
         wrapper.classList.add('phase-center');
     }
 
-    setTimeout(() => {
-        overlay.classList.remove('active');
-        if (wrapper) wrapper.classList.remove('phase-center');
-        setTimeout(() => {
-            overlay.remove();
-            _catgirlPanelOpen = false;
-        }, 400);
-    }, 300);
+    await new Promise(resolve => setTimeout(resolve, 300));
+    overlay.classList.remove('active');
+    if (wrapper) wrapper.classList.remove('phase-center');
+    await new Promise(resolve => setTimeout(resolve, 400));
+    overlay.remove();
+    _catgirlPanelOpen = false;
 }
 window.closeCatgirlPanel = closeCatgirlPanel;
 
@@ -5093,8 +5177,50 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
     }
 }
 
+async function ensureCanModifyCardsOutsideVoiceMode() {
+    // 检查语音状态 - 先获取权威当前角色，再检查语音模式
+    // cache: 'no-store' 防止浏览器/WebView 复用旧响应导致语音保护 fail-open
+    try {
+        const currentResp = await fetch('/api/characters/current_catgirl', { cache: 'no-store' });
+        if (!currentResp.ok) {
+            throw new Error(`current_catgirl request failed: ${currentResp.status}`);
+        }
+        const currentData = await currentResp.json();
+        const currentCatgirl = currentData.current_catgirl || '';
+
+        if (currentCatgirl) {
+            const voiceResp = await fetch(
+                `/api/characters/catgirl/${encodeURIComponent(currentCatgirl)}/voice_mode_status`,
+                { cache: 'no-store' }
+            );
+            if (!voiceResp.ok) {
+                throw new Error(`voice_mode_status request failed: ${voiceResp.status}`);
+            }
+            const voiceData = await voiceResp.json();
+            if (voiceData.is_voice_mode) {
+                const msg = window.t ? window.t('character.cannotModifyInVoiceMode') : '语音状态下无法切换或删除角色卡，请先关闭语音控制';
+                showMessage(msg, 'error', 6000);
+                await showAlertDialog(msg, { type: 'error' });
+                return { ok: false };
+            }
+        }
+        return { ok: true, currentCatgirl };
+    } catch (error) {
+        console.error('检查语音模式状态失败:', error);
+        const msg = window.t ? window.t('character.voiceModeCheckFailed') : '检查语音模式状态失败，请稍后重试';
+        showMessage(msg, 'error', 6000);
+        await showAlertDialog(msg, { type: 'error' });
+        return { ok: false };
+    }
+}
+
 // 切换猫娘
 async function workshopSwitchCatgirl(name) {
+    const guard = await ensureCanModifyCardsOutsideVoiceMode();
+    if (!guard.ok) {
+        return;
+    }
+
     try {
         const response = await fetch('/api/characters/current_catgirl', {
             method: 'POST',
@@ -5116,11 +5242,21 @@ async function workshopSwitchCatgirl(name) {
 }
 
 // 删除猫娘
+// 返回值约定：成功删除返回 true；任何早退/失败/用户取消都返回 false——给调用方据此决定是否关面板
 async function workshopDeleteCatgirl(name) {
-    // 检查是否为当前猫娘
-    if (name === window._workshopCurrentCatgirl) {
-        showMessage(window.t ? window.t('character.cannotDeleteCurrentCard') : '不能删除当前正在使用的角色卡', 'error');
-        return;
+    // 先做语音态预检并拿到权威当前角色名，避免别窗口切换后本地缓存失效
+    const guard = await ensureCanModifyCardsOutsideVoiceMode();
+    if (!guard.ok) {
+        return false;
+    }
+
+    // 用权威值校验“是否当前角色”——本地 window._workshopCurrentCatgirl 在跨窗口切换后可能过期
+    const authoritativeCurrent = guard.currentCatgirl || window._workshopCurrentCatgirl;
+    if (name === authoritativeCurrent) {
+        const msg = window.t ? window.t('character.cannotDeleteCurrentCard') : '不能删除当前正在使用的角色卡';
+        showMessage(msg, 'error', 6000);
+        await showAlertDialog(msg, { type: 'error' });
+        return false;
     }
 
     // 检查是否只剩一只猫娘
@@ -5131,7 +5267,7 @@ async function workshopDeleteCatgirl(name) {
             const catgirls = allData?.['猫娘'] || {};
             if (Object.keys(catgirls).length <= 1) {
                 showMessage(window.t ? window.t('character.onlyOneCatgirlLeft') : '只剩一只猫娘，无法删除！', 'error');
-                return;
+                return false;
             }
         }
     } catch (e) {
@@ -5159,15 +5295,28 @@ async function workshopDeleteCatgirl(name) {
         cancelText,
         danger: true,
     });
-    if (!confirmed) return;
+    if (!confirmed) return false;
 
     try {
-        await fetch('/api/characters/catgirl/' + encodeURIComponent(name), { method: 'DELETE' });
+        const resp = await fetch('/api/characters/catgirl/' + encodeURIComponent(name), { method: 'DELETE' });
+        if (!resp.ok) {
+            let serverMsg = '';
+            try {
+                const data = await resp.json();
+                serverMsg = data?.error || data?.message || '';
+            } catch (_) { /* 响应不是 JSON 就退回到默认文案 */ }
+            const msg = serverMsg || (window.t ? window.t('character.deleteError') : '删除猫娘时发生错误');
+            showMessage(msg, 'error', 6000);
+            await showAlertDialog(msg, { type: 'error' });
+            return false;
+        }
         // 重新加载角色卡列表
         await loadCharacterCards();
+        return true;
     } catch (error) {
         console.error('删除猫娘失败:', error);
         showMessage(window.t ? window.t('character.deleteError') : '删除猫娘时发生错误', 'error');
+        return false;
     }
 }
 
@@ -5357,7 +5506,7 @@ function buildSteamTabContent(name, rawData, card, container) {
                 </div>
             </div>
             <div id="live2d-preview-overlay" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 100; pointer-events: auto;"></div>
-            <button id="live2d-refresh-btn" style="position: absolute; top: 10px; right: 10px; z-index: 101; width: 30px; height: 30px; border: none; border-radius: 50%; background-color: transparent; color: white; cursor: pointer; display: flex; justify-content: center; align-items: center; font-size: 16px; pointer-events: auto;" title="${window.t ? window.t('steam.refreshLive2DPreview') : '刷新Live2D预览'}" onclick="refreshLive2DPreview()">↻</button>
+            <button id="live2d-refresh-btn" style="position: absolute; top: 10px; right: 10px; z-index: 101; width: 30px; height: 30px; border: none; border-radius: 50%; background-color: transparent; color: white; cursor: pointer; display: none; justify-content: center; align-items: center; font-size: 16px; pointer-events: auto;" title="${window.t ? window.t('steam.refreshLive2DPreview') : '刷新Live2D预览'}" onclick="refreshLive2DPreview()">↻</button>
         </div>`;
     live2dSection.appendChild(previewContainer);
 
@@ -5368,9 +5517,7 @@ function buildSteamTabContent(name, rawData, card, container) {
     controlsDiv.innerHTML = `
         <div style="display: flex; gap: 10px; margin-bottom: 10px; flex-wrap: wrap;">
             <div style="flex: 1; min-width: 150px;">
-                <select id="preview-motion-select" class="control-input" style="width: 100%;">
-                    <option value="" data-i18n="steam.selectMotion">${window.t ? window.t('steam.selectMotion') : '选择动作'}</option>
-                </select>
+                <select id="preview-motion-select" class="control-input" style="width: 100%;"></select>
                 <div style="font-size: 11px; color: #888; margin-top: 3px; text-align: center;" data-i18n="character.idleMotionHint">${window.t ? window.t('character.idleMotionHint') : '保存角色时，当前选中的动作将被设为待机动作'}</div>
             </div>
             <div class="btn-play-wrapper">
@@ -5381,9 +5528,7 @@ function buildSteamTabContent(name, rawData, card, container) {
         </div>
         <div style="display: flex; gap: 10px; flex-wrap: wrap;">
             <div style="flex: 1; min-width: 150px;">
-                <select id="preview-expression-select" class="control-input" style="width: 100%;">
-                    <option value="" data-i18n="steam.selectExpression">${window.t ? window.t('steam.selectExpression') : '选择表情'}</option>
-                </select>
+                <select id="preview-expression-select" class="control-input" style="width: 100%;"></select>
             </div>
             <div class="btn-play-wrapper">
                 <button id="preview-play-expression-btn" class="btn" disabled>
@@ -5392,6 +5537,7 @@ function buildSteamTabContent(name, rawData, card, container) {
             </div>
         </div>`;
     live2dSection.appendChild(controlsDiv);
+    ensurePreviewPlaybackBindings();
     topRow.appendChild(live2dSection);
     layout.appendChild(topRow);
 
@@ -5514,12 +5660,12 @@ function buildSteamTabContent(name, rawData, card, container) {
 
     const tagsWrapper = document.createElement('div');
     tagsWrapper.id = 'character-card-tags-wrapper';
-    tagsWrapper.style.cssText = 'display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 15px; border: 2px solid #b3e5fc; border-radius: 50px; background-color: #fff; min-height: 40px; box-sizing: border-box; margin-top: 5px;';
     const tagsContainer = document.createElement('div');
     tagsContainer.className = 'tags-container';
     tagsContainer.id = 'character-card-tags-container';
     tagsWrapper.appendChild(tagsContainer);
     tagsControlGroup.appendChild(tagsWrapper);
+    ensureCharacterCardTagScrollControls();
     tagsArea.appendChild(tagsControlGroup);
     tagsButtonsSection.appendChild(tagsArea);
 
@@ -5785,6 +5931,7 @@ function expandCharacterCardSection(card) {
                 tagsContainer.appendChild(tagElement);
             });
         }
+        requestAnimationFrame(updateCharacterCardTagScrollControls);
     }
 
     // 显示角色卡区域
@@ -6207,6 +6354,7 @@ async function performUpload(data) {
                     const itemTitle = document.getElementById('item-title');
                     const itemDescription = document.getElementById('item-description');
                     const contentFolder = document.getElementById('content-folder');
+                    const previewImageInput = document.getElementById('preview-image');
                     const tagsContainer = document.getElementById('tags-container');
 
 
@@ -6221,6 +6369,11 @@ async function performUpload(data) {
                     }
                     // 使用临时目录路径（隐藏字段）
                     if (contentFolder) contentFolder.value = result.temp_folder;
+                    // 若后端成功从角色卡卡面复制出预览图，则默认带入；没有卡面时不改动用户当前预览图输入。
+                    if (previewImageInput && result.preview_image) {
+                        previewImageInput.value = result.preview_image;
+                        previewImageInput.classList.remove('error');
+                    }
                     resetWorkshopVoiceReferenceFields(cardName);
 
                     // 添加角色卡标签到上传标签（允许用户编辑）
@@ -6376,6 +6529,75 @@ async function scanModels() {
 
 // 全局变量：当前选择的模型信息
 let selectedModelInfo = null;
+
+function setLive2DPreviewRefreshButtonState(visible, enabled = visible) {
+    const refreshButton = document.getElementById('live2d-refresh-btn');
+    if (!refreshButton) return;
+
+    refreshButton.style.display = visible ? 'flex' : 'none';
+    refreshButton.disabled = !enabled;
+    refreshButton.style.cursor = enabled ? 'pointer' : 'default';
+    refreshButton.setAttribute('aria-hidden', visible ? 'false' : 'true');
+}
+
+function fitLive2DPreviewModelToContainer(model) {
+    if (!live2dPreviewManager || !live2dPreviewManager.pixi_app || !model) return;
+
+    const renderer = live2dPreviewManager.pixi_app.renderer;
+    const screenWidth = Number(renderer?.screen?.width) || 0;
+    const screenHeight = Number(renderer?.screen?.height) || 0;
+    if (screenWidth <= 0 || screenHeight <= 0) return;
+
+    model.anchor.set(0.5, 0.5);
+    if (!Number.isFinite(model.scale?.x) || model.scale.x <= 0 || !Number.isFinite(model.scale?.y) || model.scale.y <= 0) {
+        model.scale.set(0.18);
+    }
+
+    model.x = screenWidth * 0.5;
+    model.y = screenHeight * 0.5;
+
+    // Live2DManager 在 addChild 之前会先调用 applyModelSettings。
+    // 这时直接依赖 getBounds() 做精确 fitting 并不稳定，先做保守居中，
+    // 等模型真正挂到 stage 上后再用 bounds 做二次校正。
+    if (!model.parent || typeof model.getBounds !== 'function') return;
+
+    let bounds = null;
+    try {
+        bounds = model.getBounds();
+    } catch (error) {
+        console.warn('[CharacterCard] 获取 Live2D 预览 bounds 失败:', error);
+        return;
+    }
+
+    const initialWidth = Number(bounds?.width) || 0;
+    const initialHeight = Number(bounds?.height) || 0;
+    if (initialWidth <= 1 || initialHeight <= 1) return;
+
+    const padding = 30;
+    const availableWidth = Math.max(80, screenWidth - padding * 2);
+    const availableHeight = Math.max(80, screenHeight - padding * 2);
+    const scaleRatio = Math.min(availableWidth / initialWidth, availableHeight / initialHeight);
+
+    if (Number.isFinite(scaleRatio) && scaleRatio > 0) {
+        const nextScaleX = Math.max(0.02, Math.min(model.scale.x * scaleRatio, 2.5));
+        const nextScaleY = Math.max(0.02, Math.min(model.scale.y * scaleRatio, 2.5));
+        model.scale.set(nextScaleX, nextScaleY);
+    }
+
+    try {
+        const fittedBounds = model.getBounds();
+        const fittedWidth = Number(fittedBounds?.width) || 0;
+        const fittedHeight = Number(fittedBounds?.height) || 0;
+        if (fittedWidth > 1 && fittedHeight > 1) {
+            const currentCenterX = (Number(fittedBounds.x) || 0) + fittedWidth * 0.5;
+            const currentCenterY = (Number(fittedBounds.y) || 0) + fittedHeight * 0.5;
+            model.x += (screenWidth * 0.5) - currentCenterX;
+            model.y += (screenHeight * 0.5) - currentCenterY;
+        }
+    } catch (error) {
+        console.warn('[CharacterCard] 校正 Live2D 预览位置失败:', error);
+    }
+}
 
 // 初始化模型选择功能
 // 音色相关函数（功能暂未实现）
@@ -6604,6 +6826,37 @@ let _workshopVrmModulesLoaded = false;
 let _workshopMmdModulesLoaded = false;
 let _workshopVrmModulesLoading = false;
 let _workshopMmdModulesLoading = false;
+let _workshopPreviewGeneration = 0;
+
+function cancelWorkshopPreviewLoads() {
+    _workshopPreviewGeneration += 1;
+    cancelPendingLive2DPreviewLoads();
+}
+
+function isWorkshopPreviewLoadCurrent(generation) {
+    return generation === _workshopPreviewGeneration && !!document.querySelector('.catgirl-panel-overlay');
+}
+
+async function disposeStaleWorkshopPreviewManager(manager, type) {
+    if (!manager) return;
+    try {
+        if (type === 'mmd' && typeof manager.stopAnimation === 'function') {
+            manager.stopAnimation();
+        }
+        if (typeof manager.dispose === 'function') {
+            await manager.dispose();
+        }
+    } catch (e) {
+        console.warn(`[Workshop ${String(type || '').toUpperCase()}] 清理过期预览实例失败:`, e);
+    } finally {
+        if (type === 'vrm' && workshopVrmManager === manager) {
+            workshopVrmManager = null;
+        }
+        if (type === 'mmd' && workshopMmdManager === manager) {
+            workshopMmdManager = null;
+        }
+    }
+}
 
 // 按需加载 VRM 模块
 async function ensureVrmModulesLoaded() {
@@ -6754,16 +7007,58 @@ async function disposeWorkshopMmd() {
     hideAll3DPreviews();
 }
 
+function syncWorkshop3DPreviewSize(manager, canvasId) {
+    if (!manager || !manager.renderer) return false;
+
+    const previewContent = document.getElementById('live2d-preview-content');
+    const canvas = canvasId ? document.getElementById(canvasId) : (manager.renderer.domElement || null);
+    const rect = previewContent ? previewContent.getBoundingClientRect() : null;
+    const w = Math.max(1, Math.round(rect?.width || previewContent?.clientWidth || canvas?.clientWidth || 0));
+    const h = Math.max(1, Math.round(rect?.height || previewContent?.clientHeight || canvas?.clientHeight || 0));
+    if (w <= 1 || h <= 1) return false;
+
+    if (canvas) {
+        canvas.style.width = '100%';
+        canvas.style.height = '100%';
+        canvas.width = Math.round(w * (window.devicePixelRatio || 1));
+        canvas.height = Math.round(h * (window.devicePixelRatio || 1));
+    }
+
+    manager.renderer.setSize(w, h, false);
+    if (manager.camera) {
+        manager.camera.aspect = w / h;
+        manager.camera.updateProjectionMatrix();
+    }
+    if (manager.effect && typeof manager.effect.setSize === 'function') {
+        manager.effect.setSize(w, h);
+    }
+    return true;
+}
+
+function scheduleWorkshop3DPreviewResize(manager, canvasId) {
+    requestAnimationFrame(() => {
+        syncWorkshop3DPreviewSize(manager, canvasId);
+        requestAnimationFrame(() => syncWorkshop3DPreviewSize(manager, canvasId));
+    });
+}
+
 // 加载 VRM 模型预览
 async function loadVrmPreview(modelPath, rawData) {
+    const previewGeneration = ++_workshopPreviewGeneration;
+    let localVrmManager = null;
     try {
+        cancelPendingLive2DPreviewLoads();
+        selectedModelInfo = null;
+        setLive2DPreviewRefreshButtonState(false, false);
+
         // 先清理之前的 3D 预览
         await disposeWorkshopVrm();
         await disposeWorkshopMmd();
+        if (!isWorkshopPreviewLoadCurrent(previewGeneration)) return;
 
         // 清理 Live2D 预览（如果有）
         if (live2dPreviewManager && live2dPreviewManager.currentModel) {
-            await live2dPreviewManager.removeModel(true);
+            await live2dPreviewManager.removeModel({ skipCloseWindows: true });
             currentPreviewModel = null;
         }
 
@@ -6783,6 +7078,7 @@ async function loadVrmPreview(modelPath, rawData) {
 
         // 确保 VRM 模块已加载
         const loaded = await ensureVrmModulesLoaded();
+        if (!isWorkshopPreviewLoadCurrent(previewGeneration)) return;
         if (!loaded) {
             console.error('[Workshop VRM] 模块加载失败');
             showMessage(window.t ? window.t('steam.vrmModuleLoadFailed') || 'VRM 模块加载失败' : 'VRM 模块加载失败', 'error');
@@ -6794,13 +7090,18 @@ async function loadVrmPreview(modelPath, rawData) {
         if (vrmContainer) vrmContainer.style.display = 'block';
 
         // 创建 VRM 管理器实例
-        workshopVrmManager = new window.VRMManager();
+        localVrmManager = new window.VRMManager();
+        workshopVrmManager = localVrmManager;
 
         // 获取光照配置
         const lighting = rawData?.['lighting'] || null;
 
         // 初始化 Three.js 场景
-        await workshopVrmManager.initThreeJS('vrm-preview-canvas', 'vrm-preview-container', lighting);
+        await localVrmManager.initThreeJS('vrm-preview-canvas', 'vrm-preview-container', lighting);
+        if (!isWorkshopPreviewLoadCurrent(previewGeneration) || workshopVrmManager !== localVrmManager) {
+            await disposeStaleWorkshopPreviewManager(localVrmManager, 'vrm');
+            return;
+        }
 
         // 修正容器样式：VRMCore.init 会设置 position:fixed 覆盖全屏，
         // 这里覆盖为 absolute 使其嵌入预览区域内
@@ -6814,19 +7115,9 @@ async function loadVrmPreview(modelPath, rawData) {
             vrmContainerEl.style.zIndex = '10';
         }
 
-        // 按预览区域实际尺寸重设渲染器大小
+        // 按预览区域实际尺寸同步 renderer / camera / effect，避免 CSS 尺寸和 WebGL 后备尺寸不一致。
         const previewContent = document.getElementById('live2d-preview-content');
-        if (previewContent && workshopVrmManager.renderer) {
-            const w = previewContent.clientWidth;
-            const h = previewContent.clientHeight;
-            if (w > 0 && h > 0) {
-                workshopVrmManager.renderer.setSize(w, h);
-                if (workshopVrmManager.camera) {
-                    workshopVrmManager.camera.aspect = w / h;
-                    workshopVrmManager.camera.updateProjectionMatrix();
-                }
-            }
-        }
+        syncWorkshop3DPreviewSize(localVrmManager, 'vrm-preview-canvas');
 
         // 允许 3D 交互：临时启用预览区域的 pointer-events
         if (previewContent) previewContent.style.pointerEvents = 'auto';
@@ -6837,33 +7128,47 @@ async function loadVrmPreview(modelPath, rawData) {
         const idleAnimation = rawData?.['idleAnimation'] || '/static/vrm/animation/wait03.vrma';
 
         // 加载模型
-        const result = await workshopVrmManager.loadModel(modelPath, {
+        const result = await localVrmManager.loadModel(modelPath, {
             canvasId: 'vrm-preview-canvas',
             containerId: 'vrm-preview-container',
             addShadow: true,
             idleAnimation: idleAnimation
         });
+        if (!isWorkshopPreviewLoadCurrent(previewGeneration) || workshopVrmManager !== localVrmManager) {
+            await disposeStaleWorkshopPreviewManager(localVrmManager, 'vrm');
+            return;
+        }
 
         if (result) {
+            scheduleWorkshop3DPreviewResize(localVrmManager, 'vrm-preview-canvas');
             console.log('[Workshop VRM] 模型预览加载成功');
             showMessage(window.t ? window.t('steam.vrmPreviewLoaded') || 'VRM 模型预览已加载' : 'VRM 模型预览已加载', 'success');
         }
     } catch (error) {
         console.error('[Workshop VRM] 加载预览失败:', error);
+        await disposeStaleWorkshopPreviewManager(localVrmManager, 'vrm');
+        currentPreviewModel = null;
         showMessage(window.t ? window.t('steam.vrmPreviewFailed') || 'VRM 模型预览加载失败' : 'VRM 模型预览加载失败', 'error');
     }
 }
 
 // 加载 MMD 模型预览
 async function loadMmdPreview(modelPath, rawData) {
+    const previewGeneration = ++_workshopPreviewGeneration;
+    let localMmdManager = null;
     try {
+        cancelPendingLive2DPreviewLoads();
+        selectedModelInfo = null;
+        setLive2DPreviewRefreshButtonState(false, false);
+
         // 先清理之前的 3D 预览
         await disposeWorkshopVrm();
         await disposeWorkshopMmd();
+        if (!isWorkshopPreviewLoadCurrent(previewGeneration)) return;
 
         // 清理 Live2D 预览（如果有）
         if (live2dPreviewManager && live2dPreviewManager.currentModel) {
-            await live2dPreviewManager.removeModel(true);
+            await live2dPreviewManager.removeModel({ skipCloseWindows: true });
             currentPreviewModel = null;
         }
 
@@ -6883,6 +7188,7 @@ async function loadMmdPreview(modelPath, rawData) {
 
         // 确保 MMD 模块已加载
         const loaded = await ensureMmdModulesLoaded();
+        if (!isWorkshopPreviewLoadCurrent(previewGeneration)) return;
         if (!loaded) {
             console.error('[Workshop MMD] 模块加载失败');
             showMessage(window.t ? window.t('steam.mmdModuleLoadFailed') || 'MMD 模块加载失败' : 'MMD 模块加载失败', 'error');
@@ -6894,10 +7200,15 @@ async function loadMmdPreview(modelPath, rawData) {
         if (mmdContainer) mmdContainer.style.display = 'block';
 
         // 创建 MMD 管理器实例
-        workshopMmdManager = new window.MMDManager();
+        localMmdManager = new window.MMDManager();
+        workshopMmdManager = localMmdManager;
 
         // 初始化
-        await workshopMmdManager.init('mmd-preview-canvas', 'mmd-preview-container');
+        await localMmdManager.init('mmd-preview-canvas', 'mmd-preview-container');
+        if (!isWorkshopPreviewLoadCurrent(previewGeneration) || workshopMmdManager !== localMmdManager) {
+            await disposeStaleWorkshopPreviewManager(localMmdManager, 'mmd');
+            return;
+        }
 
         // 修正容器样式：MMDCore.init 会设置 position:fixed 覆盖全屏，
         // 这里覆盖为 absolute 使其嵌入预览区域内
@@ -6911,19 +7222,9 @@ async function loadMmdPreview(modelPath, rawData) {
             mmdContainerEl.style.zIndex = '10';
         }
 
-        // 按预览区域实际尺寸重设渲染器大小
+        // 按预览区域实际尺寸同步 renderer / camera / effect，避免 CSS 尺寸和 WebGL 后备尺寸不一致。
         const previewContent = document.getElementById('live2d-preview-content');
-        if (previewContent && workshopMmdManager.renderer) {
-            const w = previewContent.clientWidth;
-            const h = previewContent.clientHeight;
-            if (w > 0 && h > 0) {
-                workshopMmdManager.renderer.setSize(w, h);
-                if (workshopMmdManager.camera) {
-                    workshopMmdManager.camera.aspect = w / h;
-                    workshopMmdManager.camera.updateProjectionMatrix();
-                }
-            }
-        }
+        syncWorkshop3DPreviewSize(localMmdManager, 'mmd-preview-canvas');
 
         // 允许 3D 交互：临时启用预览区域的 pointer-events
         if (previewContent) previewContent.style.pointerEvents = 'auto';
@@ -6931,15 +7232,24 @@ async function loadMmdPreview(modelPath, rawData) {
         if (overlay) overlay.style.display = 'none';
 
         // 加载模型
-        const modelInfo = await workshopMmdManager.loadModel(modelPath);
+        const modelInfo = await localMmdManager.loadModel(modelPath);
+        if (!isWorkshopPreviewLoadCurrent(previewGeneration) || workshopMmdManager !== localMmdManager) {
+            await disposeStaleWorkshopPreviewManager(localMmdManager, 'mmd');
+            return;
+        }
 
         if (modelInfo) {
+            scheduleWorkshop3DPreviewResize(localMmdManager, 'mmd-preview-canvas');
             // 如果有 idle 动画，尝试加载
             const idleAnimation = rawData?.['mmd_idle_animation'] || '';
-            if (idleAnimation && typeof workshopMmdManager.loadAnimation === 'function') {
+            if (idleAnimation && typeof localMmdManager.loadAnimation === 'function') {
                 try {
-                    await workshopMmdManager.loadAnimation(idleAnimation);
-                    workshopMmdManager.playAnimation();
+                    await localMmdManager.loadAnimation(idleAnimation);
+                    if (!isWorkshopPreviewLoadCurrent(previewGeneration) || workshopMmdManager !== localMmdManager) {
+                        await disposeStaleWorkshopPreviewManager(localMmdManager, 'mmd');
+                        return;
+                    }
+                    localMmdManager.playAnimation();
                 } catch (e) {
                     console.warn('[Workshop MMD] idle 动画加载失败:', e);
                 }
@@ -6949,12 +7259,17 @@ async function loadMmdPreview(modelPath, rawData) {
         }
     } catch (error) {
         console.error('[Workshop MMD] 加载预览失败:', error);
+        await disposeStaleWorkshopPreviewManager(localMmdManager, 'mmd');
+        currentPreviewModel = null;
         showMessage(window.t ? window.t('steam.mmdPreviewFailed') || 'MMD 模型预览加载失败' : 'MMD 模型预览加载失败', 'error');
     }
 }
 
 // 清除所有模型预览（Live2D + VRM + MMD）
 async function clearAllModelPreviews(showModelNotSetMessage = false) {
+    cancelWorkshopPreviewLoads();
+    selectedModelInfo = null;
+    setLive2DPreviewRefreshButtonState(false, false);
     await disposeWorkshopVrm();
     await disposeWorkshopMmd();
     hideAll3DPreviews();
@@ -6980,11 +7295,16 @@ async function clearAllModelPreviews(showModelNotSetMessage = false) {
 // 清除Live2D预览并显示占位符
 async function clearLive2DPreview(showModelNotSetMessage = false) {
     try {
+        cancelPendingLive2DPreviewLoads();
+        selectedModelInfo = null;
+        window._previewMotionFiles = [];
+        setLive2DPreviewRefreshButtonState(false, false);
+
         // 如果有模型加载，先移除它
-        if (live2dPreviewManager && live2dPreviewManager.currentModel) {
-            await live2dPreviewManager.removeModel(true);
-            currentPreviewModel = null;
+        if (live2dPreviewManager && typeof live2dPreviewManager.removeModel === 'function') {
+            await live2dPreviewManager.removeModel({ skipCloseWindows: true });
         }
+        currentPreviewModel = null;
 
         // 隐藏canvas，显示占位符
         const canvas = document.getElementById('live2d-preview-canvas');
@@ -7026,12 +7346,103 @@ async function clearLive2DPreview(showModelNotSetMessage = false) {
     }
 }
 
+async function destroyLive2DPreviewContext() {
+    const manager = live2dPreviewManager;
+    cancelPendingLive2DPreviewLoads();
+    selectedModelInfo = null;
+    currentPreviewModel = null;
+    window._previewMotionFiles = [];
+    setLive2DPreviewRefreshButtonState(false, false);
+
+    if (!manager) {
+        return;
+    }
+
+    if (typeof manager._activeLoadToken === 'number') {
+        manager._activeLoadToken += 1;
+    }
+
+    try {
+        await clearLive2DPreview();
+    } finally {
+        manager._isLoadingModel = false;
+        manager._modelLoadState = 'idle';
+        manager._isModelReadyForInteraction = false;
+
+        if (manager._canvasRevealTimer) {
+            clearTimeout(manager._canvasRevealTimer);
+            manager._canvasRevealTimer = null;
+        }
+
+        try {
+            if (manager.pixi_app && manager.pixi_app.view && manager.pixi_app.view.style) {
+                manager.pixi_app.view.style.transition = '';
+                manager.pixi_app.view.style.opacity = '';
+            }
+        } catch (_) {}
+
+        if (manager._previewResizeHandlerBound && manager._previewResizeHandler) {
+            window.removeEventListener('resize', manager._previewResizeHandler);
+        }
+        manager._previewResizeHandlerBound = false;
+        manager._previewResizeHandler = null;
+
+        if (manager._screenChangeHandler) {
+            window.removeEventListener('resize', manager._screenChangeHandler);
+            manager._screenChangeHandler = null;
+        }
+        if (manager._displayChangeHandler) {
+            window.removeEventListener('electron-display-changed', manager._displayChangeHandler);
+            manager._displayChangeHandler = null;
+        }
+
+        if (manager.pixi_app && typeof manager.pixi_app.destroy === 'function') {
+            try {
+                manager.pixi_app.destroy(true);
+            } catch (destroyError) {
+                console.warn('[CharacterCard] 销毁 Live2D 预览 PIXI 实例失败:', destroyError);
+            }
+        }
+
+        manager.pixi_app = null;
+        manager.currentModel = null;
+        manager.isInitialized = false;
+        manager._lastPIXIContext = { canvasId: null, containerId: null };
+        live2dPreviewManager = null;
+    }
+}
+
 // 通过模型名称加载Live2D模型
 async function loadLive2DModelByName(modelName, modelInfo = null) {
+    const loadGeneration = beginLive2DPreviewLoadGeneration();
+    let loadedModel = null;
+    setLive2DPreviewRefreshButtonState(false, false);
+    const ensureCurrentLoad = async () => {
+        if (isCurrentLive2DPreviewLoad(loadGeneration)) {
+            return;
+        }
+
+        if (loadedModel && live2dPreviewManager?.currentModel === loadedModel) {
+            try {
+                await live2dPreviewManager.removeModel({ skipCloseWindows: true });
+            } catch (cleanupError) {
+                console.warn('[CharacterCard] 清理过期 Live2D 预览失败:', cleanupError);
+            }
+        }
+
+        const staleError = new Error('Stale Live2D preview load');
+        staleError.code = 'STALE_LIVE2D_PREVIEW_LOAD';
+        throw staleError;
+    };
+
     try {
-        // 确保live2dPreviewManager已初始化
+        // 每次加载前都重新校验预览上下文。
+        // Steam 详情面板会动态销毁并重建 canvas，仅凭 manager 是否存在
+        // 无法判断它是否还绑定在当前这次打开的预览节点上。
+        await initLive2DPreview();
+        await ensureCurrentLoad();
         if (!live2dPreviewManager || !live2dPreviewManager.pixi_app) {
-            await initLive2DPreview();
+            throw new Error('Live2D preview is not ready');
         }
 
         // 强制resize PIXI应用，确保canvas尺寸正确
@@ -7045,10 +7456,11 @@ async function loadLive2DModelByName(modelName, modelInfo = null) {
 
         // 如果已经有模型加载，先移除它
         if (live2dPreviewManager && live2dPreviewManager.currentModel) {
-            await live2dPreviewManager.removeModel(true);
+            await live2dPreviewManager.removeModel({ skipCloseWindows: true });
             // 重置当前预览模型引用
             currentPreviewModel = null;
         }
+        await ensureCurrentLoad();
 
         // 如果没有传入modelInfo，则从API获取模型列表
         if (!modelInfo) {
@@ -7065,6 +7477,7 @@ async function loadLive2DModelByName(modelName, modelInfo = null) {
                 throw new Error(window.t('steam.modelNotFound', '模型未找到'));
             }
         }
+        await ensureCurrentLoad();
 
         // 确保获取正确的steam_id，优先使用modelInfo中的item_id
         let finalSteamId = modelInfo.item_id;
@@ -7085,6 +7498,7 @@ async function loadLive2DModelByName(modelName, modelInfo = null) {
         }
         const filesData = await filesRes.json();
         if (!filesData.success) throw new Error(window.t('live2d.modelFilesFetchFailed', '无法获取模型文件列表'));
+        await ensureCurrentLoad();
         window._previewMotionFiles = filesData.motion_files || [];
 
         // 2. Fetch model config
@@ -7106,6 +7520,7 @@ async function loadLive2DModelByName(modelName, modelInfo = null) {
         const modelConfigRes = await fetch(modelJsonUrl);
         if (!modelConfigRes.ok) throw new Error((window.t && window.t('live2d.modelConfigFetchFailed', { status: modelConfigRes.statusText })) || `无法获取模型配置: ${modelConfigRes.statusText}`);
         const modelConfig = await modelConfigRes.json();
+        await ensureCurrentLoad();
 
         // 3. Add URL context for the loader
         modelConfig.url = modelJsonUrl;
@@ -7139,34 +7554,49 @@ async function loadLive2DModelByName(modelName, modelInfo = null) {
             wheelEnabled: true,
             skipCloseWindows: true  // 创意工坊页面不需要关闭其他窗口
         });
+        loadedModel = live2dPreviewManager.currentModel || null;
+        await ensureCurrentLoad();
 
         // 设置当前预览模型引用，用于播放动作和表情
-        currentPreviewModel = live2dPreviewManager.currentModel;
+        currentPreviewModel = loadedModel;
 
         // 清除模型路径，防止拖动预览时自动保存到preference
         live2dPreviewManager._lastLoadedModelPath = null;
 
         // 更新预览控件
         await updatePreviewControlsAfterModelLoad(filesData);
+        await ensureCurrentLoad();
 
         // 模型加载完成后，确保它在容器中正确显示
         setTimeout(() => {
-            if (live2dPreviewManager && live2dPreviewManager.currentModel) {
-                live2dPreviewManager.applyModelSettings(live2dPreviewManager.currentModel, {});
+            if (!isCurrentLive2DPreviewLoad(loadGeneration)) {
+                return;
+            }
+
+            const canvas = document.getElementById('live2d-preview-canvas');
+            if (live2dPreviewManager && live2dPreviewManager.currentModel && canvas) {
+                fitLive2DPreviewModelToContainer(live2dPreviewManager.currentModel);
                 // 确保canvas正确显示，占位符被隐藏
-                document.getElementById('live2d-preview-canvas').style.display = '';
-                document.querySelector('.preview-placeholder').style.display = 'none';
+                canvas.style.display = '';
+                const placeholder = document.querySelector('#live2d-preview-content .preview-placeholder');
+                if (placeholder) placeholder.style.display = 'none';
                 // 强制重绘canvas
-                if (live2dPreviewManager.app && live2dPreviewManager.app.renderer) {
-                    live2dPreviewManager.app.renderer.render(live2dPreviewManager.app.stage);
+                if (live2dPreviewManager.pixi_app && live2dPreviewManager.pixi_app.renderer) {
+                    live2dPreviewManager.pixi_app.renderer.render(live2dPreviewManager.pixi_app.stage);
                 }
             }
         }, 100);
 
         // 更新全局selectedModelInfo变量
         selectedModelInfo = modelInfo;
+        setLive2DPreviewRefreshButtonState(true, true);
         showMessage((window.t && window.t('live2d.modelLoadSuccess', { model: modelName })) || `模型 ${modelName} 加载成功`, 'success');
     } catch (error) {
+        if (error && error.code === 'STALE_LIVE2D_PREVIEW_LOAD') {
+            return;
+        }
+
+        setLive2DPreviewRefreshButtonState(false, false);
         console.error('Failed to load Live2D model by name:', error);
         showMessage((window.t && window.t('live2d.modelLoadFailed', { model: modelName })) || `加载模型 ${modelName} 失败`, 'error');
 
@@ -7229,16 +7659,53 @@ async function updatePreviewControlsAfterModelLoad(filesData) {
         console.error('Failed to update preview controls:', error);
     }
 
-    // 恢复已保存的待机动作（如果存在）
+    // 恢复已保存的待机动作（如果存在）。显式保留空值，避免“无动作”被浏览器默认选中第一个 option。
     const rawData = window._currentCardRawData || {};
     const savedIdleAnimation = rawData._reserved?.avatar?.live2d?.idle_animation
         || rawData.avatar?.live2d?.idle_animation
-        || rawData.live2d_idle_animation;
-    if (savedIdleAnimation && motionSelect) {
-        const motionFiles = window._previewMotionFiles || [];
-        if (motionFiles.includes(savedIdleAnimation)) {
-            motionSelect.value = savedIdleAnimation;
+        || rawData.live2d_idle_animation
+        || '';
+    const savedIdleAnimationBaseName = savedIdleAnimation
+        ? String(savedIdleAnimation).split('/').pop()
+        : '';
+    const availableMotionFiles = window._previewMotionFiles || [];
+    let initialMotionToPlay = '';
+    if (motionSelect) {
+        motionSelect.value = '';
+    }
+    if (savedIdleAnimationBaseName && motionSelect) {
+        const matchingSavedMotion = availableMotionFiles.find(file => {
+            const normalizedFile = String(file || '');
+            return normalizedFile === savedIdleAnimation
+                || normalizedFile.split('/').pop() === savedIdleAnimationBaseName;
+        });
+        if (matchingSavedMotion) {
+            motionSelect.value = matchingSavedMotion;
+            initialMotionToPlay = matchingSavedMotion;
         }
+    }
+
+    const previewModelToAutoplay = currentPreviewModel;
+
+    if (live2dPreviewManager) {
+        live2dPreviewManager._userIdleAnimations = initialMotionToPlay
+            ? [String(initialMotionToPlay).split('/').pop()]
+            : [];
+    }
+
+    const scheduledMotionSelection = motionSelect ? motionSelect.value : '';
+
+    if (initialMotionToPlay && previewModelToAutoplay) {
+        requestAnimationFrame(() => {
+            if (
+                currentPreviewModel === previewModelToAutoplay
+                && live2dPreviewManager?.currentModel === previewModelToAutoplay
+                && motionSelect
+                && motionSelect.value === scheduledMotionSelection
+            ) {
+                handlePreviewMotionPlay();
+            }
+        });
     }
 }
 
@@ -7316,7 +7783,6 @@ function updateCardPreview() {
 document.addEventListener('DOMContentLoaded', function () {
     // 只有 description 输入框仍然存在，为其添加事件监听器
     const descriptionInput = document.getElementById('character-card-description');
-    const characterCardTagsWrapper = document.getElementById('character-card-tags-wrapper');
 
     // 页面加载完成后自动加载音色列表
     loadVoices();
@@ -7325,17 +7791,8 @@ document.addEventListener('DOMContentLoaded', function () {
         descriptionInput.addEventListener('input', updateCardPreview);
     }
 
-    if (characterCardTagsWrapper) {
-        characterCardTagsWrapper.addEventListener('scroll', updateCharacterCardTagScrollControls, { passive: true });
-        if (typeof ResizeObserver !== 'undefined') {
-            const tagsResizeObserver = new ResizeObserver(() => {
-                updateCharacterCardTagScrollControls();
-            });
-            tagsResizeObserver.observe(characterCardTagsWrapper);
-        }
-    }
-
     window.addEventListener('resize', updateCharacterCardTagScrollControls);
+    ensureCharacterCardTagScrollControls();
     window.setTimeout(updateCharacterCardTagScrollControls, 0);
 });
 
@@ -7358,6 +7815,20 @@ function clearTags(type) {
 // Live2D预览相关功能
 let live2dPreviewManager = null;
 let currentPreviewModel = null;
+let live2dPreviewLoadGeneration = 0;
+
+function beginLive2DPreviewLoadGeneration() {
+    live2dPreviewLoadGeneration += 1;
+    return live2dPreviewLoadGeneration;
+}
+
+function cancelPendingLive2DPreviewLoads() {
+    live2dPreviewLoadGeneration += 1;
+}
+
+function isCurrentLive2DPreviewLoad(loadGeneration) {
+    return loadGeneration === live2dPreviewLoadGeneration;
+}
 
 // 初始化Live2D预览环境
 async function initLive2DPreview() {
@@ -7367,84 +7838,79 @@ async function initLive2DPreview() {
             throw new Error('Live2DManager class not found');
         }
 
-        // 避免重复初始化
-        if (live2dPreviewManager && live2dPreviewManager.pixi_app) {
-            return; // 已经正常初始化，不需要重新初始化
+        const canvasId = 'live2d-preview-canvas';
+        const containerId = 'live2d-preview-content';
+        const canvas = document.getElementById(canvasId);
+        const container = document.getElementById(containerId);
+
+        // Steam 预览区域是动态创建的；在 DOM 尚未生成时静默跳过，
+        // 避免页面初始加载阶段提前报错并污染后续初始化状态。
+        if (!canvas || !container) {
+            return;
         }
 
-        // 清理可能存在的残缺实例
-        live2dPreviewManager = null;
+        if (!live2dPreviewManager) {
+            live2dPreviewManager = new Live2DManager();
+        }
 
-        // 创建一个新的Live2DManager实例
-        live2dPreviewManager = new Live2DManager();
-        await live2dPreviewManager.initPIXI('live2d-preview-canvas', 'live2d-preview-content');
+        const existingView = live2dPreviewManager.pixi_app?.view || null;
+        const needsPixiRebuild = !!(
+            existingView && (
+                existingView !== canvas ||
+                !existingView.isConnected
+            )
+        );
+
+        if (needsPixiRebuild && typeof live2dPreviewManager.rebuildPIXI === 'function') {
+            await live2dPreviewManager.rebuildPIXI(canvasId, containerId);
+        } else if (typeof live2dPreviewManager.ensurePIXIReady === 'function') {
+            await live2dPreviewManager.ensurePIXIReady(canvasId, containerId);
+        } else if (!live2dPreviewManager.pixi_app) {
+            await live2dPreviewManager.initPIXI(canvasId, containerId);
+        }
 
         // 覆盖applyModelSettings方法，为预览模式实现专门的显示逻辑
-        const originalApplyModelSettings = live2dPreviewManager.applyModelSettings;
-        live2dPreviewManager.applyModelSettings = function (model, options) {
-            // 获取预览容器的尺寸
-            const container = document.getElementById('live2d-preview-content');
-            if (!container) {
-                return originalApplyModelSettings(model, options);
-            }
-
-            const containerWidth = container.clientWidth;
-            const containerHeight = container.clientHeight;
-
-            // 先设置临时缩放和锚点以便获取实际边界
-            model.anchor.set(0.5, 0.5);
-            model.scale.set(0.1); // 临时缩放值
-            model.x = 0;
-            model.y = 0;
-
-            // 获取模型的实际边界
-            const bounds = model.getBounds();
-            const modelWidth = bounds.width / 0.1; // 还原原始宽度
-            const modelHeight = bounds.height / 0.1; // 还原原始高度
-
-            // 计算适合容器的缩放比例
-            const padding = 30;
-            const availableWidth = Math.max(50, containerWidth - padding * 2);
-            const availableHeight = Math.max(50, containerHeight - padding * 2);
-
-            // 基于实际模型尺寸计算缩放
-            const scaleX = availableWidth / modelWidth;
-            const scaleY = availableHeight / modelHeight;
-
-            // 取较小值确保完整显示
-            let defaultScale = Math.min(scaleX, scaleY);
-            defaultScale = Math.max(0.01, Math.min(defaultScale, 1.0));
-
-            model.scale.set(defaultScale);
-
-            // 将模型居中显示在容器中央
-            model.x = containerWidth * 0.5;
-            model.y = containerHeight * 0.5;
-
-            // 锚点保持中心，确保模型居中缩放
-            model.anchor.set(0.5, 0.5);
-        };
+        if (!live2dPreviewManager._previewApplyModelSettingsPatched) {
+            const originalApplyModelSettings = live2dPreviewManager.applyModelSettings;
+            live2dPreviewManager.applyModelSettings = function (model, options) {
+                // 获取预览容器的尺寸
+                const previewContainer = document.getElementById(containerId);
+                if (!previewContainer || !this.pixi_app || !this.pixi_app.renderer) {
+                    return originalApplyModelSettings.call(this, model, options);
+                }
+                fitLive2DPreviewModelToContainer(model);
+            };
+            live2dPreviewManager._previewApplyModelSettingsPatched = true;
+        }
 
         // 添加窗口大小变化的监听，当预览区域大小变化时重新计算模型缩放和位置
-        function resizePreviewModel() {
-            const container = document.getElementById('live2d-preview-content');
-            if (live2dPreviewManager && live2dPreviewManager.pixi_app && container &&
-                container.clientWidth > 0 && container.clientHeight > 0) {
-                live2dPreviewManager.pixi_app.renderer.resize(container.clientWidth, container.clientHeight);
+        if (!live2dPreviewManager._previewResizeHandlerBound) {
+            function resizePreviewModel() {
+                const previewContainer = document.getElementById(containerId);
+                if (live2dPreviewManager && live2dPreviewManager.pixi_app && previewContainer &&
+                    previewContainer.clientWidth > 0 && previewContainer.clientHeight > 0) {
+                    live2dPreviewManager.pixi_app.renderer.resize(previewContainer.clientWidth, previewContainer.clientHeight);
+                }
+                if (live2dPreviewManager && live2dPreviewManager.currentModel) {
+                    // 调用我们覆盖的applyModelSettings方法，重新计算模型缩放和位置
+                    live2dPreviewManager.applyModelSettings(live2dPreviewManager.currentModel, {});
+                    if (live2dPreviewManager.pixi_app && live2dPreviewManager.pixi_app.renderer) {
+                        live2dPreviewManager.pixi_app.renderer.render(live2dPreviewManager.pixi_app.stage);
+                    }
+                }
             }
-            if (live2dPreviewManager && live2dPreviewManager.currentModel) {
-                // 调用我们覆盖的applyModelSettings方法，重新计算模型缩放和位置
-                live2dPreviewManager.applyModelSettings(live2dPreviewManager.currentModel, {});
-            }
+            live2dPreviewManager._previewResizeHandler = resizePreviewModel;
+            live2dPreviewManager._previewResizeHandlerBound = true;
+            window.addEventListener('resize', resizePreviewModel);
         }
 
         // 添加removeModel方法的fallback，防止调用时出错
         if (!live2dPreviewManager.removeModel) {
             live2dPreviewManager.removeModel = async function (force) {
                 try {
-                    if (this.currentModel && this.app && this.app.stage) {
+                    if (this.currentModel && this.pixi_app && this.pixi_app.stage) {
                         // 移除当前模型
-                        this.app.stage.removeChild(this.currentModel);
+                        this.pixi_app.stage.removeChild(this.currentModel);
                         this.currentModel = null;
 
                         // 如果有清理资源的方法，调用它
@@ -7458,9 +7924,6 @@ async function initLive2DPreview() {
             };
         }
 
-        // 添加窗口大小变化监听
-        window.addEventListener('resize', resizePreviewModel);
-
     } catch (error) {
         console.error('Failed to initialize Live2D preview:', error);
         live2dPreviewManager = null;
@@ -7471,8 +7934,9 @@ async function initLive2DPreview() {
 // 从文件夹加载Live2D模型
 async function loadLive2DModelFromFolder(files) {
     try {
+        await initLive2DPreview();
         if (!live2dPreviewManager || !live2dPreviewManager.pixi_app) {
-            await initLive2DPreview();
+            throw new Error('Live2D preview is not ready');
         }
 
         // 获取第一个文件夹的名称
@@ -7629,10 +8093,16 @@ function updatePreviewControls(motionFiles, expressionFiles) {
     motionSelect.innerHTML = '';
     expressionSelect.innerHTML = '';
 
-    // 更新动作选择框
+    // 更新动作选择框：始终提供空选项，允许保存“无待机动作”。
+    const emptyMotionOption = document.createElement('option');
+    emptyMotionOption.value = '';
+    emptyMotionOption.textContent = (window.t && window.t('character.noIdleMotion', '无动作')) || '无动作';
+    motionSelect.appendChild(emptyMotionOption);
+
     if (motionFiles.length > 0) {
         motionSelect.disabled = false;
         playMotionBtn.disabled = false;
+        motionSelect.value = '';
 
         // 添加动作选项（value 使用文件名，便于直接作为 live2d_idle_animation）
         motionFiles.forEach((motionFile) => {
@@ -7644,17 +8114,19 @@ function updatePreviewControls(motionFiles, expressionFiles) {
     } else {
         motionSelect.disabled = true;
         playMotionBtn.disabled = true;
-
-        const option = document.createElement('option');
-        option.value = '';
-        option.textContent = window.t('live2d.noMotionFiles', '没有动作文件');
-        motionSelect.appendChild(option);
+        emptyMotionOption.textContent = (window.t && window.t('live2d.noMotionFiles', '没有动作文件')) || '没有动作文件';
     }
 
-    // 更新表情选择框
+    // 更新表情选择框：始终提供空选项，避免默认选中第一个表情。
+    const emptyExpressionOption = document.createElement('option');
+    emptyExpressionOption.value = '';
+    emptyExpressionOption.textContent = (window.t && window.t('character.noExpression', '无表情')) || '无表情';
+    expressionSelect.appendChild(emptyExpressionOption);
+
     if (expressionFiles.length > 0) {
         expressionSelect.disabled = false;
         playExpressionBtn.disabled = false;
+        expressionSelect.value = '';
 
         // 添加表情选项
         expressionFiles.forEach(expressionFile => {
@@ -7667,64 +8139,61 @@ function updatePreviewControls(motionFiles, expressionFiles) {
     } else {
         expressionSelect.disabled = true;
         playExpressionBtn.disabled = true;
-
-        const option = document.createElement('option');
-        option.value = '';
-        option.textContent = window.t('live2d.noExpressionFiles', '没有表情文件');
-        expressionSelect.appendChild(option);
+        emptyExpressionOption.textContent = (window.t && window.t('live2d.noExpressionFiles', '没有表情文件')) || '没有表情文件';
     }
 
     // 显示预览控件
     previewControls.style.display = '';
+
+    ensurePreviewPlaybackBindings();
 }
 
-// 播放预览动作
-const playMotionBtn = document.getElementById('preview-play-motion-btn');
-if (playMotionBtn) {
-    playMotionBtn.addEventListener('click', () => {
-        if (!currentPreviewModel) return;
+function handlePreviewMotionPlay() {
+    if (!currentPreviewModel) return;
 
-        const motionSelect = document.getElementById('preview-motion-select');
-        const motionFile = motionSelect.value;
-        if (!motionFile) return;
+    const motionSelect = document.getElementById('preview-motion-select');
+    const motionFile = motionSelect ? motionSelect.value : '';
+    if (!motionFile) return;
 
-        const motionIndex = (window._previewMotionFiles || []).indexOf(motionFile);
-        if (motionIndex < 0) return;
+    const motionIndex = (window._previewMotionFiles || []).indexOf(motionFile);
+    if (motionIndex < 0) return;
 
-        try {
-            currentPreviewModel.motion('PreviewAll', motionIndex, 3);
-        } catch (error) {
-            console.error('Failed to play motion:', error);
-            showMessage(window.t('live2d.playMotionFailed', { motion: motionFile }), 'error');
-        }
-    });
+    try {
+        currentPreviewModel.motion('PreviewAll', motionIndex, 3);
+    } catch (error) {
+        console.error('Failed to play motion:', error);
+        showMessage(window.t('live2d.playMotionFailed', { motion: motionFile }), 'error');
+    }
 }
 
-// 播放预览表情
-const playExpressionBtn = document.getElementById('preview-play-expression-btn');
-if (playExpressionBtn) {
-    playExpressionBtn.addEventListener('click', () => {
-        if (!currentPreviewModel) return;
+function handlePreviewExpressionPlay() {
+    if (!currentPreviewModel) return;
 
-        const expressionSelect = document.getElementById('preview-expression-select');
-        const expressionName = expressionSelect.value;
+    const expressionSelect = document.getElementById('preview-expression-select');
+    const expressionName = expressionSelect ? expressionSelect.value : '';
+    if (!expressionName) return;
 
-        if (!expressionName) return;
-
-        try {
-            currentPreviewModel.expression(expressionName);
-        } catch (error) {
-            console.error('Failed to play expression:', error);
-            showMessage(window.t('live2d.playExpressionFailed', { expression: expressionName }), 'error');
-        }
-    });
+    try {
+        currentPreviewModel.expression(expressionName);
+    } catch (error) {
+        console.error('Failed to play expression:', error);
+        showMessage(window.t('live2d.playExpressionFailed', { expression: expressionName }), 'error');
+    }
 }
 
-// 页面加载完成后初始化Live2D预览环境
-document.addEventListener('DOMContentLoaded', function () {
-    // 延迟初始化，确保其他资源已加载
-    setTimeout(initLive2DPreview, 1000);
-});
+function ensurePreviewPlaybackBindings() {
+    const playMotionBtn = document.getElementById('preview-play-motion-btn');
+    if (playMotionBtn && playMotionBtn.dataset.previewMotionBound !== 'true') {
+        playMotionBtn.addEventListener('click', handlePreviewMotionPlay);
+        playMotionBtn.dataset.previewMotionBound = 'true';
+    }
+
+    const playExpressionBtn = document.getElementById('preview-play-expression-btn');
+    if (playExpressionBtn && playExpressionBtn.dataset.previewExpressionBound !== 'true') {
+        playExpressionBtn.addEventListener('click', handlePreviewExpressionPlay);
+        playExpressionBtn.dataset.previewExpressionBound = 'true';
+    }
+}
 
 // 注意事项标签功能
 (function () {

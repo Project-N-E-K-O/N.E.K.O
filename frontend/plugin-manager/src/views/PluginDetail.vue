@@ -1,25 +1,89 @@
 <template>
-  <div class="plugin-detail">
+  <div class="plugin-detail" data-yui-guide-id="plugin-detail-page">
     <!-- Loading 状态 -->
     <div v-if="loading" class="loading-container">
       <el-icon class="is-loading" :size="32"><Loading /></el-icon>
       <span>{{ $t('common.loading') }}</span>
     </div>
 
-    <el-card v-else-if="plugin">
+    <el-card v-else-if="plugin" data-yui-guide-id="plugin-detail-card">
       <template #header>
-        <div class="card-header">
-          <div class="header-left">
-            <el-button :icon="ArrowLeft" @click="goBack">{{ $t('common.back') }}</el-button>
+        <div class="card-header" data-yui-guide-id="plugin-detail-header">
+          <div class="header-left" data-yui-guide-id="plugin-detail-title">
+            <el-button :icon="ArrowLeft" data-yui-guide-id="plugin-detail-back" @click="goBack">{{ $t('common.back') }}</el-button>
             <h2>{{ plugin.name }}</h2>
           </div>
-          <PluginActions :plugin-id="pluginId" />
+          <div data-yui-guide-id="plugin-detail-actions">
+            <PluginActions :plugin-id="pluginId" />
+          </div>
         </div>
       </template>
 
-      <el-tabs v-model="activeTab">
+      <el-tabs v-model="activeTab" data-yui-guide-id="plugin-detail-tabs">
+        <el-tab-pane v-if="panelSurfaces.length > 0" :label="$t('plugins.ui.panel')" name="panel">
+          <div class="surface-section" data-yui-guide-id="plugin-detail-panel">
+            <el-alert
+              v-if="surfaceWarnings.length > 0"
+              class="surface-warning"
+              type="warning"
+              show-icon
+              :closable="false"
+            >
+              <template #title>{{ $t('plugins.ui.surfaceWarnings') }}</template>
+              <ul class="surface-warning__list">
+                <li v-for="warning in surfaceWarnings" :key="`${warning.path}:${warning.code}:${warning.message}`">
+                  <code>{{ warning.path }}</code>
+                  <span>{{ warning.message }}</span>
+                </li>
+              </ul>
+            </el-alert>
+            <el-tabs v-if="panelSurfaces.length > 1" v-model="activePanelSurfaceId" type="border-card">
+              <el-tab-pane
+                v-for="surface in panelSurfaces"
+                :key="surface.id"
+                :label="surface.title || surface.id"
+                :name="surface.id"
+              >
+                <HostedSurfaceFrame :plugin-id="pluginId" :surface="surface" height="560px" @open-logs="openLogsTab" />
+              </el-tab-pane>
+            </el-tabs>
+            <HostedSurfaceFrame v-else :plugin-id="pluginId" :surface="panelSurfaces[0]!" height="560px" @open-logs="openLogsTab" />
+          </div>
+        </el-tab-pane>
+
+        <el-tab-pane v-if="guideSurfaces.length > 0" :label="$t('plugins.ui.guide')" name="guide">
+          <div class="surface-section" data-yui-guide-id="plugin-detail-guide">
+            <el-alert
+              v-if="surfaceWarnings.length > 0"
+              class="surface-warning"
+              type="warning"
+              show-icon
+              :closable="false"
+            >
+              <template #title>{{ $t('plugins.ui.surfaceWarnings') }}</template>
+              <ul class="surface-warning__list">
+                <li v-for="warning in surfaceWarnings" :key="`${warning.path}:${warning.code}:${warning.message}`">
+                  <code>{{ warning.path }}</code>
+                  <span>{{ warning.message }}</span>
+                </li>
+              </ul>
+            </el-alert>
+            <el-tabs v-if="guideSurfaces.length > 1" v-model="activeGuideSurfaceId" type="border-card">
+              <el-tab-pane
+                v-for="surface in guideSurfaces"
+                :key="surface.id"
+                :label="surface.title || surface.id"
+                :name="surface.id"
+              >
+                <HostedSurfaceFrame :plugin-id="pluginId" :surface="surface" height="560px" @open-logs="openLogsTab" />
+              </el-tab-pane>
+            </el-tabs>
+            <HostedSurfaceFrame v-else :plugin-id="pluginId" :surface="guideSurfaces[0]!" height="560px" @open-logs="openLogsTab" />
+          </div>
+        </el-tab-pane>
+
         <el-tab-pane :label="$t('plugins.basicInfo')" name="info">
-          <div class="info-section">
+          <div class="info-section" data-yui-guide-id="plugin-detail-info">
             <el-descriptions :column="2" border>
               <el-descriptions-item :label="$t('plugins.id')">{{ plugin.id }}</el-descriptions-item>
               <el-descriptions-item :label="$t('plugins.version')">{{ plugin.version }}</el-descriptions-item>
@@ -73,19 +137,27 @@
         </el-tab-pane>
 
         <el-tab-pane :label="$t('plugins.entries')" name="entries">
-          <EntryList :entries="plugin.entries || []" :plugin-id="pluginId" :plugin-status="pluginStatus" />
+          <div data-yui-guide-id="plugin-detail-entries">
+            <EntryList :entries="plugin.entries || []" :plugin-id="pluginId" :plugin-status="pluginStatus" />
+          </div>
         </el-tab-pane>
 
         <el-tab-pane :label="$t('plugins.performance')" name="metrics">
-          <MetricsCard :plugin-id="pluginId" />
+          <div data-yui-guide-id="plugin-detail-metrics">
+            <MetricsCard :plugin-id="pluginId" />
+          </div>
         </el-tab-pane>
 
         <el-tab-pane :label="$t('plugins.config')" name="config">
-          <PluginConfigEditor :plugin-id="pluginId" />
+          <div data-yui-guide-id="plugin-detail-config">
+            <PluginConfigEditor :plugin-id="pluginId" />
+          </div>
         </el-tab-pane>
 
         <el-tab-pane :label="$t('plugins.logs')" name="logs">
-          <LogViewer :plugin-id="pluginId" />
+          <div data-yui-guide-id="plugin-detail-logs">
+            <LogViewer :plugin-id="pluginId" />
+          </div>
         </el-tab-pane>
       </el-tabs>
     </el-card>
@@ -106,6 +178,9 @@ import MetricsCard from '@/components/metrics/MetricsCard.vue'
 import PluginConfigEditor from '@/components/plugin/PluginConfigEditor.vue'
 import LogViewer from '@/components/logs/LogViewer.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
+import HostedSurfaceFrame from '@/components/plugin/HostedSurfaceFrame.vue'
+import { getPluginUiSurfaceInfo } from '@/api/plugins'
+import type { PluginUiSurface, PluginUiWarning } from '@/types/api'
 
 const route = useRoute()
 const router = useRouter()
@@ -114,11 +189,19 @@ const pluginStore = usePluginStore()
 const pluginId = computed(() => route.params.id as string)
 const activeTab = ref('info')
 const loading = ref(true)
-const allowedTabs = new Set(['info', 'entries', 'metrics', 'config', 'logs'])
+const surfaces = ref<PluginUiSurface[]>([])
+const surfaceWarnings = ref<PluginUiWarning[]>([])
+const activePanelSurfaceId = ref('')
+const activeGuideSurfaceId = ref('')
+const allowedTabs = new Set(['panel', 'guide', 'info', 'entries', 'metrics', 'config', 'logs'])
+let currentSurfaceLoadId = 0
 
 const plugin = computed(() => {
   return pluginStore.pluginsWithStatus.find(p => p.id === pluginId.value)
 })
+
+const panelSurfaces = computed(() => surfaces.value.filter((surface) => surface.kind === 'panel'))
+const guideSurfaces = computed(() => surfaces.value.filter((surface) => surface.kind === 'guide' || surface.kind === 'docs'))
 
 const isExtension = computed(() => plugin.value?.type === 'extension')
 const isAdapter = computed(() => plugin.value?.type === 'adapter')
@@ -164,11 +247,60 @@ function resolveActiveTab(value: unknown): string {
   return typeof value === 'string' && allowedTabs.has(value) ? value : 'info'
 }
 
+function resolveDefaultTab(value: unknown): string {
+  const requested = resolveActiveTab(value)
+  if (requested === 'panel' && panelSurfaces.value.length === 0) return 'info'
+  if (requested === 'guide' && guideSurfaces.value.length === 0) return 'info'
+  return requested
+}
+
+function syncSurfaceTabs() {
+  if (!activePanelSurfaceId.value && panelSurfaces.value[0]) {
+    activePanelSurfaceId.value = panelSurfaces.value[0].id
+  }
+  if (!activeGuideSurfaceId.value && guideSurfaces.value[0]) {
+    activeGuideSurfaceId.value = guideSurfaces.value[0].id
+  }
+}
+
+function openLogsTab() {
+  activeTab.value = 'logs'
+  router.replace({
+    query: {
+      ...route.query,
+      tab: 'logs',
+    },
+  })
+}
+
+async function fetchSurfaces() {
+  const loadId = ++currentSurfaceLoadId
+  const currentPluginId = pluginId.value
+  try {
+    const info = await getPluginUiSurfaceInfo(currentPluginId)
+    if (loadId !== currentSurfaceLoadId || currentPluginId !== pluginId.value) return
+    surfaces.value = info.surfaces
+    surfaceWarnings.value = info.warnings
+  } catch (caught: any) {
+    if (loadId !== currentSurfaceLoadId || currentPluginId !== pluginId.value) return
+    surfaces.value = []
+    surfaceWarnings.value = [{
+      path: 'plugin.ui',
+      code: 'surface_query_failed',
+      message: caught?.response?.data?.detail || caught?.message || String(caught),
+    }]
+  }
+  activePanelSurfaceId.value = ''
+  activeGuideSurfaceId.value = ''
+  syncSurfaceTabs()
+}
+
 onMounted(async () => {
   try {
-    activeTab.value = resolveActiveTab(route.query.tab)
     await pluginStore.fetchPlugins()
     await pluginStore.fetchPluginStatus(pluginId.value)
+    await fetchSurfaces()
+    activeTab.value = resolveDefaultTab(route.query.tab)
     pluginStore.setSelectedPlugin(pluginId.value)
   } finally {
     loading.value = false
@@ -178,9 +310,21 @@ onMounted(async () => {
 watch(
   () => route.query.tab,
   (tab) => {
-    activeTab.value = resolveActiveTab(tab)
+    activeTab.value = resolveDefaultTab(tab)
   },
 )
+
+watch(pluginId, async () => {
+  loading.value = true
+  try {
+    await pluginStore.fetchPluginStatus(pluginId.value)
+    await fetchSurfaces()
+    activeTab.value = resolveDefaultTab(route.query.tab)
+    pluginStore.setSelectedPlugin(pluginId.value)
+  } finally {
+    loading.value = false
+  }
+})
 </script>
 
 <style scoped>
@@ -226,6 +370,28 @@ watch(
 
 .info-section {
   padding: 20px 0;
+}
+
+.surface-section {
+  padding: 16px 0;
+}
+
+.surface-warning {
+  margin-bottom: 14px;
+}
+
+.surface-warning__list {
+  margin: 6px 0 0;
+  padding-left: 18px;
+}
+
+.surface-warning__list li {
+  line-height: 1.7;
+}
+
+.surface-warning__list code {
+  margin-right: 8px;
+  color: var(--el-color-warning);
 }
 
 .bound-extensions {

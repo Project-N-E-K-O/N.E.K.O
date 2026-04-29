@@ -424,6 +424,62 @@ async def _ais_review_enabled() -> bool:
     return True
 
 
+async def _ais_powerful_memory_enabled() -> bool:
+    """检查"强力记忆"是否启用——controls evidence-RFC 引入的全部新 LLM 路径。
+
+    关闭时只保留 RFC 之前的基础流水线（Stage-1 fact 抽取 / reflection synthesize
+    / recent compress+review / recall reranker / 主动搭话回应的 check_feedback）
+    + time-driven promote fallback。关后可省 ~40-50% token。
+
+    持久化到 ``core_config.json`` 的 ``powerful_memory_enabled`` 字段，缺失默
+    认 True（保兼容）。每次需要时再开 read_json_async，不缓存——和
+    ``_ais_review_enabled`` 同款热加载，无需重启即生效。
+    """
+    from utils.file_utils import read_json_async
+    try:
+        config_path = str(_config_manager.get_runtime_config_path('core_config.json'))
+        if not await asyncio.to_thread(os.path.exists, config_path):
+            return True
+        config_data = await read_json_async(config_path)
+        if isinstance(config_data, dict) and not config_data.get('powerful_memory_enabled', True):
+            return False
+    except Exception as e:
+        logger.debug(f"[Memory] 读取强力记忆开关配置失败，默认启用: {e}")
+    return True
+
+
+async def _reset_confirmed_at_for_all_characters() -> int:
+    """开→关 migration：所有角色的 confirmed reflection 重置 confirmed_at 锚点。
+
+    被 main_routers/memory_router.py 的 update_powerful_memory_config 调用——
+    只在 prev=True, new=False 切换时跑。让 time-driven fallback 走完整 14 天
+    计时，避免"刚关就立刻批量 promote 旧 confirmed"的体验断层。
+
+    返回真实迁移条目数。**对不可恢复失败（reflection_engine 未初始化 / 角色
+    列表加载失败）一律 raise**，让 caller endpoint 区分"真实 0 条"（角色都
+    loaded 但没需要重置的）vs"根本没跑"（早期失败）。CodeRabbit PR #997
+    feedback：之前两条早期失败路径都返回 0 → endpoint 包装成 ok=true,
+    count=0 → 上游 memory_router 误判成功 → 落盘 powerful_memory_enabled=False
+    → 旧 confirmed_at 永久漏迁移。
+    """
+    if reflection_engine is None:
+        raise RuntimeError(
+            "reflection_engine 未初始化（memory_server limited-mode 或 startup 未完成）"
+        )
+    character_data = await _config_manager.aload_characters()
+    catgirl_names = list(character_data.get('猫娘', {}).keys())
+    # 角色列表为空（没配过猫娘）是合法的"0 条要迁移" case，正常返回 0。
+    total = 0
+    for name in catgirl_names:
+        try:
+            count = await reflection_engine.areset_confirmed_at_to_now(name)
+            total += count
+        except Exception as e:
+            # 单角色失败不致命——记录后继续。最终 count 反映成功的 N 条。
+            logger.warning(f"[Memory] migration {name} 重置失败（其他角色继续）: {e}")
+    return total
+
+
 def _touch_activity() -> None:
     """记录一次对话活动，刷新空闲计时器。"""
     global _last_activity_time
@@ -635,19 +691,77 @@ async def shutdown_memory_server():
         logger.error(f"处理关闭信号时出错: {e}")
         return {"status": "error", "message": str(e)}
 
-REBUTTAL_CHECK_INTERVAL = 300  # 5 分钟
+REBUTTAL_CHECK_INTERVAL = 180  # 3 分钟
 REBUTTAL_FIRST_RUN_LOOKBACK_HOURS = 1  # 首次启动 / 时钟回拨兜底回扫窗口
+# Drain pattern: 一次最多处理 N 条 user 消息，避免高频用户场景下 prompt 爆炸。
+# 多余的留到下一轮（cursor 推进到第 N 条的 timestamp，不丢消息）。
+REBUTTAL_DRAIN_BATCH_LIMIT = 20
+# 读 SQL 时的硬上限——bound memory，防止 1h fallback 把整张表拉进来。
+# 200 行通常包含 50-100 条 user 消息，足以喂多次 drain。
+REBUTTAL_SQL_ROW_LIMIT = 200
+
+
+def _coerce_db_ts(ts) -> datetime | None:
+    """归一化 SQL 行里的 timestamp 字段为 datetime。
+
+    SQLAlchemy + SQLite 在某些 driver 配置下返回字符串而非 datetime；与
+    memory/timeindex.py:get_last_conversation_time 同款归一化。返回 None
+    表示无法解析（caller 应跳过此行而不是把 None 写进 cursor）。
+    """
+    if isinstance(ts, datetime):
+        return ts
+    if isinstance(ts, str):
+        try:
+            return datetime.fromisoformat(ts)
+        except ValueError:
+            try:
+                return datetime.strptime(ts, "%Y-%m-%d %H:%M:%S.%f")
+            except ValueError:
+                return None
+    return None
+
+
+def _extract_user_messages_with_ts_from_rows(rows: list) -> list[tuple[str, datetime]]:
+    """从 time_indexed SQL 查询结果中提取 (用户消息文本, timestamp) 元组。
+
+    rows: [(timestamp, session_id, message_json), ...] (ASC ordered by ts)
+    message_json 是 langchain SQLChatMessageHistory 存储的 JSON 字符串。
+    content 可能是 str 或 list[{type, text}]。
+
+    返回的 list 按 ts ASC 排序，caller 可基于 last item 的 ts 推 cursor。
+    timestamp 通过 _coerce_db_ts 归一化为 datetime 对象（SQL driver 可能
+    返回 str）；解析失败的行会被跳过。
+    """
+    out: list[tuple[str, datetime]] = []
+    for ts_raw, _, msg_json in rows:
+        ts = _coerce_db_ts(ts_raw)
+        if ts is None:
+            continue
+        try:
+            msg = json.loads(msg_json) if isinstance(msg_json, str) else msg_json
+            if isinstance(msg, dict) and msg.get('type') == 'human':
+                content = msg.get('data', {}).get('content', '')
+                if isinstance(content, str):
+                    if content.strip():
+                        out.append((content, ts))
+                elif isinstance(content, list):
+                    for part in content:
+                        if isinstance(part, dict) and part.get('type') == 'text':
+                            text_val = part.get('text', '')
+                            if text_val.strip():
+                                out.append((text_val, ts))
+        except (json.JSONDecodeError, TypeError):
+            continue
+    return out
 
 
 def _extract_user_messages_from_rows(rows: list) -> list[str]:
-    """从 time_indexed SQL 查询结果中提取用户消息文本。
+    """从 time_indexed SQL 查询结果中提取用户消息文本（legacy text-only 视图）。
 
-    rows: [(session_id, message_json), ...]
-    message_json 是 langchain SQLChatMessageHistory 存储的 JSON 字符串。
-    content 可能是 str 或 list[{type, text}]，与 _extract_user_messages 对齐。
+    rows: [(timestamp, session_id, message_json), ...]
     """
     user_msgs = []
-    for _, msg_json in rows:
+    for _, _, msg_json in rows:
         try:
             msg = json.loads(msg_json) if isinstance(msg_json, str) else msg_json
             if isinstance(msg, dict) and msg.get('type') == 'human':
@@ -727,6 +841,35 @@ async def _periodic_rebuttal_loop():
     """
     await asyncio.sleep(_INITIAL_DELAY_REBUTTAL)
     while True:
+        # 强力记忆关 → rebuttal LLM 整段停（这是 evidence-RFC 引入的最贵
+        # 周期 LLM 之一，每 180s 一次开 thinking 跑 drain）。关闭后用户的
+        # 反驳信号经由 per-turn check_feedback (主动搭话回应) 仍能进 evidence。
+        #
+        # 关态推进 cursor 到 now：否则重新开启时 _resolve_rebuttal_start_time
+        # 拿到的是关闭前的旧 cursor，下一轮会把关闭期间积攒的所有 user msg
+        # 整段补处理（极大 prompt + 大量 LLM 调用）。"关时不跑" 应等价于
+        # "关时已 noop 处理完"——重开后从 now 重新累积，不回补。
+        if not await _ais_powerful_memory_enabled():
+            try:
+                character_data = await _config_manager.aload_characters()
+                catgirl_names = list(character_data.get('猫娘', {}).keys())
+                cursor_now = datetime.now()
+                for name in catgirl_names:
+                    try:
+                        await cursor_store.aset_cursor(
+                            name, CURSOR_REBUTTAL_CHECKED_UNTIL, cursor_now,
+                        )
+                    except Exception as cursor_e:
+                        # 单角色 cursor 推进失败不致命——下一轮再试，最坏
+                        # 是该角色重开时多扫一段窗口，不影响其他角色。
+                        logger.debug(
+                            f"[Rebuttal] {name}: 关态 cursor 推进失败: {cursor_e}"
+                        )
+            except Exception as e:
+                logger.debug(f"[Rebuttal] 关态 cursor 推进 batch 失败: {e}")
+            await asyncio.sleep(REBUTTAL_CHECK_INTERVAL)
+            continue
+
         try:
             character_data = await _config_manager.aload_characters()
             catgirl_names = list(character_data.get('猫娘', {}).keys())
@@ -739,7 +882,13 @@ async def _periodic_rebuttal_loop():
 
         async def _check_one_rebuttal(name: str):
             """单个 catgirl 的反驳检查。各角色互相独立，外层 gather 并行。
-            内部对 feedbacks 仍串行 areject_promotion（同 reflection 不能并发处理）。"""
+            内部对 feedbacks 仍串行 areject_promotion（同 reflection 不能并发处理）。
+
+            Drain 模式：每轮最多处理 ``REBUTTAL_DRAIN_BATCH_LIMIT`` (=20) 条
+            user 消息，cursor 推进到第 N 条的 timestamp。背压期（高频对话用户
+            或 1h fallback）下分多个 tick 排干，每次 LLM prompt 大小受控；
+            消息不丢（cursor 严格按已处理位置推进）。
+            """
             try:
                 confirmed = await reflection_engine.aget_confirmed_reflections(name)
                 if not confirmed:
@@ -754,6 +903,7 @@ async def _periodic_rebuttal_loop():
                 start_time = await _resolve_rebuttal_start_time(name, now)
                 rows = await time_manager.aretrieve_original_by_timeframe(
                     name, start_time, now,
+                    limit_rows=REBUTTAL_SQL_ROW_LIMIT,
                 )
                 if not rows:
                     await cursor_store.aset_cursor(
@@ -761,12 +911,44 @@ async def _periodic_rebuttal_loop():
                     )
                     return
 
-                user_msgs = _extract_user_messages_from_rows(rows)
-                if not user_msgs:
-                    await cursor_store.aset_cursor(
-                        name, CURSOR_REBUTTAL_CHECKED_UNTIL, now,
-                    )
+                # 提取 (msg, ts) 元组（ASC by ts；ts 已归一化为 datetime）
+                user_msgs_with_ts = _extract_user_messages_with_ts_from_rows(rows)
+                if not user_msgs_with_ts:
+                    # 窗口里只有 AI 消息或无 user 内容 → 推进 cursor 到 SQL 截
+                    # 取的最后一行 ts（如果命中 LIMIT 还有更多行）或 now（清空了）
+                    last_row_ts = _coerce_db_ts(rows[-1][0])
+                    if len(rows) >= REBUTTAL_SQL_ROW_LIMIT and last_row_ts is not None:
+                        await cursor_store.aset_cursor(
+                            name, CURSOR_REBUTTAL_CHECKED_UNTIL, last_row_ts,
+                        )
+                    else:
+                        # 既然没命中 LIMIT，窗口已经全部扫过；直接推到 now。
+                        # last_row_ts 解析失败也走这条（保守 fallback）。
+                        await cursor_store.aset_cursor(
+                            name, CURSOR_REBUTTAL_CHECKED_UNTIL, now,
+                        )
                     return
+
+                # Drain 取前 N 条 user msg。然后扩展 batch 把和 batch 末位
+                # 共享同 ts 的后续 user msg 也吸收进来——因为 SQL 用
+                # ``timestamp BETWEEN`` (inclusive)，cursor 推进到 batch[-1].ts
+                # 后下一轮会把同 ts 的行原样重读。如果不扩展，多条同 ts 的
+                # user msg 在 batch 边界被切，会出现"只处理一部分，剩下的下
+                # 轮当 batch 边界又被切"的死循环（``store_conversation`` 一
+                # 批 message 共享 timestamp，所以同 ts 多条很常见）。
+                # 扩展受 SQL 行 LIMIT 兜底，不会无界增长。
+                batch = user_msgs_with_ts[:REBUTTAL_DRAIN_BATCH_LIMIT]
+                if len(user_msgs_with_ts) > len(batch):
+                    boundary_ts = batch[-1][1]
+                    extend_idx = len(batch)
+                    while (
+                        extend_idx < len(user_msgs_with_ts)
+                        and user_msgs_with_ts[extend_idx][1] == boundary_ts
+                    ):
+                        extend_idx += 1
+                    if extend_idx > len(batch):
+                        batch = user_msgs_with_ts[:extend_idx]
+                user_msgs = [m for m, _ in batch]
 
                 # 复用 check_feedback 判断反驳
                 feedbacks = await reflection_engine.check_feedback_for_confirmed(
@@ -777,9 +959,33 @@ async def _periodic_rebuttal_loop():
                     logger.warning(f"[Rebuttal] {name}: 反驳检查失败，保留游标待重试")
                     return
 
-                # 成功才推进游标并持久化
+                # 成功才推进游标并持久化。Drain 推进规则：
+                # - 还有 user msgs 在本次 read 内未处理（batch 已扩展含所有
+                #   同 ts，所以剩余的 ts 一定 > batch[-1].ts）
+                #   → cursor 推到第一个未处理 user msg 的 ts（next read 的
+                #     BETWEEN 起点，包含该行不会重处理因为它本来就 unprocessed）
+                # - SQL 命中 LIMIT 但 user msgs 全处理 → cursor 推到最后一行 ts
+                #   (next read 会重读 same-ts cluster 但 LLM 调用幂等无害)
+                # - 全干净 → cursor 推到 now
+                more_user_msgs = len(user_msgs_with_ts) > len(batch)
+                hit_sql_limit = len(rows) >= REBUTTAL_SQL_ROW_LIMIT
+                if more_user_msgs:
+                    new_cursor = user_msgs_with_ts[len(batch)][1]
+                    logger.info(
+                        f"[Rebuttal] {name}: drain 处理 {len(batch)} 条，"
+                        f"cursor 推进到下一未处理 user msg ts，下轮续"
+                    )
+                elif hit_sql_limit:
+                    last_row_ts = _coerce_db_ts(rows[-1][0])
+                    new_cursor = last_row_ts if last_row_ts is not None else now
+                    logger.info(
+                        f"[Rebuttal] {name}: drain 处理 {len(batch)} 条 user msg，"
+                        f"SQL 命中 LIMIT，cursor 推进到最后一行 ts，下轮续"
+                    )
+                else:
+                    new_cursor = now
                 await cursor_store.aset_cursor(
-                    name, CURSOR_REBUTTAL_CHECKED_UNTIL, now,
+                    name, CURSOR_REBUTTAL_CHECKED_UNTIL, new_cursor,
                 )
                 for fb in feedbacks:
                     if isinstance(fb, dict) and fb.get('feedback') == 'denied':
@@ -799,7 +1005,7 @@ async def _periodic_rebuttal_loop():
         await asyncio.sleep(REBUTTAL_CHECK_INTERVAL)
 
 
-AUTO_PROMOTE_CHECK_INTERVAL = 300  # 5 分钟
+AUTO_PROMOTE_CHECK_INTERVAL = 180  # 3 分钟（与 rebuttal 同步，覆盖同样级别的状态变化）
 
 async def _periodic_auto_promote_loop():
     """定期执行 auto_promote_stale：pending→confirmed→promoted 状态迁移。
@@ -824,11 +1030,21 @@ async def _periodic_auto_promote_loop():
             await asyncio.sleep(AUTO_PROMOTE_CHECK_INTERVAL)
             continue
 
+        powerful = await _ais_powerful_memory_enabled()
+
         async def _promote_one(name: str):
             try:
-                transitions = await reflection_engine.aauto_promote_stale(name)
+                if powerful:
+                    # score-driven + merge LLM (current evidence-RFC 路径)
+                    transitions = await reflection_engine.aauto_promote_stale(name)
+                else:
+                    # 强力记忆关：time-driven 直接 aadd_fact，零 LLM
+                    transitions = await reflection_engine.aauto_promote_time_driven(name)
                 if transitions:
-                    logger.info(f"[AutoPromote] {name}: {transitions} 条状态迁移")
+                    logger.info(
+                        f"[AutoPromote] {name}: {transitions} 条状态迁移"
+                        f"({'score+merge' if powerful else 'time-driven'})"
+                    )
             except Exception as e:
                 logger.debug(f"[AutoPromote] {name}: 处理失败: {e}")
 
@@ -869,6 +1085,11 @@ async def _periodic_idle_maintenance_loop():
                 logger.debug(f"[IdleMaint] 加载角色列表失败: {e}")
                 continue
 
+            # 强力记忆开关 → 控制 1b (fact_dedup) 和 2 (persona corrections)
+            # 是否跑。子任务 1 (history 压缩) 和 3 (recent.review) 是 RFC 之
+            # 前的基础设施，永远跑。本轮快照一次，跨角色复用。
+            powerful_enabled = await _ais_powerful_memory_enabled()
+
             for name in catgirl_names:
                 # 每处理一个角色前重新检查空闲，一旦变忙立即退出
                 if not _is_idle():
@@ -901,7 +1122,8 @@ async def _periodic_idle_maintenance_loop():
                     # fact_dedup_resolver is None when vectors are disabled
                     # or bootstrap failed — legacy hash + FTS5 dedup
                     # remains the entire dedup pipeline in that case.
-                    if fact_dedup_resolver is not None:
+                    # 强力记忆关 → 整段跳过（向量去重是 evidence-RFC 后期引入的）
+                    if powerful_enabled and fact_dedup_resolver is not None:
                         if not _is_idle():
                             break
                         try:
@@ -918,22 +1140,26 @@ async def _periodic_idle_maintenance_loop():
                         except Exception as e:
                             logger.warning(f"[IdleMaint] {name}: fact 向量去重失败: {e}")
 
-                    # ── 子任务2: Persona 矛盾审视（有需要就跑，不受 review_enabled / history_len 限制） ──
-                    # resolve_corrections 不读 recent history，矛盾队列由独立的 evidence 管线
-                    # 维护，应当永远跑。把 review 闸门移到子任务 3 之前。
-                    if not _is_idle():
-                        break
-                    try:
-                        pending_corrections = await persona_manager.aload_pending_corrections(name)
-                        if pending_corrections:
-                            logger.info(
-                                f"[IdleMaint] {name}: 发现 {len(pending_corrections)} 条未处理的 persona 矛盾，触发审视"
-                            )
-                            resolved = await persona_manager.resolve_corrections(name)
-                            if resolved:
-                                logger.info(f"[IdleMaint] {name}: 审视了 {resolved} 条 persona 矛盾")
-                    except Exception as e:
-                        logger.warning(f"[IdleMaint] {name}: persona 矛盾审视失败: {e}")
+                    # ── 子任务2: Persona 矛盾审视（强力记忆关时跳过） ──
+                    # resolve_corrections 由 evidence-RFC 引入；矛盾队列的产生路
+                    # 径（aadd_fact 的 keyword overlap heuristic 触发 _aqueue_correction）
+                    # 在强力记忆关时仍可能产生（time-driven aadd_fact 也走启发式检查），
+                    # 但消化路径 LLM 整批审视成本高，关时不跑。queue 会累积，
+                    # 等用户重开强力记忆时一次性消化。
+                    if powerful_enabled:
+                        if not _is_idle():
+                            break
+                        try:
+                            pending_corrections = await persona_manager.aload_pending_corrections(name)
+                            if pending_corrections:
+                                logger.info(
+                                    f"[IdleMaint] {name}: 发现 {len(pending_corrections)} 条未处理的 persona 矛盾，触发审视"
+                                )
+                                resolved = await persona_manager.resolve_corrections(name)
+                                if resolved:
+                                    logger.info(f"[IdleMaint] {name}: 审视了 {resolved} 条 persona 矛盾")
+                        except Exception as e:
+                            logger.warning(f"[IdleMaint] {name}: persona 矛盾审视失败: {e}")
 
                     # ── 子任务3: 记忆整理 review ──
                     # Phase C: gate 逻辑全部集中到 maybe_spawn_review，IdleMaint
@@ -1409,11 +1635,38 @@ async def _periodic_signal_extraction_loop():
     """
     await asyncio.sleep(_INITIAL_DELAY_SIGNAL)
     while True:
+        # 强力记忆关 → Stage-1 + Stage-2 evidence 抽取整段停。这是 evidence-RFC
+        # 引入的 token 大头（每 40s 轮询一次，trigger 时跑 Stage-1 + Stage-2 两
+        # 个 LLM 调用，Stage-2 还开 thinking）。关闭后 evidence_score 不再变化，
+        # confirmed/promoted 走 time-driven fallback。
+        #
+        # 关态推进 last_check_ts 到 now（同 rebuttal 处的理由）：避免重开后
+        # 把关闭期间的所有 user msg 当成"积压"一次性塞进 Stage-1+Stage-2 prompt。
+        if not await _ais_powerful_memory_enabled():
+            try:
+                character_data = await _config_manager.aload_characters()
+                catgirl_names = list(character_data.get('猫娘', {}).keys())
+                cursor_now = datetime.now()
+                for name in catgirl_names:
+                    try:
+                        _signal_check_mark_done(name, cursor_now)
+                    except Exception as cursor_e:
+                        # 单角色 last_check_ts 推进失败不致命——同 rebuttal
+                        # 处的理由，下一轮再试。
+                        logger.debug(
+                            f"[SignalLoop] {name}: 关态 cursor 推进失败: {cursor_e}"
+                        )
+            except Exception as e:
+                logger.debug(f"[SignalLoop] 关态 cursor 推进 batch 失败: {e}")
+            await asyncio.sleep(EVIDENCE_SIGNAL_CHECK_INTERVAL_SECONDS)
+            continue
+
         try:
             character_data = await _config_manager.aload_characters()
             catgirl_names = list(character_data.get('猫娘', {}).keys())
         except Exception as e:
             logger.debug(f"[SignalLoop] 加载角色列表失败: {e}")
+            await asyncio.sleep(EVIDENCE_SIGNAL_CHECK_INTERVAL_SECONDS)
             continue
 
         now = datetime.now()
@@ -1836,6 +2089,25 @@ async def block_storage_startup(payload: ContinueStorageStartupRequest | None = 
     }
 
 
+@app.post("/internal/memory/reset_confirmed_at")
+async def internal_reset_confirmed_at():
+    """强力记忆 ON→OFF migration：重置所有角色 confirmed reflection 的
+    confirmed_at 锚点到 now。
+
+    main_routers/memory_router.py 通过 HTTP 触发本端点——helper
+    ``_reset_confirmed_at_for_all_characters`` 依赖本进程内的
+    ``reflection_engine`` 全局，必须在 memory_server 进程跑才能拿到正确的
+    实例（main_server 进程虽然能 import memory_server 模块，但那是个 fresh
+    副本，``reflection_engine`` 是 None，调用会成 no-op）。
+    """
+    try:
+        count = await _reset_confirmed_at_for_all_characters()
+        return {"ok": True, "count": count}
+    except Exception as e:
+        logger.warning(f"[Memory] reset_confirmed_at migration 失败: {e}")
+        return {"ok": False, "error": str(e), "count": 0}
+
+
 @app.on_event("shutdown")
 async def shutdown_event_handler():
     """应用关闭时执行清理工作"""
@@ -2074,20 +2346,35 @@ async def api_reflect(lanlan_name: str):
     absorbed 标记竞态问题。
     """
     lanlan_name = validate_lanlan_name(lanlan_name)
-    auto_transitions = 0
     reflection_result = None
-    try:
-        auto_transitions = await reflection_engine.aauto_promote_stale(lanlan_name)
-    except Exception as e:
-        logger.debug(f"[ReflectAPI] {lanlan_name}: auto_promote_stale 失败: {e}")
+    # auto_promote_stale 改 fire-and-forget：开 thinking 后 promote_merge 单
+    # 调用可能 30-90s，串行多个 confirmed reflection 累计能超 client 15s
+    # timeout。periodic auto_promote loop 每 180s 跑一次会兜底，本端点不
+    # 等也安全。caller (system_router) 仅用 auto_transitions 打 log，丢失
+    # 计数无功能影响。
+    _spawn_background_task(_safe_auto_promote(lanlan_name))
     try:
         reflection_result = await reflection_engine.reflect(lanlan_name)
     except Exception as e:
         logger.debug(f"[ReflectAPI] {lanlan_name}: reflect 失败: {e}")
     return {
         "reflection": reflection_result,
-        "auto_transitions": auto_transitions,
+        "auto_transitions": 0,  # fire-and-forget，本调用不返回真实计数
     }
+
+
+async def _safe_auto_promote(lanlan_name: str) -> None:
+    """fire-and-forget 包装，吞 reflection_engine.aauto_promote_* 的异常。
+
+    根据强力记忆开关二选一：开 → score-driven + merge LLM；关 → time-driven。
+    """
+    try:
+        if await _ais_powerful_memory_enabled():
+            await reflection_engine.aauto_promote_stale(lanlan_name)
+        else:
+            await reflection_engine.aauto_promote_time_driven(lanlan_name)
+    except Exception as e:
+        logger.debug(f"[ReflectAPI] {lanlan_name}: 后台 auto_promote 失败: {e}")
 
 
 @app.get("/followup_topics/{lanlan_name}")
@@ -2136,6 +2423,10 @@ async def _extract_facts_and_check_feedback(messages: list, lanlan_name: str):
         # Best-effort counter bump; a failure here only delays the next
         # signal-extraction cycle — not worth interrupting conversation flow.
         logger.debug(f"[MemoryServer] signal-check turn counter 更新失败: {e}")
+
+    # 强力记忆开关——本轮 evidence-related 路径的 gate（promote/negative-keyword/
+    # corrections）。check_feedback 自身仍跑（主动搭话回应是核心 channel）。
+    powerful_enabled = await _ais_powerful_memory_enabled()
 
     try:
         # 1. 事实提取（legacy flow；真正的 Stage-1+Stage-2 走
@@ -2219,35 +2510,43 @@ async def _extract_facts_and_check_feedback(messages: list, lanlan_name: str):
                                 f"{rid}，此次 denial 未转入 status: {e}"
                             )
 
-                # 让后续 score 扫描把 pending→confirmed 推进
+                # 让后续扫描把 pending→confirmed 推进。强力记忆决定走哪条：
+                #   开 → score-driven + merge LLM
+                #   关 → time-driven (14 天 confirm + 14 天 promote, 零 LLM)
                 try:
-                    await reflection_engine.aauto_promote_stale(lanlan_name)
+                    if powerful_enabled:
+                        await reflection_engine.aauto_promote_stale(lanlan_name)
+                    else:
+                        await reflection_engine.aauto_promote_time_driven(lanlan_name)
                 except Exception as e:
                     logger.debug(
-                        f"[MemoryServer] {lanlan_name}: auto_promote_stale 失败: {e}"
+                        f"[MemoryServer] {lanlan_name}: auto_promote 失败: {e}"
                     )
     except Exception as e:
         logger.warning(f"[MemoryServer] 反馈检查失败: {e}")
 
-    try:
-        # 3.5 负面关键词 hook（§3.4.5）——命中就派个异步小 LLM 任务
-        if user_msgs:
-            from utils.language_utils import get_global_language
-            _spawn_background_task(
-                _amaybe_trigger_negative_keyword_hook(
-                    lanlan_name, user_msgs, get_global_language(),
+    if powerful_enabled:
+        try:
+            # 3.5 负面关键词 hook（§3.4.5）——命中就派个异步小 LLM 任务
+            # 强力记忆关 → 整段不跑（这是 evidence-RFC 引入的额外 LLM 路径）
+            if user_msgs:
+                from utils.language_utils import get_global_language
+                _spawn_background_task(
+                    _amaybe_trigger_negative_keyword_hook(
+                        lanlan_name, user_msgs, get_global_language(),
+                    )
                 )
-            )
-    except Exception as e:
-        logger.debug(f"[MemoryServer] 负面关键词 hook 派发失败: {e}")
+        except Exception as e:
+            logger.debug(f"[MemoryServer] 负面关键词 hook 派发失败: {e}")
 
-    try:
-        # 4. 审视矛盾队列（如果有 pending corrections）
-        resolved = await persona_manager.resolve_corrections(lanlan_name)
-        if resolved:
-            logger.info(f"[MemoryServer] {lanlan_name}: 审视了 {resolved} 条 persona 矛盾")
-    except Exception as e:
-        logger.warning(f"[MemoryServer] 矛盾审视失败: {e}")
+        try:
+            # 4. 审视矛盾队列（如果有 pending corrections）
+            # 强力记忆关 → 不跑 LLM 批量审视（corrections queue 累积，等重开消化）
+            resolved = await persona_manager.resolve_corrections(lanlan_name)
+            if resolved:
+                logger.info(f"[MemoryServer] {lanlan_name}: 审视了 {resolved} 条 persona 矛盾")
+        except Exception as e:
+            logger.warning(f"[MemoryServer] 矛盾审视失败: {e}")
 
 
 async def _outbox_extract_facts_handler(lanlan_name: str, payload: dict) -> None:

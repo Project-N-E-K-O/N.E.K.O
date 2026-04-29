@@ -74,7 +74,9 @@ export default {
     sdkVersion: 'Versão do SDK',
     updateTime: 'Hora da atualização',
     noMetricsData: 'Sem dados de desempenho',
-    failedToLoadServerInfo: 'Falha ao carregar informações do servidor'
+    failedToLoadServerInfo: 'Falha ao carregar informações do servidor',
+    startTutorial: 'Guia tutorial',
+    tutorialHint: 'Primeira vez no gerenciador de plugins? Toque aqui que eu te mostro rapidinho.'
   },
   plugins: {
     title: 'Plugins',
@@ -240,9 +242,19 @@ export default {
     },
     ui: {
       open: 'Abrir UI',
+      panel: 'Painel',
+      guide: 'Tutorial',
       loading: 'Carregando UI do plugin...',
       loadError: 'Falha ao carregar a UI do plugin',
-      noUI: 'Este plugin não possui UI personalizada'
+      noUI: 'Este plugin não possui UI personalizada',
+      hostedTsxPending: 'Renderização Hosted TSX em breve',
+      markdownPending: 'Renderização de tutorial Markdown em breve',
+      autoPending: 'Painéis gerados automaticamente em breve',
+      surfaceUnavailable: 'Surface indisponível',
+      surfaceEntryMissing: 'O arquivo de entrada declarado por esta Surface não existe. Verifique o caminho entry no plugin.toml.',
+      surfaceWarnings: 'A declaração de UI do plugin precisa de atenção',
+      controlError: 'Erro de controle da UI do plugin',
+      hostedRuntimePending: 'O contêiner Vue reconheceu esta Surface. Renderizadores TSX, Markdown e Auto serão conectados em uma fase posterior.'
     }
   },
   metrics: {
@@ -417,6 +429,85 @@ export default {
     welcome: 'É aqui que você gerencia todos os seus plugins, nya~ Pode navegar, executar e ajustar pra me deixar ainda mais poderosa!',
     hint: 'Vá com calma, dê uma olhadinha, e toca no botão abaixo quando terminar~',
     complete: 'Tudo pronto, meow~',
-    dismiss: 'Talvez depois~'
+    dismiss: 'Talvez depois~',
+    keyboardSkipHint: 'Pressione Enter ou Espaço para avançar. Isso fica ativo 0,5 segundo após o início de cada etapa.',
+    steps: {
+      start: {
+        title: 'Comece aqui',
+        body: 'Use este botão sempre que quiser rever o tutorial do gerenciador de plugins. Eu não vou aparecer sozinha, nya.'
+      },
+      stats: {
+        title: 'Visão geral dos plugins',
+        body: 'Estes cartões mostram plugins totais, em execução, parados e com falha para você entender o estado de relance.'
+      },
+      metrics: {
+        title: 'Monitor de desempenho',
+        body: 'Esta área mostra CPU, memória, threads e plugins ativos do serviço de plugins.'
+      },
+      server: {
+        title: 'Informações do servidor',
+        body: 'Aqui você vê a versão do SDK, a contagem de plugins e a hora da atualização para confirmar que o serviço está saudável.'
+      },
+      plugins: {
+        title: 'Lista de plugins',
+        body: 'Entre em Plugins à esquerda para iniciar, parar, configurar plugins ou verificar logs.'
+      },
+      pluginWorkbench: {
+        title: 'Área de plugins',
+        body: 'Aqui ficam plugins, adaptadores e extensões para a gestão do dia a dia.'
+      },
+      pluginFilters: {
+        title: 'Busca e filtros',
+        body: 'Filtre por nome, estado, tipo ou regras avançadas quando a lista ficar grande.'
+      },
+      pluginLayout: {
+        title: 'Layout da visualização',
+        body: 'Alterne entre lista, uma coluna, duas colunas e modo compacto conforme sua tela.'
+      },
+      pluginContextMenu: {
+        title: 'Ações com clique direito',
+        body: 'Clique com o botão direito em um plugin para abrir detalhes, configuração, logs ou ações comuns.'
+      },
+      packageManager: {
+        title: 'Gerenciador de pacotes',
+        body: 'Ele reutiliza filtros e seleção atuais para empacotar, inspecionar, verificar ou descompactar.'
+      },
+      packageOperations: {
+        title: 'Operações de pacote',
+        body: 'Escolha modos de empacotamento, inspecione pacotes ou analise bundles. O tutorial não executa ações perigosas.'
+      },
+      pluginDetail: {
+        title: 'Detalhes do plugin',
+        body: 'A página de detalhes mostra metadados, entradas, métricas, configuração e logs.'
+      },
+      pluginDetailActions: {
+        title: 'Ações dos detalhes',
+        body: 'As ações no canto superior direito se aplicam ao plugin atual.'
+      },
+      runs: {
+        title: 'Execuções',
+        body: 'Execuções mostram histórico e estado ao vivo das tarefas dos plugins.'
+      },
+      runsList: {
+        title: 'Lista de execuções',
+        body: 'Selecione uma execução à esquerda ou atualize para sincronizar os registros recentes.'
+      },
+      runsDetail: {
+        title: 'Detalhe da execução',
+        body: 'O painel mostra etapa, progresso, erros e exportações; cancelar só aparece quando permitido.'
+      },
+      logs: {
+        title: 'Logs do servidor',
+        body: 'Logs do servidor ajudam a revisar saídas e erros do serviço de plugins.'
+      },
+      logToolbar: {
+        title: 'Filtros de logs',
+        body: 'Filtre por nível, palavra-chave e número de linhas, ou alterne a rolagem automática.'
+      },
+      logList: {
+        title: 'Lista de logs',
+        body: 'Os logs mostram hora, origem, nível e mensagem para depurar problemas de plugins.'
+      }
+    }
   }
 }

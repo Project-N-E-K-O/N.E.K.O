@@ -56,7 +56,8 @@ The N.E.K.O. plugin system is a Python-based plugin framework built on **process
 - **Plugin store** — `PluginStore` for persistent key-value storage
 - **Bus system** — `self.bus` for event pub/sub
 - **Dynamic entries** — Register/unregister entry points at runtime
-- **Static UI** — Serve a web UI from your plugin directory
+- **Hosted UI** — Build interactive TSX panels and Markdown guides in the Plugin Manager
+- **Static UI** — Serve a legacy web UI from your plugin directory
 - **Lifecycle hooks** — `startup`, `shutdown`, `reload`, `freeze`, `unfreeze`, `config_change`
 - **Timer tasks** — Periodic execution with `@timer_interval`
 - **Message handlers** — React to messages from the host system
@@ -70,7 +71,10 @@ plugin/plugins/
     ├── plugin.toml      # Plugin configuration
     ├── config.json      # Optional: custom config
     ├── data/            # Optional: runtime data directory
-    └── static/          # Optional: web UI files
+    ├── ui/              # Optional: hosted TSX panels
+    ├── docs/            # Optional: Markdown or TSX guide surfaces
+    ├── i18n/            # Optional: plugin-local translations
+    └── static/          # Optional: legacy web UI files
 ```
 
 ## Quick Links
@@ -78,6 +82,7 @@ plugin/plugins/
 - [Quick Start](./quick-start) — Create your first plugin in 5 minutes
 - [SDK Reference](./sdk-reference) — Base classes, context API, Result types
 - [Decorators](./decorators) — All available decorators
+- [Hosted UI](./hosted-ui) — Build TSX panels and Markdown guides
 - [Examples](./examples) — Complete working examples
 - [Advanced Topics](./advanced) — Extensions, Adapters, cross-plugin calls, hooks
 - [Best Practices](./best-practices) — Error handling, testing, code organization

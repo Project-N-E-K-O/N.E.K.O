@@ -9,9 +9,10 @@
     <!-- i18next 加载器（统一处理 CDN 加载和初始化） -->
     <script src="/static/i18n-i18next.js"></script>
     <link rel="stylesheet" href="/static/css/memory_browser.css">
+    <link rel="stylesheet" href="/static/css/storage-location.css">
     <link rel="stylesheet" href="/static/css/dark-mode.css">
     <link rel="stylesheet" href="/static/css/tutorial-styles.css">
-    <link rel="stylesheet" href="/static/css/yui-guide.css">
+    <link rel="stylesheet" href="/static/css/yui-guide.css?v=20260427-2">
     <script src="/static/theme-manager.js"></script>
 </head>
 <body>
@@ -45,6 +46,19 @@
                                 </div>
                             </div>
                         </div>
+                        <div class="review-toggle">
+                            <div class="review-toggle-title" data-i18n="memory.strongMemory">强力记忆</div>
+                            <div class="auto-review-toggle-wrapper">
+                                <input type="checkbox" id="strong-memory-toggle-checkbox">
+                                <label for="strong-memory-toggle-checkbox" class="auto-review-toggle-btn">
+                                    <span class="auto-review-toggle-icon"></span>
+                                    <span class="auto-review-toggle-text" id="strong-memory-toggle-text" data-i18n="memory.disabled">已关闭</span>
+                                </label>
+                                <div class="auto-review-toggle-note" data-i18n="memory.strongMemoryNote">
+                                    开启时启用深度记忆固化（口头反馈、自动反驳检测、多通道证据累加），关闭后约可节省 40% 模型调用
+                                </div>
+                            </div>
+                        </div>
                     </div>
                     <div class="file-list tutorial-section">
                         <div class="file-list-title" data-i18n="memory.tutorialReset">新手引导</div>
@@ -63,6 +77,22 @@
                             </select>
                             <button type="button" class="auto-review-toggle-btn tutorial-reset-btn" id="tutorial-reset-btn" onclick="resetTutorialForPage(document.getElementById('tutorial-reset-select').value)" disabled>
                                 <span data-i18n="memory.resetTutorialBtn">重置引导</span>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="file-list storage-location-section">
+                        <div class="file-list-title" data-i18n="memory.storageLocation">存储位置</div>
+                        <div class="storage-location-card-mini">
+                            <div class="storage-location-mini-row">
+                                <span class="storage-location-mini-label" data-i18n="memory.storageCurrentRoot">当前数据位置</span>
+                                <span class="storage-location-mini-value" id="storage-current-root">加载中...</span>
+                            </div>
+                            <div class="storage-location-mini-status" id="storage-location-status"></div>
+                            <button type="button" class="storage-location-manage-btn" id="storage-location-manage-btn" disabled>
+                                <span data-i18n="memory.changeStorageLocation">更改存储位置</span>
+                            </button>
+                            <button type="button" class="storage-location-open-btn" id="storage-location-open-btn" disabled>
+                                <span data-i18n="memory.openCurrentStorageRoot">打开当前目录</span>
                             </button>
                         </div>
                     </div>
@@ -85,6 +115,34 @@
             </div>
         </div>
     </div>
+    <div class="storage-location-modal-backdrop" id="storage-location-modal" hidden>
+        <div class="storage-location-modal-card" role="dialog" aria-modal="true" aria-labelledby="storage-location-modal-title">
+            <div class="storage-location-modal-head">
+                <h3 id="storage-location-modal-title" data-i18n="memory.storageManagementTitle">更改存储位置</h3>
+                <button type="button" class="storage-location-modal-close" id="storage-location-modal-close" data-i18n-title="common.close" data-i18n-aria="common.close" aria-label="关闭">×</button>
+            </div>
+            <div class="storage-location-modal-body">
+                <div class="storage-location-modal-field">
+                    <span class="storage-location-modal-label" data-i18n="memory.storageCurrentRoot">当前数据位置</span>
+                    <span class="storage-location-modal-value" id="storage-modal-current-root">-</span>
+                </div>
+                <label class="storage-location-modal-field" for="storage-target-root-input">
+                    <span class="storage-location-modal-label" data-i18n="memory.storageTargetRoot">目标位置</span>
+                    <input type="text" id="storage-target-root-input" class="storage-location-target-input" data-i18n-placeholder="memory.storageTargetPlaceholder" placeholder="选择或输入新的数据位置">
+                </label>
+                <div class="storage-location-modal-actions">
+                    <button type="button" class="storage-location-open-btn" id="storage-location-pick-btn">
+                        <span data-i18n="memory.storagePickTarget">选择位置</span>
+                    </button>
+                    <button type="button" class="storage-location-restart-btn" id="storage-location-restart-btn">
+                        <span data-i18n="memory.storageConfirmRestart">确认关闭并迁移</span>
+                    </button>
+                </div>
+                <div class="storage-location-preflight-result" id="storage-location-preflight-result"></div>
+            </div>
+        </div>
+    </div>
+    <script src="/static/app-storage-location.js" data-storage-location-auto-start="false"></script>
     <script src="/static/js/memory_browser.js"></script>
 
     <!-- Driver.js 库 -->
@@ -93,8 +151,8 @@
 
     <script src="/static/yui-guide-steps.js?v=20260422-1"></script>
     <script src="/static/yui-guide-overlay.js?v=20260422-6"></script>
-    <script src="/static/yui-guide-page-handoff.js?v=20260422-9"></script>
-    <script src="/static/yui-guide-director.js?v=20260422-7"></script>
+    <script src="/static/yui-guide-page-handoff.js?v=20260427-2"></script>
+    <script src="/static/yui-guide-director.js?v=20260427-2"></script>
     <!-- 通用教程管理器 -->
     <script src="/static/universal-tutorial-manager.js?v=12"></script>
 

@@ -34,6 +34,32 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
 
 
 @pytest.fixture(autouse=True)
+def _isolate_runtime_overrides(monkeypatch: pytest.MonkeyPatch):
+    """Redirect plugin runtime override persistence to an in-memory dict for tests.
+
+    Without this, tests that exercise `disable_extension` / `enable_extension`
+    (directly or via `delete_plugin`) would write to the real user's
+    ``plugin_runtime_overrides.json``, persistently disabling extensions on the
+    developer's machine.
+    """
+    from plugin.server.infrastructure import runtime_overrides as _ro
+
+    fake_store: dict[str, bool] = {}
+
+    monkeypatch.setattr(_ro, "_load_from_disk", lambda: dict(fake_store))
+    monkeypatch.setattr(
+        _ro,
+        "_save_to_disk",
+        lambda overrides: fake_store.clear() or fake_store.update(overrides),
+    )
+    _ro.reset_cache_for_testing()
+    try:
+        yield fake_store
+    finally:
+        _ro.reset_cache_for_testing()
+
+
+@pytest.fixture(autouse=True)
 def _clear_leaked_running_loop(request: pytest.FixtureRequest):
     """Temporarily clear any running event loop leaked by Playwright's greenlet
     so that sync tests see a clean ``asyncio.get_running_loop() → RuntimeError``

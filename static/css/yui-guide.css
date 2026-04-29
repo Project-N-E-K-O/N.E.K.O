@@ -47,11 +47,6 @@ body.yui-guide-home-driver-hidden .driver-highlight {
 
 .yui-guide-spotlight-frame {
   position: fixed;
-  border: 2px solid #93d6ff;
-  box-shadow:
-    0 0 0 4px #a1e4ff,
-    0 0 0 7px #aff3ff,
-    0 16px 32px rgba(147, 214, 255, 0.18);
   opacity: 0;
   transform: translateY(0);
   transition:
@@ -62,11 +57,118 @@ body.yui-guide-home-driver-hidden .driver-highlight {
     height 220ms ease,
     border-radius 220ms ease;
   pointer-events: none;
+  overflow: visible;
 }
 
 .yui-guide-spotlight-frame.is-visible {
   opacity: 1;
   animation: yui-guide-chat-pulse 1.5s ease-in-out infinite;
+}
+
+.yui-guide-spotlight-chrome {
+  position: absolute;
+  inset: 3px;
+  border-radius: inherit;
+  pointer-events: none;
+  background: linear-gradient(180deg, rgba(84, 133, 255, 0.09), rgba(89, 211, 255, 0.03));
+  box-shadow:
+    0 0 0 1px rgba(214, 243, 255, 0.72),
+    0 0 18px rgba(104, 194, 255, 0.56),
+    0 0 34px rgba(87, 136, 255, 0.26),
+    inset 0 0 16px rgba(131, 214, 255, 0.16);
+}
+
+.yui-guide-spotlight-chrome::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  padding: 2px;
+  border-radius: inherit;
+  --yui-guide-spotlight-corner-size: min(34%, 138px);
+  --yui-guide-spotlight-border-gap: min(68%, 144px);
+
+  background:
+    linear-gradient(rgba(39, 89, 228, 0.98), rgba(39, 89, 228, 0.98)) top center / calc(100% - var(--yui-guide-spotlight-border-gap)) 2px no-repeat,
+    linear-gradient(rgba(39, 89, 228, 0.98), rgba(39, 89, 228, 0.98)) bottom center / calc(100% - var(--yui-guide-spotlight-border-gap)) 2px no-repeat,
+    linear-gradient(90deg, rgba(39, 89, 228, 0.98), rgba(39, 89, 228, 0.98)) left center / 2px calc(100% - var(--yui-guide-spotlight-border-gap)) no-repeat,
+    linear-gradient(90deg, rgba(39, 89, 228, 0.98), rgba(39, 89, 228, 0.98)) right center / 2px calc(100% - var(--yui-guide-spotlight-border-gap)) no-repeat,
+    radial-gradient(circle at top left,
+      rgba(235, 249, 255, 0.98) 0,
+      rgba(186, 231, 255, 0.98) 13%,
+      rgba(76, 137, 255, 0.95) 52%,
+      rgba(39, 89, 228, 0.98) 96%,
+      transparent 100%
+    ) top left / var(--yui-guide-spotlight-corner-size) var(--yui-guide-spotlight-corner-size) no-repeat,
+    radial-gradient(circle at top right,
+      rgba(235, 249, 255, 0.98) 0,
+      rgba(186, 231, 255, 0.98) 13%,
+      rgba(76, 137, 255, 0.95) 52%,
+      rgba(39, 89, 228, 0.98) 96%,
+      transparent 100%
+    ) top right / var(--yui-guide-spotlight-corner-size) var(--yui-guide-spotlight-corner-size) no-repeat,
+    radial-gradient(circle at bottom right,
+      rgba(235, 249, 255, 0.98) 0,
+      rgba(186, 231, 255, 0.98) 13%,
+      rgba(76, 137, 255, 0.95) 52%,
+      rgba(39, 89, 228, 0.98) 96%,
+      transparent 100%
+    ) bottom right / var(--yui-guide-spotlight-corner-size) var(--yui-guide-spotlight-corner-size) no-repeat,
+    radial-gradient(circle at bottom left,
+      rgba(235, 249, 255, 0.98) 0,
+      rgba(186, 231, 255, 0.98) 13%,
+      rgba(76, 137, 255, 0.95) 52%,
+      rgba(39, 89, 228, 0.98) 96%,
+      transparent 100%
+    ) bottom left / var(--yui-guide-spotlight-corner-size) var(--yui-guide-spotlight-corner-size) no-repeat;
+  pointer-events: none;
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  mask-composite: exclude;
+}
+
+.yui-guide-spotlight-decoration,
+.yui-guide-spotlight-circle-skin {
+  position: absolute;
+  pointer-events: none;
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: contain;
+}
+
+.yui-guide-spotlight-ear-left {
+  top: -29px;
+  left: 2px;
+  width: 94.5px;
+  height: 40.5px;
+  background-image: url('/static/assets/tutorial/highlight/left-cat-ear.png');
+}
+
+.yui-guide-spotlight-ear-right {
+  top: -30px;
+  right: 2px;
+  width: 94.5px;
+  height: 40.5px;
+  background-image: url('/static/assets/tutorial/highlight/right-cat-ear.png');
+}
+
+.yui-guide-spotlight-paw {
+  right: -18px;
+  bottom: -11px;
+  width: 51px;
+  height: 51px;
+  background-image: url('/static/assets/tutorial/highlight/cat-paw.png');
+  filter: drop-shadow(0 0 8px rgba(119, 211, 255, 0.58));
+}
+
+.yui-guide-spotlight-circle-skin {
+  display: none;
+  inset: -18px;
+  background-image: url('/static/assets/tutorial/highlight/circle-highlight.png');
 }
 
 .yui-guide-spotlight-frame-persistent {
@@ -75,19 +177,27 @@ body.yui-guide-home-driver-hidden .driver-highlight {
 
 .yui-guide-spotlight-frame-action {
   z-index: 1;
-  border-color: #93d6ff;
-  box-shadow:
-    0 0 0 4px #a1e4ff,
-    0 0 0 7px #aff3ff,
-    0 16px 30px rgba(147, 214, 255, 0.20);
 }
 
 .yui-guide-spotlight-frame.is-circular-mask {
-  box-shadow:
-    0 0 0 9999px rgba(3, 7, 18, 0.62),
-    0 0 0 4px #a1e4ff,
-    0 0 0 7px #aff3ff,
-    0 16px 32px rgba(147, 214, 255, 0.18);
+  box-shadow: none !important;
+}
+
+.yui-guide-spotlight-frame.is-circular-mask.is-visible {
+  animation: none !important;
+  animation-name: none !important;
+  box-shadow: none !important;
+}
+
+.yui-guide-spotlight-frame.is-circular-mask .yui-guide-spotlight-chrome,
+.yui-guide-spotlight-frame.is-circular-mask .yui-guide-spotlight-ear-left,
+.yui-guide-spotlight-frame.is-circular-mask .yui-guide-spotlight-ear-right,
+.yui-guide-spotlight-frame.is-circular-mask .yui-guide-spotlight-paw {
+  display: none;
+}
+
+.yui-guide-spotlight-frame.is-circular-mask .yui-guide-spotlight-circle-skin {
+  display: block;
 }
 
 .yui-guide-precise-highlight {

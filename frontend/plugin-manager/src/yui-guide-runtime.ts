@@ -1,27 +1,40 @@
 import defaultGhostCursorUrl from '../../../static/assets/tutorial/ghost-cursor/default-ghost-cursor.png'
 import clickGhostCursorUrl from '../../../static/assets/tutorial/ghost-cursor/click-ghost-cursor.png'
+import leftCatEarUrl from '../../../static/assets/tutorial/highlight/left-cat-ear.png'
+import rightCatEarUrl from '../../../static/assets/tutorial/highlight/right-cat-ear.png'
+import catPawUrl from '../../../static/assets/tutorial/highlight/cat-paw.png'
 import { getLocale } from './i18n'
-import { getTrustedOpenerOrigin, useYuiTutorialBridge } from './composables/useYuiTutorialBridge'
+import router from './router'
 
 const START_EVENT = 'neko:yui-guide:plugin-dashboard:start'
 const READY_EVENT = 'neko:yui-guide:plugin-dashboard:ready'
 const DONE_EVENT = 'neko:yui-guide:plugin-dashboard:done'
 const INTERRUPT_REQUEST_EVENT = 'neko:yui-guide:plugin-dashboard:interrupt-request'
 const INTERRUPT_ACK_EVENT = 'neko:yui-guide:plugin-dashboard:interrupt-ack'
+const LOCAL_TUTORIAL_START_EVENT = 'neko:plugin-dashboard-tutorial:start'
+const LOCAL_TUTORIAL_ACTION_EVENT = 'neko:plugin-tutorial:action'
+const HANDOFF_STORAGE_KEY = 'neko_yui_guide_handoff_token'
+const HANDOFF_TOKEN_VERSION = 1
+const PREACTIVATE_CLEANUP_MS = 8000
 const GUIDE_AUDIO_BASE_URL = '/static/assets/tutorial/guide-audio/'
 const DEFAULT_GUIDE_LOCALE = 'zh'
-const HOME_YUI_GUIDE_FLOW_ID = 'home_yui_guide_v1'
-const PLUGIN_DASHBOARD_LANDING_SCENE = 'plugin_dashboard_landing'
 const DEFAULT_INTERRUPT_DISTANCE = 32
 const DEFAULT_INTERRUPT_SPEED_THRESHOLD = 1.8
 const DEFAULT_INTERRUPT_ACCELERATION_THRESHOLD = 0.09
 const DEFAULT_INTERRUPT_ACCELERATION_STREAK = 3
 const DEFAULT_INTERRUPT_THROTTLE_MS = 500
+const LOCAL_TUTORIAL_ADVANCE_COOLDOWN_MS = 500
 const SCRIPTED_MOTION_INTERRUPT_STREAK = 2
 const DEFAULT_PASSIVE_RESISTANCE_DISTANCE = 10
 const DEFAULT_PASSIVE_RESISTANCE_SPEED_THRESHOLD = 0.2
 const DEFAULT_PASSIVE_RESISTANCE_INTERVAL_MS = 140
 const DEFAULT_RESISTANCE_CURSOR_REVEAL_MS = 3000
+const PLUGIN_DASHBOARD_MOVE_TO_MAIN_MS = 780
+const PLUGIN_DASHBOARD_SCROLL_PHASE_MS = 2000
+// Negative values mean inward/inset padding for the plugin-main spotlight.
+const PLUGIN_MAIN_SPOTLIGHT_INSET = -25
+const PLUGIN_DASHBOARD_DEFAULT_TOTAL_MS = 9000
+const MIN_SPOTLIGHT_RADIUS = 4
 const RESISTANCE_LINES = [
   '喂！不要拽我啦，还没轮到你的回合呢！',
   '等一下啦！还没结束呢，不要随便打断我啦！',
@@ -62,13 +75,65 @@ const GUIDE_AUDIO_BY_KEY = {
   },
 } as const
 
+function normalizeOrigin(value: string) {
+  const normalizedValue = String(value || '').trim()
+  if (!normalizedValue) {
+    return ''
+  }
+
+  try {
+    return new URL(normalizedValue).origin
+  } catch {
+    return ''
+  }
+}
+
+const DEFAULT_OPENER_ORIGIN = normalizeOrigin(import.meta.env.VITE_YUI_TUTORIAL_OPENER_ORIGIN || '')
+const DEFAULT_LOCAL_OPENER_ORIGINS = [
+  'http://127.0.0.1:48911',
+  'http://localhost:48911',
+  'https://127.0.0.1:48912',
+  'https://localhost:48912',
+] as const
+const ALLOWED_OPENER_ORIGINS = new Set(
+  [
+    import.meta.env.VITE_YUI_TUTORIAL_ALLOWED_OPENER_ORIGINS || '',
+    DEFAULT_OPENER_ORIGIN,
+    ...DEFAULT_LOCAL_OPENER_ORIGINS,
+  ]
+    .flatMap((value) => String(value || '').split(','))
+    .map((value) => normalizeOrigin(value))
+    .filter(Boolean),
+)
+
+function getTrustedOpenerOrigin() {
+  if (!window.opener || window.opener.closed) {
+    return DEFAULT_OPENER_ORIGIN
+  }
+
+  try {
+    const openerOrigin = window.opener.location.origin
+    if (openerOrigin && (openerOrigin === window.location.origin || ALLOWED_OPENER_ORIGINS.has(openerOrigin))) {
+      return openerOrigin
+    }
+  } catch {
+    // Cross-origin opener access is expected here.
+  }
+
+  return DEFAULT_OPENER_ORIGIN
+}
+
 const ROOT_ID = 'yui-guide-plugin-dashboard-runtime'
 const SVG_NS = 'http://www.w3.org/2000/svg'
 const BACKDROP_MASK_ID = `${ROOT_ID}-mask`
+const DEFAULT_SPOTLIGHT_PADDING = 6
+const BACKDROP_CUTOUT_INSET = 4
 let currentGuideAudio: HTMLAudioElement | null = null
 let currentGuideAudioTimer: number | null = null
 let currentGuideSpeechStop: (() => void) | null = null
 let openerMessageOrigin = ''
+const guideAudioDurationCache = new Map<string, number>()
+const guideAudioDurationPromiseCache = new Map<string, Promise<number>>()
 
 type StartPayload = {
   line?: string
@@ -76,6 +141,28 @@ type StartPayload = {
   audioUrl?: string
   closeOnDone?: boolean
   interruptCount?: number
+  narrationDurationMs?: number
+  narrationStartedAtMs?: number
+}
+
+export type PluginDashboardLocalTutorialStep = {
+  targetId?: string
+  title: string
+  body: string
+  route?: string
+  action?: string
+  waitMs?: number
+  allowMissing?: boolean
+  motion?: 'point' | 'ellipse' | 'click'
+  durationMs?: number
+}
+
+export type PluginDashboardLocalTutorialPayload = {
+  steps: PluginDashboardLocalTutorialStep[]
+  labels?: {
+    skip?: string
+    keyboardHint?: string
+  }
 }
 
 type SpotlightRect = {
@@ -84,6 +171,7 @@ type SpotlightRect = {
   width: number
   height: number
   radius: number
+  padding: number
 }
 
 type ActiveNarration = {
@@ -158,8 +246,8 @@ function resolveSpeechLang() {
 }
 
 function getAllowedOpenerOrigins() {
+  const origins = new Set<string>(ALLOWED_OPENER_ORIGINS)
   const trustedOrigin = getTrustedOpenerOrigin()
-  const origins = new Set<string>()
   if (trustedOrigin) {
     origins.add(trustedOrigin)
   }
@@ -170,16 +258,26 @@ function getAllowedOpenerOrigins() {
 }
 
 function isAllowedOpenerEvent(event: MessageEvent) {
-  const allowedOrigins = getAllowedOpenerOrigins()
-  if (!event.origin || !allowedOrigins.has(event.origin)) {
-    return false
-  }
-
   if (!window.opener || window.opener.closed || event.source !== window.opener) {
     return false
   }
 
-  openerMessageOrigin = event.origin
+  const origin = typeof event.origin === 'string' ? event.origin : ''
+  if (!origin) {
+    return false
+  }
+
+  if (origin === window.location.origin) {
+    openerMessageOrigin = origin
+    return true
+  }
+
+  const allowedOrigins = getAllowedOpenerOrigins()
+  if (!allowedOrigins.has(origin)) {
+    return false
+  }
+
+  openerMessageOrigin = origin
   return true
 }
 
@@ -209,6 +307,29 @@ function resolveGuideAudioSrc(voiceKey?: keyof typeof GUIDE_AUDIO_BY_KEY, audioU
   return fileName ? `${GUIDE_AUDIO_BASE_URL}${fileLocale}/${encodeURIComponent(fileName)}` : ''
 }
 
+function getGuideAudioDurationCacheKey(audioSrc: string) {
+  const normalizedAudioSrc = typeof audioSrc === 'string' ? audioSrc.trim() : ''
+  if (!normalizedAudioSrc) {
+    return ''
+  }
+
+  try {
+    return new URL(normalizedAudioSrc, window.location.href).href
+  } catch (_) {
+    return normalizedAudioSrc
+  }
+}
+
+function cacheGuideAudioDuration(audioSrc: string, durationSeconds: number) {
+  if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) {
+    return
+  }
+  const cacheKey = getGuideAudioDurationCacheKey(audioSrc)
+  if (cacheKey) {
+    guideAudioDurationCache.set(cacheKey, Math.round(durationSeconds * 1000))
+  }
+}
+
 function playGuideAudioWithPromise(audioSrc: string, minimumDurationMs: number) {
   const normalizedAudioSrc = typeof audioSrc === 'string' ? audioSrc.trim() : ''
   if (!normalizedAudioSrc) {
@@ -218,14 +339,44 @@ function playGuideAudioWithPromise(audioSrc: string, minimumDurationMs: number) 
   return new Promise<void>((resolve, reject) => {
     let settled = false
     const audio = new Audio(normalizedAudioSrc)
+    const cacheKey = getGuideAudioDurationCacheKey(normalizedAudioSrc)
+    let resolveMetadataDuration: ((durationMs: number) => void) | null = null
+    let metadataTimerId: number | null = null
     const maxWaitMs = Math.max(3000, minimumDurationMs) + 12000
     currentGuideAudio = audio
+    if (cacheKey) {
+      let metadataPromise: Promise<number>
+      metadataPromise = new Promise<number>((resolveMetadata) => {
+        resolveMetadataDuration = resolveMetadata
+        metadataTimerId = window.setTimeout(() => {
+          metadataTimerId = null
+          resolveMetadata(0)
+        }, 2500)
+      }).finally(() => {
+        if (guideAudioDurationPromiseCache.get(cacheKey) === metadataPromise) {
+          guideAudioDurationPromiseCache.delete(cacheKey)
+        }
+      })
+      guideAudioDurationPromiseCache.set(cacheKey, metadataPromise)
+    }
+
+    const finishMetadataDuration = (durationMs: number) => {
+      if (metadataTimerId !== null) {
+        window.clearTimeout(metadataTimerId)
+        metadataTimerId = null
+      }
+      if (resolveMetadataDuration) {
+        resolveMetadataDuration(durationMs)
+        resolveMetadataDuration = null
+      }
+    }
 
     const finish = (success: boolean, error?: unknown) => {
       if (settled) {
         return
       }
       settled = true
+      finishMetadataDuration(0)
       window.clearTimeout(timerId)
       if (currentGuideAudioTimer === timerId) {
         currentGuideAudioTimer = null
@@ -238,6 +389,7 @@ function playGuideAudioWithPromise(audioSrc: string, minimumDurationMs: number) 
       }
       audio.onended = null
       audio.onerror = null
+      audio.onloadedmetadata = null
       if (success) {
         resolve()
         return
@@ -251,6 +403,13 @@ function playGuideAudioWithPromise(audioSrc: string, minimumDurationMs: number) 
     currentGuideAudioTimer = timerId
 
     audio.preload = 'auto'
+    audio.onloadedmetadata = () => {
+      const durationMs = Number.isFinite(audio.duration) && audio.duration > 0
+        ? Math.round(audio.duration * 1000)
+        : 0
+      cacheGuideAudioDuration(normalizedAudioSrc, audio.duration)
+      finishMetadataDuration(durationMs)
+    }
     audio.onended = () => finish(true)
     audio.onerror = () => finish(false, new Error('guide_audio_error'))
     const stop = () => {
@@ -273,6 +432,86 @@ function playGuideAudioWithPromise(audioSrc: string, minimumDurationMs: number) 
   })
 }
 
+function loadGuideAudioDurationMs(audioSrc: string, fallbackDurationMs: number): Promise<number> {
+  const normalizedAudioSrc = typeof audioSrc === 'string' ? audioSrc.trim() : ''
+  if (!normalizedAudioSrc) {
+    return Promise.resolve(fallbackDurationMs)
+  }
+
+  const cacheKey = getGuideAudioDurationCacheKey(normalizedAudioSrc)
+  const cachedDurationMs = cacheKey ? guideAudioDurationCache.get(cacheKey) : null
+  if (Number.isFinite(cachedDurationMs) && (cachedDurationMs as number) > 0) {
+    return Promise.resolve(cachedDurationMs as number)
+  }
+
+  const pendingDurationPromise = cacheKey ? guideAudioDurationPromiseCache.get(cacheKey) : null
+  if (pendingDurationPromise) {
+    return pendingDurationPromise.then((durationMs): number | Promise<number> => {
+      if (Number.isFinite(durationMs) && durationMs > 0) {
+        return durationMs
+      }
+      return loadGuideAudioDurationMs(normalizedAudioSrc, fallbackDurationMs)
+    })
+  }
+
+  const currentAudioCacheKey = currentGuideAudio
+    ? getGuideAudioDurationCacheKey(currentGuideAudio.currentSrc || currentGuideAudio.src || '')
+    : ''
+  if (
+    currentGuideAudio
+    && cacheKey
+    && currentAudioCacheKey === cacheKey
+    && Number.isFinite(currentGuideAudio.duration)
+    && currentGuideAudio.duration > 0
+  ) {
+    const durationMs = Math.round(currentGuideAudio.duration * 1000)
+    guideAudioDurationCache.set(cacheKey, durationMs)
+    return Promise.resolve(durationMs)
+  }
+
+  return new Promise<number>((resolve) => {
+    let settled = false
+    const audio = new Audio()
+    const finish = (durationMs?: number) => {
+      if (settled) {
+        return
+      }
+      settled = true
+      window.clearTimeout(timerId)
+      audio.onloadedmetadata = null
+      audio.onerror = null
+      try {
+        audio.pause()
+        audio.removeAttribute('src')
+        audio.load()
+      } catch (_) {}
+      resolve(Number.isFinite(durationMs) && (durationMs as number) > 0
+        ? Math.round(durationMs as number)
+        : fallbackDurationMs)
+    }
+
+    const timerId = window.setTimeout(() => finish(), 2500)
+    audio.preload = 'metadata'
+    audio.onloadedmetadata = () => {
+      const durationMs = Number.isFinite(audio.duration) && audio.duration > 0
+        ? audio.duration * 1000
+        : 0
+      if (cacheKey && durationMs > 0) {
+        guideAudioDurationCache.set(cacheKey, Math.round(durationMs))
+      }
+      finish(durationMs)
+    }
+    audio.onerror = () => finish()
+
+    try {
+      audio.src = normalizedAudioSrc
+      audio.load()
+    } catch (_) {
+      finish()
+    }
+  })
+}
+
 function createSvgElement<K extends keyof SVGElementTagNameMap>(
   tagName: K,
   className?: string,
@@ -282,6 +521,46 @@ function createSvgElement<K extends keyof SVGElementTagNameMap>(
     element.setAttribute('class', className)
   }
   return element
+}
+
+function readSpotlightNumberAttr(element: Element | null, attributeName: string) {
+  if (!element || !attributeName || typeof element.getAttribute !== 'function') {
+    return null
+  }
+
+  const rawValue = element.getAttribute(attributeName)
+  const value = Number.parseFloat(rawValue || '')
+  return Number.isFinite(value) ? value : null
+}
+
+function ensurePluginSpotlightDecorations(spotlight: HTMLDivElement | null) {
+  if (!spotlight) {
+    return
+  }
+
+  if (!spotlight.querySelector('.yui-guide-plugin-spotlight-chrome')) {
+    const chrome = document.createElement('div')
+    chrome.className = 'yui-guide-plugin-spotlight-chrome'
+    spotlight.appendChild(chrome)
+  }
+
+  if (!spotlight.querySelector('.yui-guide-plugin-spotlight-ear-left')) {
+    const earLeft = document.createElement('div')
+    earLeft.className = 'yui-guide-plugin-spotlight-decoration yui-guide-plugin-spotlight-ear-left'
+    spotlight.appendChild(earLeft)
+  }
+
+  if (!spotlight.querySelector('.yui-guide-plugin-spotlight-ear-right')) {
+    const earRight = document.createElement('div')
+    earRight.className = 'yui-guide-plugin-spotlight-decoration yui-guide-plugin-spotlight-ear-right'
+    spotlight.appendChild(earRight)
+  }
+
+  if (!spotlight.querySelector('.yui-guide-plugin-spotlight-paw')) {
+    const paw = document.createElement('div')
+    paw.className = 'yui-guide-plugin-spotlight-decoration yui-guide-plugin-spotlight-paw'
+    spotlight.appendChild(paw)
+  }
 }
 
 function speakTextWithPromise(
@@ -359,6 +638,20 @@ function stopCurrentGuideSpeech() {
   } catch (_) {}
 }
 
+async function resolveNarrationDurationMs(payload: StartPayload) {
+  if (Number.isFinite(payload.narrationDurationMs)) {
+    return Math.min(Math.max(0, Math.round(payload.narrationDurationMs as number)), 24000)
+  }
+
+  const fallbackDurationMs = PLUGIN_DASHBOARD_DEFAULT_TOTAL_MS
+  const localAudioSrc = resolveGuideAudioSrc(payload.voiceKey, payload.audioUrl)
+  if (!localAudioSrc) {
+    return fallbackDurationMs
+  }
+
+  return loadGuideAudioDurationMs(localAudioSrc, fallbackDurationMs)
+}
+
 function resolveResistanceTextKey(interruptCount: number) {
   return interruptCount >= 2
     ? 'tutorial.yuiGuide.lines.interruptResistLight3'
@@ -433,19 +726,112 @@ function injectStyle() {
 
     #${ROOT_ID} .yui-guide-plugin-spotlight {
       position: fixed;
-      border: 3px solid #93d6ff;
       border-radius: 18px;
-      box-shadow:
-        0 0 0 7px #a1e4ff,
-        0 0 0 12px #aff3ff,
-        0 20px 38px rgba(147, 214, 255, 0.26);
       opacity: 0;
+      overflow: visible;
       transition:
         opacity 180ms ease,
         left 220ms ease,
         top 220ms ease,
         width 220ms ease,
         height 220ms ease;
+    }
+
+    #${ROOT_ID} .yui-guide-plugin-spotlight-chrome {
+      position: absolute;
+      inset: 3px;
+      border-radius: inherit;
+      background: linear-gradient(180deg, rgba(84, 133, 255, 0.09), rgba(89, 211, 255, 0.03));
+      box-shadow:
+        0 0 0 1px rgba(214, 243, 255, 0.72),
+        0 0 18px rgba(104, 194, 255, 0.56),
+        0 0 34px rgba(87, 136, 255, 0.26),
+        inset 0 0 16px rgba(131, 214, 255, 0.16);
+    }
+
+    #${ROOT_ID} .yui-guide-plugin-spotlight-chrome::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      padding: 2px;
+      border-radius: inherit;
+      --yui-guide-plugin-spotlight-corner-size: min(34%, 138px);
+      --yui-guide-plugin-spotlight-border-gap: min(68%, 144px);
+      background:
+        linear-gradient(rgba(39, 89, 228, 0.98), rgba(39, 89, 228, 0.98)) top center / calc(100% - var(--yui-guide-plugin-spotlight-border-gap)) 2px no-repeat,
+        linear-gradient(rgba(39, 89, 228, 0.98), rgba(39, 89, 228, 0.98)) bottom center / calc(100% - var(--yui-guide-plugin-spotlight-border-gap)) 2px no-repeat,
+        linear-gradient(90deg, rgba(39, 89, 228, 0.98), rgba(39, 89, 228, 0.98)) left center / 2px calc(100% - var(--yui-guide-plugin-spotlight-border-gap)) no-repeat,
+        linear-gradient(90deg, rgba(39, 89, 228, 0.98), rgba(39, 89, 228, 0.98)) right center / 2px calc(100% - var(--yui-guide-plugin-spotlight-border-gap)) no-repeat,
+        radial-gradient(circle at top left,
+          rgba(235, 249, 255, 0.98) 0,
+          rgba(186, 231, 255, 0.98) 13%,
+          rgba(76, 137, 255, 0.95) 52%,
+          rgba(39, 89, 228, 0.98) 96%,
+          transparent 100%
+        ) top left / var(--yui-guide-plugin-spotlight-corner-size) var(--yui-guide-plugin-spotlight-corner-size) no-repeat,
+        radial-gradient(circle at top right,
+          rgba(235, 249, 255, 0.98) 0,
+          rgba(186, 231, 255, 0.98) 13%,
+          rgba(76, 137, 255, 0.95) 52%,
+          rgba(39, 89, 228, 0.98) 96%,
+          transparent 100%
+        ) top right / var(--yui-guide-plugin-spotlight-corner-size) var(--yui-guide-plugin-spotlight-corner-size) no-repeat,
+        radial-gradient(circle at bottom right,
+          rgba(235, 249, 255, 0.98) 0,
+          rgba(186, 231, 255, 0.98) 13%,
+          rgba(76, 137, 255, 0.95) 52%,
+          rgba(39, 89, 228, 0.98) 96%,
+          transparent 100%
+        ) bottom right / var(--yui-guide-plugin-spotlight-corner-size) var(--yui-guide-plugin-spotlight-corner-size) no-repeat,
+        radial-gradient(circle at bottom left,
+          rgba(235, 249, 255, 0.98) 0,
+          rgba(186, 231, 255, 0.98) 13%,
+          rgba(76, 137, 255, 0.95) 52%,
+          rgba(39, 89, 228, 0.98) 96%,
+          transparent 100%
+        ) bottom left / var(--yui-guide-plugin-spotlight-corner-size) var(--yui-guide-plugin-spotlight-corner-size) no-repeat;
+      pointer-events: none;
+      -webkit-mask:
+        linear-gradient(#000 0 0) content-box,
+        linear-gradient(#000 0 0);
+      -webkit-mask-composite: xor;
+      mask:
+        linear-gradient(#000 0 0) content-box,
+        linear-gradient(#000 0 0);
+      mask-composite: exclude;
+    }
+
+    #${ROOT_ID} .yui-guide-plugin-spotlight-decoration {
+      position: absolute;
+      pointer-events: none;
+      background-position: center;
+      background-repeat: no-repeat;
+      background-size: contain;
+    }
+
+    #${ROOT_ID} .yui-guide-plugin-spotlight-ear-left {
+      top: -29px;
+      left: 2px;
+      width: 94.5px;
+      height: 40.5px;
+      background-image: url('${leftCatEarUrl}');
+    }
+
+    #${ROOT_ID} .yui-guide-plugin-spotlight-ear-right {
+      top: -30px;
+      right: 2px;
+      width: 94.5px;
+      height: 40.5px;
+      background-image: url('${rightCatEarUrl}');
+    }
+
+    #${ROOT_ID} .yui-guide-plugin-spotlight-paw {
+      right: -18px;
+      bottom: -11px;
+      width: 51px;
+      height: 51px;
+      background-image: url('${catPawUrl}');
+      filter: drop-shadow(0 0 8px rgba(119, 211, 255, 0.58));
     }
 
     #${ROOT_ID} .yui-guide-plugin-spotlight.is-visible {
@@ -460,8 +846,6 @@ function injectStyle() {
     #${ROOT_ID}.is-angry .yui-guide-plugin-spotlight {
       opacity: 0 !important;
       display: none !important;
-      border-color: transparent;
-      box-shadow: none;
       animation: none;
     }
 
@@ -521,6 +905,70 @@ function injectStyle() {
       animation: yui-guide-plugin-click 240ms ease;
     }
 
+    #${ROOT_ID} .yui-guide-plugin-card {
+      position: fixed;
+      right: 32px;
+      bottom: 32px;
+      z-index: 3;
+      width: min(360px, calc(100vw - 40px));
+      padding: 18px;
+      border: 1px solid rgba(147, 214, 255, 0.42);
+      border-radius: 18px;
+      background: color-mix(in srgb, var(--el-bg-color, #ffffff) 92%, transparent);
+      box-shadow: 0 18px 48px rgba(15, 23, 42, 0.28);
+      color: var(--el-text-color-primary, #1f2937);
+      pointer-events: auto;
+      backdrop-filter: blur(18px) saturate(1.25);
+      -webkit-backdrop-filter: blur(18px) saturate(1.25);
+    }
+
+    #${ROOT_ID} .yui-guide-plugin-card[hidden] {
+      display: none;
+    }
+
+    #${ROOT_ID} .yui-guide-plugin-card-title {
+      margin: 0 0 8px;
+      font-size: 16px;
+      font-weight: 700;
+      line-height: 1.4;
+    }
+
+    #${ROOT_ID} .yui-guide-plugin-card-body {
+      margin: 0;
+      color: var(--el-text-color-regular, #4b5563);
+      font-size: 13px;
+      line-height: 1.7;
+    }
+
+    #${ROOT_ID} .yui-guide-plugin-card-hint {
+      margin: 10px 0 0;
+      color: var(--el-text-color-secondary, #6b7280);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    #${ROOT_ID} .yui-guide-plugin-card-actions {
+      display: flex;
+      justify-content: flex-end;
+      margin-top: 14px;
+    }
+
+    #${ROOT_ID} .yui-guide-plugin-skip {
+      border: 1px solid color-mix(in srgb, var(--el-border-color, #dcdfe6) 70%, transparent);
+      border-radius: 999px;
+      padding: 6px 12px;
+      background: transparent;
+      color: var(--el-text-color-regular, #4b5563);
+      cursor: pointer;
+      font: inherit;
+      font-size: 12px;
+    }
+
+    #${ROOT_ID} .yui-guide-plugin-skip:hover {
+      border-color: var(--el-color-primary, #409eff);
+      color: var(--el-color-primary, #409eff);
+    }
+
     @keyframes yui-guide-plugin-pulse {
       0%, 100% { transform: scale(1); }
       50% { transform: scale(1.02); }
@@ -545,6 +993,11 @@ class PluginDashboardGuideRuntime {
   spotlight: HTMLDivElement | null = null
   cursorShell: HTMLDivElement | null = null
   cursorInner: HTMLDivElement | null = null
+  guideCard: HTMLElement | null = null
+  guideCardTitle: HTMLHeadingElement | null = null
+  guideCardBody: HTMLParagraphElement | null = null
+  guideCardHint: HTMLParagraphElement | null = null
+  guideCardSkip: HTMLButtonElement | null = null
   cursorPosition: { x: number; y: number } | null = null
   lastCursorTarget: { x: number; y: number } | null = null
   spotlightElement: Element | null = null
@@ -566,6 +1019,9 @@ class PluginDashboardGuideRuntime {
   cursorTransitionActive = false
   activeNarration: ActiveNarration | null = null
   pendingInterruptAck: PendingInterruptAck | null = null
+  localTutorialStepAdvanceReadyAt = 0
+  localTutorialStepAdvance: (() => void) | null = null
+  preactivationTimeoutId: number | null = null
   boundPointerMoveHandler = (event: PointerEvent | MouseEvent) => {
     this.handleInterrupt(event)
   }
@@ -594,9 +1050,71 @@ class PluginDashboardGuideRuntime {
     }
     this.setSpotlight(this.spotlightElement)
   }
+  boundLocalTutorialKeydown = (event: KeyboardEvent) => {
+    this.handleLocalTutorialKeydown(event)
+  }
 
   isCurrentRun(sessionId: string) {
     return this.running && this.activeSessionId === sessionId
+  }
+
+  hasPendingPluginDashboardHandoff() {
+    if (typeof window === 'undefined' || typeof window.localStorage === 'undefined') {
+      return false
+    }
+
+    try {
+      const raw = window.localStorage.getItem(HANDOFF_STORAGE_KEY)
+      if (!raw) {
+        return false
+      }
+      const token = JSON.parse(raw) as {
+        token_version?: number
+        flow_id?: string
+        target_page?: string
+        consumed?: boolean
+        expires_at?: number
+      } | null
+      return !!(
+        token
+        && token.token_version === HANDOFF_TOKEN_VERSION
+        && typeof token.flow_id === 'string'
+        && token.flow_id.trim() !== ''
+        && token.target_page === 'plugin_dashboard'
+        && token.consumed !== true
+        && Number.isFinite(token.expires_at)
+        && Number(token.expires_at) > Date.now()
+      )
+    } catch {
+      return false
+    }
+  }
+
+  clearPreactivationTimeout() {
+    if (this.preactivationTimeoutId !== null) {
+      window.clearTimeout(this.preactivationTimeoutId)
+      this.preactivationTimeoutId = null
+    }
+  }
+
+  preactivatePendingOverlay() {
+    if (!window.opener || window.opener.closed) {
+      return false
+    }
+    if (!this.hasPendingPluginDashboardHandoff()) {
+      return false
+    }
+
+    this.activateOverlayShell()
+    this.clearPreactivationTimeout()
+    this.preactivationTimeoutId = window.setTimeout(() => {
+      this.preactivationTimeoutId = null
+      if (this.running) {
+        return
+      }
+      this.cleanup()
+    }, PREACTIVATE_CLEANUP_MS)
+    return true
   }
 
   ensureRoot() {
@@ -638,6 +1156,7 @@ class PluginDashboardGuideRuntime {
     const spotlight = document.createElement('div')
     spotlight.className = 'yui-guide-plugin-spotlight'
     spotlight.hidden = true
+    ensurePluginSpotlightDecorations(spotlight)
 
     const interactionShield = document.createElement('div')
     interactionShield.className = 'yui-guide-plugin-interaction-shield'
@@ -649,9 +1168,32 @@ class PluginDashboardGuideRuntime {
     cursorInner.className = 'yui-guide-plugin-cursor'
     cursorShell.appendChild(cursorInner)
 
+    const guideCard = document.createElement('section')
+    guideCard.className = 'yui-guide-plugin-card'
+    guideCard.hidden = true
+    guideCard.setAttribute('role', 'dialog')
+    guideCard.setAttribute('aria-live', 'polite')
+    const guideCardTitle = document.createElement('h3')
+    guideCardTitle.className = 'yui-guide-plugin-card-title'
+    const guideCardBody = document.createElement('p')
+    guideCardBody.className = 'yui-guide-plugin-card-body'
+    const guideCardHint = document.createElement('p')
+    guideCardHint.className = 'yui-guide-plugin-card-hint'
+    const guideCardActions = document.createElement('div')
+    guideCardActions.className = 'yui-guide-plugin-card-actions'
+    const guideCardSkip = document.createElement('button')
+    guideCardSkip.type = 'button'
+    guideCardSkip.className = 'yui-guide-plugin-skip'
+    guideCardActions.appendChild(guideCardSkip)
+    guideCard.appendChild(guideCardTitle)
+    guideCard.appendChild(guideCardBody)
+    guideCard.appendChild(guideCardHint)
+    guideCard.appendChild(guideCardActions)
+
     root.appendChild(backdrop)
     root.appendChild(interactionShield)
     root.appendChild(spotlight)
+    root.appendChild(guideCard)
     root.appendChild(cursorShell)
     document.body.appendChild(root)
 
@@ -664,6 +1206,11 @@ class PluginDashboardGuideRuntime {
     this.spotlight = spotlight
     this.cursorShell = cursorShell
     this.cursorInner = cursorInner
+    this.guideCard = guideCard
+    this.guideCardTitle = guideCardTitle
+    this.guideCardBody = guideCardBody
+    this.guideCardHint = guideCardHint
+    this.guideCardSkip = guideCardSkip
     this.syncBackdropViewport()
   }
 
@@ -793,7 +1340,8 @@ class PluginDashboardGuideRuntime {
       return null
     }
 
-    const padding = 12
+    const padding = readSpotlightNumberAttr(htmlElement, 'data-yui-guide-spotlight-padding')
+      ?? DEFAULT_SPOTLIGHT_PADDING
     const left = Math.max(0, Math.floor(rect.left - padding))
     const top = Math.max(0, Math.floor(rect.top - padding))
     const right = Math.min(window.innerWidth, Math.ceil(rect.right + padding))
@@ -803,10 +1351,12 @@ class PluginDashboardGuideRuntime {
 
     let radius = 18
     try {
-      const computed = window.getComputedStyle(htmlElement)
-      const parsedRadius = Number.parseFloat(computed.borderTopLeftRadius || computed.borderRadius || '')
+      const explicitRadius = readSpotlightNumberAttr(htmlElement, 'data-yui-guide-spotlight-radius')
+      const parsedRadius = Number.isFinite(explicitRadius) && Number(explicitRadius) > 0
+        ? Number(explicitRadius)
+        : Number.parseFloat(window.getComputedStyle(htmlElement).borderTopLeftRadius || window.getComputedStyle(htmlElement).borderRadius || '')
       if (Number.isFinite(parsedRadius) && parsedRadius > 0) {
-        radius = parsedRadius + 12
+        radius = Math.max(MIN_SPOTLIGHT_RADIUS, parsedRadius + padding)
       }
     } catch (_) {}
 
@@ -816,6 +1366,7 @@ class PluginDashboardGuideRuntime {
       width,
       height,
       radius,
+      padding,
     }
   }
 
@@ -856,12 +1407,24 @@ class PluginDashboardGuideRuntime {
     ;(this.backdropCutout as unknown as { hidden?: boolean }).hidden = false
     this.backdropCutout.setAttribute('visibility', 'visible')
     this.backdropCutout.style.removeProperty('display')
-    this.backdropCutout.setAttribute('x', String(spotlightRect.left))
-    this.backdropCutout.setAttribute('y', String(spotlightRect.top))
-    this.backdropCutout.setAttribute('width', String(spotlightRect.width))
-    this.backdropCutout.setAttribute('height', String(spotlightRect.height))
-    this.backdropCutout.setAttribute('rx', String(spotlightRect.radius))
-    this.backdropCutout.setAttribute('ry', String(spotlightRect.radius))
+    const maxInset = Math.max(0, spotlightRect.padding)
+    const inset = Math.max(0, Math.min(
+      BACKDROP_CUTOUT_INSET,
+      maxInset,
+      Math.floor(spotlightRect.width / 2),
+      Math.floor(spotlightRect.height / 2),
+    ))
+    const x = spotlightRect.left + inset
+    const y = spotlightRect.top + inset
+    const width = Math.max(0, spotlightRect.width - (inset * 2))
+    const height = Math.max(0, spotlightRect.height - (inset * 2))
+    const radius = Math.max(0, spotlightRect.radius - inset)
+    this.backdropCutout.setAttribute('x', String(x))
+    this.backdropCutout.setAttribute('y', String(y))
+    this.backdropCutout.setAttribute('width', String(width))
+    this.backdropCutout.setAttribute('height', String(height))
+    this.backdropCutout.setAttribute('rx', String(radius))
+    this.backdropCutout.setAttribute('ry', String(radius))
   }
 
   setSpotlight(element: Element | null) {
@@ -905,16 +1468,20 @@ class PluginDashboardGuideRuntime {
     this.updateBackdropCutout(null)
   }
 
-  showCursor(x: number, y: number) {
+  activateOverlayShell() {
     this.ensureRoot()
-    if (!this.cursorShell) {
-      return
-    }
-
     document.documentElement.classList.add('yui-guide-plugin-dashboard-running')
     document.documentElement.classList.add('yui-taking-over')
     document.body.classList.add('yui-guide-plugin-dashboard-running')
     document.body.classList.add('yui-taking-over')
+  }
+
+  showCursor(x: number, y: number) {
+    this.activateOverlayShell()
+    if (!this.cursorShell) {
+      return
+    }
+
     this.cursorShell.classList.add('is-visible')
     this.cursorShell.style.transitionDuration = '0ms'
     this.cursorShell.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px)`
@@ -1303,6 +1870,90 @@ class PluginDashboardGuideRuntime {
     })
   }
 
+  requestLocalTutorialStepAdvance() {
+    if (!this.running || Date.now() < this.localTutorialStepAdvanceReadyAt) {
+      return false
+    }
+    const advance = this.localTutorialStepAdvance
+    if (!advance) {
+      return false
+    }
+    this.localTutorialStepAdvance = null
+    this.cancelActiveNarration()
+    this.cancelCursorMotion()
+    advance()
+    return true
+  }
+
+  handleLocalTutorialKeydown(event: KeyboardEvent) {
+    if (event.key !== 'Enter' && event.key !== ' ') {
+      return
+    }
+
+    event.preventDefault()
+    event.stopPropagation()
+    this.requestLocalTutorialStepAdvance()
+  }
+
+  showLocalGuideCard(step: PluginDashboardLocalTutorialStep, labels?: PluginDashboardLocalTutorialPayload['labels']) {
+    this.ensureRoot()
+    if (!this.guideCard || !this.guideCardTitle || !this.guideCardBody || !this.guideCardHint || !this.guideCardSkip) {
+      return
+    }
+
+    this.guideCardTitle.textContent = step.title
+    this.guideCardBody.textContent = step.body
+    this.guideCardHint.textContent = labels?.keyboardHint || ''
+    this.guideCardSkip.textContent = labels?.skip || 'Skip'
+    this.guideCardSkip.onclick = () => {
+      this.cleanup()
+    }
+    this.guideCard.hidden = false
+  }
+
+  hideLocalGuideCard() {
+    if (this.guideCard) {
+      this.guideCard.hidden = true
+    }
+    if (this.guideCardSkip) {
+      this.guideCardSkip.onclick = null
+    }
+  }
+
+  resolveLocalGuideTarget(step: PluginDashboardLocalTutorialStep) {
+    const targetId = String(step.targetId || '').trim()
+    if (!targetId) {
+      return null
+    }
+    return document.querySelector(`[data-yui-guide-id="${CSS.escape(targetId)}"]`) as HTMLElement | null
+  }
+
+  async prepareLocalTutorialStep(step: PluginDashboardLocalTutorialStep) {
+    const route = String(step.route || '').trim()
+    if (route && router.currentRoute.value.fullPath !== route) {
+      try {
+        await router.push(route)
+      } catch (error) {
+        console.error(`[YuiGuide] Failed to navigate to route: ${route}`, error)
+        throw error
+      }
+      await wait(220)
+      if (router.currentRoute.value.fullPath !== route) {
+        throw new Error(`Yui guide route mismatch: expected ${route}, got ${router.currentRoute.value.fullPath}`)
+      }
+    }
+
+    const action = String(step.action || '').trim()
+    if (action) {
+      window.dispatchEvent(new CustomEvent(LOCAL_TUTORIAL_ACTION_EVENT, {
+        detail: { action },
+      }))
+      await wait(step.waitMs ?? 280)
+    } else if (step.waitMs && step.waitMs > 0) {
+      await wait(step.waitMs)
+    }
+  }
+
   interruptNarrationForResistance() {
     const narration = this.activeNarration
     if (!narration || narration.cancelled) {
@@ -1650,6 +2301,115 @@ class PluginDashboardGuideRuntime {
     this.cleanup()
   }
 
+  async runLocalTutorial(sessionId: string, payload: PluginDashboardLocalTutorialPayload) {
+    const steps = Array.isArray(payload.steps)
+      ? payload.steps.filter((step) => step && (step.targetId || step.route || step.action) && (step.title || step.body))
+      : []
+    if (steps.length === 0) {
+      return
+    }
+
+    if (this.running) {
+      this.cleanup()
+    }
+
+    this.running = true
+    this.activeSessionId = sessionId
+    this.localTutorialStepAdvanceReadyAt = Date.now() + LOCAL_TUTORIAL_ADVANCE_COOLDOWN_MS
+    const isCurrent = () => this.isCurrentRun(sessionId)
+    this.ensureRoot()
+    window.addEventListener('resize', this.boundRefreshSpotlight, true)
+    window.addEventListener('scroll', this.boundRefreshSpotlight, true)
+    document.addEventListener('keydown', this.boundLocalTutorialKeydown, true)
+
+    try {
+      this.showCursor(window.innerWidth / 2, Math.max(72, window.innerHeight / 2))
+
+      for (const step of steps) {
+        if (!isCurrent()) {
+          return
+        }
+
+        await this.prepareLocalTutorialStep(step)
+        if (!isCurrent()) {
+          return
+        }
+
+        const target = await this.waitForElement(() => this.resolveLocalGuideTarget(step), 2500)
+        if (!isCurrent()) {
+          return
+        }
+        if (!target) {
+          this.clearSpotlight()
+          this.hideLocalGuideCard()
+          if (!step.allowMissing) {
+            throw new Error(`Missing tutorial target: ${step.targetId || step.route || step.action || '(unknown)'}`)
+          }
+          continue
+        }
+
+        target.scrollIntoView({ block: 'center', inline: 'center', behavior: 'smooth' })
+        if (!(await this.waitForSceneDelay(240, isCurrent))) {
+          return
+        }
+
+        this.setSpotlight(target)
+        this.showLocalGuideCard(step, payload.labels)
+        this.localTutorialStepAdvanceReadyAt = Date.now() + LOCAL_TUTORIAL_ADVANCE_COOLDOWN_MS
+        let stepAdvanced = false
+        const isCurrentStep = () => isCurrent() && !stepAdvanced
+        const stepAdvancePromise = new Promise<void>((resolve) => {
+          this.localTutorialStepAdvance = () => {
+            stepAdvanced = true
+            resolve()
+          }
+        })
+
+        await Promise.race([
+          this.moveCursorToElementWithRecovery(target, 620, isCurrentStep),
+          stepAdvancePromise,
+        ])
+        if (!isCurrent()) {
+          return
+        }
+        if (stepAdvanced) {
+          this.localTutorialStepAdvance = null
+          continue
+        }
+
+        if (step.motion === 'click') {
+          this.clickCursor()
+        } else if (step.motion === 'ellipse') {
+          await Promise.race([
+            this.runEllipse(target, Math.max(1200, step.durationMs || 2200), isCurrentStep),
+            stepAdvancePromise,
+          ])
+        }
+
+        if (!isCurrent()) {
+          return
+        }
+        if (stepAdvanced) {
+          this.localTutorialStepAdvance = null
+          continue
+        }
+
+        await Promise.race([
+          Promise.all([
+            this.startNarration(step.body),
+            this.waitForSceneDelay(Math.max(1400, step.durationMs || 2200), isCurrentStep),
+          ]),
+          stepAdvancePromise,
+        ])
+        this.localTutorialStepAdvance = null
+      }
+    } finally {
+      if (isCurrent()) {
+        this.cleanup()
+      }
+    }
+  }
+
   cleanup() {
     const pauseResolvers = this.scenePauseResolvers.slice()
     this.scenePauseResolvers = []
@@ -1660,11 +2420,15 @@ class PluginDashboardGuideRuntime {
       } catch (_) {}
     })
     document.documentElement.classList.remove('yui-guide-plugin-dashboard-running')
+    document.documentElement.removeAttribute('data-yui-guide-spotlight-padding')
     document.documentElement.classList.remove('yui-taking-over')
     document.documentElement.classList.remove('yui-resistance-cursor-reveal')
     document.body.classList.remove('yui-guide-plugin-dashboard-running')
     document.body.classList.remove('yui-taking-over')
     document.body.classList.remove('yui-resistance-cursor-reveal')
+    document
+      .querySelector('[data-yui-guide-id="plugin-main"]')
+      ?.removeAttribute('data-yui-guide-spotlight-padding')
     if (currentGuideAudioTimer !== null) {
       window.clearTimeout(currentGuideAudioTimer)
       currentGuideAudioTimer = null
@@ -1702,6 +2466,7 @@ class PluginDashboardGuideRuntime {
     document.removeEventListener('click', this.boundInteractionGuard, true)
     document.removeEventListener('dblclick', this.boundInteractionGuard, true)
     document.removeEventListener('contextmenu', this.boundInteractionGuard, true)
+    document.removeEventListener('keydown', this.boundLocalTutorialKeydown, true)
     this.clearSpotlight()
     if (this.root && this.root.parentNode) {
       this.root.parentNode.removeChild(this.root)
@@ -1719,6 +2484,11 @@ class PluginDashboardGuideRuntime {
     this.spotlight = null
     this.cursorShell = null
     this.cursorInner = null
+    this.guideCard = null
+    this.guideCardTitle = null
+    this.guideCardBody = null
+    this.guideCardHint = null
+    this.guideCardSkip = null
     this.cursorPosition = null
     this.spotlightElement = null
     this.lastCursorTarget = null
@@ -1738,6 +2508,9 @@ class PluginDashboardGuideRuntime {
     this.cursorTransitionActive = false
     this.activeNarration = null
     this.pendingInterruptAck = null
+    this.localTutorialStepAdvanceReadyAt = 0
+    this.localTutorialStepAdvance = null
+    this.clearPreactivationTimeout()
     this.scenePauseResolvers = []
   }
 
@@ -1746,6 +2519,7 @@ class PluginDashboardGuideRuntime {
       return
     }
 
+    this.clearPreactivationTimeout()
     this.cleanup()
     this.running = true
     this.activeSessionId = sessionId
@@ -1753,7 +2527,7 @@ class PluginDashboardGuideRuntime {
       ? Math.max(0, Math.floor(payload.interruptCount as number))
       : 0
     const isCurrent = () => this.isCurrentRun(sessionId)
-    this.ensureRoot()
+    this.activateOverlayShell()
     window.addEventListener('resize', this.boundRefreshSpotlight, true)
     window.addEventListener('scroll', this.boundRefreshSpotlight, true)
     // 用 pointer 事件而非 mouse 事件采样：interactionGuard 把 touchstart/move/end 都拦掉了，
@@ -1798,6 +2572,8 @@ class PluginDashboardGuideRuntime {
       return
     }
 
+    mainContainer.setAttribute('data-yui-guide-spotlight-padding', String(PLUGIN_MAIN_SPOTLIGHT_INSET))
+
     if (!isCurrent()) {
       return
     }
@@ -1829,26 +2605,54 @@ class PluginDashboardGuideRuntime {
       voiceKey: payload.voiceKey,
       audioUrl: payload.audioUrl,
     })
+    const totalNarrationDurationMs = await resolveNarrationDurationMs(payload)
+    const elapsedBeforeMotionMs = Number.isFinite(payload.narrationStartedAtMs)
+      ? Math.max(0, Date.now() - Math.round(payload.narrationStartedAtMs as number))
+      : 0
+    const budgetMs = Math.max(0, totalNarrationDurationMs - elapsedBeforeMotionMs)
+    const baseMoveToMainDurationMs = PLUGIN_DASHBOARD_MOVE_TO_MAIN_MS
+    const baseScrollDownDurationMs = Math.round(PLUGIN_DASHBOARD_SCROLL_PHASE_MS / 2)
+    const baseScrollUpDurationMs = PLUGIN_DASHBOARD_SCROLL_PHASE_MS - baseScrollDownDurationMs
+    const fixedPartsDurationMs = baseMoveToMainDurationMs + baseScrollDownDurationMs + baseScrollUpDurationMs
+    let moveToMainDurationMs = baseMoveToMainDurationMs
+    let scrollDownDurationMs = baseScrollDownDurationMs
+    let scrollUpDurationMs = baseScrollUpDurationMs
+    let ellipseDurationMs = Math.max(0, budgetMs - fixedPartsDurationMs)
+    if (budgetMs < fixedPartsDurationMs && fixedPartsDurationMs > 0) {
+      const scale = budgetMs / fixedPartsDurationMs
+      moveToMainDurationMs = Math.floor(baseMoveToMainDurationMs * scale)
+      scrollDownDurationMs = Math.floor(baseScrollDownDurationMs * scale)
+      scrollUpDurationMs = Math.max(0, Math.round(budgetMs) - moveToMainDurationMs - scrollDownDurationMs)
+      ellipseDurationMs = 0
+    }
 
     if (!isCurrent()) {
       return
     }
     this.setSpotlight(mainContainer)
-    await this.moveCursorToElementWithRecovery(mainContainer, 780, isCurrent)
-    if (!isCurrent()) {
-      return
+    if (moveToMainDurationMs > 0) {
+      await this.moveCursorToElementWithRecovery(mainContainer, moveToMainDurationMs, isCurrent)
+      if (!isCurrent()) {
+        return
+      }
     }
-    await this.animateScroll(mainContainer, 150, 1000, isCurrent)
-    if (!isCurrent()) {
-      return
+    if (scrollDownDurationMs > 0) {
+      await this.animateScroll(mainContainer, 150, scrollDownDurationMs, isCurrent)
+      if (!isCurrent()) {
+        return
+      }
     }
-    await this.animateScroll(mainContainer, -150, 1000, isCurrent)
-    if (!isCurrent()) {
-      return
+    if (scrollUpDurationMs > 0) {
+      await this.animateScroll(mainContainer, -150, scrollUpDurationMs, isCurrent)
+      if (!isCurrent()) {
+        return
+      }
     }
-    await this.runEllipse(mainContainer, 7000, isCurrent)
-    if (!isCurrent()) {
-      return
+    if (ellipseDurationMs > 0) {
+      await this.runEllipse(mainContainer, ellipseDurationMs, isCurrent)
+      if (!isCurrent()) {
+        return
+      }
     }
     await speechPromise
     if (!isCurrent()) {
@@ -1861,9 +2665,6 @@ class PluginDashboardGuideRuntime {
     }
 
     if (payload.closeOnDone !== false) {
-      if (!(await this.waitForSceneDelay(120, isCurrent))) {
-        return
-      }
       window.close()
     }
 
@@ -1874,42 +2675,27 @@ class PluginDashboardGuideRuntime {
   }
 }
 
+export function startPluginDashboardTutorial(payload: PluginDashboardLocalTutorialPayload) {
+  window.dispatchEvent(new CustomEvent<PluginDashboardLocalTutorialPayload>(LOCAL_TUTORIAL_START_EVENT, {
+    detail: payload,
+  }))
+}
+
 export function initPluginDashboardYuiGuideRuntime() {
   const runtime = new PluginDashboardGuideRuntime()
-  const tutorialBridge = useYuiTutorialBridge()
   let receivedStartMessage = false
-  const initialBridgeState = tutorialBridge.state.value
-  const shouldUseBridgeFallback = !!(
-    initialBridgeState.isActive
-    && initialBridgeState.flowId === HOME_YUI_GUIDE_FLOW_ID
-    && initialBridgeState.sourcePage === 'home'
-    && initialBridgeState.resumeScene === PLUGIN_DASHBOARD_LANDING_SCENE
-  )
-  const fallbackStartPayload: StartPayload = {
-    line: '',
-    closeOnDone: false,
-  }
-  let fallbackSessionId = shouldUseBridgeFallback
-    ? `query-${initialBridgeState.handoffToken || Date.now()}`
-    : ''
+  runtime.preactivatePendingOverlay()
 
-  const mergeStartPayload = (target: StartPayload, payload: StartPayload) => {
-    if (typeof payload.line === 'string') {
-      target.line = payload.line
-    }
-    if (payload.voiceKey) {
-      target.voiceKey = payload.voiceKey
-    }
-    if (typeof payload.audioUrl === 'string') {
-      target.audioUrl = payload.audioUrl
-    }
-    if (typeof payload.closeOnDone === 'boolean') {
-      target.closeOnDone = payload.closeOnDone
-    }
-    if (Number.isFinite(payload.interruptCount)) {
-      target.interruptCount = Math.max(0, Math.floor(payload.interruptCount as number))
-    }
-  }
+  window.addEventListener(LOCAL_TUTORIAL_START_EVENT, (event: Event) => {
+    const payload = (event as CustomEvent<PluginDashboardLocalTutorialPayload>).detail
+    const sessionId = `local-${Date.now()}`
+    runtime.runLocalTutorial(sessionId, payload).catch(() => {
+      if (!runtime.isCurrentRun(sessionId)) {
+        return
+      }
+      runtime.cleanup()
+    })
+  })
 
   window.addEventListener('message', (event: MessageEvent) => {
     const data = event.data
@@ -1937,13 +2723,6 @@ export function initPluginDashboardYuiGuideRuntime() {
 
     const startPayload = (data.payload || {}) as StartPayload
 
-    if (shouldUseBridgeFallback && !receivedStartMessage) {
-      fallbackSessionId = sessionId
-      mergeStartPayload(fallbackStartPayload, startPayload)
-      receivedStartMessage = true
-      return
-    }
-
     receivedStartMessage = true
     runtime.run(sessionId, startPayload).catch(() => {
       if (!runtime.isCurrentRun(sessionId)) {
@@ -1951,34 +2730,8 @@ export function initPluginDashboardYuiGuideRuntime() {
       }
       runtime.notify(DONE_EVENT, sessionId)
       runtime.cleanup()
+    }).finally(() => {
+      receivedStartMessage = false
     })
   })
-
-  window.setTimeout(() => {
-    if (!shouldUseBridgeFallback) {
-      return
-    }
-
-    const bridgeState = tutorialBridge.state.value
-    if (
-      !bridgeState.isActive
-      || bridgeState.flowId !== HOME_YUI_GUIDE_FLOW_ID
-      || bridgeState.sourcePage !== 'home'
-      || bridgeState.resumeScene !== PLUGIN_DASHBOARD_LANDING_SCENE
-    ) {
-      return
-    }
-
-    receivedStartMessage = true
-    const sessionId = fallbackSessionId || `query-${bridgeState.handoffToken || Date.now()}`
-    runtime.run(sessionId, fallbackStartPayload).catch(() => {
-      if (!runtime.isCurrentRun(sessionId)) {
-        return
-      }
-      // 与主 START_EVENT 分支保持对称：先通知 opener DONE 再 cleanup，
-      // 否则 fallback 路径下 run 抛错时主页教程永远收不到完成信号会卡死
-      runtime.notify(DONE_EVENT, sessionId)
-      runtime.cleanup()
-    })
-  }, 320)
 }

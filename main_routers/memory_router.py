@@ -465,13 +465,106 @@ async def update_review_config(request: Request):
         await asyncio.to_thread(
             config_manager.save_json_config, 'core_config.json', config_data
         )
-        
+
         logger.info(f"记忆整理配置已更新: enabled={enabled}")
         return {"success": True, "enabled": enabled}
     except MaintenanceModeError:
         raise
     except Exception as e:
         logger.error(f"更新记忆整理配置失败: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@router.get('/powerful_memory_config')
+async def get_powerful_memory_config():
+    """获取强力记忆开关。默认 True（保兼容老用户）。"""
+    try:
+        from utils.config_manager import get_config_manager
+        config_manager = get_config_manager()
+        config_data = await asyncio.to_thread(
+            config_manager.load_json_config, 'core_config.json', default_value={}
+        )
+        return {"enabled": config_data.get('powerful_memory_enabled', True)}
+    except Exception as e:
+        logger.error(f"读取强力记忆配置失败: {e}")
+        return {"enabled": True}
+
+
+@router.post('/powerful_memory_config')
+async def update_powerful_memory_config(request: Request):
+    """更新强力记忆开关。
+
+    关闭时停掉 evidence-RFC 引入的全部新 LLM 路径（Stage-2 / promote_merge /
+    rebuttal / negative-keyword / fact_dedup / persona corrections）。保留主
+    动搭话回应的 check_feedback 作为唯一 evidence channel。开→关切换时把所
+    有 confirmed reflection 的 confirmed_at 重置到 now，避免立即批量 promote。
+    """
+    try:
+        data = await request.json()
+        enabled = data.get('enabled', True)
+
+        from utils.config_manager import get_config_manager
+        config_manager = get_config_manager()
+        config_data = await asyncio.to_thread(
+            config_manager.load_json_config, 'core_config.json', default_value={}
+        )
+
+        prev_enabled = config_data.get('powerful_memory_enabled', True)
+        config_data['powerful_memory_enabled'] = enabled
+
+        # 开→关切换：先跑 migration（重置所有角色 confirmed reflection 的
+        # confirmed_at 到 now，让 time-driven fallback 走完整 14 天计时），
+        # **成功后**再 save config。否则 migration 失败后 config 已经
+        # `False`，下一次用户点关也不会再进 prev_enabled and not enabled 分
+        # 支，旧 confirmed_at 锚点永久漏迁移，旧 confirmed 可能立刻被 time-
+        # driven 抓走 promote。必须原子：要么两者都成功，要么都失败。
+        # 必须走 HTTP 调 memory_server——本 router 在 main_server 进程，直接
+        # `from memory_server import ...` 拿到的是 fresh 副本，reflection_engine
+        # 是 None，migration 会静默 no-op。memory_server 跑在独立进程
+        # (MEMORY_SERVER_PORT)，那里 reflection_engine 由 startup hook 初始化。
+        if prev_enabled and not enabled:
+            try:
+                from config import MEMORY_SERVER_PORT
+                from utils.internal_http_client import get_internal_http_client
+                client = get_internal_http_client()
+                resp = await client.post(
+                    f"http://127.0.0.1:{MEMORY_SERVER_PORT}/internal/memory/reset_confirmed_at",
+                    timeout=10.0,
+                )
+                if resp.status_code != 200:
+                    logger.warning(
+                        f"强力记忆切换 migration HTTP 状态码 {resp.status_code}，配置未保存"
+                    )
+                    return {
+                        "success": False,
+                        "error": f"migration HTTP {resp.status_code}",
+                    }
+                payload = resp.json()
+                if not isinstance(payload, dict) or not payload.get('ok'):
+                    err = payload.get('error', 'migration returned ok=false') if isinstance(payload, dict) else 'migration payload invalid'
+                    logger.warning(f"强力记忆切换 migration 失败，配置未保存: {err}")
+                    return {"success": False, "error": err}
+                migrated = int(payload.get('count', 0))
+                logger.info(
+                    f"强力记忆切换 ON→OFF：已重置 {migrated} 条 confirmed "
+                    f"reflection 的 confirmed_at 锚点"
+                )
+            except Exception as e:
+                logger.warning(f"强力记忆切换 migration 异常，配置未保存: {e}")
+                return {"success": False, "error": str(e)}
+
+        # Migration 成功（或非 ON→OFF 切换）才落盘配置——保证用户从前端
+        # 视角看到的 toggle 状态与 reflection_engine 实际状态一致。
+        await asyncio.to_thread(
+            config_manager.save_json_config, 'core_config.json', config_data
+        )
+
+        logger.info(f"强力记忆配置已更新: enabled={enabled} (prev={prev_enabled})")
+        return {"success": True, "enabled": enabled}
+    except MaintenanceModeError:
+        raise
+    except Exception as e:
+        logger.error(f"更新强力记忆配置失败: {e}")
         return {"success": False, "error": str(e)}
 
 
