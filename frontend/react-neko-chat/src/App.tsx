@@ -931,7 +931,7 @@ export default function App({
     if (!target || typeof ResizeObserver === 'undefined') return;
     // 阈值：低于此宽度时把右侧 3 个工具按钮折叠成 ··· 菜单。
     // 5 按钮 + 4 分隔 + 发送按钮 + 间距，约 260px 起就开始拥挤。
-    const COMPACT_THRESHOLD = 360;
+    const COMPACT_THRESHOLD = 250;
     const observer = new ResizeObserver(entries => {
       for (const entry of entries) {
         setIsCompactComposer(entry.contentRect.width < COMPACT_THRESHOLD);
