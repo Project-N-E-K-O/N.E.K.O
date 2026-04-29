@@ -1177,6 +1177,14 @@ class DirectTaskExecutor:
             logger.debug("[UserPlugin] Failed to normalize plugins to list, continuing with empty list", exc_info=True)
         if skipped_passive:
             logger.debug("[UserPlugin] Skipped %d passive plugin(s)", skipped_passive)
+
+        # Pre-filter: only keep plugins that have at least one Agent-visible entry.
+        # This prevents hidden-entry-only plugins from leaking into Stage 1 (BM25 / keyword / coarse-screen).
+        pre_filter_count = len(plugin_list)
+        plugin_list = [p for p in plugin_list if self._agent_visible_plugin_entries(p)]
+        if pre_filter_count != len(plugin_list):
+            logger.debug("[UserPlugin] Pre-filtered %d plugin(s) with no visible entries", pre_filter_count - len(plugin_list))
+
         if not plugin_list:
             return UserPluginDecision(
                 has_task=False, can_execute=False, task_description="",
@@ -1431,7 +1439,7 @@ class DirectTaskExecutor:
                 final_has = decision.get("has_task", False)
                 final_can = decision.get("can_execute", False)
                 if final_has and final_can:
-                    if valid_entries_map and final_pid not in valid_entries_map:
+                    if final_pid not in valid_entries_map:
                         logger.warning("[UserPlugin Assessment] Final check: plugin_id '%s' still invalid after retry, forcing can_execute=false", final_pid)
                         final_can = False
                         decision["can_execute"] = False
@@ -1452,7 +1460,7 @@ class DirectTaskExecutor:
                         final_can = False
                         decision["can_execute"] = False
                         decision["reason"] = "no_agent_visible_entries"
-                    elif valid_entries_map and valid_entries_map.get(final_pid) and final_eid not in valid_entries_map[final_pid]:
+                    elif valid_entries_map.get(final_pid) and final_eid not in valid_entries_map[final_pid]:
                         logger.warning("[UserPlugin Assessment] Final check: entry_id '%s' still invalid for plugin '%s', forcing can_execute=false", final_eid, final_pid)
                         final_can = False
                         decision["can_execute"] = False
