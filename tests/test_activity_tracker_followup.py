@@ -352,6 +352,43 @@ def test_thresholds_load_from_preferences():
     assert snap.state == 'away'
 
 
+def test_count_thresholds_reject_non_integer_floats():
+    """``window_switch_transition_threshold`` and
+    ``unfinished_thread_max_followups`` are count-shaped — floats like
+    ``0.9`` or ``1.7`` must NOT silently truncate to 0 / 1 (which would
+    break transitioning detection or cap unfinished_thread at 1 instead
+    of the user's intended 2). Loader-side validation only checks
+    "positive number"; the integer guard lives in ActivityStateMachine.
+
+    Verify by direct ActivityPreferences construction (bypasses the
+    loader's validation) — if the int guard ever regresses, this catches it.
+    """
+    # Float that would silently round to 0 or 1
+    bad_prefs = ActivityPreferences(thresholds={
+        'window_switch_transition_threshold': 0.9,    # int(0.9) → 0 (broken)
+        'unfinished_thread_max_followups': 1.7,        # int(1.7) → 1 (off-by-one)
+    })
+    sm = ActivityStateMachine(prefs=bad_prefs)
+    # Both must fall back to defaults rather than truncate
+    assert sm._window_switch_transition_threshold == 5, (
+        f'non-integer float must fall back to default 5; '
+        f'got {sm._window_switch_transition_threshold}'
+    )
+    assert sm._unfinished_thread_max_followups == 2, (
+        f'non-integer float must fall back to default 2; '
+        f'got {sm._unfinished_thread_max_followups}'
+    )
+
+    # Whole-number floats (3.0) are OK — they ARE integers in value.
+    ok_prefs = ActivityPreferences(thresholds={
+        'window_switch_transition_threshold': 7.0,
+        'unfinished_thread_max_followups': 3.0,
+    })
+    sm2 = ActivityStateMachine(prefs=ok_prefs)
+    assert sm2._window_switch_transition_threshold == 7
+    assert sm2._unfinished_thread_max_followups == 3
+
+
 def test_loader_drops_invalid_threshold_values():
     """The JSON-side loader silently drops malformed threshold entries.
 
@@ -528,6 +565,53 @@ def test_loader_keeps_last_good_prefs_on_parse_failure(tmp_path, monkeypatch):
     p2 = _load_from_file(str(pref_file))
     assert p2 is None, 'parse failure must signal None, not return defaults'
 
+    # Round 3: end-to-end through the public API. Pin the contract that
+    # `get_activity_preferences()` keeps the previously cached prefs
+    # intact when `_load_from_file` returns None — not just that the
+    # private helper signals None correctly. Without this leg, a future
+    # refactor that "helpfully" replaces the cache with defaults on
+    # parse failure would still let the test above pass while breaking
+    # the user-facing contract (their overrides quietly vanish).
+    from utils.activity_config import (
+        get_activity_preferences,
+        invalidate_activity_preferences_cache,
+    )
+    monkeypatch.setattr(
+        'utils.activity_config._resolve_preferences_path',
+        lambda: str(pref_file),
+    )
+    invalidate_activity_preferences_cache()
+
+    # Restore valid file content + populate cache via the public API
+    pref_file.write_text(
+        json.dumps([{
+            'model_path': _GLOBAL_CONVERSATION_KEY,
+            'activity': {
+                'thresholds': {'away_idle_seconds': 300},
+                'user_app_overrides': {
+                    'mycorp.exe': {'category': 'work'},
+                },
+            },
+        }]),
+        encoding='utf-8',
+    )
+    cached_good = get_activity_preferences()
+    assert cached_good.thresholds == {'away_idle_seconds': 300.0}
+    assert 'mycorp.exe' in cached_good.user_app_overrides
+
+    # Now corrupt the file and force a reload. The public API must
+    # serve the previous good cache, NOT defaults.
+    pref_file.write_text('{ malformed json again', encoding='utf-8')
+    invalidate_activity_preferences_cache()
+    cached_after_corrupt = get_activity_preferences()
+    assert cached_after_corrupt.thresholds == {'away_idle_seconds': 300.0}, (
+        'parse failure must preserve previously cached thresholds; '
+        f'got {cached_after_corrupt.thresholds}'
+    )
+    assert 'mycorp.exe' in cached_after_corrupt.user_app_overrides, (
+        'parse failure must preserve previously cached user_app_overrides'
+    )
+
 
 def test_loader_returns_defaults_when_no_activity_section(tmp_path):
     """Successfully parsed file without activity section returns defaults
@@ -590,11 +674,29 @@ def test_tracker_picks_up_fresh_prefs_via_refresh_hook():
     original = _cache.prefs
     try:
         _cache.prefs = new_prefs
+
+        # Direct private-hook call — sanity check that _refresh_prefs
+        # itself swaps prefs correctly when invoked.
         tracker._refresh_prefs()
-        # Now classify with the post-swap prefs
         obs2 = observation_from_system(sn, tracker._sm._prefs)
         assert obs2.category == 'work'
         assert obs2.canonical == 'SomeUnknownApp'
+
+        # Public API check — the contract is "get_snapshot_sync triggers
+        # _refresh_prefs at the entry point". If a future refactor
+        # removes that call from the public entry, the direct test
+        # above would still pass while live sessions stop hot-reloading.
+        # Restore an older prefs object so the next public call has to
+        # re-pick the cached new_prefs.
+        sentinel_prefs = ActivityPreferences()  # baseline w/ no overrides
+        tracker._sm._prefs = sentinel_prefs
+        _cache.prefs = new_prefs  # the loader cache stays on new_prefs
+        tracker.get_snapshot_sync()  # public entry — must call _refresh_prefs
+        assert tracker._sm._prefs is new_prefs, (
+            'public get_snapshot_sync must call _refresh_prefs to swap '
+            'in fresh cached prefs; if a future refactor removes that '
+            'call, live sessions will stop hot-reloading user overrides'
+        )
     finally:
         _cache.prefs = original
 

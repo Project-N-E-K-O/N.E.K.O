@@ -395,9 +395,30 @@ class ActivityStateMachine:
         self._casual_browsing_min_dwell_seconds = prefs.thresholds.get(
             'casual_browsing_min_dwell_seconds', CASUAL_BROWSING_MIN_DWELL_SECONDS,
         )
-        self._window_switch_transition_threshold = int(prefs.thresholds.get(
-            'window_switch_transition_threshold', WINDOW_SWITCH_TRANSITION_THRESHOLD,
-        ))
+        # Count-shaped thresholds need integer semantics — bare ``int(...)``
+        # would silently truncate ``0.9`` → ``0`` or ``1.7`` → ``1``,
+        # producing surprising behaviour (transitioning never trips,
+        # unfinished_thread_max_followups gets capped at 1 instead of 2).
+        # ``_parse_thresholds`` only validates "positive number", not
+        # "integer", so a typo'd float in user_preferences.json reaches
+        # this point. Reject non-integer floats and fall back to the
+        # default rather than silently rounding.
+        def _int_threshold(name: str, default: int) -> int:
+            raw = prefs.thresholds.get(name)
+            if raw is None or isinstance(raw, bool):
+                return default
+            try:
+                if not float(raw).is_integer():
+                    return default
+            except (TypeError, ValueError):
+                return default
+            value = int(raw)
+            return value if value >= 1 else default
+
+        self._window_switch_transition_threshold = _int_threshold(
+            'window_switch_transition_threshold',
+            WINDOW_SWITCH_TRANSITION_THRESHOLD,
+        )
         self._window_history_lookback_seconds = prefs.thresholds.get(
             'window_history_lookback_seconds', WINDOW_HISTORY_LOOKBACK_SECONDS,
         )
@@ -407,9 +428,10 @@ class ActivityStateMachine:
         self._unfinished_thread_window_seconds = prefs.thresholds.get(
             'unfinished_thread_window_seconds', UNFINISHED_THREAD_WINDOW_SECONDS,
         )
-        self._unfinished_thread_max_followups = int(prefs.thresholds.get(
-            'unfinished_thread_max_followups', UNFINISHED_THREAD_MAX_FOLLOWUPS,
-        ))
+        self._unfinished_thread_max_followups = _int_threshold(
+            'unfinished_thread_max_followups',
+            UNFINISHED_THREAD_MAX_FOLLOWUPS,
+        )
         self._gaming_gpu_threshold_percent = prefs.thresholds.get(
             'gaming_gpu_threshold_percent', GAMING_GPU_THRESHOLD_PERCENT,
         )
