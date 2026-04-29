@@ -706,8 +706,14 @@ class OmniOfflineClient:
                                 response_metadata={"token_usage": usage_dict},
                             )
                             usage_emitted = True
-                        except Exception:
-                            pass
+                        except Exception as usage_err:
+                            # usage 是可选 telemetry —— SDK 版本差异 / 字段缺失 /
+                            # 字段类型不符都不该打断主文本流。只 debug-log 一下，
+                            # 让用户回复继续。
+                            logger.debug(
+                                "genai usage_metadata emit skipped: %s",
+                                usage_err,
+                            )
             except Exception as e:
                 err_msg = str(e).lower()
                 # Tools-related rejection => signal fallback path.

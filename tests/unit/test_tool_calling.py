@@ -14,10 +14,8 @@ catch contract regressions in the tool plumbing.
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import sys
-import types as _types
 from pathlib import Path
 
 import pytest
