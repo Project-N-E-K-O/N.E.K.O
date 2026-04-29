@@ -81,7 +81,10 @@ class AutoplayLoopMixin:
             return {"status": "error", "message": "guidance 必须是字典"}
         if not guidance.get("content"):
             return {"status": "error", "message": "guidance.content 不能为空"}
-        max_queue = max(1, int(self._cfg.get("neko_guidance_max_queue", 50) or 50))
+        try:
+            max_queue = max(1, int(self._cfg.get("neko_guidance_max_queue", 50) or 50))
+        except (ValueError, TypeError):
+            max_queue = 50
         step_value = guidance.get("step")
         try:
             guidance_step = self._step_count if step_value is None else int(step_value)
@@ -213,10 +216,12 @@ class AutoplayLoopMixin:
             if in_combat or screen == "combat":
                 task["has_entered_combat"] = True
                 return False
-            return bool(task.get("has_entered_combat") and screen != "combat")
+            if task.get("has_entered_combat") and screen != "combat":
+                return True
+            if current_floor > start_floor:
+                return True
+            return False
         if current_floor > start_floor:
-            return True
-        if stop_condition in {"combat", "current_combat"} and task.get("start_screen") == "combat" and not in_combat and screen in {"reward", "map", "event", "shop", "rest", "treasure"}:
             return True
         return False
 
