@@ -23,6 +23,10 @@ class FakeElement {{}}
 
 global.window = global;
 global.Element = FakeElement;
+// app-prompt-shared.js 模块顶层会注册 beforeunload/pagehide listener，
+// node 的 global 默认没有 addEventListener，这里 noop stub 即可。
+global.addEventListener = function () {{}};
+global.removeEventListener = function () {{}};
 global.document = {{
   visibilityState: 'visible',
   hasFocus() {{

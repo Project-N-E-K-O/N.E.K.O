@@ -3425,6 +3425,17 @@ class LLMSessionManager:
             )
             return
 
+        # Drop the proactive subset from the queue once we have the SM
+        # claim — keep the passive cbs for the next user-turn drain. 与
+        # voice-mode 分支对称（line 3394-3397）：voice 在 hot-swap 前 trim，
+        # text 在 claim 成功后 trim。preempt / not-delivered / exception 路径
+        # 靠 ``extend(callbacks_snapshot)`` 把 proactive 子集放回队列，保证
+        # 投递失败不会丢消息。
+        self.pending_agent_callbacks = [
+            cb for cb in self.pending_agent_callbacks
+            if cb.get("delivery_mode") == "passive"
+        ]
+
         try:
             if isinstance(self.session, OmniOfflineClient):
                 await self._deliver_agent_callbacks_text(instruction, callbacks_snapshot)

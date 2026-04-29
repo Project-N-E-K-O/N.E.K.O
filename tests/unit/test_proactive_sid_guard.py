@@ -55,6 +55,10 @@ def _make_mgr() -> LLMSessionManager:
     # 状态机：finish_proactive_delivery / handle_new_message 会 fire 事件，
     # 所以测试 mgr 也要有真实 SM 实例（轻量、无外部依赖）。
     mgr.state = SessionStateMachine(lanlan_name="Test")
+    # finish_proactive_delivery 会调 _flush_ai_turn_text_to_tracker → activity_tracker；
+    # 这里 mock 掉即可，不影响 sid guard 行为本身。
+    mgr._activity_tracker = MagicMock()
+    mgr._current_ai_turn_text = ''
     return mgr
 
 
