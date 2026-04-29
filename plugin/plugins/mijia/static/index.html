@@ -292,6 +292,25 @@
             </div>
             <div id="sceneList" class="scene-list"></div>
         </div>
+
+        <!-- 智能控制区 -->
+        <div class="card" id="controlCard">
+            <h3>🎮 智能控制</h3>
+            <p class="info-text">输入控制命令，支持以下格式：</p>
+            <ul class="info-text" style="margin: 8px 0 16px 20px; line-height: 1.8;">
+                <li><strong>开灯/关灯</strong>：<code>打开客厅灯</code>、<code>关闭卧室灯</code></li>
+                <li><strong>空调控制</strong>：<code>打开空调</code>、<code>关闭空调</code></li>
+                <li><strong>插座控制</strong>：<code>打开插座</code>、<code>关闭卧室插座</code></li>
+            </ul>
+            <div class="form-group">
+                <input type="text" id="controlInput" placeholder="输入控制命令，例如：打开客厅灯" />
+            </div>
+            <div class="btn-group">
+                <button id="controlBtn">发送命令</button>
+                <button id="clearControlBtn" class="secondary">清空</button>
+            </div>
+            <div id="controlResult" style="margin-top: 12px; font-size: 0.85rem;"></div>
+        </div>
     </div>
 </div>
 
@@ -363,8 +382,11 @@
     }
 
     // 加载当前状态（家庭、设备）
-    async function loadStatus() {
+    // refresh=true 时强制从网络获取，否则优先读缓存
+    async function loadStatus(refresh = false) {
         try {
+            // 先重新加载凭据（防止插件重载后凭据未及时加载导致显示未登录）
+            await callPlugin('reload_credential', {});
             const homes = await callPlugin('list_homes', {});
             if (homes && homes.homes && homes.homes.length) {
                 const home = homes.homes[0];
@@ -376,8 +398,8 @@
                 }
                 showMessage(`✅ 已登录，家庭：${escapeHtml(home.name)}`, 'success');
                 document.getElementById('userInfo').innerHTML = `<p>🏠 当前家庭：${escapeHtml(home.name)} (ID: ${escapeHtml(home.id)})</p>`;
-                // 获取设备列表
-                const devicesRes = await callPlugin('list_devices', { home_id: home.id });
+                // 获取设备列表（refresh=true 时强制从网络拉取）
+                const devicesRes = await callPlugin('list_devices', { home_id: home.id, refresh: refresh });
                 if (devicesRes && devicesRes.devices) {
                     const devices = devicesRes.devices;
                     let html = '<p><strong>📱 设备列表（可设置别名方便控制）：</strong></p>';
@@ -406,8 +428,6 @@
                 showMessage('❌ 未登录或没有家庭，请先登录', 'error');
                 document.getElementById('userInfo').innerHTML = '';
                 document.getElementById('deviceList').innerHTML = '';
-                // 未登录时自动触发扫码登录
-                startQrLogin();
             }
         } catch (err) {
             console.error(err);
@@ -441,12 +461,6 @@
             qrImg.src = qrData.qr_url;
             document.getElementById('qrDisplay').classList.remove('hidden');
             showMessage('请使用米家APP扫描二维码', 'info');
-
-            // 自动在新标签页打开网页授权页面
-            if (qrData.login_url) {
-                window.open(qrData.login_url, '_blank');
-                showMessage('已自动打开登录页面，请在浏览器中完成授权', 'info');
-            }
 
             // 废弃旧轮询并开启新一轮
             if (pollInterval) clearInterval(pollInterval);
@@ -577,13 +591,56 @@
         }
     }
 
+    // 智能控制：发送命令（调用 smart_control 入口，支持自然语言）
+    async function sendControlCommand() {
+        const input = document.getElementById('controlInput');
+        const command = input.value.trim();
+        if (!command) {
+            showMessage('请输入控制命令', 'warning');
+            return;
+        }
+
+        const resultDiv = document.getElementById('controlResult');
+        resultDiv.style.color = '#6c6c70';
+        resultDiv.textContent = '⏳ 命令执行中...';
+
+        try {
+            const result = await callPlugin('smart_control', { command: command });
+            if (result.success) {
+                resultDiv.style.color = '#34c759';
+                resultDiv.textContent = `✅ ${escapeHtml(result.message || '命令已执行')}`;
+                input.value = '';
+                // 3秒后刷新设备状态
+                setTimeout(() => loadStatus(true), 3000);
+            } else {
+                resultDiv.style.color = '#ff3b30';
+                resultDiv.textContent = `❌ ${escapeHtml(result.message || '未知错误')}`;
+            }
+        } catch (err) {
+            resultDiv.style.color = '#ff3b30';
+            resultDiv.textContent = `❌ 执行出错：${escapeHtml(err.message)}`;
+        }
+    }
+
+    // 清空控制输入
+    function clearControlInput() {
+        document.getElementById('controlInput').value = '';
+        document.getElementById('controlResult').textContent = '';
+    }
+
     // 页面初始化
     document.addEventListener('DOMContentLoaded', () => {
         document.getElementById('qrLoginBtn').addEventListener('click', startQrLogin);
         document.getElementById('cancelPollBtn').addEventListener('click', stopPolling);
         document.getElementById('logoutBtn').addEventListener('click', logout);
-        document.getElementById('refreshStatusBtn').addEventListener('click', loadStatus);
+        document.getElementById('refreshStatusBtn').addEventListener('click', () => loadStatus(true));
         document.getElementById('refreshScenesBtn').addEventListener('click', () => loadScenes(true));
+        document.getElementById('controlBtn').addEventListener('click', sendControlCommand);
+        document.getElementById('clearControlBtn').addEventListener('click', clearControlInput);
+        // 支持回车键发送
+        document.getElementById('controlInput').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') sendControlCommand();
+        });
         loadStatus();
     });
 </script>

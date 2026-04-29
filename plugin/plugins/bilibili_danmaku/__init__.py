@@ -44,6 +44,8 @@ from plugin.sdk.plugin import (
     plugin_entry,
     lifecycle,
     timer_interval,
+    ui,
+    tr,
     Ok,
     Err,
     SdkError,
@@ -1130,6 +1132,62 @@ class BiliDanmakuPlugin(NekoPluginBase):
         })
 
     # ==========================================
+    # Hosted UI 上下文
+    # ==========================================
+
+    @ui.context(id="dashboard", title="B站弹幕监听控制面板")
+    async def get_dashboard_context(self):
+        """为 Hosted UI 面板提供状态数据"""
+        is_listening = self._listener is not None and self._listener.is_running()
+
+        # 获取连接状态
+        connection = {}
+        if self._listener:
+            connection = self._listener.get_connection_state()
+            state_map = {
+                "disconnected": "未连接",
+                "connecting": "连接中",
+                "authenticating": "认证中",
+                "receiving": "接收中",
+                "reconnecting": "重连中",
+            }
+            connection["state_desc"] = state_map.get(connection.get("state", ""), connection.get("state", ""))
+        else:
+            connection = {"state": "disconnected", "server": "", "viewer_count": 0, "room_id": self._room_id, "state_desc": "未初始化"}
+
+        # 背景LLM状态
+        bg_llm = {
+            "enabled": self._background_llm_enabled,
+            "window_size": self._config.get("background_llm", {}).get("window_size", 15),
+            "max_samples": self._config.get("background_llm", {}).get("max_samples", 30),
+        }
+        if self._llm_client:
+            bg_llm["llm_stats"] = self._llm_client.get_stats()
+        if self._aggregator:
+            bg_llm["aggregator_stats"] = self._aggregator.get_stats()
+
+        return {
+            "room_id": self._room_id,
+            "listening": is_listening,
+            "connecting": self._connecting,
+            "logged_in": self._is_logged_in,
+            "logged_in_bili_uid": self._logged_in_bili_uid,
+            "interval": self._interval,
+            "danmaku_max_length": self._danmaku_max_length,
+            "target_lanlan": self._target_lanlan,
+            "master_bili_uid": self._master_bili_uid,
+            "master_bili_name": self._master_bili_name,
+            "queue_size": len(self._ui_danmaku_queue),
+            "connection": connection,
+            "stats": {
+                "received": self._total_received,
+                "filtered": self._total_filtered,
+                "pushed": self._total_pushed,
+            },
+            "background_llm": bg_llm,
+        }
+
+    # ==========================================
     # 背景LLM系统API（新体系）
     # ==========================================
 
@@ -1305,6 +1363,7 @@ class BiliDanmakuPlugin(NekoPluginBase):
     # 原有API保持兼容
     # ==========================================
 
+    @ui.action(label=tr("actions.setRoom.label", default="切换房间"), tone="primary", group="room", order=10, refresh_context=True)
     @plugin_entry(
         id="set_room_id",
         name="更改监听直播间",
@@ -1345,6 +1404,7 @@ class BiliDanmakuPlugin(NekoPluginBase):
             "old_room_id": old_room,
         })
 
+    @ui.action(label=tr("actions.setInterval.label", default="设置间隔"), tone="secondary", group="settings", order=10, refresh_context=True)
     @plugin_entry(
         id="set_interval",
         name="更改弹幕推送间隔",
@@ -1390,6 +1450,7 @@ class BiliDanmakuPlugin(NekoPluginBase):
             "old_interval": old_interval,
         })
 
+    @ui.action(label=tr("actions.sendDanmaku.label", default="发送弹幕"), tone="danger", group="danmaku", order=10, refresh_context=True)
     @plugin_entry(
         id="send_danmaku",
         name="发送弹幕到直播间",
@@ -1783,6 +1844,7 @@ class BiliDanmakuPlugin(NekoPluginBase):
             "old_value": old_value,
         })
 
+    @ui.action(label=tr("actions.connect.label", default="连接"), tone="success", group="connection", order=10, refresh_context=True)
     @plugin_entry(
         id="connect",
         name="开始监听",
@@ -1813,6 +1875,7 @@ class BiliDanmakuPlugin(NekoPluginBase):
             "room_id": self._room_id,
         })
 
+    @ui.action(label=tr("actions.disconnect.label", default="断开"), tone="warning", group="connection", order=20, refresh_context=True)
     @plugin_entry(
         id="disconnect",
         name="停止监听",
@@ -1893,6 +1956,13 @@ class BiliDanmakuPlugin(NekoPluginBase):
             "has_buvid3": bool(buvid3),
         })
 
+    @ui.action(
+        label=tr("actions.clearCredential.label", default="退出登录"),
+        tone="danger",
+        group="auth",
+        order=30,
+        refresh_context=True,
+    )
     @plugin_entry(
         id="clear_credential",
         name="清除B站登录凭据",
@@ -1956,6 +2026,13 @@ class BiliDanmakuPlugin(NekoPluginBase):
         except Exception as e:
             return self._bili_err(e)
 
+    @ui.action(
+        label=tr("actions.biliLogin.label", default="扫码登录"),
+        tone="primary",
+        group="auth",
+        order=10,
+        refresh_context=True,
+    )
     @plugin_entry(
         id="bili_login",
         name="生成 B站 登录二维码",
@@ -1968,6 +2045,13 @@ class BiliDanmakuPlugin(NekoPluginBase):
         except Exception as e:
             return self._bili_err(e)
 
+    @ui.action(
+        label=tr("actions.biliLoginCheck.label", default="检查扫码状态"),
+        tone="secondary",
+        group="auth",
+        order=20,
+        refresh_context=True,
+    )
     @plugin_entry(
         id="bili_login_check",
         name="检查 B站 登录状态",
@@ -1976,7 +2060,24 @@ class BiliDanmakuPlugin(NekoPluginBase):
     )
     async def bili_login_check(self, **_):
         try:
-            return self._bili_ok(await self._auth_service.login_check())
+            result = await self._auth_service.login_check()
+            # 登录成功时：将 uid/username 写入 config
+            if result.get("status") == "done":
+                uid_str = result.get("uid", "")
+                username = result.get("username", "")
+                if uid_str:
+                    try:
+                        uid_int = int(uid_str)
+                    except (TypeError, ValueError):
+                        uid_int = 0
+                    old_uid = self._master_bili_uid
+                    old_name = self._master_bili_name
+                    self._master_bili_uid = uid_int
+                    self._master_bili_name = username
+                    self._refresh_logged_in_master_conflict()
+                    await self._save_plugin_config()
+                    self.logger.info(f"登录用户已写入 config: uid={uid_int}, name={username} (原 uid={old_uid}, name={old_name})")
+            return self._bili_ok(result)
         except Exception as e:
             return self._bili_err(e)
 
