@@ -474,7 +474,9 @@ GAME_TITLE_KEYWORDS: list = [
     ('Rocket League', ['Rocket League', '火箭联盟', '火箭聯盟', 'ロケットリーグ', '로켓 리그'], 'competitive', 'sports'),
     ('Fall Guys', ['Fall Guys', '糖豆人', '糖豆人', 'フォールガイズ', '폴 가이즈'], 'casual', 'party'),
     ('Among Us', ['Among Us', '我们之中', '在我们之中', 'アモングアス'], 'casual', 'party'),
-    ('Genshin', ['Genshin'], 'casual', 'rpg'),  # safety alias
+    # 'Genshin' alone was a leftover safety-alias entry — already covered
+    # by the 'Genshin Impact' canonical above; first-match wins, so this
+    # tuple was unreachable. Removed.
     ('Roblox', ['Roblox', '罗布乐思', '邏輯思維 Roblox', 'ロブロックス', '로블록스'], 'varied', 'party'),
     ('Minecraft', ['Minecraft', '我的世界', 'マインクラフト', '마인크래프트'], 'varied', 'sim'),
     ('Terraria', ['Terraria', '泰拉瑞亚', '泰拉瑞亞', 'テラリア', '테라리아'], 'casual', 'sim'),
@@ -557,7 +559,9 @@ GAME_TITLE_KEYWORDS: list = [
     ('EA Sports FC', ['EA Sports FC', 'FIFA', 'EA SPORTS FC 25', 'FC 25', 'EA SPORTS FC 24'], 'competitive', 'sports'),
     # Family-name canonical so per-year overrides remain addressable
     ('NBA 2K', ['NBA 2K25', 'NBA 2K24', 'NBA 2K23', 'NBA 2K'], 'competitive', 'sports'),
-    ('Rocket League', ['Rocket League'], 'competitive', 'sports'),
+    # Rocket League was duplicated here (same alias as the entry above
+    # in the Western multiplayer section); first-match wins so this was
+    # unreachable. Removed.
 
     # ============================================================
     # MOBA / shooter / extras
