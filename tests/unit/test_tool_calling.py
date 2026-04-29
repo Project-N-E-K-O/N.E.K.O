@@ -592,6 +592,46 @@ async def test_register_tool_and_sync_serializes_concurrent_updates():
     assert mgr.sync_call_log[-1] == ("a", "b", "c")
 
 
+def test_tool_register_request_rejects_non_loopback_callback_url():
+    """callback_url host 白名单：必须是 127.0.0.0/8 / ::1 / localhost，
+    防止本地 caller 把 main_server 当 SSRF 出站代理。
+
+    回归保护：CodeRabbit PR #1035 第 14 轮 review."""
+    from pydantic import ValidationError
+
+    from main_routers.tool_router import ToolRegisterRequest
+
+    base = {
+        "name": "x",
+        "callback_url": "http://127.0.0.1:9000/cb",
+        "parameters": {"type": "object", "properties": {}},
+    }
+
+    # 合法 case
+    for url in [
+        "http://127.0.0.1:9000/cb",
+        "http://localhost:9000/cb",
+        "http://[::1]:9000/cb",
+        "http://127.0.0.5/cb",  # 127.0.0.0/8 整段都是 loopback
+        "https://localhost/cb",
+    ]:
+        ToolRegisterRequest(**{**base, "callback_url": url})
+
+    # 非法 case：公网 IP / 局域网 IP / 私有域名 / 错误 scheme / 缺 host
+    illegal_urls = [
+        "http://8.8.8.8/cb",
+        "http://192.168.1.5/cb",  # 局域网也禁
+        "http://10.0.0.1/cb",
+        "http://example.com/cb",
+        "ftp://127.0.0.1/cb",  # 错误 scheme
+        "http:///cb",  # 缺 host
+        "http://[2001:db8::1]/cb",  # 公网 IPv6
+    ]
+    for url in illegal_urls:
+        with pytest.raises(ValidationError):
+            ToolRegisterRequest(**{**base, "callback_url": url})
+
+
 @pytest.mark.asyncio
 async def test_register_tool_and_sync_propagates_session_update_failure():
     """`*_and_sync` 必须在 wire 同步失败时把异常往上抛 —— 否则 HTTP

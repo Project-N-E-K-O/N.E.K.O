@@ -234,8 +234,14 @@ mgr.register_tool(ToolDefinition(
 
 - **不要在工具名里放敏感信息**：LLM 会在生成时把工具名写进 tool_calls，
   最终持久化进对话历史
-- **`callback_url` 必须是 `127.0.0.1` / `localhost` 网段**：跨主机不允许
-  （`verify_local_access` 守门）
+- **`callback_url` 必须指向本机 loopback**：服务端会用 `urlparse` +
+  `ipaddress.ip_address` 校验 host 在 `127.0.0.0/8` / `::1` / 字面量
+  `localhost` 之内，否则注册请求会被 422 拒绝。这是**两道独立闸门**：
+  - `verify_local_access` 限制谁能调用 `/api/tools/register`（只允许
+    本机来源）
+  - `callback_url` host 白名单限制注册的回调地址（防止本地 caller 用
+    main_server 当 SSRF 出站代理）
+  跨主机的合法场景需要走独立的反向代理 + 显式授权流程
 - **`timeout_seconds ≤ 300`**：超过 5 分钟的同步工具应该改成"立即返回 +
   通过 plugin 自己的事件机制异步推送结果"模式，否则会让对话整体卡死
 - **工具失败要返回明确的错误**：`is_error: true` + 一句人类可读的 `error`，

@@ -47,15 +47,58 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
+import ipaddress
+from urllib.parse import urlparse
+
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from main_logic.tool_calling import ToolCall, ToolDefinition, ToolResult
 from main_routers.cookies_login_router import verify_local_access
 from utils.logger_config import get_module_logger
 
 from .shared_state import get_session_manager
+
+
+def _validate_local_callback_url(url: str) -> str:
+    """callback_url host 白名单校验：只能指向本机 loopback。
+
+    ``verify_local_access`` 只管"谁能调 /api/tools/register"，不管
+    ``callback_url`` 的值。如果不校验 host，本地 caller 可以注册一个
+    指向公网/局域网的 callback_url，把 main_server 当 SSRF 出站代理对
+    外发 LLM 工具调用 payload（含用户对话内容、模型生成的 args）。
+
+    强制 host 必须是 loopback（``127.0.0.0/8`` IPv4、``::1`` IPv6 或
+    字面量 ``localhost``）。当前 plugin 模型全是本机进程，没有跨机
+    合法用例。需要跨机的请走独立的反向代理 + 显式授权流程。
+    """
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError(
+            f"callback_url scheme 必须是 http/https，实际：{parsed.scheme!r}"
+        )
+    host = parsed.hostname
+    if not host:
+        raise ValueError("callback_url 缺少 host")
+    host = host.strip("[]")  # IPv6 字面量
+    # 直接比对 localhost 字面量
+    if host.lower() == "localhost":
+        return url
+    # 解析为 IP 后用 ipaddress 模块判断是否 loopback —— 同时正确处理
+    # IPv4 / IPv6 / IPv4-mapped IPv6（::ffff:127.0.0.1）等情况。
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        raise ValueError(
+            f"callback_url host 必须是 loopback 地址（127.0.0.0/8、::1、"
+            f"localhost），实际是非 IP 域名：{host!r}"
+        ) from None
+    if not ip.is_loopback:
+        raise ValueError(
+            f"callback_url host 必须是 loopback 地址，实际：{host!r}"
+        )
+    return url
 
 # 这些端点能改运行时状态（注册/卸载工具、配置 callback_url），如果服务被
 # 暴露到 LAN 上不加保护就成了任意远程工具转发器。复用 cookies_login_router
@@ -99,6 +142,11 @@ class ToolRegisterRequest(BaseModel):
     # 模型轮也会被卡住；超过 5 分钟的同步工具应该改成 plugin 自己拆任务
     # 而不是把 main_server 长期 hold 住。
     timeout_seconds: float = Field(default=30.0, gt=0.0, le=300.0)
+
+    @field_validator("callback_url")
+    @classmethod
+    def _check_callback_url_is_local(cls, v: str) -> str:
+        return _validate_local_callback_url(v)
 
 
 class ToolUnregisterRequest(BaseModel):
