@@ -157,12 +157,9 @@ class HealthCheckResponse(BaseModel):
 # message_type 涵盖：基础载荷（text/url/binary/binary_url）+ 系统语义类型
 # （proactive_notification → 经 proactive_bridge 转 proactive_message 注入主 AI；
 # music_allowlist_add / music_play_url → 注册音乐域名白名单 / 直接播放曲目，
-# 由前端而非主 AI 消费）。新加 message_type 时请同步 plugin/server/messaging/
-# proactive_bridge.py 与 plugin/PLUGIN_DEVELOPMENT_GUIDE.md。
-_PLUGIN_PUSH_MESSAGE_TYPES = (
-    "text", "url", "binary", "binary_url",
-    "proactive_notification", "music_allowlist_add", "music_play_url",
-)
+# 由前端而非主 AI 消费）。新加 message_type 时请同步 PluginPushMessage 的
+# Literal 定义、plugin/server/messaging/proactive_bridge.py 的分发逻辑、
+# 以及 plugin/PLUGIN_DEVELOPMENT_GUIDE.md 的取值表。
 
 
 class PluginPushMessageRequest(BaseModel):
