@@ -224,7 +224,11 @@ async def register_tool(req: ToolRegisterRequest) -> Dict[str, Any]:
     for mgr in targets:
         role_name = getattr(mgr, "lanlan_name", "?")
         try:
-            mgr.register_tool(tool, replace=True)
+            # 用 _and_sync 版本：注册后等 session.update 推送完成再返回，
+            # 这样调用方拿到 ok=True 的瞬间，active/pending session 上的
+            # tools 已经是最新 —— 不会出现"返回成功但下一次 model 调用
+            # 还看不到工具"的窗口。
+            await mgr.register_tool_and_sync(tool, replace=True)
             affected.append(role_name)
         except Exception as e:
             err_text = f"{type(e).__name__}: {e}"
@@ -255,7 +259,8 @@ async def unregister_tool(req: ToolUnregisterRequest) -> Dict[str, Any]:
     removed_any = False
     affected: List[str] = []
     for mgr in targets:
-        if mgr.unregister_tool(req.name):
+        # _and_sync 版本：等 session 同步完成再返回，与 register 端点对偶。
+        if await mgr.unregister_tool_and_sync(req.name):
             removed_any = True
             affected.append(getattr(mgr, "lanlan_name", "?"))
     return {"ok": True, "removed": removed_any, "name": req.name, "affected_roles": affected}
@@ -266,7 +271,7 @@ async def clear_tools(req: ToolClearRequest) -> Dict[str, Any]:
     targets = _resolve_target_managers(req.role)
     total = 0
     for mgr in targets:
-        total += mgr.clear_tools(source=req.source)
+        total += await mgr.clear_tools_and_sync(source=req.source)
     return {"ok": True, "removed": total, "source": req.source}
 
 

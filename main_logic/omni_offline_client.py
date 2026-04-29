@@ -190,7 +190,16 @@ def _genai_messages_to_contents(
             if role == "assistant":
                 tool_calls = msg.get("tool_calls") or []
                 if tool_calls:
+                    # 同 turn text + function_call 并存的场景：``content``
+                    # 是 _astream_genai_with_tools 写进来的 streamed_text_buffer，
+                    # 表示模型在调工具前已经先吐给用户的话。这条 text 必须
+                    # 跟 function_call parts 一起回放给 Gemini，否则下一轮
+                    # generate_content_stream 看到的历史依然缺前半句，模型
+                    # 还是会重复 / 改口（这正是上一条修复的对偶点）。
                     parts = []
+                    text_content = msg.get("content")
+                    if isinstance(text_content, str) and text_content.strip():
+                        parts.append(types.Part(text=text_content))
                     for tc in tool_calls:
                         fn = tc.get("function") or {}
                         try:

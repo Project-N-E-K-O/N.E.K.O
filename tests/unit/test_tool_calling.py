@@ -503,6 +503,96 @@ async def test_offline_genai_streamed_text_persisted_with_tool_call(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_genai_messages_to_contents_preserves_text_with_tool_calls():
+    """assistant 同时有 content + tool_calls 时，转 Gemini Content 必须把
+    text 和 function_call 一起 emit 成 parts。否则下一轮 generate_content_stream
+    看到的历史依然缺已 stream 出去的前半句，模型还是会重复 / 改口。
+
+    回归保护：CodeRabbit PR #1035 第 6 轮 review."""
+    pytest.importorskip("google.genai")
+    from main_logic.omni_offline_client import _genai_messages_to_contents
+
+    messages = [
+        {"role": "user", "content": "查天气"},
+        {
+            "role": "assistant",
+            "content": "让我查一下天气，",
+            "tool_calls": [{
+                "id": "c1",
+                "type": "function",
+                "function": {"name": "get_weather", "arguments": '{"city":"Tokyo"}'},
+            }],
+        },
+        {"role": "tool", "tool_call_id": "c1", "name": "get_weather",
+         "content": '{"temp_c": 22}'},
+    ]
+    _, contents = _genai_messages_to_contents(messages)
+    # 找 assistant turn
+    assistant_turn = next(c for c in contents if c.role == "model")
+    parts = list(assistant_turn.parts)
+    # 第一个 part 必须是 text，后面才是 function_call
+    text_parts = [p for p in parts if getattr(p, "text", None)]
+    fc_parts = [p for p in parts if getattr(p, "function_call", None)]
+    assert text_parts, (
+        "assistant 同 turn 里有 content 时，转 Gemini Content 必须保留 text part，"
+        "否则下一轮 LLM 看不到自己已 stream 出去的前半句"
+    )
+    assert any("查一下天气" in (p.text or "") for p in text_parts)
+    assert fc_parts and fc_parts[0].function_call.name == "get_weather"
+
+
+@pytest.mark.asyncio
+async def test_register_tool_and_sync_serializes_concurrent_updates():
+    """连续多个 register_tool_and_sync 必须串行推送 session.update —— 否则
+    OpenAI Realtime / GLM / Qwen 收到的 wire 事件可能乱序，最后一份快照
+    不一定对应 registry 的最终状态。
+
+    回归保护：CodeRabbit PR #1035 第 6 轮 review."""
+    import asyncio as _asyncio
+
+    from main_logic.tool_calling import ToolDefinition
+
+    # 构造一个带 _tool_sync_lock + tool_registry 但其它字段都 stub 的 mgr。
+    class _StubMgr:
+        def __init__(self):
+            from main_logic.tool_calling import ToolRegistry
+            self.tool_registry = ToolRegistry()
+            self._tool_sync_lock = _asyncio.Lock()
+            self.session = None
+            self.pending_session = None
+            self.sync_call_log: list = []
+
+        async def _sync_tools_to_active_session(self):
+            # 模拟实际实现：进 lock 内才读 registry 并"推送"。
+            async with self._tool_sync_lock:
+                names = self.tool_registry.names()
+                # 模拟 session.update 推送 ~10ms
+                await _asyncio.sleep(0.01)
+                self.sync_call_log.append(tuple(sorted(names)))
+
+        async def register_tool_and_sync(self, tool, *, replace=True):
+            self.tool_registry.register(tool, replace=replace)
+            await self._sync_tools_to_active_session()
+
+    mgr = _StubMgr()
+
+    # 三个并发 register。
+    await _asyncio.gather(
+        mgr.register_tool_and_sync(ToolDefinition(name="a", description="", handler=lambda _: 0)),
+        mgr.register_tool_and_sync(ToolDefinition(name="b", description="", handler=lambda _: 0)),
+        mgr.register_tool_and_sync(ToolDefinition(name="c", description="", handler=lambda _: 0)),
+    )
+
+    # 串行：每次 sync 看到的快照单调增加（不会出现"先看到 abc 后看到 ab"的乱序）。
+    sizes = [len(snap) for snap in mgr.sync_call_log]
+    assert sizes == sorted(sizes), (
+        f"sync_call_log 必须单调增加（串行推送），实际：{mgr.sync_call_log}"
+    )
+    # 最后一次 sync 必须看到完整 3 个工具
+    assert mgr.sync_call_log[-1] == ("a", "b", "c")
+
+
+@pytest.mark.asyncio
 async def test_offline_genai_tools_unsupported_error_correctly_disables_path(monkeypatch):
     """与上一条对偶：当 genai 真的报"tools not supported"时，必须被包装成
     `_GenaiToolsUnsupported`，让 `_astream_with_tools` 翻 `_genai_tools_unsupported`

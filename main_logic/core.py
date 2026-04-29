@@ -542,6 +542,12 @@ class LLMSessionManager:
         # 同一份 registry 同时给 offline 和 realtime client 使用，所以
         # 切换会话时不需要重新注册。
         self.tool_registry = ToolRegistry()
+        # 同步推送 tools 到 active/pending session 时的串行化锁。
+        # 防止连续多次 register/unregister/clear 触发的 session.update
+        # 在 wire 上乱序（OpenAI Realtime / GLM / Qwen / Step 都接受
+        # session.update 流式覆盖，乱序可能让最后一份快照不对应 registry
+        # 的最终状态）。
+        self._tool_sync_lock = asyncio.Lock()
         # 下一次 handle_response_complete 发出的 turn end 要携带的 meta。
         # 在 handle_avatar_interaction 等需要标记特殊轮次的入口里设置，
         # 由 handle_response_complete 读取并清空。比独立的
@@ -1500,16 +1506,36 @@ class LLMSessionManager:
         - ``tool.handler is None`` 时调用会被路由到 ``ToolRegistry`` 的
           ``remote_dispatcher``，用于跨进程 plugin / agent_server。后者
           由 main_server 启动时挂上（HTTP 转发到对应 plugin）。
-        如果当前 session 已建立，会立即把更新后的 tools list 推给 session
-        （仅 OpenAI Realtime / GLM / Step / 各家 offline 支持 mid-session 更新）。
+
+        ⚠️ 这是**同步**入口：只更新 registry 状态，session 同步是 fire-and-forget
+        通过 ``_fire_task`` 跑。如果调用方需要等"工具在 wire 上真生效"再
+        返回，请改用 ``await register_tool_and_sync(...)``（HTTP /api/tools/
+        register 端点已自动用了那条路径）。
         """
         self.tool_registry.register(tool, replace=replace)
         self._fire_task(self._sync_tools_to_active_session())
+
+    async def register_tool_and_sync(self, tool: ToolDefinition, *, replace: bool = True) -> None:
+        """``register_tool`` 的 await 版本：注册后等 session 同步推送完成。
+
+        给 HTTP `/api/tools/register` 之类的远程入口用——caller 拿到响应时
+        active/pending session 上的 tools 已经是最新的，不会出现"返回 ok
+        但下一次 model 调用还看不到工具"的窗口。串行化由 ``_tool_sync_lock``
+        保证：连续多个并发 register 不会让 wire 上的 session.update 乱序。
+        """
+        self.tool_registry.register(tool, replace=replace)
+        await self._sync_tools_to_active_session()
 
     def unregister_tool(self, name: str) -> bool:
         existed = self.tool_registry.unregister(name)
         if existed:
             self._fire_task(self._sync_tools_to_active_session())
+        return existed
+
+    async def unregister_tool_and_sync(self, name: str) -> bool:
+        existed = self.tool_registry.unregister(name)
+        if existed:
+            await self._sync_tools_to_active_session()
         return existed
 
     def list_tools(self) -> list[str]:
@@ -1519,6 +1545,12 @@ class LLMSessionManager:
         n = self.tool_registry.clear(source=source)
         if n > 0:
             self._fire_task(self._sync_tools_to_active_session())
+        return n
+
+    async def clear_tools_and_sync(self, *, source: str | None = None) -> int:
+        n = self.tool_registry.clear(source=source)
+        if n > 0:
+            await self._sync_tools_to_active_session()
         return n
 
     async def _on_tool_call(self, call: ToolCall) -> ToolResult:
@@ -1540,29 +1572,37 @@ class LLMSessionManager:
         ``apply_tools_to_session`` 仅对 ``OmniRealtimeClient`` 且已 ws
         connect 的实例有意义；offline 客户端只靠 ``set_tools`` 在下次
         ``stream_text`` 取到新快照即可。
+
+        ⚠️ 串行化：用 ``_tool_sync_lock`` 保证多个并发调用按调用顺序
+        逐个推送 session.update。否则 ``register_tool / unregister_tool /
+        clear_tools`` 连续触发的 wire 事件可能乱序，最后一份快照不一定
+        对应 registry 的最终状态。
         """
-        defs = self.tool_registry.all()
-        targets = []
-        if self.session is not None:
-            targets.append(self.session)
-        if self.pending_session is not None and self.pending_session is not self.session:
-            targets.append(self.pending_session)
-        if not targets:
-            return
-        for sess in targets:
-            try:
-                if hasattr(sess, "set_tools"):
-                    sess.set_tools(defs)
-                if hasattr(sess, "set_tool_call_handler"):
-                    sess.set_tool_call_handler(self._on_tool_call)
-                if isinstance(sess, OmniRealtimeClient) and sess.ws is not None:
-                    await sess.apply_tools_to_session()
-            except Exception as e:
-                logger.warning(
-                    "⚠️ Tool sync to %s session failed: %s",
-                    "pending" if sess is self.pending_session else "active",
-                    e,
-                )
+        async with self._tool_sync_lock:
+            # registry 在 lock 内才读，确保拿到的是 lock 持有期间的真实快照
+            # （而不是入队时的旧值）。
+            defs = self.tool_registry.all()
+            targets = []
+            if self.session is not None:
+                targets.append(self.session)
+            if self.pending_session is not None and self.pending_session is not self.session:
+                targets.append(self.pending_session)
+            if not targets:
+                return
+            for sess in targets:
+                try:
+                    if hasattr(sess, "set_tools"):
+                        sess.set_tools(defs)
+                    if hasattr(sess, "set_tool_call_handler"):
+                        sess.set_tool_call_handler(self._on_tool_call)
+                    if isinstance(sess, OmniRealtimeClient) and sess.ws is not None:
+                        await sess.apply_tools_to_session()
+                except Exception as e:
+                    logger.warning(
+                        "⚠️ Tool sync to %s session failed: %s",
+                        "pending" if sess is self.pending_session else "active",
+                        e,
+                    )
 
     def _bind_session_lifecycle_callbacks(self, session):
         """Bind lifecycle callbacks with closure-captured session reference.
