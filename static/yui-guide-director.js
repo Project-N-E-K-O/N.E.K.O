@@ -1366,6 +1366,7 @@
             document.addEventListener('click', this.interactionGuardHandler, true);
             document.addEventListener('dblclick', this.interactionGuardHandler, true);
             document.addEventListener('contextmenu', this.interactionGuardHandler, true);
+            document.addEventListener('pointerdown', this.skipButtonClickHandler, true);
             document.addEventListener('click', this.skipButtonClickHandler, true);
         }
 
@@ -6726,6 +6727,7 @@
             document.removeEventListener('click', this.interactionGuardHandler, true);
             document.removeEventListener('dblclick', this.interactionGuardHandler, true);
             document.removeEventListener('contextmenu', this.interactionGuardHandler, true);
+            document.removeEventListener('pointerdown', this.skipButtonClickHandler, true);
             document.removeEventListener('click', this.skipButtonClickHandler, true);
         }
 

@@ -1016,7 +1016,7 @@ class PluginDashboardGuideRuntime {
     this.onPointerDown(event)
   }
   boundInteractionGuard = (event: Event) => {
-    if (!this.running || !event || (event as { isTrusted?: boolean }).isTrusted === false) {
+    if (!this.running || !event) {
       return
     }
 
@@ -1025,6 +1025,10 @@ class PluginDashboardGuideRuntime {
       && event instanceof window.MouseEvent
       && this.forwardHomeSkipClick(event)
     ) {
+      return
+    }
+
+    if ((event as { isTrusted?: boolean }).isTrusted === false) {
       return
     }
 
@@ -1339,7 +1343,7 @@ class PluginDashboardGuideRuntime {
   }
 
   forwardHomeSkipClick(event: PointerEvent | MouseEvent) {
-    if (!this.running || !event || event.isTrusted === false || !this.activeSessionId) {
+    if (!this.running || !event || !this.activeSessionId) {
       return false
     }
 
@@ -2734,9 +2738,20 @@ class PluginDashboardLocalTutorialRunner {
     skipButton.style.fontSize = '13px'
     skipButton.style.fontWeight = '600'
     skipButton.style.cursor = 'pointer'
-    skipButton.addEventListener('click', () => {
+    const handleSkip = (event: Event) => {
+      if (typeof event.preventDefault === 'function') {
+        event.preventDefault()
+      }
+      if (typeof event.stopImmediatePropagation === 'function') {
+        event.stopImmediatePropagation()
+      }
+      if (typeof event.stopPropagation === 'function') {
+        event.stopPropagation()
+      }
       this.requestCancel()
-    })
+    }
+    skipButton.addEventListener('pointerdown', handleSkip)
+    skipButton.addEventListener('click', handleSkip)
 
     footer.appendChild(hintEl)
     footer.appendChild(skipButton)
