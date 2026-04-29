@@ -2153,7 +2153,7 @@
             "ru": "ruso"
         },
         "interval": {
-            "chatIntervalBase": "Intervalo base",
+            "chatIntervalBase": "Intervalo de percepción",
             "visionInterval": "Intervalo de lectura"
         },
         "toggles": {
@@ -2161,9 +2161,9 @@
             "mergeMessages": "Fusionar mensajes",
             "avatarReactionBubble": "Burbuja de expresión",
             "proactiveChat": "Chat proactivo",
-            "proactiveVision": "Visión Proactiva",
+            "proactiveVision": "Modo Privacidad",
             "proactiveVisionChat": "Compartir pantalla",
-            "proactiveVisionChatTooltip": "Requiere que estén habilitados tanto el chat proactivo como la visión proactiva",
+            "proactiveVisionChatTooltip": "Requiere chat proactivo habilitado y Modo Privacidad deshabilitado",
             "proactiveNewsChat": "Sitio web de noticias",
             "proactiveNewsChatTooltip": "Utilice temas de actualidad para un chat proactivo",
             "proactiveVideoChat": "Sitio web de vídeos",
@@ -2563,8 +2563,8 @@
             "desc": "Tu Neko inicia la conversación de forma proactiva. Ajuste la frecuencia aquí ~"
         },
         "step14": {
-            "title": "👀 Visión Proactiva",
-            "desc": "A diferencia de Screen Share, que transmite continuamente durante las sesiones de voz, Proactive Vision permite que tu Neko mire tu pantalla de vez en cuando por sí solo. Ajuste el intervalo aquí ~"
+            "title": "🔒 Modo Privacidad",
+            "desc": "Cuando el Modo Privacidad está desactivado, tu Neko echará un vistazo a tu pantalla de vez en cuando por sí solo, a diferencia del Compartir pantalla que transmite continuamente durante las sesiones de voz. Ajuste el intervalo aquí ~"
         },
         "step15": {
             "title": "👤 Administrador de personajes",

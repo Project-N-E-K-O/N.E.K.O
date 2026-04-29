@@ -2153,7 +2153,7 @@
             "ru": "Русский"
         },
         "interval": {
-            "chatIntervalBase": "기본 간격",
+            "chatIntervalBase": "인지 간격",
             "visionInterval": "읽기 간격"
         },
         "toggles": {
@@ -2161,9 +2161,9 @@
             "mergeMessages": "메시지 병합",
             "avatarReactionBubble": "표정 말풍선",
             "proactiveChat": "사전 예방적 채팅",
-            "proactiveVision": "사전 예방적 비전",
+            "proactiveVision": "프라이버시 모드",
             "proactiveVisionChat": "화면 공유",
-            "proactiveVisionChatTooltip": "사전 예방적 채팅과 사전 예방적 비전을 모두 활성화해야 합니다",
+            "proactiveVisionChatTooltip": "사전 예방적 채팅을 활성화하고 프라이버시 모드를 비활성화해야 합니다",
             "proactiveNewsChat": "뉴스 웹사이트",
             "proactiveNewsChatTooltip": "트렌딩 토픽을 사용하여 채팅",
             "proactiveVideoChat": "동영상 웹사이트",
@@ -2563,8 +2563,8 @@
             "desc": "동반자는 주기적으로 대화를 시작합니다. 여기서 간격을 조정하세요~"
         },
         "step14": {
-            "title": "🙌 사전 예방적 비전",
-            "desc": "음성 세션 중 실시간으로 전송하는 화면 공유와 달리, 사전 예방적 비전을 활성화하면 동료가 때때로 스스로 화면을 살펴봅니다. 여기서 간격을 조정하세요~"
+            "title": "🔒 프라이버시 모드",
+            "desc": "프라이버시 모드를 끄면 동료가 때때로 스스로 화면을 살펴봅니다. 음성 세션 중 실시간으로 전송하는 화면 공유와는 다릅니다. 여기서 간격을 조정하세요~"
         },
         "step15": {
             "title": "👤 캐릭터 관리자",

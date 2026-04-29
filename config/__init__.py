@@ -1191,10 +1191,27 @@ PROACTIVE_CHAT_HISTORY_MAX = 10
 - 用途：每个 lanlan 维护的最近主动搭话记录，用于 1h 内去重。
 - 上游：proactive 触发的搭话事件。"""
 
-PROACTIVE_TOPIC_HISTORY_MAX = 100
-"""_proactive_topic_history deque maxlen。
-- 用途：每个 lanlan 维护的最近话题去重队列。
-- 上游：proactive 选中的话题 key。"""
+PROACTIVE_SOURCE_HARD_SKIP_SECONDS = 5 * 3600
+"""主动搭话 source 衰减历史的硬窗口（p_skip=1.0）。
+- 用途：5h 内同一 URL 必跳，超过后按 kind 半衰期指数衰减。
+- 上游：system_router._should_skip_source。"""
+
+PROACTIVE_SOURCE_HALF_LIFE_BY_KIND: dict[str, float] = {
+    'web': 3 * 86400.0,
+    'image': 3 * 86400.0,
+    'music': 1 * 86400.0,
+}
+"""硬窗口外按 kind 各自的 p_skip 半衰期（秒）。
+- web/image：3d（新闻 / 表情包重复成本相对低，慢慢复活）
+- music：1d（曲库小，更频繁轮转）
+- 用途：system_router._half_life_for 查表。"""
+
+PROACTIVE_SOURCE_HALF_LIFE_DEFAULT = 3 * 86400.0
+"""未在 _BY_KIND 命中时的兜底半衰期。"""
+
+PROACTIVE_SOURCE_FORGET_P = 0.05
+"""p_skip 跌破此阈值即从衰减历史中遗忘（让文件体积自然有界）。
+- 当前参数下：music ≈ 4.5d 后遗忘，web/image ≈ 13d 后遗忘。"""
 
 EMOTION_ANALYSIS_MAX_TOKENS = 40
 """情感分析 LLM 的 max_completion_tokens。
@@ -1465,7 +1482,10 @@ __all__ = [
     'PROACTIVE_PHASE2_GENERATE_MAX_TOKENS',
     'PROACTIVE_PHASE1_UNIFIED_MAX_TOKENS',
     'PROACTIVE_CHAT_HISTORY_MAX',
-    'PROACTIVE_TOPIC_HISTORY_MAX',
+    'PROACTIVE_SOURCE_HARD_SKIP_SECONDS',
+    'PROACTIVE_SOURCE_HALF_LIFE_BY_KIND',
+    'PROACTIVE_SOURCE_HALF_LIFE_DEFAULT',
+    'PROACTIVE_SOURCE_FORGET_P',
     'EMOTION_ANALYSIS_MAX_TOKENS',
     'PLUGIN_USER_CONTEXT_MAX_ITEMS',
     'TRANSLATION_OUTPUT_MAX_TOKENS',

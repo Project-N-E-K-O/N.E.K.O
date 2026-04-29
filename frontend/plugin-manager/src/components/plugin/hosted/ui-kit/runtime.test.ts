@@ -141,6 +141,23 @@ describe('hosted ui runtime', () => {
     expect(ui.t('greeting', { name: 'Neko' })).toBe('Hello Neko')
   })
 
+  it('falls back from regional Chinese locales to zh-CN only for Chinese locales', () => {
+    window.__NEKO_PAYLOAD = {
+      locale: 'zh-TW',
+      i18n: {
+        default_locale: 'en',
+        messages: {
+          'zh-CN': { greeting: '你好 {name}' },
+          en: {},
+        },
+      },
+    }
+    expect(ui.t('greeting', { name: 'Neko' })).toBe('你好 Neko')
+
+    window.__NEKO_PAYLOAD.locale = 'ja'
+    expect(ui.t('greeting', { name: 'Neko', defaultValue: 'Hello {name}' })).toBe('Hello Neko')
+  })
+
   it('updates event listeners instead of stacking stale handlers', () => {
     const first = vi.fn()
     const second = vi.fn()

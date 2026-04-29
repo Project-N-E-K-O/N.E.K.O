@@ -14,8 +14,10 @@ import sys
 import asyncio
 import base64
 import difflib
+import hashlib
 import ipaddress
 import math
+import random
 import re
 import secrets
 import shutil
@@ -24,6 +26,7 @@ import tempfile
 import time
 from collections import deque
 from io import BytesIO
+from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlsplit
 
@@ -64,7 +67,10 @@ from config import (
     PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
     PROACTIVE_PHASE1_UNIFIED_MAX_TOKENS,
     PROACTIVE_CHAT_HISTORY_MAX,
-    PROACTIVE_TOPIC_HISTORY_MAX,
+    PROACTIVE_SOURCE_HARD_SKIP_SECONDS,
+    PROACTIVE_SOURCE_HALF_LIFE_BY_KIND,
+    PROACTIVE_SOURCE_HALF_LIFE_DEFAULT,
+    PROACTIVE_SOURCE_FORGET_P,
     EMOTION_ANALYSIS_MAX_TOKENS,
 )
 from config.prompts_sys import _loc
@@ -89,6 +95,7 @@ from config.prompts_proactive import (
     PROACTIVE_MUSIC_TAG_INSTRUCTIONS,
     MUSIC_SEARCH_RESULT_TEXTS,
 )
+from utils.file_utils import atomic_write_json_async, read_json
 from utils.workshop_utils import get_workshop_path
 from utils.screenshot_utils import (
     compress_screenshot,
@@ -1269,13 +1276,145 @@ async def get_changelog(since: str = "", lang: str = ""):
 # --- 主动搭话近期记录暂存区 ---
 # {lanlan_name: deque([(timestamp, message), ...], maxlen=10)}
 _proactive_chat_history: dict[str, deque] = {}
-_proactive_topic_history: dict[str, deque] = {}
 
 _RECENT_CHAT_MAX_AGE_SECONDS = 3600  # 1小时内的搭话记录
-_RECENT_TOPIC_MAX_AGE_SECONDS = 3600  # 1小时内避免重复网络话题
 _PROACTIVE_SIMILARITY_THRESHOLD = 0.94  # 高阈值，尽量避免误杀
 _PHASE1_FETCH_PER_SOURCE = PROACTIVE_PHASE1_FETCH_PER_SOURCE  # Phase 1 每个信息源固定抓取条数
 _PHASE1_TOTAL_TOPIC_TARGET = PROACTIVE_PHASE1_TOTAL_TOPICS  # Phase 1 输入给筛选模型的总候选目标条数
+
+# --- 全局来源衰减历史（跨角色 / 持久化）---
+# 主动搭话消费过的 web / music / image 链接进入这里，按 URL hash 索引。
+# 5h 内硬 skip（p_skip=1），其后按 kind 各自半衰期指数衰减；p_skip 低于阈值
+# 时直接遗忘。所有 IO 走 asyncio.to_thread / atomic_write_json_async，过滤
+# 路径只读 dict + RNG，不阻塞 event loop。
+# （衰减参数定义在 config/__init__.py 与项目其他 budget 常量统一维护）
+_SOURCE_HISTORY_FILENAME = "proactive_source_history.json"
+_SOURCE_HISTORY_SCHEMA_VERSION = 1
+
+_source_history: dict[str, dict[str, Any]] = {}
+_source_history_lock = asyncio.Lock()
+_source_history_loaded = False
+
+
+def _source_history_path() -> Path:
+    return Path(get_config_manager().memory_dir) / _SOURCE_HISTORY_FILENAME
+
+
+def _source_hash(url: str = '', fallback_title: str = '') -> str:
+    """URL 优先，否则归一化 title 兜底。空字符串表示"无法稳定标识"。"""
+    norm = (url or '').strip().lower().rstrip('/')
+    if norm:
+        return hashlib.sha256(norm.encode('utf-8')).hexdigest()
+    title_norm = re.sub(r'\s+', ' ', (fallback_title or '').strip().lower())
+    if title_norm:
+        return hashlib.sha256(('t::' + title_norm).encode('utf-8')).hexdigest()
+    return ''
+
+
+def _half_life_for(kind: str) -> float:
+    return PROACTIVE_SOURCE_HALF_LIFE_BY_KIND.get(kind, PROACTIVE_SOURCE_HALF_LIFE_DEFAULT)
+
+
+def _source_skip_probability(age: float, half_life: float) -> float:
+    if age < PROACTIVE_SOURCE_HARD_SKIP_SECONDS:
+        return 1.0
+    decay_age = age - PROACTIVE_SOURCE_HARD_SKIP_SECONDS
+    return 0.5 ** (decay_age / half_life)
+
+
+def _should_skip_source(url_hash: str) -> bool:
+    """同步纯内存判定，O(1)，可在同步 picking loop 中直接调用。"""
+    if not url_hash:
+        return False
+    entry = _source_history.get(url_hash)
+    if not entry:
+        return False
+    age = time.time() - entry.get('ts', 0.0)
+    p = _source_skip_probability(age, _half_life_for(entry.get('kind', 'web')))
+    if p >= 1.0:
+        return True
+    if p <= 0.0:
+        return False
+    return random.random() < p
+
+
+async def _ensure_source_history_loaded() -> None:
+    """惰性加载，幂等。文件读取放进线程池，不阻塞 event loop。"""
+    global _source_history_loaded
+    if _source_history_loaded:
+        return
+    async with _source_history_lock:
+        if _source_history_loaded:
+            return
+        path = _source_history_path()
+        try:
+            data = await asyncio.to_thread(read_json, path)
+            entries = data.get('entries') if isinstance(data, dict) else None
+            if isinstance(entries, dict):
+                # 加载时顺便丢掉早已遗忘阈值之下的条目
+                now = time.time()
+                for h, entry in entries.items():
+                    if not isinstance(entry, dict):
+                        continue
+                    age = now - float(entry.get('ts', 0.0) or 0.0)
+                    p = _source_skip_probability(
+                        age, _half_life_for(entry.get('kind', 'web'))
+                    )
+                    if p >= PROACTIVE_SOURCE_FORGET_P:
+                        _source_history[h] = entry
+        except FileNotFoundError:
+            # 首次运行 / 全新机器：尚无历史文件，按空历史继续
+            pass
+        except Exception as e:
+            logger.warning(
+                f"加载 {_SOURCE_HISTORY_FILENAME} 失败，按空历史处理: {type(e).__name__}: {e}"
+            )
+        _source_history_loaded = True
+
+
+async def _record_source_used(
+    *,
+    url: str,
+    kind: str,
+    title: str = '',
+) -> None:
+    """成功消费 source 后调用：更新内存表 → prune → 异步落盘。
+
+    并发记录由 asyncio.Lock 串行化；落盘走 atomic_write_json_async（线程池
+    内 fsync + os.replace），主协程不会被磁盘 IO 卡住。
+    """
+    h = _source_hash(url, title)
+    if not h:
+        return
+    snapshot: dict[str, Any] | None = None
+    async with _source_history_lock:
+        _source_history[h] = {
+            "ts": time.time(),
+            "kind": kind,
+            "title": (title or '')[:80],
+        }
+        # 顺手 prune：写盘前剔除已遗忘条目，文件体积自然有界
+        now = time.time()
+        forget = [
+            hh for hh, entry in _source_history.items()
+            if _source_skip_probability(
+                now - float(entry.get('ts', 0.0) or 0.0),
+                _half_life_for(entry.get('kind', 'web'))
+            ) < PROACTIVE_SOURCE_FORGET_P
+        ]
+        for hh in forget:
+            _source_history.pop(hh, None)
+        snapshot = {
+            "v": _SOURCE_HISTORY_SCHEMA_VERSION,
+            "entries": dict(_source_history),
+        }
+    try:
+        await atomic_write_json_async(_source_history_path(), snapshot)
+    except Exception as e:
+        # 写盘失败不影响主流程：下一次 record 会整文件重写覆盖
+        logger.warning(
+            f"落盘 {_SOURCE_HISTORY_FILENAME} 失败: {type(e).__name__}: {e}"
+        )
 
 # --- 来源动态权重系统 ---
 _SOURCE_WEIGHT_DECAY_LAMBDA = 0.002   # 指数衰减系数，半衰期 ≈ 5.8 分钟
@@ -1688,47 +1827,6 @@ def _is_similar_to_recent_proactive_chat(lanlan_name: str, message: str) -> tupl
         if score >= _PROACTIVE_SIMILARITY_THRESHOLD:
             return True, score
     return False, best
-
-
-def _build_topic_dedup_key(topic_title: str = '', topic_source: str = '', topic_url: str = '') -> str:
-    """
-    构建话题去重键，优先使用 URL（更稳定）；没有 URL 时退化到 source+title。
-    """
-    url = (topic_url or '').strip().lower()
-    if url:
-        return f"url::{url}"
-    source = re.sub(r'\s+', ' ', (topic_source or '').strip().lower())
-    title = re.sub(r'\s+', ' ', (topic_title or '').strip().lower())
-    if title:
-        return f"st::{source}::{title}"
-    return ''
-
-
-def _is_recent_topic_used(lanlan_name: str, topic_key: str) -> bool:
-    """
-    判断某个话题 key 是否在近期已被使用。
-    """
-    if not topic_key:
-        return False
-    history = _proactive_topic_history.get(lanlan_name)
-    if not history:
-        return False
-    now = time.time()
-    for ts, old_key in history:
-        if now - ts < _RECENT_TOPIC_MAX_AGE_SECONDS and old_key == topic_key:
-            return True
-    return False
-
-
-def _record_topic_usage(lanlan_name: str, topic_key: str):
-    """
-    记录一次话题 key 使用。
-    """
-    if not topic_key:
-        return
-    if lanlan_name not in _proactive_topic_history:
-        _proactive_topic_history[lanlan_name] = deque(maxlen=PROACTIVE_TOPIC_HISTORY_MAX)
-    _proactive_topic_history[lanlan_name].append((time.time(), topic_key))
 
 
 def _compute_source_weights(
@@ -3257,13 +3355,36 @@ async def proactive_chat(request: Request):
         # 在 enabled_modes 解析之前拉一次，因为 propensity 可能需要把
         # enabled_modes 收紧到只剩 vision（restricted_screen_only 状态）。
         # 详见 docs/design/user-activity-tracker.md。
+        #
+        # 隐私模式：用户开了"隐私模式"开关 → 临时禁用整个 user-activity-tracker，
+        # 回退到 PR #1015 之前的无限制策略。snapshot 留 None，下游所有 gating
+        # 都已在 PR #1015 设计时按 "snapshot is not None" 写过 fallback：
+        #   - propensity 收紧（restricted_screen_only）→ 不触发
+        #   - 反思/回忆 _allow_reminiscence → 默认放开
+        #   - state_section 渲染 → 输出空串
+        #   - mark_unfinished_thread_used → 不计数
+        # 所以这里把 snapshot 直接设 None 就够，等价于"tracker 不存在"。
+        from utils.preferences import ais_privacy_mode_enabled
         try:
-            activity_snapshot = await mgr._activity_tracker.get_snapshot()
-            print(f"[{lanlan_name}] activity snapshot: state={activity_snapshot.state} "
-                  f"propensity={activity_snapshot.propensity} reasons={activity_snapshot.propensity_reasons}")
-        except Exception as _act_err:
-            logger.warning(f"[{lanlan_name}] activity snapshot fetch failed: {_act_err}; falling back to open propensity")
+            privacy_mode = await ais_privacy_mode_enabled()
+        except Exception as _pm_err:
+            # fail-closed：读不出来按隐私开启处理。正常"用户没开隐私"是
+            # ais_privacy_mode_enabled 返回 False，不进这个 except。
+            logger.warning(
+                f"[{lanlan_name}] privacy mode check failed, defaulting to enabled: {_pm_err}",
+            )
+            privacy_mode = True
+        if privacy_mode:
+            print(f"[{lanlan_name}] 隐私模式开启，跳过 activity tracker，按无限制策略搭话")
             activity_snapshot = None
+        else:
+            try:
+                activity_snapshot = await mgr._activity_tracker.get_snapshot()
+                print(f"[{lanlan_name}] activity snapshot: state={activity_snapshot.state} "
+                      f"propensity={activity_snapshot.propensity} reasons={activity_snapshot.propensity_reasons}")
+            except Exception as _act_err:
+                logger.warning(f"[{lanlan_name}] activity snapshot fetch failed: {_act_err}; falling back to open propensity")
+                activity_snapshot = None
 
         # ========== 解析 enabled_modes ==========
         enabled_modes = data.get('enabled_modes', [])
@@ -3312,7 +3433,11 @@ async def proactive_chat(request: Request):
                 }))
 
         print(f"[{lanlan_name}] 启用的搭话模式: {enabled_modes}")
-        
+
+        # 全局 source 衰减历史：进入 picking 前确保已惰性加载到内存（首次为线程池
+        # IO，后续是 O(1) flag 检查）。同步 picking loop 后续直接读 dict。
+        await _ensure_source_history_loaded()
+
         # ========== 0. 并行获取所有信息源内容（无 LLM） ==========
         screenshot_data = data.get('screenshot_data')
         has_screenshot = bool(screenshot_data) and isinstance(screenshot_data, str)
@@ -3717,11 +3842,11 @@ async def proactive_chat(request: Request):
                 selected_links: list[dict] = []
                 for link in links:
                     title = link.get('title', '')
-                    source = link.get('source', '')
                     url = link.get('url', '')
-                    key = _build_topic_dedup_key(topic_title=title, topic_source=source, topic_url=url)
+                    key = _source_hash(url, title)
                     if key:
-                        if key in seen_topic_keys or _is_recent_topic_used(lanlan_name, key):
+                        # 跨会话衰减 skip：5h 硬窗口，之后按 web 半衰期概率瞬移到下一条
+                        if key in seen_topic_keys or _should_skip_source(key):
                             continue
                         seen_topic_keys.add(key)
                     # 给 link 打上来源 mode 标记，用于细粒度 channel 记录
@@ -3849,11 +3974,10 @@ async def proactive_chat(request: Request):
                         selected_links_2: list[dict] = []
                         for link in links:
                             title = link.get('title', '')
-                            source_name = link.get('source', '')
                             url = link.get('url', '')
-                            key = _build_topic_dedup_key(topic_title=title, topic_source=source_name, topic_url=url)
+                            key = _source_hash(url, title)
                             if key:
-                                if key in seen_topic_keys_2 or _is_recent_topic_used(lanlan_name, key):
+                                if key in seen_topic_keys_2 or _should_skip_source(key):
                                     continue
                                 seen_topic_keys_2.add(key)
                             if 'mode' not in link:
@@ -3941,13 +4065,16 @@ async def proactive_chat(request: Request):
         web_parsed = unified_parsed.get('web')
         if web_parsed and web_parsed.get('title'):
             matched = _lookup_link_by_title(web_parsed.get('title', ''), all_web_links)
-            topic_key = _build_topic_dedup_key(
-                topic_title=web_parsed.get('title', ''),
-                topic_source=web_parsed.get('source', ''),
-                topic_url=(matched.get('url', '') if matched else ''),
+            topic_key = _source_hash(
+                matched.get('url', '') if matched else '',
+                web_parsed.get('title', ''),
             )
-            if topic_key and _is_recent_topic_used(lanlan_name, topic_key):
-                print(f"[{lanlan_name}] Phase 1 话题去重命中，跳过: {web_parsed.get('title','')[:60]}")
+            # matched 的链接已经在 picking 阶段过了一次 _should_skip_source，
+            # 这里再 roll 等于让等效 p_skip = 1-(1-p)^2，违背单次半衰期模型。
+            # 仅对未匹配（LLM 幻觉的 title-only 候选）兜底再判一次。
+            needs_recheck = bool(topic_key) and matched is None
+            if needs_recheck and _should_skip_source(topic_key):
+                print(f"[{lanlan_name}] Phase 1 title-only 话题命中衰减，跳过: {web_parsed.get('title','')[:60]}")
             else:
                 if matched:
                     selected_web_link = {
@@ -3956,10 +4083,12 @@ async def proactive_chat(request: Request):
                         'source': web_parsed.get('source', matched.get('source', '')),
                         'mode': matched.get('mode', 'web'),  # 保留细粒度 mode
                     }
-                    selected_web_topic_key = topic_key
                     print(f"[{lanlan_name}] Phase 1 链接预匹配成功: {matched.get('title','')[:60]}")
                 else:
                     print(f"[{lanlan_name}] Phase 1 未在 web_links 中匹配到标题: {web_parsed.get('title','')[:60]}")
+                # 不论 matched 与否，都把 topic_key 留下来供 Phase 2 后落盘 ——
+                # 哪怕只有 title 也参与衰减历史，避免同样的标题被反复 surface
+                selected_web_topic_key = topic_key
                 # 用 web_parsed 的 summary 或原始文本作为 topic
                 web_topic_text = web_parsed.get('summary', web_parsed.get('title', ''))
                 phase1_topics.append(('web', web_topic_text.strip()))
@@ -4041,28 +4170,51 @@ async def proactive_chat(request: Request):
                     print(f"[{lanlan_name}] 成功获取 {len(result_p1.get('data', []))} 个表情包 (来源: {result_p1.get('source', '?')})")
 
         # ============================================================
-        # 音乐话题组装（去重 + 暂存链接）
+        # 音乐话题组装（遍历候选 → 衰减 skip → 暂存链接）
+        # 与 web/meme 对偶：超取 N 条后逐条概率 skip，遇命中瞬移到下一条。
+        # 全部命中则清空 music_content 让通道整体降级。
         # ============================================================
         if music_content and music_content.get('formatted_content'):
             music_topic = music_content['formatted_content']
             if music_topic:
                 music_tracks = music_content.get('raw_data', {}).get('data', [])
                 if music_tracks:
-                    first_track = music_tracks[0]
-                    track_name = first_track.get('name', '')
-                    track_artist = first_track.get('artist', '')
-                    track_url = first_track.get('url', '')
-                    track_cover = first_track.get('cover', '')
-                    music_topic_key = _build_topic_dedup_key(
-                        topic_title=f"{track_name} - {track_artist}",
-                        topic_source='music',
-                        topic_url=track_url
-                    )
-                    if _is_recent_topic_used(lanlan_name, music_topic_key):
-                        print(f"[{lanlan_name}]- Phase 1 音乐话题去重命中，跳过: {track_name}")
-                        music_content = None  # 彻底清空，防止去重后的残留数据泄漏到 fallback 逻辑
+                    picked_track: dict | None = None
+                    picked_key: str = ''
+                    for candidate_track in music_tracks:
+                        track_url = candidate_track.get('url', '')
+                        track_name = candidate_track.get('name', '')
+                        track_artist = candidate_track.get('artist', '')
+                        candidate_key = _source_hash(
+                            track_url, f"{track_name} - {track_artist}"
+                        )
+                        if candidate_key and _should_skip_source(candidate_key):
+                            print(f"[{lanlan_name}]- Phase 1 音乐候选去重命中，跳过: {track_name}")
+                            continue
+                        picked_track = candidate_track
+                        picked_key = candidate_key
+                        break
+                    if picked_track is None:
+                        print(f"[{lanlan_name}]- Phase 1 所有音乐候选均被衰减 skip，整体清空通道")
+                        music_content = None
                     else:
-                        # proactive 话题文本（即将拼进 phase2 prompt）不写 logger
+                        # 选中非首条时，把 raw_data['data'] 砍到 picked 起始位置并重 format —
+                        # 否则 music_topic 文本仍以被 skip 掉的首条为头条，与
+                        # selected_music_link 的归因脱节，下游 _append_music_recommendations
+                        # 也会把已 skip 的首条作为推荐项暴露给前端。
+                        picked_idx = music_tracks.index(picked_track)
+                        if picked_idx > 0:
+                            raw = music_content.get('raw_data') or {}
+                            raw_trimmed = {**raw, 'data': music_tracks[picked_idx:]}
+                            new_topic = _format_music_content(raw_trimmed, proactive_lang)
+                            if new_topic:
+                                music_topic = new_topic
+                                music_content['formatted_content'] = music_topic
+                                music_content['raw_data'] = raw_trimmed
+                        track_name = picked_track.get('name', '')
+                        track_artist = picked_track.get('artist', '')
+                        track_url = picked_track.get('url', '')
+                        track_cover = picked_track.get('cover', '')
                         logger.debug(f"[{lanlan_name}]- Phase 1 音乐话题已添加 (topic_len={len(music_topic)})")
                         print(f"[{lanlan_name}]- Phase 1 音乐话题: {music_topic[:100]}")
                         selected_music_link = {
@@ -4073,7 +4225,7 @@ async def proactive_chat(request: Request):
                             'source': '音乐推荐',
                             'type': 'music'
                         }
-                        selected_music_topic_key = music_topic_key
+                        selected_music_topic_key = picked_key
                         phase1_topics.append(('music', music_topic))
                 else:
                     logger.debug(f"[{lanlan_name}] Phase 1 音乐话题已添加 (topic_len={len(music_topic)})")
@@ -4092,13 +4244,9 @@ async def proactive_chat(request: Request):
                     if not meme_url:
                         continue  # 跳过无 URL 的候选
                     meme_source = candidate_meme.get('source', '表情包')
-                    meme_topic_key = _build_topic_dedup_key(
-                        topic_title=meme_title,
-                        topic_source=meme_source,
-                        topic_url=meme_url
-                    )
-                    if meme_topic_key and _is_recent_topic_used(lanlan_name, meme_topic_key):
-                        logger.debug(f"[{lanlan_name}]- Phase 1 表情包话题去重命中，跳过: {meme_title[:30]}")
+                    meme_topic_key = _source_hash(meme_url, meme_title)
+                    if meme_topic_key and _should_skip_source(meme_topic_key):
+                        logger.debug(f"[{lanlan_name}]- Phase 1 表情包候选去重命中，跳过: {meme_title[:30]}")
                         continue
                     single_meme_topic = f"发现一个很有意思的[表情包]：'{meme_title}' (来自 {meme_source})"
                     logger.debug(f"[{lanlan_name}]- Phase 1 表情包话题已添加 (限额1张): {single_meme_topic}")
@@ -4676,17 +4824,41 @@ async def proactive_chat(request: Request):
                 for link in source_links if link
             )
 
-        if selected_web_topic_key and _is_link_selected(selected_web_link):
-            _record_topic_usage(lanlan_name, selected_web_topic_key)
-            print(f"[{lanlan_name}] 已记录 Web 话题去重: {selected_web_topic_key[:60]}")
-            
+        # title-only 的 web topic（LLM 在 over-fetch 列表外编出来的标题）也写入衰减历史，
+        # 否则下一轮可能再次被 surface。matched 时仍按链接是否成功登卡（_is_link_selected）
+        # 把关；非 matched 时绕过链接卡片检查。
+        if selected_web_topic_key and (
+            selected_web_link is None or _is_link_selected(selected_web_link)
+        ):
+            _wl = selected_web_link or {}
+            _web_title_dbg = (
+                _wl.get('title', '')
+                or (web_parsed.get('title', '') if web_parsed else '')
+            )
+            await _record_source_used(
+                url=_wl.get('url', '') or '',
+                kind='web',
+                title=_web_title_dbg,
+            )
+            print(f"[{lanlan_name}] 已记录 Web source 衰减历史: {selected_web_topic_key[:16]}")
+
         if selected_music_topic_key and (is_music_used or _is_link_selected(selected_music_link)):
-            _record_topic_usage(lanlan_name, selected_music_topic_key)
-            print(f"[{lanlan_name}] 已记录音乐话题去重: {selected_music_topic_key}")
-            
+            _ml = selected_music_link or {}
+            _music_title_dbg = f"{_ml.get('title', '')} - {_ml.get('artist', '')}".strip(' -')
+            await _record_source_used(
+                url=_ml.get('url', '') or '',
+                kind='music',
+                title=_music_title_dbg,
+            )
+            print(f"[{lanlan_name}] 已记录音乐 source 衰减历史: {selected_music_topic_key[:16]}")
+
         if selected_meme_topic_key and _is_link_selected(selected_meme_link):
-            _record_topic_usage(lanlan_name, selected_meme_topic_key)
-            print(f"[{lanlan_name}] 已记录表情包话题去重: {selected_meme_topic_key[:60]}")
+            await _record_source_used(
+                url=(selected_meme_link or {}).get('url', '') or '',
+                kind='image',
+                title=(selected_meme_link or {}).get('title', '') or '',
+            )
+            print(f"[{lanlan_name}] 已记录表情包 source 衰减历史: {selected_meme_topic_key[:16]}")
 
         return await _end_proactive(JSONResponse({
             "success": True,
