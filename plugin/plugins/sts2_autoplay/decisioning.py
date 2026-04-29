@@ -322,7 +322,7 @@ class DecisioningMixin:
                     best_card = card
                     best_idx = idx
                     synergy_type = self._detect_card_synergy_type(card, combat)
-                    target = self._safe_int(tactical.get("recommended_target_index"))
+                    target = self._safe_int(tactical.get("recommended_target_index"), None)
                     valid_targets = card.get("valid_target_indices") if isinstance(card.get("valid_target_indices"), list) else []
                     if valid_targets:
                         if target is not None and target in [self._safe_int(t) for t in valid_targets]:

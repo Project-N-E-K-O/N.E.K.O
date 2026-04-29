@@ -109,7 +109,10 @@ class AutoplayLoopMixin:
                 self._server_state = "degraded" if self._consecutive_errors < int(self._cfg.get("max_consecutive_errors", 3) or 3) else "disconnected"
                 self._last_error = str(exc)
                 self._emit_status()
-            interval = float(self._cfg.get("poll_interval_active_seconds", 1) if self._autoplay_state == "running" else self._cfg.get("poll_interval_idle_seconds", 3))
+            try:
+                interval = float(self._cfg.get("poll_interval_active_seconds", 1) if self._autoplay_state == "running" else self._cfg.get("poll_interval_idle_seconds", 3))
+            except (ValueError, TypeError):
+                interval = 1.0
             await asyncio.sleep(max(0.1, interval))
 
     async def _autoplay_loop(self) -> None:
