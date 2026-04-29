@@ -2225,8 +2225,8 @@
             "ru": "Русский"
         },
         "interval": {
-            "chatIntervalBase": "感知间隔",
-            "visionInterval": "读取间隔"
+            "chatIntervalBase": "最低间隔",
+            "visionInterval": "感知间隔"
         },
         "toggles": {
             "allowInterrupt": "允许打断",
