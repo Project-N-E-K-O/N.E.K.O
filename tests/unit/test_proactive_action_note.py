@@ -36,14 +36,63 @@ def test_action_note_empty_when_no_source_links():
     assert build_proactive_action_note('music', None, 'zh', master_name=MASTER) == ''
 
 
-def test_action_note_chat_channel_returns_empty():
-    """chat / vision / unknown 通道：AI 自己说的话已经在 full_text 里，
-    不需要再追加任何元数据。"""
-    links = [{'title': '随便', 'source': '系统'}]
-    assert build_proactive_action_note('chat', links, 'zh', master_name=MASTER) == ''
+def test_action_note_vision_channel_always_empty():
+    """vision 通道：屏幕本身是用户那侧已有的画面，不是 AI 分享出去的素材，
+    哪怕 source_links 不空也不写 note。"""
+    links = [{'title': '某曲', 'artist': 'X', 'source': '音乐推荐', 'type': 'music'}]
     assert build_proactive_action_note('vision', links, 'zh', master_name=MASTER) == ''
-    assert build_proactive_action_note('unknown', links, 'zh', master_name=MASTER) == ''
-    assert build_proactive_action_note('', links, 'zh', master_name=MASTER) == ''
+
+
+def test_action_note_chat_unknown_empty_when_no_source_links():
+    """chat / unknown / 空通道 + source_links 空 → 空串。
+    （AI 自己说的话已经在 full_text 里，无外部素材时不需要追加元数据。）"""
+    assert build_proactive_action_note('chat', [], 'zh', master_name=MASTER) == ''
+    assert build_proactive_action_note('unknown', [], 'zh', master_name=MASTER) == ''
+    assert build_proactive_action_note('', [], 'zh', master_name=MASTER) == ''
+
+
+def test_action_note_chat_channel_with_music_fallback_uses_music_note():
+    """关键回归（Codex review #1041 找出的 case）：
+
+    主路径里 ``should_try_music_fallback`` 允许 LLM Phase 2 输出 [CHAT]
+    （→ primary_channel='chat'）时仍然把 music tracks 追加进 source_links
+    并设 is_music_used=True，用户那侧**实际听到了歌**。此时 action_note
+    必须按 music 模板出，否则 AI 下一轮反问"刚才放的什么"还是答不上来——
+    PR 要解决的核心痛点丢失。
+
+    旧实现按 primary_channel 严格分支返回空串；新实现在 chat/unknown 通道
+    回退探测 source_links 实际素材。
+    """
+    links = [{
+        'title': '稻香',
+        'artist': '周杰伦',
+        'url': 'https://example.com/track',
+        'source': '音乐推荐',
+        'type': 'music',
+    }]
+    note = build_proactive_action_note('chat', links, 'zh', master_name=MASTER)
+    assert '稻香' in note
+    assert '周杰伦' in note
+    assert MASTER in note
+
+
+def test_action_note_unknown_channel_falls_back_to_source_links():
+    """unknown / 空通道也走探测路径，按 music > meme > web 优先级匹配。"""
+    music_link = {'title': 'T', 'artist': 'A', 'source': '音乐推荐', 'type': 'music'}
+    meme_link = {'title': 'M', 'source': '微博', 'type': 'meme'}
+
+    note_music = build_proactive_action_note('unknown', [music_link], 'zh', master_name=MASTER)
+    assert 'T' in note_music and 'A' in note_music
+
+    note_meme = build_proactive_action_note('', [meme_link], 'zh', master_name=MASTER)
+    assert 'M' in note_meme and '微博' in note_meme
+
+    # music + meme 共存 → 优先 music
+    note_both = build_proactive_action_note(
+        'unknown', [meme_link, music_link], 'zh', master_name=MASTER,
+    )
+    assert 'T' in note_both
+    assert 'M' not in note_both
 
 
 def test_action_note_music_includes_title_and_artist():

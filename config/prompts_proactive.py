@@ -2886,20 +2886,32 @@ def build_proactive_action_note(
     """根据本轮 proactive 实际投递的内容构造一条简短行动注解。
 
     返回值会被追加到 AIMessage 内容尾部（_conversation_history），让 LLM 下一轮
-    能记得"自己刚才放了什么 / 分享了什么 / 来源是哪"。返回空串表示无元数据可记
-    （chat / vision / unknown 通道，或对应素材未成功 attach 时都走这条）。
+    能记得"自己刚才放了什么 / 分享了什么 / 来源是哪"。返回空串表示无元数据可记。
 
-    格式按 primary_channel 分支：music 用 title+artist；meme/web 用 title+source。
+    挑模板的策略：先按 primary_channel 走 music / meme / web 三类对应的素材；
+    primary_channel 无明确素材类型（chat / unknown / 空）时，**回退到探测
+    source_links 实际素材**——这是为了 cover ``should_try_music_fallback``
+    路径：LLM Phase 2 输出 ``[CHAT]``（→ primary_channel='chat'）但本轮其实
+    已经把 music tracks 追加进 source_links 并设了 is_music_used=True，用户
+    那边实际听到了歌；不探测就会丢掉这条 "已放过" 元数据。优先级 music >
+    meme > web，与前端通常的素材展示重要性一致。
+
+    vision 通道始终返回空：屏幕本身是用户那侧已有的画面，不是 AI 分享出去
+    的素材，无需事件日志。
+
     模板里对人的称呼一律用 {master} 占位符，由调用方传入 master_name 展开成
-    用户实际设定的名字——避免出现"主人"这类物化称呼。
-
-    title/artist/source 任一缺失时按本地化占位符兜底，但只要 source_links 里
-    没有匹配本通道的条目就直接返回空串，避免凭空编出"未知 / 未知 / 未知"骚扰
-    LLM 上下文。
+    用户实际设定的名字——避免出现"主人"这类物化称呼。title/artist/source
+    任一缺失时按本地化占位符兜底；source_links 里没有任何匹配素材就返回
+    空串，避免凭空编"未知 / 未知 / 未知"骚扰 LLM 上下文。
     """
     if not source_links:
         return ''
     channel = (primary_channel or '').strip().lower()
+
+    # vision: 屏幕本身不是分享出去的素材，即便 source_links 有数据也不写。
+    if channel == 'vision':
+        return ''
+
     placeholders = PROACTIVE_ACTION_NOTE_PLACEHOLDERS.get(
         language, PROACTIVE_ACTION_NOTE_PLACEHOLDERS['en']
     )
@@ -2915,7 +2927,7 @@ def build_proactive_action_note(
     def _is_meme(link: dict) -> bool:
         return str(link.get('type', '')).lower().startswith('meme')
 
-    if channel == 'music':
+    def _try_music() -> str:
         track = next(
             (l for l in source_links if isinstance(l, dict) and _is_music(l)),
             None,
@@ -2928,13 +2940,15 @@ def build_proactive_action_note(
             artist=_safe(track.get('artist'), 'artist'),
         )
 
-    if channel == 'meme':
+    def _try_meme(allow_typeless_fallback: bool = False) -> str:
         meme = next(
             (l for l in source_links if isinstance(l, dict) and _is_meme(l)),
             None,
         )
-        # type 字段缺失时按 primary_channel 已声明 meme，回退到第一条非音乐链接
-        if not meme:
+        # primary_channel='meme' 但素材没填 type=meme（早期 fallback 链路）：
+        # 回退到第一条非音乐链接当 meme 处理。chat/unknown 通道走探测路径时
+        # 不开这个回退，避免把任意 web link 误当作 meme。
+        if not meme and allow_typeless_fallback:
             meme = next(
                 (
                     l for l in source_links
@@ -2950,7 +2964,7 @@ def build_proactive_action_note(
             source=_safe(meme.get('source'), 'source'),
         )
 
-    if channel in {'web', 'news', 'video', 'home', 'personal'}:
+    def _try_web() -> str:
         link = next(
             (
                 l for l in source_links
@@ -2966,5 +2980,18 @@ def build_proactive_action_note(
             source=_safe(link.get('source'), 'source'),
         )
 
-    # chat / vision / unknown — 没有外部素材需要单独存证
+    if channel == 'music':
+        return _try_music()
+    if channel == 'meme':
+        return _try_meme(allow_typeless_fallback=True)
+    if channel in {'web', 'news', 'video', 'home', 'personal'}:
+        return _try_web()
+
+    # chat / unknown / 空 / 其它未识别通道 —— 回退探测 source_links 实际素材，
+    # 处理 should_try_music_fallback 等"primary_channel 与实际投递素材不一致"
+    # 的边角 case。优先 music > meme > web。
+    for builder in (_try_music, _try_meme, _try_web):
+        note = builder()
+        if note:
+            return note
     return ''
