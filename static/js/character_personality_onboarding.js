@@ -149,9 +149,23 @@
                 return;
             }
             await new Promise((resolve) => {
-                const complete = () => resolve();
-                window.addEventListener('neko:tutorial-completed', complete, { once: true });
-                window.addEventListener('neko:tutorial-skipped', complete, { once: true });
+                let settled = false;
+                const cleanup = () => {
+                    window.removeEventListener('neko:tutorial-completed', handleCompleted);
+                    window.removeEventListener('neko:tutorial-skipped', handleSkipped);
+                };
+                const finish = () => {
+                    if (settled) {
+                        return;
+                    }
+                    settled = true;
+                    cleanup();
+                    resolve();
+                };
+                const handleCompleted = () => finish();
+                const handleSkipped = () => finish();
+                window.addEventListener('neko:tutorial-completed', handleCompleted, { once: true });
+                window.addEventListener('neko:tutorial-skipped', handleSkipped, { once: true });
             });
         }
 

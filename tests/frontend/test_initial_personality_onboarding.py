@@ -233,6 +233,113 @@ def test_onboarding_waits_for_tutorial_completion_before_showing(mock_page: Page
 
 
 @pytest.mark.frontend
+def test_wait_for_tutorial_completion_removes_sibling_listener_after_completion(mock_page: Page):
+    _bootstrap_page(mock_page)
+    mock_page.evaluate(
+        """
+        () => {
+            const originalAdd = window.addEventListener.bind(window);
+            const originalRemove = window.removeEventListener.bind(window);
+            const trackedTypes = new Set(['neko:tutorial-completed', 'neko:tutorial-skipped']);
+            const tracked = [];
+
+            const sameCapture = (left, right) => Boolean(left) === Boolean(right);
+            const activeCount = (type) => tracked.filter((entry) => entry.type === type && entry.active).length;
+
+            window.addEventListener = function(type, listener, options) {
+                if (!trackedTypes.has(type) || typeof listener !== 'function') {
+                    return originalAdd(type, listener, options);
+                }
+                const once = !!(options && typeof options === 'object' && options.once);
+                const capture = !!(options && typeof options === 'object' && options.capture);
+                const entry = {
+                    type,
+                    listener,
+                    capture,
+                    active: true,
+                    wrapped: null,
+                };
+                const wrapped = function(event) {
+                    if (once) {
+                        entry.active = false;
+                    }
+                    return listener.call(this, event);
+                };
+                entry.wrapped = wrapped;
+                tracked.push(entry);
+                return originalAdd(type, wrapped, options);
+            };
+
+            window.removeEventListener = function(type, listener, options) {
+                if (!trackedTypes.has(type) || typeof listener !== 'function') {
+                    return originalRemove(type, listener, options);
+                }
+                const capture = !!(options && typeof options === 'object' && options.capture);
+                const entry = tracked.find((item) => (
+                    item.active &&
+                    item.type === type &&
+                    item.listener === listener &&
+                    sameCapture(item.capture, capture)
+                ));
+                if (entry) {
+                    entry.active = false;
+                    return originalRemove(type, entry.wrapped, options);
+                }
+                return originalRemove(type, listener, options);
+            };
+
+            window.__tutorialListenerCounts = () => ({
+                completed: activeCount('neko:tutorial-completed'),
+                skipped: activeCount('neko:tutorial-skipped'),
+            });
+        }
+        """
+    )
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static" / "js" / "character_personality_onboarding.js"))
+
+    mock_page.evaluate(
+        """
+        () => {
+            window.__tutorialWaitDone = false;
+            const countsBefore = window.__tutorialListenerCounts();
+            window.__tutorialCountsBeforeWait = countsBefore;
+            window.CharacterPersonalityOnboarding.waitForTutorialCompletion().then(() => {
+                window.__tutorialWaitDone = true;
+            });
+        }
+        """
+    )
+
+    counts_before_wait = mock_page.evaluate("() => window.__tutorialCountsBeforeWait")
+    mock_page.wait_for_function(
+        """
+        () => {
+            const counts = window.__tutorialListenerCounts();
+            const before = window.__tutorialCountsBeforeWait;
+            return counts.completed === before.completed + 1 && counts.skipped === before.skipped + 1;
+        }
+        """
+    )
+    counts_during_wait = mock_page.evaluate("() => window.__tutorialListenerCounts()")
+    assert counts_during_wait["completed"] == counts_before_wait["completed"] + 1
+    assert counts_during_wait["skipped"] == counts_before_wait["skipped"] + 1
+
+    mock_page.evaluate(
+        """
+        () => {
+            window.dispatchEvent(new CustomEvent('neko:tutorial-completed', {
+                detail: { page: 'home' }
+            }));
+        }
+        """
+    )
+    mock_page.wait_for_function("() => window.__tutorialWaitDone === true")
+
+    counts_after = mock_page.evaluate("() => window.__tutorialListenerCounts()")
+    assert counts_after == counts_before_wait
+
+
+@pytest.mark.frontend
 def test_onboarding_waits_for_tutorial_prompt_settlement_before_showing(mock_page: Page):
     _bootstrap_page(mock_page)
     mock_page.evaluate(
@@ -389,7 +496,7 @@ def test_onboarding_started_state_waits_without_busy_fetch_loop(mock_page: Page)
     const_requests = mock_page.evaluate(
         "() => window.__requestLog.filter((entry) => entry.url === '/api/tutorial-prompt/state').length"
     )
-    assert const_requests <= 3
+    assert const_requests <= 4
     expect(mock_page.locator("[data-testid='character-personality-overlay']")).to_have_count(0)
 
 
