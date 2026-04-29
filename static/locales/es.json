@@ -2916,9 +2916,9 @@
                 "sayHello": "Hola"
             },
             "lines": {
-                "introBasic": "¡Cuando quieras encontrarme, escribe o envía un mensaje de voz aquí para invocarme, nyan!",
+                "introBasic": "¡Mira, hay un botón mágico aquí! ¡Solo haz clic en él y podrás chatear directamente conmigo! ¿Quieres contarme las novedades divertidas de hoy? ¿O solo decir mi nombre? ¡Ven a probarlo, ya no puedo esperar para escuchar tu voz! ¡Miau!",
                 "introCatPaw": "¡Bien, basta de cháchara, nyan! ¿Ves esa \"patita\" linda? ¿Lista? ¡Préstame tu ratón un ratito!",
-                "takeoverCaptureCursor": "¡Aupa! ¡Por fin atrapé tu ratón, nyan~!",
+                "takeoverCaptureCursor": "¡Aparece un súper botón mágico! ¡Con solo hacer clic aquí, puedo estirar mis pequeñas patitas hasta tu teclado y tu ratón! Te ayudaré a escribir y a abrir páginas web... Pero, si ese puntero del ratón sigue moviéndose de un lado a otro, quizá no pueda resistirme a abalanzarme sobre él. ¿Estás listo para mis travesuras... digo, mi ayuda? ¡Miau!",
                 "takeoverPluginPreviewHome": "¡Aún no termino! ¡Mira, mira! ¡Hay tantíiisimos plugins divertidos aquí!",
                 "takeoverPluginPreviewDashboard": "Con esto, no solo puedo leer comentarios de Bilibili, también puedo apagar las luces y el aire acondicionado por ti... ¡Soy la todopoderosa Súper Diosa Gata! ¡Hmph~!",
                 "takeoverSettingsPeekIntro": "Por supuesto, no me molestaría charlar más si quieres, ¡pero más vale que prepares muchas golosinas! Jeje, ¡es broma! Todos los ajustes están en este icono de engranaje.",
@@ -2928,6 +2928,7 @@
                 "interruptResistLight3": "¡Espera un momento! ¡Aún no he terminado, no me interrumpas así!",
                 "interruptAngryExit": "¡Humanoooo~~~~! ¡Qué grosero eres, nyan! Ya que quieres hacerlo todo solo, ¡juega con esa pantalla fría tú solo! ¡Hmph!",
                 "introProactive": "¡Ugh, cómo te atreves a ignorar a esta Joven Dama! ¡Si me sigues ignorando, voy a saltar y morderte! (¡Hiss!!)",
+                "introProactiveShort": "Si sigues ignorándome, voy a saltar y morderte yo misma, ¿sabes~? (¡Hiss!!)",
                 "introGreetingReply": "¡Soy tu propia catgirl! Desde hoy estaré a tu lado, Maestro. Ya sea que quieras charlar, jugar o necesites ayuda con algo, seré tu buena chica. Llevémonos bien, te amo más que a nadie, ¡Maestro~!",
                 "introPractice": "¡Ahora intenta hablarme y veamos si estamos perfectamente sincronizados, nyan~!",
                 "introActivationHint": "¡Haz clic aquí para que pueda empezar a hablar, nyan~!"

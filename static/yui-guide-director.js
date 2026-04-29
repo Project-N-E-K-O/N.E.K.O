@@ -194,6 +194,21 @@
     const PLUGIN_DASHBOARD_SKIP_REQUEST_EVENT = 'neko:yui-guide:plugin-dashboard:skip-request';
     const DEFAULT_TUTORIAL_MODEL_MANAGER_LANLAN_NAME = 'ATLS';
     const GUIDE_AUDIO_BASE_URL = '/static/assets/tutorial/guide-audio/';
+    const GUIDE_AUDIO_FILE_NAMES = Object.freeze({
+        intro_basic: '这里有一个神奇的按钮.mp3',
+        intro_greeting_reply: '我是你的专属猫娘，从.mp3',
+        takeover_capture_cursor: '超级魔法按钮出现！只.mp3',
+        takeover_plugin_preview_home: '还没完呢！你快看快看.mp3',
+        takeover_plugin_preview_dashboard: '有了它们，我不光能看.mp3',
+        takeover_settings_peek_intro: '当然啦，如果你想让本.mp3',
+        takeover_settings_peek_detail: '你看，这里可以穿我的.mp3',
+        interrupt_resist_light_1: '喂！不要拽我啦，还没.mp3',
+        interrupt_resist_light_3: '等一下啦！还没结束呢.mp3',
+        interrupt_angry_exit: '人类~~~~！你真的.mp3',
+        takeover_return_control: '好啦好啦，不霸占你的.mp3',
+        intro_proactive: '可恶，居然敢无视本大.mp3',
+        intro_cat_paw: '好啦！不说废话了喵—.mp3'
+    });
     const INTRO_ACTIVATION_HINT_KEY = 'tutorial.yuiGuide.lines.introActivationHint';
     const INTRO_ACTIVATION_HINT = '点一下这里，我就能开始说话啦～';
     const GUIDE_EXPRESSION_TRACKS_BY_VOICE_KEY = Object.freeze({
@@ -211,81 +226,81 @@
     });
     const GUIDE_AUDIO_FILES_BY_KEY = Object.freeze({
         intro_basic: {
-            zh: '这里有一个神奇的按钮！只要点击它，就可以直接和我聊天啦！想跟我分享今天的新鲜事吗？或者只是叫叫我的名字？快来试试嘛，我已经迫不及待想听到你的声音啦！喵！.mp3',
-            ja: '这里有一个神奇的按钮！只要点击它，就可以直接和我聊天啦！想跟我分享今天的新鲜事吗？或者只是叫叫我的名字？快来试试嘛，我已经迫不及待想听到你的声音啦！喵！.mp3',
-            en: '这里有一个神奇的按钮！只要点击它，就可以直接和我聊天啦！想跟我分享今天的新鲜事吗？或者只是叫叫我的名字？快来试试嘛，我已经迫不及待想听到你的声音啦！喵！.mp3',
-            ko: '这里有一个神奇的按钮！只要点击它，就可以直接和我聊天啦！想跟我分享今天的新鲜事吗？或者只是叫叫我的名字？快来试试嘛，我已经迫不及待想听到你的声音啦！喵！.mp3',
-            ru: '这里有一个神奇的按钮！只要点击它，就可以直接和我聊天啦！想跟我分享今天的新鲜事吗？或者只是叫叫我的名字？快来试试嘛，我已经迫不及待想听到你的声音啦！喵！.mp3'
+            zh: GUIDE_AUDIO_FILE_NAMES.intro_basic,
+            ja: GUIDE_AUDIO_FILE_NAMES.intro_basic,
+            en: GUIDE_AUDIO_FILE_NAMES.intro_basic,
+            ko: GUIDE_AUDIO_FILE_NAMES.intro_basic,
+            ru: GUIDE_AUDIO_FILE_NAMES.intro_basic
         },
         intro_greeting_reply: {
-            zh: '我是你的专属猫娘，从今天起就由我来陪伴主人咯。无论是想要聊天解闷、一起玩耍，还是需要我帮忙做些什么，我都会乖乖陪在主人身边的喵。以后请多多指教啦，最喜欢主人了~！.mp3',
-            ja: '我是你的专属猫娘，从今天起就由我来陪伴主人咯。无论是想要聊天解闷、一起玩耍，还是需要我帮忙做些什么，我都会乖乖陪在主人身边的喵。以后请多多指教啦，最喜欢主人了~！.mp3',
-            en: '我是你的专属猫娘，从今天起就由我来陪伴主人咯。无论是想要聊天解闷、一起玩耍，还是需要我帮忙做些什么，我都会乖乖陪在主人身边的喵。以后请多多指教啦，最喜欢主人了~！.mp3',
-            ko: '我是你的专属猫娘，从今天起就由我来陪伴主人咯。无论是想要聊天解闷、一起玩耍，还是需要我帮忙做些什么，我都会乖乖陪在主人身边的喵。以后请多多指教啦，最喜欢主人了~！.mp3',
-            ru: '我是你的专属猫娘，从今天起就由我来陪伴主人咯。无论是想要聊天解闷、一起玩耍，还是需要我帮忙做些什么，我都会乖乖陪在主人身边的喵。以后请多多指教啦，最喜欢主人了~！.mp3'
+            zh: GUIDE_AUDIO_FILE_NAMES.intro_greeting_reply,
+            ja: GUIDE_AUDIO_FILE_NAMES.intro_greeting_reply,
+            en: GUIDE_AUDIO_FILE_NAMES.intro_greeting_reply,
+            ko: GUIDE_AUDIO_FILE_NAMES.intro_greeting_reply,
+            ru: GUIDE_AUDIO_FILE_NAMES.intro_greeting_reply
         },
         takeover_capture_cursor: {
-            zh: '超级魔法按钮出现！只要点一下这里，我就可以把小爪子伸到你的键盘和鼠标上啦！我会帮你打字，帮你点开网页……不过，要是那个鼠标指针动来动去的话，我可能也会忍不住扑上去抓它哦！准备好迎接我的捣乱……啊不，是帮忙了吗？喵！.mp3',
-            ja: '超级魔法按钮出现！只要点一下这里，我就可以把小爪子伸到你的键盘和鼠标上啦！我会帮你打字，帮你点开网页……不过，要是那个鼠标指针动来动去的话，我可能也会忍不住扑上去抓它哦！准备好迎接我的捣乱……啊不，是帮忙了吗？喵！.mp3',
-            en: '超级魔法按钮出现！只要点一下这里，我就可以把小爪子伸到你的键盘和鼠标上啦！我会帮你打字，帮你点开网页……不过，要是那个鼠标指针动来动去的话，我可能也会忍不住扑上去抓它哦！准备好迎接我的捣乱……啊不，是帮忙了吗？喵！.mp3',
-            ko: '超级魔法按钮出现！只要点一下这里，我就可以把小爪子伸到你的键盘和鼠标上啦！我会帮你打字，帮你点开网页……不过，要是那个鼠标指针动来动去的话，我可能也会忍不住扑上去抓它哦！准备好迎接我的捣乱……啊不，是帮忙了吗？喵！.mp3',
-            ru: '超级魔法按钮出现！只要点一下这里，我就可以把小爪子伸到你的键盘和鼠标上啦！我会帮你打字，帮你点开网页……不过，要是那个鼠标指针动来动去的话，我可能也会忍不住扑上去抓它哦！准备好迎接我的捣乱……啊不，是帮忙了吗？喵！.mp3'
+            zh: GUIDE_AUDIO_FILE_NAMES.takeover_capture_cursor,
+            ja: GUIDE_AUDIO_FILE_NAMES.takeover_capture_cursor,
+            en: GUIDE_AUDIO_FILE_NAMES.takeover_capture_cursor,
+            ko: GUIDE_AUDIO_FILE_NAMES.takeover_capture_cursor,
+            ru: GUIDE_AUDIO_FILE_NAMES.takeover_capture_cursor
         },
         takeover_plugin_preview_home: {
-            zh: '还没完呢！你快看快看，这里还有超～～多好玩的插件呢！.mp3',
-            ja: '还没完呢！你快看快看，这里还有超～～多好玩的插件呢！.mp3',
-            en: '还没完呢！你快看快看，这里还有超～～多好玩的插件呢！.mp3',
-            ko: '还没完呢！你快看快看，这里还有超～～多好玩的插件呢！.mp3',
-            ru: '还没完呢！你快看快看，这里还有超～～多好玩的插件呢！.mp3'
+            zh: GUIDE_AUDIO_FILE_NAMES.takeover_plugin_preview_home,
+            ja: GUIDE_AUDIO_FILE_NAMES.takeover_plugin_preview_home,
+            en: GUIDE_AUDIO_FILE_NAMES.takeover_plugin_preview_home,
+            ko: GUIDE_AUDIO_FILE_NAMES.takeover_plugin_preview_home,
+            ru: GUIDE_AUDIO_FILE_NAMES.takeover_plugin_preview_home
         },
         takeover_plugin_preview_dashboard: {
-            zh: '有了它们，我不光能看 B 站弹幕，还能帮你关灯开空调…… 本喵就是无所不能的超级猫猫神！哼哼～.mp3',
-            ja: '有了它们，我不光能看 B 站弹幕，还能帮你关灯开空调…… 本喵就是无所不能的超级猫猫神！哼哼～.mp3',
-            en: '有了它们，我不光能看 B 站弹幕，还能帮你关灯开空调…… 本喵就是无所不能的超级猫猫神！哼哼～.mp3',
-            ko: '有了它们，我不光能看 B 站弹幕，还能帮你关灯开空调…… 本喵就是无所不能的超级猫猫神！哼哼～.mp3',
-            ru: '有了它们，我不光能看 B 站弹幕，还能帮你关灯开空调…… 本喵就是无所不能的超级猫猫神！哼哼～.mp3'
+            zh: GUIDE_AUDIO_FILE_NAMES.takeover_plugin_preview_dashboard,
+            ja: GUIDE_AUDIO_FILE_NAMES.takeover_plugin_preview_dashboard,
+            en: GUIDE_AUDIO_FILE_NAMES.takeover_plugin_preview_dashboard,
+            ko: GUIDE_AUDIO_FILE_NAMES.takeover_plugin_preview_dashboard,
+            ru: GUIDE_AUDIO_FILE_NAMES.takeover_plugin_preview_dashboard
         },
         takeover_settings_peek_intro: {
-            zh: '当然啦，如果你想让本喵多和你聊聊天也不是不行啦，给我多准备点小鱼干吧，嘿嘿，好了不逗你啦，设置都在这个齿轮里。.mp3',
-            ja: '当然啦，如果你想让本喵多和你聊聊天也不是不行啦，给我多准备点小鱼干吧，嘿嘿，好了不逗你啦，设置都在这个齿轮里。.mp3',
-            en: '当然啦，如果你想让本喵多和你聊聊天也不是不行啦，给我多准备点小鱼干吧，嘿嘿，好了不逗你啦，设置都在这个齿轮里。.mp3',
-            ko: '当然啦，如果你想让本喵多和你聊聊天也不是不行啦，给我多准备点小鱼干吧，嘿嘿，好了不逗你啦，设置都在这个齿轮里。.mp3',
-            ru: '当然啦，如果你想让本喵多和你聊聊天也不是不行啦，给我多准备点小鱼干吧，嘿嘿，好了不逗你啦，设置都在这个齿轮里。.mp3'
+            zh: GUIDE_AUDIO_FILE_NAMES.takeover_settings_peek_intro,
+            ja: GUIDE_AUDIO_FILE_NAMES.takeover_settings_peek_intro,
+            en: GUIDE_AUDIO_FILE_NAMES.takeover_settings_peek_intro,
+            ko: GUIDE_AUDIO_FILE_NAMES.takeover_settings_peek_intro,
+            ru: GUIDE_AUDIO_FILE_NAMES.takeover_settings_peek_intro
         },
         takeover_settings_peek_detail: {
-            zh: '你看，这里可以穿我的新衣服、给我换一个好听的声音……换一个猫娘或是修改记忆？等一下！你在干嘛？该不会是想把我换掉吧？啊啊啊不行！快关掉快关掉！.mp3',
-            ja: '你看，这里可以穿我的新衣服、给我换一个好听的声音……换一个猫娘或是修改记忆？等一下！你在干嘛？该不会是想把我换掉吧？啊啊啊不行！快关掉快关掉！.mp3',
-            en: '你看，这里可以穿我的新衣服、给我换一个好听的声音……换一个猫娘或是修改记忆？等一下！你在干嘛？该不会是想把我换掉吧？啊啊啊不行！快关掉快关掉！.mp3',
-            ko: '你看，这里可以穿我的新衣服、给我换一个好听的声音……换一个猫娘或是修改记忆？等一下！你在干嘛？该不会是想把我换掉吧？啊啊啊不行！快关掉快关掉！.mp3',
-            ru: '你看，这里可以穿我的新衣服、给我换一个好听的声音……换一个猫娘或是修改记忆？等一下！你在干嘛？该不会是想把我换掉吧？啊啊啊不行！快关掉快关掉！.mp3'
+            zh: GUIDE_AUDIO_FILE_NAMES.takeover_settings_peek_detail,
+            ja: GUIDE_AUDIO_FILE_NAMES.takeover_settings_peek_detail,
+            en: GUIDE_AUDIO_FILE_NAMES.takeover_settings_peek_detail,
+            ko: GUIDE_AUDIO_FILE_NAMES.takeover_settings_peek_detail,
+            ru: GUIDE_AUDIO_FILE_NAMES.takeover_settings_peek_detail
         },
         interrupt_resist_light_1: {
-            zh: '喂！不要拽我啦，还没轮到你的回合呢！.mp3',
-            ja: '喂！不要拽我啦，还没轮到你的回合呢！.mp3',
-            en: '喂！不要拽我啦，还没轮到你的回合呢！.mp3',
-            ko: '喂！不要拽我啦，还没轮到你的回合呢！.mp3',
-            ru: '喂！不要拽我啦，还没轮到你的回合呢！.mp3'
+            zh: GUIDE_AUDIO_FILE_NAMES.interrupt_resist_light_1,
+            ja: GUIDE_AUDIO_FILE_NAMES.interrupt_resist_light_1,
+            en: GUIDE_AUDIO_FILE_NAMES.interrupt_resist_light_1,
+            ko: GUIDE_AUDIO_FILE_NAMES.interrupt_resist_light_1,
+            ru: GUIDE_AUDIO_FILE_NAMES.interrupt_resist_light_1
         },
         interrupt_resist_light_3: {
-            zh: '等一下啦！还没结束呢，不要随便打断我啦！.mp3',
-            ja: '等一下啦！还没结束呢，不要随便打断我啦！.mp3',
-            en: '等一下啦！还没结束呢，不要随便打断我啦！.mp3',
-            ko: '等一下啦！还没结束呢，不要随便打断我啦！.mp3',
-            ru: '等一下啦！还没结束呢，不要随便打断我啦！.mp3'
+            zh: GUIDE_AUDIO_FILE_NAMES.interrupt_resist_light_3,
+            ja: GUIDE_AUDIO_FILE_NAMES.interrupt_resist_light_3,
+            en: GUIDE_AUDIO_FILE_NAMES.interrupt_resist_light_3,
+            ko: GUIDE_AUDIO_FILE_NAMES.interrupt_resist_light_3,
+            ru: GUIDE_AUDIO_FILE_NAMES.interrupt_resist_light_3
         },
         interrupt_angry_exit: {
-            zh: '人类~~~~！你真的很没礼貌喵！既然你这么想自己操作，那你就自己对着冰冷的屏幕玩去吧！哼！.mp3',
-            ja: '人类~~~~！你真的很没礼貌喵！既然你这么想自己操作，那你就自己对着冰冷的屏幕玩去吧！哼！.mp3',
-            en: '人类~~~~！你真的很没礼貌喵！既然你这么想自己操作，那你就自己对着冰冷的屏幕玩去吧！哼！.mp3',
-            ko: '人类~~~~！你真的很没礼貌喵！既然你这么想自己操作，那你就自己对着冰冷的屏幕玩去吧！哼！.mp3',
-            ru: '人类~~~~！你真的很没礼貌喵！既然你这么想自己操作，那你就自己对着冰冷的屏幕玩去吧！哼！.mp3'
+            zh: GUIDE_AUDIO_FILE_NAMES.interrupt_angry_exit,
+            ja: GUIDE_AUDIO_FILE_NAMES.interrupt_angry_exit,
+            en: GUIDE_AUDIO_FILE_NAMES.interrupt_angry_exit,
+            ko: GUIDE_AUDIO_FILE_NAMES.interrupt_angry_exit,
+            ru: GUIDE_AUDIO_FILE_NAMES.interrupt_angry_exit
         },
         takeover_return_control: {
-            zh: '好啦好啦，不霸占你的电脑啦～控制权还给你了喵！可不许趁我不注意乱点奇怪的设置哦！之后的日子也请你多多关照了喵～.mp3',
-            ja: '好啦好啦，不霸占你的电脑啦～控制权还给你了喵！可不许趁我不注意乱点奇怪的设置哦！之后的日子也请你多多关照了喵～.mp3',
-            en: '好啦好啦，不霸占你的电脑啦～控制权还给你了喵！可不许趁我不注意乱点奇怪的设置哦！之后的日子也请你多多关照了喵～.mp3',
-            ko: '好啦好啦，不霸占你的电脑啦～控制权还给你了喵！可不许趁我不注意乱点奇怪的设置哦！之后的日子也请你多多关照了喵～.mp3',
-            ru: '好啦好啦，不霸占你的电脑啦～控制权还给你了喵！可不许趁我不注意乱点奇怪的设置哦！之后的日子也请你多多关照了喵～.mp3'
+            zh: GUIDE_AUDIO_FILE_NAMES.takeover_return_control,
+            ja: GUIDE_AUDIO_FILE_NAMES.takeover_return_control,
+            en: GUIDE_AUDIO_FILE_NAMES.takeover_return_control,
+            ko: GUIDE_AUDIO_FILE_NAMES.takeover_return_control,
+            ru: GUIDE_AUDIO_FILE_NAMES.takeover_return_control
         }
     });
 
@@ -300,8 +315,8 @@
     }
 
     const GUIDE_AUDIO_FILE_OVERRIDES_BY_KEY = Object.freeze({
-        intro_proactive: guideAudioFilesForAllLocales('可恶，居然敢无视本大小姐嘛！要说你一直没理我，我可是会主动跑出来咬你的哦～（哈！！）.mp3'),
-        intro_cat_paw: guideAudioFilesForAllLocales('好啦！不说废话了喵——你看到那个可爱的‘猫爪’了吗，准备好了吗？让我借用一下你的鼠标吧！.mp3')
+        intro_proactive: guideAudioFilesForAllLocales(GUIDE_AUDIO_FILE_NAMES.intro_proactive),
+        intro_cat_paw: guideAudioFilesForAllLocales(GUIDE_AUDIO_FILE_NAMES.intro_cat_paw)
     });
 
     function guideAudioSrc(key) {
@@ -2902,13 +2917,11 @@
             this.activeNarration = null;
             this.clearNarrationResumeTimer();
 
-            if (!narration) {
-                return;
+            if (narration) {
+                narration.cancelled = true;
             }
-
-            narration.cancelled = true;
             this.voiceQueue.stop();
-            if (typeof narration.resolve === 'function') {
+            if (narration && typeof narration.resolve === 'function') {
                 narration.resolve();
             }
         }
@@ -3036,7 +3049,14 @@
         interruptNarrationForResistance() {
             const narration = this.activeNarration;
             if (!narration || narration.cancelled) {
-                return false;
+                const playbackSnapshot = this.voiceQueue.capturePlaybackSnapshot();
+                if (!playbackSnapshot) {
+                    return false;
+                }
+
+                this.clearNarrationResumeTimer();
+                this.voiceQueue.stop();
+                return true;
             }
 
             if (narration.interrupted) {
@@ -5041,7 +5061,9 @@
                 const dashboardNarrationPromise = this.speakGuideLine(dashboardText, {
                     voiceKey: dashboardVoiceKey
                 }).catch(() => {}).finally(() => {
-                    this.notifyPluginDashboardNarrationFinished();
+                    if (!this.angryExitTriggered && runId === this.sceneRunId && !this.destroyed) {
+                        this.notifyPluginDashboardNarrationFinished();
+                    }
                     return closePluginPreviewPanel();
                 });
 
@@ -6496,6 +6518,7 @@
             this.angryExitTriggered = true;
             this.clearSceneTimers();
             this.disableInterrupts();
+            this.cancelActiveNarration();
 
             const angryStep = this.getStep('interrupt_angry_exit');
             const performance = (angryStep && angryStep.performance) || {};
@@ -6514,6 +6537,7 @@
             await this.speakGuideLine(bubbleText || '', {
                 voiceKey: performance.voiceKey
             });
+            this.notifyPluginDashboardNarrationFinished();
             if (this.destroyed) {
                 return;
             }

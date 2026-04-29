@@ -4,6 +4,7 @@ import leftCatEarUrl from '../../../static/assets/tutorial/highlight/left-cat-ea
 import rightCatEarUrl from '../../../static/assets/tutorial/highlight/right-cat-ear.png'
 import catPawUrl from '../../../static/assets/tutorial/highlight/cat-paw.png'
 import { getLocale } from './i18n'
+import router from './router'
 
 const START_EVENT = 'neko:yui-guide:plugin-dashboard:start'
 const READY_EVENT = 'neko:yui-guide:plugin-dashboard:ready'
@@ -43,36 +44,66 @@ const RESISTANCE_VOICE_KEYS = [
   'interrupt_resist_light_3',
 ] as const
 const ANGRY_EXIT_LINE = '人类~~~~！你真的很没礼貌喵！既然你这么想自己操作，那你就自己对着冰冷的屏幕玩去吧！哼！'
+const GUIDE_AUDIO_FILE_NAMES = {
+  takeover_plugin_preview_dashboard: '有了它们，我不光能看.mp3',
+  interrupt_resist_light_1: '喂！不要拽我啦，还没.mp3',
+  interrupt_resist_light_3: '等一下啦！还没结束呢.mp3',
+  interrupt_angry_exit: '人类~~~~！你真的.mp3',
+} as const
 const GUIDE_AUDIO_BY_KEY = {
   takeover_plugin_preview_dashboard: {
-    zh: '有了它们，我不光能看 B 站弹幕，还能帮你关灯开空调…… 本喵就是无所不能的超级猫猫神！哼哼～.mp3',
-    en: '有了它们，我不光能看 B 站弹幕，还能帮你关灯开空调…… 本喵就是无所不能的超级猫猫神！哼哼～.mp3',
-    ja: '有了它们，我不光能看 B 站弹幕，还能帮你关灯开空调…… 本喵就是无所不能的超级猫猫神！哼哼～.mp3',
-    ko: '有了它们，我不光能看 B 站弹幕，还能帮你关灯开空调…… 本喵就是无所不能的超级猫猫神！哼哼～.mp3',
-    ru: '有了它们，我不光能看 B 站弹幕，还能帮你关灯开空调…… 本喵就是无所不能的超级猫猫神！哼哼～.mp3',
+    zh: GUIDE_AUDIO_FILE_NAMES.takeover_plugin_preview_dashboard,
+    en: GUIDE_AUDIO_FILE_NAMES.takeover_plugin_preview_dashboard,
+    ja: GUIDE_AUDIO_FILE_NAMES.takeover_plugin_preview_dashboard,
+    ko: GUIDE_AUDIO_FILE_NAMES.takeover_plugin_preview_dashboard,
+    ru: GUIDE_AUDIO_FILE_NAMES.takeover_plugin_preview_dashboard,
   },
   interrupt_resist_light_1: {
-    zh: '喂！不要拽我啦，还没轮到你的回合呢！.mp3',
-    en: '喂！不要拽我啦，还没轮到你的回合呢！.mp3',
-    ja: '喂！不要拽我啦，还没轮到你的回合呢！.mp3',
-    ko: '喂！不要拽我啦，还没轮到你的回合呢！.mp3',
-    ru: '喂！不要拽我啦，还没轮到你的回合呢！.mp3',
+    zh: GUIDE_AUDIO_FILE_NAMES.interrupt_resist_light_1,
+    en: GUIDE_AUDIO_FILE_NAMES.interrupt_resist_light_1,
+    ja: GUIDE_AUDIO_FILE_NAMES.interrupt_resist_light_1,
+    ko: GUIDE_AUDIO_FILE_NAMES.interrupt_resist_light_1,
+    ru: GUIDE_AUDIO_FILE_NAMES.interrupt_resist_light_1,
   },
   interrupt_resist_light_3: {
-    zh: '等一下啦！还没结束呢，不要随便打断我啦！.mp3',
-    en: '等一下啦！还没结束呢，不要随便打断我啦！.mp3',
-    ja: '等一下啦！还没结束呢，不要随便打断我啦！.mp3',
-    ko: '等一下啦！还没结束呢，不要随便打断我啦！.mp3',
-    ru: '等一下啦！还没结束呢，不要随便打断我啦！.mp3',
+    zh: GUIDE_AUDIO_FILE_NAMES.interrupt_resist_light_3,
+    en: GUIDE_AUDIO_FILE_NAMES.interrupt_resist_light_3,
+    ja: GUIDE_AUDIO_FILE_NAMES.interrupt_resist_light_3,
+    ko: GUIDE_AUDIO_FILE_NAMES.interrupt_resist_light_3,
+    ru: GUIDE_AUDIO_FILE_NAMES.interrupt_resist_light_3,
   },
   interrupt_angry_exit: {
-    zh: '人类~~~~！你真的很没礼貌喵！既然你这么想自己操作，那你就自己对着冰冷的屏幕玩去吧！哼！.mp3',
-    en: '人类~~~~！你真的很没礼貌喵！既然你这么想自己操作，那你就自己对着冰冷的屏幕玩去吧！哼！.mp3',
-    ja: '人类~~~~！你真的很没礼貌喵！既然你这么想自己操作，那你就自己对着冰冷的屏幕玩去吧！哼！.mp3',
-    ko: '人类~~~~！你真的很没礼貌喵！既然你这么想自己操作，那你就自己对着冰冷的屏幕玩去吧！哼！.mp3',
-    ru: '人类~~~~！你真的很没礼貌喵！既然你这么想自己操作，那你就自己对着冰冷的屏幕玩去吧！哼！.mp3',
+    zh: GUIDE_AUDIO_FILE_NAMES.interrupt_angry_exit,
+    en: GUIDE_AUDIO_FILE_NAMES.interrupt_angry_exit,
+    ja: GUIDE_AUDIO_FILE_NAMES.interrupt_angry_exit,
+    ko: GUIDE_AUDIO_FILE_NAMES.interrupt_angry_exit,
+    ru: GUIDE_AUDIO_FILE_NAMES.interrupt_angry_exit,
   },
 } as const
+
+const LOCAL_TUTORIAL_ACTION_EVENT = 'neko:plugin-tutorial:action'
+
+export type PluginDashboardLocalTutorialMotion = 'point' | 'click' | 'ellipse'
+
+export type PluginDashboardLocalTutorialStep = {
+  targetId: string
+  title: string
+  body: string
+  route?: string
+  motion?: PluginDashboardLocalTutorialMotion
+  action?: string
+  waitMs?: number
+  allowMissing?: boolean
+  durationMs?: number
+}
+
+type StartPluginDashboardTutorialOptions = {
+  steps: PluginDashboardLocalTutorialStep[]
+  labels?: {
+    skip?: string
+    keyboardHint?: string
+  }
+}
 
 function normalizeOrigin(value: string) {
   const normalizedValue = String(value || '').trim()
@@ -1842,7 +1873,13 @@ class PluginDashboardGuideRuntime {
   interruptNarrationForResistance() {
     const narration = this.activeNarration
     if (!narration || narration.cancelled) {
-      return false
+      if (!currentGuideAudio && !currentGuideSpeechStop) {
+        return false
+      }
+
+      this.clearNarrationResumeTimer()
+      stopCurrentGuideSpeech()
+      return true
     }
     if (narration.interrupted) {
       return true
@@ -2166,6 +2203,7 @@ class PluginDashboardGuideRuntime {
     this.clearSpotlight()
     this.resetCursorVisualState()
     this.setAngryVisual(true)
+    this.homeNarrationFinished = false
     const handledByHome = await this.requestHomeInterruptPlayback({
       kind: 'interrupt_angry_exit',
       text: ANGRY_EXIT_LINE,
@@ -2181,6 +2219,15 @@ class PluginDashboardGuideRuntime {
         voiceKey: 'interrupt_angry_exit',
       })
       if (!isSameSession()) {
+        return
+      }
+    } else {
+      const angryExitTimeoutMs = clamp(estimateSpeechDurationMs(ANGRY_EXIT_LINE) + 2000, 4000, 12000)
+      const homeNarrationCompleted = await Promise.race([
+        this.waitForHomeNarrationFinished(sessionAtStart, isSameSession),
+        wait(angryExitTimeoutMs).then(() => isSameSession()),
+      ])
+      if (!homeNarrationCompleted || !isSameSession()) {
         return
       }
     }
@@ -2477,6 +2524,352 @@ class PluginDashboardGuideRuntime {
     }
     this.cleanup()
   }
+}
+
+class PluginDashboardLocalTutorialRunner {
+  runtime = new PluginDashboardGuideRuntime()
+  tooltip: HTMLDivElement | null = null
+  titleEl: HTMLDivElement | null = null
+  bodyEl: HTMLDivElement | null = null
+  hintEl: HTMLDivElement | null = null
+  skipButton: HTMLButtonElement | null = null
+  cancelled = false
+  shieldClickHandler: ((event: Event) => void) | null = null
+  keydownHandler: ((event: KeyboardEvent) => void) | null = null
+  advanceResolver: (() => void) | null = null
+  advanceEnabled = false
+
+  async start(options: StartPluginDashboardTutorialOptions) {
+    const steps = Array.isArray(options.steps) ? options.steps.filter(Boolean) : []
+    if (!steps.length) {
+      return
+    }
+    const firstStep = steps[0]
+    if (!firstStep) {
+      return
+    }
+
+    this.runtime.activateOverlayShell()
+    this.runtime.ensureRoot()
+    this.ensureTooltip(options.labels)
+    this.bindAdvanceHandlers()
+
+    try {
+      const initialTarget = await this.waitForStepTarget(firstStep, 1200)
+      if (initialTarget) {
+        const rect = this.runtime.getRect(initialTarget)
+        const x = rect ? rect.left + rect.width / 2 : window.innerWidth / 2
+        const y = rect ? rect.top + rect.height / 2 : window.innerHeight / 2
+        this.runtime.showCursor(x, y)
+      } else {
+        this.runtime.showCursor(window.innerWidth / 2, window.innerHeight / 2)
+      }
+
+      for (const step of steps) {
+        if (this.cancelled) {
+          return
+        }
+
+        await this.runStep(step)
+      }
+    } finally {
+      this.cleanup()
+    }
+  }
+
+  ensureTooltip(labels?: StartPluginDashboardTutorialOptions['labels']) {
+    if (!this.runtime.root || this.tooltip) {
+      return
+    }
+
+    const tooltip = document.createElement('div')
+    tooltip.style.position = 'fixed'
+    tooltip.style.right = '24px'
+    tooltip.style.bottom = '24px'
+    tooltip.style.width = 'min(360px, calc(100vw - 32px))'
+    tooltip.style.padding = '16px 16px 14px'
+    tooltip.style.borderRadius = '18px'
+    tooltip.style.background = 'rgba(8, 18, 44, 0.92)'
+    tooltip.style.border = '1px solid rgba(160, 214, 255, 0.35)'
+    tooltip.style.boxShadow = '0 24px 80px rgba(8, 17, 40, 0.45)'
+    tooltip.style.backdropFilter = 'blur(14px)'
+    tooltip.style.color = '#eef7ff'
+    tooltip.style.pointerEvents = 'auto'
+    tooltip.style.zIndex = '2147483647'
+    tooltip.style.fontFamily = 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif'
+
+    const titleEl = document.createElement('div')
+    titleEl.style.fontSize = '16px'
+    titleEl.style.fontWeight = '700'
+    titleEl.style.lineHeight = '1.35'
+    titleEl.style.marginBottom = '8px'
+
+    const bodyEl = document.createElement('div')
+    bodyEl.style.fontSize = '14px'
+    bodyEl.style.lineHeight = '1.6'
+    bodyEl.style.color = 'rgba(238, 247, 255, 0.92)'
+
+    const footer = document.createElement('div')
+    footer.style.display = 'flex'
+    footer.style.alignItems = 'center'
+    footer.style.justifyContent = 'space-between'
+    footer.style.gap = '12px'
+    footer.style.marginTop = '14px'
+
+    const hintEl = document.createElement('div')
+    hintEl.textContent = labels?.keyboardHint || ''
+    hintEl.style.fontSize = '12px'
+    hintEl.style.lineHeight = '1.45'
+    hintEl.style.color = 'rgba(194, 219, 255, 0.78)'
+    hintEl.style.flex = '1'
+
+    const skipButton = document.createElement('button')
+    skipButton.type = 'button'
+    skipButton.textContent = labels?.skip || 'Skip'
+    skipButton.style.border = '0'
+    skipButton.style.borderRadius = '999px'
+    skipButton.style.padding = '8px 14px'
+    skipButton.style.background = 'rgba(107, 170, 255, 0.18)'
+    skipButton.style.color = '#eef7ff'
+    skipButton.style.fontSize = '13px'
+    skipButton.style.fontWeight = '600'
+    skipButton.style.cursor = 'pointer'
+    skipButton.addEventListener('click', () => {
+      this.cancelled = true
+      this.resolveAdvance()
+    })
+
+    footer.appendChild(hintEl)
+    footer.appendChild(skipButton)
+    tooltip.appendChild(titleEl)
+    tooltip.appendChild(bodyEl)
+    tooltip.appendChild(footer)
+    this.runtime.root.appendChild(tooltip)
+
+    this.tooltip = tooltip
+    this.titleEl = titleEl
+    this.bodyEl = bodyEl
+    this.hintEl = hintEl
+    this.skipButton = skipButton
+  }
+
+  bindAdvanceHandlers() {
+    const shield = this.runtime.interactionShield
+    if (shield && !this.shieldClickHandler) {
+      this.shieldClickHandler = () => {
+        if (!this.advanceEnabled) {
+          return
+        }
+        this.resolveAdvance()
+      }
+      shield.addEventListener('click', this.shieldClickHandler)
+    }
+
+    if (!this.keydownHandler) {
+      this.keydownHandler = (event: KeyboardEvent) => {
+        if (!this.advanceEnabled) {
+          return
+        }
+        if (event.key !== 'Enter' && event.key !== ' ') {
+          return
+        }
+        event.preventDefault()
+        this.resolveAdvance()
+      }
+      window.addEventListener('keydown', this.keydownHandler, true)
+    }
+  }
+
+  resolveAdvance() {
+    const resolver = this.advanceResolver
+    this.advanceResolver = null
+    if (resolver) {
+      resolver()
+    }
+  }
+
+  async navigate(route?: string) {
+    const targetRoute = String(route || '').trim()
+    if (!targetRoute) {
+      return
+    }
+
+    const currentFullPath = router.currentRoute.value.fullPath
+    if (currentFullPath === targetRoute) {
+      return
+    }
+
+    try {
+      await router.push(targetRoute)
+    } catch (_) {}
+    await wait(80)
+  }
+
+  async dispatchAction(action?: string) {
+    const value = String(action || '').trim()
+    if (!value) {
+      return
+    }
+
+    window.dispatchEvent(new CustomEvent(LOCAL_TUTORIAL_ACTION_EVENT, {
+      detail: {
+        action: value,
+      },
+    }))
+  }
+
+  async waitForStepTarget(step: PluginDashboardLocalTutorialStep, timeoutMs = 3600) {
+    const targetId = String(step.targetId || '').trim()
+    if (!targetId) {
+      return null
+    }
+
+    const startedAt = Date.now()
+    while ((Date.now() - startedAt) < timeoutMs) {
+      const element = document.querySelector(`[data-yui-guide-id="${targetId}"]`) as HTMLElement | null
+      if (element) {
+        return element
+      }
+      await wait(80)
+    }
+
+    return null
+  }
+
+  positionTooltip(target: HTMLElement | null) {
+    if (!this.tooltip) {
+      return
+    }
+
+    const rect = target ? this.runtime.getRect(target) : null
+    const tooltipWidth = Math.min(360, Math.max(280, Math.round(window.innerWidth * 0.28)))
+    this.tooltip.style.width = `${Math.min(tooltipWidth, window.innerWidth - 32)}px`
+
+    if (!rect) {
+      this.tooltip.style.left = ''
+      this.tooltip.style.top = ''
+      this.tooltip.style.right = '24px'
+      this.tooltip.style.bottom = '24px'
+      return
+    }
+
+    const margin = 16
+    const tooltipRect = this.tooltip.getBoundingClientRect()
+    const preferredTop = rect.bottom + 16
+    const placeBelow = preferredTop + tooltipRect.height <= window.innerHeight - margin
+    const left = clamp(rect.left + (rect.width / 2) - (tooltipRect.width / 2), margin, window.innerWidth - tooltipRect.width - margin)
+    const top = placeBelow
+      ? preferredTop
+      : Math.max(margin, rect.top - tooltipRect.height - 16)
+
+    this.tooltip.style.left = `${Math.round(left)}px`
+    this.tooltip.style.top = `${Math.round(top)}px`
+    this.tooltip.style.right = 'auto'
+    this.tooltip.style.bottom = 'auto'
+  }
+
+  async runStep(step: PluginDashboardLocalTutorialStep) {
+    await this.navigate(step.route)
+    if (this.cancelled) {
+      return
+    }
+
+    await this.dispatchAction(step.action)
+    if (step.waitMs && step.waitMs > 0) {
+      await wait(step.waitMs)
+    } else if (step.action) {
+      await wait(120)
+    }
+    if (this.cancelled) {
+      return
+    }
+
+    const target = await this.waitForStepTarget(step)
+    if (!target) {
+      if (step.allowMissing) {
+        return
+      }
+      return
+    }
+
+    if (this.titleEl) {
+      this.titleEl.textContent = step.title || ''
+    }
+    if (this.bodyEl) {
+      this.bodyEl.textContent = step.body || ''
+    }
+
+    this.runtime.setSpotlight(target)
+    this.positionTooltip(target)
+
+    const motion = step.motion || 'point'
+    const durationMs = Math.max(600, Math.round(step.durationMs || 1800))
+    if (motion === 'ellipse') {
+      await this.runtime.moveCursorToElementWithRecovery(target, 460, () => !this.cancelled)
+      if (!this.cancelled) {
+        await this.runtime.runEllipse(target, durationMs, () => !this.cancelled)
+      }
+    } else {
+      await this.runtime.moveCursorToElementWithRecovery(target, Math.min(700, durationMs), () => !this.cancelled)
+      if (!this.cancelled && motion === 'click') {
+        this.runtime.clickCursor()
+      }
+    }
+
+    if (this.cancelled) {
+      return
+    }
+
+    this.advanceEnabled = false
+    window.setTimeout(() => {
+      this.advanceEnabled = true
+    }, 500)
+
+    await new Promise<void>((resolve) => {
+      this.advanceResolver = resolve
+      window.setTimeout(() => {
+        if (this.advanceResolver === resolve) {
+          this.resolveAdvance()
+        }
+      }, Math.max(1200, durationMs))
+    })
+    this.advanceEnabled = false
+  }
+
+  cleanup() {
+    this.cancelled = true
+    this.advanceEnabled = false
+    this.resolveAdvance()
+
+    if (this.runtime.interactionShield && this.shieldClickHandler) {
+      this.runtime.interactionShield.removeEventListener('click', this.shieldClickHandler)
+    }
+    if (this.keydownHandler) {
+      window.removeEventListener('keydown', this.keydownHandler, true)
+    }
+
+    this.shieldClickHandler = null
+    this.keydownHandler = null
+    this.tooltip = null
+    this.titleEl = null
+    this.bodyEl = null
+    this.hintEl = null
+    this.skipButton = null
+    this.runtime.cleanup()
+  }
+}
+
+let activeLocalTutorialRunner: PluginDashboardLocalTutorialRunner | null = null
+
+export function startPluginDashboardTutorial(options: StartPluginDashboardTutorialOptions) {
+  activeLocalTutorialRunner?.cleanup()
+  const runner = new PluginDashboardLocalTutorialRunner()
+  activeLocalTutorialRunner = runner
+  void runner.start(options).finally(() => {
+    if (activeLocalTutorialRunner === runner) {
+      activeLocalTutorialRunner = null
+    }
+  })
 }
 
 export function initPluginDashboardYuiGuideRuntime() {
