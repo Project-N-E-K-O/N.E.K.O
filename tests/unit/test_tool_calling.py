@@ -270,6 +270,57 @@ async def test_offline_openai_path_runs_tool_then_text():
     assert roles[2] == "tool"
     assert messages[1]["tool_calls"][0]["function"]["name"] == "get_weather"
     assert json.loads(messages[2]["content"])["temp_c"] == 22
+    # tool 消息必须带 name（Gemini 转换路径靠这个字段填 FunctionResponse.name）
+    assert messages[2]["name"] == "get_weather"
+
+
+@pytest.mark.asyncio
+async def test_offline_switch_model_recomputes_genai_routing():
+    """switch_model 切到不同 endpoint 后必须重新计算 _use_genai_sdk，
+    并清空 _genai_client，否则会沿用旧 conversation 的路由判断。
+
+    回归保护：Codex P1 反馈，PR #1035。"""
+    from main_logic.omni_offline_client import OmniOfflineClient, _GENAI_AVAILABLE
+
+    if not _GENAI_AVAILABLE:
+        pytest.skip("google-genai SDK not installed in this env")
+
+    # 建 client：conversation 走 OpenAI，vision_base_url 指向 Gemini native endpoint。
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    client.model = "gpt-4o-mini"
+    client.base_url = "https://api.openai.com/v1"
+    client.api_key = "sk-fake"
+    client.vision_model = "gemini-2.5-flash"
+    client.vision_base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
+    client.vision_api_key = "fake-gemini-key"
+    client.max_response_length = 300
+    client._tool_definitions = []
+    client.on_tool_call = None
+    client._genai_tools_unsupported = False
+    client._genai_client = "stale-sentinel"  # 模拟旧 client
+    # 初始用 OpenAI conversation，路由旗标必为 False
+    from main_logic.omni_offline_client import _should_use_genai_sdk
+    client._use_genai_sdk = _should_use_genai_sdk(client.model, client.base_url)
+    assert client._use_genai_sdk is False
+
+    # 给一个能 aclose() 的占位 llm
+    class _FakeLLM2:
+        max_completion_tokens = 100
+        async def aclose(self): pass
+    client.llm = _FakeLLM2()
+
+    # 切到 vision config（用 Gemini native endpoint）
+    await client.switch_model("gemini-2.5-flash", use_vision_config=True)
+
+    # 路由旗标必须重新计算成 True
+    assert client._use_genai_sdk is True, (
+        "switch_model 后 _use_genai_sdk 必须重算，否则 vision/Gemini 切换路由错"
+    )
+    # 旧 _genai_client 必须被清空，下次走 lazy init
+    assert client._genai_client is None
+    # base_url / api_key 必须同步到 vision 配置
+    assert client.base_url == "https://generativelanguage.googleapis.com/v1beta/openai"
+    assert client.api_key == "fake-gemini-key"
 
 
 @pytest.mark.asyncio

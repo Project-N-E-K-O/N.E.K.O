@@ -217,11 +217,35 @@ def _genai_messages_to_contents(
                     parsed = {"result": raw_out}
                 if not isinstance(parsed, dict):
                     parsed = {"result": parsed}
-                contents.append(types.Content(role="user", parts=[
-                    types.Part.from_function_response(
-                        name=msg.get("name") or msg.get("tool_call_id") or "tool",
-                        response=parsed,
+                # Gemini FunctionResponse.name 必须与原 function_call.name 完全
+                # 一致，否则 server 把这条 tool 结果当成无主消息丢弃。
+                # 现在 ``_execute_and_append_openai_tool_calls`` 已写入 ``name``，
+                # 但历史里若有旧条目（或外部传入的 messages）没带 name，仍要
+                # 反查前面 assistant 的 tool_calls 找匹配 tool_call_id。绝不能
+                # fallback 到 tool_call_id 自身——那是 "call_xxx" 格式不是函数名。
+                fn_name = msg.get("name") or ""
+                if not fn_name:
+                    tcid = msg.get("tool_call_id") or ""
+                    if tcid:
+                        # 反向扫前面的 assistant tool_calls
+                        for prev in reversed(messages[: messages.index(msg)] if msg in messages else []):
+                            prev_calls = (prev.get("tool_calls") or []) if isinstance(prev, dict) else []
+                            for tc in prev_calls:
+                                if tc.get("id") == tcid:
+                                    fn_name = (tc.get("function") or {}).get("name") or ""
+                                    break
+                            if fn_name:
+                                break
+                if not fn_name:
+                    # 实在找不到——记 warning 并用占位，不要塞 call_xxx 给 Gemini。
+                    logger.warning(
+                        "genai message conversion: tool message missing name, "
+                        "tool_call_id=%s — using placeholder 'unknown_tool'",
+                        msg.get("tool_call_id"),
                     )
+                    fn_name = "unknown_tool"
+                contents.append(types.Content(role="user", parts=[
+                    types.Part.from_function_response(name=fn_name, response=parsed)
                 ]))
                 continue
             if role == "user":
@@ -516,6 +540,10 @@ class OmniOfflineClient:
             messages.append({
                 "role": "tool",
                 "tool_call_id": tool_call.call_id,
+                # 写入 ``name`` 让 Gemini 路径能直接用（FunctionResponse.name
+                # 必须与原 function_call name 完全一致）。OpenAI-compat 不需要
+                # 这个字段也不会因此报错——它只用 tool_call_id 关联。
+                "name": tool_call.name,
                 "content": result.output_as_json_string(),
             })
 
@@ -850,6 +878,15 @@ class OmniOfflineClient:
             old_llm = self.llm
             self.llm = new_llm
             self.model = new_model
+            # ⚠️ 同步 self.base_url / self.api_key —— 否则后续 _astream_with_tools
+            # 重新计算 _use_genai_sdk 时拿到的还是旧 conversation 配置，会
+            # 把 vision 走的 Gemini endpoint 错误路由到 OpenAI-compat（反之亦然）。
+            self.base_url = base_url
+            self.api_key = api_key
+            # 路由旗标随之刷新；旧 _genai_client 抛弃（若 api_key 变了它已失效）。
+            self._use_genai_sdk = _should_use_genai_sdk(self.model, self.base_url)
+            self._genai_client = None
+            self._genai_tools_unsupported = False
             try:
                 await old_llm.aclose()
             except Exception as e:
