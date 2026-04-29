@@ -94,6 +94,7 @@ from config.prompts_proactive import (
     PROACTIVE_SOURCE_LABELS,
     PROACTIVE_MUSIC_TAG_INSTRUCTIONS,
     MUSIC_SEARCH_RESULT_TEXTS,
+    build_proactive_action_note,
 )
 from utils.file_utils import atomic_write_json_async, read_json
 from utils.workshop_utils import get_workshop_path
@@ -4785,8 +4786,20 @@ async def proactive_chat(request: Request):
         # 一次性投递完整文本 + 记录历史 + TTS end + turn end
         # 传 proactive_sid：若 Phase 2 流结束到这里之间用户已打断（换了 sid），
         # finish 内部会跳过所有写入，避免 proactive 文本污染用户当前轮次。
+        # action_note：把"放了什么歌 / 分享了哪条内容 / 来源"作为元数据追加到
+        # AIMessage 历史，否则下一轮被反问"刚才放的什么"时 LLM 完全无从作答
+        # （只看得到自己说过的话，看不到自己实际投递了什么素材）。模板里对人
+        # 的称呼一律用 master_name 实名展开，不写"主人"这类物化称呼。
+        action_note = build_proactive_action_note(
+            primary_channel=primary_channel,
+            source_links=source_links,
+            language=proactive_lang,
+            master_name=master_name_current,
+        )
         committed = await mgr.finish_proactive_delivery(
-            response_text, expected_speech_id=proactive_sid
+            response_text,
+            expected_speech_id=proactive_sid,
+            action_note=action_note,
         )
         if not committed:
             # Proactive 内容未真正落库（用户已接管本轮），所有下游副作用必须跳过：

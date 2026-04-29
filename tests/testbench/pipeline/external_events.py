@@ -317,10 +317,16 @@ def _resolve_language(session: Session) -> tuple[str, str]:
 
 
 def _resolve_names(session: Session) -> tuple[str, str]:
-    """Return ``(character_name, master_name)`` with ``主人`` fallback."""
+    """Return ``(character_name, master_name)``.
+
+    ``master_name`` 缺省时返回空串，由调用方按场景自行兜底——避免在源头硬编码
+    "主人"等物化称呼。memory_note 路径下游
+    (:func:`config.prompts_avatar_interaction._build_avatar_interaction_memory_meta`)
+    自带本地化中性词回退（zh="对方"、en="they" 等）。
+    """
     persona = session.persona or {}
     lanlan = str(persona.get("character_name") or "").strip()
-    master = str(persona.get("master_name") or "").strip() or "主人"
+    master = str(persona.get("master_name") or "").strip()
     return lanlan, master
 
 
@@ -1238,7 +1244,7 @@ def _build_avatar_instruction_bundle(
             ),
         ))
 
-    meta = _build_avatar_interaction_memory_meta(full_lang, normalized)
+    meta = _build_avatar_interaction_memory_meta(full_lang, normalized, master_name)
     memory_note = str(meta.get("memory_note") or "")
     dedupe_key = str(meta.get("memory_dedupe_key") or normalized["tool_id"])
     dedupe_rank = int(meta.get("memory_dedupe_rank") or 1)

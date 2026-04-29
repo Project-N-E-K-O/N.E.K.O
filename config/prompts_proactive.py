@@ -2834,3 +2834,184 @@ WEEKEND_HINT: dict[str, str] = {
     'ko': '오늘은 주말이다. 푹 쉬어.',
     'ru': 'Сегодня выходной — время отдохнуть.',
 }
+
+
+# ── Proactive action note (memory metadata appended to AI history) ──
+# 主动搭话完成时把"实际投递的素材"以一行 [...] 注解的形式追加到 AIMessage 文本里：
+# 放了哪首歌、分享了什么内容、来源是哪里。下一轮 LLM 拿到 memory_context 时
+# 就能看到这些事实，避免出现"刚才放的什么歌？""不知道，没记住"的违和感。
+#
+# 注解只进 _conversation_history（→ memory_context），不进 send_lanlan_response、
+# 不进 TTS — 用户不会在前端看到这一行；它只是给 AI 自己留的一份"行动日志"。
+
+PROACTIVE_ACTION_NOTE_MUSIC: dict[str, str] = {
+    'zh': '[给{master}放了《{title}》— {artist}]',
+    'en': '[Played for {master}: "{title}" by {artist}]',
+    'ja': '[{master}に再生した曲：『{title}』— {artist}]',
+    'ko': '[{master}에게 재생한 곡: 《{title}》 — {artist}]',
+    'ru': '[Для {master}: «{title}» — {artist}]',
+}
+
+PROACTIVE_ACTION_NOTE_MEME: dict[str, str] = {
+    'zh': '[给{master}分享了表情包：《{title}》（来自 {source}）]',
+    'en': '[Sent {master} a meme: "{title}" (from {source})]',
+    'ja': '[{master}に送ったスタンプ：『{title}』（{source} より）]',
+    'ko': '[{master}에게 보낸 짤: 《{title}》 ({source} 출처)]',
+    'ru': '[Отправлено для {master}: «{title}» (из {source})]',
+}
+
+PROACTIVE_ACTION_NOTE_WEB: dict[str, str] = {
+    'zh': '[给{master}分享了《{title}》（来自 {source}）]',
+    'en': '[Shared with {master}: "{title}" (from {source})]',
+    'ja': '[{master}にシェアした内容：『{title}』（{source} より）]',
+    'ko': '[{master}에게 공유한 내용: 《{title}》 ({source} 출처)]',
+    # 俄语：三条 PROACTIVE_ACTION_NOTE_* 统一用 "для + genitive" 结构，与 placeholders
+    # 'master': 'собеседника'（genitive 形式）兼容；空名兜底直接得到合法俄语，真实
+    # 名字塞进 для 后不变格但 LLM 仍能正确理解。原 'с {master}'（instrumental 介词）
+    # 跟 fallback 的 genitive 形式不匹配，改成 для 让三条 ru 模板一致。
+    'ru': '[Поделено для {master}: «{title}» (из {source})]',
+}
+
+PROACTIVE_ACTION_NOTE_PLACEHOLDERS: dict[str, dict[str, str]] = {
+    'zh': {'title': '未命名', 'artist': '未知艺术家', 'source': '未知来源', 'master': '对方'},
+    'en': {'title': 'Untitled', 'artist': 'Unknown Artist', 'source': 'Unknown Source', 'master': 'them'},
+    'ja': {'title': '無題', 'artist': '不明なアーティスト', 'source': '不明な出典', 'master': '相手'},
+    'ko': {'title': '제목 없음', 'artist': '아티스트 미상', 'source': '출처 미상', 'master': '상대'},
+    'ru': {'title': 'Без названия', 'artist': 'Неизвестный исполнитель', 'source': 'Неизвестный источник', 'master': 'собеседника'},
+}
+
+
+def build_proactive_action_note(
+    primary_channel: str,
+    source_links: list[dict] | None,
+    language: str,
+    master_name: str,
+) -> str:
+    """根据本轮 proactive 实际投递的内容构造一条简短行动注解。
+
+    返回值会被追加到 AIMessage 内容尾部（_conversation_history），让 LLM 下一轮
+    能记得"自己刚才放了什么 / 分享了什么 / 来源是哪"。返回空串表示无元数据可记。
+
+    挑模板的策略：先按 primary_channel 走 music / meme / web 三类对应的素材；
+    primary_channel 无明确素材类型（chat / unknown / 空）时，**回退到探测
+    source_links 实际素材**——这是为了 cover ``should_try_music_fallback``
+    路径：LLM Phase 2 输出 ``[CHAT]``（→ primary_channel='chat'）但本轮其实
+    已经把 music tracks 追加进 source_links 并设了 is_music_used=True，用户
+    那边实际听到了歌；不探测就会丢掉这条 "已放过" 元数据。优先级 music >
+    meme > web，与前端通常的素材展示重要性一致。
+
+    web 子通道集合 ``{'web', 'news', 'video', 'home', 'personal', 'window'}``
+    与 ``main_routers/system_router.py:build_proactive_response`` 里
+    ``web_link.get('mode', 'web')`` 产出的 mode 集合保持同步——遗漏任何一个
+    会让对应通道走到末尾的 chat fallback、被 music-first 优先级误识别成
+    "放歌"，覆盖与本通道一致的 ``PROACTIVE_SOURCE_LABELS`` keys。
+
+    vision 通道始终返回空：屏幕本身是用户那侧已有的画面，不是 AI 分享出去
+    的素材，无需事件日志。
+
+    模板里对人的称呼一律用 {master} 占位符，由调用方传入 master_name 展开成
+    用户实际设定的名字——避免出现"主人"这类物化称呼。title/artist/source
+    任一缺失时按本地化占位符兜底；source_links 里没有任何匹配素材就返回
+    空串，避免凭空编"未知 / 未知 / 未知"骚扰 LLM 上下文。
+    """
+    if not source_links:
+        return ''
+    channel = (primary_channel or '').strip().lower()
+
+    # vision: 屏幕本身不是分享出去的素材，即便 source_links 有数据也不写。
+    if channel == 'vision':
+        return ''
+
+    # 归一化 language：caller 通常已经传短码（zh/en/ja/ko/ru），但区域标签
+    # （zh-CN / ja-JP 等）应被映射到对应短码，否则 placeholders 和 _loc 会双双
+    # 落英文兜底，丢失本地化。下面 .format() 用 lang_key 而不是原始 language。
+    lang_key = _normalize_prompt_language(language)
+    placeholders = PROACTIVE_ACTION_NOTE_PLACEHOLDERS.get(
+        lang_key, PROACTIVE_ACTION_NOTE_PLACEHOLDERS['en']
+    )
+    # action_note 是单行元数据，必须强制压成一行。title/source/master_name 任一
+    # 含 \n/\r/\t 都会让 _conversation_history 里那条 AIMessage 的 content 多
+    # 出几行结构，下游 LLM context 渲染容易把 note 误当成正常对话内容。
+    def _single_line(value) -> str:
+        return ' '.join(str(value or '').split())
+
+    master = _single_line(master_name) or placeholders['master']
+
+    def _safe(value, fallback_key: str) -> str:
+        s = _single_line(value)
+        return s or placeholders[fallback_key]
+
+    def _is_music(link: dict) -> bool:
+        return link.get('type') == 'music' or link.get('source') == '音乐推荐'
+
+    def _is_meme(link: dict) -> bool:
+        return str(link.get('type', '')).lower().startswith('meme')
+
+    def _try_music() -> str:
+        track = next(
+            (l for l in source_links if isinstance(l, dict) and _is_music(l)),
+            None,
+        )
+        if not track:
+            return ''
+        return _loc(PROACTIVE_ACTION_NOTE_MUSIC, lang_key).format(
+            master=master,
+            title=_safe(track.get('title'), 'title'),
+            artist=_safe(track.get('artist'), 'artist'),
+        )
+
+    def _try_meme(allow_typeless_fallback: bool = False) -> str:
+        meme = next(
+            (l for l in source_links if isinstance(l, dict) and _is_meme(l)),
+            None,
+        )
+        # primary_channel='meme' 但素材没填 type=meme（早期 fallback 链路）：
+        # 回退到第一条非音乐链接当 meme 处理。chat/unknown 通道走探测路径时
+        # 不开这个回退，避免把任意 web link 误当作 meme。
+        if not meme and allow_typeless_fallback:
+            meme = next(
+                (
+                    l for l in source_links
+                    if isinstance(l, dict) and not _is_music(l)
+                ),
+                None,
+            )
+        if not meme:
+            return ''
+        return _loc(PROACTIVE_ACTION_NOTE_MEME, lang_key).format(
+            master=master,
+            title=_safe(meme.get('title'), 'title'),
+            source=_safe(meme.get('source'), 'source'),
+        )
+
+    def _try_web() -> str:
+        link = next(
+            (
+                l for l in source_links
+                if isinstance(l, dict) and not _is_music(l) and not _is_meme(l)
+            ),
+            None,
+        )
+        if not link:
+            return ''
+        return _loc(PROACTIVE_ACTION_NOTE_WEB, lang_key).format(
+            master=master,
+            title=_safe(link.get('title'), 'title'),
+            source=_safe(link.get('source'), 'source'),
+        )
+
+    if channel == 'music':
+        return _try_music()
+    if channel == 'meme':
+        return _try_meme(allow_typeless_fallback=True)
+    if channel in {'web', 'news', 'video', 'home', 'personal', 'window'}:
+        return _try_web()
+
+    # chat / unknown / 空 / 其它未识别通道 —— 回退探测 source_links 实际素材，
+    # 处理 should_try_music_fallback 等"primary_channel 与实际投递素材不一致"
+    # 的边角 case。优先 music > meme > web。
+    for builder in (_try_music, _try_meme, _try_web):
+        note = builder()
+        if note:
+            return note
+    return ''
