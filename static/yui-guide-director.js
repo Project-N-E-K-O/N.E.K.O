@@ -176,6 +176,7 @@
     const DEFAULT_STEP_DELAY_MS = 120;
     const DEFAULT_SCENE_SETTLE_MS = 260;
     const DEFAULT_CURSOR_DURATION_MS = 520;
+    const DEFAULT_CURSOR_CLICK_VISIBLE_MS = 420;
     const INTRO_GREETING_REPLY_TEXT = '我是你的专属猫娘，从今天起就由我来陪伴主人咯。无论是想要聊天解闷、一起玩耍，还是需要我帮忙做些什么，我都会乖乖陪在主人身边的喵。以后请多多指教啦，最喜欢主人了~！';
     const INTRO_GREETING_REPLY_TEXT_KEY = 'tutorial.yuiGuide.lines.introGreetingReply';
     const TAKEOVER_PLUGIN_DASHBOARD_TEXT = '有了它们，我不光能看 B 站弹幕，还能帮你关灯开空调…… 本喵就是无所不能的超级猫猫神！哼哼～';
@@ -1246,8 +1247,8 @@
             });
         }
 
-        click() {
-            this.overlay.clickCursor();
+        click(durationMs) {
+            this.overlay.clickCursor(durationMs);
         }
 
         wobble() {
@@ -1416,6 +1417,47 @@
             }
 
             return null;
+        }
+
+        getHomePresentationSceneOrder() {
+            if (!this.registry || !this.registry.sceneOrder || !Array.isArray(this.registry.sceneOrder.home)) {
+                return [];
+            }
+
+            return this.registry.sceneOrder.home.filter(function (sceneId) {
+                return (
+                    typeof sceneId === 'string'
+                    && sceneId.indexOf('interrupt_') !== 0
+                    && sceneId.indexOf('handoff_') !== 0
+                );
+            });
+        }
+
+        getBubbleMetaForScene(sceneId) {
+            const normalizedSceneId = typeof sceneId === 'string' ? sceneId.trim() : '';
+            if (this.page !== 'home') {
+                return '';
+            }
+
+            if (normalizedSceneId === 'intro_activation') {
+                return '准备开始';
+            }
+
+            const order = this.getHomePresentationSceneOrder();
+            const index = order.indexOf(normalizedSceneId);
+            if (index === -1 || order.length <= 0) {
+                return '';
+            }
+
+            return '主页引导 ' + (index + 1) + '/' + order.length;
+        }
+
+        showGuideBubble(text, options, sceneId) {
+            const normalizedOptions = Object.assign({}, options || {});
+            if (!normalizedOptions.meta) {
+                normalizedOptions.meta = this.getBubbleMetaForScene(sceneId || this.currentSceneId);
+            }
+            this.overlay.showBubble(text, normalizedOptions);
         }
 
         resolveModelPrefix() {
@@ -1881,6 +1923,7 @@
                         return;
                     }
                     seen.add(element);
+                    this.applyCircularFloatingButtonSpotlightHint(element);
                     nextElements.push(element);
                 });
             });
@@ -2089,9 +2132,10 @@
 
             if (typeof element.closest === 'function') {
                 const shell = element.closest(
+                    '#live2d-btn-mic, #vrm-btn-mic, #mmd-btn-mic, ' +
                     '#live2d-btn-agent, #vrm-btn-agent, #mmd-btn-agent, ' +
                     '#live2d-btn-settings, #vrm-btn-settings, #mmd-btn-settings, ' +
-                    '[id$="-btn-agent"], [id$="-btn-settings"]'
+                    '[id$="-btn-mic"], [id$="-btn-agent"], [id$="-btn-settings"]'
                 );
                 if (shell) {
                     return shell;
@@ -2099,6 +2143,28 @@
             }
 
             return element;
+        }
+
+        isCircularFloatingButtonSpotlight(element) {
+            const target = this.getFloatingButtonShell(element) || element;
+            if (!target || typeof target.id !== 'string') {
+                return false;
+            }
+
+            return /-btn-(mic|agent|settings)$/.test(target.id);
+        }
+
+        applyCircularFloatingButtonSpotlightHint(element) {
+            if (!this.isCircularFloatingButtonSpotlight(element)) {
+                return false;
+            }
+
+            const target = this.getFloatingButtonShell(element) || element;
+            this.setSpotlightGeometryHint(target, {
+                padding: 4,
+                geometry: 'circle'
+            });
+            return true;
         }
 
         getSettingsPeekTargets() {
@@ -2263,6 +2329,7 @@
 
             if (Object.prototype.hasOwnProperty.call(normalized, 'persistent')) {
                 if (persistentTarget) {
+                    this.applyCircularFloatingButtonSpotlightHint(persistentTarget);
                     this.overlay.setPersistentSpotlight(persistentTarget);
                 } else {
                     this.overlay.clearPersistentSpotlight();
@@ -2271,6 +2338,7 @@
 
             if (Object.prototype.hasOwnProperty.call(normalized, 'primary')) {
                 if (primaryTarget) {
+                    this.applyCircularFloatingButtonSpotlightHint(primaryTarget);
                     this.overlay.activateSpotlight(primaryTarget);
                 } else {
                     this.overlay.clearActionSpotlight();
@@ -2280,6 +2348,7 @@
             if (Object.prototype.hasOwnProperty.call(normalized, 'secondary')) {
                 this.customSecondarySpotlightTarget = secondaryTarget || null;
                 if (secondaryTarget) {
+                    this.applyCircularFloatingButtonSpotlightHint(secondaryTarget);
                     this.overlay.activateSecondarySpotlight(secondaryTarget);
                 } else if (!Object.prototype.hasOwnProperty.call(normalized, 'primary')) {
                     this.overlay.clearActionSpotlight();
@@ -3218,6 +3287,7 @@
             const bubbleText = this.resolvePerformanceBubbleText(performance);
             const spotlightTarget = this.getSceneSpotlightTarget(this.currentSceneId, performance);
             if (spotlightTarget) {
+                this.applyCircularFloatingButtonSpotlightHint(spotlightTarget);
                 this.overlay.setPersistentSpotlight(spotlightTarget);
             } else {
                 this.overlay.clearPersistentSpotlight();
@@ -3225,23 +3295,25 @@
 
             const actionSpotlightTarget = this.getActionSpotlightTarget(this.currentSceneId, performance);
             if (actionSpotlightTarget) {
+                this.applyCircularFloatingButtonSpotlightHint(actionSpotlightTarget);
                 this.overlay.activateSpotlight(actionSpotlightTarget);
             } else {
                 this.overlay.clearActionSpotlight();
             }
 
             if (this.customSecondarySpotlightTarget) {
+                this.applyCircularFloatingButtonSpotlightHint(this.customSecondarySpotlightTarget);
                 this.overlay.activateSecondarySpotlight(this.customSecondarySpotlightTarget);
             }
 
             if (this.shouldNarrateInChat(this.currentSceneId)) {
                 this.overlay.hideBubble();
             } else if (bubbleText) {
-                this.overlay.showBubble(bubbleText, {
+                this.showGuideBubble(bubbleText, {
                     title: 'Yui',
                     emotion: performance.emotion || 'neutral',
                     anchorRect: this.resolveRect(this.currentStep.anchor)
-                });
+                }, this.currentSceneId);
             } else {
                 this.overlay.hideBubble();
             }
@@ -4147,8 +4219,13 @@
         }
 
         async clickCursorAndWait(holdMs) {
-            this.cursor.click();
-            await this.waitForSceneDelay(Number.isFinite(holdMs) ? holdMs : 180);
+            const visibleMs = clamp(
+                Math.round(Number.isFinite(holdMs) ? holdMs : DEFAULT_CURSOR_CLICK_VISIBLE_MS),
+                DEFAULT_CURSOR_CLICK_VISIBLE_MS,
+                900
+            );
+            this.cursor.click(visibleMs);
+            await this.waitForSceneDelay(visibleMs);
         }
 
         hoverElement(element) {
@@ -4245,7 +4322,18 @@
                 return false;
             }
 
-            this.cursor.click();
+            const clickVisibleMs = clamp(
+                Math.round(Number.isFinite(normalized.clickVisibleMs) ? normalized.clickVisibleMs : DEFAULT_CURSOR_CLICK_VISIBLE_MS),
+                DEFAULT_CURSOR_CLICK_VISIBLE_MS,
+                900
+            );
+            this.cursor.click(clickVisibleMs);
+            if (!(await this.waitForSceneDelay(clickVisibleMs))) {
+                return false;
+            }
+            if (normalized.runId !== this.sceneRunId || this.isStopping()) {
+                return false;
+            }
             if (typeof normalized.action !== 'function') {
                 return true;
             }
@@ -4662,7 +4750,7 @@
                     return null;
                 }
 
-                this.cursor.click();
+                await this.clickCursorAndWait(scaleSceneMs(420, 240, 900));
                 const agentPanelOpened = await this.openAgentPanel();
                 if (!agentPanelOpened || guardFailed()) {
                     return null;
@@ -4683,7 +4771,7 @@
                     return null;
                 }
 
-                this.cursor.click();
+                await this.clickCursorAndWait(scaleSceneMs(420, 240, 900));
                 const agentMasterEnabled = await this.setAgentMasterEnabled(true);
                 if (!agentMasterEnabled || guardFailed()) {
                     return null;
@@ -4715,7 +4803,7 @@
                     return null;
                 }
 
-                this.cursor.click();
+                await this.clickCursorAndWait(scaleSceneMs(420, 240, 900));
                 const pluginToggleEnabled = await this.setAgentFlagEnabled('user_plugin_enabled', true);
                 if (!pluginToggleEnabled || guardFailed()) {
                     return null;
@@ -5820,10 +5908,10 @@
                 }
 
                 try {
-                    this.overlay.showBubble(content, {
+                    this.showGuideBubble(content, {
                         title: this.getGuideAssistantName(),
                         emotion: 'neutral'
-                    });
+                    }, this.currentSceneId);
                 } catch (error) {
                     console.warn('[YuiGuide] 兜底气泡展示失败:', error);
                 }
@@ -5965,9 +6053,10 @@
                 this.cursor.showAt(cx, cy);
                 this.cursor.wobble();
                 const activationHint = this.resolveGuideCopy(INTRO_ACTIVATION_HINT_KEY, INTRO_ACTIVATION_HINT);
-                this.overlay.showBubble(activationHint, {
-                    anchorRect: inputRect
-                });
+                this.showGuideBubble(activationHint, {
+                    anchorRect: inputRect,
+                    meta: this.getBubbleMetaForScene('intro_activation')
+                }, 'intro_activation');
                 // 将气泡定位到输入框正上方
                 const bubbleEl = this.overlay.bubble;
                 if (bubbleEl) {
@@ -6200,18 +6289,13 @@
             if (stepId === 'takeover_return_control') {
                 this.overlay.clearPersistentSpotlight();
             } else if (persistentSpotlightTarget) {
+                this.applyCircularFloatingButtonSpotlightHint(persistentSpotlightTarget);
                 this.overlay.setPersistentSpotlight(persistentSpotlightTarget);
             }
 
             const actionSpotlightTarget = this.getActionSpotlightTarget(stepId, performance);
-            if (
-                actionSpotlightTarget
-                && (stepId === 'takeover_capture_cursor' || stepId === 'takeover_plugin_preview')
-            ) {
-                this.setSpotlightGeometryHint(actionSpotlightTarget, {
-                    padding: 4,
-                    geometry: 'circle'
-                });
+            if (actionSpotlightTarget) {
+                this.applyCircularFloatingButtonSpotlightHint(actionSpotlightTarget);
             }
             if (actionSpotlightTarget) {
                 this.overlay.activateSpotlight(actionSpotlightTarget);
@@ -6284,11 +6368,11 @@
             }
 
             if (bubbleText && !shouldNarrateAfterMove && !shouldNarrateInChat) {
-                this.overlay.showBubble(bubbleText, {
+                this.showGuideBubble(bubbleText, {
                     title: 'Yui',
                     emotion: performance.emotion || 'neutral',
                     anchorRect: anchorRect
-                });
+                }, stepId);
             } else if (!shouldNarrateAfterMove) {
                 this.overlay.hideBubble();
             }
@@ -6335,11 +6419,11 @@
             }
 
             if (bubbleText && shouldNarrateDuringMove && !shouldNarrateInChat) {
-                this.overlay.showBubble(bubbleText, {
+                this.showGuideBubble(bubbleText, {
                     title: 'Yui',
                     emotion: performance.emotion || 'neutral',
                     anchorRect: anchorRect
-                });
+                }, stepId);
             }
 
             if (performance.emotion && shouldNarrateDuringMove && !this.hasGuideExpressionTrack(performance.voiceKey)) {
@@ -6391,11 +6475,11 @@
             }
 
             if (bubbleText && shouldNarrateAfterMove && !shouldNarrateInChat) {
-                this.overlay.showBubble(bubbleText, {
+                this.showGuideBubble(bubbleText, {
                     title: 'Yui',
                     emotion: performance.emotion || 'neutral',
                     anchorRect: anchorRect
-                });
+                }, stepId);
             } else if (shouldNarrateAfterMove) {
                 this.overlay.hideBubble();
             }
@@ -6420,7 +6504,10 @@
             }
 
             if (performance.cursorAction === 'click' && !shouldOpenPanelAfterNarration) {
-                this.cursor.click();
+                await this.clickCursorAndWait(DEFAULT_CURSOR_CLICK_VISIBLE_MS);
+                if (runId !== this.sceneRunId || this.destroyed) {
+                    return;
+                }
             } else if (performance.cursorAction === 'wobble') {
                 this.cursor.wobble();
             }

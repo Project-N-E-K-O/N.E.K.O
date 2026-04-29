@@ -99,6 +99,8 @@
     steps.intro_proactive.performance.emotion = 'surprised';
     steps.intro_proactive.performance.cursorAction = 'wobble';
     steps.intro_proactive.performance.cursorTarget = '#${p}-toggle-proactive-chat';
+    steps.intro_proactive.performance.cursorSpeedMultiplier = 1.08;
+    steps.intro_proactive.performance.delayMs = 120;
     steps.intro_proactive.performance.interruptible = true;
     steps.intro_proactive.interrupts.mode = 'theatrical_abort';
     steps.intro_proactive.interrupts.resetOnStepAdvance = false;
@@ -112,6 +114,8 @@
     steps.intro_cat_paw.performance.emotion = 'happy';
     steps.intro_cat_paw.performance.cursorAction = 'wobble';
     steps.intro_cat_paw.performance.cursorTarget = '#${p}-btn-agent';
+    steps.intro_cat_paw.performance.cursorSpeedMultiplier = 0.94;
+    steps.intro_cat_paw.performance.delayMs = 160;
     steps.intro_cat_paw.performance.interruptible = true;
     steps.intro_cat_paw.interrupts.mode = 'theatrical_abort';
     steps.intro_cat_paw.interrupts.resetOnStepAdvance = false;
@@ -208,6 +212,7 @@
     steps.handoff_api_key.performance.voiceKey = 'handoff_api_key';
     steps.handoff_api_key.performance.cursorAction = 'click';
     steps.handoff_api_key.performance.cursorTarget = '#${p}-menu-api-keys';
+    steps.handoff_api_key.performance.cursorSpeedMultiplier = 1.12;
     steps.handoff_api_key.navigation.openUrl = '/api_key';
     steps.handoff_api_key.navigation.windowName = 'api_key';
     steps.handoff_api_key.navigation.resumeScene = 'api_key_intro';
@@ -219,6 +224,7 @@
     steps.handoff_memory_browser.performance.voiceKey = 'handoff_memory_browser';
     steps.handoff_memory_browser.performance.cursorAction = 'click';
     steps.handoff_memory_browser.performance.cursorTarget = '#${p}-menu-memory';
+    steps.handoff_memory_browser.performance.cursorSpeedMultiplier = 1.12;
     steps.handoff_memory_browser.navigation.openUrl = '/memory_browser';
     steps.handoff_memory_browser.navigation.windowName = 'memory_browser';
     steps.handoff_memory_browser.navigation.resumeScene = 'memory_browser_intro';
@@ -230,6 +236,7 @@
     steps.handoff_plugin_dashboard.performance.voiceKey = 'handoff_plugin_dashboard';
     steps.handoff_plugin_dashboard.performance.cursorAction = 'click';
     steps.handoff_plugin_dashboard.performance.cursorTarget = '#${p}-btn-agent';
+    steps.handoff_plugin_dashboard.performance.cursorSpeedMultiplier = 1.05;
     steps.handoff_plugin_dashboard.navigation.openUrl = '/ui/';
     steps.handoff_plugin_dashboard.navigation.windowName = 'plugin_dashboard';
     steps.handoff_plugin_dashboard.navigation.resumeScene = 'plugin_dashboard_landing';
