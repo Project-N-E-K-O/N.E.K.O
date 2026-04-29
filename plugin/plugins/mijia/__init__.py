@@ -69,21 +69,31 @@ class MijiaPlugin(NekoPluginBase):
                 raw_homes = await self.api.get_homes()
                 homes = [{"id": h.id, "name": h.name} for h in raw_homes if h.id]
 
-                # 获取设备列表（从缓存）
+                # 获取设备列表（从缓存，需归属校验防止跨用户泄露）
                 cache_path = self.data_path("devices_cache.json")
                 if cache_path.exists():
                     try:
                         cached = await read_json_async(cache_path)
-                        devices = cached.get("devices", [])
+                        cache_user_id = cached.get('user_id')
+                        current_user_id = self.api.credential.user_id if self.api.credential else None
+                        if not current_user_id or cache_user_id == current_user_id:
+                            devices = cached.get("devices", [])
+                        else:
+                            self.logger.debug(f"设备缓存归属不匹配(u={cache_user_id}→{current_user_id})，跳过")
                     except Exception:
                         pass
 
-                # 获取场景列表（从缓存）
+                # 获取场景列表（从缓存，需归属校验防止跨用户泄露）
                 scenes_cache_path = self.data_path("scenes_cache.json")
                 if scenes_cache_path.exists():
                     try:
                         cached = await read_json_async(scenes_cache_path)
-                        scenes = cached.get("scenes", [])
+                        cache_user_id = cached.get('user_id')
+                        current_user_id = self.api.credential.user_id if self.api.credential else None
+                        if not current_user_id or cache_user_id == current_user_id:
+                            scenes = cached.get("scenes", [])
+                        else:
+                            self.logger.debug(f"场景缓存归属不匹配(u={cache_user_id}→{current_user_id})，跳过")
                     except Exception:
                         pass
             except Exception as e:
@@ -217,7 +227,10 @@ class MijiaPlugin(NekoPluginBase):
     )
     async def reload_credential(self, **_):
         """重新加载凭据（供前端刷新状态前调用）"""
-        await self._reload_credential()
+        try:
+            await self._reload_credential()
+        except Exception as e:
+            self.logger.warning(f"reload_credential 失败: {e}")
         return Ok({
             "success": True,
             "logged_in": self.api is not None,
