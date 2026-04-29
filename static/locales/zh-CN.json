@@ -137,7 +137,7 @@
         "selectModelFolder": "请选择包含Live2D模型文件的文件夹",
         "live2dInitFailed": "Live2D预览环境初始化失败",
         "live2dPreviewLoaded": "Live2D模型预览加载成功",
-        "live2dPreviewLoadFailed": "Live2D模型预览加载失败：{{error}} ",
+        "live2dPreviewLoadFailed": "Live2D模型预览加载失败：{{error}}",
         "searchAriaLabel": "搜索订阅内容",
         "sortAriaLabel": "排序方式",
         "scrollTagsLeftAriaLabel": "向左滚动标签",

@@ -137,7 +137,7 @@
         "selectModelFolder": "Выберите папку с файлами модели Live2D",
         "live2dInitFailed": "Ошибка инициализации среды предпросмотра Live2D",
         "live2dPreviewLoaded": "Предпросмотр модели Live2D загружен успешно",
-        "live2dPreviewLoadFailed": "Ошибка загрузки предпросмотра модели Live2D: {{error}}",
+        "live2dPreviewLoadFailed": "Не удалось загрузить предпросмотр модели Live2D: {{error}}",
         "searchAriaLabel": "Поиск по подпискам",
         "sortAriaLabel": "Порядок сортировки",
         "scrollTagsLeftAriaLabel": "Прокрутить теги влево",

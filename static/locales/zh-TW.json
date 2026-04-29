@@ -137,7 +137,7 @@
         "selectModelFolder": "請選擇包含Live2D模型文件的文件夾",
         "live2dInitFailed": "Live2D預覽環境初始化失敗",
         "live2dPreviewLoaded": "Live2D模型預覽加載成功",
-        "live2dPreviewLoadFailed": "Live2D模型預覽加載失敗：{{error}} ",
+        "live2dPreviewLoadFailed": "Live2D模型預覽載入失敗：{{error}}",
         "searchAriaLabel": "搜尋訂閱內容",
         "sortAriaLabel": "排序方式",
         "scrollTagsLeftAriaLabel": "向左捲動標籤",
@@ -1268,7 +1268,7 @@
             "playing": "正在播放錶情: {{name}}",
             "reset": "重置錶情",
             "builtInOnly": "VRM錶情通常是模型內置的，無法單獨上傳",
-            "stopped": "表情已停止"
+            "stopped": "表情播放已停止"
         },
         "selectFolder": "選擇文件夾",
         "vrmUpload": {

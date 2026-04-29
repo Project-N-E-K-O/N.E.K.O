@@ -42,7 +42,7 @@
         "toneMappingCineon": "Cineón",
         "toneMappingACESFilmic": "ACES Filmico",
         "toneMappingAgX": "AGX",
-        "toneMappingNeutral": "Neutral",
+        "toneMappingNeutral": "Neutro",
         "loadFailed": "Error de carga"
     },
     "autostartPrompt": {
@@ -137,7 +137,7 @@
         "selectModelFolder": "Seleccione una carpeta que contenga archivos de modelo Live2D",
         "live2dInitFailed": "Falló la inicialización del entorno de vista previa de Live2D",
         "live2dPreviewLoaded": "La vista previa del modelo Live2D se cargó correctamente",
-        "live2dPreviewLoadFailed": "Error al cargar la vista previa del modelo Live2D: {{error}}",
+        "live2dPreviewLoadFailed": "No se pudo cargar la vista previa del modelo Live2D: {{error}}",
         "searchAriaLabel": "Buscar suscripciones",
         "sortAriaLabel": "Opciones de clasificación",
         "scrollTagsLeftAriaLabel": "Desplazar etiquetas a la izquierda",
@@ -1244,7 +1244,7 @@
             "deleteSuccess": "Animaciones {{count}} VMD eliminadas correctamente",
             "deleteFailed": "No se pudo eliminar: {{count}} animación(es)",
             "deleteSelectedCount": "Eliminar seleccionado ({{count}})",
-            "deletePartialSuccess": "Se eliminaron con éxito las animaciones {{count}} VMD, {{failed}} falló",
+            "deletePartialSuccess": "Se eliminaron correctamente {{count}} animaciones VMD, {{failed}} fallaron",
             "playFailed": "Error al reproducir la animación"
         },
         "modelFilesFetchFailed": "No se pudo recuperar la lista de archivos de modelo",

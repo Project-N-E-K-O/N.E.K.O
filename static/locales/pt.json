@@ -137,7 +137,7 @@
         "selectModelFolder": "Selecione uma pasta contendo arquivos de modelo Live2D",
         "live2dInitFailed": "Falha na inicialização do ambiente de visualização Live2D",
         "live2dPreviewLoaded": "Visualização do modelo Live2D carregada com sucesso",
-        "live2dPreviewLoadFailed": "Falha no carregamento da visualização do modelo Live2D: {{error}}",
+        "live2dPreviewLoadFailed": "Falha ao carregar a prévia do modelo Live2D: {{error}}",
         "searchAriaLabel": "Pesquisar assinaturas",
         "sortAriaLabel": "Opções de classificação",
         "scrollTagsLeftAriaLabel": "Rolar etiquetas para a esquerda",

@@ -137,7 +137,7 @@
         "selectModelFolder": "Please select a folder containing Live2D model files",
         "live2dInitFailed": "Live2D preview environment initialization failed",
         "live2dPreviewLoaded": "Live2D model preview loaded successfully",
-        "live2dPreviewLoadFailed": "Live2D model preview loading failed: {{error}} ",
+        "live2dPreviewLoadFailed": "Failed to load Live2D model preview: {{error}}",
         "searchAriaLabel": "Search subscriptions",
         "sortAriaLabel": "Sort options",
         "scrollTagsLeftAriaLabel": "Scroll tags left",
