@@ -193,6 +193,24 @@ class PluginPushMessageRequest(BaseModel):
             if not isinstance(self.binary_url, str) or not self.binary_url:
                 raise ValueError("binary_url is required when message_type is 'binary_url'")
             return self
+        # System-semantic types: enforce payload requirements that
+        # proactive_bridge.py would otherwise silently drop, so plugin
+        # authors get an actionable error at push_message() call time
+        # instead of "successfully enqueued, no observable effect".
+        if mt == "proactive_notification":
+            if not isinstance(self.content, str) or not self.content.strip():
+                raise ValueError("content is required when message_type is 'proactive_notification'")
+            return self
+        if mt == "music_play_url":
+            url_obj = self.metadata.get("url") if isinstance(self.metadata, dict) else None
+            if not isinstance(url_obj, str) or not url_obj.strip():
+                raise ValueError("metadata.url (str) is required when message_type is 'music_play_url'")
+            return self
+        if mt == "music_allowlist_add":
+            domains_obj = self.metadata.get("domains") if isinstance(self.metadata, dict) else None
+            if not isinstance(domains_obj, list) or not domains_obj:
+                raise ValueError("metadata.domains (non-empty list) is required when message_type is 'music_allowlist_add'")
+            return self
         return self
 
 
