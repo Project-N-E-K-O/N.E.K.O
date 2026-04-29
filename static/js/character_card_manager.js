@@ -2627,6 +2627,18 @@ function mergeCharacterSettingsCardsFromModels(loadSequence, discovered) {
     window.characterCards = (window.characterCards || []).concat(cards);
     globalCharacterCards = window.characterCards || [];
     refreshCharacterCardSelectOptions();
+    // 主列表视图也要同步刷新，否则晚到的旧格式兼容卡得等下次整页刷新才会出现
+    renderCharaCardsView();
+}
+
+function refreshExpandedCardAfterScan(loadSequence) {
+    if (loadSequence !== characterCardLoadSequence) return;
+    if (!currentCharacterCardId) return;
+    const card = (window.characterCards || []).find(c => String(c.id) === String(currentCharacterCardId));
+    if (card) {
+        // availableModels 在扫描完成后才落地，重跑 expand 让上传/预览按钮基于最新模型列表渲染
+        expandCharacterCardSection(card);
+    }
 }
 
 function refreshCharacterCardSelectOptions() {
@@ -2691,7 +2703,7 @@ async function loadCharacterCards() {
 
     // 模型扫描可能受 Linux 新存储根、创意工坊目录或 Steam 状态影响变慢。
     // 角色列表不应被模型扫描阻塞；扫描完成后再用于预览/上传等增强能力。
-    const modelScanPromise = scanModels();
+    const modelScanPromise = scanModels(loadSequence);
 
     // 转换角色数据为角色卡格式（定义为全局变量，供其他函数使用）
     window.characterCards = [];
@@ -2791,6 +2803,10 @@ async function loadCharacterCards() {
                 .then(discovered => mergeCharacterSettingsCardsFromModels(loadSequence, discovered));
 
             scanBudget.eventual.then(scanCompleted => {
+                if (scanCompleted) {
+                    // 扫描成功后回补当前展开角色卡的上传/预览状态，避免用户先点开卡片时停留在旧/空 availableModels
+                    refreshExpandedCardAfterScan(loadSequence);
+                }
                 if (scanBudget.inTime || !scanCompleted) {
                     return null;
                 }
@@ -6524,7 +6540,7 @@ function editCharacterCardModal() {
 }
 
 // 扫描Live2D模型
-async function scanModels() {
+async function scanModels(loadSequence) {
     showMessage(window.t ? window.t('steam.scanningModels') : '正在扫描模型...', 'info');
 
     try {
@@ -6541,22 +6557,19 @@ async function scanModels() {
         }
         const models = await live2dResponse.json();
 
-        // 存储所有模型到全局变量（用于角色卡加载，包括static目录的模型）
-        window.allModels = models;
-
         // 过滤掉来自static目录的模型（如mao_pro），只保留用户文档目录中的模型
         // 这是为了防止上传版权Live2D模型
         const uploadableModels = models.filter(model => model.source !== 'static');
-        // 存储可上传模型列表到全局变量（用于上传检查）
-        availableModels = uploadableModels;
 
-        // 处理 VRM 模型
+        // 处理 VRM 模型（先收集到局部变量，避免旧轮扫描晚到时回滚新轮结果）
+        let scannedAllVrmModels = null;
+        let nextAvailableVrmModels = null;
         try {
             if (vrmResponse && vrmResponse.ok) {
                 const vrmData = await vrmResponse.json();
                 if (vrmData.success && vrmData.models) {
-                    window.allVrmModels = vrmData.models;
-                    availableVrmModels = vrmData.models.filter(m => m.location !== 'project');
+                    scannedAllVrmModels = vrmData.models;
+                    nextAvailableVrmModels = vrmData.models.filter(m => m.location !== 'project');
                 }
             }
         } catch (e) {
@@ -6564,16 +6577,35 @@ async function scanModels() {
         }
 
         // 处理 MMD 模型
+        let scannedAllMmdModels = null;
+        let nextAvailableMmdModels = null;
         try {
             if (mmdResponse && mmdResponse.ok) {
                 const mmdData = await mmdResponse.json();
                 if (mmdData.success && mmdData.models) {
-                    window.allMmdModels = mmdData.models;
-                    availableMmdModels = mmdData.models.filter(m => m.location !== 'project');
+                    scannedAllMmdModels = mmdData.models;
+                    nextAvailableMmdModels = mmdData.models.filter(m => m.location !== 'project');
                 }
             }
         } catch (e) {
             console.warn('处理MMD模型列表失败:', e);
+        }
+
+        // 序列号校验：若已被新一轮 loadCharacterCards 触发，丢弃本轮结果，防止旧扫描回滚新数据
+        if (loadSequence !== undefined && loadSequence !== characterCardLoadSequence) {
+            return false;
+        }
+
+        // 提交到全局变量（用于角色卡加载，包括static目录的模型）
+        window.allModels = models;
+        availableModels = uploadableModels;
+        if (scannedAllVrmModels) {
+            window.allVrmModels = scannedAllVrmModels;
+            availableVrmModels = nextAvailableVrmModels;
+        }
+        if (scannedAllMmdModels) {
+            window.allMmdModels = scannedAllMmdModels;
+            availableMmdModels = nextAvailableMmdModels;
         }
 
         // 触发模型扫描完成事件，通知其他组件刷新 UI（具有容错能力）
