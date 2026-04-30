@@ -592,9 +592,12 @@ interface YuiGuideDirector {
 - 当前已落地的语音目录为 `zh`、`en`、`ja`、`ko`、`ru`。
 - `zh-TW` 文本走 i18n，语音复用 `zh/` 目录，不单独拆新音频桶。
 - 预录音频播放失败时只做静默等待，避免浏览器 TTS 串音。
+- 普通教程语音播放时只启动教程专用的简单嘴部开合动画，不接入全局 TTS / WebSocket / 音频分析链路；`interrupt_*` 对抗机制语音不驱动嘴部动作。
 - 全新手教程已经去掉遮罩。
 - 首页与 `/ui/` 页面只保留 spotlight、precise highlight 和 ghost cursor。
 - Ghost Cursor 只负责页面内演出，不控制真实系统鼠标。
+- Ghost Cursor 所有可见状态下的位置切换必须平滑移动，不能从一个目标点突变到另一个目标点。
+- 首页和 `/ui/` 页面进入椭圆轨迹前，必须先平滑移动到轨迹起点，再开始轨迹动画。
 - 所有“模拟点击”都必须同时满足两件事：
   - 前端出现高亮、Ghost Cursor 平滑移动和点击反馈。
   - 对应真实业务 API 或业务动作被实际调用。
@@ -604,6 +607,9 @@ interface YuiGuideDirector {
 - 普通矩形高亮继续沿用统一的放大缩小 pulse 动效。
 - 首页普通模式下，用户首次点击聊天输入框后立即进入 `body.yui-taking-over`，真实鼠标全局隐藏。
 - N.E.K.O.-PC 外置 `/chat` 模式没有“输入框点击后再隐藏鼠标”这一步，而是由首页主流程直接接管。
+- 新手教程期间会把当前角色模型临时切到 `yui_default`，并按模型管理页保存 / 重载流程生效；教程结束、跳过或异常收尾时恢复用户原模型。
+- 教程期间模型容器使用相对视口定位到屏幕中间偏右：`left: 55%`、`top: 50%`、`transform: translate(-50%, -50%) translateZ(0)`，容器尺寸保持 `width: 100%`、`height: 100%`。
+- 教程结束时必须恢复模型容器原始 `left/top/right/bottom/width/height/transform` 内联样式。
 
 ### 15.2 总流程状态机
 
@@ -620,6 +626,7 @@ interface YuiGuideDirector {
 
 - `intro_greeting_reply` 是前奏辅助段，不是 `yui-guide-steps.js` 里的正式 step。
 - 当前首页正式 scene 顺序仍以 `static/yui-guide-steps.js` 中的 `sceneOrder.home` 为准。
+- `intro_proactive` 与 `intro_cat_paw` 已从当前流程和 scene 注册表中移除，不再有单独台词、语音或步骤映射。
 - `interrupt_resist_light` 与 `interrupt_angry_exit` 作为中断场景，可在主流程中途插入。
 
 ### 15.3 开场前奏与阶段一：聊天入口 + 语音控制按钮
@@ -634,17 +641,23 @@ interface YuiGuideDirector {
 6. 等待用户点击输入框，用于解锁浏览器 autoplay。
 7. 点击后气泡消失，并立即进入 `yui-taking-over`。
 
+补充说明：
+
+- Ghost Cursor 初次出现允许直接落在输入框附近；之后只要已经可见，所有位置更新都必须通过平滑移动完成。
+
 点击输入框后，前奏继续执行：
 
 1. 向对话窗发送并播放自我介绍：
    `我是你的专属猫娘，从今天起就由我来陪伴主人咯。无论是想要聊天解闷、一起玩耍，还是需要我帮忙做些什么，我都会乖乖陪在主人身边的喵。以后请多多指教啦，最喜欢主人了~！`
-   表情轨道：`sbx -> xxy -> z1`
+   表情轨道：`sbx -> xxy`
 2. 随后向对话窗发送并播放 `intro_basic`：
    `这里有一个神奇的按钮！只要点击它，就可以直接和我聊天啦！想跟我分享今天的新鲜事吗？或者只是叫叫我的名字？快来试试嘛，我已经迫不及待想听到你的声音啦！喵！`
-   表情轨道：`swz -> z1`
+   表情轨道：`swz`
 3. 对话窗作为 persistent spotlight 保持高亮。
 4. `alt='语音控制'` 按钮作为 action spotlight 用圆形图高亮。
 5. Ghost Cursor 在语音播报期间从输入区移动到 `alt='语音控制'` 按钮。
+
+本阶段结束后不会再进入旧的 `intro_proactive` 或 `intro_cat_paw`，而是直接进入 `takeover_capture_cursor`。
 
 N.E.K.O.-PC 外置 `/chat` 模式当前实现如下：
 
@@ -673,6 +686,7 @@ N.E.K.O.-PC 外置 `/chat` 模式当前实现如下：
 
 - 本段以及后续接管段的 `interruptCount` 会跨 scene 累计。
 - 对应 step 的 `resetOnStepAdvance = false`，不会在 scene 切换时自动清零。
+- 【猫爪总开关】到【键鼠控制】的 Ghost Cursor 移动使用明显较短时长，避免相邻开关间慢速移动时出现抖动感。
 
 ### 15.5 阶段三：插件面板联动（`takeover_plugin_preview` + `/ui/`）
 
@@ -689,6 +703,11 @@ N.E.K.O.-PC 外置 `/chat` 模式当前实现如下：
 4. 用虚拟 spotlight 高亮【管理面板】按钮区域。
 5. Ghost Cursor 移动到【管理面板】并模拟点击。
 6. 同步打开真实 `/ui/` 页面。
+
+当前管理面板入口说明：
+
+- 用户手动点击首页猫爪侧边【管理面板】时，入口 URL 直接指向 `http://127.0.0.1:48916/ui`，并继续追加 `v=` 缓存刷新参数。
+- 教程跨页演出仍由 `static/yui-guide-page-handoff.js` 负责打开 `/ui/` 并进行 handoff。
 
 跨页切换后的统一口径如下：
 
@@ -710,6 +729,11 @@ N.E.K.O.-PC 外置 `/chat` 模式当前实现如下：
 6. 再向上滚动 `150px`。
 7. 然后在 `<main>` 区域做椭圆轨迹移动。
 
+补充说明：
+
+- `/ui/` 内 Ghost Cursor 初次出现后，如果需要重定位到插件按钮附近，会先平滑移动再开始后续步骤。
+- 进入 `<main>` 椭圆轨迹前，会先平滑移动到椭圆起点；这段预移动从椭圆总预算中拆出较大的时间片，避免从按钮或中心点突变到轨迹边缘，也避免额外拉长阶段时长。
+
 `/ui/` 与首页当前通过握手机制同步：
 
 - 首页向 `/ui/` 发送 `neko:yui-guide:plugin-dashboard:start` 启动演出。
@@ -726,7 +750,7 @@ N.E.K.O.-PC 外置 `/chat` 模式当前实现如下：
 
 - 如果 `/ui/` 窗口是教程自己创建的，则由教程关闭。
 - 猫爪总开关、键鼠控制、用户插件开关会回滚到接管前快照。
-- 首页 UI 和首页 Ghost Cursor 恢复，继续进入设置阶段。
+- 首页 UI 和首页 Ghost Cursor 恢复，继续进入设置阶段；恢复时如果 Ghost Cursor 已有位置，必须平滑移动到后续目标，不允许瞬移。
 
 ### 15.6 阶段四：设置一瞥（`takeover_settings_peek`）
 
@@ -777,6 +801,7 @@ N.E.K.O.-PC 外置 `/chat` 模式当前实现如下：
 - 进入本段前会先清掉 persistent spotlight 和 action spotlight。
 - 因此这里不应该再出现“全桌面高亮”。
 - 本段播报完成后，Ghost Cursor 回到视口中心，晃动一次，然后隐藏。
+- 回到视口中心也走平滑移动；只有最终隐藏动作会直接收起 Ghost Cursor。
 - 随后禁用中断监听，并以 `complete` 结束教程。
 
 ### 15.8 对抗机制
@@ -862,7 +887,7 @@ N.E.K.O.-PC 外置 `/chat` 模式当前实现如下：
 - `/ui/` 页面只负责把 angry exit 请求传回首页。
 - 首页负责追加文本、播放：
   `人类~~~~！你真的很没礼貌喵！既然你这么想自己操作，那你就自己对着冰冷的屏幕玩去吧！哼！`
-- 生气退出台词表情随机使用 `z2` / `z3` 其中一个。
+- 生气退出会直接应用 `z3` 生气表情；因为此时已经进入终止态，不再依赖普通语音表情轨道。
 - 台词结束后统一走：
   `requestTermination('pointer_interrupt', 'angry_exit')`
 
@@ -918,6 +943,7 @@ N.E.K.O.-PC 外置 `/chat` 模式当前限制如下：
   - 首页 Ghost Cursor 与高亮编排
 - `static/yui-guide-overlay.js`
   - spotlight / circle-highlight DOM
+  - 首页 Ghost Cursor 平滑移动、椭圆轨迹起点预移动
 - `static/css/yui-guide.css`
   - 所有 spotlight、circle-highlight、Ghost Cursor、接管态样式
 - `static/yui-guide-page-handoff.js`
@@ -926,8 +952,12 @@ N.E.K.O.-PC 外置 `/chat` 模式当前限制如下：
   - 跨页 handoff
 - `frontend/plugin-manager/src/yui-guide-runtime.ts`
   - `/ui/` 子页 Ghost Cursor
+  - `/ui/` 子页 Ghost Cursor 平滑重定位与椭圆轨迹起点预移动
   - `/ui/` spotlight
   - `/ui/` 页面中断检测与首页握手
+- `static/universal-tutorial-manager.js`
+  - 教程期间模型强制切换到 `yui_default`
+  - 教程模型容器相对视口定位与结束恢复
 - `static/app-interpage.js`
   - 教程消息向外置 `/chat` 注入
   - N.E.K.O.-PC 对话窗锁定状态广播接收

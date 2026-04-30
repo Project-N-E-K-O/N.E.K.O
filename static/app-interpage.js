@@ -1335,11 +1335,47 @@
         }
     }
 
+    function updatePendingYuiGuideChatMessage(messageId, patch) {
+        var targetId = String(messageId || '');
+        if (!targetId || !patch || typeof patch !== 'object') {
+            return false;
+        }
+
+        var updated = false;
+        _pendingYuiGuideChatMessages = _pendingYuiGuideChatMessages.map(function (message) {
+            if (!message || String(message.id) !== targetId) {
+                return message;
+            }
+            updated = true;
+            return Object.assign({}, message, patch);
+        });
+        return updated;
+    }
+
     function appendYuiGuideChatMessage(message) {
         if (window.location.pathname !== '/chat') return;
         if (!message || typeof message !== 'object') return;
         _pendingYuiGuideChatMessages.push(message);
         scheduleYuiGuideChatMessageFlush(0);
+    }
+
+    function updateYuiGuideChatMessage(messageId, patch) {
+        if (window.location.pathname !== '/chat') return;
+        if (!messageId || !patch || typeof patch !== 'object') return;
+
+        var host = window.reactChatWindowHost;
+        if (host && typeof host.updateMessage === 'function') {
+            try {
+                host.updateMessage(messageId, patch);
+                return;
+            } catch (error) {
+                console.warn('[YuiGuide] Failed to update guide chat message:', error);
+            }
+        }
+
+        if (updatePendingYuiGuideChatMessage(messageId, patch)) {
+            scheduleYuiGuideChatMessageFlush(0);
+        }
     }
     try {
         if (typeof BroadcastChannel !== 'undefined') {
@@ -1394,6 +1430,10 @@
                     }
                     case 'yui_guide_append_chat_message': {
                         appendYuiGuideChatMessage(event.data.message);
+                        break;
+                    }
+                    case 'yui_guide_update_chat_message': {
+                        updateYuiGuideChatMessage(event.data.messageId, event.data.patch);
                         break;
                     }
                     case 'avatar_updated': {

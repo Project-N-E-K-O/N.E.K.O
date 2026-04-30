@@ -27,6 +27,24 @@
 .driver-highlight {
     box-shadow: 0 0 20px rgba(68, 183, 254, 0.4) !important;
     border-radius: 8px;
+    overflow: hidden !important;
+}
+
+.driver-highlight::after {
+    content: '';
+    position: absolute;
+    top: -22%;
+    bottom: -22%;
+    left: -48%;
+    width: 34%;
+    border-radius: inherit;
+    background:
+        linear-gradient(108deg, transparent 0 10%, rgba(255, 255, 255, 0.28) 45%, rgba(125, 225, 255, 0.12) 58%, transparent 100%);
+    filter: blur(0.2px);
+    opacity: 0;
+    pointer-events: none;
+    transform: translateX(0) skewX(-12deg);
+    animation: yui-guide-driver-highlight-sweep 3.8s ease-in-out infinite;
 }
 
 /* ============================================
@@ -173,6 +191,23 @@
     }
 }
 
+@keyframes yui-guide-driver-highlight-sweep {
+    0%,
+    62% {
+        opacity: 0;
+        transform: translateX(0) skewX(-12deg);
+    }
+
+    78% {
+        opacity: 0.24;
+    }
+
+    100% {
+        opacity: 0;
+        transform: translateX(420%) skewX(-12deg);
+    }
+}
+
 /* 高亮元素脉冲效果 */
 .driver-highlight {
     animation: pulse 2s infinite;
@@ -258,7 +293,7 @@
     position: fixed;
     top: max(14px, env(safe-area-inset-top));
     right: max(18px, env(safe-area-inset-right));
-    z-index: 100007;
+    z-index: 2147483647;
     width: auto;
     height: auto;
     min-width: 82px;

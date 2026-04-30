@@ -99,6 +99,20 @@
             0%, 100% { transform: scale(1); }
             50% { transform: scale(1.01); }
         }
+        @keyframes yui-guide-chat-spotlight-sweep {
+            0%,
+            62% {
+                opacity: 0;
+                transform: translateX(0) skewX(-12deg);
+            }
+            78% {
+                opacity: 0.42;
+            }
+            100% {
+                opacity: 0;
+                transform: translateX(420%) skewX(-12deg);
+            }
+        }
         #yui-guide-chat-spotlight {
             position: fixed;
             left: 0;
@@ -183,6 +197,29 @@
                 linear-gradient(#000 0 0) content-box,
                 linear-gradient(#000 0 0);
             mask-composite: exclude;
+        }
+        #yui-guide-chat-spotlight .yui-guide-chat-spotlight-sweep {
+            position: absolute;
+            inset: 8px;
+            border-radius: inherit;
+            overflow: hidden;
+            pointer-events: none;
+            z-index: 4;
+        }
+        #yui-guide-chat-spotlight .yui-guide-chat-spotlight-sweep::before {
+            content: '';
+            position: absolute;
+            top: -22%;
+            bottom: -22%;
+            left: -48%;
+            width: 34%;
+            background:
+                linear-gradient(108deg, transparent 0 10%, rgba(255, 255, 255, 0.58) 45%, rgba(125, 225, 255, 0.26) 58%, transparent 100%);
+            filter: blur(0.2px);
+            opacity: 0;
+            pointer-events: none;
+            transform: translateX(0) skewX(-12deg);
+            animation: yui-guide-chat-spotlight-sweep 2.4s ease-in-out infinite;
         }
         #yui-guide-chat-spotlight.is-visible {
             opacity: 1;
@@ -504,6 +541,7 @@
     <div id="status-toast"></div>
     <div id="yui-guide-chat-spotlight" hidden>
         <div class="yui-guide-chat-spotlight-chrome"></div>
+        <span class="yui-guide-chat-spotlight-sweep"></span>
         <div class="yui-guide-chat-spotlight-ear-left"></div>
         <div class="yui-guide-chat-spotlight-ear-right"></div>
         <div class="yui-guide-chat-spotlight-paw"></div>

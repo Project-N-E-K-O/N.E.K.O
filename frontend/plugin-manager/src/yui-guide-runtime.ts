@@ -659,10 +659,19 @@ function ensurePluginSpotlightDecorations(spotlight: HTMLDivElement | null) {
     return
   }
 
-  if (!spotlight.querySelector('.yui-guide-plugin-spotlight-chrome')) {
-    const chrome = document.createElement('div')
+  let chrome = spotlight.querySelector('.yui-guide-plugin-spotlight-chrome') as HTMLDivElement | null
+  if (!chrome) {
+    chrome = document.createElement('div')
     chrome.className = 'yui-guide-plugin-spotlight-chrome'
     spotlight.appendChild(chrome)
+  } else if (!(chrome instanceof HTMLDivElement)) {
+    chrome = null
+  }
+
+  if (!spotlight.querySelector('.yui-guide-plugin-spotlight-sweep')) {
+    const sweep = document.createElement('span')
+    sweep.className = 'yui-guide-plugin-spotlight-sweep'
+    spotlight.appendChild(sweep)
   }
 
   if (!spotlight.querySelector('.yui-guide-plugin-spotlight-ear-left')) {
@@ -843,6 +852,7 @@ function injectStyle() {
       border-radius: 18px;
       opacity: 0;
       overflow: visible;
+      isolation: isolate;
       transition:
         opacity 180ms ease,
         left 220ms ease,
@@ -855,12 +865,38 @@ function injectStyle() {
       position: absolute;
       inset: 3px;
       border-radius: inherit;
+      overflow: hidden;
+      isolation: isolate;
       background: linear-gradient(180deg, rgba(84, 133, 255, 0.09), rgba(89, 211, 255, 0.03));
       box-shadow:
         0 0 0 1px rgba(214, 243, 255, 0.72),
         0 0 18px rgba(104, 194, 255, 0.56),
         0 0 34px rgba(87, 136, 255, 0.26),
         inset 0 0 16px rgba(131, 214, 255, 0.16);
+    }
+
+    #${ROOT_ID} .yui-guide-plugin-spotlight-sweep {
+      position: absolute;
+      inset: 8px;
+      border-radius: inherit;
+      overflow: hidden;
+      pointer-events: none;
+      z-index: 4;
+    }
+
+    #${ROOT_ID} .yui-guide-plugin-spotlight-sweep::before {
+      content: '';
+      position: absolute;
+      top: -22%;
+      bottom: -22%;
+      left: -48%;
+      width: 34%;
+      background:
+        linear-gradient(108deg, transparent 0 10%, rgba(255, 255, 255, 0.58) 45%, rgba(125, 225, 255, 0.26) 58%, transparent 100%);
+      filter: blur(0.2px);
+      opacity: 0;
+      transform: translateX(0) skewX(-12deg);
+      animation: yui-guide-plugin-spotlight-sheen 2.4s ease-in-out infinite;
     }
 
     #${ROOT_ID} .yui-guide-plugin-spotlight-chrome::before {
@@ -905,6 +941,7 @@ function injectStyle() {
           transparent 100%
         ) bottom left / var(--yui-guide-plugin-spotlight-corner-size) var(--yui-guide-plugin-spotlight-corner-size) no-repeat;
       pointer-events: none;
+      z-index: 2;
       -webkit-mask:
         linear-gradient(#000 0 0) content-box,
         linear-gradient(#000 0 0);
@@ -1119,6 +1156,21 @@ function injectStyle() {
       50% { transform: scale(1.02); }
     }
 
+    @keyframes yui-guide-plugin-spotlight-sheen {
+      0%,
+      62% {
+        opacity: 0;
+        transform: translateX(0) skewX(-12deg);
+      }
+      78% {
+        opacity: 0.42;
+      }
+      100% {
+        opacity: 0;
+        transform: translateX(420%) skewX(-12deg);
+      }
+    }
+
     @keyframes yui-guide-plugin-click {
       0% { transform: scale(1); }
       35%, 68% { transform: scale(0.82); }
@@ -1170,11 +1222,18 @@ function injectStyle() {
     }
 
     @media (prefers-reduced-motion: reduce) {
+      #${ROOT_ID} .yui-guide-plugin-spotlight,
+      #${ROOT_ID} .yui-guide-plugin-spotlight-sweep::before,
+      #${ROOT_ID} .yui-guide-plugin-cursor-trail-layer,
+      #${ROOT_ID} .yui-guide-plugin-cursor-trail,
+      #${ROOT_ID} .yui-guide-plugin-click-star {
+        animation: none !important;
+      }
+
       #${ROOT_ID} .yui-guide-plugin-cursor-trail-layer,
       #${ROOT_ID} .yui-guide-plugin-cursor-trail,
       #${ROOT_ID} .yui-guide-plugin-click-star {
         display: none !important;
-        animation: none !important;
       }
     }
   `
@@ -1844,12 +1903,17 @@ class PluginDashboardGuideRuntime {
       return
     }
 
+    const previous = this.cursorPosition
+    const shouldGlide = !!(
+      previous
+      && this.cursorShell.classList.contains('is-visible')
+    )
     this.cursorShell.classList.add('is-visible')
-    this.cursorShell.style.transitionDuration = '0ms'
+    this.cursorShell.style.transitionDuration = shouldGlide ? '360ms' : '0ms'
     this.cursorShell.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px)`
     this.cursorPosition = { x, y }
     this.lastCursorTarget = { x, y }
-    this.cursorTrailLastPoint = null
+    this.cursorTrailLastPoint = shouldGlide && previous ? { x: previous.x, y: previous.y } : null
     this.cursorTrailLastAt = 0
   }
 
@@ -2472,6 +2536,31 @@ class PluginDashboardGuideRuntime {
     const centerY = rect.top + rect.height * 0.42
     const radiusX = Math.min(440, rect.width * 0.72)
     const radiusY = Math.min(224, rect.height * 0.4)
+    const startX = centerX + radiusX
+    const startY = centerY
+    let ellipseMotionDurationMs = durationMs
+    if (this.cursorPosition && Math.hypot(startX - this.cursorPosition.x, startY - this.cursorPosition.y) > 2) {
+      const prepareMoveDurationMs = Math.min(
+        Math.max(0, durationMs - 360),
+        Math.min(1400, Math.max(700, Math.round(durationMs * 0.3))),
+      )
+      const prepared = await this.moveCursor(
+        startX,
+        startY,
+        prepareMoveDurationMs,
+        isCurrent,
+      )
+      if (!prepared || (isCurrent && !isCurrent())) {
+        return
+      }
+      ellipseMotionDurationMs = Math.max(0, durationMs - prepareMoveDurationMs)
+    } else if (!this.cursorPosition) {
+      this.showCursor(startX, startY)
+    }
+    if (ellipseMotionDurationMs <= 0) {
+      return
+    }
+
     const startedAt = performance.now()
     let pausedAt: number | null = null
     let pausedDurationMs = 0
@@ -2500,7 +2589,7 @@ class PluginDashboardGuideRuntime {
             pausedDurationMs += now - pausedAt
             pausedAt = null
           }
-          const progress = clamp((now - startedAt - pausedDurationMs) / durationMs, 0, 1)
+          const progress = clamp((now - startedAt - pausedDurationMs) / ellipseMotionDurationMs, 0, 1)
           const angle = progress * Math.PI * 2
           const x = centerX + Math.cos(angle) * radiusX
           const y = centerY + Math.sin(angle) * radiusY
@@ -3288,7 +3377,10 @@ class PluginDashboardGuideRuntime {
     if (!isCurrent()) {
       return
     }
-    this.showCursor(startX, startY)
+    await this.moveCursor(startX, startY, 420, isCurrent)
+    if (!isCurrent()) {
+      return
+    }
     this.setSpotlight(pluginButton)
     await this.moveCursorToElementWithRecovery(pluginButton, 700, isCurrent)
     if (!isCurrent()) {

@@ -103,6 +103,9 @@
         if (!frame.querySelector('.yui-guide-spotlight-chrome')) {
             frame.appendChild(createElement('div', 'yui-guide-spotlight-chrome'));
         }
+        if (!frame.querySelector('.yui-guide-spotlight-sweep')) {
+            frame.appendChild(createElement('span', 'yui-guide-spotlight-sweep'));
+        }
         if (!frame.querySelector('.yui-guide-spotlight-circle-skin')) {
             frame.appendChild(createElement('div', 'yui-guide-spotlight-circle-skin'));
         }
@@ -1115,13 +1118,20 @@
 
         showCursorAt(x, y) {
             this.ensureRoot();
+            const previous = this.cursorPosition;
+            const shouldGlide = !!(
+                previous
+                && this.cursorShell
+                && !this.cursorShell.hidden
+                && this.cursorShell.classList.contains('is-visible')
+            );
             this.document.body.classList.add('yui-guide-ghost-cursor-active');
             this.cursorShell.hidden = false;
             this.cursorShell.classList.add('is-visible');
-            this.cursorShell.style.transitionDuration = '0ms';
+            this.cursorShell.style.transitionDuration = shouldGlide ? '360ms' : '0ms';
             this.cursorShell.style.transform = 'translate(' + Math.round(x) + 'px, ' + Math.round(y) + 'px)';
             this.cursorPosition = { x: x, y: y };
-            this.cursorTrailLastPoint = null;
+            this.cursorTrailLastPoint = shouldGlide ? { x: previous.x, y: previous.y } : null;
             this.cursorTrailLastAt = 0;
         }
 
@@ -1679,19 +1689,37 @@
             }
 
             var self = this;
-            var startedAt = performance.now();
-            var pausedTotalMs = 0;
-            var pausedAt = 0;
+            var startX = centerX + radiusX;
+            var startY = centerY;
 
             self.document.body.classList.add('yui-guide-ghost-cursor-active');
             self.cursorShell.hidden = false;
             self.cursorShell.classList.add('is-visible');
-            self.cursorTrailLastPoint = self.cursorPosition
-                ? { x: self.cursorPosition.x, y: self.cursorPosition.y }
-                : null;
-            self.cursorTrailLastAt = 0;
+            var startDistance = self.cursorPosition
+                ? Math.hypot(startX - self.cursorPosition.x, startY - self.cursorPosition.y)
+                : 0;
+            var prepareMove = self.cursorPosition && startDistance > 2
+                ? self.moveCursorTo(startX, startY, {
+                    durationMs: Math.min(520, Math.max(220, Math.round(cycleMs * 0.08))),
+                    pauseCheck: pauseCheck,
+                    cancelCheck: cancelCheck
+                })
+                : Promise.resolve(true);
 
-            return new Promise(function (resolve) {
+            return prepareMove.then(function (prepared) {
+                if (!prepared) {
+                    return false;
+                }
+
+                var startedAt = performance.now();
+                var pausedTotalMs = 0;
+                var pausedAt = 0;
+                self.cursorTrailLastPoint = self.cursorPosition
+                    ? { x: self.cursorPosition.x, y: self.cursorPosition.y }
+                    : null;
+                self.cursorTrailLastAt = 0;
+
+                return new Promise(function (resolve) {
                 function tick(now) {
                     if (!self.cursorShell || !self.cursorShell.isConnected) {
                         resolve(false);
@@ -1744,6 +1772,7 @@
                 }
 
                 window.requestAnimationFrame(tick);
+            });
             });
         }
 

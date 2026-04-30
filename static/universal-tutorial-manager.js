@@ -3083,18 +3083,27 @@ class UniversalTutorialManager {
             }
         }
 
-        // 将模型容器移到屏幕右边（在引导中）
+        // 将模型容器放到屏幕中间偏右（在引导中）
         const modelPrefix = this._tutorialModelPrefix || UniversalTutorialManager.detectModelPrefix();
         const modelContainer = document.getElementById(`${modelPrefix}-container`);
         if (modelContainer) {
             this.originalLive2dStyle = {
                 left: modelContainer.style.left,
+                top: modelContainer.style.top,
                 right: modelContainer.style.right,
+                bottom: modelContainer.style.bottom,
+                width: modelContainer.style.width,
+                height: modelContainer.style.height,
                 transform: modelContainer.style.transform
             };
-            modelContainer.style.left = 'auto';
-            modelContainer.style.right = '0';
-            console.log(`[Tutorial] 将模型容器移到屏幕右边 (${modelPrefix})`);
+            modelContainer.style.left = '55%';
+            modelContainer.style.top = '50%';
+            modelContainer.style.right = 'auto';
+            modelContainer.style.bottom = 'auto';
+            modelContainer.style.width = '100%';
+            modelContainer.style.height = '100%';
+            modelContainer.style.transform = 'translate(-50%, -50%) translateZ(0)';
+            console.log(`[Tutorial] 将模型容器放到屏幕中间偏右 (${modelPrefix})`);
         }
 
         // 立即强制显示浮动工具栏（引导开始时）
@@ -3242,7 +3251,7 @@ class UniversalTutorialManager {
         // 明确设置点击区域，防止 CEF 继承父元素 pointer-events 导致无法点击
         btn.style.pointerEvents = 'auto';
         btn.style.position = 'fixed';
-        btn.style.zIndex = '100007';
+        btn.style.zIndex = '2147483647';
         btn.style.touchAction = 'manipulation'; // 消除 CEF 的 300ms 点击延迟
 
         let skipHandled = false;
@@ -3256,6 +3265,8 @@ class UniversalTutorialManager {
                 return;
             }
             skipHandled = true;
+            btn.disabled = true;
+            btn.setAttribute('aria-disabled', 'true');
             if (e && typeof e.preventDefault === 'function') {
                 e.preventDefault();
             }
@@ -3269,18 +3280,12 @@ class UniversalTutorialManager {
                 ? this.ensureYuiGuideDirector()
                 : null;
             if (director && typeof director.skip === 'function') {
-                Promise.resolve().then(async () => {
-                    try {
-                        await Promise.race([
-                            Promise.resolve(director.skip('skip', 'skip')),
-                            new Promise((_, reject) => {
-                                window.setTimeout(() => reject(new Error('skip_timeout')), 1800);
-                            })
-                        ]);
-                    } catch (error) {
-                        handleSkipFailure(error);
-                    }
-                });
+                try {
+                    director.skip('skip', 'skip');
+                    window.setTimeout(() => this.requestTutorialDestroy('skip'), 0);
+                } catch (error) {
+                    handleSkipFailure(error);
+                }
                 return;
             }
 
@@ -3288,11 +3293,14 @@ class UniversalTutorialManager {
         };
 
         btn.addEventListener('pointerdown', handleSkipRequest);
+        btn.addEventListener('mousedown', handleSkipRequest);
+        btn.addEventListener('touchstart', handleSkipRequest, { passive: false });
         btn.addEventListener('click', (e) => {
             e.stopPropagation();
             handleSkipRequest(e);
         });
         document.body.appendChild(btn);
+        this.setYuiGuideSkipBypassEnabled(true);
         console.log('[Tutorial] 跳过按钮已显示');
     }
 
@@ -3304,6 +3312,17 @@ class UniversalTutorialManager {
         if (existing) {
             existing.remove();
             console.log('[Tutorial] 跳过按钮已移除');
+        }
+        this.setYuiGuideSkipBypassEnabled(false);
+    }
+
+    setYuiGuideSkipBypassEnabled(enabled) {
+        try {
+            window.dispatchEvent(new CustomEvent('neko:yui-guide:plugin-dashboard-skip-bypass', {
+                detail: { enabled: !!enabled }
+            }));
+        } catch (error) {
+            console.warn('[Tutorial] 切换 Yui Guide skip bypass 失败:', error);
         }
     }
 
@@ -4129,7 +4148,11 @@ class UniversalTutorialManager {
         const modelContainer = document.getElementById(`${endPrefix}-container`);
         if (modelContainer && this.originalLive2dStyle) {
             modelContainer.style.left = this.originalLive2dStyle.left;
+            modelContainer.style.top = this.originalLive2dStyle.top;
             modelContainer.style.right = this.originalLive2dStyle.right;
+            modelContainer.style.bottom = this.originalLive2dStyle.bottom;
+            modelContainer.style.width = this.originalLive2dStyle.width;
+            modelContainer.style.height = this.originalLive2dStyle.height;
             modelContainer.style.transform = this.originalLive2dStyle.transform;
             console.log(`[Tutorial] 恢复 ${endPrefix} 模型原始位置`);
         }

@@ -4464,6 +4464,9 @@ class Live2DManager {
      * @param {boolean} enabled - 是否启用鼠标跟踪
      */
     setMouseTrackingEnabled(enabled) {
+        if (window.nekoYuiGuideFaceForwardLock === true) {
+            enabled = false;
+        }
         this._mouseTrackingEnabled = enabled;
         window.mouseTrackingEnabled = enabled;
 
@@ -4491,6 +4494,9 @@ class Live2DManager {
      * @returns {boolean}
      */
     isMouseTrackingEnabled() {
+        if (window.nekoYuiGuideFaceForwardLock === true) {
+            return false;
+        }
         return this._mouseTrackingEnabled !== false;
     }
 

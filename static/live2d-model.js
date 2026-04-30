@@ -663,6 +663,19 @@ Live2DManager.prototype._updateEyeBlink = function(delta) {
 Live2DManager.prototype._updateRandomLookAt = function(delta) {
     const coreModel = this.currentModel?.internalModel?.coreModel;
     if (!coreModel) return;
+    if (window.nekoYuiGuideFaceForwardLock === true) {
+        this._lookAtTargetX = 0;
+        this._lookAtTargetY = 0;
+        this._lookAtCurrentX = 0;
+        this._lookAtCurrentY = 0;
+        try {
+            coreModel.setParameterValueById('ParamAngleX', 0);
+            coreModel.setParameterValueById('ParamAngleY', 0);
+            coreModel.setParameterValueById('ParamEyeBallX', 0);
+            coreModel.setParameterValueById('ParamEyeBallY', 0);
+        } catch (_) {}
+        return;
+    }
     if (this._mouseTrackingEnabled) return;
     if (this._lookAtTimer === undefined) {
         this._lookAtTimer = 0;
