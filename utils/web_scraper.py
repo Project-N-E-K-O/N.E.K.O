@@ -757,8 +757,12 @@ async def _fetch_twitter_trending_fallback(limit: int = 10) -> Dict[str, Any]:
             response = await client.get(source['url'], headers=headers, timeout=5.0)
 
             if response.status_code == 200:
-                soup = BeautifulSoup(response.text, 'html.parser')
-                trending_list = source['parser'](soup, limit)
+                # BS4 解析 + 解析器迭代统一放线程池，避免阻塞 event loop
+                def _parse_in_thread(html: str, parser, _limit: int) -> List[Dict[str, Any]]:
+                    return parser(BeautifulSoup(html, 'html.parser'), _limit)
+                trending_list = await asyncio.to_thread(
+                    _parse_in_thread, response.text, source['parser'], limit
+                )
 
                 if trending_list:
                     logger.info(f"从{source['name']}获取到{len(trending_list)}条Twitter热门")
@@ -1412,8 +1416,8 @@ async def search_google(query: str, limit: int = 10) -> Dict[str, Any]:
         response.raise_for_status()
         html_content = response.text
 
-        # 解析搜索结果
-        results = parse_google_results(html_content, limit)
+        # 解析搜索结果（BS4 大 HTML 同步解析放线程池，避免阻塞 event loop）
+        results = await asyncio.to_thread(parse_google_results, html_content, limit)
 
         if results:
             return {
@@ -1567,7 +1571,7 @@ async def search_baidu(query: str, limit: int = 5) -> Dict[str, Any]:
         html_content = response.text
 
         # 解析搜索结果
-        results = parse_baidu_results(html_content, limit)
+        results = await asyncio.to_thread(parse_baidu_results, html_content, limit)
 
         if results:
             return {
