@@ -691,7 +691,29 @@ class GameAgentService:
             # fresh one for the current task. We assume the agent
             # emits frames in completion order and drain them FIFO:
             # for every task we abandoned without an ack, swallow one
-            # incoming frame. The stale frame's *text* must NOT enter
+            # incoming frame.
+            #
+            # KNOWN LIMITATION: this FIFO assumption is exactly that —
+            # an assumption. If the agent server processes tasks with
+            # internal concurrency such that an *overwritten* task A
+            # finishes *after* the replacement task B (i.e. frames
+            # arrive in B-then-A order), this filter swallows B's
+            # real completion and later accepts A's stale frame as if
+            # it were B's. The current ``minecraft_task`` call would
+            # then hang until ``task_timeout_seconds`` while a wrong
+            # result eventually surfaces.
+            #
+            # Properly fixing this requires the agent protocol to
+            # carry a task ID on both ``task`` and ``task_finished``
+            # frames so we can correlate explicitly. That's a
+            # protocol-level change for upstream agents and out of
+            # scope here. In practice agents we ship against
+            # (mineflayer-based bots) process tasks sequentially —
+            # overwrite stops the current task before starting the
+            # next — so out-of-order completions don't occur. If you
+            # write an agent that does have internal concurrency,
+            # add task IDs to the protocol and we'll wire correlation
+            # in. The stale frame's *text* must NOT enter
             # ``_log_cache`` either — otherwise the next system prompt
             # would surface "old task done" while a new task is still
             # running, lying about both branches of the prompt.

@@ -97,6 +97,19 @@ agent 端启动方式由你自己决定（一般是 `node minecraft-agent/index.
 迁移指南：原 `core.game_agent_enabled = True` + `core.game_agent_url = ...` 的两行代码不再需要；
 直接启用本插件并按需调整 `plugin.toml`。
 
+## 已知限制
+
+**协议没有 task ID，依赖 FIFO 完成顺序**：插件用一个 stale-frame drop 计数器
+来过滤老任务（已 timeout / overwrite / cancel）的延迟 `task_finished` 帧，
+假设 agent 按完成顺序发帧。如果你写的 agent 内部有并发使得"被 overwrite 的
+A 在替换者 B 之后才完成"（即帧顺序是 B-then-A），filter 会吞掉 B 的真完成、
+把 A 的延迟帧当成 B 的——当前 `minecraft_task` 调用会卡到 `task_timeout_seconds`。
+
+我们 ship 的目标 agent (mineflayer 系) 都是顺序处理：overwrite 会先停老任务
+再起新任务，不存在 out-of-order completion，实践上不会触发。如果你写的 agent
+内部有真正的并发，请在协议里给 `task` / `task_finished` 帧加 task ID，并提
+issue 让我们接 explicit correlation。
+
 ## 文件分工
 
 | 文件 | 作用 |
