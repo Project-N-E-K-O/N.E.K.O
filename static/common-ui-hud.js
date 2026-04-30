@@ -7,6 +7,18 @@ window.AgentHUD = window.AgentHUD || {};
 
 var PLUGIN_DASHBOARD_REDIRECT_URL = '/api/agent/user_plugin/dashboard';
 
+function appendPluginDashboardOpenerOrigin(url) {
+    const target = new URL(url, document.baseURI || window.location.href);
+    if (window.location && window.location.origin) {
+        target.searchParams.set('yui_opener_origin', window.location.origin);
+    }
+    return target.toString();
+}
+
+function getPluginDashboardRedirectUrl() {
+    return appendPluginDashboardOpenerOrigin(PLUGIN_DASHBOARD_REDIRECT_URL);
+}
+
 function appendCacheBuster(url) {
     var separator = typeof url === 'string' && url.indexOf('?') >= 0 ? '&' : '?';
     return `${url}${separator}v=${Date.now()}`;
@@ -214,7 +226,7 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
                     labelKey: 'settings.toggles.pluginManagementPanel',
                     labelFallback: '管理面板',
                     icon: '⚙',
-                    url: PLUGIN_DASHBOARD_REDIRECT_URL,
+                    url: getPluginDashboardRedirectUrl,
                     windowName: 'neko_plugin_dashboard',
                     forceReloadOnReuse: true
                 }
@@ -287,7 +299,9 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
                 const left = Math.max(0, Math.floor((screen.width - width) / 2));
                 const top = Math.max(0, Math.floor((screen.height - height) / 2));
                 const features = `width=${width},height=${height},left=${left},top=${top},menubar=no,toolbar=no,location=no,status=no,resizable=yes,scrollbars=yes`;
-                const rawUrl = actionConfig.url;
+                const rawUrl = typeof actionConfig.url === 'function'
+                    ? actionConfig.url()
+                    : actionConfig.url;
                 const absoluteUrl = new URL(rawUrl, document.baseURI || window.location.href).toString();
                 const targetUrl = actionConfig.forceReloadOnReuse
                     ? appendCacheBuster(absoluteUrl)

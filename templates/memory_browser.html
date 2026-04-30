@@ -7,13 +7,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title data-i18n="memory.title">记忆浏览 - Project N.E.K.O.</title>
     <!-- i18next 加载器（统一处理 CDN 加载和初始化） -->
-    <script src="/static/i18n-i18next.js"></script>
-    <link rel="stylesheet" href="/static/css/memory_browser.css">
-    <link rel="stylesheet" href="/static/css/storage-location.css">
-    <link rel="stylesheet" href="/static/css/dark-mode.css">
-    <link rel="stylesheet" href="/static/css/tutorial-styles.css">
-    <link rel="stylesheet" href="/static/css/yui-guide.css?v=20260427-2">
-    <script src="/static/theme-manager.js"></script>
+    <script src="/static/i18n-i18next.js?v={{ static_asset_version }}"></script>
+    <link rel="stylesheet" href="/static/css/memory_browser.css?v={{ static_asset_version }}">
+    <link rel="stylesheet" href="/static/css/storage-location.css?v={{ static_asset_version }}">
+    <link rel="stylesheet" href="/static/css/dark-mode.css?v={{ static_asset_version }}">
+    <link rel="stylesheet" href="/static/css/tutorial-styles.css?v={{ static_asset_version }}">
+    <link rel="stylesheet" href="/static/css/yui-guide.css?v={{ static_asset_version }}">
+    <script src="/static/theme-manager.js?v={{ static_asset_version }}"></script>
 </head>
 <body>
     <div class="container">
@@ -143,19 +143,19 @@
             </div>
         </div>
     </div>
-    <script src="/static/app-storage-location.js" data-storage-location-auto-start="false"></script>
-    <script src="/static/js/memory_browser.js"></script>
+    <script src="/static/app-storage-location.js?v={{ static_asset_version }}" data-storage-location-auto-start="false"></script>
+    <script src="/static/js/memory_browser.js?v={{ static_asset_version }}"></script>
 
     <!-- Driver.js 库 -->
-    <script src="/static/libs/driver.min.js"></script>
-    <link rel="stylesheet" href="/static/libs/driver.min.css">
+    <script src="/static/libs/driver.min.js?v={{ static_asset_version }}"></script>
+    <link rel="stylesheet" href="/static/libs/driver.min.css?v={{ static_asset_version }}">
 
-    <script src="/static/yui-guide-steps.js?v=20260422-1"></script>
-    <script src="/static/yui-guide-overlay.js?v=20260422-6"></script>
-    <script src="/static/yui-guide-page-handoff.js?v=20260427-2"></script>
-    <script src="/static/yui-guide-director.js?v=20260427-2"></script>
+    <script src="/static/yui-guide-steps.js?v={{ static_asset_version }}"></script>
+    <script src="/static/yui-guide-overlay.js?v={{ static_asset_version }}"></script>
+    <script src="/static/yui-guide-page-handoff.js?v={{ static_asset_version }}"></script>
+    <script src="/static/yui-guide-director.js?v={{ static_asset_version }}"></script>
     <!-- 通用教程管理器 -->
-    <script src="/static/universal-tutorial-manager.js?v=12"></script>
+    <script src="/static/universal-tutorial-manager.js?v={{ static_asset_version }}"></script>
 
     <!-- 初始化 -->
     <script>

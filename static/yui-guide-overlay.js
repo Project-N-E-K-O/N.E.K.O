@@ -7,6 +7,30 @@
     const EXTRA_SPOTLIGHT_ENTRY_COUNT = 6;
     const DEFAULT_SPOTLIGHT_PADDING = 6;
     const BACKDROP_CUTOUT_INSET = 4;
+    const BACKDROP_DIM_ENABLED = false;
+    const DEFAULT_CURSOR_CLICK_VISIBLE_MS = 420;
+    const CURSOR_CLICK_STAR_COUNT = 7;
+    const CURSOR_CLICK_STAR_LIFETIME_MS = 760;
+    const CURSOR_TRAIL_PARTICLE_LIFETIME_MS = 420;
+    const CURSOR_TRAIL_MIN_DISTANCE = 3;
+    const CURSOR_TRAIL_MIN_INTERVAL_MS = 8;
+    const CURSOR_TRAIL_SEGMENT_SPACING = 9;
+    const CURSOR_TRAIL_MAX_SEGMENTS_PER_FRAME = 6;
+    const CURSOR_TRAIL_MAX_POINTS = 34;
+    const CURSOR_TRAIL_MAX_PARTICLES = 24;
+    const CURSOR_TRAIL_ICON_CHANCE = 0.045;
+    const CURSOR_TRAIL_BLUE_PARTICLE_CHANCE = 0.42;
+    const CURSOR_TRAIL_MOVE_BURST_COUNT = 3;
+    const CURSOR_TRAIL_ACTION_BURST_COUNT = 5;
+    const CURSOR_TRAIL_BODY_HEAD_WIDTH = 34;
+    const CURSOR_TRAIL_BODY_TAIL_WIDTH = 8;
+    const CURSOR_TRAIL_CORE_HEAD_WIDTH = 14;
+    const CURSOR_TRAIL_CORE_TAIL_WIDTH = 3.8;
+    const CURSOR_TRAIL_HEAD_RADIUS = 15;
+    const CURSOR_TRAIL_ICON_URLS = Object.freeze([
+        '/static/icons/send_icon.png',
+        '/static/icons/paw_ui.png'
+    ]);
 
     function createElement(tagName, className) {
         const element = document.createElement(tagName);
@@ -34,6 +58,46 @@
         return Number.isFinite(value) ? value : null;
     }
 
+    function shouldReduceMotion() {
+        try {
+            return !!(
+                window.matchMedia
+                && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+            );
+        } catch (_) {
+            return false;
+        }
+    }
+
+    function isCircularFloatingButtonElement(element) {
+        if (!element) {
+            return false;
+        }
+
+        const matchesCircularId = (candidate) => {
+            return !!(
+                candidate
+                && typeof candidate.id === 'string'
+                && /-btn-(mic|agent|settings)$/.test(candidate.id)
+            );
+        };
+
+        if (matchesCircularId(element)) {
+            return true;
+        }
+
+        if (typeof element.closest === 'function') {
+            return !!element.closest(
+                '#live2d-btn-mic, #vrm-btn-mic, #mmd-btn-mic, ' +
+                '#live2d-btn-agent, #vrm-btn-agent, #mmd-btn-agent, ' +
+                '#live2d-btn-settings, #vrm-btn-settings, #mmd-btn-settings, ' +
+                '[id$="-btn-mic"], [id$="-btn-agent"], [id$="-btn-settings"]'
+            );
+        }
+
+        return false;
+    }
+
     function ensureSpotlightFrameDecorations(frame) {
         if (!frame) {
             return;
@@ -42,6 +106,19 @@
         if (!frame.querySelector('.yui-guide-spotlight-chrome')) {
             frame.appendChild(createElement('div', 'yui-guide-spotlight-chrome'));
         }
+        if (!frame.querySelector('.yui-guide-spotlight-sweep')) {
+            frame.appendChild(createElement('span', 'yui-guide-spotlight-sweep'));
+        }
+        if (!frame.querySelector('.yui-guide-spotlight-circle-skin')) {
+            frame.appendChild(createElement('div', 'yui-guide-spotlight-circle-skin'));
+        }
+    }
+
+    function ensureSpotlightImageDecorations(frame) {
+        if (!frame) {
+            return;
+        }
+
         if (!frame.querySelector('.yui-guide-spotlight-ear-left')) {
             frame.appendChild(createElement('div', 'yui-guide-spotlight-decoration yui-guide-spotlight-ear-left'));
         }
@@ -51,8 +128,42 @@
         if (!frame.querySelector('.yui-guide-spotlight-paw')) {
             frame.appendChild(createElement('div', 'yui-guide-spotlight-decoration yui-guide-spotlight-paw'));
         }
-        if (!frame.querySelector('.yui-guide-spotlight-circle-skin')) {
-            frame.appendChild(createElement('div', 'yui-guide-spotlight-circle-skin'));
+    }
+
+    function removeSpotlightImageDecorations(frame) {
+        if (!frame || typeof frame.querySelectorAll !== 'function') {
+            return;
+        }
+
+        frame.querySelectorAll(
+            '.yui-guide-spotlight-ear-left, .yui-guide-spotlight-ear-right, .yui-guide-spotlight-paw'
+        ).forEach((element) => {
+            if (element && element.parentNode) {
+                element.parentNode.removeChild(element);
+            }
+        });
+    }
+
+    function applySpotlightFrameDecorationMode(frame, useCircleImage) {
+        if (!frame) {
+            return;
+        }
+
+        const chrome = frame.querySelector('.yui-guide-spotlight-chrome');
+        const circleSkin = frame.querySelector('.yui-guide-spotlight-circle-skin');
+
+        if (useCircleImage) {
+            removeSpotlightImageDecorations(frame);
+        } else {
+            ensureSpotlightImageDecorations(frame);
+        }
+
+        if (chrome && chrome.style) {
+            chrome.style.display = useCircleImage ? 'none' : '';
+        }
+
+        if (circleSkin && circleSkin.style) {
+            circleSkin.style.display = useCircleImage ? 'block' : '';
         }
     }
 
@@ -72,7 +183,9 @@
             this.actionSpotlightFrame = null;
             this.secondaryActionSpotlightFrame = null;
             this.bubble = null;
+            this.bubbleHeader = null;
             this.bubbleTitle = null;
+            this.bubbleMeta = null;
             this.bubbleBody = null;
             this.preview = null;
             this.previewTitle = null;
@@ -80,6 +193,19 @@
             this.cursorShell = null;
             this.cursorInner = null;
             this.cursorPosition = null;
+            this.cursorClickTimer = 0;
+            this.activeClickStars = new Set();
+            this.activeTrailParticles = new Set();
+            this.cursorTrailLastPoint = null;
+            this.cursorTrailLastAt = 0;
+            this.cursorTrailSvg = null;
+            this.cursorTrailBody = null;
+            this.cursorTrailCore = null;
+            this.cursorTrailHead = null;
+            this.cursorTrailHeadCore = null;
+            this.cursorTrailGradient = null;
+            this.cursorTrailPoints = [];
+            this.cursorTrailDecayFrame = 0;
             this.persistentHighlightedElement = null;
             this.actionHighlightedElement = null;
             this.secondaryActionHighlightedElement = null;
@@ -186,9 +312,15 @@
 
                 const bubble = createElement('section', 'yui-guide-bubble');
                 bubble.hidden = true;
+                bubble.setAttribute('role', 'status');
+                bubble.setAttribute('aria-live', 'polite');
+                const bubbleHeader = createElement('div', 'yui-guide-bubble-header');
                 const bubbleTitle = createElement('div', 'yui-guide-bubble-title');
+                const bubbleMeta = createElement('div', 'yui-guide-bubble-meta');
                 const bubbleBody = createElement('div', 'yui-guide-bubble-body');
-                bubble.appendChild(bubbleTitle);
+                bubbleHeader.appendChild(bubbleTitle);
+                bubbleHeader.appendChild(bubbleMeta);
+                bubble.appendChild(bubbleHeader);
                 bubble.appendChild(bubbleBody);
 
                 const preview = createElement('section', 'yui-guide-preview');
@@ -202,6 +334,7 @@
                 cursorShell.hidden = true;
                 const cursorInner = createElement('div', 'yui-guide-cursor');
                 cursorShell.appendChild(cursorInner);
+                const cursorTrailSvg = this.createCursorTrailLayer();
 
                 stage.appendChild(backdrop);
                 stage.appendChild(persistentSpotlightFrame);
@@ -209,6 +342,7 @@
                 stage.appendChild(secondaryActionSpotlightFrame);
                 stage.appendChild(bubble);
                 stage.appendChild(preview);
+                stage.appendChild(cursorTrailSvg);
                 stage.appendChild(cursorShell);
                 root.appendChild(stage);
                 this.document.body.appendChild(root);
@@ -225,7 +359,9 @@
                 this.actionSpotlightFrame = actionSpotlightFrame;
                 this.secondaryActionSpotlightFrame = secondaryActionSpotlightFrame;
                 this.bubble = bubble;
+                this.bubbleHeader = bubbleHeader;
                 this.bubbleTitle = bubbleTitle;
+                this.bubbleMeta = bubbleMeta;
                 this.bubbleBody = bubbleBody;
                 this.preview = preview;
                 this.previewTitle = previewTitle;
@@ -249,13 +385,25 @@
                 ensureSpotlightFrameDecorations(this.actionSpotlightFrame);
                 ensureSpotlightFrameDecorations(this.secondaryActionSpotlightFrame);
                 this.bubble = root.querySelector('.yui-guide-bubble');
+                this.bubbleHeader = root.querySelector('.yui-guide-bubble-header');
                 this.bubbleTitle = root.querySelector('.yui-guide-bubble-title');
+                this.bubbleMeta = root.querySelector('.yui-guide-bubble-meta');
                 this.bubbleBody = root.querySelector('.yui-guide-bubble-body');
+                this.ensureBubbleHeader();
                 this.preview = root.querySelector('.yui-guide-preview');
                 this.previewTitle = root.querySelector('.yui-guide-preview-title');
                 this.previewList = root.querySelector('.yui-guide-preview-list');
                 this.cursorShell = root.querySelector('.yui-guide-cursor-shell');
                 this.cursorInner = root.querySelector('.yui-guide-cursor');
+                this.cursorTrailSvg = root.querySelector('.yui-guide-cursor-trail-layer');
+                this.cursorTrailBody = root.querySelector('.yui-guide-cursor-trail-ribbon');
+                this.cursorTrailCore = root.querySelector('.yui-guide-cursor-trail-core');
+                this.cursorTrailHead = root.querySelector('.yui-guide-cursor-trail-head');
+                this.cursorTrailHeadCore = root.querySelector('.yui-guide-cursor-trail-head-core');
+                this.cursorTrailGradient = root.querySelector('#' + ROOT_ID + '-cursor-trail-gradient');
+                if (!this.cursorTrailSvg && this.stage && this.cursorShell) {
+                    this.stage.insertBefore(this.createCursorTrailLayer(), this.cursorShell);
+                }
                 this.extraSpotlightEntries = [];
                 const cutouts = root.querySelectorAll('.yui-guide-backdrop-cutout-extra');
                 const frames = root.querySelectorAll('.yui-guide-spotlight-frame-extra');
@@ -273,6 +421,78 @@
             return root;
         }
 
+        createCursorTrailLayer() {
+            const trailSvg = createSvgElement('svg', 'yui-guide-cursor-trail-layer');
+            trailSvg.setAttribute('aria-hidden', 'true');
+            trailSvg.setAttribute('data-yui-cursor-hidden', 'true');
+            trailSvg.setAttribute('preserveAspectRatio', 'none');
+
+            const defs = createSvgElement('defs');
+            const gradient = createSvgElement('linearGradient');
+            gradient.id = ROOT_ID + '-cursor-trail-gradient';
+            gradient.setAttribute('gradientUnits', 'userSpaceOnUse');
+
+            [
+                ['0%', '#3157e8', '0'],
+                ['22%', '#396dff', '0'],
+                ['58%', '#26bfff', '0.24'],
+                ['100%', '#55efff', '0.52']
+            ].forEach((entry) => {
+                const stop = createSvgElement('stop');
+                stop.setAttribute('offset', entry[0]);
+                stop.setAttribute('stop-color', entry[1]);
+                stop.setAttribute('stop-opacity', entry[2]);
+                gradient.appendChild(stop);
+            });
+
+            const headGradient = createSvgElement('radialGradient');
+            headGradient.id = ROOT_ID + '-cursor-trail-head-gradient';
+            headGradient.setAttribute('cx', '50%');
+            headGradient.setAttribute('cy', '50%');
+            headGradient.setAttribute('r', '58%');
+            [
+                ['0%', '#7df7ff', '0.44'],
+                ['48%', '#31c8ff', '0.2'],
+                ['100%', '#2d5cff', '0']
+            ].forEach((entry) => {
+                const stop = createSvgElement('stop');
+                stop.setAttribute('offset', entry[0]);
+                stop.setAttribute('stop-color', entry[1]);
+                stop.setAttribute('stop-opacity', entry[2]);
+                headGradient.appendChild(stop);
+            });
+
+            defs.appendChild(gradient);
+            defs.appendChild(headGradient);
+
+            const body = createSvgElement('path', 'yui-guide-cursor-trail-ribbon');
+            body.setAttribute('fill', 'url(#' + ROOT_ID + '-cursor-trail-gradient)');
+
+            const core = createSvgElement('path', 'yui-guide-cursor-trail-core');
+            core.setAttribute('fill', 'url(#' + ROOT_ID + '-cursor-trail-gradient)');
+
+            const head = createSvgElement('circle', 'yui-guide-cursor-trail-head');
+            head.setAttribute('fill', 'url(#' + ROOT_ID + '-cursor-trail-head-gradient)');
+
+            const headCore = createSvgElement('circle', 'yui-guide-cursor-trail-head-core');
+            headCore.setAttribute('fill', '#66f3ff');
+
+            trailSvg.appendChild(defs);
+            trailSvg.appendChild(body);
+            trailSvg.appendChild(core);
+            trailSvg.appendChild(head);
+            trailSvg.appendChild(headCore);
+
+            this.cursorTrailSvg = trailSvg;
+            this.cursorTrailBody = body;
+            this.cursorTrailCore = core;
+            this.cursorTrailHead = head;
+            this.cursorTrailHeadCore = headCore;
+            this.cursorTrailGradient = gradient;
+
+            return trailSvg;
+        }
+
         ensureExtraSpotlightEntry(index) {
             const normalizedIndex = Number(index);
             if (!Number.isInteger(normalizedIndex) || normalizedIndex < 0) {
@@ -284,6 +504,36 @@
                 return this.extraSpotlightEntries[normalizedIndex];
             }
             return null;
+        }
+
+        ensureBubbleHeader() {
+            if (!this.bubble) {
+                return;
+            }
+
+            if (!this.bubbleHeader) {
+                this.bubbleHeader = createElement('div', 'yui-guide-bubble-header');
+                this.bubble.insertBefore(this.bubbleHeader, this.bubble.firstChild || null);
+            }
+
+            if (!this.bubbleTitle) {
+                this.bubbleTitle = createElement('div', 'yui-guide-bubble-title');
+            }
+            if (!this.bubbleTitle.parentNode || this.bubbleTitle.parentNode !== this.bubbleHeader) {
+                this.bubbleHeader.insertBefore(this.bubbleTitle, this.bubbleHeader.firstChild || null);
+            }
+
+            if (!this.bubbleMeta) {
+                this.bubbleMeta = createElement('div', 'yui-guide-bubble-meta');
+            }
+            if (!this.bubbleMeta.parentNode || this.bubbleMeta.parentNode !== this.bubbleHeader) {
+                this.bubbleHeader.appendChild(this.bubbleMeta);
+            }
+
+            if (!this.bubbleBody) {
+                this.bubbleBody = createElement('div', 'yui-guide-bubble-body');
+                this.bubble.appendChild(this.bubbleBody);
+            }
         }
 
         setExtraSpotlights(elements) {
@@ -343,6 +593,24 @@
             });
         }
 
+        hideBackdrop() {
+            if (!this.backdrop) {
+                return;
+            }
+
+            this.backdrop.hidden = true;
+            this.backdrop.classList.remove('is-visible');
+            this.updateBackdropCutout(this.backdropPersistentCutout, null);
+            this.updateBackdropCutout(this.backdropActionCutout, null);
+            this.updateBackdropCutout(this.backdropSecondaryActionCutout, null);
+            this.extraSpotlightEntries.forEach((entry) => {
+                if (!entry) {
+                    return;
+                }
+                this.updateBackdropCutout(entry.cutout, null);
+            });
+        }
+
         getSpotlightRect(element) {
             if (!element || typeof element.getBoundingClientRect !== 'function') {
                 return null;
@@ -357,15 +625,14 @@
             const padding = paddingValue == null ? DEFAULT_SPOTLIGHT_PADDING : paddingValue;
             const rawWidth = Math.max(0, Math.round(rect.width));
             const rawHeight = Math.max(0, Math.round(rect.height));
-            const rawMinEdge = Math.min(rawWidth, rawHeight);
             const radiusOverride = readSpotlightNumberAttr(element, 'data-yui-guide-spotlight-radius');
             const geometryHint = typeof element.getAttribute === 'function'
                 ? (element.getAttribute('data-yui-guide-spotlight-geometry') || '').trim().toLowerCase()
                 : '';
+            const inferredCircularButton = isCircularFloatingButtonElement(element);
             const rawRadius = radiusOverride != null
                 ? Math.max(0, radiusOverride)
                 : Math.max(0, this.getSpotlightRadius(element, padding) - padding);
-            const sizeTolerance = Math.max(8, Math.round(rawMinEdge * 0.12));
             const left = Math.max(0, Math.floor(rect.left - padding));
             const top = Math.max(0, Math.floor(rect.top - padding));
             const right = Math.min(window.innerWidth, Math.ceil(rect.right + padding));
@@ -373,10 +640,7 @@
             const width = Math.max(0, right - left);
             const height = Math.max(0, bottom - top);
             const radius = this.getSpotlightRadius(element, padding);
-            const isCircular = geometryHint === 'circle'
-                && rawMinEdge > 0
-                && Math.abs(rawWidth - rawHeight) <= sizeTolerance
-                && rawRadius >= ((rawMinEdge / 2) - 4);
+            const isCircular = geometryHint === 'circle' || inferredCircularButton;
 
             return {
                 left: left,
@@ -462,19 +726,24 @@
             const normalizedOptions = options || {};
             const allowMask = normalizedOptions.allowMask !== false;
             const variant = normalizedOptions.variant || '';
+            const forceCircleImage = variant === 'circle-image';
 
             if (!spotlightRect) {
                 frame.hidden = true;
                 frame.classList.remove('is-visible');
                 frame.classList.remove('is-circular-mask');
+                frame.classList.remove('is-circle-image');
                 frame.classList.remove('is-thin-variant');
+                applySpotlightFrameDecorationMode(frame, false);
                 return;
             }
 
             frame.hidden = false;
             frame.classList.add('is-visible');
             frame.classList.toggle('is-circular-mask', !!spotlightRect.isCircular && allowMask);
+            frame.classList.toggle('is-circle-image', forceCircleImage);
             frame.classList.toggle('is-thin-variant', variant === 'thin');
+            applySpotlightFrameDecorationMode(frame, !!spotlightRect.isCircular || forceCircleImage);
             frame.style.left = spotlightRect.left + 'px';
             frame.style.top = spotlightRect.top + 'px';
             frame.style.width = spotlightRect.width + 'px';
@@ -515,27 +784,37 @@
 
             if (this.backdrop) {
                 this.syncBackdropViewport();
-                if (persistentMaskRect || actionMaskRect || secondaryActionMaskRect || extraMaskRects.length > 0) {
-                    this.backdrop.hidden = false;
-                    this.backdrop.classList.add('is-visible');
-                } else {
-                    this.backdrop.hidden = true;
-                    this.backdrop.classList.remove('is-visible');
-                }
-                this.updateBackdropCutout(this.backdropPersistentCutout, persistentMaskRect);
-                this.updateBackdropCutout(this.backdropActionCutout, actionMaskRect);
-                this.updateBackdropCutout(this.backdropSecondaryActionCutout, secondaryActionMaskRect);
+                const hasBackdropCutout = !!(persistentMaskRect || actionMaskRect || secondaryActionMaskRect || extraMaskRects.length > 0);
+                this.backdrop.hidden = !hasBackdropCutout;
+                this.backdrop.classList.toggle('is-visible', hasBackdropCutout);
             }
 
+            const getFrameVariantFromElement = (element) => {
+                if (!element || typeof element.getAttribute !== 'function') {
+                    return '';
+                }
+                const geometry = (element.getAttribute('data-yui-guide-spotlight-geometry') || '').trim().toLowerCase();
+                if (geometry === 'circle' || isCircularFloatingButtonElement(element)) {
+                    return 'circle-image';
+                }
+                return element.getAttribute('data-yui-guide-spotlight-variant') || '';
+            };
+
             this.updateSpotlightFrame(this.persistentSpotlightFrame, persistentRect, {
-                allowMask: true
+                allowMask: true,
+                variant: getFrameVariantFromElement(this.persistentHighlightedElement)
             });
             this.updateSpotlightFrame(this.actionSpotlightFrame, actionRect, {
-                allowMask: true
+                allowMask: true,
+                variant: getFrameVariantFromElement(this.actionHighlightedElement)
             });
             this.updateSpotlightFrame(this.secondaryActionSpotlightFrame, secondaryActionRect, {
-                allowMask: true
+                allowMask: true,
+                variant: getFrameVariantFromElement(this.secondaryActionHighlightedElement)
             });
+            this.updateBackdropCutout(this.backdropPersistentCutout, persistentMaskRect);
+            this.updateBackdropCutout(this.backdropActionCutout, actionMaskRect);
+            this.updateBackdropCutout(this.backdropSecondaryActionCutout, secondaryActionMaskRect);
             extraRects.forEach((rect, index) => {
                 const entry = this.ensureExtraSpotlightEntry(index);
                 if (!entry) {
@@ -543,9 +822,7 @@
                 }
                 const maskRect = rect || null;
                 const sourceElement = this.extraSpotlightElements[index] || null;
-                const variant = sourceElement && typeof sourceElement.getAttribute === 'function'
-                    ? sourceElement.getAttribute('data-yui-guide-spotlight-variant')
-                    : '';
+                const variant = getFrameVariantFromElement(sourceElement);
                 this.updateBackdropCutout(entry.cutout, maskRect);
                 this.updateSpotlightFrame(entry.frame, rect || null, {
                     allowMask: true,
@@ -599,42 +876,115 @@
             }
         }
 
-        positionBubble(anchorRect) {
+        clearBubblePlacement() {
             this.ensureRoot();
 
-            let left = Math.max(24, window.innerWidth - 360);
-            let top = 32;
+            if (!this.bubble) {
+                return;
+            }
+            this.bubble.classList.remove(
+                'is-placement-top',
+                'is-placement-right',
+                'is-placement-bottom',
+                'is-placement-left',
+                'is-placement-floating'
+            );
+        }
+
+        scoreBubbleCandidate(candidate, width, height, viewportWidth, viewportHeight, viewportPadding) {
+            const overflowLeft = Math.max(0, viewportPadding - candidate.left);
+            const overflowTop = Math.max(0, viewportPadding - candidate.top);
+            const overflowRight = Math.max(0, candidate.left + width - (viewportWidth - viewportPadding));
+            const overflowBottom = Math.max(0, candidate.top + height - (viewportHeight - viewportPadding));
+            const overflow = overflowLeft + overflowTop + overflowRight + overflowBottom;
+            return (overflow * 1000) + candidate.priority;
+        }
+
+        positionBubble(anchorRect, options) {
+            this.ensureRoot();
+            this.clearBubblePlacement();
+
+            const normalizedOptions = options || {};
+            const viewportPadding = Number.isFinite(normalizedOptions.viewportPadding)
+                ? Math.max(8, normalizedOptions.viewportPadding)
+                : 16;
+            const gap = Number.isFinite(normalizedOptions.gap) ? Math.max(8, normalizedOptions.gap) : 18;
+            const viewportWidth = Math.max(1, window.innerWidth || 0);
+            const viewportHeight = Math.max(1, window.innerHeight || 0);
+            const availableWidth = Math.max(1, viewportWidth - (viewportPadding * 2));
+            const availableHeight = Math.max(1, viewportHeight - (viewportPadding * 2));
+            const minWidth = Math.min(220, availableWidth);
+            const minHeight = Math.min(96, availableHeight);
+            const width = Math.max(minWidth, Math.min(this.bubble.offsetWidth || 340, availableWidth));
+            const height = Math.max(minHeight, Math.min(this.bubble.offsetHeight || 120, availableHeight));
+
+            const clampLeft = (value) => Math.max(viewportPadding, Math.min(value, viewportWidth - width - viewportPadding));
+            const clampTop = (value) => Math.max(viewportPadding, Math.min(value, viewportHeight - height - viewportPadding));
+            let placement = 'floating';
+            let left = clampLeft(viewportWidth - width - 24);
+            let top = viewportPadding + 16;
 
             if (anchorRect && Number.isFinite(anchorRect.left) && Number.isFinite(anchorRect.top)) {
-                left = anchorRect.right + 24;
-                top = Math.max(20, anchorRect.top - 8);
+                const anchorCenterX = anchorRect.left + (anchorRect.width / 2);
+                const anchorCenterY = anchorRect.top + (anchorRect.height / 2);
+                const candidates = [
+                    {
+                        placement: 'right',
+                        left: anchorRect.right + gap,
+                        top: anchorCenterY - (height / 2),
+                        priority: 0
+                    },
+                    {
+                        placement: 'left',
+                        left: anchorRect.left - width - gap,
+                        top: anchorCenterY - (height / 2),
+                        priority: 1
+                    },
+                    {
+                        placement: 'top',
+                        left: anchorCenterX - (width / 2),
+                        top: anchorRect.top - height - gap,
+                        priority: 2
+                    },
+                    {
+                        placement: 'bottom',
+                        left: anchorCenterX - (width / 2),
+                        top: anchorRect.bottom + gap,
+                        priority: 3
+                    }
+                ].sort((a, b) => {
+                    return this.scoreBubbleCandidate(a, width, height, viewportWidth, viewportHeight, viewportPadding)
+                        - this.scoreBubbleCandidate(b, width, height, viewportWidth, viewportHeight, viewportPadding);
+                });
 
-                if (left + 320 > window.innerWidth - 16) {
-                    left = Math.max(16, anchorRect.left - 336);
-                }
-
-                if (top + 220 > window.innerHeight - 16) {
-                    top = Math.max(16, window.innerHeight - 236);
-                }
+                const best = candidates[0];
+                placement = best.placement;
+                left = clampLeft(best.left);
+                top = clampTop(best.top);
             }
 
+            this.bubble.classList.add('is-placement-' + placement);
             this.bubble.style.left = Math.round(left) + 'px';
             this.bubble.style.top = Math.round(top) + 'px';
         }
 
         showBubble(text, options) {
             this.ensureRoot();
+            this.ensureBubbleHeader();
 
             const normalizedOptions = options || {};
             const title = typeof normalizedOptions.title === 'string' ? normalizedOptions.title.trim() : '';
+            const meta = typeof normalizedOptions.meta === 'string' ? normalizedOptions.meta.trim() : '';
             const emotion = typeof normalizedOptions.emotion === 'string' ? normalizedOptions.emotion.trim() : 'neutral';
 
-            this.positionBubble(normalizedOptions.anchorRect || null);
             this.bubbleTitle.textContent = title || 'Yui';
             this.bubbleTitle.hidden = false;
+            this.bubbleMeta.textContent = meta;
+            this.bubbleMeta.hidden = !meta;
             this.bubbleBody.textContent = text || '';
             this.bubble.hidden = false;
             this.bubble.dataset.emotion = emotion || 'neutral';
+            this.positionBubble(normalizedOptions.anchorRect || null, normalizedOptions);
             this.bubble.classList.add('is-visible');
         }
 
@@ -642,6 +992,7 @@
             this.ensureRoot();
             this.bubble.hidden = true;
             this.bubble.classList.remove('is-visible');
+            this.clearBubblePlacement();
             delete this.bubble.dataset.emotion;
         }
 
@@ -743,18 +1094,8 @@
             this.syncHighlightedElementClasses();
 
             if (this.backdrop) {
-                this.backdrop.hidden = true;
-                this.backdrop.classList.remove('is-visible');
+                this.hideBackdrop();
             }
-            this.updateBackdropCutout(this.backdropPersistentCutout, null);
-            this.updateBackdropCutout(this.backdropActionCutout, null);
-            this.updateBackdropCutout(this.backdropSecondaryActionCutout, null);
-            this.extraSpotlightEntries.forEach((entry) => {
-                if (!entry) {
-                    return;
-                }
-                this.updateBackdropCutout(entry.cutout, null);
-            });
             this.updateSpotlightFrame(this.persistentSpotlightFrame, null);
             this.updateSpotlightFrame(this.actionSpotlightFrame, null);
             this.updateSpotlightFrame(this.secondaryActionSpotlightFrame, null);
@@ -783,12 +1124,27 @@
 
         showCursorAt(x, y) {
             this.ensureRoot();
+            const previous = this.cursorPosition;
+            const shouldGlide = !!(
+                previous
+                && this.cursorShell
+                && !this.cursorShell.hidden
+                && this.cursorShell.classList.contains('is-visible')
+            );
             this.document.body.classList.add('yui-guide-ghost-cursor-active');
             this.cursorShell.hidden = false;
             this.cursorShell.classList.add('is-visible');
+            if (shouldGlide) {
+                this.cursorTrailLastPoint = { x: previous.x, y: previous.y };
+                this.cursorTrailLastAt = 0;
+                return this.moveCursorTo(x, y, { durationMs: 360 });
+            }
             this.cursorShell.style.transitionDuration = '0ms';
             this.cursorShell.style.transform = 'translate(' + Math.round(x) + 'px, ' + Math.round(y) + 'px)';
             this.cursorPosition = { x: x, y: y };
+            this.cursorTrailLastPoint = null;
+            this.cursorTrailLastAt = 0;
+            return Promise.resolve(true);
         }
 
         moveCursorTo(x, y, options) {
@@ -811,6 +1167,17 @@
             this.document.body.classList.add('yui-guide-ghost-cursor-active');
             this.cursorShell.hidden = false;
             this.cursorShell.classList.add('is-visible');
+            if (shouldReduceMotion()) {
+                if (cancelCheck && cancelCheck()) {
+                    return Promise.resolve(false);
+                }
+                this.cursorShell.style.transitionDuration = '0ms';
+                this.cursorShell.style.transform = 'translate(' + Math.round(x) + 'px, ' + Math.round(y) + 'px)';
+                this.cursorPosition = { x: x, y: y };
+                this.cursorTrailLastPoint = null;
+                this.cursorTrailLastAt = 0;
+                return Promise.resolve(true);
+            }
 
             return new Promise((resolve) => {
                 let settled = false;
@@ -821,6 +1188,10 @@
                 const startY = this.cursorPosition.y;
                 const deltaX = x - startX;
                 const deltaY = y - startY;
+                const totalDistance = Math.hypot(deltaX, deltaY);
+                const movementAngle = Math.atan2(deltaY, deltaX || 0.001);
+                this.cursorTrailLastPoint = { x: startX, y: startY };
+                this.cursorTrailLastAt = 0;
                 const finish = (completed) => {
                     if (settled) {
                         return;
@@ -832,6 +1203,9 @@
                     }
                     if (completed) {
                         this.cursorPosition = { x: x, y: y };
+                        if (totalDistance > 8) {
+                            this.spawnCursorTrailBurst(x, y, movementAngle, CURSOR_TRAIL_MOVE_BURST_COUNT);
+                        }
                     }
                     resolve(completed !== false);
                 };
@@ -865,10 +1239,13 @@
                         : Math.max(0, Math.min(1, elapsedMs / durationMs));
                     const nextX = startX + (deltaX * progress);
                     const nextY = startY + (deltaY * progress);
+                    const previousX = this.cursorPosition ? this.cursorPosition.x : startX;
+                    const previousY = this.cursorPosition ? this.cursorPosition.y : startY;
 
                     this.cursorShell.style.transitionDuration = '0ms';
                     this.cursorShell.style.transform = 'translate(' + Math.round(nextX) + 'px, ' + Math.round(nextY) + 'px)';
                     this.cursorPosition = { x: nextX, y: nextY };
+                    this.maybeSpawnCursorTrail(nextX, nextY, previousX, previousY, now);
 
                     if (progress >= 1) {
                         finish(true);
@@ -882,19 +1259,480 @@
             });
         }
 
-        clickCursor() {
+        removeCursorTrailEntry(entry) {
+            if (!entry) {
+                return;
+            }
+            if (entry.timer) {
+                window.clearTimeout(entry.timer);
+            }
+            if (entry.element && entry.element.parentNode) {
+                entry.element.parentNode.removeChild(entry.element);
+            }
+            this.activeTrailParticles.delete(entry);
+        }
+
+        trimCursorTrailParticles() {
+            while (this.activeTrailParticles.size > CURSOR_TRAIL_MAX_PARTICLES) {
+                const first = this.activeTrailParticles.values().next().value;
+                if (!first) {
+                    return;
+                }
+                this.removeCursorTrailEntry(first);
+            }
+        }
+
+        clearCursorTrailParticles() {
+            if (this.cursorTrailDecayFrame) {
+                window.cancelAnimationFrame(this.cursorTrailDecayFrame);
+                this.cursorTrailDecayFrame = 0;
+            }
+
+            if (this.activeTrailParticles && this.activeTrailParticles.size > 0) {
+                Array.from(this.activeTrailParticles).forEach((entry) => {
+                    this.removeCursorTrailEntry(entry);
+                });
+            }
+
+            this.cursorTrailPoints = [];
+            this.cursorTrailLastPoint = null;
+            this.cursorTrailLastAt = 0;
+            if (this.cursorTrailSvg) {
+                this.cursorTrailSvg.classList.remove('is-visible');
+            }
+            if (this.cursorTrailBody) {
+                this.cursorTrailBody.setAttribute('d', '');
+            }
+            if (this.cursorTrailCore) {
+                this.cursorTrailCore.setAttribute('d', '');
+            }
+        }
+
+        spawnCursorTrailParticle(x, y, angle, kind) {
+            if (!this.stage || shouldReduceMotion()) {
+                return;
+            }
+
+            const isBlueParticle = kind === 'blue';
+            const particle = createElement(
+                'span',
+                'yui-guide-cursor-trail ' + (isBlueParticle ? 'is-blue-particle' : 'is-icon')
+            );
+            const width = isBlueParticle
+                ? 5 + Math.random() * 5
+                : 7 + Math.random() * 5;
+            const opacity = isBlueParticle
+                ? 0.46 + Math.random() * 0.22
+                : 0.09 + Math.random() * 0.1;
+            const drift = isBlueParticle
+                ? 14 + Math.random() * 24
+                : 10 + Math.random() * 16;
+            const sideJitter = (Math.random() - 0.5) * (isBlueParticle ? 30 : 20);
+            const backOffset = isBlueParticle
+                ? 10 + Math.random() * 28
+                : 22 + Math.random() * 20;
+            const cos = Math.cos(angle);
+            const sin = Math.sin(angle);
+            const baseX = x - (cos * backOffset) - (sin * sideJitter);
+            const baseY = y - (sin * backOffset) + (cos * sideJitter);
+
+            particle.setAttribute('aria-hidden', 'true');
+            particle.style.left = baseX.toFixed(2) + 'px';
+            particle.style.top = baseY.toFixed(2) + 'px';
+            particle.style.setProperty('--trail-width', width.toFixed(2) + 'px');
+            particle.style.setProperty('--trail-height', width.toFixed(2) + 'px');
+            particle.style.setProperty('--trail-angle', (angle * 180 / Math.PI).toFixed(2) + 'deg');
+            particle.style.setProperty('--trail-drift-x', (-cos * drift).toFixed(2) + 'px');
+            particle.style.setProperty('--trail-drift-y', (-sin * drift).toFixed(2) + 'px');
+            particle.style.setProperty('--trail-opacity', opacity.toFixed(2));
+
+            if (!isBlueParticle) {
+                particle.style.setProperty('--trail-brightness', (0.78 + Math.random() * 0.2).toFixed(2));
+                const iconUrl = CURSOR_TRAIL_ICON_URLS[Math.floor(Math.random() * CURSOR_TRAIL_ICON_URLS.length)];
+                particle.style.setProperty('--trail-icon', 'url("' + iconUrl + '")');
+            }
+
+            const entry = {
+                element: particle,
+                timer: 0
+            };
+            entry.timer = window.setTimeout(() => {
+                this.removeCursorTrailEntry(entry);
+            }, CURSOR_TRAIL_PARTICLE_LIFETIME_MS + 120);
+
+            this.activeTrailParticles.add(entry);
+            this.stage.appendChild(particle);
+            this.trimCursorTrailParticles();
+        }
+
+        spawnCursorTrailBurst(x, y, angle, count) {
+            if (!this.stage || shouldReduceMotion()) {
+                return;
+            }
+
+            const normalizedCount = Math.max(1, Math.round(Number.isFinite(count) ? count : CURSOR_TRAIL_MOVE_BURST_COUNT));
+            const baseAngle = Number.isFinite(angle) ? angle : 0;
+            for (let index = 0; index < normalizedCount; index += 1) {
+                const offset = normalizedCount <= 1
+                    ? 0
+                    : ((index / (normalizedCount - 1)) - 0.5) * 1.7;
+                this.spawnCursorTrailParticle(x, y, baseAngle + offset + ((Math.random() - 0.5) * 0.38), 'blue');
+            }
+        }
+
+        getCursorTrailNow(now) {
+            if (Number.isFinite(now)) {
+                return now;
+            }
+            if (window.performance && typeof window.performance.now === 'function') {
+                return window.performance.now();
+            }
+            return Date.now();
+        }
+
+        syncCursorTrailViewport() {
+            if (!this.cursorTrailSvg) {
+                return;
+            }
+            const width = Math.max(1, window.innerWidth || this.document.documentElement.clientWidth || 1);
+            const height = Math.max(1, window.innerHeight || this.document.documentElement.clientHeight || 1);
+            this.cursorTrailSvg.setAttribute('viewBox', '0 0 ' + width + ' ' + height);
+        }
+
+        trimCursorTrailPoints(now) {
+            const cutoff = now - CURSOR_TRAIL_PARTICLE_LIFETIME_MS;
+            this.cursorTrailPoints = (this.cursorTrailPoints || [])
+                .filter((point) => point && Number.isFinite(point.x) && Number.isFinite(point.y) && point.t >= cutoff);
+
+            if (this.cursorTrailPoints.length > CURSOR_TRAIL_MAX_POINTS) {
+                this.cursorTrailPoints = this.cursorTrailPoints.slice(this.cursorTrailPoints.length - CURSOR_TRAIL_MAX_POINTS);
+            }
+        }
+
+        formatCursorTrailPoint(point) {
+            return point.x.toFixed(1) + ' ' + point.y.toFixed(1);
+        }
+
+        appendSmoothCursorTrailPath(points, useMove) {
+            if (!points || points.length === 0) {
+                return '';
+            }
+
+            let path = (useMove ? 'M ' : 'L ') + this.formatCursorTrailPoint(points[0]);
+            if (points.length === 1) {
+                return path;
+            }
+
+            for (let index = 1; index < points.length - 1; index += 1) {
+                const current = points[index];
+                const next = points[index + 1];
+                const mid = {
+                    x: (current.x + next.x) / 2,
+                    y: (current.y + next.y) / 2
+                };
+                path += ' Q ' + this.formatCursorTrailPoint(current) + ' ' + this.formatCursorTrailPoint(mid);
+            }
+
+            path += ' L ' + this.formatCursorTrailPoint(points[points.length - 1]);
+            return path;
+        }
+
+        buildCursorTrailRibbonPath(points, headWidth, tailWidth) {
+            if (!points || points.length < 2) {
+                return '';
+            }
+
+            const left = [];
+            const right = [];
+            const count = points.length;
+
+            for (let index = 0; index < count; index += 1) {
+                const point = points[index];
+                const previous = points[Math.max(0, index - 1)];
+                const next = points[Math.min(count - 1, index + 1)];
+                let dx = next.x - previous.x;
+                let dy = next.y - previous.y;
+                let length = Math.hypot(dx, dy);
+
+                if (length < 0.001 && index > 0) {
+                    dx = point.x - points[index - 1].x;
+                    dy = point.y - points[index - 1].y;
+                    length = Math.hypot(dx, dy);
+                }
+                if (length < 0.001) {
+                    dx = 1;
+                    dy = 0;
+                    length = 1;
+                }
+
+                const progress = count <= 1 ? 1 : index / (count - 1);
+                const eased = progress * progress * (3 - (2 * progress));
+                const width = tailWidth + ((headWidth - tailWidth) * eased);
+                const normalX = -dy / length;
+                const normalY = dx / length;
+                const halfWidth = width / 2;
+
+                left.push({
+                    x: point.x + (normalX * halfWidth),
+                    y: point.y + (normalY * halfWidth)
+                });
+                right.push({
+                    x: point.x - (normalX * halfWidth),
+                    y: point.y - (normalY * halfWidth)
+                });
+            }
+
+            return this.appendSmoothCursorTrailPath(left, true)
+                + ' '
+                + this.appendSmoothCursorTrailPath(right.slice().reverse(), false)
+                + ' Z';
+        }
+
+        updateCursorTrail(now) {
+            if (!this.stage || shouldReduceMotion()) {
+                this.clearCursorTrailParticles();
+                return;
+            }
+
+            if (!this.cursorTrailSvg || !this.cursorTrailBody || !this.cursorTrailCore) {
+                const layer = this.createCursorTrailLayer();
+                if (this.cursorShell) {
+                    this.stage.insertBefore(layer, this.cursorShell);
+                } else {
+                    this.stage.appendChild(layer);
+                }
+            }
+
+            const currentNow = this.getCursorTrailNow(now);
+            this.syncCursorTrailViewport();
+            this.trimCursorTrailPoints(currentNow);
+
+            if (this.cursorTrailPoints.length < 2) {
+                if (this.cursorTrailSvg) {
+                    this.cursorTrailSvg.classList.remove('is-visible');
+                }
+                this.cursorTrailBody.setAttribute('d', '');
+                this.cursorTrailCore.setAttribute('d', '');
+                return;
+            }
+
+            const points = this.cursorTrailPoints;
+            const tail = points[0];
+            const head = points[points.length - 1];
+            const bodyPath = this.buildCursorTrailRibbonPath(
+                points,
+                CURSOR_TRAIL_BODY_HEAD_WIDTH,
+                CURSOR_TRAIL_BODY_TAIL_WIDTH
+            );
+            const corePath = this.buildCursorTrailRibbonPath(
+                points,
+                CURSOR_TRAIL_CORE_HEAD_WIDTH,
+                CURSOR_TRAIL_CORE_TAIL_WIDTH
+            );
+
+            if (this.cursorTrailGradient) {
+                this.cursorTrailGradient.setAttribute('x1', tail.x.toFixed(1));
+                this.cursorTrailGradient.setAttribute('y1', tail.y.toFixed(1));
+                this.cursorTrailGradient.setAttribute('x2', head.x.toFixed(1));
+                this.cursorTrailGradient.setAttribute('y2', head.y.toFixed(1));
+            }
+
+            this.cursorTrailBody.setAttribute('d', bodyPath);
+            this.cursorTrailCore.setAttribute('d', corePath);
+            if (this.cursorTrailHead) {
+                this.cursorTrailHead.setAttribute('cx', head.x.toFixed(1));
+                this.cursorTrailHead.setAttribute('cy', head.y.toFixed(1));
+                this.cursorTrailHead.setAttribute('r', String(CURSOR_TRAIL_HEAD_RADIUS));
+            }
+            if (this.cursorTrailHeadCore) {
+                this.cursorTrailHeadCore.setAttribute('cx', head.x.toFixed(1));
+                this.cursorTrailHeadCore.setAttribute('cy', head.y.toFixed(1));
+                this.cursorTrailHeadCore.setAttribute('r', '3.8');
+            }
+            if (this.cursorTrailSvg) {
+                this.cursorTrailSvg.classList.add('is-visible');
+            }
+        }
+
+        scheduleCursorTrailDecay() {
+            if (this.cursorTrailDecayFrame || shouldReduceMotion()) {
+                return;
+            }
+
+            const tick = (now) => {
+                this.cursorTrailDecayFrame = 0;
+                this.updateCursorTrail(now);
+                if (this.cursorTrailPoints && this.cursorTrailPoints.length > 0) {
+                    this.cursorTrailDecayFrame = window.requestAnimationFrame(tick);
+                }
+            };
+
+            this.cursorTrailDecayFrame = window.requestAnimationFrame(tick);
+        }
+
+        maybeSpawnCursorTrail(x, y, previousX, previousY, now) {
+            if (shouldReduceMotion()) {
+                return;
+            }
+
+            const dx = x - previousX;
+            const dy = y - previousY;
+            const stepDistance = Math.hypot(dx, dy);
+            if (stepDistance < 0.6) {
+                return;
+            }
+
+            const currentNow = this.getCursorTrailNow(now);
+            const lastPoint = this.cursorTrailLastPoint;
+            const elapsedMs = Number.isFinite(currentNow) && Number.isFinite(this.cursorTrailLastAt)
+                ? currentNow - this.cursorTrailLastAt
+                : CURSOR_TRAIL_MIN_INTERVAL_MS;
+            const distanceFromLast = lastPoint
+                ? Math.hypot(x - lastPoint.x, y - lastPoint.y)
+                : CURSOR_TRAIL_MIN_DISTANCE;
+
+            if (distanceFromLast < CURSOR_TRAIL_MIN_DISTANCE && elapsedMs < CURSOR_TRAIL_MIN_INTERVAL_MS) {
+                return;
+            }
+
+            const startPoint = lastPoint
+                ? {
+                    x: lastPoint.x,
+                    y: lastPoint.y,
+                    t: Number.isFinite(lastPoint.t) ? lastPoint.t : Math.max(0, currentNow - 16)
+                }
+                : {
+                    x: previousX,
+                    y: previousY,
+                    t: Math.max(0, currentNow - 16)
+                };
+            if (!lastPoint || this.cursorTrailPoints.length === 0) {
+                this.cursorTrailPoints.push(startPoint);
+            }
+
+            const distance = Math.hypot(x - startPoint.x, y - startPoint.y);
+            const segmentCount = Math.max(
+                1,
+                Math.min(CURSOR_TRAIL_MAX_SEGMENTS_PER_FRAME, Math.ceil(distance / CURSOR_TRAIL_SEGMENT_SPACING))
+            );
+            const startTime = Number.isFinite(startPoint.t) ? startPoint.t : currentNow - 16;
+
+            for (let index = 1; index <= segmentCount; index += 1) {
+                const ratio = index / segmentCount;
+                this.cursorTrailPoints.push({
+                    x: startPoint.x + ((x - startPoint.x) * ratio),
+                    y: startPoint.y + ((y - startPoint.y) * ratio),
+                    t: startTime + ((currentNow - startTime) * ratio)
+                });
+            }
+
+            this.cursorTrailLastPoint = { x: x, y: y, t: currentNow };
+            this.cursorTrailLastAt = currentNow;
+            this.updateCursorTrail(currentNow);
+            this.scheduleCursorTrailDecay();
+
+            if (Math.random() < CURSOR_TRAIL_BLUE_PARTICLE_CHANCE && distance > 10) {
+                this.spawnCursorTrailParticle(x, y, Math.atan2(dy, dx), 'blue');
+            }
+            if (Math.random() < CURSOR_TRAIL_ICON_CHANCE && distance > 16) {
+                this.spawnCursorTrailParticle(x, y, Math.atan2(dy, dx), 'icon');
+            }
+        }
+
+        clearCursorClickStars() {
+            if (!this.activeClickStars || this.activeClickStars.size === 0) {
+                return;
+            }
+
+            this.activeClickStars.forEach((entry) => {
+                if (!entry) {
+                    return;
+                }
+                if (entry.timer) {
+                    window.clearTimeout(entry.timer);
+                }
+                if (entry.element && entry.element.parentNode) {
+                    entry.element.parentNode.removeChild(entry.element);
+                }
+            });
+            this.activeClickStars.clear();
+        }
+
+        spawnCursorClickStars() {
+            if (!this.cursorShell || shouldReduceMotion()) {
+                return;
+            }
+
+            const fragment = this.document.createDocumentFragment();
+            for (let index = 0; index < CURSOR_CLICK_STAR_COUNT; index += 1) {
+                const angle = ((Math.PI * 2) * (index / CURSOR_CLICK_STAR_COUNT)) + ((Math.random() - 0.5) * 0.92);
+                const distance = 28 + Math.random() * 34;
+                const size = 6 + Math.random() * 6;
+                const x = Math.cos(angle) * distance;
+                const y = Math.sin(angle) * distance;
+                const star = createElement('span', 'yui-guide-click-star');
+                star.setAttribute('aria-hidden', 'true');
+                star.style.setProperty('--star-x', x.toFixed(2) + 'px');
+                star.style.setProperty('--star-y', y.toFixed(2) + 'px');
+                star.style.setProperty('--star-mid-x', (x * 0.76).toFixed(2) + 'px');
+                star.style.setProperty('--star-mid-y', (y * 0.76).toFixed(2) + 'px');
+                star.style.setProperty('--star-size', size.toFixed(2) + 'px');
+                star.style.setProperty('--star-rotate', Math.round(Math.random() * 180) + 'deg');
+                star.style.setProperty('--star-delay', Math.round(Math.random() * 60) + 'ms');
+                star.style.setProperty('--star-hue', String(Math.round(36 + Math.random() * 28)));
+                fragment.appendChild(star);
+
+                const entry = {
+                    element: star,
+                    timer: 0
+                };
+                entry.timer = window.setTimeout(() => {
+                    if (star.parentNode) {
+                        star.parentNode.removeChild(star);
+                    }
+                    this.activeClickStars.delete(entry);
+                }, CURSOR_CLICK_STAR_LIFETIME_MS + 120);
+                this.activeClickStars.add(entry);
+            }
+
+            this.cursorShell.appendChild(fragment);
+        }
+
+        clickCursor(durationMs) {
             this.ensureRoot();
             if (!this.cursorInner) {
                 return;
             }
+            const visibleMs = Number.isFinite(durationMs)
+                ? Math.max(DEFAULT_CURSOR_CLICK_VISIBLE_MS, Math.round(durationMs))
+                : DEFAULT_CURSOR_CLICK_VISIBLE_MS;
+            if (this.cursorClickTimer) {
+                window.clearTimeout(this.cursorClickTimer);
+                this.cursorClickTimer = 0;
+            }
+            if (this.cursorShell) {
+                this.document.body.classList.add('yui-guide-ghost-cursor-active');
+                this.cursorShell.hidden = false;
+                this.cursorShell.classList.add('is-visible');
+            }
             this.cursorInner.classList.remove('is-clicking');
             void this.cursorInner.offsetWidth;
             this.cursorInner.classList.add('is-clicking');
-            window.setTimeout(() => {
+            this.spawnCursorClickStars();
+            if (this.cursorPosition) {
+                this.spawnCursorTrailBurst(
+                    this.cursorPosition.x,
+                    this.cursorPosition.y,
+                    -Math.PI / 2,
+                    CURSOR_TRAIL_ACTION_BURST_COUNT
+                );
+            }
+            this.cursorClickTimer = window.setTimeout(() => {
+                this.cursorClickTimer = 0;
                 if (this.cursorInner) {
                     this.cursorInner.classList.remove('is-clicking');
                 }
-            }, 260);
+            }, visibleMs);
         }
 
         wobbleCursor() {
@@ -905,6 +1743,14 @@
             this.cursorInner.classList.remove('is-wobbling');
             void this.cursorInner.offsetWidth;
             this.cursorInner.classList.add('is-wobbling');
+            if (this.cursorPosition) {
+                this.spawnCursorTrailBurst(
+                    this.cursorPosition.x,
+                    this.cursorPosition.y,
+                    Math.PI,
+                    CURSOR_TRAIL_ACTION_BURST_COUNT
+                );
+            }
             window.setTimeout(() => {
                 if (this.cursorInner) {
                     this.cursorInner.classList.remove('is-wobbling');
@@ -919,15 +1765,51 @@
             }
 
             var self = this;
-            var startedAt = performance.now();
-            var pausedTotalMs = 0;
-            var pausedAt = 0;
+            var startX = centerX + radiusX;
+            var startY = centerY;
 
             self.document.body.classList.add('yui-guide-ghost-cursor-active');
             self.cursorShell.hidden = false;
             self.cursorShell.classList.add('is-visible');
+            var startDistance = self.cursorPosition
+                ? Math.hypot(startX - self.cursorPosition.x, startY - self.cursorPosition.y)
+                : 0;
+            if (shouldReduceMotion()) {
+                if (typeof cancelCheck === 'function' && cancelCheck()) {
+                    return Promise.resolve(false);
+                }
+                if (typeof abortCheck === 'function' && abortCheck()) {
+                    return Promise.resolve(false);
+                }
+                self.cursorShell.style.transitionDuration = '0ms';
+                self.cursorShell.style.transform = 'translate(' + Math.round(startX) + 'px, ' + Math.round(startY) + 'px)';
+                self.cursorPosition = { x: startX, y: startY };
+                self.cursorTrailLastPoint = null;
+                self.cursorTrailLastAt = 0;
+                return Promise.resolve(true);
+            }
+            var prepareMove = self.cursorPosition && startDistance > 2
+                ? self.moveCursorTo(startX, startY, {
+                    durationMs: Math.min(520, Math.max(220, Math.round(cycleMs * 0.08))),
+                    pauseCheck: pauseCheck,
+                    cancelCheck: cancelCheck
+                })
+                : Promise.resolve(true);
 
-            return new Promise(function (resolve) {
+            return prepareMove.then(function (prepared) {
+                if (!prepared) {
+                    return false;
+                }
+
+                var startedAt = performance.now();
+                var pausedTotalMs = 0;
+                var pausedAt = 0;
+                self.cursorTrailLastPoint = self.cursorPosition
+                    ? { x: self.cursorPosition.x, y: self.cursorPosition.y }
+                    : null;
+                self.cursorTrailLastAt = 0;
+
+                return new Promise(function (resolve) {
                 function tick(now) {
                     if (!self.cursorShell || !self.cursorShell.isConnected) {
                         resolve(false);
@@ -965,9 +1847,12 @@
                     var angle = progress * Math.PI * 2;
                     var x = centerX + Math.cos(angle) * radiusX;
                     var y = centerY + Math.sin(angle) * radiusY;
+                    var previousX = self.cursorPosition ? self.cursorPosition.x : x;
+                    var previousY = self.cursorPosition ? self.cursorPosition.y : y;
                     self.cursorShell.style.transitionDuration = '80ms';
                     self.cursorShell.style.transform = 'translate(' + Math.round(x) + 'px, ' + Math.round(y) + 'px)';
                     self.cursorPosition = { x: x, y: y };
+                    self.maybeSpawnCursorTrail(x, y, previousX, previousY, now);
 
                     if (progress >= 1) {
                         resolve(true);
@@ -978,11 +1863,21 @@
 
                 window.requestAnimationFrame(tick);
             });
+            });
         }
 
         hideCursor() {
             this.ensureRoot();
             this.document.body.classList.remove('yui-guide-ghost-cursor-active');
+            if (this.cursorClickTimer) {
+                window.clearTimeout(this.cursorClickTimer);
+                this.cursorClickTimer = 0;
+            }
+            if (this.cursorInner) {
+                this.cursorInner.classList.remove('is-clicking');
+            }
+            this.clearCursorClickStars();
+            this.clearCursorTrailParticles();
             this.cursorShell.hidden = true;
             this.cursorShell.classList.remove('is-visible');
         }
@@ -992,6 +1887,12 @@
             this.document.body.classList.remove('yui-guide-ghost-cursor-active');
             this.document.documentElement.style.cursor = '';
             this.document.body.style.cursor = '';
+            if (this.cursorClickTimer) {
+                window.clearTimeout(this.cursorClickTimer);
+                this.cursorClickTimer = 0;
+            }
+            this.clearCursorClickStars();
+            this.clearCursorTrailParticles();
             this.clearSpotlight();
             if (this.root && this.root.isConnected) {
                 this.root.remove();
@@ -1009,7 +1910,9 @@
             this.actionSpotlightFrame = null;
             this.secondaryActionSpotlightFrame = null;
             this.bubble = null;
+            this.bubbleHeader = null;
             this.bubbleTitle = null;
+            this.bubbleMeta = null;
             this.bubbleBody = null;
             this.preview = null;
             this.previewTitle = null;
@@ -1017,6 +1920,15 @@
             this.cursorShell = null;
             this.cursorInner = null;
             this.cursorPosition = null;
+            this.cursorTrailSvg = null;
+            this.cursorTrailBody = null;
+            this.cursorTrailCore = null;
+            this.cursorTrailHead = null;
+            this.cursorTrailHeadCore = null;
+            this.cursorTrailGradient = null;
+            this.cursorTrailPoints = [];
+            this.cursorTrailLastPoint = null;
+            this.cursorTrailLastAt = 0;
             this.persistentHighlightedElement = null;
             this.actionHighlightedElement = null;
             this.secondaryActionHighlightedElement = null;
