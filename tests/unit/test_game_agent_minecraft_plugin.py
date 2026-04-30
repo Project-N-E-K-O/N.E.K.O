@@ -421,6 +421,47 @@ async def test_stale_task_finished_after_timeout_is_dropped():
 
 
 @pytest.mark.asyncio
+async def test_stale_task_finished_does_not_flip_task_finished_flag():
+    """Dropping a stale frame must not set ``_task_finished = True``,
+    which would leak the abandoned task's completion state into the
+    *current* in-flight task and break the autonomous loop's busy
+    gate."""
+    service, _ = _make_service()
+    service.configure({"task_timeout_seconds": 5.0})
+    service._client = _FakeClient()
+
+    # Start a task → _task_finished flips to False → time it out so we
+    # accumulate a drop.
+    service.configure({"task_timeout_seconds": 0.1})
+    out = await service.execute_minecraft_task(task="A")
+    assert out["status"] == "timeout"
+    assert service._stale_task_finishes_to_drop == 1
+
+    # Start a fresh task — _task_finished is False again (in flight).
+    service.configure({"task_timeout_seconds": 5.0})
+    runner = asyncio.create_task(service.execute_minecraft_task(task="B"))
+    for _ in range(50):
+        if service._pending is not None and service._pending.task_text == "B":
+            break
+        await asyncio.sleep(0.01)
+    assert service._task_finished is False
+
+    # Stale frame for A arrives → must be dropped, must NOT flip
+    # _task_finished to True (B is still running).
+    await service._on_task_finished({"status": "ok", "text": "A done late"})
+    assert service._stale_task_finishes_to_drop == 0
+    assert service._task_finished is False
+    assert service._pending is not None
+    assert service._pending.task_text == "B"
+
+    # Real B completion now flips the flag.
+    await service._on_task_finished({"status": "ok", "text": "B done"})
+    assert service._task_finished is True
+    out_b = await asyncio.wait_for(runner, timeout=2.0)
+    assert out_b == {"status": "ok", "query": "B"}
+
+
+@pytest.mark.asyncio
 async def test_stale_task_finished_after_overwrite_is_dropped():
     """After overwrite, a delayed task_finished for the *old* task must
     not be matched to the *new* pending task (which has its own id-less

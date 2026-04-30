@@ -524,7 +524,6 @@ class GameAgentService:
         self._log_info("task_finished: status={}, text={}", status, text[:80])
         if text:
             self._log_cache.append(text)
-        self._task_finished = True
 
         async with self._pending_lock:
             # The agent server's protocol has no task ID, so a delayed
@@ -540,17 +539,26 @@ class GameAgentService:
                     "dropped stale task_finished (status={}, drops_remaining={})",
                     status, self._stale_task_finishes_to_drop,
                 )
+                # Don't touch ``_task_finished`` here — flipping it
+                # would leak the *old* task's completion state into
+                # the *new* (still in-flight) task, breaking the
+                # autonomous-loop's busy gate and the system prompt's
+                # "正在进行中 vs 已完成" branch.
                 return
             if self._pending is None:
                 # Stray task_finished (e.g. from agent restart) — nothing
-                # to wake. Just keep the log line for the next system
-                # prompt.
+                # to wake. Update the flag anyway so the autonomous
+                # loop knows the agent is idle and can resume nudging.
+                self._task_finished = True
                 return
             self._pending.result = {
                 "status": status,
                 "query": self._pending.task_text,
             }
             self._pending.event.set()
+            # Now safe to flip — this frame is being applied to the
+            # current pending task.
+            self._task_finished = True
             # Don't None-out here; ``execute_minecraft_task`` does that
             # after it reads ``result`` so we don't race the read.
 

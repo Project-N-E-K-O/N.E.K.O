@@ -88,6 +88,22 @@ class GameAgentClient:
                 self.is_connected = True
                 self._log_info("connected to {}", self.uri)
                 await self._listen()
+                # ``_listen`` swallows ConnectionClosed internally and
+                # returns normally — without an explicit sleep here the
+                # outer loop reconnects immediately, which against an
+                # agent that's repeatedly dropping the socket becomes a
+                # tight loop. Mirror the exception-path reconnect
+                # interval for the clean-close path too.
+                self.is_connected = False
+                if self._running:
+                    self._log_info(
+                        "listen exited cleanly, reconnecting in {:.1f}s",
+                        self.reconnect_interval,
+                    )
+                    try:
+                        await asyncio.sleep(self.reconnect_interval)
+                    except asyncio.CancelledError:
+                        break
             except asyncio.CancelledError:
                 break
             except Exception as exc:
