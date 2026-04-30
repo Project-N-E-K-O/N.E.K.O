@@ -29,18 +29,19 @@ function writeStoredDarkMode(dark: boolean) {
   } catch (_) {}
 }
 
-function applyDarkMode(dark: boolean, options: { persist?: boolean } = {}) {
+function applyDarkMode(dark: boolean | null | undefined, options: { persist?: boolean } = {}) {
+  const resolvedDark = typeof dark === 'boolean' ? dark : getSystemPrefersDark()
   const html = document.documentElement
-  if (dark) {
+  if (resolvedDark) {
     html.classList.add('dark')
     html.setAttribute('data-theme', 'dark')
   } else {
     html.classList.remove('dark')
     html.removeAttribute('data-theme')
   }
-  isDark.value = dark
+  isDark.value = resolvedDark
   if (options.persist !== false) {
-    writeStoredDarkMode(dark)
+    writeStoredDarkMode(resolvedDark)
   }
 }
 
@@ -59,7 +60,11 @@ function setupThemeSyncListeners() {
   listenersRegistered = true
 
   window.addEventListener('storage', (event) => {
-    if (event.key !== DARK_MODE_KEY || event.newValue === null) {
+    if (event.key !== DARK_MODE_KEY) {
+      return
+    }
+    if (event.newValue === null) {
+      applyDarkMode(null, { persist: false })
       return
     }
     applyDarkMode(event.newValue === 'true', { persist: false })
@@ -95,7 +100,7 @@ export function initDarkMode() {
       Promise.resolve(bridge.get())
         .then((dark) => {
           if (initEpoch === darkModeInitEpoch && typeof dark === 'boolean') {
-            applyDarkMode(dark)
+            applyDarkMode(dark, { persist: false })
           }
         })
         .catch(() => {})

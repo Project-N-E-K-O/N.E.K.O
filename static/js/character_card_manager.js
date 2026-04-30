@@ -6544,8 +6544,6 @@ async function handleUploadToWorkshop() {
             const validModels = availableModels.filter(model => model.name !== 'yui_default');
             if (validModels.length > 0) {
                 selectedModelName = validModels[0].name;
-            } else if (availableModels.length > 0) {
-                selectedModelName = availableModels[0].name;
             } else {
                 showMessage(window.t ? window.t('steam.noAvailableModelsError') : '没有可用的模型', 'error');
                 return;

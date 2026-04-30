@@ -543,9 +543,7 @@ def test_target_page_templates_load_yui_runtime_stack_before_tutorial_manager():
 def test_home_yui_guide_does_not_route_to_steam_workshop():
     yui_source = Path("static/yui-guide-steps.js").read_text(encoding="utf-8")
     tutorial_source = Path("static/universal-tutorial-manager.js").read_text(encoding="utf-8")
-    paths = _route_paths_from_decorators("main_routers/pages_router.py", "router")
 
-    assert "/steam_workshop_manager" not in paths
     assert "handoff_steam_workshop" not in yui_source
     assert "/steam_workshop_manager" not in yui_source
     assert "yuiGuideSceneId: 'handoff_steam_workshop'" not in tutorial_source

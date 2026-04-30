@@ -1333,12 +1333,10 @@ class UniversalTutorialManager {
         })(), setupDeadline]).catch((error) => {
             override.cancelled = true;
             this.revealTutorialLive2dPrepared();
-            if (this._tutorialAvatarOverride === override) {
-                this._tutorialAvatarOverride.currentName = null;
-                this._tutorialAvatarOverride.snapshotPayload = null;
-                this._tutorialAvatarOverride = null;
-            }
             this.applyTutorialChatIdentityOverride({ active: false });
+            if (this._tutorialAvatarOverride === override) {
+                this.restoreTutorialAvatarOverride();
+            }
             console.warn('[Tutorial] 临时切换 yui-origin 模型失败:', error);
         });
 
