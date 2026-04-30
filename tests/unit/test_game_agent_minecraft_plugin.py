@@ -32,17 +32,24 @@ async def _wait_for_pending(service, *, predicate=None, timeout: float = 0.5):
     fast with a clear assertion if the timeout fires — without this
     fail-fast branch, a flaky test would surface as an unrelated
     AttributeError on ``service._pending.task_text`` later, hiding
-    the real cause."""
+    the real cause.
+    """
     deadline = asyncio.get_event_loop().time() + timeout
     while asyncio.get_event_loop().time() < deadline:
         pending = service._pending
         if pending is not None and (predicate is None or predicate(pending)):
             return pending
         await asyncio.sleep(0.01)
+    # ``pytest.fail`` raises ``pytest.failed.Exception`` and never
+    # returns, but its return type isn't annotated as ``NoReturn`` in
+    # all pytest versions, so the static analyzer warns about a
+    # potential implicit ``None`` fall-through. Make the
+    # never-returns property explicit with ``raise AssertionError``.
     pytest.fail(
         f"_pending never satisfied predicate within {timeout}s; "
         f"current _pending={service._pending!r}"
     )
+    raise AssertionError("unreachable")  # pragma: no cover
 
 
 # ---------------------------------------------------------------------------
@@ -514,7 +521,9 @@ async def test_log_heuristic_does_not_flip_when_pending_task_active():
     await service._on_log("Connection lost and re-established.")
     assert service._task_finished is False
 
-    # Clean up
+    # Clean up — we cancelled it ourselves so both CancelledError
+    # and any incidental exception on the way out are expected and
+    # irrelevant to the assertions above.
     runner.cancel()
     try:
         await runner
