@@ -445,6 +445,78 @@ def test_home_template_loads_yui_runtime_stack_before_tutorial_manager():
     assert positions == sorted(positions)
 
 
+def test_home_template_loads_yui_wakeup_before_director():
+    source = Path("templates/index.html").read_text(encoding="utf-8")
+
+    positions = [
+        _script_tag_position(source, name)
+        for name in (
+            "yui-guide-overlay.js",
+            "yui-guide-page-handoff.js",
+            "yui-guide-wakeup.js",
+            "yui-guide-director.js",
+            "universal-tutorial-manager.js",
+        )
+    ]
+    assert positions == sorted(positions)
+
+
+def test_yui_wakeup_live2d_session_keeps_m2_boundaries():
+    source = Path("static/yui-guide-wakeup.js").read_text(encoding="utf-8")
+    live2d_source = Path("static/live2d-model.js").read_text(encoding="utf-8")
+    style_source = Path("static/css/yui-guide.css").read_text(encoding="utf-8")
+    yui_model = json.loads(Path("static/yui_default/yui_default.model3.json").read_text(encoding="utf-8"))
+    yui_display_info = json.loads(Path("static/yui_default/yui_default.cdi3.json").read_text(encoding="utf-8"))
+    yui_param_ids = {
+        item.get("Id")
+        for item in yui_display_info.get("Parameters", [])
+        if isinstance(item, dict)
+    }
+
+    assert "class Live2DWakeupSession" in source
+    assert "DEFAULT_DURATION_MS = 3800" in source
+    assert "LIVE2D_HANDOFF_MS = 620" in source
+    assert "LIVE2D_HANDOFF_MS" in source
+    assert "_suspendEyeBlinkOverride" in source
+    assert "removeBlockingGuideOverlay" in source
+    assert "#yui-guide-overlay" in source
+    assert "yui-taking-over" in source
+    assert "setTemporaryPoseOverride" in source
+    assert "applyTemporaryPose" in source
+    assert "Live2DManager.prototype.setTemporaryPoseOverride" in live2d_source
+    assert "_applyTemporaryPoseOverride(currentCoreModel)" in live2d_source
+    for param_id in (
+        "ParamEyeLOpen",
+        "ParamEyeROpen",
+        "ParamAngleX",
+        "ParamAngleY",
+        "ParamAngleZ",
+        "ParamEyeBallX",
+        "ParamEyeBallY",
+        "ParamBodyAngleX",
+        "ParamBodyAngleY",
+        "ParamBodyAngleZ",
+        "Param75",
+        "Param90",
+        "Param92",
+        "Param95",
+    ):
+        assert param_id in source
+
+    assert yui_model.get("FileReferences", {}).get("Motions") == {}
+    for param_id in ("Param75", "Param90", "Param92", "Param95"):
+        assert param_id in yui_param_ids
+
+    assert "coreModel.update =" not in source
+    assert "motionManager.update =" not in source
+    assert "model.focus(" not in source
+    assert "document.createElement" not in source
+    assert "appendChild" not in source
+    assert "yui-guide-wakeup-stage" not in style_source
+    assert "yui-guide-wakeup-backdrop" not in style_source
+    assert "yui-guide-wakeup-particle" not in style_source
+
+
 def test_target_page_templates_load_yui_runtime_stack_before_tutorial_manager():
     for template_path in (
         "templates/api_key_settings.html",
@@ -489,14 +561,11 @@ def test_home_yui_guide_avatar_override_does_not_persist_tutorial_model():
     tutorial_source = Path("static/universal-tutorial-manager.js").read_text(encoding="utf-8")
     interpage_source = Path("static/app-interpage.js").read_text(encoding="utf-8")
 
-    begin_block = tutorial_source[
-        tutorial_source.index("beginTutorialAvatarOverride()"):
-        tutorial_source.index("async restoreTutorialAvatarOverride()")
-    ]
-    restore_block = tutorial_source[
-        tutorial_source.index("async restoreTutorialAvatarOverride()"):
-        tutorial_source.index("/**", tutorial_source.index("async restoreTutorialAvatarOverride()"))
-    ]
+    begin_start = tutorial_source.index("beginTutorialAvatarOverride()")
+    restore_start = tutorial_source.index("restoreTutorialAvatarOverride()")
+    restore_end = tutorial_source.index("/**", restore_start)
+    begin_block = tutorial_source[begin_start:restore_start]
+    restore_block = tutorial_source[restore_start:restore_end]
 
     assert "saveTutorialModelPayload" not in begin_block
     assert "saveTutorialModelPayload" not in restore_block

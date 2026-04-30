@@ -7000,7 +7000,7 @@
                     reason: result && result.reason ? result.reason : ''
                 });
             } catch (error) {
-                console.warn('[YuiGuide] 入场苏醒遮罩播放失败，继续教程:', error);
+                console.warn('[YuiGuide] 入场苏醒播放失败，继续教程:', error);
                 this.recordExperienceMetric('wakeup_result', {
                     result: 'fallback',
                     reason: 'exception'

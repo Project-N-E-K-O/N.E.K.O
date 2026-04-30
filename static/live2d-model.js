@@ -85,6 +85,7 @@ Live2DManager.prototype.removeModel = async function(options = {}) {
     this._mouthOverrideInstalled = false;
     this._origCoreModelUpdate = null;
     this._coreModelRef = null;
+    this._temporaryPoseOverride = null;
 
     if (this._mouthTicker && ticker) {
         try {
@@ -276,6 +277,46 @@ Live2DManager.prototype.getCurrentModel = function() {
     return this.currentModel || null;
 };
 
+// 安装短期姿态覆盖槽。用于教程苏醒这类需要在渲染前最后写入的动作，
+// 避免被视线锁、眨眼、常驻表情或 motion update 覆盖。
+Live2DManager.prototype.setTemporaryPoseOverride = function(source, apply) {
+    if (typeof apply !== 'function') {
+        return false;
+    }
+    this._temporaryPoseOverride = {
+        source: String(source || 'temporary_pose'),
+        apply: apply
+    };
+    return true;
+};
+
+Live2DManager.prototype.clearTemporaryPoseOverride = function(source) {
+    const active = this._temporaryPoseOverride;
+    if (!active) {
+        return;
+    }
+    if (!source || active.source === source) {
+        this._temporaryPoseOverride = null;
+    }
+};
+
+Live2DManager.prototype._applyTemporaryPoseOverride = function(coreModel) {
+    const active = this._temporaryPoseOverride;
+    if (!active || typeof active.apply !== 'function' || !coreModel) {
+        return;
+    }
+    try {
+        active.apply(coreModel, {
+            manager: this,
+            model: this.currentModel || null,
+            now: performance.now()
+        });
+    } catch (error) {
+        console.warn('[Live2D] 临时姿态覆盖执行失败，已清理:', error);
+        this._temporaryPoseOverride = null;
+    }
+};
+
 // 重置模型相关的派生元数据（用于加载新模型前清理旧状态）
 Live2DManager.prototype._resetDerivedModelMetadata = function() {
     this._randomLookAtAffectsHead = false; // 是否允许随机视线影响头部角度
@@ -302,6 +343,7 @@ Live2DManager.prototype._resetDerivedModelMetadata = function() {
     this._lookAtTargetY = 0;
     this._lookAtCurrentX = 0;
     this._lookAtCurrentY = 0;
+    this._temporaryPoseOverride = null;
     this._bubbleGeometryCache = null;
     this._bubbleGeometryModelReadyAt = 0;
     this._bubbleGeometryRefreshPass = 0;
@@ -1635,6 +1677,12 @@ Live2DManager.prototype.installMouthOverride = function() {
                         }
                     }
                 }
+            }
+
+            // 注入点 3（渲染前最后姿态覆盖）：教程苏醒等短期动作在这里写入，
+            // 确保不会被正脸锁、随机视线、眨眼或常驻表情在同一帧覆盖。
+            if (typeof this._applyTemporaryPoseOverride === 'function') {
+                this._applyTemporaryPoseOverride(currentCoreModel);
             }
         } catch (e) {
             console.error('口型覆盖参数写入失败:', e);
