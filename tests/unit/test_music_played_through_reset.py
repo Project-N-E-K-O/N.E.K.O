@@ -95,6 +95,43 @@ def test_compute_source_weights_recovers_after_reset(monkeypatch):
         assert abs(weights_after[ch] - 0.25) < 1e-9
 
 
+def test_reset_is_counter_zero_not_throttle_off(monkeypatch):
+    """关键语义：重置 = counter 归 0，不是永久关闭 throttle。
+    听完一次后，下一轮再连续分享 music 仍然会重新累加并最终被剔除——
+    否则相当于"用户听完一次 → 此后无限放音乐"。"""
+    sr._proactive_chat_history.pop(LL, None)
+    candidates = ["web", "music", "meme", "reminiscence"]
+
+    fake_t = [10_000.0]
+    monkeypatch.setattr(sr.time, "time", lambda: fake_t[0])
+
+    # 第一轮：连推 3 首 → music 被剔除
+    for i in range(3):
+        sr._record_proactive_chat(LL, f"first-{i}", "music")
+        fake_t[0] += 1.0
+    assert "music" in sr._filter_sources_by_weight(
+        sr._compute_source_weights(LL, candidates)
+    )
+
+    # 用户听完最后一首 → 复位
+    fake_t[0] += 0.5
+    sr._clear_channel_from_proactive_history(LL, "music")
+    assert "music" not in sr._filter_sources_by_weight(
+        sr._compute_source_weights(LL, candidates)
+    ), "复位后立刻应当回到均匀"
+
+    # 第二轮：再连推 3 首 → 应当从 0 重新累加，再次被剔除
+    for i in range(3):
+        fake_t[0] += 1.0
+        sr._record_proactive_chat(LL, f"second-{i}", "music")
+    suppressed = sr._filter_sources_by_weight(
+        sr._compute_source_weights(LL, candidates)
+    )
+    assert "music" in suppressed, (
+        "复位不能等同于永久关闭 throttle —— 第二轮再连推 3 首必须重新触达阈值"
+    )
+
+
 def test_cleared_entries_still_visible_in_format_recent(monkeypatch):
     """清空 channel 字段后，message 文本仍要在 _format_recent_proactive_chats 里出现，
     避免 LLM 反复推同一首歌。"""
