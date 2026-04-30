@@ -44,6 +44,9 @@ class VRMAnimation {
         this.mouthExpressions = { 'aa': null, 'ih': null, 'ou': null, 'ee': null, 'oh': null };
         this.currentMouthWeight = 0;
         this.frequencyData = null;
+        // _updateLipSync 每帧调 setValue，失败时用 console.warn 会刷屏。
+        // 用 Set 记住已告警过的表情名，同名失败只打一次。
+        this._lipSyncWarnedNames = new Set();
         this._boundsUpdateFrameCounter = 0;
         this._boundsUpdateInterval = 5;
         this._skinnedMeshes = [];
@@ -750,6 +753,8 @@ class VRMAnimation {
     startLipSync(analyser) {
         this.analyser = analyser;
         this.lipSyncActive = true;
+        // 清空一次性告警记录：换模型或重新开始 lip sync 时，允许新会话重新告警一次。
+        this._lipSyncWarnedNames.clear();
         this.updateMouthExpressionMapping();
         if (this.analyser) {
             this.frequencyData = new Uint8Array(this.analyser.frequencyBinCount);
@@ -825,10 +830,31 @@ class VRMAnimation {
         const finalWeight = Math.max(0, this.currentMouthWeight);
         const mouthOpenName = this.mouthExpressions.aa || 'aa';
 
+        const expressionManager = this.manager.currentModel.vrm.expressionManager;
+
+        // 待机 VRMA 的 mixer.update 可能在本帧已写入 ih/ou/ee/oh 等口型轨道；
+        // _updateLipSync 在 mixer 之后执行，但只覆盖 aa，剩余四个元音残留会与 aa
+        // 叠加成混合口型。这里在写入 aa 之前先把其他口型表情置 0，确保语音口型同步
+        // 期间嘴部完全由 lip sync 驱动，不被待机动作的口型轨道影响。
+        for (const [vowel, name] of Object.entries(this.mouthExpressions)) {
+            if (!name || vowel === 'aa') continue;
+            try {
+                expressionManager.setValue(name, 0);
+            } catch (e) {
+                if (!this._lipSyncWarnedNames.has(name)) {
+                    this._lipSyncWarnedNames.add(name);
+                    console.warn(`[VRM LipSync] 重置口型表情失败: ${name}`, e);
+                }
+            }
+        }
+
         try {
-            this.manager.currentModel.vrm.expressionManager.setValue(mouthOpenName, finalWeight);
+            expressionManager.setValue(mouthOpenName, finalWeight);
         } catch (e) {
-            console.warn(`[VRM LipSync] 设置表情失败: ${mouthOpenName}`, e);
+            if (!this._lipSyncWarnedNames.has(mouthOpenName)) {
+                this._lipSyncWarnedNames.add(mouthOpenName);
+                console.warn(`[VRM LipSync] 设置表情失败: ${mouthOpenName}`, e);
+            }
         }
     }
 
