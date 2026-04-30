@@ -32,7 +32,10 @@ def _reset_shared_state():
         yield
     finally:
         shared_state = sys.modules.get("main_routers.shared_state")
-        if shared_state is None or not had_shared_state:
+        if shared_state is None:
+            return
+        if not had_shared_state:
+            shared_state._state.clear()
             return
 
         shared_state._state.clear()

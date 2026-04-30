@@ -66,6 +66,7 @@ class STS2AutoplayService(
         self._last_neko_commentary_scene = ""
         self._last_neko_event_scene = ""
         self._last_neko_event_floor = -1
+        self._auto_pause_reason: Optional[str] = None
 
     _MODE_ALIASES = {
         "full-program": "full-program",
@@ -173,6 +174,7 @@ class STS2AutoplayService(
         self._cfg["character_strategy"] = self._resolve_startup_character_strategy(self._cfg.get("character_strategy"))
         self._shutdown = False
         self._paused = False
+        self._auto_pause_reason = None
         self._autoplay_state = "idle"
         self._client = STS2ApiClient(
             base_url=str(self._cfg.get("base_url") or "http://127.0.0.1:8080"),

@@ -24,6 +24,20 @@ class DecisioningMixin:
             return {}
         return constraints if isinstance(constraints, dict) else {}
 
+    def _enemy_hp_value(self, enemy: dict[str, Any]) -> int:
+        analyzer = getattr(self, "_combat_analyzer", None)
+        analyzer_enemy_hp_value = getattr(analyzer, "_enemy_hp_value", None)
+        if callable(analyzer_enemy_hp_value):
+            return int(analyzer_enemy_hp_value(enemy))
+        return self._safe_int(self._first_present(enemy.get("hp"), enemy.get("current_hp"), enemy.get("health"), default=0), 0)
+
+    def _enemy_block_value(self, enemy: dict[str, Any]) -> int:
+        analyzer = getattr(self, "_combat_analyzer", None)
+        analyzer_enemy_block_value = getattr(analyzer, "_enemy_block_value", None)
+        if callable(analyzer_enemy_block_value):
+            return int(analyzer_enemy_block_value(enemy))
+        return self._safe_int(self._first_present(enemy.get("block"), enemy.get("current_block"), default=0), 0)
+
     def _is_desperate_situation(self, context: dict[str, Any]) -> bool:
         if not bool(self._cfg.get("neko_desperate_enabled", True)):
             return False
@@ -338,7 +352,7 @@ class DecisioningMixin:
                             best_target = self._safe_int(valid_targets[0])
                     else:
                         best_target = None
-            if best_card is None or best_benefit < -999990.0 or (best_sequence and best_benefit <= 0):
+            if best_card is None or best_benefit < -999990.0 or best_benefit <= 0:
                 break
             action = self._action_for_card(play_card_actions, best_card, target_index=best_target)
             if action is None:
@@ -721,8 +735,8 @@ class DecisioningMixin:
                 "in_combat": snapshot.get("in_combat"),
                 "character": snapshot.get("character"),
                 "turn": self._first_present(combat.get("turn"), raw_state.get("turn")),
-                "player_hp": self._first_present(player.get("hp"), run.get("current_hp"), run.get("hp")),
-                "max_hp": self._first_present(player.get("max_hp"), run.get("max_hp")),
+                "player_hp": self._first_present(player.get("hp"), raw_state.get("current_hp"), run.get("current_hp"), run.get("hp")),
+                "max_hp": self._first_present(player.get("max_hp"), raw_state.get("max_hp"), run.get("max_hp")),
                 "gold": run.get("gold"),
                 "energy": player.get("energy"),
             },

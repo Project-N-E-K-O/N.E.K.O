@@ -1,35 +1,19 @@
 from __future__ import annotations
 
 import asyncio
-import importlib
-import sys
-import types
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 
+from plugin.plugins.sts2_autoplay.tests._isolated_loader import load_isolated_sts2_module
+
+
 PROJECT_ROOT = Path(__file__).resolve().parents[4]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-STS2_PACKAGE_DIR = Path(__file__).resolve().parents[1]
 
 
-def load_service_class():
-    for name, path in {
-        "plugin": PROJECT_ROOT / "plugin",
-        "plugin.plugins": PROJECT_ROOT / "plugin" / "plugins",
-        "plugin.plugins.sts2_autoplay": STS2_PACKAGE_DIR,
-    }.items():
-        if name not in sys.modules:
-            module = types.ModuleType(name)
-            module.__path__ = [str(path)]
-            sys.modules[name] = module
-    return importlib.import_module("plugin.plugins.sts2_autoplay.service").STS2AutoplayService
-
-
-STS2AutoplayService = load_service_class()
+STS2AutoplayService = load_isolated_sts2_module("sts2_neko_command_test_pkg", "service").STS2AutoplayService
 
 
 class DummyLogger:

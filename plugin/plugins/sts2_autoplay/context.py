@@ -505,7 +505,10 @@ class GameContextAnalyzer:
         return score
 
     def _option_has_nearby_buffer(self, raw: Dict[str, Any]) -> bool:
-        stack: List[Any] = [raw]
+        stack: List[Any] = []
+        for key, value in raw.items():
+            if str(key).lower() in {"next_nodes", "children", "neighbors", "branches", "paths", "next", "nearby", "adjacent"} and isinstance(value, (dict, list)):
+                stack.append(value)
         keywords = {"rest", "campfire", "篝火", "shop", "merchant", "商店", "event", "question", "问号"}
         while stack:
             current = stack.pop()

@@ -1,35 +1,19 @@
 from __future__ import annotations
 
 import asyncio
-import importlib
-import sys
-import types
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 
+from plugin.plugins.sts2_autoplay.tests._isolated_loader import load_isolated_sts2_module
+
+
 PROJECT_ROOT = Path(__file__).resolve().parents[4]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-STS2_PACKAGE_DIR = Path(__file__).resolve().parents[1]
 
 
-def load_context_flow_mixin():
-    for name, path in {
-        "plugin": PROJECT_ROOT / "plugin",
-        "plugin.plugins": PROJECT_ROOT / "plugin" / "plugins",
-        "plugin.plugins.sts2_autoplay": STS2_PACKAGE_DIR,
-    }.items():
-        if name not in sys.modules:
-            module = types.ModuleType(name)
-            module.__path__ = [str(path)]
-            sys.modules[name] = module
-    return importlib.import_module("plugin.plugins.sts2_autoplay.context_flow").ContextFlowMixin
-
-
-ContextFlowMixin = load_context_flow_mixin()
+ContextFlowMixin = load_isolated_sts2_module("sts2_context_flow_test_pkg", "context_flow").ContextFlowMixin
 
 
 class ContextFlowService(ContextFlowMixin):

@@ -647,7 +647,7 @@ class NekoReportingMixin:
 
         safe_hp_threshold = max(0.0, min(1.0, self._safe_float(self._cfg.get("neko_auto_safe_hp_threshold", 0.5), 0.5)))
         resume_after_low_hp = bool(self._cfg.get("neko_auto_resume_after_low_hp", True))
-        if resume_after_low_hp and self._autoplay_state == "paused" and self._paused and hp_ratio >= safe_hp_threshold:
+        if resume_after_low_hp and self._autoplay_state == "paused" and self._paused and self._auto_pause_reason == "low_hp" and hp_ratio >= safe_hp_threshold:
             return {"action": "resume", "reason": "hp_recovered", "hp_ratio": round(hp_ratio, 2)}
 
         return None
@@ -685,6 +685,7 @@ class NekoReportingMixin:
         }
         if action_type == "pause":
             self._paused = True
+            self._auto_pause_reason = str(reason or "auto")
             if self._autoplay_state == "running":
                 self._autoplay_state = "paused"
             self._emit_status()
@@ -705,6 +706,7 @@ class NekoReportingMixin:
                 self.logger.info(f"[sts2_autoplay][neko-auto] restore_speed: interval restored to {saved_interval}")
         elif action_type == "resume":
             self._paused = False
+            self._auto_pause_reason = None
             self._autoplay_state = "running"
             saved_interval = self._cfg.get("_neko_auto_saved_action_interval")
             if saved_interval is not None:

@@ -174,6 +174,7 @@ def start_callback_server(
     handle.port = port
 
     ready_event = threading.Event()
+    startup_error: list[str] = []
 
     def _run_server() -> None:
         loop = asyncio.new_event_loop()
@@ -192,23 +193,31 @@ def start_callback_server(
 
         async def _serve_and_signal() -> None:
             # Start serving. uvicorn.Server sets self.started=True once
-            # it is accepting connections. We poll for that in a background
-            # task and signal the main thread.
+            # it is accepting connections. Only that state is considered a
+            # successful startup signal; timeout and serve() exit are failures.
             async def _wait_started() -> None:
                 for _ in range(100):  # up to 5 seconds
                     if getattr(server, "started", False):
                         ready_event.set()
                         return
+                    if getattr(server, "should_exit", False):
+                        startup_error.append("callback server exited before accepting connections")
+                        ready_event.set()
+                        return
                     await asyncio.sleep(0.05)
-                # Fallback: signal anyway so main thread doesn't hang
+                startup_error.append("callback server did not become ready within 5s")
                 ready_event.set()
 
-            asyncio.ensure_future(_wait_started())
+            waiter = asyncio.ensure_future(_wait_started())
             await server.serve()
+            if not waiter.done() and not getattr(server, "started", False):
+                startup_error.append("callback server stopped before startup completed")
+                ready_event.set()
 
         try:
             loop.run_until_complete(_serve_and_signal())
         except Exception as exc:
+            startup_error.append(str(exc))
             logger.warning("Callback server loop exited: %s", exc)
         finally:
             ready_event.set()  # unblock main thread if serve() failed early
@@ -227,12 +236,14 @@ def start_callback_server(
     handle._thread = thread
 
     # Wait for the server to be ready (up to 5 seconds)
-    if ready_event.wait(timeout=5.0):
+    ready_event.wait(timeout=5.0)
+    if getattr(handle._server, "started", False):
         logger.info("STS2 tool callback server started on %s:%d (thread=%s)", host, port, thread.name)
-    else:
-        logger.warning("STS2 tool callback server did not become ready within 5s")
+        return handle
 
-    return handle
+    reason = startup_error[-1] if startup_error else "callback server did not become ready within 5s"
+    stop_callback_server(handle, logger)
+    raise RuntimeError(reason)
 
 
 def stop_callback_server(handle: Optional[_CallbackServerHandle], logger: Any) -> None:

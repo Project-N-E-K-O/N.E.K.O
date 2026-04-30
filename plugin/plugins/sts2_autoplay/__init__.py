@@ -34,7 +34,7 @@ def _as_mapping(value: Any) -> JsonObject:
 
 
 def _summary_from(payload: Mapping[str, Any]) -> str:
-    return str(payload.get("summary") or "")
+    return str(payload.get("summary") or payload.get("message") or payload.get("content") or "")
 
 
 def _finite_float(value: Any, *, key: str) -> float:

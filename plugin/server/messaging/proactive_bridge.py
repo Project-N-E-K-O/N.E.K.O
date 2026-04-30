@@ -13,6 +13,7 @@ import json
 import os
 import threading
 import time
+from urllib.parse import urlparse
 
 from plugin.logging_config import get_logger
 
@@ -22,6 +23,12 @@ except Exception:  # pragma: no cover
     zmq = None
 
 logger = get_logger("server.messaging.proactive_bridge")
+
+
+def _is_safe_music_url(value: str) -> bool:
+    parsed = urlparse(value.strip())
+    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
 
 
 def _resolve_agent_push_addr() -> str:
@@ -224,7 +231,7 @@ class ProactiveBridge:
                     # -------- 4. Music Direct Play --------
                     elif msg_type == "music_play_url":
                         music_url = metadata.get("url")
-                        if not isinstance(music_url, str) or not music_url.strip():
+                        if not isinstance(music_url, str) or not _is_safe_music_url(music_url):
                             continue
                         proactive_event = {
                             "event_type": "music_play_url",

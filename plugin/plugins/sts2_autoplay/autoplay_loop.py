@@ -17,6 +17,7 @@ class AutoplayLoopMixin:
             await self.refresh_state()
         except Exception as exc:
             self.logger.warning(f"启动尖塔半自动前刷新状态失败，将延迟初始化起点: {exc}")
+            self._snapshot = {}
 
         self._semi_auto_task = self._build_semi_auto_task(objective=objective, stop_condition=stop_condition)
         try:
@@ -25,6 +26,7 @@ class AutoplayLoopMixin:
             self.logger.warning(f"任务启动通知失败，不影响任务执行: {exc}")
 
         self._paused = False
+        self._auto_pause_reason = None
         self._autoplay_state = "running"
         self._autoplay_task = asyncio.create_task(self._autoplay_loop())
         self._emit_status()
@@ -34,6 +36,7 @@ class AutoplayLoopMixin:
         if self._autoplay_task is None or self._autoplay_task.done():
             return {"status": "idle", "message": "没有运行中的尖塔半自动任务", "executed": False}
         task = dict(self._semi_auto_task) if isinstance(self._semi_auto_task, dict) else None
+        self._auto_pause_reason = None
         self._paused = True
         if self._autoplay_state == "running":
             self._autoplay_state = "paused"
@@ -51,6 +54,7 @@ class AutoplayLoopMixin:
             self._emit_status()
             return {"status": "idle", "message": "没有可恢复的尖塔半自动任务", "executed": False}
         self._paused = False
+        self._auto_pause_reason = None
         self._autoplay_state = "running"
         self._emit_status()
         return {"status": "running", "message": "尖塔已恢复"}
@@ -58,6 +62,7 @@ class AutoplayLoopMixin:
     async def stop_autoplay(self, reason: str = "用户请求停止") -> Dict[str, Any]:
         task = dict(self._semi_auto_task) if isinstance(self._semi_auto_task, dict) else None
         self._paused = False
+        self._auto_pause_reason = None
         self._semi_auto_task = None
         if self._autoplay_task is not None:
             self._autoplay_task.cancel()

@@ -8,6 +8,7 @@ See ``docs/zh-CN/plugins/tool-calling.md`` for the official protocol spec.
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Any, Dict, List
 
 import httpx
@@ -178,13 +179,14 @@ def _build_callback_url(callback_port: int, tool_name: str) -> str:
     return f"http://127.0.0.1:{callback_port}/{tool_name}"
 
 
-async def register_all_tools(logger: Any, *, callback_port: int) -> None:
+async def register_all_tools(logger: Any, *, callback_port: int, deadline_seconds: float = 30.0) -> None:
     """Register all STS2 tools with the main_server ToolRegistry.
 
-    Uses the ``register_with_retry`` pattern recommended by the official
-    tool-calling doc: retry indefinitely on connection errors (main_server
-    may not be ready yet), break on logical failures.
+    Retries transient connection errors until ``deadline_seconds`` elapses.
+    This keeps plugin startup bounded so tool-calling can degrade cleanly
+    when main_server is unavailable.
     """
+    deadline_at = time.monotonic() + max(1.0, float(deadline_seconds))
     async with httpx.AsyncClient() as client:
         for tool_def in TOOL_DEFINITIONS:
             payload = {
@@ -197,9 +199,13 @@ async def register_all_tools(logger: Any, *, callback_port: int) -> None:
                 "timeout_seconds": tool_def.get("timeout_seconds", 30),
             }
             while True:
+                remaining = deadline_at - time.monotonic()
+                if remaining <= 0:
+                    logger.warning("Tool '%s' register timed out after %.1fs", tool_def["name"], deadline_seconds)
+                    break
                 try:
                     r = await client.post(
-                        f"{_TOOLS_API}/register", json=payload, timeout=5,
+                        f"{_TOOLS_API}/register", json=payload, timeout=min(5.0, max(0.5, remaining)),
                     )
                     body = r.json()
                     if body.get("ok"):
@@ -215,14 +221,16 @@ async def register_all_tools(logger: Any, *, callback_port: int) -> None:
                             body.get("failed_roles"),
                         )
                     break
-                except (httpx.ConnectError, httpx.TimeoutException):
-                    pass  # main_server not ready yet, retry
+                except (httpx.ConnectError, httpx.TimeoutException) as exc:
+                    if time.monotonic() >= deadline_at:
+                        logger.warning("Tool '%s' register unavailable before deadline: %s", tool_def["name"], exc)
+                        break
                 except Exception as e:
                     logger.warning(
                         "Tool '%s' register error: %s", tool_def["name"], e,
                     )
                     break
-                await asyncio.sleep(2)
+                await asyncio.sleep(min(2.0, max(0.1, deadline_at - time.monotonic())))
 
 
 async def unregister_all_tools(logger: Any) -> None:

@@ -10,7 +10,7 @@ PR #1035 introduced a unified tool calling system. Official doc: `docs/zh-CN/plu
 Plugin (user_plugin_server, port NEKO_PLUGIN_PORT)     Main Server (port 48911)
   |                                                          |
   |-- POST /api/tools/register ----------------------------->|  startup
-  |     callback_url = 127.0.0.1:plugin_port/api/...        |
+  |     callback_url = http://127.0.0.1:plugin_port/api/... |
   |                                                          |
   |<-- POST callback_url -----------------------------------|  LLM tool_call
   |     {name, arguments, call_id}                           |

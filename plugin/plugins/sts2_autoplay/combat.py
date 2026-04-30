@@ -94,6 +94,12 @@ class CombatAnalyzer:
                 if len(numbers) >= 2 and ("x" in intent.lower() or "×" in intent):
                     return max(0, numbers[0] * numbers[1])
                 return max(0, numbers[0])
+            damage_value = self._first_numeric_value(enemy.get("intent_damage"))
+            if damage_value is None:
+                damage_value = self._first_numeric_value(enemy.get("intent_value"))
+            if damage_value is not None:
+                hits_value = max(1, self._safe_int(self._first_numeric_value(enemy.get("hits")), 1))
+                return max(0, damage_value * hits_value)
         return 0
 
     def _card_text_candidates(self, card: Dict[str, Any]) -> List[str]:
@@ -369,9 +375,9 @@ class CombatAnalyzer:
     def _orb_damage_on_evoke(self, orb: Dict[str, Any], *, target_index: Any = None) -> int:
         orb_type = self._orb_type(orb)
         if orb_type == "lightning":
-            return self._orb_numeric_value(orb, {"evoke_damage", "evoke", "passive_evoke", "damage", "amount"})
+            return self._orb_numeric_value(orb, ("evoke_damage", "evoke", "passive_evoke", "damage", "amount"))
         if orb_type == "dark":
-            return self._orb_numeric_value(orb, {"evoke_damage", "evoke", "damage", "amount", "passive_amount", "current"})
+            return self._orb_numeric_value(orb, ("evoke_damage", "evoke", "damage", "amount", "passive_amount", "current"))
         return 0
 
     def _orb_type(self, orb: Dict[str, Any]) -> str:
@@ -390,7 +396,7 @@ class CombatAnalyzer:
             return "plasma"
         return ""
 
-    def _orb_numeric_value(self, orb: Dict[str, Any], keys: set) -> int:
+    def _orb_numeric_value(self, orb: Dict[str, Any], keys: tuple[str, ...]) -> int:
         for key in keys:
             value = self._first_numeric_value(orb.get(key))
             if value is not None:

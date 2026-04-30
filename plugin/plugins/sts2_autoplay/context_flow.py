@@ -19,12 +19,14 @@ class ContextFlowMixin:
 
     def _safe_config_int(self, key: str, default: int) -> int:
         try:
-            return int(self._cfg.get(key, default) or default)
+            value = self._cfg.get(key, default)
+            return int(default if value is None else value)
         except (ValueError, TypeError):
             return default
 
     def _safe_config_float(self, key: str, default: float) -> float:
-        return self._safe_float(self._cfg.get(key, default) or default, default)
+        value = self._cfg.get(key, default)
+        return self._safe_float(default if value is None else value, default)
 
     def _publish_snapshot(self, snapshot: Dict[str, Any], *, record_history: bool) -> Dict[str, Any]:
         self._snapshot = snapshot

@@ -501,7 +501,8 @@ class NekoCommandingMixin:
         card_name = ""
         for snapshot in snapshots:
             played_cards = snapshot.get("played_cards") if isinstance(snapshot.get("played_cards"), list) else []
-            for name in played_cards:
+            hand_names = snapshot.get("hand_names") if isinstance(snapshot.get("hand_names"), list) else []
+            for name in [*played_cards, *hand_names]:
                 normalized = str(name or "").strip()
                 if normalized:
                     card_name = normalized
