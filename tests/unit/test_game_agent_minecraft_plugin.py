@@ -22,6 +22,30 @@ if str(_ROOT) not in sys.path:
 
 
 # ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+async def _wait_for_pending(service, *, predicate=None, timeout: float = 0.5):
+    """Spin until the service has a pending task that matches
+    ``predicate`` (or any pending task if predicate is None). Fails
+    fast with a clear assertion if the timeout fires — without this
+    fail-fast branch, a flaky test would surface as an unrelated
+    AttributeError on ``service._pending.task_text`` later, hiding
+    the real cause."""
+    deadline = asyncio.get_event_loop().time() + timeout
+    while asyncio.get_event_loop().time() < deadline:
+        pending = service._pending
+        if pending is not None and (predicate is None or predicate(pending)):
+            return pending
+        await asyncio.sleep(0.01)
+    pytest.fail(
+        f"_pending never satisfied predicate within {timeout}s; "
+        f"current _pending={service._pending!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Fakes
 # ---------------------------------------------------------------------------
 
@@ -149,6 +173,8 @@ async def test_dispatch_race_honors_concurrent_verdict_over_disconnected():
         if service._pending is not None:
             break
         await asyncio.sleep(0.01)
+    else:
+        pytest.fail("service._pending was never set within poll budget")
     my_pending = service._pending
     assert my_pending is not None
     my_pending.result = {
@@ -256,6 +282,8 @@ async def test_concurrent_call_returns_busy_when_overwrite_false():
         if service._pending is not None:
             break
         await asyncio.sleep(0.01)
+    else:
+        pytest.fail("service._pending was never set within poll budget")
 
     # Concurrent call without overwrite gets busy.
     out = await service.execute_minecraft_task(task="other task", overwrite=False)
@@ -267,6 +295,10 @@ async def test_concurrent_call_returns_busy_when_overwrite_false():
     try:
         await long_runner
     except (asyncio.CancelledError, Exception):
+        # We just cancelled it ourselves — both CancelledError and any
+        # exception raised on the way out are expected and irrelevant
+        # to the assertions above. Swallow so the test completes
+        # cleanly.
         pass
 
 
@@ -284,6 +316,8 @@ async def test_overwrite_interrupts_old_task_with_status():
         if service._pending is not None:
             break
         await asyncio.sleep(0.01)
+    else:
+        pytest.fail("service._pending was never set within poll budget")
 
     # Issue overwrite — should kick old task into "interrupted" return.
     new_runner = asyncio.create_task(
@@ -301,6 +335,8 @@ async def test_overwrite_interrupts_old_task_with_status():
         if service._pending is not None and service._pending.task_text == "new task":
             break
         await asyncio.sleep(0.01)
+    else:
+        pytest.fail("_pending was never the new task within poll budget")
 
     # The agent will (eventually) emit a delayed task_finished for the
     # *old* task before the new one's frame arrives. Per the FIFO drop
@@ -413,6 +449,80 @@ async def test_log_cache_is_bounded():
 
 
 @pytest.mark.asyncio
+async def test_screenshot_data_uri_jpeg_with_empty_encoding_picks_jpeg_mime():
+    """Some agents send ``data:image/jpeg;base64,...`` payloads with
+    an empty ``encoding`` field. Without parsing the URI scheme, the
+    handler defaults to PNG and tags JPEG bytes wrongly."""
+    import base64
+    service, push_calls = _make_service()
+    service.configure({})
+    # Stub Pillow to fail so the JPEG-passthrough branch fires
+    # (otherwise the JPEG→PNG conversion would mask the mime issue
+    # by re-encoding to PNG anyway).
+    import sys
+    import types
+    fake_pil = types.ModuleType("PIL")
+    fake_image = types.ModuleType("PIL.Image")
+    def _open_raises(*_a, **_k):
+        raise RuntimeError("Pillow not available in this test")
+    fake_image.open = _open_raises  # type: ignore[attr-defined]
+    fake_pil.Image = fake_image  # type: ignore[attr-defined]
+    sys.modules.setdefault("PIL", fake_pil)
+    sys.modules.setdefault("PIL.Image", fake_image)
+
+    jpeg_bytes = b"\xff\xd8\xff\xe0fakejpegmarker"
+    payload = "data:image/jpeg;base64," + base64.b64encode(jpeg_bytes).decode()
+
+    # encoding="" — without the data-URI mime parsing, we'd default
+    # to PNG and silently mis-tag the JPEG bytes.
+    await service._on_screenshot(payload, encoding="")
+
+    assert len(push_calls) == 1
+    parts = push_calls[0]["parts"]
+    assert parts[0]["mime"] == "image/jpeg"
+    assert parts[0]["data"] == jpeg_bytes
+
+
+@pytest.mark.asyncio
+async def test_log_heuristic_does_not_flip_when_pending_task_active():
+    """An old task's late "task run ended" log must not flip
+    ``_task_finished`` to True while a new task is in flight —
+    otherwise the autonomous loop's busy gate breaks. We defer to
+    the explicit ``task_finished`` frame's stale-frame filtering
+    when a task is pending."""
+    service, _ = _make_service()
+    service.configure({"task_timeout_seconds": 5.0})
+    service._client = _FakeClient()
+
+    # Start a task — _pending populated, _task_finished=False.
+    runner = asyncio.create_task(service.execute_minecraft_task(task="A"))
+    for _ in range(50):
+        if service._pending is not None:
+            break
+        await asyncio.sleep(0.01)
+    else:
+        pytest.fail("_pending was never set within poll budget")
+    assert service._task_finished is False
+
+    # An old task's late "task run ended" log arrives — must NOT
+    # flip _task_finished while A is still pending.
+    await service._on_log("task run ended (for some old task)")
+    assert service._task_finished is False
+    assert service._pending is not None  # still in flight
+
+    # Same for connection-lost log.
+    await service._on_log("Connection lost and re-established.")
+    assert service._task_finished is False
+
+    # Clean up
+    runner.cancel()
+    try:
+        await runner
+    except (asyncio.CancelledError, Exception):
+        pass
+
+
+@pytest.mark.asyncio
 async def test_log_callback_tracks_task_state_from_strings():
     service, _ = _make_service()
     service.configure({})
@@ -443,6 +553,8 @@ async def test_stop_unblocks_pending_handler():
         if service._pending is not None:
             break
         await asyncio.sleep(0.01)
+    else:
+        pytest.fail("service._pending was never set within poll budget")
 
     await service.stop()
     out = await asyncio.wait_for(runner, timeout=2.0)
@@ -472,6 +584,8 @@ async def test_stop_preserves_stale_frame_debt():
         if service._pending is not None:
             break
         await asyncio.sleep(0.01)
+    else:
+        pytest.fail("service._pending was never set within poll budget")
 
     await service.stop()
     out = await asyncio.wait_for(runner, timeout=2.0)
@@ -552,6 +666,8 @@ async def test_stale_task_finished_does_not_flip_task_finished_flag():
         if service._pending is not None and service._pending.task_text == "B":
             break
         await asyncio.sleep(0.01)
+    else:
+        pytest.fail("_pending was never task B within poll budget")
     assert service._task_finished is False
 
     # Stale frame for A arrives → must be dropped, must NOT flip
@@ -586,6 +702,8 @@ async def test_stale_task_finished_after_overwrite_is_dropped():
         if service._pending is not None:
             break
         await asyncio.sleep(0.01)
+    else:
+        pytest.fail("service._pending was never set within poll budget")
 
     # Overwrite — old runner resolves with "interrupted", drop counter += 1.
     new_runner = asyncio.create_task(
@@ -600,6 +718,8 @@ async def test_stale_task_finished_after_overwrite_is_dropped():
         if service._pending is not None and service._pending.task_text == "new task":
             break
         await asyncio.sleep(0.01)
+    else:
+        pytest.fail("_pending was never the new task within poll budget")
 
     # Late task_finished for OLD task arrives first — must be dropped,
     # NOT attached to the new task.
@@ -634,6 +754,8 @@ async def test_cancellation_clears_pending_slot():
         if service._pending is not None:
             break
         await asyncio.sleep(0.01)
+    else:
+        pytest.fail("service._pending was never set within poll budget")
 
     runner.cancel()
     with pytest.raises(asyncio.CancelledError):

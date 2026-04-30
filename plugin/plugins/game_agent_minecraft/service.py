@@ -468,25 +468,48 @@ class GameAgentService:
         self._log_cache.append(text_strip)
 
         # The original integration sniffed log strings to track agent
-        # state because the protocol didn't have explicit "task running"
-        # frames. Keep the same heuristics so existing agent servers
-        # work without protocol changes.
+        # state because some agent server implementations emit logs
+        # before / instead of explicit ``task_finished`` frames. Keep
+        # the heuristic so existing agents work, but gate the
+        # "True" transitions on ``_pending is None`` — without that
+        # gate, an old (timed-out / overwritten / cancelled) task's
+        # late "task run ended" log would prematurely flip the busy
+        # gate while the *new* in-flight task is still running. When
+        # a task IS pending, we defer to the explicit ``task_finished``
+        # frame which already does proper stale-frame filtering.
         if "task run ended" in text_strip:
-            self._task_finished = True
+            if self._pending is None:
+                self._task_finished = True
         elif "action selection" in text_strip:
+            # Setting False unconditionally is safe — at worst it
+            # confirms what's already true (a task is in flight).
             self._task_finished = False
         elif text_strip == "Connection lost and re-established.":
-            self._task_finished = True
+            if self._pending is None:
+                self._task_finished = True
 
     async def _on_screenshot(self, payload: str, encoding: str) -> None:
         """Decode a base64 screenshot, convert JPEG→PNG when needed, and
         either stream it into the realtime LLM session immediately or
         cache it for the next autonomous-prompt burst."""
+        # Some agents send screenshots as ``data:`` URIs that already
+        # carry the mime in the scheme; pull it out before stripping
+        # so we don't mis-tag JPEG bytes as PNG when the explicit
+        # ``encoding`` field is empty.
+        embedded_mime: Optional[str] = None
         try:
             stripped = payload
             if stripped.startswith("data:"):
                 comma = stripped.find(",")
                 if comma != -1:
+                    header = stripped[5:comma]  # after "data:"
+                    # Header looks like "image/jpeg;base64" or just
+                    # "image/png". Take the segment up to the first
+                    # ``;`` as the mime.
+                    semi = header.find(";")
+                    candidate = header[:semi] if semi != -1 else header
+                    if candidate and "/" in candidate:
+                        embedded_mime = candidate.lower()
                     stripped = stripped[comma + 1:]
             img_bytes = base64.b64decode(stripped, validate=False)
         except Exception as exc:
@@ -496,9 +519,16 @@ class GameAgentService:
             )
             return
 
+        # Resolve "is this a JPEG?" by considering both the explicit
+        # ``encoding`` field and the mime extracted from a data: URI.
+        # The explicit field wins when both are present (more
+        # authoritative); the URI scheme is a fallback when the
+        # encoding is empty.
         mime = "image/png"
         enc_lower = (encoding or "").lower()
-        if "jpeg" in enc_lower or "jpg" in enc_lower:
+        is_jpeg_explicit = "jpeg" in enc_lower or "jpg" in enc_lower
+        is_jpeg_embedded = embedded_mime in ("image/jpeg", "image/jpg")
+        if is_jpeg_explicit or (not enc_lower and is_jpeg_embedded):
             # Gemini's realtime media input prefers PNG; convert here so
             # downstream code can be format-agnostic. Pillow is already
             # a transitive project dep (used by avatar/MMD pipelines).

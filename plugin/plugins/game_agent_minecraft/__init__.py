@@ -127,11 +127,15 @@ class GameAgentMinecraftPlugin(NekoPluginBase):
         name="minecraft_task",
         description=MINECRAFT_TASK_DESCRIPTION,
         parameters=MINECRAFT_TASK_SCHEMA,
-        # Block the handler up to 30s (the full LLM tool ceiling) while
-        # the agent server runs the task. Service-internal timeout is a
-        # bit lower so we always return a clean ``status: timeout``
-        # before the SDK's outer wrapper times out.
-        timeout=30.0,
+        # Set the SDK wrapper's timeout to the maximum the server
+        # accepts (300s, see ``ToolRegisterRequest.timeout_seconds``)
+        # so the *real* per-call cap is governed by the operator-
+        # configured ``[game_agent].task_timeout_seconds``. With a
+        # hardcoded 30s here, any user-set ``task_timeout_seconds`` >
+        # 30 would be silently truncated by the SDK's outer wrapper
+        # before the service could return its structured
+        # ``{status: "timeout"}`` shape.
+        timeout=300.0,
     )
     async def minecraft_task(self, *, task: str, overwrite: bool = False, **_):
         return await self._service.execute_minecraft_task(
