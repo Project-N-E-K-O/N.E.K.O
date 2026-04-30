@@ -1599,7 +1599,33 @@
     }
 
     class YuiGuideEmotionBridge {
+        normalizeModelType(modelType) {
+            const normalizedType = String(modelType || '').toLowerCase();
+            if (normalizedType === 'vrm' || normalizedType === 'mmd') {
+                return normalizedType;
+            }
+            if (normalizedType === 'live2d') {
+                return 'live2d';
+            }
+            return '';
+        }
+
         getActiveModelType() {
+            const runtimeType = this.normalizeModelType(
+                typeof window.getActiveModelType === 'function' ? window.getActiveModelType() : ''
+            );
+            if (runtimeType) {
+                return runtimeType;
+            }
+
+            const storedType = this.normalizeModelType(
+                (window.sessionStorage && window.sessionStorage.getItem('modelType'))
+                || (window.localStorage && window.localStorage.getItem('modelType'))
+            );
+            if (storedType) {
+                return storedType;
+            }
+
             const cfg = window.lanlan_config;
             if (!cfg) {
                 return 'live2d';
