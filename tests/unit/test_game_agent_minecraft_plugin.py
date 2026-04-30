@@ -499,26 +499,33 @@ async def test_log_cache_is_bounded():
 
 
 @pytest.mark.asyncio
-async def test_screenshot_data_uri_jpeg_with_empty_encoding_picks_jpeg_mime():
+async def test_screenshot_data_uri_jpeg_with_empty_encoding_picks_jpeg_mime(monkeypatch):
     """Some agents send ``data:image/jpeg;base64,...`` payloads with
     an empty ``encoding`` field. Without parsing the URI scheme, the
-    handler defaults to PNG and tags JPEG bytes wrongly."""
+    handler defaults to PNG and tags JPEG bytes wrongly.
+
+    We use ``monkeypatch.setitem`` to force the JPEG-passthrough
+    branch (Pillow stubbed to fail) and rely on monkeypatch's
+    auto-rollback so the fake module state doesn't bleed into other
+    tests in the suite.
+    """
     import base64
-    service, push_calls = _make_service()
-    service.configure({})
-    # Stub Pillow to fail so the JPEG-passthrough branch fires
-    # (otherwise the JPEG→PNG conversion would mask the mime issue
-    # by re-encoding to PNG anyway).
     import sys
     import types
+
+    service, push_calls = _make_service()
+    service.configure({})
+    # Force the JPEG-passthrough branch by stubbing Pillow's
+    # ``Image.open`` to raise. Without this, a real PIL would
+    # re-encode JPEG → PNG and mask the mime-handling we're testing.
     fake_pil = types.ModuleType("PIL")
     fake_image = types.ModuleType("PIL.Image")
     def _open_raises(*_a, **_k):
-        raise RuntimeError("Pillow not available in this test")
+        raise RuntimeError("Pillow stubbed for this test")
     fake_image.open = _open_raises  # type: ignore[attr-defined]
     fake_pil.Image = fake_image  # type: ignore[attr-defined]
-    sys.modules.setdefault("PIL", fake_pil)
-    sys.modules.setdefault("PIL.Image", fake_image)
+    monkeypatch.setitem(sys.modules, "PIL", fake_pil)
+    monkeypatch.setitem(sys.modules, "PIL.Image", fake_image)
 
     jpeg_bytes = b"\xff\xd8\xff\xe0fakejpegmarker"
     payload = "data:image/jpeg;base64," + base64.b64encode(jpeg_bytes).decode()
