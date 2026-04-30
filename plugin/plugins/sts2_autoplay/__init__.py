@@ -11,7 +11,7 @@ from plugin.sdk.plugin import Err, NekoPluginBase, Ok, SdkError, lifecycle, neko
 
 from .service import STS2AutoplayService
 from .tool_bridge import register_all_tools, unregister_all_tools
-from .tool_callbacks import create_tool_callback_router
+from .tool_callbacks import create_tool_callback_app, start_callback_server, stop_callback_server
 
 _CONFIG_FILE = Path(__file__).with_name("plugin.toml")
 _SOURCE_ID = "sts2_autoplay"
@@ -86,51 +86,33 @@ class STS2AutoplayPlugin(NekoPluginBase):
         self._cfg = _as_mapping(cfg.get("sts2"))
         await self._service.startup(self._cfg)
 
-        # Mount tool_call callback HTTP endpoints on the plugin server's FastAPI app.
-        # We mount directly on the FastAPI app (not via SDK include_router, which
-        # expects PluginRouter and is for entry-based routers, not raw HTTP).
-        self._tool_callback_router = create_tool_callback_router(self._service)
-        self._mount_fastapi_router(self._tool_callback_router)
-
-        # Register tools with main_server ToolRegistry (background with retry)
+        # Start a lightweight HTTP server inside this plugin child process
+        # for tool_call callbacks. Plugins run as separate processes via
+        # multiprocessing.Process and do NOT share the plugin server's
+        # FastAPI app (ctx.app is None). The tool_calling protocol requires
+        # a callback_url that main_server can POST to.
         import asyncio
-        plugin_port = self._resolve_plugin_port()
-        asyncio.create_task(register_all_tools(self.logger, plugin_port=plugin_port))
+        self._tool_callback_server = None
+        self._tool_callback_port = 0
+        try:
+            callback_app = create_tool_callback_app(self._service)
+            server, port = await start_callback_server(callback_app, self.logger)
+            self._tool_callback_server = server
+            self._tool_callback_port = port
+            # Register tools with main_server ToolRegistry (background with retry)
+            asyncio.create_task(register_all_tools(self.logger, callback_port=port))
+        except Exception as exc:
+            self.logger.warning("Failed to start tool callback server: %s. Tool calling disabled.", exc)
 
         return Ok({"status": "ready", "result": await self._service.get_status()})
 
     @lifecycle(id="shutdown")
     async def shutdown(self, **_: Any):
         await unregister_all_tools(self.logger)
+        await stop_callback_server(self._tool_callback_server, self.logger)
+        self._tool_callback_server = None
         await self._service.shutdown()
         return Ok({"status": "shutdown"})
-
-    def _mount_fastapi_router(self, router: Any) -> None:
-        """Mount a raw FastAPI APIRouter on the plugin server's FastAPI app.
-
-        The SDK's ``include_router`` expects ``PluginRouter`` (entry-based).
-        For HTTP callback endpoints we need to mount on the underlying
-        FastAPI app directly.
-        """
-        app = getattr(self.ctx, "app", None)
-        if app is not None and hasattr(app, "include_router"):
-            app.include_router(router)
-            self.logger.info("Mounted tool callback router on plugin server app")
-        else:
-            self.logger.warning(
-                "Cannot mount tool callback router: plugin ctx.app not available. "
-                "Tool callbacks will not work until the FastAPI app is accessible."
-            )
-
-    @staticmethod
-    def _resolve_plugin_port() -> int:
-        """Resolve the plugin HTTP server port from environment.
-
-        The plugin server sets ``NEKO_USER_PLUGIN_SERVER_PORT`` after
-        selecting an available port. Default is 48916 (from config).
-        """
-        from config import USER_PLUGIN_SERVER_PORT
-        return int(os.environ.get("NEKO_USER_PLUGIN_SERVER_PORT", str(USER_PLUGIN_SERVER_PORT)))
 
     async def _run_entry(self, action: AsyncPayloadFactory, *, finish: bool = False):
         try:

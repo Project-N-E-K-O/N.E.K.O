@@ -168,12 +168,17 @@ TOOL_DEFINITIONS: List[Dict[str, Any]] = [
 ]
 
 
-def _build_callback_url(plugin_port: int, tool_name: str) -> str:
-    """Build the callback URL for a tool on the plugin HTTP server."""
-    return f"http://127.0.0.1:{plugin_port}/api/sts2_autoplay/tools/{tool_name}"
+def _build_callback_url(callback_port: int, tool_name: str) -> str:
+    """Build the callback URL for a tool on the plugin's callback HTTP server.
+
+    The callback server runs inside the plugin child process on its own
+    dedicated port (separate from the plugin server). Routes are mounted
+    at the root level (no prefix).
+    """
+    return f"http://127.0.0.1:{callback_port}/{tool_name}"
 
 
-async def register_all_tools(logger: Any, *, plugin_port: int) -> None:
+async def register_all_tools(logger: Any, *, callback_port: int) -> None:
     """Register all STS2 tools with the main_server ToolRegistry.
 
     Uses the ``register_with_retry`` pattern recommended by the official
@@ -186,7 +191,7 @@ async def register_all_tools(logger: Any, *, plugin_port: int) -> None:
                 "name": tool_def["name"],
                 "description": tool_def["description"],
                 "parameters": tool_def["parameters"],
-                "callback_url": _build_callback_url(plugin_port, tool_def["name"]),
+                "callback_url": _build_callback_url(callback_port, tool_def["name"]),
                 "role": None,
                 "source": _SOURCE_TAG,
                 "timeout_seconds": tool_def.get("timeout_seconds", 30),
