@@ -79,6 +79,7 @@ class Live2DManager {
         this.pixi_app = null;
         this.isInitialized = false;
         this.motionTimer = null;
+        this._motionTimerGeneration = 0;
         this.isEmotionChanging = false;
         this.dragEnabled = false;
         this.isFocusing = false;

@@ -288,7 +288,17 @@ Live2DManager.prototype._resetParametersToInitialState = function(options = {}) 
     return resetCount;
 };
 
+Live2DManager.prototype._nextMotionTimerGeneration = function() {
+    this._motionTimerGeneration = (this._motionTimerGeneration || 0) + 1;
+    return this._motionTimerGeneration;
+};
+
+Live2DManager.prototype._isCurrentMotionTimerGeneration = function(generation) {
+    return generation === (this._motionTimerGeneration || 0);
+};
+
 Live2DManager.prototype._clearMotionTimer = function() {
+    this._nextMotionTimerGeneration();
     if (!this.motionTimer) return false;
 
     console.log(`清除motion定时器，类型: ${this.motionTimer.type || 'unknown'}`);
@@ -350,11 +360,11 @@ Live2DManager.prototype._resetExplicitMotionParameters = function(options = {}) 
                     }
                 }
             } catch (indexError) {
-                // 部分 Cubism 版本不支持 getParameterIndex，退回到默认 motion 清理值。
+                // 部分 Cubism 版本不支持 getParameterIndex，忽略该参数。
             }
         }
 
-        return { found: false, value: 0 };
+        return { found: false };
     };
 
     let resetCount = 0;
@@ -362,6 +372,7 @@ Live2DManager.prototype._resetExplicitMotionParameters = function(options = {}) 
         if (protectedIds.has(paramId)) continue;
         try {
             const baseline = findRecordedBaseline(paramId);
+            if (!baseline.found) continue;
             coreModel.setParameterValueById(paramId, baseline.value);
             resetCount++;
         } catch (e) {
@@ -876,9 +887,12 @@ Live2DManager.prototype.playMotion = async function(emotion) {
         console.warn(`未找到情感 ${emotion} 对应的动作，但将保持表情`);
         // 如果没有找到对应的motion，设置一个短定时器以确保expression能够显示
         // 并且不设置回调来清除效果，让表情一直持续
-        this.motionTimer = setTimeout(() => {
+        const generation = this._nextMotionTimerGeneration();
+        const keepExpressionTimer = setTimeout(() => {
+            if (!this._isCurrentMotionTimerGeneration(generation)) return;
             this.motionTimer = null;
         }, 500); // 500ms应该足够让expression稳定显示
+        this.motionTimer = { type: 'timeout', id: keepExpressionTimer, generation };
         return;
     }
 
@@ -928,11 +942,14 @@ Live2DManager.prototype.playMotion = async function(emotion) {
                         console.log(`预期motion持续时间: ${motionDuration}ms`);
 
                         // 设置定时器在motion结束后清理motion参数（但保留expression）
-                        this.motionTimer = setTimeout(() => {
+                        const generation = this._nextMotionTimerGeneration();
+                        const motionEndTimer = setTimeout(() => {
+                            if (!this._isCurrentMotionTimerGeneration(generation)) return;
                             console.log(`motion播放完成（预期文件: ${choice.File}），清除motion参数但保留expression`);
                             this.motionTimer = null;
                             this.clearEmotionEffects(); // 只清除motion参数，不清除expression
                         }, motionDuration);
+                        this.motionTimer = { type: 'timeout', id: motionEndTimer, generation };
 
                         return; // 成功播放，直接返回
                     } else {
@@ -962,56 +979,64 @@ Live2DManager.prototype.playMotion = async function(emotion) {
 // 播放简单动作（回退方案）
 Live2DManager.prototype.playSimpleMotion = function(emotion) {
     try {
+        const generation = this._nextMotionTimerGeneration();
+        const isCurrentMotion = () => this._isCurrentMotionTimerGeneration(generation);
+
         switch (emotion) {
             case 'happy': {
                 // 轻微点头
                 this.currentModel.internalModel.coreModel.setParameterValueById('ParamAngleY', 8);
                 const happyTimer = setTimeout(() => {
+                    if (!isCurrentMotion()) return;
                     this.currentModel.internalModel.coreModel.setParameterValueById('ParamAngleY', 0);
                     this.motionTimer = null;
                     // motion完成后清除motion参数，但保留expression
                     this.clearEmotionEffects();
                 }, 1000);
-                this.motionTimer = { type: 'timeout', id: happyTimer };
+                this.motionTimer = { type: 'timeout', id: happyTimer, generation };
                 break;
             }
             case 'sad': {
                 // 轻微低头
                 this.currentModel.internalModel.coreModel.setParameterValueById('ParamAngleY', -5);
                 const sadTimer = setTimeout(() => {
+                    if (!isCurrentMotion()) return;
                     this.currentModel.internalModel.coreModel.setParameterValueById('ParamAngleY', 0);
                     this.motionTimer = null;
                     // motion完成后清除motion参数，但保留expression
                     this.clearEmotionEffects();
                 }, 1200);
-                this.motionTimer = { type: 'timeout', id: sadTimer };
+                this.motionTimer = { type: 'timeout', id: sadTimer, generation };
                 break;
             }
             case 'angry': {
                 // 轻微摇头
                 this.currentModel.internalModel.coreModel.setParameterValueById('ParamAngleX', 5);
                 const angryPhaseTimer = setTimeout(() => {
+                    if (!isCurrentMotion()) return;
                     this.currentModel.internalModel.coreModel.setParameterValueById('ParamAngleX', -5);
                 }, 400);
                 const angryTimer = setTimeout(() => {
+                    if (!isCurrentMotion()) return;
                     this.currentModel.internalModel.coreModel.setParameterValueById('ParamAngleX', 0);
                     this.motionTimer = null;
                     // motion完成后清除motion参数，但保留expression
                     this.clearEmotionEffects();
                 }, 800);
-                this.motionTimer = { type: 'timeout', id: angryTimer, extraTimeoutIds: [angryPhaseTimer] };
+                this.motionTimer = { type: 'timeout', id: angryTimer, extraTimeoutIds: [angryPhaseTimer], generation };
                 break;
             }
             case 'surprised': {
                 // 轻微后仰
                 this.currentModel.internalModel.coreModel.setParameterValueById('ParamAngleY', -8);
                 const surprisedTimer = setTimeout(() => {
+                    if (!isCurrentMotion()) return;
                     this.currentModel.internalModel.coreModel.setParameterValueById('ParamAngleY', 0);
                     this.motionTimer = null;
                     // motion完成后清除motion参数，但保留expression
                     this.clearEmotionEffects();
                 }, 800);
-                this.motionTimer = { type: 'timeout', id: surprisedTimer };
+                this.motionTimer = { type: 'timeout', id: surprisedTimer, generation };
                 break;
             }
             default:
