@@ -43,7 +43,7 @@ class NekoCommandingMixin:
         if normalized_scope in {"status", "auto"} and self._neko_text_has_any(text, ["状态", "情况", "局面", "快照", "合法动作", "现在什么"]):
             return self._wrap_neko_command_result("snapshot", "get_snapshot", await self.get_snapshot(), executed=False)
 
-        if normalized_scope == "guidance" or (normalized_scope == "auto" and self._autoplay_state in {"running", "paused"} and self._is_neko_guidance_text(text)):
+        if normalized_scope == "guidance" or (normalized_scope == "auto" and self._is_neko_guidance_text(text)):
             if self._autoplay_state in {"running", "paused"}:
                 result = await self.send_neko_guidance({"content": raw_command, "step": self._step_count, "type": "soft_guidance"})
                 return self._wrap_neko_command_result("guidance", "send_neko_guidance", result, executed=False)
