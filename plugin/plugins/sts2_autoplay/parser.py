@@ -121,6 +121,7 @@ class StrategyParser:
             "估算规则",
             "商店遗物",
             "商店药水",
+            "商店卡牌",
             "商店不可删除",
             "商店不可移除",
             "不可删除卡牌",
@@ -423,6 +424,18 @@ class StrategyParser:
                         current_category = ""
                 elif "商店药水" in title:
                     current_shop_type = "potion"
+                    if "必需" in title:
+                        current_category = "required"
+                    elif "高优先" in title or "补强" in title:
+                        current_category = "high_priority"
+                    elif "条件" in title:
+                        current_category = "conditional"
+                    elif "慎买" in title or "低优先" in title:
+                        current_category = "low_priority"
+                    else:
+                        current_category = ""
+                elif "商店卡牌" in title:
+                    current_shop_type = "card"
                     if "必需" in title:
                         current_category = "required"
                     elif "高优先" in title or "补强" in title:

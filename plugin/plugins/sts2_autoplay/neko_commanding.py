@@ -47,8 +47,16 @@ class NekoCommandingMixin:
             if self._autoplay_state in {"running", "paused"}:
                 result = await self.send_neko_guidance({"content": raw_command, "step": self._step_count, "type": "soft_guidance"})
                 return self._wrap_neko_command_result("guidance", "send_neko_guidance", result, executed=False)
-            result = await self.recommend_one_card_by_neko(objective=raw_command)
-            return self._wrap_neko_command_result("advice", "recommend_one_card_by_neko", result, executed=False)
+            return self._wrap_neko_command_result(
+                "guidance",
+                "clarify",
+                {
+                    "status": "clarify",
+                    "message": "软指导会在自动游玩运行时生效。你可以先让我开始自动游玩，或改成'这回合怎么打'来要建议。",
+                },
+                executed=False,
+                needs_confirmation=True,
+            )
 
         if normalized_scope == "review" or (normalized_scope == "auto" and self._is_neko_review_text(text)):
             result = await self.review_recent_play_by_neko(objective=raw_command)

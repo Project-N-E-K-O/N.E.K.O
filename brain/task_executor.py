@@ -1395,10 +1395,13 @@ class DirectTaskExecutor:
 
                 if d_has and d_can:
                     correction_hint = None
+                    visible_entries = valid_entries_map.get(d_pid)
                     if not d_pid:
                         correction_hint = f"plugin_id is required when has_task/can_execute are true. Available plugins: {list(valid_entries_map.keys())}"
                     elif d_pid not in valid_entries_map:
                         correction_hint = f"plugin_id '{d_pid}' does not exist. Available plugins: {list(valid_entries_map.keys())}"
+                    elif visible_entries == []:
+                        correction_hint = f"plugin '{d_pid}' has no Agent-visible entries."
                     elif not d_eid and valid_entries_map.get(d_pid):
                         correction_hint = (
                             f"entry_id is required for plugin '{d_pid}' when has_task/can_execute are true. "
@@ -1440,11 +1443,20 @@ class DirectTaskExecutor:
                 final_has = decision.get("has_task", False)
                 final_can = decision.get("can_execute", False)
                 if final_has and final_can:
+                    final_visible = valid_entries_map.get(final_pid)
                     if final_pid not in valid_entries_map:
                         logger.warning("[UserPlugin Assessment] Final check: plugin_id '%s' still invalid after retry, forcing can_execute=false", final_pid)
                         final_can = False
                         decision["can_execute"] = False
                         decision["reason"] = f"plugin_id '{final_pid}' not found"
+                    elif final_visible == []:
+                        logger.warning(
+                            "[UserPlugin Assessment] Final check: plugin_id '%s' has no Agent-visible entries, forcing can_execute=false",
+                            final_pid,
+                        )
+                        final_can = False
+                        decision["can_execute"] = False
+                        decision["reason"] = "no_agent_visible_entries"
                     elif not final_eid and valid_entries_map.get(final_pid):
                         logger.warning(
                             "[UserPlugin Assessment] Final check: entry_id missing while has_task/can_execute=true (plugin_id=%s), forcing can_execute=false",

@@ -241,11 +241,19 @@ class STS2AutoplayPlugin(NekoPluginBase):
                 post_action_delay_seconds=_optional_finite_float(post_action_delay_seconds, key="post_action_delay_seconds"),
                 poll_interval_active_seconds=_optional_finite_float(poll_interval_active_seconds, key="poll_interval_active_seconds"),
             )
-            self._save_speed_overrides(
-                action_interval_seconds=payload.get("action_interval_seconds"),
-                post_action_delay_seconds=payload.get("post_action_delay_seconds"),
-                poll_interval_active_seconds=payload.get("poll_interval_active_seconds"),
-            )
+            try:
+                self._save_speed_overrides(
+                    action_interval_seconds=payload.get("action_interval_seconds"),
+                    post_action_delay_seconds=payload.get("post_action_delay_seconds"),
+                    poll_interval_active_seconds=payload.get("poll_interval_active_seconds"),
+                )
+            except Exception as exc:
+                self.logger.warning(f"STS2 speed override persistence failed: {exc}")
+                return {
+                    **payload,
+                    "local_save_failed": True,
+                    "warning": f"运行时速度已生效，但写回 plugin.toml 失败: {exc}",
+                }
             return payload
 
         return await self._run_entry(action, finish=True)
