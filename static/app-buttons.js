@@ -1434,6 +1434,13 @@
             }
         });
 
+        function markFirstUserInputForAchievement() {
+            if (window.appChat && typeof window.appChat.isFirstUserInput === 'function' && window.appChat.isFirstUserInput()) {
+                window.appChat.markFirstUserInput();
+                console.log(window.t('console.userFirstInputDetected'));
+            }
+        }
+
         async function sendTextPayloadInternal(rawText, options) {
             options = options || {};
             var text = String(typeof rawText === 'string' ? rawText : '').trim();
@@ -1656,12 +1663,8 @@
                             }
                         }
 
-                        // First user input check
-                        if (window.appChat && window.appChat.isFirstUserInput()) {
-                            window.appChat.markFirstUserInput();
-                            console.log(window.t('console.userFirstInputDetected'));
-                            window.checkAndUnlockFirstDialogueAchievement();
-                        }
+                        // 首次用户输入只标记状态；成就只在 AI 首次可见回复时触发
+                        markFirstUserInputForAchievement();
                     }
 
                     if (!isReactWindowSource && window.appChat && typeof window.appChat.appendReactUserMessage === 'function' && sentImageUrls.length > 0) {
@@ -1674,6 +1677,8 @@
                     updateReactOptimisticMessageStatus('sent');
 
                     if (sentUserContent) {
+                        // 覆盖纯截图/图片首轮输入：没有 text 分支时也要标记用户已交互
+                        markFirstUserInputForAchievement();
                         window.dispatchEvent(new CustomEvent('neko:user-content-sent'));
                     }
 
