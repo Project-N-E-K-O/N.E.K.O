@@ -178,7 +178,15 @@ function hasStaticModelFlag(metadata) {
         || metadata.is_default === true;
 }
 
+function isLegacyDefaultLive2DModel(modelName) {
+    return modelName === 'yui_default' || modelName === 'yui-default';
+}
+
 function isStaticDefaultLive2DModel(modelName, rawData = {}) {
+    if (isLegacyDefaultLive2DModel(modelName)) {
+        return true;
+    }
+
     if (modelName !== 'yui-origin') {
         return false;
     }

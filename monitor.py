@@ -42,6 +42,9 @@ templates = Jinja2Templates(directory=get_resource_path(""))
 
 app = FastAPI()
 
+LEGACY_DEFAULT_LIVE2D_MODELS = {"yui_default", "yui-default"}
+DEFAULT_LIVE2D_MODEL = "yui-origin"
+
 # 挂载静态文件
 app.mount("/static", StaticFiles(directory=get_resource_path("static")), name="static")
 _config_manager = get_config_manager()
@@ -95,12 +98,19 @@ async def get_page_config(lanlan_name: str = ""):
             live2d = parts[-2] if len(parts) >= 2 else parts[-1].removesuffix('.model3.json')
         else:
             live2d = live2d_model_path
+        if live2d in LEGACY_DEFAULT_LIVE2D_MODELS:
+            live2d = DEFAULT_LIVE2D_MODEL
         
         # 查找所有模型
         models = find_models()
         
         # 根据 live2d 字段查找对应的 model path
         model_path = next((m["path"] for m in models if m["name"] == live2d), find_model_config_file(live2d))
+        if not model_path and live2d != DEFAULT_LIVE2D_MODEL:
+            model_path = next(
+                (m["path"] for m in models if m["name"] == DEFAULT_LIVE2D_MODEL),
+                find_model_config_file(DEFAULT_LIVE2D_MODEL),
+            )
         
         return {
             "success": True,
