@@ -310,7 +310,10 @@
         if (_pendingFlushTimer) { clearInterval(_pendingFlushTimer); _pendingFlushTimer = null; }
         var batch = _pendingHostMessages.splice(0);
         for (var i = 0; i < batch.length; i++) {
-            try { host.appendMessage(batch[i]); } catch (_) {}
+            try {
+                host.appendMessage(batch[i]);
+                markAssistantVisibleResponseForAchievement();
+            } catch (_) {}
         }
     }
 
@@ -345,10 +348,12 @@
         var timeStr = getCurrentTimeString();
         var msg = buildMessage(msgId, 'assistant', getCurrentAssistantName(), timeStr, cleanSentence, 'streaming');
 
+        var appendedToHost = false;
         if (msg && host && typeof host.appendMessage === 'function') {
             // host 就绪，先重放待发队列，再追加新消息
             _tryFlushPendingHostMessages();
             host.appendMessage(msg);
+            appendedToHost = true;
         } else if (msg) {
             // host 尚未初始化，放入待重发队列而非静默丢弃
             console.warn('[ChatAdapter] host not ready, queuing message', msgId);
@@ -366,7 +371,9 @@
         if (typeof window.ensureAssistantTurnStarted === 'function') {
             window.ensureAssistantTurnStarted('create_gemini_bubble');
         }
-        markAssistantVisibleResponseForAchievement();
+        if (appendedToHost) {
+            markAssistantVisibleResponseForAchievement();
+        }
 
         return ref;
     }

@@ -314,9 +314,17 @@
         if (!window.unlockAchievement) {
             if (!firstDialogueUnlockPending) {
                 firstDialogueUnlockPending = true;
+                var retryAttempts = 0;
+                var maxRetryAttempts = 10;
                 setTimeout(function retryFirstDialogueUnlock() {
                     if (!firstDialogueUnlockPending) return;
+                    retryAttempts += 1;
                     if (!window.unlockAchievement) {
+                        if (retryAttempts >= maxRetryAttempts) {
+                            firstDialogueUnlockPending = false;
+                            console.warn('[Achievement] unlockAchievement not ready; giving up first dialogue retry');
+                            return;
+                        }
                         setTimeout(retryFirstDialogueUnlock, 500);
                         return;
                     }
@@ -968,11 +976,10 @@
                 // ========== 追踪本轮气泡 ==========
                 window.currentTurnGeminiBubbles.push(messageDiv);
                 createdVisibleBubble = true;
+                markAssistantVisibleResponse();
             } else {
                 window.currentGeminiMessage = null;
             }
-
-            markAssistantVisibleResponse();
         } else if (sender === 'gemini' && isMergeMessagesEnabled()) {
             // 【核心重构】不再依赖 isNewMessage 标志，而是根据"本轮是否已有气泡"来决策。
             // 解决首个 chunk 被清洗为空（纯指令）时导致的渲染坠落 Bug
