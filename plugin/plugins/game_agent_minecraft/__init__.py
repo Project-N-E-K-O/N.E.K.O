@@ -164,7 +164,11 @@ class GameAgentMinecraftPlugin(NekoPluginBase):
     @plugin_entry(
         id="game_agent_reload_config",
         name="重载游戏代理配置",
-        description="不重启 WebSocket 连接的前提下重新读取 plugin.toml [game_agent] 配置。",
+        description=(
+            "重新读取 plugin.toml [game_agent] 配置；纯数据项 (timeouts、"
+            "intervals、screenshot 开关) 直接生效，ws_url 或重连间隔变更则会"
+            "触发 WebSocket 客户端 stop+start 切换到新地址。"
+        ),
         llm_result_fields=["summary"],
         input_schema={"type": "object", "properties": {}},
     )
@@ -177,7 +181,16 @@ class GameAgentMinecraftPlugin(NekoPluginBase):
                 if isinstance(cfg.get("game_agent"), dict)
                 else {}
             )
-            self._service.configure(self._cfg)
-            return Ok({"summary": "config reloaded", "result": self._service.get_status()})
+            transport_restarted = await self._service.reload_config_live(self._cfg)
+            summary = (
+                "config reloaded with transport restart"
+                if transport_restarted
+                else "config reloaded (live)"
+            )
+            return Ok({
+                "summary": summary,
+                "transport_restarted": transport_restarted,
+                "result": self._service.get_status(),
+            })
         except Exception as exc:
             raise SdkError(f"reload failed: {type(exc).__name__}: {exc}")

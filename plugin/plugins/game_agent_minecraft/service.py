@@ -103,6 +103,13 @@ class GameAgentService:
         # Cross-callback state
         self._pending: Optional[PendingTask] = None
         self._pending_lock = asyncio.Lock()
+        # Counter of tasks we abandoned without an acknowledged
+        # ``task_finished`` (timeout / overwrite / shutdown). Used to
+        # filter out stale frames from the agent: the protocol carries
+        # no task id, so without this a delayed completion for an old
+        # task would be (incorrectly) attributed to whatever task is
+        # currently pending. Drained FIFO in ``_on_task_finished``.
+        self._stale_task_finishes_to_drop: int = 0
         self._log_cache: list[str] = []
         # Bounded ring buffer — discarding old screenshots is fine,
         # the autonomous loop only ever sends "the latest few".
@@ -116,11 +123,25 @@ class GameAgentService:
     # Configuration / lifecycle
     # ------------------------------------------------------------------
 
+    # Keys whose changes only take effect on the next ``start()`` —
+    # the ``GameAgentClient`` constructor copies them once. Tracking
+    # them lets ``reload_config_live`` decide whether a stop+start
+    # cycle is needed to make the new value real.
+    _TRANSPORT_KEYS = ("_ws_url", "_reconnect_interval")
+
     def configure(self, cfg: Dict[str, Any]) -> None:
         """Read the ``[game_agent]`` section of ``plugin.toml`` (passed
         in by the plugin facade) and update local config. Defensive
         about missing/wrong types so a partial / hand-edited config
-        doesn't crash startup."""
+        doesn't crash startup.
+
+        Note: when called after ``start()``, transport-affecting keys
+        (``ws_url``, ``reconnect_interval_seconds``) update internal
+        state but do **not** swap the live ``GameAgentClient`` —
+        that's a transport-level identity change that needs a stop+
+        start cycle. Use :meth:`reload_config_live` if you want the
+        new transport values to take effect immediately.
+        """
         def _f(key: str, default: float) -> float:
             v = cfg.get(key, default)
             try:
@@ -154,6 +175,44 @@ class GameAgentService:
             self._screenshot_cache = collections.deque(
                 self._screenshot_cache, maxlen=size
             )
+
+    async def reload_config_live(self, cfg: Dict[str, Any]) -> bool:
+        """Apply a config update at runtime.
+
+        Pure-data keys (timeouts, intervals, screenshot toggles) update
+        in place — they're read on every loop tick / handler call.
+
+        Transport-affecting keys (``ws_url``,
+        ``reconnect_interval_seconds``) are baked into the live
+        :class:`GameAgentClient` instance at construction time, so a
+        change there requires a stop+start cycle to take effect. We
+        capture the old values, run ``configure``, then compare; if
+        they shifted and we're already running, restart the WS
+        client so the new endpoint is used.
+
+        Returns ``True`` if a transport restart actually happened.
+        """
+        was_running = self._client is not None
+        old_ws_url = self._ws_url
+        old_reconnect = self._reconnect_interval
+
+        self.configure(cfg)
+
+        transport_changed = (
+            self._ws_url != old_ws_url
+            or self._reconnect_interval != old_reconnect
+        )
+        if was_running and transport_changed:
+            self._log_info(
+                "config reload triggered transport restart "
+                "(ws_url={} -> {}, reconnect={} -> {})",
+                old_ws_url, self._ws_url,
+                old_reconnect, self._reconnect_interval,
+            )
+            await self.stop()
+            await self.start()
+            return True
+        return False
 
     async def start(self) -> None:
         """Spin up the WebSocket client + autonomous loop. Idempotent —
@@ -193,12 +252,19 @@ class GameAgentService:
                 }
                 self._pending.event.set()
                 self._pending = None
+            # Drop any in-flight ``task_finished`` frames that arrive
+            # after we've torn down — they would have nowhere to go.
+            self._stale_task_finishes_to_drop = 0
 
         if self._system_loop_task is not None:
             self._system_loop_task.cancel()
             try:
                 await self._system_loop_task
             except (asyncio.CancelledError, Exception):
+                # We just cancelled it — CancelledError is the
+                # expected shape; any other Exception means the loop
+                # raised on its way out (already logged inside the
+                # loop), nothing more to do here on shutdown.
                 pass
             self._system_loop_task = None
 
@@ -211,6 +277,9 @@ class GameAgentService:
             try:
                 await self._client_task
             except (asyncio.CancelledError, Exception):
+                # Same as above — cancellation we asked for, or a
+                # transport failure already surfaced via the WS
+                # client's own error logging.
                 pass
             self._client_task = None
 
@@ -263,7 +332,9 @@ class GameAgentService:
                         "hint": "Set overwrite=True to interrupt the current task.",
                     }
                 # Wake the old handler with an "interrupted" verdict
-                # before claiming the slot for the new task.
+                # before claiming the slot for the new task. The agent
+                # may still send a delayed ``task_finished`` for the
+                # old task, so flag one frame to drop when it arrives.
                 self._log_warning(
                     "overwriting task: {} -> {}", self._pending.task_text, task
                 )
@@ -274,6 +345,7 @@ class GameAgentService:
                 }
                 self._pending.event.set()
                 self._pending = None
+                self._stale_task_finishes_to_drop += 1
 
             # The handler keeps a *local* reference to its own
             # PendingTask; ``self._pending`` may be reassigned (or
@@ -310,12 +382,26 @@ class GameAgentService:
             async with self._pending_lock:
                 if self._pending is my_pending:
                     self._pending = None
+                    self._stale_task_finishes_to_drop += 1
             self._log_info("task timed out: {}", task[:80])
             return {
                 "status": "timeout",
                 "query": task,
                 "reason": f"Not finished within {self._task_timeout:.0f}s.",
             }
+        except asyncio.CancelledError:
+            # The outer SDK ``@llm_tool(timeout=...)`` wrapper or a
+            # plugin shutdown may cancel this task while we're still
+            # waiting. Without this branch ``self._pending`` would
+            # stick around forever, making subsequent calls return
+            # "busy" against an event nothing will ever set. Clean
+            # the slot first, then re-raise so the cancellation
+            # propagates as the SDK expects.
+            async with self._pending_lock:
+                if self._pending is my_pending:
+                    self._pending = None
+                    self._stale_task_finishes_to_drop += 1
+            raise
 
         # Read the verdict the callback (or overwrite/shutdown path)
         # wrote into ``my_pending.result`` before setting the event.
@@ -423,6 +509,20 @@ class GameAgentService:
         self._task_finished = True
 
         async with self._pending_lock:
+            # The agent server's protocol has no task ID, so a delayed
+            # ``task_finished`` for an old (timed-out / overwritten /
+            # shutdown-cancelled) task is indistinguishable from a
+            # fresh one for the current task. We assume the agent
+            # emits frames in completion order and drain them FIFO:
+            # for every task we abandoned without an ack, swallow one
+            # incoming frame.
+            if self._stale_task_finishes_to_drop > 0:
+                self._stale_task_finishes_to_drop -= 1
+                self._log_info(
+                    "dropped stale task_finished (status={}, drops_remaining={})",
+                    status, self._stale_task_finishes_to_drop,
+                )
+                return
             if self._pending is None:
                 # Stray task_finished (e.g. from agent restart) — nothing
                 # to wake. Just keep the log line for the next system
@@ -543,7 +643,10 @@ class GameAgentService:
         }
 
     # ------------------------------------------------------------------
-    # Logging helpers — silently no-op when no logger is supplied
+    # Logging helpers — silently no-op when no logger is supplied.
+    # Each helper guards its emit because the SDK's loguru-based logger
+    # can transiently fail (file rotation mid-write, etc.); we never
+    # want a diagnostic log line to surface as a real error.
     # ------------------------------------------------------------------
 
     def _log_info(self, msg: str, *args: Any) -> None:
@@ -551,21 +654,21 @@ class GameAgentService:
             try:
                 self.logger.info("[GameAgent] " + msg, *args)
             except Exception:
-                pass
+                pass  # log emission itself failed — see comment above
 
     def _log_warning(self, msg: str, *args: Any) -> None:
         if self.logger is not None:
             try:
                 self.logger.warning("[GameAgent] " + msg, *args)
             except Exception:
-                pass
+                pass  # log emission itself failed — see comment above
 
     def _log_error(self, msg: str, *args: Any) -> None:
         if self.logger is not None:
             try:
                 self.logger.error("[GameAgent] " + msg, *args)
             except Exception:
-                pass
+                pass  # log emission itself failed — see comment above
 
 
 __all__ = ["GameAgentService", "PendingTask"]

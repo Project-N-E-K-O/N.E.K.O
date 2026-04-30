@@ -110,6 +110,9 @@ class GameAgentClient:
             try:
                 await ws.close()
             except Exception:
+                # Best-effort close on shutdown — if the socket is
+                # already torn down (peer hung up, OS reaped fd, ...)
+                # there's nothing for us to recover; we're stopping.
                 pass
         self._log_info("stopped")
 
@@ -192,7 +195,11 @@ class GameAgentClient:
             self._log_error("listen error: {}: {}", type(exc).__name__, exc)
 
     # ------------------------------------------------------------------
-    # Logging helpers — silently no-op when no logger is supplied
+    # Logging helpers — silently no-op when no logger is supplied.
+    # Each helper guards its emit with try/except because the plugin
+    # SDK's loguru-based logger can transiently fail (e.g. file rotation
+    # mid-write) and we never want a log line to surface as a real
+    # error in callers that just wanted to record diagnostics.
     # ------------------------------------------------------------------
 
     def _log_info(self, msg: str, *args: Any) -> None:
@@ -200,28 +207,28 @@ class GameAgentClient:
             try:
                 self.logger.info("[GameAgent] " + msg, *args)
             except Exception:
-                pass
+                pass  # log emission itself failed — see comment above
 
     def _log_warning(self, msg: str, *args: Any) -> None:
         if self.logger is not None:
             try:
                 self.logger.warning("[GameAgent] " + msg, *args)
             except Exception:
-                pass
+                pass  # log emission itself failed — see comment above
 
     def _log_error(self, msg: str, *args: Any) -> None:
         if self.logger is not None:
             try:
                 self.logger.error("[GameAgent] " + msg, *args)
             except Exception:
-                pass
+                pass  # log emission itself failed — see comment above
 
     def _log_debug(self, msg: str, *args: Any) -> None:
         if self.logger is not None:
             try:
                 self.logger.debug("[GameAgent] " + msg, *args)
             except Exception:
-                pass
+                pass  # log emission itself failed — see comment above
 
 
 __all__ = [

@@ -238,7 +238,14 @@ async def test_overwrite_interrupts_old_task_with_status():
         if service._pending is not None and service._pending.task_text == "new task":
             break
         await asyncio.sleep(0.01)
-    await service._on_task_finished({"status": "ok"})
+
+    # The agent will (eventually) emit a delayed task_finished for the
+    # *old* task before the new one's frame arrives. Per the FIFO drop
+    # rule, that first frame is swallowed and the new task's frame
+    # resolves the runner.
+    await service._on_task_finished({"status": "ok", "text": "old finished late"})
+    assert service._pending is not None  # still waiting
+    await service._on_task_finished({"status": "ok", "text": "new finished"})
     new_out = await asyncio.wait_for(new_runner, timeout=2.0)
     assert new_out == {"status": "ok", "query": "new task"}
 
@@ -324,3 +331,175 @@ async def test_stop_unblocks_pending_handler():
     out = await asyncio.wait_for(runner, timeout=2.0)
     assert out["status"] == "interrupted"
     assert "shutting down" in out["reason"].lower()
+
+
+# ---------------------------------------------------------------------------
+# Stale task_finished filtering — protocol has no task IDs, so a delayed
+# completion frame for an abandoned task must not be misattributed to the
+# new pending task.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_stale_task_finished_after_timeout_is_dropped():
+    """After a task times out, a delayed task_finished frame for it
+    should be swallowed instead of resolving the *next* call."""
+    service, _ = _make_service()
+    service.configure({"task_timeout_seconds": 0.1})
+    service._client = _FakeClient()
+
+    # Task A times out — leaves a "stale frame" debt of 1.
+    out_a = await service.execute_minecraft_task(task="task A")
+    assert out_a["status"] == "timeout"
+    assert service._stale_task_finishes_to_drop == 1
+
+    # Late task_finished for A arrives — should be dropped, not
+    # attached to anything.
+    await service._on_task_finished({"status": "ok", "text": "A done late"})
+    assert service._stale_task_finishes_to_drop == 0
+    # No pending task got falsely resolved.
+    assert service._pending is None
+
+
+@pytest.mark.asyncio
+async def test_stale_task_finished_after_overwrite_is_dropped():
+    """After overwrite, a delayed task_finished for the *old* task must
+    not be matched to the *new* pending task (which has its own id-less
+    frame coming later)."""
+    service, _ = _make_service()
+    service.configure({"task_timeout_seconds": 5.0})
+    service._client = _FakeClient()
+
+    # Start old task.
+    old_runner = asyncio.create_task(
+        service.execute_minecraft_task(task="old task")
+    )
+    for _ in range(50):
+        if service._pending is not None:
+            break
+        await asyncio.sleep(0.01)
+
+    # Overwrite — old runner resolves with "interrupted", drop counter += 1.
+    new_runner = asyncio.create_task(
+        service.execute_minecraft_task(task="new task", overwrite=True)
+    )
+    old_out = await asyncio.wait_for(old_runner, timeout=2.0)
+    assert old_out["status"] == "interrupted"
+    assert service._stale_task_finishes_to_drop == 1
+
+    # Wait for the new task's pending slot.
+    for _ in range(50):
+        if service._pending is not None and service._pending.task_text == "new task":
+            break
+        await asyncio.sleep(0.01)
+
+    # Late task_finished for OLD task arrives first — must be dropped,
+    # NOT attached to the new task.
+    await service._on_task_finished({"status": "ok", "text": "old done late"})
+    assert service._stale_task_finishes_to_drop == 0
+    # New task is still pending (drop didn't resolve it).
+    assert service._pending is not None
+    assert service._pending.task_text == "new task"
+
+    # Now the real frame for the new task arrives — should resolve normally.
+    await service._on_task_finished({"status": "ok", "text": "new done"})
+    new_out = await asyncio.wait_for(new_runner, timeout=2.0)
+    assert new_out == {"status": "ok", "query": "new task"}
+
+
+# ---------------------------------------------------------------------------
+# Cancellation cleanup — when the outer SDK timeout cancels the handler,
+# self._pending must not be left dangling.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_cancellation_clears_pending_slot():
+    service, _ = _make_service()
+    service.configure({"task_timeout_seconds": 30.0})
+    service._client = _FakeClient()
+
+    runner = asyncio.create_task(
+        service.execute_minecraft_task(task="long task")
+    )
+    for _ in range(50):
+        if service._pending is not None:
+            break
+        await asyncio.sleep(0.01)
+
+    runner.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await runner
+    assert service._pending is None
+    # And the drop counter was bumped so a delayed frame doesn't bind
+    # to whatever task comes next.
+    assert service._stale_task_finishes_to_drop == 1
+
+
+# ---------------------------------------------------------------------------
+# reload_config_live — transport-affecting keys trigger restart
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_reload_config_live_no_restart_when_not_running():
+    """Pure config update before start() — just mutates state, never
+    restarts (because there's nothing to restart)."""
+    service, _ = _make_service()
+    service.configure({"ws_url": "ws://localhost:48909"})
+    restarted = await service.reload_config_live({"ws_url": "ws://localhost:48910"})
+    assert restarted is False
+    assert service.get_status()["ws_url"] == "ws://localhost:48910"
+
+
+@pytest.mark.asyncio
+async def test_reload_config_live_restarts_on_ws_url_change():
+    """When a live client exists and ws_url changes, the service does
+    a stop+start cycle so the new URL takes effect."""
+    service, _ = _make_service()
+    service.configure({"ws_url": "ws://localhost:48909"})
+
+    # Plug a fake "running" state without launching real WS code:
+    # the reload path treats ``self._client is not None`` as "running",
+    # and ``stop()`` / ``start()`` deal with whatever's there.
+    fake_client = _FakeClient()
+    service._client = fake_client
+
+    # Patch start() to track invocations without spinning up a real
+    # WebSocket connection.
+    start_calls: list[str] = []
+
+    async def fake_start():
+        start_calls.append(service._ws_url)
+        service._client = _FakeClient()
+
+    service.start = fake_start  # type: ignore[method-assign]
+
+    restarted = await service.reload_config_live({"ws_url": "ws://example:9999"})
+    assert restarted is True
+    assert start_calls == ["ws://example:9999"]
+    assert service.get_status()["ws_url"] == "ws://example:9999"
+
+
+@pytest.mark.asyncio
+async def test_reload_config_live_no_restart_for_pure_data_keys():
+    """Changing only timeouts / intervals doesn't tear down the
+    transport — those are read on every tick."""
+    service, _ = _make_service()
+    service.configure({"ws_url": "ws://localhost:48909", "task_timeout_seconds": 25.0})
+    service._client = _FakeClient()
+
+    # Track that start() was NOT called.
+    start_calls: list[str] = []
+
+    async def fake_start():
+        start_calls.append(service._ws_url)
+
+    service.start = fake_start  # type: ignore[method-assign]
+
+    restarted = await service.reload_config_live({
+        "ws_url": "ws://localhost:48909",  # unchanged
+        "task_timeout_seconds": 60.0,
+    })
+    assert restarted is False
+    assert start_calls == []
