@@ -569,12 +569,30 @@ class GameAgentService:
             # confirms what's already true (a task is in flight).
             self._task_finished = False
         elif text_strip == "Connection lost and re-established.":
-            if self._pending is None:
-                self._task_finished = True
-                # Connection bounce wipes the agent's task queue —
-                # any abandoned-task frames we were waiting to drain
-                # will never arrive. Reset the debt to avoid
-                # swallowing the next session's legitimate frames.
+            # Connection bounce wipes the agent's task queue. Two
+            # cases to clean up:
+            # 1. No task pending → just reset debt (any unpaid drops
+            #    from before the bounce will never arrive).
+            # 2. A task IS pending → its ``task_finished`` will
+            #    never come either; wake the handler with an
+            #    "interrupted" verdict so it doesn't sit on
+            #    ``event.wait`` until ``task_timeout_seconds``
+            #    expires. Clear the slot so a follow-up minecraft_task
+            #    isn't refused with "busy".
+            async with self._pending_lock:
+                pending = self._pending
+                if pending is None:
+                    self._task_finished = True
+                else:
+                    pending.result = {
+                        "status": "interrupted",
+                        "query": pending.task_text,
+                        "reason": "Agent connection bounced — task lost.",
+                    }
+                    self._pending = None
+                    pending.event.set()
+                    self._task_finished = True
+                # Drain debt unconditionally — agent state is gone.
                 self._stale_task_finishes_to_drop = 0
 
     async def _on_screenshot(self, payload: str, encoding: str) -> None:

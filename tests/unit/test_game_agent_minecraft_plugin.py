@@ -679,6 +679,40 @@ async def test_log_connection_lost_clears_all_stale_debt():
 
 
 @pytest.mark.asyncio
+async def test_log_connection_lost_wakes_pending_handler():
+    """If a task is pending when the agent reconnects, its
+    ``task_finished`` will never arrive (agent's task queue was
+    wiped). The handler must be woken with an "interrupted" verdict
+    so it doesn't sit blocked on ``event.wait`` until
+    ``task_timeout_seconds`` expires."""
+    service, _ = _make_service()
+    service.configure({"task_timeout_seconds": 30.0})
+    service._client = _FakeClient()
+
+    runner = asyncio.create_task(service.execute_minecraft_task(task="long task"))
+    for _ in range(50):
+        if service._pending is not None:
+            break
+        await asyncio.sleep(0.01)
+    else:
+        pytest.fail("_pending was never set")
+
+    # Pre-bump debt to verify it's also drained.
+    service._stale_task_finishes_to_drop = 2
+
+    await service._on_log("Connection lost and re-established.")
+
+    # Pending was woken with an interrupted verdict.
+    out = await asyncio.wait_for(runner, timeout=2.0)
+    assert out["status"] == "interrupted"
+    assert "connection bounced" in out["reason"].lower()
+    # Slot is free for the next call.
+    assert service._pending is None
+    # Debt drained (agent state is gone).
+    assert service._stale_task_finishes_to_drop == 0
+
+
+@pytest.mark.asyncio
 async def test_log_heuristic_does_not_flip_when_pending_task_active():
     """An old task's late "task run ended" log must not flip
     ``_task_finished`` to True while a new task is in flight —
@@ -704,10 +738,11 @@ async def test_log_heuristic_does_not_flip_when_pending_task_active():
     await service._on_log("task run ended (for some old task)")
     assert service._task_finished is False
     assert service._pending is not None  # still in flight
-
-    # Same for connection-lost log.
-    await service._on_log("Connection lost and re-established.")
-    assert service._task_finished is False
+    # Note: ``Connection lost and re-established.`` intentionally
+    # behaves differently when a task is pending — it wakes the
+    # handler with "interrupted" because the agent's task queue
+    # was wiped. That contract is pinned in
+    # ``test_log_connection_lost_wakes_pending_handler``.
 
     runner.cancel()
     try:
