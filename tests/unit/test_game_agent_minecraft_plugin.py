@@ -310,6 +310,49 @@ async def test_concurrent_call_returns_busy_when_overwrite_false():
 
 
 @pytest.mark.asyncio
+async def test_overwrite_only_accepts_true_canonical_bool():
+    """The LLM may emit a non-canonical truthy value for ``overwrite``
+    (string ``"true"``, integer ``1``, etc.). The strict ``is True``
+    check ensures the destructive interrupt path only fires on the
+    canonical boolean — anything else falls through to the safe
+    ``"busy"`` response."""
+    service, _ = _make_service()
+    service.configure({"task_timeout_seconds": 5.0})
+    service._client = _FakeClient()
+
+    # Start a task to occupy the slot.
+    long_runner = asyncio.create_task(
+        service.execute_minecraft_task(task="incumbent")
+    )
+    for _ in range(50):
+        if service._pending is not None:
+            break
+        await asyncio.sleep(0.01)
+    else:
+        pytest.fail("incumbent never claimed the slot")
+
+    # ``overwrite="true"`` (string) — must NOT interrupt.
+    out = await service.execute_minecraft_task(task="impostor", overwrite="true")
+    assert out["result"] == "busy"
+    assert out["currently_executing"] == "incumbent"
+
+    # ``overwrite=1`` (truthy int) — same.
+    out = await service.execute_minecraft_task(task="impostor", overwrite=1)
+    assert out["result"] == "busy"
+
+    # Sanity: the slot still holds the original task, not impostor.
+    assert service._pending is not None
+    assert service._pending.task_text == "incumbent"
+
+    long_runner.cancel()
+    try:
+        await long_runner
+    except (asyncio.CancelledError, Exception):
+        # Cleanup-only swallow — we cancelled it ourselves.
+        pass
+
+
+@pytest.mark.asyncio
 async def test_overwrite_interrupts_old_task_with_status():
     service, _ = _make_service()
     service.configure({"task_timeout_seconds": 5.0})

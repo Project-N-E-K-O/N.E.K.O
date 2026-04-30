@@ -163,11 +163,19 @@ class GameAgentClient:
         try:
             async for raw in ws:
                 try:
-                    data: dict = json.loads(raw)
+                    data = json.loads(raw)
                 except (json.JSONDecodeError, TypeError):
                     # Agent server should never emit non-JSON frames;
                     # drop and keep listening rather than tearing down
                     # the connection over malformed input.
+                    continue
+                if not isinstance(data, dict):
+                    # JSON parsed successfully but the top-level value
+                    # isn't an object (e.g. ``null``, an array, a bare
+                    # string). The protocol requires objects with a
+                    # ``type`` field; calling ``.get`` on a non-dict
+                    # would raise AttributeError and crash the
+                    # listener.
                     continue
 
                 msg_type = data.get("type", "")

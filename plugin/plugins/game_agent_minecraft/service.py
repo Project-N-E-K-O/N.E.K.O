@@ -314,7 +314,7 @@ class GameAgentService:
     # ------------------------------------------------------------------
 
     async def execute_minecraft_task(
-        self, *, task: str, overwrite: bool = False
+        self, *, task: str, overwrite: Any = False
     ) -> Dict[str, Any]:
         """Implementation of the ``minecraft_task`` LLM tool.
 
@@ -343,14 +343,21 @@ class GameAgentService:
                 "error": "NOT_STARTED",
             }
 
+        # The schema declares ``overwrite: boolean`` but the LLM is
+        # not reliably constrained — it may emit a string ``"true"``,
+        # an int ``1``, or some other truthy value. Strict ``is True``
+        # only accepts the canonical Python bool so the destructive
+        # interrupt path doesn't fire by accident on an off-spec arg.
+        overwrite_flag = overwrite is True
+
         async with self._pending_lock:
             if self._pending is not None:
-                if not overwrite:
+                if not overwrite_flag:
                     # Refuse without disturbing the in-flight task.
                     return {
                         "result": "busy",
                         "currently_executing": self._pending.task_text,
-                        "hint": "Set overwrite=True to interrupt the current task.",
+                        "hint": "Set overwrite=true (boolean, not string) to interrupt the current task.",
                     }
                 # Wake the old handler with an "interrupted" verdict
                 # before claiming the slot for the new task. The agent
