@@ -916,6 +916,23 @@ class UniversalTutorialManager {
         return result;
     }
 
+    buildTutorialTemporaryModelConfig(payload) {
+        const modelName = this.tutorialNonEmptyString(payload && payload.live2d) || 'yui_default';
+        const modelPath = modelName === 'yui_default'
+            ? '/static/yui_default/yui_default.model3.json'
+            : `/live2d-models/${encodeURIComponent(modelName)}/${encodeURIComponent(modelName)}.model3.json`;
+
+        return {
+            success: true,
+            model_type: 'live2d',
+            live3d_sub_type: '',
+            model_path: modelPath,
+            lighting: window.lanlan_config && window.lanlan_config.lighting
+                ? Object.assign({}, window.lanlan_config.lighting)
+                : null
+        };
+    }
+
     syncTutorialLanlanModelMode(payload) {
         if (!window.lanlan_config || !payload) {
             return;
@@ -928,9 +945,73 @@ class UniversalTutorialManager {
         }
     }
 
-    async reloadTutorialModel(lanlanName, payload) {
+    async loadTemporaryTutorialLive2dModel(payload) {
+        const tempConfig = this.buildTutorialTemporaryModelConfig(payload);
+        const modelPath = tempConfig.model_path;
+
+        if (!window.live2dManager && typeof window.Live2DManager === 'function') {
+            window.live2dManager = new window.Live2DManager();
+        }
+        if (!window.live2dManager) {
+            throw new Error('Live2DManager unavailable');
+        }
+
+        if (!window.live2dManager.pixi_app || !window.live2dManager.pixi_app.renderer) {
+            await window.live2dManager.initPIXI('live2d-canvas', 'live2d-container');
+        }
+
+        const vrmContainer = document.getElementById('vrm-container');
+        if (vrmContainer) {
+            vrmContainer.style.display = 'none';
+            vrmContainer.classList.add('hidden');
+        }
+        const mmdContainer = document.getElementById('mmd-container');
+        if (mmdContainer) {
+            mmdContainer.style.display = 'none';
+            mmdContainer.classList.add('hidden');
+        }
+        if (window.vrmManager && typeof window.vrmManager.pauseRendering === 'function') {
+            window.vrmManager.pauseRendering();
+        }
+        if (window.mmdManager && typeof window.mmdManager.pauseRendering === 'function') {
+            window.mmdManager.pauseRendering();
+        }
+
+        const live2dContainer = document.getElementById('live2d-container');
+        if (live2dContainer) {
+            live2dContainer.classList.remove('hidden');
+            live2dContainer.style.display = 'block';
+            live2dContainer.style.visibility = 'visible';
+            live2dContainer.style.removeProperty('pointer-events');
+        }
+
+        await window.live2dManager.loadModel(modelPath, {
+            isMobile: window.innerWidth <= 768
+        });
+        if (window.LanLan1) {
+            window.LanLan1.live2dModel = window.live2dManager.getCurrentModel();
+            window.LanLan1.currentModel = window.live2dManager.getCurrentModel();
+        }
+        if (typeof window.showLive2d === 'function') {
+            window.showLive2d();
+        }
+    }
+
+    async reloadTutorialModel(lanlanName, payload, options = {}) {
+        const useTemporaryConfig = options && options.temporary === true;
         if (typeof window.handleModelReload === 'function') {
-            await window.handleModelReload(lanlanName);
+            const reloadOptions = {
+                suppressToast: true
+            };
+            if (useTemporaryConfig) {
+                reloadOptions.temporaryConfig = this.buildTutorialTemporaryModelConfig(payload);
+                reloadOptions.skipIdleRestore = true;
+            }
+            await window.handleModelReload(lanlanName, reloadOptions);
+            return;
+        }
+        if (useTemporaryConfig) {
+            await this.loadTemporaryTutorialLive2dModel(payload);
             return;
         }
         this.syncTutorialLanlanModelMode(payload);
@@ -972,9 +1053,8 @@ class UniversalTutorialManager {
             this._tutorialAvatarOverride.currentName = currentName;
             this._tutorialAvatarOverride.snapshotPayload = snapshotPayload;
 
-            await this.saveTutorialModelPayload(currentName, tutorialModelPayload);
-            await this.reloadTutorialModel(currentName, tutorialModelPayload);
-            console.log('[Tutorial] 新手教程期间已按模型管理页保存流程临时切换到 yui_default 模型:', tutorialModelPayload);
+            await this.reloadTutorialModel(currentName, tutorialModelPayload, { temporary: true });
+            console.log('[Tutorial] 新手教程期间已临时切换到 yui_default 模型（未写入用户配置）:', tutorialModelPayload);
         })().catch((error) => {
             console.warn('[Tutorial] 临时切换 yui_default 模型失败:', error);
         }).finally(() => {
@@ -1003,12 +1083,11 @@ class UniversalTutorialManager {
         const snapshotPayload = override.snapshotPayload;
 
         try {
-            if (!currentName || !snapshotPayload) {
+            if (!currentName) {
                 return;
             }
 
-            await this.saveTutorialModelPayload(currentName, snapshotPayload);
-            await this.reloadTutorialModel(currentName, snapshotPayload);
+            await this.reloadTutorialModel(currentName, snapshotPayload || {});
             console.log('[Tutorial] 已按模型管理页保存流程恢复新手教程前的用户模型:', override.activePrefix || 'unknown');
         } catch (error) {
             console.warn('[Tutorial] 恢复新手教程前用户模型失败:', error);

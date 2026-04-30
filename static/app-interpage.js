@@ -250,9 +250,16 @@
      * is queued and executed once the current one finishes.
      *
      * @param {string} [targetLanlanName='']  - optional character name filter
+     * @param {object} [reloadOptions]        - runtime-only reload options
      */
-    async function handleModelReload(targetLanlanName) {
+    async function handleModelReload(targetLanlanName, reloadOptions) {
         targetLanlanName = targetLanlanName || '';
+        reloadOptions = reloadOptions || {};
+        var temporaryConfig = reloadOptions.temporaryConfig && typeof reloadOptions.temporaryConfig === 'object'
+            ? reloadOptions.temporaryConfig
+            : null;
+        var suppressToast = !!reloadOptions.suppressToast;
+        var skipIdleRestore = !!reloadOptions.skipIdleRestore;
 
         // 只有承载完整模型 UI 的页面才处理重载；Chat 等子窗口缺少渲染容器，
         // 执行会导致异常并弹出误导性的"模型切换失败"toast。
@@ -290,22 +297,29 @@
         let activeMmdLoadingSessionId = '';
 
         try {
-            // 1. Re-fetch page config
+            // 1. Re-fetch page config, or use a caller-provided temporary runtime config.
             var nameForConfig = targetLanlanName || currentLanlanName;
-            var pageConfigUrl = nameForConfig
-                ? '/api/config/page_config?lanlan_name=' + encodeURIComponent(nameForConfig)
-                : '/api/config/page_config';
-            var response = await fetch(pageConfigUrl);
-            var data = await response.json();
+            var data;
+            if (temporaryConfig) {
+                data = Object.assign({ success: true }, temporaryConfig);
+            } else {
+                var pageConfigUrl = nameForConfig
+                    ? '/api/config/page_config?lanlan_name=' + encodeURIComponent(nameForConfig)
+                    : '/api/config/page_config';
+                var response = await fetch(pageConfigUrl);
+                data = await response.json();
+            }
 
             if (data.success) {
                 var newModelPath = data.model_path || '';
                 var newModelType = (data.model_type || 'live2d').toLowerCase();
                 var live3dSubType = (data.live3d_sub_type || '').toLowerCase();
                 var oldModelType = window.lanlan_config?.model_type || 'live2d';
-                var nextLighting = (data.lighting && typeof data.lighting === 'object')
-                    ? Object.assign({}, data.lighting)
-                    : null;
+                var nextLighting = (temporaryConfig && !Object.prototype.hasOwnProperty.call(data, 'lighting'))
+                    ? (window.lanlan_config?.lighting || null)
+                    : ((data.lighting && typeof data.lighting === 'object')
+                        ? Object.assign({}, data.lighting)
+                        : null);
 
                 window.lanlan_config = window.lanlan_config || {};
                 window.lanlan_config.lighting = nextLighting;
@@ -746,8 +760,10 @@
                                 window.LanLan1.currentModel = window.live2dManager.getCurrentModel();
                             }
 
-                            // 恢复 Live2D 待机动作
-                            restoreLive2DIdleAnimationOnMainPage();
+                            // 恢复 Live2D 待机动作。教程临时模型不读取用户模型的待机动作，避免把不匹配的动作套到 yui_default。
+                            if (!skipIdleRestore) {
+                                restoreLive2DIdleAnimationOnMainPage();
+                            }
                         } else {
                             console.error('[Model] Live2D 管理器初始化失败');
                         }
@@ -767,16 +783,20 @@
                 }
 
                 // 5. Success toast
-                window.showStatusToast(
-                    window.t ? window.t('app.modelSwitched') : '模型已切换',
-                    2000
-                );
+                if (!suppressToast) {
+                    window.showStatusToast(
+                        window.t ? window.t('app.modelSwitched') : '模型已切换',
+                        2000
+                    );
+                }
             } else {
                 console.error('[Model] 获取页面配置失败:', data.error);
-                window.showStatusToast(
-                    window.t ? window.t('app.modelSwitchFailed') : '模型切换失败',
-                    3000
-                );
+                if (!suppressToast) {
+                    window.showStatusToast(
+                        window.t ? window.t('app.modelSwitchFailed') : '模型切换失败',
+                        3000
+                    );
+                }
             }
         } catch (error) {
             console.error('[Model] 模型热切换失败:', error);
@@ -793,10 +813,12 @@
                 window.lanlan_config.live3d_sub_type = oldLive3dSubType || '';
                 console.warn('[Model] 已回滚 config:', { model_type: oldModelType, live3d_sub_type: oldLive3dSubType });
             }
-            window.showStatusToast(
-                window.t ? window.t('app.modelSwitchFailed') : '模型切换失败',
-                3000
-            );
+            if (!suppressToast) {
+                window.showStatusToast(
+                    window.t ? window.t('app.modelSwitchFailed') : '模型切换失败',
+                    3000
+                );
+            }
         } finally {
             // Clear in-flight flag
             window._modelReloadInFlight = false;

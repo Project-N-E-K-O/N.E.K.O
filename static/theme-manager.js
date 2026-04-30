@@ -69,6 +69,7 @@
 
   async function initTheme() {
     let isDark = false;
+    let shouldPersist = true;
 
     if (window.nekoDarkMode && typeof window.nekoDarkMode.get === 'function') {
       try {
@@ -78,20 +79,24 @@
         try {
           const stored = localStorage.getItem(STORAGE_KEY);
           isDark = stored !== null ? stored === 'true' : getSystemPrefersDark();
+          shouldPersist = stored !== null;
         } catch (_) {
           isDark = getSystemPrefersDark();
+          shouldPersist = false;
         }
       }
     } else {
       try {
         const stored = localStorage.getItem(STORAGE_KEY);
         isDark = stored !== null ? stored === 'true' : getSystemPrefersDark();
+        shouldPersist = stored !== null;
       } catch (_) {
         isDark = getSystemPrefersDark();
+        shouldPersist = false;
       }
     }
 
-    applyTheme(isDark);
+    applyTheme(isDark, { persist: shouldPersist });
   }
 
   function listenForThemeChanges() {
@@ -113,10 +118,10 @@
       media.addEventListener('change', (event) => {
         try {
           if (localStorage.getItem(STORAGE_KEY) === null) {
-            applyThemeAnimated(event.matches);
+            applyThemeAnimated(event.matches, { persist: false });
           }
         } catch (_) {
-          applyThemeAnimated(event.matches);
+          applyThemeAnimated(event.matches, { persist: false });
         }
       });
     }

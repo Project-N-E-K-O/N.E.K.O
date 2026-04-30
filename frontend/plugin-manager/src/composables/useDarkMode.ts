@@ -75,7 +75,7 @@ function setupThemeSyncListeners() {
     const media = window.matchMedia('(prefers-color-scheme: dark)')
     media.addEventListener('change', (event) => {
       if (readStoredDarkMode() === null) {
-        applyDarkMode(event.matches)
+        applyDarkMode(event.matches, { persist: false })
       }
     })
   } catch (_) {}
@@ -85,7 +85,7 @@ export function initDarkMode() {
   setupThemeSyncListeners()
 
   const saved = readStoredDarkMode()
-  applyDarkMode(saved !== null ? saved : getSystemPrefersDark())
+  applyDarkMode(saved !== null ? saved : getSystemPrefersDark(), { persist: saved !== null })
 
   const bridge = getNekoDarkModeBridge()
   if (bridge && typeof bridge.get === 'function') {
