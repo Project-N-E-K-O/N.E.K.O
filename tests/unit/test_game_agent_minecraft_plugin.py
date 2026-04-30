@@ -855,6 +855,52 @@ async def test_stale_task_finished_after_overwrite_is_dropped():
 
 
 @pytest.mark.asyncio
+async def test_cancellation_during_send_task_clears_pending_slot():
+    """The cancellation handler around ``event.wait()`` only catches
+    cancels that land *after* dispatch. Cancellation during the
+    ``send_task`` await itself (e.g. plugin shutdown sweeps tasks
+    while the WS roundtrip is in flight) was previously a leak —
+    ``_pending`` would dangle and every subsequent call would return
+    'busy' against an event nothing would set."""
+
+    class _SlowSendClient:
+        is_connected = True
+
+        def __init__(self):
+            self.released = asyncio.Event()
+
+        async def send_task(self, task):
+            # Block until cancelled — the test cancels the runner
+            # while we're suspended here.
+            await self.released.wait()
+            return True
+
+        async def stop(self):
+            pass
+
+    service, _ = _make_service()
+    service.configure({"task_timeout_seconds": 30.0})
+    service._client = _SlowSendClient()
+
+    runner = asyncio.create_task(service.execute_minecraft_task(task="A"))
+    for _ in range(50):
+        if service._pending is not None:
+            break
+        await asyncio.sleep(0.01)
+    else:
+        pytest.fail("_pending was never set within poll budget")
+
+    runner.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await runner
+
+    assert service._pending is None
+    assert service._task_finished is True
+    # Bumped because we abandoned the task without an ack.
+    assert service._stale_task_finishes_to_drop == 1
+
+
+@pytest.mark.asyncio
 async def test_cancellation_clears_pending_slot():
     service, _ = _make_service()
     service.configure({"task_timeout_seconds": 30.0})

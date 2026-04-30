@@ -387,7 +387,22 @@ class GameAgentService:
             self._pending = my_pending
             self._task_finished = False
 
-        sent = await self._client.send_task(task)
+        try:
+            sent = await self._client.send_task(task)
+        except asyncio.CancelledError:
+            # Cancellation can hit during the dispatch await too (the
+            # outer SDK timeout fires, plugin shutdown sweeps tasks).
+            # The ``event.wait()`` cancellation handler below covers
+            # the post-dispatch window, but without this branch a
+            # cancel landing in the dispatch window leaves
+            # ``self._pending`` dangling and every subsequent call
+            # returns "busy" against an event nothing will ever set.
+            async with self._pending_lock:
+                if self._pending is my_pending:
+                    self._pending = None
+                    self._task_finished = True
+                    self._stale_task_finishes_to_drop += 1
+            raise
         # The ``send_task`` await is a suspension point — another
         # coroutine (overwrite / stop / a stale task_finished frame
         # filtered to fall through to ``_pending``) may have already
