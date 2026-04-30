@@ -305,6 +305,7 @@ def test_yui_guide_steps_registry_keeps_m1_to_m4_home_flow_contract():
     ):
         assert expected in source
 
+    # Keep concatenated literals here so search/grep does not match this test file.
     for removed in (
         "'intro_" + "proactive'",
         "'intro_" + "cat_paw'",

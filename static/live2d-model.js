@@ -298,7 +298,8 @@ Live2DManager.prototype.clearTemporaryPoseOverride = function(source) {
     if (!active) {
         return;
     }
-    if (!source || active.source === source) {
+    const normalizedSource = String(source || '');
+    if (!normalizedSource || active.source === normalizedSource) {
         this._temporaryPoseOverride = null;
     }
 };

@@ -641,8 +641,7 @@ def test_manual_character_personality_reselect_waits_for_home_tutorial_completio
         """
     )
 
-    mock_page.wait_for_timeout(350)
-    expect(mock_page.locator("[data-testid='character-personality-overlay']")).to_have_count(0)
+    expect(mock_page.locator("[data-testid='character-personality-overlay']")).to_have_count(0, timeout=1000)
 
     mock_page.evaluate(
         """

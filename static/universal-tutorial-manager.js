@@ -11,6 +11,7 @@ const TUTORIAL_STORAGE_KEY_PREFIX = 'neko_tutorial_';
 const TUTORIAL_PROMPT_FLOW_PREFIX = '[TutorialPromptFlow]';
 const TUTORIAL_YUI_LIVE2D_MODEL_NAME = 'yui-origin';
 const TUTORIAL_YUI_LIVE2D_MODEL_PATH = '/static/yui-origin/yui-origin.model3.json';
+const TUTORIAL_AVATAR_OVERRIDE_TIMEOUT_MS = 8000;
 
 function getTutorialStorageKeyForPage(pageKey) {
     return TUTORIAL_STORAGE_KEY_PREFIX + pageKey;
@@ -1265,7 +1266,7 @@ class UniversalTutorialManager {
 
     beginTutorialAvatarOverride() {
         if (this._tutorialAvatarOverridePromise) {
-            if (this._tutorialAvatarOverride && this._tutorialAvatarOverride.restoring) {
+            if (this._tutorialAvatarOverride && (this._tutorialAvatarOverride.restoring || this._tutorialAvatarOverride.restoreRequested)) {
                 return this._tutorialAvatarOverridePromise.then(() => this.beginTutorialAvatarOverride());
             }
             return this._tutorialAvatarOverridePromise;
@@ -1279,14 +1280,27 @@ class UniversalTutorialManager {
             activePrefix,
             restoreRequested: false
         };
+        const override = this._tutorialAvatarOverride;
+        const ensureOverrideActive = () => {
+            if (this._tutorialAvatarOverride !== override || override.cancelled) {
+                throw new Error('tutorial avatar override setup cancelled');
+            }
+        };
+        const setupDeadline = new Promise((_, reject) => {
+            setTimeout(() => {
+                reject(new Error(`tutorial avatar override setup timed out after ${TUTORIAL_AVATAR_OVERRIDE_TIMEOUT_MS}ms`));
+            }, TUTORIAL_AVATAR_OVERRIDE_TIMEOUT_MS);
+        });
 
-        const setupPromise = (async () => {
+        const setupPromise = Promise.race([(async () => {
             const currentName = await this.resolveCurrentTutorialCatgirlName();
+            ensureOverrideActive();
             if (!currentName) {
                 throw new Error('current tutorial catgirl name unavailable');
             }
 
             const characters = await this.fetchTutorialCharacters();
+            ensureOverrideActive();
             const catgirls = (characters && characters['猫娘']) || {};
             const currentConfig = catgirls[currentName];
             if (!currentConfig) {
@@ -1304,8 +1318,11 @@ class UniversalTutorialManager {
 
             this.setTutorialLive2dPreparing(true);
             await this.reloadTutorialModel(currentName, tutorialModelPayload, { temporary: true });
+            ensureOverrideActive();
             await this.sleep(350);
+            ensureOverrideActive();
             const tutorialAvatar = await this.captureTutorialChatAvatarPreview();
+            ensureOverrideActive();
             this.applyTutorialChatIdentityOverride({
                 active: true,
                 displayName: 'YUI',
@@ -1313,8 +1330,15 @@ class UniversalTutorialManager {
                 modelType: tutorialAvatar && tutorialAvatar.modelType ? tutorialAvatar.modelType : 'live2d'
             });
             console.log('[Tutorial] 新手教程期间已临时切换到 yui-origin 模型（未写入用户配置）:', tutorialModelPayload);
-        })().catch((error) => {
+        })(), setupDeadline]).catch((error) => {
+            override.cancelled = true;
             this.revealTutorialLive2dPrepared();
+            if (this._tutorialAvatarOverride === override) {
+                this._tutorialAvatarOverride.currentName = null;
+                this._tutorialAvatarOverride.snapshotPayload = null;
+                this._tutorialAvatarOverride = null;
+            }
+            this.applyTutorialChatIdentityOverride({ active: false });
             console.warn('[Tutorial] 临时切换 yui-origin 模型失败:', error);
         });
 
@@ -1339,7 +1363,12 @@ class UniversalTutorialManager {
 
         if (this._tutorialAvatarOverridePromise) {
             override.restoreRequested = true;
-            return this._tutorialAvatarOverridePromise;
+            return this._tutorialAvatarOverridePromise.then(() => {
+                if (this._tutorialAvatarOverride === override && !override.restoring) {
+                    return this.restoreTutorialAvatarOverride();
+                }
+                return this._tutorialAvatarOverridePromise || Promise.resolve();
+            });
         }
 
         const currentName = override.currentName;

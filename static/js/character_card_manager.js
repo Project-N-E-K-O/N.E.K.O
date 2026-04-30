@@ -6751,9 +6751,6 @@ async function scanModels(loadSequence) {
         }
         const models = await live2dResponse.json();
 
-        // 存储所有模型到全局变量（用于角色卡加载，包括static目录的模型）
-        window.allModels = models;
-
         // 过滤掉来自static目录的模型（如默认/版权Live2D），只保留用户文档目录中的模型
         // 这是为了防止上传版权Live2D模型
         const uploadableModels = models.filter(model => model.source !== 'static');

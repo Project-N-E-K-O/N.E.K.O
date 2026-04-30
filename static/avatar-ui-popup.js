@@ -1725,6 +1725,12 @@ function createIntervalControl(manager, prefix, toggle) {
 
     container._expand = () => {
         if (container.style.display === 'flex' && container.style.opacity !== '0') return;
+        const visibilityRevision = (container._visibilityRevision || 0) + 1;
+        container._visibilityRevision = visibilityRevision;
+        if (container._expandFrameId) {
+            cancelAnimationFrame(container._expandFrameId);
+            container._expandFrameId = null;
+        }
         if (container._collapseTimeout) { clearTimeout(container._collapseTimeout); container._collapseTimeout = null; }
 
         container.style.display = 'flex';
@@ -1744,7 +1750,11 @@ function createIntervalControl(manager, prefix, toggle) {
             window.AvatarPopupUI.positionSidePanel(container, anchor);
         }
 
-        requestAnimationFrame(() => {
+        container._expandFrameId = requestAnimationFrame(() => {
+            container._expandFrameId = null;
+            if (container._visibilityRevision !== visibilityRevision || container.style.display === 'none') {
+                return;
+            }
             container.style.pointerEvents = 'auto';
             container.style.opacity = '1';
             container.style.transform = 'translateX(0)';
@@ -1753,11 +1763,17 @@ function createIntervalControl(manager, prefix, toggle) {
 
     container._collapse = () => {
         if (container.style.display === 'none') return;
+        container._visibilityRevision = (container._visibilityRevision || 0) + 1;
+        const visibilityRevision = container._visibilityRevision;
+        if (container._expandFrameId) {
+            cancelAnimationFrame(container._expandFrameId);
+            container._expandFrameId = null;
+        }
         if (container._collapseTimeout) { clearTimeout(container._collapseTimeout); container._collapseTimeout = null; }
         container.style.opacity = '0';
         container.style.transform = container.dataset.goLeft === 'true' ? 'translateX(6px)' : 'translateX(-6px)';
         container._collapseTimeout = setTimeout(() => {
-            if (container.style.opacity === '0') container.style.display = 'none';
+            if (container._visibilityRevision === visibilityRevision && container.style.opacity === '0') container.style.display = 'none';
             container._collapseTimeout = null;
         }, AVATAR_POPUP_ANIMATION_DURATION_MS);
     };

@@ -3,6 +3,7 @@ import { ref, onMounted } from 'vue'
 const DARK_MODE_KEY = 'neko-dark-mode'
 const isDark = ref(false)
 let listenersRegistered = false
+let darkModeInitEpoch = 0
 
 type NekoDarkModeBridge = {
   get?: () => boolean | Promise<boolean>
@@ -67,7 +68,7 @@ function setupThemeSyncListeners() {
   window.addEventListener('neko-theme-changed', (event: Event) => {
     const detail = (event as CustomEvent<{ darkMode?: boolean }>).detail
     if (detail && typeof detail.darkMode === 'boolean') {
-      applyDarkMode(detail.darkMode)
+      applyDarkMode(detail.darkMode, { persist: false })
     }
   })
 
@@ -90,9 +91,10 @@ export function initDarkMode() {
   const bridge = getNekoDarkModeBridge()
   if (bridge && typeof bridge.get === 'function') {
     try {
+      const initEpoch = ++darkModeInitEpoch
       Promise.resolve(bridge.get())
         .then((dark) => {
-          if (typeof dark === 'boolean') {
+          if (initEpoch === darkModeInitEpoch && typeof dark === 'boolean') {
             applyDarkMode(dark)
           }
         })
@@ -102,6 +104,7 @@ export function initDarkMode() {
 }
 
 function toggleDarkMode() {
+  darkModeInitEpoch += 1
   const next = !isDark.value
   applyDarkMode(next)
 

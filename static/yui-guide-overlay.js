@@ -906,14 +906,12 @@
             const gap = Number.isFinite(normalizedOptions.gap) ? Math.max(8, normalizedOptions.gap) : 18;
             const viewportWidth = Math.max(1, window.innerWidth || 0);
             const viewportHeight = Math.max(1, window.innerHeight || 0);
-            const width = Math.min(
-                this.bubble.offsetWidth || 340,
-                Math.max(220, viewportWidth - (viewportPadding * 2))
-            );
-            const height = Math.min(
-                this.bubble.offsetHeight || 120,
-                Math.max(96, viewportHeight - (viewportPadding * 2))
-            );
+            const availableWidth = Math.max(1, viewportWidth - (viewportPadding * 2));
+            const availableHeight = Math.max(1, viewportHeight - (viewportPadding * 2));
+            const minWidth = Math.min(220, availableWidth);
+            const minHeight = Math.min(96, availableHeight);
+            const width = Math.max(minWidth, Math.min(this.bubble.offsetWidth || 340, availableWidth));
+            const height = Math.max(minHeight, Math.min(this.bubble.offsetHeight || 120, availableHeight));
 
             const clampLeft = (value) => Math.max(viewportPadding, Math.min(value, viewportWidth - width - viewportPadding));
             const clampTop = (value) => Math.max(viewportPadding, Math.min(value, viewportHeight - height - viewportPadding));
@@ -1158,6 +1156,17 @@
             this.document.body.classList.add('yui-guide-ghost-cursor-active');
             this.cursorShell.hidden = false;
             this.cursorShell.classList.add('is-visible');
+            if (shouldReduceMotion()) {
+                if (cancelCheck && cancelCheck()) {
+                    return Promise.resolve(false);
+                }
+                this.cursorShell.style.transitionDuration = '0ms';
+                this.cursorShell.style.transform = 'translate(' + Math.round(x) + 'px, ' + Math.round(y) + 'px)';
+                this.cursorPosition = { x: x, y: y };
+                this.cursorTrailLastPoint = null;
+                this.cursorTrailLastAt = 0;
+                return Promise.resolve(true);
+            }
 
             return new Promise((resolve) => {
                 let settled = false;
@@ -1754,6 +1763,20 @@
             var startDistance = self.cursorPosition
                 ? Math.hypot(startX - self.cursorPosition.x, startY - self.cursorPosition.y)
                 : 0;
+            if (shouldReduceMotion()) {
+                if (typeof cancelCheck === 'function' && cancelCheck()) {
+                    return Promise.resolve(false);
+                }
+                if (typeof abortCheck === 'function' && abortCheck()) {
+                    return Promise.resolve(false);
+                }
+                self.cursorShell.style.transitionDuration = '0ms';
+                self.cursorShell.style.transform = 'translate(' + Math.round(startX) + 'px, ' + Math.round(startY) + 'px)';
+                self.cursorPosition = { x: startX, y: startY };
+                self.cursorTrailLastPoint = null;
+                self.cursorTrailLastAt = 0;
+                return Promise.resolve(true);
+            }
             var prepareMove = self.cursorPosition && startDistance > 2
                 ? self.moveCursorTo(startX, startY, {
                     durationMs: Math.min(520, Math.max(220, Math.round(cycleMs * 0.08))),

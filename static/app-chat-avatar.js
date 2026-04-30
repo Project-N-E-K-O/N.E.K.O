@@ -1141,6 +1141,16 @@
         return '';
     };
 
+    mod.getCurrentAvatarModelType = function getCurrentAvatarModelType() {
+        if (tutorialAvatarOverrideDataUrl) return tutorialAvatarOverrideModelType || getCurrentModelType();
+        if (hasUsableCachedPreview()) return cachedPreview.modelType || getCurrentModelType();
+        if (cachedPreview && cachedPreview.dataUrl) return cachedPreview.modelType || getCurrentModelType();
+        var stored = loadFromStorage();
+        if (stored && stored.dataUrl) return stored.modelType || getCurrentModelType();
+        if (externalAvatarDataUrl) return externalAvatarModelType || getCurrentModelType();
+        return getCurrentModelType();
+    };
+
     mod.setTutorialAvatarOverride = function setTutorialAvatarOverride(dataUrl, modelType) {
         tutorialAvatarOverrideDataUrl = dataUrl || '';
         tutorialAvatarOverrideModelType = modelType || '';
@@ -1160,7 +1170,7 @@
         window.dispatchEvent(new CustomEvent('chat-avatar-preview-updated', {
             detail: {
                 dataUrl: mod.getCurrentAvatarDataUrl(),
-                modelType: getCurrentModelType(),
+                modelType: mod.getCurrentAvatarModelType(),
                 source: 'tutorial_override_clear'
             }
         }));
