@@ -227,22 +227,127 @@ def test_yui_guide_steps_registry_keeps_m1_to_m4_home_flow_contract():
         "'takeover_return_control'",
         "'handoff_api_key'",
         "'handoff_memory_browser'",
-        "'handoff_steam_workshop'",
         "'handoff_plugin_dashboard'",
         "steps.handoff_api_key.navigation.resumeScene = 'api_key_intro';",
         "steps.handoff_memory_browser.navigation.resumeScene = 'memory_browser_intro';",
-        "steps.handoff_steam_workshop.navigation.resumeScene = 'steam_workshop_intro';",
         "steps.handoff_plugin_dashboard.navigation.resumeScene = 'plugin_dashboard_landing';",
+        "steps.intro_proactive.performance.cursorSpeedMultiplier = 1.08;",
+        "steps.intro_cat_paw.performance.delayMs = 160;",
         "steps.plugin_dashboard_landing = createBaseStep('plugin_dashboard_landing', 'plugin_dashboard', '#plugin-list');",
         "steps.api_key_intro = createBaseStep('api_key_intro', 'api_key', '#coreApiSelect-dropdown-trigger');",
         "steps.memory_browser_intro = createBaseStep('memory_browser_intro', 'memory_browser', '#memory-file-list');",
-        "steps.steam_workshop_intro = createBaseStep('steam_workshop_intro', 'steam_workshop', '#workshop-tabs');",
         "api_key: ['api_key_intro']",
         "memory_browser: ['memory_browser_intro']",
-        "steam_workshop: ['steam_workshop_intro']",
         "plugin_dashboard: ['plugin_dashboard_landing']",
     ):
         assert expected in source
+
+    for removed in (
+        "'handoff_steam_workshop'",
+        "steps.handoff_steam_workshop",
+        "steps.steam_workshop_intro",
+        "steam_workshop: ['steam_workshop_intro']",
+        "/steam_workshop_manager",
+    ):
+        assert removed not in source
+
+
+def test_yui_guide_overlay_supports_progress_meta_and_viewport_placement():
+    overlay_source = Path("static/yui-guide-overlay.js").read_text(encoding="utf-8")
+    director_source = Path("static/yui-guide-director.js").read_text(encoding="utf-8")
+    style_source = Path("static/css/yui-guide.css").read_text(encoding="utf-8")
+
+    for expected in (
+        "yui-guide-bubble-header",
+        "yui-guide-bubble-meta",
+        "scoreBubbleCandidate",
+        "is-placement-",
+        "isCircularFloatingButtonElement(element)",
+        "geometry === 'circle' || isCircularFloatingButtonElement(element)",
+    ):
+        assert expected in overlay_source
+
+    for expected in (
+        "getHomePresentationSceneOrder()",
+        "getBubbleMetaForScene(sceneId)",
+        "主页引导 ",
+        "isCircularFloatingButtonSpotlight(element)",
+        "applyCircularFloatingButtonSpotlightHint(persistentSpotlightTarget)",
+        "'[id$=\"-btn-mic\"], [id$=\"-btn-agent\"], [id$=\"-btn-settings\"]'",
+        "this.applyCircularFloatingButtonSpotlightHint(primaryTarget)",
+        "this.applyCircularFloatingButtonSpotlightHint(this.customSecondarySpotlightTarget)",
+    ):
+        assert expected in director_source
+
+    for expected in (
+        ".yui-guide-bubble-meta",
+        ".yui-guide-bubble.is-placement-top::after",
+        "@keyframes yui-guide-spotlight-sheen",
+        "html[data-theme='dark'] .yui-guide-overlay",
+    ):
+        assert expected in style_source
+
+
+def test_home_tutorial_complex_optimization_plan_is_documented():
+    source = Path("docs/design/home-tutorial-yui-guide-optimization-roadmap.md").read_text(encoding="utf-8")
+
+    for expected in (
+        "场景图代替固定线性队列",
+        "任务清单式进度",
+        "平台能力矩阵",
+        "旁白与动作的 cue 时间轴",
+        "可恢复断点和失败回退",
+    ):
+        assert expected in source
+
+
+def test_yui_guide_cat_paw_click_state_is_visible_before_actions():
+    overlay_source = Path("static/yui-guide-overlay.js").read_text(encoding="utf-8")
+    director_source = Path("static/yui-guide-director.js").read_text(encoding="utf-8")
+    style_source = Path("static/css/yui-guide.css").read_text(encoding="utf-8")
+    plugin_runtime_source = Path("frontend/plugin-manager/src/yui-guide-runtime.ts").read_text(encoding="utf-8")
+
+    for source in (overlay_source, director_source, plugin_runtime_source):
+        assert "DEFAULT_CURSOR_CLICK_VISIBLE_MS = 420" in source
+
+    for expected in (
+        "this.cursorClickTimer",
+        "window.clearTimeout(this.cursorClickTimer)",
+        "this.cursorInner.classList.add('is-clicking')",
+        "CURSOR_CLICK_STAR_COUNT = 7",
+        "spawnCursorClickStars()",
+        "this.spawnCursorClickStars();",
+        "yui-guide-click-star",
+        "--star-mid-x",
+        "CURSOR_TRAIL_ICON_URLS",
+        "/static/icons/send_icon.png",
+        "/static/icons/paw_ui.png",
+        "maybeSpawnCursorTrail(nextX, nextY, previousX, previousY, now)",
+        "yui-guide-cursor-trail is-icon",
+    ):
+        assert expected in overlay_source
+
+    for expected in (
+        "this.cursor.click(clickVisibleMs)",
+        "await this.waitForSceneDelay(clickVisibleMs)",
+        "await this.clickCursorAndWait(DEFAULT_CURSOR_CLICK_VISIBLE_MS)",
+    ):
+        assert expected in director_source
+
+    assert "animation: yui-guide-cursor-click 420ms ease;" in style_source
+    assert "@keyframes yui-guide-click-star-burst" in style_source
+    assert ".yui-guide-click-star" in style_source
+    assert ".yui-guide-cursor-trail.is-glow" in style_source
+    assert ".yui-guide-cursor-trail.is-icon" in style_source
+    assert "@keyframes yui-guide-cursor-trail-fade" in style_source
+    assert "animation: yui-guide-plugin-click 420ms ease;" in plugin_runtime_source
+    assert "CURSOR_CLICK_STAR_COUNT = 7" in plugin_runtime_source
+    assert "CURSOR_TRAIL_ICON_URLS = [sendIconUrl, pawUiUrl]" in plugin_runtime_source
+    assert "yui-guide-plugin-click-star" in plugin_runtime_source
+    assert "yui-guide-plugin-cursor-trail is-icon" in plugin_runtime_source
+    assert "maybeSpawnCursorTrail(position.x, position.y, previous.x, previous.y, now)" in plugin_runtime_source
+    assert "spawnCursorClickStars()" in plugin_runtime_source
+    assert "await this.waitForSceneDelay(DEFAULT_CURSOR_CLICK_VISIBLE_MS, isCurrent)" in plugin_runtime_source
 
 
 _YUI_RUNTIME_SCRIPTS = (
@@ -294,6 +399,18 @@ def test_target_page_templates_load_yui_runtime_stack_before_tutorial_manager():
         _stylesheet_tag_position(source, "yui-guide.css")
 
 
+def test_home_yui_guide_does_not_route_to_steam_workshop():
+    yui_source = Path("static/yui-guide-steps.js").read_text(encoding="utf-8")
+    tutorial_source = Path("static/universal-tutorial-manager.js").read_text(encoding="utf-8")
+    paths = _route_paths_from_decorators("main_routers/pages_router.py", "router")
+
+    assert "/steam_workshop_manager" not in paths
+    assert "handoff_steam_workshop" not in yui_source
+    assert "/steam_workshop_manager" not in yui_source
+    assert "yuiGuideSceneId: 'handoff_steam_workshop'" not in tutorial_source
+    assert "#${p}-menu-steam-workshop" not in tutorial_source
+
+
 def test_universal_tutorial_manager_normalizes_api_key_handoff_and_resume_scene_mappings():
     source = Path("static/universal-tutorial-manager.js").read_text(encoding="utf-8")
 
@@ -304,7 +421,6 @@ def test_universal_tutorial_manager_normalizes_api_key_handoff_and_resume_scene_
         "applyYuiGuideResumeScene(validSteps)",
         "yuiGuideSceneId: 'api_key_intro'",
         "yuiGuideSceneId: 'memory_browser_intro'",
-        "yuiGuideSceneId: 'steam_workshop_intro'",
     ):
         assert expected in source
 

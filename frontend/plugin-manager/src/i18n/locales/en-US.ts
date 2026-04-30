@@ -434,6 +434,8 @@ export default {
         takeoverPluginPreviewDashboard: 'With these, I can not only read Bilibili comments, but also turn off lights and AC for you... I am the all-powerful Super Cat God! Hmph~',
         takeoverSettingsPeekIntro: "Of course, I wouldn't mind chatting more if you want, but you'd better prepare lots of treats! Hehe, just kidding! All the settings are in this gear icon.",
         takeoverSettingsPeekDetail: "Look, you can change my outfit, or my voice... wait, CHANGE TO ANOTHER CATGIRL?! OR ERASE MEMORIES?! Wait, what are you doing?! You're not trying to replace me, are you?! No no no! Close it! Close it right now!",
+        takeoverSettingsPeekDetailPart1: 'Look, you can change my outfit, or my voice... wait, CHANGE TO ANOTHER CATGIRL?! OR ERASE MEMORIES?!',
+        takeoverSettingsPeekDetailPart2: "Wait, what are you doing?! You're not trying to replace me, are you?! No no no! Close it! Close it right now!",
         takeoverReturnControl: "Alright, alright, I'm done hijacking your PC~! Giving control back to you! But don't you dare touch any weird settings while I'm not looking! I'm counting on you from now on, nyan~!",
         interruptResistLight1: "Hey! Don't drag me around! It's not your turn yet, nyan!",
         interruptResistLight3: "Wait a sec! I'm not finished yet, don't just interrupt me like that!",

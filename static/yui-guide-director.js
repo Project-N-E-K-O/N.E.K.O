@@ -176,12 +176,17 @@
     const DEFAULT_STEP_DELAY_MS = 120;
     const DEFAULT_SCENE_SETTLE_MS = 260;
     const DEFAULT_CURSOR_DURATION_MS = 520;
+    const DEFAULT_CURSOR_CLICK_VISIBLE_MS = 420;
     const INTRO_GREETING_REPLY_TEXT = '我是你的专属猫娘，从今天起就由我来陪伴主人咯。无论是想要聊天解闷、一起玩耍，还是需要我帮忙做些什么，我都会乖乖陪在主人身边的喵。以后请多多指教啦，最喜欢主人了~！';
     const INTRO_GREETING_REPLY_TEXT_KEY = 'tutorial.yuiGuide.lines.introGreetingReply';
     const TAKEOVER_PLUGIN_DASHBOARD_TEXT = '有了它们，我不光能看 B 站弹幕，还能帮你关灯开空调…… 本喵就是无所不能的超级猫猫神！哼哼～';
     const TAKEOVER_PLUGIN_DASHBOARD_TEXT_KEY = 'tutorial.yuiGuide.lines.takeoverPluginPreviewDashboard';
-    const TAKEOVER_SETTINGS_DETAIL_TEXT = '你看，这里可以穿我的新衣服、给我换一个好听的声音……换一个猫娘或是修改记忆？等一下！你在干嘛？该不会是想把我换掉吧？啊啊啊不行！快关掉快关掉！';
+    const TAKEOVER_SETTINGS_DETAIL_TEXT_PART_1 = '你看，这里可以穿我的新衣服、给我换一个好听的声音……换一个猫娘或是修改记忆？';
+    const TAKEOVER_SETTINGS_DETAIL_TEXT_PART_2 = '等一下！你在干嘛？该不会是想把我换掉吧？啊啊啊不行！快关掉快关掉！';
+    const TAKEOVER_SETTINGS_DETAIL_TEXT = TAKEOVER_SETTINGS_DETAIL_TEXT_PART_1 + TAKEOVER_SETTINGS_DETAIL_TEXT_PART_2;
     const TAKEOVER_SETTINGS_DETAIL_TEXT_KEY = 'tutorial.yuiGuide.lines.takeoverSettingsPeekDetail';
+    const TAKEOVER_SETTINGS_DETAIL_TEXT_PART_1_KEY = 'tutorial.yuiGuide.lines.takeoverSettingsPeekDetailPart1';
+    const TAKEOVER_SETTINGS_DETAIL_TEXT_PART_2_KEY = 'tutorial.yuiGuide.lines.takeoverSettingsPeekDetailPart2';
     const DEFAULT_SPOTLIGHT_PADDING = 6;
     const PLUGIN_DASHBOARD_WINDOW_NAME = 'plugin_dashboard';
     const PLUGIN_DASHBOARD_HANDOFF_EVENT = 'neko:yui-guide:plugin-dashboard:start';
@@ -357,6 +362,10 @@
         takeover_settings_peek_intro: Object.freeze({
             baseDurationMs: 11877,
             openSettingsPanel: 9000
+        }),
+        takeover_settings_peek_detail: Object.freeze({
+            baseDurationMs: 13923,
+            showSecondLine: 7450
         })
     });
 
@@ -381,6 +390,13 @@
             en: 9338,
             ko: 11360,
             ru: 10697
+        }),
+        takeover_settings_peek_detail: Object.freeze({
+            zh: 13923,
+            ja: 24514,
+            en: 15497,
+            ko: 21600,
+            ru: 14937
         })
     });
 
@@ -391,6 +407,8 @@
         'tutorial.yuiGuide.lines.takeoverPluginPreviewDashboard': '有了它们，我不光能看 B 站弹幕，还能帮你关灯开空调…… 本喵就是无所不能的超级猫猫神！哼哼～',
         'tutorial.yuiGuide.lines.takeoverSettingsPeekIntro': '当然啦，如果你想让本喵多和你聊聊天也不是不行啦，给我多准备点小鱼干吧，嘿嘿，好了不逗你啦，设置都在这个齿轮里。',
         'tutorial.yuiGuide.lines.takeoverSettingsPeekDetail': '你看，这里可以穿我的新衣服、给我换一个好听的声音……换一个猫娘或是修改记忆？等一下！你在干嘛？该不会是想把我换掉吧？啊啊啊不行！快关掉快关掉！',
+        'tutorial.yuiGuide.lines.takeoverSettingsPeekDetailPart1': '你看，这里可以穿我的新衣服、给我换一个好听的声音……换一个猫娘或是修改记忆？',
+        'tutorial.yuiGuide.lines.takeoverSettingsPeekDetailPart2': '等一下！你在干嘛？该不会是想把我换掉吧？啊啊啊不行！快关掉快关掉！',
         'tutorial.yuiGuide.lines.takeoverReturnControl': '好啦好啦，不霸占你的电脑啦～控制权还给你了喵！可不许趁我不注意乱点奇怪的设置哦！之后的日子也请你多多关照了喵～',
         'tutorial.yuiGuide.lines.interruptResistLight1': '喂！不要拽我啦，还没轮到你的回合呢！',
         'tutorial.yuiGuide.lines.interruptResistLight3': '等一下啦！还没结束呢，不要随便打断我啦！',
@@ -1229,8 +1247,8 @@
             });
         }
 
-        click() {
-            this.overlay.clickCursor();
+        click(durationMs) {
+            this.overlay.clickCursor(durationMs);
         }
 
         wobble() {
@@ -1399,6 +1417,47 @@
             }
 
             return null;
+        }
+
+        getHomePresentationSceneOrder() {
+            if (!this.registry || !this.registry.sceneOrder || !Array.isArray(this.registry.sceneOrder.home)) {
+                return [];
+            }
+
+            return this.registry.sceneOrder.home.filter(function (sceneId) {
+                return (
+                    typeof sceneId === 'string'
+                    && sceneId.indexOf('interrupt_') !== 0
+                    && sceneId.indexOf('handoff_') !== 0
+                );
+            });
+        }
+
+        getBubbleMetaForScene(sceneId) {
+            const normalizedSceneId = typeof sceneId === 'string' ? sceneId.trim() : '';
+            if (this.page !== 'home') {
+                return '';
+            }
+
+            if (normalizedSceneId === 'intro_activation') {
+                return '准备开始';
+            }
+
+            const order = this.getHomePresentationSceneOrder();
+            const index = order.indexOf(normalizedSceneId);
+            if (index === -1 || order.length <= 0) {
+                return '';
+            }
+
+            return '主页引导 ' + (index + 1) + '/' + order.length;
+        }
+
+        showGuideBubble(text, options, sceneId) {
+            const normalizedOptions = Object.assign({}, options || {});
+            if (!normalizedOptions.meta) {
+                normalizedOptions.meta = this.getBubbleMetaForScene(sceneId || this.currentSceneId);
+            }
+            this.overlay.showBubble(text, normalizedOptions);
         }
 
         resolveModelPrefix() {
@@ -1864,6 +1923,7 @@
                         return;
                     }
                     seen.add(element);
+                    this.applyCircularFloatingButtonSpotlightHint(element);
                     nextElements.push(element);
                 });
             });
@@ -2072,9 +2132,10 @@
 
             if (typeof element.closest === 'function') {
                 const shell = element.closest(
+                    '#live2d-btn-mic, #vrm-btn-mic, #mmd-btn-mic, ' +
                     '#live2d-btn-agent, #vrm-btn-agent, #mmd-btn-agent, ' +
                     '#live2d-btn-settings, #vrm-btn-settings, #mmd-btn-settings, ' +
-                    '[id$="-btn-agent"], [id$="-btn-settings"]'
+                    '[id$="-btn-mic"], [id$="-btn-agent"], [id$="-btn-settings"]'
                 );
                 if (shell) {
                     return shell;
@@ -2082,6 +2143,28 @@
             }
 
             return element;
+        }
+
+        isCircularFloatingButtonSpotlight(element) {
+            const target = this.getFloatingButtonShell(element) || element;
+            if (!target || typeof target.id !== 'string') {
+                return false;
+            }
+
+            return /-btn-(mic|agent|settings)$/.test(target.id);
+        }
+
+        applyCircularFloatingButtonSpotlightHint(element) {
+            if (!this.isCircularFloatingButtonSpotlight(element)) {
+                return false;
+            }
+
+            const target = this.getFloatingButtonShell(element) || element;
+            this.setSpotlightGeometryHint(target, {
+                padding: 4,
+                geometry: 'circle'
+            });
+            return true;
         }
 
         getSettingsPeekTargets() {
@@ -2246,6 +2329,7 @@
 
             if (Object.prototype.hasOwnProperty.call(normalized, 'persistent')) {
                 if (persistentTarget) {
+                    this.applyCircularFloatingButtonSpotlightHint(persistentTarget);
                     this.overlay.setPersistentSpotlight(persistentTarget);
                 } else {
                     this.overlay.clearPersistentSpotlight();
@@ -2254,6 +2338,7 @@
 
             if (Object.prototype.hasOwnProperty.call(normalized, 'primary')) {
                 if (primaryTarget) {
+                    this.applyCircularFloatingButtonSpotlightHint(primaryTarget);
                     this.overlay.activateSpotlight(primaryTarget);
                 } else {
                     this.overlay.clearActionSpotlight();
@@ -2263,6 +2348,7 @@
             if (Object.prototype.hasOwnProperty.call(normalized, 'secondary')) {
                 this.customSecondarySpotlightTarget = secondaryTarget || null;
                 if (secondaryTarget) {
+                    this.applyCircularFloatingButtonSpotlightHint(secondaryTarget);
                     this.overlay.activateSecondarySpotlight(secondaryTarget);
                 } else if (!Object.prototype.hasOwnProperty.call(normalized, 'primary')) {
                     this.overlay.clearActionSpotlight();
@@ -3201,6 +3287,7 @@
             const bubbleText = this.resolvePerformanceBubbleText(performance);
             const spotlightTarget = this.getSceneSpotlightTarget(this.currentSceneId, performance);
             if (spotlightTarget) {
+                this.applyCircularFloatingButtonSpotlightHint(spotlightTarget);
                 this.overlay.setPersistentSpotlight(spotlightTarget);
             } else {
                 this.overlay.clearPersistentSpotlight();
@@ -3208,23 +3295,25 @@
 
             const actionSpotlightTarget = this.getActionSpotlightTarget(this.currentSceneId, performance);
             if (actionSpotlightTarget) {
+                this.applyCircularFloatingButtonSpotlightHint(actionSpotlightTarget);
                 this.overlay.activateSpotlight(actionSpotlightTarget);
             } else {
                 this.overlay.clearActionSpotlight();
             }
 
             if (this.customSecondarySpotlightTarget) {
+                this.applyCircularFloatingButtonSpotlightHint(this.customSecondarySpotlightTarget);
                 this.overlay.activateSecondarySpotlight(this.customSecondarySpotlightTarget);
             }
 
             if (this.shouldNarrateInChat(this.currentSceneId)) {
                 this.overlay.hideBubble();
             } else if (bubbleText) {
-                this.overlay.showBubble(bubbleText, {
+                this.showGuideBubble(bubbleText, {
                     title: 'Yui',
                     emotion: performance.emotion || 'neutral',
                     anchorRect: this.resolveRect(this.currentStep.anchor)
-                });
+                }, this.currentSceneId);
             } else {
                 this.overlay.hideBubble();
             }
@@ -3872,7 +3961,12 @@
 
             if (api && typeof api.openPage === 'function') {
                 try {
-                    return await api.openPage('http://127.0.0.1:48916/ui/', 'plugin_dashboard', '', options || null);
+                    return await api.openPage(
+                        new URL('/ui/', this.getPluginDashboardExpectedOrigin()).toString(),
+                        'plugin_dashboard',
+                        '',
+                        options || null
+                    );
                 } catch (error) {
                     console.warn('[YuiGuide] openPage(plugin_dashboard) 失败:', error);
                 }
@@ -4125,8 +4219,13 @@
         }
 
         async clickCursorAndWait(holdMs) {
-            this.cursor.click();
-            await this.waitForSceneDelay(Number.isFinite(holdMs) ? holdMs : 180);
+            const visibleMs = clamp(
+                Math.round(Number.isFinite(holdMs) ? holdMs : DEFAULT_CURSOR_CLICK_VISIBLE_MS),
+                DEFAULT_CURSOR_CLICK_VISIBLE_MS,
+                900
+            );
+            this.cursor.click(visibleMs);
+            await this.waitForSceneDelay(visibleMs);
         }
 
         hoverElement(element) {
@@ -4223,7 +4322,18 @@
                 return false;
             }
 
-            this.cursor.click();
+            const clickVisibleMs = clamp(
+                Math.round(Number.isFinite(normalized.clickVisibleMs) ? normalized.clickVisibleMs : DEFAULT_CURSOR_CLICK_VISIBLE_MS),
+                DEFAULT_CURSOR_CLICK_VISIBLE_MS,
+                900
+            );
+            this.cursor.click(clickVisibleMs);
+            if (!(await this.waitForSceneDelay(clickVisibleMs))) {
+                return false;
+            }
+            if (normalized.runId !== this.sceneRunId || this.isStopping()) {
+                return false;
+            }
             if (typeof normalized.action !== 'function') {
                 return true;
             }
@@ -4640,7 +4750,7 @@
                     return null;
                 }
 
-                this.cursor.click();
+                await this.clickCursorAndWait(scaleSceneMs(420, 240, 900));
                 const agentPanelOpened = await this.openAgentPanel();
                 if (!agentPanelOpened || guardFailed()) {
                     return null;
@@ -4661,7 +4771,7 @@
                     return null;
                 }
 
-                this.cursor.click();
+                await this.clickCursorAndWait(scaleSceneMs(420, 240, 900));
                 const agentMasterEnabled = await this.setAgentMasterEnabled(true);
                 if (!agentMasterEnabled || guardFailed()) {
                     return null;
@@ -4693,7 +4803,7 @@
                     return null;
                 }
 
-                this.cursor.click();
+                await this.clickCursorAndWait(scaleSceneMs(420, 240, 900));
                 const pluginToggleEnabled = await this.setAgentFlagEnabled('user_plugin_enabled', true);
                 if (!pluginToggleEnabled || guardFailed()) {
                     return null;
@@ -4852,10 +4962,15 @@
                     12000,
                     42000
                 );
-                const targetOrigin = '*';
+                const targetOrigin = this.getPluginDashboardExpectedOrigin();
+                if (!targetOrigin) {
+                    resolve(false);
+                    return;
+                }
                 const handoff = {
                     sessionId: sessionId,
                     windowRef: windowRef,
+                    targetOrigin: targetOrigin,
                     ready: false,
                     readyAt: 0,
                     resolve: (result) => {
@@ -4944,7 +5059,7 @@
                 windowRef.postMessage({
                     type: PLUGIN_DASHBOARD_NARRATION_FINISHED_EVENT,
                     sessionId: handoff.sessionId
-                }, '*');
+                }, handoff.targetOrigin || this.getPluginDashboardExpectedOrigin());
             } catch (error) {
                 console.warn('[YuiGuide] 向插件面板发送 narration finished 失败:', error);
             }
@@ -4963,12 +5078,37 @@
                     sessionId: handoff.sessionId,
                     reason: typeof reason === 'string' && reason.trim() ? reason.trim() : 'skip',
                     closeWindow: true
-                }, '*');
+                }, handoff.targetOrigin || this.getPluginDashboardExpectedOrigin());
                 return true;
             } catch (error) {
                 console.warn('[YuiGuide] 向插件面板发送 terminate 失败:', error);
                 return false;
             }
+        }
+
+        detectDesktopPlatform() {
+            const rawPlatform = (
+                (navigator.userAgentData && navigator.userAgentData.platform)
+                || navigator.platform
+                || navigator.userAgent
+                || ''
+            ).toString().toLowerCase();
+            if (rawPlatform.includes('mac')) return 'macos';
+            if (rawPlatform.includes('win')) return 'windows';
+            if (rawPlatform.includes('linux') || rawPlatform.includes('x11')) return 'linux';
+            return 'web';
+        }
+
+        getSkipButtonHitPadding(platform, boundsSource) {
+            if (boundsSource === 'electron-window-bounds') {
+                if (platform === 'macos') return 28;
+                if (platform === 'linux') return 32;
+                return 20;
+            }
+            if (platform === 'macos') return 36;
+            if (platform === 'linux') return 44;
+            if (platform === 'windows') return 28;
+            return 18;
         }
 
         async getGuideHostWindowBounds() {
@@ -4998,7 +5138,8 @@
                     x: Math.round(x),
                     y: Math.round(y),
                     width: Math.round(width),
-                    height: Math.round(height)
+                    height: Math.round(height),
+                    source: 'electron-window-bounds'
                 };
             } catch (_) {
                 return null;
@@ -5016,6 +5157,7 @@
                 return null;
             }
 
+            const platform = this.detectDesktopPlatform();
             const hostBounds = await this.getGuideHostWindowBounds();
             const rawScreenLeft = hostBounds && Number.isFinite(hostBounds.x)
                 ? hostBounds.x
@@ -5029,13 +5171,20 @@
                 : Number(window.screenTop);
             const screenLeft = Number.isFinite(rawScreenLeft) ? rawScreenLeft : 0;
             const screenTop = Number.isFinite(rawScreenTop) ? rawScreenTop : 0;
-            const hitPadding = 16;
+            const boundsSource = hostBounds && hostBounds.source
+                ? hostBounds.source
+                : 'browser-screen-origin';
+            const hitPadding = this.getSkipButtonHitPadding(platform, boundsSource);
 
             return {
                 left: Math.round(screenLeft + rect.left - hitPadding),
                 top: Math.round(screenTop + rect.top - hitPadding),
                 right: Math.round(screenLeft + rect.right + hitPadding),
-                bottom: Math.round(screenTop + rect.bottom + hitPadding)
+                bottom: Math.round(screenTop + rect.bottom + hitPadding),
+                coordinateSpace: boundsSource,
+                platform: platform,
+                devicePixelRatio: Number.isFinite(Number(window.devicePixelRatio)) ? Number(window.devicePixelRatio) : 1,
+                hitPadding: hitPadding
             };
         }
 
@@ -5273,12 +5422,38 @@
                 TAKEOVER_SETTINGS_DETAIL_TEXT_KEY,
                 TAKEOVER_SETTINGS_DETAIL_TEXT
             );
-            this.appendGuideChatMessage(detailText, {
-                textKey: TAKEOVER_SETTINGS_DETAIL_TEXT_KEY
+            const detailTextPart1 = this.resolveGuideCopy(
+                TAKEOVER_SETTINGS_DETAIL_TEXT_PART_1_KEY,
+                TAKEOVER_SETTINGS_DETAIL_TEXT_PART_1
+            );
+            const detailTextPart2 = this.resolveGuideCopy(
+                TAKEOVER_SETTINGS_DETAIL_TEXT_PART_2_KEY,
+                TAKEOVER_SETTINGS_DETAIL_TEXT_PART_2
+            );
+            this.appendGuideChatMessage(detailTextPart1 || detailText, {
+                textKey: detailTextPart1
+                    ? TAKEOVER_SETTINGS_DETAIL_TEXT_PART_1_KEY
+                    : TAKEOVER_SETTINGS_DETAIL_TEXT_KEY
             });
 
             let settingsPeekHighlightsCleared = false;
             let settingsPanelClosed = false;
+            let settingsDetailSecondLineDisplayed = false;
+            const appendSettingsDetailSecondLine = () => {
+                if (
+                    settingsDetailSecondLineDisplayed
+                    || runId !== this.sceneRunId
+                    || this.isStopping()
+                    || !detailTextPart2
+                ) {
+                    return;
+                }
+
+                settingsDetailSecondLineDisplayed = true;
+                this.appendGuideChatMessage(detailTextPart2, {
+                    textKey: TAKEOVER_SETTINGS_DETAIL_TEXT_PART_2_KEY
+                });
+            };
             const clearSettingsPeekHighlights = () => {
                 if (settingsPeekHighlightsCleared) {
                     return;
@@ -5309,6 +5484,7 @@
             const narrationPromise = this.speakGuideLine(detailText, {
                 voiceKey: 'takeover_settings_peek_detail'
             }).finally(() => {
+                appendSettingsDetailSecondLine();
                 if (runId !== this.sceneRunId || this.isStopping()) {
                     return;
                 }
@@ -5317,6 +5493,16 @@
                 clearSettingsPeekHighlights();
                 return closeSettingsPeekPanel();
             });
+            const secondLineDisplayPromise = (async () => {
+                if (!(await this.waitForNarrationCue(
+                    'takeover_settings_peek_detail',
+                    'showSecondLine'
+                ))) {
+                    return;
+                }
+
+                appendSettingsDetailSecondLine();
+            })();
 
             this.overlay.clearActionSpotlight();
 
@@ -5396,7 +5582,7 @@
                 }
             })();
 
-            await Promise.all([narrationPromise, actionPromise]);
+            await Promise.all([narrationPromise, actionPromise, secondLineDisplayPromise]);
             if (runId !== this.sceneRunId || this.isStopping()) {
                 return;
             }
@@ -5722,10 +5908,10 @@
                 }
 
                 try {
-                    this.overlay.showBubble(content, {
+                    this.showGuideBubble(content, {
                         title: this.getGuideAssistantName(),
                         emotion: 'neutral'
-                    });
+                    }, this.currentSceneId);
                 } catch (error) {
                     console.warn('[YuiGuide] 兜底气泡展示失败:', error);
                 }
@@ -5867,9 +6053,10 @@
                 this.cursor.showAt(cx, cy);
                 this.cursor.wobble();
                 const activationHint = this.resolveGuideCopy(INTRO_ACTIVATION_HINT_KEY, INTRO_ACTIVATION_HINT);
-                this.overlay.showBubble(activationHint, {
-                    anchorRect: inputRect
-                });
+                this.showGuideBubble(activationHint, {
+                    anchorRect: inputRect,
+                    meta: this.getBubbleMetaForScene('intro_activation')
+                }, 'intro_activation');
                 // 将气泡定位到输入框正上方
                 const bubbleEl = this.overlay.bubble;
                 if (bubbleEl) {
@@ -6102,18 +6289,13 @@
             if (stepId === 'takeover_return_control') {
                 this.overlay.clearPersistentSpotlight();
             } else if (persistentSpotlightTarget) {
+                this.applyCircularFloatingButtonSpotlightHint(persistentSpotlightTarget);
                 this.overlay.setPersistentSpotlight(persistentSpotlightTarget);
             }
 
             const actionSpotlightTarget = this.getActionSpotlightTarget(stepId, performance);
-            if (
-                actionSpotlightTarget
-                && (stepId === 'takeover_capture_cursor' || stepId === 'takeover_plugin_preview')
-            ) {
-                this.setSpotlightGeometryHint(actionSpotlightTarget, {
-                    padding: 4,
-                    geometry: 'circle'
-                });
+            if (actionSpotlightTarget) {
+                this.applyCircularFloatingButtonSpotlightHint(actionSpotlightTarget);
             }
             if (actionSpotlightTarget) {
                 this.overlay.activateSpotlight(actionSpotlightTarget);
@@ -6186,11 +6368,11 @@
             }
 
             if (bubbleText && !shouldNarrateAfterMove && !shouldNarrateInChat) {
-                this.overlay.showBubble(bubbleText, {
+                this.showGuideBubble(bubbleText, {
                     title: 'Yui',
                     emotion: performance.emotion || 'neutral',
                     anchorRect: anchorRect
-                });
+                }, stepId);
             } else if (!shouldNarrateAfterMove) {
                 this.overlay.hideBubble();
             }
@@ -6237,11 +6419,11 @@
             }
 
             if (bubbleText && shouldNarrateDuringMove && !shouldNarrateInChat) {
-                this.overlay.showBubble(bubbleText, {
+                this.showGuideBubble(bubbleText, {
                     title: 'Yui',
                     emotion: performance.emotion || 'neutral',
                     anchorRect: anchorRect
-                });
+                }, stepId);
             }
 
             if (performance.emotion && shouldNarrateDuringMove && !this.hasGuideExpressionTrack(performance.voiceKey)) {
@@ -6293,11 +6475,11 @@
             }
 
             if (bubbleText && shouldNarrateAfterMove && !shouldNarrateInChat) {
-                this.overlay.showBubble(bubbleText, {
+                this.showGuideBubble(bubbleText, {
                     title: 'Yui',
                     emotion: performance.emotion || 'neutral',
                     anchorRect: anchorRect
-                });
+                }, stepId);
             } else if (shouldNarrateAfterMove) {
                 this.overlay.hideBubble();
             }
@@ -6322,7 +6504,10 @@
             }
 
             if (performance.cursorAction === 'click' && !shouldOpenPanelAfterNarration) {
-                this.cursor.click();
+                await this.clickCursorAndWait(DEFAULT_CURSOR_CLICK_VISIBLE_MS);
+                if (runId !== this.sceneRunId || this.destroyed) {
+                    return;
+                }
             } else if (performance.cursorAction === 'wobble') {
                 this.cursor.wobble();
             }
@@ -6880,9 +7065,9 @@
             }
 
             const windowRef = handoff && handoff.windowRef ? handoff.windowRef : null;
-            const targetOrigin = event && typeof event.origin === 'string' && event.origin
-                ? event.origin
-                : '*';
+            const targetOrigin = handoff && handoff.targetOrigin
+                ? handoff.targetOrigin
+                : this.getPluginDashboardExpectedOrigin();
             const postAck = () => {
                 if (!windowRef || windowRef.closed) {
                     return;
@@ -6970,7 +7155,7 @@
             if (!handoff || !handoff.windowRef || event.source !== handoff.windowRef) {
                 return;
             }
-            const expectedOrigin = this.getPluginDashboardExpectedOrigin();
+            const expectedOrigin = handoff.targetOrigin || this.getPluginDashboardExpectedOrigin();
             if (expectedOrigin && event.origin !== expectedOrigin) {
                 return;
             }

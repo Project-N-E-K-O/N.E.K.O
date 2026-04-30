@@ -100,6 +100,44 @@ def test_heartbeat_route_rejects_request_with_wrong_csrf_token(unauthenticated_p
 
 
 @pytest.mark.unit
+def test_yui_guide_handoff_token_is_backend_authoritative_and_single_use(tutorial_prompt_client):
+    client, _config = tutorial_prompt_client
+
+    created = client.post("/api/yui-guide/handoff/create", json={
+        "target_page": "memory_browser",
+        "target_path": "/memory_browser",
+        "resume_scene": "memory_browser_intro",
+        "source_page": "home",
+        "source_path": "/",
+    })
+    assert created.status_code == 200
+    token = created.json()["token"]
+    assert token["authority"] == "server"
+    assert token["signature"]
+    assert token["consumed"] is False
+
+    consumed = client.post("/api/yui-guide/handoff/consume", json={
+        "token": token["token"],
+        "signature": token["signature"],
+        "expected_page": "memory_browser",
+        "consumer_id": "unit-test-consumer",
+    })
+    assert consumed.status_code == 200
+    consumed_token = consumed.json()["token"]
+    assert consumed_token["consumed"] is True
+    assert consumed_token["consumed_by"] == "unit-test-consumer"
+
+    replay = client.post("/api/yui-guide/handoff/consume", json={
+        "token": token["token"],
+        "signature": token["signature"],
+        "expected_page": "memory_browser",
+        "consumer_id": "unit-test-consumer",
+    })
+    assert replay.status_code == 409
+    assert replay.json()["error_code"] == "handoff_token_consumed"
+
+
+@pytest.mark.unit
 def test_heartbeat_route_prompts_immediately_on_first_open(tutorial_prompt_client):
     client, _config = tutorial_prompt_client
 

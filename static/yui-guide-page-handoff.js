@@ -19,7 +19,6 @@
  * │ interrupt_angry_exit     │ #${p}-container                       │ OK     │
  * │ handoff_api_key          │ #${p}-menu-api-keys                   │ OK **  │
  * │ handoff_memory_browser   │ #${p}-menu-memory                     │ OK **  │
- * │ handoff_steam_workshop   │ #${p}-menu-steam-workshop             │ OK **  │
  * │ handoff_plugin_dashboard │ #${p}-btn-agent                       │ OK     │
  * └──────────────────────────┴───────────────────────────────────────┴────────┘
  *  * #text-input-area 在 #chat-container(display:none!important) 内，
@@ -195,6 +194,10 @@
     var HANDOFF_TOKEN_VERSION = 1;
     var HANDOFF_TOKEN_TTL_MS = 5 * 60 * 1000;
     var HANDOFF_FLOW_ID = 'home_yui_guide_v1';
+    var HANDOFF_CREATE_ENDPOINT = '/api/yui-guide/handoff/create';
+    var HANDOFF_CONSUME_ENDPOINT = '/api/yui-guide/handoff/consume';
+    var PAGE_CONFIG_URL = '/api/config/page_config';
+    var CSRF_HEADER_NAME = 'X-CSRF-Token';
     var DEFAULT_PLUGIN_DASHBOARD_ORIGIN = 'http://127.0.0.1:48916';
     function generateTokenId() {
         return 'h_' + Date.now().toString(36) + '_' + Math.random().toString(36).substring(2, 10);
@@ -311,18 +314,118 @@
         }
     }
 
-    function createHandoffToken(targetPage, resumeScene) {
-        var now = Date.now();
-        var tokenObj = {
-            token: 'h_' + now.toString(36) + '_' + Math.random().toString(36).substring(2, 10),
-            token_version: HANDOFF_TOKEN_VERSION,
-            flow_id: HANDOFF_FLOW_ID,
-            source_page: 'home',
-            target_page: targetPage || '',
-            resume_scene: resumeScene || null,
-            created_at: now,
-            expires_at: now + HANDOFF_TOKEN_TTL_MS
+    function normalizeHandoffPath(value) {
+        if (typeof value !== 'string' || !value) {
+            return '';
+        }
+        try {
+            var url = new URL(value, window.location.href);
+            if (url.origin !== window.location.origin) {
+                return url.toString();
+            }
+            return url.pathname + url.search + url.hash;
+        } catch (_) {
+            return value;
+        }
+    }
+
+    function getPageConfigUrl() {
+        try {
+            var url = new URL(PAGE_CONFIG_URL, window.location.origin);
+            var params = new URLSearchParams(window.location.search || '');
+            var lanlanName = params.get('lanlan_name') || '';
+            if (lanlanName) {
+                url.searchParams.set('lanlan_name', lanlanName);
+            }
+            return url.pathname + url.search;
+        } catch (_) {
+            return PAGE_CONFIG_URL;
+        }
+    }
+
+    async function getLocalMutationHeaders() {
+        var headers = {
+            'Content-Type': 'application/json'
         };
+
+        var helper = window.nekoLocalMutationSecurity;
+        if (helper && typeof helper.getMutationHeaders === 'function') {
+            try {
+                var helperHeaders = await helper.getMutationHeaders();
+                if (helperHeaders && typeof helperHeaders === 'object') {
+                    return Object.assign(headers, helperHeaders);
+                }
+            } catch (error) {
+                console.warn('[YuiGuideHandoff] CSRF helper failed, refetching page_config:', error);
+            }
+        }
+
+        try {
+            var response = await fetch(getPageConfigUrl(), {
+                cache: 'no-store'
+            });
+            if (response.ok) {
+                var config = await response.json();
+                if (config && typeof config.autostart_csrf_token === 'string' && config.autostart_csrf_token) {
+                    headers[CSRF_HEADER_NAME] = config.autostart_csrf_token;
+                }
+            }
+        } catch (error) {
+            console.warn('[YuiGuideHandoff] page_config CSRF fetch failed:', error);
+        }
+
+        return headers;
+    }
+
+    async function postHandoffJson(endpoint, payload) {
+        var headers = await getLocalMutationHeaders();
+        var response = await fetch(endpoint, {
+            method: 'POST',
+            headers: headers,
+            cache: 'no-store',
+            body: JSON.stringify(payload || {})
+        });
+
+        if (!response.ok) {
+            var error = new Error('HTTP ' + response.status);
+            try {
+                error.responseBody = await response.json();
+                if (error.responseBody && error.responseBody.error) {
+                    error.message = String(error.responseBody.error);
+                }
+            } catch (_) {}
+            throw error;
+        }
+
+        return response.json();
+    }
+
+    async function createHandoffToken(targetPage, resumeScene, targetPath) {
+        var now = Date.now();
+        var response;
+        try {
+            response = await postHandoffJson(HANDOFF_CREATE_ENDPOINT, {
+                token_version: HANDOFF_TOKEN_VERSION,
+                flow_id: HANDOFF_FLOW_ID,
+                source_page: 'home',
+                source_path: normalizeHandoffPath(window.location.href),
+                target_page: targetPage || '',
+                target_path: normalizeHandoffPath(targetPath || ''),
+                resume_scene: resumeScene || null,
+                requested_at: now
+            });
+        } catch (error) {
+            console.error('[YuiGuideHandoff] createHandoffToken: backend create failed:', error);
+            return null;
+        }
+
+        var tokenObj = response && response.token && typeof response.token === 'object'
+            ? response.token
+            : null;
+        if (!tokenObj || !tokenObj.token || tokenObj.token_version !== HANDOFF_TOKEN_VERSION || tokenObj.authority !== 'server') {
+            console.error('[YuiGuideHandoff] createHandoffToken: invalid backend token');
+            return null;
+        }
 
         try {
             localStorage.setItem(HANDOFF_STORAGE_KEY, JSON.stringify(tokenObj));
@@ -362,7 +465,7 @@
         }
     }
 
-    function consumeHandoffToken(expectedPage) {
+    async function consumeHandoffToken(expectedPage) {
         var tokenObj = readHandoffToken();
         if (!tokenObj) return null;
 
@@ -375,58 +478,64 @@
             return null;
         }
 
+        if (tokenObj.authority !== 'server') {
+            console.warn('[YuiGuideHandoff] consumeHandoffToken: ignoring non-authoritative local token');
+            clearHandoffToken();
+            return null;
+        }
+
         var expectedSignature = getHandoffTokenSignature(tokenObj);
         if (!expectedSignature) {
             console.warn('[YuiGuideHandoff] consumeHandoffToken: token 缺少稳定标识');
             return null;
         }
 
-        var currentTokenObj = readHandoffToken();
-        if (!currentTokenObj || currentTokenObj.consumed) {
+        var response;
+        try {
+            response = await postHandoffJson(HANDOFF_CONSUME_ENDPOINT, {
+                token: tokenObj.token,
+                signature: expectedSignature,
+                expected_page: expectedPage || '',
+                consumer_id: HANDOFF_SESSION_ID
+            });
+        } catch (error) {
+            console.warn('[YuiGuideHandoff] consumeHandoffToken: backend consume failed:', error);
             return null;
         }
 
-        if (getHandoffTokenSignature(currentTokenObj) !== expectedSignature) {
-            console.warn('[YuiGuideHandoff] consumeHandoffToken: token 已变化，取消消费');
+        var authoritativeTokenObj = response && response.token && typeof response.token === 'object'
+            ? response.token
+            : null;
+        if (!authoritativeTokenObj || !authoritativeTokenObj.consumed) {
             return null;
         }
-
-        var consumedTokenObj = Object.assign({}, currentTokenObj, {
-            consumed: true,
-            consumed_by: HANDOFF_SESSION_ID,
-            consumed_at: Date.now()
-        });
+        if (getHandoffTokenSignature(authoritativeTokenObj) !== expectedSignature) {
+            return null;
+        }
+        if (authoritativeTokenObj.consumed_by !== HANDOFF_SESSION_ID) {
+            return null;
+        }
 
         try {
-            localStorage.setItem(HANDOFF_STORAGE_KEY, JSON.stringify(consumedTokenObj));
+            localStorage.setItem(HANDOFF_STORAGE_KEY, JSON.stringify(authoritativeTokenObj));
         } catch (error) {
-            console.error('[YuiGuideHandoff] consumeHandoffToken: 标记消费失败:', error);
-            return null;
-        }
-
-        var storedTokenObj = readHandoffToken();
-        if (!storedTokenObj || !storedTokenObj.consumed) {
-            return null;
-        }
-        if (getHandoffTokenSignature(storedTokenObj) !== expectedSignature) {
-            return null;
-        }
-        if (storedTokenObj.consumed_by !== HANDOFF_SESSION_ID) {
+            console.error('[YuiGuideHandoff] consumeHandoffToken: mark authoritative consume failed:', error);
             return null;
         }
 
         notifyHandoffConsumed({
-            token: storedTokenObj.token,
-            target_page: storedTokenObj.target_page || '',
-            resume_scene: storedTokenObj.resume_scene || null,
-            consumed_by: storedTokenObj.consumed_by,
-            consumed_at: storedTokenObj.consumed_at,
-            source_page: storedTokenObj.source_page || '',
-            flow_id: storedTokenObj.flow_id || '',
+            token: authoritativeTokenObj.token,
+            target_page: authoritativeTokenObj.target_page || '',
+            resume_scene: authoritativeTokenObj.resume_scene || null,
+            consumed_by: authoritativeTokenObj.consumed_by,
+            consumed_at: authoritativeTokenObj.consumed_at,
+            source_page: authoritativeTokenObj.source_page || '',
+            flow_id: authoritativeTokenObj.flow_id || '',
             expected_page: expectedPage || null
         });
 
-        return storedTokenObj;
+        return authoritativeTokenObj;
+
     }
 
     function waitFor(condition, timeoutMs, intervalMs) {
@@ -1058,7 +1167,7 @@
         clearHandoffToken();
     }
 
-    function openPageWithHandoff(targetPage, resumeScene, openUrl, windowName, features, options) {
+    async function openPageWithHandoff(targetPage, resumeScene, openUrl, windowName, features, options) {
         var isPluginDashboardTarget = (
             targetPage === 'plugin_dashboard'
             || normalizeWindowName(windowName) === normalizeWindowName('plugin_dashboard')
@@ -1076,7 +1185,7 @@
             );
         }
 
-        var tokenObj = createHandoffToken(targetPage, resumeScene);
+        var tokenObj = await createHandoffToken(targetPage, resumeScene, openUrl);
         if (!tokenObj) {
             console.warn('[YuiGuideHandoff] openPageWithHandoff: token 创建失败，回退到普通打开');
             return openPage(

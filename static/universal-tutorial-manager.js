@@ -235,7 +235,7 @@ class UniversalTutorialManager {
         return [];
     }
 
-    consumePendingYuiGuideHandoffToken() {
+    async consumePendingYuiGuideHandoffToken() {
         if (this._yuiGuideHandoffToken) {
             return this._yuiGuideHandoffToken;
         }
@@ -252,7 +252,7 @@ class UniversalTutorialManager {
 
         for (const expectedPage of expectedPages) {
             try {
-                const token = handoffApi.consumeHandoffToken(expectedPage);
+                const token = await handoffApi.consumeHandoffToken(expectedPage);
                 if (token) {
                     this._yuiGuideHandoffToken = token;
                     console.log('[Tutorial] 已消费 Yui Guide handoff token:', expectedPage, token);
@@ -906,7 +906,9 @@ class UniversalTutorialManager {
             console.log('[Tutorial] driver.js 环境检测成功');
 
             // 检查是否需要自动启动引导
-            this.checkAndStartTutorial();
+            this.checkAndStartTutorial().catch(error => {
+                console.error('[Tutorial] checkAndStartTutorial failed:', error);
+            });
         } catch (error) {
             console.error('[Tutorial] driver.js 初始化失败:', error);
         }
@@ -1236,13 +1238,13 @@ class UniversalTutorialManager {
     /**
      * 检查是否需要自动启动引导
      */
-    checkAndStartTutorial() {
+    async checkAndStartTutorial() {
         if (this.isTutorialRunning || window.isInTutorial) {
             console.log('[Tutorial] 引导进行中，跳过启动检查');
             return;
         }
 
-        const handoffToken = this.consumePendingYuiGuideHandoffToken();
+        const handoffToken = await this.consumePendingYuiGuideHandoffToken();
         if (handoffToken) {
             console.log('[Tutorial] 检测到跨页 handoff，强制恢复当前页面引导:', this.currentPage, handoffToken);
             this.startTutorialWhenI18nReady(500);
@@ -1588,15 +1590,6 @@ class UniversalTutorialManager {
                 disableActiveInteraction: true
             },
             {
-                element: `#${p}-menu-steam-workshop`,
-                popover: {
-                    title: window.t ? window.t('tutorial.step18.title', '🛠️ 创意工坊') : '🛠️ 创意工坊',
-                    description: window.t ? window.t('tutorial.step18.desc', '进入 Steam 创意工坊页面，管理订阅内容~') : '进入 Steam 创意工坊页面，管理订阅内容~',
-                },
-                yuiGuideSceneId: 'handoff_steam_workshop',
-                disableActiveInteraction: true
-            },
-            {
                 element: 'body',
                 popover: {
                     title: t('tutorial.systray.location.title', '🖥️ 托盘图标位置'),
@@ -1935,8 +1928,7 @@ class UniversalTutorialManager {
                 popover: {
                     title: this.t('tutorial.steam_workshop.step1.title', '🧭 创意工坊分区'),
                     description: this.t('tutorial.steam_workshop.step1.desc', '这里可以在订阅内容和角色卡之间切换，后续管理 Workshop 内容都会从这里展开。'),
-                },
-                yuiGuideSceneId: 'steam_workshop_intro'
+                }
             },
             {
                 element: '#subscriptions-list',
