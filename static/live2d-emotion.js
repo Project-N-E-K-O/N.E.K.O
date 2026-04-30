@@ -1304,22 +1304,29 @@ Live2DManager.prototype.setEmotion = async function(emotion) {
     
     // 检查是否需要重置：即使情绪和表情都相同，也先清掉上一条 motion 的 transient 残留。
     if (this.currentEmotion === emotion && this.currentExpressionFile === targetExpressionFile) {
-        await this.resetTransientMotionAndExpressionState({
-            preserveExpression: !!targetExpressionFile || shouldPreserveExistingExpression,
-            resetAllParameters: !targetExpressionFile && !shouldPreserveExistingExpression
-        });
-
-        // 相同情绪且相同表情，保留原有的50%概率随机播放动作机制
-        if (Math.random() < 0.5) {
-            console.log(`检测到相同情绪且相同表情: ${emotion} (${targetExpressionFile})，已清理残留，仅随机播放motion`);
-            await this.playMotion(emotion);
-        } else {
-            console.log(`检测到相同情绪且相同表情: ${emotion} (${targetExpressionFile})，已清理残留，跳过播放`);
-        }
+        this.isEmotionChanging = true;
         try {
-            await this.applyPersistentExpressionsNative(true);
-        } catch (e) {
-            console.warn('重新应用常驻表情失败:', e);
+            await this.resetTransientMotionAndExpressionState({
+                preserveExpression: !!targetExpressionFile || shouldPreserveExistingExpression,
+                resetAllParameters: !targetExpressionFile && !shouldPreserveExistingExpression
+            });
+
+            // 相同情绪且相同表情，保留原有的50%概率随机播放动作机制
+            if (Math.random() < 0.5) {
+                console.log(`检测到相同情绪且相同表情: ${emotion} (${targetExpressionFile})，已清理残留，仅随机播放motion`);
+                await this.playMotion(emotion);
+            } else {
+                console.log(`检测到相同情绪且相同表情: ${emotion} (${targetExpressionFile})，已清理残留，跳过播放`);
+            }
+            try {
+                await this.applyPersistentExpressionsNative(true);
+            } catch (e) {
+                console.warn('重新应用常驻表情失败:', e);
+            }
+        } catch (error) {
+            console.error(`设置相同情感 ${emotion} 失败:`, error);
+        } finally {
+            this.isEmotionChanging = false;
         }
         return;
     }
