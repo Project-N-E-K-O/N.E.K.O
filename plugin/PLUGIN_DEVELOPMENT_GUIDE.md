@@ -292,9 +292,11 @@ ctx.push_message(
     parts=[                         # 有序的内容 parts
         {"type": "text",  "text": "看这个"},
         {"type": "image", "data": img_bytes, "mime": "image/png"},
-        {"type": "image", "url":  "https://example.com/cat.png"},
-        {"type": "audio", "data": audio_bytes, "mime": "audio/mpeg"},
-        {"type": "video", "url":  "https://example.com/clip.mp4"},
+        # 以下三种当前只在 schema 中占位，AI 注入链路 warn-drop，
+        # 详见下文「当前实现限制」：
+        # {"type": "image", "url": "https://example.com/cat.png"},
+        # {"type": "audio", "data": audio_bytes, "mime": "audio/mpeg"},
+        # {"type": "video", "url":  "https://example.com/clip.mp4"},
         {"type": "ui_action",
          "action": "media_play_url",
          "url": "https://example.com/song.mp3",
@@ -335,16 +337,26 @@ ctx.push_message(
 |---|---|---|
 | `text` | `text: str` | 纯文本 |
 | `image` | `data: bytes` + `mime` 或 `url` + `mime` | 图（inline 或远端） |
-| `audio` | 同 image | 音频 |
-| `video` | 同 image | 视频 |
+| `audio` | 同 image | 音频（schema 占位，**当前 AI 注入链路尚未消费**，会 warn-drop） |
+| `video` | 同 image | 视频（schema 占位，**当前 AI 注入链路尚未消费**，会 warn-drop） |
 | `ui_action` | `action: str` + 各 action 的字段 | 前端 UI 副作用 |
 
 inline `data: bytes` 由 SDK 自动 base64 编码后随 payload 传出。
 
+> **当前实现限制**（v0.9 移除前会逐步补齐）：
+> - `ai_behavior in ("respond","read")` 时只有 **inline `image` parts** 真正进 LLM
+>   上下文（走 `session.stream_image(base64)`）。
+> - `image` 的 `url` 形态会被 main_server warn-drop，避免 event-bus 同步去抓远端
+>   导致整路阻塞。需要 URL 形态时请在 plugin 自己 fetch 后回填 `data` 字段。
+> - `audio` / `video` 当前没有对应的 realtime 注入通道（`stream_audio` 是 PCM 实时
+>   麦克风专用，video 完全没有 API），都会 warn-drop。这两种 type 现阶段只
+>   推荐配合 `ai_behavior="blind"` + `ui_action` 走纯前端展示。
+>
 > **大小限制**：inline part 通过 message_plane 走 ZMQ，整条 payload 上限是
 > `MESSAGE_PLANE_PAYLOAD_MAX_BYTES`（默认 256 KB）。1080p 截图建议先压成
 > JPEG q70 或 256x256 PNG；超过 256KB 的大文件请上传到 BlobStore 再用
-> `parts=[{"type": "image", "url": ...}]` 引用。
+> `parts=[{"type": "image", "url": ...}]` 引用，**注意上一条限制**：当前
+> 只有 inline 形态才进 AI。
 
 ##### 常见组合
 
