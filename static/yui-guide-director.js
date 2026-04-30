@@ -1599,19 +1599,48 @@
     }
 
     class YuiGuideEmotionBridge {
+        getActiveModelType() {
+            const cfg = window.lanlan_config;
+            if (!cfg) {
+                return 'live2d';
+            }
+
+            const modelType = String(cfg.model_type || '').toLowerCase();
+            if (modelType === 'live3d') {
+                const subType = String(cfg.live3d_sub_type || '').toLowerCase();
+                if (subType === 'mmd' || subType === 'vrm') {
+                    return subType;
+                }
+                return 'live2d';
+            }
+
+            return modelType === 'vrm' ? 'vrm' : 'live2d';
+        }
+
         apply(emotion) {
-            if (!emotion || !window.live2dManager || !window.live2dManager.currentModel) {
+            if (!emotion) {
                 return;
             }
 
-            if (typeof window.live2dManager.playMotion !== 'function') {
+            if (this.getActiveModelType() === 'live2d') {
+                if (!window.live2dManager || !window.live2dManager.currentModel || typeof window.live2dManager.playMotion !== 'function') {
+                    return;
+                }
+
+                try {
+                    window.live2dManager.playMotion(emotion);
+                } catch (error) {
+                    console.warn('[YuiGuide] 播放教程动作失败:', emotion, error);
+                }
                 return;
             }
 
-            try {
-                window.live2dManager.playMotion(emotion);
-            } catch (error) {
-                console.warn('[YuiGuide] 播放教程动作失败:', emotion, error);
+            if (window.LanLan1 && typeof window.LanLan1.setEmotion === 'function') {
+                try {
+                    window.LanLan1.setEmotion(emotion);
+                } catch (error) {
+                    console.warn('[YuiGuide] 设置教程情绪失败:', emotion, error);
+                }
             }
         }
 
