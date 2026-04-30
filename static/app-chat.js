@@ -337,12 +337,14 @@
 
         firstDialogueUnlockPending = false;
         firstDialogueUnlockInFlight = true;
-        console.log(window.t('console.firstConversationUnlockAchievement'));
+        var firstDialogueUnlockMessage = (window.t && window.t('console.firstConversationUnlockAchievement')) || 'First conversation detected, unlocking achievement';
+        console.log(firstDialogueUnlockMessage);
         try {
             await window.unlockAchievement('ACH_FIRST_DIALOGUE');
             firstDialogueUnlocked = true;
         } catch (error) {
-            console.error(window.t('console.achievementUnlockError'), error);
+            var achievementUnlockErrorMessage = (window.t && window.t('console.achievementUnlockError')) || 'Achievement unlock error';
+            console.error(achievementUnlockErrorMessage, error);
         } finally {
             firstDialogueUnlockInFlight = false;
         }
@@ -352,7 +354,8 @@
         if (firstDialogueUnlocked) return;
         if (isFirstAIResponse) {
             isFirstAIResponse = false;
-            console.log(window.t('console.aiFirstReplyDetected'));
+            var aiFirstReplyDetectedMessage = (window.t && window.t('console.aiFirstReplyDetected')) || 'AI first reply detected';
+            console.log(aiFirstReplyDetectedMessage);
         }
         checkAndUnlockFirstDialogueAchievement();
     }
