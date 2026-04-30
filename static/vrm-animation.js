@@ -825,8 +825,23 @@ class VRMAnimation {
         const finalWeight = Math.max(0, this.currentMouthWeight);
         const mouthOpenName = this.mouthExpressions.aa || 'aa';
 
+        const expressionManager = this.manager.currentModel.vrm.expressionManager;
+
+        // 待机 VRMA 的 mixer.update 可能在本帧已写入 ih/ou/ee/oh 等口型轨道；
+        // _updateLipSync 在 mixer 之后执行，但只覆盖 aa，剩余四个元音残留会与 aa
+        // 叠加成混合口型。这里在写入 aa 之前先把其他口型表情置 0，确保语音口型同步
+        // 期间嘴部完全由 lip sync 驱动，不被待机动作的口型轨道影响。
+        for (const [vowel, name] of Object.entries(this.mouthExpressions)) {
+            if (!name || vowel === 'aa') continue;
+            try {
+                expressionManager.setValue(name, 0);
+            } catch (e) {
+                console.warn(`[VRM LipSync] 重置口型表情失败: ${name}`, e);
+            }
+        }
+
         try {
-            this.manager.currentModel.vrm.expressionManager.setValue(mouthOpenName, finalWeight);
+            expressionManager.setValue(mouthOpenName, finalWeight);
         } catch (e) {
             console.warn(`[VRM LipSync] 设置表情失败: ${mouthOpenName}`, e);
         }
