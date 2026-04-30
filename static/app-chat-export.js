@@ -1983,9 +1983,76 @@
         return modal;
     }
 
+    function getPreviewModalDocument(modal) {
+        if (modal && modal.panel && modal.panel.ownerDocument) return modal.panel.ownerDocument;
+        if (state.previewWindow && !state.previewWindow.closed && state.previewWindow.document) return state.previewWindow.document;
+        return document;
+    }
+
+    function detachPreviewHandlers(modal) {
+        var modalDocument = getPreviewModalDocument(modal);
+        if (state.previewEscHandler) {
+            try {
+                modalDocument.removeEventListener('keydown', state.previewEscHandler);
+            } catch (_) {}
+            if (state.previewWindow && !state.previewWindow.closed && state.previewWindow.document !== modalDocument) {
+                try {
+                    state.previewWindow.document.removeEventListener('keydown', state.previewEscHandler);
+                } catch (_) {}
+            }
+            state.previewEscHandler = null;
+        }
+        if (modal && modal._localeHandler) {
+            window.removeEventListener('localechange', modal._localeHandler);
+            modal._localeHandler = null;
+        }
+        if (state.previewWindow && state.previewWindow._localeHandler) {
+            window.removeEventListener('localechange', state.previewWindow._localeHandler);
+            state.previewWindow._localeHandler = null;
+        }
+    }
+
+    function disposePreviewModal(closeWindow) {
+        var modal = state.previewModal;
+        state.previewRenderToken += 1;
+        if (modal) {
+            var modalDocument = getPreviewModalDocument(modal);
+            try {
+                modal.backdrop.hidden = true;
+                modal.panel.hidden = true;
+                modal.panel.classList.remove('is-open');
+                modal.backdrop.classList.remove('is-open');
+                if (modalDocument.body) modalDocument.body.classList.remove('chat-export-modal-open');
+            } catch (_) {}
+        }
+        detachPreviewHandlers(modal);
+        state.previewModal = null;
+        if (state.previewWindow && state.previewWindow._chatExportBeforeUnloadHandler) {
+            try {
+                state.previewWindow.removeEventListener('beforeunload', state.previewWindow._chatExportBeforeUnloadHandler);
+            } catch (_) {}
+            state.previewWindow._chatExportBeforeUnloadHandler = null;
+        }
+        if (closeWindow && state.previewWindow && !state.previewWindow.closed) {
+            state.previewWindow.close();
+            state.previewWindow = null;
+        }
+    }
+
+    function isPreviewModalUsable(modal, doc) {
+        return !!(modal
+            && modal.panel
+            && modal.backdrop
+            && modal.panel.ownerDocument === doc
+            && modal.backdrop.ownerDocument === doc
+            && modal.panel.isConnected
+            && modal.backdrop.isConnected);
+    }
+
     function ensurePreviewModal(targetDocument) {
         var doc = targetDocument || document;
-        if (!state.previewModal || (state.previewModal.panel && state.previewModal.panel.ownerDocument !== doc)) {
+        if (!isPreviewModalUsable(state.previewModal, doc)) {
+            disposePreviewModal(false);
             state.previewModal = createPreviewModal(doc);
         }
         return state.previewModal;
@@ -2232,6 +2299,9 @@
             : window.open('', 'neko-chat-export-preview', buildExportWindowFeatures());
         if (!previewWindow) return null;
 
+        if (isExistingWindow) {
+            disposePreviewModal(false);
+        }
         state.previewWindow = previewWindow;
         var doc = previewWindow.document;
         doc.open();
@@ -2254,23 +2324,19 @@
             + '</style></head><body class="chat-export-window"></body></html>');
         doc.close();
         previewWindow.focus();
-        if (isExistingWindow && state.previewEscHandler && state.previewModal && state.previewModal.panel) {
-            try {
-                state.previewModal.panel.ownerDocument.removeEventListener('keydown', state.previewEscHandler);
-            } catch (_) {}
-            state.previewEscHandler = null;
-        }
-        previewWindow.addEventListener('beforeunload', function () {
+        var beforeUnloadHandler = function () {
             if (state.previewWindow === previewWindow) {
+                disposePreviewModal(false);
                 state.previewWindow = null;
-                state.previewModal = null;
             }
-        }, { once: true });
+        };
+        previewWindow._chatExportBeforeUnloadHandler = beforeUnloadHandler;
+        previewWindow.addEventListener('beforeunload', beforeUnloadHandler, { once: true });
         return previewWindow;
     }
 
-    async function openPreviewModal() {
-        var previewWindow = openExportPreviewWindow();
+    async function openPreviewModal(previewWindow) {
+        previewWindow = previewWindow || openExportPreviewWindow();
         if (!previewWindow) {
             showToast('chat.previewOpenBlocked', 'Unable to open a new preview window.', 4000);
             return;
@@ -2319,30 +2385,8 @@
     }
 
     function closePreviewModal() {
-        var modal = state.previewModal;
-        state.previewRenderToken += 1;
-        if (modal) {
-            var modalDocument = modal.panel.ownerDocument || document;
-            modal.backdrop.hidden = true;
-            modal.panel.hidden = true;
-            modal.panel.classList.remove('is-open');
-            modal.backdrop.classList.remove('is-open');
-            if (modalDocument.body) modalDocument.body.classList.remove('chat-export-modal-open');
-            if (state.previewEscHandler) {
-                modalDocument.removeEventListener('keydown', state.previewEscHandler);
-                state.previewEscHandler = null;
-            }
-            if (modal._localeHandler) {
-                window.removeEventListener('localechange', modal._localeHandler);
-                modal._localeHandler = null;
-            }
-        }
+        disposePreviewModal(true);
         clearPreviewCache();
-        if (state.previewWindow && !state.previewWindow.closed) {
-            state.previewWindow.close();
-        }
-        state.previewWindow = null;
-        state.previewModal = null;
     }
 
     // ======================== Action handlers ========================
@@ -2493,6 +2537,12 @@
             return;
         }
 
+        var previewWindow = openExportPreviewWindow();
+        if (!previewWindow) {
+            showToast('chat.previewOpenBlocked', 'Unable to open a new preview window.', 4000);
+            return;
+        }
+
         var host = getReactChatHost();
         if (host && typeof host.ensureBundleLoaded === 'function') {
             try {
@@ -2505,6 +2555,7 @@
         var messages = getReactMessages();
         if (messages.length === 0) {
             showToast('chat.exportEmpty', 'There is no conversation to export yet.', 3000);
+            closePreviewModal();
             return;
         }
 
@@ -2513,7 +2564,7 @@
             state.allMessages = messages;
             state.selectedIds = new Set();
             clearPreviewCache();
-            await openPreviewModal();
+            await openPreviewModal(previewWindow);
         } catch (error) {
             logExportError('handleExportButtonClick', error);
             showToastMessage(
