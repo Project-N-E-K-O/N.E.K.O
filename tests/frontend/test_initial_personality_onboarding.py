@@ -37,6 +37,7 @@ def _bootstrap_page(mock_page: Page) -> None:
             window.waitForStorageLocationStartupBarrier = async function() {};
             window.universalTutorialManager = {
                 isTutorialRunning: true,
+                currentPage: 'home',
             };
             window.__tutorialPromptState = 'completed';
             window.__tutorialPromptStatePayload = null;
@@ -585,7 +586,7 @@ def test_manual_character_personality_reselect_opens_directly_on_home_refresh(mo
         """
         () => {
             window.universalTutorialManager.isTutorialRunning = false;
-            window.__tutorialPromptState = 'observing';
+            window.__tutorialPromptState = 'completed';
             window.__personaOnboardingState = {
                 status: 'completed',
                 handled_at: '2026-04-29T12:00:00Z',
@@ -606,10 +607,60 @@ def test_manual_character_personality_reselect_opens_directly_on_home_refresh(mo
     )
 
     expect(mock_page.locator("[data-testid='character-personality-overlay']")).to_be_visible()
-    assert not any(
-        entry["url"] == "/api/tutorial-prompt/state"
-        for entry in mock_page.evaluate("() => window.__requestLog")
+
+
+@pytest.mark.frontend
+def test_manual_character_personality_reselect_waits_for_home_tutorial_completion(mock_page: Page):
+    _bootstrap_page(mock_page)
+    mock_page.evaluate(
+        """
+        () => {
+            window.universalTutorialManager.isTutorialRunning = false;
+            window.__tutorialPromptStatePayload = {
+                status: 'observing',
+                deferred_until: 0,
+                never_remind: false,
+                user_cohort: 'new',
+            };
+            window.__personaOnboardingState = {
+                status: 'completed',
+                handled_at: '2026-04-29T12:00:00Z',
+                manual_reselect_character_name: '\u5c0f\u5929',
+                manual_reselect_requested_at: '2026-04-29T12:10:00Z',
+            };
+        }
+        """
     )
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static" / "js" / "character_personality_onboarding.js"))
+
+    mock_page.evaluate(
+        """
+        () => {
+            window.CharacterPersonalityOnboarding.bootstrap();
+        }
+        """
+    )
+
+    mock_page.wait_for_timeout(350)
+    expect(mock_page.locator("[data-testid='character-personality-overlay']")).to_have_count(0)
+
+    mock_page.evaluate(
+        """
+        () => {
+            window.__tutorialPromptStatePayload = {
+                status: 'completed',
+                deferred_until: 0,
+                never_remind: false,
+                user_cohort: 'new',
+            };
+            window.dispatchEvent(new CustomEvent('neko:tutorial-completed', {
+                detail: { page: 'home', source: 'idle_prompt' }
+            }));
+        }
+        """
+    )
+
+    expect(mock_page.locator("[data-testid='character-personality-overlay']")).to_be_visible()
 
 
 @pytest.mark.frontend
@@ -912,6 +963,57 @@ def test_onboarding_translate_falls_back_when_window_t_returns_raw_key(mock_page
     expect(mock_page.locator("[data-role='title']")).to_have_text("你想让我变成哪种陪着你的样子喵？")
     expect(mock_page.locator("[data-testid='character-personality-skip']")).to_have_text("先跳过喵")
     expect(mock_page.locator("[data-role='current-character']")).to_have_text("小天")
+
+
+@pytest.mark.frontend
+def test_onboarding_translate_falls_back_when_window_t_returns_object(mock_page: Page):
+    _bootstrap_page(mock_page)
+    mock_page.evaluate(
+        """
+        () => {
+            window.universalTutorialManager.isTutorialRunning = false;
+            window.t = function() {
+                return { bad: 'object' };
+            };
+        }
+        """
+    )
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static" / "js" / "character_personality_onboarding.js"))
+
+    mock_page.evaluate(
+        """
+        () => {
+            window.CharacterPersonalityOnboarding.bootstrap();
+        }
+        """
+    )
+
+    def assert_visible_fallback_text(selector: str) -> str:
+        locator = mock_page.locator(selector)
+        expect(locator).to_be_visible()
+        text = locator.inner_text()
+        assert text.strip()
+        assert "[object Object]" not in text
+        return text
+
+    assert_visible_fallback_text("[data-role='title']")
+    assert_visible_fallback_text(".character-personality-intro")
+    preset_name = mock_page.evaluate(
+        "() => window.CharacterPersonalityOnboarding.presets[0].display_name"
+    )
+    expect(mock_page.locator(".character-personality-card-name")).to_have_text(preset_name)
+
+    mock_page.locator("[data-testid='character-personality-preset-classic_genki']").click()
+    assert_visible_fallback_text(".stage-two-title")
+    assert_visible_fallback_text(".character-personality-preview-label")
+    assert_visible_fallback_text(".stage-two-subtitle")
+    expect(mock_page.locator("[data-testid='character-personality-preview-stream']")).to_contain_text(
+        preset_name,
+        timeout=5000,
+    )
+    assert "[object Object]" not in mock_page.locator(
+        "[data-testid='character-personality-preview-stream']"
+    ).inner_text()
 
 
 @pytest.mark.frontend

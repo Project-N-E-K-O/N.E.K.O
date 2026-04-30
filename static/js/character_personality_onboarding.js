@@ -23,11 +23,13 @@
                     defaultValue: fallback,
                 })
                 : window.t(key, fallback);
-            if (translated && translated !== key) {
-                return translated;
+            if (typeof translated === 'string' && translated.trim() && translated !== key) {
+                return options && typeof options === 'object'
+                    ? interpolateTemplate(translated, options)
+                    : translated;
             }
         }
-        const template = fallback || key;
+        const template = typeof fallback === 'string' && fallback ? fallback : key;
         return options && typeof options === 'object'
             ? interpolateTemplate(template, options)
             : template;
@@ -80,6 +82,7 @@
             this.selectedPresetId = '';
             this.bootstrapStarted = false;
             this.pendingResumeAfterTutorial = false;
+            this.pendingResumeAfterTutorialReason = '';
             this.restoreBodyPointerEventsNeeded = false;
             this.originalBodyPointerEvents = '';
             this.openReason = 'onboarding';
@@ -94,14 +97,15 @@
             }
             this.bootstrapStarted = true;
             await this.waitForStartupBarrier();
+            await this.waitForTutorialFlowToSettle();
             if (await this.openIfManualReselectPending()) {
                 return;
             }
-            await this.waitForTutorialFlowToSettle();
             await this.openIfPending();
         }
 
         async openFromSettings(characterName) {
+            await this.waitForTutorialFlowToSettle();
             this.openReason = 'settings';
             this.currentCharacterName = String(characterName || '').trim() || await this.fetchCurrentCharacterName();
             this.presets = await this.fetchPresets();
@@ -114,6 +118,16 @@
             if (typeof window.waitForStorageLocationStartupBarrier === 'function') {
                 await window.waitForStorageLocationStartupBarrier();
             }
+        }
+
+        shouldRespectHomeTutorialGate() {
+            const manager = window.universalTutorialManager || null;
+            if (manager && typeof manager.currentPage === 'string' && manager.currentPage) {
+                return manager.currentPage === 'home';
+            }
+
+            const pathname = String(window.location && window.location.pathname || '').replace(/\/+$/, '') || '/';
+            return pathname === '/' || pathname === '/index';
         }
 
         async waitForTutorialManagerReady() {
@@ -216,6 +230,10 @@
         }
 
         async waitForTutorialFlowToSettle() {
+            if (!this.shouldRespectHomeTutorialGate()) {
+                return;
+            }
+
             await this.waitForTutorialCompletion();
 
             while (true) {
@@ -356,10 +374,11 @@
                 if (!event || !event.detail || event.detail.page !== 'home') {
                     return;
                 }
-                if (!this.bootstrapStarted || this.openReason !== 'onboarding') {
+                if (!this.overlay || this.overlay.hidden) {
                     return;
                 }
                 this.pendingResumeAfterTutorial = true;
+                this.pendingResumeAfterTutorialReason = this.openReason || 'onboarding';
                 if (this.overlay && !this.overlay.hidden) {
                     this.hideOverlay();
                 }
@@ -369,10 +388,20 @@
                 if (!event || !event.detail || event.detail.page !== 'home') {
                     return;
                 }
-                if (!this.pendingResumeAfterTutorial || this.openReason !== 'onboarding') {
+                if (!this.pendingResumeAfterTutorial) {
                     return;
                 }
+                const resumeReason = this.pendingResumeAfterTutorialReason || this.openReason || 'onboarding';
                 this.pendingResumeAfterTutorial = false;
+                this.pendingResumeAfterTutorialReason = '';
+                if (resumeReason === 'manual_reselect') {
+                    void this.openIfManualReselectPending();
+                    return;
+                }
+                if (resumeReason === 'settings') {
+                    this.showOverlay();
+                    return;
+                }
                 void this.openIfPending();
             };
 

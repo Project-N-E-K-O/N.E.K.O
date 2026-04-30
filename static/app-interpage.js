@@ -281,6 +281,28 @@
               && document.getElementById('mmd-container'));
     }
 
+    async function _waitForLive2DManagerIdle(timeoutMs) {
+        var manager = window.live2dManager;
+        if (!manager || !manager._isLoadingModel) {
+            return;
+        }
+
+        var waitMs = Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 30000;
+        var startedAt = Date.now();
+        console.log('[Model] Live2D 模型仍在加载，等待空闲后继续热切换');
+
+        while (manager && manager._isLoadingModel) {
+            if (Date.now() - startedAt >= waitMs) {
+                console.warn('[Model] 等待 Live2D 模型加载空闲超时，继续尝试热切换');
+                return;
+            }
+            await new Promise(function (resolve) {
+                setTimeout(resolve, 80);
+            });
+            manager = window.live2dManager;
+        }
+    }
+
     /**
      * Handle model hot-swap triggered from another tab (model_manager).
      *
@@ -776,6 +798,7 @@
                                 console.log('[Model] PIXI 应用未初始化，正在初始化...');
                                 await window.live2dManager.initPIXI('live2d-canvas', 'live2d-container');
                             }
+                            await _waitForLive2DManagerIdle(30000);
 
                             // Apply saved user preferences to avoid "reset" on return from model manager
                             var modelPreferences = null;
@@ -788,7 +811,8 @@
 
                             await window.live2dManager.loadModel(newModelPath, {
                                 preferences: modelPreferences,
-                                isMobile: window.innerWidth <= 768
+                                isMobile: window.innerWidth <= 768,
+                                suppressInitialIdle: skipIdleRestore
                             });
 
                             // Sync legacy global references
@@ -797,7 +821,7 @@
                                 window.LanLan1.currentModel = window.live2dManager.getCurrentModel();
                             }
 
-                            // 恢复 Live2D 待机动作。教程临时模型不读取用户模型的待机动作，避免把不匹配的动作套到 yui_default。
+                            // 恢复 Live2D 待机动作。教程临时模型不读取用户模型的待机动作，避免把不匹配的动作套到 yui-origin。
                             if (!skipIdleRestore) {
                                 restoreLive2DIdleAnimationOnMainPage();
                             }

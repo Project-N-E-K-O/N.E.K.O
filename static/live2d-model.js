@@ -347,6 +347,9 @@ Live2DManager.prototype._resetDerivedModelMetadata = function() {
     this._lookAtCurrentX = 0;
     this._lookAtCurrentY = 0;
     this._temporaryPoseOverride = null;
+    this._temporaryMotionSuspendToken = null;
+    this._idleMotionFinishHandler = null;
+    this._idleMotionFinishModel = null;
     this._bubbleGeometryCache = null;
     this._bubbleGeometryModelReadyAt = 0;
     this._bubbleGeometryRefreshPass = 0;
@@ -750,25 +753,63 @@ Live2DManager.prototype._updateRandomLookAt = function(delta) {
     } catch (_) {}
 };
 
+Live2DManager.prototype._clearIdleMotionLoopTimers = function() {
+    if (!(this._idleMotionLoopTimers instanceof Set)) {
+        this._idleMotionLoopTimers = new Set();
+        return;
+    }
+    this._idleMotionLoopTimers.forEach(timer => clearTimeout(timer));
+    this._idleMotionLoopTimers.clear();
+};
+
+Live2DManager.prototype.suspendTemporaryMotions = function(source, model) {
+    const activeModel = model || this.currentModel || null;
+    if (!activeModel || activeModel !== this.currentModel || !activeModel.internalModel) {
+        return false;
+    }
+
+    const token = String(source || 'temporary_motion_suspend');
+    this._temporaryMotionSuspendToken = token;
+    this._clearIdleMotionLoopTimers();
+
+    const motionManager = activeModel.internalModel.motionManager;
+    if (motionManager && typeof motionManager.stopAllMotions === 'function') {
+        try {
+            motionManager.stopAllMotions();
+        } catch (_) {}
+    }
+
+    return true;
+};
+
+Live2DManager.prototype.resumeTemporaryMotions = function(source) {
+    const token = String(source || 'temporary_motion_suspend');
+    if (this._temporaryMotionSuspendToken && this._temporaryMotionSuspendToken !== token) {
+        return false;
+    }
+
+    this._temporaryMotionSuspendToken = null;
+    if (this.currentModel && this.currentModel.internalModel && this.currentModel.internalModel.motionManager) {
+        this.setupIdleMotionLoop(this.currentModel);
+    }
+    return true;
+};
+
 // 设置待机动作循环（Idle Motion 无限循环）
 Live2DManager.prototype.setupIdleMotionLoop = function(model) {
     if (!model || !model.internalModel || !model.internalModel.motionManager) return;
     const motionManager = model.internalModel.motionManager;
+    if (this._temporaryMotionSuspendToken) return;
 
     // 初始化定时器集合，并在重新设置时清理旧定时器
-    if (this._idleMotionLoopTimers instanceof Set) {
-        this._idleMotionLoopTimers.forEach(timer => clearTimeout(timer));
-        this._idleMotionLoopTimers.clear();
-    } else {
-        this._idleMotionLoopTimers = new Set();
-    }
+    this._clearIdleMotionLoopTimers();
 
     // 生成一个调度器，自带当前模型有效性校验与定时器回收
     const scheduleIdleMotion = (delay) => {
         const timer = setTimeout(() => {
             this._idleMotionLoopTimers.delete(timer);
             // 如果模型已销毁，或当前挂载的模型已经不是传入的这个模型，则直接取消
-            if (this.currentModel !== model || model.destroyed || window._currentMotionPreviewId != null) {
+            if (this.currentModel !== model || model.destroyed || window._currentMotionPreviewId != null || this._temporaryMotionSuspendToken) {
                 return;
             }
             if (!motionManager.playing) {
@@ -778,20 +819,40 @@ Live2DManager.prototype.setupIdleMotionLoop = function(model) {
         this._idleMotionLoopTimers.add(timer);
     };
 
-    model.internalModel.events.on('motionFinish', () => {
+    try {
+        if (
+            this._idleMotionFinishHandler
+            && this._idleMotionFinishModel
+            && this._idleMotionFinishModel.internalModel
+            && this._idleMotionFinishModel.internalModel.events
+            && typeof this._idleMotionFinishModel.internalModel.events.removeListener === 'function'
+        ) {
+            this._idleMotionFinishModel.internalModel.events.removeListener('motionFinish', this._idleMotionFinishHandler);
+        }
+    } catch (_) {}
+
+    this._idleMotionFinishModel = model;
+    this._idleMotionFinishHandler = () => {
+        if (this._temporaryMotionSuspendToken) {
+            return;
+        }
         if (window._currentMotionPreviewId != null) {
             console.log('[Live2D] 预览模式中，忽略 motionFinish，不启动新 Idle');
             return;
         }
         const randomDelay = 1000 + Math.random() * 2000;
         scheduleIdleMotion(randomDelay);
-    });
+    };
+    model.internalModel.events.on('motionFinish', this._idleMotionFinishHandler);
 
     scheduleIdleMotion(2000);
 };
 
 // 播放待机动作（从用户保存的 Idle 动画或默认 Idle 随机选择）
 Live2DManager.prototype._playIdleMotion = function(motionManager) {
+    if (this._temporaryMotionSuspendToken) {
+        return;
+    }
     const idleAnimations = this._userIdleAnimations;
     if (idleAnimations && idleAnimations.length > 0) {
         // 兼容性获取 motionGroups，优先取公开属性，fallback 到私有属性
@@ -1207,8 +1268,10 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
         : Date.now();
     this._bubbleGeometryRefreshPass = 0;
 
+    const suppressInitialIdle = options.suppressInitialIdle === true;
+
     // 模型完全可见后播放 Idle 情绪（替代原来的独立 setTimeout）
-    if (hasIdleInEmotionMapping || hasIdleInFileReferences) {
+    if (!suppressInitialIdle && (hasIdleInEmotionMapping || hasIdleInFileReferences)) {
         try {
             console.log('[Live2D Model] 模型淡入完成，开始播放Idle情绪');
             this.setEmotion('Idle').catch(error => {
@@ -1220,9 +1283,11 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
     }
 
     // 启动待机动作无限循环
-    try {
-        this.setupIdleMotionLoop(model);
-    } catch (_) {}
+    if (!suppressInitialIdle) {
+        try {
+            this.setupIdleMotionLoop(model);
+        } catch (_) {}
+    }
 
     // 调用回调函数
     if (this.onModelLoaded) {
@@ -1452,7 +1517,7 @@ Live2DManager.prototype.installMouthOverride = function() {
             }
             
             // 先调用原始的 motionManager.update（添加错误处理）
-            if (origMotionManagerUpdate) {
+            if (!this._temporaryMotionSuspendToken && origMotionManagerUpdate) {
                 try {
                     origMotionManagerUpdate(...args);
                 } catch (e) {

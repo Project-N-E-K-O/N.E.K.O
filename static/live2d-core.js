@@ -124,6 +124,9 @@ class Live2DManager {
         this._origMotionManagerUpdate = null; // 保存原始的 motionManager.update 方法
         this._origCoreModelUpdate = null; // 保存原始的 coreModel.update 方法
         this._mouthTicker = null;
+        this._temporaryMotionSuspendToken = null;
+        this._idleMotionFinishHandler = null;
+        this._idleMotionFinishModel = null;
 
         // 记录最后一次加载模型的原始路径（用于保存偏好时使用）
         this._lastLoadedModelPath = null;

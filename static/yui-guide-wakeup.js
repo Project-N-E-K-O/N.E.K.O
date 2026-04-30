@@ -5,11 +5,13 @@
         return;
     }
 
-    const DEFAULT_DURATION_MS = 3800;
+    const DEFAULT_DURATION_MS = 4000;
     const REDUCED_MOTION_DURATION_MS = 520;
     const LIVE2D_READY_WAIT_MS = 900;
     const LIVE2D_HANDOFF_MS = 620;
     const LIVE2D_REDUCED_HANDOFF_MS = 160;
+    const WAKEUP_EYE_CLOSED_PROGRESS = 0.40;
+    const WAKEUP_EYE_OPEN_PROGRESS = 0.40;
     const LIVE2D_PARAMS = Object.freeze({
         eyeLeft: 'ParamEyeLOpen',
         eyeRight: 'ParamEyeROpen',
@@ -22,16 +24,7 @@
         eyeSmileRight: 'ParamEyeRSmile',
         bodyAngleX: 'ParamBodyAngleX',
         bodyAngleY: 'ParamBodyAngleY',
-        bodyAngleZ: 'ParamBodyAngleZ',
-        // Existing yui_default parameters from yui_default.cdi3.json:
-        // Param75: 【开关】右-挥手
-        // Param90: 右小臂-动画
-        // Param92: 右手-动画
-        // Param95: 右手-摆手动画
-        yuiRightWaveSwitch: 'Param75',
-        yuiRightForearmAnim: 'Param90',
-        yuiRightHandAnim: 'Param92',
-        yuiRightHandWave: 'Param95'
+        bodyAngleZ: 'ParamBodyAngleZ'
     });
 
     function shouldReduceMotion() {
@@ -270,10 +263,6 @@
                 || params.bodyAngleX
                 || params.bodyAngleY
                 || params.bodyAngleZ
-                || params.yuiRightWaveSwitch
-                || params.yuiRightForearmAnim
-                || params.yuiRightHandAnim
-                || params.yuiRightHandWave
             )
         );
     }
@@ -329,6 +318,7 @@
             this.previousEyeBlinkSuspended = !!this.manager._suspendEyeBlinkOverride;
             this.poseOverrideSource = 'yui_guide_wakeup_' + this.token;
             this.usesTemporaryPoseOverride = false;
+            this.motionHoldInstalled = false;
             this.tick = this.tick.bind(this);
             this.applyTemporaryPose = this.applyTemporaryPose.bind(this);
         }
@@ -355,6 +345,7 @@
             this.active = true;
             this.startedAt = this.timelineStartedAt || performance.now();
             this.manager._suspendEyeBlinkOverride = true;
+            this.motionHoldInstalled = this.installMotionHold();
             this.usesTemporaryPoseOverride = this.installTemporaryPoseOverride();
             this.applyPose(this.computePose(0), 1);
             if (this.manager && this.manager.pixi_app && this.manager.pixi_app.renderer) {
@@ -388,22 +379,12 @@
             if (this.manager) {
                 this.manager._suspendEyeBlinkOverride = this.previousEyeBlinkSuspended;
                 this.clearTemporaryPoseOverride();
+                this.clearMotionHold();
             }
-            if (!this.usesTemporaryPoseOverride && this.isCurrentModel()) {
-                Object.keys(this.params).forEach((key) => {
-                    const meta = this.params[key];
-                    writeParam(this.coreModel, meta, meta.initial);
-                });
-            }
+            this.restoreCapturedParams();
         }
 
         cancel(reason) {
-            if (this.isCurrentModel()) {
-                Object.keys(this.params).forEach((key) => {
-                    const meta = this.params[key];
-                    writeParam(this.coreModel, meta, meta.initial);
-                });
-            }
             this.stop(reason || 'cancelled');
         }
 
@@ -425,6 +406,37 @@
             try {
                 this.manager.clearTemporaryPoseOverride(this.poseOverrideSource);
             } catch (_) {}
+        }
+
+        installMotionHold() {
+            if (!this.manager || typeof this.manager.suspendTemporaryMotions !== 'function') {
+                return false;
+            }
+            try {
+                return this.manager.suspendTemporaryMotions(this.poseOverrideSource, this.model) === true;
+            } catch (_) {
+                return false;
+            }
+        }
+
+        clearMotionHold() {
+            if (!this.motionHoldInstalled || !this.manager || typeof this.manager.resumeTemporaryMotions !== 'function') {
+                return;
+            }
+            try {
+                this.manager.resumeTemporaryMotions(this.poseOverrideSource);
+            } catch (_) {}
+            this.motionHoldInstalled = false;
+        }
+
+        restoreCapturedParams() {
+            if (!this.isCurrentModel()) {
+                return;
+            }
+            Object.keys(this.params).forEach((key) => {
+                const meta = this.params[key];
+                writeParam(this.coreModel, meta, meta.initial);
+            });
         }
 
         applyTemporaryPose(coreModel) {
@@ -480,15 +492,11 @@
 
         computePose(progress) {
             const t = easeInOutCubic(progress);
-            const holdProgress = clamp(progress / 0.22, 0, 1);
-            const wakeProgress = clamp((progress - 0.22) / 0.42, 0, 1);
+            const holdProgress = clamp(progress / WAKEUP_EYE_CLOSED_PROGRESS, 0, 1);
+            const wakeProgress = clamp((progress - WAKEUP_EYE_CLOSED_PROGRESS) / WAKEUP_EYE_OPEN_PROGRESS, 0, 1);
             const wakeEase = easeOutCubic(wakeProgress);
-            const waveProgress = clamp((progress - 0.68) / 0.22, 0, 1);
-            const waveOut = 1 - easeOutCubic(clamp((progress - 0.88) / 0.12, 0, 1));
-            const waveWeight = Math.sin(waveProgress * Math.PI) * waveOut;
-            const waveCycle = Math.sin(waveProgress * Math.PI * 4);
             let eyeOpen = 0;
-            if (progress <= 0.22) {
+            if (progress <= WAKEUP_EYE_CLOSED_PROGRESS) {
                 eyeOpen = 0.02 * holdProgress;
             } else {
                 const flutter = Math.sin(wakeProgress * Math.PI * 3) * 0.08 * (1 - wakeProgress);
@@ -505,11 +513,7 @@
                 eyeSmile: this.reducedMotion ? 0 : clamp(wakeEase * 0.18, 0, 0.18),
                 bodyAngleX: this.reducedMotion ? 0 : lerp(-6.5, 0, t),
                 bodyAngleY: this.reducedMotion ? 0 : lerp(-3.2, 0, t),
-                bodyAngleZ: this.reducedMotion ? 0 : lerp(3.6, 0, t),
-                yuiRightWaveSwitch: this.reducedMotion ? 0 : clamp(waveWeight, 0, 1),
-                yuiRightForearmAnim: this.reducedMotion ? 0 : clamp(0.5 + waveCycle * 0.5, 0, 1) * waveWeight,
-                yuiRightHandAnim: this.reducedMotion ? 0 : clamp(0.56 + waveCycle * 0.44, 0, 1) * waveWeight,
-                yuiRightHandWave: this.reducedMotion ? 0 : clamp(0.5 + waveCycle * 0.5, 0, 1) * waveWeight
+                bodyAngleZ: this.reducedMotion ? 0 : lerp(3.6, 0, t)
             };
         }
 
@@ -537,10 +541,6 @@
             this.writeWeighted('bodyAngleX', pose.bodyAngleX, w);
             this.writeWeighted('bodyAngleY', pose.bodyAngleY, w);
             this.writeWeighted('bodyAngleZ', pose.bodyAngleZ, w);
-            this.writeWeighted('yuiRightWaveSwitch', pose.yuiRightWaveSwitch, w);
-            this.writeWeighted('yuiRightForearmAnim', pose.yuiRightForearmAnim, w);
-            this.writeWeighted('yuiRightHandAnim', pose.yuiRightHandAnim, w);
-            this.writeWeighted('yuiRightHandWave', pose.yuiRightHandWave, w);
         }
     }
 

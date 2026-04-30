@@ -470,8 +470,8 @@ def test_yui_wakeup_live2d_session_keeps_m2_boundaries():
     source = Path("static/yui-guide-wakeup.js").read_text(encoding="utf-8")
     live2d_source = Path("static/live2d-model.js").read_text(encoding="utf-8")
     style_source = Path("static/css/yui-guide.css").read_text(encoding="utf-8")
-    yui_model = json.loads(Path("static/yui_default/yui_default.model3.json").read_text(encoding="utf-8"))
-    yui_display_info = json.loads(Path("static/yui_default/yui_default.cdi3.json").read_text(encoding="utf-8"))
+    yui_model = json.loads(Path("static/yui-origin/yui-origin.model3.json").read_text(encoding="utf-8"))
+    yui_display_info = json.loads(Path("static/yui-origin/yui-origin.cdi3.json").read_text(encoding="utf-8"))
     yui_param_ids = {
         item.get("Id")
         for item in yui_display_info.get("Parameters", [])
@@ -479,7 +479,7 @@ def test_yui_wakeup_live2d_session_keeps_m2_boundaries():
     }
 
     assert "class Live2DWakeupSession" in source
-    assert "DEFAULT_DURATION_MS = 3800" in source
+    assert "DEFAULT_DURATION_MS = 4000" in source
     assert "LIVE2D_HANDOFF_MS = 620" in source
     assert "LIVE2D_HANDOFF_MS" in source
     assert "_suspendEyeBlinkOverride" in source
@@ -488,6 +488,11 @@ def test_yui_wakeup_live2d_session_keeps_m2_boundaries():
     assert "yui-taking-over" in source
     assert "setTemporaryPoseOverride" in source
     assert "applyTemporaryPose" in source
+    assert "restoreCapturedParams()" in source
+    assert "this.clearTemporaryPoseOverride();" in source
+    assert "this.clearMotionHold();" in source
+    assert "this.restoreCapturedParams();" in source
+    assert "if (!this.usesTemporaryPoseOverride && this.isCurrentModel())" not in source
     assert "Live2DManager.prototype.setTemporaryPoseOverride" in live2d_source
     assert "_applyTemporaryPoseOverride(currentCoreModel)" in live2d_source
     for param_id in (
@@ -501,14 +506,12 @@ def test_yui_wakeup_live2d_session_keeps_m2_boundaries():
         "ParamBodyAngleX",
         "ParamBodyAngleY",
         "ParamBodyAngleZ",
-        "Param75",
-        "Param90",
-        "Param92",
-        "Param95",
     ):
         assert param_id in source
 
-    assert yui_model.get("FileReferences", {}).get("Motions") == {}
+    yui_file_refs = yui_model.get("FileReferences", {})
+    assert yui_file_refs.get("Moc") == "yui-origin.moc3"
+    assert yui_file_refs.get("DisplayInfo") == "yui-origin.cdi3.json"
     for param_id in ("Param75", "Param90", "Param92", "Param95"):
         assert param_id in yui_param_ids
 
@@ -575,9 +578,15 @@ def test_home_yui_guide_avatar_override_does_not_persist_tutorial_model():
     assert "saveTutorialModelPayload" not in begin_block
     assert "saveTutorialModelPayload" not in restore_block
     assert "this.reloadTutorialModel(currentName, tutorialModelPayload, { temporary: true })" in begin_block
+    assert "live2d: TUTORIAL_YUI_LIVE2D_MODEL_NAME" in begin_block
+    assert "TUTORIAL_YUI_LIVE2D_MODEL_PATH = '/static/yui-origin/yui-origin.model3.json'" in tutorial_source
+    assert "suppressInitialIdle: true" in tutorial_source
+    assert "suppressInitialIdle: skipIdleRestore" in interpage_source
     assert "temporaryConfig" in interpage_source
     assert "skipIdleRestore" in interpage_source
     assert "suppressToast" in interpage_source
+    assert "async function _waitForLive2DManagerIdle" in interpage_source
+    assert "await _waitForLive2DManagerIdle(30000);" in interpage_source
 
 
 def test_theme_system_preference_does_not_become_saved_user_choice():

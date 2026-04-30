@@ -9,6 +9,8 @@
 const TUTORIAL_PAGES = Object.freeze(['home', 'model_manager', 'model_manager_live2d', 'model_manager_vrm', 'model_manager_mmd', 'model_manager_common', 'parameter_editor', 'emotion_manager', 'chara_manager', 'settings', 'voice_clone', 'steam_workshop', 'memory_browser']);
 const TUTORIAL_STORAGE_KEY_PREFIX = 'neko_tutorial_';
 const TUTORIAL_PROMPT_FLOW_PREFIX = '[TutorialPromptFlow]';
+const TUTORIAL_YUI_LIVE2D_MODEL_NAME = 'yui-origin';
+const TUTORIAL_YUI_LIVE2D_MODEL_PATH = '/static/yui-origin/yui-origin.model3.json';
 
 function getTutorialStorageKeyForPage(pageKey) {
     return TUTORIAL_STORAGE_KEY_PREFIX + pageKey;
@@ -854,7 +856,7 @@ class UniversalTutorialManager {
 
         const live2dPath = this.tutorialAvatarValue(config, ['live2d', 'model_path'], ['live2d']);
         payload.model_type = 'live2d';
-        payload.live2d = this.inferTutorialLive2dModelName(live2dPath) || 'yui_default';
+        payload.live2d = this.inferTutorialLive2dModelName(live2dPath) || TUTORIAL_YUI_LIVE2D_MODEL_NAME;
 
         const itemId = this.tutorialNonEmptyString(
             this.tutorialAvatarValue(config, ['asset_source_id'], ['item_id', 'live2d_item_id'])
@@ -923,9 +925,9 @@ class UniversalTutorialManager {
     }
 
     buildTutorialTemporaryModelConfig(payload) {
-        const modelName = this.tutorialNonEmptyString(payload && payload.live2d) || 'yui_default';
-        const modelPath = modelName === 'yui_default'
-            ? '/static/yui_default/yui_default.model3.json'
+        const modelName = this.tutorialNonEmptyString(payload && payload.live2d) || TUTORIAL_YUI_LIVE2D_MODEL_NAME;
+        const modelPath = modelName === TUTORIAL_YUI_LIVE2D_MODEL_NAME
+            ? TUTORIAL_YUI_LIVE2D_MODEL_PATH
             : `/live2d-models/${encodeURIComponent(modelName)}/${encodeURIComponent(modelName)}.model3.json`;
 
         return {
@@ -992,7 +994,8 @@ class UniversalTutorialManager {
         }
 
         await window.live2dManager.loadModel(modelPath, {
-            isMobile: window.innerWidth <= 768
+            isMobile: window.innerWidth <= 768,
+            suppressInitialIdle: true
         });
         await this.applyTutorialLive2dViewportPlacement();
         if (window.LanLan1) {
@@ -1293,7 +1296,7 @@ class UniversalTutorialManager {
             const snapshotPayload = this.buildTutorialModelSavePayload(currentConfig);
             const tutorialModelPayload = {
                 model_type: 'live2d',
-                live2d: 'yui_default',
+                live2d: TUTORIAL_YUI_LIVE2D_MODEL_NAME,
                 live2d_idle_animation: ''
             };
             this._tutorialAvatarOverride.currentName = currentName;
@@ -1309,10 +1312,10 @@ class UniversalTutorialManager {
                 avatarDataUrl: tutorialAvatar && tutorialAvatar.dataUrl ? tutorialAvatar.dataUrl : '',
                 modelType: tutorialAvatar && tutorialAvatar.modelType ? tutorialAvatar.modelType : 'live2d'
             });
-            console.log('[Tutorial] 新手教程期间已临时切换到 yui_default 模型（未写入用户配置）:', tutorialModelPayload);
+            console.log('[Tutorial] 新手教程期间已临时切换到 yui-origin 模型（未写入用户配置）:', tutorialModelPayload);
         })().catch((error) => {
             this.revealTutorialLive2dPrepared();
-            console.warn('[Tutorial] 临时切换 yui_default 模型失败:', error);
+            console.warn('[Tutorial] 临时切换 yui-origin 模型失败:', error);
         });
 
         this._tutorialAvatarOverridePromise = setupPromise;
