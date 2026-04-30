@@ -27,6 +27,7 @@
     let isFirstAIResponse = true;  // 跟踪是否为AI第一次回复
     let firstDialogueUnlockPending = false; // unlockAchievement 尚未就绪时的补偿标记
     let firstDialogueUnlockInFlight = false;
+    let firstDialogueUnlocked = false;
 
     // ======================== 工具函数 ========================
 
@@ -309,7 +310,7 @@
      * 只由 AI 可见回复路径触发；用户输入路径只负责标记 isFirstUserInput。
      */
     async function checkAndUnlockFirstDialogueAchievement() {
-        if (isFirstUserInput || firstDialogueUnlockInFlight) return;
+        if (isFirstUserInput || firstDialogueUnlockInFlight || firstDialogueUnlocked) return;
 
         if (!window.unlockAchievement) {
             if (!firstDialogueUnlockPending) {
@@ -339,6 +340,7 @@
         console.log(window.t('console.firstConversationUnlockAchievement'));
         try {
             await window.unlockAchievement('ACH_FIRST_DIALOGUE');
+            firstDialogueUnlocked = true;
         } catch (error) {
             console.error(window.t('console.achievementUnlockError'), error);
         } finally {
@@ -347,6 +349,7 @@
     }
 
     function markAssistantVisibleResponse() {
+        if (firstDialogueUnlocked) return;
         if (isFirstAIResponse) {
             isFirstAIResponse = false;
             console.log(window.t('console.aiFirstReplyDetected'));
