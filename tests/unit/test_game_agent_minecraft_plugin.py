@@ -676,6 +676,67 @@ async def test_stale_task_finished_after_timeout_is_dropped():
 
 
 @pytest.mark.asyncio
+async def test_stale_task_finished_with_no_pending_marks_idle():
+    """When a stale frame drops AND there's no current pending task,
+    the agent has genuinely returned to idle. Set ``_task_finished``
+    to True so the autonomous loop knows it can resume nudging —
+    otherwise a flag stuck at False (from before stop()/abandon)
+    would silently keep the busy gate engaged forever."""
+    service, _ = _make_service()
+    service.configure({})
+    # Pre-conditions: a task is "in flight" from the loop's perspective
+    # (flag stuck at False) and we have one pending stale-frame drop
+    # but no actual pending task — the typical post-stop+restart shape.
+    service._stale_task_finishes_to_drop = 1
+    service._task_finished = False
+    assert service._pending is None
+
+    await service._on_task_finished({"status": "ok", "text": "late frame for abandoned task"})
+    assert service._stale_task_finishes_to_drop == 0
+    # Critical: the flag flipped to True even though the frame was
+    # dropped — agent is idle, busy gate must reflect that.
+    assert service._task_finished is True
+
+
+@pytest.mark.asyncio
+async def test_stale_task_finished_with_pending_keeps_flag_false():
+    """Counter-test to the above: when dropping a stale frame WHILE a
+    real task is pending, ``_task_finished`` must stay False (existing
+    invariant — pinned by ``test_stale_task_finished_does_not_flip_…``).
+    Combined with the prior test, this defines the rule: flip on
+    drop only when ``_pending is None``."""
+    service, _ = _make_service()
+    service.configure({"task_timeout_seconds": 5.0})
+    service._client = _FakeClient()
+
+    # Pre-bump drop counter as if a prior task had been abandoned.
+    service._stale_task_finishes_to_drop = 1
+
+    # Now start a fresh task — _pending=B, _task_finished=False.
+    runner = asyncio.create_task(service.execute_minecraft_task(task="B"))
+    for _ in range(50):
+        if service._pending is not None:
+            break
+        await asyncio.sleep(0.01)
+    else:
+        pytest.fail("B never claimed the slot")
+    assert service._task_finished is False
+
+    # Stale drop while B is in flight — must NOT flip the flag.
+    await service._on_task_finished({"status": "ok", "text": "old"})
+    assert service._task_finished is False
+    assert service._pending is not None
+    assert service._pending.task_text == "B"
+
+    runner.cancel()
+    try:
+        await runner
+    except (asyncio.CancelledError, Exception):
+        # Cleanup-only swallow.
+        pass
+
+
+@pytest.mark.asyncio
 async def test_stale_task_finished_does_not_pollute_log_cache():
     """Stale frames must not contribute their text to ``_log_cache``
     either — otherwise the next system prompt would surface "old task

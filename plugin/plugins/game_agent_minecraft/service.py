@@ -601,11 +601,16 @@ class GameAgentService:
                     "dropped stale task_finished (status={}, drops_remaining={})",
                     status, self._stale_task_finishes_to_drop,
                 )
-                # Don't touch ``_task_finished`` here — flipping it
-                # would leak the *old* task's completion state into
-                # the *new* (still in-flight) task, breaking the
-                # autonomous-loop's busy gate and the system prompt's
-                # "正在进行中 vs 已完成" branch.
+                # If no task is currently pending, the agent has
+                # genuinely returned to idle (we just dropped what
+                # would have been the only signal). Flipping
+                # ``_task_finished`` here keeps the autonomous loop's
+                # busy gate accurate so it can resume nudging.
+                # When a task IS pending, leave the flag alone —
+                # flipping it would leak the *old* task's completion
+                # state into the *new* (still in-flight) task.
+                if self._pending is None:
+                    self._task_finished = True
                 return
             # From here on the frame is being accepted; it's safe to
             # commit the text + flag updates.
