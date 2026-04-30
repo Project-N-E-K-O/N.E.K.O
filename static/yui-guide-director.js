@@ -1618,30 +1618,29 @@
                 return runtimeType;
             }
 
+            const cfg = window.lanlan_config;
+            if (cfg) {
+                const modelType = String(cfg.model_type || '').toLowerCase();
+                if (modelType === 'live3d') {
+                    const subType = String(cfg.live3d_sub_type || '').toLowerCase();
+                    if (subType === 'mmd' || subType === 'vrm') {
+                        return subType;
+                    }
+                    return 'live2d';
+                }
+
+                if (modelType === 'vrm' || modelType === 'mmd') {
+                    return modelType;
+                }
+                return 'live2d';
+            }
+
             const storedType = this.normalizeModelType(
                 (window.sessionStorage && window.sessionStorage.getItem('modelType'))
                 || (window.localStorage && window.localStorage.getItem('modelType'))
             );
             if (storedType) {
                 return storedType;
-            }
-
-            const cfg = window.lanlan_config;
-            if (!cfg) {
-                return 'live2d';
-            }
-
-            const modelType = String(cfg.model_type || '').toLowerCase();
-            if (modelType === 'live3d') {
-                const subType = String(cfg.live3d_sub_type || '').toLowerCase();
-                if (subType === 'mmd' || subType === 'vrm') {
-                    return subType;
-                }
-                return 'live2d';
-            }
-
-            if (modelType === 'vrm' || modelType === 'mmd') {
-                return modelType;
             }
             return 'live2d';
         }
