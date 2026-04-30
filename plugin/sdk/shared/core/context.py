@@ -379,44 +379,65 @@ class SdkContext:
     def push_message(
         self,
         *,
-        source: str,
-        message_type: str,
-        description: str = "",
+        # ── v2 schema (preferred) ─────────────────────────────────────
+        visibility: list[str] | None = None,
+        ai_behavior: str | None = None,
+        parts: list[dict[str, object]] | None = None,
+        # ── common ────────────────────────────────────────────────────
+        source: str = "",
+        target_lanlan: str | None = None,
+        metadata: dict[str, object] | None = None,
         priority: int = 0,
+        # ── v1 legacy (each emits DeprecationWarning when used) ───────
+        message_type: str | None = None,
+        description: str | None = None,
         content: str | None = None,
         binary_data: bytes | None = None,
         binary_url: str | None = None,
-        metadata: dict[str, object] | None = None,
+        mime: str | None = None,
         unsafe: bool = False,
         fast_mode: bool = False,
-        target_lanlan: str | None = None,
         delivery: str | bool | None = None,
         reply: bool | None = None,
     ) -> object:
-        """Push a notification to the main AI.
+        """Push a message from a plugin to the host.
 
-        ``delivery`` matches the semantics of :meth:`finish` — defaults to
-        ``"proactive"`` (the AI is interrupted to announce the message). Pass
-        ``delivery="passive"`` for a quiet, carry-on-next-turn notification.
-        ``reply`` is a deprecated bool alias.
+        Two orthogonal axes drive the host's downstream behaviour:
+
+        * ``visibility`` (``list["chat" | "hud"]``, default ``[]``) — where
+          the user sees the *plugin's* parts rendered verbatim.  Empty
+          list means the user does not see the parts directly; if AI also
+          responds, only the AI's reply is visible.
+        * ``ai_behavior`` (``"respond" | "read" | "blind"``, default
+          ``"respond"``) — how the LLM treats the parts: generate a turn
+          immediately, ingest into context for natural mention later, or
+          ignore entirely.
+
+        ``parts`` is an ordered list of content parts (``text``,
+        ``image``, ``audio``, ``video``, ``ui_action``).  See
+        :mod:`plugin.sdk.shared.core.push_message_schema` for full shapes.
+
+        All other parameters are deprecated and emit ``DeprecationWarning``;
+        scheduled for removal in v0.9 (``docs/changelog``).
         """
-        # Non-None delivery/reply ⇒ stamp metadata.agent.delivery so the host
-        # bridge picks it up. Untouched metadata stays as the caller passed it.
-        if delivery is not None or reply is not None:
-            resolved = normalize_delivery(delivery, reply)
-            metadata = self._normalize_export_metadata(metadata, delivery=resolved)
         return self._host_ctx.push_message(
+            visibility=visibility,
+            ai_behavior=ai_behavior,
+            parts=parts,
             source=source,
+            target_lanlan=target_lanlan,
+            metadata=metadata,
+            priority=priority,
             message_type=message_type,
             description=description,
-            priority=priority,
             content=content,
             binary_data=binary_data,
             binary_url=binary_url,
-            metadata=metadata,
+            mime=mime,
             unsafe=unsafe,
             fast_mode=fast_mode,
-            target_lanlan=target_lanlan,
+            delivery=delivery,
+            reply=reply,
         )
 
     def update_status(self, status: dict[str, object]) -> None:

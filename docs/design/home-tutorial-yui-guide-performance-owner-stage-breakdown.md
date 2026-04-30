@@ -27,12 +27,12 @@
 
 同时还核对了当前代码中的真实锚点与运行时状态：
 
-- [static/universal-tutorial-manager.js](../../static/universal-tutorial-manager.js)
-- [static/yui-guide-steps.js](../../static/yui-guide-steps.js)
+- `static/universal-tutorial-manager.js`
+- `static/yui-guide-steps.js`
 - `templates/index.html`
-- [static/avatar-ui-popup.js](../../static/avatar-ui-popup.js)
-- [static/app-interpage.js](../../static/app-interpage.js)
-- [static/live2d-emotion.js](../../static/live2d-emotion.js)
+- `static/avatar-ui-popup.js`
+- `static/app-interpage.js`
+- `static/live2d-emotion.js`
 - `templates/viewer.html`
 
 ---
@@ -43,7 +43,7 @@
 
 当前已经成立的前置条件有：
 
-- 首页已经加载了 [static/yui-guide-steps.js](../../static/yui-guide-steps.js) 和 [static/universal-tutorial-manager.js](../../static/universal-tutorial-manager.js)
+- 首页已经加载了 `static/yui-guide-steps.js` 和 `static/universal-tutorial-manager.js`
 - `UniversalTutorialManager` 已经具备 `Yui Guide` 运行时桥接能力
 - 首页旧教程 step 已经补了首批 `yuiGuideSceneId`
 - 共享场景注册表已经存在，并且首页 `sceneOrder.home` 已冻结
@@ -109,7 +109,7 @@
 
 ### 5.2 可参与但不应主改
 
-- [static/yui-guide-steps.js](../../static/yui-guide-steps.js)
+- `static/yui-guide-steps.js`
 
 开发 B 在这个文件里主要补：
 
@@ -126,12 +126,12 @@
 
 ### 5.3 不应直接长期占用
 
-- [static/universal-tutorial-manager.js](../../static/universal-tutorial-manager.js)
+- `static/universal-tutorial-manager.js`
 - `templates/index.html`
-- [static/app-ui.js](../../static/app-ui.js)
-- [static/app-buttons.js](../../static/app-buttons.js)
-- [static/avatar-ui-popup.js](../../static/avatar-ui-popup.js)
-- [static/app-interpage.js](../../static/app-interpage.js)
+- `static/app-ui.js`
+- `static/app-buttons.js`
+- `static/avatar-ui-popup.js`
+- `static/app-interpage.js`
 
 如果需要这些文件提供新挂接点，先提接口需求，再由主负责人或开发 C 收口。
 
@@ -273,7 +273,7 @@ interface YuiGuideDirector {
 - 约定 overlay 根节点命名和销毁方式
 - 约定 bubble、voice、emotion、cursor 的编排顺序
 - 确认所有退出路径最终都汇聚到一次 `destroy()`
-- 审视 [static/yui-guide-steps.js](../../static/yui-guide-steps.js) 里的首版 `performance` 是否足够驱动第一阶段
+- 审视 `static/yui-guide-steps.js` 里的首版 `performance` 是否足够驱动第一阶段
 
 此阶段不要做的事情：
 
@@ -438,7 +438,7 @@ interface YuiGuideDirector {
 
 ## 10.3 Emotion
 
-从当前仓库看，首页已经加载了 [static/live2d-emotion.js](../../static/live2d-emotion.js)，而视图侧已有现成情感调用入口。
+从当前仓库看，首页已经加载了 `static/live2d-emotion.js`，而视图侧已有现成情感调用入口。
 
 因此建议开发 B：
 
