@@ -1027,7 +1027,7 @@ class DirectTaskExecutor:
         ]
 
     def _find_plugin_entry(self, plugins: Any, plugin_id: str, preferred_entry: str) -> tuple[Optional[dict], Optional[dict]]:
-        """Find a plugin and a usable entry, falling back to the first Agent-visible declared entry."""
+        """Find a plugin and a matching entry. Returns (plugin, None) if preferred_entry is not found among visible entries."""
         iterable = plugins.items() if isinstance(plugins, dict) else enumerate(plugins)
         for _, plugin in iterable:
             if not isinstance(plugin, dict) or plugin.get("id") != plugin_id:
