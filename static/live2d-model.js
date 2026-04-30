@@ -889,6 +889,7 @@ Live2DManager.prototype._playIdleMotion = async function(motionManager) {
         }
         return indexes;
     };
+    const getMotionFile = (motion) => motion && (motion.file || motion.File);
     const trackMotionFile = (file) => {
         if (!file || typeof this._trackActiveMotionParametersFromFile !== 'function') {
             if (typeof this._clearActiveMotionParamIds === 'function') {
@@ -929,7 +930,7 @@ Live2DManager.prototype._playIdleMotion = async function(motionManager) {
         for (const idx of indexes) {
             const motion = group[idx];
             if (filter && !filter(motion)) continue;
-            const file = motion && (motion.file || motion.File);
+            const file = getMotionFile(motion);
             if (await startTrackedMotion(groupName, idx, file)) return true;
         }
         return false;
@@ -944,13 +945,17 @@ Live2DManager.prototype._playIdleMotion = async function(motionManager) {
         } else {
             const group = motionGroups.PreviewAll;
             const startedUserIdle = await startTrackedGroupMotion('PreviewAll', group, (motion) => {
-                return motion && motion.file && idleAnimations.includes(motion.file.split('/').pop());
+                const motionFile = getMotionFile(motion);
+                return motionFile && idleAnimations.includes(motionFile.split('/').pop());
             });
             if (startedUserIdle) {
                 return;
             }
             if (Array.isArray(group) && group.length > 0) {
-                const available = group.filter(m => m.file && idleAnimations.includes(m.file.split('/').pop()));
+                const available = group.filter((motion) => {
+                    const motionFile = getMotionFile(motion);
+                    return motionFile && idleAnimations.includes(motionFile.split('/').pop());
+                });
                 if (available.length > 0) {
                     console.warn('[Live2D] 用户保存的待机动作启动失败，回退到默认 Idle');
                 }
