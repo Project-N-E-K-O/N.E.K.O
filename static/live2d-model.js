@@ -229,10 +229,10 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
         console.error('加载模型失败:', error);
         
         // 尝试回退到默认模型
-        if (modelPath !== '/static/yui_default/yui_default.model3.json') {
-            console.warn('模型加载失败，尝试回退到默认模型: yui_default');
+        if (modelPath !== '/static/yui-origin/yui-origin.model3.json') {
+            console.warn('模型加载失败，尝试回退到默认模型: yui-origin');
             try {
-                const defaultModelPath = '/static/yui_default/yui_default.model3.json';
+                const defaultModelPath = '/static/yui-origin/yui-origin.model3.json';
                 // 主模型可能已在 _configureLoadedModel 中途写入派生状态；
                 // 回退加载前先清空，避免默认模型继承失败模型的元数据。
                 this._resetDerivedModelMetadata();
@@ -243,7 +243,7 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
                 // 使用统一的模型配置方法
                 await this._configureLoadedModel(model, defaultModelPath, options, loadToken);
 
-                console.log('成功回退到默认模型: yui_default');
+                console.log('成功回退到默认模型: yui-origin');
                 return model;
             } catch (fallbackError) {
                 console.error('回退到默认模型也失败:', fallbackError);
@@ -902,7 +902,7 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
         const cleanPath = urlString.split('#')[0].split('?')[0];
         const lastSlash = cleanPath.lastIndexOf('/');
         const rootDir = lastSlash >= 0 ? cleanPath.substring(0, lastSlash) : '/static';
-        this.modelRootPath = rootDir; // e.g. /static/yui_default or /static/some/deeper/dir
+        this.modelRootPath = rootDir; // e.g. /static/yui-origin or /static/some/deeper/dir
         const parts = rootDir.split('/').filter(Boolean);
         const rawName = parts.length > 0 ? parts[parts.length - 1] : null;
         try { this.modelName = rawName ? decodeURIComponent(rawName) : null; } catch (_) { this.modelName = rawName; }

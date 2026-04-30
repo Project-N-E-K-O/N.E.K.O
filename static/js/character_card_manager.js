@@ -151,7 +151,7 @@ function closeModalOnOutsideClick(event) {
     }
 }
 
-// 检查当前模型是否为默认模型（yui_default）
+// 检查当前模型是否为默认模型（yui-origin）
 function isDefaultModel() {
     // 使用保存的角色卡模型名称
     const currentModel = window.currentCharacterCardModel || '';
@@ -178,8 +178,16 @@ function hasStaticModelFlag(metadata) {
         || metadata.is_default === true;
 }
 
+function isLegacyDefaultLive2DModel(modelName) {
+    return modelName === 'yui_default' || modelName === 'yui-default';
+}
+
 function isStaticDefaultLive2DModel(modelName, rawData = {}) {
-    if (modelName !== 'yui_default') {
+    if (isLegacyDefaultLive2DModel(modelName)) {
+        return true;
+    }
+
+    if (modelName !== 'yui-origin') {
         return false;
     }
 
@@ -6581,7 +6589,7 @@ async function handleUploadToWorkshop() {
             fullCharaData['voice_id'] = voiceId;
         }
 
-        // 设置默认模型（排除yui_default）- 仅限 Live2D 模型类型
+        // 设置默认模型（排除yui-origin）- 仅限 Live2D 模型类型
         if (currentModelType === 'live2d' && (!selectedModelName || isStaticDefaultLive2DModel(selectedModelName, rawData))) {
             const validModels = availableModels.filter(model =>
                 model

@@ -215,19 +215,6 @@
     });
     const INTRO_ACTIVATION_HINT_KEY = 'tutorial.yuiGuide.lines.introActivationHint';
     const INTRO_ACTIVATION_HINT = '点一下这里，我就能开始说话啦～';
-    const GUIDE_EXPRESSION_TRACKS_BY_VOICE_KEY = Object.freeze({
-        intro_greeting_reply: Object.freeze(['sbx', 'xxy']),
-        intro_basic: Object.freeze(['swz']),
-        takeover_capture_cursor: Object.freeze(['szhs', 'syhs']),
-        takeover_plugin_preview_home: Object.freeze(['by']),
-        takeover_plugin_preview_dashboard: Object.freeze(['syhs']),
-        takeover_settings_peek_intro: Object.freeze(['xxy']),
-        takeover_settings_peek_detail: Object.freeze(['sbx']),
-        takeover_return_control: Object.freeze([]),
-        interrupt_resist_light_1: Object.freeze(['__random_z2_z3__']),
-        interrupt_resist_light_3: Object.freeze(['__random_z2_z3__']),
-        interrupt_angry_exit: Object.freeze(['z3'])
-    });
     const GUIDE_AUDIO_FILES_BY_KEY = Object.freeze({
         intro_basic: {
             zh: GUIDE_AUDIO_FILE_NAMES.intro_basic,
@@ -1612,43 +1599,248 @@
     }
 
     class YuiGuideEmotionBridge {
-        apply(emotion) {
-            if (!emotion || !window.LanLan1 || typeof window.LanLan1.setEmotion !== 'function') {
-                return;
+        normalizeModelType(modelType) {
+            const normalizedType = String(modelType || '').toLowerCase();
+            if (normalizedType === 'vrm' || normalizedType === 'mmd') {
+                return normalizedType;
             }
-
-            try {
-                window.LanLan1.setEmotion(emotion);
-            } catch (error) {
-                console.warn('[YuiGuide] 设置情绪失败:', error);
+            if (normalizedType === 'live2d') {
+                return 'live2d';
             }
+            return '';
         }
 
-        playExpression(expressionId) {
-            const normalizedExpressionId = typeof expressionId === 'string' ? expressionId.trim() : '';
-            if (!normalizedExpressionId || !window.live2dManager || !window.live2dManager.currentModel) {
-                return;
-            }
-
-            if (typeof window.live2dManager.playExpression !== 'function') {
-                return;
-            }
-
+        getStoredValue(key) {
             try {
-                window.live2dManager.playExpression(
-                    '__tutorial__',
-                    'expressions/' + normalizedExpressionId + '.exp3.json'
+                return (
+                    (window.sessionStorage && window.sessionStorage.getItem(key))
+                    || (window.localStorage && window.localStorage.getItem(key))
+                    || ''
                 );
-            } catch (error) {
-                console.warn('[YuiGuide] 播放教程表情失败:', normalizedExpressionId, error);
+            } catch (_) {
+                return '';
             }
         }
 
-        clear() {
+        resolveStoredModelType() {
+            const modelType = String(this.getStoredValue('modelType') || '').toLowerCase();
+            if (modelType === 'live3d') {
+                const subType = String(
+                    this.getStoredValue('live3dSubType') || this.getStoredValue('live3d_sub_type')
+                ).toLowerCase();
+                if (subType === 'mmd' || subType === 'vrm') {
+                    return subType;
+                }
+                return 'vrm';
+            }
+            return this.normalizeModelType(modelType);
+        }
+
+        getActiveModelType() {
+            const runtimeType = this.normalizeModelType(
+                typeof window.getActiveModelType === 'function' ? window.getActiveModelType() : ''
+            );
+            if (runtimeType) {
+                return runtimeType;
+            }
+
+            const cfg = window.lanlan_config;
+            if (cfg) {
+                const modelType = String(cfg.model_type || '').toLowerCase();
+                if (modelType === 'live3d') {
+                    const subType = String(cfg.live3d_sub_type || '').toLowerCase();
+                    if (subType === 'mmd' || subType === 'vrm') {
+                        return subType;
+                    }
+                    return 'live2d';
+                }
+
+                if (modelType === 'vrm' || modelType === 'mmd') {
+                    return modelType;
+                }
+                return 'live2d';
+            }
+
+            const storedType = this.resolveStoredModelType();
+            if (storedType) {
+                return storedType;
+            }
+            return 'live2d';
+        }
+
+        handleAsyncFailure(result, ...warningArgs) {
+            if (result && typeof result.catch === 'function') {
+                result.catch((error) => {
+                    console.warn(...warningArgs, error);
+                });
+            }
+        }
+
+        apply(emotion) {
+            if (!emotion) {
+                return;
+            }
+
+            const activeModelType = this.getActiveModelType();
+            if (activeModelType === 'live2d') {
+                if (!window.live2dManager || !window.live2dManager.currentModel || typeof window.live2dManager.playMotion !== 'function') {
+                    return;
+                }
+
+                try {
+                    const motionPromise = window.live2dManager.playMotion(emotion);
+                    this.handleAsyncFailure(motionPromise, '[YuiGuide] 播放教程动作失败:', emotion);
+                } catch (error) {
+                    console.warn('[YuiGuide] 播放教程动作失败:', emotion, error);
+                }
+                return;
+            }
+
+            try {
+                if (activeModelType === 'mmd') {
+                    if (window.mmdManager && typeof window.mmdManager.setEmotion === 'function') {
+                        window.mmdManager.setEmotion(emotion);
+                    } else if (
+                        window.mmdManager
+                        && window.mmdManager.expression
+                        && typeof window.mmdManager.expression.setEmotion === 'function'
+                    ) {
+                        window.mmdManager.expression.setEmotion(emotion);
+                    }
+                    return;
+                }
+
+                if (activeModelType === 'vrm') {
+                    if (window.vrmManager && typeof window.vrmManager.setEmotion === 'function') {
+                        window.vrmManager.setEmotion(emotion);
+                    } else if (
+                        window.vrmManager
+                        && window.vrmManager.expression
+                        && typeof window.vrmManager.expression.setMood === 'function'
+                    ) {
+                        window.vrmManager.expression.setMood(emotion);
+                    }
+                    return;
+                }
+            } catch (error) {
+                console.warn('[YuiGuide] 设置教程情绪失败:', emotion, error);
+            }
+        }
+
+        clearLive2DGuidePresentation() {
+            const manager = window.live2dManager;
+            if (!manager) {
+                return false;
+            }
+
+            let handled = false;
+
+            if (typeof manager.clearEmotionEffects === 'function') {
+                this.handleAsyncFailure(
+                    manager.clearEmotionEffects(),
+                    '[YuiGuide] 清理 Live2D 教程动作失败:'
+                );
+                handled = true;
+            }
+
+            if (typeof manager.clearExpression === 'function') {
+                this.handleAsyncFailure(
+                    manager.clearExpression(),
+                    '[YuiGuide] 清理 Live2D 表情失败:'
+                );
+                handled = true;
+            }
+
+            const motionManager = manager.currentModel
+                && manager.currentModel.internalModel
+                && manager.currentModel.internalModel.motionManager;
+            if (motionManager && typeof motionManager.stopAllMotions === 'function') {
+                motionManager.stopAllMotions();
+                handled = true;
+            }
+
+            return handled;
+        }
+
+        clearMmdGuidePresentation() {
+            const manager = window.mmdManager;
+            if (!manager) {
+                return false;
+            }
+
+            if (typeof manager.setEmotion === 'function') {
+                this.handleAsyncFailure(
+                    manager.setEmotion('neutral'),
+                    '[YuiGuide] 清理 MMD 教程情绪失败:'
+                );
+                return true;
+            }
+
+            const expression = manager.expression;
+            if (expression && typeof expression.setEmotion === 'function') {
+                this.handleAsyncFailure(
+                    expression.setEmotion('neutral'),
+                    '[YuiGuide] 清理 MMD 教程情绪失败:'
+                );
+                return true;
+            }
+
+            if (expression && typeof expression.resetAllMorphs === 'function') {
+                this.handleAsyncFailure(
+                    expression.resetAllMorphs(),
+                    '[YuiGuide] 清理 MMD 教程 morph 失败:'
+                );
+                return true;
+            }
+
+            return false;
+        }
+
+        clearVrmGuidePresentation() {
+            const manager = window.vrmManager;
+            if (!manager) {
+                return false;
+            }
+
+            if (typeof manager.setEmotion === 'function') {
+                this.handleAsyncFailure(
+                    manager.setEmotion('neutral'),
+                    '[YuiGuide] 清理 VRM 教程情绪失败:'
+                );
+                return true;
+            }
+
+            const expression = manager.expression;
+            if (expression && typeof expression.setMood === 'function') {
+                this.handleAsyncFailure(
+                    expression.setMood('neutral'),
+                    '[YuiGuide] 清理 VRM 教程情绪失败:'
+                );
+                return true;
+            }
+
+            return false;
+        }
+
+        clearViaActiveModelType() {
+            const activeModelType = this.getActiveModelType();
+            if (activeModelType === 'live2d') {
+                return this.clearLive2DGuidePresentation();
+            }
+            if (activeModelType === 'mmd') {
+                return this.clearMmdGuidePresentation();
+            }
+            if (activeModelType === 'vrm') {
+                return this.clearVrmGuidePresentation();
+            }
+            return false;
+        }
+
+        clearWithLegacyBridge() {
             if (window.LanLan1 && typeof window.LanLan1.clearEmotionEffects === 'function') {
                 try {
                     window.LanLan1.clearEmotionEffects();
-                    return;
+                    return true;
                 } catch (error) {
                     console.warn('[YuiGuide] 清理情绪失败:', error);
                 }
@@ -1657,10 +1849,25 @@
             if (window.LanLan1 && typeof window.LanLan1.clearExpression === 'function') {
                 try {
                     window.LanLan1.clearExpression();
+                    return true;
                 } catch (error) {
                     console.warn('[YuiGuide] 清理表情失败:', error);
                 }
             }
+
+            return false;
+        }
+
+        clear() {
+            try {
+                if (this.clearViaActiveModelType()) {
+                    return;
+                }
+            } catch (error) {
+                console.warn('[YuiGuide] 按模型类型清理教程情绪失败:', error);
+            }
+
+            this.clearWithLegacyBridge();
         }
     }
 
@@ -1858,9 +2065,7 @@
             this.spotlightGeometryHintElements = new Set();
             this.retainedExtraSpotlightElements = [];
             this.sceneExtraSpotlightElements = [];
-            this.expressionTrackToken = 0;
             this.activeGuideEmotion = '';
-            this.activeGuideExpressionId = '';
             this.pluginDashboardHandoff = null;
             this.pluginDashboardLastInterruptRequestId = '';
             this.pluginDashboardWindowCreatedByGuide = false;
@@ -2233,79 +2438,24 @@
             return translateGuideText(textKey, fallbackText);
         }
 
-        getGuideExpressionTrack(voiceKey) {
-            const normalizedVoiceKey = typeof voiceKey === 'string' ? voiceKey.trim() : '';
-            if (!normalizedVoiceKey) {
-                return null;
-            }
-
-            if (!Object.prototype.hasOwnProperty.call(GUIDE_EXPRESSION_TRACKS_BY_VOICE_KEY, normalizedVoiceKey)) {
-                return null;
-            }
-
-            return GUIDE_EXPRESSION_TRACKS_BY_VOICE_KEY[normalizedVoiceKey];
-        }
-
-        hasGuideExpressionTrack(voiceKey) {
-            return Array.isArray(this.getGuideExpressionTrack(voiceKey));
-        }
-
-        cancelGuideExpressionTrack() {
-            this.expressionTrackToken += 1;
-        }
-
-        resolveGuideExpressionId(expressionId) {
-            const normalizedExpressionId = typeof expressionId === 'string' ? expressionId.trim() : '';
-            if (!normalizedExpressionId) {
-                return '';
-            }
-
-            if (normalizedExpressionId === '__random_z2_z3__') {
-                return Math.random() < 0.5 ? 'z2' : 'z3';
-            }
-
-            return normalizedExpressionId;
-        }
-
-        playGuideExpression(expressionId) {
-            const resolvedExpressionId = this.resolveGuideExpressionId(expressionId);
-            if (!resolvedExpressionId) {
-                return;
-            }
-
-            this.activeGuideEmotion = '';
-            this.activeGuideExpressionId = resolvedExpressionId;
-            this.emotionBridge.playExpression(resolvedExpressionId);
-        }
-
         applyGuideEmotion(emotion) {
             const normalizedEmotion = typeof emotion === 'string' ? emotion.trim() : '';
             if (!normalizedEmotion) {
                 return;
             }
 
-            this.activeGuideExpressionId = '';
             this.activeGuideEmotion = normalizedEmotion;
             this.emotionBridge.apply(normalizedEmotion);
         }
 
         clearGuidePresentation() {
             this.activeGuideEmotion = '';
-            this.activeGuideExpressionId = '';
             this.emotionBridge.clear();
         }
 
         captureCurrentGuidePresentationSnapshot() {
-            if (this.activeGuideExpressionId) {
-                return {
-                    expressionId: this.activeGuideExpressionId,
-                    emotion: ''
-                };
-            }
-
             if (this.activeGuideEmotion) {
                 return {
-                    expressionId: '',
                     emotion: this.activeGuideEmotion
                 };
             }
@@ -2318,11 +2468,6 @@
                 return false;
             }
 
-            if (snapshot.expressionId) {
-                this.playGuideExpression(snapshot.expressionId);
-                return true;
-            }
-
             if (snapshot.emotion) {
                 this.applyGuideEmotion(snapshot.emotion);
                 return true;
@@ -2332,55 +2477,14 @@
             return true;
         }
 
-        async runGuideExpressionTrack(text, options) {
-            const normalizedOptions = options || {};
-            const track = this.getGuideExpressionTrack(normalizedOptions.voiceKey);
-            this.cancelGuideExpressionTrack();
-            const trackToken = this.expressionTrackToken;
-
-            if (!Array.isArray(track)) {
-                return;
-            }
-
-            if (track.length === 0) {
-                this.clearGuidePresentation();
-                return;
-            }
-
-            const durationMs = this.getGuideVoiceDurationMs(normalizedOptions.voiceKey, resolveGuideLocale())
-                || estimateSpeechDurationMs(text || '');
-            const segmentDurationMs = Math.max(240, Math.round(durationMs / Math.max(1, track.length)));
-
-            for (let index = 0; index < track.length; index += 1) {
-                if (trackToken !== this.expressionTrackToken || this.isStopping()) {
-                    return;
-                }
-
-                this.playGuideExpression(track[index]);
-                if (index >= (track.length - 1)) {
-                    return;
-                }
-
-                const continued = await this.waitForSceneDelay(segmentDurationMs);
-                if (!continued || trackToken !== this.expressionTrackToken || this.isStopping()) {
-                    return;
-                }
-            }
-        }
-
         async speakGuideLine(text, options) {
             const content = typeof text === 'string' ? text.trim() : '';
-            const normalizedOptions = options || {};
 
             if (!content) {
-                this.cancelGuideExpressionTrack();
                 return;
             }
 
-            await Promise.all([
-                this.speakLineAndWait(content, normalizedOptions),
-                this.runGuideExpressionTrack(content, normalizedOptions)
-            ]);
+            await this.speakLineAndWait(content, options || {});
         }
 
         resolvePerformanceBubbleText(performance) {
@@ -4021,13 +4125,16 @@
             return true;
         }
 
-        scheduleNarrationResume() {
+        scheduleNarrationResume(options) {
             this.clearNarrationResumeTimer();
+            const resumeOptions = options || {};
 
             const attemptResume = () => {
                 const narration = this.activeNarration;
                 if (!narration || narration.cancelled || this.destroyed) {
-                    this.restoreCurrentScenePresentation();
+                    this.restoreCurrentScenePresentation({
+                        skipEmotion: !!resumeOptions.skipEmotion
+                    });
                     return;
                 }
 
@@ -4044,7 +4151,9 @@
                 }
 
                 narration.interrupted = false;
-                this.restoreCurrentScenePresentation();
+                this.restoreCurrentScenePresentation({
+                    skipEmotion: !!resumeOptions.skipEmotion
+                });
                 this.runNarration(narration).catch((error) => {
                     console.warn('[YuiGuide] 恢复教程语音失败:', error);
                 });
@@ -4059,7 +4168,7 @@
             this.currentContext = context || null;
         }
 
-        restoreCurrentScenePresentation() {
+        restoreCurrentScenePresentation(options) {
             if (this.destroyed || this.angryExitTriggered || !this.currentStep) {
                 return;
             }
@@ -4099,8 +4208,12 @@
                 this.overlay.hideBubble();
             }
 
-            if (performance.emotion && !this.hasGuideExpressionTrack(performance.voiceKey)) {
-                this.applyGuideEmotion(performance.emotion);
+            if (!(options && options.skipEmotion)) {
+                if (performance.emotion) {
+                    this.applyGuideEmotion(performance.emotion);
+                } else if (this.activeGuideEmotion) {
+                    this.clearGuidePresentation();
+                }
             }
         }
 
@@ -6344,7 +6457,7 @@
                     voiceKey: introVoiceKey
                 });
             }
-            if (performance.emotion && !this.hasGuideExpressionTrack(performance.voiceKey || 'takeover_settings_peek_intro')) {
+            if (performance.emotion) {
                 this.applyGuideEmotion(performance.emotion);
             }
 
@@ -7283,7 +7396,7 @@
                 textKey: introStep.performance.bubbleTextKey || '',
                 voiceKey: introStep.performance.voiceKey
             });
-            if (introStep.performance.emotion && !this.hasGuideExpressionTrack(introStep.performance.voiceKey)) {
+            if (introStep.performance.emotion) {
                 this.applyGuideEmotion(introStep.performance.emotion);
             }
             await Promise.all([
@@ -7336,7 +7449,7 @@
                     voiceKey: introStep.performance.voiceKey
                 });
             }
-            if (introStep.performance.emotion && !this.hasGuideExpressionTrack(introStep.performance.voiceKey)) {
+            if (introStep.performance.emotion) {
                 this.applyGuideEmotion(introStep.performance.emotion);
             }
             await Promise.all([
@@ -7512,7 +7625,7 @@
                         voiceKey: performance.voiceKey
                     });
                 }
-                if (performance.emotion && !this.hasGuideExpressionTrack(performance.voiceKey)) {
+                if (performance.emotion) {
                     this.applyGuideEmotion(performance.emotion);
                 }
 
@@ -7569,7 +7682,7 @@
                 this.overlay.hideBubble();
             }
 
-            if (performance.emotion && !shouldNarrateAfterMove && !this.hasGuideExpressionTrack(performance.voiceKey)) {
+            if (performance.emotion && !shouldNarrateAfterMove) {
                 this.applyGuideEmotion(performance.emotion);
             }
 
@@ -7618,7 +7731,7 @@
                 }, stepId);
             }
 
-            if (performance.emotion && shouldNarrateDuringMove && !this.hasGuideExpressionTrack(performance.voiceKey)) {
+            if (performance.emotion && shouldNarrateDuringMove) {
                 this.applyGuideEmotion(performance.emotion);
             }
 
@@ -7677,7 +7790,7 @@
                 this.overlay.hideBubble();
             }
 
-            if (performance.emotion && shouldNarrateAfterMove && !this.hasGuideExpressionTrack(performance.voiceKey)) {
+            if (performance.emotion && shouldNarrateAfterMove) {
                 this.applyGuideEmotion(performance.emotion);
             }
 
@@ -7965,9 +8078,7 @@
                 voiceKey: resistanceVoiceKeys[resistanceVoiceIndex] || '',
                 streamPauseWithScene: false
             });
-            if (!this.hasGuideExpressionTrack(resistanceVoiceKeys[resistanceVoiceIndex] || '')) {
-                this.applyGuideEmotion(performance.emotion || 'surprised');
-            }
+            this.applyGuideEmotion(performance.emotion || 'surprised');
             const cursorResistancePromise = suppressCursorReaction
                 ? Promise.resolve()
                 : this.cursor.resistTo(x, y);
@@ -7976,20 +8087,21 @@
                 this.voiceQueue.speak(message, {
                     voiceKey: resistanceVoiceKey
                 }),
-                cursorResistancePromise,
-                this.runGuideExpressionTrack(message, {
-                    voiceKey: resistanceVoiceKey
-                })
+                cursorResistancePromise
             ]).finally(() => {
                 this.resumeCurrentSceneAfterResistance();
-                this.restoreGuidePresentationSnapshot(presentationSnapshot);
+                const didRestorePresentationSnapshot = this.restoreGuidePresentationSnapshot(presentationSnapshot);
                 const narration = this.activeNarration;
                 if (narration && narration.interrupted) {
-                    this.scheduleNarrationResume();
+                    this.scheduleNarrationResume({
+                        skipEmotion: didRestorePresentationSnapshot
+                    });
                     return;
                 }
 
-                this.restoreCurrentScenePresentation();
+                this.restoreCurrentScenePresentation({
+                    skipEmotion: didRestorePresentationSnapshot
+                });
             });
         }
 
@@ -8022,7 +8134,7 @@
                 streamPauseWithScene: false,
                 streamAllowDuringAngryExit: true
             });
-            this.playGuideExpression('z3');
+            this.applyGuideEmotion(performance.emotion || 'angry');
             await this.speakGuideLine(bubbleText || '', {
                 voiceKey: performance.voiceKey
             });
@@ -8079,7 +8191,6 @@
                 this.pluginDashboardHandoff.resolve(false);
             }
             this.cancelActiveNarration();
-            this.cancelGuideExpressionTrack();
             this.clearIntroFlow();
             this.clearSceneTimers();
             this.clearGuideChatStreamTimers();
