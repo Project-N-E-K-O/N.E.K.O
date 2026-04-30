@@ -68,6 +68,7 @@ class UniversalTutorialManager {
         this._tutorialEndHandled = false;
         this._tutorialAvatarOverride = null;
         this._tutorialAvatarOverridePromise = null;
+        this._isDestroyed = false;
 
         // 刷新延迟常量
         this.LAYOUT_REFRESH_DELAY = 100;
@@ -1154,21 +1155,34 @@ class UniversalTutorialManager {
         if (window.appInterpage && typeof window.appInterpage.applyTutorialChatIdentityOverride === 'function') {
             window.appInterpage.applyTutorialChatIdentityOverride(payload);
         } else if (payload.active) {
-            window.__NEKO_TUTORIAL_CHAT_IDENTITY_OVERRIDE__ = {
+            const overrideDetail = {
                 active: true,
                 displayName: payload.displayName || 'YUI',
                 avatarDataUrl: payload.avatarDataUrl || '',
                 modelType: payload.modelType || ''
             };
-            window.__NEKO_TUTORIAL_ASSISTANT_NAME_OVERRIDE__ = payload.displayName || 'YUI';
+            window.__NEKO_TUTORIAL_CHAT_IDENTITY_OVERRIDE__ = {
+                active: true,
+                displayName: overrideDetail.displayName,
+                avatarDataUrl: overrideDetail.avatarDataUrl,
+                modelType: overrideDetail.modelType
+            };
+            window.__NEKO_TUTORIAL_ASSISTANT_NAME_OVERRIDE__ = overrideDetail.displayName;
             if (window.appChatAvatar && typeof window.appChatAvatar.setTutorialAvatarOverride === 'function') {
-                window.appChatAvatar.setTutorialAvatarOverride(payload.avatarDataUrl || '', payload.modelType || '');
+                window.appChatAvatar.setTutorialAvatarOverride(overrideDetail.avatarDataUrl, overrideDetail.modelType);
+            } else {
+                window.__nekoPendingTutorialChatIdentity = overrideDetail;
             }
+            window.dispatchEvent(new CustomEvent('neko:tutorial-chat-identity-changed', {
+                detail: overrideDetail
+            }));
         } else {
             delete window.__NEKO_TUTORIAL_CHAT_IDENTITY_OVERRIDE__;
             delete window.__NEKO_TUTORIAL_ASSISTANT_NAME_OVERRIDE__;
             if (window.appChatAvatar && typeof window.appChatAvatar.clearTutorialAvatarOverride === 'function') {
                 window.appChatAvatar.clearTutorialAvatarOverride();
+            } else {
+                window.__nekoPendingTutorialChatIdentity = { active: false };
             }
             window.dispatchEvent(new CustomEvent('neko:tutorial-chat-identity-changed', {
                 detail: { active: false }
@@ -3105,6 +3119,7 @@ class UniversalTutorialManager {
      * 启动引导步骤（内部方法）
      */
     startTutorialSteps(validSteps) {
+        this._isDestroyed = false;
         // 预加载所有步骤中的图片，确保走到含图片的步骤时图片已在浏览器缓存中
         this._preloadStepImages(validSteps);
 
@@ -3130,6 +3145,9 @@ class UniversalTutorialManager {
 
         if (useYuiOnlyHomeFlow) {
             const startYuiOnlyHomeFlow = () => {
+                if (this._isDestroyed) {
+                    return;
+                }
                 window.isInTutorial = true;
                 this.currentStep = 0;
                 this.driver = null;
@@ -4181,6 +4199,7 @@ class UniversalTutorialManager {
      * 因此既能给正常结束（onTutorialEnd）复用，也能给启动失败的回退路径复用。
      */
     _teardownTutorialUI() {
+        this._isDestroyed = true;
         // 重置运行标志
         this.isTutorialRunning = false;
         this.clearNextButtonGuard();

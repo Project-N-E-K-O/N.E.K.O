@@ -3,6 +3,7 @@
 
   const STORAGE_KEY = 'neko-dark-mode';
   const TRANSITION_MS = 300;
+  const THEME_EVENT_ORIGIN = 'theme-manager';
   let themeTransitionTimeout = null;
   let initialized = false;
 
@@ -65,6 +66,10 @@
       });
     }
 
+    window.dispatchEvent(new CustomEvent('neko-theme-changed', {
+      detail: { darkMode: newState, origin: THEME_EVENT_ORIGIN }
+    }));
+
     return newState;
   }
 
@@ -102,7 +107,13 @@
 
   function listenForThemeChanges() {
     window.addEventListener('neko-theme-changed', (event) => {
+      if (event.detail && event.detail.origin === THEME_EVENT_ORIGIN) {
+        return;
+      }
       if (event.detail && typeof event.detail.darkMode === 'boolean') {
+        if (event.detail.darkMode === isDarkMode()) {
+          return;
+        }
         applyThemeAnimated(event.detail.darkMode);
       }
     });
