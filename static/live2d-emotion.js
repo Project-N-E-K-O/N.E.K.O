@@ -942,7 +942,7 @@ Live2DManager.prototype.playSimpleMotion = function(emotion) {
 };
 
 // 清理当前情感效果（清除motion参数，但保留expression）
-Live2DManager.prototype.clearEmotionEffects = async function() {
+Live2DManager.prototype.clearEmotionEffects = function() {
     console.log('开始清理motion效果（保留expression）...');
     
     // 清除动作定时器
@@ -970,11 +970,9 @@ Live2DManager.prototype.clearEmotionEffects = async function() {
     
     // 重新应用常驻表情（保护常驻expression不被影响）
     // skipBackup=true 因为只是重新应用，不需要再次备份
-    try {
-        await this.applyPersistentExpressionsNative(true);
-    } catch (e) {
+    Promise.resolve(this.applyPersistentExpressionsNative(true)).catch((e) => {
         console.warn('重新应用常驻表情失败:', e);
-    }
+    });
     
     console.log('motion效果清理完成，motion参数已重置，expression参数已保留');
 };
