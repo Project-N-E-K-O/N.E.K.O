@@ -9,8 +9,6 @@
  * │ 场景 ID                  │ 锚点选择器                            │ 状态   │
  * ├──────────────────────────┼───────────────────────────────────────┼────────┤
  * │ intro_basic              │ #text-input-area                      │ OK *   │
- * │ intro_proactive          │ #${p}-toggle-proactive-chat           │ OK     │
- * │ intro_cat_paw            │ #${p}-btn-agent                       │ OK     │
  * │ takeover_capture_cursor  │ #${p}-btn-agent                       │ OK     │
  * │ takeover_plugin_preview  │ #${p}-btn-agent                       │ OK     │
  * │ takeover_settings_peek   │ #${p}-btn-settings                    │ OK     │
@@ -19,7 +17,6 @@
  * │ interrupt_angry_exit     │ #${p}-container                       │ OK     │
  * │ handoff_api_key          │ #${p}-menu-api-keys                   │ OK **  │
  * │ handoff_memory_browser   │ #${p}-menu-memory                     │ OK **  │
- * │ handoff_steam_workshop   │ #${p}-menu-steam-workshop             │ OK **  │
  * │ handoff_plugin_dashboard │ #${p}-btn-agent                       │ OK     │
  * └──────────────────────────┴───────────────────────────────────────┴────────┘
  *  * #text-input-area 在 #chat-container(display:none!important) 内，
@@ -37,7 +34,6 @@
 
     var _activeWindows = {};
     var _activeTimers = {};
-    var _pluginDashboardCompleteDeprecatedWarned = false;
 
     function syncMainUIVisibility() {
         var hasOpenWindow = Object.keys(_activeWindows).some(function (key) {
@@ -196,12 +192,11 @@
     var HANDOFF_TOKEN_VERSION = 1;
     var HANDOFF_TOKEN_TTL_MS = 5 * 60 * 1000;
     var HANDOFF_FLOW_ID = 'home_yui_guide_v1';
+    var HANDOFF_CREATE_ENDPOINT = '/api/yui-guide/handoff/create';
+    var HANDOFF_CONSUME_ENDPOINT = '/api/yui-guide/handoff/consume';
+    var PAGE_CONFIG_URL = '/api/config/page_config';
+    var CSRF_HEADER_NAME = 'X-CSRF-Token';
     var DEFAULT_PLUGIN_DASHBOARD_ORIGIN = 'http://127.0.0.1:48916';
-    var PLUGIN_DASHBOARD_DONE_EVENT = 'neko:yui-guide:plugin-dashboard:done';
-    var PLUGIN_DASHBOARD_INTERRUPT_REQUEST_EVENT = 'neko:yui-guide:plugin-dashboard:interrupt-request';
-    var PLUGIN_DASHBOARD_INTERRUPT_ACK_EVENT = 'neko:yui-guide:plugin-dashboard:interrupt-ack';
-    var _processedPluginDashboardCompletionTokens = {};
-
     function generateTokenId() {
         return 'h_' + Date.now().toString(36) + '_' + Math.random().toString(36).substring(2, 10);
     }
@@ -239,6 +234,70 @@
         return document.getElementById(p + '-btn-' + buttonId);
     }
 
+    function positionFloatingPopupNow(buttonId, prefix) {
+        var p = prefix || getPrefix();
+        var popup = getPopup(buttonId, p);
+        var popupUi = window.AvatarPopupUI || null;
+        if (!popup || !popupUi || typeof popupUi.positionPopup !== 'function') {
+            return false;
+        }
+
+        try {
+            var pos = popupUi.positionPopup(popup, {
+                buttonId: buttonId,
+                buttonPrefix: p + '-btn-',
+                triggerPrefix: p + '-trigger-icon-',
+                rightMargin: 20,
+                bottomMargin: 60,
+                topMargin: 8,
+                gap: 8,
+                sidePanelWidth: (buttonId === 'settings' || buttonId === 'agent') ? 320 : 0
+            });
+            popup.dataset.opensLeft = String(!!(pos && pos.opensLeft));
+            return true;
+        } catch (error) {
+            console.warn('[YuiGuideHandoff] positionFloatingPopupNow 失败:', buttonId, error);
+            return false;
+        }
+    }
+
+    function waitForPopupPositioned(buttonId, prefix, timeoutMs) {
+        var p = prefix || getPrefix();
+        var popup = getPopup(buttonId, p);
+        if (!popup) {
+            return Promise.resolve(false);
+        }
+
+        if (
+            popup.style.display === 'flex'
+            && !popup.classList.contains('is-positioning')
+            && typeof popup.dataset.opensLeft === 'string'
+            && popup.dataset.opensLeft !== ''
+        ) {
+            positionFloatingPopupNow(buttonId, p);
+            return Promise.resolve(true);
+        }
+
+        return waitFor(function () {
+            if (
+                popup.style.display === 'flex'
+                && !popup.classList.contains('is-positioning')
+                && typeof popup.dataset.opensLeft === 'string'
+                && popup.dataset.opensLeft !== ''
+            ) {
+                return true;
+            }
+            return null;
+        }, Number.isFinite(timeoutMs) ? timeoutMs : POPUP_OPEN_ANIMATION_MS + 900).then(function (positioned) {
+            if (positioned) {
+                positionFloatingPopupNow(buttonId, p);
+                return true;
+            }
+
+            return positionFloatingPopupNow(buttonId, p);
+        });
+    }
+
     function getPluginDashboardExpectedOrigin() {
         if (window.YUI_GUIDE_PLUGIN_DASHBOARD_ORIGIN) {
             try {
@@ -260,18 +319,10 @@
     }
 
     function buildPluginDashboardUrl(params) {
-        var origin = getPluginDashboardExpectedOrigin();
-        var normalizedOrigin = DEFAULT_PLUGIN_DASHBOARD_ORIGIN;
-
-        if (origin) {
-            try {
-                normalizedOrigin = new URL(String(origin)).origin;
-            } catch (e) {
-                console.warn('[YuiGuideHandoff] buildPluginDashboardUrl: dashboard origin 无效，回退默认值:', e);
-            }
+        var url = new URL('/api/agent/user_plugin/dashboard', window.location.origin);
+        if (window.location && window.location.origin) {
+            url.searchParams.set('yui_opener_origin', window.location.origin);
         }
-
-        var url = new URL('/ui/', normalizedOrigin);
         (Array.isArray(params) ? params : []).forEach(function (entry) {
             if (typeof entry !== 'string' || !entry) return;
             var equalIndex = entry.indexOf('=');
@@ -317,18 +368,118 @@
         }
     }
 
-    function createHandoffToken(targetPage, resumeScene) {
-        var now = Date.now();
-        var tokenObj = {
-            token: 'h_' + now.toString(36) + '_' + Math.random().toString(36).substring(2, 10),
-            token_version: HANDOFF_TOKEN_VERSION,
-            flow_id: HANDOFF_FLOW_ID,
-            source_page: 'home',
-            target_page: targetPage || '',
-            resume_scene: resumeScene || null,
-            created_at: now,
-            expires_at: now + HANDOFF_TOKEN_TTL_MS
+    function normalizeHandoffPath(value) {
+        if (typeof value !== 'string' || !value) {
+            return '';
+        }
+        try {
+            var url = new URL(value, window.location.href);
+            if (url.origin !== window.location.origin) {
+                return url.toString();
+            }
+            return url.pathname + url.search + url.hash;
+        } catch (_) {
+            return value;
+        }
+    }
+
+    function getPageConfigUrl() {
+        try {
+            var url = new URL(PAGE_CONFIG_URL, window.location.origin);
+            var params = new URLSearchParams(window.location.search || '');
+            var lanlanName = params.get('lanlan_name') || '';
+            if (lanlanName) {
+                url.searchParams.set('lanlan_name', lanlanName);
+            }
+            return url.pathname + url.search;
+        } catch (_) {
+            return PAGE_CONFIG_URL;
+        }
+    }
+
+    async function getLocalMutationHeaders() {
+        var headers = {
+            'Content-Type': 'application/json'
         };
+
+        var helper = window.nekoLocalMutationSecurity;
+        if (helper && typeof helper.getMutationHeaders === 'function') {
+            try {
+                var helperHeaders = await helper.getMutationHeaders();
+                if (helperHeaders && typeof helperHeaders === 'object') {
+                    return Object.assign(headers, helperHeaders);
+                }
+            } catch (error) {
+                console.warn('[YuiGuideHandoff] CSRF helper failed, refetching page_config:', error);
+            }
+        }
+
+        try {
+            var response = await fetch(getPageConfigUrl(), {
+                cache: 'no-store'
+            });
+            if (response.ok) {
+                var config = await response.json();
+                if (config && typeof config.autostart_csrf_token === 'string' && config.autostart_csrf_token) {
+                    headers[CSRF_HEADER_NAME] = config.autostart_csrf_token;
+                }
+            }
+        } catch (error) {
+            console.warn('[YuiGuideHandoff] page_config CSRF fetch failed:', error);
+        }
+
+        return headers;
+    }
+
+    async function postHandoffJson(endpoint, payload) {
+        var headers = await getLocalMutationHeaders();
+        var response = await fetch(endpoint, {
+            method: 'POST',
+            headers: headers,
+            cache: 'no-store',
+            body: JSON.stringify(payload || {})
+        });
+
+        if (!response.ok) {
+            var error = new Error('HTTP ' + response.status);
+            try {
+                error.responseBody = await response.json();
+                if (error.responseBody && error.responseBody.error) {
+                    error.message = String(error.responseBody.error);
+                }
+            } catch (_) {}
+            throw error;
+        }
+
+        return response.json();
+    }
+
+    async function createHandoffToken(targetPage, resumeScene, targetPath) {
+        var now = Date.now();
+        var response;
+        try {
+            response = await postHandoffJson(HANDOFF_CREATE_ENDPOINT, {
+                token_version: HANDOFF_TOKEN_VERSION,
+                flow_id: HANDOFF_FLOW_ID,
+                source_page: 'home',
+                source_path: normalizeHandoffPath(window.location.href),
+                target_page: targetPage || '',
+                target_path: normalizeHandoffPath(targetPath || ''),
+                resume_scene: resumeScene || null,
+                requested_at: now
+            });
+        } catch (error) {
+            console.error('[YuiGuideHandoff] createHandoffToken: backend create failed:', error);
+            return null;
+        }
+
+        var tokenObj = response && response.token && typeof response.token === 'object'
+            ? response.token
+            : null;
+        if (!tokenObj || !tokenObj.token || tokenObj.token_version !== HANDOFF_TOKEN_VERSION || tokenObj.authority !== 'server') {
+            console.error('[YuiGuideHandoff] createHandoffToken: invalid backend token');
+            return null;
+        }
 
         try {
             localStorage.setItem(HANDOFF_STORAGE_KEY, JSON.stringify(tokenObj));
@@ -368,7 +519,7 @@
         }
     }
 
-    function consumeHandoffToken(expectedPage) {
+    async function consumeHandoffToken(expectedPage) {
         var tokenObj = readHandoffToken();
         if (!tokenObj) return null;
 
@@ -381,58 +532,64 @@
             return null;
         }
 
+        if (tokenObj.authority !== 'server') {
+            console.warn('[YuiGuideHandoff] consumeHandoffToken: ignoring non-authoritative local token');
+            clearHandoffToken();
+            return null;
+        }
+
         var expectedSignature = getHandoffTokenSignature(tokenObj);
         if (!expectedSignature) {
             console.warn('[YuiGuideHandoff] consumeHandoffToken: token 缺少稳定标识');
             return null;
         }
 
-        var currentTokenObj = readHandoffToken();
-        if (!currentTokenObj || currentTokenObj.consumed) {
+        var response;
+        try {
+            response = await postHandoffJson(HANDOFF_CONSUME_ENDPOINT, {
+                token: tokenObj.token,
+                signature: expectedSignature,
+                expected_page: expectedPage || '',
+                consumer_id: HANDOFF_SESSION_ID
+            });
+        } catch (error) {
+            console.warn('[YuiGuideHandoff] consumeHandoffToken: backend consume failed:', error);
             return null;
         }
 
-        if (getHandoffTokenSignature(currentTokenObj) !== expectedSignature) {
-            console.warn('[YuiGuideHandoff] consumeHandoffToken: token 已变化，取消消费');
+        var authoritativeTokenObj = response && response.token && typeof response.token === 'object'
+            ? response.token
+            : null;
+        if (!authoritativeTokenObj || !authoritativeTokenObj.consumed) {
             return null;
         }
-
-        var consumedTokenObj = Object.assign({}, currentTokenObj, {
-            consumed: true,
-            consumed_by: HANDOFF_SESSION_ID,
-            consumed_at: Date.now()
-        });
+        if (getHandoffTokenSignature(authoritativeTokenObj) !== expectedSignature) {
+            return null;
+        }
+        if (authoritativeTokenObj.consumed_by !== HANDOFF_SESSION_ID) {
+            return null;
+        }
 
         try {
-            localStorage.setItem(HANDOFF_STORAGE_KEY, JSON.stringify(consumedTokenObj));
+            localStorage.setItem(HANDOFF_STORAGE_KEY, JSON.stringify(authoritativeTokenObj));
         } catch (error) {
-            console.error('[YuiGuideHandoff] consumeHandoffToken: 标记消费失败:', error);
-            return null;
-        }
-
-        var storedTokenObj = readHandoffToken();
-        if (!storedTokenObj || !storedTokenObj.consumed) {
-            return null;
-        }
-        if (getHandoffTokenSignature(storedTokenObj) !== expectedSignature) {
-            return null;
-        }
-        if (storedTokenObj.consumed_by !== HANDOFF_SESSION_ID) {
+            console.error('[YuiGuideHandoff] consumeHandoffToken: mark authoritative consume failed:', error);
             return null;
         }
 
         notifyHandoffConsumed({
-            token: storedTokenObj.token,
-            target_page: storedTokenObj.target_page || '',
-            resume_scene: storedTokenObj.resume_scene || null,
-            consumed_by: storedTokenObj.consumed_by,
-            consumed_at: storedTokenObj.consumed_at,
-            source_page: storedTokenObj.source_page || '',
-            flow_id: storedTokenObj.flow_id || '',
+            token: authoritativeTokenObj.token,
+            target_page: authoritativeTokenObj.target_page || '',
+            resume_scene: authoritativeTokenObj.resume_scene || null,
+            consumed_by: authoritativeTokenObj.consumed_by,
+            consumed_at: authoritativeTokenObj.consumed_at,
+            source_page: authoritativeTokenObj.source_page || '',
+            flow_id: authoritativeTokenObj.flow_id || '',
             expected_page: expectedPage || null
         });
 
-        return storedTokenObj;
+        return authoritativeTokenObj;
+
     }
 
     function waitFor(condition, timeoutMs, intervalMs) {
@@ -466,6 +623,12 @@
         });
     }
 
+    function delay(ms) {
+        return new Promise(function (resolve) {
+            setTimeout(resolve, Math.max(0, Number.isFinite(ms) ? ms : 0));
+        });
+    }
+
     function getAgentToggleElement(toggleId) {
         var prefix = getPrefix();
         return document.getElementById(prefix + '-toggle-' + toggleId);
@@ -487,6 +650,68 @@
     function getAgentSidePanelAction(toggleId, actionId) {
         if (!toggleId || !actionId) return null;
         return document.getElementById('neko-sidepanel-action-' + toggleId + '-' + actionId);
+    }
+
+    function waitForStableElementRect(element, timeoutMs) {
+        if (!element || typeof element.getBoundingClientRect !== 'function') {
+            return Promise.resolve(null);
+        }
+
+        var timeout = Number.isFinite(timeoutMs) ? timeoutMs : 700;
+        var startedAt = Date.now();
+        var lastRect = null;
+        var stableCount = 0;
+
+        return new Promise(function (resolve) {
+            function tick() {
+                var rect = element.getBoundingClientRect();
+                if (!rect || rect.width <= 0 || rect.height <= 0) {
+                    if ((Date.now() - startedAt) >= timeout) {
+                        resolve(null);
+                        return;
+                    }
+                    setTimeout(tick, 80);
+                    return;
+                }
+
+                if (lastRect) {
+                    var delta = Math.max(
+                        Math.abs(rect.left - lastRect.left),
+                        Math.abs(rect.top - lastRect.top),
+                        Math.abs(rect.width - lastRect.width),
+                        Math.abs(rect.height - lastRect.height)
+                    );
+                    stableCount = delta <= 1 ? stableCount + 1 : 0;
+                }
+                lastRect = {
+                    left: rect.left,
+                    top: rect.top,
+                    width: rect.width,
+                    height: rect.height
+                };
+
+                if (stableCount >= 2 || (Date.now() - startedAt) >= timeout) {
+                    resolve(element);
+                    return;
+                }
+
+                setTimeout(tick, 80);
+            }
+
+            tick();
+        });
+    }
+
+    function waitForAgentSidePanelLayoutStable(toggleId, timeoutMs) {
+        return waitFor(function () {
+            var panel = getAgentSidePanel(toggleId);
+            return panel && isSidePanelVisible(panel) ? panel : null;
+        }, Number.isFinite(timeoutMs) ? Math.max(260, timeoutMs) : 900).then(function (panel) {
+            if (!panel) return null;
+            return delay(380).then(function () {
+                return waitForStableElementRect(panel, Number.isFinite(timeoutMs) ? timeoutMs : 700);
+            });
+        });
     }
 
     function getOpenedWindow(fullName) {
@@ -632,7 +857,7 @@
         }
 
         if (popup.style.display === 'flex') {
-            return Promise.resolve(true);
+            return waitForPopupPositioned('settings', prefix);
         }
 
         dispatchSyntheticPress(button);
@@ -644,7 +869,8 @@
         return waitFor(function () {
             return popup.style.display === 'flex' ? true : null;
         }, POPUP_OPEN_ANIMATION_MS + 500).then(function (opened) {
-            return !!opened;
+            if (!opened) return false;
+            return waitForPopupPositioned('settings', prefix);
         });
     }
 
@@ -690,7 +916,7 @@
         }
 
         if (popup.style.display === 'flex') {
-            return Promise.resolve(true);
+            return waitForPopupPositioned('agent', prefix);
         }
 
         dispatchSyntheticPress(button);
@@ -701,7 +927,8 @@
         return waitFor(function () {
             return popup.style.display === 'flex' ? true : null;
         }, POPUP_OPEN_ANIMATION_MS + 500).then(function (opened) {
-            return !!opened;
+            if (!opened) return false;
+            return waitForPopupPositioned('agent', prefix);
         });
     }
 
@@ -922,15 +1149,20 @@
         return ensureAgentSidePanelVisible(toggleId).then(function (visible) {
             if (!visible) return null;
 
-            return waitFor(function () {
-                var sidePanel = getAgentSidePanel(toggleId);
-                var button = getAgentSidePanelAction(toggleId, actionId);
-                if (!sidePanel || !button || !isSidePanelVisible(sidePanel)) {
-                    return null;
-                }
-                return button.offsetParent !== null ? button : null;
-            }, normalizedTimeoutMs).then(function (button) {
-                return button || null;
+            return waitForAgentSidePanelLayoutStable(toggleId, Math.min(1000, normalizedTimeoutMs)).then(function () {
+                return waitFor(function () {
+                    var sidePanel = getAgentSidePanel(toggleId);
+                    var button = getAgentSidePanelAction(toggleId, actionId);
+                    if (!sidePanel || !button || !isSidePanelVisible(sidePanel)) {
+                        return null;
+                    }
+                    return button.offsetParent !== null ? button : null;
+                }, normalizedTimeoutMs);
+            }).then(function (button) {
+                if (!button) return null;
+                return waitForStableElementRect(button, Math.min(760, normalizedTimeoutMs)).then(function () {
+                    return button || null;
+                });
             });
         });
     }
@@ -940,7 +1172,7 @@
 
         return ensureAgentSidePanelActionVisible(toggleId, actionId).then(function (button) {
             if (!button || typeof button.click !== 'function') {
-                console.warn('[YuiGuideHandoff] clickAgentSidePanelAction: action 不存在:', toggleId, actionId);
+                console.warn('[YuiGuideHandoff] clickAgentSidePanelAction: action 不存在', toggleId, actionId);
                 return false;
             }
 
@@ -1028,137 +1260,6 @@
         }));
     }
 
-    /**
-     * @deprecated Plugin dashboard guide handoff now uses
-     * neko:yui-guide:plugin-dashboard:start and
-     * neko:yui-guide:plugin-dashboard:interrupt-ack messages.
-     */
-    function listenPluginDashboardComplete(onComplete, onInterrupt) {
-        var callbacks = typeof onComplete === 'object' && onComplete
-            ? onComplete
-            : {
-                onComplete: onComplete,
-                onInterrupt: onInterrupt
-            };
-        var completeCallback = typeof callbacks.onComplete === 'function' ? callbacks.onComplete : null;
-        var interruptCallback = typeof callbacks.onInterrupt === 'function' ? callbacks.onInterrupt : null;
-        if (!completeCallback && !interruptCallback) return function () {};
-        if (!_pluginDashboardCompleteDeprecatedWarned) {
-            _pluginDashboardCompleteDeprecatedWarned = true;
-            console.warn('[YuiGuideHandoff] listenPluginDashboardComplete 已弃用，请改用 neko:yui-guide:plugin-dashboard:start / neko:yui-guide:plugin-dashboard:interrupt-ack 消息流程。');
-        }
-
-        function pruneProcessedMessages() {
-            Object.keys(_processedPluginDashboardCompletionTokens).forEach(function (processedToken) {
-                if ((Date.now() - _processedPluginDashboardCompletionTokens[processedToken]) > HANDOFF_TOKEN_TTL_MS) {
-                    delete _processedPluginDashboardCompletionTokens[processedToken];
-                }
-            });
-        }
-
-        function markProcessed(messageKey) {
-            if (!messageKey) return false;
-            pruneProcessedMessages();
-            if (_processedPluginDashboardCompletionTokens[messageKey]) {
-                return false;
-            }
-            _processedPluginDashboardCompletionTokens[messageKey] = Date.now();
-            return true;
-        }
-
-        function isTrustedPluginDashboardMessage(event) {
-            var expectedOrigin = getPluginDashboardExpectedOrigin();
-            if (!expectedOrigin || event.origin !== expectedOrigin) {
-                return false;
-            }
-
-            var fullName = normalizeWindowName('plugin_dashboard');
-            var trackedWindow = (_activeWindows && _activeWindows[fullName])
-                || (window._openedWindows && window._openedWindows[fullName])
-                || null;
-            if (trackedWindow) {
-                if (trackedWindow.closed) {
-                    return false;
-                }
-                return event.source === trackedWindow;
-            }
-
-            if (!window.opener || window.opener.closed) {
-                return false;
-            }
-            return event.source === window.opener;
-        }
-
-        function handleTokenBackedComplete(data, detail) {
-            if (data.type !== 'neko:yui-guide:plugin-dashboard-complete') return false;
-            var flowId = detail.flow_id || detail.flow || '';
-            var tokenId = detail.handoff_token || detail.token || '';
-            var tokenObj = readHandoffToken();
-            if (!tokenObj || !tokenId) return true;
-            if (flowId !== (tokenObj.flow_id || HANDOFF_FLOW_ID)) return true;
-            if (tokenId !== tokenObj.token) return true;
-            if (!markProcessed('legacy:' + tokenId)) return true;
-
-            if (completeCallback) {
-                completeCallback(detail);
-            }
-            return true;
-        }
-
-        function handleTokenlessPluginDashboardMessage(data, detail) {
-            var tokenObj = readHandoffToken();
-            var hasActivePluginDashboardToken = !!(
-                tokenObj
-                && !tokenObj.consumed
-                && tokenObj.target_page === 'plugin_dashboard'
-            );
-            var isTokenHandoffMessage = !!(
-                data.type === 'neko:yui-guide:plugin-dashboard-complete'
-                || detail.handoff_token
-                || detail.token
-            );
-            if (hasActivePluginDashboardToken && isTokenHandoffMessage) return false;
-
-            var sessionId = typeof data.sessionId === 'string' ? data.sessionId : '';
-            var requestId = typeof data.requestId === 'string' ? data.requestId : '';
-            if (!sessionId) return false;
-            if (data.type === PLUGIN_DASHBOARD_DONE_EVENT) {
-                if (!markProcessed('done:' + sessionId)) return true;
-                if (completeCallback) {
-                    completeCallback(Object.assign({}, detail, {
-                        sessionId: sessionId
-                    }));
-                }
-                return true;
-            }
-            if (data.type === PLUGIN_DASHBOARD_INTERRUPT_REQUEST_EVENT || data.type === PLUGIN_DASHBOARD_INTERRUPT_ACK_EVENT) {
-                if (!interruptCallback) return true;
-                if (!requestId) return true;
-                if (!markProcessed('interrupt:' + data.type + ':' + requestId)) return true;
-                interruptCallback(Object.assign({}, detail, {
-                    sessionId: sessionId,
-                    requestId: requestId,
-                    type: data.type
-                }));
-                return true;
-            }
-            return false;
-        }
-
-        function handler(event) {
-            if (!event.data || typeof event.data !== 'object') return;
-            if (!isTrustedPluginDashboardMessage(event)) return;
-            var detail = event.data.detail || {};
-            if (handleTokenBackedComplete(event.data, detail)) return;
-            handleTokenlessPluginDashboardMessage(event.data, detail);
-        }
-
-        window.addEventListener('message', handler);
-        return function () {
-            window.removeEventListener('message', handler);
-        };
-    }
-
     function openModelManagerPage(lanlanName) {
         var name = typeof lanlanName === 'string' && lanlanName.trim()
             ? lanlanName.trim()
@@ -1195,7 +1296,7 @@
         clearHandoffToken();
     }
 
-    function openPageWithHandoff(targetPage, resumeScene, openUrl, windowName, features, options) {
+    async function openPageWithHandoff(targetPage, resumeScene, openUrl, windowName, features, options) {
         var isPluginDashboardTarget = (
             targetPage === 'plugin_dashboard'
             || normalizeWindowName(windowName) === normalizeWindowName('plugin_dashboard')
@@ -1213,7 +1314,7 @@
             );
         }
 
-        var tokenObj = createHandoffToken(targetPage, resumeScene);
+        var tokenObj = await createHandoffToken(targetPage, resumeScene, openUrl);
         if (!tokenObj) {
             console.warn('[YuiGuideHandoff] openPageWithHandoff: token 创建失败，回退到普通打开');
             return openPage(
@@ -1296,7 +1397,6 @@
         getPluginDashboardExpectedOrigin: getPluginDashboardExpectedOrigin,
         openPageWithHandoff: openPageWithHandoff,
         openPluginDashboard: openPluginDashboard,
-        listenPluginDashboardComplete: listenPluginDashboardComplete,
         openModelManagerPage: openModelManagerPage,
         waitForWindowOpen: waitForWindowOpen,
         closeWindow: closeWindow

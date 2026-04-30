@@ -895,6 +895,38 @@
         consecutiveSkipCount = 0;
     }
 
+    // 完整播放是用户对"音乐分享"通道最强的正向反馈：让后端把
+    // _proactive_chat_history 里 channel=='music' 的最近条目通道清空，从而停止
+    // 因为"刚刚分享过音乐"而对 music 通道继续做权重衰减惩罚。fire-and-forget。
+    // 去抖按曲目维度：APlayer 同一首 audio 偶尔会重复 fire ended（音源/seek 抖动），
+    // 但两首不同歌秒级连续 ended 是合法事件，不能被全局 timestamp 吞掉。
+    let lastMusicPlayedThroughKey = '';
+    let lastMusicPlayedThroughAt = 0;
+    function notifyMusicPlayedThrough(track) {
+        // 用 filter(Boolean) 把缺失字段挤掉再 join，避免 {url:'',name:'',artist:''}
+        // 拼出"||"这种伪 key 让多首无元数据曲共享去抖钥匙
+        const parts = track ? [track.url, track.name, track.artist].filter(Boolean) : [];
+        const trackKey = parts.join('|');
+        const now = Date.now();
+        if (now - lastMusicPlayedThroughAt < 2000) {
+            // 空 key 时退化到全局 2s 兜底；非空 key 仅在和上次相同时才吞
+            if (!trackKey || trackKey === lastMusicPlayedThroughKey) return;
+        }
+        lastMusicPlayedThroughKey = trackKey;
+        lastMusicPlayedThroughAt = now;
+        const lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
+        try {
+            fetch('/api/proactive/music_played_through', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    lanlan_name: lanlanName,
+                    track: track ? { name: track.name, artist: track.artist, url: track.url } : null
+                })
+            }).catch(() => { /* 后端不可达不影响播放体验 */ });
+        } catch (e) { /* fetch 不可用：忽略 */ }
+    }
+
     // 全局监听管理
     let managedWindowListeners = [];
     const addManagedListener = (type, listener, options) => {
@@ -1486,6 +1518,7 @@
                 boundPlayer.on('ended', () => {
                     updatePlayBtnState(false);
                     resetSkipCounter();
+                    notifyMusicPlayedThrough(currentPlayingTrack);
                     accumulatedPlaySeconds = 0;
                     lastPlayPosition = 0;
                     const tokenAtEvent = boundPlayer._latestToken;

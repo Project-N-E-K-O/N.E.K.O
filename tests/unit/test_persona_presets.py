@@ -52,4 +52,3 @@ def test_persona_override_fields_cover_supported_profile_keys():
         "隐藏设定",
         "一句话台词",
     }
-

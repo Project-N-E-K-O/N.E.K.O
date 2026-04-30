@@ -2,7 +2,7 @@ import ast
 import asyncio
 import json
 from pathlib import Path
-from urllib.parse import urlencode
+from urllib.parse import parse_qs, urlencode, urlparse
 
 import pytest
 from starlette.requests import Request
@@ -151,6 +151,75 @@ async def test_main_agent_router_plugin_dashboard_redirect_ignores_empty_v_query
     assert response.headers["location"] == _expected_plugin_dashboard_location()
 
 
+@pytest.mark.asyncio
+async def test_main_agent_router_plugin_dashboard_redirect_keeps_loopback_yui_opener_origin():
+    from config import USER_PLUGIN_BASE
+    from main_routers.agent_router import redirect_plugin_dashboard
+
+    request = Request({
+        "type": "http",
+        "method": "GET",
+        "path": "/api/agent/user_plugin/dashboard",
+        "headers": [],
+        "query_string": b"v=abc123&yui_opener_origin=http%3A%2F%2F127.0.0.1%3A48923&unsafe=https%3A%2F%2Fexample.com",
+    })
+    response = await redirect_plugin_dashboard(request)
+
+    location = response.headers["location"]
+    parsed_location = urlparse(location)
+    expected_location = urlparse(USER_PLUGIN_BASE.rstrip("/") + "/ui")
+    assert parsed_location.scheme == expected_location.scheme
+    assert parsed_location.netloc == expected_location.netloc
+    assert parsed_location.path == expected_location.path
+    query = parse_qs(parsed_location.query)
+    assert query == {
+        "v": ["abc123"],
+        "yui_opener_origin": ["http://127.0.0.1:48923"],
+    }
+
+
+@pytest.mark.asyncio
+async def test_main_agent_router_plugin_dashboard_redirect_rejects_non_loopback_yui_opener_origin():
+    from main_routers.agent_router import redirect_plugin_dashboard
+
+    request = Request({
+        "type": "http",
+        "method": "GET",
+        "path": "/api/agent/user_plugin/dashboard",
+        "headers": [],
+        "query_string": b"yui_opener_origin=https%3A%2F%2Fexample.com",
+    })
+    response = await redirect_plugin_dashboard(request)
+
+    assert response.headers["location"] == _expected_plugin_dashboard_location()
+
+
+def test_home_page_opens_plugin_dashboard_through_backend_redirect_for_handoff():
+    page_source = Path("templates/index.html").read_text(encoding="utf-8")
+    pages_router_source = Path("main_routers/pages_router.py").read_text(encoding="utf-8")
+    index_source = Path("static/js/index.js").read_text(encoding="utf-8")
+    hud_source = Path("static/common-ui-hud.js").read_text(encoding="utf-8")
+    handoff_source = Path("static/yui-guide-page-handoff.js").read_text(encoding="utf-8")
+    director_source = Path("static/yui-guide-director.js").read_text(encoding="utf-8")
+    plugin_runtime_source = Path("frontend/plugin-manager/src/yui-guide-runtime.ts").read_text(encoding="utf-8")
+
+    assert "def _user_plugin_ctx()" not in pages_router_source
+    assert "window.NEKO_USER_PLUGIN_BASE = {{ user_plugin_base | tojson }};" not in page_source
+    assert "data.user_plugin_base" not in index_source
+    assert "var PLUGIN_DASHBOARD_REDIRECT_URL = '/api/agent/user_plugin/dashboard';" in hud_source
+    assert "getPluginDashboardRedirectUrl" in hud_source
+    assert "url: getPluginDashboardRedirectUrl" in hud_source
+    assert "new URL('/api/agent/user_plugin/dashboard', window.location.origin)" in handoff_source
+    assert "new URL('/api/agent/user_plugin/dashboard', window.location.origin)" in director_source
+    assert "handoff.ready ? handoff.targetOrigin : '*'" in director_source
+    assert "isTrustedPluginDashboardOrigin(event.origin)" in director_source
+    assert "yui_opener_origin" in handoff_source
+    assert "OPENER_ORIGIN_QUERY_PARAM = 'yui_opener_origin'" in plugin_runtime_source
+    assert "getQueryOpenerOrigin()" in plugin_runtime_source
+    assert "isLoopbackOrigin(origin)" in plugin_runtime_source
+    assert "var PLUGIN_DASHBOARD_REDIRECT_URL = 'http://127.0.0.1:48916/ui';" not in hud_source
+
+
 def test_agent_server_expected_event_driven_endpoints_exist():
     paths = _route_paths_from_decorators("agent_server.py", "app")
     for expected in {
@@ -219,30 +288,134 @@ def test_yui_guide_steps_registry_keeps_m1_to_m4_home_flow_contract():
     for expected in (
         "const CONTRACT_VERSION = 2;",
         "'intro_basic'",
-        "'intro_proactive'",
-        "'intro_cat_paw'",
         "'takeover_capture_cursor'",
         "'takeover_plugin_preview'",
         "'takeover_settings_peek'",
         "'takeover_return_control'",
         "'handoff_api_key'",
         "'handoff_memory_browser'",
-        "'handoff_steam_workshop'",
         "'handoff_plugin_dashboard'",
         "steps.handoff_api_key.navigation.resumeScene = 'api_key_intro';",
         "steps.handoff_memory_browser.navigation.resumeScene = 'memory_browser_intro';",
-        "steps.handoff_steam_workshop.navigation.resumeScene = 'steam_workshop_intro';",
         "steps.handoff_plugin_dashboard.navigation.resumeScene = 'plugin_dashboard_landing';",
         "steps.plugin_dashboard_landing = createBaseStep('plugin_dashboard_landing', 'plugin_dashboard', '#plugin-list');",
         "steps.api_key_intro = createBaseStep('api_key_intro', 'api_key', '#coreApiSelect-dropdown-trigger');",
         "steps.memory_browser_intro = createBaseStep('memory_browser_intro', 'memory_browser', '#memory-file-list');",
-        "steps.steam_workshop_intro = createBaseStep('steam_workshop_intro', 'steam_workshop', '#workshop-tabs');",
         "api_key: ['api_key_intro']",
         "memory_browser: ['memory_browser_intro']",
-        "steam_workshop: ['steam_workshop_intro']",
         "plugin_dashboard: ['plugin_dashboard_landing']",
     ):
         assert expected in source
+
+    # Keep concatenated literals here so search/grep does not match this test file.
+    for removed in (
+        "'intro_" + "proactive'",
+        "'intro_" + "cat_paw'",
+        "steps.intro_" + "proactive",
+        "steps.intro_" + "cat_paw",
+        "'handoff_steam_workshop'",
+        "steps.handoff_steam_workshop",
+        "steps.steam_workshop_intro",
+        "steam_workshop: ['steam_workshop_intro']",
+        "/steam_workshop_manager",
+    ):
+        assert removed not in source
+
+
+def test_yui_guide_overlay_supports_progress_meta_and_viewport_placement():
+    overlay_source = Path("static/yui-guide-overlay.js").read_text(encoding="utf-8")
+    director_source = Path("static/yui-guide-director.js").read_text(encoding="utf-8")
+    style_source = Path("static/css/yui-guide.css").read_text(encoding="utf-8")
+
+    for expected in (
+        "yui-guide-bubble-header",
+        "yui-guide-bubble-meta",
+        "scoreBubbleCandidate",
+        "is-placement-",
+        "isCircularFloatingButtonElement(element)",
+        "geometry === 'circle' || isCircularFloatingButtonElement(element)",
+    ):
+        assert expected in overlay_source
+
+    for expected in (
+        "getHomePresentationSceneOrder()",
+        "getBubbleMetaForScene(sceneId)",
+        "主页引导 ",
+        "isCircularFloatingButtonSpotlight(element)",
+        "applyCircularFloatingButtonSpotlightHint(persistentSpotlightTarget)",
+        "'[id$=\"-btn-mic\"], [id$=\"-btn-agent\"], [id$=\"-btn-settings\"]'",
+        "this.applyCircularFloatingButtonSpotlightHint(primaryTarget)",
+        "this.applyCircularFloatingButtonSpotlightHint(this.customSecondarySpotlightTarget)",
+    ):
+        assert expected in director_source
+
+    for expected in (
+        ".yui-guide-bubble-meta",
+        ".yui-guide-bubble.is-placement-top::after",
+        "@keyframes yui-guide-spotlight-sheen",
+        "html[data-theme='dark'] .yui-guide-overlay",
+    ):
+        assert expected in style_source
+
+
+def test_yui_guide_cat_paw_click_state_is_visible_before_actions():
+    overlay_source = Path("static/yui-guide-overlay.js").read_text(encoding="utf-8")
+    director_source = Path("static/yui-guide-director.js").read_text(encoding="utf-8")
+    style_source = Path("static/css/yui-guide.css").read_text(encoding="utf-8")
+    plugin_runtime_source = Path("frontend/plugin-manager/src/yui-guide-runtime.ts").read_text(encoding="utf-8")
+
+    for source in (overlay_source, director_source, plugin_runtime_source):
+        assert "DEFAULT_CURSOR_CLICK_VISIBLE_MS = 420" in source
+
+    for expected in (
+        "this.cursorClickTimer",
+        "window.clearTimeout(this.cursorClickTimer)",
+        "this.cursorInner.classList.add('is-clicking')",
+        "CURSOR_CLICK_STAR_COUNT = 7",
+        "spawnCursorClickStars()",
+        "this.spawnCursorClickStars();",
+        "yui-guide-click-star",
+        "--star-mid-x",
+        "CURSOR_TRAIL_ICON_URLS",
+        "CURSOR_TRAIL_BLUE_PARTICLE_CHANCE = 0.42",
+        "/static/icons/send_icon.png",
+        "/static/icons/paw_ui.png",
+        "maybeSpawnCursorTrail(nextX, nextY, previousX, previousY, now)",
+        "isBlueParticle ? 'is-blue-particle' : 'is-icon'",
+        "is-blue-particle",
+    ):
+        assert expected in overlay_source
+
+    for expected in (
+        "this.cursor.click(clickVisibleMs)",
+        "await this.waitForSceneDelay(clickVisibleMs)",
+        "await this.clickCursorAndWait(DEFAULT_CURSOR_CLICK_VISIBLE_MS)",
+    ):
+        assert expected in director_source
+
+    assert "animation: yui-guide-cursor-click 420ms ease;" in style_source
+    assert "@keyframes yui-guide-click-star-burst" in style_source
+    assert ".yui-guide-click-star" in style_source
+    assert ".yui-guide-cursor-trail.is-glow" in style_source
+    assert ".yui-guide-cursor-trail.is-icon" in style_source
+    assert ".yui-guide-cursor-trail.is-blue-particle" in style_source
+    assert "rgba(119, 233, 255, 0.96)" in style_source
+    assert "opacity: 0.52;" in style_source
+    assert "drop-shadow(0 0 7px rgba(255, 244, 164, 0.92))" in style_source
+    assert "@keyframes yui-guide-cursor-trail-fade" in style_source
+    assert "animation: yui-guide-plugin-click 420ms ease;" in plugin_runtime_source
+    assert "CURSOR_CLICK_STAR_COUNT = 7" in plugin_runtime_source
+    assert "const size = 6 + Math.random() * 6" in overlay_source
+    assert "const size = 6 + Math.random() * 6" in plugin_runtime_source
+    assert "0.09 + Math.random() * 0.1" in plugin_runtime_source
+    assert "CURSOR_TRAIL_ICON_URLS = [sendIconUrl, pawUiUrl]" in plugin_runtime_source
+    assert "CURSOR_TRAIL_BLUE_PARTICLE_CHANCE = 0.42" in plugin_runtime_source
+    assert "yui-guide-plugin-click-star" in plugin_runtime_source
+    assert "yui-guide-plugin-cursor-trail ${isBlueParticle ? 'is-blue-particle' : 'is-icon'}" in plugin_runtime_source
+    assert "is-blue-particle" in plugin_runtime_source
+    assert "maybeSpawnCursorTrail(position.x, position.y, previous.x, previous.y, now)" in plugin_runtime_source
+    assert "spawnCursorClickStars()" in plugin_runtime_source
+    assert "await this.waitForSceneDelay(DEFAULT_CURSOR_CLICK_VISIBLE_MS, isCurrent)" in plugin_runtime_source
 
 
 _YUI_RUNTIME_SCRIPTS = (
@@ -280,6 +453,81 @@ def test_home_template_loads_yui_runtime_stack_before_tutorial_manager():
     assert positions == sorted(positions)
 
 
+def test_home_template_loads_yui_wakeup_before_director():
+    source = Path("templates/index.html").read_text(encoding="utf-8")
+
+    positions = [
+        _script_tag_position(source, name)
+        for name in (
+            "yui-guide-overlay.js",
+            "yui-guide-page-handoff.js",
+            "yui-guide-wakeup.js",
+            "yui-guide-director.js",
+            "universal-tutorial-manager.js",
+        )
+    ]
+    assert positions == sorted(positions)
+
+
+def test_yui_wakeup_live2d_session_keeps_m2_boundaries():
+    source = Path("static/yui-guide-wakeup.js").read_text(encoding="utf-8")
+    live2d_source = Path("static/live2d-model.js").read_text(encoding="utf-8")
+    style_source = Path("static/css/yui-guide.css").read_text(encoding="utf-8")
+    yui_model = json.loads(Path("static/yui-origin/yui-origin.model3.json").read_text(encoding="utf-8"))
+    yui_display_info = json.loads(Path("static/yui-origin/yui-origin.cdi3.json").read_text(encoding="utf-8"))
+    yui_param_ids = {
+        item.get("Id")
+        for item in yui_display_info.get("Parameters", [])
+        if isinstance(item, dict)
+    }
+
+    assert "class Live2DWakeupSession" in source
+    assert "DEFAULT_DURATION_MS = 4000" in source
+    assert "LIVE2D_HANDOFF_MS = 620" in source
+    assert "LIVE2D_HANDOFF_MS" in source
+    assert "_suspendEyeBlinkOverride" in source
+    assert "removeBlockingGuideOverlay" in source
+    assert "#yui-guide-overlay" in source
+    assert "yui-taking-over" in source
+    assert "setTemporaryPoseOverride" in source
+    assert "applyTemporaryPose" in source
+    assert "restoreCapturedParams()" in source
+    assert "this.clearTemporaryPoseOverride();" in source
+    assert "this.clearMotionHold();" in source
+    assert "this.restoreCapturedParams();" in source
+    assert "if (!this.usesTemporaryPoseOverride && this.isCurrentModel())" not in source
+    assert "Live2DManager.prototype.setTemporaryPoseOverride" in live2d_source
+    assert "_applyTemporaryPoseOverride(currentCoreModel)" in live2d_source
+    for param_id in (
+        "ParamEyeLOpen",
+        "ParamEyeROpen",
+        "ParamAngleX",
+        "ParamAngleY",
+        "ParamAngleZ",
+        "ParamEyeBallX",
+        "ParamEyeBallY",
+        "ParamBodyAngleX",
+        "ParamBodyAngleY",
+        "ParamBodyAngleZ",
+    ):
+        assert param_id in source
+
+    yui_file_refs = yui_model.get("FileReferences", {})
+    assert yui_file_refs.get("Moc") == "yui-origin.moc3"
+    assert yui_file_refs.get("DisplayInfo") == "yui-origin.cdi3.json"
+    for param_id in ("Param75", "Param90", "Param92", "Param95"):
+        assert param_id in yui_param_ids
+
+    assert "coreModel.update =" not in source
+    assert "motionManager.update =" not in source
+    assert "model.focus(" not in source
+    assert "document.createElement" not in source
+    assert "appendChild" not in source
+    assert "yui-guide-wakeup-stage" not in style_source
+    assert "yui-guide-wakeup-backdrop" not in style_source
+    assert "yui-guide-wakeup-particle" not in style_source
+
+
 def test_target_page_templates_load_yui_runtime_stack_before_tutorial_manager():
     for template_path in (
         "templates/api_key_settings.html",
@@ -294,6 +542,16 @@ def test_target_page_templates_load_yui_runtime_stack_before_tutorial_manager():
         _stylesheet_tag_position(source, "yui-guide.css")
 
 
+def test_home_yui_guide_does_not_route_to_steam_workshop():
+    yui_source = Path("static/yui-guide-steps.js").read_text(encoding="utf-8")
+    tutorial_source = Path("static/universal-tutorial-manager.js").read_text(encoding="utf-8")
+
+    assert "handoff_steam_workshop" not in yui_source
+    assert "/steam_workshop_manager" not in yui_source
+    assert "yuiGuideSceneId: 'handoff_steam_workshop'" not in tutorial_source
+    assert "#${p}-menu-steam-workshop" not in tutorial_source
+
+
 def test_universal_tutorial_manager_normalizes_api_key_handoff_and_resume_scene_mappings():
     source = Path("static/universal-tutorial-manager.js").read_text(encoding="utf-8")
 
@@ -304,9 +562,88 @@ def test_universal_tutorial_manager_normalizes_api_key_handoff_and_resume_scene_
         "applyYuiGuideResumeScene(validSteps)",
         "yuiGuideSceneId: 'api_key_intro'",
         "yuiGuideSceneId: 'memory_browser_intro'",
-        "yuiGuideSceneId: 'steam_workshop_intro'",
     ):
         assert expected in source
+
+
+def test_home_yui_guide_avatar_override_does_not_persist_tutorial_model():
+    tutorial_source = Path("static/universal-tutorial-manager.js").read_text(encoding="utf-8")
+    interpage_source = Path("static/app-interpage.js").read_text(encoding="utf-8")
+
+    begin_start = tutorial_source.index("beginTutorialAvatarOverride()")
+    restore_start = tutorial_source.index("restoreTutorialAvatarOverride()")
+    restore_end = tutorial_source.index("/**", restore_start)
+    begin_block = tutorial_source[begin_start:restore_start]
+    restore_block = tutorial_source[restore_start:restore_end]
+
+    assert "saveTutorialModelPayload" not in begin_block
+    assert "saveTutorialModelPayload" not in restore_block
+    assert "this.reloadTutorialModel(currentName, tutorialModelPayload, { temporary: true })" in begin_block
+    assert "live2d: TUTORIAL_YUI_LIVE2D_MODEL_NAME" in begin_block
+    assert "TUTORIAL_YUI_LIVE2D_MODEL_PATH = '/static/yui-origin/yui-origin.model3.json'" in tutorial_source
+    assert "suppressInitialIdle: true" in tutorial_source
+    assert "suppressInitialIdle: skipIdleRestore" in interpage_source
+    assert "temporaryConfig" in interpage_source
+    assert "skipIdleRestore" in interpage_source
+    assert "suppressToast" in interpage_source
+    assert "async function _waitForLive2DManagerIdle" in interpage_source
+    assert "await _waitForLive2DManagerIdle(30000);" in interpage_source
+
+
+def test_theme_system_preference_does_not_become_saved_user_choice():
+    theme_source = Path("static/theme-manager.js").read_text(encoding="utf-8")
+    plugin_dark_mode_source = Path("frontend/plugin-manager/src/composables/useDarkMode.ts").read_text(encoding="utf-8")
+
+    assert "applyTheme(isDark, { persist: shouldPersist });" in theme_source
+    assert "applyThemeAnimated(event.matches, { persist: false });" in theme_source
+    assert "applyDarkMode(saved !== null ? saved : getSystemPrefersDark(), { persist: saved !== null })" in plugin_dark_mode_source
+    assert "applyDarkMode(event.matches, { persist: false })" in plugin_dark_mode_source
+
+
+def test_home_yui_guide_uses_platform_capability_matrix_for_cross_window_skip():
+    director_source = Path("static/yui-guide-director.js").read_text(encoding="utf-8")
+    plugin_runtime_source = Path("frontend/plugin-manager/src/yui-guide-runtime.ts").read_text(encoding="utf-8")
+
+    assert "window.homeTutorialPlatformCapabilities" in director_source
+    assert "createHomeTutorialPlatformCapabilities" in director_source
+    assert "supportsExternalChat" in director_source
+    assert "supportsSystemTrayHint" in director_source
+    assert "supportsPluginDashboardWindow" in director_source
+    assert "preferredSkipHitPadding" in director_source
+    assert "forwardingTolerance" in director_source
+    assert "platformCapabilities" in plugin_runtime_source
+    assert "const explicitTolerance = Number(rect.forwardingTolerance)" in plugin_runtime_source
+    assert "if (platform === 'linux') return Math.max(8, Math.round(basePadding * 0.35))" in plugin_runtime_source
+    assert "if (platform === 'macos') return Math.max(6, Math.round(basePadding * 0.25))" in plugin_runtime_source
+
+
+def test_home_yui_guide_scenes_declare_timelines_and_director_consumes_normalized_cues():
+    steps_source = Path("static/yui-guide-steps.js").read_text(encoding="utf-8")
+    director_source = Path("static/yui-guide-director.js").read_text(encoding="utf-8")
+
+    assert "timeline: []" in steps_source
+    assert "{ at: 0.16, action: 'highlightVoiceControl' }" in steps_source
+    assert "{ at: 0.54, action: 'openSettingsPanel' }" in steps_source
+    assert "{ voiceKey: 'takeover_settings_peek_detail', at: 7450 / 13923, action: 'showSecondLine' }" in steps_source
+    assert "getGuideTimelineCueConfig(voiceKey, cueName)" in director_source
+    assert "const timeline = Array.isArray(performance.timeline) ? performance.timeline : []" in director_source
+    assert "cue.action !== normalizedCueName" in director_source
+    assert "GUIDE_NARRATION_TIMELINES_BY_KEY" in director_source
+    assert "estimateSpeechDurationMs(fallbackText || '')" in director_source
+
+
+def test_home_yui_guide_records_local_experience_metrics_without_upload_path():
+    director_source = Path("static/yui-guide-director.js").read_text(encoding="utf-8")
+
+    assert "neko_home_tutorial_experience_metrics_v1" in director_source
+    assert "window.homeTutorialExperienceMetrics" in director_source
+    assert "recordExperienceMetric('scene_start'" in director_source
+    assert "recordExperienceMetric('scene_complete'" in director_source
+    assert "recordExperienceMetric('scene_failed'" in director_source
+    assert "recordExperienceMetric('skip'" in director_source
+    assert "recordExperienceMetric('angry_exit'" in director_source
+    assert "recordExperienceMetric('handoff_failed'" in director_source
+    assert ".localStorage.setItem(" in director_source
 
 
 def test_plugin_manager_bootstraps_plugin_dashboard_runtime_without_overlay_bridge():

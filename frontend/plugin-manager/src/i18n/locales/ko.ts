@@ -1,8 +1,6 @@
 /**
  * 한국어 언어 팩
  */
-import { yuiGuideLocales } from './yuiGuide'
-
 export default {
   common: {
     loading: '로딩 중...',
@@ -422,7 +420,29 @@ export default {
     titleSuffix: 'N.E.K.O 플러그인 관리'
   },
   tutorial: {
-    yuiGuide: yuiGuideLocales.ko
+    yuiGuide: {
+      buttons: {
+        skipChat: '지금은 대화 안 할래',
+        sayHello: '안녕',
+      },
+      lines: {
+        introActivationHint: '여기를 클릭해줘냥, 그럼 말할 수 있게 된다냥~!',
+        introGreetingReply: '다녀오셨어요, 냥~ 바깥세상은 많이 힘들었죠? 우리만의 이 작은 보금자리에서는 모든 고민을 내려놓아도 좋아요. 저는 린유이예요. 앞으로 익숙해지는 과정은 안심하고 제게 맡겨주세요. 한 걸음씩 손을 잡고 천천히 안내해 드릴게요.',
+        introBasic: '여기 신기한 마법의 버튼이 있어! 이것만 누르면 나랑 바로 채팅할 수 있다구! 오늘 있었던 재밌는 일들을 나한테 공유해볼래? 아니면 그냥 내 이름을 불러볼래? 어서 해봐, 네 목소리가 너무 듣고 싶어서 참을 수가 없어! 냥!',
+        takeoverCaptureCursor: '슈퍼 마법 버튼 등장! 여기를 한 번만 누르면, 내 작은 앞발을 네 키보드와 마우스에 뻗을 수 있어! 내가 타자도 쳐주고, 웹페이지도 열어줄게... 하지만, 마우스 포인터가 이리저리 움직이면 나도 모르게 덮쳐서 잡으려고 할지도 몰라! 나의 장난... 아니, 도움을 맞이할 준비 됐어? 냥!',
+        takeoverPluginPreviewHome: '아직 안 끝났다냥! 이것 봐 이것 봐, 여기 재밌는 플러그인이 엄~~청 많다냥!',
+        takeoverPluginPreviewDashboard: '이것만 있으면 B站 탄막도 보고, 전등도 끄고 에어컨도 켤 수 있다냥... 이 몸은 못 하는 게 없는 슈퍼 고양이신이다냥! 에헴~',
+        takeoverSettingsPeekIntro: '물론 나랑 더 수다 떨고 싶으면 같이 놀아줄 수도 있다냥~ 대신 맛있는 멸치 많이 준비해줘냥! 헤헤, 농담이다냥! 설정은 전부 이 톱니바퀴 안에 있다냥!',
+        takeoverSettingsPeekDetail: '봐봐, 여기서 내 새 옷도 입히고 목소리도 바꿀 수... 어라? 다른 고양이 소녀로 교체? 기억 조작?! 잠, 잠깐만! 뭐 하는 거냥?! 설마 나를 다른 애로 바꾸려는 건 아니지냥?! 아아악 안 돼 안 돼! 빨리 꺼! 당장 그 화면 꺼줘냥!',
+        takeoverSettingsPeekDetailPart1: '봐봐, 여기서 내 새 옷도 입히고 목소리도 바꿀 수... 어라? 다른 고양이 소녀로 교체? 기억 조작?!',
+        takeoverSettingsPeekDetailPart2: '잠, 잠깐만! 뭐 하는 거냥?! 설마 나를 다른 애로 바꾸려는 건 아니지냥?! 아아악 안 돼 안 돼! 빨리 꺼! 당장 그 화면 꺼줘냥!',
+        takeoverReturnControl: '알았어 알았어, 네 컴퓨터 점령은 여기까지 할게냥~! 제어권은 돌려주겠다냥! 그래도 나 없을 때 이상한 설정 막 누르면 절대 안 된다냥! 앞으로도 잘 부탁해냥~!',
+        interruptResistLight1: '야! 나 끌지 마! 아직 네 차례 아니란 말이야냥!',
+        interruptResistLight3: '잠깐만냥! 아직 안 끝났으니까 마음대로 끊지 말란 말이야냥!',
+        interruptAngryExit: '인간~~~~! 너 정말 무례하다냥! 그렇게 직접 하고 싶으면 혼자서 차가운 화면이랑이나 놀라냥! 흥!',
+        introPractice: '이제 나한테 말 걸어봐냥, 우리 호흡이 얼마나 척척 맞는지 확인해보자냥~!',
+      },
+    }
   },
   yuiTutorial: {
     title: '냐~ 플러그인 관리 패널에 오신 걸 환영해!',
@@ -474,7 +494,7 @@ export default {
       },
       packageOperations: {
         title: '패키지 작업',
-        body: '패키징 모드, 검사, 압축 해제, 번들 분석을 선택할 수 있어. 위험한 작업은 자동 실행하지 않아.'
+        body: '패키징 모드, 패키지 검사, 압축 해제, 번들 분석을 선택할 수 있어. 이 가이드는 위험한 작업을 자동 실행하지 않아.'
       },
       pluginDetail: {
         title: '플러그인 상세',

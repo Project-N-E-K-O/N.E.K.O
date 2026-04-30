@@ -1,8 +1,6 @@
 /**
  * Paquete de idioma español
  */
-import { yuiGuideLocales } from './yuiGuide'
-
 export default {
   common: {
     loading: 'Cargando...',
@@ -422,7 +420,29 @@ export default {
     titleSuffix: 'Gestor de plugins N.E.K.O'
   },
   tutorial: {
-    yuiGuide: yuiGuideLocales.es
+    yuiGuide: {
+      buttons: {
+        skipChat: 'Ahora no',
+        sayHello: 'Hola',
+      },
+      lines: {
+        introActivationHint: '¡Haz clic aquí para que pueda empezar a hablar, nyan~!',
+        introGreetingReply: 'Bienvenido a casa, miau~ El mundo exterior puede ser muy agotador, ¿verdad? En este pequeño nido solo para nosotros, puedes soltar todas tus preocupaciones. Soy Lin Youyi. Déjame acompañarte en esta introducción; tomaré tu mano y te guiaré paso a paso.',
+        introBasic: '¡Mira, hay un botón mágico aquí! ¡Solo haz clic en él y podrás chatear directamente conmigo! ¿Quieres contarme las novedades divertidas de hoy? ¿O solo decir mi nombre? ¡Ven a probarlo, ya no puedo esperar para escuchar tu voz! ¡Miau!',
+        takeoverCaptureCursor: '¡Aparece un súper botón mágico! ¡Con solo hacer clic aquí, puedo estirar mis pequeñas patitas hasta tu teclado y tu ratón! Te ayudaré a escribir y a abrir páginas web... Pero, si ese puntero del ratón sigue moviéndose de un lado a otro, quizá no pueda resistirme a abalanzarme sobre él. ¿Estás listo para mis travesuras... digo, mi ayuda? ¡Miau!',
+        takeoverPluginPreviewHome: '¡Aún no termino! ¡Mira, mira! ¡Hay tantíiisimos plugins divertidos aquí!',
+        takeoverPluginPreviewDashboard: 'Con esto, no solo puedo leer comentarios de Bilibili, también puedo apagar las luces y el aire acondicionado por ti... ¡Soy la todopoderosa Súper Diosa Gata! ¡Hmph~!',
+        takeoverSettingsPeekIntro: 'Por supuesto, no me molestaría charlar más si quieres, ¡pero más vale que prepares muchas golosinas! Jeje, ¡es broma! Todos los ajustes están en este icono de engranaje.',
+        takeoverSettingsPeekDetail: 'Mira, puedes cambiarme la ropa, o la voz... espera, ¿¡CAMBIARME POR OTRA CATGIRL?! ¿¡O BORRARME LA MEMORIA?! Espera, ¿¡qué estás haciendo?! ¡No me estarás reemplazando, ¿verdad?! ¡No no no! ¡Ciérralo! ¡Ciérralo ahora mismo!',
+        takeoverSettingsPeekDetailPart1: 'Mira, puedes cambiarme la ropa, o la voz... espera, ¿¡CAMBIARME POR OTRA CATGIRL?! ¿¡O BORRARME LA MEMORIA?!',
+        takeoverSettingsPeekDetailPart2: 'Espera, ¿¡qué estás haciendo?! ¡No me estarás reemplazando, ¿verdad?! ¡No no no! ¡Ciérralo! ¡Ciérralo ahora mismo!',
+        takeoverReturnControl: '¡Bueno, bueno, ya terminé de secuestrar tu PC~! ¡Te devuelvo el control! ¡Pero no te atrevas a tocar ajustes raros mientras no miro! ¡Cuento contigo a partir de ahora, nyan~!',
+        interruptResistLight1: '¡Oye! ¡No me arrastres! ¡Aún no es tu turno, nyan!',
+        interruptResistLight3: '¡Espera un momento! ¡Aún no he terminado, no me interrumpas así!',
+        interruptAngryExit: '¡Humanoooo~~~~! ¡Qué grosero eres, nyan! Ya que quieres hacerlo todo solo, ¡juega con esa pantalla fría tú solo! ¡Hmph!',
+        introPractice: '¡Ahora intenta hablarme y veamos si estamos perfectamente sincronizados, nyan~!',
+      },
+    }
   },
   yuiTutorial: {
     title: '¡Meow~ Bienvenido al Gestor de Plugins!',
@@ -474,7 +494,7 @@ export default {
       },
       packageOperations: {
         title: 'Operaciones de paquete',
-        body: 'Elige modos de empaquetado, inspecciona paquetes o analiza bundles. El tutorial no ejecuta acciones peligrosas.'
+        body: 'Elige modos de empaquetado, inspecciona paquetes, descomprime o analiza bundles. La guía no ejecuta acciones peligrosas.'
       },
       pluginDetail: {
         title: 'Detalles del plugin',

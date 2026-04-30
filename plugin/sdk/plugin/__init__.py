@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from . import base as _base
 from . import decorators as _decorators
+from . import llm_tool as _llm_tool
 from . import runtime as _runtime
 from . import ui as ui
 from plugin.sdk.shared.i18n import PluginI18n, tr
@@ -32,6 +33,10 @@ after_entry = _decorators.after_entry
 around_entry = _decorators.around_entry
 replace_entry = _decorators.replace_entry
 plugin = _decorators.plugin
+
+# --- LLM tool ---
+llm_tool = _llm_tool.llm_tool
+LlmToolMeta = _llm_tool.LlmToolMeta
 
 # --- Result ---
 Ok = _runtime.Ok
@@ -77,6 +82,9 @@ __all__ = [
     "replace_entry",
     "plugin",
     "ui",
+    # LLM tool
+    "llm_tool",
+    "LlmToolMeta",
     "PluginI18n",
     "tr",
     # Result

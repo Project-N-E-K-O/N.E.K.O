@@ -757,6 +757,14 @@
                         clearTimeout(S._voiceSessionInitialTimer);
                         S._voiceSessionInitialTimer = null;
                     }
+                    // 真用户语音到达 → 等同于一次"用户输入"：清退避级别 +
+                    // 复位语音模式无回复计数。否则连续被 preempt / 长时间没
+                    // 回应都不会复位 _voiceProactiveNoResponseCount，10 轮后
+                    // 主动搭话会被永久关闭，即使用户其实一直在讲话。
+                    // 跨窗口通过 BroadcastChannel 广播，让 leader 同步。
+                    if (typeof window.resetProactiveChatBackoff === 'function') {
+                        window.resetProactiveChatBackoff();
+                    }
                     var now = Date.now();
                     var shouldMerge = S.isRecording &&
                         S.lastVoiceUserMessage &&
