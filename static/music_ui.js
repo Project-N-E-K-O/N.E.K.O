@@ -895,6 +895,27 @@
         consecutiveSkipCount = 0;
     }
 
+    // 完整播放是用户对"音乐分享"通道最强的正向反馈：让后端把
+    // _proactive_chat_history 里 channel=='music' 的最近条目通道清空，从而停止
+    // 因为"刚刚分享过音乐"而对 music 通道继续做权重衰减惩罚。fire-and-forget。
+    let lastMusicPlayedThroughAt = 0;
+    function notifyMusicPlayedThrough(track) {
+        const now = Date.now();
+        if (now - lastMusicPlayedThroughAt < 2000) return;  // 同曲反复 ended 去抖
+        lastMusicPlayedThroughAt = now;
+        const lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
+        try {
+            fetch('/api/proactive/music_played_through', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    lanlan_name: lanlanName,
+                    track: track ? { name: track.name, artist: track.artist, url: track.url } : null
+                })
+            }).catch(() => { /* 后端不可达不影响播放体验 */ });
+        } catch (e) { /* fetch 不可用：忽略 */ }
+    }
+
     // 全局监听管理
     let managedWindowListeners = [];
     const addManagedListener = (type, listener, options) => {
@@ -1486,6 +1507,7 @@
                 boundPlayer.on('ended', () => {
                     updatePlayBtnState(false);
                     resetSkipCounter();
+                    notifyMusicPlayedThrough(currentPlayingTrack);
                     accumulatedPlaySeconds = 0;
                     lastPlayPosition = 0;
                     const tokenAtEvent = boundPlayer._latestToken;

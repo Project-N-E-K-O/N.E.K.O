@@ -1790,6 +1790,34 @@ def _record_proactive_chat(lanlan_name: str, message: str, channel: str = ''):
     _proactive_chat_history[lanlan_name].append((time.time(), message, channel))
 
 
+def _clear_channel_from_proactive_history(lanlan_name: str, channel: str) -> int:
+    """把指定通道在 _proactive_chat_history 中的 channel 标记清空。
+
+    用途：用户给出强正向反馈（例如音乐完整播放完毕），相当于明确接受了这一通道
+    最近的输出，这时 _compute_source_weights 不应该继续因为"刚刚用过"惩罚该通道。
+    把 channel 字段置空即可让 raw_score 不再累加该条 entry，但 message 文本仍然
+    保留在 deque 里供 dedup / similarity / format_recent_proactive_chats 复用。
+
+    返回被清空的 entry 数。
+    """
+    history = _proactive_chat_history.get(lanlan_name)
+    if not history:
+        return 0
+    rewritten: list[tuple] = []
+    cleared = 0
+    for entry in history:
+        if len(entry) >= 3 and entry[2] == channel:
+            rewritten.append((entry[0], entry[1], ''))
+            cleared += 1
+        else:
+            rewritten.append(entry)
+    if cleared == 0:
+        return 0
+    history.clear()
+    history.extend(rewritten)
+    return cleared
+
+
 def _normalize_text_for_similarity(text: str) -> str:
     """
     文本归一化（保守策略）：
@@ -4956,6 +4984,34 @@ async def proactive_chat(request: Request):
 
 
 
+
+
+@router.post('/proactive/music_played_through')
+async def proactive_music_played_through(request: Request):
+    """
+    用户把推荐的歌完整听完后由前端 fire（aplayer 'ended' 事件）。
+    后端把 _proactive_chat_history 中该角色所有 channel == 'music' 的 entry 的
+    通道字段清空，从而让 _compute_source_weights 不再把"刚刚共享过音乐"
+    继续计入对 music 通道的衰减惩罚——完整播放是用户对该通道最强的正向反馈。
+    """
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    try:
+        config_manager = get_config_manager()
+        _, her_name_default, _, _, _, _, _, _, _ = await config_manager.aget_character_data()
+    except Exception:
+        her_name_default = ''
+    lanlan_name = (data.get('lanlan_name') or her_name_default or '').strip()
+    if not lanlan_name:
+        return JSONResponse({"success": False, "error": "lanlan_name missing"}, status_code=400)
+    cleared = _clear_channel_from_proactive_history(lanlan_name, 'music')
+    if cleared:
+        logger.info(f"[{lanlan_name}] 音乐完整播放，重置 music 通道权重衰减（清空 {cleared} 条）")
+    return JSONResponse({"success": True, "cleared": cleared, "lanlan_name": lanlan_name})
 
 
 @router.post('/translate')
