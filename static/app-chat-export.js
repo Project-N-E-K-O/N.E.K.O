@@ -2012,8 +2012,10 @@
         }
     }
 
-    function disposePreviewModal(closeWindow) {
+    function disposePreviewModal(closeWindow, destroyWindow) {
         var modal = state.previewModal;
+        var previewWindow = state.previewWindow;
+        var shouldDestroyWindow = !!(destroyWindow || closeWindow || (previewWindow && previewWindow.closed));
         state.previewRenderToken += 1;
         if (modal) {
             var modalDocument = getPreviewModalDocument(modal);
@@ -2027,14 +2029,16 @@
         }
         detachPreviewHandlers(modal);
         state.previewModal = null;
-        if (state.previewWindow && state.previewWindow._chatExportBeforeUnloadHandler) {
+        if (shouldDestroyWindow && previewWindow && previewWindow._chatExportBeforeUnloadHandler) {
             try {
-                state.previewWindow.removeEventListener('beforeunload', state.previewWindow._chatExportBeforeUnloadHandler);
+                previewWindow.removeEventListener('beforeunload', previewWindow._chatExportBeforeUnloadHandler);
             } catch (_) {}
-            state.previewWindow._chatExportBeforeUnloadHandler = null;
+            previewWindow._chatExportBeforeUnloadHandler = null;
         }
-        if (closeWindow && state.previewWindow && !state.previewWindow.closed) {
-            state.previewWindow.close();
+        if (closeWindow && previewWindow && !previewWindow.closed) {
+            previewWindow.close();
+        }
+        if (shouldDestroyWindow && state.previewWindow === previewWindow) {
             state.previewWindow = null;
         }
     }
@@ -2324,14 +2328,15 @@
             + '</style></head><body class="chat-export-window"></body></html>');
         doc.close();
         previewWindow.focus();
-        var beforeUnloadHandler = function () {
-            if (state.previewWindow === previewWindow) {
-                disposePreviewModal(false);
-                state.previewWindow = null;
-            }
-        };
-        previewWindow._chatExportBeforeUnloadHandler = beforeUnloadHandler;
-        previewWindow.addEventListener('beforeunload', beforeUnloadHandler, { once: true });
+        if (!previewWindow._chatExportBeforeUnloadHandler) {
+            var beforeUnloadHandler = function () {
+                if (state.previewWindow === previewWindow) {
+                    disposePreviewModal(false, true);
+                }
+            };
+            previewWindow._chatExportBeforeUnloadHandler = beforeUnloadHandler;
+            previewWindow.addEventListener('beforeunload', beforeUnloadHandler, { once: true });
+        }
         return previewWindow;
     }
 
