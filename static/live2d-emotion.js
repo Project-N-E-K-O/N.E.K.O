@@ -965,6 +965,14 @@ Live2DManager.prototype.playMotion = async function(emotion) {
         return;
     }
 
+    const playMotionModel = this.currentModel;
+    const playMotionInvocationGeneration = (this._playMotionInvocationGeneration || 0) + 1;
+    this._playMotionInvocationGeneration = playMotionInvocationGeneration;
+    const isCurrentPlayMotionInvocation = () => (
+        this.currentModel === playMotionModel
+        && this._playMotionInvocationGeneration === playMotionInvocationGeneration
+    );
+
     // 优先使用 Cubism 原生 Motion Group（FileReferences.Motions）
     // 格式: { emotion: [{ File: "motions/xxx.motion3.json" }, ...] }
     let motions = null;
@@ -988,6 +996,7 @@ Live2DManager.prototype.playMotion = async function(emotion) {
     // setEmotion() 会先应用本轮表情再播放动作；单独调用 playMotion()
     // 时也应保留用户当前表情，只清掉上一条 motion 的残留。
     await this.resetTransientMotionAndExpressionState({ preserveExpression: true });
+    if (!isCurrentPlayMotionInvocation()) return;
 
     if (!motions || motions.length === 0) {
         console.warn(`未找到情感 ${emotion} 对应的动作，但将保持表情`);
@@ -997,6 +1006,7 @@ Live2DManager.prototype.playMotion = async function(emotion) {
         const generation = this._nextMotionTimerGeneration();
         const keepExpressionTimer = setTimeout(() => {
             if (!this._isCurrentMotionTimerGeneration(generation)) return;
+            if (!isCurrentPlayMotionInvocation()) return;
             this.motionTimer = null;
         }, 500); // 500ms应该足够让expression稳定显示
         this.motionTimer = { type: 'timeout', id: keepExpressionTimer, generation };
@@ -1013,6 +1023,22 @@ Live2DManager.prototype.playMotion = async function(emotion) {
     const motionParamTrackModel = this.currentModel;
     const motionParamTrackGeneration = (this._motionParameterTrackGeneration || 0) + 1;
     this._motionParameterTrackGeneration = motionParamTrackGeneration;
+    const motionTimerGuardGeneration = this._motionTimerGeneration || 0;
+    const isCurrentMotionInvocation = () => (
+        isCurrentPlayMotionInvocation()
+        && this.currentModel === motionParamTrackModel
+        && this._motionParameterTrackGeneration === motionParamTrackGeneration
+        && this._isCurrentMotionTimerGeneration(motionTimerGuardGeneration)
+    );
+    const clearTrackedMotionParamsIfCurrent = () => {
+        if (
+            isCurrentPlayMotionInvocation()
+            && this.currentModel === motionParamTrackModel
+            && this._motionParameterTrackGeneration === motionParamTrackGeneration
+        ) {
+            this._activeMotionParamIds = null;
+        }
+    };
 
     try {
         // 尝试使用Live2D模型的原生motion播放功能
@@ -1030,6 +1056,7 @@ Live2DManager.prototype.playMotion = async function(emotion) {
                     console.log(`尝试使用情感组播放motion: ${emotion}`);
 
                     const motion = await this.currentModel.motion(emotion, choiceIndex);
+                    if (!isCurrentMotionInvocation()) return;
 
                     if (motion) {
                         console.log(`成功开始播放motion（情感组: ${emotion}，预期文件: ${choice.File}）`);
@@ -1055,7 +1082,7 @@ Live2DManager.prototype.playMotion = async function(emotion) {
                                 this.currentModel === motionParamTrackModel
                                 && this._motionParameterTrackGeneration === motionParamTrackGeneration
                             ) {
-                                this._clearActiveMotionParamIds();
+                                clearTrackedMotionParamsIfCurrent();
                             }
                         } catch (error) {
                             console.warn('无法获取motion持续时间，使用默认值');
@@ -1063,16 +1090,21 @@ Live2DManager.prototype.playMotion = async function(emotion) {
                                 this.currentModel === motionParamTrackModel
                                 && this._motionParameterTrackGeneration === motionParamTrackGeneration
                             ) {
-                                this._clearActiveMotionParamIds();
+                                clearTrackedMotionParamsIfCurrent();
                             }
                         }
 
                         console.log(`预期motion持续时间: ${motionDuration}ms`);
+                        if (!isCurrentMotionInvocation()) return;
 
                         // 设置定时器在motion结束后清理motion参数（但保留expression）
                         const generation = this._nextMotionTimerGeneration();
                         const motionEndTimer = setTimeout(() => {
                             if (!this._isCurrentMotionTimerGeneration(generation)) return;
+                            if (
+                                this.currentModel !== motionParamTrackModel
+                                || this._motionParameterTrackGeneration !== motionParamTrackGeneration
+                            ) return;
                             console.log(`motion播放完成（预期文件: ${choice.File}），清除motion参数但保留expression`);
                             this.motionTimer = null;
                             this.clearEmotionEffects(); // 只清除motion参数，不清除expression
@@ -1090,16 +1122,19 @@ Live2DManager.prototype.playMotion = async function(emotion) {
 
             // 如果原生motion播放失败，回退到简单动作
             console.warn(`无法播放motion: ${choice.File}，回退到简单动作`);
+            if (!isCurrentMotionInvocation()) return;
             this.playSimpleMotion(emotion);
 
         } catch (error) {
             console.error('motion播放过程中出错:', error);
+            if (!isCurrentMotionInvocation()) return;
             this.playSimpleMotion(emotion);
         }
 
     } catch (error) {
         console.error('播放动作失败:', error);
         // 回退到简单动作
+        if (!isCurrentMotionInvocation()) return;
         this.playSimpleMotion(emotion);
     }
 };
@@ -1280,6 +1315,11 @@ Live2DManager.prototype.setEmotion = async function(emotion) {
             await this.playMotion(emotion);
         } else {
             console.log(`检测到相同情绪且相同表情: ${emotion} (${targetExpressionFile})，已清理残留，跳过播放`);
+        }
+        try {
+            await this.applyPersistentExpressionsNative(true);
+        } catch (e) {
+            console.warn('重新应用常驻表情失败:', e);
         }
         return;
     }
