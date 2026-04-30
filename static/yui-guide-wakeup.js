@@ -369,6 +369,12 @@
                 this.manager._suspendEyeBlinkOverride = this.previousEyeBlinkSuspended;
                 this.clearTemporaryPoseOverride();
             }
+            if (!this.usesTemporaryPoseOverride && this.isCurrentModel()) {
+                Object.keys(this.params).forEach((key) => {
+                    const meta = this.params[key];
+                    writeParam(this.coreModel, meta, meta.initial);
+                });
+            }
         }
 
         cancel(reason) {
@@ -686,7 +692,7 @@
                                     finish('played', '');
                                 }, Math.max(0, Math.round(durationMs)));
                             } else {
-                                finish('played', '');
+                                finish(live2dResult.result, live2dResult.reason || '');
                             }
                         }
                         return live2dResult;
@@ -695,7 +701,7 @@
                         console.warn('[YuiGuideWakeup] Live2D 苏醒参数覆盖失败:', error);
                         live2dResult = { result: 'fallback', reason: 'live2d_exception' };
                         if (this.runToken === token && !settled) {
-                            finish('played', '');
+                            finish(live2dResult.result, live2dResult.reason || '');
                         }
                         return live2dResult;
                     });

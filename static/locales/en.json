@@ -1690,7 +1690,7 @@
         "deleteFailed": "Delete failed",
         "addCatgirlFieldPrompt": "Please enter the name of the new field (key name)",
         "addCatgirlFieldTitle": "Add NEKO Field",
-        "live2dModelError": "NEKO \"{{name}}\"'s Live2D model file does not exist or is corrupted.\n\nCurrent model path: {{path}}\n\nDo you want to fallback to default model (mao_pro)?\n\nClick \"OK\" to use default model, click \"Cancel\" to keep current settings.",
+        "live2dModelError": "NEKO \"{{name}}\"'s Live2D model file does not exist or is corrupted.\n\nCurrent model path: {{path}}\n\nDo you want to fallback to default model (yui_default)?\n\nClick \"OK\" to use default model, click \"Cancel\" to keep current settings.",
         "live2dModelErrorTitle": "Live2D Model Error",
         "fallbackToDefaultModel": "Fallen back to default model: {{path}}",
         "fallbackFailed": "Failed to fallback to default model, please check model settings",

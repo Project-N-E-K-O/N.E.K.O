@@ -1685,7 +1685,7 @@
         "deleteFailed": "Error al eliminar",
         "addCatgirlFieldPrompt": "Por favor ingrese el nombre del nuevo campo (nombre de clave)",
         "addCatgirlFieldTitle": "Agregar campo NEKO",
-        "live2dModelError": "El archivo de modelo Live2D de NEKO \"{{name}}\" no existe o está dañado.\n\nRuta del modelo actual: {{path}}\n\n¿Quiere volver al modelo predeterminado (mao_pro)?\n\nHaga clic en \"Aceptar\" para usar el modelo predeterminado, haga clic en \"Cancelar\" para mantener la configuración actual.",
+        "live2dModelError": "El archivo de modelo Live2D de NEKO \"{{name}}\" no existe o está dañado.\n\nRuta del modelo actual: {{path}}\n\n¿Quiere volver al modelo predeterminado (yui_default)?\n\nHaga clic en \"Aceptar\" para usar el modelo predeterminado, haga clic en \"Cancelar\" para mantener la configuración actual.",
         "live2dModelErrorTitle": "Error del modelo Live2D",
         "fallbackToDefaultModel": "Regresado al modelo predeterminado: {{path}}",
         "fallbackFailed": "No se pudo volver al modelo predeterminado; verifique la configuración del modelo",

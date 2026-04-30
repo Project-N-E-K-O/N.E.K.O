@@ -3138,9 +3138,12 @@ class UniversalTutorialManager {
         );
         const shouldOverrideYuiAvatar = useYuiOnlyHomeFlow;
 
+        let avatarReadyPromise = null;
         if (shouldOverrideYuiAvatar) {
             this._tutorialModelPrefix = 'live2d';
-            this.beginTutorialAvatarOverride();
+            avatarReadyPromise = this.beginTutorialAvatarOverride();
+        } else {
+            avatarReadyPromise = this._tutorialAvatarOverridePromise;
         }
 
         if (useYuiOnlyHomeFlow) {
@@ -3156,7 +3159,6 @@ class UniversalTutorialManager {
                 this.notifyYuiGuidePreludeStart(validSteps);
                 this.showSkipButton();
             };
-            const avatarReadyPromise = this._tutorialAvatarOverridePromise;
             if (avatarReadyPromise) {
                 avatarReadyPromise.finally(startYuiOnlyHomeFlow);
             } else {

@@ -1689,7 +1689,7 @@
         "deleteFailed": "Ошибка удаления",
         "addCatgirlFieldPrompt": "Введите имя нового поля",
         "addCatgirlFieldTitle": "Добавить поле NEKO",
-        "live2dModelError": "Файл модели Live2D NEKO \"{{name}}\" не существует или повреждён.\n\nТекущий путь: {{path}}\n\nИспользовать модель по умолчанию (mao_pro)?",
+        "live2dModelError": "Файл модели Live2D NEKO \"{{name}}\" не существует или повреждён.\n\nТекущий путь: {{path}}\n\nИспользовать модель по умолчанию (yui_default)?",
         "live2dModelErrorTitle": "Ошибка модели Live2D",
         "fallbackToDefaultModel": "Переключено на модель по умолчанию: {{path}}",
         "fallbackFailed": "Не удалось переключиться на модель по умолчанию",

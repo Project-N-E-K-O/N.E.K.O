@@ -1685,7 +1685,7 @@
         "deleteFailed": "Falha na exclusão",
         "addCatgirlFieldPrompt": "Por favor insira o nome do novo campo (nome da chave)",
         "addCatgirlFieldTitle": "Adicionar campo NEKO",
-        "live2dModelError": "O arquivo de modelo Live2D de NEKO \"{{name}}\" não existe ou está corrompido.\n\nCaminho do modelo atual: {{path}}\n\nVocê deseja retornar ao modelo padrão (mao_pro)?\n\nClique em \"OK\" para usar o modelo padrão, clique em \"Cancelar\" para manter as configurações atuais.",
+        "live2dModelError": "O arquivo de modelo Live2D de NEKO \"{{name}}\" não existe ou está corrompido.\n\nCaminho do modelo atual: {{path}}\n\nVocê deseja retornar ao modelo padrão (yui_default)?\n\nClique em \"OK\" para usar o modelo padrão, clique em \"Cancelar\" para manter as configurações atuais.",
         "live2dModelErrorTitle": "Erro de modelo Live2D",
         "fallbackToDefaultModel": "Retorno ao modelo padrão: {{path}}",
         "fallbackFailed": "Falha ao retornar ao modelo padrão. Verifique as configurações do modelo",

@@ -2,7 +2,7 @@ import ast
 import asyncio
 import json
 from pathlib import Path
-from urllib.parse import urlencode
+from urllib.parse import parse_qs, urlencode, urlparse
 
 import pytest
 from starlette.requests import Request
@@ -165,10 +165,15 @@ async def test_main_agent_router_plugin_dashboard_redirect_keeps_loopback_yui_op
     })
     response = await redirect_plugin_dashboard(request)
 
-    assert response.headers["location"] == (
-        USER_PLUGIN_BASE.rstrip("/")
-        + "/ui?v=abc123&yui_opener_origin=http%3A%2F%2F127.0.0.1%3A48923"
-    )
+    location = response.headers["location"]
+    parsed_location = urlparse(location)
+    expected_location = urlparse(USER_PLUGIN_BASE.rstrip("/") + "/ui")
+    assert parsed_location.scheme == expected_location.scheme
+    assert parsed_location.netloc == expected_location.netloc
+    assert parsed_location.path == expected_location.path
+    query = parse_qs(parsed_location.query)
+    assert query["v"] == ["abc123"]
+    assert query["yui_opener_origin"] == ["http://127.0.0.1:48923"]
 
 
 @pytest.mark.asyncio

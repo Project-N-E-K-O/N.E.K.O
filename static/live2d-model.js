@@ -837,7 +837,7 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
         const cleanPath = urlString.split('#')[0].split('?')[0];
         const lastSlash = cleanPath.lastIndexOf('/');
         const rootDir = lastSlash >= 0 ? cleanPath.substring(0, lastSlash) : '/static';
-        this.modelRootPath = rootDir; // e.g. /static/mao_pro or /static/some/deeper/dir
+        this.modelRootPath = rootDir; // e.g. /static/yui_default or /static/some/deeper/dir
         const parts = rootDir.split('/').filter(Boolean);
         const rawName = parts.length > 0 ? parts[parts.length - 1] : null;
         try { this.modelName = rawName ? decodeURIComponent(rawName) : null; } catch (_) { this.modelName = rawName; }

@@ -1689,7 +1689,7 @@
         "deleteFailed": "삭제 실패",
         "addCatgirlFieldPrompt": "새 필드의 이름(키 이름)을 입력하세요.",
         "addCatgirlFieldTitle": "NEKO 필드 추가",
-        "live2dModelError": "NEKO \"{{name}}\"의 Live2D 모델 파일이 존재하지 않거나 손상되었습니다.\n\n현재 모델 경로: {{path}}\n\n기본 모델(mao_pro)로 대체하시겠습니까?\n\n기본 모델을 사용하려면 \"확인\"을 클릭하고, 현재 설정을 유지하려면 \"취소\"를 클릭하세요.",
+        "live2dModelError": "NEKO \"{{name}}\"의 Live2D 모델 파일이 존재하지 않거나 손상되었습니다.\n\n현재 모델 경로: {{path}}\n\n기본 모델(yui_default)로 대체하시겠습니까?\n\n기본 모델을 사용하려면 \"확인\"을 클릭하고, 현재 설정을 유지하려면 \"취소\"를 클릭하세요.",
         "live2dModelErrorTitle": "Live2D 모델 오류",
         "fallbackToDefaultModel": "기본 모델로 돌아갔습니다: {{path}}",
         "fallbackFailed": "기본 모델로 대체하지 못했습니다. 모델 설정을 확인하세요.",
