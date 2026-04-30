@@ -86,9 +86,11 @@ class STS2AutoplayPlugin(NekoPluginBase):
         self._cfg = _as_mapping(cfg.get("sts2"))
         await self._service.startup(self._cfg)
 
-        # Mount tool_call callback HTTP endpoints on the plugin server
+        # Mount tool_call callback HTTP endpoints on the plugin server's FastAPI app.
+        # We mount directly on the FastAPI app (not via SDK include_router, which
+        # expects PluginRouter and is for entry-based routers, not raw HTTP).
         self._tool_callback_router = create_tool_callback_router(self._service)
-        self.include_router(self._tool_callback_router)
+        self._mount_fastapi_router(self._tool_callback_router)
 
         # Register tools with main_server ToolRegistry (background with retry)
         import asyncio
@@ -103,10 +105,32 @@ class STS2AutoplayPlugin(NekoPluginBase):
         await self._service.shutdown()
         return Ok({"status": "shutdown"})
 
+    def _mount_fastapi_router(self, router: Any) -> None:
+        """Mount a raw FastAPI APIRouter on the plugin server's FastAPI app.
+
+        The SDK's ``include_router`` expects ``PluginRouter`` (entry-based).
+        For HTTP callback endpoints we need to mount on the underlying
+        FastAPI app directly.
+        """
+        app = getattr(self.ctx, "app", None)
+        if app is not None and hasattr(app, "include_router"):
+            app.include_router(router)
+            self.logger.info("Mounted tool callback router on plugin server app")
+        else:
+            self.logger.warning(
+                "Cannot mount tool callback router: plugin ctx.app not available. "
+                "Tool callbacks will not work until the FastAPI app is accessible."
+            )
+
     @staticmethod
     def _resolve_plugin_port() -> int:
-        """Resolve the plugin HTTP server port from environment."""
-        return int(os.environ.get("NEKO_PLUGIN_PORT", "48912"))
+        """Resolve the plugin HTTP server port from environment.
+
+        The plugin server sets ``NEKO_USER_PLUGIN_SERVER_PORT`` after
+        selecting an available port. Default is 48916 (from config).
+        """
+        from config import USER_PLUGIN_SERVER_PORT
+        return int(os.environ.get("NEKO_USER_PLUGIN_SERVER_PORT", str(USER_PLUGIN_SERVER_PORT)))
 
     async def _run_entry(self, action: AsyncPayloadFactory, *, finish: bool = False):
         try:
