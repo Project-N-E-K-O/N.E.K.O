@@ -46,8 +46,6 @@
 | 场景 ID | 页面归属 | 语义说明 |
 |---|---|---|
 | `intro_basic` | `home` | 开场第一句，介绍文字输入与语音召唤 |
-| `intro_proactive` | `home` | 开场第二句，介绍主动搭话 / 主动视觉 |
-| `intro_cat_paw` | `home` | 开场第三句，指向猫爪 / OpenClaw 入口 |
 | `takeover_capture_cursor` | `home` | 接管动作一，借用鼠标 |
 | `takeover_plugin_preview` | `home` | 接管动作二，首页插件预演 |
 | `takeover_settings_peek` | `home` | 接管动作三，打开设置一瞥 |
@@ -63,7 +61,6 @@
 
 - 已冻结的场景 ID 不允许改名
 - 如果后续需要拆细场景，只能新增 ID，不能偷偷改旧 ID 的语义
-- 若 `intro_proactive` 后续要拆成“主动搭话”和“主动视觉”两个独立节点，必须新增新 ID，不得重定义旧 ID
 
 ### 3.2 锚点写法冻结
 
@@ -173,8 +170,6 @@ interface YuiGuideDirector {
 
 `2026-04-15` 首批冻结映射为：
 
-- `#${p}-btn-agent` -> `intro_cat_paw`
-- `#${p}-toggle-proactive-chat` -> `intro_proactive`
 - `#${p}-btn-settings` -> `takeover_settings_peek`
 - `#${p}-menu-api-keys` -> `handoff_api_key`
 - `#${p}-menu-memory` -> `handoff_memory_browser`
@@ -185,7 +180,6 @@ interface YuiGuideDirector {
 - `intro_basic` 暂不通过新增 driver step 承接，而是先通过 `startPrelude()` + 注册表中的 `#text-input-area` 锚点承接
 - `startPrelude()` 只负责处理“当前页面里还没有挂到旧 tutorial step 上的 intro 场景”
 - 按 `2026-04-15` 的落地结果，首页 `prelude` 当前只承接 `intro_basic`
-- `intro_proactive` 与 `intro_cat_paw` 不在第一阶段的 `prelude` 中重复播放，而是分别跟随旧首页步骤进入
 - 这样做是为了避免在主负责人前置阶段提前重排首页旧教程顺序，降低与后续实现合流时的冲突概率
 
 ### 3.4.2 M2 首页交互包装 API 冻结（补充）

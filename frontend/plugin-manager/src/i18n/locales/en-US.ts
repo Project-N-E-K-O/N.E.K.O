@@ -440,9 +440,6 @@ export default {
         interruptResistLight1: "Hey! Don't drag me around! It's not your turn yet, nyan!",
         interruptResistLight3: "Wait a sec! I'm not finished yet, don't just interrupt me like that!",
         interruptAngryExit: "Humannnn~~~~! You're so rude, nyan! Since you want to do everything yourself, go play with that cold screen alone! Hmph!",
-        introProactive: "Ugh, how dare you ignore this Young Lady! If you keep ignoring me, I'll jump out and bite you! (Hiss!!)",
-        introProactiveShort: 'If you keep ignoring me, I’ll jump out and bite you myself, you know~ (Hiss!!)',
-        introCatPaw: 'Alright, enough chit-chat, nyan! See that cute "paw"? Ready? Let me borrow your mouse for a tiny bit!',
         introPractice: "Now, try talking to me and see if we're perfectly in sync, nyan~!",
       },
     }

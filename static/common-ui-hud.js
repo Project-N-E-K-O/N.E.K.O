@@ -5,7 +5,7 @@
 
 window.AgentHUD = window.AgentHUD || {};
 
-var PLUGIN_DASHBOARD_REDIRECT_URL = '/api/agent/user_plugin/dashboard';
+var PLUGIN_DASHBOARD_REDIRECT_URL = 'http://127.0.0.1:48916/ui';
 
 function appendCacheBuster(url) {
     var separator = typeof url === 'string' && url.indexOf('?') >= 0 ? '&' : '?';

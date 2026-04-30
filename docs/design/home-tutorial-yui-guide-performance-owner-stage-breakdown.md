@@ -189,8 +189,6 @@ interface YuiGuideDirector {
 开发 B 当前直接可用的首页场景包括：
 
 - `intro_basic`
-- `intro_proactive`
-- `intro_cat_paw`
 - `takeover_capture_cursor`
 - `takeover_plugin_preview`
 - `takeover_settings_peek`
@@ -250,8 +248,6 @@ interface YuiGuideDirector {
 | 场景 ID | 开发 B 需要交付什么 |
 |---|---|
 | `intro_basic` | 气泡、语音、表情；通过 `startPrelude()` 承接，不重复挂进旧 step |
-| `intro_proactive` | 进入 step 时的台词、表情、基础节奏 |
-| `intro_cat_paw` | 第三句开场白、进入接管前的情绪抬升 |
 | `takeover_capture_cursor` | ghost cursor 初次出现、轻晃、接管开始样式 |
 | `takeover_plugin_preview` | 点击猫爪后的预演层、插件展示节奏、可中断清理 |
 | `takeover_settings_peek` | 进入设置一瞥时的台词、光标点击与情绪转折 |
@@ -303,7 +299,7 @@ interface YuiGuideDirector {
 
 - `createYuiGuideDirector()` 可被首页稳定创建
 - `startPrelude()` 能只处理 `intro_basic`
-- `enterStep()` 能处理 `intro_proactive` 与 `intro_cat_paw`
+- `enterStep()` 能处理接管、插件、设置与归还控制权场景
 - `leaveStep()` 不留下脏气泡、脏音频、脏计时器
 - 气泡和表情桥有第一版最小闭环
 - `performance` 首批配置被补齐并可驱动运行
@@ -318,8 +314,7 @@ interface YuiGuideDirector {
 阶段完成标准：
 
 - 首页教程启动后，`intro_basic` 会在 prelude 阶段出现
-- `intro_proactive` 与 `intro_cat_paw` 不会被重复播放
-- 三句开场白与场景 ID 一一对应
+- 开场旁白只保留当前流程实际使用的自我介绍与 `intro_basic`
 - 跳过时不会残留气泡、定时器、表情占用
 
 ---
@@ -529,7 +524,6 @@ interface YuiGuideDirector {
 
 - 首次进入首页时，Yui 演出会正常开始
 - `intro_basic` 只在 prelude 播放一次
-- `intro_proactive` 与 `intro_cat_paw` 随 step 进入
 - 跳过后 overlay、气泡、音频、监听器都被清理
 - ghost cursor 不影响真实鼠标
 - 轻微打断会拉扯并回弹
@@ -553,7 +547,7 @@ interface YuiGuideDirector {
 1. 新建 `static/yui-guide-director.js`，只做空壳 Director 与统一终止态
 2. 新建 `static/yui-guide-overlay.js`，先把根节点、bubble 容器、cursor 容器立起来
 3. 新建 `static/css/yui-guide.css`，先实现最小可见样式和 `body.yui-taking-over`
-4. 跑通 `intro_basic / intro_proactive / intro_cat_paw`
+4. 跑通 `intro_basic`
 5. 跑通 `takeover_capture_cursor`
 6. 跑通 `takeover_plugin_preview / takeover_settings_peek / takeover_return_control`
 7. 最后补 `interrupt_resist_light / interrupt_angry_exit`

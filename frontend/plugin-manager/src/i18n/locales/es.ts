@@ -440,9 +440,6 @@ export default {
         interruptResistLight1: '¡Oye! ¡No me arrastres! ¡Aún no es tu turno, nyan!',
         interruptResistLight3: '¡Espera un momento! ¡Aún no he terminado, no me interrumpas así!',
         interruptAngryExit: '¡Humanoooo~~~~! ¡Qué grosero eres, nyan! Ya que quieres hacerlo todo solo, ¡juega con esa pantalla fría tú solo! ¡Hmph!',
-        introProactive: '¡Ugh, cómo te atreves a ignorar a esta Joven Dama! ¡Si me sigues ignorando, voy a saltar y morderte! (¡Hiss!!)',
-        introProactiveShort: 'Si sigues ignorándome, voy a saltar y morderte yo misma, ¿sabes~? (¡Hiss!!)',
-        introCatPaw: '¡Bien, basta de cháchara, nyan! ¿Ves esa "patita" linda? ¿Lista? ¡Préstame tu ratón un ratito!',
         introPractice: '¡Ahora intenta hablarme y veamos si estamos perfectamente sincronizados, nyan~!',
       },
     }

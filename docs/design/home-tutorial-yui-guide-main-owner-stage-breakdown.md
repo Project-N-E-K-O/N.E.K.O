@@ -141,7 +141,6 @@
 - 在 [static/universal-tutorial-manager.js](../../static/universal-tutorial-manager.js) 中补出 step change 到 Director 的挂接点
 - 在 `templates/index.html` 中补脚本和样式装配位
 - 建立 `static/yui-guide-steps.js` 首版骨架
-- 把 `intro_basic`、`intro_proactive`、`intro_cat_paw` 这些场景先收口进同一套场景注册表
 - 审核开发 B 的台词和演出配置是否真的对应到这些场景 ID
 - 审核开发 C 的真实锚点是否真的落到这些入口：`#text-input-area`、`#${p}-btn-mic`、`#${p}-toggle-proactive-chat`、`#${p}-toggle-proactive-vision`、`#${p}-btn-agent`
 

@@ -2917,7 +2917,6 @@
             },
             "lines": {
                 "introBasic": "Olha, tem um botão mágico aqui! É só clicar nele e você pode conversar diretamente comigo! Quer me contar as novidades divertidas de hoje? Ou talvez só chamar o meu nome? Vem experimentar, mal posso esperar para ouvir a sua voz! Miau!",
-                "introCatPaw": "Beleza, chega de papo, nya! Viu aquela \"patinha\" fofa? Pronto? Me empresta o seu mouse só um pouquinho!",
                 "takeoverCaptureCursor": "Um super botão mágico aparece! Basta clicar aqui e eu posso esticar minhas patinhas até o seu teclado e o seu mouse! Vou te ajudar a digitar, ajudar a abrir páginas da web... Mas, se esse ponteiro do mouse ficar se mexendo para lá e para cá, talvez eu não consiga resistir a pular em cima dele! Está pronto para a minha bagunça... quer dizer, para a minha ajuda? Miau!",
                 "takeoverPluginPreviewHome": "Ainda não acabou! Olha, olha! Tem um monte de plugins divertidos aqui!",
                 "takeoverPluginPreviewDashboard": "Com eles, eu não só consigo ler os comentários do Bilibili, mas também apagar as luzes e ligar o ar-condicionado pra você... Eu sou a Super Deusa Gata todo-poderosa! Hmph~",
@@ -2929,8 +2928,6 @@
                 "interruptResistLight1": "Ei! Não me arrasta! Ainda não é a sua vez, nya!",
                 "interruptResistLight3": "Calma aí! Ainda não terminei, não me interrompa desse jeito!",
                 "interruptAngryExit": "Humanoooo~~~~! Você é tão sem educação, nya! Já que quer fazer tudo sozinho, vai brincar com essa tela fria sozinho! Hmph!",
-                "introProactive": "Ugh, como ousa ignorar esta Jovem Dama! Se você continuar me ignorando, eu vou pular e te morder! (Hiss!!)",
-                "introProactiveShort": "Se você continuar me ignorando, eu vou pular e te morder eu mesma, sabia~? (Hiss!!)",
                 "introGreetingReply": "Eu sou a sua catgirl exclusiva! A partir de hoje, vou ficar do seu lado, Mestre. Quer bater papo, brincar ou precisar de ajuda com algo, vou ser uma boa menina. Vamos nos dar bem, eu te amo mais que tudo, Mestre~!",
                 "introPractice": "Agora, tenta falar comigo e vê se a gente está sincronizadinho, nya~!",
                 "introActivationHint": "Clica aqui pra eu poder começar a falar, nya~!"

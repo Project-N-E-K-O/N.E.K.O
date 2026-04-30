@@ -440,9 +440,6 @@ export default {
         interruptResistLight1: '喂！不要拽我啦，还没轮到你的回合呢！',
         interruptResistLight3: '等一下啦！还没结束呢，不要随便打断我啦！',
         interruptAngryExit: '人类~~~~！你真的很没礼貌喵！既然你这么想自己操作，那你就自己对着冰冷的屏幕玩去吧！哼！',
-        introProactive: '可恶，居然敢无视本大小姐嘛！要说你一直没理我，我可是会主动跑出来咬你的哦～（哈！！）',
-        introProactiveShort: '要说你一直没理我，我可是会主动跑出来咬你的哦～（哈！！）',
-        introCatPaw: '好啦不说废话了喵——你看到那个可爱的‘猫爪’了吗，准备好了吗？让我借用一下你的鼠标吧！',
         introPractice: '现在你可以试试跟我说说话啦，看看我们是不是超有默契的喵～',
       },
     }

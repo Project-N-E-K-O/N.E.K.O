@@ -219,8 +219,6 @@ def test_yui_guide_steps_registry_keeps_m1_to_m4_home_flow_contract():
     for expected in (
         "const CONTRACT_VERSION = 2;",
         "'intro_basic'",
-        "'intro_proactive'",
-        "'intro_cat_paw'",
         "'takeover_capture_cursor'",
         "'takeover_plugin_preview'",
         "'takeover_settings_peek'",
@@ -231,8 +229,6 @@ def test_yui_guide_steps_registry_keeps_m1_to_m4_home_flow_contract():
         "steps.handoff_api_key.navigation.resumeScene = 'api_key_intro';",
         "steps.handoff_memory_browser.navigation.resumeScene = 'memory_browser_intro';",
         "steps.handoff_plugin_dashboard.navigation.resumeScene = 'plugin_dashboard_landing';",
-        "steps.intro_proactive.performance.cursorSpeedMultiplier = 1.08;",
-        "steps.intro_cat_paw.performance.delayMs = 160;",
         "steps.plugin_dashboard_landing = createBaseStep('plugin_dashboard_landing', 'plugin_dashboard', '#plugin-list');",
         "steps.api_key_intro = createBaseStep('api_key_intro', 'api_key', '#coreApiSelect-dropdown-trigger');",
         "steps.memory_browser_intro = createBaseStep('memory_browser_intro', 'memory_browser', '#memory-file-list');",
@@ -243,6 +239,10 @@ def test_yui_guide_steps_registry_keeps_m1_to_m4_home_flow_contract():
         assert expected in source
 
     for removed in (
+        "'intro_" + "proactive'",
+        "'intro_" + "cat_paw'",
+        "steps.intro_" + "proactive",
+        "steps.intro_" + "cat_paw",
         "'handoff_steam_workshop'",
         "steps.handoff_steam_workshop",
         "steps.steam_workshop_intro",

@@ -66,6 +66,8 @@ class UniversalTutorialManager {
         this._tutorialEndReason = null;
         this._tutorialEndRawReason = null;
         this._tutorialEndHandled = false;
+        this._tutorialAvatarOverride = null;
+        this._tutorialAvatarOverridePromise = null;
 
         // 刷新延迟常量
         this.LAYOUT_REFRESH_DELAY = 100;
@@ -745,6 +747,277 @@ class UniversalTutorialManager {
         }
 
         return 'live2d';
+    }
+
+    tutorialNonEmptyString(value) {
+        if (value === undefined || value === null) {
+            return '';
+        }
+        const normalized = String(value).trim();
+        const lowered = normalized.toLowerCase();
+        if (!normalized || lowered === 'undefined' || lowered === 'null') {
+            return '';
+        }
+        return normalized;
+    }
+
+    tutorialReservedAvatar(config) {
+        return (config && config._reserved && config._reserved.avatar) || {};
+    }
+
+    tutorialAvatarValue(config, path, legacyKeys = []) {
+        const avatar = this.tutorialReservedAvatar(config);
+        let current = avatar;
+        for (let index = 0; index < path.length; index += 1) {
+            if (!current || typeof current !== 'object') {
+                current = undefined;
+                break;
+            }
+            current = current[path[index]];
+        }
+        if (current !== undefined && current !== null) {
+            return current;
+        }
+        for (let index = 0; index < legacyKeys.length; index += 1) {
+            const legacyValue = config && config[legacyKeys[index]];
+            if (legacyValue !== undefined && legacyValue !== null) {
+                return legacyValue;
+            }
+        }
+        return undefined;
+    }
+
+    inferTutorialLive2dModelName(modelPath) {
+        const value = this.tutorialNonEmptyString(modelPath);
+        if (!value) {
+            return '';
+        }
+        const normalized = value.split('?')[0].split('#')[0].replace(/\\/g, '/');
+        const segments = normalized.split('/').filter(Boolean);
+        const filename = segments[segments.length - 1] || '';
+        if (/\.model3\.json$/i.test(filename)) {
+            return segments.length >= 2
+                ? decodeURIComponent(segments[segments.length - 2])
+                : decodeURIComponent(filename.replace(/\.model3\.json$/i, ''));
+        }
+        return value;
+    }
+
+    buildTutorialModelSavePayload(config) {
+        const rawModelType = this.tutorialNonEmptyString(
+            this.tutorialAvatarValue(config, ['model_type'], ['model_type'])
+        ) || 'live2d';
+        const modelType = rawModelType === 'vrm' ? 'live3d' : rawModelType;
+        const payload = {
+            model_type: modelType
+        };
+
+        if (modelType === 'live3d') {
+            const live3dSubType = this.tutorialNonEmptyString(
+                this.tutorialAvatarValue(config, ['live3d_sub_type'], ['live3d_sub_type'])
+            ).toLowerCase();
+            const vrmPath = this.tutorialNonEmptyString(
+                this.tutorialAvatarValue(config, ['vrm', 'model_path'], ['vrm'])
+            );
+            const mmdPath = this.tutorialNonEmptyString(
+                this.tutorialAvatarValue(config, ['mmd', 'model_path'], ['mmd'])
+            );
+            const useMmd = live3dSubType === 'mmd' || (!!mmdPath && !vrmPath);
+
+            if (useMmd) {
+                payload.mmd = mmdPath;
+                const mmdAnimation = this.tutorialAvatarValue(config, ['mmd', 'animation'], ['mmd_animation']);
+                const mmdIdleAnimation = this.tutorialAvatarValue(config, ['mmd', 'idle_animation'], ['mmd_idle_animation', 'mmd_idle_animations']);
+                if (mmdAnimation !== undefined) payload.mmd_animation = mmdAnimation || '';
+                if (mmdIdleAnimation !== undefined) payload.mmd_idle_animation = mmdIdleAnimation || [];
+            } else {
+                payload.vrm = vrmPath;
+                const vrmAnimation = this.tutorialAvatarValue(config, ['vrm', 'animation'], ['vrm_animation']);
+                const vrmIdleAnimation = this.tutorialAvatarValue(config, ['vrm', 'idle_animation'], ['idleAnimation', 'idleAnimations']);
+                if (vrmAnimation !== undefined) payload.vrm_animation = vrmAnimation || '';
+                if (vrmIdleAnimation !== undefined) payload.idle_animation = vrmIdleAnimation || [];
+            }
+            const itemId = this.tutorialNonEmptyString(
+                this.tutorialAvatarValue(config, ['asset_source_id'], ['item_id', 'live2d_item_id'])
+            );
+            if (itemId) {
+                payload.item_id = itemId;
+            }
+            return payload;
+        }
+
+        const live2dPath = this.tutorialAvatarValue(config, ['live2d', 'model_path'], ['live2d']);
+        payload.model_type = 'live2d';
+        payload.live2d = this.inferTutorialLive2dModelName(live2dPath) || 'yui_default';
+
+        const itemId = this.tutorialNonEmptyString(
+            this.tutorialAvatarValue(config, ['asset_source_id'], ['item_id', 'live2d_item_id'])
+        );
+        if (itemId) {
+            payload.item_id = itemId;
+            payload.live2d_item_id = itemId;
+        }
+
+        const live2dIdleAnimation = this.tutorialAvatarValue(
+            config,
+            ['live2d', 'idle_animation'],
+            ['live2d_idle_animation']
+        );
+        if (live2dIdleAnimation !== undefined) {
+            payload.live2d_idle_animation = live2dIdleAnimation || '';
+        }
+
+        return payload;
+    }
+
+    async fetchTutorialCharacters() {
+        const response = await fetch('/api/characters', {
+            credentials: 'same-origin',
+            cache: 'no-store'
+        });
+        if (!response.ok) {
+            throw new Error(`characters load failed: ${response.status}`);
+        }
+        return response.json();
+    }
+
+    async resolveCurrentTutorialCatgirlName() {
+        const configuredName = this.tutorialNonEmptyString(
+            window.lanlan_config && window.lanlan_config.lanlan_name
+        );
+        if (configuredName) {
+            return configuredName;
+        }
+
+        const response = await fetch('/api/config/page_config', {
+            credentials: 'same-origin',
+            cache: 'no-store'
+        });
+        if (!response.ok) {
+            return '';
+        }
+        const data = await response.json();
+        return this.tutorialNonEmptyString(data && data.lanlan_name);
+    }
+
+    async saveTutorialModelPayload(lanlanName, payload) {
+        const response = await fetch(`/api/characters/catgirl/l2d/${encodeURIComponent(lanlanName)}`, {
+            method: 'PUT',
+            credentials: 'same-origin',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(payload)
+        });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok || !result.success) {
+            throw new Error((result && result.error) || `model save failed: ${response.status}`);
+        }
+        return result;
+    }
+
+    syncTutorialLanlanModelMode(payload) {
+        if (!window.lanlan_config || !payload) {
+            return;
+        }
+        window.lanlan_config.model_type = payload.model_type || 'live2d';
+        if (payload.model_type === 'live3d') {
+            window.lanlan_config.live3d_sub_type = payload.mmd ? 'mmd' : 'vrm';
+        } else {
+            window.lanlan_config.live3d_sub_type = '';
+        }
+    }
+
+    async reloadTutorialModel(lanlanName, payload) {
+        if (typeof window.handleModelReload === 'function') {
+            await window.handleModelReload(lanlanName);
+            return;
+        }
+        this.syncTutorialLanlanModelMode(payload);
+        if (typeof window.showCurrentModel === 'function') {
+            await window.showCurrentModel();
+        }
+    }
+
+    beginTutorialAvatarOverride() {
+        if (this._tutorialAvatarOverride || this._tutorialAvatarOverridePromise) {
+            return this._tutorialAvatarOverridePromise || Promise.resolve();
+        }
+
+        const activePrefix = UniversalTutorialManager.detectModelPrefix();
+        this._tutorialAvatarOverride = {
+            activePrefix,
+            restoreRequested: false
+        };
+
+        this._tutorialAvatarOverridePromise = (async () => {
+            const currentName = await this.resolveCurrentTutorialCatgirlName();
+            if (!currentName) {
+                throw new Error('current tutorial catgirl name unavailable');
+            }
+
+            const characters = await this.fetchTutorialCharacters();
+            const catgirls = (characters && characters['猫娘']) || {};
+            const currentConfig = catgirls[currentName];
+            if (!currentConfig) {
+                throw new Error(`current catgirl config not found: ${currentName}`);
+            }
+
+            const snapshotPayload = this.buildTutorialModelSavePayload(currentConfig);
+            const tutorialModelPayload = {
+                model_type: 'live2d',
+                live2d: 'yui_default',
+                live2d_idle_animation: ''
+            };
+            this._tutorialAvatarOverride.currentName = currentName;
+            this._tutorialAvatarOverride.snapshotPayload = snapshotPayload;
+
+            await this.saveTutorialModelPayload(currentName, tutorialModelPayload);
+            await this.reloadTutorialModel(currentName, tutorialModelPayload);
+            console.log('[Tutorial] 新手教程期间已按模型管理页保存流程临时切换到 yui_default 模型:', tutorialModelPayload);
+        })().catch((error) => {
+            console.warn('[Tutorial] 临时切换 yui_default 模型失败:', error);
+        }).finally(() => {
+            this._tutorialAvatarOverridePromise = null;
+            if (this._tutorialAvatarOverride && this._tutorialAvatarOverride.restoreRequested) {
+                this.restoreTutorialAvatarOverride();
+            }
+        });
+
+        return this._tutorialAvatarOverridePromise;
+    }
+
+    async restoreTutorialAvatarOverride() {
+        const override = this._tutorialAvatarOverride;
+        if (!override) {
+            return;
+        }
+
+        if (this._tutorialAvatarOverridePromise) {
+            override.restoreRequested = true;
+            return;
+        }
+
+        this._tutorialAvatarOverride = null;
+        const currentName = override.currentName;
+        const snapshotPayload = override.snapshotPayload;
+
+        try {
+            if (!currentName || !snapshotPayload) {
+                return;
+            }
+
+            await this.saveTutorialModelPayload(currentName, snapshotPayload);
+            await this.reloadTutorialModel(currentName, snapshotPayload);
+            console.log('[Tutorial] 已按模型管理页保存流程恢复新手教程前的用户模型:', override.activePrefix || 'unknown');
+        } catch (error) {
+            console.warn('[Tutorial] 恢复新手教程前用户模型失败:', error);
+            if (typeof window.showCurrentModel === 'function') {
+                try {
+                    await window.showCurrentModel();
+                } catch (_) {}
+            }
+        }
     }
 
     /**
@@ -1525,7 +1798,6 @@ class UniversalTutorialManager {
                     title: window.t ? window.t('tutorial.step8.title', '🔨 OpenClaw') : '🔨 OpenClaw',
                     description: window.t ? window.t('tutorial.step8.desc', '打开猫爪面板，使用 computer use、browser use 和用户插件等功能。让猫娘使用你的电脑、帮你工作、陪你游戏~') : '打开猫爪面板，使用 computer use、browser use 和用户插件等功能。让猫娘使用你的电脑、帮你工作、陪你游戏~',
                 },
-                yuiGuideSceneId: 'intro_cat_paw',
                 disableActiveInteraction: true
             },
             {
@@ -1552,7 +1824,6 @@ class UniversalTutorialManager {
                     title: window.t ? window.t('tutorial.step13.title', '💬 主动搭话') : '💬 主动搭话',
                     description: window.t ? window.t('tutorial.step13.desc', '开启后猫娘会主动发起对话，频率可在此调整~') : '开启后猫娘会主动发起对话，频率可在此调整~',
                 },
-                yuiGuideSceneId: 'intro_proactive',
                 disableActiveInteraction: true
             },
             {
@@ -2678,15 +2949,29 @@ class UniversalTutorialManager {
             this.currentPage === 'home'
             && this.isYuiGuideEnabledForPage(this.currentPage)
         );
+        const shouldOverrideYuiAvatar = useYuiOnlyHomeFlow;
+
+        if (shouldOverrideYuiAvatar) {
+            this._tutorialModelPrefix = 'live2d';
+            this.beginTutorialAvatarOverride();
+        }
 
         if (useYuiOnlyHomeFlow) {
-            window.isInTutorial = true;
-            this.currentStep = 0;
-            this.driver = null;
-            console.log('[Tutorial] 首页启用 Yui Guide，跳过旧版 driver 教程启动流程');
-            this.emitTutorialStarted();
-            this.notifyYuiGuidePreludeStart(validSteps);
-            this.showSkipButton();
+            const startYuiOnlyHomeFlow = () => {
+                window.isInTutorial = true;
+                this.currentStep = 0;
+                this.driver = null;
+                console.log('[Tutorial] 首页启用 Yui Guide，跳过旧版 driver 教程启动流程');
+                this.emitTutorialStarted();
+                this.notifyYuiGuidePreludeStart(validSteps);
+                this.showSkipButton();
+            };
+            const avatarReadyPromise = this._tutorialAvatarOverridePromise;
+            if (avatarReadyPromise) {
+                avatarReadyPromise.finally(startYuiOnlyHomeFlow);
+            } else {
+                startYuiOnlyHomeFlow();
+            }
             return;
         }
 
@@ -2720,7 +3005,7 @@ class UniversalTutorialManager {
         }
 
         // 将模型容器移到屏幕右边（在引导中）
-        const modelPrefix = UniversalTutorialManager.detectModelPrefix();
+        const modelPrefix = this._tutorialModelPrefix || UniversalTutorialManager.detectModelPrefix();
         const modelContainer = document.getElementById(`${modelPrefix}-container`);
         if (modelContainer) {
             this.originalLive2dStyle = {
@@ -3841,6 +4126,8 @@ class UniversalTutorialManager {
         // 恢复所有在引导中修改过的元素的原始样式
         this.restoreAllModifiedElements();
         this.restoreTutorialInteractionState();
+        this.restoreTutorialAvatarOverride();
+        this._tutorialModelPrefix = null;
     }
 
     /**

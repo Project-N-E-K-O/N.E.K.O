@@ -9,8 +9,6 @@
  * │ 场景 ID                  │ 锚点选择器                            │ 状态   │
  * ├──────────────────────────┼───────────────────────────────────────┼────────┤
  * │ intro_basic              │ #text-input-area                      │ OK *   │
- * │ intro_proactive          │ #${p}-toggle-proactive-chat           │ OK     │
- * │ intro_cat_paw            │ #${p}-btn-agent                       │ OK     │
  * │ takeover_capture_cursor  │ #${p}-btn-agent                       │ OK     │
  * │ takeover_plugin_preview  │ #${p}-btn-agent                       │ OK     │
  * │ takeover_settings_peek   │ #${p}-btn-settings                    │ OK     │

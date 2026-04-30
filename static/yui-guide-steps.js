@@ -13,8 +13,6 @@
 
     const HOME_SCENE_ORDER = Object.freeze([
         'intro_basic',
-        'intro_proactive',
-        'intro_cat_paw',
         'takeover_capture_cursor',
         'takeover_plugin_preview',
         'takeover_settings_peek',
@@ -89,36 +87,6 @@
     steps.intro_basic.performance.interruptible = true;
     steps.intro_basic.interrupts.mode = 'theatrical_abort';
     steps.intro_basic.interrupts.resetOnStepAdvance = false;
-
-    steps.intro_proactive = createBaseStep('intro_proactive', 'home', '#${p}-toggle-proactive-chat');
-    steps.intro_proactive.tutorial.title = '主动搭话';
-    steps.intro_proactive.tutorial.description = '介绍主动搭话开关。';
-    steps.intro_proactive.performance.bubbleText = '可恶，居然敢无视本大小姐嘛！要说你一直没理我，我可是会主动跑出来咬你的哦～（哈！！）';
-    steps.intro_proactive.performance.bubbleTextKey = 'tutorial.yuiGuide.lines.introProactive';
-    steps.intro_proactive.performance.voiceKey = 'intro_proactive';
-    steps.intro_proactive.performance.emotion = 'surprised';
-    steps.intro_proactive.performance.cursorAction = 'wobble';
-    steps.intro_proactive.performance.cursorTarget = '#${p}-toggle-proactive-chat';
-    steps.intro_proactive.performance.cursorSpeedMultiplier = 1.08;
-    steps.intro_proactive.performance.delayMs = 120;
-    steps.intro_proactive.performance.interruptible = true;
-    steps.intro_proactive.interrupts.mode = 'theatrical_abort';
-    steps.intro_proactive.interrupts.resetOnStepAdvance = false;
-
-    steps.intro_cat_paw = createBaseStep('intro_cat_paw', 'home', '#${p}-btn-agent');
-    steps.intro_cat_paw.tutorial.title = '猫爪入口';
-    steps.intro_cat_paw.tutorial.description = '介绍 OpenClaw/猫爪面板入口。';
-    steps.intro_cat_paw.performance.bubbleText = '好啦不说废话了喵——你看到那个可爱的‘猫爪’了吗，准备好了吗？让我借用一下你的鼠标吧！';
-    steps.intro_cat_paw.performance.bubbleTextKey = 'tutorial.yuiGuide.lines.introCatPaw';
-    steps.intro_cat_paw.performance.voiceKey = 'intro_cat_paw';
-    steps.intro_cat_paw.performance.emotion = 'happy';
-    steps.intro_cat_paw.performance.cursorAction = 'wobble';
-    steps.intro_cat_paw.performance.cursorTarget = '#${p}-btn-agent';
-    steps.intro_cat_paw.performance.cursorSpeedMultiplier = 0.94;
-    steps.intro_cat_paw.performance.delayMs = 160;
-    steps.intro_cat_paw.performance.interruptible = true;
-    steps.intro_cat_paw.interrupts.mode = 'theatrical_abort';
-    steps.intro_cat_paw.interrupts.resetOnStepAdvance = false;
 
     steps.takeover_capture_cursor = createBaseStep('takeover_capture_cursor', 'home', '#${p}-btn-agent');
     steps.takeover_capture_cursor.tutorial.title = '键鼠控制介绍';

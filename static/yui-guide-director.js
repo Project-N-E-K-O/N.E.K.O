@@ -210,9 +210,7 @@
         interrupt_resist_light_1: '喂！不要拽我啦，还没.mp3',
         interrupt_resist_light_3: '等一下啦！还没结束呢.mp3',
         interrupt_angry_exit: '人类~~~~！你真的.mp3',
-        takeover_return_control: '好啦好啦，不霸占你的.mp3',
-        intro_proactive: '可恶，居然敢无视本大.mp3',
-        intro_cat_paw: '好啦！不说废话了喵—.mp3'
+        takeover_return_control: '好啦好啦，不霸占你的.mp3'
     });
     const INTRO_ACTIVATION_HINT_KEY = 'tutorial.yuiGuide.lines.introActivationHint';
     const INTRO_ACTIVATION_HINT = '点一下这里，我就能开始说话啦～';
@@ -319,10 +317,7 @@
         });
     }
 
-    const GUIDE_AUDIO_FILE_OVERRIDES_BY_KEY = Object.freeze({
-        intro_proactive: guideAudioFilesForAllLocales(GUIDE_AUDIO_FILE_NAMES.intro_proactive),
-        intro_cat_paw: guideAudioFilesForAllLocales(GUIDE_AUDIO_FILE_NAMES.intro_cat_paw)
-    });
+    const GUIDE_AUDIO_FILE_OVERRIDES_BY_KEY = Object.freeze({});
 
     function guideAudioSrc(key) {
         const files = key

@@ -440,9 +440,6 @@ export default {
         interruptResistLight1: 'Ei! Não me arrasta! Ainda não é a sua vez, nya!',
         interruptResistLight3: 'Calma aí! Ainda não terminei, não me interrompa desse jeito!',
         interruptAngryExit: 'Humanoooo~~~~! Você é tão sem educação, nya! Já que quer fazer tudo sozinho, vai brincar com essa tela fria sozinho! Hmph!',
-        introProactive: 'Ugh, como ousa ignorar esta Jovem Dama! Se você continuar me ignorando, eu vou pular e te morder! (Hiss!!)',
-        introProactiveShort: 'Se você continuar me ignorando, eu vou pular e te morder eu mesma, sabia~? (Hiss!!)',
-        introCatPaw: 'Beleza, chega de papo, nya! Viu aquela "patinha" fofa? Pronto? Me empresta o seu mouse só um pouquinho!',
         introPractice: 'Agora, tenta falar comigo e vê se a gente está sincronizadinho, nya~!',
       },
     }
