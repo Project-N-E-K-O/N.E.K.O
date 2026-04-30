@@ -188,6 +188,7 @@
     const TAKEOVER_SETTINGS_DETAIL_TEXT_PART_1_KEY = 'tutorial.yuiGuide.lines.takeoverSettingsPeekDetailPart1';
     const TAKEOVER_SETTINGS_DETAIL_TEXT_PART_2_KEY = 'tutorial.yuiGuide.lines.takeoverSettingsPeekDetailPart2';
     const DEFAULT_SPOTLIGHT_PADDING = 6;
+    const PLUGIN_MANAGEMENT_ENTRY_SPOTLIGHT_EXTRA_X = 15;
     const PLUGIN_DASHBOARD_WINDOW_NAME = 'plugin_dashboard';
     const PLUGIN_DASHBOARD_HANDOFF_EVENT = 'neko:yui-guide:plugin-dashboard:start';
     const PLUGIN_DASHBOARD_READY_EVENT = 'neko:yui-guide:plugin-dashboard:ready';
@@ -2452,6 +2453,23 @@
             element.setAttribute('data-yui-guide-spotlight-padding', String(padding));
             element.setAttribute('data-yui-guide-spotlight-radius', String(radius));
             return element;
+        }
+
+        createPluginManagementEntrySpotlight(button) {
+            const rect = this.getElementRect(button);
+            if (!rect) {
+                return button || null;
+            }
+
+            return this.createVirtualSpotlight('plugin-management-entry', {
+                left: rect.left - PLUGIN_MANAGEMENT_ENTRY_SPOTLIGHT_EXTRA_X,
+                top: rect.top,
+                right: rect.right + PLUGIN_MANAGEMENT_ENTRY_SPOTLIGHT_EXTRA_X,
+                bottom: rect.bottom
+            }, {
+                padding: DEFAULT_SPOTLIGHT_PADDING + 2,
+                radius: 18
+            }) || button;
         }
 
         createUnionSpotlight(key, elements, options) {
@@ -5124,10 +5142,7 @@
             }
 
             this.clearVirtualSpotlight('plugin-management-entry');
-            this.setSpotlightGeometryHint(button, {
-                padding: DEFAULT_SPOTLIGHT_PADDING + 2,
-                radius: 18
-            });
+            const spotlightTarget = this.createPluginManagementEntrySpotlight(button) || button;
             this.replaceRetainedExtraSpotlight(
                 (candidate) => candidate
                     && (
@@ -5137,9 +5152,9 @@
                             && candidate.getAttribute('data-yui-guide-virtual-spotlight') === 'plugin-management-entry'
                         )
                     ),
-                button
+                spotlightTarget
             );
-            this.overlay.activateSpotlight(button);
+            this.overlay.activateSpotlight(spotlightTarget);
 
             if (this.isCursorAlignedWithElement(button, 5)) {
                 return true;
@@ -5500,11 +5515,7 @@
             }
 
             this.clearVirtualSpotlight('plugin-management-entry');
-            this.setSpotlightGeometryHint(managementButton, {
-                padding: DEFAULT_SPOTLIGHT_PADDING + 2,
-                radius: 18
-            });
-            const managementSpotlightTarget = managementButton;
+            const managementSpotlightTarget = this.createPluginManagementEntrySpotlight(managementButton) || managementButton;
 
             this.overlay.activateSpotlight(managementSpotlightTarget);
             if (!(await this.waitForSceneDelay(scaleSceneMs(60, 40, 180))) || guardFailed()) {
@@ -5776,11 +5787,7 @@
                     return null;
                 }
                 this.clearVirtualSpotlight('plugin-management-entry');
-                this.setSpotlightGeometryHint(managementButton, {
-                    padding: DEFAULT_SPOTLIGHT_PADDING + 2,
-                    radius: 18
-                });
-                const managementSpotlightTarget = managementButton;
+                const managementSpotlightTarget = this.createPluginManagementEntrySpotlight(managementButton) || managementButton;
 
                 // 11-13. 高亮管理面板 -> 移动到高亮中心点 -> 点击并同步打开真实页面
                 this.addRetainedExtraSpotlight(managementSpotlightTarget);
