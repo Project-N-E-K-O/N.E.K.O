@@ -180,6 +180,17 @@ Live2DManager.prototype._resetParametersToInitialState = function(options = {}) 
 
     const coreModel = this.currentModel.internalModel.coreModel;
     const protectedIds = preserveExpression ? this._getActiveExpressionParamIds() : new Set();
+    const protectedIndexes = new Set();
+    if (preserveExpression && protectedIds.size > 0 && typeof coreModel.getParameterIndex === 'function') {
+        protectedIds.forEach((id) => {
+            try {
+                const idx = coreModel.getParameterIndex(id);
+                if (idx >= 0) protectedIndexes.add(idx);
+            } catch (e) {
+                // 参数不存在或当前 Cubism 版本不支持该查询，忽略。
+            }
+        });
+    }
     let resetCount = 0;
 
     for (const [paramId, initialValue] of Object.entries(this.initialParameters)) {
@@ -187,6 +198,7 @@ Live2DManager.prototype._resetParametersToInitialState = function(options = {}) 
             if (paramId.startsWith('param_')) {
                 const paramIndex = parseInt(paramId.substring(6), 10);
                 if (!isNaN(paramIndex)) {
+                    if (protectedIndexes.has(paramIndex)) continue;
                     let resolvedParamId = null;
                     try {
                         if (typeof coreModel.getParameterId === 'function') {
