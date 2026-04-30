@@ -407,16 +407,17 @@ class MemoReminderPlugin(NekoPluginBase):
         if not r.get("delivered"):
             self.ctx.push_message(
                 source="memo_reminder",
-                message_type="proactive_notification",
-                description=f"⏰ 备忘提醒 [{rid[:8]}]",
+                visibility=[],
+                ai_behavior="respond",
+                parts=[{"type": "text", "text": f"⏰ 提醒: {msg}"}],
                 priority=8,
-                content=f"⏰ 提醒: {msg}",
                 metadata={
                     "task_id": rid,
                     "reminder_id": rid,
                     "repeat": repeat_label,
                     "trigger_at": r.get("trigger_at"),
                     "created_at": r.get("created_at"),
+                    "description": f"⏰ 备忘提醒 [{rid[:8]}]",
                 },
                 target_lanlan=r.get("lanlan_name"),
             )

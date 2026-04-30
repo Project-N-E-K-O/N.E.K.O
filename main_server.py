@@ -638,6 +638,60 @@ async def _handle_agent_event(event: dict):
             return
         if event_type in ("task_result", "proactive_message"):
             text = (event.get("text") or "").strip()
+
+            # v2 push_message: media parts (image/audio/video) ride on the
+            # same proactive_message event.  Inject them straight into the
+            # realtime session before the (text → callback) path so the AI
+            # sees them in the same context window as the text it's about
+            # to be asked to respond to.  ai_behavior=blind suppresses
+            # injection (AI shouldn't see).
+            media_parts = event.get("media_parts") if isinstance(event.get("media_parts"), list) else []
+            ai_behavior_v2 = event.get("ai_behavior")
+            if media_parts and ai_behavior_v2 in ("respond", "read"):
+                sess = getattr(mgr, "session", None)
+                send_media = getattr(sess, "send_media_input", None) if sess else None
+                if send_media is None:
+                    logger.debug(
+                        "[EventBus] %s media_parts dropped: session=%s lacks send_media_input",
+                        event_type,
+                        type(sess).__name__ if sess else "None",
+                    )
+                else:
+                    import base64 as _b64
+
+                    for mp in media_parts:
+                        if not isinstance(mp, dict):
+                            continue
+                        b64 = mp.get("binary_base64")
+                        url = mp.get("url")
+                        mime = mp.get("mime") or "image/png"
+                        try:
+                            if isinstance(b64, str) and b64:
+                                data = _b64.b64decode(b64, validate=False)
+                            elif isinstance(url, str) and url:
+                                logger.debug(
+                                    "[EventBus] media_part url-only not yet fetched (mime=%s)",
+                                    mime,
+                                )
+                                # TODO(v0.9): fetch URL → bytes; until then
+                                # plugin authors should inline-encode for media.
+                                continue
+                            else:
+                                continue
+                        except Exception as e:
+                            logger.warning("[EventBus] media_part decode failed: %s", e)
+                            continue
+                        if not data:
+                            continue
+                        try:
+                            await send_media(data, mime)
+                            logger.debug(
+                                "[EventBus] media_part injected: mime=%s bytes=%d",
+                                mime, len(data),
+                            )
+                        except Exception as e:
+                            logger.warning("[EventBus] media_part send failed: %s", e)
+
             if text:
                 if event.get("direct_reply"):
                     detail_text = (event.get("detail") or text).strip()

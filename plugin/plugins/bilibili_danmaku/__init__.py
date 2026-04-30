@@ -2619,15 +2619,16 @@ class BiliDanmakuPlugin(NekoPluginBase):
             self.logger.info(f"_push_to_ai 调用: description={description}, priority={priority}, content_len={len(content)}")
             self.push_message(
                 source=self.name,
-                message_type="proactive_notification",
-                description=description,
-                content=content,
+                visibility=[],
+                ai_behavior="respond",
+                parts=[{"type": "text", "text": content}],
                 priority=priority,
                 metadata={
                     "room_id": self._room_id,
                     "plugin": self.name,
-                    "timestamp": datetime.now().isoformat()
-                }
+                    "description": description,
+                    "timestamp": datetime.now().isoformat(),
+                },
             )
             self.logger.info(f"_push_to_ai 成功: {description}")
         except Exception as e:
