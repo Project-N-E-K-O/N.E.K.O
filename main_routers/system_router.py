@@ -83,17 +83,19 @@ from config.prompts_proactive import (
     get_proactive_music_failsafe_hint,
     get_proactive_music_strict_constraint,
     get_proactive_format_sections,
+    get_screen_section_header, get_screen_img_hint,
     RECENT_PROACTIVE_CHATS_HEADER, RECENT_PROACTIVE_CHATS_FOOTER,
     RECENT_PROACTIVE_TIME_LABELS, RECENT_PROACTIVE_CHANNEL_LABELS,
     BEGIN_GENERATE,
-    SCREEN_SECTION_HEADER, SCREEN_SECTION_FOOTER,
-    SCREEN_WINDOW_TITLE, SCREEN_IMG_HINT,
+    SCREEN_SECTION_FOOTER,
+    SCREEN_WINDOW_TITLE,
     EXTERNAL_TOPIC_HEADER, EXTERNAL_TOPIC_FOOTER,
     MUSIC_SECTION_HEADER, MUSIC_SECTION_FOOTER,
     MEME_SECTION_HEADER, MEME_SECTION_FOOTER,
     PROACTIVE_SOURCE_LABELS,
     PROACTIVE_MUSIC_TAG_INSTRUCTIONS,
     MUSIC_SEARCH_RESULT_TEXTS,
+    build_proactive_action_note,
 )
 from utils.file_utils import atomic_write_json_async, read_json
 from utils.workshop_utils import get_workshop_path
@@ -4391,11 +4393,11 @@ async def proactive_chat(request: Request):
         # 构建屏幕内容段（vision 通道）
         screen_section = ""
         if screenshot_b64_for_phase2:
-            sl = _loc(SCREEN_SECTION_HEADER, proactive_lang)
+            sl = get_screen_section_header(master_name_current, proactive_lang)
             sf = _loc(SCREEN_SECTION_FOOTER, proactive_lang)
             vision_window = vision_content.get('window_title', '') if vision_content else ''
             window_line = _loc(SCREEN_WINDOW_TITLE, proactive_lang).format(window=vision_window) if vision_window else ""
-            hint = _loc(SCREEN_IMG_HINT, proactive_lang)
+            hint = get_screen_img_hint(master_name_current, proactive_lang)
             screen_section = f"{sl}\n{window_line}{hint}\n{sf}"
             print(f"[{lanlan_name}] Phase 2 将使用 vision 模型直接看截图")
         else:
@@ -4442,7 +4444,7 @@ async def proactive_chat(request: Request):
         music_playing_hint = ""
         if is_playing_music and current_track:
             track_name = current_track.get('name') or get_proactive_music_unknown_track_name(proactive_lang)
-            music_playing_hint = get_proactive_music_playing_hint(track_name, proactive_lang)
+            music_playing_hint = get_proactive_music_playing_hint(track_name, master_name_current, proactive_lang)
 
         # 静动分离：generate_prompt 作为静态 SystemMessage（可被缓存），
         # 追加的音乐/表情包指令作为动态上下文注入 HumanMessage
@@ -4481,6 +4483,7 @@ async def proactive_chat(request: Request):
         generate_prompt = get_proactive_generate_prompt(
             proactive_lang, music_playing_hint,
             has_music=bool(music_section), has_meme=bool(meme_section),
+            master_name=master_name_current,
         ).format(
             character_prompt=character_prompt,
             inner_thoughts=inner_thoughts,
@@ -4503,7 +4506,7 @@ async def proactive_chat(request: Request):
             )
             raw_data = music_content.get('raw_data', {}) if music_content else {}
             if raw_data.get('best_match', {}).get('status') == 'fuzzy':
-                dynamic_context_for_phase2 += get_proactive_music_failsafe_hint(proactive_lang)
+                dynamic_context_for_phase2 += get_proactive_music_failsafe_hint(master_name_current, proactive_lang)
 
         if is_playing_music:
             dynamic_context_for_phase2 += get_proactive_music_strict_constraint(proactive_lang)
@@ -4785,8 +4788,20 @@ async def proactive_chat(request: Request):
         # 一次性投递完整文本 + 记录历史 + TTS end + turn end
         # 传 proactive_sid：若 Phase 2 流结束到这里之间用户已打断（换了 sid），
         # finish 内部会跳过所有写入，避免 proactive 文本污染用户当前轮次。
+        # action_note：把"放了什么歌 / 分享了哪条内容 / 来源"作为元数据追加到
+        # AIMessage 历史，否则下一轮被反问"刚才放的什么"时 LLM 完全无从作答
+        # （只看得到自己说过的话，看不到自己实际投递了什么素材）。模板里对人
+        # 的称呼一律用 master_name 实名展开，不写"主人"这类物化称呼。
+        action_note = build_proactive_action_note(
+            primary_channel=primary_channel,
+            source_links=source_links,
+            language=proactive_lang,
+            master_name=master_name_current,
+        )
         committed = await mgr.finish_proactive_delivery(
-            response_text, expected_speech_id=proactive_sid
+            response_text,
+            expected_speech_id=proactive_sid,
+            action_note=action_note,
         )
         if not committed:
             # Proactive 内容未真正落库（用户已接管本轮），所有下游副作用必须跳过：

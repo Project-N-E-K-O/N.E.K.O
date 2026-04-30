@@ -40,6 +40,25 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/cloudsave", tags=["cloudsave"])
 
 
+CLOUDSAVE_ERROR_I18N_KEYS = {
+    "CLOUDSAVE_PROVIDER_UNAVAILABLE": "cloudsave.error.providerUnavailable",
+    "ACTIVE_SESSION_BLOCKED": "cloudsave.error.activeSessionBlocked",
+    "SESSION_TERMINATE_FAILED": "cloudsave.error.sessionTerminateFailed",
+    "MEMORY_SERVER_RELEASE_FAILED": "cloudsave.error.memoryServerReleaseFailed",
+    "LOCAL_CHARACTER_NOT_FOUND": "cloudsave.error.localCharacterNotFound",
+    "CLOUD_CHARACTER_NOT_FOUND": "cloudsave.error.cloudCharacterNotFound",
+    "CLOUDSAVE_CHARACTER_NOT_FOUND": "cloudsave.error.cloudCharacterNotFound",
+    "LOCAL_CHARACTER_EXISTS": "cloudsave.error.localCharacterExists",
+    "CLOUD_CHARACTER_EXISTS": "cloudsave.error.cloudCharacterExists",
+    "CLOUDSAVE_WRITE_FENCE_ACTIVE": "cloudsave.error.writeFenceActive",
+    "NAME_AUDIT_FAILED": "cloudsave.error.nameAuditFailed",
+    "CLOUDSAVE_UPLOAD_FAILED": "cloudsave.error.uploadFailed",
+    "CLOUDSAVE_DOWNLOAD_FAILED": "cloudsave.error.downloadFailed",
+    "LOCAL_RELOAD_FAILED_ROLLED_BACK": "cloudsave.error.localReloadFailedRolledBack",
+    "INVALID_JSON_BODY": "cloudsave.error.invalidJsonBody",
+}
+
+
 def _build_steam_autocloud_payload(config_manager) -> dict:
     return build_steam_autocloud_status(
         config_manager,
@@ -204,6 +223,8 @@ def _cloudsave_error_response(
     *,
     status_code: int = 400,
     character_name: str = "",
+    message_key: str = "",
+    message_params: dict | None = None,
     extra: dict | None = None,
 ):
     payload = {
@@ -211,6 +232,8 @@ def _cloudsave_error_response(
         "error": code,
         "code": code,
         "message": message,
+        "message_key": message_key or CLOUDSAVE_ERROR_I18N_KEYS.get(code, ""),
+        "message_params": message_params or {},
     }
     if character_name:
         payload["character_name"] = character_name
@@ -224,7 +247,7 @@ def _active_session_block_reason(character_name: str) -> str:
     mgr = session_manager.get(character_name)
     if mgr is None or not getattr(mgr, "is_active", False):
         return ""
-    return "角色存在活跃会话，暂不允许云端下载覆盖，请先停止会话后重试"
+    return "This character has an active session. Stop the session before downloading."
 
 
 async def _force_terminate_session(character_name: str) -> tuple[bool, str]:
@@ -328,7 +351,7 @@ async def post_cloudsave_character_upload(name: str, request: Request):
     if not is_cloudsave_provider_available(config_manager):
         return _cloudsave_error_response(
             "CLOUDSAVE_PROVIDER_UNAVAILABLE",
-            "云存档提供方当前不可用，已阻止上传操作",
+            "Cloud save provider is currently unavailable.",
             status_code=503,
             character_name=name,
         )
@@ -337,7 +360,7 @@ async def post_cloudsave_character_upload(name: str, request: Request):
     except Exception:
         return _cloudsave_error_response(
             "INVALID_JSON_BODY",
-            "请求体 JSON 解析失败",
+            "Invalid JSON request body.",
             status_code=400,
             character_name=name,
         )
@@ -345,9 +368,11 @@ async def post_cloudsave_character_upload(name: str, request: Request):
     if not isinstance(overwrite_val, bool):
         return _cloudsave_error_response(
             "INVALID_PARAMETER",
-            "overwrite 必须为布尔值",
+            "Invalid parameter: overwrite must be boolean.",
             status_code=400,
             character_name=name,
+            message_key="cloudsave.error.invalidBooleanParameter",
+            message_params={"parameter": "overwrite"},
         )
     overwrite = overwrite_val
 
@@ -366,7 +391,7 @@ async def post_cloudsave_character_upload(name: str, request: Request):
         logger.exception("云存档上传失败: %s", name)
         return _cloudsave_error_response(
             "CLOUDSAVE_UPLOAD_FAILED",
-            "上传失败，请稍后重试",
+            "Upload failed. Please try again later.",
             status_code=500,
             character_name=name,
         )
@@ -388,7 +413,7 @@ async def post_cloudsave_character_download(name: str, request: Request):
     if not is_cloudsave_provider_available(config_manager):
         return _cloudsave_error_response(
             "CLOUDSAVE_PROVIDER_UNAVAILABLE",
-            "云存档提供方当前不可用，已阻止下载操作",
+            "Cloud save provider is currently unavailable.",
             status_code=503,
             character_name=name,
         )
@@ -397,7 +422,7 @@ async def post_cloudsave_character_download(name: str, request: Request):
     except Exception:
         return _cloudsave_error_response(
             "INVALID_JSON_BODY",
-            "请求体 JSON 解析失败",
+            "Invalid JSON request body.",
             status_code=400,
             character_name=name,
         )
@@ -406,16 +431,20 @@ async def post_cloudsave_character_download(name: str, request: Request):
     if not isinstance(overwrite_val, bool):
         return _cloudsave_error_response(
             "INVALID_PARAMETER",
-            "overwrite 必须为布尔值",
+            "Invalid parameter: overwrite must be boolean.",
             status_code=400,
             character_name=name,
+            message_key="cloudsave.error.invalidBooleanParameter",
+            message_params={"parameter": "overwrite"},
         )
     if "backup_before_overwrite" in (body or {}) and not isinstance(backup_val, bool):
         return _cloudsave_error_response(
             "INVALID_PARAMETER",
-            "backup_before_overwrite 必须为布尔值",
+            "Invalid parameter: backup_before_overwrite must be boolean.",
             status_code=400,
             character_name=name,
+            message_key="cloudsave.error.invalidBooleanParameter",
+            message_params={"parameter": "backup_before_overwrite"},
         )
     overwrite = overwrite_val
     backup_before_overwrite = backup_val
@@ -435,9 +464,10 @@ async def post_cloudsave_character_download(name: str, request: Request):
         if not terminated_ok:
             return _cloudsave_error_response(
                 "SESSION_TERMINATE_FAILED",
-                f"终止活跃会话失败: {terminate_msg}",
+                f"Failed to terminate active session: {terminate_msg}",
                 status_code=503,
                 character_name=name,
+                message_params={"message": terminate_msg},
             )
         released_memory_handle = await release_memory_server_character(
             name,
@@ -446,7 +476,7 @@ async def post_cloudsave_character_download(name: str, request: Request):
         if not released_memory_handle:
             return _cloudsave_error_response(
                 "MEMORY_SERVER_RELEASE_FAILED",
-                "释放本地角色记忆句柄失败，已阻止下载覆盖，请稍后重试",
+                "Failed to release the local memory handle before overwrite. Please try again later.",
                 status_code=503,
                 character_name=name,
             )
@@ -476,7 +506,7 @@ async def post_cloudsave_character_download(name: str, request: Request):
         if not released_memory_handle:
             return _cloudsave_error_response(
                 "MEMORY_SERVER_RELEASE_FAILED",
-                "释放本地角色记忆句柄失败，已阻止下载覆盖，请稍后重试",
+                "Failed to release the local memory handle before overwrite. Please try again later.",
                 status_code=503,
                 character_name=name,
             )
@@ -501,7 +531,7 @@ async def post_cloudsave_character_download(name: str, request: Request):
         logger.exception("云存档下载失败: %s", name)
         return _cloudsave_error_response(
             "CLOUDSAVE_DOWNLOAD_FAILED",
-            "下载失败，请稍后重试",
+            "Download failed. Please try again later.",
             status_code=500,
             character_name=name,
         )
@@ -528,9 +558,10 @@ async def post_cloudsave_character_download(name: str, request: Request):
             rollback_error = str(rollback_exc)
         return _cloudsave_error_response(
             "LOCAL_RELOAD_FAILED_ROLLED_BACK",
-            f"下载已应用，但本地重载失败: {exc}",
+            f"The download was applied, but local reload failed: {exc}",
             status_code=500,
             character_name=name,
+            message_params={"message": str(exc)},
             extra={
                 "rolled_back": rollback_attempted and rollback_error == "" and rollback_notify_ok,
                 "rollback_error": rollback_error,

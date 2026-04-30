@@ -1278,6 +1278,43 @@ def _normalize_prompt_language(lang: str) -> str:
     return 'en'
 
 
+def _resolve_master_for_template(master_name: str | None, lang_key: str) -> str:
+    """把 master_name 归一化成可直接塞进 {master} 占位符的字符串。
+
+    空名 / None / 全空白 时返回 PROACTIVE_ACTION_NOTE_PLACEHOLDERS 里
+    对应 locale 的中性兜底（"对方" / "them" / "相手" / "상대" /
+    "собеседника"），避免任何模板里再出现"主人"等物化称呼。
+
+    lang_key 必须已经过 _normalize_prompt_language 归一化；caller 传未归一化
+    的区域标签（zh-CN / ja-JP）只能拿到英文兜底，丢失本地化。
+
+    PROACTIVE_ACTION_NOTE_PLACEHOLDERS 的引用故意放在函数体内：模块顶层执行
+    顺序里，本 helper 比 PROACTIVE_ACTION_NOTE_PLACEHOLDERS 字典定义早出现，
+    放函数体里靠延迟查找规避前向引用。
+    """
+    name = ' '.join(str(master_name or '').split())
+    if name:
+        return name
+    return PROACTIVE_ACTION_NOTE_PLACEHOLDERS.get(
+        lang_key, PROACTIVE_ACTION_NOTE_PLACEHOLDERS['en']
+    )['master']
+
+
+def _escape_format_braces(value: str) -> str:
+    """把字符串里的 ``{`` / ``}`` 双倍转义，让它在后续 str.format() 里被当字面量。
+
+    用于"先在 helper 里 .format(master=...) 展开本地 {master} 占位符、再把
+    结果拼回外层模板交给外层 .format() 处理"的双层 format 路径。如果 master_name
+    本身含 `{` `}`（用户起的怪名字 "A{B}"），第一次 .format 会原样塞入字面量
+    `A{B}`，但第二次 .format 会把它当成新的 `{B}` 占位符并 KeyError。
+
+    本 helper 在第一次 .format 前对 master 值做 ``{`` → ``{{`` / ``}`` → ``}}``
+    转义，第一次 .format 后字符串里就是 ``A{{B}}``；第二次 .format 把 ``{{`` /
+    ``}}`` 还原为 ``{`` / ``}``，最终输出 ``A{B}`` 字面量，且不会被误解析。
+    """
+    return value.replace('{', '{{').replace('}', '}}')
+
+
 PROACTIVE_CHAT_PROMPTS = {
     'zh': {
         'home': proactive_chat_prompt,
@@ -1375,11 +1412,11 @@ _P2_MUSIC_INSTRUCTION = {
 }
 
 _P2_MEME_INSTRUCTION = {
-    'zh': '\n- 关于表情包：当你决定结合表情包进行搭话时，系统会自动发送一张搞笑图片表情包（如熊猫头、沙雕图等）给主人看。你的文字中请不要直接评论"这张图"（比如不要说"这张图好搞笑"），而是直接利用这张图片的情绪/内容来表达你想说的话（比如配合一张累瘫的图说："主人你该休息啦"）。**注意：表情包是发给主人看的，不是发给你的；你不需要对它做出外部反应。**',
-    'en': '\n- About memes: When you decide to combine a meme with your message, the system will automatically send a funny meme image to the master. Please do NOT directly comment on "the image" in your text (e.g., don\'t say "This image is funny"). Instead, directly use the mood/content of the image to express what you want to say. **Note: The meme is sent TO the master, not TO you; you don\'t need to "react" to it externally.**',
-    'ja': '\n- ミームについて：ミームを取り入れて話しかけると決めたとき、システムが自動的に面白い画像をご主人に送信します。テキストの中で直接「この画像」について言及しないでください（例：「この画像面白いね」と言わないでください）。代わりに、画像の雰囲気や内容をそのまま利用して、伝えたいことを表現してください。**注意：ミームはご主人に送られるもので、あなたに送られるものではありません。外部から「反応」するのではなく、画像と一緒に思いを表現してください。**',
-    'ko': '\n- 밈에 대해: 밈을 결합하여 말을 걸기로 결정했을 때, 시스템이 자동으로 재미있는 이미지를 주인에게 보냅니다. 텍스트에서 직접 "이 사진"(예: "이 사진 웃기네요")에 대해 언급하지 마세요. 대신 이미지의 분위기나 내용을 직접 활용하여 하고 싶은 말을 표현하세요. **참고: 밈은 주인에게 보내는 것이지 당신에게 보내는 것이 아닙니다.**',
-    'ru': '\n- О мемах: когда вы решаете включить мем в свою реплику, система автоматически отправит смешное изображение хозяину. Пожалуйста, НЕ комментируйте само "изображение" в тексте (например, не говорите "эта картинка смешная"). Вместо этого напрямую используйте настроение или содержание картинки, чтобы выразить свою мысль. **Внимание: мем отправляется хозяину, а не вам; вам не нужно "реагировать" на него со стороны.**',
+    'zh': '\n- 关于表情包：当你决定结合表情包进行搭话时，系统会自动发送一张搞笑图片表情包（如熊猫头、沙雕图等）给{master}看。你的文字中请不要直接评论"这张图"（比如不要说"这张图好搞笑"），而是直接利用这张图片的情绪/内容来表达你想说的话（比如配合一张累瘫的图说："{master}你该休息啦"）。**注意：表情包是发给{master}看的，不是发给你的；你不需要对它做出外部反应。**',
+    'en': '\n- About memes: When you decide to combine a meme with your message, the system will automatically send a funny meme image to {master}. Please do NOT directly comment on "the image" in your text (e.g., don\'t say "This image is funny"). Instead, directly use the mood/content of the image to express what you want to say. **Note: The meme is sent TO {master}, not TO you; you don\'t need to "react" to it externally.**',
+    'ja': '\n- ミームについて：ミームを取り入れて話しかけると決めたとき、システムが自動的に面白い画像を{master}に送信します。テキストの中で直接「この画像」について言及しないでください（例：「この画像面白いね」と言わないでください）。代わりに、画像の雰囲気や内容をそのまま利用して、伝えたいことを表現してください。**注意：ミームは{master}に送られるもので、あなたに送られるものではありません。外部から「反応」するのではなく、画像と一緒に思いを表現してください。**',
+    'ko': '\n- 밈에 대해: 밈을 결합하여 말을 걸기로 결정했을 때, 시스템이 자동으로 재미있는 이미지를 {master}에게 보냅니다. 텍스트에서 직접 "이 사진"(예: "이 사진 웃기네요")에 대해 언급하지 마세요. 대신 이미지의 분위기나 내용을 직접 활용하여 하고 싶은 말을 표현하세요. **참고: 밈은 {master}에게 보내는 것이지 당신에게 보내는 것이 아닙니다.**',
+    'ru': '\n- О мемах: когда вы решаете включить мем в свою реплику, система автоматически отправит смешное изображение для {master}. Пожалуйста, НЕ комментируйте само "изображение" в тексте (например, не говорите "эта картинка смешная"). Вместо этого напрямую используйте настроение или содержание картинки, чтобы выразить свою мысль. **Внимание: мем отправляется для {master}, а не вам; вам не нужно "реагировать" на него со стороны.**',
 }
 
 
@@ -1928,10 +1965,13 @@ def get_proactive_screen_prompt(channel: str, lang: str = 'zh') -> str:
 
 
 def get_proactive_generate_prompt(lang: str = 'zh', music_playing_hint: str = "",
-                                  has_music: bool = False, has_meme: bool = False) -> str:
+                                  has_music: bool = False, has_meme: bool = False,
+                                  master_name: str | None = None) -> str:
     """
     获取 Phase 2 生成阶段 prompt。
     has_music / has_meme 控制是否注入音乐/表情包行为指令，避免无来源时产生幻觉。
+    master_name 用于把表情包指令里的 {master} 占位符提前展开成用户实际设定的名字
+    （或本地化中性兜底，例如"对方"/"them"），避免出现"主人"等物化称呼。
     """
     lang_key = _normalize_prompt_language(lang)
     prompt = PROACTIVE_GENERATE_PROMPTS.get(lang_key, PROACTIVE_GENERATE_PROMPTS.get('en', PROACTIVE_GENERATE_PROMPTS['zh']))
@@ -1939,6 +1979,15 @@ def get_proactive_generate_prompt(lang: str = 'zh', music_playing_hint: str = ""
     # 动态注入音乐/表情包行为指令
     music_instr = _P2_MUSIC_INSTRUCTION.get(lang_key, _P2_MUSIC_INSTRUCTION.get('en', _P2_MUSIC_INSTRUCTION['zh'])) if has_music else ''
     meme_instr = _P2_MEME_INSTRUCTION.get(lang_key, _P2_MEME_INSTRUCTION.get('en', _P2_MEME_INSTRUCTION['zh'])) if has_meme else ''
+    # meme_instr 含 {master} 占位符，需要在拼回外层 prompt 之前展开掉。否则它会
+    # 流到 main_routers/system_router.py 的整体 .format(master_name=..., ...) 那里，
+    # 而那一步只传 master_name 不传 master，会触发 KeyError。
+    # master_name 含 `{` / `}`（异常但合法的用户输入，例如 "A{B}"）时必须先转义，
+    # 否则第一次 .format 把字面量 `{B}` 注进 meme_instr，外层 .format 会再次解析
+    # 这个字面量并报 KeyError。Codex review #1043 r3164599879 抓的就是这条。
+    if meme_instr:
+        master_value = _escape_format_braces(_resolve_master_for_template(master_name, lang_key))
+        meme_instr = meme_instr.format(master=master_value)
     prompt = prompt.replace('{music_instruction}', music_instr).replace('{meme_instruction}', meme_instr)
 
     if music_playing_hint:
@@ -2150,11 +2199,11 @@ SCREEN_WINDOW_TITLE = {
 
 # ---------- 截图提示 ----------
 SCREEN_IMG_HINT = {
-    'zh': '（上方附有主人当前的屏幕截图，请直接观察截图内容来搭话）',
-    'en': "(The master's current screenshot is attached above — observe it directly)",
-    'ja': '（上にご主人のスクリーンショットがあります。直接観察してください）',
-    'ko': '(위에 주인의 스크린샷이 첨부되어 있습니다. 직접 관찰하세요)',
-    'ru': '(Выше прикреплён текущий скриншот экрана хозяина — наблюдайте его напрямую)',
+    'zh': '（上方附有{master}当前的屏幕截图，请直接观察截图内容来搭话）',
+    'en': "(The current screenshot of {master} is attached above — observe it directly)",
+    'ja': '（上に{master}のスクリーンショットがあります。直接観察してください）',
+    'ko': '(위에 {master}의 스크린샷이 첨부되어 있습니다. 직접 관찰하세요)',
+    'ru': '(Выше прикреплён текущий скриншот экрана для {master} — наблюдайте его напрямую)',
 }
 
 # ---------- 触发 LLM 开始生成 ----------
@@ -2200,13 +2249,13 @@ RECENT_PROACTIVE_CHANNEL_LABELS = {
     'ru': {'vision': 'экран', 'web': 'веб'},
 }
 
-# ---------- 主人屏幕区块 ----------
+# ---------- 屏幕区块 ----------
 SCREEN_SECTION_HEADER = {
-    'zh': '======主人的屏幕======',
-    'en': "======Master's Screen======",
-    'ja': '======ご主人の画面======',
-    'ko': '======주인의 화면======',
-    'ru': '======Экран хозяина======',
+    'zh': '======{master}的屏幕======',
+    'en': "======Screen of {master}======",
+    'ja': '======{master}の画面======',
+    'ko': '======{master}의 화면======',
+    'ru': '======Экран для {master}======',
 }
 
 SCREEN_SECTION_FOOTER = {
@@ -2464,7 +2513,7 @@ CONTEXT_SUMMARY_TASK_FOOTER = {
 
 # ---------- 主动搭话：当前正在放歌时的提示（引导 AI 聊当前的歌，而不是推荐新歌） ----------
 PROACTIVE_MUSIC_PLAYING_HINT = {
-    'zh': '\n[绝对指令] 当前正在播放音乐："{track_name}"。请仅限评价或探讨这首歌、歌手或音乐风格。**严禁**推荐新歌、**严禁**尝试更换曲目，请全力维持当前的听歌氛围，不要打扰主人的雅致。',
+    'zh': '\n[绝对指令] 当前正在播放音乐："{track_name}"。请仅限评价或探讨这首歌、歌手或音乐风格。**严禁**推荐新歌、**严禁**尝试更换曲目，请全力维持当前的听歌氛围，不要打扰{master}的雅致。',
     'en': '\n[ABSOLUTE COMMAND] Current music playing: "{track_name}". Please limit your discussion strictly to this song, artist, or genre. **DO NOT** recommend new songs or try to change the music. Focus entirely on maintaining the current vibe.',
     'ja': '\n[絶対命令] 現在音楽「{track_name}」を再生中です。この曲、アーティスト、または音楽ジャンルについてのみお話しください。新しい曲を勧めたり、曲を変更したりすることは**厳禁**です。現在の雰囲気を維持することに全力を注いでください。',
     'ko': '\n[절대 명령] 현재 음악 "{track_name}"이(가) 재생 중입니다. 오직 이 곡, 아티스트 또는 음악 장르에 대해서만 이야기하십시오. 새로운 곡을 추천하거나 곡을 바꾸는 것은 **엄격히 금지**됩니다. 현재의 분위기를 유지하는 데 집중하십시오.',
@@ -2480,11 +2529,11 @@ PROACTIVE_MUSIC_UNKNOWN_TRACK = {
 }
 
 PROACTIVE_MUSIC_FAILSAFE_HINTS = {
-    'zh': '\n[环境提示] 当前未找到与关键词精准匹配的资源。为你提供了一些风格相似的兜底曲目，请在对话中向主人说明，并确认是否符合他的心意。',
-    'en': '\n[Environment Hint] No exact match found for the keyword. Provided some fallback tracks with a similar style. Please explain this to the master and confirm if they like it.',
-    'ja': '\n[環境提示] キーワードに正確に一致するリソースが見つかりませんでした。似たようなスタイルの代替曲を提供しました。主人にその旨を説明し、気に入ってもらえるか確認してください。',
-    'ko': '\n[환경 힌트] 키워드와 정확히 일치하는 리소스를 찾을 수 없습니다. 유사한 스타일의 대체 곡을 제공했습니다. 주인에게 이 내용을 설명하고 마음에 드는지 확인하세요.',
-    'ru': '\n[Экологическая подсказка] Точного соответствия ключевому слову не найдено. Предоставлены запасные треки в похожем стиле. Пожалуйста, объясни это хозяину и уточни, нравятся ли они ему.',
+    'zh': '\n[环境提示] 当前未找到与关键词精准匹配的资源。为你提供了一些风格相似的兜底曲目，请在对话中向{master}说明，并确认是否符合心意。',
+    'en': '\n[Environment Hint] No exact match found for the keyword. Provided some fallback tracks with a similar style. Please explain this to {master} and confirm if they like it.',
+    'ja': '\n[環境提示] キーワードに正確に一致するリソースが見つかりませんでした。似たようなスタイルの代替曲を提供しました。{master}にその旨を説明し、気に入ってもらえるか確認してください。',
+    'ko': '\n[환경 힌트] 키워드와 정확히 일치하는 리소스를 찾을 수 없습니다. 유사한 스타일의 대체 곡을 제공했습니다. {master}에게 이 내용을 설명하고 마음에 드는지 확인하세요.',
+    'ru': '\n[Экологическая подсказка] Точного соответствия ключевому слову не найдено. Предоставлены запасные треки в похожем стиле. Пожалуйста, объясни это для {master} и уточни, нравятся ли они.',
 }
 
 PROACTIVE_MUSIC_STRICT_CONSTRAINT = {
@@ -2504,23 +2553,46 @@ def get_proactive_music_unknown_track_name(lang: str = 'zh') -> str:
     return PROACTIVE_MUSIC_UNKNOWN_TRACK.get(lang_key, PROACTIVE_MUSIC_UNKNOWN_TRACK.get('en', PROACTIVE_MUSIC_UNKNOWN_TRACK['zh']))
 
 
-def get_proactive_music_playing_hint(track_name: str, lang: str = 'zh') -> str:
+def get_proactive_music_playing_hint(track_name: str, master_name: str | None = None,
+                                     lang: str = 'zh') -> str:
     """
-    获取“正在放歌”的提示语
+    获取“正在放歌”的提示语。zh 模板含 {master} 占位符，由本函数展开成用户名或本地化
+    中性兜底（避免"主人"）；其它语言模板暂无 {master}，多余 kwarg 会被 .format 忽略。
+
+    本函数返回值会被 system_router 拼到 generate_prompt 末尾、再走整体 .format()，
+    所以 track_name 和 master_name 都需要先 escape `{` / `}`，否则用户起的怪
+    歌名/怪用户名会让外层 .format() KeyError（Codex review #1043 r3164599885）。
     """
     lang_key = _normalize_prompt_language(lang)
     template = PROACTIVE_MUSIC_PLAYING_HINT.get(lang_key, PROACTIVE_MUSIC_PLAYING_HINT.get('en', PROACTIVE_MUSIC_PLAYING_HINT['zh']))
-    # 对歌名中的花括号进行转义，防止后续整体 prompt.format() 时触发 KeyError
-    safe_track_name = track_name.replace('{', '{{').replace('}', '}}')
-    return template.format(track_name=safe_track_name)
+    safe_track_name = _escape_format_braces(track_name)
+    safe_master = _escape_format_braces(_resolve_master_for_template(master_name, lang_key))
+    return template.format(track_name=safe_track_name, master=safe_master)
 
 
-def get_proactive_music_failsafe_hint(lang: str = 'zh') -> str:
+def get_proactive_music_failsafe_hint(master_name: str | None = None, lang: str = 'zh') -> str:
     """
-    获取“模糊匹配/无资源”的兜底提示语
+    获取“模糊匹配/无资源”的兜底提示语。模板含 {master} 占位符，本函数负责展开。
     """
     lang_key = _normalize_prompt_language(lang)
-    return PROACTIVE_MUSIC_FAILSAFE_HINTS.get(lang_key, PROACTIVE_MUSIC_FAILSAFE_HINTS.get('en', PROACTIVE_MUSIC_FAILSAFE_HINTS['zh']))
+    template = PROACTIVE_MUSIC_FAILSAFE_HINTS.get(
+        lang_key, PROACTIVE_MUSIC_FAILSAFE_HINTS.get('en', PROACTIVE_MUSIC_FAILSAFE_HINTS['zh'])
+    )
+    return template.format(master=_resolve_master_for_template(master_name, lang_key))
+
+
+def get_screen_section_header(master_name: str | None = None, lang: str = 'zh') -> str:
+    """获取 vision 通道的屏幕区块标题（含 {master} 占位符的本地化展开）。"""
+    lang_key = _normalize_prompt_language(lang)
+    template = SCREEN_SECTION_HEADER.get(lang_key, SCREEN_SECTION_HEADER.get('en', SCREEN_SECTION_HEADER['zh']))
+    return template.format(master=_resolve_master_for_template(master_name, lang_key))
+
+
+def get_screen_img_hint(master_name: str | None = None, lang: str = 'zh') -> str:
+    """获取截图说明 hint（含 {master} 占位符的本地化展开）。"""
+    lang_key = _normalize_prompt_language(lang)
+    template = SCREEN_IMG_HINT.get(lang_key, SCREEN_IMG_HINT.get('en', SCREEN_IMG_HINT['zh']))
+    return template.format(master=_resolve_master_for_template(master_name, lang_key))
 
 
 def get_proactive_music_strict_constraint(lang: str = 'zh') -> str:
@@ -2834,3 +2906,184 @@ WEEKEND_HINT: dict[str, str] = {
     'ko': '오늘은 주말이다. 푹 쉬어.',
     'ru': 'Сегодня выходной — время отдохнуть.',
 }
+
+
+# ── Proactive action note (memory metadata appended to AI history) ──
+# 主动搭话完成时把"实际投递的素材"以一行 [...] 注解的形式追加到 AIMessage 文本里：
+# 放了哪首歌、分享了什么内容、来源是哪里。下一轮 LLM 拿到 memory_context 时
+# 就能看到这些事实，避免出现"刚才放的什么歌？""不知道，没记住"的违和感。
+#
+# 注解只进 _conversation_history（→ memory_context），不进 send_lanlan_response、
+# 不进 TTS — 用户不会在前端看到这一行；它只是给 AI 自己留的一份"行动日志"。
+
+PROACTIVE_ACTION_NOTE_MUSIC: dict[str, str] = {
+    'zh': '[给{master}放了《{title}》— {artist}]',
+    'en': '[Played for {master}: "{title}" by {artist}]',
+    'ja': '[{master}に再生した曲：『{title}』— {artist}]',
+    'ko': '[{master}에게 재생한 곡: 《{title}》 — {artist}]',
+    'ru': '[Для {master}: «{title}» — {artist}]',
+}
+
+PROACTIVE_ACTION_NOTE_MEME: dict[str, str] = {
+    'zh': '[给{master}分享了表情包：《{title}》（来自 {source}）]',
+    'en': '[Sent {master} a meme: "{title}" (from {source})]',
+    'ja': '[{master}に送ったスタンプ：『{title}』（{source} より）]',
+    'ko': '[{master}에게 보낸 짤: 《{title}》 ({source} 출처)]',
+    'ru': '[Отправлено для {master}: «{title}» (из {source})]',
+}
+
+PROACTIVE_ACTION_NOTE_WEB: dict[str, str] = {
+    'zh': '[给{master}分享了《{title}》（来自 {source}）]',
+    'en': '[Shared with {master}: "{title}" (from {source})]',
+    'ja': '[{master}にシェアした内容：『{title}』（{source} より）]',
+    'ko': '[{master}에게 공유한 내용: 《{title}》 ({source} 출처)]',
+    # 俄语：三条 PROACTIVE_ACTION_NOTE_* 统一用 "для + genitive" 结构，与 placeholders
+    # 'master': 'собеседника'（genitive 形式）兼容；空名兜底直接得到合法俄语，真实
+    # 名字塞进 для 后不变格但 LLM 仍能正确理解。原 'с {master}'（instrumental 介词）
+    # 跟 fallback 的 genitive 形式不匹配，改成 для 让三条 ru 模板一致。
+    'ru': '[Поделено для {master}: «{title}» (из {source})]',
+}
+
+PROACTIVE_ACTION_NOTE_PLACEHOLDERS: dict[str, dict[str, str]] = {
+    'zh': {'title': '未命名', 'artist': '未知艺术家', 'source': '未知来源', 'master': '对方'},
+    'en': {'title': 'Untitled', 'artist': 'Unknown Artist', 'source': 'Unknown Source', 'master': 'them'},
+    'ja': {'title': '無題', 'artist': '不明なアーティスト', 'source': '不明な出典', 'master': '相手'},
+    'ko': {'title': '제목 없음', 'artist': '아티스트 미상', 'source': '출처 미상', 'master': '상대'},
+    'ru': {'title': 'Без названия', 'artist': 'Неизвестный исполнитель', 'source': 'Неизвестный источник', 'master': 'собеседника'},
+}
+
+
+def build_proactive_action_note(
+    primary_channel: str,
+    source_links: list[dict] | None,
+    language: str,
+    master_name: str,
+) -> str:
+    """根据本轮 proactive 实际投递的内容构造一条简短行动注解。
+
+    返回值会被追加到 AIMessage 内容尾部（_conversation_history），让 LLM 下一轮
+    能记得"自己刚才放了什么 / 分享了什么 / 来源是哪"。返回空串表示无元数据可记。
+
+    挑模板的策略：先按 primary_channel 走 music / meme / web 三类对应的素材；
+    primary_channel 无明确素材类型（chat / unknown / 空）时，**回退到探测
+    source_links 实际素材**——这是为了 cover ``should_try_music_fallback``
+    路径：LLM Phase 2 输出 ``[CHAT]``（→ primary_channel='chat'）但本轮其实
+    已经把 music tracks 追加进 source_links 并设了 is_music_used=True，用户
+    那边实际听到了歌；不探测就会丢掉这条 "已放过" 元数据。优先级 music >
+    meme > web，与前端通常的素材展示重要性一致。
+
+    web 子通道集合 ``{'web', 'news', 'video', 'home', 'personal', 'window'}``
+    与 ``main_routers/system_router.py:build_proactive_response`` 里
+    ``web_link.get('mode', 'web')`` 产出的 mode 集合保持同步——遗漏任何一个
+    会让对应通道走到末尾的 chat fallback、被 music-first 优先级误识别成
+    "放歌"，覆盖与本通道一致的 ``PROACTIVE_SOURCE_LABELS`` keys。
+
+    vision 通道始终返回空：屏幕本身是用户那侧已有的画面，不是 AI 分享出去
+    的素材，无需事件日志。
+
+    模板里对人的称呼一律用 {master} 占位符，由调用方传入 master_name 展开成
+    用户实际设定的名字——避免出现"主人"这类物化称呼。title/artist/source
+    任一缺失时按本地化占位符兜底；source_links 里没有任何匹配素材就返回
+    空串，避免凭空编"未知 / 未知 / 未知"骚扰 LLM 上下文。
+    """
+    if not source_links:
+        return ''
+    channel = (primary_channel or '').strip().lower()
+
+    # vision: 屏幕本身不是分享出去的素材，即便 source_links 有数据也不写。
+    if channel == 'vision':
+        return ''
+
+    # 归一化 language：caller 通常已经传短码（zh/en/ja/ko/ru），但区域标签
+    # （zh-CN / ja-JP 等）应被映射到对应短码，否则 placeholders 和 _loc 会双双
+    # 落英文兜底，丢失本地化。下面 .format() 用 lang_key 而不是原始 language。
+    lang_key = _normalize_prompt_language(language)
+    placeholders = PROACTIVE_ACTION_NOTE_PLACEHOLDERS.get(
+        lang_key, PROACTIVE_ACTION_NOTE_PLACEHOLDERS['en']
+    )
+    # action_note 是单行元数据，必须强制压成一行。title/source/master_name 任一
+    # 含 \n/\r/\t 都会让 _conversation_history 里那条 AIMessage 的 content 多
+    # 出几行结构，下游 LLM context 渲染容易把 note 误当成正常对话内容。
+    def _single_line(value) -> str:
+        return ' '.join(str(value or '').split())
+
+    master = _single_line(master_name) or placeholders['master']
+
+    def _safe(value, fallback_key: str) -> str:
+        s = _single_line(value)
+        return s or placeholders[fallback_key]
+
+    def _is_music(link: dict) -> bool:
+        return link.get('type') == 'music' or link.get('source') == '音乐推荐'
+
+    def _is_meme(link: dict) -> bool:
+        return str(link.get('type', '')).lower().startswith('meme')
+
+    def _try_music() -> str:
+        track = next(
+            (l for l in source_links if isinstance(l, dict) and _is_music(l)),
+            None,
+        )
+        if not track:
+            return ''
+        return _loc(PROACTIVE_ACTION_NOTE_MUSIC, lang_key).format(
+            master=master,
+            title=_safe(track.get('title'), 'title'),
+            artist=_safe(track.get('artist'), 'artist'),
+        )
+
+    def _try_meme(allow_typeless_fallback: bool = False) -> str:
+        meme = next(
+            (l for l in source_links if isinstance(l, dict) and _is_meme(l)),
+            None,
+        )
+        # primary_channel='meme' 但素材没填 type=meme（早期 fallback 链路）：
+        # 回退到第一条非音乐链接当 meme 处理。chat/unknown 通道走探测路径时
+        # 不开这个回退，避免把任意 web link 误当作 meme。
+        if not meme and allow_typeless_fallback:
+            meme = next(
+                (
+                    l for l in source_links
+                    if isinstance(l, dict) and not _is_music(l)
+                ),
+                None,
+            )
+        if not meme:
+            return ''
+        return _loc(PROACTIVE_ACTION_NOTE_MEME, lang_key).format(
+            master=master,
+            title=_safe(meme.get('title'), 'title'),
+            source=_safe(meme.get('source'), 'source'),
+        )
+
+    def _try_web() -> str:
+        link = next(
+            (
+                l for l in source_links
+                if isinstance(l, dict) and not _is_music(l) and not _is_meme(l)
+            ),
+            None,
+        )
+        if not link:
+            return ''
+        return _loc(PROACTIVE_ACTION_NOTE_WEB, lang_key).format(
+            master=master,
+            title=_safe(link.get('title'), 'title'),
+            source=_safe(link.get('source'), 'source'),
+        )
+
+    if channel == 'music':
+        return _try_music()
+    if channel == 'meme':
+        return _try_meme(allow_typeless_fallback=True)
+    if channel in {'web', 'news', 'video', 'home', 'personal', 'window'}:
+        return _try_web()
+
+    # chat / unknown / 空 / 其它未识别通道 —— 回退探测 source_links 实际素材，
+    # 处理 should_try_music_fallback 等"primary_channel 与实际投递素材不一致"
+    # 的边角 case。优先 music > meme > web。
+    for builder in (_try_music, _try_meme, _try_web):
+        note = builder()
+        if note:
+            return note
+    return ''

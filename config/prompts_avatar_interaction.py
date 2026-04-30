@@ -626,103 +626,123 @@ _AVATAR_INTERACTION_REACTION_PROFILES = {
         },
     },
 }
+# Memory-note 模板里对人的称呼一律用 {master} 占位符，由 _build_avatar_interaction_memory_meta
+# 在格式化时展开成调用方传入的 master_name。禁止在模板里出现 "主人 / Your master /
+# ご主人さま / 주인 / Хозяин" 等附属称呼字面量；这是项目核心价值观，反 AI 物化。
+# 已有 tests/unit/test_avatar_interaction_memory_contract.py 的禁词测试做护栏。
 _AVATAR_INTERACTION_MEMORY_NOTE_TEMPLATES = {
     "zh": {
         "lollipop": {
-            "offer": "[主人喂了你一口棒棒糖]",
-            "tease": "[主人又喂了你一口棒棒糖]",
-            "tap_soft": "[主人连续拿棒棒糖喂你]",
+            "offer": "[{master}喂了你一口棒棒糖]",
+            "tease": "[{master}又喂了你一口棒棒糖]",
+            "tap_soft": "[{master}连续拿棒棒糖喂你]",
         },
         "fist": {
-            "poke": "[主人摸了摸你的头]",
-            "rapid": "[主人连续摸了摸你的头]",
+            "poke": "[{master}摸了摸你的头]",
+            "rapid": "[{master}连续摸了摸你的头]",
         },
         "hammer": {
-            "bonk": "[主人用锤子敲了敲你的头]",
-            "rapid": "[主人连续敲了你好几下]",
-            "easter_egg": "[主人用锤子重重敲了你的头]",
+            "bonk": "[{master}用锤子敲了敲你的头]",
+            "rapid": "[{master}连续敲了你好几下]",
+            "easter_egg": "[{master}用锤子重重敲了你的头]",
         },
     },
     "en": {
         "lollipop": {
-            "offer": "[Your master fed you a bite of lollipop]",
-            "tease": "[Your master fed you another bite of lollipop]",
-            "tap_soft": "[Your master kept feeding you the lollipop]",
+            "offer": "[{master} fed you a bite of lollipop]",
+            "tease": "[{master} fed you another bite of lollipop]",
+            "tap_soft": "[{master} kept feeding you the lollipop]",
         },
         "fist": {
-            "poke": "[Your master gave your head a gentle pat]",
-            "rapid": "[Your master repeatedly patted your head]",
+            "poke": "[{master} gave your head a gentle pat]",
+            "rapid": "[{master} repeatedly patted your head]",
         },
         "hammer": {
-            "bonk": "[Your master bonked your head with a hammer]",
-            "rapid": "[Your master bonked you several times]",
-            "easter_egg": "[Your master hit your head hard with a hammer]",
+            "bonk": "[{master} bonked your head with a hammer]",
+            "rapid": "[{master} bonked you several times]",
+            "easter_egg": "[{master} hit your head hard with a hammer]",
         },
     },
     "zh-TW": {
         "lollipop": {
-            "offer": "[主人餵了你一口棒棒糖]",
-            "tease": "[主人又餵了你一口棒棒糖]",
-            "tap_soft": "[主人連續拿棒棒糖餵你]",
+            "offer": "[{master}餵了你一口棒棒糖]",
+            "tease": "[{master}又餵了你一口棒棒糖]",
+            "tap_soft": "[{master}連續拿棒棒糖餵你]",
         },
         "fist": {
-            "poke": "[主人摸了摸你的頭]",
-            "rapid": "[主人連續摸了摸你的頭]",
+            "poke": "[{master}摸了摸你的頭]",
+            "rapid": "[{master}連續摸了摸你的頭]",
         },
         "hammer": {
-            "bonk": "[主人用槌子敲了敲你的頭]",
-            "rapid": "[主人連續敲了你好幾下]",
-            "easter_egg": "[主人用槌子重重敲了你的頭]",
+            "bonk": "[{master}用槌子敲了敲你的頭]",
+            "rapid": "[{master}連續敲了你好幾下]",
+            "easter_egg": "[{master}用槌子重重敲了你的頭]",
         },
     },
     "ja": {
         "lollipop": {
-            "offer": "[ご主人さまがあなたにペロペロキャンディをひとくち食べさせた]",
-            "tease": "[ご主人さまがあなたにもうひとくちペロペロキャンディを食べさせた]",
-            "tap_soft": "[ご主人さまがペロペロキャンディを続けて食べさせた]",
+            "offer": "[{master}があなたにペロペロキャンディをひとくち食べさせた]",
+            "tease": "[{master}があなたにもうひとくちペロペロキャンディを食べさせた]",
+            "tap_soft": "[{master}がペロペロキャンディを続けて食べさせた]",
         },
         "fist": {
-            "poke": "[ご主人さまがあなたの頭にそっと触れた]",
-            "rapid": "[ご主人さまがあなたの頭を続けて軽く触れた]",
+            "poke": "[{master}があなたの頭にそっと触れた]",
+            "rapid": "[{master}があなたの頭を続けて軽く触れた]",
         },
         "hammer": {
-            "bonk": "[ご主人さまがハンマーであなたの頭をこつんと叩いた]",
-            "rapid": "[ご主人さまがあなたを何度か続けて叩いた]",
-            "easter_egg": "[ご主人さまがハンマーであなたの頭を強く叩いた]",
+            "bonk": "[{master}がハンマーであなたの頭をこつんと叩いた]",
+            "rapid": "[{master}があなたを何度か続けて叩いた]",
+            "easter_egg": "[{master}がハンマーであなたの頭を強く叩いた]",
         },
     },
     "ko": {
+        # 韩语主格助词 이/가 与名字最后一个音节的韵尾相关；master_name 是任意字符串
+        # （可能是中/英/数字），无法静态判断，本文件统一用 "이"。memory_note 是给
+        # LLM 读的事件日志，不是 user-facing 字符串，小幅语法瑕疵 LLM 能正确理解。
         "lollipop": {
-            "offer": "[주인이 너에게 막대사탕을 한입 먹여 줬다]",
-            "tease": "[주인이 너에게 막대사탕을 한입 더 먹여 줬다]",
-            "tap_soft": "[주인이 막대사탕을 계속 먹여 줬다]",
+            "offer": "[{master}이 너에게 막대사탕을 한입 먹여 줬다]",
+            "tease": "[{master}이 너에게 막대사탕을 한입 더 먹여 줬다]",
+            "tap_soft": "[{master}이 막대사탕을 계속 먹여 줬다]",
         },
         "fist": {
-            "poke": "[주인이 네 머리를 살짝 만져 줬다]",
-            "rapid": "[주인이 네 머리를 여러 번 연달아 만져 줬다]",
+            "poke": "[{master}이 네 머리를 살짝 만져 줬다]",
+            "rapid": "[{master}이 네 머리를 여러 번 연달아 만져 줬다]",
         },
         "hammer": {
-            "bonk": "[주인이 망치로 네 머리를 콩 쳤다]",
-            "rapid": "[주인이 너를 여러 번 연달아 쳤다]",
-            "easter_egg": "[주인이 망치로 네 머리를 세게 쳤다]",
+            "bonk": "[{master}이 망치로 네 머리를 콩 쳤다]",
+            "rapid": "[{master}이 너를 여러 번 연달아 쳤다]",
+            "easter_egg": "[{master}이 망치로 네 머리를 세게 쳤다]",
         },
     },
     "ru": {
+        # 俄语过去时随主语性别变（дал / дала）。master_name 是任意字符串，无法静态
+        # 判断性别，本文件统一用阳性默认形式。同上：LLM-facing 事件日志容忍语法瑕疵。
         "lollipop": {
-            "offer": "[Хозяин дал тебе кусочек леденца]",
-            "tease": "[Хозяин дал тебе ещё кусочек леденца]",
-            "tap_soft": "[Хозяин продолжал кормить тебя леденцом]",
+            "offer": "[{master} дал тебе кусочек леденца]",
+            "tease": "[{master} дал тебе ещё кусочек леденца]",
+            "tap_soft": "[{master} продолжал кормить тебя леденцом]",
         },
         "fist": {
-            "poke": "[Хозяин мягко погладил тебя по голове]",
-            "rapid": "[Хозяин несколько раз подряд погладил тебя по голове]",
+            "poke": "[{master} мягко погладил тебя по голове]",
+            "rapid": "[{master} несколько раз подряд погладил тебя по голове]",
         },
         "hammer": {
-            "bonk": "[Хозяин стукнул тебя молотком по голове]",
-            "rapid": "[Хозяин несколько раз подряд ударил тебя]",
-            "easter_egg": "[Хозяин сильно ударил тебя молотком по голове]",
+            "bonk": "[{master} стукнул тебя молотком по голове]",
+            "rapid": "[{master} несколько раз подряд ударил тебя]",
+            "easter_egg": "[{master} сильно ударил тебя молотком по голове]",
         },
     },
+}
+
+# master_name 缺失/空时按本地化中性词回退；禁止回落到"主人 / master / ご主人さま /
+# 주인 / Хозяин"等物化称呼。
+_AVATAR_INTERACTION_MEMORY_NOTE_MASTER_FALLBACK: dict[str, str] = {
+    "zh": "对方",
+    "zh-TW": "對方",
+    "en": "they",
+    "ja": "相手",
+    "ko": "상대",
+    "ru": "собеседник",
 }
 _AVATAR_INTERACTION_DEFAULT_REACTION_PROFILES = {
     "zh": {
@@ -1141,13 +1161,26 @@ def _build_avatar_interaction_instruction(
     return "\n".join(lines)
 
 
-def _build_avatar_interaction_memory_note(language: str | None, payload: dict) -> str:
-    return _build_avatar_interaction_memory_meta(language, payload)["memory_note"]
+def _build_avatar_interaction_memory_note(
+    language: str | None, payload: dict, master_name: str
+) -> str:
+    return _build_avatar_interaction_memory_meta(language, payload, master_name)["memory_note"]
 
 
-def _build_avatar_interaction_memory_meta(language: str | None, payload: dict) -> dict:
+def _build_avatar_interaction_memory_meta(
+    language: str | None, payload: dict, master_name: str
+) -> dict:
+    """生成 avatar 互动的 memory_note + dedupe 元信息。
+
+    ``master_name`` 必传：模板内只用 ``{master}`` 占位符表达"对 AI 做事的人"，
+    禁止字面量"主人 / Your master / ご主人さま / 주인 / Хозяин"等物化称呼。
+    传入空串时按 ``_AVATAR_INTERACTION_MEMORY_NOTE_MASTER_FALLBACK`` 本地化
+    中性词兜底（zh="对方"、en="they" 等），同样不会回落到物化称呼。
+    """
     locale = _avatar_interaction_locale(language)
     templates = _AVATAR_INTERACTION_MEMORY_NOTE_TEMPLATES.get(locale, {})
+    fallback = _AVATAR_INTERACTION_MEMORY_NOTE_MASTER_FALLBACK
+    master = str(master_name or "").strip() or fallback.get(locale, fallback["en"])
     tool_id = str(payload.get("tool_id") or "").strip().lower()
     action_id = str(payload.get("action_id") or "").strip().lower()
     intensity = _normalize_avatar_interaction_intensity(tool_id, action_id, payload.get("intensity") or "normal")
@@ -1195,8 +1228,12 @@ def _build_avatar_interaction_memory_meta(language: str | None, payload: dict) -
     else:
         memory_note = templates.get(tool_id, {}).get(action_id, "")
 
+    formatted_note = str(memory_note or "").strip()
+    if formatted_note and "{master}" in formatted_note:
+        formatted_note = formatted_note.format(master=master)
+
     return {
-        "memory_note": str(memory_note or "").strip(),
+        "memory_note": formatted_note,
         "memory_dedupe_key": dedupe_key,
         "memory_dedupe_rank": dedupe_rank,
     }

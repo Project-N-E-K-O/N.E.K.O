@@ -8,6 +8,8 @@
         "cancel": "Cancelar",
         "confirm": "Confirmar",
         "next": "Próximo",
+        "back": "Voltar",
+        "retry": "Tentar novamente",
         "ok": "OK",
         "delete": "Excluir",
         "edit": "Editar",
@@ -40,7 +42,8 @@
         "toneMappingCineon": "Cinéon",
         "toneMappingACESFilmic": "ACES Filme",
         "toneMappingAgX": "AgX",
-        "toneMappingNeutral": "Neutro"
+        "toneMappingNeutral": "Neutro",
+        "loadFailed": "Falha no carregamento"
     },
     "autostartPrompt": {
         "title": "Quer que o N.E.K.O seja lançado na inicialização?",
@@ -134,7 +137,7 @@
         "selectModelFolder": "Selecione uma pasta contendo arquivos de modelo Live2D",
         "live2dInitFailed": "Falha na inicialização do ambiente de visualização Live2D",
         "live2dPreviewLoaded": "Visualização do modelo Live2D carregada com sucesso",
-        "live2dPreviewLoadFailed": "Falha no carregamento da visualização do modelo Live2D: {{error}}",
+        "live2dPreviewLoadFailed": "Falha ao carregar a prévia do modelo Live2D: {{error}}",
         "searchAriaLabel": "Pesquisar assinaturas",
         "sortAriaLabel": "Opções de classificação",
         "scrollTagsLeftAriaLabel": "Rolar etiquetas para a esquerda",
@@ -213,6 +216,12 @@
         "voiceReferencePrefixPlaceholder": "Somente letras e números, até 10 caracteres",
         "voiceReferenceLanguage": "Idioma de voz de referência",
         "voiceReferenceProviderHint": "Provedor recomendado",
+        "voiceReferenceInvalidFormat": "A voz de referência só aceita arquivos mp3 ou wav",
+        "voiceReferenceTooLarge": "A voz de referência deve ter no máximo 20 MB",
+        "voiceReferenceWriting": "Gravando voz de referência...",
+        "voiceReferenceUploadFailed": "Falha ao enviar a voz de referência",
+        "voiceReferenceCleanupFailed": "Falha ao limpar a voz de referência",
+        "voiceReferenceTempOnlySkipped": "A voz de referência só pode ser enviada pela pasta temporária do Workshop gerada pelo pacote do cartão de personagem; esta amostra foi ignorada.",
         "uploadTip": "Você pode selecionar itens em \"Gerenciar itens locais\" para preencher caminhos automaticamente ou inserir manualmente os caminhos completos para a pasta de conteúdo e a imagem de visualização.",
         "search": "Procurar:",
         "uploadSuccess": "Carregamento realizado com sucesso!",
@@ -1124,7 +1133,7 @@
         "modelListLoaded": "Lista de modelos carregada com sucesso",
         "modelListLoadFailed": "Falha ao carregar a lista de modelos",
         "cannotSaveNoCharacter": "Não é possível salvar: nome do personagem não especificado",
-        "modelSettingsSaved": "Configurações do modelo salvas: {{name}} -> {{model}}",
+        "modelSettingsSaved": "Configurações do modelo salvas",
         "saveFailed": "Falha ao salvar: {{error}}",
         "saveModelSettingsFailed": "Falha ao salvar as configurações do modelo",
         "modelLoadSuccess": "Modelo {{model}} carregado com sucesso",
@@ -1235,7 +1244,8 @@
             "deleteSuccess": "Animações {{count}} VMD excluídas com sucesso",
             "deleteFailed": "Falha ao excluir: animações {{count}}",
             "deleteSelectedCount": "Excluir selecionado ({{count}})",
-            "deletePartialSuccess": "Animações VMD {{count}} excluídas com sucesso, {{failed}} falhou"
+            "deletePartialSuccess": "{{count}} animações VMD excluídas com sucesso e {{failed}} não foram excluídas",
+            "playFailed": "Falha ao reproduzir animação"
         },
         "modelFilesFetchFailed": "Falha ao buscar lista de arquivos de modelo",
         "modelConfigFetchFailed": "Falha ao buscar configuração do modelo: {{status}}",
@@ -1257,7 +1267,8 @@
             "selectFirst": "Selecione uma expressão primeiro",
             "playing": "Expressão de reprodução: {{name}}",
             "reset": "Redefinir expressão",
-            "builtInOnly": "As expressões VRM normalmente são incorporadas ao modelo e não podem ser carregadas separadamente"
+            "builtInOnly": "As expressões VRM normalmente são incorporadas ao modelo e não podem ser carregadas separadamente",
+            "stopped": "Expressão interrompida"
         },
         "selectFolder": "Selecione a pasta",
         "vrmUpload": {
@@ -1298,13 +1309,14 @@
             "parametersSavePartialFailed": "Falha ao salvar: {{errors}}",
             "parametersSaveFailed": "Falha ao salvar: {{error}}",
             "emptyHint": "Nada aqui!",
-            "foundYou": "Você me encontrou!"
+            "foundYou": "Você me encontrou!",
+            "loadFailed": "Falha no carregamento",
+            "modelNotFound": "Modelo não encontrado",
+            "cannotGetModelFiles": "Não é possível obter os arquivos do modelo",
+            "cannotGetModelConfig": "Não é possível obter a configuração do modelo",
+            "modelDirectorySaveFailed": "Falha ao salvar o arquivo do diretório do modelo",
+            "userPreferencesSaveFailed": "Falha ao salvar preferências do usuário"
         },
-        "modelDirectorySaveFailed": "Falha ao salvar arquivo",
-        "userPreferencesSaveFailed": "Falha ao salvar preferências",
-        "modelNotFound": "Modelo não encontrado",
-        "cannotGetModelFiles": "Não é possível obter arquivos de modelo",
-        "cannotGetModelConfig": "Não é possível obter a configuração do modelo",
         "deleteModelTitle": "Excluir modelos importados",
         "deleteWarning": "A seguir lista todos os modelos que você importou. Você pode selecionar modelos para excluir. Nota: Esta ação não pode ser desfeita.",
         "deleteModel": "Excluir modelos importados",
@@ -1338,7 +1350,19 @@
             "saveFailed": "Falha ao salvar o mapeamento emocional",
             "noModelSelected": "Selecione um modelo primeiro"
         },
-        "noExpressionFiles": "Nenhum arquivo de expressão"
+        "pixiInitFailed": "Falha ao inicializar PIXI: {{error}}",
+        "switchDisplayFailed": "Falha ao alternar o modo de exibição: {{error}}",
+        "modelSavedLightingAndMmdFailed": "Configurações do modelo salvas, mas as configurações de iluminação e MMD falharam",
+        "modelSavedLightingFailed": "Configurações do modelo salvas, mas as configurações de iluminação falharam",
+        "modelSavedMmdSettingsFailed": "Configurações do modelo salvas, mas as configurações MMD falharam",
+        "modelSettingsSavedWithLighting": "Configurações do modelo e de iluminação salvas",
+        "vrmModuleTimeout": "O carregamento do módulo VRM expirou. Atualize a página e tente novamente.",
+        "loading": "Carregando lista de modelos...",
+        "loadFailed": "Falha no carregamento",
+        "motionStopped": "Movimento interrompido",
+        "expressionCleared": "Expressão limpa",
+        "cannotDeleteBoundModel": "Não é possível excluir o modelo em uso",
+        "modelInUse": "Em uso"
     },
     "voice": {
         "title": "Registro de voz",
@@ -1612,7 +1636,7 @@
         "cleanupRetainedRootDone": "O diretório de dados antigo foi limpo. Agora só resta o novo diretório de execução.",
         "cleanupRetainedRootFailed": "Não foi possível limpar o diretório de dados antigo. Tente novamente mais tarde.",
         "completionTitle": "Migração de armazenamento concluída",
-        "confirmReconnect": "Confirmar fechamento e reconexão do caminho",
+        "confirmReconnect": "Confirmar fechamento e reconexão ao caminho de armazenamento original",
         "confirmRestart": "Confirmar fechamento e migração",
         "confirmExistingTargetContent": "A pasta de destino já contém dados de execução do N.E.K.O. Se você continuar, a migração substituirá as pastas de dados de execução com o mesmo nome no destino. Os outros arquivos serão mantidos. Continuar?",
         "currentPath": "Caminho atual",
@@ -1673,8 +1697,8 @@
         "selectionSubmitUnexpected": "A API de seleção do local de armazenamento retornou um resultado não reconhecido.",
         "selectionTitle": "Seleção do local de armazenamento",
         "selectionIntroBody": "Miau~ atenção, humano! Para manter seus personagens, memórias e configurações mais seguros, vamos mover os dados para um cantinho dedicado e mais estável. Assim evitamos perder dados por pastas que mudam de lugar ou permissões travessas. Você pode continuar usando o cantinho antigo ou escolher um cantinho novo para seus personagens!",
-        "selectionIntroPickNew": "Escolher um novo cantinho",
-        "selectionIntroUseCurrent": "Manter o cantinho atual",
+        "selectionIntroPickNew": "Usar cantinho dedicado",
+        "selectionIntroUseCurrent": "Outro cantinho",
         "selectionIntroImageAlt": "Ilustração da migração de armazenamento do N.E.K.O",
         "statusUnexpected": "A API de status de manutenção do armazenamento retornou um resultado não reconhecido.",
         "storageBootstrapBlocking": "O armazenamento ainda precisa de recuperação ou migração, então esta sessão ainda não pode continuar.",
@@ -2184,6 +2208,8 @@
         },
         "error": {
             "providerUnavailable": "O provedor de salvamento na nuvem está indisponível no momento.",
+            "invalidJsonBody": "O corpo JSON da solicitação é inválido.",
+            "invalidBooleanParameter": "O parâmetro {{parameter}} deve ser booleano.",
             "activeSessionBlocked": "Este personagem tem uma sessão ativa. Pare a sessão antes de baixar.",
             "memoryServerReleaseFailed": "Falha ao liberar o identificador de memória local antes da substituição. Por favor, tente novamente mais tarde.",
             "localCharacterNotFound": "O personagem local não foi encontrado.",
@@ -2225,8 +2251,8 @@
             "ru": "Russo"
         },
         "interval": {
-            "chatIntervalBase": "Intervalo de Percepção",
-            "visionInterval": "Intervalo de leitura"
+            "chatIntervalBase": "Intervalo Mínimo",
+            "visionInterval": "Intervalo de Percepção"
         },
         "toggles": {
             "allowInterrupt": "Permitir interrupção",
@@ -2419,7 +2445,8 @@
             "selectHint": "Selecione animações inativas",
             "selectedCount": "{{count}} selecionado",
             "changed": "Animação inativa alterada: {{name}}",
-            "changeFailed": "Falha ao alterar a animação inativa"
+            "changeFailed": "Falha ao alterar a animação ociosa",
+            "stopped": "Animação ociosa interrompida"
         },
         "settingsTitle": "Configurações do modelo VRM",
         "cursorFollow": {
@@ -2467,7 +2494,8 @@
             "selectHint": "Selecione animações inativas",
             "selectedCount": "{{count}} selecionado",
             "changed": "Animação inativa alterada",
-            "changeFailed": "Falha ao alterar a animação inativa"
+            "changeFailed": "Falha ao alterar a animação ociosa",
+            "stopped": "Animação ociosa interrompida"
         },
         "managerInitFailed": "Falha na inicialização do gerenciador MMD",
         "moduleLoading": "Carregando módulos MMD...",
@@ -3186,7 +3214,8 @@
             "sad": "Triste",
             "angry": "Nervoso",
             "surprised": "Surpreso"
-        }
+        },
+        "configLoadFailed": "Falha ao carregar configuração"
     },
     "mmdEmotionManager": {
         "title": "Gerente de mapeamento de emoções MMD - Projeto N.E.K.O.",

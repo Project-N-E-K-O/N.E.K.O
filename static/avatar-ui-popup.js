@@ -1589,7 +1589,7 @@ function createIntervalControl(manager, prefix, toggle) {
     });
 
     const labelKey = toggle.id === 'proactive-chat' ? 'settings.interval.chatIntervalBase' : 'settings.interval.visionInterval';
-    const defaultLabel = toggle.id === 'proactive-chat' ? '感知间隔' : '读取间隔';
+    const defaultLabel = toggle.id === 'proactive-chat' ? '最低间隔' : '感知间隔';
     const labelText = document.createElement('span');
     labelText.textContent = window.t ? window.t(labelKey) : defaultLabel;
     labelText.setAttribute('data-i18n', labelKey);

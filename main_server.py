@@ -1285,6 +1285,7 @@ from main_routers.music_router import router as music_router # noqa
 from main_routers.pages_router import router as pages_router # noqa
 from main_routers.storage_location_router import router as storage_location_router # noqa
 from main_routers.system_router import router as system_router # noqa
+from main_routers.tool_router import router as tool_router # noqa
 from main_routers.vrm_router import router as vrm_router # noqa
 from main_routers.websocket_router import router as websocket_router # noqa
 from main_routers.workshop_router import router as workshop_router # noqa
@@ -1333,6 +1334,7 @@ app.include_router(storage_location_router)
 app.include_router(websocket_router)
 app.include_router(agent_router)
 app.include_router(system_router)
+app.include_router(tool_router)
 app.include_router(music_router)
 app.include_router(cookies_login_router) # Cookies登录相关路由，放在最后以避免与其他API路由冲突
 app.include_router(pages_router)  # 兜底路由需最后挂载

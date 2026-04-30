@@ -3305,6 +3305,48 @@ class ConfigManager:
 
             assert_cloudsave_writable(self, operation="repair", target="workshop_config.json")
             self._cleanup_invalid_workshop_configs()
+
+    def _rebase_workshop_config_after_storage_migration(self, config):
+        if not isinstance(config, dict):
+            return config
+
+        try:
+            root_state = self.load_root_state()
+        except Exception:
+            root_state = {}
+
+        candidate_source_roots = []
+        if isinstance(root_state, dict):
+            for key in ("last_migration_backup", "last_migration_source"):
+                raw_root = str(root_state.get(key) or "").strip()
+                if raw_root:
+                    candidate_source_roots.append(raw_root)
+
+        if not candidate_source_roots:
+            return config
+
+        try:
+            from utils.storage_path_rewrite import rebase_runtime_bound_workshop_config_paths
+        except Exception:
+            return config
+
+        rebased_config = config
+        for source_root in candidate_source_roots:
+            next_config = rebase_runtime_bound_workshop_config_paths(
+                rebased_config,
+                source_root=source_root,
+                target_root=self.app_docs_dir,
+            )
+            rebased_config = next_config
+
+        if rebased_config is config:
+            return config
+
+        try:
+            self.save_workshop_config(rebased_config)
+        except Exception as exc:
+            logger.warning("保存迁移后的 workshop 配置路径自愈结果失败: %s", exc)
+        return rebased_config
     
     def load_workshop_config(self):
         """
@@ -3318,16 +3360,18 @@ class ConfigManager:
             if os.path.exists(config_path):
                 with open(config_path, 'r', encoding='utf-8') as f:
                     config = json.load(f)
-                    logger.debug(f"成功加载workshop配置: {config}")
-                    return config
+                config = self._rebase_workshop_config_after_storage_migration(config)
+                logger.debug(f"成功加载workshop配置: {config}")
+                return config
             else:
                 # 配置不存在时直接返回默认值，避免只读查询链路隐式写入配置文件。
                 with self._workshop_config_lock:
                     if os.path.exists(config_path):
                         with open(config_path, 'r', encoding='utf-8') as f:
                             config = json.load(f)
-                            logger.debug(f"成功加载workshop配置: {config}")
-                            return config
+                        config = self._rebase_workshop_config_after_storage_migration(config)
+                        logger.debug(f"成功加载workshop配置: {config}")
+                        return config
 
                     default_config = {
                         "default_workshop_folder": str(self.workshop_dir),

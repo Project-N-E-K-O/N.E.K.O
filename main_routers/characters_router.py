@@ -83,7 +83,12 @@ from utils.persona_presets import (
 )
 from utils.url_utils import encode_url_path
 from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable
-from config import MEMORY_SERVER_PORT, TFLINK_UPLOAD_URL, CHARACTER_RESERVED_FIELDS
+from config import (
+    MEMORY_SERVER_PORT,
+    TFLINK_UPLOAD_URL,
+    CHARACTER_RESERVED_FIELDS,
+    DEFAULT_LIVE2D_MODEL_NAME,
+)
 
 router = APIRouter(prefix="/api/characters", tags=["characters"])
 logger = get_module_logger(__name__, "Main")
@@ -925,33 +930,41 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
             except Exception as e:
                 logger.warning(f"获取模型信息失败: {e}")
         
-        # 回退机制：如果没有找到模型，使用默认的mao_pro
+        # 回退机制：如果没有找到模型，使用默认模型 (DEFAULT_LIVE2D_MODEL_NAME)
         if not live2d_model_name or not model_info:
-            logger.info(f"猫娘 {catgirl_name} 未设置Live2D模型，回退到默认模型 mao_pro")
-            live2d_model_name = 'mao_pro'
+            logger.info(
+                f"猫娘 {catgirl_name} 未设置Live2D模型，回退到默认模型 "
+                f"{DEFAULT_LIVE2D_MODEL_NAME}"
+            )
+            live2d_model_name = DEFAULT_LIVE2D_MODEL_NAME
             try:
-                # 先从完整的模型列表中查找mao_pro
+                # 先从完整的模型列表中查找默认模型
                 all_models = find_models()
-                matching_model = next((m for m in all_models if m['name'] == 'mao_pro'), None)
-                
+                matching_model = next(
+                    (m for m in all_models if m['name'] == DEFAULT_LIVE2D_MODEL_NAME),
+                    None,
+                )
+
                 if matching_model:
                     model_info = matching_model.copy()
                     model_info['is_fallback'] = True
                 else:
                     # 如果找不到，回退到原来的逻辑
-                    model_dir, url_prefix = find_model_directory('mao_pro')
+                    model_dir, url_prefix = find_model_directory(DEFAULT_LIVE2D_MODEL_NAME)
                     if model_dir and os.path.exists(model_dir):
                         model_files = [f for f in os.listdir(model_dir) if f.endswith('.model3.json')]
                         if model_files:
                             model_file = model_files[0]
-                            model_path = f'{url_prefix}/mao_pro/{model_file}'
+                            model_path = f'{url_prefix}/{DEFAULT_LIVE2D_MODEL_NAME}/{model_file}'
                             model_info = {
-                                'name': 'mao_pro',
+                                'name': DEFAULT_LIVE2D_MODEL_NAME,
                                 'path': model_path,
                                 'is_fallback': True  # 标记这是回退模型
                             }
             except Exception as e:
-                logger.error(f"获取默认模型mao_pro失败: {e}")
+                logger.error(
+                    f"获取默认模型 {DEFAULT_LIVE2D_MODEL_NAME} 失败: {e}"
+                )
         
         if model_info and isinstance(model_info.get('path'), str):
             model_info['path'] = encode_url_path(model_info['path'])
@@ -2030,6 +2043,16 @@ async def update_character_persona_selection(name: str, request: Request):
     try:
         await config_manager.asave_characters(characters)
         await _clear_character_recent_history(config_manager, name)
+        session_manager = get_session_manager()
+        is_current_catgirl = (name == characters.get('当前猫娘', ''))
+        mgr = session_manager[name] if is_current_catgirl and name in session_manager else None
+        expected_session = getattr(mgr, "session", None) if mgr and mgr.is_active else None
+        if expected_session is not None:
+            await send_reload_page_notice(mgr, "人格设定已更新，页面即将刷新")
+            try:
+                await mgr.end_session(by_server=True, expected_session=expected_session)
+            except Exception as e:
+                logger.error(f"结束 session 时出错: {e}")
 
         initialize_one_character = get_init_one_catgirl()
         await initialize_one_character(name, is_new=False)
@@ -2068,6 +2091,17 @@ async def clear_character_persona_selection(name: str):
     try:
         await config_manager.asave_characters(characters)
         await _clear_character_recent_history(config_manager, name)
+
+        session_manager = get_session_manager()
+        is_current_catgirl = (name == characters.get('当前猫娘', ''))
+        mgr = session_manager[name] if is_current_catgirl and name in session_manager else None
+        expected_session = getattr(mgr, "session", None) if mgr and mgr.is_active else None
+        if expected_session is not None:
+            await send_reload_page_notice(mgr, "人格设定已更新，页面即将刷新")
+            try:
+                await mgr.end_session(by_server=True, expected_session=expected_session)
+            except Exception as e:
+                logger.error(f"结束 session 时出错: {e}")
 
         initialize_one_character = get_init_one_catgirl()
         await initialize_one_character(name, is_new=False)
@@ -3954,7 +3988,7 @@ async def export_catgirl_card(name: str):
     3. 将压缩包数据拼接到PNG图片中
     4. 返回PNG图片供下载
 
-    注意：默认模型(mao_pro)不会被包含在导出中
+    注意：默认模型(DEFAULT_LIVE2D_MODEL_NAME)不会被包含在导出中
     """
     import zipfile
     import tempfile
@@ -4025,8 +4059,11 @@ async def export_catgirl_card(name: str):
                             live2d_name = live2d_name.split('/')[-1]
 
                         # 检查是否是默认模型
-                        if live2d_name == 'mao_pro':
-                            logger.info(f'猫娘 {name} 使用的是默认模型 mao_pro，跳过模型打包')
+                        if live2d_name == DEFAULT_LIVE2D_MODEL_NAME:
+                            logger.info(
+                                f'猫娘 {name} 使用的是默认模型 '
+                                f'{DEFAULT_LIVE2D_MODEL_NAME}，跳过模型打包'
+                            )
                         else:
                             # 查找模型目录
                             model_dir, _ = find_model_directory(live2d_name)
@@ -5098,7 +5135,7 @@ async def export_catgirl_with_portrait(
                     live2d_path = get_reserved(catgirl_data, 'avatar', 'live2d', 'model_path', default='')
                     if live2d_path and live2d_path.strip():
                         live2d_name = live2d_path.split('/')[0] if '/' in live2d_path else live2d_path.replace('.model3.json', '')
-                        if live2d_name and live2d_name != 'mao_pro':
+                        if live2d_name and live2d_name != DEFAULT_LIVE2D_MODEL_NAME:
                             model_dir, _ = find_model_directory(live2d_name)
                             if model_dir and os.path.exists(model_dir):
                                 if is_user_imported_model(model_dir, _config_manager):

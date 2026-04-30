@@ -8,6 +8,8 @@
         "cancel": "취소",
         "confirm": "확인",
         "next": "다음",
+        "back": "뒤로",
+        "retry": "다시 시도",
         "ok": "알았어",
         "delete": "삭제",
         "edit": "편집",
@@ -40,7 +42,8 @@
         "toneMappingCineon": "Cineon",
         "toneMappingACESFilmic": "ACES Filmic",
         "toneMappingAgX": "AgX",
-        "toneMappingNeutral": "Neutral"
+        "toneMappingNeutral": "Neutral",
+        "loadFailed": "로드 실패"
     },
     "autostartPrompt": {
         "title": "N.E.K.O를 시작 시 자동 실행할까요?",
@@ -134,7 +137,7 @@
         "selectModelFolder": "Live2D 모델 파일이 포함된 폴더를 선택하세요",
         "live2dInitFailed": "Live2D 미리보기 환경 초기화 실패",
         "live2dPreviewLoaded": "Live2D 모델 미리보기가 성공적으로 로드되었습니다.",
-        "live2dPreviewLoadFailed": "Live2D 모델 미리보기 로드 실패: {{error}}",
+        "live2dPreviewLoadFailed": "Live2D 모델 미리보기를 불러오지 못했습니다: {{error}}",
         "searchAriaLabel": "구독 항목 검색",
         "sortAriaLabel": "정렬 방식",
         "scrollTagsLeftAriaLabel": "태그를 왼쪽으로 스크롤",
@@ -213,6 +216,12 @@
         "voiceReferencePrefixPlaceholder": "영문자와 숫자만, 최대 10자",
         "voiceReferenceLanguage": "참고 음성 언어",
         "voiceReferenceProviderHint": "권장 제공자",
+        "voiceReferenceInvalidFormat": "참고 음성은 mp3 또는 wav 형식만 지원합니다",
+        "voiceReferenceTooLarge": "참고 음성 크기는 20MB 이하여야 합니다",
+        "voiceReferenceWriting": "참고 음성 업로드 중...",
+        "voiceReferenceUploadFailed": "참고 음성 업로드 실패",
+        "voiceReferenceCleanupFailed": "참고 음성 정리 실패",
+        "voiceReferenceTempOnlySkipped": "참고 음성은 캐릭터 카드 패키징 후 생성된 창작마당 임시 폴더에서만 업로드할 수 있어 이 샘플은 건너뛰었습니다.",
         "uploadTip": "\"로컬 항목 관리\"에서 항목을 선택하여 경로를 자동으로 채우거나 콘텐츠 폴더 및 미리보기 이미지의 전체 경로를 수동으로 입력할 수 있습니다.",
         "search": "검색:",
         "uploadSuccess": "업로드가 성공했습니다!",
@@ -1124,7 +1133,7 @@
         "modelListLoaded": "모델 목록이 성공적으로 로드되었습니다.",
         "modelListLoadFailed": "모델 목록을 로드하지 못했습니다.",
         "cannotSaveNoCharacter": "저장할 수 없습니다: 캐릭터 이름이 지정되지 않았습니다.",
-        "modelSettingsSaved": "저장된 모델 설정: {{name}} -> {{model}}",
+        "modelSettingsSaved": "모델 설정이 저장되었습니다",
         "saveFailed": "저장 실패: {{error}}",
         "saveModelSettingsFailed": "모델 설정을 저장하지 못했습니다.",
         "modelLoadSuccess": "모델 {{model}}이(가) 성공적으로 로드되었습니다.",
@@ -1235,7 +1244,8 @@
             "deleteSuccess": "{{count}}개의 VMD 애니메이션 삭제 성공",
             "deleteFailed": "삭제 실패: {{count}}개의 애니메이션",
             "deleteSelectedCount": "선택 삭제 ({{count}})",
-            "deletePartialSuccess": "{{count}}개의 VMD 애니메이션 삭제 성공, {{failed}}개 실패"
+            "deletePartialSuccess": "{{count}}개의 VMD 애니메이션 삭제 성공, {{failed}}개 실패",
+            "playFailed": "애니메이션 재생 실패"
         },
         "modelFilesFetchFailed": "모델 파일 목록을 가져오지 못했습니다.",
         "modelConfigFetchFailed": "모델 구성을 가져오지 못했습니다: {{status}}",
@@ -1257,7 +1267,8 @@
             "selectFirst": "먼저 표현식을 선택하세요.",
             "playing": "표현식 재생: {{name}}",
             "reset": "표현식 재설정",
-            "builtInOnly": "VRM 표현은 일반적으로 모델에 내장되어 있으며 별도로 업로드할 수 없습니다."
+            "builtInOnly": "VRM 표현은 일반적으로 모델에 내장되어 있으며 별도로 업로드할 수 없습니다.",
+            "stopped": "표현식 재생이 중지되었습니다"
         },
         "selectFolder": "폴더 선택",
         "vrmUpload": {
@@ -1298,13 +1309,14 @@
             "parametersSavePartialFailed": "저장 실패: {{errors}}",
             "parametersSaveFailed": "저장 실패: {{error}}",
             "emptyHint": "여기엔 아무것도 없어요!",
-            "foundYou": "찾았다!"
+            "foundYou": "찾았다!",
+            "loadFailed": "로드 실패",
+            "modelNotFound": "모델을 찾을 수 없습니다",
+            "cannotGetModelFiles": "모델 파일을 가져올 수 없습니다",
+            "cannotGetModelConfig": "모델 설정을 가져올 수 없습니다",
+            "modelDirectorySaveFailed": "모델 디렉터리 파일 저장 실패",
+            "userPreferencesSaveFailed": "사용자 기본 설정 저장 실패"
         },
-        "modelDirectorySaveFailed": "파일 저장 실패",
-        "userPreferencesSaveFailed": "기본 설정 저장 실패",
-        "modelNotFound": "모델을 찾을 수 없음",
-        "cannotGetModelFiles": "모델 파일을 가져올 수 없습니다.",
-        "cannotGetModelConfig": "모델 구성을 가져올 수 없습니다.",
         "deleteModelTitle": "가져온 모델 삭제",
         "deleteWarning": "다음은 가져온 모든 모델을 나열합니다. 삭제할 모델을 선택할 수 있습니다. 참고: 이 작업은 취소할 수 없습니다.",
         "deleteModel": "가져온 모델 삭제",
@@ -1338,7 +1350,19 @@
             "saveFailed": "감정 매핑을 저장하지 못했습니다.",
             "noModelSelected": "먼저 모델을 선택하세요."
         },
-        "noExpressionFiles": "표정 파일 없음"
+        "pixiInitFailed": "PIXI 초기화 실패: {{error}}",
+        "switchDisplayFailed": "표시 모드 전환 실패: {{error}}",
+        "modelSavedLightingAndMmdFailed": "모델 설정은 저장되었지만 조명 및 MMD 설정 저장에 실패했습니다",
+        "modelSavedLightingFailed": "모델 설정은 저장되었지만 조명 설정 저장에 실패했습니다",
+        "modelSavedMmdSettingsFailed": "모델 설정은 저장되었지만 MMD 설정 저장에 실패했습니다",
+        "modelSettingsSavedWithLighting": "모델 및 조명 설정이 저장되었습니다",
+        "vrmModuleTimeout": "VRM 모듈 로드 시간이 초과되었습니다. 페이지를 새로고침해 주세요.",
+        "loading": "모델 목록 로드 중...",
+        "loadFailed": "로드 실패",
+        "motionStopped": "동작이 중지되었습니다",
+        "expressionCleared": "표정이 지워졌습니다",
+        "cannotDeleteBoundModel": "현재 사용 중인 모델은 삭제할 수 없습니다",
+        "modelInUse": "사용 중"
     },
     "voice": {
         "title": "음성 등록",
@@ -1612,7 +1636,7 @@
         "cleanupRetainedRootDone": "이전 데이터 디렉터리를 정리했습니다. 이제 새 실행 디렉터리만 남아 있습니다.",
         "cleanupRetainedRootFailed": "이전 데이터 디렉터리를 정리하지 못했습니다. 잠시 후 다시 시도해 주세요.",
         "completionTitle": "저장소 이전이 완료되었습니다",
-        "confirmReconnect": "종료 후 경로 다시 연결 확인",
+        "confirmReconnect": "종료 후 원래 저장 경로 다시 연결 확인",
         "confirmRestart": "종료 후 이전 확인",
         "confirmExistingTargetContent": "대상 폴더에 이미 N.E.K.O 실행 데이터가 들어 있습니다. 계속하면 대상에 있는 같은 이름의 실행 데이터 폴더를 덮어쓰고, 그 밖의 파일은 그대로 유지합니다. 계속할까요?",
         "currentPath": "현재 경로",
@@ -1673,8 +1697,8 @@
         "selectionSubmitUnexpected": "저장 위치 선택 API 가 알 수 없는 결과를 반환했습니다.",
         "selectionTitle": "저장 위치 선택",
         "selectionIntroBody": "야옹~ 안내할게요! 캐릭터, 기억, 설정을 더 안전하게 지키기 위해 데이터를 더 안정적인 전용 보금자리로 옮기려고 해요. 폴더가 엉뚱한 곳으로 가거나 권한 문제로 데이터가 사라질 걱정을 줄일 수 있어요. 기존 보금자리를 계속 써도 되고, 새 보금자리를 골라도 돼요!",
-        "selectionIntroPickNew": "새 보금자리 선택하기",
-        "selectionIntroUseCurrent": "지금 보금자리 쓰기",
+        "selectionIntroPickNew": "전용 보금자리 쓰기",
+        "selectionIntroUseCurrent": "다른 보금자리",
         "selectionIntroImageAlt": "N.E.K.O 저장 위치 이전 안내 이미지",
         "statusUnexpected": "저장소 유지보수 상태 API 가 알 수 없는 결과를 반환했습니다.",
         "storageBootstrapBlocking": "저장소는 아직 복구 또는 이전이 필요하므로 이 세션을 계속할 수 없습니다.",
@@ -2184,6 +2208,8 @@
         },
         "error": {
             "providerUnavailable": "클라우드 저장 제공자를 현재 사용할 수 없습니다.",
+            "invalidJsonBody": "요청 본문 JSON을 해석하지 못했습니다.",
+            "invalidBooleanParameter": "{{parameter}} 매개변수는 불리언 값이어야 합니다.",
             "activeSessionBlocked": "이 캐릭터에는 활성 세션이 있습니다. 다운로드 전에 세션을 중지하세요.",
             "memoryServerReleaseFailed": "덮어쓰기 전에 로컬 메모리 핸들을 해제하지 못했습니다. 나중에 다시 시도해 주세요.",
             "localCharacterNotFound": "로컬 캐릭터를 찾을 수 없습니다.",
@@ -2225,8 +2251,8 @@
             "ru": "Русский"
         },
         "interval": {
-            "chatIntervalBase": "인지 간격",
-            "visionInterval": "읽기 간격"
+            "chatIntervalBase": "최소 간격",
+            "visionInterval": "인지 간격"
         },
         "toggles": {
             "allowInterrupt": "인터럽트 허용",
@@ -2419,7 +2445,8 @@
             "selectHint": "대기 동작 선택",
             "selectedCount": "{{count}}개 선택됨",
             "changed": "대기 애니메이션이 변경되었습니다: {{name}}",
-            "changeFailed": "대기 애니메이션 변경 실패"
+            "changeFailed": "대기 애니메이션 변경 실패",
+            "stopped": "대기 애니메이션이 중지되었습니다"
         },
         "settingsTitle": "VRM 모델 설정",
         "cursorFollow": {
@@ -2467,7 +2494,8 @@
             "selectHint": "대기 동작 선택",
             "selectedCount": "{{count}}개 선택됨",
             "changed": "대기 애니메이션이 변경되었습니다",
-            "changeFailed": "대기 애니메이션 변경에 실패했습니다"
+            "changeFailed": "대기 애니메이션 변경에 실패했습니다",
+            "stopped": "대기 애니메이션이 중지되었습니다"
         },
         "managerInitFailed": "MMD 관리자 초기화에 실패했습니다",
         "moduleLoading": "MMD 모듈을 로드하는 중...",
@@ -3186,7 +3214,8 @@
             "sad": "슬픔 (Sad)",
             "angry": "화남 (Angry)",
             "surprised": "놀람 (Surprised)"
-        }
+        },
+        "configLoadFailed": "설정 로드 실패"
     },
     "mmdEmotionManager": {
         "title": "MMD 감정 매핑 관리자 - Project N.E.K.O.",
