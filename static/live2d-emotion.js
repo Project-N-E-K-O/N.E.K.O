@@ -1097,6 +1097,13 @@ Live2DManager.prototype.setEmotion = async function(emotion) {
         // 播放动作
         await this.playMotion(emotion);
 
+        // 即使当前情感没有可用 expression/motion，也要把 full reset 清掉的常驻表情补回。
+        try {
+            await this.applyPersistentExpressionsNative(true);
+        } catch (e) {
+            console.warn('重新应用常驻表情失败:', e);
+        }
+
         console.log(`情感 ${emotion} 设置完成`);
     } catch (error) {
         console.error(`设置情感 ${emotion} 失败:`, error);
