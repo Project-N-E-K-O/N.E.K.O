@@ -1001,6 +1001,7 @@
                     window.currentTurnGeminiBubbles = window.currentTurnGeminiBubbles || [];
                     window.currentTurnGeminiBubbles.push(msgDiv);
                     createdVisibleBubble = true;
+                    markAssistantVisibleResponse();
                 } else {
                     // 仅有指令无文本，继续保持指针为空，直到出现有意义的文本块
                     window.currentGeminiMessage = null;
