@@ -494,7 +494,7 @@ export default {
       },
       packageOperations: {
         title: 'Operações de pacote',
-        body: 'Escolha modos de empacotamento, inspecione pacotes ou analise bundles. O tutorial não executa ações perigosas.'
+        body: 'Escolha modos de empacotamento, inspecione pacotes, descompacte ou analise bundles. O tutorial não executa ações perigosas.'
       },
       pluginDetail: {
         title: 'Detalhes do plugin',
