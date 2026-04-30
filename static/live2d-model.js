@@ -78,6 +78,8 @@ Live2DManager.prototype.removeModel = async function(options = {}) {
     this.initialParameters = {};
     this.motionBaselineParameters = {};
     this._activeExpressionParamIds = null;
+    this._activeMotionParamIds = null;
+    this._motionParameterTrackGeneration = 0;
     this._motionTimerGeneration = 0;
 
     if (activeModel) {
@@ -844,6 +846,13 @@ Live2DManager.prototype.setupIdleMotionLoop = function(model) {
             console.log('[Live2D] 预览模式中，忽略 motionFinish，不启动新 Idle');
             return;
         }
+        if (typeof this.clearEmotionEffects === 'function') {
+            try {
+                this.clearEmotionEffects();
+            } catch (e) {
+                console.warn('[Live2D] motionFinish 后清理 motion 参数失败:', e);
+            }
+        }
         const randomDelay = 1000 + Math.random() * 2000;
         scheduleIdleMotion(randomDelay);
     };
@@ -857,6 +866,11 @@ Live2DManager.prototype._playIdleMotion = function(motionManager) {
     if (this._temporaryMotionSuspendToken) {
         return;
     }
+    const trackMotionFile = (file) => {
+        if (file && typeof this._trackActiveMotionParametersFromFile === 'function') {
+            this._trackActiveMotionParametersFromFile(file).catch(() => {});
+        }
+    };
     const idleAnimations = this._userIdleAnimations;
     if (idleAnimations && idleAnimations.length > 0) {
         // 兼容性获取 motionGroups，优先取公开属性，fallback 到私有属性
@@ -873,12 +887,23 @@ Live2DManager.prototype._playIdleMotion = function(motionManager) {
                     const idx = group.indexOf(chosen);
                     if (idx >= 0) {
                         console.log(`[Live2D] 播放用户保存的待机动作: ${chosen.file}`);
+                        trackMotionFile(chosen.file);
                         motionManager.startMotion('PreviewAll', idx);
                         return;
                     }
                 }
             }
         }
+    }
+    const definitions = motionManager.definitions || motionManager._definitions || {};
+    const idleDefinitions = definitions.Idle;
+    if (Array.isArray(idleDefinitions) && idleDefinitions.length > 0) {
+        const idx = Math.floor(Math.random() * idleDefinitions.length);
+        const definition = idleDefinitions[idx];
+        const file = definition && (definition.File || definition.file);
+        trackMotionFile(file);
+        motionManager.startMotion('Idle', idx);
+        return;
     }
     motionManager.startRandomMotion('Idle');
 };
