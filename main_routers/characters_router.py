@@ -848,9 +848,14 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
             logger.info(f"猫娘 {catgirl_name} 未设置Live2D模型，回退到默认模型 yui_default")
             live2d_model_name = 'yui_default'
             try:
-                # 先从完整的模型列表中查找 yui_default
+                # 先从完整的模型列表中查找内置 yui_default，避免误匹配用户/工坊同名模型
                 all_models = find_models()
-                matching_model = next((m for m in all_models if m['name'] == 'yui_default'), None)
+                matching_model = next(
+                    (m for m in all_models if m.get('name') == 'yui_default' and m.get('source') == 'builtin'),
+                    None,
+                )
+                if matching_model is None:
+                    matching_model = next((m for m in all_models if m.get('name') == 'yui_default'), None)
                 
                 if matching_model:
                     model_info = matching_model.copy()

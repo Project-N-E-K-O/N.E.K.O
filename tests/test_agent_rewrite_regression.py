@@ -613,8 +613,8 @@ def test_home_yui_guide_scenes_declare_timelines_and_director_consumes_normalize
 
     assert "timeline: []" in steps_source
     assert "{ at: 0.16, action: 'highlightVoiceControl' }" in steps_source
-    assert "{ at: 0.76, action: 'openSettingsPanel' }" in steps_source
-    assert "{ voiceKey: 'takeover_settings_peek_detail', at: 0.54, action: 'showSecondLine' }" in steps_source
+    assert "{ at: 0.54, action: 'openSettingsPanel' }" in steps_source
+    assert "{ voiceKey: 'takeover_settings_peek_detail', at: 0.76, action: 'showSecondLine' }" in steps_source
     assert "getGuideTimelineCueConfig(voiceKey, cueName)" in director_source
     assert "const timeline = Array.isArray(performance.timeline) ? performance.timeline : []" in director_source
     assert "cue.action !== normalizedCueName" in director_source

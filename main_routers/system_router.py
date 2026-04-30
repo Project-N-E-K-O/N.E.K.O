@@ -738,6 +738,16 @@ async def consume_yui_guide_handoff(request: Request):
             status_code=400,
         )
 
+    if not expected_page:
+        return _json_no_store_response(
+            {
+                "ok": False,
+                "error_code": "invalid_expected_page",
+                "error": "expected_page is required",
+            },
+            status_code=400,
+        )
+
     async with _yui_guide_handoff_lock:
         _prune_yui_handoff_records(now_ms)
         record = _yui_guide_handoff_tokens.get(token)
@@ -774,7 +784,7 @@ async def consume_yui_guide_handoff(request: Request):
             )
 
         target_page = str(record.get("target_page") or "")
-        if expected_page and expected_page != target_page:
+        if expected_page != target_page:
             return _json_no_store_response(
                 {
                     "ok": False,
