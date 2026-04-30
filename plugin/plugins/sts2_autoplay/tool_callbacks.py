@@ -87,24 +87,15 @@ def _build_callback_app(service: Any) -> Any:
     async def cb_autoplay_control(request: Request) -> JSONResponse:
         async def handler(args: Dict[str, Any]) -> Any:
             action = str(args.get("action", ""))
-            if action == "start":
-                result = await service.start_autoplay(
-                    objective=args.get("objective"),
-                    stop_condition=args.get("stop_condition", "current_floor"),
-                )
-                if isinstance(result, dict) and result.get("status") == "running":
-                    result["hint"] = (
-                        "自动游玩已在后台启动，正在持续进行中，尚未打完。"
-                        "请告知用户正在帮忙打，可以随时暂停或询问进度。"
-                    )
-                return result
-            elif action == "pause":
-                return await service.pause_autoplay()
-            elif action == "resume":
-                return await service.resume_autoplay()
-            elif action == "stop":
+            if action == "stop":
                 return await service.stop_autoplay()
-            raise ValueError(f"unknown autoplay control action: {action}")
+            return {
+                "status": "rejected",
+                "message": "sts2_autoplay_control 只允许 action=stop，已拒绝非停止类 tool-call。",
+                "summary": "已拒绝非停止类 tool-call。",
+                "executed": False,
+                "allowed_actions": ["stop"],
+            }
         return await _safe_call(request, handler)
 
     @app.post("/sts2_review_play")
