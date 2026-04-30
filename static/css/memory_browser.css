@@ -336,7 +336,8 @@ body .container-header {
     margin-left: 20px;
 }
 
-#review-toggle-checkbox {
+#review-toggle-checkbox,
+#strong-memory-toggle-checkbox {
     position: absolute;
     opacity: 0;
     pointer-events: none;

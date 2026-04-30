@@ -4692,7 +4692,11 @@ async def proactive_chat(request: Request):
                 await _emit_safe(cleaned)
         
         # --- 结果处理 ---
-        print(f"\n[PROACTIVE-DEBUG] Phase 2 STREAM output (aborted={aborted}, tag={source_tag}): {(buffer + full_text)[:300]}\n")
+        # buffer 是流前 ~80 字符的原始累积（含 [TAG]\n 前缀和正文头部），
+        # full_text 是去标签后真正投递给 TTS / send_lanlan_response 的内容。
+        # 两者拼起来打印会让正文头部"复读"一遍，看着像 bug 实际不是。
+        # 调试只需要 tag + 实际投递文本即可。
+        print(f"\n[PROACTIVE-DEBUG] Phase 2 STREAM output (aborted={aborted}, tag={source_tag}): {full_text[:300]}\n")
         if aborted or not full_text.strip():
             # 只有当用户没接管时才调 handle_new_message 清 TTS —— 否则会把
             # 用户正常回复的 TTS 也清掉（PR #862 修的 bug）。状态机的
