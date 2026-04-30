@@ -10,6 +10,8 @@ import os
 from plugin.sdk.plugin import Err, NekoPluginBase, Ok, SdkError, lifecycle, neko_plugin, plugin_entry
 
 from .service import STS2AutoplayService
+from .tool_bridge import register_all_tools, unregister_all_tools
+from .tool_callbacks import create_tool_callback_router
 
 _CONFIG_FILE = Path(__file__).with_name("plugin.toml")
 _SOURCE_ID = "sts2_autoplay"
@@ -83,12 +85,28 @@ class STS2AutoplayPlugin(NekoPluginBase):
         cfg = _as_mapping(await self.config.dump(timeout=5.0))
         self._cfg = _as_mapping(cfg.get("sts2"))
         await self._service.startup(self._cfg)
+
+        # Mount tool_call callback HTTP endpoints on the plugin server
+        self._tool_callback_router = create_tool_callback_router(self._service)
+        self.include_router(self._tool_callback_router)
+
+        # Register tools with main_server ToolRegistry (background with retry)
+        import asyncio
+        plugin_port = self._resolve_plugin_port()
+        asyncio.create_task(register_all_tools(self.logger, plugin_port=plugin_port))
+
         return Ok({"status": "ready", "result": await self._service.get_status()})
 
     @lifecycle(id="shutdown")
     async def shutdown(self, **_: Any):
+        await unregister_all_tools(self.logger)
         await self._service.shutdown()
         return Ok({"status": "shutdown"})
+
+    @staticmethod
+    def _resolve_plugin_port() -> int:
+        """Resolve the plugin HTTP server port from environment."""
+        return int(os.environ.get("NEKO_PLUGIN_PORT", "48912"))
 
     async def _run_entry(self, action: AsyncPayloadFactory, *, finish: bool = False):
         try:
