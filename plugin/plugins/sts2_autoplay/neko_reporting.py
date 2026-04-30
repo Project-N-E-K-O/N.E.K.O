@@ -19,7 +19,7 @@ class NekoReportingMixin:
         snapshot = context.get("snapshot") if isinstance(context.get("snapshot"), dict) else {}
         raw_state = snapshot.get("raw_state") if isinstance(snapshot.get("raw_state"), dict) else {}
         hp_raw = {k: raw_state.get(k) for k in raw_state if "hp" in k.lower() or "health" in k.lower()}
-        self.logger.info(f"[sts2_autoplay][hp-debug] raw_state hp fields: {hp_raw}")
+        self.logger.debug(f"[sts2_autoplay][hp-debug] raw_state hp fields: {hp_raw}")
         combat = raw_state.get("combat") if isinstance(raw_state.get("combat"), dict) else {}
         player = combat.get("player") if isinstance(combat.get("player"), dict) else {}
         run = raw_state.get("run") if isinstance(raw_state.get("run"), dict) else {}
@@ -91,8 +91,8 @@ class NekoReportingMixin:
             "screen": snapshot.get("screen", "unknown"),
             "floor": snapshot.get("floor", 0),
             "act": snapshot.get("act", 0),
-            "player_hp": self._first_present(player.get("hp"), run.get("current_hp"), run.get("hp")),
-            "max_hp": self._first_present(player.get("max_hp"), run.get("max_hp")),
+            "player_hp": self._first_present(player.get("hp"), raw_state.get("current_hp"), run.get("current_hp"), run.get("hp")),
+            "max_hp": self._first_present(player.get("max_hp"), raw_state.get("max_hp"), run.get("max_hp")),
             "gold": run.get("gold"),
             "in_combat": snapshot.get("in_combat", False),
             "turn": self._first_present(combat.get("turn"), raw_state.get("turn"), 1),
@@ -130,7 +130,7 @@ class NekoReportingMixin:
             result_snapshot = result_context.get("snapshot")
         report = self._report_full_step(
             {"snapshot": result_snapshot if isinstance(result_snapshot, dict) else self._snapshot},
-            decision_result=step_result.get("reasoning") if isinstance(step_result.get("reasoning"), dict) else self._last_llm_reasoning,
+            decision_result=step_result.get("reasoning") if isinstance(step_result.get("reasoning"), dict) else None,
         )
         hand_names = [c.get("name", "?") for c in report.get("hand", []) if isinstance(c, dict)]
         enemy_summaries = []
@@ -369,7 +369,7 @@ class NekoReportingMixin:
         if not bool(self._cfg.get("neko_commentary_enabled", True)):
             return False
         critical_always = bool(self._cfg.get("neko_critical_commentary_always", True))
-        if critical_always and urgency in {"critical", "high"}:
+        if critical_always and urgency == "critical":
             return True
         now = time.time()
         min_interval = max(0.0, float(self._cfg.get("neko_commentary_min_interval_seconds", 4) or 4))
@@ -427,7 +427,13 @@ class NekoReportingMixin:
             "act": act,
         }
         try:
-            maybe_awaitable = notifier(content=content, description=description, metadata=metadata, priority=priority)
+            maybe_awaitable = notifier(
+                content=content,
+                description=description,
+                metadata=metadata,
+                priority=priority,
+                message_type="proactive_notification",
+            )
             if isinstance(maybe_awaitable, Awaitable):
                 await maybe_awaitable
         except Exception as exc:

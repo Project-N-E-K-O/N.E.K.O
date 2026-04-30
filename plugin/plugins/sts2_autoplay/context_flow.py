@@ -164,7 +164,12 @@ class ContextFlowMixin:
     def _prepare_action_request(self, action: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
         raw = action.get("raw") if isinstance(action.get("raw"), dict) else {}
         raw_action = raw.get("action")
-        action_type = str(action.get("type") or raw.get("type") or (raw_action if isinstance(raw_action, str) else ""))
+        action_type = str(
+            action.get("type")
+            or raw.get("type")
+            or raw.get("name")
+            or (raw_action if isinstance(raw_action, str) else "")
+        )
         template_raw = dict(raw)
         if action_type in {"choose_reward_card", "select_deck_card"}:
             template_raw.pop("option_index", None)
