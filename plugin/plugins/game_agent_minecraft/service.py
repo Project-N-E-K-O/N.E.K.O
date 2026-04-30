@@ -193,7 +193,14 @@ class GameAgentService:
         if isinstance(url, str) and url:
             self._ws_url = url
         self._reconnect_interval = max(0.5, _f("reconnect_interval_seconds", 5.0))
-        self._task_timeout = max(1.0, _f("task_timeout_seconds", 25.0))
+        # Cap at 295s — 5s below the SDK wrapper's 300s ceiling
+        # (see ``@llm_tool(timeout=300.0)`` in ``__init__.py``). Without
+        # this clamp, an operator setting e.g. ``task_timeout_seconds = 600``
+        # would have the SDK wrapper time out at 300s and cancel the
+        # handler before the service could return its structured
+        # ``{status: "timeout"}`` shape — the LLM would see the cancel
+        # error path instead of the clean timeout result.
+        self._task_timeout = max(1.0, min(295.0, _f("task_timeout_seconds", 25.0)))
         self._system_prompt_interval = max(1.0, _f("system_prompt_interval_seconds", 5.0))
         self._skip_when_busy = _b("skip_system_prompt_if_busy", True)
         self._stream_screenshots = _b("stream_screenshots_to_llm", True)

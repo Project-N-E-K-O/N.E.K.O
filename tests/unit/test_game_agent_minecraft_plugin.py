@@ -115,11 +115,32 @@ def test_configure_clamps_invalid_numeric():
         "system_prompt_interval_seconds": -5.0,
         "screenshot_cache_size": "abc",
     })
-    # Bad strings fall back to defaults; negative interval clamps to ≥1.
     status = service.get_status()
     assert status["ws_url"] == "ws://example:1234"
-    # No way to inspect internal _task_timeout from the public API, but
-    # the fact that it didn't raise is the contract.
+    # Bad strings fall back to defaults; negative values clamp to the
+    # documented floor. Inspect the private attributes directly — we
+    # already test against private state throughout this file, and
+    # without these assertions a regression in the fallback or clamp
+    # logic would silently let this test pass.
+    assert service._task_timeout == 25.0  # default
+    assert service._system_prompt_interval == 1.0  # clamped from -5
+    assert service._screenshot_cache_size == 3  # default
+    assert service._reconnect_interval == 5.0  # default
+
+
+def test_configure_clamps_task_timeout_below_sdk_ceiling():
+    """``@llm_tool(timeout=300.0)`` is the SDK wrapper ceiling. The
+    service must clamp configured ``task_timeout_seconds`` *below*
+    that so its structured ``{status: "timeout"}`` response can fire
+    before the wrapper cancels the handler."""
+    service, _ = _make_service()
+    service.configure({"task_timeout_seconds": 600.0})
+    # Ceiling - small buffer so service-internal fires first.
+    assert service._task_timeout <= 300.0
+    assert service._task_timeout > 0.0
+    # And a normal value passes through.
+    service.configure({"task_timeout_seconds": 90.0})
+    assert service._task_timeout == 90.0
 
 
 # ---------------------------------------------------------------------------
@@ -520,20 +541,22 @@ async def test_log_cache_is_bounded():
     service, _ = _make_service()
     service.configure({})
 
-    # Push more lines than the cap. The cap is an internal constant
-    # (200 at time of writing); we use a generous multiple so the test
-    # doesn't go stale if the constant grows modestly.
-    cap_estimate = 200
-    overflow_count = cap_estimate * 3
+    # Read the actual cap off the deque rather than hardcoding it —
+    # otherwise bumping the constant in the implementation would
+    # spuriously fail this test even when the bounded-growth invariant
+    # is intact.
+    cap = service._log_cache.maxlen
+    assert cap is not None and cap > 0
+    overflow_count = cap * 3
+
     for i in range(overflow_count):
         await service._on_log(f"line {i}")
 
     cached = list(service._log_cache)
-    # Cap held; we only kept "the most recent N" lines, not all of them.
-    assert len(cached) < overflow_count
-    assert len(cached) <= cap_estimate
-    # And the survivors are the most recent ones, not the oldest.
+    assert len(cached) == cap, "cache should be at exactly the maxlen"
+    # Survivors are the most recent ones, not the oldest.
     assert cached[-1] == f"line {overflow_count - 1}"
+    assert cached[0] == f"line {overflow_count - cap}"
 
 
 @pytest.mark.asyncio
