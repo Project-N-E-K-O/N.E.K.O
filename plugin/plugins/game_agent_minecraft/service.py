@@ -60,6 +60,14 @@ class PendingTask:
     # Filled in by the WebSocket callback (or by overwrite/timeout
     # paths) right before ``event`` is set.
     result: Dict[str, Any] = field(default_factory=dict)
+    # True once the task text was actually sent to the agent server
+    # (``client.send_task`` returned True). Drop-counter bumps for
+    # abandonment paths (timeout / overwrite / cancel / stop) must
+    # gate on this flag — if we never dispatched, the agent will
+    # never emit a stale ``task_finished`` for this task and bumping
+    # the counter would silently swallow the *next* legitimate
+    # frame.
+    dispatched: bool = False
 
 
 class GameAgentService:
@@ -257,22 +265,23 @@ class GameAgentService:
         # Drain pending handler first so it returns before we kill the
         # transport that would feed its event.
         async with self._pending_lock:
-            if self._pending is not None:
-                self._pending.result = {
+            pending = self._pending
+            if pending is not None:
+                pending.result = {
                     "status": "interrupted",
-                    "query": self._pending.task_text,
+                    "query": pending.task_text,
                     "reason": "Game agent plugin shutting down.",
                 }
-                self._pending.event.set()
+                pending.event.set()
                 self._pending = None
-                # We abandoned this task without an ack — bump the
-                # drop counter so a delayed ``task_finished`` (which
-                # might still hit us if ``stop()`` is part of a
-                # ``reload_config_live`` cycle and the same agent
-                # buffers and redelivers the frame after reconnect)
-                # doesn't bind to whatever new task the LLM picks
-                # next.
-                self._stale_task_finishes_to_drop += 1
+                # Bump only if the task was actually dispatched —
+                # otherwise the agent never received it and won't
+                # generate a stale frame. (Matters most for the
+                # ``reload_config_live`` stop+start cycle when the
+                # same agent might redeliver buffered frames after
+                # reconnect.)
+                if pending.dispatched:
+                    self._stale_task_finishes_to_drop += 1
             # Note: do NOT zero the counter — preserve any existing
             # debt from prior timeouts/overwrites that may still have
             # frames in flight from before this stop().
@@ -366,14 +375,21 @@ class GameAgentService:
                 self._log_warning(
                     "overwriting task: {} -> {}", self._pending.task_text, task
                 )
-                self._pending.result = {
+                old_pending = self._pending
+                old_pending.result = {
                     "status": "interrupted",
-                    "query": self._pending.task_text,
+                    "query": old_pending.task_text,
                     "reason": "Overwritten by a new task.",
                 }
-                self._pending.event.set()
+                old_pending.event.set()
                 self._pending = None
-                self._stale_task_finishes_to_drop += 1
+                # Only count a stale-frame debt if the old task was
+                # actually dispatched to the agent — if its handler
+                # hadn't reached past ``send_task`` yet, the agent
+                # never received it and won't emit a stale frame to
+                # consume.
+                if old_pending.dispatched:
+                    self._stale_task_finishes_to_drop += 1
 
             # The handler keeps a *local* reference to its own
             # PendingTask; ``self._pending`` may be reassigned (or
@@ -397,12 +413,19 @@ class GameAgentService:
             # cancel landing in the dispatch window leaves
             # ``self._pending`` dangling and every subsequent call
             # returns "busy" against an event nothing will ever set.
+            # Don't bump the drop counter — ``send_task`` was
+            # cancelled before completing, so the task was never
+            # delivered and won't generate a stale frame.
             async with self._pending_lock:
                 if self._pending is my_pending:
                     self._pending = None
                     self._task_finished = True
-                    self._stale_task_finishes_to_drop += 1
             raise
+        if sent:
+            # Mark as dispatched so abandonment paths (overwrite /
+            # timeout / cancel / stop) know whether to expect a
+            # stale ``task_finished`` frame for this task.
+            my_pending.dispatched = True
         # The ``send_task`` await is a suspension point — another
         # coroutine (overwrite / stop / a stale task_finished frame
         # filtered to fall through to ``_pending``) may have already
@@ -446,7 +469,8 @@ class GameAgentService:
             async with self._pending_lock:
                 if self._pending is my_pending:
                     self._pending = None
-                    self._stale_task_finishes_to_drop += 1
+                    if my_pending.dispatched:
+                        self._stale_task_finishes_to_drop += 1
             self._log_info("task timed out: {}", task[:80])
             return {
                 "status": "timeout",
@@ -464,7 +488,8 @@ class GameAgentService:
             async with self._pending_lock:
                 if self._pending is my_pending:
                     self._pending = None
-                    self._stale_task_finishes_to_drop += 1
+                    if my_pending.dispatched:
+                        self._stale_task_finishes_to_drop += 1
             raise
 
         # Read the verdict the callback (or overwrite/shutdown path)

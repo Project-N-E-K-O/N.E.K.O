@@ -896,8 +896,69 @@ async def test_cancellation_during_send_task_clears_pending_slot():
 
     assert service._pending is None
     assert service._task_finished is True
-    # Bumped because we abandoned the task without an ack.
-    assert service._stale_task_finishes_to_drop == 1
+    # NOT bumped — ``send_task`` was cancelled before completing, so
+    # the agent never received the task and won't emit a stale frame
+    # for it. Bumping would silently swallow the next legitimate
+    # ``task_finished`` from a future task.
+    assert service._stale_task_finishes_to_drop == 0
+
+
+@pytest.mark.asyncio
+async def test_overwrite_does_not_bump_drop_counter_for_undispatched_old():
+    """If the OLD task hadn't reached past ``send_task`` yet when
+    overwrite arrives, the agent never received it and won't emit a
+    stale frame. Bumping the drop counter in that case would silently
+    swallow the NEW task's legitimate completion frame.
+
+    We can't observe this directly via the public path (overwrite
+    inside the lock makes the race unreachable in production), but
+    the underlying invariant is: ``_stale_task_finishes_to_drop``
+    increments must gate on ``PendingTask.dispatched``. Verify by
+    pre-seeding an undispatched pending state and overwriting it."""
+    from plugin.plugins.game_agent_minecraft.service import PendingTask
+
+    service, _ = _make_service()
+    service.configure({"task_timeout_seconds": 5.0})
+    service._client = _FakeClient()
+
+    # Plant an undispatched pending task in the slot directly. This
+    # simulates the corner where OLD's handler claimed _pending but
+    # was suspended inside ``send_task`` and never returned.
+    fake_old = PendingTask(
+        task_text="undispatched-old",
+        event=asyncio.Event(),
+        start_time=0.0,
+        dispatched=False,
+    )
+    service._pending = fake_old
+    service._task_finished = False
+
+    # New task arrives with overwrite=True — should set old's event,
+    # claim the slot, and crucially NOT bump the drop counter.
+    new_runner = asyncio.create_task(
+        service.execute_minecraft_task(task="new", overwrite=True)
+    )
+
+    # Wait for the new task to claim the slot.
+    for _ in range(50):
+        if service._pending is not None and service._pending is not fake_old:
+            break
+        await asyncio.sleep(0.01)
+    else:
+        pytest.fail("new task never claimed the slot")
+
+    # Old task's event was set → its handler would resolve, but we
+    # injected it directly so there's no handler to drain. Just
+    # verify the counter rule.
+    assert service._stale_task_finishes_to_drop == 0, (
+        "must not bump for undispatched abandoned task"
+    )
+
+    # Now drive the agent's task_finished for the new task — it
+    # should resolve normally (NOT be swallowed as stale).
+    await service._on_task_finished({"status": "ok", "text": "new done"})
+    out = await asyncio.wait_for(new_runner, timeout=2.0)
+    assert out == {"status": "ok", "query": "new"}
 
 
 @pytest.mark.asyncio
