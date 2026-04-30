@@ -949,6 +949,96 @@ async def test_cancellation_during_send_task_clears_pending_slot():
 
 
 @pytest.mark.asyncio
+async def test_overwrite_during_send_task_bumps_via_late_dispatch_flag():
+    """Re-architected: drive the slow-send fake step by step to verify
+    the late-dispatch bump fires when overwrite sets the flag."""
+
+    class _SlowSendClient:
+        is_connected = True
+
+        def __init__(self):
+            self.gates: list[asyncio.Event] = []
+            self.sent_tasks: list[str] = []
+
+        async def send_task(self, task):
+            gate = asyncio.Event()
+            self.gates.append(gate)
+            await gate.wait()
+            self.sent_tasks.append(task)
+            return True
+
+        async def stop(self):
+            pass
+
+    service, _ = _make_service()
+    service.configure({"task_timeout_seconds": 5.0})
+    slow = _SlowSendClient()
+    service._client = slow
+
+    # 1. Start old task. send_task suspends on gates[0].
+    old_runner = asyncio.create_task(service.execute_minecraft_task(task="old"))
+    for _ in range(50):
+        if len(slow.gates) >= 1 and service._pending is not None:
+            break
+        await asyncio.sleep(0.01)
+    else:
+        pytest.fail("old's send_task never reached the gate")
+    old_pending = service._pending
+    assert old_pending.dispatched is False
+    assert service._stale_task_finishes_to_drop == 0
+
+    # 2. Overwrite arrives. send_task for new will suspend on gates[1].
+    new_runner = asyncio.create_task(
+        service.execute_minecraft_task(task="new", overwrite=True)
+    )
+    for _ in range(50):
+        if len(slow.gates) >= 2:
+            break
+        await asyncio.sleep(0.01)
+    else:
+        pytest.fail("new's send_task never reached the gate")
+
+    # 3. After overwrite ran inside the lock:
+    #    - old's event was set + result=interrupted
+    #    - bump_on_late_dispatch was armed (because dispatched=False)
+    #    - drop counter NOT yet bumped
+    assert old_pending.bump_on_late_dispatch is True
+    assert service._stale_task_finishes_to_drop == 0
+
+    # 4. Release old's send_task. Handler runs: dispatched=True →
+    #    sees bump_on_late_dispatch → bumps counter → is_set() → returns.
+    slow.gates[0].set()
+    old_out = await asyncio.wait_for(old_runner, timeout=2.0)
+    assert old_out["status"] == "interrupted"
+    assert service._stale_task_finishes_to_drop == 1, (
+        "bump must have happened on late dispatch"
+    )
+
+    # 5. Release new's send_task and let new run normally to confirm
+    #    the slot is healthy.
+    slow.gates[1].set()
+    # Wait for new to enter event.wait, then drive task_finished.
+    for _ in range(50):
+        if service._pending is not None and service._pending.task_text == "new":
+            break
+        await asyncio.sleep(0.01)
+    else:
+        pytest.fail("new never settled into pending state")
+
+    # 6. The agent's frame for old (the abandoned one) arrives first
+    #    — should be dropped via the counter we just bumped, NOT
+    #    misattributed to new.
+    await service._on_task_finished({"status": "ok", "text": "old's late frame"})
+    assert service._stale_task_finishes_to_drop == 0
+    assert service._pending is not None  # new still pending
+
+    # 7. New's real frame arrives → resolves new.
+    await service._on_task_finished({"status": "ok", "text": "new done"})
+    new_out = await asyncio.wait_for(new_runner, timeout=2.0)
+    assert new_out == {"status": "ok", "query": "new"}
+
+
+@pytest.mark.asyncio
 async def test_overwrite_does_not_bump_drop_counter_for_undispatched_old():
     """If the OLD task hadn't reached past ``send_task`` yet when
     overwrite arrives, the agent never received it and won't emit a

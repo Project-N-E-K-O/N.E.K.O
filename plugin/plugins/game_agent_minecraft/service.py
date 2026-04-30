@@ -68,6 +68,14 @@ class PendingTask:
     # the counter would silently swallow the *next* legitimate
     # frame.
     dispatched: bool = False
+    # Set by overwrite/stop when they abandon an *undispatched* task
+    # (i.e. its handler is still suspended inside ``send_task``).
+    # Tells the handler: "if you successfully dispatch later, bump
+    # the stale-drop counter yourself — the agent will receive your
+    # task and emit a frame for it that no one is waiting for, and
+    # I (the abandoner) couldn't do the bump because dispatched was
+    # False at my point in time."
+    bump_on_late_dispatch: bool = False
 
 
 class GameAgentService:
@@ -274,14 +282,14 @@ class GameAgentService:
                 }
                 pending.event.set()
                 self._pending = None
-                # Bump only if the task was actually dispatched —
-                # otherwise the agent never received it and won't
-                # generate a stale frame. (Matters most for the
-                # ``reload_config_live`` stop+start cycle when the
-                # same agent might redeliver buffered frames after
-                # reconnect.)
+                # Same logic as overwrite: bump now if dispatched,
+                # otherwise arm the late-dispatch flag so the
+                # handler bumps when ``send_task`` eventually
+                # succeeds.
                 if pending.dispatched:
                     self._stale_task_finishes_to_drop += 1
+                else:
+                    pending.bump_on_late_dispatch = True
             # Note: do NOT zero the counter — preserve any existing
             # debt from prior timeouts/overwrites that may still have
             # frames in flight from before this stop().
@@ -383,13 +391,16 @@ class GameAgentService:
                 }
                 old_pending.event.set()
                 self._pending = None
-                # Only count a stale-frame debt if the old task was
-                # actually dispatched to the agent — if its handler
-                # hadn't reached past ``send_task`` yet, the agent
-                # never received it and won't emit a stale frame to
-                # consume.
+                # Stale-frame debt: bump now if old was dispatched, or
+                # arm the late-dispatch flag if it wasn't. Without the
+                # late-dispatch path, an old task whose ``send_task``
+                # succeeds *after* this overwrite would have its
+                # eventual ``task_finished`` frame misattributed to
+                # the new (B) task.
                 if old_pending.dispatched:
                     self._stale_task_finishes_to_drop += 1
+                else:
+                    old_pending.bump_on_late_dispatch = True
 
             # The handler keeps a *local* reference to its own
             # PendingTask; ``self._pending`` may be reassigned (or
@@ -426,6 +437,16 @@ class GameAgentService:
             # timeout / cancel / stop) know whether to expect a
             # stale ``task_finished`` frame for this task.
             my_pending.dispatched = True
+            # If we were already abandoned during the dispatch
+            # window (overwrite/stop ran while ``send_task`` was
+            # suspended), the abandoner couldn't bump the drop
+            # counter at that moment because ``dispatched`` was
+            # False. Now that the agent *has* received the task,
+            # we're the only ones with the information that a stale
+            # frame is coming for it — bump now to consume it.
+            if my_pending.bump_on_late_dispatch:
+                async with self._pending_lock:
+                    self._stale_task_finishes_to_drop += 1
         # The ``send_task`` await is a suspension point — another
         # coroutine (overwrite / stop / a stale task_finished frame
         # filtered to fall through to ``_pending``) may have already
