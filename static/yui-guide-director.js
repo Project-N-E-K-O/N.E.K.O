@@ -337,7 +337,7 @@
 
     function shouldGuideAudioDriveMouth(voiceKey) {
         const normalizedKey = typeof voiceKey === 'string' ? voiceKey.trim() : '';
-        return !!normalizedKey && normalizedKey.indexOf('interrupt_') !== 0;
+        return !!normalizedKey;
     }
 
     const TAKEOVER_CAPTURE_SELECTORS = Object.freeze({
@@ -803,6 +803,7 @@
             };
             this.previewCache = new Map();
             this.currentMouthMotionSession = null;
+            this.guideAudioContext = null;
         }
 
         stop() {
@@ -840,6 +841,9 @@
                         this.currentAudioMeta.source.stop();
                         this.currentAudioMeta.source.disconnect();
                     }
+                    if (this.currentAudioMeta.analyserNode) {
+                        this.currentAudioMeta.analyserNode.disconnect();
+                    }
                     if (this.currentAudioMeta.gainNode) {
                         this.currentAudioMeta.gainNode.disconnect();
                     }
@@ -859,6 +863,22 @@
             }
         }
 
+        destroy() {
+            this.stop();
+            if (this.guideAudioContext && this.guideAudioContext.state !== 'closed') {
+                try {
+                    const closePromise = this.guideAudioContext.close();
+                    if (closePromise && typeof closePromise.catch === 'function') {
+                        closePromise.catch(() => {});
+                    }
+                } catch (_) {}
+            }
+            this.guideAudioContext = null;
+            if (this.previewCache && typeof this.previewCache.clear === 'function') {
+                this.previewCache.clear();
+            }
+        }
+
         stopGuideMouthMotion(session) {
             const activeSession = session || this.currentMouthMotionSession;
             if (!activeSession) {
@@ -874,6 +894,18 @@
                     window.cancelAnimationFrame(activeSession.animationFrameId);
                     activeSession.animationFrameId = 0;
                 }
+                if (activeSession.mediaSourceNode) {
+                    try {
+                        activeSession.mediaSourceNode.disconnect();
+                    } catch (_) {}
+                    activeSession.mediaSourceNode = null;
+                }
+                if (activeSession.analyserNode) {
+                    try {
+                        activeSession.analyserNode.disconnect();
+                    } catch (_) {}
+                    activeSession.analyserNode = null;
+                }
                 if (window.LanLan1 && typeof window.LanLan1.setMouth === 'function') {
                     window.LanLan1.setMouth(0);
                 }
@@ -882,7 +914,20 @@
             }
         }
 
-        startGuideMouthMotion(voiceKey) {
+        createGuideAnalyser(context) {
+            if (!context || typeof context.createAnalyser !== 'function') {
+                return null;
+            }
+
+            const analyser = context.createAnalyser();
+            analyser.fftSize = 2048;
+            if ('smoothingTimeConstant' in analyser) {
+                analyser.smoothingTimeConstant = 0.72;
+            }
+            return analyser;
+        }
+
+        startGuideMouthMotion(voiceKey, options) {
             if (!shouldGuideAudioDriveMouth(voiceKey)) {
                 return null;
             }
@@ -894,10 +939,21 @@
             }
 
             this.stopGuideMouthMotion();
+            const normalizedOptions = options || {};
+            const analyserNode = normalizedOptions.analyserNode || normalizedOptions.analyser || null;
+            if (!analyserNode) {
+                return null;
+            }
             const session = {
                 animationFrameId: 0,
                 startedAt: performance.now(),
-                lastMouthOpen: 0
+                lastMouthOpen: 0,
+                quietFrames: 0,
+                analyserNode: analyserNode,
+                mediaSourceNode: normalizedOptions.mediaSourceNode || null,
+                dataArray: analyserNode && Number.isFinite(analyserNode.fftSize)
+                    ? new Uint8Array(analyserNode.fftSize)
+                    : null
             };
 
             try {
@@ -906,11 +962,41 @@
                         return;
                     }
                     session.animationFrameId = window.requestAnimationFrame(animate);
-                    const elapsed = Math.max(0, now - session.startedAt);
-                    const pulse = Math.sin(elapsed / 118) * 0.5 + 0.5;
-                    const flutter = Math.sin(elapsed / 48) * 0.06;
-                    const target = clamp(0.12 + pulse * 0.46 + flutter, 0.06, 0.66);
-                    const mouthOpen = (session.lastMouthOpen * 0.72) + (target * 0.28);
+                    let target = 0;
+
+                    if (session.analyserNode && session.dataArray) {
+                        session.analyserNode.getByteTimeDomainData(session.dataArray);
+                        let sum = 0;
+                        for (let index = 0; index < session.dataArray.length; index += 1) {
+                            const value = (session.dataArray[index] - 128) / 128;
+                            sum += value * value;
+                        }
+                        const rms = Math.sqrt(sum / session.dataArray.length);
+                        const noiseFloor = 0.022;
+                        const fullOpenRms = 0.15;
+                        if (rms <= noiseFloor) {
+                            session.quietFrames += 1;
+                            target = 0;
+                        } else {
+                            session.quietFrames = 0;
+                            const normalizedRms = clamp((rms - noiseFloor) / (fullOpenRms - noiseFloor), 0, 1);
+                            target = Math.pow(normalizedRms, 0.72) * 0.95;
+                            if (target < 0.035) {
+                                target = 0;
+                            }
+                        }
+                        if (session.quietFrames >= 2) {
+                            target = 0;
+                        }
+                    }
+
+                    const smoothing = target > session.lastMouthOpen
+                        ? 0.56
+                        : (target === 0 ? 0.62 : 0.42);
+                    let mouthOpen = (session.lastMouthOpen * (1 - smoothing)) + (target * smoothing);
+                    if (mouthOpen < 0.025) {
+                        mouthOpen = 0;
+                    }
                     session.lastMouthOpen = mouthOpen;
                     window.LanLan1.setMouth(mouthOpen);
                 };
@@ -920,6 +1006,39 @@
                 return session;
             } catch (error) {
                 console.warn('[YuiGuide] 启动教程嘴部动作失败:', error);
+                return null;
+            }
+        }
+
+        createGuideAudioElementMouthMotionNodes(audio) {
+            if (!audio) {
+                return null;
+            }
+
+            const context = this.getAvailableGuideAudioContext();
+            if (!context || typeof context.createMediaElementSource !== 'function') {
+                return null;
+            }
+
+            const analyserNode = this.createGuideAnalyser(context);
+            if (!analyserNode) {
+                return null;
+            }
+
+            try {
+                const mediaSourceNode = context.createMediaElementSource(audio);
+                mediaSourceNode.connect(analyserNode);
+                analyserNode.connect(context.destination);
+                return {
+                    context: context,
+                    analyserNode: analyserNode,
+                    mediaSourceNode: mediaSourceNode
+                };
+            } catch (error) {
+                try {
+                    analyserNode.disconnect();
+                } catch (_) {}
+                console.warn('[YuiGuide] 创建教程音频口型分析器失败:', error);
                 return null;
             }
         }
@@ -974,6 +1093,7 @@
 
         getAvailableGuideAudioContext() {
             const candidates = [
+                this.guideAudioContext,
                 window.lanlanAudioContext,
                 window.appState && window.appState.audioPlayerContext,
                 window.AM && window.AM.ctx
@@ -990,7 +1110,18 @@
                 return candidate;
             }
 
-            return null;
+            const AudioContextConstructor = window.AudioContext || window.webkitAudioContext;
+            if (typeof AudioContextConstructor !== 'function') {
+                return null;
+            }
+
+            try {
+                this.guideAudioContext = new AudioContextConstructor();
+                return this.guideAudioContext;
+            } catch (error) {
+                console.warn('[YuiGuide] 创建教程 AudioContext 失败:', error);
+                return null;
+            }
         }
 
         decodeGuideAudioBuffer(context, arrayBuffer) {
@@ -1179,6 +1310,7 @@
                 return false;
             }
 
+            await resumeKnownAudioContexts();
             const minDurationMs = Number.isFinite(minimumDurationMs) ? minimumDurationMs : 0;
             const initialTimeSeconds = Math.max(
                 0,
@@ -1189,6 +1321,7 @@
                 let settled = false;
                 const audio = new Audio(audioSrc);
                 let mouthMotionSession = null;
+                let audioMouthMotionNodes = null;
                 const finish = (success, error) => {
                     if (settled) {
                         return;
@@ -1196,6 +1329,17 @@
                     settled = true;
                     this.stopGuideMouthMotion(mouthMotionSession);
                     mouthMotionSession = null;
+                    if (audioMouthMotionNodes) {
+                        try {
+                            if (audioMouthMotionNodes.mediaSourceNode) {
+                                audioMouthMotionNodes.mediaSourceNode.disconnect();
+                            }
+                            if (audioMouthMotionNodes.analyserNode) {
+                                audioMouthMotionNodes.analyserNode.disconnect();
+                            }
+                        } catch (_) {}
+                        audioMouthMotionNodes = null;
+                    }
                     if (this.currentFallbackTimer === fallbackTimerId) {
                         this.currentFallbackTimer = null;
                     }
@@ -1255,8 +1399,16 @@
                     finish(true);
                 }, Math.max(estimateSpeechDurationMs('x'), minDurationMs, 3000));
                 this.currentFallbackTimer = fallbackTimerId;
+                audioMouthMotionNodes = this.createGuideAudioElementMouthMotionNodes(audio);
+                if (audioMouthMotionNodes
+                    && audioMouthMotionNodes.context
+                    && audioMouthMotionNodes.context.state === 'suspended'
+                    && typeof audioMouthMotionNodes.context.resume === 'function') {
+                    audioMouthMotionNodes.context.resume().catch(() => {});
+                }
                 mouthMotionSession = this.startGuideMouthMotion(
-                    meta && typeof meta.voiceKey === 'string' ? meta.voiceKey : ''
+                    meta && typeof meta.voiceKey === 'string' ? meta.voiceKey : '',
+                    audioMouthMotionNodes
                 );
 
                 try {
@@ -1277,6 +1429,9 @@
             }
 
             await resumeKnownAudioContexts();
+            if (context.state === 'suspended' && typeof context.resume === 'function') {
+                await context.resume().catch(() => {});
+            }
             const response = await fetch(audioSrc, {
                 credentials: 'same-origin'
             });
@@ -1293,6 +1448,7 @@
                 let settled = false;
                 const source = context.createBufferSource();
                 const gainNode = typeof context.createGain === 'function' ? context.createGain() : null;
+                const analyserNode = this.createGuideAnalyser(context);
                 let mouthMotionSession = null;
                 const finish = (success, error) => {
                     if (settled) {
@@ -1309,6 +1465,11 @@
                     try {
                         source.disconnect();
                     } catch (_) {}
+                    if (analyserNode) {
+                        try {
+                            analyserNode.disconnect();
+                        } catch (_) {}
+                    }
                     if (gainNode) {
                         try {
                             gainNode.disconnect();
@@ -1331,7 +1492,15 @@
                 };
 
                 source.buffer = audioBuffer;
-                if (gainNode) {
+                if (analyserNode && gainNode) {
+                    gainNode.gain.value = 1;
+                    source.connect(analyserNode);
+                    analyserNode.connect(gainNode);
+                    gainNode.connect(context.destination);
+                } else if (analyserNode) {
+                    source.connect(analyserNode);
+                    analyserNode.connect(context.destination);
+                } else if (gainNode) {
                     gainNode.gain.value = 1;
                     source.connect(gainNode);
                     gainNode.connect(context.destination);
@@ -1339,7 +1508,8 @@
                     source.connect(context.destination);
                 }
                 mouthMotionSession = this.startGuideMouthMotion(
-                    meta && typeof meta.voiceKey === 'string' ? meta.voiceKey : ''
+                    meta && typeof meta.voiceKey === 'string' ? meta.voiceKey : '',
+                    analyserNode ? { analyserNode: analyserNode } : null
                 );
 
                 this.currentFinish = cancelPlayback;
@@ -1347,6 +1517,7 @@
                     mode: 'buffer',
                     context: context,
                     source: source,
+                    analyserNode: analyserNode,
                     gainNode: gainNode,
                     startedAt: context.currentTime,
                     startOffsetMs: startOffsetMs,
@@ -1403,27 +1574,29 @@
 
             if (localAudioSrc) {
                 try {
+                    const playedByContext = await this.playPreviewAudioThroughContext(
+                        localAudioSrc,
+                        fallbackDurationMs,
+                        startAtMs,
+                        {
+                            voiceKey: normalizedOptions.voiceKey,
+                            text: message
+                        }
+                    );
+                    if (playedByContext) {
+                        return;
+                    }
+                } catch (error) {
+                    console.warn('[YuiGuide] AudioContext 教程语音播放失败，尝试 HTMLAudio:', normalizedOptions.voiceKey, error);
+                }
+
+                try {
                     await this.playPreviewAudio(localAudioSrc, fallbackDurationMs, startAtMs, {
                         voiceKey: normalizedOptions.voiceKey,
                         text: message
                     });
                     return;
                 } catch (error) {
-                    try {
-                        const playedByContext = await this.playPreviewAudioThroughContext(
-                            localAudioSrc,
-                            fallbackDurationMs,
-                            startAtMs,
-                            {
-                                voiceKey: normalizedOptions.voiceKey,
-                                text: message
-                            }
-                        );
-                        if (playedByContext) {
-                            return;
-                        }
-                    } catch (_) {}
-
                     console.warn('[YuiGuide] 本地教程语音播放失败，回退为静默等待:', normalizedOptions.voiceKey, error);
                 }
             }
@@ -1705,6 +1878,11 @@
                 ? capabilityApi.create()
                 : createHomeTutorialPlatformCapabilities();
             this.experienceMetrics = window.homeTutorialExperienceMetrics || createHomeTutorialExperienceMetrics();
+            this.wakeup = window.YuiGuideWakeup && typeof window.YuiGuideWakeup.create === 'function'
+                ? window.YuiGuideWakeup.create({
+                    metrics: this.experienceMetrics
+                })
+                : null;
             this.tutorialFaceForwardLockSnapshot = null;
             this.enableTutorialFaceForwardLock();
 
@@ -6251,6 +6429,9 @@
                 this._introActivationResolve();
                 this._introActivationResolve = null;
             }
+            if (this.wakeup && typeof this.wakeup.cancel === 'function') {
+                this.wakeup.cancel('termination');
+            }
             this.clearIntroFlow();
             this.voiceQueue.stop();
             this.clearAllVirtualSpotlights();
@@ -6798,6 +6979,27 @@
             return true;
         }
 
+        async runWakeupPrelude() {
+            if (this.page !== 'home' || this.isStopping() || !this.wakeup || typeof this.wakeup.run !== 'function') {
+                return;
+            }
+
+            this.applyTutorialFaceForwardLock();
+            try {
+                const result = await this.wakeup.run();
+                this.recordExperienceMetric('wakeup_result', {
+                    result: result && result.result ? result.result : '',
+                    reason: result && result.reason ? result.reason : ''
+                });
+            } catch (error) {
+                console.warn('[YuiGuide] 入场苏醒遮罩播放失败，继续教程:', error);
+                this.recordExperienceMetric('wakeup_result', {
+                    result: 'fallback',
+                    reason: 'exception'
+                });
+            }
+        }
+
         async runChatIntroPrelude() {
             if (this.introFlowStarted || this.isStopping()) {
                 return;
@@ -6971,6 +7173,10 @@
 
             const firstSceneId = preludeSceneIds[0];
             if (firstSceneId === 'intro_basic' && this.page === 'home') {
+                await this.runWakeupPrelude();
+                if (this.isStopping()) {
+                    return;
+                }
                 await this.runChatIntroPrelude();
                 return;
             }
@@ -7675,8 +7881,15 @@
             this.clearIntroFlow();
             this.clearSceneTimers();
             this.clearGuideChatStreamTimers();
+            if (this.wakeup && typeof this.wakeup.destroy === 'function') {
+                this.wakeup.destroy();
+            }
             this.disableInterrupts();
-            this.voiceQueue.stop();
+            if (this.voiceQueue && typeof this.voiceQueue.destroy === 'function') {
+                this.voiceQueue.destroy();
+            } else {
+                this.voiceQueue.stop();
+            }
             this.cursor.cancel();
             this.cursor.hide();
             this.clearAllVirtualSpotlights();
