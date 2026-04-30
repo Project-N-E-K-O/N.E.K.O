@@ -463,7 +463,8 @@ async def fetch_weibo_trending(limit: int = 10) -> Dict[str, Any]:
             return await _fetch_weibo_trending_fallback(limit)
 
         html = response.text
-        soup = BeautifulSoup(html, 'lxml')
+        # BS4 解析放线程池（与 Google/Baidu/Twitter 链路一致）
+        soup = await asyncio.to_thread(BeautifulSoup, html, 'lxml')
 
         # 解析热搜列表 (td-02 class)
         td_items = soup.find_all('td', class_='td-02')
