@@ -332,6 +332,12 @@
         }
     }
 
+    function markAssistantVisibleResponseForAchievement() {
+        if (window.appChat && typeof window.appChat.markAssistantVisibleResponse === 'function') {
+            window.appChat.markAssistantVisibleResponse();
+        }
+    }
+
     function createGeminiBubble(sentence) {
         var host = getHost();
         var cleanSentence = (sentence || '').replace(/\[play_music:[^\]]*(\]|$)/g, '');
@@ -360,6 +366,7 @@
         if (typeof window.ensureAssistantTurnStarted === 'function') {
             window.ensureAssistantTurnStarted('create_gemini_bubble');
         }
+        markAssistantVisibleResponseForAchievement();
 
         return ref;
     }
@@ -459,6 +466,7 @@
             window.currentGeminiMessage = ref;
             window.currentTurnGeminiBubbles = window.currentTurnGeminiBubbles || [];
             window.currentTurnGeminiBubbles.push(ref);
+            markAssistantVisibleResponseForAchievement();
             return;
         }
 
@@ -619,6 +627,7 @@
                 window.currentGeminiMessage = ref;
                 window.currentTurnGeminiBubbles.push(ref);
                 createdVisibleBubble = true;
+                markAssistantVisibleResponseForAchievement();
             } else {
                 window.currentGeminiMessage = null;
             }
@@ -641,6 +650,7 @@
                     window.currentTurnGeminiBubbles = window.currentTurnGeminiBubbles || [];
                     window.currentTurnGeminiBubbles.push(newRef);
                     createdVisibleBubble = true;
+                    markAssistantVisibleResponseForAchievement();
                 } else {
                     window.currentGeminiMessage = null;
                 }
@@ -678,6 +688,7 @@
                 window.currentGeminiMessage = gemRef;
                 window.currentTurnGeminiBubbles.push(gemRef);
                 createdVisibleBubble = true;
+                markAssistantVisibleResponseForAchievement();
             }
         }
 

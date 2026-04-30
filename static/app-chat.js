@@ -25,6 +25,8 @@
     // 首次交互跟踪
     let isFirstUserInput = true;   // 跟踪是否为用户第一次输入
     let isFirstAIResponse = true;  // 跟踪是否为AI第一次回复
+    let firstDialogueUnlockPending = false; // unlockAchievement 尚未就绪时的补偿标记
+    let firstDialogueUnlockInFlight = false;
 
     // ======================== 工具函数 ========================
 
@@ -303,19 +305,45 @@
     // ======================== 成就 ========================
 
     /**
-     * 检查并解锁首次对话成就
-     * 当用户和AI都完成首次交互后调用API
+     * 检查并解锁首次对话成就。
+     * 只由 AI 可见回复路径触发；用户输入路径只负责标记 isFirstUserInput。
      */
     async function checkAndUnlockFirstDialogueAchievement() {
-        if (!isFirstUserInput && !isFirstAIResponse) {
-            if (!window.unlockAchievement) return;
-            console.log(window.t('console.firstConversationUnlockAchievement'));
-            try {
-                await window.unlockAchievement('ACH_FIRST_DIALOGUE');
-            } catch (error) {
-                console.error(window.t('console.achievementUnlockError'), error);
+        if (isFirstUserInput || firstDialogueUnlockInFlight) return;
+
+        if (!window.unlockAchievement) {
+            if (!firstDialogueUnlockPending) {
+                firstDialogueUnlockPending = true;
+                setTimeout(function retryFirstDialogueUnlock() {
+                    if (!firstDialogueUnlockPending) return;
+                    if (!window.unlockAchievement) {
+                        setTimeout(retryFirstDialogueUnlock, 500);
+                        return;
+                    }
+                    checkAndUnlockFirstDialogueAchievement();
+                }, 500);
             }
+            return;
         }
+
+        firstDialogueUnlockPending = false;
+        firstDialogueUnlockInFlight = true;
+        console.log(window.t('console.firstConversationUnlockAchievement'));
+        try {
+            await window.unlockAchievement('ACH_FIRST_DIALOGUE');
+        } catch (error) {
+            console.error(window.t('console.achievementUnlockError'), error);
+        } finally {
+            firstDialogueUnlockInFlight = false;
+        }
+    }
+
+    function markAssistantVisibleResponse() {
+        if (isFirstAIResponse) {
+            isFirstAIResponse = false;
+            console.log(window.t('console.aiFirstReplyDetected'));
+        }
+        checkAndUnlockFirstDialogueAchievement();
     }
 
     // ======================== 气泡创建 ========================
@@ -337,12 +365,8 @@
             window.ensureAssistantTurnStarted('create_gemini_bubble');
         }
 
-        // 如果是AI第一次回复，更新状态并检查成就
-        if (isFirstAIResponse) {
-            isFirstAIResponse = false;
-            console.log(window.t('console.aiFirstReplyDetected'));
-            checkAndUnlockFirstDialogueAchievement();
-        }
+        // AI 可见回复出现时才尝试解锁首次对话成就
+        markAssistantVisibleResponse();
     }
 
     function normalizeGeminiText(s) {
@@ -801,11 +825,7 @@
                 window.currentTurnGeminiBubbles = window.currentTurnGeminiBubbles || [];
                 window.currentTurnGeminiBubbles.push(msgDiv);
 
-                if (isFirstAIResponse) {
-                    isFirstAIResponse = false;
-                    console.log(window.t('console.aiFirstReplyDetected'));
-                    checkAndUnlockFirstDialogueAchievement();
-                }
+                markAssistantVisibleResponse();
                 return;
             }
 
@@ -952,11 +972,7 @@
                 window.currentGeminiMessage = null;
             }
 
-            if (isFirstAIResponse) {
-                isFirstAIResponse = false;
-                console.log(window.t('console.aiFirstReplyDetected'));
-                checkAndUnlockFirstDialogueAchievement();
-            }
+            markAssistantVisibleResponse();
         } else if (sender === 'gemini' && isMergeMessagesEnabled()) {
             // 【核心重构】不再依赖 isNewMessage 标志，而是根据"本轮是否已有气泡"来决策。
             // 解决首个 chunk 被清洗为空（纯指令）时导致的渲染坠落 Bug
@@ -1019,12 +1035,8 @@
                 window.currentTurnGeminiBubbles.push(newDiv);
                 createdVisibleBubble = true;
 
-                // 如果是AI第一次回复，更新状态并检查成就
-                if (isFirstAIResponse) {
-                    isFirstAIResponse = false;
-                    console.log('\u68C0\u6D4B\u5230AI\u7B2C\u4E00\u6B21\u56DE\u590D');
-                    checkAndUnlockFirstDialogueAchievement();
-                }
+                // AI 可见回复出现时才尝试解锁首次对话成就
+                markAssistantVisibleResponse();
             }
         }
         // 仅在用户已处于底部附近时自动滚动（使用函数开头缓存的快照）
@@ -1042,6 +1054,7 @@
     mod.appendMessage = appendMessage;
     mod.appendReactUserMessage = appendReactUserMessage;
     mod.checkAndUnlockFirstDialogueAchievement = checkAndUnlockFirstDialogueAchievement;
+    mod.markAssistantVisibleResponse = markAssistantVisibleResponse;
     mod.setReactMessageStatus = setReactMessageStatus;
     mod.ensureUserDisplayName = ensureUserDisplayName;
 
