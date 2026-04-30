@@ -4208,8 +4208,12 @@
                 this.overlay.hideBubble();
             }
 
-            if (!(options && options.skipEmotion) && performance.emotion) {
-                this.applyGuideEmotion(performance.emotion);
+            if (!(options && options.skipEmotion)) {
+                if (performance.emotion) {
+                    this.applyGuideEmotion(performance.emotion);
+                } else if (this.activeGuideEmotion) {
+                    this.clearGuidePresentation();
+                }
             }
         }
 
