@@ -267,7 +267,21 @@ Live2DManager.prototype._resetExplicitMotionParameters = function(options = {}) 
     for (const paramId of motionParams) {
         if (protectedIds.has(paramId)) continue;
         try {
-            coreModel.setParameterValueById(paramId, 0);
+            let resetValue = 0;
+            if (Object.prototype.hasOwnProperty.call(this.initialParameters || {}, paramId)) {
+                resetValue = this.initialParameters[paramId];
+            } else if (typeof coreModel.getParameterIndex === 'function') {
+                try {
+                    const paramIndex = coreModel.getParameterIndex(paramId);
+                    const indexKey = `param_${paramIndex}`;
+                    if (paramIndex >= 0 && Object.prototype.hasOwnProperty.call(this.initialParameters || {}, indexKey)) {
+                        resetValue = this.initialParameters[indexKey];
+                    }
+                } catch (indexError) {
+                    // 部分 Cubism 版本不支持 getParameterIndex，退回到默认 motion 清理值。
+                }
+            }
+            coreModel.setParameterValueById(paramId, resetValue);
             resetCount++;
         } catch (e) {
             // 参数不存在，忽略
@@ -277,7 +291,7 @@ Live2DManager.prototype._resetExplicitMotionParameters = function(options = {}) 
     return resetCount;
 };
 
-Live2DManager.prototype.resetTransientMotionAndExpressionState = function(options = {}) {
+Live2DManager.prototype.resetTransientMotionAndExpressionState = async function(options = {}) {
     const preserveExpression = options.preserveExpression === true;
 
     this._cancelSmoothReset();
@@ -311,7 +325,7 @@ Live2DManager.prototype.resetTransientMotionAndExpressionState = function(option
 
     if (preserveExpression) {
         try {
-            this.applyPersistentExpressionsNative(true);
+            await this.applyPersistentExpressionsNative(true);
         } catch (e) {
             console.warn('重新应用常驻表情失败:', e);
         }
@@ -715,6 +729,11 @@ Live2DManager.prototype.playExpression = async function(emotion, specifiedExpres
                 const expression = await this.currentModel.expression(expressionName);
                 if (expression) {
                     console.log(`成功使用原生API播放expression: ${expressionName}`);
+                    try {
+                        await this.applyPersistentExpressionsNative(true);
+                    } catch (e) {
+                        console.warn('重新应用常驻表情失败:', e);
+                    }
                     return; // 成功播放，直接返回
                 } else {
                     console.warn(`原生expression API未返回有效结果 (name: ${expressionName})，回退到手动参数设置`);
@@ -812,7 +831,7 @@ Live2DManager.prototype.playMotion = async function(emotion) {
         // 新 motion 开始前先回到干净基准。这里保留当前 expression，因为
         // setEmotion() 会先应用本轮表情再播放动作；单独调用 playMotion()
         // 时也应保留用户当前表情，只清掉上一条 motion 的残留。
-        this.resetTransientMotionAndExpressionState({ preserveExpression: true });
+        await this.resetTransientMotionAndExpressionState({ preserveExpression: true });
 
         // 尝试使用Live2D模型的原生motion播放功能
         try {
@@ -947,7 +966,7 @@ Live2DManager.prototype.playSimpleMotion = function(emotion) {
 };
 
 // 清理当前情感效果（清除motion参数，但保留expression）
-Live2DManager.prototype.clearEmotionEffects = function() {
+Live2DManager.prototype.clearEmotionEffects = async function() {
     console.log('开始清理motion效果（保留expression）...');
     
     // 清除动作定时器
@@ -971,12 +990,12 @@ Live2DManager.prototype.clearEmotionEffects = function() {
     // 全量恢复，同时保护当前 transient expression、常驻表情和口型参数。
     const resetCount = this._resetParametersToInitialState({ preserveExpression: true });
     const explicitResetCount = this._resetExplicitMotionParameters({ preserveExpression: true });
-    console.log(`已按初始基准重置${resetCount}个motion参数，显式重置${explicitResetCount}个motion参数，expression参数已保留`);
+    console.log(`已按初始基准重置${resetCount}个motion参数，显式恢复${explicitResetCount}个motion参数，expression参数已保留`);
     
     // 重新应用常驻表情（保护常驻expression不被影响）
     // skipBackup=true 因为只是重新应用，不需要再次备份
     try {
-        this.applyPersistentExpressionsNative(true);
+        await this.applyPersistentExpressionsNative(true);
     } catch (e) {
         console.warn('重新应用常驻表情失败:', e);
     }
@@ -1053,7 +1072,7 @@ Live2DManager.prototype.setEmotion = async function(emotion) {
 
         // 切到新情感前，完整清掉上一轮 motion/expression 的参数与覆盖监听。
         // 之后再应用本轮 expression/motion，避免上一个动作的手臂/透明度残留叠到新动作上。
-        this.resetTransientMotionAndExpressionState({ preserveExpression: false });
+        await this.resetTransientMotionAndExpressionState({ preserveExpression: false });
 
         this.currentEmotion = emotion;
         this.currentExpressionFile = targetExpressionFile;
