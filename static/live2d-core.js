@@ -114,6 +114,7 @@ class Live2DManager {
         this.persistentExpressionNames = [];
         this.persistentExpressionParamsByName = {};
         this.motionBaselineParameters = {};
+        this._activeExpressionParamIds = null;
 
         // UI/Ticker 资源句柄（便于在切换模型时清理）
         this._lockIconTicker = null;

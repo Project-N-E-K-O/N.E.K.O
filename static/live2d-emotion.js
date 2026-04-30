@@ -18,6 +18,7 @@ Live2DManager.prototype.recordInitialParameters = function() {
         const coreModel = this.currentModel.internalModel.coreModel;
         this.initialParameters = {};
         this.motionBaselineParameters = {};
+        this._activeExpressionParamIds = null;
         
         const paramCount = coreModel.getParameterCount();
         // 详细参数日志默认关闭，避免控制台刷屏；如需调试可在控制台执行：
@@ -131,6 +132,7 @@ Live2DManager.prototype.recordInitialParameters = function() {
         console.warn('记录初始参数失败:', error);
         this.initialParameters = {};
         this.motionBaselineParameters = {};
+        this._activeExpressionParamIds = null;
     }
 };
 
