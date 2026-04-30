@@ -85,11 +85,11 @@ async def get_page_config(lanlan_name: str = ""):
             'avatar',
             'live2d',
             'model_path',
-            default='yui_default',
+            default='yui-origin',
             legacy_keys=('live2d',),
         )
         if not isinstance(live2d_model_path, str):
-            live2d_model_path = str(live2d_model_path) if live2d_model_path is not None else 'yui_default'
+            live2d_model_path = str(live2d_model_path) if live2d_model_path is not None else 'yui-origin'
         if live2d_model_path.endswith('.model3.json'):
             parts = live2d_model_path.replace('\\', '/').split('/')
             live2d = parts[-2] if len(parts) >= 2 else parts[-1].removesuffix('.model3.json')

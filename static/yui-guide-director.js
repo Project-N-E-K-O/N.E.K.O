@@ -215,19 +215,6 @@
     });
     const INTRO_ACTIVATION_HINT_KEY = 'tutorial.yuiGuide.lines.introActivationHint';
     const INTRO_ACTIVATION_HINT = '点一下这里，我就能开始说话啦～';
-    const GUIDE_EXPRESSION_TRACKS_BY_VOICE_KEY = Object.freeze({
-        intro_greeting_reply: Object.freeze(['sbx', 'xxy']),
-        intro_basic: Object.freeze(['swz']),
-        takeover_capture_cursor: Object.freeze(['szhs', 'syhs']),
-        takeover_plugin_preview_home: Object.freeze(['by']),
-        takeover_plugin_preview_dashboard: Object.freeze(['syhs']),
-        takeover_settings_peek_intro: Object.freeze(['xxy']),
-        takeover_settings_peek_detail: Object.freeze(['sbx']),
-        takeover_return_control: Object.freeze([]),
-        interrupt_resist_light_1: Object.freeze(['__random_z2_z3__']),
-        interrupt_resist_light_3: Object.freeze(['__random_z2_z3__']),
-        interrupt_angry_exit: Object.freeze(['z3'])
-    });
     const GUIDE_AUDIO_FILES_BY_KEY = Object.freeze({
         intro_basic: {
             zh: GUIDE_AUDIO_FILE_NAMES.intro_basic,
@@ -1613,34 +1600,18 @@
 
     class YuiGuideEmotionBridge {
         apply(emotion) {
-            if (!emotion || !window.LanLan1 || typeof window.LanLan1.setEmotion !== 'function') {
+            if (!emotion || !window.live2dManager || !window.live2dManager.currentModel) {
+                return;
+            }
+
+            if (typeof window.live2dManager.playMotion !== 'function') {
                 return;
             }
 
             try {
-                window.LanLan1.setEmotion(emotion);
+                window.live2dManager.playMotion(emotion);
             } catch (error) {
-                console.warn('[YuiGuide] 设置情绪失败:', error);
-            }
-        }
-
-        playExpression(expressionId) {
-            const normalizedExpressionId = typeof expressionId === 'string' ? expressionId.trim() : '';
-            if (!normalizedExpressionId || !window.live2dManager || !window.live2dManager.currentModel) {
-                return;
-            }
-
-            if (typeof window.live2dManager.playExpression !== 'function') {
-                return;
-            }
-
-            try {
-                window.live2dManager.playExpression(
-                    '__tutorial__',
-                    'expressions/' + normalizedExpressionId + '.exp3.json'
-                );
-            } catch (error) {
-                console.warn('[YuiGuide] 播放教程表情失败:', normalizedExpressionId, error);
+                console.warn('[YuiGuide] 播放教程动作失败:', emotion, error);
             }
         }
 
@@ -1858,9 +1829,7 @@
             this.spotlightGeometryHintElements = new Set();
             this.retainedExtraSpotlightElements = [];
             this.sceneExtraSpotlightElements = [];
-            this.expressionTrackToken = 0;
             this.activeGuideEmotion = '';
-            this.activeGuideExpressionId = '';
             this.pluginDashboardHandoff = null;
             this.pluginDashboardLastInterruptRequestId = '';
             this.pluginDashboardWindowCreatedByGuide = false;
@@ -2233,79 +2202,24 @@
             return translateGuideText(textKey, fallbackText);
         }
 
-        getGuideExpressionTrack(voiceKey) {
-            const normalizedVoiceKey = typeof voiceKey === 'string' ? voiceKey.trim() : '';
-            if (!normalizedVoiceKey) {
-                return null;
-            }
-
-            if (!Object.prototype.hasOwnProperty.call(GUIDE_EXPRESSION_TRACKS_BY_VOICE_KEY, normalizedVoiceKey)) {
-                return null;
-            }
-
-            return GUIDE_EXPRESSION_TRACKS_BY_VOICE_KEY[normalizedVoiceKey];
-        }
-
-        hasGuideExpressionTrack(voiceKey) {
-            return Array.isArray(this.getGuideExpressionTrack(voiceKey));
-        }
-
-        cancelGuideExpressionTrack() {
-            this.expressionTrackToken += 1;
-        }
-
-        resolveGuideExpressionId(expressionId) {
-            const normalizedExpressionId = typeof expressionId === 'string' ? expressionId.trim() : '';
-            if (!normalizedExpressionId) {
-                return '';
-            }
-
-            if (normalizedExpressionId === '__random_z2_z3__') {
-                return Math.random() < 0.5 ? 'z2' : 'z3';
-            }
-
-            return normalizedExpressionId;
-        }
-
-        playGuideExpression(expressionId) {
-            const resolvedExpressionId = this.resolveGuideExpressionId(expressionId);
-            if (!resolvedExpressionId) {
-                return;
-            }
-
-            this.activeGuideEmotion = '';
-            this.activeGuideExpressionId = resolvedExpressionId;
-            this.emotionBridge.playExpression(resolvedExpressionId);
-        }
-
         applyGuideEmotion(emotion) {
             const normalizedEmotion = typeof emotion === 'string' ? emotion.trim() : '';
             if (!normalizedEmotion) {
                 return;
             }
 
-            this.activeGuideExpressionId = '';
             this.activeGuideEmotion = normalizedEmotion;
             this.emotionBridge.apply(normalizedEmotion);
         }
 
         clearGuidePresentation() {
             this.activeGuideEmotion = '';
-            this.activeGuideExpressionId = '';
             this.emotionBridge.clear();
         }
 
         captureCurrentGuidePresentationSnapshot() {
-            if (this.activeGuideExpressionId) {
-                return {
-                    expressionId: this.activeGuideExpressionId,
-                    emotion: ''
-                };
-            }
-
             if (this.activeGuideEmotion) {
                 return {
-                    expressionId: '',
                     emotion: this.activeGuideEmotion
                 };
             }
@@ -2318,11 +2232,6 @@
                 return false;
             }
 
-            if (snapshot.expressionId) {
-                this.playGuideExpression(snapshot.expressionId);
-                return true;
-            }
-
             if (snapshot.emotion) {
                 this.applyGuideEmotion(snapshot.emotion);
                 return true;
@@ -2332,55 +2241,14 @@
             return true;
         }
 
-        async runGuideExpressionTrack(text, options) {
-            const normalizedOptions = options || {};
-            const track = this.getGuideExpressionTrack(normalizedOptions.voiceKey);
-            this.cancelGuideExpressionTrack();
-            const trackToken = this.expressionTrackToken;
-
-            if (!Array.isArray(track)) {
-                return;
-            }
-
-            if (track.length === 0) {
-                this.clearGuidePresentation();
-                return;
-            }
-
-            const durationMs = this.getGuideVoiceDurationMs(normalizedOptions.voiceKey, resolveGuideLocale())
-                || estimateSpeechDurationMs(text || '');
-            const segmentDurationMs = Math.max(240, Math.round(durationMs / Math.max(1, track.length)));
-
-            for (let index = 0; index < track.length; index += 1) {
-                if (trackToken !== this.expressionTrackToken || this.isStopping()) {
-                    return;
-                }
-
-                this.playGuideExpression(track[index]);
-                if (index >= (track.length - 1)) {
-                    return;
-                }
-
-                const continued = await this.waitForSceneDelay(segmentDurationMs);
-                if (!continued || trackToken !== this.expressionTrackToken || this.isStopping()) {
-                    return;
-                }
-            }
-        }
-
         async speakGuideLine(text, options) {
             const content = typeof text === 'string' ? text.trim() : '';
-            const normalizedOptions = options || {};
 
             if (!content) {
-                this.cancelGuideExpressionTrack();
                 return;
             }
 
-            await Promise.all([
-                this.speakLineAndWait(content, normalizedOptions),
-                this.runGuideExpressionTrack(content, normalizedOptions)
-            ]);
+            await this.speakLineAndWait(content, options || {});
         }
 
         resolvePerformanceBubbleText(performance) {
@@ -4099,7 +3967,7 @@
                 this.overlay.hideBubble();
             }
 
-            if (performance.emotion && !this.hasGuideExpressionTrack(performance.voiceKey)) {
+            if (performance.emotion) {
                 this.applyGuideEmotion(performance.emotion);
             }
         }
@@ -6344,7 +6212,7 @@
                     voiceKey: introVoiceKey
                 });
             }
-            if (performance.emotion && !this.hasGuideExpressionTrack(performance.voiceKey || 'takeover_settings_peek_intro')) {
+            if (performance.emotion) {
                 this.applyGuideEmotion(performance.emotion);
             }
 
@@ -7283,7 +7151,7 @@
                 textKey: introStep.performance.bubbleTextKey || '',
                 voiceKey: introStep.performance.voiceKey
             });
-            if (introStep.performance.emotion && !this.hasGuideExpressionTrack(introStep.performance.voiceKey)) {
+            if (introStep.performance.emotion) {
                 this.applyGuideEmotion(introStep.performance.emotion);
             }
             await Promise.all([
@@ -7336,7 +7204,7 @@
                     voiceKey: introStep.performance.voiceKey
                 });
             }
-            if (introStep.performance.emotion && !this.hasGuideExpressionTrack(introStep.performance.voiceKey)) {
+            if (introStep.performance.emotion) {
                 this.applyGuideEmotion(introStep.performance.emotion);
             }
             await Promise.all([
@@ -7512,7 +7380,7 @@
                         voiceKey: performance.voiceKey
                     });
                 }
-                if (performance.emotion && !this.hasGuideExpressionTrack(performance.voiceKey)) {
+                if (performance.emotion) {
                     this.applyGuideEmotion(performance.emotion);
                 }
 
@@ -7569,7 +7437,7 @@
                 this.overlay.hideBubble();
             }
 
-            if (performance.emotion && !shouldNarrateAfterMove && !this.hasGuideExpressionTrack(performance.voiceKey)) {
+            if (performance.emotion && !shouldNarrateAfterMove) {
                 this.applyGuideEmotion(performance.emotion);
             }
 
@@ -7618,7 +7486,7 @@
                 }, stepId);
             }
 
-            if (performance.emotion && shouldNarrateDuringMove && !this.hasGuideExpressionTrack(performance.voiceKey)) {
+            if (performance.emotion && shouldNarrateDuringMove) {
                 this.applyGuideEmotion(performance.emotion);
             }
 
@@ -7677,7 +7545,7 @@
                 this.overlay.hideBubble();
             }
 
-            if (performance.emotion && shouldNarrateAfterMove && !this.hasGuideExpressionTrack(performance.voiceKey)) {
+            if (performance.emotion && shouldNarrateAfterMove) {
                 this.applyGuideEmotion(performance.emotion);
             }
 
@@ -7965,9 +7833,7 @@
                 voiceKey: resistanceVoiceKeys[resistanceVoiceIndex] || '',
                 streamPauseWithScene: false
             });
-            if (!this.hasGuideExpressionTrack(resistanceVoiceKeys[resistanceVoiceIndex] || '')) {
-                this.applyGuideEmotion(performance.emotion || 'surprised');
-            }
+            this.applyGuideEmotion(performance.emotion || 'surprised');
             const cursorResistancePromise = suppressCursorReaction
                 ? Promise.resolve()
                 : this.cursor.resistTo(x, y);
@@ -7976,10 +7842,7 @@
                 this.voiceQueue.speak(message, {
                     voiceKey: resistanceVoiceKey
                 }),
-                cursorResistancePromise,
-                this.runGuideExpressionTrack(message, {
-                    voiceKey: resistanceVoiceKey
-                })
+                cursorResistancePromise
             ]).finally(() => {
                 this.resumeCurrentSceneAfterResistance();
                 this.restoreGuidePresentationSnapshot(presentationSnapshot);
@@ -8022,7 +7885,7 @@
                 streamPauseWithScene: false,
                 streamAllowDuringAngryExit: true
             });
-            this.playGuideExpression('z3');
+            this.applyGuideEmotion(performance.emotion || 'angry');
             await this.speakGuideLine(bubbleText || '', {
                 voiceKey: performance.voiceKey
             });
@@ -8079,7 +7942,6 @@
                 this.pluginDashboardHandoff.resolve(false);
             }
             this.cancelActiveNarration();
-            this.cancelGuideExpressionTrack();
             this.clearIntroFlow();
             this.clearSceneTimers();
             this.clearGuideChatStreamTimers();

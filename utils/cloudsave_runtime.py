@@ -1960,7 +1960,7 @@ def _derive_character_binding_summary(
 
     fallback_model_ref = ""
     if asset_state != "ready" and binding_model_type != "live2d":
-        fallback_model_ref = "yui_default/yui_default.model3.json"
+        fallback_model_ref = "yui-origin/yui-origin.model3.json"
 
     return {
         "character_name": character_name,
