@@ -786,6 +786,11 @@ Live2DManager.prototype.playMotion = async function(emotion) {
         }
     }
 
+    // 新 motion 开始前先回到干净基准。这里保留当前 expression，因为
+    // setEmotion() 会先应用本轮表情再播放动作；单独调用 playMotion()
+    // 时也应保留用户当前表情，只清掉上一条 motion 的残留。
+    await this.resetTransientMotionAndExpressionState({ preserveExpression: true });
+
     if (!motions || motions.length === 0) {
         console.warn(`未找到情感 ${emotion} 对应的动作，但将保持表情`);
         // 如果没有找到对应的motion，设置一个短定时器以确保expression能够显示
@@ -804,35 +809,6 @@ Live2DManager.prototype.playMotion = async function(emotion) {
     }
 
     try {
-        // 清除之前的动作定时器
-        if (this.motionTimer) {
-            console.log('检测到前一个motion正在播放，正在停止...');
-
-            if (this.motionTimer.type === 'animation') {
-                cancelAnimationFrame(this.motionTimer.id);
-            } else if (this.motionTimer.type === 'timeout') {
-                clearTimeout(this.motionTimer.id);
-            } else if (this.motionTimer.type === 'motion') {
-                // 停止motion播放
-                try {
-                    if (this.motionTimer.id && this.motionTimer.id.stop) {
-                        this.motionTimer.id.stop();
-                    }
-                } catch (motionError) {
-                    console.warn('停止motion失败:', motionError);
-                }
-            } else {
-                clearTimeout(this.motionTimer);
-            }
-            this.motionTimer = null;
-            console.log('前一个motion已停止');
-        }
-
-        // 新 motion 开始前先回到干净基准。这里保留当前 expression，因为
-        // setEmotion() 会先应用本轮表情再播放动作；单独调用 playMotion()
-        // 时也应保留用户当前表情，只清掉上一条 motion 的残留。
-        await this.resetTransientMotionAndExpressionState({ preserveExpression: true });
-
         // 尝试使用Live2D模型的原生motion播放功能
         try {
             // 构建完整的motion路径（相对模型根目录）
