@@ -317,20 +317,26 @@
                 firstDialogueUnlockPending = true;
                 var retryAttempts = 0;
                 var maxRetryAttempts = 10;
+                var retryDelayMs = 500;
+                var slowRetryDelayMs = 5000;
                 setTimeout(function retryFirstDialogueUnlock() {
-                    if (!firstDialogueUnlockPending) return;
+                    if (!firstDialogueUnlockPending || firstDialogueUnlocked) {
+                        firstDialogueUnlockPending = false;
+                        return;
+                    }
                     retryAttempts += 1;
                     if (!window.unlockAchievement) {
                         if (retryAttempts >= maxRetryAttempts) {
-                            firstDialogueUnlockPending = false;
-                            console.warn('[Achievement] unlockAchievement not ready; giving up first dialogue retry');
+                            retryAttempts = 0;
+                            console.warn('[Achievement] unlockAchievement not ready; continuing first dialogue retry at a slower interval');
+                            setTimeout(retryFirstDialogueUnlock, slowRetryDelayMs);
                             return;
                         }
-                        setTimeout(retryFirstDialogueUnlock, 500);
+                        setTimeout(retryFirstDialogueUnlock, retryDelayMs);
                         return;
                     }
                     checkAndUnlockFirstDialogueAchievement();
-                }, 500);
+                }, retryDelayMs);
             }
             return;
         }
