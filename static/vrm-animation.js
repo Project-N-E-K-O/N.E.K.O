@@ -44,6 +44,9 @@ class VRMAnimation {
         this.mouthExpressions = { 'aa': null, 'ih': null, 'ou': null, 'ee': null, 'oh': null };
         this.currentMouthWeight = 0;
         this.frequencyData = null;
+        // _updateLipSync 每帧调 setValue，失败时用 console.warn 会刷屏。
+        // 用 Set 记住已告警过的表情名，同名失败只打一次。
+        this._lipSyncWarnedNames = new Set();
         this._boundsUpdateFrameCounter = 0;
         this._boundsUpdateInterval = 5;
         this._skinnedMeshes = [];
@@ -750,6 +753,8 @@ class VRMAnimation {
     startLipSync(analyser) {
         this.analyser = analyser;
         this.lipSyncActive = true;
+        // 清空一次性告警记录：换模型或重新开始 lip sync 时，允许新会话重新告警一次。
+        this._lipSyncWarnedNames.clear();
         this.updateMouthExpressionMapping();
         if (this.analyser) {
             this.frequencyData = new Uint8Array(this.analyser.frequencyBinCount);
@@ -836,14 +841,20 @@ class VRMAnimation {
             try {
                 expressionManager.setValue(name, 0);
             } catch (e) {
-                console.warn(`[VRM LipSync] 重置口型表情失败: ${name}`, e);
+                if (!this._lipSyncWarnedNames.has(name)) {
+                    this._lipSyncWarnedNames.add(name);
+                    console.warn(`[VRM LipSync] 重置口型表情失败: ${name}`, e);
+                }
             }
         }
 
         try {
             expressionManager.setValue(mouthOpenName, finalWeight);
         } catch (e) {
-            console.warn(`[VRM LipSync] 设置表情失败: ${mouthOpenName}`, e);
+            if (!this._lipSyncWarnedNames.has(mouthOpenName)) {
+                this._lipSyncWarnedNames.add(mouthOpenName);
+                console.warn(`[VRM LipSync] 设置表情失败: ${mouthOpenName}`, e);
+            }
         }
     }
 
