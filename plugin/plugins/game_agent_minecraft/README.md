@@ -51,7 +51,7 @@ agent 端启动方式由你自己决定（一般是 `node minecraft-agent/index.
 
 ## LLM 工具：`minecraft_task`
 
-```
+```json
 {
   "name": "minecraft_task",
   "description": "Send a task to the Minecraft game system ...",
