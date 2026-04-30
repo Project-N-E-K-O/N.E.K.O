@@ -7,11 +7,9 @@ from typing import Any, Optional
 import math
 import os
 
-from plugin.sdk.plugin import Err, NekoPluginBase, Ok, SdkError, lifecycle, neko_plugin, plugin_entry
+from plugin.sdk.plugin import Err, NekoPluginBase, Ok, SdkError, lifecycle, llm_tool, neko_plugin, plugin_entry
 
 from .service import STS2AutoplayService
-from .tool_bridge import register_all_tools, unregister_all_tools
-from .tool_callbacks import start_callback_server, stop_callback_server
 
 _CONFIG_FILE = Path(__file__).with_name("plugin.toml")
 _SOURCE_ID = "sts2_autoplay"
@@ -85,34 +83,59 @@ class STS2AutoplayPlugin(NekoPluginBase):
         cfg = _as_mapping(await self.config.dump(timeout=5.0))
         self._cfg = _as_mapping(cfg.get("sts2"))
         await self._service.startup(self._cfg)
-
-        # Start a tool_call callback HTTP server in a dedicated thread.
-        #
-        # Why a thread: plugins run as child processes (multiprocessing.Process).
-        # The host runs startup() on a temporary event loop that closes once
-        # startup returns. Any asyncio.create_task() on that loop gets cancelled.
-        # The callback server must outlive startup, so it runs on its own loop
-        # in a daemon thread.
-        self._tool_callback_handle = None
-        try:
-            handle = start_callback_server(self._service, self.logger)
-            self._tool_callback_handle = handle
-            # Register tools with main_server. Await directly instead of
-            # create_task -- the startup loop is temporary and tasks on it
-            # would be cancelled.
-            await register_all_tools(self.logger, callback_port=handle.port)
-        except Exception as exc:
-            self.logger.warning("Failed to start tool callback server: %s. Tool calling disabled.", exc)
-
         return Ok({"status": "ready", "result": await self._service.get_status()})
 
     @lifecycle(id="shutdown")
     async def shutdown(self, **_: Any):
-        await unregister_all_tools(self.logger)
-        stop_callback_server(self._tool_callback_handle, self.logger)
-        self._tool_callback_handle = None
         await self._service.shutdown()
         return Ok({"status": "shutdown"})
+
+    # ---- LLM-callable tools (registered via @llm_tool, see PR #1055) -----
+    # Only two tools are exposed to the LLM: a stop-only safety valve and
+    # a read-only status probe. All advice/play/start/pause/resume/review/
+    # guidance flows must go through agent-brain plugin entries above.
+
+    @llm_tool(
+        name="sts2_autoplay_control",
+        description=(
+            "仅用于停止已经运行或暂停中的杀戮尖塔自动游玩任务。"
+            "本工具只接受 action=stop；不能启动、暂停、恢复、查询状态或执行游戏动作。"
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["stop"],
+                    "description": "唯一允许的控制动作：stop",
+                },
+            },
+            "required": ["action"],
+        },
+        timeout=10.0,
+    )
+    async def llm_autoplay_control(self, action: str = "", **_: Any) -> JsonObject:
+        if action == "stop":
+            return await self._service.stop_autoplay()
+        return {
+            "status": "rejected",
+            "message": "sts2_autoplay_control 只允许 action=stop，已拒绝非停止类 tool-call。",
+            "summary": "已拒绝非停止类 tool-call。",
+            "executed": False,
+            "allowed_actions": ["stop"],
+        }
+
+    @llm_tool(
+        name="sts2_get_status",
+        description=(
+            "只读获取杀戮尖塔连接状态、自动游玩状态、当前界面和最近错误。"
+            "本工具不会启动、停止、暂停、恢复或执行任何游戏动作。"
+        ),
+        parameters={"type": "object", "properties": {}},
+        timeout=10.0,
+    )
+    async def llm_get_status(self, **_: Any) -> JsonObject:
+        return await self._service.get_status()
 
     async def _run_entry(self, action: AsyncPayloadFactory, *, finish: bool = False):
         try:
