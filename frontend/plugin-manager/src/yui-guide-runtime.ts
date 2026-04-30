@@ -35,18 +35,21 @@ const DEFAULT_RESISTANCE_CURSOR_REVEAL_MS = 3000
 const DEFAULT_CURSOR_CLICK_VISIBLE_MS = 420
 const CURSOR_CLICK_STAR_COUNT = 7
 const CURSOR_CLICK_STAR_LIFETIME_MS = 760
-const CURSOR_TRAIL_PARTICLE_LIFETIME_MS = 300
+const CURSOR_TRAIL_PARTICLE_LIFETIME_MS = 420
 const CURSOR_TRAIL_MIN_DISTANCE = 3
 const CURSOR_TRAIL_MIN_INTERVAL_MS = 8
 const CURSOR_TRAIL_SEGMENT_SPACING = 9
 const CURSOR_TRAIL_MAX_SEGMENTS_PER_FRAME = 6
 const CURSOR_TRAIL_MAX_POINTS = 34
-const CURSOR_TRAIL_MAX_PARTICLES = 12
+const CURSOR_TRAIL_MAX_PARTICLES = 24
 const CURSOR_TRAIL_ICON_CHANCE = 0.045
+const CURSOR_TRAIL_BLUE_PARTICLE_CHANCE = 0.42
+const CURSOR_TRAIL_MOVE_BURST_COUNT = 3
+const CURSOR_TRAIL_ACTION_BURST_COUNT = 5
 const CURSOR_TRAIL_BODY_HEAD_WIDTH = 34
-const CURSOR_TRAIL_BODY_TAIL_WIDTH = 3
+const CURSOR_TRAIL_BODY_TAIL_WIDTH = 8
 const CURSOR_TRAIL_CORE_HEAD_WIDTH = 14
-const CURSOR_TRAIL_CORE_TAIL_WIDTH = 1.5
+const CURSOR_TRAIL_CORE_TAIL_WIDTH = 3.8
 const CURSOR_TRAIL_HEAD_RADIUS = 15
 const CURSOR_TRAIL_ICON_URLS = [sendIconUrl, pawUiUrl] as const
 const PLUGIN_DASHBOARD_MOVE_TO_MAIN_MS = 780
@@ -138,7 +141,25 @@ function normalizeOrigin(value: string) {
   }
 }
 
+function isLoopbackOrigin(origin: string) {
+  try {
+    const url = new URL(origin)
+    const hostname = url.hostname.toLowerCase()
+    return (
+      (url.protocol === 'http:' || url.protocol === 'https:')
+      && (
+        hostname === 'localhost'
+        || hostname === '127.0.0.1'
+        || hostname === '::1'
+      )
+    )
+  } catch {
+    return false
+  }
+}
+
 const DEFAULT_OPENER_ORIGIN = normalizeOrigin(import.meta.env.VITE_YUI_TUTORIAL_OPENER_ORIGIN || '')
+const OPENER_ORIGIN_QUERY_PARAM = 'yui_opener_origin'
 const DEFAULT_LOCAL_OPENER_ORIGINS = [
   'http://127.0.0.1:48911',
   'http://localhost:48911',
@@ -156,9 +177,19 @@ const ALLOWED_OPENER_ORIGINS = new Set(
     .filter(Boolean),
 )
 
+function getQueryOpenerOrigin() {
+  try {
+    const params = new URLSearchParams(window.location.search || '')
+    const origin = normalizeOrigin(params.get(OPENER_ORIGIN_QUERY_PARAM) || '')
+    return origin && isLoopbackOrigin(origin) ? origin : ''
+  } catch {
+    return ''
+  }
+}
+
 function getTrustedOpenerOrigin() {
   if (!window.opener || window.opener.closed) {
-    return DEFAULT_OPENER_ORIGIN
+    return getQueryOpenerOrigin() || DEFAULT_OPENER_ORIGIN
   }
 
   try {
@@ -170,7 +201,7 @@ function getTrustedOpenerOrigin() {
     // Cross-origin opener access is expected here.
   }
 
-  return DEFAULT_OPENER_ORIGIN
+  return getQueryOpenerOrigin() || DEFAULT_OPENER_ORIGIN
 }
 
 const ROOT_ID = 'yui-guide-plugin-dashboard-runtime'
@@ -295,7 +326,11 @@ function resolveGuideLocale() {
 
 function getAllowedOpenerOrigins() {
   const origins = new Set<string>(ALLOWED_OPENER_ORIGINS)
+  const queryOpenerOrigin = getQueryOpenerOrigin()
   const trustedOrigin = getTrustedOpenerOrigin()
+  if (queryOpenerOrigin) {
+    origins.add(queryOpenerOrigin)
+  }
   if (trustedOrigin) {
     origins.add(trustedOrigin)
   }
@@ -1050,31 +1085,31 @@ function injectStyle() {
     }
 
     #${ROOT_ID} .yui-guide-plugin-cursor-trail-layer.is-visible {
-      opacity: 1;
+      opacity: 0.78;
     }
 
     #${ROOT_ID} .yui-guide-plugin-cursor-trail-ribbon {
-      opacity: 0.96;
+      opacity: 0.52;
       filter:
         blur(0.35px)
-        drop-shadow(0 0 10px rgba(41, 191, 255, 0.36))
-        drop-shadow(0 3px 16px rgba(42, 86, 224, 0.24));
+        drop-shadow(0 0 8px rgba(41, 191, 255, 0.16))
+        drop-shadow(0 3px 14px rgba(42, 86, 224, 0.1));
     }
 
     #${ROOT_ID} .yui-guide-plugin-cursor-trail-core {
-      opacity: 0.58;
+      opacity: 0.3;
       filter: blur(0.18px);
     }
 
     #${ROOT_ID} .yui-guide-plugin-cursor-trail-head {
-      opacity: 0.95;
+      opacity: 0.62;
       filter:
         blur(0.2px)
-        drop-shadow(0 0 12px rgba(58, 223, 255, 0.42));
+        drop-shadow(0 0 10px rgba(58, 223, 255, 0.22));
     }
 
     #${ROOT_ID} .yui-guide-plugin-cursor-trail-head-core {
-      opacity: 0.58;
+      opacity: 0.32;
       filter: blur(0.4px);
     }
 
@@ -1091,7 +1126,7 @@ function injectStyle() {
         translate(-50%, -50%)
         rotate(var(--trail-angle, 0deg))
         scale(0.92);
-      animation: yui-guide-plugin-cursor-trail-fade 300ms ease-out both;
+      animation: yui-guide-plugin-cursor-trail-fade 420ms ease-out both;
     }
 
     #${ROOT_ID} .yui-guide-plugin-cursor-trail.is-glow {
@@ -1105,9 +1140,21 @@ function injectStyle() {
       background-size: contain;
       filter:
         brightness(var(--trail-brightness, 0.88))
-        saturate(1.28)
-        drop-shadow(0 0 5px rgba(87, 211, 255, 0.32));
+        saturate(1.08)
+        drop-shadow(0 0 4px rgba(87, 211, 255, 0.18));
       opacity: 0;
+    }
+
+    #${ROOT_ID} .yui-guide-plugin-cursor-trail.is-blue-particle {
+      border-radius: 999px;
+      background:
+        radial-gradient(circle at 36% 32%, rgba(255, 255, 255, 0.98) 0 18%, transparent 20%),
+        radial-gradient(circle, rgba(119, 233, 255, 0.96) 0 36%, rgba(44, 174, 255, 0.62) 58%, transparent 76%);
+      box-shadow:
+        0 0 8px rgba(72, 207, 255, 0.62),
+        0 0 16px rgba(49, 113, 255, 0.3);
+      filter: saturate(1.1);
+      mix-blend-mode: normal;
     }
 
     #${ROOT_ID} .yui-guide-plugin-click-star {
@@ -1124,8 +1171,8 @@ function injectStyle() {
         hsl(var(--star-hue, 46) 96% 62%);
       clip-path: polygon(50% 0, 61% 34%, 96% 34%, 68% 55%, 80% 92%, 50% 70%, 20% 92%, 32% 55%, 4% 34%, 39% 34%);
       filter:
-        drop-shadow(0 0 5px rgba(255, 239, 150, 0.72))
-        drop-shadow(0 2px 5px rgba(180, 92, 32, 0.24));
+        drop-shadow(0 0 7px rgba(255, 244, 164, 0.92))
+        drop-shadow(0 2px 7px rgba(180, 92, 32, 0.34));
       transform: translate(-50%, -50%) rotate(var(--star-rotate, 0deg)) scale(0.24);
       animation: yui-guide-plugin-click-star-burst 760ms cubic-bezier(0.16, 1, 0.3, 1) var(--star-delay, 0ms) both;
     }
@@ -1179,14 +1226,17 @@ function injectStyle() {
 
     @keyframes yui-guide-plugin-cursor-trail-fade {
       0% {
-        opacity: var(--trail-opacity, 0.16);
+        opacity: var(--trail-opacity, 0.1);
         transform:
           translate(-50%, -50%)
           rotate(var(--trail-angle, 0deg))
-          scale(0.84);
+          scale(0.74);
       }
-      45% {
-        opacity: calc(var(--trail-opacity, 0.16) * 0.62);
+      36% {
+        opacity: var(--trail-opacity, 0.1);
+      }
+      72% {
+        opacity: calc(var(--trail-opacity, 0.1) * 0.42);
       }
       100% {
         opacity: 0;
@@ -1206,11 +1256,11 @@ function injectStyle() {
         opacity: 1;
       }
       62% {
-        opacity: 0.94;
+        opacity: 1;
         transform:
           translate(calc(-50% + var(--star-mid-x, 0px)), calc(-50% + var(--star-mid-y, 0px)))
           rotate(calc(var(--star-rotate, 0deg) + 88deg))
-          scale(1);
+          scale(1.14);
       }
       100% {
         opacity: 0;
@@ -1412,9 +1462,9 @@ class PluginDashboardGuideRuntime {
 
     ;([
       ['0%', '#3157e8', '0'],
-      ['30%', '#396dff', '0.16'],
-      ['68%', '#26bfff', '0.58'],
-      ['100%', '#55efff', '0.92'],
+      ['22%', '#396dff', '0'],
+      ['58%', '#26bfff', '0.24'],
+      ['100%', '#55efff', '0.52'],
     ] as const).forEach(([offset, color, opacity]) => {
       const stop = createSvgElement('stop')
       stop.setAttribute('offset', offset)
@@ -1429,8 +1479,8 @@ class PluginDashboardGuideRuntime {
     headGradient.setAttribute('cy', '50%')
     headGradient.setAttribute('r', '58%')
     ;([
-      ['0%', '#7df7ff', '0.78'],
-      ['48%', '#31c8ff', '0.36'],
+      ['0%', '#7df7ff', '0.44'],
+      ['48%', '#31c8ff', '0.2'],
       ['100%', '#2d5cff', '0'],
     ] as const).forEach(([offset, color, opacity]) => {
       const stop = createSvgElement('stop')
@@ -1976,6 +2026,8 @@ class PluginDashboardGuideRuntime {
     this.cursorShell.classList.add('is-visible')
     this.cursorShell.style.transitionDuration = `${Math.max(0, durationMs)}ms`
     const startPosition = this.getRenderedCursorPosition() || this.cursorPosition
+    const totalDistance = startPosition ? Math.hypot(x - startPosition.x, y - startPosition.y) : 0
+    const movementAngle = startPosition ? Math.atan2(y - startPosition.y, x - startPosition.x || 0.001) : 0
     this.cursorTrailLastPoint = startPosition ? { x: startPosition.x, y: startPosition.y } : null
     this.cursorTrailLastAt = 0
 
@@ -2003,7 +2055,11 @@ class PluginDashboardGuideRuntime {
           ) {
             await this.waitUntilSceneResumed()
           }
-          resolve(completed && motionToken === this.cursorMotionToken)
+          const didComplete = completed && motionToken === this.cursorMotionToken
+          if (didComplete && totalDistance > 8) {
+            this.spawnCursorTrailBurst(x, y, movementAngle, CURSOR_TRAIL_MOVE_BURST_COUNT)
+          }
+          resolve(didComplete)
         }
         void finalize()
       }
@@ -2112,23 +2168,32 @@ class PluginDashboardGuideRuntime {
     this.cursorTrailCore?.setAttribute('d', '')
   }
 
-  spawnCursorTrailParticle(x: number, y: number, angle: number) {
+  spawnCursorTrailParticle(x: number, y: number, angle: number, kind: 'blue' | 'icon' = 'icon') {
     if (!this.root || shouldReduceMotion()) {
       return
     }
 
     const particle = document.createElement('span')
-    const width = 7 + Math.random() * 5
-    const opacity = 0.1 + Math.random() * 0.12
-    const drift = 10 + Math.random() * 16
-    const sideJitter = (Math.random() - 0.5) * 20
-    const backOffset = 22 + Math.random() * 20
+    const isBlueParticle = kind === 'blue'
+    const width = isBlueParticle
+      ? 5 + Math.random() * 5
+      : 7 + Math.random() * 5
+    const opacity = isBlueParticle
+      ? 0.46 + Math.random() * 0.22
+      : 0.09 + Math.random() * 0.1
+    const drift = isBlueParticle
+      ? 14 + Math.random() * 24
+      : 10 + Math.random() * 16
+    const sideJitter = (Math.random() - 0.5) * (isBlueParticle ? 30 : 20)
+    const backOffset = isBlueParticle
+      ? 10 + Math.random() * 28
+      : 22 + Math.random() * 20
     const cos = Math.cos(angle)
     const sin = Math.sin(angle)
     const baseX = x - (cos * backOffset) - (sin * sideJitter)
     const baseY = y - (sin * backOffset) + (cos * sideJitter)
 
-    particle.className = 'yui-guide-plugin-cursor-trail is-icon'
+    particle.className = `yui-guide-plugin-cursor-trail ${isBlueParticle ? 'is-blue-particle' : 'is-icon'}`
     particle.setAttribute('aria-hidden', 'true')
     particle.style.left = `${baseX.toFixed(2)}px`
     particle.style.top = `${baseY.toFixed(2)}px`
@@ -2138,10 +2203,12 @@ class PluginDashboardGuideRuntime {
     particle.style.setProperty('--trail-drift-x', `${(-cos * drift).toFixed(2)}px`)
     particle.style.setProperty('--trail-drift-y', `${(-sin * drift).toFixed(2)}px`)
     particle.style.setProperty('--trail-opacity', opacity.toFixed(2))
-    particle.style.setProperty('--trail-brightness', (0.78 + Math.random() * 0.2).toFixed(2))
 
-    const iconUrl = CURSOR_TRAIL_ICON_URLS[Math.floor(Math.random() * CURSOR_TRAIL_ICON_URLS.length)]
-    particle.style.setProperty('--trail-icon', `url("${iconUrl}")`)
+    if (!isBlueParticle) {
+      particle.style.setProperty('--trail-brightness', (0.78 + Math.random() * 0.2).toFixed(2))
+      const iconUrl = CURSOR_TRAIL_ICON_URLS[Math.floor(Math.random() * CURSOR_TRAIL_ICON_URLS.length)]
+      particle.style.setProperty('--trail-icon', `url("${iconUrl}")`)
+    }
 
     const entry: { element: HTMLSpanElement; timer: number } = {
       element: particle,
@@ -2154,6 +2221,21 @@ class PluginDashboardGuideRuntime {
     this.activeTrailParticles.add(entry)
     this.root.appendChild(particle)
     this.trimCursorTrailParticles()
+  }
+
+  spawnCursorTrailBurst(x: number, y: number, angle: number, count = CURSOR_TRAIL_MOVE_BURST_COUNT) {
+    if (!this.root || shouldReduceMotion()) {
+      return
+    }
+
+    const normalizedCount = Math.max(1, Math.round(Number.isFinite(count) ? count : CURSOR_TRAIL_MOVE_BURST_COUNT))
+    const baseAngle = Number.isFinite(angle) ? angle : 0
+    for (let index = 0; index < normalizedCount; index += 1) {
+      const offset = normalizedCount <= 1
+        ? 0
+        : ((index / (normalizedCount - 1)) - 0.5) * 1.7
+      this.spawnCursorTrailParticle(x, y, baseAngle + offset + ((Math.random() - 0.5) * 0.38), 'blue')
+    }
   }
 
   getCursorTrailNow(now?: number) {
@@ -2392,8 +2474,11 @@ class PluginDashboardGuideRuntime {
     this.updateCursorTrail(currentNow)
     this.scheduleCursorTrailDecay()
 
+    if (Math.random() < CURSOR_TRAIL_BLUE_PARTICLE_CHANCE && distance > 10) {
+      this.spawnCursorTrailParticle(x, y, Math.atan2(dy, dx), 'blue')
+    }
     if (Math.random() < CURSOR_TRAIL_ICON_CHANCE && distance > 16) {
-      this.spawnCursorTrailParticle(x, y, Math.atan2(dy, dx))
+      this.spawnCursorTrailParticle(x, y, Math.atan2(dy, dx), 'icon')
     }
   }
 
@@ -2416,6 +2501,14 @@ class PluginDashboardGuideRuntime {
     void this.cursorInner.offsetWidth
     this.cursorInner.classList.add('is-clicking')
     this.spawnCursorClickStars()
+    if (this.cursorPosition) {
+      this.spawnCursorTrailBurst(
+        this.cursorPosition.x,
+        this.cursorPosition.y,
+        -Math.PI / 2,
+        CURSOR_TRAIL_ACTION_BURST_COUNT,
+      )
+    }
     this.cursorClickTimer = window.setTimeout(() => {
       this.cursorClickTimer = null
       this.cursorInner?.classList.remove('is-clicking')
@@ -2444,8 +2537,8 @@ class PluginDashboardGuideRuntime {
     const fragment = document.createDocumentFragment()
     for (let index = 0; index < CURSOR_CLICK_STAR_COUNT; index += 1) {
       const angle = ((Math.PI * 2) * (index / CURSOR_CLICK_STAR_COUNT)) + ((Math.random() - 0.5) * 0.92)
-      const distance = 24 + Math.random() * 30
-      const size = 5 + Math.random() * 5
+      const distance = 28 + Math.random() * 34
+      const size = 6 + Math.random() * 6
       const x = Math.cos(angle) * distance
       const y = Math.sin(angle) * distance
       const star = document.createElement('span')

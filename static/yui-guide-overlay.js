@@ -11,18 +11,21 @@
     const DEFAULT_CURSOR_CLICK_VISIBLE_MS = 420;
     const CURSOR_CLICK_STAR_COUNT = 7;
     const CURSOR_CLICK_STAR_LIFETIME_MS = 760;
-    const CURSOR_TRAIL_PARTICLE_LIFETIME_MS = 300;
+    const CURSOR_TRAIL_PARTICLE_LIFETIME_MS = 420;
     const CURSOR_TRAIL_MIN_DISTANCE = 3;
     const CURSOR_TRAIL_MIN_INTERVAL_MS = 8;
     const CURSOR_TRAIL_SEGMENT_SPACING = 9;
     const CURSOR_TRAIL_MAX_SEGMENTS_PER_FRAME = 6;
     const CURSOR_TRAIL_MAX_POINTS = 34;
-    const CURSOR_TRAIL_MAX_PARTICLES = 12;
+    const CURSOR_TRAIL_MAX_PARTICLES = 24;
     const CURSOR_TRAIL_ICON_CHANCE = 0.045;
+    const CURSOR_TRAIL_BLUE_PARTICLE_CHANCE = 0.42;
+    const CURSOR_TRAIL_MOVE_BURST_COUNT = 3;
+    const CURSOR_TRAIL_ACTION_BURST_COUNT = 5;
     const CURSOR_TRAIL_BODY_HEAD_WIDTH = 34;
-    const CURSOR_TRAIL_BODY_TAIL_WIDTH = 3;
+    const CURSOR_TRAIL_BODY_TAIL_WIDTH = 8;
     const CURSOR_TRAIL_CORE_HEAD_WIDTH = 14;
-    const CURSOR_TRAIL_CORE_TAIL_WIDTH = 1.5;
+    const CURSOR_TRAIL_CORE_TAIL_WIDTH = 3.8;
     const CURSOR_TRAIL_HEAD_RADIUS = 15;
     const CURSOR_TRAIL_ICON_URLS = Object.freeze([
         '/static/icons/send_icon.png',
@@ -431,9 +434,9 @@
 
             [
                 ['0%', '#3157e8', '0'],
-                ['30%', '#396dff', '0.16'],
-                ['68%', '#26bfff', '0.58'],
-                ['100%', '#55efff', '0.92']
+                ['22%', '#396dff', '0'],
+                ['58%', '#26bfff', '0.24'],
+                ['100%', '#55efff', '0.52']
             ].forEach((entry) => {
                 const stop = createSvgElement('stop');
                 stop.setAttribute('offset', entry[0]);
@@ -448,8 +451,8 @@
             headGradient.setAttribute('cy', '50%');
             headGradient.setAttribute('r', '58%');
             [
-                ['0%', '#7df7ff', '0.78'],
-                ['48%', '#31c8ff', '0.36'],
+                ['0%', '#7df7ff', '0.44'],
+                ['48%', '#31c8ff', '0.2'],
                 ['100%', '#2d5cff', '0']
             ].forEach((entry) => {
                 const stop = createSvgElement('stop');
@@ -1165,6 +1168,8 @@
                 const startY = this.cursorPosition.y;
                 const deltaX = x - startX;
                 const deltaY = y - startY;
+                const totalDistance = Math.hypot(deltaX, deltaY);
+                const movementAngle = Math.atan2(deltaY, deltaX || 0.001);
                 this.cursorTrailLastPoint = { x: startX, y: startY };
                 this.cursorTrailLastAt = 0;
                 const finish = (completed) => {
@@ -1178,6 +1183,9 @@
                     }
                     if (completed) {
                         this.cursorPosition = { x: x, y: y };
+                        if (totalDistance > 8) {
+                            this.spawnCursorTrailBurst(x, y, movementAngle, CURSOR_TRAIL_MOVE_BURST_COUNT);
+                        }
                     }
                     resolve(completed !== false);
                 };
@@ -1280,17 +1288,29 @@
             }
         }
 
-        spawnCursorTrailParticle(x, y, angle) {
+        spawnCursorTrailParticle(x, y, angle, kind) {
             if (!this.stage || shouldReduceMotion()) {
                 return;
             }
 
-            const particle = createElement('span', 'yui-guide-cursor-trail is-icon');
-            const width = 7 + Math.random() * 5;
-            const opacity = 0.1 + Math.random() * 0.12;
-            const drift = 10 + Math.random() * 16;
-            const sideJitter = (Math.random() - 0.5) * 20;
-            const backOffset = 22 + Math.random() * 20;
+            const isBlueParticle = kind === 'blue';
+            const particle = createElement(
+                'span',
+                'yui-guide-cursor-trail ' + (isBlueParticle ? 'is-blue-particle' : 'is-icon')
+            );
+            const width = isBlueParticle
+                ? 5 + Math.random() * 5
+                : 7 + Math.random() * 5;
+            const opacity = isBlueParticle
+                ? 0.46 + Math.random() * 0.22
+                : 0.09 + Math.random() * 0.1;
+            const drift = isBlueParticle
+                ? 14 + Math.random() * 24
+                : 10 + Math.random() * 16;
+            const sideJitter = (Math.random() - 0.5) * (isBlueParticle ? 30 : 20);
+            const backOffset = isBlueParticle
+                ? 10 + Math.random() * 28
+                : 22 + Math.random() * 20;
             const cos = Math.cos(angle);
             const sin = Math.sin(angle);
             const baseX = x - (cos * backOffset) - (sin * sideJitter);
@@ -1305,10 +1325,12 @@
             particle.style.setProperty('--trail-drift-x', (-cos * drift).toFixed(2) + 'px');
             particle.style.setProperty('--trail-drift-y', (-sin * drift).toFixed(2) + 'px');
             particle.style.setProperty('--trail-opacity', opacity.toFixed(2));
-            particle.style.setProperty('--trail-brightness', (0.78 + Math.random() * 0.2).toFixed(2));
 
-            const iconUrl = CURSOR_TRAIL_ICON_URLS[Math.floor(Math.random() * CURSOR_TRAIL_ICON_URLS.length)];
-            particle.style.setProperty('--trail-icon', 'url("' + iconUrl + '")');
+            if (!isBlueParticle) {
+                particle.style.setProperty('--trail-brightness', (0.78 + Math.random() * 0.2).toFixed(2));
+                const iconUrl = CURSOR_TRAIL_ICON_URLS[Math.floor(Math.random() * CURSOR_TRAIL_ICON_URLS.length)];
+                particle.style.setProperty('--trail-icon', 'url("' + iconUrl + '")');
+            }
 
             const entry = {
                 element: particle,
@@ -1321,6 +1343,21 @@
             this.activeTrailParticles.add(entry);
             this.stage.appendChild(particle);
             this.trimCursorTrailParticles();
+        }
+
+        spawnCursorTrailBurst(x, y, angle, count) {
+            if (!this.stage || shouldReduceMotion()) {
+                return;
+            }
+
+            const normalizedCount = Math.max(1, Math.round(Number.isFinite(count) ? count : CURSOR_TRAIL_MOVE_BURST_COUNT));
+            const baseAngle = Number.isFinite(angle) ? angle : 0;
+            for (let index = 0; index < normalizedCount; index += 1) {
+                const offset = normalizedCount <= 1
+                    ? 0
+                    : ((index / (normalizedCount - 1)) - 0.5) * 1.7;
+                this.spawnCursorTrailParticle(x, y, baseAngle + offset + ((Math.random() - 0.5) * 0.38), 'blue');
+            }
         }
 
         getCursorTrailNow(now) {
@@ -1574,8 +1611,11 @@
             this.updateCursorTrail(currentNow);
             this.scheduleCursorTrailDecay();
 
+            if (Math.random() < CURSOR_TRAIL_BLUE_PARTICLE_CHANCE && distance > 10) {
+                this.spawnCursorTrailParticle(x, y, Math.atan2(dy, dx), 'blue');
+            }
             if (Math.random() < CURSOR_TRAIL_ICON_CHANCE && distance > 16) {
-                this.spawnCursorTrailParticle(x, y, Math.atan2(dy, dx));
+                this.spawnCursorTrailParticle(x, y, Math.atan2(dy, dx), 'icon');
             }
         }
 
@@ -1606,8 +1646,8 @@
             const fragment = this.document.createDocumentFragment();
             for (let index = 0; index < CURSOR_CLICK_STAR_COUNT; index += 1) {
                 const angle = ((Math.PI * 2) * (index / CURSOR_CLICK_STAR_COUNT)) + ((Math.random() - 0.5) * 0.92);
-                const distance = 24 + Math.random() * 30;
-                const size = 5 + Math.random() * 5;
+                const distance = 28 + Math.random() * 34;
+                const size = 6 + Math.random() * 6;
                 const x = Math.cos(angle) * distance;
                 const y = Math.sin(angle) * distance;
                 const star = createElement('span', 'yui-guide-click-star');
@@ -1659,6 +1699,14 @@
             void this.cursorInner.offsetWidth;
             this.cursorInner.classList.add('is-clicking');
             this.spawnCursorClickStars();
+            if (this.cursorPosition) {
+                this.spawnCursorTrailBurst(
+                    this.cursorPosition.x,
+                    this.cursorPosition.y,
+                    -Math.PI / 2,
+                    CURSOR_TRAIL_ACTION_BURST_COUNT
+                );
+            }
             this.cursorClickTimer = window.setTimeout(() => {
                 this.cursorClickTimer = 0;
                 if (this.cursorInner) {
@@ -1675,6 +1723,14 @@
             this.cursorInner.classList.remove('is-wobbling');
             void this.cursorInner.offsetWidth;
             this.cursorInner.classList.add('is-wobbling');
+            if (this.cursorPosition) {
+                this.spawnCursorTrailBurst(
+                    this.cursorPosition.x,
+                    this.cursorPosition.y,
+                    Math.PI,
+                    CURSOR_TRAIL_ACTION_BURST_COUNT
+                );
+            }
             window.setTimeout(() => {
                 if (this.cursorInner) {
                     this.cursorInner.classList.remove('is-wobbling');

@@ -151,6 +151,68 @@ async def test_main_agent_router_plugin_dashboard_redirect_ignores_empty_v_query
     assert response.headers["location"] == _expected_plugin_dashboard_location()
 
 
+@pytest.mark.asyncio
+async def test_main_agent_router_plugin_dashboard_redirect_keeps_loopback_yui_opener_origin():
+    from config import USER_PLUGIN_BASE
+    from main_routers.agent_router import redirect_plugin_dashboard
+
+    request = Request({
+        "type": "http",
+        "method": "GET",
+        "path": "/api/agent/user_plugin/dashboard",
+        "headers": [],
+        "query_string": b"v=abc123&yui_opener_origin=http%3A%2F%2F127.0.0.1%3A48923&unsafe=https%3A%2F%2Fexample.com",
+    })
+    response = await redirect_plugin_dashboard(request)
+
+    assert response.headers["location"] == (
+        USER_PLUGIN_BASE.rstrip("/")
+        + "/ui?v=abc123&yui_opener_origin=http%3A%2F%2F127.0.0.1%3A48923"
+    )
+
+
+@pytest.mark.asyncio
+async def test_main_agent_router_plugin_dashboard_redirect_rejects_non_loopback_yui_opener_origin():
+    from main_routers.agent_router import redirect_plugin_dashboard
+
+    request = Request({
+        "type": "http",
+        "method": "GET",
+        "path": "/api/agent/user_plugin/dashboard",
+        "headers": [],
+        "query_string": b"yui_opener_origin=https%3A%2F%2Fexample.com",
+    })
+    response = await redirect_plugin_dashboard(request)
+
+    assert response.headers["location"] == _expected_plugin_dashboard_location()
+
+
+def test_home_page_opens_plugin_dashboard_through_backend_redirect_for_handoff():
+    page_source = Path("templates/index.html").read_text(encoding="utf-8")
+    pages_router_source = Path("main_routers/pages_router.py").read_text(encoding="utf-8")
+    index_source = Path("static/js/index.js").read_text(encoding="utf-8")
+    hud_source = Path("static/common-ui-hud.js").read_text(encoding="utf-8")
+    handoff_source = Path("static/yui-guide-page-handoff.js").read_text(encoding="utf-8")
+    director_source = Path("static/yui-guide-director.js").read_text(encoding="utf-8")
+    plugin_runtime_source = Path("frontend/plugin-manager/src/yui-guide-runtime.ts").read_text(encoding="utf-8")
+
+    assert "def _user_plugin_ctx()" not in pages_router_source
+    assert "window.NEKO_USER_PLUGIN_BASE = {{ user_plugin_base | tojson }};" not in page_source
+    assert "data.user_plugin_base" not in index_source
+    assert "var PLUGIN_DASHBOARD_REDIRECT_URL = '/api/agent/user_plugin/dashboard';" in hud_source
+    assert "getPluginDashboardRedirectUrl" in hud_source
+    assert "url: getPluginDashboardRedirectUrl" in hud_source
+    assert "new URL('/api/agent/user_plugin/dashboard', window.location.origin)" in handoff_source
+    assert "new URL('/api/agent/user_plugin/dashboard', window.location.origin)" in director_source
+    assert "handoff.ready ? handoff.targetOrigin : '*'" in director_source
+    assert "isTrustedPluginDashboardOrigin(event.origin)" in director_source
+    assert "yui_opener_origin" in handoff_source
+    assert "OPENER_ORIGIN_QUERY_PARAM = 'yui_opener_origin'" in plugin_runtime_source
+    assert "getQueryOpenerOrigin()" in plugin_runtime_source
+    assert "isLoopbackOrigin(origin)" in plugin_runtime_source
+    assert "var PLUGIN_DASHBOARD_REDIRECT_URL = 'http://127.0.0.1:48916/ui';" not in hud_source
+
+
 def test_agent_server_expected_event_driven_endpoints_exist():
     paths = _route_paths_from_decorators("agent_server.py", "app")
     for expected in {
@@ -307,10 +369,12 @@ def test_yui_guide_cat_paw_click_state_is_visible_before_actions():
         "yui-guide-click-star",
         "--star-mid-x",
         "CURSOR_TRAIL_ICON_URLS",
+        "CURSOR_TRAIL_BLUE_PARTICLE_CHANCE = 0.42",
         "/static/icons/send_icon.png",
         "/static/icons/paw_ui.png",
         "maybeSpawnCursorTrail(nextX, nextY, previousX, previousY, now)",
-        "yui-guide-cursor-trail is-icon",
+        "isBlueParticle ? 'is-blue-particle' : 'is-icon'",
+        "is-blue-particle",
     ):
         assert expected in overlay_source
 
@@ -326,12 +390,21 @@ def test_yui_guide_cat_paw_click_state_is_visible_before_actions():
     assert ".yui-guide-click-star" in style_source
     assert ".yui-guide-cursor-trail.is-glow" in style_source
     assert ".yui-guide-cursor-trail.is-icon" in style_source
+    assert ".yui-guide-cursor-trail.is-blue-particle" in style_source
+    assert "rgba(119, 233, 255, 0.96)" in style_source
+    assert "opacity: 0.52;" in style_source
+    assert "drop-shadow(0 0 7px rgba(255, 244, 164, 0.92))" in style_source
     assert "@keyframes yui-guide-cursor-trail-fade" in style_source
     assert "animation: yui-guide-plugin-click 420ms ease;" in plugin_runtime_source
     assert "CURSOR_CLICK_STAR_COUNT = 7" in plugin_runtime_source
+    assert "const size = 6 + Math.random() * 6" in overlay_source
+    assert "const size = 6 + Math.random() * 6" in plugin_runtime_source
+    assert "0.09 + Math.random() * 0.1" in plugin_runtime_source
     assert "CURSOR_TRAIL_ICON_URLS = [sendIconUrl, pawUiUrl]" in plugin_runtime_source
+    assert "CURSOR_TRAIL_BLUE_PARTICLE_CHANCE = 0.42" in plugin_runtime_source
     assert "yui-guide-plugin-click-star" in plugin_runtime_source
-    assert "yui-guide-plugin-cursor-trail is-icon" in plugin_runtime_source
+    assert "yui-guide-plugin-cursor-trail ${isBlueParticle ? 'is-blue-particle' : 'is-icon'}" in plugin_runtime_source
+    assert "is-blue-particle" in plugin_runtime_source
     assert "maybeSpawnCursorTrail(position.x, position.y, previous.x, previous.y, now)" in plugin_runtime_source
     assert "spawnCursorClickStars()" in plugin_runtime_source
     assert "await this.waitForSceneDelay(DEFAULT_CURSOR_CLICK_VISIBLE_MS, isCurrent)" in plugin_runtime_source

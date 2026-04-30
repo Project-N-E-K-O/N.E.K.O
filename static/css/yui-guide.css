@@ -574,31 +574,31 @@ html.dark .yui-guide-bubble[data-emotion='angry'] {
 }
 
 .yui-guide-cursor-trail-layer.is-visible {
-  opacity: 1;
+  opacity: 0.78;
 }
 
 .yui-guide-cursor-trail-ribbon {
-  opacity: 0.96;
+  opacity: 0.52;
   filter:
     blur(0.35px)
-    drop-shadow(0 0 10px rgba(41, 191, 255, 0.36))
-    drop-shadow(0 3px 16px rgba(42, 86, 224, 0.24));
+    drop-shadow(0 0 8px rgba(41, 191, 255, 0.16))
+    drop-shadow(0 3px 14px rgba(42, 86, 224, 0.1));
 }
 
 .yui-guide-cursor-trail-core {
-  opacity: 0.58;
+  opacity: 0.3;
   filter: blur(0.18px);
 }
 
 .yui-guide-cursor-trail-head {
-  opacity: 0.95;
+  opacity: 0.62;
   filter:
     blur(0.2px)
-    drop-shadow(0 0 12px rgba(58, 223, 255, 0.42));
+    drop-shadow(0 0 10px rgba(58, 223, 255, 0.22));
 }
 
 .yui-guide-cursor-trail-head-core {
-  opacity: 0.58;
+  opacity: 0.32;
   filter: blur(0.4px);
 }
 
@@ -615,7 +615,7 @@ html.dark .yui-guide-bubble[data-emotion='angry'] {
     translate(-50%, -50%)
     rotate(var(--trail-angle, 0deg))
     scale(0.92);
-  animation: yui-guide-cursor-trail-fade 300ms ease-out both;
+  animation: yui-guide-cursor-trail-fade 420ms ease-out both;
 }
 
 .yui-guide-cursor-trail.is-glow {
@@ -629,9 +629,21 @@ html.dark .yui-guide-bubble[data-emotion='angry'] {
   background-size: contain;
   filter:
     brightness(var(--trail-brightness, 0.88))
-    saturate(1.28)
-    drop-shadow(0 0 5px rgba(87, 211, 255, 0.32));
+    saturate(1.08)
+    drop-shadow(0 0 4px rgba(87, 211, 255, 0.18));
   opacity: 0;
+}
+
+.yui-guide-cursor-trail.is-blue-particle {
+  border-radius: 999px;
+  background:
+    radial-gradient(circle at 36% 32%, rgba(255, 255, 255, 0.98) 0 18%, transparent 20%),
+    radial-gradient(circle, rgba(119, 233, 255, 0.96) 0 36%, rgba(44, 174, 255, 0.62) 58%, transparent 76%);
+  box-shadow:
+    0 0 8px rgba(72, 207, 255, 0.62),
+    0 0 16px rgba(49, 113, 255, 0.3);
+  filter: saturate(1.1);
+  mix-blend-mode: normal;
 }
 
 .yui-guide-click-star {
@@ -648,8 +660,8 @@ html.dark .yui-guide-bubble[data-emotion='angry'] {
     hsl(var(--star-hue, 46) 96% 62%);
   clip-path: polygon(50% 0, 61% 34%, 96% 34%, 68% 55%, 80% 92%, 50% 70%, 20% 92%, 32% 55%, 4% 34%, 39% 34%);
   filter:
-    drop-shadow(0 0 5px rgba(255, 239, 150, 0.72))
-    drop-shadow(0 2px 5px rgba(180, 92, 32, 0.24));
+    drop-shadow(0 0 7px rgba(255, 244, 164, 0.92))
+    drop-shadow(0 2px 7px rgba(180, 92, 32, 0.34));
   transform: translate(-50%, -50%) rotate(var(--star-rotate, 0deg)) scale(0.24);
   animation: yui-guide-click-star-burst 760ms cubic-bezier(0.16, 1, 0.3, 1) var(--star-delay, 0ms) both;
 }
@@ -788,15 +800,19 @@ body.yui-taking-over #react-chat-window-root .composer-input:focus-visible {
 
 @keyframes yui-guide-cursor-trail-fade {
   0% {
-    opacity: var(--trail-opacity, 0.16);
+    opacity: var(--trail-opacity, 0.1);
     transform:
       translate(-50%, -50%)
       rotate(var(--trail-angle, 0deg))
-      scale(0.84);
+      scale(0.74);
   }
 
-  45% {
-    opacity: calc(var(--trail-opacity, 0.16) * 0.62);
+  36% {
+    opacity: var(--trail-opacity, 0.1);
+  }
+
+  72% {
+    opacity: calc(var(--trail-opacity, 0.1) * 0.42);
   }
 
   100% {
@@ -819,11 +835,11 @@ body.yui-taking-over #react-chat-window-root .composer-input:focus-visible {
   }
 
   62% {
-    opacity: 0.94;
+    opacity: 1;
     transform:
       translate(calc(-50% + var(--star-mid-x, 0px)), calc(-50% + var(--star-mid-y, 0px)))
       rotate(calc(var(--star-rotate, 0deg) + 88deg))
-      scale(1);
+      scale(1.14);
   }
 
   100% {

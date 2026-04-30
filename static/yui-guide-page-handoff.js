@@ -255,18 +255,10 @@
     }
 
     function buildPluginDashboardUrl(params) {
-        var origin = getPluginDashboardExpectedOrigin();
-        var normalizedOrigin = DEFAULT_PLUGIN_DASHBOARD_ORIGIN;
-
-        if (origin) {
-            try {
-                normalizedOrigin = new URL(String(origin)).origin;
-            } catch (e) {
-                console.warn('[YuiGuideHandoff] buildPluginDashboardUrl: dashboard origin 无效，回退默认值:', e);
-            }
+        var url = new URL('/api/agent/user_plugin/dashboard', window.location.origin);
+        if (window.location && window.location.origin) {
+            url.searchParams.set('yui_opener_origin', window.location.origin);
         }
-
-        var url = new URL('/ui/', normalizedOrigin);
         (Array.isArray(params) ? params : []).forEach(function (entry) {
             if (typeof entry !== 'string' || !entry) return;
             var equalIndex = entry.indexOf('=');

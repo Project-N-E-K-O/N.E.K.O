@@ -4542,8 +4542,12 @@
 
             if (api && typeof api.openPage === 'function') {
                 try {
+                    const fallbackUrl = new URL('/api/agent/user_plugin/dashboard', window.location.origin);
+                    if (window.location && window.location.origin) {
+                        fallbackUrl.searchParams.set('yui_opener_origin', window.location.origin);
+                    }
                     return await api.openPage(
-                        new URL('/ui/', this.getPluginDashboardExpectedOrigin()).toString(),
+                        fallbackUrl.toString(),
                         'plugin_dashboard',
                         '',
                         options || null
@@ -4582,6 +4586,26 @@
                 } catch (_) {}
             }
             return 'http://127.0.0.1:48916';
+        }
+
+        isTrustedPluginDashboardOrigin(origin) {
+            if (typeof origin !== 'string' || origin.trim() === '') {
+                return false;
+            }
+            try {
+                const url = new URL(origin);
+                const hostname = String(url.hostname || '').toLowerCase();
+                return (
+                    (url.protocol === 'http:' || url.protocol === 'https:')
+                    && (
+                        hostname === '127.0.0.1'
+                        || hostname === 'localhost'
+                        || hostname === '::1'
+                    )
+                );
+            } catch (_) {
+                return false;
+            }
         }
 
         async openModelManagerPage(lanlanName) {
@@ -5631,7 +5655,7 @@
                                 type: PLUGIN_DASHBOARD_HANDOFF_EVENT,
                                 sessionId: sessionId,
                                 payload: handoffPayload
-                            }, targetOrigin);
+                            }, handoff.ready ? handoff.targetOrigin : '*');
                         } catch (error) {
                             console.warn('[YuiGuide] 向插件面板发送 handoff 消息失败:', error);
                         }
@@ -7936,7 +7960,11 @@
             }
             const expectedOrigin = handoff.targetOrigin || this.getPluginDashboardExpectedOrigin();
             if (expectedOrigin && event.origin !== expectedOrigin) {
-                return;
+                if (!handoff.ready && this.isTrustedPluginDashboardOrigin(event.origin)) {
+                    handoff.targetOrigin = event.origin;
+                } else {
+                    return;
+                }
             }
 
             if (data.type === PLUGIN_DASHBOARD_INTERRUPT_REQUEST_EVENT) {
@@ -7959,6 +7987,9 @@
             if (data.type === PLUGIN_DASHBOARD_READY_EVENT) {
                 handoff.ready = true;
                 handoff.readyAt = Date.now();
+                if (this.isTrustedPluginDashboardOrigin(event.origin)) {
+                    handoff.targetOrigin = event.origin;
+                }
                 return;
             }
 
