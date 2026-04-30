@@ -12,11 +12,9 @@ is invoked with the right arguments.
 """
 from __future__ import annotations
 
-import asyncio
 import queue
 import sys
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
 
 import pytest
 

@@ -19,7 +19,6 @@ from plugin.sdk.shared.i18n import PluginI18n, load_plugin_i18n_from_meta
 from plugin.sdk.shared.models.exceptions import EntryConflictError
 
 from .llm_tool import (
-    LLM_TOOL_ENTRY_PREFIX,
     LlmToolMeta,
     collect_llm_tool_methods,
     entry_id_for_tool,
@@ -76,6 +75,8 @@ class NekoPluginBase(_SharedNekoPluginBase):
                 try:
                     logger.exception("Auto-registration of @llm_tool methods failed")
                 except Exception:
+                    # Logger itself failed — nothing left to do; matches
+                    # the pattern used in ``_notify_host_comm`` above.
                     pass
 
     def _load_plugin_i18n(self) -> PluginI18n:
@@ -597,6 +598,8 @@ class NekoPluginBase(_SharedNekoPluginBase):
                             meta.name,
                         )
                     except Exception:
+                        # Logger itself failed — swallow; same idiom as
+                        # ``_notify_host_comm`` above.
                         pass
         self._llm_tools_auto_registered = True
         return registered
