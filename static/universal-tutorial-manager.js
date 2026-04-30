@@ -1330,14 +1330,22 @@ class UniversalTutorialManager {
                 modelType: tutorialAvatar && tutorialAvatar.modelType ? tutorialAvatar.modelType : 'live2d'
             });
             console.log('[Tutorial] 新手教程期间已临时切换到 yui-origin 模型（未写入用户配置）:', tutorialModelPayload);
-        })(), setupDeadline]).catch((error) => {
+        })(), setupDeadline]).catch(async (error) => {
             override.cancelled = true;
             this.revealTutorialLive2dPrepared();
-            this.applyTutorialChatIdentityOverride({ active: false });
+            try {
+                await Promise.resolve(this.applyTutorialChatIdentityOverride({ active: false }));
+            } catch (identityError) {
+                console.warn('[Tutorial] 清理临时聊天身份失败:', identityError);
+            }
             if (this._tutorialAvatarOverride === override) {
-                this.restoreTutorialAvatarOverride();
+                if (this._tutorialAvatarOverridePromise === setupPromise) {
+                    this._tutorialAvatarOverridePromise = null;
+                }
+                await this.restoreTutorialAvatarOverride();
             }
             console.warn('[Tutorial] 临时切换 yui-origin 模型失败:', error);
+            throw error;
         });
 
         this._tutorialAvatarOverridePromise = setupPromise;
@@ -3672,8 +3680,11 @@ class UniversalTutorialManager {
                 : null;
             if (director && typeof director.skip === 'function') {
                 try {
-                    director.skip('skip', 'skip');
-                    window.setTimeout(() => this.requestTutorialDestroy('skip'), 0);
+                    Promise.resolve(director.skip('skip', 'skip'))
+                        .then(() => {
+                            this.requestTutorialDestroy('skip');
+                        })
+                        .catch(handleSkipFailure);
                 } catch (error) {
                     handleSkipFailure(error);
                 }

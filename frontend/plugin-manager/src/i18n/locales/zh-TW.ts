@@ -494,7 +494,7 @@ export default {
       },
       packageOperations: {
         title: '包管理操作區',
-        body: '這裡可以選擇打包模式、檢查外掛包、解包或分析整合包；危險操作不會在教程中自動執行。'
+        body: '這裡可以選擇打包模式、檢查外掛包、解包或分析整合包；本指南不會自動執行危險操作。'
       },
       pluginDetail: {
         title: '外掛詳情頁',

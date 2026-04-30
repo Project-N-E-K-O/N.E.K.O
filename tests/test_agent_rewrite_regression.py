@@ -172,8 +172,10 @@ async def test_main_agent_router_plugin_dashboard_redirect_keeps_loopback_yui_op
     assert parsed_location.netloc == expected_location.netloc
     assert parsed_location.path == expected_location.path
     query = parse_qs(parsed_location.query)
-    assert query["v"] == ["abc123"]
-    assert query["yui_opener_origin"] == ["http://127.0.0.1:48923"]
+    assert query == {
+        "v": ["abc123"],
+        "yui_opener_origin": ["http://127.0.0.1:48923"],
+    }
 
 
 @pytest.mark.asyncio

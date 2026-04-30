@@ -494,7 +494,7 @@ export default {
       },
       packageOperations: {
         title: 'Operaciones de paquete',
-        body: 'Elige modos de empaquetado, inspecciona paquetes, descomprime o analiza bundles. El tutorial no ejecuta acciones peligrosas.'
+        body: 'Elige modos de empaquetado, inspecciona paquetes, descomprime o analiza bundles. La guía no ejecuta acciones peligrosas.'
       },
       pluginDetail: {
         title: 'Detalles del plugin',

@@ -155,7 +155,47 @@ function closeModalOnOutsideClick(event) {
 function isDefaultModel() {
     // 使用保存的角色卡模型名称
     const currentModel = window.currentCharacterCardModel || '';
-    return currentModel === 'yui_default';
+    return isStaticDefaultLive2DModel(currentModel, window._currentCardRawData || {});
+}
+
+function getLive2DModelInfo(modelName) {
+    if (!modelName) {
+        return null;
+    }
+    const allModels = Array.isArray(window.allModels) ? window.allModels : [];
+    const matches = allModels.filter(model => model && model.name === modelName);
+    return matches.length === 1 ? matches[0] : null;
+}
+
+function hasStaticModelFlag(metadata) {
+    if (!metadata || typeof metadata !== 'object') {
+        return false;
+    }
+    return metadata.source === 'static'
+        || metadata.isStatic === true
+        || metadata.is_static === true
+        || metadata.isDefault === true
+        || metadata.is_default === true;
+}
+
+function isStaticDefaultLive2DModel(modelName, rawData = {}) {
+    if (modelName !== 'yui_default') {
+        return false;
+    }
+
+    if (window.currentCharacterCardModel === modelName && window.currentCharacterCardModelSource) {
+        return window.currentCharacterCardModelSource === 'static';
+    }
+
+    const modelInfo = getLive2DModelInfo(modelName);
+    if (hasStaticModelFlag(modelInfo) || hasStaticModelFlag(modelInfo && modelInfo.modelMetadata)) {
+        return true;
+    }
+
+    const rawModel = rawData && typeof rawData.model === 'object' ? rawData.model : null;
+    return hasStaticModelFlag(rawData && rawData.modelMetadata)
+        || hasStaticModelFlag(rawData && rawData._reserved && rawData._reserved.modelMetadata)
+        || hasStaticModelFlag(rawModel);
 }
 
 // 更新上传按钮状态（不再依赖model-select元素）
@@ -6116,6 +6156,8 @@ function expandCharacterCardSection(card) {
     window.currentCharacterCardModel = (effectiveModelType !== 'live2d' && effectiveModelPath) ? effectiveModelPath : live2d;
     window.currentCharacterCardModelType = effectiveModelType;
     window.currentCharacterCardModelPath = effectiveModelPath;
+    const currentLive2DModelInfo = effectiveModelType === 'live2d' ? getLive2DModelInfo(live2d) : null;
+    window.currentCharacterCardModelSource = currentLive2DModelInfo && currentLive2DModelInfo.source ? currentLive2DModelInfo.source : '';
     window._currentCardRawData = rawData;
 
     // 检查模型是否可上传（检查是否来自static目录）
@@ -6540,7 +6582,7 @@ async function handleUploadToWorkshop() {
         }
 
         // 设置默认模型（排除yui_default）- 仅限 Live2D 模型类型
-        if (currentModelType === 'live2d' && (!selectedModelName || selectedModelName === 'yui_default')) {
+        if (currentModelType === 'live2d' && (!selectedModelName || isStaticDefaultLive2DModel(selectedModelName, rawData))) {
             const validModels = availableModels.filter(model => model.name !== 'yui_default');
             if (validModels.length > 0) {
                 selectedModelName = validModels[0].name;

@@ -1129,11 +1129,17 @@
             this.document.body.classList.add('yui-guide-ghost-cursor-active');
             this.cursorShell.hidden = false;
             this.cursorShell.classList.add('is-visible');
-            this.cursorShell.style.transitionDuration = shouldGlide ? '360ms' : '0ms';
+            if (shouldGlide) {
+                this.cursorTrailLastPoint = { x: previous.x, y: previous.y };
+                this.cursorTrailLastAt = 0;
+                return this.moveCursorTo(x, y, { durationMs: 360 });
+            }
+            this.cursorShell.style.transitionDuration = '0ms';
             this.cursorShell.style.transform = 'translate(' + Math.round(x) + 'px, ' + Math.round(y) + 'px)';
             this.cursorPosition = { x: x, y: y };
-            this.cursorTrailLastPoint = shouldGlide ? { x: previous.x, y: previous.y } : null;
+            this.cursorTrailLastPoint = null;
             this.cursorTrailLastAt = 0;
+            return Promise.resolve(true);
         }
 
         moveCursorTo(x, y, options) {

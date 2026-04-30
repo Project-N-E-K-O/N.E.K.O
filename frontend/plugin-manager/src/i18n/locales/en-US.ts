@@ -494,7 +494,7 @@ export default {
       },
       packageOperations: {
         title: 'Package Operations',
-        body: 'Choose packaging modes, inspect packages, unpack, or analyze bundles here. The tutorial will not run dangerous actions.'
+        body: 'Choose packaging modes, inspect packages, unpack, or analyze bundles here. The guide will not run dangerous actions.'
       },
       pluginDetail: {
         title: 'Plugin Details',
