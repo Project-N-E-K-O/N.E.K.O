@@ -1640,7 +1640,10 @@
                 return 'live2d';
             }
 
-            return modelType === 'vrm' ? 'vrm' : 'live2d';
+            if (modelType === 'vrm' || modelType === 'mmd') {
+                return modelType;
+            }
+            return 'live2d';
         }
 
         apply(emotion) {
@@ -3949,13 +3952,16 @@
             return true;
         }
 
-        scheduleNarrationResume() {
+        scheduleNarrationResume(options) {
             this.clearNarrationResumeTimer();
+            const resumeOptions = options || {};
 
             const attemptResume = () => {
                 const narration = this.activeNarration;
                 if (!narration || narration.cancelled || this.destroyed) {
-                    this.restoreCurrentScenePresentation();
+                    this.restoreCurrentScenePresentation({
+                        skipEmotion: !!resumeOptions.skipEmotion
+                    });
                     return;
                 }
 
@@ -3972,7 +3978,9 @@
                 }
 
                 narration.interrupted = false;
-                this.restoreCurrentScenePresentation();
+                this.restoreCurrentScenePresentation({
+                    skipEmotion: !!resumeOptions.skipEmotion
+                });
                 this.runNarration(narration).catch((error) => {
                     console.warn('[YuiGuide] 恢复教程语音失败:', error);
                 });
@@ -3987,7 +3995,7 @@
             this.currentContext = context || null;
         }
 
-        restoreCurrentScenePresentation() {
+        restoreCurrentScenePresentation(options) {
             if (this.destroyed || this.angryExitTriggered || !this.currentStep) {
                 return;
             }
@@ -4027,7 +4035,7 @@
                 this.overlay.hideBubble();
             }
 
-            if (performance.emotion) {
+            if (!(options && options.skipEmotion) && performance.emotion) {
                 this.applyGuideEmotion(performance.emotion);
             }
         }
@@ -7905,14 +7913,18 @@
                 cursorResistancePromise
             ]).finally(() => {
                 this.resumeCurrentSceneAfterResistance();
-                this.restoreGuidePresentationSnapshot(presentationSnapshot);
+                const didRestorePresentationSnapshot = this.restoreGuidePresentationSnapshot(presentationSnapshot);
                 const narration = this.activeNarration;
                 if (narration && narration.interrupted) {
-                    this.scheduleNarrationResume();
+                    this.scheduleNarrationResume({
+                        skipEmotion: didRestorePresentationSnapshot
+                    });
                     return;
                 }
 
-                this.restoreCurrentScenePresentation();
+                this.restoreCurrentScenePresentation({
+                    skipEmotion: didRestorePresentationSnapshot
+                });
             });
         }
 
