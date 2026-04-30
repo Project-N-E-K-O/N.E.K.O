@@ -875,6 +875,20 @@ Live2DManager.prototype._playIdleMotion = function(motionManager) {
             this._trackActiveMotionParametersFromFile(file).catch(() => {});
         }
     };
+    const startTrackedMotion = (groupName, index, file) => {
+        try {
+            const started = motionManager.startMotion(groupName, index);
+            if (started === false) {
+                console.warn(`[Live2D] 启动 ${groupName} 待机动作失败，回退到随机 Idle`);
+                return false;
+            }
+            trackMotionFile(file);
+            return true;
+        } catch (e) {
+            console.warn(`[Live2D] 启动 ${groupName} 待机动作失败，回退到随机 Idle:`, e);
+            return false;
+        }
+    };
     const idleAnimations = this._userIdleAnimations;
     if (idleAnimations && idleAnimations.length > 0) {
         // 兼容性获取 motionGroups，优先取公开属性，fallback 到私有属性
@@ -891,9 +905,7 @@ Live2DManager.prototype._playIdleMotion = function(motionManager) {
                     const idx = group.indexOf(chosen);
                     if (idx >= 0) {
                         console.log(`[Live2D] 播放用户保存的待机动作: ${chosen.file}`);
-                        trackMotionFile(chosen.file);
-                        motionManager.startMotion('PreviewAll', idx);
-                        return;
+                        if (startTrackedMotion('PreviewAll', idx, chosen.file)) return;
                     }
                 }
             }
@@ -905,9 +917,7 @@ Live2DManager.prototype._playIdleMotion = function(motionManager) {
         const idx = Math.floor(Math.random() * idleDefinitions.length);
         const definition = idleDefinitions[idx];
         const file = definition && (definition.File || definition.file);
-        trackMotionFile(file);
-        motionManager.startMotion('Idle', idx);
-        return;
+        if (startTrackedMotion('Idle', idx, file)) return;
     }
     motionManager.startRandomMotion('Idle');
 };
