@@ -416,8 +416,8 @@ ctx.push_message(
 | 旧字段 | 新写法 |
 |---|---|
 | `message_type="proactive_notification"` | 默认行为，去掉即可 |
-| `message_type="music_play_url"` | `parts=[{"type":"ui_action","action":"media_play_url",...}]` + `visibility=["chat"]` |
-| `message_type="music_allowlist_add"` | `parts=[{"type":"ui_action","action":"media_allowlist_add","domains":[...]}]` |
+| `message_type="music_play_url"` | `parts=[{"type":"ui_action","action":"media_play_url",...}]` + `visibility=["chat"], ai_behavior="blind"` |
+| `message_type="music_allowlist_add"` | `parts=[{"type":"ui_action","action":"media_allowlist_add","domains":[...]}]` + `ai_behavior="blind"` |
 | `content="X"` | `parts=[{"type":"text","text":"X"}]` |
 | `binary_data=bytes, mime` | `parts=[{"type":"image","data":bytes,"mime":...}]` |
 | `binary_url=URL` | `parts=[{"type":"image","url":URL,"mime":...}]` |
