@@ -111,9 +111,16 @@ class GameAgentService:
         # currently pending. Drained FIFO in ``_on_task_finished``.
         self._stale_task_finishes_to_drop: int = 0
         self._log_cache: list[str] = []
-        # Bounded ring buffer — discarding old screenshots is fine,
-        # the autonomous loop only ever sends "the latest few".
-        self._screenshot_cache: collections.deque[bytes] = collections.deque(maxlen=3)
+        # Bounded ring buffer of (image_bytes, mime). We carry the mime
+        # alongside the bytes because the JPEG→PNG conversion in
+        # ``_on_screenshot`` can fall through to "ship as-is" on Pillow
+        # failure; replaying that frame in the autonomous loop with
+        # ``image/png`` would mis-tag JPEG bytes and may confuse the
+        # downstream image part handler. Discarding old frames is fine
+        # — the autonomous loop only ever sends "the latest few".
+        self._screenshot_cache: collections.deque[tuple[bytes, str]] = collections.deque(
+            maxlen=3
+        )
         self._task_finished: bool = True
 
         # Pacing state for the autonomous loop
@@ -363,10 +370,15 @@ class GameAgentService:
         if not sent:
             # Roll back the pending slot — the agent never accepted the
             # task, so we shouldn't keep reporting "busy" to subsequent
-            # calls.
+            # calls. Also reset ``_task_finished`` (we flipped it to
+            # ``False`` above optimistically); without resetting, the
+            # autonomous loop's ``skip_system_prompt_if_busy`` gate
+            # would behave as if a task were still running, and the
+            # "正在进行的操作" branch of the system prompt would lie.
             async with self._pending_lock:
                 if self._pending is my_pending:
                     self._pending = None
+                    self._task_finished = True
             return {
                 "output": {
                     "error": "agent server is not connected",
@@ -477,7 +489,7 @@ class GameAgentService:
                 )
                 mime = "image/jpeg"
 
-        self._screenshot_cache.append(img_bytes)
+        self._screenshot_cache.append((img_bytes, mime))
 
         # Stream immediately into the realtime LLM session. push_message
         # v2 with ``ai_behavior="read"`` translates downstream into
@@ -609,8 +621,10 @@ class GameAgentService:
         parts: list[Dict[str, Any]] = []
         screenshots = list(self._screenshot_cache)
         self._screenshot_cache.clear()
-        for img_bytes in screenshots:
-            parts.append({"type": "image", "data": img_bytes, "mime": "image/png"})
+        for img_bytes, img_mime in screenshots:
+            # Preserve the per-frame mime — see ``_screenshot_cache``
+            # field comment for why this isn't always image/png.
+            parts.append({"type": "image", "data": img_bytes, "mime": img_mime})
         parts.append({"type": "text", "text": prompt_text})
 
         try:

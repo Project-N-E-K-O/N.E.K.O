@@ -122,6 +122,11 @@ async def test_execute_returns_disconnected_when_send_fails():
     # Critical: ``_pending`` was rolled back so subsequent calls don't
     # see "busy" against an event nothing will ever set.
     assert service._pending is None
+    # And ``_task_finished`` was reset back to True — without that, the
+    # autonomous loop's "skip when busy" gate and the system prompt's
+    # "正在进行的操作" branch would behave as if a phantom task were
+    # still running.
+    assert service._task_finished is True
 
 
 # ---------------------------------------------------------------------------
@@ -293,6 +298,36 @@ async def test_screenshot_streaming_disabled_caches_only():
     assert push_calls == []
     # But the bytes should be cached for the next system-prompt burst.
     assert service.get_status()["screenshot_cache_size"] == 1
+
+
+@pytest.mark.asyncio
+async def test_system_prompt_replay_preserves_per_frame_mime():
+    """Cached screenshots may have heterogeneous mimes (PNG-converted
+    PNG vs. JPEG-passed-through if Pillow conversion failed). The
+    autonomous-loop replay must use each frame's actual mime, not a
+    hardcoded image/png — otherwise downstream ``stream_image`` would
+    receive mis-tagged JPEG bytes."""
+    service, push_calls = _make_service()
+    service.configure({"stream_screenshots_to_llm": False})  # cache only
+
+    # Manually plant cache entries with different mimes (skipping
+    # _on_screenshot decode path so we can choose mimes deterministically).
+    service._screenshot_cache.append((b"<png-bytes>", "image/png"))
+    service._screenshot_cache.append((b"<jpeg-bytes>", "image/jpeg"))
+    # Need at least one cached log line so the loop's "nothing to say"
+    # gate doesn't short-circuit.
+    service._log_cache.append("test event")
+
+    await service._fire_system_prompt()
+    assert len(push_calls) == 1
+    parts = push_calls[0]["parts"]
+    image_parts = [p for p in parts if p["type"] == "image"]
+    assert len(image_parts) == 2
+    mimes = [p["mime"] for p in image_parts]
+    assert mimes == ["image/png", "image/jpeg"]
+    # And the bytes survived round-trip too.
+    datas = [p["data"] for p in image_parts]
+    assert datas == [b"<png-bytes>", b"<jpeg-bytes>"]
 
 
 @pytest.mark.asyncio
