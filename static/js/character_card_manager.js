@@ -6583,7 +6583,12 @@ async function handleUploadToWorkshop() {
 
         // 设置默认模型（排除yui_default）- 仅限 Live2D 模型类型
         if (currentModelType === 'live2d' && (!selectedModelName || isStaticDefaultLive2DModel(selectedModelName, rawData))) {
-            const validModels = availableModels.filter(model => model.name !== 'yui_default');
+            const validModels = availableModels.filter(model =>
+                model
+                && model.name
+                && !hasStaticModelFlag(model)
+                && !hasStaticModelFlag(model.modelMetadata)
+            );
             if (validModels.length > 0) {
                 selectedModelName = validModels[0].name;
             } else {

@@ -784,7 +784,9 @@
 
             if (this.backdrop) {
                 this.syncBackdropViewport();
-                this.hideBackdrop();
+                const hasBackdropCutout = !!(persistentMaskRect || actionMaskRect || secondaryActionMaskRect || extraMaskRects.length > 0);
+                this.backdrop.hidden = !hasBackdropCutout;
+                this.backdrop.classList.toggle('is-visible', hasBackdropCutout);
             }
 
             const getFrameVariantFromElement = (element) => {
@@ -810,6 +812,9 @@
                 allowMask: true,
                 variant: getFrameVariantFromElement(this.secondaryActionHighlightedElement)
             });
+            this.updateBackdropCutout(this.backdropPersistentCutout, persistentMaskRect);
+            this.updateBackdropCutout(this.backdropActionCutout, actionMaskRect);
+            this.updateBackdropCutout(this.backdropSecondaryActionCutout, secondaryActionMaskRect);
             extraRects.forEach((rect, index) => {
                 const entry = this.ensureExtraSpotlightEntry(index);
                 if (!entry) {

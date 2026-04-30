@@ -71,6 +71,7 @@ class UniversalTutorialManager {
         this._tutorialEndHandled = false;
         this._tutorialAvatarOverride = null;
         this._tutorialAvatarOverridePromise = null;
+        this._teardownPromise = null;
         this._tutorialViewportPlacementResizeHandler = null;
         this._tutorialViewportPlacementResizeTimer = null;
         this._isDestroyed = false;
@@ -1349,13 +1350,20 @@ class UniversalTutorialManager {
         });
 
         this._tutorialAvatarOverridePromise = setupPromise;
-        setupPromise.finally(() => {
+        setupPromise.then(
+            () => null,
+            () => null
+        ).then(() => {
             if (this._tutorialAvatarOverridePromise === setupPromise) {
                 this._tutorialAvatarOverridePromise = null;
             }
             if (this._tutorialAvatarOverride && this._tutorialAvatarOverride.restoreRequested) {
-                this.restoreTutorialAvatarOverride();
+                this.restoreTutorialAvatarOverride().catch(error => {
+                    console.warn('[Tutorial] 延迟恢复新手教程头像失败:', error);
+                });
             }
+        }).catch(error => {
+            console.warn('[Tutorial] 清理新手教程头像准备状态失败:', error);
         });
 
         return setupPromise;
@@ -3446,7 +3454,13 @@ class UniversalTutorialManager {
                 this.showSkipButton();
             };
             if (avatarReadyPromise) {
-                avatarReadyPromise.finally(startYuiOnlyHomeFlow);
+                avatarReadyPromise.then(
+                    startYuiOnlyHomeFlow,
+                    (error) => {
+                        console.warn('[Tutorial] YUI 头像准备失败，继续启动首页引导:', error);
+                        startYuiOnlyHomeFlow();
+                    }
+                );
             } else {
                 startYuiOnlyHomeFlow();
             }
@@ -4491,6 +4505,9 @@ class UniversalTutorialManager {
      * 因此既能给正常结束（onTutorialEnd）复用，也能给启动失败的回退路径复用。
      */
     _teardownTutorialUI() {
+        if (this._teardownPromise) {
+            return this._teardownPromise;
+        }
         this._isDestroyed = true;
         this.revealTutorialLive2dPrepared();
         // 重置运行标志
@@ -4633,8 +4650,19 @@ class UniversalTutorialManager {
         // 恢复所有在引导中修改过的元素的原始样式
         this.restoreAllModifiedElements();
         this.restoreTutorialInteractionState();
-        this.restoreTutorialAvatarOverride();
-        this._tutorialModelPrefix = null;
+        const teardownPromise = Promise.resolve()
+            .then(() => this.restoreTutorialAvatarOverride())
+            .catch(error => {
+                console.warn('[Tutorial] 拆除引导时恢复头像失败:', error);
+            })
+            .finally(() => {
+                this._tutorialModelPrefix = null;
+                if (this._teardownPromise === teardownPromise) {
+                    this._teardownPromise = null;
+                }
+            });
+        this._teardownPromise = teardownPromise;
+        return teardownPromise;
     }
 
     /**
@@ -4918,7 +4946,7 @@ window.universalTutorialManager = null;
  * 初始化通用教程管理器
  * 应在 DOM 加载完成后调用
  */
-function initUniversalTutorialManager() {
+async function initUniversalTutorialManager() {
     // 检测当前页面类型
     const currentPageType = UniversalTutorialManager.detectPage();
 
@@ -4926,14 +4954,24 @@ function initUniversalTutorialManager() {
     if (window.universalTutorialManager) {
         if (window.universalTutorialManager.currentPage !== currentPageType) {
             console.log('[Tutorial] 页面已改变，销毁旧实例并创建新实例');
+            const previousManager = window.universalTutorialManager;
             // 销毁旧的 driver 实例和清理状态
-            if (window.universalTutorialManager.isTutorialRunning) {
-                window.universalTutorialManager.onTutorialEnd();
+            if (previousManager.isTutorialRunning) {
+                previousManager.onTutorialEnd();
+            } else if (typeof previousManager._teardownTutorialUI === 'function') {
+                previousManager._teardownTutorialUI();
             }
-            if (window.universalTutorialManager.driver) {
-                window.universalTutorialManager.driver.destroy();
+            if (previousManager.driver) {
+                previousManager.driver.destroy();
             }
-            window.universalTutorialManager.teardownModelManagerListeners();
+            previousManager.teardownModelManagerListeners();
+            if (previousManager._teardownPromise) {
+                try {
+                    await previousManager._teardownPromise;
+                } catch (error) {
+                    console.warn('[Tutorial] 等待旧教程实例拆除失败，继续创建新实例:', error);
+                }
+            }
             // 创建新实例
             window.universalTutorialManager = new UniversalTutorialManager();
             console.log('[Tutorial] 通用教程管理器已重新初始化，页面:', currentPageType);
