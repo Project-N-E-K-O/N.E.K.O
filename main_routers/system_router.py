@@ -673,13 +673,18 @@ async def create_yui_guide_handoff(request: Request):
     payload = await _read_json_object(request)
     validation_error = _validate_local_mutation_request(request, payload=payload)
     if validation_error is not None:
+        _set_no_store_headers(validation_error)
         return validation_error
 
     target_page = _normalize_yui_handoff_text(payload.get("target_page"), max_length=80)
     if not target_page:
-        return JSONResponse(
+        return _json_no_store_response(
+            {
+                "ok": False,
+                "error_code": "invalid_target_page",
+                "error": "target_page is required",
+            },
             status_code=400,
-            content={"ok": False, "error_code": "invalid_target_page", "error": "target_page is required"},
         )
 
     now_ms = int(time.time() * 1000)
@@ -705,7 +710,7 @@ async def create_yui_guide_handoff(request: Request):
         _prune_yui_handoff_records(now_ms)
         _yui_guide_handoff_tokens[record["token"]] = record
 
-    return {"ok": True, "token": _public_yui_handoff_record(record)}
+    return _json_no_store_response({"ok": True, "token": _public_yui_handoff_record(record)})
 
 
 @router.post("/yui-guide/handoff/consume")
@@ -713,6 +718,7 @@ async def consume_yui_guide_handoff(request: Request):
     payload = await _read_json_object(request)
     validation_error = _validate_local_mutation_request(request, payload=payload)
     if validation_error is not None:
+        _set_no_store_headers(validation_error)
         return validation_error
 
     token = _normalize_yui_handoff_text(payload.get("token"), max_length=128)
@@ -723,50 +729,74 @@ async def consume_yui_guide_handoff(request: Request):
     now_ms = int(time.time() * 1000)
 
     if not token or not signature:
-        return JSONResponse(
+        return _json_no_store_response(
+            {
+                "ok": False,
+                "error_code": "invalid_handoff_token",
+                "error": "token and signature are required",
+            },
             status_code=400,
-            content={"ok": False, "error_code": "invalid_handoff_token", "error": "token and signature are required"},
         )
 
     async with _yui_guide_handoff_lock:
         _prune_yui_handoff_records(now_ms)
         record = _yui_guide_handoff_tokens.get(token)
         if not record:
-            return JSONResponse(
+            return _json_no_store_response(
+                {
+                    "ok": False,
+                    "error_code": "handoff_token_not_found",
+                    "error": "handoff token not found",
+                },
                 status_code=404,
-                content={"ok": False, "error_code": "handoff_token_not_found", "error": "handoff token not found"},
             )
 
         stored_signature = str(record.get("signature") or "")
         if not hmac.compare_digest(signature, stored_signature):
-            return JSONResponse(
+            return _json_no_store_response(
+                {
+                    "ok": False,
+                    "error_code": "handoff_signature_mismatch",
+                    "error": "handoff signature mismatch",
+                },
                 status_code=403,
-                content={"ok": False, "error_code": "handoff_signature_mismatch", "error": "handoff signature mismatch"},
             )
 
         source_origin = str(record.get("source_origin") or "")
         if source_origin and request_origin and request_origin != source_origin:
-            return JSONResponse(
+            return _json_no_store_response(
+                {
+                    "ok": False,
+                    "error_code": "handoff_origin_mismatch",
+                    "error": "handoff origin mismatch",
+                },
                 status_code=403,
-                content={"ok": False, "error_code": "handoff_origin_mismatch", "error": "handoff origin mismatch"},
             )
 
         target_page = str(record.get("target_page") or "")
         if expected_page and expected_page != target_page:
-            return JSONResponse(
+            return _json_no_store_response(
+                {
+                    "ok": False,
+                    "error_code": "handoff_target_mismatch",
+                    "error": "handoff target mismatch",
+                },
                 status_code=403,
-                content={"ok": False, "error_code": "handoff_target_mismatch", "error": "handoff target mismatch"},
             )
 
         if record.get("consumed_at"):
-            return JSONResponse(
+            return _json_no_store_response(
+                {
+                    "ok": False,
+                    "error_code": "handoff_token_consumed",
+                    "error": "handoff token already consumed",
+                },
                 status_code=409,
-                content={"ok": False, "error_code": "handoff_token_consumed", "error": "handoff token already consumed"},
             )
 
         record["consumed_at"] = now_ms
         record["consumed_by"] = consumed_by or request_origin or "unknown"
-        return {"ok": True, "token": _public_yui_handoff_record(record)}
+        return _json_no_store_response({"ok": True, "token": _public_yui_handoff_record(record)})
 
 
 @router.get("/system/status")

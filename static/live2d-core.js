@@ -4464,13 +4464,11 @@ class Live2DManager {
      * @param {boolean} enabled - 是否启用鼠标跟踪
      */
     setMouseTrackingEnabled(enabled) {
-        if (window.nekoYuiGuideFaceForwardLock === true) {
-            enabled = false;
-        }
         this._mouseTrackingEnabled = enabled;
         window.mouseTrackingEnabled = enabled;
+        const effectiveEnabled = enabled && window.nekoYuiGuideFaceForwardLock !== true;
 
-        if (enabled) {
+        if (effectiveEnabled) {
             // 重新启用时，如果模型存在且没有鼠标跟踪监听器，则启用
             if (this.currentModel && !this._mouseTrackingListener) {
                 this.enableMouseTracking(this.currentModel);

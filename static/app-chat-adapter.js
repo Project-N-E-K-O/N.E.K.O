@@ -87,6 +87,12 @@
         return window.appChatAvatar.getCurrentAvatarDataUrl() || '';
     }
 
+    function getAssistantAvatarLabel() {
+        var name = getCurrentAssistantName();
+        var first = Array.from(name || '')[0] || '';
+        return first ? first.toUpperCase() : undefined;
+    }
+
     function nextReactMessageId(prefix) {
         _reactMessageSeq += 1;
         return (prefix || 'msg') + '-' + Date.now() + '-' + _reactMessageSeq;
@@ -746,6 +752,7 @@
             if (!message || message.role !== 'assistant') return;
             host.updateMessage(message.id, {
                 author: getCurrentAssistantName(),
+                avatarLabel: getAssistantAvatarLabel(),
                 avatarUrl: avatarUrl || undefined
             });
         });

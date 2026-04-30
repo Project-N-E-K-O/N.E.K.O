@@ -632,10 +632,6 @@ class UniversalTutorialManager {
             }
         }
 
-        if (this.isYuiGuideEnabledForPage()) {
-            this.notifyYuiGuideTutorialEnd(reason);
-        }
-
         if (this.driver) {
             this.driver.destroy();
             return;
@@ -1021,8 +1017,14 @@ class UniversalTutorialManager {
     }
 
     beginTutorialAvatarOverride() {
-        if (this._tutorialAvatarOverride || this._tutorialAvatarOverridePromise) {
-            return this._tutorialAvatarOverridePromise || Promise.resolve();
+        if (this._tutorialAvatarOverridePromise) {
+            if (this._tutorialAvatarOverride && this._tutorialAvatarOverride.restoring) {
+                return this._tutorialAvatarOverridePromise.then(() => this.beginTutorialAvatarOverride());
+            }
+            return this._tutorialAvatarOverridePromise;
+        }
+        if (this._tutorialAvatarOverride) {
+            return Promise.resolve();
         }
 
         const activePrefix = UniversalTutorialManager.detectModelPrefix();
@@ -1031,7 +1033,7 @@ class UniversalTutorialManager {
             restoreRequested: false
         };
 
-        this._tutorialAvatarOverridePromise = (async () => {
+        const setupPromise = (async () => {
             const currentName = await this.resolveCurrentTutorialCatgirlName();
             if (!currentName) {
                 throw new Error('current tutorial catgirl name unavailable');
@@ -1065,47 +1067,64 @@ class UniversalTutorialManager {
             console.log('[Tutorial] 新手教程期间已临时切换到 yui_default 模型（未写入用户配置）:', tutorialModelPayload);
         })().catch((error) => {
             console.warn('[Tutorial] 临时切换 yui_default 模型失败:', error);
-        }).finally(() => {
-            this._tutorialAvatarOverridePromise = null;
+        });
+
+        this._tutorialAvatarOverridePromise = setupPromise;
+        setupPromise.finally(() => {
+            if (this._tutorialAvatarOverridePromise === setupPromise) {
+                this._tutorialAvatarOverridePromise = null;
+            }
             if (this._tutorialAvatarOverride && this._tutorialAvatarOverride.restoreRequested) {
                 this.restoreTutorialAvatarOverride();
             }
         });
 
-        return this._tutorialAvatarOverridePromise;
+        return setupPromise;
     }
 
-    async restoreTutorialAvatarOverride() {
+    restoreTutorialAvatarOverride() {
         const override = this._tutorialAvatarOverride;
         if (!override) {
-            return;
+            return Promise.resolve();
         }
 
         if (this._tutorialAvatarOverridePromise) {
             override.restoreRequested = true;
-            return;
+            return this._tutorialAvatarOverridePromise;
         }
 
-        this._tutorialAvatarOverride = null;
         const currentName = override.currentName;
         const snapshotPayload = override.snapshotPayload;
+        override.restoring = true;
 
-        try {
-            this.applyTutorialChatIdentityOverride({ active: false });
-            if (!currentName) {
-                return;
-            }
+        const restorePromise = Promise.resolve().then(async () => {
+            try {
+                this.applyTutorialChatIdentityOverride({ active: false });
+                if (!currentName) {
+                    return;
+                }
 
-            await this.reloadTutorialModel(currentName, snapshotPayload || {});
-            console.log('[Tutorial] 已按模型管理页保存流程恢复新手教程前的用户模型:', override.activePrefix || 'unknown');
-        } catch (error) {
-            console.warn('[Tutorial] 恢复新手教程前用户模型失败:', error);
-            if (typeof window.showCurrentModel === 'function') {
-                try {
-                    await window.showCurrentModel();
-                } catch (_) {}
+                await this.reloadTutorialModel(currentName, snapshotPayload || {});
+                console.log('[Tutorial] 已按模型管理页保存流程恢复新手教程前的用户模型:', override.activePrefix || 'unknown');
+            } catch (error) {
+                console.warn('[Tutorial] 恢复新手教程前用户模型失败:', error);
+                if (typeof window.showCurrentModel === 'function') {
+                    try {
+                        await window.showCurrentModel();
+                    } catch (_) {}
+                }
+            } finally {
+                if (this._tutorialAvatarOverride === override) {
+                    this._tutorialAvatarOverride = null;
+                }
+                if (this._tutorialAvatarOverridePromise === restorePromise) {
+                    this._tutorialAvatarOverridePromise = null;
+                }
             }
-        }
+        });
+
+        this._tutorialAvatarOverridePromise = restorePromise;
+        return restorePromise;
     }
 
     async captureTutorialChatAvatarPreview() {

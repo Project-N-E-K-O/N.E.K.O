@@ -58,7 +58,6 @@
         });
 
         for (const panel of toHide) {
-            if (panel.style.display === 'none') continue;
             // 清除所有定时器
             if (panel._collapseTimeout) {
                 clearTimeout(panel._collapseTimeout);
@@ -74,6 +73,7 @@
                 panel._expandFrameId = null;
             }
             panel._visibilityRevision = (panel._visibilityRevision || 0) + 1;
+            if (panel.style.display === 'none') continue;
             panel.style.transition = 'none';
             panel.style.opacity = '0';
             panel.style.display = 'none';

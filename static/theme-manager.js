@@ -4,6 +4,7 @@
   const STORAGE_KEY = 'neko-dark-mode';
   const TRANSITION_MS = 300;
   let themeTransitionTimeout = null;
+  let initialized = false;
 
   try {
     const savedTheme = localStorage.getItem(STORAGE_KEY);
@@ -107,7 +108,11 @@
     });
 
     window.addEventListener('storage', (event) => {
-      if (event.key !== STORAGE_KEY || event.newValue === null) {
+      if (event.key !== STORAGE_KEY) {
+        return;
+      }
+      if (event.newValue === null || event.newValue === '') {
+        applyThemeAnimated(getSystemPrefersDark(), { persist: false });
         return;
       }
       applyThemeAnimated(event.newValue === 'true', { persist: false });
@@ -128,6 +133,10 @@
   }
 
   async function fullInit() {
+    if (initialized) {
+      return;
+    }
+    initialized = true;
     await initTheme();
     listenForThemeChanges();
   }

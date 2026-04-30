@@ -258,15 +258,16 @@ class VRMManager {
                 this._cursorFollow.init(this);
             }
             // 同步鼠标跟踪启用状态
+            const storedMouseTrackingEnabled = window.mouseTrackingEnabled !== false;
             const isEnabled = window.nekoYuiGuideFaceForwardLock === true
                 ? false
-                : window.mouseTrackingEnabled !== false;
+                : storedMouseTrackingEnabled;
             console.log(`[VRM] 鼠标跟踪检查: window.mouseTrackingEnabled=${window.mouseTrackingEnabled}, isEnabled=${isEnabled}`);
             if (this._cursorFollow.isEnabled() !== isEnabled) {
                 this._cursorFollow.setEnabled(isEnabled);
             }
             // 同步内部状态
-            this._mouseTrackingEnabled = isEnabled;
+            this._mouseTrackingEnabled = storedMouseTrackingEnabled;
             // CursorFollow 拥有自己的 eyesTarget，旧 _lookAtTarget 不再需要
             return;
         }
@@ -1620,14 +1621,12 @@ class VRMManager {
      * @param {boolean} enabled - 是否启用鼠标跟踪
      */
     setMouseTrackingEnabled(enabled) {
-        if (window.nekoYuiGuideFaceForwardLock === true) {
-            enabled = false;
-        }
         this._mouseTrackingEnabled = enabled;
         window.mouseTrackingEnabled = enabled;
+        const effectiveEnabled = enabled && window.nekoYuiGuideFaceForwardLock !== true;
 
         if (this._cursorFollow) {
-            this._cursorFollow.setEnabled(enabled);
+            this._cursorFollow.setEnabled(effectiveEnabled);
         }
     }
 

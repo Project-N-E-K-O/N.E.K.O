@@ -70,7 +70,7 @@ async def _resolve_user_plugin_base() -> str:
     for base in candidates:
         try:
             response = await client.get(f"{base}/available", timeout=0.45)
-            if response.status_code < 500:
+            if response.is_success:
                 _USER_PLUGIN_BASE_CACHE = (base, now)
                 return base
         except Exception:
