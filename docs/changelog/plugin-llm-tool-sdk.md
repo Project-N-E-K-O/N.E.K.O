@@ -35,8 +35,18 @@ class WeatherPlugin(NekoPluginBase):
 ```
 
 The decorator alone is enough — no need to spin up an HTTP server, no
-need to write registration / unregistration / re-registration logic
+need to write registration / unregistration / cleanup-on-stop logic
 yourself.
+
+> ⚠️ **What this helper doesn't do**: it doesn't auto-recover after a
+> `main_server` restart or first-boot race. The IPC notification fires
+> once at plugin startup; if `main_server` was unreachable at that
+> moment the registration is skipped (with a warning logged) and the
+> tool stays invisible to the model until the plugin reloads or
+> `register_llm_tool` is called imperatively. Plugins that need
+> resilience to `main_server` restarts should detect the condition
+> (e.g. via a periodic `GET /api/tools` health probe) and re-register
+> themselves.
 
 ## Why
 

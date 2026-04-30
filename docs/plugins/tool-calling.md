@@ -46,7 +46,14 @@ SDK base class during plugin construction; the plugin server registers
 the tool with `main_server` over HTTP and routes incoming model
 dispatches back into the plugin process via existing IPC. When the
 plugin stops, every registered tool is cleared from `main_server`
-automatically.
+on a best-effort basis.
+
+What the helper *doesn't* do: auto-recover after a `main_server` restart
+or first-boot race. Registration is fired once at plugin startup; if
+`main_server` was unreachable then, the tool stays invisible to the
+model until the plugin reloads or `register_llm_tool` is invoked
+imperatively. The "What Happens When main_server Restarts" section near
+the end of this page covers the resilience pattern in detail.
 
 The rest of this document explains the underlying HTTP contract and
 when you might need to reach for it directly.

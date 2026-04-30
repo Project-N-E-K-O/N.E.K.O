@@ -191,6 +191,24 @@ async def register_remote_tool(
         )
 
     body = resp.json()
+    # ``main_server`` distinguishes HTTP-level failures (caught above as
+    # status >= 400) from per-role logic failures — the latter come back
+    # as 200 with ``{"ok": false, "failed_roles": [...]}`` when *no* role
+    # accepted the registration. Treat that as a hard failure: skip
+    # local tracking so a later ``has_plugin_tool`` doesn't lie, and
+    # raise so the IPC handler logs and the caller can see what
+    # happened.
+    if isinstance(body, dict) and body.get("ok") is False:
+        affected = body.get("affected_roles") or []
+        failed = body.get("failed_roles") or []
+        logger.warning(
+            "register_remote_tool rejected by main_server: plugin_id={}, name={}, "
+            "affected_roles={}, failed_roles={}",
+            plugin_id, name, affected, failed,
+        )
+        raise RuntimeError(
+            f"main_server rejected register for '{name}': affected={affected}, failed={failed}"
+        )
     async with _lock:
         _plugin_tools[plugin_id][name] = {"timeout_seconds": float(timeout_seconds)}
     logger.info(
@@ -208,16 +226,13 @@ async def unregister_remote_tool(
 ) -> Dict[str, Any]:
     """Unregister a single LLM tool from ``main_server``.
 
-    Removes the tracking entry first so a stale registry doesn't try to
-    re-clear it on shutdown if the HTTP call partially succeeds.
+    HTTP first, local tracking second — and only if every role
+    succeeded. ``main_server`` reports per-role failures as 200 with
+    ``failed_roles=[...]``, so a partial success would leave the tool
+    half-registered on some role; pruning local tracking in that case
+    means a later ``clear_plugin_tools`` can't catch the stragglers and
+    the model would still see them.
     """
-    async with _lock:
-        owned = _plugin_tools.get(plugin_id)
-        if owned is not None:
-            owned.pop(name, None)
-            if not owned:
-                _plugin_tools.pop(plugin_id, None)
-
     payload = {"name": name, "role": role}
     client = _get_http_client()
     url = f"{_main_server_base_url()}/api/tools/unregister"
@@ -239,7 +254,27 @@ async def unregister_remote_tool(
         raise RuntimeError(
             f"main_server /api/tools/unregister returned {resp.status_code}: {text[:500]}"
         )
-    return resp.json()
+    body = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
+    failed_roles = body.get("failed_roles") if isinstance(body, dict) else None
+    if failed_roles:
+        logger.warning(
+            "unregister_remote_tool partial failure — keeping local tracking: "
+            "plugin_id={}, name={}, failed_roles={}",
+            plugin_id, name, failed_roles,
+        )
+        # Local tracking stays so ``clear_plugin_tools`` on shutdown
+        # still attempts to wipe the orphaned roles. Surface as an
+        # error so the IPC handler logs visibly.
+        raise RuntimeError(
+            f"main_server reported failed_roles={failed_roles} for unregister of '{name}'"
+        )
+    async with _lock:
+        owned = _plugin_tools.get(plugin_id)
+        if owned is not None:
+            owned.pop(name, None)
+            if not owned:
+                _plugin_tools.pop(plugin_id, None)
+    return body if isinstance(body, dict) else {"ok": True}
 
 
 async def clear_plugin_tools(plugin_id: str, *, role: Optional[str] = None) -> Dict[str, Any]:

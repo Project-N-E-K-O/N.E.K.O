@@ -424,6 +424,123 @@ async def test_callback_route_passes_through_error_shape():
 
 
 @pytest.mark.asyncio
+async def test_register_remote_tool_skips_local_tracking_on_ok_false(monkeypatch):
+    """``main_server`` can return HTTP 200 with body ``{"ok": false}``
+    when no role accepted the registration. The helper must not write
+    a local tracking entry in that case — otherwise ``has_plugin_tool``
+    lies and we'd dispatch a tool main_server doesn't actually have."""
+    from plugin.server.messaging import llm_tool_registry
+
+    class FakeResp:
+        status_code = 200
+        headers = {"content-type": "application/json"}
+        text = ""
+        def json(self):
+            return {
+                "ok": False,
+                "registered": "ghost",
+                "affected_roles": [],
+                "failed_roles": [{"role": "Lanlan", "error": "x"}],
+                "error": "no role accepted the registration",
+            }
+
+    class FakeClient:
+        async def post(self, url, json=None):
+            return FakeResp()
+
+    monkeypatch.setattr(llm_tool_registry, "_get_http_client", lambda: FakeClient())
+
+    with pytest.raises(RuntimeError, match="rejected register"):
+        await llm_tool_registry.register_remote_tool(
+            plugin_id="px",
+            name="ghost",
+            description="d",
+            parameters={"type": "object", "properties": {}},
+            timeout_seconds=30.0,
+        )
+
+    # Most importantly: nothing leaked into local tracking.
+    assert not llm_tool_registry.has_plugin_tool("px", "ghost")
+
+
+@pytest.mark.asyncio
+async def test_unregister_remote_tool_keeps_local_on_partial_failure(monkeypatch):
+    """``/api/tools/unregister`` returns 200 with ``failed_roles`` when
+    only some roles failed to unregister. Local tracking must stay
+    intact so the shutdown ``clear`` can still try to wipe the
+    stragglers."""
+    from plugin.server.messaging import llm_tool_registry
+
+    # Pre-seed local tracking as if registration had succeeded.
+    async with llm_tool_registry._lock:
+        llm_tool_registry._plugin_tools["px"]["t"] = {"timeout_seconds": 30.0}
+
+    class FakeResp:
+        status_code = 200
+        headers = {"content-type": "application/json"}
+        text = ""
+        def json(self):
+            return {
+                "ok": False,
+                "removed": True,
+                "name": "t",
+                "affected_roles": ["A"],
+                "failed_roles": [{"role": "B", "error": "boom"}],
+            }
+
+    class FakeClient:
+        async def post(self, url, json=None):
+            return FakeResp()
+
+    monkeypatch.setattr(llm_tool_registry, "_get_http_client", lambda: FakeClient())
+
+    try:
+        with pytest.raises(RuntimeError, match="failed_roles"):
+            await llm_tool_registry.unregister_remote_tool(plugin_id="px", name="t")
+        # Critical: local entry preserved so clear_plugin_tools can
+        # later attempt to wipe role B.
+        assert llm_tool_registry.has_plugin_tool("px", "t")
+    finally:
+        async with llm_tool_registry._lock:
+            llm_tool_registry._plugin_tools.pop("px", None)
+
+
+@pytest.mark.asyncio
+async def test_unregister_remote_tool_drops_local_on_full_success(monkeypatch):
+    from plugin.server.messaging import llm_tool_registry
+
+    async with llm_tool_registry._lock:
+        llm_tool_registry._plugin_tools["px"]["t"] = {"timeout_seconds": 30.0}
+
+    class FakeResp:
+        status_code = 200
+        headers = {"content-type": "application/json"}
+        text = ""
+        def json(self):
+            return {
+                "ok": True,
+                "removed": True,
+                "name": "t",
+                "affected_roles": ["A"],
+                "failed_roles": [],
+            }
+
+    class FakeClient:
+        async def post(self, url, json=None):
+            return FakeResp()
+
+    monkeypatch.setattr(llm_tool_registry, "_get_http_client", lambda: FakeClient())
+
+    try:
+        out = await llm_tool_registry.unregister_remote_tool(plugin_id="px", name="t")
+        assert out.get("ok") is True
+        assert not llm_tool_registry.has_plugin_tool("px", "t")
+    finally:
+        async with llm_tool_registry._lock:
+            llm_tool_registry._plugin_tools.pop("px", None)
+
+
+@pytest.mark.asyncio
 async def test_callback_route_handles_timeout():
     from plugin.core.state import state
     from plugin.server.messaging import llm_tool_registry
