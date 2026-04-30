@@ -823,7 +823,9 @@ Live2DManager.prototype.setupIdleMotionLoop = function(model) {
                 return;
             }
             if (!motionManager.playing) {
-                this._playIdleMotion(motionManager);
+                Promise.resolve(this._playIdleMotion(motionManager)).catch((e) => {
+                    console.warn('[Live2D] 播放 Idle motion 失败:', e);
+                });
             }
         }, delay);
         this._idleMotionLoopTimers.add(timer);
@@ -866,28 +868,71 @@ Live2DManager.prototype.setupIdleMotionLoop = function(model) {
 };
 
 // 播放待机动作（从用户保存的 Idle 动画或默认 Idle 随机选择）
-Live2DManager.prototype._playIdleMotion = function(motionManager) {
+Live2DManager.prototype._playIdleMotion = async function(motionManager) {
     if (this._temporaryMotionSuspendToken) {
         return;
     }
-    const trackMotionFile = (file) => {
-        if (file && typeof this._trackActiveMotionParametersFromFile === 'function') {
-            this._trackActiveMotionParametersFromFile(file).catch(() => {});
+    const expectedModel = this.currentModel;
+    const isCurrentIdleRequest = () => (
+        this.currentModel === expectedModel
+        && expectedModel
+        && !expectedModel.destroyed
+        && window._currentMotionPreviewId == null
+        && !this._temporaryMotionSuspendToken
+    );
+    const getRandomizedIndexes = (length) => {
+        const indexes = [];
+        for (let i = 0; i < length; i++) indexes.push(i);
+        for (let i = indexes.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [indexes[i], indexes[j]] = [indexes[j], indexes[i]];
         }
+        return indexes;
     };
-    const startTrackedMotion = (groupName, index, file) => {
+    const trackMotionFile = (file) => {
+        if (!file || typeof this._trackActiveMotionParametersFromFile !== 'function') {
+            if (typeof this._clearActiveMotionParamIds === 'function') {
+                this._clearActiveMotionParamIds();
+            }
+            return;
+        }
+        this._trackActiveMotionParametersFromFile(file).catch(() => {});
+    };
+    const startTrackedMotion = async (groupName, index, file) => {
+        if (!isCurrentIdleRequest()) return false;
         try {
-            const started = motionManager.startMotion(groupName, index);
+            const started = await motionManager.startMotion(groupName, index);
+            if (!isCurrentIdleRequest()) return false;
             if (started === false) {
-                console.warn(`[Live2D] 启动 ${groupName} 待机动作失败，回退到随机 Idle`);
+                console.warn(`[Live2D] 启动 ${groupName} 待机动作失败，尝试下一个 Idle 候选`);
                 return false;
             }
             trackMotionFile(file);
             return true;
         } catch (e) {
-            console.warn(`[Live2D] 启动 ${groupName} 待机动作失败，回退到随机 Idle:`, e);
+            console.warn(`[Live2D] 启动 ${groupName} 待机动作失败，尝试下一个 Idle 候选:`, e);
             return false;
         }
+    };
+    const startTrackedDefinitionMotion = async (groupName, definitions) => {
+        if (!Array.isArray(definitions) || definitions.length === 0) return false;
+        for (const idx of getRandomizedIndexes(definitions.length)) {
+            const definition = definitions[idx];
+            const file = definition && (definition.File || definition.file);
+            if (await startTrackedMotion(groupName, idx, file)) return true;
+        }
+        return false;
+    };
+    const startTrackedGroupMotion = async (groupName, group, filter) => {
+        if (!Array.isArray(group) || group.length === 0) return false;
+        const indexes = getRandomizedIndexes(group.length);
+        for (const idx of indexes) {
+            const motion = group[idx];
+            if (filter && !filter(motion)) continue;
+            const file = motion && (motion.file || motion.File);
+            if (await startTrackedMotion(groupName, idx, file)) return true;
+        }
+        return false;
     };
     const idleAnimations = this._userIdleAnimations;
     if (idleAnimations && idleAnimations.length > 0) {
@@ -898,28 +943,44 @@ Live2DManager.prototype._playIdleMotion = function(motionManager) {
             console.warn('[Live2D] motionGroups 不可用或 PreviewAll 组不存在，跳过用户待机动作');
         } else {
             const group = motionGroups.PreviewAll;
-            if (group && group.length > 0) {
+            const startedUserIdle = await startTrackedGroupMotion('PreviewAll', group, (motion) => {
+                return motion && motion.file && idleAnimations.includes(motion.file.split('/').pop());
+            });
+            if (startedUserIdle) {
+                return;
+            }
+            if (Array.isArray(group) && group.length > 0) {
                 const available = group.filter(m => m.file && idleAnimations.includes(m.file.split('/').pop()));
                 if (available.length > 0) {
-                    const chosen = available[Math.floor(Math.random() * available.length)];
-                    const idx = group.indexOf(chosen);
-                    if (idx >= 0) {
-                        console.log(`[Live2D] 播放用户保存的待机动作: ${chosen.file}`);
-                        if (startTrackedMotion('PreviewAll', idx, chosen.file)) return;
-                    }
+                    console.warn('[Live2D] 用户保存的待机动作启动失败，回退到默认 Idle');
                 }
             }
         }
     }
     const definitions = motionManager.definitions || motionManager._definitions || {};
-    const idleDefinitions = definitions.Idle;
-    if (Array.isArray(idleDefinitions) && idleDefinitions.length > 0) {
-        const idx = Math.floor(Math.random() * idleDefinitions.length);
-        const definition = idleDefinitions[idx];
-        const file = definition && (definition.File || definition.file);
-        if (startTrackedMotion('Idle', idx, file)) return;
+    if (await startTrackedDefinitionMotion('Idle', definitions.Idle)) {
+        return;
     }
-    motionManager.startRandomMotion('Idle');
+
+    const motionGroups = motionManager.motionGroups || motionManager._motionGroups || {};
+    if (await startTrackedGroupMotion('Idle', motionGroups.Idle)) {
+        return;
+    }
+
+    if (!isCurrentIdleRequest()) return;
+    try {
+        const started = await motionManager.startRandomMotion('Idle');
+        if (!isCurrentIdleRequest()) return;
+        if (started === false) {
+            this._clearActiveMotionParamIds();
+            return;
+        }
+        // 没有可解析的 file 时无法追踪 motion3 参数，清掉旧追踪，避免复用上一条 motion 的参数集合。
+        this._clearActiveMotionParamIds();
+    } catch (e) {
+        this._clearActiveMotionParamIds();
+        console.warn('[Live2D] 随机 Idle motion 启动失败:', e);
+    }
 };
 
 // 配置已加载的模型（私有方法，用于消除主路径和回退路径的重复代码）
