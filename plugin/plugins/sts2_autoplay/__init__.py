@@ -49,10 +49,16 @@ def _optional_finite_float(value: Optional[float], *, key: str) -> Optional[floa
 def _replace_toml_number(text: str, *, key: str, value: float) -> str:
     needle = f"{key} ="
     replacement = f"{key} = {value:g}"
-    lines = text.splitlines()
-    updated_lines = [replacement if line.strip().startswith(needle) else line for line in lines]
+    found = False
+    updated_lines: list[str] = []
+    for line in text.splitlines():
+        if line.strip().startswith(needle):
+            found = True
+            updated_lines.append(replacement)
+        else:
+            updated_lines.append(line)
 
-    if updated_lines == lines:
+    if not found:
         raise SdkError(f"plugin.toml 中未找到配置项: {key}")
 
     return "\n".join(updated_lines) + ("\n" if text.endswith("\n") else "")
