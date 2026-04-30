@@ -83,7 +83,11 @@ TOOL_DEFINITIONS: List[Dict[str, Any]] = [
     # 4. Autoplay control (combined start/pause/resume/stop)
     {
         "name": "sts2_autoplay_control",
-        "description": "杀戮尖塔自动游玩控制。支持 action: start/pause/resume/stop。",
+        "description": (
+            "杀戮尖塔自动游玩控制。支持 action: start/pause/resume/stop。"
+            "注意：start 只是启动后台自动游玩循环，返回后游玩仍在继续进行，"
+            "不代表已经打完。应告知用户正在帮忙打而不是已打完。"
+        ),
         "parameters": {
             "type": "object",
             "properties": {

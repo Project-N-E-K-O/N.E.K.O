@@ -68,10 +68,17 @@ def create_tool_callback_router(service: Any) -> APIRouter:
         async def handler(args: Dict[str, Any]) -> Any:
             action = str(args.get("action", ""))
             if action == "start":
-                return await service.start_autoplay(
+                result = await service.start_autoplay(
                     objective=args.get("objective"),
                     stop_condition=args.get("stop_condition", "current_floor"),
                 )
+                # Hint to LLM: autoplay is a background task, not yet completed
+                if isinstance(result, dict) and result.get("status") == "running":
+                    result["hint"] = (
+                        "自动游玩已在后台启动，正在持续进行中，尚未打完。"
+                        "请告知用户正在帮忙打，可以随时暂停或询问进度。"
+                    )
+                return result
             elif action == "pause":
                 return await service.pause_autoplay()
             elif action == "resume":
