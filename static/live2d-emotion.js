@@ -228,6 +228,9 @@ Live2DManager.prototype._clearMotionTimer = function() {
     if (!this.motionTimer) return false;
 
     console.log(`清除motion定时器，类型: ${this.motionTimer.type || 'unknown'}`);
+    const extraTimeoutIds = Array.isArray(this.motionTimer.extraTimeoutIds)
+        ? this.motionTimer.extraTimeoutIds
+        : [];
 
     if (this.motionTimer.type === 'animation') {
         cancelAnimationFrame(this.motionTimer.id);
@@ -245,6 +248,7 @@ Live2DManager.prototype._clearMotionTimer = function() {
         clearTimeout(this.motionTimer);
     }
 
+    extraTimeoutIds.forEach((timerId) => clearTimeout(timerId));
     this.motionTimer = null;
     return true;
 };
@@ -907,7 +911,7 @@ Live2DManager.prototype.playSimpleMotion = function(emotion) {
             case 'angry':
                 // 轻微摇头
                 this.currentModel.internalModel.coreModel.setParameterValueById('ParamAngleX', 5);
-                setTimeout(() => {
+                const angryPhaseTimer = setTimeout(() => {
                     this.currentModel.internalModel.coreModel.setParameterValueById('ParamAngleX', -5);
                 }, 400);
                 const angryTimer = setTimeout(() => {
@@ -916,7 +920,7 @@ Live2DManager.prototype.playSimpleMotion = function(emotion) {
                     // motion完成后清除motion参数，但保留expression
                     this.clearEmotionEffects();
                 }, 800);
-                this.motionTimer = { type: 'timeout', id: angryTimer };
+                this.motionTimer = { type: 'timeout', id: angryTimer, extraTimeoutIds: [angryPhaseTimer] };
                 break;
             case 'surprised':
                 // 轻微后仰
