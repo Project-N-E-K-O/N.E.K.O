@@ -381,6 +381,22 @@ class GameAgentService:
             self._task_finished = False
 
         sent = await self._client.send_task(task)
+        # The ``send_task`` await is a suspension point — another
+        # coroutine (overwrite / stop / a stale task_finished frame
+        # filtered to fall through to ``_pending``) may have already
+        # written a verdict into ``my_pending.result`` and set the
+        # event during the suspend window. Honor that verdict
+        # *before* deciding to return AGENT_DISCONNECTED, otherwise
+        # we'd contradict whatever the system already recorded for
+        # this slot (e.g. surfacing AGENT_DISCONNECTED to the LLM
+        # while the rest of the system thinks the task was
+        # interrupted).
+        if my_pending.event.is_set():
+            async with self._pending_lock:
+                if self._pending is my_pending:
+                    self._pending = None
+            return my_pending.result or {"status": "ok", "query": task}
+
         if not sent:
             # Roll back the pending slot — the agent never accepted the
             # task, so we shouldn't keep reporting "busy" to subsequent

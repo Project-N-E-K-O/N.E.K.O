@@ -113,6 +113,64 @@ async def test_execute_returns_not_started_when_no_client():
 
 
 @pytest.mark.asyncio
+async def test_dispatch_race_honors_concurrent_verdict_over_disconnected():
+    """If overwrite/stop/etc. wrote a verdict + set the event during
+    the ``await send_task(...)`` suspension, the handler must surface
+    that verdict instead of returning AGENT_DISCONNECTED — the rest
+    of the system already recorded the task as 'interrupted', so a
+    contradicting AGENT_DISCONNECTED tooltip would be wrong."""
+
+    class _SlowSendClient:
+        is_connected = True
+
+        def __init__(self):
+            self.released = asyncio.Event()
+            self.return_value = False  # simulate "send failed"
+
+        async def send_task(self, task):
+            # Suspend long enough for the test to inject a verdict.
+            await self.released.wait()
+            return self.return_value
+
+        async def stop(self):
+            pass
+
+    service, _ = _make_service()
+    service.configure({"task_timeout_seconds": 5.0})
+    slow = _SlowSendClient()
+    service._client = slow
+
+    runner = asyncio.create_task(service.execute_minecraft_task(task="A"))
+
+    # Wait for the handler to claim _pending, then race in: write
+    # an interrupted verdict + set the event, while send_task is
+    # still suspended.
+    for _ in range(50):
+        if service._pending is not None:
+            break
+        await asyncio.sleep(0.01)
+    my_pending = service._pending
+    assert my_pending is not None
+    my_pending.result = {
+        "status": "interrupted",
+        "query": "A",
+        "reason": "Overwritten by a new task.",
+    }
+    my_pending.event.set()
+
+    # Now release send_task to return False ("disconnected"). Without
+    # the fix, the handler would return AGENT_DISCONNECTED and lose
+    # the interrupted verdict.
+    slow.released.set()
+    out = await asyncio.wait_for(runner, timeout=2.0)
+    assert out == {
+        "status": "interrupted",
+        "query": "A",
+        "reason": "Overwritten by a new task.",
+    }
+
+
+@pytest.mark.asyncio
 async def test_execute_returns_disconnected_when_send_fails():
     service, _ = _make_service()
     service._client = _FakeClient(send_task_returns=False)
