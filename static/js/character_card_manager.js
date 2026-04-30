@@ -6261,6 +6261,7 @@ async function handleUploadToWorkshop() {
                 showMessage(window.t ? window.t('steam.noAvailableModelsError') : '没有可用的模型', 'error');
                 return;
             }
+            fullCharaData.live2d = selectedModelName;
         } else if ((currentModelType === 'vrm' || currentModelType === 'mmd') && !selectedModelName) {
             showMessage(window.t ? window.t('steam.noAvailableModelsError') : '没有可用的模型', 'error');
             return;

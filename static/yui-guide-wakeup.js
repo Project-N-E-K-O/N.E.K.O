@@ -89,6 +89,20 @@
         } catch (_) {}
     }
 
+    function revealPreparedTutorialLive2D(reason) {
+        try {
+            if (document && document.body) {
+                document.body.classList.remove('yui-guide-live2d-preparing');
+            }
+            window.dispatchEvent(new CustomEvent('neko:yui-guide:live2d-prepared-revealed', {
+                detail: {
+                    reason: reason || '',
+                    timestamp: Date.now()
+                }
+            }));
+        } catch (_) {}
+    }
+
     function clamp(value, min, max) {
         const number = Number(value);
         if (!Number.isFinite(number)) {
@@ -343,6 +357,12 @@
             this.manager._suspendEyeBlinkOverride = true;
             this.usesTemporaryPoseOverride = this.installTemporaryPoseOverride();
             this.applyPose(this.computePose(0), 1);
+            if (this.manager && this.manager.pixi_app && this.manager.pixi_app.renderer) {
+                try {
+                    this.manager.pixi_app.renderer.render(this.manager.pixi_app.stage);
+                } catch (_) {}
+            }
+            revealPreparedTutorialLive2D('wakeup_initial_pose');
             if (this.ticker && typeof this.ticker.add === 'function') {
                 this.ticker.add(this.tick);
             } else {
@@ -604,6 +624,7 @@
         async run(options) {
             const normalizedOptions = options || {};
             if (isStorageLocationOverlayVisible(this.document)) {
+                revealPreparedTutorialLive2D('storage_overlay_visible');
                 this.record('wakeup_skipped', { reason: 'storage_overlay_visible' });
                 return { result: 'skipped', reason: 'storage_overlay_visible' };
             }
@@ -613,8 +634,8 @@
             const token = ++this.runToken;
             const reducedMotion = shouldReduceMotion();
             const durationMs = reducedMotion
-                ? REDUCED_MOTION_DURATION_MS
-                : (Number.isFinite(normalizedOptions.durationMs) ? normalizedOptions.durationMs : DEFAULT_DURATION_MS);
+                ? normalizeDuration(REDUCED_MOTION_DURATION_MS, DEFAULT_DURATION_MS)
+                : normalizeDuration(normalizedOptions.durationMs, DEFAULT_DURATION_MS);
             const timelineStartedAt = 0;
             let live2dResult = { result: 'pending', reason: '' };
             let live2dSessionPromise = null;
@@ -692,6 +713,7 @@
                                     finish('played', '');
                                 }, Math.max(0, Math.round(durationMs)));
                             } else {
+                                revealPreparedTutorialLive2D(live2dResult.reason || live2dResult.result);
                                 finish(live2dResult.result, live2dResult.reason || '');
                             }
                         }
@@ -701,6 +723,7 @@
                         console.warn('[YuiGuideWakeup] Live2D 苏醒参数覆盖失败:', error);
                         live2dResult = { result: 'fallback', reason: 'live2d_exception' };
                         if (this.runToken === token && !settled) {
+                            revealPreparedTutorialLive2D(live2dResult.reason);
                             finish(live2dResult.result, live2dResult.reason || '');
                         }
                         return live2dResult;

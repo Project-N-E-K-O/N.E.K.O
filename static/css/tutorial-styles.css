@@ -47,6 +47,23 @@
     animation: yui-guide-driver-highlight-sweep 3.8s ease-in-out infinite;
 }
 
+@media (prefers-reduced-motion: reduce) {
+    .driver-highlight,
+    .driver-highlight::after {
+        animation: none !important;
+        transition: none !important;
+        transform: none !important;
+    }
+
+    .driver-highlight::after {
+        left: 0;
+        right: 0;
+        width: auto;
+        opacity: 0.16;
+        background: rgba(125, 225, 255, 0.16);
+    }
+}
+
 /* ============================================
    弹窗容器样式
    ============================================ */

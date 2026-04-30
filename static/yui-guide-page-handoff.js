@@ -234,6 +234,70 @@
         return document.getElementById(p + '-btn-' + buttonId);
     }
 
+    function positionFloatingPopupNow(buttonId, prefix) {
+        var p = prefix || getPrefix();
+        var popup = getPopup(buttonId, p);
+        var popupUi = window.AvatarPopupUI || null;
+        if (!popup || !popupUi || typeof popupUi.positionPopup !== 'function') {
+            return false;
+        }
+
+        try {
+            var pos = popupUi.positionPopup(popup, {
+                buttonId: buttonId,
+                buttonPrefix: p + '-btn-',
+                triggerPrefix: p + '-trigger-icon-',
+                rightMargin: 20,
+                bottomMargin: 60,
+                topMargin: 8,
+                gap: 8,
+                sidePanelWidth: (buttonId === 'settings' || buttonId === 'agent') ? 320 : 0
+            });
+            popup.dataset.opensLeft = String(!!(pos && pos.opensLeft));
+            return true;
+        } catch (error) {
+            console.warn('[YuiGuideHandoff] positionFloatingPopupNow 失败:', buttonId, error);
+            return false;
+        }
+    }
+
+    function waitForPopupPositioned(buttonId, prefix, timeoutMs) {
+        var p = prefix || getPrefix();
+        var popup = getPopup(buttonId, p);
+        if (!popup) {
+            return Promise.resolve(false);
+        }
+
+        if (
+            popup.style.display === 'flex'
+            && !popup.classList.contains('is-positioning')
+            && typeof popup.dataset.opensLeft === 'string'
+            && popup.dataset.opensLeft !== ''
+        ) {
+            positionFloatingPopupNow(buttonId, p);
+            return Promise.resolve(true);
+        }
+
+        return waitFor(function () {
+            if (
+                popup.style.display === 'flex'
+                && !popup.classList.contains('is-positioning')
+                && typeof popup.dataset.opensLeft === 'string'
+                && popup.dataset.opensLeft !== ''
+            ) {
+                return true;
+            }
+            return null;
+        }, Number.isFinite(timeoutMs) ? timeoutMs : POPUP_OPEN_ANIMATION_MS + 900).then(function (positioned) {
+            if (positioned) {
+                positionFloatingPopupNow(buttonId, p);
+                return true;
+            }
+
+            return positionFloatingPopupNow(buttonId, p);
+        });
+    }
+
     function getPluginDashboardExpectedOrigin() {
         if (window.YUI_GUIDE_PLUGIN_DASHBOARD_ORIGIN) {
             try {
@@ -559,6 +623,12 @@
         });
     }
 
+    function delay(ms) {
+        return new Promise(function (resolve) {
+            setTimeout(resolve, Math.max(0, Number.isFinite(ms) ? ms : 0));
+        });
+    }
+
     function getAgentToggleElement(toggleId) {
         var prefix = getPrefix();
         return document.getElementById(prefix + '-toggle-' + toggleId);
@@ -580,6 +650,68 @@
     function getAgentSidePanelAction(toggleId, actionId) {
         if (!toggleId || !actionId) return null;
         return document.getElementById('neko-sidepanel-action-' + toggleId + '-' + actionId);
+    }
+
+    function waitForStableElementRect(element, timeoutMs) {
+        if (!element || typeof element.getBoundingClientRect !== 'function') {
+            return Promise.resolve(null);
+        }
+
+        var timeout = Number.isFinite(timeoutMs) ? timeoutMs : 700;
+        var startedAt = Date.now();
+        var lastRect = null;
+        var stableCount = 0;
+
+        return new Promise(function (resolve) {
+            function tick() {
+                var rect = element.getBoundingClientRect();
+                if (!rect || rect.width <= 0 || rect.height <= 0) {
+                    if ((Date.now() - startedAt) >= timeout) {
+                        resolve(null);
+                        return;
+                    }
+                    setTimeout(tick, 80);
+                    return;
+                }
+
+                if (lastRect) {
+                    var delta = Math.max(
+                        Math.abs(rect.left - lastRect.left),
+                        Math.abs(rect.top - lastRect.top),
+                        Math.abs(rect.width - lastRect.width),
+                        Math.abs(rect.height - lastRect.height)
+                    );
+                    stableCount = delta <= 1 ? stableCount + 1 : 0;
+                }
+                lastRect = {
+                    left: rect.left,
+                    top: rect.top,
+                    width: rect.width,
+                    height: rect.height
+                };
+
+                if (stableCount >= 2 || (Date.now() - startedAt) >= timeout) {
+                    resolve(element);
+                    return;
+                }
+
+                setTimeout(tick, 80);
+            }
+
+            tick();
+        });
+    }
+
+    function waitForAgentSidePanelLayoutStable(toggleId, timeoutMs) {
+        return waitFor(function () {
+            var panel = getAgentSidePanel(toggleId);
+            return panel && isSidePanelVisible(panel) ? panel : null;
+        }, Number.isFinite(timeoutMs) ? Math.max(260, timeoutMs) : 900).then(function (panel) {
+            if (!panel) return null;
+            return delay(380).then(function () {
+                return waitForStableElementRect(panel, Number.isFinite(timeoutMs) ? timeoutMs : 700);
+            });
+        });
     }
 
     function getOpenedWindow(fullName) {
@@ -725,7 +857,7 @@
         }
 
         if (popup.style.display === 'flex') {
-            return Promise.resolve(true);
+            return waitForPopupPositioned('settings', prefix);
         }
 
         dispatchSyntheticPress(button);
@@ -737,7 +869,8 @@
         return waitFor(function () {
             return popup.style.display === 'flex' ? true : null;
         }, POPUP_OPEN_ANIMATION_MS + 500).then(function (opened) {
-            return !!opened;
+            if (!opened) return false;
+            return waitForPopupPositioned('settings', prefix);
         });
     }
 
@@ -783,7 +916,7 @@
         }
 
         if (popup.style.display === 'flex') {
-            return Promise.resolve(true);
+            return waitForPopupPositioned('agent', prefix);
         }
 
         dispatchSyntheticPress(button);
@@ -794,7 +927,8 @@
         return waitFor(function () {
             return popup.style.display === 'flex' ? true : null;
         }, POPUP_OPEN_ANIMATION_MS + 500).then(function (opened) {
-            return !!opened;
+            if (!opened) return false;
+            return waitForPopupPositioned('agent', prefix);
         });
     }
 
@@ -1015,15 +1149,20 @@
         return ensureAgentSidePanelVisible(toggleId).then(function (visible) {
             if (!visible) return null;
 
-            return waitFor(function () {
-                var sidePanel = getAgentSidePanel(toggleId);
-                var button = getAgentSidePanelAction(toggleId, actionId);
-                if (!sidePanel || !button || !isSidePanelVisible(sidePanel)) {
-                    return null;
-                }
-                return button.offsetParent !== null ? button : null;
-            }, normalizedTimeoutMs).then(function (button) {
-                return button || null;
+            return waitForAgentSidePanelLayoutStable(toggleId, Math.min(1000, normalizedTimeoutMs)).then(function () {
+                return waitFor(function () {
+                    var sidePanel = getAgentSidePanel(toggleId);
+                    var button = getAgentSidePanelAction(toggleId, actionId);
+                    if (!sidePanel || !button || !isSidePanelVisible(sidePanel)) {
+                        return null;
+                    }
+                    return button.offsetParent !== null ? button : null;
+                }, normalizedTimeoutMs);
+            }).then(function (button) {
+                if (!button) return null;
+                return waitForStableElementRect(button, Math.min(760, normalizedTimeoutMs)).then(function () {
+                    return button || null;
+                });
             });
         });
     }
@@ -1033,7 +1172,7 @@
 
         return ensureAgentSidePanelActionVisible(toggleId, actionId).then(function (button) {
             if (!button || typeof button.click !== 'function') {
-                console.warn('[YuiGuideHandoff] clickAgentSidePanelAction: action 不存在:', toggleId, actionId);
+                console.warn('[YuiGuideHandoff] clickAgentSidePanelAction: action 不存在', toggleId, actionId);
                 return false;
             }
 

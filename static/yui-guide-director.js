@@ -725,10 +725,15 @@
             return 0;
         }
 
-        const durationMs = units.reduce((total, unit) => {
-            return total + (/[，。！？,.!?、~～—-]/.test(unit) ? 118 : 42);
-        }, 220);
-        return clamp(Math.round(durationMs), 900, 12000);
+        return clamp(Math.round(units.length * 40), 720, 9600);
+    }
+
+    function resolveGuideChatStreamSyncDurationMs(durationMs) {
+        if (!Number.isFinite(durationMs) || durationMs <= 0) {
+            return 0;
+        }
+
+        return clamp(Math.round(durationMs * 0.78), 720, 24000);
     }
 
     async function resumeKnownAudioContexts() {
@@ -2714,6 +2719,27 @@
             return !!(sidePanel && sidePanel.style.display === 'flex' && sidePanel.style.opacity !== '0');
         }
 
+        async waitForAgentSidePanelLayoutStable(toggleId, timeoutMs) {
+            const sidePanel = await this.waitForElement(() => {
+                const panel = this.getAgentSidePanel(toggleId);
+                return panel && this.isAgentSidePanelVisible(toggleId) ? panel : null;
+            }, Number.isFinite(timeoutMs) ? Math.max(260, timeoutMs) : 900);
+            if (!sidePanel) {
+                return null;
+            }
+
+            // AvatarPopupUI may run an edge-overlap self-correction after the expand
+            // animation starts. Wait through that correction window before sampling.
+            if (!(await this.waitForSceneDelay(380))) {
+                return null;
+            }
+
+            return this.waitForStableElementRect(
+                sidePanel,
+                Number.isFinite(timeoutMs) ? timeoutMs : 560
+            );
+        }
+
         collapseAgentSidePanel(toggleId) {
             const sidePanel = this.getAgentSidePanel(toggleId);
             if (!sidePanel) {
@@ -4229,6 +4255,59 @@
             return !!(popup && popup.style.display === 'flex' && popup.style.opacity !== '0');
         }
 
+        positionManagedPanelNow(panelId) {
+            const popup = this.getManagedPanelElement(panelId);
+            const popupUi = window.AvatarPopupUI || null;
+            const prefix = this.resolveModelPrefix();
+            if (!popup || !popupUi || typeof popupUi.positionPopup !== 'function') {
+                return false;
+            }
+
+            try {
+                const pos = popupUi.positionPopup(popup, {
+                    buttonId: panelId,
+                    buttonPrefix: prefix + '-btn-',
+                    triggerPrefix: prefix + '-trigger-icon-',
+                    rightMargin: 20,
+                    bottomMargin: 60,
+                    topMargin: 8,
+                    gap: 8,
+                    sidePanelWidth: (panelId === 'settings' || panelId === 'agent') ? 320 : 0
+                });
+                popup.dataset.opensLeft = String(!!(pos && pos.opensLeft));
+                return true;
+            } catch (error) {
+                console.warn('[YuiGuide] positionManagedPanelNow 失败:', panelId, error);
+                return false;
+            }
+        }
+
+        async waitForManagedPanelPositioned(panelId, timeoutMs) {
+            const popup = this.getManagedPanelElement(panelId);
+            if (!popup) {
+                return false;
+            }
+
+            const positioned = await this.waitForElement(() => {
+                if (
+                    popup.style.display === 'flex'
+                    && !popup.classList.contains('is-positioning')
+                    && typeof popup.dataset.opensLeft === 'string'
+                    && popup.dataset.opensLeft !== ''
+                ) {
+                    return popup;
+                }
+                return null;
+            }, Number.isFinite(timeoutMs) ? timeoutMs : 1100);
+
+            if (positioned) {
+                this.positionManagedPanelNow(panelId);
+                return true;
+            }
+
+            return this.positionManagedPanelNow(panelId);
+        }
+
         forceHideManagedPanel(panelId) {
             const popup = this.getManagedPanelElement(panelId);
             if (!popup) {
@@ -4254,7 +4333,7 @@
         async setFallbackFloatingPopupVisible(buttonId, visible) {
             const desiredVisible = !!visible;
             if (this.isManagedPanelVisible(buttonId) === desiredVisible) {
-                return desiredVisible;
+                return !desiredVisible || await this.waitForManagedPanelPositioned(buttonId);
             }
 
             const button = this.getFallbackFloatingButton(buttonId);
@@ -4270,7 +4349,11 @@
                 return isVisible === desiredVisible ? (popup || button) : null;
             }, 1200);
 
-            return !!result && this.isManagedPanelVisible(buttonId) === desiredVisible;
+            if (!(!!result && this.isManagedPanelVisible(buttonId) === desiredVisible)) {
+                return false;
+            }
+
+            return !desiredVisible || await this.waitForManagedPanelPositioned(buttonId);
         }
 
         async openAgentPanel() {
@@ -4371,6 +4454,8 @@
                 return null;
             }
 
+            await this.waitForAgentSidePanelLayoutStable(toggleId, 620);
+
             return this.waitForVisibleElement(() => {
                 const button = this.getAgentSidePanelButton(toggleId, actionId);
                 if (!button || !this.isAgentSidePanelVisible(toggleId)) {
@@ -4385,7 +4470,11 @@
             const api = this.getHomeInteractionApi();
             if (api && typeof api.ensureAgentSidePanelActionVisible === 'function') {
                 try {
-                    return await api.ensureAgentSidePanelActionVisible(toggleId, actionId, normalizedTimeoutMs);
+                    const actionElement = await api.ensureAgentSidePanelActionVisible(toggleId, actionId, normalizedTimeoutMs);
+                    if (actionElement) {
+                        await this.waitForAgentSidePanelLayoutStable(toggleId, 620);
+                    }
+                    return actionElement;
                 } catch (error) {
                     console.warn('[YuiGuide] ensureAgentSidePanelActionVisible 调用失败，改用本地兜底:', error);
                 }
@@ -5001,6 +5090,67 @@
             return false;
         }
 
+        isCursorAlignedWithElement(element, tolerancePx) {
+            const cursorPosition = this.overlay && typeof this.overlay.getCursorPosition === 'function'
+                ? this.overlay.getCursorPosition()
+                : null;
+            const rect = this.getElementRect(element);
+            if (!cursorPosition || !rect) {
+                return false;
+            }
+
+            const tolerance = Number.isFinite(tolerancePx) ? Math.max(0, tolerancePx) : 6;
+            return cursorPosition.x >= rect.left - tolerance
+                && cursorPosition.x <= rect.right + tolerance
+                && cursorPosition.y >= rect.top - tolerance
+                && cursorPosition.y <= rect.bottom + tolerance;
+        }
+
+        async realignCursorToAgentSidePanelAction(toggleId, actionId, durationMs) {
+            const stablePanel = await this.waitForAgentSidePanelLayoutStable(toggleId, 980);
+            if (!stablePanel || this.isStopping()) {
+                return false;
+            }
+
+            const button = await this.waitForVisibleElement(() => {
+                const actionButton = this.getAgentSidePanelButton(toggleId, actionId);
+                if (!actionButton || !this.isAgentSidePanelVisible(toggleId)) {
+                    return null;
+                }
+                return this.getElementRect(actionButton) ? actionButton : null;
+            }, 900);
+            if (!button || this.isStopping()) {
+                return false;
+            }
+
+            this.clearVirtualSpotlight('plugin-management-entry');
+            this.setSpotlightGeometryHint(button, {
+                padding: DEFAULT_SPOTLIGHT_PADDING + 2,
+                radius: 18
+            });
+            this.replaceRetainedExtraSpotlight(
+                (candidate) => candidate
+                    && (
+                        candidate === button
+                        || (
+                            typeof candidate.getAttribute === 'function'
+                            && candidate.getAttribute('data-yui-guide-virtual-spotlight') === 'plugin-management-entry'
+                        )
+                    ),
+                button
+            );
+            this.overlay.activateSpotlight(button);
+
+            if (this.isCursorAlignedWithElement(button, 5)) {
+                return true;
+            }
+
+            return this.moveCursorToElement(
+                button,
+                Number.isFinite(durationMs) ? durationMs : 360
+            );
+        }
+
         async clickCursorAndWait(holdMs) {
             const visibleMs = clamp(
                 Math.round(Number.isFinite(holdMs) ? holdMs : DEFAULT_CURSOR_CLICK_VISIBLE_MS),
@@ -5349,18 +5499,12 @@
                 return null;
             }
 
-            const managementButtonRect = this.getElementRect(managementButton);
-            const managementSpotlightTarget = managementButtonRect
-                ? this.createVirtualSpotlight('plugin-management-entry', {
-                    left: Math.max(0, managementButtonRect.left - 14),
-                    top: managementButtonRect.top,
-                    right: Math.min(window.innerWidth, managementButtonRect.right + 14),
-                    bottom: managementButtonRect.bottom
-                }, {
-                    padding: DEFAULT_SPOTLIGHT_PADDING,
-                    radius: 18
-                })
-                : managementButton;
+            this.clearVirtualSpotlight('plugin-management-entry');
+            this.setSpotlightGeometryHint(managementButton, {
+                padding: DEFAULT_SPOTLIGHT_PADDING + 2,
+                radius: 18
+            });
+            const managementSpotlightTarget = managementButton;
 
             this.overlay.activateSpotlight(managementSpotlightTarget);
             if (!(await this.waitForSceneDelay(scaleSceneMs(60, 40, 180))) || guardFailed()) {
@@ -5379,6 +5523,15 @@
             }
 
             if (!(await this.waitForSceneDelay(scaleSceneMs(90, 40, 220))) || guardFailed()) {
+                return null;
+            }
+
+            const realignedToManagementButton = await this.realignCursorToAgentSidePanelAction(
+                'agent-user-plugin',
+                'management-panel',
+                scaleSceneMs(420, 180, 760)
+            );
+            if (!realignedToManagementButton || guardFailed()) {
                 return null;
             }
 
@@ -5622,18 +5775,12 @@
                 if (!managementMovementTarget || guardFailed()) {
                     return null;
                 }
-                const managementButtonRect = this.getElementRect(managementButton);
-                const managementSpotlightTarget = managementButtonRect
-                    ? this.createVirtualSpotlight('plugin-management-entry', {
-                        left: Math.max(0, managementButtonRect.left - 14),
-                        top: managementButtonRect.top,
-                        right: Math.min(window.innerWidth, managementButtonRect.right + 14),
-                        bottom: managementButtonRect.bottom
-                    }, {
-                        padding: DEFAULT_SPOTLIGHT_PADDING,
-                        radius: 18
-                    })
-                    : managementButton;
+                this.clearVirtualSpotlight('plugin-management-entry');
+                this.setSpotlightGeometryHint(managementButton, {
+                    padding: DEFAULT_SPOTLIGHT_PADDING + 2,
+                    radius: 18
+                });
+                const managementSpotlightTarget = managementButton;
 
                 // 11-13. 高亮管理面板 -> 移动到高亮中心点 -> 点击并同步打开真实页面
                 this.addRetainedExtraSpotlight(managementSpotlightTarget);
@@ -5652,6 +5799,14 @@
                 }
 
                 if (!(await this.waitForSceneDelay(scaleSceneMs(90, 40, 220)))) {
+                    return null;
+                }
+                const realignedToManagementButton = await this.realignCursorToAgentSidePanelAction(
+                    'agent-user-plugin',
+                    'management-panel',
+                    scaleSceneMs(420, 180, 760)
+                );
+                if (!realignedToManagementButton || guardFailed()) {
                     return null;
                 }
                 await this.clickCursorAndWait(scaleSceneMs(180, 90, 420));
@@ -6248,11 +6403,25 @@
                 TAKEOVER_SETTINGS_DETAIL_TEXT_PART_2
             );
             const detailVoiceKey = 'takeover_settings_peek_detail';
+            const detailVoiceDurationMs = this.getGuideVoiceDurationMs(detailVoiceKey, resolveGuideLocale())
+                || estimateSpeechDurationMs(detailText || '');
+            const detailCueConfig = getGuideAudioCueConfig(detailVoiceKey);
+            const secondLineCue = detailCueConfig && detailCueConfig.showSecondLine
+                && Number.isFinite(detailCueConfig.showSecondLine.at)
+                ? clamp(detailCueConfig.showSecondLine.at, 0.1, 0.9)
+                : 0.54;
+            const detailPart1StreamDurationMs = detailTextPart2
+                ? Math.max(900, Math.round(detailVoiceDurationMs * secondLineCue))
+                : detailVoiceDurationMs;
+            const detailPart2StreamDurationMs = detailTextPart2
+                ? Math.max(900, Math.round(detailVoiceDurationMs * (1 - secondLineCue)))
+                : 0;
             this.appendGuideChatMessage(detailTextPart1 || detailText, {
                 textKey: detailTextPart1
                     ? TAKEOVER_SETTINGS_DETAIL_TEXT_PART_1_KEY
                     : TAKEOVER_SETTINGS_DETAIL_TEXT_KEY,
-                voiceKey: detailVoiceKey
+                voiceKey: detailVoiceKey,
+                streamDurationMs: detailPart1StreamDurationMs
             });
 
             let settingsPeekHighlightsCleared = false;
@@ -6271,7 +6440,8 @@
                 settingsDetailSecondLineDisplayed = true;
                 this.appendGuideChatMessage(detailTextPart2, {
                     textKey: TAKEOVER_SETTINGS_DETAIL_TEXT_PART_2_KEY,
-                    voiceKey: detailVoiceKey
+                    voiceKey: detailVoiceKey,
+                    streamDurationMs: detailPart2StreamDurationMs
                 });
             };
             const clearSettingsPeekHighlights = () => {
@@ -6690,6 +6860,19 @@
         }
 
         resolveGuideChatStreamDurationMs(content, options) {
+            const normalizedOptions = options || {};
+            if (Number.isFinite(normalizedOptions.streamDurationMs)) {
+                return resolveGuideChatStreamSyncDurationMs(normalizedOptions.streamDurationMs);
+            }
+
+            const voiceDurationMs = this.getGuideVoiceDurationMs(
+                normalizedOptions.voiceKey,
+                resolveGuideLocale()
+            );
+            if (voiceDurationMs > 0) {
+                return resolveGuideChatStreamSyncDurationMs(voiceDurationMs);
+            }
+
             return estimateGuideChatStreamDurationMs(content);
         }
 
@@ -6719,7 +6902,7 @@
             let waitingForResume = false;
             const pauseWithScene = !(options && options.streamPauseWithScene === false);
             const allowDuringAngryExit = !!(options && options.streamAllowDuringAngryExit);
-            const tickMs = clamp(Math.round(durationMs / Math.max(total, 1)), 56, 150);
+            const tickMs = clamp(Math.round(durationMs / Math.max(total, 1)), 28, 90);
             const step = () => {
                 if (
                     this.destroyed
@@ -6989,6 +7172,9 @@
 
         async runWakeupPrelude() {
             if (this.page !== 'home' || this.isStopping() || !this.wakeup || typeof this.wakeup.run !== 'function') {
+                if (typeof document !== 'undefined' && document.body) {
+                    document.body.classList.remove('yui-guide-live2d-preparing');
+                }
                 return;
             }
 

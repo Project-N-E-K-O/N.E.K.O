@@ -38,6 +38,13 @@ body.yui-guide-home-driver-hidden .driver-highlight {
   pointer-events: none !important;
 }
 
+body.yui-guide-live2d-preparing #live2d-container,
+body.yui-guide-live2d-preparing #live2d-canvas {
+  opacity: 0 !important;
+  transition: none !important;
+  pointer-events: none !important;
+}
+
 .yui-guide-stage {
   position: relative;
   width: 100%;
@@ -972,14 +979,6 @@ body.yui-taking-over #react-chat-window-root .composer-input:focus-visible {
     transition: none !important;
   }
 
-  .yui-guide-bubble,
-  .yui-guide-preview,
-  .yui-guide-preview.is-visible,
-  .yui-guide-cursor,
-  .yui-guide-cursor-shell,
-  .yui-guide-spotlight-frame {
-    transform: none !important;
-  }
 }
 
 @media (max-width: 768px) {

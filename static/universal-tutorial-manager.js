@@ -68,6 +68,8 @@ class UniversalTutorialManager {
         this._tutorialEndHandled = false;
         this._tutorialAvatarOverride = null;
         this._tutorialAvatarOverridePromise = null;
+        this._tutorialViewportPlacementResizeHandler = null;
+        this._tutorialViewportPlacementResizeTimer = null;
         this._isDestroyed = false;
 
         // 刷新延迟常量
@@ -612,33 +614,40 @@ class UniversalTutorialManager {
     requestTutorialDestroy(reason = 'destroy') {
         this.setTutorialEndReason(reason);
 
-        const yuiGuidePageKey = this.isYuiGuideEnabledForPage()
-            ? this.getYuiGuidePageKey()
-            : '';
-        if (yuiGuidePageKey && yuiGuidePageKey !== 'home') {
-            const channel = window.appInterpage && window.appInterpage.nekoBroadcastChannel;
-            if (channel && typeof channel.postMessage === 'function') {
-                try {
-                    channel.postMessage({
-                        action: 'yui_guide_request_termination',
-                        sourcePage: yuiGuidePageKey,
-                        targetPage: 'home',
-                        reason: reason || 'skip',
-                        tutorialReason: reason || 'skip',
-                        timestamp: Date.now()
-                    });
-                } catch (error) {
-                    console.warn('[Tutorial] 广播 Yui Guide 跨页终止请求失败:', error);
-                }
-            }
-        }
-
         if (this.driver) {
             this.driver.destroy();
             return;
         }
 
         this.onTutorialEnd();
+    }
+
+    broadcastYuiGuideTerminationRequest(endMeta = {}) {
+        const yuiGuidePageKey = this.isYuiGuideEnabledForPage()
+            ? this.getYuiGuidePageKey()
+            : '';
+        if (!yuiGuidePageKey || yuiGuidePageKey === 'home') {
+            return;
+        }
+
+        const rawReason = this.normalizeTutorialEndRawReason(
+            endMeta.rawReason || endMeta.reason || 'destroy'
+        );
+        const channel = window.appInterpage && window.appInterpage.nekoBroadcastChannel;
+        if (channel && typeof channel.postMessage === 'function') {
+            try {
+                channel.postMessage({
+                    action: 'yui_guide_request_termination',
+                    sourcePage: yuiGuidePageKey,
+                    targetPage: 'home',
+                    reason: rawReason,
+                    tutorialReason: rawReason,
+                    timestamp: Date.now()
+                });
+            } catch (error) {
+                console.warn('[Tutorial] 广播 Yui Guide 跨页终止请求失败:', error);
+            }
+        }
     }
 
     /**
@@ -985,6 +994,7 @@ class UniversalTutorialManager {
         await window.live2dManager.loadModel(modelPath, {
             isMobile: window.innerWidth <= 768
         });
+        await this.applyTutorialLive2dViewportPlacement();
         if (window.LanLan1) {
             window.LanLan1.live2dModel = window.live2dManager.getCurrentModel();
             window.LanLan1.currentModel = window.live2dManager.getCurrentModel();
@@ -1005,6 +1015,9 @@ class UniversalTutorialManager {
                 reloadOptions.skipIdleRestore = true;
             }
             await window.handleModelReload(lanlanName, reloadOptions);
+            if (useTemporaryConfig) {
+                await this.applyTutorialLive2dViewportPlacement();
+            }
             return;
         }
         if (useTemporaryConfig) {
@@ -1015,6 +1028,236 @@ class UniversalTutorialManager {
         if (typeof window.showCurrentModel === 'function') {
             await window.showCurrentModel();
         }
+    }
+
+    setTutorialLive2dPreparing(preparing) {
+        if (typeof document === 'undefined' || !document.body) {
+            return;
+        }
+        document.body.classList.toggle('yui-guide-live2d-preparing', preparing === true);
+    }
+
+    revealTutorialLive2dPrepared() {
+        this.setTutorialLive2dPreparing(false);
+    }
+
+    getTutorialLive2dScreenBounds(manager, model) {
+        if (manager && typeof manager.getModelScreenBounds === 'function') {
+            const bounds = manager.getModelScreenBounds();
+            if (bounds) {
+                return bounds;
+            }
+        }
+
+        if (!model || typeof model.getBounds !== 'function') {
+            return null;
+        }
+
+        let rawBounds = null;
+        try {
+            rawBounds = model.getBounds();
+        } catch (error) {
+            console.warn('[Tutorial] 获取 YUI 模型边界失败:', error);
+            return null;
+        }
+
+        if (!rawBounds) {
+            return null;
+        }
+
+        const left = Number(rawBounds.left);
+        const right = Number(rawBounds.right);
+        const top = Number(rawBounds.top);
+        const bottom = Number(rawBounds.bottom);
+        const width = right - left;
+        const height = bottom - top;
+        if (
+            !Number.isFinite(left) || !Number.isFinite(right) ||
+            !Number.isFinite(top) || !Number.isFinite(bottom) ||
+            !Number.isFinite(width) || !Number.isFinite(height) ||
+            width <= 0 || height <= 0
+        ) {
+            return null;
+        }
+
+        return {
+            left,
+            right,
+            top,
+            bottom,
+            width,
+            height,
+            centerX: left + width / 2,
+            centerY: top + height / 2
+        };
+    }
+
+    async waitForTutorialLive2dLayoutFrame(manager) {
+        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        if (manager && manager.pixi_app && manager.pixi_app.renderer && typeof manager.pixi_app.renderer.render === 'function') {
+            try {
+                manager.pixi_app.renderer.render(manager.pixi_app.stage);
+            } catch (_) {}
+        }
+    }
+
+    async applyTutorialLive2dViewportPlacement() {
+        const manager = window.live2dManager || null;
+        const model = manager && (typeof manager.getCurrentModel === 'function'
+            ? manager.getCurrentModel()
+            : manager.currentModel);
+        const app = manager && manager.pixi_app;
+        if (!manager || !model || !app || !app.renderer) {
+            return false;
+        }
+
+        const screen = app.renderer.screen || {};
+        const viewportWidth = Math.max(1, window.innerWidth || Number(screen.width) || 1);
+        const viewportHeight = Math.max(1, window.innerHeight || Number(screen.height) || 1);
+        const marginX = Math.max(20, Math.min(48, viewportWidth * 0.035));
+        const marginTop = Math.max(18, Math.min(42, viewportHeight * 0.04));
+        const marginBottom = Math.max(28, Math.min(72, viewportHeight * 0.07));
+        const targetCenterXRatio = viewportWidth < 900 ? 0.56 : 0.63;
+        const targetCenterX = viewportWidth * targetCenterXRatio;
+        const targetCenterY = viewportHeight * (viewportHeight < 720 ? 0.5 : 0.52);
+        const horizontalFitWidth = Math.max(
+            1,
+            2 * Math.min(
+                targetCenterX - marginX,
+                viewportWidth - marginX - targetCenterX
+            )
+        );
+        const maxVisibleWidth = Math.min(viewportWidth - marginX * 2, horizontalFitWidth);
+        const maxVisibleHeight = viewportHeight - marginTop - marginBottom;
+
+        await this.waitForTutorialLive2dLayoutFrame(manager);
+        let bounds = this.getTutorialLive2dScreenBounds(manager, model);
+        if (!bounds) {
+            return false;
+        }
+
+        const currentScaleX = Math.abs(Number(model.scale && model.scale.x) || 1);
+        const currentScaleY = Math.abs(Number(model.scale && model.scale.y) || currentScaleX || 1);
+        const currentScale = Math.max(0.0001, Math.max(currentScaleX, currentScaleY));
+        const naturalWidth = bounds.width / currentScale;
+        const naturalHeight = bounds.height / currentScale;
+        if (
+            Number.isFinite(naturalWidth) && Number.isFinite(naturalHeight) &&
+            naturalWidth > 0 && naturalHeight > 0
+        ) {
+            const targetScale = Math.max(
+                0.005,
+                Math.min(
+                    maxVisibleWidth / naturalWidth,
+                    maxVisibleHeight / naturalHeight,
+                    0.5
+                )
+            );
+            model.scale.set(targetScale, targetScale);
+            await this.waitForTutorialLive2dLayoutFrame(manager);
+            bounds = this.getTutorialLive2dScreenBounds(manager, model) || bounds;
+        }
+
+        const resolveSafeCenter = (rect) => {
+            const rectWidth = rect && Number.isFinite(rect.width) ? rect.width : 0;
+            const rectHeight = rect && Number.isFinite(rect.height) ? rect.height : 0;
+            const minCenterX = marginX + rectWidth / 2;
+            const maxCenterX = viewportWidth - marginX - rectWidth / 2;
+            const minCenterY = marginTop + rectHeight / 2;
+            const maxCenterY = viewportHeight - marginBottom - rectHeight / 2;
+            const safeCenterX = minCenterX <= maxCenterX
+                ? Math.max(minCenterX, Math.min(targetCenterX, maxCenterX))
+                : viewportWidth / 2;
+            const safeCenterY = minCenterY <= maxCenterY
+                ? Math.max(minCenterY, Math.min(targetCenterY, maxCenterY))
+                : viewportHeight / 2;
+            return {
+                x: safeCenterX,
+                y: safeCenterY
+            };
+        };
+
+        let safeCenter = resolveSafeCenter(bounds);
+        model.x += safeCenter.x - bounds.centerX;
+        model.y += safeCenter.y - bounds.centerY;
+        await this.waitForTutorialLive2dLayoutFrame(manager);
+        bounds = this.getTutorialLive2dScreenBounds(manager, model) || bounds;
+
+        const overflowX = Math.max(0, marginX - bounds.left, bounds.right - (viewportWidth - marginX));
+        const overflowY = Math.max(0, marginTop - bounds.top, bounds.bottom - (viewportHeight - marginBottom));
+        if ((overflowX > 0 || overflowY > 0) && bounds.width > 0 && bounds.height > 0) {
+            const fitRatio = Math.max(
+                0.005,
+                Math.min(
+                    1,
+                    (maxVisibleWidth / bounds.width) * 0.98,
+                    (maxVisibleHeight / bounds.height) * 0.98
+                )
+            );
+            if (fitRatio < 0.999) {
+                const nextScaleX = Math.max(0.005, Math.abs(model.scale.x) * fitRatio);
+                const nextScaleY = Math.max(0.005, Math.abs(model.scale.y) * fitRatio);
+                model.scale.set(nextScaleX, nextScaleY);
+                await this.waitForTutorialLive2dLayoutFrame(manager);
+                bounds = this.getTutorialLive2dScreenBounds(manager, model) || bounds;
+                safeCenter = resolveSafeCenter(bounds);
+                model.x += safeCenter.x - bounds.centerX;
+                model.y += safeCenter.y - bounds.centerY;
+            }
+        }
+
+        await this.waitForTutorialLive2dLayoutFrame(manager);
+        bounds = this.getTutorialLive2dScreenBounds(manager, model) || bounds;
+        safeCenter = resolveSafeCenter(bounds);
+        model.x += safeCenter.x - bounds.centerX;
+        model.y += safeCenter.y - bounds.centerY;
+
+        this.ensureTutorialLive2dViewportPlacementWatcher();
+        console.log('[Tutorial] YUI 模型已按当前视口放置:', {
+            viewportWidth,
+            viewportHeight,
+            targetCenterX: Math.round(targetCenterX),
+            targetCenterY: Math.round(targetCenterY),
+            scaleX: model.scale && Number(model.scale.x).toFixed(4),
+            scaleY: model.scale && Number(model.scale.y).toFixed(4)
+        });
+        return true;
+    }
+
+    ensureTutorialLive2dViewportPlacementWatcher() {
+        if (this._tutorialViewportPlacementResizeHandler) {
+            return;
+        }
+
+        this._tutorialViewportPlacementResizeHandler = () => {
+            if (this._tutorialViewportPlacementResizeTimer) {
+                clearTimeout(this._tutorialViewportPlacementResizeTimer);
+            }
+            this._tutorialViewportPlacementResizeTimer = setTimeout(() => {
+                this._tutorialViewportPlacementResizeTimer = null;
+                if (!this._tutorialAvatarOverride || this._isDestroyed) {
+                    return;
+                }
+                this.applyTutorialLive2dViewportPlacement().catch(error => {
+                    console.warn('[Tutorial] resize 后重排 YUI 模型失败:', error);
+                });
+            }, 120);
+        };
+        window.addEventListener('resize', this._tutorialViewportPlacementResizeHandler);
+        window.addEventListener('electron-display-changed', this._tutorialViewportPlacementResizeHandler);
+    }
+
+    clearTutorialLive2dViewportPlacementWatcher() {
+        if (this._tutorialViewportPlacementResizeTimer) {
+            clearTimeout(this._tutorialViewportPlacementResizeTimer);
+            this._tutorialViewportPlacementResizeTimer = null;
+        }
+        if (!this._tutorialViewportPlacementResizeHandler) {
+            return;
+        }
+        window.removeEventListener('resize', this._tutorialViewportPlacementResizeHandler);
+        window.removeEventListener('electron-display-changed', this._tutorialViewportPlacementResizeHandler);
+        this._tutorialViewportPlacementResizeHandler = null;
     }
 
     beginTutorialAvatarOverride() {
@@ -1056,6 +1299,7 @@ class UniversalTutorialManager {
             this._tutorialAvatarOverride.currentName = currentName;
             this._tutorialAvatarOverride.snapshotPayload = snapshotPayload;
 
+            this.setTutorialLive2dPreparing(true);
             await this.reloadTutorialModel(currentName, tutorialModelPayload, { temporary: true });
             await this.sleep(350);
             const tutorialAvatar = await this.captureTutorialChatAvatarPreview();
@@ -1067,6 +1311,7 @@ class UniversalTutorialManager {
             });
             console.log('[Tutorial] 新手教程期间已临时切换到 yui_default 模型（未写入用户配置）:', tutorialModelPayload);
         })().catch((error) => {
+            this.revealTutorialLive2dPrepared();
             console.warn('[Tutorial] 临时切换 yui_default 模型失败:', error);
         });
 
@@ -1100,6 +1345,8 @@ class UniversalTutorialManager {
 
         const restorePromise = Promise.resolve().then(async () => {
             try {
+                this.clearTutorialLive2dViewportPlacementWatcher();
+                this.revealTutorialLive2dPrepared();
                 this.applyTutorialChatIdentityOverride({ active: false });
                 if (!currentName) {
                     return;
@@ -1115,6 +1362,7 @@ class UniversalTutorialManager {
                     } catch (_) {}
                 }
             } finally {
+                this.clearTutorialLive2dViewportPlacementWatcher();
                 if (this._tutorialAvatarOverride === override) {
                     this._tutorialAvatarOverride = null;
                 }
@@ -4166,6 +4414,7 @@ class UniversalTutorialManager {
         const endMeta = this.resolveTutorialEndMeta(finalSteps);
 
         this.notifyYuiGuideStepLeave(finalStepConfig, finalStepIndex, 'tutorial-end');
+        this.broadcastYuiGuideTerminationRequest(endMeta);
         this.notifyYuiGuideTutorialEnd(endMeta.rawReason);
         const completedSource = this.currentTutorialStartSource;
 
@@ -4202,6 +4451,7 @@ class UniversalTutorialManager {
      */
     _teardownTutorialUI() {
         this._isDestroyed = true;
+        this.revealTutorialLive2dPrepared();
         // 重置运行标志
         this.isTutorialRunning = false;
         this.clearNextButtonGuard();

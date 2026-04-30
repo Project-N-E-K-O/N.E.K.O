@@ -16,6 +16,7 @@ class MMDCursorFollow {
         this.enabled = window.nekoYuiGuideFaceForwardLock === true
             ? false
             : window.mouseTrackingEnabled !== false;
+        this._disabledByYuiGuideFaceForwardLock = window.nekoYuiGuideFaceForwardLock === true && window.mouseTrackingEnabled !== false;
         this._rawMouseX = 0;
         this._rawMouseY = 0;
         this._hasPointerInput = false;
@@ -247,7 +248,17 @@ class MMDCursorFollow {
 
     update(delta) {
         if (window.nekoYuiGuideFaceForwardLock === true && this.enabled) {
+            this._disabledByYuiGuideFaceForwardLock = true;
             this.setEnabled(false);
+        }
+        if (
+            window.nekoYuiGuideFaceForwardLock !== true
+            && this._disabledByYuiGuideFaceForwardLock
+            && !this.enabled
+            && window.mouseTrackingEnabled !== false
+        ) {
+            this._disabledByYuiGuideFaceForwardLock = false;
+            this.setEnabled(true);
         }
         if (!this.enabled || !THREE) return;
         if (!this._headBone && !this._neckBone) return;
@@ -486,7 +497,12 @@ class MMDCursorFollow {
 
     setEnabled(enabled) {
         if (window.nekoYuiGuideFaceForwardLock === true) {
+            if (enabled || this.enabled) {
+                this._disabledByYuiGuideFaceForwardLock = true;
+            }
             enabled = false;
+        } else {
+            this._disabledByYuiGuideFaceForwardLock = false;
         }
         this.enabled = enabled;
         if (!enabled) {

@@ -1390,21 +1390,23 @@
     }
 
     function appendYuiGuideChatMessage(message) {
-        if (window.location.pathname !== '/chat') return;
+        if (!isStandaloneChatPage()) return;
         if (!message || typeof message !== 'object') return;
         _pendingYuiGuideChatMessages.push(message);
         scheduleYuiGuideChatMessageFlush(0);
     }
 
     function updateYuiGuideChatMessage(messageId, patch) {
-        if (window.location.pathname !== '/chat') return;
+        if (!isStandaloneChatPage()) return;
         if (!messageId || !patch || typeof patch !== 'object') return;
 
         var host = window.reactChatWindowHost;
         if (host && typeof host.updateMessage === 'function') {
             try {
-                host.updateMessage(messageId, patch);
-                return;
+                var handled = host.updateMessage(messageId, patch);
+                if (handled) {
+                    return;
+                }
             } catch (error) {
                 console.warn('[YuiGuide] Failed to update guide chat message:', error);
             }
@@ -1434,7 +1436,7 @@
 
                 switch (event.data.action) {
                     case 'reload_model':
-                        await handleModelReload(event.data?.lanlan_name);
+                        await handleModelReload(event.data?.lanlan_name, event.data?.reloadOptions);
                         break;
                     case 'hide_main_ui':
                         handleHideMainUI();
@@ -1493,7 +1495,7 @@
                         break;
                     }
                     case 'request_tutorial_chat_identity': {
-                        if (window.location.pathname === '/chat') break;
+                        if (isStandaloneChatPage()) break;
                         if (window.__NEKO_TUTORIAL_CHAT_IDENTITY_OVERRIDE__ && nekoBroadcastChannel) {
                             nekoBroadcastChannel.postMessage(Object.assign({
                                 action: 'tutorial_chat_identity_override',
@@ -1504,7 +1506,7 @@
                     }
                     case 'request_avatar': {
                         // 仅 Pet 主窗口（/index）应答，Chat 窗口不回传
-                        if (window.location.pathname === '/chat') break;
+                        if (isStandaloneChatPage()) break;
                         // 校验 lanlan_name：与 avatar_updated 对称，本地名未就绪或不匹配时不回包
                         const reqCurrentName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
                         if (event.data.lanlan_name && (!reqCurrentName || event.data.lanlan_name !== reqCurrentName)) break;
@@ -1541,13 +1543,6 @@
                         }
                         break;
                     }
-                    case 'yui_guide_append_chat_message': {
-                        if (!isStandaloneChatPage()) break;
-                        if (window.reactChatWindowHost && typeof window.reactChatWindowHost.appendMessage === 'function') {
-                            window.reactChatWindowHost.appendMessage(event.data.message || null);
-                        }
-                        break;
-                    }
                     case 'yui_guide_set_chat_buttons_disabled': {
                         if (!isStandaloneChatPage() || !document.body) break;
                         applyYuiGuideChatLockState(event.data.disabled !== false);
@@ -1580,7 +1575,7 @@
                         break;
                     }
                     case 'request_avatar_capture': {
-                        if (window.location.pathname === '/chat') break;
+                        if (isStandaloneChatPage()) break;
                         var captureLanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
                         if (event.data.lanlan_name && (!captureLanlanName || event.data.lanlan_name !== captureLanlanName)) break;
                         var captureRequestId = event.data.requestId || '';
@@ -1679,7 +1674,8 @@
 
         var contentEditableTargets = document.querySelectorAll(
             '#react-chat-window-shell [contenteditable=\"true\"], '
-            + '#react-chat-window-shell [contenteditable=\"plaintext-only\"]'
+            + '#react-chat-window-shell [contenteditable=\"plaintext-only\"], '
+            + '#react-chat-window-shell [data-yui-guide-prev-contenteditable]'
         );
         contentEditableTargets.forEach(function (element) {
             if (!element || typeof element.getAttribute !== 'function') {
@@ -1891,7 +1887,7 @@
                 return;
             }
             console.log('[Model] 通过 postMessage 收到模型重载通知');
-            await handleModelReload(event.data?.lanlan_name);
+            await handleModelReload(event.data?.lanlan_name, event.data?.reloadOptions);
         }
     });
 

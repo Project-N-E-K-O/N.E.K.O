@@ -140,8 +140,8 @@
     steps.takeover_settings_peek.performance.settingsMenuId = 'character';
     steps.takeover_settings_peek.performance.interruptible = true;
     steps.takeover_settings_peek.performance.timeline = [
-        { at: 0.76, action: 'openSettingsPanel' },
-        { voiceKey: 'takeover_settings_peek_detail', at: 0.54, action: 'showSecondLine' }
+        { at: 0.54, action: 'openSettingsPanel' },
+        { voiceKey: 'takeover_settings_peek_detail', at: 0.76, action: 'showSecondLine' }
     ];
     steps.takeover_settings_peek.interrupts.mode = 'theatrical_abort';
     steps.takeover_settings_peek.interrupts.resetOnStepAdvance = false;
