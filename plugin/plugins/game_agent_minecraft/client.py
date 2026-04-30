@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any, Awaitable, Callable, Dict, Optional
 
 import websockets
 from websockets import exceptions as ws_exceptions
@@ -136,16 +136,25 @@ class GameAgentClient:
     # Outbound
     # ------------------------------------------------------------------
 
-    async def send_task(self, task: str) -> bool:
+    async def send_task(self, task: str, *, task_id: Optional[str] = None) -> bool:
         """Push a task command. Returns ``True`` on successful send,
-        ``False`` if the socket isn't connected (caller decides whether
-        to retry, queue, or surface as a tool error)."""
+        ``False`` if the socket isn't connected.
+
+        ``task_id`` is an *optional* per-task identifier the agent can
+        echo back on its ``task_finished`` frame to allow explicit
+        correlation under concurrent agent execution. Agents that
+        process tasks sequentially can ignore it; the plugin falls
+        back to FIFO ordering when the field is absent.
+        """
         ws = self._ws
         if ws is None or not self.is_connected:
             self._log_warning("not connected; dropping task: {}", task[:80])
             return False
+        payload: Dict[str, Any] = {"type": "task", "task": task}
+        if task_id is not None:
+            payload["task_id"] = task_id
         try:
-            await ws.send(json.dumps({"type": "task", "task": task}))
+            await ws.send(json.dumps(payload))
             self._log_info("sent task: {}", task[:120])
             return True
         except Exception as exc:

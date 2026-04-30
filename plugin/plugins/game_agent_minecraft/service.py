@@ -36,6 +36,7 @@ import base64
 import collections
 import re
 import time
+import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Optional
 
@@ -57,6 +58,12 @@ class PendingTask:
     task_text: str
     event: asyncio.Event
     start_time: float
+    # Per-task ID we generate locally and forward to the agent on the
+    # outbound ``task`` frame. If the agent echoes it on
+    # ``task_finished``, we use it for explicit correlation; if not
+    # (sequential agents with no concurrency) we fall back to FIFO
+    # ordering on the stale-frame drop counter. See README "已知限制".
+    task_id: str = ""
     # Filled in by the WebSocket callback (or by overwrite/timeout
     # paths) right before ``event`` is set.
     result: Dict[str, Any] = field(default_factory=dict)
@@ -416,13 +423,16 @@ class GameAgentService:
             # whoever set the event also wrote into the dataclass we
             # hold here.
             my_pending = PendingTask(
-                task_text=task, event=asyncio.Event(), start_time=time.time(),
+                task_text=task,
+                event=asyncio.Event(),
+                start_time=time.time(),
+                task_id=uuid.uuid4().hex,
             )
             self._pending = my_pending
             self._task_finished = False
 
         try:
-            sent = await self._client.send_task(task)
+            sent = await self._client.send_task(task, task_id=my_pending.task_id)
         except asyncio.CancelledError:
             # Cancellation can hit during the dispatch await too (the
             # outer SDK timeout fires, plugin shutdown sweeps tasks).
@@ -682,6 +692,16 @@ class GameAgentService:
             data.get("text") or data.get("data") or data.get("message") or ""
         )
         status = str(data.get("status") or "ok")
+        # Optional explicit correlation: agents that opt in echo back
+        # the ``task_id`` we sent on the matching ``task`` frame.
+        # When present we trust it absolutely and skip the FIFO
+        # heuristic entirely (an out-of-order completion is
+        # disambiguated by ID, not by arrival order). Agents that
+        # don't emit it fall through to the FIFO drop counter as
+        # before.
+        echoed_task_id = data.get("task_id")
+        if not isinstance(echoed_task_id, str) or not echoed_task_id:
+            echoed_task_id = None
         self._log_info("task_finished: status={}, text={}", status, text[:80])
 
         async with self._pending_lock:
@@ -693,34 +713,47 @@ class GameAgentService:
             # for every task we abandoned without an ack, swallow one
             # incoming frame.
             #
-            # KNOWN LIMITATION: this FIFO assumption is exactly that —
-            # an assumption. If the agent server processes tasks with
-            # internal concurrency such that an *overwritten* task A
-            # finishes *after* the replacement task B (i.e. frames
-            # arrive in B-then-A order), this filter swallows B's
-            # real completion and later accepts A's stale frame as if
-            # it were B's. The current ``minecraft_task`` call would
-            # then hang until ``task_timeout_seconds`` while a wrong
-            # result eventually surfaces.
-            #
-            # Properly fixing this requires the agent protocol to
-            # carry a task ID on both ``task`` and ``task_finished``
-            # frames so we can correlate explicitly. That's a
-            # protocol-level change for upstream agents and out of
-            # scope here. In practice agents we ship against
-            # (mineflayer-based bots) process tasks sequentially —
-            # overwrite stops the current task before starting the
-            # next — so out-of-order completions don't occur. If you
-            # write an agent that does have internal concurrency,
-            # add task IDs to the protocol and we'll wire correlation
-            # in. The stale frame's *text* must NOT enter
+            # KNOWN LIMITATION (FIFO mode only): this FIFO assumption
+            # is exactly that — an assumption. Agents that opt into
+            # task_id correlation (the branch above) bypass it
+            # entirely. For agents that don't echo task_id, an
+            # internal-concurrency case where an *overwritten* task
+            # A finishes *after* the replacement task B (frames
+            # arrive B-then-A) breaks: this filter swallows B's
+            # real completion and later accepts A's stale frame as
+            # if it were B's; the current ``minecraft_task`` call
+            # hangs until ``task_timeout_seconds`` and a wrong
+            # result eventually surfaces. The fix is for the agent
+            # to echo task_id on the matching ``task_finished``
+            # frame — see README "已知限制" for details. The stale frame's *text* must NOT enter
             # ``_log_cache`` either — otherwise the next system prompt
             # would surface "old task done" while a new task is still
             # running, lying about both branches of the prompt.
-            if self._stale_task_finishes_to_drop > 0:
+            # Explicit correlation path (agent opted into task_id
+            # echoing): trust the ID. If it matches the current
+            # pending task, accept the frame normally (skip the
+            # stale-drop heuristic — even if drop counter is non-zero,
+            # this frame is unambiguously for the active task). If it
+            # doesn't match, it's stale by definition; drop it without
+            # touching the counter (counter is only for FIFO-mode
+            # agents).
+            if echoed_task_id is not None:
+                if self._pending is not None and self._pending.task_id == echoed_task_id:
+                    pass  # fall through to acceptance below
+                else:
+                    self._log_info(
+                        "dropped stale task_finished by id mismatch "
+                        "(echoed={}, pending={})",
+                        echoed_task_id,
+                        self._pending.task_id if self._pending else None,
+                    )
+                    if self._pending is None:
+                        self._task_finished = True
+                    return
+            elif self._stale_task_finishes_to_drop > 0:
                 self._stale_task_finishes_to_drop -= 1
                 self._log_info(
-                    "dropped stale task_finished (status={}, drops_remaining={})",
+                    "dropped stale task_finished (FIFO mode, status={}, drops_remaining={})",
                     status, self._stale_task_finishes_to_drop,
                 )
                 # If no task is currently pending, the agent has

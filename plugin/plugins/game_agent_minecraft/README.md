@@ -10,11 +10,17 @@ agent server 与本插件通过单一 WebSocket 连接通信，JSON 帧格式：
 
 | 方向 | `type` | 字段 |
 |------|--------|------|
-| → agent | `task` | `{"type": "task", "task": "<目标>"}` |
+| → agent | `task` | `{"type": "task", "task": "<目标>", "task_id": "<uuid>"}` |
 | ← agent | `log` | `{"type": "log", "text": "..."}` |
 | ← agent | `screenshot` | `{"type": "screenshot", "image": "<base64>", "encoding": "png"\|"jpeg"}` |
-| ← agent | `task_finished` | `{"type": "task_finished", "status": "ok", "text": "..."}` |
+| ← agent | `task_finished` | `{"type": "task_finished", "status": "ok", "text": "...", "task_id": "<uuid>"}` |
 | ← agent | `agent_status` | informational, ignored by callbacks |
+
+`task_id` 是**可选的**显式关联字段。插件每次发 `task` 帧都会带一个新生成
+的 UUID；agent 如果在对应的 `task_finished` 帧里把这个 UUID 原样回传，插件
+就用 ID 严格匹配 pending 任务，跳过 FIFO 的 stale-frame 启发式。**不回传
+也兼容**——插件会回退到按完成顺序匹配（见下方"已知限制"）。建议有内部并发
+的 agent 实现一定带上 `task_id` 以避免 out-of-order 完成被错误归属。
 
 agent 端启动方式由你自己决定（一般是 `node minecraft-agent/index.js --port 48909`
 或类似命令），插件只负责连进去。
@@ -99,16 +105,16 @@ agent 端启动方式由你自己决定（一般是 `node minecraft-agent/index.
 
 ## 已知限制
 
-**协议没有 task ID，依赖 FIFO 完成顺序**：插件用一个 stale-frame drop 计数器
-来过滤老任务（已 timeout / overwrite / cancel）的延迟 `task_finished` 帧，
-假设 agent 按完成顺序发帧。如果你写的 agent 内部有并发使得"被 overwrite 的
-A 在替换者 B 之后才完成"（即帧顺序是 B-then-A），filter 会吞掉 B 的真完成、
+**FIFO 回退模式下的 out-of-order completion**：如果 agent 没有在
+`task_finished` 帧里回传 `task_id`，插件就退化到按完成顺序匹配 pending
+任务的 stale-frame drop 计数器。假设 agent 按完成顺序发帧——这对顺序处理
+的 agent（mineflayer 系等）成立，但若 agent 内部有并发使得"被 overwrite
+的 A 在替换者 B 之后才完成"（帧顺序 B-then-A），filter 会吞掉 B 的真完成、
 把 A 的延迟帧当成 B 的——当前 `minecraft_task` 调用会卡到 `task_timeout_seconds`。
 
-我们 ship 的目标 agent (mineflayer 系) 都是顺序处理：overwrite 会先停老任务
-再起新任务，不存在 out-of-order completion，实践上不会触发。如果你写的 agent
-内部有真正的并发，请在协议里给 `task` / `task_finished` 帧加 task ID，并提
-issue 让我们接 explicit correlation。
+**修复方法**：在 agent 端把 task 帧里收到的 `task_id` 原样回传到对应的
+`task_finished` 帧上即可。插件会自动切到显式 ID 匹配模式，不再依赖完成
+顺序。
 
 ## 文件分工
 

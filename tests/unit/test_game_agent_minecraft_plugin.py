@@ -70,7 +70,7 @@ class _FakeClient:
         # directly with this fake, so callbacks are invoked manually.
         self.on_task_finished = None
 
-    async def send_task(self, task: str) -> bool:
+    async def send_task(self, task: str, *, task_id: str = "") -> bool:
         self.sent.append(task)
         return self._send_returns
 
@@ -185,7 +185,7 @@ async def test_dispatch_race_honors_concurrent_verdict_over_disconnected():
             self.released = asyncio.Event()
             self.return_value = False  # simulate "send failed"
 
-        async def send_task(self, task):
+        async def send_task(self, task, *, task_id=""):
             # Suspend long enough for the test to inject a verdict.
             await self.released.wait()
             return self.return_value
@@ -835,6 +835,81 @@ async def test_stop_preserves_stale_frame_debt():
 
 
 @pytest.mark.asyncio
+async def test_explicit_task_id_correlation_resolves_out_of_order():
+    """When the agent echoes ``task_id`` on ``task_finished``, the
+    plugin trusts the ID over arrival order. An out-of-order
+    completion (B's frame before A's, but A's overwrite came first)
+    must NOT be swallowed by the FIFO drop counter — the ID matches
+    the active pending task and the frame is accepted."""
+    service, _ = _make_service()
+    service.configure({"task_timeout_seconds": 5.0})
+    service._client = _FakeClient()
+
+    # Pre-bump drop counter as if FIFO mode was tracking an abandon —
+    # in explicit-correlation mode this counter must NOT be consumed
+    # for an ID-matching frame.
+    service._stale_task_finishes_to_drop = 1
+
+    runner = asyncio.create_task(
+        service.execute_minecraft_task(task="B")
+    )
+    for _ in range(50):
+        if service._pending is not None:
+            break
+        await asyncio.sleep(0.01)
+    else:
+        pytest.fail("_pending was never set")
+    b_id = service._pending.task_id
+    assert b_id  # service generated a task_id
+
+    # Agent emits task_finished for B with matching task_id. Even
+    # though drop counter > 0, the ID match means "this is for the
+    # active task" so we accept it without touching the counter.
+    await service._on_task_finished({"status": "ok", "task_id": b_id})
+    out = await asyncio.wait_for(runner, timeout=2.0)
+    assert out["status"] == "ok"
+    # Counter untouched — explicit correlation skips FIFO drops.
+    assert service._stale_task_finishes_to_drop == 1
+
+
+@pytest.mark.asyncio
+async def test_explicit_task_id_correlation_drops_mismatch():
+    """When the agent echoes a ``task_id`` that doesn't match the
+    pending task, the frame is unambiguously stale — drop without
+    touching the FIFO counter (counter is only for the no-id mode)."""
+    service, _ = _make_service()
+    service.configure({"task_timeout_seconds": 5.0})
+    service._client = _FakeClient()
+
+    runner = asyncio.create_task(
+        service.execute_minecraft_task(task="B")
+    )
+    for _ in range(50):
+        if service._pending is not None:
+            break
+        await asyncio.sleep(0.01)
+    else:
+        pytest.fail("_pending was never set")
+
+    # Stale frame with non-matching task_id arrives.
+    await service._on_task_finished({
+        "status": "ok",
+        "task_id": "this-is-some-other-tasks-id",
+    })
+    # B's pending state is untouched.
+    assert service._pending is not None
+    assert service._pending.task_text == "B"
+
+    # B's real frame with matching id arrives.
+    await service._on_task_finished({
+        "status": "ok",
+        "task_id": service._pending.task_id,
+    })
+    out = await asyncio.wait_for(runner, timeout=2.0)
+    assert out["status"] == "ok"
+
+
+@pytest.mark.asyncio
 async def test_stale_task_finished_after_timeout_is_dropped():
     """After a task times out, a delayed task_finished frame for it
     should be swallowed instead of resolving the *next* call."""
@@ -1049,7 +1124,7 @@ async def test_cancellation_during_send_task_clears_pending_slot():
         def __init__(self):
             self.released = asyncio.Event()
 
-        async def send_task(self, task):
+        async def send_task(self, task, *, task_id=""):
             # Block until cancelled — the test cancels the runner
             # while we're suspended here.
             await self.released.wait()
@@ -1095,7 +1170,7 @@ async def test_overwrite_during_send_task_bumps_via_late_dispatch_flag():
             self.gates: list[asyncio.Event] = []
             self.sent_tasks: list[str] = []
 
-        async def send_task(self, task):
+        async def send_task(self, task, *, task_id=""):
             gate = asyncio.Event()
             self.gates.append(gate)
             await gate.wait()
