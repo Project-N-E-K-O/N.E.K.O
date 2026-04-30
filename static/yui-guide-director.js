@@ -1628,7 +1628,12 @@
                 }
 
                 try {
-                    window.live2dManager.playMotion(emotion);
+                    const motionPromise = window.live2dManager.playMotion(emotion);
+                    if (motionPromise && typeof motionPromise.catch === 'function') {
+                        motionPromise.catch((error) => {
+                            console.warn('[YuiGuide] 播放教程动作失败:', emotion, error);
+                        });
+                    }
                 } catch (error) {
                     console.warn('[YuiGuide] 播放教程动作失败:', emotion, error);
                 }
