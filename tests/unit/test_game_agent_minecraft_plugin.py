@@ -226,6 +226,44 @@ async def test_execute_returns_disconnected_when_send_fails():
 
 
 @pytest.mark.asyncio
+async def test_finished_result_not_overwritten_by_racing_stop():
+    """``_on_task_finished`` must clear ``self._pending`` BEFORE
+    setting the event, so a racing ``stop()`` that acquires the lock
+    after this block exits can't see the still-completed PendingTask
+    and overwrite its result with "interrupted". Without that
+    ordering, the waiter (which shares the same PendingTask object)
+    would read a corrupted result."""
+    service, _ = _make_service()
+    service.configure({"task_timeout_seconds": 5.0})
+    service._client = _FakeClient()
+
+    runner = asyncio.create_task(service.execute_minecraft_task(task="A"))
+    for _ in range(50):
+        if service._pending is not None:
+            break
+        await asyncio.sleep(0.01)
+    else:
+        pytest.fail("_pending was never set")
+
+    # Fire task_finished. After this returns, self._pending should be
+    # cleared (so a racing stop() sees no pending task) but the
+    # waiter's local PendingTask still has the {"status": "ok"}
+    # result baked in.
+    await service._on_task_finished({"status": "ok"})
+    # ``self._pending`` was cleared inside the same lock block as
+    # ``event.set()``, so a stop() coming in here can't mutate the
+    # finished PendingTask's result.
+    assert service._pending is None
+
+    await service.stop()
+
+    out = await asyncio.wait_for(runner, timeout=2.0)
+    assert out == {"status": "ok", "query": "A"}, (
+        "stop() must not have overwritten the task_finished verdict"
+    )
+
+
+@pytest.mark.asyncio
 async def test_execute_completes_when_task_finished_fires():
     service, _ = _make_service()
     service.configure({"task_timeout_seconds": 5.0})

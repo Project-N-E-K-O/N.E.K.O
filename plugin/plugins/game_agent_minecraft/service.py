@@ -662,14 +662,25 @@ class GameAgentService:
                 # loop knows the agent is idle and can resume nudging.
                 self._task_finished = True
                 return
-            self._pending.result = {
+            # Snapshot the pending ref *and* clear the shared slot
+            # before calling ``event.set()`` — both still under the
+            # lock. If we leave ``self._pending`` pointing at the
+            # finished task, a racing ``stop()``/overwrite that
+            # acquires the lock between this block exiting and the
+            # waiter running could see ``self._pending is not None``
+            # and overwrite the result we just wrote (the waiter and
+            # ``self._pending`` reference the *same* PendingTask
+            # object, so a mutation here corrupts the waiter's read).
+            # The waiter holds its own ``my_pending`` local ref, so
+            # clearing ``self._pending`` here is safe.
+            pending = self._pending
+            self._pending = None
+            pending.result = {
                 "status": status,
-                "query": self._pending.task_text,
+                "query": pending.task_text,
             }
-            self._pending.event.set()
+            pending.event.set()
             self._task_finished = True
-            # Don't None-out here; ``execute_minecraft_task`` does that
-            # after it reads ``result`` so we don't race the read.
 
     # ------------------------------------------------------------------
     # Autonomous system-prompt loop
