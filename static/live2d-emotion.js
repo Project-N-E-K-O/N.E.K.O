@@ -212,10 +212,64 @@ Live2DManager.prototype._resetParametersToInitialState = function(options = {}) 
     return resetCount;
 };
 
+Live2DManager.prototype._clearMotionTimer = function() {
+    if (!this.motionTimer) return false;
+
+    console.log(`清除motion定时器，类型: ${this.motionTimer.type || 'unknown'}`);
+
+    if (this.motionTimer.type === 'animation') {
+        cancelAnimationFrame(this.motionTimer.id);
+    } else if (this.motionTimer.type === 'timeout') {
+        clearTimeout(this.motionTimer.id);
+    } else if (this.motionTimer.type === 'motion') {
+        try {
+            if (this.motionTimer.id && this.motionTimer.id.stop) {
+                this.motionTimer.id.stop();
+            }
+        } catch (motionError) {
+            console.warn('停止motion失败:', motionError);
+        }
+    } else {
+        clearTimeout(this.motionTimer);
+    }
+
+    this.motionTimer = null;
+    return true;
+};
+
+Live2DManager.prototype._resetExplicitMotionParameters = function(options = {}) {
+    const preserveExpression = options.preserveExpression !== false;
+    const coreModel = this.currentModel?.internalModel?.coreModel;
+    if (!coreModel) return 0;
+
+    const protectedIds = preserveExpression ? this._getActiveExpressionParamIds() : new Set();
+    const motionParams = [
+        'ParamAngleX', 'ParamAngleY', 'ParamAngleZ',
+        'ParamBodyAngleX', 'ParamBodyAngleY', 'ParamBodyAngleZ',
+        'ParamBreath', 'ParamBreath2', 'ParamBreath3',
+        'ParamLookAtX', 'ParamLookAtY',
+        'ParamShake'
+    ];
+
+    let resetCount = 0;
+    for (const paramId of motionParams) {
+        if (protectedIds.has(paramId)) continue;
+        try {
+            coreModel.setParameterValueById(paramId, 0);
+            resetCount++;
+        } catch (e) {
+            // 参数不存在，忽略
+        }
+    }
+
+    return resetCount;
+};
+
 Live2DManager.prototype.resetTransientMotionAndExpressionState = function(options = {}) {
     const preserveExpression = options.preserveExpression === true;
 
     this._cancelSmoothReset();
+    this._clearMotionTimer();
 
     if (!preserveExpression) {
         this._removeManualExpressionOverride();
@@ -240,7 +294,8 @@ Live2DManager.prototype.resetTransientMotionAndExpressionState = function(option
     }
 
     const resetCount = this._resetParametersToInitialState({ preserveExpression });
-    console.log(`已按初始基准重置${resetCount}个参数，preserveExpression=${preserveExpression}`);
+    const explicitResetCount = this._resetExplicitMotionParameters({ preserveExpression });
+    console.log(`已按初始基准重置${resetCount}个参数，显式重置${explicitResetCount}个motion参数，preserveExpression=${preserveExpression}`);
 
     if (preserveExpression) {
         try {
@@ -884,30 +939,7 @@ Live2DManager.prototype.clearEmotionEffects = function() {
     console.log('开始清理motion效果（保留expression）...');
     
     // 清除动作定时器
-    if (this.motionTimer) {
-        console.log(`清除motion定时器，类型: ${this.motionTimer.type || 'unknown'}`);
-        
-        if (this.motionTimer.type === 'animation') {
-            // 取消动画帧
-            cancelAnimationFrame(this.motionTimer.id);
-        } else if (this.motionTimer.type === 'timeout') {
-            // 清除普通定时器
-            clearTimeout(this.motionTimer.id);
-        } else if (this.motionTimer.type === 'motion') {
-            // 停止motion播放
-            try {
-                if (this.motionTimer.id && this.motionTimer.id.stop) {
-                    this.motionTimer.id.stop();
-                }
-            } catch (motionError) {
-                console.warn('停止motion失败:', motionError);
-            }
-        } else {
-            // 兼容旧的定时器格式
-            clearTimeout(this.motionTimer);
-        }
-        this.motionTimer = null;
-    }
+    this._clearMotionTimer();
     
     // 停止所有motion（但不重置expression参数）
     if (this.currentModel && this.currentModel.internalModel && this.currentModel.internalModel.motionManager) {
@@ -926,7 +958,8 @@ Live2DManager.prototype.clearEmotionEffects = function() {
     // 只清角度/呼吸会留下上一个 motion 的残影；按模型加载时记录的初始基准
     // 全量恢复，同时保护当前 transient expression、常驻表情和口型参数。
     const resetCount = this._resetParametersToInitialState({ preserveExpression: true });
-    console.log(`已按初始基准重置${resetCount}个motion参数，expression参数已保留`);
+    const explicitResetCount = this._resetExplicitMotionParameters({ preserveExpression: true });
+    console.log(`已按初始基准重置${resetCount}个motion参数，显式重置${explicitResetCount}个motion参数，expression参数已保留`);
     
     // 重新应用常驻表情（保护常驻expression不被影响）
     // skipBackup=true 因为只是重新应用，不需要再次备份
