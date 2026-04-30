@@ -463,7 +463,7 @@ async def fetch_weibo_trending(limit: int = 10) -> Dict[str, Any]:
             return await _fetch_weibo_trending_fallback(limit)
 
         html = response.text
-        soup = BeautifulSoup(html, 'html.parser')
+        soup = BeautifulSoup(html, 'lxml')
 
         # 解析热搜列表 (td-02 class)
         td_items = soup.find_all('td', class_='td-02')
@@ -759,7 +759,7 @@ async def _fetch_twitter_trending_fallback(limit: int = 10) -> Dict[str, Any]:
             if response.status_code == 200:
                 # BS4 解析 + 解析器迭代统一放线程池，避免阻塞 event loop
                 def _parse_in_thread(html: str, parser, _limit: int) -> List[Dict[str, Any]]:
-                    return parser(BeautifulSoup(html, 'html.parser'), _limit)
+                    return parser(BeautifulSoup(html, 'lxml'), _limit)
                 trending_list = await asyncio.to_thread(
                     _parse_in_thread, response.text, source['parser'], limit
                 )
@@ -1461,7 +1461,7 @@ def parse_google_results(html_content: str, limit: int = 5) -> List[Dict[str, st
     
     try:
         from urllib.parse import urljoin, urlparse, parse_qs
-        soup = BeautifulSoup(html_content, 'html.parser')
+        soup = BeautifulSoup(html_content, 'lxml')
         
         # 查找搜索结果容器
         # Google使用各种类名，尝试多个选择器
@@ -1615,7 +1615,7 @@ def parse_baidu_results(html_content: str, limit: int = 5) -> List[Dict[str, str
     
     try:
         from urllib.parse import urljoin
-        soup = BeautifulSoup(html_content, 'html.parser')
+        soup = BeautifulSoup(html_content, 'lxml')
         
         # 提取搜索结果容器
         containers = soup.find_all('div', class_=lambda x: x and 'c-container' in x, limit=limit * 2)

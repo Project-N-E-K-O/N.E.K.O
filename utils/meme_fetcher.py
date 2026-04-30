@@ -225,7 +225,7 @@ class MemeFetcher:
                 return []
 
             # BS4 解析放线程池，避免阻塞 event loop
-            soup = await asyncio.to_thread(BeautifulSoup, html, 'html.parser')
+            soup = await asyncio.to_thread(BeautifulSoup, html, 'lxml')
 
             # Imgflip 的搜索结果
             target_links = soup.find_all('a', href=re.compile(r'^/(i|gif)/[a-zA-Z0-9]+$'))
@@ -531,7 +531,10 @@ class DoutubFetcher:
             # BS4 + DOTALL 正则 + JSON 解析整体放线程池，full HTML 上的 .*?
             # 全文扫描在 event loop 里能阻塞百毫秒级。
             def _parse_html_blob(_html: str) -> tuple:
-                _soup = BeautifulSoup(_html, 'html.parser')
+                _soup = BeautifulSoup(_html, 'lxml')
+                # 三种框架的 SSR 注入格式按优先级尝试：Next.js → Nuxt.js → 通用 INITIAL_STATE。
+                # 任一格式 JSON 解析失败都静默吞异常（页面脚本可能被压缩/截断/混淆），
+                # _ssr 保持 None，调用方会回退到下方 XHR API 抓取，无需中断流程。
                 _ssr = None
                 _nuxt = re.search(r'window\.__NUXT__\s*=\s*({.*?});', _html, re.DOTALL)
                 _next = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', _html, re.DOTALL)
@@ -540,17 +543,17 @@ class DoutubFetcher:
                     try:
                         _ssr = json.loads(_next.group(1))
                     except json.JSONDecodeError:
-                        pass
+                        pass  # 见上方 SSR 降级注释
                 elif _nuxt:
                     try:
                         _ssr = json.loads(_nuxt.group(1))
                     except json.JSONDecodeError:
-                        pass
+                        pass  # 见上方 SSR 降级注释
                 elif _init:
                     try:
                         _ssr = json.loads(_init.group(1))
                     except json.JSONDecodeError:
-                        pass
+                        pass  # 见上方 SSR 降级注释
                 return _soup, _ssr
 
             soup, ssr_data = await asyncio.to_thread(_parse_html_blob, html)
@@ -768,7 +771,7 @@ class DoutupkFetcher:
                 return []
 
             # BS4 解析放线程池
-            soup = await asyncio.to_thread(BeautifulSoup, html, 'html.parser')
+            soup = await asyncio.to_thread(BeautifulSoup, html, 'lxml')
             results: List[Dict[str, Any]] = []
 
             # 懒加载结构：img.image_dtb[data-original=真实URL]，src 是 loader 占位图
@@ -965,7 +968,7 @@ class FabiaoqingFetcher:
                 return []
 
             # BS4 解析放线程池
-            soup = await asyncio.to_thread(BeautifulSoup, html, 'html.parser')
+            soup = await asyncio.to_thread(BeautifulSoup, html, 'lxml')
             results = []
 
             img_items = soup.select('img.bqppsearch')
