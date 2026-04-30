@@ -57,6 +57,7 @@
                 cursorSpeedMultiplier: 1,
                 delayMs: 0,
                 interruptible: false,
+                timeline: [],
                 resistanceVoices: [],
                 resistanceVoiceKeys: []
             },
@@ -85,6 +86,9 @@
     steps.intro_basic.performance.emotion = 'happy';
     steps.intro_basic.performance.cursorTarget = '#${p}-btn-mic';
     steps.intro_basic.performance.interruptible = true;
+    steps.intro_basic.performance.timeline = [
+        { at: 0.16, action: 'highlightVoiceControl' }
+    ];
     steps.intro_basic.interrupts.mode = 'theatrical_abort';
     steps.intro_basic.interrupts.resetOnStepAdvance = false;
 
@@ -98,6 +102,11 @@
     steps.takeover_capture_cursor.performance.cursorAction = 'click';
     steps.takeover_capture_cursor.performance.cursorTarget = '#${p}-btn-agent';
     steps.takeover_capture_cursor.performance.interruptible = true;
+    steps.takeover_capture_cursor.performance.timeline = [
+        { at: 0.14, action: 'highlightCatPaw' },
+        { at: 0.32, action: 'enableAgentMaster' },
+        { at: 0.58, action: 'enableKeyboardControl' }
+    ];
     steps.takeover_capture_cursor.interrupts.mode = 'theatrical_abort';
     steps.takeover_capture_cursor.interrupts.resetOnStepAdvance = false;
 
@@ -111,6 +120,11 @@
     steps.takeover_plugin_preview.performance.cursorAction = 'click';
     steps.takeover_plugin_preview.performance.cursorTarget = '#${p}-btn-agent';
     steps.takeover_plugin_preview.performance.interruptible = true;
+    steps.takeover_plugin_preview.performance.timeline = [
+        { at: 0.24, action: 'enableUserPlugin' },
+        { at: 0.54, action: 'openManagementPanel' },
+        { at: 0.76, action: 'handoffPluginDashboard' }
+    ];
     steps.takeover_plugin_preview.interrupts.mode = 'theatrical_abort';
     steps.takeover_plugin_preview.interrupts.resetOnStepAdvance = false;
 
@@ -125,6 +139,10 @@
     steps.takeover_settings_peek.performance.cursorTarget = '#${p}-btn-settings';
     steps.takeover_settings_peek.performance.settingsMenuId = 'character';
     steps.takeover_settings_peek.performance.interruptible = true;
+    steps.takeover_settings_peek.performance.timeline = [
+        { at: 0.76, action: 'openSettingsPanel' },
+        { voiceKey: 'takeover_settings_peek_detail', at: 0.54, action: 'showSecondLine' }
+    ];
     steps.takeover_settings_peek.interrupts.mode = 'theatrical_abort';
     steps.takeover_settings_peek.interrupts.resetOnStepAdvance = false;
 
@@ -138,6 +156,9 @@
     steps.takeover_return_control.performance.cursorAction = 'wobble';
     steps.takeover_return_control.performance.cursorTarget = '#${p}-container';
     steps.takeover_return_control.performance.interruptible = true;
+    steps.takeover_return_control.performance.timeline = [
+        { at: 0.48, action: 'returnControl' }
+    ];
     steps.takeover_return_control.interrupts.mode = 'theatrical_abort';
     steps.takeover_return_control.interrupts.resetOnStepAdvance = false;
 

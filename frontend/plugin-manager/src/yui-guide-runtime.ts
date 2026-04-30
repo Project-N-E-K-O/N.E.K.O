@@ -194,6 +194,7 @@ type StartPayload = {
   narrationDurationMs?: number
   narrationStartedAtMs?: number
   skipButtonScreenRect?: ScreenRect | null
+  platformCapabilities?: HomeTutorialPlatformCapabilities | null
 }
 
 type SpotlightRect = {
@@ -214,6 +215,19 @@ type ScreenRect = {
   platform?: 'windows' | 'macos' | 'linux' | 'web' | string
   devicePixelRatio?: number
   hitPadding?: number
+  forwardingTolerance?: number
+  pointerProfile?: string
+}
+
+type HomeTutorialPlatformCapabilities = {
+  version?: number
+  platform?: 'windows' | 'macos' | 'linux' | 'web' | string
+  windowBoundsSource?: string
+  supportsExternalChat?: boolean
+  supportsSystemTrayHint?: boolean
+  supportsPluginDashboardWindow?: boolean
+  pointerProfile?: string
+  preferredSkipHitPadding?: number
 }
 
 type ActiveNarration = {
@@ -1630,18 +1644,20 @@ class PluginDashboardGuideRuntime {
   }
 
   getHomeSkipForwardingTolerance(rect: ScreenRect) {
-    const platform = String(rect.platform || '').toLowerCase()
+    const explicitTolerance = Number(rect.forwardingTolerance)
+    if (Number.isFinite(explicitTolerance) && explicitTolerance >= 0) {
+      return explicitTolerance
+    }
+
     const coordinateSpace = String(rect.coordinateSpace || '').toLowerCase()
     const rawPadding = Number(rect.hitPadding)
     const basePadding = Number.isFinite(rawPadding) ? Math.max(0, rawPadding) : 0
     if (coordinateSpace === 'electron-window-bounds') {
+      const platform = String(rect.platform || '').toLowerCase()
       if (platform === 'linux') return Math.max(8, Math.round(basePadding * 0.35))
       if (platform === 'macos') return Math.max(6, Math.round(basePadding * 0.25))
       return Math.max(4, Math.round(basePadding * 0.2))
     }
-    if (platform === 'linux') return 18
-    if (platform === 'macos') return 14
-    if (platform === 'windows') return 10
     return 6
   }
 
@@ -3207,6 +3223,8 @@ class PluginDashboardGuideRuntime {
           platform: payload.skipButtonScreenRect.platform,
           devicePixelRatio: payload.skipButtonScreenRect.devicePixelRatio,
           hitPadding: payload.skipButtonScreenRect.hitPadding,
+          forwardingTolerance: payload.skipButtonScreenRect.forwardingTolerance,
+          pointerProfile: payload.skipButtonScreenRect.pointerProfile || payload.platformCapabilities?.pointerProfile,
         }
       : null
     this.homeNarrationFinished = false

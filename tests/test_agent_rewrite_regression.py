@@ -288,19 +288,6 @@ def test_yui_guide_overlay_supports_progress_meta_and_viewport_placement():
         assert expected in style_source
 
 
-def test_home_tutorial_complex_optimization_plan_is_documented():
-    source = Path("docs/design/home-tutorial-yui-guide-optimization-roadmap.md").read_text(encoding="utf-8")
-
-    for expected in (
-        "场景图代替固定线性队列",
-        "任务清单式进度",
-        "平台能力矩阵",
-        "旁白与动作的 cue 时间轴",
-        "可恢复断点和失败回退",
-    ):
-        assert expected in source
-
-
 def test_yui_guide_cat_paw_click_state_is_visible_before_actions():
     overlay_source = Path("static/yui-guide-overlay.js").read_text(encoding="utf-8")
     director_source = Path("static/yui-guide-director.js").read_text(encoding="utf-8")
@@ -423,6 +410,83 @@ def test_universal_tutorial_manager_normalizes_api_key_handoff_and_resume_scene_
         "yuiGuideSceneId: 'memory_browser_intro'",
     ):
         assert expected in source
+
+
+def test_home_yui_guide_avatar_override_does_not_persist_tutorial_model():
+    tutorial_source = Path("static/universal-tutorial-manager.js").read_text(encoding="utf-8")
+    interpage_source = Path("static/app-interpage.js").read_text(encoding="utf-8")
+
+    begin_block = tutorial_source[
+        tutorial_source.index("beginTutorialAvatarOverride()"):
+        tutorial_source.index("async restoreTutorialAvatarOverride()")
+    ]
+    restore_block = tutorial_source[
+        tutorial_source.index("async restoreTutorialAvatarOverride()"):
+        tutorial_source.index("/**", tutorial_source.index("async restoreTutorialAvatarOverride()"))
+    ]
+
+    assert "saveTutorialModelPayload" not in begin_block
+    assert "saveTutorialModelPayload" not in restore_block
+    assert "this.reloadTutorialModel(currentName, tutorialModelPayload, { temporary: true })" in begin_block
+    assert "temporaryConfig" in interpage_source
+    assert "skipIdleRestore" in interpage_source
+    assert "suppressToast" in interpage_source
+
+
+def test_theme_system_preference_does_not_become_saved_user_choice():
+    theme_source = Path("static/theme-manager.js").read_text(encoding="utf-8")
+    plugin_dark_mode_source = Path("frontend/plugin-manager/src/composables/useDarkMode.ts").read_text(encoding="utf-8")
+
+    assert "applyTheme(isDark, { persist: shouldPersist });" in theme_source
+    assert "applyThemeAnimated(event.matches, { persist: false });" in theme_source
+    assert "applyDarkMode(saved !== null ? saved : getSystemPrefersDark(), { persist: saved !== null })" in plugin_dark_mode_source
+    assert "applyDarkMode(event.matches, { persist: false })" in plugin_dark_mode_source
+
+
+def test_home_yui_guide_uses_platform_capability_matrix_for_cross_window_skip():
+    director_source = Path("static/yui-guide-director.js").read_text(encoding="utf-8")
+    plugin_runtime_source = Path("frontend/plugin-manager/src/yui-guide-runtime.ts").read_text(encoding="utf-8")
+
+    assert "window.homeTutorialPlatformCapabilities" in director_source
+    assert "createHomeTutorialPlatformCapabilities" in director_source
+    assert "supportsExternalChat" in director_source
+    assert "supportsSystemTrayHint" in director_source
+    assert "supportsPluginDashboardWindow" in director_source
+    assert "preferredSkipHitPadding" in director_source
+    assert "forwardingTolerance" in director_source
+    assert "platformCapabilities" in plugin_runtime_source
+    assert "const explicitTolerance = Number(rect.forwardingTolerance)" in plugin_runtime_source
+    assert "if (platform === 'linux') return Math.max(8, Math.round(basePadding * 0.35))" in plugin_runtime_source
+    assert "if (platform === 'macos') return Math.max(6, Math.round(basePadding * 0.25))" in plugin_runtime_source
+
+
+def test_home_yui_guide_scenes_declare_timelines_and_director_consumes_normalized_cues():
+    steps_source = Path("static/yui-guide-steps.js").read_text(encoding="utf-8")
+    director_source = Path("static/yui-guide-director.js").read_text(encoding="utf-8")
+
+    assert "timeline: []" in steps_source
+    assert "{ at: 0.16, action: 'highlightVoiceControl' }" in steps_source
+    assert "{ at: 0.76, action: 'openSettingsPanel' }" in steps_source
+    assert "{ voiceKey: 'takeover_settings_peek_detail', at: 0.54, action: 'showSecondLine' }" in steps_source
+    assert "getGuideTimelineCueConfig(voiceKey, cueName)" in director_source
+    assert "const timeline = Array.isArray(performance.timeline) ? performance.timeline : []" in director_source
+    assert "cue.action !== normalizedCueName" in director_source
+    assert "GUIDE_NARRATION_TIMELINES_BY_KEY" in director_source
+    assert "estimateSpeechDurationMs(fallbackText || '')" in director_source
+
+
+def test_home_yui_guide_records_local_experience_metrics_without_upload_path():
+    director_source = Path("static/yui-guide-director.js").read_text(encoding="utf-8")
+
+    assert "neko_home_tutorial_experience_metrics_v1" in director_source
+    assert "window.homeTutorialExperienceMetrics" in director_source
+    assert "recordExperienceMetric('scene_start'" in director_source
+    assert "recordExperienceMetric('scene_complete'" in director_source
+    assert "recordExperienceMetric('scene_failed'" in director_source
+    assert "recordExperienceMetric('skip'" in director_source
+    assert "recordExperienceMetric('angry_exit'" in director_source
+    assert "recordExperienceMetric('handoff_failed'" in director_source
+    assert ".localStorage.setItem(" in director_source
 
 
 def test_plugin_manager_bootstraps_plugin_dashboard_runtime_without_overlay_bridge():

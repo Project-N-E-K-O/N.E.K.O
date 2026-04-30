@@ -353,14 +353,209 @@
         return Math.max(min, Math.min(max, value));
     }
 
-    const GUIDE_AUDIO_CUES_BY_KEY = Object.freeze({
+    const HOME_TUTORIAL_PLATFORM_PROFILES = Object.freeze({
+        windows: Object.freeze({
+            supportsExternalChat: true,
+            supportsSystemTrayHint: true,
+            supportsPluginDashboardWindow: true,
+            pointerProfile: 'mouse',
+            browserSkipHitPadding: 28,
+            electronSkipHitPadding: 20,
+            browserSkipForwardingTolerance: 10,
+            electronSkipForwardingToleranceRatio: 0.2,
+            electronSkipForwardingToleranceMin: 4
+        }),
+        macos: Object.freeze({
+            supportsExternalChat: true,
+            supportsSystemTrayHint: true,
+            supportsPluginDashboardWindow: true,
+            pointerProfile: 'trackpad',
+            browserSkipHitPadding: 36,
+            electronSkipHitPadding: 28,
+            browserSkipForwardingTolerance: 14,
+            electronSkipForwardingToleranceRatio: 0.25,
+            electronSkipForwardingToleranceMin: 6
+        }),
+        linux: Object.freeze({
+            supportsExternalChat: true,
+            supportsSystemTrayHint: true,
+            supportsPluginDashboardWindow: true,
+            pointerProfile: 'mouse',
+            browserSkipHitPadding: 44,
+            electronSkipHitPadding: 32,
+            browserSkipForwardingTolerance: 18,
+            electronSkipForwardingToleranceRatio: 0.35,
+            electronSkipForwardingToleranceMin: 8
+        }),
+        web: Object.freeze({
+            supportsExternalChat: false,
+            supportsSystemTrayHint: false,
+            supportsPluginDashboardWindow: true,
+            pointerProfile: 'pointer',
+            browserSkipHitPadding: 18,
+            electronSkipHitPadding: 18,
+            browserSkipForwardingTolerance: 6,
+            electronSkipForwardingToleranceRatio: 0.2,
+            electronSkipForwardingToleranceMin: 4
+        })
+    });
+
+    function detectHomeTutorialPlatform() {
+        const rawPlatform = (
+            (navigator.userAgentData && navigator.userAgentData.platform)
+            || navigator.platform
+            || navigator.userAgent
+            || ''
+        ).toString().toLowerCase();
+        if (rawPlatform.indexOf('mac') >= 0) return 'macos';
+        if (rawPlatform.indexOf('win') >= 0) return 'windows';
+        if (rawPlatform.indexOf('linux') >= 0 || rawPlatform.indexOf('x11') >= 0) return 'linux';
+        return 'web';
+    }
+
+    function createHomeTutorialPlatformCapabilities(overrides) {
+        const normalizedOverrides = overrides && typeof overrides === 'object' ? overrides : {};
+        const platform = typeof normalizedOverrides.platform === 'string' && normalizedOverrides.platform.trim()
+            ? normalizedOverrides.platform.trim().toLowerCase()
+            : detectHomeTutorialPlatform();
+        const profile = HOME_TUTORIAL_PLATFORM_PROFILES[platform] || HOME_TUTORIAL_PLATFORM_PROFILES.web;
+        const hasElectronBounds = !!(
+            window.nekoPetDrag
+            && typeof window.nekoPetDrag.getBounds === 'function'
+        );
+        const windowBoundsSource = hasElectronBounds ? 'electron-window-bounds' : 'browser-screen-origin';
+        const preferredSkipHitPadding = windowBoundsSource === 'electron-window-bounds'
+            ? profile.electronSkipHitPadding
+            : profile.browserSkipHitPadding;
+
+        return Object.freeze({
+            version: 1,
+            platform: HOME_TUTORIAL_PLATFORM_PROFILES[platform] ? platform : 'web',
+            windowBoundsSource: windowBoundsSource,
+            supportsExternalChat: normalizedOverrides.supportsExternalChat === true || (
+                normalizedOverrides.supportsExternalChat !== false && profile.supportsExternalChat
+            ),
+            supportsSystemTrayHint: normalizedOverrides.supportsSystemTrayHint === true || (
+                normalizedOverrides.supportsSystemTrayHint !== false && profile.supportsSystemTrayHint
+            ),
+            supportsPluginDashboardWindow: normalizedOverrides.supportsPluginDashboardWindow === true || (
+                normalizedOverrides.supportsPluginDashboardWindow !== false && profile.supportsPluginDashboardWindow
+            ),
+            pointerProfile: typeof normalizedOverrides.pointerProfile === 'string' && normalizedOverrides.pointerProfile.trim()
+                ? normalizedOverrides.pointerProfile.trim()
+                : profile.pointerProfile,
+            preferredSkipHitPadding: preferredSkipHitPadding,
+            getSkipHitPadding: function (boundsSource) {
+                return boundsSource === 'electron-window-bounds'
+                    ? profile.electronSkipHitPadding
+                    : profile.browserSkipHitPadding;
+            },
+            getSkipForwardingTolerance: function (screenRect) {
+                const rect = screenRect && typeof screenRect === 'object' ? screenRect : {};
+                const coordinateSpace = String(rect.coordinateSpace || windowBoundsSource || '').toLowerCase();
+                const rawPadding = Number(rect.hitPadding);
+                const basePadding = Number.isFinite(rawPadding) ? Math.max(0, rawPadding) : preferredSkipHitPadding;
+                if (coordinateSpace === 'electron-window-bounds') {
+                    return Math.max(
+                        profile.electronSkipForwardingToleranceMin,
+                        Math.round(basePadding * profile.electronSkipForwardingToleranceRatio)
+                    );
+                }
+                return profile.browserSkipForwardingTolerance;
+            }
+        });
+    }
+
+    const HOME_TUTORIAL_PLATFORM_CAPABILITIES_API = Object.freeze({
+        create: createHomeTutorialPlatformCapabilities,
+        detectPlatform: detectHomeTutorialPlatform,
+        profiles: HOME_TUTORIAL_PLATFORM_PROFILES
+    });
+
+    window.homeTutorialPlatformCapabilities = window.homeTutorialPlatformCapabilities || HOME_TUTORIAL_PLATFORM_CAPABILITIES_API;
+
+    const HOME_TUTORIAL_EXPERIENCE_METRICS_STORAGE_KEY = 'neko_home_tutorial_experience_metrics_v1';
+    const HOME_TUTORIAL_EXPERIENCE_METRICS_LIMIT = 300;
+
+    function readHomeTutorialExperienceMetrics() {
+        try {
+            const raw = window.localStorage && window.localStorage.getItem(HOME_TUTORIAL_EXPERIENCE_METRICS_STORAGE_KEY);
+            const parsed = raw ? JSON.parse(raw) : [];
+            return Array.isArray(parsed) ? parsed : [];
+        } catch (_) {
+            return [];
+        }
+    }
+
+    function writeHomeTutorialExperienceMetrics(events) {
+        if (!window.localStorage) {
+            return false;
+        }
+
+        try {
+            const boundedEvents = (Array.isArray(events) ? events : [])
+                .slice(-HOME_TUTORIAL_EXPERIENCE_METRICS_LIMIT);
+            window.localStorage.setItem(
+                HOME_TUTORIAL_EXPERIENCE_METRICS_STORAGE_KEY,
+                JSON.stringify(boundedEvents)
+            );
+            return true;
+        } catch (_) {
+            return false;
+        }
+    }
+
+    function createHomeTutorialExperienceMetrics() {
+        return Object.freeze({
+            storageKey: HOME_TUTORIAL_EXPERIENCE_METRICS_STORAGE_KEY,
+            record: function (type, detail) {
+                const eventType = typeof type === 'string' ? type.trim() : '';
+                if (!eventType) {
+                    return null;
+                }
+
+                const event = Object.assign({
+                    type: eventType,
+                    timestamp: Date.now()
+                }, detail && typeof detail === 'object' ? detail : {});
+                const current = readHomeTutorialExperienceMetrics();
+                current.push(event);
+                writeHomeTutorialExperienceMetrics(current);
+
+                try {
+                    window.dispatchEvent(new CustomEvent('neko:yui-guide:experience-metric', {
+                        detail: event
+                    }));
+                } catch (_) {}
+
+                return event;
+            },
+            list: function () {
+                return readHomeTutorialExperienceMetrics();
+            },
+            clear: function () {
+                return writeHomeTutorialExperienceMetrics([]);
+            },
+            export: function () {
+                return JSON.stringify(readHomeTutorialExperienceMetrics(), null, 2);
+            }
+        });
+    }
+
+    window.homeTutorialExperienceMetrics = window.homeTutorialExperienceMetrics || createHomeTutorialExperienceMetrics();
+
+    const GUIDE_NARRATION_TIMELINES_BY_KEY = Object.freeze({
         takeover_settings_peek_intro: Object.freeze({
-            baseDurationMs: 11877,
-            openSettingsPanel: 9000
+            fallbackDurationMs: 11877,
+            cues: Object.freeze({
+                openSettingsPanel: Object.freeze({ at: 9000 / 11877 })
+            })
         }),
         takeover_settings_peek_detail: Object.freeze({
-            baseDurationMs: 13923,
-            showSecondLine: 7450
+            fallbackDurationMs: 13923,
+            cues: Object.freeze({
+                showSecondLine: Object.freeze({ at: 7450 / 13923 })
+            })
         })
     });
 
@@ -417,7 +612,7 @@
             return null;
         }
 
-        return GUIDE_AUDIO_CUES_BY_KEY[normalizedKey] || null;
+        return GUIDE_NARRATION_TIMELINES_BY_KEY[normalizedKey] || null;
     }
 
     function getGuideAudioDurationConfig(voiceKey) {
@@ -1358,6 +1553,11 @@
             this.skipButtonClickHandler = this.onSkipButtonClick.bind(this);
             this.interactionGuardHandler = this.onInteractionGuard.bind(this);
             this.externalizedChatSpotlightKind = '';
+            const capabilityApi = window.homeTutorialPlatformCapabilities;
+            this.platformCapabilities = capabilityApi && typeof capabilityApi.create === 'function'
+                ? capabilityApi.create()
+                : createHomeTutorialPlatformCapabilities();
+            this.experienceMetrics = window.homeTutorialExperienceMetrics || createHomeTutorialExperienceMetrics();
 
             if (this.page === 'home') {
                 document.body.classList.add('yui-guide-home-driver-hidden');
@@ -1453,6 +1653,23 @@
                 normalizedOptions.meta = this.getBubbleMetaForScene(sceneId || this.currentSceneId);
             }
             this.overlay.showBubble(text, normalizedOptions);
+        }
+
+        recordExperienceMetric(type, detail) {
+            if (!this.experienceMetrics || typeof this.experienceMetrics.record !== 'function') {
+                return null;
+            }
+
+            const payload = Object.assign({
+                page: this.page || '',
+                sceneId: this.currentSceneId || ''
+            }, detail && typeof detail === 'object' ? detail : {});
+
+            try {
+                return this.experienceMetrics.record(type, payload);
+            } catch (_) {
+                return null;
+            }
         }
 
         resolveModelPrefix() {
@@ -2942,32 +3159,84 @@
             return true;
         }
 
-        resolveGuideVoiceCueTargetMs(voiceKey, cueName, playbackDurationMs) {
-            const cueConfig = getGuideAudioCueConfig(voiceKey);
+        getGuideTimelineCueConfig(voiceKey, cueName) {
+            const normalizedVoiceKey = typeof voiceKey === 'string' ? voiceKey.trim() : '';
             const normalizedCueName = typeof cueName === 'string' ? cueName.trim() : '';
-            if (!cueConfig || !normalizedCueName) {
+            if (!normalizedVoiceKey || !normalizedCueName) {
+                return null;
+            }
+
+            const steps = this.registry && this.registry.steps && typeof this.registry.steps === 'object'
+                ? this.registry.steps
+                : {};
+            const stepIds = Object.keys(steps);
+            for (let index = 0; index < stepIds.length; index += 1) {
+                const step = steps[stepIds[index]];
+                const performance = step && step.performance ? step.performance : {};
+                const timeline = Array.isArray(performance.timeline) ? performance.timeline : [];
+                for (let timelineIndex = 0; timelineIndex < timeline.length; timelineIndex += 1) {
+                    const cue = timeline[timelineIndex];
+                    if (!cue || cue.action !== normalizedCueName || !Number.isFinite(cue.at)) {
+                        continue;
+                    }
+
+                    const cueVoiceKey = typeof cue.voiceKey === 'string' && cue.voiceKey.trim()
+                        ? cue.voiceKey.trim()
+                        : (typeof performance.voiceKey === 'string' ? performance.voiceKey.trim() : '');
+                    if (cueVoiceKey !== normalizedVoiceKey) {
+                        continue;
+                    }
+
+                    return {
+                        at: clamp(cue.at, 0, 1),
+                        fallbackDurationMs: this.getGuideVoiceDurationMs(normalizedVoiceKey, 'zh')
+                    };
+                }
+            }
+
+            const fallbackConfig = getGuideAudioCueConfig(normalizedVoiceKey);
+            const fallbackCue = fallbackConfig && fallbackConfig.cues
+                ? fallbackConfig.cues[normalizedCueName]
+                : null;
+            if (!fallbackCue || !Number.isFinite(fallbackCue.at)) {
+                return null;
+            }
+
+            return {
+                at: clamp(fallbackCue.at, 0, 1),
+                fallbackDurationMs: Number.isFinite(fallbackConfig.fallbackDurationMs)
+                    ? Math.max(1, fallbackConfig.fallbackDurationMs)
+                    : 0
+            };
+        }
+
+        resolveGuideVoiceCueTargetMs(voiceKey, cueName, playbackDurationMs, fallbackText) {
+            const cueConfig = this.getGuideTimelineCueConfig(voiceKey, cueName);
+            if (!cueConfig) {
                 return 0;
             }
 
-            const baseDurationMs = Number.isFinite(cueConfig.baseDurationMs)
-                ? Math.max(1, cueConfig.baseDurationMs)
+            const fallbackDurationMs = Number.isFinite(cueConfig.fallbackDurationMs)
+                ? Math.max(1, cueConfig.fallbackDurationMs)
                 : 0;
-            const baseCueMs = Number.isFinite(cueConfig[normalizedCueName])
-                ? Math.max(0, cueConfig[normalizedCueName])
-                : 0;
-            if (baseDurationMs <= 0 || baseCueMs <= 0) {
+            if (cueConfig.at <= 0) {
                 return 0;
             }
 
-            const progress = clamp(baseCueMs / baseDurationMs, 0, 1);
             const targetDurationMs = Number.isFinite(playbackDurationMs) && playbackDurationMs > 0
                 ? playbackDurationMs
-                : baseDurationMs;
-            return clamp(Math.round(targetDurationMs * progress), 0, targetDurationMs);
+                : this.getGuideVoiceDurationMs(voiceKey, resolveGuideLocale())
+                    || estimateSpeechDurationMs(fallbackText || '')
+                    || fallbackDurationMs;
+            return clamp(Math.round(targetDurationMs * cueConfig.at), 0, targetDurationMs);
         }
 
         async waitForNarrationCue(voiceKey, cueName) {
-            const fallbackTargetMs = this.resolveGuideVoiceCueTargetMs(voiceKey, cueName, 0);
+            const activeNarrationAtStart = this.activeNarration;
+            const fallbackText = activeNarrationAtStart && activeNarrationAtStart.voiceKey === voiceKey
+                ? activeNarrationAtStart.text
+                : '';
+            const fallbackTargetMs = this.resolveGuideVoiceCueTargetMs(voiceKey, cueName, 0, fallbackText);
             if (fallbackTargetMs <= 0) {
                 return true;
             }
@@ -2989,7 +3258,8 @@
                     const cueTargetMs = this.resolveGuideVoiceCueTargetMs(
                         voiceKey,
                         cueName,
-                        playbackSnapshot.durationMs
+                        playbackSnapshot.durationMs,
+                        fallbackText
                     );
                     if (playbackSnapshot.currentTimeMs >= cueTargetMs) {
                         return true;
@@ -3319,8 +3589,30 @@
         }
 
         async playManagedScene(stepId, meta) {
+            const startedAt = Date.now();
             this.setCurrentScene(stepId, meta && meta.context ? meta.context : null);
-            await this.playScene(stepId, meta || {});
+            this.recordExperienceMetric('scene_start', {
+                sceneId: stepId || '',
+                source: meta && meta.source ? meta.source : '',
+                runId: this.sceneRunId + 1
+            });
+
+            try {
+                await this.playScene(stepId, meta || {});
+                this.recordExperienceMetric('scene_complete', {
+                    sceneId: stepId || '',
+                    source: meta && meta.source ? meta.source : '',
+                    durationMs: Math.max(0, Date.now() - startedAt)
+                });
+            } catch (error) {
+                this.recordExperienceMetric('scene_failed', {
+                    sceneId: stepId || '',
+                    source: meta && meta.source ? meta.source : '',
+                    durationMs: Math.max(0, Date.now() - startedAt),
+                    reason: error && error.message ? error.message : 'unknown'
+                });
+                throw error;
+            }
         }
 
         disableInterrupts() {
@@ -4934,6 +5226,11 @@
 
         async waitForPluginDashboardPerformance(windowRef, payload) {
             if (!windowRef || windowRef.closed) {
+                this.recordExperienceMetric('handoff_failed', {
+                    sceneId: this.currentSceneId || 'takeover_plugin_preview',
+                    targetPage: 'plugin_dashboard',
+                    reason: 'plugin_dashboard_window_missing'
+                });
                 return Promise.resolve(false);
             }
 
@@ -4949,7 +5246,25 @@
                 const startedAt = Date.now();
                 const handoffPayload = Object.assign({}, payload || {}, {
                     interruptCount: Math.max(0, Math.floor(Number.isFinite(this.interruptCount) ? this.interruptCount : 0)),
-                    skipButtonScreenRect: skipButtonScreenRect
+                    skipButtonScreenRect: skipButtonScreenRect,
+                    platformCapabilities: {
+                        version: 1,
+                        platform: this.platformCapabilities && this.platformCapabilities.platform
+                            ? this.platformCapabilities.platform
+                            : 'web',
+                        windowBoundsSource: this.platformCapabilities && this.platformCapabilities.windowBoundsSource
+                            ? this.platformCapabilities.windowBoundsSource
+                            : 'browser-screen-origin',
+                        supportsExternalChat: !!(this.platformCapabilities && this.platformCapabilities.supportsExternalChat),
+                        supportsSystemTrayHint: !!(this.platformCapabilities && this.platformCapabilities.supportsSystemTrayHint),
+                        supportsPluginDashboardWindow: !!(this.platformCapabilities && this.platformCapabilities.supportsPluginDashboardWindow),
+                        pointerProfile: this.platformCapabilities && this.platformCapabilities.pointerProfile
+                            ? this.platformCapabilities.pointerProfile
+                            : 'pointer',
+                        preferredSkipHitPadding: this.platformCapabilities && Number.isFinite(this.platformCapabilities.preferredSkipHitPadding)
+                            ? this.platformCapabilities.preferredSkipHitPadding
+                            : 18
+                    }
                 });
                 const preloadTimeoutMs = 15000;
                 const executionTimeoutMs = clamp(
@@ -4959,6 +5274,11 @@
                 );
                 const targetOrigin = this.getPluginDashboardExpectedOrigin();
                 if (!targetOrigin) {
+                    this.recordExperienceMetric('handoff_failed', {
+                        sceneId: this.currentSceneId || 'takeover_plugin_preview',
+                        targetPage: 'plugin_dashboard',
+                        reason: 'target_origin_missing'
+                    });
                     resolve(false);
                     return;
                 }
@@ -4968,6 +5288,7 @@
                     targetOrigin: targetOrigin,
                     ready: false,
                     readyAt: 0,
+                    failureReason: '',
                     resolve: (result) => {
                         if (this.pluginDashboardHandoff !== handoff) {
                             return;
@@ -4981,6 +5302,13 @@
                             handoff.timeoutId = 0;
                         }
                         this.pluginDashboardHandoff = null;
+                        if (!result) {
+                            this.recordExperienceMetric('handoff_failed', {
+                                sceneId: this.currentSceneId || 'takeover_plugin_preview',
+                                targetPage: 'plugin_dashboard',
+                                reason: handoff.failureReason || 'unknown'
+                            });
+                        }
                         resolve(result);
                     },
                     reject: (error) => {
@@ -5000,6 +5328,7 @@
                     },
                     post: () => {
                         if (!windowRef || windowRef.closed) {
+                            handoff.failureReason = 'plugin_dashboard_window_closed';
                             handoff.resolve(false);
                             return;
                         }
@@ -5017,16 +5346,19 @@
 
                 handoff.intervalId = window.setInterval(() => {
                     if (!windowRef || windowRef.closed) {
+                        handoff.failureReason = 'plugin_dashboard_window_closed';
                         handoff.resolve(false);
                         return;
                     }
 
                     if (!handoff.ready && (Date.now() - startedAt) >= preloadTimeoutMs) {
+                        handoff.failureReason = 'plugin_dashboard_ready_timeout';
                         handoff.resolve(false);
                         return;
                     }
 
                     if (handoff.ready && handoff.readyAt > 0 && (Date.now() - handoff.readyAt) >= executionTimeoutMs) {
+                        handoff.failureReason = 'plugin_dashboard_execution_timeout';
                         handoff.resolve(false);
                         return;
                     }
@@ -5035,6 +5367,7 @@
                     }
                 }, 450);
                 handoff.timeoutId = window.setTimeout(() => {
+                    handoff.failureReason = handoff.ready ? 'plugin_dashboard_execution_timeout' : 'plugin_dashboard_ready_timeout';
                     handoff.resolve(false);
                 }, preloadTimeoutMs + executionTimeoutMs);
 
@@ -5079,31 +5412,6 @@
                 console.warn('[YuiGuide] 向插件面板发送 terminate 失败:', error);
                 return false;
             }
-        }
-
-        detectDesktopPlatform() {
-            const rawPlatform = (
-                (navigator.userAgentData && navigator.userAgentData.platform)
-                || navigator.platform
-                || navigator.userAgent
-                || ''
-            ).toString().toLowerCase();
-            if (rawPlatform.includes('mac')) return 'macos';
-            if (rawPlatform.includes('win')) return 'windows';
-            if (rawPlatform.includes('linux') || rawPlatform.includes('x11')) return 'linux';
-            return 'web';
-        }
-
-        getSkipButtonHitPadding(platform, boundsSource) {
-            if (boundsSource === 'electron-window-bounds') {
-                if (platform === 'macos') return 28;
-                if (platform === 'linux') return 32;
-                return 20;
-            }
-            if (platform === 'macos') return 36;
-            if (platform === 'linux') return 44;
-            if (platform === 'windows') return 28;
-            return 18;
         }
 
         async getGuideHostWindowBounds() {
@@ -5152,7 +5460,6 @@
                 return null;
             }
 
-            const platform = this.detectDesktopPlatform();
             const hostBounds = await this.getGuideHostWindowBounds();
             const rawScreenLeft = hostBounds && Number.isFinite(hostBounds.x)
                 ? hostBounds.x
@@ -5168,8 +5475,10 @@
             const screenTop = Number.isFinite(rawScreenTop) ? rawScreenTop : 0;
             const boundsSource = hostBounds && hostBounds.source
                 ? hostBounds.source
-                : 'browser-screen-origin';
-            const hitPadding = this.getSkipButtonHitPadding(platform, boundsSource);
+                : (this.platformCapabilities && this.platformCapabilities.windowBoundsSource) || 'browser-screen-origin';
+            const hitPadding = this.platformCapabilities && typeof this.platformCapabilities.getSkipHitPadding === 'function'
+                ? this.platformCapabilities.getSkipHitPadding(boundsSource)
+                : 18;
 
             return {
                 left: Math.round(screenLeft + rect.left - hitPadding),
@@ -5177,9 +5486,20 @@
                 right: Math.round(screenLeft + rect.right + hitPadding),
                 bottom: Math.round(screenTop + rect.bottom + hitPadding),
                 coordinateSpace: boundsSource,
-                platform: platform,
+                platform: this.platformCapabilities && this.platformCapabilities.platform
+                    ? this.platformCapabilities.platform
+                    : 'web',
                 devicePixelRatio: Number.isFinite(Number(window.devicePixelRatio)) ? Number(window.devicePixelRatio) : 1,
-                hitPadding: hitPadding
+                hitPadding: hitPadding,
+                forwardingTolerance: this.platformCapabilities && typeof this.platformCapabilities.getSkipForwardingTolerance === 'function'
+                    ? this.platformCapabilities.getSkipForwardingTolerance({
+                        coordinateSpace: boundsSource,
+                        hitPadding: hitPadding
+                    })
+                    : 6,
+                pointerProfile: this.platformCapabilities && this.platformCapabilities.pointerProfile
+                    ? this.platformCapabilities.pointerProfile
+                    : 'pointer'
             };
         }
 
@@ -6797,6 +7117,11 @@
                 return;
             }
 
+            this.recordExperienceMetric('angry_exit', {
+                sceneId: this.currentSceneId || 'interrupt_angry_exit',
+                reason: source || 'pointer_interrupt',
+                interruptCount: Math.max(0, Math.floor(Number.isFinite(this.interruptCount) ? this.interruptCount : 0))
+            });
             this.angryExitTriggered = true;
             this.clearSceneTimers();
             this.disableInterrupts();
@@ -6847,6 +7172,10 @@
         }
 
         skip(reason, tutorialReason) {
+            this.recordExperienceMetric('skip', {
+                reason: reason || 'skip',
+                tutorialReason: tutorialReason || reason || 'skip'
+            });
             this.requestTermination(reason, tutorialReason);
         }
 
