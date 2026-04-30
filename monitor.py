@@ -7,7 +7,7 @@ import asyncio
 import json
 import os
 import logging
-from config import MONITOR_SERVER_PORT
+from config import MONITOR_SERVER_PORT, DEFAULT_LIVE2D_MODEL_NAME
 from utils.config_manager import get_config_manager, get_reserved
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.staticfiles import StaticFiles
@@ -42,8 +42,10 @@ templates = Jinja2Templates(directory=get_resource_path(""))
 
 app = FastAPI()
 
-LEGACY_DEFAULT_LIVE2D_MODELS = {"yui_default", "yui-default"}
-DEFAULT_LIVE2D_MODEL = "yui-origin"
+DEFAULT_LIVE2D_MODEL = DEFAULT_LIVE2D_MODEL_NAME
+LEGACY_DEFAULT_LIVE2D_MODELS = {
+    model_name for model_name in ("yui_default", "yui-default") if model_name != DEFAULT_LIVE2D_MODEL
+}
 
 # 挂载静态文件
 app.mount("/static", StaticFiles(directory=get_resource_path("static")), name="static")

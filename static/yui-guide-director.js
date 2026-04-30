@@ -1668,6 +1668,14 @@
             return 'live2d';
         }
 
+        handleAsyncFailure(result, ...warningArgs) {
+            if (result && typeof result.catch === 'function') {
+                result.catch((error) => {
+                    console.warn(...warningArgs, error);
+                });
+            }
+        }
+
         apply(emotion) {
             if (!emotion) {
                 return;
@@ -1681,11 +1689,7 @@
 
                 try {
                     const motionPromise = window.live2dManager.playMotion(emotion);
-                    if (motionPromise && typeof motionPromise.catch === 'function') {
-                        motionPromise.catch((error) => {
-                            console.warn('[YuiGuide] 播放教程动作失败:', emotion, error);
-                        });
-                    }
+                    this.handleAsyncFailure(motionPromise, '[YuiGuide] 播放教程动作失败:', emotion);
                 } catch (error) {
                     console.warn('[YuiGuide] 播放教程动作失败:', emotion, error);
                 }
@@ -1723,11 +1727,118 @@
             }
         }
 
-        clear() {
+        clearLive2DGuidePresentation() {
+            const manager = window.live2dManager;
+            if (!manager) {
+                return false;
+            }
+
+            if (typeof manager.clearEmotionEffects === 'function') {
+                this.handleAsyncFailure(
+                    manager.clearEmotionEffects(),
+                    '[YuiGuide] 清理 Live2D 教程动作失败:'
+                );
+                return true;
+            }
+
+            if (typeof manager.clearExpression === 'function') {
+                this.handleAsyncFailure(
+                    manager.clearExpression(),
+                    '[YuiGuide] 清理 Live2D 表情失败:'
+                );
+                return true;
+            }
+
+            const motionManager = manager.currentModel
+                && manager.currentModel.internalModel
+                && manager.currentModel.internalModel.motionManager;
+            if (motionManager && typeof motionManager.stopAllMotions === 'function') {
+                motionManager.stopAllMotions();
+                return true;
+            }
+
+            return false;
+        }
+
+        clearMmdGuidePresentation() {
+            const manager = window.mmdManager;
+            if (!manager) {
+                return false;
+            }
+
+            if (typeof manager.setEmotion === 'function') {
+                this.handleAsyncFailure(
+                    manager.setEmotion('neutral'),
+                    '[YuiGuide] 清理 MMD 教程情绪失败:'
+                );
+                return true;
+            }
+
+            const expression = manager.expression;
+            if (expression && typeof expression.setEmotion === 'function') {
+                this.handleAsyncFailure(
+                    expression.setEmotion('neutral'),
+                    '[YuiGuide] 清理 MMD 教程情绪失败:'
+                );
+                return true;
+            }
+
+            if (expression && typeof expression.resetAllMorphs === 'function') {
+                this.handleAsyncFailure(
+                    expression.resetAllMorphs(),
+                    '[YuiGuide] 清理 MMD 教程 morph 失败:'
+                );
+                return true;
+            }
+
+            return false;
+        }
+
+        clearVrmGuidePresentation() {
+            const manager = window.vrmManager;
+            if (!manager) {
+                return false;
+            }
+
+            if (typeof manager.setEmotion === 'function') {
+                this.handleAsyncFailure(
+                    manager.setEmotion('neutral'),
+                    '[YuiGuide] 清理 VRM 教程情绪失败:'
+                );
+                return true;
+            }
+
+            const expression = manager.expression;
+            if (expression && typeof expression.setMood === 'function') {
+                this.handleAsyncFailure(
+                    expression.setMood('neutral'),
+                    '[YuiGuide] 清理 VRM 教程情绪失败:'
+                );
+                return true;
+            }
+
+            return false;
+        }
+
+        clearViaActiveModelType() {
+            const activeModelType = this.getActiveModelType();
+            if (activeModelType === 'live2d') {
+                return this.clearLive2DGuidePresentation();
+            }
+            if (activeModelType === 'mmd') {
+                return this.clearMmdGuidePresentation();
+            }
+            if (activeModelType === 'vrm') {
+                return this.clearVrmGuidePresentation();
+            }
+            return false;
+        }
+
+        clearWithLegacyBridge() {
             if (window.LanLan1 && typeof window.LanLan1.clearEmotionEffects === 'function') {
                 try {
                     window.LanLan1.clearEmotionEffects();
-                    return;
+                    return true;
                 } catch (error) {
                     console.warn('[YuiGuide] 清理情绪失败:', error);
                 }
@@ -1736,10 +1847,25 @@
             if (window.LanLan1 && typeof window.LanLan1.clearExpression === 'function') {
                 try {
                     window.LanLan1.clearExpression();
+                    return true;
                 } catch (error) {
                     console.warn('[YuiGuide] 清理表情失败:', error);
                 }
             }
+
+            return false;
+        }
+
+        clear() {
+            try {
+                if (this.clearViaActiveModelType()) {
+                    return;
+                }
+            } catch (error) {
+                console.warn('[YuiGuide] 按模型类型清理教程情绪失败:', error);
+            }
+
+            this.clearWithLegacyBridge();
         }
     }
 
