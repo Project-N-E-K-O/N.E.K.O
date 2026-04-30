@@ -11,7 +11,7 @@ from plugin.sdk.plugin import Err, NekoPluginBase, Ok, SdkError, lifecycle, neko
 
 from .service import STS2AutoplayService
 from .tool_bridge import register_all_tools, unregister_all_tools
-from .tool_callbacks import create_tool_callback_app, start_callback_server, stop_callback_server
+from .tool_callbacks import start_callback_server, stop_callback_server
 
 _CONFIG_FILE = Path(__file__).with_name("plugin.toml")
 _SOURCE_ID = "sts2_autoplay"
@@ -86,21 +86,21 @@ class STS2AutoplayPlugin(NekoPluginBase):
         self._cfg = _as_mapping(cfg.get("sts2"))
         await self._service.startup(self._cfg)
 
-        # Start a lightweight HTTP server inside this plugin child process
-        # for tool_call callbacks. Plugins run as separate processes via
-        # multiprocessing.Process and do NOT share the plugin server's
-        # FastAPI app (ctx.app is None). The tool_calling protocol requires
-        # a callback_url that main_server can POST to.
-        import asyncio
-        self._tool_callback_server = None
-        self._tool_callback_port = 0
+        # Start a tool_call callback HTTP server in a dedicated thread.
+        #
+        # Why a thread: plugins run as child processes (multiprocessing.Process).
+        # The host runs startup() on a temporary event loop that closes once
+        # startup returns. Any asyncio.create_task() on that loop gets cancelled.
+        # The callback server must outlive startup, so it runs on its own loop
+        # in a daemon thread.
+        self._tool_callback_handle = None
         try:
-            callback_app = create_tool_callback_app(self._service)
-            server, port = await start_callback_server(callback_app, self.logger)
-            self._tool_callback_server = server
-            self._tool_callback_port = port
-            # Register tools with main_server ToolRegistry (background with retry)
-            asyncio.create_task(register_all_tools(self.logger, callback_port=port))
+            handle = start_callback_server(self._service, self.logger)
+            self._tool_callback_handle = handle
+            # Register tools with main_server. Await directly instead of
+            # create_task -- the startup loop is temporary and tasks on it
+            # would be cancelled.
+            await register_all_tools(self.logger, callback_port=handle.port)
         except Exception as exc:
             self.logger.warning("Failed to start tool callback server: %s. Tool calling disabled.", exc)
 
@@ -109,8 +109,8 @@ class STS2AutoplayPlugin(NekoPluginBase):
     @lifecycle(id="shutdown")
     async def shutdown(self, **_: Any):
         await unregister_all_tools(self.logger)
-        await stop_callback_server(self._tool_callback_server, self.logger)
-        self._tool_callback_server = None
+        stop_callback_server(self._tool_callback_handle, self.logger)
+        self._tool_callback_handle = None
         await self._service.shutdown()
         return Ok({"status": "shutdown"})
 

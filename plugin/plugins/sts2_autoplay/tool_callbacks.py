@@ -1,27 +1,24 @@
 """HTTP callback server for STS2 tool_call invocations.
 
-Plugins run as child processes (via ``multiprocessing.Process``), so they
-do NOT share the plugin server's FastAPI app. The tool_calling protocol
-requires a ``callback_url`` that main_server can POST to, which means
-the plugin must run its own lightweight HTTP server.
+Plugins run as child processes (via ``multiprocessing.Process``). The
+plugin host runs ``startup()`` on a **temporary** event loop that closes
+once startup returns. Any ``asyncio.create_task()`` on that loop will be
+cancelled.
 
-This module provides:
-- ``create_tool_callback_app(service)`` -- build a FastAPI app with callbacks
-- ``start_callback_server(app, logger)`` -- start it on a random available port
-- ``stop_callback_server(server)`` -- clean shutdown
+To keep the callback HTTP server alive, we run uvicorn in a **dedicated
+daemon thread** with its own persistent event loop. Tool registration
+also runs on that loop after the server is ready.
 
-Response contract (per ``docs/zh-CN/plugins/tool-calling.md``):
-  success: ``{"output": <any JSON>, "is_error": false}``
-  failure: ``{"error": "human-readable message", "is_error": true}``
+Lifecycle:
+  startup  -> ``start_callback_server()``  (spawns thread, returns port)
+  shutdown -> ``stop_callback_server()``   (signals exit, joins thread)
 """
 from __future__ import annotations
 
 import asyncio
 import socket
+import threading
 from typing import Any, Awaitable, Callable, Dict, Optional, Tuple
-
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
 
 
 def _find_available_port(host: str = "127.0.0.1", start: int = 49100, max_tries: int = 100) -> int:
@@ -37,19 +34,17 @@ def _find_available_port(host: str = "127.0.0.1", start: int = 49100, max_tries:
     raise RuntimeError(f"no available port in range {start}-{start + max_tries - 1}")
 
 
-def create_tool_callback_app(service: Any) -> FastAPI:
-    """Create a minimal FastAPI app with callback endpoints for each tool.
+def _build_callback_app(service: Any) -> Any:
+    """Create a minimal FastAPI app with callback endpoints for each tool."""
+    from fastapi import FastAPI, Request
+    from fastapi.responses import JSONResponse
 
-    This app runs inside the plugin child process on its own port,
-    separate from the plugin server's FastAPI app.
-    """
     app = FastAPI(title="STS2 Tool Callbacks")
 
     async def _safe_call(
         request: Request,
         handler: Callable[[Dict[str, Any]], Awaitable[Any]],
     ) -> JSONResponse:
-        """Parse request body, call handler, return structured response."""
         body = await request.json()
         args = body.get("arguments", {})
         try:
@@ -93,7 +88,6 @@ def create_tool_callback_app(service: Any) -> FastAPI:
                     objective=args.get("objective"),
                     stop_condition=args.get("stop_condition", "current_floor"),
                 )
-                # Hint to LLM: autoplay is a background task, not yet completed
                 if isinstance(result, dict) and result.get("status") == "running":
                     result["hint"] = (
                         "自动游玩已在后台启动，正在持续进行中，尚未打完。"
@@ -144,43 +138,103 @@ def create_tool_callback_app(service: Any) -> FastAPI:
     return app
 
 
-async def start_callback_server(
-    app: FastAPI, logger: Any, *, host: str = "127.0.0.1",
-) -> Tuple[Any, int]:
-    """Start the callback HTTP server on a dynamically selected port.
+class _CallbackServerHandle:
+    """Opaque handle for the callback server running in a background thread."""
 
-    Returns ``(server_instance, port)`` so the caller can build
-    callback_urls and stop the server later.
+    def __init__(self) -> None:
+        self._thread: Optional[threading.Thread] = None
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._server: Any = None  # uvicorn.Server
+        self.port: int = 0
+
+    @property
+    def is_running(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
+
+
+def start_callback_server(
+    service: Any, logger: Any, *, host: str = "127.0.0.1",
+) -> _CallbackServerHandle:
+    """Start the callback HTTP server in a dedicated daemon thread.
+
+    The thread runs its own event loop so the server survives the
+    temporary startup loop closing. Returns a handle for later shutdown.
+
+    This function is synchronous and can be called from ``startup()``.
     """
     import uvicorn
 
     port = _find_available_port(host)
-    config = uvicorn.Config(
-        app,
-        host=host,
-        port=port,
-        log_level="warning",
-        log_config=None,
+    app = _build_callback_app(service)
+    handle = _CallbackServerHandle()
+    handle.port = port
+
+    ready_event = threading.Event()
+
+    def _run_server() -> None:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        handle._loop = loop
+
+        config = uvicorn.Config(
+            app,
+            host=host,
+            port=port,
+            log_level="warning",
+            log_config=None,
+        )
+        server = uvicorn.Server(config)
+        handle._server = server
+
+        async def _serve_and_signal() -> None:
+            # Signal ready once the server starts accepting connections
+            server.config.loaded = True
+            ready_event.set()
+            await server.serve()
+
+        try:
+            loop.run_until_complete(_serve_and_signal())
+        except Exception as exc:
+            logger.warning("Callback server loop exited: %s", exc)
+        finally:
+            try:
+                loop.run_until_complete(loop.shutdown_asyncgens())
+            except Exception:
+                pass
+            loop.close()
+
+    thread = threading.Thread(
+        target=_run_server,
+        name="sts2-tool-callback-server",
+        daemon=True,
     )
-    server = uvicorn.Server(config)
+    thread.start()
+    handle._thread = thread
 
-    # Run the server in a background task so it doesn't block the event loop
-    serve_task = asyncio.create_task(server.serve())
-    # Give uvicorn a moment to bind the socket
-    await asyncio.sleep(0.3)
+    # Wait for the server to be ready (up to 5 seconds)
+    if ready_event.wait(timeout=5.0):
+        logger.info("STS2 tool callback server started on %s:%d (thread=%s)", host, port, thread.name)
+    else:
+        logger.warning("STS2 tool callback server did not become ready within 5s")
 
-    logger.info("STS2 tool callback server started on %s:%d", host, port)
-    return server, port
+    return handle
 
 
-async def stop_callback_server(server: Any, logger: Any) -> None:
-    """Gracefully shut down the callback HTTP server."""
-    if server is None:
+def stop_callback_server(handle: Optional[_CallbackServerHandle], logger: Any) -> None:
+    """Gracefully shut down the callback HTTP server.
+
+    Synchronous -- safe to call from ``shutdown()`` on the temporary loop.
+    """
+    if handle is None or not handle.is_running:
         return
     try:
-        server.should_exit = True
-        # Give it a moment to finish in-flight requests
-        await asyncio.sleep(0.5)
-        logger.info("STS2 tool callback server stopped")
+        if handle._server is not None:
+            handle._server.should_exit = True
+        if handle._thread is not None:
+            handle._thread.join(timeout=3.0)
+            if handle._thread.is_alive():
+                logger.warning("Callback server thread did not exit within 3s")
+            else:
+                logger.info("STS2 tool callback server stopped")
     except Exception as e:
         logger.warning("Error stopping tool callback server: %s", e)
