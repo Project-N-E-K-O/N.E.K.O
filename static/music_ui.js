@@ -903,9 +903,15 @@
     let lastMusicPlayedThroughKey = '';
     let lastMusicPlayedThroughAt = 0;
     function notifyMusicPlayedThrough(track) {
-        const trackKey = track ? [track.url || '', track.name || '', track.artist || ''].join('|') : '';
+        // 用 filter(Boolean) 把缺失字段挤掉再 join，避免 {url:'',name:'',artist:''}
+        // 拼出"||"这种伪 key 让多首无元数据曲共享去抖钥匙
+        const parts = track ? [track.url, track.name, track.artist].filter(Boolean) : [];
+        const trackKey = parts.join('|');
         const now = Date.now();
-        if (trackKey && trackKey === lastMusicPlayedThroughKey && now - lastMusicPlayedThroughAt < 2000) return;
+        if (now - lastMusicPlayedThroughAt < 2000) {
+            // 空 key 时退化到全局 2s 兜底；非空 key 仅在和上次相同时才吞
+            if (!trackKey || trackKey === lastMusicPlayedThroughKey) return;
+        }
         lastMusicPlayedThroughKey = trackKey;
         lastMusicPlayedThroughAt = now;
         const lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
