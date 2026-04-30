@@ -96,7 +96,10 @@
   #controls input[type="checkbox"] { cursor: pointer; width: 15px; height: 15px; }
   #voice-controls {
     margin-top: 8px; padding-top: 8px; border-top: 1px solid rgba(255,255,255,0.18);
-    display: grid; grid-template-columns: auto 1fr auto; gap: 6px; align-items: center;
+    display: none; grid-template-columns: auto 1fr auto; gap: 6px; align-items: center;
+  }
+  #voice-controls[data-debug-visible="true"] {
+    display: grid;
   }
   #voice-controls button, #voice-controls input {
     border: 1px solid rgba(255,255,255,0.25); border-radius: 5px;
@@ -130,11 +133,11 @@
 <div id="controls">
   <label><input type="checkbox" id="boundary-toggle"> 启用边界（出界规则）</label>
   <label><input type="checkbox" id="voice-output-toggle" checked> 念出 LLM 台词（项目语音）</label>
-  <div id="voice-controls">
-    <button id="voice-mic-button" type="button">按住说话</button>
-    <input id="voice-text-input" type="text" placeholder="或输入主人语音文本，回车发送">
+  <div id="voice-controls" aria-hidden="true">
+    <button id="voice-mic-button" type="button">调试语音</button>
+    <input id="voice-text-input" type="text" placeholder="调试：输入最终转写文本，回车发送">
     <button id="voice-send-button" type="button">发送</button>
-    <div id="voice-status">语音隔离层：待机</div>
+    <div id="voice-status">调试 STT：隐藏</div>
   </div>
 </div>
 <div id="status">loading VRM dependencies…</div>
@@ -539,10 +542,18 @@
     BOUNDARY.enabled = boundaryToggle.checked;
   });
   const voiceOutputToggle = document.getElementById('voice-output-toggle');
+  const voiceControls = document.getElementById('voice-controls');
   const voiceMicButton = document.getElementById('voice-mic-button');
   const voiceTextInput = document.getElementById('voice-text-input');
   const voiceSendButton = document.getElementById('voice-send-button');
   const voiceStatusEl = document.getElementById('voice-status');
+  const debugSttVisible = new URLSearchParams(window.location.search).get('debug_stt') === '1' ||
+    window.localStorage?.getItem('soccerDebugStt') === '1';
+  if (debugSttVisible && voiceControls) {
+    voiceControls.dataset.debugVisible = 'true';
+    voiceControls.setAttribute('aria-hidden', 'false');
+    console.log('[SoccerVoice][DebugSTT] 调试控件已显示 | 来源=debug_stt/localStorage');
+  }
 
   const state = {
     player: { x: 0, y: 0, vx: 0, vy: 0 },
@@ -1635,14 +1646,20 @@
       'steal', 'stolen',
     ]),
     // 节流：同一 kind 的 LLM 调用间隔（秒）
-    cooldowns: {},
-    cooldownSec: 8,
-    realtimeContextLastSentAt: 0,
-    realtimeContextCooldownMs: 1200,
-    routeHeartbeatTimer: null,
-    routeHeartbeatInFlight: false,
-    routeHeartbeatFailures: 0,
-  };
+	    cooldowns: {},
+	    cooldownSec: 8,
+	    realtimeContextLastSentAt: 0,
+	    realtimeContextCooldownMs: 1200,
+	    routeHeartbeatTimer: null,
+	    routeHeartbeatInFlight: false,
+	    routeHeartbeatFailures: 0,
+	    loggedExternalInputKeys: new Set(),
+	    routeVoiceSttActive: false,
+	    routeVoiceSttListening: false,
+	    routeVoiceSttStopping: false,
+	    routeVoiceSttRecognition: null,
+	    routeVoiceSttRestartTimer: null,
+	  };
 
   function _gameRoutePayload(extra = {}) {
     return JSON.stringify({
@@ -1688,25 +1705,147 @@
     _llm.routeHeartbeatTimer = setInterval(_sendGameRouteHeartbeat, 2500);
   }
 
-  function _stopGameRouteHeartbeat() {
-    if (_llm.routeHeartbeatTimer) {
-      clearInterval(_llm.routeHeartbeatTimer);
-      _llm.routeHeartbeatTimer = null;
-    }
-  }
+	  function _stopGameRouteHeartbeat() {
+	    if (_llm.routeHeartbeatTimer) {
+	      clearInterval(_llm.routeHeartbeatTimer);
+	      _llm.routeHeartbeatTimer = null;
+	    }
+	  }
 
-  async function _startGameRoute() {
-    try {
-      const resp = await fetch('/api/game/soccer/route/start', {
-        method: 'POST',
+	  function _routeVoiceRecognitionCtor() {
+	    return window.SpeechRecognition || window.webkitSpeechRecognition || null;
+	  }
+
+	  function _startRouteVoiceSttGate(reason = 'route') {
+	    _llm.routeVoiceSttActive = true;
+	    if (_llm.routeVoiceSttListening) {
+	      console.log(`[SoccerVoice][RouteSTT] 已在运行 | reason=${reason}`);
+	      return true;
+	    }
+	    const SpeechRecognition = _routeVoiceRecognitionCtor();
+	    if (!SpeechRecognition) {
+	      console.warn('[SoccerVoice][RouteSTT] 当前浏览器不支持 SpeechRecognition，无法接收主语音最终转写');
+	      _setVoiceStatus('当前浏览器不支持游戏语音转写，请暂时使用主聊天文本输入');
+	      return false;
+	    }
+	    if (!_llm.routeVoiceSttRecognition) {
+	      const rec = new SpeechRecognition();
+	      rec.lang = 'zh-CN';
+	      rec.continuous = true;
+	      rec.interimResults = false;
+	      rec.maxAlternatives = 1;
+	      rec.onstart = () => {
+	        _llm.routeVoiceSttListening = true;
+	        _llm.routeVoiceSttStopping = false;
+	        _setVoiceStatus('游戏语音 STT：正在听主人说话');
+	        console.log('[SoccerVoice][RouteSTT] 已启动');
+	      };
+	      rec.onaudiostart = () => console.log('[SoccerVoice][RouteSTT][Diag] audio start');
+	      rec.onsoundstart = () => console.log('[SoccerVoice][RouteSTT][Diag] sound start');
+	      rec.onspeechstart = () => console.log('[SoccerVoice][RouteSTT][Diag] speech start');
+	      rec.onspeechend = () => console.log('[SoccerVoice][RouteSTT][Diag] speech end');
+	      rec.onsoundend = () => console.log('[SoccerVoice][RouteSTT][Diag] sound end');
+	      rec.onaudioend = () => console.log('[SoccerVoice][RouteSTT][Diag] audio end');
+	      rec.onnomatch = (event) => console.warn('[SoccerVoice][RouteSTT][Diag] no match:', event);
+	      rec.onresult = (event) => {
+	        let finalText = '';
+	        const startIndex = typeof event.resultIndex === 'number' ? event.resultIndex : 0;
+	        console.log('[SoccerVoice][RouteSTT][Diag] result event:', {
+	          resultIndex: startIndex,
+	          resultCount: event.results ? event.results.length : 0,
+	        });
+	        for (let i = startIndex; i < event.results.length; i++) {
+	          const result = event.results[i];
+	          if (!result || result.isFinal === false) continue;
+	          finalText += (result[0] && result[0].transcript) || '';
+	        }
+	        finalText = finalText.trim();
+	        if (!finalText) return;
+	        console.log(`[SoccerVoice][RouteSTT] 最终转写 | text="${finalText}"`);
+	        void _submitUserSpeech(finalText, 'route-hidden-speech-recognition');
+	      };
+	      rec.onerror = (event) => {
+	        const errorCode = event?.error || 'unknown';
+	        console.warn('[SoccerVoice][RouteSTT] 识别错误:', errorCode, event);
+	        if (errorCode === 'no-speech') {
+	          console.warn('[SoccerVoice][RouteSTT][Diag] no-speech: 识别器启动了但没有形成最终语音。检查是否出现 audio/sound/speech start。');
+	        }
+	        _setVoiceStatus(`游戏语音 STT：${errorCode}`);
+	        if (errorCode === 'not-allowed' || errorCode === 'service-not-allowed') {
+	          _llm.routeVoiceSttActive = false;
+	          _llm.routeVoiceSttStopping = true;
+	        }
+	      };
+	      rec.onend = () => {
+	        _llm.routeVoiceSttListening = false;
+	        if (_llm.routeVoiceSttRestartTimer) {
+	          clearTimeout(_llm.routeVoiceSttRestartTimer);
+	          _llm.routeVoiceSttRestartTimer = null;
+	        }
+	        if (_llm.routeVoiceSttActive && !_llm.cleanedUp && !_llm.routeVoiceSttStopping) {
+	          _llm.routeVoiceSttRestartTimer = setTimeout(() => _startRouteVoiceSttGate('restart'), 350);
+	        }
+	        _llm.routeVoiceSttStopping = false;
+	      };
+	      _llm.routeVoiceSttRecognition = rec;
+	    }
+	    try {
+	      _llm.routeVoiceSttStopping = false;
+	      _llm.routeVoiceSttRecognition.start();
+	      _llm.routeVoiceSttListening = true;
+	      console.log(`[SoccerVoice][RouteSTT] 启动请求 | reason=${reason}`);
+	      return true;
+	    } catch (e) {
+	      if (e && e.name === 'InvalidStateError') {
+	        _llm.routeVoiceSttListening = true;
+	        console.log('[SoccerVoice][RouteSTT] start ignored: already running');
+	        return true;
+	      }
+	      console.warn('[SoccerVoice][RouteSTT] 启动失败:', e);
+	      _setVoiceStatus('游戏语音 STT：启动失败，请暂时使用主聊天文本输入');
+	      _llm.routeVoiceSttListening = false;
+	      return false;
+	    }
+	  }
+
+	  function _stopRouteVoiceSttGate() {
+	    _llm.routeVoiceSttActive = false;
+	    _llm.routeVoiceSttStopping = true;
+	    if (_llm.routeVoiceSttRestartTimer) {
+	      clearTimeout(_llm.routeVoiceSttRestartTimer);
+	      _llm.routeVoiceSttRestartTimer = null;
+	    }
+	    if (_llm.routeVoiceSttRecognition) {
+	      try { _llm.routeVoiceSttRecognition.stop(); } catch (e) {
+	        try { _llm.routeVoiceSttRecognition.abort(); } catch (_) { /* noop */ }
+	      }
+	    }
+	    _llm.routeVoiceSttListening = false;
+	  }
+
+	  function _handleGameVoiceSttGateOutput(output) {
+	    _llm.routeVoiceSttActive = true;
+	    _setVoiceStatus('游戏语音 STT：主语音入口接管中');
+	    console.log('[SoccerVoice][RouteSTT] 后端要求启动游戏语音 STT，复用主 Realtime 转写:', output);
+	  }
+
+	  async function _startGameRoute() {
+	    try {
+	      const resp = await fetch('/api/game/soccer/route/start', {
+	        method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: _gameRoutePayload(),
       });
       const data = await resp.json().catch(() => ({}));
-      if (data.ok) {
-        console.log('[SoccerRoute] 已接管主语音入口/主聊天窗:', data.state);
-        _startGameRouteHeartbeat();
-      } else {
+	      if (data.ok) {
+	        console.log('[SoccerRoute] 已接管主语音入口/主聊天窗:', data.state);
+	        if (data.state?.game_external_voice_route_active) {
+	          _llm.routeVoiceSttActive = true;
+	          _setVoiceStatus('游戏语音 STT：等待主语音入口接管');
+	          console.log('[SoccerVoice][RouteSTT] 已进入游戏语音路由，等待主 Realtime 转写接管');
+	        }
+	        _startGameRouteHeartbeat();
+	      } else {
         soccerRecoverableLog('[SoccerRoute] 接管主入口失败:', data);
       }
     } catch (e) {
@@ -2050,7 +2189,7 @@
     }
   }
 
-  async function _handleGameLLMResult(result, meta, eventTs) {
+	  async function _handleGameLLMResult(result, meta, eventTs) {
     if (result?.skipped) return;
     if (!result || !result.line) {
       if (result?.fallback && meta?.builtinFallback) {
@@ -2130,41 +2269,67 @@
       if (ignored.length > 0) {
         console.log(`[SoccerLLM][Control] 忽略 | 回合=${meta?.round ?? '?'} 非法指令 ${ignored.join('；')}，可选心情=${SoccerDemo.MOODS.join('/')}，可选难度=${SoccerDemo.DIFFICULTIES.join('/')}`);
       }
-    }
-  }
+	    }
+	  }
 
-  async function _drainExternalGameRouteOutputs() {
-    if (_llm.cleanedUp) return;
-    try {
-      const resp = await fetch('/api/game/soccer/route/drain', {
+	  function _logExternalGameRouteInput(output) {
+	    const event = output.event || {};
+	    const meta = output.meta || {};
+	    const requestId = output.request_id || meta.request_id || '';
+	    const inputText = event.textRaw || meta.inputText || event.userVoiceText || event.userText || '';
+	    const kind = event.kind || meta.kind || 'external-input';
+	    const inputType = event.type || (meta.hasUserSpeech ? 'user_voice' : (meta.hasUserText ? 'user_text' : 'external_input'));
+	    const round = event.round ?? meta.round ?? '?';
+	    const key = requestId || `${output.ts || ''}:${kind}:${inputText}`;
+	    if (key && _llm.loggedExternalInputKeys.has(key)) return;
+	    if (key) _llm.loggedExternalInputKeys.add(key);
+	    console.log(
+	      `[SoccerLLM][Mailbox] 收集 | 回合=${round} 类型=${inputType} 事件=${eventLabel(kind)}(${kind}) ` +
+	      `队列=外部路由 原文="${inputText}" 来源=${output.source || '-'} 请求=${requestId || '-'}`
+	    );
+	  }
+
+	  async function _drainExternalGameRouteOutputs() {
+	    if (_llm.cleanedUp) return;
+	    try {
+	      const resp = await fetch('/api/game/soccer/route/drain', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ session_id: _llm.sessionId }),
       });
       if (!resp.ok) return;
-      const data = await resp.json().catch(() => ({}));
-      const outputs = Array.isArray(data.outputs) ? data.outputs : [];
-      for (const output of outputs) {
-        if (!output || output.type !== 'game_llm_result') continue;
-        await _handleGameLLMResult(
-          output.result || {},
-          output.meta || { kind: 'external-text', voiceAlreadyHandled: true },
+	      const data = await resp.json().catch(() => ({}));
+	      const outputs = Array.isArray(data.outputs) ? data.outputs : [];
+	      for (const output of outputs) {
+	        if (output && output.type === 'game_voice_stt_gate') {
+	          _handleGameVoiceSttGateOutput(output);
+	          continue;
+	        }
+	        if (output && output.type === 'game_external_input') {
+	          _logExternalGameRouteInput(output);
+	          continue;
+	        }
+	        if (!output || output.type !== 'game_llm_result') continue;
+	        await _handleGameLLMResult(
+	          output.result || {},
+	          output.meta || { kind: 'external-text', voiceAlreadyHandled: true },
           performance.now()
         );
       }
     } catch (e) {
       soccerRecoverableLog('[SoccerRoute] 外部输入结果拉取失败:', e);
-    }
-  }
+	    }
+	  }
   const _routeDrainTimer = setInterval(_drainExternalGameRouteOutputs, 700);
 
   function _endGameLLMSession(useBeacon = false) {
     if (_llm.cleanedUp) return;
-    _llm.cleanedUp = true;
-    clearInterval(_routeDrainTimer);
-    _stopGameRouteHeartbeat();
+	    _llm.cleanedUp = true;
+	    clearInterval(_routeDrainTimer);
+	    _stopGameRouteHeartbeat();
+	    _stopRouteVoiceSttGate();
 
-    const payload = _gameRoutePayload({ reason: useBeacon ? 'pagehide' : 'manual' });
+	    const payload = _gameRoutePayload({ reason: useBeacon ? 'pagehide' : 'manual' });
     const url = '/api/game/soccer/end';
 
     if (useBeacon && navigator.sendBeacon) {
@@ -2192,7 +2357,7 @@
     _enqueueLLMItem(_makeMailboxItemFromSpeak(p));
   });
 
-  async function _submitUserSpeech(text, source = 'web-stt') {
+  async function _submitUserSpeech(text, source = 'debug-stt') {
     const clean = String(text || '').trim();
     if (!clean) return;
     const item = _makeMailboxItemFromUserSpeech(clean);
@@ -2200,7 +2365,7 @@
     console.log(`[SoccerVoice] 输入 | 来源=${source} 回合=${item.round} 分数=${JSON.stringify(item.snapshot.score)} 原文="${item.textRaw}"`);
     _setVoiceStatus(`已收到主人语音：${item.textRaw}`);
 
-    const requestId = `web-stt-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    const requestId = `debug-stt-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
     try {
       const resp = await fetch('/api/game/soccer/route/voice-transcript', {
         method: 'POST',
@@ -2213,12 +2378,12 @@
       });
       const data = await resp.json().catch(() => ({}));
       if (resp.ok && data.ok && data.handled) {
-        _setVoiceStatus(`已提交网页 STT：${clean}`);
+        _setVoiceStatus(`已提交调试 STT：${clean}`);
         return;
       }
-      soccerRecoverableLog('[SoccerVoice] 网页 STT 后端路由未接收，回退本地队列:', data.reason || resp.status);
+      soccerRecoverableLog('[SoccerVoice] 调试 STT 后端路由未接收，回退本地队列:', data.reason || resp.status);
     } catch (e) {
-      soccerRecoverableLog('[SoccerVoice] 网页 STT 提交失败，回退本地队列:', e);
+      soccerRecoverableLog('[SoccerVoice] 调试 STT 提交失败，回退本地队列:', e);
     }
 
     _enqueueLLMItem(item);
@@ -2242,14 +2407,14 @@
   function _setVoiceListening(next) {
     voiceListening = next;
     voiceMicButton?.classList.toggle('listening', next);
-    if (voiceMicButton) voiceMicButton.textContent = next ? '松开结束' : '按住说话';
-    _setVoiceStatus(next ? '语音隔离层：正在听主人说话…' : '语音隔离层：待机');
+    if (voiceMicButton) voiceMicButton.textContent = next ? '松开提交' : '调试语音';
+    _setVoiceStatus(next ? '调试 STT：正在听主人说话…' : '调试 STT：待机');
   }
 
   function _ensureVoiceRecognition() {
     if (!BrowserSpeechRecognition) {
-      _setVoiceStatus('当前浏览器不支持 SpeechRecognition，请用文本框模拟语音输入');
-      console.warn('[SoccerVoice] 浏览器不支持 SpeechRecognition，使用文本框作为 STT Gate');
+      _setVoiceStatus('当前浏览器不支持调试 STT，请用调试文本框提交');
+      console.warn('[SoccerVoice] 浏览器不支持 SpeechRecognition，调试 STT 文本框仍可提交最终转写');
       return null;
     }
     if (voiceRecognition) return voiceRecognition;
@@ -2258,16 +2423,31 @@
     voiceRecognition.continuous = false;
     voiceRecognition.interimResults = false;
     voiceRecognition.maxAlternatives = 1;
+    voiceRecognition.onstart = () => console.log('[SoccerVoice][DebugSTT][Diag] recognition start');
+    voiceRecognition.onaudiostart = () => console.log('[SoccerVoice][DebugSTT][Diag] audio start');
+    voiceRecognition.onsoundstart = () => console.log('[SoccerVoice][DebugSTT][Diag] sound start');
+    voiceRecognition.onspeechstart = () => console.log('[SoccerVoice][DebugSTT][Diag] speech start');
+    voiceRecognition.onspeechend = () => console.log('[SoccerVoice][DebugSTT][Diag] speech end');
+    voiceRecognition.onsoundend = () => console.log('[SoccerVoice][DebugSTT][Diag] sound end');
+    voiceRecognition.onaudioend = () => console.log('[SoccerVoice][DebugSTT][Diag] audio end');
+    voiceRecognition.onnomatch = (event) => console.warn('[SoccerVoice][DebugSTT][Diag] no match:', event);
     voiceRecognition.onresult = (event) => {
       const results = Array.from(event.results || []);
+      console.log('[SoccerVoice][DebugSTT][Diag] result event:', {
+        resultIndex: event.resultIndex,
+        resultCount: results.length,
+      });
       const finalText = results
         .map(r => r?.[0]?.transcript || '')
         .join('')
         .trim();
-      if (finalText) void _submitUserSpeech(finalText, 'speech-recognition');
+      if (finalText) void _submitUserSpeech(finalText, 'debug-speech-recognition');
     };
     voiceRecognition.onerror = (event) => {
       console.warn('[SoccerVoice] 识别错误:', event.error || event);
+      if ((event.error || '') === 'no-speech') {
+        console.warn('[SoccerVoice][DebugSTT][Diag] no-speech: 识别器启动了但没有形成最终语音。检查是否出现 audio/sound/speech start。');
+      }
       _setVoiceStatus(`语音识别错误：${event.error || 'unknown'}`);
     };
     voiceRecognition.onend = () => _setVoiceListening(false);
@@ -2296,7 +2476,7 @@
   window.addEventListener('mouseup', _stopVoiceRecognition);
   window.addEventListener('touchend', _stopVoiceRecognition);
   if (!BrowserSpeechRecognition) {
-    _setVoiceStatus('当前浏览器不支持 SpeechRecognition，请用文本框模拟语音输入');
+    _setVoiceStatus('当前浏览器不支持调试 STT，请用调试文本框提交');
   }
 
   window.addEventListener('pagehide', () => _endGameLLMSession(true));

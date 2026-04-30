@@ -908,10 +908,65 @@
                 // -------- status --------
                 } else if (response.type === 'status') {
                     var statusCode = null;
+                    var statusPayload = null;
+                    var statusDetails = null;
                     try {
-                        var parsed = JSON.parse(response.message);
-                        if (parsed && parsed.code) statusCode = parsed.code;
+                        statusPayload = JSON.parse(response.message);
+                        if (statusPayload && statusPayload.code) statusCode = statusPayload.code;
+                        if (statusPayload && statusPayload.details && typeof statusPayload.details === 'object') {
+                            statusDetails = statusPayload.details;
+                        }
                     } catch (_) { }
+
+                    if (statusCode === 'GAME_ROUTE_ENDED') {
+                        var shouldResumeAudio = !!(statusDetails && statusDetails.should_resume_external_on_exit);
+                        var wasRecording = !!S.isRecording;
+                        console.log(`[GameVoiceSTT] 游戏语音路由已结束 | resume=${shouldResumeAudio} recording=${wasRecording}`);
+                        if (typeof window.stopGameVoiceSttGate === 'function') {
+                            window.stopGameVoiceSttGate();
+                        } else {
+                            S.gameVoiceSttGateActive = false;
+                            S.gameVoiceSttGameType = '';
+                        }
+                        if (shouldResumeAudio && wasRecording && !S.isMicMuted) {
+                            var micPipelineAlive = !!(S.stream && S.audioContext && S.workletNode);
+                            if (!micPipelineAlive && typeof window.startMicCapture === 'function') {
+                                Promise.resolve(window.startMicCapture()).catch(function (error) {
+                                    console.warn('[GameVoiceSTT] 游戏退出后恢复普通语音采集失败:', error);
+                                });
+                            }
+                        }
+                        return;
+                    }
+
+                    if (statusCode === 'GAME_VOICE_STT_GATE_ACTIVE') {
+                        var sttProvider = (statusDetails && statusDetails.stt_provider) || 'browser';
+                        S.gameVoiceSttGameType = (statusDetails && statusDetails.game_type) || 'soccer';
+                        console.log(`[GameVoiceSTT] 游戏语音接管已激活 | game=${S.gameVoiceSttGameType} provider=${sttProvider} recording=${!!S.isRecording} muted=${!!S.isMicMuted}`);
+                        if (S._voiceSessionInitialTimer) {
+                            clearTimeout(S._voiceSessionInitialTimer);
+                            S._voiceSessionInitialTimer = null;
+                        }
+                        if (typeof window.stopProactiveChatSchedule === 'function') {
+                            window.stopProactiveChatSchedule();
+                        }
+                        if (sttProvider === 'realtime') {
+                            if (typeof window.stopGameVoiceSttGate === 'function') {
+                                window.stopGameVoiceSttGate();
+                            } else {
+                                S.gameVoiceSttGateActive = false;
+                            }
+                            console.log('[GameVoiceSTT] 复用原 Realtime STT，继续发送普通麦克风音频，普通回复由后端丢弃');
+                            return;
+                        }
+                        S.gameVoiceSttGateActive = true;
+                        if (typeof window.startGameVoiceSttGate === 'function') {
+                            window.startGameVoiceSttGate();
+                        } else {
+                            console.warn('[GameVoiceSTT] startGameVoiceSttGate unavailable');
+                        }
+                        return;
+                    }
 
                     var isGoodbyeActive = (window.live2dManager && window.live2dManager._goodbyeClicked) || (window.vrmManager && window.vrmManager._goodbyeClicked) || (window.mmdManager && window.mmdManager._goodbyeClicked);
                     if ((S.isSwitchingMode || isGoodbyeActive || S._suppressCharacterLeft) && (statusCode === 'CHARACTER_LEFT' || response.message.includes('已离开'))) {
@@ -1530,7 +1585,7 @@
                     }, 500);
 
                     // 语音模式：session 开始 5 秒内无 transcription，启动 proactive chat 计时器
-                    if (response.input_mode !== 'text' && S.proactiveChatEnabled) {
+                    if (response.input_mode !== 'text' && S.proactiveChatEnabled && !S.gameVoiceSttGateActive) {
                         if (S._voiceSessionInitialTimer) {
                             clearTimeout(S._voiceSessionInitialTimer);
                         }

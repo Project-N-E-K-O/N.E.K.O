@@ -246,6 +246,7 @@ class OmniRealtimeClient:
         self._modalities = ["text", "audio"]
         self._audio_in_buffer = False
         self._skip_until_next_response = False
+        self._game_route_stt_only = False
         self._audio_delta_count = 0  # diagnostic: count audio.delta events per session
         self._audio_delta_total = 0  # monotonic diagnostic across responses
         self._last_audio_delta_time = 0.0
@@ -515,6 +516,34 @@ class OmniRealtimeClient:
             "prefix_padding_ms": 300,
             "silence_duration_ms": 650,
         }
+
+    async def set_game_route_stt_only(self, enabled: bool) -> bool:
+        """Best-effort switch: keep Realtime input transcription, suppress auto replies."""
+        enabled = bool(enabled)
+        if self._game_route_stt_only == enabled:
+            return True
+        if not self.ws or self._fatal_error_occurred:
+            self._game_route_stt_only = enabled
+            return False
+
+        if "qwen" in self._model_lower:
+            turn_detection = self._qwen_server_vad_turn_detection_config()
+            if enabled:
+                # Qwen Realtime follows server_vad for automatic turns.  This
+                # keeps VAD/transcription active while asking the provider not
+                # to create a normal assistant response for each speech stop.
+                turn_detection["create_response"] = False
+            await self.update_session({"turn_detection": turn_detection})
+            self._game_route_stt_only = enabled
+            logger.info("game route realtime STT-only mode %s for model=%s", "enabled" if enabled else "disabled", self.model)
+            return True
+
+        logger.info(
+            "game route realtime STT-only mode not configured for model=%s; output callbacks will be suppressed locally",
+            self.model,
+        )
+        self._game_route_stt_only = enabled
+        return False
 
     async def process_audio_chunk_async(self, audio_chunk: bytes) -> bytes:
         """

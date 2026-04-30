@@ -751,6 +751,29 @@ async def _finalize_game_route_state_inner(
     state["game_external_voice_route_active"] = False
     state["game_external_text_route_active"] = False
     state["heartbeat_enabled"] = False
+    lanlan_name = str(state.get("lanlan_name") or "")
+    mgr = get_session_manager().get(lanlan_name) if lanlan_name else None
+    session = getattr(mgr, "session", None) if mgr else None
+    if session and hasattr(session, "set_game_route_stt_only"):
+        try:
+            await session.set_game_route_stt_only(False)
+        except Exception as exc:
+            logger.warning("⚠️ 游戏路由退出时恢复 Realtime STT-only 失败: %s", exc)
+    if mgr and hasattr(mgr, "send_status"):
+        try:
+            await mgr.send_status(json.dumps({
+                "code": "GAME_ROUTE_ENDED",
+                "details": {
+                    "game_type": str(state.get("game_type") or ""),
+                    "session_id": str(state.get("session_id") or ""),
+                    "reason": reason,
+                    "before_game_external_mode": state.get("before_game_external_mode"),
+                    "before_game_external_active": bool(state.get("before_game_external_active")),
+                    "should_resume_external_on_exit": bool(state.get("should_resume_external_on_exit")),
+                },
+            }))
+        except Exception as exc:
+            logger.warning("⚠️ 游戏路由退出状态通知失败: %s", exc)
 
     archive = state.get("archive") if isinstance(state.get("archive"), dict) else None
     if archive is None:
@@ -1085,6 +1108,8 @@ async def game_route_start(game_type: str, request: Request):
         lanlan_name,
         data.get("game_last_full_dialogue_count"),
     )
+    if state.get("before_game_external_mode") == "audio" and state.get("before_game_external_active"):
+        await route_external_stream_message(lanlan_name, {"input_type": "audio"})
     return {"ok": True, "state": _public_route_state(state)}
 
 
@@ -1329,6 +1354,17 @@ async def _route_external_transcript_to_game(
     if not text:
         return True
 
+    now = time.time()
+    if kind == "user-voice":
+        last_voice = state.get("_last_external_voice_transcript") if isinstance(state.get("_last_external_voice_transcript"), dict) else {}
+        if (
+            str(last_voice.get("text") or "") == text
+            and now - float(last_voice.get("ts") or 0) < 3.0
+        ):
+            logger.info("🎮 游戏语音转写去重: lanlan=%s text=%s", lanlan_name, text[:40])
+            return True
+        state["_last_external_voice_transcript"] = {"text": text, "ts": now}
+
     mgr = get_session_manager().get(lanlan_name)
     game_type = str(state.get("game_type") or "soccer")
     session_id = str(state.get("session_id") or "default")
@@ -1359,6 +1395,22 @@ async def _route_external_transcript_to_game(
         "source": source,
         "text": text,
         "request_id": request_id or "",
+    })
+    _append_game_output(state, {
+        "type": "game_external_input",
+        "source": source,
+        "request_id": request_id or "",
+        "ts": time.time(),
+        "event": event,
+        "meta": {
+            "kind": kind,
+            "round": event.get("round"),
+            "priority": 8,
+            "itemCount": 1,
+            "inputText": text,
+            "hasUserSpeech": kind == "user-voice",
+            "hasUserText": kind == "user-text",
+        },
     })
     result = await _run_game_chat(game_type, session_id, event)
     _append_game_dialog(state, {
@@ -1462,15 +1514,32 @@ async def route_external_stream_message(lanlan_name: str, message: dict) -> bool
                 session_id=str(state.get("session_id") or ""),
             )
         _append_route_activation(state, "external_voice_hijacked_by_game", "voice")
-        if mgr and hasattr(mgr, "send_status") and not state.get("_voice_stt_not_ready_notified"):
-            state["_voice_stt_not_ready_notified"] = True
-            await mgr.send_status(json.dumps({
-                "code": "GAME_VOICE_STT_NOT_READY",
+        session = getattr(mgr, "session", None) if mgr else None
+        if session and hasattr(session, "set_game_route_stt_only"):
+            try:
+                await session.set_game_route_stt_only(True)
+            except Exception as exc:
+                logger.warning("⚠️ 游戏路由启用 Realtime STT-only 失败: %s", exc)
+        if not state.get("_voice_stt_gate_active_notified"):
+            state["_voice_stt_gate_active_notified"] = True
+            status_payload = {
+                "code": "GAME_VOICE_STT_GATE_ACTIVE",
                 "details": {
                     "game_type": game_type,
-                    "message": "游戏期间主语音入口已被游戏路由接管。原始音频不会进入普通 Realtime；独立 STT 需把最终文本送入游戏语音转写入口。",
+                    "stt_provider": str(message.get("stt_provider") or "realtime"),
+                    "message": "游戏期间主语音入口已被游戏路由接管。当前复用原 Realtime 作为 STT provider；最终转写交给游戏路由，普通 Realtime 回复由后端丢弃。",
                 },
-            }))
+            }
+            _append_game_output(state, {
+                "type": "game_voice_stt_gate",
+                "source": "external_voice_hijacked_by_game",
+                "request_id": request_id or "",
+                "ts": time.time(),
+                "status": "active",
+                "details": status_payload["details"],
+            })
+            if mgr and hasattr(mgr, "send_status"):
+                await mgr.send_status(json.dumps(status_payload))
         return True
 
     if input_type in {"screen", "camera"}:

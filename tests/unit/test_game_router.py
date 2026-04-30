@@ -284,6 +284,28 @@ class _FakeGameRouteManager:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_route_start_activates_stt_gate_when_audio_already_active(monkeypatch, _fake_realtime):
+    mgr = _FakeGameRouteManager()
+    mgr.is_active = True
+    mgr.session = _fake_realtime(model_lower="qwen-realtime", delivered=True)
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
+
+    result = await game_router.game_route_start(
+        "soccer",
+        _FakeRequest({"lanlan_name": "Lan", "session_id": "match_1"}),
+    )
+
+    assert result["ok"] is True
+    state = result["state"]
+    assert state["before_game_external_mode"] == "audio"
+    assert state["before_game_external_active"] is True
+    assert state["game_external_voice_route_active"] is True
+    assert state["game_input_mode"] == "voice"
+    assert "GAME_VOICE_STT_GATE_ACTIVE" in mgr.statuses[0]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_route_external_text_to_game_llm_and_project_tts(monkeypatch):
     mgr = _FakeGameRouteManager()
     monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
@@ -332,14 +354,16 @@ async def test_route_external_text_to_game_llm_and_project_tts(monkeypatch):
         "game_type": "soccer",
         "session_id": "match_1",
     })]
-    assert state["pending_outputs"][0]["meta"]["voiceAlreadyHandled"] is True
-    assert state["pending_outputs"][0]["result"]["line"] == "才没有放水呢。"
+    assert [output["type"] for output in state["pending_outputs"]] == ["game_external_input", "game_llm_result"]
+    assert state["pending_outputs"][0]["meta"]["inputText"] == "你是不是在放水？"
+    assert state["pending_outputs"][1]["meta"]["voiceAlreadyHandled"] is True
+    assert state["pending_outputs"][1]["result"]["line"] == "才没有放水呢。"
     assert [item["type"] for item in state["game_dialog_log"]] == ["user", "assistant"]
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_route_external_audio_blocks_ordinary_realtime(monkeypatch):
+async def test_route_external_audio_activates_game_stt_gate(monkeypatch):
     mgr = _FakeGameRouteManager()
     monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
     state = game_router._activate_game_route("soccer", "match_1", "Lan")
@@ -352,7 +376,7 @@ async def test_route_external_audio_blocks_ordinary_realtime(monkeypatch):
     assert state["game_external_voice_route_active"] is True
     assert state["game_input_mode"] == "voice"
     assert state["activation_source"] == "external_voice_hijacked_by_game"
-    assert "GAME_VOICE_STT_NOT_READY" in mgr.statuses[0]
+    assert "GAME_VOICE_STT_GATE_ACTIVE" in mgr.statuses[0]
     assert len(mgr.statuses) == 1
 
 
@@ -400,8 +424,10 @@ async def test_route_external_voice_transcript_to_game_llm(monkeypatch):
         "game_type": "soccer",
         "session_id": "match_1",
     })]
-    assert state["pending_outputs"][0]["meta"]["kind"] == "user-voice"
-    assert state["pending_outputs"][0]["meta"]["hasUserSpeech"] is True
+    assert [output["type"] for output in state["pending_outputs"]] == ["game_external_input", "game_llm_result"]
+    assert state["pending_outputs"][0]["meta"]["inputText"] == "我马上要进球了"
+    assert state["pending_outputs"][1]["meta"]["kind"] == "user-voice"
+    assert state["pending_outputs"][1]["meta"]["hasUserSpeech"] is True
 
 
 @pytest.mark.unit

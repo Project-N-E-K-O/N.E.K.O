@@ -77,6 +77,13 @@
         silenceDetectionTimer: null,
         hasSoundDetected: false,
         isMicMuted: false,
+        gameVoiceSttGateActive: false,
+        gameVoiceSttGameType: '',
+        gameVoiceSttRecognition: null,
+        gameVoiceSttListening: false,
+        gameVoiceSttStopping: false,
+        gameVoiceSttRestartTimer: null,
+        gameVoiceSttUnsupportedNotified: false,
 
         // --- 会话 / WebSocket ---
         socket: null,

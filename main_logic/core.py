@@ -759,8 +759,20 @@ class LLMSessionManager:
             self.tts_pending_chunks.clear()
             self._tts_done_pending_until_ready = False
 
+    def _is_game_route_active(self) -> bool:
+        try:
+            from main_routers.game_router import is_game_route_active
+
+            return bool(is_game_route_active(self.lanlan_name))
+        except Exception:
+            return False
+
     async def handle_new_message(self):
         """处理新模型输出：清空TTS队列并通知前端"""
+        if self._is_game_route_active():
+            logger.info("[%s] game route active: suppressing ordinary realtime new-message handling", self.lanlan_name)
+            return
+
         # 重置音频重采样器状态（新轮次音频不应与上轮次连续）
         self.audio_resampler.clear()
         await self._clear_tts_pipeline()
@@ -788,6 +800,9 @@ class LLMSessionManager:
 
     async def handle_text_data(self, text: str, is_first_chunk: bool = False):
         """文本回调：处理文本显示和TTS（用于文本模式）"""
+        if self._is_game_route_active():
+            logger.info("[%s] game route active: dropping ordinary realtime text chunk len=%d", self.lanlan_name, len(text or ""))
+            return
 
         # 主动搭话 race guard：prompt_ephemeral 路径会设置 _proactive_expected_sid
         # contextvar。若其与 current_speech_id 不一致，说明用户已在 proactive
@@ -917,6 +932,11 @@ class LLMSessionManager:
 
     async def handle_response_complete(self):
         """Qwen完成回调：用于处理Core API的响应完成事件，包含TTS和热切换逻辑"""
+        if self._is_game_route_active():
+            logger.info("[%s] game route active: dropping ordinary realtime response completion", self.lanlan_name)
+            self._active_text_request_id = None
+            return
+
         active_request_id = self._active_text_request_id
 
         if self.use_tts and self.tts_thread and self.tts_thread.is_alive():
@@ -1178,6 +1198,9 @@ class LLMSessionManager:
 
     async def handle_audio_data(self, audio_data: bytes):
         """Qwen音频回调：推送音频到WebSocket前端"""
+        if self._is_game_route_active():
+            logger.info("[%s] game route active: dropping ordinary realtime audio bytes=%d", self.lanlan_name, len(audio_data or b""))
+            return
         if not self.use_tts:
             if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
                 # 这里假设audio_data为PCM16字节流，使用流式重采样器处理
@@ -1269,6 +1292,30 @@ class LLMSessionManager:
             # to work normally, so just bypass the tracker block.
             if transcript.strip():
                 self._session_turn_count += 1
+        transcript_text = transcript.strip()
+        if transcript_text and self._is_game_route_active():
+            try:
+                from main_routers.game_router import route_external_voice_transcript
+
+                handled = await route_external_voice_transcript(
+                    self.lanlan_name,
+                    transcript_text,
+                    request_id=f"realtime-stt-{uuid4()}",
+                )
+                logger.info(
+                    "[%s] game route active: realtime STT transcript routed handled=%s len=%d",
+                    self.lanlan_name, handled, len(transcript_text),
+                )
+                if handled:
+                    if isinstance(self.session, OmniRealtimeClient):
+                        try:
+                            await self.session.cancel_response()
+                            logger.info("[%s] game route active: cancelled ordinary realtime response after STT transcript", self.lanlan_name)
+                        except Exception as cancel_exc:
+                            logger.debug("[%s] game route active: realtime response cancel skipped/failed: %s", self.lanlan_name, cancel_exc)
+                    return
+            except Exception as exc:
+                logger.warning("[%s] game route realtime STT route failed: %s", self.lanlan_name, exc)
 
         # 推送到同步消息队列
         self.sync_message_queue.put({"type": "user", "data": {"input_type": "transcript", "data": transcript.strip()}})
@@ -1310,6 +1357,10 @@ class LLMSessionManager:
 
     async def handle_output_transcript(self, text: str, is_first_chunk: bool = False):
         """输出转录回调：处理文本显示和TTS（用于语音模式）"""
+        if self._is_game_route_active():
+            logger.info("[%s] game route active: dropping ordinary realtime output transcript len=%d", self.lanlan_name, len(text or ""))
+            return
+
         # 同 handle_text_data：proactive 路径设置的 sid 期望值若与 current 不符，
         # 丢弃本 chunk，避免 proactive 文本被错插进用户新轮次。
         expected_sid = _proactive_expected_sid.get()

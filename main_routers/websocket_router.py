@@ -132,9 +132,9 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                             _fire_task(session_manager[lanlan_name].send_session_started("text"))
                             continue
                         if input_type == "audio":
-                            logger.info("[%s] game route active: blocking ordinary realtime start for game voice route", lanlan_name)
-                            _fire_task(route_external_stream_message(lanlan_name, {"input_type": "audio"}))
-                            _fire_task(session_manager[lanlan_name].send_session_failed("audio"))
+                            logger.info("[%s] game route active: starting ordinary realtime as STT provider for game voice", lanlan_name)
+                            _fire_task(route_external_stream_message(lanlan_name, {"input_type": "audio", "stt_provider": "realtime"}))
+                            _fire_task(session_manager[lanlan_name].start_session(websocket, message.get("new_session", False), "audio"))
                             continue
                     # 传递input_mode参数，告知session manager使用何种模式
                     # 注意：音频模块由 main_server 后台预加载，Python import lock 会自动等待首次导入完成
@@ -153,9 +153,13 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
 
             elif action == "stream_data":
                 if is_game_route_active(lanlan_name):
-                    handled_by_game = await route_external_stream_message(lanlan_name, message)
-                    if handled_by_game:
-                        continue
+                    input_type = message.get("input_type")
+                    if input_type == "audio":
+                        await route_external_stream_message(lanlan_name, {"input_type": "audio", "stt_provider": "realtime"})
+                    else:
+                        handled_by_game = await route_external_stream_message(lanlan_name, message)
+                        if handled_by_game:
+                            continue
                 # [DIAG] 切换猫娘后语音 STT 不触发的排查：确认前端是否送达音频
                 # _input_type_dbg = message.get("input_type")
                 # _data = message.get("data")
