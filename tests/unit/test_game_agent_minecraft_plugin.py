@@ -247,6 +247,36 @@ async def test_execute_returns_disconnected_when_send_fails():
 
 
 @pytest.mark.asyncio
+async def test_task_finished_text_propagates_to_tool_result():
+    """The agent's free-text completion message (``text``/``data``/
+    ``message`` field on the task_finished frame) must reach the
+    LLM as part of the tool result — not just status/query."""
+    service, _ = _make_service()
+    service.configure({"task_timeout_seconds": 5.0})
+    service._client = _FakeClient()
+
+    async def driver():
+        for _ in range(50):
+            if service._pending is not None:
+                break
+            await asyncio.sleep(0.01)
+        else:
+            raise RuntimeError("handler never set _pending")
+        await service._on_task_finished({
+            "status": "ok",
+            "text": "Mined 10 oak logs, inventory full.",
+        })
+
+    runner = asyncio.create_task(driver())
+    out = await service.execute_minecraft_task(task="mine 10 oak logs")
+    await runner
+
+    assert out["status"] == "ok"
+    assert out["query"] == "mine 10 oak logs"
+    assert out["text"] == "Mined 10 oak logs, inventory full."
+
+
+@pytest.mark.asyncio
 async def test_finished_result_not_overwritten_by_racing_stop():
     """``_on_task_finished`` must clear ``self._pending`` BEFORE
     setting the event, so a racing ``stop()`` that acquires the lock
@@ -299,7 +329,10 @@ async def test_execute_completes_when_task_finished_fires():
             await asyncio.sleep(0.01)
         else:
             raise RuntimeError("handler never set _pending")
-        await service._on_task_finished({"status": "ok", "text": "done"})
+        # Frame without ``text`` — text propagation is covered by a
+        # dedicated test; here we only verify the basic resolve-on-
+        # ``task_finished`` contract.
+        await service._on_task_finished({"status": "ok"})
 
     runner = asyncio.create_task(driver())
     out = await service.execute_minecraft_task(task="mine 10 logs")
@@ -453,7 +486,7 @@ async def test_overwrite_interrupts_old_task_with_status():
     # resolves the runner.
     await service._on_task_finished({"status": "ok", "text": "old finished late"})
     assert service._pending is not None  # still waiting
-    await service._on_task_finished({"status": "ok", "text": "new finished"})
+    await service._on_task_finished({"status": "ok"})
     new_out = await asyncio.wait_for(new_runner, timeout=2.0)
     assert new_out == {"status": "ok", "query": "new task"}
 
@@ -737,7 +770,7 @@ async def test_stale_task_finished_after_timeout_is_dropped():
 
     # Late task_finished for A arrives — should be dropped, not
     # attached to anything.
-    await service._on_task_finished({"status": "ok", "text": "A done late"})
+    await service._on_task_finished({"status": "ok", "text": "A done late (stale)"})
     assert service._stale_task_finishes_to_drop == 0
     # No pending task got falsely resolved.
     assert service._pending is None
@@ -853,14 +886,14 @@ async def test_stale_task_finished_does_not_flip_task_finished_flag():
 
     # Stale frame for A arrives → must be dropped, must NOT flip
     # _task_finished to True (B is still running).
-    await service._on_task_finished({"status": "ok", "text": "A done late"})
+    await service._on_task_finished({"status": "ok", "text": "A done late (stale)"})
     assert service._stale_task_finishes_to_drop == 0
     assert service._task_finished is False
     assert service._pending is not None
     assert service._pending.task_text == "B"
 
     # Real B completion now flips the flag.
-    await service._on_task_finished({"status": "ok", "text": "B done"})
+    await service._on_task_finished({"status": "ok"})
     assert service._task_finished is True
     out_b = await asyncio.wait_for(runner, timeout=2.0)
     assert out_b == {"status": "ok", "query": "B"}
@@ -911,7 +944,7 @@ async def test_stale_task_finished_after_overwrite_is_dropped():
     assert service._pending.task_text == "new task"
 
     # Now the real frame for the new task arrives — should resolve normally.
-    await service._on_task_finished({"status": "ok", "text": "new done"})
+    await service._on_task_finished({"status": "ok"})
     new_out = await asyncio.wait_for(new_runner, timeout=2.0)
     assert new_out == {"status": "ok", "query": "new task"}
 
@@ -1056,7 +1089,7 @@ async def test_overwrite_during_send_task_bumps_via_late_dispatch_flag():
     assert service._pending is not None  # new still pending
 
     # 7. New's real frame arrives → resolves new.
-    await service._on_task_finished({"status": "ok", "text": "new done"})
+    await service._on_task_finished({"status": "ok"})
     new_out = await asyncio.wait_for(new_runner, timeout=2.0)
     assert new_out == {"status": "ok", "query": "new"}
 
@@ -1114,7 +1147,7 @@ async def test_overwrite_does_not_bump_drop_counter_for_undispatched_old():
 
     # Now drive the agent's task_finished for the new task — it
     # should resolve normally (NOT be swallowed as stale).
-    await service._on_task_finished({"status": "ok", "text": "new done"})
+    await service._on_task_finished({"status": "ok"})
     out = await asyncio.wait_for(new_runner, timeout=2.0)
     assert out == {"status": "ok", "query": "new"}
 

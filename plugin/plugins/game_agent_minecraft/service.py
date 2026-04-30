@@ -703,10 +703,19 @@ class GameAgentService:
             # clearing ``self._pending`` here is safe.
             pending = self._pending
             self._pending = None
-            pending.result = {
+            # Carry the agent's free-text message into the tool
+            # result so the LLM sees the agent's final commentary
+            # (e.g. "Mined 10 oak logs, inventory full" or "Path
+            # blocked by water"). Without this, the model only sees
+            # status/query and has to infer outcome detail —
+            # noticeably worse for narration and error recovery.
+            result_payload: Dict[str, Any] = {
                 "status": status,
                 "query": pending.task_text,
             }
+            if text:
+                result_payload["text"] = text
+            pending.result = result_payload
             pending.event.set()
             self._task_finished = True
 
