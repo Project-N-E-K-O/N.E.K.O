@@ -8,12 +8,16 @@ from main_routers import game_router
 @pytest.fixture(autouse=True)
 def _reset_game_sessions():
     snapshot = dict(game_router._game_sessions)
+    route_snapshot = dict(game_router._game_route_states)
     game_router._game_sessions.clear()
+    game_router._game_route_states.clear()
     try:
         yield
     finally:
         game_router._game_sessions.clear()
         game_router._game_sessions.update(snapshot)
+        game_router._game_route_states.clear()
+        game_router._game_route_states.update(route_snapshot)
 
 
 class _FakeRequest:
@@ -63,6 +67,8 @@ async def test_game_end_returns_closed_flag_for_missing_session():
         "ok": True,
         "closed": False,
         "session_id": "missing",
+        "route_closed": False,
+        "archive": None,
     }
 
 
@@ -83,6 +89,8 @@ async def test_game_end_closes_existing_session():
         "ok": True,
         "closed": True,
         "session_id": "match_1",
+        "route_closed": False,
+        "archive": None,
     }
     fake_session.close.assert_awaited_once()
 
@@ -246,3 +254,274 @@ async def test_realtime_speak_non_qwen_uses_text_response(monkeypatch, _fake_rea
     assert len(session.create_response_calls) == 1
     assert "换我进攻了" in session.create_response_calls[0]
     assert result["voice_source"]["provider"] == "openai"
+
+
+class _FakeGameRouteManager:
+    def __init__(self):
+        self.is_active = False
+        self.session = None
+        self.input_mode = "audio"
+        self.mirrored = []
+        self.spoken = []
+        self.statuses = []
+
+    async def mirror_game_user_text(self, text, **kwargs):
+        self.mirrored.append((text, kwargs))
+
+    async def speak_game_line(self, line, **kwargs):
+        self.spoken.append((line, kwargs))
+        return {
+            "ok": True,
+            "method": "project_tts",
+            "speech_id": "game-speech",
+            "audio_sent": True,
+            "voice_source": {"provider": "project_tts"},
+        }
+
+    async def send_status(self, message):
+        self.statuses.append(message)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_route_external_text_to_game_llm_and_project_tts(monkeypatch):
+    mgr = _FakeGameRouteManager()
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
+
+    state = game_router._activate_game_route("soccer", "match_1", "Lan")
+    state["last_state"] = {
+        "round": 3,
+        "mood": "happy",
+        "difficulty": "lv2",
+        "score": {"player": 1, "ai": 4},
+    }
+
+    async def fake_run_game_chat(game_type, session_id, event):
+        assert game_type == "soccer"
+        assert session_id == "match_1"
+        assert event["kind"] == "user-text"
+        assert event["userText"] == "你是不是在放水？"
+        assert event["scoreDiff"] == 3
+        return {
+            "line": "才没有放水呢。",
+            "control": {"mood": "happy"},
+            "llm_source": {"provider": "fake"},
+        }
+
+    monkeypatch.setattr(game_router, "_run_game_chat", fake_run_game_chat)
+
+    handled = await game_router.route_external_stream_message(
+        "Lan",
+        {"input_type": "text", "data": "你是不是在放水？", "request_id": "req-1"},
+    )
+
+    assert handled is True
+    assert state["game_external_text_route_active"] is True
+    assert state["game_input_mode"] == "text"
+    assert state["activation_source"] == "external_text_hijacked_by_game"
+    assert mgr.mirrored == [("你是不是在放水？", {
+        "request_id": "req-1",
+        "game_type": "soccer",
+        "session_id": "match_1",
+        "source": "external_text_route",
+        "input_type": "game_text",
+        "send_to_frontend": False,
+    })]
+    assert mgr.spoken == [("才没有放水呢。", {
+        "request_id": "req-1",
+        "game_type": "soccer",
+        "session_id": "match_1",
+    })]
+    assert state["pending_outputs"][0]["meta"]["voiceAlreadyHandled"] is True
+    assert state["pending_outputs"][0]["result"]["line"] == "才没有放水呢。"
+    assert [item["type"] for item in state["game_dialog_log"]] == ["user", "assistant"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_route_external_audio_blocks_ordinary_realtime(monkeypatch):
+    mgr = _FakeGameRouteManager()
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
+    state = game_router._activate_game_route("soccer", "match_1", "Lan")
+
+    handled = await game_router.route_external_stream_message("Lan", {"input_type": "audio", "data": [0, 1]})
+    handled_again = await game_router.route_external_stream_message("Lan", {"input_type": "audio", "data": [2, 3]})
+
+    assert handled is True
+    assert handled_again is True
+    assert state["game_external_voice_route_active"] is True
+    assert state["game_input_mode"] == "voice"
+    assert state["activation_source"] == "external_voice_hijacked_by_game"
+    assert "GAME_VOICE_STT_NOT_READY" in mgr.statuses[0]
+    assert len(mgr.statuses) == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_route_external_voice_transcript_to_game_llm(monkeypatch):
+    mgr = _FakeGameRouteManager()
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
+    state = game_router._activate_game_route("soccer", "match_1", "Lan")
+
+    async def fake_run_game_chat(game_type, session_id, event):
+        assert game_type == "soccer"
+        assert session_id == "match_1"
+        assert event["kind"] == "user-voice"
+        assert event["userVoiceText"] == "我马上要进球了"
+        return {
+            "line": "那我可要认真防你啦。",
+            "control": {"difficulty": "max"},
+            "llm_source": {"provider": "fake"},
+        }
+
+    monkeypatch.setattr(game_router, "_run_game_chat", fake_run_game_chat)
+
+    handled = await game_router.route_external_voice_transcript(
+        "Lan",
+        "我马上要进球了",
+        request_id="voice-1",
+        game_type="soccer",
+        session_id="match_1",
+    )
+
+    assert handled is True
+    assert state["game_external_voice_route_active"] is True
+    assert state["game_input_mode"] == "voice"
+    assert mgr.mirrored == [("我马上要进球了", {
+        "request_id": "voice-1",
+        "game_type": "soccer",
+        "session_id": "match_1",
+        "source": "external_voice_route",
+        "input_type": "game_voice_transcript",
+        "send_to_frontend": True,
+    })]
+    assert mgr.spoken == [("那我可要认真防你啦。", {
+        "request_id": "voice-1",
+        "game_type": "soccer",
+        "session_id": "match_1",
+    })]
+    assert state["pending_outputs"][0]["meta"]["kind"] == "user-voice"
+    assert state["pending_outputs"][0]["meta"]["hasUserSpeech"] is True
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_route_heartbeat_refreshes_last_state(monkeypatch):
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {})
+    state = game_router._activate_game_route("soccer", "match_1", "Lan")
+    before = state["last_heartbeat_at"]
+
+    result = await game_router.game_route_heartbeat(
+        "soccer",
+        _FakeRequest({
+            "lanlan_name": "Lan",
+            "session_id": "match_1",
+            "currentState": {"score": {"player": 3, "ai": 2}},
+        }),
+    )
+
+    assert result["ok"] is True
+    assert result["active"] is True
+    assert state["last_heartbeat_at"] >= before
+    assert state["last_state"] == {"score": {"player": 3, "ai": 2}}
+    assert result["heartbeat_timeout_seconds"] == game_router._GAME_ROUTE_HEARTBEAT_TIMEOUT_SECONDS
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_heartbeat_timeout_finalize_archives_and_closes_session(monkeypatch):
+    fake_session = type("FakeSession", (), {"close": AsyncMock()})()
+    game_router._game_sessions["soccer:match_1"] = {
+        "session": fake_session,
+        "reply_chunks": [],
+        "last_activity": 0,
+        "lock": None,
+    }
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {})
+    state = game_router._activate_game_route("soccer", "match_1", "Lan")
+
+    submitted = []
+
+    async def fake_submit(archive):
+        submitted.append(archive)
+        return {"ok": True, "status": "cached", "count": 1}
+
+    monkeypatch.setattr(game_router, "_submit_game_archive_to_memory", fake_submit)
+
+    result = await game_router._finalize_game_route_state(
+        state,
+        reason="heartbeat_timeout",
+        close_game_session=True,
+    )
+
+    assert state["game_route_active"] is False
+    assert state["heartbeat_enabled"] is False
+    assert state["exit_reason"] == "heartbeat_timeout"
+    assert result["game_session_closed"] is True
+    assert result["archive"]["exit_reason"] == "heartbeat_timeout"
+    assert result["archive_memory"] == {"ok": True, "status": "cached", "count": 1}
+    assert submitted[0]["exit_reason"] == "heartbeat_timeout"
+    fake_session.close.assert_awaited_once()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_project_speak_uses_manager_project_tts(monkeypatch):
+    mgr = _FakeGameRouteManager()
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
+    monkeypatch.setattr(game_router, "_get_current_character_info", lambda: {"lanlan_name": "Lan"})
+
+    result = await game_router.game_project_speak(
+        "soccer",
+        _FakeRequest({"line": "换我进攻了", "session_id": "match_1", "request_id": "req-2"}),
+    )
+
+    assert result["ok"] is True
+    assert result["method"] == "project_tts"
+    assert result["voice_source"]["provider"] == "project_tts"
+    assert mgr.spoken == [("换我进攻了", {
+        "request_id": "req-2",
+        "game_type": "soccer",
+        "session_id": "match_1",
+    })]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_game_end_archives_active_route_to_memory(monkeypatch):
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {})
+    state = game_router._activate_game_route("soccer", "match_1", "Lan")
+    state["last_state"] = {
+        "score": {"player": 2, "ai": 5},
+    }
+    game_router._append_game_dialog(state, {
+        "type": "user",
+        "source": "external_text_route",
+        "text": "你是不是在放水？",
+    })
+    game_router._append_game_dialog(state, {
+        "type": "assistant",
+        "source": "game_llm",
+        "line": "才没有放水呢。",
+        "control": {"mood": "happy"},
+    })
+
+    submitted = []
+
+    async def fake_submit(archive):
+        submitted.append(archive)
+        return {"ok": True, "status": "cached", "count": 1}
+
+    monkeypatch.setattr(game_router, "_submit_game_archive_to_memory", fake_submit)
+
+    result = await game_router.game_end(
+        "soccer",
+        _FakeRequest({"session_id": "match_1", "lanlan_name": "Lan"}),
+    )
+
+    assert result["route_closed"] is True
+    assert result["archive_memory"] == {"ok": True, "status": "cached", "count": 1}
+    assert result["archive"]["summary"].startswith("soccer 小游戏结束")
+    assert "待接入 memory_server" not in result["archive"]["summary"]
+    assert submitted[0]["last_full_dialogues"][-1]["line"] == "才没有放水呢。"
+    assert state["game_route_active"] is False

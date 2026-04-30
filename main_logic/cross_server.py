@@ -630,6 +630,13 @@ async def run_sync_connector(
                             # 发送用户转录到 monitor 供副终端显示
                             if data:
                                 await _try_send_json(sync_slot, {'type': 'user_transcript', 'text': data})
+                        elif input_type in {"game_text", "game_voice_transcript"}:
+                            if user_input_cache == '':
+                                await _try_send_json(sync_slot, {'type': 'user_activity'})  # 用于打断前端声音播放
+                            user_input_cache += data
+                            # 发送用户转录/游戏期间外部文本到 monitor 供副终端显示
+                            if data:
+                                await _try_send_json(sync_slot, {'type': 'user_transcript', 'text': data})
                         elif input_type == "screen":
                             last_screen = data
                             if data:

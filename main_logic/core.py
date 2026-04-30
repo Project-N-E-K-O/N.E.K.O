@@ -1423,6 +1423,168 @@ class LLMSessionManager:
         except Exception as e:
             logger.error(f"💥 WS Send Lanlan Response Error: {e}")
             return False
+
+    async def mirror_game_user_text(
+        self,
+        text: str,
+        *,
+        request_id: str | None = None,
+        game_type: str = "",
+        session_id: str = "",
+        source: str = "external_text_route",
+        input_type: str = "game_text",
+        send_to_frontend: bool = False,
+    ):
+        """Mirror a hijacked main-chat text input without invoking the ordinary chat LLM."""
+        clean = str(text or "").strip()
+        if not clean:
+            return
+        self.last_user_activity_time = time.time()
+        self._session_turn_count += 1
+        self.sync_message_queue.put({
+            "type": "user",
+            "data": {
+                "input_type": input_type,
+                "data": clean,
+                "source": source,
+                "game_type": game_type,
+                "session_id": session_id,
+                "request_id": request_id or "",
+            },
+        })
+        if send_to_frontend and self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
+            try:
+                await self.websocket.send_json({
+                    "type": "user_transcript",
+                    "text": clean,
+                    "source": source,
+                    "request_id": request_id,
+                })
+            except Exception as e:
+                logger.error(f"⚠️ 发送游戏语音转写到前端失败: {e}")
+
+    async def _ensure_game_tts_runtime(self) -> bool:
+        """Ensure the existing project TTS worker/handler can speak a game line.
+
+        This intentionally does not create an OmniOfflineClient or OmniRealtimeClient;
+        it only uses the project's TTS worker and normal frontend audio queue.
+        """
+        started_new_worker = False
+        if self.tts_thread is None or not self.tts_thread.is_alive():
+            self._start_tts_thread()
+            started_new_worker = True
+            start_time = time.time()
+            ready = False
+            while time.time() - start_time < 12.0:
+                if not self.tts_response_queue.empty():
+                    msg = self.tts_response_queue.get_nowait()
+                    if isinstance(msg, tuple) and len(msg) == 2 and msg[0] == "__ready__":
+                        ready = bool(msg[1])
+                        break
+                    self.tts_response_queue.put(msg)
+                    break
+                await asyncio.sleep(0.05)
+            async with self.tts_cache_lock:
+                self.tts_ready = ready
+        elif not self.tts_ready:
+            # A running handler may receive __ready__ shortly; queued text will flush then.
+            logger.debug("[%s] game TTS worker alive but not ready; line will be cached", self.lanlan_name)
+
+        if started_new_worker and self.tts_handler_task and not self.tts_handler_task.done():
+            self.tts_handler_task.cancel()
+            try:
+                await asyncio.wait_for(self.tts_handler_task, timeout=1.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                pass
+            self.tts_handler_task = None
+        if self.tts_handler_task and self.tts_handler_task.done():
+            self.tts_handler_task = None
+        if not self.tts_handler_task:
+            self.tts_handler_task = asyncio.create_task(self.tts_response_handler())
+
+        if self.tts_ready:
+            await self._flush_tts_pending_chunks()
+        return bool(self.tts_thread and self.tts_thread.is_alive())
+
+    async def speak_game_line(
+        self,
+        line: str,
+        *,
+        request_id: str | None = None,
+        game_type: str = "",
+        session_id: str = "",
+    ) -> dict:
+        """Send a game A-layer line through the normal chat mirror and project TTS path."""
+        clean = str(line or "").strip()
+        if not clean:
+            return {"ok": False, "reason": "missing_line", "audio_sent": False}
+
+        async with self.lock:
+            interrupted_speech_id = self.current_speech_id
+
+        self.audio_resampler.clear()
+        if self.use_tts:
+            await self._clear_tts_pipeline()
+        await self.send_user_activity(interrupted_speech_id)
+
+        async with self.lock:
+            self.current_speech_id = str(uuid4())
+            self._tts_done_queued_for_turn = False
+            self._tts_done_pending_until_ready = False
+            turn_id = self.current_speech_id
+            self.state.mark_user_input_preempt()
+        await self.state.fire(SessionEvent.USER_INPUT, sid=turn_id)
+
+        previous_request_id = self._active_text_request_id
+        self._active_text_request_id = request_id
+        try:
+            await self.send_lanlan_response(clean, is_first_chunk=True, turn_id=turn_id)
+            tts_available = await self._ensure_game_tts_runtime()
+            audio_queued = False
+            if tts_available:
+                async with self.tts_cache_lock:
+                    if self.tts_ready and self.tts_thread and self.tts_thread.is_alive():
+                        self._enqueue_tts_text_chunk(turn_id, clean)
+                    else:
+                        self.tts_pending_chunks.append((turn_id, clean))
+                    status = self._request_tts_done_locked()
+                    audio_queued = status in {"queued", "deferred", "already"}
+
+            turn_end_msg = {
+                "type": "system",
+                "data": "turn end",
+                "request_id": request_id,
+                "meta": {
+                    "source": "game_route",
+                    "game_type": game_type,
+                    "session_id": session_id,
+                },
+            }
+            self.sync_message_queue.put(turn_end_msg)
+            try:
+                if (
+                    self.websocket
+                    and hasattr(self.websocket, "client_state")
+                    and self.websocket.client_state == self.websocket.client_state.CONNECTED
+                ):
+                    await self.websocket.send_json(turn_end_msg)
+            except Exception as e:
+                logger.warning("[%s] game line turn_end send failed: %s", self.lanlan_name, e)
+
+            return {
+                "ok": True,
+                "method": "project_tts",
+                "speech_id": turn_id,
+                "audio_sent": audio_queued,
+                "audio_queued": audio_queued,
+                "voice_source": {
+                    "provider": "project_tts",
+                    "method": "project_tts",
+                    "use_existing_send_speech": True,
+                },
+            }
+        finally:
+            self._active_text_request_id = previous_request_id
         
     async def handle_silence_timeout(self, *, expected_session=None):
         """处理语音输入静默超时：自动关闭session但保持live2d显示"""

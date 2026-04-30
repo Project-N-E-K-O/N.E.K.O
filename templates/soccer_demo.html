@@ -1639,7 +1639,81 @@
     cooldownSec: 8,
     realtimeContextLastSentAt: 0,
     realtimeContextCooldownMs: 1200,
+    routeHeartbeatTimer: null,
+    routeHeartbeatInFlight: false,
+    routeHeartbeatFailures: 0,
   };
+
+  function _gameRoutePayload(extra = {}) {
+    return JSON.stringify({
+      session_id: _llm.sessionId,
+      currentState: SoccerDemo._snapshot(),
+      ...extra,
+    });
+  }
+
+  async function _sendGameRouteHeartbeat() {
+    if (_llm.cleanedUp || _llm.routeHeartbeatInFlight) return;
+    _llm.routeHeartbeatInFlight = true;
+    try {
+      const resp = await fetch('/api/game/soccer/route/heartbeat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: _gameRoutePayload(),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (resp.ok && data.ok && data.active) {
+        _llm.routeHeartbeatFailures = 0;
+        return;
+      }
+      if (resp.ok && data.ok && data.active === false) {
+        console.warn('[SoccerRoute] 心跳发现后端路由已结束:', data.reason || 'inactive');
+        _setVoiceStatus('游戏路由已结束，刷新页面可重新接管');
+        _stopGameRouteHeartbeat();
+        return;
+      }
+      _llm.routeHeartbeatFailures += 1;
+      soccerRecoverableLog('[SoccerRoute] 心跳异常:', data.reason || resp.status);
+    } catch (e) {
+      _llm.routeHeartbeatFailures += 1;
+      soccerRecoverableLog('[SoccerRoute] 心跳请求失败:', e);
+    } finally {
+      _llm.routeHeartbeatInFlight = false;
+    }
+  }
+
+  function _startGameRouteHeartbeat() {
+    _stopGameRouteHeartbeat();
+    void _sendGameRouteHeartbeat();
+    _llm.routeHeartbeatTimer = setInterval(_sendGameRouteHeartbeat, 2500);
+  }
+
+  function _stopGameRouteHeartbeat() {
+    if (_llm.routeHeartbeatTimer) {
+      clearInterval(_llm.routeHeartbeatTimer);
+      _llm.routeHeartbeatTimer = null;
+    }
+  }
+
+  async function _startGameRoute() {
+    try {
+      const resp = await fetch('/api/game/soccer/route/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: _gameRoutePayload(),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (data.ok) {
+        console.log('[SoccerRoute] 已接管主语音入口/主聊天窗:', data.state);
+        _startGameRouteHeartbeat();
+      } else {
+        soccerRecoverableLog('[SoccerRoute] 接管主入口失败:', data);
+      }
+    } catch (e) {
+      soccerRecoverableLog('[SoccerRoute] 接管主入口请求失败:', e);
+    }
+  }
+  _startGameRoute();
 
   function _scoreDiffOf(snapshot) {
     const score = snapshot?.score || { player: 0, ai: 0 };
@@ -1791,11 +1865,12 @@
     _llm.lastVoiceFailure = null;
     const stateNow = SoccerDemo._snapshot();
     try {
-      const resp = await fetch('/api/game/soccer/realtime-speak', {
+      const resp = await fetch('/api/game/soccer/speak', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           source: 'game-llm-result',
+          session_id: _llm.sessionId,
           line,
           state: stateNow,
           event: {
@@ -1811,7 +1886,7 @@
       const data = await resp.json().catch(() => ({}));
       if (data.ok) {
         data.voice_source = data.voice_source || {
-          provider: 'realtime',
+          provider: 'project_tts',
           model: data.method || 'unknown',
           method: data.method || 'unknown',
           lang: data.language || '',
@@ -1994,33 +2069,36 @@
       kind: (meta?.kind || 'mailbox') + '-llm',
       sourceLabel: `LLM生成 · ${Math.round(performance.now() - eventTs)}ms`,
     });
-    const voiceStartedAt = performance.now();
-    void _sendRealtimeSpeech(result.line, meta, result).then((voiceResult) => {
-      const finalVoiceResult = voiceResult || {};
-      const voiceOk = !!finalVoiceResult?.ok;
-      const voiceSource = finalVoiceResult?.voice_source || { provider: 'project_voice_unavailable' };
-      if (!voiceOk && voiceResult?.reason !== 'voice_output_disabled') {
-        const deliveredButMismatch = !!finalVoiceResult?.audio_sent && finalVoiceResult?.reason === 'spoken_transcript_mismatch';
-        console.log(
-          `[SoccerVoice] ${deliveredButMismatch ? '项目语音已送达但台词不匹配' : '项目语音未送达'} | 原因=${finalVoiceResult?.reason || 'realtime_unavailable'} ` +
-          `台词来源=${_formatSourceLabel(result.llm_source)} 台词="${result.line}"`
+    const shouldRequestVoice = !meta?.voiceAlreadyHandled;
+    if (shouldRequestVoice) {
+      const voiceStartedAt = performance.now();
+      void _sendRealtimeSpeech(result.line, meta, result).then((voiceResult) => {
+        const finalVoiceResult = voiceResult || {};
+        const voiceOk = !!finalVoiceResult?.ok;
+        const voiceSource = finalVoiceResult?.voice_source || { provider: 'project_voice_unavailable' };
+        if (!voiceOk && voiceResult?.reason !== 'voice_output_disabled') {
+          const deliveredButMismatch = !!finalVoiceResult?.audio_sent && finalVoiceResult?.reason === 'spoken_transcript_mismatch';
+          console.log(
+            `[SoccerVoice] ${deliveredButMismatch ? '项目语音已送达但台词不匹配' : '项目语音未送达'} | 原因=${finalVoiceResult?.reason || 'project_tts_unavailable'} ` +
+            `台词来源=${_formatSourceLabel(result.llm_source)} 台词="${result.line}"`
+          );
+        }
+        soccerRecoverableLog(
+          `[SoccerLLM] 语音结果 | 回合=${meta?.round ?? '?'} 事件=${eventLabel(meta?.kind)}(${meta?.kind}) ` +
+          `语音来源=${_formatSourceLabel(voiceSource)} 语音送达=${!!finalVoiceResult?.audio_sent} ` +
+          `提交=${!!finalVoiceResult?.audio_committed} 响应=${!!finalVoiceResult?.response_observed} ` +
+          `完成=${!!finalVoiceResult?.response_done} 匹配=${finalVoiceResult?.line_match !== undefined ? !!finalVoiceResult.line_match : '-'} ` +
+          `状态=${voiceOk ? 'ok' : (finalVoiceResult?.reason || 'failed')} ` +
+          `耗时=${(performance.now() - voiceStartedAt).toFixed(0)}ms`
         );
-      }
-      soccerRecoverableLog(
-        `[SoccerLLM] 语音结果 | 回合=${meta?.round ?? '?'} 事件=${eventLabel(meta?.kind)}(${meta?.kind}) ` +
-        `语音来源=${_formatSourceLabel(voiceSource)} 语音送达=${!!finalVoiceResult?.audio_sent} ` +
-        `提交=${!!finalVoiceResult?.audio_committed} 响应=${!!finalVoiceResult?.response_observed} ` +
-        `完成=${!!finalVoiceResult?.response_done} 匹配=${finalVoiceResult?.line_match !== undefined ? !!finalVoiceResult.line_match : '-'} ` +
-        `状态=${voiceOk ? 'ok' : (finalVoiceResult?.reason || 'failed')} ` +
-        `耗时=${(performance.now() - voiceStartedAt).toFixed(0)}ms`
-      );
-    }).catch((e) => {
-      soccerRecoverableLog('[SoccerVoice] 项目语音结果处理失败:', e);
-    });
+      }).catch((e) => {
+        soccerRecoverableLog('[SoccerVoice] 项目语音结果处理失败:', e);
+      });
+    }
     console.log(
       `[SoccerLLM] 已显示 | 回合=${meta?.round ?? '?'} 事件=${eventLabel(meta?.kind)}(${meta?.kind}) ` +
       `台词来源=${_formatSourceLabel(result.llm_source)} ` +
-      `语音请求=${voiceOutputToggle?.checked ? '已发起' : '已关闭'} ` +
+      `语音请求=${shouldRequestVoice ? (voiceOutputToggle?.checked ? '已发起' : '已关闭') : '后端已处理'} ` +
       `事件到气泡=${(performance.now() - eventTs).toFixed(0)}ms`
     );
 
@@ -2055,11 +2133,38 @@
     }
   }
 
+  async function _drainExternalGameRouteOutputs() {
+    if (_llm.cleanedUp) return;
+    try {
+      const resp = await fetch('/api/game/soccer/route/drain', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: _llm.sessionId }),
+      });
+      if (!resp.ok) return;
+      const data = await resp.json().catch(() => ({}));
+      const outputs = Array.isArray(data.outputs) ? data.outputs : [];
+      for (const output of outputs) {
+        if (!output || output.type !== 'game_llm_result') continue;
+        await _handleGameLLMResult(
+          output.result || {},
+          output.meta || { kind: 'external-text', voiceAlreadyHandled: true },
+          performance.now()
+        );
+      }
+    } catch (e) {
+      soccerRecoverableLog('[SoccerRoute] 外部输入结果拉取失败:', e);
+    }
+  }
+  const _routeDrainTimer = setInterval(_drainExternalGameRouteOutputs, 700);
+
   function _endGameLLMSession(useBeacon = false) {
     if (_llm.cleanedUp) return;
     _llm.cleanedUp = true;
+    clearInterval(_routeDrainTimer);
+    _stopGameRouteHeartbeat();
 
-    const payload = JSON.stringify({ session_id: _llm.sessionId });
+    const payload = _gameRoutePayload({ reason: useBeacon ? 'pagehide' : 'manual' });
     const url = '/api/game/soccer/end';
 
     if (useBeacon && navigator.sendBeacon) {
@@ -2087,18 +2192,42 @@
     _enqueueLLMItem(_makeMailboxItemFromSpeak(p));
   });
 
-  function _submitUserSpeech(text, source = 'text') {
-    const item = _makeMailboxItemFromUserSpeech(text);
+  async function _submitUserSpeech(text, source = 'web-stt') {
+    const clean = String(text || '').trim();
+    if (!clean) return;
+    const item = _makeMailboxItemFromUserSpeech(clean);
     if (!item) return;
     console.log(`[SoccerVoice] 输入 | 来源=${source} 回合=${item.round} 分数=${JSON.stringify(item.snapshot.score)} 原文="${item.textRaw}"`);
     _setVoiceStatus(`已收到主人语音：${item.textRaw}`);
+
+    const requestId = `web-stt-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    try {
+      const resp = await fetch('/api/game/soccer/route/voice-transcript', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: _gameRoutePayload({
+          transcript: clean,
+          source,
+          request_id: requestId,
+        }),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (resp.ok && data.ok && data.handled) {
+        _setVoiceStatus(`已提交网页 STT：${clean}`);
+        return;
+      }
+      soccerRecoverableLog('[SoccerVoice] 网页 STT 后端路由未接收，回退本地队列:', data.reason || resp.status);
+    } catch (e) {
+      soccerRecoverableLog('[SoccerVoice] 网页 STT 提交失败，回退本地队列:', e);
+    }
+
     _enqueueLLMItem(item);
   }
 
   function _submitVoiceTextInput() {
     const text = voiceTextInput?.value || '';
     if (voiceTextInput) voiceTextInput.value = '';
-    _submitUserSpeech(text, 'text-box');
+    void _submitUserSpeech(text, 'text-box');
   }
 
   voiceSendButton?.addEventListener('click', _submitVoiceTextInput);
@@ -2135,7 +2264,7 @@
         .map(r => r?.[0]?.transcript || '')
         .join('')
         .trim();
-      if (finalText) _submitUserSpeech(finalText, 'speech-recognition');
+      if (finalText) void _submitUserSpeech(finalText, 'speech-recognition');
     };
     voiceRecognition.onerror = (event) => {
       console.warn('[SoccerVoice] 识别错误:', event.error || event);
