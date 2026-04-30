@@ -1273,10 +1273,10 @@ def check_h_persona_language_fallback(client, mock) -> list[str]:
     """H — persona.language=es/pt → instruction is English (silent fallback)."""
     errors: list[str] = []
 
-    # Expected English prefix substring from AGENT_CALLBACK_NOTIFICATION['en']
-    # (kept in this smoke as a string literal — if upstream wording
-    # changes, update here too).
-    english_callback_prefix = "System Notice: The following background tasks"
+    # Expected English prefix substring from SYSTEM_NOTIFICATION_PASSIVE['en']
+    # — testbench renders agent_callback via the passive header now (matching
+    # the production drain path). If upstream wording changes, update here too.
+    english_callback_prefix = "System Notice"  # match passive: "[System Notice] Message from ..."
     # Expected *absent* substrings (other languages' prefixes). We only
     # sample a couple of non-ASCII giveaway tokens per language so tiny
     # wording tweaks upstream don't break the test.

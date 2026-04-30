@@ -1691,9 +1691,8 @@ body.react-chat-window-dragging {
     position: fixed;
     inset: 0;
     z-index: 100040;
-    display: flex;
-    flex-direction: column;
-    background: #111;
+    display: block;
+    background: #090b10;
     pointer-events: auto;
     animation: crop-fade-in 0.2s ease;
 }
@@ -1703,47 +1702,59 @@ body.react-chat-window-dragging {
     to   { opacity: 1; }
 }
 
+.crop-workspace {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+}
+
 /* Top bar with tabs */
 .crop-topbar {
     position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
-    height: 40px;
+    top: 18px;
+    left: 50%;
+    transform: translateX(-50%);
+    height: 48px;
     display: flex;
     align-items: center;
-    gap: 2px;
-    padding: 0 12px;
-    background: rgba(0, 0, 0, 0.85);
-    border-bottom: 1px solid rgba(68, 183, 254, 0.3);
-    z-index: 2;
+    gap: 6px;
+    padding: 0 10px;
+    background: rgba(8, 11, 18, 0.78);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 999px;
+    box-shadow: 0 12px 36px rgba(0, 0, 0, 0.35);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    z-index: 5;
     user-select: none;
 }
 
 .crop-tab {
-    padding: 5px 16px;
+    padding: 8px 16px;
     border: none;
-    border-radius: 4px;
-    font-size: 0.85rem;
+    border-radius: 999px;
+    font-size: 0.84rem;
     font-weight: 500;
     cursor: pointer;
-    color: rgba(255, 255, 255, 0.6);
+    color: rgba(255, 255, 255, 0.72);
     background: transparent;
-    transition: background 0.15s, color 0.15s;
+    transition: background 0.15s, color 0.15s, transform 0.12s ease;
 }
 
 .crop-tab:hover {
     background: rgba(255, 255, 255, 0.1);
     color: #fff;
+    transform: translateY(-1px);
 }
 
 .crop-tab-active {
-    background: rgba(68, 183, 254, 0.25);
-    color: #44b7fe;
+    background: rgba(68, 183, 254, 0.18);
+    color: #8bd8ff;
+    box-shadow: inset 0 0 0 1px rgba(68, 183, 254, 0.34);
 }
 
 .crop-tab-active:hover {
-    background: rgba(68, 183, 254, 0.35);
+    background: rgba(68, 183, 254, 0.28);
 }
 
 .crop-tab-cancel {
@@ -1782,30 +1793,131 @@ body.react-chat-window-dragging {
 
 .crop-canvas {
     position: absolute;
-    top: 40px;
+    top: 0;
     left: 0;
     width: 100%;
-    height: calc(100% - 40px);
+    height: 100%;
     cursor: crosshair;
     touch-action: none;
     z-index: 1;
 }
 
+.crop-selection-box {
+    position: absolute;
+    z-index: 3;
+    border: 1px solid rgba(255, 255, 255, 0.92);
+    box-shadow:
+        0 0 0 1px rgba(68, 183, 254, 0.9),
+        inset 0 0 0 1px rgba(68, 183, 254, 0.25),
+        0 12px 30px rgba(0, 0, 0, 0.22);
+    pointer-events: none;
+}
+
+.crop-selection-grid-line {
+    position: absolute;
+    background: rgba(255, 255, 255, 0.38);
+}
+
+.crop-selection-grid-line.h1,
+.crop-selection-grid-line.h2 {
+    left: 0;
+    right: 0;
+    height: 1px;
+}
+
+.crop-selection-grid-line.v1,
+.crop-selection-grid-line.v2 {
+    top: 0;
+    bottom: 0;
+    width: 1px;
+}
+
+.crop-selection-grid-line.h1 { top: 33.333%; }
+.crop-selection-grid-line.h2 { top: 66.666%; }
+.crop-selection-grid-line.v1 { left: 33.333%; }
+.crop-selection-grid-line.v2 { left: 66.666%; }
+
+.crop-selection-handle {
+    position: absolute;
+    width: 10px;
+    height: 10px;
+    margin-left: -5px;
+    margin-top: -5px;
+    border-radius: 50%;
+    background: #fff;
+    border: 2px solid #44b7fe;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+}
+
+.crop-selection-handle.nw { left: 0; top: 0; }
+.crop-selection-handle.n  { left: 50%; top: 0; }
+.crop-selection-handle.ne { left: 100%; top: 0; }
+.crop-selection-handle.e  { left: 100%; top: 50%; }
+.crop-selection-handle.se { left: 100%; top: 100%; }
+.crop-selection-handle.s  { left: 50%; top: 100%; }
+.crop-selection-handle.sw { left: 0; top: 100%; }
+.crop-selection-handle.w  { left: 0; top: 50%; }
+
+.crop-selection-badge,
+.crop-pointer-badge {
+    position: absolute;
+    z-index: 4;
+    min-width: 70px;
+    padding: 6px 10px;
+    border-radius: 999px;
+    font-size: 12px;
+    line-height: 1;
+    color: #fff;
+    background: rgba(8, 11, 18, 0.82);
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.26);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    pointer-events: none;
+    white-space: nowrap;
+}
+
+.crop-crosshair {
+    position: absolute;
+    z-index: 2;
+    pointer-events: none;
+    background: rgba(255, 255, 255, 0.2);
+}
+
+.crop-crosshair-x {
+    left: 0;
+    right: 0;
+    height: 1px;
+}
+
+.crop-crosshair-y {
+    top: 0;
+    bottom: 0;
+    width: 1px;
+}
+
 /* Floating ✓ / × buttons near selection */
 .crop-action-btns {
-    position: fixed;
+    position: absolute;
     display: flex;
-    gap: 4px;
-    z-index: 100041;
+    gap: 8px;
+    z-index: 6;
     pointer-events: auto;
     animation: crop-fade-in 0.15s ease;
+    padding: 6px;
+    border-radius: 999px;
+    background: rgba(8, 11, 18, 0.82);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    box-shadow: 0 12px 36px rgba(0, 0, 0, 0.32);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
 }
 
 .crop-action-btn {
-    width: 32px;
-    height: 32px;
+    width: 36px;
+    height: 36px;
     border: none;
-    border-radius: 6px;
+    border-radius: 999px;
     font-size: 1.1rem;
     font-weight: 700;
     cursor: pointer;
@@ -1827,7 +1939,7 @@ body.react-chat-window-dragging {
 }
 
 .crop-action-cancel {
-    background: rgba(255, 255, 255, 0.15);
+    background: rgba(255, 255, 255, 0.12);
     color: #ff6b7a;
     border: 1px solid rgba(220, 53, 69, 0.4);
 }
@@ -1840,26 +1952,27 @@ body.react-chat-window-dragging {
 /* Mobile adjustments */
 @media (max-width: 768px) {
     .crop-topbar {
-        height: 36px;
+        top: 14px;
+        height: 42px;
         padding: 0 8px;
+        max-width: calc(100vw - 20px);
     }
 
     .crop-tab {
-        padding: 4px 10px;
+        padding: 6px 10px;
         font-size: 0.78rem;
-    }
-
-    /* .crop-bg-image 的 top/width/height 由 app-crop.js computeImgMetrics() 写入 inline style，此处不再重复定义 */
-
-    .crop-canvas {
-        top: 36px;
-        height: calc(100% - 36px);
     }
 
     .crop-action-btn {
         width: 36px;
         height: 36px;
         font-size: 1.2rem;
+    }
+
+    .crop-selection-badge,
+    .crop-pointer-badge {
+        font-size: 11px;
+        padding: 5px 9px;
     }
 }
 

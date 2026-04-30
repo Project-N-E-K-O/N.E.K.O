@@ -12,8 +12,9 @@
       v-if="items.length > 0"
       class="plugin-grid-section"
       :class="sectionClass"
+      :data-yui-guide-id="`plugin-list-section-${variant}`"
     >
-      <div class="section-header" :class="headerClass">
+      <div class="section-header" :class="headerClass" :data-yui-guide-id="`plugin-list-section-${variant}-header`">
         <span class="section-title">
           <el-icon v-if="icon"><component :is="icon" /></el-icon>
           {{ title }}
@@ -40,6 +41,7 @@
           :key="item.id"
           class="plugin-item"
           :class="pluginItemClass(item.id)"
+          :data-yui-guide-id="index === 0 ? 'plugin-list-card' : `plugin-list-card-${item.id}`"
           :style="itemMotionStyle(index)"
         >
           <Transition name="check-pop">

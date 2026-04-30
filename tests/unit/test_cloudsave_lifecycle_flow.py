@@ -2,9 +2,7 @@ import contextlib
 import json
 import shutil
 import asyncio
-import threading
 from pathlib import Path
-from queue import Queue
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
@@ -16,15 +14,16 @@ def _role_state_from_session_managers(session_managers: dict) -> dict:
     """Build a role_state dict seeded with the given session_managers.
 
     Post-#855 consolidation: the old module-level ``session_manager`` dict
-    became ``role_state[name].session_manager``. Tests that want to stub
+    became ``role_state[name].session_manager``. ``sync_shutdown_event`` /
+    ``sync_process`` were later removed when cross_server moved from daemon
+    thread to a main-loop ``asyncio.Task``. Tests that want to stub
     shutdown-time behavior construct RoleState stubs here (with live
-    Queue/Event/Lock so any adapter access does not explode).
+    Queue/Lock so any adapter access does not explode).
     """
-    from main_server import RoleState
+    from main_server import RoleState, _SyncMessageQueue
     return {
         name: RoleState(
-            sync_message_queue=Queue(),
-            sync_shutdown_event=threading.Event(),
+            sync_message_queue=_SyncMessageQueue(),
             websocket_lock=asyncio.Lock(),
             session_manager=session_manager,
         )
@@ -730,22 +729,24 @@ async def test_main_server_cancel_workshop_background_tasks_uses_public_api():
 
 @pytest.mark.unit
 def test_main_server_resets_sync_shutdown_events_after_startup_rollback():
+    """``_reset_sync_connector_shutdown_events`` 现在是 no-op：cross_server 改成
+    主 loop 上的 asyncio.Task 后，没有 ThreadEvent 可以 reset。函数保留是为了
+    避免改动文件内众多调用点，本测试只验证它仍可调用且不会抛异常。
+    """
     import main_server
+    from main_server import _SyncMessageQueue
 
-    event = threading.Event()
-    event.set()
     role_state = {
         "小满": main_server.RoleState(
-            sync_message_queue=Queue(),
-            sync_shutdown_event=event,
+            sync_message_queue=_SyncMessageQueue(),
             websocket_lock=asyncio.Lock(),
         )
     }
 
     with patch.object(main_server, "role_state", role_state):
-        main_server._reset_sync_connector_shutdown_events()
-
-    assert event.is_set() is False
+        # 不抛异常即视为通过；旧版会清 threading.Event，新版无状态可清。
+        # 显式断言返回值为 None，未来若改成有副作用返回时能更早暴露。
+        assert main_server._reset_sync_connector_shutdown_events() is None
 
 
 @pytest.mark.unit

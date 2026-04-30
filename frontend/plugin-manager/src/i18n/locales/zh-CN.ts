@@ -74,7 +74,9 @@ export default {
     sdkVersion: 'SDK 版本',
     updateTime: '更新时间',
     noMetricsData: '暂无性能数据',
-    failedToLoadServerInfo: '无法加载服务器信息'
+    failedToLoadServerInfo: '无法加载服务器信息',
+    startTutorial: '教程引导',
+    tutorialHint: '第一次使用插件管理器？点这里让我带你快速认识一下。'
   },
   plugins: {
     title: '插件列表',
@@ -240,9 +242,19 @@ export default {
     },
     ui: {
       open: '打开界面',
+      panel: '面板',
+      guide: '教程',
       loading: '加载插件界面中...',
       loadError: '加载插件界面失败',
-      noUI: '该插件没有自定义界面'
+      noUI: '该插件没有自定义界面',
+      hostedTsxPending: 'Hosted TSX 渲染即将支持',
+      markdownPending: 'Markdown 教程渲染即将支持',
+      autoPending: '自动生成面板即将支持',
+      surfaceUnavailable: 'Surface 暂不可用',
+      surfaceEntryMissing: '该 Surface 声明的入口文件不存在，请检查 plugin.toml 中的 entry 路径。',
+      surfaceWarnings: '插件 UI 声明存在需要处理的问题',
+      controlError: '插件界面控件错误',
+      hostedRuntimePending: '前端容器已经识别到该 Surface。TSX/Markdown/Auto 渲染器会在后续阶段接入。'
     }
   },
   metrics: {
@@ -417,6 +429,85 @@ export default {
     welcome: '这里就是管理所有插件的地方啦！你可以查看、启动、配置各种插件，让我变得更厉害哦～',
     hint: '随便看看吧，看完了点下面的按钮告诉我～',
     complete: '看完了喵～',
-    dismiss: '先不看'
+    dismiss: '先不看',
+    keyboardSkipHint: '按 Enter 或空格进入下一步，每步开始后 0.5 秒生效。',
+    steps: {
+      start: {
+        title: '从这里开始',
+        body: '点这个按钮就可以随时重新播放插件管理器的教程，不会自动打扰你喵。'
+      },
+      stats: {
+        title: '插件总览',
+        body: '这里会显示插件总数、运行中、已停止和崩溃数量，让你一眼看出当前状态。'
+      },
+      metrics: {
+        title: '性能监控',
+        body: '这里展示插件服务整体的 CPU、内存、线程和活跃插件情况，排查问题时很有用。'
+      },
+      server: {
+        title: '服务器信息',
+        body: '这里可以看到 SDK 版本、插件数量和更新时间，用来确认当前插件服务是否正常。'
+      },
+      plugins: {
+        title: '插件列表入口',
+        body: '要启动、停止、配置插件，或者查看单个插件日志，就从左侧的插件管理进入。'
+      },
+      pluginWorkbench: {
+        title: '插件管理工作台',
+        body: '这里集中展示插件、适配器和扩展，是日常管理插件的主要页面。'
+      },
+      pluginFilters: {
+        title: '筛选和搜索',
+        body: '可以按名称、状态、类型或高级规则筛选插件，插件很多时会特别好用。'
+      },
+      pluginLayout: {
+        title: '视图布局',
+        body: '这里可以切换列表、单排、双排和紧凑布局，按你的屏幕空间调整显示方式。'
+      },
+      pluginContextMenu: {
+        title: '右键操作',
+        body: '对插件右键可以快速打开详情、配置、日志，也能执行启停、重载等常用操作。'
+      },
+      packageManager: {
+        title: '包管理侧栏',
+        body: '包管理会复用当前筛选和选择结果，用来打包、检查、校验或解包插件包。'
+      },
+      packageOperations: {
+        title: '包管理操作区',
+        body: '这里可以选择打包模式、检查包、解包或分析整合包；危险操作不会在教程中自动执行。'
+      },
+      pluginDetail: {
+        title: '插件详情页',
+        body: '进入详情页后可以查看插件元信息、入口点、性能、配置和日志。'
+      },
+      pluginDetailActions: {
+        title: '详情页操作',
+        body: '右上角保留了针对当前插件的快捷操作，适合在确认详情后再启动、停止或重载。'
+      },
+      runs: {
+        title: '运行记录',
+        body: '运行记录会展示插件入口任务的执行历史和实时状态。'
+      },
+      runsList: {
+        title: '运行列表',
+        body: '左侧列表用于选择某次运行，刷新按钮可以重新同步最新记录。'
+      },
+      runsDetail: {
+        title: '运行详情',
+        body: '右侧会显示阶段、进度、错误和导出物；取消按钮只对可取消任务出现。'
+      },
+      logs: {
+        title: '服务器日志',
+        body: '服务器日志可以帮助你查看插件服务本身的输出和错误。'
+      },
+      logToolbar: {
+        title: '日志筛选工具',
+        body: '这里可以按级别、关键词和行数筛选日志，也可以控制是否自动滚动。'
+      },
+      logList: {
+        title: '日志列表',
+        body: '日志列表按时间展示来源、级别和消息，是排查插件问题的第一站。'
+      }
+    }
   }
 }

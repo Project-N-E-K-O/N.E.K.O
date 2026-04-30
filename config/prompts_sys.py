@@ -86,20 +86,10 @@ RESULT_PARSER_PHRASES = {
     'list_count':         {'zh': '({n}条)', 'en': '({n} items)', 'ja': '({n}件)', 'ko': '({n}건)', 'ru': '({n} шт.)'},
     'plugin_notification': {'zh': '收到插件通知', 'en': 'Plugin notification received', 'ja': 'プラグイン通知を受信', 'ko': '플러그인 알림 수신', 'ru': 'Получено уведомление от плагина'},
     'notification_received': {'zh': '收到通知', 'en': 'Notification received', 'ja': '通知を受信', 'ko': '알림 수신', 'ru': 'Получено уведомление'},
-    # agent callback 注入 LLM 上下文的标签
-    'task_completed':     {'zh': '[任务完成]', 'en': '[Task completed]', 'ja': '[タスク完了]', 'ko': '[작업 완료]', 'ru': '[Задача выполнена]'},
-    'task_partial':       {'zh': '[任务部分完成]', 'en': '[Task partially completed]', 'ja': '[タスク一部完了]', 'ko': '[작업 부분 완료]', 'ru': '[Задача частично выполнена]'},
-    'task_failed_tag':    {'zh': '[任务失败]', 'en': '[Task failed]', 'ja': '[タスク失敗]', 'ko': '[작업 실패]', 'ru': '[Задача не выполнена]'},
-    'detail_prefix':      {'zh': '  详情：', 'en': '  Details: ', 'ja': '  詳細：', 'ko': '  상세: ', 'ru': '  Подробности: '},
+    # agent callback 注入 LLM 上下文的 detail 标签
+    # 状态信息（已完成/失败/取消等）由外层 SYSTEM_NOTIFICATION_PROACTIVE / PASSIVE
+    # 表达，inner item 渲染时只需要可选的 detail label。
     'detail_result':      {'zh': '详细结果：', 'en': 'Detailed result: ', 'ja': '詳細結果：', 'ko': '상세 결과：', 'ru': 'Подробный результат: '},
-    # agent_server task summary 模板
-    'plugin_done':        {'zh': '插件任务 "{id}" 已完成', 'en': 'Plugin task "{id}" completed', 'ja': 'プラグインタスク "{id}" 完了', 'ko': '플러그인 작업 "{id}" 완료', 'ru': 'Задача плагина «{id}» выполнена'},
-    'plugin_done_with':   {'zh': '插件任务 "{id}" 已完成：{detail}', 'en': 'Plugin task "{id}" completed: {detail}', 'ja': 'プラグインタスク "{id}" 完了：{detail}', 'ko': '플러그인 작업 "{id}" 완료: {detail}', 'ru': 'Задача плагина «{id}» выполнена: {detail}'},
-    'plugin_failed':      {'zh': '插件任务 "{id}" 执行失败', 'en': 'Plugin task "{id}" failed', 'ja': 'プラグインタスク "{id}" 失敗', 'ko': '플러그인 작업 "{id}" 실패', 'ru': 'Задача плагина «{id}» не выполнена'},
-    'plugin_failed_with': {'zh': '插件任务 "{id}" 执行失败：{detail}', 'en': 'Plugin task "{id}" failed: {detail}', 'ja': 'プラグインタスク "{id}" 失敗：{detail}', 'ko': '플러그인 작업 "{id}" 실패: {detail}', 'ru': 'Задача плагина «{id}» не выполнена: {detail}'},
-    'plugin_cancelled':   {'zh': '插件任务已取消', 'en': 'Plugin task cancelled', 'ja': 'プラグインタスクがキャンセルされました', 'ko': '플러그인 작업 취소됨', 'ru': 'Задача плагина отменена'},
-    'plugin_cancelled_id': {'zh': '插件任务 "{id}" 已取消', 'en': 'Plugin task "{id}" cancelled', 'ja': 'プラグインタスク "{id}" キャンセル', 'ko': '플러그인 작업 "{id}" 취소됨', 'ru': 'Задача плагина «{id}» отменена'},
-    'plugin_exception':   {'zh': '插件任务 "{id}" 执行异常: {err}', 'en': 'Plugin task "{id}" exception: {err}', 'ja': 'プラグインタスク "{id}" 例外: {err}', 'ko': '플러그인 작업 "{id}" 예외: {err}', 'ru': 'Задача плагина «{id}» — исключение: {err}'},
     'cu_task_done':       {'zh': '你的任务"{desc}"{status}：{detail}', 'en': 'Your task "{desc}" {status}: {detail}', 'ja': 'タスク「{desc}」{status}：{detail}', 'ko': '작업 "{desc}" {status}: {detail}', 'ru': 'Ваша задача «{desc}» {status}: {detail}'},
     'cu_task_done_no_desc': {'zh': '你的任务{status}：{detail}', 'en': 'Your task {status}: {detail}', 'ja': 'タスク{status}：{detail}', 'ko': '작업 {status}: {detail}', 'ru': 'Ваша задача {status}: {detail}'},
     'cu_task_desc_only':  {'zh': '你的任务"{desc}"{status}', 'en': 'Your task "{desc}" {status}', 'ja': 'タスク「{desc}」{status}', 'ko': '작업 "{desc}" {status}', 'ru': 'Ваша задача «{desc}» {status}'},
@@ -241,13 +231,104 @@ CONTEXT_SUMMARY_READY = {
     'ru': '======Конец краткого содержания. {name}, приготовьтесь — вы скоро продолжите голосовой разговор с {master}.======\n',
 }
 
-# ---------- 系统通知：后台任务完成 ----------
-SYSTEM_NOTIFICATION_TASKS_DONE = {
-    'zh': '======[系统通知] 以下后台任务已完成，请{name}先用自然、简洁的口吻向{master}汇报，再恢复正常对话======\n',
-    'en': '======[System Notice] The following background tasks have been completed. Please have {name} briefly and naturally report to {master} first, then resume normal conversation.======\n',
-    'ja': '======[システム通知] 以下のバックグラウンドタスクが完了しました。{name}はまず自然に簡潔な口調で{master}に報告し、その後通常の会話に戻ってください。======\n',
-    'ko': '======[시스템 알림] 다음 백그라운드 작업이 완료되었습니다. {name}은 먼저 자연스럽고 간결하게 {master}에게 보고한 뒤 일반 대화로 돌아오세요.======\n',
-    'ru': '======[Системное уведомление] Следующие фоновые задачи завершены. Пожалуйста, {name} сначала кратко и естественно доложите {master}, затем возобновите обычный разговор.======\n',
+# ---------- 来源描述符（agent_task_callback 渲染时按 user_language 动态拼装）----------
+# source_kind → 模板，``{name}`` 由 callback.source_name 填入。kind 缺失或未识别时
+# 走 'unknown'（按字面回显 source_name）。新增来源时只需往这里加一行。
+SOURCE_DESCRIPTORS = {
+    'plugin': {
+        'zh': '插件「{name}」', 'en': 'plugin "{name}"',
+        'ja': 'プラグイン「{name}」', 'ko': '플러그인 "{name}"',
+        'ru': 'плагина «{name}»',
+    },
+    'timer': {
+        'zh': '定时器', 'en': 'the timer',
+        'ja': 'タイマー', 'ko': '타이머', 'ru': 'таймера',
+    },
+    'mcp': {
+        'zh': 'MCP 服务「{name}」', 'en': 'MCP server "{name}"',
+        'ja': 'MCPサーバー「{name}」', 'ko': 'MCP 서버 "{name}"',
+        'ru': 'MCP-сервера «{name}»',
+    },
+    'system': {
+        'zh': '系统', 'en': 'the system',
+        'ja': 'システム', 'ko': '시스템', 'ru': 'системы',
+    },
+    'cu': {
+        'zh': '电脑操作任务', 'en': 'computer use',
+        'ja': 'コンピュータ操作', 'ko': '컴퓨터 조작', 'ru': 'управления компьютером',
+    },
+    'browser': {
+        'zh': '浏览器自动化任务', 'en': 'browser automation',
+        'ja': 'ブラウザ自動化', 'ko': '브라우저 자동화', 'ru': 'автоматизации браузера',
+    },
+    'agent': {
+        'zh': '子代理「{name}」', 'en': 'sub-agent "{name}"',
+        'ja': 'サブエージェント「{name}」', 'ko': '하위 에이전트 "{name}"',
+        'ru': 'субагента «{name}»',
+    },
+    'unknown': {
+        'zh': '{name}', 'en': '{name}',
+        'ja': '{name}', 'ko': '{name}', 'ru': '{name}',
+    },
+}
+
+# ---------- Task 状态短语（外层模板的 {status_phrase} 槽位）----------
+TASK_STATUS_PHRASES = {
+    'completed': {
+        'zh': '已完成', 'en': 'has completed',
+        'ja': '完了しました', 'ko': '완료되었습니다', 'ru': 'завершена',
+    },
+    'partial': {
+        'zh': '部分完成', 'en': 'partially completed',
+        'ja': '一部完了しました', 'ko': '부분 완료되었습니다', 'ru': 'частично завершена',
+    },
+    'failed': {
+        'zh': '执行失败', 'en': 'has failed',
+        'ja': '失敗しました', 'ko': '실패했습니다', 'ru': 'не выполнена',
+    },
+    'cancelled': {
+        'zh': '已取消', 'en': 'was cancelled',
+        'ja': 'キャンセルされました', 'ko': '취소되었습니다', 'ru': 'отменена',
+    },
+}
+
+# ---------- Task 汇报动作短语（外层模板的 {action_phrase} 槽位，按 status 分化）----------
+TASK_ACTION_PHRASES = {
+    'completed': {
+        'zh': '汇报', 'en': 'report',
+        'ja': '報告', 'ko': '보고', 'ru': 'доложите',
+    },
+    'partial': {
+        'zh': '汇报情况', 'en': 'report the situation',
+        'ja': '状況を報告', 'ko': '상황을 보고', 'ru': 'опишите ситуацию',
+    },
+    'failed': {
+        'zh': '说明情况', 'en': 'explain what happened',
+        'ja': '状況を説明', 'ko': '상황을 설명', 'ru': 'объясните, что произошло',
+    },
+    'cancelled': {
+        'zh': '说明情况', 'en': 'explain the cancellation',
+        'ja': 'キャンセルを説明', 'ko': '취소를 설명', 'ru': 'объясните отмену',
+    },
+}
+
+# ---------- 系统通知：主动汇报型（task_result 默认走这条，要求 AI 立即起 turn）----------
+SYSTEM_NOTIFICATION_PROACTIVE = {
+    'zh': '======[系统通知] 来自{source}的任务{status_phrase}，请{name}先用自然、简洁的口吻向{master}{action_phrase}，再恢复正常对话======\n',
+    'en': '======[System Notice] A task from {source} {status_phrase}. Please have {name} briefly and naturally {action_phrase} to {master} first, then resume normal conversation.======\n',
+    'ja': '======[システム通知] {source}からのタスクが{status_phrase}。{name}はまず自然に簡潔な口調で{master}に{action_phrase}し、その後通常の会話に戻ってください。======\n',
+    'ko': '======[시스템 알림] {source}의 작업이 {status_phrase}. {name}은 먼저 자연스럽고 간결하게 {master}에게 {action_phrase}한 뒤 일반 대화로 돌아오세요.======\n',
+    'ru': '======[Системное уведомление] Задача от {source} {status_phrase}. Пожалуйста, {name} сначала кратко и естественно {action_phrase} {master}, затем возобновите обычный разговор.======\n',
+}
+
+# ---------- 系统通知：被动捎带型（push_message / delivery="passive" 走这条，
+# 仅写入上下文，不要求 AI 立即起 turn——下一次用户发言时被自然带入 prompt）----------
+SYSTEM_NOTIFICATION_PASSIVE = {
+    'zh': '======[系统通知] 来自{source}的消息======\n',
+    'en': '======[System Notice] Message from {source}======\n',
+    'ja': '======[システム通知] {source}からのメッセージ======\n',
+    'ko': '======[시스템 알림] {source}의 메시지======\n',
+    'ru': '======[Системное уведомление] Сообщение от {source}======\n',
 }
 
 # ---------- 前情概要 + 任务汇报 ----------
@@ -265,15 +346,6 @@ CONTEXT_SUMMARY_TASK_FOOTER = {
     'ja': '\n報告を終えたら、通常の会話に戻ってください。======\n',
     'ko': '\n보고를 마친 후 일반 대화로 돌아오세요.======\n',
     'ru': '\nПосле доклада возобновите обычный разговор.======\n',
-}
-
-# ---------- Agent callback 系统通知 ----------
-AGENT_CALLBACK_NOTIFICATION = {
-    'zh': '======[系统通知：以下是最近完成的后台任务情况，请在回复中自然地提及或确认]\n',
-    'en': '======[System Notice: The following background tasks were recently completed. Please naturally mention or acknowledge them in your reply.]\n',
-    'ja': '======[システム通知：以下は最近完了したバックグラウンドタスクです。返答の中で自然に言及または確認してください。]\n',
-    'ko': '======[시스템 알림：다음은 최근 완료된 백그라운드 작업입니다. 답변에서 자연스럽게 언급하거나 확인하세요.]\n',
-    'ru': '======[Системное уведомление: следующие фоновые задачи недавно завершены. Пожалуйста, естественно упомяните или подтвердите их в своём ответе.]\n',
 }
 
 # ---------- Vision: Avatar 截图注解（叠加在发给视觉模型的截图上，用户不可见） ----------

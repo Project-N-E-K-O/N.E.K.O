@@ -1,4 +1,5 @@
 import asyncio
+import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -20,6 +21,7 @@ from utils.storage_migration import (
     save_storage_migration,
 )
 from utils.storage_policy import get_storage_policy_path, load_storage_policy, save_storage_policy
+from utils.file_utils import atomic_write_json
 
 
 class _DummyConfigManager:
@@ -123,6 +125,41 @@ def test_storage_location_target_content_probe_uses_public_runtime_helper(tmp_pa
         assert storage_location_router_module._target_root_has_user_content(target_root, config_manager) is True
 
     helper.assert_called_once_with(target_root, config_manager=config_manager)
+
+
+@pytest.mark.unit
+def test_collect_warning_codes_matches_cloud_sync_path_segments_only(tmp_path):
+    current_root = tmp_path / "current" / "N.E.K.O"
+
+    false_positive_target = tmp_path / "onedrive_backup_restore" / "N.E.K.O"
+    assert "sync_folder" not in storage_location_router_module._collect_warning_codes(
+        current_root,
+        false_positive_target,
+    )
+
+    dropbox_backup_target = tmp_path / "dropbox_backup_restore" / "N.E.K.O"
+    assert "sync_folder" not in storage_location_router_module._collect_warning_codes(
+        current_root,
+        dropbox_backup_target,
+    )
+
+    onedrive_target = tmp_path / "OneDrive - Example" / "N.E.K.O"
+    assert "sync_folder" in storage_location_router_module._collect_warning_codes(
+        current_root,
+        onedrive_target,
+    )
+
+    dropbox_target = tmp_path / "Dropbox (Personal)" / "N.E.K.O"
+    assert "sync_folder" in storage_location_router_module._collect_warning_codes(
+        current_root,
+        dropbox_target,
+    )
+
+    google_drive_target = tmp_path / "Google Drive (Acme)" / "N.E.K.O"
+    assert "sync_folder" in storage_location_router_module._collect_warning_codes(
+        current_root,
+        google_drive_target,
+    )
 
 
 @pytest.mark.unit
@@ -249,6 +286,113 @@ def test_storage_location_select_same_path_releases_limited_startup_barrier(tmp_
 
     assert response.status_code == 200
     assert release_calls == ["storage_selection_continue_current_session"]
+
+
+@pytest.mark.unit
+def test_storage_location_exit_requests_application_shutdown(tmp_path):
+    config_manager = _DummyConfigManager(tmp_path)
+    shutdown_calls = []
+
+    async def request_app_shutdown():
+        shutdown_calls.append("shutdown")
+
+    with _build_client(config_manager, request_app_shutdown=request_app_shutdown) as client:
+        response = client.post(
+            "/api/storage/location/exit",
+            headers={"X-Neko-Storage-Action": "exit"},
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "ok": True,
+        "result": "shutdown_initiated",
+    }
+    assert shutdown_calls == ["shutdown"]
+
+
+@pytest.mark.unit
+def test_storage_location_exit_reports_unavailable_without_shutdown_callback(tmp_path):
+    config_manager = _DummyConfigManager(tmp_path)
+
+    with _build_client(config_manager) as client:
+        response = client.post(
+            "/api/storage/location/exit",
+            headers={"X-Neko-Storage-Action": "exit"},
+        )
+
+    assert response.status_code == 503
+    payload = response.json()
+    assert payload["ok"] is False
+    assert payload["error_code"] == "restart_unavailable"
+
+
+@pytest.mark.unit
+def test_storage_location_exit_requires_storage_action_header(tmp_path):
+    config_manager = _DummyConfigManager(tmp_path)
+    shutdown_calls = []
+
+    with _build_client(config_manager, request_app_shutdown=lambda: shutdown_calls.append("shutdown")) as client:
+        response = client.post("/api/storage/location/exit")
+
+    assert response.status_code == 403
+    payload = response.json()
+    assert payload["ok"] is False
+    assert payload["error_code"] == "storage_exit_forbidden"
+    assert shutdown_calls == []
+
+
+@pytest.mark.unit
+def test_storage_location_exit_ignores_ready_storage_state(tmp_path):
+    config_manager = _DummyConfigManager(tmp_path)
+    shutdown_calls = []
+    save_storage_policy(
+        config_manager,
+        selected_root=config_manager.app_docs_dir,
+        selection_source="current",
+    )
+
+    with _build_client(config_manager, request_app_shutdown=lambda: shutdown_calls.append("shutdown")) as client:
+        response = client.post(
+            "/api/storage/location/exit",
+            headers={"X-Neko-Storage-Action": "exit"},
+        )
+
+    assert response.status_code == 409
+    payload = response.json()
+    assert payload["ok"] is False
+    assert payload["error_code"] == "storage_exit_not_required"
+    assert shutdown_calls == []
+
+
+@pytest.mark.unit
+def test_storage_location_exit_allows_maintenance_readonly_shutdown(tmp_path):
+    config_manager = _DummyConfigManager(tmp_path)
+    shutdown_calls = []
+    save_storage_policy(
+        config_manager,
+        selected_root=config_manager.app_docs_dir,
+        selection_source="current",
+        anchor_root=config_manager.anchor_root,
+    )
+    config_manager.save_root_state({
+        "mode": ROOT_MODE_MAINTENANCE_READONLY,
+        "last_known_good_root": str(config_manager.app_docs_dir),
+        "last_migration_result": "restart_pending:test",
+        "last_migration_source": str(config_manager.app_docs_dir),
+    })
+
+    with _build_client(config_manager, request_app_shutdown=lambda: shutdown_calls.append("shutdown")) as client:
+        response = client.post(
+            "/api/storage/location/exit",
+            headers={"X-Neko-Storage-Action": "exit"},
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "ok": True,
+        "result": "shutdown_initiated",
+    }
+    assert shutdown_calls == ["shutdown"]
 
 
 @pytest.mark.unit
@@ -835,6 +979,43 @@ def test_storage_location_pick_directory_uses_windows_native_picker_first(tmp_pa
 
 
 @pytest.mark.unit
+def test_windows_powershell_directory_picker_uses_topmost_owner(tmp_path):
+    selected_root = str((tmp_path / "picked-win").resolve())
+
+    with patch.object(
+        storage_location_router_module,
+        "_resolve_executable_name",
+        return_value="powershell.exe",
+    ), patch.object(
+        storage_location_router_module.shutil,
+        "which",
+        return_value="powershell.exe",
+    ), patch.object(
+        storage_location_router_module.subprocess,
+        "run",
+        return_value=storage_location_router_module.subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=selected_root + "\n",
+            stderr="",
+        ),
+    ) as run_mock:
+        result = storage_location_router_module._pick_directory_via_powershell(
+            start_path=str(tmp_path)
+        )
+
+    assert result == selected_root
+    command = run_mock.call_args.args[0]
+    script = command[-1]
+    assert "Add-Type -AssemblyName System.Drawing" in script
+    assert "$owner.TopMost = $true" in script
+    assert "$owner.Activate()" in script
+    assert "$owner.BringToFront()" in script
+    assert "[System.Windows.Forms.Application]::DoEvents()" in script
+    assert "$result = $dialog.ShowDialog($owner)" in script
+
+
+@pytest.mark.unit
 def test_storage_location_pick_directory_falls_back_to_tkinter_when_linux_native_dialog_unavailable(tmp_path):
     with patch.object(storage_location_router_module.sys, "platform", "linux"):
         with patch.object(
@@ -1298,6 +1479,16 @@ def test_storage_location_status_exposes_completed_migration_notice(tmp_path):
 
     (source_root / "config").mkdir(parents=True, exist_ok=True)
     (source_root / "config" / "characters.json").write_text('{"current":"A"}', encoding="utf-8")
+    atomic_write_json(
+        source_root / "config" / "workshop_config.json",
+        {
+            "default_workshop_folder": str(source_root / "workshop"),
+            "user_workshop_folder": str(source_root / "workshop" / "cached"),
+            "user_mod_folder": str(tmp_path / "external-mods"),
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
 
     create_pending_storage_migration(
         config_manager,
@@ -1325,6 +1516,11 @@ def test_storage_location_status_exposes_completed_migration_notice(tmp_path):
     assert payload["completion_notice"]["target_root"] == str(target_root.resolve())
     assert payload["completion_notice"]["retained_root"] == str(source_root.resolve())
     assert payload["completion_notice"]["cleanup_available"] is True
+
+    migrated_workshop_config = json.loads((target_root / "config" / "workshop_config.json").read_text(encoding="utf-8"))
+    assert migrated_workshop_config["default_workshop_folder"] == str((target_root / "workshop").resolve())
+    assert migrated_workshop_config["user_workshop_folder"] == str((target_root / "workshop" / "cached").resolve())
+    assert migrated_workshop_config["user_mod_folder"] == str(tmp_path / "external-mods")
 
 
 @pytest.mark.unit

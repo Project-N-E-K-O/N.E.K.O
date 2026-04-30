@@ -1,0 +1,6 @@
+{
+  "name": "@neko/plugin-ui",
+  "version": "0.1.0",
+  "types": "index.d.ts",
+  "private": true
+}

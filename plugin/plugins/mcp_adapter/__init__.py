@@ -19,6 +19,7 @@ from urllib.parse import urljoin
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Callable
 
+from pydantic import BaseModel, Field
 from bs4 import BeautifulSoup  # type: ignore[import-untyped]
 from markdownify import markdownify as markdownify_html  # type: ignore[import-untyped]
 
@@ -29,6 +30,8 @@ from plugin.sdk.plugin import (
     Ok,
     Err,
     SdkError,
+    tr,
+    ui,
 )
 from plugin.sdk.adapter import AdapterGatewayCore, DefaultPolicyEngine, NekoAdapterPlugin
 from plugin.sdk.adapter.gateway_models import ExternalRequest
@@ -93,6 +96,22 @@ class MCPServerConnection:
     connected: bool = False
     error: Optional[str] = None
     request_id: int = 0
+
+
+class McpServerView(BaseModel):
+    name: str
+    transport: str
+    connected: bool
+    tools_count: int
+    error: str | None = None
+    tools: list[dict[str, str]] = Field(default_factory=list)
+
+
+class McpPanelState(BaseModel):
+    connected_servers: int
+    total_servers: int
+    total_tools: int
+    servers: list[McpServerView]
 
 
 class MCPClient:
@@ -638,7 +657,7 @@ class MCPClient:
         """断开连接"""
         self._shutdown = True
         self.connected = False
-        
+
         if self._stderr_task:
             self._stderr_task.cancel()
             try:
@@ -665,11 +684,21 @@ class MCPClient:
             self.writer = None
         
         if self.process:
-            self.process.terminate()
             try:
-                await asyncio.wait_for(self.process.wait(), timeout=5.0)
+                self.process.terminate()
+            except ProcessLookupError:
+                self.process = None
+                self.reader = None
+                self.tools = []
+            try:
+                if self.process is not None:
+                    await asyncio.wait_for(self.process.wait(), timeout=5.0)
             except asyncio.TimeoutError:
-                self.process.kill()
+                try:
+                    if self.process is not None:
+                        self.process.kill()
+                except ProcessLookupError:
+                    pass
             self.process = None
         
         self.reader = None
@@ -1087,7 +1116,8 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         super().__init__(ctx)
         self._clients: Dict[str, MCPClient] = {}
         self._server_states: Dict[str, Dict[str, object]] = {}
-        self._connect_task: Optional[asyncio.Task] = None
+        self._connect_tasks: Dict[str, asyncio.Task] = {}
+        self._pending_auto_connect: Dict[str, tuple[Dict[str, object], float]] = {}
         self._reconnect_tasks: Dict[str, asyncio.Task] = {}
         self._shutdown = False
         # 重连配置缓存
@@ -1104,6 +1134,50 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         self._serializer: Optional[MCPResponseSerializer] = None
         self._policy: Optional[DefaultPolicyEngine] = None
         self._gateway_core: Optional[AdapterGatewayCore] = None
+
+    @ui.context(id="dashboard", title="MCP Adapter 管理面板")
+    async def get_dashboard_ui_context(self) -> McpPanelState:
+        self._schedule_pending_auto_connects()
+        servers: list[McpServerView] = []
+        seen: set[str] = set()
+        for name, client in self._clients.items():
+            seen.add(name)
+            servers.append(McpServerView(
+                name=name,
+                transport=client.config.transport,
+                connected=bool(client.connected),
+                tools_count=len(client.tools),
+                error=None,
+                tools=[
+                    {
+                        "name": tool.name,
+                        "description": tool.description,
+                    }
+                    for tool in client.tools
+                ],
+            ))
+        for name, cfg in self._servers_config.items():
+            if name in seen or not isinstance(cfg, dict):
+                continue
+            state = self._server_states.get(name, {})
+            servers.append(McpServerView(
+                name=name,
+                transport=str(cfg.get("transport", "unknown")),
+                connected=bool(state.get("connected", False)),
+                tools_count=int(state.get("tools_count", 0) or 0),
+                error=str(state.get("error")) if state.get("error") else None,
+                tools=[
+                    {"name": str(tool_name), "description": ""}
+                    for tool_name in state.get("tools", [])
+                    if isinstance(tool_name, str)
+                ] if isinstance(state.get("tools"), list) else [],
+            ))
+        return McpPanelState(
+            connected_servers=sum(1 for item in servers if item.connected),
+            total_servers=len(servers),
+            total_tools=sum(item.tools_count for item in servers),
+            servers=servers,
+        )
     
     @lifecycle(id="startup")
     async def on_startup(self):
@@ -1112,9 +1186,6 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         
         # 初始化 Adapter 基类
         await self.adapter_startup()
-        
-        # 注册静态 UI
-        self.register_static_ui("static")
         
         # 加载配置
         config = await self.config.dump()
@@ -1133,7 +1204,8 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         # 先初始化 Gateway Core 组件（需要在连接服务器之前，因为 _register_mcp_tools 依赖它）
         self._init_gateway_core()
         
-        # 连接所有启用的 servers
+        # Schedule enabled servers in the background. Startup must stay responsive
+        # so hosted UI context/actions can be served immediately.
         for server_name, server_cfg in servers_config.items():
             if not isinstance(server_cfg, dict):
                 continue
@@ -1142,11 +1214,20 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
                 self.ctx.logger.info(f"Skipping disabled MCP server: {server_name}")
                 continue
             
-            await self._connect_server(server_name, server_cfg, connect_timeout)
+            self._pending_auto_connect[server_name] = (server_cfg, connect_timeout)
+            self._server_states[server_name] = {
+                **self._server_states.get(server_name, {}),
+                "connected": False,
+                "error": "Auto-connect pending",
+            }
         
         self.ctx.logger.info(
-            f"MCP Adapter started with {len(self._clients)} connected servers"
+            f"MCP Adapter started with {len(self._clients)} connected servers; pending {len(self._pending_auto_connect)} auto-connect task(s)"
         )
+
+    async def _on_command_loop_start(self) -> None:
+        """Schedule startup auto-connect tasks once the long-lived command loop is active."""
+        self._schedule_pending_auto_connects()
     
     async def _on_tool_register(
         self,
@@ -1489,6 +1570,15 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
             return False
         task.cancel()
         return True
+
+    def _cancel_connect_task(self, server_name: str) -> bool:
+        task = self._connect_tasks.pop(server_name, None)
+        cancelled = False
+        if task is not None and not task.done():
+            task.cancel()
+            cancelled = True
+        self._pending_auto_connect.pop(server_name, None)
+        return cancelled
     
     async def _unregister_mcp_tools(self, server_name: str) -> None:
         """
@@ -1500,13 +1590,59 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         """
         if self._route_engine:
             await self._route_engine.unregister_server_tools(server_name)
+
+    def _schedule_pending_auto_connects(self) -> None:
+        for server_name, (server_cfg, timeout) in list(self._pending_auto_connect.items()):
+            if self._schedule_connect_server(server_name, server_cfg, timeout):
+                self._pending_auto_connect.pop(server_name, None)
+
+    def _schedule_connect_server(self, server_name: str, server_cfg: Dict[str, object], timeout: float) -> bool:
+        if self._shutdown:
+            return False
+        if server_name in self._clients:
+            return False
+        existing = self._connect_tasks.get(server_name)
+        if existing is not None and not existing.done():
+            return False
+
+        self._server_states[server_name] = {
+            **self._server_states.get(server_name, {}),
+            "connected": False,
+            "error": "Connecting...",
+        }
+
+        async def _runner() -> None:
+            try:
+                await self._connect_server(server_name, server_cfg, timeout)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self.ctx.logger.exception(f"Background connect failed for MCP server '{server_name}': {exc}")
+                self._server_states[server_name] = {
+                    **self._server_states.get(server_name, {}),
+                    "connected": False,
+                    "error": str(exc),
+                }
+            finally:
+                current = self._connect_tasks.get(server_name)
+                if current is asyncio.current_task():
+                    self._connect_tasks.pop(server_name, None)
+
+        self._connect_tasks[server_name] = asyncio.create_task(_runner())
+        return True
     
     @lifecycle(id="shutdown")
     async def on_shutdown(self):
         """插件关闭时断开所有连接"""
         self.ctx.logger.info("MCP Adapter shutting down...")
         self._shutdown = True
-        
+
+        self._pending_auto_connect.clear()
+
+        for task in self._connect_tasks.values():
+            task.cancel()
+        self._connect_tasks.clear()
+
         # 取消所有重连任务
         for task in self._reconnect_tasks.values():
             task.cancel()
@@ -1611,7 +1747,11 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         timeout: float = 30.0
     ) -> bool:
         """连接到单个 MCP server"""
+        client: MCPClient | None = None
         try:
+            if server_name not in self._servers_config:
+                self.ctx.logger.info(f"Skip connecting removed MCP server '{server_name}'")
+                return False
             timeout = self._coerce_timeout(timeout, 30.0)
             # 提取配置字段并进行类型转换
             transport_raw = server_cfg.get("transport", "stdio")
@@ -1647,6 +1787,10 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
             client.set_disconnect_callback(self._on_server_disconnect)
             
             if await client.connect(timeout=timeout):
+                if server_name not in self._servers_config:
+                    await client.disconnect()
+                    self.ctx.logger.info(f"Discarded connection for removed MCP server '{server_name}'")
+                    return False
                 self._clients[server_name] = client
                 client._reconnect_attempts = 0  # 重置重连计数
                 
@@ -1676,7 +1820,13 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
                     "error": "Connection failed",
                 }
                 return False
-                
+        except asyncio.CancelledError:
+            if client is not None and self._clients.get(server_name) is not client:
+                try:
+                    await client.disconnect()
+                except Exception:
+                    pass
+            raise
         except Exception as e:
             self.ctx.logger.exception(f"Failed to connect to MCP server '{server_name}': {e}")
             self._server_states[server_name] = {
@@ -1687,8 +1837,8 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
     
     @plugin_entry(
         id="list_servers",
-        name="List MCP Servers",
-        description="列出所有配置的 MCP servers 及其状态",
+        name=tr("entries.listServers.name", default="List MCP Servers"),
+        description=tr("entries.listServers.description", default="List all configured MCP servers and their status."),
         llm_result_fields=["total"],
     )
     async def list_servers(self, **_):
@@ -1749,17 +1899,18 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         
         return Ok({"servers": servers, "total": len(servers)})
     
+    @ui.action(label=tr("actions.connect.label", default="Connect"), tone="primary", group="server", order=10, refresh_context=True)
     @plugin_entry(
         id="connect_server",
-        name="Connect MCP Server",
-        description="连接到指定的 MCP server",
+        name=tr("entries.connect.name", default="Connect MCP Server"),
+        description=tr("entries.connect.description", default="Connect to a configured MCP server."),
         llm_result_fields=["message"],
         input_schema={
             "type": "object",
             "properties": {
                 "server_name": {
                     "type": "string",
-                    "description": "Server name from config"
+                    "description": tr("entries.connect.fields.server_name.description", default="Server name from config")
                 }
             },
             "required": ["server_name"]
@@ -1780,26 +1931,24 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         server_cfg = servers_config[server_name]
         adapter_config = config.get("mcp_adapter", {})
         timeout = self._coerce_timeout(adapter_config.get("connect_timeout", 30), 30.0)
-        
-        if await self._connect_server(server_name, server_cfg, timeout):
-            return Ok({
-                "message": f"Connected to server '{server_name}'",
-                "tools_count": len(self._clients[server_name].tools),
-            })
-        else:
-            return Err(SdkError(f"Failed to connect to server '{server_name}'"))
+        scheduled = self._schedule_connect_server(server_name, server_cfg, timeout)
+        return Ok({
+            "message": f"Connection {'scheduled' if scheduled else 'already pending'} for server '{server_name}'",
+            "connecting": scheduled or server_name in self._connect_tasks,
+        })
     
+    @ui.action(label=tr("actions.disconnect.label", default="Disconnect"), tone="warning", group="server", order=20, refresh_context=True)
     @plugin_entry(
         id="disconnect_server",
-        name="Disconnect MCP Server",
-        description="断开与指定 MCP server 的连接",
+        name=tr("entries.disconnect.name", default="Disconnect MCP Server"),
+        description=tr("entries.disconnect.description", default="Disconnect from a configured MCP server."),
         llm_result_fields=["message"],
         input_schema={
             "type": "object",
             "properties": {
                 "server_name": {
                     "type": "string",
-                    "description": "Server name"
+                    "description": tr("entries.common.fields.server_name.description", default="Server name")
                 }
             },
             "required": ["server_name"]
@@ -1827,47 +1976,48 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         
         return Ok({"message": f"Disconnected from server '{server_name}'"})
     
+    @ui.action(label=tr("actions.addServer.label", default="Add Server"), tone="success", group="server", order=5, refresh_context=True)
     @plugin_entry(
         id="add_server",
-        name="Add MCP Server",
-        description="添加新的 MCP server 配置",
+        name=tr("entries.addServer.name", default="Add MCP Server"),
+        description=tr("entries.addServer.description", default="Add a new MCP server configuration."),
         llm_result_fields=["message"],
         input_schema={
             "type": "object",
             "properties": {
                 "name": {
                     "type": "string",
-                    "description": "Server name (unique identifier)"
+                    "description": tr("entries.addServer.fields.name.description", default="Server name, used as a unique identifier")
                 },
                 "transport": {
                     "type": "string",
                     "enum": ["stdio", "sse", "streamable-http"],
-                    "description": "Transport type"
+                    "description": tr("entries.addServer.fields.transport.description", default="Transport type")
                 },
                 "command": {
                     "type": "string",
-                    "description": "Command to run (for stdio transport)"
+                    "description": tr("entries.addServer.fields.command.description", default="Command to run for stdio transport")
                 },
                 "args": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Command arguments"
+                    "description": tr("entries.addServer.fields.args.description", default="Command arguments")
                 },
                 "url": {
                     "type": "string",
-                    "description": "Server URL (for sse/http transport)"
+                    "description": tr("entries.addServer.fields.url.description", default="Server URL for SSE or HTTP transport")
                 },
                 "env": {
                     "type": "object",
-                    "description": "Environment variables"
+                    "description": tr("entries.addServer.fields.env.description", default="Environment variables")
                 },
                 "enabled": {
                     "type": "boolean",
-                    "description": "Whether to enable this server"
+                    "description": tr("entries.addServer.fields.enabled.description", default="Whether to enable this server")
                 },
                 "auto_connect": {
                     "type": "boolean",
-                    "description": "Whether to connect immediately"
+                    "description": tr("entries.addServer.fields.autoConnect.description", default="Whether to connect immediately")
                 }
             },
             "required": ["name", "transport"]
@@ -1913,12 +2063,12 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
                 if auto_connect and enabled and name not in self._clients:
                     adapter_config = config.get("mcp_adapter", {})
                     timeout_val = self._coerce_timeout(adapter_config.get("connect_timeout", 30), 30.0)
-                    if await self._connect_server(name, server_cfg, timeout_val):
-                        return Ok({
-                            "message": f"Server '{name}' already exists and is now connected",
-                            "tools_count": len(self._clients[name].tools),
-                            "already_exists": True,
-                        })
+                    scheduled = self._schedule_connect_server(name, server_cfg, timeout_val)
+                    return Ok({
+                        "message": f"Server '{name}' already exists; connection {'scheduled' if scheduled else 'already pending'}",
+                        "already_exists": True,
+                        "connecting": scheduled or name in self._connect_tasks,
+                    })
                 return Ok({
                     "message": f"Server '{name}' already exists",
                     "already_exists": True,
@@ -1942,24 +2092,20 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         if auto_connect and enabled:
             adapter_config = config.get("mcp_adapter", {})
             timeout_val = self._coerce_timeout(adapter_config.get("connect_timeout", 30), 30.0)
-            
-            if await self._connect_server(name, server_cfg, timeout_val):
-                return Ok({
-                    "message": f"Added and connected to server '{name}'",
-                    "tools_count": len(self._clients[name].tools),
-                })
-            else:
-                return Ok({
-                    "message": f"Added server '{name}' but connection failed",
-                    "connected": False,
-                })
+            self._schedule_connect_server(name, server_cfg, timeout_val)
+            return Ok({
+                "message": f"Added server '{name}' and scheduled connection",
+                "connected": False,
+                "connecting": True,
+            })
         
         return Ok({"message": f"Added server '{name}'"})
     
+    @ui.action(label=tr("actions.removeServers.label", default="Remove Server"), tone="danger", group="server", order=30, confirm=tr("actions.removeServers.confirm", default="Remove these MCP Servers?"), refresh_context=True)
     @plugin_entry(
         id="remove_servers",
-        name="Remove MCP Servers",
-        description="批量移除 MCP server 配置",
+        name=tr("entries.removeServers.name", default="Remove MCP Servers"),
+        description=tr("entries.removeServers.description", default="Remove one or more MCP server configurations."),
         llm_result_fields=["message"],
         input_schema={
             "type": "object",
@@ -1967,7 +2113,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
                 "server_names": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "List of server names to remove"
+                    "description": tr("entries.removeServers.fields.server_names.description", default="List of server names to remove")
                 }
             },
             "required": ["server_names"]
@@ -1986,6 +2132,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
                 not_found.append(name)
                 continue
 
+            self._cancel_connect_task(name)
             self._cancel_reconnect_task(name)
             
             # 如果已连接，先断开
@@ -2018,23 +2165,23 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
     
     @plugin_entry(
         id="call_tool",
-        name="Call MCP Tool",
-        description="调用指定 MCP server 的 tool",
+        name=tr("entries.callTool.name", default="Call MCP Tool"),
+        description=tr("entries.callTool.description", default="Call a tool exposed by a configured MCP server."),
         llm_result_fields=["summary"],
         input_schema={
             "type": "object",
             "properties": {
                 "server_name": {
                     "type": "string",
-                    "description": "Server name"
+                    "description": tr("entries.common.fields.server_name.description", default="Server name")
                 },
                 "tool_name": {
                     "type": "string",
-                    "description": "Tool name"
+                    "description": tr("entries.common.fields.tool_name.description", default="Tool name")
                 },
                 "arguments": {
                     "type": "object",
-                    "description": "Tool arguments"
+                    "description": tr("entries.common.fields.arguments.description", default="Tool arguments")
                 }
             },
             "required": ["server_name", "tool_name"]
@@ -2072,8 +2219,8 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
     
     @plugin_entry(
         id="list_tools",
-        name="List MCP Tools",
-        description="列出所有可用的 MCP tools",
+        name=tr("entries.listTools.name", default="List MCP Tools"),
+        description=tr("entries.listTools.description", default="List all available MCP tools."),
         llm_result_fields=["total"],
     )
     async def list_tools(self, server_name: Optional[str] = None, **_):
@@ -2097,27 +2244,27 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
     
     @plugin_entry(
         id="gateway_invoke",
-        name="Gateway Invoke",
-        description="通过 Gateway Core 调用 MCP tool（新架构）",
+        name=tr("entries.gatewayInvoke.name", default="Gateway Invoke"),
+        description=tr("entries.gatewayInvoke.description", default="Call an MCP tool through Gateway Core."),
         llm_result_fields=["summary"],
         input_schema={
             "type": "object",
             "properties": {
                 "tool_name": {
                     "type": "string",
-                    "description": "Tool name to invoke"
+                    "description": tr("entries.common.fields.tool_name.description", default="Tool name")
                 },
                 "arguments": {
                     "type": "object",
-                    "description": "Tool arguments"
+                    "description": tr("entries.common.fields.arguments.description", default="Tool arguments")
                 },
                 "target_plugin_id": {
                     "type": "string",
-                    "description": "Optional: route to NEKO plugin instead of MCP tool"
+                    "description": tr("entries.gatewayInvoke.fields.targetPluginId.description", default="Optional target N.E.K.O plugin ID")
                 },
                 "timeout_s": {
                     "type": "number",
-                    "description": "Optional timeout in seconds for downstream call"
+                    "description": tr("entries.gatewayInvoke.fields.timeout.description", default="Optional timeout in seconds for the downstream call")
                 }
             },
             "required": ["tool_name"]

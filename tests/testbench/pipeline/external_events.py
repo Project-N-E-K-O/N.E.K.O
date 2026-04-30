@@ -317,10 +317,16 @@ def _resolve_language(session: Session) -> tuple[str, str]:
 
 
 def _resolve_names(session: Session) -> tuple[str, str]:
-    """Return ``(character_name, master_name)`` with ``主人`` fallback."""
+    """Return ``(character_name, master_name)``.
+
+    ``master_name`` 缺省时返回空串，由调用方按场景自行兜底——避免在源头硬编码
+    "主人"等物化称呼。memory_note 路径下游
+    (:func:`config.prompts_avatar_interaction._build_avatar_interaction_memory_meta`)
+    自带本地化中性词回退（zh="对方"、en="they" 等）。
+    """
     persona = session.persona or {}
     lanlan = str(persona.get("character_name") or "").strip()
-    master = str(persona.get("master_name") or "").strip() or "主人"
+    master = str(persona.get("master_name") or "").strip()
     return lanlan, master
 
 
@@ -1238,7 +1244,7 @@ def _build_avatar_instruction_bundle(
             ),
         ))
 
-    meta = _build_avatar_interaction_memory_meta(full_lang, normalized)
+    meta = _build_avatar_interaction_memory_meta(full_lang, normalized, master_name)
     memory_note = str(meta.get("memory_note") or "")
     dedupe_key = str(meta.get("memory_dedupe_key") or normalized["tool_id"])
     dedupe_rank = int(meta.get("memory_dedupe_rank") or 1)
@@ -1269,30 +1275,55 @@ def _build_agent_callback_instruction_bundle(
 ) -> Optional[_InstructionBundle]:
     """Build the agent_callback instruction bundle. Returns ``None`` if
     callbacks are empty (caller → ``reason="empty_callbacks"``).
+
+    Mirrors the production drain path in ``main_logic.core``: synthesizes
+    callback dicts (status=completed, source_kind=system) and renders via
+    ``_build_callback_instruction`` so the testbench wire matches the
+    grouped-by-source/status outer template the real LLM sees.
     """
-    from config.prompts_sys import AGENT_CALLBACK_NOTIFICATION
+    from config.prompts_sys import SYSTEM_NOTIFICATION_PASSIVE, _loc
+    from main_logic.core import _build_callback_instruction
 
     _full_lang, short_lang = _resolve_language(session)
 
     raw_items = payload.get("callbacks") if isinstance(payload, dict) else None
     if not isinstance(raw_items, list):
         raw_items = []
-    items: list[str] = []
+    callbacks: list[dict[str, Any]] = []
     for item in raw_items:
         if isinstance(item, str) and item.strip():
-            items.append(item.strip())
+            callbacks.append({
+                "status": "completed",
+                "source_kind": "system",
+                "source_name": "",
+                "summary": item.strip(),
+                "detail": item.strip(),
+            })
         elif isinstance(item, dict):
             text = item.get("text") or item.get("summary") or ""
             text = str(text or "").strip()
             if text:
-                items.append(text)
+                callbacks.append({
+                    "status": item.get("status") or "completed",
+                    "source_kind": item.get("source_kind") or "system",
+                    "source_name": item.get("source_name") or "",
+                    "summary": text,
+                    "detail": str(item.get("detail") or text),
+                })
 
-    if not items:
+    if not callbacks:
         return None
 
-    prefix = AGENT_CALLBACK_NOTIFICATION.get(short_lang, AGENT_CALLBACK_NOTIFICATION["en"])
-    template_raw = prefix
-    instruction = prefix + "\n".join(f"- {t}" for t in items)
+    # Use passive=True to mirror the next-user-turn drain semantics that
+    # this simulator was originally built around.
+    instruction = _build_callback_instruction(
+        callbacks,
+        lang=short_lang,
+        lanlan_name=getattr(session, "lanlan_name", "") or "",
+        master_name=getattr(session, "master_name", "") or "",
+        passive=True,
+    )
+    template_raw = _loc(SYSTEM_NOTIFICATION_PASSIVE, short_lang)
     return _InstructionBundle(
         template_raw=template_raw,
         instruction_final=instruction,

@@ -1,18 +1,18 @@
 <template>
-  <div class="runs-page">
+  <div class="runs-page" data-yui-guide-id="runs-page">
     <el-row :gutter="20">
       <el-col :span="10">
-        <el-card>
+        <el-card data-yui-guide-id="runs-list-panel">
           <template #header>
             <div class="card-header">
               <span>{{ $t('runs.title') }}</span>
               <div class="actions">
-                <el-button :icon="Refresh" size="small" @click="handleRefresh" :loading="loading" />
+                <el-button :icon="Refresh" size="small" data-yui-guide-id="runs-list-refresh" @click="handleRefresh" :loading="loading" />
               </div>
             </div>
           </template>
 
-          <div v-if="!connected" class="hint">
+          <div v-if="!connected" class="hint" data-yui-guide-id="runs-ws-disconnected">
             <el-alert type="warning" :closable="false">
               <template #title>
                 <span>{{ $t('runs.wsDisconnected') }}</span>
@@ -24,6 +24,7 @@
             :data="runs"
             size="small"
             style="width: 100%"
+            data-yui-guide-id="runs-table"
             highlight-current-row
             @current-change="handleSelect"
             :row-key="(row: any) => row.run_id"
@@ -44,14 +45,14 @@
             </el-table-column>
           </el-table>
 
-          <div v-if="runs.length === 0" class="empty">
+          <div v-if="runs.length === 0" class="empty" data-yui-guide-id="runs-empty">
             <el-empty :description="$t('runs.noRuns')" />
           </div>
         </el-card>
       </el-col>
 
       <el-col :span="14">
-        <el-card>
+        <el-card data-yui-guide-id="runs-detail-panel">
           <template #header>
             <div class="card-header">
               <span>{{ $t('runs.detail') }}</span>
@@ -60,6 +61,7 @@
                   v-if="selectedRun"
                   size="small"
                   :icon="Refresh"
+                  data-yui-guide-id="runs-detail-refresh"
                   @click="handleRefreshSelected"
                   :loading="loadingSelected"
                 >
@@ -69,6 +71,7 @@
                   v-if="selectedRun && canCancelSelected"
                   size="small"
                   type="danger"
+                  data-yui-guide-id="runs-detail-cancel"
                   @click="handleCancel"
                 >
                   {{ $t('runs.cancel') }}
@@ -77,11 +80,11 @@
             </div>
           </template>
 
-          <div v-if="!selectedRun" class="empty">
+          <div v-if="!selectedRun" class="empty" data-yui-guide-id="runs-detail-empty">
             <el-empty :description="$t('runs.selectRun')" />
           </div>
 
-          <div v-else class="detail">
+          <div v-else class="detail" data-yui-guide-id="runs-detail-summary">
             <el-descriptions :column="2" size="small" border>
               <el-descriptions-item :label="$t('runs.runId')">{{ selectedRun.run_id }}</el-descriptions-item>
               <el-descriptions-item :label="$t('runs.status')">{{ selectedRun.status }}</el-descriptions-item>
@@ -100,11 +103,11 @@
               </el-descriptions-item>
             </el-descriptions>
 
-            <div class="export-section">
+            <div class="export-section" data-yui-guide-id="runs-export-section">
               <div class="export-header">
                 <span>{{ $t('runs.export') }}</span>
               </div>
-              <el-table :data="selectedExports" size="small" style="width: 100%" :row-key="(row: any) => row.export_item_id">
+              <el-table :data="selectedExports" size="small" style="width: 100%" data-yui-guide-id="runs-export-table" :row-key="(row: any) => row.export_item_id">
                 <el-table-column prop="type" :label="$t('runs.exportType')" width="120" />
                 <el-table-column :label="$t('runs.exportContent')">
                   <template #default="scope">

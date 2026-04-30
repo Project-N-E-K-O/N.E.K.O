@@ -13,6 +13,8 @@
         limited: false
     };
     let storagePreflightState = null;
+    let storagePreflightBusy = false;
+    const STORAGE_APP_FOLDER_NAME = 'N.E.K.O';
     // 单一来源：app-storage-location.js 在 memory_browser.html 里先于本文件加载并把常量
     // 挂到 window.appStorageLocation 上；这里直接复用，避免两份字面量随时间漂移。
     const STORAGE_RESTART_MESSAGE_TYPE = (window.appStorageLocation && window.appStorageLocation.STORAGE_RESTART_MESSAGE_TYPE)
@@ -76,6 +78,39 @@
         const separatorIndex = Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\'));
         if (separatorIndex <= 0) return '';
         return trimmed.slice(0, separatorIndex);
+    }
+
+    function pathEndsWithAppFolder(path) {
+        const normalized = String(path || '').trim().replace(/[\\/]+$/, '');
+        if (!normalized) return false;
+        const separatorIndex = Math.max(normalized.lastIndexOf('/'), normalized.lastIndexOf('\\'));
+        const lastSegment = separatorIndex >= 0 ? normalized.slice(separatorIndex + 1) : normalized;
+        return lastSegment === STORAGE_APP_FOLDER_NAME;
+    }
+
+    function normalizeStorageRootForDisplay(pathText) {
+        const original = String(pathText || '').trim();
+        if (original === '/') {
+            return '/' + STORAGE_APP_FOLDER_NAME;
+        }
+        if (/^[A-Za-z]:\\$/.test(original)) {
+            return original + STORAGE_APP_FOLDER_NAME;
+        }
+        const normalized = original.replace(/[\\/]+$/, '');
+        if (!normalized || pathEndsWithAppFolder(original)) {
+            return normalized;
+        }
+        const separator = normalized.lastIndexOf('\\') > normalized.lastIndexOf('/') ? '\\' : '/';
+        return normalized + separator + STORAGE_APP_FOLDER_NAME;
+    }
+
+    function applyStorageTargetRootDisplay(pathText) {
+        const normalized = normalizeStorageRootForDisplay(pathText);
+        const input = document.getElementById('storage-target-root-input');
+        if (input) {
+            input.value = normalized;
+        }
+        return normalized;
     }
 
     function getStorageDirectoryPickerStartPath() {
@@ -223,15 +258,10 @@
     function renderStorageRestartButton() {
         const restartBtn = document.getElementById('storage-location-restart-btn');
         if (!restartBtn) return;
-        const canRestart = !!(
-            storagePreflightState
-            && storagePreflightState.ok === true
-            && storagePreflightState.result === 'restart_required'
-            && !storagePreflightState.blocking_error_code
-            && !storagePreflightState.blocking_error_message
-        );
-        restartBtn.hidden = !canRestart;
-        restartBtn.disabled = !canRestart;
+        const input = document.getElementById('storage-target-root-input');
+        const restartAccepted = !!(input && input.disabled);
+        restartBtn.hidden = restartAccepted;
+        restartBtn.disabled = storagePreflightBusy || restartAccepted;
     }
 
     function sleep(ms) {
@@ -241,14 +271,12 @@
     }
 
     function setStoragePreflightBusy(busy) {
-        const btn = document.getElementById('storage-location-preflight-btn');
-        if (btn) {
-            btn.disabled = !!busy;
-        }
+        storagePreflightBusy = !!busy;
         const pickBtn = document.getElementById('storage-location-pick-btn');
         if (pickBtn) {
             pickBtn.disabled = !!busy;
         }
+        renderStorageRestartButton();
     }
 
     function openStorageLocationManager() {
@@ -271,9 +299,11 @@
             input.placeholder = translate('memory.storageTargetPlaceholder', '选择或输入新的数据位置');
         }
         storagePreflightState = null;
+        setStoragePreflightBusy(false);
         setStoragePreflightResult('', '');
         renderStorageRestartButton();
         modal.hidden = false;
+        document.body.classList.add('storage-location-memory-modal-open');
     }
 
     function closeStorageLocationManager() {
@@ -281,6 +311,7 @@
         if (modal) {
             modal.hidden = true;
         }
+        document.body.classList.remove('storage-location-memory-modal-open');
         const input = document.getElementById('storage-target-root-input');
         if (input) {
             input.disabled = false;
@@ -326,10 +357,7 @@
             if (!selectedRoot) {
                 throw new Error('empty selected_root');
             }
-            const input = document.getElementById('storage-target-root-input');
-            if (input) {
-                input.value = selectedRoot;
-            }
+            applyStorageTargetRootDisplay(selectedRoot);
             storagePreflightState = null;
             setStoragePreflightResult('', '');
             renderStorageRestartButton();
@@ -364,13 +392,15 @@
         return lines.filter(Boolean).join('\n');
     }
 
-    async function runStorageLocationPreflight() {
+    async function runStorageLocationPreflight(options) {
+        const keepBusy = !!(options && options.keepBusy);
         const input = document.getElementById('storage-target-root-input');
-        const selectedRoot = input ? String(input.value || '').trim() : '';
+        let selectedRoot = input ? String(input.value || '').trim() : '';
         if (!selectedRoot) {
             setStoragePreflightResult(translate('memory.storageTargetRequired', '请先选择或输入目标位置'), 'error');
-            return;
+            return null;
         }
+        selectedRoot = applyStorageTargetRootDisplay(selectedRoot);
         setStoragePreflightBusy(true);
         setStoragePreflightResult(translate('memory.storagePreflightRunning', '正在预检...'), 'success');
         try {
@@ -390,26 +420,31 @@
             const isBlocked = !!(payload.blocking_error_code || payload.blocking_error_message);
             setStoragePreflightResult(formatPreflightResult(payload), isBlocked ? 'error' : 'success');
             renderStorageRestartButton();
+            return payload;
         } catch (e) {
             console.warn('[MemoryBrowser] storage location preflight failed:', e);
             storagePreflightState = null;
             setStoragePreflightResult(String(e && e.message ? e.message : translate('memory.storagePreflightFailed', '预检失败')), 'error');
             renderStorageRestartButton();
+            return null;
         } finally {
-            setStoragePreflightBusy(false);
+            if (!keepBusy) {
+                setStoragePreflightBusy(false);
+            }
         }
     }
 
-    async function restartWithStorageLocation() {
+    async function restartWithStorageLocation(options) {
+        const keepBusy = !!(options && options.keepBusy);
         if (!storagePreflightState || storagePreflightState.result !== 'restart_required') {
             setStoragePreflightResult(translate('memory.storagePreflightRequired', '请先完成预检'), 'error');
             renderStorageRestartButton();
-            return;
+            return false;
         }
         const selectedRoot = String(storagePreflightState.selected_root || storagePreflightState.target_root || '').trim();
         if (!selectedRoot) {
             setStoragePreflightResult(translate('memory.storagePreflightFailed', '预检失败'), 'error');
-            return;
+            return false;
         }
 
         let confirmExistingTargetContent = false;
@@ -417,7 +452,7 @@
             const message = storagePreflightState.existing_target_confirmation_message
                 || translate('memory.storageExistingTargetWarning', '目标位置已经包含现有数据，后续确认迁移前需要二次确认。');
             if (!window.confirm(message)) {
-                return;
+                return false;
             }
             confirmExistingTargetContent = true;
         }
@@ -453,14 +488,34 @@
             }
             renderStorageRestartButton();
             await closeStorageManagerAfterRestartNotice(payload);
+            return true;
         } catch (e) {
             console.warn('[MemoryBrowser] storage location restart failed:', e);
             setStoragePreflightResult(String(e && e.message ? e.message : translate('memory.storageRestartFailed', '关闭并迁移请求失败')), 'error');
             renderStorageRestartButton();
+            return false;
         } finally {
-            if (!restartAccepted) {
+            if (!restartAccepted && !keepBusy) {
                 setStoragePreflightBusy(false);
             }
+        }
+    }
+
+    async function preflightAndRestartWithStorageLocation() {
+        const payload = await runStorageLocationPreflight({ keepBusy: true });
+        if (
+            !payload
+            || payload.result !== 'restart_required'
+            || payload.blocking_error_code
+            || payload.blocking_error_message
+        ) {
+            setStoragePreflightBusy(false);
+            return;
+        }
+
+        const restartAccepted = await restartWithStorageLocation({ keepBusy: true });
+        if (!restartAccepted) {
+            setStoragePreflightBusy(false);
         }
     }
 
@@ -532,6 +587,7 @@
                 }
             } catch (_) {}
         }
+        document.body.classList.remove('storage-location-memory-modal-open');
         await showStandaloneStorageMaintenanceOverlay(payload);
     }
 
@@ -1138,12 +1194,6 @@
                 pickStorageTargetDirectory();
             });
         }
-        const preflightStorageBtn = document.getElementById('storage-location-preflight-btn');
-        if (preflightStorageBtn) {
-            preflightStorageBtn.addEventListener('click', function () {
-                runStorageLocationPreflight();
-            });
-        }
         const storageTargetInput = document.getElementById('storage-target-root-input');
         if (storageTargetInput) {
             storageTargetInput.addEventListener('input', function () {
@@ -1155,7 +1205,7 @@
         const restartStorageBtn = document.getElementById('storage-location-restart-btn');
         if (restartStorageBtn) {
             restartStorageBtn.addEventListener('click', function () {
-                restartWithStorageLocation();
+                preflightAndRestartWithStorageLocation();
             });
         }
 

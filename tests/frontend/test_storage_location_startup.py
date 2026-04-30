@@ -1,4 +1,5 @@
 import json
+import re
 
 import pytest
 from playwright.sync_api import Page, expect
@@ -34,6 +35,78 @@ def _page_config_state(page: Page, timeout_ms: int = 250) -> str:
         """,
         timeout_ms,
     )
+
+
+def _continue_storage_intro(page: Page) -> None:
+    expect(page.get_by_role("heading", name="为什么要迁移？")).to_have_count(0)
+    expect(page.locator(".storage-location-intro-card")).to_be_visible(timeout=15_000)
+    expect(page.locator(".storage-location-intro-image")).to_be_visible(timeout=15_000)
+    expect(page.locator(".storage-location-intro-image")).to_have_attribute(
+        "src",
+        re.compile(r"/static/icons/small_easter_egg\.png$"),
+    )
+    expect(page.locator("text=喵呜～人类注意啦！")).to_be_visible(timeout=15_000)
+    expect(page.get_by_role("heading", name="存储位置选择")).to_be_hidden(timeout=5_000)
+    expect(page.get_by_role("button", name="使用专属小窝")).to_be_visible(timeout=15_000)
+    page.get_by_role("button", name="其他小窝").click()
+    expect(page.get_by_role("heading", name="存储位置选择")).to_be_visible(timeout=15_000)
+
+
+def _expect_storage_migration_has_no_scrollbars(page: Page) -> None:
+    metrics = page.evaluate(
+        """
+        () => {
+            const overlay = document.querySelector('#storage-location-overlay');
+            const modal = document.querySelector('.storage-location-modal');
+            const activeView = document.querySelector('.storage-location-view:not([hidden])');
+            const missing = [];
+            if (!overlay) {
+                missing.push('overlay');
+            }
+            if (!modal) {
+                missing.push('modal');
+            }
+            if (!activeView) {
+                missing.push('activeView');
+            }
+            if (missing.length) {
+                return { ok: false, missing };
+            }
+            const overlayStyle = getComputedStyle(overlay);
+            const modalStyle = getComputedStyle(modal);
+            const viewStyle = getComputedStyle(activeView);
+            const toMetrics = (element, style) => ({
+                overflowX: style.overflowX,
+                overflowY: style.overflowY,
+                clientWidth: element.clientWidth,
+                scrollWidth: element.scrollWidth,
+                clientHeight: element.clientHeight,
+                scrollHeight: element.scrollHeight,
+            });
+            return {
+                ok: true,
+                overlay: toMetrics(overlay, overlayStyle),
+                modal: toMetrics(modal, modalStyle),
+                activeView: toMetrics(activeView, viewStyle),
+            };
+        }
+        """
+    )
+    assert metrics.get("ok"), {"missing": metrics.get("missing"), "metrics": metrics}
+    for name in ("overlay", "modal", "activeView"):
+        item = metrics[name]
+        assert item["overflowX"] != "scroll", {"element": name, "metric": "overflowX", "metrics": item}
+        assert item["overflowY"] != "scroll", {"element": name, "metric": "overflowY", "metrics": item}
+        assert item["scrollWidth"] <= item["clientWidth"] + 1, {
+            "element": name,
+            "metric": "scrollWidth",
+            "metrics": item,
+        }
+        assert item["scrollHeight"] <= item["clientHeight"] + 1, {
+            "element": name,
+            "metric": "scrollHeight",
+            "metrics": item,
+        }
 
 
 def _mock_selection_required_state(
@@ -110,6 +183,66 @@ def _mock_selection_required_state(
 
 
 @pytest.mark.frontend
+def test_storage_location_loading_view_has_no_scrollbars(
+    mock_page: Page,
+    running_server: str,
+):
+    page = mock_page
+    pending_status_routes = []
+
+    def hold_status(route):
+        pending_status_routes.append(route)
+
+    page.route("**/api/system/status", hold_status)
+    page.goto(f"{running_server}/", wait_until="domcontentloaded")
+
+    expect(page.get_by_role("heading", name="正在确认存储布局状态")).to_be_visible(timeout=15_000)
+    _expect_storage_migration_has_no_scrollbars(page)
+
+    assert pending_status_routes
+    pending_status_routes[0].fulfill(
+        status=200,
+        content_type="application/json",
+        body=json.dumps(
+            {
+                "ok": True,
+                "status": "ready",
+                "ready": True,
+                "storage": {
+                    "selection_required": False,
+                    "migration_pending": False,
+                    "recovery_required": False,
+                    "blocking_reason": "",
+                },
+            },
+            ensure_ascii=False,
+        ),
+    )
+    expect(page.locator("#storage-location-overlay")).to_be_hidden(timeout=10_000)
+
+
+@pytest.mark.frontend
+def test_storage_location_error_view_has_no_scrollbars(
+    mock_page: Page,
+    running_server: str,
+):
+    page = mock_page
+    page.route(
+        "**/api/system/status",
+        lambda route: route.fulfill(
+            status=503,
+            content_type="application/json",
+            body=json.dumps({"ok": False, "error": "temporary unavailable"}),
+        ),
+    )
+
+    page.goto(f"{running_server}/", wait_until="domcontentloaded")
+
+    expect(page.get_by_role("heading", name="暂时无法读取存储位置引导信息")).to_be_visible(timeout=15_000)
+    _expect_storage_migration_has_no_scrollbars(page)
+
+
+@pytest.mark.frontend
 def test_storage_location_overlay_blocks_page_config_until_current_path_confirmed(
     mock_page: Page,
     running_server: str,
@@ -134,22 +267,107 @@ def test_storage_location_overlay_blocks_page_config_until_current_path_confirme
     page.goto(f"{running_server}/", wait_until="domcontentloaded")
 
     overlay = page.locator("#storage-location-overlay")
-    selection_title = page.get_by_role("heading", name="请选择本次运行使用的存储位置")
-    keep_current_button = page.get_by_role("button", name="保持当前路径")
+    intro_card = page.locator(".storage-location-intro-card")
+    selection_title = page.get_by_role("heading", name="存储位置选择")
 
     expect(overlay).to_be_visible(timeout=15_000)
-    expect(selection_title).to_be_visible(timeout=15_000)
+    expect(page.get_by_role("heading", name="为什么要迁移？")).to_have_count(0)
+    expect(intro_card).to_be_visible(timeout=15_000)
+    expect(selection_title).to_be_hidden(timeout=5_000)
+    _expect_storage_migration_has_no_scrollbars(page)
 
     _arm_page_config_resolution_probe(page)
     assert _page_config_state(page) == "pending"
 
-    keep_current_button.click()
+    page.get_by_role("button", name="使用专属小窝").click()
 
     expect(overlay).to_be_hidden(timeout=10_000)
     page.wait_for_function(
         "() => window.__nekoPageConfigResolved === true",
         timeout=10_000,
     )
+
+
+@pytest.mark.frontend
+def test_storage_location_close_requests_app_shutdown_while_startup_is_blocked(
+    mock_page: Page,
+    running_server: str,
+):
+    page = mock_page
+    exit_requests = {"count": 0}
+    _mock_selection_required_state(page)
+    page.add_init_script(
+        """
+        window.__nekoHostCloseCalls = 0;
+        window.nekoHost = {
+            closeWindow: async () => {
+                window.__nekoHostCloseCalls += 1;
+                return { ok: true };
+            },
+        };
+        """
+    )
+
+    def handle_exit(route):
+        exit_requests["count"] += 1
+        assert route.request.headers.get("x-neko-storage-action") == "exit"
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps({"ok": True, "result": "shutdown_initiated"}),
+        )
+
+    page.route("**/api/storage/location/exit", handle_exit)
+    page.goto(f"{running_server}/", wait_until="domcontentloaded")
+
+    expect(page.locator("#storage-location-overlay")).to_be_visible(timeout=15_000)
+    expect(page.locator(".storage-location-intro-card")).to_be_visible(timeout=15_000)
+
+    page.locator(".storage-location-modal > .storage-location-close").click()
+    page.wait_for_function("() => window.__nekoHostCloseCalls === 1", timeout=10_000)
+
+    assert exit_requests["count"] == 1
+    assert _page_config_state(page) == "pending"
+
+
+@pytest.mark.frontend
+def test_storage_location_close_keeps_window_open_when_app_shutdown_request_fails(
+    mock_page: Page,
+    running_server: str,
+):
+    page = mock_page
+    exit_requests = {"count": 0}
+    _mock_selection_required_state(page)
+    page.add_init_script(
+        """
+        window.__nekoHostCloseCalls = 0;
+        window.nekoHost = {
+            closeWindow: async () => {
+                window.__nekoHostCloseCalls += 1;
+                return { ok: true };
+            },
+        };
+        """
+    )
+
+    def handle_exit(route):
+        exit_requests["count"] += 1
+        route.fulfill(
+            status=503,
+            content_type="application/json",
+            body=json.dumps({"ok": False, "error": "shutdown unavailable"}),
+        )
+
+    page.route("**/api/storage/location/exit", handle_exit)
+    page.goto(f"{running_server}/", wait_until="domcontentloaded")
+
+    expect(page.locator("#storage-location-overlay")).to_be_visible(timeout=15_000)
+    page.locator(".storage-location-modal > .storage-location-close").click()
+    page.wait_for_timeout(500)
+
+    assert exit_requests["count"] == 1
+    assert page.evaluate("window.__nekoHostCloseCalls") == 0
+    expect(page.locator("#storage-location-overlay")).to_be_visible()
 
 
 @pytest.mark.frontend
@@ -191,10 +409,12 @@ def test_storage_location_overlay_blocks_independent_startup_requests_while_barr
     page.goto(f"{running_server}/", wait_until="domcontentloaded")
 
     overlay = page.locator("#storage-location-overlay")
-    selection_title = page.get_by_role("heading", name="请选择本次运行使用的存储位置")
+    intro_card = page.locator(".storage-location-intro-card")
 
     expect(overlay).to_be_visible(timeout=15_000)
-    expect(selection_title).to_be_visible(timeout=15_000)
+    expect(page.get_by_role("heading", name="为什么要迁移？")).to_have_count(0)
+    expect(intro_card).to_be_visible(timeout=15_000)
+    _expect_storage_migration_has_no_scrollbars(page)
 
     page.wait_for_timeout(800)
     assert _page_config_state(page) == "pending"
@@ -233,13 +453,12 @@ def test_storage_location_selection_view_hides_internal_paths_and_supports_folde
 
     page.goto(f"{running_server}/", wait_until="domcontentloaded")
 
-    expect(page.get_by_role("heading", name="请选择本次运行使用的存储位置")).to_be_visible(timeout=15_000)
+    _continue_storage_intro(page)
     assert page.locator("text=固定锚点目录").count() == 0
     assert page.locator("text=固定 cloudsave 目录").count() == 0
     assert page.locator("text=已检测到的旧数据目录").count() == 0
     assert page.locator("text=本阶段提示").count() == 0
 
-    page.get_by_role("button", name="选择其他位置").click()
     assert page.locator("text=应用会使用其中独立的 N.E.K.O 子文件夹").count() == 0
     page.get_by_role("button", name="选择文件夹").click()
 
@@ -247,6 +466,45 @@ def test_storage_location_selection_view_hides_internal_paths_and_supports_folde
     submit_other_button = page.get_by_role("button", name="提交该位置")
     expect(custom_input).to_have_value(picked_root, timeout=10_000)
     expect(submit_other_button).to_be_enabled(timeout=10_000)
+
+
+@pytest.mark.frontend
+def test_storage_location_desktop_picker_normalizes_parent_directory_before_submit(
+    mock_page: Page,
+    running_server: str,
+    tmp_path,
+):
+    page = mock_page
+    picked_parent = str((tmp_path / "desktop-picked-root").resolve())
+    picked_root = str((tmp_path / "desktop-picked-root" / "N.E.K.O").resolve())
+    _mock_selection_required_state(page)
+    page.add_init_script(
+        """
+        window.nekoHost = {
+            pickDirectory: async (options) => {
+                window.__storagePickOptions = options;
+                return { cancelled: false, selected_root: %s };
+            }
+        };
+        """
+        % json.dumps(picked_parent)
+    )
+    page.route(
+        "**/api/storage/location/pick-directory",
+        lambda route: route.fulfill(
+            status=500,
+            content_type="application/json",
+            body='{"ok": false, "error": "backend picker should not be used when host picker succeeds"}',
+        ),
+    )
+
+    page.goto(f"{running_server}/", wait_until="domcontentloaded")
+    _continue_storage_intro(page)
+    page.get_by_role("button", name="选择文件夹").click()
+
+    custom_input = page.locator(".storage-location-input")
+    expect(custom_input).to_have_value(picked_root, timeout=10_000)
+    assert page.evaluate("window.__storagePickOptions && window.__storagePickOptions.title") == "选择文件夹"
 
 
 @pytest.mark.frontend
@@ -280,25 +538,26 @@ def test_storage_location_overlay_keeps_page_config_blocked_on_restart_required_
     page.goto(f"{running_server}/", wait_until="domcontentloaded")
 
     overlay = page.locator("#storage-location-overlay")
-    selection_title = page.get_by_role("heading", name="请选择本次运行使用的存储位置")
-    choose_other_button = page.get_by_role("button", name="选择其他位置")
+    selection_title = page.get_by_role("heading", name="存储位置选择")
     submit_other_button = page.get_by_role("button", name="提交该位置")
     custom_input = page.locator(".storage-location-input")
-    preview_title = page.get_by_role("heading", name="该选择需要后续关闭并迁移")
+    preview_note = page.locator("text=更改存储位置会先关闭当前实例")
 
     expect(overlay).to_be_visible(timeout=15_000)
+    _continue_storage_intro(page)
     expect(selection_title).to_be_visible(timeout=15_000)
+    _expect_storage_migration_has_no_scrollbars(page)
 
     _arm_page_config_resolution_probe(page)
     assert _page_config_state(page) == "pending"
 
-    choose_other_button.click()
     expect(custom_input).to_be_visible(timeout=5_000)
 
     custom_input.fill(str(tmp_path / "alt-storage"))
     submit_other_button.click()
 
-    expect(preview_title).to_be_visible(timeout=10_000)
+    expect(preview_note).to_be_visible(timeout=10_000)
+    _expect_storage_migration_has_no_scrollbars(page)
     assert select_requests[-1]["selected_root"] == str(target_root.resolve())
     assert _page_config_state(page) == "pending"
 
@@ -312,6 +571,7 @@ def test_storage_location_restart_confirmation_enters_maintenance_page_and_recov
     page = mock_page
     status_requests = {"count": 0}
     storage_status_requests = {"count": 0}
+    target_root = str((tmp_path / "alt-storage" / "N.E.K.O").resolve())
 
     def handle_status(route):
         status_requests["count"] += 1
@@ -385,7 +645,7 @@ def test_storage_location_restart_confirmation_enters_maintenance_page_and_recov
                         },
                         "migration": {
                             "status": "pending",
-                            "target_root": str((tmp_path / "alt-storage" / "N.E.K.O").resolve()),
+                            "target_root": target_root,
                         },
                     },
                     ensure_ascii=False,
@@ -468,9 +728,9 @@ def test_storage_location_restart_confirmation_enters_maintenance_page_and_recov
                 {
                     "ok": True,
                     "result": "restart_required",
-                    "selected_root": str((tmp_path / "alt-storage" / "N.E.K.O").resolve()),
+                    "selected_root": target_root,
                     "selection_source": "custom",
-                    "target_root": str((tmp_path / "alt-storage" / "N.E.K.O").resolve()),
+                    "target_root": target_root,
                     "estimated_required_bytes": 4096,
                     "target_free_bytes": 1048576,
                     "permission_ok": True,
@@ -491,8 +751,8 @@ def test_storage_location_restart_confirmation_enters_maintenance_page_and_recov
                 {
                     "ok": True,
                     "result": "restart_initiated",
-                    "selected_root": str((tmp_path / "alt-storage" / "N.E.K.O").resolve()),
-                    "target_root": str((tmp_path / "alt-storage" / "N.E.K.O").resolve()),
+                    "selected_root": target_root,
+                    "target_root": target_root,
                     "selection_source": "custom",
                     "estimated_required_bytes": 4096,
                     "target_free_bytes": 1048576,
@@ -503,7 +763,7 @@ def test_storage_location_restart_confirmation_enters_maintenance_page_and_recov
                     "migration": {
                         "status": "pending",
                         "source_root": "/tmp/runtime/N.E.K.O",
-                        "target_root": str((tmp_path / "alt-storage" / "N.E.K.O").resolve()),
+                        "target_root": target_root,
                         "selection_source": "custom",
                         "requested_at": "2026-04-24T00:00:00Z",
                         "backup_root": "",
@@ -518,25 +778,29 @@ def test_storage_location_restart_confirmation_enters_maintenance_page_and_recov
     )
 
     page.goto(f"{running_server}/", wait_until="domcontentloaded")
+    _continue_storage_intro(page)
 
-    choose_other_button = page.get_by_role("button", name="选择其他位置")
     submit_other_button = page.get_by_role("button", name="提交该位置")
     confirm_restart_button = page.get_by_role("button", name="确认关闭并迁移")
     custom_input = page.locator(".storage-location-input")
     maintenance_title = page.get_by_role("heading", name="正在优化存储布局...")
     maintenance_progress = page.locator('[role="progressbar"]')
 
-    choose_other_button.click()
     expect(custom_input).to_be_visible(timeout=5_000)
     custom_input.fill(str(tmp_path / "alt-storage" / "N.E.K.O"))
     submit_other_button.click()
 
+    expect(page.locator(".storage-location-selection-actions")).to_be_hidden(timeout=10_000)
+    expect(page.locator(".storage-location-restart-actions")).to_be_visible(timeout=10_000)
     expect(confirm_restart_button).to_be_visible(timeout=10_000)
     confirm_restart_button.click()
 
     expect(maintenance_title).to_be_visible(timeout=10_000)
     expect(maintenance_progress).to_be_visible(timeout=10_000)
+    _expect_storage_migration_has_no_scrollbars(page)
     assert int(maintenance_progress.get_attribute("aria-valuenow") or "0") >= 10
+    assert "目标路径已记录" not in (maintenance_progress.get_attribute("aria-valuetext") or "")
+    assert target_root not in page.locator("#storage-location-overlay").inner_text()
     assert _page_config_state(page) == "pending"
     expect(page.locator("#storage-location-overlay")).to_be_hidden(timeout=15_000)
     page.wait_for_function(
@@ -715,11 +979,46 @@ def test_storage_location_existing_target_requires_second_confirmation_before_re
             ),
         )
 
+    page.route(
+        "**/api/storage/location/status",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(
+                {
+                    "ok": True,
+                    "ready": False,
+                    "status": "maintenance",
+                    "lifecycle_state": "maintenance",
+                    "migration_stage": "pending",
+                    "maintenance_message": "",
+                    "poll_interval_ms": 200,
+                    "effective_root": "/tmp/runtime/N.E.K.O",
+                    "last_error_summary": "",
+                    "blocking_reason": "migration_pending",
+                    "storage": {
+                        "selection_required": False,
+                        "migration_pending": True,
+                        "recovery_required": False,
+                        "legacy_cleanup_pending": False,
+                        "stage": "stage3_web_restart",
+                    },
+                    "migration": {
+                        "status": "pending",
+                        "source_root": "/tmp/runtime/N.E.K.O",
+                        "target_root": target_root,
+                        "selection_source": "custom",
+                    },
+                },
+                ensure_ascii=False,
+            ),
+        ),
+    )
     page.route("**/api/storage/location/restart", handle_restart)
     page.on("dialog", lambda dialog: dialog.accept())
 
     page.goto(f"{running_server}/", wait_until="domcontentloaded")
-    page.get_by_role("button", name="选择其他位置").click()
+    _continue_storage_intro(page)
     page.locator(".storage-location-input").fill(str(tmp_path / "existing-target"))
     page.get_by_role("button", name="提交该位置").click()
 
@@ -831,7 +1130,7 @@ def test_storage_location_pending_migration_refresh_stays_on_maintenance_page_in
 
     overlay = page.locator("#storage-location-overlay")
     maintenance_title = page.get_by_role("heading", name="正在优化存储布局...")
-    selection_title = page.get_by_role("heading", name="请选择本次运行使用的存储位置")
+    selection_title = page.get_by_role("heading", name="存储位置选择")
 
     expect(overlay).to_be_visible(timeout=15_000)
     expect(maintenance_title).to_be_visible(timeout=15_000)
@@ -900,7 +1199,7 @@ def test_storage_location_overlay_stays_open_for_recovery_required_state_even_if
     page.goto(f"{running_server}/", wait_until="domcontentloaded")
 
     overlay = page.locator("#storage-location-overlay")
-    selection_title = page.get_by_role("heading", name="请选择本次运行使用的存储位置")
+    selection_title = page.get_by_role("heading", name="存储位置选择")
 
     expect(overlay).to_be_visible(timeout=15_000)
     expect(selection_title).to_be_visible(timeout=15_000)
@@ -997,6 +1296,19 @@ def test_storage_location_ready_state_shows_completion_notice_and_allows_manual_
 
     source_root = str((tmp_path / "source-root" / "N.E.K.O").resolve())
     target_root = str((tmp_path / "target-root" / "N.E.K.O").resolve())
+    page.add_init_script(
+        """
+        () => {
+            window.__nekoOpenPathCalls = [];
+            window.nekoHost = {
+                openPath: async (payload) => {
+                    window.__nekoOpenPathCalls.push(payload);
+                    return { ok: true };
+                },
+            };
+        }
+        """
+    )
 
     page.route(
         "**/api/system/status",
@@ -1130,6 +1442,8 @@ def test_storage_location_ready_state_shows_completion_notice_and_allows_manual_
     expect(completion_paths.nth(0)).to_have_text(target_root, timeout=10_000)
     expect(completion_paths.nth(1)).to_have_text(source_root, timeout=10_000)
     expect(cleanup_button).to_be_visible(timeout=10_000)
+    expect(completion_card.get_by_role("button", name="打开当前目录")).to_have_count(0)
+    expect(completion_card.get_by_role("button", name="打开旧目录")).to_have_count(0)
     expect(completion_card.locator(".storage-location-actions button", has_text="关闭")).to_have_count(0)
 
     before_drag = completion_card.bounding_box()
@@ -1150,3 +1464,135 @@ def test_storage_location_ready_state_shows_completion_notice_and_allows_manual_
     assert json.loads(cleanup_requests["payload"]) == {
         "retained_root": source_root,
     }
+
+
+@pytest.mark.frontend
+def test_storage_location_completion_notice_close_is_remembered_per_migration(
+    mock_page: Page,
+    running_server: str,
+    tmp_path,
+):
+    page = mock_page
+
+    source_root = str((tmp_path / "source-root" / "N.E.K.O").resolve())
+    target_root = str((tmp_path / "target-root" / "N.E.K.O").resolve())
+    completion_notice = {
+        "completed": True,
+        "message": "新的运行目录已经生效，旧数据目录目前仍保留。",
+        "source_root": source_root,
+        "target_root": target_root,
+        "retained_root": source_root,
+        "retained_root_exists": True,
+        "cleanup_available": True,
+        "completed_at": "2026-04-25T00:00:00Z",
+    }
+
+    page.route(
+        "**/api/system/status",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(
+                {
+                    "ok": True,
+                    "status": "ready",
+                    "ready": True,
+                    "storage": {
+                        "selection_required": False,
+                        "migration_pending": False,
+                        "recovery_required": False,
+                        "blocking_reason": "",
+                        "last_error_summary": "",
+                        "legacy_cleanup_pending": True,
+                        "stage": "stage5_completion",
+                    },
+                },
+                ensure_ascii=False,
+            ),
+        ),
+    )
+
+    def handle_storage_status(route):
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(
+                {
+                    "ok": True,
+                    "ready": True,
+                    "status": "ready",
+                    "lifecycle_state": "ready",
+                    "migration_stage": "completed",
+                    "maintenance_message": "",
+                    "poll_interval_ms": 200,
+                    "effective_root": target_root,
+                    "last_error_summary": "",
+                    "blocking_reason": "",
+                    "storage": {
+                        "selection_required": False,
+                        "migration_pending": False,
+                        "recovery_required": False,
+                        "legacy_cleanup_pending": True,
+                        "stage": "stage5_completion",
+                    },
+                    "migration": {
+                        "status": "completed",
+                        "source_root": source_root,
+                        "target_root": target_root,
+                        "retained_source_root": source_root,
+                        "retained_source_mode": "manual_retention",
+                        "completed_at": completion_notice["completed_at"],
+                    },
+                    "completion_notice": dict(completion_notice),
+                },
+                ensure_ascii=False,
+            ),
+        )
+
+    page.route("**/api/storage/location/status", handle_storage_status)
+
+    page.goto(f"{running_server}/", wait_until="domcontentloaded")
+    completion_card = page.locator(".storage-location-completion-card")
+
+    page.wait_for_function(
+        """
+        async () => {
+            if (!window.appStorageLocation) return false;
+            await window.appStorageLocation.refreshCompletionNotice();
+            const card = document.querySelector('.storage-location-completion-card');
+            return !!(card && !card.hidden);
+        }
+        """,
+        timeout=10_000,
+    )
+    expect(completion_card).to_be_visible(timeout=10_000)
+
+    completion_card.locator(".storage-location-close").click()
+    expect(completion_card).to_be_hidden(timeout=10_000)
+
+    page.reload(wait_until="domcontentloaded")
+    page.wait_for_function(
+        """
+        async () => {
+            if (!window.appStorageLocation) return false;
+            await window.appStorageLocation.refreshCompletionNotice();
+            const card = document.querySelector('.storage-location-completion-card');
+            return !!card && card.hidden === true;
+        }
+        """,
+        timeout=10_000,
+    )
+    expect(completion_card).to_be_hidden(timeout=10_000)
+
+    completion_notice["completed_at"] = "2026-04-26T00:00:00Z"
+    page.wait_for_function(
+        """
+        async () => {
+            await window.appStorageLocation.refreshCompletionNotice();
+            const card = document.querySelector('.storage-location-completion-card');
+            return !!(card && !card.hidden);
+        }
+        """,
+        timeout=10_000,
+    )
+    expect(completion_card).to_be_visible(timeout=10_000)

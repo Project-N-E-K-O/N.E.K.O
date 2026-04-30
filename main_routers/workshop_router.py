@@ -329,7 +329,7 @@ async def _query_ugc_details_batch(steamworks, item_ids: list[int], max_retries:
                 logger.debug(f"run_callbacks (post-query pump) 异常: {e}")
             
             return results
-        
+
         except Exception as e:
             logger.warning(f"UGC 批量查询异常: {e} (attempt {attempt + 1}/{max_retries})")
             if attempt < max_retries - 1:

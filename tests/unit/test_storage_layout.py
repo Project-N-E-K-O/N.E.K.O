@@ -3,7 +3,13 @@ from unittest.mock import patch
 
 import pytest
 
-from utils.storage_layout import NEKO_STORAGE_ANCHOR_ROOT_ENV, NEKO_STORAGE_SELECTED_ROOT_ENV, resolve_storage_layout
+from utils.storage_layout import (
+    NEKO_STORAGE_ANCHOR_ROOT_ENV,
+    NEKO_STORAGE_CLOUDSAVE_ROOT_ENV,
+    NEKO_STORAGE_SELECTED_ROOT_ENV,
+    export_storage_layout_to_env,
+    resolve_storage_layout,
+)
 from utils.storage_policy import save_storage_policy
 from utils.file_utils import atomic_write_json
 
@@ -25,6 +31,28 @@ def _make_config_manager(tmp_path: Path):
     # Preserve the mocked candidate list after __init__ so subsequent layout calls stay deterministic.
     config_manager._get_standard_data_directory_candidates = lambda: [standard_root]
     return config_manager
+
+
+@pytest.mark.unit
+def test_export_storage_layout_to_env_clears_empty_values(tmp_path):
+    environ = {
+        NEKO_STORAGE_SELECTED_ROOT_ENV: "stale-selected",
+        NEKO_STORAGE_ANCHOR_ROOT_ENV: "stale-anchor",
+        NEKO_STORAGE_CLOUDSAVE_ROOT_ENV: "stale-cloudsave",
+    }
+
+    export_storage_layout_to_env(
+        {
+            "selected_root": tmp_path / "selected",
+            "anchor_root": "",
+            "cloudsave_root": None,
+        },
+        environ=environ,
+    )
+
+    assert environ[NEKO_STORAGE_SELECTED_ROOT_ENV] == str(tmp_path / "selected")
+    assert NEKO_STORAGE_ANCHOR_ROOT_ENV not in environ
+    assert NEKO_STORAGE_CLOUDSAVE_ROOT_ENV not in environ
 
 
 @pytest.mark.unit

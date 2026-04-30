@@ -9,17 +9,17 @@ checkpoint flow, and exposes maintenance-state diagnostics for the web UI.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import shutil
 import sys
 import inspect
 import subprocess
-import shutil as shell_shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Response
+from fastapi import APIRouter, Request, Response
 from pydantic import BaseModel, Field, field_validator
 
 from config import APP_NAME
@@ -30,10 +30,12 @@ from main_routers.shared_state import (
 )
 from utils.cloudsave_runtime import ROOT_MODE_MAINTENANCE_READONLY, ROOT_MODE_NORMAL, set_root_mode
 from utils.storage_location_bootstrap import (
+    STORAGE_STARTUP_BLOCKING_REASONS,
     STORAGE_STATUS_POLL_INTERVAL_MS,
     build_storage_location_bootstrap_payload,
 )
 from utils.storage_migration import (
+    MIGRATED_RUNTIME_ENTRY_NAMES,
     STORAGE_MIGRATION_STATUS_COMPLETED,
     STORAGE_MIGRATION_STATUS_FAILED,
     create_pending_storage_migration,
@@ -56,18 +58,8 @@ from utils.storage_policy import (
 from utils.config_manager import get_config_manager as get_runtime_config_manager
 
 router = APIRouter(prefix="/api/storage/location", tags=["storage_location"])
+logger = logging.getLogger(__name__)
 _storage_mutation_lock = asyncio.Lock()
-_MIGRATED_RUNTIME_ENTRY_NAMES = (
-    "config",
-    "memory",
-    "plugins",
-    "live2d",
-    "vrm",
-    "mmd",
-    "workshop",
-    "character_cards",
-    "jukebox",
-)
 
 
 class StorageLocationSelectionRequest(BaseModel):
@@ -92,7 +84,7 @@ class StorageLocationDirectoryPickerRequest(BaseModel):
     start_path: str = Field(default="", min_length=0, max_length=4096)
 
 
-class _DirectoryPickerCancelled(RuntimeError):
+class _DirectoryPickerCancelled(Exception):
     pass
 
 
@@ -206,7 +198,9 @@ async def _release_storage_startup_barrier_or_rollback(
         try:
             _restore_storage_mutation_state(config_manager, snapshot, anchor_root=anchor_root)
         except Exception:
-            pass
+            logger.exception(
+                "failed to rollback storage mutation state after startup barrier release failed",
+            )
         raise
 
 
@@ -245,7 +239,7 @@ def _safe_path_size(path: Path) -> int:
 
 def _estimate_runtime_payload_bytes(source_root: Path) -> int:
     total = 0
-    for name in _MIGRATED_RUNTIME_ENTRY_NAMES:
+    for name in MIGRATED_RUNTIME_ENTRY_NAMES:
         total += _safe_path_size(source_root / name)
     return total
 
@@ -289,12 +283,43 @@ def _path_chain_has_symlink(path: Path) -> bool:
         candidate = parent
 
 
+def _path_segments(path: Path) -> list[str]:
+    return [
+        segment.strip().lower()
+        for segment in str(path).replace("\\", "/").split("/")
+        if segment.strip()
+    ]
+
+
+def _is_cloud_sync_path_segment(segment: str) -> bool:
+    normalized_segment = str(segment or "").strip().lower()
+
+    def matches_client_folder(prefix: str) -> bool:
+        if normalized_segment == prefix:
+            return True
+        if not normalized_segment.startswith(prefix):
+            return False
+        suffix = normalized_segment[len(prefix) :].lstrip()
+        return bool(suffix) and suffix[0] in {"(", "-", "["}
+
+    if any(
+        matches_client_folder(prefix)
+        for prefix in ("icloud drive", "google drive", "googledrive", "dropbox")
+    ):
+        return True
+    return (
+        normalized_segment == "onedrive"
+        or normalized_segment.startswith("onedrive - ")
+        or normalized_segment.startswith("onedrive (")
+    )
+
+
 def _collect_warning_codes(current_root: Path, target_root: Path) -> list[str]:
     warning_codes: list[str] = []
     raw_target = str(target_root)
     normalized_target = raw_target.replace("\\", "/").lower()
 
-    if any(token in normalized_target for token in ("onedrive", "icloud drive", "googledrive", "google drive", "dropbox")):
+    if any(_is_cloud_sync_path_segment(segment) for segment in _path_segments(target_root)):
         warning_codes.append("sync_folder")
     if raw_target.startswith("\\\\") or normalized_target.startswith("//"):
         warning_codes.append("network_share")
@@ -448,7 +473,7 @@ def _resolve_executable_name(*candidates: str) -> str:
             continue
         if os.path.isabs(candidate) and os.path.exists(candidate):
             return candidate
-        resolved = shell_shutil.which(candidate)
+        resolved = shutil.which(candidate)
         if resolved:
             return resolved
     return candidates[0]
@@ -521,7 +546,7 @@ def _pick_directory_via_powershell(*, start_path: str) -> str:
         "pwsh.exe",
         "pwsh",
     )
-    if not os.path.isabs(powershell_executable) and not shell_shutil.which(powershell_executable):
+    if not os.path.isabs(powershell_executable) and not shutil.which(powershell_executable):
         raise _DirectoryPickerUnavailable(
             "directory_picker_unavailable",
             "当前系统未找到 PowerShell，无法打开目录选择器。",
@@ -530,13 +555,26 @@ def _pick_directory_via_powershell(*, start_path: str) -> str:
     escaped_start_path = start_path.replace("'", "''")
     script = """
 Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+$owner = New-Object System.Windows.Forms.Form
+$owner.Text = 'N.E.K.O'
+$owner.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen
+$owner.Size = New-Object System.Drawing.Size(1, 1)
+$owner.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedToolWindow
+$owner.ShowInTaskbar = $false
+$owner.Opacity = 0
+$owner.TopMost = $true
 $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
 $dialog.Description = '请选择存储位置目录'
 $dialog.ShowNewFolderButton = $true
 if ('{start_path}') {{
     $dialog.SelectedPath = '{start_path}'
 }}
-$result = $dialog.ShowDialog()
+$owner.Show()
+$owner.Activate()
+$owner.BringToFront()
+[System.Windows.Forms.Application]::DoEvents()
+$result = $dialog.ShowDialog($owner)
 if ($result -eq [System.Windows.Forms.DialogResult]::OK) {{
     Write-Output $dialog.SelectedPath
     exit 0
@@ -581,19 +619,19 @@ exit 2
 def _pick_directory_via_linux_dialog(*, start_path: str) -> str:
     commands: list[list[str]] = []
     zenity_executable = _resolve_executable_name("/usr/bin/zenity", "/bin/zenity", "zenity")
-    if os.path.isabs(zenity_executable) and os.path.exists(zenity_executable) or shell_shutil.which(zenity_executable):
+    if os.path.isabs(zenity_executable) and os.path.exists(zenity_executable) or shutil.which(zenity_executable):
         command = [zenity_executable, "--file-selection", "--directory", "--title=请选择存储位置目录"]
         if start_path:
             command.append(f"--filename={start_path.rstrip('/')}/")
         commands.append(command)
     kdialog_executable = _resolve_executable_name("/usr/bin/kdialog", "/bin/kdialog", "kdialog")
-    if os.path.isabs(kdialog_executable) and os.path.exists(kdialog_executable) or shell_shutil.which(kdialog_executable):
+    if os.path.isabs(kdialog_executable) and os.path.exists(kdialog_executable) or shutil.which(kdialog_executable):
         command = [kdialog_executable, "--getexistingdirectory"]
         if start_path:
             command.append(start_path)
         commands.append(command)
     yad_executable = _resolve_executable_name("/usr/bin/yad", "/bin/yad", "yad")
-    if os.path.isabs(yad_executable) and os.path.exists(yad_executable) or shell_shutil.which(yad_executable):
+    if os.path.isabs(yad_executable) and os.path.exists(yad_executable) or shutil.which(yad_executable):
         command = [yad_executable, "--file-selection", "--directory", "--title=请选择存储位置目录"]
         if start_path:
             command.append(f"--filename={start_path.rstrip('/')}/")
@@ -650,6 +688,8 @@ def _pick_directory_via_tkinter(*, start_path: str) -> str:
         root.withdraw()
         try:
             root.attributes("-topmost", True)
+            root.lift()
+            root.focus_force()
         except Exception:
             pass
         root.update_idletasks()
@@ -710,7 +750,7 @@ def _open_path_in_file_manager(path: Path | str) -> None:
             subprocess.Popen(["open", str(target_path)])
             return
 
-        opener = shell_shutil.which("xdg-open") or shell_shutil.which("gio")
+        opener = shutil.which("xdg-open") or shutil.which("gio")
         if not opener:
             raise _OpenStorageRootUnavailable(
                 "open_storage_root_unavailable",
@@ -1027,7 +1067,7 @@ def _cleanup_retained_runtime_root(
         raise ValueError("保留目录当前不满足安全清理条件。")
 
     if paths_equal(retained_path, anchor_root):
-        for entry_name in _MIGRATED_RUNTIME_ENTRY_NAMES:
+        for entry_name in MIGRATED_RUNTIME_ENTRY_NAMES:
             entry_path = retained_path / entry_name
             if entry_path.is_dir() and not entry_path.is_symlink():
                 shutil.rmtree(entry_path)
@@ -1071,6 +1111,59 @@ async def get_storage_location_status(response: Response):
 
     config_manager = _get_storage_config_manager()
     return _build_status_payload(config_manager)
+
+
+@router.post("/exit")
+async def post_storage_location_exit(request: Request, response: Response):
+    _set_no_cache_headers(response)
+
+    if request.headers.get("X-Neko-Storage-Action") != "exit":
+        response.status_code = 403
+        return {
+            "ok": False,
+            "error_code": "storage_exit_forbidden",
+            "error": "缺少存储退出确认标记。",
+        }
+
+    config_manager = _get_storage_config_manager()
+    bootstrap_payload = build_storage_location_bootstrap_payload(config_manager)
+    blocking_reason = str(bootstrap_payload.get("blocking_reason") or "").strip()
+    root_mode = str((config_manager.load_root_state() or {}).get("mode") or "").strip()
+    if (
+        blocking_reason not in STORAGE_STARTUP_BLOCKING_REASONS
+        and root_mode != ROOT_MODE_MAINTENANCE_READONLY
+    ):
+        response.status_code = 409
+        return {
+            "ok": False,
+            "error_code": "storage_exit_not_required",
+            "error": "当前没有需要阻断启动的存储状态。",
+            "blocking_reason": blocking_reason,
+        }
+
+    request_app_shutdown = get_request_app_shutdown()
+    if not callable(request_app_shutdown):
+        response.status_code = 503
+        return {
+            "ok": False,
+            "error_code": "restart_unavailable",
+            "error": "当前实例暂时无法执行受控关闭，请稍后重试。",
+        }
+
+    try:
+        await _request_app_shutdown(request_app_shutdown)
+    except Exception as exc:
+        response.status_code = 500
+        return {
+            "ok": False,
+            "error_code": "restart_schedule_failed",
+            "error": f"受控关闭启动失败: {exc}",
+        }
+
+    return {
+        "ok": True,
+        "result": "shutdown_initiated",
+    }
 
 
 @router.get("/diagnostics")
@@ -1646,7 +1739,9 @@ async def _post_storage_location_restart_locked(
             try:
                 _restore_storage_mutation_state(config_manager, state_snapshot, anchor_root=anchor_root)
             except Exception:
-                pass
+                logger.exception(
+                    "failed to rollback storage mutation state after restart scheduling failed",
+                )
 
             response.status_code = 500
             return {

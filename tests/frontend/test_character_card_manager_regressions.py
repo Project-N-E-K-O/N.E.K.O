@@ -381,6 +381,129 @@ def test_character_card_manager_creates_tag_scroll_buttons_for_dynamic_wrapper(
 
 
 @pytest.mark.frontend
+def test_character_card_manager_renders_and_opens_cards_when_model_scan_never_resolves(
+    mock_page: Page,
+    running_server: str,
+):
+    _open_character_card_manager(mock_page, running_server)
+
+    state = mock_page.evaluate(
+        """
+        async () => {
+            const originalFetch = window.fetch.bind(window);
+            let live2dModelScanRequests = 0;
+
+            window.fetch = async (input, init) => {
+                const url = typeof input === 'string' ? input : input.url;
+
+                if (url.endsWith('/api/live2d/models')) {
+                    live2dModelScanRequests += 1;
+                    return new Promise(() => {});
+                }
+
+                if (url.endsWith('/api/model/vrm/models')) {
+                    return new Response(JSON.stringify({ success: true, models: [] }), {
+                        status: 200,
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                }
+
+                if (url.endsWith('/api/model/mmd/models')) {
+                    return new Response(JSON.stringify({ success: true, models: [] }), {
+                        status: 200,
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                }
+
+                if (url.endsWith('/api/characters/')) {
+                    return new Response(JSON.stringify({
+                        '主人': {},
+                        '当前猫娘': '模拟猫娘',
+                        '猫娘': {
+                            '模拟猫娘': {
+                                '档案名': '模拟猫娘',
+                                'description': '迁移后角色管理应能直接显示',
+                                '关键词': ['迁移', '回归']
+                            }
+                        }
+                    }), {
+                        status: 200,
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                }
+
+                if (url.endsWith('/api/characters/character-card/list')) {
+                    return new Response(JSON.stringify({ success: true, character_cards: [] }), {
+                        status: 200,
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                }
+
+                if (url.endsWith('/api/characters/current_catgirl')) {
+                    return new Response(JSON.stringify({ current_catgirl: '模拟猫娘' }), {
+                        status: 200,
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                }
+
+                if (url.endsWith('/api/characters/card-faces')) {
+                    return new Response(JSON.stringify({ success: true, names: [] }), {
+                        status: 200,
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                }
+
+                if (url.endsWith('/api/characters/card-metas')) {
+                    return new Response(JSON.stringify({ success: true, metas: {} }), {
+                        status: 200,
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                }
+
+                return originalFetch(input, init);
+            };
+
+            const startedAt = performance.now();
+            const loadResult = await Promise.race([
+                loadCharacterCards().then(() => 'resolved'),
+                new Promise(resolve => setTimeout(() => resolve('timeout'), 900))
+            ]);
+            const elapsedMs = performance.now() - startedAt;
+
+            const card = document.querySelector('.chara-card-item');
+            card?.click();
+            await new Promise(resolve => setTimeout(resolve, 80));
+
+            return {
+                loadResult,
+                elapsedMs,
+                live2dModelScanRequests,
+                cardCount: document.querySelectorAll('.chara-card-item').length,
+                cardName: card?.querySelector('.card-name')?.textContent || '',
+                selectExists: !!document.querySelector('#character-card-select'),
+                selectOptions: Array.from(document.querySelectorAll('#character-card-select option'))
+                    .map(option => option.textContent),
+                panelOpen: !!document.querySelector('.catgirl-panel-overlay'),
+                profileName: document.querySelector('.catgirl-panel-overlay input[name="档案名"]')?.value || '',
+                saveButtonExists: !!document.querySelector('.catgirl-panel-overlay #save-button')
+            };
+        }
+        """
+    )
+
+    assert state["loadResult"] == "resolved"
+    assert state["elapsedMs"] < 900
+    assert state["live2dModelScanRequests"] >= 1
+    assert state["cardCount"] == 1
+    assert state["cardName"] == "模拟猫娘"
+    if state["selectExists"]:
+        assert "模拟猫娘" in state["selectOptions"]
+    assert state["panelOpen"] is True
+    assert state["profileName"] == "模拟猫娘"
+    assert state["saveButtonExists"] is True
+
+
+@pytest.mark.frontend
 def test_character_card_manager_live2d_preview_loads_after_regression_fixes(
     mock_page: Page,
     running_server: str,

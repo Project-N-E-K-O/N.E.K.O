@@ -198,6 +198,17 @@ class PluginCommunicationResourceManager:
             ct.add_done_callback(self._background_tasks.discard)
             raise TimeoutError(f"{error_context} execution timed out after {timeout}s") from None
 
+    async def _send_command_and_wait(
+        self,
+        req_id: str,
+        msg: dict,
+        timeout: float | None,
+        error_context: str,
+    ) -> Any:
+        return await self._run_on_owner_loop(
+            self._send_command_and_wait_local(req_id, msg, timeout, error_context)
+        )
+
     async def trigger(self, entry_id: str, args: dict, timeout: float | None = PLUGIN_TRIGGER_TIMEOUT) -> Any:
         return await self._run_on_owner_loop(self._trigger_local(entry_id, args, timeout))
 
@@ -220,6 +231,11 @@ class PluginCommunicationResourceManager:
         return await self._run_on_owner_loop(
             self._trigger_custom_event_local(event_type, event_id, args, timeout)
         )
+
+    async def get_ui_context(self, context_id: str = "main", timeout: float = 5.0) -> Any:
+        req_id = str(uuid.uuid4())
+        msg = {"type": "UI_CONTEXT", "req_id": req_id, "context_id": str(context_id or "main")}
+        return await self._send_command_and_wait(req_id, msg, timeout, f"ui context {context_id}")
 
     async def _trigger_custom_event_local(
         self,

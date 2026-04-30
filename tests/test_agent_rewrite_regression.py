@@ -262,6 +262,14 @@ def _script_tag_position(source: str, script_name: str) -> int:
     return position
 
 
+def _stylesheet_tag_position(source: str, stylesheet_name: str) -> int:
+    """Find a stylesheet link while allowing cache-buster query strings."""
+    needle = f'<link rel="stylesheet" href="/static/css/{stylesheet_name}'
+    position = source.find(needle)
+    assert position != -1, f"missing stylesheet link for {stylesheet_name}"
+    return position
+
+
 def test_home_template_loads_yui_runtime_stack_before_tutorial_manager():
     source = Path("templates/index.html").read_text(encoding="utf-8")
 
@@ -283,7 +291,7 @@ def test_target_page_templates_load_yui_runtime_stack_before_tutorial_manager():
             for name in (*_YUI_RUNTIME_SCRIPTS, "universal-tutorial-manager.js")
         ]
         assert positions == sorted(positions), template_path
-        assert '<link rel="stylesheet" href="/static/css/yui-guide.css">' in source
+        _stylesheet_tag_position(source, "yui-guide.css")
 
 
 def test_universal_tutorial_manager_normalizes_api_key_handoff_and_resume_scene_mappings():
@@ -641,7 +649,7 @@ def test_agent_server_openclaw_sender_id_prefers_latest_user_identity():
             break
     assert fn_src is not None
 
-    ns = {}
+    ns = {"AGENT_HISTORY_TURNS": 8}
     exec("from typing import Any\n" + fn_src, ns)
     resolver = ns["_resolve_openclaw_sender_id"]
 

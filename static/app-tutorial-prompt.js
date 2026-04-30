@@ -48,6 +48,7 @@
         promptDrivenTutorialToken: null,
         tutorialRunToken: null,
         pendingTutorialStartPersistence: null,
+        pendingTutorialStartPayload: null,
         userCohort: 'unknown',
     };
 
@@ -402,6 +403,22 @@
         try {
             clearHeartbeatSnapshot();
 
+            if (state.pendingTutorialStartPayload && !state.pendingTutorialStartPersistence) {
+                const retryPersistence = persistTutorialLifecycle(
+                    '/api/tutorial-prompt/tutorial-started',
+                    state.pendingTutorialStartPayload,
+                    'tutorial-started-persisted'
+                );
+                state.pendingTutorialStartPersistence = retryPersistence;
+                const retryResponse = await retryPersistence;
+                if (retryResponse && retryResponse.ok !== false) {
+                    state.pendingTutorialStartPayload = null;
+                }
+                if (state.pendingTutorialStartPersistence === retryPersistence) {
+                    state.pendingTutorialStartPersistence = null;
+                }
+            }
+
             data = await requestJson(HEARTBEAT_ENDPOINT, {
                 method: 'POST',
                 json: payload,
@@ -578,14 +595,14 @@
         logFlow('prompt-open', { token: shortPromptToken(promptToken) });
         try {
             const decision = await window.showDecisionPrompt({
-                title: translate('tutorialPrompt.title', '要不要先看一下新手引导？'),
+                title: translate('tutorialPrompt.title', '要不要开始主页新手引导？'),
                 message: translate(
                     'tutorialPrompt.message',
-                    '看起来你刚刚打开 N.E.K.O，还没有开始操作。要不要先带你快速认识一下主页里的核心功能？'
+                    '我可以带你快速认识主页上的核心入口，用最短路径上手 N.E.K.O。'
                 ),
                 note: translate(
                     'tutorialPrompt.note',
-                    '引导会从主页开始，介绍常用按钮和交互入口。'
+                    '整个过程随时都可以跳过，也可以之后再从记忆浏览里重新打开。'
                 ),
                 dismissValue: null,
                 closeOnClickOutside: false,
@@ -750,15 +767,26 @@
                 promptToken: shortPromptToken(state.promptDrivenTutorialToken || state.lastPromptTokenSeen),
                 tutorialRunToken: shortTutorialRunToken(state.tutorialRunToken),
             });
-            const startPersistence = persistTutorialLifecycle('/api/tutorial-prompt/tutorial-started', {
+            const startPayload = {
                 page: 'home',
                 source: event.detail.source || 'manual',
                 prompt_token: event.detail.source === 'idle_prompt'
                     ? state.promptDrivenTutorialToken
                     : undefined,
-            }, 'tutorial-started-persisted');
+            };
+            state.pendingTutorialStartPayload = startPayload;
+            const startPersistence = persistTutorialLifecycle(
+                '/api/tutorial-prompt/tutorial-started',
+                startPayload,
+                'tutorial-started-persisted'
+            );
             state.pendingTutorialStartPersistence = startPersistence;
-            void startPersistence.finally(function () {
+            void startPersistence.then(function (response) {
+                if (response && response.ok !== false) {
+                    state.pendingTutorialStartPayload = null;
+                }
+                return response;
+            }).finally(function () {
                 if (state.pendingTutorialStartPersistence === startPersistence) {
                     state.pendingTutorialStartPersistence = null;
                 }

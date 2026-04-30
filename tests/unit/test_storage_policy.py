@@ -47,6 +47,18 @@ def test_save_storage_policy_writes_stable_layout_under_anchor_state(tmp_path):
 
 
 @pytest.mark.unit
+def test_load_storage_policy_returns_default_when_payload_is_unreadable(tmp_path):
+    config_manager = _DummyConfigManager(tmp_path)
+    policy_path = get_storage_policy_path(config_manager)
+    policy_path.parent.mkdir(parents=True, exist_ok=True)
+    policy_path.write_text("{not-json", encoding="utf-8")
+
+    default_payload = {"selected_root": str(config_manager.app_docs_dir)}
+
+    assert load_storage_policy(config_manager, default=default_payload) == default_payload
+
+
+@pytest.mark.unit
 def test_validate_selected_root_rejects_anchor_reserved_state_directory(tmp_path):
     config_manager = _DummyConfigManager(tmp_path)
     invalid_target = tmp_path / "anchor-base" / "N.E.K.O" / "state" / "nested"

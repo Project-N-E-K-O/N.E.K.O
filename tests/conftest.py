@@ -392,6 +392,22 @@ def clean_user_data_dir(tmp_path_factory):
     cm.project_config_dir = cm.config_dir
     cm.project_memory_dir = cm.memory_dir
 
+    # Keep browser/e2e tests isolated from the developer machine's real
+    # storage bootstrap state. The session temp root should start as a ready
+    # app root unless a test explicitly mocks a blocked storage state.
+    from utils.storage_policy import save_storage_policy
+
+    save_storage_policy(
+        None,
+        selected_root=cm.app_docs_dir,
+        anchor_root=cm.anchor_root,
+        selection_source="test",
+    )
+    cm.save_root_state(cm.build_default_root_state())
+    storage_migration_path = cm.local_state_dir / "storage_migration.json"
+    if storage_migration_path.exists():
+        storage_migration_path.unlink()
+
     # Also patch the class method for any NEW instances that might be created
     patcher = patch("utils.config_manager.ConfigManager._get_documents_directory", return_value=tmp_path)
     legacy_patcher = patch("utils.config_manager.ConfigManager.get_legacy_app_root_candidates", return_value=[])
