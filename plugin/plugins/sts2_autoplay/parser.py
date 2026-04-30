@@ -61,7 +61,8 @@ class StrategyParser:
         return sorted(path.stem for path in strategies_dir.glob("*.md") if path.is_file())
 
     def _normalize_character_strategy_name(self, strategy_name: Any) -> str:
-        raw = str(strategy_name or "defect").strip().lower().replace(" ", "_")
+        fallback = "defect" if strategy_name is None else strategy_name
+        raw = str(fallback).strip().lower().replace(" ", "_")
         alias = self._CHARACTER_STRATEGY_ALIASES.get(raw)
         if alias:
             return alias
@@ -143,8 +144,6 @@ class StrategyParser:
             if include_section_body:
                 lines.append(f"### {title}")
                 lines.extend(section.get("body_lines", []))
-            if not include_section_body:
-                continue
             for detail in section.get("details", []):
                 detail_title = str(detail.get("title") or "")
                 if any(token in detail_title for token in supported_detail_titles):
@@ -217,7 +216,7 @@ class StrategyParser:
         }
 
     def _parse_strategy_frontmatter(self, prompt: str) -> Optional[Dict[str, Any]]:
-        text = prompt or ""
+        text = (prompt or "").lstrip("\ufeff")
         if not text.startswith("---"):
             return None
         match = re.match(r"^---\s*\r?\n([\s\S]*?)\r?\n---\s*(?:\r?\n|$)", text)

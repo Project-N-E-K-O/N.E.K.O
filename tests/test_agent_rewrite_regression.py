@@ -367,7 +367,7 @@ def test_task_executor_hides_agent_auto_disabled_plugin_entries():
     assert "sts2_start_autoplay" in desc
     plugin, entry = executor._find_plugin_entry(plugins, "sts2_autoplay", "sts2_get_snapshot")
     assert plugin is plugins[0]
-    assert entry["id"] == "sts2_start_autoplay"
+    assert entry is None
 
 
 def test_task_executor_skips_plugin_with_only_agent_hidden_entries():

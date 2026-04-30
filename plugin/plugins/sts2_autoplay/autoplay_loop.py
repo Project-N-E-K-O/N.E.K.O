@@ -150,6 +150,12 @@ class AutoplayLoopMixin:
                     prev_screen = self._snapshot.get("screen") if self._snapshot else None
                     continue
                 result = await self.step_once()
+                if result.get("status") == "error":
+                    self._last_error = str(result.get("error") or result.get("message") or "step_once failed")
+                    self._emit_status()
+                    await asyncio.sleep(0.2)
+                    prev_screen = self._snapshot.get("screen") if self._snapshot else None
+                    continue
                 self._step_count += 1
                 if result.get("status") == "idle":
                     try:

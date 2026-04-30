@@ -11,6 +11,21 @@ from .models import normalize_snapshot
 
 
 class ContextFlowMixin:
+    def _safe_float(self, value: Any, default: float = 0.0) -> float:
+        try:
+            return float(value)
+        except (ValueError, TypeError):
+            return default
+
+    def _safe_config_int(self, key: str, default: int) -> int:
+        try:
+            return int(self._cfg.get(key, default) or default)
+        except (ValueError, TypeError):
+            return default
+
+    def _safe_config_float(self, key: str, default: float) -> float:
+        return self._safe_float(self._cfg.get(key, default) or default, default)
+
     def _publish_snapshot(self, snapshot: Dict[str, Any], *, record_history: bool) -> Dict[str, Any]:
         self._snapshot = snapshot
         self._server_state = "connected"
@@ -140,8 +155,8 @@ class ContextFlowMixin:
         return self._context_analyzer._is_eventish_screen(screen)
 
     async def _await_stable_step_context(self) -> Dict[str, Any]:
-        attempts = max(2, int(self._cfg.get("stable_state_attempts", 4) or 4))
-        delay = max(0.1, float(self._cfg.get("poll_interval_active_seconds", 1) or 1) / 2)
+        attempts = max(2, self._safe_config_int("stable_state_attempts", 4))
+        delay = max(0.1, self._safe_config_float("poll_interval_active_seconds", 1.0) / 2)
         previous: Optional[Dict[str, Any]] = None
         last_context: Optional[Dict[str, Any]] = None
         for attempt in range(attempts):
@@ -242,13 +257,13 @@ class ContextFlowMixin:
         return {**prepared, "action": matching_action, "kwargs": kwargs, "context": latest, "context_signature": latest["signature"]}
 
     async def _await_action_interval(self) -> None:
-        delay = max(0.0, float(self._cfg.get("action_interval_seconds", 0.5) or 0.5))
+        delay = max(0.0, self._safe_config_float("action_interval_seconds", 0.5))
         if delay > 0:
             await asyncio.sleep(delay)
 
     async def _await_post_action_settle(self, before_context: dict[str, Any], prepared: dict[str, Any]) -> Dict[str, Any]:
-        attempts = max(2, int(self._cfg.get("post_action_settle_attempts", 6) or 6))
-        delay = max(0.1, float(self._cfg.get("post_action_delay_seconds", 0.5) or 0.5))
+        attempts = max(2, self._safe_config_int("post_action_settle_attempts", 6))
+        delay = max(0.1, self._safe_config_float("post_action_delay_seconds", 0.5))
         last_context = before_context
         for attempt in range(attempts):
             if attempt > 0:
