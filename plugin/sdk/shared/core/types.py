@@ -166,17 +166,24 @@ class PluginContextProtocol(Protocol):
     def push_message(
         self,
         *,
-        source: str,
-        message_type: str,
-        description: str = "",
+        # v2 schema:
+        visibility: list[str] | None = None,
+        ai_behavior: str | None = None,
+        parts: list[dict[str, object]] | None = None,
+        # common:
+        source: str = "",
+        target_lanlan: str | None = None,
+        metadata: dict[str, object] | None = None,
         priority: int = 0,
+        # legacy (deprecated; translated by host adapter):
+        message_type: str | None = None,
+        description: str | None = None,
         content: str | None = None,
         binary_data: bytes | None = None,
         binary_url: str | None = None,
-        metadata: dict[str, object] | None = None,
+        mime: str | None = None,
         unsafe: bool = False,
         fast_mode: bool = False,
-        target_lanlan: str | None = None,
         delivery: str | bool | None = None,
         reply: bool | None = None,
     ) -> object: ...

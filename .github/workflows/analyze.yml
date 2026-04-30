@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   python-lint:
-    name: Python lint (ruff + async-blocking + no-loguru + no-temperature + prompt-hygiene + i18n-sync)
+    name: Python lint (ruff + async-blocking + no-loguru + no-temperature + prompt-hygiene + i18n-sync + docs-no-relative-paths)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -88,3 +88,12 @@ jobs:
         # there's nothing to diff against.
         if: github.event_name == 'pull_request'
         run: python scripts/check_i18n_sync.py --base "origin/${{ github.base_ref }}"
+
+      - name: Forbid relative-up markdown links inside docs/
+        # docs/ ships through VitePress with itself as the deploy root;
+        # any markdown link target starting with '..' resolves outside the
+        # site and breaks deploy. We've shipped this regression more than
+        # once — this check fails the build before the next attempt lands.
+        # Fix is to inline the path as code (`foo/bar.js`) instead of a
+        # link, or move the referenced content into docs/.
+        run: python scripts/check_docs_no_relative_paths.py
