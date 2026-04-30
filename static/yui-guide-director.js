@@ -1610,6 +1610,32 @@
             return '';
         }
 
+        getStoredValue(key) {
+            try {
+                return (
+                    (window.sessionStorage && window.sessionStorage.getItem(key))
+                    || (window.localStorage && window.localStorage.getItem(key))
+                    || ''
+                );
+            } catch (_) {
+                return '';
+            }
+        }
+
+        resolveStoredModelType() {
+            const modelType = String(this.getStoredValue('modelType') || '').toLowerCase();
+            if (modelType === 'live3d') {
+                const subType = String(
+                    this.getStoredValue('live3dSubType') || this.getStoredValue('live3d_sub_type')
+                ).toLowerCase();
+                if (subType === 'mmd' || subType === 'vrm') {
+                    return subType;
+                }
+                return 'vrm';
+            }
+            return this.normalizeModelType(modelType);
+        }
+
         getActiveModelType() {
             const runtimeType = this.normalizeModelType(
                 typeof window.getActiveModelType === 'function' ? window.getActiveModelType() : ''
@@ -1635,10 +1661,7 @@
                 return 'live2d';
             }
 
-            const storedType = this.normalizeModelType(
-                (window.sessionStorage && window.sessionStorage.getItem('modelType'))
-                || (window.localStorage && window.localStorage.getItem('modelType'))
-            );
+            const storedType = this.resolveStoredModelType();
             if (storedType) {
                 return storedType;
             }
