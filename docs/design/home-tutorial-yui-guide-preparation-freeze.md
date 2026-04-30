@@ -265,18 +265,18 @@ type YuiGuideHandoffToken = {
 
 | 文件 / 模块 | owner | 说明 |
 |---|---|---|
-| [static/universal-tutorial-manager.js](../../static/universal-tutorial-manager.js) | 主负责人 | 高冲突骨架文件 |
+| `static/universal-tutorial-manager.js` | 主负责人 | 高冲突骨架文件 |
 | `templates/index.html` | 主负责人 | 首页脚本装配入口 |
 | `static/yui-guide-steps.js` | 主负责人 | 共享场景注册表与步骤契约 |
 | `static/yui-guide-director.js` | 开发 B | 演出层主模块 |
 | `static/yui-guide-overlay.js` | 开发 B | 演出层 UI 壳 |
 | `static/css/yui-guide.css` | 开发 B | 演出样式 |
 | `static/assets/tutorial/` | 开发 B | 演出素材目录 |
-| [static/avatar-ui-popup.js](../../static/avatar-ui-popup.js) | 开发 C | 首页设置入口与菜单结构 |
-| [static/app-interpage.js](../../static/app-interpage.js) | 开发 C | 跨页消息桥 |
+| `static/avatar-ui-popup.js` | 开发 C | 首页设置入口与菜单结构 |
+| `static/app-interpage.js` | 开发 C | 跨页消息桥 |
 | `static/yui-guide-page-handoff.js` | 开发 C | handoff 主体模块 |
-| [static/app-ui.js](../../static/app-ui.js) | 开发 C 主导，主负责人收口 | 共管文件 |
-| [static/app-buttons.js](../../static/app-buttons.js) | 开发 C 主导，主负责人收口 | 共管文件 |
+| `static/app-ui.js` | 开发 C 主导，主负责人收口 | 共管文件 |
+| `static/app-buttons.js` | 开发 C 主导，主负责人收口 | 共管文件 |
 
 ### 3.7 合并顺序与节奏冻结
 
@@ -334,7 +334,7 @@ type YuiGuideHandoffToken = {
 原因：这是共享契约文件，B 和 C 都会碰。
 控制方式：主负责人长期持有；B 只主改 `performance`；C 只主改 `anchor / navigation`。
 
-2. [static/app-ui.js](../../static/app-ui.js) / [static/app-buttons.js](../../static/app-buttons.js)
+2. `static/app-ui.js` / `static/app-buttons.js`
 原因：这两个文件后续既可能被入口包装用到，也可能被“请她离开”等统一动作用到。
 控制方式：开发 C 主导，主负责人只做最小收口，开发 B 不直接改。
 

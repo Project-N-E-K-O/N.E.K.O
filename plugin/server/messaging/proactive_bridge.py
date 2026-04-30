@@ -1,9 +1,16 @@
 """Bridge: message_plane PUB → agent event bus (AGENT_PUSH_ADDR).
 
-Subscribes to the message_plane PUB endpoint, watches for messages
-with ``message_type == "proactive_notification"``, and forwards them
-as ``proactive_message`` events to main_server's PULL socket so the
-AI can deliver a proactive spoken response.
+Subscribes to the message_plane PUB endpoint, watches for v2 push_message
+payloads, and translates them into the legacy ``proactive_message`` /
+``music_play_url`` / ``music_allowlist_add`` events that main_server's
+``handle_agent_event`` already understands.
+
+The v2 schema (``visibility`` + ``ai_behavior`` + ``parts``) is the single
+source of truth — see :mod:`plugin.sdk.shared.core.push_message_schema`.
+Legacy ``message_type`` payloads still arrive when an older plugin is
+loaded; the SDK adapter (``plugin.core.context.PluginContext.push_message``)
+runs the v1→v2 translation client-side so by the time the payload reaches
+this bridge it always has v2 fields populated.
 
 Flow: plugin ─(ZMQ ingest)→ message_plane ─(PUB)→ **this bridge** ─(PUSH)→ main_server PULL
 """
@@ -13,8 +20,10 @@ import json
 import os
 import threading
 import time
+from typing import Any
 
 from plugin.logging_config import get_logger
+from plugin.sdk.shared.core.push_message_schema import AI_BEHAVIOR_VALUES
 
 try:
     import zmq
@@ -22,6 +31,53 @@ except Exception:  # pragma: no cover
     zmq = None
 
 logger = get_logger("server.messaging.proactive_bridge")
+
+
+# Map (visibility, ai_behavior) → legacy delivery_mode the existing
+# main_server proactive_message handler understands.  ``visibility`` is
+# treated as a set; we only consult ``"hud"`` membership because
+# proactive_message always also fires the agent_notification HUD path.
+def _resolve_delivery_mode(visibility: list[str], ai_behavior: str) -> str:
+    if ai_behavior == "respond":
+        return "proactive"
+    if ai_behavior == "read":
+        return "passive"
+    return "silent"
+
+
+def _aggregate_text_parts(parts: list[dict[str, Any]]) -> str:
+    """Concatenate ``type=text`` parts into a single string."""
+    pieces: list[str] = []
+    for p in parts:
+        if not isinstance(p, dict):
+            continue
+        if p.get("type") == "text":
+            t = p.get("text")
+            if isinstance(t, str) and t:
+                pieces.append(t)
+    return "\n".join(pieces).strip()
+
+
+def _media_parts(parts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Filter for image/audio/video parts (passed through to the AI session)."""
+    out: list[dict[str, Any]] = []
+    for p in parts:
+        if not isinstance(p, dict):
+            continue
+        if p.get("type") in ("image", "audio", "video"):
+            entry: dict[str, Any] = {"type": p.get("type")}
+            if isinstance(p.get("binary_base64"), str):
+                entry["binary_base64"] = p["binary_base64"]
+            if isinstance(p.get("url"), str):
+                entry["url"] = p["url"]
+            if isinstance(p.get("mime"), str):
+                entry["mime"] = p["mime"]
+            out.append(entry)
+    return out
+
+
+def _ui_action_parts(parts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [p for p in parts if isinstance(p, dict) and p.get("type") == "ui_action"]
 
 
 def _resolve_agent_push_addr() -> str:
@@ -37,7 +93,7 @@ def _resolve_agent_push_addr() -> str:
 
 
 class ProactiveBridge:
-    """Daemon thread that relays proactive plugin notifications to main_server."""
+    """Daemon thread that relays plugin push_message payloads to main_server."""
 
     def __init__(self) -> None:
         self._stop = threading.Event()
@@ -96,7 +152,7 @@ class ProactiveBridge:
         try:
             while not self._stop.is_set():
                 try:
-                    parts = sub_sock.recv_multipart()
+                    parts_raw = sub_sock.recv_multipart()
                 except zmq.Again:
                     continue
                 except Exception as e:
@@ -105,122 +161,23 @@ class ProactiveBridge:
                         time.sleep(0.1)
                     continue
 
-                if len(parts) < 2:
+                if len(parts_raw) < 2:
                     continue
 
                 try:
-                    event = json.loads(parts[1])
+                    event = json.loads(parts_raw[1])
                 except Exception:
                     continue
 
                 payload = event.get("payload") if isinstance(event, dict) else None
-
                 if not isinstance(payload, dict):
                     continue
 
                 try:
-                    msg_type = payload.get("message_type")
-                    plugin_id = payload.get("plugin_id", "")
-                    metadata = payload.get("metadata")
-                    if not isinstance(metadata, dict):
-                        metadata = {}
-
-                    # -------- 1. Proactive Spoken Notification --------
-                    if msg_type == "proactive_notification":
-                        raw_content = payload.get("content")
-                        # 通过 result_parser 确保 content 不含原始 JSON
-                        try:
-                            from brain.result_parser import parse_push_message_content
-                            content = parse_push_message_content(raw_content)
-                        except Exception:
-                            content = str(raw_content or "").strip()
-
-                        if not content:
-                            continue
-
-                        # Resolve delivery mode from metadata.agent.delivery
-                        # (canonical) or metadata.agent.reply (deprecated bool
-                        # alias). Default = "proactive" (push interrupts to
-                        # announce); plugin authors may override per-call.
-                        # Silent stays in proactive_bridge — main_server's
-                        # event-bus dispatcher applies the silent skip alongside
-                        # the same gate task_result uses.
-                        #
-                        # Priority: if ``agent.delivery`` is present (valid or
-                        # not) it owns the decision — invalid values fall back
-                        # to default ("proactive") rather than letting the
-                        # legacy ``reply`` bool quietly override (would let
-                        # ``delivery="typo", reply=False`` flip to "silent").
-                        agent_meta = metadata.get("agent") if isinstance(metadata.get("agent"), dict) else {}
-                        if "delivery" in agent_meta:
-                            raw_delivery = agent_meta["delivery"]
-                            if isinstance(raw_delivery, str) and raw_delivery in ("proactive", "passive", "silent"):
-                                delivery_mode = raw_delivery
-                            elif isinstance(raw_delivery, bool):
-                                delivery_mode = "proactive" if raw_delivery else "silent"
-                            else:
-                                delivery_mode = "proactive"  # invalid delivery — fall back to default
-                        elif isinstance(agent_meta.get("reply"), bool):
-                            delivery_mode = "proactive" if agent_meta["reply"] else "silent"
-                        else:
-                            delivery_mode = "proactive"
-
-                        proactive_event = {
-                            "event_type": "proactive_message",
-                            "lanlan_name": metadata.get("target_lanlan") or None,
-                            "text": content,
-                            "summary": content,
-                            "detail": content,
-                            "channel": f"plugin:{plugin_id}" if plugin_id else "plugin",
-                            "task_id": metadata.get("task_id", ""),
-                            "success": True,
-                            "status": "completed",
-                            "delivery_mode": delivery_mode,
-                            "source_kind": "plugin",
-                            # str() guard: upstream may set plugin_id to a non-string
-                            # (e.g. int id). Downstream main_logic renderer uses
-                            # ``.strip()``/``.format()`` which would raise on those.
-                            "source_name": str(plugin_id) if plugin_id else "",
-                            "timestamp": payload.get("time", ""),
-                        }
-                    
-                    # -------- 2. Music Allowlist Add --------
-                    elif msg_type == "music_allowlist_add":
-                        proactive_event = {
-                            "event_type": "music_allowlist_add",
-                            "domains": metadata.get("domains", []),
-                            "source": plugin_id,
-                            "timestamp": payload.get("time", "")
-                        }
-
-                    # -------- 3. Music Direct Play --------
-                    elif msg_type == "music_play_url":
-                        music_url = metadata.get("url")
-                        if not isinstance(music_url, str) or not music_url.strip():
-                            continue
-                        proactive_event = {
-                            "event_type": "music_play_url",
-                            "url": music_url,
-                            "name": metadata.get("name"),
-                            "artist": metadata.get("artist"),
-                            "source": plugin_id,
-                            "timestamp": payload.get("time", "")
-                        }
-                    else:
-                        continue
+                    self._dispatch(payload, push_sock)
                 except Exception as e:
-                    logger.error("Error processing proactive payload: {}", e)
+                    logger.error("Error dispatching push payload: {}", e)
                     continue
-
-                try:
-                    push_sock.send_json(proactive_event, zmq.NOBLOCK)
-                    logger.info(
-                        "proactive bridge forwarded: plugin={} type={}",
-                        plugin_id,
-                        proactive_event.get("event_type"),
-                    )
-                except Exception as e:
-                    logger.warning("proactive bridge push failed: {}", e)
         finally:
             try:
                 sub_sock.close(linger=0)
@@ -231,6 +188,145 @@ class ProactiveBridge:
             except Exception:
                 pass
 
+    def _dispatch(self, payload: dict[str, Any], push_sock: Any) -> None:
+        """Translate a v2 (or legacy-shimmed) push payload into legacy
+        agent-event-bus events and PUSH them to main_server.
+
+        A single push_message can produce multiple events:
+
+        * ``proactive_message`` (text + media for AI session, including
+          delivery_mode silent for HUD-only notifications)
+        * ``music_play_url`` / ``music_allowlist_add`` (UI side effects
+          carried as ui_action parts)
+
+        Empty plumbing — no parts and no actionable signal — is dropped
+        with a debug log so plugin authors notice on first run.
+        """
+        plugin_id = payload.get("plugin_id", "")
+        timestamp = payload.get("time", "")
+        metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+
+        # v2 fields are guaranteed by the SDK adapter's translate step,
+        # but accept legacy shapes too for safety.
+        schema = payload.get("schema")
+        visibility = payload.get("visibility") if isinstance(payload.get("visibility"), list) else []
+        ai_behavior = payload.get("ai_behavior")
+        if ai_behavior not in AI_BEHAVIOR_VALUES:
+            ai_behavior = "respond"
+        parts = payload.get("parts") if isinstance(payload.get("parts"), list) else []
+
+        target_lanlan = payload.get("target_lanlan") or metadata.get("target_lanlan") or None
+
+        events_out: list[dict[str, Any]] = []
+
+        # ---- ui_action parts → legacy music_* events ----
+        for ui in _ui_action_parts(parts):
+            action = ui.get("action")
+            if action == "media_play_url":
+                url = ui.get("url") or metadata.get("url")
+                if not isinstance(url, str) or not url.strip():
+                    logger.debug(
+                        "ui_action=media_play_url missing url; plugin={}",
+                        plugin_id,
+                    )
+                    continue
+                events_out.append(
+                    {
+                        "event_type": "music_play_url",
+                        "lanlan_name": target_lanlan,
+                        "url": url,
+                        "name": ui.get("name") or metadata.get("name"),
+                        "artist": ui.get("artist") or metadata.get("artist"),
+                        "source": plugin_id,
+                        "timestamp": timestamp,
+                    }
+                )
+            elif action == "media_allowlist_add":
+                domains = ui.get("domains") or metadata.get("domains") or []
+                if not isinstance(domains, list) or not domains:
+                    logger.debug(
+                        "ui_action=media_allowlist_add missing domains; plugin={}",
+                        plugin_id,
+                    )
+                    continue
+                events_out.append(
+                    {
+                        "event_type": "music_allowlist_add",
+                        "lanlan_name": target_lanlan,
+                        "domains": list(domains),
+                        "source": plugin_id,
+                        "timestamp": timestamp,
+                    }
+                )
+            else:
+                logger.warning(
+                    "ui_action with unknown action={!r}; plugin={}",
+                    action, plugin_id,
+                )
+
+        # ---- text + media parts → proactive_message (or HUD-only) ----
+        text = _aggregate_text_parts(parts)
+        # Bridge-level result_parser strips raw JSON envelopes that some
+        # plugins still emit when they hand-craft content.  Best-effort.
+        if text:
+            try:
+                from brain.result_parser import parse_push_message_content
+
+                text = parse_push_message_content(text)
+            except Exception as e:
+                # Best-effort sanitization — fall back to the raw aggregated
+                # text if the parser misbehaves on this particular shape.
+                logger.debug("parse_push_message_content failed (fallback to raw): {}", e)
+
+        media = _media_parts(parts)
+        has_ai_payload = bool(text) or bool(media)
+
+        if has_ai_payload or "hud" in visibility:
+            delivery_mode = _resolve_delivery_mode(visibility, ai_behavior)
+            proactive_event: dict[str, Any] = {
+                "event_type": "proactive_message",
+                "lanlan_name": target_lanlan,
+                "text": text or "",
+                "summary": text or "",
+                "detail": text or "",
+                "channel": f"plugin:{plugin_id}" if plugin_id else "plugin",
+                "task_id": metadata.get("task_id", ""),
+                "success": True,
+                "status": "completed",
+                "delivery_mode": delivery_mode,
+                "source_kind": "plugin",
+                "source_name": str(plugin_id) if plugin_id else "",
+                "timestamp": timestamp,
+                # v2 carries media inline; main_server will base64-decode
+                # and call session.send_media_input before/after the
+                # callback queue depending on ai_behavior.
+                "media_parts": media,
+                "visibility": list(visibility),
+                "ai_behavior": ai_behavior,
+            }
+            # When ai_behavior=blind we still want the HUD agent_notification
+            # to fire (handled by main_server's existing branch).  Setting
+            # delivery_mode="silent" tells the proactive_message handler to
+            # skip the LLM injection but keep the WS notif.
+            events_out.append(proactive_event)
+
+        if not events_out:
+            logger.debug(
+                "push payload produced no events: plugin={} schema={} parts={}",
+                plugin_id, schema, len(parts),
+            )
+            return
+
+        for ev in events_out:
+            try:
+                push_sock.send_json(ev, zmq.NOBLOCK)
+                logger.info(
+                    "proactive bridge forwarded: plugin={} event={}",
+                    plugin_id, ev.get("event_type"),
+                )
+            except Exception as e:
+                logger.warning("proactive bridge push failed: {}", e)
+
 
 _bridge = ProactiveBridge()
 
@@ -239,5 +335,5 @@ def start_proactive_bridge() -> None:
     _bridge.start()
 
 
-def stop_proactive_bridge() -> None: 
+def stop_proactive_bridge() -> None:
     _bridge.stop()

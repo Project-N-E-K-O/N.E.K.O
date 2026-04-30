@@ -428,30 +428,32 @@ class PluginContextProtocol(Protocol):
     # ==================== 消息推送 ====================
     def push_message(
         self,
-        source: str,
-        message_type: str,
-        description: str = "",
+        *,
+        # v2 schema (preferred)：见 plugin/sdk/shared/core/push_message_schema.py
+        visibility: Optional[list] = None,
+        ai_behavior: Optional[str] = None,
+        parts: Optional[list] = None,
+        # 通用：
+        source: str = "",
+        target_lanlan: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
         priority: int = 0,
+        # v1 legacy (deprecated, removed in v0.9)：
+        message_type: Optional[str] = None,
+        description: Optional[str] = None,
         content: Optional[str] = None,
         binary_data: Optional[bytes] = None,
         binary_url: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        mime: Optional[str] = None,
         unsafe: bool = False,
         fast_mode: bool = False,
+        delivery: Any = None,
+        reply: Optional[bool] = None,
     ) -> None:
-        """推送消息到主进程
-        
-        Args:
-            source: 消息来源
-            message_type: 消息类型("text", "url", "binary", "binary_url")
-            description: 描述
-            priority: 优先级(数字越大优先级越高)
-            content: 文本内容或URL
-            binary_data: 二进制数据
-            binary_url: 二进制文件URL
-            metadata: 元数据
-            unsafe: 是否跳过严格schema校验
-            fast_mode: 是否使用快速模式(批量推送)
+        """推送消息到主进程。
+
+        v2 推荐参数 (visibility/ai_behavior/parts) 见 push_message_schema 文档；
+        其余参数为 v1 deprecated，host 端会自动翻译并 emit DeprecationWarning。
         """
         ...
     
