@@ -898,10 +898,15 @@
     // 完整播放是用户对"音乐分享"通道最强的正向反馈：让后端把
     // _proactive_chat_history 里 channel=='music' 的最近条目通道清空，从而停止
     // 因为"刚刚分享过音乐"而对 music 通道继续做权重衰减惩罚。fire-and-forget。
+    // 去抖按曲目维度：APlayer 同一首 audio 偶尔会重复 fire ended（音源/seek 抖动），
+    // 但两首不同歌秒级连续 ended 是合法事件，不能被全局 timestamp 吞掉。
+    let lastMusicPlayedThroughKey = '';
     let lastMusicPlayedThroughAt = 0;
     function notifyMusicPlayedThrough(track) {
+        const trackKey = track ? [track.url || '', track.name || '', track.artist || ''].join('|') : '';
         const now = Date.now();
-        if (now - lastMusicPlayedThroughAt < 2000) return;  // 同曲反复 ended 去抖
+        if (trackKey && trackKey === lastMusicPlayedThroughKey && now - lastMusicPlayedThroughAt < 2000) return;
+        lastMusicPlayedThroughKey = trackKey;
         lastMusicPlayedThroughAt = now;
         const lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
         try {
