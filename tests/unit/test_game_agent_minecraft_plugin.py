@@ -452,6 +452,25 @@ async def test_stale_task_finished_after_timeout_is_dropped():
 
 
 @pytest.mark.asyncio
+async def test_stale_task_finished_does_not_pollute_log_cache():
+    """Stale frames must not contribute their text to ``_log_cache``
+    either — otherwise the next system prompt would surface "old task
+    done" alongside a still-running new task, contradicting itself."""
+    service, _ = _make_service()
+    service.configure({})
+    # Pre-bump drop counter as if a prior task had been abandoned.
+    service._stale_task_finishes_to_drop = 1
+
+    await service._on_task_finished({
+        "status": "ok",
+        "text": "old task completion message — should NOT appear in cache",
+    })
+    # Frame was dropped → text must not be cached.
+    assert list(service._log_cache) == []
+    assert service._stale_task_finishes_to_drop == 0
+
+
+@pytest.mark.asyncio
 async def test_stale_task_finished_does_not_flip_task_finished_flag():
     """Dropping a stale frame must not set ``_task_finished = True``,
     which would leak the abandoned task's completion state into the

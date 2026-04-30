@@ -530,8 +530,6 @@ class GameAgentService:
         )
         status = str(data.get("status") or "ok")
         self._log_info("task_finished: status={}, text={}", status, text[:80])
-        if text:
-            self._log_cache.append(text)
 
         async with self._pending_lock:
             # The agent server's protocol has no task ID, so a delayed
@@ -540,7 +538,10 @@ class GameAgentService:
             # fresh one for the current task. We assume the agent
             # emits frames in completion order and drain them FIFO:
             # for every task we abandoned without an ack, swallow one
-            # incoming frame.
+            # incoming frame. The stale frame's *text* must NOT enter
+            # ``_log_cache`` either — otherwise the next system prompt
+            # would surface "old task done" while a new task is still
+            # running, lying about both branches of the prompt.
             if self._stale_task_finishes_to_drop > 0:
                 self._stale_task_finishes_to_drop -= 1
                 self._log_info(
@@ -553,6 +554,10 @@ class GameAgentService:
                 # autonomous-loop's busy gate and the system prompt's
                 # "正在进行中 vs 已完成" branch.
                 return
+            # From here on the frame is being accepted; it's safe to
+            # commit the text + flag updates.
+            if text:
+                self._log_cache.append(text)
             if self._pending is None:
                 # Stray task_finished (e.g. from agent restart) — nothing
                 # to wake. Update the flag anyway so the autonomous
@@ -564,8 +569,6 @@ class GameAgentService:
                 "query": self._pending.task_text,
             }
             self._pending.event.set()
-            # Now safe to flip — this frame is being applied to the
-            # current pending task.
             self._task_finished = True
             # Don't None-out here; ``execute_minecraft_task`` does that
             # after it reads ``result`` so we don't race the read.
