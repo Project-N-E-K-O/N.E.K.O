@@ -668,7 +668,7 @@ body.storage-location-memory-modal-open {
 .storage-location-modal-card::before {
     content: "";
     position: absolute;
-    inset: -12px;
+    inset: 0;
     z-index: 0;
     opacity: 0.36;
     pointer-events: none;

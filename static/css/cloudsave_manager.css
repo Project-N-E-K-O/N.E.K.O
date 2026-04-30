@@ -573,6 +573,37 @@ body .container-header {
     color: var(--cloudsave-muted);
 }
 
+:root[data-theme="dark"] {
+    --cloudsave-panel: #18222c;
+    --cloudsave-panel-soft: #1f2a36;
+    --cloudsave-panel-warm: rgba(79, 58, 19, 0.4);
+    --cloudsave-text: #e6edf3;
+    --cloudsave-muted: #b0bec5;
+    --cloudsave-shadow: 0 12px 30px rgba(0, 0, 0, 0.34);
+}
+
+html[data-theme="dark"],
+body[data-theme="dark"],
+:root[data-theme="dark"] body {
+    background: #121820;
+    color: #e6edf3;
+}
+
+[data-theme="dark"] .container,
+[data-theme="dark"] .container-content {
+    background: #121820;
+    color: #e6edf3;
+}
+
+[data-theme="dark"] body .container-header {
+    background: linear-gradient(to right, #164b63, #0d3c68);
+    box-shadow: 0 1px 0 rgba(125, 211, 252, 0.16);
+}
+
+[data-theme="dark"] .page-subtitle {
+    color: #b0bec5;
+}
+
 [data-theme="dark"] .header-actions .btn.secondary {
     background: #2d2d2d;
     color: #8dd7ff;
@@ -630,6 +661,30 @@ body .container-header {
 [data-theme="dark"] #cloudsave-provider-scope,
 [data-theme="dark"] .cloudsave-empty {
     color: #b0bec5;
+}
+
+[data-theme="dark"] .cloudsave-group.other,
+[data-theme="dark"] .cloudsave-meta-section,
+[data-theme="dark"] .cloudsave-guidance.info,
+[data-theme="dark"] .cloudsave-guidance.caution,
+[data-theme="dark"] .cloudsave-guidance.strong {
+    background: #1f2a36;
+    border-color: rgba(125, 211, 252, 0.18);
+    color: #dbeafe;
+}
+
+[data-theme="dark"] .cloudsave-meta-value,
+[data-theme="dark"] .cloudsave-name-note-title,
+[data-theme="dark"] .cloudsave-name-note-body,
+[data-theme="dark"] .cloudsave-guidance-title,
+[data-theme="dark"] .cloudsave-guidance-body,
+[data-theme="dark"] .cloudsave-warning {
+    color: #e6edf3;
+}
+
+[data-theme="dark"] .cloudsave-warning {
+    background: rgba(113, 63, 18, 0.38);
+    border: 1px solid rgba(251, 191, 36, 0.26);
 }
 
 @media (max-width: 768px) {

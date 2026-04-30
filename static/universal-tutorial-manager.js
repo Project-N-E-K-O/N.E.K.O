@@ -2263,8 +2263,8 @@ class UniversalTutorialManager {
             {
                 element: `#${p}-toggle-proactive-vision`,
                 popover: {
-                    title: window.t ? window.t('tutorial.step14.title', '👀 自主视觉') : '👀 自主视觉',
-                    description: window.t ? window.t('tutorial.step14.desc', '与语音会话中实时传输的屏幕分享不同，开启自主视觉后猫娘会时不时自己看一眼你的屏幕。间隔可在此调整~') : '与语音会话中实时传输的屏幕分享不同，开启自主视觉后猫娘会时不时自己看一眼你的屏幕。间隔可在此调整~',
+                    title: window.t ? window.t('tutorial.step14.title', '🔒 隐私模式') : '🔒 隐私模式',
+                    description: window.t ? window.t('tutorial.step14.desc', '关闭隐私模式后，猫娘会时不时自己看一眼你的屏幕，与语音会话中实时传输的屏幕分享不同。间隔可在此调整~') : '关闭隐私模式后，猫娘会时不时自己看一眼你的屏幕，与语音会话中实时传输的屏幕分享不同。间隔可在此调整~',
                 },
                 disableActiveInteraction: true
             },
@@ -4934,6 +4934,37 @@ function resetTutorialForPage(pageKey) {
         return;
     }
 
+    if (pageKey === 'current_personality') {
+        fetch('/api/characters/persona-reselect-current', {
+            method: 'POST',
+        }).then(async (response) => {
+            let payload = null;
+            try {
+                payload = await response.json();
+            } catch (error) {
+                payload = null;
+            }
+            if (!response.ok || !payload || payload.success !== true) {
+                const fallbackError = window.t
+                    ? window.t('memory.currentPersonalityResetFailed', '触发当前角色性格重选失败，请稍后再试。')
+                    : '触发当前角色性格重选失败，请稍后再试。';
+                alert(payload && payload.error ? payload.error : fallbackError);
+                return;
+            }
+
+            const successMessage = window.t
+                ? window.t('memory.currentPersonalityResetSuccess', '已记录当前角色的人格重选请求，请回到主页刷新后继续。')
+                : '已记录当前角色的人格重选请求，请回到主页刷新后继续。';
+            alert(successMessage);
+        }).catch(() => {
+            const fallbackError = window.t
+                ? window.t('memory.currentPersonalityResetFailed', '触发当前角色性格重选失败，请稍后再试。')
+                : '触发当前角色性格重选失败，请稍后再试。';
+            alert(fallbackError);
+        });
+        return;
+    }
+
     if (window.universalTutorialManager) {
         window.universalTutorialManager.resetPageTutorial(pageKey);
     } else {
@@ -4967,7 +4998,8 @@ function resetTutorialForPage(pageKey) {
         'chara_manager': window.t ? window.t('memory.tutorialPageCharaManager', '角色管理') : '角色管理',
         'settings': window.t ? window.t('memory.tutorialPageSettings', 'API设置') : 'API设置',
         'voice_clone': window.t ? window.t('memory.tutorialPageVoiceClone', '语音克隆') : '语音克隆',
-        'memory_browser': window.t ? window.t('memory.tutorialPageMemoryBrowser', '记忆浏览') : '记忆浏览'
+        'memory_browser': window.t ? window.t('memory.tutorialPageMemoryBrowser', '记忆浏览') : '记忆浏览',
+        'current_personality': window.t ? window.t('memory.tutorialPageCurrentPersonality', '当前角色性格') : '当前角色性格'
     };
     const pageName = pageNames[pageKey] || pageKey;
     // 使用带参数的 i18n 键，格式：已重置「{{pageName}}」的引导

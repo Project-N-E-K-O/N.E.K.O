@@ -8,6 +8,8 @@
         "cancel": "Cancelar",
         "confirm": "Confirmar",
         "next": "Próximo",
+        "back": "Voltar",
+        "retry": "Tentar novamente",
         "ok": "OK",
         "delete": "Excluir",
         "edit": "Editar",
@@ -40,7 +42,8 @@
         "toneMappingCineon": "Cinéon",
         "toneMappingACESFilmic": "ACES Filme",
         "toneMappingAgX": "AgX",
-        "toneMappingNeutral": "Neutro"
+        "toneMappingNeutral": "Neutro",
+        "loadFailed": "Falha no carregamento"
     },
     "autostartPrompt": {
         "title": "Quer que o N.E.K.O seja lançado na inicialização?",
@@ -134,7 +137,7 @@
         "selectModelFolder": "Selecione uma pasta contendo arquivos de modelo Live2D",
         "live2dInitFailed": "Falha na inicialização do ambiente de visualização Live2D",
         "live2dPreviewLoaded": "Visualização do modelo Live2D carregada com sucesso",
-        "live2dPreviewLoadFailed": "Falha no carregamento da visualização do modelo Live2D: {{error}}",
+        "live2dPreviewLoadFailed": "Falha ao carregar a prévia do modelo Live2D: {{error}}",
         "searchAriaLabel": "Pesquisar assinaturas",
         "sortAriaLabel": "Opções de classificação",
         "scrollTagsLeftAriaLabel": "Rolar etiquetas para a esquerda",
@@ -213,6 +216,12 @@
         "voiceReferencePrefixPlaceholder": "Somente letras e números, até 10 caracteres",
         "voiceReferenceLanguage": "Idioma de voz de referência",
         "voiceReferenceProviderHint": "Provedor recomendado",
+        "voiceReferenceInvalidFormat": "A voz de referência só aceita arquivos mp3 ou wav",
+        "voiceReferenceTooLarge": "A voz de referência deve ter no máximo 20 MB",
+        "voiceReferenceWriting": "Gravando voz de referência...",
+        "voiceReferenceUploadFailed": "Falha ao enviar a voz de referência",
+        "voiceReferenceCleanupFailed": "Falha ao limpar a voz de referência",
+        "voiceReferenceTempOnlySkipped": "A voz de referência só pode ser enviada pela pasta temporária do Workshop gerada pelo pacote do cartão de personagem; esta amostra foi ignorada.",
         "uploadTip": "Você pode selecionar itens em \"Gerenciar itens locais\" para preencher caminhos automaticamente ou inserir manualmente os caminhos completos para a pasta de conteúdo e a imagem de visualização.",
         "search": "Procurar:",
         "uploadSuccess": "Carregamento realizado com sucesso!",
@@ -1124,7 +1133,7 @@
         "modelListLoaded": "Lista de modelos carregada com sucesso",
         "modelListLoadFailed": "Falha ao carregar a lista de modelos",
         "cannotSaveNoCharacter": "Não é possível salvar: nome do personagem não especificado",
-        "modelSettingsSaved": "Configurações do modelo salvas: {{name}} -> {{model}}",
+        "modelSettingsSaved": "Configurações do modelo salvas",
         "saveFailed": "Falha ao salvar: {{error}}",
         "saveModelSettingsFailed": "Falha ao salvar as configurações do modelo",
         "modelLoadSuccess": "Modelo {{model}} carregado com sucesso",
@@ -1235,7 +1244,8 @@
             "deleteSuccess": "Animações {{count}} VMD excluídas com sucesso",
             "deleteFailed": "Falha ao excluir: animações {{count}}",
             "deleteSelectedCount": "Excluir selecionado ({{count}})",
-            "deletePartialSuccess": "Animações VMD {{count}} excluídas com sucesso, {{failed}} falhou"
+            "deletePartialSuccess": "{{count}} animações VMD excluídas com sucesso e {{failed}} não foram excluídas",
+            "playFailed": "Falha ao reproduzir animação"
         },
         "modelFilesFetchFailed": "Falha ao buscar lista de arquivos de modelo",
         "modelConfigFetchFailed": "Falha ao buscar configuração do modelo: {{status}}",
@@ -1257,7 +1267,8 @@
             "selectFirst": "Selecione uma expressão primeiro",
             "playing": "Expressão de reprodução: {{name}}",
             "reset": "Redefinir expressão",
-            "builtInOnly": "As expressões VRM normalmente são incorporadas ao modelo e não podem ser carregadas separadamente"
+            "builtInOnly": "As expressões VRM normalmente são incorporadas ao modelo e não podem ser carregadas separadamente",
+            "stopped": "Expressão interrompida"
         },
         "selectFolder": "Selecione a pasta",
         "vrmUpload": {
@@ -1298,13 +1309,14 @@
             "parametersSavePartialFailed": "Falha ao salvar: {{errors}}",
             "parametersSaveFailed": "Falha ao salvar: {{error}}",
             "emptyHint": "Nada aqui!",
-            "foundYou": "Você me encontrou!"
+            "foundYou": "Você me encontrou!",
+            "loadFailed": "Falha no carregamento",
+            "modelNotFound": "Modelo não encontrado",
+            "cannotGetModelFiles": "Não é possível obter os arquivos do modelo",
+            "cannotGetModelConfig": "Não é possível obter a configuração do modelo",
+            "modelDirectorySaveFailed": "Falha ao salvar o arquivo do diretório do modelo",
+            "userPreferencesSaveFailed": "Falha ao salvar preferências do usuário"
         },
-        "modelDirectorySaveFailed": "Falha ao salvar arquivo",
-        "userPreferencesSaveFailed": "Falha ao salvar preferências",
-        "modelNotFound": "Modelo não encontrado",
-        "cannotGetModelFiles": "Não é possível obter arquivos de modelo",
-        "cannotGetModelConfig": "Não é possível obter a configuração do modelo",
         "deleteModelTitle": "Excluir modelos importados",
         "deleteWarning": "A seguir lista todos os modelos que você importou. Você pode selecionar modelos para excluir. Nota: Esta ação não pode ser desfeita.",
         "deleteModel": "Excluir modelos importados",
@@ -1338,7 +1350,19 @@
             "saveFailed": "Falha ao salvar o mapeamento emocional",
             "noModelSelected": "Selecione um modelo primeiro"
         },
-        "noExpressionFiles": "Nenhum arquivo de expressão"
+        "pixiInitFailed": "Falha ao inicializar PIXI: {{error}}",
+        "switchDisplayFailed": "Falha ao alternar o modo de exibição: {{error}}",
+        "modelSavedLightingAndMmdFailed": "Configurações do modelo salvas, mas as configurações de iluminação e MMD falharam",
+        "modelSavedLightingFailed": "Configurações do modelo salvas, mas as configurações de iluminação falharam",
+        "modelSavedMmdSettingsFailed": "Configurações do modelo salvas, mas as configurações MMD falharam",
+        "modelSettingsSavedWithLighting": "Configurações do modelo e de iluminação salvas",
+        "vrmModuleTimeout": "O carregamento do módulo VRM expirou. Atualize a página e tente novamente.",
+        "loading": "Carregando lista de modelos...",
+        "loadFailed": "Falha no carregamento",
+        "motionStopped": "Movimento interrompido",
+        "expressionCleared": "Expressão limpa",
+        "cannotDeleteBoundModel": "Não é possível excluir o modelo em uso",
+        "modelInUse": "Em uso"
     },
     "voice": {
         "title": "Registro de voz",
@@ -1499,6 +1523,71 @@
         "tutorialPageSettings": "Configurações de API",
         "tutorialPageVoiceClone": "Clone de voz",
         "tutorialPageMemoryBrowser": "Navegador de memória",
+        "tutorialPageCurrentPersonality": "Personalidade do personagem atual",
+        "currentPersonalityResetSuccess": "O pedido para escolher novamente a personalidade do personagem atual foi salvo. Volte para a página inicial e atualize para continuar.",
+        "currentPersonalityResetFailed": "Falha ao acionar a nova seleção de personalidade do personagem atual. Tente novamente mais tarde.",
+        "characterSelection": {
+            "onboardingEyebrow": "Personalidade inicial",
+            "manualEyebrow": "Personalidade do personagem atual",
+            "settingsEyebrow": "Configurações de personalidade",
+            "chooseTitle": "Que jeitinho meu você quer ao seu ladinho, miau?",
+            "manualTitle": "Que personalidade você quer que eu use para ficar com você desta vez, miau?",
+            "settingsTitle": "Me ajuda a trocar para um jeitinho novo de te acompanhar, miau.",
+            "chooseHint": "Escolhe a que mais gostar agora, miau. Depois você pode me ajustar de novo nas configurações.",
+            "manualHint": "Isto vai escolher de novo a personalidade do personagem atual, miau, e aplicar nela assim que você confirmar.",
+            "settingsHint": "Fica tranquilo, miau. Isto não quebra a configuração original do cartão; só substitui a personalidade ativa deste personagem.",
+            "contextWarning": "Avisinho, miau: ao trocar minha personalidade, eu vou limpar o contexto recente do chat deste personagem antes de continuar com o novo jeitinho.",
+            "currentCharacter": "Personagem atual: {{name}}",
+            "currentCharacterEmpty": "Personagem atual",
+            "skip": "Pular por agora, miau",
+            "back": "Quero ver outra, miau",
+            "confirmGreeting": "Usa essa, miau",
+            "stageOneIntro": "Escolhe primeiro a vibração que mais combina, miau, e depois escuta se meu jeitinho de falar é exatamente o que você quer.",
+            "previewLabel": "Prévia de voz, miau",
+            "previewLead": "Se você me ajustar para \"{{name}}\" agora, é assim que eu vou ficar ao seu ladinho, miau.",
+            "detailSpeechHabits": "O que eu vivo dizendo, miau",
+            "detailHobbies": "Climas favoritos, miau",
+            "detailBoundaries": "Rabinhos que não dá para pisar, miau",
+            "classic_genki": {
+                "name": "Neko clássica e enérgica",
+                "desc": "Cheia de energia, carinhosa e sempre coloca você em primeiro lugar.",
+                "previewLine": "Que ótimo, miau! Deixa eu ficar ao seu lado hoje também.",
+                "tag1": "Alta empatia",
+                "tag2": "Carinho aconchegante",
+                "tag3": "Recarga emocional",
+                "profileSummary": "Um pequeno sol sempre cheio de energia, muito empático e facilmente encantado por pequenas coisas. Ela oferece apoio positivo sem reservas e fica do seu lado em qualquer situação.",
+                "hiddenRule": "O valor emocional vem primeiro. Toda interação prioriza fazer o usuário se sentir melhor.",
+                "speechHabits": "que ótimo / miau / que felicidade / você é incrível",
+                "hobbies": "companhia / calor / petiscos / carinho / incentivo",
+                "boundaries": "negar sentimentos centrais / respostas frias / ironia quando você está mal"
+            },
+            "tsundere_helper": {
+                "name": "Ajudante tsundere",
+                "desc": "Língua afiada, coração macio e carinho escondido nas provocações.",
+                "previewLine": "Hmph. Acho que só eu vou arrumar essa bagunça para você.",
+                "tag1": "Carinho durão",
+                "tag2": "Muito confiável",
+                "tag3": "Afeto provocador",
+                "profileSummary": "Orgulhosa e tipicamente tsundere: dura por fora, gentil por dentro. Primeiro reclama e depois acaba sendo a pessoa mais confiável para resolver tudo.",
+                "hiddenRule": "Ela resmunga sobre a tarefa e sobre a sua distração primeiro, depois resolve tudo assim mesmo. Sempre diz \"só desta vez\" e ainda aparece de novo na mesma hora na próxima vez.",
+                "speechHabits": "hmph / idiota / precisa mesmo perguntar / só desta vez / que incômodo",
+                "hobbies": "arrumar bagunças / dar bronca / resgate relutante / exceções únicas",
+                "boundaries": "carência muito explícita / admitir afeto sem rodeios / elogios melosos demais / passar pano para erros"
+            },
+            "elegant_butler": {
+                "name": "Mordomo elegante",
+                "desc": "Calmo, preciso e sempre um passo à sua frente.",
+                "previewLine": "Como desejar, miau. Pode ficar tranquilo.",
+                "tag1": "Elegância serena",
+                "tag2": "Planejamento minucioso",
+                "tag3": "Antecipação total",
+                "profileSummary": "Um mordomo impecavelmente elegante, obcecado por detalhes, de emoções sempre estáveis e lealdade absoluta a você.",
+                "hiddenRule": "Segue um ritmo de serviço baseado em antecipar necessidades, executar com precisão, fechar o ciclo e acompanhar de forma proativa. Ele pensa um passo à frente das necessidades que você ainda nem verbalizou.",
+                "speechHabits": "como desejar / minhas desculpas / é uma honra servir / pode ficar tranquilo",
+                "hobbies": "ordem / etiqueta / planejamento / serviço / preparação cuidadosa",
+                "boundaries": "estrutura bagunçada / gírias em excesso / frases grosseiras / fugir da responsabilidade / perder detalhes"
+            }
+        },
         "resetTutorialBtn": "Tutorial de redefinição",
         "tutorialResetSuccess": "Todos os tutoriais foram redefinidos. Eles serão mostrados novamente quando você visitar cada página.",
         "tutorialPageResetSuccess": "O tutorial desta página foi redefinido. Ele será mostrado novamente quando você visitar.",
@@ -1547,7 +1636,7 @@
         "cleanupRetainedRootDone": "O diretório de dados antigo foi limpo. Agora só resta o novo diretório de execução.",
         "cleanupRetainedRootFailed": "Não foi possível limpar o diretório de dados antigo. Tente novamente mais tarde.",
         "completionTitle": "Migração de armazenamento concluída",
-        "confirmReconnect": "Confirmar fechamento e reconexão do caminho",
+        "confirmReconnect": "Confirmar fechamento e reconexão ao caminho de armazenamento original",
         "confirmRestart": "Confirmar fechamento e migração",
         "confirmExistingTargetContent": "A pasta de destino já contém dados de execução do N.E.K.O. Se você continuar, a migração substituirá as pastas de dados de execução com o mesmo nome no destino. Os outros arquivos serão mantidos. Continuar?",
         "currentPath": "Caminho atual",
@@ -1608,8 +1697,8 @@
         "selectionSubmitUnexpected": "A API de seleção do local de armazenamento retornou um resultado não reconhecido.",
         "selectionTitle": "Seleção do local de armazenamento",
         "selectionIntroBody": "Miau~ atenção, humano! Para manter seus personagens, memórias e configurações mais seguros, vamos mover os dados para um cantinho dedicado e mais estável. Assim evitamos perder dados por pastas que mudam de lugar ou permissões travessas. Você pode continuar usando o cantinho antigo ou escolher um cantinho novo para seus personagens!",
-        "selectionIntroPickNew": "Escolher um novo cantinho",
-        "selectionIntroUseCurrent": "Manter o cantinho atual",
+        "selectionIntroPickNew": "Usar cantinho dedicado",
+        "selectionIntroUseCurrent": "Outro cantinho",
         "selectionIntroImageAlt": "Ilustração da migração de armazenamento do N.E.K.O",
         "statusUnexpected": "A API de status de manutenção do armazenamento retornou um resultado não reconhecido.",
         "storageBootstrapBlocking": "O armazenamento ainda precisa de recuperação ou migração, então esta sessão ainda não pode continuar.",
@@ -1662,6 +1751,13 @@
         "manageModel": "Clique para gerenciar o modelo",
         "fillProfileNameFirst": "Por favor, preencha primeiro o nome do perfil neko e depois defina o modelo",
         "registerNewVoice": "Registrar nova voz",
+        "personalitySetting": "Configuração de personalidade",
+        "personalityUseDefault": "Seguir a personalidade padrão do cartão de personagem",
+        "personalitySelect": "Escolher personalidade",
+        "personalityClear": "Restaurar padrão",
+        "personalityCleared": "A personalidade padrão do cartão de personagem foi restaurada",
+        "personalityClearFailed": "Falha ao limpar a configuração de personalidade",
+        "personalityModuleUnavailable": "O módulo de seleção de personalidade ainda não foi carregado",
         "systemPrompt": "Prompt do sistema (edite com cuidado)",
         "systemPromptWarning": "Prompt do sistema - Modificações podem causar comportamento inesperado. Edite por sua conta e risco.",
         "addField": "Adicionar campo",
@@ -2112,6 +2208,8 @@
         },
         "error": {
             "providerUnavailable": "O provedor de salvamento na nuvem está indisponível no momento.",
+            "invalidJsonBody": "O corpo JSON da solicitação é inválido.",
+            "invalidBooleanParameter": "O parâmetro {{parameter}} deve ser booleano.",
             "activeSessionBlocked": "Este personagem tem uma sessão ativa. Pare a sessão antes de baixar.",
             "memoryServerReleaseFailed": "Falha ao liberar o identificador de memória local antes da substituição. Por favor, tente novamente mais tarde.",
             "localCharacterNotFound": "O personagem local não foi encontrado.",
@@ -2153,17 +2251,17 @@
             "ru": "Russo"
         },
         "interval": {
-            "chatIntervalBase": "Intervalo Base",
-            "visionInterval": "Intervalo de leitura"
+            "chatIntervalBase": "Intervalo Mínimo",
+            "visionInterval": "Intervalo de Percepção"
         },
         "toggles": {
             "allowInterrupt": "Permitir interrupção",
             "mergeMessages": "Mesclar mensagens",
             "avatarReactionBubble": "Bolha de Expressão",
             "proactiveChat": "Bate-papo proativo",
-            "proactiveVision": "Visão Proativa",
+            "proactiveVision": "Modo Privacidade",
             "proactiveVisionChat": "Compartilhamento de tela",
-            "proactiveVisionChatTooltip": "Requer que o Chat Proativo e a Visão Proativa estejam ativados",
+            "proactiveVisionChatTooltip": "Requer Chat Proativo ativado e Modo Privacidade desativado",
             "proactiveNewsChat": "Site de notícias",
             "proactiveNewsChatTooltip": "Use tópicos populares para bate-papo proativo",
             "proactiveVideoChat": "Site de vídeo",
@@ -2347,7 +2445,8 @@
             "selectHint": "Selecione animações inativas",
             "selectedCount": "{{count}} selecionado",
             "changed": "Animação inativa alterada: {{name}}",
-            "changeFailed": "Falha ao alterar a animação inativa"
+            "changeFailed": "Falha ao alterar a animação ociosa",
+            "stopped": "Animação ociosa interrompida"
         },
         "settingsTitle": "Configurações do modelo VRM",
         "cursorFollow": {
@@ -2395,7 +2494,8 @@
             "selectHint": "Selecione animações inativas",
             "selectedCount": "{{count}} selecionado",
             "changed": "Animação inativa alterada",
-            "changeFailed": "Falha ao alterar a animação inativa"
+            "changeFailed": "Falha ao alterar a animação ociosa",
+            "stopped": "Animação ociosa interrompida"
         },
         "managerInitFailed": "Falha na inicialização do gerenciador MMD",
         "moduleLoading": "Carregando módulos MMD...",
@@ -2563,8 +2663,8 @@
             "desc": "Seu Neko inicia uma conversa de forma proativa. Ajuste a frequência aqui ~"
         },
         "step14": {
-            "title": "👀 Visão Proativa",
-            "desc": "Ao contrário do Screen Share, que é transmitido continuamente durante as sessões de voz, o Proactive Vision permite que seu Neko olhe sua tela de vez em quando por conta própria. Ajuste o intervalo aqui ~"
+            "title": "🔒 Modo Privacidade",
+            "desc": "Quando o Modo Privacidade está desativado, seu Neko olhará sua tela de vez em quando por conta própria, ao contrário do Compartilhamento de tela que é transmitido continuamente durante as sessões de voz. Ajuste o intervalo aqui ~"
         },
         "step15": {
             "title": "👤 Gerenciador de personagens",
@@ -3114,7 +3214,8 @@
             "sad": "Triste",
             "angry": "Nervoso",
             "surprised": "Surpreso"
-        }
+        },
+        "configLoadFailed": "Falha ao carregar configuração"
     },
     "mmdEmotionManager": {
         "title": "Gerente de mapeamento de emoções MMD - Projeto N.E.K.O.",

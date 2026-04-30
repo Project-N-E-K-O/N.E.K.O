@@ -301,6 +301,46 @@ def test_load_workshop_config_does_not_delete_invalid_file_on_read(tmp_path):
 
 
 @pytest.mark.unit
+def test_load_workshop_config_rebases_paths_from_retained_migration_source(tmp_path):
+    cm = _make_config_manager(tmp_path)
+    source_root = tmp_path / "old-root" / "N.E.K.O"
+    source_workshop = source_root / "workshop"
+    external_mods = tmp_path / "external-mods"
+    cm.config_dir.mkdir(parents=True, exist_ok=True)
+    source_workshop.mkdir(parents=True, exist_ok=True)
+    external_mods.mkdir(parents=True, exist_ok=True)
+
+    atomic_write_json(
+        cm.config_dir / "workshop_config.json",
+        {
+            "default_workshop_folder": str(source_workshop),
+            "user_workshop_folder": str(source_workshop / "cached"),
+            "user_mod_folder": str(external_mods),
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+    cm.save_root_state(
+        {
+            **cm.build_default_root_state(),
+            "current_root": str(cm.app_docs_dir),
+            "last_known_good_root": str(cm.app_docs_dir),
+            "last_migration_source": str(source_root),
+            "last_migration_backup": str(source_root),
+            "last_migration_result": f"completed:{cm.app_docs_dir}",
+        }
+    )
+
+    loaded = cm.load_workshop_config()
+    persisted = json.loads((cm.config_dir / "workshop_config.json").read_text(encoding="utf-8"))
+
+    assert loaded["default_workshop_folder"] == str(cm.workshop_dir)
+    assert loaded["user_workshop_folder"] == str(cm.workshop_dir / "cached")
+    assert loaded["user_mod_folder"] == str(external_mods)
+    assert persisted == loaded
+
+
+@pytest.mark.unit
 def test_repair_workshop_configs_respects_cloudsave_write_fence(tmp_path):
     cm = _make_config_manager(tmp_path)
     from utils.cloudsave_runtime import MaintenanceModeError

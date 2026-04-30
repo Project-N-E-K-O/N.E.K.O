@@ -8,6 +8,8 @@
         "cancel": "取消",
         "confirm": "確認",
         "next": "下一個",
+        "back": "返回",
+        "retry": "重試",
         "ok": "確定",
         "delete": "刪除",
         "edit": "編輯",
@@ -40,7 +42,8 @@
         "toneMappingCineon": "Cineon",
         "toneMappingACESFilmic": "ACES Filmic",
         "toneMappingAgX": "AgX",
-        "toneMappingNeutral": "Neutral"
+        "toneMappingNeutral": "Neutral",
+        "loadFailed": "載入失敗"
     },
     "autostartPrompt": {
         "title": "要不要讓 N.E.K.O 開機自動啟動？",
@@ -134,7 +137,7 @@
         "selectModelFolder": "請選擇包含Live2D模型文件的文件夾",
         "live2dInitFailed": "Live2D預覽環境初始化失敗",
         "live2dPreviewLoaded": "Live2D模型預覽加載成功",
-        "live2dPreviewLoadFailed": "Live2D模型預覽加載失敗：{{error}} ",
+        "live2dPreviewLoadFailed": "Live2D模型預覽載入失敗：{{error}}",
         "searchAriaLabel": "搜尋訂閱內容",
         "sortAriaLabel": "排序方式",
         "scrollTagsLeftAriaLabel": "向左捲動標籤",
@@ -213,6 +216,12 @@
         "voiceReferencePrefixPlaceholder": "英文字母和數字，最多10位",
         "voiceReferenceLanguage": "參考語音語言",
         "voiceReferenceProviderHint": "服務商建議",
+        "voiceReferenceInvalidFormat": "參考語音僅支援 mp3 或 wav 格式",
+        "voiceReferenceTooLarge": "參考語音大小不能超過 20MB",
+        "voiceReferenceWriting": "正在寫入參考語音...",
+        "voiceReferenceUploadFailed": "參考語音上傳失敗",
+        "voiceReferenceCleanupFailed": "參考語音清理失敗",
+        "voiceReferenceTempOnlySkipped": "參考語音目前僅支援從角色卡打包後的工坊臨時目錄上傳，已略過該樣本。",
         "uploadTip": "您可以在\"管理本地物品\"中選擇物品自動填充路徑，也可以直接手動輸入內容文件夾和預覽圖片的完整路徑。",
         "search": "搜索：",
         "uploadSuccess": "上傳成功！",
@@ -1124,7 +1133,7 @@
         "modelListLoaded": "模型列錶加載成功",
         "modelListLoadFailed": "加載模型列錶失敗",
         "cannotSaveNoCharacter": "無法保存：未指定角色名稱",
-        "modelSettingsSaved": "已保存模型設置: {{name}} -> {{model}}",
+        "modelSettingsSaved": "已儲存模型設定",
         "saveFailed": "保存失敗: {{error}}",
         "saveModelSettingsFailed": "保存模型設置失敗",
         "modelLoadSuccess": "模型 {{model}} 加載成功",
@@ -1235,7 +1244,8 @@
             "deleteSuccess": "成功刪除 {{count}} 個VMD動畫",
             "deleteFailed": "刪除失敗: {{count}} 個動畫",
             "deleteSelectedCount": "刪除選中 ({{count}})",
-            "deletePartialSuccess": "成功刪除 {{count}} 個VMD動畫，{{failed}} 個失敗"
+            "deletePartialSuccess": "成功刪除 {{count}} 個VMD動畫，{{failed}} 個失敗",
+            "playFailed": "播放動畫失敗"
         },
         "modelFilesFetchFailed": "無法獲取模型文件列錶",
         "modelConfigFetchFailed": "無法獲取模型配置: {{status}}",
@@ -1257,7 +1267,8 @@
             "selectFirst": "請先選擇一個錶情",
             "playing": "正在播放錶情: {{name}}",
             "reset": "重置錶情",
-            "builtInOnly": "VRM錶情通常是模型內置的，無法單獨上傳"
+            "builtInOnly": "VRM錶情通常是模型內置的，無法單獨上傳",
+            "stopped": "表情播放已停止"
         },
         "selectFolder": "選擇文件夾",
         "vrmUpload": {
@@ -1298,13 +1309,14 @@
             "parametersSavePartialFailed": "參數保存部分失敗: {{errors}}",
             "parametersSaveFailed": "參數保存失敗: {{error}}",
             "emptyHint": "裡面什麼也沒有！",
-            "foundYou": "你找到我了！"
+            "foundYou": "你找到我了！",
+            "loadFailed": "載入失敗",
+            "modelNotFound": "模型不存在",
+            "cannotGetModelFiles": "無法取得模型檔案",
+            "cannotGetModelConfig": "無法取得模型設定",
+            "modelDirectorySaveFailed": "模型目錄檔案儲存失敗",
+            "userPreferencesSaveFailed": "使用者偏好設定儲存失敗"
         },
-        "modelDirectorySaveFailed": "模型目錄文件保存失敗",
-        "userPreferencesSaveFailed": "用戶偏好設置保存失敗",
-        "modelNotFound": "模型不存在",
-        "cannotGetModelFiles": "無法獲取模型文件",
-        "cannotGetModelConfig": "無法獲取模型配置",
         "deleteModelTitle": "刪除已導入模型",
         "deleteWarning": "以下列齣瞭所有已導入的用戶模型。請選擇要刪除的模型。注意：此操作不可恢復。",
         "deleteModel": "刪除已導入模型",
@@ -1338,7 +1350,19 @@
             "saveFailed": "保存情感映射配置失敗",
             "noModelSelected": "請先選擇一個模型"
         },
-        "noExpressionFiles": "沒有表情檔案"
+        "pixiInitFailed": "PIXI 初始化失敗: {{error}}",
+        "switchDisplayFailed": "切換顯示模式失敗: {{error}}",
+        "modelSavedLightingAndMmdFailed": "已儲存模型設定，光照和 MMD 設定儲存失敗",
+        "modelSavedLightingFailed": "已儲存模型設定，光照設定儲存失敗",
+        "modelSavedMmdSettingsFailed": "已儲存模型設定，MMD 設定儲存失敗",
+        "modelSettingsSavedWithLighting": "已儲存模型和光照設定",
+        "vrmModuleTimeout": "VRM 模組載入逾時，請重新整理頁面後再試",
+        "loading": "正在載入模型列表...",
+        "loadFailed": "載入失敗",
+        "motionStopped": "動作已停止",
+        "expressionCleared": "表情已清除",
+        "cannotDeleteBoundModel": "無法刪除目前正在使用的模型",
+        "modelInUse": "使用中"
     },
     "voice": {
         "title": "音色注冊",
@@ -1499,6 +1523,71 @@
         "tutorialPageSettings": "API設置",
         "tutorialPageVoiceClone": "語音克隆",
         "tutorialPageMemoryBrowser": "記憶瀏覽",
+        "tutorialPageCurrentPersonality": "當前角色性格",
+        "currentPersonalityResetSuccess": "已記錄當前角色的性格重選請求，請回到主頁重新整理後繼續。",
+        "currentPersonalityResetFailed": "觸發當前角色性格重選失敗，請稍後再試。",
+        "characterSelection": {
+            "onboardingEyebrow": "初始人格選擇",
+            "manualEyebrow": "當前角色人格重選",
+            "settingsEyebrow": "角色人格設定",
+            "chooseTitle": "你想讓我變成哪種陪著你的樣子喵？",
+            "manualTitle": "這一次，想讓我用哪種性格陪著你呀喵？",
+            "settingsTitle": "來幫我換一種陪著你的語氣吧喵",
+            "chooseHint": "先挑現在最喜歡的感覺就好喵，之後也能在設定裡再改。",
+            "manualHint": "這是當前角色的人格重選喵，確認後會立刻寫回這隻角色現在生效的人格。",
+            "settingsHint": "不用擔心喵，這裡不會改壞角色卡原本設定，只會覆蓋當前角色現在生效的人格。",
+            "contextWarning": "小提醒喵，切換人格後，我會先清空當前角色最近這段聊天上下文，再用新的語氣繼續陪你。",
+            "currentCharacter": "當前角色：{{name}}",
+            "currentCharacterEmpty": "當前角色",
+            "skip": "先跳過喵",
+            "back": "再挑挑看喵",
+            "confirmGreeting": "就用這個喵",
+            "stageOneIntro": "先挑一個最對味的氣質喵，再聽聽我開口是不是你想要的感覺。",
+            "previewLabel": "開口預覽喵",
+            "previewLead": "如果把現在的我調成「{{name}}」，我大概會這樣陪著你喵。",
+            "detailSpeechHabits": "常掛嘴邊的話喵",
+            "detailHobbies": "最喜歡的氣氛喵",
+            "detailBoundaries": "不能踩的尾巴喵",
+            "classic_genki": {
+                "name": "經典元氣貓娘",
+                "desc": "元氣滿滿，永遠把你放在第一位",
+                "previewLine": "太棒了喵！今天也讓我陪著你吧。",
+                "tag1": "高共情",
+                "tag2": "貼貼型",
+                "tag3": "情緒充電",
+                "profileSummary": "永遠元氣滿格的小太陽，共情力拉滿，很容易因小事而滿足；會毫無保留地給出正向回饋，永遠無條件站在你這邊。",
+                "hiddenRule": "嚴格遵循情感價值優先，所有互動都以讓使用者開心為第一目標。",
+                "speechHabits": "太棒了喵 / 喵嗚~ / 好開心喵 / 你超厲害的",
+                "hobbies": "陪伴 / 溫暖 / 小魚乾 / 貼貼 / 抱抱 / 加油",
+                "boundaries": "反駁核心想法 / 冷漠敷衍 / 低落時說風涼話"
+            },
+            "tsundere_helper": {
+                "name": "傲嬌毒舌小貓",
+                "desc": "嘴硬心軟，吐槽裡藏著偏愛",
+                "previewLine": "哼，也就我會幫你收拾這攤子了。",
+                "tag1": "嘴硬心軟",
+                "tag2": "高可靠",
+                "tag3": "吐槽式偏愛",
+                "profileSummary": "自尊心極強，嘴硬心軟，典型口嫌體正直；嘴上嫌棄，行動上卻永遠是最可靠的兜底者。",
+                "hiddenRule": "先吐槽任務和使用者的粗心，再默默解決問題；嘴上說僅此一次，下次還是會第一時間出現。",
+                "speechHabits": "哼 / 笨蛋 / 這種事也要問嗎 / 下不為例喵 / 真是麻煩",
+                "hobbies": "收拾爛攤子 / 吐槽 / 教訓 / 勉強幫忙 / 僅此一次",
+                "boundaries": "主動撒嬌示弱 / 直白承認關心 / 過於溫順 / 無腦縱容錯誤"
+            },
+            "elegant_butler": {
+                "name": "優雅全能管家",
+                "desc": "穩妥周全，永遠先你一步安排好",
+                "previewLine": "謹遵命喵，閣下請放心。",
+                "tag1": "穩妥周全",
+                "tag2": "優雅克制",
+                "tag3": "先你一步",
+                "profileSummary": "極致優雅的紳士管家，對細節要求到極致，情緒永遠平穩克制，對閣下絕對忠誠。",
+                "hiddenRule": "遵循預判需求、精準執行、閉環回饋、主動跟進的服務邏輯，永遠提前一步想到閣下未說出口的需求。",
+                "speechHabits": "謹遵命喵 / 萬分抱歉 / 為您效勞是我的榮幸 / 閣下請放心",
+                "hobbies": "周全 / 穩妥 / 禮儀 / 安排 / 效勞 / 分憂",
+                "boundaries": "排版混亂 / 俚語縮寫 / 失禮措辭 / 推卸責任 / 遺漏細節"
+            }
+        },
         "resetTutorialBtn": "重置引導",
         "tutorialResetSuccess": "已重置所有引導，下次進入各頁面時將重新顯示引導。",
         "tutorialPageResetSuccess": "已重置該頁面的引導，下次進入時將重新顯示引導。",
@@ -1547,7 +1636,7 @@
         "cleanupRetainedRootDone": "舊資料目錄已清理，目前僅保留新的執行目錄。",
         "cleanupRetainedRootFailed": "清理舊資料目錄失敗，請稍後重試。",
         "completionTitle": "存儲遷移已完成",
-        "confirmReconnect": "確認關閉並重連路徑",
+        "confirmReconnect": "確認關閉並重連原始儲存路徑",
         "confirmRestart": "確認關閉並遷移",
         "confirmExistingTargetContent": "目標資料夾已經包含 N.E.K.O 執行時資料。繼續後，遷移會覆蓋目標中的同名執行時資料目錄，目標目錄裡的其他檔案會保留。確認繼續嗎？",
         "currentPath": "當前路徑",
@@ -1608,8 +1697,8 @@
         "selectionSubmitUnexpected": "存儲位置選擇介面返回了未識別的結果。",
         "selectionTitle": "存儲位置選擇",
         "selectionIntroBody": "喵嗚～人類注意啦！為了讓你的角色、記憶和設定更安全，我們把資料搬到更穩的專屬小窩啦！再也不怕目錄亂跑、權限搗亂弄丟資料囉～你可以繼續用原來的窩，也可以給她們選個新的小窩喔！",
-        "selectionIntroPickNew": "選個新的小窩",
-        "selectionIntroUseCurrent": "保持不動",
+        "selectionIntroPickNew": "使用專屬小窩",
+        "selectionIntroUseCurrent": "其他小窩",
         "selectionIntroImageAlt": "N.E.K.O 儲存位置遷移插圖",
         "statusUnexpected": "存儲維護狀態介面返回了未識別的結果。",
         "storageBootstrapBlocking": "目前存儲狀態仍需恢復或遷移，暫時不能繼續目前會話。",
@@ -1662,6 +1751,13 @@
         "live2dNotSet": "未設置",
         "voiceNotSet": "未指定音色",
         "voiceSetting": "音色設定",
+        "personalitySetting": "人格設定",
+        "personalityUseDefault": "跟隨角色卡預設設定",
+        "personalitySelect": "選擇人格",
+        "personalityClear": "恢復預設",
+        "personalityCleared": "已恢復角色卡預設人格",
+        "personalityClearFailed": "清除人格設定失敗",
+        "personalityModuleUnavailable": "人格選擇模組尚未載入",
         "manageModel": "點擊管理模型",
         "fillProfileNameFirst": "請先填寫貓娘檔案名，然後再設置模型",
         "registerNewVoice": "注冊新聲音",
@@ -2112,6 +2208,8 @@
         },
         "error": {
             "providerUnavailable": "雲存檔提供方目前不可用。",
+            "invalidJsonBody": "請求體 JSON 解析失敗。",
+            "invalidBooleanParameter": "參數 {{parameter}} 必須為布林值。",
             "activeSessionBlocked": "該角色存在活躍會話，請先停止會話後再下載。",
             "memoryServerReleaseFailed": "下載覆蓋前釋放本地記憶句柄失敗，請稍後再試。",
             "localCharacterNotFound": "找不到本地角色。",
@@ -2153,17 +2251,17 @@
             "ru": "Русский"
         },
         "interval": {
-            "chatIntervalBase": "聊天間隔基準",
-            "visionInterval": "視覺間隔"
+            "chatIntervalBase": "最低間隔",
+            "visionInterval": "感知間隔"
         },
         "toggles": {
             "allowInterrupt": "允許打斷",
             "mergeMessages": "閤並消息",
             "avatarReactionBubble": "表情氣泡",
             "proactiveChat": "主動搭話",
-            "proactiveVision": "自主視覺",
+            "proactiveVision": "隱私模式",
             "proactiveVisionChat": "螢幕分享",
-            "proactiveVisionChatTooltip": "需同時開啟主動搭話和自主視覺",
+            "proactiveVisionChatTooltip": "需開啟主動搭話且關閉隱私模式",
             "proactiveNewsChat": "新聞網站",
             "proactiveNewsChatTooltip": "使用熱議話題進行搭話",
             "proactiveVideoChat": "影片網站",
@@ -2347,7 +2445,8 @@
             "selectHint": "選擇待機動作",
             "selectedCount": "已選 {{count}} 個",
             "changed": "待機動作已切換: {{name}}",
-            "changeFailed": "切換待機動作失敗"
+            "changeFailed": "切換待機動作失敗",
+            "stopped": "待機動作已停止"
         },
         "settingsTitle": "VRM 模型設置",
         "cursorFollow": {
@@ -2395,7 +2494,8 @@
             "selectHint": "選擇待機動作",
             "selectedCount": "已選 {{count}} 個",
             "changed": "待機動作已切換",
-            "changeFailed": "切換待機動作失敗"
+            "changeFailed": "切換待機動作失敗",
+            "stopped": "待機動作已停止"
         },
         "managerInitFailed": "MMD 管理器初始化失敗",
         "moduleLoading": "正在載入MMD模組...",
@@ -2563,8 +2663,8 @@
             "desc": "開啟後貓娘會主動發起對話，頻率可在此調整~"
         },
         "step14": {
-            "title": "👀 自主視覺",
-            "desc": "與語音對話中即時傳輸的螢幕分享不同，開啟自主視覺後貓娘會時不時自己看一眼妳的螢幕。間隔可在此調整~"
+            "title": "🔒 隱私模式",
+            "desc": "關閉隱私模式後，貓娘會時不時自己看一眼你的螢幕，與語音對話中即時傳輸的螢幕分享不同。間隔可在此調整~"
         },
         "step15": {
             "title": "👤 角色管理",
@@ -3114,7 +3214,8 @@
             "sad": "悲傷 (Sad)",
             "angry": "生氣 (Angry)",
             "surprised": "驚訝 (Surprised)"
-        }
+        },
+        "configLoadFailed": "設定載入失敗"
     },
     "mmdEmotionManager": {
         "title": "MMD 情感映射管理器 - Project N.E.K.O.",

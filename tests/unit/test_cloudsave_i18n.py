@@ -236,6 +236,16 @@ def test_cloudsave_manager_translate_short_circuits_for_empty_i18n_key():
 
 
 @pytest.mark.unit
+def test_cloudsave_manager_prefers_backend_error_i18n_keys():
+    script = CLOUDSAVE_JS.read_text(encoding="utf-8")
+
+    assert "payload.message_key" in script
+    assert "payload.message_params" in script
+    assert "cloudsave.error.invalidJsonBody" in script
+    assert "cloudsave.error.invalidBooleanParameter" in script
+
+
+@pytest.mark.unit
 def test_cloudsave_manager_renders_provider_status_card_messages():
     cloudsave_template = CLOUDSAVE_TEMPLATE.read_text(encoding="utf-8")
     script = CLOUDSAVE_JS.read_text(encoding="utf-8")

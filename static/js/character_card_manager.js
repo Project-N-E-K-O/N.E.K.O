@@ -2526,6 +2526,9 @@ function syncTitleDataText() {
 async function loadCharacterData() {
     try {
         const resp = await fetch('/api/characters/');
+        if (!resp.ok) {
+            throw new Error(`HTTP ${resp.status}`);
+        }
         return await resp.json();
     } catch (error) {
         console.error('加载角色数据失败:', error);
@@ -2540,8 +2543,169 @@ let globalCharacterCards = [];
 // 全局变量：当前打开的角色卡ID（用于模态框操作）
 let currentCharacterCardId = null;
 
+const CHARACTER_CARD_MODEL_SCAN_RENDER_BUDGET_MS = 2500;
+let characterCardLoadSequence = 0;
+
+function waitForCharacterCardModelScanBudget(scanPromise) {
+    const eventual = Promise.resolve(scanPromise)
+        .then(scanCompleted => scanCompleted === true)
+        .catch(error => {
+            console.warn('角色卡模型扫描失败，先渲染角色列表:', error);
+            return false;
+        });
+
+    return new Promise(resolve => {
+        let settled = false;
+        const finish = inTime => {
+            if (settled) return;
+            settled = true;
+            resolve({ inTime, eventual });
+        };
+
+        window.setTimeout(() => finish(false), CHARACTER_CARD_MODEL_SCAN_RENDER_BUDGET_MS);
+        eventual.then(scanCompleted => finish(scanCompleted === true));
+    });
+}
+
+async function collectCharacterSettingsCardsFromModels(idCounter, loadSequence) {
+    let nextId = idCounter;
+    const newCards = [];
+    for (const model of availableModels) {
+        // 每个模型外层 fetch 前先校验序列号；旧轮被新一轮 loadCharacterCards 抢占后立刻早退，
+        // 避免在大目录下继续打 model_files / *.chara.json 的废请求拖慢最新一轮 I/O
+        if (loadSequence !== undefined && loadSequence !== characterCardLoadSequence) {
+            return { cards: newCards, nextId };
+        }
+        try {
+            // 调用API获取模型文件列表
+            const response = await fetch(`/api/live2d/model_files/${model.name}`);
+            if (response.ok) {
+                const data = await response.json();
+                if (data.success) {
+                    // 检查是否有*.chara.json格式的角色卡文件
+                    const jsonFiles = data.json_files || [];
+                    const characterSettingsFiles = jsonFiles.filter(file =>
+                        file.endsWith('.chara.json')
+                    );
+
+                    // 如果找到character_settings文件，解析并添加到角色卡列表
+                    for (const file of characterSettingsFiles) {
+                        if (loadSequence !== undefined && loadSequence !== characterCardLoadSequence) {
+                            return { cards: newCards, nextId };
+                        }
+                        try {
+                            // 获取完整的文件内容
+                            // 构建正确的文件URL - 从模型配置文件路径推断
+                            const modelJsonUrl = model.path;
+                            const modelRootUrl = modelJsonUrl.substring(0, modelJsonUrl.lastIndexOf('/') + 1);
+                            const fileUrl = modelRootUrl + file;
+
+                            const fileResponse = await fetch(fileUrl);
+                            if (fileResponse.ok) {
+                                const jsonData = await fileResponse.json();
+                                // 检查是否包含"type": "character_settings"
+                                if (jsonData && jsonData.type === 'character_settings') {
+                                    newCards.push({
+                                        id: nextId++,
+                                        name: jsonData.name || `${model.name}_settings`,
+                                        description: jsonData.description || (window.t ? window.t('steam.characterSettingsFile') : '角色设置文件'),
+                                        tags: jsonData.tags || [],
+                                        rawData: jsonData  // 保存原始数据，方便详情页使用
+                                    });
+                                }
+                            }
+                        } catch (fileError) {
+                            console.error(`解析文件${file}失败:`, fileError);
+                        }
+                    }
+                }
+            }
+        } catch (error) {
+            console.error(`获取模型${model.name}文件列表失败:`, error);
+        }
+    }
+    return { cards: newCards, nextId };
+}
+
+function mergeCharacterSettingsCardsFromModels(loadSequence, discovered) {
+    const cards = discovered?.cards || [];
+    if (loadSequence !== characterCardLoadSequence || cards.length === 0) {
+        return;
+    }
+    window.characterCards = (window.characterCards || []).concat(cards);
+    globalCharacterCards = window.characterCards || [];
+    refreshCharacterCardSelectOptions();
+    // 主列表视图也要同步刷新，否则晚到的旧格式兼容卡得等下次整页刷新才会出现
+    renderCharaCardsView();
+}
+
+function refreshExpandedCardAfterScan(loadSequence) {
+    if (loadSequence !== characterCardLoadSequence) return;
+    if (!currentCharacterCardId) return;
+    const card = (window.characterCards || []).find(c => String(c.id) === String(currentCharacterCardId));
+    if (card) {
+        // availableModels 在扫描完成后才落地，重跑 expand 让上传/预览按钮基于最新模型列表渲染
+        expandCharacterCardSection(card);
+    }
+}
+
+function refreshCharacterCardSelectOptions() {
+    const characterCardSelect = document.getElementById('character-card-select');
+
+    if (!characterCardSelect) {
+        return;
+    }
+
+    // 保留当前选中值，重建后再恢复，避免异步补卡时把用户已选项清掉
+    const previousValue = characterCardSelect.value;
+
+    // 清空现有选项（保留第一个默认选项）
+    while (characterCardSelect.options.length > 1) {
+        characterCardSelect.remove(1);
+    }
+
+    if (window.characterCards && window.characterCards.length > 0) {
+        // 填充下拉选项
+        window.characterCards.forEach(card => {
+            const option = document.createElement('option');
+            option.value = card.id;
+            option.text = card.name;
+            characterCardSelect.add(option);
+        });
+
+        // 添加change事件监听器
+        characterCardSelect.onchange = function () {
+            const selectedId = this.value;
+            if (selectedId) {
+                // 注意：select.value 返回字符串，card.id 可能是数字或字符串，使用 == 进行宽松比较
+                const selectedCard = window.characterCards.find(c => String(c.id) === selectedId);
+                if (selectedCard) {
+                    expandCharacterCardSection(selectedCard);
+                }
+            }
+        };
+
+        if (previousValue && Array.from(characterCardSelect.options).some(option => option.value === previousValue)) {
+            characterCardSelect.value = previousValue;
+        }
+    }
+}
+
 // 加载角色卡列表
 async function loadCharacterCards() {
+    const loadSequence = ++characterCardLoadSequence;
+
+    // 新一轮加载先失效上一轮的模型扫描缓存：scanModels 现在 fire-and-forget，
+    // 若新一轮扫描卡住/失败，本应基于过期清单判断上传可用性会出现假阳性。
+    // 清空后扫描完成前 UI 会显示"无可用模型"，是诚实的 loading 信号；
+    // refreshExpandedCardAfterScan 在扫描完成后会按当前展开卡重渲染恢复正常状态。
+    availableModels = [];
+    availableVrmModels = [];
+    availableMmdModels = [];
+    window.allModels = [];
+    window.allVrmModels = [];
+    window.allMmdModels = [];
+
     // 显示加载状态
     const characterCardsList = document.getElementById('character-cards-list');
     if (characterCardsList) {
@@ -2556,8 +2720,9 @@ async function loadCharacterCards() {
     const characterData = await loadCharacterData();
     if (!characterData) return;
 
-    // 调用scanModels()获取可用模型列表
-    await scanModels();
+    // 模型扫描可能受 Linux 新存储根、创意工坊目录或 Steam 状态影响变慢。
+    // 角色列表不应被模型扫描阻塞；扫描完成后再用于预览/上传等增强能力。
+    const modelScanPromise = scanModels(loadSequence);
 
     // 转换角色数据为角色卡格式（定义为全局变量，供其他函数使用）
     window.characterCards = [];
@@ -2614,88 +2779,11 @@ async function loadCharacterCards() {
         console.error('从character_cards文件夹加载角色卡失败:', error);
     }
 
-    // 扫描模型文件夹中的character_settings JSON文件（兼容旧格式）
-    for (const model of availableModels) {
-        try {
-            // 调用API获取模型文件列表
-            const response = await fetch(`/api/live2d/model_files/${model.name}`);
-            if (response.ok) {
-                const data = await response.json();
-                if (data.success) {
-                    // 检查是否有*.chara.json格式的角色卡文件
-                    const jsonFiles = data.json_files || [];
-                    const characterSettingsFiles = jsonFiles.filter(file =>
-                        file.endsWith('.chara.json')
-                    );
-
-                    // 如果找到character_settings文件，解析并添加到角色卡列表
-                    for (const file of characterSettingsFiles) {
-                        try {
-                            // 获取完整的文件内容
-                            // 构建正确的文件URL - 从模型配置文件路径推断
-                            const modelJsonUrl = model.path;
-                            const modelRootUrl = modelJsonUrl.substring(0, modelJsonUrl.lastIndexOf('/') + 1);
-                            const fileUrl = modelRootUrl + file;
-
-                            const fileResponse = await fetch(fileUrl);
-                            if (fileResponse.ok) {
-                                const jsonData = await fileResponse.json();
-                                // 检查是否包含"type": "character_settings"
-                                if (jsonData && jsonData.type === 'character_settings') {
-                                    window.characterCards.push({
-                                        id: idCounter++,
-                                        name: jsonData.name || `${model.name}_settings`,
-                                            description: jsonData.description || (window.t ? window.t('steam.characterSettingsFile') : '角色设置文件'),
-                                        tags: jsonData.tags || [],
-                                        rawData: jsonData  // 保存原始数据，方便详情页使用
-                                    });
-                                }
-                            }
-                        } catch (fileError) {
-                            console.error(`解析文件${file}失败:`, fileError);
-                        }
-                    }
-                }
-            }
-        } catch (error) {
-            console.error(`获取模型${model.name}文件列表失败:`, error);
-        }
-    }
+    // 扫描模型文件夹中的 character_settings JSON 文件仅用于旧格式兼容，不能阻塞角色管理主列表。
+    const characterSettingsStartId = idCounter;
 
     // 渲染角色卡列表（改为下拉选单）
-    const characterCardSelect = document.getElementById('character-card-select');
-
-    if (characterCardSelect) {
-        // 清空现有选项（保留第一个默认选项）
-        while (characterCardSelect.options.length > 1) {
-            characterCardSelect.remove(1);
-        }
-
-        if (window.characterCards && window.characterCards.length > 0) {
-            // 填充下拉选项
-            window.characterCards.forEach(card => {
-                const option = document.createElement('option');
-                option.value = card.id;
-                option.text = card.name;
-                characterCardSelect.add(option);
-            });
-
-            // 添加change事件监听器
-            characterCardSelect.onchange = function () {
-                const selectedId = this.value;
-                if (selectedId) {
-                    // 注意：select.value 返回字符串，card.id 可能是数字或字符串，使用 == 进行宽松比较
-                    const selectedCard = window.characterCards.find(c => String(c.id) === selectedId);
-                    if (selectedCard) {
-                        expandCharacterCardSection(selectedCard);
-                    }
-                }
-            };
-
-        } else {
-            // 没有角色卡时，也可以保留默认选项或者显示无
-        }
-    }
+    refreshCharacterCardSelectOptions();
 
     // 将角色卡列表保存到全局变量（已使用window.characterCards，这里保持兼容）
     globalCharacterCards = window.characterCards || [];
@@ -2727,6 +2815,33 @@ async function loadCharacterCards() {
     // 同步加载主人档案和已隐藏猫娘列表
     loadMasterProfile();
     renderHiddenCatgirls();
+
+    waitForCharacterCardModelScanBudget(modelScanPromise)
+        .then(scanBudget => {
+            const appendAfterScan = () => collectCharacterSettingsCardsFromModels(characterSettingsStartId, loadSequence)
+                .then(discovered => mergeCharacterSettingsCardsFromModels(loadSequence, discovered));
+
+            scanBudget.eventual.then(scanCompleted => {
+                if (scanCompleted) {
+                    // 扫描成功后回补当前展开角色卡的上传/预览状态，避免用户先点开卡片时停留在旧/空 availableModels
+                    refreshExpandedCardAfterScan(loadSequence);
+                }
+                if (scanBudget.inTime || !scanCompleted) {
+                    return null;
+                }
+                return appendAfterScan();
+            }).catch(error => {
+                console.warn('角色卡旧格式兼容延迟扫描失败，已保留主列表:', error);
+            });
+
+            if (!scanBudget.inTime) {
+                return null;
+            }
+            return appendAfterScan();
+        })
+        .catch(error => {
+            console.warn('角色卡旧格式兼容扫描失败，已保留主列表:', error);
+        });
 }
 
 // ===== 角色卡 卡片/列表 视图 =====
@@ -4159,6 +4274,12 @@ async function closeCatgirlPanel() {
     if (overlay.dataset.closing === 'true') return;
     overlay.dataset.closing = 'true';
 
+    const currentForm = overlay.querySelector('form');
+    if (currentForm && currentForm._characterPersonalityUpdateHandler) {
+        window.removeEventListener('neko:character-personality-updated', currentForm._characterPersonalityUpdateHandler);
+        delete currentForm._characterPersonalityUpdateHandler;
+    }
+
     // 取消所有预览加载：包括尚未完成的 Live2D/VRM/MMD 异步加载，避免清理后又把预览建回来
     if (typeof cancelWorkshopPreviewLoads === 'function') {
         cancelWorkshopPreviewLoads();
@@ -4199,6 +4320,13 @@ async function closeCatgirlPanel() {
 window.closeCatgirlPanel = closeCatgirlPanel;
 
 function buildCatgirlDetailForm(name, rawData, isNew, container) {
+    const previousForm = container && typeof container.querySelector === 'function'
+        ? container.querySelector('form')
+        : null;
+    if (previousForm && previousForm._characterPersonalityUpdateHandler) {
+        window.removeEventListener('neko:character-personality-updated', previousForm._characterPersonalityUpdateHandler);
+    }
+
     let cat = rawData || {};
     let form = document.createElement('form');
     form.id = name ? 'catgirl-form-' + name : 'catgirl-form-new';
@@ -4431,6 +4559,138 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
     };
     addFieldArea.appendChild(addFieldBtn);
     form.appendChild(addFieldArea);
+
+    function readCharacterPersonalitySelection(characterData) {
+        const reserved = characterData && typeof characterData === 'object' ? characterData['_reserved'] : null;
+        const override = reserved && typeof reserved === 'object' ? reserved['persona_override'] : null;
+        const profile = override && typeof override.profile === 'object' ? override.profile : {};
+        const presetId = override && typeof override === 'object' ? String(override.preset_id || '').trim() : '';
+        const hasOverride = !!(override && presetId);
+        return {
+            hasOverride,
+            presetId,
+            profile,
+            displayName: hasOverride
+                ? String(profile['性格原型'] || presetId).trim()
+                : '',
+        };
+    }
+
+    function applyCharacterPersonalitySelection(selection) {
+        const reserved = cat['_reserved'] && typeof cat['_reserved'] === 'object'
+            ? cat['_reserved']
+            : (cat['_reserved'] = {});
+        if (!selection || selection.mode !== 'override') {
+            delete reserved['persona_override'];
+            if (!Object.keys(reserved).length) {
+                delete cat['_reserved'];
+            }
+            return;
+        }
+
+        reserved['persona_override'] = {
+            preset_id: String(selection.preset_id || '').trim(),
+            source: String(selection.source || '').trim(),
+            selected_at: String(selection.selected_at || '').trim(),
+            profile: selection.profile && typeof selection.profile === 'object'
+                ? { ...selection.profile }
+                : {},
+        };
+    }
+
+    function isPersonalityPanelAlive() {
+        if (!container || !container.isConnected) {
+            return false;
+        }
+        const overlay = typeof container.closest === 'function'
+            ? container.closest('.catgirl-panel-overlay')
+            : null;
+        return !!(overlay && overlay.isConnected && overlay.dataset.closing !== 'true');
+    }
+
+    const personalityWrapper = document.createElement('div');
+    personalityWrapper.className = 'field-row-wrapper';
+    const personalityLabel = document.createElement('label');
+    personalityLabel.textContent = window.t ? window.t('character.personalitySetting') : '人格设定';
+    personalityLabel.style.fontSize = '1rem';
+    personalityWrapper.appendChild(personalityLabel);
+
+    const personalityRow = document.createElement('div');
+    personalityRow.className = 'field-row';
+    const personalitySummary = document.createElement('div');
+    personalitySummary.style.flex = '1';
+    personalitySummary.style.padding = '0 12px';
+    personalitySummary.style.color = '#40C5F1';
+    personalitySummary.style.fontSize = '0.95rem';
+    personalitySummary.style.whiteSpace = 'nowrap';
+    personalitySummary.style.overflow = 'hidden';
+    personalitySummary.style.textOverflow = 'ellipsis';
+    const personalitySelection = readCharacterPersonalitySelection(cat);
+    personalitySummary.textContent = personalitySelection.hasOverride
+        ? personalitySelection.displayName
+        : (window.t ? window.t('character.personalityUseDefault') : '跟随角色卡默认设定');
+    personalityRow.appendChild(personalitySummary);
+    personalityWrapper.appendChild(personalityRow);
+
+    const personalitySelectBtn = document.createElement('button');
+    personalitySelectBtn.type = 'button';
+    personalitySelectBtn.className = 'btn sm';
+    personalitySelectBtn.style.marginLeft = '8px';
+    personalitySelectBtn.style.minWidth = '120px';
+    personalitySelectBtn.dataset.testid = 'character-personality-select';
+    personalitySelectBtn.textContent = window.t ? window.t('character.personalitySelect') : '选择人格';
+    personalitySelectBtn.disabled = !!isNew;
+    personalitySelectBtn.addEventListener('click', async function () {
+        if (isNew) {
+            return;
+        }
+        if (!window.CharacterPersonalityOnboarding || typeof window.CharacterPersonalityOnboarding.openFromSettings !== 'function') {
+            if (typeof showAlert === 'function') {
+                await showAlert(window.t ? window.t('character.personalityModuleUnavailable') : '人格选择模块尚未加载');
+            }
+            return;
+        }
+        await window.CharacterPersonalityOnboarding.openFromSettings(name);
+    });
+    personalityWrapper.appendChild(personalitySelectBtn);
+
+    const personalityClearBtn = document.createElement('button');
+    personalityClearBtn.type = 'button';
+    personalityClearBtn.className = 'btn sm delete';
+    personalityClearBtn.style.marginLeft = '8px';
+    personalityClearBtn.style.minWidth = '120px';
+    personalityClearBtn.dataset.testid = 'character-personality-clear';
+    personalityClearBtn.textContent = window.t ? window.t('character.personalityClear') : '恢复默认';
+    personalityClearBtn.disabled = !personalitySelection.hasOverride;
+    personalityClearBtn.addEventListener('click', async function () {
+        if (!name || personalityClearBtn.disabled) {
+            return;
+        }
+        try {
+            const response = await fetch(`/api/characters/character/${encodeURIComponent(name)}/persona-selection`, {
+                method: 'DELETE',
+            });
+            const result = await response.json();
+            if (!response.ok || !result.success) {
+                throw new Error(result && result.error ? result.error : `Request failed: ${response.status}`);
+            }
+            applyCharacterPersonalitySelection(result.selection);
+            if (isPersonalityPanelAlive()) {
+                buildCatgirlDetailForm(name, cat, false, container);
+            }
+            if (typeof loadCharacterCards === 'function') {
+                loadCharacterCards().catch(e => console.warn('刷新角色列表失败:', e));
+            }
+            showMessage(window.t ? window.t('character.personalityCleared') : '已恢复角色卡默认人格', 'success');
+        } catch (e) {
+            console.error('清除人格设定失败:', e);
+            if (typeof showAlert === 'function') {
+                await showAlert(window.t ? window.t('character.personalityClearFailed') : '清除人格设定失败');
+            }
+        }
+    });
+    personalityWrapper.appendChild(personalityClearBtn);
+    form.appendChild(personalityWrapper);
 
     // 进阶设定折叠
     const fold = document.createElement('div');
@@ -4748,6 +5008,35 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
     form.appendChild(btnArea);
     container.innerHTML = '';
     container.appendChild(form);
+
+    if (!isNew && name) {
+        const handleCharacterPersonalityUpdated = async function (event) {
+            const detail = event && event.detail ? event.detail : {};
+            if (String(detail.characterName || '').trim() !== name) {
+                return;
+            }
+            try {
+                const response = await fetch(`/api/characters/character/${encodeURIComponent(name)}/persona-selection`, {
+                    cache: 'no-store',
+                });
+                const result = await response.json();
+                if (!response.ok || !result.success) {
+                    throw new Error(result && result.error ? result.error : `Request failed: ${response.status}`);
+                }
+                applyCharacterPersonalitySelection(result.selection);
+                if (isPersonalityPanelAlive()) {
+                    buildCatgirlDetailForm(name, cat, false, container);
+                }
+                if (typeof loadCharacterCards === 'function') {
+                    loadCharacterCards().catch(e => console.warn('刷新角色列表失败:', e));
+                }
+            } catch (e) {
+                console.warn('刷新人格设定展示失败:', e);
+            }
+        };
+        form._characterPersonalityUpdateHandler = handleCharacterPersonalityUpdated;
+        window.addEventListener('neko:character-personality-updated', handleCharacterPersonalityUpdated);
+    }
 
     // 绑定变化监听以显隐保存/取消按钮（新建猫娘始终显示）
     if (!isNew) {
@@ -6445,7 +6734,7 @@ function editCharacterCardModal() {
 }
 
 // 扫描Live2D模型
-async function scanModels() {
+async function scanModels(loadSequence) {
     showMessage(window.t ? window.t('steam.scanningModels') : '正在扫描模型...', 'info');
 
     try {
@@ -6465,19 +6754,19 @@ async function scanModels() {
         // 存储所有模型到全局变量（用于角色卡加载，包括static目录的模型）
         window.allModels = models;
 
-        // 过滤掉来自static目录的模型（如yui_default），只保留用户文档目录中的模型
+        // 过滤掉来自static目录的模型（如默认/版权Live2D），只保留用户文档目录中的模型
         // 这是为了防止上传版权Live2D模型
         const uploadableModels = models.filter(model => model.source !== 'static');
-        // 存储可上传模型列表到全局变量（用于上传检查）
-        availableModels = uploadableModels;
 
-        // 处理 VRM 模型
+        // 处理 VRM 模型（先收集到局部变量，避免旧轮扫描晚到时回滚新轮结果）
+        let scannedAllVrmModels = null;
+        let nextAvailableVrmModels = null;
         try {
             if (vrmResponse && vrmResponse.ok) {
                 const vrmData = await vrmResponse.json();
                 if (vrmData.success && vrmData.models) {
-                    window.allVrmModels = vrmData.models;
-                    availableVrmModels = vrmData.models.filter(m => m.location !== 'project');
+                    scannedAllVrmModels = vrmData.models;
+                    nextAvailableVrmModels = vrmData.models.filter(m => m.location !== 'project');
                 }
             }
         } catch (e) {
@@ -6485,17 +6774,34 @@ async function scanModels() {
         }
 
         // 处理 MMD 模型
+        let scannedAllMmdModels = null;
+        let nextAvailableMmdModels = null;
         try {
             if (mmdResponse && mmdResponse.ok) {
                 const mmdData = await mmdResponse.json();
                 if (mmdData.success && mmdData.models) {
-                    window.allMmdModels = mmdData.models;
-                    availableMmdModels = mmdData.models.filter(m => m.location !== 'project');
+                    scannedAllMmdModels = mmdData.models;
+                    nextAvailableMmdModels = mmdData.models.filter(m => m.location !== 'project');
                 }
             }
         } catch (e) {
             console.warn('处理MMD模型列表失败:', e);
         }
+
+        // 序列号校验：若已被新一轮 loadCharacterCards 触发，丢弃本轮结果，防止旧扫描回滚新数据
+        if (loadSequence !== undefined && loadSequence !== characterCardLoadSequence) {
+            return false;
+        }
+
+        // 提交到全局变量（用于角色卡加载，包括static目录的模型）
+        // 注意：6 个全局必须无条件覆写到本轮结果，VRM/MMD 子扫描失败时落 [] 而非沿用旧值；
+        // 否则 tab 切换路径里如果 VRM/MMD 端点偶发失败，会保留上一轮的 stale 列表造成假阳性
+        window.allModels = models;
+        availableModels = uploadableModels;
+        window.allVrmModels = scannedAllVrmModels || [];
+        availableVrmModels = nextAvailableVrmModels || [];
+        window.allMmdModels = scannedAllMmdModels || [];
+        availableMmdModels = nextAvailableMmdModels || [];
 
         // 触发模型扫描完成事件，通知其他组件刷新 UI（具有容错能力）
         try {
@@ -6521,10 +6827,12 @@ async function scanModels() {
             console.warn('更新 Live2D 模型选择按钮文字失败:', e);
         }
 
+        return true;
 
     } catch (error) {
         console.error('扫描模型失败:', error);
         showMessage(window.t ? window.t('steam.modelScanError') : '扫描模型失败', 'error');
+        return false;
     }
 }
 
@@ -6835,7 +7143,7 @@ function cancelWorkshopPreviewLoads() {
 }
 
 function isWorkshopPreviewLoadCurrent(generation) {
-    return generation === _workshopPreviewGeneration && !!document.querySelector('.catgirl-panel-overlay');
+    return generation === _workshopPreviewGeneration && !!document.getElementById('live2d-preview-content');
 }
 
 async function disposeStaleWorkshopPreviewManager(manager, type) {

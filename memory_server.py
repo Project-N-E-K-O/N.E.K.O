@@ -1064,7 +1064,7 @@ async def _periodic_idle_maintenance_loop():
     replay / migration 任务先消化），之后每 IDLE_CHECK_INTERVAL 秒轮询一次。
 
     每轮为每个角色依次执行：
-    1. 历史记录压缩 — 有需要就跑（history > max_history_length）
+    1. 历史记录压缩 — 有需要就跑（history > compress_threshold）
     1b. Fact 向量去重 — 有需要就跑（vectors 启用且 pending dedup 队列非空）
     2. Persona 矛盾审视 — 有需要就跑（pending corrections 非空）；不受 recent_memory_auto_review
        开关或 REVIEW_SKIP_HISTORY_LEN 影响：persona corrections 不读 recent history，是独立的
@@ -1101,10 +1101,14 @@ async def _periodic_idle_maintenance_loop():
                     history_len = len(history)
 
                     # ── 子任务1: 历史记录压缩（有需要就跑，不受全局开关控制） ──
-                    if history_len > recent_history_manager.max_history_length:
+                    # 门槛对齐 update_history 内部的真实触发条件 `len > compress_threshold`
+                    # （默认 15）。用 max_history_length（默认 10，压缩后保留条数）会让
+                    # 11~15 区间持续触发 IdleMaint 但 update_history 实际不压缩，形成
+                    # 每 IDLE_CHECK_INTERVAL 一次的空转日志。
+                    if history_len > recent_history_manager.compress_threshold:
                         logger.info(
                             f"[IdleMaint] {name}: 历史记录过长 ({history_len} > "
-                            f"{recent_history_manager.max_history_length})，触发压缩"
+                            f"{recent_history_manager.compress_threshold})，触发压缩"
                         )
                         try:
                             # 传空消息列表仅触发压缩逻辑

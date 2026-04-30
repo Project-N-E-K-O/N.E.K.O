@@ -158,9 +158,61 @@ def test_memory_browser_page_load(mock_page: Page, running_server: str, seed_mem
     expect(mock_page.locator("#storage-recommended-root")).to_have_count(0)
     expect(mock_page.locator("#storage-current-root")).not_to_have_text("加载中...", timeout=5000)
     expect(mock_page.locator("#storage-location-overlay")).to_have_count(0)
+    expect(mock_page.locator("#tutorial-reset-select option[value='current_personality']")).to_have_count(1)
     assert mock_page.evaluate("typeof window.appStorageLocation") == "object"
     assert mock_page.evaluate("typeof window.waitForStorageLocationStartupBarrier") == "undefined"
     assert mock_page.evaluate("typeof window.__nekoStorageLocationStartupBarrier") == "undefined"
+
+
+@pytest.mark.frontend
+def test_memory_browser_current_personality_reset_requests_home_reselect(
+    mock_page: Page,
+    running_server: str,
+    seed_memory_file,
+):
+    _install_ready_memory_browser_routes(mock_page, seed_memory_file)
+    request_log = []
+
+    def handle_reselect(route):
+        request_log.append({
+            "url": route.request.url,
+            "method": route.request.method,
+        })
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            json={
+                "success": True,
+                "state": {
+                    "status": "completed",
+                    "handled_at": "2026-04-29T12:00:00Z",
+                    "manual_reselect_character_name": "测试猫娘",
+                    "manual_reselect_requested_at": "2026-04-29T12:10:00Z",
+                },
+            },
+        )
+
+    mock_page.route("**/api/characters/persona-reselect-current", handle_reselect)
+    mock_page.goto(f"{running_server}/memory_browser")
+    mock_page.wait_for_selector("#tutorial-reset-select", timeout=10000)
+    mock_page.select_option("#tutorial-reset-select", "current_personality")
+    with mock_page.expect_response(
+        lambda r: "/api/characters/persona-reselect-current" in r.url
+        and r.request.method == "POST"
+        and r.status == 200
+    ):
+        with mock_page.expect_event("dialog") as dialog_info:
+            mock_page.locator("#tutorial-reset-btn").click()
+
+    dialog = dialog_info.value
+    dialog_messages = [dialog.message]
+    dialog.accept()
+
+    assert request_log == [{
+        "url": f"{running_server}/api/characters/persona-reselect-current",
+        "method": "POST",
+    }]
+    assert dialog_messages == ["已记录当前角色的性格重选请求，请回到主页刷新后继续。"]
 
 
 @pytest.mark.frontend

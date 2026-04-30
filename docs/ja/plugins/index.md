@@ -80,4 +80,5 @@ plugin/plugins/
 - [デコレーター](./decorators) — 利用可能なすべてのデコレーター
 - [サンプル](./examples) — 完全に動作するサンプル
 - [応用トピック](./advanced) — Extension、Adapter、プラグイン間呼び出し、フック
+- [LLM ツール呼び出し](./tool-calling) — LLM が会話中に呼び出せるツールをプラグインから登録する
 - [ベストプラクティス](./best-practices) — エラーハンドリング、テスト、コード構成

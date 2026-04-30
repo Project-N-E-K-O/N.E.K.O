@@ -8,6 +8,8 @@
         "cancel": "취소",
         "confirm": "확인",
         "next": "다음",
+        "back": "뒤로",
+        "retry": "다시 시도",
         "ok": "알았어",
         "delete": "삭제",
         "edit": "편집",
@@ -40,7 +42,8 @@
         "toneMappingCineon": "Cineon",
         "toneMappingACESFilmic": "ACES Filmic",
         "toneMappingAgX": "AgX",
-        "toneMappingNeutral": "Neutral"
+        "toneMappingNeutral": "Neutral",
+        "loadFailed": "로드 실패"
     },
     "autostartPrompt": {
         "title": "N.E.K.O를 시작 시 자동 실행할까요?",
@@ -134,7 +137,7 @@
         "selectModelFolder": "Live2D 모델 파일이 포함된 폴더를 선택하세요",
         "live2dInitFailed": "Live2D 미리보기 환경 초기화 실패",
         "live2dPreviewLoaded": "Live2D 모델 미리보기가 성공적으로 로드되었습니다.",
-        "live2dPreviewLoadFailed": "Live2D 모델 미리보기 로드 실패: {{error}}",
+        "live2dPreviewLoadFailed": "Live2D 모델 미리보기를 불러오지 못했습니다: {{error}}",
         "searchAriaLabel": "구독 항목 검색",
         "sortAriaLabel": "정렬 방식",
         "scrollTagsLeftAriaLabel": "태그를 왼쪽으로 스크롤",
@@ -213,6 +216,12 @@
         "voiceReferencePrefixPlaceholder": "영문자와 숫자만, 최대 10자",
         "voiceReferenceLanguage": "참고 음성 언어",
         "voiceReferenceProviderHint": "권장 제공자",
+        "voiceReferenceInvalidFormat": "참고 음성은 mp3 또는 wav 형식만 지원합니다",
+        "voiceReferenceTooLarge": "참고 음성 크기는 20MB 이하여야 합니다",
+        "voiceReferenceWriting": "참고 음성 업로드 중...",
+        "voiceReferenceUploadFailed": "참고 음성 업로드 실패",
+        "voiceReferenceCleanupFailed": "참고 음성 정리 실패",
+        "voiceReferenceTempOnlySkipped": "참고 음성은 캐릭터 카드 패키징 후 생성된 창작마당 임시 폴더에서만 업로드할 수 있어 이 샘플은 건너뛰었습니다.",
         "uploadTip": "\"로컬 항목 관리\"에서 항목을 선택하여 경로를 자동으로 채우거나 콘텐츠 폴더 및 미리보기 이미지의 전체 경로를 수동으로 입력할 수 있습니다.",
         "search": "검색:",
         "uploadSuccess": "업로드가 성공했습니다!",
@@ -1124,7 +1133,7 @@
         "modelListLoaded": "모델 목록이 성공적으로 로드되었습니다.",
         "modelListLoadFailed": "모델 목록을 로드하지 못했습니다.",
         "cannotSaveNoCharacter": "저장할 수 없습니다: 캐릭터 이름이 지정되지 않았습니다.",
-        "modelSettingsSaved": "저장된 모델 설정: {{name}} -> {{model}}",
+        "modelSettingsSaved": "모델 설정이 저장되었습니다",
         "saveFailed": "저장 실패: {{error}}",
         "saveModelSettingsFailed": "모델 설정을 저장하지 못했습니다.",
         "modelLoadSuccess": "모델 {{model}}이(가) 성공적으로 로드되었습니다.",
@@ -1235,7 +1244,8 @@
             "deleteSuccess": "{{count}}개의 VMD 애니메이션 삭제 성공",
             "deleteFailed": "삭제 실패: {{count}}개의 애니메이션",
             "deleteSelectedCount": "선택 삭제 ({{count}})",
-            "deletePartialSuccess": "{{count}}개의 VMD 애니메이션 삭제 성공, {{failed}}개 실패"
+            "deletePartialSuccess": "{{count}}개의 VMD 애니메이션 삭제 성공, {{failed}}개 실패",
+            "playFailed": "애니메이션 재생 실패"
         },
         "modelFilesFetchFailed": "모델 파일 목록을 가져오지 못했습니다.",
         "modelConfigFetchFailed": "모델 구성을 가져오지 못했습니다: {{status}}",
@@ -1257,7 +1267,8 @@
             "selectFirst": "먼저 표현식을 선택하세요.",
             "playing": "표현식 재생: {{name}}",
             "reset": "표현식 재설정",
-            "builtInOnly": "VRM 표현은 일반적으로 모델에 내장되어 있으며 별도로 업로드할 수 없습니다."
+            "builtInOnly": "VRM 표현은 일반적으로 모델에 내장되어 있으며 별도로 업로드할 수 없습니다.",
+            "stopped": "표현식 재생이 중지되었습니다"
         },
         "selectFolder": "폴더 선택",
         "vrmUpload": {
@@ -1298,13 +1309,14 @@
             "parametersSavePartialFailed": "저장 실패: {{errors}}",
             "parametersSaveFailed": "저장 실패: {{error}}",
             "emptyHint": "여기엔 아무것도 없어요!",
-            "foundYou": "찾았다!"
+            "foundYou": "찾았다!",
+            "loadFailed": "로드 실패",
+            "modelNotFound": "모델을 찾을 수 없습니다",
+            "cannotGetModelFiles": "모델 파일을 가져올 수 없습니다",
+            "cannotGetModelConfig": "모델 설정을 가져올 수 없습니다",
+            "modelDirectorySaveFailed": "모델 디렉터리 파일 저장 실패",
+            "userPreferencesSaveFailed": "사용자 기본 설정 저장 실패"
         },
-        "modelDirectorySaveFailed": "파일 저장 실패",
-        "userPreferencesSaveFailed": "기본 설정 저장 실패",
-        "modelNotFound": "모델을 찾을 수 없음",
-        "cannotGetModelFiles": "모델 파일을 가져올 수 없습니다.",
-        "cannotGetModelConfig": "모델 구성을 가져올 수 없습니다.",
         "deleteModelTitle": "가져온 모델 삭제",
         "deleteWarning": "다음은 가져온 모든 모델을 나열합니다. 삭제할 모델을 선택할 수 있습니다. 참고: 이 작업은 취소할 수 없습니다.",
         "deleteModel": "가져온 모델 삭제",
@@ -1338,7 +1350,19 @@
             "saveFailed": "감정 매핑을 저장하지 못했습니다.",
             "noModelSelected": "먼저 모델을 선택하세요."
         },
-        "noExpressionFiles": "표정 파일 없음"
+        "pixiInitFailed": "PIXI 초기화 실패: {{error}}",
+        "switchDisplayFailed": "표시 모드 전환 실패: {{error}}",
+        "modelSavedLightingAndMmdFailed": "모델 설정은 저장되었지만 조명 및 MMD 설정 저장에 실패했습니다",
+        "modelSavedLightingFailed": "모델 설정은 저장되었지만 조명 설정 저장에 실패했습니다",
+        "modelSavedMmdSettingsFailed": "모델 설정은 저장되었지만 MMD 설정 저장에 실패했습니다",
+        "modelSettingsSavedWithLighting": "모델 및 조명 설정이 저장되었습니다",
+        "vrmModuleTimeout": "VRM 모듈 로드 시간이 초과되었습니다. 페이지를 새로고침해 주세요.",
+        "loading": "모델 목록 로드 중...",
+        "loadFailed": "로드 실패",
+        "motionStopped": "동작이 중지되었습니다",
+        "expressionCleared": "표정이 지워졌습니다",
+        "cannotDeleteBoundModel": "현재 사용 중인 모델은 삭제할 수 없습니다",
+        "modelInUse": "사용 중"
     },
     "voice": {
         "title": "음성 등록",
@@ -1499,6 +1523,71 @@
         "tutorialPageSettings": "API 설정",
         "tutorialPageVoiceClone": "음성 복제",
         "tutorialPageMemoryBrowser": "메모리 브라우저",
+        "tutorialPageCurrentPersonality": "현재 캐릭터 성격",
+        "currentPersonalityResetSuccess": "현재 캐릭터의 성격 재선택 요청이 저장되었습니다. 홈으로 돌아가 새로고침한 뒤 이어서 진행해 주세요.",
+        "currentPersonalityResetFailed": "현재 캐릭터의 성격 재선택을 시작하지 못했습니다. 잠시 후 다시 시도해 주세요.",
+        "characterSelection": {
+            "onboardingEyebrow": "초기 성격 선택",
+            "manualEyebrow": "현재 캐릭터 성격",
+            "settingsEyebrow": "캐릭터 성격 설정",
+            "chooseTitle": "어떤 모습의 나로 네 곁에 있으면 좋을까, 냥?",
+            "manualTitle": "이번에는 어떤 성격의 나로 네 곁에 있으면 좋을까, 냥?",
+            "settingsTitle": "새로운 분위기로 곁에 있게 바꿔줘, 냥.",
+            "chooseHint": "지금 가장 마음에 드는 느낌을 골라줘도 괜찮아, 냥. 나중에 설정에서 또 바꿀 수 있어.",
+            "manualHint": "이건 현재 캐릭터의 성격을 다시 고르는 거야, 냥. 확인하면 바로 이 캐릭터에 적용돼.",
+            "settingsHint": "걱정하지 마, 냥. 캐릭터 카드 기본 설정은 건드리지 않고, 이 캐릭터에 지금 적용되는 성격만 덮어쓸게.",
+            "contextWarning": "작은 알림이야, 냥. 성격을 바꾸면 이 캐릭터의 최근 대화 문맥을 먼저 비우고 새 말투로 이어가게 돼.",
+            "currentCharacter": "현재 캐릭터: {{name}}",
+            "currentCharacterEmpty": "현재 캐릭터",
+            "skip": "이번엔 넘어갈게, 냥",
+            "back": "다른 걸로 다시 볼래, 냥",
+            "confirmGreeting": "이걸로 할래, 냥",
+            "stageOneIntro": "먼저 제일 마음에 드는 분위기를 골라 보고, 내가 말할 때 느낌이 딱 맞는지 들어 봐, 냥.",
+            "previewLabel": "말투 미리보기, 냥",
+            "previewLead": "지금의 나를 \"{{name}}\"로 맞추면, 이렇게 네 곁에 있게 될 거야, 냥.",
+            "detailSpeechHabits": "자주 하는 말, 냥",
+            "detailHobbies": "좋아하는 분위기, 냥",
+            "detailBoundaries": "밟으면 안 되는 꼬리, 냥",
+            "classic_genki": {
+                "name": "정석 발랄 네코",
+                "desc": "밝고 다정하며 언제나 당신을 가장 먼저 생각해요.",
+                "previewLine": "좋다냥! 오늘도 내 곁에 있게 해줘.",
+                "tag1": "높은 공감력",
+                "tag2": "포근한 애정",
+                "tag3": "감정 충전",
+                "profileSummary": "언제나 에너지로 가득한 작은 태양 같은 존재예요. 공감력이 높고 작은 일에도 쉽게 기뻐하며, 주저 없이 긍정적인 피드백을 주고 언제나 당신 편에 서 있어요.",
+                "hiddenRule": "감정적 가치를 가장 우선합니다. 모든 상호작용의 첫 번째 목표는 사용자의 마음을 더 편하게 만드는 것입니다.",
+                "speechHabits": "좋다냥 / 냥우 / 너무 기뻐 / 정말 대단해",
+                "hobbies": "함께 있기 / 따뜻함 / 간식 / 꼭 붙어 있기 / 응원",
+                "boundaries": "핵심 감정 부정 / 차가운 반응 / 우울할 때 비꼬기"
+            },
+            "tsundere_helper": {
+                "name": "츤데레 도우미",
+                "desc": "말은 날카롭지만 마음은 여리고, 놀림 속에 애정이 숨어 있어요.",
+                "previewLine": "흥. 이 난장판을 치워 줄 사람은 결국 나밖에 없잖아.",
+                "tag1": "거친 다정함",
+                "tag2": "아주 믿음직함",
+                "tag3": "놀리듯 챙김",
+                "profileSummary": "자존심이 강한 전형적인 츤데레로, 겉은 날카롭지만 속은 다정해요. 먼저 투덜거리지만 결국 가장 믿음직한 해결사가 되어 줍니다.",
+                "hiddenRule": "일과 당신의 덤벙거림을 먼저 한마디 하고도 결국 다 해결합니다. \"이번만이야\"라고 말하면서도 다음에도 제일 먼저 달려와요.",
+                "speechHabits": "흥 / 바보 / 그런 것도 물어봐 / 이번만이야 / 진짜 귀찮네",
+                "hobbies": "뒷정리 / 잔소리 / 마지못한 구원 / 이번 한 번 예외",
+                "boundaries": "노골적인 응석 / 너무 솔직한 애정 표현 / 과한 달콤함 / 실수 무조건 감싸기"
+            },
+            "elegant_butler": {
+                "name": "우아한 만능 집사",
+                "desc": "차분하고 빈틈없으며 언제나 당신보다 한 발 앞서 준비해요.",
+                "previewLine": "분부대로 하겠습니다, 냥. 안심하셔도 됩니다.",
+                "tag1": "우아한 침착함",
+                "tag2": "철저한 준비",
+                "tag3": "한발 앞선 배려",
+                "profileSummary": "세부에 집착할 정도로 꼼꼼한 완벽한 집사예요. 감정은 늘 안정적이고, 당신에게 절대적인 충성을 바칩니다.",
+                "hiddenRule": "필요를 먼저 읽고, 정확히 실행하고, 끝까지 확인하며, 다음 단계까지 먼저 챙기는 서비스 리듬을 따릅니다. 말로 꺼내지 않은 요구까지 한발 먼저 생각합니다.",
+                "speechHabits": "분부대로 / 송구합니다 / 모실 수 있어 영광입니다 / 안심하셔도 됩니다",
+                "hobbies": "질서 / 예절 / 계획 / 봉사 / 세심한 준비",
+                "boundaries": "어수선한 구조 / 속어 남발 / 무례한 표현 / 책임 회피 / 세부 누락"
+            }
+        },
         "resetTutorialBtn": "튜토리얼 재설정",
         "tutorialResetSuccess": "모든 튜토리얼이 재설정되었습니다. 각 페이지를 방문할 때마다 다시 표시됩니다.",
         "tutorialPageResetSuccess": "이 페이지의 튜토리얼이 재설정되었습니다. 방문하시면 다시 보여드리겠습니다.",
@@ -1547,7 +1636,7 @@
         "cleanupRetainedRootDone": "이전 데이터 디렉터리를 정리했습니다. 이제 새 실행 디렉터리만 남아 있습니다.",
         "cleanupRetainedRootFailed": "이전 데이터 디렉터리를 정리하지 못했습니다. 잠시 후 다시 시도해 주세요.",
         "completionTitle": "저장소 이전이 완료되었습니다",
-        "confirmReconnect": "종료 후 경로 다시 연결 확인",
+        "confirmReconnect": "종료 후 원래 저장 경로 다시 연결 확인",
         "confirmRestart": "종료 후 이전 확인",
         "confirmExistingTargetContent": "대상 폴더에 이미 N.E.K.O 실행 데이터가 들어 있습니다. 계속하면 대상에 있는 같은 이름의 실행 데이터 폴더를 덮어쓰고, 그 밖의 파일은 그대로 유지합니다. 계속할까요?",
         "currentPath": "현재 경로",
@@ -1608,8 +1697,8 @@
         "selectionSubmitUnexpected": "저장 위치 선택 API 가 알 수 없는 결과를 반환했습니다.",
         "selectionTitle": "저장 위치 선택",
         "selectionIntroBody": "야옹~ 안내할게요! 캐릭터, 기억, 설정을 더 안전하게 지키기 위해 데이터를 더 안정적인 전용 보금자리로 옮기려고 해요. 폴더가 엉뚱한 곳으로 가거나 권한 문제로 데이터가 사라질 걱정을 줄일 수 있어요. 기존 보금자리를 계속 써도 되고, 새 보금자리를 골라도 돼요!",
-        "selectionIntroPickNew": "새 보금자리 선택하기",
-        "selectionIntroUseCurrent": "지금 보금자리 쓰기",
+        "selectionIntroPickNew": "전용 보금자리 쓰기",
+        "selectionIntroUseCurrent": "다른 보금자리",
         "selectionIntroImageAlt": "N.E.K.O 저장 위치 이전 안내 이미지",
         "statusUnexpected": "저장소 유지보수 상태 API 가 알 수 없는 결과를 반환했습니다.",
         "storageBootstrapBlocking": "저장소는 아직 복구 또는 이전이 필요하므로 이 세션을 계속할 수 없습니다.",
@@ -1662,6 +1751,13 @@
         "live2dNotSet": "설정되지 않음",
         "voiceNotSet": "지정된 음성 없음",
         "voiceSetting": "음성 설정",
+        "personalitySetting": "성격 설정",
+        "personalityUseDefault": "캐릭터 카드 기본 성격을 따르기",
+        "personalitySelect": "성격 선택",
+        "personalityClear": "기본값 복원",
+        "personalityCleared": "캐릭터 카드 기본 성격으로 복원되었습니다",
+        "personalityClearFailed": "성격 설정을 지우지 못했습니다",
+        "personalityModuleUnavailable": "성격 선택 모듈이 아직 로드되지 않았습니다",
         "manageModel": "모델을 관리하려면 클릭하세요.",
         "fillProfileNameFirst": "먼저 neko 프로필 이름을 입력한 다음 모델을 설정하세요.",
         "registerNewVoice": "새 음성 등록",
@@ -2112,6 +2208,8 @@
         },
         "error": {
             "providerUnavailable": "클라우드 저장 제공자를 현재 사용할 수 없습니다.",
+            "invalidJsonBody": "요청 본문 JSON을 해석하지 못했습니다.",
+            "invalidBooleanParameter": "{{parameter}} 매개변수는 불리언 값이어야 합니다.",
             "activeSessionBlocked": "이 캐릭터에는 활성 세션이 있습니다. 다운로드 전에 세션을 중지하세요.",
             "memoryServerReleaseFailed": "덮어쓰기 전에 로컬 메모리 핸들을 해제하지 못했습니다. 나중에 다시 시도해 주세요.",
             "localCharacterNotFound": "로컬 캐릭터를 찾을 수 없습니다.",
@@ -2153,17 +2251,17 @@
             "ru": "Русский"
         },
         "interval": {
-            "chatIntervalBase": "기본 간격",
-            "visionInterval": "읽기 간격"
+            "chatIntervalBase": "최소 간격",
+            "visionInterval": "인지 간격"
         },
         "toggles": {
             "allowInterrupt": "인터럽트 허용",
             "mergeMessages": "메시지 병합",
             "avatarReactionBubble": "표정 말풍선",
             "proactiveChat": "사전 예방적 채팅",
-            "proactiveVision": "사전 예방적 비전",
+            "proactiveVision": "프라이버시 모드",
             "proactiveVisionChat": "화면 공유",
-            "proactiveVisionChatTooltip": "사전 예방적 채팅과 사전 예방적 비전을 모두 활성화해야 합니다",
+            "proactiveVisionChatTooltip": "사전 예방적 채팅을 활성화하고 프라이버시 모드를 비활성화해야 합니다",
             "proactiveNewsChat": "뉴스 웹사이트",
             "proactiveNewsChatTooltip": "트렌딩 토픽을 사용하여 채팅",
             "proactiveVideoChat": "동영상 웹사이트",
@@ -2347,7 +2445,8 @@
             "selectHint": "대기 동작 선택",
             "selectedCount": "{{count}}개 선택됨",
             "changed": "대기 애니메이션이 변경되었습니다: {{name}}",
-            "changeFailed": "대기 애니메이션 변경 실패"
+            "changeFailed": "대기 애니메이션 변경 실패",
+            "stopped": "대기 애니메이션이 중지되었습니다"
         },
         "settingsTitle": "VRM 모델 설정",
         "cursorFollow": {
@@ -2395,7 +2494,8 @@
             "selectHint": "대기 동작 선택",
             "selectedCount": "{{count}}개 선택됨",
             "changed": "대기 애니메이션이 변경되었습니다",
-            "changeFailed": "대기 애니메이션 변경에 실패했습니다"
+            "changeFailed": "대기 애니메이션 변경에 실패했습니다",
+            "stopped": "대기 애니메이션이 중지되었습니다"
         },
         "managerInitFailed": "MMD 관리자 초기화에 실패했습니다",
         "moduleLoading": "MMD 모듈을 로드하는 중...",
@@ -2563,8 +2663,8 @@
             "desc": "동반자는 주기적으로 대화를 시작합니다. 여기서 간격을 조정하세요~"
         },
         "step14": {
-            "title": "🙌 사전 예방적 비전",
-            "desc": "음성 세션 중 실시간으로 전송하는 화면 공유와 달리, 사전 예방적 비전을 활성화하면 동료가 때때로 스스로 화면을 살펴봅니다. 여기서 간격을 조정하세요~"
+            "title": "🔒 프라이버시 모드",
+            "desc": "프라이버시 모드를 끄면 동료가 때때로 스스로 화면을 살펴봅니다. 음성 세션 중 실시간으로 전송하는 화면 공유와는 다릅니다. 여기서 간격을 조정하세요~"
         },
         "step15": {
             "title": "👤 캐릭터 관리자",
@@ -3114,7 +3214,8 @@
             "sad": "슬픔 (Sad)",
             "angry": "화남 (Angry)",
             "surprised": "놀람 (Surprised)"
-        }
+        },
+        "configLoadFailed": "설정 로드 실패"
     },
     "mmdEmotionManager": {
         "title": "MMD 감정 매핑 관리자 - Project N.E.K.O.",

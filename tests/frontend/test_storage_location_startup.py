@@ -47,9 +47,66 @@ def _continue_storage_intro(page: Page) -> None:
     )
     expect(page.locator("text=喵呜～人类注意啦！")).to_be_visible(timeout=15_000)
     expect(page.get_by_role("heading", name="存储位置选择")).to_be_hidden(timeout=5_000)
-    expect(page.get_by_role("button", name="保持不动")).to_be_visible(timeout=15_000)
-    page.get_by_role("button", name="选个新的小窝").click()
+    expect(page.get_by_role("button", name="使用专属小窝")).to_be_visible(timeout=15_000)
+    page.get_by_role("button", name="其他小窝").click()
     expect(page.get_by_role("heading", name="存储位置选择")).to_be_visible(timeout=15_000)
+
+
+def _expect_storage_migration_has_no_scrollbars(page: Page) -> None:
+    metrics = page.evaluate(
+        """
+        () => {
+            const overlay = document.querySelector('#storage-location-overlay');
+            const modal = document.querySelector('.storage-location-modal');
+            const activeView = document.querySelector('.storage-location-view:not([hidden])');
+            const missing = [];
+            if (!overlay) {
+                missing.push('overlay');
+            }
+            if (!modal) {
+                missing.push('modal');
+            }
+            if (!activeView) {
+                missing.push('activeView');
+            }
+            if (missing.length) {
+                return { ok: false, missing };
+            }
+            const overlayStyle = getComputedStyle(overlay);
+            const modalStyle = getComputedStyle(modal);
+            const viewStyle = getComputedStyle(activeView);
+            const toMetrics = (element, style) => ({
+                overflowX: style.overflowX,
+                overflowY: style.overflowY,
+                clientWidth: element.clientWidth,
+                scrollWidth: element.scrollWidth,
+                clientHeight: element.clientHeight,
+                scrollHeight: element.scrollHeight,
+            });
+            return {
+                ok: true,
+                overlay: toMetrics(overlay, overlayStyle),
+                modal: toMetrics(modal, modalStyle),
+                activeView: toMetrics(activeView, viewStyle),
+            };
+        }
+        """
+    )
+    assert metrics.get("ok"), {"missing": metrics.get("missing"), "metrics": metrics}
+    for name in ("overlay", "modal", "activeView"):
+        item = metrics[name]
+        assert item["overflowX"] != "scroll", {"element": name, "metric": "overflowX", "metrics": item}
+        assert item["overflowY"] != "scroll", {"element": name, "metric": "overflowY", "metrics": item}
+        assert item["scrollWidth"] <= item["clientWidth"] + 1, {
+            "element": name,
+            "metric": "scrollWidth",
+            "metrics": item,
+        }
+        assert item["scrollHeight"] <= item["clientHeight"] + 1, {
+            "element": name,
+            "metric": "scrollHeight",
+            "metrics": item,
+        }
 
 
 def _mock_selection_required_state(
@@ -126,6 +183,66 @@ def _mock_selection_required_state(
 
 
 @pytest.mark.frontend
+def test_storage_location_loading_view_has_no_scrollbars(
+    mock_page: Page,
+    running_server: str,
+):
+    page = mock_page
+    pending_status_routes = []
+
+    def hold_status(route):
+        pending_status_routes.append(route)
+
+    page.route("**/api/system/status", hold_status)
+    page.goto(f"{running_server}/", wait_until="domcontentloaded")
+
+    expect(page.get_by_role("heading", name="正在确认存储布局状态")).to_be_visible(timeout=15_000)
+    _expect_storage_migration_has_no_scrollbars(page)
+
+    assert pending_status_routes
+    pending_status_routes[0].fulfill(
+        status=200,
+        content_type="application/json",
+        body=json.dumps(
+            {
+                "ok": True,
+                "status": "ready",
+                "ready": True,
+                "storage": {
+                    "selection_required": False,
+                    "migration_pending": False,
+                    "recovery_required": False,
+                    "blocking_reason": "",
+                },
+            },
+            ensure_ascii=False,
+        ),
+    )
+    expect(page.locator("#storage-location-overlay")).to_be_hidden(timeout=10_000)
+
+
+@pytest.mark.frontend
+def test_storage_location_error_view_has_no_scrollbars(
+    mock_page: Page,
+    running_server: str,
+):
+    page = mock_page
+    page.route(
+        "**/api/system/status",
+        lambda route: route.fulfill(
+            status=503,
+            content_type="application/json",
+            body=json.dumps({"ok": False, "error": "temporary unavailable"}),
+        ),
+    )
+
+    page.goto(f"{running_server}/", wait_until="domcontentloaded")
+
+    expect(page.get_by_role("heading", name="暂时无法读取存储位置引导信息")).to_be_visible(timeout=15_000)
+    _expect_storage_migration_has_no_scrollbars(page)
+
+
+@pytest.mark.frontend
 def test_storage_location_overlay_blocks_page_config_until_current_path_confirmed(
     mock_page: Page,
     running_server: str,
@@ -152,18 +269,17 @@ def test_storage_location_overlay_blocks_page_config_until_current_path_confirme
     overlay = page.locator("#storage-location-overlay")
     intro_card = page.locator(".storage-location-intro-card")
     selection_title = page.get_by_role("heading", name="存储位置选择")
-    keep_current_button = page.get_by_role("button", name="保持当前路径")
 
     expect(overlay).to_be_visible(timeout=15_000)
     expect(page.get_by_role("heading", name="为什么要迁移？")).to_have_count(0)
     expect(intro_card).to_be_visible(timeout=15_000)
     expect(selection_title).to_be_hidden(timeout=5_000)
+    _expect_storage_migration_has_no_scrollbars(page)
 
     _arm_page_config_resolution_probe(page)
     assert _page_config_state(page) == "pending"
 
-    _continue_storage_intro(page)
-    keep_current_button.click()
+    page.get_by_role("button", name="使用专属小窝").click()
 
     expect(overlay).to_be_hidden(timeout=10_000)
     page.wait_for_function(
@@ -298,6 +414,7 @@ def test_storage_location_overlay_blocks_independent_startup_requests_while_barr
     expect(overlay).to_be_visible(timeout=15_000)
     expect(page.get_by_role("heading", name="为什么要迁移？")).to_have_count(0)
     expect(intro_card).to_be_visible(timeout=15_000)
+    _expect_storage_migration_has_no_scrollbars(page)
 
     page.wait_for_timeout(800)
     assert _page_config_state(page) == "pending"
@@ -429,6 +546,7 @@ def test_storage_location_overlay_keeps_page_config_blocked_on_restart_required_
     expect(overlay).to_be_visible(timeout=15_000)
     _continue_storage_intro(page)
     expect(selection_title).to_be_visible(timeout=15_000)
+    _expect_storage_migration_has_no_scrollbars(page)
 
     _arm_page_config_resolution_probe(page)
     assert _page_config_state(page) == "pending"
@@ -439,6 +557,7 @@ def test_storage_location_overlay_keeps_page_config_blocked_on_restart_required_
     submit_other_button.click()
 
     expect(preview_note).to_be_visible(timeout=10_000)
+    _expect_storage_migration_has_no_scrollbars(page)
     assert select_requests[-1]["selected_root"] == str(target_root.resolve())
     assert _page_config_state(page) == "pending"
 
@@ -678,6 +797,7 @@ def test_storage_location_restart_confirmation_enters_maintenance_page_and_recov
 
     expect(maintenance_title).to_be_visible(timeout=10_000)
     expect(maintenance_progress).to_be_visible(timeout=10_000)
+    _expect_storage_migration_has_no_scrollbars(page)
     assert int(maintenance_progress.get_attribute("aria-valuenow") or "0") >= 10
     assert "目标路径已记录" not in (maintenance_progress.get_attribute("aria-valuetext") or "")
     assert target_root not in page.locator("#storage-location-overlay").inner_text()

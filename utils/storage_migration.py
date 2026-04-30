@@ -16,6 +16,7 @@ from utils.storage_policy import (
     paths_equal,
     save_storage_policy,
 )
+from utils.storage_path_rewrite import rebase_runtime_bound_workshop_config_paths
 
 logger = get_module_logger(__name__)
 
@@ -170,6 +171,28 @@ def _copy_runtime_entry(source_path: Path, target_path: Path) -> None:
         return
 
     raise StorageMigrationError("source_entry_missing", f"迁移源条目不存在: {source_path}")
+
+
+def _rewrite_migrated_runtime_config_paths(*, source_root: Path, target_root: Path) -> None:
+    workshop_config_path = target_root / "config" / "workshop_config.json"
+    if not workshop_config_path.is_file():
+        return
+
+    try:
+        payload = read_json(workshop_config_path)
+    except Exception as exc:
+        logger.warning("Failed to read migrated workshop_config for path rewrite: %s", exc)
+        return
+
+    rewritten_payload = rebase_runtime_bound_workshop_config_paths(
+        payload,
+        source_root=source_root,
+        target_root=target_root,
+    )
+    if rewritten_payload is payload:
+        return
+
+    atomic_write_json(workshop_config_path, rewritten_payload, ensure_ascii=False, indent=2)
 
 
 def _snapshot_path(path: Path) -> dict[str, int | str]:
@@ -471,6 +494,9 @@ def run_pending_storage_migration(
                 target_entry = target_root / entry_name
                 source_snapshots[entry_name] = _snapshot_path(source_entry)
                 _copy_runtime_entry(source_entry, target_entry)
+            _rewrite_migrated_runtime_config_paths(source_root=source_root, target_root=target_root)
+            if "config" in source_snapshots:
+                source_snapshots["config"] = _snapshot_path(target_root / "config")
 
         payload = _persist_migration_payload(
             config_manager,

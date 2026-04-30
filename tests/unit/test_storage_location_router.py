@@ -1,4 +1,5 @@
 import asyncio
+import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -20,6 +21,7 @@ from utils.storage_migration import (
     save_storage_migration,
 )
 from utils.storage_policy import get_storage_policy_path, load_storage_policy, save_storage_policy
+from utils.file_utils import atomic_write_json
 
 
 class _DummyConfigManager:
@@ -135,10 +137,28 @@ def test_collect_warning_codes_matches_cloud_sync_path_segments_only(tmp_path):
         false_positive_target,
     )
 
+    dropbox_backup_target = tmp_path / "dropbox_backup_restore" / "N.E.K.O"
+    assert "sync_folder" not in storage_location_router_module._collect_warning_codes(
+        current_root,
+        dropbox_backup_target,
+    )
+
     onedrive_target = tmp_path / "OneDrive - Example" / "N.E.K.O"
     assert "sync_folder" in storage_location_router_module._collect_warning_codes(
         current_root,
         onedrive_target,
+    )
+
+    dropbox_target = tmp_path / "Dropbox (Personal)" / "N.E.K.O"
+    assert "sync_folder" in storage_location_router_module._collect_warning_codes(
+        current_root,
+        dropbox_target,
+    )
+
+    google_drive_target = tmp_path / "Google Drive (Acme)" / "N.E.K.O"
+    assert "sync_folder" in storage_location_router_module._collect_warning_codes(
+        current_root,
+        google_drive_target,
     )
 
 
@@ -959,6 +979,43 @@ def test_storage_location_pick_directory_uses_windows_native_picker_first(tmp_pa
 
 
 @pytest.mark.unit
+def test_windows_powershell_directory_picker_uses_topmost_owner(tmp_path):
+    selected_root = str((tmp_path / "picked-win").resolve())
+
+    with patch.object(
+        storage_location_router_module,
+        "_resolve_executable_name",
+        return_value="powershell.exe",
+    ), patch.object(
+        storage_location_router_module.shutil,
+        "which",
+        return_value="powershell.exe",
+    ), patch.object(
+        storage_location_router_module.subprocess,
+        "run",
+        return_value=storage_location_router_module.subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=selected_root + "\n",
+            stderr="",
+        ),
+    ) as run_mock:
+        result = storage_location_router_module._pick_directory_via_powershell(
+            start_path=str(tmp_path)
+        )
+
+    assert result == selected_root
+    command = run_mock.call_args.args[0]
+    script = command[-1]
+    assert "Add-Type -AssemblyName System.Drawing" in script
+    assert "$owner.TopMost = $true" in script
+    assert "$owner.Activate()" in script
+    assert "$owner.BringToFront()" in script
+    assert "[System.Windows.Forms.Application]::DoEvents()" in script
+    assert "$result = $dialog.ShowDialog($owner)" in script
+
+
+@pytest.mark.unit
 def test_storage_location_pick_directory_falls_back_to_tkinter_when_linux_native_dialog_unavailable(tmp_path):
     with patch.object(storage_location_router_module.sys, "platform", "linux"):
         with patch.object(
@@ -1422,6 +1479,16 @@ def test_storage_location_status_exposes_completed_migration_notice(tmp_path):
 
     (source_root / "config").mkdir(parents=True, exist_ok=True)
     (source_root / "config" / "characters.json").write_text('{"current":"A"}', encoding="utf-8")
+    atomic_write_json(
+        source_root / "config" / "workshop_config.json",
+        {
+            "default_workshop_folder": str(source_root / "workshop"),
+            "user_workshop_folder": str(source_root / "workshop" / "cached"),
+            "user_mod_folder": str(tmp_path / "external-mods"),
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
 
     create_pending_storage_migration(
         config_manager,
@@ -1449,6 +1516,11 @@ def test_storage_location_status_exposes_completed_migration_notice(tmp_path):
     assert payload["completion_notice"]["target_root"] == str(target_root.resolve())
     assert payload["completion_notice"]["retained_root"] == str(source_root.resolve())
     assert payload["completion_notice"]["cleanup_available"] is True
+
+    migrated_workshop_config = json.loads((target_root / "config" / "workshop_config.json").read_text(encoding="utf-8"))
+    assert migrated_workshop_config["default_workshop_folder"] == str((target_root / "workshop").resolve())
+    assert migrated_workshop_config["user_workshop_folder"] == str((target_root / "workshop" / "cached").resolve())
+    assert migrated_workshop_config["user_mod_folder"] == str(tmp_path / "external-mods")
 
 
 @pytest.mark.unit

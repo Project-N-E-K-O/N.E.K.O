@@ -71,6 +71,13 @@ def get_character_reserved_fields() -> tuple[str, ...]:
 RESERVED_FIELD_SCHEMA = {
     "voice_id": str,
     "system_prompt": str,
+    "persona_override": {
+        "preset_id": str,
+        "selected_at": str,
+        "source": str,
+        "prompt_guidance": str,
+        "profile": dict,
+    },
     "character_origin": {
         "source": str,
         "source_id": str,
@@ -317,6 +324,13 @@ DEFAULT_MASTER_TEMPLATE = {
     "昵称": "哥哥",
 }
 
+# 默认 Live2D 模型名（不带后缀的目录/文件 stem）。
+# DEFAULT_LANLAN_TEMPLATE.live2d.model_path 与 main_routers/characters_router.py
+# 里"未设置 Live2D 模型时的回退"逻辑共享这个常量，避免两处漂移。新增/替换默认
+# 模型只需要改这一处。
+DEFAULT_LIVE2D_MODEL_NAME = "yui-origin"
+DEFAULT_LIVE2D_MODEL_PATH = f"{DEFAULT_LIVE2D_MODEL_NAME}/{DEFAULT_LIVE2D_MODEL_NAME}.model3.json"
+
 DEFAULT_LANLAN_TEMPLATE = {
     "test": {
         "性别": "女",
@@ -330,7 +344,7 @@ DEFAULT_LANLAN_TEMPLATE = {
                 "asset_source": "local",
                 "asset_source_id": "",
                 "live2d": {
-                    "model_path": "yui_default/yui_default.model3.json",
+                    "model_path": DEFAULT_LIVE2D_MODEL_PATH,
                 },
                 "vrm": {
                     "model_path": "",
@@ -1020,6 +1034,101 @@ TASK_ERROR_MAX_TOKENS = 350
 - 用途：_emit_task_result 的 error 档位。
 - 上游：异常 stack / API 错误响应。"""
 
+# ---- Agent: defensive char-caps (NOT token caps) ----
+# 下面这些是"防御性 char-cap"——在异常文本 / cancel reason / plugin reply
+# 流入下游字段（summary / detail / error_message / tracker.detail / 前端
+# notification）之前的硬截。
+#
+# 为什么是 char 而不是 token：
+# - LLM-facing 字段（summary / detail / error_message / tracker.detail）
+#   真正的 prompt budget 在 _emit_task_result 内部用 TASK_*_MAX_TOKENS
+#   二次截断；外层 char-cap 只是为了避免把 MB 级原始字符串直接喂给
+#   tiktoken（编码本身就很慢）。
+# - 前端 agent_notification 字段是 toast / 错误面板展示，不进 LLM；
+#   token 精度无业务意义。
+#
+# 常量值分组（按"是否进 LLM 上下文"切）：
+#   进上下文（防御性 char-cap，下游再走 token-cap）：
+#     - EXCEPTION_TEXT_MAX_CHARS         = 500  → summary 字段、_exc_text
+#                                                / cancel_msg 等共享变量
+#     - ERROR_MESSAGE_MAX_CHARS          = 300  → error_message 字段直接 cap
+#     - TASK_TRACKER_DETAIL_MAX_CHARS    = 300  → tracker.record_completed
+#                                                .detail 字段（inject 时进
+#                                                LLM 的 system 消息）
+#     - TASK_TRACKER_INJECT_DETAIL_MAX_CHARS = 300 → tracker.inject 渲染
+#                                                detail 写进 LLM prompt
+#                                                的最终一次 char-cap
+#   不进上下文（前端展示）：
+#     - USER_NOTIFICATION_REASON_MAX_CHARS = 200  → agent_notification.text
+#     - USER_NOTIFICATION_ERROR_MAX_CHARS  = 500  → agent_notification
+#                                                  .error_message
+
+EXCEPTION_TEXT_MAX_CHARS = 500
+"""LLM-facing summary 字段 / 共享异常变量的防御性 char-cap。
+- 用途：
+  1. summary=reply[:N] / summary=_exc_text 等直接对 summary 字段的 char-cap。
+  2. cancel_msg = str(e)[:N] / _exc_text = str(e)[:N] 这类"一份截断给
+     summary/detail/error_message 三个字段共用"的局部变量。
+- 为什么是 char：tracebacks / API 错误体可能高达 MB，先 char-cap 再让
+  _emit_task_result 内部用 TASK_SUMMARY_MAX_TOKENS / TASK_LARGE_DETAIL_
+  MAX_TOKENS / TASK_ERROR_MAX_TOKENS 做精确 token 截，省去对整个原始
+  字符串做 tiktoken 编码的开销。
+- 与 ERROR_MESSAGE_MAX_CHARS 的关系：单纯 error_message 字段直接 char-cap
+  统一走 300（更紧）；本常量是变量级 / summary 级，500 给 summary 留点
+  余量；当 cancel_msg / _exc_text 这类已经 500 的变量再赋给 error_message
+  时，沿用变量截断结果，不再做二次截。"""
+
+ERROR_MESSAGE_MAX_CHARS = 300
+"""LLM-facing error_message 字段直接 char-cap。
+- 用途：error_message=str(e)[:N] / error_message=str(nk_result.get("error"))[:N]
+  这类直接对 error_message 字段的 char-cap（没有走中间共享变量的那种）。
+- 为什么是 char：和 EXCEPTION_TEXT_MAX_CHARS 同样是给下游 _emit_task_result
+  内部 TASK_ERROR_MAX_TOKENS（350 token）做防御性预处理。
+- 为什么和 EXCEPTION_TEXT_MAX_CHARS 数值不同：error_message 字段下游 token
+  budget 比 summary 紧（350 vs 400），300 char 能避免给 token-cap 留无效
+  空间，同时与 TASK_TRACKER_*_MAX_CHARS 对齐。"""
+
+TASK_TRACKER_DETAIL_MAX_CHARS = 300
+"""AgentTaskTracker.record_completed 的 detail 字段 char-cap。
+- 用途：失败 / 取消路径上 detail=str(e)[:N] / detail=cancel_msg[:N] /
+  detail=reply[:N] 等给 tracker 的 detail 字段做硬截。
+- 为什么是 char：tracker.detail 看似只进内存日志，但 AgentTaskTracker.
+  inject() 会把整段记录拼成 system 消息塞进 task_executor 的下次决策
+  messages（agent_server.py 中的 _task_tracker.inject(messages, lanlan)），
+  所以这条字段实际上会进 LLM 上下文。三层防御链路：
+    1. 入站 char-cap = 本常量（300）
+    2. record_completed 内部 _tt(detail, TASK_DETAIL_MAX_TOKENS)（200 token）
+    3. inject 渲染时再 char-cap = TASK_TRACKER_INJECT_DETAIL_MAX_CHARS（300）
+- 注意：成功路径上 OpenFang 已用 _tt(_track_detail, TASK_DETAIL_MAX_TOKENS)
+  走 token-cap，那条路径不在本常量管辖范围。"""
+
+TASK_TRACKER_INJECT_DETAIL_MAX_CHARS = 300
+"""AgentTaskTracker.inject 渲染 detail 进 LLM system 消息时的最终 char-cap。
+- 用途：agent_server.AgentTaskTracker.inject 内部 _sanitize(detail, N) 在把
+  每条 record 的 detail 拼进 [AGENT TASK TRACKING …] system 消息前做的
+  最后一次 char-cap。
+- 为什么是 char：进 LLM prompt 前的硬上限——已经被入站 char-cap +
+  record_completed 内 token-cap 处理过；这里再 char-cap 是渲染时为了让
+  单行长度可控。"""
+
+USER_NOTIFICATION_REASON_MAX_CHARS = 200
+"""agent_notification.text 内嵌 reason 片段的 char-cap。
+- 用途：DirectTaskExecutor 评估失败时把 reason 拼进面向前端 toast 的
+  text 字段（"⚠️ Agent评估失败: {reason[:N]}"）。
+- 为什么是 char：toast 容量小、不进 LLM。"""
+
+USER_NOTIFICATION_ERROR_MAX_CHARS = 500
+"""agent_notification.error_message 字段 char-cap（前端展示，不进 LLM）。
+- 用途：main_server EventBus 在转发 agent_notification 给前端 WS 时对
+  error_message 做的硬截；agent_server 评估失败 / 后台异常时也按此
+  cap reason / str(e) 写进 agent_notification.error_message。
+- 为什么是 char：纯前端展示字段，不进 LLM；和 USER_NOTIFICATION_REASON_
+  MAX_CHARS 数值不同（错误详情比 toast 文本宽容）。
+- 注意：本常量服务的是"前端 agent_notification 通道"的 error_message，
+  和 LLM-facing 的 ERROR_MESSAGE_MAX_CHARS（300）不是一回事——前者直
+  接灌 WS 帧给浏览器，后者是 _emit_task_result 字段经 callback 进
+  LLM prompt。"""
+
 AGENT_TASK_TRACKER_MAX_RECORDS = 50
 """AgentTaskTracker 最多保留的任务执行记录数。
 - 用途：deque-like 结构 maxlen，供 analyzer 去重 / 上下文交错排序。
@@ -1191,10 +1300,27 @@ PROACTIVE_CHAT_HISTORY_MAX = 10
 - 用途：每个 lanlan 维护的最近主动搭话记录，用于 1h 内去重。
 - 上游：proactive 触发的搭话事件。"""
 
-PROACTIVE_TOPIC_HISTORY_MAX = 100
-"""_proactive_topic_history deque maxlen。
-- 用途：每个 lanlan 维护的最近话题去重队列。
-- 上游：proactive 选中的话题 key。"""
+PROACTIVE_SOURCE_HARD_SKIP_SECONDS = 5 * 3600
+"""主动搭话 source 衰减历史的硬窗口（p_skip=1.0）。
+- 用途：5h 内同一 URL 必跳，超过后按 kind 半衰期指数衰减。
+- 上游：system_router._should_skip_source。"""
+
+PROACTIVE_SOURCE_HALF_LIFE_BY_KIND: dict[str, float] = {
+    'web': 3 * 86400.0,
+    'image': 3 * 86400.0,
+    'music': 1 * 86400.0,
+}
+"""硬窗口外按 kind 各自的 p_skip 半衰期（秒）。
+- web/image：3d（新闻 / 表情包重复成本相对低，慢慢复活）
+- music：1d（曲库小，更频繁轮转）
+- 用途：system_router._half_life_for 查表。"""
+
+PROACTIVE_SOURCE_HALF_LIFE_DEFAULT = 3 * 86400.0
+"""未在 _BY_KIND 命中时的兜底半衰期。"""
+
+PROACTIVE_SOURCE_FORGET_P = 0.05
+"""p_skip 跌破此阈值即从衰减历史中遗忘（让文件体积自然有界）。
+- 当前参数下：music ≈ 4.5d 后遗忘，web/image ≈ 13d 后遗忘。"""
 
 EMOTION_ANALYSIS_MAX_TOKENS = 40
 """情感分析 LLM 的 max_completion_tokens。
@@ -1465,7 +1591,10 @@ __all__ = [
     'PROACTIVE_PHASE2_GENERATE_MAX_TOKENS',
     'PROACTIVE_PHASE1_UNIFIED_MAX_TOKENS',
     'PROACTIVE_CHAT_HISTORY_MAX',
-    'PROACTIVE_TOPIC_HISTORY_MAX',
+    'PROACTIVE_SOURCE_HARD_SKIP_SECONDS',
+    'PROACTIVE_SOURCE_HALF_LIFE_BY_KIND',
+    'PROACTIVE_SOURCE_HALF_LIFE_DEFAULT',
+    'PROACTIVE_SOURCE_FORGET_P',
     'EMOTION_ANALYSIS_MAX_TOKENS',
     'PLUGIN_USER_CONTEXT_MAX_ITEMS',
     'TRANSLATION_OUTPUT_MAX_TOKENS',
