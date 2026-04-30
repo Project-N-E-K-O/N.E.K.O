@@ -42,7 +42,8 @@
 
     function getCurrentAssistantName() {
         return sanitizeDisplayName(
-            (window.lanlan_config && window.lanlan_config.lanlan_name)
+            window.__NEKO_TUTORIAL_ASSISTANT_NAME_OVERRIDE__
+            || (window.lanlan_config && window.lanlan_config.lanlan_name)
             || window._currentCatgirl
             || window.currentCatgirl
         ) || 'Neko';
@@ -743,7 +744,10 @@
         if (!snapshot || !Array.isArray(snapshot.messages)) return;
         snapshot.messages.forEach(function (message) {
             if (!message || message.role !== 'assistant') return;
-            host.updateMessage(message.id, { avatarUrl: avatarUrl || undefined });
+            host.updateMessage(message.id, {
+                author: getCurrentAssistantName(),
+                avatarUrl: avatarUrl || undefined
+            });
         });
     }
 
@@ -769,6 +773,7 @@
     // 头像更新事件
     window.addEventListener('chat-avatar-preview-updated', refreshReactAssistantAvatars);
     window.addEventListener('chat-avatar-preview-cleared', refreshReactAssistantAvatars);
+    window.addEventListener('neko:tutorial-chat-identity-changed', refreshReactAssistantAvatars);
 
     // init() 的 chat-avatar-preview-updated 事件可能在本脚本或 reactChatWindowHost 就绪前触发，
     // 延迟到所有同步脚本加载完成后主动刷新一次

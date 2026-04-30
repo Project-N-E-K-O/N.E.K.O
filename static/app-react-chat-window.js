@@ -216,7 +216,8 @@
 
     function getCurrentAssistantName() {
         return sanitizeDisplayName(
-            (window.lanlan_config && window.lanlan_config.lanlan_name)
+            window.__NEKO_TUTORIAL_ASSISTANT_NAME_OVERRIDE__
+            || (window.lanlan_config && window.lanlan_config.lanlan_name)
             || window._currentCatgirl
             || window.currentCatgirl
         ) || 'Neko';

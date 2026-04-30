@@ -6578,6 +6578,7 @@
 
         getGuideAssistantName() {
             const candidates = [
+                window.__NEKO_TUTORIAL_ASSISTANT_NAME_OVERRIDE__,
                 window.lanlan_config && window.lanlan_config.lanlan_name,
                 window._currentCatgirl,
                 window.currentCatgirl
@@ -6594,6 +6595,13 @@
         }
 
         getGuideAssistantAvatarUrl() {
+            if (window.appChatAvatar && typeof window.appChatAvatar.getCurrentAvatarDataUrl === 'function') {
+                const avatarUrl = window.appChatAvatar.getCurrentAvatarDataUrl();
+                if (typeof avatarUrl === 'string' && avatarUrl.trim()) {
+                    return avatarUrl.trim();
+                }
+            }
+
             const host = window.reactChatWindowHost;
             if (!host || typeof host.getState !== 'function') {
                 return undefined;

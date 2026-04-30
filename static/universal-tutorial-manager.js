@@ -1054,6 +1054,14 @@ class UniversalTutorialManager {
             this._tutorialAvatarOverride.snapshotPayload = snapshotPayload;
 
             await this.reloadTutorialModel(currentName, tutorialModelPayload, { temporary: true });
+            await this.sleep(350);
+            const tutorialAvatar = await this.captureTutorialChatAvatarPreview();
+            this.applyTutorialChatIdentityOverride({
+                active: true,
+                displayName: 'YUI',
+                avatarDataUrl: tutorialAvatar && tutorialAvatar.dataUrl ? tutorialAvatar.dataUrl : '',
+                modelType: tutorialAvatar && tutorialAvatar.modelType ? tutorialAvatar.modelType : 'live2d'
+            });
             console.log('[Tutorial] 新手教程期间已临时切换到 yui_default 模型（未写入用户配置）:', tutorialModelPayload);
         })().catch((error) => {
             console.warn('[Tutorial] 临时切换 yui_default 模型失败:', error);
@@ -1083,6 +1091,7 @@ class UniversalTutorialManager {
         const snapshotPayload = override.snapshotPayload;
 
         try {
+            this.applyTutorialChatIdentityOverride({ active: false });
             if (!currentName) {
                 return;
             }
@@ -1095,6 +1104,71 @@ class UniversalTutorialManager {
                 try {
                     await window.showCurrentModel();
                 } catch (_) {}
+            }
+        }
+    }
+
+    async captureTutorialChatAvatarPreview() {
+        if (!window.avatarPortrait || typeof window.avatarPortrait.capture !== 'function') {
+            return null;
+        }
+
+        try {
+            return await window.avatarPortrait.capture({
+                width: 320,
+                height: 320,
+                padding: 0.035,
+                shape: 'rounded',
+                radius: 40,
+                background: 'rgba(255, 255, 255, 0.96)',
+                includeDataUrl: true,
+                includeSourceDataUrl: false
+            });
+        } catch (error) {
+            console.warn('[Tutorial] 截取新手教程 YUI 头像失败:', error);
+            return null;
+        }
+    }
+
+    applyTutorialChatIdentityOverride(detail) {
+        const payload = detail || {};
+        if (window.appInterpage && typeof window.appInterpage.applyTutorialChatIdentityOverride === 'function') {
+            window.appInterpage.applyTutorialChatIdentityOverride(payload);
+        } else if (payload.active) {
+            window.__NEKO_TUTORIAL_CHAT_IDENTITY_OVERRIDE__ = {
+                active: true,
+                displayName: payload.displayName || 'YUI',
+                avatarDataUrl: payload.avatarDataUrl || '',
+                modelType: payload.modelType || ''
+            };
+            window.__NEKO_TUTORIAL_ASSISTANT_NAME_OVERRIDE__ = payload.displayName || 'YUI';
+            if (window.appChatAvatar && typeof window.appChatAvatar.setTutorialAvatarOverride === 'function') {
+                window.appChatAvatar.setTutorialAvatarOverride(payload.avatarDataUrl || '', payload.modelType || '');
+            }
+        } else {
+            delete window.__NEKO_TUTORIAL_CHAT_IDENTITY_OVERRIDE__;
+            delete window.__NEKO_TUTORIAL_ASSISTANT_NAME_OVERRIDE__;
+            if (window.appChatAvatar && typeof window.appChatAvatar.clearTutorialAvatarOverride === 'function') {
+                window.appChatAvatar.clearTutorialAvatarOverride();
+            }
+            window.dispatchEvent(new CustomEvent('neko:tutorial-chat-identity-changed', {
+                detail: { active: false }
+            }));
+        }
+
+        const channel = window.appInterpage && window.appInterpage.nekoBroadcastChannel;
+        if (channel && typeof channel.postMessage === 'function') {
+            try {
+                channel.postMessage({
+                    action: 'tutorial_chat_identity_override',
+                    active: !!payload.active,
+                    displayName: payload.displayName || '',
+                    avatarDataUrl: payload.avatarDataUrl || '',
+                    modelType: payload.modelType || '',
+                    timestamp: Date.now()
+                });
+            } catch (error) {
+                console.warn('[Tutorial] 广播新手教程聊天身份覆盖失败:', error);
             }
         }
     }

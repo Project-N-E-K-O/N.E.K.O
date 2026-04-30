@@ -43,6 +43,44 @@
         return false;
     }
 
+    function applyTutorialChatIdentityOverride(payload) {
+        var detail = payload || {};
+        if (detail.active) {
+            window.__NEKO_TUTORIAL_CHAT_IDENTITY_OVERRIDE__ = {
+                active: true,
+                displayName: detail.displayName || 'YUI',
+                avatarDataUrl: detail.avatarDataUrl || '',
+                modelType: detail.modelType || ''
+            };
+            window.__NEKO_TUTORIAL_ASSISTANT_NAME_OVERRIDE__ = detail.displayName || 'YUI';
+            if (window.appChatAvatar && typeof window.appChatAvatar.setTutorialAvatarOverride === 'function') {
+                window.appChatAvatar.setTutorialAvatarOverride(detail.avatarDataUrl || '', detail.modelType || '');
+            } else {
+                window.__nekoPendingTutorialChatIdentity = {
+                    active: true,
+                    avatarDataUrl: detail.avatarDataUrl || '',
+                    modelType: detail.modelType || ''
+                };
+            }
+        } else {
+            delete window.__NEKO_TUTORIAL_CHAT_IDENTITY_OVERRIDE__;
+            delete window.__NEKO_TUTORIAL_ASSISTANT_NAME_OVERRIDE__;
+            if (window.appChatAvatar && typeof window.appChatAvatar.clearTutorialAvatarOverride === 'function') {
+                window.appChatAvatar.clearTutorialAvatarOverride();
+            } else {
+                window.__nekoPendingTutorialChatIdentity = { active: false };
+            }
+        }
+        window.dispatchEvent(new CustomEvent('neko:tutorial-chat-identity-changed', {
+            detail: {
+                active: !!detail.active,
+                displayName: detail.displayName || '',
+                avatarDataUrl: detail.avatarDataUrl || '',
+                modelType: detail.modelType || ''
+            }
+        }));
+    }
+
     // =====================================================================
     // Overlay cleanup helpers
     // =====================================================================
@@ -1450,6 +1488,20 @@
                         }
                         break;
                     }
+                    case 'tutorial_chat_identity_override': {
+                        applyTutorialChatIdentityOverride(event.data);
+                        break;
+                    }
+                    case 'request_tutorial_chat_identity': {
+                        if (window.location.pathname === '/chat') break;
+                        if (window.__NEKO_TUTORIAL_CHAT_IDENTITY_OVERRIDE__ && nekoBroadcastChannel) {
+                            nekoBroadcastChannel.postMessage(Object.assign({
+                                action: 'tutorial_chat_identity_override',
+                                timestamp: Date.now()
+                            }, window.__NEKO_TUTORIAL_CHAT_IDENTITY_OVERRIDE__));
+                        }
+                        break;
+                    }
                     case 'request_avatar': {
                         // 仅 Pet 主窗口（/index）应答，Chat 窗口不回传
                         if (window.location.pathname === '/chat') break;
@@ -1762,7 +1814,8 @@
     // Pet 窗口（/index）捕获头像后，通过 BC 广播给 Chat 窗口
     window.addEventListener('chat-avatar-preview-updated', function (evt) {
         // source === 'ipc' 表示此事件来自 BC 注入（setExternalAvatar），不回传避免循环
-        if (evt.detail && evt.detail.source === 'ipc') return;
+        var eventSource = evt.detail && evt.detail.source;
+        if (eventSource === 'ipc' || eventSource === 'tutorial_override' || eventSource === 'tutorial_override_clear') return;
         if (!nekoBroadcastChannel) return;
         var dataUrl = evt.detail && evt.detail.dataUrl;
         if (!dataUrl) return;
@@ -1786,6 +1839,10 @@
             });
         };
         postAvatarRequest();
+        nekoBroadcastChannel.postMessage({
+            action: 'request_tutorial_chat_identity',
+            timestamp: Date.now()
+        });
         nekoBroadcastChannel.postMessage({
             action: 'yui_guide_chat_ready',
             timestamp: Date.now()
@@ -1851,6 +1908,7 @@
     mod.cleanupVRMOverlayUI = cleanupVRMOverlayUI;
     mod.cleanupMMDOverlayUI = cleanupMMDOverlayUI;
     mod.syncVoiceChatComposerHidden = syncVoiceChatComposerHidden;
+    mod.applyTutorialChatIdentityOverride = applyTutorialChatIdentityOverride;
 
     // Backward-compatible window globals
     window.handleModelReload = handleModelReload;

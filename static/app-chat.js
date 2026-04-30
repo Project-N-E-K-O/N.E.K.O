@@ -49,7 +49,8 @@
 
     function getCurrentAssistantName() {
         return sanitizeDisplayName(
-            (window.lanlan_config && window.lanlan_config.lanlan_name)
+            window.__NEKO_TUTORIAL_ASSISTANT_NAME_OVERRIDE__
+            || (window.lanlan_config && window.lanlan_config.lanlan_name)
             || window._currentCatgirl
             || window.currentCatgirl
         ) || 'Neko';
@@ -295,6 +296,7 @@
         snapshot.messages.forEach(function (message) {
             if (!message || message.role !== 'assistant') return;
             host.updateMessage(message.id, {
+                author: getCurrentAssistantName(),
                 avatarUrl: avatarUrl || undefined
             });
         });
@@ -1070,6 +1072,7 @@
 
     window.addEventListener('chat-avatar-preview-updated', refreshReactAssistantAvatars);
     window.addEventListener('chat-avatar-preview-cleared', refreshReactAssistantAvatars);
+    window.addEventListener('neko:tutorial-chat-identity-changed', refreshReactAssistantAvatars);
 
     // 音乐搜索纪元：向后兼容全局变量（原来定义在 app.js IIFE 外部的 currentMusicSearchEpoch）
     if (typeof window._musicSearchEpoch === 'undefined') {
