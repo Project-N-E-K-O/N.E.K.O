@@ -79,8 +79,12 @@ Live2DManager.prototype.removeModel = async function(options = {}) {
     this.motionBaselineParameters = {};
     this._activeExpressionParamIds = null;
     this._activeMotionParamIds = null;
-    this._motionParameterTrackGeneration = 0;
-    this._motionTimerGeneration = 0;
+    this._motionParameterTrackGeneration = (this._motionParameterTrackGeneration || 0) + 1;
+    if (typeof this._nextMotionTimerGeneration === 'function') {
+        this._nextMotionTimerGeneration();
+    } else {
+        this._motionTimerGeneration = (this._motionTimerGeneration || 0) + 1;
+    }
 
     if (activeModel) {
         try {
