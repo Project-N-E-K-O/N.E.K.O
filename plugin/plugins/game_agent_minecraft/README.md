@@ -29,8 +29,13 @@ agent 端启动方式由你自己决定（一般是 `node minecraft-agent/index.
 
 1. 启动 Minecraft agent server，记下监听端口（默认 `48909`）
 2. 在 N.E.K.O 插件管理界面启用 `game_agent_minecraft` 插件
-3. 如需修改 agent 地址或超时，编辑 `plugin.toml` 的 `[game_agent]` 节，然后调
-   `game_agent_reload_config` entry 即可热更新（无需重启 WebSocket 连接）
+3. 如需修改配置，编辑 `plugin.toml` 的 `[game_agent]` 节后调
+   `game_agent_reload_config` entry 应用：
+   - **非 transport 配置**（`task_timeout_seconds`、`system_prompt_interval_seconds`、
+     `screenshot_cache_size`、各种开关等）—— 当场生效，**不重连** WebSocket。
+   - **transport 配置**（`ws_url`、`reconnect_interval_seconds`）—— 会触发
+     WebSocket 客户端 stop+start 切换到新地址；entry 返回值的
+     `transport_restarted` 标志会反映这一点。
 
 启用后无需任何 main_logic 代码改动 —— `minecraft_task` 工具会通过 SDK 的
 `@llm_tool` 装饰器自动注册到 `main_server` 的统一工具表。
