@@ -1064,7 +1064,7 @@ async def _periodic_idle_maintenance_loop():
     replay / migration 任务先消化），之后每 IDLE_CHECK_INTERVAL 秒轮询一次。
 
     每轮为每个角色依次执行：
-    1. 历史记录压缩 — 有需要就跑（history > max_history_length）
+    1. 历史记录压缩 — 有需要就跑（history > compress_threshold）
     1b. Fact 向量去重 — 有需要就跑（vectors 启用且 pending dedup 队列非空）
     2. Persona 矛盾审视 — 有需要就跑（pending corrections 非空）；不受 recent_memory_auto_review
        开关或 REVIEW_SKIP_HISTORY_LEN 影响：persona corrections 不读 recent history，是独立的
