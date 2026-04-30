@@ -1356,13 +1356,19 @@ export default function App({
   const emojiToolMenuNode = (
     <div className="composer-tool-menu" ref={toolMenuRef}>
       <button
-        className={`composer-tool-btn composer-emoji-btn${toolMenuOpen ? ' is-active' : ''}`}
+        className={`composer-tool-btn composer-emoji-btn${toolMenuOpen || activeToolItem ? ' is-active' : ''}`}
         type="button"
         aria-label={selectedEmojiButtonAriaLabel}
         title={selectedEmojiButtonAriaLabel}
         aria-controls={toolMenuOpen ? 'composer-tool-popover' : undefined}
         aria-expanded={toolMenuOpen}
-        onClick={() => setToolMenuOpen(open => !open)}
+        onClick={() => {
+          if (activeToolItem) {
+            clearActiveCursorToolSelection();
+            return;
+          }
+          setToolMenuOpen(open => !open);
+        }}
       >
         <img
           src={activeToolMenuVisual?.imagePath || '/static/icons/emoji_icon.png'}
