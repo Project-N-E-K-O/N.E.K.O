@@ -392,6 +392,37 @@ async def test_stop_unblocks_pending_handler():
     assert "shutting down" in out["reason"].lower()
 
 
+@pytest.mark.asyncio
+async def test_stop_preserves_stale_frame_debt():
+    """When stop() interrupts a pending task, it must bump the drop
+    counter (not zero it). reload_config_live = stop+start; if the
+    same agent buffers and redelivers the abandoned task's
+    task_finished after reconnect, the counter ensures it doesn't
+    bind to whatever the LLM picks next. Likewise, prior debt from
+    earlier timeouts must survive stop() instead of being zeroed."""
+    service, _ = _make_service()
+    service.configure({"task_timeout_seconds": 30.0})
+    service._client = _FakeClient()
+
+    # Pre-populate a debt of 2 from earlier abandons.
+    service._stale_task_finishes_to_drop = 2
+
+    runner = asyncio.create_task(
+        service.execute_minecraft_task(task="will be stopped")
+    )
+    for _ in range(50):
+        if service._pending is not None:
+            break
+        await asyncio.sleep(0.01)
+
+    await service.stop()
+    out = await asyncio.wait_for(runner, timeout=2.0)
+    assert out["status"] == "interrupted"
+    # Counter should be 3: prior debt (2) preserved + this stop's
+    # abandoned task (+1).
+    assert service._stale_task_finishes_to_drop == 3
+
+
 # ---------------------------------------------------------------------------
 # Stale task_finished filtering — protocol has no task IDs, so a delayed
 # completion frame for an abandoned task must not be misattributed to the

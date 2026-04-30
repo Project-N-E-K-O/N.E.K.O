@@ -265,9 +265,17 @@ class GameAgentService:
                 }
                 self._pending.event.set()
                 self._pending = None
-            # Drop any in-flight ``task_finished`` frames that arrive
-            # after we've torn down — they would have nowhere to go.
-            self._stale_task_finishes_to_drop = 0
+                # We abandoned this task without an ack — bump the
+                # drop counter so a delayed ``task_finished`` (which
+                # might still hit us if ``stop()`` is part of a
+                # ``reload_config_live`` cycle and the same agent
+                # buffers and redelivers the frame after reconnect)
+                # doesn't bind to whatever new task the LLM picks
+                # next.
+                self._stale_task_finishes_to_drop += 1
+            # Note: do NOT zero the counter — preserve any existing
+            # debt from prior timeouts/overwrites that may still have
+            # frames in flight from before this stop().
 
         if self._system_loop_task is not None:
             self._system_loop_task.cancel()
