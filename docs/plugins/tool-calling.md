@@ -57,7 +57,7 @@ There are two integration layers, stacked:
 
 ### Layer 1 — Raw HTTP (universal)
 
-```
+```text
 ┌──────────────────┐  HTTP /api/tools/register   ┌──────────────────────┐
 │  Plugin (process)│ ───────────────────────────▶│  Main Server         │
 │                  │                             │  - ToolRegistry      │
@@ -80,7 +80,7 @@ or registering tools from a non-NekoPluginBase context.
 
 ### Layer 2 — `@llm_tool` SDK helper (recommended for plugins)
 
-```
+```text
                  (1) IPC: LLM_TOOL_REGISTER
                           ┌──────────────────────────────┐
                           ▼                              │
@@ -436,8 +436,12 @@ plugin doesn't crash — only that one tool call fails.
   reloading the plugin once `main_server` is healthy.
 - On plugin stop, `lifecycle_service.stop_plugin` calls
   `plugin/server/messaging/llm_tool_registry.py::clear_plugin_tools`,
-  which POSTs `/api/tools/clear?source=plugin:{plugin_id}` so every
-  tool the plugin registered is removed atomically.
+  which POSTs `/api/tools/clear` with body
+  `{"source": "plugin:{plugin_id}", "role": null}` so every tool the
+  plugin registered is dropped in one round-trip. The cleanup is
+  best-effort: if `main_server` is unreachable at that moment, we log
+  and continue — process restart or a manual `clear` call will
+  reconcile.
 
 ### Where the code lives
 

@@ -33,7 +33,7 @@ from __future__ import annotations
 import asyncio
 import os
 from collections import defaultdict
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional
 
 import httpx
 
@@ -46,10 +46,11 @@ logger = get_logger("server.messaging.llm_tool_registry")
 # Process-global state
 # ---------------------------------------------------------------------------
 
-# plugin_id -> set of tool names this plugin currently owns on main_server.
+# plugin_id -> {tool_name -> {"timeout_seconds": float}}.
 # Used to wipe everything on plugin stop without iterating main_server's
-# registry. Also lets us detect duplicate registrations cheaply.
-_plugin_tools: Dict[str, Set[str]] = defaultdict(set)
+# registry, to detect duplicate registrations, and to look up the
+# per-tool timeout in the callback route (so we don't hard-code 30s).
+_plugin_tools: Dict[str, Dict[str, Dict[str, Any]]] = defaultdict(dict)
 _lock = asyncio.Lock()
 
 # Lazy-initialised httpx client. We share one client across registrations
@@ -191,7 +192,7 @@ async def register_remote_tool(
 
     body = resp.json()
     async with _lock:
-        _plugin_tools[plugin_id].add(name)
+        _plugin_tools[plugin_id][name] = {"timeout_seconds": float(timeout_seconds)}
     logger.info(
         "Registered LLM tool '{}' for plugin '{}' (callback={})",
         name, plugin_id, callback_url,
@@ -211,10 +212,10 @@ async def unregister_remote_tool(
     re-clear it on shutdown if the HTTP call partially succeeds.
     """
     async with _lock:
-        names = _plugin_tools.get(plugin_id)
-        if names is not None:
-            names.discard(name)
-            if not names:
+        owned = _plugin_tools.get(plugin_id)
+        if owned is not None:
+            owned.pop(name, None)
+            if not owned:
                 _plugin_tools.pop(plugin_id, None)
 
     payload = {"name": name, "role": role}
@@ -250,7 +251,7 @@ async def clear_plugin_tools(plugin_id: str, *, role: Optional[str] = None) -> D
     failure here would mask the real shutdown reason).
     """
     async with _lock:
-        owned = set(_plugin_tools.pop(plugin_id, set()))
+        owned = list(_plugin_tools.pop(plugin_id, {}).keys())
 
     payload = {"source": _source_tag(plugin_id), "role": role}
     client = _get_http_client()
@@ -293,8 +294,23 @@ def get_plugin_tool_names(plugin_id: str) -> List[str]:
     ``main_server``'s actual registry — the two can diverge if
     ``main_server`` was restarted without restarting the plugin server.
     """
-    return sorted(_plugin_tools.get(plugin_id, set()))
+    return sorted(_plugin_tools.get(plugin_id, {}).keys())
 
 
 def has_plugin_tool(plugin_id: str, name: str) -> bool:
-    return name in _plugin_tools.get(plugin_id, set())
+    return name in _plugin_tools.get(plugin_id, {})
+
+
+def get_plugin_tool_timeout(plugin_id: str, name: str) -> Optional[float]:
+    """Return the per-tool ``timeout_seconds`` recorded at registration
+    time, or ``None`` if the tool isn't tracked. The callback route uses
+    this to hand the right timeout to ``host.trigger`` instead of
+    hard-coding a default — without it, a 90-second tool would be cut
+    off at 30s on the plugin side while ``main_server`` was still
+    waiting up to 90s for the HTTP response.
+    """
+    entry = _plugin_tools.get(plugin_id, {}).get(name)
+    if entry is None:
+        return None
+    timeout = entry.get("timeout_seconds")
+    return float(timeout) if isinstance(timeout, (int, float)) else None

@@ -63,7 +63,7 @@ declaration.
 
 ## Architecture
 
-```
+```text
                  (1) IPC: LLM_TOOL_REGISTER
                           ┌──────────────────────────────┐
                           ▼                              │
@@ -112,8 +112,12 @@ declaration.
 4. **Cleanup on plugin stop.**
    `lifecycle_service.stop_plugin` calls
    `plugin/server/messaging/llm_tool_registry.py::clear_plugin_tools`
-   which POSTs `/api/tools/clear?source=plugin:{plugin_id}` so every
-   tool registered by the plugin is removed atomically.
+   which POSTs `/api/tools/clear` with body
+   `{"source": "plugin:{plugin_id}", "role": null}` so every tool
+   registered by the plugin is dropped in one round-trip. The cleanup
+   is best-effort — a transient `main_server` outage at stop time is
+   logged and swallowed; a process restart or manual `clear` call
+   will reconcile.
 
 ## API surface
 

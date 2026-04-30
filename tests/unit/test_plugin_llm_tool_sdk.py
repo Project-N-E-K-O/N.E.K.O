@@ -311,7 +311,7 @@ async def test_callback_route_returns_plugin_not_running(monkeypatch):
 
     # Pretend the plugin registered "x" but the host died.
     async with llm_tool_registry._lock:
-        llm_tool_registry._plugin_tools["dead_plugin"].add("x")
+        llm_tool_registry._plugin_tools["dead_plugin"]["x"] = {"timeout_seconds": 30.0}
 
     try:
         body = {"name": "x", "arguments": {}, "call_id": "c1", "raw_arguments": "{}"}
@@ -330,7 +330,7 @@ async def test_callback_route_invokes_host_trigger():
     from plugin.server.routes.llm_tools import llm_tool_callback
 
     async with llm_tool_registry._lock:
-        llm_tool_registry._plugin_tools["live_plugin"].add("ping")
+        llm_tool_registry._plugin_tools["live_plugin"]["ping"] = {"timeout_seconds": 90.0}
 
     captured: dict = {}
 
@@ -352,7 +352,46 @@ async def test_callback_route_invokes_host_trigger():
 
     assert captured["entry_id"] == "__llm_tool__ping"
     assert captured["args"] == {"foo": "bar"}
+    # The route should hand the per-tool timeout to ``host.trigger`` —
+    # not the hard-coded 30s default — so a long-running tool doesn't
+    # get cut off on the plugin side while main_server is still
+    # waiting for the HTTP response.
+    assert captured["timeout"] == 90.0
     assert out == {"output": {"pong": True}, "is_error": False}
+
+
+@pytest.mark.asyncio
+async def test_callback_route_falls_back_to_default_timeout_when_unknown():
+    """If a desync leaves the registry in a weird state where
+    ``has_plugin_tool`` returns True but the timeout is missing, the
+    route falls back to the 30s default rather than 5xx-ing."""
+    from plugin.core.state import state
+    from plugin.server.messaging import llm_tool_registry
+    from plugin.server.routes.llm_tools import _DEFAULT_TOOL_TIMEOUT_SECONDS, llm_tool_callback
+
+    async with llm_tool_registry._lock:
+        # Empty inner dict — present but no timeout recorded.
+        llm_tool_registry._plugin_tools["p"]["t"] = {}
+
+    captured: dict = {}
+
+    class FakeHost:
+        async def trigger(self, entry_id, args, timeout):
+            captured["timeout"] = timeout
+            return {}
+
+    state.plugin_hosts["p"] = FakeHost()
+    try:
+        await llm_tool_callback(
+            plugin_id="p", tool_name="t",
+            body={"name": "t", "arguments": {}, "call_id": "c", "raw_arguments": "{}"},
+        )
+    finally:
+        state.plugin_hosts.pop("p", None)
+        async with llm_tool_registry._lock:
+            llm_tool_registry._plugin_tools.pop("p", None)
+
+    assert captured["timeout"] == _DEFAULT_TOOL_TIMEOUT_SECONDS
 
 
 @pytest.mark.asyncio
@@ -364,7 +403,7 @@ async def test_callback_route_passes_through_error_shape():
     from plugin.server.routes.llm_tools import llm_tool_callback
 
     async with llm_tool_registry._lock:
-        llm_tool_registry._plugin_tools["p"].add("t")
+        llm_tool_registry._plugin_tools["p"]["t"] = {"timeout_seconds": 30.0}
 
     class FakeHost:
         async def trigger(self, entry_id, args, timeout):
@@ -391,7 +430,7 @@ async def test_callback_route_handles_timeout():
     from plugin.server.routes.llm_tools import llm_tool_callback
 
     async with llm_tool_registry._lock:
-        llm_tool_registry._plugin_tools["p"].add("slow")
+        llm_tool_registry._plugin_tools["p"]["slow"] = {"timeout_seconds": 30.0}
 
     class FakeHost:
         async def trigger(self, entry_id, args, timeout):

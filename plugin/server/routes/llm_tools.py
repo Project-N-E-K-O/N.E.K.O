@@ -36,15 +36,20 @@ from fastapi import APIRouter, Body, HTTPException
 
 from plugin.core.state import state
 from plugin.logging_config import get_logger
-from plugin.server.messaging.llm_tool_registry import has_plugin_tool
+from plugin.server.messaging.llm_tool_registry import (
+    get_plugin_tool_timeout,
+    has_plugin_tool,
+)
 
 logger = get_logger("server.routes.llm_tools")
 
 router = APIRouter(prefix="/api/llm-tools", tags=["llm-tools"])
 
-# Default per-call upper bound when the registration didn't carry one
-# all the way through. Mirrors ``ToolRegisterRequest.timeout_seconds``
-# default in ``main_routers/tool_router.py``.
+# Fallback when the per-tool timeout isn't tracked (shouldn't happen
+# normally because ``has_plugin_tool`` guards entry, but kept as a safety
+# net so a registry desync doesn't 5xx the dispatcher). Mirrors
+# ``ToolRegisterRequest.timeout_seconds`` default in
+# ``main_routers/tool_router.py``.
 _DEFAULT_TOOL_TIMEOUT_SECONDS = 30.0
 
 
@@ -126,7 +131,21 @@ async def llm_tool_callback(
         raise HTTPException(status_code=500, detail="plugin host has no trigger() method")
 
     entry_id = _entry_id_for_tool(tool_name)
-    timeout_seconds = _DEFAULT_TOOL_TIMEOUT_SECONDS
+    # Use the per-tool timeout that was recorded at registration time
+    # so a long-running tool isn't cut off at 30s on the plugin side
+    # while ``main_server`` is still waiting for the HTTP response.
+    # ``main_server`` itself uses the same value as its httpx timeout
+    # (see ``_remote_dispatch``), so the two sides line up — small
+    # buffer not subtracted because a plugin-side timeout already
+    # produces a clean error JSON before main_server's HTTP timeout
+    # fires (the await on ``trigger`` raises ``TimeoutError`` which we
+    # convert into ``is_error: True`` below).
+    registered_timeout = get_plugin_tool_timeout(plugin_id, tool_name)
+    timeout_seconds = (
+        float(registered_timeout)
+        if registered_timeout is not None and registered_timeout > 0
+        else _DEFAULT_TOOL_TIMEOUT_SECONDS
+    )
 
     # The plugin handler is invoked with ``arguments`` as kwargs; the
     # plugin SDK's adapter wraps the registered handler so it receives
