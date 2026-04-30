@@ -143,6 +143,8 @@ class StrategyParser:
             if include_section_body:
                 lines.append(f"### {title}")
                 lines.extend(section.get("body_lines", []))
+            if not include_section_body:
+                continue
             for detail in section.get("details", []):
                 detail_title = str(detail.get("title") or "")
                 if any(token in detail_title for token in supported_detail_titles):

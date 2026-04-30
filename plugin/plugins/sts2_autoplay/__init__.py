@@ -211,7 +211,11 @@ class STS2AutoplayPlugin(NekoPluginBase):
 
     @plugin_entry(id="sts2_get_history", name="获取尖塔历史", description="获取最近尖塔动作和状态历史。仅在用户明确要求查看尖塔历史时调用。", llm_result_fields=["summary"], input_schema={"type": "object", "properties": {"limit": {"type": "integer", "default": _DEFAULT_HISTORY_LIMIT}}}, metadata={"agent_auto": False})
     async def sts2_get_history(self, limit: int = _DEFAULT_HISTORY_LIMIT, **_: Any):
-        safe_limit = max(1, min(int(limit), _MAX_HISTORY_LIMIT))
+        try:
+            raw_limit = int(limit)
+        except (TypeError, ValueError):
+            raw_limit = _DEFAULT_HISTORY_LIMIT
+        safe_limit = max(1, min(raw_limit, _MAX_HISTORY_LIMIT))
         return await self._run_entry(lambda: self._service.get_history(limit=safe_limit))
 
     @plugin_entry(id="sts2_send_neko_guidance", name="发送Neko指导", description="向后台 autoplay 发送猫娘的软指导，会在下一轮决策时被 LLM 参考。", llm_result_fields=["summary"], input_schema={"type": "object", "properties": {"content": {"type": "string", "description": "猫娘的指导内容，自然语言"}, "step": {"type": "integer", "description": "对应的步数（可选）"}, "type": {"type": "string", "default": _DEFAULT_GUIDANCE_TYPE}}, "required": ["content"]})

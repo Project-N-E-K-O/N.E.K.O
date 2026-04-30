@@ -19,7 +19,7 @@ class NekoReportingMixin:
         snapshot = context.get("snapshot") if isinstance(context.get("snapshot"), dict) else {}
         raw_state = snapshot.get("raw_state") if isinstance(snapshot.get("raw_state"), dict) else {}
         hp_raw = {k: raw_state.get(k) for k in raw_state if "hp" in k.lower() or "health" in k.lower()}
-        self.logger.info(f"[sts2_autoplay][hp-debug] raw_state hp fields: {hp_raw}")
+        self.logger.debug(f"[sts2_autoplay][hp-debug] raw_state hp fields: {hp_raw}")
         combat = raw_state.get("combat") if isinstance(raw_state.get("combat"), dict) else {}
         player = combat.get("player") if isinstance(combat.get("player"), dict) else {}
         run = raw_state.get("run") if isinstance(raw_state.get("run"), dict) else {}
@@ -130,7 +130,7 @@ class NekoReportingMixin:
             result_snapshot = result_context.get("snapshot")
         report = self._report_full_step(
             {"snapshot": result_snapshot if isinstance(result_snapshot, dict) else self._snapshot},
-            decision_result=step_result.get("reasoning") if isinstance(step_result.get("reasoning"), dict) else self._last_llm_reasoning,
+            decision_result=step_result.get("reasoning") if isinstance(step_result.get("reasoning"), dict) else None,
         )
         hand_names = [c.get("name", "?") for c in report.get("hand", []) if isinstance(c, dict)]
         enemy_summaries = []

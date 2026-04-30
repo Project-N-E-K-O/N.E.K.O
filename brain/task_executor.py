@@ -1036,8 +1036,6 @@ class DirectTaskExecutor:
             for entry in visible_entries:
                 if entry.get("id") == preferred_entry:
                     return plugin, entry
-            if visible_entries:
-                return plugin, visible_entries[0]
             return plugin, None
         return None, None
 

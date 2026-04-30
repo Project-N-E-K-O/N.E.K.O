@@ -500,8 +500,8 @@ class NekoCommandingMixin:
     def _build_neko_review_card_praise(self, snapshots: list[Dict[str, Any]], *, enemy_hp_delta: int, incoming_attack: int, block: int) -> str:
         card_name = ""
         for snapshot in snapshots:
-            hand_names = snapshot.get("hand_names") if isinstance(snapshot.get("hand_names"), list) else []
-            for name in hand_names:
+            played_cards = snapshot.get("played_cards") if isinstance(snapshot.get("played_cards"), list) else []
+            for name in played_cards:
                 normalized = str(name or "").strip()
                 if normalized:
                     card_name = normalized
