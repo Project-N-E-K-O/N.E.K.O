@@ -428,24 +428,25 @@ class PluginContextProtocol(Protocol):
     # ==================== 消息推送 ====================
     def push_message(
         self,
-        source: str = "",
-        message_type: Optional[str] = None,
-        description: Optional[str] = None,
-        priority: int = 0,
-        content: Optional[str] = None,
-        binary_data: Optional[bytes] = None,
-        binary_url: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-        unsafe: bool = False,
-        fast_mode: bool = False,
-        target_lanlan: Optional[str] = None,
         *,
         # v2 schema (preferred)：见 plugin/sdk/shared/core/push_message_schema.py
         visibility: Optional[list] = None,
         ai_behavior: Optional[str] = None,
         parts: Optional[list] = None,
-        # v1 legacy (deprecated, removed in v0.9):
+        # 通用：
+        source: str = "",
+        target_lanlan: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        priority: int = 0,
+        # v1 legacy (deprecated, removed in v0.9)：
+        message_type: Optional[str] = None,
+        description: Optional[str] = None,
+        content: Optional[str] = None,
+        binary_data: Optional[bytes] = None,
+        binary_url: Optional[str] = None,
         mime: Optional[str] = None,
+        unsafe: bool = False,
+        fast_mode: bool = False,
         delivery: Any = None,
         reply: Optional[bool] = None,
     ) -> None:

@@ -852,13 +852,42 @@ class PluginContext:
         )
         legacy_content = content if isinstance(content, str) else _synthesize_legacy_content(canonical.get("parts") or [])
         legacy_binary_url: Optional[str] = binary_url if isinstance(binary_url, str) else None
-        if legacy_binary_url is None:
+        legacy_binary_data: Optional[bytes] = bytes(binary_data) if isinstance(binary_data, (bytes, bytearray)) else None
+        legacy_mime: Optional[str] = mime if isinstance(mime, str) else None
+        if legacy_binary_url is None or legacy_binary_data is None or legacy_mime is None:
             for part in canonical.get("parts") or []:
-                url_obj = part.get("url") if isinstance(part, dict) else None
-                if isinstance(url_obj, str) and url_obj:
-                    legacy_binary_url = url_obj
+                if not isinstance(part, dict):
+                    continue
+                if part.get("type") not in ("image", "audio", "video"):
+                    continue
+                if legacy_binary_url is None:
+                    url_obj = part.get("url")
+                    if isinstance(url_obj, str) and url_obj:
+                        legacy_binary_url = url_obj
+                if legacy_binary_data is None:
+                    b64_obj = part.get("binary_base64")
+                    if isinstance(b64_obj, str) and b64_obj:
+                        try:
+                            legacy_binary_data = base64.b64decode(b64_obj, validate=False)
+                        except Exception:
+                            legacy_binary_data = None
+                if legacy_mime is None:
+                    mime_obj = part.get("mime")
+                    if isinstance(mime_obj, str) and mime_obj:
+                        legacy_mime = mime_obj
+                if legacy_binary_url is not None and legacy_binary_data is not None and legacy_mime is not None:
                     break
         legacy_description = description if isinstance(description, str) else ""
+        # Resolve the legacy delivery/reply pair from the v2 axes so v1
+        # consumers that branch on these fields still see a coherent value
+        # during the deprecation window.
+        if canonical["ai_behavior"] == "respond":
+            legacy_delivery = "proactive"
+        elif canonical["ai_behavior"] == "read":
+            legacy_delivery = "passive"
+        else:
+            legacy_delivery = "silent"
+        legacy_reply = legacy_delivery != "silent"
 
         def _build_wire_payload(*, message_id: str, ts: Any) -> Dict[str, Any]:
             """Construct the message_plane envelope (v2 + legacy compat fields).
@@ -882,11 +911,17 @@ class PluginContext:
                 "target_lanlan": canonical.get("target_lanlan"),
                 # Legacy compat fields for downstream consumers that have not
                 # migrated to v2 yet (query_service, _types/models.py, etc.).
+                # All derived from the canonical v2 payload so a v2-only
+                # caller still surfaces something meaningful here.
                 "message_type": legacy_message_type,
                 "content": legacy_content,
+                "binary_data": legacy_binary_data,
                 "binary_url": legacy_binary_url,
+                "mime": legacy_mime,
                 "description": legacy_description,
                 "unsafe": bool(unsafe),
+                "delivery": legacy_delivery,
+                "reply": legacy_reply,
             }
 
         # Prefer writing messages directly to message_plane ingest to isolate high-frequency writes

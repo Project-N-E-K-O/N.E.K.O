@@ -277,6 +277,7 @@ self.report_status({
 })
 ```
 
+<a id="push-message-v2"></a>
 #### `push_message(**kwargs) -> object`
 
 `push_message` 是插件 → 主系统的**唯一**消息推送入口。两条独立的轴
@@ -598,7 +599,7 @@ value = await store.get("key")  # → {"count": 42}
 `push_message` 没有 `message_type` 字段了——内容形态由 `parts` 各元素的
 `type` 描述（`text` / `image` / `audio` / `video` / `ui_action`），下游
 路由由 `visibility` + `ai_behavior` 决定。详见上面 [3.3 节
-`push_message`](#push_message_kwargs---object)。
+`push_message`](#push-message-v2)。
 
 `message_type=...` 仍可作为旧 API 兼容形参传入，但每次会触发
 `DeprecationWarning`，v0.9 移除。

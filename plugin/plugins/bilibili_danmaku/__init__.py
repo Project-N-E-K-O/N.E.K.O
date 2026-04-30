@@ -2623,6 +2623,7 @@ class BiliDanmakuPlugin(NekoPluginBase):
                 ai_behavior="respond",
                 parts=[{"type": "text", "text": content}],
                 priority=priority,
+                target_lanlan=self._target_lanlan or None,
                 metadata={
                     "room_id": self._room_id,
                     "plugin": self.name,

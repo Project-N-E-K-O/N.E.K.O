@@ -23,10 +23,7 @@ import time
 from typing import Any
 
 from plugin.logging_config import get_logger
-from plugin.sdk.shared.core.push_message_schema import (
-    AI_BEHAVIOR_VALUES,
-    SCHEMA_VERSION,
-)
+from plugin.sdk.shared.core.push_message_schema import AI_BEHAVIOR_VALUES
 
 try:
     import zmq
@@ -236,6 +233,7 @@ class ProactiveBridge:
                 events_out.append(
                     {
                         "event_type": "music_play_url",
+                        "lanlan_name": target_lanlan,
                         "url": url,
                         "name": ui.get("name") or metadata.get("name"),
                         "artist": ui.get("artist") or metadata.get("artist"),
@@ -254,6 +252,7 @@ class ProactiveBridge:
                 events_out.append(
                     {
                         "event_type": "music_allowlist_add",
+                        "lanlan_name": target_lanlan,
                         "domains": list(domains),
                         "source": plugin_id,
                         "timestamp": timestamp,
@@ -274,8 +273,10 @@ class ProactiveBridge:
                 from brain.result_parser import parse_push_message_content
 
                 text = parse_push_message_content(text)
-            except Exception:
-                pass
+            except Exception as e:
+                # Best-effort sanitization — fall back to the raw aggregated
+                # text if the parser misbehaves on this particular shape.
+                logger.debug("parse_push_message_content failed (fallback to raw): {}", e)
 
         media = _media_parts(parts)
         has_ai_payload = bool(text) or bool(media)
