@@ -1262,15 +1262,24 @@ Live2DManager.prototype.setEmotion = async function(emotion) {
     if (expressionFiles.length > 0) {
         targetExpressionFile = this.getRandomElement(expressionFiles);
     }
+
+    const isIdleEmotion = typeof emotion === 'string' && emotion.toLowerCase() === 'idle';
+    const willApplyNewExpression = !!targetExpressionFile;
+    const shouldPreserveExistingExpression = isIdleEmotion && !willApplyNewExpression;
     
-    // 检查是否需要重置：如果情绪和表情都相同，则跳过重置
+    // 检查是否需要重置：即使情绪和表情都相同，也先清掉上一条 motion 的 transient 残留。
     if (this.currentEmotion === emotion && this.currentExpressionFile === targetExpressionFile) {
-        // 相同情绪且相同表情，不触发重置，保留原有的50%概率随机播放动作机制
+        await this.resetTransientMotionAndExpressionState({
+            preserveExpression: !!targetExpressionFile || shouldPreserveExistingExpression,
+            resetAllParameters: !targetExpressionFile && !shouldPreserveExistingExpression
+        });
+
+        // 相同情绪且相同表情，保留原有的50%概率随机播放动作机制
         if (Math.random() < 0.5) {
-            console.log(`检测到相同情绪且相同表情: ${emotion} (${targetExpressionFile})，不触发重置，仅随机播放motion`);
+            console.log(`检测到相同情绪且相同表情: ${emotion} (${targetExpressionFile})，已清理残留，仅随机播放motion`);
             await this.playMotion(emotion);
         } else {
-            console.log(`检测到相同情绪且相同表情: ${emotion} (${targetExpressionFile})，不触发重置，跳过播放`);
+            console.log(`检测到相同情绪且相同表情: ${emotion} (${targetExpressionFile})，已清理残留，跳过播放`);
         }
         return;
     }
@@ -1288,13 +1297,12 @@ Live2DManager.prototype.setEmotion = async function(emotion) {
     try {
         console.log(`开始设置新情感: ${emotion}`);
 
-        const willApplyNewExpression = !!targetExpressionFile;
-
-        // 如果本轮没有新的 expression（典型场景是 Idle 只播待机动作），沿用旧语义：
-        // 只清掉上一条 motion 的残留，不把当前表情回滚掉。
+        // setEmotion 切入新情绪时应清理上一套 expression/motion 残留；
+        // 唯一例外是回退到 Idle 且没有新 expression，此时沿用旧语义：
+        // 只清 motion 残留，不把当前情绪表情洗掉。
         await this.resetTransientMotionAndExpressionState({
-            preserveExpression: !willApplyNewExpression,
-            resetAllParameters: willApplyNewExpression
+            preserveExpression: shouldPreserveExistingExpression,
+            resetAllParameters: !shouldPreserveExistingExpression
         });
 
         this.currentEmotion = emotion;
@@ -1314,11 +1322,13 @@ Live2DManager.prototype.setEmotion = async function(emotion) {
             }
         }
 
-        // 播放表情（使用确定的表情文件以保持一致性）。没有新表情时保持当前表情。
+        // 播放表情（使用确定的表情文件以保持一致性）。
         if (willApplyNewExpression) {
             await this.playExpression(emotion, targetExpressionFile);
+        } else if (shouldPreserveExistingExpression) {
+            console.log(`Idle 未配置新表情，保留当前表情`);
         } else {
-            console.log(`情感 ${emotion} 未配置新表情，保留当前表情`);
+            console.log(`情感 ${emotion} 未配置新表情，已清除上一套表情状态`);
         }
 
         // 播放动作
