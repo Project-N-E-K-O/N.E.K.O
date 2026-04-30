@@ -79,7 +79,7 @@ The new schema solves these by:
 | `delivery="passive"` | `ai_behavior="read"` |
 | `delivery="silent"` / `reply=False` | `visibility=["hud"], ai_behavior="blind"` |
 | `content="X"` | `parts=[{"type":"text","text":"X"}]` |
-| `binary_data=bytes, mime=...` | `parts=[{"type":"image","data":bytes,"mime":...}]` (or audio/video) |
+| `binary_data=bytes, mime=...` | `parts=[{"type":"image","data":bytes,"mime":...}]` (or `audio`; `video` accepted in schema but main_server warn-drops it for now) |
 | `binary_url=URL` | `parts=[{"type":"image","url":URL}]` |
 | `message_type="music_play_url"` | `parts=[{"type":"ui_action","action":"media_play_url","url":..., "media_type":"audio"}]`, `visibility=["chat"]`, `ai_behavior="blind"` |
 | `message_type="music_allowlist_add"` | `parts=[{"type":"ui_action","action":"media_allowlist_add","domains":[...]}]`, `ai_behavior="blind"` |

@@ -64,7 +64,19 @@ def main() -> int:
         except Exception as e:
             print(f"::warning file={md_path}::could not read ({e})", file=sys.stderr)
             continue
+        # Fenced code blocks frequently contain "bad-example" snippets the
+        # docs are explicitly warning against (e.g. a sample of the very
+        # link form this lint forbids).  Skip anything inside ``` / ~~~
+        # fences so the "show, don't tell" pattern stays usable.  Indented
+        # code blocks (4-space) are rare in this repo and not handled.
+        in_fence = False
         for lineno, line in enumerate(text.splitlines(), start=1):
+            stripped = line.lstrip()
+            if stripped.startswith("```") or stripped.startswith("~~~"):
+                in_fence = not in_fence
+                continue
+            if in_fence:
+                continue
             for m in LINK_PATTERN.finditer(line):
                 failures.append((md_path, lineno, m.group(1)))
 
