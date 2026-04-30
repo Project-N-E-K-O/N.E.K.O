@@ -168,7 +168,7 @@ class DecisioningMixin:
             return "strength_boost"
         if any(k in text_blob for k in {"metallicize", "金属化", "护甲每回合"}):
             return "block_boost"
-        if any(k in text_blob for k in {"draw", "抽卡", "skim", "coolheaded", "手牌", "卡片"}):
+        if any(k in text_blob for k in {"draw", "抽卡", "摸牌", "抽牌", "skim", "coolheaded"}):
             return "draw"
         if any(k in text_blob for k in {"channel", "zap", "lightning", "frost", "dark", "冰球", "闪电球", "dark orb", "orb", "充能球"}):
             return "orb_channel"

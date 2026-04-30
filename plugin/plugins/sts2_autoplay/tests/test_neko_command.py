@@ -167,8 +167,10 @@ def test_neko_command_guidance_when_autoplay_running(service: CommandService) ->
 @pytest.mark.unit
 def test_neko_command_guidance_degrades_to_advice_when_not_running(service: CommandService) -> None:
     result = run(service.neko_command("先防一下，别贪"))
-    assert result["intent"] == "unknown"
+    assert result["intent"] == "guidance"
+    assert result["action"] == "clarify"
     assert result["needs_confirmation"] is True
+    assert result["executed"] is False
     assert service.called == []
 
 

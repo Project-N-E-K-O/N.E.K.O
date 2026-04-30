@@ -47,7 +47,11 @@ constraints:
     relic:
       high_priority:
         双资源核心: [战斗开始时获得星辰, 每回合额外获得星辰, 星辰上限增加]
-        能量运转: [冰淇淋, Ice Cream, 天鹅绒项圈, 加费 Boss 遗物]
+        能量运转: [冰淇淋, Ice Cream, 加费 Boss 遗物]
+      conditional:
+        天鹅绒项圈:
+          - items: [天鹅绒项圈]
+            condition: 仅当走单发核弹流时考虑，星轨运转流避免
       low_priority:
         纯数值遗物: [与费用无关的纯数值遗物, 与资源无关的纯数值遗物]
     potion:

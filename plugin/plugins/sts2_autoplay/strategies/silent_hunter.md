@@ -44,8 +44,12 @@ constraints:
     relic:
       high_priority:
         流派与运转核心: [苦无, kunai, 手里剑, shuriken, 结实绷带, tough bandages, 铜钹, tingsha, 折扇, ornamental fan, 纸鹤, paper krane, 毒蟾蜍, snecko skull, 冰淇淋, ice cream]
+      conditional:
+        巨口储蓄罐:
+          - items: [巨口储蓄罐]
+            condition: 仅在第三层及以后视为低价值，前中期保持中性
       low_priority:
-        泛用性差: [榴莲, tiny house, 巨口储蓄罐]
+        泛用性差: [榴莲, tiny house]
     potion:
       high_priority:
         爆发与救命: [幽灵药水, ghost in a jar, 炼制药水, alchemize potion, 技能药水, skill potion, 敏捷药水, dexterity potion, 多重药水, duplication potion]

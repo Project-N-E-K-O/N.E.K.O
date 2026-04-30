@@ -22,5 +22,9 @@ def load_isolated_sts2_module(package_name: str, module_name: str) -> Any:
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules[qualified_name] = module
-    spec.loader.exec_module(module)
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        sys.modules.pop(qualified_name, None)
+        raise
     return module

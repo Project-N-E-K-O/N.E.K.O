@@ -121,7 +121,7 @@ def test_current_combat_task_started_in_combat_completes_on_reward_screen() -> N
 
 
 @pytest.mark.unit
-def test_autoplay_loop_short_circuits_error_step_without_reports_or_autonomous_actions() -> None:
+def test_autoplay_loop_error_step_then_idle_emits_report_and_assesses_autonomous() -> None:
     service = LoopService()
     service._autoplay_state = "running"
     service._cfg = {"neko_reporting_enabled": True, "neko_report_interval_steps": 1}

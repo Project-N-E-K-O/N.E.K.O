@@ -33,7 +33,7 @@ class NekoCommandingMixin:
                 return self._wrap_neko_command_result("stop", "stop_autoplay", await self.stop_autoplay(), executed=False)
             if self._neko_text_has_any(text, ["暂停", "先停", "等一下", "别动", "pause"]):
                 return self._wrap_neko_command_result("pause", "pause_autoplay", await self.pause_autoplay(), executed=False)
-            if self._neko_text_has_any(text, ["继续", "恢复", "接着打", "resume"]):
+            if self._neko_text_has_any(text, ["继续托管", "恢复托管", "继续自动打", "恢复自动打", "继续代打", "接着托管", "resume"]):
                 return self._wrap_neko_command_result("resume", "resume_autoplay", await self.resume_autoplay(), executed=False)
 
         if normalized_scope in {"status", "auto"} and self._neko_text_has_any(text, ["健康", "连上", "连接", "health"]):

@@ -708,11 +708,6 @@ class NekoReportingMixin:
             self._paused = False
             self._auto_pause_reason = None
             self._autoplay_state = "running"
-            saved_interval = self._cfg.get("_neko_auto_saved_action_interval")
-            if saved_interval is not None:
-                self._cfg["action_interval_seconds"] = float(saved_interval)
-                self._cfg.pop("_neko_auto_saved_action_interval", None)
-                self.logger.info(f"[sts2_autoplay][neko-auto] resume: interval restored to {saved_interval}")
             self._emit_status()
         if notifier is not None and action_type in messages:
             detail = messages[action_type]

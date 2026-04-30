@@ -91,7 +91,7 @@ def test_validate_play_card_target_combo_filters_dirty_valid_targets() -> None:
         {"index": 0, "name": "全体攻击", "playable": True, "valid_target_indices": ["dirty"]},
     ]
     context = combat_context(hand, [])
-    normalized_kwargs = {"card_index": 0}
+    normalized_kwargs = {"card_index": 0, "target_index": 999}
 
     assert service._validate_play_card_target_combo(normalized_kwargs, context, {"action_type": "play_card", "kwargs": {}}) is True
     assert "target_index" not in normalized_kwargs

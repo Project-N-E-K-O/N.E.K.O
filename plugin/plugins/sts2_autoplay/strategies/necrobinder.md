@@ -45,8 +45,12 @@ constraints:
   shop_preferences:
     relic:
       high_priority:
-        核心联动: [骷髅法杖, 防腐绷带, 异蛇之颅]
+        核心联动: [骷髅法杖, 防腐绷带]
         通用生存: [鸟面瓮, 水银沙漏]
+      conditional:
+        异蛇之颅:
+          - items: [异蛇之颅]
+            condition: 仅当其对末日机制生效时才视为核心联动
       low_priority:
         高频攻击遗物: [苦无, 手里剑]
     card:
