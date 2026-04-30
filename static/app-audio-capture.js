@@ -1002,6 +1002,8 @@
         S.isMicMuted = muted;
         if (S.isMicMuted) {
             stopSilenceDetection();
+            // 与 toggleMicMute 对齐：进入 muted 时清掉时间戳，避免拖尾。
+            S.userRecentSpeechTime = 0;
         } else if (S.isRecording) {
             startSilenceDetection();
         }
