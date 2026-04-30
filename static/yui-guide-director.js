@@ -1733,12 +1733,14 @@
                 return false;
             }
 
+            let handled = false;
+
             if (typeof manager.clearEmotionEffects === 'function') {
                 this.handleAsyncFailure(
                     manager.clearEmotionEffects(),
                     '[YuiGuide] 清理 Live2D 教程动作失败:'
                 );
-                return true;
+                handled = true;
             }
 
             if (typeof manager.clearExpression === 'function') {
@@ -1746,7 +1748,7 @@
                     manager.clearExpression(),
                     '[YuiGuide] 清理 Live2D 表情失败:'
                 );
-                return true;
+                handled = true;
             }
 
             const motionManager = manager.currentModel
@@ -1754,10 +1756,10 @@
                 && manager.currentModel.internalModel.motionManager;
             if (motionManager && typeof motionManager.stopAllMotions === 'function') {
                 motionManager.stopAllMotions();
-                return true;
+                handled = true;
             }
 
-            return false;
+            return handled;
         }
 
         clearMmdGuidePresentation() {
