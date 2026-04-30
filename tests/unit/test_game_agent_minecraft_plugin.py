@@ -331,6 +331,30 @@ async def test_system_prompt_replay_preserves_per_frame_mime():
 
 
 @pytest.mark.asyncio
+async def test_log_cache_is_bounded():
+    """Without a cap, an idle ``skip_system_prompt_if_busy=True`` plus a
+    chatty agent would balloon the log cache without bound. The cap
+    drops oldest lines when full so memory stays flat."""
+    service, _ = _make_service()
+    service.configure({})
+
+    # Push more lines than the cap. The cap is an internal constant
+    # (200 at time of writing); we use a generous multiple so the test
+    # doesn't go stale if the constant grows modestly.
+    cap_estimate = 200
+    overflow_count = cap_estimate * 3
+    for i in range(overflow_count):
+        await service._on_log(f"line {i}")
+
+    cached = list(service._log_cache)
+    # Cap held; we only kept "the most recent N" lines, not all of them.
+    assert len(cached) < overflow_count
+    assert len(cached) <= cap_estimate
+    # And the survivors are the most recent ones, not the oldest.
+    assert cached[-1] == f"line {overflow_count - 1}"
+
+
+@pytest.mark.asyncio
 async def test_log_callback_tracks_task_state_from_strings():
     service, _ = _make_service()
     service.configure({})

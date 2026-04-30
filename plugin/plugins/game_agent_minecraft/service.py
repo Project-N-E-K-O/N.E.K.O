@@ -110,7 +110,13 @@ class GameAgentService:
         # task would be (incorrectly) attributed to whatever task is
         # currently pending. Drained FIFO in ``_on_task_finished``.
         self._stale_task_finishes_to_drop: int = 0
-        self._log_cache: list[str] = []
+        # Bounded ring buffer of agent log lines. Without a cap this
+        # would grow without bound when the autonomous loop is gated
+        # off (e.g. ``skip_system_prompt_if_busy=True`` and a long
+        # task is in flight); the agent emits log lines continuously
+        # and we'd never drain. ``deque(maxlen=...)`` drops oldest on
+        # overflow which is fine — the LLM only needs recent context.
+        self._log_cache: collections.deque[str] = collections.deque(maxlen=200)
         # Bounded ring buffer of (image_bytes, mime). We carry the mime
         # alongside the bytes because the JPEG→PNG conversion in
         # ``_on_screenshot`` can fall through to "ship as-is" on Pillow
