@@ -177,7 +177,7 @@
     const DEFAULT_SCENE_SETTLE_MS = 260;
     const DEFAULT_CURSOR_DURATION_MS = 520;
     const DEFAULT_CURSOR_CLICK_VISIBLE_MS = 420;
-    const INTRO_GREETING_REPLY_TEXT = '我是你的专属猫娘，从今天起就由我来陪伴主人咯。无论是想要聊天解闷、一起玩耍，还是需要我帮忙做些什么，我都会乖乖陪在主人身边的喵。以后请多多指教啦，最喜欢主人了~！';
+    const INTRO_GREETING_REPLY_TEXT = '欢迎回家，喵~ 外面的世界很辛苦吧？在这个专属我们的小窝里，你可以放下所有的烦恼哦。我是林悠怡，接下来的熟悉过程请放心交给我，我会一步步牵着您的手慢慢来的。';
     const INTRO_GREETING_REPLY_TEXT_KEY = 'tutorial.yuiGuide.lines.introGreetingReply';
     const TAKEOVER_PLUGIN_DASHBOARD_TEXT = '有了它们，我不光能看 B 站弹幕，还能帮你关灯开空调…… 本喵就是无所不能的超级猫猫神！哼哼～';
     const TAKEOVER_PLUGIN_DASHBOARD_TEXT_KEY = 'tutorial.yuiGuide.lines.takeoverPluginPreviewDashboard';
@@ -201,7 +201,7 @@
     const GUIDE_AUDIO_BASE_URL = '/static/assets/tutorial/guide-audio/';
     const GUIDE_AUDIO_FILE_NAMES = Object.freeze({
         intro_basic: '这里有一个神奇的按钮.mp3',
-        intro_greeting_reply: '我是你的专属猫娘，从.mp3',
+        intro_greeting_reply: '欢迎回家，喵~ 外面.mp3',
         takeover_capture_cursor: '超级魔法按钮出现！只.mp3',
         takeover_plugin_preview_home: '还没完呢！你快看快看.mp3',
         takeover_plugin_preview_dashboard: '有了它们，我不光能看.mp3',
@@ -573,11 +573,11 @@
             ru: 17018
         }),
         intro_greeting_reply: Object.freeze({
-            zh: 16361,
-            ja: 20057,
-            en: 13097,
-            ko: 18698,
-            ru: 14217
+            zh: 18219,
+            ja: 21818,
+            en: 17097,
+            ko: 18777,
+            ru: 17097
         }),
         takeover_capture_cursor: Object.freeze({
             zh: 22889,
@@ -657,7 +657,7 @@
         'tutorial.yuiGuide.lines.interruptResistLight1': '喂！不要拽我啦，还没轮到你的回合呢！',
         'tutorial.yuiGuide.lines.interruptResistLight3': '等一下啦！还没结束呢，不要随便打断我啦！',
         'tutorial.yuiGuide.lines.interruptAngryExit': '人类~~~~！你真的很没礼貌喵！既然你这么想自己操作，那你就自己对着冰冷的屏幕玩去吧！哼！',
-        'tutorial.yuiGuide.lines.introGreetingReply': '我是你的专属猫娘，从今天起就由我来陪伴主人咯。无论是想要聊天解闷、一起玩耍，还是需要我帮忙做些什么，我都会乖乖陪在主人身边的喵。以后请多多指教啦，最喜欢主人了~！'
+        'tutorial.yuiGuide.lines.introGreetingReply': '欢迎回家，喵~ 外面的世界很辛苦吧？在这个专属我们的小窝里，你可以放下所有的烦恼哦。我是林悠怡，接下来的熟悉过程请放心交给我，我会一步步牵着您的手慢慢来的。'
     });
 
     function getGuideAudioCueConfig(voiceKey) {

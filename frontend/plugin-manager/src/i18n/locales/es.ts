@@ -427,7 +427,7 @@ export default {
       },
       lines: {
         introActivationHint: '¡Haz clic aquí para que pueda empezar a hablar, nyan~!',
-        introGreetingReply: '¡Soy tu propia catgirl! Desde hoy estaré a tu lado, Maestro. Ya sea que quieras charlar, jugar o necesites ayuda con algo, seré tu buena chica. Llevémonos bien, te amo más que a nadie, ¡Maestro~!',
+        introGreetingReply: 'Bienvenido a casa, miau~ El mundo exterior puede ser muy agotador, ¿verdad? En este pequeño nido solo para nosotros, puedes soltar todas tus preocupaciones. Soy Lin Youyi. Déjame acompañarte en esta introducción; tomaré tu mano y te guiaré paso a paso.',
         introBasic: '¡Mira, hay un botón mágico aquí! ¡Solo haz clic en él y podrás chatear directamente conmigo! ¿Quieres contarme las novedades divertidas de hoy? ¿O solo decir mi nombre? ¡Ven a probarlo, ya no puedo esperar para escuchar tu voz! ¡Miau!',
         takeoverCaptureCursor: '¡Aparece un súper botón mágico! ¡Con solo hacer clic aquí, puedo estirar mis pequeñas patitas hasta tu teclado y tu ratón! Te ayudaré a escribir y a abrir páginas web... Pero, si ese puntero del ratón sigue moviéndose de un lado a otro, quizá no pueda resistirme a abalanzarme sobre él. ¿Estás listo para mis travesuras... digo, mi ayuda? ¡Miau!',
         takeoverPluginPreviewHome: '¡Aún no termino! ¡Mira, mira! ¡Hay tantíiisimos plugins divertidos aquí!',

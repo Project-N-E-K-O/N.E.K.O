@@ -427,7 +427,7 @@ export default {
       },
       lines: {
         introActivationHint: 'Click here so I can start talking, nyan~!',
-        introGreetingReply: "I'm your very own catgirl! Starting today, I'll be by your side, Master. Whether you want to chat, play, or need help with something, I'll be your good girl. Let's get along, I love you most, Master~!",
+        introGreetingReply: "Welcome home, meow~ The outside world can be so exhausting, right? In this little nest just for us, you can let go of all your worries. I'm Lin Youyi. Please leave the rest of the introduction to me—I'll hold your hand and guide you through it step by step.",
         introBasic: "Look, a magical button! Just click it and you can chat directly with me! Want to share today's fun news with me? Or maybe just call my name? Come try it out, I can't wait to hear your voice! Meow!",
         takeoverCaptureCursor: "Super magic button appears! Just click here and I can stretch my little paws over to your keyboard and mouse! I'll help you type, help you open web pages... But, if that mouse pointer keeps moving around, I might not be able to resist pouncing on it! Are you ready for my troublemaking... I mean, my help? Meow!",
         takeoverPluginPreviewHome: 'Not done yet! Look, look! There are so~~ many fun plugins here!',
