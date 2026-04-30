@@ -17,6 +17,7 @@ Live2DManager.prototype.recordInitialParameters = function() {
     try {
         const coreModel = this.currentModel.internalModel.coreModel;
         this.initialParameters = {};
+        this.motionBaselineParameters = {};
         
         const paramCount = coreModel.getParameterCount();
         // 详细参数日志默认关闭，避免控制台刷屏；如需调试可在控制台执行：
@@ -26,8 +27,24 @@ Live2DManager.prototype.recordInitialParameters = function() {
             console.groupCollapsed(`参数记录详情 (${paramCount}个参数)`);
         }
         
-        // 需要跳过的位置相关参数
+        // expression 重置仍跳过这些动态参数；motion 清理会单独记录它们的基线。
         const skipParams = ['ParamAngleX', 'ParamAngleY', 'ParamAngleZ', 'ParamMouthOpenY', 'ParamO'];
+        const motionBaselineParamIds = [
+            ...skipParams,
+            'ParamBodyAngleX', 'ParamBodyAngleY', 'ParamBodyAngleZ',
+            'ParamBreath', 'ParamBreath2', 'ParamBreath3',
+            'ParamLookAtX', 'ParamLookAtY',
+            'ParamShake'
+        ];
+        const motionBaselineParamSet = new Set(motionBaselineParamIds);
+        const recordMotionBaseline = (paramId, paramIndex, currentValue) => {
+            if (paramId) {
+                this.motionBaselineParameters[paramId] = currentValue;
+            }
+            if (Number.isInteger(paramIndex) && paramIndex >= 0) {
+                this.motionBaselineParameters[`param_${paramIndex}`] = currentValue;
+            }
+        };
         
         // 使用与clearEmotionEffects相同的逻辑，但改为记录值而不是重置
         for (let i = 0; i < paramCount; i++) {
@@ -44,29 +61,60 @@ Live2DManager.prototype.recordInitialParameters = function() {
                  }
                 
                 const currentValue = coreModel.getParameterValueByIndex(i);
+                const paramKey = paramId || `param_${i}`;
                 
                 // 跳过位置和嘴巴相关参数
                 if (skipParams.includes(paramId)) {
+                    recordMotionBaseline(paramId, i, currentValue);
                     if (_verbose) console.log(`跳过位置/嘴巴参数: ${paramId} = ${currentValue}`);
                     continue;
                 }
                 
                 // 使用索引作为参数名的备用方案
-                const paramKey = paramId || `param_${i}`;
                 this.initialParameters[paramKey] = currentValue;
+                if (motionBaselineParamSet.has(paramId)) {
+                    recordMotionBaseline(paramId, i, currentValue);
+                }
                 if (_verbose) console.log(`记录参数: ${paramKey} = ${currentValue}`);
             } catch (e) {
                 console.warn(`记录参数 ${i} 失败:`, e);
             }
         }
+
+        motionBaselineParamIds.forEach((paramId) => {
+            if (Object.prototype.hasOwnProperty.call(this.motionBaselineParameters, paramId)) return;
+
+            try {
+                let paramIndex = -1;
+                let currentValue;
+
+                if (typeof coreModel.getParameterIndex === 'function') {
+                    paramIndex = coreModel.getParameterIndex(paramId);
+                    if (paramIndex >= 0) {
+                        currentValue = coreModel.getParameterValueByIndex(paramIndex);
+                    }
+                }
+
+                if (currentValue === undefined && typeof coreModel.getParameterValueById === 'function') {
+                    currentValue = coreModel.getParameterValueById(paramId);
+                }
+
+                if (currentValue !== undefined) {
+                    recordMotionBaseline(paramId, paramIndex, currentValue);
+                }
+            } catch (e) {
+                // 模型没有该 motion 参数或当前 Cubism API 不支持读取，忽略。
+            }
+        });
         
         // 结束可折叠日志组
         if (_verbose) console.groupEnd();
         
-        console.log(`[Live2D] 已记录${Object.keys(this.initialParameters).length}个初始参数 (跳过${paramCount - Object.keys(this.initialParameters).length}个位置/嘴巴参数)`);
+        console.log(`[Live2D] 已记录${Object.keys(this.initialParameters).length}个初始参数 (跳过${paramCount - Object.keys(this.initialParameters).length}个位置/嘴巴参数)，${Object.keys(this.motionBaselineParameters).length}个motion基线`);
     } catch (error) {
         console.warn('记录初始参数失败:', error);
         this.initialParameters = {};
+        this.motionBaselineParameters = {};
     }
 };
 
@@ -266,26 +314,39 @@ Live2DManager.prototype._resetExplicitMotionParameters = function(options = {}) 
         'ParamLookAtX', 'ParamLookAtY',
         'ParamShake'
     ];
+    const baselineSources = [this.motionBaselineParameters, this.initialParameters];
+    const findRecordedBaseline = (paramId) => {
+        for (const source of baselineSources) {
+            if (source && Object.prototype.hasOwnProperty.call(source, paramId)) {
+                return { found: true, value: source[paramId] };
+            }
+        }
+
+        if (typeof coreModel.getParameterIndex === 'function') {
+            try {
+                const paramIndex = coreModel.getParameterIndex(paramId);
+                const indexKey = `param_${paramIndex}`;
+                if (paramIndex >= 0) {
+                    for (const source of baselineSources) {
+                        if (source && Object.prototype.hasOwnProperty.call(source, indexKey)) {
+                            return { found: true, value: source[indexKey] };
+                        }
+                    }
+                }
+            } catch (indexError) {
+                // 部分 Cubism 版本不支持 getParameterIndex，退回到默认 motion 清理值。
+            }
+        }
+
+        return { found: false, value: 0 };
+    };
 
     let resetCount = 0;
     for (const paramId of motionParams) {
         if (protectedIds.has(paramId)) continue;
         try {
-            let resetValue = 0;
-            if (Object.prototype.hasOwnProperty.call(this.initialParameters || {}, paramId)) {
-                resetValue = this.initialParameters[paramId];
-            } else if (typeof coreModel.getParameterIndex === 'function') {
-                try {
-                    const paramIndex = coreModel.getParameterIndex(paramId);
-                    const indexKey = `param_${paramIndex}`;
-                    if (paramIndex >= 0 && Object.prototype.hasOwnProperty.call(this.initialParameters || {}, indexKey)) {
-                        resetValue = this.initialParameters[indexKey];
-                    }
-                } catch (indexError) {
-                    // 部分 Cubism 版本不支持 getParameterIndex，退回到默认 motion 清理值。
-                }
-            }
-            coreModel.setParameterValueById(paramId, resetValue);
+            const baseline = findRecordedBaseline(paramId);
+            coreModel.setParameterValueById(paramId, baseline.value);
             resetCount++;
         } catch (e) {
             // 参数不存在，忽略

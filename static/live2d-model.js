@@ -76,6 +76,7 @@ Live2DManager.prototype.removeModel = async function(options = {}) {
         } catch (_) {}
     }
     this.initialParameters = {};
+    this.motionBaselineParameters = {};
 
     if (activeModel) {
         try {
