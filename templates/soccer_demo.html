@@ -46,6 +46,15 @@
     border-left: 8px solid transparent; border-right: 8px solid transparent;
     border-top: 8px solid rgba(255,255,255,0.96);
   }
+  #ai-speech-bubble[data-source-label]::before {
+    content: attr(data-source-label);
+    position: absolute; left: 10px; top: -20px;
+    color: rgba(255,255,255,0.88);
+    background: rgba(0,0,0,0.5);
+    padding: 2px 7px; border-radius: 999px;
+    font: 11px/1.2 "Segoe UI", "PingFang SC", sans-serif;
+    white-space: nowrap;
+  }
   #ai-speech-bubble[data-mood="angry"] { background: #ffe0e0; }
   #ai-speech-bubble[data-mood="angry"]::after { border-top-color: #ffe0e0; }
   #ai-speech-bubble[data-mood="happy"] { background: #fff5c2; }
@@ -77,6 +86,31 @@
     background: rgba(0,0,0,0.4); padding: 6px 10px; border-radius: 4px;
     pointer-events: none;
   }
+  #controls {
+    position: fixed; left: 12px; top: 12px; z-index: 25;
+    color: rgba(255,255,255,0.85); font: 13px/1.4 sans-serif;
+    background: rgba(0,0,0,0.45); padding: 6px 12px; border-radius: 6px;
+    user-select: none; -webkit-user-select: none;
+  }
+  #controls label { cursor: pointer; display: flex; align-items: center; gap: 6px; }
+  #controls input[type="checkbox"] { cursor: pointer; width: 15px; height: 15px; }
+  #voice-controls {
+    margin-top: 8px; padding-top: 8px; border-top: 1px solid rgba(255,255,255,0.18);
+    display: grid; grid-template-columns: auto 1fr auto; gap: 6px; align-items: center;
+  }
+  #voice-controls button, #voice-controls input {
+    border: 1px solid rgba(255,255,255,0.25); border-radius: 5px;
+    background: rgba(255,255,255,0.10); color: rgba(255,255,255,0.92);
+    font: 12px/1.3 "Segoe UI", "PingFang SC", sans-serif;
+  }
+  #voice-controls button { cursor: pointer; padding: 4px 8px; }
+  #voice-controls button.listening {
+    background: rgba(255,80,96,0.78); border-color: rgba(255,180,190,0.9);
+  }
+  #voice-controls input { min-width: 210px; padding: 4px 7px; }
+  #voice-status {
+    grid-column: 1 / -1; opacity: 0.75; font-size: 12px;
+  }
 </style>
 </head>
 <body>
@@ -92,6 +126,16 @@
 <div id="hint">
   鼠标 = 引导玩家 · 按住左键 = 蓄力，松开 = 射门（离球 ≤90px 触发）· R 复位<br>
   1-6 = AI 心情（平静/开心/生气/放松/悲伤/惊讶）· 进球后自动切换难度档
+</div>
+<div id="controls">
+  <label><input type="checkbox" id="boundary-toggle"> 启用边界（出界规则）</label>
+  <label><input type="checkbox" id="voice-output-toggle" checked> 念出 LLM 台词（项目语音）</label>
+  <div id="voice-controls">
+    <button id="voice-mic-button" type="button">按住说话</button>
+    <input id="voice-text-input" type="text" placeholder="或输入主人语音文本，回车发送">
+    <button id="voice-send-button" type="button">发送</button>
+    <div id="voice-status">语音隔离层：待机</div>
+  </div>
 </div>
 <div id="status">loading VRM dependencies…</div>
 
@@ -248,9 +292,9 @@
     }
     setStatus('VRM ready');
 
-    // --- 接 Live2D mao_pro 作为 AI ---
+    // --- 接当前猫娘 Live2D 作为 AI ---
     try {
-      setStatus('loading Live2D mao_pro…');
+      setStatus('loading AI Live2D…');
       if (!window.live2dManager) throw new Error('live2dManager missing');
       // 显式传 width/height，避免某些环境 window.screen.width=0 导致 canvas 变 1x1
       await window.live2dManager.initPIXI('ai-l2d-canvas', 'ai-l2d-container', {
@@ -266,7 +310,21 @@
       }
       // loadModel 的 await 在某些环境（preview/background tab）里 rAF 被 throttle 时不 resolve，
       // 但 currentModel 其实早就设上了；用 race + 轮询等 currentModel 出现后直接做 fit，而不是死等 await
-      const loadPromise = window.live2dManager.loadModel('/static/mao_pro/mao_pro.model3.json');
+      // 需求 2：从后端获取当前角色的 Live2D 模型路径；获取失败时才回退到 mao_pro。
+      let aiL2dPath = '/static/mao_pro/mao_pro.model3.json';
+      try {
+        const charResp = await fetch('/api/game/soccer/character');
+        if (charResp.ok) {
+          const charData = await charResp.json();
+          if (charData.live2d_path) {
+            aiL2dPath = charData.live2d_path;
+            console.log('[soccer_demo] 使用当前角色 L2D:', charData.lanlan_name, aiL2dPath);
+          }
+        }
+      } catch (e) {
+        console.warn('[soccer_demo] 获取角色信息失败，使用默认 mao_pro:', e);
+      }
+      const loadPromise = window.live2dManager.loadModel(aiL2dPath);
       loadPromise.catch(e => console.warn('[soccer_demo] L2D loadModel awaited reject:', e));
       await new Promise((resolve, reject) => {
         const t0 = Date.now();
@@ -351,7 +409,7 @@
  *     SoccerDemo.enableMoodRotation(s)  // 启用随机轮换；默认 20s（页面加载后自动开启）
  *     SoccerDemo.disableMoodRotation()  // 关闭自动轮换
  *
- *  ── 难度（4 档循环：max → lv2 → lv3 → lv4 → max，每进一球自动切）
+ *  ── 难度（4 档：max → lv2 → lv3 → lv4；当前默认由 LLM 控制）
  *     SoccerDemo.DIFFICULTIES           // ['max','lv2','lv3','lv4']
  *     SoccerDemo.setDifficulty(name)    // 直接设；触发 'diff-<name>' 气泡
  *     SoccerDemo.getDifficulty()
@@ -397,8 +455,10 @@
  *
  *     const unsubEv = SoccerDemo.onEvent(({label, meta, time}) => { ... })
  *     // label 取值：
- *     //   'goal-scored'          meta = { side: 'ai' }
- *     //   'goal-conceded'        meta = { side: 'player' }
+ *     //   'goal-scored'          meta = { side: 'ai', lastTouch }
+ *     //   'goal-conceded'        meta = { side: 'player', lastTouch }
+ *     //   'own-goal-by-ai'       meta = { side: 'player', lastTouch: 'ai' }
+ *     //   'own-goal-by-player'   meta = { side: 'ai', lastTouch: 'player' }
  *     //   'player-kick'          玩家踢球（无 meta）
  *     //   'ai-kick'              AI 踢球
  *     //   'unstick'              球被脱困
@@ -420,7 +480,7 @@
  *     });
  *
  *  ── 内建场景 kind（SoccerDemo.triggerScene 会用这些作为 LINES 池的 key）
- *     进球:             'goal-scored' / 'goal-conceded'
+ *     进球:             'goal-scored' / 'goal-conceded' / 'own-goal-by-ai' / 'own-goal-by-player'
  *     射门/抢断:        'shot-miss' / 'steal' / 'stolen'
  *     场面控制:         'long-attack-possession' / 'long-defense-possession'（按 allowAttack 分支）
  *     观察玩家:         'player-idle' / 'player-charging-long' / 'close-proximity'
@@ -464,12 +524,33 @@
     charBallRestitution: 1.25,
   };
 
+  // ── 边界系统 ──────────────────────────────────────────────────────
+  // 边界 = 球场内缩一定距离的矩形区域，球超出边界视为出界
+  const BOUNDARY = {
+    enabled: false,
+    margin: 40,          // 边界距画布边缘的距离（像素）
+    outOfBoundsDelay: 0.5, // 出界后等待时间（秒），让玩家看到球飞出去
+  };
+  let _outOfBoundsTimer = 0;
+  let _outOfBoundsSide = null; // 'player' | 'ai' | null — 最后触球的一方
+
+  const boundaryToggle = document.getElementById('boundary-toggle');
+  boundaryToggle.addEventListener('change', () => {
+    BOUNDARY.enabled = boundaryToggle.checked;
+  });
+  const voiceOutputToggle = document.getElementById('voice-output-toggle');
+  const voiceMicButton = document.getElementById('voice-mic-button');
+  const voiceTextInput = document.getElementById('voice-text-input');
+  const voiceSendButton = document.getElementById('voice-send-button');
+  const voiceStatusEl = document.getElementById('voice-status');
+
   const state = {
     player: { x: 0, y: 0, vx: 0, vy: 0 },
     ai:     { x: 0, y: 0, vx: 0, vy: 0, color: '#ef4565' },
     ball:   { x: 0, y: 0, vx: 0, vy: 0 },
     mouse:  { x: 0, y: 0 },
     score:  { player: 0, ai: 0 },
+    round:  1,
     flashTimer: 0,
     flashSide: null,
   };
@@ -545,6 +626,9 @@
     const oppNearBall = Math.hypot(b.x - opx, b.y - opy) < 100;
     b.vx = dirX * CFG.kickImpulse * impulseScale + kicker.vx * 0.4;
     b.vy = dirY * CFG.kickImpulse * impulseScale + kicker.vy * 0.4;
+    // 边界系统：记录最后触球方
+    _outOfBoundsSide = isPlayer ? 'player' : 'ai';
+    lastTouchSide = isPlayer ? 'player' : 'ai';
     logGameEvent(isPlayer ? 'player-kick' : 'ai-kick');
     markBallTouched();
     emitEvent(isPlayer ? 'player-kick' : 'ai-kick');
@@ -658,6 +742,33 @@
     b.vx *= k; b.vy *= k;
     const W = canvas.width, H = canvas.height;
     const goalY1 = H/2 - CFG.goalHeight/2, goalY2 = H/2 + CFG.goalHeight/2;
+
+    // ── 边界模式：出界检测 ──
+    if (BOUNDARY.enabled) {
+      const m = BOUNDARY.margin;
+      const bLeft = m, bRight = W - m, bTop = m, bBottom = H - m;
+      const isOut = b.x - r < bLeft || b.x + r > bRight || b.y - r < bTop || b.y + r > bBottom;
+      if (isOut) {
+        _outOfBoundsTimer += dt;
+        if (_outOfBoundsTimer >= BOUNDARY.outOfBoundsDelay) {
+          // 出界：球重置到中场，给对方发球
+          // 最后触球方出界 → 对方获得控球权
+          const servingSide = _outOfBoundsSide === 'player' ? -1 : +1;
+          b.x = W / 2;
+          b.y = H / 2;
+          b.vx = servingSide * 80;
+          b.vy = 0;
+          _outOfBoundsTimer = 0;
+          triggerScene(_outOfBoundsSide === 'player' ? 'stolen' : 'steal');
+          emitEvent('out-of-bounds', { lastTouch: _outOfBoundsSide });
+        }
+        return; // 出界期间不做墙壁反弹
+      } else {
+        _outOfBoundsTimer = 0;
+      }
+    }
+
+    // ── 默认模式：墙壁反弹 ──
     if (b.y < r)     { b.y = r;     b.vy = -b.vy * CFG.wallRestitution; }
     if (b.y > H - r) { b.y = H - r; b.vy = -b.vy * CFG.wallRestitution; }
     const inGoalBand = (b.y > goalY1 && b.y < goalY2);
@@ -669,6 +780,7 @@
 
   // 球"幽灵"时间：大于 0 时球临时穿透所有角色（unstick 用，让球能从死角飞出去）
   let ballGhostSec = 0;
+  let lastTouchSide = null;
 
   // 圆 vs 圆碰撞（角色是半径 = charSize/2 的圆，中心 = 物理框中心）
   function resolveCharBall(c) {
@@ -702,21 +814,27 @@
     const y1 = H/2 - CFG.goalHeight/2, y2 = H/2 + CFG.goalHeight/2;
     if (b.x - r < CFG.goalWidth && b.y > y1 && b.y < y2) {
       state.score.ai++; flash('ai');
-      triggerScene('goal-scored');
-      emitEvent('goal-scored', { side: 'ai' });
-      resetPositions(+1); cycleDifficulty();
+      const kind = lastTouchSide === 'player' ? 'own-goal-by-player' : 'goal-scored';
+      triggerScene(kind);
+      emitEvent(kind, { side: 'ai', lastTouch: lastTouchSide });
+      resetPositions(+1);
+      state.round++;
+      if (DIFFICULTY_AUTOCYCLE_ON_GOAL) cycleDifficulty();
     }
     if (b.x + r > W - CFG.goalWidth && b.y > y1 && b.y < y2) {
       state.score.player++; flash('player');
-      triggerScene('goal-conceded');
-      emitEvent('goal-conceded', { side: 'player' });
-      resetPositions(-1); cycleDifficulty();
+      const kind = lastTouchSide === 'ai' ? 'own-goal-by-ai' : 'goal-conceded';
+      triggerScene(kind);
+      emitEvent(kind, { side: 'player', lastTouch: lastTouchSide });
+      resetPositions(-1);
+      state.round++;
+      if (DIFFICULTY_AUTOCYCLE_ON_GOAL) cycleDifficulty();
     }
   }
 
   function flash(side) { state.flashTimer = 0.6; state.flashSide = side; }
 
-  // 难度档：从 max（最难）到 lv4（最弱）。每进一个球（任一方）循环到下一档。
+  // 难度档：从 max（最难）到 lv4（最弱）。当前默认由 LLM 控制，不再每进一球自动循环。
   const DIFFICULTY = [
     { name: 'max', kickCdMin: 0.4, kickCdMax: 0.6, windupSec: 0.00, speedMul: 1.00, allowAttack: true },
     { name: 'lv2', kickCdMin: 0.9, kickCdMax: 1.4, windupSec: 0.35, speedMul: 1.00, allowAttack: true },
@@ -953,10 +1071,12 @@
   const bubbleEl = document.getElementById('ai-speech-bubble');
   let bubbleEndsAt = 0;
   let bubbleHideTimer = null;
-  function defaultBubbleRenderer({ text, mood, durationMs }) {
+  function defaultBubbleRenderer({ text, mood, durationMs, sourceLabel }) {
     if (!bubbleEl) return;
     bubbleEl.textContent = text;
     bubbleEl.setAttribute('data-mood', mood);
+    if (sourceLabel) bubbleEl.setAttribute('data-source-label', sourceLabel);
+    else bubbleEl.removeAttribute('data-source-label');
     bubbleEl.classList.add('show');
     if (bubbleHideTimer) clearTimeout(bubbleHideTimer);
     bubbleHideTimer = setTimeout(() => { bubbleEl.classList.remove('show'); }, durationMs);
@@ -983,6 +1103,83 @@
   // 冷却管理：全局 + per-key
   const SPEECH_CD = Object.create(null);
   let currentSpeechPriority = 0;
+  const DEBUG_SPEECH_VERBOSE = false;
+  let DEBUG_WARN_WITH_STACK = false;
+  const SHOW_BUILTIN_SPEECH = false;
+  const DIFFICULTY_AUTOCYCLE_ON_GOAL = false;
+  const REQUEST_CONTROL_REASON = true;
+  const LLM_INTERCEPT_KINDS = new Set([
+    'goal-scored', 'goal-conceded',
+    'own-goal-by-ai', 'own-goal-by-player',
+    'steal', 'stolen',
+  ]);
+  const LOGGED_BUILTIN_KINDS = new Set([
+    'goal-scored', 'goal-conceded',
+    'own-goal-by-ai', 'own-goal-by-player',
+    'steal', 'stolen',
+  ]);
+  const EVENT_LABELS = {
+    'goal-scored': '猫娘进球',
+    'goal-conceded': '猫娘丢球',
+    'own-goal-by-ai': '猫娘乌龙球',
+    'own-goal-by-player': '玩家乌龙球',
+    'user-voice': '主人语音',
+    'mailbox-batch': '累积上下文',
+    'steal': '猫娘抢到球',
+    'stolen': '猫娘被抢断',
+    'shot-miss': '射门未进',
+    'long-attack-possession': '长时间进攻',
+    'long-defense-possession': '长时间防守',
+    'player-idle': '玩家停住',
+    'player-charging-long': '玩家蓄力过久',
+    'close-proximity': '距离太近',
+    'free-ball': '无人碰球',
+    'score-boring': '比分沉闷',
+    'no-goal-1min': '长时间无进球',
+    'fast-ball': '球速很快',
+    'startle': '猫娘受惊',
+    'zoneout': '猫娘走神',
+    'unstick': '球脱困',
+    'out-of-bounds': '球出界',
+    'mood-calm': '心情变为平静',
+    'mood-happy': '心情变为开心',
+    'mood-angry': '心情变为生气',
+    'mood-relaxed': '心情变为放松',
+    'mood-sad': '心情变为悲伤',
+    'mood-surprised': '心情变为惊讶',
+    'diff-max': '难度最高',
+    'diff-lv2': '难度二档',
+    'diff-lv3': '难度三档',
+    'diff-lv4': '难度四档',
+  };
+  function eventLabel(kind) {
+    if (!kind) return '未知事件';
+    if (kind.endsWith('-llm')) {
+      const base = kind.slice(0, -4);
+      return `${eventLabel(base)} / LLM台词`;
+    }
+    if (kind.endsWith('-fallback')) {
+      const base = kind.slice(0, -9);
+      return `${eventLabel(base)} / 内建兜底`;
+    }
+    return EVENT_LABELS[kind] || kind;
+  }
+  const MOOD_LABELS = {
+    calm: '平静',
+    happy: '开心',
+    angry: '生气',
+    relaxed: '放松',
+    sad: '悲伤',
+    surprised: '惊讶',
+  };
+  function moodLabel(mood) {
+    if (!mood) return '未知心情';
+    return MOOD_LABELS[mood] ? `${MOOD_LABELS[mood]}(${mood})` : mood;
+  }
+  function soccerRecoverableLog(...args) {
+    if (DEBUG_WARN_WITH_STACK) console.warn(...args);
+    else console.log(...args);
+  }
 
   function canSay(opts) {
     const now = performance.now();
@@ -996,9 +1193,46 @@
     if (!raw) return false;
     opts.priority = opts.priority || 0;
     if (!canSay(opts)) return false;
-    const styled = (MOOD_STYLE[moodKey] || MOOD_STYLE.calm)(raw);
+    const kind = opts.kind || 'generic';
+    const isLLM = kind.endsWith('-llm');
+    const isFallback = kind.endsWith('-fallback');
+    const source = isLLM ? 'LLM生成' : (isFallback ? '快路径兜底' : '内建快路径');
+    const sourceLabel = opts.sourceLabel || source;
+    const shouldWaitForLLM = opts.waitForLLM && !isLLM;
     const now = performance.now();
     const dur = opts.duration || Math.min(3800, 1500 + raw.length * 90);
+    if (shouldWaitForLLM) {
+      if (DEBUG_SPEECH_VERBOSE || LOGGED_BUILTIN_KINDS.has(kind)) {
+        console.log(`[Soccer] 等待LLM | 回合=${state.round} 事件=${eventLabel(kind)}(${kind}) 心情=${moodLabel(moodKey)} 兜底="${raw}"`);
+      }
+      emitSpeak({
+        text: raw,
+        textRaw: raw,
+        mood: moodKey,
+        kind,
+        round: state.round,
+        source,
+        sourceLabel,
+        priority: opts.priority,
+        durationMs: dur,
+        ts: now,
+        builtinFallback: raw,
+      });
+      return true;
+    }
+    if (!isLLM && !isFallback && !SHOW_BUILTIN_SPEECH) {
+      if (opts.cooldownKey && opts.cooldownSec) {
+        SPEECH_CD[opts.cooldownKey] = now + opts.cooldownSec * 1000;
+      }
+      if (DEBUG_SPEECH_VERBOSE || LOGGED_BUILTIN_KINDS.has(kind)) {
+        console.log(`[Soccer] 内建隐藏 | 回合=${state.round} 事件=${eventLabel(kind)}(${kind}) 心情=${moodLabel(moodKey)} 原文="${raw}"`);
+      }
+      return true;
+    }
+    if (isLLM || DEBUG_SPEECH_VERBOSE || LOGGED_BUILTIN_KINDS.has(kind)) {
+      console.log(`[Soccer] ${source} | 回合=${state.round} 事件=${eventLabel(kind)}(${kind}) 心情=${moodLabel(moodKey)} 输出="${raw}"`);
+    }
+    const styled = (MOOD_STYLE[moodKey] || MOOD_STYLE.calm)(raw);
     currentSpeechPriority = opts.priority;
     bubbleEndsAt = now + dur;
     if (opts.cooldownKey && opts.cooldownSec) {
@@ -1007,6 +1241,8 @@
     const payload = {
       text: styled, textRaw: raw,
       mood: moodKey, kind: opts.kind || 'generic',
+      round: state.round,
+      source, sourceLabel,
       priority: opts.priority, durationMs: dur,
       ts: now,
     };
@@ -1021,6 +1257,8 @@
   const LINES = {
     'goal-scored':   ['进啦！😼', '我赢定了~', '嘻嘻~'],
     'goal-conceded': ['啊——！', '等等，再来一次！', '可恶……'],
+    'own-goal-by-ai': ['……我踢进自己门了？', '刚刚不算！', '呜，脚滑了啦'],
+    'own-goal-by-player': ['诶？你帮我进了？', '这是送我的球吗~', '主人你踢错边啦'],
     'shot-miss':     ['啧……', '差一点', '嗯？'],
     'steal':         ['嘿嘿，给我的~', '我拿到了', '哈！'],
     'stolen':        ['哎呀', '啊！', '等等！'],
@@ -1049,6 +1287,7 @@
   };
   const PRIORITY = {
     'goal-scored': 9, 'goal-conceded': 9,
+    'own-goal-by-ai': 9, 'own-goal-by-player': 9,
     'diff-max': 7, 'diff-lv2': 7, 'diff-lv3': 7, 'diff-lv4': 7,
     'mood-happy': 6, 'mood-angry': 6, 'mood-sad': 6, 'mood-surprised': 6, 'mood-relaxed': 6, 'mood-calm': 6,
     'unstick': 5, 'startle': 5, 'zoneout': 5,
@@ -1067,6 +1306,45 @@
     'free-ball': 20, 'score-boring': 30, 'no-goal-1min': 60,
     'startle': 6, 'zoneout': 6, 'unstick': 4,
   };
+  const QUICK_LINE_KEYS = [
+    'goal-scored', 'goal-conceded', 'own-goal-by-ai', 'own-goal-by-player',
+    'steal', 'stolen', 'player-idle', 'player-charging-long',
+    'free-ball', 'startle', 'zoneout',
+  ];
+
+  function applyGeneratedQuickLines(lines = {}) {
+    const applied = {};
+    for (const key of QUICK_LINE_KEYS) {
+      const pool = Array.isArray(lines[key])
+        ? lines[key].map(v => String(v || '').trim()).filter(Boolean).slice(0, 4)
+        : [];
+      if (!pool.length) continue;
+      LINES[key] = pool;
+      applied[key] = pool;
+    }
+    return applied;
+  }
+
+  async function loadGeneratedQuickLines() {
+    try {
+      const resp = await fetch('/api/game/soccer/quick-lines', { method: 'POST' });
+      if (!resp.ok) {
+        soccerRecoverableLog(`[SoccerQuickLines] 生成失败 | HTTP ${resp.status}，继续使用内建快路径`, LINES);
+        return;
+      }
+      const data = await resp.json();
+      if (!data.ok || !data.lines || !Object.keys(data.lines).length) {
+        soccerRecoverableLog('[SoccerQuickLines] 生成失败 | 继续使用内建快路径', data);
+        return;
+      }
+      const applied = applyGeneratedQuickLines(data.lines);
+      console.log(`[SoccerQuickLines] 已生成 | 角色=${data.character || '未知'} 覆盖=${Object.keys(applied).length} 缺失=${(data.missing || []).join(',') || '无'}`);
+      console.log('[SoccerQuickLines] 当前快路径台词字典:', applied);
+    } catch (e) {
+      soccerRecoverableLog('[SoccerQuickLines] 生成请求失败 | 继续使用内建快路径', e);
+    }
+  }
+  loadGeneratedQuickLines();
 
   function triggerScene(kind) {
     const pool = LINES[kind];
@@ -1077,6 +1355,7 @@
       priority: PRIORITY[kind] || 0,
       cooldownKey: kind,
       cooldownSec: COOLDOWN[kind] || 0,
+      waitForLLM: LLM_INTERCEPT_KINDS.has(kind),
     });
   }
 
@@ -1320,14 +1599,579 @@
     // events
     onEvent(cb) { eventListeners.add(cb); return () => eventListeners.delete(cb); },
     offEvent(cb) { eventListeners.delete(cb); },
+    setWarnStacks(enabled = true) { DEBUG_WARN_WITH_STACK = !!enabled; },
+    // boundary
+    enableBoundary(enabled = true) {
+      BOUNDARY.enabled = enabled;
+      boundaryToggle.checked = enabled;
+    },
+    isBoundaryEnabled: () => BOUNDARY.enabled,
     // 供外部调试：获取内部状态（只读快照）
     _snapshot: () => ({ mood: moodKey, difficulty: DIFFICULTY[difficultyIdx].name,
+                        round: state.round,
                         score: { ...state.score }, aiMode, aiFreezeSec,
                         ballGhost: ballGhostSec > 0 }),
   };
 
   // 默认开启 20s 心情轮换
   enableMoodRotation(20);
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  LLM 接入（A+B 双簧模式）
+  //  A：后端 OmniOfflineClient 决策，生成台词 + 控制指令
+  //  B：前端将台词显示为气泡，控制指令应用到游戏状态
+  // ═══════════════════════════════════════════════════════════════════════════
+  const _llm = {
+    sessionId: 'soccer_' + Date.now().toString(36),
+    pending: false,
+    cleanedUp: false,
+    pendingItems: [],
+    flushQueued: false,
+    maxPendingItems: 10,
+    // 需要 LLM 生成台词的事件类型（高优先级游戏事件）
+    llmKinds: new Set([
+      'goal-scored', 'goal-conceded',
+      'own-goal-by-ai', 'own-goal-by-player',
+      'steal', 'stolen',
+    ]),
+    // 节流：同一 kind 的 LLM 调用间隔（秒）
+    cooldowns: {},
+    cooldownSec: 8,
+    realtimeContextLastSentAt: 0,
+    realtimeContextCooldownMs: 1200,
+  };
+
+  function _scoreDiffOf(snapshot) {
+    const score = snapshot?.score || { player: 0, ai: 0 };
+    return Number(score.ai || 0) - Number(score.player || 0);
+  }
+
+  function _setVoiceStatus(text) {
+    if (voiceStatusEl) voiceStatusEl.textContent = text;
+  }
+
+  function _formatSourceLabel(source) {
+    if (!source) return 'unknown';
+    if (typeof source === 'string') return source;
+    if (source.label) return source.label;
+    const parts = [];
+    if (source.provider) parts.push(source.provider);
+    if (source.model) parts.push(source.model);
+    if (source.method) parts.push(`method=${source.method}`);
+    if (source.voiceName) parts.push(`voice=${source.voiceName}`);
+    if (source.lang) parts.push(`lang=${source.lang}`);
+    return parts.join(' / ') || 'unknown';
+  }
+
+  function _makeMailboxItemFromSpeak(p) {
+    const snapshot = SoccerDemo._snapshot();
+    return {
+      type: 'game_event',
+      kind: p.kind,
+      label: eventLabel(p.kind),
+      textRaw: p.textRaw,
+      mood: p.mood,
+      priority: p.priority || 0,
+      builtinFallback: p.builtinFallback || '',
+      snapshot,
+      round: p.round,
+      ts: p.ts || performance.now(),
+    };
+  }
+
+  function _makeMailboxItemFromUserSpeech(text) {
+    const clean = String(text || '').trim();
+    if (!clean) return null;
+    const snapshot = SoccerDemo._snapshot();
+    return {
+      type: 'user_speech',
+      kind: 'user-voice',
+      label: '主人语音',
+      textRaw: clean,
+      mood: snapshot.mood,
+      priority: 8,
+      snapshot,
+      round: snapshot.round,
+      ts: performance.now(),
+    };
+  }
+
+  function _compactMailboxItems(items) {
+    // 代码层不做“求饶/挑衅/撒娇”这类语义总结；只做证据保全和机械限流。
+    // 主人语音保留原文与当时快照，游戏事件在过多时保留最近记录和计数摘要。
+    if (items.length <= _llm.maxPendingItems) return items;
+    const preserved = [];
+    const counts = Object.create(null);
+    for (const item of items) {
+      if (item.type === 'user_speech') preserved.push(item);
+      else counts[item.kind] = (counts[item.kind] || 0) + 1;
+    }
+    const recent = items.slice(-Math.max(4, _llm.maxPendingItems - preserved.length));
+    const counted = Object.entries(counts).map(([kind, count]) => ({
+      type: 'game_event_count',
+      kind,
+      label: eventLabel(kind),
+      count,
+    }));
+    return [...preserved.slice(-4), ...recent, ...counted].slice(-_llm.maxPendingItems);
+  }
+
+  function _buildMailboxEvent(items, currentState) {
+    const first = items[0] || {};
+    const score = currentState.score || { player: 0, ai: 0 };
+    const base = {
+      kind: items.length === 1 ? first.kind : 'mailbox-batch',
+      round: currentState.round,
+      mood: currentState.mood,
+      textRaw: items.length === 1 ? first.textRaw : `mailbox:${items.length}`,
+      score,
+      scoreDiff: _scoreDiffOf(currentState),
+      difficulty: currentState.difficulty,
+      aiMode: currentState.aiMode,
+      requestControlReason: REQUEST_CONTROL_REASON,
+      currentState,
+      pendingItems: items,
+    };
+    if (first.type === 'user_speech') {
+      base.userSpeech = first.textRaw;
+      base.source = 'voice_input_gate';
+    }
+    return base;
+  }
+
+  async function _sendRealtimeGameContext(source, items = []) {
+    const now = performance.now();
+    if (now - _llm.realtimeContextLastSentAt < _llm.realtimeContextCooldownMs) return;
+    _llm.realtimeContextLastSentAt = now;
+    const stateNow = SoccerDemo._snapshot();
+    const safeItems = items.slice(-6).map((item) => ({
+      type: item.type,
+      kind: item.kind,
+      textRaw: item.textRaw,
+      round: item.round,
+      snapshot: item.snapshot,
+    }));
+    try {
+      const resp = await fetch('/api/game/soccer/realtime-context', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          source,
+          state: stateNow,
+          pendingItems: safeItems,
+        }),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (data.ok) {
+        console.log(`[SoccerRealtime] 注入成功 | 来源=${source} 条目=${safeItems.length} bytes=${data.bytes}`);
+      } else {
+        console.log(`[SoccerRealtime] 跳过 | 来源=${source} 原因=${data.reason || resp.status}`);
+      }
+    } catch (e) {
+      soccerRecoverableLog('[SoccerRealtime] 注入请求失败:', e);
+    }
+  }
+
+  async function _sendRealtimeSpeech(line, meta = {}, result = {}) {
+    if (!line) {
+      return {
+        ok: false,
+        reason: 'missing_line',
+        voice_source: { provider: 'project_voice_unavailable' },
+      };
+    }
+    if (!voiceOutputToggle?.checked) {
+      return {
+        ok: false,
+        reason: 'voice_output_disabled',
+        skipped: true,
+        voice_source: { provider: 'project_voice_disabled' },
+      };
+    }
+    _llm.lastVoiceFailure = null;
+    const stateNow = SoccerDemo._snapshot();
+    try {
+      const resp = await fetch('/api/game/soccer/realtime-speak', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          source: 'game-llm-result',
+          line,
+          state: stateNow,
+          event: {
+            kind: meta.kind || 'mailbox',
+            round: meta.round,
+            priority: meta.priority || 0,
+            itemCount: meta.itemCount || 1,
+            hasUserSpeech: !!meta.hasUserSpeech,
+          },
+          control: result.control || {},
+        }),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (data.ok) {
+        data.voice_source = data.voice_source || {
+          provider: 'realtime',
+          model: data.method || 'unknown',
+          method: data.method || 'unknown',
+          lang: data.language || '',
+        };
+        console.log(
+          `[SoccerRealtime] 原流水线输出成功 | 方式=${data.method || 'unknown'} ` +
+          `语言=${data.language || '-'} 来源=${_formatSourceLabel(data.voice_source)} ` +
+          `speech_id=${data.speech_id || '-'} audio_sent=${!!data.audio_sent} ` +
+          `audio_committed=${!!data.audio_committed} response_observed=${!!data.response_observed} ` +
+          `audio_observed=${!!data.audio_observed} response_done=${!!data.response_done} ` +
+          `line_match=${data.line_match !== undefined ? !!data.line_match : '-'} ` +
+          `transcript="${(data.spoken_transcript || '').slice(0, 80)}" bytes=${data.bytes || 0}`
+        );
+        return data;
+      }
+      const skipDiag = [
+        data.audio_sent !== undefined ? `audio_sent=${!!data.audio_sent}` : '',
+        data.audio_committed !== undefined ? `audio_committed=${!!data.audio_committed}` : '',
+        data.response_observed !== undefined ? `response_observed=${!!data.response_observed}` : '',
+        data.audio_observed !== undefined ? `audio_observed=${!!data.audio_observed}` : '',
+        data.response_done !== undefined ? `response_done=${!!data.response_done}` : '',
+        data.line_match !== undefined ? `line_match=${!!data.line_match}` : '',
+        data.use_tts !== undefined ? `use_tts=${!!data.use_tts}` : '',
+      ].filter(Boolean).join(' ');
+      console.log(
+        `[SoccerRealtime] 原流水线输出未送达 | 原因=${data.reason || resp.status} ` +
+        `来源=${_formatSourceLabel(data.voice_source || { provider: 'project_voice_unavailable' })} ${skipDiag}`
+      );
+      _llm.lastVoiceFailure = {
+        ok: false,
+        reason: data.reason || `HTTP ${resp.status}`,
+        voice_source: data.voice_source || { provider: 'project_voice_unavailable' },
+        audio_sent: data.audio_sent,
+        audio_committed: data.audio_committed,
+        response_observed: data.response_observed,
+        audio_observed: data.audio_observed,
+        response_done: data.response_done,
+        line_match: data.line_match,
+        spoken_transcript: data.spoken_transcript,
+        use_tts: data.use_tts,
+      };
+      return _llm.lastVoiceFailure;
+    } catch (e) {
+      console.log(`[SoccerRealtime] 原流水线输出请求失败 | ${String(e)}`);
+      _llm.lastVoiceFailure = {
+        ok: false,
+        reason: 'request_failed',
+        error: String(e),
+        voice_source: { provider: 'project_voice_unavailable' },
+      };
+      return _llm.lastVoiceFailure;
+    }
+  }
+
+  function _enqueueLLMItem(item) {
+    if (!item) return;
+    if (item.type === 'game_event') {
+      const now = Date.now();
+      const lastCall = _llm.cooldowns[item.kind] || 0;
+      const cooldownLeftMs = _llm.cooldownSec * 1000 - (now - lastCall);
+      if (cooldownLeftMs > 0) {
+        console.log(`[SoccerLLM][Mailbox] 冷却丢弃 | 回合=${item.round} 事件=${eventLabel(item.kind)}(${item.kind}) 剩余=${Math.ceil(cooldownLeftMs)}ms`);
+        return;
+      }
+      _llm.cooldowns[item.kind] = now;
+    }
+    _llm.pendingItems.push(item);
+    _llm.pendingItems = _compactMailboxItems(_llm.pendingItems);
+    console.log(
+      `[SoccerLLM][Mailbox] 收集 | 回合=${item.round} 类型=${item.type} 事件=${eventLabel(item.kind)}(${item.kind}) ` +
+      `队列=${_llm.pendingItems.length} 原文="${item.textRaw || ''}"`
+    );
+    _sendRealtimeGameContext(item.type, _llm.pendingItems);
+    _scheduleMailboxFlush();
+  }
+
+  function _scheduleMailboxFlush() {
+    if (_llm.flushQueued) return;
+    _llm.flushQueued = true;
+    setTimeout(() => {
+      _llm.flushQueued = false;
+      _flushMailbox();
+    }, 0);
+  }
+
+  async function _flushMailbox() {
+    if (_llm.pending || !_llm.pendingItems.length) return;
+    const items = _llm.pendingItems.splice(0, _llm.pendingItems.length);
+    const currentState = SoccerDemo._snapshot();
+    const eventPayload = _buildMailboxEvent(items, currentState);
+    _sendRealtimeGameContext('mailbox-flush', items);
+    const first = items[0] || {};
+    const eventTs = first.ts || performance.now();
+    const displayMeta = {
+      kind: eventPayload.kind,
+      round: currentState.round,
+      priority: Math.max(...items.map(i => i.priority || 0), 0),
+      builtinFallback: items.length === 1 ? (first.builtinFallback || '') : '',
+      itemCount: items.length,
+      hasUserSpeech: items.some(i => i.type === 'user_speech'),
+    };
+    const result = await _requestGameLLM(eventPayload, displayMeta, eventTs);
+    await _handleGameLLMResult(result, displayMeta, eventTs);
+    if (_llm.pendingItems.length) _scheduleMailboxFlush();
+  }
+
+  async function _requestGameLLM(eventPayload, displayMeta, eventTs = performance.now()) {
+    _llm.pending = true;
+    const requestStartedAt = performance.now();
+    const kind = eventPayload.kind || 'unknown';
+    const mood = eventPayload.mood;
+    const score = eventPayload.score || { player: 0, ai: 0 };
+    const scoreDiff = score.ai - score.player;
+    try {
+      console.log(
+        `[SoccerLLM] 请求 | 回合=${eventPayload.round} 事件=${eventLabel(kind)}(${kind}) ` +
+        `心情=${moodLabel(mood)} 难度=${eventPayload.difficulty} 分差=${scoreDiff} ` +
+        `条目=${displayMeta?.itemCount || 1} 原因=${REQUEST_CONTROL_REASON ? '请求' : '关闭'} ` +
+        `分数=${JSON.stringify(score)} 原文="${eventPayload.textRaw || ''}"`
+      );
+      const resp = await fetch('/api/game/soccer/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          session_id: _llm.sessionId,
+          event: eventPayload,
+        }),
+      });
+      if (!resp.ok) return { fallback: true, reason: `HTTP ${resp.status}` };
+      const data = await resp.json();
+      if (data.error) {
+        console.warn('[SoccerLLM] 错误:', data.error);
+        return { fallback: true, reason: data.error };
+      }
+      const fetchMs = performance.now() - requestStartedAt;
+      const eventToResponseMs = performance.now() - eventTs;
+      const metrics = data.metrics || {};
+      const control = data.control || {};
+      console.log(
+        `[SoccerLLM] 完成 | 回合=${eventPayload.round} 事件=${eventLabel(kind)}(${kind}) 总耗时=${eventToResponseMs.toFixed(0)}ms ` +
+        `请求=${fetchMs.toFixed(0)}ms 后端LLM=${metrics.llm_ms ?? '?'}ms 后端总=${metrics.total_ms ?? '?'}ms ` +
+        `来源=${_formatSourceLabel(data.llm_source)} 台词="${data.line}"`
+      );
+      const controlText = Object.keys(control).length > 0 ? JSON.stringify(control) : '无';
+      console.log(`[SoccerLLM][Control] 返回 | 回合=${eventPayload.round} 事件=${eventLabel(kind)}(${kind}) 指令=${controlText}`);
+      if (control.reason) {
+        console.log(`[SoccerLLM][Control] 理由 | 回合=${eventPayload.round} 事件=${eventLabel(kind)}(${kind}) ${control.reason}`);
+      }
+      if (data.balance_hint) {
+        console.log(
+          `[SoccerLLM][Control] 提示 | 回合=${eventPayload.round} 事件=${eventLabel(kind)}(${kind}) ` +
+          `局势=${data.balance_hint.state} 强度=${data.balance_hint.intensity} 建议=${data.balance_hint.suggestion || 'free'} 推荐难度=${data.balance_hint.recommendedDifficulty || '无'}`
+        );
+      }
+      return data;
+    } catch (e) {
+      console.warn('[SoccerLLM] 请求失败:', e);
+      return { fallback: true, reason: '请求失败' };
+    } finally {
+      _llm.pending = false;
+    }
+  }
+
+  async function _handleGameLLMResult(result, meta, eventTs) {
+    if (result?.skipped) return;
+    if (!result || !result.line) {
+      if (result?.fallback && meta?.builtinFallback) {
+        SoccerDemo.say(meta.builtinFallback, {
+          priority: meta.priority || 0,
+          kind: meta.kind + '-fallback',
+          sourceLabel: 'LLM失败 · 内建兜底',
+        });
+        console.log(`[SoccerLLM] 兜底 | 回合=${meta.round} 事件=${eventLabel(meta.kind)}(${meta.kind}) 原因=${result.reason || '无LLM台词'} 事件到气泡=${(performance.now() - eventTs).toFixed(0)}ms`);
+      }
+      return;
+    }
+
+    SoccerDemo.say(result.line, {
+      priority: Math.min((meta?.priority || 0) + 1, 9),
+      kind: (meta?.kind || 'mailbox') + '-llm',
+      sourceLabel: `LLM生成 · ${Math.round(performance.now() - eventTs)}ms`,
+    });
+    const voiceStartedAt = performance.now();
+    void _sendRealtimeSpeech(result.line, meta, result).then((voiceResult) => {
+      const finalVoiceResult = voiceResult || {};
+      const voiceOk = !!finalVoiceResult?.ok;
+      const voiceSource = finalVoiceResult?.voice_source || { provider: 'project_voice_unavailable' };
+      if (!voiceOk && voiceResult?.reason !== 'voice_output_disabled') {
+        const deliveredButMismatch = !!finalVoiceResult?.audio_sent && finalVoiceResult?.reason === 'spoken_transcript_mismatch';
+        console.log(
+          `[SoccerVoice] ${deliveredButMismatch ? '项目语音已送达但台词不匹配' : '项目语音未送达'} | 原因=${finalVoiceResult?.reason || 'realtime_unavailable'} ` +
+          `台词来源=${_formatSourceLabel(result.llm_source)} 台词="${result.line}"`
+        );
+      }
+      soccerRecoverableLog(
+        `[SoccerLLM] 语音结果 | 回合=${meta?.round ?? '?'} 事件=${eventLabel(meta?.kind)}(${meta?.kind}) ` +
+        `语音来源=${_formatSourceLabel(voiceSource)} 语音送达=${!!finalVoiceResult?.audio_sent} ` +
+        `提交=${!!finalVoiceResult?.audio_committed} 响应=${!!finalVoiceResult?.response_observed} ` +
+        `完成=${!!finalVoiceResult?.response_done} 匹配=${finalVoiceResult?.line_match !== undefined ? !!finalVoiceResult.line_match : '-'} ` +
+        `状态=${voiceOk ? 'ok' : (finalVoiceResult?.reason || 'failed')} ` +
+        `耗时=${(performance.now() - voiceStartedAt).toFixed(0)}ms`
+      );
+    }).catch((e) => {
+      soccerRecoverableLog('[SoccerVoice] 项目语音结果处理失败:', e);
+    });
+    console.log(
+      `[SoccerLLM] 已显示 | 回合=${meta?.round ?? '?'} 事件=${eventLabel(meta?.kind)}(${meta?.kind}) ` +
+      `台词来源=${_formatSourceLabel(result.llm_source)} ` +
+      `语音请求=${voiceOutputToggle?.checked ? '已发起' : '已关闭'} ` +
+      `事件到气泡=${(performance.now() - eventTs).toFixed(0)}ms`
+    );
+
+    // 应用控制指令（心情/难度）
+    // 台词允许轻微过期，但控制会真实改变游戏；后续 mailbox 版本需要为控制结果加
+    // 状态快照/版本校验。当前 demo 只做合法值校验，主要用于验证 LLM 控制方向。
+    if (result.control) {
+      const applied = [];
+      const ignored = [];
+      if (result.control.mood && SoccerDemo.MOODS.includes(result.control.mood)) {
+        const beforeMood = SoccerDemo.getMood();
+        SoccerDemo.disableMoodRotation();
+        SoccerDemo.setMood(result.control.mood);
+        applied.push(`心情 ${moodLabel(beforeMood)} -> ${moodLabel(result.control.mood)}`);
+        setTimeout(() => SoccerDemo.enableMoodRotation(20), 15000);
+      } else if (result.control.mood) {
+        ignored.push(`心情=${result.control.mood}`);
+      }
+      if (result.control.difficulty && SoccerDemo.DIFFICULTIES.includes(result.control.difficulty)) {
+        const beforeDifficulty = SoccerDemo.getDifficulty();
+        SoccerDemo.setDifficulty(result.control.difficulty);
+        applied.push(`难度 ${beforeDifficulty} -> ${result.control.difficulty}`);
+      } else if (result.control.difficulty) {
+        ignored.push(`难度=${result.control.difficulty}`);
+      }
+      if (applied.length > 0) {
+        console.log(`[SoccerLLM][Control] 应用 | 回合=${meta?.round ?? '?'} ${applied.join('；')}`);
+      }
+      if (ignored.length > 0) {
+        console.log(`[SoccerLLM][Control] 忽略 | 回合=${meta?.round ?? '?'} 非法指令 ${ignored.join('；')}，可选心情=${SoccerDemo.MOODS.join('/')}，可选难度=${SoccerDemo.DIFFICULTIES.join('/')}`);
+      }
+    }
+  }
+
+  function _endGameLLMSession(useBeacon = false) {
+    if (_llm.cleanedUp) return;
+    _llm.cleanedUp = true;
+
+    const payload = JSON.stringify({ session_id: _llm.sessionId });
+    const url = '/api/game/soccer/end';
+
+    if (useBeacon && navigator.sendBeacon) {
+      try {
+        const ok = navigator.sendBeacon(url, new Blob([payload], { type: 'application/json' }));
+        if (ok) return;
+      } catch (e) {
+        soccerRecoverableLog('[SoccerLLM] sendBeacon 清理失败:', e);
+      }
+    }
+
+    fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: payload,
+      keepalive: true,
+    }).catch((e) => {
+      soccerRecoverableLog('[SoccerLLM] 清理请求失败:', e);
+    });
+  }
+
+  // 注册 onSpeak 回调：拦截高优先级事件，调用 LLM 生成台词
+  SoccerDemo.onSpeak(async (p) => {
+    if (!_llm.llmKinds.has(p.kind)) return;
+    _enqueueLLMItem(_makeMailboxItemFromSpeak(p));
+  });
+
+  function _submitUserSpeech(text, source = 'text') {
+    const item = _makeMailboxItemFromUserSpeech(text);
+    if (!item) return;
+    console.log(`[SoccerVoice] 输入 | 来源=${source} 回合=${item.round} 分数=${JSON.stringify(item.snapshot.score)} 原文="${item.textRaw}"`);
+    _setVoiceStatus(`已收到主人语音：${item.textRaw}`);
+    _enqueueLLMItem(item);
+  }
+
+  function _submitVoiceTextInput() {
+    const text = voiceTextInput?.value || '';
+    if (voiceTextInput) voiceTextInput.value = '';
+    _submitUserSpeech(text, 'text-box');
+  }
+
+  voiceSendButton?.addEventListener('click', _submitVoiceTextInput);
+  voiceTextInput?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') _submitVoiceTextInput();
+  });
+
+  const BrowserSpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  let voiceRecognition = null;
+  let voiceListening = false;
+
+  function _setVoiceListening(next) {
+    voiceListening = next;
+    voiceMicButton?.classList.toggle('listening', next);
+    if (voiceMicButton) voiceMicButton.textContent = next ? '松开结束' : '按住说话';
+    _setVoiceStatus(next ? '语音隔离层：正在听主人说话…' : '语音隔离层：待机');
+  }
+
+  function _ensureVoiceRecognition() {
+    if (!BrowserSpeechRecognition) {
+      _setVoiceStatus('当前浏览器不支持 SpeechRecognition，请用文本框模拟语音输入');
+      console.warn('[SoccerVoice] 浏览器不支持 SpeechRecognition，使用文本框作为 STT Gate');
+      return null;
+    }
+    if (voiceRecognition) return voiceRecognition;
+    voiceRecognition = new BrowserSpeechRecognition();
+    voiceRecognition.lang = 'zh-CN';
+    voiceRecognition.continuous = false;
+    voiceRecognition.interimResults = false;
+    voiceRecognition.maxAlternatives = 1;
+    voiceRecognition.onresult = (event) => {
+      const results = Array.from(event.results || []);
+      const finalText = results
+        .map(r => r?.[0]?.transcript || '')
+        .join('')
+        .trim();
+      if (finalText) _submitUserSpeech(finalText, 'speech-recognition');
+    };
+    voiceRecognition.onerror = (event) => {
+      console.warn('[SoccerVoice] 识别错误:', event.error || event);
+      _setVoiceStatus(`语音识别错误：${event.error || 'unknown'}`);
+    };
+    voiceRecognition.onend = () => _setVoiceListening(false);
+    return voiceRecognition;
+  }
+
+  function _startVoiceRecognition() {
+    const rec = _ensureVoiceRecognition();
+    if (!rec || voiceListening) return;
+    try {
+      rec.start();
+      _setVoiceListening(true);
+    } catch (e) {
+      console.warn('[SoccerVoice] 启动识别失败:', e);
+      _setVoiceListening(false);
+    }
+  }
+
+  function _stopVoiceRecognition() {
+    if (!voiceRecognition || !voiceListening) return;
+    try { voiceRecognition.stop(); } catch (e) { console.warn('[SoccerVoice] 停止识别失败:', e); }
+  }
+
+  voiceMicButton?.addEventListener('mousedown', _startVoiceRecognition);
+  voiceMicButton?.addEventListener('touchstart', (e) => { e.preventDefault(); _startVoiceRecognition(); }, { passive: false });
+  window.addEventListener('mouseup', _stopVoiceRecognition);
+  window.addEventListener('touchend', _stopVoiceRecognition);
+  if (!BrowserSpeechRecognition) {
+    _setVoiceStatus('当前浏览器不支持 SpeechRecognition，请用文本框模拟语音输入');
+  }
+
+  window.addEventListener('pagehide', () => _endGameLLMSession(true));
+  window.addEventListener('beforeunload', () => _endGameLLMSession(true));
 
   let lastT = performance.now();
   function loop(t) {
@@ -1409,6 +2253,23 @@
     ctx.strokeStyle = 'rgba(255,255,255,0.6)';
     ctx.strokeRect(0, y1, CFG.goalWidth, CFG.goalHeight);
     ctx.strokeRect(W - CFG.goalWidth, y1, CFG.goalWidth, CFG.goalHeight);
+
+    // ── 边界线（启用时绘制）──
+    if (BOUNDARY.enabled) {
+      const m = BOUNDARY.margin;
+      ctx.strokeStyle = 'rgba(255,255,255,0.55)';
+      ctx.lineWidth = 2;
+      ctx.setLineDash([8, 6]);
+      ctx.strokeRect(m, m, W - m * 2, H - m * 2);
+      ctx.setLineDash([]);
+      // 出界闪烁提示
+      if (_outOfBoundsTimer > 0) {
+        const flash = Math.sin(_outOfBoundsTimer * 12) * 0.5 + 0.5;
+        ctx.strokeStyle = `rgba(255,80,80,${0.4 + flash * 0.5})`;
+        ctx.lineWidth = 3;
+        ctx.strokeRect(m, m, W - m * 2, H - m * 2);
+      }
+    }
 
     // AI：L2D 没加载成功的话，用方块 fallback
     if (!window.live2dManager?.currentModel) {
@@ -1560,7 +2421,7 @@
     dctx.fillText(`mouse: ${state.mouse.x|0}, ${state.mouse.y|0}`, 12, 20);
     dctx.fillText(`player ctr: ${pcx|0}, ${pcy|0}`, 12, 36);
     dctx.fillText(`ai ctr: ${acx|0}, ${acy|0}  mode: ${aiMode}`, 12, 52);
-    dctx.fillText(`difficulty: ${DIFFICULTY[difficultyIdx].name}  mood: ${moodKey}  charge: ${(playerCharge*100)|0}%`, 12, 68);
+    dctx.fillText(`round: ${state.round}  difficulty: ${DIFFICULTY[difficultyIdx].name}  mood: ${moodKey}  charge: ${(playerCharge*100)|0}%`, 12, 68);
     const ballSp = Math.hypot(state.ball.vx, state.ball.vy) | 0;
     dctx.fillText(`ball: (${state.ball.x|0}, ${state.ball.y|0})  v=${ballSp}`, 12, 84);
 
@@ -1606,6 +2467,8 @@
     dctx.textAlign = 'center';
     dctx.font = 'bold 36px sans-serif';
     dctx.fillText(`${state.score.player}  :  ${state.score.ai}`, W/2, 54);
+    dctx.font = 'bold 16px sans-serif';
+    dctx.fillText(`Round ${state.round}`, W/2, 78);
   }
 
   function drawChar(c) {

@@ -385,6 +385,9 @@ class LLMSessionManager:
         self._screenshot_future: asyncio.Future | None = None
         self._avatar_position: dict | None = None  # 前端传来的 Avatar 归一化坐标 {centerX, centerY, width, height}
         self.current_speech_id = None
+        self._speech_output_total = 0  # diagnostic: chunks actually sent to frontend playback
+        self._last_speech_output_time = 0.0
+        self._last_speech_output_bytes = 0
         self.emoji_pattern = re.compile(r'[^\w\u4e00-\u9fff\s>][^\w\u4e00-\u9fff\s]{2,}[^\w\u4e00-\u9fff\s<]', flags=re.UNICODE)
         self.emoji_pattern2 = re.compile("["
         u"\U0001F600-\U0001F64F"  # emoticons
@@ -4850,6 +4853,9 @@ class LLMSessionManager:
                 })
                 await self.websocket.send_bytes(tts_audio)
                 logger.debug(f"🔊 send_speech OK: {len(tts_audio)} bytes, speech_id={effective_speech_id}")
+                self._speech_output_total += 1
+                self._last_speech_output_time = time.time()
+                self._last_speech_output_bytes = len(tts_audio)
                 self.sync_message_queue.put({"type": "binary", "data": tts_audio})
             else:
                 ws_state = getattr(self.websocket, 'client_state', None) if self.websocket else None

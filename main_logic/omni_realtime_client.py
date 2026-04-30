@@ -219,6 +219,7 @@ class OmniRealtimeClient:
         self.voice = voice
         self.ws = None
         self.instructions = None
+        self._active_instructions = None
         self.on_text_delta = on_text_delta
         self.on_audio_delta = on_audio_delta
         self.on_new_message = on_new_message
@@ -246,6 +247,17 @@ class OmniRealtimeClient:
         self._audio_in_buffer = False
         self._skip_until_next_response = False
         self._audio_delta_count = 0  # diagnostic: count audio.delta events per session
+        self._audio_delta_total = 0  # monotonic diagnostic across responses
+        self._last_audio_delta_time = 0.0
+        self._input_audio_committed_total = 0  # diagnostic: audio buffer commits observed
+        self._last_input_audio_committed_time = 0.0
+        self._response_created_total = 0  # diagnostic: response.created events observed
+        self._last_response_created_time = 0.0
+        self._response_done_total = 0  # diagnostic: response.done events observed
+        self._last_response_done_time = 0.0
+        self._last_response_transcript = ""
+        self._speech_started_total = 0  # diagnostic: server VAD start events observed
+        self._speech_stopped_total = 0  # diagnostic: server VAD stop events observed
         # Track image recognition per turn
         self._image_recognized_this_turn = False
         self._image_sent_this_turn = False
@@ -494,6 +506,15 @@ class OmniRealtimeClient:
             await self.update_session(qwen_payload)
         else:
             logger.info("apply_tools_to_session: api_type=%s does not support custom tools — ignoring", api)
+
+    def _qwen_server_vad_turn_detection_config(self) -> Dict[str, Any]:
+        """Return the default Qwen server-VAD config used by this client."""
+        return {
+            "type": "server_vad",
+            "threshold": 0.55,
+            "prefix_padding_ms": 300,
+            "silence_duration_ms": 650,
+        }
 
     async def process_audio_chunk_async(self, audio_chunk: bytes) -> bytes:
         """
@@ -805,6 +826,8 @@ class OmniRealtimeClient:
             else:
                 raise ValueError(f"Invalid model: {self.model}")
             self.instructions = instructions
+            if self._active_instructions is None:
+                self._active_instructions = instructions
         else:
             raise ValueError(f"Invalid turn detection mode: {self.turn_detection_mode}")
     
@@ -858,6 +881,7 @@ class OmniRealtimeClient:
 
             self._last_speech_time = time.time()
             self.instructions = instructions
+            self._active_instructions = instructions
             logger.info("✅ Gemini Live API connected successfully")
             
         except Exception as e:
@@ -1042,6 +1066,8 @@ class OmniRealtimeClient:
             "session": config
         }
         await self.send_event(event)
+        if "instructions" in config:
+            self._active_instructions = config.get("instructions")
 
     async def stream_audio(self, audio_chunk: bytes) -> None:
         """Stream raw audio data to the API.
@@ -1458,7 +1484,13 @@ class OmniRealtimeClient:
         except Exception as e:
             logger.error(f"Error sending client content to Gemini: {e}")
 
-    async def prompt_ephemeral(self, instruction: str = "", *, language: str = "zh") -> bool:
+    async def prompt_ephemeral(
+        self,
+        instruction: str = "",
+        *,
+        language: str = "zh",
+        qwen_manual_commit: bool = False,
+    ) -> bool:
         """Send a fire-and-forget audio nudge to trigger proactive AI speech.
 
         Injects a short WAV clip via ``input_audio_buffer.append`` so the
@@ -1472,6 +1504,11 @@ class OmniRealtimeClient:
 
         Chunk pacing mirrors hot-swap flush: 1600 bytes/chunk, 0.025 s sleep,
         40 chunks/s → 2× real-time delivery.
+
+        ``qwen_manual_commit=True`` is an experimental game-speech path for
+        short prerecorded prompts that do not reliably cross Qwen server-VAD:
+        the client temporarily disables VAD, appends the WAV, explicitly sends
+        ``input_audio_buffer.commit`` + ``response.create``, then restores VAD.
 
         Returns True if the audio was fully sent, False if skipped or aborted.
         """
@@ -1561,6 +1598,13 @@ class OmniRealtimeClient:
                 },
             })
             logger.info("prompt_ephemeral: injected vision text description for non-native backend")
+
+        manual_qwen_turn = bool(qwen_manual_commit and "qwen" in self._model_lower and not self._is_gemini)
+        restore_qwen_vad = False
+        if manual_qwen_turn:
+            await self.update_session({"turn_detection": None})
+            restore_qwen_vad = True
+            logger.info("prompt_ephemeral: Qwen manual commit mode enabled for this nudge")
 
         # ── Suppress mic input during injection ────────────────────────
         self._proactive_injecting = True
@@ -1656,12 +1700,26 @@ class OmniRealtimeClient:
             # replaced by a newer frame from stream_image() during our async loop.
             if has_vision and self._latest_image_b64 == snapshot_image_b64:
                 self._proactive_image_consumed = True
-            logger.info("prompt_ephemeral: audio injection complete (%s%s), waiting for VAD → response",
+            response_trigger = "VAD → response"
+            if manual_qwen_turn:
+                await self.send_event({"type": "input_audio_buffer.commit"})
+                await self.send_event({"type": "response.create"})
+                response_trigger = "manual commit → response.create"
+            logger.info("prompt_ephemeral: audio injection complete (%s%s), waiting for %s",
                          "vision" if has_vision else "general",
-                         "+image" if image_injected else "")
+                         "+image" if image_injected else "",
+                         response_trigger)
             return True
         finally:
             self._proactive_injecting = False
+            if restore_qwen_vad and not self._fatal_error_occurred and self.ws is not None:
+                try:
+                    await self.update_session({
+                        "turn_detection": self._qwen_server_vad_turn_detection_config()
+                    })
+                    logger.info("prompt_ephemeral: Qwen server VAD restored after manual nudge")
+                except Exception as e:
+                    logger.warning("prompt_ephemeral: failed to restore Qwen server VAD: %s", e)
 
     async def cancel_response(self) -> None:
         """Cancel the current response."""
@@ -1925,6 +1983,8 @@ class OmniRealtimeClient:
                             await self._send_tool_result_openai_realtime(result)
                         self._fire_task(_run_tool())
                 elif event_type == "response.done":
+                    self._response_done_total += 1
+                    self._last_response_done_time = time.time()
                     # 解析实时 API 返回的 token 用量
                     try:
                         resp_data = event.get("response", {})
@@ -1948,10 +2008,12 @@ class OmniRealtimeClient:
                     self._interrupted = False  # 确保中断标志在响应结束时清除，防止阻塞下一轮 text.delta
                     # 响应完成，检测重复度
                     if self._current_response_transcript:
+                        self._last_response_transcript = self._current_response_transcript
                         print(f"OmniRealtimeClient: response.done - 当前转录: '{self._current_response_transcript[:50]}...' | audio_deltas={self._audio_delta_count}")
                         await self._check_repetition(self._current_response_transcript)
                         self._current_response_transcript = ""
                     else:
+                        self._last_response_transcript = ""
                         print(f"OmniRealtimeClient: response.done - 没有转录文本 | audio_deltas={self._audio_delta_count}")
                     self._audio_delta_count = 0
                     # 确保 buffer 被清空
@@ -1962,6 +2024,8 @@ class OmniRealtimeClient:
                     if self.on_response_done:
                         await self.on_response_done()
                 elif event_type == "response.created":
+                    self._response_created_total += 1
+                    self._last_response_created_time = time.time()
                     self._current_response_id = event.get("response", {}).get("id")
                     self._is_responding = True
                     self._interrupted = False  # Clear interruption flag on new response
@@ -1971,8 +2035,13 @@ class OmniRealtimeClient:
                     self._current_response_transcript = ""  # 重置当前回复转录
                 elif event_type == "response.output_item.added":
                     self._current_item_id = event.get("item", {}).get("id")
+                elif event_type == "input_audio_buffer.committed":
+                    self._input_audio_committed_total += 1
+                    self._last_input_audio_committed_time = time.time()
+                    logger.info("input_audio_buffer.committed observed (total=%d)", self._input_audio_committed_total)
                 # Handle interruptions
                 elif event_type == "input_audio_buffer.speech_started":
+                    self._speech_started_total += 1
                     logger.info("Speech detected")
                     self._audio_in_buffer = True
                     # 重置静默计时器
@@ -1991,6 +2060,7 @@ class OmniRealtimeClient:
                         logger.info("Handling interruption")
                         await self.handle_interruption()
                 elif event_type == "input_audio_buffer.speech_stopped":
+                    self._speech_stopped_total += 1
                     logger.info("Speech ended")
                     if self.on_new_message:
                         await self.on_new_message()
@@ -2023,6 +2093,8 @@ class OmniRealtimeClient:
                                 self._is_first_text_chunk = False
                     elif event_type in ["response.audio.delta", "response.output_audio.delta"]:
                         self._audio_delta_count += 1
+                        self._audio_delta_total += 1
+                        self._last_audio_delta_time = time.time()
                         if self._audio_delta_count == 1:
                             logger.info(f"🔊 首个 audio.delta 已收到 (type={event_type}, bytes={len(event.get('delta',''))})")
                         if self.on_audio_delta:
