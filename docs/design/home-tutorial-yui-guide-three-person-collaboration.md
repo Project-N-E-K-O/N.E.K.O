@@ -50,12 +50,12 @@
 
 当前仓库中，与本项目直接相关的核心落点包括：
 
-- [static/universal-tutorial-manager.js](../../static/universal-tutorial-manager.js)
+- `static/universal-tutorial-manager.js`
 - `templates/index.html`
-- [static/avatar-ui-popup.js](../../static/avatar-ui-popup.js)
-- [static/app-interpage.js](../../static/app-interpage.js)
-- [static/app-ui.js](../../static/app-ui.js)
-- [static/app-buttons.js](../../static/app-buttons.js)
+- `static/avatar-ui-popup.js`
+- `static/app-interpage.js`
+- `static/app-ui.js`
+- `static/app-buttons.js`
 - `main_routers/agent_router.py`
 - `plugin/server/routes/frontend.py`
 - `frontend/plugin-manager`
@@ -373,7 +373,7 @@
 
 ### 主负责文件
 
-- [static/universal-tutorial-manager.js](../../static/universal-tutorial-manager.js)
+- `static/universal-tutorial-manager.js`
 - `templates/index.html`
 - 本文档及相关设计文档
 - 若采用单文件场景注册表，默认由主负责人持有 `static/yui-guide-steps.js`
@@ -382,8 +382,8 @@
 
 以下文件只有在联调或接口收口时才建议由主负责人触达：
 
-- [static/app-ui.js](../../static/app-ui.js)
-- [static/app-buttons.js](../../static/app-buttons.js)
+- `static/app-ui.js`
+- `static/app-buttons.js`
 
 ### 不应承担的内容
 
@@ -431,7 +431,7 @@
 
 ### 可协同但不应主改的文件
 
-- [static/universal-tutorial-manager.js](../../static/universal-tutorial-manager.js)
+- `static/universal-tutorial-manager.js`
 - `templates/index.html`
 
 开发 B 可以提出挂接点需求，但不要直接长期占用这些文件。
@@ -473,10 +473,10 @@
 
 ### 主导负责文件
 
-- [static/avatar-ui-popup.js](../../static/avatar-ui-popup.js)
-- [static/app-interpage.js](../../static/app-interpage.js)
-- [static/app-ui.js](../../static/app-ui.js)
-- [static/app-buttons.js](../../static/app-buttons.js)
+- `static/avatar-ui-popup.js`
+- `static/app-interpage.js`
+- `static/app-ui.js`
+- `static/app-buttons.js`
 
 建议新增一个由开发 C 独占的新文件：
 
@@ -488,7 +488,7 @@
 - `plugin/server/routes/frontend.py`
 - `main_routers/agent_router.py`
 
-其中 [static/app-ui.js](../../static/app-ui.js) 和 [static/app-buttons.js](../../static/app-buttons.js) 由开发 C 主导，但仍按后文“共管文件”规则协作，不视为独占写入范围。
+其中 `static/app-ui.js` 和 `static/app-buttons.js` 由开发 C 主导，但仍按后文“共管文件”规则协作，不视为独占写入范围。
 
 ### 交付结果应该长什么样
 
@@ -508,7 +508,7 @@
 
 以下文件默认只允许主负责人长期修改：
 
-- [static/universal-tutorial-manager.js](../../static/universal-tutorial-manager.js)
+- `static/universal-tutorial-manager.js`
 - `templates/index.html`
 
 原因：
@@ -545,8 +545,8 @@
 
 ## 7.4 开发 C 的独占写入范围
 
-- [static/avatar-ui-popup.js](../../static/avatar-ui-popup.js)
-- [static/app-interpage.js](../../static/app-interpage.js)
+- `static/avatar-ui-popup.js`
+- `static/app-interpage.js`
 - `static/yui-guide-page-handoff.js`
 
 若进入插件面板教程桥阶段，再追加：
@@ -557,8 +557,8 @@
 
 以下文件允许发生有限协作，但必须先同步接口意图：
 
-- [static/app-ui.js](../../static/app-ui.js)
-- [static/app-buttons.js](../../static/app-buttons.js)
+- `static/app-ui.js`
+- `static/app-buttons.js`
 
 建议规则：
 
@@ -708,7 +708,7 @@
 
 ### 主负责人
 
-- 在 [static/universal-tutorial-manager.js](../../static/universal-tutorial-manager.js) 中补出 Director 挂接点
+- 在 `static/universal-tutorial-manager.js` 中补出 Director 挂接点
 - 先建立首版共享场景注册表与场景 ID 骨架
 - 明确 step change 生命周期回调
 - 决定旧教程键和新版本教程键如何并存
@@ -809,7 +809,7 @@
 ### 开发 C
 
 - 实现 `YuiGuidePageHandoff`
-- 在 [static/app-interpage.js](../../static/app-interpage.js) 中接入 handoff 事件流
+- 在 `static/app-interpage.js` 中接入 handoff 事件流
 - 为后续真实插件面板路由接入准备 `/api/agent/user_plugin/dashboard -> /ui` 的桥接骨架
 
 需先打通的真实页面接力如下：

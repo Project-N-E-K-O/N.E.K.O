@@ -38,7 +38,7 @@ ctx.push_message(
   the SDK adapter for the wire.
 
 Schema source-of-truth:
-[`plugin/sdk/shared/core/push_message_schema.py`](../../plugin/sdk/shared/core/push_message_schema.py).
+`plugin/sdk/shared/core/push_message_schema.py`.
 
 ## Why
 
@@ -92,7 +92,7 @@ The new schema solves these by:
 All legacy parameters (`message_type`, `description`, `content`,
 `binary_data`, `binary_url`, `mime`, `delivery`, `reply`, `unsafe`) still
 work and are translated client-side by
-[`translate_push_message`](../../plugin/sdk/shared/core/push_message_schema.py).
+`translate_push_message`.
 Each legacy parameter that is actually passed emits a `DeprecationWarning`
 on every call, citing this version target.
 
@@ -100,7 +100,7 @@ The wire payload populates **both** v2 (`schema`, `visibility`,
 `ai_behavior`, `parts`) and synthesised legacy fields (`message_type`,
 `content`, `binary_url`, `description`) so that downstream readers that
 have not migrated yet (notably
-[`plugin/server/application/messages/query_service.py`](../../plugin/server/application/messages/query_service.py))
+`plugin/server/application/messages/query_service.py`)
 keep working through the deprecation window.
 
 `SdkContext.register_music_domains()` is **removed outright** — no
@@ -124,6 +124,6 @@ to the `ui_action: media_allowlist_add` part shape.
 * `plugin/_types/protocols.py`, `_types/models.py`
 * `plugin/core/context.py`
 * `plugin/server/messaging/proactive_bridge.py`
-* `main_server.py` (`media_parts` → `session.send_media_input`)
+* `main_server.py` (image `media_parts` → `session.stream_image`; audio/video warn-drop pending a transport)
 * `plugin/plugins/{bilibili_danmaku,memo_reminder,sts2_autoplay}/__init__.py` (migrated senders)
 * `plugin/PLUGIN_DEVELOPMENT_GUIDE.md`
