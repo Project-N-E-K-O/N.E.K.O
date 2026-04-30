@@ -6862,7 +6862,8 @@
         resolveGuideChatStreamDurationMs(content, options) {
             const normalizedOptions = options || {};
             if (Number.isFinite(normalizedOptions.streamDurationMs)) {
-                return resolveGuideChatStreamSyncDurationMs(normalizedOptions.streamDurationMs);
+                const explicitDurationMs = Math.round(normalizedOptions.streamDurationMs);
+                return explicitDurationMs > 0 ? clamp(explicitDurationMs, 720, 24000) : 0;
             }
 
             const voiceDurationMs = this.getGuideVoiceDurationMs(
