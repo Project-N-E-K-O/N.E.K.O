@@ -2627,6 +2627,9 @@ class BiliDanmakuPlugin(NekoPluginBase):
                 metadata={
                     "room_id": self._room_id,
                     "plugin": self.name,
+                    # TODO(v0.9): remove — `description` is a v1 leftover
+                    # log label with no v2 consumer; safe to drop once the
+                    # legacy wire field goes away.
                     "description": description,
                     "timestamp": datetime.now().isoformat(),
                 },

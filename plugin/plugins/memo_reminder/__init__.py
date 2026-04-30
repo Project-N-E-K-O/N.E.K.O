@@ -417,6 +417,7 @@ class MemoReminderPlugin(NekoPluginBase):
                     "repeat": repeat_label,
                     "trigger_at": r.get("trigger_at"),
                     "created_at": r.get("created_at"),
+                    # TODO(v0.9): remove — v1 leftover log label, no v2 consumer
                     "description": f"⏰ 备忘提醒 [{rid[:8]}]",
                 },
                 target_lanlan=r.get("lanlan_name"),

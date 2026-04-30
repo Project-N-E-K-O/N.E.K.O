@@ -111,7 +111,15 @@ to the `ui_action: media_allowlist_add` part shape.
 
 * All legacy `push_message` parameters listed above.
 * The legacy fields synthesised on the wire payload (`message_type`,
-  `content`, `binary_data`, `binary_url`, `description`, `unsafe`).
+  `content`, `binary_data`, `binary_url`, `description`, `unsafe`,
+  `delivery`, `reply`).
+* `description` everywhere it currently lingers — has no semantic
+  consumer in v2, only surfaces as a human label in legacy log lines and
+  the `query_service` response.  Marked with `TODO(v0.9)` in
+  `plugin/core/context.py`, `plugin/server/application/messages/query_service.py`,
+  and the three migrated in-tree plugin senders
+  (`bilibili_danmaku` / `memo_reminder` / `sts2_autoplay`) so the cleanup
+  PR can grep for the marker.
 * The legacy event-bus event shape (`proactive_message` event type
   itself stays, but its `media_parts` / `visibility` / `ai_behavior`
   fields become the only schema; `delivery_mode` becomes derived).

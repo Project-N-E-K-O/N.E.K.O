@@ -877,6 +877,13 @@ class PluginContext:
                         legacy_mime = mime_obj
                 if legacy_binary_url is not None and legacy_binary_data is not None and legacy_mime is not None:
                     break
+        # ``description`` has no role in v2 (no semantic consumer; only
+        # surfaces as a human label in legacy log lines and the
+        # query_service messages-bus response).  Synthesised here purely
+        # so v1 readers don't see ``None`` during the deprecation window.
+        # TODO(v0.9): drop this field, the kwarg, and the query_service
+        # fallback together; new callers should put any human label in
+        # ``metadata`` if they want it.
         legacy_description = description if isinstance(description, str) else ""
         # Resolve the legacy delivery/reply pair from the v2 axes so v1
         # consumers that branch on these fields still see a coherent value
