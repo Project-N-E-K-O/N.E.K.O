@@ -40,6 +40,19 @@ Live2DManager.prototype.recordInitialParameters = function() {
             'ParamShake'
         ];
         const motionBaselineParamSet = new Set(motionBaselineParamIds);
+        const skipParamIndexes = new Set();
+        if (typeof coreModel.getParameterIndex === 'function') {
+            skipParams.forEach((paramId) => {
+                try {
+                    const paramIndex = coreModel.getParameterIndex(paramId);
+                    if (paramIndex >= 0) {
+                        skipParamIndexes.add(paramIndex);
+                    }
+                } catch (e) {
+                    // 当前模型/API 不支持该参数时忽略。
+                }
+            });
+        }
         const recordMotionBaseline = (paramId, paramIndex, currentValue) => {
             if (paramId) {
                 this.motionBaselineParameters[paramId] = currentValue;
@@ -67,7 +80,7 @@ Live2DManager.prototype.recordInitialParameters = function() {
                 const paramKey = paramId || `param_${i}`;
                 
                 // 跳过位置和嘴巴相关参数
-                if (skipParams.includes(paramId)) {
+                if (skipParams.includes(paramId) || skipParamIndexes.has(i)) {
                     recordMotionBaseline(paramId, i, currentValue);
                     if (_verbose) console.log(`跳过位置/嘴巴参数: ${paramId} = ${currentValue}`);
                     continue;
