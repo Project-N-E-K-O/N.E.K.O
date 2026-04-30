@@ -310,7 +310,9 @@
         if (_pendingFlushTimer) { clearInterval(_pendingFlushTimer); _pendingFlushTimer = null; }
         var batch = _pendingHostMessages.splice(0);
         for (var i = 0; i < batch.length; i++) {
-            try { host.appendMessage(batch[i]); } catch (_) {}
+            if (appendHostMessageSafely(host, batch[i], 'flush_pending_host_message')) {
+                markAssistantVisibleResponseForAchievement();
+            }
         }
     }
 
@@ -332,6 +334,23 @@
         }
     }
 
+    function markAssistantVisibleResponseForAchievement() {
+        if (window.appChat && typeof window.appChat.markAssistantVisibleResponse === 'function') {
+            window.appChat.markAssistantVisibleResponse();
+        }
+    }
+
+    function appendHostMessageSafely(host, message, context) {
+        if (!message || !host || typeof host.appendMessage !== 'function') return false;
+        try {
+            host.appendMessage(message);
+            return true;
+        } catch (error) {
+            console.warn('[ChatAdapter] host.appendMessage failed', context || '', error);
+            return false;
+        }
+    }
+
     function createGeminiBubble(sentence) {
         var host = getHost();
         var cleanSentence = (sentence || '').replace(/\[play_music:[^\]]*(\]|$)/g, '');
@@ -339,10 +358,11 @@
         var timeStr = getCurrentTimeString();
         var msg = buildMessage(msgId, 'assistant', getCurrentAssistantName(), timeStr, cleanSentence, 'streaming');
 
+        var appendedToHost = false;
         if (msg && host && typeof host.appendMessage === 'function') {
             // host 就绪，先重放待发队列，再追加新消息
             _tryFlushPendingHostMessages();
-            host.appendMessage(msg);
+            appendedToHost = appendHostMessageSafely(host, msg, 'create_gemini_bubble');
         } else if (msg) {
             // host 尚未初始化，放入待重发队列而非静默丢弃
             console.warn('[ChatAdapter] host not ready, queuing message', msgId);
@@ -359,6 +379,9 @@
 
         if (typeof window.ensureAssistantTurnStarted === 'function') {
             window.ensureAssistantTurnStarted('create_gemini_bubble');
+        }
+        if (appendedToHost) {
+            markAssistantVisibleResponseForAchievement();
         }
 
         return ref;
@@ -452,13 +475,15 @@
             var msgId = nextReactMessageId('assistant');
             var timeStr = getCurrentTimeString();
             var msg = buildMessage(msgId, 'assistant', getCurrentAssistantName(), timeStr, cleanFullText, 'streaming');
-            if (msg) host.appendMessage(msg);
+            var appendedToHost = appendHostMessageSafely(host, msg, 'render_structured_gemini_message');
+            if (!appendedToHost) return;
 
             var ref = createVirtualBubbleRef(msgId);
             ref._stableTime = timeStr;
             window.currentGeminiMessage = ref;
             window.currentTurnGeminiBubbles = window.currentTurnGeminiBubbles || [];
             window.currentTurnGeminiBubbles.push(ref);
+            markAssistantVisibleResponseForAchievement();
             return;
         }
 
@@ -612,13 +637,15 @@
                 var msgId = nextReactMessageId('assistant');
                 var timeStr = getCurrentTimeString();
                 var msg = buildMessage(msgId, 'assistant', getCurrentAssistantName(), timeStr, cleanNewText, 'streaming');
-                if (msg) host.appendMessage(msg);
+                var appendedToHost = appendHostMessageSafely(host, msg, 'merge_new_message');
+                if (!appendedToHost) return createdVisibleBubble;
 
                 var ref = createVirtualBubbleRef(msgId);
                 ref._stableTime = timeStr;
                 window.currentGeminiMessage = ref;
                 window.currentTurnGeminiBubbles.push(ref);
                 createdVisibleBubble = true;
+                markAssistantVisibleResponseForAchievement();
             } else {
                 window.currentGeminiMessage = null;
             }
@@ -633,7 +660,8 @@
                     var newId = nextReactMessageId('assistant');
                     var newTime = getCurrentTimeString();
                     var newMsg = buildMessage(newId, 'assistant', getCurrentAssistantName(), newTime, cleanText, 'streaming');
-                    if (newMsg) host.appendMessage(newMsg);
+                    var appendedToHost = appendHostMessageSafely(host, newMsg, 'merge_continuation_first_visible');
+                    if (!appendedToHost) return createdVisibleBubble;
 
                     var newRef = createVirtualBubbleRef(newId);
                     newRef._stableTime = newTime;
@@ -641,6 +669,7 @@
                     window.currentTurnGeminiBubbles = window.currentTurnGeminiBubbles || [];
                     window.currentTurnGeminiBubbles.push(newRef);
                     createdVisibleBubble = true;
+                    markAssistantVisibleResponseForAchievement();
                 } else {
                     window.currentGeminiMessage = null;
                 }
@@ -678,6 +707,7 @@
                 window.currentGeminiMessage = gemRef;
                 window.currentTurnGeminiBubbles.push(gemRef);
                 createdVisibleBubble = true;
+                markAssistantVisibleResponseForAchievement();
             }
         }
 

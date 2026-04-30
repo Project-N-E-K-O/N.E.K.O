@@ -746,6 +746,12 @@
 
                 // -------- user_transcript --------
                 } else if (response.type === 'user_transcript') {
+                    // 语音转写也属于用户首次输入；这里只标记，成就仍等 AI 首次可见回复时触发
+                    if (window.appChat && typeof window.appChat.isFirstUserInput === 'function' && window.appChat.isFirstUserInput()) {
+                        window.appChat.markFirstUserInput();
+                        console.log(window.t('console.userFirstInputDetected'));
+                    }
+
                     // 收到 transcription，清除 session 初始 5 秒计时器
                     if (S._voiceSessionInitialTimer) {
                         clearTimeout(S._voiceSessionInitialTimer);
