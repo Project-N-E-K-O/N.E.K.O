@@ -1190,17 +1190,19 @@ async def _periodic_idle_maintenance_loop():
 
 
 async def _periodic_new_dialog_qps_log_loop():
-    """每 NEW_DIALOG_QPS_FLUSH_INTERVAL 秒输出一次 /new_dialog 调用计数并清零。"""
+    """每 NEW_DIALOG_QPS_FLUSH_INTERVAL 秒输出一次 /new_dialog 调用计数并清零。
+
+    无流量时也打 total=0 心跳——避免静默时无法区分'真零流量'与'loop 已挂'。
+    """
     while True:
         await asyncio.sleep(NEW_DIALOG_QPS_FLUSH_INTERVAL)
-        if _new_dialog_qps_counter:
-            snapshot = dict(_new_dialog_qps_counter)
-            _new_dialog_qps_counter.clear()
-            total = sum(snapshot.values())
-            logger.info(
-                f"[QPS] /new_dialog last {NEW_DIALOG_QPS_FLUSH_INTERVAL}s: "
-                f"total={total} per_char={snapshot}"
-            )
+        snapshot = dict(_new_dialog_qps_counter)
+        _new_dialog_qps_counter.clear()
+        total = sum(snapshot.values())
+        logger.info(
+            f"[QPS] /new_dialog last {NEW_DIALOG_QPS_FLUSH_INTERVAL}s: "
+            f"total={total} per_char={snapshot}"
+        )
 
 
 # memory-evidence-rfc §3.3.6 Reconciler handlers live in
