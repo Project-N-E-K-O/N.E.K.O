@@ -130,14 +130,20 @@ def test_configure_clamps_invalid_numeric():
 
 def test_configure_clamps_task_timeout_below_sdk_ceiling():
     """``@llm_tool(timeout=300.0)`` is the SDK wrapper ceiling. The
-    service must clamp configured ``task_timeout_seconds`` *below*
-    that so its structured ``{status: "timeout"}`` response can fire
-    before the wrapper cancels the handler."""
+    service must clamp configured ``task_timeout_seconds`` strictly
+    *below* that with a meaningful buffer (≥ 1s) so its structured
+    ``{status: "timeout"}`` response reliably fires before the
+    wrapper cancels the handler — anything within 300s would race
+    the wrapper's cancel."""
     service, _ = _make_service()
     service.configure({"task_timeout_seconds": 600.0})
-    # Ceiling - small buffer so service-internal fires first.
-    assert service._task_timeout <= 300.0
-    assert service._task_timeout > 0.0
+    # Strict <= 295.0 (5s buffer below 300s SDK ceiling). If
+    # implementation regresses to a thinner buffer (e.g. 299.5),
+    # this test catches it.
+    assert service._task_timeout <= 295.0
+    assert 300.0 - service._task_timeout >= 1.0, (
+        "buffer below SDK ceiling must be at least 1s"
+    )
     # And a normal value passes through.
     service.configure({"task_timeout_seconds": 90.0})
     assert service._task_timeout == 90.0
@@ -632,6 +638,44 @@ async def test_screenshot_data_uri_jpeg_with_empty_encoding_picks_jpeg_mime(monk
     parts = push_calls[0]["parts"]
     assert parts[0]["mime"] == "image/jpeg"
     assert parts[0]["data"] == jpeg_bytes
+
+
+@pytest.mark.asyncio
+async def test_log_task_run_ended_drains_one_stale_debt():
+    """Some agent implementations emit ``task run ended`` log lines
+    in lieu of (or alongside) the explicit ``task_finished`` frame
+    for an abandoned task. When that log fires AND we're carrying
+    stale-frame debt AND no task is currently pending, this log line
+    IS the abandoned task's completion — drain one drop so a
+    future legitimate ``task_finished`` doesn't get swallowed."""
+    service, _ = _make_service()
+    service.configure({})
+
+    # Pre-bump debt as if a prior task had been abandoned.
+    service._stale_task_finishes_to_drop = 1
+    assert service._pending is None
+
+    await service._on_log("task run ended (for the abandoned task)")
+    assert service._stale_task_finishes_to_drop == 0, (
+        "log heuristic must drain one stale-frame debt"
+    )
+    assert service._task_finished is True
+
+
+@pytest.mark.asyncio
+async def test_log_connection_lost_clears_all_stale_debt():
+    """Agent reconnect wipes its task queue — any debts we were
+    holding for in-flight frames will never be paid off. Reset the
+    debt counter to avoid swallowing the next session's frames."""
+    service, _ = _make_service()
+    service.configure({})
+
+    service._stale_task_finishes_to_drop = 3
+    assert service._pending is None
+
+    await service._on_log("Connection lost and re-established.")
+    assert service._stale_task_finishes_to_drop == 0
+    assert service._task_finished is True
 
 
 @pytest.mark.asyncio

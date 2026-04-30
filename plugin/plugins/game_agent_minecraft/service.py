@@ -555,6 +555,15 @@ class GameAgentService:
         if "task run ended" in text_strip:
             if self._pending is None:
                 self._task_finished = True
+                # Some agent implementations emit "task run ended" in
+                # lieu of (or alongside) an explicit ``task_finished``
+                # frame for the abandoned task. If we're currently
+                # carrying stale-frame debt, this log line *is* the
+                # signal of that abandoned task's completion — drain
+                # one drop so a future legitimate ``task_finished``
+                # frame doesn't get swallowed instead.
+                if self._stale_task_finishes_to_drop > 0:
+                    self._stale_task_finishes_to_drop -= 1
         elif "action selection" in text_strip:
             # Setting False unconditionally is safe — at worst it
             # confirms what's already true (a task is in flight).
@@ -562,6 +571,11 @@ class GameAgentService:
         elif text_strip == "Connection lost and re-established.":
             if self._pending is None:
                 self._task_finished = True
+                # Connection bounce wipes the agent's task queue —
+                # any abandoned-task frames we were waiting to drain
+                # will never arrive. Reset the debt to avoid
+                # swallowing the next session's legitimate frames.
+                self._stale_task_finishes_to_drop = 0
 
     async def _on_screenshot(self, payload: str, encoding: str) -> None:
         """Decode a base64 screenshot, convert JPEG→PNG when needed, and
