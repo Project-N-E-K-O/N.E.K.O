@@ -2919,7 +2919,6 @@ async def cancel_correction(lanlan_name: str):
 async def new_dialog(lanlan_name: str):
     lanlan_name = validate_lanlan_name(lanlan_name)
     _touch_activity()
-    _new_dialog_qps_counter[lanlan_name] = _new_dialog_qps_counter.get(lanlan_name, 0) + 1
 
     # 检查角色是否存在于配置中
     try:
@@ -2931,6 +2930,10 @@ async def new_dialog(lanlan_name: str):
     except Exception as e:
         logger.error(f"检查角色配置失败: {e}")
         return PlainTextResponse("")
+
+    # 仅对合法角色计数：QPS 观测的目的是评估 C+ 缓存决策，无效请求不构成
+    # cacheable 机会，记进来反而污染 per_char 分布。
+    _new_dialog_qps_counter[lanlan_name] = _new_dialog_qps_counter.get(lanlan_name, 0) + 1
 
     # settle_lock 保留：等 /renew /settle 的首轮摘要完成，读到一致数据。
     # review 不持此锁，且写盘是「整体引用替换 + fingerprint patch」原子操作，
