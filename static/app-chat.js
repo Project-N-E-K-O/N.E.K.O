@@ -215,7 +215,11 @@
         }
         var message = buildReactTextMessage(messageId, role, author, timeStr, text, status);
         if (!message) return;
-        host.appendMessage(message);
+        try {
+            host.appendMessage(message);
+        } catch (error) {
+            console.warn('[Chat] React message mirror append failed', error);
+        }
     }
 
     function appendReactUserMessage(payload) {
