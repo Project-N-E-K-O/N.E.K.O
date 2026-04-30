@@ -183,16 +183,24 @@ Live2DManager.prototype._resetParametersToInitialState = function(options = {}) 
     let resetCount = 0;
 
     for (const [paramId, initialValue] of Object.entries(this.initialParameters)) {
-        if (protectedIds.has(paramId)) continue;
-
         try {
             if (paramId.startsWith('param_')) {
                 const paramIndex = parseInt(paramId.substring(6), 10);
                 if (!isNaN(paramIndex)) {
+                    let resolvedParamId = null;
+                    try {
+                        if (typeof coreModel.getParameterId === 'function') {
+                            resolvedParamId = coreModel.getParameterId(paramIndex);
+                        }
+                    } catch (e) {
+                        resolvedParamId = null;
+                    }
+                    if (resolvedParamId && protectedIds.has(resolvedParamId)) continue;
                     coreModel.setParameterValueByIndex(paramIndex, initialValue);
                     resetCount++;
                 }
             } else {
+                if (protectedIds.has(paramId)) continue;
                 coreModel.setParameterValueById(paramId, initialValue);
                 resetCount++;
             }
@@ -873,8 +881,6 @@ Live2DManager.prototype.playSimpleMotion = function(emotion) {
 
 // 清理当前情感效果（清除motion参数，但保留expression）
 Live2DManager.prototype.clearEmotionEffects = function() {
-    let hasCleared = false;
-    
     console.log('开始清理motion效果（保留expression）...');
     
     // 清除动作定时器
@@ -901,7 +907,6 @@ Live2DManager.prototype.clearEmotionEffects = function() {
             clearTimeout(this.motionTimer);
         }
         this.motionTimer = null;
-        hasCleared = true;
     }
     
     // 停止所有motion（但不重置expression参数）
@@ -911,7 +916,6 @@ Live2DManager.prototype.clearEmotionEffects = function() {
             if (this.currentModel.internalModel.motionManager.stopAllMotions) {
                 this.currentModel.internalModel.motionManager.stopAllMotions();
                 console.log('已停止所有motion，保留expression参数');
-                hasCleared = true;
             }
         } catch (motionError) {
             console.warn('停止motion失败:', motionError);
@@ -922,7 +926,6 @@ Live2DManager.prototype.clearEmotionEffects = function() {
     // 只清角度/呼吸会留下上一个 motion 的残影；按模型加载时记录的初始基准
     // 全量恢复，同时保护当前 transient expression、常驻表情和口型参数。
     const resetCount = this._resetParametersToInitialState({ preserveExpression: true });
-    if (resetCount > 0) hasCleared = true;
     console.log(`已按初始基准重置${resetCount}个motion参数，expression参数已保留`);
     
     // 重新应用常驻表情（保护常驻expression不被影响）
