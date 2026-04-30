@@ -1673,7 +1673,8 @@
                 return;
             }
 
-            if (this.getActiveModelType() === 'live2d') {
+            const activeModelType = this.getActiveModelType();
+            if (activeModelType === 'live2d') {
                 if (!window.live2dManager || !window.live2dManager.currentModel || typeof window.live2dManager.playMotion !== 'function') {
                     return;
                 }
@@ -1691,12 +1692,34 @@
                 return;
             }
 
-            if (window.LanLan1 && typeof window.LanLan1.setEmotion === 'function') {
-                try {
-                    window.LanLan1.setEmotion(emotion);
-                } catch (error) {
-                    console.warn('[YuiGuide] 设置教程情绪失败:', emotion, error);
+            try {
+                if (activeModelType === 'mmd') {
+                    if (window.mmdManager && typeof window.mmdManager.setEmotion === 'function') {
+                        window.mmdManager.setEmotion(emotion);
+                    } else if (
+                        window.mmdManager
+                        && window.mmdManager.expression
+                        && typeof window.mmdManager.expression.setEmotion === 'function'
+                    ) {
+                        window.mmdManager.expression.setEmotion(emotion);
+                    }
+                    return;
                 }
+
+                if (activeModelType === 'vrm') {
+                    if (window.vrmManager && typeof window.vrmManager.setEmotion === 'function') {
+                        window.vrmManager.setEmotion(emotion);
+                    } else if (
+                        window.vrmManager
+                        && window.vrmManager.expression
+                        && typeof window.vrmManager.expression.setMood === 'function'
+                    ) {
+                        window.vrmManager.expression.setMood(emotion);
+                    }
+                    return;
+                }
+            } catch (error) {
+                console.warn('[YuiGuide] 设置教程情绪失败:', emotion, error);
             }
         }
 

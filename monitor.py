@@ -93,11 +93,15 @@ async def get_page_config(lanlan_name: str = ""):
         )
         if not isinstance(live2d_model_path, str):
             live2d_model_path = str(live2d_model_path) if live2d_model_path is not None else DEFAULT_LIVE2D_MODEL
+        live2d_model_path = live2d_model_path.strip()
         if live2d_model_path.endswith('.model3.json'):
             parts = live2d_model_path.replace('\\', '/').split('/')
             live2d = parts[-2] if len(parts) >= 2 else parts[-1].removesuffix('.model3.json')
         else:
             live2d = live2d_model_path
+        live2d = live2d.strip()
+        if not live2d:
+            live2d = DEFAULT_LIVE2D_MODEL
         if live2d in LEGACY_DEFAULT_LIVE2D_MODELS:
             live2d = DEFAULT_LIVE2D_MODEL
         
