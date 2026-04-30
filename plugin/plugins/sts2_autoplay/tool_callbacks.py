@@ -12,13 +12,20 @@ also runs on that loop after the server is ready.
 Lifecycle:
   startup  -> ``start_callback_server()``  (spawns thread, returns port)
   shutdown -> ``stop_callback_server()``   (signals exit, joins thread)
+
+NOTE: Do NOT use ``from __future__ import annotations`` in this module.
+FastAPI relies on runtime type introspection of route handler signatures
+to distinguish ``Request`` parameters from query parameters. PEP 563
+stringified annotations break this when types are imported at module level.
 """
-from __future__ import annotations
 
 import asyncio
 import socket
 import threading
 from typing import Any, Awaitable, Callable, Dict, Optional, Tuple
+
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 
 
 def _find_available_port(host: str = "127.0.0.1", start: int = 49100, max_tries: int = 100) -> int:
@@ -36,9 +43,6 @@ def _find_available_port(host: str = "127.0.0.1", start: int = 49100, max_tries:
 
 def _build_callback_app(service: Any) -> Any:
     """Create a minimal FastAPI app with callback endpoints for each tool."""
-    from fastapi import FastAPI, Request
-    from fastapi.responses import JSONResponse
-
     app = FastAPI(title="STS2 Tool Callbacks")
 
     async def _safe_call(
