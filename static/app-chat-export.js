@@ -30,6 +30,7 @@
         selectedIds: null,          // Set<string> of ChatMessage.id
         allMessages: [],            // latest snapshot of messages from host
         previewModal: null,         // { backdrop, panel, frame, img, ... }
+        previewWindow: null,        // independent export window
         previewEscHandler: null,
         previewCache: new Map(),    // cacheKey -> { payload }
         previewCurrentCacheKey: '',
@@ -1752,54 +1753,59 @@
 
     // ======================== Preview modal ========================
 
-    function createPreviewModal() {
-        var backdrop = document.createElement('div');
+    function createPreviewModal(targetDocument) {
+        var doc = targetDocument || document;
+        var backdrop = doc.createElement('div');
         backdrop.className = 'chat-export-preview-backdrop';
         backdrop.hidden = true;
 
-        var panel = document.createElement('div');
+        var panel = doc.createElement('div');
         panel.className = 'chat-export-preview-panel';
         panel.hidden = true;
         panel.setAttribute('role', 'dialog');
         panel.setAttribute('aria-modal', 'true');
 
-        var header = document.createElement('div');
-        header.className = 'chat-export-preview-header';
+        var header = doc.createElement('div');
+        header.className = 'chat-export-preview-header container-header';
 
-        var title = document.createElement('h2');
+        var title = doc.createElement('h2');
         title.className = 'chat-export-preview-title';
         title.textContent = translateLabel('chat.exportPreviewTitle', 'Export Preview');
+        title.setAttribute('data-text', title.textContent);
 
-        var summary = document.createElement('div');
+        var summary = doc.createElement('div');
         summary.className = 'chat-export-preview-summary';
 
-        var closeButton = document.createElement('button');
+        var closeButton = doc.createElement('button');
         closeButton.type = 'button';
-        closeButton.className = 'chat-export-preview-close';
+        closeButton.className = 'chat-export-preview-close close-btn';
         closeButton.setAttribute('aria-label', translateLabel('common.close', 'Close'));
-        closeButton.textContent = '\u274C';
+        var closeIcon = doc.createElement('img');
+        closeIcon.src = '/static/icons/close_button.png';
+        closeIcon.alt = translateLabel('common.close', 'Close');
+        closeButton.appendChild(closeIcon);
 
         header.appendChild(title);
         header.appendChild(summary);
         header.appendChild(closeButton);
 
-        var selectionSection = document.createElement('div');
+        var selectionSection = doc.createElement('div');
         selectionSection.className = 'chat-export-selection-section';
 
-        var selectionToolbar = document.createElement('div');
+        var selectionToolbar = doc.createElement('div');
         selectionToolbar.className = 'chat-export-selection-toolbar';
 
-        var selectAllButton = document.createElement('button');
+        var selectAllButton = doc.createElement('button');
         selectAllButton.type = 'button';
         selectAllButton.className = 'chat-export-selection-tool';
         selectAllButton.textContent = translateLabel('chat.exportSelectAll', 'Select All');
 
-        var selectNoneButton = document.createElement('button');
+        var selectNoneButton = doc.createElement('button');
         selectNoneButton.type = 'button';
         selectNoneButton.className = 'chat-export-selection-tool';
         selectNoneButton.textContent = translateLabel('chat.exportSelectNone', 'Clear');
 
-        var selectInvertButton = document.createElement('button');
+        var selectInvertButton = doc.createElement('button');
         selectInvertButton.type = 'button';
         selectInvertButton.className = 'chat-export-selection-tool';
         selectInvertButton.textContent = translateLabel('chat.exportSelectInvert', 'Invert');
@@ -1808,41 +1814,41 @@
         selectionToolbar.appendChild(selectNoneButton);
         selectionToolbar.appendChild(selectInvertButton);
 
-        var selectionList = document.createElement('div');
+        var selectionList = doc.createElement('div');
         selectionList.className = 'chat-export-selection-list';
 
         selectionSection.appendChild(selectionToolbar);
         selectionSection.appendChild(selectionList);
 
-        var controls = document.createElement('div');
+        var controls = doc.createElement('div');
         controls.className = 'chat-export-preview-controls';
 
-        var formatGroup = document.createElement('div');
+        var formatGroup = doc.createElement('div');
         formatGroup.className = 'chat-export-format-group';
         controls.appendChild(formatGroup);
 
-        var imageOptions = document.createElement('div');
+        var imageOptions = doc.createElement('div');
         imageOptions.className = 'chat-export-image-options';
         controls.appendChild(imageOptions);
 
-        var previewBody = document.createElement('div');
+        var previewBody = doc.createElement('div');
         previewBody.className = 'chat-export-preview-body';
 
-        var frame = document.createElement('iframe');
+        var frame = doc.createElement('iframe');
         frame.className = 'chat-export-preview-frame';
         frame.hidden = true;
         frame.setAttribute('sandbox', 'allow-same-origin');
         frame.setAttribute('title', translateLabel('chat.exportPreviewTitle', 'Export Preview'));
 
-        var previewImageWrap = document.createElement('div');
+        var previewImageWrap = doc.createElement('div');
         previewImageWrap.className = 'chat-export-preview-image-wrap';
         previewImageWrap.hidden = true;
-        var previewImage = document.createElement('img');
+        var previewImage = doc.createElement('img');
         previewImage.className = 'chat-export-preview-image';
         previewImage.alt = translateLabel('chat.exportPreviewTitle', 'Export Preview');
         previewImageWrap.appendChild(previewImage);
 
-        var placeholder = document.createElement('div');
+        var placeholder = doc.createElement('div');
         placeholder.className = 'chat-export-preview-placeholder';
         placeholder.textContent = translateLabel('chat.exportPreviewLoading', 'Generating preview...');
 
@@ -1850,20 +1856,20 @@
         previewBody.appendChild(previewImageWrap);
         previewBody.appendChild(placeholder);
 
-        var footer = document.createElement('div');
+        var footer = doc.createElement('div');
         footer.className = 'chat-export-preview-footer';
 
-        var copyButton = document.createElement('button');
+        var copyButton = doc.createElement('button');
         copyButton.type = 'button';
         copyButton.className = 'chat-export-preview-action chat-export-preview-action-copy';
         copyButton.textContent = translateLabel('chat.copyToClipboard', 'Copy to Clipboard');
 
-        var openWindowButton = document.createElement('button');
+        var openWindowButton = doc.createElement('button');
         openWindowButton.type = 'button';
         openWindowButton.className = 'chat-export-preview-action chat-export-preview-action-open';
         openWindowButton.textContent = translateLabel('chat.previewOpenWindow', 'Open In Window');
 
-        var downloadButton = document.createElement('button');
+        var downloadButton = doc.createElement('button');
         downloadButton.type = 'button';
         downloadButton.className = 'chat-export-preview-action chat-export-preview-action-download chat-export-preview-action-primary';
         downloadButton.textContent = translateLabel('chat.confirmExportAs', 'Export {{format}}', {
@@ -1880,8 +1886,8 @@
         panel.appendChild(previewBody);
         panel.appendChild(footer);
 
-        document.body.appendChild(backdrop);
-        document.body.appendChild(panel);
+        doc.body.appendChild(backdrop);
+        doc.body.appendChild(panel);
 
         var modal = {
             backdrop: backdrop,
@@ -1889,6 +1895,7 @@
             title: title,
             summary: summary,
             closeButton: closeButton,
+            closeIcon: closeIcon,
             selectionToolbar: selectionToolbar,
             selectAllButton: selectAllButton,
             selectNoneButton: selectNoneButton,
@@ -1960,8 +1967,10 @@
         var localeHandler = function () {
             closeButton.setAttribute('aria-label', translateLabel('common.close', 'Close'));
             title.textContent = translateLabel('chat.exportPreviewTitle', 'Export Preview');
+            title.setAttribute('data-text', title.textContent);
             frame.setAttribute('title', translateLabel('chat.exportPreviewTitle', 'Export Preview'));
             previewImage.alt = translateLabel('chat.exportPreviewTitle', 'Export Preview');
+            closeIcon.alt = translateLabel('common.close', 'Close');
             selectAllButton.textContent = translateLabel('chat.exportSelectAll', 'Select All');
             selectNoneButton.textContent = translateLabel('chat.exportSelectNone', 'Clear');
             selectInvertButton.textContent = translateLabel('chat.exportSelectInvert', 'Invert');
@@ -1974,9 +1983,10 @@
         return modal;
     }
 
-    function ensurePreviewModal() {
-        if (!state.previewModal) {
-            state.previewModal = createPreviewModal();
+    function ensurePreviewModal(targetDocument) {
+        var doc = targetDocument || document;
+        if (!state.previewModal || (state.previewModal.panel && state.previewModal.panel.ownerDocument !== doc)) {
+            state.previewModal = createPreviewModal(doc);
         }
         return state.previewModal;
     }
@@ -2005,11 +2015,12 @@
         if (!modal) return;
         modal.selectionList.innerHTML = '';
 
+        var doc = modal.selectionList.ownerDocument || document;
         state.allMessages.forEach(function (message) {
-            var row = document.createElement('label');
+            var row = doc.createElement('label');
             row.className = 'chat-export-selection-row';
 
-            var checkbox = document.createElement('input');
+            var checkbox = doc.createElement('input');
             checkbox.type = 'checkbox';
             checkbox.className = 'chat-export-selection-checkbox';
             checkbox.checked = state.selectedIds.has(message.id);
@@ -2030,25 +2041,25 @@
                 schedulePreviewRender();
             });
 
-            var meta = document.createElement('div');
+            var meta = doc.createElement('div');
             meta.className = 'chat-export-selection-meta';
-            var author = document.createElement('span');
+            var author = doc.createElement('span');
             author.className = 'chat-export-selection-author';
             author.textContent = message.author || getRoleLabel(message.role);
-            var time = document.createElement('span');
+            var time = doc.createElement('span');
             time.className = 'chat-export-selection-time';
             time.textContent = message.time || '';
             meta.appendChild(author);
             if (message.time) meta.appendChild(time);
 
-            var preview = document.createElement('div');
+            var preview = doc.createElement('div');
             preview.className = 'chat-export-selection-preview';
             var previewText = extractBlocksPlainText(message.blocks);
             preview.textContent = previewText.length > 160
                 ? previewText.slice(0, 160) + '…'
                 : previewText;
 
-            var body = document.createElement('div');
+            var body = doc.createElement('div');
             body.className = 'chat-export-selection-body';
             body.appendChild(meta);
             body.appendChild(preview);
@@ -2064,11 +2075,12 @@
     function renderControls() {
         var modal = state.previewModal;
         if (!modal) return;
+        var doc = modal.formatGroup.ownerDocument || document;
 
         // format chips
         modal.formatGroup.innerHTML = '';
         getExportFormats().forEach(function (format) {
-            var chip = document.createElement('button');
+            var chip = doc.createElement('button');
             chip.type = 'button';
             chip.className = 'chat-export-format-chip';
             chip.dataset.formatId = format.id;
@@ -2086,10 +2098,10 @@
         // image options (style + format)
         modal.imageOptions.innerHTML = '';
         if (state.exportFormat === 'image') {
-            var styleGroup = document.createElement('div');
+            var styleGroup = doc.createElement('div');
             styleGroup.className = 'chat-export-style-group';
             getImageExportStyles().forEach(function (style) {
-                var chip = document.createElement('button');
+                var chip = doc.createElement('button');
                 chip.type = 'button';
                 chip.className = 'chat-export-style-chip';
                 chip.textContent = style.label;
@@ -2104,10 +2116,10 @@
             });
             modal.imageOptions.appendChild(styleGroup);
 
-            var formatGroup2 = document.createElement('div');
+            var formatGroup2 = doc.createElement('div');
             formatGroup2.className = 'chat-export-image-format-group';
             getImageExportFormats().forEach(function (format) {
-                var chip = document.createElement('button');
+                var chip = doc.createElement('button');
                 chip.type = 'button';
                 chip.className = 'chat-export-image-format-chip';
                 chip.textContent = format.label;
@@ -2147,7 +2159,7 @@
     }
 
     async function renderPreviewModal() {
-        var modal = ensurePreviewModal();
+        var modal = state.previewModal || ensurePreviewModal();
         var entries = getSelectedEntries();
 
         renderControls();
@@ -2203,16 +2215,77 @@
         }
     }
 
+    function buildExportWindowFeatures() {
+        var width = Math.min(980, Math.max(760, Math.round((window.screen && window.screen.availWidth ? window.screen.availWidth : 980) * 0.72)));
+        var height = Math.min(860, Math.max(620, Math.round((window.screen && window.screen.availHeight ? window.screen.availHeight : 760) * 0.78)));
+        var left = Math.max(0, Math.round(((window.screen && window.screen.availWidth ? window.screen.availWidth : width) - width) / 2));
+        var top = Math.max(0, Math.round(((window.screen && window.screen.availHeight ? window.screen.availHeight : height) - height) / 2));
+        return 'popup=yes,toolbar=no,location=no,status=no,menubar=no,scrollbars=yes,resizable=yes,width='
+            + width + ',height=' + height + ',left=' + left + ',top=' + top;
+    }
+
+    function openExportPreviewWindow() {
+        var previewTitle = translateLabel('chat.exportPreviewTitle', 'Export Preview');
+        var isExistingWindow = !!(state.previewWindow && !state.previewWindow.closed);
+        var previewWindow = isExistingWindow
+            ? state.previewWindow
+            : window.open('', 'neko-chat-export-preview', buildExportWindowFeatures());
+        if (!previewWindow) return null;
+
+        state.previewWindow = previewWindow;
+        var doc = previewWindow.document;
+        doc.open();
+        doc.write('<!DOCTYPE html><html><head><meta charset="utf-8">'
+            + '<meta name="viewport" content="width=device-width, initial-scale=1.0">'
+            + '<title>' + escapeHtml(previewTitle) + '</title>'
+            + '<link rel="stylesheet" href="/static/css/api_key_settings.css">'
+            + '<link rel="stylesheet" href="/static/css/index.css">'
+            + '<link rel="stylesheet" href="/static/css/dark-mode.css">'
+            + '<style>'
+            + 'html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#f8fafc;}'
+            + 'body.chat-export-window{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;padding:0;padding-bottom:0;min-height:100vh;}'
+            + 'body.chat-export-window .chat-export-preview-backdrop{display:none!important;}'
+            + 'body.chat-export-window .chat-export-preview-panel{position:fixed;inset:0;top:0;left:0;transform:none;width:100vw;height:100vh;max-height:none;border-radius:0;box-shadow:none;opacity:1;background:#fff;}'
+            + 'body.chat-export-window .chat-export-preview-header.container-header{position:sticky;top:0;z-index:100;flex-shrink:0;border-bottom:0;}'
+            + 'body.chat-export-window .chat-export-preview-title{white-space:nowrap;}'
+            + 'body.chat-export-window .chat-export-preview-summary{color:rgba(255,255,255,.92);font-weight:600;text-shadow:0 1px 2px rgba(0,80,140,.24);}'
+            + 'body.chat-export-window .chat-export-preview-close img{pointer-events:none;}'
+            + 'body.chat-export-window .chat-export-preview-body{max-height:none;}'
+            + '</style></head><body class="chat-export-window"></body></html>');
+        doc.close();
+        previewWindow.focus();
+        if (isExistingWindow && state.previewEscHandler && state.previewModal && state.previewModal.panel) {
+            try {
+                state.previewModal.panel.ownerDocument.removeEventListener('keydown', state.previewEscHandler);
+            } catch (_) {}
+            state.previewEscHandler = null;
+        }
+        previewWindow.addEventListener('beforeunload', function () {
+            if (state.previewWindow === previewWindow) {
+                state.previewWindow = null;
+                state.previewModal = null;
+            }
+        }, { once: true });
+        return previewWindow;
+    }
+
     async function openPreviewModal() {
-        var modal = ensurePreviewModal();
+        var previewWindow = openExportPreviewWindow();
+        if (!previewWindow) {
+            showToast('chat.previewOpenBlocked', 'Unable to open a new preview window.', 4000);
+            return;
+        }
+        var modal = ensurePreviewModal(previewWindow.document);
 
         // Re-register localeHandler if it was removed on previous close
         if (!modal._localeHandler) {
             var localeHandler = function () {
                 modal.closeButton.setAttribute('aria-label', translateLabel('common.close', 'Close'));
                 modal.title.textContent = translateLabel('chat.exportPreviewTitle', 'Export Preview');
+                modal.title.setAttribute('data-text', modal.title.textContent);
                 modal.frame.setAttribute('title', translateLabel('chat.exportPreviewTitle', 'Export Preview'));
                 modal.previewImage.alt = translateLabel('chat.exportPreviewTitle', 'Export Preview');
+                if (modal.closeIcon) modal.closeIcon.alt = translateLabel('common.close', 'Close');
                 modal.selectAllButton.textContent = translateLabel('chat.exportSelectAll', 'Select All');
                 modal.selectNoneButton.textContent = translateLabel('chat.exportSelectNone', 'Clear');
                 modal.selectInvertButton.textContent = translateLabel('chat.exportSelectInvert', 'Invert');
@@ -2223,7 +2296,7 @@
             modal._localeHandler = localeHandler;
         }
 
-        modal.backdrop.hidden = false;
+        modal.backdrop.hidden = true;
         modal.panel.hidden = false;
 
         // Force a reflow before adding is-open so the opacity transition fires
@@ -2231,13 +2304,13 @@
 
         modal.panel.classList.add('is-open');
         modal.backdrop.classList.add('is-open');
-        document.body.classList.add('chat-export-modal-open');
+        modal.panel.ownerDocument.body.classList.add('chat-export-modal-open');
 
         if (!state.previewEscHandler) {
             state.previewEscHandler = function (event) {
                 if (event.key === 'Escape') closePreviewModal();
             };
-            document.addEventListener('keydown', state.previewEscHandler);
+            modal.panel.ownerDocument.addEventListener('keydown', state.previewEscHandler);
         }
 
         renderSelectionList();
@@ -2247,22 +2320,29 @@
 
     function closePreviewModal() {
         var modal = state.previewModal;
-        if (!modal) return;
         state.previewRenderToken += 1;
-        modal.backdrop.hidden = true;
-        modal.panel.hidden = true;
-        modal.panel.classList.remove('is-open');
-        modal.backdrop.classList.remove('is-open');
-        document.body.classList.remove('chat-export-modal-open');
+        if (modal) {
+            var modalDocument = modal.panel.ownerDocument || document;
+            modal.backdrop.hidden = true;
+            modal.panel.hidden = true;
+            modal.panel.classList.remove('is-open');
+            modal.backdrop.classList.remove('is-open');
+            if (modalDocument.body) modalDocument.body.classList.remove('chat-export-modal-open');
+            if (state.previewEscHandler) {
+                modalDocument.removeEventListener('keydown', state.previewEscHandler);
+                state.previewEscHandler = null;
+            }
+            if (modal._localeHandler) {
+                window.removeEventListener('localechange', modal._localeHandler);
+                modal._localeHandler = null;
+            }
+        }
         clearPreviewCache();
-        if (state.previewEscHandler) {
-            document.removeEventListener('keydown', state.previewEscHandler);
-            state.previewEscHandler = null;
+        if (state.previewWindow && !state.previewWindow.closed) {
+            state.previewWindow.close();
         }
-        if (modal._localeHandler) {
-            window.removeEventListener('localechange', modal._localeHandler);
-            modal._localeHandler = null;
-        }
+        state.previewWindow = null;
+        state.previewModal = null;
     }
 
     // ======================== Action handlers ========================
