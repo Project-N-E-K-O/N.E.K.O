@@ -28,7 +28,10 @@ Live2DManager.prototype.recordInitialParameters = function() {
         }
         
         // expression 重置仍跳过这些动态参数；motion 清理会单独记录它们的基线。
-        const skipParams = ['ParamAngleX', 'ParamAngleY', 'ParamAngleZ', 'ParamMouthOpenY', 'ParamO'];
+        const lipSyncSkipParams = Array.isArray(window.LIPSYNC_PARAMS)
+            ? window.LIPSYNC_PARAMS
+            : ['ParamMouthOpenY', 'ParamMouthForm', 'ParamMouthOpen', 'ParamA', 'ParamI', 'ParamU', 'ParamE', 'ParamO'];
+        const skipParams = ['ParamAngleX', 'ParamAngleY', 'ParamAngleZ', ...lipSyncSkipParams];
         const motionBaselineParamIds = [
             ...skipParams,
             'ParamBodyAngleX', 'ParamBodyAngleY', 'ParamBodyAngleZ',
@@ -947,7 +950,7 @@ Live2DManager.prototype.playMotion = async function(emotion) {
 Live2DManager.prototype.playSimpleMotion = function(emotion) {
     try {
         switch (emotion) {
-            case 'happy':
+            case 'happy': {
                 // 轻微点头
                 this.currentModel.internalModel.coreModel.setParameterValueById('ParamAngleY', 8);
                 const happyTimer = setTimeout(() => {
@@ -958,7 +961,8 @@ Live2DManager.prototype.playSimpleMotion = function(emotion) {
                 }, 1000);
                 this.motionTimer = { type: 'timeout', id: happyTimer };
                 break;
-            case 'sad':
+            }
+            case 'sad': {
                 // 轻微低头
                 this.currentModel.internalModel.coreModel.setParameterValueById('ParamAngleY', -5);
                 const sadTimer = setTimeout(() => {
@@ -969,7 +973,8 @@ Live2DManager.prototype.playSimpleMotion = function(emotion) {
                 }, 1200);
                 this.motionTimer = { type: 'timeout', id: sadTimer };
                 break;
-            case 'angry':
+            }
+            case 'angry': {
                 // 轻微摇头
                 this.currentModel.internalModel.coreModel.setParameterValueById('ParamAngleX', 5);
                 const angryPhaseTimer = setTimeout(() => {
@@ -983,7 +988,8 @@ Live2DManager.prototype.playSimpleMotion = function(emotion) {
                 }, 800);
                 this.motionTimer = { type: 'timeout', id: angryTimer, extraTimeoutIds: [angryPhaseTimer] };
                 break;
-            case 'surprised':
+            }
+            case 'surprised': {
                 // 轻微后仰
                 this.currentModel.internalModel.coreModel.setParameterValueById('ParamAngleY', -8);
                 const surprisedTimer = setTimeout(() => {
@@ -994,6 +1000,7 @@ Live2DManager.prototype.playSimpleMotion = function(emotion) {
                 }, 800);
                 this.motionTimer = { type: 'timeout', id: surprisedTimer };
                 break;
+            }
             default:
                 // 中性状态，重置角度
                 this.currentModel.internalModel.coreModel.setParameterValueById('ParamAngleX', 0);
