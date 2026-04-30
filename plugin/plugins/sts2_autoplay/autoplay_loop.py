@@ -157,6 +157,12 @@ class AutoplayLoopMixin:
                     except (ValueError, TypeError):
                         idle_sleep = 1.0
                     await asyncio.sleep(idle_sleep)
+                if result.get("status") == "error":
+                    self._last_error = str(result.get("error") or result.get("message") or "step_once failed")
+                    self._emit_status()
+                    await asyncio.sleep(0.2)
+                    prev_screen = self._snapshot.get("screen") if self._snapshot else None
+                    continue
                 try:
                     report_interval = max(1, int(self._cfg.get("neko_report_interval_steps", 1) or 1))
                 except (ValueError, TypeError):

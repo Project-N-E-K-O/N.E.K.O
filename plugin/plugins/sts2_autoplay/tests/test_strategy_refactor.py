@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +34,7 @@ def load_module(module_name: str, relative_path: str):
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
     spec.loader.exec_module(module)
     return module
 
@@ -138,12 +140,29 @@ def test_strategy_constraints_parse_non_empty_structured_buckets(parser: Any, st
 
 @pytest.mark.unit
 def test_numeric_strategy_names_are_not_supported_before_plugin_release(parser: Any) -> None:
+    assert parser._normalize_character_strategy_name(0) == "0"
     assert parser._normalize_character_strategy_name("1") == "1"
     assert parser._normalize_character_strategy_name("2") == "2"
     with pytest.raises(RuntimeError):
         parser._ensure_character_strategy_exists("1")
     with pytest.raises(RuntimeError):
         parser._ensure_character_strategy_exists("2")
+
+
+@pytest.mark.unit
+def test_strategy_frontmatter_accepts_utf8_bom(parser: Any) -> None:
+    parsed = parser._parse_strategy_frontmatter("\ufeff---\nconstraints:\n  required:\n    zap: [zap]\n---\nbody")
+
+    assert parsed == {"required": {"zap": ["zap"]}}
+
+
+@pytest.mark.unit
+def test_strategy_constraint_sections_include_supported_child_under_unrelated_parent(parser: Any) -> None:
+    rendered = parser._strategy_sections_for_constraints("## 其他说明\n无关内容\n### 战斗偏好\n- 优先防御\n")
+
+    assert "### 其他说明" not in rendered
+    assert "#### 战斗偏好" in rendered
+    assert "- 优先防御" in rendered
 
 
 @pytest.mark.unit

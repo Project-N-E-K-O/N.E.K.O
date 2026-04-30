@@ -227,3 +227,26 @@ def test_autonomous_low_hp_pause_notifies_main_program() -> None:
     assert notification["metadata"]["reason"] == "low_hp"
     assert notification["metadata"]["reason_label"] == "血量过低"
     assert notification["metadata"]["requires_user_attention"] is True
+
+
+@pytest.mark.unit
+def test_autonomous_action_ignores_invalid_numeric_config() -> None:
+    service = make_service(
+        neko_auto_low_hp_threshold="bad",
+        neko_auto_safe_hp_threshold="bad",
+        action_interval_seconds="bad",
+    )
+    service._autoplay_state = "running"
+    service._snapshot = {
+        "screen": "event",
+        "floor": 3,
+        "act": 1,
+        "raw_state": {
+            "combat": {
+                "player": {"hp": 40, "max_hp": 50},
+                "enemies": [],
+            }
+        },
+    }
+
+    assert service._assess_neko_autonomous_action(prev_screen="combat") is None

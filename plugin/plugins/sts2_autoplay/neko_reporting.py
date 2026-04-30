@@ -15,6 +15,12 @@ class NekoReportingMixin:
                 return value
         return None
 
+    def _safe_float(self, value: Any, default: float = 0.0) -> float:
+        try:
+            return float(value)
+        except (ValueError, TypeError):
+            return default
+
     def _report_full_step(self, context: Dict[str, Any], *, decision_result: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         snapshot = context.get("snapshot") if isinstance(context.get("snapshot"), dict) else {}
         raw_state = snapshot.get("raw_state") if isinstance(snapshot.get("raw_state"), dict) else {}
@@ -610,7 +616,7 @@ class NekoReportingMixin:
             max_hp = 1
         hp_ratio = current_hp / max_hp
 
-        low_hp_threshold = max(0.0, min(1.0, float(self._cfg.get("neko_auto_low_hp_threshold", 0.3))))
+        low_hp_threshold = max(0.0, min(1.0, self._safe_float(self._cfg.get("neko_auto_low_hp_threshold", 0.3), 0.3)))
         if hp_ratio <= low_hp_threshold and self._autoplay_state == "running":
             return {"action": "pause", "reason": "low_hp", "hp_ratio": round(hp_ratio, 2)}
 
@@ -629,7 +635,7 @@ class NekoReportingMixin:
         player_block = self._combat_player_block(combat)
         remaining_damage = max(0, incoming_attack - player_block)
         dangerous_attack_threshold = self._safe_int(self._cfg.get("neko_auto_dangerous_attack_threshold", 20))
-        already_slowed = float(self._cfg.get("action_interval_seconds", 1.5) or 1.5) >= 3.0 or "_neko_auto_saved_action_interval" in self._cfg
+        already_slowed = self._safe_float(self._cfg.get("action_interval_seconds", 1.5) or 1.5, 1.5) >= 3.0 or "_neko_auto_saved_action_interval" in self._cfg
         if not already_slowed and is_boss_screen and not was_boss_screen and self._autoplay_state == "running":
             return {"action": "slow_down", "reason": "boss_combat", "floor": floor}
         if (not already_slowed and incoming_attack >= dangerous_attack_threshold and remaining_damage > 0 and screen == "combat" and self._autoplay_state == "running"):
@@ -639,7 +645,7 @@ class NekoReportingMixin:
             if danger_gone:
                 return {"action": "restore_speed", "reason": "danger_passed"}
 
-        safe_hp_threshold = max(0.0, min(1.0, float(self._cfg.get("neko_auto_safe_hp_threshold", 0.5))))
+        safe_hp_threshold = max(0.0, min(1.0, self._safe_float(self._cfg.get("neko_auto_safe_hp_threshold", 0.5), 0.5)))
         resume_after_low_hp = bool(self._cfg.get("neko_auto_resume_after_low_hp", True))
         if resume_after_low_hp and self._autoplay_state == "paused" and self._paused and hp_ratio >= safe_hp_threshold:
             return {"action": "resume", "reason": "hp_recovered", "hp_ratio": round(hp_ratio, 2)}

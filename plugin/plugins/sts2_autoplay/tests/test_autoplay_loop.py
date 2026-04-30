@@ -33,6 +33,8 @@ AutoplayLoopMixin = load_autoplay_loop_mixin()
 
 
 class LoopService(AutoplayLoopMixin):
+    _is_semi_auto_task_complete = AutoplayLoopMixin._is_semi_auto_task_complete
+
     def __init__(self) -> None:
         self._autoplay_task = None
         self._semi_auto_task: dict[str, Any] | None = None
@@ -41,6 +43,14 @@ class LoopService(AutoplayLoopMixin):
         self._snapshot: dict[str, Any] = {}
         self._step_count = 0
         self._cfg: dict[str, Any] = {}
+        self._shutdown = False
+        self._last_error = ""
+        self._last_task_report_step = 0
+        self.reports: list[dict[str, Any]] = []
+        self.completed = False
+        self.autonomous_calls = 0
+        self.status_emits = 0
+        self.step_results: list[dict[str, Any]] = []
         self.started: list[dict[str, Any]] = []
 
     def _safe_int(self, value: Any, default: int = 0) -> int:
@@ -57,7 +67,26 @@ class LoopService(AutoplayLoopMixin):
         return {"status": "running", "executed": True}
 
     def _emit_status(self) -> None:
-        pass
+        self.status_emits += 1
+
+    async def step_once(self) -> dict[str, Any]:
+        if self.step_results:
+            result = self.step_results.pop(0)
+            if not self.step_results:
+                self._shutdown = True
+            return result
+        self._shutdown = True
+        return {"status": "idle"}
+
+    async def _push_neko_report(self, result: dict[str, Any]) -> None:
+        self.reports.append(result)
+
+    async def _complete_semi_auto_task(self) -> None:
+        self.completed = True
+
+    def _assess_neko_autonomous_action(self, prev_screen: str | None) -> dict[str, Any] | None:
+        self.autonomous_calls += 1
+        return None
 
 
 def run(coro):
@@ -105,3 +134,23 @@ def test_current_combat_task_started_in_combat_completes_on_reward_screen() -> N
     service._snapshot = {"screen": "reward", "floor": 3, "in_combat": False}
 
     assert service._is_semi_auto_task_complete() is True
+
+
+@pytest.mark.unit
+def test_autoplay_loop_short_circuits_error_step_without_reports_or_autonomous_actions() -> None:
+    service = LoopService()
+    service._autoplay_state = "running"
+    service._cfg = {"neko_reporting_enabled": True, "neko_report_interval_steps": 1}
+    service._semi_auto_task = {"stop_condition": "manual", "start_floor": 1}
+    service._snapshot = {"screen": "combat", "floor": 1}
+    service.step_results = [
+        {"status": "error", "error": "bad action"},
+        {"status": "idle"},
+    ]
+
+    run(service._autoplay_loop())
+
+    assert service._last_error == "bad action"
+    assert service.reports == [{"status": "idle"}]
+    assert service.autonomous_calls == 1
+    assert service.status_emits >= 1
