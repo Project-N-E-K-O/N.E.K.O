@@ -719,6 +719,18 @@
         return clamp(Math.round(message.length * 280), 2200, 24000);
     }
 
+    function estimateGuideChatStreamDurationMs(text) {
+        const units = Array.from(typeof text === 'string' ? text.trim() : '');
+        if (units.length === 0) {
+            return 0;
+        }
+
+        const durationMs = units.reduce((total, unit) => {
+            return total + (/[，。！？,.!?、~～—-]/.test(unit) ? 118 : 42);
+        }, 220);
+        return clamp(Math.round(durationMs), 900, 12000);
+    }
+
     async function resumeKnownAudioContexts() {
         const tasks = [];
 
@@ -6034,26 +6046,11 @@
                 TAKEOVER_SETTINGS_DETAIL_TEXT_PART_2
             );
             const detailVoiceKey = 'takeover_settings_peek_detail';
-            const detailNarrationDurationMs = this.getGuideVoiceDurationMs(detailVoiceKey, resolveGuideLocale())
-                || estimateSpeechDurationMs(detailText);
-            const detailSecondLineAtMs = this.resolveGuideVoiceCueTargetMs(
-                detailVoiceKey,
-                'showSecondLine',
-                detailNarrationDurationMs
-            );
-            const firstDetailStreamDurationMs = detailTextPart2
-                ? detailSecondLineAtMs
-                : detailNarrationDurationMs;
-            const secondDetailStreamDurationMs = Math.max(
-                0,
-                detailNarrationDurationMs - firstDetailStreamDurationMs
-            );
             this.appendGuideChatMessage(detailTextPart1 || detailText, {
                 textKey: detailTextPart1
                     ? TAKEOVER_SETTINGS_DETAIL_TEXT_PART_1_KEY
                     : TAKEOVER_SETTINGS_DETAIL_TEXT_KEY,
-                voiceKey: detailVoiceKey,
-                streamDurationMs: firstDetailStreamDurationMs
+                voiceKey: detailVoiceKey
             });
 
             let settingsPeekHighlightsCleared = false;
@@ -6072,8 +6069,7 @@
                 settingsDetailSecondLineDisplayed = true;
                 this.appendGuideChatMessage(detailTextPart2, {
                     textKey: TAKEOVER_SETTINGS_DETAIL_TEXT_PART_2_KEY,
-                    voiceKey: detailVoiceKey,
-                    streamDurationMs: secondDetailStreamDurationMs
+                    voiceKey: detailVoiceKey
                 });
             };
             const clearSettingsPeekHighlights = () => {
@@ -6481,23 +6477,7 @@
         }
 
         resolveGuideChatStreamDurationMs(content, options) {
-            const normalizedOptions = options || {};
-            const explicitDurationMs = Number(normalizedOptions.streamDurationMs);
-            if (Number.isFinite(explicitDurationMs) && explicitDurationMs > 0) {
-                return explicitDurationMs;
-            }
-
-            const voiceKey = typeof normalizedOptions.voiceKey === 'string'
-                ? normalizedOptions.voiceKey.trim()
-                : '';
-            const voiceDurationMs = voiceKey
-                ? this.getGuideVoiceDurationMs(voiceKey, resolveGuideLocale())
-                : 0;
-            if (voiceDurationMs > 0) {
-                return voiceDurationMs;
-            }
-
-            return estimateSpeechDurationMs(content);
+            return estimateGuideChatStreamDurationMs(content);
         }
 
         streamGuideChatMessage(message, content, options) {
@@ -6525,9 +6505,14 @@
             let lastTickAt = Date.now();
             let waitingForResume = false;
             const pauseWithScene = !(options && options.streamPauseWithScene === false);
+            const allowDuringAngryExit = !!(options && options.streamAllowDuringAngryExit);
             const tickMs = clamp(Math.round(durationMs / Math.max(total, 1)), 56, 150);
             const step = () => {
-                if (this.destroyed || this.isStopping()) {
+                if (
+                    this.destroyed
+                    || this.terminationRequested
+                    || (this.angryExitTriggered && !allowDuringAngryExit)
+                ) {
                     return;
                 }
 
@@ -6541,7 +6526,11 @@
                         this.waitUntilSceneResumed().then(() => {
                             waitingForResume = false;
                             lastTickAt = Date.now();
-                            if (!this.destroyed && !this.isStopping()) {
+                            if (
+                                !this.destroyed
+                                && !this.terminationRequested
+                                && (!this.angryExitTriggered || allowDuringAngryExit)
+                            ) {
                                 this.scheduleGuideChatStream(step, Math.min(80, tickMs));
                             }
                         });
@@ -7597,7 +7586,9 @@
             this.overlay.hideBubble();
             this.appendGuideChatMessage(bubbleText || '人类~~~~！你真的很没礼貌喵！', {
                 textKey: performance.bubbleTextKey || '',
-                voiceKey: performance.voiceKey
+                voiceKey: performance.voiceKey,
+                streamPauseWithScene: false,
+                streamAllowDuringAngryExit: true
             });
             this.playGuideExpression('z3');
             await this.speakGuideLine(bubbleText || '', {
@@ -7646,15 +7637,6 @@
             this.destroyed = true;
             this.terminationRequested = true;
             this.releaseTutorialFaceForwardLock();
-            if (window.appState) {
-                window.appState.isTextSessionActive = false;
-                window.appState.sessionStartedResolver = null;
-                window.appState.sessionStartedRejecter = null;
-            }
-            if (window.sessionTimeoutId) {
-                window.clearTimeout(window.sessionTimeoutId);
-                window.sessionTimeoutId = null;
-            }
             this.resumeCurrentSceneAfterResistance();
             this.clearExternalizedChatFx();
             this.setExternalizedChatButtonsDisabled(false);

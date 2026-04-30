@@ -278,9 +278,8 @@
         // Concurrency: wait if another reload is in-flight
         if (window._modelReloadInFlight) {
             console.log('[Model] 模型重载已在进行中，等待完成后重试');
-            window._pendingModelReload = true;
             await window._modelReloadPromise;
-            return;
+            return handleModelReload(targetLanlanName, reloadOptions);
         }
 
         // Mark in-flight
