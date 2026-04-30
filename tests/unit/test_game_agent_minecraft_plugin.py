@@ -521,13 +521,13 @@ async def test_log_heuristic_does_not_flip_when_pending_task_active():
     await service._on_log("Connection lost and re-established.")
     assert service._task_finished is False
 
-    # Clean up — we cancelled it ourselves so both CancelledError
-    # and any incidental exception on the way out are expected and
-    # irrelevant to the assertions above.
     runner.cancel()
     try:
         await runner
     except (asyncio.CancelledError, Exception):
+        # Cleanup-only swallow — we cancelled it ourselves so both
+        # CancelledError and any incidental exception on the way out
+        # are expected and irrelevant to the assertions above.
         pass
 
 
