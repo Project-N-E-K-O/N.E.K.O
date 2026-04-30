@@ -1786,7 +1786,7 @@
         "deleteFailed": "删除失败",
         "addCatgirlFieldPrompt": "请输入新设定的名称（键名）",
         "addCatgirlFieldTitle": "新增猫娘设定",
-        "live2dModelError": "猫娘\"{{name}}\"的Live2D模型文件不存在或已损坏。\n\n当前模型路径: {{path}}\n\n是否回退到默认模型(yui_default)？\n\n点击\"确定\"使用默认模型，点击\"取消\"保持当前设置。",
+        "live2dModelError": "猫娘\"{{name}}\"的Live2D模型文件不存在或已损坏。\n\n当前模型路径: {{path}}\n\n是否回退到默认模型(mao_pro)？\n\n点击\"确定\"使用默认模型，点击\"取消\"保持当前设置。",
         "live2dModelErrorTitle": "Live2D模型异常",
         "fallbackToDefaultModel": "已回退到默认模型: {{path}}",
         "fallbackFailed": "回退到默认模型失败，请检查模型设置",

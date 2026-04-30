@@ -1785,7 +1785,7 @@
         "deleteFailed": "削除に失敗しました",
         "addCatgirlFieldPrompt": "新しいフィールドの名前（キー名）を入力してください",
         "addCatgirlFieldTitle": "NEKO フィールドを追加",
-        "live2dModelError": "NEKO \"{{name}}\" の Live2D モデルファイルが存在しないか、破損しています。\n\n現在のモデルパス: {{path}}\n\nデフォルトモデル (yui_default) にフォールバックしますか？\n\n「OK」をクリックしてデフォルトモデルを使用するか、「キャンセル」をクリックして現在の設定を保持してください。",
+        "live2dModelError": "NEKO \"{{name}}\" の Live2D モデルファイルが存在しないか、破損しています。\n\n現在のモデルパス: {{path}}\n\nデフォルトモデル (mao_pro) にフォールバックしますか？\n\n「OK」をクリックしてデフォルトモデルを使用するか、「キャンセル」をクリックして現在の設定を保持してください。",
         "live2dModelErrorTitle": "Live2D モデルエラー",
         "fallbackToDefaultModel": "デフォルトモデルにフォールバックしました: {{path}}",
         "fallbackFailed": "デフォルトモデルへのフォールバックに失敗しました。モデル設定を確認してください",
