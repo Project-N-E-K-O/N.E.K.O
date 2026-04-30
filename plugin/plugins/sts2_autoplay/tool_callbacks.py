@@ -187,9 +187,19 @@ def start_callback_server(
         handle._server = server
 
         async def _serve_and_signal() -> None:
-            # Signal ready once the server starts accepting connections
-            server.config.loaded = True
-            ready_event.set()
+            # Start serving. uvicorn.Server sets self.started=True once
+            # it is accepting connections. We poll for that in a background
+            # task and signal the main thread.
+            async def _wait_started() -> None:
+                for _ in range(100):  # up to 5 seconds
+                    if getattr(server, "started", False):
+                        ready_event.set()
+                        return
+                    await asyncio.sleep(0.05)
+                # Fallback: signal anyway so main thread doesn't hang
+                ready_event.set()
+
+            asyncio.ensure_future(_wait_started())
             await server.serve()
 
         try:
@@ -197,6 +207,7 @@ def start_callback_server(
         except Exception as exc:
             logger.warning("Callback server loop exited: %s", exc)
         finally:
+            ready_event.set()  # unblock main thread if serve() failed early
             try:
                 loop.run_until_complete(loop.shutdown_asyncgens())
             except Exception:
