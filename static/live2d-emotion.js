@@ -975,9 +975,56 @@ Live2DManager.prototype.playMotion = async function(emotion) {
 
     // 优先使用 Cubism 原生 Motion Group（FileReferences.Motions）
     // 格式: { emotion: [{ File: "motions/xxx.motion3.json" }, ...] }
+    const getMotionFile = (motionItem) => motionItem && (motionItem.File || motionItem.file);
+    const normalizeMotionFileKey = (motionFile) => {
+        return String(motionFile || '')
+            .replace(/\\/g, '/')
+            .replace(/^[./]+/, '')
+            .toLowerCase();
+    };
+    const findMotionInRuntimeDefinitions = (groupName, motionFile) => {
+        const targetKey = normalizeMotionFileKey(motionFile);
+        if (!targetKey) return null;
+
+        const motionManager = this.currentModel?.internalModel?.motionManager;
+        const definitionSources = [
+            motionManager?.definitions,
+            motionManager?._definitions,
+            this.fileReferences?.Motions
+        ].filter(Boolean);
+        const findInGroup = (definitions, name) => {
+            const group = definitions && definitions[name];
+            if (!Array.isArray(group)) return null;
+            for (let index = 0; index < group.length; index++) {
+                const file = getMotionFile(group[index]);
+                if (normalizeMotionFileKey(file) === targetKey) {
+                    return { group: name, index, file };
+                }
+            }
+            return null;
+        };
+
+        for (const definitions of definitionSources) {
+            const preferred = findInGroup(definitions, groupName);
+            if (preferred) return preferred;
+        }
+
+        for (const definitions of definitionSources) {
+            for (const name of Object.keys(definitions || {})) {
+                if (name === groupName) continue;
+                const match = findInGroup(definitions, name);
+                if (match) return match;
+            }
+        }
+
+        return null;
+    };
+
     let motions = null;
+    let motionsUseRuntimeIndexes = false;
     if (this.fileReferences && this.fileReferences.Motions && this.fileReferences.Motions[emotion]) {
         motions = this.fileReferences.Motions[emotion]; // 形如 [{ File: "motions/xxx.motion3.json" }, ...]
+        motionsUseRuntimeIndexes = true;
     } else if (this.emotionMapping && this.emotionMapping.motions && this.emotionMapping.motions[emotion]) {
         // 兼容 EmotionMapping.motions: { emotion: ["motions/xxx.motion3.json", ...] }
         const emotionMotions = this.emotionMapping.motions[emotion];
@@ -1015,11 +1062,20 @@ Live2DManager.prototype.playMotion = async function(emotion) {
 
     const choiceIndex = Math.floor(Math.random() * motions.length);
     const choice = motions[choiceIndex];
-    if (!choice || !choice.File) {
+    const choiceFile = getMotionFile(choice);
+    if (!choice || !choiceFile) {
         console.warn(`motion配置无效: ${JSON.stringify(choice)}，回退到简单动作`);
         this.playSimpleMotion(emotion);
         return;
     }
+    const runtimeChoice = findMotionInRuntimeDefinitions(emotion, choiceFile)
+        || (motionsUseRuntimeIndexes ? { group: emotion, index: choiceIndex, file: choiceFile } : null);
+    if (!runtimeChoice) {
+        console.warn(`motion文件未注册到运行时motion组: ${choiceFile}，回退到简单动作`);
+        this.playSimpleMotion(emotion);
+        return;
+    }
+    const runtimeMotionFile = runtimeChoice.file || choiceFile;
     const motionParamTrackModel = this.currentModel;
     const motionParamTrackGeneration = (this._motionParameterTrackGeneration || 0) + 1;
     this._motionParameterTrackGeneration = motionParamTrackGeneration;
@@ -1044,22 +1100,22 @@ Live2DManager.prototype.playMotion = async function(emotion) {
         // 尝试使用Live2D模型的原生motion播放功能
         try {
             // 构建完整的motion路径（相对模型根目录）
-            const motionPath = this.resolveAssetPath(choice.File);
+            const motionPath = this.resolveAssetPath(runtimeMotionFile);
             console.log(`尝试播放motion: ${motionPath}`);
 
             // 使用模型的原生motion播放功能
             if (this.currentModel.motion) {
                 try {
-                    console.log(`尝试播放motion: ${choice.File}`);
+                    console.log(`尝试播放motion: ${runtimeMotionFile}`);
 
-                    // 使用情感名称作为motion组名，这样可以确保播放正确的motion
-                    console.log(`尝试使用情感组播放motion: ${emotion}`);
+                    // 使用运行时 motion group/index 播放，确保播放文件和追踪清理文件一致。
+                    console.log(`尝试使用motion组播放motion: ${runtimeChoice.group}[${runtimeChoice.index}]`);
 
-                    const motion = await this.currentModel.motion(emotion, choiceIndex);
+                    const motion = await this.currentModel.motion(runtimeChoice.group, runtimeChoice.index);
                     if (!isCurrentMotionInvocation()) return;
 
                     if (motion) {
-                        console.log(`成功开始播放motion（情感组: ${emotion}，预期文件: ${choice.File}）`);
+                        console.log(`成功开始播放motion（motion组: ${runtimeChoice.group}，预期文件: ${runtimeMotionFile}）`);
 
                         // 获取motion的实际持续时间
                         let motionDuration = 5000; // 默认5秒
@@ -1105,7 +1161,7 @@ Live2DManager.prototype.playMotion = async function(emotion) {
                                 this.currentModel !== motionParamTrackModel
                                 || this._motionParameterTrackGeneration !== motionParamTrackGeneration
                             ) return;
-                            console.log(`motion播放完成（预期文件: ${choice.File}），清除motion参数但保留expression`);
+                            console.log(`motion播放完成（预期文件: ${runtimeMotionFile}），清除motion参数但保留expression`);
                             this.motionTimer = null;
                             this.clearEmotionEffects(); // 只清除motion参数，不清除expression
                         }, motionDuration);
@@ -1121,7 +1177,7 @@ Live2DManager.prototype.playMotion = async function(emotion) {
             }
 
             // 如果原生motion播放失败，回退到简单动作
-            console.warn(`无法播放motion: ${choice.File}，回退到简单动作`);
+            console.warn(`无法播放motion: ${runtimeMotionFile}，回退到简单动作`);
             if (!isCurrentMotionInvocation()) return;
             this.playSimpleMotion(emotion);
 
