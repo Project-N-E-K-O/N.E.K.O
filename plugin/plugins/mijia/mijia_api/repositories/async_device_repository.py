@@ -286,8 +286,7 @@ class AsyncDeviceRepositoryImpl(IAsyncDeviceRepository):
         for device_id in device_ids:
             self._cache.invalidate_pattern(f"{credential.user_id}:device:{device_id}")
 
-        results = response.get("result", [])
-        return [r.get("code") == 0 for r in results]
+        return response.get("result", [])
 
     def _parse_device(self, data: Dict[str, Any], home_id: str) -> Device:
         """解析设备数据

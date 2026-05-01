@@ -1097,7 +1097,7 @@ class MijiaPlugin(NekoPluginBase):
             verb = (act_m.group(2) or "").strip()
             if device_hint and verb:
                 match_result = await self._match_devices(device_hint)
-                if match_result["status"] == "found" and len(match_result["devices"]) == 1:
+                if match_result["status"] == "ok" and len(match_result["devices"]) == 1:
                     device = match_result["devices"][0]
                     did = device.get("did")
                     actions = device.get("actions", [])
@@ -1778,15 +1778,27 @@ class MijiaPlugin(NekoPluginBase):
         """按场景名称查找并执行场景"""
         cache_path = self.data_path("scenes_cache.json")
         scenes = []
+        cached_home_id = None
         if cache_path.exists():
             try:
                 cached = await read_json_async(cache_path)
                 scenes = cached.get('scenes', [])
+                cached_home_id = cached.get('home_id')
             except Exception:
                 pass
 
         if not scenes:
             return Err(SdkError("场景列表为空，请先获取场景列表"))
+
+        # 归属校验：缓存的 home_id 必须属于当前账号
+        if cached_home_id and self.api:
+            try:
+                homes = await self.api.get_homes()
+                valid_home_ids = {h.id for h in homes if h.id}
+                if cached_home_id not in valid_home_ids:
+                    return Err(SdkError("场景缓存归属不匹配，请先刷新场景列表"))
+            except Exception:
+                pass
 
         # 模糊匹配场景名
         name_lower = scene_name.lower()
@@ -1800,12 +1812,14 @@ class MijiaPlugin(NekoPluginBase):
             return Err(SdkError(f"找到多个匹配场景：{', '.join(names)}，请更精确指定"))
 
         scene = matched[0]
-        # 获取 home_id
-        try:
-            homes = await self.api.get_homes()
-            home_id = homes[0].id if homes else None
-        except Exception:
-            home_id = None
+        # 优先使用缓存中的 home_id（场景所属家庭），否则回退到第一个家庭
+        home_id = cached_home_id
+        if not home_id:
+            try:
+                homes = await self.api.get_homes()
+                home_id = homes[0].id if homes else None
+            except Exception:
+                home_id = None
 
         if not home_id:
             return Err(SdkError("未找到可用家庭"))
