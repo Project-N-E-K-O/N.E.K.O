@@ -35,6 +35,8 @@ from datetime import datetime, timedelta
 
 from config import APP_NAME
 
+NEKO_STORAGE_SELECTED_ROOT_ENV = "NEKO_STORAGE_SELECTED_ROOT"
+
 
 def _get_application_root() -> Path:
     if getattr(sys, "frozen", False):
@@ -49,6 +51,21 @@ def _get_writable_application_directory() -> Path:
     if getattr(sys, "frozen", False):
         return Path(sys.executable).resolve().parent
     return _get_application_root()
+
+
+def _get_selected_storage_root_from_env() -> Path | None:
+    raw_root = str(os.environ.get(NEKO_STORAGE_SELECTED_ROOT_ENV) or "").strip()
+    if not raw_root:
+        return None
+
+    try:
+        selected_root = Path(raw_root).expanduser()
+    except Exception:
+        return None
+
+    if not selected_root.is_absolute():
+        return None
+    return selected_root
 
 
 class RobustLoggerConfig:
@@ -111,16 +128,27 @@ class RobustLoggerConfig:
         """
         获取合适的日志目录
         优先级：
-        1. 用户文档目录/{APP_NAME}/logs（我的文档，默认首选）
-        2. 应用程序所在目录/logs
-        3. 用户数据目录（AppData等）
-        4. 用户主目录
-        5. 临时目录（最后的降级选项）
+        1. 已选择的运行时存储目录/logs（由启动器通过环境变量注入）
+        2. 用户文档目录/{APP_NAME}/logs（兼容旧版本和直接运行）
+        3. 应用程序所在目录/logs
+        4. 用户数据目录（AppData等）
+        5. 用户主目录
+        6. 临时目录（最后的降级选项）
         
         Returns:
             Path: 日志目录路径
         """
-        # 尝试1: 使用用户文档目录（我的文档，默认首选！）
+        # 尝试1: 使用当前存储根目录。老日志不迁移；新日志跟随新根目录。
+        try:
+            selected_root = _get_selected_storage_root_from_env()
+            if selected_root is not None:
+                log_dir = selected_root / "logs"
+                if self._test_directory_writable(log_dir):
+                    return log_dir
+        except Exception as e:
+            print(f"Warning: Failed to use selected storage log directory: {e}", file=sys.stderr)
+
+        # 尝试2: 使用用户文档目录（兼容旧版本和非 launcher 直接运行）
         try:
             docs_dir = self._get_documents_directory()
             # 使用配置的应用名称目录
