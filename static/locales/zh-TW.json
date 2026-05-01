@@ -1878,7 +1878,8 @@
         "cardAuthorUpdateFailed": "更新作者失敗：{{error}}",
         "idleMotionHint": "儲存角色時，目前選中的動作將被設為待機動作",
         "saveMasterSuccess": "儲存主人設定成功",
-        "editCardFace": "編輯卡面"
+        "editCardFace": "編輯卡面",
+        "cardMakerPopupBlocked": "卡面製作頁面未能自動開啟，請允許瀏覽器彈出視窗後重試，或點擊卡面區域手動開啟。"
     },
     "app": {
         "welcomeBack": "{{name}}迴來瞭！",

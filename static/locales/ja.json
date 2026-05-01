@@ -1878,7 +1878,8 @@
         "cardAuthorUpdateFailed": "作者の更新に失敗しました: {{error}}",
         "idleMotionHint": "保存時に選択されたモーションが待機モーションとして設定されます",
         "saveMasterSuccess": "マスタープロフィールを保存しました",
-        "editCardFace": "カードフェイスを編集"
+        "editCardFace": "カードフェイスを編集",
+        "cardMakerPopupBlocked": "カード作成ページを自動的に開けませんでした。ブラウザのポップアップを許可して再試行するか、カードエリアをクリックして手動で開いてください。"
     },
     "app": {
         "welcomeBack": "{{name}}が戻りました！",

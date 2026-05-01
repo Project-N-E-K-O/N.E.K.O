@@ -1878,7 +1878,8 @@
         "cardAuthorUpdateFailed": "작성자 업데이트 실패: {{error}}",
         "idleMotionHint": "저장 시 선택한 모션이 대기 모션으로 설정됩니다",
         "saveMasterSuccess": "주인 설정 저장 성공",
-        "editCardFace": "카드 이미지 편집"
+        "editCardFace": "카드 이미지 편집",
+        "cardMakerPopupBlocked": "카드 제작 페이지를 자동으로 열 수 없습니다. 브라우저의 팝업을 허용한 뒤 다시 시도하거나, 카드 영역을 클릭해 직접 열어 주세요."
     },
     "app": {
         "welcomeBack": "{{name}}이 돌아왔습니다!",

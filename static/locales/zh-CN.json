@@ -1878,7 +1878,8 @@
         "cardAuthorUpdated": "作者已更新",
         "cardAuthorUpdateFailed": "更新作者失败: {{error}}",
         "saveMasterSuccess": "保存主人设定成功",
-        "editCardFace": "编辑卡面"
+        "editCardFace": "编辑卡面",
+        "cardMakerPopupBlocked": "卡面制作页面未能自动打开，请允许浏览器弹窗后重试，或点击卡面区域手动打开。"
     },
     "app": {
         "welcomeBack": "{{name}}回来了！",
