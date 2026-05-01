@@ -1832,8 +1832,10 @@ class UniversalTutorialManager {
                                 const nextIdx = steps.findIndex(s => s.element === '#emotion-config');
                                 if (nextIdx >= 0 && this.driver && typeof this.driver.showStep === 'function') {
                                     // 把 timer 加入 _refreshTimers，教程销毁/重启时一并清理，
-                                    // 避免回调跑到已销毁的 driver 上（race）
+                                    // 避免回调跑到已销毁的 driver 上（race）；
+                                    // 同时检查 window.isInTutorial，防止 200ms 内用户 Skip/Done 后还跳步
                                     const advanceTimer = setTimeout(() => {
+                                        if (!window.isInTutorial) return;
                                         if (!this.driver || typeof this.driver.showStep !== 'function') return;
                                         const curIdx = typeof this.driver.currentStep === 'number'
                                             ? this.driver.currentStep : -1;
