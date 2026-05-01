@@ -2839,20 +2839,20 @@
         },
         "emotion_manager": {
             "step1": {
-                "title": "🎭 Выбрать модель",
-                "desc": "Сначала выберите модель Live2D, для которой нужно настроить эмоции. У каждой модели могут быть независимые настройки эмоций."
+                "title": "🎭 Select Model",
+                "desc": "First select the Live2D model to configure emotions. Each model can have independent emotion settings."
             },
             "step_pick": {
-                "title": "👇 Выберите модель",
-                "desc": "Щёлкните по любому пункту в выпадающем списке, чтобы выбрать модель. Без выбора модели продолжить нельзя."
+                "title": "👇 Pick a Model",
+                "desc": "Click any item in the dropdown list to choose a model. You must pick one to proceed."
             },
             "step2": {
-                "title": "😊 Область настройки эмоций",
-                "desc": "Настройте сочетания выражений и движений для разных эмоций. Ваша Neko будет автоматически переключать эмоции в зависимости от разговора."
+                "title": "😊 Emotion Configuration Area",
+                "desc": "Configure expressions and motion combinations for different emotions. Your Neko will automatically switch emotions based on conversation."
             },
             "step3": {
-                "title": "🔄 Сбросить настройки",
-                "desc": "Нажмите, чтобы сбросить настройки эмоций к значениям по умолчанию."
+                "title": "🔄 Reset Configuration",
+                "desc": "Click to reset emotion configuration to default values."
             }
         },
         "chara_manager": {

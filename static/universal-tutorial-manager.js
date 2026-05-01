@@ -1831,13 +1831,17 @@ class UniversalTutorialManager {
                             if (this.hasEmotionManagerModelSelected()) {
                                 const nextIdx = steps.findIndex(s => s.element === '#emotion-config');
                                 if (nextIdx >= 0 && this.driver && typeof this.driver.showStep === 'function') {
-                                    setTimeout(() => {
-                                        const curIdx = (this.driver && typeof this.driver.currentStep === 'number')
+                                    // 把 timer 加入 _refreshTimers，教程销毁/重启时一并清理，
+                                    // 避免回调跑到已销毁的 driver 上（race）
+                                    const advanceTimer = setTimeout(() => {
+                                        if (!this.driver || typeof this.driver.showStep !== 'function') return;
+                                        const curIdx = typeof this.driver.currentStep === 'number'
                                             ? this.driver.currentStep : -1;
                                         if (curIdx === stepIdx) {
                                             this.driver.showStep(nextIdx);
                                         }
                                     }, 200);
+                                    if (this._refreshTimers) this._refreshTimers.push(advanceTimer);
                                 }
                             } else {
                                 ensureOpen();
