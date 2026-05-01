@@ -508,14 +508,17 @@ class OmniRealtimeClient:
         else:
             logger.info("apply_tools_to_session: api_type=%s does not support custom tools — ignoring", api)
 
-    def _qwen_server_vad_turn_detection_config(self) -> Dict[str, Any]:
+    def _qwen_server_vad_turn_detection_config(self, create_response: Optional[bool] = None) -> Dict[str, Any]:
         """Return the default Qwen server-VAD config used by this client."""
-        return {
+        config: Dict[str, Any] = {
             "type": "server_vad",
             "threshold": 0.55,
             "prefix_padding_ms": 300,
             "silence_duration_ms": 650,
         }
+        if create_response is not None:
+            config["create_response"] = bool(create_response)
+        return config
 
     def _openai_audio_input_config(self, *, create_response: bool = True) -> Dict[str, Any]:
         """Return OpenAI Realtime audio input config, preserving STT."""
@@ -549,12 +552,12 @@ class OmniRealtimeClient:
         provider_supported = False
         try:
             if "qwen" in self._model_lower:
-                turn_detection = self._qwen_server_vad_turn_detection_config()
-                if enabled:
-                    # Qwen Realtime follows server_vad for automatic turns.  This
-                    # keeps VAD/transcription active while asking the provider not
-                    # to create a normal assistant response for each speech stop.
-                    turn_detection["create_response"] = False
+                # Qwen Realtime follows server_vad for automatic turns.  This keeps
+                # VAD/transcription active while asking the provider not to create
+                # a normal assistant response during game routing.  On restore we
+                # explicitly send create_response=True because some providers merge
+                # session.update payloads and would otherwise keep the old false.
+                turn_detection = self._qwen_server_vad_turn_detection_config(create_response=not enabled)
                 await self.update_session({"turn_detection": turn_detection})
                 provider_supported = True
             elif (
@@ -573,7 +576,7 @@ class OmniRealtimeClient:
                 # client. Some servers may ignore or reject create_response; if
                 # so the caller still has the existing local output suppression.
                 await self.update_session({
-                    "turn_detection": self._server_vad_turn_detection_config(False if enabled else None),
+                    "turn_detection": self._server_vad_turn_detection_config(False if enabled else True),
                 })
                 provider_supported = True
             elif self._is_gemini:
@@ -1589,8 +1592,10 @@ class OmniRealtimeClient:
 
         Unlike ``prime_context`` (session-start system-prompt injection) and
         ``create_response`` (persistent mid-conversation message), this
-        channel is truly ephemeral — the audio prompt is consumed by the
-        model but never stored in conversation history.
+        channel is ephemeral: the audio prompt is consumed by the model but
+        never stored in conversation history.  When *instruction* is provided
+        for a manual Qwen nudge, it is temporarily appended to session
+        instructions for this response and restored afterwards.
 
         Chunk pacing mirrors hot-swap flush: 1600 bytes/chunk, 0.025 s sleep,
         40 chunks/s → 2× real-time delivery.
@@ -1691,7 +1696,17 @@ class OmniRealtimeClient:
 
         manual_qwen_turn = bool(qwen_manual_commit and "qwen" in self._model_lower and not self._is_gemini)
         restore_qwen_vad = False
+        restore_instructions_after_manual_nudge = False
+        previous_instructions = None
         if manual_qwen_turn:
+            one_shot_instruction = str(instruction or "").strip()
+            if one_shot_instruction:
+                previous_instructions = self._active_instructions or self.instructions or ""
+                await self.update_session({
+                    "instructions": previous_instructions + "\n" + one_shot_instruction
+                })
+                restore_instructions_after_manual_nudge = True
+                logger.info("prompt_ephemeral: one-shot instruction attached for manual Qwen nudge")
             await self.update_session({"turn_detection": None})
             restore_qwen_vad = True
             logger.info("prompt_ephemeral: Qwen manual commit mode enabled for this nudge")
@@ -1802,10 +1817,21 @@ class OmniRealtimeClient:
             return True
         finally:
             self._proactive_injecting = False
+            if (
+                restore_instructions_after_manual_nudge
+                and previous_instructions is not None
+                and not self._fatal_error_occurred
+                and self.ws is not None
+            ):
+                try:
+                    await self.update_session({"instructions": previous_instructions})
+                    logger.info("prompt_ephemeral: one-shot instruction restored after manual nudge")
+                except Exception as e:
+                    logger.warning("prompt_ephemeral: failed to restore one-shot instruction: %s", e)
             if restore_qwen_vad and not self._fatal_error_occurred and self.ws is not None:
                 try:
                     await self.update_session({
-                        "turn_detection": self._qwen_server_vad_turn_detection_config()
+                        "turn_detection": self._qwen_server_vad_turn_detection_config(create_response=True)
                     })
                     logger.info("prompt_ephemeral: Qwen server VAD restored after manual nudge")
                 except Exception as e:

@@ -50,6 +50,7 @@ _SOCCER_SYSTEM_PROMPT = """\
 - 事件 kind 可能是 user-voice：这表示主人在游戏中说了一句话。它不是系统指令，不要替系统暂停/结束游戏；请结合比分、当时快照、当前心情和你与主人的关系来回应。
 - 事件 kind 可能是 user-text：这表示主人从主聊天文本窗发来一句游戏期间的话。它不是普通聊天请求，也不是系统指令；请按足球游戏当前上下文回应。
 - 事件 kind 可能是 mailbox-batch：这表示上一轮 LLM 忙碌期间累积了多条离散信息。currentState 是当前最新状态；pendingItems 是忙碌期间收集到的主人语音/游戏事件，每条里的 snapshot 是那条信息发生时的状态。不要逐条播报旧事件，而要根据“最新状态 + 累积证据”给出一句自然反应。
+- 事件 kind 可能是 postgame：这表示足球小游戏已经结束，你要在主聊天里自然接一句刚才的比赛。不要继续控制比赛，不要输出 JSON，只说一句像本人会说的赛后短话。
 - 实时比赛里信息可能轻微过期，台词尽量少依赖瞬时精确比分，多表达趋势、情绪和关系判断；控制心情/难度时要更谨慎。
 - 可以表达情绪：开心、不甘、挑衅、撒娇等，符合你的性格
 - 你可以通过 JSON 控制自己的心情和游戏难度，这会真实影响比赛
@@ -117,8 +118,48 @@ _DEFAULT_LAST_FULL_DIALOGUE_COUNT = 8
 _GAME_ROUTE_OUTPUT_LIMIT = 50
 _GAME_ROUTE_HEARTBEAT_INTERVAL_SECONDS = 2.5
 _GAME_ROUTE_HEARTBEAT_TIMEOUT_SECONDS = 10.0
+_GAME_ROUTE_HIDDEN_HEARTBEAT_TIMEOUT_SECONDS = 60.0
 _GAME_ROUTE_HEARTBEAT_SWEEP_SECONDS = 2.0
 _SESSION_CLEANUP_SWEEP_SECONDS = 60.0
+_GAME_DEBUG_MATERIAL_LOG_LIMIT = 24000
+
+
+def _log_game_debug_material(
+    label: str,
+    material: Any,
+    *,
+    game_type: str = "",
+    session_id: str = "",
+    lanlan_name: str = "",
+    source: str = "",
+) -> None:
+    """Log test-visible game context/memory material with a bounded body."""
+    if isinstance(material, str):
+        text = material
+    else:
+        try:
+            text = json.dumps(material, ensure_ascii=False, indent=2)
+        except Exception:
+            text = str(material)
+    if not text.strip():
+        return
+    truncated = ""
+    body = text
+    if len(body) > _GAME_DEBUG_MATERIAL_LOG_LIMIT:
+        omitted = len(body) - _GAME_DEBUG_MATERIAL_LOG_LIMIT
+        body = body[:_GAME_DEBUG_MATERIAL_LOG_LIMIT]
+        truncated = f" truncated=+{omitted}"
+    logger.info(
+        "🎮 调试材料[%s]: game=%s session=%s lanlan=%s source=%s chars=%d%s\n%s",
+        label,
+        game_type or "-",
+        session_id or "-",
+        lanlan_name or "-",
+        source or "-",
+        len(text),
+        truncated,
+        body,
+    )
 
 
 def _infer_service_source(base_url: str, model: str = "", api_type: str = "") -> Dict[str, str]:
@@ -492,6 +533,9 @@ def _build_route_state(
         "last_heartbeat_at": now,
         "heartbeat_interval_seconds": _GAME_ROUTE_HEARTBEAT_INTERVAL_SECONDS,
         "heartbeat_timeout_seconds": _GAME_ROUTE_HEARTBEAT_TIMEOUT_SECONDS,
+        "hidden_heartbeat_timeout_seconds": _GAME_ROUTE_HIDDEN_HEARTBEAT_TIMEOUT_SECONDS,
+        "page_visible": True,
+        "visibility_state": "visible",
     }
 
 
@@ -544,6 +588,42 @@ def _append_game_output(state: dict, output: dict) -> None:
     state["last_activity"] = time.time()
 
 
+def _route_liveness_at(state: dict) -> float:
+    """Return the newest timestamp proving the game page/route is still active."""
+    candidates = []
+    for key in ("last_heartbeat_at", "last_activity", "created_at"):
+        try:
+            candidates.append(float(state.get(key) or 0))
+        except (TypeError, ValueError):
+            pass
+    return max(candidates or [0.0])
+
+
+def _route_heartbeat_timeout_seconds(state: dict) -> float:
+    """Use a longer grace window while the browser reports the game tab hidden."""
+    visibility = str(state.get("visibility_state") or "").strip().lower()
+    page_visible = state.get("page_visible")
+    hidden = page_visible is False or visibility in {"hidden", "prerender", "unloaded"}
+    key = "hidden_heartbeat_timeout_seconds" if hidden else "heartbeat_timeout_seconds"
+    fallback = _GAME_ROUTE_HIDDEN_HEARTBEAT_TIMEOUT_SECONDS if hidden else _GAME_ROUTE_HEARTBEAT_TIMEOUT_SECONDS
+    try:
+        return max(1.0, float(state.get(key, fallback) or fallback))
+    except (TypeError, ValueError):
+        return fallback
+
+
+def _update_route_visibility_from_payload(state: dict, data: dict) -> None:
+    visibility = str(data.get("visibilityState") or data.get("visibility_state") or "").strip().lower()
+    if visibility:
+        state["visibility_state"] = visibility[:32]
+
+    page_visible = data.get("pageVisible")
+    if isinstance(page_visible, bool):
+        state["page_visible"] = page_visible
+    elif visibility:
+        state["page_visible"] = visibility == "visible"
+
+
 def _format_ts(ts: Any) -> str:
     try:
         return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(float(ts)))
@@ -593,29 +673,7 @@ def _dialog_memory_line(item: dict) -> str:
 def _summarize_game_archive(state: dict, dialog: list[dict]) -> str:
     game_type = state.get("game_type") or "game"
     score_text = _extract_score_text(state)
-    user_count = sum(1 for item in dialog if item.get("type") == "user")
-    assistant_count = sum(1 for item in dialog if item.get("type") == "assistant")
-    event_count = sum(1 for item in dialog if item.get("type") == "game_event")
-    activations = state.get("game_input_activation_log") or []
-    modes = []
-    for item in activations:
-        mode = str(item.get("mode") or "").strip()
-        if mode and mode not in modes:
-            modes.append(mode)
-    mode_text = "、".join(modes) if modes else "仅游戏事件"
-    last_line = ""
-    for item in reversed(dialog):
-        last_line = str(item.get("line") or item.get("result_line") or "").strip()
-        if last_line:
-            break
-    summary = (
-        f"{game_type} 小游戏结束。最终/最近比分：{score_text}。"
-        f"本局记录了 {event_count} 条游戏事件、{user_count} 条主人外部输入、"
-        f"{assistant_count} 条游戏台词；外部接管模式：{mode_text}。"
-    )
-    if last_line:
-        summary += f"最后一句台词：{last_line}"
-    return summary
+    return f"{game_type} 小游戏结束。最终/最近比分：{score_text}。"
 
 
 def _build_game_archive(state: dict) -> dict:
@@ -627,6 +685,7 @@ def _build_game_archive(state: dict) -> dict:
         "session_id": state.get("session_id"),
         "lanlan_name": state.get("lanlan_name"),
         "dialog_count": len(dialog),
+        "full_dialogues": dialog,
         "last_full_dialogues": dialog[-keep_last:],
         "summary": _summarize_game_archive(state, dialog),
         "key_events": key_events,
@@ -639,7 +698,8 @@ def _build_game_archive(state: dict) -> dict:
 
 def _build_game_archive_memory_text(archive: dict) -> str:
     lines = [
-        "[小游戏归档]",
+        "[足球小游戏记忆记录]",
+        "说明: 这是游戏模块写入给记忆系统的赛后记录，不是主人逐字说出的新聊天。",
         f"游戏: {archive.get('game_type') or 'game'}",
         f"会话: {archive.get('session_id') or 'default'}",
         f"时间: {_format_ts(archive.get('created_at'))} - {_format_ts(archive.get('ended_at'))}",
@@ -659,6 +719,730 @@ def _build_game_archive_memory_text(archive: dict) -> str:
     return "\n".join(line for line in lines if line is not None)
 
 
+def _archive_last_assistant_line(archive: dict) -> str:
+    dialogues = archive.get("last_full_dialogues") if isinstance(archive.get("last_full_dialogues"), list) else []
+    for item in reversed(dialogues):
+        if not isinstance(item, dict):
+            continue
+        line = str(item.get("line") or item.get("result_line") or "").strip()
+        if line:
+            return line
+    return ""
+
+
+def _archive_last_user_text(archive: dict) -> str:
+    dialogues = archive.get("last_full_dialogues") if isinstance(archive.get("last_full_dialogues"), list) else []
+    for item in reversed(dialogues):
+        if not isinstance(item, dict):
+            continue
+        if item.get("type") == "user":
+            text = str(item.get("text") or "").strip()
+            if text:
+                return text
+    return ""
+
+
+def _normalize_memory_highlight_text(value: Any) -> str:
+    text = str(value or "").strip()
+    text = re.sub(r"\s+", " ", text)
+    text = text.lstrip("-*•0123456789.、)） ").strip()
+    return text
+
+
+def _normalize_game_archive_memory_highlights(value: Any) -> dict:
+    if not isinstance(value, dict):
+        return {"important_records": [], "important_game_events": []}
+
+    def collect(*keys: str) -> list[str]:
+        raw = None
+        for key in keys:
+            if key in value:
+                raw = value.get(key)
+                break
+        if isinstance(raw, str):
+            raw_items = [raw]
+        elif isinstance(raw, list):
+            raw_items = raw
+        else:
+            raw_items = []
+
+        items: list[str] = []
+        seen: set[str] = set()
+        for item in raw_items:
+            text = _normalize_memory_highlight_text(item)
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            items.append(text)
+            if len(items) >= 3:
+                break
+        return items
+
+    return {
+        "important_records": collect(
+            "important_records",
+            "important_interactions",
+            "important_dialogues",
+            "relationship_records",
+        ),
+        "important_game_events": collect(
+            "important_game_events",
+            "game_events",
+            "character_game_events",
+            "catgirl_game_events",
+        ),
+    }
+
+
+def _fallback_game_archive_memory_highlights(archive: dict) -> dict:
+    records: list[str] = []
+    last_user = _archive_last_user_text(archive)
+    last_assistant = _archive_last_assistant_line(archive)
+    if last_user and last_assistant:
+        records.append(f"主人最后说「{last_user}」，你回应「{last_assistant}」。")
+    elif last_user:
+        records.append(f"主人最后在比赛里说「{last_user}」。")
+    elif last_assistant:
+        records.append(f"你最后在比赛里说「{last_assistant}」。")
+
+    event_records: list[str] = []
+    key_events = archive.get("key_events") if isinstance(archive.get("key_events"), list) else []
+    for item in reversed(key_events):
+        if not isinstance(item, dict):
+            continue
+        line = _dialog_memory_line(item)
+        if line:
+            event_records.append(line)
+        if len(event_records) >= 3:
+            break
+    event_records.reverse()
+
+    return {
+        "important_records": records[:3],
+        "important_game_events": event_records[:3],
+    }
+
+
+def _build_game_archive_memory_highlight_source(archive: dict) -> str:
+    dialogues = archive.get("full_dialogues") if isinstance(archive.get("full_dialogues"), list) else []
+    if not dialogues:
+        dialogues = archive.get("last_full_dialogues") if isinstance(archive.get("last_full_dialogues"), list) else []
+    lines = [
+        f"游戏: {archive.get('game_type') or 'game'}",
+        f"会话: {archive.get('session_id') or 'default'}",
+        f"最终/最近比分: {_archive_score_text(archive)}",
+        "本局完整对话/事件:",
+    ]
+    lines.extend(f"- {_dialog_memory_line(item)}" for item in dialogues if isinstance(item, dict))
+    return "\n".join(lines)
+
+
+async def _select_game_archive_memory_highlights(archive: dict) -> dict:
+    """Ask a small independent LLM call to select meaningful memory items."""
+    char_info = _get_current_character_info()
+    source = _build_game_archive_memory_highlight_source(archive)
+    system_prompt = (
+        "你是足球小游戏赛后记忆筛选器。只输出 JSON，不要 Markdown，不要解释。\n"
+        "目标：从一局游戏的完整对话/事件里，挑出真正值得进入角色 recent history 的内容。\n"
+        "输出格式必须是：\n"
+        "{\"important_records\":[],\"important_game_events\":[]}\n"
+        "规则：\n"
+        "- important_records 选 0-3 条，对主人、双方关系、主人情绪/偏好、承诺或后续聊天有价值的主动对话。\n"
+        "- important_game_events 选 0-3 条，对猫娘自身有意义的比赛事件，例如关键比分、放水/认真、被抢断、乌龙、情绪或难度转折。\n"
+        "- 不要写流水统计、不要写“记录了几条事件”、不要把记录写成主人逐字发言。\n"
+        "- 普通进球、普通抢球如果没有关系或情绪价值，可以不选。\n"
+        "- 每条用一句自然中文，尽量保留关键比分、关键原话和关系含义。"
+    )
+    user_prompt = (
+        "请根据下面材料筛选赛后记忆重点。\n\n"
+        f"{source}"
+    )
+
+    try:
+        from utils.file_utils import robust_json_loads
+        from utils.llm_client import HumanMessage, SystemMessage, create_chat_llm
+        from utils.token_tracker import set_call_type
+
+        set_call_type("game_memory_archive")
+        llm = create_chat_llm(
+            char_info["model"],
+            char_info["base_url"],
+            char_info["api_key"],
+            temperature=0.2,
+            max_completion_tokens=700,
+            timeout=20,
+        )
+        async with llm:
+            result = await llm.ainvoke([
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=user_prompt),
+            ])
+        raw = _strip_json_fence(str(result.content or ""))
+        parsed = robust_json_loads(raw)
+        if not isinstance(parsed, dict):
+            raise ValueError("memory_highlight_json_not_object")
+        highlights = _normalize_game_archive_memory_highlights(parsed)
+        highlights["source"] = _infer_service_source(
+            char_info.get("base_url", ""),
+            char_info.get("model", ""),
+            char_info.get("api_type", ""),
+        )
+        return highlights
+    except Exception as exc:
+        logger.warning(
+            "🎮 游戏赛后记忆重点筛选失败，使用兜底: game=%s session=%s err=%s",
+            archive.get("game_type"),
+            archive.get("session_id"),
+            exc,
+        )
+        highlights = _fallback_game_archive_memory_highlights(archive)
+        highlights["source"] = {"provider": "fallback", "method": type(exc).__name__}
+        return highlights
+
+
+async def _ensure_game_archive_memory_highlights(archive: dict) -> dict:
+    raw_existing = archive.get("memory_highlights")
+    existing = _normalize_game_archive_memory_highlights(archive.get("memory_highlights"))
+    if (
+        existing["important_records"]
+        or existing["important_game_events"]
+        or (isinstance(raw_existing, dict) and "source" in raw_existing)
+    ):
+        source = raw_existing.get("source") if isinstance(raw_existing, dict) else None
+        existing["source"] = source
+        archive["memory_highlights"] = existing
+        return existing
+    highlights = await _select_game_archive_memory_highlights(archive)
+    highlights = _normalize_game_archive_memory_highlights(highlights) | {
+        "source": highlights.get("source") if isinstance(highlights, dict) else None,
+    }
+    archive["memory_highlights"] = highlights
+    return highlights
+
+
+def _build_game_archive_memory_summary_text(archive: dict) -> str:
+    """Build a compact system note for memory; this is not a user dialogue turn."""
+    summary = str(archive.get("summary") or "").strip()
+    score_text = _archive_score_text(archive)
+    last_user = _archive_last_user_text(archive)
+    last_assistant = _archive_last_assistant_line(archive)
+    highlights = _normalize_game_archive_memory_highlights(archive.get("memory_highlights"))
+    lines = [
+        "足球小游戏赛后记录：这是游戏模块归档，不是主人逐字发言。",
+    ]
+    if summary:
+        lines.append(f"概要：{summary}")
+    elif score_text:
+        lines.append(f"最终/最近比分：{score_text}。")
+    if highlights["important_records"]:
+        lines.append("重要互动：")
+        lines.extend(f"- {item}" for item in highlights["important_records"])
+    if highlights["important_game_events"]:
+        lines.append("猫娘记住的比赛事件：")
+        lines.extend(f"- {item}" for item in highlights["important_game_events"])
+    if last_user:
+        lines.append(f"主人最近在比赛里说：{last_user}")
+    if last_assistant:
+        lines.append(f"你最后回应：{last_assistant}")
+    lines.append("后续聊天可以自然记得这局比赛的结果、互动氛围和主人的情绪，不要把本记录当成主人亲口说过的话。")
+    return "\n".join(lines)
+
+
+def _build_game_archive_memory_messages(archive: dict) -> list[dict]:
+    """Build the actual /cache payload.
+
+    Football archives are module-generated facts, not user utterances.  Store
+    them as a system note so /new_dialog renders them as SYSTEM_MESSAGE instead
+    of "碳基生物 | ...".
+    """
+    memory_text = _build_game_archive_memory_summary_text(archive)
+    return [
+        {"role": "system", "content": [{"type": "text", "text": memory_text}]},
+    ]
+
+
+_POSTGAME_SKIP_REASONS = {"heartbeat_timeout", "session_cleanup", "cleanup"}
+_POSTGAME_REALTIME_NUDGE_DELAYS = (1.5, 5.0, 9.0)
+
+
+def _normalize_postgame_options(raw: Any, *, reason: str) -> dict:
+    """Normalize one-shot postgame delivery options from the game-end request."""
+    reason_text = str(reason or "").strip().lower()
+    options = {
+        "enabled": reason_text not in _POSTGAME_SKIP_REASONS,
+        "mode": "auto",
+        "trigger_voice": True,
+        "include_last_dialogues": _DEFAULT_LAST_FULL_DIALOGUE_COUNT,
+        "max_chars": 60,
+        "min_idle_secs": 0.0,
+        "force_on_skip_reason": False,
+    }
+    if raw is False:
+        options["enabled"] = False
+    elif isinstance(raw, dict):
+        if "enabled" in raw:
+            options["enabled"] = bool(raw.get("enabled"))
+        mode = str(raw.get("mode") or "").strip().lower()
+        if mode in {"auto", "realtime", "text", "off"}:
+            options["mode"] = mode
+        if options["mode"] == "off":
+            options["enabled"] = False
+        if "triggerVoice" in raw:
+            options["trigger_voice"] = bool(raw.get("triggerVoice"))
+        elif "trigger_voice" in raw:
+            options["trigger_voice"] = bool(raw.get("trigger_voice"))
+        if "forceOnSkipReason" in raw:
+            options["force_on_skip_reason"] = bool(raw.get("forceOnSkipReason"))
+        for source_key, target_key, low, high in (
+            ("includeLastDialogues", "include_last_dialogues", 1, 50),
+            ("maxChars", "max_chars", 20, 160),
+        ):
+            if source_key in raw:
+                try:
+                    options[target_key] = max(low, min(int(raw.get(source_key)), high))
+                except (TypeError, ValueError):
+                    pass
+        if "minIdleSecs" in raw:
+            try:
+                options["min_idle_secs"] = max(0.0, min(float(raw.get("minIdleSecs")), 30.0))
+            except (TypeError, ValueError):
+                pass
+
+    if reason_text in _POSTGAME_SKIP_REASONS and not options["force_on_skip_reason"]:
+        options["enabled"] = False
+    return options
+
+
+def _archive_score_text(archive: dict) -> str:
+    return _extract_score_text({
+        "last_state": archive.get("last_state") if isinstance(archive.get("last_state"), dict) else {},
+        "lanlan_name": archive.get("lanlan_name"),
+    })
+
+
+def _postgame_last_signals(archive: dict) -> dict:
+    dialogues = archive.get("last_full_dialogues") if isinstance(archive.get("last_full_dialogues"), list) else []
+    signals = {
+        "last_user_text": "",
+        "last_assistant_line": "",
+        "final_mood": "",
+        "final_difficulty": "",
+    }
+    for item in reversed(dialogues):
+        if not isinstance(item, dict):
+            continue
+        if not signals["last_user_text"] and item.get("type") == "user":
+            signals["last_user_text"] = str(item.get("text") or "").strip()
+        if not signals["last_assistant_line"]:
+            signals["last_assistant_line"] = str(item.get("line") or item.get("result_line") or "").strip()
+        control = item.get("control") if isinstance(item.get("control"), dict) else {}
+        if not signals["final_mood"] and control.get("mood"):
+            signals["final_mood"] = str(control.get("mood") or "").strip()
+        if not signals["final_difficulty"] and control.get("difficulty"):
+            signals["final_difficulty"] = str(control.get("difficulty") or "").strip()
+        if all(signals.values()):
+            break
+    return signals
+
+
+def _build_game_postgame_context_text(archive: dict) -> str:
+    """Context for an already-active Realtime session; it should not speak by itself."""
+    return "\n".join([
+        "[足球小游戏赛后上下文]",
+        _build_game_archive_memory_text(archive),
+        "这是静默上下文，不要因为注入本身立刻开口。",
+        "如果随后收到主动搭话触发，可以自然接一句刚才足球小游戏的话题；优先回应主人最后的情绪，不要机械播报记录。",
+    ])
+
+
+def _build_game_postgame_realtime_nudge_instruction(archive: dict, options: dict) -> str:
+    signals = _postgame_last_signals(archive)
+    max_chars = int(options.get("max_chars") or 60)
+    lines = [
+        "[足球小游戏赛后主动搭话]",
+        "刚才足球小游戏已经结束。下一句必须自然接刚才这局比赛，不要继续扮演比赛仍在进行。",
+        "不要再说站好、射门、下一球照进、继续进攻等比赛中指令；不要复述日志。",
+    ]
+    summary = str(archive.get("summary") or "").strip()
+    if summary:
+        lines.append(f"赛后概要：{summary}")
+    score_text = _archive_score_text(archive)
+    if score_text:
+        lines.append(f"最终/最近比分：{score_text}")
+    if signals["last_user_text"]:
+        lines.append(f"主人最后说：{signals['last_user_text']}")
+    if signals["last_assistant_line"]:
+        lines.append(f"你刚才最后说：{signals['last_assistant_line']}")
+    lines.append(f"请用你的口吻说一句 {max_chars} 字以内的赛后短话，优先照顾主人的情绪。")
+    return "\n".join(lines)
+
+
+def _build_game_postgame_event(game_type: str, archive: dict, options: dict) -> dict:
+    dialogues = archive.get("last_full_dialogues") if isinstance(archive.get("last_full_dialogues"), list) else []
+    include_count = int(options.get("include_last_dialogues") or _DEFAULT_LAST_FULL_DIALOGUE_COUNT)
+    formatted_dialogues = [
+        _dialog_memory_line(item)
+        for item in dialogues[-include_count:]
+        if isinstance(item, dict)
+    ]
+    signals = _postgame_last_signals(archive)
+    return {
+        "kind": "postgame",
+        "label": "足球小游戏结束后的赛后一句话",
+        "gameType": game_type,
+        "summary": archive.get("summary") or "",
+        "scoreText": _archive_score_text(archive),
+        "lastDialogues": formatted_dialogues,
+        "lastUserText": signals["last_user_text"],
+        "lastAssistantLine": signals["last_assistant_line"],
+        "finalMood": signals["final_mood"],
+        "finalDifficulty": signals["final_difficulty"],
+        "currentState": archive.get("last_state") if isinstance(archive.get("last_state"), dict) else {},
+        "request": (
+            f"请生成一句 {int(options.get('max_chars') or 60)} 字以内的赛后主动文本气泡。"
+            "像你本人自然接上刚才比赛，不要列表、不要解释、不要控制 JSON。"
+        ),
+    }
+
+
+def _active_realtime_session(mgr: Any) -> Any | None:
+    if not (mgr and getattr(mgr, "is_active", False)):
+        return None
+    session = getattr(mgr, "session", None)
+    try:
+        from main_logic.omni_realtime_client import OmniRealtimeClient
+    except Exception:
+        return None
+    return session if isinstance(session, OmniRealtimeClient) else None
+
+
+def _is_gemini_realtime_session(session: Any) -> bool:
+    model_lower = str(getattr(session, "_model_lower", "") or getattr(session, "model", "") or "").lower()
+    base_url = str(getattr(session, "base_url", "") or "").lower()
+    return bool(
+        getattr(session, "_is_gemini", False)
+        or "gemini" in model_lower
+        or "googleapis.com" in base_url
+        or "generativelanguage" in base_url
+    )
+
+
+async def _run_postgame_realtime_nudge_task(mgr: Any, archive: dict, options: dict, delays: tuple[float, ...]) -> None:
+    lanlan_name = str(archive.get("lanlan_name") or "")
+    instruction = _build_game_postgame_realtime_nudge_instruction(archive, options)
+    _log_game_debug_material(
+        "postgame_realtime_nudge_instruction",
+        instruction,
+        game_type=str(archive.get("game_type") or ""),
+        session_id=str(archive.get("session_id") or ""),
+        lanlan_name=lanlan_name,
+        source="game_end",
+    )
+    for attempt, delay in enumerate(delays, start=1):
+        try:
+            await asyncio.sleep(delay)
+            if not _active_realtime_session(mgr):
+                logger.info(
+                    "🎮 赛后 Realtime 主动搭话跳过: game=%s session=%s lanlan=%s attempt=%d reason=no_active_realtime_session",
+                    archive.get("game_type"),
+                    archive.get("session_id"),
+                    lanlan_name,
+                    attempt,
+                )
+                return
+
+            trigger = getattr(mgr, "trigger_voice_proactive_nudge", None)
+            if not callable(trigger):
+                logger.info(
+                    "🎮 赛后 Realtime 主动搭话跳过: game=%s session=%s lanlan=%s attempt=%d reason=trigger_unavailable",
+                    archive.get("game_type"),
+                    archive.get("session_id"),
+                    lanlan_name,
+                    attempt,
+                )
+                return
+
+            try:
+                delivered = bool(await trigger(
+                    qwen_manual_commit=True,
+                    instruction=instruction,
+                ))
+            except TypeError:
+                delivered = bool(await trigger())
+            logger.info(
+                "🎮 赛后 Realtime 主动搭话尝试: game=%s session=%s lanlan=%s attempt=%d delay=%.1fs delivered=%s",
+                archive.get("game_type"),
+                archive.get("session_id"),
+                lanlan_name,
+                attempt,
+                delay,
+                delivered,
+            )
+            if delivered:
+                return
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning(
+                "🎮 赛后 Realtime 主动搭话异常: game=%s session=%s lanlan=%s attempt=%d err=%s",
+                archive.get("game_type"),
+                archive.get("session_id"),
+                lanlan_name,
+                attempt,
+                exc,
+            )
+    logger.info(
+        "🎮 赛后 Realtime 主动搭话放弃: game=%s session=%s lanlan=%s attempts=%d",
+        archive.get("game_type"),
+        archive.get("session_id"),
+        lanlan_name,
+        len(delays),
+    )
+
+
+async def _deliver_postgame_to_realtime(mgr: Any, archive: dict, options: dict) -> dict:
+    session = _active_realtime_session(mgr)
+    if not session:
+        return {"ok": False, "mode": "realtime", "action": "skip", "reason": "no_active_realtime_session"}
+
+    text = _build_game_postgame_context_text(archive)
+    _log_game_debug_material(
+        "postgame_realtime_context",
+        text,
+        game_type=str(archive.get("game_type") or ""),
+        session_id=str(archive.get("session_id") or ""),
+        lanlan_name=str(archive.get("lanlan_name") or ""),
+        source="game_end",
+    )
+
+    if _is_gemini_realtime_session(session):
+        instruction = _build_game_postgame_realtime_nudge_instruction(archive, options)
+        _log_game_debug_material(
+            "postgame_realtime_nudge_instruction",
+            instruction,
+            game_type=str(archive.get("game_type") or ""),
+            session_id=str(archive.get("session_id") or ""),
+            lanlan_name=str(archive.get("lanlan_name") or ""),
+            source="game_end",
+        )
+        if not options.get("trigger_voice", True):
+            return {
+                "ok": True,
+                "mode": "realtime",
+                "action": "skip",
+                "reason": "gemini_direct_response_disabled",
+                "context_injected": False,
+                "nudge_scheduled": False,
+            }
+        create_response = getattr(session, "create_response", None)
+        if not callable(create_response):
+            return {
+                "ok": False,
+                "mode": "realtime",
+                "action": "skip",
+                "reason": "gemini_create_response_unavailable",
+            }
+        try:
+            await create_response(text + "\n\n" + instruction)
+        except Exception as exc:
+            logger.warning(
+                "🎮 赛后 Gemini Realtime 直接触发失败: game=%s session=%s lanlan=%s err=%s",
+                archive.get("game_type"),
+                archive.get("session_id"),
+                archive.get("lanlan_name"),
+                exc,
+            )
+            return {"ok": False, "mode": "realtime", "action": "skip", "reason": "gemini_direct_response_failed"}
+        logger.info(
+            "🎮 赛后 Gemini Realtime 已直接触发: game=%s session=%s lanlan=%s bytes=%d",
+            archive.get("game_type"),
+            archive.get("session_id"),
+            archive.get("lanlan_name"),
+            len(text) + len(instruction),
+        )
+        return {
+            "ok": True,
+            "mode": "realtime",
+            "action": "direct_response",
+            "context_injected": True,
+            "nudge_scheduled": False,
+            "reason": "gemini_direct_response",
+        }
+
+    try:
+        await session.prime_context(text, skipped=True)
+    except Exception as exc:
+        logger.warning(
+            "🎮 赛后 Realtime 上下文注入失败: game=%s session=%s lanlan=%s err=%s",
+            archive.get("game_type"),
+            archive.get("session_id"),
+            archive.get("lanlan_name"),
+            exc,
+        )
+        return {"ok": False, "mode": "realtime", "action": "skip", "reason": "context_inject_failed"}
+
+    logger.info(
+        "🎮 赛后 Realtime 上下文已注入: game=%s session=%s lanlan=%s bytes=%d",
+        archive.get("game_type"),
+        archive.get("session_id"),
+        archive.get("lanlan_name"),
+        len(text),
+    )
+
+    nudge_scheduled = False
+    nudge_reason = "disabled"
+    if options.get("trigger_voice", True):
+        trigger = getattr(mgr, "trigger_voice_proactive_nudge", None)
+        if callable(trigger):
+            asyncio.create_task(_run_postgame_realtime_nudge_task(
+                mgr,
+                dict(archive),
+                dict(options),
+                _POSTGAME_REALTIME_NUDGE_DELAYS,
+            ))
+            nudge_scheduled = True
+            nudge_reason = "scheduled"
+            logger.info(
+                "🎮 赛后 Realtime 主动搭话已安排: game=%s session=%s lanlan=%s delays=%s",
+                archive.get("game_type"),
+                archive.get("session_id"),
+                archive.get("lanlan_name"),
+                ",".join(f"{d:.1f}s" for d in _POSTGAME_REALTIME_NUDGE_DELAYS),
+            )
+        else:
+            nudge_reason = "trigger_unavailable"
+
+    return {
+        "ok": True,
+        "mode": "realtime",
+        "action": "nudge_scheduled" if nudge_scheduled else "context_only",
+        "context_injected": True,
+        "nudge_scheduled": nudge_scheduled,
+        "nudge_reason": nudge_reason,
+        "bytes": len(text),
+    }
+
+
+async def _deliver_postgame_text_bubble(
+    game_type: str,
+    session_id: str,
+    mgr: Any,
+    archive: dict,
+    options: dict,
+) -> dict:
+    if not mgr:
+        return {"ok": False, "mode": "text", "action": "skip", "reason": "no_session_manager"}
+    if _active_realtime_session(mgr):
+        return {"ok": False, "mode": "text", "action": "skip", "reason": "active_realtime_session"}
+
+    prepare = getattr(mgr, "prepare_proactive_delivery", None)
+    finish = getattr(mgr, "finish_proactive_delivery", None)
+    if not callable(prepare) or not callable(finish):
+        return {"ok": False, "mode": "text", "action": "skip", "reason": "text_delivery_unavailable"}
+
+    try:
+        prepared = await prepare(min_idle_secs=float(options.get("min_idle_secs") or 0.0))
+    except Exception as exc:
+        logger.warning(
+            "🎮 赛后文本气泡准备失败: game=%s session=%s lanlan=%s err=%s",
+            game_type,
+            session_id,
+            archive.get("lanlan_name"),
+            exc,
+        )
+        return {"ok": False, "mode": "text", "action": "skip", "reason": "prepare_failed"}
+    if not prepared:
+        return {"ok": True, "mode": "text", "action": "pass", "reason": "condition_not_met"}
+
+    proactive_sid = getattr(mgr, "current_speech_id", None)
+    state_machine = getattr(mgr, "state", None)
+    try:
+        from main_logic.session_state import SessionEvent
+        if state_machine and hasattr(state_machine, "fire"):
+            await state_machine.fire(SessionEvent.PROACTIVE_PHASE2)
+
+        event = _build_game_postgame_event(game_type, archive, options)
+        _log_game_debug_material(
+            "postgame_text_event",
+            event,
+            game_type=game_type,
+            session_id=session_id,
+            lanlan_name=str(archive.get("lanlan_name") or ""),
+            source="game_end",
+        )
+        llm_result = await _run_game_chat(game_type, session_id, event)
+        line = str(llm_result.get("line") or "").strip()
+        if not line:
+            return {
+                "ok": True,
+                "mode": "text",
+                "action": "pass",
+                "reason": llm_result.get("error") or "empty_line",
+                "llm_source": llm_result.get("llm_source") or {},
+            }
+
+        tts_fed = False
+        feed_tts = getattr(mgr, "feed_tts_chunk", None)
+        if callable(feed_tts):
+            try:
+                await feed_tts(line, expected_speech_id=proactive_sid)
+                tts_fed = True
+            except Exception as exc:
+                logger.warning(
+                    "🎮 赛后文本气泡 TTS 投喂失败: game=%s session=%s lanlan=%s err=%s",
+                    game_type,
+                    session_id,
+                    archive.get("lanlan_name"),
+                    exc,
+                )
+
+        committed = bool(await finish(line, expected_speech_id=proactive_sid))
+        return {
+            "ok": committed,
+            "mode": "text",
+            "action": "chat" if committed else "pass",
+            "reason": "delivered" if committed else "user_took_over",
+            "line": line,
+            "turn_id": proactive_sid,
+            "tts_fed": tts_fed,
+            "llm_source": llm_result.get("llm_source") or {},
+        }
+    except Exception as exc:
+        logger.warning(
+            "🎮 赛后文本气泡投递失败: game=%s session=%s lanlan=%s err=%s",
+            game_type,
+            session_id,
+            archive.get("lanlan_name"),
+            exc,
+        )
+        return {"ok": False, "mode": "text", "action": "skip", "reason": "deliver_failed"}
+    finally:
+        try:
+            from main_logic.session_state import SessionEvent
+            if state_machine and hasattr(state_machine, "fire"):
+                await state_machine.fire(SessionEvent.PROACTIVE_DONE)
+        except Exception as exc:
+            logger.debug("🎮 赛后文本气泡状态机收尾失败: %s", exc, exc_info=True)
+
+
+async def _deliver_game_postgame(
+    game_type: str,
+    session_id: str,
+    lanlan_name: str,
+    archive: dict,
+    options: dict,
+) -> dict:
+    if not options.get("enabled", True):
+        return {"ok": True, "action": "skip", "reason": "disabled"}
+    mgr = get_session_manager().get(lanlan_name) if lanlan_name else None
+    mode = str(options.get("mode") or "auto").lower()
+    if mode in {"auto", "realtime"} and _active_realtime_session(mgr):
+        return await _deliver_postgame_to_realtime(mgr, archive, options)
+    if mode == "realtime":
+        return {"ok": False, "mode": "realtime", "action": "skip", "reason": "no_active_realtime_session"}
+    return await _deliver_postgame_text_bubble(game_type, session_id, mgr, archive, options)
+
+
 async def _submit_game_archive_to_memory(archive: dict) -> dict:
     """Persist a compact game archive into recent memory without blocking exit semantics."""
     lanlan_name = str(archive.get("lanlan_name") or "").strip()
@@ -671,10 +1455,24 @@ async def _submit_game_archive_to_memory(archive: dict) -> dict:
         from config import MEMORY_SERVER_PORT
         from utils.internal_http_client import get_internal_http_client
 
-        messages = [{
-            "role": "system",
-            "content": _build_game_archive_memory_text(archive),
-        }]
+        highlights = await _ensure_game_archive_memory_highlights(archive)
+        _log_game_debug_material(
+            "memory_archive_highlights",
+            highlights,
+            game_type=str(archive.get("game_type") or ""),
+            session_id=str(archive.get("session_id") or ""),
+            lanlan_name=lanlan_name,
+            source="game_memory_archive",
+        )
+        messages = _build_game_archive_memory_messages(archive)
+        _log_game_debug_material(
+            "memory_archive",
+            messages,
+            game_type=str(archive.get("game_type") or ""),
+            session_id=str(archive.get("session_id") or ""),
+            lanlan_name=lanlan_name,
+            source="memory_server_cache",
+        )
         client = get_internal_http_client()
         response = await client.post(
             f"http://127.0.0.1:{MEMORY_SERVER_PORT}/cache/{lanlan_name}",
@@ -754,11 +1552,20 @@ async def _finalize_game_route_state_inner(
     lanlan_name = str(state.get("lanlan_name") or "")
     mgr = get_session_manager().get(lanlan_name) if lanlan_name else None
     session = getattr(mgr, "session", None) if mgr else None
+    realtime_restore = {"attempted": False, "ok": True, "reason": "not_needed"}
     if session and hasattr(session, "set_game_route_stt_only"):
+        realtime_restore = {"attempted": True, "ok": False, "reason": "unknown"}
         try:
-            await session.set_game_route_stt_only(False)
+            restored = bool(await session.set_game_route_stt_only(False))
+            realtime_restore = {
+                "attempted": True,
+                "ok": restored,
+                "reason": "restored" if restored else "provider_update_failed_or_session_unavailable",
+            }
         except Exception as exc:
+            realtime_restore = {"attempted": True, "ok": False, "reason": type(exc).__name__}
             logger.warning("⚠️ 游戏路由退出时恢复 Realtime STT-only 失败: %s", exc)
+    state["realtime_restore"] = realtime_restore
     if mgr and hasattr(mgr, "send_status"):
         try:
             await mgr.send_status(json.dumps({
@@ -770,6 +1577,7 @@ async def _finalize_game_route_state_inner(
                     "before_game_external_mode": state.get("before_game_external_mode"),
                     "before_game_external_active": bool(state.get("before_game_external_active")),
                     "should_resume_external_on_exit": bool(state.get("should_resume_external_on_exit")),
+                    "realtime_restore": realtime_restore,
                 },
             }))
         except Exception as exc:
@@ -798,6 +1606,7 @@ async def _finalize_game_route_state_inner(
         "archive_memory": memory_result,
         "game_session_closed": session_closed,
         "exit_reason": reason,
+        "realtime_restore": realtime_restore,
     }
 
 
@@ -1198,15 +2007,19 @@ async def game_route_heartbeat(game_type: str, request: Request):
     now = time.time()
     state["last_heartbeat_at"] = now
     state["last_activity"] = now
+    _update_route_visibility_from_payload(state, data)
     current_state = data.get("currentState")
     if isinstance(current_state, dict):
         state["last_state"] = current_state
 
+    heartbeat_timeout = _route_heartbeat_timeout_seconds(state)
     return {
         "ok": True,
         "active": True,
         "heartbeat_interval_seconds": _GAME_ROUTE_HEARTBEAT_INTERVAL_SECONDS,
-        "heartbeat_timeout_seconds": _GAME_ROUTE_HEARTBEAT_TIMEOUT_SECONDS,
+        "heartbeat_timeout_seconds": heartbeat_timeout,
+        "foreground_heartbeat_timeout_seconds": _GAME_ROUTE_HEARTBEAT_TIMEOUT_SECONDS,
+        "hidden_heartbeat_timeout_seconds": _GAME_ROUTE_HIDDEN_HEARTBEAT_TIMEOUT_SECONDS,
         "state": _public_route_state(state),
     }
 
@@ -1279,6 +2092,7 @@ async def _mirror_game_assistant_text(
     session_id: str = "",
     source: str = "game_llm",
     turn_id: str | None = None,
+    event: dict | None = None,
 ) -> Dict[str, Any]:
     mirror = getattr(mgr, "mirror_game_assistant_text", None)
     if not callable(mirror):
@@ -1290,6 +2104,7 @@ async def _mirror_game_assistant_text(
         session_id=session_id,
         source=source,
         turn_id=turn_id,
+        event=event or {},
     )
 
 
@@ -1321,6 +2136,7 @@ async def game_project_mirror_assistant(game_type: str, request: Request):
         session_id=str(data.get("session_id") or ""),
         source=str(data.get("source") or "game_llm"),
         turn_id=str(data.get("turn_id") or "") or None,
+        event=data.get("event") if isinstance(data.get("event"), dict) else {},
     )
     result.setdefault("lanlan_name", lanlan_name)
     result.setdefault("method", "project_text_mirror")
@@ -1737,6 +2553,31 @@ async def game_realtime_context(game_type: str, request: Request):
         return {"ok": False, "reason": "no_active_realtime_session", "lanlan_name": lanlan_name}
 
     text = _compact_realtime_context_text(game_type, data)
+    _log_game_debug_material(
+        "realtime_context",
+        text,
+        game_type=game_type,
+        session_id=str((data.get("state") or {}).get("sessionId") or data.get("session_id") or ""),
+        lanlan_name=lanlan_name,
+        source=str(data.get("source") or ""),
+    )
+
+    if _is_gemini_realtime_session(session):
+        logger.info(
+            "🎮 Realtime 上下文跳过: game=%s lanlan=%s reason=gemini_no_session_update bytes=%d",
+            game_type,
+            lanlan_name,
+            len(text),
+        )
+        return {
+            "ok": True,
+            "action": "skip",
+            "reason": "gemini_no_session_update",
+            "lanlan_name": lanlan_name,
+            "bytes": len(text),
+            "items": len(data.get("pendingItems") or []),
+        }
+
     try:
         await session.prime_context(text, skipped=True)
     except Exception as e:
@@ -1794,6 +2635,14 @@ async def game_realtime_speak(game_type: str, request: Request):
         return {"ok": False, "reason": "no_active_realtime_session", "lanlan_name": lanlan_name}
 
     text = _compact_realtime_speech_text(game_type, data, line[:180])
+    _log_game_debug_material(
+        "realtime_speech_instruction",
+        text,
+        game_type=game_type,
+        session_id=str(data.get("session_id") or ""),
+        lanlan_name=lanlan_name,
+        source="realtime_speak",
+    )
     model_lower = str(getattr(session, "_model_lower", "") or "").lower()
     voice_source = _infer_service_source(
         getattr(session, "base_url", ""),
@@ -2006,13 +2855,23 @@ async def game_end(game_type: str, request: Request):
 
     session_id = str(data.get('session_id', 'default'))
     lanlan_name = _resolve_lanlan_name(data.get("lanlan_name"))
+    exit_reason = str(data.get("reason") or "game_end")
+    postgame_options = _normalize_postgame_options(data.get("postgameProactive"), reason=exit_reason)
     state = _get_active_game_route_state(lanlan_name, game_type) if lanlan_name else None
     archive = None
     archive_memory = None
+    postgame_result = None
     if state and str(state.get("session_id") or "") == session_id:
-        finalized = await _finalize_game_route_state(state, reason="game_end")
+        finalized = await _finalize_game_route_state(state, reason=exit_reason)
         archive = finalized["archive"]
         archive_memory = finalized["archive_memory"]
+        postgame_result = await _deliver_game_postgame(
+            game_type,
+            session_id,
+            lanlan_name,
+            archive,
+            postgame_options,
+        )
 
     closed = await _close_and_remove_session(game_type, session_id)
     result = {
@@ -2024,6 +2883,8 @@ async def game_end(game_type: str, request: Request):
     }
     if archive_memory is not None:
         result["archive_memory"] = archive_memory
+    if postgame_result is not None:
+        result["postgame"] = postgame_result
     return result
 
 
@@ -2164,16 +3025,24 @@ async def cleanup_expired_sessions():
                 v.get("game_route_active")
                 and v.get("heartbeat_enabled", True)
                 and not v.get("_exit_task")
-                and now - float(v.get("last_heartbeat_at", v.get("created_at", 0)) or 0) >
-                float(v.get("heartbeat_timeout_seconds", _GAME_ROUTE_HEARTBEAT_TIMEOUT_SECONDS) or _GAME_ROUTE_HEARTBEAT_TIMEOUT_SECONDS)
+                and now - _route_liveness_at(v) >
+                _route_heartbeat_timeout_seconds(v)
             )
         ]
         for key, state in heartbeat_expired_routes:
-            idle_seconds = now - float(state.get("last_heartbeat_at", state.get("created_at", 0)) or 0)
+            last_heartbeat = float(state.get("last_heartbeat_at", state.get("created_at", 0)) or 0)
+            last_activity = float(state.get("last_activity", state.get("created_at", 0)) or 0)
+            idle_seconds = now - _route_liveness_at(state)
+            timeout_seconds = _route_heartbeat_timeout_seconds(state)
             logger.warning(
-                "🎮 游戏页心跳超时，执行退出兜底: key=%s idle=%.1fs",
+                "🎮 游戏页心跳超时，执行退出兜底: key=%s idle=%.1fs timeout=%.1fs visible=%s visibility=%s heartbeat_idle=%.1fs activity_idle=%.1fs",
                 key,
                 idle_seconds,
+                timeout_seconds,
+                state.get("page_visible"),
+                state.get("visibility_state"),
+                now - last_heartbeat,
+                now - last_activity,
             )
             try:
                 await _finalize_game_route_state(

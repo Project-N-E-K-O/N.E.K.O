@@ -1,3 +1,4 @@
+import asyncio
 from unittest.mock import AsyncMock
 
 import pytest
@@ -38,6 +39,146 @@ def test_parse_control_instructions_extracts_json_line():
         "line": "这球我拿下了喵",
         "control": {"mood": "happy", "difficulty": "lv2"},
     }
+
+
+@pytest.mark.unit
+def test_game_archive_memory_payload_uses_system_note_shape():
+    archive = {
+        "game_type": "soccer",
+        "session_id": "match_1",
+        "lanlan_name": "Lan",
+        "summary": "soccer 小游戏结束。最终/最近比分：主人 1 : 4 Lan。",
+        "memory_highlights": {
+            "important_records": ["主人要求温柔一点，你改成让球式回应。"],
+            "important_game_events": ["猫娘大比分领先后开始放水。"],
+        },
+        "last_full_dialogues": [
+            {"type": "user", "text": "温柔一点"},
+            {"type": "assistant", "line": "好好好，让你踢。"},
+        ],
+        "key_events": [],
+        "last_state": {"score": {"player": 1, "ai": 4}},
+    }
+
+    messages = game_router._build_game_archive_memory_messages(archive)
+
+    assert [msg["role"] for msg in messages] == ["system"]
+    assert "游戏模块归档，不是主人逐字发言" in messages[0]["content"][0]["text"]
+    assert "soccer 小游戏结束" in messages[0]["content"][0]["text"]
+    assert "重要互动：" in messages[0]["content"][0]["text"]
+    assert "主人要求温柔一点，你改成让球式回应。" in messages[0]["content"][0]["text"]
+    assert "猫娘记住的比赛事件：" in messages[0]["content"][0]["text"]
+    assert "本局记录了" not in messages[0]["content"][0]["text"]
+    assert "外部接管模式" not in messages[0]["content"][0]["text"]
+    assert "主人最近在比赛里说：温柔一点" in messages[0]["content"][0]["text"]
+    assert "你最后回应：好好好，让你踢。" in messages[0]["content"][0]["text"]
+
+
+@pytest.mark.unit
+def test_game_archive_summary_keeps_score_not_counters():
+    summary = game_router._summarize_game_archive(
+        {"game_type": "soccer", "lanlan_name": "Lan", "last_state": {"score": {"player": 0, "ai": 5}}},
+        [
+            {"type": "game_event"},
+            {"type": "user"},
+            {"type": "assistant"},
+        ],
+    )
+
+    assert summary == "soccer 小游戏结束。最终/最近比分：主人 0 : 5 Lan。"
+    assert "本局记录了" not in summary
+    assert "外部接管模式" not in summary
+
+
+@pytest.mark.unit
+def test_memory_review_prompt_protects_soccer_archive_records():
+    from config.prompts_memory import get_history_review_prompt
+
+    prompt = get_history_review_prompt("zh")
+
+    assert "足球小游戏赛后记录" in prompt
+    assert "不同时间/会话的足球比分默认代表不同局比赛" in prompt
+    assert "不要整条删除" in prompt
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_memory_highlight_selector_uses_full_dialogue_log(monkeypatch):
+    calls = []
+
+    class _FakeLLM:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def ainvoke(self, messages):
+            calls.append(messages)
+            return type("Resp", (), {
+                "content": '{"important_records":["保留了第一句互动"],"important_game_events":["记住了关键抢断"]}'
+            })()
+
+    def fake_create_chat_llm(*_args, **_kwargs):
+        return _FakeLLM()
+
+    monkeypatch.setattr(
+        game_router,
+        "_get_current_character_info",
+        lambda: {
+            "model": "test-model",
+            "base_url": "http://llm.test",
+            "api_key": "key",
+            "api_type": "test",
+        },
+    )
+    monkeypatch.setattr("utils.llm_client.create_chat_llm", fake_create_chat_llm)
+
+    archive = {
+        "game_type": "soccer",
+        "session_id": "match_1",
+        "lanlan_name": "Lan",
+        "last_state": {"score": {"player": 0, "ai": 5}},
+        "full_dialogues": [
+            {"type": "user", "text": "第一句也要参与筛选"},
+            {"type": "assistant", "line": "我记着呢。"},
+            {"type": "user", "text": "最后一句"},
+        ],
+        "last_full_dialogues": [
+            {"type": "user", "text": "最后一句"},
+        ],
+        "key_events": [],
+    }
+
+    highlights = await game_router._select_game_archive_memory_highlights(archive)
+
+    assert highlights["important_records"] == ["保留了第一句互动"]
+    assert highlights["important_game_events"] == ["记住了关键抢断"]
+    assert "第一句也要参与筛选" in calls[0][1].content
+
+
+@pytest.mark.unit
+def test_route_liveness_prefers_recent_activity_over_stale_heartbeat():
+    state = {
+        "created_at": 100.0,
+        "last_heartbeat_at": 110.0,
+        "last_activity": 125.0,
+    }
+
+    assert game_router._route_liveness_at(state) == 125.0
+
+
+@pytest.mark.unit
+def test_route_heartbeat_timeout_uses_hidden_grace_window():
+    assert game_router._route_heartbeat_timeout_seconds({"page_visible": True}) == (
+        game_router._GAME_ROUTE_HEARTBEAT_TIMEOUT_SECONDS
+    )
+    assert game_router._route_heartbeat_timeout_seconds({"page_visible": False}) == (
+        game_router._GAME_ROUTE_HIDDEN_HEARTBEAT_TIMEOUT_SECONDS
+    )
+    assert game_router._route_heartbeat_timeout_seconds({"visibility_state": "hidden"}) == (
+        game_router._GAME_ROUTE_HIDDEN_HEARTBEAT_TIMEOUT_SECONDS
+    )
 
 
 @pytest.mark.unit
@@ -99,8 +240,9 @@ class _FakeRealtimeSession:
     def __init__(self, *, model_lower="qwen-realtime", delivered=True):
         self._model_lower = model_lower
         self.model = model_lower
-        self.base_url = "https://dashscope.aliyuncs.com"
+        self.base_url = "https://generativelanguage.googleapis.com" if "gemini" in model_lower else "https://dashscope.aliyuncs.com"
         self._api_type = "openai"
+        self._is_gemini = "gemini" in model_lower
         self._is_responding = False
         self._audio_delta_total = 0
         self._input_audio_committed_total = 0
@@ -122,11 +264,14 @@ class _FakeRealtimeSession:
         if "instructions" in config:
             self._active_instructions = config["instructions"]
 
-    async def prompt_ephemeral(self, *, language="zh", qwen_manual_commit=False):
-        self.prompt_calls.append({
+    async def prompt_ephemeral(self, *args, language="zh", qwen_manual_commit=False):
+        call = {
             "language": language,
             "qwen_manual_commit": qwen_manual_commit,
-        })
+        }
+        if args:
+            call["instruction"] = args[0]
+        self.prompt_calls.append(call)
         if self.delivered:
             self._input_audio_committed_total += 1
             self._response_created_total += 1
@@ -146,6 +291,13 @@ class _FakeRealtimeManager:
         self.lock = None
         self.use_tts = False
         self._speech_output_total = 0
+        self.voice_nudge_calls = 0
+        self.voice_nudge_kwargs = []
+
+    async def trigger_voice_proactive_nudge(self, **kwargs):
+        self.voice_nudge_calls += 1
+        self.voice_nudge_kwargs.append(kwargs)
+        return True
 
 
 @pytest.fixture
@@ -193,6 +345,30 @@ async def test_realtime_speak_qwen_uses_audio_nudge(monkeypatch, _fake_realtime)
     assert "这球我拿下了喵" in session.update_session_calls[0]["instructions"]
     assert session.update_session_calls[-1]["instructions"] == "base realtime instructions"
     assert session._active_instructions == "base realtime instructions"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_realtime_context_skips_gemini_prime_to_avoid_hidden_response(monkeypatch, _fake_realtime):
+    session = _fake_realtime(model_lower="gemini-2.5-flash-native-audio-preview", delivered=True)
+    mgr = _FakeRealtimeManager(session)
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
+
+    result = await game_router.game_realtime_context(
+        "soccer",
+        _FakeRequest({
+            "lanlan_name": "Lan",
+            "source": "game_event",
+            "currentState": {"score": {"player": 1, "ai": 2}},
+            "pendingItems": [{"type": "game_event", "kind": "goal-scored"}],
+        }),
+    )
+
+    assert result["ok"] is True
+    assert result["action"] == "skip"
+    assert result["reason"] == "gemini_no_session_update"
+    assert session.prime_context_calls == []
+    assert session.create_response_calls == []
 
 
 @pytest.mark.unit
@@ -455,6 +631,31 @@ async def test_route_heartbeat_refreshes_last_state(monkeypatch):
     assert state["last_heartbeat_at"] >= before
     assert state["last_state"] == {"score": {"player": 3, "ai": 2}}
     assert result["heartbeat_timeout_seconds"] == game_router._GAME_ROUTE_HEARTBEAT_TIMEOUT_SECONDS
+    assert state["page_visible"] is True
+    assert state["visibility_state"] == "visible"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_route_heartbeat_records_hidden_visibility(monkeypatch):
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {})
+    state = game_router._activate_game_route("soccer", "match_1", "Lan")
+
+    result = await game_router.game_route_heartbeat(
+        "soccer",
+        _FakeRequest({
+            "lanlan_name": "Lan",
+            "session_id": "match_1",
+            "pageVisible": False,
+            "visibilityState": "hidden",
+        }),
+    )
+
+    assert result["ok"] is True
+    assert result["active"] is True
+    assert result["heartbeat_timeout_seconds"] == game_router._GAME_ROUTE_HIDDEN_HEARTBEAT_TIMEOUT_SECONDS
+    assert state["page_visible"] is False
+    assert state["visibility_state"] == "hidden"
 
 
 @pytest.mark.unit
@@ -569,6 +770,7 @@ async def test_project_mirror_assistant_uses_text_only_mirror(monkeypatch):
         "session_id": "match_1",
         "source": "game-llm-result",
         "turn_id": "turn-mirror",
+        "event": {},
     })]
     assert mgr.spoken == []
 
@@ -612,3 +814,196 @@ async def test_game_end_archives_active_route_to_memory(monkeypatch):
     assert "待接入 memory_server" not in result["archive"]["summary"]
     assert submitted[0]["last_full_dialogues"][-1]["line"] == "才没有放水呢。"
     assert state["game_route_active"] is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_game_end_injects_postgame_context_into_active_realtime(monkeypatch, _fake_realtime):
+    session = _fake_realtime(model_lower="qwen-realtime", delivered=True)
+    mgr = _FakeRealtimeManager(session)
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
+    monkeypatch.setattr(game_router, "_POSTGAME_REALTIME_NUDGE_DELAYS", (0.0,))
+    state = game_router._activate_game_route("soccer", "match_1", "Lan")
+    state["last_state"] = {"score": {"player": 1, "ai": 3}}
+    game_router._append_game_dialog(state, {
+        "type": "user",
+        "source": "external_voice_route",
+        "text": "我是不是不适合玩这个？",
+    })
+    game_router._append_game_dialog(state, {
+        "type": "assistant",
+        "source": "game_llm",
+        "line": "别认输嘛，再来一脚。",
+        "control": {"mood": "relaxed"},
+    })
+
+    async def fake_submit(archive):
+        return {"ok": True, "status": "cached", "count": 1}
+
+    monkeypatch.setattr(game_router, "_submit_game_archive_to_memory", fake_submit)
+
+    result = await game_router.game_end(
+        "soccer",
+        _FakeRequest({"session_id": "match_1", "lanlan_name": "Lan", "reason": "manual"}),
+    )
+
+    assert result["postgame"]["mode"] == "realtime"
+    assert result["postgame"]["context_injected"] is True
+    assert result["postgame"]["nudge_scheduled"] is True
+    await asyncio.sleep(0.01)
+    assert mgr.voice_nudge_calls == 1
+    assert mgr.voice_nudge_kwargs[0]["qwen_manual_commit"] is True
+    assert "足球小游戏赛后主动搭话" in mgr.voice_nudge_kwargs[0]["instruction"]
+    assert "不要继续扮演比赛仍在进行" in mgr.voice_nudge_kwargs[0]["instruction"]
+    assert session.prime_context_calls
+    context_text, skipped = session.prime_context_calls[0]
+    assert skipped is True
+    assert "足球小游戏赛后上下文" in context_text
+    assert "我是不是不适合玩这个？" in context_text
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_game_end_uses_direct_response_for_gemini_postgame(monkeypatch, _fake_realtime):
+    session = _fake_realtime(model_lower="gemini-2.5-flash-native-audio-preview", delivered=True)
+    mgr = _FakeRealtimeManager(session)
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
+    state = game_router._activate_game_route("soccer", "match_1", "Lan")
+    state["last_state"] = {"score": {"player": 3, "ai": 14}}
+    game_router._append_game_dialog(state, {
+        "type": "user",
+        "source": "external_voice_route",
+        "text": "哇,你是笨蛋。",
+    })
+    game_router._append_game_dialog(state, {
+        "type": "assistant",
+        "source": "game_llm",
+        "line": "十二比三，帅的是我。",
+    })
+
+    async def fake_submit(archive):
+        return {"ok": True, "status": "cached", "count": 1}
+
+    monkeypatch.setattr(game_router, "_submit_game_archive_to_memory", fake_submit)
+
+    result = await game_router.game_end(
+        "soccer",
+        _FakeRequest({"session_id": "match_1", "lanlan_name": "Lan", "reason": "manual"}),
+    )
+
+    assert result["postgame"]["mode"] == "realtime"
+    assert result["postgame"]["action"] == "direct_response"
+    assert result["postgame"]["reason"] == "gemini_direct_response"
+    assert session.prime_context_calls == []
+    assert session.prompt_calls == []
+    assert mgr.voice_nudge_calls == 0
+    assert len(session.create_response_calls) == 1
+    assert "足球小游戏赛后上下文" in session.create_response_calls[0]
+    assert "足球小游戏赛后主动搭话" in session.create_response_calls[0]
+    assert "不要继续扮演比赛仍在进行" in session.create_response_calls[0]
+
+
+class _FakePostgameState:
+    def __init__(self):
+        self.events = []
+
+    async def fire(self, event, **kwargs):
+        self.events.append((event, kwargs))
+
+
+class _FakePostgameTextManager:
+    def __init__(self):
+        self.is_active = False
+        self.session = None
+        self.current_speech_id = "postgame-sid"
+        self.state = _FakePostgameState()
+        self.prepare_calls = []
+        self.feed_tts_calls = []
+        self.finish_calls = []
+
+    async def prepare_proactive_delivery(self, **kwargs):
+        self.prepare_calls.append(kwargs)
+        return True
+
+    async def finish_proactive_delivery(self, text, **kwargs):
+        self.finish_calls.append((text, kwargs))
+        return True
+
+    async def feed_tts_chunk(self, text, **kwargs):
+        self.feed_tts_calls.append((text, kwargs))
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_game_end_delivers_one_shot_postgame_text_bubble(monkeypatch):
+    mgr = _FakePostgameTextManager()
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
+    state = game_router._activate_game_route("soccer", "match_1", "Lan")
+    state["last_state"] = {"score": {"player": 2, "ai": 4}}
+    game_router._append_game_dialog(state, {
+        "type": "user",
+        "source": "external_text_route",
+        "text": "我好像踢不进去。",
+    })
+
+    async def fake_submit(archive):
+        return {"ok": True, "status": "cached", "count": 1}
+
+    async def fake_run_game_chat(game_type, session_id, event):
+        assert game_type == "soccer"
+        assert session_id == "match_1"
+        assert event["kind"] == "postgame"
+        assert event["lastUserText"] == "我好像踢不进去。"
+        assert event["scoreText"] == "主人 2 : 4 Lan"
+        return {
+            "line": "刚才那局不算，我下次慢点陪你踢。",
+            "llm_source": {"provider": "fake"},
+        }
+
+    monkeypatch.setattr(game_router, "_submit_game_archive_to_memory", fake_submit)
+    monkeypatch.setattr(game_router, "_run_game_chat", fake_run_game_chat)
+
+    result = await game_router.game_end(
+        "soccer",
+        _FakeRequest({"session_id": "match_1", "lanlan_name": "Lan", "reason": "manual"}),
+    )
+
+    assert result["postgame"]["mode"] == "text"
+    assert result["postgame"]["action"] == "chat"
+    assert result["postgame"]["line"] == "刚才那局不算，我下次慢点陪你踢。"
+    assert result["postgame"]["tts_fed"] is True
+    assert mgr.prepare_calls == [{"min_idle_secs": 0.0}]
+    assert mgr.feed_tts_calls == [("刚才那局不算，我下次慢点陪你踢。", {
+        "expected_speech_id": "postgame-sid",
+    })]
+    assert mgr.finish_calls == [("刚才那局不算，我下次慢点陪你踢。", {
+        "expected_speech_id": "postgame-sid",
+    })]
+    assert any(getattr(event, "name", "") == "PROACTIVE_PHASE2" for event, _ in mgr.state.events)
+    assert any(getattr(event, "name", "") == "PROACTIVE_DONE" for event, _ in mgr.state.events)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_game_end_skips_postgame_on_heartbeat_timeout(monkeypatch):
+    mgr = _FakePostgameTextManager()
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
+    state = game_router._activate_game_route("soccer", "match_1", "Lan")
+
+    async def fake_submit(archive):
+        return {"ok": True, "status": "cached", "count": 1}
+
+    async def fake_run_game_chat(*_args, **_kwargs):
+        raise AssertionError("postgame should not run during heartbeat timeout")
+
+    monkeypatch.setattr(game_router, "_submit_game_archive_to_memory", fake_submit)
+    monkeypatch.setattr(game_router, "_run_game_chat", fake_run_game_chat)
+
+    result = await game_router.game_end(
+        "soccer",
+        _FakeRequest({"session_id": "match_1", "lanlan_name": "Lan", "reason": "heartbeat_timeout"}),
+    )
+
+    assert result["postgame"] == {"ok": True, "action": "skip", "reason": "disabled"}
+    assert mgr.prepare_calls == []
+    assert state["exit_reason"] == "heartbeat_timeout"

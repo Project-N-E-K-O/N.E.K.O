@@ -534,6 +534,11 @@
                 // -------- gemini_response --------
                 if (response.type === 'gemini_response') {
                     var isNewMessage = response.isNewMessage || false;
+                    if (response.metadata && response.metadata.game_route) {
+                        var gameMeta = response.metadata.game_route;
+                        var gameEvent = gameMeta.event || {};
+                        console.log(`[GameMirror] 主聊天栏收到游戏台词 | game=${gameMeta.game_type || '-'} session=${gameMeta.session_id || '-'} kind=${gameEvent.kind || '-'} round=${gameEvent.round || '-'} source=${response.metadata.source || '-'}`);
+                    }
                     if (isNewMessage) {
                         // voice chat 中，AI 新消息到来时若上一条人类消息为纯空白则替换为 ...
                         if (S.lastVoiceUserMessage && S.lastVoiceUserMessage.isConnected &&
@@ -920,8 +925,12 @@
 
                     if (statusCode === 'GAME_ROUTE_ENDED') {
                         var shouldResumeAudio = !!(statusDetails && statusDetails.should_resume_external_on_exit);
+                        var realtimeRestore = statusDetails && statusDetails.realtime_restore;
                         var wasRecording = !!S.isRecording;
-                        console.log(`[GameVoiceSTT] 游戏语音路由已结束 | resume=${shouldResumeAudio} recording=${wasRecording}`);
+                        console.log(`[GameVoiceSTT] 游戏语音路由已结束 | resume=${shouldResumeAudio} recording=${wasRecording} realtime_restore=${realtimeRestore && realtimeRestore.ok === false ? realtimeRestore.reason : 'ok'}`);
+                        if (realtimeRestore && realtimeRestore.attempted && realtimeRestore.ok === false) {
+                            console.warn('[GameVoiceSTT] 游戏退出后 Realtime 恢复未确认:', realtimeRestore.reason || 'unknown');
+                        }
                         if (typeof window.stopGameVoiceSttGate === 'function') {
                             window.stopGameVoiceSttGate();
                         } else {

@@ -1397,6 +1397,7 @@ class LLMSessionManager:
         text: str,
         is_first_chunk: bool = False,
         turn_id: str | None = None,
+        metadata: dict | None = None,
         request_id: Any = _REQUEST_ID_UNSET,
     ):
         """Qwen输出转录回调: 可用于前端显示/缓存/同步。
@@ -1430,6 +1431,8 @@ class LLMSessionManager:
             "turn_id": effective_turn_id,
             "request_id": effective_request_id,
         }
+        if metadata:
+            message["metadata"] = metadata
 
         # 无论 WS 发送成功与否，始终将消息写入 sync_message_queue 和 message_cache，
         # 确保 cross_server 历史组装不因 WS 断连而丢失 assistant 内容。
@@ -1523,6 +1526,7 @@ class LLMSessionManager:
         session_id: str = "",
         source: str = "game_llm",
         turn_id: str | None = None,
+        event: dict | None = None,
     ) -> dict:
         """Mirror a game assistant line without invoking TTS or ordinary chat generation."""
         clean = str(text or "").strip()
@@ -1532,8 +1536,21 @@ class LLMSessionManager:
         mirror_turn_id = turn_id or request_id or str(uuid4())
         previous_request_id = self._active_text_request_id
         self._active_text_request_id = request_id
+        metadata = {
+            "source": source,
+            "game_route": {
+                "game_type": game_type,
+                "session_id": session_id,
+                "event": event or {},
+            },
+        }
         try:
-            await self.send_lanlan_response(clean, is_first_chunk=True, turn_id=mirror_turn_id)
+            await self.send_lanlan_response(
+                clean,
+                is_first_chunk=True,
+                turn_id=mirror_turn_id,
+                metadata=metadata,
+            )
         finally:
             self._active_text_request_id = previous_request_id
         return {
@@ -3496,12 +3513,25 @@ class LLMSessionManager:
     # Voice-chat proactive audio nudge (dedicated path)
     # ------------------------------------------------------------------
 
-    async def trigger_voice_proactive_nudge(self) -> bool:
+    async def trigger_voice_proactive_nudge(
+        self,
+        *,
+        qwen_manual_commit: bool = False,
+        instruction: str = "",
+    ) -> bool:
         """Inject a pre-recorded audio prompt to nudge the voice model into speaking.
 
         This is the **only** caller of ``OmniRealtimeClient.prompt_ephemeral``
         for the voice-chat proactive feature.  It is completely independent of
         ``trigger_agent_callbacks`` (which handles agent task results).
+
+        qwen_manual_commit forces the Qwen Realtime prompt audio to be committed
+        explicitly, which is useful for one-shot game/postgame nudges that should
+        not wait for server VAD to infer a user turn.
+
+        instruction is an optional one-shot steering note for this proactive
+        turn.  It is passed to the Realtime client as transient instructions and
+        must not be stored as a user message.
 
         Returns True if the audio was fully injected, False if skipped.
         """
@@ -3511,7 +3541,11 @@ class LLMSessionManager:
             logger.info("[%s] voice proactive nudge skipped: hot-swap imminent", self.lanlan_name)
             return False
         _lang = normalize_language_code(self.user_language, format='short') or 'zh'
-        delivered = await self.session.prompt_ephemeral(language=_lang)
+        delivered = await self.session.prompt_ephemeral(
+            instruction,
+            language=_lang,
+            qwen_manual_commit=qwen_manual_commit,
+        )
         if delivered:
             logger.info("[%s] voice proactive nudge delivered (%s)", self.lanlan_name, _lang)
         else:

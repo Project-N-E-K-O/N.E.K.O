@@ -172,7 +172,7 @@ async def test_game_route_stt_only_qwen_disables_and_restores_auto_response():
     assert restored is True
     msg = _last_sent_json(ws)
     assert msg["session"]["turn_detection"]["type"] == "server_vad"
-    assert "create_response" not in msg["session"]["turn_detection"]
+    assert msg["session"]["turn_detection"]["create_response"] is True
 
 
 @pytest.mark.unit
@@ -224,7 +224,7 @@ async def test_game_route_stt_only_server_vad_providers_try_create_response_fals
     restored = await client.set_game_route_stt_only(False)
     assert restored is True
     msg = _last_sent_json(ws)
-    assert msg["session"]["turn_detection"] == {"type": "server_vad"}
+    assert msg["session"]["turn_detection"] == {"type": "server_vad", "create_response": True}
 
 
 @pytest.mark.unit
@@ -236,6 +236,35 @@ async def test_game_route_stt_only_provider_update_failure_falls_back_locally():
 
     assert enabled is False
     assert client._game_route_stt_only is True
+
+
+@pytest.mark.unit
+async def test_prompt_ephemeral_manual_qwen_uses_one_shot_instruction(monkeypatch):
+    import main_logic.omni_realtime_client as realtime_mod
+
+    client, ws = _stt_only_client("qwen3-omni-flash-realtime", api_type="qwen")
+    client.instructions = "base realtime instructions"
+    client._active_instructions = "base realtime instructions\n[足球小游戏赛后上下文]"
+    monkeypatch.setattr(realtime_mod, "_load_proactive_audio", lambda _filename: b"\x00" * 320)
+
+    delivered = await client.prompt_ephemeral(
+        "下一句必须自然接刚才这局足球小游戏。",
+        language="zh",
+        qwen_manual_commit=True,
+    )
+
+    assert delivered is True
+    events = [json.loads(call_args[0][0]) for call_args in ws.send.call_args_list]
+    instruction_updates = [
+        event["session"]["instructions"]
+        for event in events
+        if event.get("type") == "session.update" and "instructions" in event.get("session", {})
+    ]
+    assert instruction_updates[0].endswith("下一句必须自然接刚才这局足球小游戏。")
+    assert instruction_updates[-1] == "base realtime instructions\n[足球小游戏赛后上下文]"
+    assert client._active_instructions == "base realtime instructions\n[足球小游戏赛后上下文]"
+    assert any(event.get("type") == "input_audio_buffer.commit" for event in events)
+    assert any(event.get("type") == "response.create" for event in events)
 
 @pytest.mark.unit
 async def test_receive_text_delta(realtime_client):
