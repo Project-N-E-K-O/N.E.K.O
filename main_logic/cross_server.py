@@ -240,8 +240,50 @@ def _build_recent_analyze_messages(
     return [msg for msg in recent if msg.get('content') or msg.get('attachments')]
 
 
-async def keep_reader(ws: aiohttp.ClientWebSocketResponse):
-    """保持 WebSocket 连接活跃的读取循环"""
+async def _safe_close(target) -> None:
+    """关 ws / session 的统一兜底。已进入清理阶段，close 失败不影响后续流程。"""
+    if target is None:
+        return
+    try:
+        await target.close()
+    except Exception as e:
+        logger.debug(f"_safe_close: ignored exception during close: {e}")
+
+
+class _WSSlot:
+    """单 ws 端点的共享状态。主 loop / reader / maintainer 三方读写。
+
+    主 loop 只对 ``ws`` / ``dead_event`` 做读 + 标死，从不调 ws_connect / close；
+    全部生命周期由 :func:`_slot_maintainer` 在独立 task 里管理。
+    """
+    __slots__ = ("name", "url", "lanlan_name", "ws_kwargs",
+                 "ws", "session", "reader", "maintainer", "dead_event")
+
+    def __init__(self, name: str, url: str, lanlan_name: str, *, ws_kwargs=None):
+        self.name = name
+        self.url = url
+        self.lanlan_name = lanlan_name
+        self.ws_kwargs = ws_kwargs or {}
+        self.ws: aiohttp.ClientWebSocketResponse | None = None
+        self.session: aiohttp.ClientSession | None = None
+        self.reader: asyncio.Task | None = None
+        self.maintainer: asyncio.Task | None = None
+        self.dead_event = asyncio.Event()
+        self.dead_event.set()  # 初始即"死" → maintainer 第一次 wait 立即返回，触发首连
+
+
+def _mark_dead(slot: _WSSlot) -> None:
+    """标记 slot 为断开。幂等。主 loop send 失败 / reader 检测 close 都调这个。"""
+    slot.ws = None
+    slot.dead_event.set()
+
+
+async def _slot_reader(slot: _WSSlot, ws: aiohttp.ClientWebSocketResponse) -> None:
+    """绑定到具体 ws 实例的读循环。检测 close → mark_dead 唤醒 maintainer。
+
+    ws 通过参数传入而不是从 slot 读，避免 maintainer 已经替换 slot.ws 后老 reader
+    误标新 ws 为死。被 maintainer 主动 cancel 时不调 mark_dead。
+    """
     try:
         while True:
             try:
@@ -251,9 +293,111 @@ async def keep_reader(ws: aiohttp.ClientWebSocketResponse):
             except asyncio.TimeoutError:
                 pass
             except asyncio.CancelledError:
-                break
+                return
     except Exception:
         pass
+    # 仅当当前 slot.ws 仍是这条 ws 时才标死，避免覆盖 maintainer 刚装上的新连接
+    if slot.ws is ws:
+        _mark_dead(slot)
+
+
+async def _slot_maintainer(
+    slot: _WSSlot,
+    *,
+    backoff_min: float = 0.25,
+    backoff_max: float = 1.5,
+) -> None:
+    """单 slot 的 reconnect 循环，事件驱动 + 指数退避。
+
+    monitor 是外挂；不在的时候这条 task 会以 backoff_max 节奏静默重试，主 sync loop
+    完全不感知。
+
+    周期保证：每次尝试 = ``wait_for(ws_connect, timeout=backoff)``，所以 cycle 时长
+    被 backoff 双向夹住——
+    - 上限：connect 挂到 timeout 才失败，cycle ≈ backoff
+    - 下限：connect 极速 fail（refused），sleep 补足到 backoff，cycle = backoff
+
+    backoff_max=1.5s 即"最差 1.5s 轮询"。Windows 上裸 ws_connect 失败有时要 ~4s
+    （TCP SYN timeout），不加 wait_for 这条保证就破了。
+    """
+    backoff = backoff_min
+    while True:
+        await slot.dead_event.wait()
+
+        # 旧 reader / session 异步清理（不阻塞重连本身）
+        old_reader = slot.reader
+        old_session = slot.session
+        slot.reader = None
+        slot.session = None
+        if old_reader is not None:
+            old_reader.cancel()
+        if old_session is not None:
+            asyncio.create_task(_safe_close(old_session))
+
+        new_session = aiohttp.ClientSession()
+        slot.session = new_session
+        cycle_start = time.monotonic()
+        try:
+            new_ws = await asyncio.wait_for(
+                new_session.ws_connect(slot.url, **slot.ws_kwargs),
+                timeout=backoff,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.debug(
+                f"[{slot.lanlan_name}] {slot.name} ws_connect 失败: "
+                f"{type(e).__name__}: {e} (backoff {backoff:.2f}s)"
+            )
+            # 失败的 session 立即后台收，避免 lingering
+            asyncio.create_task(_safe_close(new_session))
+            slot.session = None
+            # 拉到 backoff 周期：fast-fail (refused, ms 级) 时补 sleep；
+            # timeout 到点失败时基本不 sleep 直接进下一轮
+            elapsed = time.monotonic() - cycle_start
+            if elapsed < backoff:
+                await asyncio.sleep(backoff - elapsed)
+            backoff = min(backoff * 2, backoff_max)
+            continue  # dead_event 仍 set，下轮立即再试
+
+        # 顺序很重要：先把 ws 装上 + 清 dead_event，再创建 reader。
+        # 否则 reader 可能在 clear() 之前就 mark_dead，clear 会把这个信号擦掉。
+        slot.ws = new_ws
+        slot.dead_event.clear()
+        slot.reader = asyncio.create_task(
+            _slot_reader(slot, new_ws),
+            name=f"WSReader-{slot.name}-{slot.lanlan_name}",
+        )
+        backoff = backoff_min
+
+
+async def _try_send_json(slot: _WSSlot | None, payload: dict) -> bool:
+    """fail-soft 发送。slot 不存在 / ws 死 / send 抛异常都返回 False，不向上传播。"""
+    if slot is None:
+        return False
+    ws = slot.ws
+    if ws is None:
+        return False
+    try:
+        await ws.send_json(payload)
+        return True
+    except Exception:
+        _mark_dead(slot)
+        return False
+
+
+async def _try_send_bytes(slot: _WSSlot | None, payload: bytes) -> bool:
+    if slot is None:
+        return False
+    ws = slot.ws
+    if ws is None:
+        return False
+    try:
+        await ws.send_bytes(payload)
+        return True
+    except Exception:
+        _mark_dead(slot)
+        return False
 
 
 async def _post_memory_server(
@@ -344,14 +488,17 @@ async def run_sync_connector(
 ):
     """Async-native 同步连接器，跑在调用方主 event loop 上。
 
-    历史：最早是 multiprocessing 子进程（``*_process`` 命名遗留），
-    后来变成 daemon Thread + 内部 ``asyncio.new_event_loop()``。现在合并到
-    主 loop：
-    - 取消通过 ``asyncio.CancelledError`` 触发；cleanup 在 finally 完成
-    - ``message_queue`` 改为 ``asyncio.Queue``，用 ``await get()`` 替代 20ms
-      轮询。生产端 ``put_nowait()`` 与旧版 ``queue.Queue`` API 兼容
-    - 应用层 heartbeat 节流到 ``HEARTBEAT_INTERVAL`` 一次（当前 1s）；底层 ws
-      ping/pong 由 ``aiohttp.ws_connect(heartbeat=10)`` 自动维持
+    架构：
+    - 主 loop：``await message_queue.get()`` 阻塞等消息，处理后用 ``_try_send_*``
+      把数据塞进 ws；ws 死/不存在时 fail-soft 跳过。**主 loop 永远不调
+      ws_connect / session.close / ws.close**，所以 monitor 没启动或断线
+      不会阻塞 memory 等其它 await 路径。
+    - 每个 ws 一个 :func:`_slot_maintainer` 后台 task：``dead_event`` 唤醒 +
+      指数退避重连（0.25s → 2s 封顶）。失败时静默重试，不打扰主 loop。
+    - 每条活 ws 一个 :func:`_slot_reader` 后台 task：检测服务端 close →
+      ``_mark_dead`` → 唤醒 maintainer。
+    - 应用层 heartbeat 已删除：aiohttp 底层 ``heartbeat=10`` 的 ping/pong
+      会在 ~10s 内把死连接变成 reader 看得见的 ``CLOSED``。
 
     Args:
         status_callback: 可选 ``Callable[[str], None]``。运行在主 loop 上，
@@ -374,15 +521,36 @@ async def run_sync_connector(
             return False
     shutdown_event = _NeverShutdown()
 
-    sync_session = None
-    sync_ws = None
-    sync_reader = None
-    binary_session = None
-    binary_ws = None
-    binary_reader = None
-    bullet_session = None
-    bullet_ws = None
-    bullet_reader = None
+    # ws slots：config 里关掉的端点压根不创建 maintainer，零成本。
+    sync_slot: _WSSlot | None = None
+    binary_slot: _WSSlot | None = None
+    bullet_slot: _WSSlot | None = None
+    if config['monitor']:
+        sync_slot = _WSSlot(
+            'sync',
+            f"{sync_server_url}/sync/{lanlan_name}",
+            lanlan_name,
+            ws_kwargs={'heartbeat': 10},
+        )
+        binary_slot = _WSSlot(
+            'binary',
+            f"{sync_server_url}/sync_binary/{lanlan_name}",
+            lanlan_name,
+            ws_kwargs={'heartbeat': 10},
+        )
+    if config['bullet']:
+        bullet_slot = _WSSlot(
+            'bullet',
+            f"wss://127.0.0.1:{COMMENTER_SERVER_PORT}/sync/{lanlan_name}",
+            lanlan_name,
+            ws_kwargs={'ssl': ssl._create_unverified_context()},
+        )
+    slots: list[_WSSlot] = [s for s in (sync_slot, binary_slot, bullet_slot) if s is not None]
+    for s in slots:
+        s.maintainer = asyncio.create_task(
+            _slot_maintainer(s),
+            name=f"WSMaint-{s.name}-{lanlan_name}",
+        )
 
     user_input_cache = ''
     text_output_cache = ''  # lanlan的当前消息
@@ -398,43 +566,17 @@ async def run_sync_connector(
         MEMORY_CACHE_SCOPE_TURN_END: False,
     }
 
-    last_heartbeat_at = 0.0
-    # 节流后的应用层 heartbeat 间隔。原因不是省 CPU（aiohttp ws_connect(heartbeat=10)
-    # 已经在底层做了 ping/pong），而是控制 send-fail → ws=None → 下一轮 reconnect
-    # 这条链路的检测延迟。1s 在 idle 期足够安静（远低于改造前 50Hz），同时把
-    # 断线检测窗口锁在 ~1s。设太大（比如 10s）会让 idle→burst 切换时第一波消息
-    # 撞到旧 ws 上更长一段时间。
-    HEARTBEAT_INTERVAL = 1.0
-    IDLE_TIMEOUT = 10.0  # 没消息时仍每 10s 唤醒一次 ws 检查/重连
-    # 外层 loop 唤醒粒度必须 <= heartbeat 间隔，否则 idle 期 heartbeat / reconnect
-    # 检查仍要等 IDLE_TIMEOUT 才轮上一次——HEARTBEAT_INTERVAL 调到 1s 但 wait_for
-    # 还卡 10s 的话，注释里写的"~1s 探测窗口"就是空头支票。
-    LOOP_TICK = min(IDLE_TIMEOUT, HEARTBEAT_INTERVAL)
-
     try:
         while True:
-            message = None
-            try:
-                # check_async_blocking.py 用纯名字启发式（``*_queue.get()`` 一律拍），
-                # 类型标注不影响判断；这里 message_queue 实际是 ``asyncio.Queue``，
-                # ``.get()`` 返回 coroutine 由 wait_for 调度，不会阻塞 event loop。
-                message = await asyncio.wait_for(
-                    message_queue.get(),  # noqa: ASYNC_BLOCK — asyncio.Queue, not queue.Queue
-                    timeout=LOOP_TICK,
-                )
-            except asyncio.TimeoutError:
-                # 超时 = 没消息：保持 message=None 走到下面 ws 维持段做周期性
-                # reconnect/heartbeat 检查。idle 期每 LOOP_TICK 触发一次（当前
-                # 1s，由 min(IDLE_TIMEOUT, HEARTBEAT_INTERVAL) 决定）；不打日志
-                # 否则会变成稳定噪音。
-                pass
+            # 阻塞等消息。无消息时主 loop 完全沉默——ws 维护已下沉到 _slot_maintainer，
+            # 不再需要周期唤醒做 reconnect/heartbeat 巡检。
+            message = await message_queue.get()  # noqa: ASYNC_BLOCK — asyncio.Queue, not queue.Queue
 
             if message is not None:
                 try:
                     if message["type"] == "json":
-                        # Forward to monitor if enabled
-                        if config['monitor'] and sync_ws:
-                            await sync_ws.send_json(message["data"])
+                        # Forward to monitor if enabled (fail-soft: monitor 不在直接跳过)
+                        await _try_send_json(sync_slot, message["data"])
 
                         # Only treat assistant turn when it's a gemini_response
                         if message["data"].get("type") == "gemini_response":
@@ -447,7 +589,7 @@ async def run_sync_connector(
                                 current_turn_start_index = len(chat_history)
                                 text_output_cache = datetime.now().strftime('[%Y%m%d %a %H:%M] ')
 
-                                if config['bullet'] and bullet_ws:
+                                if bullet_slot is not None and bullet_slot.ws is not None:
                                     try:
                                         last_user = last_ai = None
                                         for i in chat_history[::-1]:
@@ -465,7 +607,7 @@ async def run_sync_connector(
                                             "screen": last_screen
                                         }
                                         binary_message = pickle.dumps(message_data)
-                                        await bullet_ws.send_bytes(binary_message)
+                                        await _try_send_bytes(bullet_slot, binary_message)
                                     except Exception as e:
                                         logger.error(f"[{lanlan_name}] Error when sending to commenter: {e}")
 
@@ -476,19 +618,18 @@ async def run_sync_connector(
                                 pass
 
                     elif message["type"] == "binary":
-                        if config['monitor'] and binary_ws:
-                            await binary_ws.send_bytes(message["data"])
+                        await _try_send_bytes(binary_slot, message["data"])
 
                     elif message["type"] == "user":  # 准备转录
                         data = message["data"].get("data")
                         input_type = message["data"].get("input_type")
                         if input_type == "transcript": # 暂时只处理语音，后续还需要记录图片
-                            if user_input_cache == '' and config['monitor'] and sync_ws:
-                                await sync_ws.send_json({'type': 'user_activity'}) #用于打断前端声音播放
+                            if user_input_cache == '':
+                                await _try_send_json(sync_slot, {'type': 'user_activity'})  # 用于打断前端声音播放
                             user_input_cache += data
                             # 发送用户转录到 monitor 供副终端显示
-                            if config['monitor'] and sync_ws and data:
-                                await sync_ws.send_json({'type': 'user_transcript', 'text': data})
+                            if data:
+                                await _try_send_json(sync_slot, {'type': 'user_transcript', 'text': data})
                         elif input_type == "screen":
                             last_screen = data
                             if data:
@@ -603,8 +744,7 @@ async def run_sync_connector(
                                 # 主动搭话（无用户输入）时：合并未同步的连续 assistant 消息，不写入 /cache
                                 if not had_user_input_this_turn and not is_avatar_interaction_turn:
                                     merge_unsynced_tail_assistants(chat_history, last_synced_index)
-                                if config['monitor'] and sync_ws:
-                                    await sync_ws.send_json({'type': 'turn end'})
+                                await _try_send_json(sync_slot, {'type': 'turn end'})
                                 if is_avatar_interaction_turn:
                                     # Avatar tool turns are handled in an isolated
                                     # memory path so they never leak into analyzer
@@ -685,6 +825,13 @@ async def run_sync_connector(
                                             chat_history,
                                             pending_user_images,
                                             allow_attach_to_last_user=had_user_input_this_turn,
+                                        )
+                                        has_user = any(m.get('role') == 'user' for m in recent)
+                                        logger.info(
+                                            f"[{lanlan_name}] turn_end analyze check: "
+                                            f"history={len(chat_history)} recent={len(recent)} "
+                                            f"has_user={has_user} had_input={had_user_input_this_turn} "
+                                            f"agent_callback_turn={is_agent_callback_turn_end}"
                                         )
                                         if recent and not is_agent_callback_turn_end:
                                             sent = await _publish_analyze_request_with_fallback(
@@ -842,130 +989,30 @@ async def run_sync_connector(
                             logger.error(f"[{lanlan_name}] System message error: {e}", exc_info=True)
                 except Exception as e:
                     logger.error(f"[{lanlan_name}] Message processing error: {e}", exc_info=True)
- 
-            # WebSocket 连接管理（独立于消息处理）
-            try:
-                # 如果连接不存在，尝试建立连接
-                try:
-                    if config['monitor']:
-                        if sync_ws is None:
-                            if sync_session:
-                                await sync_session.close()
-                            sync_session = aiohttp.ClientSession()
-                            try:
-                                sync_ws = await sync_session.ws_connect(
-                                    f"{sync_server_url}/sync/{lanlan_name}",
-                                    heartbeat=10,
-                                )
-                                # print(f"[Sync Process] [{lanlan_name}] 文本连接已建立")
-                                sync_reader = asyncio.create_task(keep_reader(sync_ws))
-                            except Exception:
-                                # logger.warning(f"[{lanlan_name}] Monitor文本连接失败: {e}")
-                                sync_ws = None
 
-                        if binary_ws is None:
-                            if binary_session:
-                                await binary_session.close()
-                            binary_session = aiohttp.ClientSession()
-                            try:
-                                binary_ws = await binary_session.ws_connect(
-                                    f"{sync_server_url}/sync_binary/{lanlan_name}",
-                                    heartbeat=10,
-                                )
-                                # print(f"[Sync Process] [{lanlan_name}] 二进制连接已建立")
-                                binary_reader = asyncio.create_task(keep_reader(binary_ws))
-                            except Exception:
-                                # logger.warning(f"[{lanlan_name}] Monitor二进制连接失败: {e}")
-                                binary_ws = None
+            # ws 维护已下沉到独立 _slot_maintainer task，主 loop 不再做巡检。
 
-                        # 发送应用层心跳（节流到每 HEARTBEAT_INTERVAL 一次）。
-                        # 底层 ws ping/pong 已由 aiohttp.ws_connect(heartbeat=10)
-                        # 维持，应用层 heartbeat 主要作为 send 失败 = 连接断的探针。
-                        _now_ts = time.time()
-                        _should_heartbeat = (_now_ts - last_heartbeat_at >= HEARTBEAT_INTERVAL)
-                        if _should_heartbeat:
-                            last_heartbeat_at = _now_ts
-
-                        if _should_heartbeat and config['monitor'] and sync_ws:
-                            try:
-                                await sync_ws.send_json({"type": "heartbeat", "timestamp": _now_ts})
-                            except Exception:
-                                sync_ws = None
-
-                        if _should_heartbeat and config['monitor'] and binary_ws:
-                            try:
-                                await binary_ws.send_bytes(b'\x00\x01\x02\x03')
-                            except Exception:
-                                binary_ws = None
-
-                except Exception as e:
-                    logger.error(f"[{lanlan_name}] Monitor连接异常: {e}", exc_info=True)
-                    sync_ws = None
-                    binary_ws = None
-
-                try:
-                    if config['bullet']:
-                        if bullet_ws is None:
-                            if bullet_session:
-                                await bullet_session.close()
-                            bullet_session = aiohttp.ClientSession()
-                            try:
-                                bullet_ws = await bullet_session.ws_connect(
-                                    f"wss://127.0.0.1:{COMMENTER_SERVER_PORT}/sync/{lanlan_name}",
-                                    ssl=ssl._create_unverified_context()
-                                )
-                                # print(f"[Sync Process] [{lanlan_name}] Bullet连接已建立")
-                                bullet_reader = asyncio.create_task(keep_reader(bullet_ws))
-                            except Exception:
-                                # Bullet 连接失败是正常的（该服务可能未启动）
-                                bullet_ws = None
-                except Exception as e:
-                    logger.error(f"[{lanlan_name}] Bullet连接异常: {e}", exc_info=True)
-                    bullet_ws = None
-
-                # 不再需要 0.02s 的 spin sleep —— 上层 await message_queue.get()
-                # 已经是阻塞的，无消息时整个 loop 自然挂起，不会忙等。
-
-            except asyncio.CancelledError:
-                # 让外层 try 的 finally 接管 cleanup
-                raise
-            except Exception as e:
-                logger.error(f"[{lanlan_name}] WebSocket连接异常: {e}")
-                sync_ws = None
-                binary_ws = None
-                bullet_ws = None
-                await asyncio.sleep(0.5)  # 出错时退避 0.5s 再重连，避免快速失败 spam
- 
     except asyncio.CancelledError:
         raise
     finally:
-        # 关闭资源（并行：3 个 ws + 3 个 session 互相独立）。无论是正常完成、
-        # 取消、还是异常退出，都走这里清理。
-        async def _safe_close(target):
-            if target is None:
-                return
-            try:
-                await target.close()
-            except Exception as e:
-                # 已进入重连/退出阶段，close 失败不影响后续流程；记 debug 方便排障
-                logger.debug(f"_safe_close: ignored exception during close: {e}")
+        # cleanup 顺序：先 cancel maintainer + reader（停止新建连接 / 读循环），
+        # 再 close 现存的 ws + session。maintainer 自己持有 session 引用，cancel
+        # 后我们从 slot 里读出来一并关。
+        for s in slots:
+            if s.maintainer is not None:
+                s.maintainer.cancel()
+            if s.reader is not None:
+                s.reader.cancel()
+
+        bg_tasks = [t for s in slots for t in (s.maintainer, s.reader) if t is not None]
+        if bg_tasks:
+            await asyncio.gather(*bg_tasks, return_exceptions=True)
 
         await asyncio.gather(
-            _safe_close(sync_ws), _safe_close(binary_ws), _safe_close(bullet_ws),
-            _safe_close(sync_session), _safe_close(binary_session), _safe_close(bullet_session),
+            *(_safe_close(s.ws) for s in slots),
+            *(_safe_close(s.session) for s in slots),
             return_exceptions=True,
         )
-        # cancel reader task 后必须 await，否则 task 在 loop 关闭时还 pending
-        # 会触发 "Task was destroyed but it is pending!" 告警。keep_reader 内部
-        # 已经处理 CancelledError → break，所以 gather(return_exceptions=True)
-        # 会安静地收掉 cancel 副作用。
-        readers = [r for r in (sync_reader, binary_reader, bullet_reader) if r is not None]
-        # asyncio.Task.cancel() 不抛异常（返回 bool），所以这里不需要 try/except
-        # 包裹——旧线程版本的过度防御代码已删除。
-        for rdr in readers:
-            rdr.cancel()
-        if readers:
-            await asyncio.gather(*readers, return_exceptions=True)
         # 注意：不在这里调用 aclose_internal_http_client_current_loop()。
         # 旧版子进程/独立线程拥有自己的 event loop，其 http client 也是 per-loop
         # 缓存的，退出时需要 close。现在合并到主 loop，client 由主代码共享，

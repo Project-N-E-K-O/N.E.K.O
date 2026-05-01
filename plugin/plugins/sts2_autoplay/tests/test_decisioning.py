@@ -33,6 +33,9 @@ class DummyLlmStrategy:
 
 
 class DummyCombatAnalyzer:
+    def __init__(self) -> None:
+        self.orb_state_calls = 0
+
     def build_tactical_summary(self, combat: dict[str, Any], strategy_constraints_loader, character_strategy: str | None = None) -> dict[str, Any]:
         incoming = sum(int(enemy.get("intent_attack", 0) or 0) for enemy in combat.get("enemies", []) if isinstance(enemy, dict))
         current_block = int(combat.get("player_block", 0) or 0)
@@ -71,6 +74,11 @@ class DummyCombatAnalyzer:
     def _card_orb_damage_value(self, card: dict[str, Any], combat: dict[str, Any], target_index: Any = None) -> int:
         return int(card.get("orb_damage", 0) or 0)
 
+    def _combat_orb_state(self, combat: dict[str, Any]) -> list[dict[str, Any]]:
+        self.orb_state_calls += 1
+        value = combat.get("orbs")
+        return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
+
     def _combat_player_block(self, combat: dict[str, Any]) -> int:
         return int(combat.get("player_block", 0) or 0)
 
@@ -88,7 +96,7 @@ class DummyCombatAnalyzer:
         return max(playable, key=lambda card: int(card.get("block", 0) or 0), default=None)
 
 
-class DecisionService(DecisioningMixin):
+class DecisionServiceBase(DecisioningMixin):
     def __init__(self) -> None:
         self._cfg = {"neko_desperate_enabled": True, "neko_desperate_hp_threshold": 0.5}
         self.logger = DummyLogger()
@@ -100,6 +108,12 @@ class DecisionService(DecisioningMixin):
             return int(value)
         except Exception:
             return default
+
+    def _first_present(self, *values: Any, default: Any = None) -> Any:
+        for value in values:
+            if value is not None:
+                return value
+        return default
 
     def _configured_mode(self) -> str:
         return "full-program"
@@ -121,9 +135,6 @@ class DecisionService(DecisioningMixin):
     def _enemy_intent_attack_total(self, enemy: dict[str, Any]) -> int:
         return int(enemy.get("intent_attack", 0) or 0)
 
-    def _combat_orbs(self, combat: dict[str, Any]) -> list[dict[str, Any]]:
-        return []
-
     def _find_defensive_action(self, actions: list[dict[str, Any]], combat: dict[str, Any], tactical_summary: dict[str, Any]) -> dict[str, Any] | None:
         block_card = self._best_playable_block_card(combat)
         if block_card is None:
@@ -144,6 +155,11 @@ class DecisionService(DecisioningMixin):
 
     def _describe_legal_action(self, action: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
         return action
+
+
+class DecisionService(DecisionServiceBase):
+    def _combat_orbs(self, combat: dict[str, Any]) -> list[dict[str, Any]]:
+        return []
 
 
 class DummyContextAnalyzer:
@@ -198,6 +214,20 @@ def test_desperate_uses_attack_when_lethal_exists() -> None:
     assert selected is not None
     assert selected["raw"]["card_index"] == 0
     assert selected["raw"]["target_index"] == 0
+
+
+@pytest.mark.unit
+def test_marginal_benefit_reads_orbs_from_combat_analyzer_without_service_helper() -> None:
+    service = DecisionServiceBase()
+    zap = {"index": 0, "name": "电击", "type": "skill", "card_type": "skill", "playable": True, "cost": 0, "description": "channel lightning", "orb_damage": 8}
+    combat = {"player_energy": 3, "player_block": 0, "hand": [zap], "orbs": [{"type": "lightning"}], "enemies": [{"index": 0, "hp": 40, "intent_attack": 0}]}
+    tactical = {"recommended_target_index": 0, "incoming_attack_total": 0}
+    state = {"energy": 3, "block": 0, "str_stacks": 0, "weaken_stacks": 0, "vulnerable_stacks": 0}
+
+    benefit = service._calc_marginal_benefit(zap, state, combat, tactical, {}, remaining_cards=[])
+
+    assert benefit > 0
+    assert service._combat_analyzer.orb_state_calls == 1
 
 
 @pytest.mark.unit

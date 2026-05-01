@@ -12,6 +12,9 @@ class AutoplayLoopMixin:
     async def start_autoplay(self, objective: Optional[str] = None, stop_condition: str = "current_floor") -> Dict[str, Any]:
         if self._autoplay_task and not self._autoplay_task.done():
             return {"status": "running", "message": "尖塔半自动任务已在运行", "task": self._semi_auto_task, "task_started": False, "action_executed": False, "executed": False}
+        if self._autoplay_task and self._autoplay_task.done():
+            self._autoplay_task = None
+        self._last_error = ""
 
         try:
             await self.refresh_state()
@@ -74,6 +77,7 @@ class AutoplayLoopMixin:
                 pass
             self._autoplay_task = None
         self._autoplay_state = "idle"
+        self._last_error = ""
         self._emit_status()
         try:
             await self._notify_neko_task_event("stopped", task=task, reason=reason)
@@ -205,6 +209,7 @@ class AutoplayLoopMixin:
             task = dict(self._semi_auto_task) if isinstance(self._semi_auto_task, dict) else None
             self._autoplay_state = "error"
             self._last_error = str(exc)
+            self.logger.exception("尖塔半自动循环异常停止")
             try:
                 await self._maybe_emit_frontend_message(event_type="error", detail=str(exc), snapshot=self._snapshot, priority=7, force=True)
             except Exception as notify_exc:
@@ -214,6 +219,9 @@ class AutoplayLoopMixin:
             except Exception as notify_exc:
                 self.logger.warning(f"终态任务事件通知失败: {notify_exc}")
             self._emit_status()
+        finally:
+            if self._autoplay_task is asyncio.current_task():
+                self._autoplay_task = None
 
     def _build_semi_auto_task(self, *, objective: Optional[str], stop_condition: str) -> Dict[str, Any]:
         snapshot = self._snapshot if isinstance(self._snapshot, dict) else {}

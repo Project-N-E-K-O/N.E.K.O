@@ -32,6 +32,15 @@ class DecisioningMixin:
             return int(analyzer_enemy_block_value(enemy))
         return self._safe_int(self._first_present(enemy.get("block"), enemy.get("current_block"), default=0), 0)
 
+    def _combat_orbs(self, combat: dict[str, Any]) -> list[dict[str, Any]]:
+        if not isinstance(combat, dict):
+            return []
+        analyzer = getattr(self, "_combat_analyzer", None)
+        analyzer_combat_orb_state = getattr(analyzer, "_combat_orb_state", None)
+        if callable(analyzer_combat_orb_state):
+            return list(analyzer_combat_orb_state(combat))
+        return []
+
     def _is_desperate_situation(self, context: dict[str, Any]) -> bool:
         if not bool(self._cfg.get("neko_desperate_enabled", True)):
             return False
