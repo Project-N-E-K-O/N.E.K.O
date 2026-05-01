@@ -350,13 +350,13 @@ CONTEXT_SUMMARY_TASK_FOOTER = {
 
 # ---------- Vision: Avatar 截图注解（叠加在发给视觉模型的截图上，用户不可见） ----------
 AVATAR_ANNOTATION_TEXT = {
-    'zh':    ('这是{name}在桌面上的虚拟形象,', '请{name}不要主动提及', '请{name}不要主动提及'),
-    'zh-CN': ('这是{name}在桌面上的虚拟形象,', '请{name}不要主动提及', '请{name}不要主动提及'),
-    'zh-TW': ('這是{name}在桌面上的虛擬形象,', '請{name}不要主動提及', '請{name}不要主動提及'),
-    'en':    ("This is {name}'s virtual avatar on the desktop,", "Please don't mention it, {name}", "Please don't mention it, {name}"),
-    'ja':    ('これはデスクトップ上の{name}の仮想アバターです,', '{name}は自分から言及しないでください', '{name}は自分から言及しないでください'),
-    'ko':    ('이것은 바탕화면의 {name} 가상 아바타입니다,', '{name}은(는) 스스로 언급하지 마세요', '{name}은(는) 스스로 언급하지 마세요'),
-    'ru':    ('Это виртуальный аватар {name} на рабочем столе,', 'Пожалуйста, {name}, не упоминай это', 'Пожалуйста, {name}, не упоминай это'),
+    'zh':    ('这是{name}在桌面上的虚拟形象,', '请{name}不要主动提及'),
+    'zh-CN': ('这是{name}在桌面上的虚拟形象,', '请{name}不要主动提及'),
+    'zh-TW': ('這是{name}在桌面上的虛擬形象,', '請{name}不要主動提及'),
+    'en':    ("This is {name}'s virtual avatar on the desktop,", "Please don't mention it, {name}"),
+    'ja':    ('これはデスクトップ上の{name}の仮想アバターです,', '{name}は自分から言及しないでください'),
+    'ko':    ('이것은 바탕화면의 {name} 가상 아바타입니다,', '{name}은(는) 스스로 언급하지 마세요'),
+    'ru':    ('Это виртуальный аватар {name} на рабочем столе,', 'Пожалуйста, {name}, не упоминай это'),
 }
 
 # ---------- Vision 图像描述 prompt ----------
