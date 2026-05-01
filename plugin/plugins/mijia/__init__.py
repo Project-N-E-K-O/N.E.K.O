@@ -1060,6 +1060,10 @@ class MijiaPlugin(NekoPluginBase):
         if scene_match:
             return await self._execute_scene_by_name(scene_match.group(1).strip())
 
+        # === 开关指令最高优先级（防止被动作分支抢先匹配） ===
+        # "打开/关闭/开/关" 开头的是二元开关指令，直接走控制解析，不进动作分支
+        _is_switch_cmd = re.match(r'(?:打开|开启|关闭|关掉|开|关)\s*\S', command.strip())
+
         # === 查询意图识别 ===
         _QUERY_PAT = re.search(
             r'(?:是多少|怎么样|什么状态|几度|多亮|多暗|多热|多冷|'
@@ -1079,22 +1083,25 @@ class MijiaPlugin(NekoPluginBase):
                 return await self.query_device_state(device_hint)
 
         # === 设备操作（开始/暂停/停止/回充等） ===
+        # 开关指令已优先处理，此处跳过防止 "关灯" 被误匹配为动作
         _ACTION_VERBS = (
-            r'开始|启动|继续|暂停|停止|关闭|回充|回去充电|'
+            r'开始|启动|继续|暂停|停止|回充|回去充电|'
             r'出舱|集尘|洗拖布|烘干|建图|召唤清洁'
         )
-        act_m = re.match(
-            r'(.+?)(?:的|把|让)?\s*(' + _ACTION_VERBS + r')(?:.+)?$',
-            command.strip(),
-        )
-        if not act_m:
-            # 动词在前："开始扫地" / "暂停洗衣机"
-            act_m2 = re.match(
-                r'(' + _ACTION_VERBS + r')\s*(.+)',
+        act_m = None
+        if not _is_switch_cmd:
+            act_m = re.match(
+                r'(.+?)(?:的|把|让)?\s*(' + _ACTION_VERBS + r')(?:.+)?$',
                 command.strip(),
             )
-            if act_m2:
-                act_m = type('M', (), {'group': lambda self, n: act_m2.group(3 - n) if n in (1, 2) else None})()
+            if not act_m:
+                # 动词在前："开始扫地" / "暂停洗衣机"
+                act_m2 = re.match(
+                    r'(' + _ACTION_VERBS + r')\s*(.+)',
+                    command.strip(),
+                )
+                if act_m2:
+                    act_m = type('M', (), {'group': lambda self, n: act_m2.group(3 - n) if n in (1, 2) else None})()
 
         if act_m:
             device_hint = (act_m.group(1) or "").strip()
