@@ -336,8 +336,8 @@ SETTINGS_EXTRACTOR_PROMPT = {
     'zh': """从以下对话中提取关于{LANLAN_NAME}和{MASTER_NAME}的重要个人信息，用于个人备忘录以及未来的角色扮演，以json格式返回。
 请以JSON格式返回，格式为:
 {{
-    "{LANLAN_NAME}": {{"属性1": "值", "属性2": "值", ...其他个人信息...}}
-    "{MASTER_NAME}": {{...个人信息...}},
+    "{LANLAN_NAME}": {{"属性1": "值", "属性2": "值", "其他个人信息": "..."}},
+    "{MASTER_NAME}": {{"属性1": "值", "属性2": "值", "其他个人信息": "..."}}
 }}
 
 ======以下为对话======
@@ -348,8 +348,8 @@ SETTINGS_EXTRACTOR_PROMPT = {
 
     'en': """Extract important personal information about {LANLAN_NAME} and {MASTER_NAME} from the following conversation. This is for a personal memo and future role-playing. Return in JSON format:
 {{
-    "{LANLAN_NAME}": {{"attribute1": "value", "attribute2": "value", ...other personal info...}}
-    "{MASTER_NAME}": {{...personal info...}},
+    "{LANLAN_NAME}": {{"attribute1": "value", "attribute2": "value", "other_info": "..."}},
+    "{MASTER_NAME}": {{"attribute1": "value", "attribute2": "value", "other_info": "..."}}
 }}
 
 ======以下为对话======
@@ -360,8 +360,8 @@ Now extract important personal information about {LANLAN_NAME} and {MASTER_NAME}
 
     'ja': """以下の会話から{LANLAN_NAME}と{MASTER_NAME}に関する重要な個人情報を抽出してください。個人メモおよび将来のロールプレイに使用します。JSON形式で返してください：
 {{
-    "{LANLAN_NAME}": {{"属性1": "値", "属性2": "値", ...その他の個人情報...}}
-    "{MASTER_NAME}": {{...個人情報...}},
+    "{LANLAN_NAME}": {{"属性1": "値", "属性2": "値", "その他の個人情報": "..."}},
+    "{MASTER_NAME}": {{"属性1": "値", "属性2": "値", "その他の個人情報": "..."}}
 }}
 
 ======以下为对话======
@@ -372,8 +372,8 @@ Now extract important personal information about {LANLAN_NAME} and {MASTER_NAME}
 
     'ko': """다음 대화에서 {LANLAN_NAME}과 {MASTER_NAME}에 대한 중요한 개인 정보를 추출해 주세요. 개인 메모 및 향후 역할극에 사용됩니다. JSON 형식으로 반환해 주세요:
 {{
-    "{LANLAN_NAME}": {{"속성1": "값", "속성2": "값", ...기타 개인 정보...}}
-    "{MASTER_NAME}": {{...개인 정보...}},
+    "{LANLAN_NAME}": {{"속성1": "값", "속성2": "값", "기타_개인_정보": "..."}},
+    "{MASTER_NAME}": {{"속성1": "값", "속성2": "값", "기타_개인_정보": "..."}}
 }}
 
 ======以下为对话======
@@ -384,8 +384,8 @@ Now extract important personal information about {LANLAN_NAME} and {MASTER_NAME}
 
     'ru': """Извлеките важную личную информацию о {LANLAN_NAME} и {MASTER_NAME} из следующей беседы. Это для личного блокнота и будущей ролевой игры. Верните в формате JSON:
 {{
-    "{LANLAN_NAME}": {{"атрибут1": "значение", "атрибут2": "значение", ...другая личная информация...}}
-    "{MASTER_NAME}": {{...личная информация...}},
+    "{LANLAN_NAME}": {{"атрибут1": "значение", "атрибут2": "значение", "другая_информация": "..."}},
+    "{MASTER_NAME}": {{"атрибут1": "значение", "атрибут2": "значение", "другая_информация": "..."}}
 }}
 
 ======以下为对话======
@@ -402,7 +402,6 @@ def get_settings_extractor_prompt(lang: str = 'zh') -> str:
 
 settings_extractor_prompt = SETTINGS_EXTRACTOR_PROMPT['zh']
 
-settings_verifier_prompt = ''
 
 # =====================================================================
 # ======= History review =============================================
