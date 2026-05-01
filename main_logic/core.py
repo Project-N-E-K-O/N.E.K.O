@@ -734,6 +734,14 @@ class LLMSessionManager:
         except Exception:
             return False
 
+    def _can_preserve_tts_ready_for_session_start(self) -> bool:
+        """A live, previously-ready TTS worker will not emit __ready__ again."""
+        return bool(
+            self.tts_ready
+            and self.tts_thread is not None
+            and self.tts_thread.is_alive()
+        )
+
     async def _clear_tts_pipeline(self):
         """清空 TTS 请求/响应队列和待处理缓存，停止当前合成。"""
         if self.use_tts and self.tts_thread and self.tts_thread.is_alive():
@@ -2574,9 +2582,13 @@ class LLMSessionManager:
             logger.info(f"📌 已重新加载配置: core_api={self.core_api_type}, realtime_model={_realtime_model}, text_model={_conversation_model}, vision_model={_vision_model}, voice_id={self.voice_id}")
             logger.info(f"[语音会话诊断] 配置加载完成 (耗时: {time.time() - _diag_start:.2f}秒)")
         
-            # 重置TTS缓存状态
+            # 重置 TTS 缓存状态。若 TTS worker 已经存活且此前确认 ready，
+            # 这里只清空待播文本，不要把 ready 状态抹掉；存活 worker 不会
+            # 因为新 text session 再发一次 __ready__，否则赛后一次性文本会
+            # 永远停在 pending chunks 里。
+            preserve_tts_ready = self._can_preserve_tts_ready_for_session_start()
             async with self.tts_cache_lock:
-                self.tts_ready = False
+                self.tts_ready = preserve_tts_ready
                 self.tts_pending_chunks.clear()
         
             # 重置输入缓存状态

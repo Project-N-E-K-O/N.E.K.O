@@ -119,6 +119,26 @@ async def test_feed_tts_chunk_drop_is_atomic_with_enqueue():
         assert enqueue_calls[0][0] == "s_proactive"
 
 
+def test_can_preserve_tts_ready_for_live_worker():
+    mgr = _make_mgr()
+    mgr.tts_ready = True
+    mgr.tts_thread.is_alive.return_value = True
+
+    assert LLMSessionManager._can_preserve_tts_ready_for_session_start(mgr) is True
+
+
+def test_cannot_preserve_tts_ready_for_dead_or_unready_worker():
+    mgr = _make_mgr()
+
+    mgr.tts_ready = False
+    mgr.tts_thread.is_alive.return_value = True
+    assert LLMSessionManager._can_preserve_tts_ready_for_session_start(mgr) is False
+
+    mgr.tts_ready = True
+    mgr.tts_thread.is_alive.return_value = False
+    assert LLMSessionManager._can_preserve_tts_ready_for_session_start(mgr) is False
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # handle_text_data (text mode) 的 contextvar guard
 # ─────────────────────────────────────────────────────────────────────────────

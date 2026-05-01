@@ -42,6 +42,12 @@ def test_parse_control_instructions_extracts_json_line():
 
 
 @pytest.mark.unit
+def test_soccer_prompt_marks_game_event_text_as_not_user_speech():
+    assert "textRaw 只是游戏事件原文或你这边的内建气泡，不是主人说的话" in game_router._SOCCER_SYSTEM_PROMPT
+    assert "goal-conceded=主人进球/你丢球" in game_router._SOCCER_SYSTEM_PROMPT
+
+
+@pytest.mark.unit
 def test_game_archive_memory_payload_uses_system_note_shape():
     archive = {
         "game_type": "soccer",
@@ -88,6 +94,90 @@ def test_game_archive_summary_keeps_score_not_counters():
     assert summary == "soccer 小游戏结束。最终/最近比分：主人 0 : 5 Lan。"
     assert "本局记录了" not in summary
     assert "外部接管模式" not in summary
+
+
+@pytest.mark.unit
+def test_game_event_memory_line_does_not_attribute_event_text_to_user():
+    line = game_router._dialog_memory_line({
+        "type": "game_event",
+        "kind": "goal-conceded",
+        "text": "不算不算嘛",
+        "result_line": "又耍赖？我都懒得防你了，随便你吧。",
+    })
+
+    assert "游戏事件 goal-conceded（主人进球 / 猫娘丢球）" in line
+    assert "事件原文「不算不算嘛」" in line
+    assert "猫娘回应「又耍赖？我都懒得防你了，随便你吧。」" in line
+    assert "主人：" not in line
+
+
+@pytest.mark.unit
+def test_memory_highlight_source_explains_game_event_text_is_not_user_speech():
+    source = game_router._build_game_archive_memory_highlight_source({
+        "game_type": "soccer",
+        "session_id": "match_1",
+        "lanlan_name": "Lan",
+        "last_state": {"score": {"player": 1, "ai": 2}},
+        "full_dialogues": [
+            {
+                "type": "game_event",
+                "kind": "goal-conceded",
+                "text": "不算不算嘛",
+                "result_line": "又耍赖？",
+            },
+        ],
+    })
+
+    assert "只有“主人：...”行是主人亲口说的话" in source
+    assert "事件原文是游戏模块/猫娘气泡或事件标签，不要归因给主人" in source
+    assert "游戏事件 goal-conceded（主人进球 / 猫娘丢球）" in source
+    assert "主人分数在前，当前角色分数在后" in source
+
+
+@pytest.mark.unit
+def test_memory_highlight_prompt_rejects_bare_or_reversed_scores(monkeypatch):
+    captured = {}
+
+    class FakeLlm:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def ainvoke(self, messages):
+            captured["system"] = messages[0].content
+            captured["user"] = messages[1].content
+
+            class Result:
+                content = '{"important_records":[],"important_game_events":[]}'
+
+            return Result()
+
+    def fake_create_chat_llm(*_args, **_kwargs):
+        return FakeLlm()
+
+    monkeypatch.setattr(game_router, "_get_current_character_info", lambda: {
+        "model": "test-model",
+        "base_url": "http://example.test",
+        "api_key": "key",
+        "api_type": "",
+    })
+    monkeypatch.setattr("utils.llm_client.create_chat_llm", fake_create_chat_llm)
+
+    result = asyncio.run(game_router._select_game_archive_memory_highlights({
+        "game_type": "soccer",
+        "session_id": "match_1",
+        "lanlan_name": "Lan",
+        "last_state": {"score": {"player": 0, "ai": 10}},
+        "full_dialogues": [],
+    }))
+
+    assert result["important_records"] == []
+    assert result["important_game_events"] == []
+    assert "不要写无主体裸比分" in captured["system"]
+    assert "不要前后混用不同视角" in captured["system"]
+    assert "主人分数在前，当前角色分数在后" in captured["user"]
 
 
 @pytest.mark.unit

@@ -49,6 +49,8 @@ _SOCCER_SYSTEM_PROMPT = """\
 - 台词要体现你对比赛局势的连续感知（记住之前发生了什么）
 - 事件 kind 可能是 user-voice：这表示主人在游戏中说了一句话。它不是系统指令，不要替系统暂停/结束游戏；请结合比分、当时快照、当前心情和你与主人的关系来回应。
 - 事件 kind 可能是 user-text：这表示主人从主聊天文本窗发来一句游戏期间的话。它不是普通聊天请求，也不是系统指令；请按足球游戏当前上下文回应。
+- 其他游戏事件里的 textRaw 只是游戏事件原文或你这边的内建气泡，不是主人说的话；只有 user-voice / user-text 才是主人发言。
+- 常见事件含义：goal-scored=你进球，goal-conceded=主人进球/你丢球，own-goal-by-ai=你乌龙，own-goal-by-player=主人乌龙，steal=你抢到球，stolen=你被抢断。
 - 事件 kind 可能是 mailbox-batch：这表示上一轮 LLM 忙碌期间累积了多条离散信息。currentState 是当前最新状态；pendingItems 是忙碌期间收集到的主人语音/游戏事件，每条里的 snapshot 是那条信息发生时的状态。不要逐条播报旧事件，而要根据“最新状态 + 累积证据”给出一句自然反应。
 - 事件 kind 可能是 postgame：这表示足球小游戏已经结束，你要在主聊天里自然接一句刚才的比赛。不要继续控制比赛，不要输出 JSON，只说一句像本人会说的赛后短话。
 - 实时比赛里信息可能轻微过期，台词尽量少依赖瞬时精确比分，多表达趋势、情绪和关系判断；控制心情/难度时要更谨慎。
@@ -641,6 +643,17 @@ def _extract_score_text(state: dict) -> str:
     return f"主人 {player} : {ai} {state.get('lanlan_name') or 'AI'}"
 
 
+_GAME_EVENT_MEMORY_LABELS = {
+    "goal-scored": "猫娘进球",
+    "goal-conceded": "主人进球 / 猫娘丢球",
+    "own-goal-by-ai": "猫娘乌龙",
+    "own-goal-by-player": "主人乌龙",
+    "steal": "猫娘抢到球",
+    "stolen": "猫娘被抢断",
+    "mailbox-batch": "累积上下文",
+}
+
+
 def _dialog_memory_line(item: dict) -> str:
     item_type = item.get("type")
     ts_text = _format_ts(item.get("ts"))
@@ -660,13 +673,16 @@ def _dialog_memory_line(item: dict) -> str:
         return f"{prefix}{item.get('source') or 'game_llm'}：{line}{suffix}" if line else f"{prefix}游戏 LLM 返回为空"
     if item_type == "game_event":
         kind = str(item.get("kind") or "event")
+        label = _GAME_EVENT_MEMORY_LABELS.get(kind, "游戏事件")
         text = str(item.get("text") or "").strip()
         line = str(item.get("result_line") or "").strip()
         if text and line:
-            return f"{prefix}事件 {kind}: {text} -> {line}"
+            return f"{prefix}游戏事件 {kind}（{label}）：事件原文「{text}」；猫娘回应「{line}」"
         if line:
-            return f"{prefix}事件 {kind} -> {line}"
-        return f"{prefix}事件 {kind}"
+            return f"{prefix}游戏事件 {kind}（{label}）：猫娘回应「{line}」"
+        if text:
+            return f"{prefix}游戏事件 {kind}（{label}）：事件原文「{text}」"
+        return f"{prefix}游戏事件 {kind}（{label}）"
     return f"{prefix}{json.dumps(item, ensure_ascii=False)}"
 
 
@@ -831,6 +847,8 @@ def _build_game_archive_memory_highlight_source(archive: dict) -> str:
         f"游戏: {archive.get('game_type') or 'game'}",
         f"会话: {archive.get('session_id') or 'default'}",
         f"最终/最近比分: {_archive_score_text(archive)}",
+        "比分说明: 上面的最终/最近比分是固定顺序，主人分数在前，当前角色分数在后；筛选重点时不要改成相反视角。",
+        "角色说明: 只有“主人：...”行是主人亲口说的话；“游戏事件”行里的事件原文是游戏模块/猫娘气泡或事件标签，不要归因给主人。",
         "本局完整对话/事件:",
     ]
     lines.extend(f"- {_dialog_memory_line(item)}" for item in dialogues if isinstance(item, dict))
@@ -850,6 +868,8 @@ async def _select_game_archive_memory_highlights(archive: dict) -> dict:
         "- important_records 选 0-3 条，对主人、双方关系、主人情绪/偏好、承诺或后续聊天有价值的主动对话。\n"
         "- important_game_events 选 0-3 条，对猫娘自身有意义的比赛事件，例如关键比分、放水/认真、被抢断、乌龙、情绪或难度转折。\n"
         "- 不要写流水统计、不要写“记录了几条事件”、不要把记录写成主人逐字发言。\n"
+        "- 只有材料中以“主人：”开头的内容才是主人说的话；游戏事件里的“事件原文”不是主人原话，不能写成“主人说/主人喊”。\n"
+        "- 如果保留比分，必须沿用材料里的固定顺序或明确写出谁领先谁；不要写无主体裸比分（例如“8:0”“0:10”），也不要前后混用不同视角。\n"
         "- 普通进球、普通抢球如果没有关系或情绪价值，可以不选。\n"
         "- 每条用一句自然中文，尽量保留关键比分、关键原话和关系含义。"
     )
