@@ -262,11 +262,20 @@ class _FakeGameRouteManager:
         self.session = None
         self.input_mode = "audio"
         self.mirrored = []
+        self.assistant_mirrored = []
         self.spoken = []
         self.statuses = []
+        self.user_activity_count = 0
 
     async def mirror_game_user_text(self, text, **kwargs):
         self.mirrored.append((text, kwargs))
+
+    async def mirror_game_assistant_text(self, text, **kwargs):
+        self.assistant_mirrored.append((text, kwargs))
+        return {"ok": True, "mirrored": True, "method": "project_text_mirror"}
+
+    async def send_user_activity(self):
+        self.user_activity_count += 1
 
     async def speak_game_line(self, line, **kwargs):
         self.spoken.append((line, kwargs))
@@ -306,7 +315,7 @@ async def test_route_start_activates_stt_gate_when_audio_already_active(monkeypa
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_route_external_text_to_game_llm_and_project_tts(monkeypatch):
+async def test_route_external_text_to_game_llm_defers_voice_to_frontend_arbiter(monkeypatch):
     mgr = _FakeGameRouteManager()
     monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
 
@@ -349,14 +358,11 @@ async def test_route_external_text_to_game_llm_and_project_tts(monkeypatch):
         "input_type": "game_text",
         "send_to_frontend": False,
     })]
-    assert mgr.spoken == [("才没有放水呢。", {
-        "request_id": "req-1",
-        "game_type": "soccer",
-        "session_id": "match_1",
-    })]
+    assert mgr.user_activity_count == 1
+    assert mgr.spoken == []
     assert [output["type"] for output in state["pending_outputs"]] == ["game_external_input", "game_llm_result"]
     assert state["pending_outputs"][0]["meta"]["inputText"] == "你是不是在放水？"
-    assert state["pending_outputs"][1]["meta"]["voiceAlreadyHandled"] is True
+    assert state["pending_outputs"][1]["meta"]["voiceAlreadyHandled"] is False
     assert state["pending_outputs"][1]["result"]["line"] == "才没有放水呢。"
     assert [item["type"] for item in state["game_dialog_log"]] == ["user", "assistant"]
 
@@ -419,15 +425,13 @@ async def test_route_external_voice_transcript_to_game_llm(monkeypatch):
         "input_type": "game_voice_transcript",
         "send_to_frontend": True,
     })]
-    assert mgr.spoken == [("那我可要认真防你啦。", {
-        "request_id": "voice-1",
-        "game_type": "soccer",
-        "session_id": "match_1",
-    })]
+    assert mgr.user_activity_count == 1
+    assert mgr.spoken == []
     assert [output["type"] for output in state["pending_outputs"]] == ["game_external_input", "game_llm_result"]
     assert state["pending_outputs"][0]["meta"]["inputText"] == "我马上要进球了"
     assert state["pending_outputs"][1]["meta"]["kind"] == "user-voice"
     assert state["pending_outputs"][1]["meta"]["hasUserSpeech"] is True
+    assert state["pending_outputs"][1]["meta"]["voiceAlreadyHandled"] is False
 
 
 @pytest.mark.unit
@@ -509,7 +513,64 @@ async def test_project_speak_uses_manager_project_tts(monkeypatch):
         "request_id": "req-2",
         "game_type": "soccer",
         "session_id": "match_1",
+        "mirror_text": True,
     })]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_project_speak_can_skip_text_mirror_for_frontend_arbiter(monkeypatch):
+    mgr = _FakeGameRouteManager()
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
+    monkeypatch.setattr(game_router, "_get_current_character_info", lambda: {"lanlan_name": "Lan"})
+
+    result = await game_router.game_project_speak(
+        "soccer",
+        _FakeRequest({
+            "line": "只播放语音",
+            "session_id": "match_1",
+            "request_id": "req-voice",
+            "mirror_text": False,
+        }),
+    )
+
+    assert result["ok"] is True
+    assert mgr.spoken == [("只播放语音", {
+        "request_id": "req-voice",
+        "game_type": "soccer",
+        "session_id": "match_1",
+        "mirror_text": False,
+    })]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_project_mirror_assistant_uses_text_only_mirror(monkeypatch):
+    mgr = _FakeGameRouteManager()
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
+    monkeypatch.setattr(game_router, "_get_current_character_info", lambda: {"lanlan_name": "Lan"})
+
+    result = await game_router.game_project_mirror_assistant(
+        "soccer",
+        _FakeRequest({
+            "line": "文字先进入主聊天窗",
+            "session_id": "match_1",
+            "request_id": "req-mirror",
+            "turn_id": "turn-mirror",
+            "source": "game-llm-result",
+        }),
+    )
+
+    assert result["ok"] is True
+    assert result["method"] == "project_text_mirror"
+    assert mgr.assistant_mirrored == [("文字先进入主聊天窗", {
+        "request_id": "req-mirror",
+        "game_type": "soccer",
+        "session_id": "match_1",
+        "source": "game-llm-result",
+        "turn_id": "turn-mirror",
+    })]
+    assert mgr.spoken == []
 
 
 @pytest.mark.unit

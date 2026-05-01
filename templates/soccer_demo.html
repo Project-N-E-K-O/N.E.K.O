@@ -1659,7 +1659,91 @@
 	    routeVoiceSttStopping: false,
 	    routeVoiceSttRecognition: null,
 	    routeVoiceSttRestartTimer: null,
+	    speechPlaybackState: null,
+	    speechPlaybackChannel: null,
+	    speechPriorityById: new Map(),
+	    voiceArbiter: {
+	      pending: null,
+	      inFlight: null,
+	      timer: null,
+	      seq: 0,
+	      waitingForUserReplyGeneration: false,
+	    },
 	  };
+
+  const SPEECH_PLAYBACK_STATE_KEY = 'neko_speech_playback_state';
+  const SPEECH_PLAYBACK_CHANNEL_NAME = 'neko_speech_playback_channel';
+  const GAME_VOICE_ARBITER_DEFAULTS = {
+    tailWaitSeconds: 0.8,
+    freshTtlSeconds: 2.0,
+    userReplyFreshTtlSeconds: 5.0,
+    inFlightGuardSeconds: 2.0,
+    stalePlaybackStateMs: 3500,
+  };
+
+  function _normalizeSpeechPlaybackState(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    const updatedAt = Number(raw.updatedAt || 0);
+    if (!Number.isFinite(updatedAt)) {
+      return null;
+    }
+    const ageMs = Math.max(0, Date.now() - updatedAt);
+    const rawRemainingSeconds = Math.max(0, Number(raw.remainingSeconds || 0));
+    const shouldAdvanceByWallClock = raw.audioContextState !== 'suspended';
+    const remainingSeconds = shouldAdvanceByWallClock
+      ? Math.max(0, rawRemainingSeconds - ageMs / 1000)
+      : rawRemainingSeconds;
+    if (ageMs > GAME_VOICE_ARBITER_DEFAULTS.stalePlaybackStateMs && remainingSeconds <= 0.5) {
+      return null;
+    }
+    return {
+      active: !!raw.active && remainingSeconds > 0.05,
+      speechId: raw.speechId ? String(raw.speechId) : '',
+      turnId: raw.turnId ? String(raw.turnId) : '',
+      remainingSeconds,
+      updatedAt,
+      ageMs,
+      reason: raw.reason || '',
+    };
+  }
+
+  function _readSpeechPlaybackState() {
+    const live = _normalizeSpeechPlaybackState(_llm.speechPlaybackState);
+    if (live) return live;
+    try {
+      const stored = JSON.parse(localStorage.getItem(SPEECH_PLAYBACK_STATE_KEY) || 'null');
+      const normalized = _normalizeSpeechPlaybackState(stored);
+      if (normalized) {
+        _llm.speechPlaybackState = stored;
+        return normalized;
+      }
+    } catch (_) { /* noop */ }
+    return { active: false, speechId: '', turnId: '', remainingSeconds: 0, updatedAt: 0, reason: 'missing' };
+  }
+
+  function _initSpeechPlaybackStateBridge() {
+    try {
+      if (typeof BroadcastChannel !== 'undefined') {
+        _llm.speechPlaybackChannel = new BroadcastChannel(SPEECH_PLAYBACK_CHANNEL_NAME);
+        _llm.speechPlaybackChannel.onmessage = (event) => {
+          if (event?.data?.type === 'speech_playback_state') {
+            _llm.speechPlaybackState = event.data;
+          }
+        };
+      }
+    } catch (e) {
+      console.warn('[SoccerVoice][Arbiter] 播放状态 BroadcastChannel 不可用:', e);
+    }
+    window.addEventListener('storage', (event) => {
+      if (event.key !== SPEECH_PLAYBACK_STATE_KEY || !event.newValue) return;
+      try {
+        const data = JSON.parse(event.newValue);
+        if (data?.type === 'speech_playback_state') _llm.speechPlaybackState = data;
+      } catch (_) { /* noop */ }
+    });
+    _readSpeechPlaybackState();
+  }
+  _initSpeechPlaybackStateBridge();
 
   function _gameRoutePayload(extra = {}) {
     return JSON.stringify({
@@ -1985,6 +2069,41 @@
     }
   }
 
+  async function _mirrorGameAssistantText(line, meta = {}, result = {}) {
+    const clean = String(line || '').trim();
+    if (!clean || meta?.voiceAlreadyHandled) return null;
+    const requestId = meta.request_id || result.request_id || `game-llm-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    try {
+      const resp = await fetch('/api/game/soccer/mirror-assistant', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          source: 'game-llm-result',
+          session_id: _llm.sessionId,
+          request_id: requestId,
+          turn_id: `game-mirror-${requestId}`,
+          line: clean,
+          event: {
+            kind: meta.kind || 'mailbox',
+            round: meta.round,
+            priority: meta.priority || 0,
+            itemCount: meta.itemCount || 1,
+            hasUserSpeech: !!meta.hasUserSpeech,
+            hasUserText: !!meta.hasUserText,
+          },
+        }),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!data.ok) {
+        console.log(`[SoccerMirror] 主聊天窗镜像失败 | 原因=${data.reason || resp.status} 台词="${clean}"`);
+      }
+      return data;
+    } catch (e) {
+      soccerRecoverableLog('[SoccerMirror] 主聊天窗镜像请求失败:', e);
+      return { ok: false, reason: 'request_failed', error: String(e) };
+    }
+  }
+
   async function _sendRealtimeSpeech(line, meta = {}, result = {}) {
     if (!line) {
       return {
@@ -2010,6 +2129,8 @@
         body: JSON.stringify({
           source: 'game-llm-result',
           session_id: _llm.sessionId,
+          request_id: meta.request_id || result.request_id || '',
+          mirror_text: false,
           line,
           state: stateNow,
           event: {
@@ -2018,6 +2139,7 @@
             priority: meta.priority || 0,
             itemCount: meta.itemCount || 1,
             hasUserSpeech: !!meta.hasUserSpeech,
+            hasUserText: !!meta.hasUserText,
           },
           control: result.control || {},
         }),
@@ -2078,6 +2200,284 @@
       };
       return _llm.lastVoiceFailure;
     }
+  }
+
+  function _isUserReplyVoiceMeta(meta = {}) {
+    return !!(meta.hasUserSpeech || meta.hasUserText || meta.kind === 'user-voice' || meta.kind === 'user-text');
+  }
+
+  function _voicePriorityForMeta(meta = {}) {
+    const raw = Number(meta.voicePriority);
+    if (Number.isFinite(raw) && raw >= 0 && raw <= 5) {
+      return Math.floor(raw);
+    }
+    if (_isUserReplyVoiceMeta(meta)) {
+      return 0;
+    }
+    return 4;
+  }
+
+  function _voiceFreshTtlForMeta(meta = {}, priority = 4) {
+    const raw = Number(meta.freshTtlSeconds);
+    if (Number.isFinite(raw) && raw > 0) return raw;
+    if (meta.hasUserSpeech || meta.hasUserText || priority <= 1) {
+      return GAME_VOICE_ARBITER_DEFAULTS.userReplyFreshTtlSeconds;
+    }
+    return GAME_VOICE_ARBITER_DEFAULTS.freshTtlSeconds;
+  }
+
+  function _currentPlaybackPriority(playback) {
+    if (!playback?.active) return null;
+    if (Number.isFinite(playback.priority)) return playback.priority;
+    if (!playback.speechId) return null;
+    const mapped = _llm.speechPriorityById.get(playback.speechId);
+    return Number.isFinite(mapped) ? mapped : 4;
+  }
+
+  function _shouldInterruptPlayback(priority, playback) {
+    if (!playback?.active) return false;
+    if (priority === 0) return true;
+    if (priority === 1) return _currentPlaybackPriority(playback) !== 1;
+    return false;
+  }
+
+  function _clearVoiceArbiterPending(reason = 'clear') {
+    if (_llm.voiceArbiter.timer) {
+      clearTimeout(_llm.voiceArbiter.timer);
+      _llm.voiceArbiter.timer = null;
+    }
+    if (_llm.voiceArbiter.pending) {
+      console.log(`[SoccerVoice][Arbiter] 清理待播 | 原因=${reason} 台词="${_llm.voiceArbiter.pending.line}"`);
+    }
+    _llm.voiceArbiter.pending = null;
+  }
+
+  function _clearVoiceArbiterInFlight(reason = 'clear') {
+    if (_llm.voiceArbiter.inFlight) {
+      console.log(`[SoccerVoice][Arbiter] 清理占用中语音 | 原因=${reason} 台词="${_llm.voiceArbiter.inFlight.line}"`);
+    }
+    _llm.voiceArbiter.inFlight = null;
+  }
+
+  function _markUserInputForVoiceArbiter(source = 'user-input') {
+    _clearVoiceArbiterPending(source);
+    _clearVoiceArbiterInFlight(source);
+    _llm.voiceArbiter.waitingForUserReplyGeneration = true;
+    console.log(`[SoccerVoice][Arbiter] 用户输入打断 | 来源=${source}，等待猫娘对用户输入的回复生成`);
+  }
+
+  function _scheduleVoiceArbiterFlush(delayMs, reason) {
+    if (_llm.voiceArbiter.timer) clearTimeout(_llm.voiceArbiter.timer);
+    _llm.voiceArbiter.timer = setTimeout(() => {
+      _llm.voiceArbiter.timer = null;
+      void _flushVoiceArbiter(reason);
+    }, Math.max(0, delayMs));
+  }
+
+  function _storePendingVoice(entry, reason, playback) {
+    const pending = _llm.voiceArbiter.pending;
+    if (pending && pending.priority < entry.priority && performance.now() <= pending.expiresAt) {
+      console.log(
+        `[SoccerVoice][Arbiter] 丢弃新候选 | 原因=已有更高优先级 优先级=${entry.priority} ` +
+        `现有=${pending.priority} 台词="${entry.line}"`
+      );
+      return;
+    }
+    if (pending) {
+      console.log(`[SoccerVoice][Arbiter] 替换待播 | 原因=${reason} 旧="${pending.line}" 新="${entry.line}"`);
+    } else {
+      console.log(`[SoccerVoice][Arbiter] 暂存待播 | 原因=${reason} 台词="${entry.line}"`);
+    }
+    _llm.voiceArbiter.pending = entry;
+    const now = performance.now();
+    const remainingMs = playback?.active ? Math.max(0, playback.remainingSeconds * 1000 + 80) : 0;
+    const ttlMs = Math.max(0, entry.expiresAt - now);
+    _scheduleVoiceArbiterFlush(Math.min(Math.max(remainingMs, 80), Math.max(ttlMs, 80)), reason);
+  }
+
+  function _pendingOutranksEntry(entry) {
+    const pending = _llm.voiceArbiter.pending;
+    return !!(pending && pending.priority < entry.priority && performance.now() <= pending.expiresAt);
+  }
+
+  function _setVoiceArbiterInFlight(entry, reason = 'request') {
+    const guardMs = Math.max(
+      500,
+      Math.min(
+        entry.freshTtlSeconds * 1000,
+        GAME_VOICE_ARBITER_DEFAULTS.inFlightGuardSeconds * 1000
+      )
+    );
+    _llm.voiceArbiter.inFlight = {
+      id: entry.id,
+      line: entry.line,
+      priority: entry.priority,
+      speechId: '',
+      startedAt: performance.now(),
+      expiresAt: performance.now() + guardMs,
+      reason,
+    };
+  }
+
+  function _updateVoiceArbiterInFlightFromResult(entry, result = {}) {
+    const inFlight = _llm.voiceArbiter.inFlight;
+    if (!inFlight || inFlight.id !== entry.id) return;
+    const speechId = result?.speech_id ? String(result.speech_id) : '';
+    if (speechId) {
+      inFlight.speechId = speechId;
+      _llm.speechPriorityById.set(speechId, entry.priority);
+    }
+    const delivered = !!(result?.audio_sent || result?.audio_queued);
+    if (!delivered) {
+      _clearVoiceArbiterInFlight(result?.reason || 'voice-not-delivered');
+      return;
+    }
+    inFlight.expiresAt = performance.now() + Math.max(
+      500,
+      GAME_VOICE_ARBITER_DEFAULTS.inFlightGuardSeconds * 1000
+    );
+  }
+
+  function _readVoiceInFlight(playback) {
+    const inFlight = _llm.voiceArbiter.inFlight;
+    if (!inFlight) return null;
+    if (performance.now() > inFlight.expiresAt) {
+      _clearVoiceArbiterInFlight('expired');
+      return null;
+    }
+    if (inFlight.speechId && playback?.active && playback.speechId === inFlight.speechId) {
+      _clearVoiceArbiterInFlight('playback-observed');
+      return null;
+    }
+    return {
+      active: true,
+      speechId: inFlight.speechId || '',
+      priority: inFlight.priority,
+      remainingSeconds: Math.max(0.1, (inFlight.expiresAt - performance.now()) / 1000),
+      reason: 'in-flight',
+      source: 'in_flight',
+    };
+  }
+
+  function _readVoiceOccupancy() {
+    const playback = _readSpeechPlaybackState();
+    const inFlight = _readVoiceInFlight(playback);
+    if (!playback?.active) return inFlight || playback;
+    if (!inFlight) return playback;
+    const playbackPriority = _currentPlaybackPriority(playback);
+    if (Number.isFinite(inFlight.priority) && (!Number.isFinite(playbackPriority) || inFlight.priority < playbackPriority)) {
+      return inFlight;
+    }
+    return playback;
+  }
+
+  function _requestGameVoiceWithLogging(entry, reason = 'immediate') {
+    const voiceStartedAt = performance.now();
+    const meta = entry.meta || {};
+    _llm.voiceArbiter.waitingForUserReplyGeneration = false;
+    _setVoiceArbiterInFlight(entry, reason);
+    console.log(`[SoccerVoice][Arbiter] 放行语音 | 原因=${reason} 优先级=${entry.priority} 台词="${entry.line}"`);
+    return _sendRealtimeSpeech(entry.line, meta, entry.result || {}).then((voiceResult) => {
+      const finalVoiceResult = voiceResult || {};
+      const voiceOk = !!finalVoiceResult?.ok;
+      const voiceSource = finalVoiceResult?.voice_source || { provider: 'project_voice_unavailable' };
+      _updateVoiceArbiterInFlightFromResult(entry, finalVoiceResult);
+      if (!voiceOk && voiceResult?.reason !== 'voice_output_disabled') {
+        const deliveredButMismatch = !!finalVoiceResult?.audio_sent && finalVoiceResult?.reason === 'spoken_transcript_mismatch';
+        console.log(
+          `[SoccerVoice] ${deliveredButMismatch ? '项目语音已送达但台词不匹配' : '项目语音未送达'} | 原因=${finalVoiceResult?.reason || 'project_tts_unavailable'} ` +
+          `台词来源=${_formatSourceLabel(entry.result?.llm_source)} 台词="${entry.line}"`
+        );
+      }
+      soccerRecoverableLog(
+        `[SoccerLLM] 语音结果 | 回合=${meta?.round ?? '?'} 事件=${eventLabel(meta?.kind)}(${meta?.kind}) ` +
+        `语音来源=${_formatSourceLabel(voiceSource)} 语音送达=${!!finalVoiceResult?.audio_sent} ` +
+        `提交=${!!finalVoiceResult?.audio_committed} 响应=${!!finalVoiceResult?.response_observed} ` +
+        `完成=${!!finalVoiceResult?.response_done} 匹配=${finalVoiceResult?.line_match !== undefined ? !!finalVoiceResult.line_match : '-'} ` +
+        `状态=${voiceOk ? 'ok' : (finalVoiceResult?.reason || 'failed')} ` +
+        `耗时=${(performance.now() - voiceStartedAt).toFixed(0)}ms`
+      );
+      return finalVoiceResult;
+    }).catch((e) => {
+      soccerRecoverableLog('[SoccerVoice] 项目语音结果处理失败:', e);
+      _clearVoiceArbiterInFlight('request-failed');
+      return { ok: false, reason: 'request_failed', error: String(e) };
+    });
+  }
+
+  async function _flushVoiceArbiter(reason = 'timer') {
+    const entry = _llm.voiceArbiter.pending;
+    if (!entry) return null;
+    if (performance.now() > entry.expiresAt) {
+      console.log(`[SoccerVoice][Arbiter] 丢弃过期待播 | 原因=${reason} 台词="${entry.line}"`);
+      _llm.voiceArbiter.pending = null;
+      return { ok: false, reason: 'voice_candidate_expired', skipped: true };
+    }
+    if (_llm.voiceArbiter.waitingForUserReplyGeneration && !_isUserReplyVoiceMeta(entry.meta || {})) {
+      const ttlMs = Math.max(0, entry.expiresAt - performance.now());
+      _scheduleVoiceArbiterFlush(Math.min(Math.max(ttlMs, 120), 300), 'waiting-user-reply-generation');
+      return { ok: false, reason: 'waiting_user_reply_generation', queued: true };
+    }
+    const playback = _readVoiceOccupancy();
+    if (
+      playback.active &&
+      !_shouldInterruptPlayback(entry.priority, playback) &&
+      playback.remainingSeconds > entry.tailWaitSeconds
+    ) {
+      _storePendingVoice(entry, `仍在播放 ${playback.remainingSeconds.toFixed(2)}s`, playback);
+      return { ok: false, reason: 'voice_candidate_waiting', queued: true };
+    }
+    _llm.voiceArbiter.pending = null;
+    return _requestGameVoiceWithLogging(entry, reason);
+  }
+
+  function _enqueueGameVoice(line, meta = {}, result = {}, eventTs = performance.now()) {
+    const priority = _voicePriorityForMeta(meta);
+    const freshTtlSeconds = _voiceFreshTtlForMeta(meta, priority);
+    const isUserReplyVoice = _isUserReplyVoiceMeta(meta);
+    const entry = {
+      id: ++_llm.voiceArbiter.seq,
+      line,
+      meta,
+      result,
+      eventTs,
+      priority,
+      tailWaitSeconds: Number(meta.tailWaitSeconds) > 0 ? Number(meta.tailWaitSeconds) : GAME_VOICE_ARBITER_DEFAULTS.tailWaitSeconds,
+      freshTtlSeconds,
+      createdAt: performance.now(),
+      expiresAt: performance.now() + freshTtlSeconds * 1000,
+    };
+
+    if (!voiceOutputToggle?.checked) {
+      return _requestGameVoiceWithLogging(entry, 'voice-disabled-check');
+    }
+
+    if (_llm.voiceArbiter.waitingForUserReplyGeneration && !isUserReplyVoice) {
+      _storePendingVoice(entry, '等待猫娘对用户输入的回复生成', null);
+      return Promise.resolve({ ok: false, queued: true, reason: 'waiting_user_reply_generation' });
+    }
+
+    const playback = _readVoiceOccupancy();
+    if (_pendingOutranksEntry(entry)) {
+      console.log(
+        `[SoccerVoice][Arbiter] 丢弃新候选 | 原因=已有更高优先级待播 ` +
+        `优先级=${entry.priority} 台词="${entry.line}"`
+      );
+      _scheduleVoiceArbiterFlush(0, 'higher-priority-pending');
+      return Promise.resolve({ ok: false, skipped: true, reason: 'higher_priority_pending' });
+    }
+    if (!playback.active || _shouldInterruptPlayback(priority, playback)) {
+      _clearVoiceArbiterPending('immediate-play');
+      return _requestGameVoiceWithLogging(entry, playback.active ? 'priority-interrupt' : 'idle');
+    }
+
+    if (playback.remainingSeconds <= entry.tailWaitSeconds) {
+      _storePendingVoice(entry, `尾部等待 ${playback.remainingSeconds.toFixed(2)}s`, playback);
+      return Promise.resolve({ ok: false, queued: true, reason: 'voice_tail_wait' });
+    }
+
+    _storePendingVoice(entry, `当前剩余 ${playback.remainingSeconds.toFixed(2)}s`, playback);
+    return Promise.resolve({ ok: false, queued: true, reason: 'voice_deferred' });
   }
 
   function _enqueueLLMItem(item) {
@@ -2192,6 +2592,9 @@
 	  async function _handleGameLLMResult(result, meta, eventTs) {
     if (result?.skipped) return;
     if (!result || !result.line) {
+      if (meta?.hasUserSpeech || meta?.hasUserText || meta?.kind === 'user-voice' || meta?.kind === 'user-text') {
+        _llm.voiceArbiter.waitingForUserReplyGeneration = false;
+      }
       if (result?.fallback && meta?.builtinFallback) {
         SoccerDemo.say(meta.builtinFallback, {
           priority: meta.priority || 0,
@@ -2208,31 +2611,10 @@
       kind: (meta?.kind || 'mailbox') + '-llm',
       sourceLabel: `LLM生成 · ${Math.round(performance.now() - eventTs)}ms`,
     });
+    void _mirrorGameAssistantText(result.line, meta, result);
     const shouldRequestVoice = !meta?.voiceAlreadyHandled;
     if (shouldRequestVoice) {
-      const voiceStartedAt = performance.now();
-      void _sendRealtimeSpeech(result.line, meta, result).then((voiceResult) => {
-        const finalVoiceResult = voiceResult || {};
-        const voiceOk = !!finalVoiceResult?.ok;
-        const voiceSource = finalVoiceResult?.voice_source || { provider: 'project_voice_unavailable' };
-        if (!voiceOk && voiceResult?.reason !== 'voice_output_disabled') {
-          const deliveredButMismatch = !!finalVoiceResult?.audio_sent && finalVoiceResult?.reason === 'spoken_transcript_mismatch';
-          console.log(
-            `[SoccerVoice] ${deliveredButMismatch ? '项目语音已送达但台词不匹配' : '项目语音未送达'} | 原因=${finalVoiceResult?.reason || 'project_tts_unavailable'} ` +
-            `台词来源=${_formatSourceLabel(result.llm_source)} 台词="${result.line}"`
-          );
-        }
-        soccerRecoverableLog(
-          `[SoccerLLM] 语音结果 | 回合=${meta?.round ?? '?'} 事件=${eventLabel(meta?.kind)}(${meta?.kind}) ` +
-          `语音来源=${_formatSourceLabel(voiceSource)} 语音送达=${!!finalVoiceResult?.audio_sent} ` +
-          `提交=${!!finalVoiceResult?.audio_committed} 响应=${!!finalVoiceResult?.response_observed} ` +
-          `完成=${!!finalVoiceResult?.response_done} 匹配=${finalVoiceResult?.line_match !== undefined ? !!finalVoiceResult.line_match : '-'} ` +
-          `状态=${voiceOk ? 'ok' : (finalVoiceResult?.reason || 'failed')} ` +
-          `耗时=${(performance.now() - voiceStartedAt).toFixed(0)}ms`
-        );
-      }).catch((e) => {
-        soccerRecoverableLog('[SoccerVoice] 项目语音结果处理失败:', e);
-      });
+      void _enqueueGameVoice(result.line, meta, result, eventTs);
     }
     console.log(
       `[SoccerLLM] 已显示 | 回合=${meta?.round ?? '?'} 事件=${eventLabel(meta?.kind)}(${meta?.kind}) ` +
@@ -2289,6 +2671,12 @@
 	    );
 	  }
 
+  function _performanceTimeFromEpochSeconds(epochSeconds) {
+    const epochMs = Number(epochSeconds) * 1000;
+    if (!Number.isFinite(epochMs) || epochMs <= 0) return performance.now();
+    return performance.now() - Math.max(0, Date.now() - epochMs);
+  }
+
 	  async function _drainExternalGameRouteOutputs() {
 	    if (_llm.cleanedUp) return;
 	    try {
@@ -2306,14 +2694,19 @@
 	          continue;
 	        }
 	        if (output && output.type === 'game_external_input') {
+	          _markUserInputForVoiceArbiter(output.source || 'external-route-input');
 	          _logExternalGameRouteInput(output);
 	          continue;
 	        }
 	        if (!output || output.type !== 'game_llm_result') continue;
+	        const resultMeta = Object.assign({}, output.meta || { kind: 'external-text', voiceAlreadyHandled: true }, {
+	          request_id: output.request_id || output.meta?.request_id || '',
+	        });
+	        const inputEpochSeconds = resultMeta.inputTs || output.input_ts || output.event?.inputTs || output.ts;
 	        await _handleGameLLMResult(
 	          output.result || {},
-	          output.meta || { kind: 'external-text', voiceAlreadyHandled: true },
-          performance.now()
+	          resultMeta,
+          _performanceTimeFromEpochSeconds(inputEpochSeconds)
         );
       }
     } catch (e) {
@@ -2326,6 +2719,12 @@
     if (_llm.cleanedUp) return;
 	    _llm.cleanedUp = true;
 	    clearInterval(_routeDrainTimer);
+	    _clearVoiceArbiterPending('cleanup');
+	    _clearVoiceArbiterInFlight('cleanup');
+	    if (_llm.speechPlaybackChannel) {
+	      try { _llm.speechPlaybackChannel.close(); } catch (_) { /* noop */ }
+	      _llm.speechPlaybackChannel = null;
+	    }
 	    _stopGameRouteHeartbeat();
 	    _stopRouteVoiceSttGate();
 
@@ -2362,6 +2761,7 @@
     if (!clean) return;
     const item = _makeMailboxItemFromUserSpeech(clean);
     if (!item) return;
+    _markUserInputForVoiceArbiter(source);
     console.log(`[SoccerVoice] 输入 | 来源=${source} 回合=${item.round} 分数=${JSON.stringify(item.snapshot.score)} 原文="${item.textRaw}"`);
     _setVoiceStatus(`已收到主人语音：${item.textRaw}`);
 

@@ -517,6 +517,26 @@ class OmniRealtimeClient:
             "silence_duration_ms": 650,
         }
 
+    def _openai_audio_input_config(self, *, create_response: bool = True) -> Dict[str, Any]:
+        """Return OpenAI Realtime audio input config, preserving STT."""
+        return {
+            "transcription": {"model": "gpt-4o-mini-transcribe"},
+            "turn_detection": {
+                "type": "semantic_vad",
+                "eagerness": "auto",
+                "create_response": bool(create_response),
+                "interrupt_response": True,
+            },
+        }
+
+    @staticmethod
+    def _server_vad_turn_detection_config(create_response: Optional[bool] = None) -> Dict[str, Any]:
+        """Return a generic server_vad config, optionally requesting no auto-response."""
+        config: Dict[str, Any] = {"type": "server_vad"}
+        if create_response is not None:
+            config["create_response"] = bool(create_response)
+        return config
+
     async def set_game_route_stt_only(self, enabled: bool) -> bool:
         """Best-effort switch: keep Realtime input transcription, suppress auto replies."""
         enabled = bool(enabled)
@@ -526,24 +546,65 @@ class OmniRealtimeClient:
             self._game_route_stt_only = enabled
             return False
 
-        if "qwen" in self._model_lower:
-            turn_detection = self._qwen_server_vad_turn_detection_config()
-            if enabled:
-                # Qwen Realtime follows server_vad for automatic turns.  This
-                # keeps VAD/transcription active while asking the provider not
-                # to create a normal assistant response for each speech stop.
-                turn_detection["create_response"] = False
-            await self.update_session({"turn_detection": turn_detection})
+        provider_supported = False
+        try:
+            if "qwen" in self._model_lower:
+                turn_detection = self._qwen_server_vad_turn_detection_config()
+                if enabled:
+                    # Qwen Realtime follows server_vad for automatic turns.  This
+                    # keeps VAD/transcription active while asking the provider not
+                    # to create a normal assistant response for each speech stop.
+                    turn_detection["create_response"] = False
+                await self.update_session({"turn_detection": turn_detection})
+                provider_supported = True
+            elif (
+                "gpt" in self._model_lower
+                or self._api_type.lower() == "openai"
+                or "api.openai.com" in str(self.base_url or "").lower()
+            ):
+                await self.update_session({
+                    "audio": {
+                        "input": self._openai_audio_input_config(create_response=not enabled),
+                    },
+                })
+                provider_supported = True
+            elif any(key in self._model_lower for key in ("glm", "step", "free")):
+                # These providers use a top-level server_vad shape in this
+                # client. Some servers may ignore or reject create_response; if
+                # so the caller still has the existing local output suppression.
+                await self.update_session({
+                    "turn_detection": self._server_vad_turn_detection_config(False if enabled else None),
+                })
+                provider_supported = True
+            elif self._is_gemini:
+                logger.info(
+                    "game route realtime STT-only mode for Gemini has no live session.update equivalent; "
+                    "output callbacks will be suppressed locally"
+                )
+            else:
+                logger.info(
+                    "game route realtime STT-only mode not configured for model=%s; output callbacks will be suppressed locally",
+                    self.model,
+                )
+        except Exception as exc:
+            logger.warning(
+                "game route realtime STT-only provider update failed for model=%s enabled=%s: %s; "
+                "falling back to local output suppression",
+                self.model,
+                enabled,
+                exc,
+            )
             self._game_route_stt_only = enabled
-            logger.info("game route realtime STT-only mode %s for model=%s", "enabled" if enabled else "disabled", self.model)
-            return True
+            return False
 
-        logger.info(
-            "game route realtime STT-only mode not configured for model=%s; output callbacks will be suppressed locally",
-            self.model,
-        )
         self._game_route_stt_only = enabled
-        return False
+        logger.info(
+            "game route realtime STT-only mode %s for model=%s provider_update=%s",
+            "enabled" if enabled else "disabled",
+            self.model,
+            provider_supported,
+        )
+        return provider_supported
 
     async def process_audio_chunk_async(self, audio_chunk: bytes) -> bytes:
         """

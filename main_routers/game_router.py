@@ -1256,6 +1256,7 @@ async def _speak_game_line_via_project_tts(
     request_id: str | None = None,
     game_type: str = "",
     session_id: str = "",
+    mirror_text: bool = True,
 ) -> Dict[str, Any]:
     speak = getattr(mgr, "speak_game_line", None)
     if not callable(speak):
@@ -1265,7 +1266,65 @@ async def _speak_game_line_via_project_tts(
         request_id=request_id,
         game_type=game_type,
         session_id=session_id,
+        mirror_text=mirror_text,
     )
+
+
+async def _mirror_game_assistant_text(
+    mgr: Any,
+    line: str,
+    *,
+    request_id: str | None = None,
+    game_type: str = "",
+    session_id: str = "",
+    source: str = "game_llm",
+    turn_id: str | None = None,
+) -> Dict[str, Any]:
+    mirror = getattr(mgr, "mirror_game_assistant_text", None)
+    if not callable(mirror):
+        return {"ok": False, "reason": "project_text_mirror_method_unavailable", "mirrored": False}
+    return await mirror(
+        line,
+        request_id=request_id,
+        game_type=game_type,
+        session_id=session_id,
+        source=source,
+        turn_id=turn_id,
+    )
+
+
+@router.post("/{game_type}/mirror-assistant")
+async def game_project_mirror_assistant(game_type: str, request: Request):
+    """Mirror A.line into the normal chat display without invoking TTS."""
+    try:
+        data = await request.json()
+    except Exception:
+        return {"ok": False, "reason": "invalid_body"}
+
+    line = str(data.get("line") or "").strip()
+    if not line:
+        return {"ok": False, "reason": "missing_line"}
+
+    lanlan_name = _resolve_lanlan_name(data.get("lanlan_name"))
+    if not lanlan_name:
+        return {"ok": False, "reason": "missing_lanlan_name"}
+
+    mgr = get_session_manager().get(lanlan_name)
+    if not mgr:
+        return {"ok": False, "reason": "no_session_manager", "lanlan_name": lanlan_name}
+
+    result = await _mirror_game_assistant_text(
+        mgr,
+        line,
+        request_id=str(data.get("request_id") or "") or None,
+        game_type=game_type,
+        session_id=str(data.get("session_id") or ""),
+        source=str(data.get("source") or "game_llm"),
+        turn_id=str(data.get("turn_id") or "") or None,
+    )
+    result.setdefault("lanlan_name", lanlan_name)
+    result.setdefault("method", "project_text_mirror")
+    return result
 
 
 @router.post("/{game_type}/speak")
@@ -1294,6 +1353,7 @@ async def game_project_speak(game_type: str, request: Request):
         request_id=str(data.get("request_id") or "") or None,
         game_type=game_type,
         session_id=str(data.get("session_id") or ""),
+        mirror_text=data.get("mirror_text", True) is not False,
     )
     result.setdefault("lanlan_name", lanlan_name)
     result.setdefault("method", "project_tts")
@@ -1384,6 +1444,11 @@ async def _route_external_transcript_to_game(
             input_type="game_voice_transcript" if kind == "user-voice" else "game_text",
             send_to_frontend=kind == "user-voice",
         )
+    if mgr and hasattr(mgr, "send_user_activity"):
+        try:
+            await mgr.send_user_activity()
+        except Exception as exc:
+            logger.debug("🎮 游戏外部输入打断当前语音失败: %s", exc)
 
     event = (
         _build_external_voice_event(state, text)
@@ -1400,7 +1465,8 @@ async def _route_external_transcript_to_game(
         "type": "game_external_input",
         "source": source,
         "request_id": request_id or "",
-        "ts": time.time(),
+        "ts": now,
+        "input_ts": now,
         "event": event,
         "meta": {
             "kind": kind,
@@ -1410,9 +1476,12 @@ async def _route_external_transcript_to_game(
             "inputText": text,
             "hasUserSpeech": kind == "user-voice",
             "hasUserText": kind == "user-text",
+            "inputTs": now,
         },
     })
+    llm_started_at = time.time()
     result = await _run_game_chat(game_type, session_id, event)
+    result_ts = time.time()
     _append_game_dialog(state, {
         "type": "assistant",
         "source": "game_llm",
@@ -1424,7 +1493,10 @@ async def _route_external_transcript_to_game(
         "type": "game_llm_result",
         "source": source,
         "request_id": request_id or "",
-        "ts": time.time(),
+        "ts": result_ts,
+        "input_ts": now,
+        "llm_started_ts": llm_started_at,
+        "llm_elapsed_ms": int(max(0.0, result_ts - llm_started_at) * 1000),
         "event": event,
         "result": result,
         "meta": {
@@ -1434,21 +1506,16 @@ async def _route_external_transcript_to_game(
             "itemCount": 1,
             "hasUserSpeech": kind == "user-voice",
             "hasUserText": kind == "user-text",
-            "voiceAlreadyHandled": True,
+            "voiceAlreadyHandled": False,
+            "inputTs": now,
+            "llmStartedTs": llm_started_at,
+            "llmElapsedMs": int(max(0.0, result_ts - llm_started_at) * 1000),
         },
     }
     _append_game_output(state, output)
 
     line = str(result.get("line") or "").strip()
-    if mgr and line:
-        await _speak_game_line_via_project_tts(
-            mgr,
-            line,
-            request_id=request_id,
-            game_type=game_type,
-            session_id=session_id,
-        )
-    elif mgr and hasattr(mgr, "send_status"):
+    if not line and mgr and hasattr(mgr, "send_status"):
         await mgr.send_status(json.dumps({
             "code": "GAME_ROUTE_LLM_FAILED",
             "details": {"source": source, "error": result.get("error", "empty_line")},

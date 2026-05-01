@@ -13,6 +13,22 @@ from main_logic.omni_realtime_client import OmniRealtimeClient, TurnDetectionMod
 # Dummy WAV header + silence for testing audio streaming
 DUMMY_AUDIO_CHUNK = b'\x00' * 1024
 
+
+def _stt_only_client(model: str, *, api_type: str = ""):
+    client = OmniRealtimeClient(
+        base_url="wss://example.test/realtime",
+        api_key="test-key",
+        model=model,
+        api_type=api_type,
+    )
+    ws = AsyncMock()
+    client.ws = ws
+    return client, ws
+
+
+def _last_sent_json(ws):
+    return json.loads(ws.send.call_args_list[-1][0][0])
+
 @pytest.fixture
 def mock_websocket():
     """Returns a mock websocket object."""
@@ -140,6 +156,87 @@ async def test_stream_audio(realtime_client):
     
     await realtime_client.close()
 
+
+@pytest.mark.unit
+async def test_game_route_stt_only_qwen_disables_and_restores_auto_response():
+    client, ws = _stt_only_client("qwen3-omni-flash-realtime", api_type="qwen")
+
+    enabled = await client.set_game_route_stt_only(True)
+    assert enabled is True
+    msg = _last_sent_json(ws)
+    assert msg["type"] == "session.update"
+    assert msg["session"]["turn_detection"]["type"] == "server_vad"
+    assert msg["session"]["turn_detection"]["create_response"] is False
+
+    restored = await client.set_game_route_stt_only(False)
+    assert restored is True
+    msg = _last_sent_json(ws)
+    assert msg["session"]["turn_detection"]["type"] == "server_vad"
+    assert "create_response" not in msg["session"]["turn_detection"]
+
+
+@pytest.mark.unit
+async def test_game_route_stt_only_openai_disables_and_restores_auto_response():
+    client, ws = _stt_only_client("gpt-realtime-mini", api_type="openai")
+
+    enabled = await client.set_game_route_stt_only(True)
+    assert enabled is True
+    msg = _last_sent_json(ws)
+    audio_input = msg["session"]["audio"]["input"]
+    assert audio_input["transcription"]["model"] == "gpt-4o-mini-transcribe"
+    assert audio_input["turn_detection"]["type"] == "semantic_vad"
+    assert audio_input["turn_detection"]["create_response"] is False
+
+    restored = await client.set_game_route_stt_only(False)
+    assert restored is True
+    msg = _last_sent_json(ws)
+    audio_input = msg["session"]["audio"]["input"]
+    assert audio_input["transcription"]["model"] == "gpt-4o-mini-transcribe"
+    assert audio_input["turn_detection"]["create_response"] is True
+
+
+@pytest.mark.unit
+async def test_game_route_stt_only_openai_api_type_does_not_require_gpt_model_name():
+    client, ws = _stt_only_client("realtime-mini", api_type="openai")
+
+    enabled = await client.set_game_route_stt_only(True)
+
+    assert enabled is True
+    msg = _last_sent_json(ws)
+    audio_input = msg["session"]["audio"]["input"]
+    assert audio_input["transcription"]["model"] == "gpt-4o-mini-transcribe"
+    assert audio_input["turn_detection"]["create_response"] is False
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("model", ["glm-realtime-air", "step-audio-2", "free-model"])
+async def test_game_route_stt_only_server_vad_providers_try_create_response_false(model):
+    client, ws = _stt_only_client(model)
+
+    enabled = await client.set_game_route_stt_only(True)
+    assert enabled is True
+    msg = _last_sent_json(ws)
+    assert msg["session"]["turn_detection"] == {
+        "type": "server_vad",
+        "create_response": False,
+    }
+
+    restored = await client.set_game_route_stt_only(False)
+    assert restored is True
+    msg = _last_sent_json(ws)
+    assert msg["session"]["turn_detection"] == {"type": "server_vad"}
+
+
+@pytest.mark.unit
+async def test_game_route_stt_only_provider_update_failure_falls_back_locally():
+    client, ws = _stt_only_client("step-audio-2")
+    ws.send.side_effect = RuntimeError("unsupported create_response")
+
+    enabled = await client.set_game_route_stt_only(True)
+
+    assert enabled is False
+    assert client._game_route_stt_only is True
+
 @pytest.mark.unit
 async def test_receive_text_delta(realtime_client):
     """Test handling of incoming text delta events via handle_messages."""
@@ -186,4 +283,3 @@ async def test_receive_text_delta(realtime_client):
     
     # Verify response.done was processed
     assert response_done_mock.called
-

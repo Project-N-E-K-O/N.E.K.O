@@ -1514,6 +1514,38 @@ class LLMSessionManager:
             except Exception as e:
                 logger.error(f"⚠️ 发送游戏语音转写到前端失败: {e}")
 
+    async def mirror_game_assistant_text(
+        self,
+        text: str,
+        *,
+        request_id: str | None = None,
+        game_type: str = "",
+        session_id: str = "",
+        source: str = "game_llm",
+        turn_id: str | None = None,
+    ) -> dict:
+        """Mirror a game assistant line without invoking TTS or ordinary chat generation."""
+        clean = str(text or "").strip()
+        if not clean:
+            return {"ok": False, "reason": "missing_line", "mirrored": False}
+
+        mirror_turn_id = turn_id or request_id or str(uuid4())
+        previous_request_id = self._active_text_request_id
+        self._active_text_request_id = request_id
+        try:
+            await self.send_lanlan_response(clean, is_first_chunk=True, turn_id=mirror_turn_id)
+        finally:
+            self._active_text_request_id = previous_request_id
+        return {
+            "ok": True,
+            "mirrored": True,
+            "turn_id": mirror_turn_id,
+            "request_id": request_id or "",
+            "game_type": game_type,
+            "session_id": session_id,
+            "source": source,
+        }
+
     async def _ensure_game_tts_runtime(self) -> bool:
         """Ensure the existing project TTS worker/handler can speak a game line.
 
@@ -1564,6 +1596,7 @@ class LLMSessionManager:
         request_id: str | None = None,
         game_type: str = "",
         session_id: str = "",
+        mirror_text: bool = True,
     ) -> dict:
         """Send a game A-layer line through the normal chat mirror and project TTS path."""
         clean = str(line or "").strip()
@@ -1589,7 +1622,8 @@ class LLMSessionManager:
         previous_request_id = self._active_text_request_id
         self._active_text_request_id = request_id
         try:
-            await self.send_lanlan_response(clean, is_first_chunk=True, turn_id=turn_id)
+            if mirror_text:
+                await self.send_lanlan_response(clean, is_first_chunk=True, turn_id=turn_id)
             tts_available = await self._ensure_game_tts_runtime()
             audio_queued = False
             if tts_available:
