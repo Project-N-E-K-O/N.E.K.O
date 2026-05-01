@@ -338,6 +338,19 @@ class RobustLoggerConfig:
         except Exception as e:
             print(f"Warning: Failed to cleanup old logs: {e}", file=sys.stderr)
     
+    def _resolve_console_level(self) -> int:
+        """决定 console handler 的级别。
+
+        默认：max(log_level, INFO) —— 即便整体开 DEBUG，控制台也只显示 INFO+，
+        DEBUG 走文件。可用 NEKO_LOG_CONSOLE_LEVEL=DEBUG/INFO/... 覆盖。
+        """
+        override = (os.environ.get("NEKO_LOG_CONSOLE_LEVEL") or "").strip().upper()
+        if override:
+            level = logging.getLevelName(override)
+            if isinstance(level, int):
+                return level
+        return max(self.log_level, logging.INFO)
+
     def get_log_file_path(self):
         """获取日志文件路径"""
         return str(self.log_file)
@@ -380,10 +393,14 @@ class RobustLoggerConfig:
         date_format = '%Y-%m-%d %H:%M:%S'
         formatter = logging.Formatter(log_format, date_format)
         
+        # 控制台默认钳到 INFO：DEBUG 量太大会瞬间淹没终端，落盘即可。
+        # 想让 console 也吐 DEBUG（极少数本地排障场景），设 NEKO_LOG_CONSOLE_LEVEL=DEBUG。
+        console_level = self._resolve_console_level()
+
         # 1. 控制台Handler
         try:
             console_handler = logging.StreamHandler(sys.stdout)
-            console_handler.setLevel(self.log_level)
+            console_handler.setLevel(console_level)
             console_handler.setFormatter(formatter)
             logger.addHandler(console_handler)
         except Exception as e:
@@ -398,13 +415,39 @@ class RobustLoggerConfig:
                 backupCount=self.backup_count,
                 encoding='utf-8'
             )
-            file_handler.setLevel(self.log_level)
+            # 主日志钳到 INFO+：DEBUG 走单独的 dev 文件，不污染用户统一日志。
+            file_handler.setLevel(max(self.log_level, logging.INFO))
             file_handler.setFormatter(formatter)
             logger.addHandler(file_handler)
         except Exception as e:
             print(f"Error: Failed to add file handler: {e}", file=sys.stderr)
             # 文件handler失败不应该阻止应用运行
-        
+
+        # 2b. Dev-only DEBUG Handler：仅源码运行时启用，落到源码 ``logs/`` 下，
+        # 只收 DEBUG 一级（INFO+ 已经在主日志里）。frozen 时不挂——AppImage
+        # squashfs 只读，且打包后用户不需要 dev 调试日志。
+        if not getattr(sys, "frozen", False) and self.log_level <= logging.DEBUG:
+            try:
+                dev_debug_dir = _get_application_root() / "logs"
+                dev_debug_dir.mkdir(parents=True, exist_ok=True)
+                if self.service_name:
+                    debug_filename = f"{self.app_name}_{self.service_name}_debug_{datetime.now().strftime('%Y%m%d')}.log"
+                else:
+                    debug_filename = f"{self.app_name}_debug_{datetime.now().strftime('%Y%m%d')}.log"
+                debug_handler = RotatingFileHandler(
+                    dev_debug_dir / debug_filename,
+                    maxBytes=self.max_bytes,
+                    backupCount=self.backup_count,
+                    encoding='utf-8',
+                    delay=True,
+                )
+                debug_handler.setLevel(logging.DEBUG)
+                debug_handler.addFilter(lambda r: r.levelno < logging.INFO)
+                debug_handler.setFormatter(formatter)
+                logger.addHandler(debug_handler)
+            except Exception as e:
+                print(f"Warning: Failed to add dev debug handler: {e}", file=sys.stderr)
+
         # 3. 错误日志Handler（单独记录ERROR及以上级别）
         try:
             if self.service_name:
