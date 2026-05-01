@@ -204,7 +204,11 @@ class MijiaPlugin(NekoPluginBase):
                 cache_user_id = cached.get('user_id')
                 current_user_id = self.api.credential.user_id if self.api.credential else None
                 if not current_user_id or cache_user_id == current_user_id:
-                    return cached.get('devices', [])
+                    devices = cached.get('devices', [])
+                    # 新逻辑依赖 room_name 字段，旧缓存缺少时自动刷新
+                    if devices and 'room_name' in devices[0]:
+                        return devices
+                    self.logger.info("设备缓存缺少 room_name 字段，自动刷新")
             except Exception:
                 pass
         result = await self.list_devices()
