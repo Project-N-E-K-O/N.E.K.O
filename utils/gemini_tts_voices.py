@@ -58,10 +58,14 @@ _GEMINI_TTS_VOICE_ALIASES = {
 
 
 def normalize_gemini_tts_voice(voice_id: str | None) -> tuple[str, bool]:
-    """Return a supported Gemini voice and whether the input was recognized."""
+    """Return a supported Gemini voice and whether the input was recognized.
+
+    Empty / whitespace input is treated as unrecognized so callers can tell
+    "user explicitly chose a Gemini voice" apart from "we picked the default".
+    """
     normalized = (voice_id or "").strip()
     if not normalized:
-        return GEMINI_TTS_DEFAULT_VOICE, True
+        return GEMINI_TTS_DEFAULT_VOICE, False
 
     exact_match = _GEMINI_TTS_VOICE_LOOKUP.get(normalized.casefold())
     if exact_match:
@@ -76,8 +80,7 @@ def normalize_gemini_tts_voice(voice_id: str | None) -> tuple[str, bool]:
 
 def is_gemini_tts_voice(voice_id: str | None) -> bool:
     """Return True when the voice is a Gemini TTS voice or supported alias."""
-    _, recognized = normalize_gemini_tts_voice(voice_id)
-    return recognized and bool((voice_id or "").strip())
+    return normalize_gemini_tts_voice(voice_id)[1]
 
 
 def get_gemini_tts_voices() -> dict[str, dict[str, str | bool]]:

@@ -20,7 +20,6 @@ from utils.aiohttp_proxy_utils import aiohttp_session_kwargs_for_url
 from utils.config_manager import get_config_manager
 from utils.gemini_tts_voices import (
     GEMINI_TTS_MODEL,
-    is_gemini_tts_voice,
     normalize_gemini_tts_voice,
 )
 from utils.logger_config import get_module_logger
@@ -2120,9 +2119,9 @@ def gemini_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
     """Gemini TTS worker — 按句切分合成，httpx 异步直连。"""
     import httpx
 
-    requested_voice_id = voice_id
+    requested_voice_id = (voice_id or "").strip()
     voice_id, voice_recognized = normalize_gemini_tts_voice(voice_id)
-    if not voice_recognized:
+    if requested_voice_id and not voice_recognized:
         logger.warning(
             "Gemini TTS voice '%s' is not in the supported catalog; falling back to '%s'",
             requested_voice_id,
@@ -2885,14 +2884,13 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
 
     # 如果有自定义克隆音色，使用 CosyVoice（阿里云）
     # 必须同时有有效的 voice_id 且不是免费预设音色，否则 fallthrough 到默认 TTS
+    # 注：Gemini 原生 voice (Puck/Leda 等) 不会进入此分支 ——
+    # core.py 的 _has_custom_tts 已对 core_api_type=='gemini' + Gemini voice 短路返回 False。
     if has_custom_voice and voice_id:
         from utils.api_config_loader import get_free_voices
-        if core_api_type == 'gemini' and is_gemini_tts_voice(voice_id):
-            logger.info("Gemini native voice '%s' detected, using Gemini TTS worker", voice_id)
-        elif voice_id not in set(get_free_voices().values()):
+        if voice_id not in set(get_free_voices().values()):
             return cosyvoice_vc_tts_worker, None, 'cosyvoice'
-        else:
-            logger.info("voice_id '%s' 是免费预设音色，跳过 CosyVoice，使用默认 TTS", voice_id)
+        logger.info("voice_id '%s' 是免费预设音色，跳过 CosyVoice，使用默认 TTS", voice_id)
 
     # 没有自定义音色时，使用与 core_api 匹配的默认 TTS
     if core_api_type == 'qwen':
