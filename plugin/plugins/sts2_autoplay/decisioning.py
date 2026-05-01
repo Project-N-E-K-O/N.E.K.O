@@ -9,12 +9,6 @@ from typing import Any, Awaitable, Dict, Optional
 
 
 class DecisioningMixin:
-    def _first_present(self, *values: Any, default: Any = None) -> Any:
-        for value in values:
-            if value is not None:
-                return value
-        return default
-
     def _safe_strategy_constraints(self, strategy: Optional[str] = None) -> dict[str, Any]:
         active_strategy = strategy or self._configured_character_strategy()
         try:

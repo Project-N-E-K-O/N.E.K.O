@@ -30,9 +30,11 @@ class ContextFlowMixin:
 
     def _publish_snapshot(self, snapshot: Dict[str, Any], *, record_history: bool) -> Dict[str, Any]:
         self._snapshot = snapshot
-        self._server_state = "connected"
-        self._last_error = ""
-        self._last_poll_at = time.time()
+        self._set_transport_state("connected", error="")
+        self._poll_last_error = ""
+        self._poll_last_success_at = time.time()
+        self._refresh_runtime_state_from_snapshot(snapshot)
+        self._last_poll_at = self._poll_last_success_at
         if record_history:
             self._history.appendleft({
                 "type": "snapshot",

@@ -9,12 +9,6 @@ from typing import Any, Awaitable, Dict, Optional
 
 
 class NekoReportingMixin:
-    def _first_present(self, *values: Any) -> Any:
-        for value in values:
-            if value is not None:
-                return value
-        return None
-
     def _safe_float(self, value: Any, default: float = 0.0) -> float:
         try:
             return float(value)

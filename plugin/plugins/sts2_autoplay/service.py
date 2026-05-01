@@ -19,9 +19,11 @@ from .context_flow import ContextFlowMixin
 from .decisioning import DecisioningMixin
 from .neko_commanding import NekoCommandingMixin
 from .neko_reporting import NekoReportingMixin
+from .value_helpers import ValueHelpersMixin
 
 
 class STS2AutoplayService(
+    ValueHelpersMixin,
     NekoCommandingMixin,
     NekoReportingMixin,
     ContextFlowMixin,
@@ -42,8 +44,14 @@ class STS2AutoplayService(
         self._shutdown = False
         self._paused = False
         self._server_state = "disconnected"
+        self._transport_state = "disconnected"
+        self._game_state = "unknown"
+        self._action_state = "none"
         self._autoplay_state = "disabled"
         self._last_error = ""
+        self._poll_last_error = ""
+        self._poll_last_success_at = 0.0
+        self._poll_last_failure_at = 0.0
         self._last_action = ""
         self._last_poll_at = 0.0
         self._last_action_at = 0.0
@@ -210,13 +218,15 @@ class STS2AutoplayService(
                 self.logger.warning("[sts2_autoplay] shutdown skipped client close because event loop is already closed")
             self._client = None
         self._server_state = "disconnected"
+        self._transport_state = "disconnected"
+        self._game_state = "unknown"
+        self._action_state = "none"
         self._emit_status()
 
     async def health_check(self) -> Dict[str, Any]:
         client = self._require_client()
         data = await client.health()
-        self._server_state = "connected"
-        self._last_error = ""
+        self._set_transport_state("connected", error="")
         self._emit_status()
         message = f"STS2-Agent 已连接: {client.base_url}"
         return {"status": "connected", "message": message, "summary": message, "health": data}
@@ -229,14 +239,20 @@ class STS2AutoplayService(
     async def get_status(self) -> Dict[str, Any]:
         current_mode = self._configured_mode()
         current_character_strategy = self._configured_character_strategy()
+        runtime_state = self._build_runtime_state()
         summary = (
-            f"尖塔服务={self._server_state}，自动游玩={self._autoplay_state}，"
-            f"screen={self._snapshot.get('screen', 'unknown')}，floor={self._snapshot.get('floor', 0)}"
+            f"尖塔服务={self._server_state}，传输={runtime_state['server']['transport_state']}，"
+            f"游戏={runtime_state['game']['state']}，可执行={runtime_state['actionability']['state']}，"
+            f"自动游玩={self._autoplay_state}，screen={self._snapshot.get('screen', 'unknown')}，"
+            f"floor={self._snapshot.get('floor', 0)}"
         )
         return {
             "summary": summary,
             "message": summary,
-            "server": {"state": self._server_state, "base_url": self._cfg.get("base_url", "http://127.0.0.1:8080")},
+            "server": runtime_state["server"],
+            "game": runtime_state["game"],
+            "actionability": runtime_state["actionability"],
+            "poll": runtime_state["poll"],
             "autoplay": {
                 "state": self._autoplay_state,
                 "mode": current_mode,
@@ -389,12 +405,85 @@ class STS2AutoplayService(
             raise RuntimeError("STS2 客户端未初始化")
         return self._client
 
+    def _set_transport_state(self, state: str, *, error: str = "") -> None:
+        self._transport_state = state
+        self._server_state = state
+        self._last_error = error
+
+    def _derive_game_state(self, snapshot: Dict[str, Any]) -> str:
+        screen = str(snapshot.get("screen") or snapshot.get("normalized_screen") or "unknown").strip().lower()
+        if not snapshot or screen in {"", "unknown", "none"}:
+            return "unknown"
+        if bool(snapshot.get("in_combat", False)):
+            return "combat_active"
+        if any(token in screen for token in ["combat", "battle"]):
+            return "combat_active"
+        if any(token in screen for token in ["reward", "card_reward", "combat_reward"]):
+            return "reward"
+        if "map" in screen:
+            return "map"
+        if any(token in screen for token in ["shop", "rest", "event", "boss_relic", "chest"]):
+            return "run_active"
+        if any(token in screen for token in ["menu", "start", "none"]):
+            return "menu"
+        return "run_active"
+
+    def _derive_action_state(self, snapshot: Dict[str, Any]) -> str:
+        actions = snapshot.get("available_actions") if isinstance(snapshot.get("available_actions"), list) else []
+        if not actions:
+            return "none"
+        if any(self._action_type_from_snapshot_action(action) == "play_card" for action in actions if isinstance(action, dict)):
+            return "card_actionable"
+        return "actionable"
+
+    def _action_type_from_snapshot_action(self, action: Dict[str, Any]) -> str:
+        raw = action.get("raw") if isinstance(action.get("raw"), dict) else {}
+        return str(action.get("type") or raw.get("type") or raw.get("name") or raw.get("action") or "")
+
+    def _refresh_runtime_state_from_snapshot(self, snapshot: Optional[Dict[str, Any]] = None) -> None:
+        active_snapshot = snapshot if isinstance(snapshot, dict) else self._snapshot
+        self._game_state = self._derive_game_state(active_snapshot)
+        self._action_state = self._derive_action_state(active_snapshot)
+
+    def _build_runtime_state(self) -> Dict[str, Any]:
+        self._refresh_runtime_state_from_snapshot()
+        base_url = self._cfg.get("base_url", "http://127.0.0.1:8080")
+        return {
+            "server": {
+                "state": self._server_state,
+                "transport_state": self._transport_state,
+                "base_url": base_url,
+                "last_error": self._poll_last_error or self._last_error,
+            },
+            "game": {
+                "state": self._game_state,
+                "screen": self._snapshot.get("screen", "unknown"),
+                "floor": self._snapshot.get("floor", 0),
+                "act": self._snapshot.get("act", 0),
+                "in_combat": self._snapshot.get("in_combat", False),
+            },
+            "actionability": {
+                "state": self._action_state,
+                "available_action_count": self._snapshot.get("available_action_count", 0),
+            },
+            "poll": {
+                "consecutive_errors": self._consecutive_errors,
+                "last_error": self._poll_last_error,
+                "last_success_at": self._poll_last_success_at,
+                "last_failure_at": self._poll_last_failure_at,
+            },
+        }
+
     def _emit_status(self) -> None:
         try:
             current_mode = self._configured_mode()
             current_character_strategy = self._configured_character_strategy()
+            runtime_state = self._build_runtime_state()
             self._report_status({
-                "server": {"state": self._server_state, "base_url": self._cfg.get("base_url", "http://127.0.0.1:8080")},
+                "server": runtime_state["server"],
+                "game": runtime_state["game"],
+                "actionability": runtime_state["actionability"],
+                "poll": runtime_state["poll"],
                 "autoplay": {
                     "state": self._autoplay_state,
                     "mode": current_mode,

@@ -9,11 +9,6 @@ from typing import Any, Awaitable, Dict, Optional
 
 
 class NekoCommandingMixin:
-    def _first_present(self, *values: Any) -> Any:
-        for value in values:
-            if value is not None:
-                return value
-        return None
 
     async def neko_command(self, command: str, scope: str = "auto", confirm: bool = False) -> Dict[str, Any]:
         raw_command = str(command or "").strip()
@@ -27,6 +22,23 @@ class NekoCommandingMixin:
                 needs_confirmation=True,
             )
         text = self._normalize_neko_command_text(raw_command)
+        explicit_single_card_intent = self._is_neko_play_one_card_text(text) or self._is_neko_generic_play_card_text(text)
+        explicit_autoplay_intent = self._is_neko_autoplay_text(text)
+
+        if normalized_scope == "autoplay" and not explicit_autoplay_intent:
+            if explicit_single_card_intent and not self._is_neko_observation_only_text(text):
+                result = await self.play_one_card_by_neko(objective=raw_command)
+                return self._wrap_neko_command_result("play_one_card", "play_one_card_by_neko", result, executed=bool(result.get("executed", False)) if isinstance(result, dict) else False)
+            return self._wrap_neko_command_result(
+                intent="autoplay_scope_rejected",
+                action="clarify",
+                result={
+                    "status": "confirm_required",
+                    "message": "我检测到请求没有明确自动游玩范围。为了避免把单次出牌误升级为托管，请明确说“打完这场战斗”“帮我打一层”或“持续托管”。",
+                },
+                executed=False,
+                needs_confirmation=True,
+            )
 
         if normalized_scope in {"control", "auto"}:
             if self._neko_text_has_any(text, ["停了吧", "别打了", "停止", "结束托管", "停止托管", "终止", "stop"]):
@@ -66,13 +78,13 @@ class NekoCommandingMixin:
             result = await self.answer_autoplay_question_by_neko(question=raw_command)
             return self._wrap_neko_command_result("autoplay_question", "answer_autoplay_question_by_neko", result, executed=False)
 
-        if normalized_scope == "advice" or (normalized_scope == "auto" and self._is_neko_advice_text(text)):
-            result = await self.recommend_one_card_by_neko(objective=raw_command)
-            return self._wrap_neko_command_result("advice", "recommend_one_card_by_neko", result, executed=False)
-
-        if normalized_scope == "one_card" or (normalized_scope == "auto" and self._is_neko_play_one_card_text(text)):
+        if normalized_scope == "one_card" or (normalized_scope == "auto" and explicit_single_card_intent and not self._is_neko_observation_only_text(text)):
             result = await self.play_one_card_by_neko(objective=raw_command)
             return self._wrap_neko_command_result("play_one_card", "play_one_card_by_neko", result, executed=bool(result.get("executed", False)) if isinstance(result, dict) else False)
+
+        if normalized_scope == "advice" or (normalized_scope == "auto" and self._is_neko_advice_text(text)) or (normalized_scope == "auto" and self._is_neko_observation_only_text(text)):
+            result = await self.recommend_one_card_by_neko(objective=raw_command)
+            return self._wrap_neko_command_result("advice", "recommend_one_card_by_neko", result, executed=False)
 
         if normalized_scope == "one_action" or (normalized_scope == "auto" and self._is_neko_step_once_text(text)):
             result = await self.step_once()
@@ -89,7 +101,7 @@ class NekoCommandingMixin:
                     needs_confirmation=True,
                 )
             result = await self.start_autoplay(objective=raw_command, stop_condition=stop_condition)
-            return self._wrap_neko_command_result("start_autoplay", "start_autoplay", result, executed=bool(result.get("executed", result.get("status") == "running")) if isinstance(result, dict) else False)
+            return self._wrap_neko_command_result("start_autoplay", "start_autoplay", result, executed=bool(result.get("action_executed", False)) if isinstance(result, dict) else False)
 
         return self._wrap_neko_command_result(
             intent="unknown",
@@ -130,16 +142,22 @@ class NekoCommandingMixin:
         return self._neko_text_has_any(text, ["不怎么样", "打得", "打的", "为什么", "为啥", "你在干嘛", "什么思路", "解释", "说说", "看起来", "是不是", "行不行", "能不能", "靠谱吗", "吐槽"])
 
     def _is_neko_advice_text(self, text: str) -> bool:
-        return self._neko_text_has_any(text, ["怎么打", "打哪张", "哪张牌", "建议", "看看", "分析", "怎么办", "怎么出"])
+        return self._neko_text_has_any(text, ["怎么打", "打哪张", "哪张牌", "哪张牌好", "建议", "看看", "分析", "怎么办", "怎么出"])
+
+    def _is_neko_observation_only_text(self, text: str) -> bool:
+        return self._neko_text_has_any(text, ["别动", "不要打", "先别操作", "只建议", "只分析", "别直接出", "不要操作", "别出牌"])
 
     def _is_neko_review_text(self, text: str) -> bool:
         return self._neko_text_has_any(text, ["打得怎么样", "牌打得怎么样", "打牌怎么样", "出牌怎么样", "牌感", "复盘", "评价一下", "点评", "吐槽一下", "刚才这手", "刚才的出牌"])
 
     def _is_neko_play_one_card_text(self, text: str) -> bool:
-        return self._neko_text_has_any(text, ["打一张牌", "出一张", "选一张牌打出去", "帮我打一张", "帮我出一张", "直接出一张"])
+        return self._neko_text_has_any(text, ["打一张牌", "打出一张牌", "帮我打出一张牌", "出一张", "选一张牌打出去", "帮我打一张", "帮我出一张", "替我打一张", "直接出一张", "直接打出去", "你来打一张"])
 
     def _is_neko_step_once_text(self, text: str) -> bool:
         return self._neko_text_has_any(text, ["打一步", "执行一步", "操作一下", "走一步"])
+
+    def _is_neko_generic_play_card_text(self, text: str) -> bool:
+        return self._neko_text_has_any(text, ["帮我打牌", "替我打牌", "帮我出牌", "替我出牌"])
 
     def _is_neko_autoplay_text(self, text: str) -> bool:
         return self._neko_text_has_any(text, ["打这一关", "打一关", "打一层", "打完这场", "自动打", "托管", "代打"])
@@ -151,10 +169,33 @@ class NekoCommandingMixin:
             return "manual"
         return "current_floor"
 
+    def _card_actionability_failure(self, context: Dict[str, Any], *, purpose: str) -> Optional[Dict[str, Any]]:
+        snapshot = context.get("snapshot") if isinstance(context.get("snapshot"), dict) else {}
+        actions = context.get("actions") if isinstance(context.get("actions"), list) else []
+        self._refresh_runtime_state_from_snapshot(snapshot)
+        if self._transport_state != "connected":
+            message = f"STS2-Agent 当前未连接，不能{purpose}。最近错误：{self._poll_last_error or self._last_error or '未知'}"
+            return {"status": "error", "reason_code": "transport_unavailable", "message": message, "summary": message, "snapshot": snapshot, "executed": False}
+        if self._game_state == "unknown":
+            message = f"已连接 STS2-Agent，但未识别到可操作的尖塔局面，不能{purpose}。请确认游戏已进入一局 run 或战斗界面。"
+            return {"status": "idle", "reason_code": "game_state_unknown", "message": message, "summary": message, "snapshot": snapshot, "executed": False}
+        if self._game_state != "combat_active" and not bool(snapshot.get("in_combat", False)):
+            message = f"当前不在战斗中，不能{purpose}。当前界面：{snapshot.get('screen', 'unknown')}。"
+            return {"status": "idle", "reason_code": "not_in_combat", "message": message, "summary": message, "snapshot": snapshot, "executed": False}
+        has_play_card = any(self._action_type_from_snapshot_action(action) == "play_card" for action in actions if isinstance(action, dict))
+        if not has_play_card:
+            message = f"当前没有可用的出牌动作，不能{purpose}。"
+            return {"status": "idle", "reason_code": "no_play_card_action", "message": message, "summary": message, "snapshot": snapshot, "executed": False}
+        return None
+
     async def recommend_one_card_by_neko(self, objective: Optional[str] = None) -> Dict[str, Any]:
         async with self._step_lock:
             context = await self._await_stable_step_context()
             snapshot = context.get("snapshot") if isinstance(context.get("snapshot"), dict) else {}
+            gate_failure = self._card_actionability_failure(context, purpose="推荐出牌")
+            if gate_failure is not None:
+                await self._notify_neko_card_task_event("failed", objective=objective, snapshot=snapshot, reason=gate_failure["message"])
+                return gate_failure
             play_card_actions = []
             for action in (context.get("actions") if isinstance(context.get("actions"), list) else []):
                 if not isinstance(action, dict):
@@ -210,6 +251,10 @@ class NekoCommandingMixin:
         async with self._step_lock:
             context = await self._await_stable_step_context()
             snapshot = context.get("snapshot") if isinstance(context.get("snapshot"), dict) else {}
+            gate_failure = self._card_actionability_failure(context, purpose="打出一张牌")
+            if gate_failure is not None:
+                await self._notify_neko_card_task_event("failed", objective=objective, snapshot=snapshot, reason=gate_failure["message"])
+                return gate_failure
             play_card_actions = []
             for action in (context.get("actions") if isinstance(context.get("actions"), list) else []):
                 if not isinstance(action, dict):

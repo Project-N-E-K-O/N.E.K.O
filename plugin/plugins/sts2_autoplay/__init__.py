@@ -227,7 +227,7 @@ class STS2AutoplayPlugin(NekoPluginBase):
     async def sts2_get_snapshot(self, **_: Any):
         return await self._run_entry(self._service.get_snapshot)
 
-    @plugin_entry(id="sts2_step_once", name="执行一步", description="根据当前策略执行一步尖塔合法动作。", llm_result_fields=["summary"], input_schema={"type": "object", "properties": {}})
+    @plugin_entry(id="sts2_step_once", name="执行一步", description="根据当前策略执行一步尖塔合法动作。", llm_result_fields=["summary"], input_schema={"type": "object", "properties": {}}, metadata={"agent_auto": False})
     async def sts2_step_once(self, **_: Any):
         return await self._run_entry(self._service.step_once, finish=True)
 
@@ -238,27 +238,27 @@ class STS2AutoplayPlugin(NekoPluginBase):
             finish=True,
         )
 
-    @plugin_entry(id="sts2_recommend_one_card_by_neko", name="猫娘推荐一张牌", description="当用户询问杀戮尖塔当前打哪张牌好、帮忙看看出牌建议时调用：插件只会读取玩家/手牌/敌人状态并推荐一张 play_card，说明理由，不会自动打出卡牌。", llm_result_fields=["summary"], input_schema={"type": "object", "properties": {"objective": {"type": "string", "description": "用户咨询目标，例如：帮我看看当前打哪张牌好"}}})
+    @plugin_entry(id="sts2_recommend_one_card_by_neko", name="猫娘推荐一张牌", description="当用户询问杀戮尖塔当前打哪张牌好、帮忙看看出牌建议时调用：插件只会读取玩家/手牌/敌人状态并推荐一张 play_card，说明理由，不会自动打出卡牌。", llm_result_fields=["summary"], input_schema={"type": "object", "properties": {"objective": {"type": "string", "description": "用户咨询目标，例如：帮我看看当前打哪张牌好"}}}, metadata={"agent_auto": False})
     async def sts2_recommend_one_card_by_neko(self, objective: Optional[str] = None, **_: Any):
         return await self._run_entry(lambda: self._service.recommend_one_card_by_neko(objective=objective), finish=True)
 
-    @plugin_entry(id="sts2_play_one_card_by_neko", name="猫娘选择并打出一张牌", description="仅当用户明确授权插件实际操作、自动打出、代打或说帮我选一张牌打出去时调用：插件会读取玩家/手牌/敌人状态，选择一张 play_card，先通知将要打出的卡牌和理由，然后执行出牌。用户只是问打哪张牌好、想要建议时不要调用本入口，应调用 sts2_recommend_one_card_by_neko。", llm_result_fields=["summary"], input_schema={"type": "object", "properties": {"objective": {"type": "string", "description": "用户授权目标，例如：帮我选一张牌打出去"}}})
+    @plugin_entry(id="sts2_play_one_card_by_neko", name="猫娘选择并打出一张牌", description="仅当用户明确授权插件实际操作、自动打出、代打或说帮我选一张牌打出去时调用：插件会读取玩家/手牌/敌人状态，选择一张 play_card，先通知将要打出的卡牌和理由，然后执行出牌。用户只是问打哪张牌好、想要建议时不要调用本入口，应调用 sts2_recommend_one_card_by_neko。", llm_result_fields=["summary"], input_schema={"type": "object", "properties": {"objective": {"type": "string", "description": "用户授权目标，例如：帮我选一张牌打出去"}}}, metadata={"agent_auto": False})
     async def sts2_play_one_card_by_neko(self, objective: Optional[str] = None, **_: Any):
         return await self._run_entry(lambda: self._service.play_one_card_by_neko(objective=objective), finish=True)
 
-    @plugin_entry(id="sts2_start_autoplay", name="开启尖塔游玩", description="由猫娘根据用户请求启动半自动尖塔游玩循环；例如用户说'帮我打这一关'时调用。", llm_result_fields=["summary"], input_schema={"type": "object", "properties": {"objective": {"type": "string", "description": "用户授权目标，例如：帮我打这一关"}, "stop_condition": {"type": "string", "default": _DEFAULT_STOP_CONDITION, "description": "停止条件：current_floor/current_combat/manual"}}})
+    @plugin_entry(id="sts2_start_autoplay", name="开启尖塔游玩", description="由猫娘根据用户请求启动半自动尖塔游玩循环；例如用户说'帮我打这一关'时调用。", llm_result_fields=["summary"], input_schema={"type": "object", "properties": {"objective": {"type": "string", "description": "用户授权目标，例如：帮我打这一关"}, "stop_condition": {"type": "string", "default": _DEFAULT_STOP_CONDITION, "description": "停止条件：current_floor/current_combat/manual"}}}, metadata={"agent_auto": False})
     async def sts2_start_autoplay(self, objective: Optional[str] = None, stop_condition: str = _DEFAULT_STOP_CONDITION, **_: Any):
         return await self._run_entry(lambda: self._service.start_autoplay(objective=objective, stop_condition=stop_condition), finish=True)
 
-    @plugin_entry(id="sts2_pause_autoplay", name="暂停尖塔游玩", description="暂停后台尖塔自动游玩循环。", llm_result_fields=["summary"], input_schema={"type": "object", "properties": {}})
+    @plugin_entry(id="sts2_pause_autoplay", name="暂停尖塔游玩", description="暂停后台尖塔自动游玩循环。", llm_result_fields=["summary"], input_schema={"type": "object", "properties": {}}, metadata={"agent_auto": False})
     async def sts2_pause_autoplay(self, **_: Any):
         return await self._run_entry(self._service.pause_autoplay, finish=True)
 
-    @plugin_entry(id="sts2_resume_autoplay", name="恢复尖塔游玩", description="恢复已暂停的尖塔自动游玩循环。", llm_result_fields=["summary"], input_schema={"type": "object", "properties": {}})
+    @plugin_entry(id="sts2_resume_autoplay", name="恢复尖塔游玩", description="恢复已暂停的尖塔自动游玩循环。", llm_result_fields=["summary"], input_schema={"type": "object", "properties": {}}, metadata={"agent_auto": False})
     async def sts2_resume_autoplay(self, **_: Any):
         return await self._run_entry(self._service.resume_autoplay, finish=True)
 
-    @plugin_entry(id="sts2_stop_autoplay", name="停止尖塔游玩", description="停止后台尖塔自动游玩循环。", llm_result_fields=["summary"], input_schema={"type": "object", "properties": {}})
+    @plugin_entry(id="sts2_stop_autoplay", name="停止尖塔游玩", description="停止后台尖塔自动游玩循环。", llm_result_fields=["summary"], input_schema={"type": "object", "properties": {}}, metadata={"agent_auto": False})
     async def sts2_stop_autoplay(self, **_: Any):
         return await self._run_entry(self._service.stop_autoplay, finish=True)
 
@@ -271,7 +271,7 @@ class STS2AutoplayPlugin(NekoPluginBase):
         safe_limit = max(1, min(raw_limit, _MAX_HISTORY_LIMIT))
         return await self._run_entry(lambda: self._service.get_history(limit=safe_limit))
 
-    @plugin_entry(id="sts2_send_neko_guidance", name="发送Neko指导", description="向后台 autoplay 发送猫娘的软指导，会在下一轮决策时被 LLM 参考。", llm_result_fields=["summary"], input_schema={"type": "object", "properties": {"content": {"type": "string", "description": "猫娘的指导内容，自然语言"}, "step": {"type": "integer", "description": "对应的步数（可选）"}, "type": {"type": "string", "default": _DEFAULT_GUIDANCE_TYPE}}, "required": ["content"]})
+    @plugin_entry(id="sts2_send_neko_guidance", name="发送Neko指导", description="向后台 autoplay 发送猫娘的软指导，会在下一轮决策时被 LLM 参考。", llm_result_fields=["summary"], input_schema={"type": "object", "properties": {"content": {"type": "string", "description": "猫娘的指导内容，自然语言"}, "step": {"type": "integer", "description": "对应的步数（可选）"}, "type": {"type": "string", "default": _DEFAULT_GUIDANCE_TYPE}}, "required": ["content"]}, metadata={"agent_auto": False})
     async def sts2_send_neko_guidance(self, content: str, step: Optional[int] = None, type: str = _DEFAULT_GUIDANCE_TYPE, **_: Any):
         guidance = {"content": content.strip(), "step": step, "type": type}
         return await self._run_entry(lambda: self._service.send_neko_guidance(guidance), finish=True)

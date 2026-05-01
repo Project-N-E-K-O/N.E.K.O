@@ -61,7 +61,7 @@ class CommandService(STS2AutoplayService):
         if objective == "自动打一下但是已经在运行":
             return {"status": "running", "message": "尖塔半自动任务已在运行", "executed": False}
         self._autoplay_state = "running"
-        return {"status": "running", "message": "尖塔半自动任务已启动", "executed": True}
+        return {"status": "running", "message": "尖塔半自动任务已启动，尚未代表已经执行游戏动作", "task_started": True, "action_executed": False, "executed": False}
 
     async def pause_autoplay(self, reason: str = "用户请求暂停") -> dict[str, Any]:
         self.called.append(("pause_autoplay", reason))
@@ -114,6 +114,22 @@ def test_neko_command_play_one_card_requires_explicit_wording(service: CommandSe
 
 
 @pytest.mark.unit
+def test_neko_command_rejects_llm_scope_escalation_from_single_card_to_autoplay(service: CommandService) -> None:
+    result = run(service.neko_command("帮我打一张牌", scope="autoplay", confirm=True))
+    assert result["intent"] == "play_one_card"
+    assert result["executed"] is True
+    assert service.called == [("play_one_card_by_neko", "帮我打一张牌")]
+
+
+@pytest.mark.unit
+def test_neko_command_rejects_ambiguous_autoplay_scope_without_range(service: CommandService) -> None:
+    result = run(service.neko_command("帮我打牌哦", scope="autoplay", confirm=True))
+    assert result["intent"] == "play_one_card"
+    assert result["executed"] is True
+    assert service.called == [("play_one_card_by_neko", "帮我打牌哦")]
+
+
+@pytest.mark.unit
 def test_neko_command_step_once(service: CommandService) -> None:
     result = run(service.neko_command("执行一步"))
     assert result["intent"] == "step_once"
@@ -125,7 +141,9 @@ def test_neko_command_step_once(service: CommandService) -> None:
 def test_neko_command_autoplay_current_floor_by_default(service: CommandService) -> None:
     result = run(service.neko_command("帮我打这一关"))
     assert result["intent"] == "start_autoplay"
-    assert result["executed"] is True
+    assert result["executed"] is False
+    assert result["result"]["task_started"] is True
+    assert result["result"]["action_executed"] is False
     assert service.called == [("start_autoplay", {"objective": "帮我打这一关", "stop_condition": "current_floor"})]
 
 
@@ -133,7 +151,9 @@ def test_neko_command_autoplay_current_floor_by_default(service: CommandService)
 def test_neko_command_autoplay_current_combat(service: CommandService) -> None:
     result = run(service.neko_command("打完这场战斗"))
     assert result["intent"] == "start_autoplay"
-    assert result["executed"] is True
+    assert result["executed"] is False
+    assert result["result"]["task_started"] is True
+    assert result["result"]["action_executed"] is False
     assert service.called == [("start_autoplay", {"objective": "打完这场战斗", "stop_condition": "current_combat"})]
 
 
@@ -152,6 +172,15 @@ def test_neko_command_start_autoplay_respects_result_executed_flag(service: Comm
     assert result["intent"] == "start_autoplay"
     assert result["executed"] is False
     assert service.called == [("start_autoplay", {"objective": "自动打一下但是已经在运行", "stop_condition": "current_floor"})]
+
+
+@pytest.mark.unit
+def test_neko_command_start_autoplay_task_started_is_not_action_executed(service: CommandService) -> None:
+    result = run(service.neko_command("帮我打这一关"))
+    assert result["intent"] == "start_autoplay"
+    assert result["executed"] is False
+    assert result["result"]["task_started"] is True
+    assert result["result"]["action_executed"] is False
 
 
 @pytest.mark.unit

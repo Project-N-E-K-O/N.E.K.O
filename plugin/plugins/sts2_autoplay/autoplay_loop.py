@@ -11,7 +11,7 @@ from typing import Any, Awaitable, Dict, Optional
 class AutoplayLoopMixin:
     async def start_autoplay(self, objective: Optional[str] = None, stop_condition: str = "current_floor") -> Dict[str, Any]:
         if self._autoplay_task and not self._autoplay_task.done():
-            return {"status": "running", "message": "尖塔半自动任务已在运行", "task": self._semi_auto_task, "executed": False}
+            return {"status": "running", "message": "尖塔半自动任务已在运行", "task": self._semi_auto_task, "task_started": False, "action_executed": False, "executed": False}
 
         try:
             await self.refresh_state()
@@ -30,7 +30,7 @@ class AutoplayLoopMixin:
         self._autoplay_state = "running"
         self._autoplay_task = asyncio.create_task(self._autoplay_loop())
         self._emit_status()
-        return {"status": "running", "message": "尖塔半自动任务已启动", "task": self._semi_auto_task, "executed": True}
+        return {"status": "running", "message": "尖塔半自动任务已启动，尚未代表已经执行游戏动作", "task": self._semi_auto_task, "task_started": True, "action_executed": False, "executed": False}
 
     async def pause_autoplay(self, reason: str = "用户请求暂停") -> Dict[str, Any]:
         if self._autoplay_task is None or self._autoplay_task.done():
@@ -119,10 +119,11 @@ class AutoplayLoopMixin:
         while not self._shutdown:
             try:
                 await self.refresh_state()
-                recovered = self._server_state != "connected" or bool(self._last_error)
+                recovered = self._transport_state != "connected" or bool(self._poll_last_error) or bool(self._last_error)
                 self._consecutive_errors = 0
-                self._server_state = "connected"
-                self._last_error = ""
+                self._poll_last_error = ""
+                self._poll_last_success_at = time.time()
+                self._set_transport_state("connected", error="")
                 if recovered:
                     self._emit_status()
             except Exception as exc:
@@ -131,8 +132,11 @@ class AutoplayLoopMixin:
                     max_errors = max(1, int(self._cfg.get("max_consecutive_errors", 3) or 3))
                 except (ValueError, TypeError):
                     max_errors = 3
-                self._server_state = "degraded" if self._consecutive_errors < max_errors else "disconnected"
-                self._last_error = str(exc)
+                next_state = "degraded" if self._consecutive_errors < max_errors else "disconnected"
+                error_text = str(exc)
+                self._poll_last_error = error_text
+                self._poll_last_failure_at = time.time()
+                self._set_transport_state(next_state, error=error_text)
                 self._emit_status()
             try:
                 interval = float(self._cfg.get("poll_interval_active_seconds", 1) if self._autoplay_state == "running" else self._cfg.get("poll_interval_idle_seconds", 3))
