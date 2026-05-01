@@ -149,8 +149,11 @@ def detect_avx_vnni_details() -> tuple[bool, bool]:
     try:
         import cpuinfo  # type: ignore
         flags = cpuinfo.get_cpu_info().get("flags", []) or []
-        has = any("vnni" in f for f in flags)
-        return has, True
+        # Empty flags (e.g. some virtualised hosts) is *not* a confirmed
+        # absence — fall through so /proc/cpuinfo can have a try.
+        if flags:
+            has = any("vnni" in f for f in flags)
+            return has, True
     except Exception:
         pass
 

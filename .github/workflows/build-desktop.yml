@@ -112,9 +112,10 @@ jobs:
         shell: bash
         run: |
           uv venv .venv
-          # Pull the optional `embeddings` extra (onnxruntime + tokenizers) so
-          # both the build-time prepare step and the bundled runtime have them.
-          uv sync --extra embeddings
+          # Embedding runtime deps (onnxruntime, tokenizers, py-cpuinfo) are
+          # in [project.dependencies] now — plain `uv sync` covers both the
+          # build-time prepare step and the bundled runtime.
+          uv sync
           uv pip install --python .venv nuitka ordered-set zstandard
 
       # --- Generate runtime config files (not tracked in git) ---
