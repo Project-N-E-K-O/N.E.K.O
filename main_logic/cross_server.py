@@ -358,7 +358,6 @@ async def run_sync_connector(
             可直接 ``asyncio.create_task(...)``，无需 ``run_coroutine_threadsafe``。
     """
     chat_history: list = []
-    last_user_input_diag_at: float | None = None
     default_config = {'bullet': True, 'monitor': True}
     if config is None:
         config = {}
@@ -400,7 +399,6 @@ async def run_sync_connector(
     }
 
     last_heartbeat_at = 0.0
-    message_seq = 0
     # 节流后的应用层 heartbeat 间隔。原因不是省 CPU（aiohttp ws_connect(heartbeat=10)
     # 已经在底层做了 ping/pong），而是控制 send-fail → ws=None → 下一轮 reconnect
     # 这条链路的检测延迟。1s 在 idle 期足够安静（远低于改造前 50Hz），同时把
@@ -416,8 +414,6 @@ async def run_sync_connector(
     try:
         while True:
             message = None
-            queue_wait_started = time.monotonic()
-            queue_wait_ms: float | None = None
             try:
                 # check_async_blocking.py 用纯名字启发式（``*_queue.get()`` 一律拍），
                 # 类型标注不影响判断；这里 message_queue 实际是 ``asyncio.Queue``，
@@ -426,7 +422,6 @@ async def run_sync_connector(
                     message_queue.get(),  # noqa: ASYNC_BLOCK — asyncio.Queue, not queue.Queue
                     timeout=LOOP_TICK,
                 )
-                queue_wait_ms = (time.monotonic() - queue_wait_started) * 1000.0
             except asyncio.TimeoutError:
                 # 超时 = 没消息：保持 message=None 走到下面 ws 维持段做周期性
                 # reconnect/heartbeat 检查。idle 期每 LOOP_TICK 触发一次（当前
@@ -435,30 +430,6 @@ async def run_sync_connector(
                 pass
 
             if message is not None:
-                message_seq += 1
-                message_started = time.monotonic()
-                message_type = message.get("type") if isinstance(message, dict) else type(message).__name__
-                message_data = message.get("data") if isinstance(message, dict) else None
-                if isinstance(message_data, dict):
-                    message_label = str(message_data.get("type") or message_data.get("input_type") or "dict")
-                else:
-                    message_label = str(message_data)
-                try:
-                    queue_size_after_get = message_queue.qsize()
-                except Exception:
-                    queue_size_after_get = -1
-                logger.info(
-                    "[%s] [Diag.QueueTiming] message received: seq=%d type=%s label=%r wait_ms=%s qsize_after_get=%s current_turn=%s history=%d cache_len=%d",
-                    lanlan_name,
-                    message_seq,
-                    message_type,
-                    message_label[:120],
-                    f"{queue_wait_ms:.1f}" if queue_wait_ms is not None else "NA",
-                    queue_size_after_get,
-                    current_turn,
-                    len(chat_history),
-                    len(user_input_cache),
-                )
                 try:
                     if message["type"] == "json":
                         # Forward to monitor if enabled
@@ -512,16 +483,6 @@ async def run_sync_connector(
                         data = message["data"].get("data")
                         input_type = message["data"].get("input_type")
                         if input_type == "transcript": # 暂时只处理语音，后续还需要记录图片
-                            now_diag = time.monotonic()
-                            last_user_input_diag_at = now_diag
-                            logger.info(
-                                "[%s] [Diag.AgentTiming] user_transcript queued: len=%d current_turn=%s history=%d cache_len=%d",
-                                lanlan_name,
-                                len(str(data or "")),
-                                current_turn,
-                                len(chat_history),
-                                len(user_input_cache),
-                            )
                             if user_input_cache == '' and config['monitor'] and sync_ws:
                                 await sync_ws.send_json({'type': 'user_activity'}) #用于打断前端声音播放
                             user_input_cache += data
@@ -725,34 +686,12 @@ async def run_sync_connector(
                                             pending_user_images,
                                             allow_attach_to_last_user=had_user_input_this_turn,
                                         )
-                                        has_user = any(m.get('role') == 'user' for m in recent)
-                                        user_to_turn_end_ms = (
-                                            (time.monotonic() - last_user_input_diag_at) * 1000.0
-                                            if last_user_input_diag_at is not None
-                                            else None
-                                        )
-                                        recent_roles = [str(m.get('role')) for m in recent]
-                                        logger.info(
-                                            f"[{lanlan_name}] turn_end analyze check: "
-                                            f"history={len(chat_history)} recent={len(recent)} "
-                                            f"has_user={has_user} had_input={had_user_input_this_turn} "
-                                            f"agent_callback_turn={is_agent_callback_turn_end} "
-                                            f"user_to_turn_end_ms={user_to_turn_end_ms if user_to_turn_end_ms is not None else 'NA'} "
-                                            f"recent_roles={recent_roles}"
-                                        )
                                         if recent and not is_agent_callback_turn_end:
-                                            publish_started = time.monotonic()
                                             sent = await _publish_analyze_request_with_fallback(
                                                 lanlan_name=lanlan_name,
                                                 trigger="turn_end",
                                                 messages=recent,
                                                 conversation_id=uuid.uuid4().hex,
-                                            )
-                                            logger.info(
-                                                "[%s] [Diag.AgentTiming] analyze_request publish finished: trigger=turn_end sent=%s latency_ms=%.1f",
-                                                lanlan_name,
-                                                sent,
-                                                (time.monotonic() - publish_started) * 1000.0,
                                             )
                                             if sent:
                                                 logger.debug(f"[{lanlan_name}] analyze_request dispatch success (turn_end), messages={len(recent)}")
@@ -903,28 +842,8 @@ async def run_sync_connector(
                             logger.error(f"[{lanlan_name}] System message error: {e}", exc_info=True)
                 except Exception as e:
                     logger.error(f"[{lanlan_name}] Message processing error: {e}", exc_info=True)
-                finally:
-                    processing_ms = (time.monotonic() - message_started) * 1000.0
-                    try:
-                        queue_size_after_process = message_queue.qsize()
-                    except Exception:
-                        queue_size_after_process = -1
-                    logger.info(
-                        "[%s] [Diag.QueueTiming] message processed: seq=%d type=%s label=%r processing_ms=%.1f qsize_after_process=%s current_turn=%s history=%d cache_len=%d text_cache_len=%d",
-                        lanlan_name,
-                        message_seq,
-                        message_type,
-                        message_label[:120],
-                        processing_ms,
-                        queue_size_after_process,
-                        current_turn,
-                        len(chat_history),
-                        len(user_input_cache),
-                        len(text_output_cache),
-                    )
  
             # WebSocket 连接管理（独立于消息处理）
-            ws_maintenance_started = time.monotonic()
             try:
                 # 如果连接不存在，尝试建立连接
                 try:
@@ -1016,18 +935,6 @@ async def run_sync_connector(
                 binary_ws = None
                 bullet_ws = None
                 await asyncio.sleep(0.5)  # 出错时退避 0.5s 再重连，避免快速失败 spam
-            finally:
-                ws_maintenance_ms = (time.monotonic() - ws_maintenance_started) * 1000.0
-                if ws_maintenance_ms >= 1000.0:
-                    logger.warning(
-                        "[%s] [Diag.QueueTiming] ws maintenance slow: latency_ms=%.1f had_message=%s sync_ws=%s binary_ws=%s bullet_ws=%s",
-                        lanlan_name,
-                        ws_maintenance_ms,
-                        message is not None,
-                        sync_ws is not None,
-                        binary_ws is not None,
-                        bullet_ws is not None,
-                    )
  
     except asyncio.CancelledError:
         raise

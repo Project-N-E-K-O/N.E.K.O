@@ -1153,11 +1153,9 @@ class DirectTaskExecutor:
         - Stage 2 only (< 4000 chars): full LLM assessment with all plugins
         - Stage 1 + 2 (>= 4000 chars): BM25 + LLM coarse screen + keyword → filtered → Stage 2
         """
-        started_at = time.monotonic()
         # 如果没有插件，快速返回
         try:
             if not plugins:
-                logger.info("[UserPlugin] [Diag.AgentTiming] no plugins supplied for assessment")
                 return UserPluginDecision(has_task=False, can_execute=False, task_description="", plugin_id=None, plugin_args=None, reason="No plugins")
         except Exception:
             logger.debug("[UserPlugin] Failed to check plugins validity", exc_info=True)
@@ -1194,27 +1192,8 @@ class DirectTaskExecutor:
                 plugin_id=None, plugin_args=None, reason="No active plugins",
             )
 
-        visible_entry_counts = {
-            str(p.get("id")): len(self._agent_visible_plugin_entries(p))
-            for p in plugin_list
-            if isinstance(p, dict) and p.get("id")
-        }
-        logger.info(
-            "[UserPlugin] [Diag.AgentTiming] assessment input: plugins=%d visible_plugins=%d visible_entries=%s conversation_len=%d elapsed_ms=%.1f",
-            pre_filter_count,
-            len(plugin_list),
-            visible_entry_counts,
-            len(conversation or ""),
-            (time.monotonic() - started_at) * 1000.0,
-        )
-
         # Extract user intent for keyword / BM25 matching
         user_intent = self._extract_latest_user_intent(conversation)
-        logger.info(
-            "[UserPlugin] [Diag.AgentTiming] extracted intent: len=%d preview=%r",
-            len(user_intent or ""),
-            (user_intent or "")[:120],
-        )
 
         # Build full description
         lines = self._build_plugin_desc_lines(plugin_list)
@@ -1310,7 +1289,6 @@ class DirectTaskExecutor:
                     {"role": "user", "content": user_prompt},
                 ]
 
-                llm_started = time.monotonic()
                 quota_error = await self._check_agent_quota("task_executor.assess_user_plugin")
                 if quota_error:
                     return UserPluginDecision(
@@ -1322,11 +1300,6 @@ class DirectTaskExecutor:
                         reason=quota_error,
                     )
                 response = await llm.ainvoke(messages)
-                logger.info(
-                    "[UserPlugin] [Diag.AgentTiming] stage2 llm returned: attempt=%d latency_ms=%.1f",
-                    attempt + 1,
-                    (time.monotonic() - llm_started) * 1000.0,
-                )
                 raw_text = response.content
                 # Log the prompts we sent (truncated) and the raw response (truncated) at INFO level
                 try:
@@ -1506,15 +1479,6 @@ class DirectTaskExecutor:
                         decision["reason"] = f"entry_id '{final_eid}' not found in plugin '{final_pid}'"
 
                 plugin_args = decision.get("plugin_args")
-                logger.info(
-                    "[UserPlugin] [Diag.AgentTiming] final decision: has_task=%s can_execute=%s plugin_id=%s entry_id=%s reason=%s total_ms=%.1f",
-                    decision.get("has_task", False),
-                    decision.get("can_execute", False),
-                    decision.get("plugin_id"),
-                    final_eid,
-                    decision.get("reason", ""),
-                    (time.monotonic() - started_at) * 1000.0,
-                )
 
                 return UserPluginDecision(
                     has_task=decision.get("has_task", False),
@@ -1570,22 +1534,6 @@ class DirectTaskExecutor:
             logger.debug("[TaskExecutor] All execution channels disabled, skipping")
             return None
 
-        analyze_started = time.monotonic()
-        message_roles = [str(m.get("role")) for m in messages if isinstance(m, dict)]
-        logger.info(
-            "[TaskExecutor] [Diag.AgentTiming] analyze start: task_id=%s conversation_id=%s lanlan=%s messages=%d roles=%s flags={cu=%s, bu=%s, up=%s, nk=%s, of=%s}",
-            task_id,
-            conversation_id,
-            lanlan_name,
-            len(messages) if isinstance(messages, list) else 0,
-            message_roles,
-            computer_use_enabled,
-            browser_use_enabled,
-            user_plugin_enabled,
-            openclaw_enabled,
-            openfang_enabled,
-        )
-
         # 格式化对话
         conversation = self._format_messages(messages)
         if not conversation.strip():
@@ -1593,15 +1541,6 @@ class DirectTaskExecutor:
         latest_user_request = self._extract_latest_user_intent(conversation)
         recent_context = self._extract_recent_context(messages)
         normalized_intent = self._normalize_user_intent(latest_user_request, recent_context)
-        logger.info(
-            "[TaskExecutor] [Diag.AgentTiming] analyze input normalized: task_id=%s latest_len=%d latest_preview=%r recent_context=%d normalized_preview=%r",
-            task_id,
-            len(latest_user_request or ""),
-            (latest_user_request or "")[:120],
-            len(recent_context or []),
-            (normalized_intent or "")[:120],
-        )
-
         # ── 可用性检查 ──────────────────────────────────────
         cu_available = False
         if computer_use_enabled:
@@ -1703,15 +1642,7 @@ class DirectTaskExecutor:
             return None
 
         logger.info("[TaskExecutor] Running %d assessment(s) in parallel...", len(parallel_tasks))
-        assess_started = time.monotonic()
         results = await asyncio.gather(*[t[1] for t in parallel_tasks], return_exceptions=True)
-        logger.info(
-            "[TaskExecutor] [Diag.AgentTiming] assessments finished: task_id=%s latency_ms=%.1f total_ms=%.1f keys=%s",
-            task_id,
-            (time.monotonic() - assess_started) * 1000.0,
-            (time.monotonic() - analyze_started) * 1000.0,
-            [key for key, _ in parallel_tasks],
-        )
 
         up_decision: Optional[UserPluginDecision] = None
         unified: Optional[UnifiedChannelDecision] = None
@@ -1743,13 +1674,6 @@ class DirectTaskExecutor:
                 return TaskResult(task_id=task_id, has_task=False, reason=up_decision.reason)
             # task_description 是 LLM 决策出的任务描述，不写 logger
             logger.info("[TaskExecutor] Using UserPlugin (desc_len=%d), plugin_id=%s", len(up_decision.task_description or ""), up_decision.plugin_id)
-            logger.info(
-                "[TaskExecutor] [Diag.AgentTiming] user_plugin selected: task_id=%s plugin_id=%s entry_id=%s total_ms=%.1f",
-                task_id,
-                up_decision.plugin_id,
-                up_decision.entry_id,
-                (time.monotonic() - analyze_started) * 1000.0,
-            )
             print(f"[TaskExecutor] Using UserPlugin: {up_decision.task_description}, plugin_id={up_decision.plugin_id}")
             return TaskResult(
                 task_id=task_id,
