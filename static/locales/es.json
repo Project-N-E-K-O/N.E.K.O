@@ -1878,7 +1878,8 @@
         "switchCard": "Cambiar tarjeta",
         "switchSuccess": "Cambiado con éxito",
         "tempSaveFailed": "Error al guardar temporalmente: {{error}}",
-        "editCardFace": "Editar cara de la tarjeta"
+        "editCardFace": "Editar cara de la tarjeta",
+        "cardMakerPopupBlocked": "La página del creador de tarjetas no se pudo abrir automáticamente. Permite las ventanas emergentes y vuelve a intentarlo, o haz clic en el área de la tarjeta para abrirla manualmente."
     },
     "app": {
         "welcomeBack": "¡{{name}} ha vuelto!",

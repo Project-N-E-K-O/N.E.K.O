@@ -1878,7 +1878,8 @@
         "switchCard": "Trocar cartão",
         "switchSuccess": "Trocado com sucesso",
         "tempSaveFailed": "Falha ao salvar temporariamente: {{error}}",
-        "editCardFace": "Editar rosto do cartão"
+        "editCardFace": "Editar rosto do cartão",
+        "cardMakerPopupBlocked": "A página do criador de cartões não pôde ser aberta automaticamente. Permita pop-ups e tente novamente, ou clique na área do cartão para abri-la manualmente."
     },
     "app": {
         "welcomeBack": "{{name}} está de volta!",
