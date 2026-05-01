@@ -19,7 +19,6 @@
 | **场景执行** | `执行回家模式` | 兼容"执行"、"运行"、"触发"等动词 |
 
 ### 🏠 空间感知与消歧 (Spatial Awareness & Disambiguation)
-针对公测用户反馈的"设备一多直接玩球"问题，本版本进行了针对性优化：
 
 *   **区域感知**：插件会自动构建 `room_id -> room_name` 映射，理解"客厅"、"主卧"等空间概念。
 *   **优雅消歧**：当用户指令（如"打开灯"）匹配到多个设备时，插件**不再报错**，而是返回结构化的澄清选项：
@@ -75,7 +74,6 @@ POST /plugin/mijia/api/check_login_status
 | `smart_control` | **核心入口**：自然语言统一控制 | AI Agent、语音助手 |
 | `find_device_by_name` | 按名称/别名/区域查找设备 | 调试、设备发现 |
 | `query_device_state` | 查询设备详细状态（多属性） | 状态监控、仪表盘 |
-| `control_device` | 精确控制（需 DID/SIID/PIID） | 自动化脚本、第三方集成 |
 | `execute_scene` | 执行智能场景 | 场景联动 |
 
 ## 🗺️ 技术架构简图
