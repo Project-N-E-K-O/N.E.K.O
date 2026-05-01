@@ -5493,7 +5493,12 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
             const hasCardFace = window._cardFaceNames && window._cardFaceNames.has(catgirlName);
             if (!hasCardFace) {
                 const makerUrl = `/card_maker?name=${encodeURIComponent(catgirlName)}&mode=maker`;
-                window.open(makerUrl, '_blank', 'width=1200,height=800');
+                const makerWindow = window.open(makerUrl, '_blank', 'width=1200,height=800');
+                if (!makerWindow) {
+                    await showAlertDialog(window.t ? window.t('character.cardMakerPopupBlocked') : '卡面制作页面未能自动打开，请允许浏览器弹窗后重试，或点击卡面区域手动打开。', { type: 'warning' });
+                } else {
+                    closeCatgirlPanel();
+                }
             } else {
                 closeCatgirlPanel();
             }

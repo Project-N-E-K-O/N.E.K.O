@@ -526,7 +526,7 @@
         "steamNotRunningTitle": "El vapor no funciona",
         "steamNotRunningMessage": "El cliente Steam no se está ejecutando o no ha iniciado sesión.\n\nLas funciones de Workshop requieren el cliente Steam. Por favor:\n1. Descargue e instale el cliente Steam\n2. Inicie Steam e inicie sesión en su cuenta\n3. Reabrir esta página",
         "addNewCatgirl": "Añadir nuevo NEKO",
-        "noCardImage": "Click para\nconfigurar tarjeta",
+        "noCardImage": "Haga clic aquí para configurar la tarjeta",
         "searchCharacterCards": "\u0042uscar tarjetas de personajes...",
         "cardView": "\u0056ista de tarjetas",
         "listView": "\u0056ista de lista"
