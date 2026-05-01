@@ -31,6 +31,7 @@ from utils.api_config_loader import (
 )
 from utils.custom_tts_adapter import check_custom_tts_voice_allowed
 from utils.file_utils import atomic_write_json
+from utils.gemini_tts_voices import is_gemini_tts_voice
 from utils.logger_config import get_module_logger
 from utils.persona_presets import PERSONA_OVERRIDE_FIELDS
 
@@ -2272,6 +2273,9 @@ class ConfigManager:
         if voice_id in voices:
             return True
 
+        if self.get_core_config().get('CORE_API_TYPE') == 'gemini' and is_gemini_tts_voice(voice_id):
+            return True
+
         # 免费预设音色允许豁免保存校验，运行时再由 core.py 按当前线路动态判断可用性
         from utils.api_config_loader import get_free_voices
         free_voices = get_free_voices()
@@ -2292,6 +2296,9 @@ class ConfigManager:
         voice_storage = self.load_voice_storage()
         voices = voice_storage.get(api_key, {})
         if voice_id in voices:
+            return True
+
+        if self.get_core_config().get('CORE_API_TYPE') == 'gemini' and is_gemini_tts_voice(voice_id):
             return True
 
         from utils.api_config_loader import get_free_voices
