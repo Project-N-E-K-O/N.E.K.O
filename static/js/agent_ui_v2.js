@@ -162,6 +162,7 @@
             openfang: 'openfang_enabled',
         };
         const prevCaps = (state.snapshot && state.snapshot.capabilities) || {};
+        const prevFlags = (state.snapshot && state.snapshot.flags) || {};
         const newCaps = snapshot.capabilities || {};
         const analyzerOn = !!snapshot.analyzer_enabled;
         const snapFlags = snapshot.flags || {};
@@ -169,7 +170,17 @@
             if (!capInfo || capInfo.ready) continue;
             if (!analyzerOn) continue;
             const flagKey = CAP_TO_FLAG[capName];
-            if (!flagKey || !snapFlags[flagKey]) continue;
+            // 用户是否真的请求了这个能力：新快照、上一帧快照、pending 队列、乐观更新里有任一为真即算。
+            // 只看 snapFlags 会吞掉"用户刚开启 → 后端同帧检查失败立刻关掉"的失败提示。
+            const userRequested = !!(
+                flagKey && (
+                    snapFlags[flagKey] ||
+                    prevFlags[flagKey] ||
+                    state.pending.has(flagKey) ||
+                    state.optimistic[flagKey]
+                )
+            );
+            if (!userRequested) continue;
             const prevInfo = prevCaps[capName];
             const wasPending = prevInfo && !prevInfo.ready && prevInfo.reason && prevInfo.reason.includes('PENDING');
             const nowFailed = capInfo.reason && !capInfo.reason.includes('PENDING');
