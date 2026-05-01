@@ -320,23 +320,33 @@ class RobustLoggerConfig:
             raise
     
     def _cleanup_old_logs(self):
-        """清理超过保留期的旧日志文件"""
-        try:
-            cutoff_date = datetime.now() - timedelta(days=self.retention_days)
-            
-            for log_file in self.log_dir.glob(f"{self.app_name}_*.log*"):
-                try:
-                    # 获取文件的修改时间
-                    file_mtime = datetime.fromtimestamp(log_file.stat().st_mtime)
-                    
-                    # 如果文件太旧，删除它
-                    if file_mtime < cutoff_date:
-                        log_file.unlink()
-                        print(f"Cleaned up old log file: {log_file.name}")
-                except Exception as e:
-                    print(f"Warning: Failed to clean up log file {log_file}: {e}", file=sys.stderr)
-        except Exception as e:
-            print(f"Warning: Failed to cleanup old logs: {e}", file=sys.stderr)
+        """清理超过保留期的旧日志文件。
+
+        除了主日志目录外，源码运行时还会顺手清一下 dev DEBUG 目录
+        （``<repo>/logs/``），避免按天滚的 ``*_debug_YYYYMMDD.log`` 无限堆积。
+        """
+        cutoff_date = datetime.now() - timedelta(days=self.retention_days)
+        dirs_to_scan = [self.log_dir]
+        if not getattr(sys, "frozen", False):
+            try:
+                dev_dir = _get_application_root() / "logs"
+                if dev_dir.exists() and dev_dir.resolve() != self.log_dir.resolve():
+                    dirs_to_scan.append(dev_dir)
+            except Exception as e:
+                print(f"Warning: Failed to resolve dev debug dir for cleanup: {e}", file=sys.stderr)
+
+        for scan_dir in dirs_to_scan:
+            try:
+                for log_file in scan_dir.glob(f"{self.app_name}_*.log*"):
+                    try:
+                        file_mtime = datetime.fromtimestamp(log_file.stat().st_mtime)
+                        if file_mtime < cutoff_date:
+                            log_file.unlink()
+                            print(f"Cleaned up old log file: {log_file.name}")
+                    except Exception as e:
+                        print(f"Warning: Failed to clean up log file {log_file}: {e}", file=sys.stderr)
+            except Exception as e:
+                print(f"Warning: Failed to cleanup old logs in {scan_dir}: {e}", file=sys.stderr)
     
     def _resolve_console_level(self) -> int:
         """决定 console handler 的级别。
