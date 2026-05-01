@@ -890,6 +890,25 @@ Live2DManager.prototype._playIdleMotion = async function(motionManager) {
         return indexes;
     };
     const getMotionFile = (motion) => motion && (motion.file || motion.File);
+    const getRegisteredMotionFile = (groupName, index) => {
+        if (!groupName || index == null || index < 0) return null;
+
+        const sources = [
+            motionManager.definitions,
+            motionManager._definitions,
+            motionManager.motionGroups,
+            motionManager._motionGroups
+        ].filter(Boolean);
+
+        for (const source of sources) {
+            const group = source[groupName];
+            if (!Array.isArray(group)) continue;
+            const file = getMotionFile(group[index]);
+            if (file) return file;
+        }
+
+        return null;
+    };
     const trackMotionFile = (file) => {
         if (!file || typeof this._trackActiveMotionParametersFromFile !== 'function') {
             if (typeof this._clearActiveMotionParamIds === 'function') {
@@ -980,8 +999,10 @@ Live2DManager.prototype._playIdleMotion = async function(motionManager) {
             this._clearActiveMotionParamIds();
             return;
         }
-        // 没有可解析的 file 时无法追踪 motion3 参数，清掉旧追踪，避免复用上一条 motion 的参数集合。
-        this._clearActiveMotionParamIds();
+        const startedGroup = motionManager.state?.currentGroup || 'Idle';
+        const startedIndex = motionManager.state?.currentIndex;
+        const startedFile = getRegisteredMotionFile(startedGroup, startedIndex);
+        trackMotionFile(startedFile);
     } catch (e) {
         this._clearActiveMotionParamIds();
         console.warn('[Live2D] 随机 Idle motion 启动失败:', e);
