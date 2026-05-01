@@ -534,6 +534,20 @@ class DirectTaskExecutor:
     def _message_text(message: Dict[str, Any]) -> str:
         return str(message.get("text") or message.get("content") or "").strip()
 
+    def _preserve_latest_user_request_for_plugin_args(
+        self,
+        *,
+        plugin_id: Any,
+        entry_id: Any,
+        plugin_args: Any,
+        latest_user_request: str,
+    ) -> Any:
+        if plugin_id == "sts2_autoplay" and entry_id == "sts2_neko_command" and latest_user_request.strip():
+            args = dict(plugin_args) if isinstance(plugin_args, dict) else {}
+            args["command"] = latest_user_request.strip()
+            return args
+        return plugin_args
+
     def _extract_recent_context(
         self,
         messages: List[Dict[str, Any]],
@@ -1478,7 +1492,12 @@ class DirectTaskExecutor:
                         decision["can_execute"] = False
                         decision["reason"] = f"entry_id '{final_eid}' not found in plugin '{final_pid}'"
 
-                plugin_args = decision.get("plugin_args")
+                plugin_args = self._preserve_latest_user_request_for_plugin_args(
+                    plugin_id=decision.get("plugin_id"),
+                    entry_id=final_eid,
+                    plugin_args=decision.get("plugin_args"),
+                    latest_user_request=user_intent,
+                )
 
                 return UserPluginDecision(
                     has_task=decision.get("has_task", False),

@@ -706,10 +706,48 @@ def test_plugin_business_callback_status_marks_non_executed_results():
     assert _plugin_business_callback_status({"status": "idle", "executed": False}) == "blocked"
     assert _plugin_business_callback_status({"status": "stale", "executed": False}) == "blocked"
     assert _plugin_business_callback_status({"status": "ok", "action": "play_one_card_by_neko", "executed": False}) == "blocked"
+    assert _plugin_business_callback_status({"status": "running", "action": "start_autoplay", "action_executed": False}) == "blocked"
     assert _plugin_business_callback_status({"status": "error", "executed": False}) == "failed"
     assert _plugin_business_callback_status({"status": "error", "observation_only": True}) is None
     assert _plugin_business_callback_status({"status": "idle", "executed": False, "observation_only": True}) is None
+    assert _plugin_business_callback_status({"status": "idle"}) is None
+    assert _plugin_business_callback_status({"status": "stale"}) is None
     assert _plugin_business_callback_status({"status": "ok", "executed": True}) is None
+
+
+def test_plugin_terminal_status_preserves_blocked_as_first_class_terminal_state():
+    from agent_server import _plugin_terminal_status
+
+    assert _plugin_terminal_status(True, None) == "completed"
+    assert _plugin_terminal_status(False, None) == "failed"
+    assert _plugin_terminal_status(True, "blocked") == "blocked"
+    assert _plugin_terminal_status(False, "blocked") == "blocked"
+    assert _plugin_terminal_status(True, "failed") == "failed"
+
+
+def test_callback_instruction_renders_blocked_plugin_result_as_not_executed():
+    from main_logic.core import _build_callback_instruction
+
+    output = _build_callback_instruction(
+        [
+            {
+                "status": "blocked",
+                "source_kind": "plugin",
+                "source_name": "尖塔自动战斗",
+                "summary": "需要确认后才能执行",
+                "detail": "需要确认后才能执行",
+                "delivery_mode": "proactive",
+            }
+        ],
+        lang="zh",
+        lanlan_name="小天",
+        master_name="主人",
+    )
+
+    assert "未执行" in output
+    assert "说明未执行原因" in output
+    assert "执行失败" not in output
+    assert "需要确认后才能执行" in output
 
 
 def test_task_executor_hides_agent_auto_disabled_plugin_entries():

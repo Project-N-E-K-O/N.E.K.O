@@ -265,6 +265,7 @@ USER_PLUGIN_SYSTEM_PROMPT = {
 - 如果 has_task/can_execute 为 true 时 entry_id 缺失或为 null，响应将被视为不可执行。
 - 严格匹配：plugin_id 和 entry_id 是代码标识符。你必须从上面的可用插件列表中原样复制它们（区分大小写、逐字符匹配）。不要发明、缩写或改写它们。如果找不到完全匹配，设置 can_execute=false。
 - 如果入口有 args(...) 信息，在 plugin_args 中使用那些字段名。只包含 schema 中列出的字段。
+- 当入口 schema 需要用户文本字段（例如 command/message/query/objective）时，必须复制用户最新消息原文；不要翻译、摘要、改写或补全。
 - 如果用户的意图与任何插件的描述功能不明确匹配，设置 has_task=false。
 - 标注了 [KEYWORD MATCH] 的插件已通过关键词预筛，优先考虑这些插件是否匹配用户意图。
 只返回 JSON 对象，不含其他内容。""",
@@ -308,6 +309,7 @@ VERY IMPORTANT:
 - If entry_id is missing or null when has_task/can_execute are true, the response will be treated as non-executable.
 - STRICT MATCHING: plugin_id and entry_id are code identifiers. You MUST copy them EXACTLY (case-sensitive, character-for-character) from the AVAILABLE PLUGINS list above. Do NOT invent, abbreviate, or paraphrase them. If you cannot find an exact match, set can_execute=false.
 - If an entry has args(...) info, use those field names in plugin_args. Only include fields listed in the schema.
+- When an entry schema needs a user text field (for example command/message/query/objective), copy the user's latest message verbatim; do not translate, summarize, rewrite, or complete it.
 - If the user's intent does not clearly match any plugin's described functionality, set has_task=false.
 - Plugins marked with [KEYWORD MATCH] have passed keyword pre-screening; prioritize checking these plugins for intent match.
 Return only the JSON object, nothing else.""",

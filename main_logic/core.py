@@ -67,6 +67,7 @@ from config.prompts_sys import (
 _STATUS_EMOJI = {
     "completed": "✅",
     "partial": "⚠️",
+    "blocked": "⚠️",
     "failed": "❌",
     "cancelled": "🚫",
 }
