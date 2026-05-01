@@ -178,15 +178,17 @@ async def analyze_image_with_vision_model(
             _loc, VISION_WATERMARK,
             VISION_SYSTEM_WITH_TITLE, VISION_SYSTEM_NO_TITLE,
             VISION_USER_WITH_TITLE, VISION_USER_NO_TITLE,
+            get_avatar_annotation_ignore_hint,
         )
         from utils.language_utils import get_global_language
         lang = get_global_language()
 
+        ignore_hint = get_avatar_annotation_ignore_hint(lang)
         if window_title:
-            system_content = VISION_WATERMARK + _loc(VISION_SYSTEM_WITH_TITLE, lang)
+            system_content = VISION_WATERMARK + _loc(VISION_SYSTEM_WITH_TITLE, lang) + ' ' + ignore_hint
             user_text = _loc(VISION_USER_WITH_TITLE, lang).format(window_title=window_title)
         else:
-            system_content = VISION_WATERMARK + _loc(VISION_SYSTEM_NO_TITLE, lang)
+            system_content = VISION_WATERMARK + _loc(VISION_SYSTEM_NO_TITLE, lang) + ' ' + ignore_hint
             user_text = _loc(VISION_USER_NO_TITLE, lang)
 
         set_call_type("vision")
