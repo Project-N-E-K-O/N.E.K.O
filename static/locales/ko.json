@@ -529,7 +529,7 @@
         "searchCharacterCards": "캐릭터 카드 검색...",
         "cardView": "카드 보기",
         "listView": "목록 보기",
-        "noCardImage": "카드 이미지\n미설정"
+        "noCardImage": "클릭하여\n카드 설정"
     },
     "dialogs": {
         "confirmLeave": "휴가 확인",

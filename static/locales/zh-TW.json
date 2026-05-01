@@ -529,7 +529,7 @@
         "searchCharacterCards": "搜尋角色卡...",
         "cardView": "卡片檢視",
         "listView": "列表檢視",
-        "noCardImage": "尚未設定\n角色卡圖片"
+        "noCardImage": "點擊此處\n設定卡面"
     },
     "dialogs": {
         "confirmLeave": "確認離開",

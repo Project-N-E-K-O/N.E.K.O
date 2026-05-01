@@ -529,7 +529,7 @@
         "searchCharacterCards": "キャラカードを検索...",
         "cardView": "カード表示",
         "listView": "リスト表示",
-        "noCardImage": "カード画像\n未設定"
+        "noCardImage": "ここをクリックして\nカードを設定"
     },
     "dialogs": {
         "confirmLeave": "退出の確認",

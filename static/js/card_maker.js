@@ -714,6 +714,10 @@
                     name: currentCharaName,
                     timestamp: Date.now()
                 }, window.location.origin);
+                // 额外触发父窗口刷新列表，确保跨窗口场景下也能立刻看到新卡面
+                if (typeof window.opener.loadCharacterCards === 'function') {
+                    try { window.opener.loadCharacterCards(); } catch (_) {}
+                }
             }
 
             exportFullBtn.textContent = t('cardExport.saveCardFaceSuccess', '保存成功！');

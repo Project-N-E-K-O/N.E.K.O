@@ -529,7 +529,7 @@
         "searchCharacterCards": "Поиск карточек...",
         "cardView": "Карточки",
         "listView": "Список",
-        "noCardImage": "Изображение\nне задано"
+        "noCardImage": "Нажмите, чтобы\nустановить карту"
     },
     "dialogs": {
         "confirmLeave": "Подтвердить выход",

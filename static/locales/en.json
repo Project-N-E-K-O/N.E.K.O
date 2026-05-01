@@ -529,7 +529,7 @@
         "searchCharacterCards": "Search character cards...",
         "cardView": "Card View",
         "listView": "List View",
-        "noCardImage": "No card\nimage set"
+        "noCardImage": "Click to set\ncard face"
     },
     "dialogs": {
         "confirmLeave": "Confirm Leave",
