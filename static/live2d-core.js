@@ -79,6 +79,7 @@ class Live2DManager {
         this.pixi_app = null;
         this.isInitialized = false;
         this.motionTimer = null;
+        this._motionTimerGeneration = 0;
         this.isEmotionChanging = false;
         this.dragEnabled = false;
         this.isFocusing = false;
@@ -112,6 +113,10 @@ class Live2DManager {
         // 常驻表情：使用官方 expression 播放并在清理后自动重放
         this.persistentExpressionNames = [];
         this.persistentExpressionParamsByName = {};
+        this.motionBaselineParameters = {};
+        this._activeExpressionParamIds = null;
+        this._activeMotionParamIds = null;
+        this._motionParameterTrackGeneration = 0;
 
         // UI/Ticker 资源句柄（便于在切换模型时清理）
         this._lockIconTicker = null;
