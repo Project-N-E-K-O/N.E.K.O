@@ -37,6 +37,9 @@ STS2AutoplayService = load_service_class()
 
 
 class DummyLogger:
+    def debug(self, message: Any, *args: Any, **kwargs: Any) -> None:
+        pass
+
     def warning(self, message: Any, *args: Any, **kwargs: Any) -> None:
         pass
 
@@ -189,6 +192,104 @@ def test_live_commentary_event_scenes_for_combat_end_key_relic_and_route_chosen(
 
 
 @pytest.mark.unit
+def test_neko_card_task_events_are_hud_only() -> None:
+    notifications: list[dict[str, Any]] = []
+
+    async def notifier(**kwargs: Any) -> None:
+        notifications.append(kwargs)
+
+    service = STS2AutoplayService(DummyLogger(), lambda status: None, frontend_notifier=notifier)
+
+    asyncio.run(
+        service._notify_neko_card_task_event(
+            "completed",
+            objective="帮我打一张牌",
+            snapshot={"screen": "combat", "floor": 15, "act": 1, "hp": 20, "max_hp": 70},
+            card_name="冲刺",
+            reason="测试理由",
+        )
+    )
+
+    assert len(notifications) == 1
+    notification = notifications[0]
+    assert notification["visibility"] == ["hud"]
+    assert notification["ai_behavior"] == "blind"
+    assert notification["message_type"] == "neko_observation"
+    assert notification["metadata"]["event_type"] == "neko_card_task_completed"
+
+
+def make_combat_snapshot() -> dict[str, Any]:
+    return {
+        "screen": "combat",
+        "floor": 3,
+        "act": 1,
+        "in_combat": True,
+        "raw_state": {
+            "combat": {
+                "turn": 1,
+                "player": {"hp": 60, "max_hp": 80, "energy": 3},
+                "hand": [{"name": "打击", "playable": True, "cost": 1}],
+                "enemies": [{"name": "史莱姆", "hp": 12, "max_hp": 20, "intent": {"type": "attack", "value": 8}}],
+            },
+            "run": {"act": 1, "hp": 60, "max_hp": 80},
+        },
+    }
+
+
+@pytest.mark.unit
+def test_neko_step_reports_do_not_push_hud_by_default() -> None:
+    notifications: list[dict[str, Any]] = []
+
+    async def notifier(**kwargs: Any) -> None:
+        notifications.append(kwargs)
+
+    service = make_service(neko_commentary_min_interval_seconds=0)
+    service._frontend_notifier = notifier
+    service._snapshot = make_combat_snapshot()
+
+    asyncio.run(
+        service._push_neko_report(
+            {
+                "snapshot": service._snapshot,
+                "reasoning": {"chosen_action": "end_turn", "reason": "测试理由"},
+            }
+        )
+    )
+
+    assert notifications == []
+
+
+@pytest.mark.unit
+def test_neko_step_reports_are_hud_only_when_enabled() -> None:
+    notifications: list[dict[str, Any]] = []
+
+    async def notifier(**kwargs: Any) -> None:
+        notifications.append(kwargs)
+
+    service = make_service(neko_commentary_min_interval_seconds=0, neko_report_hud_enabled=True)
+    service._frontend_notifier = notifier
+    service._snapshot = make_combat_snapshot()
+
+    asyncio.run(
+        service._push_neko_report(
+            {
+                "snapshot": service._snapshot,
+                "reasoning": {"chosen_action": "end_turn", "reason": "测试理由"},
+            }
+        )
+    )
+
+    assert len(notifications) == 1
+    notification = notifications[0]
+    assert notification["visibility"] == ["hud"]
+    assert notification["ai_behavior"] == "blind"
+    assert notification["message_type"] == "neko_observation"
+    assert notification["metadata"]["event_type"] == "neko_report"
+    assert notification["metadata"]["observation_only"] is True
+    assert notification["content"].startswith("尖塔观察#")
+
+
+@pytest.mark.unit
 def test_autonomous_low_hp_pause_notifies_main_program() -> None:
     notifications: list[dict[str, Any]] = []
 
@@ -223,10 +324,57 @@ def test_autonomous_low_hp_pause_notifies_main_program() -> None:
     assert notification["priority"] == 9
     assert "血量过低" in notification["content"]
     assert "需要用户确认" in notification["content"]
+    assert notification["visibility"] == []
+    assert notification["ai_behavior"] == "respond"
     assert notification["metadata"]["event_type"] == "neko_autonomous_action"
     assert notification["metadata"]["reason"] == "low_hp"
     assert notification["metadata"]["reason_label"] == "血量过低"
     assert notification["metadata"]["requires_user_attention"] is True
+
+
+@pytest.mark.unit
+def test_terminal_task_events_notify_main_program() -> None:
+    terminal_events = {"completed", "paused", "stopped", "error"}
+
+    for event in terminal_events:
+        notifications: list[dict[str, Any]] = []
+
+        async def notifier(**kwargs: Any) -> None:
+            notifications.append(kwargs)
+
+        service = STS2AutoplayService(DummyLogger(), lambda status: None, frontend_notifier=notifier)
+        service._snapshot = {"screen": "combat", "floor": 3, "act": 1}
+        task = {"objective": "帮我打这一关", "stop_condition": "current_floor"}
+
+        asyncio.run(service._notify_neko_task_event(event, task=task, reason="测试终止原因"))
+
+        assert len(notifications) == 1
+        notification = notifications[0]
+        assert notification["message_type"] == "proactive_notification"
+        assert notification["visibility"] == []
+        assert notification["ai_behavior"] == "respond"
+        assert notification["metadata"]["event_type"] == f"semi_auto_task_{event}"
+        assert notification["metadata"]["requires_user_attention"] is (event in {"paused", "stopped", "error"})
+
+
+@pytest.mark.unit
+def test_started_task_event_remains_hud_only_observation() -> None:
+    notifications: list[dict[str, Any]] = []
+
+    async def notifier(**kwargs: Any) -> None:
+        notifications.append(kwargs)
+
+    service = STS2AutoplayService(DummyLogger(), lambda status: None, frontend_notifier=notifier)
+    service._snapshot = {"screen": "combat", "floor": 3, "act": 1}
+
+    asyncio.run(service._notify_neko_task_event("started", task={"objective": "帮我打这一关"}))
+
+    assert len(notifications) == 1
+    notification = notifications[0]
+    assert notification["message_type"] == "neko_observation"
+    assert notification["visibility"] == ["hud"]
+    assert notification["ai_behavior"] == "blind"
+    assert notification["metadata"]["event_type"] == "semi_auto_task_started"
 
 
 @pytest.mark.unit

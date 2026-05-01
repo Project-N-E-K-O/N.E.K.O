@@ -12,7 +12,7 @@ class NekoCommandingMixin:
 
     async def neko_command(self, command: str, scope: str = "auto", confirm: bool = False) -> Dict[str, Any]:
         raw_command = str(command or "").strip()
-        normalized_scope = str(scope or "auto").strip().lower() or "auto"
+        normalized_scope = self._normalize_neko_command_scope(scope)
         if not raw_command:
             return self._wrap_neko_command_result(
                 intent="unknown",
@@ -22,40 +22,34 @@ class NekoCommandingMixin:
                 needs_confirmation=True,
             )
         text = self._normalize_neko_command_text(raw_command)
-        explicit_single_card_intent = self._is_neko_play_one_card_text(text) or self._is_neko_generic_play_card_text(text)
+        explicit_single_card_intent = self._is_neko_play_one_card_text(text) or self._is_neko_generic_play_card_text(text) or self._is_neko_short_play_one_card_text(text)
         explicit_autoplay_intent = self._is_neko_autoplay_text(text)
+        observation_only = self._is_neko_observation_only_text(text)
+        advice_intent = self._is_neko_advice_text(text) or observation_only
+        guidance_intent = self._is_neko_guidance_text(text)
+        review_intent = self._is_neko_review_text(text)
+        question_intent = self._is_neko_autoplay_question_text(text)
+        step_once_intent = self._is_neko_step_once_text(text)
 
-        if normalized_scope == "autoplay" and not explicit_autoplay_intent:
-            if explicit_single_card_intent and not self._is_neko_observation_only_text(text):
-                result = await self.play_one_card_by_neko(objective=raw_command)
-                return self._wrap_neko_command_result("play_one_card", "play_one_card_by_neko", result, executed=bool(result.get("executed", False)) if isinstance(result, dict) else False)
-            return self._wrap_neko_command_result(
-                intent="autoplay_scope_rejected",
-                action="clarify",
-                result={
-                    "status": "confirm_required",
-                    "message": "我检测到请求没有明确自动游玩范围。为了避免把单次出牌误升级为托管，请明确说“打完这场战斗”“帮我打一层”或“持续托管”。",
-                },
-                executed=False,
-                needs_confirmation=True,
-            )
+        if self._neko_text_has_any(text, ["停了吧", "别打了", "停止", "结束托管", "停止托管", "终止", "stop"]):
+            return self._wrap_neko_command_result("stop", "stop_autoplay", await self.stop_autoplay(), executed=False)
+        if self._neko_text_has_any(text, ["暂停", "先停", "等一下", "别动", "pause"]):
+            return self._wrap_neko_command_result("pause", "pause_autoplay", await self.pause_autoplay(), executed=False)
+        if self._neko_text_has_any(text, ["继续托管", "恢复托管", "继续自动打", "恢复自动打", "继续代打", "接着托管", "resume"]):
+            return self._wrap_neko_command_result("resume", "resume_autoplay", await self.resume_autoplay(), executed=False)
 
-        if normalized_scope in {"control", "auto"}:
-            if self._neko_text_has_any(text, ["停了吧", "别打了", "停止", "结束托管", "停止托管", "终止", "stop"]):
-                return self._wrap_neko_command_result("stop", "stop_autoplay", await self.stop_autoplay(), executed=False)
-            if self._neko_text_has_any(text, ["暂停", "先停", "等一下", "别动", "pause"]):
-                return self._wrap_neko_command_result("pause", "pause_autoplay", await self.pause_autoplay(), executed=False)
-            if self._neko_text_has_any(text, ["继续托管", "恢复托管", "继续自动打", "恢复自动打", "继续代打", "接着托管", "resume"]):
-                return self._wrap_neko_command_result("resume", "resume_autoplay", await self.resume_autoplay(), executed=False)
-
-        if normalized_scope in {"status", "auto"} and self._neko_text_has_any(text, ["健康", "连上", "连接", "health"]):
+        if self._neko_text_has_any(text, ["健康", "连上", "连接", "health"]):
             return self._wrap_neko_command_result("health", "health_check", await self.health_check(), executed=False)
-        if normalized_scope in {"status", "auto"} and self._neko_text_has_any(text, ["刷新"]):
+        if self._neko_text_has_any(text, ["刷新"]):
             return self._wrap_neko_command_result("refresh_state", "refresh_state", await self.refresh_state(), executed=False)
-        if normalized_scope in {"status", "auto"} and self._neko_text_has_any(text, ["状态", "情况", "局面", "快照", "合法动作", "现在什么"]):
+        if self._neko_text_has_any(text, ["状态", "情况", "局面", "快照", "合法动作", "现在什么"]):
             return self._wrap_neko_command_result("snapshot", "get_snapshot", await self.get_snapshot(), executed=False)
 
-        if normalized_scope == "guidance" or (normalized_scope == "auto" and self._is_neko_guidance_text(text)):
+        if explicit_single_card_intent and not observation_only:
+            result = await self.play_one_card_by_neko(objective=raw_command)
+            return self._wrap_neko_command_result("play_one_card", "play_one_card_by_neko", result, executed=bool(result.get("executed", False)) if isinstance(result, dict) else False)
+
+        if guidance_intent:
             if self._autoplay_state in {"running", "paused"}:
                 result = await self.send_neko_guidance({"content": raw_command, "step": self._step_count, "type": "soft_guidance"})
                 return self._wrap_neko_command_result("guidance", "send_neko_guidance", result, executed=False)
@@ -70,27 +64,23 @@ class NekoCommandingMixin:
                 needs_confirmation=True,
             )
 
-        if normalized_scope == "review" or (normalized_scope == "auto" and self._is_neko_review_text(text)):
+        if review_intent:
             result = await self.review_recent_play_by_neko(objective=raw_command)
             return self._wrap_neko_command_result("review", "review_recent_play_by_neko", result, executed=False)
 
-        if normalized_scope in {"question", "chat"} or (normalized_scope == "auto" and self._autoplay_state in {"running", "paused"} and self._is_neko_autoplay_question_text(text)):
+        if self._autoplay_state in {"running", "paused"} and question_intent:
             result = await self.answer_autoplay_question_by_neko(question=raw_command)
             return self._wrap_neko_command_result("autoplay_question", "answer_autoplay_question_by_neko", result, executed=False)
 
-        if normalized_scope == "one_card" or (normalized_scope == "auto" and explicit_single_card_intent and not self._is_neko_observation_only_text(text)):
-            result = await self.play_one_card_by_neko(objective=raw_command)
-            return self._wrap_neko_command_result("play_one_card", "play_one_card_by_neko", result, executed=bool(result.get("executed", False)) if isinstance(result, dict) else False)
-
-        if normalized_scope == "advice" or (normalized_scope == "auto" and self._is_neko_advice_text(text)) or (normalized_scope == "auto" and self._is_neko_observation_only_text(text)):
+        if advice_intent:
             result = await self.recommend_one_card_by_neko(objective=raw_command)
             return self._wrap_neko_command_result("advice", "recommend_one_card_by_neko", result, executed=False)
 
-        if normalized_scope == "one_action" or (normalized_scope == "auto" and self._is_neko_step_once_text(text)):
+        if step_once_intent:
             result = await self.step_once()
             return self._wrap_neko_command_result("step_once", "step_once", result, executed=bool(result.get("executed", result.get("status") == "ok")) if isinstance(result, dict) else False)
 
-        if normalized_scope == "autoplay" or (normalized_scope == "auto" and self._is_neko_autoplay_text(text)):
+        if explicit_autoplay_intent:
             stop_condition = self._infer_neko_stop_condition(text)
             if stop_condition == "manual" and not confirm:
                 return self._wrap_neko_command_result(
@@ -102,6 +92,51 @@ class NekoCommandingMixin:
                 )
             result = await self.start_autoplay(objective=raw_command, stop_condition=stop_condition)
             return self._wrap_neko_command_result("start_autoplay", "start_autoplay", result, executed=bool(result.get("action_executed", False)) if isinstance(result, dict) else False)
+
+        if normalized_scope == "autoplay":
+            return self._wrap_neko_command_result(
+                intent="autoplay_scope_rejected",
+                action="clarify",
+                result={
+                    "status": "confirm_required",
+                    "message": "我检测到请求没有明确自动游玩范围。为了避免把单次出牌误升级为托管，请明确说“打完这场战斗”“帮我打一层”或“持续托管”。",
+                },
+                executed=False,
+                needs_confirmation=True,
+            )
+        if normalized_scope == "one_card":
+            return self._wrap_neko_command_result(
+                intent="single_card_confirmation",
+                action="clarify",
+                result={"status": "confirm_required", "message": "实际出牌需要用户原话明确授权，例如“帮我打一张牌”或“帮我出一张”。"},
+                executed=False,
+                needs_confirmation=True,
+            )
+        if normalized_scope == "one_action":
+            return self._wrap_neko_command_result(
+                intent="one_action_confirmation",
+                action="clarify",
+                result={"status": "confirm_required", "message": "执行游戏动作需要用户原话明确授权，例如“执行一步”或“操作一下”。"},
+                executed=False,
+                needs_confirmation=True,
+            )
+        if normalized_scope == "guidance":
+            return self._wrap_neko_command_result(
+                "guidance",
+                "clarify",
+                {"status": "clarify", "message": "请明确告诉我想给自动游玩什么指导，例如“先防一下”或“别贪”。"},
+                executed=False,
+                needs_confirmation=True,
+            )
+        if normalized_scope == "review":
+            result = await self.review_recent_play_by_neko(objective=raw_command)
+            return self._wrap_neko_command_result("review", "review_recent_play_by_neko", result, executed=False)
+        if normalized_scope in {"question", "chat"}:
+            result = await self.answer_autoplay_question_by_neko(question=raw_command)
+            return self._wrap_neko_command_result("autoplay_question", "answer_autoplay_question_by_neko", result, executed=False)
+        if normalized_scope == "advice":
+            result = await self.recommend_one_card_by_neko(objective=raw_command)
+            return self._wrap_neko_command_result("advice", "recommend_one_card_by_neko", result, executed=False)
 
         return self._wrap_neko_command_result(
             intent="unknown",
@@ -130,6 +165,36 @@ class NekoCommandingMixin:
     def _normalize_neko_command_text(self, command: str) -> str:
         return re.sub(r"\s+", "", str(command or "").lower())
 
+    def _normalize_neko_command_scope(self, scope: str) -> str:
+        raw_scope = re.sub(r"[\s\-]+", "_", str(scope or "auto").strip().lower()) or "auto"
+        aliases = {
+            "game": "auto",
+            "play": "auto",
+            "card": "one_card",
+            "play_card": "one_card",
+            "single_card": "one_card",
+            "one_card": "one_card",
+            "action": "one_action",
+            "step": "one_action",
+            "one_action": "one_action",
+            "status": "status",
+            "snapshot": "status",
+            "state": "status",
+            "advice": "advice",
+            "recommend": "advice",
+            "suggestion": "advice",
+            "autoplay": "autoplay",
+            "auto_play": "autoplay",
+            "control": "control",
+            "guidance": "guidance",
+            "guide": "guidance",
+            "review": "review",
+            "question": "question",
+            "chat": "chat",
+            "auto": "auto",
+        }
+        return aliases.get(raw_scope, "auto")
+
     def _neko_text_has_any(self, text: str, needles: list[str]) -> bool:
         return any(self._normalize_neko_command_text(needle) in text for needle in needles)
 
@@ -152,6 +217,9 @@ class NekoCommandingMixin:
 
     def _is_neko_play_one_card_text(self, text: str) -> bool:
         return self._neko_text_has_any(text, ["打一张牌", "打出一张牌", "帮我打出一张牌", "出一张", "选一张牌打出去", "帮我打一张", "帮我出一张", "替我打一张", "直接出一张", "直接打出去", "你来打一张"])
+
+    def _is_neko_short_play_one_card_text(self, text: str) -> bool:
+        return text in {"帮我打", "替我打", "帮我出", "替我出", "你来打", "直接打"}
 
     def _is_neko_step_once_text(self, text: str) -> bool:
         return self._neko_text_has_any(text, ["打一步", "执行一步", "操作一下", "走一步"])

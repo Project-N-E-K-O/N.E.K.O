@@ -214,9 +214,19 @@ class NekoReportingMixin:
             "live_commentary": live_commentary,
             "task": task_brief,
         }
+        if not bool(self._cfg.get("neko_report_hud_enabled", False)):
+            return
         try:
             priority = self._safe_int(live_commentary.get("priority"), 5) if live_commentary.get("should_speak") else 5
-            maybe_awaitable = notifier(content=content, description=description, metadata=metadata, priority=priority, message_type="neko_observation")
+            maybe_awaitable = notifier(
+                content=content,
+                description=description,
+                metadata=metadata,
+                priority=priority,
+                message_type="neko_observation",
+                visibility=["hud"],
+                ai_behavior="blind",
+            )
             if isinstance(maybe_awaitable, Awaitable):
                 await maybe_awaitable
         except Exception as exc:
@@ -433,6 +443,8 @@ class NekoReportingMixin:
                 metadata=metadata,
                 priority=priority,
                 message_type="proactive_notification",
+                visibility=["hud"],
+                ai_behavior="blind",
             )
             if isinstance(maybe_awaitable, Awaitable):
                 await maybe_awaitable
@@ -526,6 +538,8 @@ class NekoReportingMixin:
                     "act": act,
                 },
                 priority=priority,
+                visibility=["hud"],
+                ai_behavior="blind",
             )
             if isinstance(maybe_awaitable, Awaitable):
                 await maybe_awaitable
@@ -570,6 +584,7 @@ class NekoReportingMixin:
             priority = 9
         else:
             return
+        should_tell_main_program = event in {"completed", "paused", "stopped", "error"}
         try:
             maybe_awaitable = notifier(
                 content=content,
@@ -587,6 +602,8 @@ class NekoReportingMixin:
                     "requires_user_attention": event in {"paused", "stopped", "error"},
                 },
                 priority=priority,
+                visibility=[] if should_tell_main_program else ["hud"],
+                ai_behavior="respond" if should_tell_main_program else "blind",
             )
             if isinstance(maybe_awaitable, Awaitable):
                 await maybe_awaitable
@@ -703,6 +720,7 @@ class NekoReportingMixin:
             self._auto_pause_reason = None
             self._autoplay_state = "running"
             self._emit_status()
+        should_tell_main_program = action_type in {"pause", "slow_down"}
         if notifier is not None and action_type in messages:
             detail = messages[action_type]
             try:
@@ -725,6 +743,8 @@ class NekoReportingMixin:
                         "requires_user_attention": action_type in {"pause", "slow_down"},
                     },
                     priority=9 if reason == "low_hp" else 7,
+                    visibility=[] if should_tell_main_program else ["hud"],
+                    ai_behavior="respond" if should_tell_main_program else "blind",
                 )
                 if isinstance(maybe_awaitable, Awaitable):
                     await maybe_awaitable

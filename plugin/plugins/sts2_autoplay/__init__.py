@@ -147,7 +147,7 @@ class STS2AutoplayPlugin(NekoPluginBase):
         try:
             payload = await action()
             if finish:
-                return await self.finish(data=payload, reply=False, message=_summary_from(payload))
+                return await self.finish(data=payload, delivery="proactive", message=_summary_from(payload))
             return Ok(payload)
         except SdkError as error:
             self.logger.warning(f"STS2 plugin entry failed: {error}")
@@ -164,15 +164,33 @@ class STS2AutoplayPlugin(NekoPluginBase):
         metadata: JsonObject,
         priority: int = _DEFAULT_PRIORITY,
         message_type: str = _DEFAULT_MESSAGE_TYPE,
+        visibility: list[str] | None = None,
+        ai_behavior: str | None = None,
     ) -> None:
-        self.push_message(
-            source=_SOURCE_ID,
-            message_type=message_type,
-            description=description,
-            priority=priority,
-            content=content,
-            metadata=dict(metadata),
-        )
+        kwargs: dict[str, Any] = {
+            "source": _SOURCE_ID,
+            "priority": priority,
+            "metadata": dict(metadata),
+        }
+        if visibility is not None or ai_behavior is not None:
+            kwargs.update(
+                {
+                    "visibility": visibility if visibility is not None else [],
+                    "ai_behavior": ai_behavior or "blind",
+                    "parts": [{"type": "text", "text": content}],
+                }
+            )
+            kwargs["metadata"]["description"] = description
+            kwargs["metadata"]["message_type"] = message_type
+        else:
+            kwargs.update(
+                {
+                    "message_type": message_type,
+                    "description": description,
+                    "content": content,
+                }
+            )
+        self.push_message(**kwargs)
 
     def _save_speed_overrides(
         self,

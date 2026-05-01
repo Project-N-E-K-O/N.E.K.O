@@ -10,8 +10,11 @@ from typing import Any, Awaitable, Dict, Optional
 
 class AutoplayLoopMixin:
     async def start_autoplay(self, objective: Optional[str] = None, stop_condition: str = "current_floor") -> Dict[str, Any]:
+        replaced_existing_task = False
+        previous_task = dict(self._semi_auto_task) if isinstance(self._semi_auto_task, dict) else None
         if self._autoplay_task and not self._autoplay_task.done():
-            return {"status": "running", "message": "尖塔半自动任务已在运行", "task": self._semi_auto_task, "task_started": False, "action_executed": False, "executed": False}
+            replaced_existing_task = True
+            await self.stop_autoplay(reason="用户重新请求代打，停止旧的半自动任务")
         if self._autoplay_task and self._autoplay_task.done():
             self._autoplay_task = None
         self._last_error = ""
@@ -33,7 +36,17 @@ class AutoplayLoopMixin:
         self._autoplay_state = "running"
         self._autoplay_task = asyncio.create_task(self._autoplay_loop())
         self._emit_status()
-        return {"status": "running", "message": "尖塔半自动任务已启动，尚未代表已经执行游戏动作", "task": self._semi_auto_task, "task_started": True, "action_executed": False, "executed": False}
+        message = "尖塔半自动任务已重新启动，旧任务已停止，尚未代表已经执行游戏动作" if replaced_existing_task else "尖塔半自动任务已启动，尚未代表已经执行游戏动作"
+        return {
+            "status": "running",
+            "message": message,
+            "task": self._semi_auto_task,
+            "previous_task": previous_task,
+            "replaced_existing_task": replaced_existing_task,
+            "task_started": True,
+            "action_executed": False,
+            "executed": False,
+        }
 
     async def pause_autoplay(self, reason: str = "用户请求暂停") -> Dict[str, Any]:
         if self._autoplay_task is None or self._autoplay_task.done():

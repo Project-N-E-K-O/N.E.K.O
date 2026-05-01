@@ -40,6 +40,7 @@ llm_frontend_output_enabled = true
 llm_frontend_output_probability = 0.15
 neko_reporting_enabled = true
 neko_report_interval_steps = 1
+neko_report_hud_enabled = false
 neko_commentary_enabled = true
 neko_commentary_probability = 0.65
 neko_commentary_min_interval_seconds = 4

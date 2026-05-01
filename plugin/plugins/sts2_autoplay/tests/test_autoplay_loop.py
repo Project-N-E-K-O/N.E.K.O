@@ -140,6 +140,36 @@ def test_start_autoplay_ignores_done_task_when_retrying() -> None:
 
 
 @pytest.mark.unit
+def test_start_autoplay_replaces_existing_background_task_instead_of_reporting_running() -> None:
+    async def scenario() -> None:
+        service = LoopService()
+        old_task = asyncio.create_task(asyncio.sleep(3600))
+        old_task_payload = {"objective": "旧任务", "stop_condition": "current_floor", "status": "running"}
+        service._autoplay_task = old_task
+        service._semi_auto_task = old_task_payload
+        service._autoplay_state = "paused"
+        service._paused = True
+
+        result = await service.start_autoplay(objective="新任务", stop_condition="current_floor")
+
+        assert result["status"] == "running"
+        assert result["task_started"] is True
+        assert result["replaced_existing_task"] is True
+        assert result["previous_task"] == old_task_payload
+        assert result["task"]["objective"] == "新任务"
+        assert "已在运行" not in result["message"]
+        assert old_task.done()
+        assert service._autoplay_state == "running"
+        assert service._paused is False
+        assert service.error_events[0] == ("stopped", old_task_payload, "用户重新请求代打，停止旧的半自动任务")
+        assert service.error_events[1] == ("started", None, None)
+        service._shutdown = True
+        await service.stop_autoplay()
+
+    run(scenario())
+
+
+@pytest.mark.unit
 def test_resume_autoplay_without_background_task_returns_idle_without_restarting() -> None:
     service = LoopService()
     service._semi_auto_task = {

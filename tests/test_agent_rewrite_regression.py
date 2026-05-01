@@ -684,6 +684,34 @@ def test_task_executor_format_messages_mentions_image_attachments():
     assert "LATEST_USER_REQUEST: 帮我看看这张图哪里报错了 [Attached images: 1]" in output
 
 
+def test_task_executor_preserves_latest_user_request_for_sts2_neko_command():
+    from brain.task_executor import DirectTaskExecutor
+
+    executor = object.__new__(DirectTaskExecutor)
+    plugin_args = executor._preserve_latest_user_request_for_plugin_args(
+        plugin_id="sts2_autoplay",
+        entry_id="sts2_neko_command",
+        plugin_args={"command": "play a card", "scope": "user", "confirm": True},
+        latest_user_request="帮我打出一张牌",
+    )
+
+    assert plugin_args == {"command": "帮我打出一张牌", "scope": "user", "confirm": True}
+
+
+def test_plugin_business_callback_status_marks_non_executed_results():
+    from agent_server import _plugin_business_callback_status
+
+    assert _plugin_business_callback_status({"status": "clarify", "action": "clarify", "needs_confirmation": True}) == "blocked"
+    assert _plugin_business_callback_status({"status": "confirm_required", "needs_confirmation": True}) == "blocked"
+    assert _plugin_business_callback_status({"status": "idle", "executed": False}) == "blocked"
+    assert _plugin_business_callback_status({"status": "stale", "executed": False}) == "blocked"
+    assert _plugin_business_callback_status({"status": "ok", "action": "play_one_card_by_neko", "executed": False}) == "blocked"
+    assert _plugin_business_callback_status({"status": "error", "executed": False}) == "failed"
+    assert _plugin_business_callback_status({"status": "error", "observation_only": True}) is None
+    assert _plugin_business_callback_status({"status": "idle", "executed": False, "observation_only": True}) is None
+    assert _plugin_business_callback_status({"status": "ok", "executed": True}) is None
+
+
 def test_task_executor_hides_agent_auto_disabled_plugin_entries():
     from brain.task_executor import DirectTaskExecutor
 
