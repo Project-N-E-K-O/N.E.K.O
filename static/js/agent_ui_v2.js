@@ -149,11 +149,27 @@
         const rev = Number(snapshot.revision ?? -1);
         if (Number.isFinite(rev) && rev <= state.revision) return;
 
-        // Detect precheck failure transitions: PENDING → specific failure reason
+        // Detect precheck failure transitions: PENDING → specific failure reason.
+        // Only fire the toast when the user actually opted into that capability —
+        // otherwise background daemons (OpenFang / browser-use install / startup
+        // LLM probe) flipping their own seeded PENDING → *_UNREACHABLE produce
+        // bogus "猫爪预检失败" popups even when the agent is working fine.
+        const CAP_TO_FLAG = {
+            computer_use: 'computer_use_enabled',
+            browser_use: 'browser_use_enabled',
+            user_plugin: 'user_plugin_enabled',
+            openclaw: 'openclaw_enabled',
+            openfang: 'openfang_enabled',
+        };
         const prevCaps = (state.snapshot && state.snapshot.capabilities) || {};
         const newCaps = snapshot.capabilities || {};
+        const analyzerOn = !!snapshot.analyzer_enabled;
+        const snapFlags = snapshot.flags || {};
         for (const [capName, capInfo] of Object.entries(newCaps)) {
             if (!capInfo || capInfo.ready) continue;
+            if (!analyzerOn) continue;
+            const flagKey = CAP_TO_FLAG[capName];
+            if (!flagKey || !snapFlags[flagKey]) continue;
             const prevInfo = prevCaps[capName];
             const wasPending = prevInfo && !prevInfo.ready && prevInfo.reason && prevInfo.reason.includes('PENDING');
             const nowFailed = capInfo.reason && !capInfo.reason.includes('PENDING');
