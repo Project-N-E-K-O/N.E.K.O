@@ -59,14 +59,11 @@ dependencies = [
   # utils/tokenize.py and wires render-time counting.
   "tiktoken>=0.7.0",
   "cachetools>=5.3",
-]
-
-[project.optional-dependencies]
-embeddings = [
+  # Local memory embeddings (memory/embeddings.py): ONNX + tokenizer + CPU flags
   "onnxruntime",
   "tokenizers",
+  "py-cpuinfo>=9.0.0",
 ]
-
 
 [tool.hatch.build.targets.wheel]
 packages = [

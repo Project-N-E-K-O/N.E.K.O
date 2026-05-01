@@ -68,7 +68,7 @@ for pkg in critical_packages:
             raise RuntimeError(
                 f"Cannot collect {pkg!r}, but data/embedding_models is "
                 "present and will be bundled. Install with "
-                "`uv sync --extra embeddings` or remove the embedding "
+                "`uv sync` or remove the embedding "
                 "assets directory before building."
             ) from e
         print(f"Warning: Could not collect {pkg}: {e}")
