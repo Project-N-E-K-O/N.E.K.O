@@ -2549,7 +2549,96 @@ class UniversalTutorialManager {
                 element: '#model-singleselect',
                 popover: {
                     title: this.t('tutorial.emotion_manager.step1.title', '🎭 选择模型'),
-                    description: this.t('tutorial.emotion_manager.step1.desc', '首先选择要配置情感的 Live2D 模型。每个模型可以有独立的情感配置。选好模型后才能进入下一步。'),
+                    description: this.t('tutorial.emotion_manager.step1.desc', '首先选择要配置情感的 Live2D 模型。每个模型可以有独立的情感配置。'),
+                }
+            },
+            {
+                // element 复用容器（始终可见），避免 driver 因 .singleselect-options
+                // display:none 时 rect 为零、轮询等待 5s 超时跳过本步。
+                element: '#model-singleselect',
+                _isEmotionPicker: true,
+                popover: {
+                    title: this.t('tutorial.emotion_manager.step_pick.title', '👇 选择一个模型'),
+                    description: this.t('tutorial.emotion_manager.step_pick.desc', '从下拉列表中点击选择一个模型。选好模型后才能进入下一步。'),
+                },
+                onHighlighted: function () {
+                    const singleselect = document.querySelector('#model-singleselect');
+                    if (!singleselect) return;
+                    const header = singleselect.querySelector('.singleselect-header');
+                    const options = singleselect.querySelector('.singleselect-options');
+
+                    // 把列表面板从 absolute 改为 static，撑开容器 rect，
+                    // 这样 driver 基于 getBoundingClientRect 计算的高亮框会自动包住列表，
+                    // 且高度会随实际列表项数量自适应（max-height: 250px 内由内容决定）。
+                    if (options && options.dataset.tutorialFloated !== '1') {
+                        options.dataset.tutorialFloated = '1';
+                        options.dataset.tutorialPosOrig = options.style.position || '';
+                        options.dataset.tutorialTopOrig = options.style.top || '';
+                        options.dataset.tutorialLeftOrig = options.style.left || '';
+                        options.dataset.tutorialBottomOrig = options.style.bottom || '';
+                        options.dataset.tutorialMtOrig = options.style.marginTop || '';
+                        options.style.setProperty('position', 'static', 'important');
+                        options.style.setProperty('top', 'auto', 'important');
+                        options.style.setProperty('left', 'auto', 'important');
+                        options.style.setProperty('bottom', 'auto', 'important');
+                        options.style.setProperty('margin-top', '8px', 'important');
+                    }
+
+                    const ensureOpen = () => {
+                        if (!singleselect.classList.contains('active')) {
+                            singleselect.classList.add('active');
+                            if (header) header.setAttribute('aria-expanded', 'true');
+                        }
+                    };
+                    ensureOpen();
+
+                    // 用户点选项后下拉会被关闭：已选模型则跳到下一步；未选则重新展开（保持框住列表）。
+                    if (!singleselect._tutorialPickerObserver) {
+                        const observer = new MutationObserver(() => {
+                            const stepIdx = (this.driver && typeof this.driver.currentStep === 'number')
+                                ? this.driver.currentStep : -1;
+                            const steps = this.cachedValidSteps || this.getStepsForPage();
+                            const cur = steps[stepIdx];
+                            if (!cur || !cur._isEmotionPicker) return;
+                            if (singleselect.classList.contains('active')) return;
+
+                            if (this.hasEmotionManagerModelSelected()) {
+                                const nextIdx = steps.findIndex(s => s.element === '#emotion-config');
+                                if (nextIdx >= 0 && this.driver && typeof this.driver.showStep === 'function') {
+                                    // 把 timer 加入 _refreshTimers，教程销毁/重启时一并清理，
+                                    // 避免回调跑到已销毁的 driver 上（race）；
+                                    // 同时检查 window.isInTutorial，防止 200ms 内用户 Skip/Done 后还跳步
+                                    const advanceTimer = setTimeout(() => {
+                                        if (!window.isInTutorial) return;
+                                        if (!this.driver || typeof this.driver.showStep !== 'function') return;
+                                        const curIdx = typeof this.driver.currentStep === 'number'
+                                            ? this.driver.currentStep : -1;
+                                        if (curIdx === stepIdx) {
+                                            this.driver.showStep(nextIdx);
+                                        }
+                                    }, 200);
+                                    if (this._refreshTimers) this._refreshTimers.push(advanceTimer);
+                                }
+                            } else {
+                                ensureOpen();
+                                if (this.driver && typeof this.driver.refresh === 'function') {
+                                    this.driver.refresh();
+                                }
+                            }
+                        });
+                        observer.observe(singleselect, { attributes: true, attributeFilter: ['class'] });
+                        singleselect._tutorialPickerObserver = observer;
+                    }
+
+                    // 多次 refresh 让高亮框跟上 options 撑开后的容器尺寸
+                    [60, 200, 450].forEach(delay => {
+                        const t = setTimeout(() => {
+                            if (this.driver && typeof this.driver.refresh === 'function') {
+                                this.driver.refresh();
+                            }
+                        }, delay);
+                        if (this._refreshTimers) this._refreshTimers.push(t);
+                    });
                 }
             },
             {
@@ -2559,7 +2648,10 @@ class UniversalTutorialManager {
                     description: this.t('tutorial.emotion_manager.step2.desc', '这里可以为不同的情感（如开心、悲伤、生气等）配置对应的表情和动作组合。猫娘会根据对话内容自动切换情感表现。'),
                 },
                 // 避免在引导开始时强制显示（应在选择模型后显示）
-                skipAutoShow: true
+                skipAutoShow: true,
+                // 情感配置内容异步加载（拉取表情列表 + 渲染下拉），布局会持续重排，
+                // 使用 DYNAMIC_REFRESH_DELAYS 多次刷新让高亮框跟随尺寸变化
+                skipInitialCheck: true
             },
             {
                 element: '#reset-btn',
@@ -2567,7 +2659,9 @@ class UniversalTutorialManager {
                     title: this.t('tutorial.emotion_manager.step3.title', '🔄 重置配置'),
                     description: this.t('tutorial.emotion_manager.step3.desc', '点击这个按钮可以将情感配置重置为默认值。'),
                 },
-                skipAutoShow: true
+                skipAutoShow: true,
+                // 按钮位置受 #emotion-config 内动态内容影响，需多次刷新跟上重排
+                skipInitialCheck: true
             }
         ];
     }
@@ -2754,6 +2848,43 @@ class UniversalTutorialManager {
             return !!live2dManager.getCurrentModel();
         }
         return false;
+    }
+
+    /**
+     * 收起情感配置页面挑选模型步骤所占用的下拉框，恢复 options 原定位与 active 类。
+     * 在离开 picker 步骤、教程结束时调用，确保不残留展开态/static 定位。
+     */
+    _restoreEmotionPickerDropdown() {
+        const singleselect = document.querySelector('#model-singleselect');
+        if (!singleselect) return;
+
+        if (singleselect._tutorialPickerObserver) {
+            singleselect._tutorialPickerObserver.disconnect();
+            singleselect._tutorialPickerObserver = null;
+        }
+
+        const options = singleselect.querySelector('.singleselect-options');
+        if (options && options.dataset.tutorialFloated === '1') {
+            const restore = (prop, dataKey) => {
+                const orig = options.dataset[dataKey] || '';
+                if (orig) {
+                    options.style.setProperty(prop, orig);
+                } else {
+                    options.style.removeProperty(prop);
+                }
+                delete options.dataset[dataKey];
+            };
+            restore('position', 'tutorialPosOrig');
+            restore('top', 'tutorialTopOrig');
+            restore('left', 'tutorialLeftOrig');
+            restore('bottom', 'tutorialBottomOrig');
+            restore('margin-top', 'tutorialMtOrig');
+            delete options.dataset.tutorialFloated;
+        }
+
+        singleselect.classList.remove('active', 'open-up', 'open-down');
+        const header = singleselect.querySelector('.singleselect-header');
+        if (header) header.setAttribute('aria-expanded', 'false');
     }
 
     /**
@@ -4285,9 +4416,9 @@ class UniversalTutorialManager {
                 await this.applyTutorialInteractionState(currentStepConfig, 'step-change');
 
 
-                // 情感配置页面：未选择模型时禁止进入下一步
+                // 情感配置页面：在"选择模型"挑选步骤上未选模型时禁止进入下一步
                 if (this.currentPage === 'emotion_manager' &&
-                    currentStepConfig.element === '#model-singleselect') {
+                    currentStepConfig._isEmotionPicker) {
                     const updateNextState = () => {
                         const hasModel = this.hasEmotionManagerModelSelected();
                         const hasSelectableModels = this.hasEmotionManagerSelectableModels();
@@ -4307,6 +4438,14 @@ class UniversalTutorialManager {
                     this.nextButtonGuardTimer = setInterval(updateNextState, 300);
                 }
 
+                // 离开"选择模型"挑选步骤时收起下拉框 + 恢复 options 原定位
+                if (this.currentPage === 'emotion_manager' &&
+                    previousStepConfig &&
+                    previousStepConfig._isEmotionPicker &&
+                    !currentStepConfig._isEmotionPicker) {
+                    this._restoreEmotionPickerDropdown();
+                }
+
                 // 情感配置前必须先选择/加载 Live2D 模型，避免进入后出错
                 if (this.currentPage === 'model_manager' &&
                     currentStepConfig.element === '#emotion-config-btn' &&
@@ -4323,10 +4462,12 @@ class UniversalTutorialManager {
                 if (this.currentPage === 'emotion_manager' &&
                     currentStepConfig.element === '#emotion-config' &&
                     !this.hasEmotionManagerModelSelected()) {
-                    console.warn('[Tutorial] 情感配置页面未选择模型，跳转回选择模型步骤');
-                    const targetIndex = steps.findIndex(step => step.element === '#model-singleselect');
-                    if (this.driver && typeof this.driver.showStep === 'function' && targetIndex >= 0) {
-                        this.driver.showStep(targetIndex);
+                    console.warn('[Tutorial] 情感配置页面未选择模型，跳转回挑选模型步骤');
+                    const targetIndex = steps.findIndex(step => step._isEmotionPicker);
+                    const fallbackIndex = steps.findIndex(step => step.element === '#model-singleselect' && !step._isEmotionPicker);
+                    const goto = targetIndex >= 0 ? targetIndex : fallbackIndex;
+                    if (this.driver && typeof this.driver.showStep === 'function' && goto >= 0) {
+                        this.driver.showStep(goto);
                         return;
                     }
                 }
@@ -4558,6 +4699,11 @@ class UniversalTutorialManager {
 
         if (this.currentPage === 'model_manager') {
             this.clearModelManagerTutorialRecheckTimer();
+        }
+
+        // 情感配置页面：教程结束时收起模型下拉框 + 恢复 options 原定位
+        if (this.currentPage === 'emotion_manager') {
+            this._restoreEmotionPickerDropdown();
         }
 
         // 清除全局引导标记

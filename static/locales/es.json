@@ -2842,6 +2842,10 @@
                 "title": "🎭 Seleccionar modelo",
                 "desc": "Primero seleccione el modelo Live2D para configurar las emociones. Cada modelo puede tener configuraciones de emociones independientes."
             },
+            "step_pick": {
+                "title": "👇 Elige un modelo",
+                "desc": "Haz clic en cualquier elemento de la lista desplegable para elegir un modelo. Debes seleccionar uno para continuar."
+            },
             "step2": {
                 "title": "😊 Área de Configuración de Emociones",
                 "desc": "Configure expresiones y combinaciones de movimientos para diferentes emociones. Tu Neko cambiará automáticamente de emoción según la conversación."

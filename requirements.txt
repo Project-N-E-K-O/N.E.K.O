@@ -67,7 +67,9 @@ browser-use-sdk==2.0.15
 bubus==1.5.6
     # via browser-use
 cachetools==6.2.2
-    # via google-auth
+    # via
+    #   google-auth
+    #   n-e-k-o
 cdp-use==1.4.4
     # via browser-use
 certifi==2025.8.3
@@ -264,6 +266,8 @@ openai==2.8.1
     # via
     #   browser-use
     #   n-e-k-o
+orjson==3.11.8
+    # via n-e-k-o
 ormsgpack==1.12.2
     # via n-e-k-o
 packaging==25.0
@@ -1129,7 +1133,9 @@ referencing==0.37.0
     #   jsonschema
     #   jsonschema-specifications
 regex==2026.2.28
-    # via n-e-k-o
+    # via
+    #   n-e-k-o
+    #   tiktoken
 reportlab==4.4.10
     # via browser-use
 requests==2.32.5
@@ -1142,6 +1148,7 @@ requests==2.32.5
     #   n-e-k-o
     #   posthog
     #   requests-oauthlib
+    #   tiktoken
     #   translatepy
 requests-oauthlib==2.0.0
     # via google-auth-oauthlib
@@ -1192,6 +1199,8 @@ starlette==0.46.2
     #   mcp
 tenacity==9.1.2
     # via google-genai
+tiktoken==0.12.0
+    # via n-e-k-o
 toml==0.10.2
     # via n-e-k-o
 tomli==2.4.0
