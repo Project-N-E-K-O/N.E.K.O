@@ -58,6 +58,7 @@ dependencies = [
   # token budgeting (o200k_base encoding). PR-1 pins the dep; PR-3 ships
   # utils/tokenize.py and wires render-time counting.
   "tiktoken>=0.7.0",
+  "cachetools>=5.3",
 ]
 
 [project.optional-dependencies]
