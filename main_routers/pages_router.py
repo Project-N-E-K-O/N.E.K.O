@@ -33,6 +33,12 @@ def _vrm_defaults_ctx() -> dict:
     return {"vrm_defaults": dict(DEFAULT_VRM_LIGHTING)}
 
 
+def _static_assets_ctx() -> dict:
+    """返回模板静态资源统一缓存版本号。"""
+    from config import APP_VERSION
+    return {"static_asset_version": APP_VERSION}
+
+
 def _react_chat_assets_ctx() -> dict:
     """返回 React Chat 相关静态资源的统一缓存版本号。"""
     global _react_chat_asset_version_cache
@@ -59,6 +65,7 @@ async def get_default_index(request: Request):
     return templates.TemplateResponse("templates/index.html", {
         "request": request,
         **_vrm_defaults_ctx(),
+        **_static_assets_ctx(),
         **_react_chat_assets_ctx(),
     })
 
@@ -141,7 +148,8 @@ async def api_key_settings(request: Request):
     """API Key 设置页面"""
     templates = get_templates()
     return templates.TemplateResponse("templates/api_key_settings.html", {
-        "request": request
+        "request": request,
+        **_static_assets_ctx(),
     })
 
 
@@ -168,7 +176,10 @@ async def cloudsave_manager_page(request: Request, lanlan_name: str = ""):
 @router.get('/memory_browser', response_class=HTMLResponse)
 async def memory_browser(request: Request):
     templates = get_templates()
-    return templates.TemplateResponse('templates/memory_browser.html', {"request": request})
+    return templates.TemplateResponse('templates/memory_browser.html', {
+        "request": request,
+        **_static_assets_ctx(),
+    })
 
 
 @router.get('/cookies_login', response_class=HTMLResponse)
@@ -186,6 +197,7 @@ async def get_chat_page(request: Request):
     return templates.TemplateResponse("templates/chat.html", {
         "request": request,
         **_vrm_defaults_ctx(),
+        **_static_assets_ctx(),
         **_react_chat_assets_ctx(),
     })
 
@@ -243,5 +255,6 @@ async def get_index(request: Request, lanlan_name: str):
     return templates.TemplateResponse("templates/index.html", {
         "request": request,
         **_vrm_defaults_ctx(),
+        **_static_assets_ctx(),
         **_react_chat_assets_ctx(),
     })

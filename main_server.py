@@ -638,6 +638,67 @@ async def _handle_agent_event(event: dict):
             return
         if event_type in ("task_result", "proactive_message"):
             text = (event.get("text") or "").strip()
+
+            # v2 push_message: media parts (image/audio/video) ride on the
+            # same proactive_message event.  Image parts go straight to the
+            # realtime session via ``stream_image`` (the public vision-input
+            # API on OmniRealtimeClient/OmniOfflineClient) before the (text
+            # → callback) path so the AI sees them in the same context
+            # window as the text it's about to respond to.
+            #
+            # Audio / video aren't supported here — ``stream_audio`` is the
+            # live-mic PCM pipeline (specific sample rate + RNNoise gate),
+            # not a generic file injector, and we have no video API.
+            # ai_behavior=blind suppresses injection entirely.
+            media_parts = event.get("media_parts") if isinstance(event.get("media_parts"), list) else []
+            ai_behavior_v2 = event.get("ai_behavior")
+            if media_parts and ai_behavior_v2 in ("respond", "read"):
+                sess = getattr(mgr, "session", None)
+                stream_image = getattr(sess, "stream_image", None) if sess else None
+                for mp in media_parts:
+                    if not isinstance(mp, dict):
+                        continue
+                    part_type = mp.get("type")
+                    b64 = mp.get("binary_base64")
+                    url = mp.get("url")
+                    mime = mp.get("mime") or ""
+                    if part_type != "image":
+                        # ``audio`` / ``video`` need provider-specific transport
+                        # we don't have today; drop with a one-line warning so
+                        # plugin authors notice instead of silently losing
+                        # frames.
+                        logger.warning(
+                            "[EventBus] media_part type=%s not yet supported (mime=%s); dropped",
+                            part_type, mime,
+                        )
+                        continue
+                    if stream_image is None:
+                        logger.debug(
+                            "[EventBus] image media_part dropped: session=%s has no stream_image",
+                            type(sess).__name__ if sess else "None",
+                        )
+                        continue
+                    if isinstance(b64, str) and b64:
+                        # ``stream_image`` takes a base64 STRING (not bytes); pass through
+                        try:
+                            await stream_image(b64)
+                            logger.debug(
+                                "[EventBus] image media_part injected (base64 len=%d, mime=%s)",
+                                len(b64), mime,
+                            )
+                        except Exception as e:
+                            logger.warning("[EventBus] image media_part stream_image failed: %s", e)
+                    elif isinstance(url, str) and url:
+                        # TODO(v0.9): fetch URL → bytes → base64 → stream_image.
+                        # Until then plugin authors should inline-encode small
+                        # images (≤256KB) or pre-fetch URL-served frames into
+                        # ``parts`` themselves.
+                        logger.warning(
+                            "[EventBus] image media_part url=%s not yet fetched; dropped",
+                            url[:80],
+                        )
+                    # else: malformed part, silently skip
+
             if text:
                 if event.get("direct_reply"):
                     detail_text = (event.get("detail") or text).strip()

@@ -35,6 +35,9 @@ from plugin.server.infrastructure.runtime_overrides import (
     set_runtime_override,
 )
 from plugin.server.messaging.lifecycle_events import emit_lifecycle_event
+from plugin.server.messaging.llm_tool_registry import (
+    clear_plugin_tools as clear_plugin_llm_tools,
+)
 from plugin.settings import PLUGIN_CONFIG_ROOTS, PLUGIN_SHUTDOWN_TIMEOUT
 from plugin.utils import parse_bool_config
 
@@ -758,6 +761,23 @@ class PluginLifecycleService:
             await host_obj.shutdown(timeout=PLUGIN_SHUTDOWN_TIMEOUT)
             await asyncio.to_thread(_pop_plugin_host_sync, plugin_id)
             await asyncio.to_thread(_remove_event_handlers_sync, plugin_id)
+            # Clear any LLM tools the plugin had registered with
+            # ``main_server``. Best-effort: a transient HTTP failure
+            # here shouldn't block the rest of plugin teardown — the
+            # registration helper logs the error itself. Without this
+            # call, a stopped plugin's tools would linger in
+            # main_server's registry until process restart, and the
+            # model could still pick them only to hit a 404 on
+            # dispatch.
+            try:
+                await clear_plugin_llm_tools(plugin_id)
+            except Exception as exc:
+                logger.debug(
+                    "clear_plugin_llm_tools failed (best-effort): plugin_id={}, err_type={}, err={}",
+                    plugin_id,
+                    type(exc).__name__,
+                    str(exc),
+                )
             _emit_lifecycle_event(event_type="plugin_stopped", plugin_id=plugin_id)
             return {
                 "success": True,

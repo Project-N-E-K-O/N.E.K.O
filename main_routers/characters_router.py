@@ -938,12 +938,21 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
             )
             live2d_model_name = DEFAULT_LIVE2D_MODEL_NAME
             try:
-                # 先从完整的模型列表中查找默认模型
+                # 先从完整的模型列表中查找内置/static 默认模型，避免误匹配用户/工坊同名模型
                 all_models = find_models()
                 matching_model = next(
-                    (m for m in all_models if m['name'] == DEFAULT_LIVE2D_MODEL_NAME),
+                    (
+                        m for m in all_models
+                        if m.get('name') == DEFAULT_LIVE2D_MODEL_NAME
+                        and m.get('source') in ('static', 'builtin')
+                    ),
                     None,
                 )
+                if matching_model is None:
+                    matching_model = next(
+                        (m for m in all_models if m.get('name') == DEFAULT_LIVE2D_MODEL_NAME),
+                        None,
+                    )
 
                 if matching_model:
                     model_info = matching_model.copy()

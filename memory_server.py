@@ -331,6 +331,13 @@ _settle_locks: dict[str, asyncio.Lock] = {}
 # 强引用注册表：防止 fire-and-forget task 被 GC
 _BACKGROUND_TASKS: set[asyncio.Task] = set()
 
+# /new_dialog QPS 观测：每角色累计调用次数，由 _periodic_new_dialog_qps_log_loop
+# 每 NEW_DIALOG_QPS_FLUSH_INTERVAL 秒打一行 INFO 日志后清零。用于 A 之后观测
+# proactive_chat 路径是否成为 memory_server 真正的负载来源；如不是，则不必再
+# 上 main_server 端缓存（C+ 方案）。
+_new_dialog_qps_counter: dict[str, int] = {}
+NEW_DIALOG_QPS_FLUSH_INTERVAL = 60
+
 # ── 空闲维护相关 ────────────────────────────────────────────────────
 _last_activity_time: datetime = datetime.now()            # 最后一次对话活动时间
 IDLE_CHECK_INTERVAL = 40             # 空闲检查轮询间隔（秒）
@@ -1182,6 +1189,22 @@ async def _periodic_idle_maintenance_loop():
             await asyncio.sleep(IDLE_CHECK_INTERVAL)
 
 
+async def _periodic_new_dialog_qps_log_loop():
+    """每 NEW_DIALOG_QPS_FLUSH_INTERVAL 秒输出一次 /new_dialog 调用计数并清零。
+
+    无流量时也打 total=0 心跳——避免静默时无法区分'真零流量'与'loop 已挂'。
+    """
+    while True:
+        await asyncio.sleep(NEW_DIALOG_QPS_FLUSH_INTERVAL)
+        snapshot = dict(_new_dialog_qps_counter)
+        _new_dialog_qps_counter.clear()
+        total = sum(snapshot.values())
+        logger.info(
+            f"[QPS] /new_dialog last {NEW_DIALOG_QPS_FLUSH_INTERVAL}s: "
+            f"total={total} per_char={snapshot}"
+        )
+
+
 # memory-evidence-rfc §3.3.6 Reconciler handlers live in
 # memory/evidence_handlers.py — imported at module top as
 # `_register_evidence_handlers`. Keeping the handlers in their own module
@@ -1993,6 +2016,7 @@ async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
             if EVIDENCE_SIGNAL_CHECK_ENABLED:
                 _spawn_background_task(_periodic_signal_extraction_loop())
             _spawn_background_task(_periodic_archive_sweep_loop())
+            _spawn_background_task(_periodic_new_dialog_qps_log_loop())
             _memory_background_tasks_started = True
 
         # memory-enhancements P2: vector embedding warmup + backfill worker.
@@ -2897,7 +2921,6 @@ async def cancel_correction(lanlan_name: str):
 async def new_dialog(lanlan_name: str):
     lanlan_name = validate_lanlan_name(lanlan_name)
     _touch_activity()
-    global correction_tasks, correction_cancel_flags
 
     # 检查角色是否存在于配置中
     try:
@@ -2910,23 +2933,16 @@ async def new_dialog(lanlan_name: str):
         logger.error(f"检查角色配置失败: {e}")
         return PlainTextResponse("")
 
-    # 等待 /renew 或 /settle 的首轮摘要完成，确保读到最新数据
+    # 仅对合法角色计数：QPS 观测的目的是评估 C+ 缓存决策，无效请求不构成
+    # cacheable 机会，记进来反而污染 per_char 分布。
+    _new_dialog_qps_counter[lanlan_name] = _new_dialog_qps_counter.get(lanlan_name, 0) + 1
+
+    # settle_lock 保留：等 /renew /settle 的首轮摘要完成，读到一致数据。
+    # review 不持此锁，且写盘是「整体引用替换 + fingerprint patch」原子操作，
+    # 与本路径读取无 race；Phase C 已让 review 设计成可与 /process 并行的后台
+    # 任务，/new_dialog 不再 cancel 在跑的 review（之前的 cancel 是 Phase A
+    # 遗留物，会让 review 在活跃会话里几乎永不完成）。
     async with _get_settle_lock(lanlan_name):
-        # 中断正在进行的correction任务
-        if lanlan_name in correction_tasks and not correction_tasks[lanlan_name].done():
-            logger.info(f"🛑 收到new_dialog请求，中断 {lanlan_name} 的correction任务")
-
-            if lanlan_name in correction_cancel_flags:
-                correction_cancel_flags[lanlan_name].set()
-
-            correction_tasks[lanlan_name].cancel()
-            try:
-                await correction_tasks[lanlan_name]
-            except asyncio.CancelledError:
-                logger.info(f"✅ {lanlan_name} 的correction任务已成功中断")
-            except Exception as e:
-                logger.warning(f"⚠️ 中断 {lanlan_name} 的correction任务时出现异常: {e}")
-
         # 正则表达式：删除所有类型括号及其内容（包括[]、()、{}、<>、【】、（）等）
         brackets_pattern = re.compile(r'(\[.*?\]|\(.*?\)|（.*?）|【.*?】|\{.*?\}|<.*?>)')
         master_name, _, _, _, name_mapping, _, _, _, _ = await _config_manager.aget_character_data()

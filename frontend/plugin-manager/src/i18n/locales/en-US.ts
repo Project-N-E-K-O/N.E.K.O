@@ -1,8 +1,6 @@
 /**
  * English language pack
  */
-import { yuiGuideLocales } from './yuiGuide'
-
 export default {
   common: {
     loading: 'Loading...',
@@ -422,7 +420,29 @@ export default {
     titleSuffix: 'N.E.K.O Plugin Manager'
   },
   tutorial: {
-    yuiGuide: yuiGuideLocales['en-US']
+    yuiGuide: {
+      buttons: {
+        skipChat: 'Not now',
+        sayHello: 'Hello',
+      },
+      lines: {
+        introActivationHint: 'Click here so I can start talking, nyan~!',
+        introGreetingReply: "Welcome home, meow~ The outside world can be so exhausting, right? In this little nest just for us, you can let go of all your worries. I'm Lin Youyi. Please leave the rest of the introduction to me—I'll hold your hand and guide you through it step by step.",
+        introBasic: "Look, a magical button! Just click it and you can chat directly with me! Want to share today's fun news with me? Or maybe just call my name? Come try it out, I can't wait to hear your voice! Meow!",
+        takeoverCaptureCursor: "Super magic button appears! Just click here and I can stretch my little paws over to your keyboard and mouse! I'll help you type, help you open web pages... But, if that mouse pointer keeps moving around, I might not be able to resist pouncing on it! Are you ready for my troublemaking... I mean, my help? Meow!",
+        takeoverPluginPreviewHome: 'Not done yet! Look, look! There are so~~ many fun plugins here!',
+        takeoverPluginPreviewDashboard: 'With these, I can not only read Bilibili comments, but also turn off lights and AC for you... I am the all-powerful Super Cat God! Hmph~',
+        takeoverSettingsPeekIntro: "Of course, I wouldn't mind chatting more if you want, but you'd better prepare lots of treats! Hehe, just kidding! All the settings are in this gear icon.",
+        takeoverSettingsPeekDetail: "Look, you can change my outfit, or my voice... wait, CHANGE TO ANOTHER CATGIRL?! OR ERASE MEMORIES?! Wait, what are you doing?! You're not trying to replace me, are you?! No no no! Close it! Close it right now!",
+        takeoverSettingsPeekDetailPart1: 'Look, you can change my outfit, or my voice... wait, CHANGE TO ANOTHER CATGIRL?! OR ERASE MEMORIES?!',
+        takeoverSettingsPeekDetailPart2: "Wait, what are you doing?! You're not trying to replace me, are you?! No no no! Close it! Close it right now!",
+        takeoverReturnControl: "Alright, alright, I'm done hijacking your PC~! Giving control back to you! But don't you dare touch any weird settings while I'm not looking! I'm counting on you from now on, nyan~!",
+        interruptResistLight1: "Hey! Don't drag me around! It's not your turn yet, nyan!",
+        interruptResistLight3: "Wait a sec! I'm not finished yet, don't just interrupt me like that!",
+        interruptAngryExit: "Humannnn~~~~! You're so rude, nyan! Since you want to do everything yourself, go play with that cold screen alone! Hmph!",
+        introPractice: "Now, try talking to me and see if we're perfectly in sync, nyan~!",
+      },
+    }
   },
   yuiTutorial: {
     title: 'Meow~ Welcome to the Plugin Manager!',
@@ -474,7 +494,7 @@ export default {
       },
       packageOperations: {
         title: 'Package Operations',
-        body: 'Choose pack modes, inspect packages, unpack, or analyze bundles here. The tutorial will not run dangerous actions.'
+        body: 'Choose packaging modes, inspect packages, unpack, or analyze bundles here. The guide will not run dangerous actions.'
       },
       pluginDetail: {
         title: 'Plugin Details',

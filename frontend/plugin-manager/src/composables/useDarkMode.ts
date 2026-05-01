@@ -1,53 +1,131 @@
-/**
- * 深色模式切换 Composable
- */
 import { ref, onMounted } from 'vue'
 
 const DARK_MODE_KEY = 'neko-dark-mode'
 const isDark = ref(false)
+let listenersRegistered = false
+let darkModeInitEpoch = 0
 
-/**
- * 应用深色模式
- */
-function applyDarkMode(dark: boolean) {
+type NekoDarkModeBridge = {
+  get?: () => boolean | Promise<boolean>
+  set?: (dark: boolean) => void | Promise<void>
+}
+
+function getNekoDarkModeBridge() {
+  return (window as unknown as { nekoDarkMode?: NekoDarkModeBridge }).nekoDarkMode
+}
+
+function readStoredDarkMode() {
+  try {
+    const saved = localStorage.getItem(DARK_MODE_KEY)
+    return saved === null ? null : saved === 'true'
+  } catch {
+    return null
+  }
+}
+
+function writeStoredDarkMode(dark: boolean) {
+  try {
+    localStorage.setItem(DARK_MODE_KEY, dark ? 'true' : 'false')
+  } catch (_) {}
+}
+
+function applyDarkMode(dark: boolean | null | undefined, options: { persist?: boolean } = {}) {
+  const resolvedDark = typeof dark === 'boolean' ? dark : getSystemPrefersDark()
   const html = document.documentElement
-  if (dark) {
+  if (resolvedDark) {
     html.classList.add('dark')
+    html.setAttribute('data-theme', 'dark')
   } else {
     html.classList.remove('dark')
+    html.removeAttribute('data-theme')
   }
-  isDark.value = dark
-  localStorage.setItem(DARK_MODE_KEY, dark ? 'true' : 'false')
+  isDark.value = resolvedDark
+  if (options.persist !== false) {
+    writeStoredDarkMode(resolvedDark)
+  }
 }
 
-/**
- * 初始化深色模式
- * 导出以便在应用启动时调用（在 main.ts 中）
- */
+function getSystemPrefersDark() {
+  try {
+    return window.matchMedia('(prefers-color-scheme: dark)').matches
+  } catch {
+    return false
+  }
+}
+
+function setupThemeSyncListeners() {
+  if (listenersRegistered) {
+    return
+  }
+  listenersRegistered = true
+
+  window.addEventListener('storage', (event) => {
+    if (event.key !== DARK_MODE_KEY) {
+      return
+    }
+    if (event.newValue === null) {
+      applyDarkMode(null, { persist: false })
+      return
+    }
+    applyDarkMode(event.newValue === 'true', { persist: false })
+  })
+
+  window.addEventListener('neko-theme-changed', (event: Event) => {
+    const detail = (event as CustomEvent<{ darkMode?: boolean }>).detail
+    if (detail && typeof detail.darkMode === 'boolean') {
+      applyDarkMode(detail.darkMode, { persist: false })
+    }
+  })
+
+  try {
+    const media = window.matchMedia('(prefers-color-scheme: dark)')
+    media.addEventListener('change', (event) => {
+      if (readStoredDarkMode() === null) {
+        applyDarkMode(event.matches, { persist: false })
+      }
+    })
+  } catch (_) {}
+}
+
 export function initDarkMode() {
-  const saved = localStorage.getItem(DARK_MODE_KEY)
-  if (saved !== null) {
-    const dark = saved === 'true'
-    applyDarkMode(dark)
-  } else {
-    // 如果没有保存的设置，检查系统偏好
-    const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches
-    applyDarkMode(prefersDark)
+  setupThemeSyncListeners()
+
+  const saved = readStoredDarkMode()
+  applyDarkMode(saved !== null ? saved : getSystemPrefersDark(), { persist: saved !== null })
+
+  const bridge = getNekoDarkModeBridge()
+  if (bridge && typeof bridge.get === 'function') {
+    try {
+      const initEpoch = ++darkModeInitEpoch
+      Promise.resolve(bridge.get())
+        .then((dark) => {
+          if (initEpoch === darkModeInitEpoch && typeof dark === 'boolean') {
+            applyDarkMode(dark, { persist: false })
+          }
+        })
+        .catch(() => {})
+    } catch (_) {}
   }
 }
 
-/**
- * 切换深色模式
- */
 function toggleDarkMode() {
-  applyDarkMode(!isDark.value)
+  darkModeInitEpoch += 1
+  const next = !isDark.value
+  applyDarkMode(next)
+
+  const bridge = getNekoDarkModeBridge()
+  if (bridge && typeof bridge.set === 'function') {
+    try {
+      Promise.resolve(bridge.set(next)).catch(() => {})
+    } catch (_) {}
+  }
+
+  window.dispatchEvent(new CustomEvent('neko-theme-changed', {
+    detail: { darkMode: next },
+  }))
 }
 
-/**
- * 使用深色模式的 Composable
- */
 export function useDarkMode() {
-  // 在组件挂载时同步状态（作为备用，主要初始化在模块加载时完成）
   onMounted(() => {
     const html = document.documentElement
     isDark.value = html.classList.contains('dark')
@@ -55,10 +133,6 @@ export function useDarkMode() {
 
   return {
     isDark,
-    toggleDarkMode
+    toggleDarkMode,
   }
 }
-
-// 注意：initDarkMode 现在在 main.ts 中被调用（在应用挂载前）
-// 这样可以避免页面闪烁，并确保状态在应用启动时就正确初始化
-

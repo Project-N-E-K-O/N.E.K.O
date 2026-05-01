@@ -264,7 +264,7 @@ async def get_page_config(response: Response, lanlan_name: str = ""):
             logger.warning(f"角色 {target_name} 的Live3D模型路径均为空")
         else:
             # Live2D模型：使用原有逻辑
-            live2d = get_reserved(catgirl_config, 'avatar', 'live2d', 'model_path', default='mao_pro', legacy_keys=('live2d',))
+            live2d = get_reserved(catgirl_config, 'avatar', 'live2d', 'model_path', default='yui-origin/yui-origin.model3.json', legacy_keys=('live2d',))
             live2d_item_id = get_reserved(
                 catgirl_config,
                 'avatar',

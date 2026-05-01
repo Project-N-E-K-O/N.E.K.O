@@ -17,6 +17,9 @@
     // 多窗口模式：由 IPC 从 Pet 窗口注入的头像（/chat 页面无本地模型）
     let externalAvatarDataUrl = '';
     let externalAvatarModelType = '';
+    // 新手教程期间的临时头像覆盖：只驻留内存，不写入用户角色头像缓存。
+    let tutorialAvatarOverrideDataUrl = '';
+    let tutorialAvatarOverrideModelType = '';
 
     const STORAGE_PREFIX = 'neko_avatar:';
 
@@ -1126,6 +1129,7 @@
     };
 
     mod.getCurrentAvatarDataUrl = function getCurrentAvatarDataUrl() {
+        if (tutorialAvatarOverrideDataUrl) return tutorialAvatarOverrideDataUrl;
         if (hasUsableCachedPreview()) return cachedPreview.dataUrl || '';
         // 内存缓存被 invalidate（模型加载中）或 cacheKey 暂不匹配时，仍返回旧头像
         if (cachedPreview && cachedPreview.dataUrl) return cachedPreview.dataUrl;
@@ -1135,6 +1139,41 @@
         // 多窗口 fallback：使用 IPC 注入的头像
         if (externalAvatarDataUrl) return externalAvatarDataUrl;
         return '';
+    };
+
+    mod.getCurrentAvatarModelType = function getCurrentAvatarModelType() {
+        if (tutorialAvatarOverrideDataUrl) return tutorialAvatarOverrideModelType || getCurrentModelType();
+        if (hasUsableCachedPreview()) return cachedPreview.modelType || getCurrentModelType();
+        if (cachedPreview && cachedPreview.dataUrl) return cachedPreview.modelType || getCurrentModelType();
+        var stored = loadFromStorage();
+        if (stored && stored.dataUrl) return stored.modelType || getCurrentModelType();
+        if (externalAvatarDataUrl) return externalAvatarModelType || getCurrentModelType();
+        return getCurrentModelType();
+    };
+
+    mod.setTutorialAvatarOverride = function setTutorialAvatarOverride(dataUrl, modelType) {
+        tutorialAvatarOverrideDataUrl = dataUrl || '';
+        tutorialAvatarOverrideModelType = modelType || '';
+        window.dispatchEvent(new CustomEvent('chat-avatar-preview-updated', {
+            detail: {
+                dataUrl: tutorialAvatarOverrideDataUrl,
+                modelType: tutorialAvatarOverrideModelType,
+                source: 'tutorial_override'
+            }
+        }));
+    };
+
+    mod.clearTutorialAvatarOverride = function clearTutorialAvatarOverride() {
+        if (!tutorialAvatarOverrideDataUrl && !tutorialAvatarOverrideModelType) return;
+        tutorialAvatarOverrideDataUrl = '';
+        tutorialAvatarOverrideModelType = '';
+        window.dispatchEvent(new CustomEvent('chat-avatar-preview-updated', {
+            detail: {
+                dataUrl: mod.getCurrentAvatarDataUrl(),
+                modelType: mod.getCurrentAvatarModelType(),
+                source: 'tutorial_override_clear'
+            }
+        }));
     };
 
     /**
@@ -1183,5 +1222,16 @@
     if (window.__nekoPendingAvatar) {
         mod.setExternalAvatar(window.__nekoPendingAvatar.dataUrl, window.__nekoPendingAvatar.modelType);
         delete window.__nekoPendingAvatar;
+    }
+    if (window.__nekoPendingTutorialChatIdentity) {
+        if (window.__nekoPendingTutorialChatIdentity.active) {
+            mod.setTutorialAvatarOverride(
+                window.__nekoPendingTutorialChatIdentity.avatarDataUrl,
+                window.__nekoPendingTutorialChatIdentity.modelType
+            );
+        } else {
+            mod.clearTutorialAvatarOverride();
+        }
+        delete window.__nekoPendingTutorialChatIdentity;
     }
 })();

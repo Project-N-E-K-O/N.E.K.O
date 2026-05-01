@@ -382,6 +382,16 @@
             return;
         }
 
+        // mute 状态下 audio 在 worklet onmessage 处被丢弃，根本没送到后端，
+        // 此时 analyser 仍连在增益链上能听到本地噪声（键盘/风扇/呼吸）。
+        // 把这部分 RMS 当 0：不读、不写 userRecentSpeechTime，避免 proactive
+        // guard 把"本地噪声"误判成"用户在说话"导致语音模式 nudge 被静默
+        // skip 卡死 (`_isUserRecentlySpeaking()` 8s 窗口拖尾)。
+        if (S.isMicMuted) {
+            requestAnimationFrame(monitorInputVolume);
+            return;
+        }
+
         const dataArray = new Uint8Array(S.inputAnalyser.fftSize);
         S.inputAnalyser.getByteTimeDomainData(dataArray);
 
@@ -968,6 +978,11 @@
         S.isMicMuted = !S.isMicMuted;
         if (S.isMicMuted) {
             stopSilenceDetection();
+            // 立刻清掉"用户最近在说话"的时间戳。否则 mute 前最后一帧
+            // RMS 写入的 userRecentSpeechTime 会在 8s 内继续让
+            // _isUserRecentlySpeaking() 返回 true，proactive nudge
+            // 在窗口期内仍会被 skip。
+            S.userRecentSpeechTime = 0;
         } else if (S.isRecording) {
             startSilenceDetection();
         }
@@ -987,6 +1002,8 @@
         S.isMicMuted = muted;
         if (S.isMicMuted) {
             stopSilenceDetection();
+            // 与 toggleMicMute 对齐：进入 muted 时清掉时间戳，避免拖尾。
+            S.userRecentSpeechTime = 0;
         } else if (S.isRecording) {
             startSilenceDetection();
         }

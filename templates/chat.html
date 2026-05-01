@@ -9,15 +9,15 @@
     <!-- VRM 光照默认值：从后端注入，保证在所有 JS 之前同步可用 -->
     <script>window.VRM_DEFAULT_LIGHTING=Object.freeze({{ vrm_defaults | tojson }});</script>
     <!-- 与 index.html 相同的基础 CSS/JS -->
-    <script src="/static/i18n-i18next.js"></script>
-    <script src="/static/common_dialogs.js"></script>
-    <link rel="stylesheet" href="/static/css/index.css">
-    <link rel="stylesheet" href="/static/css/subtitle.css">
-    <link rel="stylesheet" href="/static/css/dark-mode.css">
-    <link rel="stylesheet" href="/static/react/neko-chat/neko-chat-window.css?v={{ react_chat_asset_version }}">
-    <script src="/static/theme-manager.js"></script>
-    <link rel="stylesheet" href="/static/libs/APlayer.min.css">
-    <script src="/static/libs/APlayer.min.js"></script>
+    <script src="/static/i18n-i18next.js?v={{ static_asset_version }}"></script>
+    <script src="/static/common_dialogs.js?v={{ static_asset_version }}"></script>
+    <link rel="stylesheet" href="/static/css/index.css?v={{ static_asset_version }}">
+    <link rel="stylesheet" href="/static/css/subtitle.css?v={{ static_asset_version }}">
+    <link rel="stylesheet" href="/static/css/dark-mode.css?v={{ static_asset_version }}">
+    <link rel="stylesheet" href="/static/react/neko-chat/neko-chat-window.css?v={{ static_asset_version }}">
+    <script src="/static/theme-manager.js?v={{ static_asset_version }}"></script>
+    <link rel="stylesheet" href="/static/libs/APlayer.min.css?v={{ static_asset_version }}">
+    <script src="/static/libs/APlayer.min.js?v={{ static_asset_version }}"></script>
 
     <style>
         html, body {
@@ -35,7 +35,7 @@
         #react-chat-window-backdrop { display: none !important; }
         #react-chat-window-shell:not(.is-minimized):not(.is-collapsing):not(.is-expanding) {
             position: fixed !important;
-            inset: 20px !important;
+            inset: 40px 25px 25px 20px !important;
             width: auto !important; height: auto !important;
             max-width: none !important; max-height: none !important;
             transform: none !important;
@@ -73,6 +73,200 @@
         #reactChatWindowCloseButton {
             position: relative !important;
             top: -2px !important;
+        }
+        body.yui-guide-chat-buttons-disabled #react-chat-window-shell button,
+        body.yui-guide-chat-buttons-disabled #toggle-chat-btn {
+            pointer-events: none !important;
+        }
+        body.yui-guide-chat-buttons-disabled #react-chat-window-shell .composer-panel,
+        body.yui-guide-chat-buttons-disabled #react-chat-window-shell .composer-input-shell,
+        body.yui-guide-chat-buttons-disabled #react-chat-window-shell .composer-input,
+        body.yui-guide-chat-buttons-disabled #text-input-area,
+        body.yui-guide-chat-buttons-disabled #textInputBox,
+        body.yui-guide-chat-buttons-disabled #neko-resize-handle,
+        body.yui-guide-chat-buttons-disabled #react-chat-window-shell .react-chat-resize-edge {
+            pointer-events: none !important;
+        }
+        body.yui-guide-chat-buttons-disabled #react-chat-window-shell .composer-input,
+        body.yui-guide-chat-buttons-disabled #textInputBox,
+        body.yui-guide-chat-buttons-disabled #toggle-chat-btn {
+            caret-color: transparent !important;
+            user-select: none !important;
+        }
+        @keyframes yui-guide-chat-window-pulse {
+            0%, 100% { transform: scale(1); }
+            50% { transform: scale(1.014); }
+        }
+        @keyframes yui-guide-chat-input-pulse {
+            0%, 100% { transform: scale(1); }
+            50% { transform: scale(1.01); }
+        }
+        @keyframes yui-guide-chat-spotlight-sweep {
+            0%,
+            62% {
+                opacity: 0;
+                transform: translateX(0) skewX(-12deg);
+            }
+            78% {
+                opacity: 0.42;
+            }
+            100% {
+                opacity: 0;
+                transform: translateX(420%) skewX(-12deg);
+            }
+        }
+        #yui-guide-chat-spotlight {
+            position: fixed;
+            left: 0;
+            top: 0;
+            width: 0;
+            height: 0;
+            border-radius: 18px;
+            pointer-events: none;
+            z-index: 100055;
+            opacity: 0;
+            overflow: visible;
+            isolation: isolate;
+            transform-origin: center center;
+            transition: opacity 140ms ease;
+        }
+        #yui-guide-chat-spotlight .yui-guide-chat-spotlight-chrome,
+        #yui-guide-chat-spotlight .yui-guide-chat-spotlight-ear-left,
+        #yui-guide-chat-spotlight .yui-guide-chat-spotlight-ear-right,
+        #yui-guide-chat-spotlight .yui-guide-chat-spotlight-paw {
+            position: absolute;
+            pointer-events: none;
+            background-position: center;
+            background-repeat: no-repeat;
+            background-size: contain;
+        }
+        #yui-guide-chat-spotlight .yui-guide-chat-spotlight-chrome {
+            inset: 3px;
+            border-radius: inherit;
+            background: linear-gradient(180deg, rgba(84, 133, 255, 0.09), rgba(89, 211, 255, 0.03));
+            box-shadow:
+                0 0 0 1px rgba(214, 243, 255, 0.72),
+                0 0 18px rgba(104, 194, 255, 0.56),
+                0 0 34px rgba(87, 136, 255, 0.26),
+                inset 0 0 16px rgba(131, 214, 255, 0.16);
+        }
+        #yui-guide-chat-spotlight .yui-guide-chat-spotlight-chrome::before {
+            content: '';
+            position: absolute;
+            inset: 0;
+            padding: 2px;
+            border-radius: inherit;
+            --yui-guide-chat-spotlight-corner-size: min(34%, 138px);
+            --yui-guide-chat-spotlight-border-gap: min(68%, 144px);
+            background:
+                linear-gradient(rgba(39, 89, 228, 0.98), rgba(39, 89, 228, 0.98)) top center / calc(100% - var(--yui-guide-chat-spotlight-border-gap)) 2px no-repeat,
+                linear-gradient(rgba(39, 89, 228, 0.98), rgba(39, 89, 228, 0.98)) bottom center / calc(100% - var(--yui-guide-chat-spotlight-border-gap)) 2px no-repeat,
+                linear-gradient(90deg, rgba(39, 89, 228, 0.98), rgba(39, 89, 228, 0.98)) left center / 2px calc(100% - var(--yui-guide-chat-spotlight-border-gap)) no-repeat,
+                linear-gradient(90deg, rgba(39, 89, 228, 0.98), rgba(39, 89, 228, 0.98)) right center / 2px calc(100% - var(--yui-guide-chat-spotlight-border-gap)) no-repeat,
+                radial-gradient(circle at top left,
+                    rgba(235, 249, 255, 0.98) 0,
+                    rgba(186, 231, 255, 0.98) 13%,
+                    rgba(76, 137, 255, 0.95) 52%,
+                    rgba(39, 89, 228, 0.98) 96%,
+                    transparent 100%
+                ) top left / var(--yui-guide-chat-spotlight-corner-size) var(--yui-guide-chat-spotlight-corner-size) no-repeat,
+                radial-gradient(circle at top right,
+                    rgba(235, 249, 255, 0.98) 0,
+                    rgba(186, 231, 255, 0.98) 13%,
+                    rgba(76, 137, 255, 0.95) 52%,
+                    rgba(39, 89, 228, 0.98) 96%,
+                    transparent 100%
+                ) top right / var(--yui-guide-chat-spotlight-corner-size) var(--yui-guide-chat-spotlight-corner-size) no-repeat,
+                radial-gradient(circle at bottom right,
+                    rgba(235, 249, 255, 0.98) 0,
+                    rgba(186, 231, 255, 0.98) 13%,
+                    rgba(76, 137, 255, 0.95) 52%,
+                    rgba(39, 89, 228, 0.98) 96%,
+                    transparent 100%
+                ) bottom right / var(--yui-guide-chat-spotlight-corner-size) var(--yui-guide-chat-spotlight-corner-size) no-repeat,
+                radial-gradient(circle at bottom left,
+                    rgba(235, 249, 255, 0.98) 0,
+                    rgba(186, 231, 255, 0.98) 13%,
+                    rgba(76, 137, 255, 0.95) 52%,
+                    rgba(39, 89, 228, 0.98) 96%,
+                    transparent 100%
+                ) bottom left / var(--yui-guide-chat-spotlight-corner-size) var(--yui-guide-chat-spotlight-corner-size) no-repeat;
+            -webkit-mask:
+                linear-gradient(#000 0 0) content-box,
+                linear-gradient(#000 0 0);
+            -webkit-mask-composite: xor;
+            mask:
+                linear-gradient(#000 0 0) content-box,
+                linear-gradient(#000 0 0);
+            mask-composite: exclude;
+        }
+        #yui-guide-chat-spotlight .yui-guide-chat-spotlight-sweep {
+            position: absolute;
+            inset: 8px;
+            border-radius: inherit;
+            overflow: hidden;
+            pointer-events: none;
+            z-index: 4;
+        }
+        #yui-guide-chat-spotlight .yui-guide-chat-spotlight-sweep::before {
+            content: '';
+            position: absolute;
+            top: -22%;
+            bottom: -22%;
+            left: -48%;
+            width: 34%;
+            background:
+                linear-gradient(108deg, transparent 0 10%, rgba(255, 255, 255, 0.58) 45%, rgba(125, 225, 255, 0.26) 58%, transparent 100%);
+            filter: blur(0.2px);
+            opacity: 0;
+            pointer-events: none;
+            transform: translateX(0) skewX(-12deg);
+            animation: yui-guide-chat-spotlight-sweep 2.4s ease-in-out infinite;
+        }
+        #yui-guide-chat-spotlight.is-visible {
+            opacity: 1;
+        }
+        #yui-guide-chat-spotlight.is-window {
+            animation: yui-guide-chat-window-pulse 1.5s ease-in-out infinite;
+        }
+        #yui-guide-chat-spotlight.is-input {
+            animation: yui-guide-chat-input-pulse 1.5s ease-in-out infinite;
+        }
+        #yui-guide-chat-spotlight .yui-guide-chat-spotlight-ear-left {
+            top: -29px;
+            left: 2px;
+            width: 94.5px;
+            height: 40.5px;
+            background-image: url('/static/assets/tutorial/highlight/left-cat-ear.png?v={{ static_asset_version }}');
+        }
+        #yui-guide-chat-spotlight .yui-guide-chat-spotlight-ear-right {
+            top: -30px;
+            right: 2px;
+            width: 94.5px;
+            height: 40.5px;
+            background-image: url('/static/assets/tutorial/highlight/right-cat-ear.png?v={{ static_asset_version }}');
+        }
+        #yui-guide-chat-spotlight .yui-guide-chat-spotlight-paw {
+            right: -18px;
+            bottom: -11px;
+            width: 51px;
+            height: 51px;
+            background-image: url('/static/assets/tutorial/highlight/cat-paw.png?v={{ static_asset_version }}');
+            filter: drop-shadow(0 0 8px rgba(119, 211, 255, 0.58));
+        }
+        #yui-guide-chat-spotlight.is-window .yui-guide-chat-spotlight-chrome {
+            box-shadow:
+                0 0 0 1px rgba(214, 243, 255, 0.72),
+                0 0 22px rgba(104, 194, 255, 0.62),
+                0 0 42px rgba(87, 136, 255, 0.3),
+                inset 0 0 18px rgba(131, 214, 255, 0.18);
+        }
+        #yui-guide-chat-spotlight.is-input .yui-guide-chat-spotlight-chrome {
+            box-shadow:
+                0 0 0 1px rgba(214, 243, 255, 0.72),
+                0 0 16px rgba(104, 194, 255, 0.52),
+                0 0 28px rgba(87, 136, 255, 0.22),
+                inset 0 0 12px rgba(131, 214, 255, 0.14);
         }
         /* Chat 字体优化（覆盖 6 语：中简/繁/英/日/韩/俄） */
         #react-chat-window-root {
@@ -347,6 +541,13 @@
 <body class="electron-chat-window subtitle-web-host">
 
     <div id="status-toast"></div>
+    <div id="yui-guide-chat-spotlight" hidden>
+        <div class="yui-guide-chat-spotlight-chrome"></div>
+        <span class="yui-guide-chat-spotlight-sweep"></span>
+        <div class="yui-guide-chat-spotlight-ear-left"></div>
+        <div class="yui-guide-chat-spotlight-ear-right"></div>
+        <div class="yui-guide-chat-spotlight-paw"></div>
+    </div>
 
     <!-- 空壳 DOM：防止 app-ui.js / app-websocket.js 中 getElementById 返回 null -->
     <div id="live2d-container" style="display:none;"><canvas id="live2d-canvas"></canvas></div>
@@ -498,41 +699,41 @@
     </div>
 
     <!-- 跳过：Live2D/VRM/Three.js、common_ui.js(DOM拖拽不兼容)、touch-config、tutorial -->
-    <script src="/static/libs/ogg-opus-decoder.min.js"></script>
-    <script src="/static/music_ui.js"></script>
-    <script src="/static/js/index.js"></script>
+    <script src="/static/libs/ogg-opus-decoder.min.js?v={{ static_asset_version }}"></script>
+    <script src="/static/music_ui.js?v={{ static_asset_version }}"></script>
+    <script src="/static/js/index.js?v={{ static_asset_version }}"></script>
     <!-- 不加载 common_ui.js：它的 DOM 拖拽/resize 和独立窗口不兼容 -->
-    <script src="/static/achievement_manager.js"></script>
-    <script src="/static/js/agent_ui_v2.js"></script>
-    <script src="/static/ogg-opus-decoder-wrapper.js"></script>
+    <script src="/static/achievement_manager.js?v={{ static_asset_version }}"></script>
+    <script src="/static/js/agent_ui_v2.js?v={{ static_asset_version }}"></script>
+    <script src="/static/ogg-opus-decoder-wrapper.js?v={{ static_asset_version }}"></script>
 
     <!-- app 模块（与 index.html 完全相同的加载顺序）-->
-    <script src="/static/subtitle-shared.js"></script>
-    <script src="/static/app-state.js"></script>
-    <script src="/static/app-ui.js"></script>
-    <script src="/static/app-chat-text-utils.js"></script>
-    <script src="/static/app-chat.js"></script>
-    <script src="/static/app-chat-avatar.js"></script>
-    <script src="/static/app-audio-playback.js"></script>
-    <script src="/static/app-spatial-audio.js"></script>
-    <script src="/static/app-audio-capture.js"></script>
-    <script src="/static/app-screen.js?v=20260428-ss2"></script>
-    <script src="/static/app-crop.js?v=20260428-ss2"></script>
-    <script src="/static/app-interpage.js"></script>
-    <script src="/static/app-proactive.js"></script>
-    <script src="/static/app-settings.js"></script>
-    <script src="/static/app-agent.js"></script>
-    <script src="/static/app-character.js"></script>
-    <script src="/static/app-websocket.js"></script>
-    <script src="/static/app-buttons.js?v={{ react_chat_asset_version }}"></script>
-    <script src="/static/app.js"></script>
-    <script src="/static/subtitle.js"></script>
+    <script src="/static/subtitle-shared.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-state.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-ui.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-chat-text-utils.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-chat.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-chat-avatar.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-audio-playback.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-spatial-audio.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-audio-capture.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-screen.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-crop.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-interpage.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-proactive.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-settings.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-agent.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-character.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-websocket.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-buttons.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app.js?v={{ static_asset_version }}"></script>
+    <script src="/static/subtitle.js?v={{ static_asset_version }}"></script>
 
     <!-- React Chat（与 index.html 相同的 bundle + 初始化器）-->
-    <script src="/static/react/neko-chat/neko-chat-window.iife.js?v={{ react_chat_asset_version }}"></script>
-    <script src="/static/app-react-chat-window.js?v={{ react_chat_asset_version }}"></script>
-    <script src="/static/app-chat-adapter.js?v={{ react_chat_asset_version }}"></script>
-    <script src="/static/app-chat-export.js"></script>
+    <script src="/static/react/neko-chat/neko-chat-window.iife.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-react-chat-window.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-chat-adapter.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-chat-export.js?v={{ static_asset_version }}"></script>
 
     <script>
     // =====================================================================

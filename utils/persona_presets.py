@@ -103,4 +103,3 @@ def build_persona_override_payload(
         "prompt_guidance": preset["prompt_guidance"],
         "profile": deepcopy(preset["profile"]),
     }
-

@@ -34,13 +34,16 @@ class STS2AutoplayPlugin(NekoPluginBase):
         return Ok({"status": "shutdown"})
 
     def _push_frontend_notification(self, *, content: str, description: str, metadata: Dict[str, Any], priority: int = 5) -> None:
+        merged_metadata = dict(metadata)
+        # TODO(v0.9): drop description metadata; v1 leftover with no v2 consumer.
+        merged_metadata.setdefault("description", description)
         self.push_message(
             source="sts2_autoplay",
-            message_type="proactive_notification",
-            description=description,
+            visibility=[],
+            ai_behavior="respond",
+            parts=[{"type": "text", "text": content}],
             priority=priority,
-            content=content,
-            metadata=metadata,
+            metadata=merged_metadata,
         )
 
     def _save_speed_overrides(self, *, post_action_delay_seconds: Optional[float] = None, poll_interval_active_seconds: Optional[float] = None, action_interval_seconds: Optional[float] = None) -> None:

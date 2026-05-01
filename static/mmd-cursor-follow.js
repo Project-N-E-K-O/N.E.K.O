@@ -13,7 +13,10 @@ class MMDCursorFollow {
     constructor(manager) {
         this.manager = manager;
 
-        this.enabled = true;
+        this.enabled = window.nekoYuiGuideFaceForwardLock === true
+            ? false
+            : window.mouseTrackingEnabled !== false;
+        this._disabledByYuiGuideFaceForwardLock = window.nekoYuiGuideFaceForwardLock === true && window.mouseTrackingEnabled !== false;
         this._rawMouseX = 0;
         this._rawMouseY = 0;
         this._hasPointerInput = false;
@@ -244,6 +247,19 @@ class MMDCursorFollow {
     // ═══════════════════ 帧更新 ═══════════════════
 
     update(delta) {
+        if (window.nekoYuiGuideFaceForwardLock === true && this.enabled) {
+            this._disabledByYuiGuideFaceForwardLock = true;
+            this.setEnabled(false);
+        }
+        if (
+            window.nekoYuiGuideFaceForwardLock !== true
+            && this._disabledByYuiGuideFaceForwardLock
+            && !this.enabled
+            && window.mouseTrackingEnabled !== false
+        ) {
+            this._disabledByYuiGuideFaceForwardLock = false;
+            this.setEnabled(true);
+        }
         if (!this.enabled || !THREE) return;
         if (!this._headBone && !this._neckBone) return;
         if (!this._hasPointerInput) return;
@@ -480,6 +496,14 @@ class MMDCursorFollow {
     // ═══════════════════ 控制 ═══════════════════
 
     setEnabled(enabled) {
+        if (window.nekoYuiGuideFaceForwardLock === true) {
+            if (enabled || this.enabled) {
+                this._disabledByYuiGuideFaceForwardLock = true;
+            }
+            enabled = false;
+        } else {
+            this._disabledByYuiGuideFaceForwardLock = false;
+        }
         this.enabled = enabled;
         if (!enabled) {
             this._restoreAndReset();

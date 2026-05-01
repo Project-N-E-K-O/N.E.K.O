@@ -151,11 +151,59 @@ function closeModalOnOutsideClick(event) {
     }
 }
 
-// 检查当前模型是否为默认模型（mao_pro）
+// 检查当前模型是否为默认模型（yui-origin）
 function isDefaultModel() {
     // 使用保存的角色卡模型名称
     const currentModel = window.currentCharacterCardModel || '';
-    return currentModel === 'mao_pro';
+    return isStaticDefaultLive2DModel(currentModel, window._currentCardRawData || {});
+}
+
+function getLive2DModelInfo(modelName) {
+    if (!modelName) {
+        return null;
+    }
+    const allModels = Array.isArray(window.allModels) ? window.allModels : [];
+    const matches = allModels.filter(model => model && model.name === modelName);
+    return matches.length === 1 ? matches[0] : null;
+}
+
+function hasStaticModelFlag(metadata) {
+    if (!metadata || typeof metadata !== 'object') {
+        return false;
+    }
+    return metadata.source === 'static'
+        || metadata.isStatic === true
+        || metadata.is_static === true
+        || metadata.isDefault === true
+        || metadata.is_default === true;
+}
+
+function isLegacyDefaultLive2DModel(modelName) {
+    return modelName === 'yui_default' || modelName === 'yui-default';
+}
+
+function isStaticDefaultLive2DModel(modelName, rawData = {}) {
+    if (isLegacyDefaultLive2DModel(modelName)) {
+        return true;
+    }
+
+    if (modelName !== 'yui-origin') {
+        return false;
+    }
+
+    if (window.currentCharacterCardModel === modelName && window.currentCharacterCardModelSource) {
+        return window.currentCharacterCardModelSource === 'static';
+    }
+
+    const modelInfo = getLive2DModelInfo(modelName);
+    if (hasStaticModelFlag(modelInfo) || hasStaticModelFlag(modelInfo && modelInfo.modelMetadata)) {
+        return true;
+    }
+
+    const rawModel = rawData && typeof rawData.model === 'object' ? rawData.model : null;
+    return hasStaticModelFlag(rawData && rawData.modelMetadata)
+        || hasStaticModelFlag(rawData && rawData._reserved && rawData._reserved.modelMetadata)
+        || hasStaticModelFlag(rawModel);
 }
 
 // 更新上传按钮状态（不再依赖model-select元素）
@@ -6116,6 +6164,8 @@ function expandCharacterCardSection(card) {
     window.currentCharacterCardModel = (effectiveModelType !== 'live2d' && effectiveModelPath) ? effectiveModelPath : live2d;
     window.currentCharacterCardModelType = effectiveModelType;
     window.currentCharacterCardModelPath = effectiveModelPath;
+    const currentLive2DModelInfo = effectiveModelType === 'live2d' ? getLive2DModelInfo(live2d) : null;
+    window.currentCharacterCardModelSource = currentLive2DModelInfo && currentLive2DModelInfo.source ? currentLive2DModelInfo.source : '';
     window._currentCardRawData = rawData;
 
     // 检查模型是否可上传（检查是否来自static目录）
@@ -6539,17 +6589,21 @@ async function handleUploadToWorkshop() {
             fullCharaData['voice_id'] = voiceId;
         }
 
-        // 设置默认模型（排除mao_pro）- 仅限 Live2D 模型类型
-        if (currentModelType === 'live2d' && (!selectedModelName || selectedModelName === 'mao_pro')) {
-            const validModels = availableModels.filter(model => model.name !== 'mao_pro');
+        // 设置默认模型（排除yui-origin）- 仅限 Live2D 模型类型
+        if (currentModelType === 'live2d' && (!selectedModelName || isStaticDefaultLive2DModel(selectedModelName, rawData))) {
+            const validModels = availableModels.filter(model =>
+                model
+                && model.name
+                && !hasStaticModelFlag(model)
+                && !hasStaticModelFlag(model.modelMetadata)
+            );
             if (validModels.length > 0) {
                 selectedModelName = validModels[0].name;
-            } else if (availableModels.length > 0) {
-                selectedModelName = availableModels[0].name;
             } else {
                 showMessage(window.t ? window.t('steam.noAvailableModelsError') : '没有可用的模型', 'error');
                 return;
             }
+            fullCharaData.live2d = selectedModelName;
         } else if ((currentModelType === 'vrm' || currentModelType === 'mmd') && !selectedModelName) {
             showMessage(window.t ? window.t('steam.noAvailableModelsError') : '没有可用的模型', 'error');
             return;
@@ -6750,7 +6804,7 @@ async function scanModels(loadSequence) {
         }
         const models = await live2dResponse.json();
 
-        // 过滤掉来自static目录的模型（如mao_pro），只保留用户文档目录中的模型
+        // 过滤掉来自static目录的模型（如默认/版权Live2D），只保留用户文档目录中的模型
         // 这是为了防止上传版权Live2D模型
         const uploadableModels = models.filter(model => model.source !== 'static');
 

@@ -43,6 +43,44 @@
         return false;
     }
 
+    function applyTutorialChatIdentityOverride(payload) {
+        var detail = payload || {};
+        if (detail.active) {
+            window.__NEKO_TUTORIAL_CHAT_IDENTITY_OVERRIDE__ = {
+                active: true,
+                displayName: detail.displayName || 'YUI',
+                avatarDataUrl: detail.avatarDataUrl || '',
+                modelType: detail.modelType || ''
+            };
+            window.__NEKO_TUTORIAL_ASSISTANT_NAME_OVERRIDE__ = detail.displayName || 'YUI';
+            if (window.appChatAvatar && typeof window.appChatAvatar.setTutorialAvatarOverride === 'function') {
+                window.appChatAvatar.setTutorialAvatarOverride(detail.avatarDataUrl || '', detail.modelType || '');
+            } else {
+                window.__nekoPendingTutorialChatIdentity = {
+                    active: true,
+                    avatarDataUrl: detail.avatarDataUrl || '',
+                    modelType: detail.modelType || ''
+                };
+            }
+        } else {
+            delete window.__NEKO_TUTORIAL_CHAT_IDENTITY_OVERRIDE__;
+            delete window.__NEKO_TUTORIAL_ASSISTANT_NAME_OVERRIDE__;
+            if (window.appChatAvatar && typeof window.appChatAvatar.clearTutorialAvatarOverride === 'function') {
+                window.appChatAvatar.clearTutorialAvatarOverride();
+            } else {
+                window.__nekoPendingTutorialChatIdentity = { active: false };
+            }
+        }
+        window.dispatchEvent(new CustomEvent('neko:tutorial-chat-identity-changed', {
+            detail: {
+                active: !!detail.active,
+                displayName: detail.displayName || '',
+                avatarDataUrl: detail.avatarDataUrl || '',
+                modelType: detail.modelType || ''
+            }
+        }));
+    }
+
     // =====================================================================
     // Overlay cleanup helpers
     // =====================================================================
@@ -243,6 +281,28 @@
               && document.getElementById('mmd-container'));
     }
 
+    async function _waitForLive2DManagerIdle(timeoutMs) {
+        var manager = window.live2dManager;
+        if (!manager || !manager._isLoadingModel) {
+            return;
+        }
+
+        var waitMs = Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 30000;
+        var startedAt = Date.now();
+        console.log('[Model] Live2D 模型仍在加载，等待空闲后继续热切换');
+
+        while (manager && manager._isLoadingModel) {
+            if (Date.now() - startedAt >= waitMs) {
+                console.warn('[Model] 等待 Live2D 模型加载空闲超时，继续尝试热切换');
+                return;
+            }
+            await new Promise(function (resolve) {
+                setTimeout(resolve, 80);
+            });
+            manager = window.live2dManager;
+        }
+    }
+
     /**
      * Handle model hot-swap triggered from another tab (model_manager).
      *
@@ -250,9 +310,16 @@
      * is queued and executed once the current one finishes.
      *
      * @param {string} [targetLanlanName='']  - optional character name filter
+     * @param {object} [reloadOptions]        - runtime-only reload options
      */
-    async function handleModelReload(targetLanlanName) {
+    async function handleModelReload(targetLanlanName, reloadOptions) {
         targetLanlanName = targetLanlanName || '';
+        reloadOptions = reloadOptions || {};
+        var temporaryConfig = reloadOptions.temporaryConfig && typeof reloadOptions.temporaryConfig === 'object'
+            ? reloadOptions.temporaryConfig
+            : null;
+        var suppressToast = !!reloadOptions.suppressToast;
+        var skipIdleRestore = !!reloadOptions.skipIdleRestore;
 
         // 只有承载完整模型 UI 的页面才处理重载；Chat 等子窗口缺少渲染容器，
         // 执行会导致异常并弹出误导性的"模型切换失败"toast。
@@ -271,9 +338,8 @@
         // Concurrency: wait if another reload is in-flight
         if (window._modelReloadInFlight) {
             console.log('[Model] 模型重载已在进行中，等待完成后重试');
-            window._pendingModelReload = true;
             await window._modelReloadPromise;
-            return;
+            return handleModelReload(targetLanlanName, reloadOptions);
         }
 
         // Mark in-flight
@@ -290,22 +356,29 @@
         let activeMmdLoadingSessionId = '';
 
         try {
-            // 1. Re-fetch page config
+            // 1. Re-fetch page config, or use a caller-provided temporary runtime config.
             var nameForConfig = targetLanlanName || currentLanlanName;
-            var pageConfigUrl = nameForConfig
-                ? '/api/config/page_config?lanlan_name=' + encodeURIComponent(nameForConfig)
-                : '/api/config/page_config';
-            var response = await fetch(pageConfigUrl);
-            var data = await response.json();
+            var data;
+            if (temporaryConfig) {
+                data = Object.assign({ success: true }, temporaryConfig);
+            } else {
+                var pageConfigUrl = nameForConfig
+                    ? '/api/config/page_config?lanlan_name=' + encodeURIComponent(nameForConfig)
+                    : '/api/config/page_config';
+                var response = await fetch(pageConfigUrl);
+                data = await response.json();
+            }
 
             if (data.success) {
                 var newModelPath = data.model_path || '';
                 var newModelType = (data.model_type || 'live2d').toLowerCase();
                 var live3dSubType = (data.live3d_sub_type || '').toLowerCase();
                 var oldModelType = window.lanlan_config?.model_type || 'live2d';
-                var nextLighting = (data.lighting && typeof data.lighting === 'object')
-                    ? Object.assign({}, data.lighting)
-                    : null;
+                var nextLighting = (temporaryConfig && !Object.prototype.hasOwnProperty.call(data, 'lighting'))
+                    ? (window.lanlan_config?.lighting || null)
+                    : ((data.lighting && typeof data.lighting === 'object')
+                        ? Object.assign({}, data.lighting)
+                        : null);
 
                 window.lanlan_config = window.lanlan_config || {};
                 window.lanlan_config.lighting = nextLighting;
@@ -725,6 +798,7 @@
                                 console.log('[Model] PIXI 应用未初始化，正在初始化...');
                                 await window.live2dManager.initPIXI('live2d-canvas', 'live2d-container');
                             }
+                            await _waitForLive2DManagerIdle(30000);
 
                             // Apply saved user preferences to avoid "reset" on return from model manager
                             var modelPreferences = null;
@@ -737,7 +811,8 @@
 
                             await window.live2dManager.loadModel(newModelPath, {
                                 preferences: modelPreferences,
-                                isMobile: window.innerWidth <= 768
+                                isMobile: window.innerWidth <= 768,
+                                suppressInitialIdle: skipIdleRestore
                             });
 
                             // Sync legacy global references
@@ -746,8 +821,10 @@
                                 window.LanLan1.currentModel = window.live2dManager.getCurrentModel();
                             }
 
-                            // 恢复 Live2D 待机动作
-                            restoreLive2DIdleAnimationOnMainPage();
+                            // 恢复 Live2D 待机动作。教程临时模型不读取用户模型的待机动作，避免把不匹配的动作套到 yui-origin。
+                            if (!skipIdleRestore) {
+                                restoreLive2DIdleAnimationOnMainPage();
+                            }
                         } else {
                             console.error('[Model] Live2D 管理器初始化失败');
                         }
@@ -767,16 +844,20 @@
                 }
 
                 // 5. Success toast
-                window.showStatusToast(
-                    window.t ? window.t('app.modelSwitched') : '模型已切换',
-                    2000
-                );
+                if (!suppressToast) {
+                    window.showStatusToast(
+                        window.t ? window.t('app.modelSwitched') : '模型已切换',
+                        2000
+                    );
+                }
             } else {
                 console.error('[Model] 获取页面配置失败:', data.error);
-                window.showStatusToast(
-                    window.t ? window.t('app.modelSwitchFailed') : '模型切换失败',
-                    3000
-                );
+                if (!suppressToast) {
+                    window.showStatusToast(
+                        window.t ? window.t('app.modelSwitchFailed') : '模型切换失败',
+                        3000
+                    );
+                }
             }
         } catch (error) {
             console.error('[Model] 模型热切换失败:', error);
@@ -793,10 +874,12 @@
                 window.lanlan_config.live3d_sub_type = oldLive3dSubType || '';
                 console.warn('[Model] 已回滚 config:', { model_type: oldModelType, live3d_sub_type: oldLive3dSubType });
             }
-            window.showStatusToast(
-                window.t ? window.t('app.modelSwitchFailed') : '模型切换失败',
-                3000
-            );
+            if (!suppressToast) {
+                window.showStatusToast(
+                    window.t ? window.t('app.modelSwitchFailed') : '模型切换失败',
+                    3000
+                );
+            }
         } finally {
             // Clear in-flight flag
             window._modelReloadInFlight = false;
@@ -1264,6 +1347,99 @@
 
     var nekoBroadcastChannel = null;
     var _isRelayingYuiGuideHandoffSent = false;
+    var _pendingYuiGuideChatMessages = [];
+    var _yuiGuideChatFlushTimer = null;
+    var _yuiGuideChatFlushAttempts = 0;
+    var YUI_GUIDE_CHAT_FLUSH_MAX_ATTEMPTS = 50;
+
+    function scheduleYuiGuideChatMessageFlush(delay) {
+        if (_yuiGuideChatFlushTimer) return;
+        _yuiGuideChatFlushTimer = setTimeout(flushPendingYuiGuideChatMessages, typeof delay === 'number' ? delay : 0);
+    }
+
+    function flushPendingYuiGuideChatMessages() {
+        _yuiGuideChatFlushTimer = null;
+        if (!_pendingYuiGuideChatMessages.length) {
+            _yuiGuideChatFlushAttempts = 0;
+            return;
+        }
+
+        var host = window.reactChatWindowHost;
+        if (!host || typeof host.appendMessage !== 'function') {
+            if (_yuiGuideChatFlushAttempts < YUI_GUIDE_CHAT_FLUSH_MAX_ATTEMPTS) {
+                _yuiGuideChatFlushAttempts += 1;
+                scheduleYuiGuideChatMessageFlush(100);
+            } else {
+                console.warn('[YuiGuide] Chat host was not ready; dropped guide chat messages:', _pendingYuiGuideChatMessages.length);
+                _pendingYuiGuideChatMessages = [];
+                _yuiGuideChatFlushAttempts = 0;
+            }
+            return;
+        }
+
+        _yuiGuideChatFlushAttempts = 0;
+        var batch = _pendingYuiGuideChatMessages.splice(0);
+        batch.forEach(function (message) {
+            try {
+                host.appendMessage(message);
+            } catch (error) {
+                console.warn('[YuiGuide] Failed to append guide chat message:', error);
+            }
+        });
+
+        if (typeof host.openWindow === 'function') {
+            try {
+                host.openWindow();
+            } catch (error) {
+                console.warn('[YuiGuide] Failed to open guide chat window:', error);
+            }
+        }
+    }
+
+    function updatePendingYuiGuideChatMessage(messageId, patch) {
+        var targetId = String(messageId || '');
+        if (!targetId || !patch || typeof patch !== 'object') {
+            return false;
+        }
+
+        var updated = false;
+        _pendingYuiGuideChatMessages = _pendingYuiGuideChatMessages.map(function (message) {
+            if (!message || String(message.id) !== targetId) {
+                return message;
+            }
+            updated = true;
+            return Object.assign({}, message, patch);
+        });
+        return updated;
+    }
+
+    function appendYuiGuideChatMessage(message) {
+        if (!isStandaloneChatPage()) return;
+        if (!message || typeof message !== 'object') return;
+        _pendingYuiGuideChatMessages.push(message);
+        scheduleYuiGuideChatMessageFlush(0);
+    }
+
+    function updateYuiGuideChatMessage(messageId, patch) {
+        if (!isStandaloneChatPage()) return;
+        if (!messageId || !patch || typeof patch !== 'object') return;
+
+        var host = window.reactChatWindowHost;
+        if (host && typeof host.updateMessage === 'function') {
+            try {
+                var handled = host.updateMessage(messageId, patch);
+                if (handled) {
+                    return;
+                }
+            } catch (error) {
+                console.warn('[YuiGuide] Failed to update guide chat message:', error);
+            }
+        }
+
+        if (updatePendingYuiGuideChatMessage(messageId, patch)) {
+            scheduleYuiGuideChatMessageFlush(0);
+        }
+    }
     try {
         if (typeof BroadcastChannel !== 'undefined') {
             nekoBroadcastChannel = new BroadcastChannel('neko_page_channel');
@@ -1284,7 +1460,7 @@
 
                 switch (event.data.action) {
                     case 'reload_model':
-                        await handleModelReload(event.data?.lanlan_name);
+                        await handleModelReload(event.data?.lanlan_name, event.data?.reloadOptions);
                         break;
                     case 'hide_main_ui':
                         handleHideMainUI();
@@ -1315,6 +1491,14 @@
                         }
                         break;
                     }
+                    case 'yui_guide_append_chat_message': {
+                        appendYuiGuideChatMessage(event.data.message);
+                        break;
+                    }
+                    case 'yui_guide_update_chat_message': {
+                        updateYuiGuideChatMessage(event.data.messageId, event.data.patch);
+                        break;
+                    }
                     case 'avatar_updated': {
                         // 从 Pet 窗口接收头像数据，注入到 Chat 窗口
                         // 校验 lanlan_name：多角色场景下避免串头像
@@ -1330,9 +1514,23 @@
                         }
                         break;
                     }
+                    case 'tutorial_chat_identity_override': {
+                        applyTutorialChatIdentityOverride(event.data);
+                        break;
+                    }
+                    case 'request_tutorial_chat_identity': {
+                        if (isStandaloneChatPage()) break;
+                        if (window.__NEKO_TUTORIAL_CHAT_IDENTITY_OVERRIDE__ && nekoBroadcastChannel) {
+                            nekoBroadcastChannel.postMessage(Object.assign({
+                                action: 'tutorial_chat_identity_override',
+                                timestamp: Date.now()
+                            }, window.__NEKO_TUTORIAL_CHAT_IDENTITY_OVERRIDE__));
+                        }
+                        break;
+                    }
                     case 'request_avatar': {
                         // 仅 Pet 主窗口（/index）应答，Chat 窗口不回传
-                        if (window.location.pathname === '/chat') break;
+                        if (isStandaloneChatPage()) break;
                         // 校验 lanlan_name：与 avatar_updated 对称，本地名未就绪或不匹配时不回包
                         const reqCurrentName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
                         if (event.data.lanlan_name && (!reqCurrentName || event.data.lanlan_name !== reqCurrentName)) break;
@@ -1369,8 +1567,39 @@
                         }
                         break;
                     }
+                    case 'yui_guide_set_chat_buttons_disabled': {
+                        if (!isStandaloneChatPage() || !document.body) break;
+                        applyYuiGuideChatLockState(event.data.disabled !== false);
+                        break;
+                    }
+                    case 'yui_guide_set_chat_spotlight': {
+                        if (!isStandaloneChatPage() || !document.body) break;
+                        applyYuiGuideChatSpotlight(event.data.kind || '');
+                        break;
+                    }
+                    case 'yui_guide_chat_ready': {
+                        if (isStandaloneChatPage()) break;
+                        window.dispatchEvent(new CustomEvent('neko:yui-guide:external-chat-ready', {
+                            detail: {
+                                timestamp: event.data.timestamp || Date.now()
+                            }
+                        }));
+                        break;
+                    }
+                    case 'yui_guide_request_termination': {
+                        window.dispatchEvent(new CustomEvent('neko:yui-guide:remote-termination-request', {
+                            detail: {
+                                sourcePage: event.data.sourcePage || '',
+                                targetPage: event.data.targetPage || '',
+                                reason: event.data.reason || 'skip',
+                                tutorialReason: event.data.tutorialReason || 'skip',
+                                timestamp: event.data.timestamp || Date.now()
+                            }
+                        }));
+                        break;
+                    }
                     case 'request_avatar_capture': {
-                        if (window.location.pathname === '/chat') break;
+                        if (isStandaloneChatPage()) break;
                         var captureLanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
                         if (event.data.lanlan_name && (!captureLanlanName || event.data.lanlan_name !== captureLanlanName)) break;
                         var captureRequestId = event.data.requestId || '';
@@ -1420,6 +1649,169 @@
         console.log('[BroadcastChannel] 初始化失败，将使用 postMessage 后备方案:', e);
     }
 
+    function applyYuiGuideChatLockState(disabled) {
+        if (!document.body) {
+            return;
+        }
+
+        var locked = disabled !== false;
+        document.body.classList.toggle('yui-guide-chat-buttons-disabled', locked);
+
+        var activeElement = document.activeElement;
+        if (
+            locked
+            && activeElement
+            && typeof activeElement.closest === 'function'
+            && activeElement.closest('#react-chat-window-shell, #text-input-area')
+            && typeof activeElement.blur === 'function'
+        ) {
+            activeElement.blur();
+        }
+
+        var readonlyTargets = document.querySelectorAll(
+            '#react-chat-window-shell textarea, '
+            + '#react-chat-window-shell input, '
+            + '#text-input-area textarea, '
+            + '#text-input-area input'
+        );
+        readonlyTargets.forEach(function (element) {
+            if (!element || !('readOnly' in element)) {
+                return;
+            }
+
+            if (locked) {
+                if (!element.hasAttribute('data-yui-guide-prev-readonly')) {
+                    element.setAttribute('data-yui-guide-prev-readonly', element.readOnly ? 'true' : 'false');
+                }
+                element.readOnly = true;
+                return;
+            }
+
+            var prevReadOnly = element.getAttribute('data-yui-guide-prev-readonly');
+            if (prevReadOnly !== null) {
+                element.readOnly = prevReadOnly === 'true';
+                element.removeAttribute('data-yui-guide-prev-readonly');
+            } else {
+                element.readOnly = false;
+            }
+        });
+
+        var contentEditableTargets = document.querySelectorAll(
+            '#react-chat-window-shell [contenteditable=\"true\"], '
+            + '#react-chat-window-shell [contenteditable=\"plaintext-only\"], '
+            + '#react-chat-window-shell [data-yui-guide-prev-contenteditable]'
+        );
+        contentEditableTargets.forEach(function (element) {
+            if (!element || typeof element.getAttribute !== 'function') {
+                return;
+            }
+
+            if (locked) {
+                if (!element.hasAttribute('data-yui-guide-prev-contenteditable')) {
+                    element.setAttribute(
+                        'data-yui-guide-prev-contenteditable',
+                        element.getAttribute('contenteditable') || 'true'
+                    );
+                }
+                element.setAttribute('contenteditable', 'false');
+                return;
+            }
+
+            var prevContentEditable = element.getAttribute('data-yui-guide-prev-contenteditable');
+            if (prevContentEditable !== null) {
+                element.setAttribute('contenteditable', prevContentEditable);
+                element.removeAttribute('data-yui-guide-prev-contenteditable');
+            }
+        });
+    }
+
+
+    function isStandaloneChatPage() {
+        var pathname = (window.location && window.location.pathname) || '';
+        return pathname === '/chat' || pathname === '/chat/';
+    }
+
+    var yuiGuideChatSpotlightKind = '';
+    var yuiGuideChatSpotlightTimer = 0;
+
+    function getYuiGuideChatSpotlightElement() {
+        return document.getElementById('yui-guide-chat-spotlight');
+    }
+
+    function getYuiGuideChatSpotlightTarget(kind) {
+        if (!kind || typeof document === 'undefined') {
+            return null;
+        }
+
+        if (kind === 'input') {
+            return document.querySelector('#react-chat-window-root .composer-panel')
+                || document.querySelector('#react-chat-window-root .composer-input-shell')
+                || document.getElementById('text-input-area');
+        }
+
+        if (kind === 'window') {
+            return document.getElementById('react-chat-window-shell');
+        }
+
+        return null;
+    }
+
+    function clearYuiGuideChatSpotlightTracking() {
+        if (yuiGuideChatSpotlightTimer) {
+            window.clearInterval(yuiGuideChatSpotlightTimer);
+            yuiGuideChatSpotlightTimer = 0;
+        }
+    }
+
+    function updateYuiGuideChatSpotlight(kind) {
+        var spotlight = getYuiGuideChatSpotlightElement();
+        if (!spotlight) {
+            return;
+        }
+
+        var target = getYuiGuideChatSpotlightTarget(kind);
+        var rect = target && typeof target.getBoundingClientRect === 'function'
+            ? target.getBoundingClientRect()
+            : null;
+
+        if (!rect || rect.width <= 0 || rect.height <= 0) {
+            spotlight.hidden = true;
+            spotlight.classList.remove('is-visible', 'is-window', 'is-input');
+            return;
+        }
+
+        var padding = kind === 'window' ? 10 : 8;
+        var radius = kind === 'window' ? 26 : 18;
+        spotlight.hidden = false;
+        spotlight.classList.remove('is-window', 'is-input');
+        spotlight.classList.add(kind === 'window' ? 'is-window' : 'is-input');
+        spotlight.classList.add('is-visible');
+        spotlight.style.left = Math.round(rect.left - padding) + 'px';
+        spotlight.style.top = Math.round(rect.top - padding) + 'px';
+        spotlight.style.width = Math.round(rect.width + padding * 2) + 'px';
+        spotlight.style.height = Math.round(rect.height + padding * 2) + 'px';
+        spotlight.style.borderRadius = radius + 'px';
+    }
+
+    function applyYuiGuideChatSpotlight(kind) {
+        yuiGuideChatSpotlightKind = typeof kind === 'string' ? kind : '';
+        clearYuiGuideChatSpotlightTracking();
+
+        if (!yuiGuideChatSpotlightKind) {
+            var spotlight = getYuiGuideChatSpotlightElement();
+            if (spotlight) {
+                spotlight.hidden = true;
+                spotlight.classList.remove('is-visible', 'is-window', 'is-input');
+            }
+            return;
+        }
+
+        updateYuiGuideChatSpotlight(yuiGuideChatSpotlightKind);
+        yuiGuideChatSpotlightTimer = window.setInterval(function () {
+            updateYuiGuideChatSpotlight(yuiGuideChatSpotlightKind);
+        }, 120);
+    }
+
     // =====================================================================
     // Cross-window handoff event forwarding via BroadcastChannel
     // =====================================================================
@@ -1442,7 +1834,8 @@
     // Pet 窗口（/index）捕获头像后，通过 BC 广播给 Chat 窗口
     window.addEventListener('chat-avatar-preview-updated', function (evt) {
         // source === 'ipc' 表示此事件来自 BC 注入（setExternalAvatar），不回传避免循环
-        if (evt.detail && evt.detail.source === 'ipc') return;
+        var eventSource = evt.detail && evt.detail.source;
+        if (eventSource === 'ipc' || eventSource === 'tutorial_override' || eventSource === 'tutorial_override_clear') return;
         if (!nekoBroadcastChannel) return;
         var dataUrl = evt.detail && evt.detail.dataUrl;
         if (!dataUrl) return;
@@ -1456,7 +1849,7 @@
     });
 
     // Chat 窗口初始化时，向 Pet 窗口请求当前已缓存的头像
-    if (window.location.pathname === '/chat' && nekoBroadcastChannel) {
+    if (isStandaloneChatPage() && nekoBroadcastChannel) {
         var initialLanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
         var postAvatarRequest = function () {
             nekoBroadcastChannel.postMessage({
@@ -1466,6 +1859,14 @@
             });
         };
         postAvatarRequest();
+        nekoBroadcastChannel.postMessage({
+            action: 'request_tutorial_chat_identity',
+            timestamp: Date.now()
+        });
+        nekoBroadcastChannel.postMessage({
+            action: 'yui_guide_chat_ready',
+            timestamp: Date.now()
+        });
         // 配置可能尚未注入（lanlan_name 为空），等 IPC 注入后补发一次
         if (!initialLanlanName) {
             window.addEventListener('neko:config-injected', postAvatarRequest, { once: true });
@@ -1510,7 +1911,7 @@
                 return;
             }
             console.log('[Model] 通过 postMessage 收到模型重载通知');
-            await handleModelReload(event.data?.lanlan_name);
+            await handleModelReload(event.data?.lanlan_name, event.data?.reloadOptions);
         }
     });
 
@@ -1527,6 +1928,7 @@
     mod.cleanupVRMOverlayUI = cleanupVRMOverlayUI;
     mod.cleanupMMDOverlayUI = cleanupMMDOverlayUI;
     mod.syncVoiceChatComposerHidden = syncVoiceChatComposerHidden;
+    mod.applyTutorialChatIdentityOverride = applyTutorialChatIdentityOverride;
 
     // Backward-compatible window globals
     window.handleModelReload = handleModelReload;
