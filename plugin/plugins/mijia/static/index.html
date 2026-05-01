@@ -562,11 +562,11 @@
         }
     }
 
-    // 执行场景
+    // 执行场景（通过 smart_control 入口，scene 执行已合并到统一控制）
     async function executeScene(sceneId, sceneName) {
         try {
             showMessage(`正在执行「${sceneName}」...`, 'info');
-            const result = await callPlugin('execute_scene', { scene_id: sceneId, home_id: '' });
+            const result = await callPlugin('smart_control', { command: `执行${sceneName}` });
             if (result.success) {
                 showMessage(`✅「${sceneName}」执行成功！`, 'success');
             } else {
