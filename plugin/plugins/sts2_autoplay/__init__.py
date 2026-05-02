@@ -252,9 +252,15 @@ class STS2AutoplayPlugin(NekoPluginBase):
         return await self._run_entry(self._service.step_once, finish=True)
 
     @plugin_entry(id="sts2_neko_command", name="尖塔猫娘指令", description="杀戮尖塔普通用户自然语言总入口。用户没有明确指定底层工具时优先调用本入口；它会根据用户原话自动判断查看状态、给建议、打一张牌、执行一步、开启自动游玩、暂停、恢复、停止或发送软指导。默认咨询不操作，只有用户明确授权时才执行游戏动作。", llm_result_fields=["summary"], input_schema={"type": "object", "properties": {"command": {"type": "string", "description": "用户原话，例如：这回合怎么打、帮我打一张牌、先防一下、暂停一下"}, "scope": {"type": "string", "default": _DEFAULT_SCOPE, "description": "可选意图提示：auto/status/advice/one_card/one_action/autoplay/control/guidance"}, "confirm": {"type": "boolean", "default": False, "description": "是否已确认允许持续托管等高风险操作"}}, "required": ["command"]})
-    async def sts2_neko_command(self, command: str, scope: str = _DEFAULT_SCOPE, confirm: bool = False, **_: Any):
+    async def sts2_neko_command(self, command: str, scope: str = _DEFAULT_SCOPE, confirm: bool = False, **kwargs: Any):
+        # 内部 NL 决策（intent classifier）必须看用户原文：连词、语气、限定都决定意图。
+        # framework 在 _ctx["latest_user_request"] 里放了原话；direct-call 路径没有就
+        # fallback 到 LLM 给的 command。
+        ctx_obj = kwargs.get("_ctx") if isinstance(kwargs.get("_ctx"), dict) else {}
+        raw_user_request = str(ctx_obj.get("latest_user_request") or "").strip()
+        effective_command = raw_user_request or command.strip()
         return await self._run_entry(
-            lambda: self._service.neko_command(command=command.strip(), scope=scope, confirm=confirm),
+            lambda: self._service.neko_command(command=effective_command, scope=scope, confirm=confirm),
             finish=True,
         )
 

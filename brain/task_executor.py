@@ -1683,6 +1683,7 @@ class DirectTaskExecutor:
                 tool_args=up_decision.plugin_args,
                 entry_id=up_decision.entry_id,
                 reason=up_decision.reason,
+                latest_user_request=latest_user_request,
             )
 
         # 2. 统一渠道 — 按优先级 qwenpaw > openfang > browser_use > computer_use
@@ -1767,6 +1768,7 @@ class DirectTaskExecutor:
         reason: str = "",
         lanlan_name: Optional[str] = None,
         conversation_id: Optional[str] = None,
+        latest_user_request: str = "",
         on_progress: Optional[Callable[..., Awaitable[None]]] = None,
     ) -> TaskResult:
         """
@@ -1907,6 +1909,12 @@ class DirectTaskExecutor:
                 # 添加 conversation_id，用于关联触发事件和对话上下文
                 if conversation_id:
                     ctx_obj["conversation_id"] = conversation_id
+                # 用户最新原话：framework 在 dispatch 时已经提取过，通过 _ctx 暴露给
+                # plugin。plugin 在内部 NL 决策时，可以拿原文兜底，避免 LLM 改写过的
+                # plugin_args 里 string 字段丢失语气/连词等关键信号。是否使用由 plugin
+                # 自己决定，setdefault 让 plugin 提前塞的同名值优先。
+                if latest_user_request:
+                    ctx_obj.setdefault("latest_user_request", latest_user_request)
                 entry_timeout = _resolve_plugin_entry_timeout(plugin_meta, plugin_entry_id)
                 effective_entry_timeout = _resolve_ctx_entry_timeout(ctx_obj, entry_timeout)
                 ctx_obj["entry_timeout"] = effective_entry_timeout
@@ -2178,6 +2186,7 @@ class DirectTaskExecutor:
         entry_id: Optional[str] = None,
         lanlan_name: Optional[str] = None,
         conversation_id: Optional[str] = None,
+        latest_user_request: str = "",
         on_progress: Optional[Callable[..., Awaitable[None]]] = None,
     ) -> TaskResult:
         """
@@ -2193,6 +2202,7 @@ class DirectTaskExecutor:
             reason="direct_call",
             lanlan_name=lanlan_name,
             conversation_id=conversation_id,
+            latest_user_request=latest_user_request,
             on_progress=on_progress,
         )
     

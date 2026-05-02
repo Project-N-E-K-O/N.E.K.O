@@ -300,3 +300,46 @@ def test_neko_command_unknown_is_conservative(service: CommandService) -> None:
     assert result["needs_confirmation"] is True
     assert result["executed"] is False
     assert service.called == []
+
+
+@pytest.mark.unit
+def test_neko_command_entry_prefers_ctx_latest_user_request_over_llm_command() -> None:
+    """sts2_neko_command 必须优先用 framework 注入的 _ctx[latest_user_request]
+    （= 用户原文），而不是 LLM 决策出来的可能被改写的 command 参数；
+    没有 _ctx 或 _ctx 为空白时回落到 command。"""
+    from types import SimpleNamespace
+    from plugin.plugins.sts2_autoplay import STS2AutoplayPlugin
+
+    plugin = object.__new__(STS2AutoplayPlugin)
+    captured: dict[str, str] = {}
+
+    async def fake_neko_command(*, command: str, scope: str, confirm: bool) -> dict[str, Any]:
+        captured["command"] = command
+        captured["scope"] = scope
+        captured["confirm"] = str(confirm)
+        return {"status": "ok", "summary": "x", "executed": False}
+
+    async def fake_run_entry(factory: Any, *, finish: bool = False) -> Any:
+        return await factory()
+
+    plugin._service = SimpleNamespace(neko_command=fake_neko_command)
+    plugin._run_entry = fake_run_entry
+
+    run(plugin.sts2_neko_command(
+        command="LLM rewritten phrasing",
+        scope="auto",
+        _ctx={"latest_user_request": "帮我打一张牌"},
+    ))
+    assert captured["command"] == "帮我打一张牌"
+
+    captured.clear()
+    run(plugin.sts2_neko_command(command="LLM rewritten phrasing", scope="auto"))
+    assert captured["command"] == "LLM rewritten phrasing"
+
+    captured.clear()
+    run(plugin.sts2_neko_command(
+        command="LLM fallback",
+        scope="auto",
+        _ctx={"latest_user_request": "   "},
+    ))
+    assert captured["command"] == "LLM fallback"

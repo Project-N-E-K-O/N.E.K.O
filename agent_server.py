@@ -1824,6 +1824,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                             reason=result.reason,
                             lanlan_name=lanlan_name,
                             conversation_id=conversation_id,
+                            latest_user_request=getattr(result, "latest_user_request", "") or "",
                             on_progress=_on_plugin_progress,
                         )
                         run_data = up_result.result.get("run_data") if isinstance(up_result.result, dict) else None
