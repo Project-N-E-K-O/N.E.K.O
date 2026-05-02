@@ -21,7 +21,7 @@ OUTWARD_EMOTION_ANALYSIS_PROMPT = {
 2. 只有在文本整体真的平铺直叙、情绪信号很弱时，才返回 neutral。
 3. 只有在文本明确表达开心、喜欢、得意、轻快、被逗乐、享受互动时，才判为 happy，不要把单纯可爱说法、卖萌语气、口头禅误判成 happy。
 4. 如果文本主轴是委屈、想哭、脆弱、受伤、被欺负、害怕、求安慰、低落，即使语气可爱或撒娇，也应优先判为 sad。
-5. 只有当文本主轴是持续指责、明显敌意、强烈抱怨、攻击性语气、显著炸毛时才判为 angry；偶尔的吐槽、抱怨、嫌弃、轻度烦躁如果整体语气仍偏轻松、玩笑或可爱，应优先选其他情感或 neutral。
+5. 当文本主轴是指责、敌意、抱怨、烦躁、警告、拒绝、炸毛、不耐烦时判为 angry；偶尔的吐槽、嫌弃如果整体语气仍偏轻松、玩笑或可爱，可以酌情考虑。
 6. surprised 只用于明显的突发惊讶、意外、震惊、夸张反应；不要只因为有感叹号、语气词就判为 surprised。
 7. 语气助词、口癖、拟声词、宠物叫声这类风格词本身不代表情绪，不能单独作为判断依据。
 8. confidence 取 0 到 1 之间的小数；情绪很明确时应给出较高置信度。
@@ -42,7 +42,7 @@ Rules:
 2. Do not return neutral unless the text is truly emotionally weak or flat.
 3. Use happy only when the text clearly expresses positive enjoyment, affection, delight, playful pleasure, or being genuinely amused; do not treat cute phrasing or verbal tics alone as happy.
 4. If the core emotion is hurt, vulnerability, wanting to cry, feeling bullied, fear, pleading, or seeking comfort, prefer sad even if the wording sounds cute or clingy.
-5. Use angry only when the core emotion is sustained blame, clear hostility, strong complaint, attacking tone, or an obvious meltdown. Casual griping, mild annoyance, or playful complaining inside an otherwise light, joking, or cute message should NOT be labeled angry — prefer another emotion or neutral.
+5. Use angry when the core emotion is blame, hostility, complaint, irritation, warning, rejection, a meltdown, or impatience. For occasional griping or contempt, if the overall tone is still light, joking, or cute, use your judgment.
 6. Use surprised only for clear shock, sudden surprise, or exaggerated astonishment; do not label something surprised just because it has exclamation marks or filler particles.
 7. Catchphrases, sound effects, pet-like speech, and filler words are style markers, not emotions by themselves.
 8. confidence must be a number between 0 and 1.
@@ -63,7 +63,7 @@ Return JSON only, with no explanation.""",
 2. 本当に感情が弱い・平坦な文章だけ neutral にする。
 3. happy は、嬉しさ・好意・楽しさ・はしゃぎ・本当に喜んでいる反応が明確なときだけ使い、かわいい言い回しや口ぐせだけで happy にしない。
 4. 文の中心が、傷つき・しんどさ・泣きたさ・いじけ・甘えを含む弱さ・慰めを求める気持ちなら、言い方がかわいくても sad を優先する。
-5. angry は、文の中心が継続的な責め・はっきりした敵意・強い不満・攻撃的な口調・明らかな激怒であるときだけ使う。軽い愚痴・ちょっとした不満・じゃれ合いのような文句で、全体の雰囲気が軽い・ふざけている・かわいい場合は angry にせず、他の感情か neutral を優先する。
+5. angry は、文の中心が責め・敵意・不満・苛立ち・警告・拒絶・激怒・苛々であるときに使う。軽い愚痴・嫌気でも、全体の雰囲気が軽い・ふざけている・かわいい場合は状況に応じて判断する。
 6. surprised は、はっきりした驚き・意外さ・衝撃・大げさな驚愕にだけ使い、感嘆符や語気だけで surprised にしない。
 7. 口ぐせ、擬音、語尾、キャラっぽい言い回しは、それ自体では感情根拠にならない。
 8. confidence は 0〜1 の数値にする。
@@ -84,7 +84,7 @@ JSONのみを返し、説明文は付けないでください。""",
 2. 감정 신호가 정말 약하고 평이한 문장일 때만 neutral 을 사용하세요.
 3. happy 는 실제로 즐거움, 애정, 들뜸, 만족, 장난스러운 즐거움이 분명할 때만 사용하고, 단순히 귀여운 말투나 말버릇만으로 happy 로 판단하지 마세요.
 4. 문장의 핵심이 속상함, 상처, 울고 싶음, 서러움, 괴롭힘당하는 느낌, 두려움, 위로를 바라는 마음이라면 말투가 귀여워도 sad 를 우선하세요.
-5. angry 는 문장의 핵심이 지속적인 비난, 분명한 적의, 강한 불만, 공격적인 말투, 확연한 폭발일 때만 사용하세요. 가벼운 투정, 살짝 짜증, 장난스러운 불평 정도이고 전체 분위기가 가볍거나 장난스럽거나 귀엽다면 angry 로 판단하지 말고 다른 감정이나 neutral 을 우선하세요.
+5. angry 는 문장의 핵심이 비난, 적의, 불만, 짜증, 경고, 거절, 폭발, 조급함일 때 사용하세요. 가벼운 투정이나 싫어함이라도 전체 분위기가 가볍거나 장난스럽거나 귀엽다면 상황에 따라 판단하세요.
 6. surprised 는 분명한 놀람, 충격, 뜻밖의 상황, 과장된 경악에만 사용하고, 느낌표나 말끝 표현만으로 surprised 로 판단하지 마세요.
 7. 말버릇, 의성어, 캐릭터 말투, 동물 흉내 같은 표현은 그 자체로 감정을 뜻하지 않습니다.
 8. confidence 는 0~1 사이 숫자여야 합니다.
@@ -105,7 +105,7 @@ JSONのみを返し、説明文は付けないでください。""",
 2. Возвращайте neutral только если эмоция действительно слабая или почти отсутствует.
 3. Используйте happy только когда в тексте явно есть радость, удовольствие, тёплая привязанность, игривое удовольствие или искреннее веселье; милый стиль речи или словечки сами по себе не означают happy.
 4. Если в центре текста обида, уязвимость, желание заплакать, ощущение, что обижают, страх, мольба или поиск утешения, выбирайте sad, даже если формулировка звучит мило.
-5. Используйте angry только когда центр текста — это устойчивые упрёки, явная враждебность, сильные жалобы, агрессивный тон или очевидная вспышка гнева. Лёгкое ворчание, небольшое раздражение или игривое нытьё в целом мягком, шутливом или милом сообщении НЕ помечайте как angry — выбирайте другую эмоцию или neutral.
+5. Используйте angry, когда центр текста — упрёки, враждебность, жалоба, раздражение, предупреждение, отказ, вспышка гнева или нетерпение. При случайном ворчании или неприязни, если общий тон всё ещё лёгкий, шутливый или милый, действуйте по обстоятельствам.
 6. surprised используйте только для явного шока, внезапного удивления или преувеличенного изумления; одних восклицаний или частиц для этого недостаточно.
 7. Слова-паразиты, звукоподражания, повторяющиеся словечки и «персонажная» манера речи сами по себе не являются признаком эмоции.
 8. confidence должно быть числом от 0 до 1.
