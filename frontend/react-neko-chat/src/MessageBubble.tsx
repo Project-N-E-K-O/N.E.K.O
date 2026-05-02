@@ -140,7 +140,8 @@ export default function MessageBubble({
   const bubbleClassName = getBubbleClassName(message);
   const rowClassName = getRowClassName(message);
   const showAvatar = message.role !== 'system' && !isGroupedWithPrevious;
-  const showMeta = message.role !== 'system';
+  const showMeta = message.role !== 'system' && !isGroupedWithPrevious;
+  const showFailed = message.role !== 'system' && message.status === 'failed';
 
   if (message.role === 'system') {
     return (
@@ -190,11 +191,11 @@ export default function MessageBubble({
       )}
 
       <div className="message-stack">
-        {showMeta ? (
+        {(showMeta || showFailed) ? (
           <div className="message-meta">
-            <span className="message-author">{message.author}</span>
-            <span className="message-time">{message.time}</span>
-            {message.status === 'failed' ? <span className="message-delivery message-delivery-failed">{failedStatusLabel}</span> : null}
+            {showMeta ? <span className="message-author">{message.author}</span> : null}
+            {showMeta ? <span className="message-time">{message.time}</span> : null}
+            {showFailed ? <span className="message-delivery message-delivery-failed">{failedStatusLabel}</span> : null}
           </div>
         ) : null}
         <div className={bubbleClassName}>
