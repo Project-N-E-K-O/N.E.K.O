@@ -36,7 +36,10 @@ class NekoCommandingMixin:
         # resume 必须在 pause 之前判断：'取消暂停' 含 '暂停'，否则会被 pause 分支提前吞掉。
         if self._neko_text_has_any(text, ["取消暂停", "继续托管", "恢复托管", "继续自动打", "恢复自动打", "继续代打", "接着托管", "resume"]):
             return self._wrap_neko_command_result("resume", "resume_autoplay", await self.resume_autoplay(), executed=False)
-        if self._neko_text_has_any(text, ["暂停", "先停", "等一下", "别动", "pause"]):
+        # '别动' 不进 pause 关键字：它同时被 _is_neko_observation_only_text 当成
+        # 'observation-only' 触发词（"别动，看看哪张牌好"），先匹配 pause 会把请建议
+        # 的请求误升级成状态变更。要 pause 用户必须用更明确的词。
+        if self._neko_text_has_any(text, ["暂停", "先停", "等一下", "pause"]):
             return self._wrap_neko_command_result("pause", "pause_autoplay", await self.pause_autoplay(), executed=False)
 
         if self._neko_text_has_any(text, ["健康", "连上", "连接", "health"]):
@@ -129,6 +132,8 @@ class NekoCommandingMixin:
                 executed=False,
                 needs_confirmation=True,
             )
+        if normalized_scope == "status":
+            return self._wrap_neko_command_result("snapshot", "get_snapshot", await self.get_snapshot(), executed=False)
         if normalized_scope == "review":
             result = await self.review_recent_play_by_neko(objective=raw_command)
             return self._wrap_neko_command_result("review", "review_recent_play_by_neko", result, executed=False)
