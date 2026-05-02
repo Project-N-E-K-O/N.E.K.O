@@ -78,6 +78,7 @@ _SOCCER_SYSTEM_PROMPT = """\
 - 如果 balanceHint 提示主人明显领先，可以考虑认真起来、被激起胜负欲、变 angry/surprised/happy，或提高 difficulty
 - 如果比分接近，可以不输出控制，除非你的情绪明显变化
 - 你可以口头安抚主人，例如说“算你赢”，但这只是口头让步/玩笑；除非输出 difficulty/mood 影响后续玩法，不能把它当成官方比分或真实胜负被改写
+- 如果事件里有 angerPressureCap 且 reached=true，表示“生气/惩罚/哄生气”场景里的狂怒压制已经到自然上限；不要继续输出 difficulty=max。你可以继续生气、嘴硬或冷处理，但要用累了、体力耗尽、发泄完一部分、要求补偿等理由自然转折。
 - 只有当你真的想改变比赛行为时才输出 JSON；不要机械地每次都输出控制
 - 如果你看到 balanceHint 但决定不调整，也可以不输出 JSON；这时请尽量让台词本身表现出你的理由
 """
@@ -127,6 +128,9 @@ _GAME_CONTEXT_MAX_EVIDENCE_PER_SIGNAL = 2
 _SOCCER_MOODS = {"calm", "happy", "angry", "relaxed", "sad", "surprised"}
 _SOCCER_DIFFICULTIES = {"max", "lv2", "lv3", "lv4"}
 _SOCCER_DEFAULT_DIFFICULTIES = ("lv2", "lv3")
+_SOCCER_ANGER_PRESSURE_CAP_WEAK = 8
+_SOCCER_ANGER_PRESSURE_CAP_DEFAULT = 15
+_SOCCER_ANGER_PRESSURE_CAP_STRONG = 30
 _SOCCER_EMOTION_INERTIA = {"low", "medium", "high", "very_high"}
 _SOCCER_GAME_STANCES = {
     "neutral_play",
@@ -2181,10 +2185,7 @@ def _build_game_archive_tail_memory_messages(archive: dict, tail_count: int) -> 
 
 def _build_game_archive_memory_summary_text(archive: dict, *, tail_count: int | None = None) -> str:
     """Build a compact system note for memory; this is not a user dialogue turn."""
-    summary = str(archive.get("summary") or "").strip()
     score_text = _archive_score_text(archive)
-    last_user = _archive_last_user_text(archive)
-    last_assistant = _archive_last_assistant_line(archive)
     highlights = _normalize_game_archive_memory_highlights(archive.get("memory_highlights"))
     degraded = _archive_game_context_degraded(archive)
     normalized_tail_count = _normalize_game_memory_tail_count(
@@ -2193,24 +2194,16 @@ def _build_game_archive_memory_summary_text(archive: dict, *, tail_count: int | 
     lines = [
         "足球小游戏赛后记录：这是游戏模块归档，不是主人逐字发言。",
     ]
-    if summary:
-        lines.append(f"概要：{summary}")
     if score_text:
-        lines.append(f"官方比分：{score_text}。")
-        lines.append("官方比分永远以 finalScore / last_state.score 为准。")
-    lines.append("口头让步规则：局内“算你赢 / 让你赢回来 / 口头认输”只能记录为口头让步、安抚或玩笑，不改写官方比分。")
+        lines.append(f"官方比分：{score_text}。口头让步不改官方比分。")
+    else:
+        lines.append("口头让步不改官方比分。")
     if degraded:
         lines.append("局内上下文整理已降级为纯游戏模式；本归档只记录最低限度事实，不使用滚动摘要或信号列表做关系解释。")
         lines.append("降级模式不回放倒数实时片段，避免把未经整理的局内台词或口头让步写成 ordinary recent history。")
         lines.append("后续聊天只需要自然记得一起玩过足球小游戏和官方比分，不要根据本局材料生成新的关系总结。")
         return "\n".join(lines)
 
-    context_summary = _normalize_short_text(archive.get("game_context_summary"), max_chars=900)
-    signals_text = _game_context_signals_text(archive.get("game_context_signals"))
-    if context_summary:
-        lines.append(f"局内滚动摘要：{context_summary}")
-    if signals_text:
-        lines.append(f"局内中文分组信号：{signals_text}")
     if highlights["important_records"]:
         lines.append("重要互动：")
         lines.extend(f"- {item}" for item in highlights["important_records"])
@@ -2223,16 +2216,11 @@ def _build_game_archive_memory_summary_text(archive: dict, *, tail_count: int | 
         lines.append(f"赛后语气：{highlights['postgame_tone']}")
     if highlights["memory_summary"]:
         lines.append(f"后续记忆摘要：{highlights['memory_summary']}")
-    if last_user:
-        lines.append(f"主人最近在比赛里说：{last_user}")
-    if last_assistant:
-        lines.append(f"你最后回应：{last_assistant}")
     lines.append(
         f"倒数 {normalized_tail_count} 条规则：本条 system 归档不计入倒数 {normalized_tail_count} 条；"
         f"若前面的倒数 {normalized_tail_count} 条实时片段与之前 recent history 重复，"
         f"以这倒数 {normalized_tail_count} 条的相对顺序为准。"
     )
-    lines.append("后续聊天可以自然记得这局比赛的结果、互动氛围和主人的情绪，不要把本记录当成主人亲口说过的话。")
     return "\n".join(lines)
 
 
@@ -2978,6 +2966,7 @@ async def _get_or_create_session(game_type: str, session_id: str) -> dict:
         'session': session,
         'reply_chunks': reply_chunks,
         'lanlan_name': char_info['lanlan_name'],
+        'lanlan_prompt': char_info.get('lanlan_prompt') or '',
         'source': _infer_service_source(
             char_info.get('base_url', ''),
             char_info.get('model', ''),
@@ -3125,6 +3114,151 @@ def _build_soccer_balance_hint(event: Any) -> Dict[str, Any]:
     }
 
 
+def _soccer_context_text_blob(value: Any) -> str:
+    parts: list[str] = []
+    if isinstance(value, dict):
+        for item in value.values():
+            text = _soccer_context_text_blob(item)
+            if text:
+                parts.append(text)
+    elif isinstance(value, (list, tuple, set)):
+        for item in value:
+            text = _soccer_context_text_blob(item)
+            if text:
+                parts.append(text)
+    elif value is not None:
+        text = str(value).strip()
+        if text:
+            parts.append(text)
+    return " ".join(parts)
+
+
+def _soccer_anger_pressure_cap_applicable(pre_game_context: Any) -> bool:
+    if not isinstance(pre_game_context, dict):
+        return False
+    stance = str(pre_game_context.get("gameStance") or "").strip()
+    if stance == "punishing":
+        return True
+
+    emotion_values = {
+        str(pre_game_context.get("nekoEmotion") or "").strip(),
+        str(pre_game_context.get("initialMood") or "").strip(),
+    }
+    if "angry" not in emotion_values:
+        return False
+
+    if stance == "withdrawn":
+        return True
+
+    text_blob = _soccer_context_text_blob(pre_game_context).lower()
+    anger_context_keywords = (
+        "生气", "发火", "愤怒", "爆发", "惩罚", "教训", "报复", "泄愤",
+        "冷战", "冲突", "关系修复", "哄", "道歉", "补偿", "赔偿",
+        "angry", "punish", "punishment", "repair", "apology", "compensation",
+        "cold_war",
+    )
+    return any(keyword in text_blob for keyword in anger_context_keywords)
+
+
+def _soccer_anger_pressure_cap_goals(pre_game_context: Any, lanlan_prompt: str = "") -> int:
+    text_blob = f"{_soccer_context_text_blob(pre_game_context)} {lanlan_prompt}".lower()
+    weak_keywords = (
+        "不擅长运动", "运动差", "体力弱", "体弱", "虚弱", "病弱", "容易累",
+        "缺乏运动", "宅", "懒得动", "weak", "frail", "sickly",
+    )
+    strong_keywords = (
+        "擅长运动", "运动神经", "体育", "足球", "体力强", "耐力好", "精力充沛",
+        "敏捷", "athletic", "sporty", "stamina", "energetic",
+    )
+    if any(keyword in text_blob for keyword in weak_keywords):
+        return _SOCCER_ANGER_PRESSURE_CAP_WEAK
+    if any(keyword in text_blob for keyword in strong_keywords):
+        return _SOCCER_ANGER_PRESSURE_CAP_STRONG
+    return _SOCCER_ANGER_PRESSURE_CAP_DEFAULT
+
+
+def _build_soccer_anger_pressure_cap(
+    event: Any,
+    route_state: Any,
+    *,
+    lanlan_prompt: str = "",
+) -> Dict[str, Any]:
+    if not isinstance(event, dict) or not isinstance(route_state, dict):
+        return {}
+    pre_game_context = route_state.get("preGameContext")
+    if not _soccer_anger_pressure_cap_applicable(pre_game_context):
+        return {}
+
+    score = event.get("score") if isinstance(event.get("score"), dict) else {}
+    try:
+        ai_goals = int(score.get("ai", 0))
+        player_goals = int(score.get("player", 0))
+    except (TypeError, ValueError):
+        return {}
+    try:
+        score_diff = int(event.get("scoreDiff", ai_goals - player_goals))
+    except (TypeError, ValueError):
+        score_diff = ai_goals - player_goals
+
+    cap_goals = _soccer_anger_pressure_cap_goals(pre_game_context, lanlan_prompt)
+    recommended_difficulty = "lv4" if score_diff >= 10 or ai_goals >= cap_goals + 5 else "lv3"
+    reached = ai_goals >= cap_goals and score_diff > 0
+    return {
+        "applicable": True,
+        "reached": reached,
+        "capGoals": cap_goals,
+        "aiGoals": ai_goals,
+        "playerGoals": player_goals,
+        "scoreDiff": score_diff,
+        "recommendedDifficulty": recommended_difficulty,
+        "message": (
+            "这是生气/惩罚/哄生气场景的狂怒压制上限。达到上限后不能继续 angry + max；"
+            "可以用累了、体力耗尽、发泄完一部分、冷处理或要求补偿作为自然转折。"
+        ),
+    }
+
+
+def _event_current_difficulty(event: Any) -> str:
+    if not isinstance(event, dict):
+        return ""
+    difficulty = str(event.get("difficulty") or "").strip()
+    if difficulty:
+        return difficulty
+    current_state = event.get("currentState")
+    if isinstance(current_state, dict):
+        return str(current_state.get("difficulty") or "").strip()
+    return ""
+
+
+def _apply_soccer_anger_pressure_cap(result: Dict[str, Any], event: Any) -> Dict[str, Any]:
+    if not isinstance(result, dict) or not isinstance(event, dict):
+        return result
+    cap = event.get("angerPressureCap") if isinstance(event.get("angerPressureCap"), dict) else {}
+    if not cap or cap.get("reached") is not True:
+        if cap:
+            result["anger_pressure_cap"] = dict(cap, adjusted=False)
+        return result
+
+    control = dict(result.get("control") or {})
+    requested_difficulty = str(control.get("difficulty") or "").strip()
+    current_difficulty = _event_current_difficulty(event)
+    should_clamp = requested_difficulty == "max" or (not requested_difficulty and current_difficulty == "max")
+    adjusted = False
+    if should_clamp:
+        control["difficulty"] = str(cap.get("recommendedDifficulty") or "lv3")
+        existing_reason = str(control.get("reason") or "").strip()
+        cap_reason = "狂怒压制已到体力上限，改为降强度继续处理情绪"
+        if existing_reason:
+            control["reason"] = f"{existing_reason}；{cap_reason}"
+        elif event.get("requestControlReason") is True:
+            control["reason"] = cap_reason
+        result["control"] = control
+        adjusted = True
+
+    result["anger_pressure_cap"] = dict(cap, adjusted=adjusted)
+    return result
+
+
 async def _close_and_remove_session(game_type: str, session_id: str) -> bool:
     """关闭并移除指定游戏 session。"""
     key = f"{game_type}:{session_id}"
@@ -3170,6 +3304,17 @@ async def _run_game_chat(game_type: str, session_id: str, event: Any) -> Dict[st
         # 清空上一次的回复
         reply_chunks.clear()
 
+        if game_type == "soccer" and isinstance(event, dict):
+            route_state = _find_game_route_state_for_session(game_type, session_id)
+            anger_pressure_cap = _build_soccer_anger_pressure_cap(
+                event,
+                route_state,
+                lanlan_prompt=str(entry.get("lanlan_prompt") or ""),
+            )
+            if anger_pressure_cap:
+                event = dict(event)
+                event["angerPressureCap"] = anger_pressure_cap
+
         # 格式化事件为文本发送给 LLM
         import json as _json
         if isinstance(event, dict):
@@ -3194,6 +3339,8 @@ async def _run_game_chat(game_type: str, session_id: str, event: Any) -> Dict[st
         full_reply = ''.join(reply_chunks)
 
     result = _parse_control_instructions(full_reply)
+    if game_type == "soccer" and isinstance(event, dict):
+        result = _apply_soccer_anger_pressure_cap(result, event)
     if isinstance(event, dict) and event.get('balanceHint'):
         result['balance_hint'] = event['balanceHint']
     total_elapsed_ms = int((time.perf_counter() - request_started_at) * 1000)

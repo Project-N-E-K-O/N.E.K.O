@@ -362,7 +362,7 @@ async def test_refresh_game_session_instructions_rebuilds_prompt_from_context(mo
 
 
 @pytest.mark.unit
-def test_archive_includes_context_summary_and_grouped_signals(monkeypatch):
+def test_archive_uses_context_summary_and_grouped_signals_only_as_highlight_source(monkeypatch):
     state = _new_state(monkeypatch)
     state["finalScore"] = {"player": 3, "ai": 6}
     state["game_context_summary"] = "猫娘领先后放慢节奏，主人继续追分。"
@@ -371,14 +371,28 @@ def test_archive_includes_context_summary_and_grouped_signals(monkeypatch):
     _append_user_line(state, 1)
 
     archive = game_router._build_game_archive(state)
+    archive["memory_highlights"] = {
+        "important_records": ["主人继续追分，猫娘放慢节奏回应。"],
+        "important_game_events": ["官方比分主人 3 : 6 Lan。"],
+        "state_carryback": "猫娘赛后保持轻松陪玩状态。",
+        "postgame_tone": "轻松",
+        "memory_summary": "主人和猫娘刚踢完一局足球小游戏，猫娘小幅领先。",
+    }
     memory_text = game_router._build_game_archive_memory_summary_text(archive)
     highlight_source = game_router._build_game_archive_memory_highlight_source(archive)
 
     assert archive["game_context_summary"] == "猫娘领先后放慢节奏，主人继续追分。"
     assert archive["game_context_signals"]["主人信号"][0]["signalLabel"] == "主人在意能否追上比分"
     assert archive["game_context_degraded"] is False
-    assert "局内滚动摘要：猫娘领先后放慢节奏，主人继续追分。" in memory_text
-    assert "局内中文分组信号" in memory_text
+    assert "局内滚动摘要" not in memory_text
+    assert "局内中文分组信号" not in memory_text
+    assert "主人在意能否追上比分" not in memory_text
+    assert "重要互动：" in memory_text
+    assert "主人继续追分，猫娘放慢节奏回应。" in memory_text
+    assert "猫娘记住的比赛事件：" in memory_text
+    assert "后续记忆摘要：主人和猫娘刚踢完一局足球小游戏，猫娘小幅领先。" in memory_text
+    assert "主人最近在比赛里说：" not in memory_text
+    assert "你最后回应：" not in memory_text
     assert "主人在意能否追上比分" in highlight_source
     assert "筛选优先级" in highlight_source
 
@@ -410,9 +424,9 @@ async def test_degraded_archive_uses_minimal_memory_facts(monkeypatch):
 
     assert highlights["source"]["method"] == "degraded_minimal_facts"
     assert "局内上下文整理已降级为纯游戏模式" in memory_text
-    assert "官方比分：主人 1 : 9 Lan。" in memory_text
+    assert "官方比分：主人 1 : 9 Lan。口头让步不改官方比分。" in memory_text
     assert "不可靠关系摘要" not in memory_text
     assert "不可靠关系信号" not in memory_text
-    assert "口头让步规则" in memory_text
+    assert "口头让步不改官方比分" in memory_text
     assert [message["role"] for message in messages] == ["system"]
     assert "算你赢啦" not in messages[0]["content"][0]["text"]

@@ -88,6 +88,136 @@ def test_special_pregame_context_can_keep_max_difficulty(monkeypatch):
 
 
 @pytest.mark.unit
+def test_soccer_anger_pressure_cap_applies_only_to_punishing_anger_context():
+    state = {
+        "preGameContext": {
+            "gameStance": "punishing",
+            "nekoEmotion": "angry",
+            "initialMood": "angry",
+            "launchIntent": "punishment_session",
+        },
+    }
+    event = {
+        "score": {"player": 5, "ai": 16},
+        "scoreDiff": 11,
+        "difficulty": "max",
+        "mood": "angry",
+        "requestControlReason": True,
+    }
+
+    cap = game_router._build_soccer_anger_pressure_cap(event, state)
+
+    assert cap["applicable"] is True
+    assert cap["reached"] is True
+    assert cap["capGoals"] == 15
+    assert cap["recommendedDifficulty"] == "lv4"
+
+    neutral = {
+        "preGameContext": {
+            "gameStance": "competitive",
+            "nekoEmotion": "happy",
+            "initialMood": "happy",
+        },
+    }
+    assert game_router._build_soccer_anger_pressure_cap(event, neutral) == {}
+
+
+@pytest.mark.unit
+def test_soccer_anger_pressure_cap_uses_persona_stamina_bounds():
+    event = {
+        "score": {"player": 1, "ai": 9},
+        "scoreDiff": 8,
+        "difficulty": "max",
+        "mood": "angry",
+    }
+    state = {
+        "preGameContext": {
+            "gameStance": "punishing",
+            "nekoEmotion": "angry",
+            "initialMood": "angry",
+        },
+    }
+
+    weak_cap = game_router._build_soccer_anger_pressure_cap(
+        event,
+        state,
+        lanlan_prompt="体力弱，不擅长运动，跑一会儿就容易累。",
+    )
+    strong_cap = game_router._build_soccer_anger_pressure_cap(
+        event,
+        state,
+        lanlan_prompt="擅长运动，体力强，运动神经很好。",
+    )
+
+    assert weak_cap["capGoals"] == 8
+    assert weak_cap["reached"] is True
+    assert strong_cap["capGoals"] == 30
+    assert strong_cap["reached"] is False
+
+
+@pytest.mark.unit
+def test_soccer_anger_pressure_cap_clamps_max_control_after_limit():
+    event = {
+        "score": {"player": 4, "ai": 16},
+        "scoreDiff": 12,
+        "difficulty": "max",
+        "mood": "angry",
+        "requestControlReason": True,
+        "angerPressureCap": {
+            "applicable": True,
+            "reached": True,
+            "capGoals": 15,
+            "aiGoals": 16,
+            "playerGoals": 4,
+            "scoreDiff": 12,
+            "recommendedDifficulty": "lv4",
+        },
+    }
+    result = {
+        "line": "还没完。",
+        "control": {
+            "mood": "angry",
+            "difficulty": "max",
+            "reason": "继续惩罚主人",
+        },
+    }
+
+    adjusted = game_router._apply_soccer_anger_pressure_cap(result, event)
+
+    assert adjusted["control"]["difficulty"] == "lv4"
+    assert "继续惩罚主人" in adjusted["control"]["reason"]
+    assert "体力上限" in adjusted["control"]["reason"]
+    assert adjusted["anger_pressure_cap"]["adjusted"] is True
+
+
+@pytest.mark.unit
+def test_soccer_anger_pressure_cap_forces_difficulty_when_llm_omits_control():
+    event = {
+        "score": {"player": 4, "ai": 16},
+        "scoreDiff": 12,
+        "difficulty": "max",
+        "mood": "angry",
+        "requestControlReason": True,
+        "angerPressureCap": {
+            "applicable": True,
+            "reached": True,
+            "capGoals": 15,
+            "aiGoals": 16,
+            "playerGoals": 4,
+            "scoreDiff": 12,
+            "recommendedDifficulty": "lv4",
+        },
+    }
+    result = {"line": "呼……先停一下。", "control": {}}
+
+    adjusted = game_router._apply_soccer_anger_pressure_cap(result, event)
+
+    assert adjusted["control"]["difficulty"] == "lv4"
+    assert adjusted["control"]["reason"] == "狂怒压制已到体力上限，改为降强度继续处理情绪"
+    assert adjusted["anger_pressure_cap"]["adjusted"] is True
+
+
+@pytest.mark.unit
 def test_pregame_opening_line_is_short_and_does_not_repeat_invite():
     context, invalid = game_router._normalize_soccer_pregame_context({
         "gameStance": "soft_teasing",
@@ -284,10 +414,10 @@ def test_game_archive_memory_payload_uses_system_note_shape():
     assert messages[1]["content"][0]["text"] == "好好好，让你踢。"
     system_text = messages[2]["content"][0]["text"]
     assert "游戏模块归档，不是主人逐字发言" in system_text
-    assert "soccer 小游戏结束" in system_text
-    assert "官方比分：主人 1 : 4 Lan。" in system_text
-    assert "官方比分永远以 finalScore / last_state.score 为准" in system_text
-    assert "口头让步规则" in system_text
+    assert "soccer 小游戏结束" not in system_text
+    assert "官方比分：主人 1 : 4 Lan。口头让步不改官方比分。" in system_text
+    assert "官方比分永远以 finalScore / last_state.score 为准" not in system_text
+    assert "口头让步规则" not in system_text
     assert "重要互动：" in system_text
     assert "主人要求温柔一点，你改成让球式回应。" in system_text
     assert "猫娘记住的比赛事件：" in system_text
@@ -298,8 +428,8 @@ def test_game_archive_memory_payload_uses_system_note_shape():
     assert "本条 system 归档不计入倒数 2 条" in system_text
     assert "本局记录了" not in system_text
     assert "外部接管模式" not in system_text
-    assert "主人最近在比赛里说：温柔一点" in system_text
-    assert "你最后回应：好好好，让你踢。" in system_text
+    assert "主人最近在比赛里说：温柔一点" not in system_text
+    assert "你最后回应：好好好，让你踢。" not in system_text
 
 
 @pytest.mark.unit
@@ -329,8 +459,8 @@ def test_game_archive_memory_tail_uses_game_dialog_order_without_event_labels():
     assert messages[1]["content"][0]["text"] == "你刚才说算我赢？"
     assert messages[2]["content"][0]["text"] == "那是哄你的，比分可没改哦。"
     system_text = messages[-1]["content"][0]["text"]
-    assert "官方比分：主人 9 : 20 Lan。" in system_text
-    assert "口头让步规则" in system_text
+    assert "官方比分：主人 9 : 20 Lan。口头让步不改官方比分。" in system_text
+    assert "口头让步规则" not in system_text
     assert "倒数 4 条规则" in system_text
 
 
@@ -351,9 +481,9 @@ def test_game_archive_memory_prefers_final_score_over_oral_concession_text():
     messages = game_router._build_game_archive_memory_messages(archive, tail_count=1)
     system_text = messages[-1]["content"][0]["text"]
 
-    assert "官方比分：主人 9 : 20 Lan。" in system_text
-    assert "官方比分永远以 finalScore / last_state.score 为准" in system_text
-    assert "口头让步规则" in system_text
+    assert "官方比分：主人 9 : 20 Lan。口头让步不改官方比分。" in system_text
+    assert "官方比分永远以 finalScore / last_state.score 为准" not in system_text
+    assert "口头让步规则" not in system_text
     assert messages[0]["role"] == "assistant"
     assert messages[0]["content"][0]["text"] == "行吧，这局算你赢。"
 
