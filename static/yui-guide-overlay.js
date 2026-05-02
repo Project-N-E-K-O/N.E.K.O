@@ -999,6 +999,9 @@
             const title = typeof normalizedOptions.title === 'string' ? normalizedOptions.title.trim() : '';
             const meta = typeof normalizedOptions.meta === 'string' ? normalizedOptions.meta.trim() : '';
             const emotion = typeof normalizedOptions.emotion === 'string' ? normalizedOptions.emotion.trim() : 'neutral';
+            const bubbleVariant = typeof normalizedOptions.bubbleVariant === 'string'
+                ? normalizedOptions.bubbleVariant.trim()
+                : '';
 
             this.bubbleTitle.textContent = title || 'Yui';
             this.bubbleTitle.hidden = false;
@@ -1007,6 +1010,11 @@
             this.bubbleBody.textContent = text || '';
             this.bubble.hidden = false;
             this.bubble.dataset.emotion = emotion || 'neutral';
+            if (bubbleVariant) {
+                this.bubble.dataset.bubbleVariant = bubbleVariant;
+            } else {
+                delete this.bubble.dataset.bubbleVariant;
+            }
             this.positionBubble(normalizedOptions.anchorRect || null, normalizedOptions);
             this.bubble.classList.add('is-visible');
         }
@@ -1017,6 +1025,7 @@
             this.bubble.classList.remove('is-visible');
             this.clearBubblePlacement();
             delete this.bubble.dataset.emotion;
+            delete this.bubble.dataset.bubbleVariant;
         }
 
         showPluginPreview(items, options) {

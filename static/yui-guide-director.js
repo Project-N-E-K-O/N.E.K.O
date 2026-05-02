@@ -2325,7 +2325,13 @@
 
         showGuideBubble(text, options, sceneId) {
             const normalizedOptions = Object.assign({}, options || {});
-            if (!normalizedOptions.meta) {
+            const bubbleVariant = typeof normalizedOptions.bubbleVariant === 'string'
+                ? normalizedOptions.bubbleVariant.trim()
+                : '';
+            const hidesMeta = bubbleVariant === 'intro-activation' || bubbleVariant === 'plugin-manual-open';
+            if (hidesMeta) {
+                normalizedOptions.meta = '';
+            } else if (!normalizedOptions.meta) {
                 normalizedOptions.meta = this.getBubbleMetaForScene(sceneId || this.currentSceneId);
             }
             this.overlay.showBubble(text, normalizedOptions);
@@ -4707,7 +4713,11 @@
                 const api = this.getHomeInteractionApi();
                 if (api && typeof api.clickAgentSidePanelAction === 'function') {
                     try {
-                        return !!(await api.clickAgentSidePanelAction(toggleId, actionId, options || null));
+                        const clicked = await api.clickAgentSidePanelAction(toggleId, actionId, options || null);
+                        if (clicked) {
+                            return true;
+                        }
+                        return fallbackClick();
                     } catch (error) {
                         console.warn('[YuiGuide] 插件管理面板 API 点击失败，回退到本地实现:', error);
                     }
@@ -4989,7 +4999,10 @@
 
         async waitForManualPluginDashboardOpen(managementButton, spotlightTarget, runId, timeoutMs) {
             if (!managementButton || runId !== this.sceneRunId || this.isStopping()) {
-                return null;
+                return {
+                    window: null,
+                    createdByGuide: false
+                };
             }
 
             const normalizedTimeoutMs = clamp(
@@ -5016,7 +5029,7 @@
                 this.showGuideBubble(promptText, {
                     anchorRect: targetRect || null,
                     emotion: 'surprised',
-                    meta: this.getBubbleMetaForScene('takeover_plugin_preview')
+                    bubbleVariant: 'plugin-manual-open'
                 }, 'takeover_plugin_preview');
 
                 const openedWindow = await this.waitForOpenedWindow(
@@ -5027,13 +5040,19 @@
                     this.recordExperienceMetric('plugin_dashboard_popup_manual_opened', {
                         targetPage: 'plugin_dashboard'
                     });
-                    return openedWindow;
+                    return {
+                        window: openedWindow,
+                        createdByGuide: false
+                    };
                 }
 
                 this.recordExperienceMetric('plugin_dashboard_popup_manual_open_timeout', {
                     targetPage: 'plugin_dashboard'
                 });
-                return null;
+                return {
+                    window: null,
+                    createdByGuide: false
+                };
             } finally {
                 this.manualPluginDashboardOpenAllowed = false;
                 this.manualPluginDashboardOpenTarget = null;
@@ -5800,13 +5819,19 @@
                 && !this.destroyed
                 && !this.angryExitTriggered
             ) {
-                pluginDashboardWindow = await this.waitForManualPluginDashboardOpen(
+                const manualPluginDashboardOpen = await this.waitForManualPluginDashboardOpen(
                     managementButton,
                     managementSpotlightTarget,
                     runId,
                     scaleSceneMs(18000, 9000, 26000)
                 );
-                this.pluginDashboardWindowCreatedByGuide = !!(pluginDashboardWindow && !pluginDashboardWindow.closed);
+                pluginDashboardWindow = manualPluginDashboardOpen && manualPluginDashboardOpen.window;
+                this.pluginDashboardWindowCreatedByGuide = !!(
+                    manualPluginDashboardOpen
+                    && manualPluginDashboardOpen.createdByGuide
+                    && pluginDashboardWindow
+                    && !pluginDashboardWindow.closed
+                );
             }
 
             return {
@@ -6085,13 +6110,19 @@
                     && !this.destroyed
                     && !this.angryExitTriggered
                 ) {
-                    pluginDashboardWindow = await this.waitForManualPluginDashboardOpen(
+                    const manualPluginDashboardOpen = await this.waitForManualPluginDashboardOpen(
                         managementButton,
                         managementSpotlightTarget,
                         runId,
                         scaleSceneMs(18000, 9000, 26000)
                     );
-                    this.pluginDashboardWindowCreatedByGuide = !!(pluginDashboardWindow && !pluginDashboardWindow.closed);
+                    pluginDashboardWindow = manualPluginDashboardOpen && manualPluginDashboardOpen.window;
+                    this.pluginDashboardWindowCreatedByGuide = !!(
+                        manualPluginDashboardOpen
+                        && manualPluginDashboardOpen.createdByGuide
+                        && pluginDashboardWindow
+                        && !pluginDashboardWindow.closed
+                    );
                 }
 
                 if (pluginDashboardWindow && !pluginDashboardWindow.closed) {
@@ -7479,12 +7510,12 @@
                 const activationHint = this.resolveGuideCopy(INTRO_ACTIVATION_HINT_KEY, INTRO_ACTIVATION_HINT);
                 this.showGuideBubble(activationHint, {
                     anchorRect: inputRect,
-                    meta: this.getBubbleMetaForScene('intro_activation')
+                    bubbleVariant: 'intro-activation'
                 }, 'intro_activation');
                 // 将气泡定位到输入框正上方
                 const bubbleEl = this.overlay.bubble;
                 if (bubbleEl) {
-                    const bubbleW = Math.min(320, window.innerWidth - 32);
+                    const bubbleW = Math.min(bubbleEl.offsetWidth || 380, window.innerWidth - 32);
                     const bubbleH = bubbleEl.offsetHeight || 60;
                     const bLeft = Math.max(16, Math.min(
                         inputRect.left + inputRect.width / 2 - bubbleW / 2,

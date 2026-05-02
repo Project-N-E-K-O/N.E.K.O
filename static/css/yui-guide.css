@@ -469,6 +469,100 @@ html.dark .yui-guide-bubble[data-emotion='angry'] {
   --yui-guide-text: #ffeceb;
 }
 
+.yui-guide-bubble[data-bubble-variant='intro-activation'],
+.yui-guide-bubble[data-bubble-variant='plugin-manual-open'] {
+  width: min(392px, calc(100vw - 32px));
+  padding: 18px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.98);
+  border: 1px solid rgba(43, 108, 176, 0.26);
+  box-shadow:
+    0 18px 44px rgba(20, 38, 68, 0.18),
+    0 1px 0 rgba(255, 255, 255, 0.8) inset;
+  color: #1c2f44;
+  backdrop-filter: blur(10px) saturate(1.02);
+}
+
+.yui-guide-bubble[data-bubble-variant='intro-activation']::before,
+.yui-guide-bubble[data-bubble-variant='plugin-manual-open']::before {
+  content: none;
+}
+
+.yui-guide-bubble[data-bubble-variant='intro-activation']::after,
+.yui-guide-bubble[data-bubble-variant='plugin-manual-open']::after {
+  background: rgba(255, 255, 255, 0.98);
+  border-color: rgba(43, 108, 176, 0.26);
+}
+
+.yui-guide-bubble[data-bubble-variant='intro-activation'] .yui-guide-bubble-header,
+.yui-guide-bubble[data-bubble-variant='plugin-manual-open'] .yui-guide-bubble-header {
+  margin-bottom: 10px;
+  padding-bottom: 9px;
+  border-bottom: 1px solid rgba(43, 108, 176, 0.12);
+}
+
+.yui-guide-bubble[data-bubble-variant='intro-activation'] .yui-guide-bubble-title,
+.yui-guide-bubble[data-bubble-variant='plugin-manual-open'] .yui-guide-bubble-title {
+  font-size: 13px;
+  line-height: 1.3;
+  font-weight: 800;
+  text-transform: none;
+  color: #22547e;
+}
+
+.yui-guide-bubble[data-bubble-variant='intro-activation'] .yui-guide-bubble-meta,
+.yui-guide-bubble[data-bubble-variant='plugin-manual-open'] .yui-guide-bubble-meta {
+  display: none;
+}
+
+.yui-guide-bubble[data-bubble-variant='intro-activation'] .yui-guide-bubble-body,
+.yui-guide-bubble[data-bubble-variant='plugin-manual-open'] .yui-guide-bubble-body {
+  font-size: 15px;
+  line-height: 1.68;
+  color: #20364d;
+}
+
+html[data-theme='dark'] .yui-guide-bubble[data-bubble-variant='intro-activation'],
+html[data-theme='dark'] .yui-guide-bubble[data-bubble-variant='plugin-manual-open'],
+html.dark .yui-guide-bubble[data-bubble-variant='intro-activation'],
+html.dark .yui-guide-bubble[data-bubble-variant='plugin-manual-open'] {
+  background: rgba(21, 29, 41, 0.98);
+  border-color: rgba(119, 190, 255, 0.28);
+  box-shadow:
+    0 20px 48px rgba(0, 0, 0, 0.34),
+    0 1px 0 rgba(255, 255, 255, 0.06) inset;
+  color: #edf7ff;
+}
+
+html[data-theme='dark'] .yui-guide-bubble[data-bubble-variant='intro-activation']::after,
+html[data-theme='dark'] .yui-guide-bubble[data-bubble-variant='plugin-manual-open']::after,
+html.dark .yui-guide-bubble[data-bubble-variant='intro-activation']::after,
+html.dark .yui-guide-bubble[data-bubble-variant='plugin-manual-open']::after {
+  background: rgba(21, 29, 41, 0.98);
+  border-color: rgba(119, 190, 255, 0.28);
+}
+
+html[data-theme='dark'] .yui-guide-bubble[data-bubble-variant='intro-activation'] .yui-guide-bubble-header,
+html[data-theme='dark'] .yui-guide-bubble[data-bubble-variant='plugin-manual-open'] .yui-guide-bubble-header,
+html.dark .yui-guide-bubble[data-bubble-variant='intro-activation'] .yui-guide-bubble-header,
+html.dark .yui-guide-bubble[data-bubble-variant='plugin-manual-open'] .yui-guide-bubble-header {
+  border-bottom-color: rgba(119, 190, 255, 0.16);
+}
+
+html[data-theme='dark'] .yui-guide-bubble[data-bubble-variant='intro-activation'] .yui-guide-bubble-title,
+html[data-theme='dark'] .yui-guide-bubble[data-bubble-variant='plugin-manual-open'] .yui-guide-bubble-title,
+html.dark .yui-guide-bubble[data-bubble-variant='intro-activation'] .yui-guide-bubble-title,
+html.dark .yui-guide-bubble[data-bubble-variant='plugin-manual-open'] .yui-guide-bubble-title {
+  color: #9bd8ff;
+}
+
+html[data-theme='dark'] .yui-guide-bubble[data-bubble-variant='intro-activation'] .yui-guide-bubble-body,
+html[data-theme='dark'] .yui-guide-bubble[data-bubble-variant='plugin-manual-open'] .yui-guide-bubble-body,
+html.dark .yui-guide-bubble[data-bubble-variant='intro-activation'] .yui-guide-bubble-body,
+html.dark .yui-guide-bubble[data-bubble-variant='plugin-manual-open'] .yui-guide-bubble-body {
+  color: #edf7ff;
+}
+
 .yui-guide-preview {
   position: fixed;
   top: 88px;
@@ -998,10 +1092,23 @@ body.yui-taking-over #react-chat-window-root .composer-input:focus-visible {
     padding: 13px 14px 15px;
   }
 
+  .yui-guide-bubble[data-bubble-variant='intro-activation'],
+  .yui-guide-bubble[data-bubble-variant='plugin-manual-open'] {
+    width: min(352px, calc(100vw - 24px));
+    padding: 16px;
+  }
+
   .yui-guide-bubble-header {
     align-items: flex-start;
     flex-direction: column;
     gap: 4px;
+  }
+
+  .yui-guide-bubble[data-bubble-variant='intro-activation'] .yui-guide-bubble-header,
+  .yui-guide-bubble[data-bubble-variant='plugin-manual-open'] .yui-guide-bubble-header {
+    gap: 0;
+    margin-bottom: 8px;
+    padding-bottom: 8px;
   }
 
   .yui-guide-bubble-meta {
