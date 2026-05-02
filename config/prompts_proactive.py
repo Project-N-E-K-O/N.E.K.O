@@ -2588,6 +2588,13 @@ def get_screen_section_header(master_name: str | None = None, lang: str = 'zh') 
     return template.format(master=_resolve_master_for_template(master_name, lang_key))
 
 
+def get_screen_section_footer(master_name: str | None = None, lang: str = 'zh') -> str:
+    """获取 vision 通道的屏幕区块结尾（含 {master} 占位符的本地化展开）。"""
+    lang_key = _normalize_prompt_language(lang)
+    template = SCREEN_SECTION_FOOTER.get(lang_key, SCREEN_SECTION_FOOTER.get('en', SCREEN_SECTION_FOOTER['zh']))
+    return template.format(master=_resolve_master_for_template(master_name, lang_key))
+
+
 def get_screen_img_hint(master_name: str | None = None, lang: str = 'zh') -> str:
     """获取截图说明 hint（含 {master} 占位符的本地化展开），并附加 avatar 注解忽略提示。"""
     lang_key = _normalize_prompt_language(lang)

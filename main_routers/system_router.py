@@ -84,11 +84,10 @@ from config.prompts_proactive import (
     get_proactive_music_failsafe_hint,
     get_proactive_music_strict_constraint,
     get_proactive_format_sections,
-    get_screen_section_header, get_screen_img_hint,
+    get_screen_section_header, get_screen_section_footer, get_screen_img_hint,
     RECENT_PROACTIVE_CHATS_HEADER, RECENT_PROACTIVE_CHATS_FOOTER,
     RECENT_PROACTIVE_TIME_LABELS, RECENT_PROACTIVE_CHANNEL_LABELS,
     BEGIN_GENERATE,
-    SCREEN_SECTION_FOOTER,
     SCREEN_WINDOW_TITLE,
     EXTERNAL_TOPIC_HEADER, EXTERNAL_TOPIC_FOOTER,
     MUSIC_SECTION_HEADER, MUSIC_SECTION_FOOTER,
@@ -4635,7 +4634,7 @@ async def proactive_chat(request: Request):
         screen_section = ""
         if screenshot_b64_for_phase2:
             sl = get_screen_section_header(master_name_current, proactive_lang)
-            sf = _loc(SCREEN_SECTION_FOOTER, proactive_lang)
+            sf = get_screen_section_footer(master_name_current, proactive_lang)
             vision_window = vision_content.get('window_title', '') if vision_content else ''
             window_line = _loc(SCREEN_WINDOW_TITLE, proactive_lang).format(window=vision_window) if vision_window else ""
             hint = get_screen_img_hint(master_name_current, proactive_lang)
