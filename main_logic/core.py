@@ -469,6 +469,9 @@ class LLMSessionManager:
         self.session_start_last_failure_time = None
         self.session_start_cooldown_seconds = 3.0  # 冷却时间：3秒
         self.session_start_max_failures = 3  # 最大连续失败次数
+        # 熔断：达到 max_failures 后必须等用户显式触发 start_session（刷新页面/点重试）
+        # 才会清。中间任何内部 recovery 路径都被早退拦截，避免日志被刷屏。
+        self._session_start_circuit_open = False
         self._memory_error_retry_after = 0  # Memory Server 专属冷却时间戳
         self._memory_error_cooldown_seconds = 10  # Memory Server 冷却时间
         
@@ -2125,9 +2128,13 @@ class LLMSessionManager:
             logger.exception(f"💥 {error_message} (失败次数: {self.session_start_failure_count})")
 
             if self.session_start_failure_count >= self.session_start_max_failures:
-                critical_message = f"⛔ Session启动连续失败{self.session_start_failure_count}次，已停止自动重试。请检查网络连接和API配置，然后刷新页面重试。"
-                logger.critical(critical_message)
-                await self.send_status(json.dumps({"code": "SESSION_START_CRITICAL", "details": {"count": self.session_start_failure_count}}))
+                # 仅在熔断"刚跳闸"时打 CRITICAL + 推 status；之后的失败由
+                # start_session 早退拦截（理论上不会再走到这里），CRITICAL 只发一次。
+                if not self._session_start_circuit_open:
+                    self._session_start_circuit_open = True
+                    critical_message = f"⛔ Session启动连续失败{self.session_start_failure_count}次，已停止自动重试。请检查网络连接和API配置，然后刷新页面重试。"
+                    logger.critical(critical_message)
+                    await self.send_status(json.dumps({"code": "SESSION_START_CRITICAL", "details": {"count": self.session_start_failure_count}}))
             else:
                 await self.send_status(json.dumps({"code": "SESSION_START_FAILED", "details": {"error": str(e), "count": self.session_start_failure_count}}))
 
@@ -2161,12 +2168,29 @@ class LLMSessionManager:
         """
         return self._starting_session_count > 0
 
+    def reset_session_start_circuit(self) -> None:
+        """清掉熔断 + 失败计数。仅供 websocket_router 在收到用户显式
+        start_session action 时调用——这等价于"用户看到 CRITICAL 后选择重试"。
+        内部 recovery 路径绝对不要调，否则熔断就形同虚设。"""
+        if self._session_start_circuit_open or self.session_start_failure_count:
+            logger.info(f"🔄 重置 session 启动熔断 (之前失败 {self.session_start_failure_count} 次)")
+        self._session_start_circuit_open = False
+        self.session_start_failure_count = 0
+        self.session_start_last_failure_time = None
+
     async def start_session(self, websocket: WebSocket, new=False, input_mode='audio'):
         # 每次 start_session 都重新获取全局语言，确保 Steam/系统语言变更能即时生效
         self.user_language = normalize_language_code(get_global_language(), format='short')
         # 重置防刷屏标志
         self.session_closed_by_server = False
         self.last_audio_send_error_time = 0.0
+        # 熔断早退：达到失败上限后，所有内部 recovery 路径在此返回，
+        # 避免 stream_data / _process_stream_data_internal 每个音频包都触发
+        # 一次连接尝试导致日志被刷屏。用户显式 retry（websocket_router 的
+        # start_session action）会在那边先调 reset_session_start_circuit() 清掉。
+        if self._session_start_circuit_open:
+            logger.debug("Session启动熔断已跳闸，忽略本次启动请求（等用户刷新/重试）")
+            return
         # 检查是否正在启动中
         if self._starting_session_count > 0:
             logger.warning("⚠️ Session正在启动中，忽略重复请求")
@@ -2640,10 +2664,11 @@ class LLMSessionManager:
                 # 启动消息处理任务
                 self.message_handler_task = asyncio.create_task(self.session.handle_messages())
                 
-                # 启动成功，重置失败计数器
+                # 启动成功，重置失败计数器和熔断
                 self.session_start_failure_count = 0
                 self.session_start_last_failure_time = None
                 self._memory_error_retry_after = 0
+                self._session_start_circuit_open = False
 
                 logger.info(f"[语音会话诊断] 即将通知前端 session_started (start_session 总耗时: {time.time() - _diag_start:.2f}秒)")
                 # 通知前端 session 已成功启动
@@ -4183,11 +4208,15 @@ class LLMSessionManager:
                 # Memory Server 专属冷却检查
                 if self._emit_cooldown_turn_end_if_needed():
                     return
+                # 熔断早退：start_session 内部也会拦，但这里再加一层省掉
+                # 每个音频包的"自动创建 session" info 日志，避免日志洪水。
+                if self._session_start_circuit_open:
+                    return
                 logger.info(f"Session未就绪且不存在，根据输入类型 {input_type} 自动创建 session")
                 # 根据输入类型确定模式
                 mode = 'text' if input_type == 'text' else 'audio'
                 await self.start_session(self.websocket, new=False, input_mode=mode)
-                
+
                 # 检查启动是否成功
                 if not self.session or not self.is_active:
                     logger.warning("⚠️ Session启动失败，放弃本次数据流")
@@ -4217,19 +4246,11 @@ class LLMSessionManager:
             # Memory Server 专属冷却检查
             if self._emit_cooldown_turn_end_if_needed():
                 return
-            # 检查失败计数器和冷却时间
-            if self.session_start_failure_count >= self.session_start_max_failures:
-                # 达到最大失败次数，检查是否已过冷却期
-                if self.session_start_last_failure_time:
-                    time_since_last_failure = (datetime.now() - self.session_start_last_failure_time).total_seconds()
-                    if time_since_last_failure < self.session_start_cooldown_seconds:
-                        # 仍在冷却期内，不重试
-                        logger.warning(f"Session启动失败过多，冷却中... (剩余 {self.session_start_cooldown_seconds - time_since_last_failure:.1f}秒)")
-                        return
-                    else:
-                        self.session_start_failure_count = 0
-                        self.session_start_last_failure_time = None
-            
+            # 失败上限保护：start_session 内部熔断会早退，这里再加一层是为了
+            # 不让 stream 路径每个包都打"Session 不存在"info 日志，省日志开销。
+            if self._session_start_circuit_open:
+                return
+
             logger.info(f"Session 不存在或未激活，根据输入类型 {input_type} 自动创建 session")
             # 检查WebSocket状态
             ws_exists = self.websocket is not None

@@ -128,6 +128,9 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                     # 传递input_mode参数，告知session manager使用何种模式
                     # 注意：音频模块由 main_server 后台预加载，Python import lock 会自动等待首次导入完成
                     mode = 'text' if input_type == 'text' else 'audio'
+                    # 用户显式 start_session（刷新页面 / 点重试）= 清熔断。
+                    # 内部 recovery 路径不会走到这里，熔断只能从这条路被清。
+                    session_manager[lanlan_name].reset_session_start_circuit()
                     _fire_task(session_manager[lanlan_name].start_session(websocket, message.get("new_session", False), mode))
                 else:
                     await session_manager[lanlan_name].send_status(json.dumps({"code": "INVALID_INPUT_TYPE", "details": {"input_type": input_type}}))

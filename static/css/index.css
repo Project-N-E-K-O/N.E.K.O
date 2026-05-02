@@ -806,6 +806,7 @@ body.react-chat-adapter-active #chat-container {
     color: #9aa3b4;
 }
 
+#reactChatWindowMinimizeButton:hover,
 #reactChatWindowCloseButton:hover {
     background: rgba(88, 108, 145, 0.12);
     color: #2b3851;
@@ -931,6 +932,7 @@ body.react-chat-window-resizing {
 }
 
 [data-theme="dark"] #avatarPreviewHeaderButton:hover,
+[data-theme="dark"] #reactChatWindowMinimizeButton:hover,
 [data-theme="dark"] #reactChatWindowCloseButton:hover {
     background: rgba(200, 210, 230, 0.12);
     color: #dde0e8;
