@@ -47,7 +47,14 @@ export default function MessageList({
     const container = containerRef.current;
     if (!container || !shouldScrollRef.current) return;
 
-    if (isStreaming) {
+    const shouldUseInstantScroll =
+      isStreaming
+      || (
+        typeof document !== 'undefined'
+        && document.body.classList.contains('yui-taking-over')
+      );
+
+    if (shouldUseInstantScroll) {
       container.scrollTop = container.scrollHeight;
     } else {
       container.scrollTo({
