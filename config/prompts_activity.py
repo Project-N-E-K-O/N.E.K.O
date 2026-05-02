@@ -190,18 +190,17 @@ OPEN_THREADS_PROMPTS: dict[str, str] = {
 **默认应返回空数组**。绝大多数对话都自然收尾、没有悬而未决——这种情况下严格返回 `{{"open_threads": []}}`。只有当你能明确指出"谁挂了什么、对方还在等"时才报告，至多 3 条；正常情况预期是 0 条，偶尔 1 条，2-3 条很罕见。宁可漏报也不要凑数。
 
 算 hanging（应报告）：
-- AI 说"我等下查一下"然后聊别的去了，没回来给答案
 - 用户说"那个 bug 啊……"被打断，之后没回到这个话题
 - 双方约好"明天接着聊 X"，但 X 没再出现
+- 用户同时表达了两个并列的需求 / 矛盾的心情，AI 只接住其中一边，另一边没人回应
 
 不算 hanging（应忽略）：
 - 自然的话题切换、对方主动结束某个话题
 - 闲聊里的随口一提、寒暄性的"下次再说"
-- 明显的未答问题（由其它机制处理）
 - 长期话题（早就在聊，不是这段对话新起的悬念）
 
 示例 A——对话顺利结束、互道晚安 → `{{"open_threads": []}}`
-示例 B——AI 答应了没做 → `{{"open_threads": ["AI 之前说要帮查那个报错栈，但聊到一半转去推荐音乐就没回来"]}}`""",
+示例 B——用户的另一半诉求被晾在一边 → `{{"open_threads": ["用户说想吃顿好的又想减肥，AI 只顺着减肥那条线接了下去——'吃点好的'被晾在一边没人回应"]}}`""",
 
     'en': """You are a conversation review assistant. Look at the recent conversation below and identify topics that were "raised but not closed" — promises the AI made but hasn't fulfilled, user thoughts cut off mid-sentence, plans agreed but not followed up.
 
@@ -215,18 +214,17 @@ Output strict JSON (no markdown fences):
 **Default to an empty array.** Most conversations wrap naturally with nothing hanging — in that case strictly return `{{"open_threads": []}}`. Only report when you can point to a specific "X left Y hanging, the other side is still waiting", up to 3 entries; the expected count is 0, occasionally 1, rarely 2–3. Prefer under-reporting over filling the slots.
 
 Counts as hanging (report):
-- AI said "let me look that up" then drifted to another topic without returning with the answer
 - User said "about that bug…" and got interrupted, never came back to it
 - Both agreed "let's continue X tomorrow" but X never reappeared
+- User voiced two parallel needs / a mixed feeling, but AI only picked up one side and left the other unaddressed
 
 Does NOT count (ignore):
 - Natural topic shifts, the other party deliberately closing a topic
 - Casual asides, polite "we'll talk later" pleasantries
-- Obvious unanswered questions (handled by a separate mechanism)
 - Long-running topics (ongoing for a while, not a new hanging item from this window)
 
 Example A — conversation wraps cleanly, both say goodnight → `{{"open_threads": []}}`
-Example B — AI promised and forgot → `{{"open_threads": ["AI offered to look up the stack trace but switched to music recommendations and never came back"]}}`""",
+Example B — half of the user's request got left dangling → `{{"open_threads": ["User said they wanted a nice dinner but also to lose weight; AI only picked up the diet thread, leaving 'something nice for dinner' with nobody addressing it"]}}`""",
 
     'ja': """あなたは会話レビュー助手です。下の最近の会話を見て、「持ち出されたが収まっていない」話題を特定してください。例：AIが約束したがまだ実行していないこと、ユーザーが言いかけて中断したまま戻っていないこと、双方で合意したのに追いかけていない詳細など。
 
@@ -240,18 +238,17 @@ Example B — AI promised and forgot → `{{"open_threads": ["AI offered to look
 **既定値は空配列です**。ほとんどの会話は自然に収まり、宙ぶらりんなものはありません——その場合は厳密に `{{"open_threads": []}}` を返してください。「誰が何を残し、相手はまだ待っている」と明確に指摘できる場合のみ、最大3件まで報告します。期待値は0件、たまに1件、2〜3件は稀。枠を埋めるくらいなら見落とす方を選んでください。
 
 該当する（報告）：
-- AIが「ちょっと調べる」と言ったまま別の話に移り、答えを返さずにそのまま
 - ユーザーが「さっきのバグ……」と言いかけて遮られ、戻ってきていない
 - 「明日続きを話そう」と合意したのに、その話題が再び現れない
+- ユーザーが二つの並ぶ要望／相反する気持ちを口にしたのに、AIが片方しか拾わず、もう片方が放置された
 
 該当しない（無視）：
 - 自然な話題転換、相手が意図的に話題を閉じた
 - 雑談での軽い言及、社交辞令の「また今度」
-- 明らかな未回答の質問（別機構が処理）
 - 長期的な話題（ずっと続いていて、この区間で新たに発生した懸念ではない）
 
 例A——会話がきれいに収まり、おやすみで終わる → `{{"open_threads": []}}`
-例B——AIの約束未履行 → `{{"open_threads": ["AIはエラースタックを調べると言ったが、音楽の話に切り替わってそのまま戻ってこなかった"]}}`""",
+例B——ユーザーの片方の要望が放置された → `{{"open_threads": ["ユーザーが『今夜は美味しいものを食べたい、でもダイエットもしたい』と言ったのに、AIはダイエットの方だけ拾い、『美味しいもの』の側は誰も応えないまま放置された"]}}`""",
 
     'ko': """당신은 대화 검토 도우미입니다. 아래 최근 대화를 보고 "꺼냈지만 마무리되지 않은" 화제를 식별하세요. 예: AI가 약속했지만 아직 안 한 일, 사용자가 말을 꺼내다가 끊긴 채 돌아오지 않은 것, 양쪽이 합의했지만 후속하지 않은 세부 사항 등.
 
@@ -265,18 +262,17 @@ Example B — AI promised and forgot → `{{"open_threads": ["AI offered to look
 **기본값은 빈 배열입니다.** 대부분의 대화는 자연스럽게 마무리되어 미해결이 없습니다 — 그 경우 엄격히 `{{"open_threads": []}}`를 반환하세요. "누가 무엇을 남겼고 상대가 아직 기다리고 있다"고 명확히 짚을 수 있을 때만 최대 3건까지 보고합니다. 기댓값은 0건, 가끔 1건, 2~3건은 드뭅니다. 빈자리를 채우느니 누락을 택하세요.
 
 해당함 (보고):
-- AI가 "잠시 찾아볼게"라고 한 뒤 다른 화제로 넘어가 답을 가져오지 않음
 - 사용자가 "아까 그 버그…" 하다가 끊겨 돌아오지 못함
 - "내일 X 이어서 이야기하자"고 합의했지만 X가 다시 등장하지 않음
+- 사용자가 두 가지 병렬된 요구 / 상반된 감정을 동시에 말했는데, AI가 한쪽만 받아주고 다른 쪽은 아무도 응하지 않은 채 남음
 
 해당 안 함 (무시):
 - 자연스러운 화제 전환, 상대가 의도적으로 끝낸 화제
 - 잡담 중 가벼운 언급, 사교적 "다음에 봐요"
-- 명백한 미답변 질문 (다른 메커니즘이 처리)
 - 오래 이어져 온 화제 (이 구간에서 새로 생긴 미해결이 아님)
 
 예시 A — 대화가 깔끔히 마무리되고 잘 자라며 끝남 → `{{"open_threads": []}}`
-예시 B — AI의 미이행 약속 → `{{"open_threads": ["AI가 에러 스택을 찾아봐 주겠다고 했지만 음악 이야기로 넘어가 그대로 돌아오지 않았다"]}}`""",
+예시 B — 사용자 요구의 한쪽이 방치됨 → `{{"open_threads": ["사용자가 '오늘 저녁 맛있는 거 먹고 싶지만 다이어트도 하고 싶다'고 했는데, AI가 다이어트 쪽만 받아주고 '맛있는 거' 쪽은 아무도 응하지 않은 채 방치됨"]}}`""",
 
     'ru': """Вы — помощник по обзору разговора. Просмотрите недавний разговор ниже и выявите темы, которые «подняли, но не закрыли»: обещания AI, ещё не выполненные; мысли пользователя, оборвавшиеся на полуслове и не возобновлённые; согласованные планы без продолжения.
 
@@ -290,18 +286,17 @@ Example B — AI promised and forgot → `{{"open_threads": ["AI offered to look
 **По умолчанию — пустой массив.** Большинство разговоров завершаются естественно, ничего не «висит» — в таком случае строго верните `{{"open_threads": []}}`. Сообщайте только когда можете чётко указать «кто оставил что, и другая сторона всё ещё ждёт», максимум 3 записи. Ожидаемое количество — 0, иногда 1, редко 2–3. Лучше пропустить, чем заполнять слоты.
 
 Считается «висящим» (сообщать):
-- AI сказал «сейчас посмотрю» и переключился на другое, не вернувшись с ответом
 - Пользователь начал «насчёт того бага…» и был прерван, к теме не возвращались
 - Обе стороны договорились «продолжим X завтра», но X больше не всплывал
+- Пользователь высказал два параллельных желания / смешанное чувство, а AI подхватил только одну сторону, оставив другую без ответа
 
 НЕ считается (игнорировать):
 - Естественная смена темы, собеседник намеренно закрыл тему
 - Мимолётные реплики в болтовне, вежливое «поговорим как-нибудь»
-- Явные неотвеченные вопросы (обрабатываются отдельно)
 - Долгоиграющие темы (тянутся давно, это не новая зацепка в данном окне)
 
 Пример A — разговор аккуратно завершён, оба желают спокойной ночи → `{{"open_threads": []}}`
-Пример B — AI пообещал и забыл → `{{"open_threads": ["AI предложил посмотреть стек ошибки, но переключился на музыку и так и не вернулся"]}}`""",
+Пример B — одна из сторон запроса пользователя оставлена без внимания → `{{"open_threads": ["Пользователь сказал, что хочет вкусно поужинать, но и похудеть; AI подхватил только тему диеты, а сторону «вкусно поужинать» так никто и не отозвался"]}}`""",
 }
 
 
