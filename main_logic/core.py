@@ -2169,14 +2169,19 @@ class LLMSessionManager:
         return self._starting_session_count > 0
 
     def reset_session_start_circuit(self) -> None:
-        """清掉熔断 + 失败计数。仅供 websocket_router 在收到用户显式
-        start_session action 时调用——这等价于"用户看到 CRITICAL 后选择重试"。
+        """清掉熔断 + 失败计数 + memory 冷却。仅供 websocket_router 在收到用户
+        显式 start_session action 时调用——这等价于"用户看到 CRITICAL 后选择重试，
+        且声明已经修好了配置"。所以顺手把 _memory_error_retry_after 一起清掉，
+        否则用户启动了 memory server 后还得多等 10 秒。
         内部 recovery 路径绝对不要调，否则熔断就形同虚设。"""
-        if self._session_start_circuit_open or self.session_start_failure_count:
+        if (self._session_start_circuit_open
+                or self.session_start_failure_count
+                or self._memory_error_retry_after):
             logger.info(f"🔄 重置 session 启动熔断 (之前失败 {self.session_start_failure_count} 次)")
         self._session_start_circuit_open = False
         self.session_start_failure_count = 0
         self.session_start_last_failure_time = None
+        self._memory_error_retry_after = 0
 
     async def start_session(self, websocket: WebSocket, new=False, input_mode='audio'):
         # 每次 start_session 都重新获取全局语言，确保 Steam/系统语言变更能即时生效
