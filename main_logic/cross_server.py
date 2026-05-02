@@ -87,6 +87,35 @@ def normalize_text(text):  # 对文本进行基本预处理
     return text
 
 
+def _is_game_route_game_only_assistant_message(data: dict) -> bool:
+    """Return True for mirrored game lines that should not enter ordinary memory."""
+    if not isinstance(data, dict) or data.get("type") != "gemini_response":
+        return False
+    metadata = data.get("metadata")
+    if not isinstance(metadata, dict):
+        return False
+    game_route = metadata.get("game_route")
+    if not isinstance(game_route, dict):
+        return False
+    event = game_route.get("event")
+    if not isinstance(event, dict):
+        event = {}
+    return event.get("hasUserSpeech") is not True and event.get("hasUserText") is not True
+
+
+def _is_game_route_game_only_turn_end_meta(meta: dict | None) -> bool:
+    """Return True for a game TTS turn-end that belongs only to game display/archive."""
+    if not isinstance(meta, dict):
+        return False
+    game_route = meta.get("game_route")
+    if not isinstance(game_route, dict):
+        return False
+    event = game_route.get("event")
+    if not isinstance(event, dict):
+        return False
+    return event.get("hasUserSpeech") is not True and event.get("hasUserText") is not True
+
+
 def merge_unsynced_tail_assistants(chat_history, last_synced_index):
     """合并 last_synced_index 之后末尾连续的 assistant 消息为一条。
 
@@ -554,6 +583,7 @@ async def run_sync_connector(
 
     user_input_cache = ''
     text_output_cache = ''  # lanlan的当前消息
+    text_output_request_id = None
     current_turn = 'user'
     had_user_input_this_turn = False  # 当前 turn 是否有用户输入（False = 主动搭话）
     current_turn_start_index = 0
@@ -580,12 +610,20 @@ async def run_sync_connector(
 
                         # Only treat assistant turn when it's a gemini_response
                         if message["data"].get("type") == "gemini_response":
+                            if _is_game_route_game_only_assistant_message(message["data"]):
+                                logger.debug(
+                                    "[%s] game-only assistant line skipped for ordinary memory: source=%s",
+                                    lanlan_name,
+                                    (message["data"].get("metadata") or {}).get("source"),
+                                )
+                                continue
                             if current_turn == 'user':  # assistant new message starts
                                 had_user_input_this_turn = bool(user_input_cache)
                                 if user_input_cache:
                                     chat_history.append({'role': 'user', 'content': [{"type": "text", "text": user_input_cache}]})
                                     user_input_cache = ''
                                 current_turn = 'assistant'
+                                text_output_request_id = message["data"].get("request_id")
                                 current_turn_start_index = len(chat_history)
                                 text_output_cache = datetime.now().strftime('[%Y%m%d %a %H:%M] ')
 
@@ -657,10 +695,12 @@ async def run_sync_connector(
                                     chat_history.append({'role': 'system', 'content': [
                                         {'type': 'text', 'text': "网络错误，您已断开连接！"}]})
                                 text_output_cache = ''
+                                text_output_request_id = None
                             
                             elif message["data"] == "response_discarded_clear":
                                 logger.debug(f"[{lanlan_name}] 收到 response_discarded_clear，清空当前输出缓存")
                                 text_output_cache = ''
+                                text_output_request_id = None
                             
                             if message["data"] == "renew session":
                                 # 检查是否正在关闭
@@ -680,6 +720,7 @@ async def run_sync_connector(
                                     chat_history.append(
                                             {'role': 'assistant', 'content': [{'type': 'text', 'text': text_output_cache}]})
                                 text_output_cache = ''
+                                text_output_request_id = None
                                 current_turn_start_index = len(chat_history)
                                 # 合并未同步的连续主动搭话消息
                                 merge_unsynced_tail_assistants(chat_history, last_synced_index)
@@ -724,18 +765,37 @@ async def run_sync_connector(
 
                             if message["data"] in ('turn end', 'turn end agent_callback'): # lanlan的消息结束了
                                 is_agent_callback_turn_end = (message["data"] == 'turn end agent_callback')
+                                # 后端打标：meta 与 turn end 事件原子绑定，不再依赖独立通道
+                                # 的 pending_* 状态。game-only 足球台词在这里先截断，避免
+                                # 未打标的兼容镜像文本先 append 到 ordinary chat_history。
+                                turn_end_meta = message.get("meta") if isinstance(message, dict) else None
+                                if not isinstance(turn_end_meta, dict):
+                                    turn_end_meta = None
+                                was_assistant_turn = current_turn == 'assistant'
+                                if _is_game_route_game_only_turn_end_meta(turn_end_meta):
+                                    turn_end_request_id = message.get("request_id") if isinstance(message, dict) else None
+                                    if was_assistant_turn and (
+                                        not turn_end_request_id or turn_end_request_id == text_output_request_id
+                                    ):
+                                        current_turn = 'user'
+                                        text_output_cache = ''
+                                        text_output_request_id = None
+                                        current_turn_start_index = len(chat_history)
+                                        had_user_input_this_turn = False
+                                        pending_user_images = []
+                                    if config['monitor'] and sync_ws:
+                                        await sync_ws.send_json({'type': 'turn end'})
+                                    logger.debug("[%s] game-only turn end skipped for ordinary memory/analyzer", lanlan_name)
+                                    continue
                                 current_turn = 'user'
                                 text_output_cache = normalize_text(text_output_cache)
                                 if len(text_output_cache) > 0:
                                     chat_history.append(
                                         {'role': 'assistant', 'content': [{'type': 'text', 'text': text_output_cache}]})
                                 text_output_cache = ''
-                                # 后端打标：meta 与 turn end 事件原子绑定，不再依赖独立通道
-                                # 的 pending_* 状态。kind == 'avatar_interaction' 才进入隔离
-                                # 路径，其它情况按 proactive / normal 处理。
-                                turn_end_meta = message.get("meta") if isinstance(message, dict) else None
-                                if not isinstance(turn_end_meta, dict):
-                                    turn_end_meta = None
+                                text_output_request_id = None
+                                # kind == 'avatar_interaction' 才进入隔离路径，其它情况按
+                                # proactive / normal 处理。
                                 # meta 由 core 端 turn end 原子打标；avatar 互动若被用户
                                 # 接管则 core 会清空 meta，所以这里不再需要 had_user_input
                                 # 二次兜底，避免"用户语音缓存刚好先入队"误落回普通路径。
@@ -914,6 +974,7 @@ async def run_sync_connector(
                                     chat_history.append(
                                         {'role': 'assistant', 'content': [{'type': 'text', 'text': text_output_cache}]})
                                 text_output_cache = ''
+                                text_output_request_id = None
                                 current_turn_start_index = len(chat_history)
                                 # 合并未同步的连续主动搭话消息
                                 merge_unsynced_tail_assistants(chat_history, last_synced_index)

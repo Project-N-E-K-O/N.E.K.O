@@ -11,6 +11,8 @@ Game Router
 
 import asyncio
 import json
+import math
+import random
 import re
 import time
 from typing import Any, Dict
@@ -75,6 +77,7 @@ _SOCCER_SYSTEM_PROMPT = """\
 - 如果你本来就在生气、报复、泄愤、撒娇式欺负主人，也可以暂时不放水；但台词要让主人能感知到这是你的情绪/关系反应，而不是无意义碾压
 - 如果 balanceHint 提示主人明显领先，可以考虑认真起来、被激起胜负欲、变 angry/surprised/happy，或提高 difficulty
 - 如果比分接近，可以不输出控制，除非你的情绪明显变化
+- 你可以口头安抚主人，例如说“算你赢”，但这只是口头让步/玩笑；除非输出 difficulty/mood 影响后续玩法，不能把它当成官方比分或真实胜负被改写
 - 只有当你真的想改变比赛行为时才输出 JSON；不要机械地每次都输出控制
 - 如果你看到 balanceHint 但决定不调整，也可以不输出 JSON；这时请尽量让台词本身表现出你的理由
 """
@@ -112,6 +115,71 @@ _SOCCER_QUICK_LINE_KEYS = {
     "free-ball", "startle", "zoneout",
 }
 
+_DEFAULT_GAME_MEMORY_TAIL_COUNT = 6
+_MAX_GAME_MEMORY_TAIL_COUNT = 50
+_SOCCER_MOODS = {"calm", "happy", "angry", "relaxed", "sad", "surprised"}
+_SOCCER_DIFFICULTIES = {"max", "lv2", "lv3", "lv4"}
+_SOCCER_DEFAULT_DIFFICULTIES = ("lv2", "lv3")
+_SOCCER_EMOTION_INERTIA = {"low", "medium", "high", "very_high"}
+_SOCCER_GAME_STANCES = {
+    "neutral_play",
+    "teaching",
+    "soft_teasing",
+    "competitive",
+    "punishing",
+    "withdrawn",
+}
+
+_SOCCER_PREGAME_CONTEXT_PROMPT = """\
+你是足球小游戏开局上下文分析器。只输出 JSON，不要 Markdown，不要解释。
+
+任务：根据近期记录和启动参数，判断这次进入足球小游戏时 NEKO 应该以什么开局基调陪主人玩。
+普通陪玩是默认；不要把所有开局都解释成哄开心或关系修复。
+
+输出字段固定：
+{
+  "launchIntent": "unknown",
+  "confidence": 0.0,
+  "evidence": [],
+  "nekoEmotion": "calm",
+  "emotionIntensity": 0.0,
+  "emotionInertia": "low",
+  "gameStance": "neutral_play",
+  "stanceNote": "",
+  "initialMood": "calm",
+  "initialDifficulty": "lv2",
+  "openingLine": "",
+  "tonePolicy": "",
+  "difficultyPolicy": "",
+  "moodPolicy": "",
+  "softeningSignals": [],
+  "hardeningSignals": [],
+  "neutralEventPolicy": "",
+  "specialPolicies": [],
+  "postgameCarryback": ""
+}
+
+取值约束：
+- gameStance 只能是 neutral_play, teaching, soft_teasing, competitive, punishing, withdrawn。
+- initialMood 只能是 calm, happy, angry, relaxed, sad, surprised。
+- initialDifficulty 只能是 max, lv2, lv3, lv4。
+- emotionIntensity 是 0.0 到 1.0。
+- emotionInertia 只能是 low, medium, high, very_high。
+- openingLine 是进入足球小游戏后 NEKO 真正说的一句短开场白，15 个中文字符以内；可以为空。
+- 如果想不出 15 个中文字符以内的自然开场白，openingLine 留空，不要写长句。
+
+决策规则：
+- 证据不足时，gameStance 必须是 neutral_play。
+- neutral_play 表示普通陪玩，不是关系修复，不是惩罚局。
+- neutral_play 的默认难度应当是 lv2 或 lv3；不要用 max。
+- punishing 才能在开局直接 max，但必须有近期记录中的强证据支持。
+- 生气 + max 难度下，默认普通能力 NEKO 基本不可能被多次得分；不要把“主人多次得分”当作常规哄好条件。
+- 低落/自闭时，主人专注陪 NEKO 玩本身可以轻微缓解；即使双方都没进球，也可视为陪伴证据。
+- 开心/普通开局也允许因为局内互动滑向不满或闹别扭；这不是“关系修复失败”。
+- 主人的游戏中语言仍可自然影响难度；这里只定开局，不写死局内规则。
+- 如果 nekoInviteText 已经是 NEKO 主动邀请的话，openingLine 不要复读原句。
+"""
+
 # key = f"{lanlan_name}:{game_type}"
 # 游戏期间外部主入口路由状态。这里记录的是“主语音入口/主聊天窗是否被游戏接管”，
 # 不是游戏页面内部另起一套聊天入口。
@@ -122,6 +190,7 @@ _GAME_ROUTE_HEARTBEAT_INTERVAL_SECONDS = 2.5
 _GAME_ROUTE_HEARTBEAT_TIMEOUT_SECONDS = 10.0
 _GAME_ROUTE_HIDDEN_HEARTBEAT_TIMEOUT_SECONDS = 60.0
 _GAME_ROUTE_HEARTBEAT_SWEEP_SECONDS = 2.0
+_ACCIDENTAL_GAME_ENTRY_GRACE_MS = 10_000
 _SESSION_CLEANUP_SWEEP_SECONDS = 60.0
 _GAME_DEBUG_MATERIAL_LOG_LIMIT = 24000
 
@@ -359,10 +428,17 @@ async def _set_realtime_instructions(session: Any, instructions: str) -> None:
     await update({"instructions": instructions})
 
 
-def _build_game_prompt(game_type: str, lanlan_name: str, lanlan_prompt: str) -> str:
+def _build_game_prompt(
+    game_type: str,
+    lanlan_name: str,
+    lanlan_prompt: str,
+    pre_game_context: dict | None = None,
+) -> str:
     """构建游戏 system prompt。"""
     if game_type == "soccer":
-        return _SOCCER_SYSTEM_PROMPT.format(name=lanlan_name, personality=lanlan_prompt)
+        prompt = _SOCCER_SYSTEM_PROMPT.format(name=lanlan_name, personality=lanlan_prompt)
+        context_prompt = _format_soccer_pregame_context_for_prompt(pre_game_context)
+        return f"{prompt}{context_prompt}" if context_prompt else prompt
     # 未来其他游戏在这里扩展
     return f"你是{lanlan_name}。{lanlan_prompt}\n你正在玩一个游戏，根据游戏事件生成简短台词。"
 
@@ -385,6 +461,196 @@ def _strip_json_fence(text: str) -> str:
     if 0 <= json_start < json_end:
         return raw[json_start:json_end + 1].strip()
     return raw
+
+
+def _soccer_random_default_difficulty() -> str:
+    return str(random.choice(_SOCCER_DEFAULT_DIFFICULTIES))
+
+
+def _normalize_short_text(value: Any, *, max_chars: int = 120) -> str:
+    text = str(value or "").strip().replace("\n", " ")
+    text = re.sub(r"\s+", " ", text)
+    if max_chars > 0:
+        text = text[:max_chars]
+    return text
+
+
+def _normalize_text_items(value: Any, *, max_items: int = 5, max_chars: int = 80) -> list[str]:
+    if isinstance(value, str):
+        raw_items = [value]
+    elif isinstance(value, list):
+        raw_items = value
+    else:
+        raw_items = []
+
+    items: list[str] = []
+    seen: set[str] = set()
+    for item in raw_items:
+        text = _normalize_short_text(item, max_chars=max_chars)
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        items.append(text)
+        if len(items) >= max_items:
+            break
+    return items
+
+
+def _normalize_game_memory_tail_count(value: Any, default: int = _DEFAULT_GAME_MEMORY_TAIL_COUNT) -> int:
+    try:
+        count = int(value)
+    except (TypeError, ValueError):
+        count = int(default)
+    return max(1, min(count, _MAX_GAME_MEMORY_TAIL_COUNT))
+
+
+def _is_repeated_neko_invite(opening_line: str, neko_invite_text: str) -> bool:
+    line = re.sub(r"[\s，。！？、,.!?~～\"'“”‘’]+", "", str(opening_line or ""))
+    invite = re.sub(r"[\s，。！？、,.!?~～\"'“”‘’]+", "", str(neko_invite_text or ""))
+    if not line or not invite:
+        return False
+    return line == invite or line in invite or invite in line
+
+
+def _default_soccer_pregame_context(*, initial_difficulty: str | None = None) -> dict:
+    difficulty = initial_difficulty if initial_difficulty in _SOCCER_DEFAULT_DIFFICULTIES else _soccer_random_default_difficulty()
+    return {
+        "launchIntent": "unknown",
+        "confidence": 0.0,
+        "evidence": [],
+        "nekoEmotion": "calm",
+        "emotionIntensity": 0.0,
+        "emotionInertia": "low",
+        "gameStance": "neutral_play",
+        "stanceNote": "证据不足，按普通陪玩开局。",
+        "initialMood": "calm",
+        "initialDifficulty": difficulty,
+        "openingLine": "",
+        "tonePolicy": "普通陪玩，轻松自然，不强行解释成哄开心或关系修复。",
+        "difficultyPolicy": "普通陪玩默认随机中等难度；后续由局内互动和游戏 AI 自然调整。",
+        "moodPolicy": "沿用普通陪玩表现；不引入强情绪惯性。",
+        "softeningSignals": [],
+        "hardeningSignals": [],
+        "neutralEventPolicy": "普通比赛事件只产生即时反应，不强行改变关系状态。",
+        "specialPolicies": [],
+        "postgameCarryback": "赛后只按真实比赛过程和互动自然归档。",
+    }
+
+
+def _normalize_soccer_pregame_context(value: Any, *, neko_invite_text: str = "") -> tuple[dict, bool]:
+    """Normalize model output. Returns (context, had_invalid_fields)."""
+    base = _default_soccer_pregame_context()
+    if not isinstance(value, dict):
+        return base, True
+
+    context = dict(base)
+    invalid = False
+
+    string_fields = (
+        "launchIntent",
+        "nekoEmotion",
+        "stanceNote",
+        "tonePolicy",
+        "difficultyPolicy",
+        "moodPolicy",
+        "neutralEventPolicy",
+        "postgameCarryback",
+    )
+    for field in string_fields:
+        if field in value:
+            text = _normalize_short_text(value.get(field), max_chars=220)
+            if text:
+                context[field] = text
+            elif value.get(field) not in (None, ""):
+                invalid = True
+
+    if "confidence" in value:
+        try:
+            confidence = float(value.get("confidence"))
+            if 0.0 <= confidence <= 1.0:
+                context["confidence"] = confidence
+            else:
+                invalid = True
+        except (TypeError, ValueError):
+            invalid = True
+
+    if "emotionIntensity" in value:
+        try:
+            intensity = float(value.get("emotionIntensity"))
+            if 0.0 <= intensity <= 1.0:
+                context["emotionIntensity"] = intensity
+            else:
+                invalid = True
+        except (TypeError, ValueError):
+            invalid = True
+
+    if "emotionInertia" in value:
+        inertia = str(value.get("emotionInertia") or "").strip()
+        if inertia in _SOCCER_EMOTION_INERTIA:
+            context["emotionInertia"] = inertia
+        else:
+            invalid = True
+
+    if "gameStance" in value:
+        stance = str(value.get("gameStance") or "").strip()
+        if stance in _SOCCER_GAME_STANCES:
+            context["gameStance"] = stance
+        else:
+            invalid = True
+
+    if "initialMood" in value:
+        mood = str(value.get("initialMood") or "").strip()
+        if mood in _SOCCER_MOODS:
+            context["initialMood"] = mood
+        else:
+            invalid = True
+
+    if "initialDifficulty" in value:
+        difficulty = str(value.get("initialDifficulty") or "").strip()
+        if difficulty in _SOCCER_DIFFICULTIES:
+            context["initialDifficulty"] = difficulty
+        else:
+            invalid = True
+
+    if "openingLine" in value:
+        opening_line = _normalize_short_text(value.get("openingLine"), max_chars=0)
+        if len(opening_line) > 15:
+            opening_line = ""
+            invalid = True
+        if opening_line and _is_repeated_neko_invite(opening_line, neko_invite_text):
+            opening_line = ""
+        context["openingLine"] = opening_line
+
+    for field in ("evidence", "softeningSignals", "hardeningSignals", "specialPolicies"):
+        if field in value:
+            items = _normalize_text_items(value.get(field), max_items=5, max_chars=100)
+            if items or value.get(field) in (None, "", []):
+                context[field] = items
+            else:
+                invalid = True
+
+    # 普通陪玩和任何被兜底出来的开局都不能默认 max。
+    if context["gameStance"] == "neutral_play":
+        if context["initialDifficulty"] not in _SOCCER_DEFAULT_DIFFICULTIES:
+            invalid = True
+        context["initialDifficulty"] = _soccer_random_default_difficulty()
+        if not context.get("difficultyPolicy"):
+            context["difficultyPolicy"] = base["difficultyPolicy"]
+
+    return context, invalid
+
+
+def _format_soccer_pregame_context_for_prompt(pre_game_context: Any) -> str:
+    if not isinstance(pre_game_context, dict):
+        return ""
+    compact = json.dumps(pre_game_context, ensure_ascii=False, separators=(",", ":"))
+    return (
+        "\n开局上下文（由近期记录分析得到）：\n"
+        f"{compact}\n"
+        "使用方式：这是本局开局基调，不是硬脚本。你要遵守 tonePolicy、difficultyPolicy、moodPolicy、"
+        "specialPolicies 和 postgameCarryback；但局内主人语言、比分和事件仍可自然改变你的心情与难度。"
+        "不要把 neutral_play 强行解释成哄开心或关系修复。\n"
+    )
 
 
 def _normalize_quick_lines(value: Any) -> Dict[str, list[str]]:
@@ -418,7 +684,6 @@ def _get_current_character_info() -> Dict[str, Any]:
     characters = config_manager.load_characters()
     current_name = characters.get('当前猫娘', '')
 
-    catgirl_data = characters.get('猫娘', {})
     master_data = characters.get('主人', {})
     master_name = master_data.get('档案名', '主人')
 
@@ -438,6 +703,130 @@ def _get_current_character_info() -> Dict[str, Any]:
         'api_type': conversation_config.get('api_type', ''),
         'api_key': conversation_config.get('api_key', ''),
     }
+
+
+async def _fetch_recent_history_for_pregame(lanlan_name: str) -> tuple[str, str]:
+    try:
+        from config import MEMORY_SERVER_PORT
+        from utils.internal_http_client import get_internal_http_client
+
+        client = get_internal_http_client()
+        response = await client.get(
+            f"http://127.0.0.1:{MEMORY_SERVER_PORT}/get_recent_history/{lanlan_name}",
+            timeout=5.0,
+        )
+        if not response.is_success:
+            return "", "recent_history_failed"
+        return str(response.text or ""), ""
+    except Exception as exc:
+        logger.warning("🎮 开局近期记录读取失败，使用空历史: lanlan=%s err=%s", lanlan_name, exc)
+        return "", "recent_history_failed"
+
+
+async def _run_soccer_pregame_context_ai(
+    *,
+    lanlan_name: str,
+    master_name: str,
+    lanlan_prompt: str,
+    recent_history: str,
+    neko_initiated: bool,
+    neko_invite_text: str,
+) -> dict:
+    char_info = _get_current_character_info()
+    user_payload = {
+        "lanlanName": lanlan_name,
+        "masterName": master_name,
+        "recentHistory": recent_history or "开始聊天前，没有历史记录。",
+        "nekoInitiated": bool(neko_initiated),
+        "nekoInviteText": neko_invite_text,
+        "characterPromptExcerpt": str(lanlan_prompt or "")[:1200],
+    }
+
+    try:
+        from utils.file_utils import robust_json_loads
+        from utils.llm_client import HumanMessage, SystemMessage, create_chat_llm
+        from utils.token_tracker import set_call_type
+
+        set_call_type("game_pregame_context")
+        llm = create_chat_llm(
+            char_info["model"],
+            char_info["base_url"],
+            char_info["api_key"],
+            temperature=0.2,
+            max_completion_tokens=900,
+            timeout=20,
+        )
+        async with llm:
+            result = await llm.ainvoke([
+                SystemMessage(content=_SOCCER_PREGAME_CONTEXT_PROMPT),
+                HumanMessage(content=json.dumps(user_payload, ensure_ascii=False)),
+            ])
+        raw = _strip_json_fence(str(result.content or ""))
+        parsed = robust_json_loads(raw)
+    except Exception as exc:
+        logger.warning("🎮 开局上下文分析失败: lanlan=%s err=%s", lanlan_name, exc)
+        raise
+
+    if not isinstance(parsed, dict):
+        raise ValueError("pregame_context_json_not_object")
+    return parsed
+
+
+async def _build_soccer_pregame_context(
+    *,
+    game_type: str,
+    session_id: str,
+    lanlan_name: str,
+    neko_initiated: bool,
+    neko_invite_text: str,
+) -> tuple[dict, str, str]:
+    char_info = _get_current_character_info()
+    recent_history, history_error = await _fetch_recent_history_for_pregame(lanlan_name)
+    _log_game_debug_material(
+        "pregame_recent_history",
+        recent_history or "开始聊天前，没有历史记录。",
+        game_type=game_type,
+        session_id=session_id,
+        lanlan_name=lanlan_name,
+        source="memory_server_recent_history" if not history_error else "fallback_empty_history",
+    )
+
+    try:
+        raw_context = await _run_soccer_pregame_context_ai(
+            lanlan_name=lanlan_name,
+            master_name=str(char_info.get("master_name") or "主人"),
+            lanlan_prompt=str(char_info.get("lanlan_prompt") or ""),
+            recent_history=recent_history,
+            neko_initiated=neko_initiated,
+            neko_invite_text=neko_invite_text,
+        )
+    except ValueError as exc:
+        logger.warning("🎮 开局上下文 JSON 非法，使用普通陪玩兜底: lanlan=%s err=%s", lanlan_name, exc)
+        context = _default_soccer_pregame_context()
+        return context, "fallback", "invalid_json"
+    except Exception:
+        context = _default_soccer_pregame_context()
+        return context, "fallback", "ai_failed"
+
+    context, invalid_fields = _normalize_soccer_pregame_context(
+        raw_context,
+        neko_invite_text=neko_invite_text,
+    )
+    source = "ai"
+    error = "invalid_fields" if invalid_fields else history_error
+    _log_game_debug_material(
+        "pregame_context",
+        {
+            "source": source,
+            "error": error,
+            "context": context,
+        },
+        game_type=game_type,
+        session_id=session_id,
+        lanlan_name=lanlan_name,
+        source="game_pregame_context",
+    )
+    return context, source, error
 
 
 def _route_state_key(lanlan_name: str, game_type: str) -> str:
@@ -490,6 +879,16 @@ def _get_active_game_route_state(lanlan_name: str, game_type: str | None = None)
     return None
 
 
+def _find_game_route_state_for_session(game_type: str, session_id: str) -> dict | None:
+    for state in _game_route_states.values():
+        if (
+            str(state.get("game_type") or "") == str(game_type or "")
+            and str(state.get("session_id") or "") == str(session_id or "")
+        ):
+            return state
+    return None
+
+
 def is_game_route_active(lanlan_name: str, game_type: str | None = None) -> bool:
     """Used by the main WebSocket route to decide whether ordinary chat is hijacked."""
     return _get_active_game_route_state(lanlan_name, game_type) is not None
@@ -528,7 +927,19 @@ def _build_route_state(
         "game_dialog_log": [],
         "pending_outputs": [],
         "game_last_full_dialogue_count": keep_last,
+        "game_memory_tail_count": _DEFAULT_GAME_MEMORY_TAIL_COUNT,
         "last_state": {},
+        "finalScore": {},
+        "preGameContext": {},
+        "pre_game_context_source": "",
+        "pre_game_context_error": "",
+        "nekoInitiated": False,
+        "nekoInviteText": "",
+        "game_started": False,
+        "game_started_at": None,
+        "game_started_elapsed_ms": None,
+        "game_exit_started_elapsed_ms": None,
+        "accidental_game_entry_exit": False,
         "created_at": now,
         "last_activity": now,
         "heartbeat_enabled": True,
@@ -626,6 +1037,106 @@ def _update_route_visibility_from_payload(state: dict, data: dict) -> None:
         state["page_visible"] = visibility == "visible"
 
 
+def _coerce_payload_bool(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "y", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "n", "off"}:
+            return False
+    return None
+
+
+def _coerce_payload_float(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number):
+        return None
+    return number
+
+
+def _update_route_start_state_from_payload(state: dict, data: dict, *, exiting: bool = False) -> bool:
+    """Track whether the user actually clicked the game Start button."""
+    was_started = state.get("game_started") is True
+    started_value = None
+    if "gameStarted" in data:
+        started_value = _coerce_payload_bool(data.get("gameStarted"))
+    elif "game_started" in data:
+        started_value = _coerce_payload_bool(data.get("game_started"))
+
+    elapsed_ms = None
+    for key in ("gameStartedElapsedMs", "game_started_elapsed_ms"):
+        if key in data:
+            elapsed_ms = _coerce_payload_float(data.get(key))
+            break
+    if elapsed_ms is not None:
+        elapsed_ms = max(0.0, elapsed_ms)
+        state["game_started_elapsed_ms"] = elapsed_ms
+        if exiting:
+            state["game_exit_started_elapsed_ms"] = elapsed_ms
+
+    if started_value is True:
+        state["game_started"] = True
+        if not was_started:
+            state["game_started_at"] = time.time() - ((elapsed_ms or 0.0) / 1000.0)
+    elif started_value is False and not was_started:
+        state["game_started"] = False
+
+    accidental = _coerce_payload_bool(data.get("accidentalGameEntry"))
+    if accidental is None:
+        accidental = _coerce_payload_bool(data.get("accidental_game_entry"))
+    if accidental is True:
+        state["accidental_game_entry_exit"] = True
+
+    return not was_started and state.get("game_started") is True
+
+
+def _route_game_started_elapsed_ms(state: dict, *, prefer_exit_elapsed: bool = False) -> float | None:
+    if prefer_exit_elapsed:
+        exit_elapsed = _coerce_payload_float(state.get("game_exit_started_elapsed_ms"))
+        if exit_elapsed is not None:
+            return max(0.0, exit_elapsed)
+    started_at = _coerce_payload_float(state.get("game_started_at"))
+    if started_at is not None:
+        return max(0.0, (time.time() - started_at) * 1000.0)
+    elapsed = _coerce_payload_float(state.get("game_started_elapsed_ms"))
+    if elapsed is not None:
+        return max(0.0, elapsed)
+    return None
+
+
+def _game_archive_memory_skip_reason(state: dict, reason: str = "") -> str:
+    """Skip only the game archive, never ordinary user/assistant dialogue memory."""
+    reason_text = str(reason or "").strip()
+    if state.get("accidental_game_entry_exit") or reason_text == "accidental_page_entry":
+        return "accidental_page_entry"
+    if state.get("game_started") is not True:
+        return "game_not_started"
+    elapsed_ms = _coerce_payload_float(state.get("game_exit_started_elapsed_ms"))
+    if elapsed_ms is None and reason_text == "heartbeat_timeout":
+        elapsed_ms = _coerce_payload_float(state.get("game_started_elapsed_ms"))
+    if elapsed_ms is None:
+        elapsed_ms = _route_game_started_elapsed_ms(state, prefer_exit_elapsed=True)
+    if elapsed_ms is not None and elapsed_ms < _ACCIDENTAL_GAME_ENTRY_GRACE_MS:
+        return "started_under_10s"
+    return ""
+
+
+def _build_game_archive_memory_skipped_result(reason: str) -> dict:
+    return {
+        "ok": True,
+        "status": "skipped",
+        "reason": reason or "skipped",
+        "message": "game archive memory skipped; ordinary user/assistant dialogue memory is unchanged",
+    }
+
+
 def _format_ts(ts: Any) -> str:
     try:
         return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(float(ts)))
@@ -634,8 +1145,10 @@ def _format_ts(ts: Any) -> str:
 
 
 def _extract_score_text(state: dict) -> str:
+    score = state.get("finalScore") if isinstance(state.get("finalScore"), dict) else {}
     last_state = state.get("last_state") if isinstance(state.get("last_state"), dict) else {}
-    score = last_state.get("score") if isinstance(last_state.get("score"), dict) else {}
+    if not score:
+        score = last_state.get("score") if isinstance(last_state.get("score"), dict) else {}
     if not score:
         return "比分未知"
     player = score.get("player", "?")
@@ -696,6 +1209,10 @@ def _build_game_archive(state: dict) -> dict:
     dialog = list(state.get("game_dialog_log") or [])
     keep_last = int(state.get("game_last_full_dialogue_count") or _DEFAULT_LAST_FULL_DIALOGUE_COUNT)
     key_events = [item for item in dialog if item.get("type") == "game_event"][-20:]
+    last_state = state.get("last_state") if isinstance(state.get("last_state"), dict) else {}
+    final_score = state.get("finalScore") if isinstance(state.get("finalScore"), dict) else {}
+    if not final_score and isinstance(last_state.get("score"), dict):
+        final_score = dict(last_state.get("score") or {})
     return {
         "game_type": state.get("game_type"),
         "session_id": state.get("session_id"),
@@ -706,7 +1223,16 @@ def _build_game_archive(state: dict) -> dict:
         "summary": _summarize_game_archive(state, dialog),
         "key_events": key_events,
         "route_activations": list(state.get("game_input_activation_log") or []),
-        "last_state": state.get("last_state") if isinstance(state.get("last_state"), dict) else {},
+        "last_state": last_state,
+        "finalScore": final_score,
+        "game_memory_tail_count": _normalize_game_memory_tail_count(state.get("game_memory_tail_count")),
+        "preGameContext": state.get("preGameContext") if isinstance(state.get("preGameContext"), dict) else {},
+        "pre_game_context_source": str(state.get("pre_game_context_source") or ""),
+        "pre_game_context_error": str(state.get("pre_game_context_error") or ""),
+        "nekoInitiated": bool(state.get("nekoInitiated")),
+        "nekoInviteText": str(state.get("nekoInviteText") or ""),
+        "game_started": state.get("game_started") is True,
+        "game_started_elapsed_ms": _route_game_started_elapsed_ms(state, prefer_exit_elapsed=True),
         "created_at": state.get("created_at"),
         "ended_at": time.time(),
     }
@@ -720,12 +1246,27 @@ def _build_game_archive_memory_text(archive: dict) -> str:
         f"会话: {archive.get('session_id') or 'default'}",
         f"时间: {_format_ts(archive.get('created_at'))} - {_format_ts(archive.get('ended_at'))}",
         f"摘要: {archive.get('summary') or ''}",
+        f"官方比分: {_archive_score_text(archive)}",
+        "比分规则: 官方比分永远以 finalScore / last_state.score 为准；口头认输、算你赢、让你赢回来只能视为口头让步、安抚或玩笑，不改写官方比分。",
     ]
 
     key_events = archive.get("key_events") if isinstance(archive.get("key_events"), list) else []
     if key_events:
         lines.append("关键事件:")
         lines.extend(f"- {_dialog_memory_line(item)}" for item in key_events[-8:] if isinstance(item, dict))
+
+    pre_game_context = archive.get("preGameContext") if isinstance(archive.get("preGameContext"), dict) else {}
+    if pre_game_context:
+        lines.append("开局上下文:")
+        lines.append(
+            json.dumps({
+                "gameStance": pre_game_context.get("gameStance"),
+                "nekoEmotion": pre_game_context.get("nekoEmotion"),
+                "emotionIntensity": pre_game_context.get("emotionIntensity"),
+                "emotionInertia": pre_game_context.get("emotionInertia"),
+                "postgameCarryback": pre_game_context.get("postgameCarryback"),
+            }, ensure_ascii=False)
+        )
 
     last_dialogues = archive.get("last_full_dialogues") if isinstance(archive.get("last_full_dialogues"), list) else []
     if last_dialogues:
@@ -767,7 +1308,13 @@ def _normalize_memory_highlight_text(value: Any) -> str:
 
 def _normalize_game_archive_memory_highlights(value: Any) -> dict:
     if not isinstance(value, dict):
-        return {"important_records": [], "important_game_events": []}
+        return {
+            "important_records": [],
+            "important_game_events": [],
+            "state_carryback": "",
+            "postgame_tone": "",
+            "memory_summary": "",
+        }
 
     def collect(*keys: str) -> list[str]:
         raw = None
@@ -794,6 +1341,15 @@ def _normalize_game_archive_memory_highlights(value: Any) -> dict:
                 break
         return items
 
+    def pick_text(*keys: str, max_chars: int = 180) -> str:
+        for key in keys:
+            if key not in value:
+                continue
+            text = _normalize_memory_highlight_text(value.get(key))
+            if text:
+                return text[:max_chars]
+        return ""
+
     return {
         "important_records": collect(
             "important_records",
@@ -805,8 +1361,11 @@ def _normalize_game_archive_memory_highlights(value: Any) -> dict:
             "important_game_events",
             "game_events",
             "character_game_events",
-            "catgirl_game_events",
+            "neko_game_events",
         ),
+        "state_carryback": pick_text("state_carryback", "carryback", "postgame_carryback"),
+        "postgame_tone": pick_text("postgame_tone", "tone", max_chars=80),
+        "memory_summary": pick_text("memory_summary", "summary", max_chars=220),
     }
 
 
@@ -836,6 +1395,9 @@ def _fallback_game_archive_memory_highlights(archive: dict) -> dict:
     return {
         "important_records": records[:3],
         "important_game_events": event_records[:3],
+        "state_carryback": "",
+        "postgame_tone": "",
+        "memory_summary": "",
     }
 
 
@@ -847,10 +1409,24 @@ def _build_game_archive_memory_highlight_source(archive: dict) -> str:
         f"游戏: {archive.get('game_type') or 'game'}",
         f"会话: {archive.get('session_id') or 'default'}",
         f"最终/最近比分: {_archive_score_text(archive)}",
-        "比分说明: 上面的最终/最近比分是固定顺序，主人分数在前，当前角色分数在后；筛选重点时不要改成相反视角。",
+        "比分说明: 上面的最终/最近比分是官方比分，来源优先级为 finalScore / last_state.score；固定顺序是主人分数在前，当前角色分数在后；筛选重点时不要改成相反视角。",
+        "口头让步说明: 局内如果出现“算你赢”“让你赢回来”“口头认输”等，只能记录为口头让步、安抚或玩笑；不能改写官方比分或真实胜负。",
         "角色说明: 只有“主人：...”行是主人亲口说的话；“游戏事件”行里的事件原文是游戏模块/猫娘气泡或事件标签，不要归因给主人。",
         "本局完整对话/事件:",
     ]
+    pre_game_context = archive.get("preGameContext") if isinstance(archive.get("preGameContext"), dict) else {}
+    if pre_game_context:
+        lines.insert(
+            5,
+            "开局上下文: "
+            + json.dumps({
+                "gameStance": pre_game_context.get("gameStance"),
+                "nekoEmotion": pre_game_context.get("nekoEmotion"),
+                "emotionIntensity": pre_game_context.get("emotionIntensity"),
+                "emotionInertia": pre_game_context.get("emotionInertia"),
+                "postgameCarryback": pre_game_context.get("postgameCarryback"),
+            }, ensure_ascii=False),
+        )
     lines.extend(f"- {_dialog_memory_line(item)}" for item in dialogues if isinstance(item, dict))
     return "\n".join(lines)
 
@@ -863,12 +1439,16 @@ async def _select_game_archive_memory_highlights(archive: dict) -> dict:
         "你是足球小游戏赛后记忆筛选器。只输出 JSON，不要 Markdown，不要解释。\n"
         "目标：从一局游戏的完整对话/事件里，挑出真正值得进入角色 recent history 的内容。\n"
         "输出格式必须是：\n"
-        "{\"important_records\":[],\"important_game_events\":[]}\n"
+        "{\"important_records\":[],\"important_game_events\":[],\"state_carryback\":\"\",\"postgame_tone\":\"\",\"memory_summary\":\"\"}\n"
         "规则：\n"
         "- important_records 选 0-3 条，对主人、双方关系、主人情绪/偏好、承诺或后续聊天有价值的主动对话。\n"
         "- important_game_events 选 0-3 条，对猫娘自身有意义的比赛事件，例如关键比分、放水/认真、被抢断、乌龙、情绪或难度转折。\n"
+        "- state_carryback 用 0-1 句概括赛后应自然延续的 NEKO 状态；没有可靠证据就留空。\n"
+        "- postgame_tone 用短语描述赛后语气，例如普通、得意、闹别扭、低落稍缓；没有可靠证据就留空。\n"
+        "- memory_summary 用 0-1 句写给后续聊天看的本局摘要；不要编造关系修复。\n"
         "- 不要写流水统计、不要写“记录了几条事件”、不要把记录写成主人逐字发言。\n"
         "- 只有材料中以“主人：”开头的内容才是主人说的话；游戏事件里的“事件原文”不是主人原话，不能写成“主人说/主人喊”。\n"
+        "- 官方比分永远以材料里的 finalScore / last_state.score 为准；口头认输、算你赢、让你赢回来只能记录成口头让步/安抚/玩笑，不能写成真实比分改变。\n"
         "- 如果保留比分，必须沿用材料里的固定顺序或明确写出谁领先谁；不要写无主体裸比分（例如“8:0”“0:10”），也不要前后混用不同视角。\n"
         "- 普通进球、普通抢球如果没有关系或情绪价值，可以不选。\n"
         "- 每条用一句自然中文，尽量保留关键比分、关键原话和关系含义。"
@@ -926,6 +1506,9 @@ async def _ensure_game_archive_memory_highlights(archive: dict) -> dict:
     if (
         existing["important_records"]
         or existing["important_game_events"]
+        or existing["state_carryback"]
+        or existing["postgame_tone"]
+        or existing["memory_summary"]
         or (isinstance(raw_existing, dict) and "source" in raw_existing)
     ):
         source = raw_existing.get("source") if isinstance(raw_existing, dict) else None
@@ -940,48 +1523,100 @@ async def _ensure_game_archive_memory_highlights(archive: dict) -> dict:
     return highlights
 
 
-def _build_game_archive_memory_summary_text(archive: dict) -> str:
+def _game_dialog_tail_for_memory(archive: dict, tail_count: int) -> list[dict]:
+    dialogues = archive.get("full_dialogues") if isinstance(archive.get("full_dialogues"), list) else []
+    if not dialogues:
+        dialogues = archive.get("last_full_dialogues") if isinstance(archive.get("last_full_dialogues"), list) else []
+    return [item for item in dialogues[-tail_count:] if isinstance(item, dict)]
+
+
+def _game_dialog_item_to_memory_message(item: dict) -> dict | None:
+    item_type = str(item.get("type") or "")
+    text = ""
+    role = ""
+    if item_type == "user":
+        text = str(item.get("text") or "").strip()
+        role = "user"
+    elif item_type in {"assistant", "opening_line"}:
+        text = str(item.get("line") or item.get("result_line") or "").strip()
+        role = "assistant"
+    elif item_type == "game_event":
+        text = str(item.get("result_line") or item.get("line") or "").strip()
+        role = "assistant" if text else ""
+    if not role or not text:
+        return None
+    return {"role": role, "content": [{"type": "text", "text": text}]}
+
+
+def _build_game_archive_tail_memory_messages(archive: dict, tail_count: int) -> list[dict]:
+    messages: list[dict] = []
+    for item in _game_dialog_tail_for_memory(archive, tail_count):
+        message = _game_dialog_item_to_memory_message(item)
+        if message:
+            messages.append(message)
+    return messages
+
+
+def _build_game_archive_memory_summary_text(archive: dict, *, tail_count: int | None = None) -> str:
     """Build a compact system note for memory; this is not a user dialogue turn."""
     summary = str(archive.get("summary") or "").strip()
     score_text = _archive_score_text(archive)
     last_user = _archive_last_user_text(archive)
     last_assistant = _archive_last_assistant_line(archive)
     highlights = _normalize_game_archive_memory_highlights(archive.get("memory_highlights"))
+    normalized_tail_count = _normalize_game_memory_tail_count(
+        tail_count if tail_count is not None else archive.get("game_memory_tail_count")
+    )
     lines = [
         "足球小游戏赛后记录：这是游戏模块归档，不是主人逐字发言。",
     ]
     if summary:
         lines.append(f"概要：{summary}")
-    elif score_text:
-        lines.append(f"最终/最近比分：{score_text}。")
+    if score_text:
+        lines.append(f"官方比分：{score_text}。")
+        lines.append("官方比分永远以 finalScore / last_state.score 为准。")
+    lines.append("口头让步规则：局内“算你赢 / 让你赢回来 / 口头认输”只能记录为口头让步、安抚或玩笑，不改写官方比分。")
     if highlights["important_records"]:
         lines.append("重要互动：")
         lines.extend(f"- {item}" for item in highlights["important_records"])
     if highlights["important_game_events"]:
         lines.append("猫娘记住的比赛事件：")
         lines.extend(f"- {item}" for item in highlights["important_game_events"])
+    if highlights["state_carryback"]:
+        lines.append(f"赛后状态延续：{highlights['state_carryback']}")
+    if highlights["postgame_tone"]:
+        lines.append(f"赛后语气：{highlights['postgame_tone']}")
+    if highlights["memory_summary"]:
+        lines.append(f"后续记忆摘要：{highlights['memory_summary']}")
     if last_user:
         lines.append(f"主人最近在比赛里说：{last_user}")
     if last_assistant:
         lines.append(f"你最后回应：{last_assistant}")
+    lines.append(
+        f"倒数 {normalized_tail_count} 条规则：本条 system 归档不计入倒数 {normalized_tail_count} 条；"
+        f"若前面的倒数 {normalized_tail_count} 条实时片段与之前 recent history 重复，"
+        f"以这倒数 {normalized_tail_count} 条的相对顺序为准。"
+    )
     lines.append("后续聊天可以自然记得这局比赛的结果、互动氛围和主人的情绪，不要把本记录当成主人亲口说过的话。")
     return "\n".join(lines)
 
 
-def _build_game_archive_memory_messages(archive: dict) -> list[dict]:
+def _build_game_archive_memory_messages(archive: dict, tail_count: int | None = None) -> list[dict]:
     """Build the actual /cache payload.
 
-    Football archives are module-generated facts, not user utterances.  Store
-    them as a system note so /new_dialog renders them as SYSTEM_MESSAGE instead
-    of "碳基生物 | ...".
+    First replay the game's last tail window as ordinary role messages, then add
+    one module-generated system archive as the official explanation.
     """
-    memory_text = _build_game_archive_memory_summary_text(archive)
-    return [
-        {"role": "system", "content": [{"type": "text", "text": memory_text}]},
-    ]
+    normalized_tail_count = _normalize_game_memory_tail_count(
+        tail_count if tail_count is not None else archive.get("game_memory_tail_count")
+    )
+    messages = _build_game_archive_tail_memory_messages(archive, normalized_tail_count)
+    memory_text = _build_game_archive_memory_summary_text(archive, tail_count=normalized_tail_count)
+    messages.append({"role": "system", "content": [{"type": "text", "text": memory_text}]})
+    return messages
 
 
-_POSTGAME_SKIP_REASONS = {"heartbeat_timeout", "session_cleanup", "cleanup"}
+_POSTGAME_SKIP_REASONS = {"heartbeat_timeout", "session_cleanup", "cleanup", "manual_return_to_start"}
 _POSTGAME_REALTIME_NUDGE_DELAYS = (1.5, 5.0, 9.0)
 
 
@@ -1035,6 +1670,7 @@ def _normalize_postgame_options(raw: Any, *, reason: str) -> dict:
 
 def _archive_score_text(archive: dict) -> str:
     return _extract_score_text({
+        "finalScore": archive.get("finalScore") if isinstance(archive.get("finalScore"), dict) else {},
         "last_state": archive.get("last_state") if isinstance(archive.get("last_state"), dict) else {},
         "lanlan_name": archive.get("lanlan_name"),
     })
@@ -1089,10 +1725,16 @@ def _build_game_postgame_realtime_nudge_instruction(archive: dict, options: dict
     score_text = _archive_score_text(archive)
     if score_text:
         lines.append(f"最终/最近比分：{score_text}")
+        lines.append("官方比分以 finalScore / last_state.score 为准；如果你曾口头说算主人赢，那只是安抚或玩笑，不要说成真实比分改变。")
     if signals["last_user_text"]:
         lines.append(f"主人最后说：{signals['last_user_text']}")
     if signals["last_assistant_line"]:
         lines.append(f"你刚才最后说：{signals['last_assistant_line']}")
+    highlights = _normalize_game_archive_memory_highlights(archive.get("memory_highlights"))
+    if highlights["state_carryback"]:
+        lines.append(f"赛后状态延续：{highlights['state_carryback']}")
+    if highlights["postgame_tone"]:
+        lines.append(f"赛后语气：{highlights['postgame_tone']}")
     lines.append(f"请用你的口吻说一句 {max_chars} 字以内的赛后短话，优先照顾主人的情绪。")
     return "\n".join(lines)
 
@@ -1106,21 +1748,29 @@ def _build_game_postgame_event(game_type: str, archive: dict, options: dict) -> 
         if isinstance(item, dict)
     ]
     signals = _postgame_last_signals(archive)
+    current_state = dict(archive.get("last_state") or {}) if isinstance(archive.get("last_state"), dict) else {}
+    final_score = archive.get("finalScore") if isinstance(archive.get("finalScore"), dict) else {}
+    if final_score:
+        current_state["score"] = dict(final_score)
     return {
         "kind": "postgame",
         "label": "足球小游戏结束后的赛后一句话",
         "gameType": game_type,
         "summary": archive.get("summary") or "",
         "scoreText": _archive_score_text(archive),
+        "finalScore": final_score,
         "lastDialogues": formatted_dialogues,
         "lastUserText": signals["last_user_text"],
         "lastAssistantLine": signals["last_assistant_line"],
         "finalMood": signals["final_mood"],
         "finalDifficulty": signals["final_difficulty"],
-        "currentState": archive.get("last_state") if isinstance(archive.get("last_state"), dict) else {},
+        "currentState": current_state,
+        "preGameContext": archive.get("preGameContext") if isinstance(archive.get("preGameContext"), dict) else {},
+        "memoryHighlights": _normalize_game_archive_memory_highlights(archive.get("memory_highlights")),
         "request": (
             f"请生成一句 {int(options.get('max_chars') or 60)} 字以内的赛后主动文本气泡。"
             "像你本人自然接上刚才比赛，不要列表、不要解释、不要控制 JSON。"
+            "官方比分以 scoreText/finalScore 为准；currentState.score 已按官方比分对齐；口头让步不能说成真实比分改变。"
         ),
     }
 
@@ -1611,7 +2261,13 @@ async def _finalize_game_route_state_inner(
 
     memory_result = state.get("archive_memory_result")
     if not isinstance(memory_result, dict):
-        memory_result = await _submit_game_archive_to_memory(archive)
+        skip_memory_reason = _game_archive_memory_skip_reason(state, reason)
+        if skip_memory_reason:
+            archive["memory_skipped"] = True
+            archive["memory_skip_reason"] = skip_memory_reason
+            memory_result = _build_game_archive_memory_skipped_result(skip_memory_reason)
+        else:
+            memory_result = await _submit_game_archive_to_memory(archive)
         state["archive_memory_result"] = memory_result
 
     session_closed = False
@@ -1663,8 +2319,13 @@ async def _get_or_create_session(game_type: str, session_id: str) -> dict:
         master_name=char_info['master_name'],
     )
 
+    route_state = _find_game_route_state_for_session(game_type, session_id)
+    pre_game_context = route_state.get("preGameContext") if isinstance(route_state, dict) else None
     system_prompt = _build_game_prompt(
-        game_type, char_info['lanlan_name'], char_info['lanlan_prompt']
+        game_type,
+        char_info['lanlan_name'],
+        char_info['lanlan_prompt'],
+        pre_game_context if isinstance(pre_game_context, dict) else None,
     )
     await session.connect(instructions=system_prompt)
 
@@ -1931,12 +2592,40 @@ async def game_route_start(game_type: str, request: Request):
         return {"ok": False, "reason": "missing_lanlan_name"}
 
     session_id = str(data.get("session_id") or "default")
+    neko_initiated = bool(data.get("nekoInitiated"))
+    neko_invite_text = _normalize_short_text(data.get("nekoInviteText"), max_chars=120) if neko_initiated else ""
     state = _activate_game_route(
         game_type,
         session_id,
         lanlan_name,
         data.get("game_last_full_dialogue_count"),
     )
+    state["game_memory_tail_count"] = _normalize_game_memory_tail_count(
+        data.get("game_memory_tail_count", data.get("gameMemoryTailCount"))
+    )
+    state["nekoInitiated"] = neko_initiated
+    state["nekoInviteText"] = neko_invite_text
+    _update_route_start_state_from_payload(state, data)
+    if game_type == "soccer":
+        state["heartbeat_enabled"] = False
+        try:
+            context, source, error = await _build_soccer_pregame_context(
+                game_type=game_type,
+                session_id=session_id,
+                lanlan_name=lanlan_name,
+                neko_initiated=neko_initiated,
+                neko_invite_text=neko_invite_text,
+            )
+        except Exception as exc:
+            logger.warning("🎮 开局上下文构建异常，使用普通陪玩兜底: lanlan=%s err=%s", lanlan_name, exc)
+            context, source, error = _default_soccer_pregame_context(), "fallback", "ai_failed"
+        now = time.time()
+        state["preGameContext"] = context
+        state["pre_game_context_source"] = source
+        state["pre_game_context_error"] = error
+        state["heartbeat_enabled"] = True
+        state["last_heartbeat_at"] = now
+        state["last_activity"] = now
     if state.get("before_game_external_mode") == "audio" and state.get("before_game_external_active"):
         await route_external_stream_message(lanlan_name, {"input_type": "audio"})
     return {"ok": True, "state": _public_route_state(state)}
@@ -1996,6 +2685,7 @@ async def game_route_voice_transcript(game_type: str, request: Request):
     current_state = data.get("currentState")
     if isinstance(current_state, dict):
         state["last_state"] = current_state
+    _update_route_start_state_from_payload(state, data)
 
     handled = await route_external_voice_transcript(
         lanlan_name,
@@ -2028,6 +2718,7 @@ async def game_route_heartbeat(game_type: str, request: Request):
     state["last_heartbeat_at"] = now
     state["last_activity"] = now
     _update_route_visibility_from_payload(state, data)
+    _update_route_start_state_from_payload(state, data)
     current_state = data.get("currentState")
     if isinstance(current_state, dict):
         state["last_state"] = current_state
@@ -2060,6 +2751,20 @@ async def game_route_end(game_type: str, request: Request):
     if session_id and session_id != str(state.get("session_id") or ""):
         return {"ok": True, "closed": False, "archive": None, "reason": "session_id_mismatch"}
 
+    _update_route_start_state_from_payload(state, data, exiting=True)
+    current_state = data.get("currentState")
+    if isinstance(current_state, dict):
+        state["last_state"] = current_state
+        if isinstance(current_state.get("score"), dict):
+            state["finalScore"] = dict(current_state.get("score") or {})
+    final_score = data.get("finalScore")
+    if isinstance(final_score, dict):
+        state["finalScore"] = final_score
+    if "game_memory_tail_count" in data or "gameMemoryTailCount" in data:
+        state["game_memory_tail_count"] = _normalize_game_memory_tail_count(
+            data.get("game_memory_tail_count", data.get("gameMemoryTailCount"))
+        )
+
     finalized = await _finalize_game_route_state(state, reason="route_end")
     archive = finalized["archive"]
     memory_result = finalized["archive_memory"]
@@ -2090,6 +2795,8 @@ async def _speak_game_line_via_project_tts(
     game_type: str = "",
     session_id: str = "",
     mirror_text: bool = True,
+    emit_turn_end: bool = True,
+    event: dict | None = None,
 ) -> Dict[str, Any]:
     speak = getattr(mgr, "speak_game_line", None)
     if not callable(speak):
@@ -2100,6 +2807,18 @@ async def _speak_game_line_via_project_tts(
         game_type=game_type,
         session_id=session_id,
         mirror_text=mirror_text,
+        emit_turn_end=emit_turn_end,
+        event=event if isinstance(event, dict) else {},
+    )
+
+
+def _game_route_event_has_user_input(event: dict | None) -> bool:
+    if not isinstance(event, dict):
+        return False
+    return (
+        event.get("hasUserSpeech") is True
+        or event.get("hasUserText") is True
+        or event.get("kind") in {"user-voice", "user-text"}
     )
 
 
@@ -2113,6 +2832,7 @@ async def _mirror_game_assistant_text(
     source: str = "game_llm",
     turn_id: str | None = None,
     event: dict | None = None,
+    finalize_turn: bool = False,
 ) -> Dict[str, Any]:
     mirror = getattr(mgr, "mirror_game_assistant_text", None)
     if not callable(mirror):
@@ -2125,6 +2845,7 @@ async def _mirror_game_assistant_text(
         source=source,
         turn_id=turn_id,
         event=event or {},
+        finalize_turn=finalize_turn,
     )
 
 
@@ -2148,6 +2869,9 @@ async def game_project_mirror_assistant(game_type: str, request: Request):
     if not mgr:
         return {"ok": False, "reason": "no_session_manager", "lanlan_name": lanlan_name}
 
+    event = data.get("event") if isinstance(data.get("event"), dict) else {}
+    finalize_raw = data.get("finalize_turn")
+    finalize_turn = _game_route_event_has_user_input(event) if finalize_raw is None else finalize_raw is not False
     result = await _mirror_game_assistant_text(
         mgr,
         line,
@@ -2156,8 +2880,20 @@ async def game_project_mirror_assistant(game_type: str, request: Request):
         session_id=str(data.get("session_id") or ""),
         source=str(data.get("source") or "game_llm"),
         turn_id=str(data.get("turn_id") or "") or None,
-        event=data.get("event") if isinstance(data.get("event"), dict) else {},
+        event=event,
+        finalize_turn=finalize_turn,
     )
+    if result.get("ok") and str(event.get("kind") or "") == "opening-line":
+        session_id = str(data.get("session_id") or "")
+        state = _get_active_game_route_state(lanlan_name, game_type)
+        if state and (not session_id or session_id == str(state.get("session_id") or "")):
+            _append_game_dialog(state, {
+                "type": "assistant",
+                "source": "opening_line",
+                "kind": "opening-line",
+                "line": line,
+                "request_id": str(data.get("request_id") or "") or "",
+            })
     result.setdefault("lanlan_name", lanlan_name)
     result.setdefault("method", "project_text_mirror")
     return result
@@ -2190,6 +2926,8 @@ async def game_project_speak(game_type: str, request: Request):
         game_type=game_type,
         session_id=str(data.get("session_id") or ""),
         mirror_text=data.get("mirror_text", True) is not False,
+        emit_turn_end=data.get("emit_turn_end", True) is not False,
+        event=data.get("event") if isinstance(data.get("event"), dict) else {},
     )
     result.setdefault("lanlan_name", lanlan_name)
     result.setdefault("method", "project_tts")
@@ -2882,9 +3620,24 @@ async def game_end(game_type: str, request: Request):
     archive_memory = None
     postgame_result = None
     if state and str(state.get("session_id") or "") == session_id:
+        _update_route_start_state_from_payload(state, data, exiting=True)
+        current_state = data.get("currentState")
+        if isinstance(current_state, dict):
+            state["last_state"] = current_state
+            if isinstance(current_state.get("score"), dict):
+                state["finalScore"] = dict(current_state.get("score") or {})
+        final_score = data.get("finalScore")
+        if isinstance(final_score, dict):
+            state["finalScore"] = final_score
+        if "game_memory_tail_count" in data or "gameMemoryTailCount" in data:
+            state["game_memory_tail_count"] = _normalize_game_memory_tail_count(
+                data.get("game_memory_tail_count", data.get("gameMemoryTailCount"))
+            )
         finalized = await _finalize_game_route_state(state, reason=exit_reason)
         archive = finalized["archive"]
         archive_memory = finalized["archive_memory"]
+        if isinstance(archive_memory, dict) and archive_memory.get("status") == "skipped":
+            postgame_options["enabled"] = False
         postgame_result = await _deliver_game_postgame(
             game_type,
             session_id,
@@ -2977,10 +3730,10 @@ async def game_character(game_type: str):
         config_manager = get_config_manager()
         characters = config_manager.load_characters()
         current_name = characters.get('当前猫娘', '')
-        catgirl_data = characters.get('猫娘', {}).get(current_name, {})
+        neko_data = characters.get('猫娘', {}).get(current_name, {})
 
         # 获取 _reserved.avatar 配置
-        reserved = catgirl_data.get('_reserved', {})
+        reserved = neko_data.get('_reserved', {})
         avatar = reserved.get('avatar', {}) if isinstance(reserved, dict) else {}
 
         model_type = avatar.get('model_type', '') if isinstance(avatar, dict) else ''

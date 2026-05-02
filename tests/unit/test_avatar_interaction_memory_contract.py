@@ -4,7 +4,11 @@ from config.prompts_avatar_interaction import (
     _AVATAR_INTERACTION_MEMORY_NOTE_TEMPLATES,
     _build_avatar_interaction_memory_meta,
 )
-from main_logic.cross_server import _should_persist_avatar_interaction_memory
+from main_logic.cross_server import (
+    _is_game_route_game_only_assistant_message,
+    _is_game_route_game_only_turn_end_meta,
+    _should_persist_avatar_interaction_memory,
+)
 
 
 # 测试公用 master_name —— 任意字符串即可，关键是验证它会被原样展开进 memory_note，
@@ -152,3 +156,95 @@ def test_avatar_memory_meta_master_name_passes_through_unchanged():
     for name in ("小明", "Alice", "mochi", "猫猫", "Mei Wang"):
         meta = _build_avatar_interaction_memory_meta("zh", payload, name)
         assert name in meta["memory_note"]
+
+
+@pytest.mark.unit
+def test_game_route_auto_assistant_lines_are_game_only_for_ordinary_memory():
+    assert _is_game_route_game_only_assistant_message({
+        "type": "gemini_response",
+        "text": "嘿嘿，这球归我啦",
+        "metadata": {
+            "source": "game-llm-result",
+            "game_route": {
+                "game_type": "soccer",
+                "session_id": "match_1",
+                "event": {
+                    "kind": "goal-scored",
+                    "hasUserSpeech": False,
+                    "hasUserText": False,
+                },
+            },
+        },
+    }) is True
+
+    assert _is_game_route_game_only_assistant_message({
+        "type": "gemini_response",
+        "text": "看我这一脚",
+        "metadata": {
+            "source": "game-llm-result",
+            "game_route": {
+                "game_type": "soccer",
+                "session_id": "match_1",
+                "event": {"kind": "opening-line"},
+            },
+        },
+    }) is True
+
+
+@pytest.mark.unit
+def test_game_route_user_reply_assistant_lines_stay_in_ordinary_memory():
+    assert _is_game_route_game_only_assistant_message({
+        "type": "gemini_response",
+        "text": "好啦，我听见你说难了。",
+        "metadata": {
+            "source": "game-llm-result",
+            "game_route": {
+                "game_type": "soccer",
+                "session_id": "match_1",
+                "event": {
+                    "kind": "user-text",
+                    "hasUserText": True,
+                },
+            },
+        },
+    }) is False
+
+    assert _is_game_route_game_only_assistant_message({
+        "type": "gemini_response",
+        "text": "普通回复",
+        "metadata": {"source": "normal_chat"},
+    }) is False
+
+
+@pytest.mark.unit
+def test_game_route_auto_tts_turn_end_is_game_only_for_ordinary_memory():
+    assert _is_game_route_game_only_turn_end_meta({
+        "source": "game_route",
+        "game_route": {
+            "game_type": "soccer",
+            "session_id": "match_1",
+            "event": {
+                "kind": "goal-scored",
+                "hasUserSpeech": False,
+                "hasUserText": False,
+            },
+        },
+    }) is True
+
+    assert _is_game_route_game_only_turn_end_meta({
+        "source": "game_route",
+        "game_route": {
+            "game_type": "soccer",
+            "session_id": "match_1",
+            "event": {
+                "kind": "user-voice",
+                "hasUserSpeech": True,
+            },
+        },
+    }) is False
+
+    assert _is_game_route_game_only_turn_end_meta({
+        "source": "game_route",
+        "game_type": "soccer",
+        "session_id": "match_1",
+    }) is False

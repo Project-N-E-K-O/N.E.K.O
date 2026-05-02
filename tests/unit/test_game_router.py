@@ -29,6 +29,13 @@ class _FakeRequest:
         return self._payload
 
 
+def _mark_game_started(state, elapsed_ms=12_000):
+    state["game_started"] = True
+    state["game_started_elapsed_ms"] = elapsed_ms
+    state["game_started_at"] = game_router.time.time() - (elapsed_ms / 1000.0)
+    return state
+
+
 @pytest.mark.unit
 def test_parse_control_instructions_extracts_json_line():
     result = game_router._parse_control_instructions(
@@ -48,15 +55,219 @@ def test_soccer_prompt_marks_game_event_text_as_not_user_speech():
 
 
 @pytest.mark.unit
+def test_neutral_pregame_context_uses_lv2_lv3_default(monkeypatch):
+    monkeypatch.setattr(game_router.random, "choice", lambda seq: "lv3")
+
+    context, invalid = game_router._normalize_soccer_pregame_context({
+        "gameStance": "neutral_play",
+        "initialDifficulty": "max",
+        "initialMood": "calm",
+    })
+
+    assert invalid is True
+    assert context["gameStance"] == "neutral_play"
+    assert context["initialDifficulty"] == "lv3"
+
+
+@pytest.mark.unit
+def test_special_pregame_context_can_keep_max_difficulty(monkeypatch):
+    monkeypatch.setattr(game_router.random, "choice", lambda seq: "lv2")
+
+    context, invalid = game_router._normalize_soccer_pregame_context({
+        "gameStance": "punishing",
+        "initialDifficulty": "max",
+        "initialMood": "angry",
+        "emotionIntensity": 0.9,
+        "emotionInertia": "high",
+    })
+
+    assert invalid is False
+    assert context["gameStance"] == "punishing"
+    assert context["initialDifficulty"] == "max"
+    assert context["initialMood"] == "angry"
+
+
+@pytest.mark.unit
+def test_pregame_opening_line_is_short_and_does_not_repeat_invite():
+    context, invalid = game_router._normalize_soccer_pregame_context({
+        "gameStance": "soft_teasing",
+        "initialDifficulty": "lv2",
+        "openingLine": "那我认真了",
+    })
+    assert invalid is False
+    assert context["openingLine"] == "那我认真了"
+
+    too_long, too_long_invalid = game_router._normalize_soccer_pregame_context({
+        "gameStance": "soft_teasing",
+        "initialDifficulty": "lv2",
+        "openingLine": "这次要认真看着我踢球哦主人不许走神",
+    })
+    assert too_long_invalid is True
+    assert too_long["openingLine"] == ""
+
+    repeated, _ = game_router._normalize_soccer_pregame_context(
+        {
+            "gameStance": "competitive",
+            "initialDifficulty": "lv2",
+            "openingLine": "来踢球吧，主人。",
+        },
+        neko_invite_text="来踢球吧，主人。",
+    )
+    assert repeated["openingLine"] == ""
+
+
+@pytest.mark.unit
+def test_game_prompt_includes_pregame_context():
+    prompt = game_router._build_game_prompt(
+        "soccer",
+        "Lan",
+        "喜欢陪主人玩。",
+        {"gameStance": "withdrawn", "tonePolicy": "低声回应。"},
+    )
+
+    assert "开局上下文" in prompt
+    assert '"gameStance":"withdrawn"' in prompt
+    assert "不要把 neutral_play 强行解释成哄开心或关系修复" in prompt
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_build_pregame_context_uses_empty_history_fallback(monkeypatch):
+    monkeypatch.setattr(game_router.random, "choice", lambda seq: "lv2")
+    monkeypatch.setattr(game_router, "_get_current_character_info", lambda: {
+        "lanlan_name": "Lan",
+        "master_name": "主人",
+        "lanlan_prompt": "喜欢踢球。",
+        "model": "fake",
+        "base_url": "http://fake",
+        "api_type": "local",
+        "api_key": "key",
+    })
+
+    async def fake_fetch(_lanlan_name):
+        return "", "recent_history_failed"
+
+    async def fake_ai(**kwargs):
+        assert kwargs["recent_history"] == ""
+        return {
+            "gameStance": "neutral_play",
+            "initialMood": "calm",
+            "initialDifficulty": "lv2",
+        }
+
+    monkeypatch.setattr(game_router, "_fetch_recent_history_for_pregame", fake_fetch)
+    monkeypatch.setattr(game_router, "_run_soccer_pregame_context_ai", fake_ai)
+
+    context, source, error = await game_router._build_soccer_pregame_context(
+        game_type="soccer",
+        session_id="match_1",
+        lanlan_name="Lan",
+        neko_initiated=False,
+        neko_invite_text="",
+    )
+
+    assert source == "ai"
+    assert error == "recent_history_failed"
+    assert context["gameStance"] == "neutral_play"
+    assert context["initialDifficulty"] == "lv2"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_build_pregame_context_invalid_json_falls_back(monkeypatch):
+    monkeypatch.setattr(game_router.random, "choice", lambda seq: "lv3")
+    monkeypatch.setattr(game_router, "_get_current_character_info", lambda: {
+        "lanlan_name": "Lan",
+        "master_name": "主人",
+        "lanlan_prompt": "",
+        "model": "fake",
+        "base_url": "http://fake",
+        "api_type": "local",
+        "api_key": "key",
+    })
+
+    async def fake_fetch(_lanlan_name):
+        return "主人 | 来踢球", ""
+
+    async def fake_ai(**_kwargs):
+        raise ValueError("bad json")
+
+    monkeypatch.setattr(game_router, "_fetch_recent_history_for_pregame", fake_fetch)
+    monkeypatch.setattr(game_router, "_run_soccer_pregame_context_ai", fake_ai)
+
+    context, source, error = await game_router._build_soccer_pregame_context(
+        game_type="soccer",
+        session_id="match_1",
+        lanlan_name="Lan",
+        neko_initiated=False,
+        neko_invite_text="",
+    )
+
+    assert source == "fallback"
+    assert error == "invalid_json"
+    assert context["gameStance"] == "neutral_play"
+    assert context["initialDifficulty"] == "lv3"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_build_pregame_context_partial_invalid_fields(monkeypatch):
+    monkeypatch.setattr(game_router.random, "choice", lambda seq: "lv2")
+    monkeypatch.setattr(game_router, "_get_current_character_info", lambda: {
+        "lanlan_name": "Lan",
+        "master_name": "主人",
+        "lanlan_prompt": "",
+        "model": "fake",
+        "base_url": "http://fake",
+        "api_type": "local",
+        "api_key": "key",
+    })
+
+    async def fake_fetch(_lanlan_name):
+        return "主人 | 你这个笨蛋！", ""
+
+    async def fake_ai(**_kwargs):
+        return {
+            "gameStance": "punishing",
+            "initialDifficulty": "max",
+            "initialMood": "angry",
+            "emotionIntensity": 2,
+            "openingLine": "那我认真了",
+        }
+
+    monkeypatch.setattr(game_router, "_fetch_recent_history_for_pregame", fake_fetch)
+    monkeypatch.setattr(game_router, "_run_soccer_pregame_context_ai", fake_ai)
+
+    context, source, error = await game_router._build_soccer_pregame_context(
+        game_type="soccer",
+        session_id="match_1",
+        lanlan_name="Lan",
+        neko_initiated=False,
+        neko_invite_text="",
+    )
+
+    assert source == "ai"
+    assert error == "invalid_fields"
+    assert context["gameStance"] == "punishing"
+    assert context["initialDifficulty"] == "max"
+    assert context["emotionIntensity"] == 0.0
+    assert context["openingLine"] == "那我认真了"
+
+
+@pytest.mark.unit
 def test_game_archive_memory_payload_uses_system_note_shape():
     archive = {
         "game_type": "soccer",
         "session_id": "match_1",
         "lanlan_name": "Lan",
         "summary": "soccer 小游戏结束。最终/最近比分：主人 1 : 4 Lan。",
+        "game_memory_tail_count": 2,
         "memory_highlights": {
             "important_records": ["主人要求温柔一点，你改成让球式回应。"],
             "important_game_events": ["猫娘大比分领先后开始放水。"],
+            "state_carryback": "赛后猫娘仍有点得意，但愿意继续陪主人玩。",
+            "postgame_tone": "得意但放软",
+            "memory_summary": "主人希望猫娘温柔一点，猫娘开始让球。",
         },
         "last_full_dialogues": [
             {"type": "user", "text": "温柔一点"},
@@ -68,16 +279,109 @@ def test_game_archive_memory_payload_uses_system_note_shape():
 
     messages = game_router._build_game_archive_memory_messages(archive)
 
-    assert [msg["role"] for msg in messages] == ["system"]
-    assert "游戏模块归档，不是主人逐字发言" in messages[0]["content"][0]["text"]
-    assert "soccer 小游戏结束" in messages[0]["content"][0]["text"]
-    assert "重要互动：" in messages[0]["content"][0]["text"]
-    assert "主人要求温柔一点，你改成让球式回应。" in messages[0]["content"][0]["text"]
-    assert "猫娘记住的比赛事件：" in messages[0]["content"][0]["text"]
-    assert "本局记录了" not in messages[0]["content"][0]["text"]
-    assert "外部接管模式" not in messages[0]["content"][0]["text"]
-    assert "主人最近在比赛里说：温柔一点" in messages[0]["content"][0]["text"]
-    assert "你最后回应：好好好，让你踢。" in messages[0]["content"][0]["text"]
+    assert [msg["role"] for msg in messages] == ["user", "assistant", "system"]
+    assert messages[0]["content"][0]["text"] == "温柔一点"
+    assert messages[1]["content"][0]["text"] == "好好好，让你踢。"
+    system_text = messages[2]["content"][0]["text"]
+    assert "游戏模块归档，不是主人逐字发言" in system_text
+    assert "soccer 小游戏结束" in system_text
+    assert "官方比分：主人 1 : 4 Lan。" in system_text
+    assert "官方比分永远以 finalScore / last_state.score 为准" in system_text
+    assert "口头让步规则" in system_text
+    assert "重要互动：" in system_text
+    assert "主人要求温柔一点，你改成让球式回应。" in system_text
+    assert "猫娘记住的比赛事件：" in system_text
+    assert "赛后状态延续：赛后猫娘仍有点得意，但愿意继续陪主人玩。" in system_text
+    assert "赛后语气：得意但放软" in system_text
+    assert "后续记忆摘要：主人希望猫娘温柔一点，猫娘开始让球。" in system_text
+    assert "倒数 2 条规则" in system_text
+    assert "本条 system 归档不计入倒数 2 条" in system_text
+    assert "本局记录了" not in system_text
+    assert "外部接管模式" not in system_text
+    assert "主人最近在比赛里说：温柔一点" in system_text
+    assert "你最后回应：好好好，让你踢。" in system_text
+
+
+@pytest.mark.unit
+def test_game_archive_memory_tail_uses_game_dialog_order_without_event_labels():
+    archive = {
+        "game_type": "soccer",
+        "session_id": "match_1",
+        "lanlan_name": "Lan",
+        "summary": "soccer 小游戏结束。",
+        "game_memory_tail_count": 4,
+        "memory_highlights": {},
+        "full_dialogues": [
+            {"type": "user", "text": "很早的话"},
+            {"type": "game_event", "kind": "steal", "text": "纯事实没有台词"},
+            {"type": "game_event", "kind": "goal-scored", "text": "进球", "result_line": "嘿嘿，这球归我啦"},
+            {"type": "user", "text": "你刚才说算我赢？"},
+            {"type": "assistant", "source": "game_llm", "line": "那是哄你的，比分可没改哦。"},
+        ],
+        "last_state": {"score": {"player": 9, "ai": 20}},
+    }
+
+    messages = game_router._build_game_archive_memory_messages(archive)
+
+    assert [msg["role"] for msg in messages] == ["assistant", "user", "assistant", "system"]
+    assert messages[0]["content"][0]["text"] == "嘿嘿，这球归我啦"
+    assert "足球小游戏事件" not in messages[0]["content"][0]["text"]
+    assert messages[1]["content"][0]["text"] == "你刚才说算我赢？"
+    assert messages[2]["content"][0]["text"] == "那是哄你的，比分可没改哦。"
+    system_text = messages[-1]["content"][0]["text"]
+    assert "官方比分：主人 9 : 20 Lan。" in system_text
+    assert "口头让步规则" in system_text
+    assert "倒数 4 条规则" in system_text
+
+
+@pytest.mark.unit
+def test_game_archive_memory_prefers_final_score_over_oral_concession_text():
+    archive = {
+        "game_type": "soccer",
+        "session_id": "match_1",
+        "lanlan_name": "Lan",
+        "summary": "soccer 小游戏结束。",
+        "finalScore": {"player": 9, "ai": 20},
+        "last_state": {"score": {"player": 99, "ai": 0}},
+        "full_dialogues": [
+            {"type": "game_event", "kind": "goal-scored", "result_line": "行吧，这局算你赢。"},
+        ],
+    }
+
+    messages = game_router._build_game_archive_memory_messages(archive, tail_count=1)
+    system_text = messages[-1]["content"][0]["text"]
+
+    assert "官方比分：主人 9 : 20 Lan。" in system_text
+    assert "官方比分永远以 finalScore / last_state.score 为准" in system_text
+    assert "口头让步规则" in system_text
+    assert messages[0]["role"] == "assistant"
+    assert messages[0]["content"][0]["text"] == "行吧，这局算你赢。"
+
+
+@pytest.mark.unit
+def test_postgame_event_aligns_current_state_score_to_final_score():
+    event = game_router._build_game_postgame_event(
+        "soccer",
+        {
+            "summary": "soccer 小游戏结束。",
+            "lanlan_name": "Lan",
+            "finalScore": {"player": 6, "ai": 14},
+            "last_state": {
+                "score": {"player": 6, "ai": 10},
+                "round": 17,
+                "mood": "sad",
+            },
+            "last_full_dialogues": [],
+            "memory_highlights": {},
+        },
+        {"max_chars": 60},
+    )
+
+    assert event["scoreText"] == "主人 6 : 14 Lan"
+    assert event["finalScore"] == {"player": 6, "ai": 14}
+    assert event["currentState"]["score"] == {"player": 6, "ai": 14}
+    assert event["currentState"]["round"] == 17
+    assert "scoreText/finalScore" in event["request"]
 
 
 @pytest.mark.unit
@@ -132,6 +436,8 @@ def test_memory_highlight_source_explains_game_event_text_is_not_user_speech():
     assert "事件原文是游戏模块/猫娘气泡或事件标签，不要归因给主人" in source
     assert "游戏事件 goal-conceded（主人进球 / 猫娘丢球）" in source
     assert "主人分数在前，当前角色分数在后" in source
+    assert "官方比分，来源优先级为 finalScore / last_state.score" in source
+    assert "口头让步、安抚或玩笑" in source
 
 
 @pytest.mark.unit
@@ -565,6 +871,16 @@ async def test_route_start_activates_stt_gate_when_audio_already_active(monkeypa
     mgr.session = _fake_realtime(model_lower="qwen-realtime", delivered=True)
     monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
 
+    async def fake_pregame_context(**kwargs):
+        assert kwargs["neko_initiated"] is False
+        return (
+            game_router._default_soccer_pregame_context(initial_difficulty="lv2"),
+            "fallback",
+            "ai_failed",
+        )
+
+    monkeypatch.setattr(game_router, "_build_soccer_pregame_context", fake_pregame_context)
+
     result = await game_router.game_route_start(
         "soccer",
         _FakeRequest({"lanlan_name": "Lan", "session_id": "match_1"}),
@@ -574,9 +890,57 @@ async def test_route_start_activates_stt_gate_when_audio_already_active(monkeypa
     state = result["state"]
     assert state["before_game_external_mode"] == "audio"
     assert state["before_game_external_active"] is True
+    assert state["game_started"] is False
     assert state["game_external_voice_route_active"] is True
     assert state["game_input_mode"] == "voice"
+    assert state["preGameContext"]["gameStance"] == "neutral_play"
+    assert state["preGameContext"]["initialDifficulty"] == "lv2"
+    assert state["pre_game_context_source"] == "fallback"
+    assert state["pre_game_context_error"] == "ai_failed"
     assert "GAME_VOICE_STT_GATE_ACTIVE" in mgr.statuses[0]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_route_start_accepts_neko_invite_context(monkeypatch):
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {})
+
+    async def fake_pregame_context(**kwargs):
+        assert kwargs["neko_initiated"] is True
+        assert kwargs["neko_invite_text"] == "来踢球吧，主人。"
+        return (
+            {
+                **game_router._default_soccer_pregame_context(initial_difficulty="lv3"),
+                "launchIntent": "neko_invite",
+                "openingLine": "看我这一脚",
+            },
+            "ai",
+            "",
+        )
+
+    monkeypatch.setattr(game_router, "_build_soccer_pregame_context", fake_pregame_context)
+
+    result = await game_router.game_route_start(
+        "soccer",
+        _FakeRequest({
+            "lanlan_name": "Lan",
+            "session_id": "match_1",
+            "nekoInitiated": True,
+            "nekoInviteText": "来踢球吧，主人。",
+            "gameMemoryTailCount": 3,
+        }),
+    )
+
+    assert result["ok"] is True
+    state = result["state"]
+    assert state["nekoInitiated"] is True
+    assert state["nekoInviteText"] == "来踢球吧，主人。"
+    assert state["preGameContext"]["launchIntent"] == "neko_invite"
+    assert state["preGameContext"]["initialDifficulty"] == "lv3"
+    assert state["preGameContext"]["openingLine"] == "看我这一脚"
+    assert state["pre_game_context_source"] == "ai"
+    assert state["pre_game_context_error"] == ""
+    assert state["game_memory_tail_count"] == 3
 
 
 @pytest.mark.unit
@@ -697,6 +1061,7 @@ async def test_route_external_voice_transcript_to_game_llm(monkeypatch):
     assert state["pending_outputs"][0]["meta"]["inputText"] == "我马上要进球了"
     assert state["pending_outputs"][1]["meta"]["kind"] == "user-voice"
     assert state["pending_outputs"][1]["meta"]["hasUserSpeech"] is True
+    assert "skipOrdinaryMemory" not in state["pending_outputs"][1]["meta"]
     assert state["pending_outputs"][1]["meta"]["voiceAlreadyHandled"] is False
 
 
@@ -713,6 +1078,8 @@ async def test_route_heartbeat_refreshes_last_state(monkeypatch):
             "lanlan_name": "Lan",
             "session_id": "match_1",
             "currentState": {"score": {"player": 3, "ai": 2}},
+            "gameStarted": True,
+            "gameStartedElapsedMs": 15_000,
         }),
     )
 
@@ -723,6 +1090,8 @@ async def test_route_heartbeat_refreshes_last_state(monkeypatch):
     assert result["heartbeat_timeout_seconds"] == game_router._GAME_ROUTE_HEARTBEAT_TIMEOUT_SECONDS
     assert state["page_visible"] is True
     assert state["visibility_state"] == "visible"
+    assert state["game_started"] is True
+    assert state["game_started_elapsed_ms"] == 15_000
 
 
 @pytest.mark.unit
@@ -760,6 +1129,7 @@ async def test_heartbeat_timeout_finalize_archives_and_closes_session(monkeypatc
     }
     monkeypatch.setattr(game_router, "get_session_manager", lambda: {})
     state = game_router._activate_game_route("soccer", "match_1", "Lan")
+    _mark_game_started(state)
 
     submitted = []
 
@@ -787,6 +1157,34 @@ async def test_heartbeat_timeout_finalize_archives_and_closes_session(monkeypatc
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_heartbeat_timeout_without_start_skips_only_game_archive_memory(monkeypatch):
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {})
+    state = game_router._activate_game_route("soccer", "match_1", "Lan")
+    game_router._append_game_dialog(state, {
+        "type": "assistant",
+        "source": "opening_line",
+        "line": "准备好了吗",
+    })
+
+    async def fake_submit(_archive):
+        raise AssertionError("pre-start heartbeat timeout should not write game archive memory")
+
+    monkeypatch.setattr(game_router, "_submit_game_archive_to_memory", fake_submit)
+
+    result = await game_router._finalize_game_route_state(
+        state,
+        reason="heartbeat_timeout",
+        close_game_session=False,
+    )
+
+    assert result["archive_memory"]["status"] == "skipped"
+    assert result["archive_memory"]["reason"] == "game_not_started"
+    assert result["archive"]["memory_skipped"] is True
+    assert result["archive"]["last_full_dialogues"][0]["line"] == "准备好了吗"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_project_speak_uses_manager_project_tts(monkeypatch):
     mgr = _FakeGameRouteManager()
     monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
@@ -805,6 +1203,8 @@ async def test_project_speak_uses_manager_project_tts(monkeypatch):
         "game_type": "soccer",
         "session_id": "match_1",
         "mirror_text": True,
+        "emit_turn_end": True,
+        "event": {},
     })]
 
 
@@ -822,6 +1222,7 @@ async def test_project_speak_can_skip_text_mirror_for_frontend_arbiter(monkeypat
             "session_id": "match_1",
             "request_id": "req-voice",
             "mirror_text": False,
+            "emit_turn_end": False,
         }),
     )
 
@@ -831,6 +1232,8 @@ async def test_project_speak_can_skip_text_mirror_for_frontend_arbiter(monkeypat
         "game_type": "soccer",
         "session_id": "match_1",
         "mirror_text": False,
+        "emit_turn_end": False,
+        "event": {},
     })]
 
 
@@ -861,8 +1264,92 @@ async def test_project_mirror_assistant_uses_text_only_mirror(monkeypatch):
         "source": "game-llm-result",
         "turn_id": "turn-mirror",
         "event": {},
+        "finalize_turn": False,
     })]
     assert mgr.spoken == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_project_mirror_assistant_finalizes_user_reply_by_default(monkeypatch):
+    mgr = _FakeGameRouteManager()
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
+    monkeypatch.setattr(game_router, "_get_current_character_info", lambda: {"lanlan_name": "Lan"})
+
+    result = await game_router.game_project_mirror_assistant(
+        "soccer",
+        _FakeRequest({
+            "line": "听见啦，我会放慢一点。",
+            "session_id": "match_1",
+            "request_id": "req-user-reply",
+            "source": "game-llm-result",
+            "event": {
+                "kind": "user-text",
+                "hasUserText": True,
+            },
+        }),
+    )
+
+    assert result["ok"] is True
+    assert mgr.assistant_mirrored == [("听见啦，我会放慢一点。", {
+        "request_id": "req-user-reply",
+        "game_type": "soccer",
+        "session_id": "match_1",
+        "source": "game-llm-result",
+        "turn_id": None,
+        "event": {
+            "kind": "user-text",
+            "hasUserText": True,
+        },
+        "finalize_turn": True,
+    })]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_project_mirror_assistant_records_opening_line_in_game_log(monkeypatch):
+    mgr = _FakeGameRouteManager()
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
+    monkeypatch.setattr(game_router, "_get_current_character_info", lambda: {"lanlan_name": "Lan"})
+    state = game_router._activate_game_route("soccer", "match_1", "Lan")
+
+    result = await game_router.game_project_mirror_assistant(
+        "soccer",
+        _FakeRequest({
+            "line": "看我这一脚",
+            "session_id": "match_1",
+            "request_id": "opening-1",
+            "source": "game-llm-result",
+            "event": {
+                "kind": "opening-line",
+                "hasUserSpeech": False,
+                "hasUserText": False,
+            },
+        }),
+    )
+
+    assert result["ok"] is True
+    assert mgr.assistant_mirrored == [("看我这一脚", {
+        "request_id": "opening-1",
+        "game_type": "soccer",
+        "session_id": "match_1",
+        "source": "game-llm-result",
+        "turn_id": None,
+        "event": {
+            "kind": "opening-line",
+            "hasUserSpeech": False,
+            "hasUserText": False,
+        },
+        "finalize_turn": False,
+    })]
+    assert state["game_dialog_log"] == [{
+        "type": "assistant",
+        "source": "opening_line",
+        "kind": "opening-line",
+        "line": "看我这一脚",
+        "request_id": "opening-1",
+        "ts": state["game_dialog_log"][0]["ts"],
+    }]
 
 
 @pytest.mark.unit
@@ -870,9 +1357,16 @@ async def test_project_mirror_assistant_uses_text_only_mirror(monkeypatch):
 async def test_game_end_archives_active_route_to_memory(monkeypatch):
     monkeypatch.setattr(game_router, "get_session_manager", lambda: {})
     state = game_router._activate_game_route("soccer", "match_1", "Lan")
+    _mark_game_started(state)
     state["last_state"] = {
         "score": {"player": 2, "ai": 5},
     }
+    state["preGameContext"] = {
+        **game_router._default_soccer_pregame_context(initial_difficulty="lv2"),
+        "gameStance": "soft_teasing",
+    }
+    state["pre_game_context_source"] = "ai"
+    state["pre_game_context_error"] = ""
     game_router._append_game_dialog(state, {
         "type": "user",
         "source": "external_text_route",
@@ -895,15 +1389,111 @@ async def test_game_end_archives_active_route_to_memory(monkeypatch):
 
     result = await game_router.game_end(
         "soccer",
-        _FakeRequest({"session_id": "match_1", "lanlan_name": "Lan"}),
+        _FakeRequest({
+            "session_id": "match_1",
+            "lanlan_name": "Lan",
+            "currentState": {"score": {"player": 3, "ai": 6}, "round": 9},
+            "gameMemoryTailCount": 4,
+            "gameStarted": True,
+            "gameStartedElapsedMs": 15_000,
+        }),
     )
 
     assert result["route_closed"] is True
     assert result["archive_memory"] == {"ok": True, "status": "cached", "count": 1}
     assert result["archive"]["summary"].startswith("soccer 小游戏结束")
     assert "待接入 memory_server" not in result["archive"]["summary"]
+    assert result["archive"]["preGameContext"]["gameStance"] == "soft_teasing"
+    assert result["archive"]["pre_game_context_source"] == "ai"
+    assert result["archive"]["finalScore"] == {"player": 3, "ai": 6}
+    assert result["archive"]["game_memory_tail_count"] == 4
     assert submitted[0]["last_full_dialogues"][-1]["line"] == "才没有放水呢。"
+    assert submitted[0]["preGameContext"]["initialDifficulty"] == "lv2"
     assert state["game_route_active"] is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_game_end_skips_game_archive_when_game_never_started(monkeypatch):
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {})
+    state = game_router._activate_game_route("soccer", "match_1", "Lan")
+    game_router._append_game_dialog(state, {
+        "type": "assistant",
+        "source": "opening_line",
+        "line": "准备好了吗",
+    })
+
+    async def fake_submit(_archive):
+        raise AssertionError("accidental pre-start entry should not write game archive memory")
+
+    monkeypatch.setattr(game_router, "_submit_game_archive_to_memory", fake_submit)
+
+    result = await game_router.game_end(
+        "soccer",
+        _FakeRequest({
+            "session_id": "match_1",
+            "lanlan_name": "Lan",
+            "reason": "accidental_page_entry",
+            "gameStarted": False,
+            "accidentalGameEntry": True,
+        }),
+    )
+
+    assert result["route_closed"] is True
+    assert result["archive_memory"]["status"] == "skipped"
+    assert result["archive_memory"]["reason"] == "accidental_page_entry"
+    assert result["postgame"] == {"ok": True, "action": "skip", "reason": "disabled"}
+    assert result["archive"]["memory_skipped"] is True
+    assert result["archive"]["last_full_dialogues"][0]["source"] == "opening_line"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_game_end_under_10s_skips_archive_without_suppressing_user_reply_memory(monkeypatch):
+    mgr = _FakeGameRouteManager()
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
+    state = game_router._activate_game_route("soccer", "match_1", "Lan")
+    _mark_game_started(state, elapsed_ms=5_000)
+
+    async def fake_run_game_chat(_game_type, _session_id, event):
+        assert event["kind"] == "user-voice"
+        assert "skipOrdinaryMemory" not in event
+        return {"line": "先热身一下。", "control": {}, "llm_source": {"provider": "fake"}}
+
+    async def fake_submit(_archive):
+        raise AssertionError("too-short game should not write game archive memory")
+
+    monkeypatch.setattr(game_router, "_run_game_chat", fake_run_game_chat)
+    monkeypatch.setattr(game_router, "_submit_game_archive_to_memory", fake_submit)
+
+    handled = await game_router.route_external_voice_transcript(
+        "Lan",
+        "刚开始吗？",
+        request_id="voice-grace",
+        game_type="soccer",
+        session_id="match_1",
+    )
+
+    assert handled is True
+    assert state["pending_outputs"][0]["meta"]["hasUserSpeech"] is True
+    assert "skipOrdinaryMemory" not in state["pending_outputs"][0]["meta"]
+    assert state["pending_outputs"][1]["meta"]["hasUserSpeech"] is True
+    assert "skipOrdinaryMemory" not in state["pending_outputs"][1]["meta"]
+
+    result = await game_router.game_end(
+        "soccer",
+        _FakeRequest({
+            "session_id": "match_1",
+            "lanlan_name": "Lan",
+            "reason": "manual_return_to_start",
+            "gameStarted": True,
+            "gameStartedElapsedMs": 9_000,
+        }),
+    )
+
+    assert result["archive_memory"]["status"] == "skipped"
+    assert result["archive_memory"]["reason"] == "started_under_10s"
+    assert result["postgame"] == {"ok": True, "action": "skip", "reason": "disabled"}
 
 
 @pytest.mark.unit
@@ -914,6 +1504,7 @@ async def test_game_end_injects_postgame_context_into_active_realtime(monkeypatc
     monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
     monkeypatch.setattr(game_router, "_POSTGAME_REALTIME_NUDGE_DELAYS", (0.0,))
     state = game_router._activate_game_route("soccer", "match_1", "Lan")
+    _mark_game_started(state)
     state["last_state"] = {"score": {"player": 1, "ai": 3}}
     game_router._append_game_dialog(state, {
         "type": "user",
@@ -959,6 +1550,7 @@ async def test_game_end_uses_direct_response_for_gemini_postgame(monkeypatch, _f
     mgr = _FakeRealtimeManager(session)
     monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
     state = game_router._activate_game_route("soccer", "match_1", "Lan")
+    _mark_game_started(state)
     state["last_state"] = {"score": {"player": 3, "ai": 14}}
     game_router._append_game_dialog(state, {
         "type": "user",
@@ -1029,6 +1621,7 @@ async def test_game_end_delivers_one_shot_postgame_text_bubble(monkeypatch):
     mgr = _FakePostgameTextManager()
     monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
     state = game_router._activate_game_route("soccer", "match_1", "Lan")
+    _mark_game_started(state)
     state["last_state"] = {"score": {"player": 2, "ai": 4}}
     game_router._append_game_dialog(state, {
         "type": "user",
@@ -1079,6 +1672,7 @@ async def test_game_end_skips_postgame_on_heartbeat_timeout(monkeypatch):
     mgr = _FakePostgameTextManager()
     monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
     state = game_router._activate_game_route("soccer", "match_1", "Lan")
+    _mark_game_started(state)
 
     async def fake_submit(archive):
         return {"ok": True, "status": "cached", "count": 1}
@@ -1097,3 +1691,30 @@ async def test_game_end_skips_postgame_on_heartbeat_timeout(monkeypatch):
     assert result["postgame"] == {"ok": True, "action": "skip", "reason": "disabled"}
     assert mgr.prepare_calls == []
     assert state["exit_reason"] == "heartbeat_timeout"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_game_end_skips_postgame_on_manual_return_to_start(monkeypatch):
+    mgr = _FakePostgameTextManager()
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
+    state = game_router._activate_game_route("soccer", "match_1", "Lan")
+    _mark_game_started(state)
+
+    async def fake_submit(archive):
+        return {"ok": True, "status": "cached", "count": 1}
+
+    async def fake_run_game_chat(*_args, **_kwargs):
+        raise AssertionError("return-to-start should only archive, not deliver postgame")
+
+    monkeypatch.setattr(game_router, "_submit_game_archive_to_memory", fake_submit)
+    monkeypatch.setattr(game_router, "_run_game_chat", fake_run_game_chat)
+
+    result = await game_router.game_end(
+        "soccer",
+        _FakeRequest({"session_id": "match_1", "lanlan_name": "Lan", "reason": "manual_return_to_start"}),
+    )
+
+    assert result["postgame"] == {"ok": True, "action": "skip", "reason": "disabled"}
+    assert mgr.prepare_calls == []
+    assert state["exit_reason"] == "manual_return_to_start"

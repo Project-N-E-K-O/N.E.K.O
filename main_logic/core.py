@@ -1535,6 +1535,7 @@ class LLMSessionManager:
         source: str = "game_llm",
         turn_id: str | None = None,
         event: dict | None = None,
+        finalize_turn: bool = False,
     ) -> dict:
         """Mirror a game assistant line without invoking TTS or ordinary chat generation."""
         clean = str(text or "").strip()
@@ -1544,14 +1545,13 @@ class LLMSessionManager:
         mirror_turn_id = turn_id or request_id or str(uuid4())
         previous_request_id = self._active_text_request_id
         self._active_text_request_id = request_id
-        metadata = {
-            "source": source,
-            "game_route": {
-                "game_type": game_type,
-                "session_id": session_id,
-                "event": event or {},
-            },
-        }
+        event_payload = event if isinstance(event, dict) else {}
+        metadata = self._build_game_route_sync_meta(
+            source=source,
+            game_type=game_type,
+            session_id=session_id,
+            event=event_payload,
+        )
         try:
             await self.send_lanlan_response(
                 clean,
@@ -1559,6 +1559,14 @@ class LLMSessionManager:
                 turn_id=mirror_turn_id,
                 metadata=metadata,
             )
+            if finalize_turn:
+                await self._emit_game_route_turn_end(
+                    request_id=request_id,
+                    game_type=game_type,
+                    session_id=session_id,
+                    event=event_payload,
+                    log_context="game mirror",
+                )
         finally:
             self._active_text_request_id = previous_request_id
         return {
@@ -1569,7 +1577,59 @@ class LLMSessionManager:
             "game_type": game_type,
             "session_id": session_id,
             "source": source,
+            "turn_finalized": bool(finalize_turn),
         }
+
+    def _build_game_route_sync_meta(
+        self,
+        *,
+        source: str,
+        game_type: str,
+        session_id: str,
+        event: dict | None,
+    ) -> dict:
+        event_payload = event if isinstance(event, dict) else {}
+        return {
+            "source": source,
+            "game_type": game_type,
+            "session_id": session_id,
+            "game_route": {
+                "game_type": game_type,
+                "session_id": session_id,
+                "event": event_payload,
+            },
+        }
+
+    async def _emit_game_route_turn_end(
+        self,
+        *,
+        request_id: str | None,
+        game_type: str,
+        session_id: str,
+        event: dict | None,
+        log_context: str,
+    ) -> None:
+        turn_end_msg = {
+            "type": "system",
+            "data": "turn end",
+            "request_id": request_id,
+            "meta": self._build_game_route_sync_meta(
+                source="game_route",
+                game_type=game_type,
+                session_id=session_id,
+                event=event if isinstance(event, dict) else {},
+            ),
+        }
+        self.sync_message_queue.put(turn_end_msg)
+        try:
+            if (
+                self.websocket
+                and hasattr(self.websocket, "client_state")
+                and self.websocket.client_state == self.websocket.client_state.CONNECTED
+            ):
+                await self.websocket.send_json(turn_end_msg)
+        except Exception as e:
+            logger.warning("[%s] %s turn_end send failed: %s", self.lanlan_name, log_context, e)
 
     async def _ensure_game_tts_runtime(self) -> bool:
         """Ensure the existing project TTS worker/handler can speak a game line.
@@ -1622,11 +1682,14 @@ class LLMSessionManager:
         game_type: str = "",
         session_id: str = "",
         mirror_text: bool = True,
+        emit_turn_end: bool = True,
+        event: dict | None = None,
     ) -> dict:
         """Send a game A-layer line through the normal chat mirror and project TTS path."""
         clean = str(line or "").strip()
         if not clean:
             return {"ok": False, "reason": "missing_line", "audio_sent": False}
+        event_payload = event if isinstance(event, dict) else {}
 
         async with self.lock:
             interrupted_speech_id = self.current_speech_id
@@ -1648,7 +1711,17 @@ class LLMSessionManager:
         self._active_text_request_id = request_id
         try:
             if mirror_text:
-                await self.send_lanlan_response(clean, is_first_chunk=True, turn_id=turn_id)
+                await self.send_lanlan_response(
+                    clean,
+                    is_first_chunk=True,
+                    turn_id=turn_id,
+                    metadata=self._build_game_route_sync_meta(
+                        source="game_route",
+                        game_type=game_type,
+                        session_id=session_id,
+                        event=event_payload,
+                    ),
+                )
             tts_available = await self._ensure_game_tts_runtime()
             audio_queued = False
             if tts_available:
@@ -1660,26 +1733,14 @@ class LLMSessionManager:
                     status = self._request_tts_done_locked()
                     audio_queued = status in {"queued", "deferred", "already"}
 
-            turn_end_msg = {
-                "type": "system",
-                "data": "turn end",
-                "request_id": request_id,
-                "meta": {
-                    "source": "game_route",
-                    "game_type": game_type,
-                    "session_id": session_id,
-                },
-            }
-            self.sync_message_queue.put(turn_end_msg)
-            try:
-                if (
-                    self.websocket
-                    and hasattr(self.websocket, "client_state")
-                    and self.websocket.client_state == self.websocket.client_state.CONNECTED
-                ):
-                    await self.websocket.send_json(turn_end_msg)
-            except Exception as e:
-                logger.warning("[%s] game line turn_end send failed: %s", self.lanlan_name, e)
+            if emit_turn_end:
+                await self._emit_game_route_turn_end(
+                    request_id=request_id,
+                    game_type=game_type,
+                    session_id=session_id,
+                    event=event_payload,
+                    log_context="game line",
+                )
 
             return {
                 "ok": True,
@@ -1687,6 +1748,7 @@ class LLMSessionManager:
                 "speech_id": turn_id,
                 "audio_sent": audio_queued,
                 "audio_queued": audio_queued,
+                "turn_end_emitted": bool(emit_turn_end),
                 "voice_source": {
                     "provider": "project_tts",
                     "method": "project_tts",

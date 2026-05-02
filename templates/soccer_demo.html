@@ -114,6 +114,74 @@
   #voice-status {
     grid-column: 1 / -1; opacity: 0.75; font-size: 12px;
   }
+  #exit-to-start-button {
+    position: fixed; right: 12px; top: 12px; z-index: 35;
+    padding: 7px 12px;
+    border: 1px solid rgba(255,255,255,0.26);
+    border-radius: 6px;
+    background: rgba(0,0,0,0.52);
+    color: rgba(255,255,255,0.92);
+    font: 13px/1.3 "Segoe UI", "PingFang SC", sans-serif;
+    cursor: pointer;
+  }
+  #exit-to-start-button:hover {
+    background: rgba(40,40,40,0.72);
+    border-color: rgba(255,255,255,0.42);
+  }
+  #exit-to-start-button:disabled,
+  #soccer-start-button:disabled {
+    opacity: 0.55;
+    cursor: wait;
+  }
+  #exit-to-start-button[hidden] { display: none; }
+  #loading-overlay {
+    position: fixed; inset: 0; z-index: 100;
+    display: flex; align-items: center; justify-content: center;
+    background: rgba(10, 12, 16, 0.88);
+    color: rgba(255,255,255,0.92);
+    font: 14px/1.5 "Segoe UI", "PingFang SC", sans-serif;
+    transition: opacity 0.35s ease;
+  }
+  #loading-overlay.hidden {
+    opacity: 0; pointer-events: none;
+  }
+  #loading-panel {
+    display: flex; flex-direction: column; align-items: center; gap: 14px;
+    padding: 14px 18px; border: 1px solid rgba(255,255,255,0.18);
+    background: rgba(255,255,255,0.08);
+    border-radius: 8px;
+    box-shadow: 0 14px 40px rgba(0,0,0,0.28);
+    min-width: 280px;
+    max-width: calc(100vw - 32px);
+  }
+  #loading-row {
+    display: flex; align-items: center; justify-content: center; gap: 12px;
+  }
+  #loading-spinner {
+    width: 24px; height: 24px; border-radius: 50%;
+    border: 3px solid rgba(255,255,255,0.28);
+    border-top-color: rgba(255,255,255,0.95);
+    animation: loading-spin 0.8s linear infinite;
+    flex: 0 0 auto;
+  }
+  #loading-spinner[hidden],
+  #loading-actions[hidden] { display: none; }
+  #loading-text { min-width: 180px; }
+  #soccer-start-button {
+    min-width: 112px;
+    padding: 8px 18px;
+    border: 1px solid rgba(255,255,255,0.32);
+    border-radius: 6px;
+    background: rgba(255,255,255,0.14);
+    color: rgba(255,255,255,0.95);
+    font: 14px/1.3 "Segoe UI", "PingFang SC", sans-serif;
+    cursor: pointer;
+  }
+  #soccer-start-button:hover {
+    background: rgba(255,255,255,0.22);
+    border-color: rgba(255,255,255,0.50);
+  }
+  @keyframes loading-spin { to { transform: rotate(360deg); } }
 </style>
 </head>
 <body>
@@ -140,7 +208,139 @@
     <div id="voice-status">调试 STT：隐藏</div>
   </div>
 </div>
+<button id="exit-to-start-button" type="button" hidden>结束但不关闭窗口</button>
 <div id="status">loading VRM dependencies…</div>
+<div id="loading-overlay" role="status" aria-live="polite">
+  <div id="loading-panel">
+    <div id="loading-row">
+      <div id="loading-spinner" aria-hidden="true"></div>
+      <div id="loading-text">初始化足球小游戏…</div>
+    </div>
+    <div id="loading-actions" hidden>
+      <button id="soccer-start-button" type="button">开始</button>
+    </div>
+  </div>
+</div>
+
+<script>
+  window.__SoccerLoading = (() => {
+    const state = { assets: false, route: false, routeStarting: false, started: false };
+    const textEl = () => document.getElementById('loading-text');
+    const overlayEl = () => document.getElementById('loading-overlay');
+    const spinnerEl = () => document.getElementById('loading-spinner');
+    const actionsEl = () => document.getElementById('loading-actions');
+    const startButtonEl = () => document.getElementById('soccer-start-button');
+    const exitButtonEl = () => document.getElementById('exit-to-start-button');
+    const updateText = (text) => {
+      const el = textEl();
+      if (el && text) el.textContent = text;
+    };
+    const showOverlay = () => {
+      const overlay = overlayEl();
+      if (!overlay) return;
+      overlay.style.display = 'flex';
+      requestAnimationFrame(() => overlay.classList.remove('hidden'));
+    };
+    const hideOverlay = () => {
+      const overlay = overlayEl();
+      if (!overlay) return;
+      overlay.classList.add('hidden');
+      setTimeout(() => { overlay.style.display = 'none'; }, 420);
+    };
+    const setSpinnerVisible = (visible) => {
+      const el = spinnerEl();
+      if (el) el.hidden = !visible;
+    };
+    const setStartVisible = (visible, enabled = true) => {
+      const actions = actionsEl();
+      const button = startButtonEl();
+      if (actions) actions.hidden = !visible;
+      if (button) button.disabled = !enabled;
+    };
+    const setExitVisible = (visible, enabled = true) => {
+      const button = exitButtonEl();
+      if (!button) return;
+      button.hidden = !visible;
+      button.disabled = !enabled;
+    };
+    const syncStartScreen = (fallbackText = '') => {
+      if (state.assets && state.route && !state.routeStarting && !state.started) {
+        updateText(fallbackText || '准备完成，点击开始');
+        setSpinnerVisible(false);
+        setStartVisible(true, true);
+        setExitVisible(false);
+        showOverlay();
+        console.log('[SoccerStart] 前期准备完成，等待开始按钮');
+        return;
+      }
+      setSpinnerVisible(!state.assets || state.routeStarting);
+      setStartVisible(false);
+      setExitVisible(false);
+      showOverlay();
+    };
+    const tryHide = () => {
+      if (!state.assets || !state.route || !state.started) return;
+      updateText('准备完成');
+      setSpinnerVisible(false);
+      setStartVisible(false);
+      setExitVisible(true, true);
+      setTimeout(hideOverlay, 180);
+    };
+    return {
+      set(part, text) {
+        if (part && Object.prototype.hasOwnProperty.call(state, part)) {
+          state[part] = false;
+          if (part === 'route') state.routeStarting = true;
+        }
+        updateText(text);
+        syncStartScreen(text);
+      },
+      isReady() {
+        return state.assets && state.route && state.started;
+      },
+      beginStart(text = '分析开局上下文…') {
+        state.route = false;
+        state.routeStarting = true;
+        state.started = false;
+        updateText(text);
+        setSpinnerVisible(true);
+        setStartVisible(false);
+        setExitVisible(false);
+        showOverlay();
+      },
+      ending(text = '正在结束本局…') {
+        state.route = false;
+        state.routeStarting = true;
+        state.started = false;
+        updateText(text);
+        setSpinnerVisible(true);
+        setStartVisible(false);
+        setExitVisible(false, false);
+        showOverlay();
+      },
+      showStart(text = '准备完成，点击开始') {
+        state.route = true;
+        state.routeStarting = false;
+        state.started = false;
+        syncStartScreen(text);
+      },
+      startGame() {
+        if (!state.assets || !state.route || state.routeStarting) return false;
+        state.started = true;
+        console.log('[SoccerStart] 开始按钮已点击，进入游戏');
+        tryHide();
+        return true;
+      },
+      done(part, text) {
+        if (part && Object.prototype.hasOwnProperty.call(state, part)) state[part] = true;
+        if (part === 'route') state.routeStarting = false;
+        updateText(text);
+        if (state.assets && state.route && state.started) tryHide();
+        else syncStartScreen(text);
+      },
+    };
+  })();
+</script>
 
 <!-- i18n（某些 vrm-*.js 使用 window.t） -->
 <script src="/static/i18n-i18next.js"></script>
@@ -186,7 +386,10 @@
 <script>
 (async () => {
   const statusEl = document.getElementById('status');
-  const setStatus = (s) => { statusEl.textContent = s; };
+  const setStatus = (s) => {
+    statusEl.textContent = s;
+    window.__SoccerLoading?.set('assets', s);
+  };
 
   // 等 vrm 模块链加载完
   await new Promise(resolve => {
@@ -390,10 +593,12 @@
       setStatus('L2D failed: ' + (l2dErr.message || l2dErr));
     }
 
+    window.__SoccerLoading?.done('assets', '模型加载完成');
     setTimeout(() => { statusEl.style.opacity = '0'; statusEl.style.transition = 'opacity 0.8s'; }, 1500);
   } catch (e) {
     console.error('[soccer_demo] VRM init failed:', e);
     setStatus('VRM init failed: ' + (e.message || e));
+    window.__SoccerLoading?.done('assets', '模型初始化失败，继续进入游戏');
   }
 })();
 </script>
@@ -547,6 +752,8 @@
   const voiceTextInput = document.getElementById('voice-text-input');
   const voiceSendButton = document.getElementById('voice-send-button');
   const voiceStatusEl = document.getElementById('voice-status');
+  const startButton = document.getElementById('soccer-start-button');
+  const exitToStartButton = document.getElementById('exit-to-start-button');
   const debugSttVisible = new URLSearchParams(window.location.search).get('debug_stt') === '1' ||
     window.localStorage?.getItem('soccerDebugStt') === '1';
   if (debugSttVisible && voiceControls) {
@@ -554,6 +761,8 @@
     voiceControls.setAttribute('aria-hidden', 'false');
     console.log('[SoccerVoice][DebugSTT] 调试控件已显示 | 来源=debug_stt/localStorage');
   }
+  const isGameRuntimeReady = () => window.__SoccerLoading?.isReady?.() !== false;
+  const isGameUiTarget = (target) => !!target?.closest?.('#controls, #loading-overlay, #exit-to-start-button');
 
   const state = {
     player: { x: 0, y: 0, vx: 0, vy: 0 },
@@ -601,11 +810,19 @@
   let playerCharge = 0;
   const CHARGE_MAX_SEC = 1.2;
   window.addEventListener('mousedown', e => {
+    if (isGameUiTarget(e.target)) return;
+    if (!isGameRuntimeReady()) return;
     if (e.button !== 0) return;
     playerCharging = true;
     playerCharge = 0;
   });
   window.addEventListener('mouseup', e => {
+    if (isGameUiTarget(e.target)) {
+      playerCharging = false;
+      playerCharge = 0;
+      return;
+    }
+    if (!isGameRuntimeReady()) return;
     if (e.button !== 0 || !playerCharging) return;
     const { nx, ny } = kickDirFor(state.player);
     const mul = 1.0 + 0.6 * playerCharge;
@@ -616,6 +833,7 @@
   window.addEventListener('blur', () => { playerCharging = false; playerCharge = 0; });
   window.addEventListener('contextmenu', e => e.preventDefault());
   window.addEventListener('keydown', e => {
+    if (!isGameRuntimeReady()) return;
     if (e.key === 'r' || e.key === 'R') resetPositions();
     // 1-6 切换 AI 心情（debug）
     const idx = Number(e.key) - 1;
@@ -845,14 +1063,19 @@
 
   function flash(side) { state.flashTimer = 0.6; state.flashSide = side; }
 
-  // 难度档：从 max（最难）到 lv4（最弱）。当前默认由 LLM 控制，不再每进一球自动循环。
+  // 难度档：从 max（最难）到 lv4（最弱）。普通陪玩默认从 lv2/lv3 开局，后续由 LLM 控制。
   const DIFFICULTY = [
     { name: 'max', kickCdMin: 0.4, kickCdMax: 0.6, windupSec: 0.00, speedMul: 1.00, allowAttack: true },
     { name: 'lv2', kickCdMin: 0.9, kickCdMax: 1.4, windupSec: 0.35, speedMul: 1.00, allowAttack: true },
     { name: 'lv3', kickCdMin: 0.9, kickCdMax: 1.4, windupSec: 0.35, speedMul: 0.78, allowAttack: true },
     { name: 'lv4', kickCdMin: 0.9, kickCdMax: 1.4, windupSec: 0.35, speedMul: 0.78, allowAttack: false },
   ];
-  let difficultyIdx = 0;
+  function randomDefaultDifficultyIndex() {
+    const name = Math.random() < 0.5 ? 'lv2' : 'lv3';
+    const idx = DIFFICULTY.findIndex(d => d.name === name);
+    return idx >= 0 ? idx : 1;
+  }
+  let difficultyIdx = randomDefaultDifficultyIndex();
   function cycleDifficulty() {
     difficultyIdx = (difficultyIdx + 1) % DIFFICULTY.length;
   }
@@ -1645,8 +1868,13 @@
   // ═══════════════════════════════════════════════════════════════════════════
   const _llm = {
     sessionId: 'soccer_' + Date.now().toString(36),
+    preGameContext: null,
+    preGameContextSource: '',
+    preGameContextError: '',
+    pendingOpeningLine: '',
+    keepMoodRotationDisabled: false,
     pending: false,
-    cleanedUp: false,
+    cleanedUp: true,
     pendingItems: [],
     flushQueued: false,
     maxPendingItems: 10,
@@ -1667,6 +1895,10 @@
     routeHeartbeatController: null,
     routeVisibilityChangeHandler: null,
     routeHeartbeatFailures: 0,
+    gameStarted: false,
+    gameStartedAt: 0,
+    gameStartedAtEpochMs: 0,
+    gameMemoryTailCount: null,
     loggedExternalInputKeys: new Set(),
     routeVoiceSttActive: false,
     routeVoiceSttListening: false,
@@ -1682,19 +1914,107 @@
       timer: null,
       seq: 0,
       waitingForUserReplyGeneration: false,
+      userReplyProtectedUntil: 0,
     },
   };
 
   const SPEECH_PLAYBACK_STATE_KEY = 'neko_speech_playback_state';
   const SPEECH_PLAYBACK_CHANNEL_NAME = 'neko_speech_playback_channel';
   const GAME_ROUTE_HEARTBEAT_FETCH_TIMEOUT_MS = 4500;
+  const ACCIDENTAL_GAME_ENTRY_GRACE_MS = 10000;
+  const DEFAULT_GAME_MEMORY_TAIL_COUNT = 6;
+  const MAX_GAME_MEMORY_TAIL_COUNT = 50;
   const GAME_VOICE_ARBITER_DEFAULTS = {
     tailWaitSeconds: 0.8,
     freshTtlSeconds: 2.0,
     userReplyFreshTtlSeconds: 5.0,
     inFlightGuardSeconds: 2.0,
+    userReplyGuardMinSeconds: 2.4,
+    userReplyGuardMaxSeconds: 10.0,
+    userReplySecondsPerChar: 0.18,
     stalePlaybackStateMs: 3500,
   };
+
+  function _newGameSessionId() {
+    return 'soccer_' + Date.now().toString(36);
+  }
+
+  function _resetGameFieldForStartScreen() {
+    playerCharging = false;
+    playerCharge = 0;
+    state.score.player = 0;
+    state.score.ai = 0;
+    state.round = 1;
+    state.flashTimer = 0;
+    state.flashSide = null;
+    _outOfBoundsTimer = 0;
+    _outOfBoundsSide = null;
+    resetPositions();
+
+    aiKickCd = 0;
+    aiWindupRemaining = 0;
+    aiWindupAim = null;
+    aiWindupTotal = 0;
+    ballGhostSec = 0;
+    lastTouchSide = null;
+    lastBallVx = 0;
+    lastBallVy = 0;
+    zoneoutCooldown = 3 + Math.random() * 2;
+    aiMode = 'attack';
+    aiReactSec = 0;
+    aiTargetCache = { x: state.ball.x, y: state.ball.y };
+    aiFreezeSec = 0;
+    aiRetreatSec = 0;
+    aiRetreatTarget = null;
+    ballPosHistory = [];
+    unstickCd = 0;
+    GAME_EVENTS.length = 0;
+
+    difficultyIdx = randomDefaultDifficultyIndex();
+    __setMoodBase('calm');
+    if (!_llm.keepMoodRotationDisabled) SoccerDemo.enableMoodRotation(20);
+    for (const key of Object.keys(SPEECH_CD)) delete SPEECH_CD[key];
+    Object.assign(speechState, {
+      ballInOppHalfSec: 0,
+      playerIdleSec: 0,
+      closeProximitySec: 0,
+      lastBallTouchTime: performance.now(),
+      lastGoalTime: performance.now(),
+      scoreAgeAccum: 0,
+      lastFreezeKind: null,
+    });
+    SoccerDemo.clearBubble();
+  }
+
+  function _resetGameRouteRuntime({ active = false, newSession = false } = {}) {
+    if (newSession) _llm.sessionId = _newGameSessionId();
+    _llm.preGameContext = null;
+    _llm.preGameContextSource = '';
+    _llm.preGameContextError = '';
+    _llm.pendingOpeningLine = '';
+    _llm.keepMoodRotationDisabled = false;
+    _llm.pending = false;
+    _llm.cleanedUp = !active;
+    _llm.pendingItems = [];
+    _llm.flushQueued = false;
+    _llm.cooldowns = {};
+    _llm.realtimeContextLastSentAt = 0;
+    _llm.routeHeartbeatFailures = 0;
+    _llm.gameStarted = false;
+    _llm.gameStartedAt = 0;
+    _llm.gameStartedAtEpochMs = 0;
+    _llm.gameMemoryTailCount = null;
+    _llm.lastVoiceFailure = null;
+    _llm.loggedExternalInputKeys.clear();
+	    _llm.voiceArbiter.pending = null;
+	    _llm.voiceArbiter.inFlight = null;
+	    _llm.voiceArbiter.waitingForUserReplyGeneration = false;
+	    _llm.voiceArbiter.userReplyProtectedUntil = 0;
+	    if (_llm.voiceArbiter.timer) {
+	      clearTimeout(_llm.voiceArbiter.timer);
+	      _llm.voiceArbiter.timer = null;
+	    }
+  }
 
   function _normalizeSpeechPlaybackState(raw) {
     if (!raw || typeof raw !== 'object') return null;
@@ -1760,16 +2080,39 @@
   }
   _initSpeechPlaybackStateBridge();
 
+  function _gameStartedElapsedMs() {
+    if (!_llm.gameStarted || !Number.isFinite(Number(_llm.gameStartedAt)) || Number(_llm.gameStartedAt) <= 0) {
+      return 0;
+    }
+    return Math.max(0, performance.now() - Number(_llm.gameStartedAt));
+  }
+
+  function _isAccidentalGameEntryExit() {
+    if (!_llm.gameStarted) return true;
+    return _gameStartedElapsedMs() < ACCIDENTAL_GAME_ENTRY_GRACE_MS;
+  }
+
   function _gameRoutePayload(extra = {}) {
     const visibilityState = document.visibilityState || 'visible';
     const pageVisible = typeof document.hidden === 'boolean'
       ? !document.hidden
       : visibilityState === 'visible';
+    const gameStartedElapsedMs = Math.round(_gameStartedElapsedMs());
+    const tailCount = Number.isFinite(Number(_llm.gameMemoryTailCount))
+      ? Math.max(1, Math.min(Math.floor(Number(_llm.gameMemoryTailCount)), MAX_GAME_MEMORY_TAIL_COUNT))
+      : DEFAULT_GAME_MEMORY_TAIL_COUNT;
     return JSON.stringify({
       session_id: _llm.sessionId,
       currentState: SoccerDemo._snapshot(),
       pageVisible,
       visibilityState,
+      gameMemoryTailCount: tailCount,
+      game_memory_tail_count: tailCount,
+      gameStarted: !!_llm.gameStarted,
+      game_started: !!_llm.gameStarted,
+      gameStartedElapsedMs,
+      game_started_elapsed_ms: gameStartedElapsedMs,
+      gameStartedAtEpochMs: Math.round(Number(_llm.gameStartedAtEpochMs || 0)),
       ...extra,
     });
   }
@@ -1973,28 +2316,35 @@
 
 	  async function _startGameRoute() {
 	    try {
+	      window.__SoccerLoading?.beginStart?.('分析开局上下文…');
 	      const resp = await fetch('/api/game/soccer/route/start', {
 	        method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: _gameRoutePayload(),
+        body: _gameRoutePayload(_readGameRouteStartOptions()),
       });
       const data = await resp.json().catch(() => ({}));
 	      if (data.ok) {
 	        console.log('[SoccerRoute] 已接管主语音入口/主聊天窗:', data.state);
+	        _applyPreGameContext(data.state);
 	        if (data.state?.game_external_voice_route_active) {
 	          _llm.routeVoiceSttActive = true;
 	          _setVoiceStatus('游戏语音 STT：等待主语音入口接管');
 	          console.log('[SoccerVoice][RouteSTT] 已进入游戏语音路由，等待主 Realtime 转写接管');
 	        }
 	        _startGameRouteHeartbeat();
+	        _startRouteDrain();
+	        window.__SoccerLoading?.done('route', '开局上下文准备完成');
 	      } else {
         soccerRecoverableLog('[SoccerRoute] 接管主入口失败:', data);
+        _startRouteDrain();
+        window.__SoccerLoading?.done('route', '开局上下文使用本地默认');
       }
     } catch (e) {
       soccerRecoverableLog('[SoccerRoute] 接管主入口请求失败:', e);
+      _startRouteDrain();
+      window.__SoccerLoading?.done('route', '开局上下文请求失败，继续游戏');
     }
   }
-  _startGameRoute();
 
   function _scoreDiffOf(snapshot) {
     const score = snapshot?.score || { player: 0, ai: 0 };
@@ -2016,6 +2366,105 @@
     if (source.voiceName) parts.push(`voice=${source.voiceName}`);
     if (source.lang) parts.push(`lang=${source.lang}`);
     return parts.join(' / ') || 'unknown';
+  }
+
+  function _readGameRouteStartOptions() {
+    const raw = window.NEKOSoccerLaunchOptions || window.SoccerDemoLaunchOptions || {};
+    const nekoInitiated = raw.nekoInitiated === true;
+    const nekoInviteText = nekoInitiated ? String(raw.nekoInviteText || '').trim().slice(0, 120) : '';
+    const rawTailCount = raw.gameMemoryTailCount ?? raw.game_memory_tail_count ?? raw.tailCount ?? raw.tail_count;
+    const parsedTailCount = Number(rawTailCount);
+    const gameMemoryTailCount = Number.isFinite(parsedTailCount)
+      ? Math.max(1, Math.min(Math.floor(parsedTailCount), MAX_GAME_MEMORY_TAIL_COUNT))
+      : DEFAULT_GAME_MEMORY_TAIL_COUNT;
+    _llm.gameMemoryTailCount = gameMemoryTailCount;
+    return { nekoInitiated, nekoInviteText, gameMemoryTailCount, game_memory_tail_count: gameMemoryTailCount };
+  }
+
+  function _isValidSoccerMood(value) {
+    return SoccerDemo.MOODS.includes(value);
+  }
+
+  function _isValidSoccerDifficulty(value) {
+    return SoccerDemo.DIFFICULTIES.includes(value);
+  }
+
+  function _applyPreGameContext(routeState = {}) {
+    const ctx = routeState?.preGameContext && typeof routeState.preGameContext === 'object'
+      ? routeState.preGameContext
+      : null;
+    _llm.preGameContext = ctx;
+    _llm.preGameContextSource = String(routeState?.pre_game_context_source || '');
+    _llm.preGameContextError = String(routeState?.pre_game_context_error || '');
+    _llm.keepMoodRotationDisabled = !!(ctx && ctx.gameStance && ctx.gameStance !== 'neutral_play');
+
+    if (_llm.keepMoodRotationDisabled) {
+      SoccerDemo.disableMoodRotation();
+    } else {
+      SoccerDemo.enableMoodRotation(20);
+    }
+
+    if (ctx?.initialMood && _isValidSoccerMood(ctx.initialMood)) {
+      SoccerDemo.setMood(ctx.initialMood);
+    }
+    if (ctx?.initialDifficulty && _isValidSoccerDifficulty(ctx.initialDifficulty)) {
+      SoccerDemo.setDifficulty(ctx.initialDifficulty);
+    }
+
+    console.log(
+      `[SoccerRoute] 开局上下文 | stance=${ctx?.gameStance || 'none'} ` +
+      `source=${_llm.preGameContextSource || '-'} error=${_llm.preGameContextError || '-'} ` +
+      `mood=${SoccerDemo.getMood()} difficulty=${SoccerDemo.getDifficulty()} ` +
+      `rotation=${_llm.keepMoodRotationDisabled ? 'disabled' : 'enabled'}`
+    );
+
+    const openingLine = String(ctx?.openingLine || '').trim();
+    if (openingLine) {
+      _llm.pendingOpeningLine = openingLine;
+      if (isGameRuntimeReady()) {
+        _deliverPendingOpeningLine();
+      }
+    }
+  }
+
+  function _deliverPendingOpeningLine() {
+    const openingLine = String(_llm.pendingOpeningLine || '').trim();
+    _llm.pendingOpeningLine = '';
+    if (openingLine) void _deliverOpeningLine(openingLine);
+  }
+
+  function _deliverOpeningLine(line) {
+    const clean = String(line || '').trim();
+    if (!clean) return;
+    if (clean.length > 15) {
+      console.warn('[SoccerRoute] 开场白超过 15 字，跳过:', clean);
+      return;
+    }
+    const eventTs = performance.now();
+    const snapshot = SoccerDemo._snapshot();
+    const meta = {
+      kind: 'opening-line',
+      round: snapshot.round,
+      priority: 1,
+      voicePriority: 1,
+      itemCount: 1,
+      hasUserSpeech: false,
+      hasUserText: false,
+      source: 'pre_game_context',
+    };
+    const result = {
+      line: clean,
+      control: {},
+      llm_source: { provider: 'pregame_context', method: _llm.preGameContextSource || 'unknown' },
+    };
+    const bubbleShown = SoccerDemo.say(clean, {
+      priority: 1,
+      kind: 'opening-line',
+      sourceLabel: '开局上下文',
+    });
+    void _mirrorGameAssistantText(clean, meta, result);
+    void _enqueueGameVoice(clean, meta, result, eventTs);
+    console.log(`[SoccerRoute] 开场白 | 气泡=${bubbleShown ? '已显示' : '被保留'} 台词="${clean}"`);
   }
 
   function _makeMailboxItemFromSpeak(p) {
@@ -2131,6 +2580,7 @@
     const clean = String(line || '').trim();
     if (!clean || meta?.textAlreadyMirrored) return null;
     const requestId = meta.request_id || result.request_id || `game-llm-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    const shouldFinalizeTurn = !!(meta.hasUserSpeech || meta.hasUserText || meta.kind === 'user-voice' || meta.kind === 'user-text');
     try {
       const resp = await fetch('/api/game/soccer/mirror-assistant', {
         method: 'POST',
@@ -2140,6 +2590,7 @@
           session_id: _llm.sessionId,
           request_id: requestId,
           turn_id: `game-mirror-${requestId}`,
+          finalize_turn: shouldFinalizeTurn,
           line: clean,
           event: {
             kind: meta.kind || 'mailbox',
@@ -2198,6 +2649,7 @@
           session_id: _llm.sessionId,
           request_id: meta.request_id || result.request_id || '',
           mirror_text: false,
+          emit_turn_end: false,
           line,
           state: stateNow,
           event: {
@@ -2293,6 +2745,29 @@
     return GAME_VOICE_ARBITER_DEFAULTS.freshTtlSeconds;
   }
 
+  function _estimateUserReplyVoiceSeconds(line = '') {
+    const compactLen = String(line || '').replace(/\s+/g, '').length;
+    const rawSeconds = 0.8 + compactLen * GAME_VOICE_ARBITER_DEFAULTS.userReplySecondsPerChar;
+    return Math.max(
+      GAME_VOICE_ARBITER_DEFAULTS.userReplyGuardMinSeconds,
+      Math.min(GAME_VOICE_ARBITER_DEFAULTS.userReplyGuardMaxSeconds, rawSeconds)
+    );
+  }
+
+	  function _protectUserReplyVoice(entry) {
+	    if (!_isUserReplyVoiceMeta(entry?.meta || {})) return;
+	    const protectMs = _estimateUserReplyVoiceSeconds(entry.line) * 1000;
+	    _llm.voiceArbiter.userReplyProtectedUntil = Math.max(
+	      Number(_llm.voiceArbiter.userReplyProtectedUntil || 0),
+	      performance.now() + protectMs
+	    );
+	  }
+
+	  function _clearUserReplyVoiceProtection(entry) {
+	    if (!_isUserReplyVoiceMeta(entry?.meta || {})) return;
+	    _llm.voiceArbiter.userReplyProtectedUntil = 0;
+	  }
+
   function _currentPlaybackPriority(playback) {
     if (!playback?.active) return null;
     if (Number.isFinite(playback.priority)) return playback.priority;
@@ -2304,7 +2779,10 @@
   function _shouldInterruptPlayback(priority, playback) {
     if (!playback?.active) return false;
     if (priority === 0) return true;
-    if (priority === 1) return _currentPlaybackPriority(playback) !== 1;
+    if (priority === 1) {
+      const currentPriority = _currentPlaybackPriority(playback);
+      return Number.isFinite(currentPriority) && currentPriority > 1;
+    }
     return false;
   }
 
@@ -2330,6 +2808,7 @@
     _clearVoiceArbiterPending(source);
     _clearVoiceArbiterInFlight(source);
     _llm.voiceArbiter.waitingForUserReplyGeneration = true;
+    _llm.voiceArbiter.userReplyProtectedUntil = 0;
     console.log(`[SoccerVoice][Arbiter] 用户输入打断 | 来源=${source}，等待猫娘对用户输入的回复生成`);
   }
 
@@ -2368,13 +2847,16 @@
   }
 
   function _setVoiceArbiterInFlight(entry, reason = 'request') {
-    const guardMs = Math.max(
-      500,
-      Math.min(
-        entry.freshTtlSeconds * 1000,
-        GAME_VOICE_ARBITER_DEFAULTS.inFlightGuardSeconds * 1000
-      )
-    );
+    const isUserReply = _isUserReplyVoiceMeta(entry?.meta || {});
+    const guardMs = isUserReply
+      ? _estimateUserReplyVoiceSeconds(entry.line) * 1000
+      : Math.max(
+          500,
+          Math.min(
+            entry.freshTtlSeconds * 1000,
+            GAME_VOICE_ARBITER_DEFAULTS.inFlightGuardSeconds * 1000
+          )
+        );
     _llm.voiceArbiter.inFlight = {
       id: entry.id,
       line: entry.line,
@@ -2384,6 +2866,7 @@
       expiresAt: performance.now() + guardMs,
       reason,
     };
+    if (isUserReply) _protectUserReplyVoice(entry);
   }
 
   function _updateVoiceArbiterInFlightFromResult(entry, result = {}) {
@@ -2394,15 +2877,18 @@
       inFlight.speechId = speechId;
       _llm.speechPriorityById.set(speechId, entry.priority);
     }
-    const delivered = !!(result?.audio_sent || result?.audio_queued);
-    if (!delivered) {
-      _clearVoiceArbiterInFlight(result?.reason || 'voice-not-delivered');
-      return;
-    }
-    inFlight.expiresAt = performance.now() + Math.max(
-      500,
-      GAME_VOICE_ARBITER_DEFAULTS.inFlightGuardSeconds * 1000
-    );
+	    const isUserReply = _isUserReplyVoiceMeta(entry?.meta || {});
+	    const delivered = !!(result?.audio_sent || result?.audio_queued);
+	    if (!delivered) {
+	      if (isUserReply) _clearUserReplyVoiceProtection(entry);
+	      _clearVoiceArbiterInFlight(result?.reason || 'voice-not-delivered');
+	      return;
+	    }
+	    const guardMs = isUserReply
+	      ? _estimateUserReplyVoiceSeconds(entry.line) * 1000
+	      : Math.max(500, GAME_VOICE_ARBITER_DEFAULTS.inFlightGuardSeconds * 1000);
+    inFlight.expiresAt = Math.max(inFlight.expiresAt, performance.now() + guardMs);
+    if (isUserReply) _protectUserReplyVoice(entry);
   }
 
   function _readVoiceInFlight(playback) {
@@ -2426,9 +2912,24 @@
     };
   }
 
+  function _readUserReplyProtectionOccupancy() {
+    const remainingMs = Number(_llm.voiceArbiter.userReplyProtectedUntil || 0) - performance.now();
+    if (remainingMs <= 0) return null;
+    return {
+      active: true,
+      speechId: '',
+      priority: 0,
+      remainingSeconds: Math.max(0.1, remainingMs / 1000),
+      reason: 'user-reply-protected',
+      source: 'user_reply_protection',
+    };
+  }
+
   function _readVoiceOccupancy() {
     const playback = _readSpeechPlaybackState();
     const inFlight = _readVoiceInFlight(playback);
+    const userReplyProtection = _readUserReplyProtectionOccupancy();
+    if (userReplyProtection) return userReplyProtection;
     if (!playback?.active) return inFlight || playback;
     if (!inFlight) return playback;
     const playbackPriority = _currentPlaybackPriority(playback);
@@ -2441,7 +2942,9 @@
   function _requestGameVoiceWithLogging(entry, reason = 'immediate') {
     const voiceStartedAt = performance.now();
     const meta = entry.meta || {};
-    _llm.voiceArbiter.waitingForUserReplyGeneration = false;
+    if (_isUserReplyVoiceMeta(meta)) {
+      _llm.voiceArbiter.waitingForUserReplyGeneration = false;
+    }
     _setVoiceArbiterInFlight(entry, reason);
     console.log(`[SoccerVoice][Arbiter] 放行语音 | 原因=${reason} 优先级=${entry.priority} 台词="${entry.line}"`);
     return _sendRealtimeSpeech(entry.line, meta, entry.result || {}).then((voiceResult) => {
@@ -2465,11 +2968,12 @@
         `耗时=${(performance.now() - voiceStartedAt).toFixed(0)}ms`
       );
       return finalVoiceResult;
-    }).catch((e) => {
-      soccerRecoverableLog('[SoccerVoice] 项目语音结果处理失败:', e);
-      _clearVoiceArbiterInFlight('request-failed');
-      return { ok: false, reason: 'request_failed', error: String(e) };
-    });
+	    }).catch((e) => {
+	      soccerRecoverableLog('[SoccerVoice] 项目语音结果处理失败:', e);
+	      _clearUserReplyVoiceProtection(entry);
+	      _clearVoiceArbiterInFlight('request-failed');
+	      return { ok: false, reason: 'request_failed', error: String(e) };
+	    });
   }
 
   async function _flushVoiceArbiter(reason = 'timer') {
@@ -2548,6 +3052,7 @@
   }
 
   function _enqueueLLMItem(item) {
+    if (_llm.cleanedUp || !isGameRuntimeReady()) return;
     if (!item) return;
     if (item.type === 'game_event') {
       const now = Date.now();
@@ -2579,6 +3084,7 @@
   }
 
   async function _flushMailbox() {
+    if (_llm.cleanedUp || !isGameRuntimeReady()) return;
     if (_llm.pending || !_llm.pendingItems.length) return;
     const items = _llm.pendingItems.splice(0, _llm.pendingItems.length);
     const currentState = SoccerDemo._snapshot();
@@ -2657,6 +3163,7 @@
   }
 
   async function _handleGameLLMResult(result, meta, eventTs) {
+    if (_llm.cleanedUp || !isGameRuntimeReady()) return;
     if (result?.skipped) return;
     if (!result || !result.line) {
       if (meta?.hasUserSpeech || meta?.hasUserText || meta?.kind === 'user-voice' || meta?.kind === 'user-text') {
@@ -2719,7 +3226,9 @@
         SoccerDemo.disableMoodRotation();
         SoccerDemo.setMood(result.control.mood);
         applied.push(`心情 ${moodLabel(beforeMood)} -> ${moodLabel(result.control.mood)}`);
-        setTimeout(() => SoccerDemo.enableMoodRotation(20), 15000);
+        if (!_llm.keepMoodRotationDisabled) {
+          setTimeout(() => SoccerDemo.enableMoodRotation(20), 15000);
+        }
       } else if (result.control.mood) {
         ignored.push(`心情=${result.control.mood}`);
       }
@@ -2798,42 +3307,118 @@
       soccerRecoverableLog('[SoccerRoute] 外部输入结果拉取失败:', e);
 	    }
 	  }
-  const _routeDrainTimer = setInterval(_drainExternalGameRouteOutputs, 700);
 
-  function _endGameLLMSession(useBeacon = false) {
-    if (_llm.cleanedUp) return;
+  let _routeDrainTimer = null;
+  function _startRouteDrain() {
+    if (_routeDrainTimer) return;
+    _routeDrainTimer = setInterval(_drainExternalGameRouteOutputs, 700);
+  }
+  function _stopRouteDrain() {
+    if (!_routeDrainTimer) return;
+    clearInterval(_routeDrainTimer);
+    _routeDrainTimer = null;
+  }
+
+  async function _endGameLLMSession(useBeacon = false, options = {}) {
+    if (_llm.cleanedUp) return null;
 	    _llm.cleanedUp = true;
-	    clearInterval(_routeDrainTimer);
+	    _stopRouteDrain();
 	    _clearVoiceArbiterPending('cleanup');
 	    _clearVoiceArbiterInFlight('cleanup');
-	    if (_llm.speechPlaybackChannel) {
+	    if (useBeacon && _llm.speechPlaybackChannel) {
 	      try { _llm.speechPlaybackChannel.close(); } catch (_) { /* noop */ }
 	      _llm.speechPlaybackChannel = null;
 	    }
 	    _stopGameRouteHeartbeat();
 	    _stopRouteVoiceSttGate();
 
-	    const payload = _gameRoutePayload({ reason: useBeacon ? 'pagehide' : 'manual' });
+	    const originalReason = options.reason || (useBeacon ? 'pagehide' : 'manual');
+	    const accidentalExit = options.skipAccidentalEntryCheck !== true && _isAccidentalGameEntryExit();
+	    const extraPayload = {
+	      reason: accidentalExit ? 'accidental_page_entry' : originalReason,
+	      originalReason,
+	    };
+	    if (accidentalExit) {
+	      extraPayload.accidentalGameEntry = true;
+	      extraPayload.postgameProactive = false;
+	    }
+    if (!accidentalExit && Object.prototype.hasOwnProperty.call(options, 'postgameProactive')) {
+      extraPayload.postgameProactive = options.postgameProactive;
+    }
+	    const payload = _gameRoutePayload(extraPayload);
     const url = '/api/game/soccer/end';
 
     if (useBeacon && navigator.sendBeacon) {
       try {
         const ok = navigator.sendBeacon(url, new Blob([payload], { type: 'application/json' }));
-        if (ok) return;
+        if (ok) return { ok: true, beacon: true };
       } catch (e) {
         soccerRecoverableLog('[SoccerLLM] sendBeacon 清理失败:', e);
       }
     }
 
-    fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: payload,
-      keepalive: true,
-    }).catch((e) => {
+    try {
+      const resp = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: payload,
+        keepalive: true,
+      });
+      return await resp.json().catch(() => ({ ok: resp.ok, status: resp.status }));
+    } catch (e) {
       soccerRecoverableLog('[SoccerLLM] 清理请求失败:', e);
-    });
+      return { ok: false, reason: 'request_failed', error: String(e) };
+    }
   }
+
+  let _prepareStartInFlight = false;
+  async function _prepareGameForStartScreen(text = '分析开局上下文…') {
+    if (_prepareStartInFlight) return;
+    _prepareStartInFlight = true;
+    try {
+      _stopRouteDrain();
+      _stopGameRouteHeartbeat();
+      _stopRouteVoiceSttGate();
+      _resetGameRouteRuntime({ active: true, newSession: true });
+      _resetGameFieldForStartScreen();
+      window.__SoccerLoading?.beginStart?.(text);
+      await _startGameRoute();
+    } finally {
+      _prepareStartInFlight = false;
+    }
+  }
+
+  function _startGameFromStartScreen() {
+    const started = window.__SoccerLoading?.startGame?.();
+    if (!started) return;
+    _llm.gameStarted = true;
+    _llm.gameStartedAt = performance.now();
+    _llm.gameStartedAtEpochMs = Date.now();
+    void _sendGameRouteHeartbeat(true);
+    _deliverPendingOpeningLine();
+  }
+
+  let _endToStartInFlight = false;
+  async function _endGameToStartScreen() {
+    if (_endToStartInFlight || !isGameRuntimeReady()) return;
+    _endToStartInFlight = true;
+    if (exitToStartButton) exitToStartButton.disabled = true;
+    try {
+      window.__SoccerLoading?.ending?.('正在结束本局…');
+      await _endGameLLMSession(false, {
+        reason: 'manual_return_to_start',
+        postgameProactive: false,
+      });
+    } finally {
+      await _prepareGameForStartScreen('正在准备下一局…');
+      if (exitToStartButton) exitToStartButton.disabled = false;
+      _endToStartInFlight = false;
+    }
+  }
+
+  startButton?.addEventListener('click', _startGameFromStartScreen);
+  exitToStartButton?.addEventListener('click', _endGameToStartScreen);
+  void _prepareGameForStartScreen();
 
   // 注册 onSpeak 回调：拦截高优先级事件，调用 LLM 生成台词
   SoccerDemo.onSpeak(async (p) => {
@@ -2969,6 +3554,12 @@
 
   let lastT = performance.now();
   function loop(t) {
+    if (!isGameRuntimeReady()) {
+      lastT = t;
+      render();
+      requestAnimationFrame(loop);
+      return;
+    }
     const dt = Math.min(0.033, (t - lastT) / 1000);
     lastT = t;
 
