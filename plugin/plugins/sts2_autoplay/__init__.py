@@ -36,7 +36,10 @@ def _summary_from(payload: Mapping[str, Any]) -> str:
 
 
 def _finite_float(value: Any, *, key: str) -> float:
-    number = float(value)
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as exc:
+        raise SdkError(f"非法配置值: {key}={value}") from exc
     if not math.isfinite(number):
         raise SdkError(f"非法配置值: {key}={value}")
     return number

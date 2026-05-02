@@ -713,6 +713,15 @@ def test_plugin_terminal_status_defaults_and_run_data_overrides():
     assert _plugin_terminal_status(True, {"status": "stale", "executed": False}) == "completed"
     assert _plugin_terminal_status(True, {"status": "ok", "executed": True}) == "completed"
 
+    # raw_success=False must always land on "failed". run_data signals cannot
+    # "upgrade" a protocol failure to a softer status like "blocked".
+    assert _plugin_terminal_status(False, {"status": "blocked"}) == "failed"
+    assert _plugin_terminal_status(False, {"status": "clarify", "action": "clarify", "needs_confirmation": True}) == "failed"
+    assert _plugin_terminal_status(False, {"status": "confirm_required", "needs_confirmation": True}) == "failed"
+    assert _plugin_terminal_status(False, {"status": "error"}) == "failed"
+    # observation_only also doesn't change the picture on raw fail.
+    assert _plugin_terminal_status(False, {"status": "blocked", "observation_only": True}) == "failed"
+
 
 def test_callback_instruction_renders_blocked_plugin_result_as_not_executed():
     from main_logic.core import _build_callback_instruction

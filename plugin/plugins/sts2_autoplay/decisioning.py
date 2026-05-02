@@ -258,7 +258,11 @@ class DecisioningMixin:
         return total_synergy
 
     def _apply_setup_effect(self, card: dict[str, Any], state: dict[str, Any], combat: dict[str, Any]) -> None:
-        texts = set(str(card.get(k) or "").lower() for k in ("name", "label", "description") if card.get(k))
+        texts = set(
+            str(card.get(k) or "").lower()
+            for k in ("name", "label", "description", "desc", "card_description")
+            if card.get(k)
+        )
         text_blob = " ".join(texts)
         if any(k in text_blob for k in {"weaken", "虚弱", "弱化"}):
             state["weaken_stacks"] = state.get("weaken_stacks", 0) + 1
@@ -737,6 +741,7 @@ class DecisioningMixin:
 
     def _build_llm_decision_payload(self, context: dict[str, Any], *, character_strategy: Optional[str] = None, user_context: Optional[dict[str, Any]] = None) -> dict[str, Any]:
         snapshot = context.get("snapshot") if isinstance(context.get("snapshot"), dict) else {}
+        actions = context.get("actions") if isinstance(context.get("actions"), list) else []
         raw_state = snapshot.get("raw_state") if isinstance(snapshot.get("raw_state"), dict) else {}
         combat = raw_state.get("combat") if isinstance(raw_state.get("combat"), dict) else {}
         player = combat.get("player") if isinstance(combat.get("player"), dict) else {}
@@ -762,7 +767,7 @@ class DecisioningMixin:
             "combat": self._combat_analyzer.sanitize_combat_for_prompt(combat, lambda _strategy: strategy_constraints, resolved_strategy),
             "tactical_summary": self._combat_analyzer.build_tactical_summary(combat, lambda _strategy: strategy_constraints, resolved_strategy),
             "map_summary": self._context_analyzer._build_map_summary(context),
-            "legal_actions": [self._describe_legal_action(action, context) for action in context.get("actions", []) if isinstance(action, dict)],
+            "legal_actions": [self._describe_legal_action(action, context) for action in actions if isinstance(action, dict)],
             "neko_guidance": context.get("neko_guidance"),
             "user_context": user_context or {"latest_user_turn": None, "recent_user_turns": []},
         }

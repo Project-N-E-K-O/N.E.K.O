@@ -33,10 +33,11 @@ class NekoCommandingMixin:
 
         if self._neko_text_has_any(text, ["停了吧", "别打了", "停止", "结束托管", "停止托管", "终止", "stop"]):
             return self._wrap_neko_command_result("stop", "stop_autoplay", await self.stop_autoplay(), executed=False)
+        # resume 必须在 pause 之前判断：'取消暂停' 含 '暂停'，否则会被 pause 分支提前吞掉。
+        if self._neko_text_has_any(text, ["取消暂停", "继续托管", "恢复托管", "继续自动打", "恢复自动打", "继续代打", "接着托管", "resume"]):
+            return self._wrap_neko_command_result("resume", "resume_autoplay", await self.resume_autoplay(), executed=False)
         if self._neko_text_has_any(text, ["暂停", "先停", "等一下", "别动", "pause"]):
             return self._wrap_neko_command_result("pause", "pause_autoplay", await self.pause_autoplay(), executed=False)
-        if self._neko_text_has_any(text, ["继续托管", "恢复托管", "继续自动打", "恢复自动打", "继续代打", "接着托管", "resume"]):
-            return self._wrap_neko_command_result("resume", "resume_autoplay", await self.resume_autoplay(), executed=False)
 
         if self._neko_text_has_any(text, ["健康", "连上", "连接", "health"]):
             return self._wrap_neko_command_result("health", "health_check", await self.health_check(), executed=False)

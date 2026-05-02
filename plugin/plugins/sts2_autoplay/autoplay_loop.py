@@ -52,7 +52,7 @@ class AutoplayLoopMixin:
         if self._autoplay_task is None or self._autoplay_task.done():
             return {"status": "idle", "message": "没有运行中的尖塔半自动任务", "executed": False}
         task = dict(self._semi_auto_task) if isinstance(self._semi_auto_task, dict) else None
-        self._auto_pause_reason = None
+        self._auto_pause_reason = reason
         self._paused = True
         if self._autoplay_state == "running":
             self._autoplay_state = "paused"

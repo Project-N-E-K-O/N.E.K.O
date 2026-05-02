@@ -318,6 +318,8 @@ class NekoReportingMixin:
             enemies=enemies_str,
         )
 
+        # observed scene 永远更新，让转场检测不被发声沉默淹没
+        self._last_neko_observed_scene = scene
         should_speak = enabled and self._should_emit_neko_commentary(scene=scene, urgency=urgency)
         if should_speak:
             now = time.time()
@@ -360,7 +362,9 @@ class NekoReportingMixin:
         screen = str(report.get("screen") or "unknown").lower()
         action = str(chosen_action or "").lower()
         floor = self._safe_int(report.get("floor"), -1)
-        previous_scene = self._last_neko_commentary_scene
+        # 用 observed scene 而不是 commentary scene：commentary scene 只在 should_speak 时
+        # 更新，沉默轮会让"上一次场景"卡死，转场（combat_end / key_relic / route_chosen）漏检
+        previous_scene = self._last_neko_observed_scene
         combat_scenes = {"combat", "critical_hp", "low_hp", "lethal", "incoming_attack", "defense"}
         signature_floor = floor if floor >= 0 else -1
 

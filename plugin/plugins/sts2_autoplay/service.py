@@ -75,6 +75,10 @@ class STS2AutoplayService(
         self._last_task_report_step = -1
         self._last_neko_commentary_at = 0.0
         self._last_neko_commentary_scene = ""
+        # _last_neko_observed_scene 跟踪每次回调到的 scene，无论 should_speak 与否；
+        # 用于场景转场检测（combat_end / key_relic / route_chosen）。
+        # _last_neko_commentary_scene 仅用于发声节流，沉默时不更新。
+        self._last_neko_observed_scene = ""
         self._last_neko_event_scene = ""
         self._last_neko_event_floor = -1
         self._auto_pause_reason: Optional[str] = None

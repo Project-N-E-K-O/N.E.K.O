@@ -149,7 +149,9 @@ def test_live_commentary_throttles_repeated_low_urgency_scene() -> None:
 @pytest.mark.unit
 def test_live_commentary_event_scenes_for_combat_end_key_relic_and_route_chosen() -> None:
     service = make_service(neko_commentary_min_interval_seconds=0)
-    service._last_neko_commentary_scene = "combat"
+    # 转场检测读 _last_neko_observed_scene（每次回调都更新），不是 commentary scene
+    # （只在 should_speak 时更新）；否则发声节流就会让 combat_end 漏检。
+    service._last_neko_observed_scene = "combat"
 
     combat_end = build_commentary(service, report=base_report(screen="reward", in_combat=False, floor=5))
     assert combat_end["scene"] == "combat_end"

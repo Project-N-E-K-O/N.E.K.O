@@ -40,7 +40,6 @@ class LoopService(AutoplayLoopMixin):
         self.autonomous_calls = 0
         self.status_emits = 0
         self.step_results: list[dict[str, Any]] = []
-        self.started: list[dict[str, Any]] = []
         self.error_events: list[tuple[str, dict[str, Any] | None, str | None]] = []
         self.frontend_messages: list[dict[str, Any]] = []
         self.logger = DummyLogger()
@@ -174,7 +173,10 @@ def test_resume_autoplay_without_background_task_returns_idle_without_restarting
     assert result["status"] == "idle"
     assert result["executed"] is False
     assert service._autoplay_state == "idle"
-    assert service.started == []
+    # service.started 在测试桩里从来不会被填充——直接看 error_events 里有没有 'started'
+    # 通知，确认 resume 没有偷偷起一个新 task
+    assert not any(e[0] == "started" for e in service.error_events), \
+        "resume_autoplay 不应触发 'started' 通知事件"
 
 
 @pytest.mark.unit

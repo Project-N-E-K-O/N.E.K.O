@@ -962,19 +962,26 @@ def _plugin_terminal_status(success: bool, run_data: Any) -> str:
     """Return terminal status for a plugin run.
 
     Default: ``"completed"`` on raw protocol success, ``"failed"`` otherwise.
-    Plugins may override via explicit ``run_data`` signals:
+    On raw success, plugins may downgrade to ``"blocked"`` / ``"failed"`` via
+    explicit ``run_data`` signals:
 
     - ``status == "error"``                                                → "failed"
     - ``needs_confirmation=True`` / ``action == "clarify"`` /
       ``status ∈ {"blocked","clarify","confirm_required"}``                → "blocked"
     - ``observation_only=True`` bypasses the override (treated as completed)
 
-    ``executed=False`` alone is intentionally NOT enough. Many plugins use
-    it to mean "no game-side action played" while the control op itself
-    succeeded (e.g. STS2 ``stop_autoplay`` returns ``status="idle",
+    Raw protocol failure (``success=False``) always returns "failed" regardless
+    of ``run_data`` — run_data must not be allowed to "upgrade" a failure to a
+    softer status like "blocked".
+
+    ``executed=False`` alone is intentionally NOT enough to mark blocked. Many
+    plugins use it to mean "no game-side action played" while the control op
+    itself succeeded (e.g. STS2 ``stop_autoplay`` returns ``status="idle",
     executed=False`` after a real stop). Inferring blocked from that would
     misreport successful control operations.
     """
+    if not success:
+        return "failed"
     if isinstance(run_data, dict) and not bool(run_data.get("observation_only")):
         status = str(run_data.get("status") or "").strip().lower()
         action = str(run_data.get("action") or "").strip().lower()
@@ -982,7 +989,7 @@ def _plugin_terminal_status(success: bool, run_data: Any) -> str:
             return "failed"
         if bool(run_data.get("needs_confirmation")) or action == "clarify" or status in {"blocked", "clarify", "confirm_required"}:
             return "blocked"
-    return "completed" if success else "failed"
+    return "completed"
 
 
 def _resolve_delivery_mode(result: Optional[Dict]) -> str:
