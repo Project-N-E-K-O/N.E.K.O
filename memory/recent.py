@@ -663,8 +663,10 @@ class CompressedRecentHistoryManager:
                             content = str(content)
 
                     if role in ['system', 'system_message', name_mapping['system']]:
-                        # 跳过：summary 由 compress 拥有，review 不能改写
-                        continue
+                        # prompt <要点3> 让 LLM 保留+可编辑 memo，过滤掉等于
+                        # 让其在 prompt 里白做工，且 capacity 走过 head SystemMessage
+                        # 后这一格无人填补，导致 memo 在写盘时蒸发（场景 D）。
+                        corrected_messages.append(SystemMessage(content=content))
                     elif role in ['user', 'human', name_mapping['human']]:
                         corrected_messages.append(HumanMessage(content=content))
                     elif role in ['ai', 'assistant', name_mapping['ai']]:
@@ -672,6 +674,15 @@ class CompressedRecentHistoryManager:
                     else:
                         # 默认作为用户消息处理
                         corrected_messages.append(HumanMessage(content=content))
+
+                # 兜底：LLM 不听 <要点3> 把 memo 漏了 → 用 snapshot 头部
+                # 原 SystemMessage 回填，遵守"不允许删除"约束。
+                if (
+                    snapshot
+                    and isinstance(snapshot[0], SystemMessage)
+                    and not any(isinstance(m, SystemMessage) for m in corrected_messages)
+                ):
+                    corrected_messages.insert(0, snapshot[0])
 
                 # ── Phase C 关键：基于 snapshot 算 capacity 做尾部对齐替换 ──
                 current = await self.aget_recent_history(lanlan_name)
