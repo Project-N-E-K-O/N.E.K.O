@@ -39,7 +39,11 @@ body.yui-guide-home-driver-hidden .driver-highlight {
 }
 
 body.yui-guide-live2d-preparing #live2d-container,
-body.yui-guide-live2d-preparing #live2d-canvas {
+body.yui-guide-live2d-preparing #live2d-canvas,
+body.yui-guide-live2d-preparing #vrm-container,
+body.yui-guide-live2d-preparing #vrm-canvas,
+body.yui-guide-live2d-preparing #mmd-container,
+body.yui-guide-live2d-preparing #mmd-canvas {
   opacity: 0 !important;
   transition: none !important;
   pointer-events: none !important;
@@ -719,6 +723,13 @@ body.yui-taking-over [tabindex]:not([tabindex="-1"]) {
 
 body.yui-taking-over.yui-resistance-cursor-reveal,
 body.yui-taking-over.yui-resistance-cursor-reveal * {
+  cursor: auto !important;
+}
+
+html.yui-user-cursor-revealed,
+html.yui-user-cursor-revealed *,
+body.yui-taking-over.yui-user-cursor-revealed,
+body.yui-taking-over.yui-user-cursor-revealed * {
   cursor: auto !important;
 }
 
