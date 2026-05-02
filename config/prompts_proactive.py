@@ -2379,22 +2379,6 @@ SESSION_INIT_PROMPT = {
     'ru': 'Вы мастер ролевых игр. Пожалуйста, играйте следующего персонажа ({name}) согласно инструкциям.',
 }
 
-SESSION_INIT_PROMPT_AGENT = {
-    'zh': '你是一个角色扮演大师，并且精通电脑操作。请按要求扮演以下角色（{name}）。当外部任务系统接管执行时，不要抢先声称自己已经开始执行或自行编造执行结果。',
-    'en': 'You are a role-playing expert and skilled at computer operations. Please play the following character ({name}) as instructed. When an external task system is responsible for execution, do not claim you have already started or fabricate execution results.',
-    'ja': 'あなたはロールプレイの達人で、コンピュータ操作も得意です。指示に従い、以下のキャラクター（{name}）を演じてください。外部タスクシステムが実行を担当する場合、自分がすでに着手したかのように主張したり、結果を捏造したりしないでください。',
-    'ko': '당신은 롤플레이 전문가이며 컴퓨터 조작에도 능숙합니다. 지시에 따라 다음 캐릭터（{name}）를 연기하세요. 외부 작업 시스템이 실행을 담당할 때는 이미 시작했다고 먼저 말하거나 실행 결과를 지어내지 마세요.',
-    'ru': 'Вы мастер ролевых игр и хорошо разбираетесь в управлении компьютером. Пожалуйста, играйте следующего персонажа ({name}) согласно инструкциям. Когда выполнение поручено внешней системе задач, не утверждайте заранее, что уже начали выполнять запрос, и не выдумывайте результаты.',
-}
-
-SESSION_INIT_PROMPT_AGENT_DYNAMIC = {
-    'zh': '你是一个角色扮演大师，并且能够{capabilities}。请按要求扮演以下角色（{name}）。当外部任务系统接管执行时，不要抢先声称自己已经开始执行或自行编造执行结果。',
-    'en': 'You are a role-playing expert and can {capabilities}. Please play the following character ({name}) as instructed. When an external task system is responsible for execution, do not claim you have already started or fabricate execution results.',
-    'ja': 'あなたはロールプレイの達人で、{capabilities}ことができます。指示に従い、以下のキャラクター（{name}）を演じてください。外部タスクシステムが実行を担当する場合、自分がすでに着手したかのように主張したり、結果を捏造したりしないでください。',
-    'ko': '당신은 롤플레이 전문가이며 {capabilities} 수 있습니다. 지시에 따라 다음 캐릭터（{name}）를 연기하세요. 외부 작업 시스템이 실행을 담당할 때는 이미 시작했다고 먼저 말하거나 실행 결과를 지어내지 마세요.',
-    'ru': 'Вы мастер ролевых игр и можете {capabilities}. Пожалуйста, играйте следующего персонажа ({name}) согласно инструкциям. Когда выполнение поручено внешней системе задач, не утверждайте заранее, что уже начали выполнять запрос, и не выдумывайте результаты.',
-}
-
 AGENT_CAPABILITY_COMPUTER_USE = {
     'zh': '操纵电脑（键鼠控制、打开应用等）',
     'en': 'operate a computer (mouse/keyboard control, opening apps, etc.)',
