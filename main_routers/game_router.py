@@ -3613,6 +3613,7 @@ async def _speak_game_line_via_project_tts(
     session_id: str = "",
     mirror_text: bool = True,
     emit_turn_end: bool = True,
+    interrupt_audio: bool = False,
     event: dict | None = None,
 ) -> Dict[str, Any]:
     speak = getattr(mgr, "speak_game_line", None)
@@ -3625,6 +3626,7 @@ async def _speak_game_line_via_project_tts(
         session_id=session_id,
         mirror_text=mirror_text,
         emit_turn_end=emit_turn_end,
+        interrupt_audio=interrupt_audio,
         event=event if isinstance(event, dict) else {},
     )
 
@@ -3736,6 +3738,7 @@ async def game_project_speak(game_type: str, request: Request):
     if not mgr:
         return {"ok": False, "reason": "no_session_manager", "lanlan_name": lanlan_name}
 
+    interrupt_audio = _coerce_payload_bool(data.get("interrupt_audio")) is True
     result = await _speak_game_line_via_project_tts(
         mgr,
         line,
@@ -3744,6 +3747,7 @@ async def game_project_speak(game_type: str, request: Request):
         session_id=str(data.get("session_id") or ""),
         mirror_text=data.get("mirror_text", True) is not False,
         emit_turn_end=data.get("emit_turn_end", True) is not False,
+        interrupt_audio=interrupt_audio,
         event=data.get("event") if isinstance(data.get("event"), dict) else {},
     )
     result.setdefault("lanlan_name", lanlan_name)

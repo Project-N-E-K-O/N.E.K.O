@@ -1683,6 +1683,7 @@ class LLMSessionManager:
         session_id: str = "",
         mirror_text: bool = True,
         emit_turn_end: bool = True,
+        interrupt_audio: bool = False,
         event: dict | None = None,
     ) -> dict:
         """Send a game A-layer line through the normal chat mirror and project TTS path."""
@@ -1691,13 +1692,15 @@ class LLMSessionManager:
             return {"ok": False, "reason": "missing_line", "audio_sent": False}
         event_payload = event if isinstance(event, dict) else {}
 
-        async with self.lock:
-            interrupted_speech_id = self.current_speech_id
+        interrupted_speech_id = None
+        if interrupt_audio:
+            async with self.lock:
+                interrupted_speech_id = self.current_speech_id
 
-        self.audio_resampler.clear()
-        if self.use_tts:
-            await self._clear_tts_pipeline()
-        await self.send_user_activity(interrupted_speech_id)
+            self.audio_resampler.clear()
+            if self.use_tts:
+                await self._clear_tts_pipeline()
+            await self.send_user_activity(interrupted_speech_id)
 
         async with self.lock:
             self.current_speech_id = str(uuid4())
@@ -1749,6 +1752,7 @@ class LLMSessionManager:
                 "audio_sent": audio_queued,
                 "audio_queued": audio_queued,
                 "turn_end_emitted": bool(emit_turn_end),
+                "interrupt_audio": bool(interrupt_audio),
                 "voice_source": {
                     "provider": "project_tts",
                     "method": "project_tts",
