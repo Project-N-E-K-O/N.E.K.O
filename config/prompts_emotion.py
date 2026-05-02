@@ -138,10 +138,12 @@ EMOTION_KEYWORDS_BY_LANG = {
         'surprised': ('哇', '居然', '竟然', '不会吧', '啊这', '天哪', '真的假的', '怎么会'),
     },
     'en': {
-        'happy': ('haha', 'hehe', 'happy', 'glad', 'lovely', 'yay', 'awesome'),
-        'sad': ('sad', 'upset', 'depressed', 'regret', 'heartbroken'),
+        # 裸词 happy/sad/surprised 在子串匹配下会被 unhappy/unsurprised 等反向命中，先移除；
+        # 等消费端切换到词边界匹配再加回。
+        'happy': ('haha', 'hehe', 'glad', 'lovely', 'yay', 'awesome'),
+        'sad': ('upset', 'depressed', 'regret', 'heartbroken'),
         'angry': ('angry', 'furious', 'annoyed', 'irritated', 'infuriating', 'outraged'),
-        'surprised': ('wow', 'whoa', 'omg', 'unexpected', 'surprised'),
+        'surprised': ('wow', 'whoa', 'omg', 'unexpected'),
     },
     'ja': {
         'happy': ('うれしい', '嬉しい', '楽しい', 'かわいい', '好き', 'やった', '最高'),
@@ -194,7 +196,10 @@ HAPPY_PLAYFUL_PATTERNS_BY_LANG = {
 # 否定上下文回看 token：关键词命中前 N 字符内若出现这些 token，本次命中作废，
 # 避免 "我不生气 / not angry / 화 안 나 / не злюсь" 被误判为对应情绪。
 HEURISTIC_NEGATION_TOKENS_BY_LANG = {
-    'zh': ('不', '别', '別', '没', '沒', '無', '无', '未', '勿', '莫', '并不', '并非'),
+    # zh: 不/没/別/未/勿/莫 都是合理单字否定；`无/無` 移除——子串匹配下会
+    # 在 `无语/无聊/无奈/无所谓` 这类中性表达里误触发，把后面的真情绪
+    # 关键词错误屏蔽（例如 `无语真生气` 被 `无` 拉否致 angry 漏判）。
+    'zh': ('不', '别', '別', '没', '沒', '未', '勿', '莫', '并不', '并非'),
     'en': ('not ', ' no ', 'never ', "don't", "doesn't", "didn't", "won't",
            "isn't", "aren't", "wasn't", "weren't", "can't", "cannot"),
     'ja': ('ない', 'ません', 'なくて'),
