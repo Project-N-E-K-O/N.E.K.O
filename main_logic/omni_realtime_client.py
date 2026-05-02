@@ -693,10 +693,11 @@ class OmniRealtimeClient:
                         "model": "gummy-realtime-v1"
                     },
                     "turn_detection": {
-                        "type": "server_vad",
+                        # TODO: 未来需要cover更多型号
+                        "type": "semantic_vad" if "3.5" in self._model_lower else "server_vad",
                         "threshold": 0.55,
                         "prefix_padding_ms": 300,
-                        "silence_duration_ms": 650
+                        "silence_duration_ms": 600
                     },
                     "repetition_penalty": 1.2,
                     "temperature": 0.7,
