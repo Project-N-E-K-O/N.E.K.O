@@ -196,8 +196,11 @@ HAPPY_PLAYFUL_PATTERNS_BY_LANG = {
 # 否定上下文回看 token：关键词命中前 N 字符内若出现这些 token，本次命中作废，
 # 避免 "我不生气 / not angry / 화 안 나 / не злюсь" 被误判为对应情绪。
 HEURISTIC_NEGATION_TOKENS_BY_LANG = {
-    # 多字否定 token：假阳率低，启用宽 lookback（关键词前 _HEURISTIC_NEGATION_LOOKBACK 字符内）
-    'zh': ('并不', '并非'),
+    # 多字否定 token：假阳率低，启用宽 lookback（关键词前 _HEURISTIC_NEGATION_LOOKBACK 字符内）。
+    # zh 这里收常见的 `不/没 + 程度副词` 模式，覆盖紧凑 lookback 抓不到的 2-3 字符间隔
+    # 否定（如 `不是很 X / 不怎么 X / 没那么 X`）。
+    'zh': ('并不', '并非', '不太', '不是很', '不算很', '不那么', '不怎么',
+           '没那么', '没怎么', '没什么'),
     'en': ('not ', ' no ', 'never ', "don't", "doesn't", "didn't", "won't",
            "isn't", "aren't", "wasn't", "weren't", "can't", "cannot"),
     'ja': ('ない', 'ません', 'なくて'),
