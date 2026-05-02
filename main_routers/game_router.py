@@ -117,6 +117,13 @@ _SOCCER_QUICK_LINE_KEYS = {
 
 _DEFAULT_GAME_MEMORY_TAIL_COUNT = 6
 _MAX_GAME_MEMORY_TAIL_COUNT = 50
+_GAME_CONTEXT_ORGANIZE_TRIGGER_COUNT = 15
+_GAME_CONTEXT_RECENT_KEEP_COUNT = 6
+_GAME_CONTEXT_DEGRADE_PENDING_COUNT = 40
+_GAME_CONTEXT_FINALIZE_WAIT_SECONDS = 3.0
+_GAME_CONTEXT_SIGNAL_GROUPS = ("主人信号", "关系互动信号", "猫娘信号", "比赛事实", "口头声明")
+_GAME_CONTEXT_MAX_SIGNALS_PER_GROUP = 8
+_GAME_CONTEXT_MAX_EVIDENCE_PER_SIGNAL = 2
 _SOCCER_MOODS = {"calm", "happy", "angry", "relaxed", "sad", "surprised"}
 _SOCCER_DIFFICULTIES = {"max", "lv2", "lv3", "lv4"}
 _SOCCER_DEFAULT_DIFFICULTIES = ("lv2", "lv3")
@@ -433,12 +440,14 @@ def _build_game_prompt(
     lanlan_name: str,
     lanlan_prompt: str,
     pre_game_context: dict | None = None,
+    game_context: dict | None = None,
 ) -> str:
     """构建游戏 system prompt。"""
     if game_type == "soccer":
         prompt = _SOCCER_SYSTEM_PROMPT.format(name=lanlan_name, personality=lanlan_prompt)
         context_prompt = _format_soccer_pregame_context_for_prompt(pre_game_context)
-        return f"{prompt}{context_prompt}" if context_prompt else prompt
+        in_game_context_prompt = _format_game_context_for_prompt(game_context)
+        return f"{prompt}{context_prompt}{in_game_context_prompt}"
     # 未来其他游戏在这里扩展
     return f"你是{lanlan_name}。{lanlan_prompt}\n你正在玩一个游戏，根据游戏事件生成简短台词。"
 
@@ -494,6 +503,183 @@ def _normalize_text_items(value: Any, *, max_items: int = 5, max_chars: int = 80
         if len(items) >= max_items:
             break
     return items
+
+
+def _empty_game_context_signals() -> dict:
+    return {group: [] for group in _GAME_CONTEXT_SIGNAL_GROUPS}
+
+
+def _normalize_signal_label(value: Any) -> str:
+    text = _normalize_short_text(value, max_chars=60)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _normalize_game_context_evidence(value: Any) -> list[dict]:
+    if not isinstance(value, list):
+        return []
+    evidence: list[dict] = []
+    seen_ids: set[str] = set()
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        evidence_id = _normalize_short_text(item.get("id"), max_chars=40)
+        quote = _normalize_short_text(item.get("quote"), max_chars=80)
+        if not evidence_id or evidence_id in seen_ids:
+            continue
+        seen_ids.add(evidence_id)
+        evidence.append({"id": evidence_id, "quote": quote})
+        if len(evidence) >= _GAME_CONTEXT_MAX_EVIDENCE_PER_SIGNAL:
+            break
+    return evidence
+
+
+def _normalize_game_context_signal_entry(value: Any) -> dict | None:
+    if isinstance(value, str):
+        label = _normalize_signal_label(value)
+        if not label:
+            return None
+        return {
+            "signalLabel": label,
+            "summary": label,
+            "evidence": [],
+            "lastRound": None,
+            "count": 1,
+        }
+    if not isinstance(value, dict):
+        return None
+
+    label = _normalize_signal_label(value.get("signalLabel") or value.get("label"))
+    summary = _normalize_short_text(value.get("summary") or label, max_chars=160)
+    if not label and summary:
+        label = _normalize_signal_label(summary)
+    if not label:
+        return None
+
+    try:
+        count = int(value.get("count") or 1)
+    except (TypeError, ValueError):
+        count = 1
+    count = max(1, min(count, 99))
+
+    last_round = value.get("lastRound", value.get("last_round"))
+    try:
+        last_round = int(last_round) if last_round is not None else None
+    except (TypeError, ValueError):
+        last_round = None
+
+    return {
+        "signalLabel": label,
+        "summary": summary or label,
+        "evidence": _normalize_game_context_evidence(value.get("evidence")),
+        "lastRound": last_round,
+        "count": count,
+    }
+
+
+def _normalize_game_context_signals(value: Any) -> dict:
+    signals = _empty_game_context_signals()
+    if not isinstance(value, dict):
+        return signals
+    for group in _GAME_CONTEXT_SIGNAL_GROUPS:
+        raw_items = value.get(group)
+        if isinstance(raw_items, str):
+            raw_items = [raw_items]
+        if not isinstance(raw_items, list):
+            continue
+        normalized: list[dict] = []
+        seen_labels: set[str] = set()
+        for item in raw_items:
+            entry = _normalize_game_context_signal_entry(item)
+            if not entry:
+                continue
+            label_key = entry["signalLabel"]
+            if label_key in seen_labels:
+                continue
+            seen_labels.add(label_key)
+            normalized.append(entry)
+            if len(normalized) >= _GAME_CONTEXT_MAX_SIGNALS_PER_GROUP:
+                break
+        signals[group] = normalized
+    return signals
+
+
+def _merge_game_context_evidence(existing: list[dict], incoming: list[dict]) -> list[dict]:
+    merged: list[dict] = []
+    seen_ids: set[str] = set()
+    for item in [*(existing or []), *(incoming or [])]:
+        if not isinstance(item, dict):
+            continue
+        evidence_id = _normalize_short_text(item.get("id"), max_chars=40)
+        quote = _normalize_short_text(item.get("quote"), max_chars=80)
+        if not evidence_id or evidence_id in seen_ids:
+            continue
+        seen_ids.add(evidence_id)
+        merged.append({"id": evidence_id, "quote": quote})
+        if len(merged) >= _GAME_CONTEXT_MAX_EVIDENCE_PER_SIGNAL:
+            break
+    return merged
+
+
+def _merge_game_context_signals(existing: Any, incoming: Any) -> dict:
+    merged = _normalize_game_context_signals(existing)
+    incoming_signals = _normalize_game_context_signals(incoming)
+    for group in _GAME_CONTEXT_SIGNAL_GROUPS:
+        bucket = list(merged.get(group) or [])
+        for candidate in incoming_signals.get(group) or []:
+            candidate_label = candidate.get("signalLabel")
+            candidate_evidence_ids = {
+                str(ev.get("id") or "")
+                for ev in candidate.get("evidence") or []
+                if isinstance(ev, dict) and ev.get("id")
+            }
+            target = None
+            for existing_entry in bucket:
+                existing_evidence_ids = {
+                    str(ev.get("id") or "")
+                    for ev in existing_entry.get("evidence") or []
+                    if isinstance(ev, dict) and ev.get("id")
+                }
+                if existing_entry.get("signalLabel") == candidate_label or (
+                    candidate_evidence_ids and existing_evidence_ids & candidate_evidence_ids
+                ):
+                    target = existing_entry
+                    break
+            if target is None:
+                bucket.append(candidate)
+                continue
+            target["summary"] = candidate.get("summary") or target.get("summary") or target.get("signalLabel")
+            target["evidence"] = _merge_game_context_evidence(
+                target.get("evidence") or [],
+                candidate.get("evidence") or [],
+            )
+            try:
+                target["count"] = max(1, int(target.get("count") or 1)) + max(1, int(candidate.get("count") or 1))
+            except (TypeError, ValueError):
+                target["count"] = max(1, int(target.get("count") or 1))
+            candidate_round = candidate.get("lastRound")
+            target_round = target.get("lastRound")
+            if isinstance(candidate_round, int) and (
+                not isinstance(target_round, int) or candidate_round > target_round
+            ):
+                target["lastRound"] = candidate_round
+        merged[group] = bucket[-_GAME_CONTEXT_MAX_SIGNALS_PER_GROUP:]
+    return merged
+
+
+def _normalize_game_context_organizer_state(value: Any) -> dict:
+    raw = value if isinstance(value, dict) else {}
+    try:
+        failure_count = int(raw.get("failure_count") or 0)
+    except (TypeError, ValueError):
+        failure_count = 0
+    return {
+        "running": raw.get("running") is True,
+        "degraded": raw.get("degraded") is True,
+        "failure_count": max(0, failure_count),
+        "last_organized_id": str(raw.get("last_organized_id") or ""),
+        "source": raw.get("source") if isinstance(raw.get("source"), dict) else raw.get("source"),
+        "error": str(raw.get("error") or ""),
+    }
 
 
 def _normalize_game_memory_tail_count(value: Any, default: int = _DEFAULT_GAME_MEMORY_TAIL_COUNT) -> int:
@@ -651,6 +837,121 @@ def _format_soccer_pregame_context_for_prompt(pre_game_context: Any) -> str:
         "specialPolicies 和 postgameCarryback；但局内主人语言、比分和事件仍可自然改变你的心情与难度。"
         "不要把 neutral_play 强行解释成哄开心或关系修复。\n"
     )
+
+
+def _dialog_id_index(dialog: list[dict], dialog_id: str) -> int:
+    if not dialog_id:
+        return -1
+    for idx, item in enumerate(dialog):
+        if isinstance(item, dict) and str(item.get("id") or "") == dialog_id:
+            return idx
+    return -1
+
+
+def _game_context_recent_dialogues(state: dict, keep_count: int = _GAME_CONTEXT_RECENT_KEEP_COUNT) -> list[dict]:
+    dialog = [item for item in state.get("game_dialog_log") or [] if isinstance(item, dict)]
+    if not dialog:
+        return []
+    recent_ids = [
+        str(item_id)
+        for item_id in state.get("game_context_recent_ids") or []
+        if str(item_id or "").strip()
+    ]
+    if recent_ids:
+        by_id = {str(item.get("id") or ""): item for item in dialog}
+        recent = [by_id[item_id] for item_id in recent_ids if item_id in by_id]
+        if recent:
+            return recent[-keep_count:]
+    return dialog[-keep_count:]
+
+
+def _game_context_dialog_lines(dialogues: list[dict], *, max_items: int = 12) -> list[str]:
+    lines: list[str] = []
+    for item in dialogues[-max_items:]:
+        if not isinstance(item, dict):
+            continue
+        dialog_id = str(item.get("id") or "").strip()
+        line = _dialog_memory_line(item)
+        if dialog_id and line:
+            lines.append(f"{dialog_id}: {line}")
+        elif line:
+            lines.append(line)
+    return lines
+
+
+def _signals_compact_for_prompt(signals: Any) -> dict:
+    normalized = _normalize_game_context_signals(signals)
+    compact: dict[str, list[dict]] = {}
+    for group, items in normalized.items():
+        compact[group] = [
+            {
+                "signalLabel": item.get("signalLabel"),
+                "summary": item.get("summary"),
+                "evidence": item.get("evidence") or [],
+                "count": item.get("count", 1),
+                "lastRound": item.get("lastRound"),
+            }
+            for item in items
+        ]
+    return compact
+
+
+def _compact_nonempty_game_context_signals(signals: Any) -> dict:
+    compact = _signals_compact_for_prompt(signals)
+    return {group: items for group, items in compact.items() if items}
+
+
+def _game_context_signals_text(signals: Any) -> str:
+    compact = _compact_nonempty_game_context_signals(signals)
+    if not compact:
+        return ""
+    return json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
+
+
+def _format_game_context_for_prompt(context: Any) -> str:
+    if not isinstance(context, dict):
+        return ""
+    degraded = context.get("degraded") is True
+    recent_lines = _game_context_dialog_lines(context.get("recent_dialogues") or [], max_items=_GAME_CONTEXT_RECENT_KEEP_COUNT)
+    if degraded:
+        parts = [
+            "\n局内上下文整理状态：已降级为纯游戏模式。",
+            "使用方式：不要依据滚动摘要或信号列表做关系解释；只根据开局背景、当前事件、当前比分/状态和最近少量原文继续陪主人玩。",
+        ]
+        if recent_lines:
+            parts.append("最近原文窗口：")
+            parts.extend(f"- {line}" for line in recent_lines)
+        return "\n".join(parts) + "\n"
+
+    summary = _normalize_short_text(context.get("summary"), max_chars=900)
+    signals_text = _game_context_signals_text(context.get("signals"))
+    parts = ["\n局内上下文整理（本局到目前为止）："]
+    if summary:
+        parts.append(f"局内滚动摘要：{summary}")
+    if signals_text:
+        parts.append("局内信号列表：")
+        parts.append(signals_text)
+    if recent_lines:
+        parts.append("最近原文窗口：")
+        parts.extend(f"- {line}" for line in recent_lines)
+    if len(parts) == 1:
+        return ""
+    parts.append("当前状态和当前事件：以本轮输入的 currentState / event JSON 为准。")
+    parts.append("使用方式：滚动摘要用于避免遗忘本局前文；信号列表只记录可观察线索，不改写官方比分；最近原文用于自然接话。")
+    return "\n".join(parts) + "\n"
+
+
+def _build_game_context_prompt_payload(state: dict | None) -> dict | None:
+    if not isinstance(state, dict):
+        return None
+    organizer = _normalize_game_context_organizer_state(state.get("game_context_organizer"))
+    return {
+        "summary": str(state.get("game_context_summary") or ""),
+        "signals": _normalize_game_context_signals(state.get("game_context_signals")),
+        "recent_dialogues": _game_context_recent_dialogues(state, _GAME_CONTEXT_RECENT_KEEP_COUNT),
+        "degraded": organizer.get("degraded") is True,
+        "organizer": organizer,
+    }
 
 
 def _normalize_quick_lines(value: Any) -> Dict[str, list[str]]:
@@ -925,7 +1226,19 @@ def _build_route_state(
         "should_resume_external_on_exit": before_mode == "audio" and before_active,
         "game_input_activation_log": [],
         "game_dialog_log": [],
+        "game_dialog_seq": 0,
         "pending_outputs": [],
+        "game_context_summary": "",
+        "game_context_signals": _empty_game_context_signals(),
+        "game_context_recent_ids": [],
+        "game_context_organizer": {
+            "running": False,
+            "degraded": False,
+            "failure_count": 0,
+            "last_organized_id": "",
+            "source": None,
+            "error": "",
+        },
         "game_last_full_dialogue_count": keep_last,
         "game_memory_tail_count": _DEFAULT_GAME_MEMORY_TAIL_COUNT,
         "last_state": {},
@@ -987,11 +1300,82 @@ def _append_route_activation(state: dict, source: str, mode: str, detail: dict |
     })
 
 
+def _next_game_dialog_id(state: dict) -> str:
+    try:
+        seq = int(state.get("game_dialog_seq") or 0)
+    except (TypeError, ValueError):
+        seq = 0
+    seq += 1
+    state["game_dialog_seq"] = seq
+    return f"glog_{seq:04d}"
+
+
+def _sync_game_dialog_seq_from_id(state: dict, dialog_id: str) -> None:
+    match = re.search(r"(\d+)$", str(dialog_id or ""))
+    if not match:
+        return
+    try:
+        seq = int(match.group(1))
+        current = int(state.get("game_dialog_seq") or 0)
+    except (TypeError, ValueError):
+        current = 0
+        seq = 0
+    if seq > current:
+        state["game_dialog_seq"] = seq
+
+
+def _game_context_pending_dialogues(state: dict) -> list[dict]:
+    dialog = [item for item in state.get("game_dialog_log") or [] if isinstance(item, dict)]
+    organizer = _normalize_game_context_organizer_state(state.get("game_context_organizer"))
+    last_idx = _dialog_id_index(dialog, str(organizer.get("last_organized_id") or ""))
+    return dialog[last_idx + 1:]
+
+
+def _set_game_context_recent_ids(state: dict, dialogues: list[dict] | None = None) -> None:
+    source = dialogues if dialogues is not None else state.get("game_dialog_log") or []
+    ids = [str(item.get("id") or "") for item in source if isinstance(item, dict) and item.get("id")]
+    state["game_context_recent_ids"] = ids[-_GAME_CONTEXT_RECENT_KEEP_COUNT:]
+
+
+def _should_schedule_game_context_organizer(state: dict) -> bool:
+    organizer = _normalize_game_context_organizer_state(state.get("game_context_organizer"))
+    state["game_context_organizer"] = organizer
+    if state.get("_exit_flow_started") or state.get("game_route_active") is False:
+        return False
+    if organizer.get("running") or organizer.get("degraded"):
+        return False
+    return len(_game_context_pending_dialogues(state)) >= _GAME_CONTEXT_ORGANIZE_TRIGGER_COUNT
+
+
+def _maybe_schedule_game_context_organizer(state: dict) -> None:
+    if not _should_schedule_game_context_organizer(state):
+        return
+    snapshot = [dict(item) for item in _game_context_pending_dialogues(state)]
+    if len(snapshot) < _GAME_CONTEXT_ORGANIZE_TRIGGER_COUNT:
+        return
+    organizer = _normalize_game_context_organizer_state(state.get("game_context_organizer"))
+    organizer["running"] = True
+    organizer["error"] = ""
+    state["game_context_organizer"] = organizer
+    try:
+        task = asyncio.create_task(_run_game_context_organizer_task(state, snapshot))
+        state["_game_context_organizer_task"] = task
+    except RuntimeError:
+        organizer["running"] = False
+        state["game_context_organizer"] = organizer
+
+
 def _append_game_dialog(state: dict, item: dict) -> None:
     item = dict(item)
     item.setdefault("ts", time.time())
+    if item.get("id"):
+        _sync_game_dialog_seq_from_id(state, str(item.get("id") or ""))
+    else:
+        item["id"] = _next_game_dialog_id(state)
     state.setdefault("game_dialog_log", []).append(item)
     state["last_activity"] = item["ts"]
+    _set_game_context_recent_ids(state)
+    _maybe_schedule_game_context_organizer(state)
 
 
 def _append_game_output(state: dict, output: dict) -> None:
@@ -999,6 +1383,202 @@ def _append_game_output(state: dict, output: dict) -> None:
     pending.append(output)
     del pending[:-_GAME_ROUTE_OUTPUT_LIMIT]
     state["last_activity"] = time.time()
+
+
+def _build_game_context_organizer_payload(state: dict, snapshot: list[dict]) -> dict:
+    organize_dialogues = snapshot[:-_GAME_CONTEXT_RECENT_KEEP_COUNT]
+    keep_dialogues = snapshot[-_GAME_CONTEXT_RECENT_KEEP_COUNT:]
+    return {
+        "game": state.get("game_type") or "game",
+        "sessionId": state.get("session_id") or "default",
+        "lanlanName": state.get("lanlan_name") or "",
+        "officialScore": _extract_score_text(state),
+        "currentState": state.get("last_state") if isinstance(state.get("last_state"), dict) else {},
+        "existingRollingSummary": str(state.get("game_context_summary") or ""),
+        "existingSignals": _normalize_game_context_signals(state.get("game_context_signals")),
+        "organizeDialogues": [
+            {"id": item.get("id"), "line": _dialog_memory_line(item)}
+            for item in organize_dialogues
+            if isinstance(item, dict)
+        ],
+        "keptRecentDialogues": [
+            {"id": item.get("id"), "line": _dialog_memory_line(item)}
+            for item in keep_dialogues
+            if isinstance(item, dict)
+        ],
+    }
+
+
+async def _run_game_context_organizer_ai(state: dict, snapshot: list[dict]) -> dict:
+    """Summarize older in-game context and extract observable signals."""
+    char_info = _get_current_character_info()
+    payload = _build_game_context_organizer_payload(state, snapshot)
+    system_prompt = (
+        "你是足球小游戏局内上下文整理器。只输出 JSON，不要 Markdown，不要解释。\n"
+        "目标：把较早的局内原文整理进 rollingSummary，并提取少量可观察信号，供同一局后续游戏台词参考。\n"
+        "输出格式固定：{\"rollingSummary\":\"\",\"signals\":{\"主人信号\":[],\"关系互动信号\":[],\"猫娘信号\":[],\"比赛事实\":[],\"口头声明\":[]}}\n"
+        "规则：\n"
+        "- rollingSummary 用 1-4 句概括本局已经发生的关键互动、玩法状态和事实边界。\n"
+        "- 每个 signals 分组最多输出 1-3 条；每条包含 signalLabel、summary、evidence、lastRound、count。\n"
+        "- evidence 使用输入里的稳定 id，quote 保留短原文；不要编造 id。\n"
+        "- 信号是可观察线索，不是心理结论；不要猜主人内心。\n"
+        "- 比赛事实必须以 officialScore/currentState 为准；口头“算你赢/让你赢回来/认输”只放入口头声明，不能改写官方比分。\n"
+        "- 只整理 organizeDialogues；keptRecentDialogues 是保留给后续自然接话的实时窗口，不要强行摘要成新事实。"
+    )
+
+    try:
+        from utils.file_utils import robust_json_loads
+        from utils.llm_client import HumanMessage, SystemMessage, create_chat_llm
+        from utils.token_tracker import set_call_type
+
+        set_call_type("game_context_organizer")
+        llm = create_chat_llm(
+            char_info["model"],
+            char_info["base_url"],
+            char_info["api_key"],
+            temperature=0.2,
+            max_completion_tokens=900,
+            timeout=20,
+        )
+        async with llm:
+            result = await llm.ainvoke([
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=json.dumps(payload, ensure_ascii=False)),
+            ])
+        raw = _strip_json_fence(str(result.content or ""))
+        parsed = robust_json_loads(raw)
+    except Exception as exc:
+        logger.warning(
+            "🎮 局内上下文整理失败: game=%s session=%s err=%s",
+            state.get("game_type"),
+            state.get("session_id"),
+            exc,
+        )
+        raise
+
+    if not isinstance(parsed, dict):
+        raise ValueError("game_context_organizer_json_not_object")
+    parsed["source"] = _infer_service_source(
+        char_info.get("base_url", ""),
+        char_info.get("model", ""),
+        char_info.get("api_type", ""),
+    )
+    return parsed
+
+
+def _apply_game_context_organizer_success(state: dict, snapshot: list[dict], result: dict) -> None:
+    organize_dialogues = snapshot[:-_GAME_CONTEXT_RECENT_KEEP_COUNT]
+    if not organize_dialogues:
+        return
+    summary = _normalize_short_text(
+        result.get("rollingSummary") or result.get("rolling_summary") or result.get("summary"),
+        max_chars=900,
+    )
+    if summary:
+        state["game_context_summary"] = summary
+    state["game_context_signals"] = _merge_game_context_signals(
+        state.get("game_context_signals"),
+        result.get("signals") if isinstance(result.get("signals"), dict) else {},
+    )
+    organizer = _normalize_game_context_organizer_state(state.get("game_context_organizer"))
+    organizer.update({
+        "running": False,
+        "degraded": False,
+        "failure_count": 0,
+        "last_organized_id": str(organize_dialogues[-1].get("id") or ""),
+        "source": result.get("source") if isinstance(result.get("source"), dict) else result.get("source"),
+        "error": "",
+    })
+    state["game_context_organizer"] = organizer
+    _set_game_context_recent_ids(state)
+
+
+def _apply_game_context_organizer_failure(state: dict, snapshot: list[dict], error: Exception) -> None:
+    organizer = _normalize_game_context_organizer_state(state.get("game_context_organizer"))
+    organizer["running"] = False
+    organizer["failure_count"] = int(organizer.get("failure_count") or 0) + 1
+    organizer["error"] = type(error).__name__
+    pending_count = len(_game_context_pending_dialogues(state))
+    if pending_count >= _GAME_CONTEXT_DEGRADE_PENDING_COUNT:
+        organizer["degraded"] = True
+        organizer["error"] = f"degraded_after_{pending_count}_pending_items"
+        logger.warning(
+            "🎮 局内上下文整理达到硬上限，降级为纯游戏模式: game=%s session=%s pending=%s",
+            state.get("game_type"),
+            state.get("session_id"),
+            pending_count,
+        )
+    state["game_context_organizer"] = organizer
+
+
+async def _run_game_context_organizer_task(state: dict, snapshot: list[dict]) -> None:
+    succeeded = False
+    try:
+        result = await _run_game_context_organizer_ai(state, snapshot)
+        _apply_game_context_organizer_success(state, snapshot, result)
+        succeeded = True
+    except Exception as exc:
+        _apply_game_context_organizer_failure(state, snapshot, exc)
+    finally:
+        organizer = _normalize_game_context_organizer_state(state.get("game_context_organizer"))
+        if organizer.get("running"):
+            organizer["running"] = False
+            state["game_context_organizer"] = organizer
+        if succeeded and not organizer.get("degraded"):
+            _maybe_schedule_game_context_organizer(state)
+
+
+async def _settle_game_context_organizer_before_archive(state: dict) -> None:
+    task = state.get("_game_context_organizer_task")
+    if task is None or not hasattr(task, "done"):
+        return
+
+    if task.done():
+        if task.cancelled():
+            organizer = _normalize_game_context_organizer_state(state.get("game_context_organizer"))
+            organizer["running"] = False
+            organizer["error"] = organizer.get("error") or "cancelled"
+            state["game_context_organizer"] = organizer
+            return
+        try:
+            await task
+        except Exception as exc:
+            organizer = _normalize_game_context_organizer_state(state.get("game_context_organizer"))
+            organizer["running"] = False
+            organizer["error"] = type(exc).__name__
+            state["game_context_organizer"] = organizer
+            logger.warning(
+                "🎮 退出前收敛局内上下文整理失败: game=%s session=%s err=%s",
+                state.get("game_type"),
+                state.get("session_id"),
+                exc,
+            )
+        return
+
+    try:
+        await asyncio.wait_for(task, timeout=_GAME_CONTEXT_FINALIZE_WAIT_SECONDS)
+    except asyncio.TimeoutError:
+        organizer = _normalize_game_context_organizer_state(state.get("game_context_organizer"))
+        organizer["running"] = False
+        organizer["error"] = "finalize_timeout"
+        state["game_context_organizer"] = organizer
+        logger.warning(
+            "🎮 退出前等待局内上下文整理超时，使用已有信息归档: game=%s session=%s timeout=%.1fs",
+            state.get("game_type"),
+            state.get("session_id"),
+            _GAME_CONTEXT_FINALIZE_WAIT_SECONDS,
+        )
+    except Exception as exc:
+        organizer = _normalize_game_context_organizer_state(state.get("game_context_organizer"))
+        organizer["running"] = False
+        organizer["error"] = type(exc).__name__
+        state["game_context_organizer"] = organizer
+        logger.warning(
+            "🎮 退出前等待局内上下文整理失败，使用已有信息归档: game=%s session=%s err=%s",
+            state.get("game_type"),
+            state.get("session_id"),
+            exc,
+        )
 
 
 def _route_liveness_at(state: dict) -> float:
@@ -1213,6 +1793,7 @@ def _build_game_archive(state: dict) -> dict:
     final_score = state.get("finalScore") if isinstance(state.get("finalScore"), dict) else {}
     if not final_score and isinstance(last_state.get("score"), dict):
         final_score = dict(last_state.get("score") or {})
+    organizer = _normalize_game_context_organizer_state(state.get("game_context_organizer"))
     return {
         "game_type": state.get("game_type"),
         "session_id": state.get("session_id"),
@@ -1226,6 +1807,15 @@ def _build_game_archive(state: dict) -> dict:
         "last_state": last_state,
         "finalScore": final_score,
         "game_memory_tail_count": _normalize_game_memory_tail_count(state.get("game_memory_tail_count")),
+        "game_context_summary": str(state.get("game_context_summary") or ""),
+        "game_context_signals": _normalize_game_context_signals(state.get("game_context_signals")),
+        "game_context_recent_ids": [
+            str(item_id)
+            for item_id in state.get("game_context_recent_ids") or []
+            if str(item_id or "").strip()
+        ],
+        "game_context_organizer": organizer,
+        "game_context_degraded": organizer.get("degraded") is True,
         "preGameContext": state.get("preGameContext") if isinstance(state.get("preGameContext"), dict) else {},
         "pre_game_context_source": str(state.get("pre_game_context_source") or ""),
         "pre_game_context_error": str(state.get("pre_game_context_error") or ""),
@@ -1238,7 +1828,13 @@ def _build_game_archive(state: dict) -> dict:
     }
 
 
+def _archive_game_context_degraded(archive: dict) -> bool:
+    organizer = _normalize_game_context_organizer_state(archive.get("game_context_organizer"))
+    return archive.get("game_context_degraded") is True or organizer.get("degraded") is True
+
+
 def _build_game_archive_memory_text(archive: dict) -> str:
+    degraded = _archive_game_context_degraded(archive)
     lines = [
         "[足球小游戏记忆记录]",
         "说明: 这是游戏模块写入给记忆系统的赛后记录，不是主人逐字说出的新聊天。",
@@ -1249,6 +1845,15 @@ def _build_game_archive_memory_text(archive: dict) -> str:
         f"官方比分: {_archive_score_text(archive)}",
         "比分规则: 官方比分永远以 finalScore / last_state.score 为准；口头认输、算你赢、让你赢回来只能视为口头让步、安抚或玩笑，不改写官方比分。",
     ]
+    if degraded:
+        lines.append("局内上下文整理: 已降级为纯游戏模式；本记录不使用滚动摘要或信号列表做关系解释。")
+    else:
+        context_summary = _normalize_short_text(archive.get("game_context_summary"), max_chars=900)
+        signals_text = _game_context_signals_text(archive.get("game_context_signals"))
+        if context_summary:
+            lines.append(f"局内滚动摘要: {context_summary}")
+        if signals_text:
+            lines.append(f"局内中文分组信号: {signals_text}")
 
     key_events = archive.get("key_events") if isinstance(archive.get("key_events"), list) else []
     if key_events:
@@ -1405,6 +2010,7 @@ def _build_game_archive_memory_highlight_source(archive: dict) -> str:
     dialogues = archive.get("full_dialogues") if isinstance(archive.get("full_dialogues"), list) else []
     if not dialogues:
         dialogues = archive.get("last_full_dialogues") if isinstance(archive.get("last_full_dialogues"), list) else []
+    degraded = _archive_game_context_degraded(archive)
     lines = [
         f"游戏: {archive.get('game_type') or 'game'}",
         f"会话: {archive.get('session_id') or 'default'}",
@@ -1412,12 +2018,10 @@ def _build_game_archive_memory_highlight_source(archive: dict) -> str:
         "比分说明: 上面的最终/最近比分是官方比分，来源优先级为 finalScore / last_state.score；固定顺序是主人分数在前，当前角色分数在后；筛选重点时不要改成相反视角。",
         "口头让步说明: 局内如果出现“算你赢”“让你赢回来”“口头认输”等，只能记录为口头让步、安抚或玩笑；不能改写官方比分或真实胜负。",
         "角色说明: 只有“主人：...”行是主人亲口说的话；“游戏事件”行里的事件原文是游戏模块/猫娘气泡或事件标签，不要归因给主人。",
-        "本局完整对话/事件:",
     ]
     pre_game_context = archive.get("preGameContext") if isinstance(archive.get("preGameContext"), dict) else {}
     if pre_game_context:
-        lines.insert(
-            5,
+        lines.append(
             "开局上下文: "
             + json.dumps({
                 "gameStance": pre_game_context.get("gameStance"),
@@ -1427,6 +2031,18 @@ def _build_game_archive_memory_highlight_source(archive: dict) -> str:
                 "postgameCarryback": pre_game_context.get("postgameCarryback"),
             }, ensure_ascii=False),
         )
+    if degraded:
+        lines.append("局内上下文整理状态: 已降级为纯游戏模式；不要输出关系摘要、信号解释或不可验证的状态延续。")
+    else:
+        context_summary = _normalize_short_text(archive.get("game_context_summary"), max_chars=900)
+        signals_text = _game_context_signals_text(archive.get("game_context_signals"))
+        if context_summary:
+            lines.append(f"局内滚动摘要: {context_summary}")
+        if signals_text:
+            lines.append(f"局内中文分组信号: {signals_text}")
+        if context_summary or signals_text:
+            lines.append("筛选优先级: 优先参考局内滚动摘要和中文分组信号，再用完整对话/事件核对证据。")
+    lines.append("本局完整对话/事件:")
     lines.extend(f"- {_dialog_memory_line(item)}" for item in dialogues if isinstance(item, dict))
     return "\n".join(lines)
 
@@ -1501,6 +2117,12 @@ async def _select_game_archive_memory_highlights(archive: dict) -> dict:
 
 
 async def _ensure_game_archive_memory_highlights(archive: dict) -> dict:
+    if _archive_game_context_degraded(archive):
+        highlights = _normalize_game_archive_memory_highlights({})
+        highlights["source"] = {"provider": "game_context_organizer", "method": "degraded_minimal_facts"}
+        archive["memory_highlights"] = highlights
+        return highlights
+
     raw_existing = archive.get("memory_highlights")
     existing = _normalize_game_archive_memory_highlights(archive.get("memory_highlights"))
     if (
@@ -1564,6 +2186,7 @@ def _build_game_archive_memory_summary_text(archive: dict, *, tail_count: int | 
     last_user = _archive_last_user_text(archive)
     last_assistant = _archive_last_assistant_line(archive)
     highlights = _normalize_game_archive_memory_highlights(archive.get("memory_highlights"))
+    degraded = _archive_game_context_degraded(archive)
     normalized_tail_count = _normalize_game_memory_tail_count(
         tail_count if tail_count is not None else archive.get("game_memory_tail_count")
     )
@@ -1576,6 +2199,18 @@ def _build_game_archive_memory_summary_text(archive: dict, *, tail_count: int | 
         lines.append(f"官方比分：{score_text}。")
         lines.append("官方比分永远以 finalScore / last_state.score 为准。")
     lines.append("口头让步规则：局内“算你赢 / 让你赢回来 / 口头认输”只能记录为口头让步、安抚或玩笑，不改写官方比分。")
+    if degraded:
+        lines.append("局内上下文整理已降级为纯游戏模式；本归档只记录最低限度事实，不使用滚动摘要或信号列表做关系解释。")
+        lines.append("降级模式不回放倒数实时片段，避免把未经整理的局内台词或口头让步写成 ordinary recent history。")
+        lines.append("后续聊天只需要自然记得一起玩过足球小游戏和官方比分，不要根据本局材料生成新的关系总结。")
+        return "\n".join(lines)
+
+    context_summary = _normalize_short_text(archive.get("game_context_summary"), max_chars=900)
+    signals_text = _game_context_signals_text(archive.get("game_context_signals"))
+    if context_summary:
+        lines.append(f"局内滚动摘要：{context_summary}")
+    if signals_text:
+        lines.append(f"局内中文分组信号：{signals_text}")
     if highlights["important_records"]:
         lines.append("重要互动：")
         lines.extend(f"- {item}" for item in highlights["important_records"])
@@ -1604,13 +2239,16 @@ def _build_game_archive_memory_summary_text(archive: dict, *, tail_count: int | 
 def _build_game_archive_memory_messages(archive: dict, tail_count: int | None = None) -> list[dict]:
     """Build the actual /cache payload.
 
-    First replay the game's last tail window as ordinary role messages, then add
-    one module-generated system archive as the official explanation.
+    Normally replay the game's last tail window as ordinary role messages, then
+    add one module-generated system archive as the official explanation. In
+    degraded mode, only write the system archive with minimal facts.
     """
     normalized_tail_count = _normalize_game_memory_tail_count(
         tail_count if tail_count is not None else archive.get("game_memory_tail_count")
     )
-    messages = _build_game_archive_tail_memory_messages(archive, normalized_tail_count)
+    messages = []
+    if not _archive_game_context_degraded(archive):
+        messages = _build_game_archive_tail_memory_messages(archive, normalized_tail_count)
     memory_text = _build_game_archive_memory_summary_text(archive, tail_count=normalized_tail_count)
     messages.append({"role": "system", "content": [{"type": "text", "text": memory_text}]})
     return messages
@@ -1714,6 +2352,7 @@ def _build_game_postgame_context_text(archive: dict) -> str:
 def _build_game_postgame_realtime_nudge_instruction(archive: dict, options: dict) -> str:
     signals = _postgame_last_signals(archive)
     max_chars = int(options.get("max_chars") or 60)
+    degraded = _archive_game_context_degraded(archive)
     lines = [
         "[足球小游戏赛后主动搭话]",
         "刚才足球小游戏已经结束。下一句必须自然接刚才这局比赛，不要继续扮演比赛仍在进行。",
@@ -1726,14 +2365,16 @@ def _build_game_postgame_realtime_nudge_instruction(archive: dict, options: dict
     if score_text:
         lines.append(f"最终/最近比分：{score_text}")
         lines.append("官方比分以 finalScore / last_state.score 为准；如果你曾口头说算主人赢，那只是安抚或玩笑，不要说成真实比分改变。")
+    if degraded:
+        lines.append("局内上下文整理已降级为纯游戏模式；只按官方比分、最后原文和当前语气自然短答，不做关系总结。")
     if signals["last_user_text"]:
         lines.append(f"主人最后说：{signals['last_user_text']}")
     if signals["last_assistant_line"]:
         lines.append(f"你刚才最后说：{signals['last_assistant_line']}")
     highlights = _normalize_game_archive_memory_highlights(archive.get("memory_highlights"))
-    if highlights["state_carryback"]:
+    if highlights["state_carryback"] and not degraded:
         lines.append(f"赛后状态延续：{highlights['state_carryback']}")
-    if highlights["postgame_tone"]:
+    if highlights["postgame_tone"] and not degraded:
         lines.append(f"赛后语气：{highlights['postgame_tone']}")
     lines.append(f"请用你的口吻说一句 {max_chars} 字以内的赛后短话，优先照顾主人的情绪。")
     return "\n".join(lines)
@@ -2253,6 +2894,8 @@ async def _finalize_game_route_state_inner(
         except Exception as exc:
             logger.warning("⚠️ 游戏路由退出状态通知失败: %s", exc)
 
+    await _settle_game_context_organizer_before_archive(state)
+
     archive = state.get("archive") if isinstance(state.get("archive"), dict) else None
     if archive is None:
         archive = _build_game_archive(state)
@@ -2321,11 +2964,13 @@ async def _get_or_create_session(game_type: str, session_id: str) -> dict:
 
     route_state = _find_game_route_state_for_session(game_type, session_id)
     pre_game_context = route_state.get("preGameContext") if isinstance(route_state, dict) else None
+    game_context = _build_game_context_prompt_payload(route_state)
     system_prompt = _build_game_prompt(
         game_type,
         char_info['lanlan_name'],
         char_info['lanlan_prompt'],
         pre_game_context if isinstance(pre_game_context, dict) else None,
+        game_context if isinstance(game_context, dict) else None,
     )
     await session.connect(instructions=system_prompt)
 
@@ -2340,6 +2985,7 @@ async def _get_or_create_session(game_type: str, session_id: str) -> dict:
         ),
         'last_activity': time.time(),
         'lock': asyncio.Lock(),
+        'instructions': system_prompt,
     }
     _game_sessions[key] = entry
 
@@ -2352,6 +2998,29 @@ async def _get_or_create_session(game_type: str, session_id: str) -> dict:
         len(char_info.get('lanlan_prompt') or ''),
     )
     return entry
+
+
+async def _refresh_game_session_instructions(entry: dict, game_type: str, session_id: str) -> None:
+    session = entry.get("session") if isinstance(entry, dict) else None
+    update = getattr(session, "update_session", None)
+    if not callable(update):
+        return
+
+    char_info = _get_current_character_info()
+    route_state = _find_game_route_state_for_session(game_type, session_id)
+    pre_game_context = route_state.get("preGameContext") if isinstance(route_state, dict) else None
+    game_context = _build_game_context_prompt_payload(route_state)
+    instructions = _build_game_prompt(
+        game_type,
+        char_info["lanlan_name"],
+        char_info["lanlan_prompt"],
+        pre_game_context if isinstance(pre_game_context, dict) else None,
+        game_context if isinstance(game_context, dict) else None,
+    )
+    if entry.get("instructions") == instructions:
+        return
+    await update({"instructions": instructions})
+    entry["instructions"] = instructions
 
 
 def _parse_control_instructions(reply: str) -> Dict[str, Any]:
@@ -2496,6 +3165,7 @@ async def _run_game_chat(game_type: str, session_id: str, event: Any) -> Dict[st
     async with entry['lock']:
         session = entry['session']
         reply_chunks = entry['reply_chunks']
+        await _refresh_game_session_instructions(entry, game_type, session_id)
 
         # 清空上一次的回复
         reply_chunks.clear()

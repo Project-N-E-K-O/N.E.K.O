@@ -1343,6 +1343,7 @@ async def test_project_mirror_assistant_records_opening_line_in_game_log(monkeyp
         "finalize_turn": False,
     })]
     assert state["game_dialog_log"] == [{
+        "id": "glog_0001",
         "type": "assistant",
         "source": "opening_line",
         "kind": "opening-line",
