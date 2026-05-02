@@ -836,41 +836,8 @@ def _fake_realtime(monkeypatch):
         "_get_current_character_info",
         lambda: {"lanlan_name": "Lan"},
     )
-    monkeypatch.setattr(game_router, "uuid4", lambda: "new-speech")
-
-    async def _audio_sent(*_args, **_kwargs):
-        return True
-
-    monkeypatch.setattr(game_router, "_wait_for_speech_output", _audio_sent)
 
     return _FakeRealtimeSession
-
-
-@pytest.mark.unit
-@pytest.mark.asyncio
-async def test_realtime_speak_qwen_uses_audio_nudge(monkeypatch, _fake_realtime):
-    session = _fake_realtime(model_lower="qwen-realtime", delivered=True)
-    session._last_response_transcript = "这球我拿下了喵"
-    mgr = _FakeRealtimeManager(session)
-    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
-
-    result = await game_router.game_realtime_speak(
-        "soccer",
-        _FakeRequest({"line": "这球我拿下了喵", "language": "zh-CN"}),
-    )
-
-    assert result["ok"] is True
-    assert result["method"] == "qwen_audio_nudge"
-    assert result["language"] == "zh"
-    assert result["line_match"] is True
-    assert result["speech_id"] == "new-speech"
-    assert mgr.current_speech_id == "new-speech"
-    assert session.prompt_calls == [{"language": "zh", "qwen_manual_commit": True}]
-    assert session.prime_context_calls == []
-    assert len(session.update_session_calls) == 2
-    assert "这球我拿下了喵" in session.update_session_calls[0]["instructions"]
-    assert session.update_session_calls[-1]["instructions"] == "base realtime instructions"
-    assert session._active_instructions == "base realtime instructions"
 
 
 @pytest.mark.unit
@@ -895,67 +862,6 @@ async def test_realtime_context_skips_gemini_prime_to_avoid_hidden_response(monk
     assert result["reason"] == "gemini_no_session_update"
     assert session.prime_context_calls == []
     assert session.create_response_calls == []
-
-
-@pytest.mark.unit
-@pytest.mark.asyncio
-async def test_realtime_speak_qwen_restores_speech_id_when_nudge_skipped(monkeypatch, _fake_realtime):
-    session = _fake_realtime(model_lower="qwen-realtime", delivered=False)
-    mgr = _FakeRealtimeManager(session)
-    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
-
-    result = await game_router.game_realtime_speak(
-        "soccer",
-        _FakeRequest({"line": "这球我拿下了喵"}),
-    )
-
-    assert result["ok"] is False
-    assert result["reason"] == "audio_nudge_skipped"
-    assert result["method"] == "qwen_audio_nudge"
-    assert mgr.current_speech_id == "previous-speech"
-    assert len(session.update_session_calls) == 2
-    assert session.update_session_calls[-1]["instructions"] == "base realtime instructions"
-
-
-@pytest.mark.unit
-@pytest.mark.asyncio
-async def test_realtime_speak_qwen_reports_transcript_mismatch(monkeypatch, _fake_realtime):
-    session = _fake_realtime(model_lower="qwen-realtime", delivered=True)
-    session._last_response_transcript = "别光嗯啊的，快出招"
-    mgr = _FakeRealtimeManager(session)
-    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
-
-    result = await game_router.game_realtime_speak(
-        "soccer",
-        _FakeRequest({"line": "这球我拿下了喵"}),
-    )
-
-    assert result["ok"] is False
-    assert result["reason"] == "spoken_transcript_mismatch"
-    assert result["audio_sent"] is True
-    assert result["line_match"] is False
-    assert "别光嗯啊" in result["spoken_transcript"]
-
-
-@pytest.mark.unit
-@pytest.mark.asyncio
-async def test_realtime_speak_non_qwen_uses_text_response(monkeypatch, _fake_realtime):
-    session = _fake_realtime(model_lower="gpt-realtime", delivered=True)
-    session.base_url = "https://api.openai.com"
-    mgr = _FakeRealtimeManager(session)
-    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
-
-    result = await game_router.game_realtime_speak(
-        "soccer",
-        _FakeRequest({"line": "换我进攻了"}),
-    )
-
-    assert result["ok"] is True
-    assert result["method"] == "text_response"
-    assert result["speech_id"] == "new-speech"
-    assert len(session.create_response_calls) == 1
-    assert "换我进攻了" in session.create_response_calls[0]
-    assert result["voice_source"]["provider"] == "openai"
 
 
 class _FakeGameRouteManager:

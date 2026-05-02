@@ -1887,6 +1887,8 @@
     // 节流：同一 kind 的 LLM 调用间隔（秒）
     cooldowns: {},
     cooldownSec: 8,
+    // 局中 Realtime 只作 STT；赛后统一注入摘要，避免频繁 session.update 影响 VAD/STT。
+    realtimeContextEnabled: false,
     realtimeContextLastSentAt: 0,
     realtimeContextCooldownMs: 1200,
     routeHeartbeatTimer: null,
@@ -2544,6 +2546,7 @@
   }
 
   async function _sendRealtimeGameContext(source, items = []) {
+    if (!_llm.realtimeContextEnabled) return;
     const now = performance.now();
     if (now - _llm.realtimeContextLastSentAt < _llm.realtimeContextCooldownMs) return;
     _llm.realtimeContextLastSentAt = now;
@@ -2622,7 +2625,7 @@
     }
   }
 
-  async function _sendRealtimeSpeech(line, meta = {}, result = {}, options = {}) {
+  async function _sendGameSpeech(line, meta = {}, result = {}, options = {}) {
     if (!line) {
       return {
         ok: false,
@@ -2678,7 +2681,7 @@
           lang: data.language || '',
         };
         console.log(
-          `[SoccerRealtime] 原流水线输出成功 | 方式=${data.method || 'unknown'} ` +
+          `[SoccerVoice] 原流水线输出成功 | 方式=${data.method || 'unknown'} ` +
           `语言=${data.language || '-'} 来源=${_formatSourceLabel(data.voice_source)} ` +
           `speech_id=${data.speech_id || '-'} audio_sent=${!!data.audio_sent} ` +
           `interrupt_audio=${interruptAudio} ` +
@@ -2699,7 +2702,7 @@
         data.use_tts !== undefined ? `use_tts=${!!data.use_tts}` : '',
       ].filter(Boolean).join(' ');
       console.log(
-        `[SoccerRealtime] 原流水线输出未送达 | 原因=${data.reason || resp.status} ` +
+        `[SoccerVoice] 原流水线输出未送达 | 原因=${data.reason || resp.status} ` +
         `来源=${_formatSourceLabel(data.voice_source || { provider: 'project_voice_unavailable' })} ${skipDiag}`
       );
       _llm.lastVoiceFailure = {
@@ -2717,7 +2720,7 @@
       };
       return _llm.lastVoiceFailure;
     } catch (e) {
-      console.log(`[SoccerRealtime] 原流水线输出请求失败 | ${String(e)}`);
+      console.log(`[SoccerVoice] 原流水线输出请求失败 | ${String(e)}`);
       _llm.lastVoiceFailure = {
         ok: false,
         reason: 'request_failed',
@@ -2958,7 +2961,7 @@
       `[SoccerVoice][Arbiter] 放行语音 | 原因=${reason} 优先级=${entry.priority} ` +
       `打断=${interruptAudio} 台词="${entry.line}"`
     );
-    return _sendRealtimeSpeech(entry.line, meta, entry.result || {}, {
+    return _sendGameSpeech(entry.line, meta, entry.result || {}, {
       reason,
       interruptAudio,
     }).then((voiceResult) => {

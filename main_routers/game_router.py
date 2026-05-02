@@ -17,12 +17,10 @@ import re
 import time
 from typing import Any, Dict
 from urllib.parse import urlparse
-from uuid import uuid4
 
 from fastapi import APIRouter, Request
 
 from .shared_state import get_config_manager, get_session_manager
-from utils.language_utils import normalize_language_code
 from utils.logger_config import get_module_logger
 
 logger = get_module_logger(__name__, "Game")
@@ -290,153 +288,6 @@ def _infer_service_source(base_url: str, model: str = "", api_type: str = "") ->
         "host": host,
         "label": " / ".join(label_parts),
     }
-
-
-async def _claim_realtime_speech_turn(mgr: Any) -> tuple[str, str | None]:
-    """Assign a fresh speech id so audio chunks are grouped as a new turn."""
-    speech_id = str(uuid4())
-    previous_id = getattr(mgr, "current_speech_id", None)
-    lock = getattr(mgr, "lock", None)
-
-    async def apply_claim() -> None:
-        mgr.current_speech_id = speech_id
-        if hasattr(mgr, "_tts_done_queued_for_turn"):
-            mgr._tts_done_queued_for_turn = False
-        if hasattr(mgr, "_tts_done_pending_until_ready"):
-            mgr._tts_done_pending_until_ready = False
-
-    if lock:
-        async with lock:
-            await apply_claim()
-    else:
-        await apply_claim()
-    return speech_id, previous_id
-
-
-async def _restore_realtime_speech_turn_if_unused(mgr: Any, claimed_id: str, previous_id: str | None) -> None:
-    """Undo a game speech claim if the nudge was skipped before producing audio."""
-    lock = getattr(mgr, "lock", None)
-
-    async def apply_restore() -> None:
-        if getattr(mgr, "current_speech_id", None) == claimed_id:
-            mgr.current_speech_id = previous_id
-
-    if lock:
-        async with lock:
-            await apply_restore()
-    else:
-        await apply_restore()
-
-
-def _get_speech_output_total(mgr: Any) -> int:
-    try:
-        return int(getattr(mgr, "_speech_output_total", 0) or 0)
-    except Exception:
-        return 0
-
-
-async def _wait_for_speech_output(mgr: Any, previous_total: int, timeout_seconds: float = 8.0) -> bool:
-    """Return True once Core.send_speech has actually pushed audio to the frontend."""
-    deadline = time.perf_counter() + timeout_seconds
-    while time.perf_counter() < deadline:
-        if _get_speech_output_total(mgr) > previous_total:
-            return True
-        await asyncio.sleep(0.05)
-    return False
-
-
-async def _wait_for_realtime_response_done(session: Any, previous_total: int, timeout_seconds: float = 4.0) -> bool:
-    """Return True once the active Realtime response has reached response.done."""
-    deadline = time.perf_counter() + timeout_seconds
-    while time.perf_counter() < deadline:
-        try:
-            if int(getattr(session, "_response_done_total", 0) or 0) > previous_total:
-                return True
-        except Exception:
-            return False
-        await asyncio.sleep(0.05)
-    return False
-
-
-def _get_realtime_speech_lock(mgr: Any) -> asyncio.Lock:
-    """Return the per-character game speech lock, creating it lazily."""
-    lock = getattr(mgr, "_game_realtime_speech_lock", None)
-    if lock is None:
-        lock = asyncio.Lock()
-        try:
-            setattr(mgr, "_game_realtime_speech_lock", lock)
-        except Exception:
-            pass
-    return lock
-
-
-def _realtime_speech_diag(
-    mgr: Any,
-    session: Any,
-    *,
-    audio_total_before: int,
-    committed_total_before: int,
-    response_created_before: int,
-) -> Dict[str, Any]:
-    """Build common realtime speech diagnostic fields for success and failure."""
-    try:
-        audio_observed = int(getattr(session, "_audio_delta_total", 0) or 0) > audio_total_before
-    except Exception:
-        audio_observed = False
-    try:
-        audio_committed = int(getattr(session, "_input_audio_committed_total", 0) or 0) > committed_total_before
-    except Exception:
-        audio_committed = False
-    try:
-        response_observed = int(getattr(session, "_response_created_total", 0) or 0) > response_created_before
-    except Exception:
-        response_observed = False
-    return {
-        "audio_observed": audio_observed,
-        "audio_committed": audio_committed,
-        "response_observed": response_observed,
-        "use_tts": bool(getattr(mgr, "use_tts", False)),
-    }
-
-
-async def _wait_for_realtime_speech_slot(session: Any, timeout_seconds: float = 3.5) -> tuple[bool, str]:
-    """Wait briefly for the active Realtime session to become safe for a game nudge."""
-    deadline = time.perf_counter() + timeout_seconds
-    last_reason = "realtime_busy"
-    while time.perf_counter() < deadline:
-        now = time.time()
-        if getattr(session, "_is_responding", False):
-            last_reason = "realtime_busy"
-        elif now - float(getattr(session, "_ai_recent_activity_time", 0.0) or 0.0) < float(getattr(session, "_ai_recent_activity_window", 0.0) or 0.0):
-            last_reason = "ai_recently_active"
-        elif now - float(getattr(session, "_user_recent_activity_time", 0.0) or 0.0) < float(getattr(session, "_user_recent_activity_window", 0.0) or 0.0):
-            last_reason = "user_recently_active"
-        elif (getattr(session, "_has_server_vad", False) or getattr(session, "_rnnoise_vad_active", False)) and getattr(session, "_client_vad_active", False):
-            last_reason = "user_speaking"
-        elif (
-            getattr(session, "_has_server_vad", False) or getattr(session, "_rnnoise_vad_active", False)
-        ) and now - float(getattr(session, "_client_vad_last_speech_time", 0.0) or 0.0) < float(getattr(session, "_client_vad_grace_period", 0.0) or 0.0):
-            last_reason = "vad_grace_period"
-        else:
-            return True, "ready"
-        await asyncio.sleep(0.05)
-    return False, last_reason
-
-
-def _get_realtime_active_instructions(session: Any) -> str:
-    """Return the current session instructions snapshot when available."""
-    active = getattr(session, "_active_instructions", None)
-    if isinstance(active, str):
-        return active
-    base = getattr(session, "instructions", "")
-    return str(base or "")
-
-
-async def _set_realtime_instructions(session: Any, instructions: str) -> None:
-    update = getattr(session, "update_session", None)
-    if not callable(update):
-        raise RuntimeError("active realtime session does not support session.update")
-    await update({"instructions": instructions})
 
 
 def _build_game_prompt(
@@ -2244,6 +2095,8 @@ def _build_game_archive_memory_messages(archive: dict, tail_count: int | None = 
 
 _POSTGAME_SKIP_REASONS = {"heartbeat_timeout", "session_cleanup", "cleanup", "manual_return_to_start"}
 _POSTGAME_REALTIME_NUDGE_DELAYS = (1.5, 5.0, 9.0)
+_POSTGAME_REALTIME_UNORGANIZED_LIMIT = 12
+_POSTGAME_REALTIME_UNORGANIZED_MAX_CHARS = 2400
 
 
 def _normalize_postgame_options(raw: Any, *, reason: str) -> dict:
@@ -2327,14 +2180,119 @@ def _postgame_last_signals(archive: dict) -> dict:
     return signals
 
 
+def _archive_unorganized_dialogues(archive: dict, *, limit: int = _POSTGAME_REALTIME_UNORGANIZED_LIMIT) -> list[dict]:
+    dialogues = archive.get("full_dialogues") if isinstance(archive.get("full_dialogues"), list) else []
+    dialogues = [item for item in dialogues if isinstance(item, dict)]
+    if not dialogues:
+        last_dialogues = archive.get("last_full_dialogues") if isinstance(archive.get("last_full_dialogues"), list) else []
+        dialogues = [
+            item
+            for item in last_dialogues
+            if isinstance(item, dict)
+        ]
+    organizer = _normalize_game_context_organizer_state(archive.get("game_context_organizer"))
+    last_idx = _dialog_id_index(dialogues, str(organizer.get("last_organized_id") or ""))
+    pending = dialogues[last_idx + 1:] if last_idx >= 0 else dialogues
+    return pending[-max(1, limit):]
+
+
+def _append_limited_lines(lines: list[str], header: str, raw_lines: list[str], *, max_chars: int) -> None:
+    kept: list[str] = []
+    total = 0
+    for raw in reversed(raw_lines):
+        line = str(raw or "").strip()
+        if not line:
+            continue
+        next_total = total + len(line) + 2
+        if kept and next_total > max_chars:
+            break
+        kept.insert(0, line)
+        total = next_total
+    if kept:
+        lines.append(header)
+        lines.extend(kept)
+
+
 def _build_game_postgame_context_text(archive: dict) -> str:
-    """Context for an already-active Realtime session; it should not speak by itself."""
-    return "\n".join([
+    """Context for an already-active Realtime session; it should not speak by itself.
+
+    Reuse already-built game archive material only. Do not trigger another LLM
+    pass here; the Realtime session only needs compact postgame continuity.
+    """
+    degraded = _archive_game_context_degraded(archive)
+    score_text = _archive_score_text(archive)
+    highlights = _normalize_game_archive_memory_highlights(archive.get("memory_highlights"))
+    if not any(
+        (
+            highlights["important_records"],
+            highlights["important_game_events"],
+            highlights["state_carryback"],
+            highlights["postgame_tone"],
+            highlights["memory_summary"],
+        )
+    ):
+        highlights = _normalize_game_archive_memory_highlights(_fallback_game_archive_memory_highlights(archive))
+
+    lines = [
         "[足球小游戏赛后上下文]",
-        _build_game_archive_memory_text(archive),
-        "这是静默上下文，不要因为注入本身立刻开口。",
-        "如果随后收到主动搭话触发，可以自然接一句刚才足球小游戏的话题；优先回应主人最后的情绪，不要机械播报记录。",
-    ])
+        "说明: 这是静默上下文，不是主人新说的话；不要因为注入本身立刻开口。",
+        "用途: 如果随后收到主人语音/文字或主动搭话触发，自然接上刚才这局足球小游戏；不要复述日志，不要把比赛说成仍在进行。",
+        f"游戏: {archive.get('game_type') or 'game'}",
+        f"会话: {archive.get('session_id') or 'default'}",
+        f"时间: {_format_ts(archive.get('created_at'))} - {_format_ts(archive.get('ended_at'))}",
+    ]
+    if score_text:
+        lines.append(f"官方比分: {score_text}")
+    summary = str(archive.get("summary") or "").strip()
+    if summary:
+        lines.append(f"赛后概要: {summary}")
+    lines.append("比分规则: 官方比分永远以 finalScore / last_state.score 为准；口头认输、算你赢、让你赢回来只视为口头让步、安抚或玩笑。")
+
+    if degraded:
+        lines.append("局内上下文整理: 已降级为纯游戏模式；不要使用滚动摘要或信号列表做关系解释。")
+    else:
+        if highlights["memory_summary"]:
+            lines.append(f"赛后记忆摘要: {highlights['memory_summary']}")
+        if highlights["important_records"]:
+            lines.append("重要互动:")
+            lines.extend(f"- {item}" for item in highlights["important_records"])
+        if highlights["important_game_events"]:
+            lines.append("重要比赛事件:")
+            lines.extend(f"- {item}" for item in highlights["important_game_events"])
+        if highlights["state_carryback"]:
+            lines.append(f"赛后状态延续: {highlights['state_carryback']}")
+        if highlights["postgame_tone"]:
+            lines.append(f"赛后语气: {highlights['postgame_tone']}")
+
+        context_summary = _normalize_short_text(archive.get("game_context_summary"), max_chars=900)
+        signals_text = _game_context_signals_text(archive.get("game_context_signals"))
+        if context_summary:
+            lines.append(f"局内滚动摘要: {context_summary}")
+        if signals_text:
+            lines.append("局内信号列表:")
+            lines.append(signals_text)
+
+    unorganized_lines = [
+        f"- {_dialog_memory_line(item)}"
+        for item in _archive_unorganized_dialogues(archive)
+        if isinstance(item, dict)
+    ]
+    _append_limited_lines(
+        lines,
+        "未被滚动整理的最后原文窗口:",
+        unorganized_lines,
+        max_chars=_POSTGAME_REALTIME_UNORGANIZED_MAX_CHARS,
+    )
+
+    last_user = _archive_last_user_text(archive)
+    last_assistant = _archive_last_assistant_line(archive)
+    if last_user:
+        lines.append(f"主人最后说: {last_user}")
+    if last_assistant:
+        lines.append(f"你刚才最后说: {last_assistant}")
+
+    lines.append("接话规则: 优先回应主人最后的情绪和最后一句话；可以自然提到刚才比赛，但不要机械播报记录。")
+    return "\n".join(line for line in lines if line is not None)
 
 
 def _build_game_postgame_realtime_nudge_instruction(archive: dict, options: dict) -> str:
@@ -4050,50 +4008,6 @@ def _compact_realtime_context_text(game_type: str, payload: Dict[str, Any]) -> s
     return "[游戏上下文更新]\n" + json.dumps(context, ensure_ascii=False)
 
 
-def _realtime_language(payload: Dict[str, Any], mgr: Any) -> str:
-    """Resolve the short language code used by prompt_general_{lang}.wav."""
-    raw = payload.get("language") or getattr(mgr, "user_language", None) or "zh"
-    try:
-        lang = normalize_language_code(str(raw), format="short") or "zh"
-    except Exception:
-        lang = str(raw or "zh")[:2]
-    return lang[:2] or "zh"
-
-
-def _compact_realtime_speech_text(game_type: str, payload: Dict[str, Any], line: str) -> str:
-    """Build the one-shot instruction used to ask Realtime to speak a game line."""
-    state = payload.get("state") if isinstance(payload.get("state"), dict) else {}
-    event = payload.get("event") if isinstance(payload.get("event"), dict) else {}
-    control = payload.get("control") if isinstance(payload.get("control"), dict) else {}
-    context = {
-        "game": game_type,
-        "source": str(payload.get("source") or "game-llm-result"),
-        "currentState": state,
-        "event": event,
-        "control": control,
-        "line": line,
-        "instruction": (
-            "这是游戏 LLM 已经为你决定好的下一句台词。"
-            "下一次回复只能逐字说出 line 字段中的内容；不要添加前缀、后缀、解释或额外寒暄。"
-        ),
-    }
-    return "[游戏台词输出]\n" + json.dumps(context, ensure_ascii=False)
-
-
-def _normalize_spoken_line_for_compare(text: str) -> str:
-    """Normalize short spoken text for rough transcript-vs-line comparison."""
-    return re.sub(r"[\W_]+", "", str(text or "").lower(), flags=re.UNICODE)
-
-
-def _spoken_line_matches(line: str, transcript: str) -> bool:
-    """Return True when the observed transcript reasonably matches the target line."""
-    expected = _normalize_spoken_line_for_compare(line)
-    actual = _normalize_spoken_line_for_compare(transcript)
-    if not expected or not actual:
-        return False
-    return expected in actual or actual in expected
-
-
 @router.post("/{game_type}/realtime-context")
 async def game_realtime_context(game_type: str, request: Request):
     """Inject compact game context into the active Realtime voice session.
@@ -4170,258 +4084,6 @@ async def game_realtime_context(game_type: str, request: Request):
         "bytes": len(text),
         "items": len(data.get("pendingItems") or []),
     }
-
-
-@router.post("/{game_type}/realtime-speak")
-async def game_realtime_speak(game_type: str, request: Request):
-    """Voice bridge for game LLM lines.
-
-    Game mode only touches the middle of the existing voice pipeline: inject
-    context/instructions into the active AI session, then wait for the normal
-    Core output path to push audio to the frontend.
-    """
-    try:
-        data = await request.json()
-    except Exception:
-        return {"ok": False, "reason": "invalid_body"}
-
-    line = str(data.get("line") or "").strip()
-    if not line:
-        return {"ok": False, "reason": "missing_line"}
-
-    lanlan_name = str(data.get("lanlan_name") or "").strip()
-    if not lanlan_name:
-        try:
-            lanlan_name = _get_current_character_info().get("lanlan_name") or ""
-        except Exception:
-            lanlan_name = ""
-
-    if not lanlan_name:
-        return {"ok": False, "reason": "missing_lanlan_name"}
-
-    session_manager = get_session_manager()
-    mgr = session_manager.get(lanlan_name)
-    if not mgr:
-        return {"ok": False, "reason": "no_session_manager", "lanlan_name": lanlan_name}
-
-    try:
-        from main_logic.omni_realtime_client import OmniRealtimeClient
-    except Exception as e:
-        return {"ok": False, "reason": f"realtime_unavailable: {e}", "lanlan_name": lanlan_name}
-
-    session = getattr(mgr, "session", None)
-    if not (getattr(mgr, "is_active", False) and isinstance(session, OmniRealtimeClient)):
-        return {"ok": False, "reason": "no_active_realtime_session", "lanlan_name": lanlan_name}
-
-    text = _compact_realtime_speech_text(game_type, data, line[:180])
-    _log_game_debug_material(
-        "realtime_speech_instruction",
-        text,
-        game_type=game_type,
-        session_id=str(data.get("session_id") or ""),
-        lanlan_name=lanlan_name,
-        source="realtime_speak",
-    )
-    model_lower = str(getattr(session, "_model_lower", "") or "").lower()
-    voice_source = _infer_service_source(
-        getattr(session, "base_url", ""),
-        getattr(session, "model", ""),
-        getattr(session, "_api_type", ""),
-    )
-    claimed_speech_id = ""
-    previous_speech_id = None
-    speech_lock = _get_realtime_speech_lock(mgr)
-    speech_lock_acquired = False
-    restore_qwen_instructions = False
-    previous_qwen_instructions = ""
-    temporary_qwen_instructions = ""
-    try:
-        try:
-            await asyncio.wait_for(speech_lock.acquire(), timeout=3.5)
-            speech_lock_acquired = True
-        except asyncio.TimeoutError:
-            return {
-                "ok": False,
-                "reason": "realtime_busy",
-                "lanlan_name": lanlan_name,
-                "audio_sent": False,
-                "audio_committed": False,
-                "response_observed": False,
-                "audio_observed": False,
-                "use_tts": bool(getattr(mgr, "use_tts", False)),
-                "voice_source": voice_source,
-            }
-
-        slot_ok, slot_reason = await _wait_for_realtime_speech_slot(session, timeout_seconds=3.5)
-        if not slot_ok:
-            return {
-                "ok": False,
-                "reason": slot_reason,
-                "lanlan_name": lanlan_name,
-                "audio_sent": False,
-                "audio_committed": False,
-                "response_observed": False,
-                "audio_observed": False,
-                "use_tts": bool(getattr(mgr, "use_tts", False)),
-                "voice_source": voice_source,
-            }
-
-        audio_total_before = int(getattr(session, "_audio_delta_total", 0) or 0)
-        committed_total_before = int(getattr(session, "_input_audio_committed_total", 0) or 0)
-        response_created_before = int(getattr(session, "_response_created_total", 0) or 0)
-        response_done_before = int(getattr(session, "_response_done_total", 0) or 0)
-        claimed_speech_id, previous_speech_id = await _claim_realtime_speech_turn(mgr)
-        speech_total_before = _get_speech_output_total(mgr)
-        if "qwen" in model_lower:
-            lang = _realtime_language(data, mgr)
-            previous_qwen_instructions = _get_realtime_active_instructions(session)
-            temporary_qwen_instructions = (
-                previous_qwen_instructions.rstrip() + "\n" + text
-                if previous_qwen_instructions
-                else text
-            )
-            await _set_realtime_instructions(session, temporary_qwen_instructions)
-            restore_qwen_instructions = True
-            delivered = await session.prompt_ephemeral(language=lang, qwen_manual_commit=True)
-            if not delivered:
-                await _restore_realtime_speech_turn_if_unused(mgr, claimed_speech_id, previous_speech_id)
-                diag = _realtime_speech_diag(
-                    mgr,
-                    session,
-                    audio_total_before=audio_total_before,
-                    committed_total_before=committed_total_before,
-                    response_created_before=response_created_before,
-                )
-                return {
-                    "ok": False,
-                    "reason": "audio_nudge_skipped",
-                    "lanlan_name": lanlan_name,
-                    "method": "qwen_audio_nudge",
-                    "language": lang,
-                    "audio_sent": False,
-                    "line_match": False,
-                    "voice_source": voice_source,
-                    **diag,
-                }
-            audio_sent = await _wait_for_speech_output(mgr, speech_total_before, timeout_seconds=10.0)
-            response_done = await _wait_for_realtime_response_done(
-                session,
-                response_done_before,
-                timeout_seconds=4.0,
-            )
-            diag = _realtime_speech_diag(
-                mgr,
-                session,
-                audio_total_before=audio_total_before,
-                committed_total_before=committed_total_before,
-                response_created_before=response_created_before,
-            )
-            transcript = str(getattr(session, "_last_response_transcript", "") or "")
-            line_match = _spoken_line_matches(line, transcript) if response_done else False
-            if not audio_sent:
-                return {
-                    "ok": False,
-                    "reason": "no_voice_output_after_audio_nudge",
-                    "lanlan_name": lanlan_name,
-                    "method": "qwen_audio_nudge",
-                    "language": lang,
-                    "speech_id": claimed_speech_id,
-                    "audio_sent": False,
-                    "response_done": response_done,
-                    "spoken_transcript": transcript[-240:],
-                    "line_match": line_match,
-                    "voice_source": voice_source,
-                    **diag,
-                }
-            if not line_match:
-                return {
-                    "ok": False,
-                    "reason": "spoken_transcript_mismatch",
-                    "lanlan_name": lanlan_name,
-                    "method": "qwen_audio_nudge",
-                    "language": lang,
-                    "speech_id": claimed_speech_id,
-                    "audio_sent": True,
-                    "response_done": response_done,
-                    "spoken_transcript": transcript[-240:],
-                    "line_match": False,
-                    "voice_source": voice_source,
-                    **diag,
-                }
-            method = "qwen_audio_nudge"
-            response = {
-                "ok": True,
-                "lanlan_name": lanlan_name,
-                "method": method,
-                "language": lang,
-                "bytes": len(text),
-                "speech_id": claimed_speech_id,
-                "audio_sent": True,
-                "response_done": response_done,
-                "spoken_transcript": transcript[-240:],
-                "line_match": line_match,
-                "voice_source": voice_source,
-                **diag,
-            }
-        else:
-            await session.create_response(text)
-            audio_sent = await _wait_for_speech_output(mgr, speech_total_before, timeout_seconds=10.0)
-            diag = _realtime_speech_diag(
-                mgr,
-                session,
-                audio_total_before=audio_total_before,
-                committed_total_before=committed_total_before,
-                response_created_before=response_created_before,
-            )
-            if not audio_sent:
-                return {
-                    "ok": False,
-                    "reason": "no_voice_output_after_text_injection",
-                    "lanlan_name": lanlan_name,
-                    "method": "text_response",
-                    "speech_id": claimed_speech_id,
-                    "audio_sent": False,
-                    "voice_source": voice_source,
-                    **diag,
-                }
-            method = "text_response"
-            response = {
-                "ok": True,
-                "lanlan_name": lanlan_name,
-                "method": method,
-                "bytes": len(text),
-                "speech_id": claimed_speech_id,
-                "audio_sent": True,
-                "voice_source": voice_source,
-                **diag,
-            }
-    except Exception as e:
-        logger.warning("🎮 Realtime 台词发声请求失败: game=%s lanlan=%s err=%s", game_type, lanlan_name, e)
-        return {"ok": False, "reason": f"speak_failed: {e}", "lanlan_name": lanlan_name}
-    finally:
-        if restore_qwen_instructions:
-            try:
-                if _get_realtime_active_instructions(session) == temporary_qwen_instructions:
-                    await _set_realtime_instructions(session, previous_qwen_instructions)
-                else:
-                    logger.info("🎮 Realtime 游戏台词临时指令已被后续上下文覆盖，跳过恢复")
-            except Exception as e:
-                logger.warning("🎮 Realtime 游戏台词临时指令恢复失败: game=%s lanlan=%s err=%s", game_type, lanlan_name, e)
-        if speech_lock_acquired:
-            try:
-                speech_lock.release()
-            except RuntimeError:
-                pass
-
-    logger.info(
-        "🎮 游戏语音经原流水线输出: game=%s lanlan=%s method=%s bytes=%d line=%s",
-        game_type,
-        lanlan_name,
-        method,
-        int(response.get("bytes") or 0),
-        line[:60],
-    )
-    return response
 
 
 @router.post("/{game_type}/end")
