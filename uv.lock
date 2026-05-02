@@ -1302,7 +1302,6 @@ wheels = [
 
 [[package]]
 name = "n-e-k-o"
-version = "1.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "anthropic" },
@@ -1391,7 +1390,7 @@ requires-dist = [
     { name = "py-cpuinfo", specifier = ">=9.0.0" },
     { name = "pyautogui" },
     { name = "pygetwindow", marker = "sys_platform == 'win32'" },
-    { name = "pyncm-async", specifier = "==1.8.1" },
+    { name = "pyncm-async", path = "deps/pyncm_async-1.8.1-py3-none-any.whl" },
     { name = "pyobjc", marker = "sys_platform == 'darwin'" },
     { name = "pyrnnoise", specifier = ">=0.4.3" },
     { name = "pytesseract" },
@@ -1922,14 +1921,16 @@ sdist = { url = "https://files.pythonhosted.org/packages/7d/ff/4c6f31a4f08979f12
 [[package]]
 name = "pyncm-async"
 version = "1.8.1"
-source = { registry = "https://pypi.org/simple" }
+source = { path = "deps/pyncm_async-1.8.1-py3-none-any.whl" }
 dependencies = [
     { name = "httpx" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/24/ed/18433cc83c09cb434cf2f3019dbceb6a3a38d20bde95912a98f6e9da5caa/pyncm_async-1.8.1.tar.gz", hash = "sha256:9b767ebb44bc0beb3dcc9fb96cb42aae1fbaf0c945c4c2b5b7e14d62f2c4b8a4", size = 41133, upload-time = "2025-10-18T08:48:59.764Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/d1/b4/5a6d7ba67cc202267f71ea0285120f863ada03aa980df480ab58e3a18ef6/pyncm_async-1.8.1-py3-none-any.whl", hash = "sha256:f0a5247c743ed4dae009d9a8ff330bd5a9f2a0e4800c5cbef459450d095d66c0", size = 46933, upload-time = "2025-10-18T08:48:58.65Z" },
+    { filename = "pyncm_async-1.8.1-py3-none-any.whl", hash = "sha256:f0a5247c743ed4dae009d9a8ff330bd5a9f2a0e4800c5cbef459450d095d66c0" },
 ]
+
+[package.metadata]
+requires-dist = [{ name = "httpx" }]
 
 [[package]]
 name = "pyobjc"
