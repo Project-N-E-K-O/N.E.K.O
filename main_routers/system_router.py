@@ -1196,7 +1196,7 @@ def _infer_emotion_from_text(text):
     if angry_attack_hits:
         scores["angry"] += angry_attack_hits * 2
     if happy_playful_hits and not sad_vulnerable_hits and not angry_attack_hits:
-        scores["happy"] += 1
+        scores["happy"] += happy_playful_hits * 2
     if sad_vulnerable_hits and happy_playful_hits:
         # 撒娇外壳下的委屈/想哭，优先视为 sad 而不是 happy
         scores["sad"] += 1
