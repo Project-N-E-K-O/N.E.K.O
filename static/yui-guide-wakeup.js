@@ -25,10 +25,10 @@
         bodyAngleX: 'ParamBodyAngleX',
         bodyAngleY: 'ParamBodyAngleY',
         bodyAngleZ: 'ParamBodyAngleZ',
-        yuiRightWaveSwitch: 'Param75',
-        yuiRightForearmAnim: 'Param90',
-        yuiRightHandAnim: 'Param92',
-        yuiRightHandWave: 'Param95'
+        yuiRightWaveSwitch: 'Param75', // right-arm wave enable
+        yuiRightForearmAnim: 'Param90', // right forearm animation
+        yuiRightHandAnim: 'Param92', // right hand animation
+        yuiRightHandWave: 'Param95' // right hand wave
     });
 
     function shouldReduceMotion() {
@@ -193,6 +193,8 @@
                 }
             } catch (_) {}
             if (!Number.isFinite(min)) {
+                // Yui-specific wave params fall back to the generic range here;
+                // computed wave values are normalized to [0, 1] before writeParam clamps again.
                 min = id.indexOf('EyeBall') >= 0 ? -1 : (id.indexOf('Eye') >= 0 ? 0 : -30);
             }
             if (!Number.isFinite(max)) {
