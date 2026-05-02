@@ -190,6 +190,14 @@ def _extract_methods(call: ast.Call, decorator_method: str) -> frozenset[str]:
         for elt in kw.value.elts:
             if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
                 out.add(elt.value.upper())
+            else:
+                # Mixed static/dynamic list — e.g. ``methods=["GET", SOME_CONST]``.
+                # Returning the partial set would let a sibling that only covers
+                # the static methods (e.g. an explicit GET sibling) falsely
+                # exempt the trailing-slash decorator while the dynamic method
+                # remains uncovered. Fail closed. Reported by CodeRabbit on
+                # PR #1082.
+                return frozenset()
         return frozenset(out)
     return _API_ROUTE_DEFAULT_METHODS
 
@@ -405,9 +413,14 @@ def main(argv: list[str] | None = None) -> int:
     targets = [Path(p) if Path(p).is_absolute() else REPO_ROOT / p for p in raw_paths]
 
     total = 0
+    parse_failures = 0
     for file in _iter_python_files(targets):
         tree = _parse_file(file)
         if tree is None:
+            # Read failure / SyntaxError. Don't silently skip — that's
+            # fail-open (the file might have contained the very violation
+            # we exist to catch). Reported by CodeRabbit on PR #1082.
+            parse_failures += 1
             continue
         for lineno, col, msg in check_file(file, tree):
             rel = file.relative_to(REPO_ROOT) if file.is_relative_to(REPO_ROOT) else file
@@ -425,6 +438,15 @@ def main(argv: list[str] | None = None) -> int:
             "characters_router.py docstring for the full write-up.",
             file=sys.stderr,
         )
+    if parse_failures:
+        print(
+            f"\n{parse_failures} file(s) could not be parsed and were skipped — "
+            "fix the syntax/encoding errors above before re-running. The lint "
+            "exits non-zero in this case to avoid silently passing files it "
+            "didn't actually scan.",
+            file=sys.stderr,
+        )
+    if total or parse_failures:
         return 1
     return 0
 

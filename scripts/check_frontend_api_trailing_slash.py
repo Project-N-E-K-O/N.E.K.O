@@ -97,15 +97,20 @@ SCAN_SUFFIXES = {".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx", ".vue", ".html", 
 
 CODE = "API_TRAILING_SLASH"
 
-# Match an /api/... string literal whose final char before the closing quote
-# is '/'. Three quote variants. Capture the literal so we can suggest a fix
-# and so we can sniff what comes after the close-quote (concat → false alarm).
+# Match an ``/api/...`` string literal. Three quote variants. We capture
+# the path part separately from any optional ``?query`` / ``#fragment``
+# tail so the violation check can ask "did the URL PATH end with '/'?",
+# which is the right question — Starlette's 307 fires on path-vs-route
+# mismatch, query string is irrelevant. Reported by Codex on PR #1082:
+# the previous regex hard-coded ``/<close-quote>`` and silently missed
+# ``fetch('/api/foo/?x=1')`` even though it still 307s.
 #
-# We require at least one path segment after ``/api/`` (``[^"'`+\s]+``) to
-# rule out the base ``/api/`` prefix and to keep the regex from matching
-# across line breaks or expression boundaries.
+# Path segment chars: anything except quote, ``+`` (concat continuation
+# heuristic), whitespace, ``?`` and ``#`` (those start the qf tail).
+# Slash IS allowed in path so multi-segment URLs match. Require at least
+# one char after ``/api/`` to rule out the bare prefix.
 _LITERAL_RE = re.compile(
-    r"""(?P<quote>['"`])/api/(?P<rest>[^'"`+\s]+)/(?P=quote)""",
+    r"""(?P<quote>['"`])/api/(?P<urlpath>[^'"`+\s?#]+)(?P<qf>[?#][^'"`+\s]*)?(?P=quote)""",
 )
 
 # After the closing quote, what comes next? If the next non-whitespace token
@@ -168,6 +173,13 @@ def _check_text(source: str) -> Iterator[tuple[int, int, str, str]]:
         return lo + 1, pos - line_starts[lo] + 1
 
     for m in _LITERAL_RE.finditer(source):
+        urlpath = m.group("urlpath")
+        # The actual violation check: did the URL **path** end with '/'?
+        # The query/fragment tail (qf) is irrelevant — Starlette's 307
+        # fires on path-vs-route mismatch, query string isn't part of it.
+        if not urlpath.endswith("/"):
+            continue
+
         # Skip if this line carries a noqa marker for this code.
         line_no, col = _locate(m.start())
         line_end_idx = source.find("\n", m.start())
@@ -188,32 +200,38 @@ def _check_text(source: str) -> Iterator[tuple[int, int, str, str]]:
         # won't match those at all (they use ``${`` mid-literal, the
         # closing-quote check fails). So no extra branch needed here.
 
-        rest = m.group("rest")
-        suggestion = f"/api/{rest}"
+        qf = m.group("qf") or ""
+        suggestion = f"/api/{urlpath.rstrip('/')}{qf}"
         literal = m.group(0)
         yield line_no, col, literal, suggestion
+
+
+class _ReadFailed(Exception):
+    """Raised by check_file when a file can't be read; main() turns this
+    into a non-zero exit so a read failure doesn't silently pass the lint
+    (fail-closed). Reported by CodeRabbit on PR #1082."""
 
 
 def check_file(path: Path) -> list[tuple[int, int, str]]:
     try:
         source = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as e:
-        print(f"{path}: skipped — {e}", file=sys.stderr)
-        return []
+        print(f"{path}: read failed — {e}", file=sys.stderr)
+        raise _ReadFailed(str(path)) from e
     out: list[tuple[int, int, str]] = []
     for lineno, col, literal, suggestion in _check_text(source):
         out.append(
             (
                 lineno,
                 col,
-                f"URL literal {literal} ends with '/'. Drop the trailing slash "
-                f"(e.g. {suggestion!r}). Project convention: every frontend "
-                "API call must match the backend's no-trailing-slash route — "
-                "see .agent/rules/neko-guide.md (§'API URL 末尾不带斜杠') and "
-                "docs/contributing/code-style.md. If this is a prefix builder "
-                "that gets a segment appended, write it as a template literal "
-                "(e.g. `/api/foo/${id}`) or string-concat (e.g. '/api/foo/' + "
-                "id) so the lint can recognise it.",
+                f"URL literal {literal} has a trailing-slash path component. "
+                f"Drop it (e.g. {suggestion!r}). Project convention: every "
+                "frontend API call must match the backend's no-trailing-slash "
+                "route — see .agent/rules/neko-guide.md (§'API URL 末尾不带斜杠') "
+                "and docs/contributing/code-style.md. If this is a prefix "
+                "builder that gets a segment appended, write it as a template "
+                "literal (e.g. `/api/foo/${id}`) or string-concat (e.g. "
+                "'/api/foo/' + id) so the lint can recognise it.",
             )
         )
     return out
@@ -234,8 +252,14 @@ def main(argv: list[str] | None = None) -> int:
     targets = [Path(p) if Path(p).is_absolute() else REPO_ROOT / p for p in raw_paths]
 
     total = 0
+    read_failures = 0
     for file in _iter_source_files(targets):
-        for lineno, col, msg in check_file(file):
+        try:
+            results = check_file(file)
+        except _ReadFailed:
+            read_failures += 1
+            continue
+        for lineno, col, msg in results:
             rel = file.relative_to(REPO_ROOT) if file.is_relative_to(REPO_ROOT) else file
             print(f"{rel}:{lineno}:{col}  {CODE}  {msg}")
             total += 1
@@ -251,6 +275,15 @@ def main(argv: list[str] | None = None) -> int:
             "docs/contributing/code-style.md.",
             file=sys.stderr,
         )
+    if read_failures:
+        print(
+            f"\n{read_failures} file(s) could not be read and were skipped — "
+            "fix the encoding/permission errors above before re-running. The "
+            "lint exits non-zero in this case to avoid silently passing files "
+            "it didn't actually scan.",
+            file=sys.stderr,
+        )
+    if total or read_failures:
         return 1
     return 0
 
