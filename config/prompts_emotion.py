@@ -28,7 +28,7 @@ OUTWARD_EMOTION_ANALYSIS_PROMPT = {
 
 只返回 JSON，不要附加任何解释文本。""",
 
-    'en': """你是一个情感分析专家。Identify the single most dominant and outward emotion in the input text and return JSON only: {"emotion": "emotion_type", "confidence": confidence}.
+    'en': """You are an emotion analysis expert. Identify the single most dominant and outward emotion in the input text and return JSON only: {"emotion": "emotion_type", "confidence": confidence}.
 
 Allowed emotions only:
 - happy: joyful, excited, affectionate, playful, cute, delighted, warm
@@ -49,7 +49,7 @@ Rules:
 
 Return JSON only, with no explanation.""",
 
-    'ja': """你是一个情感分析专家。入力文の中で最も支配的で外に出ている感情を1つだけ選び、JSONのみで返してください：{"emotion": "emotion_type", "confidence": confidence}。
+    'ja': """あなたは感情分析の専門家です。入力文の中で最も支配的で外に出ている感情を1つだけ選び、JSONのみで返してください：{"emotion": "emotion_type", "confidence": confidence}。
 
 使用できる感情は次の5つのみです：
 - happy：喜ぶ、嬉しい、楽しい、わくわく、幸せ、かわいい、甘える
@@ -70,7 +70,7 @@ Return JSON only, with no explanation.""",
 
 JSONのみを返し、説明文は付けないでください。""",
 
-    'ko': """你是一个情感分析专家。입력 텍스트에서 가장 지배적이고 겉으로 드러나는 감정 하나만 고르고 JSON만 반환하세요: {"emotion": "emotion_type", "confidence": confidence}.
+    'ko': """당신은 감정 분석 전문가입니다. 입력 텍스트에서 가장 지배적이고 겉으로 드러나는 감정 하나만 고르고 JSON만 반환하세요: {"emotion": "emotion_type", "confidence": confidence}.
 
 허용되는 감정은 다음 다섯 가지뿐입니다:
 - happy: 행복, 즐거움, 기쁨, 신남, 설렘, 애정, 귀여움
@@ -91,7 +91,7 @@ JSONのみを返し、説明文は付けないでください。""",
 
 설명 없이 JSON만 반환하세요.""",
 
-    'ru': """你是一个情感分析专家。Определите одну наиболее доминирующую и внешне выраженную эмоцию во входном тексте и верните только JSON: {"emotion": "emotion_type", "confidence": confidence}.
+    'ru': """Вы — эксперт по анализу эмоций. Определите одну наиболее доминирующую и внешне выраженную эмоцию во входном тексте и верните только JSON: {"emotion": "emotion_type", "confidence": confidence}.
 
 Допустимы только 5 эмоций:
 - happy: радость, счастье, веселье, восторг, тёплое чувство, игривость, умиление
@@ -214,6 +214,10 @@ HEURISTIC_NEGATION_TOKENS_BY_LANG = {
 # 又不可或缺；只要它紧邻情绪词（如 `不开心 / 不太烦`）就识别为真否定。
 HEURISTIC_TIGHT_NEGATION_TOKENS_BY_LANG = {
     'zh': ('不', '别', '別', '没', '沒', '未', '勿', '莫'),
+    # ko: 韩语口语里 `안좋아 / 안슬퍼 / 안화나 / 못좋아` 这种句中连写否定常见。
+    # 单字 `안/못` 也会出现在 `안녕/안내/안전/안경/못이` 等非否定词组里，所以走紧凑
+    # lookback：仅在命中关键词紧邻前若干字符内才算否定。
+    'ko': ('안', '못'),
 }
 
 # 让步/转折连词：window 内出现这些词时，词后才算与命中关键词同小句的前文。
