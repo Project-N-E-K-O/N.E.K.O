@@ -223,6 +223,40 @@ def test_empty_llm_output_falls_through_to_white_review(tmp_path):
     assert isinstance(final[0], SystemMessage) and final[0].content == memo
 
 
+def test_only_system_no_dialogue_falls_through_to_white_review(tmp_path):
+    """LLM 只返 system 没返任何对话 ≡ 返空列表（语义上"整段对话都删"），
+    应走白 review。
+
+    Regression：normalize 不能把这种坏输出"修正"成 [SystemMessage]，否则
+    长度=1 绕过 take_count==0 白 review 闸门，对话区被擦光只剩 memo
+    （Codex P1）。
+    """
+    memo = "先前对话的备忘录: original."
+    snapshot = [
+        SystemMessage(content=memo),
+        HumanMessage(content="hi 1"),
+        AIMessage(content="ai 1"),
+        HumanMessage(content="hi 2"),
+        AIMessage(content="ai 2"),
+    ]
+    on_disk_before = list(snapshot)
+    fake_llm = _FakeLLM([
+        {"role": "SYSTEM_MESSAGE", "content": "memo only, no dialogue"},
+    ])
+    mgr, name, _master = _make_manager(tmp_path, on_disk_before, fake_llm)
+
+    status, fp = _run(mgr.review_history(name, snapshot=list(snapshot)))
+
+    assert status == "white", f"只返 system → 应走 white review，实际 {status}"
+    assert fp is None
+    # 磁盘原样不动
+    final = _read_disk(mgr.log_file_path[name])
+    assert len(final) == len(on_disk_before)
+    assert isinstance(final[0], SystemMessage) and final[0].content == memo
+    # 对话区原封不动
+    assert [type(m).__name__ for m in final[1:]] == ["HumanMessage", "AIMessage", "HumanMessage", "AIMessage"]
+
+
 def test_memo_promoted_when_llm_misplaces_it_in_middle(tmp_path):
     """LLM hallucinates by putting SystemMessage at index 1 instead of 0.
     Expect: it gets promoted to head of corrected_messages."""

@@ -695,8 +695,15 @@ class CompressedRecentHistoryManager:
                 ):
                     sys_msgs = [m for m in corrected_messages if isinstance(m, SystemMessage)]
                     others = [m for m in corrected_messages if not isinstance(m, SystemMessage)]
-                    head = sys_msgs[0] if sys_msgs else snapshot[0]
-                    corrected_messages = [head] + others
+                    if not others:
+                        # LLM 只返 system、没返任何对话 ≡ "整段对话都删"语义信号，
+                        # 跟返空列表等价，应走白 review。重置成空让下面 take_count==0
+                        # 闸门接管；不然 normalize 会塞一条 SystemMessage 进 corrected，
+                        # 长度变 1 绕过闸门，对话区被擦光只剩 memo。
+                        corrected_messages = []
+                    else:
+                        head = sys_msgs[0] if sys_msgs else snapshot[0]
+                        corrected_messages = [head] + others
 
                 # ── Phase C 关键：基于 snapshot 算 capacity 做尾部对齐替换 ──
                 current = await self.aget_recent_history(lanlan_name)
