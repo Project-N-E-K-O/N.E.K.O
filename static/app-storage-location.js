@@ -2129,15 +2129,17 @@
         window.addEventListener('localechange', handleLocaleChange);
     }
 
-    async function fetchBootstrap() {
-        // 延迟显示 loading overlay，避免请求很快完成时用户看到闪屏
+    async function fetchBootstrap(flowStartTime) {
+        // 延迟显示 loading overlay，避免从状态确认到 bootstrap 请求整体很快完成时闪屏
+        var elapsedTime = Date.now() - flowStartTime;
+        var remainingDelay = Math.max(0, 150 - elapsedTime);
         var showTimer = setTimeout(function () {
             setPhase('loading');
             setLoadingCopy(
                 translate('storage.loadingTitle', '正在确认存储布局状态'),
                 translate('storage.loadingFetchBootstrapSubtitle', '正在准备存储位置选择页面。')
             );
-        }, 150);
+        }, remainingDelay);
         try {
             var response = await fetch('/api/storage/location/bootstrap', {
                 cache: 'no-store',
@@ -2178,6 +2180,7 @@
         buildModalDom();
         attachLocaleListener();
         // 延迟显示 loading overlay，避免 waitForSystemStatus 很快完成时闪屏
+        var flowStartTime = Date.now();
         var showTimer = setTimeout(function () {
             setPhase('loading');
             setLoadingCopy(
@@ -2199,7 +2202,7 @@
                 return;
             }
 
-            await fetchBootstrap();
+            await fetchBootstrap(flowStartTime);
         } catch (error) {
             clearTimeout(showTimer);
             console.warn('[storage-location] sentinel init failed', error);
