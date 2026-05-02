@@ -178,7 +178,7 @@ Example output:
 # ── Open-thread semantic detection (emotion-tier) ───────────────────
 
 OPEN_THREADS_PROMPTS: dict[str, str] = {
-    'zh': """你是对话回顾助手。看下面最近的对话，识别"被提起但还没收尾"的话题——比如 AI 答应过但还没做的事、用户说一半被打断没说完的事、双方约定但没跟进的细节。
+    'zh': """你是对话回顾助手。看下面最近的对话，识别"被提起但还没收尾"的话题——比如 AI 答应过但还没做的事、用户说一半被打断没说完的事、用户讲到一半的故事或心情没说到结局。
 
 ======以下为最近对话（按时间顺序）======
 {conversation}
@@ -191,7 +191,7 @@ OPEN_THREADS_PROMPTS: dict[str, str] = {
 
 算 hanging（应报告）：
 - 用户说"那个 bug 啊……"被打断，之后没回到这个话题
-- 双方约好"明天接着聊 X"，但 X 没再出现
+- 用户讲到一半的故事或心情停在悬念上，没说到结局，AI 也没追问后续
 - 用户同时表达了两个并列的需求 / 矛盾的心情，AI 只接住其中一边，另一边没人回应
 
 不算 hanging（应忽略）：
@@ -202,7 +202,7 @@ OPEN_THREADS_PROMPTS: dict[str, str] = {
 示例 A——对话顺利结束、互道晚安 → `{{"open_threads": []}}`
 示例 B——用户的另一半诉求被晾在一边 → `{{"open_threads": ["用户说想吃顿好的又想减肥，AI 只顺着减肥那条线接了下去——'吃点好的'被晾在一边没人回应"]}}`""",
 
-    'en': """You are a conversation review assistant. Look at the recent conversation below and identify topics that were "raised but not closed" — promises the AI made but hasn't fulfilled, user thoughts cut off mid-sentence, plans agreed but not followed up.
+    'en': """You are a conversation review assistant. Look at the recent conversation below and identify topics that were "raised but not closed" — promises the AI made but hasn't fulfilled, user thoughts cut off mid-sentence, a story or feeling the user started telling but never finished.
 
 ======Below is Recent conversation (chronological)======
 {conversation}
@@ -215,7 +215,7 @@ Output strict JSON (no markdown fences):
 
 Counts as hanging (report):
 - User said "about that bug…" and got interrupted, never came back to it
-- Both agreed "let's continue X tomorrow" but X never reappeared
+- User started telling a story or sharing something personal, stopped on a cliffhanger / mid-arc, never reached the punchline, and AI didn't ask for the rest
 - User voiced two parallel needs / a mixed feeling, but AI only picked up one side and left the other unaddressed
 
 Does NOT count (ignore):
@@ -226,7 +226,7 @@ Does NOT count (ignore):
 Example A — conversation wraps cleanly, both say goodnight → `{{"open_threads": []}}`
 Example B — half of the user's request got left dangling → `{{"open_threads": ["User said they wanted a nice dinner but also to lose weight; AI only picked up the diet thread, leaving 'something nice for dinner' with nobody addressing it"]}}`""",
 
-    'ja': """あなたは会話レビュー助手です。下の最近の会話を見て、「持ち出されたが収まっていない」話題を特定してください。例：AIが約束したがまだ実行していないこと、ユーザーが言いかけて中断したまま戻っていないこと、双方で合意したのに追いかけていない詳細など。
+    'ja': """あなたは会話レビュー助手です。下の最近の会話を見て、「持ち出されたが収まっていない」話題を特定してください。例：AIが約束したがまだ実行していないこと、ユーザーが言いかけて中断したまま戻っていないこと、ユーザーが話し始めた話や気持ちが結末まで行かずに終わっていることなど。
 
 ======以下は最近の会話（時系列）======
 {conversation}
@@ -239,7 +239,7 @@ Example B — half of the user's request got left dangling → `{{"open_threads"
 
 該当する（報告）：
 - ユーザーが「さっきのバグ……」と言いかけて遮られ、戻ってきていない
-- 「明日続きを話そう」と合意したのに、その話題が再び現れない
+- ユーザーが面白い話や気持ちを語り始めて途中で止まり、結末／落ちまで行かず、AIも続きを聞かなかった
 - ユーザーが二つの並ぶ要望／相反する気持ちを口にしたのに、AIが片方しか拾わず、もう片方が放置された
 
 該当しない（無視）：
@@ -250,7 +250,7 @@ Example B — half of the user's request got left dangling → `{{"open_threads"
 例A——会話がきれいに収まり、おやすみで終わる → `{{"open_threads": []}}`
 例B——ユーザーの片方の要望が放置された → `{{"open_threads": ["ユーザーが『今夜は美味しいものを食べたい、でもダイエットもしたい』と言ったのに、AIはダイエットの方だけ拾い、『美味しいもの』の側は誰も応えないまま放置された"]}}`""",
 
-    'ko': """당신은 대화 검토 도우미입니다. 아래 최근 대화를 보고 "꺼냈지만 마무리되지 않은" 화제를 식별하세요. 예: AI가 약속했지만 아직 안 한 일, 사용자가 말을 꺼내다가 끊긴 채 돌아오지 않은 것, 양쪽이 합의했지만 후속하지 않은 세부 사항 등.
+    'ko': """당신은 대화 검토 도우미입니다. 아래 최근 대화를 보고 "꺼냈지만 마무리되지 않은" 화제를 식별하세요. 예: AI가 약속했지만 아직 안 한 일, 사용자가 말을 꺼내다가 끊긴 채 돌아오지 않은 것, 사용자가 꺼낸 이야기나 마음이 결말까지 가지 않고 도중에 멈춘 것 등.
 
 ======아래는 최근 대화 (시간순)======
 {conversation}
@@ -263,7 +263,7 @@ Example B — half of the user's request got left dangling → `{{"open_threads"
 
 해당함 (보고):
 - 사용자가 "아까 그 버그…" 하다가 끊겨 돌아오지 못함
-- "내일 X 이어서 이야기하자"고 합의했지만 X가 다시 등장하지 않음
+- 사용자가 재미있는 이야기나 마음을 꺼냈다가 결말 / 마무리까지 가지 않은 채 멈췄고, AI도 뒷얘기를 물어보지 않음
 - 사용자가 두 가지 병렬된 요구 / 상반된 감정을 동시에 말했는데, AI가 한쪽만 받아주고 다른 쪽은 아무도 응하지 않은 채 남음
 
 해당 안 함 (무시):
@@ -274,7 +274,7 @@ Example B — half of the user's request got left dangling → `{{"open_threads"
 예시 A — 대화가 깔끔히 마무리되고 잘 자라며 끝남 → `{{"open_threads": []}}`
 예시 B — 사용자 요구의 한쪽이 방치됨 → `{{"open_threads": ["사용자가 '오늘 저녁 맛있는 거 먹고 싶지만 다이어트도 하고 싶다'고 했는데, AI가 다이어트 쪽만 받아주고 '맛있는 거' 쪽은 아무도 응하지 않은 채 방치됨"]}}`""",
 
-    'ru': """Вы — помощник по обзору разговора. Просмотрите недавний разговор ниже и выявите темы, которые «подняли, но не закрыли»: обещания AI, ещё не выполненные; мысли пользователя, оборвавшиеся на полуслове и не возобновлённые; согласованные планы без продолжения.
+    'ru': """Вы — помощник по обзору разговора. Просмотрите недавний разговор ниже и выявите темы, которые «подняли, но не закрыли»: обещания AI, ещё не выполненные; мысли пользователя, оборвавшиеся на полуслове и не возобновлённые; история или переживание, которое пользователь начал рассказывать, но так и не довёл до конца.
 
 ======Ниже Недавний разговор (хронология)======
 {conversation}
@@ -287,7 +287,7 @@ Example B — half of the user's request got left dangling → `{{"open_threads"
 
 Считается «висящим» (сообщать):
 - Пользователь начал «насчёт того бага…» и был прерван, к теме не возвращались
-- Обе стороны договорились «продолжим X завтра», но X больше не всплывал
+- Пользователь начал рассказывать историю или делиться переживанием, остановился, не дойдя до развязки, и AI не спросил, чем закончилось
 - Пользователь высказал два параллельных желания / смешанное чувство, а AI подхватил только одну сторону, оставив другую без ответа
 
 НЕ считается (игнорировать):
