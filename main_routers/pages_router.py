@@ -3,6 +3,14 @@
 Pages Router
 
 Handles HTML page rendering endpoints.
+
+URL convention: routes declared WITHOUT trailing slash. The literal root
+``@router.get("/")`` is the only legitimate trailing-slash route in the entire
+codebase (it serves ``index.html``); the lint exempts it explicitly. Every
+other page route uses ``@router.get('/voice_clone')``, ``@router.get('/api_key')``,
+etc. See ``main_routers/characters_router.py`` docstring or
+``.agent/rules/neko-guide.md`` (§"API URL 末尾不带斜杠") for the rationale;
+enforced by ``scripts/check_api_trailing_slash.py``.
 """
 
 import time
