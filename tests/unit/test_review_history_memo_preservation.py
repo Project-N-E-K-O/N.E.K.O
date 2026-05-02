@@ -193,6 +193,36 @@ def test_memo_restored_when_llm_hallucinates_delete(tmp_path):
     assert final[0].content == memo, "restored memo should be original (not LLM's omission)"
 
 
+def test_empty_llm_output_falls_through_to_white_review(tmp_path):
+    """LLM 返回空 corrected_dialogue 是"整段都删"的语义信号，原设计
+    在 take_count == 0 处按 white review 处理（不写盘、不更新 fingerprint）。
+
+    Regression：normalize 兜底必须在 corrected_messages 非空时才介入，
+    否则会把空列表强行补成 [snapshot[0]]，绕过白 review 闸门把对话区
+    擦掉只剩 memo（CodeRabbit Critical）。
+    """
+    memo = "先前对话的备忘录: original."
+    snapshot = [
+        SystemMessage(content=memo),
+        HumanMessage(content="hi 1"),
+        AIMessage(content="ai 1"),
+        HumanMessage(content="hi 2"),
+        AIMessage(content="ai 2"),
+    ]
+    on_disk_before = list(snapshot)
+    fake_llm = _FakeLLM([])  # LLM 返回空
+    mgr, name, _master = _make_manager(tmp_path, on_disk_before, fake_llm)
+
+    status, fp = _run(mgr.review_history(name, snapshot=list(snapshot)))
+
+    assert status == "white", f"空 corrected → 应走 white review，实际 {status}"
+    assert fp is None
+    # 磁盘内容不动
+    final = _read_disk(mgr.log_file_path[name])
+    assert len(final) == len(on_disk_before)
+    assert isinstance(final[0], SystemMessage) and final[0].content == memo
+
+
 def test_memo_promoted_when_llm_misplaces_it_in_middle(tmp_path):
     """LLM hallucinates by putting SystemMessage at index 1 instead of 0.
     Expect: it gets promoted to head of corrected_messages."""

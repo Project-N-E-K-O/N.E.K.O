@@ -684,7 +684,15 @@ class CompressedRecentHistoryManager:
                 # 不规范的话头部 memo 边界会被破，下游 prompt 拼装会拿到错位的
                 # system 行（甚至中段 SystemMessage 跟下游 compress 的"alien stop"
                 # 不变量打架）。
-                if snapshot and isinstance(snapshot[0], SystemMessage):
+                # 注意：必须 gate 在 corrected_messages 非空——LLM 返空列表是
+                # "整段都删"的语义信号，下面 take_count == 0 那条会按白 review
+                # 处理；这里塞 snapshot[0] 进去会绕过白 review 闸门、把对话区
+                # 全擦掉只剩 memo。
+                if (
+                    corrected_messages
+                    and snapshot
+                    and isinstance(snapshot[0], SystemMessage)
+                ):
                     sys_msgs = [m for m in corrected_messages if isinstance(m, SystemMessage)]
                     others = [m for m in corrected_messages if not isinstance(m, SystemMessage)]
                     head = sys_msgs[0] if sys_msgs else snapshot[0]
