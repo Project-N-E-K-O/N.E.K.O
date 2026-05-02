@@ -36,14 +36,23 @@ where ``router`` is any name and the HTTP method comes from
 
 Allowed exceptions
 ------------------
-* ``@<thing>.get("/")`` — the literal root page. We have exactly one of
-  these: ``main_routers/pages_router.py`` serving ``index.html``. Allowed
-  globally because the root page IS the slash; there's no no-slash form.
+* ``@router.get("/")`` on a router whose declared ``APIRouter(prefix=...)``
+  is empty — the literal root page. We have exactly one of these:
+  ``main_routers/pages_router.py`` serving ``index.html``. Routers with a
+  non-empty prefix are NOT exempt because ``prefix="/api/foo"`` +
+  ``@router.get("/")`` registers ``/api/foo/`` which IS a trailing-slash
+  route (and triggers the same 307 hazard). Reported by CodeRabbit on
+  PR #1082.
 * **Explicit alias pair** — when the same function carries BOTH
   ``@router.get("/foo")`` and ``@router.get("/foo/")``, the trailing-slash
   one is a deliberate alias. The 307-redirect attack vector is gone (the
   slash form returns 200 directly), so the convention's safety property is
-  preserved. SPA entry points (``/ui`` + ``/ui/``) use this pattern.
+  preserved. SPA entry points (``/ui`` + ``/ui/``) use this pattern. The
+  alias check is **per HTTP method**: a trailing-slash GET needs a sibling
+  no-slash GET (a sibling POST does NOT cover it, because GET callers
+  hitting the no-slash form would still trigger the 307). For
+  ``api_route(..., methods=[...])``, every method in the list must have a
+  matching sibling.
 
 Scope
 -----
@@ -152,28 +161,121 @@ def _extract_path_arg(call: ast.Call) -> tuple[str, int, int] | None:
     return None
 
 
+# Methods that ``api_route(..., methods=[...])`` defaults to when the kwarg
+# is omitted. FastAPI matches Starlette here: GET only.
+_API_ROUTE_DEFAULT_METHODS: frozenset[str] = frozenset({"GET"})
+
+
+def _extract_methods(call: ast.Call, decorator_method: str) -> frozenset[str]:
+    """Return the uppercase HTTP method set the decorator registers.
+
+    For ``@router.get/post/...`` the method is implicit in the attribute
+    name. For ``@router.api_route(..., methods=[...])`` it comes from the
+    ``methods`` kwarg (default GET). For ``@router.websocket(...)`` we use
+    the synthetic name ``WEBSOCKET`` so it never collides with HTTP verbs.
+    """
+    if decorator_method == "websocket":
+        return frozenset({"WEBSOCKET"})
+    if decorator_method != "api_route":
+        return frozenset({decorator_method.upper()})
+    # api_route — read methods=[...] kwarg, default GET (matches FastAPI)
+    for kw in call.keywords:
+        if kw.arg != "methods":
+            continue
+        if not isinstance(kw.value, (ast.List, ast.Tuple, ast.Set)):
+            # Dynamic methods list — give up safely (treat as no method, so
+            # alias-pair check fails and the trailing slash gets flagged).
+            return frozenset()
+        out: set[str] = set()
+        for elt in kw.value.elts:
+            if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
+                out.add(elt.value.upper())
+        return frozenset(out)
+    return _API_ROUTE_DEFAULT_METHODS
+
+
+def _collect_router_prefixes(tree: ast.Module) -> dict[str, str]:
+    """Map each module-level router/app name to its declared ``prefix=``.
+
+    Looks for assignments like::
+
+        router = APIRouter(prefix="/api/foo")
+        router = APIRouter()              # → ""
+        app    = FastAPI()                # → "" (FastAPI has no prefix)
+
+    Used by the ``"/"`` exemption: a literal ``@router.get("/")`` is the
+    legitimate root only when the router has no prefix; otherwise the
+    effective registered path is ``<prefix>/`` which IS a trailing-slash
+    route. Reported by CodeRabbit on PR #1082.
+
+    Anything we can't resolve statically (re-imported router, dynamic
+    construction, etc.) is omitted from the map. The downstream check
+    treats "unknown router" conservatively — the ``"/"`` exemption fires
+    only on a known-empty prefix.
+    """
+    out: dict[str, str] = {}
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        # We only care about single-target Name = Call assignments.
+        if len(node.targets) != 1:
+            continue
+        target = node.targets[0]
+        if not isinstance(target, ast.Name):
+            continue
+        if not isinstance(node.value, ast.Call):
+            continue
+        func = node.value.func
+        ctor = None
+        if isinstance(func, ast.Name):
+            ctor = func.id
+        elif isinstance(func, ast.Attribute):
+            ctor = func.attr
+        if ctor not in ("APIRouter", "FastAPI"):
+            continue
+        prefix = ""
+        for kw in node.value.keywords:
+            if kw.arg == "prefix" and isinstance(kw.value, ast.Constant) and isinstance(kw.value.value, str):
+                prefix = kw.value.value
+                break
+        out[target.id] = prefix
+    return out
+
+
+def _decorator_owner(call: ast.Call) -> str | None:
+    """Return the variable name on the LHS of ``@<name>.<method>(...)``."""
+    if isinstance(call.func, ast.Attribute) and isinstance(call.func.value, ast.Name):
+        return call.func.value.id
+    return None
+
+
 class TrailingSlashChecker(ast.NodeVisitor):
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, router_prefixes: dict[str, str]) -> None:
         self.path = path
+        self.router_prefixes = router_prefixes
         self.violations: list[tuple[int, int, str]] = []
 
     def _visit_decorated(self, node: ast.AST) -> None:
         decos = getattr(node, "decorator_list", []) or []
 
-        # First pass: collect every route-decorator path on this function.
-        # Used to detect explicit alias pairs (``/foo`` + ``/foo/``).
-        sibling_paths: set[str] = set()
+        # First pass: collect every (METHOD, path) pair this function
+        # registers. The alias-pair exemption must match BOTH method and
+        # path — see _is_aliased_safely() below for why a same-path /
+        # different-method "sibling" is not safe.
+        sibling: set[tuple[str, str]] = set()
         for deco in decos:
-            if _is_route_decorator(deco) is None:
+            method_name = _is_route_decorator(deco)
+            if method_name is None:
                 continue
             extracted = _extract_path_arg(deco)
             if extracted is None:
                 continue
-            sibling_paths.add(extracted[0])
+            for m in _extract_methods(deco, method_name):
+                sibling.add((m, extracted[0]))
 
         for deco in decos:
-            method = _is_route_decorator(deco)
-            if method is None:
+            decorator_method = _is_route_decorator(deco)
+            if decorator_method is None:
                 continue
             extracted = _extract_path_arg(deco)
             if extracted is None:
@@ -181,13 +283,28 @@ class TrailingSlashChecker(ast.NodeVisitor):
             route_path, lineno, col = extracted
             if not route_path.endswith("/"):
                 continue
-            # Allow the literal root page — there's no no-slash form.
+            # Allow the literal root page — but ONLY when the owning router
+            # has an empty prefix. ``APIRouter(prefix="/api/foo")`` +
+            # ``@router.get("/")`` registers the effective path
+            # ``/api/foo/`` which IS a trailing-slash route, exactly the
+            # bug this lint exists to catch. Reported by CodeRabbit on
+            # PR #1082. If we can't resolve the owner statically (cross-
+            # module router etc.) be conservative and don't exempt.
             if route_path == "/":
-                continue
-            # Allow if a sibling decorator on the same function explicitly
-            # registers the no-slash form. This makes the slash form a
-            # direct 200 (not a 307), neutralising the reverse-proxy hazard.
-            if route_path.rstrip("/") in sibling_paths:
+                owner = _decorator_owner(deco)
+                if owner is not None and self.router_prefixes.get(owner, None) == "":
+                    continue
+            # Allow ONLY if every method this trailing-slash decorator
+            # registers ALSO has a sibling no-slash decorator for the same
+            # method. Otherwise a caller hitting the no-slash form with an
+            # uncovered method still triggers Starlette's 307 redirect (the
+            # exact bug this lint exists to prevent). Reported by Codex on
+            # PR #1082 — without the per-method check, mixed pairs like
+            # ``@router.get('/foo/')`` + ``@router.post('/foo')`` would slip
+            # through even though ``GET /foo`` still 307s.
+            no_slash = route_path.rstrip("/")
+            methods = _extract_methods(deco, decorator_method)
+            if methods and all((m, no_slash) in sibling for m in methods):
                 continue
             self.violations.append(
                 (
@@ -199,8 +316,10 @@ class TrailingSlashChecker(ast.NodeVisitor):
                     ".agent/rules/neko-guide.md (§'API URL 末尾不带斜杠') "
                     "and main_routers/characters_router.py docstring. If you "
                     "genuinely need both forms, register an explicit alias by "
-                    "stacking @router.get('/foo') above @router.get('/foo/') "
-                    "on the same function.",
+                    "stacking @router.<METHOD>('/foo') above "
+                    "@router.<METHOD>('/foo/') on the same function — and the "
+                    "method must match (a sibling POST won't cover a GET that "
+                    "still 307s).",
                 )
             )
         self.generic_visit(node)
@@ -263,7 +382,7 @@ def _parse_file(path: Path) -> ast.Module | None:
 
 
 def check_file(path: Path, tree: ast.Module) -> list[tuple[int, int, str]]:
-    checker = TrailingSlashChecker(path)
+    checker = TrailingSlashChecker(path, _collect_router_prefixes(tree))
     checker.visit(tree)
     return checker.violations
 
