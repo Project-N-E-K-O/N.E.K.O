@@ -3,7 +3,7 @@ import sys
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -102,7 +102,19 @@ async def test_cloudsave_router_exposes_steam_autocloud_configuration_payload():
 
             cloudsave_router_module = importlib.import_module("main_routers.cloudsave_router")
 
-            summary = await cloudsave_router_module.get_cloudsave_summary()
+            # 这个测试只关心 steam_autocloud 配置，不关心 workshop 状态查询。
+            # 不打 patch 的话 _enrich_cloudsave_payload_with_workshop_status 会调
+            # SimpleNamespace 上不存在的 .Workshop，把 ERROR 喷到日志里。
+            with patch.object(
+                cloudsave_router_module,
+                "get_subscribed_workshop_items",
+                AsyncMock(return_value={"success": True, "items": [], "total": 0}),
+            ), patch.object(
+                cloudsave_router_module,
+                "get_workshop_item_details",
+                AsyncMock(return_value={"success": True, "item": {"publishedFileId": "123456"}}),
+            ):
+                summary = await cloudsave_router_module.get_cloudsave_summary()
             assert summary["sync_backend"] == "steam_auto_cloud"
             assert summary["steam_autocloud"]["backend"] == "steam_auto_cloud"
             assert summary["steam_autocloud"]["app_id"] == "4099310"

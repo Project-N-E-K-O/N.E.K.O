@@ -24,9 +24,11 @@ def _install_fresh_memory_state(tmpdir: str):
 
     mock_cm = MagicMock()
     mock_cm.memory_dir = tmpdir
-    mock_cm.load_characters = MagicMock(
-        return_value={"猫娘": {"小天": {}}, "当前猫娘": "小天"}
-    )
+    _initial_characters = {"猫娘": {"小天": {}}, "当前猫娘": "小天"}
+    mock_cm.load_characters = MagicMock(return_value=_initial_characters)
+    # _replay_pending_outbox awaits the async variant; without an AsyncMock
+    # the bare MagicMock attribute returns a MagicMock that can't be awaited.
+    mock_cm.aload_characters = AsyncMock(return_value=_initial_characters)
     with patch("memory.outbox.get_config_manager", return_value=mock_cm):
         ob = Outbox()
     ob._config_manager = mock_cm
@@ -198,9 +200,9 @@ async def test_replay_scans_disk_for_characters_not_in_config(tmp_path):
     await ob.aappend_pending("小天", OP_EXTRACT_FACTS, {"i": 1})
 
     # 模拟 config 被改成不再包含小天（但磁盘上的 outbox 还在）
-    mock_cm.load_characters = MagicMock(
-        return_value={"猫娘": {}, "当前猫娘": None}
-    )
+    _empty_characters = {"猫娘": {}, "当前猫娘": None}
+    mock_cm.load_characters = MagicMock(return_value=_empty_characters)
+    mock_cm.aload_characters = AsyncMock(return_value=_empty_characters)
 
     calls: list[str] = []
 
