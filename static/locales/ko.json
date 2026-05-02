@@ -527,9 +527,9 @@
         "steamNotRunningMessage": "Steam 클라이언트가 실행되지 않거나 로그인되지 않았습니다.\n\n창작마당 기능을 사용하려면 Steam 클라이언트가 필요합니다:\n1. Steam 클라이언트를 다운로드하여 설치\n2. Steam을 실행하고 계정에 로그인\n3. 이 페이지를 다시 열어주세요",
         "addNewCatgirl": "새 캐릭터 카드 추가",
         "noCardImage": "여기를 클릭하여\n카드를 설정",
-        "searchCharacterCards": "\uce90릭터 카드 검색...",
-        "cardView": "\uce74드 보기",
-        "listView": "\ubaa9록 보기"
+        "searchCharacterCards": "캐릭터 카드 검색...",
+        "cardView": "카드 보기",
+        "listView": "목록 보기"
     },
     "dialogs": {
         "confirmLeave": "휴가 확인",

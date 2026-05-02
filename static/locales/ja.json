@@ -527,9 +527,9 @@
         "steamNotRunningMessage": "Steamクライアントが実行されていないか、ログインしていません。\n\nワークショップ機能にはSteamクライアントが必要です：\n1. Steamクライアントをダウンロードしてインストール\n2. Steamを起動してアカウントにログイン\n3. このページを再度開いてください",
         "addNewCatgirl": "新規キャラを追加",
         "noCardImage": "ここをクリックして\nカードフェイスを設定",
-        "searchCharacterCards": "\u30adャラカードを検索...",
-        "cardView": "\u30abード表示",
-        "listView": "\u30eaスト表示"
+        "searchCharacterCards": "キャラカードを検索...",
+        "cardView": "カード表示",
+        "listView": "リスト表示"
     },
     "dialogs": {
         "confirmLeave": "退出の確認",

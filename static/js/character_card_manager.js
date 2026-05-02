@@ -4614,13 +4614,25 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
         const profile = override && typeof override.profile === 'object' ? override.profile : {};
         const presetId = override && typeof override === 'object' ? String(override.preset_id || '').trim() : '';
         const hasOverride = !!(override && presetId);
+        // 通过 i18n 键获取本地化显示名，回退到 profile 原始值
+        const fallbackName = String(profile['性格原型'] || presetId).trim();
+        const i18nKey = presetId ? 'memory.characterSelection.' + presetId + '.name' : '';
+        var displayName = '';
+        if (hasOverride) {
+            if (typeof window.t === 'function' && i18nKey) {
+                var translated = window.t(i18nKey, fallbackName);
+                displayName = (typeof translated === 'string' && translated && translated !== i18nKey)
+                    ? translated
+                    : fallbackName;
+            } else {
+                displayName = fallbackName;
+            }
+        }
         return {
             hasOverride,
             presetId,
             profile,
-            displayName: hasOverride
-                ? String(profile['性格原型'] || presetId).trim()
-                : '',
+            displayName: displayName,
         };
     }
 

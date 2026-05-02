@@ -527,9 +527,9 @@
         "steamNotRunningMessage": "Steam client is not running or not logged in.\n\nWorkshop features require the Steam client. Please:\n1. Download and install the Steam client\n2. Launch Steam and log in to your account\n3. Reopen this page",
         "addNewCatgirl": "Add New NEKO",
         "noCardImage": "Click here to set\nthe card face",
-        "searchCharacterCards": "\u0053earch character cards...",
-        "cardView": "\u0043ard View",
-        "listView": "\u004cist View"
+        "searchCharacterCards": "Search character cards...",
+        "cardView": "Card View",
+        "listView": "List View"
     },
     "dialogs": {
         "confirmLeave": "Confirm Leave",

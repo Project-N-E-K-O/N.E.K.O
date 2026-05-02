@@ -527,9 +527,9 @@
         "steamNotRunningMessage": "O cliente Steam não está em execução ou não está conectado.\n\nOs recursos do Workshop exigem o cliente Steam. Por favor:\n1. Baixe e instale o cliente Steam\n2. Inicie o Steam e faça login na sua conta\n3. Reabra esta página",
         "addNewCatgirl": "Adicionar novo NEKO",
         "noCardImage": "Clique aqui para\nconfigurar o cartão",
-        "searchCharacterCards": "\u0050esquisar cartões de personagens...",
-        "cardView": "\u0056isualização de cartões",
-        "listView": "\u0056isualização em lista"
+        "searchCharacterCards": "Pesquisar cartões de personagens...",
+        "cardView": "Visualização de cartões",
+        "listView": "Visualização em lista"
     },
     "dialogs": {
         "confirmLeave": "Confirmar licença",

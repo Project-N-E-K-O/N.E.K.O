@@ -527,9 +527,9 @@
         "steamNotRunningMessage": "偵測到Steam用戶端未運行或未登入。\n\n創意工坊功能需要Steam用戶端支持，請：\n1. 下載並安裝Steam用戶端\n2. 啟動Steam並登入您的帳號\n3. 重新開啟此頁面",
         "addNewCatgirl": "新增角色卡",
         "noCardImage": "點擊此處\n設定卡面",
-        "searchCharacterCards": "\u641c尋角色卡...",
-        "cardView": "\u5361片檢視",
-        "listView": "\u5217表檢視"
+        "searchCharacterCards": "搜尋角色卡...",
+        "cardView": "卡片檢視",
+        "listView": "列表檢視"
     },
     "dialogs": {
         "confirmLeave": "確認離開",
