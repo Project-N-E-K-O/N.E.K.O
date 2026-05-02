@@ -38,6 +38,7 @@ from main_logic.tool_calling import (
 )
 from utils.llm_client import AIMessage
 from main_logic.session_state import SessionStateMachine, SessionEvent
+from plugin.core.state import state as _plugin_state
 from utils.preferences import load_global_conversation_settings, aload_global_conversation_settings
 from config import (
     MEMORY_SERVER_PORT,
@@ -1178,6 +1179,46 @@ class LLMSessionManager:
             else:
                 pass  # websocket未连接时忽略
 
+    def _publish_user_utterance_to_plugin_bus(
+        self, text: Optional[str], *, is_voice_source: bool
+    ) -> None:
+        """把一条用户原话推到插件总线的 user-context bucket。
+
+        Plugin 端通过 ``ctx.bus.memory.get(bucket_id=...)`` 读取。会同时写入
+        两个 bucket：``"default"``（与 protocols.py 文档示例一致，全局可读）
+        和 ``self.lanlan_name``（按角色作用域），但若两者撞名则只写一次，
+        避免同一条原话被重复消费。
+
+        Why: 在此之前 ``state.add_user_context_event`` 整条链路是 dead
+        infrastructure —— 服务端、handler、plugin SDK 全都齐全，但没人写入，
+        plugin 永远读到空。这里是用户原话进入系统的第一道关口（语音转录 +
+        文本输入），从这里发布最贴合"用户原话"的语义。
+        """
+        if not isinstance(text, str):
+            return
+        cleaned = text.strip()
+        if not cleaned:
+            return
+        event = {
+            "type": "user_message",
+            "content": cleaned,
+            "lanlan": self.lanlan_name,
+            "is_voice": bool(is_voice_source),
+            "source": "main_logic.core",
+        }
+        # dict.fromkeys 保留顺序的同时去重：lanlan_name == "default" 或为空
+        # 时不会重复写入 default bucket。
+        for bucket in dict.fromkeys(("default", self.lanlan_name)):
+            if not isinstance(bucket, str) or not bucket:
+                continue
+            try:
+                _plugin_state.add_user_context_event(bucket, event)
+            except Exception as exc:
+                logger.warning(
+                    "[%s] publish_user_utterance failed (bucket=%s): %s",
+                    self.lanlan_name, bucket, exc,
+                )
+
     async def handle_input_transcript(self, transcript: str, *, is_voice_source: bool = True):
         """输入转录回调：同步转录文本到消息队列和缓存，并发送到前端显示
 
@@ -1204,6 +1245,11 @@ class LLMSessionManager:
             if transcript.strip():
                 self._activity_tracker.on_user_message(text=transcript)
                 self._session_turn_count += 1
+                # 与 on_user_message 对偶：把"用户原话"推到插件总线 user-context
+                # bucket。文本路径在 _process_stream_data_internal 已自行调用，
+                # 这里只覆盖语音路径，避免 openclaw handoff（is_voice_source=False）
+                # 重复发布。
+                self._publish_user_utterance_to_plugin_bus(transcript, is_voice_source=True)
         else:
             # Non-voice reuse of this method (e.g. openclaw text handoff).
             # Skip activity-tracker hooks entirely — the text-mode entry
@@ -4265,6 +4311,14 @@ class LLMSessionManager:
                     # main_routers/system_router.py），那不算用户活动。
                     # text 进 buffer 给 emotion-tier 用。
                     self._activity_tracker.on_user_message(text=data if isinstance(data, str) else None)
+                    # 与 on_user_message 对偶：把"用户原话"推到插件总线 user-context
+                    # bucket。语音路径在 handle_input_transcript 里发布，这里只覆盖
+                    # 文本路径，避免 openclaw handoff（会再走一次 handle_input_transcript
+                    # 但 is_voice_source=False，不会重复发布）。
+                    self._publish_user_utterance_to_plugin_bus(
+                        data if isinstance(data, str) else None,
+                        is_voice_source=False,
+                    )
 
                     should_handoff, openclaw_messages = await self._should_handoff_text_to_openclaw(data)
                     if should_handoff:
