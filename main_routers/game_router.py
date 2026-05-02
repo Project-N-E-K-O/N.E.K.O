@@ -129,8 +129,8 @@ _SOCCER_MOODS = {"calm", "happy", "angry", "relaxed", "sad", "surprised"}
 _SOCCER_DIFFICULTIES = {"max", "lv2", "lv3", "lv4"}
 _SOCCER_DEFAULT_DIFFICULTIES = ("lv2", "lv3")
 _SOCCER_ANGER_PRESSURE_CAP_WEAK = 8
-_SOCCER_ANGER_PRESSURE_CAP_DEFAULT = 15
-_SOCCER_ANGER_PRESSURE_CAP_STRONG = 30
+_SOCCER_ANGER_PRESSURE_CAP_DEFAULT = 25
+_SOCCER_ANGER_PRESSURE_CAP_STRONG = 50
 _SOCCER_EMOTION_INERTIA = {"low", "medium", "high", "very_high"}
 _SOCCER_GAME_STANCES = {
     "neutral_play",

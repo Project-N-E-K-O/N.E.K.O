@@ -98,8 +98,8 @@ def test_soccer_anger_pressure_cap_applies_only_to_punishing_anger_context():
         },
     }
     event = {
-        "score": {"player": 5, "ai": 16},
-        "scoreDiff": 11,
+        "score": {"player": 5, "ai": 26},
+        "scoreDiff": 21,
         "difficulty": "max",
         "mood": "angry",
         "requestControlReason": True,
@@ -109,7 +109,7 @@ def test_soccer_anger_pressure_cap_applies_only_to_punishing_anger_context():
 
     assert cap["applicable"] is True
     assert cap["reached"] is True
-    assert cap["capGoals"] == 15
+    assert cap["capGoals"] == 25
     assert cap["recommendedDifficulty"] == "lv4"
 
     neutral = {
@@ -151,25 +151,25 @@ def test_soccer_anger_pressure_cap_uses_persona_stamina_bounds():
 
     assert weak_cap["capGoals"] == 8
     assert weak_cap["reached"] is True
-    assert strong_cap["capGoals"] == 30
+    assert strong_cap["capGoals"] == 50
     assert strong_cap["reached"] is False
 
 
 @pytest.mark.unit
 def test_soccer_anger_pressure_cap_clamps_max_control_after_limit():
     event = {
-        "score": {"player": 4, "ai": 16},
-        "scoreDiff": 12,
+        "score": {"player": 4, "ai": 26},
+        "scoreDiff": 22,
         "difficulty": "max",
         "mood": "angry",
         "requestControlReason": True,
         "angerPressureCap": {
             "applicable": True,
             "reached": True,
-            "capGoals": 15,
-            "aiGoals": 16,
+            "capGoals": 25,
+            "aiGoals": 26,
             "playerGoals": 4,
-            "scoreDiff": 12,
+            "scoreDiff": 22,
             "recommendedDifficulty": "lv4",
         },
     }
@@ -193,18 +193,18 @@ def test_soccer_anger_pressure_cap_clamps_max_control_after_limit():
 @pytest.mark.unit
 def test_soccer_anger_pressure_cap_forces_difficulty_when_llm_omits_control():
     event = {
-        "score": {"player": 4, "ai": 16},
-        "scoreDiff": 12,
+        "score": {"player": 4, "ai": 26},
+        "scoreDiff": 22,
         "difficulty": "max",
         "mood": "angry",
         "requestControlReason": True,
         "angerPressureCap": {
             "applicable": True,
             "reached": True,
-            "capGoals": 15,
-            "aiGoals": 16,
+            "capGoals": 25,
+            "aiGoals": 26,
             "playerGoals": 4,
-            "scoreDiff": 12,
+            "scoreDiff": 22,
             "recommendedDifficulty": "lv4",
         },
     }
