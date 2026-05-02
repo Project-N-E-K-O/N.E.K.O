@@ -1017,6 +1017,19 @@ class OmniRealtimeClient:
 
     async def update_session(self, config: Dict[str, Any]) -> None:
         """Update session configuration."""
+        # Mirror the chat-completion chokepoint: catch any unrendered
+        # {placeholder} before the system instruction (nested at provider-
+        # specific paths inside `config`) is shipped over the wire. See
+        # utils/llm_prompt_leak_check.py for rationale.
+        try:
+            from utils import llm_prompt_leak_check
+            llm_prompt_leak_check.check_dict_strings_for_leaks(
+                config, context="OmniRealtimeClient.update_session"
+            )
+        except AssertionError:
+            raise
+        except Exception:
+            pass
         event = {
             "type": "session.update",
             "session": config
