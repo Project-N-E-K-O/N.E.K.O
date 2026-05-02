@@ -1146,8 +1146,12 @@ def _has_heuristic_negation_before(text_value, position):
     return False
 
 
-# 英文 keyword 用 \b 词边界匹配，避免 `happy` 命中 `unhappy`、`surprised` 命中 `unsurprised`
-# 这类反向情绪嵌入。CJK 关键词没有空白词边界概念，仍走子串匹配。
+# 英文 keyword 用 ASCII-only 词边界匹配，避免 `happy` 命中 `unhappy`、`surprised`
+# 命中 `unsurprised` 这类反向情绪嵌入。
+# 注意：不能用 `\b`，因为 Python regex 默认 Unicode 模式下 CJK 也算 \w，
+# 在 mixed-script 文本（如 `好happy啊 / 超annoyed欸`）里 `好` 和 `h` 之间没有
+# word boundary，导致英文 keyword 完全失配。改用前后 ASCII 字母断言：
+# `(?<![a-zA-Z])keyword(?![a-zA-Z])`，CJK / 标点 / 空白都允许作为边界。
 _ASCII_WORD_KEYWORD_RE_CACHE = {}
 
 
@@ -1163,7 +1167,7 @@ def _count_keyword_hits(text_value, keyword):
     if _is_ascii_word_keyword(keyword):
         pattern = _ASCII_WORD_KEYWORD_RE_CACHE.get(keyword)
         if pattern is None:
-            pattern = re.compile(r'\b' + re.escape(keyword) + r'\b')
+            pattern = re.compile(r'(?<![a-zA-Z])' + re.escape(keyword) + r'(?![a-zA-Z])')
             _ASCII_WORD_KEYWORD_RE_CACHE[keyword] = pattern
         hits = 0
         for match in pattern.finditer(text_value):
@@ -1204,7 +1208,10 @@ def _infer_emotion_from_text(text):
     if angry_attack_hits:
         scores["angry"] += angry_attack_hits * 2
     if happy_playful_hits and not sad_vulnerable_hits and not angry_attack_hits:
-        scores["happy"] += happy_playful_hits * 2
+        # playful patterns（哈哈/嘿嘿/嘻嘻/可爱/好耶 等）大量与 happy keyword 重叠，
+        # 重复出现时 keyword 那边已经按命中数累加分数；这里只额外 +1 作为信号 boost，
+        # 避免 `haha haha haha / 哈哈哈哈哈` 类 filler 文本被双倍放大触发 override。
+        scores["happy"] += 1
     if sad_vulnerable_hits and happy_playful_hits:
         # 撒娇外壳下的委屈/想哭，优先视为 sad 而不是 happy
         scores["sad"] += 1
