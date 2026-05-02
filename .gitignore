@@ -69,6 +69,8 @@ data/embedding_models/
 .ruff_cache
 *.code-workspace
 .claude
+.trae/
+plans/
 CLAUDE.md
 /.workbuddy/
 

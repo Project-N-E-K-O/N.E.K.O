@@ -259,10 +259,13 @@ USER_PLUGIN_SYSTEM_PROMPT = {
 }}
 
 非常重要：
+- 只有当用户最新请求明确要求执行插件能力、控制外部服务、查询插件状态/数据，或明确授权插件行动时，才设置 has_task=true。
+- 不要因为插件调用“可能有帮助”、后台 turn_end 分析、普通闲聊、用户未明确授权、或 AI 已经提到某个功能，就主动调用插件。
 - 如果 has_task 和 can_execute 都为 true，entry_id 是必需的。
 - 如果 has_task/can_execute 为 true 时 entry_id 缺失或为 null，响应将被视为不可执行。
 - 严格匹配：plugin_id 和 entry_id 是代码标识符。你必须从上面的可用插件列表中原样复制它们（区分大小写、逐字符匹配）。不要发明、缩写或改写它们。如果找不到完全匹配，设置 can_execute=false。
 - 如果入口有 args(...) 信息，在 plugin_args 中使用那些字段名。只包含 schema 中列出的字段。
+- 当入口 schema 需要用户文本字段（例如 command/message/query/objective）时，必须复制用户最新消息原文；不要翻译、摘要、改写或补全。
 - 如果用户的意图与任何插件的描述功能不明确匹配，设置 has_task=false。
 - 标注了 [KEYWORD MATCH] 的插件已通过关键词预筛，优先考虑这些插件是否匹配用户意图。
 只返回 JSON 对象，不含其他内容。""",
@@ -300,10 +303,13 @@ OUTPUT FORMAT (strict JSON):
 }}
 
 VERY IMPORTANT:
+- Set has_task=true only when the user's latest request explicitly asks to use a plugin capability, control an external service, query plugin status/data, or clearly authorizes plugin action.
+- Do not invoke a plugin just because it might be helpful, because of background turn_end analysis, during casual chat, without explicit user authorization, or because the AI mentioned a feature.
 - If has_task and can_execute are true, entry_id is REQUIRED.
 - If entry_id is missing or null when has_task/can_execute are true, the response will be treated as non-executable.
 - STRICT MATCHING: plugin_id and entry_id are code identifiers. You MUST copy them EXACTLY (case-sensitive, character-for-character) from the AVAILABLE PLUGINS list above. Do NOT invent, abbreviate, or paraphrase them. If you cannot find an exact match, set can_execute=false.
 - If an entry has args(...) info, use those field names in plugin_args. Only include fields listed in the schema.
+- When an entry schema needs a user text field (for example command/message/query/objective), copy the user's latest message verbatim; do not translate, summarize, rewrite, or complete it.
 - If the user's intent does not clearly match any plugin's described functionality, set has_task=false.
 - Plugins marked with [KEYWORD MATCH] have passed keyword pre-screening; prioritize checking these plugins for intent match.
 Return only the JSON object, nothing else.""",
@@ -341,10 +347,13 @@ Return only the JSON object, nothing else.""",
 }}
 
 非常に重要：
+- ユーザーの最新リクエストがプラグイン機能の実行、外部サービスの制御、プラグインの状態/データの照会を明示的に要求している場合、またはプラグインのアクションを明確に許可している場合にのみ、has_task=true を設定してください。
+- プラグイン呼び出しが「役に立つかもしれない」こと、バックグラウンドの turn_end 分析、通常の雑談、ユーザーの明示的な許可がないこと、または AI が何らかの機能に言及したことを理由に、プラグインを能動的に呼び出さないでください。
 - has_task と can_execute が true の場合、entry_id は必須です。
 - has_task/can_execute が true なのに entry_id が欠落または null の場合、レスポンスは実行不可として扱われます。
 - 厳密マッチング：plugin_id と entry_id はコード識別子です。上記の利用可能プラグインリストからそのまま（大文字小文字区別、文字ごと）コピーしてください。発明、省略、言い換えをしないでください。完全一致が見つからない場合は can_execute=false を設定してください。
 - エントリに args(...) 情報がある場合、plugin_args でそのフィールド名を使用してください。schema にリストされたフィールドのみ含めてください。
+- エントリの schema にユーザーテキストフィールド（例: command/message/query/objective）が必要な場合、ユーザーの最新メッセージを逐語的にコピーしてください。翻訳・要約・書き換え・補完は行わないでください。
 - ユーザーの意図がどのプラグインの機能とも明確に一致しない場合、has_task=false を設定してください。
 - [KEYWORD MATCH] とマークされたプラグインはキーワード事前選別を通過しています。これらのプラグインが意図に一致するか優先的に確認してください。
 JSONオブジェクトのみ返してください。""",
@@ -382,10 +391,13 @@ JSONオブジェクトのみ返してください。""",
 }}
 
 매우 중요:
+- 사용자의 최신 요청이 플러그인 기능 실행, 외부 서비스 제어, 플러그인 상태/데이터 조회를 명시적으로 요청하거나 플러그인 작업을 명확히 승인한 경우에만 has_task=true로 설정하세요.
+- 플러그인 호출이 "도움이 될 수도 있다"는 이유, 백그라운드 turn_end 분석, 일반적인 잡담, 사용자의 명시적 승인 부재, 또는 AI가 어떤 기능을 언급했다는 이유만으로 플러그인을 능동적으로 호출하지 마세요.
 - has_task와 can_execute가 true이면 entry_id는 필수입니다.
 - has_task/can_execute가 true인데 entry_id가 누락되거나 null이면 응답은 실행 불가능으로 처리됩니다.
 - 엄격한 매칭: plugin_id와 entry_id는 코드 식별자입니다. 위의 사용 가능한 플러그인 목록에서 정확히(대소문자 구분, 문자 단위) 복사해야 합니다. 만들거나 축약하거나 바꿔 말하지 마세요. 정확한 일치를 찾을 수 없으면 can_execute=false로 설정하세요.
 - 엔트리에 args(...) 정보가 있으면 plugin_args에서 해당 필드 이름을 사용하세요. schema에 나열된 필드만 포함하세요.
+- 엔트리 schema에 사용자 텍스트 필드(예: command/message/query/objective)가 필요한 경우, 사용자의 최신 메시지를 그대로 복사하세요. 번역, 요약, 다시 쓰기, 보완하지 마세요.
 - 사용자의 의도가 어떤 플러그인의 설명된 기능과 명확히 일치하지 않으면 has_task=false로 설정하세요.
 - [KEYWORD MATCH]로 표시된 플러그인은 키워드 사전 선별을 통과했습니다. 이러한 플러그인이 의도와 일치하는지 우선적으로 확인하세요.
 JSON 객체만 반환하세요.""",
@@ -423,10 +435,13 @@ JSON 객체만 반환하세요.""",
 }}
 
 ОЧЕНЬ ВАЖНО:
+- Устанавливайте has_task=true только тогда, когда последний запрос пользователя явно просит выполнить возможность плагина, управлять внешним сервисом, запросить состояние/данные плагина или явно разрешает действие плагина.
+- Не вызывайте плагин активно только потому, что вызов плагина «может быть полезен», из-за фонового анализа turn_end, во время обычной беседы, без явного разрешения пользователя или потому, что ИИ упомянул какую-либо функцию.
 - Если has_task и can_execute равны true, entry_id ОБЯЗАТЕЛЕН.
 - Если entry_id отсутствует или равен null при has_task/can_execute=true, ответ будет считаться невыполнимым.
 - СТРОГОЕ СООТВЕТСТВИЕ: plugin_id и entry_id — это кодовые идентификаторы. Вы ДОЛЖНЫ скопировать их ТОЧНО (с учётом регистра, посимвольно) из списка доступных плагинов выше. НЕ придумывайте, не сокращайте и не перефразируйте. Если точное совпадение не найдено, установите can_execute=false.
 - Если у точки входа есть информация args(...), используйте эти имена полей в plugin_args. Включайте только поля, указанные в схеме.
+- Если в схеме точки входа есть текстовое поле пользователя (например, command/message/query/objective), скопируйте последнее сообщение пользователя дословно; не переводите, не резюмируйте, не перефразируйте и не дополняйте.
 - Если намерение пользователя явно не соответствует описанной функциональности ни одного плагина, установите has_task=false.
 - Плагины с пометкой [KEYWORD MATCH] прошли предварительную фильтрацию по ключевым словам. Приоритетно проверьте, соответствуют ли они намерению.
 Верните только объект JSON, ничего больше.""",

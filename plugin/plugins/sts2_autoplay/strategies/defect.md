@@ -1,3 +1,63 @@
+---
+constraints:
+  required:
+    雷暴鸡: [引雷针, 电流相生, 子程序, 雷暴, 创造性AI]
+    状态鸡: [高速脱离, 火箭拳, 压缩]
+    0费物理鸡: [羽化, 万众一心]
+  high_priority:
+    通用启动: [冷头, 冰川, 快速检索, 全息影像, 白噪声, 白噪音, 充电]
+    雷暴鸡: [暴风雨, 超临界态, 双倍, 内核加速, 扩容, 弹幕齐射]
+    状态鸡: [污秽攻击, 暗影之盾]
+    0费物理鸡: [超越光速]
+  conditional:
+    状态负担:
+      - items: [污秽攻击, 硬撑, 超频]
+        condition: 已有压缩或足够状态消化能力
+    高费爆发:
+      - items: [超临界态, 双倍]
+        condition: 有内核加速、全息影像、暴风雨或足够能量支撑
+  low_priority:
+    基础废牌: [打击, 防御]
+    无前置状态负担: [硬撑, 超频]
+  map_preferences:
+    稳健成长:
+      - items: [普通怪, 篝火, 商店, 问号]
+        condition: 血量偏低、启动慢或缺少稳定起防时优先低战损路线
+    可控精英:
+      - items: [精英]
+        condition: 血量健康、有药水兜底、精英前后有篝火或恢复点
+  combat_preferences:
+    球体系启动:
+      - items: [channel, evoke, orb, orb slot, lightning, frost, dark, plasma, 充能球, 闪电球, 冰球, 黑暗球, 等离子球]
+        condition: 无可用斩杀且本回合保命压力已处理
+    优先级:
+      - items: [低于斩杀, 低于必要防御, 高于基础打击]
+  combat_estimators:
+    充能球即时伤害:
+      source: orb_evoke_and_channel
+      keywords: [evoke, channel, orb, lightning, frost, dark, plasma, 充能球, 闪电球, 冰球, 黑暗球, 等离子球]
+      description: 斩杀与 best_attack_damage 估算时，把激发当前球和满球位挤出激发造成的即时伤害计入本回合伤害
+  shop_preferences:
+    relic:
+      high_priority:
+        通用启动: [冰淇淋, ice cream, 数据磁盘, data disk, 符文电容, runic capacitor, 冻结核心, frozen core, 化学x, 化学 x, chemical x, 鸟面瓮, bird-faced urn, bird faced urn, 木乃伊之手, mummified hand, 奥利哈刚, orichalcum]
+      low_priority:
+        泛用性差: [榴莲, tiny house]
+    potion:
+      high_priority:
+        爆发与容错: [液态记忆, liquid memories, 强化药水, power potion, 能量药水, energy potion, 专注药水, focus potion, 灵巧药水, dexterity potion, 敏捷药水, 赌徒药水, gamblers brew]
+    card:
+      low_priority:
+        各类非永恒的诅咒: [诅咒]
+        基础废牌: [打击, 防御]
+      unremovable:
+        永恒诅咒: [进阶之灾, ascenders bane, ascender's bane]
+---
+
+## 程序约束
+
+> 结构化程序约束以文件顶部 YAML Frontmatter 为准；本章节保留为兼容入口和人工审阅锚点。
+
 # 故障机器人策略文档
 
 ## 角色介绍

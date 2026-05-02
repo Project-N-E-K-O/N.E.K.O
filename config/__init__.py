@@ -893,7 +893,7 @@ PERSONA_RENDER_ENCODING = "o200k_base"   # tiktoken encoding
 #   - OpenClaw magic intent user_text（用 1MB 输入做 80-token 分类，自找的）
 #   - emotion 分析 user text
 #   - bilibili knowledge_context（用户配置的知识库）
-#   - sts2_autoplay strategy_prompt（用户写的策略文件）
+#   - 插件自定义 prompt / strategy 文件（由插件自行管理）
 # 详见 docs/design/llm-prompt-budget.md "已知不 cap 项"。
 # ========================================================================
 

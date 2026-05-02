@@ -36,20 +36,24 @@ def _compat_asyncio_run(main, *, debug=None, loop_factory=None):
 asyncio.runners.Runner.run = _nested_runner_run
 asyncio.run = _compat_asyncio_run
 
-import pytest
 import os
+import sys
 import threading
 import time
-import uvicorn
 import json
 import logging
 import socket
 from unittest.mock import patch
 from pathlib import Path
 
-# Add project root to sys.path if needed, or rely on pytest pythonpath
-import sys
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+import uvicorn
+
+# Add project root to sys.path before importing project-local test helpers.
+_project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+
+import pytest
 
 from tests.utils.llm_judger import LLMJudger
 
@@ -521,7 +525,6 @@ def running_server(clean_user_data_dir, mock_memory_server):
     test_port = _get_runtime_test_port("MAIN_SERVER_PORT")
 
     from main_server import app
-
     config = uvicorn.Config(app, host="127.0.0.1", port=test_port, log_level="error")
     server = uvicorn.Server(config)
 

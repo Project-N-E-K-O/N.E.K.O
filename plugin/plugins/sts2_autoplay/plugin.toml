@@ -1,13 +1,14 @@
 [plugin]
-name = "尖塔自动游玩"
-description = "连接本地尖塔 Agent 服务，读取尖塔局面并执行自动游玩控制。"
+name = "杀戮尖塔猫娘自动陪玩插件"
+description = "连接本地杀戮尖塔 Agent 服务，读取游戏局面并执行自动游玩、单步操作、出牌建议、自然语言指令、猫娘软指导、局面汇报与实况短评。目前主要支持原版角色。"
+short_description = "杀戮尖塔猫娘自动陪玩与局面汇报"
 version = "0.1.0"
 id = "sts2_autoplay"
 type = "plugin"
 entry = "plugin.plugins.sts2_autoplay:STS2AutoplayPlugin"
 
 [plugin.author]
-name = "ZhaiJiu"
+name = "ZhaiJiu、N.E.K.O Team"
 
 [plugin.sdk]
 recommended = ">=0.1.0,<0.2.0"
@@ -29,6 +30,7 @@ poll_interval_active_seconds = 1
 action_interval_seconds = 1.5
 post_action_delay_seconds = 0.5
 autoplay_on_start = false
+semi_auto_autoplay = true
 mode = "half-program"
 character_strategy = "defect"
 max_consecutive_errors = 3
@@ -36,3 +38,19 @@ push_notifications = true
 event_stream_enabled = false
 llm_frontend_output_enabled = true
 llm_frontend_output_probability = 0.15
+neko_reporting_enabled = true
+neko_report_interval_steps = 1
+neko_report_hud_enabled = false
+neko_commentary_enabled = true
+neko_commentary_probability = 0.65
+neko_commentary_min_interval_seconds = 4
+neko_critical_commentary_always = true
+neko_guidance_max_queue = 50
+neko_auto_low_hp_threshold = 0.3
+neko_auto_safe_hp_threshold = 0.5
+neko_auto_dangerous_attack_threshold = 20
+neko_auto_resume_after_low_hp = true
+neko_desperate_enabled = true
+neko_desperate_hp_threshold = 0.2
+neko_maximize_enabled = true
+neko_synergy_enabled = true
