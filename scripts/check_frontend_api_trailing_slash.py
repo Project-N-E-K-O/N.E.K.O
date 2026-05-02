@@ -105,12 +105,18 @@ CODE = "API_TRAILING_SLASH"
 # the previous regex hard-coded ``/<close-quote>`` and silently missed
 # ``fetch('/api/foo/?x=1')`` even though it still 307s.
 #
-# Path segment chars: anything except quote, ``+`` (concat continuation
-# heuristic), whitespace, ``?`` and ``#`` (those start the qf tail).
+# Char-class rationale: anything except the matching quote (terminates the
+# literal), whitespace (terminates an unquoted token), and — for urlpath
+# only — ``?`` and ``#`` (those mark the start of the qf tail). ``+`` is
+# DELIBERATELY allowed in both: it's a valid URL byte (the form-encoded
+# space, very common in query strings — second Codex finding on PR #1082).
+# The string-concat detection happens post-quote via ``_NEXT_TOKEN_RE`` so
+# we don't need to exclude ``+`` from the literal's char class to spot
+# prefix builders.
 # Slash IS allowed in path so multi-segment URLs match. Require at least
 # one char after ``/api/`` to rule out the bare prefix.
 _LITERAL_RE = re.compile(
-    r"""(?P<quote>['"`])/api/(?P<urlpath>[^'"`+\s?#]+)(?P<qf>[?#][^'"`+\s]*)?(?P=quote)""",
+    r"""(?P<quote>['"`])/api/(?P<urlpath>[^'"`\s?#]+)(?P<qf>[?#][^'"`\s]*)?(?P=quote)""",
 )
 
 # After the closing quote, what comes next? If the next non-whitespace token
