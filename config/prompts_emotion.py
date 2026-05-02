@@ -138,12 +138,12 @@ EMOTION_KEYWORDS_BY_LANG = {
         'surprised': ('哇', '居然', '竟然', '不会吧', '啊这', '天哪', '真的假的', '怎么会'),
     },
     'en': {
-        # 裸词 happy/sad/surprised 在子串匹配下会被 unhappy/unsurprised 等反向命中，先移除；
-        # 等消费端切换到词边界匹配再加回。
-        'happy': ('haha', 'hehe', 'glad', 'lovely', 'yay', 'awesome'),
-        'sad': ('upset', 'depressed', 'regret', 'heartbroken'),
+        # 英文 keyword 在 _count_keyword_hits 里走 \b 词边界匹配，所以裸词
+        # `happy/sad/surprised` 不会被 `unhappy/unsurprised` 等反向情绪嵌入命中。
+        'happy': ('haha', 'hehe', 'happy', 'glad', 'lovely', 'yay', 'awesome'),
+        'sad': ('sad', 'upset', 'depressed', 'regret', 'heartbroken'),
         'angry': ('angry', 'furious', 'annoyed', 'irritated', 'infuriating', 'outraged'),
-        'surprised': ('wow', 'whoa', 'omg', 'unexpected'),
+        'surprised': ('wow', 'whoa', 'omg', 'unexpected', 'surprised'),
     },
     'ja': {
         'happy': ('うれしい', '嬉しい', '楽しい', 'かわいい', '好き', 'やった', '最高'),
@@ -226,7 +226,9 @@ HEURISTIC_CONTRAST_CONJUNCTIONS_BY_LANG = {
     'zh': ('但', '但是', '不过', '然而', '可是', '而是'),
     'en': (' but ', ' however', ' yet ', ' though', ' instead'),
     'ja': ('けど', 'けれど', 'でも', 'しかし', 'だが'),
-    'ko': ('하지만', '그러나', '근데', '대신'),
+    # ko: `하지만/그러나/근데/대신` 是独立连接词，但口语里更常见的对比是绑定词尾
+    # `-지만/-는데`（如 `슬프지 않지만 행복해`），这两个也加进来
+    'ko': ('하지만', '그러나', '근데', '대신', '지만', '는데'),
     'ru': (' но ', ' однако', ' зато', ' а '),
 }
 

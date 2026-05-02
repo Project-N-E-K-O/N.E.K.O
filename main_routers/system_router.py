@@ -1138,9 +1138,30 @@ def _has_heuristic_negation_before(text_value, position):
     return False
 
 
+# 英文 keyword 用 \b 词边界匹配，避免 `happy` 命中 `unhappy`、`surprised` 命中 `unsurprised`
+# 这类反向情绪嵌入。CJK 关键词没有空白词边界概念，仍走子串匹配。
+_ASCII_WORD_KEYWORD_RE_CACHE = {}
+
+
+def _is_ascii_word_keyword(keyword):
+    if not keyword:
+        return False
+    return all(c.isascii() and (c.isalpha() or c in " '") for c in keyword)
+
+
 def _count_keyword_hits(text_value, keyword):
     if not keyword or not text_value:
         return 0
+    if _is_ascii_word_keyword(keyword):
+        pattern = _ASCII_WORD_KEYWORD_RE_CACHE.get(keyword)
+        if pattern is None:
+            pattern = re.compile(r'\b' + re.escape(keyword) + r'\b')
+            _ASCII_WORD_KEYWORD_RE_CACHE[keyword] = pattern
+        hits = 0
+        for match in pattern.finditer(text_value):
+            if not _has_heuristic_negation_before(text_value, match.start()):
+                hits += 1
+        return hits
     hits = 0
     search_start = 0
     while True:
