@@ -330,6 +330,21 @@ class ChatOpenAI:
         # straight through to the SDK call.
         p.update(overrides)
 
+        # Catch prompt-template leaks: literal {placeholder} that should have
+        # been .format()-ed before reaching the wire. See
+        # utils/llm_prompt_leak_check.py for the rationale and severity
+        # contract (raise in tests, warn in prod).
+        try:
+            from utils import llm_prompt_leak_check
+            llm_prompt_leak_check.check_messages_for_leaks(
+                p["messages"], context=f"ChatOpenAI._params model={self.model}"
+            )
+        except AssertionError:
+            raise
+        except Exception:
+            # Detector bugs must never break the LLM call itself.
+            pass
+
         # TEMPORARY: prompt audit log (env NEKO_LLM_PROMPT_AUDIT=1). Remove with
         # utils/llm_prompt_audit.py once budget tuning is done.
         try:

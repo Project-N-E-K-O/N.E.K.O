@@ -526,10 +526,10 @@
         "steamNotRunningTitle": "Steam 未运行",
         "steamNotRunningMessage": "检测到Steam客户端未运行或未登录。\n\n创意工坊功能需要Steam客户端支持，请：\n1. 下载并安装Steam客户端\n2. 启动Steam并登录您的账号\n3. 重新打开此页面",
         "addNewCatgirl": "新增角色卡",
-        "searchCharacterCards": "搜索角色卡...",
-        "cardView": "卡片视图",
-        "listView": "列表视图",
-        "noCardImage": "暂未设置\n角色卡图片"
+        "noCardImage": "点击此处设置卡面",
+        "searchCharacterCards": "\u641c索角色卡...",
+        "cardView": "\u5361片视图",
+        "listView": "\u5217表视图"
     },
     "dialogs": {
         "confirmLeave": "确认离开",
@@ -1878,7 +1878,8 @@
         "cardAuthorUpdated": "作者已更新",
         "cardAuthorUpdateFailed": "更新作者失败: {{error}}",
         "saveMasterSuccess": "保存主人设定成功",
-        "editCardFace": "编辑卡面"
+        "editCardFace": "编辑卡面",
+        "cardMakerPopupBlocked": "卡面制作页面未能自动打开，请允许浏览器弹窗后重试，或点击卡面区域手动打开。"
     },
     "app": {
         "welcomeBack": "{{name}}回来了！",
@@ -2841,6 +2842,10 @@
             "step1": {
                 "title": "🎭 选择模型",
                 "desc": "首先选择要配置情感的 Live2D 模型。每个模型可以有独立的情感配置。选好模型后才能进入下一步。"
+            },
+            "step_pick": {
+                "title": "👇 选择一个模型",
+                "desc": "从下拉列表中点击选择一个模型。选好模型后才能进入下一步。"
             },
             "step2": {
                 "title": "😊 情感配置区域",

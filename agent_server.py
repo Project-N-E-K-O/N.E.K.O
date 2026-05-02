@@ -805,8 +805,34 @@ async def _fire_agent_llm_connectivity_check(*, queue: bool = False) -> None:
         def _probe():
             return adapter.check_connectivity()
 
+        # If a real CUA/BU task is currently running, the LLM is demonstrably
+        # reachable — the probe lost a race (shared _llm_client + rate limit /
+        # transient timeout) and we must not flip flags off or post a bogus
+        # "猫爪预检失败 / 已自动关闭" toast on top of a working task.
+        def _has_running(kind: str) -> bool:
+            try:
+                for info in Modules.task_registry.values():
+                    if info.get("type") == kind and info.get("status") in ("queued", "running"):
+                        return True
+            except Exception:
+                pass
+            return False
+
         try:
             ok = await asyncio.get_event_loop().run_in_executor(None, _probe)
+            cu_in_flight = _has_running("computer_use")
+            bu_in_flight = _has_running("browser_use")
+
+            if not ok and (cu_in_flight or bu_in_flight):
+                logger.info(
+                    "[Agent] Agent-LLM probe failed but a real task is running "
+                    "(cu=%s bu=%s); treating as transient and skipping demote.",
+                    cu_in_flight, bu_in_flight,
+                )
+                _bump_state_revision()
+                await _emit_agent_status_update()
+                return
+
             reason = "" if ok else "AGENT_LLM_UNREACHABLE"
             _set_capability("computer_use", ok, reason)
             bu = Modules.browser_use
@@ -833,6 +859,11 @@ async def _fire_agent_llm_connectivity_check(*, queue: bool = False) -> None:
             await _emit_agent_status_update()
         except Exception as e:
             logger.warning("[Agent] Agent-LLM connectivity check error: %s", e)
+            if _has_running("computer_use") or _has_running("browser_use"):
+                # Same protection in the outer-exception path.
+                _bump_state_revision()
+                await _emit_agent_status_update()
+                return
             _set_capability("computer_use", False, "AGENT_LLM_UNREACHABLE")
             _set_capability("browser_use", False, "AGENT_LLM_UNREACHABLE")
             if Modules.agent_flags.get("computer_use_enabled"):
@@ -4312,11 +4343,17 @@ async def computer_use_availability():
 async def notify_config_changed():
     """Called by the main server after API-key / model config is saved.
     Rebuilds the CUA adapter with fresh config and kicks off a non-blocking
-    LLM connectivity check."""
+    LLM connectivity check — but only when the user actually has Agent on
+    or has a CU/BU flag enabled.  Otherwise a routine voice/chat-model save
+    fires a probe whose transient failure pops a "猫爪预检失败" toast for a
+    feature the user isn't even using."""
     _try_refresh_computer_use_adapter(force=True)
     _rewire_computer_use_dependents()
-    asyncio.ensure_future(_fire_agent_llm_connectivity_check())
-    return {"success": True, "message": "CUA adapter refreshed, connectivity check started"}
+    flags = Modules.agent_flags or {}
+    if Modules.analyzer_enabled or flags.get("computer_use_enabled") or flags.get("browser_use_enabled"):
+        asyncio.ensure_future(_fire_agent_llm_connectivity_check())
+        return {"success": True, "message": "CUA adapter refreshed, connectivity check started"}
+    return {"success": True, "message": "CUA adapter refreshed; probe skipped (agent idle)"}
 
 
 @app.get("/browser_use/availability")

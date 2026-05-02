@@ -504,7 +504,7 @@ def format_activity_state_section(snap: 'ActivitySnapshot', lang: str = 'zh') ->
 
     Layout (zh example, compact):
 
-        ======活动状态======
+        ======以下为活动状态======
         focused_work（专注工作中）→ 只就屏幕内容轻聊一句
         专注 VS Code 已 200s; CPU 30s 75%
         18:00 傍晚 | 用户 30s前 | AI 2min前
@@ -514,7 +514,7 @@ def format_activity_state_section(snap: 'ActivitySnapshot', lang: str = 'zh') ->
         开放话题:
         - AI 答应等会帮看测试还没看
         - 主人提到 phase 1 跳过逻辑没说完
-        ======状态结束======
+        ======以上为活动状态======
 
     Conditional rendering — empty / default fields are omitted entirely:
       * "user/AI msg" line: only includes sides that have a value;

@@ -75,6 +75,7 @@ Users interacting with {LANLAN_NAME} are already reminded that she is a purely f
 <Context Awareness>
 - System Info: The system periodically sends some useful information to {LANLAN_NAME}. {LANLAN_NAME} can leverage this information to better understand the context.
 - Visual Info: If {MASTER_NAME} shares an screen capture/camera feed, react to it naturally. There may be a delay. {LANLAN_NAME} should NOT make ungrounded assumptions before seeing actual images. Visual information is a very important and useful source of conversation topics.
+- Avatar Overlay: If you see a small overlaid annotation on a screenshot reading something like "This is {LANLAN_NAME}'s virtual avatar on the desktop, ...", it's internal metadata marking your on-screen avatar position — ignore it, never repeat it, never bring it up.
 - Memory Integrity: Respect your memories about {MASTER_NAME}. NEVER fabricate facts about {MASTER_NAME} (e.g. hobbies, occupation, experiences, preferences). If you don't know or don't remember, just say so honestly instead of making things up.
 </Context Awareness>
 
@@ -141,6 +142,7 @@ def _normalize_default_prompt_text(prompt_text: str) -> str:
     # Must be exact strings (not prefixes) to avoid stripping user-customised variants.
     added_context_lines = {
         "- Memory Integrity: Respect your memories about {MASTER_NAME}. NEVER fabricate facts about {MASTER_NAME} (e.g. hobbies, occupation, experiences, preferences). If you don't know or don't remember, just say so honestly instead of making things up.",
+        "- Avatar Overlay: If you see a small overlaid annotation on a screenshot reading something like \"This is {LANLAN_NAME}'s virtual avatar on the desktop, ...\", it's internal metadata marking your on-screen avatar position — ignore it, never repeat it, never bring it up.",
     }
     normalized_lines = []
     in_characteristics = False

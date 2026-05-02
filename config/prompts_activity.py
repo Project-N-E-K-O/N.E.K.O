@@ -50,17 +50,17 @@ from __future__ import annotations
 ACTIVITY_GUESS_PROMPTS: dict[str, str] = {
     'zh': """你是一个用户活动分析助手。基于下方的系统信号和最近对话片段，对用户当前的活动状态做软评分，并写一句简短的活动叙述。
 
-======系统信号======
+======以下为系统信号======
 {signals}
-======系统信号结束======
+======以上为系统信号======
 
-======最近对话（按时间顺序）======
+======以下为最近对话（按时间顺序）======
 {conversation}
-======对话结束======
+======以上为最近对话（按时间顺序）======
 
-======规则系统的初判======
+======以下为规则系统的初判======
 {rule_state}
-======初判结束======
+======以上为规则系统的初判======
 
 请输出严格的 JSON（不带 markdown 代码块），字段：
 - "scores": 一个对象，键是状态名，值是 0.0-1.0 的浮点数（独立打分，不需要归一化）。允许的状态名：{state_keys}
@@ -75,17 +75,17 @@ ACTIVITY_GUESS_PROMPTS: dict[str, str] = {
 
     'en': """You are a user-activity analyst. Given the system signals and recent conversation snippets below, give soft scores for the user's current activity state and write a one-sentence narrative.
 
-======System signals======
+======Below is System signals======
 {signals}
-======End of signals======
+======Above is System signals======
 
-======Recent conversation (chronological)======
+======Below is Recent conversation (chronological)======
 {conversation}
-======End of conversation======
+======Above is Recent conversation (chronological)======
 
-======Rule system's initial classification======
+======Below is Rule system's initial classification======
 {rule_state}
-======End of initial classification======
+======Above is Rule system's initial classification======
 
 Output strict JSON (no markdown fences), with fields:
 - "scores": object mapping state name to a 0.0-1.0 float (independent scoring, no normalization). Allowed states: {state_keys}
@@ -100,17 +100,17 @@ Example output:
 
     'ja': """あなたはユーザー活動の分析助手です。下のシステム信号と最近の会話に基づき、ユーザーの現在の活動状態にソフトスコアを付けて、一文の活動叙述を書いてください。
 
-======システム信号======
+======以下はシステム信号======
 {signals}
-======信号ここまで======
+======以上はシステム信号======
 
-======最近の会話（時系列）======
+======以下は最近の会話（時系列）======
 {conversation}
-======会話ここまで======
+======以上は最近の会話（時系列）======
 
-======ルール系の初期判定======
+======以下はルール系の初期判定======
 {rule_state}
-======初期判定ここまで======
+======以上はルール系の初期判定======
 
 厳密なJSON（markdownコードブロックなし）で出力してください：
 - "scores": 状態名をキー、0.0〜1.0の浮動小数を値とするオブジェクト（独立スコア、正規化不要）。許可される状態：{state_keys}
@@ -125,17 +125,17 @@ Example output:
 
     'ko': """당신은 사용자 활동 분석 도우미입니다. 아래의 시스템 신호와 최근 대화 스니펫을 바탕으로 사용자의 현재 활동 상태에 소프트 점수를 매기고, 활동 서술 한 문장을 작성하세요.
 
-======시스템 신호======
+======아래는 시스템 신호======
 {signals}
-======신호 끝======
+======위는 시스템 신호======
 
-======최근 대화 (시간순)======
+======아래는 최근 대화 (시간순)======
 {conversation}
-======대화 끝======
+======위는 최근 대화 (시간순)======
 
-======규칙 시스템의 초기 판정======
+======아래는 규칙 시스템의 초기 판정======
 {rule_state}
-======초기 판정 끝======
+======위는 규칙 시스템의 초기 판정======
 
 엄격한 JSON으로 출력하세요 (markdown 코드 블록 없이). 필드:
 - "scores": 상태명을 키로, 0.0-1.0 부동소수를 값으로 하는 객체 (독립 점수, 정규화 불필요). 허용 상태: {state_keys}
@@ -150,17 +150,17 @@ Example output:
 
     'ru': """Вы — аналитик активности пользователя. Опираясь на сигналы системы и недавние реплики ниже, поставьте мягкие оценки текущему состоянию активности пользователя и напишите одно предложение-описание.
 
-======Сигналы системы======
+======Ниже Сигналы системы======
 {signals}
-======Конец сигналов======
+======Выше Сигналы системы======
 
-======Недавний разговор (хронология)======
+======Ниже Недавний разговор (хронология)======
 {conversation}
-======Конец разговора======
+======Выше Недавний разговор (хронология)======
 
-======Первоначальная классификация правил======
+======Ниже Первоначальная классификация правил======
 {rule_state}
-======Конец классификации======
+======Выше Первоначальная классификация правил======
 
 Выведите строгий JSON (без markdown-обрамления), поля:
 - "scores": объект «название состояния → число 0.0-1.0» (независимые оценки, нормализация не нужна). Допустимые состояния: {state_keys}
@@ -180,9 +180,9 @@ Example output:
 OPEN_THREADS_PROMPTS: dict[str, str] = {
     'zh': """你是对话回顾助手。看下面最近的对话，列出最多 3 条"被提起但还没收尾"的话题——比如 AI 答应过但还没做的事、用户提到一半就被打断的事情、双方约定但没跟进的细节。
 
-======最近对话（按时间顺序）======
+======以下为最近对话（按时间顺序）======
 {conversation}
-======对话结束======
+======以上为最近对话（按时间顺序）======
 
 输出严格的 JSON（不带 markdown 代码块）：
 {{"open_threads": ["短句 1", "短句 2"]}}
@@ -193,9 +193,9 @@ OPEN_THREADS_PROMPTS: dict[str, str] = {
 
     'en': """You are a conversation review assistant. Look at the recent conversation below and list up to 3 topics that were "raised but not closed" — things like promises the AI made but hasn't fulfilled, user thoughts cut off mid-sentence, plans agreed but not followed up.
 
-======Recent conversation (chronological)======
+======Below is Recent conversation (chronological)======
 {conversation}
-======End of conversation======
+======Above is Recent conversation (chronological)======
 
 Output strict JSON (no markdown fences):
 {{"open_threads": ["short phrase 1", "short phrase 2"]}}
@@ -206,9 +206,9 @@ Do NOT include "obvious unanswered questions" — those are handled by a separat
 
     'ja': """あなたは会話レビュー助手です。下の最近の会話を見て、「持ち出されたが収まっていない」話題を最大3件挙げてください。例：AIが約束したがまだ実行していないこと、ユーザーが言いかけて中断したこと、双方で合意したのに追いかけていない詳細など。
 
-======最近の会話（時系列）======
+======以下は最近の会話（時系列）======
 {conversation}
-======会話ここまで======
+======以上は最近の会話（時系列）======
 
 厳密なJSON（markdownコードブロックなし）で出力：
 {{"open_threads": ["短い文1", "短い文2"]}}
@@ -219,9 +219,9 @@ Do NOT include "obvious unanswered questions" — those are handled by a separat
 
     'ko': """당신은 대화 검토 도우미입니다. 아래 최근 대화를 보고 "꺼냈지만 마무리되지 않은" 화제를 최대 3개 나열하세요. 예: AI가 약속했지만 아직 안 한 일, 사용자가 말을 꺼내다가 끊긴 것, 양쪽이 합의했지만 후속하지 않은 세부 사항 등.
 
-======최근 대화 (시간순)======
+======아래는 최근 대화 (시간순)======
 {conversation}
-======대화 끝======
+======위는 최근 대화 (시간순)======
 
 엄격한 JSON으로 출력 (markdown 코드 블록 없이):
 {{"open_threads": ["짧은 문장 1", "짧은 문장 2"]}}
@@ -232,9 +232,9 @@ Do NOT include "obvious unanswered questions" — those are handled by a separat
 
     'ru': """Вы — помощник по обзору разговора. Просмотрите недавний разговор ниже и перечислите до 3 тем, которые «подняли, но не закрыли»: обещания AI, ещё не выполненные; мысли пользователя, оборвавшиеся на полуслове; согласованные планы без продолжения.
 
-======Недавний разговор (хронология)======
+======Ниже Недавний разговор (хронология)======
 {conversation}
-======Конец разговора======
+======Выше Недавний разговор (хронология)======
 
 Выведите строгий JSON (без markdown):
 {{"open_threads": ["короткая фраза 1", "короткая фраза 2"]}}
@@ -555,8 +555,8 @@ ACTIVITY_REASON_TEMPLATES: dict[str, dict[str, str]] = {
 
 ACTIVITY_STATE_SECTION_LABELS: dict[str, dict[str, str]] = {
     'zh': {
-        'header': '======活动状态======',
-        'footer': '======状态结束======',
+        'header': '======以下为活动状态======',
+        'footer': '======以上为活动状态======',
         'never': '无',
         'seconds_ago_fmt': '{seconds:.0f}s前',
         'minutes_ago_fmt': '{minutes:.0f}min前',
@@ -576,8 +576,8 @@ ACTIVITY_STATE_SECTION_LABELS: dict[str, dict[str, str]] = {
         'time_only_fmt': '{time}',
     },
     'en': {
-        'header': '======Activity======',
-        'footer': '======End======',
+        'header': '======Below is Activity======',
+        'footer': '======Above is Activity======',
         'never': '-',
         'seconds_ago_fmt': '{seconds:.0f}s',
         'minutes_ago_fmt': '{minutes:.0f}min',
@@ -597,8 +597,8 @@ ACTIVITY_STATE_SECTION_LABELS: dict[str, dict[str, str]] = {
         'time_only_fmt': '{time}',
     },
     'ja': {
-        'header': '======活動状態======',
-        'footer': '======終わり======',
+        'header': '======以下は活動状態======',
+        'footer': '======以上は活動状態======',
         'never': '無',
         'seconds_ago_fmt': '{seconds:.0f}秒前',
         'minutes_ago_fmt': '{minutes:.0f}分前',
@@ -618,8 +618,8 @@ ACTIVITY_STATE_SECTION_LABELS: dict[str, dict[str, str]] = {
         'time_only_fmt': '{time}',
     },
     'ko': {
-        'header': '======활동 상태======',
-        'footer': '======끝======',
+        'header': '======아래는 활동 상태======',
+        'footer': '======위는 활동 상태======',
         'never': '없음',
         'seconds_ago_fmt': '{seconds:.0f}초 전',
         'minutes_ago_fmt': '{minutes:.0f}분 전',
@@ -639,8 +639,8 @@ ACTIVITY_STATE_SECTION_LABELS: dict[str, dict[str, str]] = {
         'time_only_fmt': '{time}',
     },
     'ru': {
-        'header': '======Активность======',
-        'footer': '======Конец======',
+        'header': '======Ниже Активность======',
+        'footer': '======Выше Активность======',
         'never': '-',
         'seconds_ago_fmt': '{seconds:.0f}с',
         'minutes_ago_fmt': '{minutes:.0f}мин',

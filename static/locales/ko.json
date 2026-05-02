@@ -526,10 +526,10 @@
         "steamNotRunningTitle": "Steam이 실행되지 않음",
         "steamNotRunningMessage": "Steam 클라이언트가 실행되지 않거나 로그인되지 않았습니다.\n\n창작마당 기능을 사용하려면 Steam 클라이언트가 필요합니다:\n1. Steam 클라이언트를 다운로드하여 설치\n2. Steam을 실행하고 계정에 로그인\n3. 이 페이지를 다시 열어주세요",
         "addNewCatgirl": "새 캐릭터 카드 추가",
-        "searchCharacterCards": "캐릭터 카드 검색...",
-        "cardView": "카드 보기",
-        "listView": "목록 보기",
-        "noCardImage": "카드 이미지\n미설정"
+        "noCardImage": "여기를 클릭하여\n카드를 설정",
+        "searchCharacterCards": "\uce90릭터 카드 검색...",
+        "cardView": "\uce74드 보기",
+        "listView": "\ubaa9록 보기"
     },
     "dialogs": {
         "confirmLeave": "휴가 확인",
@@ -1878,7 +1878,8 @@
         "cardAuthorUpdateFailed": "작성자 업데이트 실패: {{error}}",
         "idleMotionHint": "저장 시 선택한 모션이 대기 모션으로 설정됩니다",
         "saveMasterSuccess": "주인 설정 저장 성공",
-        "editCardFace": "카드 이미지 편집"
+        "editCardFace": "카드 이미지 편집",
+        "cardMakerPopupBlocked": "카드 제작 페이지를 자동으로 열 수 없습니다. 브라우저의 팝업을 허용한 뒤 다시 시도하거나, 카드 영역을 클릭해 직접 열어 주세요."
     },
     "app": {
         "welcomeBack": "{{name}}이 돌아왔습니다!",
@@ -2841,6 +2842,10 @@
             "step1": {
                 "title": "🎭 모델 선택",
                 "desc": "먼저 Live2D 모델을 선택하여 감정을 구성합니다. 각 모델은 독립적인 감정 설정을 가질 수 있습니다."
+            },
+            "step_pick": {
+                "title": "👇 모델 하나 선택",
+                "desc": "드롭다운 목록에서 항목을 클릭하여 모델을 선택하세요. 모델을 선택해야 다음 단계로 진행할 수 있습니다."
             },
             "step2": {
                 "title": "😊 감정 구성 영역",

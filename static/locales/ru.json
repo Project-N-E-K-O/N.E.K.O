@@ -526,10 +526,10 @@
         "steamNotRunningTitle": "Steam не запущен",
         "steamNotRunningMessage": "Клиент Steam не запущен или не выполнен вход.\n\nДля работы Мастерской необходим клиент Steam:\n1. Скачайте и установите клиент Steam\n2. Запустите Steam и войдите в свой аккаунт\n3. Откройте эту страницу заново",
         "addNewCatgirl": "Добавить нового персонажа",
-        "searchCharacterCards": "Поиск карточек...",
-        "cardView": "Карточки",
-        "listView": "Список",
-        "noCardImage": "Изображение\nне задано"
+        "noCardImage": "Нажмите, чтобы\nустановить обложку",
+        "searchCharacterCards": "\u041fоиск карточек персонажей...",
+        "cardView": "\u0412ид карточек",
+        "listView": "\u0421писок"
     },
     "dialogs": {
         "confirmLeave": "Подтвердить выход",
@@ -1878,7 +1878,8 @@
         "cardAuthorUpdateFailed": "Не удалось обновить автора: {{error}}",
         "idleMotionHint": "При сохранении выбранное движение будет установлено как ожидающее",
         "saveMasterSuccess": "Профиль хозяина сохранён",
-        "editCardFace": "Редактировать обложку"
+        "editCardFace": "Редактировать обложку",
+        "cardMakerPopupBlocked": "Не удалось автоматически открыть страницу редактора обложки. Разрешите всплывающие окна в браузере и повторите попытку, либо щёлкните область обложки, чтобы открыть её вручную."
     },
     "app": {
         "welcomeBack": "{{name}} вернулась!",
@@ -2841,6 +2842,10 @@
             "step1": {
                 "title": "🎭 Select Model",
                 "desc": "First select the Live2D model to configure emotions. Each model can have independent emotion settings."
+            },
+            "step_pick": {
+                "title": "👇 Pick a Model",
+                "desc": "Click any item in the dropdown list to choose a model. You must pick one to proceed."
             },
             "step2": {
                 "title": "😊 Emotion Configuration Area",

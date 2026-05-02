@@ -35,6 +35,8 @@ from datetime import datetime, timedelta
 
 from config import APP_NAME
 
+NEKO_STORAGE_SELECTED_ROOT_ENV = "NEKO_STORAGE_SELECTED_ROOT"
+
 
 def _get_application_root() -> Path:
     if getattr(sys, "frozen", False):
@@ -49,6 +51,21 @@ def _get_writable_application_directory() -> Path:
     if getattr(sys, "frozen", False):
         return Path(sys.executable).resolve().parent
     return _get_application_root()
+
+
+def _get_selected_storage_root_from_env() -> Path | None:
+    raw_root = str(os.environ.get(NEKO_STORAGE_SELECTED_ROOT_ENV) or "").strip()
+    if not raw_root:
+        return None
+
+    try:
+        selected_root = Path(raw_root).expanduser()
+    except Exception:
+        return None
+
+    if not selected_root.is_absolute():
+        return None
+    return selected_root
 
 
 class RobustLoggerConfig:
@@ -111,16 +128,27 @@ class RobustLoggerConfig:
         """
         获取合适的日志目录
         优先级：
-        1. 用户文档目录/{APP_NAME}/logs（我的文档，默认首选）
-        2. 应用程序所在目录/logs
-        3. 用户数据目录（AppData等）
-        4. 用户主目录
-        5. 临时目录（最后的降级选项）
+        1. 已选择的运行时存储目录/logs（由启动器通过环境变量注入）
+        2. 用户文档目录/{APP_NAME}/logs（兼容旧版本和直接运行）
+        3. 应用程序所在目录/logs
+        4. 用户数据目录（AppData等）
+        5. 用户主目录
+        6. 临时目录（最后的降级选项）
         
         Returns:
             Path: 日志目录路径
         """
-        # 尝试1: 使用用户文档目录（我的文档，默认首选！）
+        # 尝试1: 使用当前存储根目录。老日志不迁移；新日志跟随新根目录。
+        try:
+            selected_root = _get_selected_storage_root_from_env()
+            if selected_root is not None:
+                log_dir = selected_root / "logs"
+                if self._test_directory_writable(log_dir):
+                    return log_dir
+        except Exception as e:
+            print(f"Warning: Failed to use selected storage log directory: {e}", file=sys.stderr)
+
+        # 尝试2: 使用用户文档目录（兼容旧版本和非 launcher 直接运行）
         try:
             docs_dir = self._get_documents_directory()
             # 使用配置的应用名称目录
@@ -292,24 +320,47 @@ class RobustLoggerConfig:
             raise
     
     def _cleanup_old_logs(self):
-        """清理超过保留期的旧日志文件"""
-        try:
-            cutoff_date = datetime.now() - timedelta(days=self.retention_days)
-            
-            for log_file in self.log_dir.glob(f"{self.app_name}_*.log*"):
-                try:
-                    # 获取文件的修改时间
-                    file_mtime = datetime.fromtimestamp(log_file.stat().st_mtime)
-                    
-                    # 如果文件太旧，删除它
-                    if file_mtime < cutoff_date:
-                        log_file.unlink()
-                        print(f"Cleaned up old log file: {log_file.name}")
-                except Exception as e:
-                    print(f"Warning: Failed to clean up log file {log_file}: {e}", file=sys.stderr)
-        except Exception as e:
-            print(f"Warning: Failed to cleanup old logs: {e}", file=sys.stderr)
+        """清理超过保留期的旧日志文件。
+
+        除了主日志目录外，源码运行时还会顺手清一下 dev DEBUG 目录
+        （``<repo>/logs/``），避免按天滚的 ``*_debug_YYYYMMDD.log`` 无限堆积。
+        """
+        cutoff_date = datetime.now() - timedelta(days=self.retention_days)
+        dirs_to_scan = [self.log_dir]
+        if not getattr(sys, "frozen", False):
+            try:
+                dev_dir = _get_application_root() / "logs"
+                if dev_dir.exists() and dev_dir.resolve() != self.log_dir.resolve():
+                    dirs_to_scan.append(dev_dir)
+            except Exception as e:
+                print(f"Warning: Failed to resolve dev debug dir for cleanup: {e}", file=sys.stderr)
+
+        for scan_dir in dirs_to_scan:
+            try:
+                for log_file in scan_dir.glob(f"{self.app_name}_*.log*"):
+                    try:
+                        file_mtime = datetime.fromtimestamp(log_file.stat().st_mtime)
+                        if file_mtime < cutoff_date:
+                            log_file.unlink()
+                            print(f"Cleaned up old log file: {log_file.name}")
+                    except Exception as e:
+                        print(f"Warning: Failed to clean up log file {log_file}: {e}", file=sys.stderr)
+            except Exception as e:
+                print(f"Warning: Failed to cleanup old logs in {scan_dir}: {e}", file=sys.stderr)
     
+    def _resolve_console_level(self) -> int:
+        """决定 console handler 的级别。
+
+        默认：max(log_level, INFO) —— 即便整体开 DEBUG，控制台也只显示 INFO+，
+        DEBUG 走文件。可用 NEKO_LOG_CONSOLE_LEVEL=DEBUG/INFO/... 覆盖。
+        """
+        override = (os.environ.get("NEKO_LOG_CONSOLE_LEVEL") or "").strip().upper()
+        if override:
+            level = logging.getLevelName(override)
+            if isinstance(level, int):
+                return level
+        return max(self.log_level, logging.INFO)
+
     def get_log_file_path(self):
         """获取日志文件路径"""
         return str(self.log_file)
@@ -352,10 +403,14 @@ class RobustLoggerConfig:
         date_format = '%Y-%m-%d %H:%M:%S'
         formatter = logging.Formatter(log_format, date_format)
         
+        # 控制台默认钳到 INFO：DEBUG 量太大会瞬间淹没终端，落盘即可。
+        # 想让 console 也吐 DEBUG（极少数本地排障场景），设 NEKO_LOG_CONSOLE_LEVEL=DEBUG。
+        console_level = self._resolve_console_level()
+
         # 1. 控制台Handler
         try:
             console_handler = logging.StreamHandler(sys.stdout)
-            console_handler.setLevel(self.log_level)
+            console_handler.setLevel(console_level)
             console_handler.setFormatter(formatter)
             logger.addHandler(console_handler)
         except Exception as e:
@@ -370,13 +425,39 @@ class RobustLoggerConfig:
                 backupCount=self.backup_count,
                 encoding='utf-8'
             )
-            file_handler.setLevel(self.log_level)
+            # 主日志钳到 INFO+：DEBUG 走单独的 dev 文件，不污染用户统一日志。
+            file_handler.setLevel(max(self.log_level, logging.INFO))
             file_handler.setFormatter(formatter)
             logger.addHandler(file_handler)
         except Exception as e:
             print(f"Error: Failed to add file handler: {e}", file=sys.stderr)
             # 文件handler失败不应该阻止应用运行
-        
+
+        # 2b. Dev-only DEBUG Handler：仅源码运行时启用，落到源码 ``logs/`` 下，
+        # 只收 DEBUG 一级（INFO+ 已经在主日志里）。frozen 时不挂——AppImage
+        # squashfs 只读，且打包后用户不需要 dev 调试日志。
+        if not getattr(sys, "frozen", False) and self.log_level <= logging.DEBUG:
+            try:
+                dev_debug_dir = _get_application_root() / "logs"
+                dev_debug_dir.mkdir(parents=True, exist_ok=True)
+                if self.service_name:
+                    debug_filename = f"{self.app_name}_{self.service_name}_debug_{datetime.now().strftime('%Y%m%d')}.log"
+                else:
+                    debug_filename = f"{self.app_name}_debug_{datetime.now().strftime('%Y%m%d')}.log"
+                debug_handler = RotatingFileHandler(
+                    dev_debug_dir / debug_filename,
+                    maxBytes=self.max_bytes,
+                    backupCount=self.backup_count,
+                    encoding='utf-8',
+                    delay=True,
+                )
+                debug_handler.setLevel(logging.DEBUG)
+                debug_handler.addFilter(lambda r: r.levelno < logging.INFO)
+                debug_handler.setFormatter(formatter)
+                logger.addHandler(debug_handler)
+            except Exception as e:
+                print(f"Warning: Failed to add dev debug handler: {e}", file=sys.stderr)
+
         # 3. 错误日志Handler（单独记录ERROR及以上级别）
         try:
             if self.service_name:

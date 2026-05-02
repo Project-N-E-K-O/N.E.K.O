@@ -526,10 +526,10 @@
         "steamNotRunningTitle": "Steamが実行されていません",
         "steamNotRunningMessage": "Steamクライアントが実行されていないか、ログインしていません。\n\nワークショップ機能にはSteamクライアントが必要です：\n1. Steamクライアントをダウンロードしてインストール\n2. Steamを起動してアカウントにログイン\n3. このページを再度開いてください",
         "addNewCatgirl": "新規キャラを追加",
-        "searchCharacterCards": "キャラカードを検索...",
-        "cardView": "カード表示",
-        "listView": "リスト表示",
-        "noCardImage": "カード画像\n未設定"
+        "noCardImage": "ここをクリックして\nカードフェイスを設定",
+        "searchCharacterCards": "\u30adャラカードを検索...",
+        "cardView": "\u30abード表示",
+        "listView": "\u30eaスト表示"
     },
     "dialogs": {
         "confirmLeave": "退出の確認",
@@ -1878,7 +1878,8 @@
         "cardAuthorUpdateFailed": "作者の更新に失敗しました: {{error}}",
         "idleMotionHint": "保存時に選択されたモーションが待機モーションとして設定されます",
         "saveMasterSuccess": "マスタープロフィールを保存しました",
-        "editCardFace": "カードフェイスを編集"
+        "editCardFace": "カードフェイスを編集",
+        "cardMakerPopupBlocked": "カード作成ページを自動的に開けませんでした。ブラウザのポップアップを許可して再試行するか、カードエリアをクリックして手動で開いてください。"
     },
     "app": {
         "welcomeBack": "{{name}}が戻りました！",
@@ -2841,6 +2842,10 @@
             "step1": {
                 "title": "🎭 モデルを選択",
                 "desc": "まず感情を設定するLive2Dモデルを選択してください。各モデルは独立した感情設定を持つことができます。モデルを選択した後に次のステップに進めます。"
+            },
+            "step_pick": {
+                "title": "👇 モデルを1つ選んでください",
+                "desc": "ドロップダウンリストから項目をクリックしてモデルを選択してください。モデルを選択した後に次のステップに進めます。"
             },
             "step2": {
                 "title": "😊 感情設定エリア",

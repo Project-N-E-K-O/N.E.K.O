@@ -1199,7 +1199,7 @@ async def _periodic_new_dialog_qps_log_loop():
         snapshot = dict(_new_dialog_qps_counter)
         _new_dialog_qps_counter.clear()
         total = sum(snapshot.values())
-        logger.info(
+        logger.debug(
             f"[QPS] /new_dialog last {NEW_DIALOG_QPS_FLUSH_INTERVAL}s: "
             f"total={total} per_char={snapshot}"
         )

@@ -11,6 +11,8 @@ aiohttp==3.13.3
     #   dashscope
 aiosignal==1.4.0
     # via aiohttp
+annotated-doc==0.0.4
+    # via typer
 annotated-types==0.7.0
     # via pydantic
 ansicon==1.89.0 ; sys_platform == 'win32'
@@ -67,7 +69,9 @@ browser-use-sdk==2.0.15
 bubus==1.5.6
     # via browser-use
 cachetools==6.2.2
-    # via google-auth
+    # via
+    #   google-auth
+    #   n-e-k-o
 cdp-use==1.4.4
     # via browser-use
 certifi==2025.8.3
@@ -90,6 +94,7 @@ click==8.2.1
     #   audiolab
     #   browser-use
     #   pyrnnoise
+    #   typer
     #   uvicorn
 cloudpickle==3.1.2
     # via browser-use
@@ -128,12 +133,18 @@ editor==1.6.6
     # via inquirer
 fastapi==0.115.14
     # via n-e-k-o
+filelock==3.29.0
+    # via huggingface-hub
+flatbuffers==25.12.19
+    # via onnxruntime
 fonttools==4.61.0
     # via matplotlib
 frozenlist==1.7.0
     # via
     #   aiohttp
     #   aiosignal
+fsspec==2026.3.0
+    # via huggingface-hub
 google-api-core==2.29.0
     # via
     #   browser-use
@@ -170,6 +181,8 @@ h11==0.16.0
     #   uvicorn
 h2==4.3.0
     # via httpx
+hf-xet==1.4.3 ; platform_machine == 'AMD64' or platform_machine == 'aarch64' or platform_machine == 'amd64' or platform_machine == 'arm64' or platform_machine == 'x86_64'
+    # via huggingface-hub
 hpack==4.1.0
     # via h2
 httpcore==1.0.9
@@ -187,6 +200,7 @@ httpx==0.28.1
     #   google-genai
     #   googletrans
     #   groq
+    #   huggingface-hub
     #   mcp
     #   n-e-k-o
     #   ollama
@@ -194,6 +208,8 @@ httpx==0.28.1
     #   pyncm-async
 httpx-sse==0.4.3
     # via mcp
+huggingface-hub==1.12.0
+    # via tokenizers
 humanize==4.14.0
     # via audiolab
 hyperframe==6.1.0
@@ -253,6 +269,7 @@ numpy==1.26.4
     #   contourpy
     #   matplotlib
     #   n-e-k-o
+    #   onnxruntime
     #   pyrnnoise
     #   soundfile
     #   soxr
@@ -260,15 +277,21 @@ oauthlib==3.3.1
     # via requests-oauthlib
 ollama==0.6.1
     # via browser-use
+onnxruntime==1.25.0
+    # via n-e-k-o
 openai==2.8.1
     # via
     #   browser-use
     #   n-e-k-o
+orjson==3.11.8
+    # via n-e-k-o
 ormsgpack==1.12.2
     # via n-e-k-o
 packaging==25.0
     # via
+    #   huggingface-hub
     #   matplotlib
+    #   onnxruntime
     #   pytesseract
 pfzy==0.3.4
     # via inquirerpy
@@ -300,11 +323,14 @@ protobuf==6.33.5
     # via
     #   google-api-core
     #   googleapis-common-protos
+    #   onnxruntime
     #   proto-plus
 psutil==7.2.2
     # via
     #   browser-use
     #   n-e-k-o
+py-cpuinfo==9.0.0
+    # via n-e-k-o
 pyasn1==0.6.1
     # via
     #   pyasn1-modules
@@ -1112,7 +1138,9 @@ pywin32==311 ; sys_platform == 'win32'
 pywinauto==0.6.9 ; sys_platform == 'win32'
     # via n-e-k-o
 pyyaml==6.0.2
-    # via bilibili-api-python
+    # via
+    #   bilibili-api-python
+    #   huggingface-hub
 pyzmq==27.1.0
     # via n-e-k-o
 qrcode==8.2
@@ -1129,7 +1157,9 @@ referencing==0.37.0
     #   jsonschema
     #   jsonschema-specifications
 regex==2026.2.28
-    # via n-e-k-o
+    # via
+    #   n-e-k-o
+    #   tiktoken
 reportlab==4.4.10
     # via browser-use
 requests==2.32.5
@@ -1142,11 +1172,14 @@ requests==2.32.5
     #   n-e-k-o
     #   posthog
     #   requests-oauthlib
+    #   tiktoken
     #   translatepy
 requests-oauthlib==2.0.0
     # via google-auth-oauthlib
 rich==14.3.2
-    # via browser-use
+    # via
+    #   browser-use
+    #   typer
 rpds-py==0.30.0
     # via
     #   jsonschema
@@ -1161,6 +1194,8 @@ safeio==1.2
     # via translatepy
 screeninfo==0.8.1 ; platform_system != 'darwin'
     # via browser-use
+shellingham==1.5.4
+    # via typer
 six==1.17.0
     # via
     #   markdownify
@@ -1192,6 +1227,10 @@ starlette==0.46.2
     #   mcp
 tenacity==9.1.2
     # via google-genai
+tiktoken==0.12.0
+    # via n-e-k-o
+tokenizers==0.22.2
+    # via n-e-k-o
 toml==0.10.2
     # via n-e-k-o
 tomli==2.4.0
@@ -1202,10 +1241,13 @@ tornado==6.5.4
     # via n-e-k-o
 tqdm==4.67.1
     # via
+    #   huggingface-hub
     #   openai
     #   pyrnnoise
 translatepy==2.3
     # via n-e-k-o
+typer==0.24.2
+    # via huggingface-hub
 typing-extensions==4.14.1
     # via
     #   aiosignal
@@ -1218,6 +1260,7 @@ typing-extensions==4.14.1
     #   fastapi
     #   google-genai
     #   groq
+    #   huggingface-hub
     #   mcp
     #   openai
     #   posthog

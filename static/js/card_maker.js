@@ -709,11 +709,24 @@
 
             // 通知父窗口更新卡面
             if (window.opener) {
-                window.opener.postMessage({
-                    type: 'card-face-updated',
-                    name: currentCharaName,
-                    timestamp: Date.now()
-                }, window.location.origin);
+                try {
+                    window.opener.postMessage({
+                        type: 'card-face-updated',
+                        name: currentCharaName,
+                        timestamp: Date.now()
+                    }, window.location.origin);
+                } catch (_) {}
+
+                // 额外触发父窗口刷新列表，确保跨窗口场景下也能立刻看到新卡面
+                try {
+                    const loadCharacterCards = window.opener.loadCharacterCards;
+                    if (typeof loadCharacterCards === 'function') {
+                        const refreshResult = loadCharacterCards.call(window.opener);
+                        if (refreshResult && typeof refreshResult.catch === 'function') {
+                            refreshResult.catch(() => {});
+                        }
+                    }
+                } catch (_) {}
             }
 
             exportFullBtn.textContent = t('cardExport.saveCardFaceSuccess', '保存成功！');
