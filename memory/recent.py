@@ -666,7 +666,13 @@ class CompressedRecentHistoryManager:
                         # prompt <要点3> 让 LLM 保留+可编辑 memo，过滤掉等于
                         # 让其在 prompt 里白做工，且 capacity 走过 head SystemMessage
                         # 后这一格无人填补，导致 memo 在写盘时蒸发（场景 D）。
-                        corrected_messages.append(SystemMessage(content=content))
+                        # 但只在 snapshot 头本来就是 SystemMessage 时接收 LLM
+                        # 的 system 输出——否则 history 还没压缩过、不该有
+                        # SystemMessage，LLM 幻觉吐 system 必须丢，避免把伪
+                        # memo 注入未压缩对话区污染下游。
+                        if snapshot and isinstance(snapshot[0], SystemMessage):
+                            corrected_messages.append(SystemMessage(content=content))
+                        # else: 静默 drop，恢复老行为
                     elif role in ['user', 'human', name_mapping['human']]:
                         corrected_messages.append(HumanMessage(content=content))
                     elif role in ['ai', 'assistant', name_mapping['ai']]:

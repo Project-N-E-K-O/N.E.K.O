@@ -223,6 +223,39 @@ def test_empty_llm_output_falls_through_to_white_review(tmp_path):
     assert isinstance(final[0], SystemMessage) and final[0].content == memo
 
 
+def test_pre_compression_drops_hallucinated_system(tmp_path):
+    """history 还没压缩过（snapshot[0] 不是 SystemMessage），LLM 幻觉吐
+    system 行：必须 drop，恢复老 filter 行为。否则 normalize 块不触发，
+    伪 memo 会被注入未压缩对话区污染下游（Codex P2）。"""
+    snapshot = [
+        HumanMessage(content="hi 1"),
+        AIMessage(content="ai 1"),
+        HumanMessage(content="hi 2"),
+        AIMessage(content="ai 2"),
+        HumanMessage(content="hi 3"),
+        AIMessage(content="ai 3"),
+    ]
+    corrected = [
+        {"role": "Master", "content": "hi 1"},
+        {"role": "Xiaoba", "content": "ai 1"},
+        {"role": "SYSTEM_MESSAGE", "content": "fake hallucinated memo"},  # 幻觉
+        {"role": "Master", "content": "hi 2"},
+        {"role": "Xiaoba", "content": "ai 2"},
+        {"role": "Master", "content": "hi 3"},
+        {"role": "Xiaoba", "content": "ai 3"},
+    ]
+    fake_llm = _FakeLLM(corrected)
+    mgr, name, _master = _make_manager(tmp_path, snapshot, fake_llm)
+
+    status, _fp = _run(mgr.review_history(name, snapshot=list(snapshot)))
+
+    assert status == "patched"
+    final = _read_disk(mgr.log_file_path[name])
+    # 不能有任何 SystemMessage（snapshot 没有 → result 也不该有）
+    assert not any(isinstance(m, SystemMessage) for m in final), \
+        f"幻觉 system 必须被 drop，实际 final={[type(m).__name__ for m in final]}"
+
+
 def test_only_system_no_dialogue_falls_through_to_white_review(tmp_path):
     """LLM 只返 system 没返任何对话 ≡ 返空列表（语义上"整段对话都删"），
     应走白 review。
