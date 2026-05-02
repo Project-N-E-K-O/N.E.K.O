@@ -2814,16 +2814,25 @@ class ConfigManager:
             ]
             for prefix, model_key, url_key, apikey_key in _custom_api_fields:
                 provider = core_cfg.get(f'{prefix}ModelProvider', '')
+                # follow_core / follow_assist：URL/Model 是前端联动 readonly 自填的提示值
+                # （static/js/api_key_settings.js: onCustomModelProviderChange），不代表用户
+                # 选择了"自定义部署"。若把它们覆盖进 *_MODEL_URL/*_MODEL，则 get_model_api_config
+                # 在 enable_custom_api=True 时会把 realtime 误判成 'local' 自定义 realtime
+                # （TODO 未实现），下游 core_api_type='local' → TTS 调度落到 dummy_tts_worker
+                # 导致"跟随主/副"完全没声音。这里跳过 URL/Model 覆盖，让 follow_* 走回核心/辅助
+                # API profile 的默认值。API Key 仍由 follow_* 派生。
+                is_follow = provider in ('follow_core', 'follow_assist')
 
-                # URL: 空值回退到已有配置
-                cfg_url = core_cfg.get(f'{prefix}ModelUrl')
-                if cfg_url is not None:
-                    config[url_key] = cfg_url or config.get(url_key, '')
+                if not is_follow:
+                    # URL: 空值回退到已有配置
+                    cfg_url = core_cfg.get(f'{prefix}ModelUrl')
+                    if cfg_url is not None:
+                        config[url_key] = cfg_url or config.get(url_key, '')
 
-                # Model ID: 空值回退到已有配置
-                cfg_model = core_cfg.get(f'{prefix}ModelId')
-                if cfg_model is not None:
-                    config[model_key] = cfg_model or config.get(model_key, '')
+                    # Model ID: 空值回退到已有配置
+                    cfg_model = core_cfg.get(f'{prefix}ModelId')
+                    if cfg_model is not None:
+                        config[model_key] = cfg_model or config.get(model_key, '')
 
                 # API Key 处理：
                 #   follow_core   → 从核心 API Key 派生
