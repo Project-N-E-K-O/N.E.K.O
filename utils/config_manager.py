@@ -185,7 +185,20 @@ def _append_persona_guidance_to_prompt(prompt_text: str, character_payload: dict
     if not isinstance(override, dict):
         return prompt_text
 
-    guidance = str(override.get("prompt_guidance") or "").strip()
+    guidance = ""
+    preset_id = str(override.get("preset_id") or "").strip()
+    if preset_id:
+        # 运行时按当前全局语言重新解析，使 persona prompt 与基础 LANLAN prompt
+        # 一样跟随语言切换；仅当 preset_id 已被代码移除时才退回到落盘字符串。
+        try:
+            from utils.persona_presets import get_persona_prompt_guidance
+            guidance = (get_persona_prompt_guidance(preset_id) or "").strip()
+        except Exception:
+            guidance = ""
+
+    if not guidance:
+        guidance = str(override.get("prompt_guidance") or "").strip()
+
     if not guidance:
         return prompt_text
 

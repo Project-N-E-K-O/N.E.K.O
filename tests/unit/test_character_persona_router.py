@@ -91,7 +91,10 @@ def test_get_character_data_uses_persona_override_in_runtime_view():
 
         assert character_data[current_name]["性格原型"] == "经典元气猫娘"
         assert character_data[current_name]["一句话台词"] == "今天也让我陪着你吧。"
-        assert "energetic, affectionate cat companion" in prompt_map[current_name]
+        # Late-binding: stored prompt_guidance string is ignored; the live preset template
+        # is re-resolved by preset_id. "sunny cat girl" lives in the always-English IMPORTANT
+        # tail of classic_genki, so it's a language-agnostic marker.
+        assert "sunny cat girl" in prompt_map[current_name]
 
 
 @pytest.mark.unit
@@ -130,7 +133,8 @@ def test_get_character_data_ignores_stale_persona_selection_system_prompt_when_o
         _, _, _, character_data, _, prompt_map, _, _, _ = config_manager.get_character_data()
 
         assert character_data[current_name]["性格原型"] == "优雅全能管家"
-        assert "elegant, steady, professional composure" in prompt_map[current_name]
+        # Live preset template marker (English IMPORTANT tail, language-agnostic).
+        assert "butler-cat girl" in prompt_map[current_name]
         assert "<NEKO_PERSONA_SELECTION>" not in prompt_map[current_name]
         assert "笨蛋人类" not in prompt_map[current_name]
 
@@ -167,7 +171,7 @@ def test_get_character_data_keeps_custom_system_prompt_when_override_exists():
 
         assert character_data[current_name]["性格原型"] == "经典元气猫娘"
         assert "reserved fox spirit" in prompt_map[current_name]
-        assert "energetic, affectionate cat companion" in prompt_map[current_name]
+        assert "sunny cat girl" in prompt_map[current_name]
 
 
 @pytest.mark.unit
@@ -212,7 +216,7 @@ def test_get_character_data_strips_legacy_persona_block_but_keeps_custom_system_
         assert "moonlight" in prompt_map[current_name]
         assert "<NEKO_PERSONA_SELECTION>" not in prompt_map[current_name]
         assert "笨蛋人类" not in prompt_map[current_name]
-        assert "energetic, affectionate cat companion" in prompt_map[current_name]
+        assert "sunny cat girl" in prompt_map[current_name]
 
 
 @pytest.mark.unit
