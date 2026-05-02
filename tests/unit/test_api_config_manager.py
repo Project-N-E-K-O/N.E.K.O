@@ -638,8 +638,9 @@ class TestFollowProviderNotLocal:
             'ttsModelApiKey': 'sk-qwen-assist',
         })
         cfg = config_manager.get_core_config()
-        # follow_assist 时 TTS_MODEL_URL 不应被前端联动值覆盖
-        # （应保持 DEFAULT_TTS_MODEL_URL 或回退到核心/辅助 profile）
+        # follow_assist 时 TTS_MODEL_URL 必须保持空（DEFAULT_TTS_MODEL_URL=""，且
+        # core/assist profile 的 field_mapping 都不包含 tts_model_url，没有别的合法来源）。
+        # 任何非空值都意味着 follow_* 跳过 URL 覆盖的逻辑被绕过 → 回归。
         assert cfg.get('TTS_MODEL_URL', '') in ('', None), \
             f"follow_assist 时 TTS_MODEL_URL 应为空，实际={cfg.get('TTS_MODEL_URL')!r}"
 
