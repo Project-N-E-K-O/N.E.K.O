@@ -1,9 +1,8 @@
 """Bridge: message_plane PUB → agent event bus (AGENT_PUSH_ADDR).
 
 Subscribes to the message_plane PUB endpoint, watches for v2 push_message
-payloads, and translates them into the legacy ``proactive_message`` /
-``music_play_url`` / ``music_allowlist_add`` events that main_server's
-``handle_agent_event`` already understands.
+payloads, and translates them into the legacy ``proactive_message`` events
+that main_server's ``handle_agent_event`` already understands.
 
 The v2 schema (``visibility`` + ``ai_behavior`` + ``parts``) is the single
 source of truth — see :mod:`plugin.sdk.shared.core.push_message_schema`.
@@ -21,15 +20,8 @@ import os
 import threading
 import time
 from typing import Any
-from urllib.parse import urlparse
-
 from plugin.logging_config import get_logger
 from plugin.sdk.shared.core.push_message_schema import AI_BEHAVIOR_VALUES
-
-
-def _is_safe_music_url(value: str) -> bool:
-    parsed = urlparse(value.strip())
-    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
 
 try:
     import zmq
@@ -80,10 +72,6 @@ def _media_parts(parts: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 entry["mime"] = p["mime"]
             out.append(entry)
     return out
-
-
-def _ui_action_parts(parts: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [p for p in parts if isinstance(p, dict) and p.get("type") == "ui_action"]
 
 
 def _resolve_agent_push_addr() -> str:
@@ -198,12 +186,9 @@ class ProactiveBridge:
         """Translate a v2 (or legacy-shimmed) push payload into legacy
         agent-event-bus events and PUSH them to main_server.
 
-        A single push_message can produce multiple events:
-
-        * ``proactive_message`` (text + media for AI session, including
-          delivery_mode silent for HUD-only notifications)
-        * ``music_play_url`` / ``music_allowlist_add`` (UI side effects
-          carried as ui_action parts)
+        A single push_message can produce a ``proactive_message`` event
+        containing text and media for the AI session, including delivery_mode
+        silent for HUD-only notifications.
 
         Empty plumbing — no parts and no actionable signal — is dropped
         with a debug log so plugin authors notice on first run.
@@ -224,51 +209,6 @@ class ProactiveBridge:
         target_lanlan = payload.get("target_lanlan") or metadata.get("target_lanlan") or None
 
         events_out: list[dict[str, Any]] = []
-
-        # ---- ui_action parts → legacy music_* events ----
-        for ui in _ui_action_parts(parts):
-            action = ui.get("action")
-            if action == "media_play_url":
-                url = ui.get("url") or metadata.get("url")
-                if not isinstance(url, str) or not _is_safe_music_url(url):
-                    logger.debug(
-                        "ui_action=media_play_url missing or unsafe url; plugin={}",
-                        plugin_id,
-                    )
-                    continue
-                events_out.append(
-                    {
-                        "event_type": "music_play_url",
-                        "lanlan_name": target_lanlan,
-                        "url": url,
-                        "name": ui.get("name") or metadata.get("name"),
-                        "artist": ui.get("artist") or metadata.get("artist"),
-                        "source": plugin_id,
-                        "timestamp": timestamp,
-                    }
-                )
-            elif action == "media_allowlist_add":
-                domains = ui.get("domains") or metadata.get("domains") or []
-                if not isinstance(domains, list) or not domains:
-                    logger.debug(
-                        "ui_action=media_allowlist_add missing domains; plugin={}",
-                        plugin_id,
-                    )
-                    continue
-                events_out.append(
-                    {
-                        "event_type": "music_allowlist_add",
-                        "lanlan_name": target_lanlan,
-                        "domains": list(domains),
-                        "source": plugin_id,
-                        "timestamp": timestamp,
-                    }
-                )
-            else:
-                logger.warning(
-                    "ui_action with unknown action={!r}; plugin={}",
-                    action, plugin_id,
-                )
 
         # ---- text + media parts → proactive_message (or HUD-only) ----
         text = _aggregate_text_parts(parts)

@@ -82,6 +82,8 @@ class STS2AutoplayPlugin(NekoPluginBase):
             self.logger,
             self.report_status,
             self._push_frontend_notification,
+            sdk_bus=self.bus,
+            sdk_ctx=self.ctx,
         )
 
     @lifecycle(id="startup")

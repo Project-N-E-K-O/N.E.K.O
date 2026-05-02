@@ -624,13 +624,26 @@ class DecisioningMixin:
     def _action_for_card(self, actions: list[dict[str, Any]], card: dict[str, Any], *, target_index: Any = None) -> Optional[dict[str, Any]]:
         return self._heuristic_selector.action_for_card(actions, card, target_index, self)
 
+    async def _build_llm_decision_payload_with_recent_user_context(self):
+        user_context = await self._get_recent_user_context()
+
+        def build_payload(context: dict[str, Any], *, character_strategy: Optional[str] = None) -> dict[str, Any]:
+            return self._build_llm_decision_payload(
+                context,
+                character_strategy=character_strategy,
+                user_context=user_context,
+            )
+
+        return build_payload
+
     async def _select_action_full_model(self, context: dict[str, Any]) -> Optional[dict[str, Any]]:
+        build_llm_decision_payload = await self._build_llm_decision_payload_with_recent_user_context()
         return await self._llm_strategy.select_action_full_model(
             context=context,
             cfg=self._cfg,
             configured_character_strategy=self._configured_character_strategy,
             strategy_prompt_for_llm=self._strategy_prompt_for_llm,
-            build_llm_decision_payload=self._build_llm_decision_payload,
+            build_llm_decision_payload=build_llm_decision_payload,
             build_full_model_reasoning_messages=self._llm_strategy.build_full_model_reasoning_messages,
             build_full_model_checked_context=self._llm_strategy.build_full_model_checked_context,
             build_full_model_final_messages=self._llm_strategy.build_full_model_final_messages,
@@ -650,12 +663,13 @@ class DecisioningMixin:
         return self._llm_strategy.build_full_model_final_messages(payload, strategy_prompt)
 
     async def _select_action_with_llm(self, strategy: str, context: dict[str, Any]) -> Optional[dict[str, Any]]:
+        build_llm_decision_payload = await self._build_llm_decision_payload_with_recent_user_context()
         return await self._llm_strategy.select_action_with_llm(
             strategy=strategy,
             context=context,
             cfg=self._cfg,
             strategy_prompt_for_llm=self._strategy_prompt_for_llm,
-            build_llm_decision_payload=self._build_llm_decision_payload,
+            build_llm_decision_payload=build_llm_decision_payload,
             invoke_llm_json=self._llm_strategy.invoke_llm_json,
             parse_llm_decision_response=self._llm_strategy.parse_llm_decision_response,
             validate_llm_decision=self._validate_llm_decision,
@@ -665,12 +679,13 @@ class DecisioningMixin:
     async def _select_action_with_llm_and_reasoning(self, strategy: str, context: dict[str, Any], neko_guidance: Optional[str] = None) -> Optional[tuple[dict[str, Any], Optional[dict[str, Any]]]]:
         if neko_guidance:
             context["neko_guidance"] = neko_guidance
+        build_llm_decision_payload = await self._build_llm_decision_payload_with_recent_user_context()
         return await self._llm_strategy.select_action_with_llm_and_reasoning(
             strategy=strategy,
             context=context,
             cfg=self._cfg,
             strategy_prompt_for_llm=self._strategy_prompt_for_llm,
-            build_llm_decision_payload=self._build_llm_decision_payload,
+            build_llm_decision_payload=build_llm_decision_payload,
             invoke_llm_json=self._llm_strategy.invoke_llm_json,
             parse_llm_decision_response=self._llm_strategy.parse_llm_decision_response,
             validate_llm_decision=self._validate_llm_decision,
@@ -680,12 +695,13 @@ class DecisioningMixin:
     async def _select_action_full_model_and_reasoning(self, context: dict[str, Any], neko_guidance: Optional[str] = None) -> Optional[tuple[dict[str, Any], Optional[dict[str, Any]]]]:
         if neko_guidance:
             context["neko_guidance"] = neko_guidance
+        build_llm_decision_payload = await self._build_llm_decision_payload_with_recent_user_context()
         return await self._llm_strategy.select_action_full_model_and_reasoning(
             context=context,
             cfg=self._cfg,
             configured_character_strategy=self._configured_character_strategy,
             strategy_prompt_for_llm=self._strategy_prompt_for_llm,
-            build_llm_decision_payload=self._build_llm_decision_payload,
+            build_llm_decision_payload=build_llm_decision_payload,
             build_full_model_reasoning_messages=self._llm_strategy.build_full_model_reasoning_messages,
             build_full_model_checked_context=self._llm_strategy.build_full_model_checked_context,
             build_full_model_final_messages=self._llm_strategy.build_full_model_final_messages,
@@ -719,7 +735,7 @@ class DecisioningMixin:
     async def _parse_llm_reasoning_response(self, raw_text: str, *, messages: list[dict[str, Any]]) -> Optional[dict[str, Any]]:
         return await self._llm_strategy.parse_llm_reasoning_response(raw_text, messages, self._llm_strategy)
 
-    def _build_llm_decision_payload(self, context: dict[str, Any], *, character_strategy: Optional[str] = None) -> dict[str, Any]:
+    def _build_llm_decision_payload(self, context: dict[str, Any], *, character_strategy: Optional[str] = None, user_context: Optional[dict[str, Any]] = None) -> dict[str, Any]:
         snapshot = context.get("snapshot") if isinstance(context.get("snapshot"), dict) else {}
         raw_state = snapshot.get("raw_state") if isinstance(snapshot.get("raw_state"), dict) else {}
         combat = raw_state.get("combat") if isinstance(raw_state.get("combat"), dict) else {}
@@ -748,5 +764,6 @@ class DecisioningMixin:
             "map_summary": self._context_analyzer._build_map_summary(context),
             "legal_actions": [self._describe_legal_action(action, context) for action in context.get("actions", []) if isinstance(action, dict)],
             "neko_guidance": context.get("neko_guidance"),
+            "user_context": user_context or {"latest_user_turn": None, "recent_user_turns": []},
         }
         return payload

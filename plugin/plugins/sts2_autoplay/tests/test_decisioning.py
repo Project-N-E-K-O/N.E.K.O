@@ -306,6 +306,17 @@ def test_llm_decision_payload_preserves_zero_player_hp() -> None:
 
 
 @pytest.mark.unit
+def test_llm_decision_payload_includes_user_context() -> None:
+    service = DecisionService()
+    context = combat_context([], hp=10, max_hp=20, incoming=0)
+    user_context = {"latest_user_turn": {"content": "优先保血"}, "recent_user_turns": [{"content": "优先保血"}]}
+
+    payload = service._build_llm_decision_payload(context, user_context=user_context)
+
+    assert payload["user_context"] == user_context
+
+
+@pytest.mark.unit
 def test_llm_decision_payload_uses_empty_constraints_when_strategy_loading_fails() -> None:
     service = DecisionService()
     service._cfg["raise_strategy_constraints"] = True

@@ -934,7 +934,6 @@ def _plugin_business_callback_status(run_data: Any) -> Optional[str]:
     action = str(run_data.get("action") or "").strip().lower()
     observation_only = bool(run_data.get("observation_only"))
     explicit_no_execution = run_data.get("executed") is False or run_data.get("action_executed") is False
-    blocked_actions = {"play_one_card_by_neko", "step_once", "pause_autoplay", "resume_autoplay", "stop_autoplay", "start_autoplay"}
     blocked_statuses = {"blocked", "clarify", "confirm_required", "idle", "stale"}
     if observation_only:
         return None
@@ -942,7 +941,7 @@ def _plugin_business_callback_status(run_data: Any) -> Optional[str]:
         return "failed"
     if bool(run_data.get("needs_confirmation")) or action == "clarify" or status in {"blocked", "clarify", "confirm_required"}:
         return "blocked"
-    if explicit_no_execution and (action in blocked_actions or status in blocked_statuses):
+    if explicit_no_execution and status in blocked_statuses:
         return "blocked"
     return None
 

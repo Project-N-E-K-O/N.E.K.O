@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import time
 from collections import deque
 from pathlib import Path
@@ -31,10 +32,12 @@ class STS2AutoplayService(
     DecisioningMixin,
     ActionExecutionMixin,
 ):
-    def __init__(self, logger, status_reporter: Callable[[dict[str, Any]], None], frontend_notifier: Optional[Callable[..., Any]] = None) -> None:
+    def __init__(self, logger, status_reporter: Callable[[dict[str, Any]], None], frontend_notifier: Optional[Callable[..., Any]] = None, *, sdk_bus: Any = None, sdk_ctx: Any = None) -> None:
         self.logger = logger
         self._report_status = status_reporter
         self._frontend_notifier = frontend_notifier
+        self._sdk_bus = sdk_bus
+        self._sdk_ctx = sdk_ctx
         self._client: Optional[STS2ApiClient] = None
         self._cfg: Dict[str, Any] = {}
         self._snapshot: Dict[str, Any] = {}
@@ -75,6 +78,8 @@ class STS2AutoplayService(
         self._last_neko_event_scene = ""
         self._last_neko_event_floor = -1
         self._auto_pause_reason: Optional[str] = None
+        self._recent_user_turns: Deque[Dict[str, Any]] = deque(maxlen=20)
+        self._seen_user_message_ids: set[str] = set()
 
     _MODE_ALIASES = {
         "full-program": "full-program",
@@ -175,6 +180,116 @@ class STS2AutoplayService(
     @property
     def _strategies_dir(self) -> Path:
         return Path(__file__).with_name("strategies")
+
+    async def _maybe_await(self, value: Any) -> Any:
+        if inspect.isawaitable(value):
+            return await value
+        return value
+
+    def _read_record_field(self, record: Any, name: str) -> Any:
+        if isinstance(record, dict):
+            return record.get(name)
+        return getattr(record, name, None)
+
+    def _record_to_user_turn(self, record: Any) -> Optional[Dict[str, Any]]:
+        metadata = self._read_record_field(record, "metadata")
+        if not isinstance(metadata, dict):
+            metadata = {}
+        raw = self._read_record_field(record, "raw")
+        if isinstance(raw, dict):
+            raw_metadata = raw.get("metadata")
+            if isinstance(raw_metadata, dict):
+                metadata = {**raw_metadata, **metadata}
+        turn_type = self._read_record_field(record, "turn_type") or metadata.get("turn_type")
+        if str(turn_type or "").strip().lower() != "user":
+            return None
+        content = self._read_record_field(record, "content")
+        if content is None and isinstance(raw, dict):
+            content = raw.get("content")
+        content_text = str(content or "").strip()
+        if not content_text:
+            return None
+        conversation_id = self._read_record_field(record, "conversation_id") or metadata.get("conversation_id")
+        message_id = self._read_record_field(record, "message_id") or self._read_record_field(record, "id") or metadata.get("message_id")
+        timestamp = self._read_record_field(record, "timestamp") or self._read_record_field(record, "time")
+        return {
+            "content": content_text,
+            "conversation_id": str(conversation_id) if conversation_id is not None else None,
+            "timestamp": timestamp,
+            "message_id": str(message_id) if message_id is not None else None,
+            "metadata": dict(metadata),
+        }
+
+    def _remember_user_turns(self, turns: list[Dict[str, Any]]) -> None:
+        for turn in turns:
+            message_id = turn.get("message_id")
+            dedupe_key = str(message_id) if message_id else f"{turn.get('conversation_id') or ''}:{turn.get('timestamp') or ''}:{turn.get('content') or ''}"
+            if dedupe_key in self._seen_user_message_ids:
+                continue
+            self._seen_user_message_ids.add(dedupe_key)
+            self._recent_user_turns.append(turn)
+        if len(self._seen_user_message_ids) > 200:
+            self._seen_user_message_ids = {
+                str(turn.get("message_id") or f"{turn.get('conversation_id') or ''}:{turn.get('timestamp') or ''}:{turn.get('content') or ''}")
+                for turn in self._recent_user_turns
+            }
+
+    def _extract_user_turns(self, records: Any, *, limit: int) -> list[Dict[str, Any]]:
+        if records is None:
+            return []
+        if isinstance(records, dict):
+            items = records.get("items") or records.get("records") or records.get("messages") or []
+        else:
+            items = getattr(records, "items", records)
+        if not isinstance(items, list) and not isinstance(items, tuple):
+            try:
+                items = list(items)
+            except TypeError:
+                items = []
+        turns: list[Dict[str, Any]] = []
+        for record in items:
+            turn = self._record_to_user_turn(record)
+            if turn is not None:
+                turns.append(turn)
+        turns.sort(key=lambda item: float(item.get("timestamp") or 0) if isinstance(item.get("timestamp"), (int, float)) else 0.0)
+        return turns[-max(1, limit):]
+
+    async def _get_recent_user_context(self, conversation_id: Optional[str] = None, limit: Optional[int] = None) -> Dict[str, Any]:
+        max_turns = int(limit or self._cfg.get("message_context_max_user_turns", 3) or 3)
+        max_turns = max(1, min(max_turns, 10))
+        empty = {"latest_user_turn": None, "recent_user_turns": []}
+        if not bool(self._cfg.get("message_context_enabled", True)):
+            return empty
+        if self._sdk_bus is None:
+            cached = list(self._recent_user_turns)[-max_turns:]
+            return {"latest_user_turn": cached[-1] if cached else None, "recent_user_turns": cached}
+
+        turns: list[Dict[str, Any]] = []
+        conversations = getattr(self._sdk_bus, "conversations", None)
+        if conversations is not None:
+            try:
+                if conversation_id and callable(getattr(conversations, "get_by_id", None)):
+                    result = await self._maybe_await(conversations.get_by_id(conversation_id, max_count=max(max_turns * 3, 10), timeout=2.0))
+                else:
+                    result = await self._maybe_await(conversations.get(max_count=max(max_turns * 3, 10), timeout=2.0))
+                turns = self._extract_user_turns(result, limit=max_turns)
+            except Exception as exc:
+                self.logger.debug(f"[sts2_autoplay] SDK conversations user context unavailable: {exc}")
+
+        messages = getattr(self._sdk_bus, "messages", None)
+        if not turns and messages is not None:
+            try:
+                msg_filter = {"conversation_id": conversation_id} if conversation_id else None
+                result = await self._maybe_await(messages.get(plugin_id="*", max_count=max(max_turns * 5, 20), filter=msg_filter, timeout=2.0))
+                turns = self._extract_user_turns(result, limit=max_turns)
+            except Exception as exc:
+                self.logger.debug(f"[sts2_autoplay] SDK messages user context unavailable: {exc}")
+
+        if turns:
+            self._remember_user_turns(turns)
+        else:
+            turns = list(self._recent_user_turns)[-max_turns:]
+        return {"latest_user_turn": turns[-1] if turns else None, "recent_user_turns": turns}
 
     async def startup(self, cfg: Dict[str, Any]) -> None:
         self._cfg = dict(cfg)

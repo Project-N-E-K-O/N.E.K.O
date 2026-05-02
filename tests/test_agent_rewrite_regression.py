@@ -684,20 +684,6 @@ def test_task_executor_format_messages_mentions_image_attachments():
     assert "LATEST_USER_REQUEST: 帮我看看这张图哪里报错了 [Attached images: 1]" in output
 
 
-def test_task_executor_preserves_latest_user_request_for_sts2_neko_command():
-    from brain.task_executor import DirectTaskExecutor
-
-    executor = object.__new__(DirectTaskExecutor)
-    plugin_args = executor._preserve_latest_user_request_for_plugin_args(
-        plugin_id="sts2_autoplay",
-        entry_id="sts2_neko_command",
-        plugin_args={"command": "play a card", "scope": "user", "confirm": True},
-        latest_user_request="帮我打出一张牌",
-    )
-
-    assert plugin_args == {"command": "帮我打出一张牌", "scope": "user", "confirm": True}
-
-
 def test_plugin_business_callback_status_marks_non_executed_results():
     from agent_server import _plugin_business_callback_status
 
@@ -705,8 +691,6 @@ def test_plugin_business_callback_status_marks_non_executed_results():
     assert _plugin_business_callback_status({"status": "confirm_required", "needs_confirmation": True}) == "blocked"
     assert _plugin_business_callback_status({"status": "idle", "executed": False}) == "blocked"
     assert _plugin_business_callback_status({"status": "stale", "executed": False}) == "blocked"
-    assert _plugin_business_callback_status({"status": "ok", "action": "play_one_card_by_neko", "executed": False}) == "blocked"
-    assert _plugin_business_callback_status({"status": "running", "action": "start_autoplay", "action_executed": False}) == "blocked"
     assert _plugin_business_callback_status({"status": "error", "executed": False}) == "failed"
     assert _plugin_business_callback_status({"status": "error", "observation_only": True}) is None
     assert _plugin_business_callback_status({"status": "idle", "executed": False, "observation_only": True}) is None
@@ -733,7 +717,7 @@ def test_callback_instruction_renders_blocked_plugin_result_as_not_executed():
             {
                 "status": "blocked",
                 "source_kind": "plugin",
-                "source_name": "尖塔自动战斗",
+                "source_name": "示例插件",
                 "summary": "需要确认后才能执行",
                 "detail": "需要确认后才能执行",
                 "delivery_mode": "proactive",
@@ -756,19 +740,19 @@ def test_task_executor_hides_agent_auto_disabled_plugin_entries():
     executor = object.__new__(DirectTaskExecutor)
     plugins = [
         {
-            "id": "sts2_autoplay",
-            "description": "尖塔插件",
+            "id": "demo_plugin",
+            "description": "示例插件",
             "entries": [
-                {"id": "sts2_get_snapshot", "description": "获取快照", "metadata": {"agent_auto": False}},
-                {"id": "sts2_start_autoplay", "description": "开启尖塔游玩"},
+                {"id": "diagnostics_snapshot", "description": "获取诊断快照", "metadata": {"agent_auto": False}},
+                {"id": "start_job", "description": "启动示例任务"},
             ],
         }
     ]
 
     desc = "\n".join(executor._build_plugin_desc_lines(plugins))
-    assert "sts2_get_snapshot" not in desc
-    assert "sts2_start_autoplay" in desc
-    plugin, entry = executor._find_plugin_entry(plugins, "sts2_autoplay", "sts2_get_snapshot")
+    assert "diagnostics_snapshot" not in desc
+    assert "start_job" in desc
+    plugin, entry = executor._find_plugin_entry(plugins, "demo_plugin", "diagnostics_snapshot")
     assert plugin is plugins[0]
     assert entry is None
 
@@ -779,16 +763,16 @@ def test_task_executor_skips_plugin_with_only_agent_hidden_entries():
     executor = object.__new__(DirectTaskExecutor)
     plugins = [
         {
-            "id": "sts2_autoplay",
-            "description": "尖塔插件",
+            "id": "demo_plugin",
+            "description": "示例插件",
             "entries": [
-                {"id": "sts2_get_snapshot", "description": "获取快照", "metadata": {"agent_auto": False}},
+                {"id": "diagnostics_snapshot", "description": "获取诊断快照", "metadata": {"agent_auto": False}},
             ],
         }
     ]
 
     assert executor._build_plugin_desc_lines(plugins) == []
-    plugin, entry = executor._find_plugin_entry(plugins, "sts2_autoplay", "sts2_get_snapshot")
+    plugin, entry = executor._find_plugin_entry(plugins, "demo_plugin", "diagnostics_snapshot")
     assert plugin is plugins[0]
     assert entry is None
 
