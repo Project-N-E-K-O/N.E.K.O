@@ -38,6 +38,7 @@ from main_logic.tool_calling import (
 )
 from utils.llm_client import AIMessage
 from main_logic.session_state import SessionStateMachine, SessionEvent
+from plugin.core.state import state as _plugin_state
 from utils.preferences import load_global_conversation_settings, aload_global_conversation_settings
 from config import (
     MEMORY_SERVER_PORT,
@@ -1185,7 +1186,8 @@ class LLMSessionManager:
 
         Plugin 端通过 ``ctx.bus.memory.get(bucket_id=...)`` 读取。会同时写入
         两个 bucket：``"default"``（与 protocols.py 文档示例一致，全局可读）
-        和 ``self.lanlan_name``（按角色作用域）。
+        和 ``self.lanlan_name``（按角色作用域），但若两者撞名则只写一次，
+        避免同一条原话被重复消费。
 
         Why: 在此之前 ``state.add_user_context_event`` 整条链路是 dead
         infrastructure —— 服务端、handler、plugin SDK 全都齐全，但没人写入，
@@ -1197,10 +1199,6 @@ class LLMSessionManager:
         cleaned = text.strip()
         if not cleaned:
             return
-        try:
-            from plugin.core.state import state as _plugin_state
-        except Exception:
-            return
         event = {
             "type": "user_message",
             "content": cleaned,
@@ -1208,7 +1206,9 @@ class LLMSessionManager:
             "is_voice": bool(is_voice_source),
             "source": "main_logic.core",
         }
-        for bucket in ("default", self.lanlan_name):
+        # dict.fromkeys 保留顺序的同时去重：lanlan_name == "default" 或为空
+        # 时不会重复写入 default bucket。
+        for bucket in dict.fromkeys(("default", self.lanlan_name)):
             if not isinstance(bucket, str) or not bucket:
                 continue
             try:

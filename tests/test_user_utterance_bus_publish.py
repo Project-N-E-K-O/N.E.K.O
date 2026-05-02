@@ -112,6 +112,19 @@ def test_publish_non_string_input_is_ignored():
 
 
 @pytest.mark.unit
+def test_publish_dedupes_when_lanlan_name_equals_default():
+    """If lanlan_name is literally "default", we must not write twice to it."""
+    fake = _make_fake_core(lanlan_name="default")
+    LLMSessionManager._publish_user_utterance_to_plugin_bus(
+        fake, "echo me once", is_voice_source=True,
+    )
+
+    events = _drain_bucket("default")
+    assert len(events) == 1
+    assert events[0]["content"] == "echo me once"
+
+
+@pytest.mark.unit
 def test_repeated_publishes_accumulate_in_chronological_order():
     fake = _make_fake_core(lanlan_name="兰兰")
     for i, msg in enumerate(["first", "second", "third"]):
