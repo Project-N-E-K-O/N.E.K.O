@@ -202,6 +202,16 @@ HEURISTIC_NEGATION_TOKENS_BY_LANG = {
     'ru': ('не ', 'нет ', 'никогда'),
 }
 
+# 让步/转折连词：window 内出现这些词时，词后才算与命中关键词同小句的前文。
+# 用于阻断 "not X but Y / 不是 X 而是 Y" 这种对比句把前半的否定带到后半。
+HEURISTIC_CONTRAST_CONJUNCTIONS_BY_LANG = {
+    'zh': ('但', '但是', '不过', '然而', '可是', '而是'),
+    'en': (' but ', ' however', ' yet ', ' though', ' instead'),
+    'ja': ('けど', 'けれど', 'でも', 'しかし', 'だが'),
+    'ko': ('하지만', '그러나', '근데', '대신'),
+    'ru': (' но ', ' однако', ' зато', ' а '),
+}
+
 # 模型可能输出的 emotion label 别名/同义词，归一化到 canonical 5 类。
 # 'common' block 收的是 canonical 英文 label 本身及其常见英文同义词。
 EMOTION_LABEL_ALIASES_BY_LANG = {
@@ -276,6 +286,10 @@ def get_happy_playful_patterns_flat() -> tuple:
 
 def get_heuristic_negation_tokens_flat() -> tuple:
     return _flatten_lang_tuples(HEURISTIC_NEGATION_TOKENS_BY_LANG)
+
+
+def get_heuristic_contrast_conjunctions_flat() -> tuple:
+    return _flatten_lang_tuples(HEURISTIC_CONTRAST_CONJUNCTIONS_BY_LANG)
 
 
 def get_emotion_label_aliases_flat() -> dict:

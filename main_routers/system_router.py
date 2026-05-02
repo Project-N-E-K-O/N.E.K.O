@@ -82,6 +82,7 @@ from config.prompts_emotion import (
     get_sad_vulnerable_patterns_flat,
     get_happy_playful_patterns_flat,
     get_heuristic_negation_tokens_flat,
+    get_heuristic_contrast_conjunctions_flat,
     get_emotion_label_aliases_flat,
 )
 from config.prompts_memory import PROACTIVE_FOLLOWUP_HEADER
@@ -1082,8 +1083,9 @@ def _coerce_emotion_confidence(raw_confidence, default=0.5):
     return max(0.0, min(1.0, confidence))
 
 
-# 启发式打分时的否定回看 token 表统一在 config/prompts_emotion.py 按语种维护。
+# 启发式打分时的否定回看 token / 转折连词表统一在 config/prompts_emotion.py 按语种维护。
 _HEURISTIC_NEGATION_TOKENS = get_heuristic_negation_tokens_flat()
+_HEURISTIC_CONTRAST_CONJUNCTIONS = get_heuristic_contrast_conjunctions_flat()
 _HEURISTIC_NEGATION_LOOKBACK = 14
 # 子句分隔符：回看窗口越过分隔符后的内容视为另一小句，不再修饰本次命中。
 # 避免 "我不是难过，我是生气" 中 `生气` 的回看抓到前一小句的 `不` 而被误判否定。
@@ -1098,7 +1100,7 @@ def _has_heuristic_negation_before(text_value, position):
         return False
     start = max(0, position - _HEURISTIC_NEGATION_LOOKBACK)
     window = text_value[start:position]
-    # 1) 窗口越过子句分隔符的部分丢掉，只看与命中关键词同小句的前文
+    # 1) 窗口越过子句分隔符（标点）的部分丢掉，只看与命中关键词同小句的前文
     last_delim = -1
     for delim in _HEURISTIC_CLAUSE_DELIMITERS:
         idx = window.rfind(delim)
@@ -1106,9 +1108,19 @@ def _has_heuristic_negation_before(text_value, position):
             last_delim = idx
     if last_delim >= 0:
         window = window[last_delim + 1:]
-    # 2) 句首场景补一个前导空格，确保 ` no ` / ` not ` 等带前后空格的 token
-    #    在 "no angry" / "not happy" 这种句首写法下也能命中
+    # 2) 句首场景补一个前导空格，统一处理带前导空格的 token（否定 ` no `、连词 ` but `）
     window = ' ' + window
+    # 3) 让步/转折连词同样切断否定范围：处理 "not X but Y / 不是 X 而是 Y" 对比句，
+    #    避免前半的否定被错误带到后半的情绪关键词。
+    last_conj = -1
+    for conj in _HEURISTIC_CONTRAST_CONJUNCTIONS:
+        idx = window.rfind(conj)
+        if idx >= 0:
+            end_pos = idx + len(conj)
+            if end_pos > last_conj:
+                last_conj = end_pos
+    if last_conj >= 0:
+        window = window[last_conj:]
     return any(token in window for token in _HEURISTIC_NEGATION_TOKENS)
 
 
