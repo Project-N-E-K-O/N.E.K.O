@@ -419,6 +419,10 @@ class NekoCommandingMixin:
             except Exception as exc:
                 message = f"我现在读不到尖塔局面，没法可靠回答这句：{question}。错误：{exc}。"
                 return {"status": "error", "message": message, "summary": message, "executed": False, "observation_only": True}
+        if not snapshot:
+            # refresh_state 没抛异常但 snapshot 仍为空——别基于空数据拼"局面解说"
+            message = f"我现在还没拿到尖塔局面，没法可靠回答这句：{question}。请先刷新状态后再试。"
+            return {"status": "idle", "message": message, "summary": message, "executed": False, "observation_only": True}
         report = self._report_full_step({"snapshot": snapshot}, decision_result=self._last_llm_reasoning)
         hand = "、".join(str(card.get("name") or "?") for card in report.get("hand", []) if isinstance(card, dict)) or "暂无手牌"
         enemies = []
