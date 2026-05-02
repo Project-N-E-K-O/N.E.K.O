@@ -7,6 +7,11 @@ Handles agent-related endpoints including:
 - Health checks
 - Task status
 - Admin control
+
+URL convention: routes declared WITHOUT trailing slash (no ``@router.get('/')``).
+See ``main_routers/characters_router.py`` docstring or
+``.agent/rules/neko-guide.md`` (§"API URL 末尾不带斜杠") for the rationale;
+enforced by ``scripts/check_api_trailing_slash.py``.
 """
 
 import time

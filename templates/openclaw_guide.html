@@ -468,7 +468,7 @@
                 title: 'openclawGuide.pageTitle',
             };
 
-            const GUIDE_ROUTE_BASE = '/api/agent/openclaw/guide/';
+            const GUIDE_ROUTE_BASE = '/api/agent/openclaw/guide';
             const LANGUAGE_OPTIONS = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru'];
             const LOCALE_SHORT_LABELS = {
                 'zh-CN': '简',
@@ -537,7 +537,7 @@
                     return text;
                 }
                 const normalized = text.replace(/^\.?\//, '');
-                return GUIDE_ROUTE_BASE + normalized;
+                return GUIDE_ROUTE_BASE + '/' + normalized;
             }
 
             function renderMarkdown(markdown) {
