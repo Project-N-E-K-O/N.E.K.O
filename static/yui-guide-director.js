@@ -173,6 +173,9 @@
     const DEFAULT_INTERRUPT_ACCELERATION_STREAK = 3;
     const DEFAULT_PASSIVE_RESISTANCE_DISTANCE = 10;
     const DEFAULT_PASSIVE_RESISTANCE_INTERVAL_MS = 140;
+    const DEFAULT_USER_CURSOR_REVEAL_DISTANCE = 14;
+    const DEFAULT_USER_CURSOR_REVEAL_INTERVAL_MS = 160;
+    const DEFAULT_USER_CURSOR_REVEAL_MOVES = 2;
     const DEFAULT_STEP_DELAY_MS = 120;
     const DEFAULT_SCENE_SETTLE_MS = 260;
     const DEFAULT_CURSOR_DURATION_MS = 520;
@@ -181,6 +184,8 @@
     const INTRO_GREETING_REPLY_TEXT_KEY = 'tutorial.yuiGuide.lines.introGreetingReply';
     const TAKEOVER_PLUGIN_DASHBOARD_TEXT = '有了它们，我不光能看 B 站弹幕，还能帮你关灯开空调…… 本喵就是无所不能的超级猫猫神！哼哼～';
     const TAKEOVER_PLUGIN_DASHBOARD_TEXT_KEY = 'tutorial.yuiGuide.lines.takeoverPluginPreviewDashboard';
+    const PLUGIN_DASHBOARD_POPUP_BLOCKED_TEXT = '浏览器需要你亲自点一下这里打开插件面板。点一下这个“管理面板”，我就继续带你看。';
+    const PLUGIN_DASHBOARD_POPUP_BLOCKED_TEXT_KEY = 'tutorial.yuiGuide.lines.pluginDashboardPopupBlocked';
     const TAKEOVER_SETTINGS_DETAIL_TEXT_PART_1 = '你看，这里可以穿我的新衣服、给我换一个好听的声音……换一个猫娘或是修改记忆？';
     const TAKEOVER_SETTINGS_DETAIL_TEXT_PART_2 = '等一下！你在干嘛？该不会是想把我换掉吧？啊啊啊不行！快关掉快关掉！';
     const TAKEOVER_SETTINGS_DETAIL_TEXT = TAKEOVER_SETTINGS_DETAIL_TEXT_PART_1 + TAKEOVER_SETTINGS_DETAIL_TEXT_PART_2;
@@ -637,6 +642,7 @@
         'tutorial.yuiGuide.lines.takeoverCaptureCursor': '超级魔法按钮出现！只要点一下这里，我就可以把小爪子伸到你的键盘和鼠标上啦！我会帮你打字，帮你点开网页……不过，要是那个鼠标指针动来动去的话，我可能也会忍不住扑上去抓它哦！准备好迎接我的捣乱……啊不，是帮忙了吗？喵！',
         'tutorial.yuiGuide.lines.takeoverPluginPreviewHome': '还没完呢！你快看快看，这里还有超～～多好玩的插件呢！',
         'tutorial.yuiGuide.lines.takeoverPluginPreviewDashboard': '有了它们，我不光能看 B 站弹幕，还能帮你关灯开空调…… 本喵就是无所不能的超级猫猫神！哼哼～',
+        'tutorial.yuiGuide.lines.pluginDashboardPopupBlocked': '浏览器需要你亲自点一下这里打开插件面板。点一下这个“管理面板”，我就继续带你看。',
         'tutorial.yuiGuide.lines.takeoverSettingsPeekIntro': '当然啦，如果你想让本喵多和你聊聊天也不是不行啦，给我多准备点小鱼干吧，嘿嘿，好了不逗你啦，设置都在这个齿轮里。',
         'tutorial.yuiGuide.lines.takeoverSettingsPeekDetail': '你看，这里可以穿我的新衣服、给我换一个好听的声音……换一个猫娘或是修改记忆？等一下！你在干嘛？该不会是想把我换掉吧？啊啊啊不行！快关掉快关掉！',
         'tutorial.yuiGuide.lines.takeoverSettingsPeekDetailPart1': '你看，这里可以穿我的新衣服、给我换一个好听的声音……换一个猫娘或是修改记忆？',
@@ -2069,12 +2075,17 @@
             this.pluginDashboardHandoff = null;
             this.pluginDashboardLastInterruptRequestId = '';
             this.pluginDashboardWindowCreatedByGuide = false;
+            this.manualPluginDashboardOpenAllowed = false;
+            this.manualPluginDashboardOpenTarget = null;
             this.takeoverOriginalAgentSwitches = null;
             this.customSecondarySpotlightTarget = null;
             this.keydownHandler = this.onKeyDown.bind(this);
             this.pointerMoveHandler = this.onPointerMove.bind(this);
             this.pointerDownHandler = this.onPointerDown.bind(this);
             this.resistanceCursorTimer = null;
+            this.userCursorRevealMoveCount = 0;
+            this.userCursorRevealed = false;
+            this.lastUserCursorRevealMoveAt = 0;
             this.restoreHiddenCursorAfterResistance = false;
             this.pageHideHandler = this.onPageHide.bind(this);
             this.tutorialEndHandler = this.onTutorialEndEvent.bind(this);
@@ -2314,7 +2325,13 @@
 
         showGuideBubble(text, options, sceneId) {
             const normalizedOptions = Object.assign({}, options || {});
-            if (!normalizedOptions.meta) {
+            const bubbleVariant = typeof normalizedOptions.bubbleVariant === 'string'
+                ? normalizedOptions.bubbleVariant.trim()
+                : '';
+            const hidesMeta = bubbleVariant === 'intro-activation' || bubbleVariant === 'plugin-manual-open';
+            if (hidesMeta) {
+                normalizedOptions.meta = '';
+            } else if (!normalizedOptions.meta) {
                 normalizedOptions.meta = this.getBubbleMetaForScene(sceneId || this.currentSceneId);
             }
             this.overlay.showBubble(text, normalizedOptions);
@@ -4682,7 +4699,7 @@
         }
 
         async clickAgentSidePanelAction(toggleId, actionId, options) {
-            return this.callHomeInteractionApi('clickAgentSidePanelAction', [toggleId, actionId, options || null], async () => {
+            const fallbackClick = async () => {
                 const button = await this.waitForAgentSidePanelActionVisible(toggleId, actionId, 1800);
                 if (!button || typeof button.click !== 'function') {
                     return false;
@@ -4690,7 +4707,29 @@
 
                 button.click();
                 return true;
-            });
+            };
+
+            if (toggleId === 'agent-user-plugin' && actionId === 'management-panel') {
+                const api = this.getHomeInteractionApi();
+                if (api && typeof api.clickAgentSidePanelAction === 'function') {
+                    try {
+                        const clicked = await api.clickAgentSidePanelAction(toggleId, actionId, options || null);
+                        if (clicked) {
+                            return true;
+                        }
+                        return fallbackClick();
+                    } catch (error) {
+                        console.warn('[YuiGuide] 插件管理面板 API 点击失败，回退到本地实现:', error);
+                    }
+                }
+                return fallbackClick();
+            }
+
+            return this.callHomeInteractionApi(
+                'clickAgentSidePanelAction',
+                [toggleId, actionId, options || null],
+                fallbackClick
+            );
         }
 
         async openSettingsPanel() {
@@ -4956,6 +4995,71 @@
             }
 
             return null;
+        }
+
+        async waitForManualPluginDashboardOpen(managementButton, spotlightTarget, runId, timeoutMs) {
+            if (!managementButton || runId !== this.sceneRunId || this.isStopping()) {
+                return {
+                    window: null,
+                    createdByGuide: false
+                };
+            }
+
+            const normalizedTimeoutMs = clamp(
+                Math.round(Number.isFinite(timeoutMs) ? timeoutMs : 18000),
+                6000,
+                30000
+            );
+            const target = spotlightTarget || managementButton;
+            this.manualPluginDashboardOpenAllowed = true;
+            this.manualPluginDashboardOpenTarget = managementButton;
+            this.recordExperienceMetric('plugin_dashboard_popup_blocked_prompt', {
+                targetPage: 'plugin_dashboard'
+            });
+
+            try {
+                this.revealUserCursor();
+                this.overlay.activateSpotlight(target);
+                this.cursor.wobble();
+                const targetRect = this.getElementRect(target) || this.getElementRect(managementButton);
+                const promptText = this.resolveGuideCopy(
+                    PLUGIN_DASHBOARD_POPUP_BLOCKED_TEXT_KEY,
+                    PLUGIN_DASHBOARD_POPUP_BLOCKED_TEXT
+                );
+                this.showGuideBubble(promptText, {
+                    anchorRect: targetRect || null,
+                    emotion: 'surprised',
+                    bubbleVariant: 'plugin-manual-open'
+                }, 'takeover_plugin_preview');
+
+                const openedWindow = await this.waitForOpenedWindow(
+                    PLUGIN_DASHBOARD_WINDOW_NAME,
+                    normalizedTimeoutMs
+                );
+                if (openedWindow && !openedWindow.closed) {
+                    this.recordExperienceMetric('plugin_dashboard_popup_manual_opened', {
+                        targetPage: 'plugin_dashboard'
+                    });
+                    return {
+                        window: openedWindow,
+                        createdByGuide: false
+                    };
+                }
+
+                this.recordExperienceMetric('plugin_dashboard_popup_manual_open_timeout', {
+                    targetPage: 'plugin_dashboard'
+                });
+                return {
+                    window: null,
+                    createdByGuide: false
+                };
+            } finally {
+                this.manualPluginDashboardOpenAllowed = false;
+                this.manualPluginDashboardOpenTarget = null;
+                if (runId === this.sceneRunId && !this.isStopping()) {
+                    this.overlay.hideBubble();
+                }
+            }
         }
 
         getPluginDashboardExpectedOrigin() {
@@ -5662,7 +5766,7 @@
             await this.clickCursorAndWait(scaleSceneMs(180, 90, 420));
             const existingPluginDashboardWindow = await this.waitForOpenedWindow(PLUGIN_DASHBOARD_WINDOW_NAME, 120);
             const hadPluginDashboard = !!(existingPluginDashboardWindow && !existingPluginDashboardWindow.closed);
-            await this.clickAgentSidePanelAction('agent-user-plugin', 'management-panel', {
+            const agentPanelActionOpened = await this.clickAgentSidePanelAction('agent-user-plugin', 'management-panel', {
                 keepMainUIVisible: true
             });
 
@@ -5690,7 +5794,22 @@
                     }
                 }
             } else {
-                pluginDashboardWindow = await this.waitForOpenedWindow(PLUGIN_DASHBOARD_WINDOW_NAME, 6000);
+                if (agentPanelActionOpened) {
+                    pluginDashboardWindow = await this.waitForOpenedWindow(PLUGIN_DASHBOARD_WINDOW_NAME, 6000);
+                    this.pluginDashboardWindowCreatedByGuide = !!(pluginDashboardWindow && !pluginDashboardWindow.closed);
+                }
+            }
+
+            if (
+                (!pluginDashboardWindow || pluginDashboardWindow.closed)
+                && agentPanelActionOpened !== false
+                && runId === this.sceneRunId
+                && !this.destroyed
+                && !this.angryExitTriggered
+            ) {
+                pluginDashboardWindow = await this.openPluginDashboardWindow({
+                    keepMainUIVisible: true
+                });
                 this.pluginDashboardWindowCreatedByGuide = !!(pluginDashboardWindow && !pluginDashboardWindow.closed);
             }
 
@@ -5700,10 +5819,19 @@
                 && !this.destroyed
                 && !this.angryExitTriggered
             ) {
-                pluginDashboardWindow = await this.openPluginDashboardWindow({
-                    keepMainUIVisible: true
-                });
-                this.pluginDashboardWindowCreatedByGuide = !!(pluginDashboardWindow && !pluginDashboardWindow.closed);
+                const manualPluginDashboardOpen = await this.waitForManualPluginDashboardOpen(
+                    managementButton,
+                    managementSpotlightTarget,
+                    runId,
+                    scaleSceneMs(18000, 9000, 26000)
+                );
+                pluginDashboardWindow = manualPluginDashboardOpen && manualPluginDashboardOpen.window;
+                this.pluginDashboardWindowCreatedByGuide = !!(
+                    manualPluginDashboardOpen
+                    && manualPluginDashboardOpen.createdByGuide
+                    && pluginDashboardWindow
+                    && !pluginDashboardWindow.closed
+                );
             }
 
             return {
@@ -5932,7 +6060,7 @@
                 await this.clickCursorAndWait(scaleSceneMs(180, 90, 420));
                 const existingPluginDashboardWindow = await this.waitForOpenedWindow(PLUGIN_DASHBOARD_WINDOW_NAME, 120);
                 const hadPluginDashboard = !!(existingPluginDashboardWindow && !existingPluginDashboardWindow.closed);
-                await this.clickAgentSidePanelAction('agent-user-plugin', 'management-panel', {
+                const agentPanelActionOpened = await this.clickAgentSidePanelAction('agent-user-plugin', 'management-panel', {
                     keepMainUIVisible: true
                 });
                 let pluginDashboardWindow = null;
@@ -5959,11 +6087,14 @@
                         }
                     }
                 } else {
-                    pluginDashboardWindow = await this.waitForOpenedWindow(PLUGIN_DASHBOARD_WINDOW_NAME, 6000);
-                    this.pluginDashboardWindowCreatedByGuide = !!(pluginDashboardWindow && !pluginDashboardWindow.closed);
+                    if (agentPanelActionOpened) {
+                        pluginDashboardWindow = await this.waitForOpenedWindow(PLUGIN_DASHBOARD_WINDOW_NAME, 6000);
+                        this.pluginDashboardWindowCreatedByGuide = !!(pluginDashboardWindow && !pluginDashboardWindow.closed);
+                    }
                 }
                 if (
                     (!pluginDashboardWindow || pluginDashboardWindow.closed)
+                    && agentPanelActionOpened !== false
                     && runId === this.sceneRunId
                     && !this.destroyed
                     && !this.angryExitTriggered
@@ -5972,6 +6103,26 @@
                         keepMainUIVisible: true
                     });
                     this.pluginDashboardWindowCreatedByGuide = !!(pluginDashboardWindow && !pluginDashboardWindow.closed);
+                }
+                if (
+                    (!pluginDashboardWindow || pluginDashboardWindow.closed)
+                    && runId === this.sceneRunId
+                    && !this.destroyed
+                    && !this.angryExitTriggered
+                ) {
+                    const manualPluginDashboardOpen = await this.waitForManualPluginDashboardOpen(
+                        managementButton,
+                        managementSpotlightTarget,
+                        runId,
+                        scaleSceneMs(18000, 9000, 26000)
+                    );
+                    pluginDashboardWindow = manualPluginDashboardOpen && manualPluginDashboardOpen.window;
+                    this.pluginDashboardWindowCreatedByGuide = !!(
+                        manualPluginDashboardOpen
+                        && manualPluginDashboardOpen.createdByGuide
+                        && pluginDashboardWindow
+                        && !pluginDashboardWindow.closed
+                    );
                 }
 
                 if (pluginDashboardWindow && !pluginDashboardWindow.closed) {
@@ -6709,11 +6860,9 @@
             this.clearSceneTimers();
             this.disableInterrupts();
             this.cancelActiveNarration();
-            if (this.resistanceCursorTimer) {
-                window.clearTimeout(this.resistanceCursorTimer);
-                this.resistanceCursorTimer = null;
-            }
-            document.body.classList.remove('yui-resistance-cursor-reveal');
+            this.clearUserCursorReveal(true);
+            this.manualPluginDashboardOpenAllowed = false;
+            this.manualPluginDashboardOpenTarget = null;
             this.awaitingIntroActivation = false;
             if (typeof this._introActivationResolve === 'function') {
                 this._introActivationResolve();
@@ -6918,18 +7067,24 @@
             return undefined;
         }
 
-        scrollChatToBottom() {
+        scrollChatToBottom(options) {
             const messageList = this.resolveElement('#react-chat-window-root .message-list');
             if (!messageList) {
                 return;
             }
 
+            const normalizedOptions = options || {};
+            const useSmoothScroll = normalizedOptions.behavior === 'smooth';
             const scroll = () => {
                 try {
-                    messageList.scrollTo({
-                        top: messageList.scrollHeight,
-                        behavior: 'smooth'
-                    });
+                    if (useSmoothScroll) {
+                        messageList.scrollTo({
+                            top: messageList.scrollHeight,
+                            behavior: 'smooth'
+                        });
+                    } else {
+                        messageList.scrollTop = messageList.scrollHeight;
+                    }
                 } catch (_) {
                     messageList.scrollTop = messageList.scrollHeight;
                 }
@@ -6937,7 +7092,9 @@
 
             scroll();
             window.requestAnimationFrame(scroll);
-            this.schedule(scroll, 160);
+            if (useSmoothScroll) {
+                this.schedule(scroll, 160);
+            }
         }
 
         cloneGuideChatMessageWithText(message, text, status) {
@@ -7222,7 +7379,7 @@
 
             if (target && typeof target.scrollIntoView === 'function') {
                 target.scrollIntoView({
-                    behavior: 'smooth',
+                    behavior: 'auto',
                     block: 'center',
                     inline: 'nearest'
                 });
@@ -7353,12 +7510,12 @@
                 const activationHint = this.resolveGuideCopy(INTRO_ACTIVATION_HINT_KEY, INTRO_ACTIVATION_HINT);
                 this.showGuideBubble(activationHint, {
                     anchorRect: inputRect,
-                    meta: this.getBubbleMetaForScene('intro_activation')
+                    bubbleVariant: 'intro-activation'
                 }, 'intro_activation');
                 // 将气泡定位到输入框正上方
                 const bubbleEl = this.overlay.bubble;
                 if (bubbleEl) {
-                    const bubbleW = Math.min(320, window.innerWidth - 32);
+                    const bubbleW = Math.min(bubbleEl.offsetWidth || 380, window.innerWidth - 32);
                     const bubbleH = bubbleEl.offsetHeight || 60;
                     const bLeft = Math.max(16, Math.min(
                         inputRect.left + inputRect.width / 2 - bubbleW / 2,
@@ -7982,6 +8139,7 @@
                 speed: speed
             };
 
+            this.noteUserCursorRevealAttempt(distance, now);
             this.maybePlayPassiveResistance(x, y, distance, speed, now);
 
             if (distance < DEFAULT_INTERRUPT_DISTANCE) {
@@ -8022,6 +8180,73 @@
             this.playLightResistance(x, y);
         }
 
+        noteUserCursorRevealAttempt(distance, now) {
+            if (
+                this.userCursorRevealed
+                || !Number.isFinite(distance)
+                || distance < DEFAULT_USER_CURSOR_REVEAL_DISTANCE
+                || !document.body.classList.contains('yui-taking-over')
+            ) {
+                return;
+            }
+
+            if (now - this.lastUserCursorRevealMoveAt < DEFAULT_USER_CURSOR_REVEAL_INTERVAL_MS) {
+                return;
+            }
+
+            this.lastUserCursorRevealMoveAt = now;
+            this.userCursorRevealMoveCount += 1;
+            if (this.userCursorRevealMoveCount >= DEFAULT_USER_CURSOR_REVEAL_MOVES) {
+                this.revealUserCursor();
+            }
+        }
+
+        revealUserCursor() {
+            if (this.destroyed || !document.body) {
+                return;
+            }
+
+            if (this.resistanceCursorTimer) {
+                window.clearTimeout(this.resistanceCursorTimer);
+                this.resistanceCursorTimer = null;
+            }
+
+            this.userCursorRevealed = true;
+            this.restoreHiddenCursorAfterResistance = false;
+            document.documentElement.style.cursor = '';
+            document.body.style.cursor = '';
+            document.documentElement.classList.add('yui-user-cursor-revealed');
+            document.documentElement.classList.add('yui-resistance-cursor-reveal');
+            document.body.classList.add('yui-user-cursor-revealed');
+            document.body.classList.add('yui-resistance-cursor-reveal');
+        }
+
+        clearUserCursorReveal(resetCursor) {
+            if (this.resistanceCursorTimer) {
+                window.clearTimeout(this.resistanceCursorTimer);
+                this.resistanceCursorTimer = null;
+            }
+
+            this.userCursorRevealed = false;
+            this.userCursorRevealMoveCount = 0;
+            this.lastUserCursorRevealMoveAt = 0;
+            this.restoreHiddenCursorAfterResistance = false;
+
+            if (document.body) {
+                document.documentElement.classList.remove('yui-user-cursor-revealed');
+                document.documentElement.classList.remove('yui-resistance-cursor-reveal');
+                document.body.classList.remove('yui-user-cursor-revealed');
+                document.body.classList.remove('yui-resistance-cursor-reveal');
+            }
+
+            if (resetCursor) {
+                document.documentElement.style.cursor = '';
+                if (document.body) {
+                    document.body.style.cursor = '';
+                }
+            }
+        }
+
         playLightResistance(x, y, options) {
             if (this.scenePausedForResistance) {
                 return Promise.resolve();
@@ -8031,25 +8256,28 @@
             const suppressCursorReveal = !!(options && options.suppressCursorReveal);
 
             if (!suppressCursorReveal) {
-                // 对抗机制触发时真实鼠标显示 3 秒
-                if (this.resistanceCursorTimer) {
-                    window.clearTimeout(this.resistanceCursorTimer);
-                }
-                this.restoreHiddenCursorAfterResistance = document.body.classList.contains('yui-taking-over')
-                    || document.documentElement.style.cursor === 'none'
-                    || document.body.style.cursor === 'none';
-                document.documentElement.style.cursor = '';
-                document.body.style.cursor = '';
-                document.body.classList.add('yui-resistance-cursor-reveal');
-                this.resistanceCursorTimer = window.setTimeout(() => {
-                    this.resistanceCursorTimer = null;
-                    document.body.classList.remove('yui-resistance-cursor-reveal');
-                    if (!this.destroyed && !this.angryExitTriggered && this.restoreHiddenCursorAfterResistance) {
-                        document.documentElement.style.cursor = 'none';
-                        document.body.style.cursor = 'none';
+                if (this.userCursorRevealed) {
+                    this.revealUserCursor();
+                } else {
+                    if (this.resistanceCursorTimer) {
+                        window.clearTimeout(this.resistanceCursorTimer);
                     }
-                    this.restoreHiddenCursorAfterResistance = false;
-                }, 3000);
+                    this.restoreHiddenCursorAfterResistance = document.body.classList.contains('yui-taking-over')
+                        || document.documentElement.style.cursor === 'none'
+                        || document.body.style.cursor === 'none';
+                    document.documentElement.style.cursor = '';
+                    document.body.style.cursor = '';
+                    document.body.classList.add('yui-resistance-cursor-reveal');
+                    this.resistanceCursorTimer = window.setTimeout(() => {
+                        this.resistanceCursorTimer = null;
+                        document.body.classList.remove('yui-resistance-cursor-reveal');
+                        if (!this.destroyed && !this.angryExitTriggered && this.restoreHiddenCursorAfterResistance) {
+                            document.documentElement.style.cursor = 'none';
+                            document.body.style.cursor = 'none';
+                        }
+                        this.restoreHiddenCursorAfterResistance = false;
+                    }, 3000);
+                }
             }
 
             const resistanceStep = this.getStep('interrupt_resist_light');
@@ -8187,6 +8415,9 @@
             if (this.page === 'home') {
                 document.body.classList.remove('yui-guide-home-driver-hidden');
             }
+            this.clearUserCursorReveal(true);
+            this.manualPluginDashboardOpenAllowed = false;
+            this.manualPluginDashboardOpenTarget = null;
             if (this.pluginDashboardHandoff && typeof this.pluginDashboardHandoff.resolve === 'function') {
                 this.pluginDashboardHandoff.resolve(false);
             }
@@ -8286,6 +8517,20 @@
                         this._introActivationResolve();
                         this._introActivationResolve = null;
                     }
+                    return true;
+                }
+            }
+
+            if (this.manualPluginDashboardOpenAllowed && this.manualPluginDashboardOpenTarget) {
+                const manualTarget = this.manualPluginDashboardOpenTarget;
+                if (
+                    target === manualTarget
+                    || (manualTarget.contains && manualTarget.contains(target))
+                    || (
+                        target.closest
+                        && target.closest('#neko-sidepanel-action-agent-user-plugin-management-panel') === manualTarget
+                    )
+                ) {
                     return true;
                 }
             }

@@ -321,6 +321,15 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
                 } else {
                     openedWindow = window.open(targetUrl, actionConfig.windowName, features);
                 }
+                if (openedWindow) {
+                    if (!window._openedWindows) {
+                        window._openedWindows = {};
+                    }
+                    window._openedWindows[actionConfig.windowName] = openedWindow;
+                    try {
+                        openedWindow.focus();
+                    } catch (_) {}
+                }
                 setTimeout(() => { isOpening = false; }, 500);
             });
 

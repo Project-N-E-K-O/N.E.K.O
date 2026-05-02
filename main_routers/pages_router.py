@@ -16,6 +16,16 @@ from .shared_state import get_templates
 router = APIRouter(tags=["pages"])
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
+_YUI_GUIDE_ASSET_VERSION_PATHS = (
+    _PROJECT_ROOT / "static/css/yui-guide.css",
+    _PROJECT_ROOT / "static/yui-guide-steps.js",
+    _PROJECT_ROOT / "static/yui-guide-overlay.js",
+    _PROJECT_ROOT / "static/yui-guide-page-handoff.js",
+    _PROJECT_ROOT / "static/yui-guide-wakeup.js",
+    _PROJECT_ROOT / "static/yui-guide-director.js",
+)
+_STATIC_ASSET_CACHE_TTL = 30.0
+_static_asset_version_cache: tuple[float, str] = (0.0, "0")
 _REACT_CHAT_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/react/neko-chat/neko-chat-window.css",
     _PROJECT_ROOT / "static/react/neko-chat/neko-chat-window.iife.js",
@@ -36,7 +46,23 @@ def _vrm_defaults_ctx() -> dict:
 def _static_assets_ctx() -> dict:
     """返回模板静态资源统一缓存版本号。"""
     from config import APP_VERSION
-    return {"static_asset_version": APP_VERSION}
+
+    global _static_asset_version_cache
+    now = time.monotonic()
+    cached_at, cached_version = _static_asset_version_cache
+    if now - cached_at < _STATIC_ASSET_CACHE_TTL:
+        return {"static_asset_version": cached_version}
+
+    latest_mtime = 0
+    for path in _YUI_GUIDE_ASSET_VERSION_PATHS:
+        try:
+            latest_mtime = max(latest_mtime, int(path.stat().st_mtime))
+        except OSError:
+            continue
+
+    version = f"{APP_VERSION}-{latest_mtime or 0}"
+    _static_asset_version_cache = (now, version)
+    return {"static_asset_version": version}
 
 
 def _react_chat_assets_ctx() -> dict:
