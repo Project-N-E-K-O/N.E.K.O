@@ -277,10 +277,17 @@ class TrailingSlashChecker(ast.NodeVisitor):
         #   paths are ``/b/foo`` vs ``/a/foo/`` — different namespaces,
         #   the no-slash form for the trailing-slash route still 307s
         #   (Codex finding, round 4).
-        # Owner of ``None`` means we couldn't resolve the LHS of the
-        # decorator (rare); ``None`` is its own group, so two
-        # unresolvable decorators won't accidentally cross-cover.
-        sibling: set[tuple[str | None, str, str]] = set()
+        # Decorators whose owner can't be statically resolved (e.g.
+        # ``@a.router.get(...)`` where the LHS is itself an Attribute,
+        # not a Name) are NOT added to the sibling set, and the
+        # exemption check below also rejects ``owner is None``. Two
+        # unresolved decorators on the same function would otherwise
+        # both map to ``(None, method, path)`` and falsely cross-cover —
+        # caught by CodeRabbit on PR #1082 in the round-5 follow-up
+        # ("Python's `None == None` means the key collides"). Fail
+        # closed: if we can't tell which router owns the decorator, we
+        # can't safely confirm a sibling covers it.
+        sibling: set[tuple[str, str, str]] = set()
         for deco in decos:
             method_name = _is_route_decorator(deco)
             if method_name is None:
@@ -289,6 +296,8 @@ class TrailingSlashChecker(ast.NodeVisitor):
             if extracted is None:
                 continue
             owner = _decorator_owner(deco)
+            if owner is None:
+                continue
             for m in _extract_methods(deco, method_name):
                 sibling.add((owner, m, extracted[0]))
 
@@ -318,9 +327,15 @@ class TrailingSlashChecker(ast.NodeVisitor):
             # method AND the same router. Reported by Codex on PR #1082 in
             # two rounds: round 2 (per-method) and round 4 (per-owner so
             # decorators stacking different routers don't cross-cover).
+            # ``owner is None`` (couldn't statically resolve the decorator
+            # LHS) blocks exemption — see sibling-collection comment above.
             no_slash = route_path.rstrip("/")
             methods = _extract_methods(deco, decorator_method)
-            if methods and all((owner, m, no_slash) in sibling for m in methods):
+            if (
+                owner is not None
+                and methods
+                and all((owner, m, no_slash) in sibling for m in methods)
+            ):
                 continue
             self.violations.append(
                 (
