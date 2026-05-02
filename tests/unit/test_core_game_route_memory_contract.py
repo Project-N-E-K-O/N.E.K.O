@@ -99,6 +99,9 @@ async def test_speak_game_line_text_mirror_carries_game_route_metadata():
 
     assert result["ok"] is True
     assert result["turn_end_emitted"] is True
+    assert result["interrupt_audio"] is False
+    assert mgr.user_activity == []
+    assert mgr.audio_resampler.cleared is False
     assert mgr.sent_responses[0]["metadata"] == {
         "source": "game_route",
         "game_type": "soccer",
@@ -139,8 +142,34 @@ async def test_speak_game_line_can_leave_turn_end_to_text_mirror():
 
     assert result["ok"] is True
     assert result["turn_end_emitted"] is False
+    assert result["interrupt_audio"] is False
+    assert mgr.user_activity == []
+    assert mgr.audio_resampler.cleared is False
     assert mgr.sent_responses == []
     assert mgr.sync_message_queue.messages == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_speak_game_line_interrupt_audio_triggers_existing_interrupt_path():
+    mgr = _make_manager()
+
+    result = await LLMSessionManager.speak_game_line(
+        mgr,
+        "先听我说完",
+        request_id="req-interrupt",
+        game_type="soccer",
+        session_id="match_1",
+        mirror_text=False,
+        emit_turn_end=False,
+        interrupt_audio=True,
+        event={"kind": "user-text", "hasUserText": True},
+    )
+
+    assert result["ok"] is True
+    assert result["interrupt_audio"] is True
+    assert mgr.user_activity == ["old-speech"]
+    assert mgr.audio_resampler.cleared is True
 
 
 @pytest.mark.unit

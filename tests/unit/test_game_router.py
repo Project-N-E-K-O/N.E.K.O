@@ -1204,6 +1204,7 @@ async def test_project_speak_uses_manager_project_tts(monkeypatch):
         "session_id": "match_1",
         "mirror_text": True,
         "emit_turn_end": True,
+        "interrupt_audio": False,
         "event": {},
     })]
 
@@ -1233,6 +1234,38 @@ async def test_project_speak_can_skip_text_mirror_for_frontend_arbiter(monkeypat
         "session_id": "match_1",
         "mirror_text": False,
         "emit_turn_end": False,
+        "interrupt_audio": False,
+        "event": {},
+    })]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_project_speak_forwards_interrupt_audio(monkeypatch):
+    mgr = _FakeGameRouteManager()
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
+    monkeypatch.setattr(game_router, "_get_current_character_info", lambda: {"lanlan_name": "Lan"})
+
+    result = await game_router.game_project_speak(
+        "soccer",
+        _FakeRequest({
+            "line": "先听我说完",
+            "session_id": "match_1",
+            "request_id": "req-interrupt",
+            "mirror_text": False,
+            "emit_turn_end": False,
+            "interrupt_audio": True,
+        }),
+    )
+
+    assert result["ok"] is True
+    assert mgr.spoken == [("先听我说完", {
+        "request_id": "req-interrupt",
+        "game_type": "soccer",
+        "session_id": "match_1",
+        "mirror_text": False,
+        "emit_turn_end": False,
+        "interrupt_audio": True,
         "event": {},
     })]
 
