@@ -602,6 +602,10 @@ button * {
   animation: slideFromLeft 0.25s ease-out both;
 }
 
+.message-row[data-guide-message="true"] {
+  animation: none !important;
+}
+
 .message-row-user .avatar {
   order: 2;
 }
@@ -727,6 +731,10 @@ button * {
 
 .text-chunk-reveal {
   animation: textChunkReveal 0.18s ease-out both;
+}
+
+.message-row[data-guide-message="true"] .text-chunk-reveal {
+  animation: none !important;
 }
 
 .message-block-text {

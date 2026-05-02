@@ -2814,11 +2814,27 @@ class ConfigManager:
             ]
             for prefix, model_key, url_key, apikey_key in _custom_api_fields:
                 provider = core_cfg.get(f'{prefix}ModelProvider', '')
+                # follow_core / follow_assist 的 URL 是前端联动 readonly 自填的提示值
+                # （static/js/api_key_settings.js: onCustomModelProviderChange），不代表
+                # 用户选择"自定义部署"。但只在 omni/tts 才会出问题：
+                #   - omni: get_model_api_config 看见 REALTIME_MODEL+_URL 都非空 →
+                #     强行 api_type='local'（TODO 未实现）→ core_api_type='local' →
+                #     TTS 调度落 dummy_tts_worker → 静音
+                #   - tts:  TTS_MODEL_URL 被联动值污染让 tts_custom 走错 provider
+                # 其他 model type（conversation/summary/correction/emotion/vision/agent）
+                # 走 chat completion REST，没有 'local' 分支；跳 URL 反而会改变它们的
+                # follow_* 路由（详见 PR #1084 review thread），故仅对 omni/tts 跳。
+                # 注：follow_* 下用户填的 modelId 当前在 get_model_api_config fallback
+                # 路径里读不到（fallback 用 CORE_MODEL，不是 REALTIME_MODEL/TTS_MODEL），
+                # 那是另一个层面的问题，下个 PR 跟进。
+                is_follow = provider in ('follow_core', 'follow_assist')
+                skip_url_for_follow = is_follow and prefix in ('omni', 'tts')
 
-                # URL: 空值回退到已有配置
-                cfg_url = core_cfg.get(f'{prefix}ModelUrl')
-                if cfg_url is not None:
-                    config[url_key] = cfg_url or config.get(url_key, '')
+                # URL: 空值回退到已有配置；omni/tts follow_* 时跳过
+                if not skip_url_for_follow:
+                    cfg_url = core_cfg.get(f'{prefix}ModelUrl')
+                    if cfg_url is not None:
+                        config[url_key] = cfg_url or config.get(url_key, '')
 
                 # Model ID: 空值回退到已有配置
                 cfg_model = core_cfg.get(f'{prefix}ModelId')

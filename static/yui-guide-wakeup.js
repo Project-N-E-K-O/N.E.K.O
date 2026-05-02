@@ -24,7 +24,11 @@
         eyeSmileRight: 'ParamEyeRSmile',
         bodyAngleX: 'ParamBodyAngleX',
         bodyAngleY: 'ParamBodyAngleY',
-        bodyAngleZ: 'ParamBodyAngleZ'
+        bodyAngleZ: 'ParamBodyAngleZ',
+        yuiRightWaveSwitch: 'Param75', // right-arm wave enable
+        yuiRightForearmAnim: 'Param90', // right forearm animation
+        yuiRightHandAnim: 'Param92', // right hand animation
+        yuiRightHandWave: 'Param95' // right hand wave
     });
 
     function shouldReduceMotion() {
@@ -189,6 +193,8 @@
                 }
             } catch (_) {}
             if (!Number.isFinite(min)) {
+                // Yui-specific wave params fall back to the generic range here;
+                // computed wave values are normalized to [0, 1] before writeParam clamps again.
                 min = id.indexOf('EyeBall') >= 0 ? -1 : (id.indexOf('Eye') >= 0 ? 0 : -30);
             }
             if (!Number.isFinite(max)) {
@@ -263,6 +269,10 @@
                 || params.bodyAngleX
                 || params.bodyAngleY
                 || params.bodyAngleZ
+                || params.yuiRightWaveSwitch
+                || params.yuiRightForearmAnim
+                || params.yuiRightHandAnim
+                || params.yuiRightHandWave
             )
         );
     }
@@ -495,6 +505,10 @@
             const holdProgress = clamp(progress / WAKEUP_EYE_CLOSED_PROGRESS, 0, 1);
             const wakeProgress = clamp((progress - WAKEUP_EYE_CLOSED_PROGRESS) / WAKEUP_EYE_OPEN_PROGRESS, 0, 1);
             const wakeEase = easeOutCubic(wakeProgress);
+            const waveProgress = clamp((progress - 0.68) / 0.22, 0, 1);
+            const waveOut = 1 - easeOutCubic(clamp((progress - 0.88) / 0.12, 0, 1));
+            const waveWeight = Math.sin(waveProgress * Math.PI) * waveOut;
+            const waveCycle = Math.sin(waveProgress * Math.PI * 4);
             let eyeOpen = 0;
             if (progress <= WAKEUP_EYE_CLOSED_PROGRESS) {
                 eyeOpen = 0.02 * holdProgress;
@@ -513,7 +527,11 @@
                 eyeSmile: this.reducedMotion ? 0 : clamp(wakeEase * 0.18, 0, 0.18),
                 bodyAngleX: this.reducedMotion ? 0 : lerp(-6.5, 0, t),
                 bodyAngleY: this.reducedMotion ? 0 : lerp(-3.2, 0, t),
-                bodyAngleZ: this.reducedMotion ? 0 : lerp(3.6, 0, t)
+                bodyAngleZ: this.reducedMotion ? 0 : lerp(3.6, 0, t),
+                yuiRightWaveSwitch: this.reducedMotion ? 0 : clamp(waveWeight, 0, 1),
+                yuiRightForearmAnim: this.reducedMotion ? 0 : clamp(0.5 + waveCycle * 0.5, 0, 1) * waveWeight,
+                yuiRightHandAnim: this.reducedMotion ? 0 : clamp(0.56 + waveCycle * 0.44, 0, 1) * waveWeight,
+                yuiRightHandWave: this.reducedMotion ? 0 : clamp(0.5 + waveCycle * 0.5, 0, 1) * waveWeight
             };
         }
 
@@ -541,6 +559,10 @@
             this.writeWeighted('bodyAngleX', pose.bodyAngleX, w);
             this.writeWeighted('bodyAngleY', pose.bodyAngleY, w);
             this.writeWeighted('bodyAngleZ', pose.bodyAngleZ, w);
+            this.writeWeighted('yuiRightWaveSwitch', pose.yuiRightWaveSwitch, w);
+            this.writeWeighted('yuiRightForearmAnim', pose.yuiRightForearmAnim, w);
+            this.writeWeighted('yuiRightHandAnim', pose.yuiRightHandAnim, w);
+            this.writeWeighted('yuiRightHandWave', pose.yuiRightHandWave, w);
         }
     }
 

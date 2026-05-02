@@ -592,5 +592,103 @@ class TestVoiceCloneKeyResolution:
         assert key == 'sk-tts-custom-key'
 
 
+# ---------------------------------------------------------------------------
+# 11. follow_core / follow_assist must NOT be misclassified as 'local' realtime
+# ---------------------------------------------------------------------------
+class TestFollowProviderNotLocal:
+    """前端在 *ModelProvider=follow_core/follow_assist 时会用核心/辅助 provider 的
+    URL/Key 把 readonly 输入框联动填上并保存。后端必须把这些字段当作 UI 提示值忽略，
+    否则 get_model_api_config 在 enableCustomApi=True 时会误判 realtime=自定义=local，
+    导致 TTS 调度落到 dummy_tts_worker（"local不支持原生TTS"），声音消失。
+    """
+
+    @pytest.mark.unit
+    def test_realtime_follow_core_does_not_become_local(self, config_manager):
+        """omniModelProvider=follow_core + 联动自填 omniModelUrl → realtime 仍走 core API。"""
+        _write_core_config(config_manager, {
+            'coreApiKey': 'sk-qwen-core',
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'assistApiKeyQwen': 'sk-qwen-core',
+            'enableCustomApi': True,
+            # 这些是前端 follow_core 联动 readonly 自填的值
+            'omniModelProvider': 'follow_core',
+            'omniModelUrl': 'wss://dashscope.aliyuncs.com/api-ws/v1/realtime',
+            'omniModelId': '',
+            'omniModelApiKey': 'sk-qwen-core',
+        })
+        rt = config_manager.get_model_api_config('realtime')
+        assert rt['api_type'] == 'qwen', \
+            f"realtime api_type 应跟随 CORE_API_TYPE='qwen'，实际={rt['api_type']!r}"
+        assert rt['is_custom'] is False, \
+            "follow_core 不应被当作自定义 API（is_custom 必须为 False）"
+
+    @pytest.mark.unit
+    def test_tts_follow_assist_does_not_pollute_url(self, config_manager):
+        """ttsModelProvider=follow_assist + 联动自填 ttsModelUrl → TTS_MODEL_URL 不被覆盖。"""
+        _write_core_config(config_manager, {
+            'coreApiKey': 'sk-qwen-core',
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'assistApiKeyQwen': 'sk-qwen-assist',
+            'enableCustomApi': True,
+            'ttsModelProvider': 'follow_assist',
+            'ttsModelUrl': 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+            'ttsModelId': '',
+            'ttsModelApiKey': 'sk-qwen-assist',
+        })
+        cfg = config_manager.get_core_config()
+        # follow_assist 时 TTS_MODEL_URL 必须保持空（DEFAULT_TTS_MODEL_URL=""，且
+        # core/assist profile 的 field_mapping 都不包含 tts_model_url，没有别的合法来源）。
+        # 任何非空值都意味着 follow_* 跳过 URL 覆盖的逻辑被绕过 → 回归。
+        assert cfg.get('TTS_MODEL_URL', '') in ('', None), \
+            f"follow_assist 时 TTS_MODEL_URL 应为空，实际={cfg.get('TTS_MODEL_URL')!r}"
+
+    @pytest.mark.unit
+    def test_non_omni_follow_core_url_not_skipped(self, config_manager):
+        """URL skip 的 scope 必须仅限 omni/tts —— 非 omni 模型（conversation/summary/
+        correction/emotion/vision/agent）走 chat completion REST，没有 'local' 分支，
+        不该被本 PR 的 guard 触动。否则会改变它们的 follow_core 路由行为
+        （详见 PR #1084 review thread）。
+        """
+        _write_core_config(config_manager, {
+            'coreApiKey': 'sk-openai-core',
+            'coreApi': 'openai',
+            'assistApi': 'qwen',
+            'assistApiKeyQwen': 'sk-qwen-assist',
+            'enableCustomApi': True,
+            'conversationModelProvider': 'follow_core',
+            'conversationModelUrl': 'https://api.openai.com/v1',  # 前端联动填
+            'conversationModelId': '',
+            'conversationModelApiKey': 'sk-openai-core',
+        })
+        cfg = config_manager.get_core_config()
+        # conversation 不在 (omni, tts) 白名单，URL 必须被覆盖（保持原逻辑）
+        assert cfg.get('CONVERSATION_MODEL_URL') == 'https://api.openai.com/v1', \
+            f"非 omni follow_core 的 URL 不应被本 PR 的 guard 跳过，" \
+            f"实际={cfg.get('CONVERSATION_MODEL_URL')!r}"
+
+    @pytest.mark.unit
+    def test_explicit_custom_still_takes_effect(self, config_manager):
+        """provider=custom（用户真的填了自定义 URL）时仍然走自定义路径。"""
+        _write_core_config(config_manager, {
+            'coreApiKey': 'sk-core',
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'assistApiKeyQwen': 'sk-assist',
+            'enableCustomApi': True,
+            'omniModelProvider': 'custom',
+            'omniModelUrl': 'wss://my-local-deployment.example/realtime',
+            'omniModelId': 'my-local-realtime-model',
+            'omniModelApiKey': 'sk-local-key',
+        })
+        rt = config_manager.get_model_api_config('realtime')
+        assert rt['base_url'] == 'wss://my-local-deployment.example/realtime'
+        assert rt['model'] == 'my-local-realtime-model'
+        assert rt['api_type'] == 'local', \
+            "provider=custom 时应保留 'local' api_type 标记（自定义 realtime 部署）"
+        assert rt['is_custom'] is True
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])

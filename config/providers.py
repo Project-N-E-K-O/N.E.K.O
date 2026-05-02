@@ -23,6 +23,7 @@ EXTRA_BODY_CLAUDE = {"thinking": {"type": "disabled"}}
 EXTRA_BODY_GEMINI = {"extra_body": {"google": {"thinking_config": {"thinking_budget": 0}}}}
 EXTRA_BODY_GEMINI_3 = {"extra_body": {"google": {"thinking_config": {"thinking_level": "low", "include_thoughts": False}}}}
 EXTRA_BODY_OPENROUTER = {"reasoning": {"effort": "none"}}
+EXTRA_BODY_MINIMAX = {"reasoning_split": True}
 
 # Agent 调用统一开关：是否加载 extra_body。
 # 默认开启，配合 MODELS_EXTRA_BODY_MAP 实现默认关闭 thinking。
@@ -39,25 +40,32 @@ MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
     "qwen3.5-plus": EXTRA_BODY_OPENAI,
     "qwen3.6-plus": EXTRA_BODY_OPENAI,
     "qwen-plus": EXTRA_BODY_OPENAI,
-    "deepseek-ai/DeepSeek-V3.2": EXTRA_BODY_OPENAI,
-    "deepseek-ai/DeepSeek-V4-Flash": EXTRA_BODY_OPENAI,
     # GLM 系列
     "glm-4.5-air": EXTRA_BODY_CLAUDE,
     "glm-4.6v-flash": EXTRA_BODY_CLAUDE,
     "glm-4.7-flash": EXTRA_BODY_CLAUDE,
     "glm-4.6v": EXTRA_BODY_CLAUDE,
+    "glm-5v-turbo": EXTRA_BODY_CLAUDE,
     "glm-5.1": EXTRA_BODY_CLAUDE,
     # Kimi系列
     "kimi-k2-0905-preview": EXTRA_BODY_CLAUDE,
     "kimi-k2.5": EXTRA_BODY_CLAUDE,
-    # Silicon (zai-org) - 使用 Qwen 格式
+    # MiniMax系列
+    "MiniMax-M2.5": EXTRA_BODY_MINIMAX,
+    "MiniMax-M2.7": EXTRA_BODY_MINIMAX,
+    "MiniMax-Text-01": EXTRA_BODY_MINIMAX,
+    # Silicon
     "zai-org/GLM-4.6V": EXTRA_BODY_OPENAI,
+    "deepseek-ai/DeepSeek-V3.2": EXTRA_BODY_OPENAI,
+    "deepseek-ai/DeepSeek-V4-Flash": EXTRA_BODY_OPENAI,
+    "Qwen/Qwen3.5-397B-A17B": EXTRA_BODY_OPENAI,
     # Step
     "step-2-mini": {"tools": [{"type": "web_search", "function": {"description": "这个web_search用来搜索互联网的信息"}}]},
     # Claude 系列
     "claude-sonnet-4-6": EXTRA_BODY_CLAUDE,
     "claude-haiku-4-5-20251001": EXTRA_BODY_CLAUDE,
     "claude-opus-4-7": EXTRA_BODY_CLAUDE,
+    "claude-opus-4-6": EXTRA_BODY_CLAUDE,
     # Doubao Seed 2.0 系列
     "doubao-seed-2-0-lite-260215": EXTRA_BODY_CLAUDE,
     "doubao-seed-2-0-mini-260215": EXTRA_BODY_CLAUDE,

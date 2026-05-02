@@ -79,9 +79,9 @@ ACTIVITY_GUESS_PROMPTS: dict[str, str] = {
 {signals}
 ======Above is System signals======
 
-======Below is Recent conversation (chronological)======
+======以下为最近对话(按时间顺序)======
 {conversation}
-======Above is Recent conversation (chronological)======
+======以上为最近对话(按时间顺序)======
 
 ======Below is Rule system's initial classification======
 {rule_state}
@@ -104,9 +104,9 @@ Example output:
 {signals}
 ======以上はシステム信号======
 
-======以下は最近の会話（時系列）======
+======以下为最近对话(按时间顺序)======
 {conversation}
-======以上は最近の会話（時系列）======
+======以上为最近对话(按时间顺序)======
 
 ======以下はルール系の初期判定======
 {rule_state}
@@ -129,9 +129,9 @@ Example output:
 {signals}
 ======위는 시스템 신호======
 
-======아래는 최근 대화 (시간순)======
+======以下为最近对话(按时间顺序)======
 {conversation}
-======위는 최근 대화 (시간순)======
+======以上为最近对话(按时间顺序)======
 
 ======아래는 규칙 시스템의 초기 판정======
 {rule_state}
@@ -154,9 +154,9 @@ Example output:
 {signals}
 ======Выше Сигналы системы======
 
-======Ниже Недавний разговор (хронология)======
+======以下为最近对话(按时间顺序)======
 {conversation}
-======Выше Недавний разговор (хронология)======
+======以上为最近对话(按时间顺序)======
 
 ======Ниже Первоначальная классификация правил======
 {rule_state}
@@ -204,9 +204,9 @@ OPEN_THREADS_PROMPTS: dict[str, str] = {
 
     'en': """You are a conversation review assistant. Look at the recent conversation below and identify topics that were "raised but not closed" — promises the AI made but hasn't fulfilled, user thoughts cut off mid-sentence, a story or feeling the user started telling but never finished.
 
-======Below is Recent conversation (chronological)======
+======以下为最近对话(按时间顺序)======
 {conversation}
-======Above is Recent conversation (chronological)======
+======以上为最近对话(按时间顺序)======
 
 Output strict JSON (no markdown fences):
 {{"open_threads": ["short phrase 1"]}}
@@ -228,9 +228,9 @@ Example B — half of the user's request got left dangling → `{{"open_threads"
 
     'ja': """あなたは会話レビュー助手です。下の最近の会話を見て、「持ち出されたが収まっていない」話題を特定してください。例：AIが約束したがまだ実行していないこと、ユーザーが言いかけて中断したまま戻っていないこと、ユーザーが話し始めた話や気持ちが結末まで行かずに終わっていることなど。
 
-======以下は最近の会話（時系列）======
+======以下为最近对话(按时间顺序)======
 {conversation}
-======以上は最近の会話（時系列）======
+======以上为最近对话(按时间顺序)======
 
 厳密なJSON（markdownコードブロックなし）で出力：
 {{"open_threads": ["短い文1"]}}
@@ -252,9 +252,9 @@ Example B — half of the user's request got left dangling → `{{"open_threads"
 
     'ko': """당신은 대화 검토 도우미입니다. 아래 최근 대화를 보고 "꺼냈지만 마무리되지 않은" 화제를 식별하세요. 예: AI가 약속했지만 아직 안 한 일, 사용자가 말을 꺼내다가 끊긴 채 돌아오지 않은 것, 사용자가 꺼낸 이야기나 마음이 결말까지 가지 않고 도중에 멈춘 것 등.
 
-======아래는 최근 대화 (시간순)======
+======以下为最近对话(按时间顺序)======
 {conversation}
-======위는 최근 대화 (시간순)======
+======以上为最近对话(按时间顺序)======
 
 엄격한 JSON으로 출력 (markdown 코드 블록 없이):
 {{"open_threads": ["짧은 문장 1"]}}
@@ -276,9 +276,9 @@ Example B — half of the user's request got left dangling → `{{"open_threads"
 
     'ru': """Вы — помощник по обзору разговора. Просмотрите недавний разговор ниже и выявите темы, которые «подняли, но не закрыли»: обещания AI, ещё не выполненные; мысли пользователя, оборвавшиеся на полуслове и не возобновлённые; история или переживание, которое пользователь начал рассказывать, но так и не довёл до конца.
 
-======Ниже Недавний разговор (хронология)======
+======以下为最近对话(按时间顺序)======
 {conversation}
-======Выше Недавний разговор (хронология)======
+======以上为最近对话(按时间顺序)======
 
 Выведите строгий JSON (без markdown):
 {{"open_threads": ["короткая фраза 1"]}}

@@ -6,6 +6,12 @@ Handles WebSocket endpoints including:
 - Main WebSocket connection for chat
 - Proactive chat
 - Task notifications
+
+URL convention: WebSocket routes (``@router.websocket('/ws/...')``) follow the
+same no-trailing-slash rule as HTTP routes. See
+``main_routers/characters_router.py`` docstring or
+``.agent/rules/neko-guide.md`` (§"API URL 末尾不带斜杠") for the rationale;
+enforced by ``scripts/check_api_trailing_slash.py``.
 """
 
 import json

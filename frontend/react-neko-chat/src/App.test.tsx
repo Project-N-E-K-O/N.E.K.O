@@ -388,7 +388,7 @@ describe('App', () => {
     }
   });
 
-  it('exposes avatar tools as a toggle group with pressed state', () => {
+  it('selects an avatar tool from the group and clears it from the active badge', () => {
     render(<App />);
 
     fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
@@ -399,9 +399,16 @@ describe('App', () => {
     expect(lollipopButton).toHaveAttribute('aria-pressed', 'false');
 
     fireEvent.click(lollipopButton);
-    fireEvent.click(screen.getByRole('button', { name: 'Emoji: 棒棒糖' }));
 
-    expect(screen.getByRole('button', { name: '棒棒糖' })).toHaveAttribute('aria-pressed', 'true');
+    const activeBadgeButton = screen.getByRole('button', { name: 'Emoji: 棒棒糖' });
+    expect(activeBadgeButton).toHaveClass('is-active');
+    expect(screen.queryByRole('group', { name: 'Tool icons' })).not.toBeInTheDocument();
+
+    fireEvent.click(activeBadgeButton);
+
+    expect(screen.getByRole('button', { name: 'Emoji' })).toBeInTheDocument();
+    expect(screen.queryByRole('group', { name: 'Tool icons' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Emoji: 棒棒糖' })).not.toBeInTheDocument();
   });
 
   it('clears the selected avatar tool from the icon badge', () => {

@@ -101,7 +101,7 @@
       "correction_model": "gpt-5-chat-latest",
       "emotion_model": "gpt-4.1-nano",
       "vision_model": "gpt-5-chat-latest",
-      "agent_model": "gpt-5.2"
+      "agent_model": "glm-5v-turbo"
     },
     "glm": {
       "key": "glm",
@@ -136,8 +136,8 @@
       "summary_model": "deepseek-ai/DeepSeek-V4-Flash",
       "correction_model": "deepseek-ai/DeepSeek-V4-Flash",
       "emotion_model": "inclusionAI/Ling-mini-2.0",
-      "vision_model": "Qwen/Qwen3-VL-235B-A22B-Instruct",
-      "agent_model": "zai-org/GLM-4.6V"
+      "vision_model": "Qwen/Qwen3.5-397B-A17B",
+      "agent_model": "Qwen/Qwen3.5-397B-A17B"
     },
     "gemini": {
       "key": "gemini",
@@ -192,11 +192,11 @@
       "name": "MiniMax（国服）",
       "description": "支持语音克隆（TTS），国服版本",
       "openrouter_url": "https://api.minimaxi.com/v1",
-      "conversation_model": "MiniMax-Text-01",
-      "summary_model": "MiniMax-Text-01",
-      "correction_model": "MiniMax-Text-01",
-      "emotion_model": "MiniMax-Text-01",
-      "vision_model": "MiniMax-Text-01",
+      "conversation_model": "MiniMax-M2.5",
+      "summary_model": "MiniMax-M2.5",
+      "correction_model": "MiniMax-M2.5",
+      "emotion_model": "MiniMax-M2.5",
+      "vision_model": "",
       "agent_model": "MiniMax-M2.7"
     },
     "minimax_intl": {
@@ -204,11 +204,11 @@
       "name": "MiniMax（国际服）",
       "description": "支持语音克隆（TTS），国际服版本",
       "openrouter_url": "https://api.minimax.io/v1",
-      "conversation_model": "MiniMax-Text-01",
-      "summary_model": "MiniMax-Text-01",
-      "correction_model": "MiniMax-Text-01",
-      "emotion_model": "MiniMax-Text-01",
-      "vision_model": "MiniMax-Text-01",
+      "conversation_model": "MiniMax-M2.5",
+      "summary_model": "MiniMax-M2.5",
+      "correction_model": "MiniMax-M2.5",
+      "emotion_model": "MiniMax-M2.5",
+      "vision_model": "",
       "agent_model": "MiniMax-M2.7"
     },
     "claude": {

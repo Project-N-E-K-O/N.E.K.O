@@ -1249,120 +1249,130 @@ REFLECTION_PROMPT = {
 {FACTS}
 ======以上为事实======
 
-请基于这些事实，合成一段简短的反思洞察，总结你观察到的模式、趋势或关系动态。
-不要简单罗列事实，而是要提炼出更高层次的理解。
+请基于这些事实，提炼一条高层次的反思洞察。请按以下三步思考：
 
-请判断这段反思主要关于谁：
+第一步：判断该反思主要关于谁（entity）
 - "master": 主要关于 {MASTER_NAME} 的个人特征
 - "neko": 主要关于 {LANLAN_NAME} 的自我认知
 - "relationship": 关于两人之间的关系动态
 
-请同时给出该反思的语义类别 relation_type（必须与 entity 匹配），以及时间范围 temporal_scope：
+第二步：选定语义类别 relation_type（必须与 entity 匹配）与时间范围 temporal_scope
 - master 可用: preference(偏好) | trait(性格) | habit(习惯) | identity(身份) | emotional(情感) | boundary(边界)
 - neko 可用: self_awareness(自我认知) | learned(习得行为) | role_note(角色备注)
 - relationship 可用: dynamic(互动模式) | milestone(里程碑) | tension(摩擦) | shared_memory(共同记忆) | agreement(约定)
 - temporal_scope: current(当前) | past(过去) | ongoing(持续)
 
-要求：紧扣单一观察或模式，不要把多个无关事实混在一起；长度不得超过 150 字。
+第三步：围绕已选定的 entity / relation_type / temporal_scope 撰写 reflection
+要求：
+- 紧扣单一观察或模式，不要罗列事实，也不要把多个无关事实混在一起
+- 简洁清晰，不得超过 150 字
 
-请以 JSON 格式返回：
-{{"reflection": "你的反思洞察", "entity": "master/neko/relationship", "relation_type": "preference", "temporal_scope": "current"}}""",
+请以 JSON 格式返回，字段顺序保持如下：
+{{"entity": "master/neko/relationship", "relation_type": "preference", "temporal_scope": "current", "reflection": "你的反思洞察"}}""",
     'en': """Below are a series of extracted facts about {LANLAN_NAME} and {MASTER_NAME}:
 
 ======以下为事实======
 {FACTS}
 ======以上为事实======
 
-Based on these facts, synthesize a brief reflective insight summarizing the patterns, trends, or relationship dynamics you observe.
-Do not simply list the facts — distill a higher-level understanding.
+Based on these facts, distill one higher-level reflective insight. Follow these three steps:
 
-Determine which entity the reflection primarily concerns:
+Step 1: Determine which entity the reflection primarily concerns
 - "master": primarily about {MASTER_NAME}'s personal traits
 - "neko": primarily about {LANLAN_NAME}'s self-perception
 - "relationship": about the dynamics between them
 
-Also provide a semantic relation_type (must match the entity) and a temporal_scope:
+Step 2: Choose a semantic relation_type (must match the entity) and a temporal_scope
 - master: preference | trait | habit | identity | emotional | boundary
 - neko: self_awareness | learned | role_note
 - relationship: dynamic | milestone | tension | shared_memory | agreement
 - temporal_scope: current | past | ongoing
 
-Requirements: stay focused on a single observation or pattern; do not mix unrelated facts. Keep the reflection under 150 words.
+Step 3: Write the reflection around the chosen entity / relation_type / temporal_scope
+Requirements:
+- Stay focused on a single observation or pattern; do not list facts, and do not mix unrelated facts
+- Be concise and clear; the reflection MUST NOT exceed 150 words
 
-Return in JSON format:
-{{"reflection": "your reflective insight", "entity": "master/neko/relationship", "relation_type": "preference", "temporal_scope": "current"}}""",
+Return JSON with fields in this exact order:
+{{"entity": "master/neko/relationship", "relation_type": "preference", "temporal_scope": "current", "reflection": "your reflective insight"}}""",
     'ja': """以下は {LANLAN_NAME} と {MASTER_NAME} に関する一連の抽出済み事実です：
 
 ======以下为事实======
 {FACTS}
 ======以上为事实======
 
-これらの事実に基づき、観察されたパターン、傾向、または関係の動態をまとめた簡潔な反省的洞察を合成してください。
-単に事実を列挙するのではなく、より高い次元の理解を抽出してください。
+これらの事実に基づき、より高次元の反省的洞察を 1 つ抽出してください。次の 3 ステップで進めてください：
 
-この反思が主に誰についてのものか判断してください：
+ステップ 1：この反省が主に誰についてのものか判断する（entity）
 - "master": 主に {MASTER_NAME} の個人的特徴について
 - "neko": 主に {LANLAN_NAME} の自己認識について
 - "relationship": 二人の関係の動態について
 
-さらに意味カテゴリ relation_type（entity と整合）と時間範囲 temporal_scope も付けてください：
+ステップ 2：意味カテゴリ relation_type（entity と整合）と時間範囲 temporal_scope を選定する
 - master: preference | trait | habit | identity | emotional | boundary
 - neko: self_awareness | learned | role_note
 - relationship: dynamic | milestone | tension | shared_memory | agreement
 - temporal_scope: current | past | ongoing
 
-要件：単一の観察やパターンに集中し、無関係な事実を混ぜないこと。長さは 150 字を超えないこと。
+ステップ 3：選定した entity / relation_type / temporal_scope に沿って reflection を書く
+要件：
+- 単一の観察やパターンに集中し、事実を列挙したり、無関係な事実を混ぜたりしないこと
+- 簡潔かつ明瞭で、150 字を超えてはならない
 
-JSON形式で返してください：
-{{"reflection": "あなたの反省的洞察", "entity": "master/neko/relationship", "relation_type": "preference", "temporal_scope": "current"}}""",
+JSON 形式で返してください。フィールドの順序は以下の通り保ってください：
+{{"entity": "master/neko/relationship", "relation_type": "preference", "temporal_scope": "current", "reflection": "あなたの反省的洞察"}}""",
     'ko': """다음은 {LANLAN_NAME}과 {MASTER_NAME}에 대해 추출된 일련의 사실입니다:
 
 ======以下为事实======
 {FACTS}
 ======以上为事实======
 
-이 사실들을 바탕으로 관찰된 패턴, 추세 또는 관계 동태를 요약하는 간략한 반성적 통찰을 합성해 주세요.
-단순히 사실을 나열하지 말고 더 높은 차원의 이해를 도출해 주세요.
+이 사실들을 바탕으로 더 높은 차원의 반성적 통찰 하나를 도출해 주세요. 다음 세 단계를 따르세요:
 
-이 반성이 주로 누구에 대한 것인지 판단해 주세요:
+1단계: 이 반성이 주로 누구에 대한 것인지 판단합니다 (entity)
 - "master": 주로 {MASTER_NAME}의 개인적 특성에 대해
 - "neko": 주로 {LANLAN_NAME}의 자기 인식에 대해
 - "relationship": 두 사람 사이의 관계 동태에 대해
 
-또한 의미 범주 relation_type(entity와 일치해야 함)과 시간 범위 temporal_scope를 함께 제공해 주세요:
+2단계: 의미 범주 relation_type(entity와 일치해야 함)과 시간 범위 temporal_scope를 선택합니다
 - master: preference | trait | habit | identity | emotional | boundary
 - neko: self_awareness | learned | role_note
 - relationship: dynamic | milestone | tension | shared_memory | agreement
 - temporal_scope: current | past | ongoing
 
-요구사항: 단일 관찰 또는 패턴에 집중하고 관련 없는 사실을 섞지 마세요. 길이는 150자를 초과하지 마세요.
+3단계: 선택한 entity / relation_type / temporal_scope를 중심으로 reflection을 작성합니다
+요구사항:
+- 단일 관찰 또는 패턴에 집중하고, 사실을 나열하거나 관련 없는 사실을 섞지 마세요
+- 간결하고 명확하게, 150자를 초과해서는 안 됩니다
 
-JSON 형식으로 반환해 주세요:
-{{"reflection": "당신의 반성적 통찰", "entity": "master/neko/relationship", "relation_type": "preference", "temporal_scope": "current"}}""",
+JSON 형식으로 반환하며, 필드 순서는 다음과 같이 유지하세요:
+{{"entity": "master/neko/relationship", "relation_type": "preference", "temporal_scope": "current", "reflection": "당신의 반성적 통찰"}}""",
     'ru': """Ниже представлена серия извлечённых фактов о {LANLAN_NAME} и {MASTER_NAME}:
 
 ======以下为事实======
 {FACTS}
 ======以上为事实======
 
-На основе этих фактов синтезируйте краткое рефлексивное наблюдение, обобщающее замеченные закономерности, тенденции или динамику отношений.
-Не просто перечисляйте факты — извлеките понимание более высокого уровня.
+На основе этих фактов выведите одно рефлексивное наблюдение более высокого уровня. Выполните три шага:
 
-Определите, к кому это наблюдение относится в первую очередь:
+Шаг 1: Определите, к кому это наблюдение относится в первую очередь (entity)
 - "master": в основном о личных качествах {MASTER_NAME}
 - "neko": в основном о самовосприятии {LANLAN_NAME}
 - "relationship": о динамике отношений между ними
 
-Также укажите семантическую категорию relation_type (должна соответствовать entity) и временной охват temporal_scope:
+Шаг 2: Выберите семантическую категорию relation_type (должна соответствовать entity) и временной охват temporal_scope
 - master: preference | trait | habit | identity | emotional | boundary
 - neko: self_awareness | learned | role_note
 - relationship: dynamic | milestone | tension | shared_memory | agreement
 - temporal_scope: current | past | ongoing
 
-Требования: сосредоточьтесь на одном наблюдении или паттерне, не смешивайте не связанные факты. Длина — не более 150 слов.
+Шаг 3: Напишите reflection, опираясь на выбранные entity / relation_type / temporal_scope
+Требования:
+- Сосредоточьтесь на одном наблюдении или паттерне; не перечисляйте факты и не смешивайте несвязанные факты
+- Сжато и ясно; длина НЕ должна превышать 150 слов
 
-Верните в формате JSON:
-{{"reflection": "ваше рефлексивное наблюдение", "entity": "master/neko/relationship", "relation_type": "preference", "temporal_scope": "current"}}""",
+Верните в формате JSON, сохраняя порядок полей:
+{{"entity": "master/neko/relationship", "relation_type": "preference", "temporal_scope": "current", "reflection": "ваше рефлексивное наблюдение"}}""",
 }
 
 
