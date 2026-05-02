@@ -83,6 +83,7 @@ from config.prompts_emotion import (
     get_happy_playful_patterns_flat,
     get_heuristic_negation_tokens_flat,
     get_heuristic_tight_negation_tokens_flat,
+    get_heuristic_negation_blocklist_flat,
     get_heuristic_contrast_conjunctions_flat,
     get_emotion_label_aliases_flat,
 )
@@ -1087,6 +1088,7 @@ def _coerce_emotion_confidence(raw_confidence, default=0.5):
 # 启发式打分时的否定回看 token / 转折连词表统一在 config/prompts_emotion.py 按语种维护。
 _HEURISTIC_NEGATION_TOKENS = get_heuristic_negation_tokens_flat()
 _HEURISTIC_TIGHT_NEGATION_TOKENS = get_heuristic_tight_negation_tokens_flat()
+_HEURISTIC_NEGATION_BLOCKLIST = get_heuristic_negation_blocklist_flat()
 _HEURISTIC_CONTRAST_CONJUNCTIONS = get_heuristic_contrast_conjunctions_flat()
 _HEURISTIC_NEGATION_LOOKBACK = 14
 # zh 单字否定（`不/没/别/未` 等）假阳率高，必须紧邻情绪词才算真否定，
@@ -1126,13 +1128,19 @@ def _has_heuristic_negation_before(text_value, position):
                 last_conj = end_pos
     if last_conj >= 0:
         window = window[last_conj:]
-    # 4) 多字否定 token（宽 lookback）
-    if any(token in window for token in _HEURISTIC_NEGATION_TOKENS):
+    # 4) 排除非否定固定搭配（`not only / 不仅 / не только` 等肯定结构里的 not/不/не
+    #    并不是真否定）：把这些短语从 window 里替换成等长空白后再做 token 匹配。
+    sanitized = window
+    for phrase in _HEURISTIC_NEGATION_BLOCKLIST:
+        if phrase and phrase in sanitized:
+            sanitized = sanitized.replace(phrase, ' ' * len(phrase))
+    # 5) 多字否定 token（宽 lookback）
+    if any(token in sanitized for token in _HEURISTIC_NEGATION_TOKENS):
         return True
-    # 5) zh 单字否定 token：仅在紧邻命中关键词的尾部窗口里才算真否定，
+    # 6) zh 单字否定 token：仅在紧邻命中关键词的尾部窗口里才算真否定，
     #    避免 `不错/不思议/不具合` 等非否定词组里的单字误触发整个否定。
     if _HEURISTIC_TIGHT_NEGATION_TOKENS:
-        tight_window = window[-_HEURISTIC_TIGHT_NEGATION_LOOKBACK:]
+        tight_window = sanitized[-_HEURISTIC_TIGHT_NEGATION_LOOKBACK:]
         if any(token in tight_window for token in _HEURISTIC_TIGHT_NEGATION_TOKENS):
             return True
     return False

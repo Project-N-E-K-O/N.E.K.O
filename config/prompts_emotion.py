@@ -213,11 +213,22 @@ HEURISTIC_NEGATION_TOKENS_BY_LANG = {
 # 假阳率极高（`不错/不思议/不具合/不愧/不仅/不可思议` 等都不是否定），但作为否定
 # 又不可或缺；只要它紧邻情绪词（如 `不开心 / 不太烦`）就识别为真否定。
 HEURISTIC_TIGHT_NEGATION_TOKENS_BY_LANG = {
-    'zh': ('不', '别', '別', '没', '沒', '未', '勿', '莫'),
+    # zh 删除单字 `莫`：`莫名开心 / 莫名生气 / 莫名其妙` 等是常用非否定表达，
+    # 而 `莫` 单字作真否定（`莫怪 / 莫管`）在现代汉语极罕见，留之假阳大于真阳。
+    'zh': ('不', '别', '別', '没', '沒', '未', '勿'),
     # ko: 韩语口语里 `안좋아 / 안슬퍼 / 안화나 / 못좋아` 这种句中连写否定常见。
     # 单字 `안/못` 也会出现在 `안녕/안내/안전/안경/못이` 等非否定词组里，所以走紧凑
     # lookback：仅在命中关键词紧邻前若干字符内才算否定。
     'ko': ('안', '못'),
+}
+
+# 否定回看的非否定固定搭配白名单：window 中含这些短语时，把它们替换成空白后
+# 再做否定 token 匹配，避免 `not only / 不仅 / не только` 这类肯定结构里的 `not / 不 / не`
+# 被错误识别为真否定（`not only happy` → 应是 happy）。
+HEURISTIC_NEGATION_BLOCKLIST_BY_LANG = {
+    'en': ('not only', 'no doubt', 'no wonder'),
+    'zh': ('不仅', '不只', '不但', '不光'),
+    'ru': ('не только',),
 }
 
 # 让步/转折连词：window 内出现这些词时，词后才算与命中关键词同小句的前文。
@@ -310,6 +321,10 @@ def get_heuristic_negation_tokens_flat() -> tuple:
 
 def get_heuristic_tight_negation_tokens_flat() -> tuple:
     return _flatten_lang_tuples(HEURISTIC_TIGHT_NEGATION_TOKENS_BY_LANG)
+
+
+def get_heuristic_negation_blocklist_flat() -> tuple:
+    return _flatten_lang_tuples(HEURISTIC_NEGATION_BLOCKLIST_BY_LANG)
 
 
 def get_heuristic_contrast_conjunctions_flat() -> tuple:
