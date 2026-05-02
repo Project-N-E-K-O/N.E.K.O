@@ -46,6 +46,8 @@ import socket
 from unittest.mock import patch
 from pathlib import Path
 
+import uvicorn
+
 # Add project root to sys.path before importing project-local test helpers.
 _project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if _project_root not in sys.path:
@@ -490,7 +492,6 @@ def mock_memory_server():
     except (httpx.HTTPError, OSError) as exc:
         logger.debug("Memory server readiness check failed, starting mock server: %s", exc)
 
-    uvicorn = pytest.importorskip("uvicorn", reason="server fixture requires uvicorn")
     config = uvicorn.Config(app, host="127.0.0.1", port=memory_port, log_level="error")
     server = uvicorn.Server(config)
 
@@ -522,8 +523,6 @@ def running_server(clean_user_data_dir, mock_memory_server):
     Depends on clean_user_data_dir to ensure config is patched BEFORE import.
     """
     test_port = _get_runtime_test_port("MAIN_SERVER_PORT")
-
-    uvicorn = pytest.importorskip("uvicorn", reason="running_server fixture requires uvicorn")
 
     from main_server import app
     config = uvicorn.Config(app, host="127.0.0.1", port=test_port, log_level="error")
