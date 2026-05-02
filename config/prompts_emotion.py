@@ -196,15 +196,21 @@ HAPPY_PLAYFUL_PATTERNS_BY_LANG = {
 # 否定上下文回看 token：关键词命中前 N 字符内若出现这些 token，本次命中作废，
 # 避免 "我不生气 / not angry / 화 안 나 / не злюсь" 被误判为对应情绪。
 HEURISTIC_NEGATION_TOKENS_BY_LANG = {
-    # zh: 不/没/別/未/勿/莫 都是合理单字否定；`无/無` 移除——子串匹配下会
-    # 在 `无语/无聊/无奈/无所谓` 这类中性表达里误触发，把后面的真情绪
-    # 关键词错误屏蔽（例如 `无语真生气` 被 `无` 拉否致 angry 漏判）。
-    'zh': ('不', '别', '別', '没', '沒', '未', '勿', '莫', '并不', '并非'),
+    # 多字否定 token：假阳率低，启用宽 lookback（关键词前 _HEURISTIC_NEGATION_LOOKBACK 字符内）
+    'zh': ('并不', '并非'),
     'en': ('not ', ' no ', 'never ', "don't", "doesn't", "didn't", "won't",
            "isn't", "aren't", "wasn't", "weren't", "can't", "cannot"),
     'ja': ('ない', 'ません', 'なくて'),
     'ko': ('안 ', '안은', '안이', '못 ', '않', '없'),
     'ru': ('не ', 'нет ', 'никогда'),
+}
+
+# 紧凑否定 token：仅在命中关键词紧邻前若干字符（_HEURISTIC_TIGHT_NEGATION_LOOKBACK）
+# 内出现才算真否定。这是 zh 单字否定的特殊处理——`不/没/別/未` 等单字在中文里
+# 假阳率极高（`不错/不思议/不具合/不愧/不仅/不可思议` 等都不是否定），但作为否定
+# 又不可或缺；只要它紧邻情绪词（如 `不开心 / 不太烦`）就识别为真否定。
+HEURISTIC_TIGHT_NEGATION_TOKENS_BY_LANG = {
+    'zh': ('不', '别', '別', '没', '沒', '未', '勿', '莫'),
 }
 
 # 让步/转折连词：window 内出现这些词时，词后才算与命中关键词同小句的前文。
@@ -291,6 +297,10 @@ def get_happy_playful_patterns_flat() -> tuple:
 
 def get_heuristic_negation_tokens_flat() -> tuple:
     return _flatten_lang_tuples(HEURISTIC_NEGATION_TOKENS_BY_LANG)
+
+
+def get_heuristic_tight_negation_tokens_flat() -> tuple:
+    return _flatten_lang_tuples(HEURISTIC_TIGHT_NEGATION_TOKENS_BY_LANG)
 
 
 def get_heuristic_contrast_conjunctions_flat() -> tuple:

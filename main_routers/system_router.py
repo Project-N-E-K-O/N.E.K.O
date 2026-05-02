@@ -82,6 +82,7 @@ from config.prompts_emotion import (
     get_sad_vulnerable_patterns_flat,
     get_happy_playful_patterns_flat,
     get_heuristic_negation_tokens_flat,
+    get_heuristic_tight_negation_tokens_flat,
     get_heuristic_contrast_conjunctions_flat,
     get_emotion_label_aliases_flat,
 )
@@ -1085,8 +1086,12 @@ def _coerce_emotion_confidence(raw_confidence, default=0.5):
 
 # 启发式打分时的否定回看 token / 转折连词表统一在 config/prompts_emotion.py 按语种维护。
 _HEURISTIC_NEGATION_TOKENS = get_heuristic_negation_tokens_flat()
+_HEURISTIC_TIGHT_NEGATION_TOKENS = get_heuristic_tight_negation_tokens_flat()
 _HEURISTIC_CONTRAST_CONJUNCTIONS = get_heuristic_contrast_conjunctions_flat()
 _HEURISTIC_NEGATION_LOOKBACK = 14
+# zh 单字否定（`不/没/别/未` 等）假阳率高，必须紧邻情绪词才算真否定，
+# 避免 `不错/不思议/不具合` 等非否定词组里的单字误触发。
+_HEURISTIC_TIGHT_NEGATION_LOOKBACK = 2
 # 子句分隔符：回看窗口越过分隔符后的内容视为另一小句，不再修饰本次命中。
 # 避免 "我不是难过，我是生气" 中 `生气` 的回看抓到前一小句的 `不` 而被误判否定。
 _HEURISTIC_CLAUSE_DELIMITERS = (
@@ -1121,7 +1126,16 @@ def _has_heuristic_negation_before(text_value, position):
                 last_conj = end_pos
     if last_conj >= 0:
         window = window[last_conj:]
-    return any(token in window for token in _HEURISTIC_NEGATION_TOKENS)
+    # 4) 多字否定 token（宽 lookback）
+    if any(token in window for token in _HEURISTIC_NEGATION_TOKENS):
+        return True
+    # 5) zh 单字否定 token：仅在紧邻命中关键词的尾部窗口里才算真否定，
+    #    避免 `不错/不思议/不具合` 等非否定词组里的单字误触发整个否定。
+    if _HEURISTIC_TIGHT_NEGATION_TOKENS:
+        tight_window = window[-_HEURISTIC_TIGHT_NEGATION_LOOKBACK:]
+        if any(token in tight_window for token in _HEURISTIC_TIGHT_NEGATION_TOKENS):
+            return True
+    return False
 
 
 def _count_keyword_hits(text_value, keyword):
