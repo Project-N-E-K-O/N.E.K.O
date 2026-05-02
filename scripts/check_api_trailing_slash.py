@@ -266,11 +266,21 @@ class TrailingSlashChecker(ast.NodeVisitor):
     def _visit_decorated(self, node: ast.AST) -> None:
         decos = getattr(node, "decorator_list", []) or []
 
-        # First pass: collect every (METHOD, path) pair this function
-        # registers. The alias-pair exemption must match BOTH method and
-        # path — see _is_aliased_safely() below for why a same-path /
-        # different-method "sibling" is not safe.
-        sibling: set[tuple[str, str]] = set()
+        # First pass: collect every (OWNER, METHOD, path) triple this
+        # function registers. The alias-pair exemption must match all
+        # three — same router (so prefixes line up), same method, same
+        # no-slash path. Why all three:
+        # - METHOD: ``@router.post('/foo')`` doesn't cover ``GET /foo``
+        #   (Codex finding, round 2).
+        # - OWNER: ``@r2.get('/foo')`` (prefix ``/b``) does NOT cover
+        #   ``@r1.get('/foo/')`` (prefix ``/a``) because the resolved
+        #   paths are ``/b/foo`` vs ``/a/foo/`` — different namespaces,
+        #   the no-slash form for the trailing-slash route still 307s
+        #   (Codex finding, round 4).
+        # Owner of ``None`` means we couldn't resolve the LHS of the
+        # decorator (rare); ``None`` is its own group, so two
+        # unresolvable decorators won't accidentally cross-cover.
+        sibling: set[tuple[str | None, str, str]] = set()
         for deco in decos:
             method_name = _is_route_decorator(deco)
             if method_name is None:
@@ -278,8 +288,9 @@ class TrailingSlashChecker(ast.NodeVisitor):
             extracted = _extract_path_arg(deco)
             if extracted is None:
                 continue
+            owner = _decorator_owner(deco)
             for m in _extract_methods(deco, method_name):
-                sibling.add((m, extracted[0]))
+                sibling.add((owner, m, extracted[0]))
 
         for deco in decos:
             decorator_method = _is_route_decorator(deco)
@@ -291,6 +302,7 @@ class TrailingSlashChecker(ast.NodeVisitor):
             route_path, lineno, col = extracted
             if not route_path.endswith("/"):
                 continue
+            owner = _decorator_owner(deco)
             # Allow the literal root page — but ONLY when the owning router
             # has an empty prefix. ``APIRouter(prefix="/api/foo")`` +
             # ``@router.get("/")`` registers the effective path
@@ -299,20 +311,16 @@ class TrailingSlashChecker(ast.NodeVisitor):
             # PR #1082. If we can't resolve the owner statically (cross-
             # module router etc.) be conservative and don't exempt.
             if route_path == "/":
-                owner = _decorator_owner(deco)
                 if owner is not None and self.router_prefixes.get(owner, None) == "":
                     continue
             # Allow ONLY if every method this trailing-slash decorator
             # registers ALSO has a sibling no-slash decorator for the same
-            # method. Otherwise a caller hitting the no-slash form with an
-            # uncovered method still triggers Starlette's 307 redirect (the
-            # exact bug this lint exists to prevent). Reported by Codex on
-            # PR #1082 — without the per-method check, mixed pairs like
-            # ``@router.get('/foo/')`` + ``@router.post('/foo')`` would slip
-            # through even though ``GET /foo`` still 307s.
+            # method AND the same router. Reported by Codex on PR #1082 in
+            # two rounds: round 2 (per-method) and round 4 (per-owner so
+            # decorators stacking different routers don't cross-cover).
             no_slash = route_path.rstrip("/")
             methods = _extract_methods(deco, decorator_method)
-            if methods and all((m, no_slash) in sibling for m in methods):
+            if methods and all((owner, m, no_slash) in sibling for m in methods):
                 continue
             self.violations.append(
                 (
@@ -325,9 +333,10 @@ class TrailingSlashChecker(ast.NodeVisitor):
                     "and main_routers/characters_router.py docstring. If you "
                     "genuinely need both forms, register an explicit alias by "
                     "stacking @router.<METHOD>('/foo') above "
-                    "@router.<METHOD>('/foo/') on the same function — and the "
-                    "method must match (a sibling POST won't cover a GET that "
-                    "still 307s).",
+                    "@router.<METHOD>('/foo/') on the same function — same "
+                    "router, same method (a sibling on a different router or "
+                    "a sibling POST for a trailing-slash GET won't cover the "
+                    "no-slash form, which still 307s).",
                 )
             )
         self.generic_visit(node)
