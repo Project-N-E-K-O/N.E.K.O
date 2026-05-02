@@ -120,7 +120,7 @@ def _patch_cloudsave_and_aget(monkeypatch):
 
 
 def _run(coro):
-    return asyncio.get_event_loop().run_until_complete(coro)
+    return asyncio.run(coro)
 
 
 def test_memo_preserved_when_snapshot_has_head_system_and_llm_returns_it(tmp_path):
@@ -191,6 +191,77 @@ def test_memo_restored_when_llm_hallucinates_delete(tmp_path):
     final = _read_disk(mgr.log_file_path[name])
     assert isinstance(final[0], SystemMessage), "memo must be restored from snapshot"
     assert final[0].content == memo, "restored memo should be original (not LLM's omission)"
+
+
+def test_memo_promoted_when_llm_misplaces_it_in_middle(tmp_path):
+    """LLM hallucinates by putting SystemMessage at index 1 instead of 0.
+    Expect: it gets promoted to head of corrected_messages."""
+    memo = "先前对话的备忘录: 用户喜欢深夜聊天。"
+    misplaced_memo = "先前对话的备忘录: 用户偏好夜聊。"
+    snapshot = [
+        SystemMessage(content=memo),
+        HumanMessage(content="hi 1"),
+        HumanMessage(content="hi 2"),
+        AIMessage(content="ai 1"),
+        AIMessage(content="ai 2"),
+        HumanMessage(content="hi 3"),
+        AIMessage(content="ai 3"),
+    ]
+    corrected = [
+        {"role": "Master", "content": "hi 1"},
+        {"role": "SYSTEM_MESSAGE", "content": misplaced_memo},  # 错位
+        {"role": "Master", "content": "hi 2"},
+        {"role": "Xiaoba", "content": "ai 1"},
+        {"role": "Xiaoba", "content": "ai 2"},
+        {"role": "Master", "content": "hi 3"},
+        {"role": "Xiaoba", "content": "ai 3"},
+    ]
+    fake_llm = _FakeLLM(corrected)
+    mgr, name, _master = _make_manager(tmp_path, snapshot, fake_llm)
+
+    status, _fp = _run(mgr.review_history(name, snapshot=list(snapshot)))
+
+    assert status == "patched"
+    final = _read_disk(mgr.log_file_path[name])
+    assert isinstance(final[0], SystemMessage), "memo 必须在头部"
+    assert final[0].content == misplaced_memo, "用 LLM 给的（首条 system）"
+    # 其余位置不能再有 SystemMessage
+    assert not any(isinstance(m, SystemMessage) for m in final[1:])
+
+
+def test_memo_dedup_when_llm_returns_multiple_systems(tmp_path):
+    """LLM 多吐几条 SystemMessage。Expect: 只留首条作为头部 memo。"""
+    memo = "先前对话的备忘录: 原文。"
+    snapshot = [
+        SystemMessage(content=memo),
+        HumanMessage(content="hi 1"),
+        HumanMessage(content="hi 2"),
+        AIMessage(content="ai 1"),
+        AIMessage(content="ai 2"),
+        HumanMessage(content="hi 3"),
+        AIMessage(content="ai 3"),
+    ]
+    corrected = [
+        {"role": "SYSTEM_MESSAGE", "content": "memo v1"},
+        {"role": "Master", "content": "hi 1"},
+        {"role": "SYSTEM_MESSAGE", "content": "memo v2 (bogus)"},  # 多吐
+        {"role": "Master", "content": "hi 2"},
+        {"role": "Xiaoba", "content": "ai 1"},
+        {"role": "Xiaoba", "content": "ai 2"},
+        {"role": "Master", "content": "hi 3"},
+        {"role": "Xiaoba", "content": "ai 3"},
+    ]
+    fake_llm = _FakeLLM(corrected)
+    mgr, name, _master = _make_manager(tmp_path, snapshot, fake_llm)
+
+    status, _fp = _run(mgr.review_history(name, snapshot=list(snapshot)))
+
+    assert status == "patched"
+    final = _read_disk(mgr.log_file_path[name])
+    sys_msgs = [m for m in final if isinstance(m, SystemMessage)]
+    assert len(sys_msgs) == 1, f"应只剩 1 条 system，实际 {len(sys_msgs)}"
+    assert isinstance(final[0], SystemMessage)
+    assert final[0].content == "memo v1", "只留首条作为头部 memo"
 
 
 def test_memo_preserved_with_concurrent_append(tmp_path):

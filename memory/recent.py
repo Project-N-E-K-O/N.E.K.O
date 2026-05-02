@@ -675,14 +675,20 @@ class CompressedRecentHistoryManager:
                         # 默认作为用户消息处理
                         corrected_messages.append(HumanMessage(content=content))
 
-                # 兜底：LLM 不听 <要点3> 把 memo 漏了 → 用 snapshot 头部
-                # 原 SystemMessage 回填，遵守"不允许删除"约束。
-                if (
-                    snapshot
-                    and isinstance(snapshot[0], SystemMessage)
-                    and not any(isinstance(m, SystemMessage) for m in corrected_messages)
-                ):
-                    corrected_messages.insert(0, snapshot[0])
+                # 规范化 SystemMessage 位置：snapshot 头是 memo 时，
+                # corrected_messages 必须以唯一一条 SystemMessage 开头。
+                # 处理三种 LLM 坏输出：
+                # (a) 完全漏返 → 用 snapshot[0] 兜底
+                # (b) 放在中间 → 提到头部
+                # (c) 多吐几条 → 只留首条
+                # 不规范的话头部 memo 边界会被破，下游 prompt 拼装会拿到错位的
+                # system 行（甚至中段 SystemMessage 跟下游 compress 的"alien stop"
+                # 不变量打架）。
+                if snapshot and isinstance(snapshot[0], SystemMessage):
+                    sys_msgs = [m for m in corrected_messages if isinstance(m, SystemMessage)]
+                    others = [m for m in corrected_messages if not isinstance(m, SystemMessage)]
+                    head = sys_msgs[0] if sys_msgs else snapshot[0]
+                    corrected_messages = [head] + others
 
                 # ── Phase C 关键：基于 snapshot 算 capacity 做尾部对齐替换 ──
                 current = await self.aget_recent_history(lanlan_name)
