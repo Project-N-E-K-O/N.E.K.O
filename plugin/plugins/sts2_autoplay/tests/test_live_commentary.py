@@ -1,39 +1,12 @@
 from __future__ import annotations
 
 import asyncio
-import importlib.util
-import sys
 import time
-import types
-from pathlib import Path
 from typing import Any
 
 import pytest
 
-
-PROJECT_ROOT = Path(__file__).resolve().parents[4]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-STS2_DIR = Path(__file__).resolve().parents[1]
-
-
-def load_service_class():
-    package_name = "sts2_autoplay_live_commentary_pkg"
-    if package_name not in sys.modules:
-        package = types.ModuleType(package_name)
-        package.__path__ = [str(STS2_DIR)]
-        sys.modules[package_name] = package
-    module_name = f"{package_name}.service"
-    spec = importlib.util.spec_from_file_location(module_name, STS2_DIR / "service.py")
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = module
-    spec.loader.exec_module(module)
-    return module.STS2AutoplayService
-
-
-STS2AutoplayService = load_service_class()
+from plugin.plugins.sts2_autoplay.service import STS2AutoplayService
 
 
 class DummyLogger:

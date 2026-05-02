@@ -1,18 +1,10 @@
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 import pytest
 
-
-from plugin.plugins.sts2_autoplay.tests._isolated_loader import load_isolated_sts2_module
-
-
-PROJECT_ROOT = Path(__file__).resolve().parents[4]
-
-
-DecisioningMixin = load_isolated_sts2_module("sts2_decisioning_test_pkg", "decisioning").DecisioningMixin
+from plugin.plugins.sts2_autoplay.decisioning import DecisioningMixin
 
 
 class DummyLogger:

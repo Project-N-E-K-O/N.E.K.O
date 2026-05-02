@@ -1,19 +1,11 @@
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
 from typing import Any
 
 import pytest
 
-
-from plugin.plugins.sts2_autoplay.tests._isolated_loader import load_isolated_sts2_module
-
-
-PROJECT_ROOT = Path(__file__).resolve().parents[4]
-
-
-ContextFlowMixin = load_isolated_sts2_module("sts2_context_flow_test_pkg", "context_flow").ContextFlowMixin
+from plugin.plugins.sts2_autoplay.context_flow import ContextFlowMixin
 
 
 class ContextFlowService(ContextFlowMixin):

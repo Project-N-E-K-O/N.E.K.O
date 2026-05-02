@@ -1,14 +1,15 @@
 from __future__ import annotations
 
-import importlib.util
-import sys
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from plugin.plugins.sts2_autoplay.combat import CombatAnalyzer
+from plugin.plugins.sts2_autoplay.parser import StrategyParser
+from plugin.plugins.sts2_autoplay.strategy import HeuristicSelector
 
-PROJECT_ROOT = Path(__file__).resolve().parents[4]
+
 STS2_DIR = Path(__file__).resolve().parents[1]
 STRATEGY_NAMES = ["defect", "ironclad", "silent_hunter", "necrobinder", "regent"]
 
@@ -29,44 +30,19 @@ class DummyLogger:
         self.infos.append(str(message))
 
 
-def load_module(module_name: str, relative_path: str):
-    spec = importlib.util.spec_from_file_location(module_name, PROJECT_ROOT / relative_path)
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-@pytest.fixture(scope="module")
-def parser_module():
-    return load_module("sts2_autoplay_parser_for_tests", "plugin/plugins/sts2_autoplay/parser.py")
-
-
-@pytest.fixture(scope="module")
-def strategy_module():
-    return load_module("sts2_autoplay_strategy_for_tests", "plugin/plugins/sts2_autoplay/strategy.py")
-
-
-@pytest.fixture(scope="module")
-def combat_module():
-    return load_module("sts2_autoplay_combat_for_tests", "plugin/plugins/sts2_autoplay/combat.py")
+@pytest.fixture()
+def parser():
+    return StrategyParser(DummyLogger())
 
 
 @pytest.fixture()
-def parser(parser_module):
-    return parser_module.StrategyParser(DummyLogger())
+def selector():
+    return HeuristicSelector(DummyLogger())
 
 
 @pytest.fixture()
-def selector(strategy_module):
-    return strategy_module.HeuristicSelector(DummyLogger())
-
-
-@pytest.fixture()
-def combat_analyzer(combat_module):
-    return combat_module.CombatAnalyzer(DummyLogger())
+def combat_analyzer():
+    return CombatAnalyzer(DummyLogger())
 
 
 class SelectorStub:

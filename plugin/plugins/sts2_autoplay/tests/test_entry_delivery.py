@@ -4,10 +4,7 @@ from typing import Any
 
 import pytest
 
-from plugin.plugins.sts2_autoplay.tests._isolated_loader import load_isolated_sts2_module
-
-
-STS2AutoplayPlugin = load_isolated_sts2_module("sts2_entry_delivery_test_pkg", "__init__").STS2AutoplayPlugin
+from plugin.plugins.sts2_autoplay import STS2AutoplayPlugin
 
 
 class EntryDeliveryPlugin(STS2AutoplayPlugin):

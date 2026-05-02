@@ -1,18 +1,10 @@
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 import pytest
 
-
-from plugin.plugins.sts2_autoplay.tests._isolated_loader import load_isolated_sts2_module
-
-
-PROJECT_ROOT = Path(__file__).resolve().parents[4]
-
-
-ActionExecutionMixin = load_isolated_sts2_module("sts2_action_execution_test_pkg", "action_execution").ActionExecutionMixin
+from plugin.plugins.sts2_autoplay.action_execution import ActionExecutionMixin
 
 
 class DummyLogger:
