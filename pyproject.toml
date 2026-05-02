@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "N.E.K.O"
-version = "1.0.0"
+dynamic = ["version"]
 description = "N.E.K.O. Desktop"
 readme = "README.MD"
 requires-python = "==3.11.*"
@@ -64,6 +64,10 @@ dependencies = [
   "tokenizers",
   "py-cpuinfo>=9.0.0",
 ]
+
+[tool.hatch.version]
+path = "config/__init__.py"
+pattern = '''^APP_VERSION\s*=\s*["'](?P<version>[^"']+)["']'''
 
 [tool.hatch.build.targets.wheel]
 packages = [
