@@ -959,20 +959,31 @@ def _now_iso() -> str:
 
 
 def _plugin_business_callback_status(run_data: Any) -> Optional[str]:
+    """Translate a plugin's run_data into a non-None terminal status when the
+    plugin reports business outcomes that diverge from raw protocol success.
+
+    Plugin-agnostic convention. Plugins that want this layer to recognise
+    "ran fine but did not act" must set one of these explicit signals:
+    - ``status == "error"`` → "failed"
+    - ``needs_confirmation=True`` / ``action == "clarify"`` /
+      ``status in {"blocked", "clarify", "confirm_required"}`` → "blocked"
+    - ``observation_only=True`` short-circuits (treated as completed)
+
+    Notably, ``executed=False`` alone is NOT enough — plugins use
+    ``executed=False`` to mean "no game-side action played" while the
+    plugin itself succeeded (e.g. a successful stop_autoplay returns
+    ``status="idle", executed=False``). Inferring blocked from that would
+    misreport successful control operations.
+    """
     if not isinstance(run_data, dict):
         return None
     status = str(run_data.get("status") or "").strip().lower()
     action = str(run_data.get("action") or "").strip().lower()
-    observation_only = bool(run_data.get("observation_only"))
-    explicit_no_execution = run_data.get("executed") is False or run_data.get("action_executed") is False
-    blocked_statuses = {"blocked", "clarify", "confirm_required", "idle", "stale"}
-    if observation_only:
+    if bool(run_data.get("observation_only")):
         return None
     if status == "error":
         return "failed"
     if bool(run_data.get("needs_confirmation")) or action == "clarify" or status in {"blocked", "clarify", "confirm_required"}:
-        return "blocked"
-    if explicit_no_execution and status in blocked_statuses:
         return "blocked"
     return None
 
