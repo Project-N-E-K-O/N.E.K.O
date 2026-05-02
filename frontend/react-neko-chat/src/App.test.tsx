@@ -407,6 +407,7 @@ describe('App', () => {
     fireEvent.click(activeBadgeButton);
 
     expect(screen.getByRole('button', { name: 'Emoji' })).toBeInTheDocument();
+    expect(screen.queryByRole('group', { name: 'Tool icons' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Emoji: 棒棒糖' })).not.toBeInTheDocument();
   });
 
