@@ -140,7 +140,7 @@ export default function MessageBubble({
   const bubbleClassName = getBubbleClassName(message);
   const rowClassName = getRowClassName(message);
   const showAvatar = message.role !== 'system' && !isGroupedWithPrevious;
-  const showMeta = message.role !== 'system';
+  const showMeta = message.role !== 'system' && !isGroupedWithPrevious;
 
   if (message.role === 'system') {
     return (
