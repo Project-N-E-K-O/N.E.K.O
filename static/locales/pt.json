@@ -526,10 +526,10 @@
         "steamNotRunningTitle": "Steam não funciona",
         "steamNotRunningMessage": "O cliente Steam não está em execução ou não está conectado.\n\nOs recursos do Workshop exigem o cliente Steam. Por favor:\n1. Baixe e instale o cliente Steam\n2. Inicie o Steam e faça login na sua conta\n3. Reabra esta página",
         "addNewCatgirl": "Adicionar novo NEKO",
-        "cardView": "Visualização de cartões",
-        "listView": "Visualização em lista",
-        "noCardImage": "Sem imagem\nde cartão",
-        "searchCharacterCards": "Pesquisar cartões de personagens..."
+        "noCardImage": "Clique aqui para\nconfigurar o cartão",
+        "searchCharacterCards": "\u0050esquisar cartões de personagens...",
+        "cardView": "\u0056isualização de cartões",
+        "listView": "\u0056isualização em lista"
     },
     "dialogs": {
         "confirmLeave": "Confirmar licença",
@@ -1878,7 +1878,8 @@
         "switchCard": "Trocar cartão",
         "switchSuccess": "Trocado com sucesso",
         "tempSaveFailed": "Falha ao salvar temporariamente: {{error}}",
-        "editCardFace": "Editar rosto do cartão"
+        "editCardFace": "Editar rosto do cartão",
+        "cardMakerPopupBlocked": "A página do criador de cartões não pôde ser aberta automaticamente. Permita pop-ups e tente novamente, ou clique na área do cartão para abri-la manualmente."
     },
     "app": {
         "welcomeBack": "{{name}} está de volta!",
@@ -2841,6 +2842,10 @@
             "step1": {
                 "title": "🎭 Selecione o modelo",
                 "desc": "Primeiro selecione o modelo Live2D para configurar as emoções. Cada modelo pode ter configurações de emoção independentes."
+            },
+            "step_pick": {
+                "title": "👇 Escolha um modelo",
+                "desc": "Clique em qualquer item na lista suspensa para escolher um modelo. É necessário selecionar um para continuar."
             },
             "step2": {
                 "title": "😊 Área de configuração de emoções",

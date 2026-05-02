@@ -10,10 +10,10 @@ local-text-retrieval-v1
 
 ## 开发环境准备
 
-安装可选的运行时依赖：
+安装项目主依赖（已包含 `onnxruntime`、`tokenizers`、`py-cpuinfo`）：
 
 ```bash
-uv sync --extra embeddings
+uv sync
 ```
 
 把模型文件下载到匿名 profile 目录。下面的示例将一个 Hugging Face ONNX 仓库镜像到 `data/embedding_models/local-text-retrieval-v1/`：

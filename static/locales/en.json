@@ -526,10 +526,10 @@
         "steamNotRunningTitle": "Steam Not Running",
         "steamNotRunningMessage": "Steam client is not running or not logged in.\n\nWorkshop features require the Steam client. Please:\n1. Download and install the Steam client\n2. Launch Steam and log in to your account\n3. Reopen this page",
         "addNewCatgirl": "Add New NEKO",
-        "searchCharacterCards": "Search character cards...",
-        "cardView": "Card View",
-        "listView": "List View",
-        "noCardImage": "No card\nimage set"
+        "noCardImage": "Click here to set\nthe card face",
+        "searchCharacterCards": "\u0053earch character cards...",
+        "cardView": "\u0043ard View",
+        "listView": "\u004cist View"
     },
     "dialogs": {
         "confirmLeave": "Confirm Leave",
@@ -1878,7 +1878,8 @@
         "cardAuthorUpdated": "Author updated",
         "cardAuthorUpdateFailed": "Failed to update author: {{error}}",
         "saveMasterSuccess": "Master profile saved successfully",
-        "editCardFace": "Edit Card Face"
+        "editCardFace": "Edit Card Face",
+        "cardMakerPopupBlocked": "The card maker page could not open automatically. Please allow popups and retry, or click the card area to open it manually."
     },
     "app": {
         "welcomeBack": "{{name}} is back!",
@@ -2841,6 +2842,10 @@
             "step1": {
                 "title": "🎭 Select Model",
                 "desc": "First select the Live2D model to configure emotions. Each model can have independent emotion settings."
+            },
+            "step_pick": {
+                "title": "👇 Pick a Model",
+                "desc": "Click any item in the dropdown list to choose a model. You must pick one to proceed."
             },
             "step2": {
                 "title": "😊 Emotion Configuration Area",

@@ -76,6 +76,15 @@ Live2DManager.prototype.removeModel = async function(options = {}) {
         } catch (_) {}
     }
     this.initialParameters = {};
+    this.motionBaselineParameters = {};
+    this._activeExpressionParamIds = null;
+    this._activeMotionParamIds = null;
+    this._motionParameterTrackGeneration = (this._motionParameterTrackGeneration || 0) + 1;
+    if (typeof this._nextMotionTimerGeneration === 'function') {
+        this._nextMotionTimerGeneration();
+    } else {
+        this._motionTimerGeneration = (this._motionTimerGeneration || 0) + 1;
+    }
 
     if (activeModel) {
         try {
@@ -229,10 +238,10 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
         console.error('加载模型失败:', error);
         
         // 尝试回退到默认模型
-        if (modelPath !== '/static/yui_default/yui_default.model3.json') {
-            console.warn('模型加载失败，尝试回退到默认模型: yui_default');
+        if (modelPath !== '/static/yui-origin/yui-origin.model3.json') {
+            console.warn('模型加载失败，尝试回退到默认模型: yui-origin');
             try {
-                const defaultModelPath = '/static/yui_default/yui_default.model3.json';
+                const defaultModelPath = '/static/yui-origin/yui-origin.model3.json';
                 // 主模型可能已在 _configureLoadedModel 中途写入派生状态；
                 // 回退加载前先清空，避免默认模型继承失败模型的元数据。
                 this._resetDerivedModelMetadata();
@@ -243,7 +252,7 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
                 // 使用统一的模型配置方法
                 await this._configureLoadedModel(model, defaultModelPath, options, loadToken);
 
-                console.log('成功回退到默认模型: yui_default');
+                console.log('成功回退到默认模型: yui-origin');
                 return model;
             } catch (fallbackError) {
                 console.error('回退到默认模型也失败:', fallbackError);
@@ -814,7 +823,9 @@ Live2DManager.prototype.setupIdleMotionLoop = function(model) {
                 return;
             }
             if (!motionManager.playing) {
-                this._playIdleMotion(motionManager);
+                Promise.resolve(this._playIdleMotion(motionManager)).catch((e) => {
+                    console.warn('[Live2D] 播放 Idle motion 失败:', e);
+                });
             }
         }, delay);
         this._idleMotionLoopTimers.add(timer);
@@ -841,6 +852,13 @@ Live2DManager.prototype.setupIdleMotionLoop = function(model) {
             console.log('[Live2D] 预览模式中，忽略 motionFinish，不启动新 Idle');
             return;
         }
+        if (typeof this.clearEmotionEffects === 'function') {
+            try {
+                this.clearEmotionEffects();
+            } catch (e) {
+                console.warn('[Live2D] motionFinish 后清理 motion 参数失败:', e);
+            }
+        }
         const randomDelay = 1000 + Math.random() * 2000;
         scheduleIdleMotion(randomDelay);
     };
@@ -850,10 +868,92 @@ Live2DManager.prototype.setupIdleMotionLoop = function(model) {
 };
 
 // 播放待机动作（从用户保存的 Idle 动画或默认 Idle 随机选择）
-Live2DManager.prototype._playIdleMotion = function(motionManager) {
+Live2DManager.prototype._playIdleMotion = async function(motionManager) {
     if (this._temporaryMotionSuspendToken) {
         return;
     }
+    const expectedModel = this.currentModel;
+    const isCurrentIdleRequest = () => (
+        this.currentModel === expectedModel
+        && expectedModel
+        && !expectedModel.destroyed
+        && window._currentMotionPreviewId == null
+        && !this._temporaryMotionSuspendToken
+    );
+    const getRandomizedIndexes = (length) => {
+        const indexes = [];
+        for (let i = 0; i < length; i++) indexes.push(i);
+        for (let i = indexes.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [indexes[i], indexes[j]] = [indexes[j], indexes[i]];
+        }
+        return indexes;
+    };
+    const getMotionFile = (motion) => motion && (motion.file || motion.File);
+    const getRegisteredMotionFile = (groupName, index) => {
+        if (!groupName || index == null || index < 0) return null;
+
+        const sources = [
+            motionManager.definitions,
+            motionManager._definitions,
+            motionManager.motionGroups,
+            motionManager._motionGroups
+        ].filter(Boolean);
+
+        for (const source of sources) {
+            const group = source[groupName];
+            if (!Array.isArray(group)) continue;
+            const file = getMotionFile(group[index]);
+            if (file) return file;
+        }
+
+        return null;
+    };
+    const trackMotionFile = (file) => {
+        if (!file || typeof this._trackActiveMotionParametersFromFile !== 'function') {
+            if (typeof this._clearActiveMotionParamIds === 'function') {
+                this._clearActiveMotionParamIds();
+            }
+            return;
+        }
+        this._trackActiveMotionParametersFromFile(file).catch(() => {});
+    };
+    const startTrackedMotion = async (groupName, index, file) => {
+        if (!isCurrentIdleRequest()) return false;
+        try {
+            const started = await motionManager.startMotion(groupName, index);
+            if (!isCurrentIdleRequest()) return false;
+            if (started === false) {
+                console.warn(`[Live2D] 启动 ${groupName} 待机动作失败，尝试下一个 Idle 候选`);
+                return false;
+            }
+            trackMotionFile(file);
+            return true;
+        } catch (e) {
+            console.warn(`[Live2D] 启动 ${groupName} 待机动作失败，尝试下一个 Idle 候选:`, e);
+            return false;
+        }
+    };
+    const startTrackedDefinitionMotion = async (groupName, definitions) => {
+        if (!Array.isArray(definitions) || definitions.length === 0) return false;
+        for (const idx of getRandomizedIndexes(definitions.length)) {
+            const definition = definitions[idx];
+            const file = definition && (definition.File || definition.file);
+            if (await startTrackedMotion(groupName, idx, file)) return true;
+        }
+        return false;
+    };
+    const startTrackedGroupMotion = async (groupName, group, filter) => {
+        if (!Array.isArray(group) || group.length === 0) return false;
+        const indexes = getRandomizedIndexes(group.length);
+        for (const idx of indexes) {
+            const motion = group[idx];
+            if (filter && !filter(motion)) continue;
+            const file = getMotionFile(motion);
+            if (await startTrackedMotion(groupName, idx, file)) return true;
+        }
+        return false;
+    };
     const idleAnimations = this._userIdleAnimations;
     if (idleAnimations && idleAnimations.length > 0) {
         // 兼容性获取 motionGroups，优先取公开属性，fallback 到私有属性
@@ -863,21 +963,50 @@ Live2DManager.prototype._playIdleMotion = function(motionManager) {
             console.warn('[Live2D] motionGroups 不可用或 PreviewAll 组不存在，跳过用户待机动作');
         } else {
             const group = motionGroups.PreviewAll;
-            if (group && group.length > 0) {
-                const available = group.filter(m => m.file && idleAnimations.includes(m.file.split('/').pop()));
+            const startedUserIdle = await startTrackedGroupMotion('PreviewAll', group, (motion) => {
+                const motionFile = getMotionFile(motion);
+                return motionFile && idleAnimations.includes(motionFile.split('/').pop());
+            });
+            if (startedUserIdle) {
+                return;
+            }
+            if (Array.isArray(group) && group.length > 0) {
+                const available = group.filter((motion) => {
+                    const motionFile = getMotionFile(motion);
+                    return motionFile && idleAnimations.includes(motionFile.split('/').pop());
+                });
                 if (available.length > 0) {
-                    const chosen = available[Math.floor(Math.random() * available.length)];
-                    const idx = group.indexOf(chosen);
-                    if (idx >= 0) {
-                        console.log(`[Live2D] 播放用户保存的待机动作: ${chosen.file}`);
-                        motionManager.startMotion('PreviewAll', idx);
-                        return;
-                    }
+                    console.warn('[Live2D] 用户保存的待机动作启动失败，回退到默认 Idle');
                 }
             }
         }
     }
-    motionManager.startRandomMotion('Idle');
+    const definitions = motionManager.definitions || motionManager._definitions || {};
+    if (await startTrackedDefinitionMotion('Idle', definitions.Idle)) {
+        return;
+    }
+
+    const motionGroups = motionManager.motionGroups || motionManager._motionGroups || {};
+    if (await startTrackedGroupMotion('Idle', motionGroups.Idle)) {
+        return;
+    }
+
+    if (!isCurrentIdleRequest()) return;
+    try {
+        const started = await motionManager.startRandomMotion('Idle');
+        if (!isCurrentIdleRequest()) return;
+        if (started === false) {
+            this._clearActiveMotionParamIds();
+            return;
+        }
+        const startedGroup = motionManager.state?.currentGroup || 'Idle';
+        const startedIndex = motionManager.state?.currentIndex;
+        const startedFile = getRegisteredMotionFile(startedGroup, startedIndex);
+        trackMotionFile(startedFile);
+    } catch (e) {
+        this._clearActiveMotionParamIds();
+        console.warn('[Live2D] 随机 Idle motion 启动失败:', e);
+    }
 };
 
 // 配置已加载的模型（私有方法，用于消除主路径和回退路径的重复代码）
@@ -902,7 +1031,7 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
         const cleanPath = urlString.split('#')[0].split('?')[0];
         const lastSlash = cleanPath.lastIndexOf('/');
         const rootDir = lastSlash >= 0 ? cleanPath.substring(0, lastSlash) : '/static';
-        this.modelRootPath = rootDir; // e.g. /static/yui_default or /static/some/deeper/dir
+        this.modelRootPath = rootDir; // e.g. /static/yui-origin or /static/some/deeper/dir
         const parts = rootDir.split('/').filter(Boolean);
         const rawName = parts.length > 0 ? parts[parts.length - 1] : null;
         try { this.modelName = rawName ? decodeURIComponent(rawName) : null; } catch (_) { this.modelName = rawName; }

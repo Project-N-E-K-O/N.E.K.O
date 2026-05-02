@@ -151,7 +151,7 @@ function closeModalOnOutsideClick(event) {
     }
 }
 
-// 检查当前模型是否为默认模型（yui_default）
+// 检查当前模型是否为默认模型（yui-origin）
 function isDefaultModel() {
     // 使用保存的角色卡模型名称
     const currentModel = window.currentCharacterCardModel || '';
@@ -178,8 +178,16 @@ function hasStaticModelFlag(metadata) {
         || metadata.is_default === true;
 }
 
+function isLegacyDefaultLive2DModel(modelName) {
+    return modelName === 'yui_default' || modelName === 'yui-default';
+}
+
 function isStaticDefaultLive2DModel(modelName, rawData = {}) {
-    if (modelName !== 'yui_default') {
+    if (isLegacyDefaultLive2DModel(modelName)) {
+        return true;
+    }
+
+    if (modelName !== 'yui-origin') {
         return false;
     }
 
@@ -3646,7 +3654,7 @@ function renderCharaCardsGrid(container, cards, currentCatgirl, hiddenKeys) {
         avatar.className = 'card-avatar';
         const placeholderSpan = document.createElement('span');
         placeholderSpan.className = 'card-avatar-placeholder';
-        placeholderSpan.textContent = window.t ? window.t('steam.noCardImage') : '暂未设置\n角色卡图片';
+        placeholderSpan.textContent = window.t ? window.t('steam.noCardImage') : '点击此处\n设置卡面';
         avatar.appendChild(placeholderSpan);
 
         // 加载已有的卡面图片（仅在服务器侧确实存在时才请求，避免 404 噪声）
@@ -3859,7 +3867,7 @@ function openCatgirlPanel(card, originEl) {
     cardImage.setAttribute('data-edit-label', window.t ? window.t('character.editCardFace') : '✎ 编辑卡面');
     const imgPlaceholder = document.createElement('span');
     imgPlaceholder.className = 'card-avatar-placeholder';
-    imgPlaceholder.textContent = window.t ? window.t('steam.noCardImage') : '暂未设置\n角色卡图片';
+    imgPlaceholder.textContent = window.t ? window.t('steam.noCardImage') : '点击此处\n设置卡面';
     cardImage.appendChild(imgPlaceholder);
 
     // 加载已有的卡面图片（仅在服务器侧确实存在时才请求，避免 404 噪声）
@@ -5365,7 +5373,7 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
         // 收集表单数据
         const nameInput = form.querySelector('input[name="档案名"]');
         if (!nameInput || !nameInput.value.trim()) {
-            showMessage(window.t ? window.t('character.profileNameRequired') : '请输入档案名', 'error');
+            await showAlertDialog(window.t ? window.t('character.profileNameRequired') : '请输入档案名', { type: 'warning' });
             return;
         }
         data['档案名'] = nameInput.value.trim();
@@ -5481,7 +5489,19 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
             ? (window.t ? window.t('character.newCatgirlSuccess') : '新猫娘创建成功')
             : (window.t ? window.t('character.saveSuccess') : '保存成功'), 'success');
         if (isNew) {
-            closeCatgirlPanel();
+            const catgirlName = data['档案名'];
+            const hasCardFace = window._cardFaceNames && window._cardFaceNames.has(catgirlName);
+            if (!hasCardFace) {
+                const makerUrl = `/card_maker?name=${encodeURIComponent(catgirlName)}&mode=maker`;
+                const makerWindow = window.open(makerUrl, '_blank', 'width=1200,height=800');
+                if (!makerWindow) {
+                    await showAlertDialog(window.t ? window.t('character.cardMakerPopupBlocked') : '卡面制作页面未能自动打开，请允许浏览器弹窗后重试，或点击卡面区域手动打开。', { type: 'warning' });
+                } else {
+                    closeCatgirlPanel();
+                }
+            } else {
+                closeCatgirlPanel();
+            }
         } else {
             const container = form.parentNode;
             const saveBtn = form.querySelector('#save-button');
@@ -6581,7 +6601,7 @@ async function handleUploadToWorkshop() {
             fullCharaData['voice_id'] = voiceId;
         }
 
-        // 设置默认模型（排除yui_default）- 仅限 Live2D 模型类型
+        // 设置默认模型（排除yui-origin）- 仅限 Live2D 模型类型
         if (currentModelType === 'live2d' && (!selectedModelName || isStaticDefaultLive2DModel(selectedModelName, rawData))) {
             const validModels = availableModels.filter(model =>
                 model

@@ -358,14 +358,32 @@ CONTEXT_SUMMARY_TASK_FOOTER = {
 
 # ---------- Vision: Avatar 截图注解（叠加在发给视觉模型的截图上，用户不可见） ----------
 AVATAR_ANNOTATION_TEXT = {
-    'zh':    ('这是{name}在桌面上的虚拟形象,', '请{name}不要主动提及', '请{name}不要主动提及'),
-    'zh-CN': ('这是{name}在桌面上的虚拟形象,', '请{name}不要主动提及', '请{name}不要主动提及'),
-    'zh-TW': ('這是{name}在桌面上的虛擬形象,', '請{name}不要主動提及', '請{name}不要主動提及'),
-    'en':    ("This is {name}'s virtual avatar on the desktop,", "Please don't mention it, {name}", "Please don't mention it, {name}"),
-    'ja':    ('これはデスクトップ上の{name}の仮想アバターです,', '{name}は自分から言及しないでください', '{name}は自分から言及しないでください'),
-    'ko':    ('이것은 바탕화면의 {name} 가상 아바타입니다,', '{name}은(는) 스스로 언급하지 마세요', '{name}은(는) 스스로 언급하지 마세요'),
-    'ru':    ('Это виртуальный аватар {name} на рабочем столе,', 'Пожалуйста, {name}, не упоминай это', 'Пожалуйста, {name}, не упоминай это'),
+    'zh':    ('这是{name}在桌面上的虚拟形象,', '请{name}不要主动提及'),
+    'zh-CN': ('这是{name}在桌面上的虚拟形象,', '请{name}不要主动提及'),
+    'zh-TW': ('這是{name}在桌面上的虛擬形象,', '請{name}不要主動提及'),
+    'en':    ("This is {name}'s virtual avatar on the desktop,", "Please don't mention it, {name}"),
+    'ja':    ('これはデスクトップ上の{name}の仮想アバターです,', '{name}は自分から言及しないでください'),
+    'ko':    ('이것은 바탕화면의 {name} 가상 아바타입니다,', '{name}은(는) 스스로 언급하지 마세요'),
+    'ru':    ('Это виртуальный аватар {name} на рабочем столе,', 'Пожалуйста, {name}, не упоминай это'),
 }
+
+# ⚠ 与 AVATAR_ANNOTATION_TEXT 同步维护：原文片段直接嵌进 hint，方便 LLM 视觉对模式后忽略。
+AVATAR_ANNOTATION_IGNORE_HINT = {
+    'zh':    '注：截图上可能叠加了一段小字「这是<角色名>在桌面上的虚拟形象, 请<角色名>不要主动提及」。这只是用来标记桌面虚拟形象位置的系统元数据，不是用户屏幕的内容，请忽略，不要复述也不要主动提及。',
+    'zh-CN': '注：截图上可能叠加了一段小字「这是<角色名>在桌面上的虚拟形象, 请<角色名>不要主动提及」。这只是用来标记桌面虚拟形象位置的系统元数据，不是用户屏幕的内容，请忽略，不要复述也不要主动提及。',
+    'zh-TW': '註：截圖上可能疊加了一段小字「這是<角色名>在桌面上的虛擬形象, 請<角色名>不要主動提及」。這只是用來標記桌面虛擬形象位置的系統元資料，不是使用者螢幕的內容，請忽略，不要複述也不要主動提及。',
+    'en':    'Note: the screenshot may carry a small overlaid annotation reading "This is <character>\'s virtual avatar on the desktop, Please don\'t mention it, <character>". It only marks the avatar position — system metadata, not part of the user\'s screen. Ignore it, do not repeat it, and do not bring it up.',
+    'ja':    '注：スクリーンショットには「これはデスクトップ上の<キャラクター名>の仮想アバターです, <キャラクター名>は自分から言及しないでください」という小さな注釈が重ねて描かれている場合があります。これはアバター位置を示すシステムメタデータであり、ユーザー画面の一部ではありません。無視し、復唱せず、自分から言及しないでください。',
+    'ko':    '주의: 스크린샷에는 "이것은 바탕화면의 <캐릭터명> 가상 아바타입니다, <캐릭터명>은(는) 스스로 언급하지 마세요" 라는 작은 주석이 겹쳐져 있을 수 있습니다. 아바타 위치를 표시하는 시스템 메타데이터일 뿐 사용자 화면의 내용이 아닙니다. 무시하고, 따라 말하거나 먼저 언급하지 마세요.',
+    'ru':    'Примечание: на скриншот может быть наложена небольшая надпись вида «Это виртуальный аватар <персонажа> на рабочем столе, Пожалуйста, <персонаж>, не упоминай это». Это только метка положения аватара — служебные метаданные, не часть экрана пользователя. Игнорируйте её, не пересказывайте и не упоминайте сами.',
+}
+
+
+def get_avatar_annotation_ignore_hint(lang: str = 'zh') -> str:
+    """Return the localized hint telling the LLM to ignore the avatar overlay on screenshots."""
+    return (AVATAR_ANNOTATION_IGNORE_HINT.get(lang)
+            or AVATAR_ANNOTATION_IGNORE_HINT.get(lang.split('-')[0])
+            or AVATAR_ANNOTATION_IGNORE_HINT['en'])
 
 # ---------- Vision 图像描述 prompt ----------
 # 安全水印前缀（所有语言固定不变，包括逗号和空格）

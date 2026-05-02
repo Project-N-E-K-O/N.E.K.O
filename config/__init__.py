@@ -1393,7 +1393,7 @@ EVIDENCE_PROMOTION_MERGE_MODEL_TIER = "correction"  # Promote 合并决策
 # level (drop the model file → on; remove it → off) without a config edit.
 VECTORS_ENABLED = True                       # master kill switch
 VECTORS_EMBEDDING_DIM = "auto"               # "auto" | 32/64/128/256/512/768
-VECTORS_QUANTIZATION = "auto"                # "auto" | "int8" | "fp32"
+VECTORS_QUANTIZATION = "auto"                # "auto" | "int8" | "fp32" (fp32 needs model.onnx on disk)
 VECTORS_MIN_RAM_GB = 4.0                     # below this → disabled regardless
 VECTORS_MODEL_PROFILE_ID = "local-text-retrieval-v1"  # anonymous profile id + local model folder
 # Warmup: the ONNX session (~150 MB unpack) loads on first triggering

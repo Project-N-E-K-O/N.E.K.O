@@ -37,7 +37,7 @@ from .mijia_api.services.auth_service import AuthService
 from .mijia_api.infrastructure.credential_provider import CredentialProvider
 from .mijia_api.infrastructure.credential_store import FileCredentialStore
 from .mijia_api.domain.models import Credential
-from .mijia_api.domain.exceptions import TokenExpiredError, DeviceNotFoundError, DeviceOfflineError
+from .mijia_api.domain.exceptions import TokenExpiredError, DeviceNotFoundError, DeviceOfflineError, MijiaAPIException
 
 _EMBEDDED_BY_AGENT = os.getenv("NEKO_PLUGIN_HOSTED_BY_AGENT", "").strip().lower() == "true"
 
@@ -172,6 +172,176 @@ class MijiaPlugin(NekoPluginBase):
         store = FileCredentialStore(default_path=self.credential_path)
         provider = CredentialProvider(config)
         self.auth_service = AuthService(provider, store)
+
+    async def _build_room_map(self) -> dict[str, str]:
+        """构建 room_id → room_name 映射，用于区域+设备名匹配"""
+        if not self.api:
+            return {}
+        try:
+            homes = await self.api.get_homes()
+            room_map: dict[str, str] = {}
+            for home in homes:
+                if not home.rooms:
+                    continue
+                for room in home.rooms:
+                    rid = str(room.get("id", ""))
+                    rname = room.get("name", "")
+                    if rid and rname:
+                        room_map[rid] = rname
+            return room_map
+        except Exception as e:
+            self.logger.debug(f"构建房间映射失败: {e}")
+            return {}
+
+    # ========== 设备匹配与命令解析 ==========
+
+    async def _load_devices_cache(self) -> list[dict]:
+        """加载设备缓存，不存在时自动拉取"""
+        cache_path = self.data_path("devices_cache.json")
+        if cache_path.exists() and self.api:
+            try:
+                cached = await read_json_async(cache_path)
+                cache_user_id = cached.get('user_id')
+                current_user_id = self.api.credential.user_id if self.api.credential else None
+                if not current_user_id or cache_user_id == current_user_id:
+                    devices = cached.get('devices', [])
+                    # 新逻辑依赖 room_name 字段，旧缓存缺少时自动刷新
+                    if devices and 'room_name' in devices[0]:
+                        return devices
+                    self.logger.info("设备缓存缺少 room_name 字段，自动刷新")
+            except Exception:
+                pass
+        result = await self.list_devices()
+        if result.is_ok():
+            return result.value.get('devices', [])
+        return []
+
+    async def _match_devices(self, name: str) -> dict:
+        """统一设备匹配，返回 {"devices": [...], "status": "ok"|"ambiguous"|"not_found", "message": "..."}
+
+        匹配优先级：精确别名 > 精确设备名 > 区域+设备名拆分 > 模糊匹配
+        多设备时按房间分组展示，要求用户指定房间。
+        """
+        devices = await self._load_devices_cache()
+        if not devices:
+            return {"devices": [], "status": "not_found", "message": "设备列表为空，请先获取设备列表"}
+
+        name_lower = name.lower().strip().replace("的", "")
+
+        # === 精确匹配 ===
+        exact = []
+        for d in devices:
+            alias = d.get('alias', '')
+            if alias:
+                alias_list = [a.strip().lower() for a in alias.split(',') if a.strip()]
+                if name_lower in alias_list:
+                    exact.append(d)
+                    continue
+            if d.get('name', '').lower() == name_lower:
+                exact.append(d)
+
+        if len(exact) == 1:
+            return {"devices": exact, "status": "ok"}
+        if len(exact) > 1:
+            return {
+                "devices": exact,
+                "status": "ambiguous",
+                "message": self._format_ambiguous_message(name, exact),
+            }
+
+        # === 区域+设备名拆分 ===
+        room_map: dict[str, str] = {}
+        for d in devices:
+            rn = d.get('room_name', '')
+            if rn:
+                room_map[rn.lower()] = rn
+
+        room_matched = []
+        for rn_lower, rn_original in room_map.items():
+            if name_lower.startswith(rn_lower):
+                device_part = name_lower[len(rn_lower):].strip()
+                if device_part:
+                    for d in devices:
+                        if d.get('room_name', '').lower() != rn_lower:
+                            continue
+                        dname = d.get('name', '').lower()
+                        dalias = d.get('alias', '').lower()
+                        if device_part in dname or device_part in dalias:
+                            room_matched.append(d)
+                    break
+            elif name_lower.endswith(rn_lower):
+                device_part = name_lower[:-len(rn_lower)].strip()
+                if device_part:
+                    for d in devices:
+                        if d.get('room_name', '').lower() != rn_lower:
+                            continue
+                        dname = d.get('name', '').lower()
+                        dalias = d.get('alias', '').lower()
+                        if device_part in dname or device_part in dalias:
+                            room_matched.append(d)
+                    break
+
+        if len(room_matched) == 1:
+            return {"devices": room_matched, "status": "ok"}
+        if len(room_matched) > 1:
+            return {
+                "devices": room_matched,
+                "status": "ambiguous",
+                "message": self._format_ambiguous_message(name, room_matched),
+            }
+
+        # === 模糊匹配（子串） ===
+        fuzzy = []
+        for d in devices:
+            dname = d.get('name', '').lower()
+            dalias = d.get('alias', '')
+            if name_lower in dname:
+                fuzzy.append(d)
+                continue
+            if dalias:
+                alias_list = [a.strip().lower() for a in dalias.split(',') if a.strip()]
+                if any(name_lower in a for a in alias_list):
+                    fuzzy.append(d)
+
+        if len(fuzzy) == 1:
+            return {"devices": fuzzy, "status": "ok"}
+        if len(fuzzy) > 1:
+            return {
+                "devices": fuzzy,
+                "status": "ambiguous",
+                "message": self._format_ambiguous_message(name, fuzzy),
+            }
+
+        # === 完全无匹配，列出所有设备 ===
+        all_names = []
+        for d in devices:
+            rn = d.get('room_name', '')
+            dn = d.get('name', '未知')
+            alias = d.get('alias', '')
+            label = f"{rn} {dn}" if rn else dn
+            if alias:
+                label += f" (别名: {alias})"
+            all_names.append(f"  • {label}")
+        return {
+            "devices": [],
+            "status": "not_found",
+            "message": f"未找到匹配 '{name}' 的设备。当前设备列表：\n" + "\n".join(all_names),
+        }
+
+    def _format_ambiguous_message(self, query: str, devices: list[dict]) -> str:
+        """格式化多设备歧义提示，按房间分组"""
+        lines = [f"找到 {len(devices)} 个匹配 '{query}' 的设备："]
+        for i, d in enumerate(devices, 1):
+            rn = d.get('room_name', '')
+            dn = d.get('name', '未知')
+            alias = d.get('alias', '')
+            status = "🟢" if d.get("is_online") else "🔴"
+            label = f"{rn} {dn}" if rn else dn
+            if alias:
+                label += f" (别名: {alias})"
+            lines.append(f"  {i}. {status} {label}")
+        lines.append("请用房间名+设备名精确指定，如 '卧室灯'")
+        return "\n".join(lines)
 
     @plugin_entry(
         id="open_ui",
@@ -580,14 +750,18 @@ class MijiaPlugin(NekoPluginBase):
         
         try:
             devices = await self.api.get_devices(home_id)
+            # 构建房间映射，注入 room_name 到每个设备
+            room_map = await self._build_room_map()
             result = []
             for d in devices:
+                room_name = room_map.get(str(d.room_id), "") if d.room_id else ""
                 device_info = {
                     "did": d.did,
                     "name": d.name,
                     "model": d.model,
                     "is_online": d.is_online(),
-                    "room_id": d.room_id
+                    "room_id": d.room_id,
+                    "room_name": room_name,
                 }
                 
                 # 获取设备规格并缓存关键信息（siid, piid, aiid）
@@ -609,6 +783,8 @@ class MijiaPlugin(NekoPluginBase):
                                     prop["value_range"] = p.value_range
                                 if p.value_list:
                                     prop["value_list"] = p.value_list
+                                if p.service_description:
+                                    prop["service_desc"] = p.service_description
                                 properties.append(prop)
                             
                             # 缓存操作信息（包含 siid, aiid）
@@ -853,349 +1029,831 @@ class MijiaPlugin(NekoPluginBase):
         except Exception as e:
             return Err(SdkError(f"读取别名失败: {e}"))
 
-    @plugin_entry(
-        id="find_device_by_name",
-        name="根据名称查找设备",
-        description="按名称或别名模糊搜索设备，返回匹配设备列表",
-        input_schema={
-            "type": "object",
-            "properties": {
-                "name": {"type": "string", "description": "设备名称、部分名称或别名，如 '插座'"}
-            },
-            "required": ["name"]
-        },
-        llm_result_fields=["message"]
-    )
-    async def find_device_by_name(self, name: str, **_):
-        """根据名称查找设备"""
-        cache_path = self.data_path("devices_cache.json")
-
-        if not cache_path.exists():
-            # 缓存不存在，先获取设备列表
-            result = await self.list_devices()
-            if result.is_err():
-                return result
-            devices = result.value.get('devices', [])
-        else:
-            try:
-                cached = await read_json_async(cache_path)
-                devices = cached.get('devices', [])
-            except Exception as e:
-                return Err(SdkError(f"读取缓存失败: {e}"))
-        
-        # 模糊匹配设备名称和别名
-        name_lower = name.lower()
-        matched = []
-        for d in devices:
-            # 优先匹配别名（支持多别名逗号分隔）
-            alias = d.get('alias', '')
-            if alias:
-                alias_list = [a.strip() for a in alias.split(',') if a.strip()]
-                if any(name_lower in a.lower() or a.lower() == name_lower for a in alias_list):
-                    matched.append(d)
-                    continue
-            # 再匹配设备名称
-            if name_lower in d.get('name', '').lower():
-                matched.append(d)
-        
-        if not matched:
-            return Err(SdkError(f"未找到名称或别名包含 '{name}' 的设备"))
-        
-        # 构建友好消息
-        lines = [f"🔍 找到 {len(matched)} 个匹配 '{name}' 的设备:"]
-        for d in matched:
-            status = "🟢 在线" if d.get("is_online") else "🔴 离线"
-            alias = d.get('alias', '')
-            alias_info = f" (别名: {alias})" if alias else ""
-            lines.append(f"  • {d.get('name')}{alias_info} ({status})")
-            lines.append(f"    型号: {d.get('model')}")
-            lines.append(f"    DID: {d.get('did')}")
-            if d.get("properties"):
-                lines.append(f"    属性数: {len(d.get('properties', []))}")
-        message = "\n".join(lines)
-        
-        return Ok({"success": True, "message": message, "devices": matched, "count": len(matched)})
-
     @ui.action(label=tr("actions.smartControl.label", default="智能控制"), tone="success", group="control", order=10, refresh_context=True)
     @plugin_entry(
         id="smart_control",
-        name="智能控制设备",
-        description="用一句话控制设备，支持泛称设备名和自定义别名（如'插座'、'空调'、'卧室插座'、'关灯'），自动搜索匹配的设备并执行开关",
+        name="智能控制",
+        description=(
+            "统一设备控制入口，用一句话控制设备或执行场景。"
+            "支持：开关（'打开卧室灯'）、亮度（'灯调到50%'）、温度（'空调调26度'）、"
+            "模式（'空调调制冷'）、场景（'执行回家场景'）。"
+            "支持设备名、别名、房间名+设备名（如'卧室灯'）。"
+        ),
         input_schema={
             "type": "object",
             "properties": {
-                "command": {"type": "string", "description": "控制命令，支持泛称或别名，如'打开插座'、'关闭卧室插座'、'关灯'"}
+                "command": {"type": "string", "description": "控制命令，如'打开卧室灯'、'灯亮度50%'、'空调26度'、'执行回家场景'"}
             },
             "required": ["command"]
         },
         llm_result_fields=["message"]
     )
     async def smart_control(self, command: str, **_):
-        """智能控制：用户说'打开插座'，自动完成搜索+控制"""
+        """统一设备控制入口"""
         if not self.api:
             return Err(SdkError("未登录"))
-        
+
         self.logger.info(f"智能控制命令: {command}")
-        
-        cmd = command.lower().strip()
-        
-        # 判断开关并提取设备名
-        # 优先匹配长词，且只移除开头的控制词（避免误删设备名中的字）
-        turn_on = None
-        device_name = cmd
-        
-        # 按长度降序排列，优先匹配长词
-        open_keywords = ["打开", "开启", "开"]
-        close_keywords = ["关闭", "关掉", "关"]
-        
-        for keyword in open_keywords:
-            if device_name.startswith(keyword):
-                turn_on = True
-                device_name = device_name[len(keyword):].strip()
-                break
-        
-        if turn_on is None:
-            for keyword in close_keywords:
-                if device_name.startswith(keyword):
-                    turn_on = False
-                    device_name = device_name[len(keyword):].strip()
-                    break
-        
-        if turn_on is None:
-            return Err(SdkError("请说'打开'或'关闭'"))
-        
-        if not device_name:
-            return Err(SdkError("请指定设备名，如'打开插座'"))
-        
-        self.logger.info(f"解析结果: 设备='{device_name}', 操作={'开' if turn_on else '关'}")
-        
-        # 查找设备
-        result = await self.find_device_by_name(name=device_name)
-        if result.is_err():
-            self.logger.error(f"查找设备失败: {result.error}")
-            return result
-        
-        devices = result.value.get("devices", [])
-        count = result.value.get("count", len(devices))
-        self.logger.info(f"找到 {count} 个设备, devices列表长度={len(devices)}")
-        
-        if not devices:
-            return Err(SdkError(f"未找到'{device_name}'"))
-        
-        # 多设备匹配时返回歧义错误，避免误操作
-        if len(devices) > 1:
-            device_infos = []
-            for d in devices:
-                alias = d.get("alias", "")
-                name = d.get("name", "未知")
-                info = f"{name} (别名: {alias})" if alias else name
-                device_infos.append(info)
+
+        # === 场景执行 ===
+        scene_match = re.match(r'(?:执行|运行|触发)\s*(.+)', command.strip())
+        if scene_match:
+            return await self._execute_scene_by_name(scene_match.group(1).strip())
+
+        # === 开关指令最高优先级（防止被动作分支抢先匹配） ===
+        # "打开/关闭/开/关" 开头的是二元开关指令，直接走控制解析，不进动作分支
+        _is_switch_cmd = re.match(r'(?:打开|开启|关闭|关掉|开|关)\s*\S', command.strip())
+
+        # === 查询意图识别 ===
+        _QUERY_PAT = re.search(
+            r'(?:是多少|怎么样|什么状态|几度|多亮|多暗|多热|多冷|'
+            r'查询|看看|看一下|剩余|还剩|还有多久)',
+            command,
+        )
+        if _QUERY_PAT:
+            # 去掉查询关键词，提取设备名
+            device_hint = command[:_QUERY_PAT.start()].strip()
+            # 去掉属性名后缀（温度/湿度/亮度/电量等），保留设备名
+            device_hint = re.sub(
+                r'(?:温度|湿度|亮度|色温|音量|风速|电量|浓度|'
+                r'空气质量|PM2\.5|甲醛|水温|滤芯|剩余量|剩余时间)$',
+                '', device_hint,
+            ).strip()
+            if device_hint:
+                return await self.query_device_state(device_hint)
+
+        # === 设备操作（开始/暂停/停止/回充等） ===
+        # 开关指令已优先处理，此处跳过防止 "关灯" 被误匹配为动作
+        _ACTION_VERBS = (
+            r'开始|启动|继续|暂停|停止|回充|回去充电|'
+            r'出舱|集尘|洗拖布|烘干|建图|召唤清洁'
+        )
+        act_m = None
+        if not _is_switch_cmd:
+            act_m = re.match(
+                r'(.+?)(?:的|把|让)?\s*(' + _ACTION_VERBS + r')(?:.+)?$',
+                command.strip(),
+            )
+            if not act_m:
+                # 动词在前："开始扫地" / "暂停洗衣机"
+                act_m2 = re.match(
+                    r'(' + _ACTION_VERBS + r')\s*(.+)',
+                    command.strip(),
+                )
+                if act_m2:
+                    act_m = type('M', (), {'group': lambda self, n: act_m2.group(3 - n) if n in (1, 2) else None})()
+
+        if act_m:
+            device_hint = (act_m.group(1) or "").strip()
+            verb = (act_m.group(2) or "").strip()
+            if device_hint and verb:
+                match_result = await self._match_devices(device_hint)
+                if match_result["status"] == "ok" and len(match_result["devices"]) == 1:
+                    device = match_result["devices"][0]
+                    did = device.get("did")
+                    actions = device.get("actions", [])
+                    display_name = device.get("alias") or device.get("name", device_hint)
+
+                    # 从动词推断 action name
+                    _VERB_TO_ACTION = {
+                        "开始": ["start", "start_sweep", "start_wash", "start_cook", "start-work", "start-drying"],
+                        "启动": ["start", "start_sweep", "start_wash", "start_cook", "start-work"],
+                        "继续": ["start", "resume", "continue"],
+                        "暂停": ["pause", "pause-sweeping", "stop-sweeping"],
+                        "停止": ["stop", "stop-sweeping", "stop-wash", "stop-working", "cancel_cooking"],
+                        "关闭": ["stop", "stop-working", "cancel_cooking"],
+                        "回充": ["start-charge", "start_charge"],
+                        "回去充电": ["start-charge", "start_charge"],
+                        "出舱": ["start-eject"],
+                        "集尘": ["start-dust-arrest"],
+                        "洗拖布": ["start-mop-wash"],
+                        "烘干": ["start-dry"],
+                        "建图": ["start-build-map"],
+                        "召唤清洁": ["start-call-clean"],
+                    }
+                    candidates = _VERB_TO_ACTION.get(verb, [verb])
+                    matched_action = None
+                    for a in actions:
+                        aname = a.get("name", "").lower()
+                        if any(c.lower() == aname for c in candidates):
+                            matched_action = a
+                            break
+                    if not matched_action:
+                        # 模糊匹配
+                        for a in actions:
+                            aname = a.get("name", "").lower()
+                            if any(c.lower() in aname for c in candidates):
+                                matched_action = a
+                                break
+
+                    if matched_action:
+                        try:
+                            result = await self.api.call_device_action(
+                                did, matched_action["siid"], matched_action["aiid"]
+                            )
+                            return Ok({"success": True, "message": f"✅ 已对'{display_name}'执行'{verb}'操作", "device": display_name, "action": verb, "result": result})
+                        except Exception as e:
+                            return Err(SdkError(f"对'{display_name}'执行'{verb}'操作失败: {e}"))
+                    else:
+                        action_names = [a.get("name") for a in actions]
+                        return Err(SdkError(
+                            f"'{display_name}'没有'{verb}'操作。可用操作：{', '.join(action_names) if action_names else '无'}"
+                        ))
+
+        # === 解析控制命令 ===
+        parsed = self._parse_control_command(command)
+        if not parsed:
             return Err(SdkError(
-                f"找到多个匹配 '{device_name}' 的设备: {', '.join(device_infos)}。"
-                f"请使用更精确的设备名称，或通过 find_device_by_name 查看完整列表后使用 control_device 精确控制。"
+                "无法理解命令。支持的格式：\n"
+                "  开关：'打开卧室灯' / '关掉插座'\n"
+                "  亮度：'灯调到50%' / '灯亮度50'\n"
+                "  温度：'空调调26度'\n"
+                "  模式：'空调调制冷'\n"
+                "  场景：'执行回家场景'"
             ))
-        
-        device = devices[0]
-        self.logger.info(f"设备数据: {device}")
-        
+
+        device_name = parsed["device"]
+        action = parsed["action"]
+        prop_name = parsed.get("prop")
+        value = parsed.get("value")
+
+        self.logger.info(f"解析结果: device=\"{device_name}\", action={action}, prop={prop_name}, value={value}")
+
+        # === 匹配设备 ===
+        match_result = await self._match_devices(device_name)
+        if match_result["status"] == "not_found":
+            return Err(SdkError(match_result["message"]))
+        if match_result["status"] == "ambiguous":
+            return Err(SdkError(match_result["message"]))
+
+        device = match_result["devices"][0]
         did = device.get("did")
-        alias = device.get("alias", "")
-        name = alias or device.get("name", device_name)
+        display_name = device.get("alias") or device.get("name", device_name)
         props = device.get("properties", [])
-        
-        self.logger.info(f"使用设备: name={name}, did={did}, 属性数={len(props)}")
-        
-        # 找开关属性
-        switch = None
-        for p in props:
-            pname = p.get("name", "").lower()
-            if any(k in pname for k in ["开关", "电源", "power", "switch"]):
-                if p.get("access") in ["write", "read_write", "notify_read_write"]:
-                    switch = p
-                    self.logger.info(f"找到开关属性: {p}")
-                    break
-        
-        if not switch:
-            # 找第一个可写的bool
+
+        # === 开关控制 ===
+        if action == "switch":
+            # 收集所有可写的开关属性
+            switch_props = []
             for p in props:
-                if p.get("access") in ["write", "read_write", "notify_read_write"] and p.get("type") == "bool":
-                    switch = p
-                    self.logger.info(f"找到bool属性: {p}")
-                    break
-        
-        if not switch:
-            self.logger.error(f"设备 '{name}' 没有可控制的开关属性")
-            return Err(SdkError(f"'{name}'没有可控制的开关"))
-        
-        siid = switch.get("siid")
-        piid = switch.get("piid")
-        self.logger.info(f"准备控制: did={did}, siid={siid}, piid={piid}, value={turn_on}")
-        
-        # 执行控制
-        try:
-            success = await self.api.control_device(did, siid, piid, turn_on)
-            action = "打开" if turn_on else "关闭"
-            self.logger.info(f"控制结果: success={success}")
-            if success:
-                message = f"✅ 已{action}'{name}'"
-                return Ok({"success": True, "message": message, "device": name, "action": action})
+                pname = p.get("name", "").lower()
+                if any(k in pname for k in ["开关", "电源", "power", "switch", "on"]):
+                    if p.get("access") in ["write", "read_write", "notify_read_write"]:
+                        switch_props.append(p)
+            # fallback: 找第一个可写 bool 属性
+            if not switch_props:
+                for p in props:
+                    if p.get("access") in ["write", "read_write", "notify_read_write"] and p.get("type") == "bool":
+                        switch_props.append(p)
+                        break
+
+            if not switch_props:
+                return Err(SdkError(f"'{display_name}'没有可控制的开关"))
+
+            # 多控开关：根据命令中的方位词匹配
+            switch = None
+            if len(switch_props) == 1:
+                switch = switch_props[0]
             else:
-                message = f"❌ {action}'{name}'失败"
-                return Ok({"success": False, "message": message})
+                # 从命令中提取方位关键词
+                _POS_MAP = [
+                    (r"左", ["Left", "left"]),
+                    (r"右", ["Right", "right"]),
+                    (r"中", ["Middle", "middle", "Center", "center"]),
+                    (r"(?:一|1)键", ["First", "first", "1"]),
+                    (r"(?:二|2)键", ["Second", "second", "2"]),
+                    (r"(?:三|3)键", ["Third", "third", "3"]),
+                    (r"(?:四|4)键", ["Fourth", "fourth", "4"]),
+                    (r"(?:五|5)键", ["Fifth", "fifth", "5"]),
+                    (r"(?:六|6)键", ["Sixth", "sixth", "6"]),
+                ]
+                cmd_lower = command.lower()
+                for pattern, en_keywords in _POS_MAP:
+                    if re.search(pattern, command):
+                        for p in switch_props:
+                            sdesc = (p.get("service_desc") or "").lower()
+                            if any(kw.lower() in sdesc for kw in en_keywords):
+                                switch = p
+                                break
+                        if switch:
+                            break
+
+                # 未匹配到方位词 → 按默认主开关优先级自动选择
+                if not switch:
+                    switch = self._pick_default_switch(switch_props, display_name)
+                    self.logger.info(
+                        f"多控开关未指定方位，自动选择默认主开关: "
+                        f"device={display_name}, service_desc={switch.get('service_desc')}, "
+                        f"siid={switch.get('siid')}, piid={switch.get('piid')}"
+                    )
+
+            siid = switch.get("siid")
+            piid = switch.get("piid")
+            try:
+                success = await self.api.control_device(did, siid, piid, value)
+                action_text = "打开" if value else "关闭"
+                if success:
+                    return Ok({"success": True, "message": f"✅ 已{action_text}'{display_name}'", "device": display_name, "action": action_text})
+                else:
+                    return Ok({"success": False, "message": f"❌ {action_text}'{display_name}'失败"})
+            except TokenExpiredError:
+                return Err(SdkError("凭据已过期，请重新登录"))
+            except MijiaAPIException as e:
+                self.logger.warning(f"API控制失败: device={display_name}, did={did}, siid={siid}, piid={piid}, value={value}, error={e}")
+                if e.code == -6:
+                    return Err(SdkError(f"控制'{display_name}'失败：设备不支持该操作或参数有误（siid={siid}, piid={piid}），请检查设备是否在线"))
+                return Err(SdkError(f"控制'{display_name}'失败: {e}"))
+            except Exception as e:
+                self.logger.exception("控制失败")
+                return Err(SdkError(f"控制失败: {e}"))
+
+        # === 相对值调整（调亮一点/温度高一点） ===
+        if action == "adjust_prop":
+            direction = parsed.get("direction", 1)
+            delta = parsed.get("delta")
+            prop = self._find_property_for_control(props, prop_name, None)
+            if not prop:
+                available = [p.get("name") for p in props if p.get("access") in ["write", "read_write", "notify_read_write"]]
+                return Err(SdkError(f"'{display_name}'没有可控制的'{prop_name}'属性。可控制属性：{', '.join(available) if available else '无'}"))
+
+            siid = prop.get("siid")
+            piid = prop.get("piid")
+            vr = prop.get("value_range", [])
+            v_min = vr[0] if len(vr) >= 1 else 0
+            v_max = vr[1] if len(vr) >= 2 else 100
+            step = vr[2] if len(vr) >= 3 else 1
+
+            # 读取当前值
+            try:
+                cur_results = await self.api.get_device_properties([{"did": did, "siid": siid, "piid": piid}])
+                cur_value = cur_results[0].get("value") if cur_results else None
+            except Exception:
+                cur_value = None
+
+            if cur_value is None:
+                return Err(SdkError(f"无法读取'{display_name}'的{prop_name}当前值"))
+
+            # 计算目标值
+            if delta is not None:
+                target = cur_value + direction * delta
+            else:
+                # 默认调整步长：范围的 10%
+                range_size = v_max - v_min
+                default_step = max(step, range_size * 0.1)
+                target = cur_value + direction * default_step
+
+            target = max(v_min, min(v_max, target))
+            # 对齐步长
+            if step > 1:
+                target = round((target - v_min) / step) * step + v_min
+
+            try:
+                success = await self.api.control_device(did, siid, piid, target)
+                if success:
+                    return Ok({"success": True, "message": f"✅ 已将'{display_name}'的{prop_name}从{cur_value}调整为{target}", "device": display_name, "property": prop_name, "value": target})
+                else:
+                    return Ok({"success": False, "message": f"❌ 调整'{display_name}'的{prop_name}失败"})
+            except TokenExpiredError:
+                return Err(SdkError("凭据已过期，请重新登录"))
+            except MijiaAPIException as e:
+                return Err(SdkError(f"调整'{display_name}'的{prop_name}失败: {e}"))
+            except Exception as e:
+                self.logger.exception("调整失败")
+                return Err(SdkError(f"调整失败: {e}"))
+
+        # === 属性控制（亮度/温度/模式等） ===
+        if not prop_name:
+            return Err(SdkError("请指定要调整的属性，如'灯亮度50%'"))
+
+        prop = self._find_property_for_control(props, prop_name, value)
+        if not prop:
+            available = [p.get("name") for p in props if p.get("access") in ["write", "read_write", "notify_read_write"]]
+            return Err(SdkError(f"'{display_name}'没有可控制的'{prop_name}'属性。可控制属性：{', '.join(available) if available else '无'}"))
+
+        # 极值处理："最高"/"最低" → 从 value_range 取边界
+        if value in ("max", "min"):
+            vr = prop.get("value_range", [])
+            if len(vr) >= 2:
+                value = vr[1] if value == "max" else vr[0]
+            elif prop.get("value_list"):
+                vals = [item.get("value", 0) for item in prop.get("value_list", [])]
+                value = max(vals) if value == "max" else min(vals)
+            else:
+                return Err(SdkError(f"'{display_name}'的{prop_name}没有值范围信息，无法设置极值"))
+
+        # 模式/档位枚举转换：中文 → 设备 spec 数字值
+        if isinstance(value, str) and prop.get("value_list"):
+            resolved = self._resolve_enum_value(prop, value)
+            if resolved is not None:
+                self.logger.info(f"枚举转换: '{value}' → {resolved}")
+                value = resolved
+            else:
+                available_modes = [f"{item.get('description')}(={item.get('value')})" for item in prop.get("value_list", [])]
+                return Err(SdkError(
+                    f"'{display_name}'的{prop_name}不支持'{value}'。"
+                    f"可用模式：{', '.join(available_modes)}"
+                ))
+
+        # 窗帘位置：MIoT spec 定义 0=关闭, 100=全开，直接透传用户设定值
+        # 不做反转——用户说"位置到80"即设为 80（80% 开）
+
+        siid = prop.get("siid")
+        piid = prop.get("piid")
+        self.logger.info(f"控制属性: {prop.get('name')}, siid={siid}, piid={piid}, value={value}")
+
+        try:
+            success = await self.api.control_device(did, siid, piid, value)
+            if success:
+                unit = prop.get("unit", "")
+                value_display = f"{value}{unit}" if unit else str(value)
+                return Ok({"success": True, "message": f"✅ 已将'{display_name}'的{prop_name}设为{value_display}", "device": display_name, "property": prop_name, "value": value})
+            else:
+                return Ok({"success": False, "message": f"❌ 设置'{display_name}'的{prop_name}失败"})
         except TokenExpiredError:
             return Err(SdkError("凭据已过期，请重新登录"))
+        except MijiaAPIException as e:
+            self.logger.warning(f"API控制失败: device={display_name}, did={did}, siid={siid}, piid={piid}, value={value}, error={e}")
+            if e.code == -6:
+                return Err(SdkError(f"设置'{display_name}'的{prop_name}失败：设备不支持该操作或参数有误"))
+            return Err(SdkError(f"设置'{display_name}'的{prop_name}失败: {e}"))
         except Exception as e:
             self.logger.exception("控制失败")
             return Err(SdkError(f"控制失败: {e}"))
 
-    @plugin_entry(
-        id="control_device",
-        name="控制设备属性",
-        description="向设备写入属性值，精确控制开关/亮度/温度等",
-        input_schema={
-            "type": "object",
-            "properties": {
-                "device_id": {"type": "string", "description": "设备 ID（did）"},
-                "siid": {"type": "integer", "description": "服务 ID"},
-                "piid": {"type": "integer", "description": "属性 ID"},
-                "value": {"description": "目标属性值"}
-            },
-            "required": ["device_id", "siid", "piid", "value"]
-        },
-        llm_result_fields=["message"]
-    )
-    async def control_device(self, device_id: str, siid: int, piid: int, value: Any, **_):
-        """控制设备"""
-        if not self.api:
-            return Err(SdkError("未登录"))
-        try:
-            success = await self.api.control_device(device_id, siid, piid, value)
-            if success:
-                message = f"✅ 设备控制成功 (did={device_id}, siid={siid}, piid={piid}, value={value})"
-                return Ok({"success": True, "message": message, "device_id": device_id, "value": value})
-            else:
-                message = f"❌ 设备控制失败 (did={device_id})"
-                return Ok({"success": False, "message": message})
-        except DeviceNotFoundError:
-            return Err(SdkError("设备不存在"))
-        except DeviceOfflineError:
-            return Err(SdkError("设备离线"))
-        except TokenExpiredError:
-            return Err(SdkError("凭据已过期，请重新登录"))
-        except Exception as e:
-            self.logger.exception("控制设备失败")
-            return Err(SdkError(f"控制设备失败: {e}"))
+    @staticmethod
+    def _pick_default_switch(switch_props: list, display_name: str = "") -> dict:
+        """当多控开关未指定方位时，按默认主开关优先级自动选择。
 
-    @plugin_entry(
-        id="call_device_action",
-        name="调用设备操作",
-        description="触发设备的预定义操作（如扫地机清扫）",
-        input_schema={
-            "type": "object",
-            "properties": {
-                "device_id": {"type": "string", "description": "设备 ID（did）"},
-                "siid": {"type": "integer", "description": "服务 ID"},
-                "aiid": {"type": "integer", "description": "操作 ID"},
-                "params": {"type": "array", "description": "操作参数列表"}
-            },
-            "required": ["device_id", "siid", "aiid"]
-        },
-        llm_result_fields=["message"]
-    )
-    async def call_device_action(self, device_id: str, siid: int, aiid: int, params: Optional[list] = None, **_):
-        if not self.api:
-            return Err(SdkError("未登录"))
-        # 无参 action 需要空列表，不能透传 None（下层协议期望 list 而非 null）
-        normalized_params: list = params if params is not None else []
-        try:
-            result = await self.api.call_device_action(device_id, siid, aiid, normalized_params)
-            message = f"✅ 操作执行成功 (siid={siid}, aiid={aiid})"
-            return Ok({"success": True, "message": message, "result": result})
-        except TokenExpiredError:
-            return Err(SdkError("凭据已过期，请重新登录"))
-        except Exception as e:
-            self.logger.exception("调用设备操作失败")
-            return Err(SdkError(f"调用设备操作失败: {e}"))
+        优先级：
+        1. 通用 Switch（无方位前缀，主开关 / USB 插座的主插孔）
+        2. Left Switch Service（左键）
+        3. First Switch Service（第 1 键）
+        4. Middle Switch Service（中键）
+        5. Right Switch Service（右键）
+        6. Second / Third / Fourth / Fifth / Sixth Switch Service
+        7. 兜底：第一个可写开关
+        """
+        import re as _re
 
-    @ui.action(label=tr("actions.executeScene.label", default="执行场景"), tone="success", group="scene", order=10, refresh_context=True)
-    @plugin_entry(
-        id="execute_scene",
-        name="执行智能场景",
-        description="触发米家 App 中预设的智能场景",
-        input_schema={
-            "type": "object",
-            "properties": {
-                "scene_id": {"type": "string", "description": "场景 ID"},
-                "home_id": {"type": "string", "description": "家庭 ID（可选，留空自动用第一个家庭）"}
-            },
-            "required": ["scene_id"]
-        },
-        llm_result_fields=["message"]
-    )
-    async def execute_scene(self, scene_id: str, home_id: str, **_):
-        if not self.api:
-            return Err(SdkError("未登录"))
+        _POSITIONAL_PREFIXES = {"left", "right", "middle", "center",
+                                "first", "second", "third", "fourth", "fifth", "sixth"}
+
+        def _svc_desc(p):
+            return (p.get("service_desc") or "").lower()
+
+        def _is_generic_switch(sd):
+            """通用 Switch：含 'switch' 但不含方位/序号前缀，也非 USB 开关。"""
+            if "switch" not in sd:
+                return False
+            if "usb" in sd:
+                return False
+            words = sd.split()
+            # "switch" 或 "switch service" → 通用主开关
+            if words[0] == "switch":
+                return True
+            # 如果第一个词是方位/序号前缀，则不是通用的
+            return words[0] not in _POSITIONAL_PREFIXES
+
+        # 按优先级匹配
+        _POSITIONAL_ORDER = [
+            (["left"], r"left\s+switch"),
+            (["first"], r"first\s+switch"),
+            (["middle", "center"], r"(?:middle|center)\s+switch"),
+            (["right"], r"right\s+switch"),
+            (["second"], r"second\s+switch"),
+            (["third"], r"third\s+switch"),
+            (["fourth"], r"fourth\s+switch"),
+            (["fifth"], r"fifth\s+switch"),
+            (["sixth"], r"sixth\s+switch"),
+        ]
+
+        # 第一优先：通用 Switch（主开关 / 主插孔）
+        for p in switch_props:
+            if _is_generic_switch(_svc_desc(p)):
+                return p
+
+        # 第二优先：按方位/序号顺序
+        for _, pattern in _POSITIONAL_ORDER:
+            for p in switch_props:
+                if _re.search(pattern, _svc_desc(p)):
+                    return p
+
+        # 第二步：过滤掉 USB 子开关，取第一个剩余的
+        non_usb = [p for p in switch_props if "usb" not in _svc_desc(p)]
+        if non_usb:
+            return non_usb[0]
+
+        # 最终兜底：直接取第一个
+        return switch_props[0]
+
+    def _parse_control_command(self, command: str) -> Optional[dict]:
+        """解析控制命令，返回 {device, action, prop?, value?}
+
+        action: "switch" | "set_prop"
+        """
+        cmd = command.strip()
+
+        # 场景命令不在此处理
+        if re.match(r'(?:执行|运行|触发)', cmd):
+            return None
+
+        # === 开关命令：动词在最前面，直接切 ===
+        for kw in ["打开", "开启", "开"]:
+            if cmd.startswith(kw):
+                device = cmd[len(kw):].strip()
+                return {"device": device, "action": "switch", "value": True} if device else None
+        for kw in ["关闭", "关掉", "关"]:
+            if cmd.startswith(kw):
+                device = cmd[len(kw):].strip()
+                return {"device": device, "action": "switch", "value": False} if device else None
+
+        # === 属性/模式命令：找分界线 ===
+        # 左边 = 设备引用（原样传给 _match_devices），右边 = 意图
+        # 分界线三种方式，按优先级尝试：
+        _VERB = r'调到|调成|调为|设为|设置为|调至|切换到|切换至'
+        _PROP = r'亮度|色温|温度|音量|风速|浓度|湿度|位置|吸力|档位|水温|水量|角度|转速'
+        _MODE = (
+            r'制冷|制热|自动|送风|除湿|睡眠|节能|静音|强力|舒适|标准|日光|月光|彩光|温馨|'
+            r'电视|阅读|电脑|娱乐|休闲|办公|儿童|夜灯|自然风|直吹风|冷风|烘干|风干|'
+            r'换气|干燥|吹风|待机|恒温|热风|暖风|清洁|快洗|轻柔|大件|羊毛|棉麻|'
+            r'化纤|衬衣|桶自洁|婴童|冲锋衣|智能洗|内衣|丝绸|牛仔|蒸汽|护色|防过敏|'
+            r'顽渍|节能洗|标准洗|玻璃洗|预洗|少量洗|消毒|奶瓶|分层|随心|及时|'
+            r'速冷|速冻|假日|手动|最爱|智能|夜光'
+        )
+
+        device_ref = None
+        intent = None
+
+        # 1) 动词分界："空调调到26度" → "空调" | "调到26度"
+        verb_re = re.compile(_VERB)
+        verb_m = verb_re.search(cmd)
+        if verb_m:
+            device_ref = cmd[:verb_m.start()].strip()
+            intent = cmd[verb_m.start():]
+
+        # 1.5) 单字"调"分界（仅后跟数字或模式词时）：
+        #      "空调调26度" → "空调" | "调26度"，"空调调制冷" → "空调" | "调制冷"
+        if not device_ref:
+            tiao_m = re.search(r'调(?=\d|(?:' + _MODE + r'))', cmd)
+            if tiao_m:
+                device_ref = cmd[:tiao_m.start()].strip()
+                intent = cmd[tiao_m.start():]
+
+        # 2) 属性/模式词分界："灯亮度50%" → "灯" | "亮度50%"
+        if not device_ref:
+            prop_mode_re = re.compile(r'(?:' + _PROP + r'|' + _MODE + r')')
+            pm_m = prop_mode_re.search(cmd)
+            if pm_m:
+                device_ref = cmd[:pm_m.start()].strip()
+                intent = cmd[pm_m.start():]
+
+        # 3) 纯数字分界（仅当前一位是中文时，避免误切含数字的设备名）：
+        #    "卧室灯50%" → "卧室灯" | "50%"
+        if not device_ref:
+            num_m = re.search(r'(?<=[一-鿿])(\d)', cmd)
+            if num_m:
+                device_ref = cmd[:num_m.start()].strip()
+                intent = cmd[num_m.start():]
+
+        if not device_ref or not intent:
+            return None
+
+        # === 解析意图 ===
+
+        # 模式命令："制冷" / "自动模式" / "调制冷"
+        mode_m = re.match(r'(?:(?:' + _VERB + r'))?\s*(' + _MODE + r')(?:模式)?$', intent)
+        if mode_m:
+            return {"device": device_ref, "action": "set_prop", "prop": "模式", "value": mode_m.group(1)}
+
+        # 属性 + 数值："亮度50%" / "调到50%" / "调到26度" / "温度26" / "50%"
+        val_m = re.search(
+            r'(?:' + _VERB + r')?\s*'
+            r'(' + _PROP + r')?'
+            r'(\d+(?:\.\d+)?)'
+            r'\s*(%|度|℃|°)?',
+            intent,
+        )
+        if val_m:
+            prop_name = val_m.group(1)
+            num_str = val_m.group(2)
+            unit = val_m.group(3) or ""
+            value = float(num_str) if '.' in num_str else int(num_str)
+
+            # 无属性名时靠单位推断
+            if not prop_name:
+                if unit in ("度", "℃", "°"):
+                    prop_name = "温度"
+                elif unit == "%" or (isinstance(value, int) and 0 <= value <= 100):
+                    prop_name = "亮度"
+                else:
+                    return None
+
+            return {"device": device_ref, "action": "set_prop", "prop": prop_name, "value": value}
+
+        # 相对值调整："调亮一点" / "温度高一点" / "风速调大一点"
+        _ADJUST_UP = r'高|大|亮|暖|多|强|快|升'
+        _ADJUST_DOWN = r'低|小|暗|冷|少|弱|慢|降'
+        adj_m = re.search(
+            r'(' + _PROP + r')?\s*(?:调|设|切)?\s*'
+            r'(' + _ADJUST_UP + r'|' + _ADJUST_DOWN + r')'
+            r'(?:一?点|一些|一?些|一?些|少许)?',
+            intent,
+        )
+        if adj_m:
+            prop_name = adj_m.group(1)
+            direction_word = adj_m.group(2)
+            direction = 1 if re.match(_ADJUST_UP, direction_word) else -1
+            if not prop_name:
+                # 从意图中推断属性名
+                if re.search(r'度|热|冷', intent):
+                    prop_name = "温度"
+                elif re.search(r'亮|暗|光', intent):
+                    prop_name = "亮度"
+                elif re.search(r'风|速|档', intent):
+                    prop_name = "风速"
+                elif re.search(r'音|声', intent):
+                    prop_name = "音量"
+                elif re.search(r'湿', intent):
+                    prop_name = "湿度"
+                else:
+                    prop_name = "亮度"
+            # 检查是否有具体 delta 值
+            delta_m = re.search(r'(\d+(?:\.\d+)?)\s*(%|度|℃)?', intent)
+            delta = float(delta_m.group(1)) if delta_m else None
+            return {
+                "device": device_ref, "action": "adjust_prop",
+                "prop": prop_name, "direction": direction, "delta": delta,
+            }
+
+        # 极值："调到最高" / "调到最低" / "最亮" / "最暗"
+        _EXTREME = r'最高|最低|最亮|最暗|最大|最小|最强|最弱|最快|最慢|最暖|最冷|最多|最少'
+        ext_m = re.search(
+            r'(' + _PROP + r')?\s*(?:调到|调成|调为|设为)?\s*(' + _EXTREME + r')',
+            intent,
+        )
+        if ext_m:
+            prop_name = ext_m.group(1)
+            extreme_word = ext_m.group(2)
+            extreme = "max" if extreme_word in ["最高", "最亮", "最大", "最强", "最快", "最暖", "最多"] else "min"
+            if not prop_name:
+                if re.search(r'度|热|冷', intent):
+                    prop_name = "温度"
+                elif re.search(r'亮|暗', intent):
+                    prop_name = "亮度"
+                elif re.search(r'风|速|档', intent):
+                    prop_name = "风速"
+                elif re.search(r'音|声', intent):
+                    prop_name = "音量"
+                elif re.search(r'湿', intent):
+                    prop_name = "湿度"
+                else:
+                    prop_name = "亮度"
+            return {"device": device_ref, "action": "set_prop", "prop": prop_name, "value": extreme}
+
+        # 颜色控制："灯调到红色" / "灯设成蓝色"
+        _COLOR_MAP = {
+            "红": 0xFF0000, "红色": 0xFF0000,
+            "绿": 0x00FF00, "绿色": 0x00FF00,
+            "蓝": 0x0000FF, "蓝色": 0x0000FF,
+            "黄": 0xFFFF00, "黄色": 0xFFFF00,
+            "紫": 0xFF00FF, "紫色": 0xFF00FF,
+            "橙": 0xFFA500, "橙色": 0xFFA500,
+            "粉": 0xFFC0CB, "粉色": 0xFFC0CB, "粉红": 0xFFC0CB,
+            "白": 0xFFFFFF, "白色": 0xFFFFFF,
+            "青": 0x00FFFF, "青色": 0x00FFFF,
+            "黑": 0x000000, "黑色": 0x000000,
+            "暖白": 0xFFF4E0, "冷白": 0xF0F8FF,
+        }
+        color_m = re.search(
+            r'(?:调到|调成|设为|设成|切换到|切换至)\s*(.+?)(?:模式)?$',
+            intent,
+        )
+        if color_m:
+            color_word = color_m.group(1).strip()
+            rgb = _COLOR_MAP.get(color_word)
+            if rgb is not None:
+                return {"device": device_ref, "action": "set_prop", "prop": "颜色", "value": rgb}
+
+        return None
+
+    def _find_property_for_control(self, props: list[dict], prop_name: str, value: Any) -> Optional[dict]:
+        """根据属性名和目标值，从设备属性列表中找到匹配的可写属性"""
+        prop_name_lower = prop_name.lower()
+
+        # 属性名关键词映射（对齐小爱同学标准翻译表）
+        PROP_KEYWORDS = {
+            "亮度": ["亮度", "brightness"],
+            "色温": ["色温", "color temperature"],
+            "温度": ["目标温度", "设定温度", "温度", "target temperature", "target-temperature", "temperature"],
+            "音量": ["音量", "volume"],
+            "风速": ["风速", "风量", "风档", "档位", "fan speed", "fan level", "fan_level", "fan-level", "stepless_fan_level"],
+            "模式": ["模式", "mode"],
+            "浓度": ["浓度", "density"],
+            "湿度": ["湿度", "设定湿度", "target-humidity", "target_humidity", "humidity"],
+            "位置": ["位置", "position", "target-position", "target_position"],
+            "吸力": ["吸力", "suction", "suction-level", "suction_level"],
+            "档位": ["档位", "heat level", "heat-level", "heat_level", "massage-strength", "massage_strength"],
+            "水温": ["水温", "设定温度", "target-temperature", "target_temperature"],
+            "水量": ["水量", "泵量", "pump-flux", "pump_flux", "mop-water-output-level"],
+            "角度": ["角度", "angle", "backrest-angle", "backrest_angle", "leg-rest-angle", "leg-rest_angle"],
+            "转速": ["转速", "spin-speed", "spin_speed"],
+            "颜色": ["颜色", "color", "Color", "rgb-color", "color-temperature"],
+        }
+
+        keywords = PROP_KEYWORDS.get(prop_name, [prop_name_lower])
+
+        # 1. 按关键词匹配可写属性
+        for p in props:
+            if p.get("access") not in ["write", "read_write", "notify_read_write"]:
+                continue
+            pname = p.get("name", "").lower()
+            if any(kw in pname for kw in keywords):
+                return p
+
+        # 2. 模式命令：找第一个可写 string/uint 属性（通常模式属性是 enum）
+        if prop_name == "模式":
+            for p in props:
+                if p.get("access") not in ["write", "read_write", "notify_read_write"]:
+                    continue
+                ptype = p.get("type", "")
+                if ptype in ["string", "uint8", "uint16", "uint32", "int8", "int16", "int32"]:
+                    # 检查是否有 value_list（枚举属性）
+                    if p.get("value_list"):
+                        return p
+
+        return None
+
+    # ── 中文模式名 → 英文枚举关键词映射（对齐小爱同学翻译表） ──
+    _MODE_CN_TO_EN: dict[str, list[str]] = {
+        # 空调
+        "制冷": ["Cool"], "制热": ["Heat"], "送风": ["Fan"],
+        # 通用
+        "自动": ["Auto"], "睡眠": ["Sleep"], "静音": ["Silent", "Qtet"],
+        "强力": ["Strong", "Intensive", "Turbo"], "智能": ["Smart"],
+        "节能": ["Energy Saving"], "舒适": ["Comfort"],
+        "标准": ["Basic", "Standard"], "手动": ["None", "Manual"],
+        "最爱": ["Favorite"], "除湿": ["Dry"],
+        # 灯
+        "日光": ["Day"], "月光": ["Night"], "彩光": ["Color"],
+        "温馨": ["Warmth"], "电视": ["Tv"], "阅读": ["Reading"],
+        "电脑": ["Computer"], "娱乐": ["Entertainment"],
+        "休闲": ["Leisure"], "办公": ["Office"], "儿童": ["Baby", "Baby Care"],
+        "夜灯": ["Night Light", "Nightlight"],
+        # 风扇
+        "自然风": ["Natural Wind"], "直吹风": ["Straight Wind"],
+        "冷风": ["Cold Air"],
+        # 净化器/新风机
+        "低风": ["Low"], "中风": ["Medium"], "高风": ["High"],
+        "超强": ["Turbo"],
+        # 浴霸
+        "暖风": ["Hot", "Warm", "Heat"], "热风": ["Hot"],
+        "换气": ["Ventilate"], "干燥": ["Dry"], "吹风": ["Fan"],
+        "待机": ["Idle"], "恒温": ["Constant Temperature"],
+        # 洗衣机
+        "日常洗": ["Daily Wash"], "快速洗": ["Quick Wash"], "快洗": ["Quick Wash"],
+        "轻柔": ["Delicate Wash", "Delicate"], "大件": ["Heavy Wash", "Large wash"],
+        "棉麻": ["Cotton"], "化纤": ["Synthetic"], "羊毛": ["Wool"],
+        "婴童": ["Baby Care"], "内衣": ["Underwear"], "丝绸": ["Silk"],
+        "牛仔": ["Jeans"], "蒸汽": ["Steam Wash"], "护色": ["Color Protection"],
+        "防过敏": ["Anti-allergy"], "顽渍": ["Stain Wash"],
+        "智能洗": ["Smart"], "混合": ["Mix"], "冲锋衣": ["Jacket"],
+        "衬衣": ["Shirt"], "桶自洁": ["Drum Clean"],
+        "烘干": ["Dry", "Wash Dry"], "除菌": ["Sterilization"],
+        "除螨": ["Mite Removal"], "新衣": ["New-Clothes Wash"],
+        "单漂": ["Rinse"], "单脱": ["Spin"], "自定义": ["User Define"],
+        "高温": ["Boiling"], "空气洗": ["Dry Air Wash"],
+        "快洗烘": ["Quick Wash Dry"], "智能洗烘": ["Wash Dry"],
+        "运动": ["Sportswear", "Sport Mode"],
+        # 洗碗机
+        "玻璃": ["Glass"], "预洗": ["Prewash"], "少量": ["Bit Wash"],
+        "自洁": ["Self Clean"], "消毒": ["Disinfecting"],
+        "奶瓶": ["Bottle"], "大物": ["Large wash"], "锅具": ["Pot wash"],
+        "分层": ["Layered Wash"], "随心": ["Pleased"], "及时": ["Timely"],
+        # 冰箱
+        "假日": ["Holiday"], "速冷": ["Quick Cooling"], "速冻": ["Quick Frozen"],
+        # 扫地机
+        "安静": ["Silent"], "全速": ["Full Speed"],
+        # 按摩椅
+        "全身": ["Full Body"], "肩颈": ["Shoulder and Neck"],
+        "腰臀": ["Waist and Hip"], "日常放松": ["Relaxed"],
+        "助眠": ["Sleep"], "解压": ["Relieve Stress"],
+        "零重力": ["Zero Gravity"],
+        # 电饭煲
+        "精煮": ["Fine Cook"], "快煮": ["Quick Cook"],
+        "煮粥": ["Cook Congee"], "保温": ["Keep Warm"],
+        "蒸饭": ["Steam Rice"], "煲仔饭": ["ClaypotRice"],
+        "杂粮": ["MultigrainRice"], "炖汤": ["Soup"],
+        # 香薰机
+        "唤醒": ["Wake Up"],
+        # 热水器
+        "速热": ["Quick Heat"],
+    }
+
+    def _resolve_enum_value(self, prop: dict, chinese_value: str) -> Optional[int]:
+        """将中文模式/档位名转换为设备 spec 的数字枚举值。
+
+        Args:
+            prop: 设备属性字典（需含 value_list）
+            chinese_value: 用户输入的中文值，如 "制冷"
+
+        Returns:
+            匹配到的数字值，未匹配返回 None
+        """
+        value_list = prop.get("value_list")
+        if not value_list:
+            return None
+
+        # 直接尝试把输入当数字
+        if isinstance(chinese_value, (int, float)):
+            return int(chinese_value)
+
+        en_keywords = self._MODE_CN_TO_EN.get(chinese_value, [])
+        chinese_lower = chinese_value.lower()
+
+        for item in value_list:
+            desc = str(item.get("description", ""))
+            desc_lower = desc.lower()
+            # 英文枚举名精确匹配
+            if any(desc_lower == kw.lower() for kw in en_keywords):
+                return item["value"]
+            # 英文枚举名包含匹配
+            if any(kw.lower() in desc_lower for kw in en_keywords):
+                return item["value"]
+            # 中文直接匹配（value_list 描述可能是中文）
+            if chinese_lower in desc_lower:
+                return item["value"]
+
+        return None
+
+    async def _execute_scene_by_name(self, scene_name: str) -> Any:
+        """按场景名称查找并执行场景"""
+        cache_path = self.data_path("scenes_cache.json")
+        scenes = []
+        cached_home_id = None
+        if cache_path.exists():
+            try:
+                cached = await read_json_async(cache_path)
+                scenes = cached.get('scenes', [])
+                cached_home_id = cached.get('home_id')
+            except Exception:
+                pass
+
+        if not scenes:
+            return Err(SdkError("场景列表为空，请先获取场景列表"))
+
+        # 归属校验：缓存的 home_id 必须属于当前账号
+        if cached_home_id and self.api:
+            try:
+                homes = await self.api.get_homes()
+                valid_home_ids = {h.id for h in homes if h.id}
+                if cached_home_id not in valid_home_ids:
+                    return Err(SdkError("场景缓存归属不匹配，请先刷新场景列表"))
+            except Exception:
+                pass
+
+        # 模糊匹配场景名
+        name_lower = scene_name.lower()
+        matched = [s for s in scenes if name_lower in s.get("name", "").lower()]
+
+        if not matched:
+            names = [s.get("name") for s in scenes]
+            return Err(SdkError(f"未找到场景'{scene_name}'。当前场景：{', '.join(names)}"))
+        if len(matched) > 1:
+            names = [s.get("name") for s in matched]
+            return Err(SdkError(f"找到多个匹配场景：{', '.join(names)}，请更精确指定"))
+
+        scene = matched[0]
+        # 优先使用缓存中的 home_id（场景所属家庭），否则回退到第一个家庭
+        home_id = cached_home_id
+        if not home_id:
+            try:
+                homes = await self.api.get_homes()
+                home_id = homes[0].id if homes else None
+            except Exception:
+                home_id = None
+
+        if not home_id:
+            return Err(SdkError("未找到可用家庭"))
+
         try:
-            success = await self.api.execute_scene(scene_id, home_id)
+            success = await self.api.execute_scene(scene["id"], home_id)
             if success:
-                message = f"✅ 场景执行成功 (ID: {scene_id})"
-                return Ok({"success": True, "message": message})
+                return Ok({"success": True, "message": f"✅ 已执行场景'{scene['name']}'"})
             else:
-                message = f"❌ 场景执行失败 (ID: {scene_id})"
-                return Ok({"success": False, "message": message})
-        except TokenExpiredError:
-            return Err(SdkError("凭据已过期，请重新登录"))
+                return Ok({"success": False, "message": f"❌ 执行场景'{scene['name']}'失败"})
         except Exception as e:
-            self.logger.exception("执行场景失败")
             return Err(SdkError(f"执行场景失败: {e}"))
 
-    @plugin_entry(
-        id="get_device_status",
-        name="获取设备属性值",
-        description="读取设备单个属性的当前值",
-        input_schema={
-            "type": "object",
-            "properties": {
-                "device_id": {"type": "string", "description": "设备 ID（did）"},
-                "siid": {"type": "integer", "description": "服务 ID"},
-                "piid": {"type": "integer", "description": "属性 ID"}
-            },
-            "required": ["device_id", "siid", "piid"]
-        },
-        llm_result_fields=["message"]
-    )
-    async def get_device_status(self, device_id: str, siid: int, piid: int, **_):
-        """获取设备单个属性值"""
-        if not self.api:
-            return Err(SdkError("未登录"))
-        try:
-            requests = [{"did": device_id, "siid": siid, "piid": piid}]
-            results = await self.api.get_device_properties(requests)
-            if results and len(results) > 0:
-                value = results[0].get("value")
-                code = results[0].get("code", 0)
-                if code == 0:
-                    message = f"📊 属性值: {value} (siid={siid}, piid={piid})"
-                    return Ok({"success": True, "value": value, "message": message, "device_id": device_id})
-                else:
-                    return Err(SdkError(f"查询失败，错误码: {code}"))
-            else:
-                return Err(SdkError("未获取到属性值"))
-        except TokenExpiredError:
-            return Err(SdkError("凭据已过期，请重新登录"))
-        except Exception as e:
-            self.logger.exception("获取设备状态失败")
-            return Err(SdkError(f"获取设备状态失败: {e}"))
 
     # ========== 辅助功能：获取设备规格（可选） ==========
     @plugin_entry(
         id="query_device_state",
         name="查询设备状态",
-        description="按名称查询设备所有可读属性的当前值",
+        description="按名称查询设备所有可读属性的当前值，支持设备名、别名、房间名+设备名（如'卧室灯'）",
         input_schema={
             "type": "object",
             "properties": {
-                "name": {"type": "string", "description": "设备名称或部分名称"}
+                "name": {"type": "string", "description": "设备名称、别名或房间名+设备名，如'灯'、'卧室灯'、'床头插座'"}
             },
             "required": ["name"]
         },
@@ -1205,23 +1863,15 @@ class MijiaPlugin(NekoPluginBase):
         """根据设备名称查询设备状态"""
         if not self.api:
             return Err(SdkError("未登录"))
-        
-        # 查找设备
-        result = await self.find_device_by_name(name=name)
-        if result.is_err():
-            return result
-        
-        devices = result.value.get("devices", [])
-        if not devices:
-            return Err(SdkError(f"未找到'{name}'"))
-        
-        # 多设备匹配时返回歧义错误，避免查询到错误设备
-        if len(devices) > 1:
-            device_names = [d.get("name", "未知") for d in devices]
-            return Err(SdkError(
-                f"找到多个匹配 '{name}' 的设备: {', '.join(device_names)}。"
-                f"请使用更精确的设备名称。"
-            ))
+
+        # 统一设备匹配（支持区域+设备名、别名、模糊匹配）
+        match_result = await self._match_devices(name)
+        if match_result["status"] == "not_found":
+            return Err(SdkError(match_result["message"]))
+        if match_result["status"] == "ambiguous":
+            return Err(SdkError(match_result["message"]))
+
+        devices = match_result["devices"]
         
         device = devices[0]
         did = device.get("did")
@@ -1271,9 +1921,9 @@ class MijiaPlugin(NekoPluginBase):
             lines = [f"📱 设备 '{device_name}' 当前状态："]
             lines.append("")
 
-            # 属性名本地化映射（英文 -> 中文）
+            # 属性名本地化映射（对齐小爱同学标准翻译表）
             NAME_MAP = {
-                # 设备信息类
+                # ── 设备信息类 ──
                 "Device Manufacturer": "设备制造商",
                 "Device Model": "设备型号",
                 "Device ID": "设备ID",
@@ -1289,22 +1939,26 @@ class MijiaPlugin(NekoPluginBase):
                 "IP Address": "IP地址",
                 "RSSI": "信号强度",
                 "Battery Level": "电池电量",
+                "battery-level": "电池电量",
                 "Battery Voltage": "电池电压",
                 "Charging State": "充电状态",
                 "Low Battery": "低电量",
-                
-                # 开关控制类
+
+                # ── 开关控制类（灯/插座/开关等共用） ──
                 "Switch Status": "开关状态",
+                "on": "开关",
                 "Power": "电源",
                 "On": "开启",
                 "Off": "关闭",
                 "Toggle": "切换",
                 "Default Power On State": "默认通电状态",
                 "Power Off Memory": "断电记忆",
-                "Physical Control Locked": "物理控制锁定",
+                "Physical Control Locked": "儿童锁",
+                "physical-controls-locked": "儿童锁",
+                "physical_controls_locked": "儿童锁",
                 "Child Lock": "童锁",
-                
-                # 功率电量类
+
+                # ── 功率电量类（插座/开关） ──
                 "Electric Power": "实时功率",
                 "Power Consumption": "累计用电量",
                 "Voltage": "电压",
@@ -1319,32 +1973,43 @@ class MijiaPlugin(NekoPluginBase):
                 "over-ele-day": "日用电超限阈值",
                 "over-ele-month": "月用电超限阈值",
                 "on-off-count": "开关次数",
-                
-                # 照明类
+
+                # ── 照明类（灯/风扇灯/浴霸灯） ──
                 "Brightness": "亮度",
+                "brightness": "亮度",
                 "Color Temperature": "色温",
+                "color_temperature": "色温",
                 "Color": "颜色",
+                "color": "颜色",
                 "Hue": "色相",
                 "Saturation": "饱和度",
                 "Light Mode": "灯光模式",
                 "Scene": "场景",
                 "Night Light": "夜灯",
                 "Ambient Light": "氛围灯",
+                "ambient-light": "氛围灯",
                 "Illuminance": "照度",
+                "illumination": "光照度",
                 "Colorful": "彩光模式",
                 "Flow": "流光模式",
-                
-                # 环境传感器类
+
+                # ── 环境传感器类（温湿度传感器/空气检测仪等） ──
                 "temperature": "温度",
                 "Temperature": "温度",
+                "relative_humidity": "湿度",
+                "relative-humidity": "湿度",
                 "humidity": "湿度",
                 "Humidity": "湿度",
+                "pm25_density": "PM2.5",
                 "PM2.5": "PM2.5",
                 "PM10": "PM10",
+                "co2-density": "二氧化碳浓度",
                 "CO2": "二氧化碳",
                 "TVOC": "总挥发性有机物",
+                "hcho-density": "甲醛浓度",
                 "Formaldehyde": "甲醛",
                 "AQI": "空气质量指数",
+                "air-quality": "空气质量",
                 "Air Quality": "空气质量",
                 "Air Quality Level": "空气质量等级",
                 "Pressure": "气压",
@@ -1358,56 +2023,119 @@ class MijiaPlugin(NekoPluginBase):
                 "Window Status": "窗状态",
                 "Motion Detection": "移动检测",
                 "Occupancy": "有人/无人",
-                
-                # 空调/温控类
+
+                # ── 空调/温控类 ──
+                "target_temperature": "目标温度",
+                "target-temperature": "目标温度",
                 "Target Temperature": "目标温度",
                 "Current Temperature": "当前温度",
                 "Mode": "模式",
+                "mode": "模式",
                 "Fan Speed": "风速",
+                "fan_speed": "风速",
                 "Fan Level": "风量档位",
+                "fan_level": "风量档位",
+                "fan-level": "风量档位",
+                "stepless_fan_level": "无级风速",
                 "Swing Mode": "摆风模式",
+                "vertical_swing": "上下摆风",
+                "vertical_swing": "上下扫风",
                 "Vertical Swing": "上下摆风",
+                "horizontal_swing": "左右摆风",
                 "Horizontal Swing": "左右摆风",
                 "Sleep Mode": "睡眠模式",
+                "sleep-mode": "睡眠模式",
                 "Eco Mode": "节能模式",
+                "eco": "节能模式",
                 "Dry Mode": "除湿模式",
+                "dryer": "干燥模式",
                 "Heat Mode": "制热模式",
+                "heater": "辅热模式",
                 "Cool Mode": "制冷模式",
                 "Auto Mode": "自动模式",
                 "Heating": "加热中",
                 "Cooling": "制冷中",
                 "Defrosting": "除霜中",
-                
-                # 窗帘/电机类
+                "soft-wind": "柔风",
+                "un-straight-blowing": "防直吹",
+                "uv": "杀菌功能",
+                "indicator-light": "指示灯",
+
+                # ── 窗帘/电机/晾衣架类 ──
+                "motor_control": "电机控制",
                 "Motor Control": "电机控制",
                 "Motor Reverse": "电机反转",
                 "Position": "位置",
+                "position": "位置",
                 "Current Position": "当前位置",
+                "target-position": "目标位置",
+                "target_position": "目标位置",
                 "Target Position": "目标位置",
                 "Run Time": "运行时间",
-                
-                # 安防类
-                "Alarm": "警报",
+                "dryer": "烘干/风干",
+
+                # ── 安防/报警类 ──
+                "alarm": "提示音",
+                "Alarm": "提示音",
                 "Alarm Volume": "警报音量",
                 "Alarm Duration": "警报时长",
                 "Guard Mode": "守护模式",
                 "Away Mode": "离家模式",
                 "Home Mode": "在家模式",
                 "Sleep Mode Guard": "睡眠守护",
-                
-                # 定时/倒计时类
+
+                # ── 定时/倒计时类 ──
                 "start-time": "开始时间",
                 "end-time": "结束时间",
                 "duration": "持续时长",
                 "left-time": "剩余时间",
+                "left_time": "剩余时间",
                 "countdown": "倒计时",
                 "Timer": "定时器",
                 "Schedule": "定时任务",
-                
-                # 状态/故障类
+                "target-time": "目标时间",
+                "target_time": "目标时间",
+                "cook-time": "烹饪时间",
+                "cook_time": "烹饪时间",
+
+                # ── 滤芯/耗材类 ──
+                "filter-life-level": "滤芯剩余寿命",
+                "filter_life_level": "滤芯剩余寿命",
+                "filter-life-time": "滤芯剩余天数",
+                "filter-left-time": "滤芯剩余天数",
+                "filter_left_time": "滤芯剩余天数",
+                "Filter Life": "滤芯寿命",
+                "Filter Used Time": "滤芯已用时间",
+                "repellent-left-level": "蚊香剩余量",
+
+                # ── 洗衣机/洗碗机类 ──
+                "rinse-times": "漂洗次数",
+                "drying-time": "烘干时长",
+                "door-state": "舱门状态",
+                "spin-speed": "脱水转速",
+                "detergent-self-delivery": "洗衣液自动投放",
+                "detergent-left-level": "洗衣液剩余量",
+                "fabric-softener-self-delivery": "柔顺剂自动投放",
+                "fabric-softener-left-level": "柔顺剂剩余量",
+
+                # ── 水质/净饮类 ──
+                "tds_in": "入水水质",
+                "tds_out": "出水水质",
+                "tds-out": "出水水质",
+
+                # ── 扫地机类 ──
+                "suction-level": "吸力档位",
+                "sweep-mop-type": "扫拖模式",
+                "mop-water-output-level": "抹布水量",
+                "battery": "电池电量",
+                "current-step-count": "累计步数",
+                "current-calorie-consumption": "消耗热量",
+                "working-time": "工作时间",
+                "current-distance": "跑步里程",
+
+                # ── 状态/故障类 ──
                 "status": "状态",
-                "mode": "模式",
-                "on": "开启状态",
+                "on": "开关状态",
                 "power": "功率设定",
                 "data-value": "数据值",
                 "Device Fault": "设备故障",
@@ -1416,12 +2144,29 @@ class MijiaPlugin(NekoPluginBase):
                 "Error Code": "错误代码",
                 "Working Time": "工作时间",
                 "Remaining Time": "剩余时间",
-                "Filter Life": "滤芯寿命",
-                "Filter Used Time": "滤芯已用时间",
                 "protect-time": "保护时间",
+                "anion": "负离子",
+                "identify": "定位",
+
+                # ── 浴霸类 ──
+                "heating": "制热",
+                "blow": "吹风",
+                "ventilation": "换气",
+                "stop-working": "停止工作",
+
+                # ── 冰箱类 ──
+                "Refrigerating Chamber": "冷藏室",
+                "Freezing Chamber": "冷冻室",
+                "Change Chamber": "变温室",
+
+                # ── 鱼缸类 ──
+                "water-pump": "水泵",
+                "pump-flux": "水泵水量",
+                "automatic-feeding": "自动喂食",
+                "no-disturb": "勿扰模式",
             }
 
-            # 硬编码单位映射（属性名 -> 单位）
+            # 硬编码单位映射（属性名 -> 单位，对齐小爱同学标准翻译表）
             UNIT_MAP = {
                 "Electric Power": "W",
                 "Power Consumption": "kWh",
@@ -1429,8 +2174,41 @@ class MijiaPlugin(NekoPluginBase):
                 "Current": "A",
                 "temperature": "°C",
                 "Temperature": "°C",
+                "target_temperature": "°C",
+                "target-temperature": "°C",
+                "relative_humidity": "%",
+                "relative-humidity": "%",
                 "humidity": "%",
                 "Humidity": "%",
+                "target-humidity": "%",
+                "target_humidity": "%",
+                "pm25_density": "μg/m³",
+                "PM2.5": "μg/m³",
+                "co2-density": "ppm",
+                "CO2": "ppm",
+                "hcho-density": "mg/m³",
+                "Formaldehyde": "mg/m³",
+                "Brightness": "%",
+                "brightness": "%",
+                "Battery Level": "%",
+                "battery-level": "%",
+                "filter-life-level": "%",
+                "filter_life_level": "%",
+                "filter-life-time": "天",
+                "filter-left-time": "天",
+                "left-time": "分钟",
+                "left_time": "分钟",
+                "cook-time": "分钟",
+                "cook_time": "分钟",
+                "target-time": "分钟",
+                "drying-time": "分钟",
+                "spin-speed": "转",
+                "speed-level": "km/h",
+                "Illuminance": "lux",
+                "illumination": "lux",
+                "tds_in": "ppm",
+                "tds_out": "ppm",
+                "tds-out": "ppm",
             }
 
             for prop in readable_props:
@@ -1456,10 +2234,19 @@ class MijiaPlugin(NekoPluginBase):
                     if isinstance(value, bool):
                         value_str = "✅ 开启" if value else "❌ 关闭"
                     else:
-                        value_str = str(value)
-                        # 添加单位
-                        if unit:
-                            value_str = f"{value_str} {unit}"
+                        # 窗帘 current-position 算法修正：
+                        # MIoT spec 定义 0=关闭, 100=全开
+                        # 临界点 0-2 判定为"关着"，3-100 判定为"开着"
+                        sdesc_lower = (prop.get("service_desc") or "").lower()
+                        is_curtain = "curtain" in sdesc_lower or "窗帘" in sdesc_lower
+                        if is_curtain and original_name == "Current Position" and isinstance(value, (int, float)):
+                            state_text = "关闭" if value <= 2 else "开启"
+                            value_str = f"{'❌' if value <= 2 else '✅'} {state_text}（{value}%）"
+                        else:
+                            value_str = str(value)
+                            # 添加单位
+                            if unit:
+                                value_str = f"{value_str} {unit}"
 
                     states.append({
                         "name": display_name,
@@ -1488,87 +2275,3 @@ class MijiaPlugin(NekoPluginBase):
             self.logger.exception("查询设备状态失败")
             return Err(SdkError(f"查询设备状态失败: {e}"))
 
-    @plugin_entry(
-        id="get_device_spec",
-        name="获取设备规格",
-        description="查询设备型号规格，列出所有属性和操作",
-        input_schema={
-            "type": "object",
-            "properties": {
-                "model": {"type": "string", "description": "设备型号"}
-            },
-            "required": ["model"]
-        },
-        llm_result_fields=["message"]
-    )
-    async def get_device_spec(self, model: str, **_):
-        if not self.api:
-            return Err(SdkError("未登录"))
-        if not model:
-            return Err(SdkError("设备型号(model)不能为空"))
-        try:
-            spec = await self.api.get_device_spec(model)
-            if spec:
-                # 简化返回，只提取属性、操作的关键信息
-                properties = []
-                actions = []
-                
-                for p in spec.properties:
-                    prop = {
-                        "siid": p.siid,
-                        "piid": p.piid,
-                        "name": p.name,
-                        "type": p.type.value if hasattr(p.type, 'value') else str(p.type),
-                        "access": p.access.value if hasattr(p.access, 'value') else str(p.access)
-                    }
-                    if p.value_range:
-                        prop["value_range"] = p.value_range
-                    if p.value_list:
-                        prop["value_list"] = p.value_list
-                    properties.append(prop)
-                
-                for a in spec.actions:
-                    action = {
-                        "siid": a.siid,
-                        "aiid": a.aiid,
-                        "name": a.name,
-                        "parameters": [
-                            {
-                                "name": param.name,
-                                "type": param.type.value if hasattr(param.type, 'value') else str(param.type)
-                            }
-                            for param in a.parameters
-                        ]
-                    }
-                    actions.append(action)
-                
-                # 构建友好的消息
-                lines = [f"📋 设备规格: {spec.name} ({model})", ""]
-                
-                lines.append(f"【属性】共 {len(properties)} 个:")
-                for p in properties:
-                    access_icon = "🔘" if "write" in p.get("access", "") else "👁"
-                    lines.append(f"  {access_icon} {p.get('name')} (siid={p.get('siid')}, piid={p.get('piid')}, type={p.get('type')})")
-                
-                lines.append("")
-                lines.append(f"【操作】共 {len(actions)} 个:")
-                for a in actions:
-                    lines.append(f"  ▶ {a.get('name')} (siid={a.get('siid')}, aiid={a.get('aiid')})")
-                
-                message = "\n".join(lines)
-                
-                return Ok({
-                    "success": True,
-                    "message": message,
-                    "model": spec.model,
-                    "name": spec.name,
-                    "properties": properties,
-                    "actions": actions
-                })
-            else:
-                return Err(SdkError("未找到规格"))
-        except TokenExpiredError:
-            return Err(SdkError("凭据已过期，请重新登录"))
-        except Exception as e:
-            self.logger.exception("获取设备规格失败")
-            return Err(SdkError(f"获取设备规格失败: {e}"))

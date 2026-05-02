@@ -7,7 +7,7 @@ getter functions, and proactive-related injection fragments.
 """
 from __future__ import annotations
 
-from config.prompts_sys import _loc
+from config.prompts_sys import _loc, get_avatar_annotation_ignore_hint
 
 proactive_chat_prompt = """你是{lanlan_name}，现在看到了一些B站首页推荐和微博热议话题。请根据与{master_name}的对话历史和你自己的兴趣，判断是否要主动和{master_name}聊聊这些内容。
 
@@ -2589,10 +2589,11 @@ def get_screen_section_header(master_name: str | None = None, lang: str = 'zh') 
 
 
 def get_screen_img_hint(master_name: str | None = None, lang: str = 'zh') -> str:
-    """获取截图说明 hint（含 {master} 占位符的本地化展开）。"""
+    """获取截图说明 hint（含 {master} 占位符的本地化展开），并附加 avatar 注解忽略提示。"""
     lang_key = _normalize_prompt_language(lang)
     template = SCREEN_IMG_HINT.get(lang_key, SCREEN_IMG_HINT.get('en', SCREEN_IMG_HINT['zh']))
-    return template.format(master=_resolve_master_for_template(master_name, lang_key))
+    base = template.format(master=_resolve_master_for_template(master_name, lang_key))
+    return base + ' ' + get_avatar_annotation_ignore_hint(lang_key)
 
 
 def get_proactive_music_strict_constraint(lang: str = 'zh') -> str:
