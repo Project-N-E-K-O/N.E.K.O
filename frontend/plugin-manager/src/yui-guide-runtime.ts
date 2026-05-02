@@ -832,6 +832,37 @@ function injectStyle() {
       cursor: auto !important;
     }
 
+    html.yui-taking-over.yui-resistance-cursor-reveal #${ROOT_ID},
+    html.yui-taking-over.yui-resistance-cursor-reveal #${ROOT_ID} .yui-guide-plugin-backdrop,
+    html.yui-taking-over.yui-resistance-cursor-reveal #${ROOT_ID} .yui-guide-plugin-backdrop *,
+    html.yui-taking-over.yui-resistance-cursor-reveal #${ROOT_ID} .yui-guide-plugin-interaction-shield,
+    html.yui-taking-over.yui-resistance-cursor-reveal #${ROOT_ID} .yui-guide-plugin-spotlight,
+    html.yui-taking-over.yui-resistance-cursor-reveal #${ROOT_ID} .yui-guide-plugin-cursor-shell,
+    html.yui-taking-over.yui-resistance-cursor-reveal #${ROOT_ID} .yui-guide-plugin-cursor,
+    body.yui-taking-over.yui-resistance-cursor-reveal #${ROOT_ID},
+    body.yui-taking-over.yui-resistance-cursor-reveal #${ROOT_ID} .yui-guide-plugin-backdrop,
+    body.yui-taking-over.yui-resistance-cursor-reveal #${ROOT_ID} .yui-guide-plugin-backdrop *,
+    body.yui-taking-over.yui-resistance-cursor-reveal #${ROOT_ID} .yui-guide-plugin-interaction-shield,
+    body.yui-taking-over.yui-resistance-cursor-reveal #${ROOT_ID} .yui-guide-plugin-spotlight,
+    body.yui-taking-over.yui-resistance-cursor-reveal #${ROOT_ID} .yui-guide-plugin-cursor-shell,
+    body.yui-taking-over.yui-resistance-cursor-reveal #${ROOT_ID} .yui-guide-plugin-cursor,
+    html.yui-taking-over.yui-user-cursor-revealed #${ROOT_ID},
+    html.yui-taking-over.yui-user-cursor-revealed #${ROOT_ID} .yui-guide-plugin-backdrop,
+    html.yui-taking-over.yui-user-cursor-revealed #${ROOT_ID} .yui-guide-plugin-backdrop *,
+    html.yui-taking-over.yui-user-cursor-revealed #${ROOT_ID} .yui-guide-plugin-interaction-shield,
+    html.yui-taking-over.yui-user-cursor-revealed #${ROOT_ID} .yui-guide-plugin-spotlight,
+    html.yui-taking-over.yui-user-cursor-revealed #${ROOT_ID} .yui-guide-plugin-cursor-shell,
+    html.yui-taking-over.yui-user-cursor-revealed #${ROOT_ID} .yui-guide-plugin-cursor,
+    body.yui-taking-over.yui-user-cursor-revealed #${ROOT_ID},
+    body.yui-taking-over.yui-user-cursor-revealed #${ROOT_ID} .yui-guide-plugin-backdrop,
+    body.yui-taking-over.yui-user-cursor-revealed #${ROOT_ID} .yui-guide-plugin-backdrop *,
+    body.yui-taking-over.yui-user-cursor-revealed #${ROOT_ID} .yui-guide-plugin-interaction-shield,
+    body.yui-taking-over.yui-user-cursor-revealed #${ROOT_ID} .yui-guide-plugin-spotlight,
+    body.yui-taking-over.yui-user-cursor-revealed #${ROOT_ID} .yui-guide-plugin-cursor-shell,
+    body.yui-taking-over.yui-user-cursor-revealed #${ROOT_ID} .yui-guide-plugin-cursor {
+      cursor: auto !important;
+    }
+
     html.yui-guide-plugin-dashboard-running button,
     html.yui-guide-plugin-dashboard-running a[href],
     html.yui-guide-plugin-dashboard-running input,
@@ -1318,6 +1349,7 @@ class PluginDashboardGuideRuntime {
   interruptsEnabled = false
   scenePausedForResistance = false
   homeNarrationFinished = false
+  homeNarrationOwnedByOpener = false
   angryExitTriggered = false
   interruptCount = 0
   interruptAccelerationStreak = 0
@@ -2785,6 +2817,7 @@ class PluginDashboardGuideRuntime {
     }
 
     this.homeNarrationFinished = true
+    this.homeNarrationOwnedByOpener = false
     const resolvers = this.homeNarrationResolvers.slice()
     this.homeNarrationResolvers = []
     resolvers.forEach((resolve) => {
@@ -3121,6 +3154,10 @@ class PluginDashboardGuideRuntime {
     this.noteUserCursorRevealAttempt(distance, now)
     this.maybePlayPassiveResistance(x, y, distance, speed, now)
 
+    if (this.homeNarrationOwnedByOpener && !this.homeNarrationFinished) {
+      return
+    }
+
     const isScriptedMotionInterrupt = this.cursorTransitionActive
     let effectiveDistance = distance
     if (isScriptedMotionInterrupt && distance < DEFAULT_INTERRUPT_DISTANCE) {
@@ -3445,6 +3482,7 @@ class PluginDashboardGuideRuntime {
     this.interruptsEnabled = false
     this.scenePausedForResistance = false
     this.homeNarrationFinished = false
+    this.homeNarrationOwnedByOpener = false
     this.angryExitTriggered = false
     this.interruptCount = 0
     this.interruptAccelerationStreak = 0
@@ -3496,6 +3534,7 @@ class PluginDashboardGuideRuntime {
         }
       : null
     this.homeNarrationFinished = false
+    this.homeNarrationOwnedByOpener = false
     const isCurrent = () => this.isCurrentRun(sessionId)
     this.activateOverlayShell()
     window.addEventListener('resize', this.boundScheduleSpotlightRefresh, true)
@@ -3579,18 +3618,11 @@ class PluginDashboardGuideRuntime {
       ? Math.max(0, Date.now() - Math.round(payload.narrationStartedAtMs as number))
       : 0
     const budgetMs = Math.max(0, totalNarrationDurationMs - elapsedBeforeMotionMs)
-    const homeNarrationAlreadyRunning = Number.isFinite(payload.narrationStartedAtMs)
-    const speechPromise = homeNarrationAlreadyRunning
-      ? wait(budgetMs)
-      : this.startNarration(payload.line || '', {
-        voiceKey: payload.voiceKey,
-        audioUrl: payload.audioUrl,
-      })
-    if (!homeNarrationAlreadyRunning) {
-      void speechPromise.finally(() => {
-        this.markHomeNarrationFinished(sessionId)
-      })
-    }
+    this.homeNarrationOwnedByOpener = true
+    const speechPromise = wait(budgetMs)
+    void speechPromise.finally(() => {
+      this.markHomeNarrationFinished(sessionId)
+    })
     const baseMoveToMainDurationMs = PLUGIN_DASHBOARD_MOVE_TO_MAIN_MS
     const baseScrollDownDurationMs = Math.round(PLUGIN_DASHBOARD_SCROLL_PHASE_MS / 2)
     const baseScrollUpDurationMs = PLUGIN_DASHBOARD_SCROLL_PHASE_MS - baseScrollDownDurationMs
