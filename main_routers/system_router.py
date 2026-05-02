@@ -1085,6 +1085,12 @@ def _coerce_emotion_confidence(raw_confidence, default=0.5):
 # 启发式打分时的否定回看 token 表统一在 config/prompts_emotion.py 按语种维护。
 _HEURISTIC_NEGATION_TOKENS = get_heuristic_negation_tokens_flat()
 _HEURISTIC_NEGATION_LOOKBACK = 14
+# 子句分隔符：回看窗口越过分隔符后的内容视为另一小句，不再修饰本次命中。
+# 避免 "我不是难过，我是生气" 中 `生气` 的回看抓到前一小句的 `不` 而被误判否定。
+_HEURISTIC_CLAUSE_DELIMITERS = (
+    '.', ',', ';', '!', '?', '\n',
+    '，', '。', '；', '！', '？', '、', '：', ':',
+)
 
 
 def _has_heuristic_negation_before(text_value, position):
@@ -1092,6 +1098,17 @@ def _has_heuristic_negation_before(text_value, position):
         return False
     start = max(0, position - _HEURISTIC_NEGATION_LOOKBACK)
     window = text_value[start:position]
+    # 1) 窗口越过子句分隔符的部分丢掉，只看与命中关键词同小句的前文
+    last_delim = -1
+    for delim in _HEURISTIC_CLAUSE_DELIMITERS:
+        idx = window.rfind(delim)
+        if idx > last_delim:
+            last_delim = idx
+    if last_delim >= 0:
+        window = window[last_delim + 1:]
+    # 2) 句首场景补一个前导空格，确保 ` no ` / ` not ` 等带前后空格的 token
+    #    在 "no angry" / "not happy" 这种句首写法下也能命中
+    window = ' ' + window
     return any(token in window for token in _HEURISTIC_NEGATION_TOKENS)
 
 
