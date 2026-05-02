@@ -645,27 +645,28 @@ class TestFollowProviderNotLocal:
             f"follow_assist 时 TTS_MODEL_URL 应为空，实际={cfg.get('TTS_MODEL_URL')!r}"
 
     @pytest.mark.unit
-    def test_follow_mode_preserves_user_model_id(self, config_manager):
-        """follow_* 模式下 modelId 输入框非 readonly，用户主动填的值必须被尊重，
-        不能因为跳过 URL 覆盖一并丢失（修复时只跳 URL，Model 仍允许覆盖）。
+    def test_non_omni_follow_core_url_not_skipped(self, config_manager):
+        """URL skip 的 scope 必须仅限 omni/tts —— 非 omni 模型（conversation/summary/
+        correction/emotion/vision/agent）走 chat completion REST，没有 'local' 分支，
+        不该被本 PR 的 guard 触动。否则会改变它们的 follow_core 路由行为
+        （详见 PR #1084 review thread）。
         """
         _write_core_config(config_manager, {
-            'coreApiKey': 'sk-qwen-core',
-            'coreApi': 'qwen',
+            'coreApiKey': 'sk-openai-core',
+            'coreApi': 'openai',
             'assistApi': 'qwen',
-            'assistApiKeyQwen': 'sk-qwen-core',
+            'assistApiKeyQwen': 'sk-qwen-assist',
             'enableCustomApi': True,
-            'omniModelProvider': 'follow_core',
-            'omniModelUrl': 'wss://dashscope.aliyuncs.com/api-ws/v1/realtime',
-            'omniModelId': 'qwen3-omni-flash-realtime-2026-04-30-snapshot',  # 用户主动填
-            'omniModelApiKey': 'sk-qwen-core',
+            'conversationModelProvider': 'follow_core',
+            'conversationModelUrl': 'https://api.openai.com/v1',  # 前端联动填
+            'conversationModelId': '',
+            'conversationModelApiKey': 'sk-openai-core',
         })
         cfg = config_manager.get_core_config()
-        assert cfg.get('REALTIME_MODEL') == 'qwen3-omni-flash-realtime-2026-04-30-snapshot', \
-            f"follow_core 时用户填的 omniModelId 不应丢失，实际={cfg.get('REALTIME_MODEL')!r}"
-        # 同时验证 URL 仍然被跳过（bug fix invariant）
-        assert cfg.get('REALTIME_MODEL_URL', '') in ('', None), \
-            f"follow_core 时 URL 应被跳过避免触发 'local'，实际={cfg.get('REALTIME_MODEL_URL')!r}"
+        # conversation 不在 (omni, tts) 白名单，URL 必须被覆盖（保持原逻辑）
+        assert cfg.get('CONVERSATION_MODEL_URL') == 'https://api.openai.com/v1', \
+            f"非 omni follow_core 的 URL 不应被本 PR 的 guard 跳过，" \
+            f"实际={cfg.get('CONVERSATION_MODEL_URL')!r}"
 
     @pytest.mark.unit
     def test_explicit_custom_still_takes_effect(self, config_manager):
