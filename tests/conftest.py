@@ -1,3 +1,29 @@
+import os as _os
+import tempfile as _tempfile
+from pathlib import Path as _Path
+
+# Redirect test logs out of the user's real %USERPROFILE%/Documents/N.E.K.O/logs.
+# Without this, every pytest session — including ones that intentionally inject
+# OSError / 坏 JSON / mock-driven failures via patches — dumps ERROR lines into
+# the user's Documents tree.
+#
+# We override RobustLoggerConfig._get_log_directory directly (rather than going
+# through NEKO_STORAGE_SELECTED_ROOT) because that env var also drives
+# ConfigManager / cloudsave_runtime layout, and pointing those at the temp dir
+# triggers a legacy-app-root migration scan that rmtrees the temp dir mid-test.
+# Loggers are constructed at module import time, so the patch must happen here
+# in conftest BEFORE any project module is imported.
+_NEKO_TEST_LOG_ROOT = _Path(_tempfile.gettempdir()) / f"neko_test_logs_{_os.getpid()}"
+_NEKO_TEST_LOG_ROOT.mkdir(parents=True, exist_ok=True)
+from utils import logger_config as _logger_config_module
+# Override only the Documents-fallback hook (priority 2 in _get_log_directory).
+# Env-var-based override (priority 1) and the cascade through application/system
+# data dirs stay intact — so tests that use monkeypatch.setenv on
+# NEKO_STORAGE_SELECTED_ROOT still see the override they expect.
+_logger_config_module.RobustLoggerConfig._get_documents_directory = (
+    lambda self, _root=_NEKO_TEST_LOG_ROOT: _root
+)
+
 import asyncio
 import asyncio.runners
 import asyncio.coroutines
