@@ -5412,7 +5412,7 @@ window.Jukebox = {
       try {
         const catgirlName = window.lanlan_config?.catgirl_name;
         if (catgirlName) {
-          const charRes = await fetch('/api/characters/');
+          const charRes = await fetch('/api/characters');
           if (charRes.ok) {
             const charData = await charRes.json();
             idleUrl = charData?.['猫娘']?.[catgirlName]?.mmd_idle_animation;

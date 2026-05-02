@@ -545,7 +545,7 @@
             // 播放待机动作 & 启动轮换
             if (catgirlName) {
                 try {
-                    const charRes = await fetch('/api/characters/');
+                    const charRes = await fetch('/api/characters');
                     if (charRes.ok) {
                         const charData = await charRes.json();
                         const catData = charData?.['猫娘']?.[catgirlName];

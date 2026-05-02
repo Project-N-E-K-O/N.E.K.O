@@ -16,6 +16,25 @@ trigger: always_on
   - **模型从 tier 拿，不 hardcoded fallback**：每个 LLM 调用都通过 `config_manager.get_model_api_config(<tier>)` 拿 model/base_url/api_key 三件套。不要再写 `api_config.get('model', SETTING_PROPOSER_MODEL)` 这类 fallback——`SETTING_PROPOSER_MODEL` / `SETTING_VERIFIER_MODEL` 已于 2026-04 退环境。tier 未配好时让 API 直接拒绝，比静默回退到 qwen-max 更安全。
   - **memory 子模块按职责选 tier**：fact extraction / signal detection / reflection synthesis / fact dedup / recall rerank 走 `summary`；recent.review + persona.correction + promotion merge 走 `correction`。不要为单点新增 hardcoded 模型名。
 
+## API URL 末尾不带斜杠（前后端硬性要求）
+
+后端 route 声明、前端调用都必须用**不带末尾斜杠**的形式：
+
+- ✅ `/api/characters`、`/api/live2d/models`、`/api/memory/funnel/{lanlan_name}`
+- ❌ `/api/characters/`、`/api/live2d/models/`
+
+理由：
+1. **跟主流 REST API 一致**：Stripe / GitHub / Google / AWS / Microsoft REST API Guidelines 全都禁止末尾斜杠。
+2. **反代场景下不会炸**：FastAPI/Starlette 默认 `redirect_slashes=True`，把 `/foo/` 307 重定向到 `/foo`，但 `Location` 是用 request `Host` 拼出来的**绝对 URL**。如果反代没透传 `Host`、或 `proxy_headers` 没开（`NEKO_BEHIND_PROXY=1`），重定向就指向上游 `127.0.0.1:<内网端口>`，浏览器从局域网跟过去拿到 `ERR_CONNECTION_REFUSED`。PR #938 引发的角色卡管理回归就是这个 bug，根因不在反代而在我们前端写了带斜杠的 URL 把锅推给了 starlette 的脆弱重定向。**不带斜杠 = 永远不触发 307 = 整类问题消失。**
+
+具体规则：
+- **后端**：`APIRouter(prefix="/api/foo")` + `@router.get('')`（不是 `@router.get('/')`）。唯一例外是 `pages_router.py` 里 `@router.get("/")` —— 那是根页面 `index.html`，本来就该是 `/`。
+- **前端**：`fetch('/api/foo')`，不是 `fetch('/api/foo/')`。**前缀拼接**（例如 `` `/api/foo/${id}` `` 或 `` '/api/foo/' + encodeURIComponent(name) + '/sub' ``）里的中间斜杠是路径分隔符，不算违反——最终 URL 不带末尾斜杠就行。
+
+CI 守门：
+- `scripts/check_api_trailing_slash.py` —— AST 扫 `main_routers/*.py` 和 `*_server.py` 里的 `@router.get/post/...` 装饰器
+- `scripts/check_frontend_api_trailing_slash.py` —— 正则扫 `static/` / `frontend/` / `templates/` 里以 `/'` 或 `/"` 或 `` /` `` 结尾的 `/api/...` 字面量（前缀拼接形式自动豁免）
+
 ## 代码风格
 
 - **对偶性（symmetry）是硬性要求**：如果 MiniMax 拆了单独文件，Qwen 也必须拆；如果有三个 provider，它们的处理路径必须结构对称。不对偶的代码会被直接打回。

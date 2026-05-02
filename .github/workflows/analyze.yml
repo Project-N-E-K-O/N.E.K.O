@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   python-lint:
-    name: Python lint (ruff + async-blocking + no-loguru + no-temperature + prompt-hygiene + i18n-sync + docs-no-relative-paths)
+    name: Python lint (ruff + async-blocking + no-loguru + no-temperature + prompt-hygiene + i18n-sync + docs-no-relative-paths + api-trailing-slash + frontend-api-trailing-slash)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -97,3 +97,27 @@ jobs:
         # Fix is to inline the path as code (`foo/bar.js`) instead of a
         # link, or move the referenced content into docs/.
         run: python scripts/check_docs_no_relative_paths.py
+
+      - name: Forbid trailing-slash route paths on FastAPI decorators (backend)
+        # Project convention: every backend HTTP/WebSocket endpoint is
+        # declared WITHOUT a trailing slash. Avoids Starlette's absolute-URL
+        # 307 redirect under reverse proxies — root cause of the PR #938
+        # chara_manager regression: nginx/etc that don't transparently
+        # forward Host send the redirect Location to 127.0.0.1:<internal>,
+        # which the LAN browser can't reach (ERR_CONNECTION_REFUSED).
+        # The lint exempts the literal '/' root page and explicit alias pairs
+        # (same function carrying both '/foo' and '/foo/'). See
+        # .agent/rules/neko-guide.md (§"API URL 末尾不带斜杠") and
+        # main_routers/characters_router.py docstring.
+        run: python scripts/check_api_trailing_slash.py
+
+      - name: Forbid trailing-slash /api/... URL literals (frontend)
+        # Counterpart to check_api_trailing_slash.py: the backend may declare
+        # /api/foo without trailing slash, but if frontend code calls
+        # fetch('/api/foo/') the same 307 → ERR_CONNECTION_REFUSED happens.
+        # Regex sniffer over static/, frontend/, templates/. Recognises
+        # prefix builders ('/api/foo/' + id, `/api/foo/${id}`) and exempts
+        # them; flags only standalone literals ending in '/'. Suppress with
+        # // noqa: API_TRAILING_SLASH if calling a third-party API that
+        # genuinely requires the slash.
+        run: python scripts/check_frontend_api_trailing_slash.py

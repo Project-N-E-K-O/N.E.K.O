@@ -2573,7 +2573,7 @@ function syncTitleDataText() {
 // 加载角色卡数据
 async function loadCharacterData() {
     try {
-        const resp = await fetch('/api/characters/');
+        const resp = await fetch('/api/characters');
         if (!resp.ok) {
             throw new Error(`HTTP ${resp.status}`);
         }
@@ -4888,7 +4888,7 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
                 loadCharacterCards();
                 // 模型管理器关闭后，重新获取角色数据并更新模型显示名称
                 try {
-                    const resp = await fetch('/api/characters/');
+                    const resp = await fetch('/api/characters');
                     if (resp.ok) {
                         const allData = await resp.json();
                         const updatedCat = allData?.['猫娘']?.[catgirlName];
@@ -5610,7 +5610,7 @@ async function workshopDeleteCatgirl(name) {
 
     // 检查是否只剩一只猫娘
     try {
-        const resp = await fetch('/api/characters/', { cache: 'no-store' });
+        const resp = await fetch('/api/characters', { cache: 'no-store' });
         if (resp.ok) {
             const allData = await resp.json();
             const catgirls = allData?.['猫娘'] || {};
