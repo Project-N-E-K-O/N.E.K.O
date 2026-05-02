@@ -684,35 +684,34 @@ def test_task_executor_format_messages_mentions_image_attachments():
     assert "LATEST_USER_REQUEST: 帮我看看这张图哪里报错了 [Attached images: 1]" in output
 
 
-def test_plugin_business_callback_status_marks_non_executed_results():
-    from agent_server import _plugin_business_callback_status
-
-    # Explicit blocked signals (plugin must opt-in via these fields).
-    assert _plugin_business_callback_status({"status": "clarify", "action": "clarify", "needs_confirmation": True}) == "blocked"
-    assert _plugin_business_callback_status({"status": "confirm_required", "needs_confirmation": True}) == "blocked"
-    # Error signal.
-    assert _plugin_business_callback_status({"status": "error", "executed": False}) == "failed"
-    # Observation-only short-circuits even on error.
-    assert _plugin_business_callback_status({"status": "error", "observation_only": True}) is None
-    assert _plugin_business_callback_status({"status": "idle", "executed": False, "observation_only": True}) is None
-    # executed=False on its own is NOT enough — many plugins use it to mean
-    # "no game-side card played" while the control op succeeded (e.g. STS2
-    # stop_autoplay returns status="idle", executed=False after a real stop).
-    assert _plugin_business_callback_status({"status": "idle", "executed": False}) is None
-    assert _plugin_business_callback_status({"status": "stale", "executed": False}) is None
-    assert _plugin_business_callback_status({"status": "idle"}) is None
-    assert _plugin_business_callback_status({"status": "stale"}) is None
-    assert _plugin_business_callback_status({"status": "ok", "executed": True}) is None
-
-
-def test_plugin_terminal_status_preserves_blocked_as_first_class_terminal_state():
+def test_plugin_terminal_status_defaults_and_run_data_overrides():
     from agent_server import _plugin_terminal_status
 
+    # Default: success → completed, fail → failed.
     assert _plugin_terminal_status(True, None) == "completed"
     assert _plugin_terminal_status(False, None) == "failed"
-    assert _plugin_terminal_status(True, "blocked") == "blocked"
-    assert _plugin_terminal_status(False, "blocked") == "blocked"
-    assert _plugin_terminal_status(True, "failed") == "failed"
+    assert _plugin_terminal_status(True, {}) == "completed"
+    assert _plugin_terminal_status(False, {}) == "failed"
+
+    # Explicit blocked signals (plugin opts in via run_data).
+    assert _plugin_terminal_status(True, {"status": "clarify", "action": "clarify", "needs_confirmation": True}) == "blocked"
+    assert _plugin_terminal_status(True, {"status": "confirm_required", "needs_confirmation": True}) == "blocked"
+    assert _plugin_terminal_status(True, {"status": "blocked"}) == "blocked"
+
+    # Error signal forces failed even on raw success.
+    assert _plugin_terminal_status(True, {"status": "error"}) == "failed"
+
+    # observation_only bypasses overrides → fall back to raw success.
+    assert _plugin_terminal_status(True, {"status": "error", "observation_only": True}) == "completed"
+    assert _plugin_terminal_status(True, {"status": "blocked", "observation_only": True}) == "completed"
+
+    # executed=False on its own is intentionally NOT enough — many plugins use
+    # it to mean "no game-side card played" while the control op succeeded
+    # (e.g. STS2 stop_autoplay returns status="idle", executed=False after a
+    # real stop). Inferring blocked from that misreports successful ops.
+    assert _plugin_terminal_status(True, {"status": "idle", "executed": False}) == "completed"
+    assert _plugin_terminal_status(True, {"status": "stale", "executed": False}) == "completed"
+    assert _plugin_terminal_status(True, {"status": "ok", "executed": True}) == "completed"
 
 
 def test_callback_instruction_renders_blocked_plugin_result_as_not_executed():
