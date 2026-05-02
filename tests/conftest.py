@@ -1,6 +1,13 @@
 import os as _os
+import sys as _sys
 import tempfile as _tempfile
 from pathlib import Path as _Path
+
+# Project root must be on sys.path before importing `utils.*` — works even when
+# the project isn't installed as a wheel (e.g. bare `python -m pytest tests/`).
+_project_root = _os.path.abspath(_os.path.join(_os.path.dirname(__file__), '..'))
+if _project_root not in _sys.path:
+    _sys.path.insert(0, _project_root)
 
 # Redirect test logs out of the user's real %USERPROFILE%/Documents/N.E.K.O/logs.
 # Without this, every pytest session — including ones that intentionally inject
@@ -74,10 +81,8 @@ from pathlib import Path
 
 import uvicorn
 
-# Add project root to sys.path before importing project-local test helpers.
-_project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-if _project_root not in sys.path:
-    sys.path.insert(0, _project_root)
+# (Project root was already inserted into sys.path at the top of this file
+# so the early `from utils import logger_config` works without `uv sync`.)
 
 import pytest
 
