@@ -75,7 +75,15 @@ from config import (
     EMOTION_ANALYSIS_MAX_TOKENS,
 )
 from config.prompts_sys import _loc
-from config.prompts_emotion import get_outward_emotion_analysis_prompt
+from config.prompts_emotion import (
+    get_outward_emotion_analysis_prompt,
+    get_emotion_keywords_flat,
+    get_angry_attack_patterns_flat,
+    get_sad_vulnerable_patterns_flat,
+    get_happy_playful_patterns_flat,
+    get_heuristic_negation_tokens_flat,
+    get_emotion_label_aliases_flat,
+)
 from config.prompts_memory import PROACTIVE_FOLLOWUP_HEADER
 from config.prompts_proactive import (
     get_proactive_screen_prompt, get_proactive_generate_prompt,
@@ -859,122 +867,8 @@ async def get_system_status(response: Response):
 
 # 统一的表情包图源白名单由 utils.meme_fetcher 维护，本文件仅用于引入
 
-_EMOTION_LABEL_ALIASES = {
-    "happy": "happy",
-    "happiness": "happy",
-    "joy": "happy",
-    "joyful": "happy",
-    "excited": "happy",
-    "cute": "happy",
-    "playful": "happy",
-    "开心": "happy",
-    "高兴": "happy",
-    "兴奋": "happy",
-    "快乐": "happy",
-    "嬉しい": "happy",
-    "うれしい": "happy",
-    "喜び": "happy",
-    "幸せ": "happy",
-    "楽しい": "happy",
-    "행복": "happy",
-    "행복해": "happy",
-    "행복하다": "happy",
-    "기쁨": "happy",
-    "신남": "happy",
-    "радость": "happy",
-    "счастье": "happy",
-    "счастливый": "happy",
-    "счастлива": "happy",
-    "доволен": "happy",
-    "довольна": "happy",
-    "sad": "sad",
-    "sadness": "sad",
-    "down": "sad",
-    "upset": "sad",
-    "depressed": "sad",
-    "难过": "sad",
-    "伤心": "sad",
-    "失落": "sad",
-    "委屈": "sad",
-    "悲しい": "sad",
-    "かなしい": "sad",
-    "悲しみ": "sad",
-    "寂しい": "sad",
-    "슬퍼": "sad",
-    "슬픈": "sad",
-    "슬픔": "sad",
-    "우울": "sad",
-    "우울함": "sad",
-    "속상해": "sad",
-    "서운해": "sad",
-    "грустно": "sad",
-    "грусть": "sad",
-    "грустный": "sad",
-    "грустная": "sad",
-    "печаль": "sad",
-    "расстроен": "sad",
-    "расстроена": "sad",
-    "angry": "angry",
-    "anger": "angry",
-    "mad": "angry",
-    "annoyed": "angry",
-    "irritated": "angry",
-    "生气": "angry",
-    "愤怒": "angry",
-    "烦躁": "angry",
-    "恼火": "angry",
-    "怒り": "angry",
-    "怒ってる": "angry",
-    "怒った": "angry",
-    "腹が立つ": "angry",
-    "화남": "angry",
-    "화난": "angry",
-    "분노": "angry",
-    "짜증남": "angry",
-    "злой": "angry",
-    "злая": "angry",
-    "злость": "angry",
-    "сержусь": "angry",
-    "рассержен": "angry",
-    "рассержена": "angry",
-    "surprised": "surprised",
-    "surprise": "surprised",
-    "shock": "surprised",
-    "shocked": "surprised",
-    "astonished": "surprised",
-    "惊讶": "surprised",
-    "震惊": "surprised",
-    "意外": "surprised",
-    "驚き": "surprised",
-    "驚いた": "surprised",
-    "驚いてる": "surprised",
-    "びっくり": "surprised",
-    "놀람": "surprised",
-    "놀란": "surprised",
-    "놀랐어": "surprised",
-    "깜짝": "surprised",
-    "удивлен": "surprised",
-    "удивлена": "surprised",
-    "удивление": "surprised",
-    "шок": "surprised",
-    "neutral": "neutral",
-    "calm": "neutral",
-    "平静": "neutral",
-    "冷静": "neutral",
-    "中性": "neutral",
-    "普通": "neutral",
-    "平穏": "neutral",
-    "穏やか": "neutral",
-    "落ち着いてる": "neutral",
-    "보통": "neutral",
-    "차분": "neutral",
-    "차분함": "neutral",
-    "평온": "neutral",
-    "нейтрально": "neutral",
-    "спокойно": "neutral",
-    "спокойный": "neutral",
-    "спокойная": "neutral",
-}
+# 多语言关键词/别名表统一在 config/prompts_emotion.py 维护，此处只做扁平索引。
+_EMOTION_LABEL_ALIASES = get_emotion_label_aliases_flat()
 
 _EMOTION_CANONICAL_LABELS = ("happy", "sad", "angry", "surprised", "neutral")
 _EMOTION_NORMALIZED_ALIAS_LOOKUP = {}
@@ -1065,42 +959,11 @@ def _has_negated_emotion_phrase(normalized_text, compact_text, fuzzy_compact_cut
 
     return False
 
-_EMOTION_KEYWORDS = {
-    "happy": ("哈哈", "嘿嘿", "嘻嘻", "开心", "高兴", "喜欢", "太棒", "可爱", "好耶", "真好", "好开心", "爱你",
-              "haha", "hehe", "happy", "glad", "love", "lovely", "cute", "yay", "great", "awesome",
-              "うれしい", "嬉しい", "楽しい", "かわいい", "好き", "やった", "最高",
-              "좋아", "행복", "기뻐", "신나", "귀여워", "좋다", "최고",
-              "счастлив", "рада", "рад", "весело", "люблю", "милый", "класс"),
-    "sad": ("难过", "伤心", "委屈", "想哭", "要哭", "哭了", "哭", "呜呜", "呜", "遗憾", "失落", "沮丧", "低落", "心疼", "欺负", "最怕",
-            "sad", "cry", "upset", "depressed", "sorry", "regret", "heartbroken",
-            "悲しい", "つらい", "寂しい", "落ち込", "しんどい", "泣きたい",
-            "슬퍼", "우울", "속상", "서운", "힘들", "울고",
-            "грустно", "печально", "обидно", "жаль", "тоск", "плак"),
-    "angry": ("气死", "生气", "烦死", "烦", "恼火", "可恶", "离谱", "无语", "讨厌", "炸毛", "火大",
-              "angry", "mad", "annoyed", "irritated", "furious", "damn", "hate",
-              "ムカつく", "腹立", "うざい", "最悪", "イライラ", "ふざけ",
-              "짜증", "화나", "열받", "빡쳐", "어이없", "최악",
-              "злюсь", "бесит", "раздраж", "ужас", "ненавиж", "достал"),
-    "surprised": ("哇", "居然", "竟然", "不会吧", "诶", "欸", "啊这", "天哪", "真的假的", "怎么会",
-                  "wow", "whoa", "omg", "really", "seriously", "what", "unexpected", "surprised",
-                  "えっ", "うそ", "まじ", "本当", "びっくり", "なんで",
-                  "헉", "우와", "진짜", "설마", "뭐야", "깜짝",
-                  "ого", "ничего себе", "серьезно", "правда", "внезапно", "удив"),
-}
-
-_SAD_VULNERABLE_PATTERNS = (
-    "委屈", "想哭", "要哭", "哭了", "哭", "呜呜", "呜", "别欺负", "不要欺负", "欺负我",
-    "不要这样对我", "别这样对我", "最怕", "怕你这样说", "心里难受", "好难过", "可怜"
-)
-
-_ANGRY_ATTACK_PATTERNS = (
-    "气死", "生气", "烦死", "恼火", "可恶", "讨厌", "离谱", "无语", "火大",
-    "别烦", "闭嘴", "滚", "受不了"
-)
-
-_HAPPY_PLAYFUL_PATTERNS = (
-    "哈哈", "嘿嘿", "嘻嘻", "贴贴", "撒娇", "可爱", "好耶"
-)
+# 启发式关键词/patterns 全部在 config/prompts_emotion.py 按语种维护，此处只做扁平化。
+_EMOTION_KEYWORDS = get_emotion_keywords_flat()
+_SAD_VULNERABLE_PATTERNS = get_sad_vulnerable_patterns_flat()
+_ANGRY_ATTACK_PATTERNS = get_angry_attack_patterns_flat()
+_HAPPY_PLAYFUL_PATTERNS = get_happy_playful_patterns_flat()
 
 
 def _normalize_emotion_label(raw_emotion, raw_confidence=None):
@@ -1219,6 +1082,34 @@ def _coerce_emotion_confidence(raw_confidence, default=0.5):
     return max(0.0, min(1.0, confidence))
 
 
+# 启发式打分时的否定回看 token 表统一在 config/prompts_emotion.py 按语种维护。
+_HEURISTIC_NEGATION_TOKENS = get_heuristic_negation_tokens_flat()
+_HEURISTIC_NEGATION_LOOKBACK = 14
+
+
+def _has_heuristic_negation_before(text_value, position):
+    if position <= 0:
+        return False
+    start = max(0, position - _HEURISTIC_NEGATION_LOOKBACK)
+    window = text_value[start:position]
+    return any(token in window for token in _HEURISTIC_NEGATION_TOKENS)
+
+
+def _count_keyword_hits(text_value, keyword):
+    if not keyword or not text_value:
+        return 0
+    hits = 0
+    search_start = 0
+    while True:
+        pos = text_value.find(keyword, search_start)
+        if pos < 0:
+            break
+        if not _has_heuristic_negation_before(text_value, pos):
+            hits += 1
+        search_start = pos + len(keyword)
+    return hits
+
+
 def _infer_emotion_from_text(text):
     text_value = str(text or "").lower()
     if not text_value:
@@ -1227,15 +1118,14 @@ def _infer_emotion_from_text(text):
     scores = {key: 0 for key in _EMOTION_KEYWORDS}
     for emotion, keywords in _EMOTION_KEYWORDS.items():
         for keyword in keywords:
-            if keyword and keyword in text_value:
-                scores[emotion] += 1
+            scores[emotion] += _count_keyword_hits(text_value, keyword)
 
     if "!!" in text_value or "！？" in text_value or "!?" in text_value or "??" in text_value:
         scores["surprised"] += 1
 
-    sad_vulnerable_hits = sum(1 for pattern in _SAD_VULNERABLE_PATTERNS if pattern in text_value)
-    angry_attack_hits = sum(1 for pattern in _ANGRY_ATTACK_PATTERNS if pattern in text_value)
-    happy_playful_hits = sum(1 for pattern in _HAPPY_PLAYFUL_PATTERNS if pattern in text_value)
+    sad_vulnerable_hits = sum(_count_keyword_hits(text_value, p) for p in _SAD_VULNERABLE_PATTERNS)
+    angry_attack_hits = sum(_count_keyword_hits(text_value, p) for p in _ANGRY_ATTACK_PATTERNS)
+    happy_playful_hits = sum(_count_keyword_hits(text_value, p) for p in _HAPPY_PLAYFUL_PATTERNS)
 
     if sad_vulnerable_hits:
         scores["sad"] += sad_vulnerable_hits * 2
@@ -2522,7 +2412,9 @@ async def emotion_analysis(request: Request):
 
                 heuristic_emotion, heuristic_score = _infer_emotion_from_text(text)
                 if heuristic_emotion:
-                    if heuristic_emotion != emotion and heuristic_score >= 4 and confidence < 0.85:
+                    # 强 override：启发式分数较高（≥4）且模型置信度不算很高（<0.8）时
+                    # 才推翻模型判断；避免单个吐槽词把模型 happy/neutral 翻成 angry。
+                    if heuristic_emotion != emotion and heuristic_score >= 4 and confidence < 0.8:
                         emotion = heuristic_emotion
                         confidence = max(confidence, min(0.86, 0.44 + heuristic_score * 0.07))
                         decision_source = "heuristic_strong_override"
