@@ -2177,11 +2177,18 @@
     async function beginSentinelFlow() {
         buildModalDom();
         attachLocaleListener();
-        // 不在这里立刻显示 loading，由 fetchBootstrap 内部按需延迟显示，
-        // 避免请求很快完成时用户看到一闪而过的 overlay。
+        // 延迟显示 loading overlay，避免 waitForSystemStatus 很快完成时闪屏
+        var showTimer = setTimeout(function () {
+            setPhase('loading');
+            setLoadingCopy(
+                translate('storage.loadingTitle', '正在确认存储布局状态'),
+                translate('storage.loadingWaitSubtitle', '主业务界面会在存储状态确认完成后再继续加载。')
+            );
+        }, 150);
 
         try {
             var statusPayload = await waitForSystemStatus();
+            clearTimeout(showTimer);
             if (!shouldBlockMainUi(statusPayload)) {
                 hideOverlay();
                 resolveStartupDecision({
@@ -2194,6 +2201,7 @@
 
             await fetchBootstrap();
         } catch (error) {
+            clearTimeout(showTimer);
             console.warn('[storage-location] sentinel init failed', error);
             showError(error);
         }
