@@ -645,6 +645,29 @@ class TestFollowProviderNotLocal:
             f"follow_assist 时 TTS_MODEL_URL 应为空，实际={cfg.get('TTS_MODEL_URL')!r}"
 
     @pytest.mark.unit
+    def test_follow_mode_preserves_user_model_id(self, config_manager):
+        """follow_* 模式下 modelId 输入框非 readonly，用户主动填的值必须被尊重，
+        不能因为跳过 URL 覆盖一并丢失（修复时只跳 URL，Model 仍允许覆盖）。
+        """
+        _write_core_config(config_manager, {
+            'coreApiKey': 'sk-qwen-core',
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'assistApiKeyQwen': 'sk-qwen-core',
+            'enableCustomApi': True,
+            'omniModelProvider': 'follow_core',
+            'omniModelUrl': 'wss://dashscope.aliyuncs.com/api-ws/v1/realtime',
+            'omniModelId': 'qwen3-omni-flash-realtime-2026-04-30-snapshot',  # 用户主动填
+            'omniModelApiKey': 'sk-qwen-core',
+        })
+        cfg = config_manager.get_core_config()
+        assert cfg.get('REALTIME_MODEL') == 'qwen3-omni-flash-realtime-2026-04-30-snapshot', \
+            f"follow_core 时用户填的 omniModelId 不应丢失，实际={cfg.get('REALTIME_MODEL')!r}"
+        # 同时验证 URL 仍然被跳过（bug fix invariant）
+        assert cfg.get('REALTIME_MODEL_URL', '') in ('', None), \
+            f"follow_core 时 URL 应被跳过避免触发 'local'，实际={cfg.get('REALTIME_MODEL_URL')!r}"
+
+    @pytest.mark.unit
     def test_explicit_custom_still_takes_effect(self, config_manager):
         """provider=custom（用户真的填了自定义 URL）时仍然走自定义路径。"""
         _write_core_config(config_manager, {
