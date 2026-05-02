@@ -922,9 +922,12 @@ body.react-chat-window-resizing {
 }
 
 [data-theme="dark"] #avatarPreviewHeaderButton,
-[data-theme="dark"] #reactChatWindowMinimizeButton,
-[data-theme="dark"] #reactChatWindowCloseButton {
+[data-theme="dark"] #reactChatWindowMinimizeButton {
     color: #aab0bc;
+}
+
+[data-theme="dark"] #reactChatWindowCloseButton {
+    color: #8a8f9c;
 }
 
 [data-theme="dark"] #avatarPreviewHeaderButton:hover,
