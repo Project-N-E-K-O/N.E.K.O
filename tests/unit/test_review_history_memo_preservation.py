@@ -21,7 +21,6 @@ import json
 import os
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
 
 import pytest
 
