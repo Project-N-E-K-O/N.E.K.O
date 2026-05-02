@@ -567,7 +567,12 @@ class ComputerUseAdapter:
                     extra_body=extra or None,
                     timeout=20,
                 )
-                _ = resp.choices[0].message.content
+                # 连通性检测只关心 HTTP 层是否通、响应结构是否合法；某些上游
+                # （如 free-agent-model）会返回 choices 非空但 message=None
+                # 的合法 200，message 为空也视为成功。
+                choice = resp.choices[0] if resp.choices else None
+                msg = choice.message if choice else None
+                _ = getattr(msg, "content", None)
                 self.init_ok = True
                 self.last_error = None
                 logger.info("[CUA] LLM connectivity OK (%s @ %s)", model, base_url)
