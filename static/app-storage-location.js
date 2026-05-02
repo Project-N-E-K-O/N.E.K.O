@@ -2130,11 +2130,14 @@
     }
 
     async function fetchBootstrap() {
-        setPhase('loading');
-        setLoadingCopy(
-            translate('storage.loadingTitle', '正在确认存储布局状态'),
-            translate('storage.loadingFetchBootstrapSubtitle', '正在准备存储位置选择页面。')
-        );
+        // 延迟显示 loading overlay，避免请求很快完成时用户看到闪屏
+        var showTimer = setTimeout(function () {
+            setPhase('loading');
+            setLoadingCopy(
+                translate('storage.loadingTitle', '正在确认存储布局状态'),
+                translate('storage.loadingFetchBootstrapSubtitle', '正在准备存储位置选择页面。')
+            );
+        }, 150);
         try {
             var response = await fetch('/api/storage/location/bootstrap', {
                 cache: 'no-store',
@@ -2142,6 +2145,7 @@
                     'Accept': 'application/json'
                 }
             });
+            clearTimeout(showTimer);
             if (!response.ok) {
                 throw new Error('bootstrap request failed: ' + response.status);
             }
@@ -2164,6 +2168,7 @@
             });
             scheduleCompletionNoticePolling();
         } catch (error) {
+            clearTimeout(showTimer);
             console.warn('[storage-location] bootstrap failed', error);
             showError(error);
         }
@@ -2172,11 +2177,8 @@
     async function beginSentinelFlow() {
         buildModalDom();
         attachLocaleListener();
-        setPhase('loading');
-        setLoadingCopy(
-            translate('storage.loadingTitle', '正在确认存储布局状态'),
-            translate('storage.loadingSubtitle', '主业务界面会在存储状态确认完成后再继续加载。')
-        );
+        // 不在这里立刻显示 loading，由 fetchBootstrap 内部按需延迟显示，
+        // 避免请求很快完成时用户看到一闪而过的 overlay。
 
         try {
             var statusPayload = await waitForSystemStatus();
