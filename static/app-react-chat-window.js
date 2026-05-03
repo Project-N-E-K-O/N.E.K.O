@@ -1023,6 +1023,10 @@
             state.galgameOptions = [];
             state.galgameOptionsLoading = false;
             state._galgameRequestSeq += 1;
+            // Toggling off mid-fetch must also kill the in-flight request so
+            // the summary-tier inference doesn't keep running uselessly until
+            // the 30s timeout (or finishes and is silently discarded).
+            abortPendingGalgameFetch();
         }
         applyGalgameBodyClass(next);
         if (!options || options.persist !== false) persistGalgameModePreference(next);
@@ -2101,6 +2105,11 @@
             waitForAssistantBubblesFlushed(4000).then(function () {
                 if (!state.galgameModeEnabled) return;
                 if (state._galgameRequestSeq !== seqAtSchedule) return;
+                // The overlay may have been closed during the 4s wait — re-check
+                // before firing the fetch so closing the chat mid-turn doesn't
+                // still kick off a background summary-tier inference.
+                var overlayNow = getOverlay();
+                if (!overlayNow || overlayNow.hidden) return;
                 fetchGalgameOptionsForLatestTurn();
             });
         });
