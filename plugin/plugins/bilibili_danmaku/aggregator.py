@@ -292,6 +292,7 @@ class GiftAggregator:
     def _aggregate(self, gifts: list[dict]) -> list[dict]:
         """按 (user_name, gift_name) 聚合礼物，合并数量和总价值"""
         merged: dict[tuple[str, str], dict] = {}
+        seen_sc: dict[tuple[str, str], set[str]] = {}
         for g in gifts:
             key = (g.get("user_name", ""), g.get("gift_name", ""))
             if key not in merged:
@@ -303,13 +304,15 @@ class GiftAggregator:
                     "is_sc": g.get("is_sc", False),
                     "sc_message": g.get("sc_message", ""),
                 }
+                seen_sc[key] = set()
             m = merged[key]
             m["total_num"] += g.get("total_num", g.get("num", 1))
             m["total_coin"] += g.get("total_coin", 0)
             if g.get("is_sc"):
                 m["is_sc"] = True
                 msg = g.get("sc_message", "")
-                if msg and msg not in m["sc_message"]:
+                if msg and msg not in seen_sc[key]:
+                    seen_sc[key].add(msg)
                     m["sc_message"] = f"{m['sc_message']}\n{msg}" if m["sc_message"] else msg
         return list(merged.values())
 
