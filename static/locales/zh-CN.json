@@ -1157,6 +1157,7 @@
         "settingsSaved": "位置和模型设置保存成功!",
         "positionSavedModelFailed": "位置保存成功，模型设置保存失败!",
         "modelSavedPositionFailed": "模型设置保存成功，位置保存失败!",
+        "positionSaveFailedSuffix": "位置保存失败",
         "saveFailedGeneral": "保存失败!",
         "uploadSuccess": "成功: {{message}}",
         "uploadFailed": "失败: {{error}}",

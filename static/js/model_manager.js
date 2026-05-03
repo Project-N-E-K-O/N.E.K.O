@@ -6858,10 +6858,11 @@ document.addEventListener('DOMContentLoaded', async () => {
             const modelMessage = modelSaveResult && modelSaveResult.message
                 ? modelSaveResult.message
                 : t('live2d.saveFailedGeneral', '保存失败!');
-            const partialMessage = t(
-                'live2d.partialSaveWarning',
-                modelMessage || '已保存模型设置，但部分设置保存失败'
-            );
+            const partialMessage = modelStatus === 'partial'
+                ? modelMessage
+                : t('live2d.partialSaveWarning', '已保存模型设置，但部分设置保存失败');
+            const positionSaveFailedSuffix = t('live2d.positionSaveFailedSuffix', '位置保存失败');
+            const modelPartialAndPositionFailedMessage = `${partialMessage}；${positionSaveFailedSuffix}`;
             const modelSavedAtLeastPartially = modelStatus === 'ok' || modelStatus === 'partial';
 
             if (currentModelType === 'live3d') {
@@ -6894,7 +6895,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     // 不在保存时立即通知主页，而是在返回主页时通知
                     // sendMessageToMainPage('reload_model');
                 } else if (positionSuccess && modelStatus === 'partial') {
-                    showStatus(partialMessage, 3000);
+                    showStatus(modelMessage, 3000);
                     showModelManagerToast(partialMessage, 3200, 'warning');
                     window._modelManagerHasSaved = true;
                 } else if (positionSuccess) {
@@ -6903,14 +6904,14 @@ document.addEventListener('DOMContentLoaded', async () => {
                     showModelManagerToast(message, 3200, 'warning');
                     // 位置偏好已保存，主界面如触发重载可恢复位置；但仅在用户退出时才通知
                     window._modelManagerHasSaved = true;
+                } else if (modelStatus === 'partial') {
+                    showStatus(modelPartialAndPositionFailedMessage, 3000);
+                    showModelManagerToast(modelPartialAndPositionFailedMessage, 3600, 'warning');
+                    window._modelManagerHasSaved = true;
                 } else if (modelSavedAtLeastPartially) {
                     const message = t('live2d.modelSavedPositionFailed', '模型设置保存成功，位置保存失败!');
                     showStatus(message, 2000);
-                    showModelManagerToast(
-                        modelStatus === 'partial' ? partialMessage : message,
-                        3200,
-                        'warning'
-                    );
+                    showModelManagerToast(message, 3200, 'warning');
                     if (modelStatus === 'ok') {
                         window._savedModelSnapshot = captureSettingsSnapshot();
                     }

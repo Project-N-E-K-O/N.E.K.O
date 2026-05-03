@@ -1157,6 +1157,7 @@
         "settingsSaved": "Позиция и настройки модели сохранены!",
         "positionSavedModelFailed": "Позиция сохранена, но настройки модели не удалось сохранить!",
         "modelSavedPositionFailed": "Настройки модели сохранены, но позицию не удалось сохранить!",
+        "positionSaveFailedSuffix": "позицию сохранить не удалось",
         "saveFailedGeneral": "Ошибка сохранения!",
         "uploadSuccess": "Успешно: {{message}}",
         "uploadFailed": "Ошибка: {{error}}",

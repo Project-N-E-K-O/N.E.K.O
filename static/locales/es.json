@@ -1157,6 +1157,7 @@
         "settingsSaved": "¡La configuración de posición y modelo se guardó correctamente!",
         "positionSavedModelFailed": "¡La posición se guardó correctamente, pero la configuración del modelo falló!",
         "modelSavedPositionFailed": "La configuración del modelo se guardó correctamente, ¡pero falló al guardar la posición!",
+        "positionSaveFailedSuffix": "no se pudo guardar la posición",
         "saveFailedGeneral": "¡Error al guardar!",
         "uploadSuccess": "Éxito: {{message}}",
         "uploadFailed": "Error: {{error}}",

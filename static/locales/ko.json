@@ -1157,6 +1157,7 @@
         "settingsSaved": "위치 및 모델 설정이 성공적으로 저장되었습니다!",
         "positionSavedModelFailed": "위치가 성공적으로 저장되었지만 모델 설정 저장에 실패했습니다!",
         "modelSavedPositionFailed": "모델 설정이 성공적으로 저장되었지만 위치 저장에 실패했습니다.",
+        "positionSaveFailedSuffix": "위치 저장에 실패했습니다",
         "saveFailedGeneral": "저장에 실패했습니다!",
         "uploadSuccess": "성공: {{message}}",
         "uploadFailed": "오류: {{error}}",

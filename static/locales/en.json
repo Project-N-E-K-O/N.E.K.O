@@ -1157,6 +1157,7 @@
         "settingsSaved": "Position and model settings saved successfully!",
         "positionSavedModelFailed": "Position saved successfully, but model settings save failed!",
         "modelSavedPositionFailed": "Model settings saved successfully, but position save failed!",
+        "positionSaveFailedSuffix": "position save failed",
         "saveFailedGeneral": "Save failed!",
         "uploadSuccess": "Success: {{message}}",
         "uploadFailed": "Error: {{error}}",
