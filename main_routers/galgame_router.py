@@ -15,8 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import re
-from typing import Any, NamedTuple
-from urllib.parse import urlsplit
+from typing import Any
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
@@ -47,20 +46,6 @@ GALGAME_MAX_TEXT_PER_TURN = 240
 GALGAME_OPTION_MAX_TOKENS = 360
 GALGAME_OPTION_TIMEOUT_SECONDS = 25.0
 GALGAME_OPTION_LABELS = ("A", "B", "C")
-_LANLAN_FREE_API_KEY = "free-access"
-_LANLAN_FREE_TEXT_HOSTS = {
-    "www.lanlan.tech",
-    "lanlan.tech",
-    "www.lanlan.app",
-    "lanlan.app",
-}
-
-
-class _GalgameLlmResolution(NamedTuple):
-    config: dict[str, Any]
-    source: str
-    requires_agent_config: bool
-    uses_free_agent_quota: bool
 
 
 def _resolve_language(text_sample: str, request_lang: str | None) -> str:
@@ -173,63 +158,6 @@ def _fallback_options(lang: str) -> list[dict[str, str]]:
     ]
 
 
-def _clean_llm_config(config: dict[str, Any] | None) -> dict[str, Any]:
-    config = config or {}
-    return {
-        "api_key": (config.get("api_key") or "").strip(),
-        "model": (config.get("model") or "").strip(),
-        "base_url": (config.get("base_url") or "").strip(),
-        "is_custom": bool(config.get("is_custom")),
-    }
-
-
-def _base_url_host(base_url: str) -> str:
-    try:
-        return (urlsplit(base_url).hostname or "").lower()
-    except Exception:
-        return ""
-
-
-def _is_lanlan_free_text_config(config: dict[str, Any]) -> bool:
-    return (
-        config.get("api_key") == _LANLAN_FREE_API_KEY
-        and not config.get("is_custom")
-        and _base_url_host(config.get("base_url", "")) in _LANLAN_FREE_TEXT_HOSTS
-    )
-
-
-def _resolve_galgame_llm_config(config_manager: Any) -> _GalgameLlmResolution:
-    summary_config = _clean_llm_config(config_manager.get_model_api_config('summary'))
-    if _is_lanlan_free_text_config(summary_config):
-        try:
-            agent_config = _clean_llm_config(config_manager.get_model_api_config('agent'))
-        except Exception as exc:
-            logger.warning("GalGame free API agent config unavailable: %s", exc)
-        else:
-            if agent_config.get("model") and agent_config.get("base_url"):
-                return _GalgameLlmResolution(
-                    agent_config,
-                    "agent",
-                    True,
-                    _is_lanlan_free_text_config(agent_config),
-                )
-            logger.warning("GalGame free API agent model/base_url not configured")
-        return _GalgameLlmResolution(summary_config, "summary", True, False)
-
-    return _GalgameLlmResolution(summary_config, "summary", False, False)
-
-
-async def _consume_free_agent_quota(config_manager: Any) -> tuple[bool, dict[str, Any]]:
-    consume_quota = getattr(config_manager, "aconsume_agent_daily_quota", None)
-    if not callable(consume_quota):
-        return True, {}
-    try:
-        return await consume_quota(source="galgame.options", units=1)
-    except Exception as exc:
-        logger.warning("GalGame free API quota check failed: %s", exc)
-        return False, {"code": "AGENT_QUOTA_CHECK_FAILED"}
-
-
 @router.post('/galgame/options')
 async def generate_galgame_options(request: Request):
     """Generate three reply candidates for the player.
@@ -270,35 +198,17 @@ async def generate_galgame_options(request: Request):
     master_name = (data.get('master_name') or master_name_current or '').strip() \
         or _loc(GALGAME_DEFAULT_MASTER_PLACEHOLDER, lang)
 
-    llm_resolution = _resolve_galgame_llm_config(config_manager)
-    llm_config = llm_resolution.config
-    api_key = llm_config["api_key"]
-    model = llm_config["model"]
-    base_url = llm_config["base_url"]
+    summary_config = config_manager.get_model_api_config('summary') or {}
+    api_key = (summary_config.get('api_key') or '').strip()
+    model = (summary_config.get('model') or '').strip()
+    base_url = (summary_config.get('base_url') or '').strip()
     if not model or not base_url:
-        logger.warning("%s model/base_url not configured; returning fallback options", llm_resolution.source)
+        logger.warning("Summary model/base_url not configured; returning fallback options")
         return JSONResponse({
             "success": True,
             "options": _fallback_options(lang),
             "fallback": True,
         })
-    if llm_resolution.requires_agent_config and llm_resolution.source != "agent":
-        return JSONResponse({
-            "success": True,
-            "options": _fallback_options(lang),
-            "fallback": True,
-            "error": "AGENT_MODEL_NOT_CONFIGURED",
-        })
-    if llm_resolution.uses_free_agent_quota:
-        quota_ok, quota_info = await _consume_free_agent_quota(config_manager)
-        if not quota_ok:
-            return JSONResponse({
-                "success": True,
-                "options": _fallback_options(lang),
-                "fallback": True,
-                "error": "AGENT_QUOTA_EXCEEDED",
-                "quota": quota_info,
-            })
 
     system_prompt = get_galgame_option_generation_prompt(
         lang,
