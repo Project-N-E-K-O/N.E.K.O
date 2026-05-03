@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 import sys
@@ -52,6 +53,13 @@ def _decode_response(response):
 
 def _option_texts(data):
     return [item["text"] for item in data["options"]]
+
+
+def _expected_llm_kwargs():
+    return {
+        "max_completion_tokens": galgame_router.GALGAME_OPTION_MAX_TOKENS,
+        "timeout": galgame_router.GALGAME_OPTION_TIMEOUT_SECONDS,
+    }
 
 
 @pytest.mark.unit
@@ -116,7 +124,7 @@ async def test_galgame_uses_summary_model_without_temperature(monkeypatch):
     assert "fallback" not in data
     assert data["options"][0]["text"] == "先确认你刚才说的重点。"
     assert captured["api_key"] == ""
-    assert captured["kwargs"] == {"max_completion_tokens": galgame_router.GALGAME_OPTION_MAX_TOKENS}
+    assert captured["kwargs"] == _expected_llm_kwargs()
     assert config_manager.calls == ["summary"]
     assert "刚才那件事你怎么看？" in captured["messages"][1].content
 
@@ -185,7 +193,7 @@ async def test_galgame_free_summary_uses_agent_model_without_temperature(monkeyp
     assert captured["model"] == "free-agent-model"
     assert captured["base_url"] == "https://www.lanlan.app/text/v1"
     assert captured["api_key"] == "free-access"
-    assert captured["kwargs"] == {"max_completion_tokens": galgame_router.GALGAME_OPTION_MAX_TOKENS}
+    assert captured["kwargs"] == _expected_llm_kwargs()
     assert config_manager.calls == ["summary", "agent"]
     assert config_manager.quota_calls == [("galgame.options", 1)]
 
@@ -305,9 +313,61 @@ async def test_galgame_free_summary_with_paid_agent_skips_free_quota(monkeypatch
     assert captured["model"] == "paid-agent-model"
     assert captured["base_url"] == "https://dashscope.aliyuncs.com/compatible-mode/v1"
     assert captured["api_key"] == "sk-paid-agent"
-    assert captured["kwargs"] == {"max_completion_tokens": galgame_router.GALGAME_OPTION_MAX_TOKENS}
+    assert captured["kwargs"] == _expected_llm_kwargs()
     assert config_manager.calls == ["summary", "agent"]
     assert config_manager.quota_calls == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_galgame_option_generation_timeout_returns_fallback(monkeypatch):
+    config_manager = FakeConfigManager(
+        {
+            "model": "local-summary",
+            "base_url": "http://127.0.0.1:11434/v1",
+            "api_key": "",
+        }
+    )
+    captured = {}
+
+    class SlowLLM:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            captured["exit_exc_type"] = exc_type
+            return None
+
+        async def ainvoke(self, messages):
+            await asyncio.sleep(1)
+            return SimpleNamespace(content="[]")
+
+    def fake_create_chat_llm(model, base_url, api_key, **kwargs):
+        captured["kwargs"] = kwargs
+        return SlowLLM()
+
+    monkeypatch.setattr(galgame_router, "GALGAME_OPTION_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(galgame_router, "get_config_manager", lambda: config_manager)
+    monkeypatch.setattr(galgame_router, "create_chat_llm", fake_create_chat_llm)
+
+    response = await galgame_router.generate_galgame_options(
+        FakeRequest(
+            {
+                "messages": [{"role": "assistant", "text": "What do you think?"}],
+                "language": "en",
+            }
+        )
+    )
+
+    data = _decode_response(response)
+    assert data["success"] is True
+    assert data["fallback"] is True
+    assert data["error"] == "timeout"
+    assert _option_texts(data) == list(get_galgame_fallback_options("en"))
+    assert captured["kwargs"] == {
+        "max_completion_tokens": galgame_router.GALGAME_OPTION_MAX_TOKENS,
+        "timeout": 0.01,
+    }
 
 
 @pytest.mark.unit

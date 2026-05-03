@@ -13,6 +13,7 @@ URL convention: routes declared WITHOUT trailing slash. See the project
 
 from __future__ import annotations
 
+import asyncio
 import re
 from typing import Any, NamedTuple
 from urllib.parse import urlsplit
@@ -44,6 +45,7 @@ logger = get_module_logger(__name__, "GalGame")
 GALGAME_MAX_HISTORY = 8
 GALGAME_MAX_TEXT_PER_TURN = 240
 GALGAME_OPTION_MAX_TOKENS = 360
+GALGAME_OPTION_TIMEOUT_SECONDS = 25.0
 GALGAME_OPTION_LABELS = ("A", "B", "C")
 _LANLAN_FREE_API_KEY = "free-access"
 _LANLAN_FREE_TEXT_HOSTS = {
@@ -315,13 +317,25 @@ async def generate_galgame_options(request: Request):
         base_url,
         api_key,
         max_completion_tokens=GALGAME_OPTION_MAX_TOKENS,
+        timeout=GALGAME_OPTION_TIMEOUT_SECONDS,
     )
     try:
         async with llm:
-            result = await llm.ainvoke([
-                SystemMessage(content=system_prompt),
-                HumanMessage(content=dialogue_block),
-            ])
+            result = await asyncio.wait_for(
+                llm.ainvoke([
+                    SystemMessage(content=system_prompt),
+                    HumanMessage(content=dialogue_block),
+                ]),
+                timeout=GALGAME_OPTION_TIMEOUT_SECONDS,
+            )
+    except asyncio.TimeoutError:
+        logger.warning("GalGame option generation timed out")
+        return JSONResponse({
+            "success": True,
+            "options": _fallback_options(lang),
+            "fallback": True,
+            "error": "timeout",
+        })
     except Exception as exc:
         logger.warning("GalGame option generation failed: %s", exc)
         return JSONResponse({
