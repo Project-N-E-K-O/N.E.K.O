@@ -86,6 +86,7 @@
         }
 
         const gameType = S.gameVoiceSttGameType || 'soccer';
+        const sessionId = S.gameVoiceSttSessionId || S.gameRouteSessionId || '';
         const requestId = gameVoiceRequestId();
         console.log(`[GameVoiceSTT] 最终转写 | game=${gameType} request=${requestId} text="${text}"`);
         try {
@@ -94,6 +95,7 @@
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     lanlan_name: lanlanName,
+                    session_id: sessionId,
                     transcript: text,
                     request_id: requestId,
                     source: 'main_voice_stt_gate'
@@ -139,8 +141,18 @@
         stopSilenceDetection();
     }
 
+    function restoreOrdinaryMicCaptureAfterGameVoiceSttFailure(reason, error) {
+        console.warn('[GameVoiceSTT] restoring ordinary mic capture after STT gate failure:', reason, error || '');
+        stopGameVoiceSttGate();
+        if (S.isRecording && typeof startMicCapture === 'function') {
+            Promise.resolve(startMicCapture()).catch(function (restoreError) {
+                console.warn('[GameVoiceSTT] restore ordinary mic capture failed:', restoreError);
+            });
+        }
+    }
+
     function startGameVoiceSttGate() {
-        if (!S.gameVoiceSttGateActive || S.isMicMuted) {
+        if (!S.gameVoiceSttGateActive || !S.isRecording || S.isMicMuted) {
             return false;
         }
         if (S.gameVoiceSttListening) {
@@ -218,7 +230,7 @@
                     if (typeof window.showStatusToast === 'function') {
                         window.showStatusToast('游戏语音转写没有麦克风权限，请检查浏览器权限。', 4000);
                     }
-                    stopGameVoiceSttGate({ keepActive: true });
+                    restoreOrdinaryMicCaptureAfterGameVoiceSttFailure(errorCode, event);
                 }
             };
             recognition.onend = function () {
@@ -251,6 +263,7 @@
             }
             console.warn('[GameVoiceSTT] recognition start failed:', error);
             S.gameVoiceSttListening = false;
+            restoreOrdinaryMicCaptureAfterGameVoiceSttFailure('recognition_start_failed', error);
             return false;
         }
     }
@@ -260,6 +273,7 @@
         if (!keepActive) {
             S.gameVoiceSttGateActive = false;
             S.gameVoiceSttGameType = '';
+            S.gameVoiceSttSessionId = '';
         }
         if (S.gameVoiceSttRestartTimer) {
             clearTimeout(S.gameVoiceSttRestartTimer);

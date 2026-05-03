@@ -37,6 +37,10 @@ def _make_mgr() -> LLMSessionManager:
     mgr.tts_thread = MagicMock()
     mgr.tts_thread.is_alive.return_value = True
     mgr.tts_ready = True
+    mgr.core_api_type = "qwen"
+    mgr.voice_id = "voice-a"
+    mgr._is_free_preset_voice = False
+    mgr._tts_runtime_key = LLMSessionManager._build_tts_runtime_key(mgr)
     mgr.current_speech_id = None
     mgr._tts_done_queued_for_turn = False
     mgr.lanlan_name = "Test"
@@ -136,6 +140,15 @@ def test_cannot_preserve_tts_ready_for_dead_or_unready_worker():
 
     mgr.tts_ready = True
     mgr.tts_thread.is_alive.return_value = False
+    assert LLMSessionManager._can_preserve_tts_ready_for_session_start(mgr) is False
+
+
+def test_cannot_preserve_tts_ready_when_runtime_identity_changed():
+    mgr = _make_mgr()
+    mgr.tts_ready = True
+    mgr.tts_thread.is_alive.return_value = True
+    mgr.voice_id = "voice-b"
+
     assert LLMSessionManager._can_preserve_tts_ready_for_session_start(mgr) is False
 
 

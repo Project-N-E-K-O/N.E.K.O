@@ -133,6 +133,8 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                             continue
                         if input_type == "audio":
                             logger.info("[%s] game route active: starting ordinary realtime as STT provider for game voice", lanlan_name)
+                            if session_manager[lanlan_name]._starting_session_count == 0:
+                                session_manager[lanlan_name].reset_session_start_circuit()
                             _fire_task(route_external_stream_message(lanlan_name, {"input_type": "audio", "stt_provider": "realtime"}))
                             _fire_task(session_manager[lanlan_name].start_session(websocket, message.get("new_session", False), "audio"))
                             continue

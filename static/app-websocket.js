@@ -930,6 +930,7 @@
                         S.gameRouteActive = false;
                         S.gameRouteGameType = '';
                         S.gameRouteLanlanName = '';
+                        S.gameRouteSessionId = '';
                         console.log(`[GameVoiceSTT] 游戏语音路由已结束 | resume=${shouldResumeAudio} recording=${wasRecording} realtime_restore=${realtimeRestore && realtimeRestore.ok === false ? realtimeRestore.reason : 'ok'}`);
                         if (realtimeRestore && realtimeRestore.attempted && realtimeRestore.ok === false) {
                             console.warn('[GameVoiceSTT] 游戏退出后 Realtime 恢复未确认:', realtimeRestore.reason || 'unknown');
@@ -939,6 +940,7 @@
                         } else {
                             S.gameVoiceSttGateActive = false;
                             S.gameVoiceSttGameType = '';
+                            S.gameVoiceSttSessionId = '';
                         }
                         if (shouldResumeAudio && wasRecording && !S.isMicMuted) {
                             var micPipelineAlive = !!(S.stream && S.audioContext && S.workletNode);
@@ -948,6 +950,10 @@
                                 });
                             }
                         }
+                        if (S.proactiveChatWasStoppedByGameRoute && S.proactiveChatEnabled && typeof window.scheduleProactiveChat === 'function') {
+                            window.scheduleProactiveChat();
+                        }
+                        S.proactiveChatWasStoppedByGameRoute = false;
                         return;
                     }
 
@@ -956,13 +962,16 @@
                         S.gameRouteActive = true;
                         S.gameRouteGameType = (statusDetails && statusDetails.game_type) || 'soccer';
                         S.gameRouteLanlanName = (statusDetails && statusDetails.lanlan_name) || '';
+                        S.gameRouteSessionId = (statusDetails && statusDetails.session_id) || '';
                         S.gameVoiceSttGameType = (statusDetails && statusDetails.game_type) || 'soccer';
+                        S.gameVoiceSttSessionId = (statusDetails && statusDetails.session_id) || '';
                         console.log(`[GameVoiceSTT] 游戏语音接管已激活 | game=${S.gameVoiceSttGameType} provider=${sttProvider} recording=${!!S.isRecording} muted=${!!S.isMicMuted}`);
                         if (S._voiceSessionInitialTimer) {
                             clearTimeout(S._voiceSessionInitialTimer);
                             S._voiceSessionInitialTimer = null;
                         }
                         if (typeof window.stopProactiveChatSchedule === 'function') {
+                            S.proactiveChatWasStoppedByGameRoute = !!S.proactiveChatEnabled;
                             window.stopProactiveChatSchedule();
                         }
                         if (sttProvider === 'realtime') {

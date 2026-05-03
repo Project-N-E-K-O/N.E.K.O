@@ -3517,7 +3517,12 @@ async def proactive_chat(request: Request):
                     "message": "game route active; ordinary proactive skipped",
                 })
         except Exception as game_route_err:
-            logger.debug("[%s] proactive game-route guard skipped: %s", lanlan_name, game_route_err)
+            logger.warning("[%s] proactive game-route guard failed closed: %s", lanlan_name, game_route_err)
+            return JSONResponse({
+                "success": True,
+                "action": "pass",
+                "message": "game route guard unavailable; ordinary proactive skipped",
+            })
         
         # 检查能否发起新一轮主动搭话：状态机统一把 "AI 正在响应"（_is_responding）、
         # "另一轮 proactive 在跑"（phase != IDLE）两个信号收拢到 O(1) 判定。

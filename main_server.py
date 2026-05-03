@@ -1406,6 +1406,7 @@ app.include_router(pages_router)  # 兜底路由需最后挂载
 
 # 后台预加载任务
 _preload_task: asyncio.Task = None
+_game_cleanup_task: asyncio.Task = None
 _runtime_startup_init_lock = asyncio.Lock()
 _runtime_startup_init_completed = False
 _heavy_import_prewarm_started = False
@@ -1626,10 +1627,12 @@ async def _cancel_workshop_background_tasks_for_startup_rollback() -> None:
 
 
 async def _rollback_partial_main_runtime_startup() -> None:
-    global steamworks, _preload_task, agent_event_bridge
+    global steamworks, _preload_task, _game_cleanup_task, agent_event_bridge
 
     await _cancel_task_if_running(_preload_task, name="preload", timeout=1.0)
     _preload_task = None
+    await _cancel_task_if_running(_game_cleanup_task, name="game cleanup", timeout=1.0)
+    _game_cleanup_task = None
 
     await _cancel_workshop_background_tasks_for_startup_rollback()
 
@@ -1663,7 +1666,7 @@ async def _rollback_partial_main_runtime_startup() -> None:
 
 
 async def _ensure_main_server_runtime_initialized(*, reason: str) -> bool:
-    global steamworks, _preload_task, agent_event_bridge, _runtime_startup_init_completed
+    global steamworks, _preload_task, _game_cleanup_task, agent_event_bridge, _runtime_startup_init_completed
 
     if _runtime_startup_init_completed:
         return False
@@ -1705,7 +1708,8 @@ async def _ensure_main_server_runtime_initialized(*, reason: str) -> bool:
             _preload_task = asyncio.create_task(_background_preload())
             # 启动游戏 session 超时清理后台任务
             from main_routers.game_router import cleanup_expired_sessions
-            asyncio.create_task(cleanup_expired_sessions())
+            if _game_cleanup_task is None or _game_cleanup_task.done():
+                _game_cleanup_task = asyncio.create_task(cleanup_expired_sessions())
             try:
                 agent_event_bridge = MainServerAgentBridge(on_agent_event=_handle_agent_event)
                 await agent_event_bridge.start()
@@ -1910,7 +1914,7 @@ async def on_shutdown():
             logger.debug(f"同步连接器线程清理失败: {e}", exc_info=True)
         
         # 等待预加载任务完成（如果还在运行）
-        global _preload_task, agent_event_bridge
+        global _preload_task, _game_cleanup_task, agent_event_bridge
         if _preload_task:
             try:
                 await asyncio.wait_for(_preload_task, timeout=1.0)
@@ -1924,6 +1928,10 @@ async def on_shutdown():
                 logger.debug("预加载任务清理时已取消（正常关闭流程）")
             except Exception as e:
                 logger.debug(f"预加载任务清理时出错（正常关闭流程）: {e}", exc_info=True)
+            _preload_task = None
+
+        await _cancel_task_if_running(_game_cleanup_task, name="game cleanup", timeout=1.0)
+        _game_cleanup_task = None
         
         # Clean up agent_event_bridge (ZMQ context/sockets/recv thread)
         if agent_event_bridge is not None:

@@ -810,12 +810,13 @@ async def run_sync_connector(
                                     if was_assistant_turn and (
                                         not turn_end_request_id or turn_end_request_id == text_output_request_id
                                     ):
-                                        current_turn = 'user'
                                         text_output_cache = ''
                                         text_output_request_id = None
-                                        current_turn_start_index = len(chat_history)
-                                        had_user_input_this_turn = False
-                                        pending_user_images = []
+                                    current_turn = 'user'
+                                    current_turn_start_index = len(chat_history)
+                                    had_user_input_this_turn = False
+                                    user_input_cache = ''
+                                    pending_user_images = []
                                     await _try_send_json(sync_slot, {'type': 'turn end'})
                                     logger.debug("[%s] game-only turn end skipped for ordinary memory/analyzer", lanlan_name)
                                     continue

@@ -75,9 +75,16 @@
             ? patch.scheduledEndAudioTime
             : (S.nextChunkTime || 0);
         var remaining = Math.max(0, scheduledEnd - audioTime);
+        var pendingAudioWork = (
+            S.pendingAudioChunkMetaQueue.length > 0 ||
+            S.incomingAudioBlobQueue.length > 0 ||
+            !!S.pendingDecoderReset ||
+            !!S.decoderResetPromise ||
+            !!S.isProcessingIncomingAudioBlob
+        );
         var state = Object.assign({
             type: 'speech_playback_state',
-            active: remaining > 0.05 || S.scheduledSources.length > 0 || S.audioBufferQueue.length > 0,
+            active: remaining > 0.05 || S.scheduledSources.length > 0 || S.audioBufferQueue.length > 0 || pendingAudioWork,
             speechId: S.currentPlayingSpeechId || null,
             turnId: S.assistantSpeechActiveTurnId || S.assistantTurnId || null,
             scheduledEndAudioTime: scheduledEnd,

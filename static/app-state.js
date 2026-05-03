@@ -80,13 +80,16 @@
         gameRouteActive: false,
         gameRouteGameType: '',
         gameRouteLanlanName: '',
+        gameRouteSessionId: '',
         gameVoiceSttGateActive: false,
         gameVoiceSttGameType: '',
+        gameVoiceSttSessionId: '',
         gameVoiceSttRecognition: null,
         gameVoiceSttListening: false,
         gameVoiceSttStopping: false,
         gameVoiceSttRestartTimer: null,
         gameVoiceSttUnsupportedNotified: false,
+        proactiveChatWasStoppedByGameRoute: false,
 
         // --- 会话 / WebSocket ---
         socket: null,

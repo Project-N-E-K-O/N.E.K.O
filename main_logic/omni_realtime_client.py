@@ -247,6 +247,7 @@ class OmniRealtimeClient:
         self._audio_in_buffer = False
         self._skip_until_next_response = False
         self._game_route_stt_only = False
+        self._game_route_stt_only_remote_applied: Optional[bool] = False
         self._audio_delta_count = 0  # diagnostic: count audio.delta events per session
         self._audio_delta_total = 0  # monotonic diagnostic across responses
         self._last_audio_delta_time = 0.0
@@ -509,12 +510,12 @@ class OmniRealtimeClient:
             logger.info("apply_tools_to_session: api_type=%s does not support custom tools — ignoring", api)
 
     def _qwen_server_vad_turn_detection_config(self, create_response: Optional[bool] = None) -> Dict[str, Any]:
-        """Return the default Qwen server-VAD config used by this client."""
+        """Return the default Qwen turn-detection config used by this client."""
         config: Dict[str, Any] = {
-            "type": "server_vad",
+            "type": "semantic_vad" if "3.5" in self._model_lower else "server_vad",
             "threshold": 0.55,
             "prefix_padding_ms": 300,
-            "silence_duration_ms": 650,
+            "silence_duration_ms": 600,
         }
         if create_response is not None:
             config["create_response"] = bool(create_response)
@@ -543,10 +544,11 @@ class OmniRealtimeClient:
     async def set_game_route_stt_only(self, enabled: bool) -> bool:
         """Best-effort switch: keep Realtime input transcription, suppress auto replies."""
         enabled = bool(enabled)
-        if self._game_route_stt_only == enabled:
+        if self._game_route_stt_only == enabled and self._game_route_stt_only_remote_applied == enabled:
             return True
         if not self.ws or self._fatal_error_occurred:
             self._game_route_stt_only = enabled
+            self._game_route_stt_only_remote_applied = None
             return False
 
         provider_supported = False
@@ -598,9 +600,11 @@ class OmniRealtimeClient:
                 exc,
             )
             self._game_route_stt_only = enabled
+            self._game_route_stt_only_remote_applied = None
             return False
 
         self._game_route_stt_only = enabled
+        self._game_route_stt_only_remote_applied = enabled if provider_supported else None
         logger.info(
             "game route realtime STT-only mode %s for model=%s provider_update=%s",
             "enabled" if enabled else "disabled",
@@ -812,13 +816,7 @@ class OmniRealtimeClient:
                     "input_audio_transcription": {
                         "model": "gummy-realtime-v1"
                     },
-                    "turn_detection": {
-                        # TODO: 未来需要cover更多型号
-                        "type": "semantic_vad" if "3.5" in self._model_lower else "server_vad",
-                        "threshold": 0.55,
-                        "prefix_padding_ms": 300,
-                        "silence_duration_ms": 600
-                    },
+                    "turn_detection": self._qwen_server_vad_turn_detection_config(),
                     "repetition_penalty": 1.2,
                     "temperature": 0.7,
                     # "enable_search": True,
@@ -921,6 +919,8 @@ class OmniRealtimeClient:
             self.instructions = instructions
             if self._active_instructions is None:
                 self._active_instructions = instructions
+            if self._game_route_stt_only:
+                await self.set_game_route_stt_only(True)
         else:
             raise ValueError(f"Invalid turn detection mode: {self.turn_detection_mode}")
     
@@ -1707,9 +1707,19 @@ class OmniRealtimeClient:
                 })
                 restore_instructions_after_manual_nudge = True
                 logger.info("prompt_ephemeral: one-shot instruction attached for manual Qwen nudge")
-            await self.update_session({"turn_detection": None})
-            restore_qwen_vad = True
-            logger.info("prompt_ephemeral: Qwen manual commit mode enabled for this nudge")
+            try:
+                await self.update_session({"turn_detection": None})
+                restore_qwen_vad = True
+                logger.info("prompt_ephemeral: Qwen manual commit mode enabled for this nudge")
+            except Exception:
+                if restore_instructions_after_manual_nudge and previous_instructions is not None:
+                    try:
+                        await self.update_session({"instructions": previous_instructions})
+                    except Exception as restore_exc:
+                        logger.warning("prompt_ephemeral: failed to restore one-shot instruction after setup error: %s", restore_exc)
+                    else:
+                        logger.info("prompt_ephemeral: one-shot instruction restored after setup error")
+                raise
 
         # ── Suppress mic input during injection ────────────────────────
         self._proactive_injecting = True

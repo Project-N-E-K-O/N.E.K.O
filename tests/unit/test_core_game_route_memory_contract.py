@@ -77,7 +77,7 @@ def _make_manager():
     async def send_user_activity(interrupted_speech_id):
         mgr.user_activity.append(interrupted_speech_id)
 
-    async def send_lanlan_response(text, is_first_chunk=False, turn_id=None, metadata=None):
+    async def send_lanlan_response(text, is_first_chunk=False, turn_id=None, metadata=None, **_kwargs):
         mgr.sent_responses.append({
             "text": text,
             "is_first_chunk": is_first_chunk,
@@ -242,11 +242,15 @@ async def test_game_route_voice_transcript_handled_skips_ordinary_user_context(m
     mgr = _make_transcript_manager()
     routed = []
 
-    async def fake_route(lanlan_name, text, *, request_id):
-        routed.append((lanlan_name, text, request_id))
+    async def fake_route(lanlan_name, text, *, request_id, game_type=None, session_id=None):
+        routed.append((lanlan_name, text, request_id, game_type, session_id))
         return True
 
     monkeypatch.setattr(LLMSessionManager, "_is_game_route_active", lambda self: True)
+    monkeypatch.setattr(game_router, "_get_active_game_route_state", lambda lanlan_name: {
+        "game_type": "soccer",
+        "session_id": "match_1",
+    })
     monkeypatch.setattr(game_router, "route_external_voice_transcript", fake_route)
 
     await LLMSessionManager.handle_input_transcript(mgr, "  我要射门了  ", is_voice_source=True)
@@ -254,6 +258,8 @@ async def test_game_route_voice_transcript_handled_skips_ordinary_user_context(m
     assert routed and routed[0][0] == "Lan"
     assert routed[0][1] == "我要射门了"
     assert routed[0][2].startswith("realtime-stt-")
+    assert routed[0][3] == "soccer"
+    assert routed[0][4] == "match_1"
     assert mgr._activity_tracker.voice_rms_count == 1
     assert mgr._activity_tracker.user_messages == []
     assert mgr._session_turn_count == 0
@@ -308,13 +314,19 @@ async def test_non_voice_transcript_reuse_keeps_existing_ordinary_flow(monkeypat
 async def test_game_route_voice_transcript_falls_back_when_unhandled(monkeypatch, route_outcome):
     mgr = _make_transcript_manager()
 
-    async def fake_route(_lanlan_name, _text, *, request_id):
+    async def fake_route(_lanlan_name, _text, *, request_id, game_type=None, session_id=None):
         assert request_id.startswith("realtime-stt-")
+        assert game_type == "soccer"
+        assert session_id == "match_1"
         if route_outcome == "exception":
             raise RuntimeError("route failed")
         return False
 
     monkeypatch.setattr(LLMSessionManager, "_is_game_route_active", lambda self: True)
+    monkeypatch.setattr(game_router, "_get_active_game_route_state", lambda lanlan_name: {
+        "game_type": "soccer",
+        "session_id": "match_1",
+    })
     monkeypatch.setattr(game_router, "route_external_voice_transcript", fake_route)
 
     await LLMSessionManager.handle_input_transcript(mgr, "继续普通流程", is_voice_source=True)

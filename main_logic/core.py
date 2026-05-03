@@ -360,6 +360,7 @@ class LLMSessionManager:
         self.tts_request_queue = Queue()  # TTS request (线程队列)
         self.tts_response_queue = Queue()  # TTS response (线程队列)
         self.tts_thread = None  # TTS线程
+        self._tts_runtime_key = None
         # 跨 chunk 规范化器：Gemini Live 输出转录会在中文 token 之间插入 ASCII
         # 空格，让 MiniMax / CosyVoice 等 streaming TTS 把中文读断。normalizer
         # 按 replace_blank 的语义剔除空格，同时延后处理 chunk 尾部空格以保证边界正确。
@@ -736,11 +737,48 @@ class LLMSessionManager:
 
     def _can_preserve_tts_ready_for_session_start(self) -> bool:
         """A live, previously-ready TTS worker will not emit __ready__ again."""
+        current_key = self._build_tts_runtime_key()
+        worker_key = getattr(self, "_tts_runtime_key", None)
         return bool(
             self.tts_ready
             and self.tts_thread is not None
             and self.tts_thread.is_alive()
+            and current_key == worker_key
         )
+
+    def _build_tts_runtime_key(self) -> tuple:
+        """Return the effective TTS worker identity for ready-state reuse."""
+        try:
+            core_config = self._config_manager.get_core_config()
+            if core_config.get('DISABLE_TTS', False):
+                return ("disabled",)
+            has_custom = self._has_custom_tts()
+            _, api_key_override, provider_key = get_tts_worker(
+                core_api_type=self.core_api_type,
+                has_custom_voice=has_custom,
+                voice_id=self.voice_id or '',
+            )
+            tts_config = self._config_manager.get_model_api_config(
+                'tts_custom' if has_custom else 'tts_default'
+            )
+            api_key = api_key_override or tts_config.get('api_key', '')
+            return (
+                provider_key,
+                self.core_api_type,
+                self.voice_id or '',
+                bool(getattr(self, "_is_free_preset_voice", False)),
+                bool(has_custom),
+                tts_config.get('base_url', ''),
+                tts_config.get('model', ''),
+                api_key,
+            )
+        except Exception:
+            return (
+                "fallback",
+                getattr(self, "core_api_type", ""),
+                getattr(self, "voice_id", ""),
+                bool(getattr(self, "_is_free_preset_voice", False)),
+            )
 
     async def _clear_tts_pipeline(self):
         """清空 TTS 请求/响应队列和待处理缓存，停止当前合成。"""
@@ -1284,12 +1322,18 @@ class LLMSessionManager:
         transcript_text = transcript.strip()
         if transcript_text and self._is_game_route_active():
             try:
-                from main_routers.game_router import route_external_voice_transcript
+                from main_routers.game_router import _get_active_game_route_state, route_external_voice_transcript
+
+                route_state = _get_active_game_route_state(self.lanlan_name)
+                route_game_type = str(route_state.get("game_type") or "") if route_state else ""
+                route_session_id = str(route_state.get("session_id") or "") if route_state else ""
 
                 handled = await route_external_voice_transcript(
                     self.lanlan_name,
                     transcript_text,
                     request_id=f"realtime-stt-{uuid4()}",
+                    game_type=route_game_type or None,
+                    session_id=route_session_id or None,
                 )
                 logger.info(
                     "[%s] game route active: realtime STT transcript routed handled=%s len=%d",
@@ -1409,6 +1453,9 @@ class LLMSessionManager:
         turn_id: str | None = None,
         metadata: dict | None = None,
         request_id: Any = _REQUEST_ID_UNSET,
+        *,
+        track_ai_turn: bool = True,
+        cache_for_new_session: bool = True,
     ):
         """Qwen输出转录回调: 可用于前端显示/缓存/同步。
 
@@ -1427,7 +1474,8 @@ class LLMSessionManager:
         # 累加到当前轮 AI 文本 buffer，turn end 时一并交给 activity tracker 做
         # unfinished_thread 检测。emotion_pattern 已剥掉表情标签，但保留 <expr>
         # 等可能的 markup——tracker 自己会做二次 strip。
-        self._current_ai_turn_text += text_clean
+        if track_ai_turn:
+            self._current_ai_turn_text += text_clean
         effective_turn_id = turn_id or self.current_speech_id
         effective_request_id = (
             self._active_text_request_id
@@ -1449,7 +1497,7 @@ class LLMSessionManager:
         if is_first_chunk:
             logger.debug("[%s] send_lanlan_response: first chunk (len=%d)", self.lanlan_name, len(text_clean))
         self.sync_message_queue.put({"type": "json", "data": message})
-        if hasattr(self, 'is_preparing_new_session') and self.is_preparing_new_session:
+        if cache_for_new_session and hasattr(self, 'is_preparing_new_session') and self.is_preparing_new_session:
             if not hasattr(self, 'message_cache_for_new_session'):
                 self.message_cache_for_new_session = []
             # 注意：缓存使用原始文本，不翻译（用于记忆等内部处理）
@@ -1504,7 +1552,6 @@ class LLMSessionManager:
         if not clean:
             return
         self.last_user_activity_time = time.time()
-        self._session_turn_count += 1
         self.sync_message_queue.put({
             "type": "user",
             "data": {
@@ -1560,6 +1607,8 @@ class LLMSessionManager:
                 is_first_chunk=True,
                 turn_id=mirror_turn_id,
                 metadata=metadata,
+                track_ai_turn=False,
+                cache_for_new_session=False,
             )
             if finalize_turn:
                 await self._emit_game_route_turn_end(
@@ -1726,6 +1775,8 @@ class LLMSessionManager:
                         session_id=session_id,
                         event=event_payload,
                     ),
+                    track_ai_turn=False,
+                    cache_for_new_session=False,
                 )
             tts_available = await self._ensure_game_tts_runtime()
             audio_queued = False
@@ -2145,6 +2196,7 @@ class LLMSessionManager:
         """
         # 重置就绪状态，新 worker 需重新握手
         self.tts_ready = False
+        self._tts_runtime_key = None
 
         # 检查是否禁用了 TTS
         core_config = self._config_manager.get_core_config()
@@ -2184,6 +2236,7 @@ class LLMSessionManager:
             args=(self.tts_request_queue, self.tts_response_queue, api_key, self.voice_id),
             daemon=True,
         )
+        self._tts_runtime_key = self._build_tts_runtime_key()
         self.tts_thread.start()
 
     def _reset_tts_retry_state(self):

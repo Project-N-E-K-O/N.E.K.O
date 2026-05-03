@@ -906,10 +906,12 @@ class _FakeRealtimeManager:
         self._speech_output_total = 0
         self.voice_nudge_calls = 0
         self.voice_nudge_kwargs = []
+        self.voice_nudge_event = asyncio.Event()
 
     async def trigger_voice_proactive_nudge(self, **kwargs):
         self.voice_nudge_calls += 1
         self.voice_nudge_kwargs.append(kwargs)
+        self.voice_nudge_event.set()
         return True
 
 
@@ -1870,7 +1872,7 @@ async def test_game_end_injects_postgame_context_into_active_realtime(monkeypatc
     assert result["postgame"]["mode"] == "realtime"
     assert result["postgame"]["context_injected"] is True
     assert result["postgame"]["nudge_scheduled"] is True
-    await asyncio.sleep(0.01)
+    await asyncio.wait_for(mgr.voice_nudge_event.wait(), timeout=1.0)
     assert mgr.voice_nudge_calls == 1
     assert mgr.voice_nudge_kwargs[0]["qwen_manual_commit"] is True
     assert "足球小游戏赛后主动搭话" in mgr.voice_nudge_kwargs[0]["instruction"]
