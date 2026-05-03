@@ -71,6 +71,10 @@
         return shortPromptToken(tutorialRunToken);
     }
 
+    function isMobileTutorialDisabled() {
+        return window.innerWidth <= 768;
+    }
+
     function createHeartbeatToken() {
         if (window.crypto && typeof window.crypto.randomUUID === 'function') {
             return window.crypto.randomUUID();
@@ -799,6 +803,7 @@
 
     mod.init = function init() {
         if (state.initialized) return;
+        if (isMobileTutorialDisabled()) return;
 
         state.homeTutorialCompleted = isHomeTutorialSeen();
         state.initialized = true;

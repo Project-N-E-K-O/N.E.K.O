@@ -5093,6 +5093,11 @@ window.universalTutorialManager = null;
  * 应在 DOM 加载完成后调用
  */
 async function initUniversalTutorialManager() {
+    // 手机端不启用教程，避免引导遮罩、接管拖拽和移动端布局互相干扰。
+    if (window.innerWidth <= 768) {
+        return;
+    }
+
     // 检测当前页面类型
     const currentPageType = UniversalTutorialManager.detectPage();
 

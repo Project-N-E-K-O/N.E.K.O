@@ -83,8 +83,13 @@
     var DESKTOP_DEFAULT_LEFT_RATIO = 0.05;
     var MOBILE_MIN_HEIGHT = 150;
     var MOBILE_HEIGHT_STORAGE_KEY = 'neko.reactChatWindow.mobileHeight';
+    var MOBILE_EXPAND_CLICK_GUARD_MS = 700;
+    var MOBILE_EXPAND_CLICK_GUARD_RADIUS = 24;
+    var MOBILE_EXPAND_VISUAL_GUARD_MS = 900;
     var mobileUserHeight = 0; // 用户手动设置的手机端高度（0 = 自动）
     var mobileLayoutFrame = 0;
+    var mobileExpandClickGuard = null;
+    var mobileExpandVisualGuardTimer = 0;
 
     function getMobileMaxHeight() {
         return Math.max(MOBILE_MIN_HEIGHT, Math.floor(window.innerHeight * MOBILE_MAX_HEIGHT_RATIO));
@@ -107,6 +112,71 @@
             return false;
         }
         return window.innerWidth <= 768;
+    }
+
+    function clearMobileExpandVisualGuard() {
+        if (mobileExpandVisualGuardTimer) {
+            window.clearTimeout(mobileExpandVisualGuardTimer);
+            mobileExpandVisualGuardTimer = 0;
+        }
+        var shell = getShell();
+        if (shell) {
+            shell.classList.remove('is-mobile-expand-guarding');
+        }
+    }
+
+    function armMobileExpandClickGuard(clientX, clientY) {
+        if (!isMobileWidth()) return;
+        if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) return;
+        mobileExpandClickGuard = {
+            clientX: clientX,
+            clientY: clientY,
+            expiresAt: Date.now() + MOBILE_EXPAND_CLICK_GUARD_MS
+        };
+        var shell = getShell();
+        if (shell) {
+            shell.classList.add('is-mobile-expand-guarding');
+        }
+        if (mobileExpandVisualGuardTimer) {
+            window.clearTimeout(mobileExpandVisualGuardTimer);
+        }
+        mobileExpandVisualGuardTimer = window.setTimeout(clearMobileExpandVisualGuard, MOBILE_EXPAND_VISUAL_GUARD_MS);
+    }
+
+    function shouldBlockMobileExpandClick(event) {
+        if (!mobileExpandClickGuard) return false;
+        var guard = mobileExpandClickGuard;
+        if (Date.now() > guard.expiresAt) {
+            mobileExpandClickGuard = null;
+            clearMobileExpandVisualGuard();
+            return false;
+        }
+        if (!isMobileWidth()) {
+            mobileExpandClickGuard = null;
+            clearMobileExpandVisualGuard();
+            return false;
+        }
+        var dx = event.clientX - guard.clientX;
+        var dy = event.clientY - guard.clientY;
+        var withinGuardRadius = Math.sqrt(dx * dx + dy * dy) <= MOBILE_EXPAND_CLICK_GUARD_RADIUS;
+        if (!withinGuardRadius) return false;
+
+        var shell = getShell();
+        if (shell && !shell.contains(event.target)) return false;
+        if (event.type === 'click') {
+            mobileExpandClickGuard = null;
+        }
+        return true;
+    }
+
+    function blockMobileExpandSyntheticPointerEvent(event) {
+        if (!shouldBlockMobileExpandClick(event)) return;
+        // 手机端触摸展开后浏览器会补发同坐标鼠标事件；从 mousedown 起吞掉，避免按钮出现按压反馈。
+        event.preventDefault();
+        event.stopPropagation();
+        if (typeof event.stopImmediatePropagation === 'function') {
+            event.stopImmediatePropagation();
+        }
     }
 
     function getOverlay() {
@@ -1829,6 +1899,7 @@
     function stopDrag(options) {
         if (!dragState) return;
         var opts = options || {};
+        var changedTouch = opts.changedTouches && opts.changedTouches.length > 0 ? opts.changedTouches[0] : null;
 
         var wasMoved = dragState.moved;
 
@@ -1850,6 +1921,9 @@
         // 最小化状态下，未发生拖拽移动 → 视为点击，恢复窗口
         // 但 suppressClick=true（如教程接管强制中断）时不触发，避免误展开
         if (minimized && !wasMoved && !opts.suppressClick) {
+            if (changedTouch && isMobileWidth()) {
+                armMobileExpandClickGuard(changedTouch.clientX, changedTouch.clientY);
+            }
             toggleMinimized();
         }
     }
@@ -1895,8 +1969,12 @@
         }, { passive: false });
 
         document.addEventListener('mouseup', stopDrag);
-        document.addEventListener('touchend', stopDrag);
-        document.addEventListener('touchcancel', stopDrag);
+        document.addEventListener('touchend', function (event) {
+            stopDrag({ changedTouches: event.changedTouches });
+        });
+        document.addEventListener('touchcancel', function (event) {
+            stopDrag({ changedTouches: event.changedTouches, suppressClick: true });
+        });
     }
 
     var MIN_WIDTH = 320;
@@ -2197,6 +2275,9 @@
             }
         }
 
+        document.addEventListener('mousedown', blockMobileExpandSyntheticPointerEvent, true);
+        document.addEventListener('mouseup', blockMobileExpandSyntheticPointerEvent, true);
+        document.addEventListener('click', blockMobileExpandSyntheticPointerEvent, true);
         bindDragging();
         createResizeEdges();
         bindResizing();
