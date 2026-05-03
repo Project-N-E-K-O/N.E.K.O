@@ -1063,7 +1063,6 @@ async def _run_soccer_pregame_context_ai(
             char_info["model"],
             char_info["base_url"],
             char_info["api_key"],
-            temperature=0.2,
             max_completion_tokens=900,
             timeout=20,
         )
@@ -1482,7 +1481,6 @@ async def _run_game_context_organizer_ai(state: dict, snapshot: list[dict]) -> d
             char_info["model"],
             char_info["base_url"],
             char_info["api_key"],
-            temperature=0.2,
             max_completion_tokens=900,
             timeout=20,
         )
@@ -2211,7 +2209,6 @@ async def _select_game_archive_memory_highlights(archive: dict) -> dict:
             char_info["model"],
             char_info["base_url"],
             char_info["api_key"],
-            temperature=0.2,
             max_completion_tokens=700,
             timeout=20,
         )
@@ -4540,7 +4537,6 @@ async def game_quick_lines(game_type: str):
             char_info['model'],
             char_info['base_url'],
             char_info['api_key'],
-            temperature=0.8,
             max_completion_tokens=800,
             timeout=20,
         )
