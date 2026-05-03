@@ -816,8 +816,7 @@ async def run_sync_connector(
                                         current_turn_start_index = len(chat_history)
                                         had_user_input_this_turn = False
                                         pending_user_images = []
-                                    if config['monitor'] and sync_ws:
-                                        await sync_ws.send_json({'type': 'turn end'})
+                                    await _try_send_json(sync_slot, {'type': 'turn end'})
                                     logger.debug("[%s] game-only turn end skipped for ordinary memory/analyzer", lanlan_name)
                                     continue
                                 current_turn = 'user'
