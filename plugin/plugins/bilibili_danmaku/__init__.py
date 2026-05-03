@@ -148,7 +148,7 @@ async def _delete_credential_files(data_dir: Path) -> list[str]:
     return failed
 
 try:
-    from .aggregator import TimeWindowAggregator, BatchedDanmaku
+    from .aggregator import TimeWindowAggregator, BatchedDanmaku, GiftAggregator
     from .llm_client import LLMClient
     from .orchestrator import GuidanceOrchestrator
     from .user_profile import UserProfileTracker
@@ -212,6 +212,7 @@ class BiliDanmakuPlugin(NekoPluginBase):
         # 背景LLM系统组件（新体系）
         self._background_llm_enabled = False
         self._aggregator = None  # TimeWindowAggregator
+        self._gift_aggregator = None  # GiftAggregator
         self._llm_client = None  # LLMClient
         self._orchestrator = None  # GuidanceOrchestrator
         self._tracker = None  # UserProfileTracker
@@ -413,6 +414,10 @@ class BiliDanmakuPlugin(NekoPluginBase):
                 pass
         self._listener = None
         self._listen_task = None
+        # 停止礼物聚合器
+        if self._gift_aggregator:
+            await self._gift_aggregator.stop()
+            self._gift_aggregator = None
         # 清空所有缓冲队列
         self._danmaku_queue.clear()
         self._sc_queue.clear()
@@ -843,10 +848,20 @@ class BiliDanmakuPlugin(NekoPluginBase):
                 max_samples=max_samples,
             )
             await self._aggregator.start()
-            
+
+            # 5. 礼物聚合器
+            gift_window = float(agg_config.get("gift_window_size", 5.0))
+            gift_cooldown = float(agg_config.get("gift_cooldown", 15.0))
+            self._gift_aggregator = GiftAggregator(
+                callback=self._on_gift_batch_ready,
+                window_size=gift_window,
+                cooldown=gift_cooldown,
+            )
+            await self._gift_aggregator.start()
+
             self._background_llm_enabled = True
-            self.logger.info(f"背景LLM系统初始化完成: window={window_size}s, max_samples={max_samples}")
-            
+            self.logger.info(f"背景LLM系统初始化完成: window={window_size}s, max_samples={max_samples}, gift_window={gift_window}s, gift_cooldown={gift_cooldown}s")
+
         except Exception as e:
             self.logger.error(f"背景LLM系统初始化失败: {e}")
             self._background_llm_enabled = False
@@ -857,6 +872,9 @@ class BiliDanmakuPlugin(NekoPluginBase):
         if self._aggregator:
             await self._aggregator.stop()
             self._aggregator = None
+        if self._gift_aggregator:
+            await self._gift_aggregator.stop()
+            self._gift_aggregator = None
         if self._tracker:
             await self._tracker.save()
         self._orchestrator = None
@@ -864,12 +882,25 @@ class BiliDanmakuPlugin(NekoPluginBase):
         self.logger.info("背景LLM系统已停用")
 
     async def _on_batch_ready(self, batch: BatchedDanmaku):
-        """聚合器回调：批次就绪后生成引导词并推送"""
+        """聚合器回调：批次就绪后生成引导词并推送（礼物优先）"""
         if not self._background_llm_enabled or not self._orchestrator:
             return
-        
+
+        # 礼物优先：有待推送礼物时，延迟弹幕引导词（短暂延迟后重试，不丢弃）
+        if self._gift_aggregator and self._gift_aggregator.has_pending:
+            retries = getattr(batch, "_danmaku_retries", 0)
+            if retries >= 3:
+                self.logger.info("礼物队列仍有待推送，已达最大重试次数，直接处理弹幕")
+            else:
+                self.logger.info("礼物队列有待推送，延迟弹幕引导词")
+                batch._danmaku_retries = retries + 1
+                asyncio.get_event_loop().call_later(
+                    3.0, lambda: asyncio.ensure_future(self._on_batch_ready(batch))
+                )
+                return
+
         self.logger.info(f"_on_batch_ready 触发: entries={len(batch.entries)}条, total={batch.total_count}, sampled={batch.sampled}")
-        
+
         try:
             guidance = await self._orchestrator.generate(batch)
             if guidance:
@@ -877,9 +908,26 @@ class BiliDanmakuPlugin(NekoPluginBase):
                 self._last_push_time = datetime.now().timestamp()
             else:
                 self.logger.warning(f"引导词生成为空")
-                        
+
         except Exception as e:
             self.logger.error(f"引导词生成失败: {e}", exc_info=True)
+
+    async def _on_gift_batch_ready(self, aggregated_gifts: list[dict]):
+        """礼物聚合批次就绪，推送给 AI"""
+        if not aggregated_gifts:
+            return
+
+        lines = ["🎁 收到礼物，请感谢送礼的观众："]
+        for g in aggregated_gifts:
+            if g.get("is_sc"):
+                msg = g.get("sc_message", "")
+                lines.append(f"  💰 {g['user_name']} 发送了 Super Chat: {msg}")
+            else:
+                coin_str = f"（{g['total_coin']}金瓜子）" if g.get('total_coin', 0) > 0 else ""
+                lines.append(f"  🎁 {g['user_name']} 送了 {g['total_num']}个 {g['gift_name']}{coin_str}")
+        content = "\n".join(lines)
+        self.logger.info(f"_on_gift_batch_ready 推送: {len(aggregated_gifts)} 类礼物")
+        self._push_to_ai(content, f"礼物通知（{len(aggregated_gifts)} 类）", priority=9)
 
     # ==========================================
     # 弹幕处理流程（集成背景LLM）
@@ -952,50 +1000,68 @@ class BiliDanmakuPlugin(NekoPluginBase):
 
     async def _process_gift_event(self, event: Dict[str, Any]):
         """处理礼物事件"""
-        # 保持原有逻辑，礼物通常属于I类事件
         gift_info = {
             "user_name": event.get("user_name", "未知用户"),
             "gift_name": event.get("gift_name", "未知礼物"),
             "num": event.get("num", 1),
             "price_rmb": event.get("price", 0),
+            "total_coin": event.get("total_coin", 0),
+            "coin_type": event.get("coin_type", "silver"),
             "timestamp": datetime.now().isoformat()
         }
-        
+
         self._gift_queue.append(gift_info)
         self._ui_gift_queue.append(gift_info)
-        
+
         # 更新用户画像（送礼）
         if self._tracker:
             self._tracker.record_gift(
                 uname=event.get("user_name", "未知用户"),
                 price=gift_info["price_rmb"],
             )
-        
-        # 高价值礼物立即推送
-        if gift_info["price_rmb"] >= 10:  # 10元以上礼物
+
+        # 背景LLM模式：走礼物聚合器
+        if self._background_llm_enabled and self._gift_aggregator:
+            await self._gift_aggregator.add(gift_info)
+        elif gift_info["price_rmb"] >= 10:
+            # 降级模式：高价值礼物立即推送
             await self._push_immediate_event(gift_info, "高价值礼物")
 
     async def _process_sc_event(self, event: Dict[str, Any]):
         """处理SC事件"""
-        # SC属于I类事件，立即推送
         sc_info = {
             "user_name": event.get("user_name", "未知用户"),
             "message": event.get("message", ""),
             "price": event.get("price", 0),
             "timestamp": datetime.now().isoformat()
         }
-        
+
         self._sc_queue.append(sc_info)
         self._ui_sc_queue.append(sc_info)
-        
+
         # 更新用户画像（SC 也算送礼）
         if self._tracker:
             self._tracker.record_gift(
                 uname=event.get("user_name", "未知用户"),
                 price=sc_info["price"],
             )
-        
-        await self._push_immediate_event(sc_info, "Super Chat")
+
+        # 背景LLM模式：SC 当礼物走聚合器
+        if self._background_llm_enabled and self._gift_aggregator:
+            gift_like = {
+                "user_name": sc_info["user_name"],
+                "gift_name": "Super Chat",
+                "num": 1,
+                "price_rmb": sc_info["price"],
+                "total_coin": 0,
+                "coin_type": "rmb",
+                "is_sc": True,
+                "sc_message": sc_info["message"],
+                "timestamp": sc_info["timestamp"],
+            }
+            await self._gift_aggregator.add(gift_like)
+        else:
+            await self._push_immediate_event(sc_info, "Super Chat")
 
     async def _push_immediate_event(self, event: Dict[str, Any], event_type: str):
         """立即推送事件给AI"""
@@ -1165,6 +1231,8 @@ class BiliDanmakuPlugin(NekoPluginBase):
             bg_llm["llm_stats"] = self._llm_client.get_stats()
         if self._aggregator:
             bg_llm["aggregator_stats"] = self._aggregator.get_stats()
+        if self._gift_aggregator:
+            bg_llm["gift_aggregator_stats"] = self._gift_aggregator.get_stats()
 
         return {
             "room_id": self._room_id,
@@ -1251,6 +1319,7 @@ class BiliDanmakuPlugin(NekoPluginBase):
         config = {
             "enabled": self._background_llm_enabled,
             "aggregator": self._aggregator.get_stats() if self._aggregator else {},
+            "gift_aggregator": self._gift_aggregator.get_stats() if self._gift_aggregator else {},
             "orchestrator": self._orchestrator.get_stats() if self._orchestrator else {},
             "llm_client": self._llm_client.get_stats() if self._llm_client else {},
         }
@@ -1708,6 +1777,8 @@ class BiliDanmakuPlugin(NekoPluginBase):
             bg_llm_status["llm_stats"] = self._llm_client.get_stats()
         if self._aggregator:
             bg_llm_status["aggregator_stats"] = self._aggregator.get_stats()
+        if self._gift_aggregator:
+            bg_llm_status["gift_aggregator_stats"] = self._gift_aggregator.get_stats()
 
         return Ok({
             "success": True,
