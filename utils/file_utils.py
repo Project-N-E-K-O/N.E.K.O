@@ -18,7 +18,8 @@ def robust_json_loads(raw: str) -> Any:
     """json.loads with fallback for common LLM JSON quirks.
 
     Handles: unquoted keys, trailing commas, ``{{ }}``, Python ``True/False/None``,
-    single-quoted strings (including mixed-quote scenarios).
+    single-quoted strings (including mixed-quote scenarios), and stray hallucinated
+    characters between structural tokens (e.g. ``,결{`` → ``,{``).
     """
     try:
         return json.loads(raw)
@@ -42,6 +43,10 @@ def robust_json_loads(raw: str) -> Any:
         s = re.sub(r":\s*'([^']*?)'", r': "\1"', s)         # value
         s = re.sub(r"'\s*([,\]\}])", r'"\1', s)              # 数组尾
         s = re.sub(r"([,\[\{])\s*'", r'\1"', s)              # 数组头
+    # LLM 偶尔在结构 token 之间塞 1–3 个幻觉字符（实例：`,결{` 应是 `,{`）。
+    # 严格 JSON 中 `,` / `[` 之后只允许空白和合法值起始字符 (`"`, `{`, `[`, `-`, 数字, `t/f/n`)，
+    # 其他必为污染；限定 1–3 字以降低误伤合法字符串内容的概率。
+    s = re.sub(r'([,\[]\s*)[^\s",\[\]\{\}\d\-tfn]{1,3}(\s*[\{\[])', r'\1\2', s)
     return json.loads(s)
 
 
