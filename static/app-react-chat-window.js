@@ -1106,6 +1106,12 @@
                 payload.lanlan_name = window.appState.lanlan_name;
             }
         } catch (_) {}
+        try {
+            var currentUserName = typeof getCurrentUserName === 'function' ? getCurrentUserName() : '';
+            if (typeof currentUserName === 'string' && currentUserName) {
+                payload.master_name = currentUserName;
+            }
+        } catch (_) {}
 
         fetch('/api/galgame/options', {
             method: 'POST',
@@ -2001,8 +2007,16 @@
             // until the queue is drained and the lock is released before
             // building the request, with a hard cap so a stuck queue can't
             // permanently block the option fetch.
+            //
+            // Snapshot _galgameRequestSeq before waiting: invalidatePending…
+            // (called by setMessages / clearMessages / handleComposerSubmit)
+            // bumps the seq when the conversation switches or the user moves
+            // on. If that happens during the wait window, we drop this fetch
+            // so a stale turn-end can't render A/B/C into the new context.
+            var seqAtSchedule = state._galgameRequestSeq;
             waitForAssistantBubblesFlushed(4000).then(function () {
                 if (!state.galgameModeEnabled) return;
+                if (state._galgameRequestSeq !== seqAtSchedule) return;
                 fetchGalgameOptionsForLatestTurn();
             });
         });
