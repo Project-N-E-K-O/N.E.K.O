@@ -61,6 +61,32 @@
         }));
     }
 
+    function getActiveAvatarModelType() {
+        // 优先按当前可见容器判断，避免 Live2D 全局引用残留时抢走 VRM/MMD 的口型同步。
+        var vrmContainer = document.getElementById('vrm-container');
+        if (vrmContainer && vrmContainer.style.display !== 'none' && !vrmContainer.classList.contains('hidden')) {
+            return 'vrm';
+        }
+
+        var mmdContainer = document.getElementById('mmd-container');
+        if (mmdContainer && mmdContainer.style.display !== 'none' && !mmdContainer.classList.contains('hidden')) {
+            return 'mmd';
+        }
+
+        var cfg = window.lanlan_config || {};
+        var modelType = String(cfg.model_type || '').toLowerCase();
+        if (modelType === 'live3d') {
+            var subType = String(cfg.live3d_sub_type || '').toLowerCase();
+            if (subType === 'vrm' || subType === 'mmd') {
+                return subType;
+            }
+        }
+        if (modelType === 'vrm' || modelType === 'mmd') {
+            return modelType;
+        }
+        return 'live2d';
+    }
+
     function clearPendingAudioMetaStallTimer() {
         if (_pendingAudioMetaStallTimer) {
             clearTimeout(_pendingAudioMetaStallTimer);
@@ -384,19 +410,20 @@
     }
 
     function stopActiveLipSync() {
-        if (window.LanLan1 && window.LanLan1.live2dModel) {
-            stopLipSync(window.LanLan1.live2dModel);
-        } else if (window.vrmManager && window.vrmManager.currentModel && window.vrmManager.animation) {
+        var activeModelType = getActiveAvatarModelType();
+        if (activeModelType === 'vrm' && window.vrmManager && window.vrmManager.currentModel && window.vrmManager.animation) {
             if (typeof window.vrmManager.animation.stopLipSync === 'function') {
                 window.vrmManager.animation.stopLipSync();
             }
             S.lipSyncActive = false;
-        } else if (window.mmdManager && window.mmdManager.currentModel && window.mmdManager.animationModule) {
+        } else if (activeModelType === 'mmd' && window.mmdManager && window.mmdManager.currentModel && window.mmdManager.animationModule) {
             if (typeof window.mmdManager.animationModule.stopLipSync === 'function') {
                 window.mmdManager.animationModule.stopLipSync();
                 console.log('[Audio] MMD 口型同步已停止');
             }
             S.lipSyncActive = false;
+        } else if (window.LanLan1 && window.LanLan1.live2dModel) {
+            stopLipSync(window.LanLan1.live2dModel);
         } else {
             S.lipSyncActive = false;
         }
@@ -733,20 +760,21 @@
                                 hasAnalyser: hasAnalyser
                             });
                         }
-                        if (window.LanLan1 && window.LanLan1.live2dModel) {
-                            startLipSync(window.LanLan1.live2dModel, S.globalAnalyser);
-                            S.lipSyncActive = true;
-                        } else if (window.vrmManager && window.vrmManager.currentModel && window.vrmManager.animation) {
+                        var activeModelType = getActiveAvatarModelType();
+                        if (activeModelType === 'vrm' && window.vrmManager && window.vrmManager.currentModel && window.vrmManager.animation) {
                             if (typeof window.vrmManager.animation.startLipSync === 'function') {
                                 window.vrmManager.animation.startLipSync(S.globalAnalyser);
                                 S.lipSyncActive = true;
                             }
-                        } else if (window.mmdManager && window.mmdManager.currentModel && window.mmdManager.animationModule) {
+                        } else if (activeModelType === 'mmd' && window.mmdManager && window.mmdManager.currentModel && window.mmdManager.animationModule) {
                             if (typeof window.mmdManager.animationModule.startLipSync === 'function') {
                                 window.mmdManager.animationModule.startLipSync(S.globalAnalyser);
                                 S.lipSyncActive = true;
                                 console.log('[Audio] MMD 口型同步已启动');
                             }
+                        } else if (window.LanLan1 && window.LanLan1.live2dModel) {
+                            startLipSync(window.LanLan1.live2dModel, S.globalAnalyser);
+                            S.lipSyncActive = true;
                         } else {
                             if (window.DEBUG_AUDIO) {
                                 console.warn('[Audio] 无法启动口型同步：没有可用的模型');
