@@ -971,8 +971,12 @@ export default function App({
         // 同一批 setState 会和 layout 切换一起 commit，render 出来时
         // .is-leaving 类和 --collapse-from-width 变量同时生效，
         // CSS keyframe 就能从这个固定宽度插值到 0。
+        // 用 offsetWidth 而非 getBoundingClientRect().width：前者基于布局盒，
+        // 不受入场 scaleX 动画影响；如果 expand 动画还没跑完就又被压窄，
+        // bounding rect 会拿到被 scaleX 缩小后的视觉宽度导致 layout 抖动。
         if (wantCompact && composerLayoutRef.current === 'expanded' && composerToolsRightRef.current) {
-          const w = composerToolsRightRef.current.getBoundingClientRect().width;
+          const node = composerToolsRightRef.current;
+          const w = Math.max(node.offsetWidth, node.scrollWidth);
           if (w > 0) setCollapseFromWidth(w);
         }
         setComposerLayout(prev => {
@@ -995,17 +999,24 @@ export default function App({
   }, []);
 
   // 收起/展开动画跑完后切到稳态。时长需与 styles.css 中的 keyframes 对齐。
+  // prefers-reduced-motion 下 styles.css 把动画设成 none，这时还等 270/220ms
+  // 会让工具区滞留在过渡态（控件视觉上提前到位但 layout state 没切），
+  // 直接 0ms 立刻切稳态。
   useEffect(() => {
+    const prefersReducedMotion =
+      typeof window !== 'undefined'
+      && typeof window.matchMedia === 'function'
+      && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
     if (composerLayout === 'collapsing') {
       const timerId = window.setTimeout(() => {
         setComposerLayout(prev => (prev === 'collapsing' ? 'compact' : prev));
-      }, 270);
+      }, prefersReducedMotion ? 0 : 270);
       return () => window.clearTimeout(timerId);
     }
     if (composerLayout === 'expanding') {
       const timerId = window.setTimeout(() => {
         setComposerLayout(prev => (prev === 'expanding' ? 'expanded' : prev));
-      }, 220);
+      }, prefersReducedMotion ? 0 : 220);
       return () => window.clearTimeout(timerId);
     }
     return undefined;
