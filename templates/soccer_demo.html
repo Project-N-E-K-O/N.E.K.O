@@ -208,7 +208,7 @@
     <div id="voice-status">调试 STT：隐藏</div>
   </div>
 </div>
-<button id="exit-to-start-button" type="button" hidden>结束但不关闭窗口</button>
+<button id="exit-to-start-button" type="button" hidden>结束游戏（调试）</button>
 <div id="status">loading VRM dependencies…</div>
 <div id="loading-overlay" role="status" aria-live="polite">
   <div id="loading-panel">
@@ -314,6 +314,16 @@
         state.started = false;
         updateText(text);
         setSpinnerVisible(true);
+        setStartVisible(false);
+        setExitVisible(false, false);
+        showOverlay();
+      },
+      ended(text = '游戏已结束，请关闭页面。此提示仅用于调试，不作为重开的方式；重新进入请重新打开一次页面。') {
+        state.route = false;
+        state.routeStarting = false;
+        state.started = false;
+        updateText(text);
+        setSpinnerVisible(false);
         setStartVisible(false);
         setExitVisible(false, false);
         showOverlay();
@@ -3416,26 +3426,27 @@
     _deliverPendingOpeningLine();
   }
 
-  let _endToStartInFlight = false;
-  async function _endGameToStartScreen() {
-    if (_endToStartInFlight || !isGameRuntimeReady()) return;
-    _endToStartInFlight = true;
+  let _manualEndInFlight = false;
+  async function _endGameAndShowClosePrompt() {
+    if (_manualEndInFlight || !isGameRuntimeReady()) return;
+    _manualEndInFlight = true;
     if (exitToStartButton) exitToStartButton.disabled = true;
     try {
       window.__SoccerLoading?.ending?.('正在结束本局…');
       await _endGameLLMSession(false, {
-        reason: 'manual_return_to_start',
+        reason: 'manual_debug_exit',
         postgameProactive: false,
       });
     } finally {
-      await _prepareGameForStartScreen('正在准备下一局…');
-      if (exitToStartButton) exitToStartButton.disabled = false;
-      _endToStartInFlight = false;
+      // 这个按钮是测试/调试退出入口。结束后必须停在结束状态，不自动准备下一局，
+      // 避免后续接手者误以为这里是游戏内“重开”流程。
+      window.__SoccerLoading?.ended?.();
+      _manualEndInFlight = false;
     }
   }
 
   startButton?.addEventListener('click', _startGameFromStartScreen);
-  exitToStartButton?.addEventListener('click', _endGameToStartScreen);
+  exitToStartButton?.addEventListener('click', _endGameAndShowClosePrompt);
   void _prepareGameForStartScreen();
 
   // 注册 onSpeak 回调：拦截高优先级事件，调用 LLM 生成台词
