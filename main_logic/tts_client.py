@@ -775,6 +775,13 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                 ls_voice = get_livestream_config().get('voice_id', '')
                 if ls_voice:
                     voice_id = ls_voice
+                else:
+                    # 半配置状态（启用了但没填 voice_id）：明确告警，避免误以为
+                    # 直播音色已生效却实际还在用 caller 传入或默认 preset
+                    logger.warning(
+                        "livestream_config.enabled=true 但 voice_id 为空，"
+                        f"继续使用 caller 传入或默认音色: {voice_id or 'qingchunshaonv'}"
+                    )
         except Exception as e:
             logger.warning(f"读取 livestream voice_id 失败，回退到 caller 传入值: {e}")
 

@@ -2522,20 +2522,29 @@ class ConfigManager:
             print(f"[GeoIP] Dual check indeterminate (IP={ip_result}, Steam={steam_result}), transient mainland default", file=sys.stderr)
         return False
 
+    # Livestream 派生只接管 free 路这三个已知端点，避免劫持其他 lanlan.tech 路径
+    # （例如未来新增 /docs /metrics 之类的非数据端点）
+    _LIVESTREAM_DERIVE_PATHS = frozenset({'/core', '/text/v1', '/tts'})
+
     def _adjust_free_api_url(self, url: str, is_free: bool) -> str:
         """Internal URL adjustment for free API users.
 
         优先级：livestream prefix 派生 > 海外 lanlan.tech→lanlan.app 切换 > 原样返回。
-        livestream 启用时直接接管 lanlan.tech 域名，跳过地区判定。
+        livestream 启用时仅接管 lanlan.tech 域下白名单内的 free 路端点
+        （/core /text/v1 /tts），其他 path 走原地区切换。
         """
         if not url or 'lanlan.tech' not in url:
             return url
 
         try:
             if is_livestream_active():
-                derived = self._derive_livestream_url(url, get_livestream_config()['server_prefix'])
-                if derived:
-                    return derived
+                orig_path = urlparse(url).path or ''
+                if orig_path in self._LIVESTREAM_DERIVE_PATHS:
+                    derived = self._derive_livestream_url(
+                        url, get_livestream_config()['server_prefix']
+                    )
+                    if derived:
+                        return derived
         except Exception as e:
             logger.warning(f"Livestream URL 派生失败，回退到原始路径: {e}")
 
