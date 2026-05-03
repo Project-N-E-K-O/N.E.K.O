@@ -1654,9 +1654,9 @@ export default function App({
                   aria-label={galgameToggleButtonLabel}
                 >
                   {galgameOptions.length > 0 ? (
-                    galgameOptions.slice(0, 3).map((option) => (
+                    galgameOptions.slice(0, 3).map((option, index) => (
                       <button
-                        key={option.label}
+                        key={`${index}-${option.label}`}
                         type="button"
                         className="composer-galgame-option"
                         title={option.text}
