@@ -2188,7 +2188,9 @@ button * {
   .message-row-assistant,
   .text-chunk-reveal,
   .composer-icon-popover,
-  .composer-icon-button {
+  .composer-icon-button,
+  .composer-galgame-slot,
+  .composer-galgame-option {
     animation: none !important;
     animation-delay: 0ms !important;
     transition: none !important;
