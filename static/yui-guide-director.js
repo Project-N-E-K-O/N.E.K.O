@@ -2128,6 +2128,7 @@
             this.pluginDashboardWindowCreatedByGuide = false;
             this.manualPluginDashboardOpenAllowed = false;
             this.manualPluginDashboardOpenTarget = null;
+            this.manualPluginDashboardOpenUserClicked = false;
             this.takeoverOriginalAgentSwitches = null;
             this.customSecondarySpotlightTarget = null;
             this.keydownHandler = this.onKeyDown.bind(this);
@@ -5137,7 +5138,7 @@
             return null;
         }
 
-        async waitForManualPluginDashboardOpen(managementButton, spotlightTarget, runId, timeoutMs) {
+        async waitForManualPluginDashboardOpen(managementButton, spotlightTarget, runId, timeoutMs, guideOpenTriggeredBeforePrompt) {
             if (!managementButton || runId !== this.sceneRunId || this.isStopping()) {
                 return {
                     window: null,
@@ -5153,6 +5154,7 @@
             const target = spotlightTarget || managementButton;
             this.manualPluginDashboardOpenAllowed = true;
             this.manualPluginDashboardOpenTarget = managementButton;
+            this.manualPluginDashboardOpenUserClicked = false;
             this.recordExperienceMetric('plugin_dashboard_popup_blocked_prompt', {
                 targetPage: 'plugin_dashboard'
             });
@@ -5177,12 +5179,17 @@
                     normalizedTimeoutMs
                 );
                 if (openedWindow && !openedWindow.closed) {
+                    const createdByGuide = !!(
+                        guideOpenTriggeredBeforePrompt
+                        && !this.manualPluginDashboardOpenUserClicked
+                    );
                     this.recordExperienceMetric('plugin_dashboard_popup_manual_opened', {
-                        targetPage: 'plugin_dashboard'
+                        targetPage: 'plugin_dashboard',
+                        createdByGuide: createdByGuide
                     });
                     return {
                         window: openedWindow,
-                        createdByGuide: false
+                        createdByGuide: createdByGuide
                     };
                 }
 
@@ -5196,6 +5203,7 @@
             } finally {
                 this.manualPluginDashboardOpenAllowed = false;
                 this.manualPluginDashboardOpenTarget = null;
+                this.manualPluginDashboardOpenUserClicked = false;
                 if (runId === this.sceneRunId && !this.isStopping()) {
                     this.overlay.hideBubble();
                 }
@@ -5936,6 +5944,7 @@
             const agentPanelActionOpened = await this.clickAgentSidePanelAction('agent-user-plugin', 'management-panel', {
                 keepMainUIVisible: true
             });
+            const guideTriggeredPluginDashboardOpen = !!agentPanelActionOpened;
 
             let pluginDashboardWindow = null;
             if (hadPluginDashboard) {
@@ -5965,7 +5974,11 @@
                     PLUGIN_DASHBOARD_WINDOW_NAME,
                     scaleSceneMs(1200, 700, 1800)
                 );
-                this.pluginDashboardWindowCreatedByGuide = !!(pluginDashboardWindow && !pluginDashboardWindow.closed);
+                this.pluginDashboardWindowCreatedByGuide = !!(
+                    guideTriggeredPluginDashboardOpen
+                    && pluginDashboardWindow
+                    && !pluginDashboardWindow.closed
+                );
             }
 
             if (
@@ -5978,7 +5991,8 @@
                     managementButton,
                     managementSpotlightTarget,
                     runId,
-                    scaleSceneMs(18000, 9000, 26000)
+                    scaleSceneMs(18000, 9000, 26000),
+                    guideTriggeredPluginDashboardOpen
                 );
                 pluginDashboardWindow = manualPluginDashboardOpen && manualPluginDashboardOpen.window;
                 this.pluginDashboardWindowCreatedByGuide = !!(
@@ -6218,6 +6232,7 @@
                 const agentPanelActionOpened = await this.clickAgentSidePanelAction('agent-user-plugin', 'management-panel', {
                     keepMainUIVisible: true
                 });
+                const guideTriggeredPluginDashboardOpen = !!agentPanelActionOpened;
                 let pluginDashboardWindow = null;
                 if (hadPluginDashboard) {
                     try {
@@ -6246,7 +6261,11 @@
                         PLUGIN_DASHBOARD_WINDOW_NAME,
                         scaleSceneMs(1200, 700, 1800)
                     );
-                    this.pluginDashboardWindowCreatedByGuide = !!(pluginDashboardWindow && !pluginDashboardWindow.closed);
+                    this.pluginDashboardWindowCreatedByGuide = !!(
+                        guideTriggeredPluginDashboardOpen
+                        && pluginDashboardWindow
+                        && !pluginDashboardWindow.closed
+                    );
                 }
                 if (
                     (!pluginDashboardWindow || pluginDashboardWindow.closed)
@@ -6258,7 +6277,8 @@
                         managementButton,
                         managementSpotlightTarget,
                         runId,
-                        scaleSceneMs(18000, 9000, 26000)
+                        scaleSceneMs(18000, 9000, 26000),
+                        guideTriggeredPluginDashboardOpen
                     );
                     pluginDashboardWindow = manualPluginDashboardOpen && manualPluginDashboardOpen.window;
                     this.pluginDashboardWindowCreatedByGuide = !!(
@@ -7109,6 +7129,7 @@
             this.clearUserCursorReveal(true);
             this.manualPluginDashboardOpenAllowed = false;
             this.manualPluginDashboardOpenTarget = null;
+            this.manualPluginDashboardOpenUserClicked = false;
             this.awaitingIntroActivation = false;
             if (typeof this._introActivationResolve === 'function') {
                 this._introActivationResolve();
@@ -8667,6 +8688,7 @@
             this.clearUserCursorReveal(true);
             this.manualPluginDashboardOpenAllowed = false;
             this.manualPluginDashboardOpenTarget = null;
+            this.manualPluginDashboardOpenUserClicked = false;
             if (this.pluginDashboardHandoff && typeof this.pluginDashboardHandoff.resolve === 'function') {
                 this.pluginDashboardHandoff.resolve(false);
             }
@@ -8780,6 +8802,7 @@
                         && target.closest('#neko-sidepanel-action-agent-user-plugin-management-panel') === manualTarget
                     )
                 ) {
+                    this.manualPluginDashboardOpenUserClicked = true;
                     return true;
                 }
             }
