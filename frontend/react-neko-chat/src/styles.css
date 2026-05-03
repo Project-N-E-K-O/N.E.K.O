@@ -1620,8 +1620,24 @@ button * {
   background: #2497d9;
 }
 
-.composer-input-shell.is-galgame-mode {
-  min-height: 196px;
+/* Slot 包住选项区，开/关靠 max-height + opacity 过渡。
+   collapsed 态自然占 0 高，输入壳跟着内容回到原本的紧凑高度，
+   下边缘和 PR 之前一样贴合面板底；展开时 shell 跟着 slot 长高，
+   bottom-bar 锚在 panel 底不动，textarea 顶端被往上推 → 视觉
+   是从下往上拉开。 */
+.composer-galgame-slot {
+  max-height: 0;
+  overflow: hidden;
+  opacity: 0;
+  transition: max-height 220ms cubic-bezier(0.4, 0, 0.2, 1),
+              opacity 180ms ease;
+}
+
+.composer-galgame-slot.is-open {
+  /* 上限给到 3 个 30px 按钮 + 间距 + margin 余量；超出会被 overflow
+     裁掉，但实际内容只有 ~104px 用不到这么多。 */
+  max-height: 160px;
+  opacity: 1;
 }
 
 .composer-galgame-options {

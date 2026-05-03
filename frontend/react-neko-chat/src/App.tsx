@@ -656,6 +656,10 @@ export default function App({
   const resolvedScreenshotAriaLabel = screenshotButtonAriaLabel || screenshotButtonLabel;
   const resolvedTranslateAriaLabel = translateButtonAriaLabel || translateButtonLabel;
   const resolvedGalgameAriaLabel = galgameToggleButtonAriaLabel || galgameToggleButtonLabel;
+  // 模式开启 ≠ 选项实际占位。光开开关、还没收到 AI 新一轮时 slot 不撑开；
+  // 选项到位（loading 占位也算）才让 slot 长出来，输入壳跟着自然变高。
+  const galgameOptionsVisible =
+    galgameModeEnabled && (galgameOptionsLoading || galgameOptions.length > 0);
   const emojiButtonAriaLabel = i18n('chat.emojiButtonAriaLabel', 'Emoji');
   const toolIconsAriaLabel = i18n('chat.toolIconsAriaLabel', 'Tool icons');
   const clearCursorToolAriaLabel = i18n('chat.clearCursorToolAriaLabel', '恢复鼠标');
@@ -1631,7 +1635,7 @@ export default function App({
             event.preventDefault();
             submitDraft();
           }}>
-            <div className={`composer-input-shell${galgameModeEnabled ? ' is-galgame-mode' : ''}`}>
+            <div className="composer-input-shell">
               <textarea
                 className="composer-input"
                 placeholder={inputPlaceholder}
@@ -1647,47 +1651,57 @@ export default function App({
                   }
                 }}
               />
-              {galgameModeEnabled && (galgameOptionsLoading || galgameOptions.length > 0) ? (
+              {galgameModeEnabled ? (
+                // Slot 始终挂在树上，开/关靠 is-open（max-height + opacity 过渡）。
+                // 这样选项进/出时输入壳跟着自然长/缩，bottom-bar 锚在 panel 底
+                // 不动，textarea 顶端跟着 shell-top 上抬，视觉上是从下往上展开。
                 <div
-                  className={`composer-galgame-options${galgameOptionsLoading ? ' is-loading' : ''}`}
-                  role="group"
-                  aria-label={galgameToggleButtonLabel}
+                  className={`composer-galgame-slot${galgameOptionsVisible ? ' is-open' : ''}`}
+                  aria-hidden={!galgameOptionsVisible}
                 >
-                  {galgameOptions.length > 0 ? (
-                    galgameOptions.slice(0, 3).map((option, index) => (
-                      <button
-                        key={`${index}-${option.label}`}
-                        type="button"
-                        className="composer-galgame-option"
-                        title={option.text}
-                        disabled={galgameOptionsLoading}
-                        onClick={() => {
-                          if (submittingRef.current) return;
-                          submittingRef.current = true;
-                          try {
-                            onGalgameOptionSelect?.(option);
-                          } finally {
-                            requestAnimationFrame(() => { submittingRef.current = false; });
-                          }
-                        }}
-                      >
-                        <span className="composer-galgame-option-label" aria-hidden="true">{option.label}.</span>
-                        <span className="composer-galgame-option-text">{option.text}</span>
-                      </button>
-                    ))
-                  ) : (
-                    ['A', 'B', 'C'].map((label) => (
-                      <button
-                        key={label}
-                        type="button"
-                        className="composer-galgame-option is-placeholder"
-                        disabled
-                      >
-                        <span className="composer-galgame-option-label" aria-hidden="true">{label}.</span>
-                        <span className="composer-galgame-option-text">{galgameLoadingLabel}</span>
-                      </button>
-                    ))
-                  )}
+                  <div
+                    className={`composer-galgame-options${galgameOptionsLoading ? ' is-loading' : ''}`}
+                    role="group"
+                    aria-label={galgameToggleButtonLabel}
+                  >
+                    {galgameOptions.length > 0
+                      ? galgameOptions.slice(0, 3).map((option, index) => (
+                          <button
+                            key={`${index}-${option.label}`}
+                            type="button"
+                            className="composer-galgame-option"
+                            title={option.text}
+                            disabled={galgameOptionsLoading}
+                            tabIndex={galgameOptionsVisible ? 0 : -1}
+                            onClick={() => {
+                              if (submittingRef.current) return;
+                              submittingRef.current = true;
+                              try {
+                                onGalgameOptionSelect?.(option);
+                              } finally {
+                                requestAnimationFrame(() => { submittingRef.current = false; });
+                              }
+                            }}
+                          >
+                            <span className="composer-galgame-option-label" aria-hidden="true">{option.label}.</span>
+                            <span className="composer-galgame-option-text">{option.text}</span>
+                          </button>
+                        ))
+                      : galgameOptionsLoading
+                        ? ['A', 'B', 'C'].map((label) => (
+                            <button
+                              key={label}
+                              type="button"
+                              className="composer-galgame-option is-placeholder"
+                              disabled
+                              tabIndex={-1}
+                            >
+                              <span className="composer-galgame-option-label" aria-hidden="true">{label}.</span>
+                              <span className="composer-galgame-option-text">{galgameLoadingLabel}</span>
+                            </button>
+                          ))
+                        : null}
+                  </div>
                 </div>
               ) : null}
               <div className="composer-bottom-bar" ref={composerBottomBarRef}>
