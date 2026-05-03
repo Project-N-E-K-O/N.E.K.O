@@ -2245,6 +2245,16 @@
         keepFollowingWhileVisible();
     }
 
+    function isGoodbyeActive() {
+        return !!((window.live2dManager && window.live2dManager._goodbyeClicked) ||
+            (window.vrmManager && window.vrmManager._goodbyeClicked) ||
+            (window.mmdManager && window.mmdManager._goodbyeClicked));
+    }
+
+    function handleGoodbye() {
+        forceHide(true);
+    }
+
     function forceHide(resetTurn) {
         logBubbleLifecycle('forceHide:enter', { resetTurn: resetTurn });
         clearTurnTimers();
@@ -2440,7 +2450,7 @@
     }
 
     function showThinking(turnId) {
-        if (!syncEnabledFromSettings()) {
+        if (!syncEnabledFromSettings() || isGoodbyeActive()) {
             return;
         }
 
@@ -2491,6 +2501,10 @@
             detailTurnId: turnId,
             detailEmotion: detail && detail.emotion ? String(detail.emotion) : null
         });
+        if (isGoodbyeActive()) {
+            forceHide(true);
+            return;
+        }
         if (!turnId || state.turnId !== turnId || !state.visible || state.phase === 'fading') {
             logBubbleLifecycle('handleEmotionReady:skip', {
                 detailTurnId: turnId
@@ -2503,6 +2517,10 @@
         clearTimer('emotionSwapTimerId');
 
         var applyEmotionState = function () {
+            if (isGoodbyeActive()) {
+                forceHide(true);
+                return;
+            }
             if (state.turnId !== turnId || !state.visible || state.phase === 'fading') {
                 logBubbleLifecycle('handleEmotionReady:apply_skip', {
                     detailTurnId: turnId
@@ -2546,7 +2564,8 @@
             return;
         }
 
-        if (!syncEnabledFromSettings()) {
+        if (!syncEnabledFromSettings() || isGoodbyeActive()) {
+            forceHide(true);
             return;
         }
 
@@ -2660,6 +2679,7 @@
         applyVisualState();
         ensureDebugOverlayLoop();
 
+        window.addEventListener('live2d-goodbye-click', handleGoodbye);
         window.addEventListener('neko-assistant-turn-start', function (event) {
             handleTurnStart(event.detail || {});
         });
