@@ -82,9 +82,14 @@ def _strip_stray_chars_between_tokens(s: str) -> str:
             # 第 k 个字符必须是 pollution；否则再大的 k 也只会更糟
             if not _is_likely_pollution_char(s[j + k - 1]):
                 break
-            if j + k < n and s[j + k] in _VALUE_START_CHARS:
-                out.append(s[i:j])  # 保留空白
-                i = j + k
+            # 污染段后允许跟若干空白（pretty-printed 输出常见），
+            # 再看下一个非空白字符是不是合法值起始
+            m = j + k
+            while m < n and s[m].isspace():
+                m += 1
+            if m < n and s[m] in _VALUE_START_CHARS:
+                out.append(s[i:j])  # 保留 separator 后的空白
+                i = j + k  # 跳过污染段；后续空白由主循环正常 append
                 break
     return ''.join(out)
 

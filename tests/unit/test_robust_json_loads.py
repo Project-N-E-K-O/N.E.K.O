@@ -71,6 +71,21 @@ def test_pollution_run_over_2_chars_not_stripped():
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        # LLM pretty-printed 输出常见：污染字符后接空格 / 换行
+        ('[1,결 {"x":1}]', [1, {"x": 1}]),
+        ('{"a":1,결\n  "b":2}', {"a": 1, "b": 2}),
+        ('[1,결결 [2,3]]', [1, [2, 3]]),
+    ],
+)
+def test_whitespace_after_pollution_still_strippable(raw, expected):
+    """污染段后接空白 + 合法值起始也算可恢复（pretty-printed 输出场景）。"""
+    assert robust_json_loads(raw) == expected
+
+
+@pytest.mark.unit
 def test_minimum_strip_when_already_parseable_after_earlier_transform():
     """关键回归（"原本能 parse 就用原本"）：
     fallback pipeline 每步 transform 后应立刻 try parse，能 parse 立即停。
