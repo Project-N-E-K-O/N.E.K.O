@@ -2497,6 +2497,14 @@ body.react-chat-window-dragging {
         display: none;
     }
 
+    body:not(.electron-chat-window) #react-chat-window-shell.is-mobile-expand-guarding .composer-tool-btn,
+    body:not(.electron-chat-window) #react-chat-window-shell.is-mobile-expand-guarding .composer-tool-btn:hover,
+    body:not(.electron-chat-window) #react-chat-window-shell.is-mobile-expand-guarding .composer-tool-btn:active,
+    body:not(.electron-chat-window) #react-chat-window-shell.is-mobile-expand-guarding .composer-tool-btn:focus {
+        background: transparent !important;
+        pointer-events: none;
+    }
+
     body:not(.electron-chat-window) #react-chat-window-drag-handle {
         cursor: grab;
     }

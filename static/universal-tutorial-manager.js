@@ -626,6 +626,33 @@ class UniversalTutorialManager {
         this.onTutorialEnd();
     }
 
+    async destroy(reason = 'destroy') {
+        this.setTutorialEndReason(reason);
+        this._isDestroyed = true;
+
+        if (this.driver) {
+            try {
+                this.driver.destroy();
+            } catch (error) {
+                console.warn('[Tutorial] 销毁 driver 失败:', error);
+            }
+            this.driver = null;
+        }
+
+        this.teardownModelManagerListeners();
+        this.clearTutorialLive2dViewportPlacementWatcher();
+        this.clearNextButtonGuard();
+
+        if (this._refreshTimers) {
+            this._refreshTimers.forEach(t => clearTimeout(t));
+            this._refreshTimers = [];
+        }
+
+        if (this._teardownTutorialUI) {
+            await this._teardownTutorialUI();
+        }
+    }
+
     broadcastYuiGuideTerminationRequest(endMeta = {}) {
         const yuiGuidePageKey = this.isYuiGuideEnabledForPage()
             ? this.getYuiGuidePageKey()
@@ -5087,12 +5114,61 @@ class UniversalTutorialManager {
 
 // 创建全局实例
 window.universalTutorialManager = null;
+window.__universalTutorialManagerResizeRetryBound = false;
+
+async function destroyUniversalTutorialManagerInstance(reason = 'destroy') {
+    const manager = window.universalTutorialManager;
+    if (!manager) return;
+
+    if (typeof manager.destroy === 'function') {
+        await manager.destroy(reason);
+    } else {
+        if (manager.isTutorialRunning && typeof manager.onTutorialEnd === 'function') {
+            manager.onTutorialEnd();
+        } else if (typeof manager._teardownTutorialUI === 'function') {
+            await manager._teardownTutorialUI();
+        }
+        if (manager.driver && typeof manager.driver.destroy === 'function') {
+            manager.driver.destroy();
+        }
+        if (typeof manager.teardownModelManagerListeners === 'function') {
+            manager.teardownModelManagerListeners();
+        }
+    }
+    window.universalTutorialManager = null;
+}
+
+function bindUniversalTutorialManagerResizeRetry() {
+    if (window.__universalTutorialManagerResizeRetryBound) return;
+    window.__universalTutorialManagerResizeRetryBound = true;
+
+    window.addEventListener('resize', function retryUniversalTutorialManagerInit() {
+        if (window.innerWidth <= 768) return;
+        window.removeEventListener('resize', retryUniversalTutorialManagerInit);
+        window.__universalTutorialManagerResizeRetryBound = false;
+        if (window.__universalTutorialManagerInitialized) return;
+        initUniversalTutorialManager().then(function (initialized) {
+            if (initialized !== false) {
+                window.__universalTutorialManagerInitialized = true;
+            }
+        }).catch(function (error) {
+            console.error('[App] 通用引导管理器延迟初始化失败:', error);
+        });
+    });
+}
 
 /**
  * 初始化通用教程管理器
  * 应在 DOM 加载完成后调用
  */
 async function initUniversalTutorialManager() {
+    // 手机端不启用教程，避免引导遮罩、接管拖拽和移动端布局互相干扰。
+    if (window.innerWidth <= 768) {
+        bindUniversalTutorialManagerResizeRetry();
+        await destroyUniversalTutorialManagerInstance('mobile-disabled');
+        return false;
+    }
+
     // 检测当前页面类型
     const currentPageType = UniversalTutorialManager.detectPage();
 
@@ -5100,23 +5176,10 @@ async function initUniversalTutorialManager() {
     if (window.universalTutorialManager) {
         if (window.universalTutorialManager.currentPage !== currentPageType) {
             console.log('[Tutorial] 页面已改变，销毁旧实例并创建新实例');
-            const previousManager = window.universalTutorialManager;
-            // 销毁旧的 driver 实例和清理状态
-            if (previousManager.isTutorialRunning) {
-                previousManager.onTutorialEnd();
-            } else if (typeof previousManager._teardownTutorialUI === 'function') {
-                previousManager._teardownTutorialUI();
-            }
-            if (previousManager.driver) {
-                previousManager.driver.destroy();
-            }
-            previousManager.teardownModelManagerListeners();
-            if (previousManager._teardownPromise) {
-                try {
-                    await previousManager._teardownPromise;
-                } catch (error) {
-                    console.warn('[Tutorial] 等待旧教程实例拆除失败，继续创建新实例:', error);
-                }
+            try {
+                await destroyUniversalTutorialManagerInstance('page-changed');
+            } catch (error) {
+                console.warn('[Tutorial] 等待旧教程实例拆除失败，继续创建新实例:', error);
             }
             // 创建新实例
             window.universalTutorialManager = new UniversalTutorialManager();
@@ -5129,6 +5192,7 @@ async function initUniversalTutorialManager() {
         window.universalTutorialManager = new UniversalTutorialManager();
         console.log('[Tutorial] 通用教程管理器已初始化，页面:', currentPageType);
     }
+    return true;
 }
 
 /**
