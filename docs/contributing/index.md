@@ -15,6 +15,13 @@ Project N.E.K.O. is open source under the MIT License. Contributions are welcome
 The project includes built-in configurations for AI coding assistants (Claude Code, Cursor, etc.). If you develop with these tools, they will automatically load the project's rules and skills. See [AI-Assisted Dev](./ai-assisted-dev) for details and how to adapt them for other AI tools.
 :::
 
+::: warning Nuitka packaging
+If you add directories holding Python code or new dynamic imports, read
+[Nuitka Packaging Caveats](./nuitka-packaging) first. Nuitka silently drops
+`.py` files from `--include-data-dir`, and the wrong directory naming
+breaks the standalone build without breaking source-mode tests.
+:::
+
 ## What we need
 
 - **Backend developers** — Python, FastAPI, WebSocket, AI/ML integration

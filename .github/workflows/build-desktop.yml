@@ -510,6 +510,21 @@ jobs:
           fi
           [ "$missing" -eq 0 ]
 
+      # --- Generic dist invariant check ---
+      # Catches the broader class of "Nuitka silently dropped a required
+      # asset" bugs: missing config/, static/, plugin/plugins, frontend
+      # build output, or built-in plugin.toml files. See
+      # scripts/check_nuitka_dist.py for the full asset list and rationale.
+      - name: Verify Nuitka dist invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            .venv/Scripts/python.exe scripts/check_nuitka_dist.py dist/Xiao8
+          else
+            .venv/bin/python scripts/check_nuitka_dist.py dist/Xiao8
+          fi
+
       - name: Upload Python backend artifact
         uses: actions/upload-artifact@v4
         with:
