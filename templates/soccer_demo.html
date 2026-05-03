@@ -181,6 +181,31 @@
     background: rgba(255,255,255,0.22);
     border-color: rgba(255,255,255,0.50);
   }
+  #loading-actions {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+  }
+  #game-memory-option {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    color: rgba(255,255,255,0.88);
+    font: 13px/1.35 "Segoe UI", "PingFang SC", sans-serif;
+    cursor: pointer;
+  }
+  #game-memory-option input {
+    width: 15px;
+    height: 15px;
+    cursor: pointer;
+  }
+  #game-memory-hint {
+    max-width: 260px;
+    color: rgba(255,255,255,0.62);
+    text-align: center;
+    font: 11px/1.35 "Segoe UI", "PingFang SC", sans-serif;
+  }
   @keyframes loading-spin { to { transform: rotate(360deg); } }
 </style>
 </head>
@@ -218,6 +243,8 @@
     </div>
     <div id="loading-actions" hidden>
       <button id="soccer-start-button" type="button">开始</button>
+      <label id="game-memory-option"><input type="checkbox" id="game-memory-toggle"> 本局进入记忆（测试期间默认不开启）</label>
+      <div id="game-memory-hint">关闭后，玩家输入、NEKO直接回应、事件回应、赛后摘要和后续续接都不会进入或引用记忆。</div>
     </div>
   </div>
 </div>
@@ -757,6 +784,7 @@
     BOUNDARY.enabled = boundaryToggle.checked;
   });
   const voiceOutputToggle = document.getElementById('voice-output-toggle');
+  const gameMemoryToggle = document.getElementById('game-memory-toggle');
   const voiceControls = document.getElementById('voice-controls');
   const voiceMicButton = document.getElementById('voice-mic-button');
   const voiceTextInput = document.getElementById('voice-text-input');
@@ -773,6 +801,7 @@
   }
   const isGameRuntimeReady = () => window.__SoccerLoading?.isReady?.() !== false;
   const isGameUiTarget = (target) => !!target?.closest?.('#controls, #loading-overlay, #exit-to-start-button');
+  const _isGameMemoryEnabled = () => gameMemoryToggle ? gameMemoryToggle.checked !== false : true;
 
   const state = {
     player: { x: 0, y: 0, vx: 0, vy: 0 },
@@ -1911,6 +1940,7 @@
     gameStartedAt: 0,
     gameStartedAtEpochMs: 0,
     gameMemoryTailCount: null,
+    soccerGameMemoryEnabled: false,
     loggedExternalInputKeys: new Set(),
     routeVoiceSttActive: false,
     routeVoiceSttListening: false,
@@ -1932,6 +1962,26 @@
 
   const SPEECH_PLAYBACK_STATE_KEY = 'neko_speech_playback_state';
   const SPEECH_PLAYBACK_CHANNEL_NAME = 'neko_speech_playback_channel';
+  function _soccerGameMemoryPolicyPayload(enabled = _isGameMemoryEnabled()) {
+    return {
+      soccerGameMemoryEnabled: enabled,
+      soccer_game_memory_enabled: enabled,
+      soccerGameMemoryPlayerInteractionEnabled: enabled,
+      soccer_game_memory_player_interaction_enabled: enabled,
+      soccerGameMemoryEventReplyEnabled: enabled,
+      soccer_game_memory_event_reply_enabled: enabled,
+      soccerGameMemoryArchiveEnabled: enabled,
+      soccer_game_memory_archive_enabled: enabled,
+      soccerGameMemoryPostgameContextEnabled: enabled,
+      soccer_game_memory_postgame_context_enabled: enabled,
+      gameMemoryEnabled: enabled,
+      game_memory_enabled: enabled,
+    };
+  }
+  gameMemoryToggle?.addEventListener('change', () => {
+    _llm.soccerGameMemoryEnabled = _isGameMemoryEnabled();
+    console.log(`[SoccerMemory] 本局进入记忆=${_llm.soccerGameMemoryEnabled ? 'on' : 'off'}`);
+  });
   const GAME_ROUTE_HEARTBEAT_FETCH_TIMEOUT_MS = 4500;
   const ACCIDENTAL_GAME_ENTRY_GRACE_MS = 10000;
   const DEFAULT_GAME_MEMORY_TAIL_COUNT = 6;
@@ -2016,6 +2066,7 @@
     _llm.gameStartedAt = 0;
     _llm.gameStartedAtEpochMs = 0;
     _llm.gameMemoryTailCount = null;
+    _llm.soccerGameMemoryEnabled = _isGameMemoryEnabled();
     _llm.lastVoiceFailure = null;
     _llm.loggedExternalInputKeys.clear();
 	    _llm.voiceArbiter.pending = null;
@@ -2113,6 +2164,8 @@
     const tailCount = Number.isFinite(Number(_llm.gameMemoryTailCount))
       ? Math.max(1, Math.min(Math.floor(Number(_llm.gameMemoryTailCount)), MAX_GAME_MEMORY_TAIL_COUNT))
       : DEFAULT_GAME_MEMORY_TAIL_COUNT;
+    const soccerGameMemoryEnabled = _isGameMemoryEnabled();
+    _llm.soccerGameMemoryEnabled = soccerGameMemoryEnabled;
     return JSON.stringify({
       session_id: _llm.sessionId,
       currentState: SoccerDemo._snapshot(),
@@ -2120,6 +2173,7 @@
       visibilityState,
       gameMemoryTailCount: tailCount,
       game_memory_tail_count: tailCount,
+      ..._soccerGameMemoryPolicyPayload(soccerGameMemoryEnabled),
       gameStarted: !!_llm.gameStarted,
       game_started: !!_llm.gameStarted,
       gameStartedElapsedMs,
@@ -2389,8 +2443,27 @@
     const gameMemoryTailCount = Number.isFinite(parsedTailCount)
       ? Math.max(1, Math.min(Math.floor(parsedTailCount), MAX_GAME_MEMORY_TAIL_COUNT))
       : DEFAULT_GAME_MEMORY_TAIL_COUNT;
+    const rawMemoryEnabled = (
+      raw.soccerGameMemoryEnabled
+      ?? raw.soccer_game_memory_enabled
+      ?? raw.gameMemoryEnabled
+      ?? raw.game_memory_enabled
+      ?? raw.memoryEnabled
+    );
+    const rawMemoryText = String(rawMemoryEnabled ?? '').trim().toLowerCase();
+    const soccerGameMemoryEnabled = rawMemoryEnabled === undefined
+      ? _isGameMemoryEnabled()
+      : !(rawMemoryEnabled === false || ['0', 'false', 'no', 'off'].includes(rawMemoryText));
     _llm.gameMemoryTailCount = gameMemoryTailCount;
-    return { nekoInitiated, nekoInviteText, gameMemoryTailCount, game_memory_tail_count: gameMemoryTailCount };
+    _llm.soccerGameMemoryEnabled = soccerGameMemoryEnabled;
+    if (gameMemoryToggle) gameMemoryToggle.checked = soccerGameMemoryEnabled;
+    return {
+      nekoInitiated,
+      nekoInviteText,
+      gameMemoryTailCount,
+      game_memory_tail_count: gameMemoryTailCount,
+      ..._soccerGameMemoryPolicyPayload(soccerGameMemoryEnabled),
+    };
   }
 
   function _isValidSoccerMood(value) {
@@ -2612,6 +2685,8 @@
             itemCount: meta.itemCount || 1,
             hasUserSpeech: !!meta.hasUserSpeech,
             hasUserText: !!meta.hasUserText,
+            // 关闭“本局进入记忆”后，玩家输入、NEKO直接回应、游戏事件回应、赛后归档和续接上下文都不会写入/引用记忆。
+            ..._soccerGameMemoryPolicyPayload(),
             voiceAlreadyHandled: !!meta.voiceAlreadyHandled,
             fallback: !!meta.fallback,
             llmSource: result.llm_source || null,
@@ -2676,6 +2751,8 @@
             itemCount: meta.itemCount || 1,
             hasUserSpeech: !!meta.hasUserSpeech,
             hasUserText: !!meta.hasUserText,
+            // 关闭“本局进入记忆”后，TTS turn-end 也会被后端按足球游戏记忆策略处理。
+            ..._soccerGameMemoryPolicyPayload(),
             voiceArbiterReason,
             interruptAudio,
           },
@@ -3152,7 +3229,11 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           session_id: _llm.sessionId,
-          event: eventPayload,
+          ..._soccerGameMemoryPolicyPayload(),
+          event: {
+            ...eventPayload,
+            ..._soccerGameMemoryPolicyPayload(),
+          },
         }),
       });
       if (!resp.ok) return { fallback: true, reason: `HTTP ${resp.status}` };

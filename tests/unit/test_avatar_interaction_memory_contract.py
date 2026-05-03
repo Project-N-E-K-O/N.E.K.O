@@ -217,6 +217,26 @@ def test_game_route_user_reply_assistant_lines_stay_in_ordinary_memory():
 
 
 @pytest.mark.unit
+def test_game_route_memory_disabled_user_reply_lines_are_game_only():
+    assert _is_game_route_game_only_assistant_message({
+        "type": "gemini_response",
+        "text": "我听到你说难了，但这局不进记忆。",
+        "metadata": {
+            "source": "game-llm-result",
+            "game_route": {
+                "game_type": "soccer",
+                "session_id": "match_1",
+                "event": {
+                    "kind": "user-text",
+                    "hasUserText": True,
+                    "soccerGameMemoryPlayerInteractionEnabled": False,
+                },
+            },
+        },
+    }) is True
+
+
+@pytest.mark.unit
 def test_game_route_auto_tts_turn_end_is_game_only_for_ordinary_memory():
     assert _is_game_route_game_only_turn_end_meta({
         "source": "game_route",
@@ -247,4 +267,31 @@ def test_game_route_auto_tts_turn_end_is_game_only_for_ordinary_memory():
         "source": "game_route",
         "game_type": "soccer",
         "session_id": "match_1",
+    }) is False
+
+    assert _is_game_route_game_only_turn_end_meta({
+        "source": "game_route",
+        "game_route": {
+            "game_type": "soccer",
+            "session_id": "match_1",
+            "event": {
+                "kind": "user-voice",
+                "hasUserSpeech": True,
+                "soccer_game_memory_player_interaction_enabled": False,
+            },
+        },
+    }) is True
+
+    assert _is_game_route_game_only_turn_end_meta({
+        "source": "game_route",
+        "game_route": {
+            "game_type": "soccer",
+            "session_id": "match_1",
+            "event": {
+                "kind": "goal-scored",
+                "hasUserSpeech": False,
+                "hasUserText": False,
+                "soccer_game_memory_event_reply_enabled": True,
+            },
+        },
     }) is False
