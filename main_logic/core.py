@@ -385,6 +385,11 @@ class LLMSessionManager:
         self._screenshot_future: asyncio.Future | None = None
         self._avatar_position: dict | None = None  # 前端传来的 Avatar 归一化坐标 {centerX, centerY, width, height}
         self.current_speech_id = None
+        self._audio_stream_queue: asyncio.Queue[dict] = asyncio.Queue(maxsize=300)
+        self._audio_stream_worker_task: Optional[asyncio.Task] = None
+        self._audio_stream_dropped_total = 0
+        self._audio_stream_epoch = 0
+        self._last_audio_stream_backlog_log_time = 0.0
         self.emoji_pattern = re.compile(r'[^\w\u4e00-\u9fff\s>][^\w\u4e00-\u9fff\s]{2,}[^\w\u4e00-\u9fff\s<]', flags=re.UNICODE)
         self.emoji_pattern2 = re.compile("["
         u"\U0001F600-\U0001F64F"  # emoticons
@@ -570,6 +575,76 @@ class LLMSessionManager:
         self._bg_tasks.add(task)
         task.add_done_callback(self._bg_tasks.discard)
         return task
+
+    def _ensure_audio_stream_worker(self):
+        if self._audio_stream_worker_task and not self._audio_stream_worker_task.done():
+            return
+        self._audio_stream_worker_task = self._fire_task(self._audio_stream_worker_loop())
+
+    def _clear_audio_stream_queue(self, reason: str):
+        dropped = 0
+        while True:
+            try:
+                self._audio_stream_queue.get_nowait()
+                self._audio_stream_queue.task_done()
+                dropped += 1
+            except asyncio.QueueEmpty:
+                break
+        if dropped:
+            self._audio_stream_dropped_total += dropped
+            logger.info(
+                "[%s] audio stream queue cleared reason=%s dropped=%d total_dropped=%d",
+                self.lanlan_name, reason, dropped, self._audio_stream_dropped_total,
+            )
+
+    def _cancel_audio_stream_worker(self, reason: str):
+        task = self._audio_stream_worker_task
+        if not task:
+            return
+        if task.done():
+            self._audio_stream_worker_task = None
+            return
+        if task is asyncio.current_task():
+            return
+        task.cancel()
+        self._audio_stream_worker_task = None
+        logger.debug("[%s] audio stream worker cancelled reason=%s", self.lanlan_name, reason)
+
+    async def _enqueue_audio_stream_data(self, message: dict):
+        self._ensure_audio_stream_worker()
+        if self._audio_stream_queue.full():
+            try:
+                self._audio_stream_queue.get_nowait()
+                self._audio_stream_queue.task_done()
+                self._audio_stream_dropped_total += 1
+            except asyncio.QueueEmpty:
+                pass
+        await self._audio_stream_queue.put(message)
+        qsize = self._audio_stream_queue.qsize()
+        now = time.time()
+        if qsize >= 250 and now - self._last_audio_stream_backlog_log_time >= 2.0:
+            self._last_audio_stream_backlog_log_time = now
+            logger.warning(
+                "[%s] audio stream queue backlog qsize=%d max=%d total_dropped=%d",
+                self.lanlan_name,
+                qsize,
+                self._audio_stream_queue.maxsize,
+                self._audio_stream_dropped_total,
+            )
+
+    async def _audio_stream_worker_loop(self):
+        while True:
+            while not self.session_ready and self._starting_session_count > 0:
+                await asyncio.sleep(0.02)
+            message = await self._audio_stream_queue.get()
+            try:
+                await self._stream_data_now(message)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.error("[%s] audio stream worker error: %s", self.lanlan_name, exc)
+            finally:
+                self._audio_stream_queue.task_done()
 
     def _emit_cooldown_turn_end_if_needed(self):
         """冷却期间去重发送 turn_end，每秒最多一次。返回 True 表示当前处于冷却中。"""
@@ -1983,7 +2058,10 @@ class LLMSessionManager:
                     try:
                         # 重新调用stream_data处理缓存的数据
                         # 注意：这里直接处理，不再缓存（因为session_ready已设为True）
-                        await self._process_stream_data_internal(message)
+                        if message.get("input_type") == "audio":
+                            await self._enqueue_audio_stream_data(message)
+                        else:
+                            await self._process_stream_data_internal(message)
                     except Exception as e:
                         logger.error(f"💥 发送缓存的输入数据失败: {e}")
                         break
@@ -4221,6 +4299,12 @@ class LLMSessionManager:
         await self.cleanup(expected_session=expected_session)
     
     async def stream_data(self, message: dict):  # 向Core API发送Media数据
+        if message.get("input_type") == "audio":
+            await self._enqueue_audio_stream_data(message)
+            return
+        await self._stream_data_now(message)
+
+    async def _stream_data_now(self, message: dict):
         input_type = message.get("input_type")
         
         # 检查session是否就绪
@@ -4228,6 +4312,8 @@ class LLMSessionManager:
             if not self.session_ready:
                 # 检查是否正在启动session - 只有在启动过程中才缓存
                 if self._starting_session_count > 0:
+                    if input_type == "audio":
+                        return
                     # Session正在启动中，缓存输入数据
                     self.pending_input_data.append(message)
                     if len(self.pending_input_data) == 1:
@@ -4434,7 +4520,9 @@ class LLMSessionManager:
                         return
                 
                 # 检查WebSocket连接
-                if not hasattr(self.session, 'ws') or not self.session.ws:
+                session_ref = self.session
+                audio_epoch = self._audio_stream_epoch
+                if not hasattr(session_ref, 'ws') or not session_ref.ws:
                     logger.error("💥 Stream: Session websocket not available")
                     return
                 try:
@@ -4447,16 +4535,16 @@ class LLMSessionManager:
                         is_48khz = (num_samples == 480)
                         
                         processed_audio = audio_bytes  # 默认使用原始音频
-                        if is_48khz and isinstance(self.session, OmniRealtimeClient):
+                        if is_48khz and isinstance(session_ref, OmniRealtimeClient):
                             # 使用session的AudioProcessor处理音频
-                            if hasattr(self.session, '_audio_processor') and self.session._audio_processor:
+                            if hasattr(session_ref, '_audio_processor') and session_ref._audio_processor:
                                 try:
                                     # Use async wrapper to avoid blocking main loop
-                                    if hasattr(self.session, 'process_audio_chunk_async'):
-                                        processed_audio = await self.session.process_audio_chunk_async(audio_bytes)
+                                    if hasattr(session_ref, 'process_audio_chunk_async'):
+                                        processed_audio = await session_ref.process_audio_chunk_async(audio_bytes)
                                     else:
                                         # Fallback (should not happen if client updated)
-                                        processed_audio = self.session._audio_processor.process_chunk(audio_bytes)
+                                        processed_audio = session_ref._audio_processor.process_chunk(audio_bytes)
                                         
                                     # RNNoise可能返回空字节（缓冲中），跳过
                                     if len(processed_audio) == 0:
@@ -4464,6 +4552,12 @@ class LLMSessionManager:
                                 except Exception as e:
                                     logger.error(f"💥 音频预处理失败: {e}")
                                     return
+                        if (
+                            self.session is not session_ref
+                            or not self.is_active
+                            or self._audio_stream_epoch != audio_epoch
+                        ):
+                            return
                         
                         # 热切换期间或推送缓存期间，缓存处理后的音频（16kHz，已降噪）
                         if self.is_hot_swap_imminent or self.is_flushing_hot_swap_cache:
@@ -4478,7 +4572,7 @@ class LLMSessionManager:
                             return  # 静默拒绝，不记录log
                         
                         # 再次检查session状态（防止在处理过程中session被关闭）
-                        if not self.session or not hasattr(self.session, 'ws') or not self.session.ws:
+                        if not session_ref or not hasattr(session_ref, 'ws') or not session_ref.ws:
                             # 限流log：2秒内只记录一次
                             current_time = asyncio.get_event_loop().time()
                             if current_time - self.last_audio_send_error_time > self.audio_error_log_interval:
@@ -4487,7 +4581,7 @@ class LLMSessionManager:
                             return
                         
                         # 检查致命错误状态
-                        if hasattr(self.session, '_fatal_error_occurred') and self.session._fatal_error_occurred:
+                        if hasattr(session_ref, '_fatal_error_occurred') and session_ref._fatal_error_occurred:
                             current_time = asyncio.get_event_loop().time()
                             if current_time - self.last_audio_send_error_time > self.audio_error_log_interval:
                                 logger.warning("⚠️ Session已发生致命错误，跳过音频数据发送")
@@ -4495,7 +4589,7 @@ class LLMSessionManager:
                             return
                         
                         # 发送音频到session（stream_audio会检测是否48kHz，16kHz不会再处理）
-                        await self.session.stream_audio(processed_audio)
+                        await session_ref.stream_audio(processed_audio)
                     else:
                         logger.error(f"💥 Stream: Invalid audio data type: {type(data)}")
                         return
@@ -4599,6 +4693,9 @@ class LLMSessionManager:
                 # 即使会话未完全激活（如 start_session 失败），也要清理
                 # 可能残留的 TTS 重试状态，防止污染下一次会话
                 self._reset_tts_retry_state()
+                self._audio_stream_epoch += 1
+                self._clear_audio_stream_queue("end_session_inactive")
+                self._cancel_audio_stream_worker("end_session_inactive")
                 _inactive_early = True
                 # start_tts_if_needed 可能已启动 TTS 线程/handler，
                 # 但 is_active 尚未置 True 就失败了——快照引用以便释放锁后清理
@@ -4627,6 +4724,9 @@ class LLMSessionManager:
         async with self.lock:
             # Re-check after await: another task may have deactivated or swapped session.
             if not self.is_active:
+                self._audio_stream_epoch += 1
+                self._clear_audio_stream_queue("end_session_post_init_inactive")
+                self._cancel_audio_stream_worker("end_session_post_init_inactive")
                 return
             if expected_session is not None and expected_session is not self.session:
                 logger.info("⏭️ end_session: expected_session stale (post-init), skipping")
@@ -4640,6 +4740,9 @@ class LLMSessionManager:
             # 会穿过，产生孤儿 OmniRealtimeClient（silence_check_task/ws 泄漏）。
             if reset_starting_count:
                 self._starting_session_count = 0
+            self._audio_stream_epoch += 1
+            self._clear_audio_stream_queue("end_session")
+            self._cancel_audio_stream_worker("end_session")
 
             # Activity tracker：session 关闭，voice_engaged 不再可能触发。
             self._activity_tracker.on_voice_mode(False)
