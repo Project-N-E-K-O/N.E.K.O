@@ -3,22 +3,11 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from game_route_test_helpers import (
+    mark_game_started as _mark_game_started,
+    set_soccer_game_memory_policy as _set_soccer_game_memory_policy,
+)
 from main_routers import game_router
-
-
-@pytest.fixture(autouse=True)
-def _reset_game_sessions():
-    snapshot = dict(game_router._game_sessions)
-    route_snapshot = dict(game_router._game_route_states)
-    game_router._game_sessions.clear()
-    game_router._game_route_states.clear()
-    try:
-        yield
-    finally:
-        game_router._game_sessions.clear()
-        game_router._game_sessions.update(snapshot)
-        game_router._game_route_states.clear()
-        game_router._game_route_states.update(route_snapshot)
 
 
 class _FakeRequest:
@@ -27,31 +16,6 @@ class _FakeRequest:
 
     async def json(self):
         return self._payload
-
-
-def _mark_game_started(state, elapsed_ms=12_000):
-    state["game_started"] = True
-    state["game_started_elapsed_ms"] = elapsed_ms
-    state["game_started_at"] = game_router.time.time() - (elapsed_ms / 1000.0)
-    return state
-
-
-def _set_soccer_game_memory_policy(
-    state,
-    *,
-    enabled=True,
-    player_interaction=None,
-    event_reply=None,
-    archive=None,
-    postgame_context=None,
-):
-    state["soccer_game_memory_enabled"] = enabled
-    state["soccer_game_memory_player_interaction_enabled"] = enabled if player_interaction is None else player_interaction
-    state["soccer_game_memory_event_reply_enabled"] = enabled if event_reply is None else event_reply
-    state["soccer_game_memory_archive_enabled"] = enabled if archive is None else archive
-    state["soccer_game_memory_postgame_context_enabled"] = enabled if postgame_context is None else postgame_context
-    state["game_memory_enabled"] = enabled
-    return state
 
 
 @pytest.mark.unit
@@ -68,8 +32,8 @@ def test_parse_control_instructions_extracts_json_line():
 
 @pytest.mark.unit
 def test_soccer_prompt_marks_game_event_text_as_not_user_speech():
-    assert "textRaw 只是游戏事件原文或你这边的内建气泡，不是主人说的话" in game_router._SOCCER_SYSTEM_PROMPT
-    assert "goal-conceded=主人进球/你丢球" in game_router._SOCCER_SYSTEM_PROMPT
+    assert "textRaw 只是游戏事件原文或你这边的内建气泡，不是玩家说的话" in game_router._SOCCER_SYSTEM_PROMPT
+    assert "goal-conceded=玩家进球/你丢球" in game_router._SOCCER_SYSTEM_PROMPT
 
 
 @pytest.mark.unit
@@ -196,14 +160,14 @@ def test_soccer_anger_pressure_cap_clamps_max_control_after_limit():
         "control": {
             "mood": "angry",
             "difficulty": "max",
-            "reason": "继续惩罚主人",
+            "reason": "继续惩罚玩家",
         },
     }
 
     adjusted = game_router._apply_soccer_anger_pressure_cap(result, event)
 
     assert adjusted["control"]["difficulty"] == "lv4"
-    assert "继续惩罚主人" in adjusted["control"]["reason"]
+    assert "继续惩罚玩家" in adjusted["control"]["reason"]
     assert "体力上限" in adjusted["control"]["reason"]
     assert adjusted["anger_pressure_cap"]["adjusted"] is True
 
@@ -248,7 +212,7 @@ def test_pregame_opening_line_is_short_and_does_not_repeat_invite():
     too_long, too_long_invalid = game_router._normalize_soccer_pregame_context({
         "gameStance": "soft_teasing",
         "initialDifficulty": "lv2",
-        "openingLine": "这次要认真看着我踢球哦主人不许走神",
+        "openingLine": "这次要认真看着我踢球哦玩家不许走神",
     })
     assert too_long_invalid is True
     assert too_long["openingLine"] == ""
@@ -257,9 +221,9 @@ def test_pregame_opening_line_is_short_and_does_not_repeat_invite():
         {
             "gameStance": "competitive",
             "initialDifficulty": "lv2",
-            "openingLine": "来踢球吧，主人。",
+            "openingLine": "来踢球吧，玩家。",
         },
-        neko_invite_text="来踢球吧，主人。",
+        neko_invite_text="来踢球吧，玩家。",
     )
     assert repeated["openingLine"] == ""
 
@@ -269,7 +233,7 @@ def test_game_prompt_includes_pregame_context():
     prompt = game_router._build_game_prompt(
         "soccer",
         "Lan",
-        "喜欢陪主人玩。",
+        "喜欢陪玩家玩。",
         {"gameStance": "withdrawn", "tonePolicy": "低声回应。"},
     )
 
@@ -284,7 +248,7 @@ async def test_build_pregame_context_uses_empty_history_fallback(monkeypatch):
     monkeypatch.setattr(game_router.random, "choice", lambda seq: "lv2")
     monkeypatch.setattr(game_router, "_get_current_character_info", lambda: {
         "lanlan_name": "Lan",
-        "master_name": "主人",
+        "master_name": "玩家",
         "lanlan_prompt": "喜欢踢球。",
         "model": "fake",
         "base_url": "http://fake",
@@ -326,7 +290,7 @@ async def test_build_pregame_context_invalid_json_falls_back(monkeypatch):
     monkeypatch.setattr(game_router.random, "choice", lambda seq: "lv3")
     monkeypatch.setattr(game_router, "_get_current_character_info", lambda: {
         "lanlan_name": "Lan",
-        "master_name": "主人",
+        "master_name": "玩家",
         "lanlan_prompt": "",
         "model": "fake",
         "base_url": "http://fake",
@@ -335,7 +299,7 @@ async def test_build_pregame_context_invalid_json_falls_back(monkeypatch):
     })
 
     async def fake_fetch(_lanlan_name):
-        return "主人 | 来踢球", ""
+        return "玩家 | 来踢球", ""
 
     async def fake_ai(**_kwargs):
         raise ValueError("bad json")
@@ -363,7 +327,7 @@ async def test_build_pregame_context_partial_invalid_fields(monkeypatch):
     monkeypatch.setattr(game_router.random, "choice", lambda seq: "lv2")
     monkeypatch.setattr(game_router, "_get_current_character_info", lambda: {
         "lanlan_name": "Lan",
-        "master_name": "主人",
+        "master_name": "玩家",
         "lanlan_prompt": "",
         "model": "fake",
         "base_url": "http://fake",
@@ -372,7 +336,7 @@ async def test_build_pregame_context_partial_invalid_fields(monkeypatch):
     })
 
     async def fake_fetch(_lanlan_name):
-        return "主人 | 你这个笨蛋！", ""
+        return "玩家 | 你这个笨蛋！", ""
 
     async def fake_ai(**_kwargs):
         return {
@@ -408,7 +372,7 @@ def test_game_archive_memory_payload_uses_system_note_shape():
         "game_type": "soccer",
         "session_id": "match_1",
         "lanlan_name": "Lan",
-        "summary": "soccer 小游戏结束。最终/最近比分：主人 1 : 4 Lan。",
+        "summary": "soccer 小游戏结束。最终/最近比分：玩家 1 : 4 Lan。",
         "game_memory_tail_count": 2,
         "soccer_game_memory_enabled": True,
         "soccer_game_memory_player_interaction_enabled": True,
@@ -416,11 +380,11 @@ def test_game_archive_memory_payload_uses_system_note_shape():
         "soccer_game_memory_archive_enabled": True,
         "soccer_game_memory_postgame_context_enabled": True,
         "memory_highlights": {
-            "important_records": ["主人要求温柔一点，你改成让球式回应。"],
+            "important_records": ["玩家要求温柔一点，你改成让球式回应。"],
             "important_game_events": ["猫娘大比分领先后开始放水。"],
-            "state_carryback": "赛后猫娘仍有点得意，但愿意继续陪主人玩。",
+            "state_carryback": "赛后猫娘仍有点得意，但愿意继续陪玩家玩。",
             "postgame_tone": "得意但放软",
-            "memory_summary": "主人希望猫娘温柔一点，猫娘开始让球。",
+            "memory_summary": "玩家希望猫娘温柔一点，猫娘开始让球。",
         },
         "last_full_dialogues": [
             {"type": "user", "text": "温柔一点"},
@@ -436,22 +400,22 @@ def test_game_archive_memory_payload_uses_system_note_shape():
     assert messages[0]["content"][0]["text"] == "温柔一点"
     assert messages[1]["content"][0]["text"] == "好好好，让你踢。"
     system_text = messages[2]["content"][0]["text"]
-    assert "游戏模块归档，不是主人逐字发言" in system_text
+    assert "游戏模块归档，不是玩家逐字发言" in system_text
     assert "soccer 小游戏结束" not in system_text
-    assert "官方比分：主人 1 : 4 Lan。口头让步不改官方比分。" in system_text
+    assert "官方比分：玩家 1 : 4 Lan。口头让步不改官方比分。" in system_text
     assert "官方比分永远以 finalScore / last_state.score 为准" not in system_text
     assert "口头让步规则" not in system_text
     assert "重要互动：" in system_text
-    assert "主人要求温柔一点，你改成让球式回应。" in system_text
+    assert "玩家要求温柔一点，你改成让球式回应。" in system_text
     assert "猫娘记住的比赛事件：" in system_text
-    assert "赛后状态延续：赛后猫娘仍有点得意，但愿意继续陪主人玩。" in system_text
+    assert "赛后状态延续：赛后猫娘仍有点得意，但愿意继续陪玩家玩。" in system_text
     assert "赛后语气：得意但放软" in system_text
-    assert "后续记忆摘要：主人希望猫娘温柔一点，猫娘开始让球。" in system_text
+    assert "后续记忆摘要：玩家希望猫娘温柔一点，猫娘开始让球。" in system_text
     assert "倒数 2 条规则" in system_text
     assert "本条 system 归档不计入倒数 2 条" in system_text
     assert "本局记录了" not in system_text
     assert "外部接管模式" not in system_text
-    assert "主人最近在比赛里说：温柔一点" not in system_text
+    assert "玩家最近在比赛里说：温柔一点" not in system_text
     assert "你最后回应：好好好，让你踢。" not in system_text
 
 
@@ -487,7 +451,7 @@ def test_game_archive_memory_tail_uses_game_dialog_order_without_event_labels():
     assert messages[1]["content"][0]["text"] == "你刚才说算我赢？"
     assert messages[2]["content"][0]["text"] == "那是哄你的，比分可没改哦。"
     system_text = messages[-1]["content"][0]["text"]
-    assert "官方比分：主人 9 : 20 Lan。口头让步不改官方比分。" in system_text
+    assert "官方比分：玩家 9 : 20 Lan。口头让步不改官方比分。" in system_text
     assert "口头让步规则" not in system_text
     assert "倒数 4 条规则" in system_text
 
@@ -514,7 +478,7 @@ def test_game_archive_memory_prefers_final_score_over_oral_concession_text():
     messages = game_router._build_game_archive_memory_messages(archive, tail_count=1)
     system_text = messages[-1]["content"][0]["text"]
 
-    assert "官方比分：主人 9 : 20 Lan。口头让步不改官方比分。" in system_text
+    assert "官方比分：玩家 9 : 20 Lan。口头让步不改官方比分。" in system_text
     assert "官方比分永远以 finalScore / last_state.score 为准" not in system_text
     assert "口头让步规则" not in system_text
     assert messages[0]["role"] == "assistant"
@@ -574,7 +538,7 @@ def test_postgame_event_aligns_current_state_score_to_final_score():
         {"max_chars": 60},
     )
 
-    assert event["scoreText"] == "主人 6 : 14 Lan"
+    assert event["scoreText"] == "玩家 6 : 14 Lan"
     assert event["finalScore"] == {"player": 6, "ai": 14}
     assert event["currentState"]["score"] == {"player": 6, "ai": 14}
     assert event["currentState"]["round"] == 17
@@ -592,7 +556,7 @@ def test_game_archive_summary_keeps_score_not_counters():
         ],
     )
 
-    assert summary == "soccer 小游戏结束。最终/最近比分：主人 0 : 5 Lan。"
+    assert summary == "soccer 小游戏结束。最终/最近比分：玩家 0 : 5 Lan。"
     assert "本局记录了" not in summary
     assert "外部接管模式" not in summary
 
@@ -606,10 +570,10 @@ def test_game_event_memory_line_does_not_attribute_event_text_to_user():
         "result_line": "又耍赖？我都懒得防你了，随便你吧。",
     })
 
-    assert "游戏事件 goal-conceded（主人进球 / 猫娘丢球）" in line
+    assert "游戏事件 goal-conceded（玩家进球 / 猫娘丢球）" in line
     assert "事件原文「不算不算嘛」" in line
     assert "猫娘回应「又耍赖？我都懒得防你了，随便你吧。」" in line
-    assert "主人：" not in line
+    assert "玩家：" not in line
 
 
 @pytest.mark.unit
@@ -634,10 +598,10 @@ def test_memory_highlight_source_explains_game_event_text_is_not_user_speech():
         ],
     })
 
-    assert "只有“主人：...”行是主人亲口说的话" in source
-    assert "事件原文是游戏模块/猫娘气泡或事件标签，不要归因给主人" in source
-    assert "游戏事件 goal-conceded（主人进球 / 猫娘丢球）" in source
-    assert "主人分数在前，当前角色分数在后" in source
+    assert "只有“玩家：...”行是玩家亲口说的话" in source
+    assert "事件原文是游戏模块/猫娘气泡或事件标签，不要归因给玩家" in source
+    assert "游戏事件 goal-conceded（玩家进球 / 猫娘丢球）" in source
+    assert "玩家分数在前，当前角色分数在后" in source
     assert "官方比分，来源优先级为 finalScore / last_state.score" in source
     assert "口头让步、安抚或玩笑" in source
 
@@ -685,7 +649,7 @@ def test_memory_highlight_prompt_rejects_bare_or_reversed_scores(monkeypatch):
     assert result["important_game_events"] == []
     assert "不要写无主体裸比分" in captured["system"]
     assert "不要前后混用不同视角" in captured["system"]
-    assert "主人分数在前，当前角色分数在后" in captured["user"]
+    assert "玩家分数在前，当前角色分数在后" in captured["user"]
 
 
 @pytest.mark.unit
@@ -1032,7 +996,7 @@ async def test_route_start_accepts_neko_invite_context(monkeypatch):
 
     async def fake_pregame_context(**kwargs):
         assert kwargs["neko_initiated"] is True
-        assert kwargs["neko_invite_text"] == "来踢球吧，主人。"
+        assert kwargs["neko_invite_text"] == "来踢球吧，玩家。"
         return (
             {
                 **game_router._default_soccer_pregame_context(initial_difficulty="lv3"),
@@ -1051,7 +1015,7 @@ async def test_route_start_accepts_neko_invite_context(monkeypatch):
             "lanlan_name": "Lan",
             "session_id": "match_1",
             "nekoInitiated": True,
-            "nekoInviteText": "来踢球吧，主人。",
+            "nekoInviteText": "来踢球吧，玩家。",
             "gameMemoryTailCount": 3,
         }),
     )
@@ -1059,7 +1023,7 @@ async def test_route_start_accepts_neko_invite_context(monkeypatch):
     assert result["ok"] is True
     state = result["state"]
     assert state["nekoInitiated"] is True
-    assert state["nekoInviteText"] == "来踢球吧，主人。"
+    assert state["nekoInviteText"] == "来踢球吧，玩家。"
     assert state["preGameContext"]["launchIntent"] == "neko_invite"
     assert state["preGameContext"]["initialDifficulty"] == "lv3"
     assert state["preGameContext"]["openingLine"] == "看我这一脚"
@@ -1980,7 +1944,7 @@ async def test_game_end_delivers_one_shot_postgame_text_bubble(monkeypatch):
         assert session_id == "match_1"
         assert event["kind"] == "postgame"
         assert event["lastUserText"] == "我好像踢不进去。"
-        assert event["scoreText"] == "主人 2 : 4 Lan"
+        assert event["scoreText"] == "玩家 2 : 4 Lan"
         return {
             "line": "刚才那局不算，我下次慢点陪你踢。",
             "llm_source": {"provider": "fake"},

@@ -22,6 +22,12 @@ import sys
 import pytest
 
 
+_GAME_ROUTE_TEST_MODULES = {
+    "test_game_router",
+    "test_game_context_organizer",
+}
+
+
 @pytest.fixture(autouse=True)
 def _reset_shared_state():
     shared_state = sys.modules.get("main_routers.shared_state")
@@ -40,3 +46,16 @@ def _reset_shared_state():
 
         shared_state._state.clear()
         shared_state._state.update(snapshot)
+
+
+@pytest.fixture(autouse=True)
+def _reset_game_sessions(request):
+    module_name = getattr(request.module, "__name__", "").split(".")[-1]
+    if module_name not in _GAME_ROUTE_TEST_MODULES:
+        yield
+        return
+
+    from game_route_test_helpers import reset_game_route_state
+
+    with reset_game_route_state():
+        yield

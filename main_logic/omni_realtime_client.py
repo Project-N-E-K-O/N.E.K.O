@@ -1696,9 +1696,11 @@ class OmniRealtimeClient:
 
         manual_qwen_turn = bool(qwen_manual_commit and "qwen" in self._model_lower and not self._is_gemini)
         restore_qwen_vad = False
+        restore_qwen_create_response = True
         restore_instructions_after_manual_nudge = False
         previous_instructions = None
         if manual_qwen_turn:
+            restore_qwen_create_response = not self._game_route_stt_only
             one_shot_instruction = str(instruction or "").strip()
             if one_shot_instruction:
                 previous_instructions = self._active_instructions or self.instructions or ""
@@ -1841,7 +1843,9 @@ class OmniRealtimeClient:
             if restore_qwen_vad and not self._fatal_error_occurred and self.ws is not None:
                 try:
                     await self.update_session({
-                        "turn_detection": self._qwen_server_vad_turn_detection_config(create_response=True)
+                        "turn_detection": self._qwen_server_vad_turn_detection_config(
+                            create_response=restore_qwen_create_response
+                        )
                     })
                     logger.info("prompt_ephemeral: Qwen server VAD restored after manual nudge")
                 except Exception as e:

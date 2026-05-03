@@ -1896,6 +1896,7 @@
         "deviceSelected": "{{device}} 선택됨",
         "micAccessDenied": "마이크에 액세스할 수 없습니다.",
         "gameVoiceSttMicPermissionDenied": "게임 음성 전사에 마이크 권한이 없습니다. 브라우저 권한을 확인하세요.",
+        "gameVoiceSttNotSupported": "현재 브라우저는 게임 음성 전사를 지원하지 않습니다. 당분간 텍스트 입력을 사용하세요.",
         "micMuted": "마이크가 음소거되었습니다",
         "micUnmuted": "마이크 음소거가 해제되었습니다",
         "speaking": "말하기...",

@@ -1320,7 +1320,7 @@ class LLMSessionManager:
             # 维持 voice_engaged 状态。
             self._activity_tracker.on_voice_rms()
         transcript_text = transcript.strip()
-        if transcript_text and self._is_game_route_active():
+        if is_voice_source and transcript_text and self._is_game_route_active():
             try:
                 from main_routers.game_router import _get_active_game_route_state, route_external_voice_transcript
 
@@ -1592,8 +1592,6 @@ class LLMSessionManager:
             return {"ok": False, "reason": "missing_line", "mirrored": False}
 
         mirror_turn_id = turn_id or request_id or str(uuid4())
-        previous_request_id = self._active_text_request_id
-        self._active_text_request_id = request_id
         event_payload = event if isinstance(event, dict) else {}
         metadata = self._build_game_route_sync_meta(
             source=source,
@@ -1601,25 +1599,23 @@ class LLMSessionManager:
             session_id=session_id,
             event=event_payload,
         )
-        try:
-            await self.send_lanlan_response(
-                clean,
-                is_first_chunk=True,
-                turn_id=mirror_turn_id,
-                metadata=metadata,
-                track_ai_turn=False,
-                cache_for_new_session=False,
+        await self.send_lanlan_response(
+            clean,
+            is_first_chunk=True,
+            turn_id=mirror_turn_id,
+            metadata=metadata,
+            request_id=request_id,
+            track_ai_turn=False,
+            cache_for_new_session=False,
+        )
+        if finalize_turn:
+            await self._emit_game_route_turn_end(
+                request_id=request_id,
+                game_type=game_type,
+                session_id=session_id,
+                event=event_payload,
+                log_context="game mirror",
             )
-            if finalize_turn:
-                await self._emit_game_route_turn_end(
-                    request_id=request_id,
-                    game_type=game_type,
-                    session_id=session_id,
-                    event=event_payload,
-                    log_context="game mirror",
-                )
-        finally:
-            self._active_text_request_id = previous_request_id
         return {
             "ok": True,
             "mirrored": True,

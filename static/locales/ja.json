@@ -1896,6 +1896,7 @@
         "deviceSelected": "{{device}}を選択しました",
         "micAccessDenied": "マイクにアクセスできません",
         "gameVoiceSttMicPermissionDenied": "ゲーム音声文字起こしにマイク権限がありません。ブラウザの権限を確認してください。",
+        "gameVoiceSttNotSupported": "このブラウザはゲーム音声文字起こしに対応していません。しばらくテキスト入力を使ってください。",
         "micMuted": "マイクをミュートしました",
         "micUnmuted": "マイクのミュートを解除しました",
         "speaking": "話し中...",

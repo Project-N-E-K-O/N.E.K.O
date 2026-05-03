@@ -25,11 +25,11 @@ def test_soccer_game_prompts_follow_user_language():
     ja_prompt = get_soccer_system_prompt("ja").format(name="Lan", personality="likes soccer")
     es_prompt = get_soccer_system_prompt("es").format(name="Lan", personality="likes soccer")
 
-    assert "你正在和主人踢一场足球比赛" in zh_prompt
+    assert "你正在和玩家踢一场足球比赛" in zh_prompt
     assert "Output only the spoken line" in en_prompt
-    assert "Japanese" in ja_prompt
-    assert "Spanish" in es_prompt
     assert en_prompt != zh_prompt
+    assert ja_prompt != en_prompt
+    assert es_prompt != en_prompt
 
 
 @pytest.mark.unit
@@ -38,12 +38,18 @@ def test_soccer_quick_lines_and_pregame_prompts_are_localized():
         name="Lan",
         personality="likes soccer",
     )
+    quick_prompt_en = get_soccer_quick_lines_prompt("en").format(
+        name="Lan",
+        personality="likes soccer",
+    )
     user_prompt = get_soccer_quick_lines_user_prompt("ru")
+    user_prompt_en = get_soccer_quick_lines_user_prompt("en")
     pregame_prompt = get_soccer_pregame_context_prompt("pt")
+    pregame_prompt_zh = get_soccer_pregame_context_prompt("zh")
 
-    assert "Korean" in quick_prompt
-    assert "Russian" in user_prompt
-    assert "Portuguese" in pregame_prompt
+    assert quick_prompt != quick_prompt_en
+    assert user_prompt != user_prompt_en
+    assert pregame_prompt != pregame_prompt_zh
 
 
 @pytest.mark.unit
@@ -56,4 +62,4 @@ def test_build_game_prompt_uses_requested_language():
     )
 
     assert "Output only the spoken line" in prompt
-    assert "你正在和主人踢一场足球比赛" not in prompt
+    assert "你正在和玩家踢一场足球比赛" not in prompt

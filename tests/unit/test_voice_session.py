@@ -266,6 +266,35 @@ async def test_prompt_ephemeral_manual_qwen_uses_one_shot_instruction(monkeypatc
     assert any(event.get("type") == "input_audio_buffer.commit" for event in events)
     assert any(event.get("type") == "response.create" for event in events)
 
+
+@pytest.mark.unit
+async def test_prompt_ephemeral_manual_qwen_restores_stt_only_turn_detection(monkeypatch):
+    import main_logic.omni_realtime_client as realtime_mod
+
+    client, ws = _stt_only_client("qwen3-omni-flash-realtime", api_type="qwen")
+    monkeypatch.setattr(realtime_mod, "_load_proactive_audio", lambda _filename: b"\x00" * 320)
+
+    enabled = await client.set_game_route_stt_only(True)
+    assert enabled is True
+    ws.send.reset_mock()
+
+    delivered = await client.prompt_ephemeral(
+        "下一句必须自然接刚才这局足球小游戏。",
+        language="zh",
+        qwen_manual_commit=True,
+    )
+
+    assert delivered is True
+    events = [json.loads(call_args[0][0]) for call_args in ws.send.call_args_list]
+    turn_detection_updates = [
+        event["session"]["turn_detection"]
+        for event in events
+        if event.get("type") == "session.update" and "turn_detection" in event.get("session", {})
+    ]
+    assert turn_detection_updates[0] is None
+    assert turn_detection_updates[-1]["create_response"] is False
+
+
 @pytest.mark.unit
 async def test_receive_text_delta(realtime_client):
     """Test handling of incoming text delta events via handle_messages."""

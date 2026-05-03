@@ -1896,6 +1896,7 @@
         "deviceSelected": "Selected {{device}}",
         "micAccessDenied": "Cannot access microphone",
         "gameVoiceSttMicPermissionDenied": "Game voice transcription does not have microphone permission. Please check your browser permissions.",
+        "gameVoiceSttNotSupported": "This browser does not support game voice transcription. Please use text input for now.",
         "micMuted": "Microphone muted",
         "micUnmuted": "Microphone unmuted",
         "speaking": "Speaking...",

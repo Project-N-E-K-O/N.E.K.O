@@ -1896,6 +1896,7 @@
         "deviceSelected": "已選擇 {{device}}",
         "micAccessDenied": "無法訪問麥剋風",
         "gameVoiceSttMicPermissionDenied": "遊戲語音轉寫沒有麥克風權限，請檢查瀏覽器權限。",
+        "gameVoiceSttNotSupported": "目前瀏覽器不支援遊戲語音轉寫，請暫時使用文字輸入。",
         "micMuted": "麥剋風已靜音",
         "micUnmuted": "麥剋風已取消靜音",
         "speaking": "正在語音...",

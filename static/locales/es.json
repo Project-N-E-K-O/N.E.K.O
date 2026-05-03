@@ -1896,6 +1896,7 @@
         "deviceSelected": "Seleccionado {{device}}",
         "micAccessDenied": "No puedo acceder al micrófono",
         "gameVoiceSttMicPermissionDenied": "La transcripción de voz del juego no tiene permiso para usar el micrófono. Revisa los permisos del navegador.",
+        "gameVoiceSttNotSupported": "Este navegador no admite la transcripción de voz del juego. Usa la entrada de texto por ahora.",
         "micMuted": "Micrófono silenciado",
         "micUnmuted": "Micrófono activado",
         "speaking": "Discurso...",

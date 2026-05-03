@@ -1896,6 +1896,7 @@
         "deviceSelected": "已选择 {{device}}",
         "micAccessDenied": "无法访问麦克风",
         "gameVoiceSttMicPermissionDenied": "游戏语音转写没有麦克风权限，请检查浏览器权限。",
+        "gameVoiceSttNotSupported": "当前浏览器不支持游戏语音转写，请暂时使用文本输入。",
         "micMuted": "麦克风已静音",
         "micUnmuted": "麦克风已取消静音",
         "speaking": "正在语音...",

@@ -83,6 +83,7 @@ def _make_manager():
             "is_first_chunk": is_first_chunk,
             "turn_id": turn_id,
             "metadata": metadata,
+            "request_id": _kwargs.get("request_id"),
         })
 
     async def ensure_game_tts_runtime():
@@ -215,6 +216,7 @@ async def test_mirror_game_assistant_text_can_finalize_user_reply_turn():
 
     assert result["ok"] is True
     assert result["turn_finalized"] is True
+    assert mgr.sent_responses[0]["request_id"] == "req-user"
     assert mgr.sent_responses[0]["metadata"]["game_route"]["event"] == {
         "kind": "user-text",
         "hasUserText": True,
@@ -295,6 +297,29 @@ async def test_non_voice_transcript_reuse_keeps_existing_ordinary_flow(monkeypat
     mgr = _make_transcript_manager()
 
     monkeypatch.setattr(LLMSessionManager, "_is_game_route_active", lambda self: False)
+
+    await LLMSessionManager.handle_input_transcript(mgr, "文本复用", is_voice_source=False)
+
+    assert mgr._activity_tracker.voice_rms_count == 0
+    assert mgr._activity_tracker.user_messages == []
+    assert mgr._session_turn_count == 1
+    mgr._publish_user_utterance_to_plugin_bus.assert_not_called()
+    assert mgr.sync_message_queue.messages == [{
+        "type": "user",
+        "data": {"input_type": "transcript", "data": "文本复用"},
+    }]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_non_voice_transcript_reuse_does_not_enter_active_game_route(monkeypatch):
+    mgr = _make_transcript_manager()
+
+    async def fail_route(*_args, **_kwargs):
+        raise AssertionError("non-voice transcript reuse must not route through game voice")
+
+    monkeypatch.setattr(LLMSessionManager, "_is_game_route_active", lambda self: True)
+    monkeypatch.setattr(game_router, "route_external_voice_transcript", fail_route)
 
     await LLMSessionManager.handle_input_transcript(mgr, "文本复用", is_voice_source=False)
 

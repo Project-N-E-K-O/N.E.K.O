@@ -2,43 +2,16 @@ import asyncio
 
 import pytest
 
+from game_route_test_helpers import (
+    mark_game_started as _mark_game_started,
+    set_soccer_game_memory_policy as _set_soccer_game_memory_policy,
+)
 from main_routers import game_router
-
-
-@pytest.fixture(autouse=True)
-def _reset_game_state():
-    sessions_snapshot = dict(game_router._game_sessions)
-    routes_snapshot = dict(game_router._game_route_states)
-    game_router._game_sessions.clear()
-    game_router._game_route_states.clear()
-    try:
-        yield
-    finally:
-        game_router._game_sessions.clear()
-        game_router._game_sessions.update(sessions_snapshot)
-        game_router._game_route_states.clear()
-        game_router._game_route_states.update(routes_snapshot)
 
 
 def _new_state(monkeypatch):
     monkeypatch.setattr(game_router, "get_session_manager", lambda: {})
     return game_router._activate_game_route("soccer", "match_1", "Lan")
-
-
-def _mark_game_started(state, elapsed_ms=12_000):
-    state["game_started"] = True
-    state["game_started_elapsed_ms"] = elapsed_ms
-    state["game_started_at"] = game_router.time.time() - (elapsed_ms / 1000.0)
-    return state
-
-
-def _set_soccer_game_memory_policy(state, enabled):
-    state["soccer_game_memory_enabled"] = enabled
-    state["soccer_game_memory_player_interaction_enabled"] = enabled
-    state["soccer_game_memory_event_reply_enabled"] = enabled
-    state["soccer_game_memory_archive_enabled"] = enabled
-    state["soccer_game_memory_postgame_context_enabled"] = enabled
-    state["game_memory_enabled"] = enabled
 
 
 def _append_user_line(state, index):
@@ -51,11 +24,11 @@ def _append_user_line(state, index):
 
 def _fake_success_result():
     return {
-        "rollingSummary": "主人一直在追分，猫娘用轻松语气回应。",
+        "rollingSummary": "玩家一直在追分，猫娘用轻松语气回应。",
         "signals": {
-            "主人信号": [{
-                "signalLabel": "主人在意能否追上比分",
-                "summary": "主人多次提到追分。",
+            "玩家信号": [{
+                "signalLabel": "玩家在意能否追上比分",
+                "summary": "玩家多次提到追分。",
                 "evidence": [{"id": "glog_0003", "quote": "第 3 句"}],
                 "lastRound": 3,
                 "count": 1,
@@ -114,8 +87,8 @@ async def test_context_organizer_triggers_at_15_and_keeps_recent_window(monkeypa
 
     assert len(snapshots) == 1
     assert [item["id"] for item in snapshots[0]] == [f"glog_{index:04d}" for index in range(1, 16)]
-    assert state["game_context_summary"] == "主人一直在追分，猫娘用轻松语气回应。"
-    assert state["game_context_signals"]["主人信号"][0]["signalLabel"] == "主人在意能否追上比分"
+    assert state["game_context_summary"] == "玩家一直在追分，猫娘用轻松语气回应。"
+    assert state["game_context_signals"]["玩家信号"][0]["signalLabel"] == "玩家在意能否追上比分"
     assert state["game_context_organizer"]["last_organized_id"] == "glog_0009"
     assert state["game_context_organizer"]["failure_count"] == 0
     assert state["game_context_recent_ids"] == [f"glog_{index:04d}" for index in range(10, 16)]
@@ -246,9 +219,9 @@ async def test_finalize_waits_for_running_context_organizer_before_archive(monke
     release.set()
     result = await finalize_task
 
-    assert result["archive"]["game_context_summary"] == "主人一直在追分，猫娘用轻松语气回应。"
-    assert result["archive"]["game_context_signals"]["主人信号"][0]["signalLabel"] == "主人在意能否追上比分"
-    assert submitted[0]["game_context_summary"] == "主人一直在追分，猫娘用轻松语气回应。"
+    assert result["archive"]["game_context_summary"] == "玩家一直在追分，猫娘用轻松语气回应。"
+    assert result["archive"]["game_context_signals"]["玩家信号"][0]["signalLabel"] == "玩家在意能否追上比分"
+    assert submitted[0]["game_context_summary"] == "玩家一直在追分，猫娘用轻松语气回应。"
     assert state["game_route_active"] is False
     assert state["game_context_organizer"]["running"] is False
     assert state["game_context_organizer"]["last_organized_id"] == "glog_0009"
@@ -339,10 +312,10 @@ def test_game_prompt_orders_pregame_then_rolling_context(monkeypatch):
     prompt = game_router._build_game_prompt(
         "soccer",
         "Lan",
-        "喜欢陪主人玩。",
-        {"gameStance": "soft_teasing", "tonePolicy": "轻松逗主人。"},
+        "喜欢陪玩家玩。",
+        {"gameStance": "soft_teasing", "tonePolicy": "轻松逗玩家。"},
         {
-            "summary": "前半局猫娘领先，主人开始追分。",
+            "summary": "前半局猫娘领先，玩家开始追分。",
             "signals": _fake_success_result()["signals"],
             "recent_dialogues": recent_dialogues,
             "degraded": False,
@@ -353,7 +326,7 @@ def test_game_prompt_orders_pregame_then_rolling_context(monkeypatch):
     assert prompt.index("局内滚动摘要") < prompt.index("局内信号列表")
     assert prompt.index("局内信号列表") < prompt.index("最近原文窗口")
     assert prompt.index("最近原文窗口") < prompt.index("当前状态和当前事件")
-    assert "主人在意能否追上比分" in prompt
+    assert "玩家在意能否追上比分" in prompt
 
 
 @pytest.mark.unit
@@ -361,11 +334,11 @@ def test_degraded_game_prompt_excludes_summary_and_signals():
     prompt = game_router._build_game_prompt(
         "soccer",
         "Lan",
-        "喜欢陪主人玩。",
+        "喜欢陪玩家玩。",
         {"gameStance": "neutral_play"},
         {
             "summary": "不应进入 prompt 的摘要",
-            "signals": {"主人信号": [{"signalLabel": "不应进入 prompt 的信号"}]},
+            "signals": {"玩家信号": [{"signalLabel": "不应进入 prompt 的信号"}]},
             "recent_dialogues": [{"id": "glog_0040", "type": "user", "text": "继续踢"}],
             "degraded": True,
         },
@@ -383,7 +356,7 @@ def test_degraded_game_prompt_excludes_summary_and_signals():
 async def test_refresh_game_session_instructions_rebuilds_prompt_from_context(monkeypatch):
     state = _new_state(monkeypatch)
     state["preGameContext"] = {"gameStance": "soft_teasing"}
-    state["game_context_summary"] = "主人追分后猫娘放慢了节奏。"
+    state["game_context_summary"] = "玩家追分后猫娘放慢了节奏。"
     state["game_context_signals"] = _fake_success_result()["signals"]
     _append_user_line(state, 1)
 
@@ -397,8 +370,8 @@ async def test_refresh_game_session_instructions_rebuilds_prompt_from_context(mo
     fake_session = FakeSession()
     monkeypatch.setattr(game_router, "_get_current_character_info", lambda: {
         "lanlan_name": "Lan",
-        "master_name": "主人",
-        "lanlan_prompt": "喜欢陪主人玩。",
+        "master_name": "玩家",
+        "lanlan_prompt": "喜欢陪玩家玩。",
     })
 
     entry = {"session": fake_session, "instructions": "stale instructions"}
@@ -406,8 +379,8 @@ async def test_refresh_game_session_instructions_rebuilds_prompt_from_context(mo
 
     assert len(fake_session.updates) == 1
     assert "开局上下文" in fake_session.updates[0]["instructions"]
-    assert "局内滚动摘要：主人追分后猫娘放慢了节奏。" in fake_session.updates[0]["instructions"]
-    assert "主人在意能否追上比分" in fake_session.updates[0]["instructions"]
+    assert "局内滚动摘要：玩家追分后猫娘放慢了节奏。" in fake_session.updates[0]["instructions"]
+    assert "玩家在意能否追上比分" in fake_session.updates[0]["instructions"]
     assert entry["instructions"] == fake_session.updates[0]["instructions"]
 
 
@@ -415,35 +388,35 @@ async def test_refresh_game_session_instructions_rebuilds_prompt_from_context(mo
 def test_archive_uses_context_summary_and_grouped_signals_only_as_highlight_source(monkeypatch):
     state = _new_state(monkeypatch)
     state["finalScore"] = {"player": 3, "ai": 6}
-    state["game_context_summary"] = "猫娘领先后放慢节奏，主人继续追分。"
+    state["game_context_summary"] = "猫娘领先后放慢节奏，玩家继续追分。"
     state["game_context_signals"] = _fake_success_result()["signals"]
     state["game_context_organizer"]["source"] = {"provider": "fake"}
     _append_user_line(state, 1)
 
     archive = game_router._build_game_archive(state)
     archive["memory_highlights"] = {
-        "important_records": ["主人继续追分，猫娘放慢节奏回应。"],
-        "important_game_events": ["官方比分主人 3 : 6 Lan。"],
+        "important_records": ["玩家继续追分，猫娘放慢节奏回应。"],
+        "important_game_events": ["官方比分玩家 3 : 6 Lan。"],
         "state_carryback": "猫娘赛后保持轻松陪玩状态。",
         "postgame_tone": "轻松",
-        "memory_summary": "主人和猫娘刚踢完一局足球小游戏，猫娘小幅领先。",
+        "memory_summary": "玩家和猫娘刚踢完一局足球小游戏，猫娘小幅领先。",
     }
     memory_text = game_router._build_game_archive_memory_summary_text(archive)
     highlight_source = game_router._build_game_archive_memory_highlight_source(archive)
 
-    assert archive["game_context_summary"] == "猫娘领先后放慢节奏，主人继续追分。"
-    assert archive["game_context_signals"]["主人信号"][0]["signalLabel"] == "主人在意能否追上比分"
+    assert archive["game_context_summary"] == "猫娘领先后放慢节奏，玩家继续追分。"
+    assert archive["game_context_signals"]["玩家信号"][0]["signalLabel"] == "玩家在意能否追上比分"
     assert archive["game_context_degraded"] is False
     assert "局内滚动摘要" not in memory_text
     assert "局内中文分组信号" not in memory_text
-    assert "主人在意能否追上比分" not in memory_text
+    assert "玩家在意能否追上比分" not in memory_text
     assert "重要互动：" in memory_text
-    assert "主人继续追分，猫娘放慢节奏回应。" in memory_text
+    assert "玩家继续追分，猫娘放慢节奏回应。" in memory_text
     assert "猫娘记住的比赛事件：" in memory_text
-    assert "后续记忆摘要：主人和猫娘刚踢完一局足球小游戏，猫娘小幅领先。" in memory_text
-    assert "主人最近在比赛里说：" not in memory_text
+    assert "后续记忆摘要：玩家和猫娘刚踢完一局足球小游戏，猫娘小幅领先。" in memory_text
+    assert "玩家最近在比赛里说：" not in memory_text
     assert "你最后回应：" not in memory_text
-    assert "主人在意能否追上比分" in highlight_source
+    assert "玩家在意能否追上比分" in highlight_source
     assert "筛选优先级" in highlight_source
 
 
@@ -474,7 +447,7 @@ async def test_degraded_archive_uses_minimal_memory_facts(monkeypatch):
 
     assert highlights["source"]["method"] == "degraded_minimal_facts"
     assert "局内上下文整理已降级为纯游戏模式" in memory_text
-    assert "官方比分：主人 1 : 9 Lan。口头让步不改官方比分。" in memory_text
+    assert "官方比分：玩家 1 : 9 Lan。口头让步不改官方比分。" in memory_text
     assert "不可靠关系摘要" not in memory_text
     assert "不可靠关系信号" not in memory_text
     assert "口头让步不改官方比分" in memory_text

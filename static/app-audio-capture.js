@@ -166,7 +166,7 @@
                 S.gameVoiceSttUnsupportedNotified = true;
                 console.warn('[GameVoiceSTT] 当前浏览器不支持 SpeechRecognition，无法启动游戏语音 STT gate');
                 if (typeof window.showStatusToast === 'function') {
-                    window.showStatusToast('当前浏览器不支持游戏语音转写，请暂时使用文本输入。', 4000);
+                    window.showStatusToast(window.t ? window.t('app.gameVoiceSttNotSupported') : '当前浏览器不支持游戏语音转写，请暂时使用文本输入。', 4000);
                 }
             }
             return false;

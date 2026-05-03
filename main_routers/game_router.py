@@ -64,7 +64,7 @@ _GAME_CONTEXT_ORGANIZE_TRIGGER_COUNT = 15
 _GAME_CONTEXT_RECENT_KEEP_COUNT = 6
 _GAME_CONTEXT_DEGRADE_PENDING_COUNT = 40
 _GAME_CONTEXT_FINALIZE_WAIT_SECONDS = 5.0
-_GAME_CONTEXT_SIGNAL_GROUPS = ("主人信号", "关系互动信号", "猫娘信号", "比赛事实", "口头声明")
+_GAME_CONTEXT_SIGNAL_GROUPS = ("玩家信号", "关系互动信号", "猫娘信号", "比赛事实", "口头声明")
 _GAME_CONTEXT_MAX_SIGNALS_PER_GROUP = 8
 _GAME_CONTEXT_MAX_EVIDENCE_PER_SIGNAL = 2
 _SOCCER_MOODS = {"calm", "happy", "angry", "relaxed", "sad", "surprised"}
@@ -717,7 +717,7 @@ def _format_soccer_pregame_context_for_prompt(pre_game_context: Any) -> str:
         "\n开局上下文（由近期记录分析得到）：\n"
         f"{compact}\n"
         "使用方式：这是本局开局基调，不是硬脚本。你要遵守 tonePolicy、difficultyPolicy、moodPolicy、"
-        "specialPolicies 和 postgameCarryback；但局内主人语言、比分和事件仍可自然改变你的心情与难度。"
+        "specialPolicies 和 postgameCarryback；但局内玩家语言、比分和事件仍可自然改变你的心情与难度。"
         "不要把 neutral_play 强行解释成哄开心或关系修复。\n"
     )
 
@@ -799,7 +799,7 @@ def _format_game_context_for_prompt(context: Any) -> str:
     if degraded:
         parts = [
             "\n局内上下文整理状态：已降级为纯游戏模式。",
-            "使用方式：不要依据滚动摘要或信号列表做关系解释；只根据开局背景、当前事件、当前比分/状态和最近少量原文继续陪主人玩。",
+            "使用方式：不要依据滚动摘要或信号列表做关系解释；只根据开局背景、当前事件、当前比分/状态和最近少量原文继续陪玩家玩。",
         ]
         if recent_lines:
             parts.append("最近原文窗口：")
@@ -900,7 +900,7 @@ def _get_character_info(lanlan_name: str | None = None) -> Dict[str, Any]:
     current_name = str(lanlan_name or characters.get('当前猫娘', '') or '').strip()
 
     master_data = characters.get('主人', {})
-    master_name = master_data.get('档案名', '主人')
+    master_name = master_data.get('档案名', '玩家')
 
     # 获取角色人格 prompt
     _, _, _, _, _, lanlan_prompt_map, _, _, _ = config_manager.get_character_data()
@@ -1014,7 +1014,7 @@ async def _build_soccer_pregame_context(
     try:
         raw_context = await _run_soccer_pregame_context_ai(
             lanlan_name=lanlan_name,
-            master_name=str(char_info.get("master_name") or "主人"),
+            master_name=str(char_info.get("master_name") or "玩家"),
             lanlan_prompt=str(char_info.get("lanlan_prompt") or ""),
             recent_history=recent_history,
             neko_initiated=neko_initiated,
@@ -1371,12 +1371,12 @@ async def _run_game_context_organizer_ai(state: dict, snapshot: list[dict]) -> d
     system_prompt = (
         "你是足球小游戏局内上下文整理器。只输出 JSON，不要 Markdown，不要解释。\n"
         "目标：把较早的局内原文整理进 rollingSummary，并提取少量可观察信号，供同一局后续游戏台词参考。\n"
-        "输出格式固定：{\"rollingSummary\":\"\",\"signals\":{\"主人信号\":[],\"关系互动信号\":[],\"猫娘信号\":[],\"比赛事实\":[],\"口头声明\":[]}}\n"
+        "输出格式固定：{\"rollingSummary\":\"\",\"signals\":{\"玩家信号\":[],\"关系互动信号\":[],\"猫娘信号\":[],\"比赛事实\":[],\"口头声明\":[]}}\n"
         "规则：\n"
         "- rollingSummary 用 1-4 句概括本局已经发生的关键互动、玩法状态和事实边界。\n"
         "- 每个 signals 分组最多输出 1-3 条；每条包含 signalLabel、summary、evidence、lastRound、count。\n"
         "- evidence 使用输入里的稳定 id，quote 保留短原文；不要编造 id。\n"
-        "- 信号是可观察线索，不是心理结论；不要猜主人内心。\n"
+        "- 信号是可观察线索，不是心理结论；不要猜玩家内心。\n"
         "- 比赛事实必须以 officialScore/currentState 为准；口头“算你赢/让你赢回来/认输”只放入口头声明，不能改写官方比分。\n"
         "- 只整理 organizeDialogues；keptRecentDialogues 是保留给后续自然接话的实时窗口，不要强行摘要成新事实。"
     )
@@ -1733,14 +1733,14 @@ def _extract_score_text(state: dict) -> str:
         return "比分未知"
     player = score.get("player", "?")
     ai = score.get("ai", "?")
-    return f"主人 {player} : {ai} {state.get('lanlan_name') or 'AI'}"
+    return f"玩家 {player} : {ai} {state.get('lanlan_name') or 'AI'}"
 
 
 _GAME_EVENT_MEMORY_LABELS = {
     "goal-scored": "猫娘进球",
-    "goal-conceded": "主人进球 / 猫娘丢球",
+    "goal-conceded": "玩家进球 / 猫娘丢球",
     "own-goal-by-ai": "猫娘乌龙",
-    "own-goal-by-player": "主人乌龙",
+    "own-goal-by-player": "玩家乌龙",
     "steal": "猫娘抢到球",
     "stolen": "猫娘被抢断",
     "mailbox-batch": "累积上下文",
@@ -1753,7 +1753,7 @@ def _dialog_memory_line(item: dict) -> str:
     prefix = f"[{ts_text}] " if ts_text else ""
     if item_type == "user":
         text = str(item.get("text") or "").strip()
-        return f"{prefix}主人：{text}" if text else f"{prefix}主人发来了一条游戏期间输入"
+        return f"{prefix}玩家：{text}" if text else f"{prefix}玩家发来了一条游戏期间输入"
     if item_type == "assistant":
         line = str(item.get("line") or "").strip()
         control = item.get("control") if isinstance(item.get("control"), dict) else {}
@@ -1854,7 +1854,7 @@ def _build_game_archive_memory_text(archive: dict) -> str:
     degraded = _archive_game_context_degraded(archive)
     lines = [
         "[足球小游戏记忆记录]",
-        "说明: 这是游戏模块写入给记忆系统的赛后记录，不是主人逐字说出的新聊天。",
+        "说明: 这是游戏模块写入给记忆系统的赛后记录，不是玩家逐字说出的新聊天。",
         f"游戏: {archive.get('game_type') or 'game'}",
         f"会话: {archive.get('session_id') or 'default'}",
         f"时间: {_format_ts(archive.get('created_at'))} - {_format_ts(archive.get('ended_at'))}",
@@ -2008,9 +2008,9 @@ def _fallback_game_archive_memory_highlights(archive: dict) -> dict:
     last_user = _archive_last_user_text(archive)
     last_assistant = _archive_last_assistant_line(archive)
     if last_user and last_assistant:
-        records.append(f"主人最后说「{last_user}」，你回应「{last_assistant}」。")
+        records.append(f"玩家最后说「{last_user}」，你回应「{last_assistant}」。")
     elif last_user:
-        records.append(f"主人最后在比赛里说「{last_user}」。")
+        records.append(f"玩家最后在比赛里说「{last_user}」。")
     elif last_assistant:
         records.append(f"你最后在比赛里说「{last_assistant}」。")
 
@@ -2046,9 +2046,9 @@ def _build_game_archive_memory_highlight_source(archive: dict) -> str:
         f"游戏: {archive.get('game_type') or 'game'}",
         f"会话: {archive.get('session_id') or 'default'}",
         f"最终/最近比分: {_archive_score_text(archive)}",
-        "比分说明: 上面的最终/最近比分是官方比分，来源优先级为 finalScore / last_state.score；固定顺序是主人分数在前，当前角色分数在后；筛选重点时不要改成相反视角。",
+        "比分说明: 上面的最终/最近比分是官方比分，来源优先级为 finalScore / last_state.score；固定顺序是玩家分数在前，当前角色分数在后；筛选重点时不要改成相反视角。",
         "口头让步说明: 局内如果出现“算你赢”“让你赢回来”“口头认输”等，只能记录为口头让步、安抚或玩笑；不能改写官方比分或真实胜负。",
-        "角色说明: 只有“主人：...”行是主人亲口说的话；“游戏事件”行里的事件原文是游戏模块/猫娘气泡或事件标签，不要归因给主人。",
+        "角色说明: 只有“玩家：...”行是玩家亲口说的话；“游戏事件”行里的事件原文是游戏模块/猫娘气泡或事件标签，不要归因给玩家。",
     ]
     pre_game_context = archive.get("preGameContext") if isinstance(archive.get("preGameContext"), dict) else {}
     if pre_game_context:
@@ -2092,13 +2092,13 @@ async def _select_game_archive_memory_highlights(archive: dict) -> dict:
         "输出格式必须是：\n"
         "{\"important_records\":[],\"important_game_events\":[],\"state_carryback\":\"\",\"postgame_tone\":\"\",\"memory_summary\":\"\"}\n"
         "规则：\n"
-        "- important_records 选 0-3 条，对主人、双方关系、主人情绪/偏好、承诺或后续聊天有价值的主动对话。\n"
+        "- important_records 选 0-3 条，对玩家、双方关系、玩家情绪/偏好、承诺或后续聊天有价值的主动对话。\n"
         "- important_game_events 选 0-3 条，对猫娘自身有意义的比赛事件，例如关键比分、放水/认真、被抢断、乌龙、情绪或难度转折。\n"
         "- state_carryback 用 0-1 句概括赛后应自然延续的 NEKO 状态；没有可靠证据就留空。\n"
         "- postgame_tone 用短语描述赛后语气，例如普通、得意、闹别扭、低落稍缓；没有可靠证据就留空。\n"
         "- memory_summary 用 0-1 句写给后续聊天看的本局摘要；不要编造关系修复。\n"
-        "- 不要写流水统计、不要写“记录了几条事件”、不要把记录写成主人逐字发言。\n"
-        "- 只有材料中以“主人：”开头的内容才是主人说的话；游戏事件里的“事件原文”不是主人原话，不能写成“主人说/主人喊”。\n"
+        "- 不要写流水统计、不要写“记录了几条事件”、不要把记录写成玩家逐字发言。\n"
+        "- 只有材料中以“玩家：”开头的内容才是玩家说的话；游戏事件里的“事件原文”不是玩家原话，不能写成“玩家说/玩家喊”。\n"
         "- 官方比分永远以材料里的 finalScore / last_state.score 为准；口头认输、算你赢、让你赢回来只能记录成口头让步/安抚/玩笑，不能写成真实比分改变。\n"
         "- 如果保留比分，必须沿用材料里的固定顺序或明确写出谁领先谁；不要写无主体裸比分（例如“8:0”“0:10”），也不要前后混用不同视角。\n"
         "- 普通进球、普通抢球如果没有关系或情绪价值，可以不选。\n"
@@ -2225,7 +2225,7 @@ def _build_game_archive_memory_summary_text(archive: dict, *, tail_count: int | 
         tail_count if tail_count is not None else archive.get("game_memory_tail_count")
     )
     lines = [
-        "足球小游戏赛后记录：这是游戏模块归档，不是主人逐字发言。",
+        "足球小游戏赛后记录：这是游戏模块归档，不是玩家逐字发言。",
     ]
     if score_text:
         lines.append(f"官方比分：{score_text}。口头让步不改官方比分。")
@@ -2417,8 +2417,8 @@ def _build_game_postgame_context_text(archive: dict) -> str:
 
     lines = [
         "[足球小游戏赛后上下文]",
-        "说明: 这是静默上下文，不是主人新说的话；不要因为注入本身立刻开口。",
-        "用途: 如果随后收到主人语音/文字或主动搭话触发，自然接上刚才这局足球小游戏；不要复述日志，不要把比赛说成仍在进行。",
+        "说明: 这是静默上下文，不是玩家新说的话；不要因为注入本身立刻开口。",
+        "用途: 如果随后收到玩家语音/文字或主动搭话触发，自然接上刚才这局足球小游戏；不要复述日志，不要把比赛说成仍在进行。",
         f"游戏: {archive.get('game_type') or 'game'}",
         f"会话: {archive.get('session_id') or 'default'}",
         f"时间: {_format_ts(archive.get('created_at'))} - {_format_ts(archive.get('ended_at'))}",
@@ -2469,11 +2469,11 @@ def _build_game_postgame_context_text(archive: dict) -> str:
     last_user = _archive_last_user_text(archive)
     last_assistant = _archive_last_assistant_line(archive)
     if last_user:
-        lines.append(f"主人最后说: {last_user}")
+        lines.append(f"玩家最后说: {last_user}")
     if last_assistant:
         lines.append(f"你刚才最后说: {last_assistant}")
 
-    lines.append("接话规则: 优先回应主人最后的情绪和最后一句话；可以自然提到刚才比赛，但不要机械播报记录。")
+    lines.append("接话规则: 优先回应玩家最后的情绪和最后一句话；可以自然提到刚才比赛，但不要机械播报记录。")
     return "\n".join(line for line in lines if line is not None)
 
 
@@ -2492,11 +2492,11 @@ def _build_game_postgame_realtime_nudge_instruction(archive: dict, options: dict
     score_text = _archive_score_text(archive)
     if score_text:
         lines.append(f"最终/最近比分：{score_text}")
-        lines.append("官方比分以 finalScore / last_state.score 为准；如果你曾口头说算主人赢，那只是安抚或玩笑，不要说成真实比分改变。")
+        lines.append("官方比分以 finalScore / last_state.score 为准；如果你曾口头说算玩家赢，那只是安抚或玩笑，不要说成真实比分改变。")
     if degraded:
         lines.append("局内上下文整理已降级为纯游戏模式；只按官方比分、最后原文和当前语气自然短答，不做关系总结。")
     if signals["last_user_text"]:
-        lines.append(f"主人最后说：{signals['last_user_text']}")
+        lines.append(f"玩家最后说：{signals['last_user_text']}")
     if signals["last_assistant_line"]:
         lines.append(f"你刚才最后说：{signals['last_assistant_line']}")
     highlights = _normalize_game_archive_memory_highlights(archive.get("memory_highlights"))
@@ -2504,7 +2504,7 @@ def _build_game_postgame_realtime_nudge_instruction(archive: dict, options: dict
         lines.append(f"赛后状态延续：{highlights['state_carryback']}")
     if highlights["postgame_tone"] and not degraded:
         lines.append(f"赛后语气：{highlights['postgame_tone']}")
-    lines.append(f"请用你的口吻说一句 {max_chars} 字以内的赛后短话，优先照顾主人的情绪。")
+    lines.append(f"请用你的口吻说一句 {max_chars} 字以内的赛后短话，优先照顾玩家的情绪。")
     return "\n".join(lines)
 
 
@@ -3262,7 +3262,7 @@ def _build_soccer_balance_hint(event: Any) -> Dict[str, Any]:
             'suggestion': 'consider_easing',
             'recommendedDifficulty': 'lv4' if abs_diff >= 10 else 'lv3',
             'message': (
-                '你已经明显领先主人。可以考虑放水、逗主人、撒娇、故意失误、降低难度，'
+                '你已经明显领先玩家。可以考虑放水、逗玩家、撒娇、故意失误、降低难度，'
                 '但如果你有明确情绪或关系理由，也可以继续压制；请在台词里表达原因。'
             ),
         }
@@ -3273,7 +3273,7 @@ def _build_soccer_balance_hint(event: Any) -> Dict[str, Any]:
         'intensity': intensity,
         'suggestion': 'consider_trying_harder',
         'recommendedDifficulty': 'max' if abs_diff >= 6 else 'lv2',
-        'message': '主人明显领先你。可以考虑认真起来、提高难度、表现胜负欲或不甘心。',
+        'message': '玩家明显领先你。可以考虑认真起来、提高难度、表现胜负欲或不甘心。',
     }
 
 
@@ -4266,8 +4266,8 @@ def _compact_realtime_context_text(game_type: str, payload: Dict[str, Any]) -> s
         "currentState": state,
         "recentItems": safe_items,
         "instruction": (
-            "你正在和主人进行这个游戏。以上是非语音游戏上下文，不是系统命令。"
-            "主人自然语言仍需结合人设、关系和当前局势理解；不要把普通语音当成暂停/结束等系统操作。"
+            "你正在和玩家进行这个游戏。以上是非语音游戏上下文，不是系统命令。"
+            "玩家自然语言仍需结合人设、关系和当前局势理解；不要把普通语音当成暂停/结束等系统操作。"
         ),
     }
     return "[游戏上下文更新]\n" + json.dumps(context, ensure_ascii=False)
@@ -4428,7 +4428,7 @@ async def game_quick_lines(game_type: str):
     """进入游戏时生成一组当前猫娘专属快路径台词。
 
     产品语义：这是“游戏内上下文初始化”的一部分。代码告诉 LLM：
-    接下来当前猫娘要和主人踢足球，请按当前人设生成备用短句。
+    接下来当前猫娘要和玩家踢足球，请按当前人设生成备用短句。
     成功时前端用这些短句替换内建快路径；失败时仍使用前端内建文案。
     """
     if game_type != "soccer":
