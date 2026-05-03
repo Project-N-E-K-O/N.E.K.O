@@ -347,6 +347,57 @@
         });
     }
 
+    function fetchWithTimeout(resource, options, timeoutMs) {
+        const normalizedTimeoutMs = Math.max(1000, Math.round(Number.isFinite(timeoutMs) ? timeoutMs : 5000));
+        const normalizedOptions = Object.assign({}, options || {});
+        if (typeof AbortController === 'function') {
+            const controller = new AbortController();
+            const timeoutId = window.setTimeout(() => controller.abort(), normalizedTimeoutMs);
+            normalizedOptions.signal = controller.signal;
+            return fetch(resource, normalizedOptions).finally(() => {
+                window.clearTimeout(timeoutId);
+            });
+        }
+
+        return Promise.race([
+            fetch(resource, normalizedOptions),
+            new Promise((resolve, reject) => {
+                window.setTimeout(() => reject(new Error('fetch_timeout')), normalizedTimeoutMs);
+            })
+        ]);
+    }
+
+    function resolveWithTimeout(promise, timeoutMs, fallbackValue, label) {
+        const normalizedTimeoutMs = Math.max(300, Math.round(Number.isFinite(timeoutMs) ? timeoutMs : 3000));
+        let timeoutId = 0;
+        return Promise.race([
+            Promise.resolve(promise).then(
+                (value) => ({ status: 'fulfilled', value: value }),
+                (error) => ({ status: 'rejected', error: error })
+            ),
+            new Promise((resolve) => {
+                timeoutId = window.setTimeout(() => {
+                    timeoutId = 0;
+                    resolve({ status: 'timeout' });
+                }, normalizedTimeoutMs);
+            })
+        ]).then((result) => {
+            if (timeoutId) {
+                window.clearTimeout(timeoutId);
+            }
+            if (result.status === 'timeout') {
+                if (label) {
+                    console.warn('[YuiGuide] 等待超时，使用兜底:', label);
+                }
+                return fallbackValue;
+            }
+            if (result.status === 'rejected') {
+                throw result.error;
+            }
+            return result.value;
+        });
+    }
+
     function clamp(value, min, max) {
         return Math.max(min, Math.min(max, value));
     }
@@ -1431,9 +1482,9 @@
             if (context.state === 'suspended' && typeof context.resume === 'function') {
                 await context.resume().catch(() => {});
             }
-            const response = await fetch(audioSrc, {
+            const response = await fetchWithTimeout(audioSrc, {
                 credentials: 'same-origin'
-            });
+            }, 5500);
             if (!response.ok) {
                 throw new Error('guide_audio_fetch_failed');
             }
@@ -4370,7 +4421,13 @@
             const api = this.getHomeInteractionApi();
             if (api && typeof api[methodName] === 'function') {
                 try {
-                    const apiResult = await api[methodName].apply(api, Array.isArray(args) ? args : []);
+                    const apiTimeoutMs = methodName === 'openPageWithHandoff' ? 6000 : 4200;
+                    const apiResult = await resolveWithTimeout(
+                        api[methodName].apply(api, Array.isArray(args) ? args : []),
+                        apiTimeoutMs,
+                        false,
+                        'home api ' + methodName
+                    );
                     if (apiResult) {
                         return true;
                     }
@@ -4618,11 +4675,18 @@
             const api = this.getHomeInteractionApi();
             if (api && typeof api.ensureAgentSidePanelActionVisible === 'function') {
                 try {
-                    const actionElement = await api.ensureAgentSidePanelActionVisible(toggleId, actionId, normalizedTimeoutMs);
+                    const actionElement = await resolveWithTimeout(
+                        api.ensureAgentSidePanelActionVisible(toggleId, actionId, normalizedTimeoutMs),
+                        normalizedTimeoutMs + 900,
+                        null,
+                        'ensureAgentSidePanelActionVisible'
+                    );
                     if (actionElement) {
                         await this.waitForAgentSidePanelLayoutStable(toggleId, 620);
                     }
-                    return actionElement;
+                    if (actionElement) {
+                        return actionElement;
+                    }
                 } catch (error) {
                     console.warn('[YuiGuide] ensureAgentSidePanelActionVisible 调用失败，改用本地兜底:', error);
                 }
@@ -4713,7 +4777,12 @@
                 const api = this.getHomeInteractionApi();
                 if (api && typeof api.clickAgentSidePanelAction === 'function') {
                     try {
-                        const clicked = await api.clickAgentSidePanelAction(toggleId, actionId, options || null);
+                        const clicked = await resolveWithTimeout(
+                            api.clickAgentSidePanelAction(toggleId, actionId, options || null),
+                            2600,
+                            false,
+                            'clickAgentSidePanelAction'
+                        );
                         if (clicked) {
                             return true;
                         }
@@ -4834,14 +4903,24 @@
             ], async () => {
                 const api = this.getHomeInteractionApi();
                 if (targetPage === 'plugin_dashboard' && api && typeof api.openPluginDashboard === 'function') {
-                    const childWin = await api.openPluginDashboard();
+                    const childWin = await resolveWithTimeout(
+                        api.openPluginDashboard(),
+                        3600,
+                        null,
+                        'openPluginDashboard fallback'
+                    );
                     return !!childWin;
                 }
                 if (api && typeof api.openPage === 'function') {
-                    const childWin = await api.openPage(
-                        navigation.openUrl,
-                        navigation.windowName,
-                        navigation.features || ''
+                    const childWin = await resolveWithTimeout(
+                        api.openPage(
+                            navigation.openUrl,
+                            navigation.windowName,
+                            navigation.features || ''
+                        ),
+                        3600,
+                        null,
+                        'openPage fallback'
                     );
                     return !!childWin;
                 }
@@ -4854,7 +4933,16 @@
             const api = this.getHomeInteractionApi();
             if (api && typeof api.waitForWindowOpen === 'function') {
                 try {
-                    return await api.waitForWindowOpen(windowName, timeoutMs);
+                    const apiTimeoutMs = Math.max(1000, Math.round(Number.isFinite(timeoutMs) ? timeoutMs : 6000) + 800);
+                    const openedWindow = await resolveWithTimeout(
+                        api.waitForWindowOpen(windowName, timeoutMs),
+                        apiTimeoutMs,
+                        null,
+                        'waitForWindowOpen'
+                    );
+                    if (openedWindow && !openedWindow.closed) {
+                        return openedWindow;
+                    }
                 } catch (error) {
                     console.warn('[YuiGuide] 等待子窗口打开失败，改用本地兜底:', error);
                 }
@@ -4877,7 +4965,15 @@
             const api = this.getHomeInteractionApi();
             if (api && typeof api.closeWindow === 'function') {
                 try {
-                    return !!(await api.closeWindow(windowName));
+                    const apiClosed = !!(await resolveWithTimeout(
+                        api.closeWindow(windowName),
+                        2200,
+                        false,
+                        'closeWindow'
+                    ));
+                    if (apiClosed) {
+                        return true;
+                    }
                 } catch (error) {
                     console.warn('[YuiGuide] 关闭子窗口失败，改用本地兜底:', error);
                 }
@@ -4924,46 +5020,56 @@
 
         async setAgentMasterEnabled(enabled) {
             return this.callHomeInteractionApi('setAgentMasterEnabled', [enabled], async () => {
-                const response = await fetch('/api/agent/command', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({
-                        request_id: Date.now() + '-' + Math.random().toString(36).slice(2, 8),
-                        command: 'set_agent_enabled',
-                        enabled: !!enabled
-                    })
-                });
-                if (!response.ok) {
+                try {
+                    const response = await fetchWithTimeout('/api/agent/command', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            request_id: Date.now() + '-' + Math.random().toString(36).slice(2, 8),
+                            command: 'set_agent_enabled',
+                            enabled: !!enabled
+                        })
+                    }, 3600);
+                    if (!response.ok) {
+                        return false;
+                    }
+
+                    const data = await response.json();
+                    return !!(data && data.success === true);
+                } catch (error) {
+                    console.warn('[YuiGuide] 设置 Agent 总开关超时或失败:', error);
                     return false;
                 }
-
-                const data = await response.json();
-                return !!(data && data.success === true);
             });
         }
 
         async setAgentFlagEnabled(flagKey, enabled) {
             return this.callHomeInteractionApi('setAgentFlagEnabled', [flagKey, enabled], async () => {
-                const response = await fetch('/api/agent/command', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({
-                        request_id: Date.now() + '-' + Math.random().toString(36).slice(2, 8),
-                        command: 'set_flag',
-                        key: flagKey,
-                        value: !!enabled
-                    })
-                });
-                if (!response.ok) {
+                try {
+                    const response = await fetchWithTimeout('/api/agent/command', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            request_id: Date.now() + '-' + Math.random().toString(36).slice(2, 8),
+                            command: 'set_flag',
+                            key: flagKey,
+                            value: !!enabled
+                        })
+                    }, 3600);
+                    if (!response.ok) {
+                        return false;
+                    }
+
+                    const data = await response.json();
+                    return !!(data && data.success === true);
+                } catch (error) {
+                    console.warn('[YuiGuide] 设置 Agent 标志超时或失败:', flagKey, error);
                     return false;
                 }
-
-                const data = await response.json();
-                return !!(data && data.success === true);
             });
         }
 
@@ -4971,7 +5077,15 @@
             const api = this.getHomeInteractionApi();
             if (api && typeof api.openPluginDashboard === 'function') {
                 try {
-                    return await api.openPluginDashboard(options || null);
+                    const openedWindow = await resolveWithTimeout(
+                        api.openPluginDashboard(options || null),
+                        3600,
+                        null,
+                        'openPluginDashboard'
+                    );
+                    if (openedWindow && !openedWindow.closed) {
+                        return openedWindow;
+                    }
                 } catch (error) {
                     console.warn('[YuiGuide] openPluginDashboard 失败，改用本地兜底:', error);
                 }
@@ -4983,11 +5097,16 @@
                     if (window.location && window.location.origin) {
                         fallbackUrl.searchParams.set('yui_opener_origin', window.location.origin);
                     }
-                    return await api.openPage(
-                        fallbackUrl.toString(),
-                        'plugin_dashboard',
-                        '',
-                        options || null
+                    return await resolveWithTimeout(
+                        api.openPage(
+                            fallbackUrl.toString(),
+                            'plugin_dashboard',
+                            '',
+                            options || null
+                        ),
+                        3600,
+                        null,
+                        'openPage(plugin_dashboard)'
                     );
                 } catch (error) {
                     console.warn('[YuiGuide] openPage(plugin_dashboard) 失败:', error);
@@ -5117,7 +5236,15 @@
                 : this.getTutorialModelManagerLanlanName();
             if (api && typeof api.openModelManagerPage === 'function') {
                 try {
-                    return await api.openModelManagerPage(targetLanlanName);
+                    const openedWindow = await resolveWithTimeout(
+                        api.openModelManagerPage(targetLanlanName),
+                        3600,
+                        null,
+                        'openModelManagerPage'
+                    );
+                    if (openedWindow && !openedWindow.closed) {
+                        return openedWindow;
+                    }
                 } catch (error) {
                     console.warn('[YuiGuide] openModelManagerPage 失败，改用本地兜底:', error);
                 }
@@ -5127,9 +5254,14 @@
             const windowName = this.getModelManagerWindowName(targetLanlanName, appearanceMenuId);
             if (api && typeof api.openPage === 'function') {
                 try {
-                    return await api.openPage(
-                        '/model_manager?lanlan_name=' + encodeURIComponent(targetLanlanName),
-                        windowName
+                    return await resolveWithTimeout(
+                        api.openPage(
+                            '/model_manager?lanlan_name=' + encodeURIComponent(targetLanlanName),
+                            windowName
+                        ),
+                        3600,
+                        null,
+                        'openPage(model_manager)'
                     );
                 } catch (error) {
                     console.warn('[YuiGuide] openPage(model_manager) 失败:', error);
