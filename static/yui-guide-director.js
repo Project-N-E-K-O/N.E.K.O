@@ -5925,23 +5925,11 @@
                         }
                     }
                 }
-            } else {
-                if (agentPanelActionOpened) {
-                    pluginDashboardWindow = await this.waitForOpenedWindow(PLUGIN_DASHBOARD_WINDOW_NAME, 6000);
-                    this.pluginDashboardWindowCreatedByGuide = !!(pluginDashboardWindow && !pluginDashboardWindow.closed);
-                }
-            }
-
-            if (
-                (!pluginDashboardWindow || pluginDashboardWindow.closed)
-                && agentPanelActionOpened !== false
-                && runId === this.sceneRunId
-                && !this.destroyed
-                && !this.angryExitTriggered
-            ) {
-                pluginDashboardWindow = await this.openPluginDashboardWindow({
-                    keepMainUIVisible: true
-                });
+            } else if (agentPanelActionOpened) {
+                pluginDashboardWindow = await this.waitForOpenedWindow(
+                    PLUGIN_DASHBOARD_WINDOW_NAME,
+                    scaleSceneMs(1200, 700, 1800)
+                );
                 this.pluginDashboardWindowCreatedByGuide = !!(pluginDashboardWindow && !pluginDashboardWindow.closed);
             }
 
@@ -6218,22 +6206,11 @@
                             }
                         }
                     }
-                } else {
-                    if (agentPanelActionOpened) {
-                        pluginDashboardWindow = await this.waitForOpenedWindow(PLUGIN_DASHBOARD_WINDOW_NAME, 6000);
-                        this.pluginDashboardWindowCreatedByGuide = !!(pluginDashboardWindow && !pluginDashboardWindow.closed);
-                    }
-                }
-                if (
-                    (!pluginDashboardWindow || pluginDashboardWindow.closed)
-                    && agentPanelActionOpened !== false
-                    && runId === this.sceneRunId
-                    && !this.destroyed
-                    && !this.angryExitTriggered
-                ) {
-                    pluginDashboardWindow = await this.openPluginDashboardWindow({
-                        keepMainUIVisible: true
-                    });
+                } else if (agentPanelActionOpened) {
+                    pluginDashboardWindow = await this.waitForOpenedWindow(
+                        PLUGIN_DASHBOARD_WINDOW_NAME,
+                        scaleSceneMs(1200, 700, 1800)
+                    );
                     this.pluginDashboardWindowCreatedByGuide = !!(pluginDashboardWindow && !pluginDashboardWindow.closed);
                 }
                 if (
