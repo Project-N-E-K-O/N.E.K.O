@@ -1281,25 +1281,6 @@ class LLMSessionManager:
             # 即使转录为空（VAD 误触发或转录失败）也算一次"用户在发声"，
             # 维持 voice_engaged 状态。
             self._activity_tracker.on_voice_rms()
-            # 仅非空转录才算"用户消息"：on_user_message 会清掉 unfinished_thread、
-            # bump _conv_seq（让 open_threads 缓存失效）、把文本进 buffer 给
-            # emotion-tier LLM 用——空 transcript 这些副作用都不该触发。
-            if transcript.strip():
-                self._activity_tracker.on_user_message(text=transcript)
-                self._session_turn_count += 1
-                # 与 on_user_message 对偶：把"用户原话"推到插件总线 user-context
-                # bucket。文本路径在 _process_stream_data_internal 已自行调用，
-                # 这里只覆盖语音路径，避免 openclaw handoff（is_voice_source=False）
-                # 重复发布。
-                self._publish_user_utterance_to_plugin_bus(transcript, is_voice_source=True)
-        else:
-            # Non-voice reuse of this method (e.g. openclaw text handoff).
-            # Skip activity-tracker hooks entirely — the text-mode entry
-            # at `_process_stream_data_internal` has already recorded the
-            # user message. We still need the queue/cache plumbing below
-            # to work normally, so just bypass the tracker block.
-            if transcript.strip():
-                self._session_turn_count += 1
         transcript_text = transcript.strip()
         if transcript_text and self._is_game_route_active():
             try:
@@ -1324,6 +1305,27 @@ class LLMSessionManager:
                     return
             except Exception as exc:
                 logger.warning("[%s] game route realtime STT route failed: %s", self.lanlan_name, exc)
+
+        if is_voice_source:
+            # 仅非空转录才算"用户消息"：on_user_message 会清掉 unfinished_thread、
+            # bump _conv_seq（让 open_threads 缓存失效）、把文本进 buffer 给
+            # emotion-tier LLM 用——空 transcript 这些副作用都不该触发。
+            if transcript_text:
+                self._activity_tracker.on_user_message(text=transcript)
+                self._session_turn_count += 1
+                # 与 on_user_message 对偶：把"用户原话"推到插件总线 user-context
+                # bucket。文本路径在 _process_stream_data_internal 已自行调用，
+                # 这里只覆盖语音路径，避免 openclaw handoff（is_voice_source=False）
+                # 重复发布。
+                self._publish_user_utterance_to_plugin_bus(transcript, is_voice_source=True)
+        else:
+            # Non-voice reuse of this method (e.g. openclaw text handoff).
+            # Skip activity-tracker hooks entirely — the text-mode entry
+            # at `_process_stream_data_internal` has already recorded the
+            # user message. We still need the queue/cache plumbing below
+            # to work normally, so just bypass the tracker block.
+            if transcript_text:
+                self._session_turn_count += 1
 
         # 推送到同步消息队列
         self.sync_message_queue.put({"type": "user", "data": {"input_type": "transcript", "data": transcript.strip()}})

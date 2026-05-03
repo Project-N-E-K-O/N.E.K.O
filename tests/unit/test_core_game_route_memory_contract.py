@@ -1,6 +1,9 @@
+from unittest.mock import Mock
+
 import pytest
 
 from main_logic.core import LLMSessionManager
+from main_routers import game_router
 
 
 class _AsyncNullLock:
@@ -37,6 +40,18 @@ class _FakeQueue:
 
     def put(self, message):
         self.messages.append(message)
+
+
+class _FakeActivityTracker:
+    def __init__(self):
+        self.voice_rms_count = 0
+        self.user_messages = []
+
+    def on_voice_rms(self):
+        self.voice_rms_count += 1
+
+    def on_user_message(self, text):
+        self.user_messages.append(text)
 
 
 def _make_manager():
@@ -76,6 +91,15 @@ def _make_manager():
     mgr.send_user_activity = send_user_activity
     mgr.send_lanlan_response = send_lanlan_response
     mgr._ensure_game_tts_runtime = ensure_game_tts_runtime
+    return mgr
+
+
+def _make_transcript_manager():
+    mgr = _make_manager()
+    mgr.session = object()
+    mgr._activity_tracker = _FakeActivityTracker()
+    mgr._session_turn_count = 0
+    mgr._publish_user_utterance_to_plugin_bus = Mock()
     return mgr
 
 
@@ -209,4 +233,100 @@ async def test_mirror_game_assistant_text_can_finalize_user_reply_turn():
                 "event": {"kind": "user-text", "hasUserText": True},
             },
         },
+    }]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_game_route_voice_transcript_handled_skips_ordinary_user_context(monkeypatch):
+    mgr = _make_transcript_manager()
+    routed = []
+
+    async def fake_route(lanlan_name, text, *, request_id):
+        routed.append((lanlan_name, text, request_id))
+        return True
+
+    monkeypatch.setattr(LLMSessionManager, "_is_game_route_active", lambda self: True)
+    monkeypatch.setattr(game_router, "route_external_voice_transcript", fake_route)
+
+    await LLMSessionManager.handle_input_transcript(mgr, "  我要射门了  ", is_voice_source=True)
+
+    assert routed and routed[0][0] == "Lan"
+    assert routed[0][1] == "我要射门了"
+    assert routed[0][2].startswith("realtime-stt-")
+    assert mgr._activity_tracker.voice_rms_count == 1
+    assert mgr._activity_tracker.user_messages == []
+    assert mgr._session_turn_count == 0
+    mgr._publish_user_utterance_to_plugin_bus.assert_not_called()
+    assert mgr.sync_message_queue.messages == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_inactive_voice_transcript_uses_ordinary_flow(monkeypatch):
+    mgr = _make_transcript_manager()
+
+    monkeypatch.setattr(LLMSessionManager, "_is_game_route_active", lambda self: False)
+
+    await LLMSessionManager.handle_input_transcript(mgr, "  普通语音  ", is_voice_source=True)
+
+    assert mgr._activity_tracker.voice_rms_count == 1
+    assert mgr._activity_tracker.user_messages == ["  普通语音  "]
+    assert mgr._session_turn_count == 1
+    mgr._publish_user_utterance_to_plugin_bus.assert_called_once_with(
+        "  普通语音  ",
+        is_voice_source=True,
+    )
+    assert mgr.sync_message_queue.messages == [{
+        "type": "user",
+        "data": {"input_type": "transcript", "data": "普通语音"},
+    }]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_non_voice_transcript_reuse_keeps_existing_ordinary_flow(monkeypatch):
+    mgr = _make_transcript_manager()
+
+    monkeypatch.setattr(LLMSessionManager, "_is_game_route_active", lambda self: False)
+
+    await LLMSessionManager.handle_input_transcript(mgr, "文本复用", is_voice_source=False)
+
+    assert mgr._activity_tracker.voice_rms_count == 0
+    assert mgr._activity_tracker.user_messages == []
+    assert mgr._session_turn_count == 1
+    mgr._publish_user_utterance_to_plugin_bus.assert_not_called()
+    assert mgr.sync_message_queue.messages == [{
+        "type": "user",
+        "data": {"input_type": "transcript", "data": "文本复用"},
+    }]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route_outcome", ["false", "exception"])
+async def test_game_route_voice_transcript_falls_back_when_unhandled(monkeypatch, route_outcome):
+    mgr = _make_transcript_manager()
+
+    async def fake_route(_lanlan_name, _text, *, request_id):
+        assert request_id.startswith("realtime-stt-")
+        if route_outcome == "exception":
+            raise RuntimeError("route failed")
+        return False
+
+    monkeypatch.setattr(LLMSessionManager, "_is_game_route_active", lambda self: True)
+    monkeypatch.setattr(game_router, "route_external_voice_transcript", fake_route)
+
+    await LLMSessionManager.handle_input_transcript(mgr, "继续普通流程", is_voice_source=True)
+
+    assert mgr._activity_tracker.voice_rms_count == 1
+    assert mgr._activity_tracker.user_messages == ["继续普通流程"]
+    assert mgr._session_turn_count == 1
+    mgr._publish_user_utterance_to_plugin_bus.assert_called_once_with(
+        "继续普通流程",
+        is_voice_source=True,
+    )
+    assert mgr.sync_message_queue.messages == [{
+        "type": "user",
+        "data": {"input_type": "transcript", "data": "继续普通流程"},
     }]

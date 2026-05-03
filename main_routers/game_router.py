@@ -1652,14 +1652,19 @@ async def _cancel_game_context_organizer_before_disabled_archive(state: dict) ->
 
 
 def _route_liveness_at(state: dict) -> float:
-    """Return the newest timestamp proving the game page/route is still active."""
-    candidates = []
-    for key in ("last_heartbeat_at", "last_activity", "created_at"):
+    """Return the timestamp proving the game page heartbeat is still alive."""
+    for key in ("last_heartbeat_at", "created_at"):
         try:
-            candidates.append(float(state.get(key) or 0))
+            value = float(state.get(key) or 0)
         except (TypeError, ValueError):
-            pass
-    return max(candidates or [0.0])
+            continue
+        if value > 0:
+            return value
+    return 0.0
+
+
+def _route_heartbeat_expired(state: dict, now: float) -> bool:
+    return now - _route_liveness_at(state) > _route_heartbeat_timeout_seconds(state)
 
 
 def _route_heartbeat_timeout_seconds(state: dict) -> float:
@@ -4645,8 +4650,7 @@ async def cleanup_expired_sessions():
                 v.get("game_route_active")
                 and v.get("heartbeat_enabled", True)
                 and not v.get("_exit_task")
-                and now - _route_liveness_at(v) >
-                _route_heartbeat_timeout_seconds(v)
+                and _route_heartbeat_expired(v, now)
             )
         ]
         for key, state in heartbeat_expired_routes:

@@ -761,14 +761,24 @@ async def test_memory_highlight_selector_uses_full_dialogue_log(monkeypatch):
 
 
 @pytest.mark.unit
-def test_route_liveness_prefers_recent_activity_over_stale_heartbeat():
+def test_route_liveness_ignores_recent_activity_when_heartbeat_is_stale():
     state = {
         "created_at": 100.0,
         "last_heartbeat_at": 110.0,
         "last_activity": 125.0,
     }
 
-    assert game_router._route_liveness_at(state) == 125.0
+    assert game_router._route_liveness_at(state) == 110.0
+
+
+@pytest.mark.unit
+def test_route_liveness_uses_created_at_before_first_heartbeat():
+    state = {
+        "created_at": 100.0,
+        "last_activity": 125.0,
+    }
+
+    assert game_router._route_liveness_at(state) == 100.0
 
 
 @pytest.mark.unit
@@ -1362,6 +1372,58 @@ async def test_heartbeat_timeout_finalize_archives_and_closes_session(monkeypatc
     assert result["archive_memory"] == {"ok": True, "status": "cached", "count": 1}
     assert submitted[0]["exit_reason"] == "heartbeat_timeout"
     fake_session.close.assert_awaited_once()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_heartbeat_timeout_ignores_recent_activity_and_finalizes(monkeypatch):
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {})
+    now = game_router.time.time()
+    state = game_router._activate_game_route("soccer", "match_1", "Lan")
+    state["last_heartbeat_at"] = now - game_router._GAME_ROUTE_HEARTBEAT_TIMEOUT_SECONDS - 1.0
+    state["last_activity"] = now
+
+    assert game_router._route_heartbeat_expired(state, now) is True
+
+    result = await game_router._finalize_game_route_state(
+        state,
+        reason="heartbeat_timeout",
+        close_game_session=False,
+    )
+
+    assert state["game_route_active"] is False
+    assert state["heartbeat_enabled"] is False
+    assert state["exit_reason"] == "heartbeat_timeout"
+    assert result["archive"]["exit_reason"] == "heartbeat_timeout"
+
+
+@pytest.mark.unit
+def test_heartbeat_timeout_keeps_fresh_heartbeat_despite_old_activity():
+    now = game_router.time.time()
+    state = {
+        "created_at": now - 600.0,
+        "last_heartbeat_at": now - 1.0,
+        "last_activity": now - game_router._GAME_ROUTE_HEARTBEAT_TIMEOUT_SECONDS - 20.0,
+        "page_visible": True,
+    }
+
+    assert game_router._route_heartbeat_expired(state, now) is False
+
+
+@pytest.mark.unit
+def test_heartbeat_timeout_uses_created_at_before_first_heartbeat():
+    now = game_router.time.time()
+    timeout = game_router._GAME_ROUTE_HEARTBEAT_TIMEOUT_SECONDS
+    state = {
+        "created_at": now - timeout + 1.0,
+        "last_activity": now,
+        "page_visible": True,
+    }
+
+    assert game_router._route_heartbeat_expired(state, now) is False
+
+    state["created_at"] = now - timeout - 1.0
+    assert game_router._route_heartbeat_expired(state, now) is True
 
 
 @pytest.mark.unit
