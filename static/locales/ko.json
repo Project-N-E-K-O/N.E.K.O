@@ -3795,7 +3795,7 @@
             "high": "무거움",
             "extreme": "매우 무거움",
             "overall": "총평: ",
-            "noteHtml": "평가는 <a href=\"https://wiki.vrchat.com/wiki/Guides:Avatar_Performance_Ranking\" target=\"_blank\" rel=\"noopener noreferrer\" style=\"color:#40C5F1;\">VRChat Avatar Performance Ranking</a> (PC) 을 참고하며, N.E.K.O 의 단일 모델 환경에 맞게 완화되었습니다。"
+            "noteHtml": "평가는 <a href=\"https://wiki.vrchat.com/wiki/Guides:Avatar_Performance_Ranking\" target=\"_blank\" rel=\"noopener noreferrer\" style=\"color:#40C5F1;\">VRChat Avatar Performance Ranking</a> (PC) 을 참고하며, N.E.K.O 의 단일 모델 환경에 맞게 완화되었습니다."
         },
         "ratingDetail": {
             "vertices": "정점 수",
