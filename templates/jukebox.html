@@ -111,15 +111,35 @@
 
             window.Jukebox_playSong = window.Jukebox.playSong;
             window.Jukebox_close = function() {
-                window.Jukebox.close();
-                if (window.close) window.close();
+                try {
+                    if (window.Jukebox && typeof window.Jukebox.close === 'function') {
+                        window.Jukebox.close();
+                    }
+                } catch (error) {
+                    console.warn('[Jukebox] 关闭前清理失败:', error);
+                } finally {
+                    if (typeof window.close === 'function') window.close();
+                }
             };
             window.Jukebox_hide = function() {
-                if (window.nekoJukeboxWindow && typeof window.nekoJukeboxWindow.hide === 'function') {
-                    window.nekoJukeboxWindow.hide();
-                    return;
+                try {
+                    if (window.nekoJukeboxWindow && typeof window.nekoJukeboxWindow.hide === 'function') {
+                        window.nekoJukeboxWindow.hide();
+                        return;
+                    }
+                } catch (error) {
+                    console.warn('[Jukebox] 隐藏窗口失败，改为关闭:', error);
                 }
-                if (window.close) window.close();
+
+                try {
+                    if (window.Jukebox && typeof window.Jukebox.close === 'function') {
+                        window.Jukebox.close();
+                    }
+                } catch (error) {
+                    console.warn('[Jukebox] 最小化降级关闭前清理失败:', error);
+                } finally {
+                    if (typeof window.close === 'function') window.close();
+                }
             };
             window.Jukebox_updateVolume = window.Jukebox.updateVolume;
             window.Jukebox_logVolumeChange = window.Jukebox.logVolumeChange;
