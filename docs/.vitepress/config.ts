@@ -311,14 +311,17 @@ function contributingSidebar(lang: 'en' | 'zh-CN' | 'ja') {
     en: {
       group: 'Contributing', overview: 'Overview', dev: 'Developer Notes',
       test: 'Testing', code: 'Code Style', road: 'Roadmap', ai: 'AI-Assisted Dev',
+      nuitka: 'Nuitka Packaging',
     },
     'zh-CN': {
       group: '贡献指南', overview: '概览', dev: '开发者须知',
       test: '测试', code: '代码风格', road: '路线图', ai: 'AI 辅助开发',
+      nuitka: 'Nuitka 打包注意事项',
     },
     ja: {
       group: 'コントリビュート', overview: '概要', dev: '開発者ノート',
       test: 'テスト', code: 'コードスタイル', road: 'ロードマップ', ai: 'AI支援開発',
+      nuitka: 'Nuitka パッケージング',
     },
   }[lang]
   const p = lang === 'en' ? '' : `/${lang}`
@@ -331,6 +334,7 @@ function contributingSidebar(lang: 'en' | 'zh-CN' | 'ja') {
         { text: t.ai, link: `${p}/contributing/ai-assisted-dev` },
         { text: t.test, link: `${p}/contributing/testing` },
         { text: t.code, link: `${p}/contributing/code-style` },
+        { text: t.nuitka, link: `${p}/contributing/nuitka-packaging` },
         { text: t.road, link: `${p}/contributing/roadmap` },
       ],
     },
