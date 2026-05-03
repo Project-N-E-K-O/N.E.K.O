@@ -103,6 +103,97 @@ body {
     cursor: grabbing;
 }
 
+#model-manager-toast {
+    position: fixed;
+    left: 50%;
+    bottom: 18%;
+    transform: translateX(-50%) scale(0.94);
+    z-index: 100000;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    width: min(340px, calc(100vw - 48px));
+    min-height: 58px;
+    padding: 16px 22px;
+    box-sizing: border-box;
+    pointer-events: none;
+    color: #fff;
+    font-size: 16px;
+    font-weight: 700;
+    line-height: 1.35;
+    text-align: center;
+    background-image: url('/static/icons/reminder_blue.png');
+    background-size: 100% 100%;
+    background-position: center;
+    background-repeat: no-repeat;
+    background-color: transparent;
+    opacity: 0;
+    filter: drop-shadow(0 10px 24px rgba(38, 98, 200, 0.24));
+    transition: opacity 0.22s ease, transform 0.22s ease;
+}
+
+#model-manager-toast.is-visible {
+    opacity: 1;
+    transform: translateX(-50%) scale(1);
+}
+
+#model-manager-toast.is-hiding {
+    opacity: 0;
+    transform: translateX(-50%) scale(0.96);
+}
+
+.model-manager-toast-icon {
+    width: 20px;
+    height: 20px;
+    flex: 0 0 20px;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.92);
+    color: #2662c8;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+    font-weight: 900;
+}
+
+.model-manager-toast-success .model-manager-toast-icon {
+    display: none;
+}
+
+.model-manager-toast-warning .model-manager-toast-icon::before {
+    content: "!";
+}
+
+.model-manager-toast-error .model-manager-toast-icon::before {
+    content: "!";
+}
+
+.model-manager-toast-info .model-manager-toast-icon::before {
+    content: "i";
+}
+
+.model-manager-toast-loading .model-manager-toast-icon {
+    background: transparent;
+    border: 3px solid rgba(255, 255, 255, 0.35);
+    border-top-color: #fff;
+    animation: modelManagerToastSpin 1s linear infinite;
+}
+
+.model-manager-toast-loading .model-manager-toast-icon::before {
+    content: "";
+}
+
+.model-manager-toast-error {
+    filter: drop-shadow(0 10px 24px rgba(210, 58, 58, 0.24));
+}
+
+@keyframes modelManagerToastSpin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+
 #vrm-container {
     position: fixed;
     right: 0px;
