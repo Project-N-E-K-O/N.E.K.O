@@ -106,3 +106,25 @@ def test_ascii_chars_not_stripped_to_avoid_silent_numeric_corruption(raw):
     """
     with pytest.raises(json.JSONDecodeError):
         robust_json_loads(raw)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "raw",
+    [
+        '[1,−2]',  # U+2212 MINUS SIGN（数学减号）；category=Sm
+        '[1,＋5]',  # U+FF0B FULLWIDTH PLUS SIGN；category=Sm
+        '[1,－2]',  # U+FF0D FULLWIDTH HYPHEN-MINUS；category=Pd
+        '[1,０]',   # U+FF10 FULLWIDTH DIGIT ZERO；category=Nd
+        '[1,٠2]',  # U+0660 ARABIC-INDIC DIGIT ZERO；category=Nd
+    ],
+)
+def test_unicode_numeric_prefixes_not_stripped(raw):
+    """Unicode 数字符号（math symbol / dash / 全角数字 / Arabic-Indic digits）
+    不能被当 CJK 污染删掉，否则 `[1,−2]` → `[1,2]` 之类 silent numeric corruption。
+
+    只剥 Unicode category Lo (Other Letter，CJK/韩文/etc.) 和 So (Other Symbol，emoji)；
+    Sm / Pd / Nd 等数字相关类别一律放行。
+    """
+    with pytest.raises(json.JSONDecodeError):
+        robust_json_loads(raw)

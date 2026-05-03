@@ -5,6 +5,7 @@ import json
 import os
 import re
 import tempfile
+import unicodedata
 from pathlib import Path
 from typing import Any
 
@@ -17,18 +18,30 @@ _UNQUOTED_KEY_RE = re.compile(r'(?<=[{,])\s*([A-Za-z_]\w*)\s*:')
 # `-` 或数字 (number) / `t` `f` `n` (true/false/null)。
 _VALUE_START_CHARS = frozenset('"{[-tfn0123456789')
 
+# Unicode 类别白名单 —— 只剥这两类视作幻觉污染：
+#   Lo: Other Letter，含 CJK / 韩文 / 日文 / 阿拉伯文 等（实测污染源，如 `결`）
+#   So: Other Symbol，主要是 emoji
+# 故意排除 Sm (Math Symbol，含 `−` U+2212 / `＋` U+FF0B 等)、Pd (Dash)、
+# Nd (含全角数字 `０`-`９`、阿拉伯数字 `٠` 等) 等可能是 Unicode 数字前缀的类别 ——
+# 删掉它们会把 `[1,−2]` → `[1,2]` 这种 silent numeric corruption。
+_POLLUTION_UNICODE_CATEGORIES = frozenset({'Lo', 'So'})
+
+
+def _is_likely_pollution_char(c: str) -> bool:
+    """非 ASCII 且属 Other Letter (CJK/etc.) 或 Other Symbol (emoji) 类别。"""
+    if ord(c) <= 127:
+        return False
+    return unicodedata.category(c) in _POLLUTION_UNICODE_CATEGORIES
+
 
 def _strip_stray_chars_between_tokens(s: str) -> str:
-    """Strip 1–3 hallucinated **non-ASCII** chars between `,`/`[` and the next value.
+    """Strip 1–3 hallucinated chars between `,`/`[` and the next value start.
 
     Stateful scanner — only acts outside of quoted strings (with backslash escape
-    handling). 仅剥**非 ASCII** 污染（CJK / emoji / etc.）—— LLM 实测幻觉
-    几乎都是这种；ASCII 字符一律放行，避免把可能是某种半合法值前缀的内容
-    （`+5`、`.5`、`e3` 等）静默改成完全不同的数值。即便剥不掉，
-    后续 json.loads 自己抛 JSONDecodeError 走 fallback，比 silent corruption 安全。
-
-    覆盖完整合法值起始集合 (``"``/``{``/``[``/``-``/数字/``t/f/n``)，
-    所以 ``[1,결2]`` / ``["a",결"b"]`` / ``{"a":1,결"b":2}`` 都能恢复。
+    handling). 仅剥**非 ASCII Letter / emoji**（LLM 实测幻觉污染源）；ASCII 字符
+    与 Unicode 数字符号 / 标点 / dash / 全角数字一律放行，避免把
+    `+5`、`.5`、`e3`、`−2`（U+2212）、`＋5`（U+FF0B）等半合法值前缀静默改坏。
+    剥不掉就让 json.loads 自己抛 JSONDecodeError 走 fallback。
     """
     out: list[str] = []
     i = 0
@@ -56,14 +69,14 @@ def _strip_stray_chars_between_tokens(s: str) -> str:
         i += 1
         if c not in ',[':
             continue
-        # 跳过 separator 后的空白，找疑似污染段（连续 1–3 个非 ASCII 字符）
+        # 跳过 separator 后的空白，找疑似污染段（连续 1–3 个 Letter/emoji 类字符）
         j = i
         while j < n and s[j].isspace():
             j += 1
         end = j
-        while end < j + 3 and end < n and ord(s[end]) > 127:
+        while end < j + 3 and end < n and _is_likely_pollution_char(s[end]):
             end += 1
-        # 必须真的吃到了非 ASCII 字符，且后面紧跟合法值起始才算污染
+        # 必须真的吃到了污染字符，且后面紧跟合法值起始才剥
         if end > j and end < n and s[end] in _VALUE_START_CHARS:
             out.append(s[i:j])  # 保留空白
             i = end
