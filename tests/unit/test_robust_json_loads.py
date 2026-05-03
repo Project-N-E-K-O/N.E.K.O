@@ -80,13 +80,37 @@ def test_pollution_run_over_2_chars_not_stripped():
         ('[1,\U0001F9D1‍\U0001F4BB2]', [1, 2]),
         # 上限 2 cluster：两个 ❤️ 连一起也行
         ('[1,❤️❤️2]', [1, 2]),
+        # 上限 2 cluster：两个 ZWJ 复合 emoji（每个 1 cluster）
+        ('[1,\U0001F9D1‍\U0001F4BB\U0001F9D1‍\U0001F4BB2]', [1, 2]),
     ],
 )
 def test_multi_codepoint_emoji_clusters_treated_as_single(raw, expected):
     """`❤️` / `🧑‍💻` 等 multi-codepoint emoji 算 1 个 grapheme cluster。
 
     base (Lo/So) 后的 combining marks (Mn/Me/Mc) 和 ZWJ (Cf) 一并视为 cluster
-    的扩展，scanner 上限保持 2 cluster。
+    的扩展；ZWJ 后跟新的 pollution base 也并入同一 cluster。scanner 上限保持
+    2 cluster。
+    """
+    assert robust_json_loads(raw) == expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        # 关键回归：含 Python 字面量子串的标识符不应被改
+        ('{TrueValue: 1}', {"TrueValue": 1}),
+        ('{NoneType: "x"}', {"NoneType": "x"}),
+        ('{IsFalse: 0}', {"IsFalse": 0}),
+        # 但单独的 Python 字面量仍然要转
+        ('{"flag": True, "n": None, "off": False}', {"flag": True, "n": None, "off": False}),
+        ('[True, None, False]', [True, None, False]),
+    ],
+)
+def test_python_literal_replacement_uses_word_boundary(raw, expected):
+    """关键回归：`{TrueValue: 1}` 旧版会被改成 `{trueValue: 1}` 然后 unquoted-key
+    包成 `{"trueValue": 1}` 静默返回 —— key 名被篡改成完全不同字符串。
+    新实现用 word-boundary regex，仅替换独立的 True/False/None。
     """
     assert robust_json_loads(raw) == expected
 

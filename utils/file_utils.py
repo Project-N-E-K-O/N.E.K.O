@@ -13,6 +13,10 @@ from typing import Any, Callable
 # LLM 经常返回带有格式瑕疵的 JSON（无引号 key、尾逗号、Python 字面值等）。
 # 先尝试标准解析，失败后逐步修补再试。
 _UNQUOTED_KEY_RE = re.compile(r'(?<=[{,])\s*([A-Za-z_]\w*)\s*:')
+# Python 字面量 → JSON。用 word boundary 避免误改 `TrueValue` / `NoneType` 等
+# 含字面量子串的标识符（裸 `.replace` 会把 key 名静默篡改成完全不同的字符串）。
+_PY_LITERAL_RE = re.compile(r'(?<!\w)(True|False|None)(?!\w)')
+_PY_LITERAL_MAP = {'True': 'true', 'False': 'false', 'None': 'null'}
 
 # 合法 JSON 值起始字符：`"` (string) / `{` (object) / `[` (array) /
 # `-` 或数字 (number) / `t` `f` `n` (true/false/null)。
@@ -39,18 +43,35 @@ def _is_likely_pollution_char(c: str) -> bool:
     return unicodedata.category(c) in _POLLUTION_UNICODE_CATEGORIES
 
 
+_ZWJ = '‍'
+
+
 def _consume_pollution_grapheme(s: str, i: int) -> int:
     """尝试消费一个污染 grapheme cluster，返回结束位置。
 
-    如果 ``s[i]`` 是 pollution base char (Lo/So)，连同后续 combining marks
-    与 ZWJ 等扩展字符一起视作一个 cluster。不是 pollution 则返回 i 不变。
+    如果 ``s[i]`` 是 pollution base char (Lo/So)，连同后续 combining marks 与
+    ZWJ 等扩展字符一起视作一个 cluster。ZWJ 后若紧跟另一个 pollution base，则
+    继续并入同一 cluster（emoji 复合体如 ``🧑‍💻`` = PERSON + ZWJ + COMPUTER）。
+    不是 pollution 则返回 i 不变。
     """
     n = len(s)
     if i >= n or not _is_likely_pollution_char(s[i]):
         return i
     end = i + 1
-    while end < n and unicodedata.category(s[end]) in _GRAPHEME_EXTEND_CATEGORIES:
-        end += 1
+    while True:
+        # 吃掉 combining marks / ZWJ / format chars
+        while end < n and unicodedata.category(s[end]) in _GRAPHEME_EXTEND_CATEGORIES:
+            end += 1
+        # ZWJ 后若紧跟新的 pollution base，并入同一 cluster 继续
+        if (
+            end < n
+            and end >= 2
+            and s[end - 1] == _ZWJ
+            and _is_likely_pollution_char(s[end])
+        ):
+            end += 1
+            continue
+        break
     return end
 
 
@@ -234,12 +255,11 @@ def robust_json_loads(raw: str) -> Any:
         lambda s: _apply_outside_strings(
             s, lambda t: t.replace("{{", "{").replace("}}", "}"),
         ),
-        # Python 字面值 → JSON；段感知（避免改字符串内的 "True" 等）
+        # Python 字面值 → JSON；段感知（避免改字符串内的 "True" 等）+
+        # word-boundary regex（避免改 `TrueValue` / `NoneType` 这类标识符）
         lambda s: _apply_outside_strings(
             s,
-            lambda t: t.replace("True", "true")
-                       .replace("False", "false")
-                       .replace("None", "null"),
+            lambda t: _PY_LITERAL_RE.sub(lambda m: _PY_LITERAL_MAP[m.group(1)], t),
         ),
         # 尾逗号；段感知
         lambda s: _apply_outside_strings(s, lambda t: re.sub(r',\s*([}\]])', r'\1', t)),
