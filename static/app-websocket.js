@@ -76,9 +76,7 @@
     }
 
     function appendAssistantStatusMessage(text) {
-        var cleanText = String(text || '')
-            .replace(/\[play_music:[^\]]*(\]|$)/g, '')
-            .trim();
+        var cleanText = getRenderableAssistantChunkText(text);
         if (!cleanText) return false;
 
         var timeStr = (typeof window.getCurrentTimeString === 'function')

@@ -480,6 +480,7 @@ async def test_galgame_missing_model_base_url_returns_fallback(monkeypatch):
     data = _decode_response(response)
     assert data["success"] is True
     assert data["fallback"] is True
+    assert "error" not in data
     assert [item["text"] for item in data["options"]] == [
         "我有点没听清，可以再说一次吗？",
         "嗯嗯，我都在听，慢慢说就好。",
