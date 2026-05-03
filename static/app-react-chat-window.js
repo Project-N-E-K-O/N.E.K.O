@@ -1107,7 +1107,7 @@
             }
         } catch (_) {}
         try {
-            var currentUserName = typeof getCurrentUserName === 'function' ? getCurrentUserName() : '';
+            var currentUserName = getCurrentUserName();
             if (typeof currentUserName === 'string' && currentUserName) {
                 payload.master_name = currentUserName;
             }
@@ -1243,6 +1243,13 @@
         state.messages = sortMessages(state.messages.concat([normalized]));
         if (state.messages.length > MAX_MESSAGES) {
             state.messages = state.messages.slice(-MAX_MESSAGES);
+        }
+        // A new user-role message means the conversation has advanced — even
+        // when the message came in via voice / proactive / sendTextPayload
+        // rather than the React composer. Invalidate any pending GalGame fetch
+        // so its response can't render against the old turn context.
+        if (normalized.role === 'user') {
+            invalidatePendingGalgameRequest();
         }
         renderWindow();
         return normalized;
@@ -2001,6 +2008,12 @@
         // Refresh option list whenever an assistant turn finishes streaming.
         window.addEventListener('neko-assistant-turn-end', function () {
             if (!state.galgameModeEnabled) return;
+            // Skip when the chat overlay is hidden — otherwise galgame mode's
+            // default-on flag would spam /api/galgame/options (and summary-tier
+            // inference) on every assistant turn even for users who never
+            // opened the React chat window (voice-only / proactive paths).
+            var overlay = getOverlay();
+            if (!overlay || overlay.hidden) return;
             // app-chat-adapter's processRealisticQueue can still be sleeping
             // 1-2s between bubble flushes when turn-end fires, so the message
             // list may not yet contain the final assistant sentences. Wait
