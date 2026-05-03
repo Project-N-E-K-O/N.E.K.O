@@ -74,6 +74,27 @@ def test_pollution_run_over_2_chars_not_stripped():
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [
+        # `❤️` = U+2764 (HEAVY BLACK HEART, So) + U+FE0F (VARIATION SELECTOR-16, Mn)
+        ('[1,❤️2]', [1, 2]),
+        # `🧑‍💻` = U+1F9D1 + U+200D (ZWJ, Cf) + U+1F4BB —— 3 codepoint 1 cluster
+        ('[1,\U0001F9D1‍\U0001F4BB2]', [1, 2]),
+        # 上限 2 cluster：两个 ❤️ 连一起也行
+        ('[1,❤️❤️2]', [1, 2]),
+    ],
+)
+def test_multi_codepoint_emoji_clusters_treated_as_single(raw, expected):
+    """`❤️` / `🧑‍💻` 等 multi-codepoint emoji 算 1 个 grapheme cluster。
+
+    base (Lo/So) 后的 combining marks (Mn/Me/Mc) 和 ZWJ (Cf) 一并视为 cluster
+    的扩展，scanner 上限保持 2 cluster。
+    """
+    assert robust_json_loads(raw) == expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
         # LLM pretty-printed 输出常见：污染字符后接空格 / 换行
         ('[1,결 {"x":1}]', [1, {"x": 1}]),
         ('{"a":1,결\n  "b":2}', {"a": 1, "b": 2}),

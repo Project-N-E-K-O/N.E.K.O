@@ -18,13 +18,18 @@ _UNQUOTED_KEY_RE = re.compile(r'(?<=[{,])\s*([A-Za-z_]\w*)\s*:')
 # `-` 或数字 (number) / `t` `f` `n` (true/false/null)。
 _VALUE_START_CHARS = frozenset('"{[-tfn0123456789')
 
-# Unicode 类别白名单 —— 只剥这两类视作幻觉污染：
+# Unicode 类别白名单 —— 只剥这两类视作幻觉污染 base 字符：
 #   Lo: Other Letter，含 CJK / 韩文 / 日文 / 阿拉伯文 等（实测污染源，如 `결`）
 #   So: Other Symbol，主要是 emoji
 # 故意排除 Sm (Math Symbol，含 `−` U+2212 / `＋` U+FF0B 等)、Pd (Dash)、
 # Nd (含全角数字 `０`-`９`、阿拉伯数字 `٠` 等) 等可能是 Unicode 数字前缀的类别 ——
 # 删掉它们会把 `[1,−2]` → `[1,2]` 这种 silent numeric corruption。
 _POLLUTION_UNICODE_CATEGORIES = frozenset({'Lo', 'So'})
+
+# Combining marks / format chars，附属于前一个 base 字符（grapheme cluster 的一部分）。
+# 例：`❤️` = U+2764 (So) + U+FE0F (Mn variation selector)；
+#     `🧑‍💻` = U+1F9D1 (So) + U+200D (Cf ZWJ) + U+1F4BB (So)。
+_GRAPHEME_EXTEND_CATEGORIES = frozenset({'Mn', 'Me', 'Mc', 'Cf'})
 
 
 def _is_likely_pollution_char(c: str) -> bool:
@@ -34,8 +39,23 @@ def _is_likely_pollution_char(c: str) -> bool:
     return unicodedata.category(c) in _POLLUTION_UNICODE_CATEGORIES
 
 
+def _consume_pollution_grapheme(s: str, i: int) -> int:
+    """尝试消费一个污染 grapheme cluster，返回结束位置。
+
+    如果 ``s[i]`` 是 pollution base char (Lo/So)，连同后续 combining marks
+    与 ZWJ 等扩展字符一起视作一个 cluster。不是 pollution 则返回 i 不变。
+    """
+    n = len(s)
+    if i >= n or not _is_likely_pollution_char(s[i]):
+        return i
+    end = i + 1
+    while end < n and unicodedata.category(s[end]) in _GRAPHEME_EXTEND_CATEGORIES:
+        end += 1
+    return end
+
+
 def _strip_stray_chars_between_tokens(s: str) -> str:
-    """Strip 1–2 hallucinated chars between `,`/`[` and the next value start.
+    """Strip 1–2 hallucinated grapheme clusters between `,`/`[` and the next value.
 
     Stateful scanner — only acts outside of quoted strings (with backslash escape
     handling). 仅剥**非 ASCII Letter / emoji**（LLM 实测幻觉污染源）；ASCII 字符
@@ -43,8 +63,10 @@ def _strip_stray_chars_between_tokens(s: str) -> str:
     `+5`、`.5`、`e3`、`−2`（U+2212）、`＋5`（U+FF0B）等半合法值前缀静默改坏。
     剥不掉就让 json.loads 自己抛 JSONDecodeError 走 fallback。
 
-    Best-effort 最少破坏：从 k=1 起递增到 2，第一个能让 lookahead 命中
-    合法值起始的 k 立刻停 —— 不贪。
+    Best-effort 最少破坏：上限 2 个 grapheme cluster，从 k=1 起递增，第一个能让
+    lookahead 命中合法值起始的 k 立刻停 —— 不贪。一个 cluster = 1 个 pollution
+    base char + 0 或多个后续 combining marks/ZWJ，所以 `❤️`(U+2764+U+FE0F) 或
+    `🧑‍💻`(含 ZWJ) 这类 multi-codepoint emoji 也算 1 cluster。
     """
     out: list[str] = []
     i = 0
@@ -72,24 +94,24 @@ def _strip_stray_chars_between_tokens(s: str) -> str:
         i += 1
         if c not in ',[':
             continue
-        # 跳过 separator 后的空白，从最少 (k=1) 开始尝试，越少越好
+        # 跳过 separator 后的空白，从最少 (k=1 cluster) 开始
         j = i
         while j < n and s[j].isspace():
             j += 1
-        for k in (1, 2):
-            if j + k > n:
-                break
-            # 第 k 个字符必须是 pollution；否则再大的 k 也只会更糟
-            if not _is_likely_pollution_char(s[j + k - 1]):
-                break
+        cur = j
+        for _ in range(2):  # 上限 2 个 grapheme cluster
+            nxt = _consume_pollution_grapheme(s, cur)
+            if nxt == cur:
+                break  # 不是 pollution，再大 k 也只会更糟
+            cur = nxt
             # 污染段后允许跟若干空白（pretty-printed 输出常见），
             # 再看下一个非空白字符是不是合法值起始
-            m = j + k
+            m = cur
             while m < n and s[m].isspace():
                 m += 1
             if m < n and s[m] in _VALUE_START_CHARS:
                 out.append(s[i:j])  # 保留 separator 后的空白
-                i = j + k  # 跳过污染段；后续空白由主循环正常 append
+                i = cur  # 跳过污染段；后续空白由主循环正常 append
                 break
     return ''.join(out)
 
