@@ -11,11 +11,12 @@ Python package names cannot contain hyphens, so
 `--include-package=plugin.my-tool.public` is rejected by Nuitka. The natural
 fallback — `--include-data-dir=plugin/my-tool` — is also a trap: Nuitka's
 `--include-data-dir` **filters out `.py`, `.pyc`, `.pyd`, `.so`, `.dll`** and
-other code suffixes by default (see
-[`nuitka.freezer.IncludedDataFiles.default_ignored_suffixes`](../../.venv/Lib/site-packages/nuitka/freezer/IncludedDataFiles.py)).
-The bundled dist ends up with only the non-code files (`.md`, `.json`),
-runtime imports raise `ModuleNotFoundError`, and the build looks fine until
-end users open the affected feature.
+other code suffixes by default (see the `default_ignored_suffixes` tuple in
+`nuitka/freezer/IncludedDataFiles.py` of your installed Nuitka — it is the
+upstream default, not project config). The bundled dist ends up with only
+the non-code files (`.md`, `.json`), runtime imports raise
+`ModuleNotFoundError`, and the build looks fine until end users open the
+affected feature.
 
 **Real bug**: `plugin/neko-plugin-cli/` historically held a `public/` Python
 package. Server callers did `sys.path.insert(_CLI_ROOT)` then
