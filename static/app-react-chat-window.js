@@ -1025,6 +1025,32 @@
         }
     }
 
+    function waitForAssistantBubblesFlushed(maxWaitMs) {
+        // Resolve as soon as app-chat-adapter's realistic-mode queue is empty
+        // and not in the middle of processing a sentence. In merge / non-Gemini
+        // paths the queue is never populated and the predicate is true on the
+        // first check, so this just collapses to a microtask.
+        return new Promise(function (resolve) {
+            var deadline = Date.now() + (typeof maxWaitMs === 'number' ? maxWaitMs : 4000);
+            function isDrained() {
+                var q = window._realisticGeminiQueue;
+                var processing = !!window._isProcessingRealisticQueue;
+                var queueEmpty = !Array.isArray(q) || q.length === 0;
+                return queueEmpty && !processing;
+            }
+            if (isDrained()) {
+                resolve();
+                return;
+            }
+            var pollId = setInterval(function () {
+                if (isDrained() || Date.now() >= deadline) {
+                    clearInterval(pollId);
+                    resolve();
+                }
+            }, 100);
+        });
+    }
+
     function getRecentGalgameMessageHistory() {
         var msgs = Array.isArray(state.messages) ? state.messages : [];
         var collected = [];
@@ -1969,9 +1995,14 @@
         // Refresh option list whenever an assistant turn finishes streaming.
         window.addEventListener('neko-assistant-turn-end', function () {
             if (!state.galgameModeEnabled) return;
-            // Wait one frame so the React message list reflects the final blocks
-            // before we read history for the request.
-            requestAnimationFrame(function () {
+            // app-chat-adapter's processRealisticQueue can still be sleeping
+            // 1-2s between bubble flushes when turn-end fires, so the message
+            // list may not yet contain the final assistant sentences. Wait
+            // until the queue is drained and the lock is released before
+            // building the request, with a hard cap so a stuck queue can't
+            // permanently block the option fetch.
+            waitForAssistantBubblesFlushed(4000).then(function () {
+                if (!state.galgameModeEnabled) return;
                 fetchGalgameOptionsForLatestTurn();
             });
         });
