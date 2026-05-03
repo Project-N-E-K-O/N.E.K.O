@@ -1717,6 +1717,12 @@
     function closeWindow() {
         var overlay = getOverlay();
         if (!overlay) return;
+        // Closing the overlay should also abort any in-flight GalGame fetch
+        // (parity with setGalgameModeEnabled(false) / setMessages /
+        // clearMessages). Without this, a request that lands after close
+        // still passes the seq guard and writes options into hidden state,
+        // surfacing stale A/B/C the next time the user opens the window.
+        invalidatePendingGalgameRequest();
         cancelActiveAnimation(); // 清理进行中的折叠/展开回调
 
         // 如果当前处于最小化状态，恢复 shell 到正常态
