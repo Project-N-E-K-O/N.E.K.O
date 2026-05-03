@@ -1895,6 +1895,7 @@
         "autoMuteTimeout": "长时间无语音输入，已自动关闭麦克风",
         "deviceSelected": "已选择 {{device}}",
         "micAccessDenied": "无法访问麦克风",
+        "gameVoiceSttMicPermissionDenied": "游戏语音转写没有麦克风权限，请检查浏览器权限。",
         "micMuted": "麦克风已静音",
         "micUnmuted": "麦克风已取消静音",
         "speaking": "正在语音...",

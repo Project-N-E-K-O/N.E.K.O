@@ -1895,6 +1895,7 @@
         "autoMuteTimeout": "長時間音声入力がないため、マイクを自動オフにしました",
         "deviceSelected": "{{device}}を選択しました",
         "micAccessDenied": "マイクにアクセスできません",
+        "gameVoiceSttMicPermissionDenied": "ゲーム音声文字起こしにマイク権限がありません。ブラウザの権限を確認してください。",
         "micMuted": "マイクをミュートしました",
         "micUnmuted": "マイクのミュートを解除しました",
         "speaking": "話し中...",

@@ -1895,6 +1895,7 @@
         "autoMuteTimeout": "長時間無語音輸入，已自動關閉麥剋風",
         "deviceSelected": "已選擇 {{device}}",
         "micAccessDenied": "無法訪問麥剋風",
+        "gameVoiceSttMicPermissionDenied": "遊戲語音轉寫沒有麥克風權限，請檢查瀏覽器權限。",
         "micMuted": "麥剋風已靜音",
         "micUnmuted": "麥剋風已取消靜音",
         "speaking": "正在語音...",

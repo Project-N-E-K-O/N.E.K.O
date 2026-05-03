@@ -228,7 +228,7 @@
                 }
                 if (errorCode === 'not-allowed' || errorCode === 'service-not-allowed') {
                     if (typeof window.showStatusToast === 'function') {
-                        window.showStatusToast('游戏语音转写没有麦克风权限，请检查浏览器权限。', 4000);
+                        window.showStatusToast(window.t ? window.t('app.gameVoiceSttMicPermissionDenied') : '游戏语音转写没有麦克风权限，请检查浏览器权限。', 4000);
                     }
                     restoreOrdinaryMicCaptureAfterGameVoiceSttFailure(errorCode, event);
                 }

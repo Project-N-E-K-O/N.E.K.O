@@ -1895,6 +1895,7 @@
         "autoMuteTimeout": "No voice input for a long time, microphone auto-closed",
         "deviceSelected": "Selected {{device}}",
         "micAccessDenied": "Cannot access microphone",
+        "gameVoiceSttMicPermissionDenied": "Game voice transcription does not have microphone permission. Please check your browser permissions.",
         "micMuted": "Microphone muted",
         "micUnmuted": "Microphone unmuted",
         "speaking": "Speaking...",

@@ -1895,6 +1895,7 @@
         "autoMuteTimeout": "오랫동안 음성 입력이 없고 마이크가 자동으로 닫힙니다.",
         "deviceSelected": "{{device}} 선택됨",
         "micAccessDenied": "마이크에 액세스할 수 없습니다.",
+        "gameVoiceSttMicPermissionDenied": "게임 음성 전사에 마이크 권한이 없습니다. 브라우저 권한을 확인하세요.",
         "micMuted": "마이크가 음소거되었습니다",
         "micUnmuted": "마이크 음소거가 해제되었습니다",
         "speaking": "말하기...",
