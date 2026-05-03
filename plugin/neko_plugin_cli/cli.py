@@ -4,17 +4,14 @@ import argparse
 import sys
 from pathlib import Path
 
+from .public import analyze_bundle_plugins, inspect_package, pack_bundle, pack_plugin, unpack_package
+
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent.parent.resolve()
 PLUGIN_ROOT = REPO_ROOT / "plugin" / "plugins"
 TARGET_DIR = SCRIPT_DIR / "target"
 DEFAULT_PLUGINS_ROOT = REPO_ROOT / "plugin" / "plugins"
 DEFAULT_PROFILES_ROOT = REPO_ROOT / "plugin" / ".neko-package-profiles"
-
-if str(SCRIPT_DIR) not in sys.path:
-    sys.path.insert(0, str(SCRIPT_DIR))
-
-from public import analyze_bundle_plugins, inspect_package, pack_bundle, pack_plugin, unpack_package
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -73,21 +70,21 @@ def build_parser() -> argparse.ArgumentParser:
     inspect_parser = subparsers.add_parser("inspect", help="Inspect a package archive")
     inspect_parser.add_argument(
         "package",
-        help="Package file path or package file name under plugin/neko-plugin-cli/target",
+        help="Package file path or package file name under plugin/neko_plugin_cli/target",
     )
     inspect_parser.set_defaults(handler=handle_inspect)
 
     verify_parser = subparsers.add_parser("verify", help="Verify package payload hash")
     verify_parser.add_argument(
         "package",
-        help="Package file path or package file name under plugin/neko-plugin-cli/target",
+        help="Package file path or package file name under plugin/neko_plugin_cli/target",
     )
     verify_parser.set_defaults(handler=handle_verify)
 
     unpack_parser = subparsers.add_parser("unpack", help="Unpack a package archive")
     unpack_parser.add_argument(
         "package",
-        help="Package file path or package file name under plugin/neko-plugin-cli/target",
+        help="Package file path or package file name under plugin/neko_plugin_cli/target",
     )
     unpack_parser.add_argument(
         "--plugins-root",
