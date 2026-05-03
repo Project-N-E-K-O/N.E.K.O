@@ -71,11 +71,14 @@ _EXCLUDED_DIR_NAMES = frozenset(
 )
 # 任意 .venv* 目录（.venv、.venv_monitor 等）都是虚拟环境，整体跳过。
 _VENV_DIR_PATTERN = re.compile(r"^\.venv")
-# 路径片段级排除（任意层级匹配即跳过整个子树）。
+# 路径前缀级排除：从项目根开始匹配。
+# 故意**不**做"任意层级"滑窗——单元素 fragment（如 ``("frontend",)``）若放任意层级
+# 匹配，会把未来可能出现的 ``plugin/<某 feature>/frontend/``、``plugin/<x>/docs/``
+# 等子目录也静默吞掉，反而盖住该 lint 想抓的 hyphen 违规。
 _EXCLUDED_PATH_FRAGMENTS = (
     ("local_server", "cosyvoice_server", "CosyVoice"),  # vendored
-    ("frontend",),  # JS/Vue 项目，连字符是其命名惯例
-    ("docs",),  # 纯文档站
+    ("frontend",),  # 顶层 JS/Vue 项目，连字符是其命名惯例
+    ("docs",),  # 顶层纯文档站
     (".github",),  # CI yaml 等
 )
 
