@@ -117,7 +117,7 @@
                 </template>
 
                 <el-form-item label="输出目录">
-                  <el-input v-model="packForm.target_dir" placeholder="默认使用 neko-plugin-cli/target" />
+                  <el-input v-model="packForm.target_dir" placeholder="默认使用应用插件包目录" />
                 </el-form-item>
 
                 <el-form-item label="保留 staging">
