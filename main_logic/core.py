@@ -3615,6 +3615,13 @@ class LLMSessionManager:
         """
         if not self.is_active or not isinstance(self.session, OmniRealtimeClient):
             return False
+        try:
+            from main_routers.game_router import is_game_route_active
+            if is_game_route_active(self.lanlan_name):
+                logger.info("[%s] voice proactive nudge skipped: game route active", self.lanlan_name)
+                return False
+        except Exception as exc:
+            logger.debug("[%s] voice proactive game-route guard skipped: %s", self.lanlan_name, exc)
         if self.is_hot_swap_imminent:
             logger.info("[%s] voice proactive nudge skipped: hot-swap imminent", self.lanlan_name)
             return False

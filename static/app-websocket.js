@@ -927,6 +927,9 @@
                         var shouldResumeAudio = !!(statusDetails && statusDetails.should_resume_external_on_exit);
                         var realtimeRestore = statusDetails && statusDetails.realtime_restore;
                         var wasRecording = !!S.isRecording;
+                        S.gameRouteActive = false;
+                        S.gameRouteGameType = '';
+                        S.gameRouteLanlanName = '';
                         console.log(`[GameVoiceSTT] 游戏语音路由已结束 | resume=${shouldResumeAudio} recording=${wasRecording} realtime_restore=${realtimeRestore && realtimeRestore.ok === false ? realtimeRestore.reason : 'ok'}`);
                         if (realtimeRestore && realtimeRestore.attempted && realtimeRestore.ok === false) {
                             console.warn('[GameVoiceSTT] 游戏退出后 Realtime 恢复未确认:', realtimeRestore.reason || 'unknown');
@@ -950,6 +953,9 @@
 
                     if (statusCode === 'GAME_VOICE_STT_GATE_ACTIVE') {
                         var sttProvider = (statusDetails && statusDetails.stt_provider) || 'browser';
+                        S.gameRouteActive = true;
+                        S.gameRouteGameType = (statusDetails && statusDetails.game_type) || 'soccer';
+                        S.gameRouteLanlanName = (statusDetails && statusDetails.lanlan_name) || '';
                         S.gameVoiceSttGameType = (statusDetails && statusDetails.game_type) || 'soccer';
                         console.log(`[GameVoiceSTT] 游戏语音接管已激活 | game=${S.gameVoiceSttGameType} provider=${sttProvider} recording=${!!S.isRecording} muted=${!!S.isMicMuted}`);
                         if (S._voiceSessionInitialTimer) {
@@ -1594,7 +1600,7 @@
                     }, 500);
 
                     // 语音模式：session 开始 5 秒内无 transcription，启动 proactive chat 计时器
-                    if (response.input_mode !== 'text' && S.proactiveChatEnabled && !S.gameVoiceSttGateActive) {
+                    if (response.input_mode !== 'text' && S.proactiveChatEnabled && !S.gameRouteActive) {
                         if (S._voiceSessionInitialTimer) {
                             clearTimeout(S._voiceSessionInitialTimer);
                         }

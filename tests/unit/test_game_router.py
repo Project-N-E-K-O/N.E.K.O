@@ -1064,6 +1064,52 @@ async def test_route_start_accepts_neko_invite_context(monkeypatch):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_route_start_finalizes_old_active_route_before_replacing(monkeypatch):
+    fake_session = type("FakeSession", (), {"close": AsyncMock()})()
+    game_router._game_sessions[game_router._game_session_key("Lan", "soccer", "old_match")] = {
+        "session": fake_session,
+        "reply_chunks": [],
+        "last_activity": game_router.time.time(),
+        "lock": None,
+    }
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {})
+    old_state = game_router._activate_game_route("soccer", "old_match", "Lan")
+    _set_soccer_game_memory_policy(old_state, enabled=True)
+    _mark_game_started(old_state)
+
+    submitted = []
+
+    async def fake_submit(archive):
+        submitted.append(archive)
+        return {"ok": True, "status": "cached", "count": 1}
+
+    async def fake_pregame_context(**_kwargs):
+        return (
+            game_router._default_soccer_pregame_context(initial_difficulty="lv2"),
+            "fallback",
+            "",
+        )
+
+    monkeypatch.setattr(game_router, "_submit_game_archive_to_memory", fake_submit)
+    monkeypatch.setattr(game_router, "_build_soccer_pregame_context", fake_pregame_context)
+
+    result = await game_router.game_route_start(
+        "soccer",
+        _FakeRequest({"lanlan_name": "Lan", "session_id": "new_match"}),
+    )
+
+    assert result["ok"] is True
+    assert result["state"]["session_id"] == "new_match"
+    assert old_state["game_route_active"] is False
+    assert old_state["exit_reason"] == "superseded_by_route_start"
+    assert submitted[0]["session_id"] == "old_match"
+    assert submitted[0]["exit_reason"] == "superseded_by_route_start"
+    fake_session.close.assert_awaited_once()
+    assert game_router._game_route_states[game_router._route_state_key("Lan", "soccer")]["session_id"] == "new_match"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_route_external_text_to_game_llm_defers_voice_to_frontend_arbiter(monkeypatch):
     mgr = _FakeGameRouteManager()
     monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
@@ -1159,6 +1205,11 @@ async def test_route_external_audio_activates_game_stt_gate(monkeypatch):
 
     handled = await game_router.route_external_stream_message("Lan", {"input_type": "audio", "data": [0, 1]})
     handled_again = await game_router.route_external_stream_message("Lan", {"input_type": "audio", "data": [2, 3]})
+    for idx in range(40):
+        assert await game_router.route_external_stream_message(
+            "Lan",
+            {"input_type": "audio", "data": [idx]},
+        ) is True
 
     assert handled is True
     assert handled_again is True
@@ -1167,6 +1218,10 @@ async def test_route_external_audio_activates_game_stt_gate(monkeypatch):
     assert state["activation_source"] == "external_voice_hijacked_by_game"
     assert "GAME_VOICE_STT_GATE_ACTIVE" in mgr.statuses[0]
     assert len(mgr.statuses) == 1
+    assert len(state["game_input_activation_log"]) == 1
+    assert state["game_input_activation_log"][0]["source"] == "external_voice_hijacked_by_game"
+    assert state["game_input_activation_log"][0]["mode"] == "voice"
+    assert state["game_input_activation_log"][0]["detail"] == {}
 
 
 @pytest.mark.unit
@@ -1888,6 +1943,62 @@ async def test_game_end_delivers_one_shot_postgame_text_bubble(monkeypatch):
     })]
     assert any(getattr(event, "name", "") == "PROACTIVE_PHASE2" for event, _ in mgr.state.events)
     assert any(getattr(event, "name", "") == "PROACTIVE_DONE" for event, _ in mgr.state.events)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_route_end_uses_full_game_end_contract(monkeypatch):
+    mgr = _FakePostgameTextManager()
+    fake_session = type("FakeSession", (), {"close": AsyncMock()})()
+    game_router._game_sessions[game_router._game_session_key("Lan", "soccer", "match_1")] = {
+        "session": fake_session,
+        "reply_chunks": [],
+        "last_activity": game_router.time.time(),
+        "lock": None,
+    }
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
+    state = game_router._activate_game_route("soccer", "match_1", "Lan")
+    _set_soccer_game_memory_policy(state, enabled=True)
+    _mark_game_started(state)
+    state["last_state"] = {"score": {"player": 1, "ai": 2}}
+    game_router._append_game_dialog(state, {
+        "type": "user",
+        "source": "external_text_route",
+        "text": "再来一球就追上了。",
+    })
+
+    async def fake_submit(archive):
+        return {"ok": True, "status": "cached", "count": 1}
+
+    async def fake_run_game_chat(game_type, session_id, event):
+        assert game_type == "soccer"
+        assert session_id == "match_1"
+        assert event["kind"] == "postgame"
+        assert event["lastUserText"] == "再来一球就追上了。"
+        return {"line": "刚才那脚挺像样的。", "llm_source": {"provider": "fake"}}
+
+    monkeypatch.setattr(game_router, "_submit_game_archive_to_memory", fake_submit)
+    monkeypatch.setattr(game_router, "_run_game_chat", fake_run_game_chat)
+
+    result = await game_router.game_route_end(
+        "soccer",
+        _FakeRequest({"session_id": "match_1", "lanlan_name": "Lan"}),
+    )
+
+    assert result["ok"] is True
+    assert result["closed"] is True
+    assert result["route_closed"] is True
+    assert result["archive"]["exit_reason"] == "route_end"
+    assert result["archive_memory"] == {"ok": True, "status": "cached", "count": 1}
+    assert result["postgame"]["mode"] == "text"
+    assert result["postgame"]["action"] == "chat"
+    assert result["postgame"]["line"] == "刚才那脚挺像样的。"
+    assert mgr.finish_calls == [("刚才那脚挺像样的。", {
+        "expected_speech_id": "postgame-sid",
+    })]
+    fake_session.close.assert_awaited_once()
+    assert state["game_route_active"] is False
+    assert state["exit_reason"] == "route_end"
 
 
 @pytest.mark.unit

@@ -1907,6 +1907,7 @@
   // ═══════════════════════════════════════════════════════════════════════════
   const _llm = {
     sessionId: 'soccer_' + Date.now().toString(36),
+    routeLanlanName: '',
     preGameContext: null,
     preGameContextSource: '',
     preGameContextError: '',
@@ -2050,6 +2051,7 @@
 
   function _resetGameRouteRuntime({ active = false, newSession = false } = {}) {
     if (newSession) _llm.sessionId = _newGameSessionId();
+    _llm.routeLanlanName = '';
     _llm.preGameContext = null;
     _llm.preGameContextSource = '';
     _llm.preGameContextError = '';
@@ -2168,6 +2170,7 @@
     _llm.soccerGameMemoryEnabled = soccerGameMemoryEnabled;
     return JSON.stringify({
       session_id: _llm.sessionId,
+      ...(_llm.routeLanlanName ? { lanlan_name: _llm.routeLanlanName } : {}),
       currentState: SoccerDemo._snapshot(),
       pageVisible,
       visibilityState,
@@ -2385,11 +2388,12 @@
 	      window.__SoccerLoading?.beginStart?.('分析开局上下文…');
 	      const resp = await fetch('/api/game/soccer/route/start', {
 	        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: _gameRoutePayload(_readGameRouteStartOptions()),
-      });
-      const data = await resp.json().catch(() => ({}));
+	        headers: { 'Content-Type': 'application/json' },
+	        body: _gameRoutePayload(_readGameRouteStartOptions()),
+	      });
+	      const data = await resp.json().catch(() => ({}));
 	      if (data.ok) {
+	        _llm.routeLanlanName = data.state?.lanlan_name || _llm.routeLanlanName || '';
 	        console.log('[SoccerRoute] 已接管主语音入口/主聊天窗:', data.state);
 	        _applyPreGameContext(data.state);
 	        if (data.state?.game_external_voice_route_active) {
@@ -2401,16 +2405,16 @@
 	        _startRouteDrain();
 	        window.__SoccerLoading?.done('route', '开局上下文准备完成');
 	      } else {
-        soccerRecoverableLog('[SoccerRoute] 接管主入口失败:', data);
-        _startRouteDrain();
-        window.__SoccerLoading?.done('route', '开局上下文使用本地默认');
-      }
-    } catch (e) {
-      soccerRecoverableLog('[SoccerRoute] 接管主入口请求失败:', e);
-      _startRouteDrain();
-      window.__SoccerLoading?.done('route', '开局上下文请求失败，继续游戏');
-    }
-  }
+	        soccerRecoverableLog('[SoccerRoute] 接管主入口失败:', data);
+	        _startRouteDrain();
+	        window.__SoccerLoading?.done('route', '开局上下文使用本地默认');
+	      }
+	    } catch (e) {
+	      soccerRecoverableLog('[SoccerRoute] 接管主入口请求失败:', e);
+	      _startRouteDrain();
+	      window.__SoccerLoading?.done('route', '开局上下文请求失败，继续游戏');
+	    }
+	  }
 
   function _scoreDiffOf(snapshot) {
     const score = snapshot?.score || { player: 0, ai: 0 };
@@ -2647,6 +2651,7 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           source,
+          ...(_llm.routeLanlanName ? { lanlan_name: _llm.routeLanlanName } : {}),
           state: stateNow,
           pendingItems: safeItems,
         }),
@@ -2674,6 +2679,7 @@
         body: JSON.stringify({
           source: 'game-llm-result',
           session_id: _llm.sessionId,
+          ...(_llm.routeLanlanName ? { lanlan_name: _llm.routeLanlanName } : {}),
           request_id: requestId,
           turn_id: `game-mirror-${requestId}`,
           finalize_turn: shouldFinalizeTurn,
@@ -2737,6 +2743,7 @@
         body: JSON.stringify({
           source: 'game-llm-result',
           session_id: _llm.sessionId,
+          ...(_llm.routeLanlanName ? { lanlan_name: _llm.routeLanlanName } : {}),
           request_id: meta.request_id || result.request_id || '',
           mirror_text: false,
           emit_turn_end: false,
@@ -3229,6 +3236,7 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           session_id: _llm.sessionId,
+          ...(_llm.routeLanlanName ? { lanlan_name: _llm.routeLanlanName } : {}),
           ..._soccerGameMemoryPolicyPayload(),
           event: {
             ...eventPayload,
@@ -3386,7 +3394,10 @@
 	      const resp = await fetch('/api/game/soccer/route/drain', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session_id: _llm.sessionId }),
+        body: JSON.stringify({
+          session_id: _llm.sessionId,
+          ...(_llm.routeLanlanName ? { lanlan_name: _llm.routeLanlanName } : {}),
+        }),
       });
       if (!resp.ok) return;
 	      const data = await resp.json().catch(() => ({}));

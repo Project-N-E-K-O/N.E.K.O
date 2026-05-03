@@ -79,7 +79,7 @@
         const text = String(transcript || '').trim();
         if (!text) return;
 
-        const lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
+        const lanlanName = S.gameRouteLanlanName || (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
         if (!lanlanName) {
             console.warn('[GameVoiceSTT] missing lanlan_name, drop transcript');
             return;

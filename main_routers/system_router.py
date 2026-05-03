@@ -3507,6 +3507,17 @@ async def proactive_chat(request: Request):
         mgr = session_manager.get(lanlan_name)
         if not mgr:
             return JSONResponse({"success": False, "error": f"角色 {lanlan_name} 不存在"}, status_code=404)
+
+        try:
+            from main_routers.game_router import is_game_route_active
+            if is_game_route_active(lanlan_name):
+                return JSONResponse({
+                    "success": True,
+                    "action": "pass",
+                    "message": "game route active; ordinary proactive skipped",
+                })
+        except Exception as game_route_err:
+            logger.debug("[%s] proactive game-route guard skipped: %s", lanlan_name, game_route_err)
         
         # 检查能否发起新一轮主动搭话：状态机统一把 "AI 正在响应"（_is_responding）、
         # "另一轮 proactive 在跑"（phase != IDLE）两个信号收拢到 O(1) 判定。
