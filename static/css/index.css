@@ -758,6 +758,17 @@ body.react-chat-adapter-active #chat-container {
     box-shadow: 0 36px 110px rgba(12, 20, 34, 0.36);
 }
 
+/* GalGame 模式：撑高聊天框最小高度，避免移动/桌面下选项被裁切 */
+body.galgame-mode-enabled #react-chat-window-shell:not(.is-minimized):not(.is-collapsing):not(.is-expanding) {
+    min-height: min(420px, calc(100vh - 22px));
+}
+
+@media (max-width: 768px) {
+    body.galgame-mode-enabled #react-chat-window-shell:not(.is-minimized):not(.is-collapsing):not(.is-expanding) {
+        min-height: min(380px, 80vh);
+    }
+}
+
 #react-chat-window-drag-handle {
     position: absolute;
     top: 0;

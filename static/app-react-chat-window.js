@@ -14,6 +14,8 @@
     var STORAGE_TOP_KEY = 'neko.reactChatWindow.top';
     var STORAGE_WIDTH_KEY = 'neko.reactChatWindow.width';
     var STORAGE_HEIGHT_KEY = 'neko.reactChatWindow.height';
+    var GALGAME_STORAGE_KEY = 'neko.reactChatWindow.galgameMode';
+    var GALGAME_HISTORY_LIMIT = 6;
     var EVENT_PREFIX = 'react-chat-window:';
 
     var loadedPromise = null;
@@ -39,8 +41,34 @@
         onAvatarToolStateChange: null,
         pendingRollbackDrafts: Object.create(null),
         rollbackDraft: '',
-        _toolCursorResetKey: ''
+        _toolCursorResetKey: '',
+        galgameModeEnabled: readGalgameModePreference(),
+        galgameOptions: [],
+        galgameOptionsLoading: false,
+        _galgameRequestSeq: 0
     };
+
+    function readGalgameModePreference() {
+        try {
+            var raw = localStorage.getItem(GALGAME_STORAGE_KEY);
+            if (raw === null) return true; // default ON per spec
+            return raw === 'true';
+        } catch (_) {
+            return true;
+        }
+    }
+
+    function persistGalgameModePreference(enabled) {
+        try {
+            localStorage.setItem(GALGAME_STORAGE_KEY, enabled ? 'true' : 'false');
+        } catch (_) {}
+    }
+
+    function applyGalgameBodyClass(enabled) {
+        if (typeof document === 'undefined' || !document.body) return;
+        document.body.classList.toggle('galgame-mode-enabled', !!enabled);
+    }
+    applyGalgameBodyClass(state.galgameModeEnabled);
 
     var MOBILE_MAX_HEIGHT_RATIO = 0.85;
     var MOBILE_MESSAGE_MIN_HEIGHT = 60;
@@ -304,7 +332,10 @@
                 ? !!window.appState.subtitleEnabled
                 : localStorage.getItem('subtitleEnabled') === 'true',
             translateButtonLabel: getI18nText('subtitle.enable', '字幕翻译'),
-            translateButtonAriaLabel: getI18nText('subtitle.enableAriaLabel', '字幕翻译开关')
+            translateButtonAriaLabel: getI18nText('subtitle.enableAriaLabel', '字幕翻译开关'),
+            galgameToggleButtonLabel: getI18nText('chat.galgameToggle', 'GalGame 模式'),
+            galgameToggleButtonAriaLabel: getI18nText('chat.galgameToggleAriaLabel', '切换 GalGame 选项模式'),
+            galgameLoadingLabel: getI18nText('chat.galgameLoading', '生成回复选项中…')
         };
     }
 
@@ -411,6 +442,9 @@
             _rollbackKey: state._rollbackKey || undefined,
             _toolCursorResetKey: state._toolCursorResetKey || undefined,
             composerHidden: state.composerHidden,
+            galgameModeEnabled: !!state.galgameModeEnabled,
+            galgameOptions: Array.isArray(state.galgameOptions) ? state.galgameOptions : [],
+            galgameOptionsLoading: !!state.galgameOptionsLoading,
             onMessageAction: handleMessageAction,
             onComposerImportImage: handleComposerImportImage,
             onComposerScreenshot: handleComposerScreenshot,
@@ -420,7 +454,9 @@
             onAvatarToolStateChange: handleAvatarToolStateChange,
             onJukeboxClick: handleJukeboxClick,
             onAvatarGeneratorClick: handleAvatarGeneratorClick,
-            onTranslateToggle: handleTranslateToggle
+            onTranslateToggle: handleTranslateToggle,
+            onGalgameModeToggle: handleGalgameModeToggle,
+            onGalgameOptionSelect: handleGalgameOptionSelect
         });
     }
 
@@ -673,6 +709,14 @@
 
         var hasAttachments = state.composerAttachments && state.composerAttachments.length > 0;
         if (!detail.text.trim() && !hasAttachments) return;
+
+        // Clear stale GalGame options as soon as the user sends anything; the
+        // next turn-end will trigger a fresh fetch if the mode is still on.
+        if (state.galgameOptions && state.galgameOptions.length > 0) {
+            state.galgameOptions = [];
+            state._galgameRequestSeq += 1;
+            renderWindow();
+        }
 
         // Store last submitted text for rollback on RESPONSE_TOO_LONG
         // Preserve original whitespace so rollback restores exactly what the user typed
@@ -958,6 +1002,135 @@
         renderWindow();
 
         dispatchHostEvent('translate-toggle', { enabled: next });
+    }
+
+    // ============================ GalGame mode ============================
+    function setGalgameModeEnabled(enabled, options) {
+        var next = !!enabled;
+        var changed = state.galgameModeEnabled !== next;
+        state.galgameModeEnabled = next;
+        if (!next) {
+            state.galgameOptions = [];
+            state.galgameOptionsLoading = false;
+            state._galgameRequestSeq += 1;
+        }
+        applyGalgameBodyClass(next);
+        if (!options || options.persist !== false) persistGalgameModePreference(next);
+        renderWindow();
+        if (changed) {
+            dispatchHostEvent('galgame-mode-change', { enabled: next });
+        }
+    }
+
+    function getRecentGalgameMessageHistory() {
+        var msgs = Array.isArray(state.messages) ? state.messages : [];
+        var collected = [];
+        for (var i = msgs.length - 1; i >= 0 && collected.length < GALGAME_HISTORY_LIMIT; i--) {
+            var m = msgs[i];
+            if (!m) continue;
+            if (m.role !== 'assistant' && m.role !== 'user') continue;
+            var text = '';
+            if (Array.isArray(m.blocks)) {
+                for (var j = 0; j < m.blocks.length; j++) {
+                    var block = m.blocks[j];
+                    if (block && block.type === 'text' && typeof block.text === 'string') {
+                        text += (text ? '\n' : '') + block.text;
+                    }
+                }
+            }
+            text = text.replace(/\[play_music:[^\]]*(\]|$)/g, '').trim();
+            if (!text) continue;
+            collected.push({ role: m.role, text: text });
+        }
+        return collected.reverse();
+    }
+
+    function pickAcceptLanguage() {
+        try {
+            if (typeof window.getCurrentLocale === 'function') {
+                var loc = window.getCurrentLocale();
+                if (loc) return String(loc);
+            }
+        } catch (_) {}
+        if (window.i18next && typeof window.i18next.language === 'string') return window.i18next.language;
+        if (typeof navigator !== 'undefined' && typeof navigator.language === 'string') return navigator.language;
+        return '';
+    }
+
+    function fetchGalgameOptionsForLatestTurn() {
+        if (!state.galgameModeEnabled) return;
+        var history = getRecentGalgameMessageHistory();
+        if (!history.length) return;
+        if (history[history.length - 1].role !== 'assistant') return;
+
+        var requestSeq = ++state._galgameRequestSeq;
+        state.galgameOptions = [];
+        state.galgameOptionsLoading = true;
+        renderWindow();
+
+        var payload = {
+            messages: history,
+            language: pickAcceptLanguage()
+        };
+        try {
+            if (window.appState && typeof window.appState.lanlan_name === 'string' && window.appState.lanlan_name) {
+                payload.lanlan_name = window.appState.lanlan_name;
+            }
+        } catch (_) {}
+
+        fetch('/api/galgame/options', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        }).then(function (resp) {
+            if (!resp || !resp.ok) throw new Error('HTTP ' + (resp && resp.status));
+            return resp.json();
+        }).then(function (data) {
+            if (requestSeq !== state._galgameRequestSeq) return;
+            var opts = (data && Array.isArray(data.options)) ? data.options.slice(0, 3) : [];
+            opts = opts.filter(function (o) {
+                return o && typeof o.label === 'string' && typeof o.text === 'string';
+            }).map(function (o) {
+                return { label: String(o.label).slice(0, 4), text: String(o.text) };
+            });
+            state.galgameOptions = opts;
+            state.galgameOptionsLoading = false;
+            renderWindow();
+        }).catch(function (err) {
+            if (requestSeq !== state._galgameRequestSeq) return;
+            console.warn('[ReactChatWindow] galgame options fetch failed:', err);
+            state.galgameOptions = [];
+            state.galgameOptionsLoading = false;
+            renderWindow();
+        });
+    }
+
+    function handleGalgameModeToggle() {
+        setGalgameModeEnabled(!state.galgameModeEnabled);
+        if (state.galgameModeEnabled) {
+            fetchGalgameOptionsForLatestTurn();
+        }
+    }
+
+    function handleGalgameOptionSelect(option) {
+        if (!option || typeof option.text !== 'string') return;
+        var text = option.text.trim();
+        if (!text) return;
+        // Clear options immediately so the panel doesn't keep stale entries while
+        // the next turn streams in.
+        state.galgameOptions = [];
+        state.galgameOptionsLoading = false;
+        state._galgameRequestSeq += 1;
+        renderWindow();
+
+        var detail = {
+            text: text,
+            requestId: 'galgame-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8),
+            source: 'galgame-option',
+            label: option.label
+        };
+        handleComposerSubmit(detail);
+        dispatchHostEvent('galgame-option-select', detail);
     }
 
     function setViewProps(nextViewProps) {
@@ -1772,6 +1945,21 @@
         window.addEventListener(EVENT_PREFIX + 'set-composer-hidden', function (event) {
             setComposerHidden(event.detail && event.detail.hidden);
         });
+
+        window.addEventListener(EVENT_PREFIX + 'set-galgame-mode', function (event) {
+            var detail = event.detail || {};
+            setGalgameModeEnabled(!!detail.enabled, { persist: detail.persist !== false });
+        });
+
+        // Refresh option list whenever an assistant turn finishes streaming.
+        window.addEventListener('neko-assistant-turn-end', function () {
+            if (!state.galgameModeEnabled) return;
+            // Wait one frame so the React message list reflects the final blocks
+            // before we read history for the request.
+            requestAnimationFrame(function () {
+                fetchGalgameOptionsForLatestTurn();
+            });
+        });
     }
 
     function init() {
@@ -1951,6 +2139,11 @@
         },
         rollbackLastDraft: rollbackLastDraft,
         clearPendingRollbackDraft: clearPendingRollbackDraft,
+        setGalgameModeEnabled: function (enabled, options) {
+            setGalgameModeEnabled(enabled, options || {});
+        },
+        isGalgameModeEnabled: function () { return !!state.galgameModeEnabled; },
+        refreshGalgameOptions: fetchGalgameOptionsForLatestTurn,
         isMounted: function () { return mounted; }
     };
 })();
