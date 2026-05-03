@@ -48,6 +48,11 @@ const composerAttachmentSchema = z.object({
   alt: z.string().optional(),
 });
 
+const galgameOptionSchema = z.object({
+  label: z.string().min(1),
+  text: z.string().min(1),
+});
+
 const avatarInteractionPayloadBaseSchema = z.object({
   interactionId: z.string().min(1),
   target: z.literal('avatar'),
@@ -169,6 +174,12 @@ export const chatWindowPropsSchema = z.object({
   translateEnabled: z.boolean().optional(),
   translateButtonLabel: z.string().optional(),
   translateButtonAriaLabel: z.string().optional(),
+  galgameModeEnabled: z.boolean().optional(),
+  galgameOptions: z.array(galgameOptionSchema).optional(),
+  galgameOptionsLoading: z.boolean().optional(),
+  galgameToggleButtonLabel: z.string().optional(),
+  galgameToggleButtonAriaLabel: z.string().optional(),
+  galgameLoadingLabel: z.string().optional(),
   onMessageAction: z.function()
     .args(chatMessageSchema, messageActionSchema)
     .returns(z.void())
@@ -209,6 +220,14 @@ export const chatWindowPropsSchema = z.object({
     .args()
     .returns(z.void())
     .optional(),
+  onGalgameModeToggle: z.function()
+    .args()
+    .returns(z.void())
+    .optional(),
+  onGalgameOptionSelect: z.function()
+    .args(galgameOptionSchema)
+    .returns(z.void())
+    .optional(),
 });
 
 export type ChatMessageRole = z.infer<typeof chatMessageSchema>['role'];
@@ -219,6 +238,7 @@ export type LinkBlock = z.infer<typeof linkBlockSchema>;
 export type StatusBlock = z.infer<typeof statusBlockSchema>;
 export type ButtonGroupBlock = z.infer<typeof buttonGroupBlockSchema>;
 export type ComposerAttachment = z.infer<typeof composerAttachmentSchema>;
+export type GalgameOption = z.infer<typeof galgameOptionSchema>;
 export type AvatarInteractionPayload = z.infer<typeof avatarInteractionPayloadSchema>;
 export type AvatarToolStatePayload = z.infer<typeof avatarToolStatePayloadSchema>;
 export type MessageBlock = z.infer<typeof messageBlockSchema>;

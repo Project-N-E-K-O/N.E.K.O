@@ -9,6 +9,7 @@ import {
   type ComposerAttachment,
   type AvatarInteractionPayload,
   type AvatarToolStatePayload,
+  type GalgameOption,
 } from './message-schema';
 
 export type ChatWindowProps = ChatWindowSchemaProps & {
@@ -21,6 +22,8 @@ export type ChatWindowProps = ChatWindowSchemaProps & {
   onAvatarToolStateChange?: (payload: AvatarToolStatePayload) => void;
   onJukeboxClick?: () => void;
   onTranslateToggle?: () => void;
+  onGalgameModeToggle?: () => void;
+  onGalgameOptionSelect?: (option: GalgameOption) => void;
 };
 
 const defaultMessages: ChatMessage[] = [];
@@ -556,6 +559,12 @@ export default function App({
   translateEnabled = false,
   translateButtonLabel = i18n('subtitle.enable', 'Subtitle Translation'),
   translateButtonAriaLabel,
+  galgameModeEnabled = false,
+  galgameOptions = [],
+  galgameOptionsLoading = false,
+  galgameToggleButtonLabel = i18n('chat.galgameToggle', 'GalGame Mode'),
+  galgameToggleButtonAriaLabel,
+  galgameLoadingLabel = i18n('chat.galgameLoading', '生成回复选项中…'),
   onMessageAction,
   onComposerImportImage,
   onComposerScreenshot,
@@ -565,6 +574,8 @@ export default function App({
   onAvatarToolStateChange,
   onJukeboxClick,
   onTranslateToggle,
+  onGalgameModeToggle,
+  onGalgameOptionSelect,
   rollbackDraft,
   _rollbackKey,
   _toolCursorResetKey,
@@ -644,6 +655,7 @@ export default function App({
   const resolvedImportImageAriaLabel = importImageButtonAriaLabel || importImageButtonLabel;
   const resolvedScreenshotAriaLabel = screenshotButtonAriaLabel || screenshotButtonLabel;
   const resolvedTranslateAriaLabel = translateButtonAriaLabel || translateButtonLabel;
+  const resolvedGalgameAriaLabel = galgameToggleButtonAriaLabel || galgameToggleButtonLabel;
   const emojiButtonAriaLabel = i18n('chat.emojiButtonAriaLabel', 'Emoji');
   const toolIconsAriaLabel = i18n('chat.toolIconsAriaLabel', 'Tool icons');
   const clearCursorToolAriaLabel = i18n('chat.clearCursorToolAriaLabel', '恢复鼠标');
@@ -1353,6 +1365,19 @@ export default function App({
     </button>
   );
 
+  const galgameToggleButtonNode = (
+    <button
+      className={`composer-tool-btn composer-galgame-btn${galgameModeEnabled ? ' is-active' : ''}`}
+      type="button"
+      aria-label={resolvedGalgameAriaLabel}
+      aria-pressed={galgameModeEnabled}
+      title={galgameToggleButtonLabel}
+      onClick={() => onGalgameModeToggle?.()}
+    >
+      <span className="composer-galgame-btn-glyph" aria-hidden="true">G</span>
+    </button>
+  );
+
   const emojiToolMenuNode = (
     <div className="composer-tool-menu" ref={toolMenuRef}>
       <button
@@ -1575,7 +1600,10 @@ export default function App({
           />
         </section>
 
-        <footer className="composer-panel" style={composerHidden ? { display: 'none' } : undefined}>
+        <footer
+          className={`composer-panel${galgameModeEnabled ? ' is-galgame-mode' : ''}`}
+          style={composerHidden ? { display: 'none' } : undefined}
+        >
           <div id="music-player-mount" />
           {composerAttachments.length > 0 ? (
             <div className="composer-attachments" aria-label={composerAttachmentsAriaLabel}>
@@ -1603,7 +1631,7 @@ export default function App({
             event.preventDefault();
             submitDraft();
           }}>
-            <div className="composer-input-shell">
+            <div className={`composer-input-shell${galgameModeEnabled ? ' is-galgame-mode' : ''}`}>
               <textarea
                 className="composer-input"
                 placeholder={inputPlaceholder}
@@ -1619,6 +1647,49 @@ export default function App({
                   }
                 }}
               />
+              {galgameModeEnabled && (galgameOptionsLoading || galgameOptions.length > 0) ? (
+                <div
+                  className={`composer-galgame-options${galgameOptionsLoading ? ' is-loading' : ''}`}
+                  role="group"
+                  aria-label={galgameToggleButtonLabel}
+                >
+                  {galgameOptions.length > 0 ? (
+                    galgameOptions.slice(0, 3).map((option, index) => (
+                      <button
+                        key={`${index}-${option.label}`}
+                        type="button"
+                        className="composer-galgame-option"
+                        title={option.text}
+                        disabled={galgameOptionsLoading}
+                        onClick={() => {
+                          if (submittingRef.current) return;
+                          submittingRef.current = true;
+                          try {
+                            onGalgameOptionSelect?.(option);
+                          } finally {
+                            requestAnimationFrame(() => { submittingRef.current = false; });
+                          }
+                        }}
+                      >
+                        <span className="composer-galgame-option-label" aria-hidden="true">{option.label}.</span>
+                        <span className="composer-galgame-option-text">{option.text}</span>
+                      </button>
+                    ))
+                  ) : (
+                    ['A', 'B', 'C'].map((label) => (
+                      <button
+                        key={label}
+                        type="button"
+                        className="composer-galgame-option is-placeholder"
+                        disabled
+                      >
+                        <span className="composer-galgame-option-label" aria-hidden="true">{label}.</span>
+                        <span className="composer-galgame-option-text">{galgameLoadingLabel}</span>
+                      </button>
+                    ))
+                  )}
+                </div>
+              ) : null}
               <div className="composer-bottom-bar" ref={composerBottomBarRef}>
                 <div className="composer-bottom-tools" aria-label={composerToolsAriaLabel}>
                   <button
@@ -1642,6 +1713,8 @@ export default function App({
                   </button>
                   {!isCompactComposer ? (
                     <div className="composer-tools-right" key="composer-tools-expanded">
+                      <span className="composer-tool-divider" aria-hidden="true">|</span>
+                      {galgameToggleButtonNode}
                       <span className="composer-tool-divider" aria-hidden="true">|</span>
                       {translateButtonNode}
                       <span className="composer-tool-divider" aria-hidden="true">|</span>
@@ -1681,6 +1754,7 @@ export default function App({
                             role="group"
                             aria-label={overflowMenuAriaLabel}
                           >
+                            {galgameToggleButtonNode}
                             {translateButtonNode}
                             {jukeboxButtonNode}
                             {emojiToolMenuNode}

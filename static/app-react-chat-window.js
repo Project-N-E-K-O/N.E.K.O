@@ -14,6 +14,8 @@
     var STORAGE_TOP_KEY = 'neko.reactChatWindow.top';
     var STORAGE_WIDTH_KEY = 'neko.reactChatWindow.width';
     var STORAGE_HEIGHT_KEY = 'neko.reactChatWindow.height';
+    var GALGAME_STORAGE_KEY = 'neko.reactChatWindow.galgameMode';
+    var GALGAME_HISTORY_LIMIT = 6;
     var EVENT_PREFIX = 'react-chat-window:';
 
     var loadedPromise = null;
@@ -39,8 +41,42 @@
         onAvatarToolStateChange: null,
         pendingRollbackDrafts: Object.create(null),
         rollbackDraft: '',
-        _toolCursorResetKey: ''
+        _toolCursorResetKey: '',
+        // Off until init() reads the persisted preference post-barrier and
+        // calls setGalgameModeEnabled(true) — that path fires the
+        // galgame-mode-change event, which is the only signal chat.html's
+        // syncWindowToGalgameMin uses to bump Electron window height.
+        // Defaulting to true here would leave saved-OFF users permanently
+        // bumped: chat.html's listener only ever grows the window.
+        galgameModeEnabled: false,
+        galgameOptions: [],
+        galgameOptionsLoading: false,
+        _galgameRequestSeq: 0
     };
+
+    function readGalgameModePreference() {
+        try {
+            var raw = localStorage.getItem(GALGAME_STORAGE_KEY);
+            if (raw === null) return true; // default ON per spec
+            return raw === 'true';
+        } catch (_) {
+            return true;
+        }
+    }
+
+    function persistGalgameModePreference(enabled) {
+        try {
+            localStorage.setItem(GALGAME_STORAGE_KEY, enabled ? 'true' : 'false');
+        } catch (_) {}
+    }
+
+    function applyGalgameBodyClass(enabled) {
+        if (typeof document === 'undefined' || !document.body) return;
+        document.body.classList.toggle('galgame-mode-enabled', !!enabled);
+    }
+    // No module-eval apply: state defaults to off here; init() resolves the
+    // persisted preference and calls setGalgameModeEnabled(...) which flips
+    // the class and fires the change event chat.html listens to.
 
     var MOBILE_MAX_HEIGHT_RATIO = 0.85;
     var MOBILE_MESSAGE_MIN_HEIGHT = 60;
@@ -304,7 +340,10 @@
                 ? !!window.appState.subtitleEnabled
                 : localStorage.getItem('subtitleEnabled') === 'true',
             translateButtonLabel: getI18nText('subtitle.enable', '字幕翻译'),
-            translateButtonAriaLabel: getI18nText('subtitle.enableAriaLabel', '字幕翻译开关')
+            translateButtonAriaLabel: getI18nText('subtitle.enableAriaLabel', '字幕翻译开关'),
+            galgameToggleButtonLabel: getI18nText('chat.galgameToggle', 'GalGame 模式'),
+            galgameToggleButtonAriaLabel: getI18nText('chat.galgameToggleAriaLabel', '切换 GalGame 选项模式'),
+            galgameLoadingLabel: getI18nText('chat.galgameLoading', '生成回复选项中…')
         };
     }
 
@@ -411,6 +450,9 @@
             _rollbackKey: state._rollbackKey || undefined,
             _toolCursorResetKey: state._toolCursorResetKey || undefined,
             composerHidden: state.composerHidden,
+            galgameModeEnabled: !!state.galgameModeEnabled,
+            galgameOptions: Array.isArray(state.galgameOptions) ? state.galgameOptions : [],
+            galgameOptionsLoading: !!state.galgameOptionsLoading,
             onMessageAction: handleMessageAction,
             onComposerImportImage: handleComposerImportImage,
             onComposerScreenshot: handleComposerScreenshot,
@@ -420,7 +462,9 @@
             onAvatarToolStateChange: handleAvatarToolStateChange,
             onJukeboxClick: handleJukeboxClick,
             onAvatarGeneratorClick: handleAvatarGeneratorClick,
-            onTranslateToggle: handleTranslateToggle
+            onTranslateToggle: handleTranslateToggle,
+            onGalgameModeToggle: handleGalgameModeToggle,
+            onGalgameOptionSelect: handleGalgameOptionSelect
         });
     }
 
@@ -673,6 +717,16 @@
 
         var hasAttachments = state.composerAttachments && state.composerAttachments.length > 0;
         if (!detail.text.trim() && !hasAttachments) return;
+
+        // Clear stale GalGame options as soon as the user sends anything; the
+        // next turn-end will trigger a fresh fetch if the mode is still on.
+        // invalidatePendingGalgameRequest unconditionally bumps the seq + aborts
+        // the in-flight fetch (so a still-pending wait callback or response
+        // can't land into the new turn context); we only re-render when the
+        // visible state actually changed.
+        if (invalidatePendingGalgameRequest()) {
+            renderWindow();
+        }
 
         // Store last submitted text for rollback on RESPONSE_TOO_LONG
         // Preserve original whitespace so rollback restores exactly what the user typed
@@ -960,10 +1014,259 @@
         dispatchHostEvent('translate-toggle', { enabled: next });
     }
 
+    // ============================ GalGame mode ============================
+    function setGalgameModeEnabled(enabled, options) {
+        var next = !!enabled;
+        var changed = state.galgameModeEnabled !== next;
+        state.galgameModeEnabled = next;
+        if (!next) {
+            state.galgameOptions = [];
+            state.galgameOptionsLoading = false;
+            state._galgameRequestSeq += 1;
+            // Toggling off mid-fetch must also kill the in-flight request so
+            // the summary-tier inference doesn't keep running uselessly until
+            // the 30s timeout (or finishes and is silently discarded).
+            abortPendingGalgameFetch();
+        }
+        applyGalgameBodyClass(next);
+        if (!options || options.persist !== false) persistGalgameModePreference(next);
+        renderWindow();
+        if (changed) {
+            dispatchHostEvent('galgame-mode-change', { enabled: next });
+            // OFF→ON: if the chat overlay is currently visible, refetch the
+            // latest turn's options so the user sees A/B/C immediately rather
+            // than waiting for the next turn-end. Gating on overlay visibility
+            // avoids wasting a summary-tier call during init() (where the
+            // window is still hidden) and respects the same skip rule the
+            // turn-end handler uses for voice-only / proactive paths.
+            if (next) {
+                var overlay = getOverlay();
+                if (overlay && !overlay.hidden) {
+                    fetchGalgameOptionsForLatestTurn();
+                }
+            }
+        }
+    }
+
+    function waitForAssistantBubblesFlushed(maxWaitMs) {
+        // Resolve as soon as app-chat-adapter's realistic-mode queue is empty
+        // and not in the middle of processing a sentence. In merge / non-Gemini
+        // paths the queue is never populated and the predicate is true on the
+        // first check, so this just collapses to a microtask.
+        return new Promise(function (resolve) {
+            var deadline = Date.now() + (typeof maxWaitMs === 'number' ? maxWaitMs : 4000);
+            function isDrained() {
+                var q = window._realisticGeminiQueue;
+                var processing = !!window._isProcessingRealisticQueue;
+                var queueEmpty = !Array.isArray(q) || q.length === 0;
+                return queueEmpty && !processing;
+            }
+            if (isDrained()) {
+                resolve();
+                return;
+            }
+            var pollId = setInterval(function () {
+                if (isDrained() || Date.now() >= deadline) {
+                    clearInterval(pollId);
+                    resolve();
+                }
+            }, 100);
+        });
+    }
+
+    function getRecentGalgameMessageHistory() {
+        var msgs = Array.isArray(state.messages) ? state.messages : [];
+        var collected = [];
+        for (var i = msgs.length - 1; i >= 0 && collected.length < GALGAME_HISTORY_LIMIT; i--) {
+            var m = msgs[i];
+            if (!m) continue;
+            if (m.role !== 'assistant' && m.role !== 'user') continue;
+            var text = '';
+            if (Array.isArray(m.blocks)) {
+                for (var j = 0; j < m.blocks.length; j++) {
+                    var block = m.blocks[j];
+                    if (block && block.type === 'text' && typeof block.text === 'string') {
+                        text += (text ? '\n' : '') + block.text;
+                    }
+                }
+            }
+            text = text.replace(/\[play_music:[^\]]*(\]|$)/g, '').trim();
+            if (!text) continue;
+            collected.push({ role: m.role, text: text });
+        }
+        return collected.reverse();
+    }
+
+    function pickAcceptLanguage() {
+        try {
+            if (typeof window.getCurrentLocale === 'function') {
+                var loc = window.getCurrentLocale();
+                if (loc) return String(loc);
+            }
+        } catch (_) {}
+        if (window.i18next && typeof window.i18next.language === 'string') return window.i18next.language;
+        if (typeof navigator !== 'undefined' && typeof navigator.language === 'string') return navigator.language;
+        return '';
+    }
+
+    var GALGAME_FETCH_TIMEOUT_MS = 30000;
+    var _galgameAbortController = null;
+
+    function abortPendingGalgameFetch() {
+        if (_galgameAbortController) {
+            try { _galgameAbortController.abort(); } catch (_) {}
+            _galgameAbortController = null;
+        }
+    }
+
+    function fetchGalgameOptionsForLatestTurn() {
+        if (!state.galgameModeEnabled) return;
+        var history = getRecentGalgameMessageHistory();
+        if (!history.length) return;
+        if (history[history.length - 1].role !== 'assistant') return;
+
+        // Cancel any prior in-flight request — keeps summary-tier load down
+        // when turns arrive faster than the model can answer, and ensures a
+        // hung server side isn't held open while the panel is no longer
+        // listening for it.
+        abortPendingGalgameFetch();
+        var controller = (typeof AbortController === 'function') ? new AbortController() : null;
+        _galgameAbortController = controller;
+        var requestSeq = ++state._galgameRequestSeq;
+        state.galgameOptions = [];
+        state.galgameOptionsLoading = true;
+        renderWindow();
+
+        // 30s timeout cleanup: clears loading state in addition to aborting,
+        // so the catch's blanket AbortError swallow doesn't leave the panel
+        // stuck. Aborts triggered by invalidation paths instead bump the seq
+        // *and* clear state up front, so the catch's seq-mismatch return is
+        // still the right thing for those.
+        var timeoutId = controller ? setTimeout(function () {
+            timeoutId = null;
+            if (_galgameAbortController === controller) {
+                _galgameAbortController = null;
+            }
+            try { controller.abort(); } catch (_) {}
+            if (requestSeq !== state._galgameRequestSeq) return;
+            state.galgameOptions = [];
+            state.galgameOptionsLoading = false;
+            renderWindow();
+        }, GALGAME_FETCH_TIMEOUT_MS) : null;
+
+        var payload = {
+            messages: history,
+            language: pickAcceptLanguage()
+        };
+        try {
+            if (window.appState && typeof window.appState.lanlan_name === 'string' && window.appState.lanlan_name) {
+                payload.lanlan_name = window.appState.lanlan_name;
+            }
+        } catch (_) {}
+        try {
+            // getCurrentUserName() returns the literal English placeholder 'You'
+            // when no real user name can be resolved. Sending that overrides the
+            // backend's localized GALGAME_DEFAULT_MASTER_PLACEHOLDER fallback,
+            // so we only forward a name when it's a genuine user-set value.
+            var currentUserName = getCurrentUserName();
+            if (typeof currentUserName === 'string' && currentUserName && currentUserName !== 'You') {
+                payload.master_name = currentUserName;
+            }
+        } catch (_) {}
+
+        function clearTimer() {
+            if (timeoutId !== null) {
+                clearTimeout(timeoutId);
+                timeoutId = null;
+            }
+            if (_galgameAbortController === controller) {
+                _galgameAbortController = null;
+            }
+        }
+
+        fetch('/api/galgame/options', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+            signal: controller ? controller.signal : undefined
+        }).then(function (resp) {
+            if (!resp || !resp.ok) throw new Error('HTTP ' + (resp && resp.status));
+            return resp.json();
+        }).then(function (data) {
+            clearTimer();
+            if (requestSeq !== state._galgameRequestSeq) return;
+            var opts = (data && Array.isArray(data.options)) ? data.options.slice(0, 3) : [];
+            opts = opts.filter(function (o) {
+                return o && typeof o.label === 'string' && typeof o.text === 'string';
+            }).map(function (o) {
+                return { label: String(o.label).slice(0, 4), text: String(o.text) };
+            });
+            state.galgameOptions = opts;
+            state.galgameOptionsLoading = false;
+            renderWindow();
+        }).catch(function (err) {
+            clearTimer();
+            if (requestSeq !== state._galgameRequestSeq) return;
+            // Aborts come from invalidation paths that have already cleared
+            // visible state, so swallow them silently.
+            if (err && err.name === 'AbortError') return;
+            console.warn('[ReactChatWindow] galgame options fetch failed:', err);
+            state.galgameOptions = [];
+            state.galgameOptionsLoading = false;
+            renderWindow();
+        });
+    }
+
+    function handleGalgameModeToggle() {
+        // setGalgameModeEnabled handles the OFF→ON refetch internally.
+        setGalgameModeEnabled(!state.galgameModeEnabled);
+    }
+
+    function handleGalgameOptionSelect(option) {
+        if (!option || typeof option.text !== 'string') return;
+        var text = option.text.trim();
+        if (!text) return;
+        // Clear options immediately so the panel doesn't keep stale entries while
+        // the next turn streams in.
+        state.galgameOptions = [];
+        state.galgameOptionsLoading = false;
+        state._galgameRequestSeq += 1;
+        renderWindow();
+
+        var detail = {
+            text: text,
+            requestId: 'galgame-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8),
+            source: 'galgame-option',
+            label: option.label
+        };
+        handleComposerSubmit(detail);
+        dispatchHostEvent('galgame-option-select', detail);
+    }
+
     function setViewProps(nextViewProps) {
         state.viewProps = Object.assign({}, ensureViewProps(), nextViewProps || {});
         renderWindow();
         return state.viewProps;
+    }
+
+    function invalidatePendingGalgameRequest() {
+        // Conversation advanced / switched / cleared — drop any in-flight
+        // options fetch (or pending wait callback that hasn't fired yet) so
+        // its response can't render stale A/B/C into the new context.
+        // The seq bump must be UNCONDITIONAL: callers like
+        // waitForAssistantBubblesFlushed snapshot _galgameRequestSeq before
+        // their fetch goes out, so even when the panel is idle (loading
+        // false, options empty) we still need to advance the seq to invalidate
+        // those pending callbacks. The fetch itself is also aborted.
+        state._galgameRequestSeq += 1;
+        abortPendingGalgameFetch();
+        var hadVisibleState = state.galgameOptionsLoading
+            || (state.galgameOptions && state.galgameOptions.length > 0);
+        if (hadVisibleState) {
+            state.galgameOptions = [];
+            state.galgameOptionsLoading = false;
+        }
+        return hadVisibleState;
     }
 
     function setMessages(messages) {
@@ -986,6 +1289,7 @@
         if (state.messages.length > MAX_MESSAGES) {
             state.messages = state.messages.slice(-MAX_MESSAGES);
         }
+        invalidatePendingGalgameRequest();
         renderWindow();
         return state.messages;
     }
@@ -1025,6 +1329,13 @@
         if (state.messages.length > MAX_MESSAGES) {
             state.messages = state.messages.slice(-MAX_MESSAGES);
         }
+        // A new user-role message means the conversation has advanced — even
+        // when the message came in via voice / proactive / sendTextPayload
+        // rather than the React composer. Invalidate any pending GalGame fetch
+        // so its response can't render against the old turn context.
+        if (normalized.role === 'user') {
+            invalidatePendingGalgameRequest();
+        }
         renderWindow();
         return normalized;
     }
@@ -1058,6 +1369,7 @@
     function clearMessages() {
         state.messages = [];
         _sortKeySeq = 0;
+        invalidatePendingGalgameRequest();
         renderWindow();
     }
 
@@ -1405,6 +1717,25 @@
                     restorePosition();
                     scheduleMobileContentLayout();
                 }
+                // closeWindow / hidden-state turn-end both invalidate the
+                // GalGame option list, so reopening must re-fetch for the
+                // latest assistant turn or the user would see a permanently
+                // empty panel until the next reply arrives.
+                // Wait for app-chat-adapter's realistic queue to drain before
+                // building the request — same race the turn-end handler
+                // protects against, just with a shorter cap because by the
+                // time the user reopens the window the queue has usually
+                // already finished.
+                if (state.galgameModeEnabled) {
+                    var seqAtOpen = state._galgameRequestSeq;
+                    waitForAssistantBubblesFlushed(2000).then(function () {
+                        if (!state.galgameModeEnabled) return;
+                        if (state._galgameRequestSeq !== seqAtOpen) return;
+                        var overlayNow = getOverlay();
+                        if (!overlayNow || overlayNow.hidden) return;
+                        fetchGalgameOptionsForLatestTurn();
+                    });
+                }
             })
             .catch(function (error) {
                 console.error('[ReactChatWindow] open failed:', error);
@@ -1415,6 +1746,12 @@
     function closeWindow() {
         var overlay = getOverlay();
         if (!overlay) return;
+        // Closing the overlay should also abort any in-flight GalGame fetch
+        // (parity with setGalgameModeEnabled(false) / setMessages /
+        // clearMessages). Without this, a request that lands after close
+        // still passes the seq guard and writes options into hidden state,
+        // surfacing stale A/B/C the next time the user opens the window.
+        invalidatePendingGalgameRequest();
         cancelActiveAnimation(); // 清理进行中的折叠/展开回调
 
         // 如果当前处于最小化状态，恢复 shell 到正常态
@@ -1772,6 +2109,45 @@
         window.addEventListener(EVENT_PREFIX + 'set-composer-hidden', function (event) {
             setComposerHidden(event.detail && event.detail.hidden);
         });
+
+        window.addEventListener(EVENT_PREFIX + 'set-galgame-mode', function (event) {
+            var detail = event.detail || {};
+            setGalgameModeEnabled(!!detail.enabled, { persist: detail.persist !== false });
+        });
+
+        // Refresh option list whenever an assistant turn finishes streaming.
+        window.addEventListener('neko-assistant-turn-end', function () {
+            if (!state.galgameModeEnabled) return;
+            // Skip when the chat overlay is hidden — otherwise galgame mode's
+            // default-on flag would spam /api/galgame/options (and summary-tier
+            // inference) on every assistant turn even for users who never
+            // opened the React chat window (voice-only / proactive paths).
+            var overlay = getOverlay();
+            if (!overlay || overlay.hidden) return;
+            // app-chat-adapter's processRealisticQueue can still be sleeping
+            // 1-2s between bubble flushes when turn-end fires, so the message
+            // list may not yet contain the final assistant sentences. Wait
+            // until the queue is drained and the lock is released before
+            // building the request, with a hard cap so a stuck queue can't
+            // permanently block the option fetch.
+            //
+            // Snapshot _galgameRequestSeq before waiting: invalidatePending…
+            // (called by setMessages / clearMessages / handleComposerSubmit)
+            // bumps the seq when the conversation switches or the user moves
+            // on. If that happens during the wait window, we drop this fetch
+            // so a stale turn-end can't render A/B/C into the new context.
+            var seqAtSchedule = state._galgameRequestSeq;
+            waitForAssistantBubblesFlushed(4000).then(function () {
+                if (!state.galgameModeEnabled) return;
+                if (state._galgameRequestSeq !== seqAtSchedule) return;
+                // The overlay may have been closed during the 4s wait — re-check
+                // before firing the fetch so closing the chat mid-turn doesn't
+                // still kick off a background summary-tier inference.
+                var overlayNow = getOverlay();
+                if (!overlayNow || overlayNow.hidden) return;
+                fetchGalgameOptionsForLatestTurn();
+            });
+        });
     }
 
     function init() {
@@ -1783,6 +2159,13 @@
 
         ensureViewProps();
         prewarmUserDisplayName();
+        // Resolve the persisted GalGame preference now that the storage-location
+        // barrier has settled (initAfterStorageBarrier has awaited it before
+        // calling init). Reading at module-eval would risk capturing the value
+        // from a storage namespace the barrier is about to remap.
+        // setGalgameModeEnabled idempotently syncs state + body class + fires
+        // the change event when the resolved pref differs from the safe default.
+        setGalgameModeEnabled(readGalgameModePreference(), { persist: false });
 
         if (trigger) {
             trigger.addEventListener('click', openWindow);
@@ -1951,6 +2334,11 @@
         },
         rollbackLastDraft: rollbackLastDraft,
         clearPendingRollbackDraft: clearPendingRollbackDraft,
+        setGalgameModeEnabled: function (enabled, options) {
+            setGalgameModeEnabled(enabled, options || {});
+        },
+        isGalgameModeEnabled: function () { return !!state.galgameModeEnabled; },
+        refreshGalgameOptions: fetchGalgameOptionsForLatestTurn,
         isMounted: function () { return mounted; }
     };
 })();

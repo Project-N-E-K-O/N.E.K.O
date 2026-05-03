@@ -1,3 +1,36 @@
+import os as _os
+import sys as _sys
+import tempfile as _tempfile
+from pathlib import Path as _Path
+
+# Project root must be on sys.path before importing `utils.*` — works even when
+# the project isn't installed as a wheel (e.g. bare `python -m pytest tests/`).
+_project_root = _os.path.abspath(_os.path.join(_os.path.dirname(__file__), '..'))
+if _project_root not in _sys.path:
+    _sys.path.insert(0, _project_root)
+
+# Redirect test logs out of the user's real %USERPROFILE%/Documents/N.E.K.O/logs.
+# Without this, every pytest session — including ones that intentionally inject
+# OSError / 坏 JSON / mock-driven failures via patches — dumps ERROR lines into
+# the user's Documents tree.
+#
+# We override RobustLoggerConfig._get_log_directory directly (rather than going
+# through NEKO_STORAGE_SELECTED_ROOT) because that env var also drives
+# ConfigManager / cloudsave_runtime layout, and pointing those at the temp dir
+# triggers a legacy-app-root migration scan that rmtrees the temp dir mid-test.
+# Loggers are constructed at module import time, so the patch must happen here
+# in conftest BEFORE any project module is imported.
+_NEKO_TEST_LOG_ROOT = _Path(_tempfile.gettempdir()) / f"neko_test_logs_{_os.getpid()}"
+_NEKO_TEST_LOG_ROOT.mkdir(parents=True, exist_ok=True)
+from utils import logger_config as _logger_config_module
+# Override only the Documents-fallback hook (priority 2 in _get_log_directory).
+# Env-var-based override (priority 1) and the cascade through application/system
+# data dirs stay intact — so tests that use monkeypatch.setenv on
+# NEKO_STORAGE_SELECTED_ROOT still see the override they expect.
+_logger_config_module.RobustLoggerConfig._get_documents_directory = (
+    lambda self, _root=_NEKO_TEST_LOG_ROOT: _root
+)
+
 import asyncio
 import asyncio.runners
 import asyncio.coroutines
@@ -48,10 +81,8 @@ from pathlib import Path
 
 import uvicorn
 
-# Add project root to sys.path before importing project-local test helpers.
-_project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-if _project_root not in sys.path:
-    sys.path.insert(0, _project_root)
+# (Project root was already inserted into sys.path at the top of this file
+# so the early `from utils import logger_config` works without `uv sync`.)
 
 import pytest
 

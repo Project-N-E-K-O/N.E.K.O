@@ -527,9 +527,9 @@
         "steamNotRunningMessage": "检测到Steam客户端未运行或未登录。\n\n创意工坊功能需要Steam客户端支持，请：\n1. 下载并安装Steam客户端\n2. 启动Steam并登录您的账号\n3. 重新打开此页面",
         "addNewCatgirl": "新增角色卡",
         "noCardImage": "点击此处设置卡面",
-        "searchCharacterCards": "\u641c索角色卡...",
-        "cardView": "\u5361片视图",
-        "listView": "\u5217表视图"
+        "searchCharacterCards": "搜索角色卡...",
+        "cardView": "卡片视图",
+        "listView": "列表视图"
     },
     "dialogs": {
         "confirmLeave": "确认离开",
@@ -696,6 +696,9 @@
         "attachmentButtonAriaLabel": "附件",
         "jukebox": "点歌台",
         "jukeboxLabel": "点歌台",
+        "galgameToggle": "GalGame 模式",
+        "galgameToggleAriaLabel": "切换 GalGame 选项模式",
+        "galgameLoading": "生成回复选项中…",
         "exportConversation": "导出对话",
         "exportSelected": "导出所选",
         "exportPreviewTitle": "导出预览",

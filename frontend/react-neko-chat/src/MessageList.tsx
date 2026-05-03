@@ -18,7 +18,7 @@ function shouldGroupWithPrevious(current: ChatMessage, previous?: ChatMessage) {
   if (current.author !== previous.author) return false;
   if (current.role === 'system') return false;
   if (typeof current.createdAt === 'number' && typeof previous.createdAt === 'number') {
-    if (Math.abs(current.createdAt - previous.createdAt) > 5 * 60 * 1000) {
+    if (Math.abs(current.createdAt - previous.createdAt) > 30 * 1000) {
       return false;
     }
   }

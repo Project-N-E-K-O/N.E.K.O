@@ -339,6 +339,35 @@ def cosyvoice_model_supports_language_hints(model: str | None) -> bool:
     return not str(model or _COSYVOICE_CLONE_MODEL_DEFAULT).startswith("cosyvoice-v2")
 
 
+def get_livestream_config() -> Dict[str, Any]:
+    """读取 api_providers.json → livestream_config 节。
+
+    Livestream 模式是叠加在 core_api_type='free' 之上的子模式，启用后：
+    - free 路所有 lanlan.tech URL 重写为 server_prefix 派生地址（/core /text/v1 /tts）
+    - free 路 voice 强制使用 voice_id（绕过 free_voices preset gate）
+    - OmniRealtimeClient 跳过 90 秒静默闭麦判定
+
+    Returns:
+        Dict: {'enabled': bool, 'server_prefix': str, 'voice_id': str}
+        缺失字段以默认值（False / 空串）兜底。
+    """
+    raw = get_config().get('livestream_config') or {}
+    return {
+        'enabled': bool(raw.get('enabled', False)),
+        'server_prefix': str(raw.get('server_prefix', '') or '').strip(),
+        'voice_id': str(raw.get('voice_id', '') or '').strip(),
+    }
+
+
+def is_livestream_active() -> bool:
+    """livestream 实际生效需要同时具备 enabled=True 且 server_prefix 非空。
+
+    voice_id 不强制要求（缺省时 free 路保留原 voice 解析路径）。
+    """
+    cfg = get_livestream_config()
+    return cfg['enabled'] and bool(cfg['server_prefix'])
+
+
 # 导出主要函数
 __all__ = [
     'get_core_api_profiles',
@@ -352,4 +381,6 @@ __all__ = [
     'get_free_voices',
     'get_cosyvoice_clone_model',
     'cosyvoice_model_supports_language_hints',
+    'get_livestream_config',
+    'is_livestream_active',
 ]

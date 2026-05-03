@@ -377,6 +377,17 @@
            对同名 @keyframes 做二次解析，且 !important 阻止 prefers-reduced-motion
            等未来覆盖，已移除。 */
 
+        /* GalGame 模式下增大输入区与整体最小高度，避免选项被遮挡 */
+        body.galgame-mode-enabled #react-chat-window-shell .composer-input-shell {
+            min-height: 220px !important;
+        }
+        body.galgame-mode-enabled #react-chat-window-shell {
+            min-height: 320px !important;
+        }
+        body.galgame-mode-enabled {
+            min-height: 320px !important;
+        }
+
         /* Electron 独立窗口始终显示全部工具按钮（覆盖 index.css 768px 媒体查询隐藏） */
         #react-chat-window-shell .composer-bottom-tools > .composer-tool-btn:last-child {
             display: inline-flex !important;
@@ -754,7 +765,42 @@
 
         // BALL: 折叠态呼吸球的窗口总尺寸（CSS .minimized 50px 内容 + 32px Electron 窗口边框/阴影余量）
         var BALL = 82;
-        var MIN_W = 300, MIN_H = 200;
+        var MIN_W = 300;
+        var MIN_H_BASE = 200;
+        // GalGame 模式开启时输入框需要额外 ~110px 容纳 A/B/C 选项 + 间距，
+        // 否则用户首次进入会看到选项被裁切到 send 按钮下方。
+        var MIN_H_GALGAME = 320;
+        function isGalgameModeOn() {
+            return !!(document.body && document.body.classList.contains('galgame-mode-enabled'));
+        }
+        function currentMinH() {
+            return isGalgameModeOn() ? MIN_H_GALGAME : MIN_H_BASE;
+        }
+        Object.defineProperty(window, '__nekoChatMinH', {
+            get: currentMinH,
+            configurable: true
+        });
+
+        // GalGame 模式开/关时，如果当前窗口高度小于新最小值，主动 setBounds 撑高，
+        // 否则用户切到 ON 后会看到选项被裁切到 send 按钮下方。
+        function syncWindowToGalgameMin() {
+            if (collapsed || resizing || animating) return;
+            var minH = currentMinH();
+            try {
+                W.getBounds().then(function(b) {
+                    if (!b) return;
+                    if (b.height >= minH) return;
+                    W.setBounds(b.x, b.y, b.width, minH);
+                });
+            } catch (_) {}
+        }
+        // body class 由 app-react-chat-window.js 在 toggle 时刷新；这里订阅
+        // 主动同步事件，避免轮询 / MutationObserver 的重绘开销。
+        window.addEventListener('react-chat-window:galgame-mode-change', syncWindowToGalgameMin);
+        // 启动时不再主动撑高：app-react-chat-window 在 storage barrier 之后
+        // 调 setGalgameModeEnabled(readPref) 把 false→true 翻转一次，change 事件
+        // 兜底；ON 持久化时这条路径必走、OFF 持久化时不会触发不必要的扩大。
+
         var collapsed = false;
         var animating = false;
         var savedWH = null;
@@ -851,7 +897,7 @@
             var dx = e.screenX - anchorSX;
             var dy = e.screenY - anchorSY;
             var w = Math.max(MIN_W, snapBounds.w + dx);
-            var h = Math.max(MIN_H, snapBounds.h + dy);
+            var h = Math.max(currentMinH(), snapBounds.h + dy);
             if (_expandMax) {
                 w = Math.min(w, _expandMax.w);
                 h = Math.min(h, _expandMax.h);
