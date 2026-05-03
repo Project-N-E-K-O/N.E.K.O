@@ -64,6 +64,11 @@
         "never": "今後は表示しない",
         "startFailed": "今はチュートリアルを開始できません。しばらくしてからもう一度お試しください。"
     },
+    "exitRetention": {
+        "goodbyeBubble": "本当に行っちゃうの……？呼んでくれるまでここで待ってるね。",
+        "returnBubble": "戻ってきたよ。またそばにいるね。",
+        "stayButton": "残って"
+    },
     "characterProfile": {
         "gender": "性別",
         "age": "年齢",

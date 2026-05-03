@@ -702,6 +702,28 @@
             : (window.innerWidth <= 768);
     }
 
+    function callExitRetentionHook(method, payload) {
+        const api = window.exitRetentionAnimation;
+        if (!api || typeof api[method] !== 'function') return;
+        try {
+            api[method](payload || {});
+        } catch (error) {
+            console.warn('[ExitRetention] hook failed:', method, error);
+            if (typeof api.cleanup === 'function') {
+                try {
+                    api.cleanup();
+                } catch (_) { /* ignore visual cleanup errors */ }
+            }
+        }
+    }
+
+    function clearExitRetentionResetTimer() {
+        if (window._exitRetentionResetTimerId) {
+            clearTimeout(window._exitRetentionResetTimerId);
+            window._exitRetentionResetTimerId = null;
+        }
+    }
+
     // --- showCurrentModel ---
     async function showCurrentModel() {
         // 检查"请她离开"状态
@@ -1754,6 +1776,8 @@
 
         // 睡觉按钮（请她离开）
         window.addEventListener('live2d-goodbye-click', () => {
+            clearExitRetentionResetTimer();
+
             // 第零步：在任何状态变更之前立即捕获 goodbye 按钮位置
             // 其他 handler（VRM/MMD goodbyeHandler）可能先于此处执行并隐藏按钮容器，
             // 所以必须在最前面读取位置。
@@ -1864,6 +1888,11 @@
                 mmdContainer.style.display !== 'none' &&
                 !mmdContainer.classList.contains('hidden');
             console.log('[App] 判断当前模型类型 - isVrmActive:', isVrmActive, 'isMmdActive:', isMmdActive);
+            const exitRetentionModelType = isMmdActive ? 'mmd' : (isVrmActive ? 'vrm' : 'live2d');
+            callExitRetentionHook('playGoodbye', {
+                anchorRect: window._savedGoodbyeRect,
+                modelType: exitRetentionModelType
+            });
 
             // VRM 也先仅禁用交互
             const vrmCanvas = document.getElementById('vrm-canvas');
@@ -2094,10 +2123,11 @@
 
             // 触发原有的离开逻辑
             if (resetSessionButton) {
-                setTimeout(() => {
+                window._exitRetentionResetTimerId = setTimeout(() => {
+                    window._exitRetentionResetTimerId = null;
                     console.log('[App] 触发 resetSessionButton.click()，当前 goodbyeClicked 状态:', window.live2dManager ? window.live2dManager._goodbyeClicked : 'undefined');
                     resetSessionButton.click();
-                }, 10);
+                }, 1650);
             } else {
                 console.error('[App] resetSessionButton 未找到！');
             }
@@ -2106,6 +2136,7 @@
         // 请她回来按钮（统一处理函数）
         const handleReturnClick = async (event) => {
             console.log('[App] 请她回来按钮被点击，开始恢复所有界面');
+            clearExitRetentionResetTimer();
             if (multiWindowReturnBallDragState) {
                 multiWindowReturnBallDragState.dragSessionToken += 1;
                 clearMultiWindowReturnBallDeferredWork(multiWindowReturnBallDragState);
@@ -2156,8 +2187,12 @@
             hideReturnBallContainer(mmdReturnButtonContainer);
             ensureMultiWindowReturnBallDrag(null);
 
-            // 如果返回按钮被拖拽到新位置，先偏移模型再显示，避免闪烁
             const returnRect = event && event.detail && event.detail.returnButtonRect;
+            callExitRetentionHook('playReturn', {
+                returnButtonRect: returnRect
+            });
+
+            // 如果返回按钮被拖拽到新位置，先偏移模型再显示，避免闪烁
             const savedRect = window._savedGoodbyeRect;
             if (returnRect && savedRect) {
                 const returnCenterX = returnRect.left + returnRect.width / 2;
@@ -2527,6 +2562,7 @@
         window.addEventListener('live2d-return-click', handleReturnClick);
         window.addEventListener('vrm-return-click', handleReturnClick);
         window.addEventListener('mmd-return-click', handleReturnClick);
+        window.addEventListener('neko-exit-retention-stay', handleReturnClick);
     }
 
     mod.initFloatingButtonListeners = initFloatingButtonListeners;

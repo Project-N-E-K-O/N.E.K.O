@@ -3008,3 +3008,106 @@ body.chat-export-modal-open {
         flex: 1;
     }
 }
+
+/* ===== Exit Retention Animation ===== */
+.neko-exit-retention-bubble {
+    position: fixed;
+    z-index: 100001;
+    max-width: min(260px, calc(100vw - 32px));
+    padding: 10px 14px;
+    border-radius: 14px;
+    border: 1px solid rgba(94, 180, 255, 0.38);
+    background: rgba(255, 255, 255, 0.9);
+    color: #304057;
+    box-shadow: 0 8px 22px rgba(66, 118, 179, 0.16);
+    font-size: 14px;
+    line-height: 1.45;
+    font-weight: 600;
+    pointer-events: none;
+    opacity: 0;
+    transform: translateY(8px) scale(0.96);
+    transition: opacity 0.22s ease, transform 0.22s ease;
+    will-change: opacity, transform;
+}
+
+.neko-exit-retention-bubble.has-action {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    max-width: min(340px, calc(100vw - 32px));
+}
+
+.neko-exit-retention-message {
+    min-width: 0;
+}
+
+.neko-exit-retention-action {
+    flex: 0 0 auto;
+    border: 1px solid rgba(94, 180, 255, 0.42);
+    border-radius: 999px;
+    background: #ffffff;
+    color: #2b6fa8;
+    box-shadow: 0 3px 10px rgba(66, 118, 179, 0.12);
+    cursor: pointer;
+    font: inherit;
+    font-size: 13px;
+    line-height: 1;
+    padding: 7px 10px;
+    pointer-events: auto;
+    white-space: nowrap;
+    transition: background-color 0.16s ease, border-color 0.16s ease, transform 0.16s ease;
+}
+
+.neko-exit-retention-action:hover {
+    background: #eef7ff;
+    border-color: rgba(67, 148, 222, 0.72);
+    transform: translateY(-1px);
+}
+
+.neko-exit-retention-action:focus-visible {
+    outline: 2px solid rgba(67, 148, 222, 0.65);
+    outline-offset: 2px;
+}
+
+.neko-exit-retention-bubble.is-visible {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+}
+
+.neko-exit-retention-bubble.is-leaving {
+    opacity: 0;
+    transform: translateY(-6px) scale(0.98);
+}
+
+#live2d-return-button-container.neko-return-ball-arriving,
+#vrm-return-button-container.neko-return-ball-arriving,
+#mmd-return-button-container.neko-return-ball-arriving {
+    animation: nekoReturnBallArriving 0.62s cubic-bezier(0.18, 0.86, 0.28, 1) both;
+}
+
+@keyframes nekoReturnBallArriving {
+    0% {
+        transform: scale(0.88);
+    }
+    55% {
+        transform: scale(1.08);
+    }
+    100% {
+        transform: scale(1);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .neko-exit-retention-bubble,
+    .neko-exit-retention-bubble.is-visible,
+    .neko-exit-retention-bubble.is-leaving {
+        transition: opacity 0.12s ease;
+        transform: none;
+    }
+
+    #live2d-return-button-container.neko-return-ball-arriving,
+    #vrm-return-button-container.neko-return-ball-arriving,
+    #mmd-return-button-container.neko-return-ball-arriving {
+        animation: none;
+    }
+}

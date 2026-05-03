@@ -64,6 +64,11 @@
         "never": "Don't remind me",
         "startFailed": "The tutorial couldn't be started right now. Please try again later."
     },
+    "exitRetention": {
+        "goodbyeBubble": "Do I really have to go...? I'll wait here until you call me back.",
+        "returnBubble": "I'm back. I'll stay with you.",
+        "stayButton": "Stay"
+    },
     "characterProfile": {
         "gender": "Gender",
         "age": "Age",

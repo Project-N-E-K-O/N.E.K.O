@@ -64,6 +64,11 @@
         "never": "不再提示",
         "startFailed": "暂时无法开始新手引导，请稍后再试"
     },
+    "exitRetention": {
+        "goodbyeBubble": "真的要我走吗……我会在这里等你叫我回来。",
+        "returnBubble": "我回来了，继续陪你。",
+        "stayButton": "留下来"
+    },
     "characterProfile": {
         "gender": "性别",
         "age": "年龄",
