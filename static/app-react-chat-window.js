@@ -1116,14 +1116,27 @@
         abortPendingGalgameFetch();
         var controller = (typeof AbortController === 'function') ? new AbortController() : null;
         _galgameAbortController = controller;
-        var timeoutId = controller ? setTimeout(function () {
-            try { controller.abort(); } catch (_) {}
-        }, GALGAME_FETCH_TIMEOUT_MS) : null;
-
         var requestSeq = ++state._galgameRequestSeq;
         state.galgameOptions = [];
         state.galgameOptionsLoading = true;
         renderWindow();
+
+        // 30s timeout cleanup: clears loading state in addition to aborting,
+        // so the catch's blanket AbortError swallow doesn't leave the panel
+        // stuck. Aborts triggered by invalidation paths instead bump the seq
+        // *and* clear state up front, so the catch's seq-mismatch return is
+        // still the right thing for those.
+        var timeoutId = controller ? setTimeout(function () {
+            timeoutId = null;
+            if (_galgameAbortController === controller) {
+                _galgameAbortController = null;
+            }
+            try { controller.abort(); } catch (_) {}
+            if (requestSeq !== state._galgameRequestSeq) return;
+            state.galgameOptions = [];
+            state.galgameOptionsLoading = false;
+            renderWindow();
+        }, GALGAME_FETCH_TIMEOUT_MS) : null;
 
         var payload = {
             messages: history,
