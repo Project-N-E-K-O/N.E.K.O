@@ -1365,7 +1365,8 @@ button * {
   .composer-tools-right,
   .composer-tools-right > *,
   .composer-overflow-menu,
-  .composer-overflow-popover {
+  .composer-overflow-popover,
+  .composer-galgame-options.is-loading .composer-galgame-option {
     animation: none !important;
   }
 }

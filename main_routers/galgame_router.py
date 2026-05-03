@@ -20,10 +20,13 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from config.prompts_galgame import (
+    GALGAME_DEFAULT_LANLAN_PLACEHOLDER,
+    GALGAME_DEFAULT_MASTER_PLACEHOLDER,
     get_galgame_dialogue_footer,
     get_galgame_dialogue_header,
     get_galgame_option_generation_prompt,
 )
+from config.prompts_sys import _loc
 from utils.file_utils import robust_json_loads
 from utils.language_utils import detect_language, normalize_language_code
 from utils.llm_client import HumanMessage, SystemMessage, create_chat_llm
@@ -89,8 +92,13 @@ def _resolve_language(text_sample: str, request_lang: str | None) -> str:
 def _coerce_messages(raw: Any) -> list[dict[str, str]]:
     if not isinstance(raw, list):
         return []
-    cleaned: list[dict[str, str]] = []
-    for item in raw:
+    # Walk the list back-to-front and stop as soon as we have GALGAME_MAX_HISTORY
+    # accepted turns. Forward + slice would force O(n) work on adversarial /
+    # buggy clients posting megabyte payloads at this boundary endpoint.
+    collected: list[dict[str, str]] = []
+    for item in reversed(raw):
+        if len(collected) >= GALGAME_MAX_HISTORY:
+            break
         if not isinstance(item, dict):
             continue
         role = item.get('role')
@@ -104,12 +112,17 @@ def _coerce_messages(raw: Any) -> list[dict[str, str]]:
             role = 'assistant' if item.get('isAssistant') else 'user'
         if len(text) > GALGAME_MAX_TEXT_PER_TURN:
             text = text[:GALGAME_MAX_TEXT_PER_TURN].rstrip() + '…'
-        cleaned.append({'role': role, 'text': text})
-    return cleaned[-GALGAME_MAX_HISTORY:]
+        collected.append({'role': role, 'text': text})
+    collected.reverse()
+    return collected
 
 
-def _format_dialogue(messages: list[dict[str, str]], lanlan_name: str, master_name: str) -> str:
-    name_for = {'assistant': lanlan_name or 'Catgirl', 'user': master_name or 'You'}
+def _format_dialogue(
+    messages: list[dict[str, str]],
+    lanlan_name: str,
+    master_name: str,
+) -> str:
+    name_for = {'assistant': lanlan_name, 'user': master_name}
     return "\n".join(f"{name_for[msg['role']]}: {msg['text']}" for msg in messages)
 
 
@@ -204,8 +217,10 @@ async def generate_galgame_options(request: Request):
         master_name_current, her_name_current, *_ = await config_manager.aget_character_data()
     except Exception:
         master_name_current, her_name_current = '', ''
-    lanlan_name = (data.get('lanlan_name') or her_name_current or '').strip() or 'Catgirl'
-    master_name = (data.get('master_name') or master_name_current or '').strip() or 'Player'
+    lanlan_name = (data.get('lanlan_name') or her_name_current or '').strip() \
+        or _loc(GALGAME_DEFAULT_LANLAN_PLACEHOLDER, lang)
+    master_name = (data.get('master_name') or master_name_current or '').strip() \
+        or _loc(GALGAME_DEFAULT_MASTER_PLACEHOLDER, lang)
 
     summary_config = config_manager.get_model_api_config('summary')
     api_key = summary_config.get('api_key')

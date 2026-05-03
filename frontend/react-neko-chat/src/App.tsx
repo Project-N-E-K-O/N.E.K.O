@@ -1647,7 +1647,7 @@ export default function App({
                   }
                 }}
               />
-              {galgameModeEnabled ? (
+              {galgameModeEnabled && (galgameOptionsLoading || galgameOptions.length > 0) ? (
                 <div
                   className={`composer-galgame-options${galgameOptionsLoading ? ' is-loading' : ''}`}
                   role="group"
@@ -1684,9 +1684,7 @@ export default function App({
                         disabled
                       >
                         <span className="composer-galgame-option-label" aria-hidden="true">{label}.</span>
-                        <span className="composer-galgame-option-text">
-                          {galgameOptionsLoading ? galgameLoadingLabel : ''}
-                        </span>
+                        <span className="composer-galgame-option-text">{galgameLoadingLabel}</span>
                       </button>
                     ))
                   )}

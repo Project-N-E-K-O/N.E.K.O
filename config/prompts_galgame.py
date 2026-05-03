@@ -94,6 +94,18 @@ GALGAME_DIALOGUE_FOOTER = {
 }
 
 
+# Defensive defaults if upstream config_manager somehow returns blank names
+# (shouldn't happen — aget_character_data always provides defaults — but keeps
+# the prompt readable in the model's native language instead of an English
+# "her/you" residue mixing into ja/ko/ru output).
+GALGAME_DEFAULT_LANLAN_PLACEHOLDER = {
+    'zh': '猫娘', 'en': 'Catgirl', 'ja': '猫娘', 'ko': '캣걸', 'ru': 'Кошкодевочка',
+}
+GALGAME_DEFAULT_MASTER_PLACEHOLDER = {
+    'zh': '玩家', 'en': 'Player', 'ja': 'プレイヤー', 'ko': '플레이어', 'ru': 'Игрок',
+}
+
+
 def get_galgame_option_generation_prompt(
     lang: str = 'zh',
     *,
@@ -101,8 +113,8 @@ def get_galgame_option_generation_prompt(
     master_name: str = '',
 ) -> str:
     template = _loc(GALGAME_OPTION_GENERATION_PROMPT, lang)
-    safe_lanlan = lanlan_name or 'her'
-    safe_master = master_name or 'you'
+    safe_lanlan = lanlan_name or _loc(GALGAME_DEFAULT_LANLAN_PLACEHOLDER, lang)
+    safe_master = master_name or _loc(GALGAME_DEFAULT_MASTER_PLACEHOLDER, lang)
     return template.format(lanlan_name=safe_lanlan, master_name=safe_master)
 
 
