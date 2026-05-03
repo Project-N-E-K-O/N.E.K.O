@@ -712,14 +712,12 @@
 
         // Clear stale GalGame options as soon as the user sends anything; the
         // next turn-end will trigger a fresh fetch if the mode is still on.
-        // Bumping _galgameRequestSeq is critical even when the array is empty:
-        // an in-flight fetch from the previous turn would otherwise resolve
-        // and render stale A/B/C options into the new turn context.
-        var hadOptions = state.galgameOptions && state.galgameOptions.length > 0;
-        if (hadOptions || state.galgameOptionsLoading) {
-            state.galgameOptions = [];
-            state.galgameOptionsLoading = false;
-            state._galgameRequestSeq += 1;
+        // invalidatePendingGalgameRequest also bumps _galgameRequestSeq, which
+        // is critical when the array is empty but a fetch is in flight — the
+        // older response would otherwise render stale A/B/C options into the
+        // new turn context.
+        if ((state.galgameOptions && state.galgameOptions.length > 0) || state.galgameOptionsLoading) {
+            invalidatePendingGalgameRequest();
             renderWindow();
         }
 
@@ -1144,6 +1142,16 @@
         return state.viewProps;
     }
 
+    function invalidatePendingGalgameRequest() {
+        // Conversation switched / cleared — drop any in-flight options fetch so
+        // its response can't render stale A/B/C into the new context.
+        if (state.galgameOptionsLoading || (state.galgameOptions && state.galgameOptions.length > 0)) {
+            state.galgameOptions = [];
+            state.galgameOptionsLoading = false;
+            state._galgameRequestSeq += 1;
+        }
+    }
+
     function setMessages(messages) {
         // Compute fallback start past any explicit sortKey in incoming batch
         var maxIncomingSortKey = Array.isArray(messages)
@@ -1164,6 +1172,7 @@
         if (state.messages.length > MAX_MESSAGES) {
             state.messages = state.messages.slice(-MAX_MESSAGES);
         }
+        invalidatePendingGalgameRequest();
         renderWindow();
         return state.messages;
     }
@@ -1236,6 +1245,7 @@
     function clearMessages() {
         state.messages = [];
         _sortKeySeq = 0;
+        invalidatePendingGalgameRequest();
         renderWindow();
     }
 
@@ -1976,6 +1986,10 @@
 
         ensureViewProps();
         prewarmUserDisplayName();
+        // Re-apply once document.body is guaranteed — the module-eval call at
+        // load time silently bails when this script runs before <body> parses,
+        // and chat.html's syncWindowToGalgameMin reads the class at startup.
+        applyGalgameBodyClass(state.galgameModeEnabled);
 
         if (trigger) {
             trigger.addEventListener('click', openWindow);
