@@ -111,9 +111,14 @@
 
             window.Jukebox_playSong = window.Jukebox.playSong;
             window.Jukebox_close = function() {
+                window.Jukebox.close();
                 if (window.close) window.close();
             };
             window.Jukebox_hide = function() {
+                if (window.nekoJukeboxWindow && typeof window.nekoJukeboxWindow.hide === 'function') {
+                    window.nekoJukeboxWindow.hide();
+                    return;
+                }
                 if (window.close) window.close();
             };
             window.Jukebox_updateVolume = window.Jukebox.updateVolume;
