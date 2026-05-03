@@ -1033,6 +1033,18 @@
         renderWindow();
         if (changed) {
             dispatchHostEvent('galgame-mode-change', { enabled: next });
+            // OFF→ON: if the chat overlay is currently visible, refetch the
+            // latest turn's options so the user sees A/B/C immediately rather
+            // than waiting for the next turn-end. Gating on overlay visibility
+            // avoids wasting a summary-tier call during init() (where the
+            // window is still hidden) and respects the same skip rule the
+            // turn-end handler uses for voice-only / proactive paths.
+            if (next) {
+                var overlay = getOverlay();
+                if (overlay && !overlay.hidden) {
+                    fetchGalgameOptionsForLatestTurn();
+                }
+            }
         }
     }
 
@@ -1206,10 +1218,8 @@
     }
 
     function handleGalgameModeToggle() {
+        // setGalgameModeEnabled handles the OFF→ON refetch internally.
         setGalgameModeEnabled(!state.galgameModeEnabled);
-        if (state.galgameModeEnabled) {
-            fetchGalgameOptionsForLatestTurn();
-        }
     }
 
     function handleGalgameOptionSelect(option) {
@@ -1711,11 +1721,20 @@
                 // GalGame option list, so reopening must re-fetch for the
                 // latest assistant turn or the user would see a permanently
                 // empty panel until the next reply arrives.
-                // fetchGalgameOptionsForLatestTurn early-returns if the last
-                // message isn't from the assistant or the mode is off, so it
-                // is safe to call unconditionally.
+                // Wait for app-chat-adapter's realistic queue to drain before
+                // building the request — same race the turn-end handler
+                // protects against, just with a shorter cap because by the
+                // time the user reopens the window the queue has usually
+                // already finished.
                 if (state.galgameModeEnabled) {
-                    fetchGalgameOptionsForLatestTurn();
+                    var seqAtOpen = state._galgameRequestSeq;
+                    waitForAssistantBubblesFlushed(2000).then(function () {
+                        if (!state.galgameModeEnabled) return;
+                        if (state._galgameRequestSeq !== seqAtOpen) return;
+                        var overlayNow = getOverlay();
+                        if (!overlayNow || overlayNow.hidden) return;
+                        fetchGalgameOptionsForLatestTurn();
+                    });
                 }
             })
             .catch(function (error) {
