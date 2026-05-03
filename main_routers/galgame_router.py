@@ -75,11 +75,13 @@ def _resolve_language(text_sample: str, request_lang: str | None) -> str:
         try:
             return normalize_language_code(request_lang, format='short') or 'zh'
         except Exception:
+            # Bad language tag from the client — fall through to text-based detection.
             pass
     try:
         if text_sample.strip():
             return normalize_language_code(detect_language(text_sample), format='short') or 'zh'
     except Exception:
+        # detect_language can choke on emoji-only / very short strings — default to zh.
         pass
     return 'zh'
 
