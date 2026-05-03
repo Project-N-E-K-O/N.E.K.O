@@ -886,10 +886,18 @@ class BiliDanmakuPlugin(NekoPluginBase):
         if not self._background_llm_enabled or not self._orchestrator:
             return
 
-        # 礼物优先：有待推送礼物时，延迟弹幕引导词
+        # 礼物优先：有待推送礼物时，延迟弹幕引导词（短暂延迟后重试，不丢弃）
         if self._gift_aggregator and self._gift_aggregator.has_pending:
-            self.logger.info("礼物队列有待推送，延迟弹幕引导词")
-            return
+            retries = getattr(batch, "_danmaku_retries", 0)
+            if retries >= 3:
+                self.logger.info("礼物队列仍有待推送，已达最大重试次数，直接处理弹幕")
+            else:
+                self.logger.info("礼物队列有待推送，延迟弹幕引导词")
+                batch._danmaku_retries = retries + 1
+                asyncio.get_event_loop().call_later(
+                    3.0, lambda: asyncio.ensure_future(self._on_batch_ready(batch))
+                )
+                return
 
         self.logger.info(f"_on_batch_ready 触发: entries={len(batch.entries)}条, total={batch.total_count}, sampled={batch.sampled}")
 

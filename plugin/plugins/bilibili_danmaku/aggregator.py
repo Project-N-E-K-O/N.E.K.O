@@ -304,7 +304,7 @@ class GiftAggregator:
                     "sc_message": g.get("sc_message", ""),
                 }
             m = merged[key]
-            m["total_num"] += g.get("num", 1)
+            m["total_num"] += g.get("total_num", g.get("num", 1))
             m["total_coin"] += g.get("total_coin", 0)
             if g.get("is_sc"):
                 m["is_sc"] = True
