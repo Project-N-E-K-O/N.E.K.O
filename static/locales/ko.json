@@ -3692,5 +3692,125 @@
             "not_configured": "미설정",
             "testing": "테스트 중..."
         }
+    },
+    "profiler": {
+        "title": "성능 분석기",
+        "badge": {
+            "idle": "대기",
+            "warmup": "예열 중...",
+            "running": "수집 중",
+            "stopped": "중지됨"
+        },
+        "toggle": {
+            "title": "펼치기 / 접기",
+            "aria": "성능 분석기 펼치기 / 접기"
+        },
+        "btn": {
+            "start": "수집 시작",
+            "stop": "중지",
+            "snapshot": "스냅샷",
+            "reset": "초기화"
+        },
+        "debug": {
+            "title": "디버그 시각화",
+            "physicsKinematic": "본 강체",
+            "physicsKinematicTip": "Kinematic 강체 (Mode 0): 본 애니메이션을 따르며 물리 영향을 받지 않음",
+            "physicsDynamic": "물리 강체",
+            "physicsDynamicTip": "Dynamic 강체 (Mode 1): 순수 물리 구동, 중력과 충돌의 영향을 받음",
+            "physicsMixed": "혼합 강체",
+            "physicsMixedTip": "Mixed 강체 (Mode 2): 물리+본 혼합, 위치는 본에 고정",
+            "physicsSolid": "반투명 면",
+            "physicsSolidTip": "와이어프레임 / 반투명 면 전환: 반투명 모드에서 강체 겹침을 확인 가능",
+            "ik": "IK 체인",
+            "ikTip": "IK 솔버: IK 타깃, 이펙터, 체인 노드 표시",
+            "skeleton": "스켈레톤",
+            "skeletonTip": "스켈레톤 와이어프레임: 전체 본 계층 표시"
+        },
+        "fps": {
+            "recent60s": "FPS — 최근 60s",
+            "alltime": "전체 통계",
+            "current": "현재",
+            "avg": "평균",
+            "min": "최저",
+            "max": "최고",
+            "p1": "1% Low",
+            "jitter": "지터 σ",
+            "samples": "샘플 수",
+            "chartTitle": "FPS 차트"
+        },
+        "frametime": {
+            "recent60s": "프레임 시간 (ms) — 최근 60s",
+            "avg": "평균",
+            "p95": "P95",
+            "p99": "P99",
+            "max": "최대",
+            "min": "최소"
+        },
+        "section": {
+            "modelInfo": "모델 속성",
+            "assessment": "성능 평가",
+            "gpuInfo": "GPU 정보"
+        },
+        "placeholder": {
+            "snapshotForInfo": "「스냅샷」을 눌러 모델 정보를 가져오세요",
+            "snapshotForRating": "「스냅샷」을 눌러 평가를 받으세요",
+            "snapshotForGpu": "「스냅샷」을 눌러 GPU 정보를 가져오세요",
+            "noManager": "모델 매니저를 찾을 수 없음",
+            "noModel": "로드된 모델 없음",
+            "cannotRate": "평가 불가",
+            "cannotGetGpu": "GPU 정보를 가져올 수 없음",
+            "live2dUnsupported": "Live2D 모델은 성능 분석을 지원하지 않습니다"
+        },
+        "info": {
+            "type": "유형",
+            "name": "이름",
+            "vertices": "정점 수",
+            "faces": "면 수",
+            "morphTargets": "Morph Targets",
+            "materials": "재질 수",
+            "textures": "텍스처 수",
+            "bonesVRM": "Humanoid 본",
+            "bonesMMD": "본 수",
+            "physicsEngine": "물리 엔진",
+            "physicsBodies": "물리 강체",
+            "physicsConstraints": "물리 제약",
+            "springJoints": "Spring Bone 조인트",
+            "colliders": "Colliders",
+            "animation": "애니메이션",
+            "animPlaying": "재생 중",
+            "animPaused": "일시 정지",
+            "animStopped": "정지",
+            "ikGrant": "IK / Grant",
+            "outline": "외곽선",
+            "enabled": "활성",
+            "disabled": "비활성",
+            "drawCalls": "Draw Calls",
+            "triangles": "삼각형",
+            "pixelRatio": "Pixel Ratio",
+            "renderSize": "렌더 크기",
+            "gpu": "GPU",
+            "vendor": "제조사",
+            "maxTextureSize": "최대 텍스처 크기"
+        },
+        "rating": {
+            "low": "가벼움",
+            "medium": "보통",
+            "high": "무거움",
+            "extreme": "매우 무거움",
+            "overall": "총평: ",
+            "noteHtml": "평가는 <a href=\"https://wiki.vrchat.com/wiki/Guides:Avatar_Performance_Ranking\" target=\"_blank\" rel=\"noopener noreferrer\" style=\"color:#40C5F1;\">VRChat Avatar Performance Ranking</a> (PC) 을 참고하며, N.E.K.O 의 단일 모델 환경에 맞게 완화되었습니다."
+        },
+        "ratingDetail": {
+            "vertices": "정점 수",
+            "faces": "면 수(삼각형)",
+            "materials": "재질 수",
+            "textures": "텍스처 수",
+            "bones": "본 수",
+            "physicsBodies": "물리 강체",
+            "physicsConstraints": "물리 제약",
+            "springJoints": "Spring Bone 조인트",
+            "morphTargets": "Morph Targets",
+            "drawCalls": "Draw Calls"
+        }
     }
 }

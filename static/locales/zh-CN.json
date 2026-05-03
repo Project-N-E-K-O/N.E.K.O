@@ -3692,5 +3692,125 @@
             "not_configured": "未配置",
             "testing": "测试中..."
         }
+    },
+    "profiler": {
+        "title": "性能分析器",
+        "badge": {
+            "idle": "待机",
+            "warmup": "预热中...",
+            "running": "采集中",
+            "stopped": "已停止"
+        },
+        "toggle": {
+            "title": "展开/折叠",
+            "aria": "展开/折叠性能分析器"
+        },
+        "btn": {
+            "start": "开始采集",
+            "stop": "停止",
+            "snapshot": "快照",
+            "reset": "重置"
+        },
+        "debug": {
+            "title": "调试可视化",
+            "physicsKinematic": "骨骼刚体",
+            "physicsKinematicTip": "Kinematic 刚体 (Mode 0)：跟随骨骼动画，不受物理影响",
+            "physicsDynamic": "物理刚体",
+            "physicsDynamicTip": "Dynamic 刚体 (Mode 1)：纯物理驱动，受重力和碰撞影响",
+            "physicsMixed": "混合刚体",
+            "physicsMixedTip": "Mixed 刚体 (Mode 2)：物理+骨骼混合,位置锚定到骨骼",
+            "physicsSolid": "半透明面",
+            "physicsSolidTip": "切换线框/半透明面：半透明面模式可观察刚体堆叠关系和重叠程度",
+            "ik": "IK 链",
+            "ikTip": "IK 求解器：显示 IK 目标、效应器和链节点",
+            "skeleton": "骨骼",
+            "skeletonTip": "骨骼线框：显示完整骨骼层级结构"
+        },
+        "fps": {
+            "recent60s": "帧率 (FPS) — 最近 60s",
+            "alltime": "全程统计",
+            "current": "当前",
+            "avg": "平均",
+            "min": "最低",
+            "max": "最高",
+            "p1": "1% Low",
+            "jitter": "抖动σ",
+            "samples": "采样数",
+            "chartTitle": "帧率曲线"
+        },
+        "frametime": {
+            "recent60s": "帧时间 (ms) — 最近 60s",
+            "avg": "平均",
+            "p95": "P95",
+            "p99": "P99",
+            "max": "最大",
+            "min": "最小"
+        },
+        "section": {
+            "modelInfo": "模型属性",
+            "assessment": "性能评级",
+            "gpuInfo": "GPU 信息"
+        },
+        "placeholder": {
+            "snapshotForInfo": "点击「快照」获取模型信息",
+            "snapshotForRating": "点击「快照」获取评级",
+            "snapshotForGpu": "点击「快照」获取 GPU 信息",
+            "noManager": "未检测到模型管理器",
+            "noModel": "未加载模型",
+            "cannotRate": "无法评级",
+            "cannotGetGpu": "无法获取 GPU 信息",
+            "live2dUnsupported": "Live2D 模型暂不支持性能分析"
+        },
+        "info": {
+            "type": "类型",
+            "name": "名称",
+            "vertices": "顶点数",
+            "faces": "面数",
+            "morphTargets": "Morph Targets",
+            "materials": "材质数",
+            "textures": "纹理数",
+            "bonesVRM": "Humanoid 骨骼",
+            "bonesMMD": "骨骼数",
+            "physicsEngine": "物理引擎",
+            "physicsBodies": "物理刚体",
+            "physicsConstraints": "物理约束",
+            "springJoints": "Spring Bone 关节",
+            "colliders": "Colliders",
+            "animation": "动画",
+            "animPlaying": "播放中",
+            "animPaused": "暂停",
+            "animStopped": "停止",
+            "ikGrant": "IK / Grant",
+            "outline": "描边效果",
+            "enabled": "启用",
+            "disabled": "禁用",
+            "drawCalls": "Draw Calls",
+            "triangles": "三角形",
+            "pixelRatio": "Pixel Ratio",
+            "renderSize": "渲染尺寸",
+            "gpu": "GPU",
+            "vendor": "厂商",
+            "maxTextureSize": "最大纹理尺寸"
+        },
+        "rating": {
+            "low": "轻量",
+            "medium": "中等",
+            "high": "较重",
+            "extreme": "极重",
+            "overall": "总评：",
+            "noteHtml": "评级参考 <a href=\"https://wiki.vrchat.com/wiki/Guides:Avatar_Performance_Ranking\" target=\"_blank\" rel=\"noopener noreferrer\" style=\"color:#40C5F1;\">VRChat Avatar Performance Ranking</a> (PC 端)，因 N.E.K.O 为单模型场景已适当放宽。"
+        },
+        "ratingDetail": {
+            "vertices": "顶点数",
+            "faces": "面数(三角形)",
+            "materials": "材质数",
+            "textures": "纹理数",
+            "bones": "骨骼数",
+            "physicsBodies": "物理刚体",
+            "physicsConstraints": "物理约束",
+            "springJoints": "Spring Bone 关节",
+            "morphTargets": "Morph Targets",
+            "drawCalls": "Draw Calls"
+        }
     }
 }
