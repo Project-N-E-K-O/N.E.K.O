@@ -42,7 +42,11 @@
         pendingRollbackDrafts: Object.create(null),
         rollbackDraft: '',
         _toolCursorResetKey: '',
-        galgameModeEnabled: readGalgameModePreference(),
+        // Initialized to the safe default; the real localStorage value is
+        // resolved post-barrier in init() so we don't read from a storage
+        // namespace that's about to be remapped by the storage-location
+        // startup barrier.
+        galgameModeEnabled: true,
         galgameOptions: [],
         galgameOptionsLoading: false,
         _galgameRequestSeq: 0
@@ -1107,8 +1111,12 @@
             }
         } catch (_) {}
         try {
+            // getCurrentUserName() returns the literal English placeholder 'You'
+            // when no real user name can be resolved. Sending that overrides the
+            // backend's localized GALGAME_DEFAULT_MASTER_PLACEHOLDER fallback,
+            // so we only forward a name when it's a genuine user-set value.
             var currentUserName = getCurrentUserName();
-            if (typeof currentUserName === 'string' && currentUserName) {
+            if (typeof currentUserName === 'string' && currentUserName && currentUserName !== 'You') {
                 payload.master_name = currentUserName;
             }
         } catch (_) {}
@@ -2044,10 +2052,13 @@
 
         ensureViewProps();
         prewarmUserDisplayName();
-        // Re-apply once document.body is guaranteed — the module-eval call at
-        // load time silently bails when this script runs before <body> parses,
-        // and chat.html's syncWindowToGalgameMin reads the class at startup.
-        applyGalgameBodyClass(state.galgameModeEnabled);
+        // Resolve the persisted GalGame preference now that the storage-location
+        // barrier has settled (initAfterStorageBarrier has awaited it before
+        // calling init). Reading at module-eval would risk capturing the value
+        // from a storage namespace the barrier is about to remap.
+        // setGalgameModeEnabled idempotently syncs state + body class + fires
+        // the change event when the resolved pref differs from the safe default.
+        setGalgameModeEnabled(readGalgameModePreference(), { persist: false });
 
         if (trigger) {
             trigger.addEventListener('click', openWindow);
