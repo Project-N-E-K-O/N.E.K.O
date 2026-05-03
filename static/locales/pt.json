@@ -3771,7 +3771,7 @@
             "physicsEngine": "Física",
             "physicsBodies": "Corpos rígidos",
             "physicsConstraints": "Restrições",
-            "springJoints": "Spring Joints",
+            "springJoints": "Spring Bone joints",
             "colliders": "Colliders",
             "animation": "Animação",
             "animPlaying": "Reproduzindo",

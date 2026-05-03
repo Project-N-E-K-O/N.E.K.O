@@ -3771,7 +3771,7 @@
             "physicsEngine": "物理エンジン",
             "physicsBodies": "物理剛体",
             "physicsConstraints": "物理拘束",
-            "springJoints": "Spring Joints",
+            "springJoints": "Spring Bone ジョイント",
             "colliders": "Colliders",
             "animation": "アニメーション",
             "animPlaying": "再生中",

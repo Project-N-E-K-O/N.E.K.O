@@ -3771,7 +3771,7 @@
             "physicsEngine": "Физика",
             "physicsBodies": "Жёсткие тела",
             "physicsConstraints": "Ограничения",
-            "springJoints": "Spring Joints",
+            "springJoints": "Spring Bone суставы",
             "colliders": "Colliders",
             "animation": "Анимация",
             "animPlaying": "Воспроизведение",

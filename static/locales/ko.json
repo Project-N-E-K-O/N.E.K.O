@@ -3771,7 +3771,7 @@
             "physicsEngine": "물리 엔진",
             "physicsBodies": "물리 강체",
             "physicsConstraints": "물리 제약",
-            "springJoints": "Spring Joints",
+            "springJoints": "Spring Bone 조인트",
             "colliders": "Colliders",
             "animation": "애니메이션",
             "animPlaying": "재생 중",
