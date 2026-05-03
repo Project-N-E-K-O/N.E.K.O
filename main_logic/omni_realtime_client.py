@@ -210,6 +210,7 @@ class OmniRealtimeClient:
         api_type: Optional[str] = None,
         on_tool_call: Optional[OnToolCallCallback] = None,
         tool_definitions: Optional[List[ToolDefinition]] = None,
+        livestream_mode: bool = False,
     ):
         self.base_url = base_url
         self.api_key = api_key
@@ -258,8 +259,12 @@ class OmniRealtimeClient:
         # 只在 GLM 和 free API 时启用90秒静默超时，Qwen 和 Step 放行
         self._last_speech_time = None
         self._api_type = api_type or ""
-        # 只在 GLM 和 free 时启用静默超时
-        self._enable_silence_timeout = self._api_type.lower() in ['glm', 'free']
+        self._livestream_mode = bool(livestream_mode)
+        # 只在 GLM 和 free 时启用静默超时；livestream 模式（主播长会话）整路跳过
+        self._enable_silence_timeout = (
+            self._api_type.lower() in ['glm', 'free']
+            and not self._livestream_mode
+        )
         self._silence_timeout_seconds = 90  # 90秒无语音输入则自动关闭
         self._silence_check_task = None
         self._silence_timeout_triggered = False
@@ -651,7 +656,8 @@ class OmniRealtimeClient:
         if self._enable_silence_timeout:
             self._silence_check_task = asyncio.create_task(self._check_silence_timeout())
         else:
-            logger.info(f"静默超时检测已禁用（API类型: {self._api_type}），不会自动关闭会话")
+            reason = "livestream模式" if self._livestream_mode else f"API类型: {self._api_type}"
+            logger.info(f"静默超时检测已禁用（{reason}），不会自动关闭会话")
 
         # Set up default session configuration
         if self.turn_detection_mode == TurnDetectionMode.MANUAL:

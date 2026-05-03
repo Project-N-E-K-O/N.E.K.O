@@ -185,7 +185,11 @@ from config.prompts_avatar_interaction import (
 # )
 from utils.config_manager import get_config_manager, get_reserved
 from utils.logger_config import get_module_logger
-from utils.api_config_loader import get_free_voices
+from utils.api_config_loader import (
+    get_free_voices,
+    get_livestream_config,
+    is_livestream_active,
+)
 from utils.language_utils import normalize_language_code, get_global_language, get_global_language_full
 import threading
 from threading import Thread
@@ -2077,6 +2081,31 @@ class LLMSessionManager:
             legacy_keys=('voice_id',),
         )
 
+    def _is_livestream_active(self) -> bool:
+        """Livestream 是 core_api_type='free' 之上的子模式，二者必须同时成立。"""
+        return self.core_api_type == 'free' and is_livestream_active()
+
+    def _resolve_realtime_free_voice(self, realtime_config: dict):
+        """决定 OmniRealtimeClient free 路传给 server 的 voice。
+
+        优先级：
+        1. livestream 子模式启用且配置了 voice_id → 用 livestream voice_id
+           （绕过 free_voices preset gate，base_url 已被派生不含 lanlan.tech）
+        2. 否则保留原逻辑：仅在角色 voice 是 free preset、core_api_type='free'
+           且 base_url 仍指向 lanlan.tech 域时下发，避免把 preset id 透给非
+           lanlan 服务（lanlan.app 的屏蔽由 _should_block_free_preset_voice 兜底）
+        """
+        if self._is_livestream_active():
+            ls_voice = get_livestream_config().get('voice_id', '')
+            if ls_voice:
+                return ls_voice
+        base_url = realtime_config.get('base_url', '') or ''
+        if (self._is_free_preset_voice
+                and self.core_api_type == 'free'
+                and 'lanlan.tech' in base_url):
+            return self.voice_id
+        return None
+
     def _enqueue_voice_migration_notice(self, legacy_names: list) -> None:
         """将语音迁移通知推入缓冲池，委托模块级函数统一去重。"""
         enqueue_voice_migration_notice(legacy_names)
@@ -2512,8 +2541,7 @@ class LLMSessionManager:
                         base_url=realtime_config.get('base_url', ''),
                         api_key=realtime_config['api_key'],
                         model=realtime_config['model'],
-                        voice=self.voice_id if self._is_free_preset_voice and self.core_api_type == 'free'
-                            and 'lanlan.tech' in realtime_config.get('base_url', '') else None,
+                        voice=self._resolve_realtime_free_voice(realtime_config),
                         on_text_delta=self.handle_text_data,
                         on_audio_delta=self.handle_audio_data,
                         on_new_message=self.handle_new_message,
@@ -2527,6 +2555,7 @@ class LLMSessionManager:
                         api_type=self.core_api_type,
                         on_tool_call=self._on_tool_call,
                         tool_definitions=_initial_tool_defs,
+                        livestream_mode=self._is_livestream_active(),
                     )
                     # Apply user's noise reduction preference to the AudioProcessor
                     nr_enabled = (await aload_global_conversation_settings()).get('noiseReductionEnabled', True)
@@ -2926,8 +2955,7 @@ class LLMSessionManager:
                     base_url=realtime_config.get('base_url', ''),
                     api_key=realtime_config['api_key'],
                     model=realtime_config['model'],
-                    voice=self.voice_id if self._is_free_preset_voice and self.core_api_type == 'free'
-                        and 'lanlan.tech' in realtime_config.get('base_url', '') else None,
+                    voice=self._resolve_realtime_free_voice(realtime_config),
                     on_text_delta=self.handle_text_data,
                     on_audio_delta=self.handle_audio_data,
                     on_new_message=self.handle_new_message,
@@ -2941,6 +2969,7 @@ class LLMSessionManager:
                     api_type=self.core_api_type,
                     on_tool_call=self._on_tool_call,
                     tool_definitions=_pending_tool_defs,
+                    livestream_mode=self._is_livestream_active(),
                 )
                 # Apply user's noise reduction preference to the AudioProcessor
                 nr_enabled = (await aload_global_conversation_settings()).get('noiseReductionEnabled', True)

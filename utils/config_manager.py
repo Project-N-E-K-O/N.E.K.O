@@ -28,6 +28,8 @@ from utils.api_config_loader import (
     get_core_api_profiles,
     get_assist_api_profiles,
     get_assist_api_key_fields,
+    get_livestream_config,
+    is_livestream_active,
 )
 from utils.custom_tts_adapter import check_custom_tts_voice_allowed
 from utils.file_utils import atomic_write_json
@@ -2521,17 +2523,62 @@ class ConfigManager:
         return False
 
     def _adjust_free_api_url(self, url: str, is_free: bool) -> str:
-        """Internal URL adjustment for free API users based on region."""
+        """Internal URL adjustment for free API users.
+
+        优先级：livestream prefix 派生 > 海外 lanlan.tech→lanlan.app 切换 > 原样返回。
+        livestream 启用时直接接管 lanlan.tech 域名，跳过地区判定。
+        """
         if not url or 'lanlan.tech' not in url:
             return url
-        
+
+        try:
+            if is_livestream_active():
+                derived = self._derive_livestream_url(url, get_livestream_config()['server_prefix'])
+                if derived:
+                    return derived
+        except Exception as e:
+            logger.warning(f"Livestream URL 派生失败，回退到原始路径: {e}")
+
         try:
             if self._check_non_mainland():
                 return url.replace('lanlan.tech', 'lanlan.app')
         except Exception:
             pass
-        
+
         return url
+
+    @staticmethod
+    def _derive_livestream_url(original_url: str, prefix: str) -> str:
+        """从 livestream server_prefix 派生 lanlan.tech URL 的等价地址。
+
+        - 保留原 URL 的 path（``/core`` / ``/tts`` / ``/text/v1``）拼到 prefix path 之后
+        - scheme 家族不变（原 ws/wss → 输出 ws/wss；原 http/https → 输出 http/https）
+        - 加密与否（``s`` 后缀）按 prefix 的 scheme 走（prefix 是 https/wss → 输出加密）
+
+        例：
+        - ``wss://www.lanlan.tech/core`` + ``http://host:port/tok`` → ``ws://host:port/tok/core``
+        - ``https://www.lanlan.tech/text/v1`` + ``http://host:port/tok`` → ``http://host:port/tok/text/v1``
+        - ``wss://www.lanlan.tech/tts`` + ``https://host/tok`` → ``wss://host/tok/tts``
+        """
+        if not original_url or not prefix:
+            return ''
+        try:
+            orig = urlparse(original_url)
+            pref = urlparse(prefix)
+        except Exception:
+            return ''
+        if not pref.scheme or not pref.netloc:
+            return ''
+
+        is_ws_family = orig.scheme in ('ws', 'wss')
+        is_secure = pref.scheme in ('https', 'wss')
+        if is_ws_family:
+            out_scheme = 'wss' if is_secure else 'ws'
+        else:
+            out_scheme = 'https' if is_secure else 'http'
+
+        base_path = pref.path.rstrip('/')
+        return f"{out_scheme}://{pref.netloc}{base_path}{orig.path}"
 
     def get_core_config(self):
         """动态读取核心配置"""

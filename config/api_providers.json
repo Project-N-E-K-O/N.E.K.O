@@ -342,6 +342,12 @@
       "restricted": true
     }
   },
+  "_comment_livestream_config": "Livestream (主播) overlay on top of core_api_type='free': when enabled with non-empty server_prefix, free路 URLs (/core /text/v1 /tts) auto-derive from server_prefix, voice falls back to voice_id (bypasses free_voices preset gate), and OmniRealtimeClient skips 90s silence-timeout. Leave server_prefix/voice_id empty in committed configs—fill in locally.",
+  "livestream_config": {
+    "enabled": false,
+    "server_prefix": "",
+    "voice_id": ""
+  },
   "_comment_free_voices": "Shape: {voiceKey: voice_id}. Keys are i18n identifiers (e.g., playfulGirl, cuteGirl) that the frontend must localize for display. Do not treat keys as display names.",
   "free_voices": {
     "playfulGirl": "voice-tone-PGLiTXeJCS",
