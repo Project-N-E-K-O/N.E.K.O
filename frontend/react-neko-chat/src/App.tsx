@@ -582,8 +582,17 @@ export default function App({
 }: ChatWindowProps) {
   const [draft, setDraft] = useState('');
   const [toolMenuOpen, setToolMenuOpen] = useState(false);
-  // 当 composer-bottom-bar 宽度 < 阈值时，把右侧 3 个工具按钮折叠成 ··· 菜单
-  const [isCompactComposer, setIsCompactComposer] = useState(false);
+  // 当 composer-bottom-bar 宽度 < 阈值时，把右侧 4 个工具按钮折叠成 ··· 菜单。
+  // 用四态机让进出过渡都跑完动画再切稳态：
+  //   expanded   → collapsing (右→左级联收起) → compact   (··· 入场)
+  //   compact    → expanding  (··· 退场)       → expanded  (左→右级联展开)
+  // 中途 resize 反向：collapsing↔expanded、expanding↔compact 直接跳回稳态。
+  type ComposerLayout = 'expanded' | 'collapsing' | 'compact' | 'expanding';
+  const [composerLayout, setComposerLayout] = useState<ComposerLayout>('expanded');
+  const showRightTools = composerLayout === 'expanded' || composerLayout === 'collapsing';
+  // 折叠瞬间记录右 4 按钮组的实际宽度，喂给 CSS keyframe 做 width 动画。
+  // 没这个 layout 不会跟着动画收缩，发送按钮就被"顶住"直到 scaleX 跑完。
+  const [collapseFromWidth, setCollapseFromWidth] = useState<number | null>(null);
   const [overflowMenuOpen, setOverflowMenuOpen] = useState(false);
   const [activeCursorToolId, setActiveCursorToolId] = useState<string | null>(null);
   const [avatarRangeCursorVariants, setAvatarRangeCursorVariants] = useState<ToolCursorVariantState>(() => createDefaultToolCursorVariantState());
@@ -595,6 +604,9 @@ export default function App({
   const [isInnerHammerEasterEggActive, setIsInnerHammerEasterEggActive] = useState(false);
   const toolMenuRef = useRef<HTMLDivElement | null>(null);
   const composerBottomBarRef = useRef<HTMLDivElement | null>(null);
+  const composerToolsRightRef = useRef<HTMLDivElement | null>(null);
+  // 镜像 composerLayout 到 ref，让 ResizeObserver 闭包能读到最新稳态
+  const composerLayoutRef = useRef<ComposerLayout>('expanded');
   const overflowMenuRef = useRef<HTMLDivElement | null>(null);
   const avatarCursorOverlayRef = useRef<HTMLDivElement | null>(null);
   const hammerCursorOverlayRef = useRef<HTMLDivElement | null>(null);
@@ -941,26 +953,68 @@ export default function App({
     };
   }, [toolMenuOpen]);
 
-  // 监听 composer-bottom-bar 宽度，决定是否进入 compact 折叠模式
+  // 镜像 composerLayout 到 ref，给 ResizeObserver 闭包读
+  useEffect(() => {
+    composerLayoutRef.current = composerLayout;
+  }, [composerLayout]);
+
+  // 监听 composer-bottom-bar 宽度，决定是否进入 compact 折叠模式。
+  // 阈值：低于此宽度时把右侧 4 个工具按钮折叠成 ··· 菜单。
   useEffect(() => {
     const target = composerBottomBarRef.current;
     if (!target || typeof ResizeObserver === 'undefined') return;
-    // 阈值：低于此宽度时把右侧 3 个工具按钮折叠成 ··· 菜单。
-    // 5 按钮 + 4 分隔 + 发送按钮 + 间距，约 260px 起就开始拥挤。
-    const COMPACT_THRESHOLD = 250;
+    const COMPACT_THRESHOLD = 300;
     const observer = new ResizeObserver(entries => {
       for (const entry of entries) {
-        setIsCompactComposer(entry.contentRect.width < COMPACT_THRESHOLD);
+        const wantCompact = entry.contentRect.width < COMPACT_THRESHOLD;
+        // 在 expanded → collapsing 这一刻抓一下右 4 按钮组的当前像素宽度，
+        // 同一批 setState 会和 layout 切换一起 commit，render 出来时
+        // .is-leaving 类和 --collapse-from-width 变量同时生效，
+        // CSS keyframe 就能从这个固定宽度插值到 0。
+        if (wantCompact && composerLayoutRef.current === 'expanded' && composerToolsRightRef.current) {
+          const w = composerToolsRightRef.current.getBoundingClientRect().width;
+          if (w > 0) setCollapseFromWidth(w);
+        }
+        setComposerLayout(prev => {
+          if (wantCompact) {
+            if (prev === 'expanded') return 'collapsing';
+            // 展开过程中又被压窄：退场动画来不及跑完就反转，直接回到 compact 稳态。
+            if (prev === 'expanding') return 'compact';
+            return prev;
+          } else {
+            if (prev === 'compact') return 'expanding';
+            // 收起过程中又被拉宽：跳回 expanded 稳态。
+            if (prev === 'collapsing') return 'expanded';
+            return prev;
+          }
+        });
       }
     });
     observer.observe(target);
     return () => observer.disconnect();
   }, []);
 
-  // 退出折叠模式时关闭 ··· 菜单
+  // 收起/展开动画跑完后切到稳态。时长需与 styles.css 中的 keyframes 对齐。
   useEffect(() => {
-    if (!isCompactComposer) setOverflowMenuOpen(false);
-  }, [isCompactComposer]);
+    if (composerLayout === 'collapsing') {
+      const timerId = window.setTimeout(() => {
+        setComposerLayout(prev => (prev === 'collapsing' ? 'compact' : prev));
+      }, 270);
+      return () => window.clearTimeout(timerId);
+    }
+    if (composerLayout === 'expanding') {
+      const timerId = window.setTimeout(() => {
+        setComposerLayout(prev => (prev === 'expanding' ? 'expanded' : prev));
+      }, 220);
+      return () => window.clearTimeout(timerId);
+    }
+    return undefined;
+  }, [composerLayout]);
+
+  // 离开 compact 稳态时关闭 ··· 弹窗（包括反向中断和 expanding 阶段）
+  useEffect(() => {
+    if (composerLayout !== 'compact') setOverflowMenuOpen(false);
+  }, [composerLayout]);
 
   // ··· 菜单的外部点击 / Esc 关闭
   useEffect(() => {
@@ -1725,9 +1779,20 @@ export default function App({
                   >
                     <img src="/static/icons/screenshot_new_icon.png" alt="" aria-hidden="true" />
                   </button>
-                  {!isCompactComposer ? (
-                    <div className="composer-tools-right" key="composer-tools-expanded">
-                      <span className="composer-tool-divider" aria-hidden="true">|</span>
+                  {/* 这条分隔符在 expanded / compact 两态下都常驻同一位置，
+                      避免切换时分隔符闪烁，让动画过渡更顺滑 */}
+                  <span className="composer-tool-divider" aria-hidden="true">|</span>
+                  {showRightTools ? (
+                    <div
+                      ref={composerToolsRightRef}
+                      className={`composer-tools-right${composerLayout === 'collapsing' ? ' is-leaving' : ''}`}
+                      key="composer-tools-expanded"
+                      style={
+                        composerLayout === 'collapsing' && collapseFromWidth != null
+                          ? ({ '--collapse-from-width': `${collapseFromWidth}px` } as CSSProperties)
+                          : undefined
+                      }
+                    >
                       {galgameToggleButtonNode}
                       <span className="composer-tool-divider" aria-hidden="true">|</span>
                       {translateButtonNode}
@@ -1737,45 +1802,46 @@ export default function App({
                       {emojiToolMenuNode}
                     </div>
                   ) : (
-                    <>
-                      <span className="composer-tool-divider" aria-hidden="true">|</span>
-                      <div className="composer-overflow-menu" key="composer-tools-collapsed" ref={overflowMenuRef}>
-                        <button
-                          className={`composer-tool-btn composer-overflow-btn${overflowMenuOpen ? ' is-active' : ''}`}
-                          type="button"
-                          aria-label={overflowMenuAriaLabel}
-                          title={overflowMenuAriaLabel}
-                          aria-haspopup="true"
-                          aria-expanded={overflowMenuOpen}
-                          onClick={() => setOverflowMenuOpen(open => !open)}
+                    <div
+                      className={`composer-overflow-menu${composerLayout === 'expanding' ? ' is-leaving' : ''}`}
+                      key="composer-tools-collapsed"
+                      ref={overflowMenuRef}
+                    >
+                      <button
+                        className={`composer-tool-btn composer-overflow-btn${overflowMenuOpen ? ' is-active' : ''}`}
+                        type="button"
+                        aria-label={overflowMenuAriaLabel}
+                        title={overflowMenuAriaLabel}
+                        aria-haspopup="true"
+                        aria-expanded={overflowMenuOpen}
+                        onClick={() => setOverflowMenuOpen(open => !open)}
+                      >
+                        <svg
+                          width="20"
+                          height="20"
+                          viewBox="0 0 24 24"
+                          fill="currentColor"
+                          aria-hidden="true"
+                          focusable="false"
                         >
-                          <svg
-                            width="20"
-                            height="20"
-                            viewBox="0 0 24 24"
-                            fill="currentColor"
-                            aria-hidden="true"
-                            focusable="false"
-                          >
-                            <circle cx="6" cy="12" r="2" />
-                            <circle cx="12" cy="12" r="2" />
-                            <circle cx="18" cy="12" r="2" />
-                          </svg>
-                        </button>
-                        {overflowMenuOpen ? (
-                          <div
-                            className="composer-overflow-popover"
-                            role="group"
-                            aria-label={overflowMenuAriaLabel}
-                          >
-                            {galgameToggleButtonNode}
-                            {translateButtonNode}
-                            {jukeboxButtonNode}
-                            {emojiToolMenuNode}
-                          </div>
-                        ) : null}
-                      </div>
-                    </>
+                          <circle cx="6" cy="12" r="2" />
+                          <circle cx="12" cy="12" r="2" />
+                          <circle cx="18" cy="12" r="2" />
+                        </svg>
+                      </button>
+                      {overflowMenuOpen ? (
+                        <div
+                          className="composer-overflow-popover"
+                          role="group"
+                          aria-label={overflowMenuAriaLabel}
+                        >
+                          {galgameToggleButtonNode}
+                          {translateButtonNode}
+                          {jukeboxButtonNode}
+                          {emojiToolMenuNode}
+                        </div>
+                      ) : null}
+                    </div>
                   )}
                 </div>
                 <button className="send-button-circle" type="submit" aria-label={sendButtonLabel} disabled={!canSubmit}>
