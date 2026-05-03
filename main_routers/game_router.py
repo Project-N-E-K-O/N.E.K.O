@@ -21,11 +21,14 @@ from urllib.parse import urlparse
 from fastapi import APIRouter, Request
 
 from config.prompts_game import (
-    SOCCER_PREGAME_CONTEXT_PROMPT as _SOCCER_PREGAME_CONTEXT_PROMPT,
-    SOCCER_QUICK_LINES_PROMPT as _SOCCER_QUICK_LINES_PROMPT,
     SOCCER_SYSTEM_PROMPT as _SOCCER_SYSTEM_PROMPT,
+    get_soccer_pregame_context_prompt,
+    get_soccer_quick_lines_prompt,
+    get_soccer_quick_lines_user_prompt,
+    get_soccer_system_prompt,
 )
 from .shared_state import get_config_manager, get_session_manager
+from utils.language_utils import get_global_language, normalize_language_code
 from utils.logger_config import get_module_logger
 
 logger = get_module_logger(__name__, "Game")
@@ -187,15 +190,20 @@ def _build_game_prompt(
     lanlan_prompt: str,
     pre_game_context: dict | None = None,
     game_context: dict | None = None,
+    language: str | None = None,
 ) -> str:
     """构建游戏 system prompt。"""
     if game_type == "soccer":
-        prompt = _SOCCER_SYSTEM_PROMPT.format(name=lanlan_name, personality=lanlan_prompt)
+        prompt = get_soccer_system_prompt(language).format(name=lanlan_name, personality=lanlan_prompt)
         context_prompt = _format_soccer_pregame_context_for_prompt(pre_game_context)
         in_game_context_prompt = _format_game_context_for_prompt(game_context)
         return f"{prompt}{context_prompt}{in_game_context_prompt}"
     # 未来其他游戏在这里扩展
-    return f"你是{lanlan_name}。{lanlan_prompt}\n你正在玩一个游戏，根据游戏事件生成简短台词。"
+    output_language = str(language or get_global_language() or "en")
+    return (
+        f"You are {lanlan_name}. {lanlan_prompt}\n"
+        f"You are playing a game. Generate short in-character lines in {output_language} for each game event."
+    )
 
 
 def _strip_json_fence(text: str) -> str:
@@ -854,6 +862,24 @@ def _normalize_quick_lines(value: Any) -> Dict[str, list[str]]:
     return normalized
 
 
+def _resolve_game_prompt_language(lanlan_name: str | None = None) -> str:
+    """Resolve the user's current language for game-route LLM prompts."""
+    try:
+        name = str(lanlan_name or "").strip()
+        session_manager = get_session_manager()
+        manager = session_manager.get(name) if name and hasattr(session_manager, "get") else None
+        language = getattr(manager, "user_language", None)
+        if language:
+            return normalize_language_code(str(language), format="short") or "en"
+    except Exception:
+        pass
+
+    try:
+        return normalize_language_code(get_global_language(), format="short") or "en"
+    except Exception:
+        return "en"
+
+
 def _get_character_info(lanlan_name: str | None = None) -> Dict[str, Any]:
     """从 shared_state 获取指定角色信息；未指定时使用当前角色。"""
     try:
@@ -867,6 +893,7 @@ def _get_character_info(lanlan_name: str | None = None) -> Dict[str, Any]:
             info = dict(current_getter())
             if lanlan_name:
                 info.setdefault("lanlan_name", str(lanlan_name or "").strip())
+            info.setdefault("user_language", _resolve_game_prompt_language(info.get("lanlan_name")))
             return info
         raise
     characters = config_manager.load_characters()
@@ -890,6 +917,7 @@ def _get_character_info(lanlan_name: str | None = None) -> Dict[str, Any]:
         'base_url': conversation_config.get('base_url', ''),
         'api_type': conversation_config.get('api_type', ''),
         'api_key': conversation_config.get('api_key', ''),
+        'user_language': _resolve_game_prompt_language(current_name),
     }
 
 
@@ -950,7 +978,7 @@ async def _run_soccer_pregame_context_ai(
         )
         async with llm:
             result = await llm.ainvoke([
-                SystemMessage(content=_SOCCER_PREGAME_CONTEXT_PROMPT),
+                SystemMessage(content=get_soccer_pregame_context_prompt(char_info.get("user_language"))),
                 HumanMessage(content=json.dumps(user_payload, ensure_ascii=False)),
             ])
         raw = _strip_json_fence(str(result.content or ""))
@@ -3086,6 +3114,7 @@ async def _get_or_create_session(game_type: str, session_id: str, lanlan_name: s
         char_info['lanlan_prompt'],
         pre_game_context if isinstance(pre_game_context, dict) else None,
         game_context if isinstance(game_context, dict) else None,
+        char_info.get("user_language"),
     )
     await session.connect(instructions=system_prompt)
 
@@ -3138,6 +3167,7 @@ async def _refresh_game_session_instructions(
         char_info["lanlan_prompt"],
         pre_game_context if isinstance(pre_game_context, dict) else None,
         game_context if isinstance(game_context, dict) else None,
+        char_info.get("user_language"),
     )
     if entry.get("instructions") == instructions:
         return
@@ -4406,10 +4436,12 @@ async def game_quick_lines(game_type: str):
 
     try:
         char_info = _get_current_character_info()
-        prompt = _SOCCER_QUICK_LINES_PROMPT.format(
+        language = char_info.get("user_language")
+        prompt = get_soccer_quick_lines_prompt(language).format(
             name=char_info['lanlan_name'],
             personality=char_info['lanlan_prompt'],
         )
+        user_prompt = get_soccer_quick_lines_user_prompt(language)
 
         from utils.file_utils import robust_json_loads
         from utils.llm_client import HumanMessage, SystemMessage, create_chat_llm
@@ -4426,7 +4458,7 @@ async def game_quick_lines(game_type: str):
         async with llm:
             result = await llm.ainvoke([
                 SystemMessage(content=prompt),
-                HumanMessage(content="Generate soccer minigame quick-path short-line JSON."),
+                HumanMessage(content=user_prompt),
             ])
 
         raw = _strip_json_fence(str(result.content or ""))
