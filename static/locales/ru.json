@@ -3692,5 +3692,125 @@
             "not_configured": "Не настроено",
             "testing": "Проверка..."
         }
+    },
+    "profiler": {
+        "title": "Профилировщик производительности",
+        "badge": {
+            "idle": "Ожидание",
+            "warmup": "Прогрев...",
+            "running": "Запись",
+            "stopped": "Остановлено"
+        },
+        "toggle": {
+            "title": "Развернуть / свернуть",
+            "aria": "Развернуть / свернуть профилировщик"
+        },
+        "btn": {
+            "start": "Старт",
+            "stop": "Стоп",
+            "snapshot": "Снимок",
+            "reset": "Сброс"
+        },
+        "debug": {
+            "title": "Отладочная визуализация",
+            "physicsKinematic": "Костные тела",
+            "physicsKinematicTip": "Kinematic тела (Mode 0): следуют за анимацией костей, физика не действует",
+            "physicsDynamic": "Физические тела",
+            "physicsDynamicTip": "Dynamic тела (Mode 1): чистая физика, гравитация и столкновения",
+            "physicsMixed": "Смешанные тела",
+            "physicsMixedTip": "Mixed тела (Mode 2): физика + кости, позиция привязана к кости",
+            "physicsSolid": "Полупрозрачные грани",
+            "physicsSolidTip": "Каркас / полупрозрачные грани: режим грани показывает наложения тел",
+            "ik": "Цепь IK",
+            "ikTip": "Решатель IK: показывает цели, эффекторы и узлы цепи",
+            "skeleton": "Скелет",
+            "skeletonTip": "Каркас скелета: показывает полную иерархию костей"
+        },
+        "fps": {
+            "recent60s": "FPS — последние 60 с",
+            "alltime": "Общая статистика",
+            "current": "Текущий",
+            "avg": "Среднее",
+            "min": "Мин",
+            "max": "Макс",
+            "p1": "1% Low",
+            "jitter": "Джиттер σ",
+            "samples": "Выборок",
+            "chartTitle": "График FPS"
+        },
+        "frametime": {
+            "recent60s": "Время кадра (мс) — последние 60 с",
+            "avg": "Среднее",
+            "p95": "P95",
+            "p99": "P99",
+            "max": "Макс",
+            "min": "Мин"
+        },
+        "section": {
+            "modelInfo": "Свойства модели",
+            "assessment": "Оценка",
+            "gpuInfo": "Сведения о GPU"
+        },
+        "placeholder": {
+            "snapshotForInfo": "Нажмите «Снимок», чтобы получить сведения о модели",
+            "snapshotForRating": "Нажмите «Снимок», чтобы получить оценку",
+            "snapshotForGpu": "Нажмите «Снимок», чтобы получить сведения о GPU",
+            "noManager": "Менеджер моделей не обнаружен",
+            "noModel": "Модель не загружена",
+            "cannotRate": "Не удалось оценить",
+            "cannotGetGpu": "Не удалось получить сведения о GPU",
+            "live2dUnsupported": "Профилировщик пока не поддерживает модели Live2D"
+        },
+        "info": {
+            "type": "Тип",
+            "name": "Имя",
+            "vertices": "Вершин",
+            "faces": "Граней",
+            "morphTargets": "Morph Targets",
+            "materials": "Материалов",
+            "textures": "Текстур",
+            "bonesVRM": "Кости Humanoid",
+            "bonesMMD": "Костей",
+            "physicsEngine": "Физика",
+            "physicsBodies": "Жёсткие тела",
+            "physicsConstraints": "Ограничения",
+            "springJoints": "Spring Bone суставы",
+            "colliders": "Colliders",
+            "animation": "Анимация",
+            "animPlaying": "Воспроизведение",
+            "animPaused": "Пауза",
+            "animStopped": "Остановлено",
+            "ikGrant": "IK / Grant",
+            "outline": "Контур",
+            "enabled": "Вкл",
+            "disabled": "Выкл",
+            "drawCalls": "Draw calls",
+            "triangles": "Треугольники",
+            "pixelRatio": "Pixel ratio",
+            "renderSize": "Размер рендера",
+            "gpu": "GPU",
+            "vendor": "Производитель",
+            "maxTextureSize": "Макс. текстура"
+        },
+        "rating": {
+            "low": "Лёгкий",
+            "medium": "Средний",
+            "high": "Тяжёлый",
+            "extreme": "Очень тяжёлый",
+            "overall": "Итог: ",
+            "noteHtml": "Оценки опираются на <a href=\"https://wiki.vrchat.com/wiki/Guides:Avatar_Performance_Ranking\" target=\"_blank\" rel=\"noopener noreferrer\" style=\"color:#40C5F1;\">VRChat Avatar Performance Ranking</a> (PC), смягчены для одиночных сцен N.E.K.O."
+        },
+        "ratingDetail": {
+            "vertices": "Вершин",
+            "faces": "Граней (треугольники)",
+            "materials": "Материалов",
+            "textures": "Текстур",
+            "bones": "Костей",
+            "physicsBodies": "Жёсткие тела",
+            "physicsConstraints": "Ограничения",
+            "springJoints": "Spring Bone суставы",
+            "morphTargets": "Morph Targets",
+            "drawCalls": "Draw calls"
+        }
     }
 }

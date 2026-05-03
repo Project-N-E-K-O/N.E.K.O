@@ -3692,5 +3692,125 @@
             "not_configured": "Not configured",
             "testing": "Testing..."
         }
+    },
+    "profiler": {
+        "title": "Performance Profiler",
+        "badge": {
+            "idle": "Idle",
+            "warmup": "Warming up...",
+            "running": "Recording",
+            "stopped": "Stopped"
+        },
+        "toggle": {
+            "title": "Expand / collapse",
+            "aria": "Expand / collapse profiler"
+        },
+        "btn": {
+            "start": "Start",
+            "stop": "Stop",
+            "snapshot": "Snapshot",
+            "reset": "Reset"
+        },
+        "debug": {
+            "title": "Debug visualization",
+            "physicsKinematic": "Kinematic bodies",
+            "physicsKinematicTip": "Kinematic rigid bodies (Mode 0): follow bone animation, unaffected by physics",
+            "physicsDynamic": "Dynamic bodies",
+            "physicsDynamicTip": "Dynamic rigid bodies (Mode 1): pure physics, affected by gravity and collisions",
+            "physicsMixed": "Mixed bodies",
+            "physicsMixedTip": "Mixed rigid bodies (Mode 2): physics + bones, position anchored to bones",
+            "physicsSolid": "Solid faces",
+            "physicsSolidTip": "Toggle wireframe / translucent faces: translucent mode reveals stacking and overlap",
+            "ik": "IK chain",
+            "ikTip": "IK solver: shows IK targets, effectors and chain nodes",
+            "skeleton": "Skeleton",
+            "skeletonTip": "Skeleton wireframe: shows the full bone hierarchy"
+        },
+        "fps": {
+            "recent60s": "FPS — last 60s",
+            "alltime": "All-time stats",
+            "current": "Current",
+            "avg": "Avg",
+            "min": "Min",
+            "max": "Max",
+            "p1": "1% Low",
+            "jitter": "Jitter σ",
+            "samples": "Samples",
+            "chartTitle": "FPS chart"
+        },
+        "frametime": {
+            "recent60s": "Frame time (ms) — last 60s",
+            "avg": "Avg",
+            "p95": "P95",
+            "p99": "P99",
+            "max": "Max",
+            "min": "Min"
+        },
+        "section": {
+            "modelInfo": "Model attributes",
+            "assessment": "Performance rating",
+            "gpuInfo": "GPU info"
+        },
+        "placeholder": {
+            "snapshotForInfo": "Click Snapshot to fetch model info",
+            "snapshotForRating": "Click Snapshot to get a rating",
+            "snapshotForGpu": "Click Snapshot to fetch GPU info",
+            "noManager": "No model manager detected",
+            "noModel": "No model loaded",
+            "cannotRate": "Unable to rate",
+            "cannotGetGpu": "Unable to read GPU info",
+            "live2dUnsupported": "The profiler does not support Live2D models yet"
+        },
+        "info": {
+            "type": "Type",
+            "name": "Name",
+            "vertices": "Vertices",
+            "faces": "Faces",
+            "morphTargets": "Morph Targets",
+            "materials": "Materials",
+            "textures": "Textures",
+            "bonesVRM": "Humanoid bones",
+            "bonesMMD": "Bones",
+            "physicsEngine": "Physics",
+            "physicsBodies": "Rigid bodies",
+            "physicsConstraints": "Constraints",
+            "springJoints": "Spring Bone joints",
+            "colliders": "Colliders",
+            "animation": "Animation",
+            "animPlaying": "Playing",
+            "animPaused": "Paused",
+            "animStopped": "Stopped",
+            "ikGrant": "IK / Grant",
+            "outline": "Outline",
+            "enabled": "Enabled",
+            "disabled": "Disabled",
+            "drawCalls": "Draw calls",
+            "triangles": "Triangles",
+            "pixelRatio": "Pixel ratio",
+            "renderSize": "Render size",
+            "gpu": "GPU",
+            "vendor": "Vendor",
+            "maxTextureSize": "Max texture size"
+        },
+        "rating": {
+            "low": "Light",
+            "medium": "Medium",
+            "high": "Heavy",
+            "extreme": "Very heavy",
+            "overall": "Overall: ",
+            "noteHtml": "Ratings reference the <a href=\"https://wiki.vrchat.com/wiki/Guides:Avatar_Performance_Ranking\" target=\"_blank\" rel=\"noopener noreferrer\" style=\"color:#40C5F1;\">VRChat Avatar Performance Ranking</a> (PC), relaxed for N.E.K.O's single-model scenes."
+        },
+        "ratingDetail": {
+            "vertices": "Vertices",
+            "faces": "Faces (triangles)",
+            "materials": "Materials",
+            "textures": "Textures",
+            "bones": "Bones",
+            "physicsBodies": "Rigid bodies",
+            "physicsConstraints": "Constraints",
+            "springJoints": "Spring Bone joints",
+            "morphTargets": "Morph Targets",
+            "drawCalls": "Draw calls"
+        }
     }
 }

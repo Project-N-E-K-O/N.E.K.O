@@ -3692,5 +3692,125 @@
             "not_configured": "未設定",
             "testing": "テスト中..."
         }
+    },
+    "profiler": {
+        "title": "パフォーマンスアナライザー",
+        "badge": {
+            "idle": "待機",
+            "warmup": "ウォームアップ中...",
+            "running": "計測中",
+            "stopped": "停止"
+        },
+        "toggle": {
+            "title": "展開 / 折りたたみ",
+            "aria": "アナライザーの展開 / 折りたたみ"
+        },
+        "btn": {
+            "start": "計測開始",
+            "stop": "停止",
+            "snapshot": "スナップショット",
+            "reset": "リセット"
+        },
+        "debug": {
+            "title": "デバッグ表示",
+            "physicsKinematic": "ボーン剛体",
+            "physicsKinematicTip": "Kinematic 剛体 (Mode 0): ボーンアニメーションに追従、物理の影響を受けない",
+            "physicsDynamic": "物理剛体",
+            "physicsDynamicTip": "Dynamic 剛体 (Mode 1): 純物理駆動、重力と衝突の影響を受ける",
+            "physicsMixed": "混合剛体",
+            "physicsMixedTip": "Mixed 剛体 (Mode 2): 物理+ボーン混合、位置はボーンに固定",
+            "physicsSolid": "半透明面",
+            "physicsSolidTip": "ワイヤーフレーム / 半透明面の切替: 半透明モードで重なり具合を確認可能",
+            "ik": "IK チェーン",
+            "ikTip": "IK ソルバー: IK ターゲット、エフェクター、ノードを表示",
+            "skeleton": "ボーン",
+            "skeletonTip": "ボーンワイヤーフレーム: ボーン階層全体を表示"
+        },
+        "fps": {
+            "recent60s": "フレームレート (FPS) — 直近 60秒",
+            "alltime": "通算統計",
+            "current": "現在",
+            "avg": "平均",
+            "min": "最低",
+            "max": "最高",
+            "p1": "1% Low",
+            "jitter": "ジッター σ",
+            "samples": "サンプル数",
+            "chartTitle": "FPS グラフ"
+        },
+        "frametime": {
+            "recent60s": "フレーム時間 (ミリ秒) — 直近 60秒",
+            "avg": "平均",
+            "p95": "P95",
+            "p99": "P99",
+            "max": "最大",
+            "min": "最小"
+        },
+        "section": {
+            "modelInfo": "モデル属性",
+            "assessment": "パフォーマンス評価",
+            "gpuInfo": "GPU 情報"
+        },
+        "placeholder": {
+            "snapshotForInfo": "「スナップショット」をクリックしてモデル情報を取得",
+            "snapshotForRating": "「スナップショット」をクリックして評価を取得",
+            "snapshotForGpu": "「スナップショット」をクリックして GPU 情報を取得",
+            "noManager": "モデルマネージャーが検出されません",
+            "noModel": "モデルが読み込まれていません",
+            "cannotRate": "評価できません",
+            "cannotGetGpu": "GPU 情報を取得できません",
+            "live2dUnsupported": "Live2D モデルはパフォーマンス分析に対応していません"
+        },
+        "info": {
+            "type": "タイプ",
+            "name": "名前",
+            "vertices": "頂点数",
+            "faces": "面数",
+            "morphTargets": "Morph Targets",
+            "materials": "マテリアル数",
+            "textures": "テクスチャ数",
+            "bonesVRM": "Humanoid ボーン",
+            "bonesMMD": "ボーン数",
+            "physicsEngine": "物理エンジン",
+            "physicsBodies": "物理剛体",
+            "physicsConstraints": "物理拘束",
+            "springJoints": "Spring Bone ジョイント",
+            "colliders": "Colliders",
+            "animation": "アニメーション",
+            "animPlaying": "再生中",
+            "animPaused": "一時停止",
+            "animStopped": "停止",
+            "ikGrant": "IK / Grant",
+            "outline": "アウトライン",
+            "enabled": "有効",
+            "disabled": "無効",
+            "drawCalls": "Draw Calls",
+            "triangles": "三角形",
+            "pixelRatio": "Pixel Ratio",
+            "renderSize": "描画サイズ",
+            "gpu": "GPU",
+            "vendor": "ベンダー",
+            "maxTextureSize": "最大テクスチャサイズ"
+        },
+        "rating": {
+            "low": "軽量",
+            "medium": "中程度",
+            "high": "重め",
+            "extreme": "非常に重い",
+            "overall": "総合: ",
+            "noteHtml": "評価は <a href=\"https://wiki.vrchat.com/wiki/Guides:Avatar_Performance_Ranking\" target=\"_blank\" rel=\"noopener noreferrer\" style=\"color:#40C5F1;\">VRChat Avatar Performance Ranking</a> (PC) を参考にしており、N.E.K.O の単体モデルシーン向けに緩和しています。"
+        },
+        "ratingDetail": {
+            "vertices": "頂点数",
+            "faces": "面数(三角形)",
+            "materials": "マテリアル数",
+            "textures": "テクスチャ数",
+            "bones": "ボーン数",
+            "physicsBodies": "物理剛体",
+            "physicsConstraints": "物理拘束",
+            "springJoints": "Spring Bone ジョイント",
+            "morphTargets": "Morph Targets",
+            "drawCalls": "Draw Calls"
+        }
     }
 }

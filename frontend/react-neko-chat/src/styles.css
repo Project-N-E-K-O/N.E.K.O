@@ -1580,9 +1580,12 @@ button * {
 }
 
 /* ===== GalGame 模式开关 + 内嵌 A/B/C 选项 ===== */
+/* default/hover/active 三档对齐 .composer-translate-btn img 的 0.45 / 0.7 / 1
+   opacity 节奏；同色系，避免之前那个蓝灰冷灰看着像"未启用"的灰按钮。
+   border 从 1.5px 收到 1px，避免 active 时边框 + 700 字重双层勾画显得过重。 */
 .composer-galgame-btn {
   position: relative;
-  color: rgba(89, 108, 140, 0.55);
+  color: rgba(36, 151, 217, 0.45);
 }
 
 .composer-galgame-btn-glyph {
@@ -1592,7 +1595,7 @@ button * {
   width: 22px;
   height: 22px;
   border-radius: 6px;
-  border: 1.5px solid currentColor;
+  border: 1px solid currentColor;
   font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.02em;
@@ -1601,7 +1604,7 @@ button * {
 }
 
 .composer-galgame-btn:hover {
-  color: rgba(35, 116, 190, 0.85);
+  color: rgba(36, 151, 217, 0.78);
 }
 
 .composer-galgame-btn.is-active {
@@ -1620,8 +1623,24 @@ button * {
   background: #2497d9;
 }
 
-.composer-input-shell.is-galgame-mode {
-  min-height: 196px;
+/* Slot 包住选项区，开/关靠 max-height + opacity 过渡。
+   collapsed 态自然占 0 高，输入壳跟着内容回到原本的紧凑高度，
+   下边缘和 PR 之前一样贴合面板底；展开时 shell 跟着 slot 长高，
+   bottom-bar 锚在 panel 底不动，textarea 顶端被往上推 → 视觉
+   是从下往上拉开。 */
+.composer-galgame-slot {
+  max-height: 0;
+  overflow: hidden;
+  opacity: 0;
+  transition: max-height 220ms cubic-bezier(0.4, 0, 0.2, 1),
+              opacity 180ms ease;
+}
+
+.composer-galgame-slot.is-open {
+  /* 上限给到 3 个 30px 按钮 + 间距 + margin 余量；超出会被 overflow
+     裁掉，但实际内容只有 ~104px 用不到这么多。 */
+  max-height: 160px;
+  opacity: 1;
 }
 
 .composer-galgame-options {
@@ -2098,11 +2117,11 @@ button * {
 }
 
 [data-theme="dark"] .composer-galgame-btn {
-  color: rgba(180, 196, 226, 0.55);
+  color: rgba(68, 183, 254, 0.5);
 }
 
 [data-theme="dark"] .composer-galgame-btn:hover {
-  color: rgba(120, 200, 255, 0.9);
+  color: rgba(68, 183, 254, 0.82);
 }
 
 [data-theme="dark"] .composer-galgame-btn.is-active {
@@ -2169,7 +2188,9 @@ button * {
   .message-row-assistant,
   .text-chunk-reveal,
   .composer-icon-popover,
-  .composer-icon-button {
+  .composer-icon-button,
+  .composer-galgame-slot,
+  .composer-galgame-option {
     animation: none !important;
     animation-delay: 0ms !important;
     transition: none !important;
