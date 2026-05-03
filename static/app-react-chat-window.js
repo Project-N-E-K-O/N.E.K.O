@@ -1707,6 +1707,16 @@
                     restorePosition();
                     scheduleMobileContentLayout();
                 }
+                // closeWindow / hidden-state turn-end both invalidate the
+                // GalGame option list, so reopening must re-fetch for the
+                // latest assistant turn or the user would see a permanently
+                // empty panel until the next reply arrives.
+                // fetchGalgameOptionsForLatestTurn early-returns if the last
+                // message isn't from the assistant or the mode is off, so it
+                // is safe to call unconditionally.
+                if (state.galgameModeEnabled) {
+                    fetchGalgameOptionsForLatestTurn();
+                }
             })
             .catch(function (error) {
                 console.error('[ReactChatWindow] open failed:', error);
