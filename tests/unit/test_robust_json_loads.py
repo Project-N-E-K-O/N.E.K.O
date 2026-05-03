@@ -53,7 +53,7 @@ def test_galgame_korean_char_pollution():
         ('[1,결2]', [1, 2]),
         ('["a",결"b"]', ["a", "b"]),
         ('{"a":1,결"b":2}', {"a": 1, "b": 2}),
-        # 多字符 CJK 污染（≤3 字）
+        # 上限 2 字符
         ('[1,결결2]', [1, 2]),
         # emoji 也是非 ASCII，同样应剥离
         ('[1,🚀2]', [1, 2]),
@@ -61,6 +61,36 @@ def test_galgame_korean_char_pollution():
 )
 def test_non_ascii_pollution_stripped(raw, expected):
     assert robust_json_loads(raw) == expected
+
+
+@pytest.mark.unit
+def test_pollution_run_over_2_chars_not_stripped():
+    """超过 2 个连续污染字符不剥 —— scanner 上限是 1–2，避免破坏太多结构。"""
+    with pytest.raises(json.JSONDecodeError):
+        robust_json_loads('[1,결결결2]')
+
+
+@pytest.mark.unit
+def test_minimum_strip_when_already_parseable_after_earlier_transform():
+    """关键回归（"原本能 parse 就用原本"）：
+    fallback pipeline 每步 transform 后应立刻 try parse，能 parse 立即停。
+    `{a: 1}`（无引号 key）经 unquoted-key 修补后已是合法 JSON，scanner 不应再动手。
+    """
+    raw = "{a: 1}"
+    assert robust_json_loads(raw) == {"a": 1}
+
+
+@pytest.mark.unit
+def test_strict_json_with_cjk_not_touched_at_all():
+    """关键回归：raw 能直接 parse，原值无条件返回，scanner 完全不介入。
+
+    （即使 CJK 出现在数组分隔符位置 —— 因为是合法 string 内容。）
+    """
+    raw = '["你好",결]'  # 这条本身非法，作为反例：scanner 会动
+    with pytest.raises(json.JSONDecodeError):
+        robust_json_loads(raw)
+    # 而合法的就直接通过：
+    assert robust_json_loads('["你好","결"]') == ["你好", "결"]
 
 
 @pytest.mark.unit

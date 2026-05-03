@@ -35,13 +35,16 @@ def _is_likely_pollution_char(c: str) -> bool:
 
 
 def _strip_stray_chars_between_tokens(s: str) -> str:
-    """Strip 1–3 hallucinated chars between `,`/`[` and the next value start.
+    """Strip 1–2 hallucinated chars between `,`/`[` and the next value start.
 
     Stateful scanner — only acts outside of quoted strings (with backslash escape
     handling). 仅剥**非 ASCII Letter / emoji**（LLM 实测幻觉污染源）；ASCII 字符
     与 Unicode 数字符号 / 标点 / dash / 全角数字一律放行，避免把
     `+5`、`.5`、`e3`、`−2`（U+2212）、`＋5`（U+FF0B）等半合法值前缀静默改坏。
     剥不掉就让 json.loads 自己抛 JSONDecodeError 走 fallback。
+
+    Best-effort 最少破坏：从 k=1 起递增到 2，第一个能让 lookahead 命中
+    合法值起始的 k 立刻停 —— 不贪。
     """
     out: list[str] = []
     i = 0
@@ -69,53 +72,76 @@ def _strip_stray_chars_between_tokens(s: str) -> str:
         i += 1
         if c not in ',[':
             continue
-        # 跳过 separator 后的空白，找疑似污染段（连续 1–3 个 Letter/emoji 类字符）
+        # 跳过 separator 后的空白，从最少 (k=1) 开始尝试，越少越好
         j = i
         while j < n and s[j].isspace():
             j += 1
-        end = j
-        while end < j + 3 and end < n and _is_likely_pollution_char(s[end]):
-            end += 1
-        # 必须真的吃到了污染字符，且后面紧跟合法值起始才剥
-        if end > j and end < n and s[end] in _VALUE_START_CHARS:
-            out.append(s[i:j])  # 保留空白
-            i = end
+        for k in (1, 2):
+            if j + k > n:
+                break
+            # 第 k 个字符必须是 pollution；否则再大的 k 也只会更糟
+            if not _is_likely_pollution_char(s[j + k - 1]):
+                break
+            if j + k < n and s[j + k] in _VALUE_START_CHARS:
+                out.append(s[i:j])  # 保留空白
+                i = j + k
+                break
     return ''.join(out)
+
+
+def _try_json_loads(s: str) -> tuple[Any, bool]:
+    try:
+        return json.loads(s), True
+    except json.JSONDecodeError:
+        return None, False
 
 
 def robust_json_loads(raw: str) -> Any:
     """json.loads with fallback for common LLM JSON quirks.
 
+    原始输入若能直接 parse，无条件返回原结果（绝不预先 transform）。否则按
+    fallback pipeline 逐步修补 —— 每步 transform 后立即 try parse，能 parse
+    即停，避免后续步骤（尤其是 scanner）在不必要时动文本。
+
     Handles: unquoted keys, trailing commas, ``{{ }}``, Python ``True/False/None``,
     single-quoted strings (including mixed-quote scenarios), and stray hallucinated
-    characters between structural tokens (e.g. ``,결{`` → ``,{``).
+    chars between structural tokens (e.g. ``,결{`` → ``,{``).
     """
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
-        pass
-    s = raw
-    # {{ }} → { }  (LLM 模仿 prompt 模板转义)
-    s = s.replace("{{", "{").replace("}}", "}")
-    # Python 字面值 → JSON
-    s = s.replace("True", "true").replace("False", "false").replace("None", "null")
-    # 尾逗号
-    s = re.sub(r',\s*([}\]])', r'\1', s)
-    # 无引号 key:  {key: "v"} → {"key": "v"}
-    s = _UNQUOTED_KEY_RE.sub(r' "\1":', s)
-    # 单引号 → 双引号
-    if '"' not in s:
-        s = s.replace("'", '"')
-    else:
+    parsed, ok = _try_json_loads(raw)
+    if ok:
+        return parsed
+
+    def _normalize_quotes(s: str) -> str:
+        if '"' not in s:
+            return s.replace("'", '"')
         # 混合引号：逐步替换单引号 key/value
         s = re.sub(r"'([^']*?)'\s*:", r'"\1":', s)           # key
         s = re.sub(r":\s*'([^']*?)'", r': "\1"', s)         # value
         s = re.sub(r"'\s*([,\]\}])", r'"\1', s)              # 数组尾
         s = re.sub(r"([,\[\{])\s*'", r'\1"', s)              # 数组头
-    # LLM 偶尔在结构 token 之间塞 1–3 个幻觉字符（实例：`,결{` 应是 `,{`）。
-    # 用有状态扫描器避免误伤合法 string 内容里出现的同形 pattern。
-    s = _strip_stray_chars_between_tokens(s)
-    return json.loads(s)
+        return s
+
+    transforms = (
+        # {{ }} → { }  (LLM 模仿 prompt 模板转义)
+        lambda s: s.replace("{{", "{").replace("}}", "}"),
+        # Python 字面值 → JSON
+        lambda s: s.replace("True", "true").replace("False", "false").replace("None", "null"),
+        # 尾逗号
+        lambda s: re.sub(r',\s*([}\]])', r'\1', s),
+        # 无引号 key:  {key: "v"} → {"key": "v"}
+        lambda s: _UNQUOTED_KEY_RE.sub(r' "\1":', s),
+        # 单引号 → 双引号
+        _normalize_quotes,
+        # 最后才动：清掉 `,결{` 类结构 token 间幻觉污染
+        _strip_stray_chars_between_tokens,
+    )
+    s = raw
+    for transform in transforms:
+        s = transform(s)
+        parsed, ok = _try_json_loads(s)
+        if ok:
+            return parsed
+    return json.loads(s)  # 让最终错误带完整上下文抛出
 
 
 def atomic_write_text(path: str | os.PathLike[str], content: str, *, encoding: str = "utf-8") -> None:
