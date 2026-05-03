@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 
@@ -83,3 +84,15 @@ def test_string_with_escaped_quote_not_breaking_scanner():
     """字符串内含转义引号时，扫描器应正确识别字符串边界。"""
     raw = '{a: "say \\"x,bc{y\\" loud", b: 2}'
     assert robust_json_loads(raw) == {"a": 'say "x,bc{y" loud', "b": 2}
+
+
+@pytest.mark.unit
+def test_leading_decimal_not_silently_dropped():
+    """关键回归：`.` 不能被当成 1 字符污染删掉。
+
+    旧实现：`[1,.5]` 触发 fallback 后 scanner 把 `.` 当幻觉删，
+    `,5` 解析成 5 → 0.5 被静默改成 5，数值 silent corruption。
+    现在 `.` 算作疑似数字起始，scanner 不删，让 json.loads 自己抛错。
+    """
+    with pytest.raises(json.JSONDecodeError):
+        robust_json_loads('[1,.5]')

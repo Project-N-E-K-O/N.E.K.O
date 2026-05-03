@@ -15,7 +15,10 @@ _UNQUOTED_KEY_RE = re.compile(r'(?<=[{,])\s*([A-Za-z_]\w*)\s*:')
 
 # 合法 JSON 值起始字符：`"` (string) / `{` (object) / `[` (array) /
 # `-` 或数字 (number) / `t` `f` `n` (true/false/null)。
-_VALUE_START_CHARS = frozenset('"{[-tfn0123456789')
+# `.` 严格 JSON 中不是合法 number 起始 (.5 非法)，但 LLM 偶尔会写出来；
+# 算作"疑似数字起始"放进集合，scanner 不主动删它 —— 让 json.loads 自己抛错，
+# 避免把 `[1,.5]` 静默清成 `[1,5]` 这种数值 silent corruption。
+_VALUE_START_CHARS = frozenset('"{[-.tfn0123456789')
 
 
 def _strip_stray_chars_between_tokens(s: str) -> str:
