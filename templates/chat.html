@@ -377,10 +377,9 @@
            对同名 @keyframes 做二次解析，且 !important 阻止 prefers-reduced-motion
            等未来覆盖，已移除。 */
 
-        /* GalGame 模式下增大输入区与整体最小高度，避免选项被遮挡 */
-        body.galgame-mode-enabled #react-chat-window-shell .composer-input-shell {
-            min-height: 220px !important;
-        }
+        /* GalGame 模式：撑高窗口和外壳，预留 A/B/C 一来就有位置，避免
+           jump-resize；输入壳本身不再硬撑 min-height，由 .composer-galgame-slot
+           的 max-height 过渡驱动自然长高，参见 react-neko-chat styles.css。 */
         body.galgame-mode-enabled #react-chat-window-shell {
             min-height: 320px !important;
         }
