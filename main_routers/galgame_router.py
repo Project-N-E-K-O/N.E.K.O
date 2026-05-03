@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import re
 from typing import Any
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
@@ -22,6 +23,7 @@ from fastapi.responses import JSONResponse
 from config.prompts_galgame import (
     GALGAME_DEFAULT_LANLAN_PLACEHOLDER,
     GALGAME_DEFAULT_MASTER_PLACEHOLDER,
+    get_galgame_fallback_options,
     get_galgame_dialogue_footer,
     get_galgame_dialogue_header,
     get_galgame_option_generation_prompt,
@@ -43,32 +45,12 @@ GALGAME_MAX_HISTORY = 8
 GALGAME_MAX_TEXT_PER_TURN = 240
 GALGAME_OPTION_MAX_TOKENS = 360
 GALGAME_OPTION_LABELS = ("A", "B", "C")
-GALGAME_FALLBACK_BY_LANG = {
-    "zh": (
-        "我有点没听清，可以再说一次吗？",
-        "嗯嗯，我都在听，慢慢说就好。",
-        "如果我们现在掉进童话书里会怎样？",
-    ),
-    "en": (
-        "Could you walk me through that again?",
-        "I'm right here. Take your time, I'm listening.",
-        "What if we slipped into a storybook right now?",
-    ),
-    "ja": (
-        "もう一度ゆっくり説明してくれる？",
-        "ここにいるよ。ゆっくりで大丈夫。",
-        "今の話、もし絵本の中に紛れ込んだらどうする？",
-    ),
-    "ko": (
-        "한 번만 더 천천히 말해줄래?",
-        "여기 있어, 천천히 말해도 괜찮아.",
-        "우리가 지금 동화책 속으로 들어갔다면 어떨까?",
-    ),
-    "ru": (
-        "Можешь повторить ещё раз помедленнее?",
-        "Я рядом, не торопись, я слушаю.",
-        "А если бы мы сейчас провалились в сказку?",
-    ),
+_LANLAN_FREE_API_KEY = "free-access"
+_LANLAN_FREE_TEXT_HOSTS = {
+    "www.lanlan.tech",
+    "lanlan.tech",
+    "www.lanlan.app",
+    "lanlan.app",
 }
 
 
@@ -175,11 +157,62 @@ def _normalize_options(parsed: Any) -> list[dict[str, str]]:
 
 
 def _fallback_options(lang: str) -> list[dict[str, str]]:
-    texts = GALGAME_FALLBACK_BY_LANG.get(lang) or GALGAME_FALLBACK_BY_LANG['en']
+    texts = get_galgame_fallback_options(lang)
     return [
         {'label': label, 'text': text}
         for label, text in zip(GALGAME_OPTION_LABELS, texts)
     ]
+
+
+def _clean_llm_config(config: dict[str, Any] | None) -> dict[str, Any]:
+    config = config or {}
+    return {
+        "api_key": (config.get("api_key") or "").strip(),
+        "model": (config.get("model") or "").strip(),
+        "base_url": (config.get("base_url") or "").strip(),
+        "is_custom": bool(config.get("is_custom")),
+    }
+
+
+def _base_url_host(base_url: str) -> str:
+    try:
+        return (urlsplit(base_url).hostname or "").lower()
+    except Exception:
+        return ""
+
+
+def _is_lanlan_free_text_config(config: dict[str, Any]) -> bool:
+    return (
+        config.get("api_key") == _LANLAN_FREE_API_KEY
+        and not config.get("is_custom")
+        and _base_url_host(config.get("base_url", "")) in _LANLAN_FREE_TEXT_HOSTS
+    )
+
+
+def _resolve_galgame_llm_config(config_manager: Any) -> tuple[dict[str, Any], str, bool]:
+    summary_config = _clean_llm_config(config_manager.get_model_api_config('summary'))
+    if _is_lanlan_free_text_config(summary_config):
+        try:
+            agent_config = _clean_llm_config(config_manager.get_model_api_config('agent'))
+        except Exception as exc:
+            logger.warning("GalGame free API agent config unavailable: %s", exc)
+        else:
+            if agent_config.get("model") and agent_config.get("base_url"):
+                return agent_config, "agent", True
+            logger.warning("GalGame free API agent model/base_url not configured")
+
+    return summary_config, "summary", False
+
+
+async def _consume_free_agent_quota(config_manager: Any) -> tuple[bool, dict[str, Any]]:
+    consume_quota = getattr(config_manager, "aconsume_agent_daily_quota", None)
+    if not callable(consume_quota):
+        return True, {}
+    try:
+        return await consume_quota(source="galgame.options", units=1)
+    except Exception as exc:
+        logger.warning("GalGame free API quota check failed: %s", exc)
+        return False, {"code": "AGENT_QUOTA_CHECK_FAILED"}
 
 
 @router.post('/galgame/options')
@@ -222,17 +255,27 @@ async def generate_galgame_options(request: Request):
     master_name = (data.get('master_name') or master_name_current or '').strip() \
         or _loc(GALGAME_DEFAULT_MASTER_PLACEHOLDER, lang)
 
-    summary_config = config_manager.get_model_api_config('summary')
-    api_key = summary_config.get('api_key')
-    model = summary_config.get('model')
-    base_url = summary_config.get('base_url')
-    if not api_key or not model:
-        logger.warning("Summary model not configured; returning fallback options")
+    llm_config, llm_config_source, uses_free_agent_quota = _resolve_galgame_llm_config(config_manager)
+    api_key = llm_config["api_key"]
+    model = llm_config["model"]
+    base_url = llm_config["base_url"]
+    if not model or not base_url:
+        logger.warning("%s model/base_url not configured; returning fallback options", llm_config_source)
         return JSONResponse({
             "success": True,
             "options": _fallback_options(lang),
             "fallback": True,
         })
+    if uses_free_agent_quota:
+        quota_ok, quota_info = await _consume_free_agent_quota(config_manager)
+        if not quota_ok:
+            return JSONResponse({
+                "success": True,
+                "options": _fallback_options(lang),
+                "fallback": True,
+                "error": "AGENT_QUOTA_EXCEEDED",
+                "quota": quota_info,
+            })
 
     system_prompt = get_galgame_option_generation_prompt(
         lang,
@@ -250,7 +293,6 @@ async def generate_galgame_options(request: Request):
         model,
         base_url,
         api_key,
-        temperature=0.85,
         max_completion_tokens=GALGAME_OPTION_MAX_TOKENS,
     )
     try:
@@ -278,7 +320,7 @@ async def generate_galgame_options(request: Request):
         except Exception:
             options = []
     if not options:
-        logger.info("GalGame model output unparseable, using fallback. raw=%r", raw_text[:200])
+        logger.info("GalGame model output unparseable, using fallback")
         return JSONResponse({
             "success": True,
             "options": _fallback_options(lang),
