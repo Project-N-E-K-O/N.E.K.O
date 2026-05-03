@@ -63,6 +63,79 @@
             .trim();
     }
 
+    function getAssistantDisplayName() {
+        var name = '';
+        try {
+            name = (window.__NEKO_TUTORIAL_ASSISTANT_NAME_OVERRIDE__
+                || (window.lanlan_config && window.lanlan_config.lanlan_name)
+                || window._currentCatgirl
+                || window.currentCatgirl
+                || '');
+        } catch (_) {}
+        return String(name || '').trim() || 'Neko';
+    }
+
+    function appendAssistantStatusMessage(text) {
+        var cleanText = getRenderableAssistantChunkText(text);
+        if (!cleanText) return false;
+
+        var timeStr = (typeof window.getCurrentTimeString === 'function')
+            ? window.getCurrentTimeString()
+            : new Date().toLocaleTimeString('en-US', {
+                hour12: false,
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit'
+            });
+        var assistantName = getAssistantDisplayName();
+        var messageId = 'assistant-status-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+        var appendedToReact = false;
+
+        if (window.reactChatWindowHost && typeof window.reactChatWindowHost.appendMessage === 'function') {
+            try {
+                var avatarUrl = '';
+                if (window.appChatAvatar && typeof window.appChatAvatar.getCurrentAvatarDataUrl === 'function') {
+                    avatarUrl = window.appChatAvatar.getCurrentAvatarDataUrl() || '';
+                }
+                window.reactChatWindowHost.appendMessage({
+                    id: messageId,
+                    role: 'assistant',
+                    author: assistantName,
+                    time: timeStr,
+                    createdAt: Date.now(),
+                    avatarLabel: assistantName ? String(assistantName).slice(0, 1).toUpperCase() : undefined,
+                    avatarUrl: avatarUrl || undefined,
+                    blocks: [{ type: 'text', text: cleanText }],
+                    status: 'failed'
+                });
+                appendedToReact = true;
+            } catch (reactAppendError) {
+                console.warn('[WS] failed to append assistant status to React chat:', reactAppendError);
+            }
+        }
+
+        if (appendedToReact) {
+            window.currentTurnGeminiBubbles = [{
+                dataset: { reactChatMessageId: messageId },
+                parentNode: null,
+                isConnected: true,
+                textContent: '[' + timeStr + '] \u{1F380} ' + cleanText,
+                nodeType: 1
+            }];
+            return true;
+        }
+
+        var messageDiv = document.createElement('div');
+        messageDiv.classList.add('message', 'gemini');
+        messageDiv.textContent = '[' + timeStr + '] \u{1F380} ' + cleanText;
+        var cc = chatContainer();
+        if (!cc) return false;
+        cc.appendChild(messageDiv);
+        window.currentTurnGeminiBubbles = [messageDiv];
+        cc.scrollTop = cc.scrollHeight;
+        return true;
+    }
+
     function websocketTraceEnabled() {
         return window.NEKO_DEBUG_BUBBLE_LIFECYCLE === true;
     }
@@ -728,16 +801,7 @@
 
                         if (!response.will_retry && response.message) {
                             var translatedDiscardMsg = window.translateStatusMessage ? window.translateStatusMessage(response.message) : response.message;
-                            var messageDiv = document.createElement('div');
-                            messageDiv.classList.add('message', 'gemini');
-                            messageDiv.textContent = '[' + (typeof window.getCurrentTimeString === 'function' ? window.getCurrentTimeString() : '') + '] \u{1F380} ' + translatedDiscardMsg;
-                            var cc2 = chatContainer();
-                            if (cc2) {
-                                cc2.appendChild(messageDiv);
-                                window.currentGeminiMessage = messageDiv;
-                                window.currentTurnGeminiBubbles = [messageDiv];
-                                cc2.scrollTop = cc2.scrollHeight;
-                            }
+                            appendAssistantStatusMessage(translatedDiscardMsg);
                         } else {
                             var cc3 = chatContainer();
                             if (cc3) cc3.scrollTop = cc3.scrollHeight;
