@@ -797,10 +797,9 @@
         // body class 由 app-react-chat-window.js 在 toggle 时刷新；这里订阅
         // 主动同步事件，避免轮询 / MutationObserver 的重绘开销。
         window.addEventListener('react-chat-window:galgame-mode-change', syncWindowToGalgameMin);
-        // 初次进入：如启动时 mode=ON 且窗口残留旧高度，也撑高一次
-        if (isGalgameModeOn()) {
-            setTimeout(syncWindowToGalgameMin, 0);
-        }
+        // 启动时不再主动撑高：app-react-chat-window 在 storage barrier 之后
+        // 调 setGalgameModeEnabled(readPref) 把 false→true 翻转一次，change 事件
+        // 兜底；ON 持久化时这条路径必走、OFF 持久化时不会触发不必要的扩大。
 
         var collapsed = false;
         var animating = false;

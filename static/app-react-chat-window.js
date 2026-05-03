@@ -42,11 +42,13 @@
         pendingRollbackDrafts: Object.create(null),
         rollbackDraft: '',
         _toolCursorResetKey: '',
-        // Initialized to the safe default; the real localStorage value is
-        // resolved post-barrier in init() so we don't read from a storage
-        // namespace that's about to be remapped by the storage-location
-        // startup barrier.
-        galgameModeEnabled: true,
+        // Off until init() reads the persisted preference post-barrier and
+        // calls setGalgameModeEnabled(true) — that path fires the
+        // galgame-mode-change event, which is the only signal chat.html's
+        // syncWindowToGalgameMin uses to bump Electron window height.
+        // Defaulting to true here would leave saved-OFF users permanently
+        // bumped: chat.html's listener only ever grows the window.
+        galgameModeEnabled: false,
         galgameOptions: [],
         galgameOptionsLoading: false,
         _galgameRequestSeq: 0
@@ -72,7 +74,9 @@
         if (typeof document === 'undefined' || !document.body) return;
         document.body.classList.toggle('galgame-mode-enabled', !!enabled);
     }
-    applyGalgameBodyClass(state.galgameModeEnabled);
+    // No module-eval apply: state defaults to off here; init() resolves the
+    // persisted preference and calls setGalgameModeEnabled(...) which flips
+    // the class and fires the change event chat.html listens to.
 
     var MOBILE_MAX_HEIGHT_RATIO = 0.85;
     var MOBILE_MESSAGE_MIN_HEIGHT = 60;
