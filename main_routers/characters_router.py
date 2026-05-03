@@ -6,6 +6,18 @@ Handles character (catgirl) management endpoints including:
 - Character CRUD operations
 - Voice settings
 - Microphone settings
+
+URL convention
+--------------
+Every endpoint here is declared WITHOUT a trailing slash (e.g.
+``@router.get('')`` not ``@router.get('/')``, ``@router.get('/voices')`` not
+``@router.get('/voices/')``). Frontend callers must match exactly — never
+``fetch('/api/characters/')``. Triggering Starlette's slash-redirect 307
+returns an absolute ``Location`` built from the request ``Host`` and breaks
+under reverse proxies that don't transparently forward ``Host``. See
+``.agent/rules/neko-guide.md`` (§"API URL 末尾不带斜杠") for the full
+rationale and the PR #938 incident; ``scripts/check_api_trailing_slash.py``
++ ``scripts/check_frontend_api_trailing_slash.py`` enforce this in CI.
 """
 import re
 import json

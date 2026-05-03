@@ -50,17 +50,17 @@ from __future__ import annotations
 ACTIVITY_GUESS_PROMPTS: dict[str, str] = {
     'zh': """你是一个用户活动分析助手。基于下方的系统信号和最近对话片段，对用户当前的活动状态做软评分，并写一句简短的活动叙述。
 
-======系统信号======
+======以下为系统信号======
 {signals}
-======系统信号结束======
+======以上为系统信号======
 
-======最近对话（按时间顺序）======
+======以下为最近对话（按时间顺序）======
 {conversation}
-======对话结束======
+======以上为最近对话（按时间顺序）======
 
-======规则系统的初判======
+======以下为规则系统的初判======
 {rule_state}
-======初判结束======
+======以上为规则系统的初判======
 
 请输出严格的 JSON（不带 markdown 代码块），字段：
 - "scores": 一个对象，键是状态名，值是 0.0-1.0 的浮点数（独立打分，不需要归一化）。允许的状态名：{state_keys}
@@ -75,17 +75,17 @@ ACTIVITY_GUESS_PROMPTS: dict[str, str] = {
 
     'en': """You are a user-activity analyst. Given the system signals and recent conversation snippets below, give soft scores for the user's current activity state and write a one-sentence narrative.
 
-======System signals======
+======Below is System signals======
 {signals}
-======End of signals======
+======Above is System signals======
 
-======Recent conversation (chronological)======
+======以下为最近对话(按时间顺序)======
 {conversation}
-======End of conversation======
+======以上为最近对话(按时间顺序)======
 
-======Rule system's initial classification======
+======Below is Rule system's initial classification======
 {rule_state}
-======End of initial classification======
+======Above is Rule system's initial classification======
 
 Output strict JSON (no markdown fences), with fields:
 - "scores": object mapping state name to a 0.0-1.0 float (independent scoring, no normalization). Allowed states: {state_keys}
@@ -100,17 +100,17 @@ Example output:
 
     'ja': """あなたはユーザー活動の分析助手です。下のシステム信号と最近の会話に基づき、ユーザーの現在の活動状態にソフトスコアを付けて、一文の活動叙述を書いてください。
 
-======システム信号======
+======以下はシステム信号======
 {signals}
-======信号ここまで======
+======以上はシステム信号======
 
-======最近の会話（時系列）======
+======以下为最近对话(按时间顺序)======
 {conversation}
-======会話ここまで======
+======以上为最近对话(按时间顺序)======
 
-======ルール系の初期判定======
+======以下はルール系の初期判定======
 {rule_state}
-======初期判定ここまで======
+======以上はルール系の初期判定======
 
 厳密なJSON（markdownコードブロックなし）で出力してください：
 - "scores": 状態名をキー、0.0〜1.0の浮動小数を値とするオブジェクト（独立スコア、正規化不要）。許可される状態：{state_keys}
@@ -125,17 +125,17 @@ Example output:
 
     'ko': """당신은 사용자 활동 분석 도우미입니다. 아래의 시스템 신호와 최근 대화 스니펫을 바탕으로 사용자의 현재 활동 상태에 소프트 점수를 매기고, 활동 서술 한 문장을 작성하세요.
 
-======시스템 신호======
+======아래는 시스템 신호======
 {signals}
-======신호 끝======
+======위는 시스템 신호======
 
-======최근 대화 (시간순)======
+======以下为最近对话(按时间顺序)======
 {conversation}
-======대화 끝======
+======以上为最近对话(按时间顺序)======
 
-======규칙 시스템의 초기 판정======
+======아래는 규칙 시스템의 초기 판정======
 {rule_state}
-======초기 판정 끝======
+======위는 규칙 시스템의 초기 판정======
 
 엄격한 JSON으로 출력하세요 (markdown 코드 블록 없이). 필드:
 - "scores": 상태명을 키로, 0.0-1.0 부동소수를 값으로 하는 객체 (독립 점수, 정규화 불필요). 허용 상태: {state_keys}
@@ -150,17 +150,17 @@ Example output:
 
     'ru': """Вы — аналитик активности пользователя. Опираясь на сигналы системы и недавние реплики ниже, поставьте мягкие оценки текущему состоянию активности пользователя и напишите одно предложение-описание.
 
-======Сигналы системы======
+======Ниже Сигналы системы======
 {signals}
-======Конец сигналов======
+======Выше Сигналы системы======
 
-======Недавний разговор (хронология)======
+======以下为最近对话(按时间顺序)======
 {conversation}
-======Конец разговора======
+======以上为最近对话(按时间顺序)======
 
-======Первоначальная классификация правил======
+======Ниже Первоначальная классификация правил======
 {rule_state}
-======Конец классификации======
+======Выше Первоначальная классификация правил======
 
 Выведите строгий JSON (без markdown-обрамления), поля:
 - "scores": объект «название состояния → число 0.0-1.0» (независимые оценки, нормализация не нужна). Допустимые состояния: {state_keys}
@@ -178,70 +178,125 @@ Example output:
 # ── Open-thread semantic detection (emotion-tier) ───────────────────
 
 OPEN_THREADS_PROMPTS: dict[str, str] = {
-    'zh': """你是对话回顾助手。看下面最近的对话，列出最多 3 条"被提起但还没收尾"的话题——比如 AI 答应过但还没做的事、用户提到一半就被打断的事情、双方约定但没跟进的细节。
+    'zh': """你是对话回顾助手。看下面最近的对话，识别"被提起但还没收尾"的话题——比如 AI 答应过但还没做的事、用户说一半被打断没说完的事、用户讲到一半的故事或心情没说到结局。
 
-======最近对话（按时间顺序）======
+======以下为最近对话（按时间顺序）======
 {conversation}
-======对话结束======
+======以上为最近对话（按时间顺序）======
 
 输出严格的 JSON（不带 markdown 代码块）：
-{{"open_threads": ["短句 1", "短句 2"]}}
+{{"open_threads": ["短句 1"]}}
 
-每条用一句话写清是谁挂了这个话题、内容是什么。如果对话已经收尾或没什么悬而未决的，返回空数组：{{"open_threads": []}}
+**默认应返回空数组**。绝大多数对话都自然收尾、没有悬而未决——这种情况下严格返回 `{{"open_threads": []}}`。只有当你能明确指出"谁挂了什么、对方还在等"时才报告，至多 3 条；正常情况预期是 0 条，偶尔 1 条，2-3 条很罕见。宁可漏报也不要凑数。
 
-不要包括"明显的问题没回答"——那种由另一个机制处理。这里专注语义上的"挂着"。""",
+算 hanging（应报告）：
+- 用户说"那个 bug 啊……"被打断，之后没回到这个话题
+- 用户讲到一半的故事或心情停在悬念上，没说到结局，AI 也没追问后续
+- 用户同时表达了两个并列的需求 / 矛盾的心情，AI 只接住其中一边，另一边没人回应
 
-    'en': """You are a conversation review assistant. Look at the recent conversation below and list up to 3 topics that were "raised but not closed" — things like promises the AI made but hasn't fulfilled, user thoughts cut off mid-sentence, plans agreed but not followed up.
+不算 hanging（应忽略）：
+- 自然的话题切换、对方主动结束某个话题
+- 闲聊里的随口一提、寒暄性的"下次再说"
+- 长期话题（早就在聊，不是这段对话新起的悬念）
 
-======Recent conversation (chronological)======
+示例 A——对话顺利结束、互道晚安 → `{{"open_threads": []}}`
+示例 B——用户的另一半诉求被晾在一边 → `{{"open_threads": ["用户说想吃顿好的又想减肥，AI 只顺着减肥那条线接了下去——'吃点好的'被晾在一边没人回应"]}}`""",
+
+    'en': """You are a conversation review assistant. Look at the recent conversation below and identify topics that were "raised but not closed" — promises the AI made but hasn't fulfilled, user thoughts cut off mid-sentence, a story or feeling the user started telling but never finished.
+
+======以下为最近对话(按时间顺序)======
 {conversation}
-======End of conversation======
+======以上为最近对话(按时间顺序)======
 
 Output strict JSON (no markdown fences):
-{{"open_threads": ["short phrase 1", "short phrase 2"]}}
+{{"open_threads": ["short phrase 1"]}}
 
-Each entry: one sentence saying who left this thread hanging and what it was about. If the conversation is fully wrapped up or nothing is hanging, return an empty array: {{"open_threads": []}}
+**Default to an empty array.** Most conversations wrap naturally with nothing hanging — in that case strictly return `{{"open_threads": []}}`. Only report when you can point to a specific "X left Y hanging, the other side is still waiting", up to 3 entries; the expected count is 0, occasionally 1, rarely 2–3. Prefer under-reporting over filling the slots.
 
-Do NOT include "obvious unanswered questions" — those are handled by a separate mechanism. Focus on semantic "left hanging" cases.""",
+Counts as hanging (report):
+- User said "about that bug…" and got interrupted, never came back to it
+- User started telling a story or sharing something personal, stopped on a cliffhanger / mid-arc, never reached the punchline, and AI didn't ask for the rest
+- User voiced two parallel needs / a mixed feeling, but AI only picked up one side and left the other unaddressed
 
-    'ja': """あなたは会話レビュー助手です。下の最近の会話を見て、「持ち出されたが収まっていない」話題を最大3件挙げてください。例：AIが約束したがまだ実行していないこと、ユーザーが言いかけて中断したこと、双方で合意したのに追いかけていない詳細など。
+Does NOT count (ignore):
+- Natural topic shifts, the other party deliberately closing a topic
+- Casual asides, polite "we'll talk later" pleasantries
+- Long-running topics (ongoing for a while, not a new hanging item from this window)
 
-======最近の会話（時系列）======
+Example A — conversation wraps cleanly, both say goodnight → `{{"open_threads": []}}`
+Example B — half of the user's request got left dangling → `{{"open_threads": ["User said they wanted a nice dinner but also to lose weight; AI only picked up the diet thread, leaving 'something nice for dinner' with nobody addressing it"]}}`""",
+
+    'ja': """あなたは会話レビュー助手です。下の最近の会話を見て、「持ち出されたが収まっていない」話題を特定してください。例：AIが約束したがまだ実行していないこと、ユーザーが言いかけて中断したまま戻っていないこと、ユーザーが話し始めた話や気持ちが結末まで行かずに終わっていることなど。
+
+======以下为最近对话(按时间顺序)======
 {conversation}
-======会話ここまで======
+======以上为最近对话(按时间顺序)======
 
 厳密なJSON（markdownコードブロックなし）で出力：
-{{"open_threads": ["短い文1", "短い文2"]}}
+{{"open_threads": ["短い文1"]}}
 
-各項目：誰がこの話題を残したか、内容は何かを一文で。会話が完結している、または特に懸案がなければ空配列を返す：{{"open_threads": []}}
+**既定値は空配列です**。ほとんどの会話は自然に収まり、宙ぶらりんなものはありません——その場合は厳密に `{{"open_threads": []}}` を返してください。「誰が何を残し、相手はまだ待っている」と明確に指摘できる場合のみ、最大3件まで報告します。期待値は0件、たまに1件、2〜3件は稀。枠を埋めるくらいなら見落とす方を選んでください。
 
-「明らかな未回答の質問」は別の仕組みで扱うため除外してください。意味的に「宙ぶらりん」のものに集中。""",
+該当する（報告）：
+- ユーザーが「さっきのバグ……」と言いかけて遮られ、戻ってきていない
+- ユーザーが面白い話や気持ちを語り始めて途中で止まり、結末／落ちまで行かず、AIも続きを聞かなかった
+- ユーザーが二つの並ぶ要望／相反する気持ちを口にしたのに、AIが片方しか拾わず、もう片方が放置された
 
-    'ko': """당신은 대화 검토 도우미입니다. 아래 최근 대화를 보고 "꺼냈지만 마무리되지 않은" 화제를 최대 3개 나열하세요. 예: AI가 약속했지만 아직 안 한 일, 사용자가 말을 꺼내다가 끊긴 것, 양쪽이 합의했지만 후속하지 않은 세부 사항 등.
+該当しない（無視）：
+- 自然な話題転換、相手が意図的に話題を閉じた
+- 雑談での軽い言及、社交辞令の「また今度」
+- 長期的な話題（ずっと続いていて、この区間で新たに発生した懸念ではない）
 
-======최근 대화 (시간순)======
+例A——会話がきれいに収まり、おやすみで終わる → `{{"open_threads": []}}`
+例B——ユーザーの片方の要望が放置された → `{{"open_threads": ["ユーザーが『今夜は美味しいものを食べたい、でもダイエットもしたい』と言ったのに、AIはダイエットの方だけ拾い、『美味しいもの』の側は誰も応えないまま放置された"]}}`""",
+
+    'ko': """당신은 대화 검토 도우미입니다. 아래 최근 대화를 보고 "꺼냈지만 마무리되지 않은" 화제를 식별하세요. 예: AI가 약속했지만 아직 안 한 일, 사용자가 말을 꺼내다가 끊긴 채 돌아오지 않은 것, 사용자가 꺼낸 이야기나 마음이 결말까지 가지 않고 도중에 멈춘 것 등.
+
+======以下为最近对话(按时间顺序)======
 {conversation}
-======대화 끝======
+======以上为最近对话(按时间顺序)======
 
 엄격한 JSON으로 출력 (markdown 코드 블록 없이):
-{{"open_threads": ["짧은 문장 1", "짧은 문장 2"]}}
+{{"open_threads": ["짧은 문장 1"]}}
 
-각 항목: 누가 이 화제를 남겼는지, 내용은 무엇인지 한 문장으로. 대화가 마무리되었거나 특별히 미해결이 없으면 빈 배열 반환: {{"open_threads": []}}
+**기본값은 빈 배열입니다.** 대부분의 대화는 자연스럽게 마무리되어 미해결이 없습니다 — 그 경우 엄격히 `{{"open_threads": []}}`를 반환하세요. "누가 무엇을 남겼고 상대가 아직 기다리고 있다"고 명확히 짚을 수 있을 때만 최대 3건까지 보고합니다. 기댓값은 0건, 가끔 1건, 2~3건은 드뭅니다. 빈자리를 채우느니 누락을 택하세요.
 
-"명백한 미답변 질문"은 다른 메커니즘이 처리하므로 제외. 의미적으로 "걸려있는" 경우에 집중.""",
+해당함 (보고):
+- 사용자가 "아까 그 버그…" 하다가 끊겨 돌아오지 못함
+- 사용자가 재미있는 이야기나 마음을 꺼냈다가 결말 / 마무리까지 가지 않은 채 멈췄고, AI도 뒷얘기를 물어보지 않음
+- 사용자가 두 가지 병렬된 요구 / 상반된 감정을 동시에 말했는데, AI가 한쪽만 받아주고 다른 쪽은 아무도 응하지 않은 채 남음
 
-    'ru': """Вы — помощник по обзору разговора. Просмотрите недавний разговор ниже и перечислите до 3 тем, которые «подняли, но не закрыли»: обещания AI, ещё не выполненные; мысли пользователя, оборвавшиеся на полуслове; согласованные планы без продолжения.
+해당 안 함 (무시):
+- 자연스러운 화제 전환, 상대가 의도적으로 끝낸 화제
+- 잡담 중 가벼운 언급, 사교적 "다음에 봐요"
+- 오래 이어져 온 화제 (이 구간에서 새로 생긴 미해결이 아님)
 
-======Недавний разговор (хронология)======
+예시 A — 대화가 깔끔히 마무리되고 잘 자라며 끝남 → `{{"open_threads": []}}`
+예시 B — 사용자 요구의 한쪽이 방치됨 → `{{"open_threads": ["사용자가 '오늘 저녁 맛있는 거 먹고 싶지만 다이어트도 하고 싶다'고 했는데, AI가 다이어트 쪽만 받아주고 '맛있는 거' 쪽은 아무도 응하지 않은 채 방치됨"]}}`""",
+
+    'ru': """Вы — помощник по обзору разговора. Просмотрите недавний разговор ниже и выявите темы, которые «подняли, но не закрыли»: обещания AI, ещё не выполненные; мысли пользователя, оборвавшиеся на полуслове и не возобновлённые; история или переживание, которое пользователь начал рассказывать, но так и не довёл до конца.
+
+======以下为最近对话(按时间顺序)======
 {conversation}
-======Конец разговора======
+======以上为最近对话(按时间顺序)======
 
 Выведите строгий JSON (без markdown):
-{{"open_threads": ["короткая фраза 1", "короткая фраза 2"]}}
+{{"open_threads": ["короткая фраза 1"]}}
 
-Каждая запись — одно предложение: кто оставил тему «висеть» и о чём она. Если разговор завершён или ничего не висит — пустой массив: {{"open_threads": []}}
+**По умолчанию — пустой массив.** Большинство разговоров завершаются естественно, ничего не «висит» — в таком случае строго верните `{{"open_threads": []}}`. Сообщайте только когда можете чётко указать «кто оставил что, и другая сторона всё ещё ждёт», максимум 3 записи. Ожидаемое количество — 0, иногда 1, редко 2–3. Лучше пропустить, чем заполнять слоты.
 
-НЕ включайте «очевидные неотвеченные вопросы» — этим занимается отдельный механизм. Фокус на семантических «зависших» случаях.""",
+Считается «висящим» (сообщать):
+- Пользователь начал «насчёт того бага…» и был прерван, к теме не возвращались
+- Пользователь начал рассказывать историю или делиться переживанием, остановился, не дойдя до развязки, и AI не спросил, чем закончилось
+- Пользователь высказал два параллельных желания / смешанное чувство, а AI подхватил только одну сторону, оставив другую без ответа
+
+НЕ считается (игнорировать):
+- Естественная смена темы, собеседник намеренно закрыл тему
+- Мимолётные реплики в болтовне, вежливое «поговорим как-нибудь»
+- Долгоиграющие темы (тянутся давно, это не новая зацепка в данном окне)
+
+Пример A — разговор аккуратно завершён, оба желают спокойной ночи → `{{"open_threads": []}}`
+Пример B — одна из сторон запроса пользователя оставлена без внимания → `{{"open_threads": ["Пользователь сказал, что хочет вкусно поужинать, но и похудеть; AI подхватил только тему диеты, а сторону «вкусно поужинать» так никто и не отозвался"]}}`""",
 }
 
 
@@ -555,8 +610,8 @@ ACTIVITY_REASON_TEMPLATES: dict[str, dict[str, str]] = {
 
 ACTIVITY_STATE_SECTION_LABELS: dict[str, dict[str, str]] = {
     'zh': {
-        'header': '======活动状态======',
-        'footer': '======状态结束======',
+        'header': '======以下为活动状态======',
+        'footer': '======以上为活动状态======',
         'never': '无',
         'seconds_ago_fmt': '{seconds:.0f}s前',
         'minutes_ago_fmt': '{minutes:.0f}min前',
@@ -576,8 +631,8 @@ ACTIVITY_STATE_SECTION_LABELS: dict[str, dict[str, str]] = {
         'time_only_fmt': '{time}',
     },
     'en': {
-        'header': '======Activity======',
-        'footer': '======End======',
+        'header': '======Below is Activity======',
+        'footer': '======Above is Activity======',
         'never': '-',
         'seconds_ago_fmt': '{seconds:.0f}s',
         'minutes_ago_fmt': '{minutes:.0f}min',
@@ -597,8 +652,8 @@ ACTIVITY_STATE_SECTION_LABELS: dict[str, dict[str, str]] = {
         'time_only_fmt': '{time}',
     },
     'ja': {
-        'header': '======活動状態======',
-        'footer': '======終わり======',
+        'header': '======以下は活動状態======',
+        'footer': '======以上は活動状態======',
         'never': '無',
         'seconds_ago_fmt': '{seconds:.0f}秒前',
         'minutes_ago_fmt': '{minutes:.0f}分前',
@@ -618,8 +673,8 @@ ACTIVITY_STATE_SECTION_LABELS: dict[str, dict[str, str]] = {
         'time_only_fmt': '{time}',
     },
     'ko': {
-        'header': '======활동 상태======',
-        'footer': '======끝======',
+        'header': '======아래는 활동 상태======',
+        'footer': '======위는 활동 상태======',
         'never': '없음',
         'seconds_ago_fmt': '{seconds:.0f}초 전',
         'minutes_ago_fmt': '{minutes:.0f}분 전',
@@ -639,8 +694,8 @@ ACTIVITY_STATE_SECTION_LABELS: dict[str, dict[str, str]] = {
         'time_only_fmt': '{time}',
     },
     'ru': {
-        'header': '======Активность======',
-        'footer': '======Конец======',
+        'header': '======Ниже Активность======',
+        'footer': '======Выше Активность======',
         'never': '-',
         'seconds_ago_fmt': '{seconds:.0f}с',
         'minutes_ago_fmt': '{minutes:.0f}мин',

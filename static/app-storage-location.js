@@ -2129,12 +2129,17 @@
         window.addEventListener('localechange', handleLocaleChange);
     }
 
-    async function fetchBootstrap() {
-        setPhase('loading');
-        setLoadingCopy(
-            translate('storage.loadingTitle', '正在确认存储布局状态'),
-            translate('storage.loadingFetchBootstrapSubtitle', '正在准备存储位置选择页面。')
-        );
+    async function fetchBootstrap(flowStartTime) {
+        // 延迟显示 loading overlay，避免从状态确认到 bootstrap 请求整体很快完成时闪屏
+        var elapsedTime = Date.now() - flowStartTime;
+        var remainingDelay = Math.max(0, 150 - elapsedTime);
+        var showTimer = setTimeout(function () {
+            setPhase('loading');
+            setLoadingCopy(
+                translate('storage.loadingTitle', '正在确认存储布局状态'),
+                translate('storage.loadingFetchBootstrapSubtitle', '正在准备存储位置选择页面。')
+            );
+        }, remainingDelay);
         try {
             var response = await fetch('/api/storage/location/bootstrap', {
                 cache: 'no-store',
@@ -2142,6 +2147,7 @@
                     'Accept': 'application/json'
                 }
             });
+            clearTimeout(showTimer);
             if (!response.ok) {
                 throw new Error('bootstrap request failed: ' + response.status);
             }
@@ -2164,6 +2170,7 @@
             });
             scheduleCompletionNoticePolling();
         } catch (error) {
+            clearTimeout(showTimer);
             console.warn('[storage-location] bootstrap failed', error);
             showError(error);
         }
@@ -2172,14 +2179,19 @@
     async function beginSentinelFlow() {
         buildModalDom();
         attachLocaleListener();
-        setPhase('loading');
-        setLoadingCopy(
-            translate('storage.loadingTitle', '正在确认存储布局状态'),
-            translate('storage.loadingSubtitle', '主业务界面会在存储状态确认完成后再继续加载。')
-        );
+        // 延迟显示 loading overlay，避免 waitForSystemStatus 很快完成时闪屏
+        var flowStartTime = Date.now();
+        var showTimer = setTimeout(function () {
+            setPhase('loading');
+            setLoadingCopy(
+                translate('storage.loadingTitle', '正在确认存储布局状态'),
+                translate('storage.loadingWaitSubtitle', '主业务界面会在存储状态确认完成后再继续加载。')
+            );
+        }, 150);
 
         try {
             var statusPayload = await waitForSystemStatus();
+            clearTimeout(showTimer);
             if (!shouldBlockMainUi(statusPayload)) {
                 hideOverlay();
                 resolveStartupDecision({
@@ -2190,8 +2202,9 @@
                 return;
             }
 
-            await fetchBootstrap();
+            await fetchBootstrap(flowStartTime);
         } catch (error) {
+            clearTimeout(showTimer);
             console.warn('[storage-location] sentinel init failed', error);
             showError(error);
         }

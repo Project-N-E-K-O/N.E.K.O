@@ -510,7 +510,7 @@
                         window.lanlan_config.vrmIdleAnimations = [];
                         if (nameForConfig) {
                             try {
-                                var charResVrm = await fetch('/api/characters/');
+                                var charResVrm = await fetch('/api/characters');
                                 if (charResVrm.ok) {
                                     var charDataVrm = await charResVrm.json();
                                     var catDataVrm = charDataVrm?.['猫娘']?.[nameForConfig];
@@ -665,7 +665,7 @@
                         // 播放待机动作 & 启动轮换
                         if (nameForConfig) {
                             try {
-                                const charRes = await fetch('/api/characters/');
+                                const charRes = await fetch('/api/characters');
                                 if (charRes.ok) {
                                     const charData = await charRes.json();
                                     const catData = charData?.['猫娘']?.[nameForConfig];
@@ -961,7 +961,7 @@
             }
 
             // 2. 从 characters.json 获取保存的待机动作路径
-            const response = await fetch('/api/characters/');
+            const response = await fetch('/api/characters');
             const data = await response.json();
 
             // 【竞态防护】如果中途角色被切换了，立刻中止

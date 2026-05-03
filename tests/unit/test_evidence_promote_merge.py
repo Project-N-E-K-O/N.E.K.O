@@ -78,12 +78,17 @@ def _reflection(rid: str, text: str, entity: str = 'master', *,
                 status: str = 'confirmed', rein: float = 2.5,
                 disp: float = 0.0, attempt_count: int = 0,
                 last_attempt_at: str | None = None) -> dict:
+    # Anchor evidence timestamps to "now" so the fixture's rein stays
+    # above EVIDENCE_PROMOTED_THRESHOLD regardless of wall-clock drift.
+    # A hardcoded date silently decays past the gate after a few weeks
+    # (rein 2.5 with 30-day half-life crosses 2.0 around day ~10).
+    fresh = datetime.now().isoformat(timespec='seconds')
     return {
         'id': rid, 'text': text, 'entity': entity, 'status': status,
-        'source_fact_ids': [], 'created_at': '2026-04-22T10:00:00',
-        'feedback': None, 'next_eligible_at': '2026-04-22T10:00:00',
+        'source_fact_ids': [], 'created_at': fresh,
+        'feedback': None, 'next_eligible_at': fresh,
         'reinforcement': rein, 'disputation': disp,
-        'rein_last_signal_at': '2026-04-22T10:00:00',
+        'rein_last_signal_at': fresh,
         'disp_last_signal_at': None,
         'sub_zero_days': 0, 'sub_zero_last_increment_date': None,
         'user_fact_reinforce_count': 0,

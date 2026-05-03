@@ -13,7 +13,7 @@ from config.prompts_chara import lanlan_prompt, get_lanlan_prompt, is_default_pr
 
 # 应用程序名称与版本配置
 APP_NAME = "N.E.K.O"
-APP_VERSION = "0.7.4"
+APP_VERSION = "0.8.0"
 logger = logging.getLogger(f"{APP_NAME}.{__name__}")
 
 # GPT-SoVITS voice_id 前缀(角色管理中使用 "gsv:<voice_id>" 格式标识 GPT-SoVITS 声音)
@@ -893,7 +893,7 @@ PERSONA_RENDER_ENCODING = "o200k_base"   # tiktoken encoding
 #   - OpenClaw magic intent user_text（用 1MB 输入做 80-token 分类，自找的）
 #   - emotion 分析 user text
 #   - bilibili knowledge_context（用户配置的知识库）
-#   - sts2_autoplay strategy_prompt（用户写的策略文件）
+#   - 插件自定义 prompt / strategy 文件（由插件自行管理）
 # 详见 docs/design/llm-prompt-budget.md "已知不 cap 项"。
 # ========================================================================
 
@@ -1393,7 +1393,7 @@ EVIDENCE_PROMOTION_MERGE_MODEL_TIER = "correction"  # Promote 合并决策
 # level (drop the model file → on; remove it → off) without a config edit.
 VECTORS_ENABLED = True                       # master kill switch
 VECTORS_EMBEDDING_DIM = "auto"               # "auto" | 32/64/128/256/512/768
-VECTORS_QUANTIZATION = "auto"                # "auto" | "int8" | "fp32"
+VECTORS_QUANTIZATION = "auto"                # "auto" | "int8" | "fp32" (fp32 needs model.onnx on disk)
 VECTORS_MIN_RAM_GB = 4.0                     # below this → disabled regardless
 VECTORS_MODEL_PROFILE_ID = "local-text-retrieval-v1"  # anonymous profile id + local model folder
 # Warmup: the ONNX session (~150 MB unpack) loads on first triggering

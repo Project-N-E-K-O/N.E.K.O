@@ -90,9 +90,16 @@ def test_coerce_dim_invalid_value_falls_back_to_auto():
 
 
 def test_resolve_quantization_auto_branches_on_vnni():
-    """VNNI present ⇒ INT8; absent ⇒ FP32. INT8 without VNNI is slower."""
+    """VNNI present ⇒ INT8; confirmed absent ⇒ None; inconclusive ⇒ INT8."""
     assert _resolve_quantization("auto", has_vnni=True) == "int8"
-    assert _resolve_quantization("auto", has_vnni=False) == "fp32"
+    assert (
+        _resolve_quantization("auto", has_vnni=False, vnni_absence_confirmed=True)
+        is None
+    )
+    assert (
+        _resolve_quantization("auto", has_vnni=False, vnni_absence_confirmed=False)
+        == "int8"
+    )
 
 
 def test_resolve_quantization_explicit_pinning():
@@ -100,10 +107,19 @@ def test_resolve_quantization_explicit_pinning():
     pinned int8 on non-VNNI hardware (asserted via behaviour, not log)."""
     assert _resolve_quantization("int8", has_vnni=False) == "int8"
     assert _resolve_quantization("fp32", has_vnni=True) == "fp32"
+    assert _resolve_quantization("fp32", has_vnni=False) == "fp32"
 
 
 def test_resolve_quantization_invalid_falls_back_to_auto():
     assert _resolve_quantization("garbage", has_vnni=True) == "int8"
+    assert (
+        _resolve_quantization("garbage", has_vnni=False, vnni_absence_confirmed=True)
+        is None
+    )
+    assert (
+        _resolve_quantization("garbage", has_vnni=False, vnni_absence_confirmed=False)
+        == "int8"
+    )
 
 
 def test_build_model_id_encodes_axes():
@@ -130,7 +146,7 @@ def _service(**overrides) -> EmbeddingService:
         quantization_setting="auto",
         min_ram_gb=DEFAULT_VECTORS_MIN_RAM_GB,
         ram_gb=8.0,
-        has_vnni=False,
+        has_vnni=True,
     )
     defaults.update(overrides)
     return EmbeddingService(**defaults)
@@ -178,38 +194,76 @@ def test_service_healthy_construction_stays_init_until_load():
     assert svc.is_disabled() is False
     assert svc.is_available() is False
     assert svc._state == EmbeddingState.INIT
-    assert svc.model_id() == "local-text-retrieval-v1-256d-fp32"
+    assert svc.model_id() == "local-text-retrieval-v1-256d-int8"
     assert svc.dim() == 256
-    assert svc.quantization() == "fp32"
+    assert svc.quantization() == "int8"
 
 
 def test_service_dim_pinning_overrides_auto():
     svc = _service(ram_gb=4.5, embedding_dim_setting=256)
     # Even on 4.5 GB RAM, the pinned dim wins.
     assert svc.dim() == 256
-    assert svc.model_id().endswith("256d-fp32")
+    assert svc.model_id().endswith("256d-int8")
 
 
-def test_service_uses_profile_onnx_layout():
-    """The default profile uses a task-specific ONNX export under
-    onnx/model*.onnx, not the old model_<quant>.onnx layout."""
-    fp32 = _service(
+def test_service_fp32_setting_uses_fp32_onnx_path():
+    svc = _service(
         ram_gb=16.0,
         quantization_setting="fp32",
         model_dir="/models",
+        has_vnni=True,
     )
+    assert not svc.is_disabled()
+    assert svc.quantization() == "fp32"
+    assert svc.model_id() == "local-text-retrieval-v1-256d-fp32"
+    assert svc._model_file_path().replace("\\", "/").endswith(
+        "/local-text-retrieval-v1/onnx/model.onnx",
+    )
+
+
+def test_service_auto_without_vnni_disables():
+    svc = _service(
+        ram_gb=16.0,
+        has_vnni=False,
+        vnni_absence_confirmed=True,
+        quantization_setting="auto",
+    )
+    assert svc.is_disabled()
+    assert svc.disable_reason() == "avx_vnni_required_for_int8_bundle"
+
+
+def test_service_auto_inconclusive_vnni_stays_int8():
+    """Windows/macOS without cpuinfo: absence not confirmed → still try INT8."""
+    svc = _service(
+        ram_gb=16.0,
+        has_vnni=False,
+        vnni_absence_confirmed=False,
+        quantization_setting="auto",
+    )
+    assert not svc.is_disabled()
+    assert svc.quantization() == "int8"
+
+
+def test_service_uses_profile_onnx_layout():
+    """The profile uses task ONNX exports under onnx/model*.onnx."""
     int8 = _service(
         ram_gb=16.0,
         quantization_setting="int8",
         model_dir="/models",
     )
-    assert fp32._model_file_path().replace("\\", "/").endswith(
-        "/local-text-retrieval-v1/onnx/model.onnx",
+    fp32 = _service(
+        ram_gb=16.0,
+        quantization_setting="fp32",
+        model_dir="/models",
+        has_vnni=True,
     )
     assert int8._model_file_path().replace("\\", "/").endswith(
         "/local-text-retrieval-v1/onnx/model_quantized.onnx",
     )
-    assert fp32._tokenizer_file_path().replace("\\", "/").endswith(
+    assert fp32._model_file_path().replace("\\", "/").endswith(
+        "/local-text-retrieval-v1/onnx/model.onnx",
+    )
+    assert int8._tokenizer_file_path().replace("\\", "/").endswith(
         "/local-text-retrieval-v1/tokenizer.json",
     )
 
@@ -311,11 +365,11 @@ def test_select_model_dir_skips_app_data_missing_runtime_variant(tmp_path, monke
         _select_model_dir(str(app_model_dir), "local-text-retrieval-v1", "int8")
         == str(bundled_model_dir)
     )
-    # Without quantization (caller doesn't know yet), the existing-variant
-    # behavior is preserved — app-data is still preferred.
+    # Without quantization, only the shipped INT8 variant counts — fp32-only
+    # app-data must not mask a complete bundled int8 profile.
     assert (
         _select_model_dir(str(app_model_dir), "local-text-retrieval-v1")
-        == str(app_model_dir)
+        == str(bundled_model_dir)
     )
 
 
@@ -432,7 +486,7 @@ def test_infer_uses_last_token_pooling_and_matryoshka_truncation():
                 [[5.0, 0.0, 0.0], [9.0, 9.0, 9.0], [8.0, 8.0, 8.0]],
             ], dtype=np.float32)]
 
-    svc = _service(ram_gb=16.0)
+    svc = _service(ram_gb=16.0, has_vnni=True)
     svc._dim = 2  # private override keeps the fixture tiny while testing truncation
     session = _Session()
     svc._session = session

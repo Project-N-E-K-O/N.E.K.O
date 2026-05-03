@@ -42,6 +42,11 @@ Endpoints
 
 The HTTP dispatcher does NOT proxy in-process tools — those are
 registered directly via ``LLMSessionManager.register_tool``.
+
+URL convention: routes declared WITHOUT trailing slash (no ``@router.get('/')``).
+See ``main_routers/characters_router.py`` docstring or
+``.agent/rules/neko-guide.md`` (§"API URL 末尾不带斜杠") for the rationale;
+enforced by ``scripts/check_api_trailing_slash.py``.
 """
 from __future__ import annotations
 

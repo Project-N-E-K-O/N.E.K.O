@@ -6,6 +6,12 @@ Handles WebSocket endpoints including:
 - Main WebSocket connection for chat
 - Proactive chat
 - Task notifications
+
+URL convention: WebSocket routes (``@router.websocket('/ws/...')``) follow the
+same no-trailing-slash rule as HTTP routes. See
+``main_routers/characters_router.py`` docstring or
+``.agent/rules/neko-guide.md`` (§"API URL 末尾不带斜杠") for the rationale;
+enforced by ``scripts/check_api_trailing_slash.py``.
 """
 
 import json
@@ -122,6 +128,14 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                     # 传递input_mode参数，告知session manager使用何种模式
                     # 注意：音频模块由 main_server 后台预加载，Python import lock 会自动等待首次导入完成
                     mode = 'text' if input_type == 'text' else 'audio'
+                    # 用户显式 start_session（刷新页面 / 点重试）= 清熔断。
+                    # 内部 recovery 路径不会走到这里，熔断只能从这条路被清。
+                    # 但要避开"上一轮 start_session 还在跑"的 race：那时清零会让
+                    # 正在跑的失败重新算第 1 次，熔断永远开不起来。这种情况下
+                    # 让正在跑的那次自己处理；新的 start_session 进入后会被
+                    # _starting_session_count > 0 的早退拦掉。
+                    if session_manager[lanlan_name]._starting_session_count == 0:
+                        session_manager[lanlan_name].reset_session_start_circuit()
                     _fire_task(session_manager[lanlan_name].start_session(websocket, message.get("new_session", False), mode))
                 else:
                     await session_manager[lanlan_name].send_status(json.dumps({"code": "INVALID_INPUT_TYPE", "details": {"input_type": input_type}}))
@@ -144,7 +158,10 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                     session_manager[lanlan_name]._avatar_position = av_pos
                 else:
                     session_manager[lanlan_name]._avatar_position = None
-                _fire_task(session_manager[lanlan_name].stream_data(message))
+                if message.get("input_type") == "audio":
+                    await session_manager[lanlan_name].stream_data(message)
+                else:
+                    _fire_task(session_manager[lanlan_name].stream_data(message))
 
             elif action == "avatar_interaction":
                 _fire_task(session_manager[lanlan_name].handle_avatar_interaction(message))

@@ -112,9 +112,10 @@ jobs:
         shell: bash
         run: |
           uv venv .venv
-          # Pull the optional `embeddings` extra (onnxruntime + tokenizers) so
-          # both the build-time prepare step and the bundled runtime have them.
-          uv sync --extra embeddings
+          # Embedding runtime deps (onnxruntime, tokenizers, py-cpuinfo) are
+          # in [project.dependencies] now — plain `uv sync` covers both the
+          # build-time prepare step and the bundled runtime.
+          uv sync
           uv pip install --python .venv nuitka ordered-set zstandard
 
       # --- Generate runtime config files (not tracked in git) ---
@@ -128,6 +129,7 @@ jobs:
             'config/characters.en.json': {'主人': {'档案名': '', '性别': '', '昵称': ''}, '猫娘': {}, '当前猫娘': ''},
             'config/characters.ja.json': {'主人': {'档案名': '', '性别': '', '昵称': ''}, '猫娘': {}, '当前猫娘': ''},
             'config/characters.ko.json': {'主人': {'档案名': '', '性别': '', '昵称': ''}, '猫娘': {}, '当前猫娘': ''},
+            'config/characters.ru.json': {'主人': {'档案名': '', '性别': '', '昵称': ''}, '猫娘': {}, '当前猫娘': ''},
             'config/characters.zh-CN.json': {'主人': {'档案名': '', '性别': '', '昵称': ''}, '猫娘': {}, '当前猫娘': ''},
             'config/characters.zh-TW.json': {'主人': {'档案名': '', '性别': '', '昵称': ''}, '猫娘': {}, '当前猫娘': ''},
             'config/core_config.json': {},
@@ -267,6 +269,7 @@ jobs:
           NUITKA_OPTS="$NUITKA_OPTS --include-data-files=config/characters.en.json=config/characters.en.json"
           NUITKA_OPTS="$NUITKA_OPTS --include-data-files=config/characters.ja.json=config/characters.ja.json"
           NUITKA_OPTS="$NUITKA_OPTS --include-data-files=config/characters.ko.json=config/characters.ko.json"
+          NUITKA_OPTS="$NUITKA_OPTS --include-data-files=config/characters.ru.json=config/characters.ru.json"
           NUITKA_OPTS="$NUITKA_OPTS --include-data-files=config/characters.zh-CN.json=config/characters.zh-CN.json"
           NUITKA_OPTS="$NUITKA_OPTS --include-data-files=config/characters.zh-TW.json=config/characters.zh-TW.json"
           NUITKA_OPTS="$NUITKA_OPTS --include-data-files=config/core_config.json=config/core_config.json"
@@ -394,6 +397,7 @@ jobs:
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-files=config/characters.en.json=config/characters.en.json
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-files=config/characters.ja.json=config/characters.ja.json
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-files=config/characters.ko.json=config/characters.ko.json
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-data-files=config/characters.ru.json=config/characters.ru.json
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-files=config/characters.zh-CN.json=config/characters.zh-CN.json
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-files=config/characters.zh-TW.json=config/characters.zh-TW.json
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-files=config/core_config.json=config/core_config.json

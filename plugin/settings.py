@@ -92,9 +92,24 @@ def get_user_package_profiles_root() -> Path:
     return (get_user_plugin_config_root().parent / ".neko-package-profiles").resolve()
 
 
+def get_user_plugin_packages_root() -> Path:
+    """获取用户插件包（``.neko-plugin`` / ``.neko-bundle``）落地目录。
+
+    - Env: ``PLUGIN_PACKAGES_ROOT``
+    - 默认：``<user plugins root>/../.neko-plugin-packages``，与
+      ``USER_PLUGIN_CONFIG_ROOT`` / ``USER_PACKAGE_PROFILES_ROOT`` 同级，
+      避免落到 Nuitka 打包后的只读 dist 目录中。
+    """
+    custom_path = os.getenv("PLUGIN_PACKAGES_ROOT")
+    if custom_path:
+        return Path(custom_path).expanduser().resolve()
+    return (get_user_plugin_config_root().parent / ".neko-plugin-packages").resolve()
+
+
 BUILTIN_PLUGIN_CONFIG_ROOT = get_builtin_plugin_config_root()
 USER_PLUGIN_CONFIG_ROOT = get_user_plugin_config_root()
 USER_PACKAGE_PROFILES_ROOT = get_user_package_profiles_root()
+USER_PLUGIN_PACKAGES_ROOT = get_user_plugin_packages_root()
 # Deprecated compatibility alias for older single-root callers.
 PLUGIN_CONFIG_ROOT = BUILTIN_PLUGIN_CONFIG_ROOT
 PLUGIN_CONFIG_ROOTS = get_plugin_config_roots()
@@ -536,6 +551,7 @@ __all__ = [
     "BUILTIN_PLUGIN_CONFIG_ROOT",
     "USER_PLUGIN_CONFIG_ROOT",
     "USER_PACKAGE_PROFILES_ROOT",
+    "USER_PLUGIN_PACKAGES_ROOT",
     "PLUGIN_CONFIG_ROOT",
     "PLUGIN_CONFIG_ROOTS",
     "get_builtin_plugin_config_root",
@@ -543,6 +559,7 @@ __all__ = [
     "get_plugin_config_roots",
     "get_user_plugin_config_root",
     "get_user_package_profiles_root",
+    "get_user_plugin_packages_root",
     
     # 队列配置
     "EVENT_QUEUE_MAX",
@@ -621,6 +638,7 @@ PUBLIC_SYSTEM_CONFIG_KEYS = (
     "BUILTIN_PLUGIN_CONFIG_ROOT",
     "USER_PLUGIN_CONFIG_ROOT",
     "USER_PACKAGE_PROFILES_ROOT",
+    "USER_PLUGIN_PACKAGES_ROOT",
     "PLUGIN_CONFIG_ROOT",
     "PLUGIN_CONFIG_ROOTS",
     "EVENT_QUEUE_MAX",

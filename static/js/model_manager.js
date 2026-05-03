@@ -997,7 +997,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             const initialModel = window.live2dManager?.getCurrentModel() || live2dModel;
             if (!initialModel) return;
 
-            const data = await RequestHelper.fetchJson('/api/characters/');
+            const data = await RequestHelper.fetchJson('/api/characters');
             // 模型可能已在 await 期间切换
             if (window.live2dManager?.getCurrentModel() !== initialModel) {
                 console.log('[Live2D Restore] 模型已在 fetchJson 期间切换，跳过恢复');
@@ -2667,7 +2667,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     try {
                         const _lanlanName = await getLanlanName();
                         if (_lanlanName) {
-                            const _charData = await RequestHelper.fetchJson('/api/characters/');
+                            const _charData = await RequestHelper.fetchJson('/api/characters');
                             savedLightingConfig = _charData['猫娘']?.[_lanlanName]?.lighting || null;
                         }
                     } catch (e) {
@@ -5543,7 +5543,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             const lanlanName = await getLanlanName();
             if (!lanlanName) return;
 
-            const data = await RequestHelper.fetchJson('/api/characters/');
+            const data = await RequestHelper.fetchJson('/api/characters');
             const charData = data['猫娘']?.[lanlanName];
             let vrmIdleAnimation = charData?.idle_animation;
             if (vrmIdleAnimation == null) {
@@ -5649,7 +5649,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             const lanlanName = await getLanlanName();
             if (!lanlanName) return;
 
-            const data = await RequestHelper.fetchJson('/api/characters/');
+            const data = await RequestHelper.fetchJson('/api/characters');
             const charData = data['猫娘']?.[lanlanName];
             let mmdIdleAnimation = charData?.mmd_idle_animations ?? charData?.mmd_idle_animation;
 
@@ -6015,7 +6015,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (!lanlanName) return;
 
             // 使用 RequestHelper 确保统一的错误处理和超时
-            const data = await RequestHelper.fetchJson('/api/characters/');
+            const data = await RequestHelper.fetchJson('/api/characters');
             const charData = data['猫娘']?.[lanlanName];
             const lighting = charData?.lighting;
 

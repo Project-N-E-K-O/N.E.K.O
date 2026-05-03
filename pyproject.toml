@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "N.E.K.O"
-version = "1.0.0"
+dynamic = ["version"]
 description = "N.E.K.O. Desktop"
 readme = "README.MD"
 requires-python = "==3.11.*"
@@ -59,14 +59,15 @@ dependencies = [
   # utils/tokenize.py and wires render-time counting.
   "tiktoken>=0.7.0",
   "cachetools>=5.3",
-]
-
-[project.optional-dependencies]
-embeddings = [
+  # Local memory embeddings (memory/embeddings.py): ONNX + tokenizer + CPU flags
   "onnxruntime",
   "tokenizers",
+  "py-cpuinfo>=9.0.0",
 ]
 
+[tool.hatch.version]
+path = "config/__init__.py"
+pattern = '''^APP_VERSION\s*=\s*["'](?P<version>[^"']+)["']'''
 
 [tool.hatch.build.targets.wheel]
 packages = [
@@ -107,6 +108,12 @@ include = [
 exclude = [
   "plugin/plugins",
 ]
+
+# pyncm-async 已从 PyPI 下架（连同上游 pyncm 与 GitHub 仓库），改为本地 wheel 安装。
+# music plugin 已对该依赖做了 try/except 防御（main_routers/music_router.py），
+# 但 deps/*.whl 本地存档可保证 uv lock/sync 在无网/CI 环境下仍可复现。
+[tool.uv.sources]
+pyncm-async = { path = "./deps/pyncm_async-1.8.1-py3-none-any.whl" }
 
 [dependency-groups]
 dev = [

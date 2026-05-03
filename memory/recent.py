@@ -663,8 +663,16 @@ class CompressedRecentHistoryManager:
                             content = str(content)
 
                     if role in ['system', 'system_message', name_mapping['system']]:
-                        # 跳过：summary 由 compress 拥有，review 不能改写
-                        continue
+                        # prompt <要点3> 让 LLM 保留+可编辑 memo，过滤掉等于
+                        # 让其在 prompt 里白做工，且 capacity 走过 head SystemMessage
+                        # 后这一格无人填补，导致 memo 在写盘时蒸发（场景 D）。
+                        # 但只在 snapshot 头本来就是 SystemMessage 时接收 LLM
+                        # 的 system 输出——否则 history 还没压缩过、不该有
+                        # SystemMessage，LLM 幻觉吐 system 必须丢，避免把伪
+                        # memo 注入未压缩对话区污染下游。
+                        if snapshot and isinstance(snapshot[0], SystemMessage):
+                            corrected_messages.append(SystemMessage(content=content))
+                        # else: 静默 drop，恢复老行为
                     elif role in ['user', 'human', name_mapping['human']]:
                         corrected_messages.append(HumanMessage(content=content))
                     elif role in ['ai', 'assistant', name_mapping['ai']]:
@@ -672,6 +680,36 @@ class CompressedRecentHistoryManager:
                     else:
                         # 默认作为用户消息处理
                         corrected_messages.append(HumanMessage(content=content))
+
+                # 规范化 SystemMessage 位置：snapshot 头是 memo 时，
+                # corrected_messages 必须以唯一一条 SystemMessage 开头。
+                # 处理三种 LLM 坏输出：
+                # (a) 完全漏返 → 用 snapshot[0] 兜底
+                # (b) 放在中间 → 提到头部
+                # (c) 多吐几条 → 只留首条
+                # 不规范的话头部 memo 边界会被破，下游 prompt 拼装会拿到错位的
+                # system 行（甚至中段 SystemMessage 跟下游 compress 的"alien stop"
+                # 不变量打架）。
+                # 注意：必须 gate 在 corrected_messages 非空——LLM 返空列表是
+                # "整段都删"的语义信号，下面 take_count == 0 那条会按白 review
+                # 处理；这里塞 snapshot[0] 进去会绕过白 review 闸门、把对话区
+                # 全擦掉只剩 memo。
+                if (
+                    corrected_messages
+                    and snapshot
+                    and isinstance(snapshot[0], SystemMessage)
+                ):
+                    sys_msgs = [m for m in corrected_messages if isinstance(m, SystemMessage)]
+                    others = [m for m in corrected_messages if not isinstance(m, SystemMessage)]
+                    if not others:
+                        # LLM 只返 system、没返任何对话 ≡ "整段对话都删"语义信号，
+                        # 跟返空列表等价，应走白 review。重置成空让下面 take_count==0
+                        # 闸门接管；不然 normalize 会塞一条 SystemMessage 进 corrected，
+                        # 长度变 1 绕过闸门，对话区被擦光只剩 memo。
+                        corrected_messages = []
+                    else:
+                        head = sys_msgs[0] if sys_msgs else snapshot[0]
+                        corrected_messages = [head] + others
 
                 # ── Phase C 关键：基于 snapshot 算 capacity 做尾部对齐替换 ──
                 current = await self.aget_recent_history(lanlan_name)

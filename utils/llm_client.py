@@ -330,6 +330,21 @@ class ChatOpenAI:
         # straight through to the SDK call.
         p.update(overrides)
 
+        # Catch prompt-template leaks: literal {placeholder} that should have
+        # been .format()-ed before reaching the wire. See
+        # utils/llm_prompt_leak_check.py for the rationale and severity
+        # contract (raise in tests, warn in prod).
+        try:
+            from utils import llm_prompt_leak_check
+            llm_prompt_leak_check.check_messages_for_leaks(
+                p["messages"], context=f"ChatOpenAI._params model={self.model}"
+            )
+        except AssertionError:
+            raise
+        except Exception:
+            # Detector bugs must never break the LLM call itself.
+            pass
+
         # TEMPORARY: prompt audit log (env NEKO_LLM_PROMPT_AUDIT=1). Remove with
         # utils/llm_prompt_audit.py once budget tuning is done.
         try:
@@ -357,14 +372,20 @@ class ChatOpenAI:
         ``_params()`` so concurrent callers on the same client don't
         clobber each other's budgets. See ``ainvoke_raw`` for details."""
         resp = await self._aclient.chat.completions.create(**self._params(messages, **overrides))
-        content = resp.choices[0].message.content if resp.choices else ""
+        # 防御性读取：部分上游（如 free-agent-model）会返回 choices 非空但
+        # message=None 的合法响应，直接 .message.content 会 NoneType 崩溃。
+        choice = resp.choices[0] if resp.choices else None
+        msg = choice.message if choice else None
+        content = getattr(msg, "content", None)
         usage_dict = resp.usage.model_dump() if resp.usage else {}
         return LLMResponse(content=content or "", response_metadata={"token_usage": usage_dict})
 
     def invoke(self, messages: Any, **overrides: Any) -> LLMResponse:
         """Sync twin of ``ainvoke``. See its docstring for ``overrides``."""
         resp = self._client.chat.completions.create(**self._params(messages, **overrides))
-        content = resp.choices[0].message.content if resp.choices else ""
+        choice = resp.choices[0] if resp.choices else None
+        msg = choice.message if choice else None
+        content = getattr(msg, "content", None)
         usage_dict = resp.usage.model_dump() if resp.usage else {}
         return LLMResponse(content=content or "", response_metadata={"token_usage": usage_dict})
 

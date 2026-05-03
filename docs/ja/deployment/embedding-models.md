@@ -10,10 +10,10 @@ local-text-retrieval-v1
 
 ## 開発環境の準備
 
-オプションの実行時依存関係をインストールします：
+プロジェクト依存関係をインストールします（`onnxruntime` / `tokenizers` / `py-cpuinfo` を含む）：
 
 ```bash
-uv sync --extra embeddings
+uv sync
 ```
 
 モデルファイルを匿名 profile フォルダにダウンロードします。以下の例は Hugging Face の ONNX リポジトリを `data/embedding_models/local-text-retrieval-v1/` にミラーします：

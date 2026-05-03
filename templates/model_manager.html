@@ -664,6 +664,15 @@
                     return vrmManager || mmdManager || null;
                 };
 
+                const isLive2DActive = function() {
+                    const live2dContainer = document.getElementById('live2d-container');
+                    if (!isVisible(live2dContainer)) return false;
+                    if (!window.live2dManager?.currentModel) return false;
+                    const vrmReady = !!window.vrmManager?.currentModel?.vrm;
+                    const mmdReady = !!window.mmdManager?.currentModel?.mesh;
+                    return !vrmReady && !mmdReady;
+                };
+
                 window._profilerUI = new ModelProfilerUI({
                     container: mount,
                     collapsed: true,
@@ -673,6 +682,11 @@
                     getRenderer: function() {
                         var mgr = getActiveManager();
                         return mgr ? mgr.renderer : null;
+                    },
+                    getUnsupportedReason: function() {
+                        return isLive2DActive()
+                            ? { key: 'profiler.placeholder.live2dUnsupported', fallback: 'Live2D 模型暂不支持性能分析' }
+                            : null;
                     }
                 });
                 window._profilerUI.mount();

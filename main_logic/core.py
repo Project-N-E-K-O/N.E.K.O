@@ -38,6 +38,7 @@ from main_logic.tool_calling import (
 )
 from utils.llm_client import AIMessage
 from main_logic.session_state import SessionStateMachine, SessionEvent
+from plugin.core.state import state as _plugin_state
 from utils.preferences import load_global_conversation_settings, aload_global_conversation_settings
 from config import (
     MEMORY_SERVER_PORT,
@@ -67,6 +68,7 @@ from config.prompts_sys import (
 _STATUS_EMOJI = {
     "completed": "✅",
     "partial": "⚠️",
+    "blocked": "⚠️",
     "failed": "❌",
     "cancelled": "🚫",
 }
@@ -183,8 +185,12 @@ from config.prompts_avatar_interaction import (
 # )
 from utils.config_manager import get_config_manager, get_reserved
 from utils.logger_config import get_module_logger
-from utils.api_config_loader import get_free_voices
 from utils.gemini_tts_voices import is_gemini_tts_voice
+from utils.api_config_loader import (
+    get_free_voices,
+    get_livestream_config,
+    is_livestream_active,
+)
 from utils.language_utils import normalize_language_code, get_global_language, get_global_language_full
 import threading
 from threading import Thread
@@ -380,6 +386,11 @@ class LLMSessionManager:
         self._screenshot_future: asyncio.Future | None = None
         self._avatar_position: dict | None = None  # 前端传来的 Avatar 归一化坐标 {centerX, centerY, width, height}
         self.current_speech_id = None
+        self._audio_stream_queue: asyncio.Queue[dict] = asyncio.Queue(maxsize=300)
+        self._audio_stream_worker_task: Optional[asyncio.Task] = None
+        self._audio_stream_dropped_total = 0
+        self._audio_stream_epoch = 0
+        self._last_audio_stream_backlog_log_time = 0.0
         self.emoji_pattern = re.compile(r'[^\w\u4e00-\u9fff\s>][^\w\u4e00-\u9fff\s]{2,}[^\w\u4e00-\u9fff\s<]', flags=re.UNICODE)
         self.emoji_pattern2 = re.compile("["
         u"\U0001F600-\U0001F64F"  # emoticons
@@ -468,6 +479,9 @@ class LLMSessionManager:
         self.session_start_last_failure_time = None
         self.session_start_cooldown_seconds = 3.0  # 冷却时间：3秒
         self.session_start_max_failures = 3  # 最大连续失败次数
+        # 熔断：达到 max_failures 后必须等用户显式触发 start_session（刷新页面/点重试）
+        # 才会清。中间任何内部 recovery 路径都被早退拦截，避免日志被刷屏。
+        self._session_start_circuit_open = False
         self._memory_error_retry_after = 0  # Memory Server 专属冷却时间戳
         self._memory_error_cooldown_seconds = 10  # Memory Server 冷却时间
         
@@ -562,6 +576,76 @@ class LLMSessionManager:
         self._bg_tasks.add(task)
         task.add_done_callback(self._bg_tasks.discard)
         return task
+
+    def _ensure_audio_stream_worker(self):
+        if self._audio_stream_worker_task and not self._audio_stream_worker_task.done():
+            return
+        self._audio_stream_worker_task = self._fire_task(self._audio_stream_worker_loop())
+
+    def _clear_audio_stream_queue(self, reason: str):
+        dropped = 0
+        while True:
+            try:
+                self._audio_stream_queue.get_nowait()
+                self._audio_stream_queue.task_done()
+                dropped += 1
+            except asyncio.QueueEmpty:
+                break
+        if dropped:
+            self._audio_stream_dropped_total += dropped
+            logger.info(
+                "[%s] audio stream queue cleared reason=%s dropped=%d total_dropped=%d",
+                self.lanlan_name, reason, dropped, self._audio_stream_dropped_total,
+            )
+
+    def _cancel_audio_stream_worker(self, reason: str):
+        task = self._audio_stream_worker_task
+        if not task:
+            return
+        if task.done():
+            self._audio_stream_worker_task = None
+            return
+        if task is asyncio.current_task():
+            return
+        task.cancel()
+        self._audio_stream_worker_task = None
+        logger.debug("[%s] audio stream worker cancelled reason=%s", self.lanlan_name, reason)
+
+    async def _enqueue_audio_stream_data(self, message: dict):
+        self._ensure_audio_stream_worker()
+        if self._audio_stream_queue.full():
+            try:
+                self._audio_stream_queue.get_nowait()
+                self._audio_stream_queue.task_done()
+                self._audio_stream_dropped_total += 1
+            except asyncio.QueueEmpty:
+                pass
+        await self._audio_stream_queue.put(message)
+        qsize = self._audio_stream_queue.qsize()
+        now = time.time()
+        if qsize >= 250 and now - self._last_audio_stream_backlog_log_time >= 2.0:
+            self._last_audio_stream_backlog_log_time = now
+            logger.warning(
+                "[%s] audio stream queue backlog qsize=%d max=%d total_dropped=%d",
+                self.lanlan_name,
+                qsize,
+                self._audio_stream_queue.maxsize,
+                self._audio_stream_dropped_total,
+            )
+
+    async def _audio_stream_worker_loop(self):
+        while True:
+            while not self.session_ready and self._starting_session_count > 0:
+                await asyncio.sleep(0.02)
+            message = await self._audio_stream_queue.get()
+            try:
+                await self._stream_data_now(message)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.error("[%s] audio stream worker error: %s", self.lanlan_name, exc)
+            finally:
+                self._audio_stream_queue.task_done()
 
     def _emit_cooldown_turn_end_if_needed(self):
         """冷却期间去重发送 turn_end，每秒最多一次。返回 True 表示当前处于冷却中。"""
@@ -1179,6 +1263,46 @@ class LLMSessionManager:
             else:
                 pass  # websocket未连接时忽略
 
+    def _publish_user_utterance_to_plugin_bus(
+        self, text: Optional[str], *, is_voice_source: bool
+    ) -> None:
+        """把一条用户原话推到插件总线的 user-context bucket。
+
+        Plugin 端通过 ``ctx.bus.memory.get(bucket_id=...)`` 读取。会同时写入
+        两个 bucket：``"default"``（与 protocols.py 文档示例一致，全局可读）
+        和 ``self.lanlan_name``（按角色作用域），但若两者撞名则只写一次，
+        避免同一条原话被重复消费。
+
+        Why: 在此之前 ``state.add_user_context_event`` 整条链路是 dead
+        infrastructure —— 服务端、handler、plugin SDK 全都齐全，但没人写入，
+        plugin 永远读到空。这里是用户原话进入系统的第一道关口（语音转录 +
+        文本输入），从这里发布最贴合"用户原话"的语义。
+        """
+        if not isinstance(text, str):
+            return
+        cleaned = text.strip()
+        if not cleaned:
+            return
+        event = {
+            "type": "user_message",
+            "content": cleaned,
+            "lanlan": self.lanlan_name,
+            "is_voice": bool(is_voice_source),
+            "source": "main_logic.core",
+        }
+        # dict.fromkeys 保留顺序的同时去重：lanlan_name == "default" 或为空
+        # 时不会重复写入 default bucket。
+        for bucket in dict.fromkeys(("default", self.lanlan_name)):
+            if not isinstance(bucket, str) or not bucket:
+                continue
+            try:
+                _plugin_state.add_user_context_event(bucket, event)
+            except Exception as exc:
+                logger.warning(
+                    "[%s] publish_user_utterance failed (bucket=%s): %s",
+                    self.lanlan_name, bucket, exc,
+                )
+
     async def handle_input_transcript(self, transcript: str, *, is_voice_source: bool = True):
         """输入转录回调：同步转录文本到消息队列和缓存，并发送到前端显示
 
@@ -1205,6 +1329,11 @@ class LLMSessionManager:
             if transcript.strip():
                 self._activity_tracker.on_user_message(text=transcript)
                 self._session_turn_count += 1
+                # 与 on_user_message 对偶：把"用户原话"推到插件总线 user-context
+                # bucket。文本路径在 _process_stream_data_internal 已自行调用，
+                # 这里只覆盖语音路径，避免 openclaw handoff（is_voice_source=False）
+                # 重复发布。
+                self._publish_user_utterance_to_plugin_bus(transcript, is_voice_source=True)
         else:
             # Non-voice reuse of this method (e.g. openclaw text handoff).
             # Skip activity-tracker hooks entirely — the text-mode entry
@@ -1932,7 +2061,10 @@ class LLMSessionManager:
                     try:
                         # 重新调用stream_data处理缓存的数据
                         # 注意：这里直接处理，不再缓存（因为session_ready已设为True）
-                        await self._process_stream_data_internal(message)
+                        if message.get("input_type") == "audio":
+                            await self._enqueue_audio_stream_data(message)
+                        else:
+                            await self._process_stream_data_internal(message)
                     except Exception as e:
                         logger.error(f"💥 发送缓存的输入数据失败: {e}")
                         break
@@ -2033,6 +2165,31 @@ class LLMSessionManager:
             legacy_keys=('voice_id',),
         )
 
+    def _is_livestream_active(self) -> bool:
+        """Livestream 是 core_api_type='free' 之上的子模式，二者必须同时成立。"""
+        return self.core_api_type == 'free' and is_livestream_active()
+
+    def _resolve_realtime_free_voice(self, realtime_config: dict):
+        """决定 OmniRealtimeClient free 路传给 server 的 voice。
+
+        优先级：
+        1. livestream 子模式启用且配置了 voice_id → 用 livestream voice_id
+           （绕过 free_voices preset gate，base_url 已被派生不含 lanlan.tech）
+        2. 否则保留原逻辑：仅在角色 voice 是 free preset、core_api_type='free'
+           且 base_url 仍指向 lanlan.tech 域时下发，避免把 preset id 透给非
+           lanlan 服务（lanlan.app 的屏蔽由 _should_block_free_preset_voice 兜底）
+        """
+        if self._is_livestream_active():
+            ls_voice = get_livestream_config().get('voice_id', '')
+            if ls_voice:
+                return ls_voice
+        base_url = realtime_config.get('base_url', '') or ''
+        if (self._is_free_preset_voice
+                and self.core_api_type == 'free'
+                and 'lanlan.tech' in base_url):
+            return self.voice_id
+        return None
+
     def _enqueue_voice_migration_notice(self, legacy_names: list) -> None:
         """将语音迁移通知推入缓冲池，委托模块级函数统一去重。"""
         enqueue_voice_migration_notice(legacy_names)
@@ -2081,9 +2238,13 @@ class LLMSessionManager:
             logger.exception(f"💥 {error_message} (失败次数: {self.session_start_failure_count})")
 
             if self.session_start_failure_count >= self.session_start_max_failures:
-                critical_message = f"⛔ Session启动连续失败{self.session_start_failure_count}次，已停止自动重试。请检查网络连接和API配置，然后刷新页面重试。"
-                logger.critical(critical_message)
-                await self.send_status(json.dumps({"code": "SESSION_START_CRITICAL", "details": {"count": self.session_start_failure_count}}))
+                # 仅在熔断"刚跳闸"时打 CRITICAL + 推 status；之后的失败由
+                # start_session 早退拦截（理论上不会再走到这里），CRITICAL 只发一次。
+                if not self._session_start_circuit_open:
+                    self._session_start_circuit_open = True
+                    critical_message = f"⛔ Session启动连续失败{self.session_start_failure_count}次，已停止自动重试。请检查网络连接和API配置，然后刷新页面重试。"
+                    logger.critical(critical_message)
+                    await self.send_status(json.dumps({"code": "SESSION_START_CRITICAL", "details": {"count": self.session_start_failure_count}}))
             else:
                 await self.send_status(json.dumps({"code": "SESSION_START_FAILED", "details": {"error": str(e), "count": self.session_start_failure_count}}))
 
@@ -2117,12 +2278,34 @@ class LLMSessionManager:
         """
         return self._starting_session_count > 0
 
+    def reset_session_start_circuit(self) -> None:
+        """清掉熔断 + 失败计数 + memory 冷却。仅供 websocket_router 在收到用户
+        显式 start_session action 时调用——这等价于"用户看到 CRITICAL 后选择重试，
+        且声明已经修好了配置"。所以顺手把 _memory_error_retry_after 一起清掉，
+        否则用户启动了 memory server 后还得多等 10 秒。
+        内部 recovery 路径绝对不要调，否则熔断就形同虚设。"""
+        if (self._session_start_circuit_open
+                or self.session_start_failure_count
+                or self._memory_error_retry_after):
+            logger.info(f"🔄 重置 session 启动熔断 (之前失败 {self.session_start_failure_count} 次)")
+        self._session_start_circuit_open = False
+        self.session_start_failure_count = 0
+        self.session_start_last_failure_time = None
+        self._memory_error_retry_after = 0
+
     async def start_session(self, websocket: WebSocket, new=False, input_mode='audio'):
         # 每次 start_session 都重新获取全局语言，确保 Steam/系统语言变更能即时生效
         self.user_language = normalize_language_code(get_global_language(), format='short')
         # 重置防刷屏标志
         self.session_closed_by_server = False
         self.last_audio_send_error_time = 0.0
+        # 熔断早退：达到失败上限后，所有内部 recovery 路径在此返回，
+        # 避免 stream_data / _process_stream_data_internal 每个音频包都触发
+        # 一次连接尝试导致日志被刷屏。用户显式 retry（websocket_router 的
+        # start_session action）会在那边先调 reset_session_start_circuit() 清掉。
+        if self._session_start_circuit_open:
+            logger.debug("Session启动熔断已跳闸，忽略本次启动请求（等用户刷新/重试）")
+            return
         # 检查是否正在启动中
         if self._starting_session_count > 0:
             logger.warning("⚠️ Session正在启动中，忽略重复请求")
@@ -2468,8 +2651,7 @@ class LLMSessionManager:
                         base_url=realtime_config.get('base_url', ''),
                         api_key=realtime_config['api_key'],
                         model=realtime_config['model'],
-                        voice=self.voice_id if self._is_free_preset_voice and self.core_api_type == 'free'
-                            and 'lanlan.tech' in realtime_config.get('base_url', '') else None,
+                        voice=self._resolve_realtime_free_voice(realtime_config),
                         on_text_delta=self.handle_text_data,
                         on_audio_delta=self.handle_audio_data,
                         on_new_message=self.handle_new_message,
@@ -2483,6 +2665,7 @@ class LLMSessionManager:
                         api_type=self.core_api_type,
                         on_tool_call=self._on_tool_call,
                         tool_definitions=_initial_tool_defs,
+                        livestream_mode=self._is_livestream_active(),
                     )
                     # Apply user's noise reduction preference to the AudioProcessor
                     nr_enabled = (await aload_global_conversation_settings()).get('noiseReductionEnabled', True)
@@ -2596,10 +2779,11 @@ class LLMSessionManager:
                 # 启动消息处理任务
                 self.message_handler_task = asyncio.create_task(self.session.handle_messages())
                 
-                # 启动成功，重置失败计数器
+                # 启动成功，重置失败计数器和熔断
                 self.session_start_failure_count = 0
                 self.session_start_last_failure_time = None
                 self._memory_error_retry_after = 0
+                self._session_start_circuit_open = False
 
                 logger.info(f"[语音会话诊断] 即将通知前端 session_started (start_session 总耗时: {time.time() - _diag_start:.2f}秒)")
                 # 通知前端 session 已成功启动
@@ -2882,8 +3066,7 @@ class LLMSessionManager:
                     base_url=realtime_config.get('base_url', ''),
                     api_key=realtime_config['api_key'],
                     model=realtime_config['model'],
-                    voice=self.voice_id if self._is_free_preset_voice and self.core_api_type == 'free'
-                        and 'lanlan.tech' in realtime_config.get('base_url', '') else None,
+                    voice=self._resolve_realtime_free_voice(realtime_config),
                     on_text_delta=self.handle_text_data,
                     on_audio_delta=self.handle_audio_data,
                     on_new_message=self.handle_new_message,
@@ -2897,6 +3080,7 @@ class LLMSessionManager:
                     api_type=self.core_api_type,
                     on_tool_call=self._on_tool_call,
                     tool_definitions=_pending_tool_defs,
+                    livestream_mode=self._is_livestream_active(),
                 )
                 # Apply user's noise reduction preference to the AudioProcessor
                 nr_enabled = (await aload_global_conversation_settings()).get('noiseReductionEnabled', True)
@@ -4118,6 +4302,12 @@ class LLMSessionManager:
         await self.cleanup(expected_session=expected_session)
     
     async def stream_data(self, message: dict):  # 向Core API发送Media数据
+        if message.get("input_type") == "audio":
+            await self._enqueue_audio_stream_data(message)
+            return
+        await self._stream_data_now(message)
+
+    async def _stream_data_now(self, message: dict):
         input_type = message.get("input_type")
         
         # 检查session是否就绪
@@ -4125,6 +4315,8 @@ class LLMSessionManager:
             if not self.session_ready:
                 # 检查是否正在启动session - 只有在启动过程中才缓存
                 if self._starting_session_count > 0:
+                    if input_type == "audio":
+                        return
                     # Session正在启动中，缓存输入数据
                     self.pending_input_data.append(message)
                     if len(self.pending_input_data) == 1:
@@ -4139,11 +4331,15 @@ class LLMSessionManager:
                 # Memory Server 专属冷却检查
                 if self._emit_cooldown_turn_end_if_needed():
                     return
+                # 熔断早退：start_session 内部也会拦，但这里再加一层省掉
+                # 每个音频包的"自动创建 session" info 日志，避免日志洪水。
+                if self._session_start_circuit_open:
+                    return
                 logger.info(f"Session未就绪且不存在，根据输入类型 {input_type} 自动创建 session")
                 # 根据输入类型确定模式
                 mode = 'text' if input_type == 'text' else 'audio'
                 await self.start_session(self.websocket, new=False, input_mode=mode)
-                
+
                 # 检查启动是否成功
                 if not self.session or not self.is_active:
                     logger.warning("⚠️ Session启动失败，放弃本次数据流")
@@ -4173,19 +4369,11 @@ class LLMSessionManager:
             # Memory Server 专属冷却检查
             if self._emit_cooldown_turn_end_if_needed():
                 return
-            # 检查失败计数器和冷却时间
-            if self.session_start_failure_count >= self.session_start_max_failures:
-                # 达到最大失败次数，检查是否已过冷却期
-                if self.session_start_last_failure_time:
-                    time_since_last_failure = (datetime.now() - self.session_start_last_failure_time).total_seconds()
-                    if time_since_last_failure < self.session_start_cooldown_seconds:
-                        # 仍在冷却期内，不重试
-                        logger.warning(f"Session启动失败过多，冷却中... (剩余 {self.session_start_cooldown_seconds - time_since_last_failure:.1f}秒)")
-                        return
-                    else:
-                        self.session_start_failure_count = 0
-                        self.session_start_last_failure_time = None
-            
+            # 失败上限保护：start_session 内部熔断会早退，这里再加一层是为了
+            # 不让 stream 路径每个包都打"Session 不存在"info 日志，省日志开销。
+            if self._session_start_circuit_open:
+                return
+
             logger.info(f"Session 不存在或未激活，根据输入类型 {input_type} 自动创建 session")
             # 检查WebSocket状态
             ws_exists = self.websocket is not None
@@ -4268,6 +4456,14 @@ class LLMSessionManager:
                     # main_routers/system_router.py），那不算用户活动。
                     # text 进 buffer 给 emotion-tier 用。
                     self._activity_tracker.on_user_message(text=data if isinstance(data, str) else None)
+                    # 与 on_user_message 对偶：把"用户原话"推到插件总线 user-context
+                    # bucket。语音路径在 handle_input_transcript 里发布，这里只覆盖
+                    # 文本路径，避免 openclaw handoff（会再走一次 handle_input_transcript
+                    # 但 is_voice_source=False，不会重复发布）。
+                    self._publish_user_utterance_to_plugin_bus(
+                        data if isinstance(data, str) else None,
+                        is_voice_source=False,
+                    )
 
                     should_handoff, openclaw_messages = await self._should_handoff_text_to_openclaw(data)
                     if should_handoff:
@@ -4327,7 +4523,9 @@ class LLMSessionManager:
                         return
                 
                 # 检查WebSocket连接
-                if not hasattr(self.session, 'ws') or not self.session.ws:
+                session_ref = self.session
+                audio_epoch = self._audio_stream_epoch
+                if not hasattr(session_ref, 'ws') or not session_ref.ws:
                     logger.error("💥 Stream: Session websocket not available")
                     return
                 try:
@@ -4340,16 +4538,16 @@ class LLMSessionManager:
                         is_48khz = (num_samples == 480)
                         
                         processed_audio = audio_bytes  # 默认使用原始音频
-                        if is_48khz and isinstance(self.session, OmniRealtimeClient):
+                        if is_48khz and isinstance(session_ref, OmniRealtimeClient):
                             # 使用session的AudioProcessor处理音频
-                            if hasattr(self.session, '_audio_processor') and self.session._audio_processor:
+                            if hasattr(session_ref, '_audio_processor') and session_ref._audio_processor:
                                 try:
                                     # Use async wrapper to avoid blocking main loop
-                                    if hasattr(self.session, 'process_audio_chunk_async'):
-                                        processed_audio = await self.session.process_audio_chunk_async(audio_bytes)
+                                    if hasattr(session_ref, 'process_audio_chunk_async'):
+                                        processed_audio = await session_ref.process_audio_chunk_async(audio_bytes)
                                     else:
                                         # Fallback (should not happen if client updated)
-                                        processed_audio = self.session._audio_processor.process_chunk(audio_bytes)
+                                        processed_audio = session_ref._audio_processor.process_chunk(audio_bytes)
                                         
                                     # RNNoise可能返回空字节（缓冲中），跳过
                                     if len(processed_audio) == 0:
@@ -4357,6 +4555,12 @@ class LLMSessionManager:
                                 except Exception as e:
                                     logger.error(f"💥 音频预处理失败: {e}")
                                     return
+                        if (
+                            self.session is not session_ref
+                            or not self.is_active
+                            or self._audio_stream_epoch != audio_epoch
+                        ):
+                            return
                         
                         # 热切换期间或推送缓存期间，缓存处理后的音频（16kHz，已降噪）
                         if self.is_hot_swap_imminent or self.is_flushing_hot_swap_cache:
@@ -4371,7 +4575,7 @@ class LLMSessionManager:
                             return  # 静默拒绝，不记录log
                         
                         # 再次检查session状态（防止在处理过程中session被关闭）
-                        if not self.session or not hasattr(self.session, 'ws') or not self.session.ws:
+                        if not session_ref or not hasattr(session_ref, 'ws') or not session_ref.ws:
                             # 限流log：2秒内只记录一次
                             current_time = asyncio.get_event_loop().time()
                             if current_time - self.last_audio_send_error_time > self.audio_error_log_interval:
@@ -4380,7 +4584,7 @@ class LLMSessionManager:
                             return
                         
                         # 检查致命错误状态
-                        if hasattr(self.session, '_fatal_error_occurred') and self.session._fatal_error_occurred:
+                        if hasattr(session_ref, '_fatal_error_occurred') and session_ref._fatal_error_occurred:
                             current_time = asyncio.get_event_loop().time()
                             if current_time - self.last_audio_send_error_time > self.audio_error_log_interval:
                                 logger.warning("⚠️ Session已发生致命错误，跳过音频数据发送")
@@ -4388,7 +4592,7 @@ class LLMSessionManager:
                             return
                         
                         # 发送音频到session（stream_audio会检测是否48kHz，16kHz不会再处理）
-                        await self.session.stream_audio(processed_audio)
+                        await session_ref.stream_audio(processed_audio)
                     else:
                         logger.error(f"💥 Stream: Invalid audio data type: {type(data)}")
                         return
@@ -4492,6 +4696,9 @@ class LLMSessionManager:
                 # 即使会话未完全激活（如 start_session 失败），也要清理
                 # 可能残留的 TTS 重试状态，防止污染下一次会话
                 self._reset_tts_retry_state()
+                self._audio_stream_epoch += 1
+                self._clear_audio_stream_queue("end_session_inactive")
+                self._cancel_audio_stream_worker("end_session_inactive")
                 _inactive_early = True
                 # start_tts_if_needed 可能已启动 TTS 线程/handler，
                 # 但 is_active 尚未置 True 就失败了——快照引用以便释放锁后清理
@@ -4520,6 +4727,9 @@ class LLMSessionManager:
         async with self.lock:
             # Re-check after await: another task may have deactivated or swapped session.
             if not self.is_active:
+                self._audio_stream_epoch += 1
+                self._clear_audio_stream_queue("end_session_post_init_inactive")
+                self._cancel_audio_stream_worker("end_session_post_init_inactive")
                 return
             if expected_session is not None and expected_session is not self.session:
                 logger.info("⏭️ end_session: expected_session stale (post-init), skipping")
@@ -4533,6 +4743,9 @@ class LLMSessionManager:
             # 会穿过，产生孤儿 OmniRealtimeClient（silence_check_task/ws 泄漏）。
             if reset_starting_count:
                 self._starting_session_count = 0
+            self._audio_stream_epoch += 1
+            self._clear_audio_stream_queue("end_session")
+            self._cancel_audio_stream_worker("end_session")
 
             # Activity tracker：session 关闭，voice_engaged 不再可能触发。
             self._activity_tracker.on_voice_mode(False)

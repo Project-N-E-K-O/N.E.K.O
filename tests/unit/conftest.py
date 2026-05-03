@@ -17,16 +17,26 @@ because the same leak pattern exists in every cloudsave/character test.
 """
 from __future__ import annotations
 
+import sys
+
 import pytest
 
 
 @pytest.fixture(autouse=True)
 def _reset_shared_state():
-    from main_routers import shared_state
+    shared_state = sys.modules.get("main_routers.shared_state")
+    had_shared_state = shared_state is not None
+    snapshot = dict(shared_state._state) if had_shared_state else {}
 
-    snapshot = dict(shared_state._state)
     try:
         yield
     finally:
+        shared_state = sys.modules.get("main_routers.shared_state")
+        if shared_state is None:
+            return
+        if not had_shared_state:
+            shared_state._state.clear()
+            return
+
         shared_state._state.clear()
         shared_state._state.update(snapshot)

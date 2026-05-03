@@ -32,6 +32,9 @@ const DEFAULT_PASSIVE_RESISTANCE_DISTANCE = 10
 const DEFAULT_PASSIVE_RESISTANCE_SPEED_THRESHOLD = 0.2
 const DEFAULT_PASSIVE_RESISTANCE_INTERVAL_MS = 140
 const DEFAULT_RESISTANCE_CURSOR_REVEAL_MS = 3000
+const DEFAULT_USER_CURSOR_REVEAL_DISTANCE = 14
+const DEFAULT_USER_CURSOR_REVEAL_INTERVAL_MS = 160
+const DEFAULT_USER_CURSOR_REVEAL_MOVES = 2
 const DEFAULT_CURSOR_CLICK_VISIBLE_MS = 420
 const CURSOR_CLICK_STAR_COUNT = 7
 const CURSOR_CLICK_STAR_LIFETIME_MS = 760
@@ -822,6 +825,44 @@ function injectStyle() {
       cursor: auto !important;
     }
 
+    html.yui-taking-over.yui-user-cursor-revealed,
+    html.yui-taking-over.yui-user-cursor-revealed *,
+    body.yui-taking-over.yui-user-cursor-revealed,
+    body.yui-taking-over.yui-user-cursor-revealed * {
+      cursor: auto !important;
+    }
+
+    html.yui-taking-over.yui-resistance-cursor-reveal #${ROOT_ID},
+    html.yui-taking-over.yui-resistance-cursor-reveal #${ROOT_ID} .yui-guide-plugin-backdrop,
+    html.yui-taking-over.yui-resistance-cursor-reveal #${ROOT_ID} .yui-guide-plugin-backdrop *,
+    html.yui-taking-over.yui-resistance-cursor-reveal #${ROOT_ID} .yui-guide-plugin-interaction-shield,
+    html.yui-taking-over.yui-resistance-cursor-reveal #${ROOT_ID} .yui-guide-plugin-spotlight,
+    html.yui-taking-over.yui-resistance-cursor-reveal #${ROOT_ID} .yui-guide-plugin-cursor-shell,
+    html.yui-taking-over.yui-resistance-cursor-reveal #${ROOT_ID} .yui-guide-plugin-cursor,
+    body.yui-taking-over.yui-resistance-cursor-reveal #${ROOT_ID},
+    body.yui-taking-over.yui-resistance-cursor-reveal #${ROOT_ID} .yui-guide-plugin-backdrop,
+    body.yui-taking-over.yui-resistance-cursor-reveal #${ROOT_ID} .yui-guide-plugin-backdrop *,
+    body.yui-taking-over.yui-resistance-cursor-reveal #${ROOT_ID} .yui-guide-plugin-interaction-shield,
+    body.yui-taking-over.yui-resistance-cursor-reveal #${ROOT_ID} .yui-guide-plugin-spotlight,
+    body.yui-taking-over.yui-resistance-cursor-reveal #${ROOT_ID} .yui-guide-plugin-cursor-shell,
+    body.yui-taking-over.yui-resistance-cursor-reveal #${ROOT_ID} .yui-guide-plugin-cursor,
+    html.yui-taking-over.yui-user-cursor-revealed #${ROOT_ID},
+    html.yui-taking-over.yui-user-cursor-revealed #${ROOT_ID} .yui-guide-plugin-backdrop,
+    html.yui-taking-over.yui-user-cursor-revealed #${ROOT_ID} .yui-guide-plugin-backdrop *,
+    html.yui-taking-over.yui-user-cursor-revealed #${ROOT_ID} .yui-guide-plugin-interaction-shield,
+    html.yui-taking-over.yui-user-cursor-revealed #${ROOT_ID} .yui-guide-plugin-spotlight,
+    html.yui-taking-over.yui-user-cursor-revealed #${ROOT_ID} .yui-guide-plugin-cursor-shell,
+    html.yui-taking-over.yui-user-cursor-revealed #${ROOT_ID} .yui-guide-plugin-cursor,
+    body.yui-taking-over.yui-user-cursor-revealed #${ROOT_ID},
+    body.yui-taking-over.yui-user-cursor-revealed #${ROOT_ID} .yui-guide-plugin-backdrop,
+    body.yui-taking-over.yui-user-cursor-revealed #${ROOT_ID} .yui-guide-plugin-backdrop *,
+    body.yui-taking-over.yui-user-cursor-revealed #${ROOT_ID} .yui-guide-plugin-interaction-shield,
+    body.yui-taking-over.yui-user-cursor-revealed #${ROOT_ID} .yui-guide-plugin-spotlight,
+    body.yui-taking-over.yui-user-cursor-revealed #${ROOT_ID} .yui-guide-plugin-cursor-shell,
+    body.yui-taking-over.yui-user-cursor-revealed #${ROOT_ID} .yui-guide-plugin-cursor {
+      cursor: auto !important;
+    }
+
     html.yui-guide-plugin-dashboard-running button,
     html.yui-guide-plugin-dashboard-running a[href],
     html.yui-guide-plugin-dashboard-running input,
@@ -1308,6 +1349,7 @@ class PluginDashboardGuideRuntime {
   interruptsEnabled = false
   scenePausedForResistance = false
   homeNarrationFinished = false
+  homeNarrationOwnedByOpener = false
   angryExitTriggered = false
   interruptCount = 0
   interruptAccelerationStreak = 0
@@ -1317,6 +1359,9 @@ class PluginDashboardGuideRuntime {
   scriptedMotionInterruptDistance = 0
   scriptedMotionInterruptWindowStartedAt = 0
   resistanceCursorTimer: number | null = null
+  userCursorRevealMoveCount = 0
+  userCursorRevealed = false
+  lastUserCursorRevealMoveAt = 0
   cursorClickTimer: number | null = null
   activeClickStars: Set<{ element: HTMLSpanElement; timer: number }> = new Set()
   activeTrailParticles: Set<{ element: HTMLSpanElement; timer: number }> = new Set()
@@ -1343,6 +1388,7 @@ class PluginDashboardGuideRuntime {
   lastForwardedSkipAt = 0
   lastForwardedSkipScreenX = NaN
   lastForwardedSkipScreenY = NaN
+  spotlightRefreshRaf: number | null = null
   boundPointerMoveHandler = (event: PointerEvent | MouseEvent) => {
     this.handleInterrupt(event)
   }
@@ -1385,6 +1431,15 @@ class PluginDashboardGuideRuntime {
       return
     }
     this.setSpotlight(this.spotlightElement)
+  }
+  boundScheduleSpotlightRefresh = () => {
+    if (this.spotlightRefreshRaf !== null) {
+      return
+    }
+    this.spotlightRefreshRaf = window.requestAnimationFrame(() => {
+      this.spotlightRefreshRaf = null
+      this.boundRefreshSpotlight()
+    })
   }
 
   isCurrentRun(sessionId: string) {
@@ -2762,6 +2817,7 @@ class PluginDashboardGuideRuntime {
     }
 
     this.homeNarrationFinished = true
+    this.homeNarrationOwnedByOpener = false
     const resolvers = this.homeNarrationResolvers.slice()
     this.homeNarrationResolvers = []
     resolvers.forEach((resolve) => {
@@ -3095,7 +3151,12 @@ class PluginDashboardGuideRuntime {
     const acceleration = (speed - previousSpeed) / dt
 
     this.lastPointerPoint = { x, y, t: now, speed }
+    this.noteUserCursorRevealAttempt(distance, now)
     this.maybePlayPassiveResistance(x, y, distance, speed, now)
+
+    if (this.homeNarrationOwnedByOpener && !this.homeNarrationFinished) {
+      return
+    }
 
     const isScriptedMotionInterrupt = this.cursorTransitionActive
     let effectiveDistance = distance
@@ -3151,7 +3212,58 @@ class PluginDashboardGuideRuntime {
     void this.playLightResistance(x, y)
   }
 
+  noteUserCursorRevealAttempt(distance: number, now: number) {
+    if (
+      this.userCursorRevealed
+      || !Number.isFinite(distance)
+      || distance < DEFAULT_USER_CURSOR_REVEAL_DISTANCE
+      || !document.body.classList.contains('yui-taking-over')
+    ) {
+      return
+    }
+
+    if ((now - this.lastUserCursorRevealMoveAt) < DEFAULT_USER_CURSOR_REVEAL_INTERVAL_MS) {
+      return
+    }
+
+    this.lastUserCursorRevealMoveAt = now
+    this.userCursorRevealMoveCount += 1
+    if (this.userCursorRevealMoveCount >= DEFAULT_USER_CURSOR_REVEAL_MOVES) {
+      this.revealUserCursor()
+    }
+  }
+
+  revealUserCursor() {
+    if (this.resistanceCursorTimer !== null) {
+      window.clearTimeout(this.resistanceCursorTimer)
+      this.resistanceCursorTimer = null
+    }
+    this.userCursorRevealed = true
+    document.documentElement.classList.add('yui-user-cursor-revealed')
+    document.body.classList.add('yui-user-cursor-revealed')
+    document.documentElement.classList.add('yui-resistance-cursor-reveal')
+    document.body.classList.add('yui-resistance-cursor-reveal')
+  }
+
+  clearUserCursorReveal() {
+    if (this.resistanceCursorTimer !== null) {
+      window.clearTimeout(this.resistanceCursorTimer)
+      this.resistanceCursorTimer = null
+    }
+    this.userCursorRevealed = false
+    this.userCursorRevealMoveCount = 0
+    this.lastUserCursorRevealMoveAt = 0
+    document.documentElement.classList.remove('yui-user-cursor-revealed')
+    document.documentElement.classList.remove('yui-resistance-cursor-reveal')
+    document.body.classList.remove('yui-user-cursor-revealed')
+    document.body.classList.remove('yui-resistance-cursor-reveal')
+  }
+
   revealRealCursorTemporarily() {
+    if (this.userCursorRevealed) {
+      this.revealUserCursor()
+      return
+    }
     if (this.resistanceCursorTimer !== null) {
       window.clearTimeout(this.resistanceCursorTimer)
     }
@@ -3159,8 +3271,10 @@ class PluginDashboardGuideRuntime {
     document.body.classList.add('yui-resistance-cursor-reveal')
     this.resistanceCursorTimer = window.setTimeout(() => {
       this.resistanceCursorTimer = null
-      document.documentElement.classList.remove('yui-resistance-cursor-reveal')
-      document.body.classList.remove('yui-resistance-cursor-reveal')
+      if (!this.userCursorRevealed) {
+        document.documentElement.classList.remove('yui-resistance-cursor-reveal')
+        document.body.classList.remove('yui-resistance-cursor-reveal')
+      }
     }, DEFAULT_RESISTANCE_CURSOR_REVEAL_MS)
   }
 
@@ -3281,9 +3395,11 @@ class PluginDashboardGuideRuntime {
     document.documentElement.removeAttribute('data-yui-guide-spotlight-padding')
     document.documentElement.classList.remove('yui-taking-over')
     document.documentElement.classList.remove('yui-resistance-cursor-reveal')
+    document.documentElement.classList.remove('yui-user-cursor-revealed')
     document.body.classList.remove('yui-guide-plugin-dashboard-running')
     document.body.classList.remove('yui-taking-over')
     document.body.classList.remove('yui-resistance-cursor-reveal')
+    document.body.classList.remove('yui-user-cursor-revealed')
     document
       .querySelector('[data-yui-guide-id="plugin-main"]')
       ?.removeAttribute('data-yui-guide-spotlight-padding')
@@ -3305,13 +3421,20 @@ class PluginDashboardGuideRuntime {
       window.clearTimeout(this.resistanceCursorTimer)
       this.resistanceCursorTimer = null
     }
+    this.userCursorRevealed = false
+    this.userCursorRevealMoveCount = 0
+    this.lastUserCursorRevealMoveAt = 0
     this.resetCursorVisualState()
     this.clearPendingInterruptAck(false)
     this.lastForwardedSkipAt = 0
     this.lastForwardedSkipScreenX = NaN
     this.lastForwardedSkipScreenY = NaN
-    window.removeEventListener('resize', this.boundRefreshSpotlight, true)
-    window.removeEventListener('scroll', this.boundRefreshSpotlight, true)
+    if (this.spotlightRefreshRaf !== null) {
+      window.cancelAnimationFrame(this.spotlightRefreshRaf)
+      this.spotlightRefreshRaf = null
+    }
+    window.removeEventListener('resize', this.boundScheduleSpotlightRefresh, true)
+    window.removeEventListener('scroll', this.boundScheduleSpotlightRefresh, true)
     window.removeEventListener('pointermove', this.boundPointerMoveHandler, true)
     window.removeEventListener('pointerdown', this.boundPointerDownHandler, true)
     document.removeEventListener('pointerdown', this.boundInteractionGuard, true)
@@ -3359,6 +3482,7 @@ class PluginDashboardGuideRuntime {
     this.interruptsEnabled = false
     this.scenePausedForResistance = false
     this.homeNarrationFinished = false
+    this.homeNarrationOwnedByOpener = false
     this.angryExitTriggered = false
     this.interruptCount = 0
     this.interruptAccelerationStreak = 0
@@ -3410,10 +3534,11 @@ class PluginDashboardGuideRuntime {
         }
       : null
     this.homeNarrationFinished = false
+    this.homeNarrationOwnedByOpener = false
     const isCurrent = () => this.isCurrentRun(sessionId)
     this.activateOverlayShell()
-    window.addEventListener('resize', this.boundRefreshSpotlight, true)
-    window.addEventListener('scroll', this.boundRefreshSpotlight, true)
+    window.addEventListener('resize', this.boundScheduleSpotlightRefresh, true)
+    window.addEventListener('scroll', this.boundScheduleSpotlightRefresh, true)
     // 用 pointer 事件而非 mouse 事件采样：interactionGuard 把 touchstart/move/end 都拦掉了，
     // 单挂 mousemove/mousedown 会让触屏设备永远攒不到 interruptCount，被脚本接管到结束。
     // pointer 事件统一覆盖鼠标和触屏，capture 阶段先于 document 上的 interactionGuard 执行。
@@ -3493,18 +3618,11 @@ class PluginDashboardGuideRuntime {
       ? Math.max(0, Date.now() - Math.round(payload.narrationStartedAtMs as number))
       : 0
     const budgetMs = Math.max(0, totalNarrationDurationMs - elapsedBeforeMotionMs)
-    const homeNarrationAlreadyRunning = Number.isFinite(payload.narrationStartedAtMs)
-    const speechPromise = homeNarrationAlreadyRunning
-      ? wait(budgetMs)
-      : this.startNarration(payload.line || '', {
-        voiceKey: payload.voiceKey,
-        audioUrl: payload.audioUrl,
-      })
-    if (!homeNarrationAlreadyRunning) {
-      void speechPromise.finally(() => {
-        this.markHomeNarrationFinished(sessionId)
-      })
-    }
+    this.homeNarrationOwnedByOpener = true
+    const speechPromise = wait(budgetMs)
+    void speechPromise.finally(() => {
+      this.markHomeNarrationFinished(sessionId)
+    })
     const baseMoveToMainDurationMs = PLUGIN_DASHBOARD_MOVE_TO_MAIN_MS
     const baseScrollDownDurationMs = Math.round(PLUGIN_DASHBOARD_SCROLL_PHASE_MS / 2)
     const baseScrollUpDurationMs = PLUGIN_DASHBOARD_SCROLL_PHASE_MS - baseScrollDownDurationMs

@@ -1338,6 +1338,7 @@ from main_routers.agent_router import router as agent_router # noqa
 from main_routers.characters_router import router as characters_router # noqa
 from main_routers.cloudsave_router import router as cloudsave_router # noqa
 from main_routers.config_router import router as config_router # noqa
+from main_routers.galgame_router import router as galgame_router # noqa
 from main_routers.jukebox_router import router as jukebox_router # noqa
 from main_routers.live2d_router import router as live2d_router # noqa
 from main_routers.memory_router import router as memory_router # noqa
@@ -1397,6 +1398,7 @@ app.include_router(agent_router)
 app.include_router(system_router)
 app.include_router(tool_router)
 app.include_router(music_router)
+app.include_router(galgame_router)
 app.include_router(cookies_login_router) # Cookies登录相关路由，放在最后以避免与其他API路由冲突
 app.include_router(pages_router)  # 兜底路由需最后挂载
 

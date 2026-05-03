@@ -18,7 +18,7 @@ function shouldGroupWithPrevious(current: ChatMessage, previous?: ChatMessage) {
   if (current.author !== previous.author) return false;
   if (current.role === 'system') return false;
   if (typeof current.createdAt === 'number' && typeof previous.createdAt === 'number') {
-    if (Math.abs(current.createdAt - previous.createdAt) > 5 * 60 * 1000) {
+    if (Math.abs(current.createdAt - previous.createdAt) > 30 * 1000) {
       return false;
     }
   }
@@ -47,7 +47,14 @@ export default function MessageList({
     const container = containerRef.current;
     if (!container || !shouldScrollRef.current) return;
 
-    if (isStreaming) {
+    const shouldUseInstantScroll =
+      isStreaming
+      || (
+        typeof document !== 'undefined'
+        && document.body.classList.contains('yui-taking-over')
+      );
+
+    if (shouldUseInstantScroll) {
       container.scrollTop = container.scrollHeight;
     } else {
       container.scrollTo({

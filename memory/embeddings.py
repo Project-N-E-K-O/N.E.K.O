@@ -15,7 +15,12 @@ zero-cost if any of the following holds:
   * the ONNX model file is missing on disk
   * detected RAM < ``VECTORS_MIN_RAM_GB``
   * the user set ``VECTORS_ENABLED = False``
+  * ``auto`` quantization when AVX-VNNI is **confirmed absent** (no INT8
+    fast-path; default installs omit the large FP32 ONNX bundle — operators
+    who need vectors then pin ``int8`` or ship FP32 weights + ``fp32``)
   * loading or any per-call inference raised an exception (sticky disable)
+
+Explicit ``fp32`` loads ``model.onnx`` when present (manual / optional bundle).
 
 When disabled, ``is_available()`` returns False; callers MUST check it
 before invoking ``embed()`` / ``embed_batch()`` and fall back to the
@@ -88,6 +93,9 @@ class _DisableReason(enum.Enum):
     # the install commands diverge.
     NO_TOKENIZERS = "tokenizers_not_importable"
     NO_MODEL_FILE = "model_file_missing"
+    # Default bundle is INT8; ``auto`` picks INT8 only when VNNI is present or
+    # detection is inconclusive — confirmed absence disables local vectors.
+    AVX_VNNI_REQUIRED_FOR_INT8 = "avx_vnni_required_for_int8_bundle"
     LOW_RAM = "ram_below_threshold"
     LOAD_ERROR = "load_raised"
     INFERENCE_ERROR = "inference_raised"
@@ -123,28 +131,29 @@ def detect_total_ram_gb() -> float | None:
         return None
 
 
-def detect_avx_vnni() -> bool:
-    """Best-effort AVX-VNNI detection.
+def detect_avx_vnni_details() -> tuple[bool, bool]:
+    """Return ``(has_vnni, vnni_absence_confirmed)``.
 
-    Why this matters: INT8 quantized inference on a CPU without VNNI
-    instructions is *slower* than FP32, not faster — the dequantization
-    cost dominates without the dot-product fast path. So when we can't
-    confirm VNNI, we degrade INT8 → FP32 rather than ship a slower
-    inference path silently.
+    When ``vnni_absence_confirmed`` is False we could not read CPU flags
+    (should be rare now that ``py-cpuinfo`` is a required dependency).
+    ``auto`` quantization
+    still selects INT8 in that case — we only skip vectors when we are
+    *confident* the CPU lacks AVX-VNNI (INT8 would be slow and FP32 weights
+    are not shipped).
 
     Detection priority:
-      1. ``py-cpuinfo`` if installed — most accurate, cross-platform
-      2. ``/proc/cpuinfo`` parse on Linux — no extra dep
-      3. Conservative ``False`` on Windows/macOS without py-cpuinfo
-
-    The conservative default trades a small perf loss on capable
-    machines for safety on uncertain ones; users who know their hardware
-    can pin ``VECTORS_QUANTIZATION = "int8"`` to override.
+      1. ``py-cpuinfo``
+      2. ``/proc/cpuinfo`` on Linux
+      3. Otherwise inconclusive → ``(False, False)``
     """
     try:
         import cpuinfo  # type: ignore
         flags = cpuinfo.get_cpu_info().get("flags", []) or []
-        return any("vnni" in f for f in flags)
+        # Empty flags (e.g. some virtualised hosts) is *not* a confirmed
+        # absence — fall through so /proc/cpuinfo can have a try.
+        if flags:
+            has = any("vnni" in f for f in flags)
+            return has, True
     except Exception:
         pass
 
@@ -153,12 +162,18 @@ def detect_avx_vnni() -> bool:
             with open("/proc/cpuinfo", encoding="utf-8") as f:
                 for line in f:
                     if line.startswith("flags") and "vnni" in line:
-                        return True
-            return False
+                        return True, True
+            return False, True
         except Exception:
-            return False
+            return False, False
 
-    return False
+    return False, False
+
+
+def detect_avx_vnni() -> bool:
+    """Backward-compatible: whether AVX-VNNI was detected."""
+    has_vnni, _confirmed = detect_avx_vnni_details()
+    return has_vnni
 
 
 def resolve_dim_for_ram(ram_gb: float | None) -> int | None:
@@ -207,28 +222,41 @@ def _coerce_dim(value, ram_gb: float | None) -> int | None:
     return as_int
 
 
-def _resolve_quantization(value: str, has_vnni: bool) -> str:
-    """Map "auto"/"int8"/"fp32" to the actual mode after VNNI gating.
+def _resolve_quantization(
+    value: str | None,
+    has_vnni: bool,
+    *,
+    vnni_absence_confirmed: bool = True,
+) -> str | None:
+    """Map ``\"auto\"`` / ``\"int8\"`` / ``\"fp32\"`` after VNNI policy.
 
-    "auto" becomes "int8" only when VNNI is present; otherwise FP32.
-    Explicit "int8" without VNNI is honoured with a warning — the user
-    asked for it, and a wrong configuration is still preferable to a
-    silent override the user can't see in the log.
+    Returns ``\"int8\"``, ``\"fp32\"``, or ``None``. ``None`` means local
+    embeddings are off for ``auto`` when AVX-VNNI is confidently absent.
+    Explicit ``\"fp32\"`` always loads the FP32 ONNX when files exist.
+
+    Explicit ``\"int8\"`` without VNNI is still honoured (with a warning)
+    so operators can force INT8 on slow CPUs if they accept the cost.
     """
+    if value == "fp32":
+        return "fp32"
     if value == "auto" or value is None:
-        return "int8" if has_vnni else "fp32"
+        if has_vnni:
+            return "int8"
+        if not vnni_absence_confirmed:
+            return "int8"
+        return None
     if value not in ("int8", "fp32"):
-        logger.warning(
-            "EmbeddingService: invalid quantization=%r, falling back to auto",
-            value,
-        )
-        return "int8" if has_vnni else "fp32"
+        if has_vnni:
+            return "int8"
+        if not vnni_absence_confirmed:
+            return "int8"
+        return None
     if value == "int8" and not has_vnni:
         logger.warning(
             "EmbeddingService: int8 requested but AVX-VNNI not detected — "
-            "expect slower inference than fp32",
+            "expect slower inference than a hypothetical fp32 build",
         )
-    return value
+    return "int8"
 
 
 def build_model_id(profile: str, dim: int, quantization: str) -> str:
@@ -264,12 +292,10 @@ def _profile_is_complete(
     load.
 
     ``quantization`` lets callers narrow the variant requirement to the
-    one ``_load_session_blocking`` will actually open. Without it, an
-    app-data profile that only contains fp32 files would satisfy this
-    check even when the runtime resolved to int8 — selecting that dir
-    would then sticky-disable vectors at load even if a complete int8
-    bundle is sitting on disk. Pass ``None`` only when the runtime
-    quantization isn't decided yet (e.g. early bootstrap smoke tests).
+    one ``_load_session_blocking`` will actually open. With ``None``, only
+    the shipped INT8 variant is considered complete — so a legacy fp32-only
+    app-data tree does not mask a good bundled int8 profile. Pass ``None``
+    only when the runtime quantization is not yet pinned to a single file.
 
     Why stricter than ``_profile_exists``: a half-downloaded or partially
     deleted app-data profile would otherwise satisfy the existence check,
@@ -287,7 +313,8 @@ def _profile_is_complete(
     elif quantization == "fp32":
         stems = ("model.onnx",)
     else:
-        stems = ("model.onnx", "model_quantized.onnx")
+        # Only the INT8 bundle is shipped; fp32 ONNX is optional / omitted.
+        stems = ("model_quantized.onnx",)
     for stem in stems:
         model_path = os.path.join(profile_dir, "onnx", stem)
         sidecar_path = model_path + "_data"
@@ -377,6 +404,7 @@ class EmbeddingService:
         profile_id: str = DEFAULT_VECTORS_MODEL_PROFILE_ID,
         ram_gb: float | None = None,        # injected for tests
         has_vnni: bool | None = None,       # injected for tests
+        vnni_absence_confirmed: bool | None = None,  # False = inconclusive detect
     ) -> None:
         self._model_dir = model_dir
         self._enabled = enabled
@@ -389,9 +417,29 @@ class EmbeddingService:
         # even before the session loads — callers reading
         # embedding_model_id at write time need a stable id.
         self._ram_gb = ram_gb if ram_gb is not None else detect_total_ram_gb()
-        self._has_vnni = has_vnni if has_vnni is not None else detect_avx_vnni()
+        if has_vnni is not None:
+            self._has_vnni = has_vnni
+            self._vnni_absence_confirmed = (
+                True if vnni_absence_confirmed is None else vnni_absence_confirmed
+            )
+        else:
+            detected_vnni, absence_confirmed = detect_avx_vnni_details()
+            self._has_vnni = detected_vnni
+            self._vnni_absence_confirmed = absence_confirmed
         self._dim = _coerce_dim(embedding_dim_setting, self._ram_gb)
-        self._quantization = _resolve_quantization(quantization_setting, self._has_vnni)
+        if quantization_setting not in ("auto", "int8", "fp32"):
+            logger.warning(
+                "EmbeddingService: invalid quantization=%r, falling back to auto",
+                quantization_setting,
+            )
+            norm_quant = "auto"
+        else:
+            norm_quant = quantization_setting
+        self._quantization = _resolve_quantization(
+            norm_quant,
+            self._has_vnni,
+            vnni_absence_confirmed=self._vnni_absence_confirmed,
+        )
 
         self._state = EmbeddingState.INIT
         self._disable_reason = _DisableReason.NONE
@@ -411,6 +459,8 @@ class EmbeddingService:
             # for any band — defensive double-check; LOW_RAM should have
             # caught it already.
             self._mark_disabled(_DisableReason.LOW_RAM, log=False)
+        elif self._quantization is None:
+            self._mark_disabled(_DisableReason.AVX_VNNI_REQUIRED_FOR_INT8, log=True)
 
     # ── public API ────────────────────────────────────────────────────
 
@@ -433,14 +483,18 @@ class EmbeddingService:
         """Canonical id stamped into ``embedding_model_id`` cache fields.
         Returns None when the service is permanently DISABLED — callers
         should not write embedding rows in that case."""
-        if self._state == EmbeddingState.DISABLED or self._dim is None:
+        if (
+            self._state == EmbeddingState.DISABLED
+            or self._dim is None
+            or self._quantization not in ("int8", "fp32")
+        ):
             return None
         return build_model_id(self._profile_id, self._dim, self._quantization)
 
     def dim(self) -> int | None:
         return self._dim
 
-    def quantization(self) -> str:
+    def quantization(self) -> str | None:
         return self._quantization
 
     def ram_gb(self) -> float | None:
@@ -542,17 +596,14 @@ class EmbeddingService:
     def _model_file_path(self) -> str:
         """Resolve the on-disk ONNX file path for the active quantization.
 
-        Layout mirrors the task-specific ONNX repository export:
-        ``<model_dir>/<profile_id>/onnx/model.onnx`` (fp32) or
-        ``model_quantized.onnx`` (int8), plus a root-level
-        ``tokenizer.json``. Files are NOT bundled with the repo — they're
-        either downloaded by an external bootstrapper or dropped in by the
-        user. Missing files are a non-fatal disable reason, not a startup
-        error.
+        Layout mirrors the Hugging Face ONNX export:
+        ``onnx/model_quantized.onnx`` (int8) or ``onnx/model.onnx`` (fp32),
+        each with a matching ``*_data`` sidecar, plus ``tokenizer.json``.
         """
         filename = (
-            "model_quantized.onnx"
-            if self._quantization == "int8" else "model.onnx"
+            "model.onnx"
+            if self._quantization == "fp32"
+            else "model_quantized.onnx"
         )
         return os.path.join(
             self._model_dir, self._profile_id, "onnx", filename,
@@ -739,24 +790,34 @@ def _build_default_service() -> EmbeddingService:
     # Resolve quantization here so _select_model_dir can require the exact
     # variant ``_load_session_blocking`` will open. Without this, an app-data
     # profile that only contains the *other* variant would still satisfy the
-    # completeness check and short-circuit a complete bundled fallback. We
-    # pass the already-resolved value (and detected has_vnni) into the ctor
-    # so its own _resolve_quantization call is a no-op and doesn't double-log.
-    has_vnni = detect_avx_vnni()
-    resolved_quantization = _resolve_quantization(VECTORS_QUANTIZATION, has_vnni)
+    # completeness check and short-circuit a complete bundled fallback.
+    has_vnni, vnni_absence_confirmed = detect_avx_vnni_details()
+    norm_q = (
+        VECTORS_QUANTIZATION
+        if VECTORS_QUANTIZATION in ("auto", "int8", "fp32")
+        else "auto"
+    )
+    resolved_quantization = _resolve_quantization(
+        norm_q, has_vnni, vnni_absence_confirmed=vnni_absence_confirmed,
+    )
 
-    model_dir = _select_model_dir(
-        app_docs_model_dir, VECTORS_MODEL_PROFILE_ID, resolved_quantization,
+    model_dir = (
+        app_docs_model_dir
+        if resolved_quantization is None
+        else _select_model_dir(
+            app_docs_model_dir, VECTORS_MODEL_PROFILE_ID, resolved_quantization,
+        )
     )
 
     return EmbeddingService(
         model_dir=model_dir,
         enabled=VECTORS_ENABLED,
         embedding_dim_setting=VECTORS_EMBEDDING_DIM,
-        quantization_setting=resolved_quantization,
+        quantization_setting=VECTORS_QUANTIZATION,
         min_ram_gb=VECTORS_MIN_RAM_GB,
         profile_id=VECTORS_MODEL_PROFILE_ID,
         has_vnni=has_vnni,
+        vnni_absence_confirmed=vnni_absence_confirmed,
     )
 
 

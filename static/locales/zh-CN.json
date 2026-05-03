@@ -526,10 +526,10 @@
         "steamNotRunningTitle": "Steam 未运行",
         "steamNotRunningMessage": "检测到Steam客户端未运行或未登录。\n\n创意工坊功能需要Steam客户端支持，请：\n1. 下载并安装Steam客户端\n2. 启动Steam并登录您的账号\n3. 重新打开此页面",
         "addNewCatgirl": "新增角色卡",
+        "noCardImage": "点击此处设置卡面",
         "searchCharacterCards": "搜索角色卡...",
         "cardView": "卡片视图",
-        "listView": "列表视图",
-        "noCardImage": "暂未设置\n角色卡图片"
+        "listView": "列表视图"
     },
     "dialogs": {
         "confirmLeave": "确认离开",
@@ -696,6 +696,9 @@
         "attachmentButtonAriaLabel": "附件",
         "jukebox": "点歌台",
         "jukeboxLabel": "点歌台",
+        "galgameToggle": "GalGame 模式",
+        "galgameToggleAriaLabel": "切换 GalGame 选项模式",
+        "galgameLoading": "生成回复选项中…",
         "exportConversation": "导出对话",
         "exportSelected": "导出所选",
         "exportPreviewTitle": "导出预览",
@@ -1878,7 +1881,8 @@
         "cardAuthorUpdated": "作者已更新",
         "cardAuthorUpdateFailed": "更新作者失败: {{error}}",
         "saveMasterSuccess": "保存主人设定成功",
-        "editCardFace": "编辑卡面"
+        "editCardFace": "编辑卡面",
+        "cardMakerPopupBlocked": "卡面制作页面未能自动打开，请允许浏览器弹窗后重试，或点击卡面区域手动打开。"
     },
     "app": {
         "welcomeBack": "{{name}}回来了！",
@@ -3024,6 +3028,7 @@
                 "takeoverCaptureCursor": "超级魔法按钮出现！只要点一下这里，我就可以把小爪子伸到你的键盘和鼠标上啦！我会帮你打字，帮你点开网页……不过，要是那个鼠标指针动来动去的话，我可能也会忍不住扑上去抓它哦！准备好迎接我的捣乱……啊不，是帮忙了吗？喵！",
                 "takeoverPluginPreviewHome": "还没完呢！你快看快看，这里还有超～～多好玩的插件呢！",
                 "takeoverPluginPreviewDashboard": "有了它们，我不光能看 B 站弹幕，还能帮你关灯开空调…… 本喵就是无所不能的超级猫猫神！哼哼～",
+                "pluginDashboardPopupBlocked": "浏览器需要你亲自点一下这里打开插件面板。点一下这个“管理面板”，我就继续带你看。",
                 "takeoverSettingsPeekIntro": "当然啦，如果你想让本喵多和你聊聊天也不是不行啦，给我多准备点小鱼干吧，嘿嘿，好了不逗你啦，设置都在这个齿轮里。",
                 "takeoverSettingsPeekDetail": "你看，这里可以穿我的新衣服、给我换一个好听的声音……换一个猫娘或是修改记忆？等一下！你在干嘛？该不会是想把我换掉吧？啊啊啊不行！快关掉快关掉！",
                 "takeoverSettingsPeekDetailPart1": "你看，这里可以穿我的新衣服、给我换一个好听的声音……换一个猫娘或是修改记忆？",
@@ -3686,6 +3691,126 @@
             "untested": "未测试",
             "not_configured": "未配置",
             "testing": "测试中..."
+        }
+    },
+    "profiler": {
+        "title": "性能分析器",
+        "badge": {
+            "idle": "待机",
+            "warmup": "预热中...",
+            "running": "采集中",
+            "stopped": "已停止"
+        },
+        "toggle": {
+            "title": "展开/折叠",
+            "aria": "展开/折叠性能分析器"
+        },
+        "btn": {
+            "start": "开始采集",
+            "stop": "停止",
+            "snapshot": "快照",
+            "reset": "重置"
+        },
+        "debug": {
+            "title": "调试可视化",
+            "physicsKinematic": "骨骼刚体",
+            "physicsKinematicTip": "Kinematic 刚体 (Mode 0)：跟随骨骼动画，不受物理影响",
+            "physicsDynamic": "物理刚体",
+            "physicsDynamicTip": "Dynamic 刚体 (Mode 1)：纯物理驱动，受重力和碰撞影响",
+            "physicsMixed": "混合刚体",
+            "physicsMixedTip": "Mixed 刚体 (Mode 2)：物理+骨骼混合,位置锚定到骨骼",
+            "physicsSolid": "半透明面",
+            "physicsSolidTip": "切换线框/半透明面：半透明面模式可观察刚体堆叠关系和重叠程度",
+            "ik": "IK 链",
+            "ikTip": "IK 求解器：显示 IK 目标、效应器和链节点",
+            "skeleton": "骨骼",
+            "skeletonTip": "骨骼线框：显示完整骨骼层级结构"
+        },
+        "fps": {
+            "recent60s": "帧率 (FPS) — 最近 60s",
+            "alltime": "全程统计",
+            "current": "当前",
+            "avg": "平均",
+            "min": "最低",
+            "max": "最高",
+            "p1": "1% Low",
+            "jitter": "抖动σ",
+            "samples": "采样数",
+            "chartTitle": "帧率曲线"
+        },
+        "frametime": {
+            "recent60s": "帧时间 (ms) — 最近 60s",
+            "avg": "平均",
+            "p95": "P95",
+            "p99": "P99",
+            "max": "最大",
+            "min": "最小"
+        },
+        "section": {
+            "modelInfo": "模型属性",
+            "assessment": "性能评级",
+            "gpuInfo": "GPU 信息"
+        },
+        "placeholder": {
+            "snapshotForInfo": "点击「快照」获取模型信息",
+            "snapshotForRating": "点击「快照」获取评级",
+            "snapshotForGpu": "点击「快照」获取 GPU 信息",
+            "noManager": "未检测到模型管理器",
+            "noModel": "未加载模型",
+            "cannotRate": "无法评级",
+            "cannotGetGpu": "无法获取 GPU 信息",
+            "live2dUnsupported": "Live2D 模型暂不支持性能分析"
+        },
+        "info": {
+            "type": "类型",
+            "name": "名称",
+            "vertices": "顶点数",
+            "faces": "面数",
+            "morphTargets": "Morph Targets",
+            "materials": "材质数",
+            "textures": "纹理数",
+            "bonesVRM": "Humanoid 骨骼",
+            "bonesMMD": "骨骼数",
+            "physicsEngine": "物理引擎",
+            "physicsBodies": "物理刚体",
+            "physicsConstraints": "物理约束",
+            "springJoints": "Spring Bone 关节",
+            "colliders": "Colliders",
+            "animation": "动画",
+            "animPlaying": "播放中",
+            "animPaused": "暂停",
+            "animStopped": "停止",
+            "ikGrant": "IK / Grant",
+            "outline": "描边效果",
+            "enabled": "启用",
+            "disabled": "禁用",
+            "drawCalls": "Draw Calls",
+            "triangles": "三角形",
+            "pixelRatio": "Pixel Ratio",
+            "renderSize": "渲染尺寸",
+            "gpu": "GPU",
+            "vendor": "厂商",
+            "maxTextureSize": "最大纹理尺寸"
+        },
+        "rating": {
+            "low": "轻量",
+            "medium": "中等",
+            "high": "较重",
+            "extreme": "极重",
+            "overall": "总评：",
+            "noteHtml": "评级参考 <a href=\"https://wiki.vrchat.com/wiki/Guides:Avatar_Performance_Ranking\" target=\"_blank\" rel=\"noopener noreferrer\" style=\"color:#40C5F1;\">VRChat Avatar Performance Ranking</a> (PC 端)，因 N.E.K.O 为单模型场景已适当放宽。"
+        },
+        "ratingDetail": {
+            "vertices": "顶点数",
+            "faces": "面数(三角形)",
+            "materials": "材质数",
+            "textures": "纹理数",
+            "bones": "骨骼数",
+            "physicsBodies": "物理刚体",
+            "physicsConstraints": "物理约束",
+            "springJoints": "Spring Bone 关节",
+            "morphTargets": "Morph Targets",
+            "drawCalls": "Draw Calls"
         }
     }
 }

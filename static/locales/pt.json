@@ -526,10 +526,10 @@
         "steamNotRunningTitle": "Steam não funciona",
         "steamNotRunningMessage": "O cliente Steam não está em execução ou não está conectado.\n\nOs recursos do Workshop exigem o cliente Steam. Por favor:\n1. Baixe e instale o cliente Steam\n2. Inicie o Steam e faça login na sua conta\n3. Reabra esta página",
         "addNewCatgirl": "Adicionar novo NEKO",
+        "noCardImage": "Clique aqui para\nconfigurar o cartão",
+        "searchCharacterCards": "Pesquisar cartões de personagens...",
         "cardView": "Visualização de cartões",
-        "listView": "Visualização em lista",
-        "noCardImage": "Sem imagem\nde cartão",
-        "searchCharacterCards": "Pesquisar cartões de personagens..."
+        "listView": "Visualização em lista"
     },
     "dialogs": {
         "confirmLeave": "Confirmar licença",
@@ -696,6 +696,9 @@
         "attachmentButtonAriaLabel": "Anexo",
         "jukebox": "Juke-box",
         "jukeboxLabel": "Juke-box",
+        "galgameToggle": "Modo GalGame",
+        "galgameToggleAriaLabel": "Alternar modo de opções GalGame",
+        "galgameLoading": "Gerando opções de resposta…",
         "exportConversation": "Exportar conversa",
         "exportSelected": "Exportar selecionado",
         "exportPreviewTitle": "Visualização de exportação",
@@ -1878,7 +1881,8 @@
         "switchCard": "Trocar cartão",
         "switchSuccess": "Trocado com sucesso",
         "tempSaveFailed": "Falha ao salvar temporariamente: {{error}}",
-        "editCardFace": "Editar rosto do cartão"
+        "editCardFace": "Editar rosto do cartão",
+        "cardMakerPopupBlocked": "A página do criador de cartões não pôde ser aberta automaticamente. Permita pop-ups e tente novamente, ou clique na área do cartão para abri-la manualmente."
     },
     "app": {
         "welcomeBack": "{{name}} está de volta!",
@@ -3024,6 +3028,7 @@
                 "takeoverCaptureCursor": "Um super botão mágico aparece! Basta clicar aqui e eu posso esticar minhas patinhas até o seu teclado e o seu mouse! Vou te ajudar a digitar, ajudar a abrir páginas da web... Mas, se esse ponteiro do mouse ficar se mexendo para lá e para cá, talvez eu não consiga resistir a pular em cima dele! Está pronto para a minha bagunça... quer dizer, para a minha ajuda? Miau!",
                 "takeoverPluginPreviewHome": "Ainda não acabou! Olha, olha! Tem um monte de plugins divertidos aqui!",
                 "takeoverPluginPreviewDashboard": "Com eles, eu não só consigo ler os comentários do Bilibili, mas também apagar as luzes e ligar o ar-condicionado pra você... Eu sou a Super Deusa Gata todo-poderosa! Hmph~",
+                "pluginDashboardPopupBlocked": "O navegador precisa que você clique aqui para abrir o painel de plugins. Clique em \"Painel de gerenciamento\" e eu continuo te mostrando.",
                 "takeoverSettingsPeekIntro": "Claro, eu não me importaria de bater mais papo se você quiser, mas é melhor preparar bastante peixinho seco! Hehe, brincadeira! Todas as configurações estão neste ícone de engrenagem.",
                 "takeoverSettingsPeekDetail": "Olha, dá pra trocar minha roupa, ou minha voz... espera, TROCAR POR OUTRA CATGIRL?! OU APAGAR MEMÓRIAS?! Espera, o que você está fazendo?! Você não está tentando me substituir, né?! Não, não, não! Fecha isso! Fecha agora mesmo!",
                 "takeoverSettingsPeekDetailPart1": "Olha, dá pra trocar minha roupa, ou minha voz... espera, TROCAR POR OUTRA CATGIRL?! OU APAGAR MEMÓRIAS?!",
@@ -3686,6 +3691,126 @@
             "untested": "Não testado",
             "not_configured": "Não configurado",
             "testing": "Testando..."
+        }
+    },
+    "profiler": {
+        "title": "Analisador de desempenho",
+        "badge": {
+            "idle": "Inativo",
+            "warmup": "Aquecendo...",
+            "running": "Capturando",
+            "stopped": "Parado"
+        },
+        "toggle": {
+            "title": "Expandir / recolher",
+            "aria": "Expandir / recolher analisador"
+        },
+        "btn": {
+            "start": "Iniciar",
+            "stop": "Parar",
+            "snapshot": "Captura",
+            "reset": "Redefinir"
+        },
+        "debug": {
+            "title": "Visualização de depuração",
+            "physicsKinematic": "Corpos de osso",
+            "physicsKinematicTip": "Corpos rígidos Kinematic (Mode 0): seguem a animação dos ossos, sem física",
+            "physicsDynamic": "Corpos físicos",
+            "physicsDynamicTip": "Corpos rígidos Dynamic (Mode 1): física pura, sob gravidade e colisões",
+            "physicsMixed": "Corpos mistos",
+            "physicsMixedTip": "Corpos rígidos Mixed (Mode 2): física + ossos, posição ancorada ao osso",
+            "physicsSolid": "Faces sólidas",
+            "physicsSolidTip": "Alterna malha / faces translúcidas: o modo translúcido revela sobreposições",
+            "ik": "Cadeia IK",
+            "ikTip": "Solver de IK: mostra alvos, efetores e nós da cadeia",
+            "skeleton": "Esqueleto",
+            "skeletonTip": "Malha do esqueleto: mostra toda a hierarquia de ossos"
+        },
+        "fps": {
+            "recent60s": "FPS — últimos 60s",
+            "alltime": "Estatísticas totais",
+            "current": "Atual",
+            "avg": "Média",
+            "min": "Mínimo",
+            "max": "Máximo",
+            "p1": "1% Low",
+            "jitter": "Jitter σ",
+            "samples": "Amostras",
+            "chartTitle": "Gráfico de FPS"
+        },
+        "frametime": {
+            "recent60s": "Tempo de quadro (ms) — últimos 60s",
+            "avg": "Média",
+            "p95": "P95",
+            "p99": "P99",
+            "max": "Máximo",
+            "min": "Mínimo"
+        },
+        "section": {
+            "modelInfo": "Atributos do modelo",
+            "assessment": "Classificação",
+            "gpuInfo": "Info da GPU"
+        },
+        "placeholder": {
+            "snapshotForInfo": "Clique em «Captura» para obter info do modelo",
+            "snapshotForRating": "Clique em «Captura» para obter a classificação",
+            "snapshotForGpu": "Clique em «Captura» para obter info da GPU",
+            "noManager": "Gerenciador de modelos não detectado",
+            "noModel": "Nenhum modelo carregado",
+            "cannotRate": "Não foi possível classificar",
+            "cannotGetGpu": "Não foi possível obter info da GPU",
+            "live2dUnsupported": "Modelos Live2D ainda não são suportados pelo analisador"
+        },
+        "info": {
+            "type": "Tipo",
+            "name": "Nome",
+            "vertices": "Vértices",
+            "faces": "Faces",
+            "morphTargets": "Morph Targets",
+            "materials": "Materiais",
+            "textures": "Texturas",
+            "bonesVRM": "Ossos Humanoid",
+            "bonesMMD": "Ossos",
+            "physicsEngine": "Física",
+            "physicsBodies": "Corpos rígidos",
+            "physicsConstraints": "Restrições",
+            "springJoints": "Spring Bone joints",
+            "colliders": "Colliders",
+            "animation": "Animação",
+            "animPlaying": "Reproduzindo",
+            "animPaused": "Pausada",
+            "animStopped": "Parada",
+            "ikGrant": "IK / Grant",
+            "outline": "Contorno",
+            "enabled": "Ativado",
+            "disabled": "Desativado",
+            "drawCalls": "Draw calls",
+            "triangles": "Triângulos",
+            "pixelRatio": "Pixel ratio",
+            "renderSize": "Tamanho de render",
+            "gpu": "GPU",
+            "vendor": "Fabricante",
+            "maxTextureSize": "Textura máx."
+        },
+        "rating": {
+            "low": "Leve",
+            "medium": "Médio",
+            "high": "Pesado",
+            "extreme": "Muito pesado",
+            "overall": "Geral: ",
+            "noteHtml": "Classificações baseadas no <a href=\"https://wiki.vrchat.com/wiki/Guides:Avatar_Performance_Ranking\" target=\"_blank\" rel=\"noopener noreferrer\" style=\"color:#40C5F1;\">VRChat Avatar Performance Ranking</a> (PC), suavizadas para as cenas mono-modelo do N.E.K.O."
+        },
+        "ratingDetail": {
+            "vertices": "Vértices",
+            "faces": "Faces (triângulos)",
+            "materials": "Materiais",
+            "textures": "Texturas",
+            "bones": "Ossos",
+            "physicsBodies": "Corpos rígidos",
+            "physicsConstraints": "Restrições",
+            "springJoints": "Spring Bone joints",
+            "morphTargets": "Morph Targets",
+            "drawCalls": "Draw calls"
         }
     }
 }

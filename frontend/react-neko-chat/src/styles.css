@@ -602,6 +602,10 @@ button * {
   animation: slideFromLeft 0.25s ease-out both;
 }
 
+.message-row[data-guide-message="true"] {
+  animation: none !important;
+}
+
 .message-row-user .avatar {
   order: 2;
 }
@@ -727,6 +731,10 @@ button * {
 
 .text-chunk-reveal {
   animation: textChunkReveal 0.18s ease-out both;
+}
+
+.message-row[data-guide-message="true"] .text-chunk-reveal {
+  animation: none !important;
 }
 
 .message-block-text {
@@ -1357,7 +1365,8 @@ button * {
   .composer-tools-right,
   .composer-tools-right > *,
   .composer-overflow-menu,
-  .composer-overflow-popover {
+  .composer-overflow-popover,
+  .composer-galgame-options.is-loading .composer-galgame-option {
     animation: none !important;
   }
 }
@@ -1568,6 +1577,134 @@ button * {
   height: 3px;
   border-radius: 2px;
   background: #2497d9;
+}
+
+/* ===== GalGame 模式开关 + 内嵌 A/B/C 选项 ===== */
+/* default/hover/active 三档对齐 .composer-translate-btn img 的 0.45 / 0.7 / 1
+   opacity 节奏；同色系，避免之前那个蓝灰冷灰看着像"未启用"的灰按钮。
+   border 从 1.5px 收到 1px，避免 active 时边框 + 700 字重双层勾画显得过重。 */
+.composer-galgame-btn {
+  position: relative;
+  color: rgba(36, 151, 217, 0.45);
+}
+
+.composer-galgame-btn-glyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  border: 1px solid currentColor;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  line-height: 1;
+  pointer-events: none;
+}
+
+.composer-galgame-btn:hover {
+  color: rgba(36, 151, 217, 0.78);
+}
+
+.composer-galgame-btn.is-active {
+  color: #2497d9;
+}
+
+.composer-galgame-btn.is-active::after {
+  content: '';
+  position: absolute;
+  bottom: 2px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 16px;
+  height: 3px;
+  border-radius: 2px;
+  background: #2497d9;
+}
+
+/* Slot 包住选项区，开/关靠 max-height + opacity 过渡。
+   collapsed 态自然占 0 高，输入壳跟着内容回到原本的紧凑高度，
+   下边缘和 PR 之前一样贴合面板底；展开时 shell 跟着 slot 长高，
+   bottom-bar 锚在 panel 底不动，textarea 顶端被往上推 → 视觉
+   是从下往上拉开。 */
+.composer-galgame-slot {
+  max-height: 0;
+  overflow: hidden;
+  opacity: 0;
+  transition: max-height 220ms cubic-bezier(0.4, 0, 0.2, 1),
+              opacity 180ms ease;
+}
+
+.composer-galgame-slot.is-open {
+  /* 上限给到 3 个 30px 按钮 + 间距 + margin 余量；超出会被 overflow
+     裁掉，但实际内容只有 ~104px 用不到这么多。 */
+  max-height: 160px;
+  opacity: 1;
+}
+
+.composer-galgame-options {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 4px 0 2px;
+}
+
+.composer-galgame-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(127, 144, 170, 0.22);
+  background: rgba(244, 248, 254, 0.78);
+  color: #1f2329;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, transform 0.12s ease;
+  min-height: 30px;
+}
+
+.composer-galgame-option:hover:not(:disabled) {
+  background: rgba(220, 236, 252, 0.92);
+  border-color: rgba(64, 197, 241, 0.55);
+}
+
+.composer-galgame-option:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.composer-galgame-option:disabled,
+.composer-galgame-option.is-placeholder {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.composer-galgame-option-label {
+  flex: 0 0 auto;
+  font-weight: 600;
+  color: #2497d9;
+  font-size: 0.9em;
+}
+
+.composer-galgame-option-text {
+  flex: 1 1 auto;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 0.9em;
+  line-height: 1.3;
+}
+
+.composer-galgame-options.is-loading .composer-galgame-option {
+  animation: composerGalgameLoadingPulse 1.6s ease-in-out infinite;
+}
+
+@keyframes composerGalgameLoadingPulse {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 0.85; }
 }
 
 /* ===== 圆形发送按钮 ===== */
@@ -1979,6 +2116,37 @@ button * {
   background: #44b7fe;
 }
 
+[data-theme="dark"] .composer-galgame-btn {
+  color: rgba(68, 183, 254, 0.5);
+}
+
+[data-theme="dark"] .composer-galgame-btn:hover {
+  color: rgba(68, 183, 254, 0.82);
+}
+
+[data-theme="dark"] .composer-galgame-btn.is-active {
+  color: #44b7fe;
+}
+
+[data-theme="dark"] .composer-galgame-btn.is-active::after {
+  background: #44b7fe;
+}
+
+[data-theme="dark"] .composer-galgame-option {
+  background: rgba(54, 64, 90, 0.6);
+  border-color: rgba(255, 255, 255, 0.1);
+  color: #e8eaed;
+}
+
+[data-theme="dark"] .composer-galgame-option:hover:not(:disabled) {
+  background: rgba(72, 96, 142, 0.78);
+  border-color: rgba(64, 197, 241, 0.45);
+}
+
+[data-theme="dark"] .composer-galgame-option-label {
+  color: #44b7fe;
+}
+
 [data-theme="dark"] .composer-input-shell {
   background: rgba(42, 42, 60, 0.85);
   border-color: rgba(255, 255, 255, 0.08);
@@ -2020,7 +2188,9 @@ button * {
   .message-row-assistant,
   .text-chunk-reveal,
   .composer-icon-popover,
-  .composer-icon-button {
+  .composer-icon-button,
+  .composer-galgame-slot,
+  .composer-galgame-option {
     animation: none !important;
     animation-delay: 0ms !important;
     transition: none !important;

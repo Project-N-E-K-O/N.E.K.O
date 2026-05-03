@@ -214,6 +214,8 @@
             this.highlightedElements = new Set();
             this.spotlightRefreshTimer = null;
             this.boundRefreshSpotlight = this.refreshSpotlight.bind(this);
+            this.spotlightRefreshRaf = null;
+            this.boundScheduleSpotlightRefresh = this.scheduleSpotlightRefresh.bind(this);
         }
 
         ensureRoot() {
@@ -261,7 +263,7 @@
                 const extraSpotlightEntries = [];
 
                 const backdropFill = createSvgElement('rect', 'yui-guide-backdrop-fill');
-                backdropFill.setAttribute('fill', 'rgba(3, 7, 18, 0.76)');
+                backdropFill.setAttribute('fill', BACKDROP_DIM_ENABLED ? 'rgba(3, 7, 18, 0.76)' : 'transparent');
                 backdropFill.setAttribute('mask', 'url(#' + BACKDROP_MASK_ID + ')');
 
                 mask.appendChild(backdropBase);
@@ -378,6 +380,9 @@
                 this.backdropActionCutout = root.querySelector('.yui-guide-backdrop-cutout-action');
                 this.backdropSecondaryActionCutout = root.querySelector('.yui-guide-backdrop-cutout-action-secondary');
                 this.backdropFill = root.querySelector('.yui-guide-backdrop-fill');
+                if (this.backdropFill) {
+                    this.backdropFill.setAttribute('fill', BACKDROP_DIM_ENABLED ? 'rgba(3, 7, 18, 0.76)' : 'transparent');
+                }
                 this.persistentSpotlightFrame = root.querySelector('.yui-guide-spotlight-frame-persistent');
                 this.actionSpotlightFrame = root.querySelector('.yui-guide-spotlight-frame-action');
                 this.secondaryActionSpotlightFrame = root.querySelector('.yui-guide-spotlight-frame-action-secondary');
@@ -784,7 +789,9 @@
 
             if (this.backdrop) {
                 this.syncBackdropViewport();
-                const hasBackdropCutout = !!(persistentMaskRect || actionMaskRect || secondaryActionMaskRect || extraMaskRects.length > 0);
+                const hasBackdropCutout = !!(BACKDROP_DIM_ENABLED && (
+                    persistentMaskRect || actionMaskRect || secondaryActionMaskRect || extraMaskRects.length > 0
+                ));
                 this.backdrop.hidden = !hasBackdropCutout;
                 this.backdrop.classList.toggle('is-visible', hasBackdropCutout);
             }
@@ -839,14 +846,25 @@
             }
         }
 
+        scheduleSpotlightRefresh() {
+            if (this.spotlightRefreshRaf) {
+                return;
+            }
+
+            this.spotlightRefreshRaf = window.requestAnimationFrame(() => {
+                this.spotlightRefreshRaf = null;
+                this.refreshSpotlight();
+            });
+        }
+
         startSpotlightTracking() {
             if (this.spotlightRefreshTimer) {
                 return;
             }
 
-            window.addEventListener('resize', this.boundRefreshSpotlight, true);
-            window.addEventListener('scroll', this.boundRefreshSpotlight, true);
-            this.spotlightRefreshTimer = window.setInterval(this.boundRefreshSpotlight, 120);
+            window.addEventListener('resize', this.boundScheduleSpotlightRefresh, true);
+            window.addEventListener('scroll', this.boundScheduleSpotlightRefresh, true);
+            this.spotlightRefreshTimer = window.setInterval(this.boundScheduleSpotlightRefresh, 240);
         }
 
         stopSpotlightTracking() {
@@ -855,8 +873,13 @@
                 this.spotlightRefreshTimer = null;
             }
 
-            window.removeEventListener('resize', this.boundRefreshSpotlight, true);
-            window.removeEventListener('scroll', this.boundRefreshSpotlight, true);
+            if (this.spotlightRefreshRaf) {
+                window.cancelAnimationFrame(this.spotlightRefreshRaf);
+                this.spotlightRefreshRaf = null;
+            }
+
+            window.removeEventListener('resize', this.boundScheduleSpotlightRefresh, true);
+            window.removeEventListener('scroll', this.boundScheduleSpotlightRefresh, true);
         }
 
         setTakingOver(active) {
@@ -976,6 +999,9 @@
             const title = typeof normalizedOptions.title === 'string' ? normalizedOptions.title.trim() : '';
             const meta = typeof normalizedOptions.meta === 'string' ? normalizedOptions.meta.trim() : '';
             const emotion = typeof normalizedOptions.emotion === 'string' ? normalizedOptions.emotion.trim() : 'neutral';
+            const bubbleVariant = typeof normalizedOptions.bubbleVariant === 'string'
+                ? normalizedOptions.bubbleVariant.trim()
+                : '';
 
             this.bubbleTitle.textContent = title || 'Yui';
             this.bubbleTitle.hidden = false;
@@ -984,6 +1010,11 @@
             this.bubbleBody.textContent = text || '';
             this.bubble.hidden = false;
             this.bubble.dataset.emotion = emotion || 'neutral';
+            if (bubbleVariant) {
+                this.bubble.dataset.bubbleVariant = bubbleVariant;
+            } else {
+                delete this.bubble.dataset.bubbleVariant;
+            }
             this.positionBubble(normalizedOptions.anchorRect || null, normalizedOptions);
             this.bubble.classList.add('is-visible');
         }
@@ -994,6 +1025,7 @@
             this.bubble.classList.remove('is-visible');
             this.clearBubblePlacement();
             delete this.bubble.dataset.emotion;
+            delete this.bubble.dataset.bubbleVariant;
         }
 
         showPluginPreview(items, options) {

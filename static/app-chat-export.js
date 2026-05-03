@@ -2542,12 +2542,6 @@
             return;
         }
 
-        var previewWindow = openExportPreviewWindow();
-        if (!previewWindow) {
-            showToast('chat.previewOpenBlocked', 'Unable to open a new preview window.', 4000);
-            return;
-        }
-
         var host = getReactChatHost();
         if (host && typeof host.ensureBundleLoaded === 'function') {
             try {
@@ -2560,7 +2554,12 @@
         var messages = getReactMessages();
         if (messages.length === 0) {
             showToast('chat.exportEmpty', 'There is no conversation to export yet.', 3000);
-            closePreviewModal();
+            return;
+        }
+
+        var previewWindow = openExportPreviewWindow();
+        if (!previewWindow) {
+            showToast('chat.previewOpenBlocked', 'Unable to open a new preview window.', 4000);
             return;
         }
 

@@ -526,10 +526,10 @@
         "steamNotRunningTitle": "Steam 未運行",
         "steamNotRunningMessage": "偵測到Steam用戶端未運行或未登入。\n\n創意工坊功能需要Steam用戶端支持，請：\n1. 下載並安裝Steam用戶端\n2. 啟動Steam並登入您的帳號\n3. 重新開啟此頁面",
         "addNewCatgirl": "新增角色卡",
+        "noCardImage": "點擊此處\n設定卡面",
         "searchCharacterCards": "搜尋角色卡...",
         "cardView": "卡片檢視",
-        "listView": "列表檢視",
-        "noCardImage": "尚未設定\n角色卡圖片"
+        "listView": "列表檢視"
     },
     "dialogs": {
         "confirmLeave": "確認離開",
@@ -696,6 +696,9 @@
         "attachmentButtonAriaLabel": "附件",
         "jukebox": "點歌台",
         "jukeboxLabel": "點歌台",
+        "galgameToggle": "GalGame 模式",
+        "galgameToggleAriaLabel": "切換 GalGame 選項模式",
+        "galgameLoading": "正在生成回覆選項…",
         "exportConversation": "匯出對話",
         "exportSelected": "匯出所選",
         "exportPreviewTitle": "匯出預覽",
@@ -1878,7 +1881,8 @@
         "cardAuthorUpdateFailed": "更新作者失敗：{{error}}",
         "idleMotionHint": "儲存角色時，目前選中的動作將被設為待機動作",
         "saveMasterSuccess": "儲存主人設定成功",
-        "editCardFace": "編輯卡面"
+        "editCardFace": "編輯卡面",
+        "cardMakerPopupBlocked": "卡面製作頁面未能自動開啟，請允許瀏覽器彈出視窗後重試，或點擊卡面區域手動開啟。"
     },
     "app": {
         "welcomeBack": "{{name}}迴來瞭！",
@@ -3024,6 +3028,7 @@
                 "takeoverCaptureCursor": "超級魔法按鈕出現！只要點一下這裡，我就可以把小爪子伸到你的鍵盤和滑鼠上啦！我會幫你打字，幫你點開網頁……不過，要是那個滑鼠指標動來動去的話，我可能也會忍不住撲上去抓它哦！準備好迎接我的搗亂……啊不，是幫忙了嗎？喵！",
                 "takeoverPluginPreviewHome": "還沒完呢！你快看快看，這裡還有超～～多好玩的外掛呢！",
                 "takeoverPluginPreviewDashboard": "有了它們，我不光能看 B 站彈幕，還能幫你關燈開空調…… 本喵就是無所不能的超級貓貓神！哼哼～",
+                "pluginDashboardPopupBlocked": "瀏覽器需要你親自點一下這裡開啟外掛面板。點一下這個「管理面板」，我就繼續帶你看。",
                 "takeoverSettingsPeekIntro": "當然啦，如果你想讓本喵多和你聊聊天也不是不行啦，給我多準備點小魚乾吧，嘿嘿，好了不逗你啦，設定都在這個齒輪裡。",
                 "takeoverSettingsPeekDetail": "你看，這裡可以穿我的新衣服、給我換一個好聽的聲音……換一個貓娘或是修改記憶？等一下！你在幹嘛？該不會是想把我換掉吧？啊啊啊不行！快關掉快關掉！",
                 "takeoverSettingsPeekDetailPart1": "你看，這裡可以穿我的新衣服、給我換一個好聽的聲音……換一個貓娘或是修改記憶？",
@@ -3686,6 +3691,126 @@
             "untested": "未測試",
             "not_configured": "未設定",
             "testing": "測試中..."
+        }
+    },
+    "profiler": {
+        "title": "效能分析器",
+        "badge": {
+            "idle": "待機",
+            "warmup": "預熱中...",
+            "running": "採集中",
+            "stopped": "已停止"
+        },
+        "toggle": {
+            "title": "展開/收合",
+            "aria": "展開/收合效能分析器"
+        },
+        "btn": {
+            "start": "開始採集",
+            "stop": "停止",
+            "snapshot": "快照",
+            "reset": "重置"
+        },
+        "debug": {
+            "title": "除錯視覺化",
+            "physicsKinematic": "骨骼剛體",
+            "physicsKinematicTip": "Kinematic 剛體 (Mode 0)：跟隨骨骼動畫,不受物理影響",
+            "physicsDynamic": "物理剛體",
+            "physicsDynamicTip": "Dynamic 剛體 (Mode 1)：純物理驅動,受重力與碰撞影響",
+            "physicsMixed": "混合剛體",
+            "physicsMixedTip": "Mixed 剛體 (Mode 2)：物理+骨骼混合,位置錨定到骨骼",
+            "physicsSolid": "半透明面",
+            "physicsSolidTip": "切換線框/半透明面:半透明面模式可觀察剛體堆疊關係與重疊程度",
+            "ik": "IK 鏈",
+            "ikTip": "IK 求解器:顯示 IK 目標、效應器與鏈節點",
+            "skeleton": "骨骼",
+            "skeletonTip": "骨骼線框:顯示完整骨骼階層結構"
+        },
+        "fps": {
+            "recent60s": "幀率 (FPS) — 最近 60s",
+            "alltime": "全程統計",
+            "current": "目前",
+            "avg": "平均",
+            "min": "最低",
+            "max": "最高",
+            "p1": "1% Low",
+            "jitter": "抖動σ",
+            "samples": "取樣數",
+            "chartTitle": "幀率曲線"
+        },
+        "frametime": {
+            "recent60s": "幀時間 (ms) — 最近 60s",
+            "avg": "平均",
+            "p95": "P95",
+            "p99": "P99",
+            "max": "最大",
+            "min": "最小"
+        },
+        "section": {
+            "modelInfo": "模型屬性",
+            "assessment": "效能評級",
+            "gpuInfo": "GPU 資訊"
+        },
+        "placeholder": {
+            "snapshotForInfo": "點選「快照」取得模型資訊",
+            "snapshotForRating": "點選「快照」取得評級",
+            "snapshotForGpu": "點選「快照」取得 GPU 資訊",
+            "noManager": "未偵測到模型管理器",
+            "noModel": "未載入模型",
+            "cannotRate": "無法評級",
+            "cannotGetGpu": "無法取得 GPU 資訊",
+            "live2dUnsupported": "Live2D 模型暫不支援效能分析"
+        },
+        "info": {
+            "type": "類型",
+            "name": "名稱",
+            "vertices": "頂點數",
+            "faces": "面數",
+            "morphTargets": "Morph Targets",
+            "materials": "材質數",
+            "textures": "貼圖數",
+            "bonesVRM": "Humanoid 骨骼",
+            "bonesMMD": "骨骼數",
+            "physicsEngine": "物理引擎",
+            "physicsBodies": "物理剛體",
+            "physicsConstraints": "物理約束",
+            "springJoints": "Spring Bone 關節",
+            "colliders": "Colliders",
+            "animation": "動畫",
+            "animPlaying": "播放中",
+            "animPaused": "暫停",
+            "animStopped": "停止",
+            "ikGrant": "IK / Grant",
+            "outline": "描邊效果",
+            "enabled": "啟用",
+            "disabled": "停用",
+            "drawCalls": "Draw Calls",
+            "triangles": "三角形",
+            "pixelRatio": "Pixel Ratio",
+            "renderSize": "渲染尺寸",
+            "gpu": "GPU",
+            "vendor": "廠商",
+            "maxTextureSize": "最大貼圖尺寸"
+        },
+        "rating": {
+            "low": "輕量",
+            "medium": "中等",
+            "high": "較重",
+            "extreme": "極重",
+            "overall": "總評:",
+            "noteHtml": "評級參考 <a href=\"https://wiki.vrchat.com/wiki/Guides:Avatar_Performance_Ranking\" target=\"_blank\" rel=\"noopener noreferrer\" style=\"color:#40C5F1;\">VRChat Avatar Performance Ranking</a> (PC 端),因 N.E.K.O 為單模型場景已適當放寬。"
+        },
+        "ratingDetail": {
+            "vertices": "頂點數",
+            "faces": "面數(三角形)",
+            "materials": "材質數",
+            "textures": "貼圖數",
+            "bones": "骨骼數",
+            "physicsBodies": "物理剛體",
+            "physicsConstraints": "物理約束",
+            "springJoints": "Spring Bone 關節",
+            "morphTargets": "Morph Targets",
+            "drawCalls": "Draw Calls"
         }
     }
 }
