@@ -67,6 +67,17 @@ def test_exit_retention_animation_avoids_expensive_filter_animation():
 
 
 @pytest.mark.frontend
+def test_exit_retention_animation_has_dark_theme_overrides():
+    css = (REPO_ROOT / "static" / "css" / "index.css").read_text(encoding="utf-8")
+    start = css.index("/* ===== Exit Retention Animation ===== */")
+    section = css[start:]
+
+    assert '[data-theme="dark"] .neko-exit-retention-bubble' in section
+    assert '[data-theme="dark"] .neko-exit-retention-action' in section
+    assert '[data-theme="dark"] .neko-exit-retention-action:hover' in section
+
+
+@pytest.mark.frontend
 def test_exit_retention_module_does_not_animate_avatar_container_directly():
     source = (REPO_ROOT / "static" / "app-exit-retention.js").read_text(encoding="utf-8")
 

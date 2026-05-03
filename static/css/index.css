@@ -3069,6 +3069,29 @@ body.chat-export-modal-open {
     outline-offset: 2px;
 }
 
+[data-theme="dark"] .neko-exit-retention-bubble {
+    border-color: rgba(94, 180, 255, 0.28);
+    background: rgba(30, 38, 52, 0.94);
+    color: #c8d8ee;
+    box-shadow: 0 8px 22px rgba(0, 0, 0, 0.4);
+}
+
+[data-theme="dark"] .neko-exit-retention-action {
+    border-color: rgba(94, 180, 255, 0.32);
+    background: rgba(68, 140, 210, 0.12);
+    color: #8fd4ff;
+    box-shadow: 0 3px 10px rgba(0, 0, 0, 0.24);
+}
+
+[data-theme="dark"] .neko-exit-retention-action:hover {
+    border-color: rgba(94, 180, 255, 0.52);
+    background: rgba(68, 140, 210, 0.22);
+}
+
+[data-theme="dark"] .neko-exit-retention-action:focus-visible {
+    outline-color: rgba(143, 212, 255, 0.72);
+}
+
 .neko-exit-retention-bubble.is-visible {
     opacity: 1;
     transform: translateY(0) scale(1);
