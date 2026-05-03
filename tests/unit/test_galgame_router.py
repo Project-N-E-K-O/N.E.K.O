@@ -8,6 +8,7 @@ import pytest
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
 
+from config.prompts_galgame import get_galgame_fallback_options
 from main_routers import galgame_router
 
 
@@ -40,11 +41,17 @@ class FakeConfigManager:
 
     async def aconsume_agent_daily_quota(self, source="", units=1):
         self.quota_calls.append((source, units))
-        return self._quota_ok, {"used": 1, "limit": 300}
+        if self._quota_ok:
+            return True, {"limited": True, "used": 1, "limit": 300, "remaining": 299}
+        return False, {"limited": True, "used": 300, "limit": 300, "remaining": 0}
 
 
 def _decode_response(response):
     return json.loads(response.body.decode("utf-8"))
+
+
+def _option_texts(data):
+    return [item["text"] for item in data["options"]]
 
 
 @pytest.mark.unit
@@ -198,12 +205,13 @@ def test_paid_lanlan_summary_config_is_not_rewritten_or_rerouted():
         },
     )
 
-    config, source, uses_quota = galgame_router._resolve_galgame_llm_config(config_manager)
+    resolution = galgame_router._resolve_galgame_llm_config(config_manager)
 
-    assert source == "summary"
-    assert uses_quota is False
-    assert config["model"] == "paid-summary-model"
-    assert config["base_url"] == "https://www.lanlan.tech/text/v1"
+    assert resolution.source == "summary"
+    assert resolution.requires_agent_config is False
+    assert resolution.uses_free_agent_quota is False
+    assert resolution.config["model"] == "paid-summary-model"
+    assert resolution.config["base_url"] == "https://www.lanlan.tech/text/v1"
     assert config_manager.calls == ["summary"]
 
 
@@ -223,12 +231,83 @@ def test_custom_lanlan_free_access_summary_is_not_rerouted():
         },
     )
 
-    config, source, uses_quota = galgame_router._resolve_galgame_llm_config(config_manager)
+    resolution = galgame_router._resolve_galgame_llm_config(config_manager)
 
-    assert source == "summary"
-    assert uses_quota is False
-    assert config["model"] == "custom-summary"
+    assert resolution.source == "summary"
+    assert resolution.requires_agent_config is False
+    assert resolution.uses_free_agent_quota is False
+    assert resolution.config["model"] == "custom-summary"
     assert config_manager.calls == ["summary"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_galgame_free_summary_with_paid_agent_skips_free_quota(monkeypatch):
+    captured = {}
+    config_manager = FakeConfigManager(
+        {
+            "model": "free-model",
+            "base_url": "https://www.lanlan.tech/text/v1",
+            "api_key": "free-access",
+        },
+        {
+            "model": "paid-agent-model",
+            "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            "api_key": "sk-paid-agent",
+            "is_custom": True,
+        },
+        quota_ok=False,
+    )
+
+    class FakeLLM:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def ainvoke(self, messages):
+            captured["messages"] = messages
+            return SimpleNamespace(
+                content=json.dumps(
+                    {
+                        "options": [
+                            {"label": "A", "text": "Let's be practical."},
+                            {"label": "B", "text": "I will stay with you."},
+                            {"label": "C", "text": "Let's chase the comet."},
+                        ]
+                    }
+                )
+            )
+
+    def fake_create_chat_llm(model, base_url, api_key, **kwargs):
+        captured["model"] = model
+        captured["base_url"] = base_url
+        captured["api_key"] = api_key
+        captured["kwargs"] = kwargs
+        return FakeLLM()
+
+    monkeypatch.setattr(galgame_router, "get_config_manager", lambda: config_manager)
+    monkeypatch.setattr(galgame_router, "create_chat_llm", fake_create_chat_llm)
+
+    response = await galgame_router.generate_galgame_options(
+        FakeRequest(
+            {
+                "messages": [{"role": "assistant", "text": "What do you think?"}],
+                "language": "en",
+            }
+        )
+    )
+
+    data = _decode_response(response)
+    assert data["success"] is True
+    assert "fallback" not in data
+    assert captured["model"] == "paid-agent-model"
+    assert captured["base_url"] == "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    assert captured["api_key"] == "sk-paid-agent"
+    assert captured["kwargs"] == {"max_completion_tokens": galgame_router.GALGAME_OPTION_MAX_TOKENS}
+    assert config_manager.calls == ["summary", "agent"]
+    assert config_manager.quota_calls == []
 
 
 @pytest.mark.unit
@@ -266,6 +345,8 @@ async def test_galgame_free_summary_with_invalid_agent_returns_fallback(monkeypa
     assert data["success"] is True
     assert data["fallback"] is True
     assert data["error"] == "AGENT_MODEL_NOT_CONFIGURED"
+    assert "options" in data
+    assert _option_texts(data) == list(get_galgame_fallback_options("en"))
     assert config_manager.calls == ["summary", "agent"]
     assert config_manager.quota_calls == []
 
@@ -306,6 +387,10 @@ async def test_galgame_free_agent_quota_exceeded_returns_fallback(monkeypatch):
     assert data["success"] is True
     assert data["fallback"] is True
     assert data["error"] == "AGENT_QUOTA_EXCEEDED"
+    assert "options" in data
+    assert _option_texts(data) == list(get_galgame_fallback_options("en"))
+    assert data["quota"]["limited"] is True
+    assert data["quota"]["remaining"] == 0
     assert config_manager.quota_calls == [("galgame.options", 1)]
 
 
