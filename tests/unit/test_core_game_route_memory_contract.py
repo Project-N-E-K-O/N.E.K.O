@@ -67,6 +67,8 @@ def _make_manager():
     mgr._tts_done_pending_until_ready = False
     mgr.state = _FakeState()
     mgr._active_text_request_id = None
+    mgr._pending_turn_meta = None
+    mgr._current_ai_turn_text = ""
     mgr.tts_ready = False
     mgr.tts_thread = None
     mgr.tts_pending_chunks = []
@@ -127,6 +129,7 @@ async def test_speak_game_line_text_mirror_carries_game_route_metadata():
     assert result["interrupt_audio"] is False
     assert mgr.user_activity == []
     assert mgr.audio_resampler.cleared is False
+    assert mgr.sent_responses[0]["request_id"] == "req-1"
     assert mgr.sent_responses[0]["metadata"] == {
         "source": "game_route",
         "game_type": "soccer",
@@ -367,3 +370,23 @@ async def test_game_route_voice_transcript_falls_back_when_unhandled(monkeypatch
         "type": "user",
         "data": {"input_type": "transcript", "data": "继续普通流程"},
     }]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_game_route_response_complete_clears_interrupted_ordinary_turn(monkeypatch):
+    mgr = _make_manager()
+    mgr._active_text_request_id = "req-old"
+    mgr._pending_turn_meta = {"source": "ordinary"}
+    mgr._current_ai_turn_text = "ordinary text before game"
+    mgr.tts_pending_chunks = [("sid-old", "queued text")]
+
+    monkeypatch.setattr(LLMSessionManager, "_is_game_route_active", lambda self: True)
+
+    await LLMSessionManager.handle_response_complete(mgr)
+
+    assert mgr._active_text_request_id is None
+    assert mgr._pending_turn_meta is None
+    assert mgr._current_ai_turn_text == ""
+    assert mgr.tts_pending_chunks == []
+    assert mgr.sync_message_queue.messages == []

@@ -936,7 +936,7 @@
                             console.warn('[GameVoiceSTT] 游戏退出后 Realtime 恢复未确认:', realtimeRestore.reason || 'unknown');
                         }
                         if (typeof window.stopGameVoiceSttGate === 'function') {
-                            window.stopGameVoiceSttGate();
+                            window.stopGameVoiceSttGate({ restoreOrdinaryMic: false });
                         } else {
                             S.gameVoiceSttGateActive = false;
                             S.gameVoiceSttGameType = '';

@@ -75,7 +75,14 @@
         }
     }
 
-    async function submitGameVoiceSttTranscript(transcript) {
+    function getGameVoiceSttRouteSnapshot() {
+        return {
+            gameType: S.gameVoiceSttGameType || 'soccer',
+            sessionId: S.gameVoiceSttSessionId || S.gameRouteSessionId || ''
+        };
+    }
+
+    async function submitGameVoiceSttTranscript(transcript, routeSnapshot) {
         const text = String(transcript || '').trim();
         if (!text) return;
 
@@ -85,8 +92,9 @@
             return;
         }
 
-        const gameType = S.gameVoiceSttGameType || 'soccer';
-        const sessionId = S.gameVoiceSttSessionId || S.gameRouteSessionId || '';
+        const frozenRoute = routeSnapshot || getGameVoiceSttRouteSnapshot();
+        const gameType = frozenRoute.gameType || 'soccer';
+        const sessionId = frozenRoute.sessionId || '';
         const requestId = gameVoiceRequestId();
         console.log(`[GameVoiceSTT] 最终转写 | game=${gameType} request=${requestId} text="${text}"`);
         try {
@@ -104,6 +112,14 @@
             const result = await response.json().catch(() => null);
             if (!response.ok) {
                 console.warn('[GameVoiceSTT] transcript route failed:', response.status, result);
+                return;
+            }
+            if (result && result.handled === false && result.reason === 'session_id_mismatch') {
+                console.info('[GameVoiceSTT] session mismatch, restarting hidden STT gate with the current route session');
+                stopGameVoiceSttGate({ keepActive: true, restoreOrdinaryMic: false });
+                if (S.gameVoiceSttGateActive && S.isRecording && !S.isMicMuted) {
+                    S.gameVoiceSttRestartTimer = setTimeout(startGameVoiceSttGate, 250);
+                }
                 return;
             }
             if (result && result.handled === false && result.reason === 'game_route_inactive') {
@@ -143,12 +159,25 @@
 
     function restoreOrdinaryMicCaptureAfterGameVoiceSttFailure(reason, error) {
         console.warn('[GameVoiceSTT] restoring ordinary mic capture after STT gate failure:', reason, error || '');
-        stopGameVoiceSttGate();
+        stopGameVoiceSttGate({ restoreOrdinaryMic: false });
         if (S.isRecording && typeof startMicCapture === 'function') {
             Promise.resolve(startMicCapture()).catch(function (restoreError) {
                 console.warn('[GameVoiceSTT] restore ordinary mic capture failed:', restoreError);
             });
         }
+    }
+
+    function restoreOrdinaryMicCaptureAfterGameVoiceSttStop(reason) {
+        if (!S.isRecording || typeof startMicCapture !== 'function') {
+            return;
+        }
+        const ordinaryPipelineAlive = !!(S.stream && S.audioContext && S.workletNode);
+        if (ordinaryPipelineAlive) {
+            return;
+        }
+        Promise.resolve(startMicCapture()).catch(function (restoreError) {
+            console.warn(`[GameVoiceSTT] restore ordinary mic capture after ${reason || 'stop'} failed:`, restoreError);
+        });
     }
 
     function startGameVoiceSttGate() {
@@ -172,80 +201,87 @@
             return false;
         }
 
-        if (!S.gameVoiceSttRecognition) {
-            const recognition = new SpeechRecognition();
-            recognition.lang = 'zh-CN';
-            recognition.continuous = true;
-            recognition.interimResults = false;
-            recognition.maxAlternatives = 1;
-            recognition.onstart = function () {
-                S.gameVoiceSttListening = true;
-                S.gameVoiceSttStopping = false;
-                console.log('[GameVoiceSTT][Diag] recognition start');
-            };
-            recognition.onaudiostart = function () {
-                console.log('[GameVoiceSTT][Diag] audio start');
-            };
-            recognition.onsoundstart = function () {
-                console.log('[GameVoiceSTT][Diag] sound start');
-            };
-            recognition.onspeechstart = function () {
-                console.log('[GameVoiceSTT][Diag] speech start');
-            };
-            recognition.onspeechend = function () {
-                console.log('[GameVoiceSTT][Diag] speech end');
-            };
-            recognition.onsoundend = function () {
-                console.log('[GameVoiceSTT][Diag] sound end');
-            };
-            recognition.onaudioend = function () {
-                console.log('[GameVoiceSTT][Diag] audio end');
-            };
-            recognition.onnomatch = function (event) {
-                console.warn('[GameVoiceSTT][Diag] no match:', event);
-            };
-            recognition.onresult = function (event) {
-                let finalText = '';
-                const startIndex = typeof event.resultIndex === 'number' ? event.resultIndex : 0;
-                console.log('[GameVoiceSTT][Diag] result event:', {
-                    resultIndex: startIndex,
-                    resultCount: event.results ? event.results.length : 0
-                });
-                for (let i = startIndex; i < event.results.length; i++) {
-                    const result = event.results[i];
-                    if (!result || result.isFinal === false) continue;
-                    finalText += (result[0] && result[0].transcript) || '';
-                }
-                if (finalText.trim()) {
-                    void submitGameVoiceSttTranscript(finalText);
-                }
-            };
-            recognition.onerror = function (event) {
-                const errorCode = (event && event.error) || 'unknown';
-                console.warn('[GameVoiceSTT] recognition error:', errorCode, event);
-                if (errorCode === 'no-speech') {
-                    console.warn('[GameVoiceSTT][Diag] no-speech: 识别器启动了但没有形成可用语音。优先检查默认麦克风是否正确、是否有 audio/sound/speech start 日志。');
-                }
-                if (errorCode === 'not-allowed' || errorCode === 'service-not-allowed') {
-                    if (typeof window.showStatusToast === 'function') {
-                        window.showStatusToast(window.t ? window.t('app.gameVoiceSttMicPermissionDenied') : '游戏语音转写没有麦克风权限，请检查浏览器权限。', 4000);
-                    }
-                    restoreOrdinaryMicCaptureAfterGameVoiceSttFailure(errorCode, event);
-                }
-            };
-            recognition.onend = function () {
-                S.gameVoiceSttListening = false;
-                if (S.gameVoiceSttRestartTimer) {
-                    clearTimeout(S.gameVoiceSttRestartTimer);
-                    S.gameVoiceSttRestartTimer = null;
-                }
-                if (S.gameVoiceSttGateActive && S.isRecording && !S.isMicMuted && !S.gameVoiceSttStopping) {
-                    S.gameVoiceSttRestartTimer = setTimeout(startGameVoiceSttGate, 250);
-                }
-                S.gameVoiceSttStopping = false;
-            };
-            S.gameVoiceSttRecognition = recognition;
+        const routeSnapshot = getGameVoiceSttRouteSnapshot();
+        if (S.gameVoiceSttRecognition) {
+            try { S.gameVoiceSttRecognition.abort(); } catch (_) { /* noop */ }
+            S.gameVoiceSttRecognition = null;
         }
+
+        const recognition = new SpeechRecognition();
+        recognition.lang = 'zh-CN';
+        recognition.continuous = true;
+        recognition.interimResults = false;
+        recognition.maxAlternatives = 1;
+        recognition._gameVoiceRouteSnapshot = routeSnapshot;
+        recognition.onstart = function () {
+            if (S.gameVoiceSttRecognition !== recognition) return;
+            S.gameVoiceSttListening = true;
+            S.gameVoiceSttStopping = false;
+            console.log('[GameVoiceSTT][Diag] recognition start');
+        };
+        recognition.onaudiostart = function () {
+            console.log('[GameVoiceSTT][Diag] audio start');
+        };
+        recognition.onsoundstart = function () {
+            console.log('[GameVoiceSTT][Diag] sound start');
+        };
+        recognition.onspeechstart = function () {
+            console.log('[GameVoiceSTT][Diag] speech start');
+        };
+        recognition.onspeechend = function () {
+            console.log('[GameVoiceSTT][Diag] speech end');
+        };
+        recognition.onsoundend = function () {
+            console.log('[GameVoiceSTT][Diag] sound end');
+        };
+        recognition.onaudioend = function () {
+            console.log('[GameVoiceSTT][Diag] audio end');
+        };
+        recognition.onnomatch = function (event) {
+            console.warn('[GameVoiceSTT][Diag] no match:', event);
+        };
+        recognition.onresult = function (event) {
+            let finalText = '';
+            const startIndex = typeof event.resultIndex === 'number' ? event.resultIndex : 0;
+            console.log('[GameVoiceSTT][Diag] result event:', {
+                resultIndex: startIndex,
+                resultCount: event.results ? event.results.length : 0
+            });
+            for (let i = startIndex; i < event.results.length; i++) {
+                const result = event.results[i];
+                if (!result || result.isFinal === false) continue;
+                finalText += (result[0] && result[0].transcript) || '';
+            }
+            if (finalText.trim()) {
+                void submitGameVoiceSttTranscript(finalText, recognition._gameVoiceRouteSnapshot);
+            }
+        };
+        recognition.onerror = function (event) {
+            const errorCode = (event && event.error) || 'unknown';
+            console.warn('[GameVoiceSTT] recognition error:', errorCode, event);
+            if (errorCode === 'no-speech') {
+                console.warn('[GameVoiceSTT][Diag] no-speech: 识别器启动了但没有形成可用语音。优先检查默认麦克风是否正确、是否有 audio/sound/speech start 日志。');
+            }
+            if (errorCode === 'not-allowed' || errorCode === 'service-not-allowed') {
+                if (typeof window.showStatusToast === 'function') {
+                    window.showStatusToast(window.t ? window.t('app.gameVoiceSttMicPermissionDenied') : '游戏语音转写没有麦克风权限，请检查浏览器权限。', 4000);
+                }
+                restoreOrdinaryMicCaptureAfterGameVoiceSttFailure(errorCode, event);
+            }
+        };
+        recognition.onend = function () {
+            if (S.gameVoiceSttRecognition !== recognition) return;
+            S.gameVoiceSttListening = false;
+            if (S.gameVoiceSttRestartTimer) {
+                clearTimeout(S.gameVoiceSttRestartTimer);
+                S.gameVoiceSttRestartTimer = null;
+            }
+            if (S.gameVoiceSttGateActive && S.isRecording && !S.isMicMuted && !S.gameVoiceSttStopping) {
+                S.gameVoiceSttRestartTimer = setTimeout(startGameVoiceSttGate, 250);
+            }
+            S.gameVoiceSttStopping = false;
+        };
+        S.gameVoiceSttRecognition = recognition;
 
         try {
             S.gameVoiceSttStopping = false;
@@ -270,6 +306,7 @@
 
     function stopGameVoiceSttGate(options) {
         const keepActive = options && options.keepActive === true;
+        const restoreOrdinaryMic = !(options && options.restoreOrdinaryMic === false);
         if (!keepActive) {
             S.gameVoiceSttGateActive = false;
             S.gameVoiceSttGameType = '';
@@ -280,16 +317,19 @@
             S.gameVoiceSttRestartTimer = null;
         }
         S.gameVoiceSttStopping = true;
-        if (S.gameVoiceSttRecognition) {
+        const recognition = S.gameVoiceSttRecognition;
+        S.gameVoiceSttRecognition = null;
+        if (recognition) {
             try {
-                S.gameVoiceSttRecognition.stop();
+                recognition.stop();
             } catch (error) {
-                try { S.gameVoiceSttRecognition.abort(); } catch (_) { /* noop */ }
+                try { recognition.abort(); } catch (_) { /* noop */ }
             }
         }
         S.gameVoiceSttListening = false;
-        if (!S.gameVoiceSttRecognition) {
-            S.gameVoiceSttStopping = false;
+        S.gameVoiceSttStopping = false;
+        if (!keepActive && restoreOrdinaryMic) {
+            restoreOrdinaryMicCaptureAfterGameVoiceSttStop('gate stop');
         }
     }
 
@@ -938,7 +978,7 @@
                 _mic.classList.remove('recording');
                 _mic.classList.remove('active');
             }
-            stopGameVoiceSttGate();
+            stopGameVoiceSttGate({ restoreOrdinaryMic: false });
             throw err;
         }
     }
@@ -1038,7 +1078,7 @@
         if (typeof window.stopScreening === 'function') {
             window.stopScreening();
         }
-        stopGameVoiceSttGate();
+        stopGameVoiceSttGate({ restoreOrdinaryMic: false });
         if (!S.isRecording) return;
 
         S.isRecording = false;

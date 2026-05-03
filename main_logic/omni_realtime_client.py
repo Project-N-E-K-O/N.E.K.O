@@ -247,7 +247,7 @@ class OmniRealtimeClient:
         self._audio_in_buffer = False
         self._skip_until_next_response = False
         self._game_route_stt_only = False
-        self._game_route_stt_only_remote_applied: Optional[bool] = False
+        self._game_route_stt_only_remote_applied: Optional[bool] = None
         self._audio_delta_count = 0  # diagnostic: count audio.delta events per session
         self._audio_delta_total = 0  # monotonic diagnostic across responses
         self._last_audio_delta_time = 0.0
@@ -613,6 +613,14 @@ class OmniRealtimeClient:
         )
         return provider_supported
 
+    def _can_forward_model_output(self) -> bool:
+        """Return whether model output callbacks may reach ordinary consumers."""
+        return (
+            not self._game_route_stt_only
+            and not self._skip_until_next_response
+            and not self._interrupted
+        )
+
     async def process_audio_chunk_async(self, audio_chunk: bytes) -> bytes:
         """
         Asynchronously process audio chunk using RNNoise in a separate thread.
@@ -764,6 +772,7 @@ class OmniRealtimeClient:
         # connection (flag may be leftover from a previous failed session
         # when the same OmniRealtimeClient instance is reused).
         self._fatal_error_occurred = False
+        self._game_route_stt_only_remote_applied = None
 
         # 启动静默检测任务（只在启用时）
         self._last_speech_time = time.time()
@@ -917,9 +926,9 @@ class OmniRealtimeClient:
             else:
                 raise ValueError(f"Invalid model: {self.model}")
             self.instructions = instructions
-            if self._active_instructions is None:
-                self._active_instructions = instructions
+            self._active_instructions = instructions
             if self._game_route_stt_only:
+                self._game_route_stt_only_remote_applied = None
                 await self.set_game_route_stt_only(True)
         else:
             raise ValueError(f"Invalid turn detection mode: {self.turn_detection_mode}")
@@ -971,6 +980,7 @@ class OmniRealtimeClient:
             # 设置 ws 为 session，用于兼容性检查
             self.ws = self._gemini_session
             self._fatal_error_occurred = False
+            self._game_route_stt_only_remote_applied = None
 
             self._last_speech_time = time.time()
             self.instructions = instructions
@@ -2209,12 +2219,12 @@ class OmniRealtimeClient:
                         await self.on_input_transcript(transcript)
                 elif event_type in ["response.audio_transcript.done", "response.output_audio_transcript.done"]:
                     self._print_input_transcript = False
-                    if self._output_transcript_buffer and self.on_output_transcript and not self._skip_until_next_response and not self._interrupted:
+                    if self._output_transcript_buffer and self.on_output_transcript and self._can_forward_model_output():
                         await self.on_output_transcript(self._output_transcript_buffer, self._is_first_transcript_chunk)
                         self._is_first_transcript_chunk = False
                     self._output_transcript_buffer = ""
 
-                if not self._skip_until_next_response and not self._interrupted:
+                if self._can_forward_model_output():
                     if event_type in ["response.text.delta", "response.output_text.delta"]:
                         if self.on_text_delta:
                             if "glm" not in self._model_lower:
@@ -2338,8 +2348,10 @@ class OmniRealtimeClient:
                 logger.error(f"Error closing websocket: {e}")
             finally:
                 self.ws = None  # 清空引用，防止后续误用
+                self._game_route_stt_only_remote_applied = None
                 logger.info("WebSocket connection closed")
         else:
+            self._game_route_stt_only_remote_applied = None
             logger.warning("WebSocket connection is already closed or None")
     
     async def _close_gemini(self) -> None:
@@ -2353,6 +2365,7 @@ class OmniRealtimeClient:
                 self._gemini_session = None
                 self._gemini_context_manager = None
                 self.ws = None
+                self._game_route_stt_only_remote_applied = None
 
                 # 重置静默超时相关状态（与普通close()保持一致）
                 self._silence_timeout_triggered = False
@@ -2495,7 +2508,7 @@ class OmniRealtimeClient:
                             self._gemini_user_transcript = ""  # 清空累积
                         self._is_first_text_chunk = True  # 重置第一个 chunk 标记
                         self._gemini_current_transcript = ""  # 清空累积
-                        if not self._skip_until_next_response and self.on_new_message:
+                        if self._can_forward_model_output() and self.on_new_message:
                             await self.on_new_message()
                     else:
                         logger.debug(
@@ -2511,7 +2524,7 @@ class OmniRealtimeClient:
                     if hasattr(output_trans, 'text') and output_trans.text:
                         text = output_trans.text
                         self._gemini_current_transcript += text
-                        if not self._skip_until_next_response and self.on_text_delta:
+                        if self._can_forward_model_output() and self.on_text_delta:
                             self._ai_recent_activity_time = time.time()
                             await self.on_text_delta(text, self._is_first_text_chunk)
                             self._is_first_text_chunk = False
@@ -2526,7 +2539,7 @@ class OmniRealtimeClient:
                         # 处理音频
                         if hasattr(part, 'inline_data') and part.inline_data:
                             if isinstance(part.inline_data.data, bytes):
-                                if not self._skip_until_next_response and self.on_audio_delta:
+                                if self._can_forward_model_output() and self.on_audio_delta:
                                     self._ai_recent_activity_time = time.time()
                                     await self.on_audio_delta(part.inline_data.data)
 

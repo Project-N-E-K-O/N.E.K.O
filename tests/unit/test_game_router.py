@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from game_route_test_helpers import (
+from .game_route_test_helpers import (
     mark_game_started as _mark_game_started,
     set_soccer_game_memory_policy as _set_soccer_game_memory_policy,
 )
@@ -16,6 +16,20 @@ class _FakeRequest:
 
     async def json(self):
         return self._payload
+
+
+def _put_game_session(lanlan_name, game_type, session_id, session):
+    key = game_router._game_session_key(lanlan_name, game_type, session_id)
+    game_router._game_sessions[key] = {
+        "session": session,
+        "reply_chunks": [],
+        "lanlan_name": lanlan_name,
+        "game_type": game_type,
+        "session_id": session_id,
+        "last_activity": 0,
+        "lock": None,
+    }
+    return key
 
 
 @pytest.mark.unit
@@ -762,18 +776,13 @@ def test_route_heartbeat_timeout_uses_hidden_grace_window():
 @pytest.mark.asyncio
 async def test_close_and_remove_session_closes_client():
     fake_session = type("FakeSession", (), {"close": AsyncMock()})()
-    game_router._game_sessions["soccer:test_sid"] = {
-        "session": fake_session,
-        "reply_chunks": [],
-        "last_activity": 0,
-        "lock": None,
-    }
+    key = _put_game_session("Lan", "soccer", "test_sid", fake_session)
 
-    closed = await game_router._close_and_remove_session("soccer", "test_sid")
+    closed = await game_router._close_and_remove_session("soccer", "test_sid", "Lan")
 
     assert closed is True
     fake_session.close.assert_awaited_once()
-    assert "soccer:test_sid" not in game_router._game_sessions
+    assert key not in game_router._game_sessions
 
 
 @pytest.mark.unit
@@ -794,14 +803,12 @@ async def test_game_end_returns_closed_flag_for_missing_session():
 @pytest.mark.asyncio
 async def test_game_end_closes_existing_session():
     fake_session = type("FakeSession", (), {"close": AsyncMock()})()
-    game_router._game_sessions["soccer:match_1"] = {
-        "session": fake_session,
-        "reply_chunks": [],
-        "last_activity": 0,
-        "lock": None,
-    }
+    _put_game_session("Lan", "soccer", "match_1", fake_session)
 
-    result = await game_router.game_end("soccer", _FakeRequest({"session_id": "match_1"}))
+    result = await game_router.game_end(
+        "soccer",
+        _FakeRequest({"lanlan_name": "Lan", "session_id": "match_1"}),
+    )
 
     assert result == {
         "ok": True,
@@ -1305,12 +1312,7 @@ async def test_route_heartbeat_records_hidden_visibility(monkeypatch):
 @pytest.mark.asyncio
 async def test_heartbeat_timeout_finalize_archives_and_closes_session(monkeypatch):
     fake_session = type("FakeSession", (), {"close": AsyncMock()})()
-    game_router._game_sessions["soccer:match_1"] = {
-        "session": fake_session,
-        "reply_chunks": [],
-        "last_activity": 0,
-        "lock": None,
-    }
+    _put_game_session("Lan", "soccer", "match_1", fake_session)
     monkeypatch.setattr(game_router, "get_session_manager", lambda: {})
     state = game_router._activate_game_route("soccer", "match_1", "Lan")
     _set_soccer_game_memory_policy(state, enabled=True)

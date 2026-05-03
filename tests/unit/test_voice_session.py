@@ -158,20 +158,27 @@ async def test_stream_audio(realtime_client):
 
 
 @pytest.mark.unit
-async def test_game_route_stt_only_qwen_disables_and_restores_auto_response():
-    client, ws = _stt_only_client("qwen3-omni-flash-realtime", api_type="qwen")
+@pytest.mark.parametrize(
+    ("model", "expected_type"),
+    [
+        ("qwen3-omni-flash-realtime", "server_vad"),
+        ("qwen3.5-omni-realtime", "semantic_vad"),
+    ],
+)
+async def test_game_route_stt_only_qwen_disables_and_restores_auto_response(model, expected_type):
+    client, ws = _stt_only_client(model, api_type="qwen")
 
     enabled = await client.set_game_route_stt_only(True)
     assert enabled is True
     msg = _last_sent_json(ws)
     assert msg["type"] == "session.update"
-    assert msg["session"]["turn_detection"]["type"] == "server_vad"
+    assert msg["session"]["turn_detection"]["type"] == expected_type
     assert msg["session"]["turn_detection"]["create_response"] is False
 
     restored = await client.set_game_route_stt_only(False)
     assert restored is True
     msg = _last_sent_json(ws)
-    assert msg["session"]["turn_detection"]["type"] == "server_vad"
+    assert msg["session"]["turn_detection"]["type"] == expected_type
     assert msg["session"]["turn_detection"]["create_response"] is True
 
 
@@ -236,6 +243,74 @@ async def test_game_route_stt_only_provider_update_failure_falls_back_locally():
 
     assert enabled is False
     assert client._game_route_stt_only is True
+    assert client._game_route_stt_only_remote_applied is None
+
+
+@pytest.mark.unit
+async def test_game_route_stt_only_reconnect_reapplies_remote_update(monkeypatch):
+    import main_logic.omni_realtime_client as realtime_mod
+
+    client = OmniRealtimeClient(
+        base_url="wss://example.test/realtime",
+        api_key="test-key",
+        model="qwen3-omni-flash-realtime",
+        api_type="qwen",
+    )
+    ws = AsyncMock()
+
+    async def fake_connect(*_args, **_kwargs):
+        return ws
+
+    monkeypatch.setattr(realtime_mod.websockets, "connect", fake_connect)
+    client._game_route_stt_only = True
+    client._game_route_stt_only_remote_applied = True
+
+    await client.connect("base realtime instructions")
+
+    events = [json.loads(call_args[0][0]) for call_args in ws.send.call_args_list]
+    turn_detection_updates = [
+        event["session"]["turn_detection"]
+        for event in events
+        if event.get("type") == "session.update" and "turn_detection" in event.get("session", {})
+    ]
+    assert turn_detection_updates[-1]["create_response"] is False
+    assert client._game_route_stt_only_remote_applied is True
+
+    await client.close()
+    assert client._game_route_stt_only_remote_applied is None
+
+
+@pytest.mark.unit
+async def test_game_route_stt_only_suppresses_local_model_output_callbacks():
+    client, _ws = _stt_only_client("qwen3-omni-flash-realtime", api_type="qwen")
+    text_delta_mock = AsyncMock()
+    audio_delta_mock = AsyncMock()
+    output_transcript_mock = AsyncMock()
+    response_done_mock = AsyncMock()
+    client.on_text_delta = text_delta_mock
+    client.on_audio_delta = audio_delta_mock
+    client.on_output_transcript = output_transcript_mock
+    client.on_response_done = response_done_mock
+    client._game_route_stt_only = True
+
+    events = [
+        json.dumps({"type": "response.created", "response": {"id": "resp_001"}}),
+        json.dumps({"type": "response.text.delta", "delta": "ordinary"}),
+        json.dumps({"type": "response.audio.delta", "delta": base64.b64encode(b"audio").decode("ascii")}),
+        json.dumps({"type": "response.audio_transcript.delta", "delta": "spoken"}),
+        json.dumps({"type": "response.audio_transcript.done", "transcript": "spoken"}),
+        json.dumps({"type": "response.done", "response": {"id": "resp_001"}}),
+    ]
+
+    client.ws = AsyncMock()
+    client.ws.__aiter__.return_value = events
+
+    await client.handle_messages()
+
+    text_delta_mock.assert_not_called()
+    audio_delta_mock.assert_not_called()
+    output_transcript_mock.assert_not_called()
+    response_done_mock.assert_called_once()
 
 
 @pytest.mark.unit
@@ -307,13 +382,8 @@ async def test_receive_text_delta(realtime_client):
     ]
     
     
-    # Configure the mock ws to yield these events then exit
-    async def mock_iter():
-        for ev in events:
-            yield ev
-    
     realtime_client.ws = AsyncMock()
-    realtime_client.ws.__aiter__ = lambda self: mock_iter()
+    realtime_client.ws.__aiter__.return_value = events
     
     # Ensure on_text_delta is an AsyncMock so we can track calls
     text_delta_mock = AsyncMock()

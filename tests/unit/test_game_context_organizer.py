@@ -2,7 +2,7 @@ import asyncio
 
 import pytest
 
-from game_route_test_helpers import (
+from .game_route_test_helpers import (
     mark_game_started as _mark_game_started,
     set_soccer_game_memory_policy as _set_soccer_game_memory_policy,
 )

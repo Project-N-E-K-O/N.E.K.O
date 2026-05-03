@@ -1,3 +1,6 @@
+import re
+from pathlib import Path
+
 import pytest
 
 from config.prompts_game import (
@@ -8,6 +11,9 @@ from config.prompts_game import (
 )
 from main_routers import game_router
 from scripts import check_no_temperature
+
+
+ROOT = Path(__file__).resolve().parents[2]
 
 
 @pytest.mark.unit
@@ -63,3 +69,36 @@ def test_build_game_prompt_uses_requested_language():
 
     assert "Output only the spoken line" in prompt
     assert "你正在和玩家踢一场足球比赛" not in prompt
+
+
+@pytest.mark.unit
+def test_game_voice_stt_gate_freezes_route_session_and_restores_mic():
+    capture_js = (ROOT / "static" / "app-audio-capture.js").read_text(encoding="utf-8")
+
+    assert "function getGameVoiceSttRouteSnapshot()" in capture_js
+    assert "recognition._gameVoiceRouteSnapshot = routeSnapshot;" in capture_js
+    assert "submitGameVoiceSttTranscript(finalText, recognition._gameVoiceRouteSnapshot)" in capture_js
+    assert "result.reason === 'session_id_mismatch'" in capture_js
+    assert "function restoreOrdinaryMicCaptureAfterGameVoiceSttStop" in capture_js
+    assert "restoreOrdinaryMicCaptureAfterGameVoiceSttStop('gate stop')" in capture_js
+
+
+@pytest.mark.unit
+def test_game_voice_route_end_avoids_double_mic_restore():
+    websocket_js = (ROOT / "static" / "app-websocket.js").read_text(encoding="utf-8")
+
+    assert "window.stopGameVoiceSttGate({ restoreOrdinaryMic: false });" in websocket_js
+
+
+@pytest.mark.unit
+def test_realtime_reconnect_resets_active_instructions():
+    realtime_py = (ROOT / "main_logic" / "omni_realtime_client.py").read_text(encoding="utf-8")
+
+    assert not re.search(
+        r"if\s+self\._active_instructions\s+is\s+None\s*:\s*\n\s*self\._active_instructions\s*=\s*instructions",
+        realtime_py,
+    )
+    assert re.search(
+        r"self\.instructions\s*=\s*instructions\s*\n\s*self\._active_instructions\s*=\s*instructions",
+        realtime_py,
+    )

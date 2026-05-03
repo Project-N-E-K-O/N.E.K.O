@@ -8,7 +8,11 @@ import sys
 
 from plugin.logging_config import get_logger
 from plugin.server.domain.errors import ServerDomainError
-from plugin.settings import USER_PACKAGE_PROFILES_ROOT, USER_PLUGIN_CONFIG_ROOT
+from plugin.settings import (
+    USER_PACKAGE_PROFILES_ROOT,
+    USER_PLUGIN_CONFIG_ROOT,
+    USER_PLUGIN_PACKAGES_ROOT,
+)
 
 _PLUGIN_ROOT = Path(__file__).resolve().parents[3]
 _CLI_ROOT = _PLUGIN_ROOT / "neko-plugin-cli"
@@ -17,7 +21,9 @@ _RUNTIME_PLUGINS_ROOT = _PLUGIN_ROOT / "plugins"
 # unpack（导入）目标目录：统一落到用户我的文档下的 plugins 配置根。
 _UNPACK_PLUGINS_ROOT = USER_PLUGIN_CONFIG_ROOT
 _UNPACK_PROFILES_ROOT = USER_PACKAGE_PROFILES_ROOT
-_TARGET_ROOT = _CLI_ROOT / "target"
+# pack/upload 产物（``.neko-plugin`` / ``.neko-bundle``）落地目录：
+# 必须落到用户可写的我的文档目录，否则 Nuitka 打包安装到 Program Files 后会失败。
+_TARGET_ROOT = USER_PLUGIN_PACKAGES_ROOT
 
 # Allowed extensions for uploaded plugin packages
 _ALLOWED_UPLOAD_SUFFIXES = frozenset({".neko-plugin", ".neko-bundle"})
