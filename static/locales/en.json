@@ -1358,6 +1358,7 @@
         "modelSavedLightingAndMmdFailed": "Model settings saved, but lighting and MMD settings failed to save",
         "modelSavedLightingFailed": "Model settings saved, but lighting settings failed to save",
         "modelSavedMmdSettingsFailed": "Model settings saved, but MMD settings failed to save",
+        "partialSaveWarning": "Model settings saved, but some related settings failed to save",
         "modelSettingsSavedWithLighting": "Model and lighting settings saved",
         "vrmModuleTimeout": "VRM module loading timed out. Please refresh and try again.",
         "loading": "Loading model list...",

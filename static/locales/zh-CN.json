@@ -1358,6 +1358,7 @@
         "modelSavedLightingAndMmdFailed": "已保存模型设置，光照和 MMD 设置保存失败",
         "modelSavedLightingFailed": "已保存模型设置，光照设置保存失败",
         "modelSavedMmdSettingsFailed": "已保存模型设置，MMD 设置保存失败",
+        "partialSaveWarning": "已保存模型设置，但部分设置保存失败",
         "modelSettingsSavedWithLighting": "已保存模型和光照设置",
         "vrmModuleTimeout": "VRM 模块加载超时，请刷新页面重试",
         "loading": "正在加载模型列表...",

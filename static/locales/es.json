@@ -1358,6 +1358,7 @@
         "modelSavedLightingAndMmdFailed": "Configuración del modelo guardada, pero no se guardaron la iluminación ni la configuración MMD",
         "modelSavedLightingFailed": "Configuración del modelo guardada, pero no se guardó la iluminación",
         "modelSavedMmdSettingsFailed": "Configuración del modelo guardada, pero no se guardó la configuración MMD",
+        "partialSaveWarning": "Configuración del modelo guardada, pero algunas opciones relacionadas no se guardaron",
         "modelSettingsSavedWithLighting": "Configuración del modelo y de iluminación guardada",
         "vrmModuleTimeout": "Se agotó el tiempo de carga del módulo VRM. Actualiza la página e inténtalo de nuevo.",
         "loading": "Cargando lista de modelos...",

@@ -1943,6 +1943,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     //
     // 注意：必须使用专用接口保存模型和光照设置，因为通用接口会过滤掉保留字段
     // 保存模型设置到角色的函数（全面升级版）
+    function createModelSaveResult(status, message, details = {}) {
+        return { status, message, details };
+    }
+
     async function saveModelToCharacter(modelName, itemId = null, vrmAnimation = null) {
         function decodeMaybeUrlComponent(value) {
             if (typeof value !== 'string') return value;
@@ -1980,7 +1984,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 if (typeof showToast === 'function') {
                     showToast(errorMsg, 'error');
                 }
-                return false;
+                return createModelSaveResult('fail', errorMsg, { reason: 'missing_character' });
             }
 
             // 在发送 PUT 请求保存数据前，添加校验
@@ -2233,12 +2237,23 @@ document.addEventListener('DOMContentLoaded', async () => {
                 saveMessage = t('live2d.modelSettingsSaved', `已保存模型设置`, { name: modelDisplayName });
             }
             showStatus(saveMessage, mmdSettingsFailed || lightingFailed ? 3000 : 2000);
-            return !mmdSettingsFailed && !lightingFailed;
+            return createModelSaveResult(
+                mmdSettingsFailed || lightingFailed ? 'partial' : 'ok',
+                saveMessage,
+                {
+                    lightingFailed,
+                    mmdSettingsFailed,
+                    modelSaved: true,
+                    lightingError: lightingResult && lightingResult.error,
+                    mmdSettingsError: mmdSettingsResult && mmdSettingsResult.error
+                }
+            );
 
         } catch (error) {
             console.error('保存模型设置失败:', error);
-            showStatus(t('live2d.saveFailed', `保存失败: ${error.message}`), 3000);
-            return false;
+            const errorMessage = t('live2d.saveFailed', `保存失败: ${error.message}`, { error: error.message });
+            showStatus(errorMessage, 3000);
+            return createModelSaveResult('fail', errorMessage, { reason: 'exception', error });
         }
     }
 
@@ -6764,49 +6779,61 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     });
 
-    savePositionBtn.addEventListener('click', async () => {
-        // Live3D模式下，即使模型未加载，只要有选择的模型就可以保存
-        if (currentModelType === 'live3d') {
-            const selectedModelPath = vrmModelSelect ? vrmModelSelect.value : null;
-            if (!selectedModelPath) {
-                const message = t('live2d.pleaseSelectModel', '请先选择一个模型');
-                showStatus(message, 2000);
-                showModelManagerToast(message, 2600, 'warning');
-                return;
-            }
-            // 如果没有currentModelInfo，使用当前选择的模型路径创建
-            if (!currentModelInfo) {
-                const selOpt = vrmModelSelect.options[vrmModelSelect.selectedIndex];
-                const subType = selOpt ? selOpt.getAttribute('data-sub-type') : null;
-                currentModelInfo = {
-                    name: selectedModelPath,
-                    path: selectedModelPath,
-                    type: subType || 'vrm'
-                };
-            }
-        } else {
-            // Live2D模式下需要currentModelInfo
-            if (!currentModelInfo) {
-                const message = t('live2d.pleaseSelectModel', '请先选择模型');
-                showStatus(message, 2000);
-                showModelManagerToast(message, 2600, 'warning');
-                return;
-            }
-        }
+    let savingInProgress = false;
 
-        const savingMessage = t('live2d.savingSettings', '正在保存设置...');
-        showStatus(savingMessage);
-        showModelManagerToast(savingMessage, 0, 'loading');
+    savePositionBtn.addEventListener('click', async () => {
+        if (savingInProgress) return;
+
+        savingInProgress = true;
+        const wasSaveButtonDisabled = savePositionBtn.disabled;
+        savePositionBtn.disabled = true;
 
         try {
+            // Live3D模式下，即使模型未加载，只要有选择的模型就可以保存
+            if (currentModelType === 'live3d') {
+                const selectedModelPath = vrmModelSelect ? vrmModelSelect.value : null;
+                if (!selectedModelPath) {
+                    const message = t('live2d.pleaseSelectModel', '请先选择一个模型');
+                    showStatus(message, 2000);
+                    showModelManagerToast(message, 2600, 'warning');
+                    return;
+                }
+                // 如果没有currentModelInfo，使用当前选择的模型路径创建
+                if (!currentModelInfo) {
+                    const selOpt = vrmModelSelect.options[vrmModelSelect.selectedIndex];
+                    const subType = selOpt ? selOpt.getAttribute('data-sub-type') : null;
+                    currentModelInfo = {
+                        name: selectedModelPath,
+                        path: selectedModelPath,
+                        type: subType || 'vrm'
+                    };
+                }
+            } else {
+                // Live2D模式下需要currentModelInfo
+                if (!currentModelInfo) {
+                    const message = t('live2d.pleaseSelectModel', '请先选择模型');
+                    showStatus(message, 2000);
+                    showModelManagerToast(message, 2600, 'warning');
+                    return;
+                }
+            }
+
+            const savingMessage = t('live2d.savingSettings', '正在保存设置...');
+            showStatus(savingMessage);
+            showModelManagerToast(savingMessage, 0, 'loading');
+
             let positionSuccess = false;
-            let modelSuccess = false;
+            let modelSaveResult = createModelSaveResult(
+                'fail',
+                t('live2d.saveFailedGeneral', '保存失败!'),
+                { reason: 'not_started' }
+            );
 
             // 根据模型类型保存不同的设置
             if (currentModelType === 'live3d') {
                 // Live3D 模式：保存模型设置
                 // 优先使用 path（含完整相对路径），name 仅为文件名
-                modelSuccess = await saveModelToCharacter(currentModelInfo.path || currentModelInfo.name, null, null);
+                modelSaveResult = await saveModelToCharacter(currentModelInfo.path || currentModelInfo.name, null, null);
             } else {
                 // Live2D 模式：保存位置、缩放和模型设置
                 if (!live2dModel) {
@@ -6824,26 +6851,40 @@ document.addEventListener('DOMContentLoaded', async () => {
                 );
 
                 // 保存模型设置到角色，同时传入item_id
-                modelSuccess = await saveModelToCharacter(currentModelInfo.name, currentModelInfo.item_id);
+                modelSaveResult = await saveModelToCharacter(currentModelInfo.name, currentModelInfo.item_id);
             }
+
+            const modelStatus = modelSaveResult && modelSaveResult.status ? modelSaveResult.status : 'fail';
+            const modelMessage = modelSaveResult && modelSaveResult.message
+                ? modelSaveResult.message
+                : t('live2d.saveFailedGeneral', '保存失败!');
+            const partialMessage = t(
+                'live2d.partialSaveWarning',
+                modelMessage || '已保存模型设置，但部分设置保存失败'
+            );
+            const modelSavedAtLeastPartially = modelStatus === 'ok' || modelStatus === 'partial';
 
             if (currentModelType === 'live3d') {
                 // Live3D 模式：只显示模型保存结果
-                if (modelSuccess) {
-                    const message = t('live2d.settingsSaved', '模型设置保存成功!');
+                if (modelStatus === 'ok') {
+                    const message = modelMessage || t('live2d.settingsSaved', '模型设置保存成功!');
                     showStatus(message, 2000);
                     showModelManagerToast(message, 2600, 'success');
                     window.hasUnsavedChanges = false;
                     window._savedModelSnapshot = captureSettingsSnapshot();
                     window._modelManagerHasSaved = true;
+                } else if (modelStatus === 'partial') {
+                    showStatus(partialMessage, 3000);
+                    showModelManagerToast(partialMessage, 3200, 'warning');
+                    window._modelManagerHasSaved = true;
                 } else {
-                    const message = t('live2d.saveFailedGeneral', '保存失败!');
+                    const message = modelMessage || t('live2d.saveFailedGeneral', '保存失败!');
                     showStatus(message, 2000);
                     showModelManagerToast(message, 3200, 'error');
                 }
             } else {
                 // Live2D 模式：显示位置和模型保存结果
-                if (positionSuccess && modelSuccess) {
+                if (positionSuccess && modelStatus === 'ok') {
                     const message = t('live2d.settingsSaved', '位置和模型设置保存成功!');
                     showStatus(message, 2000);
                     showModelManagerToast(message, 2600, 'success');
@@ -6852,22 +6893,32 @@ document.addEventListener('DOMContentLoaded', async () => {
                     window._modelManagerHasSaved = true;
                     // 不在保存时立即通知主页，而是在返回主页时通知
                     // sendMessageToMainPage('reload_model');
+                } else if (positionSuccess && modelStatus === 'partial') {
+                    showStatus(partialMessage, 3000);
+                    showModelManagerToast(partialMessage, 3200, 'warning');
+                    window._modelManagerHasSaved = true;
                 } else if (positionSuccess) {
                     const message = t('live2d.positionSavedModelFailed', '位置保存成功，模型设置保存失败!');
                     showStatus(message, 2000);
                     showModelManagerToast(message, 3200, 'warning');
                     // 位置偏好已保存，主界面如触发重载可恢复位置；但仅在用户退出时才通知
                     window._modelManagerHasSaved = true;
-                } else if (modelSuccess) {
+                } else if (modelSavedAtLeastPartially) {
                     const message = t('live2d.modelSavedPositionFailed', '模型设置保存成功，位置保存失败!');
                     showStatus(message, 2000);
-                    showModelManagerToast(message, 3200, 'warning');
-                    window._savedModelSnapshot = captureSettingsSnapshot();
+                    showModelManagerToast(
+                        modelStatus === 'partial' ? partialMessage : message,
+                        3200,
+                        'warning'
+                    );
+                    if (modelStatus === 'ok') {
+                        window._savedModelSnapshot = captureSettingsSnapshot();
+                    }
                     window._modelManagerHasSaved = true;
                     // 不在保存时立即通知主页，而是在返回主页时通知
                     // sendMessageToMainPage('reload_model');
                 } else {
-                    const message = t('live2d.saveFailedGeneral', '保存失败!');
+                    const message = modelMessage || t('live2d.saveFailedGeneral', '保存失败!');
                     showStatus(message, 2000);
                     showModelManagerToast(message, 3200, 'error');
                 }
@@ -6877,6 +6928,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             const message = t('live2d.saveFailed', `保存失败: ${error.message}`, { error: error.message });
             showStatus(message, 3000);
             showModelManagerToast(message, 3600, 'error');
+        } finally {
+            savingInProgress = false;
+            savePositionBtn.disabled = wasSaveButtonDisabled;
         }
     });
 

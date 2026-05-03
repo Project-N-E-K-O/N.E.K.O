@@ -1358,6 +1358,7 @@
         "modelSavedLightingAndMmdFailed": "모델 설정은 저장되었지만 조명 및 MMD 설정 저장에 실패했습니다",
         "modelSavedLightingFailed": "모델 설정은 저장되었지만 조명 설정 저장에 실패했습니다",
         "modelSavedMmdSettingsFailed": "모델 설정은 저장되었지만 MMD 설정 저장에 실패했습니다",
+        "partialSaveWarning": "모델 설정은 저장되었지만 일부 관련 설정 저장에 실패했습니다",
         "modelSettingsSavedWithLighting": "모델 및 조명 설정이 저장되었습니다",
         "vrmModuleTimeout": "VRM 모듈 로드 시간이 초과되었습니다. 페이지를 새로고침해 주세요.",
         "loading": "모델 목록 로드 중...",

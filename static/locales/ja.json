@@ -1358,6 +1358,7 @@
         "modelSavedLightingAndMmdFailed": "モデル設定を保存しましたが、ライティングと MMD 設定の保存に失敗しました",
         "modelSavedLightingFailed": "モデル設定を保存しましたが、ライティング設定の保存に失敗しました",
         "modelSavedMmdSettingsFailed": "モデル設定を保存しましたが、MMD 設定の保存に失敗しました",
+        "partialSaveWarning": "モデル設定を保存しましたが、一部の関連設定の保存に失敗しました",
         "modelSettingsSavedWithLighting": "モデルとライティング設定を保存しました",
         "vrmModuleTimeout": "VRM モジュールの読み込みがタイムアウトしました。ページを再読み込みしてください",
         "loading": "モデルリストを読み込み中...",

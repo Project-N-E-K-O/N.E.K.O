@@ -1358,6 +1358,7 @@
         "modelSavedLightingAndMmdFailed": "Configurações do modelo salvas, mas as configurações de iluminação e MMD falharam",
         "modelSavedLightingFailed": "Configurações do modelo salvas, mas as configurações de iluminação falharam",
         "modelSavedMmdSettingsFailed": "Configurações do modelo salvas, mas as configurações MMD falharam",
+        "partialSaveWarning": "Configurações do modelo salvas, mas algumas configurações relacionadas falharam",
         "modelSettingsSavedWithLighting": "Configurações do modelo e de iluminação salvas",
         "vrmModuleTimeout": "O carregamento do módulo VRM expirou. Atualize a página e tente novamente.",
         "loading": "Carregando lista de modelos...",
