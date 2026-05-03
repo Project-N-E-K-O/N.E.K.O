@@ -115,14 +115,13 @@
         }
 
         if (appendedToReact) {
-            window.currentGeminiMessage = {
+            window.currentTurnGeminiBubbles = [{
                 dataset: { reactChatMessageId: messageId },
                 parentNode: null,
                 isConnected: true,
                 textContent: '[' + timeStr + '] \u{1F380} ' + cleanText,
                 nodeType: 1
-            };
-            window.currentTurnGeminiBubbles = [window.currentGeminiMessage];
+            }];
             return true;
         }
 
@@ -132,7 +131,6 @@
         var cc = chatContainer();
         if (!cc) return false;
         cc.appendChild(messageDiv);
-        window.currentGeminiMessage = messageDiv;
         window.currentTurnGeminiBubbles = [messageDiv];
         cc.scrollTop = cc.scrollHeight;
         return true;

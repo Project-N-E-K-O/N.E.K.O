@@ -19,6 +19,7 @@ def test_response_discarded_visible_in_react_chat():
         "document.createElement('div')"
     )
     assert "status: 'failed'" in helper_block
+    assert "window.currentGeminiMessage" not in helper_block
 
     response_discarded_block = source.split("// -------- response_discarded --------", 1)[1].split(
         "// -------- user_transcript --------",
