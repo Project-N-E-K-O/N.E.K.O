@@ -667,7 +667,7 @@
                 const isLive2DActive = function() {
                     const live2dContainer = document.getElementById('live2d-container');
                     if (!isVisible(live2dContainer)) return false;
-                    if (!window.live2dManager) return false;
+                    if (!window.live2dManager?.currentModel) return false;
                     const vrmReady = !!window.vrmManager?.currentModel?.vrm;
                     const mmdReady = !!window.mmdManager?.currentModel?.mesh;
                     return !vrmReady && !mmdReady;
