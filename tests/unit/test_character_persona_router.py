@@ -63,7 +63,12 @@ def _parse_json_response(response):
 
 
 @pytest.mark.unit
-def test_get_character_data_uses_persona_override_in_runtime_view():
+def test_get_character_data_uses_persona_override_in_runtime_view(monkeypatch):
+    # Pin the runtime language to JA so we can prove the late-binding language branch
+    # in get_persona_prompt_guidance actually fires (CodeRabbit nitpick on PR #1086):
+    # the always-English IMPORTANT tail alone would pass even if the L10N lookup were broken.
+    monkeypatch.setattr("utils.language_utils.get_global_language_full", lambda: "ja")
+
     with TemporaryDirectory() as td:
         config_manager = _make_config_manager(Path(td))
         bootstrap_local_cloudsave_environment(config_manager)
@@ -92,13 +97,20 @@ def test_get_character_data_uses_persona_override_in_runtime_view():
         assert character_data[current_name]["性格原型"] == "经典元气猫娘"
         assert character_data[current_name]["一句话台词"] == "今天也让我陪着你吧。"
         # Late-binding: stored prompt_guidance string is ignored; the live preset template
-        # is re-resolved by preset_id. "sunny cat girl" lives in the always-English IMPORTANT
-        # tail of classic_genki, so it's a language-agnostic marker.
+        # is re-resolved by preset_id. "sunny cat girl" is the always-English IMPORTANT tail —
+        # presence proves the persona template was injected at all.
         assert "sunny cat girl" in prompt_map[current_name]
+        # JA-only marker — proves the language branch resolved to "ja" instead of falling back.
+        # "煮干しのご褒美" only appears in classic_genki's ja template (other locales use
+        # "小鱼干"/"fishy reward"/"멸치"/"рыбку").
+        assert "煮干しのご褒美" in prompt_map[current_name]
 
 
 @pytest.mark.unit
-def test_get_character_data_ignores_stale_persona_selection_system_prompt_when_override_exists():
+def test_get_character_data_ignores_stale_persona_selection_system_prompt_when_override_exists(monkeypatch):
+    # Pin runtime language to JA to actually exercise the L10N branch (see PR #1086 review).
+    monkeypatch.setattr("utils.language_utils.get_global_language_full", lambda: "ja")
+
     with TemporaryDirectory() as td:
         config_manager = _make_config_manager(Path(td))
         bootstrap_local_cloudsave_environment(config_manager)
@@ -133,14 +145,20 @@ def test_get_character_data_ignores_stale_persona_selection_system_prompt_when_o
         _, _, _, character_data, _, prompt_map, _, _, _ = config_manager.get_character_data()
 
         assert character_data[current_name]["性格原型"] == "优雅全能管家"
-        # Live preset template marker (English IMPORTANT tail, language-agnostic).
+        # English IMPORTANT tail (language-agnostic) — proves persona template was injected.
         assert "butler-cat girl" in prompt_map[current_name]
+        # JA-only marker — proves the late-binding language branch resolved to "ja".
+        # "かしこまりましたにゃ" (hiragana) only appears in elegant_butler's ja template.
+        assert "かしこまりましたにゃ" in prompt_map[current_name]
         assert "<NEKO_PERSONA_SELECTION>" not in prompt_map[current_name]
         assert "笨蛋人类" not in prompt_map[current_name]
 
 
 @pytest.mark.unit
-def test_get_character_data_keeps_custom_system_prompt_when_override_exists():
+def test_get_character_data_keeps_custom_system_prompt_when_override_exists(monkeypatch):
+    # Pin runtime language to JA to actually exercise the L10N branch (see PR #1086 review).
+    monkeypatch.setattr("utils.language_utils.get_global_language_full", lambda: "ja")
+
     with TemporaryDirectory() as td:
         config_manager = _make_config_manager(Path(td))
         bootstrap_local_cloudsave_environment(config_manager)
@@ -171,11 +189,17 @@ def test_get_character_data_keeps_custom_system_prompt_when_override_exists():
 
         assert character_data[current_name]["性格原型"] == "经典元气猫娘"
         assert "reserved fox spirit" in prompt_map[current_name]
+        # English IMPORTANT tail (language-agnostic) — template was injected.
         assert "sunny cat girl" in prompt_map[current_name]
+        # JA-only marker — late-binding resolved to "ja" (see PR #1086 review).
+        assert "煮干しのご褒美" in prompt_map[current_name]
 
 
 @pytest.mark.unit
-def test_get_character_data_strips_legacy_persona_block_but_keeps_custom_system_prompt():
+def test_get_character_data_strips_legacy_persona_block_but_keeps_custom_system_prompt(monkeypatch):
+    # Pin runtime language to JA to actually exercise the L10N branch (see PR #1086 review).
+    monkeypatch.setattr("utils.language_utils.get_global_language_full", lambda: "ja")
+
     with TemporaryDirectory() as td:
         config_manager = _make_config_manager(Path(td))
         bootstrap_local_cloudsave_environment(config_manager)
@@ -216,7 +240,10 @@ def test_get_character_data_strips_legacy_persona_block_but_keeps_custom_system_
         assert "moonlight" in prompt_map[current_name]
         assert "<NEKO_PERSONA_SELECTION>" not in prompt_map[current_name]
         assert "笨蛋人类" not in prompt_map[current_name]
+        # English IMPORTANT tail (language-agnostic) — template was injected.
         assert "sunny cat girl" in prompt_map[current_name]
+        # JA-only marker — late-binding resolved to "ja" (see PR #1086 review).
+        assert "煮干しのご褒美" in prompt_map[current_name]
 
 
 @pytest.mark.unit
