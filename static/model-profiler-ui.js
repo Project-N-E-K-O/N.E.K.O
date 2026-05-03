@@ -18,7 +18,7 @@ class ModelProfilerUI {
      * @param {HTMLElement} opts.container - 挂载容器
      * @param {() => object} opts.getManager - 获取当前模型管理器的函数
      * @param {() => THREE.WebGLRenderer} opts.getRenderer - 获取渲染器的函数
-     * @param {() => string|null} [opts.getUnsupportedReason] - 返回非空字符串则三个快照面板都显示该提示，跳过实际采样（用于 Live2D 等不支持类型）
+     * @param {() => ({key: string, fallback: string}|null)} [opts.getUnsupportedReason] - 返回 {key, fallback} 则三个快照面板都显示该提示并跳过实际采样（用于 Live2D 等不支持类型）；key 用于 _refreshI18n 重渲染，fallback 是 i18n 未就绪时的兜底文本
      * @param {boolean} [opts.collapsed=true] - 初始是否折叠
      */
     constructor(opts) {
@@ -579,15 +579,20 @@ class ModelProfilerUI {
         this._lastSnapshot = null;
         this._lastAssessment = null;
         const reason = this.getUnsupportedReason?.();
-        if (reason) {
-            this._fillPlaceholder(this._elements.modelInfo, reason);
-            this._fillPlaceholder(this._elements.assessment, reason);
-            this._fillPlaceholder(this._elements.gpuInfo, reason);
+        if (reason && reason.key) {
+            const text = this._t(reason.key, reason.fallback || reason.key);
+            this._fillPlaceholder(this._elements.modelInfo, text, reason.key);
+            this._fillPlaceholder(this._elements.assessment, text, reason.key);
+            this._fillPlaceholder(this._elements.gpuInfo, text, reason.key);
             return;
         }
         const manager = this.getManager?.();
         if (!manager) {
-            this._fillPlaceholder(this._elements.modelInfo, this._t('profiler.placeholder.noManager', '未检测到模型管理器'));
+            this._fillPlaceholder(
+                this._elements.modelInfo,
+                this._t('profiler.placeholder.noManager', '未检测到模型管理器'),
+                'profiler.placeholder.noManager'
+            );
             return;
         }
         const snap = this.profiler.snapshot(manager);
@@ -598,12 +603,13 @@ class ModelProfilerUI {
         this._renderGPUInfo(snap);
     }
 
-    _fillPlaceholder(el, text) {
+    _fillPlaceholder(el, text, key) {
         if (!el) return;
         el.innerHTML = '';
         const div = document.createElement('div');
         div.className = 'profiler-placeholder';
         div.textContent = text;
+        if (key) div.dataset.i18nKey = key;
         el.appendChild(div);
     }
 
@@ -623,9 +629,9 @@ class ModelProfilerUI {
         for (const el of Object.values(this._elements.stats)) {
             el.textContent = '--';
         }
-        this._fillPlaceholder(this._elements.modelInfo, this._t('profiler.placeholder.snapshotForInfo', '点击「快照」获取模型信息'));
-        this._fillPlaceholder(this._elements.assessment, this._t('profiler.placeholder.snapshotForRating', '点击「快照」获取评级'));
-        this._fillPlaceholder(this._elements.gpuInfo, this._t('profiler.placeholder.snapshotForGpu', '点击「快照」获取 GPU 信息'));
+        this._fillPlaceholder(this._elements.modelInfo, this._t('profiler.placeholder.snapshotForInfo', '点击「快照」获取模型信息'), 'profiler.placeholder.snapshotForInfo');
+        this._fillPlaceholder(this._elements.assessment, this._t('profiler.placeholder.snapshotForRating', '点击「快照」获取评级'), 'profiler.placeholder.snapshotForRating');
+        this._fillPlaceholder(this._elements.gpuInfo, this._t('profiler.placeholder.snapshotForGpu', '点击「快照」获取 GPU 信息'), 'profiler.placeholder.snapshotForGpu');
         this._clearChart();
     }
 
@@ -818,7 +824,7 @@ class ModelProfilerUI {
         const el = this._elements.modelInfo;
         const t = (k, fb) => this._t(k, fb);
         if (!snap || !snap.loaded) {
-            this._fillPlaceholder(el, t('profiler.placeholder.noModel', '未加载模型'));
+            this._fillPlaceholder(el, t('profiler.placeholder.noModel', '未加载模型'), 'profiler.placeholder.noModel');
             return;
         }
 
@@ -896,7 +902,7 @@ class ModelProfilerUI {
         const el = this._elements.assessment;
         const t = (k, fb) => this._t(k, fb);
         if (!assessment || assessment.overall === 'N/A') {
-            this._fillPlaceholder(el, t('profiler.placeholder.cannotRate', '无法评级'));
+            this._fillPlaceholder(el, t('profiler.placeholder.cannotRate', '无法评级'), 'profiler.placeholder.cannotRate');
             return;
         }
 
@@ -931,7 +937,7 @@ class ModelProfilerUI {
         const el = this._elements.gpuInfo;
         const t = (k, fb) => this._t(k, fb);
         if (!snap?.gpu) {
-            this._fillPlaceholder(el, t('profiler.placeholder.cannotGetGpu', '无法获取 GPU 信息'));
+            this._fillPlaceholder(el, t('profiler.placeholder.cannotGetGpu', '无法获取 GPU 信息'), 'profiler.placeholder.cannotGetGpu');
             return;
         }
 

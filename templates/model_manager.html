@@ -684,7 +684,9 @@
                         return mgr ? mgr.renderer : null;
                     },
                     getUnsupportedReason: function() {
-                        return isLive2DActive() ? 'Live2D 模型暂不支持性能分析' : null;
+                        return isLive2DActive()
+                            ? { key: 'profiler.placeholder.live2dUnsupported', fallback: 'Live2D 模型暂不支持性能分析' }
+                            : null;
                     }
                 });
                 window._profilerUI.mount();
