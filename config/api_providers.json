@@ -342,7 +342,7 @@
       "restricted": true
     }
   },
-  "_comment_livestream_config": "Livestream (主播) overlay on top of core_api_type='free': when enabled with non-empty server_prefix, free路 URLs (/core /text/v1 /tts) auto-derive from server_prefix, voice falls back to voice_id (bypasses free_voices preset gate), and OmniRealtimeClient skips 90s silence-timeout. Leave server_prefix/voice_id empty in committed configs—fill in locally.",
+  "_comment_livestream_config": "Livestream (主播) overlay on top of core_api_type='free': when enabled with non-empty server_prefix, free路 URLs (/core /text/v1 /tts) auto-derive from server_prefix, voice falls back to voice_id (bypasses free_voices preset gate), and OmniRealtimeClient skips 90s silence-timeout. Preferred path: drop a standalone config/livestream_config.json (untracked via .gitignore) for single-file distribution. The field below is a fallback only; keep server_prefix/voice_id empty in committed configs.",
   "livestream_config": {
     "enabled": false,
     "server_prefix": "",

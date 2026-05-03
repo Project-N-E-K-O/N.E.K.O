@@ -339,19 +339,47 @@ def cosyvoice_model_supports_language_hints(model: str | None) -> bool:
     return not str(model or _COSYVOICE_CLONE_MODEL_DEFAULT).startswith("cosyvoice-v2")
 
 
+def _get_livestream_config_path() -> Path:
+    """独立 livestream 配置文件路径。
+
+    优先于 api_providers.json 中的 livestream_config 字段，方便分发给
+    主播作为单文件补丁——把这个 json 丢进 config 目录即可生效，无需
+    动 tracked 的 api_providers.json。文件被 .gitignore 的 config/*.json
+    默认覆盖，不会进 git。
+    """
+    return _get_app_root() / "config" / "livestream_config.json"
+
+
 def get_livestream_config() -> Dict[str, Any]:
-    """读取 api_providers.json → livestream_config 节。
+    """读取 livestream 配置（独立文件优先，api_providers.json 字段 fallback）。
 
     Livestream 模式是叠加在 core_api_type='free' 之上的子模式，启用后：
     - free 路所有 lanlan.tech URL 重写为 server_prefix 派生地址（/core /text/v1 /tts）
     - free 路 voice 强制使用 voice_id（绕过 free_voices preset gate）
     - OmniRealtimeClient 跳过 90 秒静默闭麦判定
 
+    优先级：
+    1. ``config/livestream_config.json``（untracked，主播分发场景的单文件补丁）
+    2. ``config/api_providers.json`` 的 ``livestream_config`` 字段（兼容路径）
+
     Returns:
         Dict: {'enabled': bool, 'server_prefix': str, 'voice_id': str}
-        缺失字段以默认值（False / 空串）兜底。
+        缺失/读取失败/字段缺失时以默认值（False / 空串）兜底。
     """
-    raw = get_config().get('livestream_config') or {}
+    raw: Optional[Dict[str, Any]] = None
+    standalone_path = _get_livestream_config_path()
+    if standalone_path.is_file():
+        try:
+            with open(standalone_path, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+            if isinstance(loaded, dict):
+                raw = loaded
+        except Exception as e:
+            logger.warning(
+                f"读取 {standalone_path.name} 失败，回退到 api_providers.json: {e}"
+            )
+    if raw is None:
+        raw = get_config().get('livestream_config') or {}
     return {
         'enabled': bool(raw.get('enabled', False)),
         'server_prefix': str(raw.get('server_prefix', '') or '').strip(),
