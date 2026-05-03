@@ -712,8 +712,13 @@
 
         // Clear stale GalGame options as soon as the user sends anything; the
         // next turn-end will trigger a fresh fetch if the mode is still on.
-        if (state.galgameOptions && state.galgameOptions.length > 0) {
+        // Bumping _galgameRequestSeq is critical even when the array is empty:
+        // an in-flight fetch from the previous turn would otherwise resolve
+        // and render stale A/B/C options into the new turn context.
+        var hadOptions = state.galgameOptions && state.galgameOptions.length > 0;
+        if (hadOptions || state.galgameOptionsLoading) {
             state.galgameOptions = [];
+            state.galgameOptionsLoading = false;
             state._galgameRequestSeq += 1;
             renderWindow();
         }
