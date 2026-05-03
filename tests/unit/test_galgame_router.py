@@ -112,6 +112,8 @@ async def test_galgame_uses_summary_model_without_temperature(monkeypatch):
     assert data["success"] is True
     assert "fallback" not in data
     assert data["options"][0]["text"] == "先确认你刚才说的重点。"
+    assert captured["model"] == "local-summary"
+    assert captured["base_url"] == "http://127.0.0.1:11434/v1"
     assert captured["api_key"] == ""
     assert captured["kwargs"] == _expected_llm_kwargs()
     assert config_manager.calls == ["summary"]
