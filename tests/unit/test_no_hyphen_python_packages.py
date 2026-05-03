@@ -60,6 +60,7 @@ _EXCLUDED_DIR_NAMES = frozenset(
         "build_nuitka",
         "launcher.build",
         ".claude",  # 含 worktrees
+        ".agent",  # AI 编程助手 skill 脚本（非项目源码、不进 Nuitka bundle）
         ".pytest_cache",
         ".mypy_cache",
         ".ruff_cache",
@@ -110,7 +111,14 @@ def test_no_hyphen_directory_contains_python_source() -> None:
     for d in _iter_dirs():
         if "-" not in d.name:
             continue
-        py_files = sorted(p.name for p in d.glob("*.py"))
+        # rglob 而非 glob：嵌套场景（如 my-tool/pkg/__init__.py）整条路径被
+        # 父级连字符卡住，仍然不可作为 Python 包导入，必须一并报。但 rglob
+        # 会下钻到 __pycache__ / .venv 等噪声目录，按 _is_excluded_part 过滤。
+        py_files = sorted(
+            p.relative_to(d).as_posix()
+            for p in d.rglob("*.py")
+            if not any(_is_excluded_part(part) for part in p.relative_to(d).parts)
+        )
         if not py_files:
             continue
         rel = d.relative_to(PROJECT_ROOT).as_posix()

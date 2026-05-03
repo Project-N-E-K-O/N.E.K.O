@@ -73,7 +73,7 @@ For diagnosing packaging issues, prefer:
 
 ## Defense in depth
 
-The historical neko-plugin-cli bug (PR #TBD, "rename neko-plugin-cli
+The historical neko-plugin-cli bug (PR #1115, "rename neko-plugin-cli
 → neko_plugin_cli") sat in production for weeks because nothing alerted on
 it. We now have three layers:
 
