@@ -78,6 +78,10 @@ export default function MessageList({
       }
     });
 
+    // 同时观察容器自身：galgame 模式开关 / 选项面板展开收起时
+    // .message-list 的 clientHeight 会被外层压缩，没有这一条最后一条消息
+    // 在面板长高的瞬间会被推出视口而不会自动跟着滚下来。
+    observer.observe(container);
     for (const child of container.children) {
       observer.observe(child);
     }
