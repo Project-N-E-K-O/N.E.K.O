@@ -29,6 +29,13 @@ class PluginSpec:
     #   static_ui, async_support, bus_events, settings
 
     create_pyproject: bool = True
+    create_readme: bool = True
+    create_tests: bool = True
+    create_gitignore: bool = True
+    create_vscode: bool = True
+    create_github_actions: bool = False
+    neko_repository: str = "owner/N.E.K.O"
+    neko_ref: str = "main"
     quick_start: bool = False
 
     @property
@@ -67,6 +74,41 @@ def generate_plugin(spec: PluginSpec, target_dir: Path) -> list[Path]:
         pyproject_path = target_dir / "pyproject.toml"
         pyproject_path.write_text(_render_pyproject_toml(spec), encoding="utf-8", newline="\n")
         created.append(pyproject_path)
+
+    if spec.create_readme:
+        readme_path = target_dir / "README.md"
+        readme_path.write_text(_render_readme_md(spec), encoding="utf-8", newline="\n")
+        created.append(readme_path)
+
+    if spec.create_tests:
+        tests_dir = target_dir / "tests"
+        tests_dir.mkdir(parents=True, exist_ok=True)
+        smoke_path = tests_dir / "test_smoke.py"
+        smoke_path.write_text(_render_smoke_test(spec), encoding="utf-8", newline="\n")
+        created.append(smoke_path)
+
+    if spec.create_gitignore:
+        gitignore_path = target_dir / ".gitignore"
+        gitignore_path.write_text(_render_gitignore(), encoding="utf-8", newline="\n")
+        created.append(gitignore_path)
+
+    if spec.create_vscode:
+        vscode_dir = target_dir / ".vscode"
+        vscode_dir.mkdir(parents=True, exist_ok=True)
+        settings_path = vscode_dir / "settings.json"
+        settings_path.write_text(_render_vscode_settings(), encoding="utf-8", newline="\n")
+        created.append(settings_path)
+
+        tasks_path = vscode_dir / "tasks.json"
+        tasks_path.write_text(_render_vscode_tasks(spec), encoding="utf-8", newline="\n")
+        created.append(tasks_path)
+
+    if spec.create_github_actions:
+        workflow_dir = target_dir / ".github" / "workflows"
+        workflow_dir.mkdir(parents=True, exist_ok=True)
+        workflow_path = workflow_dir / "verify.yml"
+        workflow_path.write_text(_render_verify_workflow(spec), encoding="utf-8", newline="\n")
+        created.append(workflow_path)
 
     return created
 
@@ -362,6 +404,222 @@ def _render_pyproject_toml(spec: PluginSpec) -> str:
 name = "{spec.plugin_id}"
 version = "{spec.version}"
 dependencies = []
+'''
+
+
+# ---------------------------------------------------------------------------
+# Repository support files
+# ---------------------------------------------------------------------------
+
+def _render_readme_md(spec: PluginSpec) -> str:
+    name = spec.name or spec.plugin_id
+    description = spec.description or "Describe what this plugin does and how to configure it."
+    return f'''# {name}
+
+{description}
+
+## Development
+
+This repository is meant to live at:
+
+```text
+N.E.K.O/plugin/plugins/{spec.plugin_id}
+```
+
+From the N.E.K.O `plugin/` directory:
+
+```bash
+uv run python neko-plugin-cli/cli.py pack {spec.plugin_id}
+uv run python neko-plugin-cli/cli.py inspect neko-plugin-cli/target/{spec.plugin_id}.neko-plugin
+uv run python neko-plugin-cli/cli.py verify neko-plugin-cli/target/{spec.plugin_id}.neko-plugin
+```
+
+## Entry
+
+```toml
+entry = "{spec.entry_point}"
+```
+'''
+
+
+def _render_smoke_test(spec: PluginSpec) -> str:
+    return f'''from pathlib import Path
+
+
+def test_plugin_manifest_exists() -> None:
+    root = Path(__file__).resolve().parents[1]
+    manifest = root / "plugin.toml"
+    assert manifest.is_file()
+    text = manifest.read_text(encoding="utf-8")
+    assert 'id = "{spec.plugin_id}"' in text
+    assert 'entry = "{spec.entry_point}"' in text
+'''
+
+
+def _render_gitignore() -> str:
+    return '''__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+dist/
+build/
+*.egg-info/
+.env
+.DS_Store
+'''
+
+
+def _render_vscode_settings() -> str:
+    return '''{
+  "nekoPlugin.pluginRoot": "../..",
+  "python.analysis.extraPaths": [
+    "${workspaceFolder}/../.."
+  ]
+}
+'''
+
+
+def _render_vscode_tasks(spec: PluginSpec) -> str:
+    return f'''{{
+  "version": "2.0.0",
+  "tasks": [
+    {{
+      "label": "N.E.K.O: pack {spec.plugin_id}",
+      "type": "shell",
+      "command": "uv run python neko-plugin-cli/cli.py pack {spec.plugin_id}",
+      "options": {{
+        "cwd": "${{config:nekoPlugin.pluginRoot}}"
+      }},
+      "problemMatcher": []
+    }},
+    {{
+      "label": "N.E.K.O: verify {spec.plugin_id}",
+      "type": "shell",
+      "command": "uv run python neko-plugin-cli/cli.py verify {spec.plugin_id}.neko-plugin",
+      "options": {{
+        "cwd": "${{config:nekoPlugin.pluginRoot}}"
+      }},
+      "problemMatcher": []
+    }},
+    {{
+      "label": "N.E.K.O: inspect {spec.plugin_id}",
+      "type": "shell",
+      "command": "uv run python neko-plugin-cli/cli.py inspect {spec.plugin_id}.neko-plugin",
+      "options": {{
+        "cwd": "${{config:nekoPlugin.pluginRoot}}"
+      }},
+      "problemMatcher": []
+    }},
+    {{
+      "label": "N.E.K.O: test {spec.plugin_id}",
+      "type": "shell",
+      "command": "uv run pytest ${{workspaceFolder}}/tests",
+      "options": {{
+        "cwd": "${{config:nekoPlugin.pluginRoot}}"
+      }},
+      "problemMatcher": []
+    }}
+  ]
+}}
+'''
+
+
+def _render_verify_workflow(spec: PluginSpec) -> str:
+    return f'''name: Verify N.E.K.O Plugin
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+env:
+  PLUGIN_ID: {spec.plugin_id}
+  NEKO_REPOSITORY: {spec.neko_repository}
+  NEKO_REF: {spec.neko_ref}
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout plugin repository
+        uses: actions/checkout@v4
+        with:
+          path: plugin-repo
+
+      - name: Checkout N.E.K.O
+        uses: actions/checkout@v4
+        with:
+          repository: ${{{{ env.NEKO_REPOSITORY }}}}
+          ref: ${{{{ env.NEKO_REF }}}}
+          path: neko
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Mount plugin into N.E.K.O tree
+        run: |
+          rm -rf "neko/plugin/plugins/${{PLUGIN_ID}}"
+          mkdir -p neko/plugin/plugins
+          cp -R plugin-repo "neko/plugin/plugins/${{PLUGIN_ID}}"
+
+      - name: Test plugin
+        working-directory: neko/plugin
+        run: |
+          if [ -d "plugins/${{PLUGIN_ID}}/tests" ]; then
+            uv run pytest "plugins/${{PLUGIN_ID}}/tests"
+          else
+            echo "No plugin tests found; skipping."
+          fi
+
+      - name: Pack and verify
+        working-directory: neko/plugin
+        run: |
+          uv run python neko-plugin-cli/cli.py pack "${{PLUGIN_ID}}"
+          uv run python neko-plugin-cli/cli.py inspect "${{PLUGIN_ID}}.neko-plugin" | tee "neko-plugin-cli/target/${{PLUGIN_ID}}.inspect.txt"
+          uv run python neko-plugin-cli/cli.py verify "${{PLUGIN_ID}}.neko-plugin" | tee "neko-plugin-cli/target/${{PLUGIN_ID}}.verify.txt"
+
+      - name: Write verification summary
+        working-directory: neko/plugin
+        run: |
+          PACKAGE="neko-plugin-cli/target/${{PLUGIN_ID}}.neko-plugin"
+          PACKAGE_SHA256="$(sha256sum "$PACKAGE" | awk '{{print $1}}')"
+          NEKO_COMMIT="$(git -C .. rev-parse HEAD)"
+
+          {{
+            echo "## N.E.K.O Plugin Verification"
+            echo ""
+            echo "| Field | Value |"
+            echo "| --- | --- |"
+            echo "| Plugin ID | ${{PLUGIN_ID}} |"
+            echo "| Plugin commit | ${{GITHUB_SHA}} |"
+            echo "| N.E.K.O repository | ${{NEKO_REPOSITORY}} |"
+            echo "| N.E.K.O ref | ${{NEKO_REF}} |"
+            echo "| N.E.K.O commit | ${{NEKO_COMMIT}} |"
+            echo "| Package | ${{PLUGIN_ID}}.neko-plugin |"
+            echo "| Package SHA256 | ${{PACKAGE_SHA256}} |"
+            echo ""
+            echo "### Inspect"
+            echo '```text'"
+            cat "neko-plugin-cli/target/${{PLUGIN_ID}}.inspect.txt"
+            echo '```'
+            echo ""
+            echo "### Verify"
+            echo '```text'"
+            cat "neko-plugin-cli/target/${{PLUGIN_ID}}.verify.txt"
+            echo '```'
+          }} >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload verification artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{{{ env.PLUGIN_ID }}}}-verification
+          path: |
+            neko/plugin/neko-plugin-cli/target/${{{{ env.PLUGIN_ID }}}}.neko-plugin
+            neko/plugin/neko-plugin-cli/target/${{{{ env.PLUGIN_ID }}}}.inspect.txt
+            neko/plugin/neko-plugin-cli/target/${{{{ env.PLUGIN_ID }}}}.verify.txt
 '''
 
 

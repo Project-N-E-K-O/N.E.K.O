@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+import shutil
 
 import pytest
 
@@ -50,6 +51,11 @@ def test_generate_quick_start_creates_expected_files(tmp_path: Path) -> None:
     assert "plugin.toml" in names
     assert "__init__.py" in names
     assert "pyproject.toml" in names
+    assert "README.md" in names
+    assert "test_smoke.py" in names
+    assert ".gitignore" in names
+    assert "settings.json" in names
+    assert "tasks.json" in names
 
     toml_text = (target / "plugin.toml").read_text(encoding="utf-8")
     assert 'id = "quick_demo"' in toml_text
@@ -63,6 +69,20 @@ def test_generate_quick_start_creates_expected_files(tmp_path: Path) -> None:
     assert "Hello, {name}" in init_text
     assert "Err" not in init_text
     assert "SdkError" not in init_text
+
+    readme_text = (target / "README.md").read_text(encoding="utf-8")
+    assert "uv run python neko-plugin-cli/cli.py pack quick_demo" in readme_text
+    assert 'entry = "plugin.plugins.quick_demo:QuickDemoPlugin"' in readme_text
+    assert (target / "tests" / "test_smoke.py").is_file()
+    assert (target / ".vscode" / "settings.json").is_file()
+    assert (target / ".vscode" / "tasks.json").is_file()
+
+    tasks_text = (target / ".vscode" / "tasks.json").read_text(encoding="utf-8")
+    assert "N.E.K.O: pack quick_demo" in tasks_text
+    assert "uv run python neko-plugin-cli/cli.py verify quick_demo.neko-plugin" in tasks_text
+
+    settings_text = (target / ".vscode" / "settings.json").read_text(encoding="utf-8")
+    assert '"nekoPlugin.pluginRoot": "../.."' in settings_text
 
 
 # ---------------------------------------------------------------------------
@@ -113,6 +133,194 @@ def test_generate_plugin_without_pyproject(tmp_path: Path) -> None:
     assert "pyproject.toml" not in names
     assert "plugin.toml" in names
     assert "__init__.py" in names
+
+
+def test_generate_plugin_without_vscode(tmp_path: Path) -> None:
+    spec = PluginSpec(
+        plugin_id="no_vscode",
+        quick_start=True,
+        create_vscode=False,
+    )
+    target = tmp_path / "no_vscode"
+    generate_plugin(spec, target)
+
+    assert not (target / ".vscode" / "settings.json").exists()
+    assert not (target / ".vscode" / "tasks.json").exists()
+
+
+def test_generate_repo_verification_workflow_when_requested(tmp_path: Path) -> None:
+    spec = PluginSpec(
+        plugin_id="verify_demo",
+        name="Verify Demo",
+        quick_start=True,
+        create_github_actions=True,
+        neko_repository="neko-org/N.E.K.O",
+        neko_ref="v1.2.3",
+    )
+    target = tmp_path / "verify_demo"
+    created = generate_plugin(spec, target)
+
+    assert target / ".github" / "workflows" / "verify.yml" in created
+    workflow_text = (target / ".github" / "workflows" / "verify.yml").read_text(encoding="utf-8")
+    assert "name: Verify N.E.K.O Plugin" in workflow_text
+    assert "PLUGIN_ID: verify_demo" in workflow_text
+    assert "NEKO_REPOSITORY: neko-org/N.E.K.O" in workflow_text
+    assert "NEKO_REF: v1.2.3" in workflow_text
+    assert "Checkout N.E.K.O" in workflow_text
+    assert 'pack "${PLUGIN_ID}"' in workflow_text
+    assert 'inspect "${PLUGIN_ID}.neko-plugin"' in workflow_text
+    assert 'verify "${PLUGIN_ID}.neko-plugin"' in workflow_text
+    assert "N.E.K.O Plugin Verification" in workflow_text
+    assert "GITHUB_STEP_SUMMARY" in workflow_text
+    assert "Upload verification artifact" in workflow_text
+
+
+def test_cli_init_non_interactive_supports_plugins_root(tmp_path: Path, capsys) -> None:
+    from neko_plugin_cli.cli import main
+
+    plugins_root = tmp_path / "plugins"
+    exit_code = main(
+        [
+            "init",
+            "cli_init_demo",
+            "--no-interactive",
+            "--plugins-root",
+            str(plugins_root),
+            "--name",
+            "CLI Init Demo",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "[OK]" in captured.out
+    plugin_dir = plugins_root / "cli_init_demo"
+    assert (plugin_dir / "plugin.toml").is_file()
+    assert (plugin_dir / "README.md").is_file()
+    assert (plugin_dir / "tests" / "test_smoke.py").is_file()
+    assert (plugin_dir / ".vscode" / "tasks.json").is_file()
+
+
+def test_cli_init_remote_requires_git(tmp_path: Path, capsys) -> None:
+    from neko_plugin_cli.cli import main
+
+    exit_code = main(
+        [
+            "init",
+            "remote_without_git",
+            "--no-interactive",
+            "--plugins-root",
+            str(tmp_path / "plugins"),
+            "--remote",
+            "git@example.com:demo/remote_without_git.git",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert "--remote requires --git" in captured.err
+
+
+def test_cli_init_can_initialize_git_repository(tmp_path: Path) -> None:
+    if shutil.which("git") is None:
+        pytest.skip("git executable not available")
+
+    from neko_plugin_cli.cli import main
+
+    plugins_root = tmp_path / "plugins"
+    exit_code = main(
+        [
+            "init",
+            "git_demo",
+            "--no-interactive",
+            "--plugins-root",
+            str(plugins_root),
+            "--git",
+            "--remote",
+            "git@example.com:demo/git_demo.git",
+        ]
+    )
+
+    assert exit_code == 0
+    plugin_dir = plugins_root / "git_demo"
+    assert (plugin_dir / ".git").is_dir()
+
+
+def test_cli_init_repo_is_one_click_repo_scaffold(tmp_path: Path) -> None:
+    if shutil.which("git") is None:
+        pytest.skip("git executable not available")
+
+    from neko_plugin_cli.cli import main
+
+    plugins_root = tmp_path / "plugins"
+    exit_code = main(
+        [
+            "init-repo",
+            "repo_demo",
+            "--plugins-root",
+            str(plugins_root),
+            "--name",
+            "Repo Demo",
+            "--remote",
+            "git@example.com:demo/repo_demo.git",
+            "--neko-repo",
+            "neko-org/N.E.K.O",
+            "--neko-ref",
+            "v1.0.0",
+        ]
+    )
+
+    assert exit_code == 0
+    plugin_dir = plugins_root / "repo_demo"
+    assert (plugin_dir / ".git").is_dir()
+    assert (plugin_dir / "README.md").is_file()
+    assert (plugin_dir / ".vscode" / "tasks.json").is_file()
+    assert (plugin_dir / ".github" / "workflows" / "verify.yml").is_file()
+    workflow_text = (plugin_dir / ".github" / "workflows" / "verify.yml").read_text(encoding="utf-8")
+    assert "NEKO_REPOSITORY: neko-org/N.E.K.O" in workflow_text
+    assert "NEKO_REF: v1.0.0" in workflow_text
+
+
+def test_cli_init_repo_supports_no_git_and_no_actions(tmp_path: Path) -> None:
+    from neko_plugin_cli.cli import main
+
+    plugins_root = tmp_path / "plugins"
+    exit_code = main(
+        [
+            "init-repo",
+            "repo_no_git",
+            "--plugins-root",
+            str(plugins_root),
+            "--no-git",
+            "--no-github-actions",
+        ]
+    )
+
+    assert exit_code == 0
+    plugin_dir = plugins_root / "repo_no_git"
+    assert not (plugin_dir / ".git").exists()
+    assert not (plugin_dir / ".github" / "workflows" / "verify.yml").exists()
+    assert (plugin_dir / ".vscode" / "tasks.json").is_file()
+
+
+def test_cli_init_repo_rejects_remote_without_git(tmp_path: Path, capsys) -> None:
+    from neko_plugin_cli.cli import main
+
+    exit_code = main(
+        [
+            "init-repo",
+            "repo_bad_remote",
+            "--plugins-root",
+            str(tmp_path / "plugins"),
+            "--no-git",
+            "--remote",
+            "git@example.com:demo/repo_bad_remote.git",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert "--remote requires git initialization" in captured.err
 
 
 # ---------------------------------------------------------------------------

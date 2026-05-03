@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -26,17 +27,70 @@ def register(subparsers: argparse._SubParsersAction, *, defaults: CliDefaults) -
     parser.add_argument("plugin_id", nargs="?", help="Plugin ID (optional, will prompt if omitted)")
     parser.add_argument("--type", dest="plugin_type", choices=("plugin", "extension", "adapter"), help="Plugin type")
     parser.add_argument("--name", help="Display name")
+    parser.add_argument("--plugins-root", help="Plugin root directory (default: N.E.K.O/plugin/plugins)")
+    parser.add_argument("--git", action="store_true", help="Initialize a git repository in the generated plugin directory")
+    parser.add_argument("--remote", help="Add a git remote named origin after --git initialization")
+    parser.add_argument("--github-actions", action="store_true", help="Generate a GitHub Actions verification workflow")
+    parser.add_argument("--neko-repo", default="owner/N.E.K.O", help="N.E.K.O repository used by generated GitHub Actions")
+    parser.add_argument("--neko-ref", default="main", help="N.E.K.O git ref used by generated GitHub Actions")
+    parser.add_argument("--no-readme", action="store_true", help="Do not generate README.md")
+    parser.add_argument("--no-tests", action="store_true", help="Do not generate tests/test_smoke.py")
+    parser.add_argument("--no-gitignore", action="store_true", help="Do not generate .gitignore")
+    parser.add_argument("--no-vscode", action="store_true", help="Do not generate VSCode settings and tasks")
     parser.add_argument("--no-interactive", action="store_true", help="Skip interactive prompts")
     parser.set_defaults(handler=handle, _defaults=defaults)
+
+    repo_parser = subparsers.add_parser(
+        "init-repo",
+        help="Create a ready-to-use standalone plugin repository",
+    )
+    repo_parser.add_argument("plugin_id", help="Plugin ID")
+    repo_parser.add_argument("--type", dest="plugin_type", choices=("plugin", "adapter"), default="plugin", help="Plugin type")
+    repo_parser.add_argument("--name", help="Display name")
+    repo_parser.add_argument("--plugins-root", help="Plugin root directory (default: N.E.K.O/plugin/plugins)")
+    repo_parser.add_argument("--remote", help="Add a git remote named origin after git initialization")
+    repo_parser.add_argument("--no-git", action="store_true", help="Do not initialize a git repository")
+    repo_parser.add_argument("--no-github-actions", action="store_true", help="Do not generate the GitHub Actions verification workflow")
+    repo_parser.add_argument("--neko-repo", default="owner/N.E.K.O", help="N.E.K.O repository used by generated GitHub Actions")
+    repo_parser.add_argument("--neko-ref", default="main", help="N.E.K.O git ref used by generated GitHub Actions")
+    repo_parser.set_defaults(handler=handle_init_repo, _defaults=defaults)
 
 
 def handle(args: argparse.Namespace) -> int:
     defaults: CliDefaults = args._defaults
+    if getattr(args, "remote", None) and not getattr(args, "git", False):
+        print("[FAIL] --remote requires --git", file=sys.stderr)
+        return 1
 
     if args.no_interactive:
         return _handle_non_interactive(args, defaults=defaults)
 
     return _handle_interactive(args, defaults=defaults)
+
+
+def handle_init_repo(args: argparse.Namespace) -> int:
+    defaults: CliDefaults = args._defaults
+    initialize_git = not args.no_git
+    if args.remote and not initialize_git:
+        print("[FAIL] --remote requires git initialization; remove --no-git", file=sys.stderr)
+        return 1
+
+    init_args = argparse.Namespace(
+        plugin_id=args.plugin_id,
+        plugin_type=args.plugin_type,
+        name=args.name,
+        plugins_root=args.plugins_root,
+        git=initialize_git,
+        remote=args.remote,
+        github_actions=not args.no_github_actions,
+        neko_repo=args.neko_repo,
+        neko_ref=args.neko_ref,
+        no_readme=False,
+        no_tests=False,
+        no_gitignore=False,
+        no_vscode=False,
+    )
+    return _handle_non_interactive(init_args, defaults=defaults)
 
 
 # ---------------------------------------------------------------------------
@@ -61,7 +115,8 @@ def _handle_interactive(args: argparse.Namespace, *, defaults: CliDefaults) -> i
         return 1
 
     # Check if directory already exists
-    target_dir = defaults.plugins_root / plugin_id
+    plugins_root = _resolve_plugins_root(args, defaults=defaults)
+    target_dir = plugins_root / plugin_id
     if target_dir.exists():
         print(f"[FAIL] directory already exists: {target_dir}", file=sys.stderr)
         return 1
@@ -100,8 +155,20 @@ def _handle_interactive(args: argparse.Namespace, *, defaults: CliDefaults) -> i
             plugin_type=plugin_type,
             quick_start=True,
             features=["lifecycle", "entry_point"],
+            create_readme=not getattr(args, "no_readme", False),
+            create_tests=not getattr(args, "no_tests", False),
+            create_gitignore=not getattr(args, "no_gitignore", False),
+            create_vscode=not getattr(args, "no_vscode", False),
+            create_github_actions=getattr(args, "github_actions", False),
+            neko_repository=getattr(args, "neko_repo", "owner/N.E.K.O"),
+            neko_ref=getattr(args, "neko_ref", "main"),
         )
-        return _generate_and_report(spec, target_dir)
+        return _generate_and_report(
+            spec,
+            target_dir,
+            initialize_git=getattr(args, "git", False),
+            remote=getattr(args, "remote", None),
+        )
 
     # ── Page 2: Advanced config ──
 
@@ -159,8 +226,20 @@ def _handle_interactive(args: argparse.Namespace, *, defaults: CliDefaults) -> i
         host_prefix=host_prefix,
         features=features,
         create_pyproject=create_pyproject,
+        create_readme=not getattr(args, "no_readme", False),
+        create_tests=not getattr(args, "no_tests", False),
+        create_gitignore=not getattr(args, "no_gitignore", False),
+        create_vscode=not getattr(args, "no_vscode", False),
+        create_github_actions=getattr(args, "github_actions", False),
+        neko_repository=getattr(args, "neko_repo", "owner/N.E.K.O"),
+        neko_ref=getattr(args, "neko_ref", "main"),
     )
-    return _generate_and_report(spec, target_dir)
+    return _generate_and_report(
+        spec,
+        target_dir,
+        initialize_git=getattr(args, "git", False),
+        remote=getattr(args, "remote", None),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -176,12 +255,14 @@ def _handle_non_interactive(args: argparse.Namespace, *, defaults: CliDefaults) 
         print(f"[FAIL] invalid plugin ID: '{plugin_id}'", file=sys.stderr)
         return 1
 
-    target_dir = defaults.plugins_root / plugin_id
+    plugins_root = _resolve_plugins_root(args, defaults=defaults)
+    target_dir = plugins_root / plugin_id
     if target_dir.exists():
         print(f"[FAIL] directory already exists: {target_dir}", file=sys.stderr)
         return 1
 
     plugin_type = args.plugin_type or "plugin"
+    initialize_git = getattr(args, "git", False)
     if plugin_type == "extension":
         print("[FAIL] --type extension requires interactive setup for host plugin ID", file=sys.stderr)
         return 1
@@ -192,27 +273,76 @@ def _handle_non_interactive(args: argparse.Namespace, *, defaults: CliDefaults) 
         plugin_type=plugin_type,
         quick_start=True,
         features=["lifecycle", "entry_point"],
+        create_readme=not getattr(args, "no_readme", False),
+        create_tests=not getattr(args, "no_tests", False),
+        create_gitignore=not getattr(args, "no_gitignore", False),
+        create_vscode=not getattr(args, "no_vscode", False),
+        create_github_actions=getattr(args, "github_actions", False),
+        neko_repository=getattr(args, "neko_repo", "owner/N.E.K.O"),
+        neko_ref=getattr(args, "neko_ref", "main"),
     )
-    return _generate_and_report(spec, target_dir)
+    return _generate_and_report(spec, target_dir, initialize_git=initialize_git, remote=getattr(args, "remote", None))
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _generate_and_report(spec: PluginSpec, target_dir: Path) -> int:
+def _generate_and_report(
+    spec: PluginSpec,
+    target_dir: Path,
+    *,
+    initialize_git: bool = False,
+    remote: str | None = None,
+) -> int:
     try:
         created = generate_plugin(spec, target_dir)
+        if initialize_git:
+            _initialize_git_repo(target_dir, remote=remote)
     except Exception as exc:
         print(f"[FAIL] {exc}", file=sys.stderr)
         return 1
 
     print(f"\n[OK] 已创建 {target_dir}/")
     for path in created:
-        print(f"  └── {path.name}")
+        print(f"  └── {path.relative_to(target_dir)}")
     print(f"\n  入口类: {spec.class_name}")
     print(f"  entry:  {spec.entry_point}")
+    if initialize_git:
+        print("  git:    initialized")
+        if remote:
+            print(f"  remote: {remote}")
     return 0
+
+
+def _resolve_plugins_root(args: argparse.Namespace, *, defaults: CliDefaults) -> Path:
+    plugins_root = getattr(args, "plugins_root", None)
+    if plugins_root:
+        return Path(plugins_root).expanduser().resolve()
+    return defaults.plugins_root
+
+
+def _initialize_git_repo(target_dir: Path, *, remote: str | None = None) -> None:
+    _run_git(["init"], cwd=target_dir)
+    if remote:
+        _run_git(["remote", "add", "origin", remote], cwd=target_dir)
+
+
+def _run_git(command: list[str], *, cwd: Path) -> None:
+    try:
+        subprocess.run(
+            ["git", *command],
+            cwd=cwd,
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError("git executable not found; install git or omit --git") from exc
+    except subprocess.CalledProcessError as exc:
+        message = (exc.stderr or exc.stdout or str(exc)).strip()
+        raise RuntimeError(f"git {' '.join(command)} failed: {message}") from exc
 
 
 def _cancelled() -> int:
