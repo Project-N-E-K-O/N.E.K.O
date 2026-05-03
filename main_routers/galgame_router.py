@@ -200,6 +200,7 @@ def _resolve_galgame_llm_config(config_manager: Any) -> tuple[dict[str, Any], st
             if agent_config.get("model") and agent_config.get("base_url"):
                 return agent_config, "agent", True
             logger.warning("GalGame free API agent model/base_url not configured")
+        return summary_config, "summary", True
 
     return summary_config, "summary", False
 
@@ -265,6 +266,13 @@ async def generate_galgame_options(request: Request):
             "success": True,
             "options": _fallback_options(lang),
             "fallback": True,
+        })
+    if uses_free_agent_quota and llm_config_source != "agent":
+        return JSONResponse({
+            "success": True,
+            "options": _fallback_options(lang),
+            "fallback": True,
+            "error": "AGENT_MODEL_NOT_CONFIGURED",
         })
     if uses_free_agent_quota:
         quota_ok, quota_info = await _consume_free_agent_quota(config_manager)

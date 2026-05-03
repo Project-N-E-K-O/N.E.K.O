@@ -233,6 +233,45 @@ def test_custom_lanlan_free_access_summary_is_not_rerouted():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_galgame_free_summary_with_invalid_agent_returns_fallback(monkeypatch):
+    config_manager = FakeConfigManager(
+        {
+            "model": "free-model",
+            "base_url": "https://www.lanlan.tech/text/v1",
+            "api_key": "free-access",
+        },
+        {
+            "model": "free-agent-model",
+            "base_url": "",
+            "api_key": "free-access",
+        },
+    )
+    monkeypatch.setattr(galgame_router, "get_config_manager", lambda: config_manager)
+    monkeypatch.setattr(
+        galgame_router,
+        "create_chat_llm",
+        lambda *args, **kwargs: pytest.fail("LLM should not be created when free agent config is invalid"),
+    )
+
+    response = await galgame_router.generate_galgame_options(
+        FakeRequest(
+            {
+                "messages": [{"role": "assistant", "text": "What do you think?"}],
+                "language": "en",
+            }
+        )
+    )
+
+    data = _decode_response(response)
+    assert data["success"] is True
+    assert data["fallback"] is True
+    assert data["error"] == "AGENT_MODEL_NOT_CONFIGURED"
+    assert config_manager.calls == ["summary", "agent"]
+    assert config_manager.quota_calls == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_galgame_free_agent_quota_exceeded_returns_fallback(monkeypatch):
     config_manager = FakeConfigManager(
         {
