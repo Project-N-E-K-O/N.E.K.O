@@ -658,9 +658,16 @@ Live2DManager.prototype._scanEyeBlinkParams = function(model) {
     const nonBlinkPatterns = [/eyeball/i, /angle/i, /look/i, /iris/i, /pupil/i];
     const found = [];
 
+    // Cubism 4/5 的 coreModel 没有 getParameterId(index)，参数 ID 列表存在
+    // coreModel._parameterIds[i] 或更底层的 coreModel._model.parameters.ids[i]。
+    // 旧 Cubism 2 的 coreModel 才有 getParameterId(index)，作为兜底。
     for (let i = 0; i < count; i++) {
         let paramId = null;
-        try { paramId = coreModel.getParameterId(i); } catch (_) {}
+        try {
+            paramId = coreModel._parameterIds?.[i]
+                ?? coreModel._model?.parameters?.ids?.[i]
+                ?? (typeof coreModel.getParameterId === 'function' ? coreModel.getParameterId(i) : null);
+        } catch (_) {}
         if (!paramId) continue;
         if (!nonBlinkPatterns.some(p => p.test(paramId)) &&
             blinkPatterns.some(p => p.test(paramId))) {
