@@ -36,6 +36,24 @@ def _mark_game_started(state, elapsed_ms=12_000):
     return state
 
 
+def _set_soccer_game_memory_policy(
+    state,
+    *,
+    enabled=True,
+    player_interaction=None,
+    event_reply=None,
+    archive=None,
+    postgame_context=None,
+):
+    state["soccer_game_memory_enabled"] = enabled
+    state["soccer_game_memory_player_interaction_enabled"] = enabled if player_interaction is None else player_interaction
+    state["soccer_game_memory_event_reply_enabled"] = enabled if event_reply is None else event_reply
+    state["soccer_game_memory_archive_enabled"] = enabled if archive is None else archive
+    state["soccer_game_memory_postgame_context_enabled"] = enabled if postgame_context is None else postgame_context
+    state["game_memory_enabled"] = enabled
+    return state
+
+
 @pytest.mark.unit
 def test_parse_control_instructions_extracts_json_line():
     result = game_router._parse_control_instructions(
@@ -392,6 +410,11 @@ def test_game_archive_memory_payload_uses_system_note_shape():
         "lanlan_name": "Lan",
         "summary": "soccer 小游戏结束。最终/最近比分：主人 1 : 4 Lan。",
         "game_memory_tail_count": 2,
+        "soccer_game_memory_enabled": True,
+        "soccer_game_memory_player_interaction_enabled": True,
+        "soccer_game_memory_event_reply_enabled": True,
+        "soccer_game_memory_archive_enabled": True,
+        "soccer_game_memory_postgame_context_enabled": True,
         "memory_highlights": {
             "important_records": ["主人要求温柔一点，你改成让球式回应。"],
             "important_game_events": ["猫娘大比分领先后开始放水。"],
@@ -440,6 +463,11 @@ def test_game_archive_memory_tail_uses_game_dialog_order_without_event_labels():
         "lanlan_name": "Lan",
         "summary": "soccer 小游戏结束。",
         "game_memory_tail_count": 4,
+        "soccer_game_memory_enabled": True,
+        "soccer_game_memory_player_interaction_enabled": True,
+        "soccer_game_memory_event_reply_enabled": True,
+        "soccer_game_memory_archive_enabled": True,
+        "soccer_game_memory_postgame_context_enabled": True,
         "memory_highlights": {},
         "full_dialogues": [
             {"type": "user", "text": "很早的话"},
@@ -473,6 +501,11 @@ def test_game_archive_memory_prefers_final_score_over_oral_concession_text():
         "summary": "soccer 小游戏结束。",
         "finalScore": {"player": 9, "ai": 20},
         "last_state": {"score": {"player": 99, "ai": 0}},
+        "soccer_game_memory_enabled": True,
+        "soccer_game_memory_player_interaction_enabled": True,
+        "soccer_game_memory_event_reply_enabled": True,
+        "soccer_game_memory_archive_enabled": True,
+        "soccer_game_memory_postgame_context_enabled": True,
         "full_dialogues": [
             {"type": "game_event", "kind": "goal-scored", "result_line": "行吧，这局算你赢。"},
         ],
@@ -486,6 +519,40 @@ def test_game_archive_memory_prefers_final_score_over_oral_concession_text():
     assert "口头让步规则" not in system_text
     assert messages[0]["role"] == "assistant"
     assert messages[0]["content"][0]["text"] == "行吧，这局算你赢。"
+
+
+@pytest.mark.unit
+def test_game_archive_tail_respects_independent_soccer_memory_policy():
+    archive = {
+        "game_type": "soccer",
+        "session_id": "match_1",
+        "lanlan_name": "Lan",
+        "summary": "soccer 小游戏结束。",
+        "last_state": {"score": {"player": 1, "ai": 2}},
+        "soccer_game_memory_enabled": True,
+        "soccer_game_memory_player_interaction_enabled": False,
+        "soccer_game_memory_event_reply_enabled": True,
+        "soccer_game_memory_archive_enabled": True,
+        "soccer_game_memory_postgame_context_enabled": True,
+        "full_dialogues": [
+            {"type": "user", "text": "这句不进记忆"},
+            {"type": "assistant", "source": "game_llm", "line": "直接回复也不进记忆"},
+            {"type": "game_event", "kind": "goal-scored", "result_line": "事件回复可以进记忆"},
+        ],
+    }
+
+    messages = game_router._build_game_archive_memory_messages(archive, tail_count=3)
+
+    assert [msg["role"] for msg in messages] == ["assistant", "system"]
+    assert messages[0]["content"][0]["text"] == "事件回复可以进记忆"
+
+    archive["soccer_game_memory_player_interaction_enabled"] = True
+    archive["soccer_game_memory_event_reply_enabled"] = False
+    messages = game_router._build_game_archive_memory_messages(archive, tail_count=3)
+
+    assert [msg["role"] for msg in messages] == ["user", "assistant", "system"]
+    assert messages[0]["content"][0]["text"] == "这句不进记忆"
+    assert messages[1]["content"][0]["text"] == "直接回复也不进记忆"
 
 
 @pytest.mark.unit
@@ -552,6 +619,11 @@ def test_memory_highlight_source_explains_game_event_text_is_not_user_speech():
         "session_id": "match_1",
         "lanlan_name": "Lan",
         "last_state": {"score": {"player": 1, "ai": 2}},
+        "soccer_game_memory_enabled": True,
+        "soccer_game_memory_player_interaction_enabled": True,
+        "soccer_game_memory_event_reply_enabled": True,
+        "soccer_game_memory_archive_enabled": True,
+        "soccer_game_memory_postgame_context_enabled": True,
         "full_dialogues": [
             {
                 "type": "game_event",
@@ -665,6 +737,11 @@ async def test_memory_highlight_selector_uses_full_dialogue_log(monkeypatch):
         "session_id": "match_1",
         "lanlan_name": "Lan",
         "last_state": {"score": {"player": 0, "ai": 5}},
+        "soccer_game_memory_enabled": True,
+        "soccer_game_memory_player_interaction_enabled": True,
+        "soccer_game_memory_event_reply_enabled": True,
+        "soccer_game_memory_archive_enabled": True,
+        "soccer_game_memory_postgame_context_enabled": True,
         "full_dialogues": [
             {"type": "user", "text": "第一句也要参与筛选"},
             {"type": "assistant", "line": "我记着呢。"},
@@ -977,6 +1054,12 @@ async def test_route_start_accepts_neko_invite_context(monkeypatch):
     assert state["pre_game_context_source"] == "ai"
     assert state["pre_game_context_error"] == ""
     assert state["game_memory_tail_count"] == 3
+    assert state["soccer_game_memory_enabled"] is False
+    assert state["soccer_game_memory_player_interaction_enabled"] is False
+    assert state["soccer_game_memory_event_reply_enabled"] is False
+    assert state["soccer_game_memory_archive_enabled"] is False
+    assert state["soccer_game_memory_postgame_context_enabled"] is False
+    assert state["game_memory_enabled"] is False
 
 
 @pytest.mark.unit
@@ -1021,7 +1104,7 @@ async def test_route_external_text_to_game_llm_defers_voice_to_frontend_arbiter(
         "game_type": "soccer",
         "session_id": "match_1",
         "source": "external_text_route",
-        "input_type": "game_text",
+        "input_type": "game_text_no_memory",
         "send_to_frontend": False,
     })]
     assert mgr.user_activity_count == 1
@@ -1031,6 +1114,40 @@ async def test_route_external_text_to_game_llm_defers_voice_to_frontend_arbiter(
     assert state["pending_outputs"][1]["meta"]["voiceAlreadyHandled"] is False
     assert state["pending_outputs"][1]["result"]["line"] == "才没有放水呢。"
     assert [item["type"] for item in state["game_dialog_log"]] == ["user", "assistant"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_route_external_text_uses_no_memory_input_type_when_game_memory_disabled(monkeypatch):
+    mgr = _FakeGameRouteManager()
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
+
+    state = game_router._activate_game_route("soccer", "match_1", "Lan")
+    _set_soccer_game_memory_policy(state, enabled=False)
+
+    async def fake_run_game_chat(game_type, session_id, event):
+        assert event["kind"] == "user-text"
+        assert event["soccerGameMemoryPlayerInteractionEnabled"] is False
+        return {"line": "这句只在本局里回应。", "control": {}, "llm_source": {"provider": "fake"}}
+
+    monkeypatch.setattr(game_router, "_run_game_chat", fake_run_game_chat)
+
+    handled = await game_router.route_external_stream_message(
+        "Lan",
+        {"input_type": "text", "data": "这局不要记", "request_id": "req-no-memory"},
+    )
+
+    assert handled is True
+    assert mgr.mirrored == [("这局不要记", {
+        "request_id": "req-no-memory",
+        "game_type": "soccer",
+        "session_id": "match_1",
+        "source": "external_text_route",
+        "input_type": "game_text_no_memory",
+        "send_to_frontend": False,
+    })]
+    assert state["pending_outputs"][0]["meta"]["soccerGameMemoryPlayerInteractionEnabled"] is False
+    assert state["pending_outputs"][1]["meta"]["soccerGameMemoryPlayerInteractionEnabled"] is False
 
 
 @pytest.mark.unit
@@ -1088,7 +1205,7 @@ async def test_route_external_voice_transcript_to_game_llm(monkeypatch):
         "game_type": "soccer",
         "session_id": "match_1",
         "source": "external_voice_route",
-        "input_type": "game_voice_transcript",
+        "input_type": "game_voice_transcript_no_memory",
         "send_to_frontend": True,
     })]
     assert mgr.user_activity_count == 1
@@ -1165,6 +1282,7 @@ async def test_heartbeat_timeout_finalize_archives_and_closes_session(monkeypatc
     }
     monkeypatch.setattr(game_router, "get_session_manager", lambda: {})
     state = game_router._activate_game_route("soccer", "match_1", "Lan")
+    _set_soccer_game_memory_policy(state, enabled=True)
     _mark_game_started(state)
 
     submitted = []
@@ -1217,6 +1335,37 @@ async def test_heartbeat_timeout_without_start_skips_only_game_archive_memory(mo
     assert result["archive_memory"]["reason"] == "game_not_started"
     assert result["archive"]["memory_skipped"] is True
     assert result["archive"]["last_full_dialogues"][0]["line"] == "准备好了吗"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_game_memory_disabled_skips_archive_memory(monkeypatch):
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {})
+    state = game_router._activate_game_route("soccer", "match_1", "Lan")
+    _set_soccer_game_memory_policy(state, enabled=True)
+    _mark_game_started(state)
+    _set_soccer_game_memory_policy(state, enabled=False)
+    game_router._append_game_dialog(state, {
+        "type": "user",
+        "source": "external_text_route",
+        "text": "这局别进记忆",
+    })
+
+    async def fake_submit(_archive):
+        raise AssertionError("disabled game memory should not submit archive payload")
+
+    monkeypatch.setattr(game_router, "_submit_game_archive_to_memory", fake_submit)
+
+    result = await game_router._finalize_game_route_state(
+        state,
+        reason="manual",
+        close_game_session=False,
+    )
+
+    assert result["archive_memory"]["status"] == "skipped"
+    assert result["archive_memory"]["reason"] == "soccer_game_memory_archive_disabled"
+    assert result["archive"]["game_memory_enabled"] is False
+    assert result["archive"]["memory_skipped"] is True
 
 
 @pytest.mark.unit
@@ -1398,19 +1547,19 @@ async def test_project_mirror_assistant_records_opening_line_in_game_log(monkeyp
     )
 
     assert result["ok"] is True
-    assert mgr.assistant_mirrored == [("看我这一脚", {
-        "request_id": "opening-1",
-        "game_type": "soccer",
-        "session_id": "match_1",
-        "source": "game-llm-result",
-        "turn_id": None,
-        "event": {
-            "kind": "opening-line",
-            "hasUserSpeech": False,
-            "hasUserText": False,
-        },
-        "finalize_turn": False,
-    })]
+    assert mgr.assistant_mirrored[0][0] == "看我这一脚"
+    mirror_kwargs = mgr.assistant_mirrored[0][1]
+    assert mirror_kwargs["request_id"] == "opening-1"
+    assert mirror_kwargs["game_type"] == "soccer"
+    assert mirror_kwargs["session_id"] == "match_1"
+    assert mirror_kwargs["source"] == "game-llm-result"
+    assert mirror_kwargs["turn_id"] is None
+    assert mirror_kwargs["finalize_turn"] is False
+    assert mirror_kwargs["event"]["kind"] == "opening-line"
+    assert mirror_kwargs["event"]["hasUserSpeech"] is False
+    assert mirror_kwargs["event"]["hasUserText"] is False
+    assert mirror_kwargs["event"]["soccerGameMemoryEventReplyEnabled"] is False
+    assert mirror_kwargs["event"]["soccer_game_memory_event_reply_enabled"] is False
     assert state["game_dialog_log"] == [{
         "id": "glog_0001",
         "type": "assistant",
@@ -1464,6 +1613,7 @@ async def test_game_end_archives_active_route_to_memory(monkeypatch):
             "lanlan_name": "Lan",
             "currentState": {"score": {"player": 3, "ai": 6}, "round": 9},
             "gameMemoryTailCount": 4,
+            "gameMemoryEnabled": True,
             "gameStarted": True,
             "gameStartedElapsedMs": 15_000,
         }),
@@ -1523,6 +1673,7 @@ async def test_game_end_under_10s_skips_archive_without_suppressing_user_reply_m
     mgr = _FakeGameRouteManager()
     monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
     state = game_router._activate_game_route("soccer", "match_1", "Lan")
+    _set_soccer_game_memory_policy(state, enabled=True)
     _mark_game_started(state, elapsed_ms=5_000)
 
     async def fake_run_game_chat(_game_type, _session_id, event):
@@ -1574,6 +1725,7 @@ async def test_game_end_injects_postgame_context_into_active_realtime(monkeypatc
     monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
     monkeypatch.setattr(game_router, "_POSTGAME_REALTIME_NUDGE_DELAYS", (0.0,))
     state = game_router._activate_game_route("soccer", "match_1", "Lan")
+    _set_soccer_game_memory_policy(state, enabled=True)
     _mark_game_started(state)
     state["last_state"] = {"score": {"player": 1, "ai": 3}}
     game_router._append_game_dialog(state, {
@@ -1620,6 +1772,7 @@ async def test_game_end_uses_direct_response_for_gemini_postgame(monkeypatch, _f
     mgr = _FakeRealtimeManager(session)
     monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
     state = game_router._activate_game_route("soccer", "match_1", "Lan")
+    _set_soccer_game_memory_policy(state, enabled=True)
     _mark_game_started(state)
     state["last_state"] = {"score": {"player": 3, "ai": 14}}
     game_router._append_game_dialog(state, {
@@ -1691,6 +1844,7 @@ async def test_game_end_delivers_one_shot_postgame_text_bubble(monkeypatch):
     mgr = _FakePostgameTextManager()
     monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
     state = game_router._activate_game_route("soccer", "match_1", "Lan")
+    _set_soccer_game_memory_policy(state, enabled=True)
     _mark_game_started(state)
     state["last_state"] = {"score": {"player": 2, "ai": 4}}
     game_router._append_game_dialog(state, {

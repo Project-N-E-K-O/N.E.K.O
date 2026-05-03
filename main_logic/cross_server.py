@@ -100,7 +100,7 @@ def _is_game_route_game_only_assistant_message(data: dict) -> bool:
     event = game_route.get("event")
     if not isinstance(event, dict):
         event = {}
-    return event.get("hasUserSpeech") is not True and event.get("hasUserText") is not True
+    return _is_game_route_event_memory_disabled_for_ordinary_memory(event)
 
 
 def _is_game_route_game_only_turn_end_meta(meta: dict | None) -> bool:
@@ -113,7 +113,40 @@ def _is_game_route_game_only_turn_end_meta(meta: dict | None) -> bool:
     event = game_route.get("event")
     if not isinstance(event, dict):
         return False
-    return event.get("hasUserSpeech") is not True and event.get("hasUserText") is not True
+    return _is_game_route_event_memory_disabled_for_ordinary_memory(event)
+
+
+def _payload_bool_from_keys(data: dict, *keys: str) -> bool | None:
+    for key in keys:
+        if key in data and isinstance(data.get(key), bool):
+            return data.get(key)
+    return None
+
+
+def _is_game_route_event_memory_disabled_for_ordinary_memory(event: dict) -> bool:
+    """Apply soccer-game memory sub-controls to mirrored assistant/turn-end entries."""
+    has_user_input = event.get("hasUserSpeech") is True or event.get("hasUserText") is True
+    if has_user_input:
+        player_interaction_enabled = _payload_bool_from_keys(
+            event,
+            "soccer_game_memory_player_interaction_enabled",
+            "soccerGameMemoryPlayerInteractionEnabled",
+        )
+        if player_interaction_enabled is not None:
+            return player_interaction_enabled is False
+    else:
+        event_reply_enabled = _payload_bool_from_keys(
+            event,
+            "soccer_game_memory_event_reply_enabled",
+            "soccerGameMemoryEventReplyEnabled",
+        )
+        if event_reply_enabled is not None:
+            return event_reply_enabled is False
+
+    legacy_enabled = _payload_bool_from_keys(event, "game_memory_enabled", "gameMemoryEnabled")
+    if legacy_enabled is not None:
+        return legacy_enabled is False
+    return not has_user_input
 
 
 def merge_unsynced_tail_assistants(chat_history, last_synced_index):
