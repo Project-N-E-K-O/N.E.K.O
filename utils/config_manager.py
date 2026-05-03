@@ -953,7 +953,6 @@ class ConfigManager:
                 buf = ctypes.create_unicode_buffer(wintypes.MAX_PATH)
                 windll.shell32.SHGetFolderPathW(None, CSIDL_PERSONAL, None, SHGFP_TYPE_CURRENT, buf)
                 api_path = Path(buf.value)
-                self._log(f"[ConfigManager] Legacy Documents API returned path: {api_path}")
                 candidates.append(api_path)
 
                 if not api_path.exists() and api_path.drive:
@@ -976,7 +975,6 @@ class ConfigManager:
                 reg_path_str = winreg.QueryValueEx(key, "Personal")[0]
                 winreg.CloseKey(key)
                 reg_path = Path(os.path.expandvars(reg_path_str))
-                self._log(f"[ConfigManager] Legacy Documents registry path: {reg_path}")
                 candidates.append(reg_path)
             except Exception as e:
                 print(f"Warning: Failed to get legacy Documents path from registry: {e}", file=sys.stderr)
