@@ -15,19 +15,20 @@ _UNQUOTED_KEY_RE = re.compile(r'(?<=[{,])\s*([A-Za-z_]\w*)\s*:')
 
 # 合法 JSON 值起始字符：`"` (string) / `{` (object) / `[` (array) /
 # `-` 或数字 (number) / `t` `f` `n` (true/false/null)。
-# `.` 严格 JSON 中不是合法 number 起始 (.5 非法)，但 LLM 偶尔会写出来；
-# 算作"疑似数字起始"放进集合，scanner 不主动删它 —— 让 json.loads 自己抛错，
-# 避免把 `[1,.5]` 静默清成 `[1,5]` 这种数值 silent corruption。
-_VALUE_START_CHARS = frozenset('"{[-.tfn0123456789')
+_VALUE_START_CHARS = frozenset('"{[-tfn0123456789')
 
 
 def _strip_stray_chars_between_tokens(s: str) -> str:
-    """Strip 1–3 hallucinated chars between `,`/`[` and the next value start.
+    """Strip 1–3 hallucinated **non-ASCII** chars between `,`/`[` and the next value.
 
     Stateful scanner — only acts outside of quoted strings (with backslash escape
-    handling) so legitimate string contents containing ``,abc{`` patterns are
-    untouched. Lookahead accepts any valid JSON value-start char (not just
-    ``{`` / ``[``), so cases like ``[1,결2]`` or ``["a",결"b"]`` also recover.
+    handling). 仅剥**非 ASCII** 污染（CJK / emoji / etc.）—— LLM 实测幻觉
+    几乎都是这种；ASCII 字符一律放行，避免把可能是某种半合法值前缀的内容
+    （`+5`、`.5`、`e3` 等）静默改成完全不同的数值。即便剥不掉，
+    后续 json.loads 自己抛 JSONDecodeError 走 fallback，比 silent corruption 安全。
+
+    覆盖完整合法值起始集合 (``"``/``{``/``[``/``-``/数字/``t/f/n``)，
+    所以 ``[1,결2]`` / ``["a",결"b"]`` / ``{"a":1,결"b":2}`` 都能恢复。
     """
     out: list[str] = []
     i = 0
@@ -55,18 +56,17 @@ def _strip_stray_chars_between_tokens(s: str) -> str:
         i += 1
         if c not in ',[':
             continue
-        # 跳过 separator 后的空白，再看接下来是不是合法值起始
+        # 跳过 separator 后的空白，找疑似污染段（连续 1–3 个非 ASCII 字符）
         j = i
         while j < n and s[j].isspace():
             j += 1
-        if j >= n or s[j] in _VALUE_START_CHARS:
-            continue
-        # 1–3 字符内若能落到合法值起始，视作幻觉污染，删掉中间这段
-        for k in range(1, 4):
-            if j + k < n and s[j + k] in _VALUE_START_CHARS:
-                out.append(s[i:j])  # 保留空白
-                i = j + k
-                break
+        end = j
+        while end < j + 3 and end < n and ord(s[end]) > 127:
+            end += 1
+        # 必须真的吃到了非 ASCII 字符，且后面紧跟合法值起始才算污染
+        if end > j and end < n and s[end] in _VALUE_START_CHARS:
+            out.append(s[i:j])  # 保留空白
+            i = end
     return ''.join(out)
 
 

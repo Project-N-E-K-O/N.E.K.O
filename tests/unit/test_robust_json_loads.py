@@ -47,18 +47,19 @@ def test_galgame_korean_char_pollution():
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [
+        # CJK 污染 + 各种合法值起始
         ('[결{"x":1}]', [{"x": 1}]),
-        ('[{"x":1},X{"y":2}]', [{"x": 1}, {"y": 2}]),
         ('[1,2,결[3,4]]', [1, 2, [3, 4]]),
-        # 数字、字符串、null/true/false 也是合法值起始 —— 不仅是 `{`/`[`。
         ('[1,결2]', [1, 2]),
         ('["a",결"b"]', ["a", "b"]),
-        ('[1,X-3]', [1, -3]),
-        ('[1,Xtrue]', [1, True]),
         ('{"a":1,결"b":2}', {"a": 1, "b": 2}),
+        # 多字符 CJK 污染（≤3 字）
+        ('[1,결결2]', [1, 2]),
+        # emoji 也是非 ASCII，同样应剥离
+        ('[1,🚀2]', [1, 2]),
     ],
 )
-def test_stray_char_between_structural_tokens(raw, expected):
+def test_non_ascii_pollution_stripped(raw, expected):
     assert robust_json_loads(raw) == expected
 
 
@@ -87,12 +88,21 @@ def test_string_with_escaped_quote_not_breaking_scanner():
 
 
 @pytest.mark.unit
-def test_leading_decimal_not_silently_dropped():
-    """关键回归：`.` 不能被当成 1 字符污染删掉。
+@pytest.mark.parametrize(
+    "raw",
+    [
+        '[1,.5]',   # `.5` 非合法 JSON number；旧实现会删 `.` → 5
+        '[1,+5]',   # `+5` 非合法 JSON number；旧实现会删 `+` → 5
+        '[1,e3]',   # `e3` 非合法；旧实现会删 `e` → 3
+        '[1,X{"y":2}]',  # ASCII 字母也不剥
+    ],
+)
+def test_ascii_chars_not_stripped_to_avoid_silent_numeric_corruption(raw):
+    """关键安全保证：ASCII 字符（包括 `+`、`.`、`e`、字母）一律不剥。
 
-    旧实现：`[1,.5]` 触发 fallback 后 scanner 把 `.` 当幻觉删，
-    `,5` 解析成 5 → 0.5 被静默改成 5，数值 silent corruption。
-    现在 `.` 算作疑似数字起始，scanner 不删，让 json.loads 自己抛错。
+    LLM 实测的污染基本都是非 ASCII（CJK / emoji）；ASCII 多半是某种半合法值的
+    一部分（malformed number、unquoted literal 等），剥掉会把数值/语义静默改坏。
+    宁可让 json.loads 自己抛错走 fallback，也不能 silent corruption。
     """
     with pytest.raises(json.JSONDecodeError):
-        robust_json_loads('[1,.5]')
+        robust_json_loads(raw)
