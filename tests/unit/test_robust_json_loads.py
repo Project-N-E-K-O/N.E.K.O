@@ -49,6 +49,12 @@ def test_galgame_korean_char_pollution():
         ('[결{"x":1}]', [{"x": 1}]),
         ('[{"x":1},X{"y":2}]', [{"x": 1}, {"y": 2}]),
         ('[1,2,결[3,4]]', [1, 2, [3, 4]]),
+        # 数字、字符串、null/true/false 也是合法值起始 —— 不仅是 `{`/`[`。
+        ('[1,결2]', [1, 2]),
+        ('["a",결"b"]', ["a", "b"]),
+        ('[1,X-3]', [1, -3]),
+        ('[1,Xtrue]', [1, True]),
+        ('{"a":1,결"b":2}', {"a": 1, "b": 2}),
     ],
 )
 def test_stray_char_between_structural_tokens(raw, expected):
@@ -60,3 +66,20 @@ def test_legitimate_string_with_cjk_not_corrupted():
     """合法 JSON 内字符串里有 CJK 不应触发清洗（json.loads 直接成功）。"""
     raw = '{"text": "结果是 {x}, 不要乱搞"}'
     assert robust_json_loads(raw) == {"text": "结果是 {x}, 不要乱搞"}
+
+
+@pytest.mark.unit
+def test_string_content_preserved_through_fallback_path():
+    """关键回归：fallback 路径触发时（无引号 key），string 内的 `,abc{` 不应被误清洗。
+
+    旧版（无状态 regex）会把 `"x,abc{y"` 静默改成 `"x,{y"`，破坏数据。
+    """
+    raw = "{a: 'x,abc{y', b: 1}"
+    assert robust_json_loads(raw) == {"a": "x,abc{y", "b": 1}
+
+
+@pytest.mark.unit
+def test_string_with_escaped_quote_not_breaking_scanner():
+    """字符串内含转义引号时，扫描器应正确识别字符串边界。"""
+    raw = '{a: "say \\"x,bc{y\\" loud", b: 2}'
+    assert robust_json_loads(raw) == {"a": 'say "x,bc{y" loud', "b": 2}

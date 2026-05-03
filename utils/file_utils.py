@@ -13,6 +13,59 @@ from typing import Any
 # 先尝试标准解析，失败后逐步修补再试。
 _UNQUOTED_KEY_RE = re.compile(r'(?<=[{,])\s*([A-Za-z_]\w*)\s*:')
 
+# 合法 JSON 值起始字符：`"` (string) / `{` (object) / `[` (array) /
+# `-` 或数字 (number) / `t` `f` `n` (true/false/null)。
+_VALUE_START_CHARS = frozenset('"{[-tfn0123456789')
+
+
+def _strip_stray_chars_between_tokens(s: str) -> str:
+    """Strip 1–3 hallucinated chars between `,`/`[` and the next value start.
+
+    Stateful scanner — only acts outside of quoted strings (with backslash escape
+    handling) so legitimate string contents containing ``,abc{`` patterns are
+    untouched. Lookahead accepts any valid JSON value-start char (not just
+    ``{`` / ``[``), so cases like ``[1,결2]`` or ``["a",결"b"]`` also recover.
+    """
+    out: list[str] = []
+    i = 0
+    n = len(s)
+    in_string = False
+    escape = False
+    while i < n:
+        c = s[i]
+        if in_string:
+            out.append(c)
+            if escape:
+                escape = False
+            elif c == '\\':
+                escape = True
+            elif c == '"':
+                in_string = False
+            i += 1
+            continue
+        if c == '"':
+            in_string = True
+            out.append(c)
+            i += 1
+            continue
+        out.append(c)
+        i += 1
+        if c not in ',[':
+            continue
+        # 跳过 separator 后的空白，再看接下来是不是合法值起始
+        j = i
+        while j < n and s[j].isspace():
+            j += 1
+        if j >= n or s[j] in _VALUE_START_CHARS:
+            continue
+        # 1–3 字符内若能落到合法值起始，视作幻觉污染，删掉中间这段
+        for k in range(1, 4):
+            if j + k < n and s[j + k] in _VALUE_START_CHARS:
+                out.append(s[i:j])  # 保留空白
+                i = j + k
+                break
+    return ''.join(out)
+
 
 def robust_json_loads(raw: str) -> Any:
     """json.loads with fallback for common LLM JSON quirks.
@@ -44,9 +97,8 @@ def robust_json_loads(raw: str) -> Any:
         s = re.sub(r"'\s*([,\]\}])", r'"\1', s)              # 数组尾
         s = re.sub(r"([,\[\{])\s*'", r'\1"', s)              # 数组头
     # LLM 偶尔在结构 token 之间塞 1–3 个幻觉字符（实例：`,결{` 应是 `,{`）。
-    # 严格 JSON 中 `,` / `[` 之后只允许空白和合法值起始字符 (`"`, `{`, `[`, `-`, 数字, `t/f/n`)，
-    # 其他必为污染；限定 1–3 字以降低误伤合法字符串内容的概率。
-    s = re.sub(r'([,\[]\s*)[^\s",\[\]\{\}\d\-tfn]{1,3}(\s*[\{\[])', r'\1\2', s)
+    # 用有状态扫描器避免误伤合法 string 内容里出现的同形 pattern。
+    s = _strip_stray_chars_between_tokens(s)
     return json.loads(s)
 
 
