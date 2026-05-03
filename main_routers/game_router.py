@@ -127,7 +127,7 @@ _SOCCER_GAME_MEMORY_POLICY_FIELDS = (
 _GAME_CONTEXT_ORGANIZE_TRIGGER_COUNT = 15
 _GAME_CONTEXT_RECENT_KEEP_COUNT = 6
 _GAME_CONTEXT_DEGRADE_PENDING_COUNT = 40
-_GAME_CONTEXT_FINALIZE_WAIT_SECONDS = 3.0
+_GAME_CONTEXT_FINALIZE_WAIT_SECONDS = 5.0
 _GAME_CONTEXT_SIGNAL_GROUPS = ("主人信号", "关系互动信号", "猫娘信号", "比赛事实", "口头声明")
 _GAME_CONTEXT_MAX_SIGNALS_PER_GROUP = 8
 _GAME_CONTEXT_MAX_EVIDENCE_PER_SIGNAL = 2
@@ -1576,6 +1576,30 @@ async def _settle_game_context_organizer_before_archive(state: dict) -> None:
             state.get("game_type"),
             state.get("session_id"),
             exc,
+        )
+
+
+async def _cancel_game_context_organizer_before_disabled_archive(state: dict) -> None:
+    task = state.get("_game_context_organizer_task")
+    organizer = _normalize_game_context_organizer_state(state.get("game_context_organizer"))
+    organizer["running"] = False
+    organizer["error"] = "archive_disabled"
+    state["game_context_organizer"] = organizer
+
+    if task is None or not hasattr(task, "done") or task.done():
+        return
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    except Exception as exc:
+        logger.debug(
+            "🎮 关闭游戏记忆后取消局内上下文整理失败: game=%s session=%s err=%s",
+            state.get("game_type"),
+            state.get("session_id"),
+            exc,
+            exc_info=True,
         )
 
 
@@ -3040,7 +3064,11 @@ async def _finalize_game_route_state_inner(
         except Exception as exc:
             logger.warning("⚠️ 游戏路由退出状态通知失败: %s", exc)
 
-    await _settle_game_context_organizer_before_archive(state)
+    skip_memory_reason = _game_archive_memory_skip_reason(state, reason)
+    if skip_memory_reason == "soccer_game_memory_archive_disabled":
+        await _cancel_game_context_organizer_before_disabled_archive(state)
+    else:
+        await _settle_game_context_organizer_before_archive(state)
 
     archive = state.get("archive") if isinstance(state.get("archive"), dict) else None
     if archive is None:
@@ -3050,7 +3078,6 @@ async def _finalize_game_route_state_inner(
 
     memory_result = state.get("archive_memory_result")
     if not isinstance(memory_result, dict):
-        skip_memory_reason = _game_archive_memory_skip_reason(state, reason)
         if skip_memory_reason:
             archive["memory_skipped"] = True
             archive["memory_skip_reason"] = skip_memory_reason

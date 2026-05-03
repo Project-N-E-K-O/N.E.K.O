@@ -32,6 +32,15 @@ def _mark_game_started(state, elapsed_ms=12_000):
     return state
 
 
+def _set_soccer_game_memory_policy(state, enabled):
+    state["soccer_game_memory_enabled"] = enabled
+    state["soccer_game_memory_player_interaction_enabled"] = enabled
+    state["soccer_game_memory_event_reply_enabled"] = enabled
+    state["soccer_game_memory_archive_enabled"] = enabled
+    state["soccer_game_memory_postgame_context_enabled"] = enabled
+    state["game_memory_enabled"] = enabled
+
+
 def _append_user_line(state, index):
     game_router._append_game_dialog(state, {
         "type": "user",
@@ -206,6 +215,7 @@ def test_degraded_context_does_not_schedule_organizer(monkeypatch):
 @pytest.mark.asyncio
 async def test_finalize_waits_for_running_context_organizer_before_archive(monkeypatch):
     state = _mark_game_started(_new_state(monkeypatch))
+    _set_soccer_game_memory_policy(state, True)
     state["finalScore"] = {"player": 3, "ai": 6}
     started = asyncio.Event()
     release = asyncio.Event()
@@ -250,6 +260,7 @@ async def test_finalize_waits_for_running_context_organizer_before_archive(monke
 @pytest.mark.asyncio
 async def test_finalize_times_out_running_context_organizer_without_late_archive_mutation(monkeypatch):
     state = _mark_game_started(_new_state(monkeypatch))
+    _set_soccer_game_memory_policy(state, True)
     state["finalScore"] = {"player": 1, "ai": 4}
     started = asyncio.Event()
     submitted = []
@@ -278,6 +289,45 @@ async def test_finalize_times_out_running_context_organizer_without_late_archive
     assert state["game_context_organizer"]["running"] is False
     assert state["game_context_organizer"]["error"] == "finalize_timeout"
     assert state["_game_context_organizer_task"].done()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_finalize_cancels_running_context_organizer_when_game_memory_disabled(monkeypatch):
+    state = _mark_game_started(_new_state(monkeypatch))
+    _set_soccer_game_memory_policy(state, False)
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def fake_ai(_state, _snapshot):
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    async def fake_submit(_archive):
+        raise AssertionError("disabled game memory should not submit archive payload")
+
+    monkeypatch.setattr(game_router, "_GAME_CONTEXT_FINALIZE_WAIT_SECONDS", 60.0)
+    monkeypatch.setattr(game_router, "_run_game_context_organizer_ai", fake_ai)
+    monkeypatch.setattr(game_router, "_submit_game_archive_to_memory", fake_submit)
+
+    for index in range(1, 16):
+        _append_user_line(state, index)
+    await asyncio.wait_for(started.wait(), timeout=1.0)
+
+    result = await asyncio.wait_for(
+        game_router._finalize_game_route_state(state, reason="manual"),
+        timeout=1.0,
+    )
+
+    assert result["archive_memory"]["status"] == "skipped"
+    assert result["archive_memory"]["reason"] == "soccer_game_memory_archive_disabled"
+    assert state["game_context_organizer"]["running"] is False
+    assert state["game_context_organizer"]["error"] == "archive_disabled"
+    assert state["_game_context_organizer_task"].done()
+    assert cancelled.is_set()
 
 
 @pytest.mark.unit
