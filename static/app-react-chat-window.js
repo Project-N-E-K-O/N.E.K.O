@@ -720,12 +720,11 @@
 
         // Clear stale GalGame options as soon as the user sends anything; the
         // next turn-end will trigger a fresh fetch if the mode is still on.
-        // invalidatePendingGalgameRequest also bumps _galgameRequestSeq, which
-        // is critical when the array is empty but a fetch is in flight — the
-        // older response would otherwise render stale A/B/C options into the
-        // new turn context.
-        if ((state.galgameOptions && state.galgameOptions.length > 0) || state.galgameOptionsLoading) {
-            invalidatePendingGalgameRequest();
+        // invalidatePendingGalgameRequest unconditionally bumps the seq + aborts
+        // the in-flight fetch (so a still-pending wait callback or response
+        // can't land into the new turn context); we only re-render when the
+        // visible state actually changed.
+        if (invalidatePendingGalgameRequest()) {
             renderWindow();
         }
 
@@ -1094,11 +1093,32 @@
         return '';
     }
 
+    var GALGAME_FETCH_TIMEOUT_MS = 30000;
+    var _galgameAbortController = null;
+
+    function abortPendingGalgameFetch() {
+        if (_galgameAbortController) {
+            try { _galgameAbortController.abort(); } catch (_) {}
+            _galgameAbortController = null;
+        }
+    }
+
     function fetchGalgameOptionsForLatestTurn() {
         if (!state.galgameModeEnabled) return;
         var history = getRecentGalgameMessageHistory();
         if (!history.length) return;
         if (history[history.length - 1].role !== 'assistant') return;
+
+        // Cancel any prior in-flight request — keeps summary-tier load down
+        // when turns arrive faster than the model can answer, and ensures a
+        // hung server side isn't held open while the panel is no longer
+        // listening for it.
+        abortPendingGalgameFetch();
+        var controller = (typeof AbortController === 'function') ? new AbortController() : null;
+        _galgameAbortController = controller;
+        var timeoutId = controller ? setTimeout(function () {
+            try { controller.abort(); } catch (_) {}
+        }, GALGAME_FETCH_TIMEOUT_MS) : null;
 
         var requestSeq = ++state._galgameRequestSeq;
         state.galgameOptions = [];
@@ -1125,14 +1145,26 @@
             }
         } catch (_) {}
 
+        function clearTimer() {
+            if (timeoutId !== null) {
+                clearTimeout(timeoutId);
+                timeoutId = null;
+            }
+            if (_galgameAbortController === controller) {
+                _galgameAbortController = null;
+            }
+        }
+
         fetch('/api/galgame/options', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
+            body: JSON.stringify(payload),
+            signal: controller ? controller.signal : undefined
         }).then(function (resp) {
             if (!resp || !resp.ok) throw new Error('HTTP ' + (resp && resp.status));
             return resp.json();
         }).then(function (data) {
+            clearTimer();
             if (requestSeq !== state._galgameRequestSeq) return;
             var opts = (data && Array.isArray(data.options)) ? data.options.slice(0, 3) : [];
             opts = opts.filter(function (o) {
@@ -1144,7 +1176,11 @@
             state.galgameOptionsLoading = false;
             renderWindow();
         }).catch(function (err) {
+            clearTimer();
             if (requestSeq !== state._galgameRequestSeq) return;
+            // Aborts come from invalidation paths that have already cleared
+            // visible state, so swallow them silently.
+            if (err && err.name === 'AbortError') return;
             console.warn('[ReactChatWindow] galgame options fetch failed:', err);
             state.galgameOptions = [];
             state.galgameOptionsLoading = false;
@@ -1187,13 +1223,23 @@
     }
 
     function invalidatePendingGalgameRequest() {
-        // Conversation switched / cleared — drop any in-flight options fetch so
+        // Conversation advanced / switched / cleared — drop any in-flight
+        // options fetch (or pending wait callback that hasn't fired yet) so
         // its response can't render stale A/B/C into the new context.
-        if (state.galgameOptionsLoading || (state.galgameOptions && state.galgameOptions.length > 0)) {
+        // The seq bump must be UNCONDITIONAL: callers like
+        // waitForAssistantBubblesFlushed snapshot _galgameRequestSeq before
+        // their fetch goes out, so even when the panel is idle (loading
+        // false, options empty) we still need to advance the seq to invalidate
+        // those pending callbacks. The fetch itself is also aborted.
+        state._galgameRequestSeq += 1;
+        abortPendingGalgameFetch();
+        var hadVisibleState = state.galgameOptionsLoading
+            || (state.galgameOptions && state.galgameOptions.length > 0);
+        if (hadVisibleState) {
             state.galgameOptions = [];
             state.galgameOptionsLoading = false;
-            state._galgameRequestSeq += 1;
         }
+        return hadVisibleState;
     }
 
     function setMessages(messages) {
