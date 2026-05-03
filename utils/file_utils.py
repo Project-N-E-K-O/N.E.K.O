@@ -7,7 +7,7 @@ import re
 import tempfile
 import unicodedata
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 # ── LLM JSON tolerance ─────────────────────────��────────────────────────
 # LLM 经常返回带有格式瑕疵的 JSON（无引号 key、尾逗号、Python 字面值等）。
@@ -101,12 +101,103 @@ def _try_json_loads(s: str) -> tuple[Any, bool]:
         return None, False
 
 
+def _apply_outside_strings(s: str, transform: Callable[[str], str]) -> str:
+    """Run ``transform`` only on text outside of quoted strings.
+
+    Both ``'...'`` and ``"..."`` are recognized as string boundaries (LLM 常输出
+    Python-repr 风格混合引号). Backslash inside strings escapes the next char.
+    Inside-string content is preserved bytewise — protects e.g. the literal value
+    ``"True"`` from the Python-literal substitution step.
+    """
+    out: list[str] = []
+    buf: list[str] = []  # outside-string segment buffer
+    quote: str | None = None
+    escape = False
+
+    def _flush_outside() -> None:
+        if buf:
+            out.append(transform(''.join(buf)))
+            buf.clear()
+
+    for c in s:
+        if escape:
+            out.append(c)
+            escape = False
+            continue
+        if quote is not None:
+            out.append(c)
+            if c == '\\':
+                escape = True
+            elif c == quote:
+                quote = None
+        else:
+            if c in ('"', "'"):
+                _flush_outside()
+                out.append(c)
+                quote = c
+            else:
+                buf.append(c)
+    _flush_outside()
+    return ''.join(out)
+
+
+def _normalize_quotes(s: str) -> str:
+    """Convert single-quoted strings to double-quoted; preserve inside content.
+
+    段感知：扫一次按 ``'`` / ``"`` 边界切片，仅把 ``'...'`` 段改成 ``"..."``，
+    并对内部出现的 ``\\'`` 解转义、对裸 ``"`` 加转义。已经是双引号字符串的段
+    一字不动。
+    """
+    out: list[str] = []
+    current: list[str] = []
+    quote: str | None = None
+    escape = False
+    for c in s:
+        if escape:
+            current.append(c)
+            escape = False
+            continue
+        if quote is not None:
+            if c == '\\':
+                current.append(c)
+                escape = True
+            elif c == quote:
+                # 字符串结束
+                if quote == "'":
+                    inner = ''.join(current)
+                    # 解 \' → '，保留 \\ 不动；为目标双引号字符串再转义裸 "
+                    inner = re.sub(r"\\'", "'", inner)
+                    inner = re.sub(r'(?<!\\)"', r'\\"', inner)
+                    out.append('"' + inner + '"')
+                else:
+                    out.append('"' + ''.join(current) + '"')
+                current = []
+                quote = None
+            else:
+                current.append(c)
+        else:
+            if c in ('"', "'"):
+                quote = c
+                current = []
+            else:
+                out.append(c)
+    if quote is not None:
+        # 未闭合 —— 原样吐出（让 json.loads 自己抛错）
+        out.append(quote)
+        out.append(''.join(current))
+    return ''.join(out)
+
+
 def robust_json_loads(raw: str) -> Any:
     """json.loads with fallback for common LLM JSON quirks.
 
     原始输入若能直接 parse，无条件返回原结果（绝不预先 transform）。否则按
     fallback pipeline 逐步修补 —— 每步 transform 后立即 try parse，能 parse
     即停，避免后续步骤（尤其是 scanner）在不必要时动文本。
+
+    所有"纯文本替换" transform（Python 字面量、`{{}}`、尾逗号、无引号 key）
+    都通过 ``_apply_outside_strings`` 包装，仅在字符串外生效，避免把字符串值
+    （如 ``"True"`` / ``"x,]"``）静默改坏。
 
     Handles: unquoted keys, trailing commas, ``{{ }}``, Python ``True/False/None``,
     single-quoted strings (including mixed-quote scenarios), and stray hallucinated
@@ -116,28 +207,25 @@ def robust_json_loads(raw: str) -> Any:
     if ok:
         return parsed
 
-    def _normalize_quotes(s: str) -> str:
-        if '"' not in s:
-            return s.replace("'", '"')
-        # 混合引号：逐步替换单引号 key/value
-        s = re.sub(r"'([^']*?)'\s*:", r'"\1":', s)           # key
-        s = re.sub(r":\s*'([^']*?)'", r': "\1"', s)         # value
-        s = re.sub(r"'\s*([,\]\}])", r'"\1', s)              # 数组尾
-        s = re.sub(r"([,\[\{])\s*'", r'\1"', s)              # 数组头
-        return s
-
     transforms = (
-        # {{ }} → { }  (LLM 模仿 prompt 模板转义)
-        lambda s: s.replace("{{", "{").replace("}}", "}"),
-        # Python 字面值 → JSON
-        lambda s: s.replace("True", "true").replace("False", "false").replace("None", "null"),
-        # 尾逗号
-        lambda s: re.sub(r',\s*([}\]])', r'\1', s),
-        # 无引号 key:  {key: "v"} → {"key": "v"}
-        lambda s: _UNQUOTED_KEY_RE.sub(r' "\1":', s),
-        # 单引号 → 双引号
+        # {{ }} → { }  (LLM 模仿 prompt 模板转义)；段感知
+        lambda s: _apply_outside_strings(
+            s, lambda t: t.replace("{{", "{").replace("}}", "}"),
+        ),
+        # Python 字面值 → JSON；段感知（避免改字符串内的 "True" 等）
+        lambda s: _apply_outside_strings(
+            s,
+            lambda t: t.replace("True", "true")
+                       .replace("False", "false")
+                       .replace("None", "null"),
+        ),
+        # 尾逗号；段感知
+        lambda s: _apply_outside_strings(s, lambda t: re.sub(r',\s*([}\]])', r'\1', t)),
+        # 无引号 key:  {key: "v"} → {"key": "v"}；段感知
+        lambda s: _apply_outside_strings(s, lambda t: _UNQUOTED_KEY_RE.sub(r' "\1":', t)),
+        # 单引号 → 双引号；自身已段感知
         _normalize_quotes,
-        # 最后才动：清掉 `,결{` 类结构 token 间幻觉污染
+        # 最后才动：清掉 `,결{` 类结构 token 间幻觉污染；自身已双引号感知
         _strip_stray_chars_between_tokens,
     )
     s = raw

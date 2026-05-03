@@ -96,6 +96,31 @@ def test_minimum_strip_when_already_parseable_after_earlier_transform():
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        # 字符串内的 Python 字面量不应被替换
+        ("{'text': 'True'}", {"text": "True"}),
+        ("{'a': 'False', 'b': 'None'}", {"a": "False", "b": "None"}),
+        # 字符串内的 `{{`/`}}` 不应被改
+        ("{'tpl': 'hello {{name}}'}", {"tpl": "hello {{name}}"}),
+        # 字符串内的 `,]` `,}` pattern 不应被去尾逗号
+        ("{'pat': 'foo,]bar'}", {"pat": "foo,]bar"}),
+        # 字符串内含像 unquoted key 的 pattern 不应被加引号
+        ("{'sql': 'SELECT a: 1 FROM t'}", {"sql": "SELECT a: 1 FROM t"}),
+        # 上述全部综合 + 双引号字符串内含相同 pattern
+        ('{"text": "True", "tpl": "{{x}}"}', {"text": "True", "tpl": "{{x}}"}),
+    ],
+)
+def test_string_content_protected_from_text_transforms(raw, expected):
+    """关键回归：fallback pipeline 里所有纯文本 transform 都段感知。
+
+    旧版会在 step 2 先把字符串内的 `True` 替换成 `true`，最终静默篡改字符串值。
+    """
+    assert robust_json_loads(raw) == expected
+
+
+@pytest.mark.unit
 def test_strict_json_with_cjk_not_touched_at_all():
     """关键回归：raw 能直接 parse，原值无条件返回，scanner 完全不介入。
 
