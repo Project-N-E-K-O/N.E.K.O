@@ -761,9 +761,11 @@ async function initSubtitleAfterStorageBarrier() {
     if (!window.__universalTutorialManagerInitialized &&
         typeof initUniversalTutorialManager === 'function') {
         try {
-            initUniversalTutorialManager();
-            window.__universalTutorialManagerInitialized = true;
-            console.log('[App] 通用引导管理器已初始化');
+            const initialized = await initUniversalTutorialManager();
+            if (initialized !== false) {
+                window.__universalTutorialManagerInitialized = true;
+                console.log('[App] 通用引导管理器已初始化');
+            }
         } catch (error) {
             console.error('[App] 通用引导管理器初始化失败:', error);
         }

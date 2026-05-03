@@ -50,6 +50,7 @@
         pendingTutorialStartPersistence: null,
         pendingTutorialStartPayload: null,
         userCohort: 'unknown',
+        mobileResizeRetryBound: false,
     };
 
     const shortPromptToken = promptTools.shortToken;
@@ -73,6 +74,18 @@
 
     function isMobileTutorialDisabled() {
         return window.innerWidth <= 768;
+    }
+
+    function bindMobileTutorialPromptResizeRetry() {
+        if (state.mobileResizeRetryBound) return;
+        state.mobileResizeRetryBound = true;
+
+        window.addEventListener('resize', function retryTutorialPromptInit() {
+            if (isMobileTutorialDisabled()) return;
+            window.removeEventListener('resize', retryTutorialPromptInit);
+            state.mobileResizeRetryBound = false;
+            mod.init();
+        });
     }
 
     function createHeartbeatToken() {
@@ -803,7 +816,10 @@
 
     mod.init = function init() {
         if (state.initialized) return;
-        if (isMobileTutorialDisabled()) return;
+        if (isMobileTutorialDisabled()) {
+            bindMobileTutorialPromptResizeRetry();
+            return;
+        }
 
         state.homeTutorialCompleted = isHomeTutorialSeen();
         state.initialized = true;
