@@ -114,13 +114,13 @@ logger = get_module_logger(__name__, "Main")
 CHARACTER_RESERVED_FIELD_SET = set(CHARACTER_RESERVED_FIELDS)
 
 
-async def _mark_new_character_greeting_pending_safe(config_manager, character_name: str, source: str) -> bool:
+async def _mark_new_character_greeting_pending_safe(config_manager, character_name: str, source: str) -> tuple[bool, str]:
     try:
         await mark_new_character_greeting_pending(config_manager, character_name, source=source)
-        return True
-    except Exception:
+        return True, ""
+    except Exception as exc:
         logger.exception("mark new character greeting pending failed: %s", character_name)
-        return False
+        return False, str(exc)
 
 
 def _json_no_store_response(content, *, status_code: int = 200):
@@ -1873,7 +1873,6 @@ async def rename_catgirl(old_name: str, request: Request):
                     status_code=500,
                 )
 
-            await rename_new_character_greeting_pending(_config_manager, old_name, new_name)
         except MaintenanceModeError as exc:
             rollback_error = await _rollback_character_operation(
                 _config_manager,
@@ -1905,11 +1904,26 @@ async def rename_catgirl(old_name: str, request: Request):
         except Exception as e:
             logger.warning(f"发送重命名通知给 {old_name} 失败: {e}")
 
-    return {
+    pending_rename_ok = True
+    pending_rename_error = ""
+    try:
+        await rename_new_character_greeting_pending(_config_manager, old_name, new_name)
+    except Exception as exc:
+        pending_rename_ok = False
+        pending_rename_error = str(exc)
+        logger.exception("rename new character greeting pending failed: %s -> %s", old_name, new_name)
+
+    result = {
         "success": True,
         "memory_renamed": True,
         "memory_server_reloaded": memory_server_reloaded,
     }
+    if not pending_rename_ok:
+        result["partial_success"] = True
+        result["pending_rename_ok"] = False
+        result["pending_rename_failed"] = True
+        result["pending_rename_error"] = pending_rename_error
+    return result
 
 
 @router.post('/catgirl/{name}/unregister_voice')
@@ -2365,7 +2379,7 @@ async def add_catgirl(request: Request):
 
     characters['猫娘'][key] = catgirl_data
     await _config_manager.asave_characters(characters)
-    pending_mark_ok = await _mark_new_character_greeting_pending_safe(_config_manager, key, "create")
+    pending_mark_ok, pending_mark_error = await _mark_new_character_greeting_pending_safe(_config_manager, key, "create")
 
     # Fast path：新增只需为 `key` 这一个 catgirl 分配资源 + 启动线程，不影响其它角色。
     init_one_catgirl = get_init_one_catgirl()
@@ -2380,7 +2394,9 @@ async def add_catgirl(request: Request):
     }
     if not pending_mark_ok:
         response["partial_success"] = True
+        response["pending_mark_ok"] = False
         response["pending_mark_failed"] = True
+        response["pending_mark_error"] = pending_mark_error
     return response
 
 
@@ -2588,7 +2604,6 @@ async def delete_catgirl(name: str):
             memory_server_reloaded = await notify_memory_server_reload(reason=f"删除角色: {name}")
             if not memory_server_reloaded:
                 raise RuntimeError("notify_memory_server_reload returned False")
-            await remove_new_character_greeting_pending(_config_manager, name)
         except MaintenanceModeError as exc:
             rollback_error = await _rollback_character_operation(
                 _config_manager,
@@ -2621,7 +2636,22 @@ async def delete_catgirl(name: str):
                 status_code=500,
             )
 
-    return {"success": True, "memory_server_reloaded": memory_server_reloaded}
+    pending_remove_ok = True
+    pending_remove_error = ""
+    try:
+        await remove_new_character_greeting_pending(_config_manager, name)
+    except Exception as exc:
+        pending_remove_ok = False
+        pending_remove_error = str(exc)
+        logger.exception("remove new character greeting pending failed: %s", name)
+
+    result = {"success": True, "memory_server_reloaded": memory_server_reloaded}
+    if not pending_remove_ok:
+        result["partial_success"] = True
+        result["pending_remove_ok"] = False
+        result["pending_remove_failed"] = True
+        result["pending_remove_error"] = pending_remove_error
+    return result
 
 @router.post('/clear_voice_ids')
 async def clear_voice_ids():
@@ -4012,9 +4042,10 @@ async def save_character_card(request: Request):
         await _config_manager.asave_characters(characters)
 
         if is_new_character:
-            pending_mark_ok = await _mark_new_character_greeting_pending_safe(_config_manager, chara_name, "character_card_save")
+            pending_mark_ok, pending_mark_error = await _mark_new_character_greeting_pending_safe(_config_manager, chara_name, "character_card_save")
         else:
             pending_mark_ok = True
+            pending_mark_error = ""
 
         # 自动重新加载配置
         initialize_character_data = get_initialize_character_data()
@@ -4025,7 +4056,9 @@ async def save_character_card(request: Request):
         result: dict = {"success": True, "character_card_name": chara_name}
         if not pending_mark_ok:
             result["partial_success"] = True
+            result["pending_mark_ok"] = False
             result["pending_mark_failed"] = True
+            result["pending_mark_error"] = pending_mark_error
         return result
     except Exception as e:
         logger.error(f"保存角色卡到characters.json失败: {e}")
@@ -4742,7 +4775,7 @@ async def import_character_card(
 
             # 保存到文件
             await _config_manager.asave_characters(characters)
-            pending_mark_ok = await _mark_new_character_greeting_pending_safe(_config_manager, character_name, "import")
+            pending_mark_ok, pending_mark_error = await _mark_new_character_greeting_pending_safe(_config_manager, character_name, "import")
 
             # 刷新内存中的角色数据，确保磁盘和内存同步
             initialize_character_data = get_initialize_character_data()
@@ -4772,12 +4805,18 @@ async def import_character_card(
                 await asyncio.to_thread(_write_card_meta, meta_path, meta)
             except Exception as meta_err:
                 logger.warning(f"[导入角色卡] 写入卡面元数据失败: {meta_err}")
-                return JSONResponse({
+                partial_result = {
                     "success": True,
+                    "partial_success": True,
                     "error": f"角色数据已导入，但卡面元数据写入失败: {meta_err}",
                     "card_meta_saved": False,
                     "character_name": character_name,
-                }, status_code=200)
+                    "pending_mark_ok": pending_mark_ok,
+                }
+                if not pending_mark_ok:
+                    partial_result["pending_mark_failed"] = True
+                    partial_result["pending_mark_error"] = pending_mark_error
+                return JSONResponse(partial_result, status_code=200)
 
             # 老角色卡兼容：如果前端上传了载体 PNG，且本地还没有同名卡面，
             # 则直接使用该 PNG 作为卡面（带 neKo chunk 不影响质量）。
@@ -4823,7 +4862,9 @@ async def import_character_card(
         }
         if not pending_mark_ok:
             import_result['partial_success'] = True
+            import_result['pending_mark_ok'] = False
             import_result['pending_mark_failed'] = True
+            import_result['pending_mark_error'] = pending_mark_error
         return JSONResponse(import_result)
 
     except zipfile.BadZipFile:
