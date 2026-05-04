@@ -124,28 +124,24 @@ async function handleOpenUi() {
   // action 行为分叉，用户体验不一致。
   const openInNewTab = action.open_in !== 'same_tab'
 
-  // 1) 显式外部 URL：按 open_in 在新 tab 或当前页跳转
-  if (target && /^https?:\/\//i.test(target)) {
-    if (openInNewTab) {
-      window.open(target, '_blank', 'noopener,noreferrer')
-    } else {
-      window.location.href = target
-    }
-    return
-  }
-
-  // 2) 内部路由：target 作为 vue-router path
+  // 显式 target：用 browser navigation（window.open），不走 SPA router——
+  // 与 list-action executor 的 ui/url 分支行为一致。SPA router（
+  // src/router/index.ts）只认识 manager 内部路由（/plugins/:id 等），plugin
+  // server 暴露的 path（如 /plugin/<id>/ui/）和外部 URL 都得走 browser
+  // navigation 才能正确跳转，否则 same_tab + plugin-server path 会被当
+  // unmatched SPA route，UI 不打开。
   if (target) {
-    if (openInNewTab) {
-      const resolved = router.resolve(target)
-      window.open(resolved.href, '_blank', 'noopener,noreferrer')
-    } else {
-      await router.push(target)
-    }
+    const windowTarget = openInNewTab ? '_blank' : '_self'
+    window.open(
+      target,
+      windowTarget,
+      openInNewTab ? 'noopener,noreferrer' : undefined,
+    )
     return
   }
 
-  // 3) 无 target 时退回默认 plugin 详情页 ?tab=ui
+  // 无 target 时退回默认 plugin 详情页 ?tab=ui，这是 manager 内部路由，
+  // 用 router.push 走 SPA 内导航更平顺；new_tab 时仍 window.open 新窗口。
   const fallback = {
     path: `/plugins/${encodeURIComponent(props.pluginId)}`,
     query: { tab: 'ui' },

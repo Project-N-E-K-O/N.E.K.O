@@ -202,6 +202,10 @@ const activePanelSurfaceId = ref('')
 const activeGuideSurfaceId = ref('')
 const allowedTabs = new Set(['panel', 'guide', 'ui', 'info', 'entries', 'metrics', 'config', 'logs'])
 let currentSurfaceLoadId = 0
+// fetchStaticUI 也需要和 fetchSurfaces 一样的 stale-response guard：用户快速
+// 切换 plugin detail 页时，旧 plugin 的 /ui-info 响应可能在新 plugin 加载后
+// 才到达，覆盖 hasStaticUI 导致 UI tab 显示状态错位。
+let currentStaticUiLoadId = 0
 const hasStaticUI = ref(false)
 
 const plugin = computed(() => {
@@ -305,10 +309,14 @@ async function fetchSurfaces() {
 }
 
 async function fetchStaticUI() {
+  const loadId = ++currentStaticUiLoadId
+  const currentPluginId = pluginId.value
   try {
-    const info = await get<{ has_ui: boolean }>(`/plugin/${encodeURIComponent(pluginId.value)}/ui-info`)
+    const info = await get<{ has_ui: boolean }>(`/plugin/${encodeURIComponent(currentPluginId)}/ui-info`)
+    if (loadId !== currentStaticUiLoadId || currentPluginId !== pluginId.value) return
     hasStaticUI.value = info?.has_ui ?? false
   } catch {
+    if (loadId !== currentStaticUiLoadId || currentPluginId !== pluginId.value) return
     hasStaticUI.value = false
   }
 }
