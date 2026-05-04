@@ -51,6 +51,7 @@
         galgameModeEnabled: false,
         galgameOptions: [],
         galgameOptionsLoading: false,
+        galgameTemporarilyDisabled: false,
         _galgameRequestSeq: 0
     };
 
@@ -1085,8 +1086,40 @@
     }
 
     // ============================ GalGame mode ============================
+    function isGalgameModeTemporarilyDisabled() {
+        return !!state.galgameTemporarilyDisabled;
+    }
+
+    function isHomeTutorialRunning() {
+        var manager = window.universalTutorialManager;
+        return !!(
+            manager
+            && manager.currentPage === 'home'
+            && manager.isTutorialRunning
+        );
+    }
+
+    function setGalgameModeTemporarilyDisabled(disabled) {
+        var next = !!disabled;
+        var changed = state.galgameTemporarilyDisabled !== next;
+        state.galgameTemporarilyDisabled = next;
+
+        if (next) {
+            setGalgameModeEnabled(false, { persist: false });
+        } else if (changed) {
+            setGalgameModeEnabled(readGalgameModePreference(), {
+                persist: false,
+                suppressRefetch: true
+            });
+        }
+    }
+
     function setGalgameModeEnabled(enabled, options) {
+        var requestOptions = options || {};
         var next = !!enabled;
+        if (next && isGalgameModeTemporarilyDisabled()) {
+            next = false;
+        }
         var changed = state.galgameModeEnabled !== next;
         state.galgameModeEnabled = next;
         if (!next) {
@@ -1099,7 +1132,9 @@
             abortPendingGalgameFetch();
         }
         applyGalgameBodyClass(next);
-        if (!options || options.persist !== false) persistGalgameModePreference(next);
+        if ((!requestOptions || requestOptions.persist !== false) && !isGalgameModeTemporarilyDisabled()) {
+            persistGalgameModePreference(next);
+        }
         renderWindow();
         if (changed) {
             dispatchHostEvent('galgame-mode-change', { enabled: next });
@@ -1109,7 +1144,7 @@
             // avoids wasting a summary-tier call during init() (where the
             // window is still hidden) and respects the same skip rule the
             // turn-end handler uses for voice-only / proactive paths.
-            if (next) {
+            if (next && !requestOptions.suppressRefetch) {
                 var overlay = getOverlay();
                 if (overlay && !overlay.hidden) {
                     fetchGalgameOptionsForLatestTurn();
@@ -1190,6 +1225,7 @@
     }
 
     function fetchGalgameOptionsForLatestTurn() {
+        if (isGalgameModeTemporarilyDisabled()) return;
         if (!state.galgameModeEnabled) return;
         var history = getRecentGalgameMessageHistory();
         if (!history.length) return;
@@ -1288,6 +1324,10 @@
     }
 
     function handleGalgameModeToggle() {
+        if (isGalgameModeTemporarilyDisabled()) {
+            setGalgameModeEnabled(false, { persist: false });
+            return;
+        }
         // setGalgameModeEnabled handles the OFF→ON refetch internally.
         setGalgameModeEnabled(!state.galgameModeEnabled);
     }
@@ -2193,6 +2233,18 @@
             setGalgameModeEnabled(!!detail.enabled, { persist: detail.persist !== false });
         });
 
+        window.addEventListener('neko:tutorial-started', function (event) {
+            var detail = event && event.detail ? event.detail : {};
+            if (detail.page !== 'home') return;
+            setGalgameModeTemporarilyDisabled(true);
+        });
+
+        window.addEventListener('neko:tutorial-completed', function (event) {
+            var detail = event && event.detail ? event.detail : {};
+            if (detail.page !== 'home') return;
+            setGalgameModeTemporarilyDisabled(false);
+        });
+
         // Refresh option list whenever an assistant turn finishes streaming.
         window.addEventListener('neko-assistant-turn-end', function () {
             if (!state.galgameModeEnabled) return;
@@ -2243,7 +2295,11 @@
         // from a storage namespace the barrier is about to remap.
         // setGalgameModeEnabled idempotently syncs state + body class + fires
         // the change event when the resolved pref differs from the safe default.
-        setGalgameModeEnabled(readGalgameModePreference(), { persist: false });
+        if (isHomeTutorialRunning()) {
+            setGalgameModeTemporarilyDisabled(true);
+        } else {
+            setGalgameModeEnabled(readGalgameModePreference(), { persist: false });
+        }
 
         if (trigger) {
             trigger.addEventListener('click', openWindow);
