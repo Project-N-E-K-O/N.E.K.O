@@ -1796,6 +1796,19 @@ class LLMSessionManager:
             self.audio_resampler.clear()
             if self.use_tts:
                 await self._clear_tts_pipeline()
+            # Realtime native voice: also tell the provider to stop generating
+            # so further audio.delta / output_audio.delta won't keep streaming
+            # past the interruption point.  Local takeover guards drop these
+            # at handler level too, but cancelling on the wire avoids wasted
+            # tokens and stale audio still in the wire buffer.
+            if isinstance(self.session, OmniRealtimeClient):
+                try:
+                    await self.session.cancel_response()
+                except Exception as cancel_exc:
+                    logger.debug(
+                        "[%s] mirror_assistant_speech: realtime cancel_response skipped/failed: %s",
+                        self.lanlan_name, cancel_exc,
+                    )
             await self.send_user_activity(interrupted_speech_id)
 
         async with self.lock:
@@ -4112,6 +4125,15 @@ class LLMSessionManager:
             self.lanlan_name, sess_type, self.state.phase.value, len(self.pending_agent_callbacks),
         )
         if not self.pending_agent_callbacks:
+            return
+        # 与 handle_text_data / handle_response_complete 等输出 handler 对偶：
+        # takeover 期间普通 chat LLM 输出会被静音，所以现在派发会被吞掉、callback
+        # 内容白丢。把入口卡住，callback 留在队列里等 takeover 释放。
+        if self._takeover_active:
+            logger.info(
+                "[%s] trigger_agent_callbacks deferred: session takeover active, keeping %d callback(s) for next attempt",
+                self.lanlan_name, len(self.pending_agent_callbacks),
+            )
             return
 
         # Hard delivery contract: trigger_agent_callbacks ONLY consumes

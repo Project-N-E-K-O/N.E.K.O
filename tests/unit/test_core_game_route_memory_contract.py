@@ -56,6 +56,7 @@ class _FakeActivityTracker:
 def _make_manager():
     mgr = object.__new__(LLMSessionManager)
     mgr.websocket = None
+    mgr.session = None
     mgr.sync_message_queue = _FakeQueue()
     mgr.lanlan_name = "Lan"
     mgr.lock = _AsyncNullLock()
