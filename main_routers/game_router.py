@@ -3601,13 +3601,24 @@ async def game_route_start(game_type: str, request: Request):
         return {"ok": False, "reason": "missing_lanlan_name"}
 
     session_id = str(data.get("session_id") or "default")
-    old_state = _get_active_game_route_state(lanlan_name, game_type)
-    if old_state:
+    # 同一角色同一时刻只允许一个 active 游戏路由：启动新路由前先结束所有其它仍活跃的
+    # 路由（同 game_type 旧 session、不同 game_type、未来跨游戏并存均覆盖）。否则
+    # is_game_route_active(lanlan_name) / _get_active_game_route_state(lanlan_name)
+    # 这些不带 game_type 的查询会拿到 dict 迭代顺序里"先出现"的那个 route，导致
+    # 文本/语音输入归属不确定。
+    for old_state in [
+        candidate
+        for candidate in list(_game_route_states.values())
+        if candidate.get("game_route_active")
+        and str(candidate.get("lanlan_name") or "") == lanlan_name
+    ]:
+        old_game_type = str(old_state.get("game_type") or "")
         old_session_id = str(old_state.get("session_id") or "default")
         logger.warning(
-            "🎮 新游戏路由启动前发现旧 active route，先结束旧局: game=%s old_session=%s new_session=%s lanlan=%s",
-            game_type,
+            "🎮 新游戏路由启动前发现旧 active route，先结束旧局: old_game=%s old_session=%s new_game=%s new_session=%s lanlan=%s",
+            old_game_type,
             old_session_id,
+            game_type,
             session_id,
             lanlan_name,
         )

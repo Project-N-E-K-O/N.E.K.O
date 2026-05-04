@@ -1093,6 +1093,43 @@ async def test_route_start_finalizes_old_active_route_before_replacing(monkeypat
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_route_start_finalizes_other_game_types_for_same_lanlan(monkeypatch):
+    """启动新路由前要结束同角色下所有 active 路由（即使 game_type 不同），
+    否则 is_game_route_active(lanlan_name) / _get_active_game_route_state(lanlan_name)
+    会按 dict 迭代顺序拿到歧义 route，导致输入归属不确定。"""
+    fake_session = type("FakeSession", (), {"close": AsyncMock()})()
+    game_router._game_sessions[game_router._game_session_key("Lan", "soccer", "soccer_match")] = {
+        "session": fake_session,
+        "reply_chunks": [],
+        "last_activity": game_router.time.time(),
+        "lock": None,
+    }
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {})
+    old_state = game_router._activate_game_route("soccer", "soccer_match", "Lan")
+    _set_soccer_game_memory_policy(old_state, enabled=True)
+    _mark_game_started(old_state)
+
+    async def fake_submit(archive):
+        return {"ok": True, "status": "cached", "count": 1}
+
+    monkeypatch.setattr(game_router, "_submit_game_archive_to_memory", fake_submit)
+
+    # 假设的另一种游戏 game_type=chess；非 soccer 路径会跳过 _build_soccer_pregame_context。
+    result = await game_router.game_route_start(
+        "chess",
+        _FakeRequest({"lanlan_name": "Lan", "session_id": "chess_match"}),
+    )
+
+    assert result["ok"] is True
+    assert old_state["game_route_active"] is False
+    assert old_state["exit_reason"] == "superseded_by_route_start"
+    fake_session.close.assert_awaited_once()
+    assert game_router.is_game_route_active("Lan", "chess") is True
+    assert game_router.is_game_route_active("Lan", "soccer") is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_route_external_text_to_game_llm_defers_voice_to_frontend_arbiter(monkeypatch):
     mgr = _FakeGameRouteManager()
     monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
