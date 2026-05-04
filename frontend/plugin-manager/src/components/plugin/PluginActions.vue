@@ -117,6 +117,25 @@ async function handleOpenUi() {
   // 若 plugin 声明了外部 URL / 自定义路由 / 新 tab 打开，UI 必须按字段路由，
   // 而不是无条件回退到默认的 `/plugins/{id}?tab=ui` 静态详情页。
   const action = uiAction.value
+
+  // 与 usePluginListContextActions.ts confirmIfNeeded 行为对齐：跳转前若
+  // plugin 声明了 confirm_message 就弹 dialog 确认，否则按钮会绕过 plugin
+  // 自己配的二次确认。`confirm_mode === 'hold'` 依赖 PluginDangerConfirmDialog
+  // 这种 host 组件呈现，按钮上下文不支持，跳过即可（plugin 给 kind: "ui"
+  // 配 hold mode 极少见）。
+  if (action.confirm_mode !== 'hold') {
+    const confirmMsg = resolveLocalizedText(action.confirm_message, locale.value, '')
+    if (confirmMsg) {
+      try {
+        await ElMessageBox.confirm(confirmMsg, t('common.confirm'), {
+          type: action.danger ? 'warning' : 'info',
+        })
+      } catch {
+        return
+      }
+    }
+  }
+
   const target = action.target?.trim() || ''
   // open_in 缺省时统一默认 new_tab，与 usePluginListContextActions.ts:366
   // 的 list-action executor convention 对齐（`open_in === 'same_tab' ? '_self'
