@@ -16,10 +16,7 @@ _lock = asyncio.Lock()
 
 
 def _state_path(config_manager) -> Path:
-    root = getattr(config_manager, "local_state_dir", None)
-    if root is None:
-        root = Path(getattr(config_manager, "app_docs_dir", ".")) / "state"
-    return Path(root) / STATE_FILENAME
+    return Path(config_manager.local_state_dir) / STATE_FILENAME
 
 
 def _empty_state() -> dict[str, Any]:
