@@ -3178,9 +3178,34 @@ async def _get_or_create_session(game_type: str, session_id: str, lanlan_name: s
             entry = _game_sessions[canonical_key]
             entry['last_activity'] = time.time()
             return entry
-        return await _build_and_register_game_session(
-            canonical_key, game_type, session_id, char_info,
-        )
+        try:
+            return await _build_and_register_game_session(
+                canonical_key, game_type, session_id, char_info,
+            )
+        except BaseException:
+            # codex P2 (PR #1127 r3182157092): if the build raises,
+            # nothing inserts into ``_game_sessions`` for this key, so
+            # ``_close_and_remove_session`` will never run for it and
+            # the per-key create lock would leak forever. Evict it
+            # here.
+            #
+            # Why conditional pop on ``_waiters``: if a peer task is
+            # already awaiting THIS lock (concurrent miss for the same
+            # canonical_key), unconditionally popping would let a new
+            # arrival call ``_get_session_create_lock`` and receive a
+            # FRESH lock object — distinct from the one the peer is
+            # awaiting — defeating the build serialization. Leaving
+            # the lock in place when there are waiters keeps them on
+            # the same Lock instance; the next successful build path
+            # registers an entry and ``_close_and_remove_session``
+            # will pop normally; another failed build will hit this
+            # branch again and eventually find ``_waiters`` empty.
+            # ``_waiters`` is CPython-private but stable across all
+            # supported Python versions.
+            waiters = getattr(create_lock, "_waiters", None)
+            if not waiters:
+                _game_session_create_locks.pop(canonical_key, None)
+            raise
 
 
 async def _build_and_register_game_session(
@@ -3682,6 +3707,15 @@ async def _run_game_chat(
     # Re-resolve canonical lanlan_name for state lookups.
     lanlan_name = str(entry.get("lanlan_name") or lanlan_name or "").strip()
 
+    # CR Major (PR #1127 r3182158697): when the post-lock route_inactive
+    # short-circuit trips and our build won the race against a finalize
+    # that ran during ``session.connect``, the freshly-registered entry
+    # would otherwise survive until the 30-min idle sweep. We capture
+    # the orphan inside the lock and close it AFTER releasing
+    # ``entry['lock']`` — ``_close_and_remove_session`` re-acquires that
+    # same lock, so closing through it under the lock would deadlock.
+    orphan_session_to_close = None
+    short_circuit_route_inactive = False
     async with entry['lock']:
         # B2: short-circuit if a finalize already kicked off (heartbeat
         # sweep, character switch, /route/end). Without this guard the
@@ -3699,60 +3733,85 @@ async def _run_game_chat(
                     "🎮 chat short-circuit: route exiting/inactive game=%s sid=%s lanlan=%s",
                     game_type, session_id, lanlan_name,
                 )
-                return {"line": "", "control": {}, "skipped": "route_inactive"}
+                # Evict our entry IFF the cache still points at us. If
+                # a peer creator already overwrote our slot, they own
+                # the close.
+                key = _game_session_key(lanlan_name, game_type, session_id)
+                cached = _game_sessions.get(key)
+                if cached is entry:
+                    _game_sessions.pop(key, None)
+                    _game_session_create_locks.pop(key, None)
+                    orphan_session_to_close = entry.get('session')
+                short_circuit_route_inactive = True
 
-        # B1: bail if our entry has been popped from the cache (peer
-        # creator overwrote us, or finalize closed the session while we
-        # were waiting on entry['lock']). Continuing would call
-        # ``stream_text`` on a closed client.
-        current_entry = _game_sessions.get(_game_session_key(lanlan_name, game_type, session_id))
-        if current_entry is not entry:
-            logger.info(
-                "🎮 chat short-circuit: entry no longer cached game=%s sid=%s lanlan=%s",
-                game_type, session_id, lanlan_name,
-            )
-            return {"line": "", "control": {}, "skipped": "entry_evicted"}
+        if not short_circuit_route_inactive:
+            # B1: bail if our entry has been popped from the cache (peer
+            # creator overwrote us, or finalize closed the session while
+            # we were waiting on entry['lock']). Continuing would call
+            # ``stream_text`` on a closed client.
+            current_entry = _game_sessions.get(_game_session_key(lanlan_name, game_type, session_id))
+            if current_entry is not entry:
+                logger.info(
+                    "🎮 chat short-circuit: entry no longer cached game=%s sid=%s lanlan=%s",
+                    game_type, session_id, lanlan_name,
+                )
+                return {"line": "", "control": {}, "skipped": "entry_evicted"}
 
-        session = entry['session']
-        reply_chunks = entry['reply_chunks']
-        await _refresh_game_session_instructions(entry, game_type, session_id, lanlan_name)
+            session = entry['session']
+            reply_chunks = entry['reply_chunks']
+            await _refresh_game_session_instructions(entry, game_type, session_id, lanlan_name)
 
-        # 清空上一次的回复
-        reply_chunks.clear()
+            # 清空上一次的回复
+            reply_chunks.clear()
 
-        if game_type == "soccer" and isinstance(event, dict):
-            route_state = _find_game_route_state_for_session(game_type, session_id, lanlan_name)
-            anger_pressure_cap = _build_soccer_anger_pressure_cap(
-                event,
-                route_state,
-                lanlan_prompt=str(entry.get("lanlan_prompt") or ""),
-            )
-            if anger_pressure_cap:
-                event = dict(event)
-                event["angerPressureCap"] = anger_pressure_cap
+            if game_type == "soccer" and isinstance(event, dict):
+                route_state = _find_game_route_state_for_session(game_type, session_id, lanlan_name)
+                anger_pressure_cap = _build_soccer_anger_pressure_cap(
+                    event,
+                    route_state,
+                    lanlan_prompt=str(entry.get("lanlan_prompt") or ""),
+                )
+                if anger_pressure_cap:
+                    event = dict(event)
+                    event["angerPressureCap"] = anger_pressure_cap
 
-        # 格式化事件为文本发送给 LLM
-        import json as _json
-        if isinstance(event, dict):
-            event_text = _json.dumps(event, ensure_ascii=False)
-        else:
-            event_text = str(event)
+            # 格式化事件为文本发送给 LLM
+            import json as _json
+            if isinstance(event, dict):
+                event_text = _json.dumps(event, ensure_ascii=False)
+            else:
+                event_text = str(event)
 
-        llm_started_at = time.perf_counter()
-        try:
-            await asyncio.wait_for(
-                session.stream_text(event_text),
-                timeout=15.0,
-            )
-        except asyncio.TimeoutError:
-            logger.warning("🎮 游戏 LLM 响应超时: game=%s sid=%s", game_type, session_id)
-            return {"error": "LLM 响应超时", "line": "", "control": {}}
-        except Exception as e:
-            logger.error("🎮 游戏 LLM 调用失败: %s", e)
-            return {"error": f"LLM 调用失败: {e}", "line": "", "control": {}}
+            llm_started_at = time.perf_counter()
+            try:
+                await asyncio.wait_for(
+                    session.stream_text(event_text),
+                    timeout=15.0,
+                )
+            except asyncio.TimeoutError:
+                logger.warning("🎮 游戏 LLM 响应超时: game=%s sid=%s", game_type, session_id)
+                return {"error": "LLM 响应超时", "line": "", "control": {}}
+            except Exception as e:
+                logger.error("🎮 游戏 LLM 调用失败: %s", e)
+                return {"error": f"LLM 调用失败: {e}", "line": "", "control": {}}
 
-        llm_elapsed_ms = int((time.perf_counter() - llm_started_at) * 1000)
-        full_reply = ''.join(reply_chunks)
+            llm_elapsed_ms = int((time.perf_counter() - llm_started_at) * 1000)
+            full_reply = ''.join(reply_chunks)
+
+    if short_circuit_route_inactive:
+        # Close the orphan session OUTSIDE entry['lock'] to avoid
+        # deadlocking against any future caller that takes the same
+        # lock. ``orphan_session_to_close`` is None when a peer beat us
+        # to the eviction.
+        if orphan_session_to_close is not None:
+            try:
+                await orphan_session_to_close.close()
+            except Exception as e:
+                logger.debug(
+                    "🎮 关闭短路 game session 失败: game=%s sid=%s err=%s",
+                    game_type, session_id, e, exc_info=True,
+                )
+        return {"line": "", "control": {}, "skipped": "route_inactive"}
 
     result = _parse_control_instructions(full_reply)
     if game_type == "soccer" and isinstance(event, dict):

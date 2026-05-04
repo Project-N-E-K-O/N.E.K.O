@@ -970,3 +970,349 @@ async def test_character_switch_finalize_serializes_with_concurrent_route_start_
             if key[0] == "Lan" and state.get("game_route_active")
         ]
         assert len(active_for_lan) <= 1, active_for_lan
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_get_or_create_session_evicts_create_lock_on_build_failure(monkeypatch):
+    """codex P2 follow-up (PR #1127 r3182157092): when
+    ``_build_and_register_game_session`` raises (e.g. ``session.connect``
+    fails) the per-key entry in ``_game_session_create_locks`` must be
+    evicted on the failure path. Without the eviction every failed
+    creation leaks one ``asyncio.Lock`` per unique session_id over
+    uptime — and crucially, ``_close_and_remove_session`` (the only
+    other place that prunes the lock map) is never called for sessions
+    that never registered.
+    """
+    with reset_game_route_state():
+        canonical_key = game_router._game_session_key(
+            "Lan", "soccer", "match_build_fail",
+        )
+        # Drop any leftover from prior runs.
+        game_router._game_session_create_locks.pop(canonical_key, None)
+
+        async def _explode(*_args, **_kwargs):
+            raise RuntimeError("connect failed (simulated)")
+
+        monkeypatch.setattr(
+            game_router, "_build_and_register_game_session", _explode,
+        )
+
+        def _stub_char_info(name):
+            return {
+                "lanlan_name": "Lan",
+                "lanlan_prompt": "",
+                "model": "stub",
+                "base_url": "https://stub.example.com",
+                "api_key": "stub",
+                "master_name": "Master",
+                "user_language": "en",
+                "api_type": "openai",
+            }
+
+        monkeypatch.setattr(game_router, "_get_character_info", _stub_char_info)
+
+        with pytest.raises(RuntimeError, match="connect failed"):
+            await game_router._get_or_create_session(
+                "soccer", "match_build_fail", "Lan",
+            )
+
+        # Critical invariant: the per-key create lock must NOT linger
+        # after a failed build, because nothing else in the lifecycle
+        # would prune it.
+        assert canonical_key not in game_router._game_session_create_locks, (
+            "Failed _build_and_register_game_session leaked its create lock; "
+            "_close_and_remove_session never runs for unregistered sessions."
+        )
+        # Sanity: nothing was inserted into _game_sessions either.
+        assert canonical_key not in game_router._game_sessions
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_get_or_create_session_keeps_create_lock_when_peer_waits(monkeypatch):
+    """codex P2 follow-up — peer-waiter variant: if Thread A's build
+    fails while Thread B is parked on the same per-key create lock, the
+    eviction must NOT pop the lock from the registry mid-flight.
+    Otherwise a third arrival would call ``_get_session_create_lock``,
+    receive a fresh ``asyncio.Lock``, and run its own build concurrently
+    with B — defeating the build serialization.
+
+    Implementation invariant: when ``create_lock._waiters`` is
+    non-empty on the failure path, leave the lock in place. We exercise
+    that branch with a real concurrent waiter and assert that AT THE
+    MOMENT A's failure unwinds, the registry still points at the
+    original lock (and Thread B subsequently re-uses it rather than
+    seeing a fresh one).
+    """
+    with reset_game_route_state():
+        canonical_key = game_router._game_session_key(
+            "Lan", "soccer", "match_peer_wait",
+        )
+        game_router._game_session_create_locks.pop(canonical_key, None)
+
+        # The build helper must NOT auto-yield before A reaches the
+        # async-with body, so A wins the lock acquisition. A then yields
+        # while raising so B has time to park as a waiter.
+        a_inside_build = asyncio.Event()
+        b_can_unblock = asyncio.Event()
+        captured: dict = {}
+
+        async def _explode_a(*_args, **_kwargs):
+            captured["lock_at_A_inside"] = (
+                game_router._game_session_create_locks.get(canonical_key)
+            )
+            a_inside_build.set()
+            # Park until B has had time to register as a waiter.
+            await b_can_unblock.wait()
+            # Confirm that B is in fact registered as a waiter on our
+            # lock by the time we raise.
+            lock = captured["lock_at_A_inside"]
+            captured["waiters_seen_at_A_raise"] = list(
+                getattr(lock, "_waiters", []) or ()
+            )
+            raise RuntimeError("A connect failed")
+
+        async def _succeed_b(*args, **kwargs):
+            # B's build runs after A fails; capture the lock instance
+            # at this point so we can prove it was not swapped.
+            captured["lock_at_B_build"] = (
+                game_router._game_session_create_locks.get(canonical_key)
+            )
+            # Build and register a minimal entry so this path resembles
+            # a successful retry.
+            from asyncio import Lock as _Lock
+            entry = {
+                "session": _DummySession(),
+                "reply_chunks": [],
+                "lanlan_name": "Lan",
+                "lanlan_prompt": "",
+                "source": {},
+                "last_activity": 0,
+                "lock": _Lock(),
+                "instructions": "",
+            }
+            game_router._game_sessions[canonical_key] = entry
+            return entry
+
+        class _DummySession:
+            async def close(self):
+                pass
+
+        # First call (A) explodes; second call (B) succeeds — we swap
+        # the dispatch after A's failure so the same monkeypatch slot
+        # serves both peers.
+        current_fn = {"fn": _explode_a}
+
+        async def _dispatch(*args, **kwargs):
+            return await current_fn["fn"](*args, **kwargs)
+
+        monkeypatch.setattr(
+            game_router, "_build_and_register_game_session", _dispatch,
+        )
+
+        def _stub_char_info(name):
+            return {
+                "lanlan_name": "Lan",
+                "lanlan_prompt": "",
+                "model": "stub",
+                "base_url": "https://stub.example.com",
+                "api_key": "stub",
+                "master_name": "Master",
+                "user_language": "en",
+                "api_type": "openai",
+            }
+
+        monkeypatch.setattr(game_router, "_get_character_info", _stub_char_info)
+
+        async def _a_runner():
+            try:
+                await game_router._get_or_create_session(
+                    "soccer", "match_peer_wait", "Lan",
+                )
+            except RuntimeError:
+                pass
+
+        async def _b_runner():
+            # Wait until A is INSIDE the lock so we park as a real
+            # waiter (not just sneak in before A acquires).
+            await a_inside_build.wait()
+            await game_router._get_or_create_session(
+                "soccer", "match_peer_wait", "Lan",
+            )
+
+        async def _release_a_after_b_parks():
+            await a_inside_build.wait()
+            # Yield several times to let B reach the async-with on the
+            # create lock and register as a waiter.
+            for _ in range(20):
+                await asyncio.sleep(0)
+            # Swap the build dispatcher so B's build succeeds when it
+            # eventually acquires the lock.
+            current_fn["fn"] = _succeed_b
+            b_can_unblock.set()
+
+        await asyncio.gather(_a_runner(), _b_runner(), _release_a_after_b_parks())
+
+        # Invariant 1: A saw a non-None waiter list at the moment of
+        # raise. This is the precondition for the conditional-pop guard
+        # to actually be exercised; if the test scaffold never produced
+        # a real waiter the assertion below would be vacuous.
+        assert captured["waiters_seen_at_A_raise"], (
+            "Test scaffold failed to register Thread B as a waiter; "
+            "the conditional-pop branch was not exercised."
+        )
+
+        # Invariant 2 (load-bearing): the lock B saw when its build ran
+        # is the SAME lock A had. If A's failure had unconditionally
+        # popped the registry, B's wake-up would have been on the old
+        # lock object but the registry would point at a fresh one for
+        # the next arrival — and `_succeed_b` here would observe a
+        # different lock instance, mismatched with the one B awaited.
+        assert captured["lock_at_B_build"] is captured["lock_at_A_inside"], (
+            "Create lock was swapped while a peer was awaiting it; "
+            "build serialization is broken."
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_partial_connect_race_does_not_orphan_session(monkeypatch):
+    """CR Major (PR #1127 r3182158697): if a finalize runs to a no-op
+    while ``_build_and_register_game_session`` is mid ``session.connect``
+    (because the entry isn't registered yet), the freshly-built
+    ``OmniOfflineClient`` would otherwise survive in ``_game_sessions``
+    until the 30-min idle sweep. The post-lock route_inactive short-
+    circuit in ``_run_game_chat`` must evict + close the orphan.
+
+    Race interleaving exercised here:
+      1. Thread A calls ``_run_game_chat`` → passes pre-create gate
+         (route still active) → enters ``_get_or_create_session`` →
+         awaits ``connect`` (we block this on a barrier).
+      2. Thread B flips ``_exit_flow_started`` / ``game_route_active``
+         on the route state, then calls ``_close_and_remove_session``
+         — which is a no-op because the entry isn't registered yet.
+      3. Barrier released → Thread A's build completes and registers
+         the entry → Thread A acquires ``entry['lock']`` → post-lock
+         route-active gate trips → fix path closes + evicts.
+
+    Pre-fix: Thread A's session lingers in ``_game_sessions`` and is
+    never closed (``close_calls == 0``).
+    Post-fix: Thread A evicts itself and awaits ``session.close()``
+    once before returning ``skipped=route_inactive``.
+    """
+    with reset_game_route_state():
+        state = _activate_route("Lan", "soccer", "match_partial_connect")
+        canonical_key = game_router._game_session_key(
+            "Lan", "soccer", "match_partial_connect",
+        )
+        game_router._game_session_create_locks.pop(canonical_key, None)
+
+        connect_barrier = asyncio.Event()
+        connect_started = asyncio.Event()
+        constructed: list = []
+
+        class _BlockingOmni:
+            def __init__(self, **kwargs):
+                self.connect_calls = 0
+                self.close_calls = 0
+                self.stream_calls = 0
+                self._closed = False
+                constructed.append(self)
+
+            async def connect(self, *, instructions: str = ""):
+                self.connect_calls += 1
+                connect_started.set()
+                # Park here until Thread B has flipped the route state
+                # and run its no-op _close_and_remove_session.
+                await connect_barrier.wait()
+
+            async def close(self):
+                self.close_calls += 1
+                self._closed = True
+
+            async def stream_text(self, text: str):
+                if self._closed:
+                    raise RuntimeError("stream_text on closed session")
+                self.stream_calls += 1
+
+            async def update_session(self, config):
+                pass
+
+        import main_logic.omni_offline_client as omni_module
+        monkeypatch.setattr(omni_module, "OmniOfflineClient", _BlockingOmni)
+
+        def _stub_char_info(name):
+            return {
+                "lanlan_name": "Lan",
+                "lanlan_prompt": "",
+                "model": "stub",
+                "base_url": "https://stub.example.com",
+                "api_key": "stub",
+                "master_name": "Master",
+                "user_language": "en",
+                "api_type": "openai",
+            }
+
+        monkeypatch.setattr(game_router, "_get_character_info", _stub_char_info)
+        monkeypatch.setattr(
+            game_router,
+            "_build_game_prompt",
+            lambda *args, **kwargs: "stub_prompt",
+        )
+
+        # Thread A: drive _run_game_chat. It will block on connect()
+        # until we release the barrier.
+        chat_task = asyncio.create_task(
+            game_router._run_game_chat(
+                "soccer",
+                "match_partial_connect",
+                {"kind": "free-ball", "lanlan_name": "Lan"},
+            )
+        )
+
+        # Wait until Thread A is parked inside connect(). Past this
+        # point the route's pre-create gate has been crossed but the
+        # entry isn't registered in _game_sessions yet.
+        await asyncio.wait_for(connect_started.wait(), timeout=2.0)
+        assert canonical_key not in game_router._game_sessions
+
+        # Thread B: simulate finalize racing in. Flip the route state
+        # to inactive, then call _close_and_remove_session — which is a
+        # no-op because Thread A's entry hasn't been inserted yet.
+        state["_exit_flow_started"] = True
+        state["game_route_active"] = False
+        no_op_close = await game_router._close_and_remove_session(
+            "soccer", "match_partial_connect", "Lan",
+        )
+        # Sanity: finalize's close was indeed a no-op.
+        assert no_op_close is False
+        assert canonical_key not in game_router._game_sessions
+
+        # Now release the barrier so Thread A's connect returns. The
+        # build then registers the entry, _run_game_chat acquires
+        # entry['lock'], hits the post-lock route_inactive gate, and
+        # (post-fix) evicts + closes its own orphan.
+        connect_barrier.set()
+        result = await asyncio.wait_for(chat_task, timeout=2.0)
+
+        assert result.get("skipped") == "route_inactive"
+        assert result.get("line") == ""
+
+        # Lifecycle invariants — these are what the fix guarantees:
+        # exactly one client built, closed exactly once, no orphan
+        # left behind in either the session cache or the create-lock
+        # map.
+        assert len(constructed) == 1
+        assert constructed[0].close_calls == 1, (
+            "Orphan OmniOfflineClient was not closed; partial-connect "
+            "race leaked a session past finalize."
+        )
+        assert canonical_key not in game_router._game_sessions, (
+            "Orphan entry survived in _game_sessions after the "
+            "route_inactive short-circuit."
+        )
+        assert canonical_key not in game_router._game_session_create_locks
+        # Stream was never invoked — short-circuit fired before
+        # stream_text.
+        assert constructed[0].stream_calls == 0
