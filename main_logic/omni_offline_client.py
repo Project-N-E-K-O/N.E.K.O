@@ -439,7 +439,7 @@ class OmniOfflineClient:
         # 能区分 truncate / gibberish-filter 路径。
         self.llm = create_chat_llm(
             self.model, self.base_url, self.api_key,
-            temperature=1.0, streaming=True, max_retries=0,
+            streaming=True, max_retries=0,
             max_completion_tokens=_budget_to_max_tokens(self.max_response_length),
         )
 
@@ -988,7 +988,7 @@ class OmniOfflineClient:
             # （和 __init__ 一致）。
             new_llm = create_chat_llm(
                 new_model, base_url, api_key,
-                temperature=1.0, streaming=True, max_retries=0,
+                streaming=True, max_retries=0,
                 max_completion_tokens=_budget_to_max_tokens(self.max_response_length),
             )
             old_llm = self.llm

@@ -21,6 +21,332 @@
     function resetSessionButton() { return document.getElementById('resetSessionButton'); }
     function statusElement()      { return document.getElementById('status'); }
 
+    // ======================== 游戏语音 STT Gate ========================
+
+    function getGameVoiceSpeechRecognition() {
+        return window.SpeechRecognition || window.webkitSpeechRecognition || null;
+    }
+
+    function gameVoiceRequestId() {
+        return `game-voice-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    }
+
+    function logGameVoiceSttDiagnostics(reason) {
+        const tracks = S.stream instanceof MediaStream
+            ? S.stream.getAudioTracks().map(track => ({
+                label: track.label || '',
+                enabled: track.enabled,
+                muted: track.muted,
+                readyState: track.readyState
+            }))
+            : [];
+        console.log('[GameVoiceSTT][Diag] env:', {
+            reason,
+            speechRecognition: !!getGameVoiceSpeechRecognition(),
+            secureContext: !!window.isSecureContext,
+            protocol: window.location ? window.location.protocol : '',
+            visibility: document.visibilityState,
+            selectedMicrophoneId: S.selectedMicrophoneId || '',
+            ordinaryStreamTracks: tracks
+        });
+        if (S.selectedMicrophoneId) {
+            console.warn('[GameVoiceSTT][Diag] SpeechRecognition 不能指定 selectedMicrophoneId，会使用浏览器默认麦克风；若默认麦不是当前项目麦，可能 no-speech。');
+        }
+        if (navigator.permissions && typeof navigator.permissions.query === 'function') {
+            navigator.permissions.query({ name: 'microphone' }).then(function (status) {
+                console.log('[GameVoiceSTT][Diag] microphone permission:', status && status.state);
+            }).catch(function (error) {
+                console.log('[GameVoiceSTT][Diag] microphone permission query unavailable:', error && error.message ? error.message : error);
+            });
+        }
+        if (navigator.mediaDevices && typeof navigator.mediaDevices.enumerateDevices === 'function') {
+            navigator.mediaDevices.enumerateDevices().then(function (devices) {
+                const audioInputs = devices
+                    .filter(device => device.kind === 'audioinput')
+                    .map(device => ({
+                        deviceId: device.deviceId,
+                        label: device.label || '',
+                        groupId: device.groupId || ''
+                    }));
+                console.log('[GameVoiceSTT][Diag] audio inputs:', audioInputs);
+            }).catch(function (error) {
+                console.log('[GameVoiceSTT][Diag] enumerate audio inputs failed:', error && error.message ? error.message : error);
+            });
+        }
+    }
+
+    function getGameVoiceSttRouteSnapshot() {
+        return {
+            gameType: S.gameVoiceSttGameType || 'soccer',
+            sessionId: S.gameVoiceSttSessionId || S.gameRouteSessionId || ''
+        };
+    }
+
+    async function submitGameVoiceSttTranscript(transcript, routeSnapshot) {
+        const text = String(transcript || '').trim();
+        if (!text) return;
+
+        const lanlanName = S.gameRouteLanlanName || (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
+        if (!lanlanName) {
+            console.warn('[GameVoiceSTT] missing lanlan_name, drop transcript');
+            return;
+        }
+
+        const frozenRoute = routeSnapshot || getGameVoiceSttRouteSnapshot();
+        const gameType = frozenRoute.gameType || 'soccer';
+        const sessionId = frozenRoute.sessionId || '';
+        const requestId = gameVoiceRequestId();
+        console.log(`[GameVoiceSTT] 最终转写 | game=${gameType} request=${requestId} text="${text}"`);
+        try {
+            const response = await fetch(`/api/game/${encodeURIComponent(gameType)}/route/voice-transcript`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    lanlan_name: lanlanName,
+                    session_id: sessionId,
+                    transcript: text,
+                    request_id: requestId,
+                    source: 'main_voice_stt_gate'
+                })
+            });
+            const result = await response.json().catch(() => null);
+            if (!response.ok) {
+                console.warn('[GameVoiceSTT] transcript route failed:', response.status, result);
+                return;
+            }
+            if (result && result.handled === false && result.reason === 'session_id_mismatch') {
+                console.info('[GameVoiceSTT] session mismatch, restarting hidden STT gate with the current route session');
+                stopGameVoiceSttGate({ keepActive: true, restoreOrdinaryMic: false });
+                if (S.gameVoiceSttGateActive && S.isRecording && !S.isMicMuted) {
+                    S.gameVoiceSttRestartTimer = setTimeout(startGameVoiceSttGate, 250);
+                }
+                return;
+            }
+            if (result && result.handled === false && result.reason === 'game_route_inactive') {
+                console.info('[GameVoiceSTT] game route inactive, stopping hidden STT gate');
+                stopGameVoiceSttGate();
+                return;
+            }
+            console.log(`[GameVoiceSTT] 已提交足球路由 | game=${gameType} request=${requestId} handled=${result ? result.handled !== false : 'unknown'} text="${text}"`);
+        } catch (error) {
+            console.warn('[GameVoiceSTT] transcript submit failed:', error);
+        }
+    }
+
+    function releaseOrdinaryMicCaptureForGameVoiceSttGate() {
+        if (S.workletNode) {
+            try { S.workletNode.disconnect(); } catch (_) { /* noop */ }
+            S.workletNode = null;
+        }
+        S.inputAnalyser = null;
+        S.micGainNode = null;
+
+        if (S.stream instanceof MediaStream) {
+            S.stream.getTracks().forEach(track => track.stop());
+            S.stream = null;
+        }
+
+        if (S.audioContext) {
+            const context = S.audioContext;
+            S.audioContext = null;
+            if (context.state !== 'closed') {
+                context.close().catch((error) => console.warn('[GameVoiceSTT] close ordinary audio context failed:', error));
+            }
+        }
+
+        stopSilenceDetection();
+    }
+
+    function restoreOrdinaryMicCaptureAfterGameVoiceSttFailure(reason, error) {
+        console.warn('[GameVoiceSTT] restoring ordinary mic capture after STT gate failure:', reason, error || '');
+        stopGameVoiceSttGate({ restoreOrdinaryMic: false });
+        if (S.isRecording && typeof startMicCapture === 'function') {
+            Promise.resolve(startMicCapture()).catch(function (restoreError) {
+                console.warn('[GameVoiceSTT] restore ordinary mic capture failed:', restoreError);
+            });
+        }
+    }
+
+    function restoreOrdinaryMicCaptureAfterGameVoiceSttStop(reason) {
+        if (!S.isRecording || typeof startMicCapture !== 'function') {
+            return;
+        }
+        const ordinaryPipelineAlive = !!(S.stream && S.audioContext && S.workletNode);
+        if (ordinaryPipelineAlive) {
+            return;
+        }
+        Promise.resolve(startMicCapture()).catch(function (restoreError) {
+            console.warn(`[GameVoiceSTT] restore ordinary mic capture after ${reason || 'stop'} failed:`, restoreError);
+        });
+    }
+
+    function startGameVoiceSttGate() {
+        if (!S.gameVoiceSttGateActive || !S.isRecording || S.isMicMuted) {
+            return false;
+        }
+        if (S.gameVoiceSttListening) {
+            releaseOrdinaryMicCaptureForGameVoiceSttGate();
+            return true;
+        }
+
+        const SpeechRecognition = getGameVoiceSpeechRecognition();
+        if (!SpeechRecognition) {
+            if (!S.gameVoiceSttUnsupportedNotified) {
+                S.gameVoiceSttUnsupportedNotified = true;
+                console.warn('[GameVoiceSTT] 当前浏览器不支持 SpeechRecognition，无法启动游戏语音 STT gate');
+                if (typeof window.showStatusToast === 'function') {
+                    window.showStatusToast(window.t ? window.t('app.gameVoiceSttNotSupported') : '当前浏览器不支持游戏语音转写，请暂时使用文本输入。', 4000);
+                }
+            }
+            return false;
+        }
+
+        const routeSnapshot = getGameVoiceSttRouteSnapshot();
+        if (S.gameVoiceSttRecognition) {
+            try { S.gameVoiceSttRecognition.abort(); } catch (_) { /* noop */ }
+            S.gameVoiceSttRecognition = null;
+        }
+
+        const recognition = new SpeechRecognition();
+        recognition.lang = (function () {
+            const raw = (typeof window.i18next !== 'undefined' && window.i18next.language)
+                || (typeof navigator !== 'undefined' && navigator.language)
+                || 'zh-CN';
+            const tag = String(raw).toLowerCase();
+            if (tag.startsWith('zh-tw') || tag === 'zh-hant' || tag.startsWith('zh-hk')) return 'zh-TW';
+            if (tag.startsWith('zh')) return 'zh-CN';
+            if (tag.startsWith('en')) return 'en-US';
+            if (tag.startsWith('ja')) return 'ja-JP';
+            if (tag.startsWith('ko')) return 'ko-KR';
+            if (tag.startsWith('ru')) return 'ru-RU';
+            if (tag.startsWith('es')) return 'es-ES';
+            if (tag.startsWith('pt')) return 'pt-BR';
+            return raw;
+        })();
+        recognition.continuous = true;
+        recognition.interimResults = false;
+        recognition.maxAlternatives = 1;
+        recognition._gameVoiceRouteSnapshot = routeSnapshot;
+        recognition.onstart = function () {
+            if (S.gameVoiceSttRecognition !== recognition) return;
+            S.gameVoiceSttListening = true;
+            S.gameVoiceSttStopping = false;
+            console.log('[GameVoiceSTT][Diag] recognition start');
+        };
+        recognition.onaudiostart = function () {
+            console.log('[GameVoiceSTT][Diag] audio start');
+        };
+        recognition.onsoundstart = function () {
+            console.log('[GameVoiceSTT][Diag] sound start');
+        };
+        recognition.onspeechstart = function () {
+            console.log('[GameVoiceSTT][Diag] speech start');
+        };
+        recognition.onspeechend = function () {
+            console.log('[GameVoiceSTT][Diag] speech end');
+        };
+        recognition.onsoundend = function () {
+            console.log('[GameVoiceSTT][Diag] sound end');
+        };
+        recognition.onaudioend = function () {
+            console.log('[GameVoiceSTT][Diag] audio end');
+        };
+        recognition.onnomatch = function (event) {
+            console.warn('[GameVoiceSTT][Diag] no match:', event);
+        };
+        recognition.onresult = function (event) {
+            let finalText = '';
+            const startIndex = typeof event.resultIndex === 'number' ? event.resultIndex : 0;
+            console.log('[GameVoiceSTT][Diag] result event:', {
+                resultIndex: startIndex,
+                resultCount: event.results ? event.results.length : 0
+            });
+            for (let i = startIndex; i < event.results.length; i++) {
+                const result = event.results[i];
+                if (!result || result.isFinal === false) continue;
+                finalText += (result[0] && result[0].transcript) || '';
+            }
+            if (finalText.trim()) {
+                void submitGameVoiceSttTranscript(finalText, recognition._gameVoiceRouteSnapshot);
+            }
+        };
+        recognition.onerror = function (event) {
+            const errorCode = (event && event.error) || 'unknown';
+            console.warn('[GameVoiceSTT] recognition error:', errorCode, event);
+            if (errorCode === 'no-speech') {
+                console.warn('[GameVoiceSTT][Diag] no-speech: 识别器启动了但没有形成可用语音。优先检查默认麦克风是否正确、是否有 audio/sound/speech start 日志。');
+            }
+            if (errorCode === 'not-allowed' || errorCode === 'service-not-allowed') {
+                if (typeof window.showStatusToast === 'function') {
+                    window.showStatusToast(window.t ? window.t('app.gameVoiceSttMicPermissionDenied') : '游戏语音转写没有麦克风权限，请检查浏览器权限。', 4000);
+                }
+                restoreOrdinaryMicCaptureAfterGameVoiceSttFailure(errorCode, event);
+            }
+        };
+        recognition.onend = function () {
+            if (S.gameVoiceSttRecognition !== recognition) return;
+            S.gameVoiceSttListening = false;
+            if (S.gameVoiceSttRestartTimer) {
+                clearTimeout(S.gameVoiceSttRestartTimer);
+                S.gameVoiceSttRestartTimer = null;
+            }
+            if (S.gameVoiceSttGateActive && S.isRecording && !S.isMicMuted && !S.gameVoiceSttStopping) {
+                S.gameVoiceSttRestartTimer = setTimeout(startGameVoiceSttGate, 250);
+            }
+            S.gameVoiceSttStopping = false;
+        };
+        S.gameVoiceSttRecognition = recognition;
+
+        try {
+            S.gameVoiceSttStopping = false;
+            logGameVoiceSttDiagnostics('start');
+            releaseOrdinaryMicCaptureForGameVoiceSttGate();
+            S.gameVoiceSttRecognition.start();
+            S.gameVoiceSttListening = true;
+            console.log(`[GameVoiceSTT] STT gate 已启动 | game=${S.gameVoiceSttGameType || 'soccer'} recording=${!!S.isRecording} ordinary_mic=released`);
+            return true;
+        } catch (error) {
+            if (error && error.name === 'InvalidStateError') {
+                S.gameVoiceSttListening = true;
+                console.log('[GameVoiceSTT] STT gate 已在运行');
+                return true;
+            }
+            console.warn('[GameVoiceSTT] recognition start failed:', error);
+            S.gameVoiceSttListening = false;
+            restoreOrdinaryMicCaptureAfterGameVoiceSttFailure('recognition_start_failed', error);
+            return false;
+        }
+    }
+
+    function stopGameVoiceSttGate(options) {
+        const keepActive = options && options.keepActive === true;
+        const restoreOrdinaryMic = !(options && options.restoreOrdinaryMic === false);
+        if (!keepActive) {
+            S.gameVoiceSttGateActive = false;
+            S.gameVoiceSttGameType = '';
+            S.gameVoiceSttSessionId = '';
+        }
+        if (S.gameVoiceSttRestartTimer) {
+            clearTimeout(S.gameVoiceSttRestartTimer);
+            S.gameVoiceSttRestartTimer = null;
+        }
+        S.gameVoiceSttStopping = true;
+        const recognition = S.gameVoiceSttRecognition;
+        S.gameVoiceSttRecognition = null;
+        if (recognition) {
+            try {
+                recognition.stop();
+            } catch (error) {
+                try { recognition.abort(); } catch (_) { /* noop */ }
+            }
+        }
+        S.gameVoiceSttListening = false;
+        S.gameVoiceSttStopping = false;
+        if (!keepActive && restoreOrdinaryMic) {
+            restoreOrdinaryMicCaptureAfterGameVoiceSttStop('gate stop');
+        }
+    }
+
     // ======================== 麦克风设备选择 ========================
 
     async function selectMicrophone(deviceId) {
@@ -516,6 +842,10 @@
                     return;
                 }
 
+                if (S.gameVoiceSttGateActive) {
+                    return;
+                }
+
                 if (S.isRecording && S.socket && S.socket.readyState === WebSocket.OPEN) {
                     S.socket.send(JSON.stringify({
                         action: 'stream_data',
@@ -618,6 +948,9 @@
             }
 
             await startAudioWorklet(S.stream);
+            if (S.gameVoiceSttGateActive) {
+                startGameVoiceSttGate();
+            }
 
             if (_mic)    _mic.disabled = true;
             if (_mute)   _mute.disabled = false;
@@ -659,6 +992,7 @@
                 _mic.classList.remove('recording');
                 _mic.classList.remove('active');
             }
+            stopGameVoiceSttGate({ restoreOrdinaryMic: false });
             throw err;
         }
     }
@@ -758,6 +1092,7 @@
         if (typeof window.stopScreening === 'function') {
             window.stopScreening();
         }
+        stopGameVoiceSttGate({ restoreOrdinaryMic: false });
         if (!S.isRecording) return;
 
         S.isRecording = false;
@@ -973,6 +1308,8 @@
     window.startMicVolumeVisualization = startMicVolumeVisualization;
     window.stopMicVolumeVisualization = stopMicVolumeVisualization;
     window.updateMicVolumeStatusNow = updateMicVolumeStatusNow;
+    window.startGameVoiceSttGate = startGameVoiceSttGate;
+    window.stopGameVoiceSttGate = stopGameVoiceSttGate;
 
     window.toggleMicMute = function(showToast = true) {
         S.isMicMuted = !S.isMicMuted;
@@ -985,6 +1322,13 @@
             S.userRecentSpeechTime = 0;
         } else if (S.isRecording) {
             startSilenceDetection();
+        }
+        if (S.gameVoiceSttGateActive) {
+            if (S.isMicMuted) {
+                stopGameVoiceSttGate({ keepActive: true });
+            } else {
+                startGameVoiceSttGate();
+            }
         }
         window.dispatchEvent(new CustomEvent('mic-mute-state-changed', {
             detail: { muted: S.isMicMuted }
@@ -1006,6 +1350,13 @@
             S.userRecentSpeechTime = 0;
         } else if (S.isRecording) {
             startSilenceDetection();
+        }
+        if (S.gameVoiceSttGateActive) {
+            if (S.isMicMuted) {
+                stopGameVoiceSttGate({ keepActive: true });
+            } else {
+                startGameVoiceSttGate();
+            }
         }
         window.dispatchEvent(new CustomEvent('mic-mute-state-changed', {
             detail: { muted: S.isMicMuted }
@@ -1042,6 +1393,8 @@
     mod.startMicVolumeVisualization = startMicVolumeVisualization;
     mod.stopMicVolumeVisualization = stopMicVolumeVisualization;
     mod.updateMicVolumeStatusNow = updateMicVolumeStatusNow;
+    mod.startGameVoiceSttGate = startGameVoiceSttGate;
+    mod.stopGameVoiceSttGate = stopGameVoiceSttGate;
 
     // ======================== 麦克风设备列表 UI ========================
 

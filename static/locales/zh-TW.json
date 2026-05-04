@@ -1897,6 +1897,8 @@
         "autoMuteTimeout": "長時間無語音輸入，已自動關閉麥剋風",
         "deviceSelected": "已選擇 {{device}}",
         "micAccessDenied": "無法訪問麥剋風",
+        "gameVoiceSttMicPermissionDenied": "遊戲語音轉寫沒有麥克風權限，請檢查瀏覽器權限。",
+        "gameVoiceSttNotSupported": "目前瀏覽器不支援遊戲語音轉寫，請暫時使用文字輸入。",
         "micMuted": "麥剋風已靜音",
         "micUnmuted": "麥剋風已取消靜音",
         "speaking": "正在語音...",
@@ -3813,6 +3815,39 @@
             "springJoints": "Spring Bone 關節",
             "morphTargets": "Morph Targets",
             "drawCalls": "Draw Calls"
+        }
+    },
+    "soccer": {
+        "startScreen": {
+            "readyToStart": "準備完成，點擊開始",
+            "ready": "準備完成"
+        },
+        "loading": {
+            "beginStartDefault": "分析開局上下文…",
+            "assetsDone": "模型載入完成",
+            "assetsFailed": "模型初始化失敗，繼續進入遊戲",
+            "routeDone": "開局上下文準備完成",
+            "routeFallback": "開局上下文使用本地預設",
+            "routeFailed": "開局上下文請求失敗，繼續遊戲"
+        },
+        "voiceStatus": {
+            "routeEnded": "遊戲路由已結束，重新整理頁面可重新接管",
+            "unsupported": "目前瀏覽器不支援遊戲語音轉寫，請暫時使用主聊天文字輸入",
+            "listening": "遊戲語音 STT：正在聽玩家說話",
+            "error": "遊戲語音 STT：{{code}}",
+            "startFailed": "遊戲語音 STT：啟動失敗，請暫時使用主聊天文字輸入",
+            "handoverInProgress": "遊戲語音 STT：主語音入口接管中",
+            "waitingForHandover": "遊戲語音 STT：等待主語音入口接管",
+            "received": "已收到玩家語音：{{text}}",
+            "debugSubmitted": "已提交除錯 STT：{{text}}",
+            "debugListening": "除錯 STT：正在聽玩家說話…",
+            "debugIdle": "除錯 STT：待機",
+            "debugUnsupported": "目前瀏覽器不支援除錯 STT，請使用除錯文字方塊提交",
+            "recognitionError": "語音辨識錯誤：{{code}}"
+        },
+        "debugButton": {
+            "holdToSubmit": "鬆開提交",
+            "idle": "除錯語音"
         }
     }
 }

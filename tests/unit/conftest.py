@@ -22,6 +22,12 @@ import sys
 import pytest
 
 
+def _needs_game_route_reset(request) -> bool:
+    """Apply game-route isolation to test_game_* modules or explicit marker users."""
+    module_name = getattr(request.module, "__name__", "").split(".")[-1]
+    return module_name.startswith("test_game_") or request.node.get_closest_marker("game_route") is not None
+
+
 @pytest.fixture(autouse=True)
 def _reset_shared_state():
     shared_state = sys.modules.get("main_routers.shared_state")
@@ -40,3 +46,15 @@ def _reset_shared_state():
 
         shared_state._state.clear()
         shared_state._state.update(snapshot)
+
+
+@pytest.fixture(autouse=True)
+def _reset_game_sessions(request):
+    if not _needs_game_route_reset(request):
+        yield
+        return
+
+    from .game_route_test_helpers import reset_game_route_state
+
+    with reset_game_route_state():
+        yield

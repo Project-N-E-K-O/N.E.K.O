@@ -28,6 +28,95 @@
     let _assistantTurnCompletionFallbackTimer = 0;
     let _assistantTurnCompletionFallbackTurnId = null;
     let _pendingAudioMetaStallTimer = 0;
+    const SPEECH_PLAYBACK_STATE_KEY = 'neko_speech_playback_state';
+    const SPEECH_PLAYBACK_CHANNEL_NAME = 'neko_speech_playback_channel';
+    const SPEECH_PLAYBACK_STATE_HEARTBEAT_MS = 200;
+    let _speechPlaybackChannel = null;
+    let _speechPlaybackStateHeartbeatTimer = 0;
+
+    function getSpeechPlaybackChannel() {
+        if (_speechPlaybackChannel !== null) {
+            return _speechPlaybackChannel;
+        }
+        _speechPlaybackChannel = false;
+        try {
+            if (typeof BroadcastChannel !== 'undefined') {
+                _speechPlaybackChannel = new BroadcastChannel(SPEECH_PLAYBACK_CHANNEL_NAME);
+            }
+        } catch (err) {
+            _speechPlaybackChannel = false;
+            if (window.DEBUG_AUDIO) {
+                console.warn('[Audio] playback BroadcastChannel init failed:', err);
+            }
+        }
+        return _speechPlaybackChannel || null;
+    }
+
+    function clearSpeechPlaybackStateHeartbeat() {
+        if (_speechPlaybackStateHeartbeatTimer) {
+            clearTimeout(_speechPlaybackStateHeartbeatTimer);
+            _speechPlaybackStateHeartbeatTimer = 0;
+        }
+    }
+
+    function scheduleSpeechPlaybackStateHeartbeat() {
+        if (_speechPlaybackStateHeartbeatTimer) {
+            return;
+        }
+        _speechPlaybackStateHeartbeatTimer = setTimeout(function () {
+            _speechPlaybackStateHeartbeatTimer = 0;
+            publishSpeechPlaybackState('heartbeat');
+        }, SPEECH_PLAYBACK_STATE_HEARTBEAT_MS);
+    }
+
+    function publishSpeechPlaybackState(reason, patch) {
+        var audioTime = S.audioPlayerContext ? S.audioPlayerContext.currentTime : 0;
+        var scheduledEnd = patch && Number.isFinite(patch.scheduledEndAudioTime)
+            ? patch.scheduledEndAudioTime
+            : (S.nextChunkTime || 0);
+        var remaining = Math.max(0, scheduledEnd - audioTime);
+        var pendingAudioWork = (
+            S.pendingAudioChunkMetaQueue.length > 0 ||
+            S.incomingAudioBlobQueue.length > 0 ||
+            !!S.pendingDecoderReset ||
+            !!S.decoderResetPromise ||
+            !!S.isProcessingIncomingAudioBlob
+        );
+        var state = Object.assign({
+            type: 'speech_playback_state',
+            active: remaining > 0.05 || S.scheduledSources.length > 0 || S.audioBufferQueue.length > 0 || pendingAudioWork,
+            speechId: S.currentPlayingSpeechId || null,
+            turnId: S.assistantSpeechActiveTurnId || S.assistantTurnId || null,
+            scheduledEndAudioTime: scheduledEnd,
+            audioContextTime: audioTime,
+            audioContextState: S.audioPlayerContext ? S.audioPlayerContext.state : '',
+            remainingSeconds: remaining,
+            updatedAt: Date.now(),
+            reason: reason || 'update',
+            source: 'audio_playback'
+        }, patch || {});
+
+        if (!state.active) {
+            state.remainingSeconds = 0;
+        }
+
+        window.NekoSpeechPlaybackState = state;
+        try {
+            localStorage.setItem(SPEECH_PLAYBACK_STATE_KEY, JSON.stringify(state));
+        } catch (_) { /* noop */ }
+
+        var channel = getSpeechPlaybackChannel();
+        if (channel) {
+            try { channel.postMessage(state); } catch (_) { /* noop */ }
+        }
+
+        if (state.active) {
+            scheduleSpeechPlaybackStateHeartbeat();
+        } else {
+            clearSpeechPlaybackStateHeartbeat();
+        }
+        return state;
+    }
 
     function audioTraceEnabled() {
         return window.NEKO_DEBUG_BUBBLE_LIFECYCLE === true;
@@ -528,6 +617,13 @@
                 S.isPlaying = false;
             }
             S.audioStartTime = 0;
+            publishSpeechPlaybackState('speech_cancel', {
+                active: false,
+                speechId: S.currentPlayingSpeechId || null,
+                turnId: S.assistantSpeechActiveTurnId || S.assistantTurnId || null,
+                scheduledEndAudioTime: S.audioPlayerContext ? S.audioPlayerContext.currentTime : 0,
+                remainingSeconds: 0
+            });
             try { stopActiveLipSync(); } catch (_e) { /* ignore */ }
         });
     }
@@ -558,6 +654,13 @@
         S.isPlaying = false;
         S.audioStartTime = 0;
         S.nextChunkTime = 0;
+        publishSpeechPlaybackState('clear_audio_queue', {
+            active: false,
+            speechId: null,
+            turnId: null,
+            scheduledEndAudioTime: S.audioPlayerContext ? S.audioPlayerContext.currentTime : 0,
+            remainingSeconds: 0
+        });
 
         await resetOggOpusDecoder();
     }
@@ -582,6 +685,13 @@
         S.isPlaying = false;
         S.audioStartTime = 0;
         S.nextChunkTime = 0;
+        publishSpeechPlaybackState('clear_audio_queue_without_decoder_reset', {
+            active: false,
+            speechId: null,
+            turnId: null,
+            scheduledEndAudioTime: S.audioPlayerContext ? S.audioPlayerContext.currentTime : 0,
+            remainingSeconds: 0
+        });
         // Note: decoder is NOT reset here.
     }
 
@@ -782,8 +892,13 @@
                         }
                     }
 
+                    var scheduledStartTime = S.nextChunkTime;
+                    var scheduledEndTime = scheduledStartTime + nextBuffer.duration;
+
                     // Precise time scheduling
-                    source.start(S.nextChunkTime);
+                    source.start(scheduledStartTime);
+                    source._nekoSpeechId = normalizeAssistantTurnId(item.speechId);
+                    source._nekoScheduledEndAudioTime = scheduledEndTime;
 
                     // On-ended callback: handle lip sync stop & cleanup
                     source.onended = (function (src) {
@@ -792,14 +907,25 @@
                             if (index !== -1) {
                                 S.scheduledSources.splice(index, 1);
                             }
+                            publishSpeechPlaybackState('source_ended', {
+                                active: S.scheduledSources.length > 0 || S.audioBufferQueue.length > 0 || S.incomingAudioBlobQueue.length > 0,
+                                speechId: S.currentPlayingSpeechId || src._nekoSpeechId || null,
+                                turnId: src._nekoAssistantTurnId || null
+                            });
                             maybeFinalizeAssistantSpeech(src._nekoAssistantTurnId);
                         };
                     })(source);
 
                     // Update next chunk time
-                    S.nextChunkTime += nextBuffer.duration;
+                    S.nextChunkTime = scheduledEndTime;
 
                     S.scheduledSources.push(source);
+                    publishSpeechPlaybackState('chunk_scheduled', {
+                        active: true,
+                        speechId: normalizeAssistantTurnId(item.speechId) || S.currentPlayingSpeechId || null,
+                        turnId: source._nekoAssistantTurnId || null,
+                        scheduledEndAudioTime: S.nextChunkTime
+                    });
                 } else {
                     break;
                 }
