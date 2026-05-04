@@ -14,6 +14,7 @@ from httpx import ASGITransport, AsyncClient
 from plugin._types.models import RunCreateResponse
 from plugin.core.state import state
 from plugin.plugins.galgame_plugin import install_tasks as install_task_module
+from plugin.plugins.galgame_plugin import install_routes as galgame_install_route_module
 from plugin.runs.manager import RunError, RunRecord
 from plugin.server.infrastructure.exceptions import register_exception_handlers
 from plugin.server.domain.errors import ServerDomainError
@@ -33,6 +34,7 @@ def plugin_ui_test_app() -> FastAPI:
     app = FastAPI(title="plugin-ui-test-app")
     register_exception_handlers(app)
     app.include_router(plugin_ui_route_module.router)
+    app.include_router(galgame_install_route_module.router)
     return app
 
 
@@ -122,8 +124,8 @@ async def test_galgame_plugin_ui_index_route_serves_static_dashboard(
     assert response.status_code == 200
     assert "text/html" in response.headers["content-type"]
     assert response.headers["cache-control"] == "no-store, no-cache, must-revalidate, max-age=0"
-    assert "<title>Galgame 插件设置</title>" in response.text
-    assert "N.E.K.O 二期" in response.text
+    assert "<title>Galgame 游玩助手</title>" in response.text
+    assert "让猫娘陪你一起玩 Galgame" in response.text
     assert "RapidOCR" in response.text
     assert "依赖安装" in response.text
     assert "DXcam" in response.text
@@ -158,8 +160,6 @@ async def test_galgame_plugin_ui_script_uses_runs_and_install_ui_api(
     assert "restoreTesseractInstallState" in response.text
     assert "session.json" not in response.text
     assert "events.jsonl" not in response.text
-    assert "galgame_explain_line" in response.text
-    assert "galgame_summarize_scene" in response.text
     assert "galgame_get_status" in response.text
     assert "galgame_get_snapshot" in response.text
     assert "galgame_get_history" in response.text
@@ -229,7 +229,7 @@ async def test_galgame_plugin_textractor_install_start_route_creates_run_and_see
         assert payload.args == {"force": True}
         return RunCreateResponse(run_id="run-textractor-1", status="queued")
 
-    monkeypatch.setattr(plugin_ui_route_module.run_service, "create_run", _fake_create_run)
+    monkeypatch.setattr(galgame_install_route_module.run_service, "create_run", _fake_create_run)
 
     response = await plugin_ui_async_client.post(
         "/plugin/galgame_plugin/ui-api/textractor/install",
@@ -260,7 +260,7 @@ async def test_galgame_plugin_rapidocr_install_start_route_creates_run_and_seeds
         assert payload.args == {"force": True}
         return RunCreateResponse(run_id="run-rapidocr-1", status="queued")
 
-    monkeypatch.setattr(plugin_ui_route_module.run_service, "create_run", _fake_create_run)
+    monkeypatch.setattr(galgame_install_route_module.run_service, "create_run", _fake_create_run)
 
     response = await plugin_ui_async_client.post(
         "/plugin/galgame_plugin/ui-api/rapidocr/install",
@@ -290,7 +290,7 @@ async def test_galgame_plugin_dxcam_install_start_route_creates_run_and_seeds_st
         assert payload.args == {"force": True}
         return RunCreateResponse(run_id="run-dxcam-1", status="queued")
 
-    monkeypatch.setattr(plugin_ui_route_module.run_service, "create_run", _fake_create_run)
+    monkeypatch.setattr(galgame_install_route_module.run_service, "create_run", _fake_create_run)
 
     response = await plugin_ui_async_client.post(
         "/plugin/galgame_plugin/ui-api/dxcam/install",
@@ -320,7 +320,7 @@ async def test_galgame_plugin_tesseract_install_start_route_creates_run_and_seed
         assert payload.args == {"force": True}
         return RunCreateResponse(run_id="run-tesseract-1", status="queued")
 
-    monkeypatch.setattr(plugin_ui_route_module.run_service, "create_run", _fake_create_run)
+    monkeypatch.setattr(galgame_install_route_module.run_service, "create_run", _fake_create_run)
 
     response = await plugin_ui_async_client.post(
         "/plugin/galgame_plugin/ui-api/tesseract/install",
@@ -364,7 +364,7 @@ async def test_galgame_plugin_textractor_install_status_route_reads_persisted_st
             message="Downloading Textractor-x64.zip",
         )
 
-    monkeypatch.setattr(plugin_ui_route_module.run_service, "get_run", _fake_get_run)
+    monkeypatch.setattr(galgame_install_route_module.run_service, "get_run", _fake_get_run)
 
     response = await plugin_ui_async_client.get(
         "/plugin/galgame_plugin/ui-api/textractor/install/run-textractor-2"
@@ -405,7 +405,7 @@ async def test_galgame_plugin_rapidocr_install_status_route_reads_persisted_stat
             message="Installing rapidocr_onnxruntime",
         )
 
-    monkeypatch.setattr(plugin_ui_route_module.run_service, "get_run", _fake_get_run)
+    monkeypatch.setattr(galgame_install_route_module.run_service, "get_run", _fake_get_run)
 
     response = await plugin_ui_async_client.get(
         "/plugin/galgame_plugin/ui-api/rapidocr/install/run-rapidocr-2"
@@ -428,7 +428,7 @@ async def test_galgame_plugin_install_status_route_rejects_invalid_task_id_befor
     def _unexpected_get_run(run_id: str) -> RunRecord:
         raise AssertionError(f"run lookup should not happen for invalid task_id: {run_id}")
 
-    monkeypatch.setattr(plugin_ui_route_module.run_service, "get_run", _unexpected_get_run)
+    monkeypatch.setattr(galgame_install_route_module.run_service, "get_run", _unexpected_get_run)
 
     response = await plugin_ui_async_client.get(
         "/plugin/galgame_plugin/ui-api/rapidocr/install/..."
@@ -467,7 +467,7 @@ async def test_galgame_plugin_tesseract_install_status_route_reads_persisted_sta
             message="Downloading jpn.traineddata",
         )
 
-    monkeypatch.setattr(plugin_ui_route_module.run_service, "get_run", _fake_get_run)
+    monkeypatch.setattr(galgame_install_route_module.run_service, "get_run", _fake_get_run)
 
     response = await plugin_ui_async_client.get(
         "/plugin/galgame_plugin/ui-api/tesseract/install/run-tesseract-2"
@@ -569,7 +569,7 @@ async def test_galgame_plugin_rapidocr_install_status_route_persists_terminal_ru
             metrics={"asset_name": "rapidocr_onnxruntime"},
         )
 
-    monkeypatch.setattr(plugin_ui_route_module.run_service, "get_run", _fake_get_run)
+    monkeypatch.setattr(galgame_install_route_module.run_service, "get_run", _fake_get_run)
 
     response = await plugin_ui_async_client.get(
         "/plugin/galgame_plugin/ui-api/rapidocr/install/run-rapidocr-terminal"
@@ -612,7 +612,7 @@ async def test_galgame_plugin_rapidocr_install_latest_route_marks_missing_run_as
             details={"run_id": "run-rapidocr-stale"},
         )
 
-    monkeypatch.setattr(plugin_ui_route_module.run_service, "get_run", _missing_run)
+    monkeypatch.setattr(galgame_install_route_module.run_service, "get_run", _missing_run)
 
     response = await plugin_ui_async_client.get(
         "/plugin/galgame_plugin/ui-api/rapidocr/install/latest"
@@ -736,7 +736,7 @@ async def test_galgame_plugin_install_stream_route_returns_404_before_stream_for
             details={"run_id": run_id},
         )
 
-    monkeypatch.setattr(plugin_ui_route_module.run_service, "get_run", _missing_get_run)
+    monkeypatch.setattr(galgame_install_route_module.run_service, "get_run", _missing_get_run)
 
     response = await plugin_ui_async_client.get(
         "/plugin/galgame_plugin/ui-api/rapidocr/install/missing-stream-task/stream"

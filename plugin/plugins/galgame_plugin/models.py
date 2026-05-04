@@ -126,6 +126,7 @@ STORE_OCR_TRIGGER_MODE = "ocr_trigger_mode"
 STORE_LLM_VISION_ENABLED = "llm_vision_enabled"
 STORE_LLM_VISION_MAX_IMAGE_PX = "llm_vision_max_image_px"
 STORE_OCR_SCREEN_TEMPLATES = "ocr_screen_templates"
+STORE_OCR_FAST_LOOP_ENABLED = "ocr_fast_loop_enabled"
 STORE_KEYS = (
     STORE_BOUND_GAME_ID,
     STORE_MODE,
@@ -148,6 +149,7 @@ STORE_KEYS = (
     STORE_LLM_VISION_ENABLED,
     STORE_LLM_VISION_MAX_IMAGE_PX,
     STORE_OCR_SCREEN_TEMPLATES,
+    STORE_OCR_FAST_LOOP_ENABLED,
 )
 
 DEFAULT_SAVE_CONTEXT = {
@@ -484,6 +486,7 @@ class GalgameBridgeConfig:
     scene_push_half_threshold: int = 4
     scene_push_time_fallback_seconds: float = 120.0
     scene_merge_total_threshold: int = 12
+    auto_open_ui: bool = False
 
 
 @dataclass(slots=True)
@@ -541,9 +544,9 @@ class GalgameOcrReaderConfig:
     ocr_reader_install_manifest_url: str = ""
     ocr_reader_install_target_dir: str = ""
     ocr_reader_install_timeout_seconds: float = 300.0
-    ocr_reader_poll_interval_seconds: float = 2.0
+    ocr_reader_poll_interval_seconds: float = 0.5
     ocr_reader_trigger_mode: str = OCR_TRIGGER_MODE_INTERVAL
-    ocr_reader_fast_loop_enabled: bool = False
+    ocr_reader_fast_loop_enabled: bool = True
     ocr_reader_no_text_takeover_after_seconds: float = 30.0
     ocr_reader_background_scene_change_distance: int = 28
     ocr_reader_languages: str = "chi_sim+jpn+eng"
@@ -602,6 +605,7 @@ class GalgameConfig:
         "scene_push_half_threshold": ("bridge", "scene_push_half_threshold"),
         "scene_push_time_fallback_seconds": ("bridge", "scene_push_time_fallback_seconds"),
         "scene_merge_total_threshold": ("bridge", "scene_merge_total_threshold"),
+        "auto_open_ui": ("bridge", "auto_open_ui"),
         "history_events_limit": ("history", "history_events_limit"),
         "history_lines_limit": ("history", "history_lines_limit"),
         "history_choices_limit": ("history", "history_choices_limit"),

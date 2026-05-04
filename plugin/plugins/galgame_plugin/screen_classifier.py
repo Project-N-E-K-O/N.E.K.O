@@ -106,8 +106,6 @@ _CONFIG_KEYWORDS = (
     "configuration",
     "settings",
     "setting",
-    "options",
-    "option",
     "volume",
     "sound",
     "voice",
@@ -119,8 +117,6 @@ _CONFIG_KEYWORDS = (
     "fullscreen",
     "设置",
     "設定",
-    "选项",
-    "選項",
     "音量",
     "声音",
     "語音",
@@ -1354,9 +1350,9 @@ def _looks_like_config(
     title_hits: int,
     normalized_lines: list[str],
 ) -> bool:
-    if config_hits >= 3:
+    if config_hits >= 4:
         return True
-    if config_hits >= 2 and save_hits < 2 and title_hits < 2:
+    if config_hits >= 3 and save_hits == 0 and title_hits == 0:
         return True
     if config_hits >= 1 and any(
         token in line

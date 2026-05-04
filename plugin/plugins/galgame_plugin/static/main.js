@@ -579,6 +579,7 @@ const SETTINGS_CONTROL_IDS = new Set([
   'ocrPollIntervalInput',
   'ocrTriggerModeSelect',
   'llmVisionToggle',
+  'fastLoopToggle',
   'llmVisionMaxImagePxInput',
 ]);
 
@@ -3049,11 +3050,12 @@ function renderStatus(status) {
   syncSettingsValue('readerModeSelect', status.reader_mode || 'auto');
   const ocrPollIntervalInput = document.getElementById('ocrPollIntervalInput');
   if (ocrPollIntervalInput && !shouldPreserveSettingsControls()) {
-    const interval = Number(status.ocr_reader_poll_interval_seconds || 2);
-    ocrPollIntervalInput.value = Number.isFinite(interval) ? interval.toFixed(1) : '2.0';
+    const interval = Number(status.ocr_reader_poll_interval_seconds || 0.5);
+    ocrPollIntervalInput.value = Number.isFinite(interval) ? interval.toFixed(1) : '0.5';
   }
   syncSettingsValue('ocrTriggerModeSelect', status.ocr_reader_trigger_mode || 'interval');
   syncSettingsChecked('llmVisionToggle', Boolean(status.llm_vision_enabled));
+  syncSettingsChecked('fastLoopToggle', Boolean(status.ocr_fast_loop_enabled));
   const llmVisionMaxInput = document.getElementById('llmVisionMaxImagePxInput');
   if (llmVisionMaxInput && !shouldPreserveSettingsControls()) {
     llmVisionMaxInput.value = String(Number(status.llm_vision_max_image_px || 768));
@@ -3943,6 +3945,7 @@ function formatOcrWindowSelectionDetail(detail) {
     foreground_window_needs_manual_confirmation: '当前前台窗口不像游戏，请手动选择游戏窗口',
     no_eligible_window: '当前没有可用游戏窗口',
     memory_reader_window_minimized: '游戏窗口已最小化，OCR 不能截图，请恢复窗口',
+    memory_reader_minimized_overridden_by_foreground: '窗口标记为最小化但实际在前台，已自动恢复',
     memory_reader_pid: '优先沿用 Memory Reader 命中的 PID',
     memory_reader_process: '优先沿用 Memory Reader 命中的进程',
     manual_target_overridden_by_memory_reader: 'Memory Reader 目标与 OCR 手动目标不一致，已优先使用 Memory Reader',
@@ -5378,9 +5381,10 @@ async function saveMode({ auto = false } = {}) {
   const advanceSpeed = document.getElementById('advanceSpeedSelect').value || 'medium';
   const readerMode = document.getElementById('readerModeSelect')?.value || 'auto';
   const ocrPollIntervalRaw = document.getElementById('ocrPollIntervalInput')?.value || '';
-  const ocrPollInterval = Number(ocrPollIntervalRaw || 2);
+  const ocrPollInterval = Number(ocrPollIntervalRaw || 0.5);
   const ocrTriggerMode = document.getElementById('ocrTriggerModeSelect')?.value || 'interval';
   const visionEnabled = Boolean(document.getElementById('llmVisionToggle')?.checked);
+  const fastLoopEnabled = Boolean(document.getElementById('fastLoopToggle')?.checked);
   const visionMaxRaw = document.getElementById('llmVisionMaxImagePxInput')?.value || '';
   const visionMaxImagePx = Number(visionMaxRaw || 768);
   if (!['auto', 'memory_reader', 'ocr_reader'].includes(readerMode)) {
@@ -5412,6 +5416,7 @@ async function saveMode({ auto = false } = {}) {
     await callPlugin('galgame_set_ocr_timing', {
       poll_interval_seconds: ocrPollInterval,
       trigger_mode: ocrTriggerMode,
+      fast_loop_enabled: fastLoopEnabled,
     });
     await callPlugin('galgame_set_llm_vision', {
       vision_enabled: visionEnabled,

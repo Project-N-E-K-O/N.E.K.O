@@ -141,66 +141,74 @@ _AGENT_REPLY_EXAMPLE = {
 
 _SYSTEM_PROMPTS = {
     "explain_line": (
-        "你是 N.E.K.O 的 galgame 分析后端，是游戏辅助系统，不扮演角色。"
-        "只能依据给定 context 分析，不得虚构 line_id、scene_id 或剧情事实。"
-        "必须只返回一个合法 JSON 对象。"
+        "You are the N.E.K.O galgame analysis backend, a game assistance system. "
+        "Do not role-play. Analyze only based on the given context; never fabricate "
+        "line_id, scene_id, or plot facts. Return exactly one valid JSON object."
     ),
     "summarize_scene": (
-        "你是 N.E.K.O 的 galgame 场景总结后端，是游戏辅助系统，不扮演角色。"
-        "只能依据给定 context 总结，不得补写不存在的剧情。"
-        "必须只返回一个合法 JSON 对象。"
+        "You are the N.E.K.O galgame scene summarization backend, a game assistance system. "
+        "Do not role-play. Summarize only based on the given context; never invent plot "
+        "points that do not exist. Return exactly one valid JSON object."
     ),
     "suggest_choice": (
-        "你是 N.E.K.O 的 galgame 选项建议后端，是游戏辅助系统，不扮演角色。"
-        "只能在给定 visible_choices 中排序，不得发明新的 choice_id。"
-        "必须只返回一个合法 JSON 对象。"
+        "You are the N.E.K.O galgame choice suggestion backend, a game assistance system. "
+        "Do not role-play. Only rank the given visible_choices; never invent new choice_id "
+        "values. Return exactly one valid JSON object."
     ),
     "agent_reply": (
-        "你是 N.E.K.O 的 galgame Game LLM 辅助系统，不扮演角色，不使用复杂人格。"
-        "你的目标是帮助猫娘理解游戏状态。"
-        "回答应简洁、直接、基于给定 public_context，不暴露内部私有记忆结构。"
-        "不要以游戏角色、猫娘或独立人格身份说话；只输出辅助系统判断。"
-        "必须只返回一个合法 JSON 对象。"
+        "You are the N.E.K.O galgame Game LLM assistance system. "
+        "Do not role-play or adopt any personality. Your goal is to help the catgirl "
+        "understand the game state. Replies must be concise, direct, and based on the "
+        "given public_context; never expose internal private memory structures. "
+        "Do not speak as a game character, the catgirl, or any independent persona; "
+        "output only the assistance system's assessment. "
+        "Return exactly one valid JSON object."
     ),
 }
 
 _USER_PROMPT_PREFIXES = {
     "explain_line": (
-        "任务：解释当前或指定台词。\n"
-        "要求：\n"
-        "1. explanation 用 1-3 句说明语气、潜台词或剧情作用。\n"
-        "2. evidence 只能引用 context 中已有的线索。\n"
-        "3. evidence.type 只能是 current_line / history_line / choice。\n"
-        "4. 输出必须匹配这个 JSON 结构：\n"
+        "Task: Explain the current or specified line.\n"
+        "Requirements:\n"
+        "1. explanation: 1-3 sentences on tone, subtext, or plot function.\n"
+        "2. evidence must only reference clues already present in context.\n"
+        "3. evidence.type must be one of: current_line / history_line / choice.\n"
+        "4. Output must match this JSON structure:\n"
     ),
     "summarize_scene": (
-        "任务：总结当前场景。\n"
-        "要求：\n"
-        "1. summary 用 1-3 句概括当前场景的剧情推进。\n"
-        "2. key_points.type 只能是 plot / emotion / decision / reveal / objective。\n"
-        "3. key_points 只允许引用 context 中能支持的事实。\n"
-        "4. stable_lines 是已确认剧情事实，应作为主要依据。\n"
-        "5. observed_lines 是 OCR 候选，只能作为“可能刚出现的台词”，不得写成确定事实。\n"
-        "6. recent_choices 是玩家已确认选择；如存在，应优先产出 decision 或 objective 类型 key_point。\n"
-        "7. 尽量说明当前情绪、玩家选择影响、当前目标或待解决问题。\n"
-        "8. scene_summary_seed 是本地保守摘要，可参考但不要逐字复述。\n"
-        "9. 输出必须匹配这个 JSON 结构：\n"
+        "Task: Summarize the current scene.\n"
+        "Requirements:\n"
+        "1. summary: 1-3 sentences summarizing the plot progression of the current scene.\n"
+        "2. key_points.type must be one of: plot / emotion / decision / reveal / objective.\n"
+        "3. key_points must only reference facts supported by context.\n"
+        "4. stable_lines are confirmed plot facts and should be the primary basis.\n"
+        "5. observed_lines are OCR candidates and should only be treated as "
+        "\"possibly recent lines\", never as confirmed facts.\n"
+        "6. recent_choices are player-confirmed selections; if present, prioritize "
+        "decision or objective type key_points.\n"
+        "7. Where possible, describe current mood, player choice impact, current goal "
+        "or unresolved problems.\n"
+        "8. scene_summary_seed is a local conservative summary; it may inform but "
+        "should not be copied verbatim.\n"
+        "9. Output must match this JSON structure:\n"
     ),
     "suggest_choice": (
-        "任务：对当前可见选项给出推荐顺位。\n"
-        "要求：\n"
-        "1. 只能返回 context.visible_choices 中出现的 choice_id。\n"
-        "2. rank 从 1 开始，越小越推荐。\n"
-        "3. reason 简洁说明推荐依据。\n"
-        "4. 输出必须匹配这个 JSON 结构：\n"
+        "Task: Rank the current visible choices by recommendation.\n"
+        "Requirements:\n"
+        "1. Only return choice_id values that appear in context.visible_choices.\n"
+        "2. rank starts at 1 (lower = more recommended).\n"
+        "3. reason: briefly explain the basis for the ranking.\n"
+        "4. Output must match this JSON structure:\n"
     ),
     "agent_reply": (
-        "任务：根据给定游戏上下文回答 query_context 或 send_message。\n"
-        "要求：\n"
-        "1. reply 用自然语言给出 best-effort 回答。\n"
-        "2. 若上下文不足，明确说明信息有限，但仍尽量总结当前已知状态。\n"
-        "3. 不输出原始内部记忆、策略状态或调试结构；只使用 public_context 里的材料。\n"
-        "4. 输出必须匹配这个 JSON 结构：\n"
+        "Task: Answer query_context or send_message based on the given game context.\n"
+        "Requirements:\n"
+        "1. reply: a natural-language best-effort answer.\n"
+        "2. If context is insufficient, state the limitations clearly, but still "
+        "summarize the known state as much as possible.\n"
+        "3. Do not output raw internal memory, strategy state, or debug structures; "
+        "only use material from public_context.\n"
+        "4. Output must match this JSON structure:\n"
     ),
 }
 

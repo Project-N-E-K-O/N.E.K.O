@@ -23,6 +23,7 @@ from .models import (
     STORE_OCR_BACKEND_SELECTION,
     STORE_OCR_CAPTURE_BACKEND,
     STORE_OCR_CAPTURE_PROFILES,
+    STORE_OCR_FAST_LOOP_ENABLED,
     STORE_OCR_POLL_INTERVAL_SECONDS,
     STORE_OCR_SCREEN_TEMPLATES,
     STORE_OCR_TRIGGER_MODE,
@@ -57,6 +58,7 @@ class GalgameStore:
         raw_reader_mode = self._read(STORE_READER_MODE, None)
         raw_poll = self._read(STORE_OCR_POLL_INTERVAL_SECONDS, None)
         raw_trigger = self._read(STORE_OCR_TRIGGER_MODE, None)
+        raw_fast_loop = self._read(STORE_OCR_FAST_LOOP_ENABLED, None)
         raw_vision = self._read(STORE_LLM_VISION_ENABLED, None)
         raw_px = self._read(STORE_LLM_VISION_MAX_IMAGE_PX, None)
         raw_templates = self._read(STORE_OCR_SCREEN_TEMPLATES, None)
@@ -80,6 +82,9 @@ class GalgameStore:
             ),
             STORE_OCR_TRIGGER_MODE: (
                 str(raw_trigger) if isinstance(raw_trigger, str) and raw_trigger else None
+            ),
+            STORE_OCR_FAST_LOOP_ENABLED: (
+                bool(raw_fast_loop) if isinstance(raw_fast_loop, bool) else None
             ),
             STORE_LLM_VISION_ENABLED: (
                 bool(raw_vision) if isinstance(raw_vision, bool) else None

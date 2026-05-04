@@ -13,7 +13,7 @@ keywords = [
     "台词",
     "选项",
 ]
-version = "0.5.0"
+version = "1.0.0"
 type = "plugin"
 entry = "plugin.plugins.galgame_plugin:GalgamePlugin"
 
@@ -44,6 +44,7 @@ warmup_replay_bytes_limit = 65536
 warmup_replay_events_limit = 50
 default_mode = "companion"
 push_notifications = true
+auto_open_ui = true
 reader_mode = "auto"
 
 [llm]

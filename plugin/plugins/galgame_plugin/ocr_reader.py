@@ -62,6 +62,7 @@ from .models import (
     parse_ocr_capture_profile_bucket_key,
 )
 from .aihong_state import (
+    AIHONG_CHOICES_REGION_PRESET as _AIHONG_CHOICES_REGION_PRESET,
     AIHONG_DIALOGUE_CAPTURE_PROFILE_PRESET as _AIHONG_DIALOGUE_CAPTURE_PROFILE_PRESET,
     AIHONG_DIALOGUE_STAGE as _AIHONG_DIALOGUE_STAGE,
     AIHONG_MENU_CAPTURE_PROFILE_PRESET as _AIHONG_MENU_CAPTURE_PROFILE_PRESET,
@@ -661,6 +662,69 @@ def _aihong_choice_boxes(
             }
         )
     return matched
+
+
+def _filter_boxes_to_region(
+    boxes: list[OcrTextBox],
+    *,
+    source_height: float,
+    top_ratio: float,
+    bottom_inset_ratio: float,
+) -> list[OcrTextBox]:
+    """Keep OCR boxes whose y bounds are within the capture image region.
+
+    source_height must use the same coordinate space as the OCR boxes.
+    """
+    if not boxes or source_height <= 0:
+        return boxes
+    top_y = source_height * top_ratio
+    bottom_y = source_height * (1.0 - bottom_inset_ratio)
+    if bottom_y <= top_y:
+        return []
+    result: list[OcrTextBox] = []
+    for box in boxes:
+        try:
+            box_top = float(getattr(box, "top", 0) or 0)
+            box_bottom = float(getattr(box, "bottom", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        if box_top >= top_y and box_bottom <= bottom_y:
+            result.append(box)
+    return result
+
+
+def _float_or_zero(value: Any) -> float:
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _aihong_choices_region_source_height(
+    boxes: list[OcrTextBox],
+    metadata: dict[str, Any] | None,
+) -> float:
+    data = metadata if isinstance(metadata, dict) else {}
+    source_size = data.get("source_size")
+    if isinstance(source_size, dict):
+        source_height = _float_or_zero(source_size.get("height"))
+        if source_height > 0:
+            return source_height
+
+    window_rect = data.get("window_rect")
+    if isinstance(window_rect, dict):
+        source_height = _float_or_zero(window_rect.get("height"))
+        if source_height > 0:
+            return source_height
+        top = _float_or_zero(window_rect.get("top"))
+        bottom = _float_or_zero(window_rect.get("bottom"))
+        if bottom > top:
+            return bottom - top
+
+    max_bottom = 0.0
+    for box in boxes:
+        max_bottom = max(max_bottom, _float_or_zero(getattr(box, "bottom", 0)))
+    return max_bottom if max_bottom > 0 else 1080.0
 
 
 def _extraction_choice_bounds_metadata(extraction: "OcrExtractionResult") -> dict[str, Any]:
@@ -6494,7 +6558,25 @@ class OcrReaderManager:
         choice_bounds_metadata: dict[str, Any] | None = None,
         choice_repeat_threshold: int = 2,
     ) -> _MenuConsumeResult:
-        lines = _stripped_ocr_lines(raw_text)
+        choice_boxes = list(boxes or [])
+        if choice_boxes:
+            source_height = _aihong_choices_region_source_height(
+                choice_boxes,
+                choice_bounds_metadata,
+            )
+            choice_boxes = _filter_boxes_to_region(
+                choice_boxes,
+                source_height=source_height,
+                top_ratio=_AIHONG_CHOICES_REGION_PRESET["top_ratio"],
+                bottom_inset_ratio=_AIHONG_CHOICES_REGION_PRESET[
+                    "bottom_inset_ratio"
+                ],
+            )
+            lines = _stripped_ocr_lines(
+                "\n".join(str(getattr(box, "text", "") or "") for box in choice_boxes)
+            )
+        else:
+            lines = _stripped_ocr_lines(raw_text)
         choices = _coerce_aihong_menu_choices(lines)
         if choices:
             return _MenuConsumeResult(
@@ -6504,7 +6586,7 @@ class OcrReaderManager:
                     now=now,
                     state=self._aihong_menu_ocr_state,
                     repeat_threshold=choice_repeat_threshold,
-                    choice_bounds=_aihong_choice_boxes(choices, list(boxes or [])),
+                    choice_bounds=_aihong_choice_boxes(choices, choice_boxes),
                     choice_bounds_metadata=choice_bounds_metadata,
                 )
                 else "",
@@ -6964,15 +7046,19 @@ class OcrReaderManager:
             last_seq=self._writer.last_seq,
             last_event_ts=self._writer.last_event_ts,
         )
+        self._set_poll_completed(
+            poll_started_at,
+            emitted=bool(emitted or observed_or_stable_emitted or screen_event_emitted),
+        )
+        result.runtime = self._runtime.to_dict()
+        return result
+
+    def _set_poll_completed(self, poll_started_at: float, *, emitted: bool = False) -> None:
         poll_completed_at = self._time_fn()
         self._runtime.last_poll_started_at = utc_now_iso(poll_started_at)
         self._runtime.last_poll_completed_at = utc_now_iso(poll_completed_at)
         self._runtime.last_poll_duration_seconds = max(0.0, poll_completed_at - poll_started_at)
-        self._runtime.last_poll_emitted_event = bool(
-            emitted or observed_or_stable_emitted or screen_event_emitted
-        )
-        result.runtime = self._runtime.to_dict()
-        return result
+        self._runtime.last_poll_emitted_event = bool(emitted)
 
     async def tick(
         self,
@@ -6985,7 +7071,6 @@ class OcrReaderManager:
         backend_plan_duration = 0.0
         window_scan_duration = 0.0
         result = OcrReaderTickResult(runtime=self._runtime.to_dict())
-        self._runtime.last_poll_started_at = utc_now_iso(poll_started_at)
         self._scene_ordering_diagnostic = "none"
         self._runtime.scene_ordering_diagnostic = "none"
 
@@ -6996,6 +7081,8 @@ class OcrReaderManager:
             result=result,
         )
         if preflight.should_return:
+            self._set_poll_completed(poll_started_at)
+            preflight.result.runtime = self._runtime.to_dict()
             return preflight.result
         result = preflight.result
         backend_plan = preflight.backend_plan
@@ -7008,6 +7095,8 @@ class OcrReaderManager:
             result=result,
         )
         if target_context.should_return:
+            self._set_poll_completed(poll_started_at)
+            target_context.result.runtime = self._runtime.to_dict()
             return target_context.result
         result = target_context.result
         target = target_context.target
@@ -9177,6 +9266,17 @@ class OcrReaderManager:
         if not windows:
             minimized_window = _memory_reader_minimized_window()
             if minimized_window is not None:
+                foreground_hwnd = _foreground_window_handle()
+                if (
+                    foreground_hwnd
+                    and foreground_hwnd != 0
+                    and foreground_hwnd == minimized_window.hwnd
+                ):
+                    selection.target = minimized_window
+                    selection.selection_detail = (
+                        "memory_reader_minimized_overridden_by_foreground"
+                    )
+                    return selection
                 return _use_memory_reader_minimized_diagnostic(minimized_window)
             selection.selection_detail = (
                 "manual_target_unavailable_fallback_to_auto"

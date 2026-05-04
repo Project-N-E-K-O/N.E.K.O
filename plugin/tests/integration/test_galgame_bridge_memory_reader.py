@@ -240,6 +240,9 @@ def _make_effective_config(bridge_root: Path, textractor_path: Path) -> dict[str
             "textractor_path": str(textractor_path),
             "auto_detect": True,
             "poll_interval_seconds": 1,
+            "engine_hooks": {
+                "renpy": ["/HREN@Demo.dll"],
+            },
         },
         "ocr_reader": {
             "enabled": False,
@@ -347,7 +350,7 @@ async def test_memory_reader_bridge_tick_fallback_and_bridge_sdk_takeover(tmp_pa
     assert isinstance(memory_reader_snapshot, Ok)
     assert memory_reader_status.value["active_data_source"] == "memory_reader"
     assert memory_reader_snapshot.value["snapshot"]["text"] == "Memory Reader 已接管。"
-    assert handle.writes == ["attach -P4242\n"]
+    assert handle.writes == ["attach -P4242\n", "/HREN@Demo.dll -P4242\n"]
 
     game_dir = bridge_root / "demo.bridge"
     game_dir.mkdir(parents=True, exist_ok=True)

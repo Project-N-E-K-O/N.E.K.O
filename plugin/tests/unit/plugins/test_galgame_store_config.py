@@ -8,6 +8,7 @@ from plugin.plugins.galgame_plugin.models import (
     STORE_LLM_VISION_MAX_IMAGE_PX,
     STORE_OCR_BACKEND_SELECTION,
     STORE_OCR_CAPTURE_BACKEND,
+    STORE_OCR_FAST_LOOP_ENABLED,
     STORE_OCR_POLL_INTERVAL_SECONDS,
     STORE_OCR_SCREEN_TEMPLATES,
     STORE_OCR_TRIGGER_MODE,
@@ -37,13 +38,16 @@ def test_galgame_store_config_overrides_keep_missing_distinct_from_false() -> No
     missing = store.load_config_overrides()
     assert missing[STORE_LLM_VISION_ENABLED] is None
     assert missing[STORE_READER_MODE] is None
+    assert missing[STORE_OCR_FAST_LOOP_ENABLED] is None
 
     store.persist_config_override(STORE_LLM_VISION_ENABLED, False)
     store.persist_config_override(STORE_READER_MODE, "ocr_reader")
+    store.persist_config_override(STORE_OCR_FAST_LOOP_ENABLED, False)
 
     loaded = store.load_config_overrides()
     assert loaded[STORE_LLM_VISION_ENABLED] is False
     assert loaded[STORE_READER_MODE] == "ocr_reader"
+    assert loaded[STORE_OCR_FAST_LOOP_ENABLED] is False
 
 
 def test_galgame_config_overrides_apply_valid_values_and_ignore_invalid() -> None:
@@ -55,6 +59,7 @@ def test_galgame_config_overrides_apply_valid_values_and_ignore_invalid() -> Non
             STORE_OCR_CAPTURE_BACKEND: "dxcam",
             STORE_OCR_POLL_INTERVAL_SECONDS: 0.25,
             STORE_OCR_TRIGGER_MODE: "after_advance",
+            STORE_OCR_FAST_LOOP_ENABLED: False,
             STORE_LLM_VISION_ENABLED: False,
             STORE_LLM_VISION_MAX_IMAGE_PX: 1024,
             STORE_OCR_SCREEN_TEMPLATES: [{"id": "title", "stage": "title_stage"}],
@@ -83,6 +88,7 @@ def test_galgame_config_overrides_apply_valid_values_and_ignore_invalid() -> Non
     assert plugin._cfg.ocr_reader.ocr_reader_capture_backend == "dxcam"
     assert plugin._cfg.ocr_reader.ocr_reader_poll_interval_seconds == 0.25
     assert plugin._cfg.ocr_reader.ocr_reader_trigger_mode == "after_advance"
+    assert plugin._cfg.ocr_reader.ocr_reader_fast_loop_enabled is False
     assert plugin._cfg.llm.llm_vision_enabled is False
     assert plugin._cfg.llm.llm_vision_max_image_px == 1024
     assert plugin._cfg.ocr_reader.ocr_reader_screen_templates == [

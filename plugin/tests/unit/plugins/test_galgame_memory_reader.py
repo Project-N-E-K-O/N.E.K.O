@@ -129,18 +129,25 @@ def _make_config(
     textractor_path: str = "",
     auto_detect: bool = True,
     poll_interval_seconds: float = 1.0,
+    hook_codes: list[str] | None = None,
+    engine_hooks: dict[str, list[str]] | None = None,
 ) -> object:
+    memory_reader_config: dict[str, object] = {
+        "enabled": enabled,
+        "textractor_path": textractor_path,
+        "auto_detect": auto_detect,
+        "poll_interval_seconds": poll_interval_seconds,
+    }
+    if hook_codes is not None:
+        memory_reader_config["hook_codes"] = hook_codes
+    if engine_hooks is not None:
+        memory_reader_config["engine_hooks"] = engine_hooks
     return build_config(
         {
             "galgame": {
                 "bridge_root": str(bridge_root),
             },
-            "memory_reader": {
-                "enabled": enabled,
-                "textractor_path": textractor_path,
-                "auto_detect": auto_detect,
-                "poll_interval_seconds": poll_interval_seconds,
-            },
+            "memory_reader": memory_reader_config,
         }
     )
 
@@ -622,6 +629,7 @@ async def test_memory_reader_manager_attaches_consumes_textractor_output_and_emi
             textractor_path=str(textractor_path),
             auto_detect=True,
             poll_interval_seconds=0.5,
+            engine_hooks={"renpy": ["/HREN@Demo.dll"]},
         ),
         process_factory=_process_factory,
         process_scanner=lambda: [
@@ -639,7 +647,7 @@ async def test_memory_reader_manager_attaches_consumes_textractor_output_and_emi
     first = await manager.tick(bridge_sdk_available=False)
     assert first.should_rescan is True
     assert first.runtime["status"] == "active"
-    assert handle.writes == ["attach -P4242\n"]
+    assert handle.writes == ["attach -P4242\n", "/HREN@Demo.dll -P4242\n"]
 
     game_id = first.runtime["game_id"]
     events_path = bridge_root / game_id / "events.jsonl"
@@ -765,6 +773,251 @@ async def test_memory_reader_manager_sends_engine_hook_codes_for_unity(
 
 
 @pytest.mark.asyncio
+async def test_memory_reader_manager_skips_process_without_hook_codes(
+    tmp_path: Path,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    textractor_path = tmp_path / "TextractorCLI.exe"
+    textractor_path.write_text("", encoding="utf-8")
+    process_factory_calls = 0
+
+    async def _process_factory(path: str):
+        nonlocal process_factory_calls
+        del path
+        process_factory_calls += 1
+        return _FakeTextractorHandle([])
+
+    manager = MemoryReaderManager(
+        logger=_Logger(),
+        config=build_config(
+            {
+                "galgame": {"bridge_root": str(bridge_root)},
+                "memory_reader": {
+                    "enabled": True,
+                    "textractor_path": str(textractor_path),
+                    "hook_codes": [],
+                    "engine_hooks": {"unity": []},
+                    "auto_detect": True,
+                },
+            }
+        ),
+        process_factory=_process_factory,
+        process_scanner=lambda: [
+            DetectedGameProcess(
+                pid=4242,
+                name="UnityGame.exe",
+                create_time=1709999999.0,
+                engine="unity",
+                detection_reason="detected_unity_module",
+            )
+        ],
+        time_fn=lambda: 1710000000.0,
+        platform_fn=lambda: True,
+    )
+
+    first = await manager.tick(bridge_sdk_available=False)
+    second = await manager.tick(bridge_sdk_available=False)
+
+    assert first.runtime["status"] == "idle"
+    assert first.runtime["detail"] == "no_hook_codes_available"
+    assert first.runtime["pid"] == 4242
+    assert first.runtime["hook_code_count"] == 0
+    assert first.runtime["hook_code_detail"] == "hook_codes_none"
+    assert second.runtime["detail"] == "no_detected_game_process"
+    assert process_factory_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_memory_reader_manager_retries_skipped_process_after_config_update(
+    tmp_path: Path,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    textractor_path = tmp_path / "TextractorCLI.exe"
+    textractor_path.write_text("", encoding="utf-8")
+    handles: list[_FakeTextractorHandle] = []
+    process = DetectedGameProcess(
+        pid=4242,
+        name="UnityGame.exe",
+        create_time=1709999999.0,
+        engine="unity",
+        detection_reason="detected_unity_module",
+    )
+
+    async def _process_factory(path: str):
+        del path
+        handle = _FakeTextractorHandle([])
+        handles.append(handle)
+        return handle
+
+    manager = MemoryReaderManager(
+        logger=_Logger(),
+        config=build_config(
+            {
+                "galgame": {"bridge_root": str(bridge_root)},
+                "memory_reader": {
+                    "enabled": True,
+                    "textractor_path": str(textractor_path),
+                    "hook_codes": [],
+                    "engine_hooks": {"unity": []},
+                    "auto_detect": True,
+                },
+            }
+        ),
+        process_factory=_process_factory,
+        process_scanner=lambda: [process],
+        time_fn=lambda: 1710000000.0,
+        platform_fn=lambda: True,
+    )
+
+    skipped = await manager.tick(bridge_sdk_available=False)
+    manager.update_config(
+        build_config(
+            {
+                "galgame": {"bridge_root": str(bridge_root)},
+                "memory_reader": {
+                    "enabled": True,
+                    "textractor_path": str(textractor_path),
+                    "hook_codes": [],
+                    "engine_hooks": {"unity": ["/HQ14+3C@GameAssembly.dll#0x33A440"]},
+                    "auto_detect": True,
+                },
+            }
+        )
+    )
+    retried = await manager.tick(bridge_sdk_available=False)
+
+    assert skipped.runtime["detail"] == "no_hook_codes_available"
+    assert retried.runtime["status"] == "attaching"
+    assert handles[0].writes == [
+        "attach -P4242\n",
+        "/HQ14+3C@GameAssembly.dll#0x33A440 -P4242\n",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_memory_reader_manager_manual_target_change_clears_skipped_process(
+    tmp_path: Path,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    textractor_path = tmp_path / "TextractorCLI.exe"
+    textractor_path.write_text("", encoding="utf-8")
+    process = DetectedGameProcess(
+        pid=4242,
+        name="UnityGame.exe",
+        create_time=1709999999.0,
+        engine="unity",
+        detection_reason="detected_unity_module",
+    )
+
+    async def _process_factory(path: str):
+        del path
+        return _FakeTextractorHandle([])
+
+    manager = MemoryReaderManager(
+        logger=_Logger(),
+        config=build_config(
+            {
+                "galgame": {"bridge_root": str(bridge_root)},
+                "memory_reader": {
+                    "enabled": True,
+                    "textractor_path": str(textractor_path),
+                    "hook_codes": [],
+                    "engine_hooks": {"unity": []},
+                    "auto_detect": True,
+                },
+            }
+        ),
+        process_factory=_process_factory,
+        process_scanner=lambda: [process],
+        process_inventory_scanner=lambda: [process],
+        time_fn=lambda: 1710000000.0,
+        platform_fn=lambda: True,
+    )
+
+    skipped = await manager.tick(bridge_sdk_available=False)
+    target = manager.resolve_manual_process_target(pid=process.pid)
+    manager.update_process_target(target)
+    retried = await manager.tick(bridge_sdk_available=False)
+
+    assert skipped.runtime["detail"] == "no_hook_codes_available"
+    assert retried.runtime["detail"] == "no_hook_codes_available"
+    assert retried.runtime["target_selection_mode"] == "manual"
+
+
+@pytest.mark.asyncio
+async def test_memory_reader_manager_gives_up_after_attach_timeout_limit(
+    tmp_path: Path,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    textractor_path = tmp_path / "TextractorCLI.exe"
+    textractor_path.write_text("", encoding="utf-8")
+    clock = {"now": 1710000000.0}
+    handles: list[_FakeTextractorHandle] = []
+
+    async def _process_factory(path: str):
+        del path
+        handle = _FakeTextractorHandle([])
+        handles.append(handle)
+        return handle
+
+    manager = MemoryReaderManager(
+        logger=_Logger(),
+        config=build_config(
+            {
+                "galgame": {"bridge_root": str(bridge_root)},
+                "memory_reader": {
+                    "enabled": True,
+                    "textractor_path": str(textractor_path),
+                    "hook_codes": [],
+                    "engine_hooks": {"unity": ["/HQ14+3C@GameAssembly.dll#0x33A440"]},
+                    "auto_detect": True,
+                },
+            }
+        ),
+        process_factory=_process_factory,
+        process_scanner=lambda: [
+            DetectedGameProcess(
+                pid=4242,
+                name="UnityGame.exe",
+                create_time=1709999999.0,
+                engine="unity",
+                detection_reason="detected_unity_module",
+            )
+        ],
+        time_fn=lambda: clock["now"],
+        platform_fn=lambda: True,
+    )
+
+    first_attach = await manager.tick(bridge_sdk_available=False)
+    clock["now"] += 6.0
+    first_timeout = await manager.tick(bridge_sdk_available=False)
+    clock["now"] += 6.0
+    second_attach = await manager.tick(bridge_sdk_available=False)
+    clock["now"] += 6.0
+    second_timeout = await manager.tick(bridge_sdk_available=False)
+    clock["now"] += 6.0
+    third_attach = await manager.tick(bridge_sdk_available=False)
+    clock["now"] += 6.0
+    limit = await manager.tick(bridge_sdk_available=False)
+    after_limit = await manager.tick(bridge_sdk_available=False)
+
+    assert first_attach.runtime["detail"] == "waiting_for_attach_confirmation"
+    assert first_timeout.runtime["detail"] == "attach_timeout"
+    assert second_attach.runtime["detail"] == "waiting_for_attach_confirmation"
+    assert second_timeout.runtime["detail"] == "attach_timeout"
+    assert third_attach.runtime["detail"] == "waiting_for_attach_confirmation"
+    assert limit.runtime["status"] == "idle"
+    assert limit.runtime["detail"] == "attach_timeout_limit_reached"
+    assert "too many times" in limit.warnings[0]
+    assert after_limit.runtime["detail"] == "no_detected_game_process"
+    assert len(handles) == 3
+
+
+@pytest.mark.asyncio
 async def test_memory_reader_manual_target_rebounds_by_process_signature(
     tmp_path: Path,
 ) -> None:
@@ -803,6 +1056,7 @@ async def test_memory_reader_manual_target_rebounds_by_process_signature(
             enabled=True,
             textractor_path=str(textractor_path),
             auto_detect=True,
+            engine_hooks={"kirikiri": ["/HKIR@Demo.dll"]},
         ),
         process_factory=_process_factory,
         process_scanner=lambda: [],
@@ -820,7 +1074,7 @@ async def test_memory_reader_manual_target_rebounds_by_process_signature(
     assert first.runtime["target_selection_mode"] == "manual"
     assert first.runtime["target_selection_detail"] == "manual_target_rebound"
     assert manager.current_process_target()["pid"] == 200
-    assert handle.writes == ["attach -P200\n"]
+    assert handle.writes == ["attach -P200\n", "/HKIR@Demo.dll -P200\n"]
 
 
 @pytest.mark.asyncio
@@ -846,6 +1100,7 @@ async def test_memory_reader_manager_marks_idle_after_text_on_heartbeat(
             textractor_path=str(textractor_path),
             auto_detect=True,
             poll_interval_seconds=0.5,
+            engine_hooks={"renpy": ["/HREN@Demo.dll"]},
         ),
         process_factory=_process_factory,
         process_scanner=lambda: [
@@ -927,6 +1182,7 @@ async def test_memory_reader_manager_marks_attached_without_text_when_only_textr
             textractor_path=str(textractor_path),
             auto_detect=True,
             poll_interval_seconds=0.5,
+            engine_hooks={"unity": ["/HUNI@Demo.dll"]},
         ),
         process_factory=_process_factory,
         process_scanner=lambda: [

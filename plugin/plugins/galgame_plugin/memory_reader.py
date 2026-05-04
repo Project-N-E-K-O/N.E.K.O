@@ -1324,12 +1324,17 @@ class MemoryReaderManager:
         self._last_no_text_warning_at = 0.0
         self._last_hook_code_count = 0
         self._last_hook_code_detail = "hook_codes_none"
+        self._skip_process_pids: set[int] = set()
+        self._consecutive_attach_timeouts = 0
+        self._max_attach_timeouts = 3
 
     def update_config(self, config: GalgameConfig) -> None:
         with self._config_update_lock:
             bridge_root_changed = self._writer.bridge_root != config.bridge_root
             self._config = config
             self._runtime.enabled = config.memory_reader_enabled
+            self._skip_process_pids.clear()
+            self._consecutive_attach_timeouts = 0
             if not bridge_root_changed:
                 return
             self._writer = MemoryReaderBridgeWriter(
@@ -1358,7 +1363,11 @@ class MemoryReaderManager:
         self._target_selection_detail = (
             "manual_target_active" if self._manual_target.is_manual() else "auto_candidate_scan"
         )
-        if old_target != self._manual_target.to_dict() and (
+        target_changed = old_target != self._manual_target.to_dict()
+        if target_changed:
+            self._skip_process_pids.clear()
+            self._consecutive_attach_timeouts = 0
+        if target_changed and (
             self._attached_process is not None or self._process is not None
         ):
             self._target_restart_requested = True
@@ -1598,6 +1607,7 @@ class MemoryReaderManager:
             self._runtime.detail = "scanning_processes"
         scanner = self._process_inventory_scanner if self._manual_target.is_manual() else self._process_scanner
         processes = await asyncio.to_thread(scanner)
+        processes = [item for item in processes if item.pid not in self._skip_process_pids]
         self._last_process_inventory = list(processes)
         if self._attached_process is None and processes:
             preview = ", ".join(f"{item.name}({item.pid},{item.engine})" for item in processes[:5])
@@ -1652,6 +1662,33 @@ class MemoryReaderManager:
             self._last_no_text_warning_at = 0.0
             self._runtime.status = "starting"
             self._runtime.detail = "starting_textractor"
+            hook_codes, hook_code_detail = _select_hook_codes_for_engine(
+                self._config,
+                target.engine,
+            )
+            self._last_hook_code_count = len(hook_codes)
+            self._last_hook_code_detail = hook_code_detail
+            self._logger.info(
+                "memory_reader hook_codes selected: {} (count={}, engine={}, detail={})",
+                hook_codes,
+                len(hook_codes),
+                target.engine,
+                hook_code_detail,
+            )
+            if not hook_codes and hook_code_detail == "hook_codes_none":
+                self._logger.info(
+                    "memory_reader no hook codes for engine={}; staying idle, OCR will handle",
+                    target.engine,
+                )
+                self._skip_process_pids.add(target.pid)
+                self._attached_process = None
+                self._runtime = self._current_runtime(
+                    status="idle",
+                    detail="no_hook_codes_available",
+                    process=target,
+                )
+                result.runtime = self._runtime.to_dict()
+                return result
             await self._ensure_textractor_started(textractor_path)
             try:
                 if self._process is None:
@@ -1752,6 +1789,7 @@ class MemoryReaderManager:
         if self._attached_process is not None and self._runtime.status == "attaching":
             if any(line.pid == self._attached_process.pid for line in parsed_lines) or log_lines:
                 self._restart_attempts = 0
+                self._consecutive_attach_timeouts = 0
                 self._runtime.status = "active"
                 self._runtime.detail = "attached" if parsed_lines else "attached_no_text_yet"
                 self._logger.info(
@@ -1762,6 +1800,27 @@ class MemoryReaderManager:
                     len(log_lines),
                 )
         if self._runtime.status == "attaching" and now - self._attach_started_at > 5.0:
+            self._consecutive_attach_timeouts += 1
+            self._logger.warning(
+                "memory_reader attach timeout ({}/{}) for {}({})",
+                self._consecutive_attach_timeouts,
+                self._max_attach_timeouts,
+                self._attached_process.name if self._attached_process else "",
+                self._attached_process.pid if self._attached_process else 0,
+            )
+            if self._consecutive_attach_timeouts >= self._max_attach_timeouts:
+                if self._attached_process is not None:
+                    self._skip_process_pids.add(self._attached_process.pid)
+                message = "memory_reader attach confirmation timed out too many times; giving up"
+                self._logger.warning(message)
+                result.warnings.append(message)
+                if self._writer.emit_error(message, ts=utc_now_iso(now)):
+                    result.should_rescan = True
+                self._runtime.status = "idle"
+                self._runtime.detail = "attach_timeout_limit_reached"
+                await self._stop_textractor()
+                result.runtime = self._runtime.to_dict()
+                return result
             message = "memory_reader attach confirmation timed out"
             self._logger.warning(
                 "memory_reader attach confirmation timed out for {}({})",
@@ -1788,6 +1847,7 @@ class MemoryReaderManager:
         if emitted:
             result.should_rescan = True
             self._last_heartbeat_at = now
+            self._consecutive_attach_timeouts = 0
             self._last_no_text_warning_at = 0.0
             self._runtime.detail = "receiving_text"
         elif self._runtime.status == "active":

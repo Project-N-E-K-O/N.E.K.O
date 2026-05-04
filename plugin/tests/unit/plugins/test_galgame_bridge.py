@@ -1113,6 +1113,7 @@ async def test_memory_reader_auto_discovers_textractor_from_path(
                 "textractor_path": "",
                 "auto_detect": True,
                 "poll_interval_seconds": 1,
+                "engine_hooks": {"renpy": ["/HREN@Demo.dll"]},
             },
         }
     )
@@ -1146,7 +1147,7 @@ async def test_memory_reader_auto_discovers_textractor_from_path(
     result = await manager.tick(bridge_sdk_available=False)
 
     assert captured_paths == [str(textractor_path)]
-    assert handle.writes == ["attach -P4242\n"]
+    assert handle.writes == ["attach -P4242\n", "/HREN@Demo.dll -P4242\n"]
     assert result.runtime["status"] == "attaching"
     await manager.shutdown()
 
@@ -1174,6 +1175,7 @@ async def test_memory_reader_auto_discovers_textractor_from_localappdata_install
                 "textractor_path": "",
                 "auto_detect": True,
                 "poll_interval_seconds": 1,
+                "engine_hooks": {"renpy": ["/HREN@Demo.dll"]},
             },
         }
     )
@@ -1356,6 +1358,40 @@ async def test_startup_binds_latest_session_and_exposes_ui(tmp_path: Path) -> No
     assert isinstance(open_ui, Ok)
     assert open_ui.value["available"] is True
     assert open_ui.value["path"] == "/plugin/galgame_plugin/ui/"
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_startup_auto_opens_ui_only_when_enabled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    opened_urls: list[str] = []
+    monkeypatch.setattr(galgame_plugin_module, "_open_url_in_browser", opened_urls.append)
+    monkeypatch.setenv("NEKO_USER_PLUGIN_SERVER_PORT", "49001")
+
+    disabled_root = tmp_path / "disabled"
+    disabled_root.mkdir()
+    disabled_plugin_dir, disabled_bridge_root = _make_plugin_dirs(disabled_root)
+    disabled_ctx = _Ctx(disabled_plugin_dir, _make_effective_config(disabled_bridge_root))
+    disabled_plugin = GalgameBridgePlugin(disabled_ctx)
+    disabled_startup = await disabled_plugin.startup()
+
+    assert isinstance(disabled_startup, Ok)
+    assert opened_urls == []
+
+    enabled_root = tmp_path / "enabled"
+    enabled_root.mkdir()
+    enabled_plugin_dir, enabled_bridge_root = _make_plugin_dirs(enabled_root)
+    enabled_ctx = _Ctx(
+        enabled_plugin_dir,
+        _make_effective_config(enabled_bridge_root, galgame={"auto_open_ui": True}),
+    )
+    enabled_plugin = GalgameBridgePlugin(enabled_ctx)
+    enabled_startup = await enabled_plugin.startup()
+
+    assert isinstance(enabled_startup, Ok)
+    assert opened_urls == ["http://127.0.0.1:49001/plugin/galgame_plugin/ui/"]
 
 
 @pytest.mark.asyncio
@@ -1780,6 +1816,95 @@ async def test_set_ocr_timing_to_interval_clears_after_advance_pending(
 
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
+async def test_set_ocr_timing_persists_and_toggles_fast_loop(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    cfg = _make_effective_config(
+        bridge_root,
+        ocr_reader={"enabled": True, "fast_loop_enabled": True},
+    )
+    plugin = GalgameBridgePlugin(_Ctx(plugin_dir, cfg))
+    plugin._cfg = build_config(cfg)
+    persist_calls: list[dict[str, object]] = []
+    manager_updates: list[bool] = []
+    cancel_calls: list[bool] = []
+    plugin._config_service = SimpleNamespace(
+        persist_ocr_timing=lambda **kwargs: persist_calls.append(dict(kwargs)),
+    )
+    plugin._ocr_reader_manager = SimpleNamespace(
+        update_config=lambda config: manager_updates.append(
+            bool(config.ocr_reader_fast_loop_enabled)
+        )
+    )
+    plugin._start_background_bridge_poll = lambda: False  # type: ignore[method-assign]
+
+    async def _cancel_fast_loop() -> None:
+        cancel_calls.append(True)
+
+    async def _ensure_monitor() -> None:
+        return None
+
+    plugin._cancel_ocr_fast_loop = _cancel_fast_loop  # type: ignore[method-assign]
+    plugin._ensure_ocr_foreground_advance_monitor = _ensure_monitor  # type: ignore[method-assign]
+
+    result = await plugin.galgame_set_ocr_timing(
+        poll_interval_seconds=1.5,
+        trigger_mode="interval",
+        fast_loop_enabled=False,
+    )
+
+    assert isinstance(result, Ok)
+    assert plugin._cfg.ocr_reader_fast_loop_enabled is False
+    assert plugin._fast_loop_auto_enabled is False
+    assert manager_updates == [False]
+    assert cancel_calls == [True]
+    assert persist_calls == [
+        {
+            "poll_interval_seconds": 1.5,
+            "trigger_mode": "interval",
+            "fast_loop_enabled": False,
+        }
+    ]
+    assert result.value["fast_loop_enabled"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_set_ocr_timing_starts_fast_loop_when_enabled(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    cfg = _make_effective_config(
+        bridge_root,
+        ocr_reader={"enabled": True, "fast_loop_enabled": False},
+    )
+    plugin = GalgameBridgePlugin(_Ctx(plugin_dir, cfg))
+    plugin._cfg = build_config(cfg)
+    start_calls: list[bool] = []
+    plugin._config_service = SimpleNamespace(persist_ocr_timing=lambda **kwargs: None)
+    plugin._ocr_reader_manager = SimpleNamespace(update_config=lambda config: None)
+    plugin._start_background_bridge_poll = lambda: False  # type: ignore[method-assign]
+    plugin._start_ocr_fast_loop = lambda: start_calls.append(True) or True  # type: ignore[method-assign]
+
+    async def _ensure_monitor() -> None:
+        return None
+
+    plugin._ensure_ocr_foreground_advance_monitor = _ensure_monitor  # type: ignore[method-assign]
+
+    result = await plugin.galgame_set_ocr_timing(
+        poll_interval_seconds=1.5,
+        trigger_mode="interval",
+        fast_loop_enabled=True,
+    )
+
+    assert isinstance(result, Ok)
+    assert plugin._cfg.ocr_reader_fast_loop_enabled is True
+    assert start_calls == [True]
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
 async def test_set_ocr_backend_resets_capture_runtime_diagnostics_on_change(
     tmp_path: Path,
 ) -> None:
@@ -2097,7 +2222,7 @@ def test_config_service_persist_runtime_state_uses_defaults_for_missing_keys() -
 
 
 @pytest.mark.plugin_unit
-def test_game_llm_agent_menu_stage_without_choices_is_unknown(tmp_path: Path) -> None:
+def test_game_llm_agent_menu_stage_without_choices_is_choice_menu(tmp_path: Path) -> None:
     plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
     ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
     plugin = GalgameBridgePlugin(ctx)
@@ -2126,7 +2251,65 @@ def test_game_llm_agent_menu_stage_without_choices_is_unknown(tmp_path: Path) ->
         snapshot,
         now=1000.0,
         scene_changed=False,
-    ) == "unknown"
+    ) == "choice_menu"
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_game_llm_agent_ocr_menu_without_bridge_choices_uses_keyboard_fallback(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    plugin = GalgameBridgePlugin(ctx)
+    local_calls: list[dict[str, object]] = []
+
+    def _local_input(_shared: dict[str, object], actuation: dict[str, object]) -> dict[str, object]:
+        local_calls.append(dict(actuation))
+        return {
+            "success": True,
+            "reason": "",
+            "kind": actuation.get("kind"),
+            "strategy_id": actuation.get("strategy_id"),
+            "method": "keyboard_choice_navigation",
+        }
+
+    agent = GameLLMAgent(
+        plugin=plugin,
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+        local_input_actuator=_local_input,
+    )
+    snapshot = _session_state(
+        text="",
+        line_id="",
+        choices=[],
+        is_menu_open=False,
+        screen_type=OCR_CAPTURE_PROFILE_STAGE_MENU,
+        screen_confidence=0.72,
+    )
+    shared = _shared_state(
+        snapshot=snapshot,
+        active_data_source=DATA_SOURCE_OCR_READER,
+        ocr_reader_runtime={
+            "enabled": True,
+            "status": "active",
+            "pid": 4242,
+            "target_is_foreground": True,
+            "input_target_foreground": True,
+        },
+    )
+
+    await agent.tick(shared)
+
+    assert len(local_calls) == 1
+    assert local_calls[0]["kind"] == "choose"
+    assert local_calls[0]["strategy_id"] == "choose_ocr_fallback"
+    assert local_calls[0]["candidate_choices"] == []
+    assert agent._ocr_choice_fallback_attempts == 1
+    assert agent._actuation is not None
+    assert agent._actuation["state"] == "awaiting_bridge"
 
 
 @pytest.mark.asyncio
@@ -2931,6 +3114,7 @@ async def test_windows_default_memory_reader_config_autodiscovers_textractor_and
         memory_reader={
             "auto_detect": True,
             "poll_interval_seconds": 1,
+            "engine_hooks": {"renpy": ["/HREN@Demo.dll"]},
         },
     )
     del cfg["memory_reader"]["enabled"]  # type: ignore[index]
@@ -2982,7 +3166,7 @@ async def test_windows_default_memory_reader_config_autodiscovers_textractor_and
     assert status.value["active_data_source"] == DATA_SOURCE_MEMORY_READER
     assert status.value["memory_reader_runtime"]["status"] == "active"
     assert snapshot.value["snapshot"]["text"] == expected_snapshot_text
-    assert good_handle.writes == ["attach -P4242\n"]
+    assert good_handle.writes == ["attach -P4242\n", "/HREN@Demo.dll -P4242\n"]
     return
 
     assert isinstance(status, Ok)
@@ -2991,7 +3175,7 @@ async def test_windows_default_memory_reader_config_autodiscovers_textractor_and
     assert status.value["active_data_source"] == DATA_SOURCE_MEMORY_READER
     assert status.value["memory_reader_runtime"]["status"] == "active"
     assert snapshot.value["snapshot"]["text"] == "Windows é»˜è®¤é…ç½®å·²è‡ªåŠ¨æŽ¥ç®¡ã€‚"
-    assert handle.writes == ["attach -P4242\n"]
+    assert handle.writes == ["attach -P4242\n", "/HREN@Demo.dll -P4242\n"]
 
 
 @pytest.mark.asyncio
@@ -8275,6 +8459,7 @@ async def test_memory_reader_fallback_activates_when_bridge_sdk_is_missing(tmp_p
         memory_reader={
             "enabled": True,
             "textractor_path": str(textractor_path),
+            "engine_hooks": {"renpy": ["/HREN@Demo.dll"]},
         },
     )
     ctx = _Ctx(plugin_dir, cfg)
@@ -8318,7 +8503,7 @@ async def test_memory_reader_fallback_activates_when_bridge_sdk_is_missing(tmp_p
     assert status.value["summary"].startswith("已通过内存读取连接（降级模式）")
     assert status.value["memory_reader_runtime"]["status"] == "active"
     assert snapshot.value["snapshot"]["text"] == "来自内存读取的台词。"
-    assert handle.writes == ["attach -P4242\n"]
+    assert handle.writes == ["attach -P4242\n", "/HREN@Demo.dll -P4242\n"]
 
 
 @pytest.mark.asyncio
@@ -8332,6 +8517,7 @@ async def test_bridge_sdk_session_preempts_memory_reader_candidate(tmp_path: Pat
         memory_reader={
             "enabled": True,
             "textractor_path": str(textractor_path),
+            "engine_hooks": {"renpy": ["/HREN@Demo.dll"]},
         },
     )
     ctx = _Ctx(plugin_dir, cfg)

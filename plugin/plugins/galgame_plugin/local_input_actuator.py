@@ -59,6 +59,7 @@ VIRTUAL_MOUSE_DIALOGUE_CANDIDATES = (
 VIRTUAL_MOUSE_FORBIDDEN_ZONES = (
     {"zone_id": "bottom_toolbar", "min_x": 0.58, "max_x": 1.0, "min_y": 0.78, "max_y": 1.0},
     {"zone_id": "top_edge", "min_x": 0.0, "max_x": 1.0, "min_y": 0.0, "max_y": 0.04},
+    {"zone_id": "right_edge_buttons", "min_x": 0.85, "max_x": 1.0, "min_y": 0.0, "max_y": 0.15},
 )
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 TOKEN_QUERY = 0x0008

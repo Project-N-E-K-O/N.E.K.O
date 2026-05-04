@@ -552,7 +552,6 @@ class GameLLMAgent:
         "advance_click",
         "advance_click",
         "advance_enter",
-        "advance_space",
     )
     _VIRTUAL_MOUSE_RECENT_SUCCESS_SECONDS = 30.0
     _VIRTUAL_MOUSE_SKIP_AFTER_CONSECUTIVE_FAILURES = 2
@@ -680,6 +679,7 @@ class GameLLMAgent:
         self._next_actuation_at = 0.0
         self._last_focus_attempt_at = 0.0
         self._focus_failure_count = 0
+        self._ocr_choice_fallback_attempts = 0
         self._scene_tracker = AgentSceneTracker(
             seen_line_limit=self._SUMMARY_SEEN_LINE_KEYS_LIMIT,
         )
@@ -1054,6 +1054,7 @@ class GameLLMAgent:
             self._next_actuation_at = 0.0
             self._last_focus_attempt_at = 0.0
             self._focus_failure_count = 0
+            self._ocr_choice_fallback_attempts = 0
             self._scene_state = self._build_empty_scene_state()
             self._last_status = AGENT_STATUS_STANDBY
             self._last_trace_message = ""
@@ -1189,7 +1190,34 @@ class GameLLMAgent:
                 self._last_status = self._compute_status(shared)
                 return
 
-            if self._scene_state["stage"] == "choice_menu" and visible_choices:
+            if self._scene_state["stage"] != "choice_menu":
+                self._ocr_choice_fallback_attempts = 0
+
+            if self._scene_state["stage"] == "choice_menu":
+                if not visible_choices:
+                    if not self._has_confirmed_ocr_choice_menu(shared, snapshot):
+                        self._trace_runtime(
+                            "tick holding choice planning: waiting for confirmed OCR menu event "
+                            "(no bridge choices)"
+                        )
+                        self._last_status = status
+                        return
+                    strategy = self._build_choice_strategy(
+                        shared,
+                        candidate_choices=[],
+                        candidate_index=0,
+                        instruction_variant=self._ocr_choice_fallback_attempts,
+                    )
+                    if strategy is not None:
+                        self._ocr_choice_fallback_attempts += 1
+                        self._trace_runtime(
+                            "tick starting OCR-only choice navigation: "
+                            f"stage={self._scene_state['stage']} "
+                            f"attempt={self._ocr_choice_fallback_attempts}"
+                        )
+                        await self._start_actuation_from_strategy(shared, strategy=strategy, now=now)
+                    self._last_status = self._compute_status(shared)
+                    return
                 if not self._has_confirmed_ocr_choice_menu(shared, snapshot):
                     self._trace_runtime(
                         "tick holding choice planning: waiting for confirmed OCR menu event"
@@ -2813,6 +2841,9 @@ class GameLLMAgent:
         if self._current_input_source(shared) != DATA_SOURCE_OCR_READER:
             return True
         choices = list(snapshot.get("choices", []))
+        screen_type = str(snapshot.get("screen_type") or "").strip()
+        if screen_type == OCR_CAPTURE_PROFILE_STAGE_MENU:
+            return True
         if not bool(snapshot.get("is_menu_open")) or not choices:
             return False
         history_events = shared.get("history_events")
@@ -3187,7 +3218,27 @@ class GameLLMAgent:
         candidate_index: int,
         instruction_variant: int,
     ) -> dict[str, Any] | None:
-        if not candidate_choices or candidate_index >= len(candidate_choices):
+        if not candidate_choices:
+            if instruction_variant >= 2:
+                return None
+            return {
+                "kind": "choose",
+                "strategy_family": "choice",
+                "strategy_id": "choose_ocr_fallback",
+                "instruction": (
+                    "A visual novel menu is currently open but no numbered choices "
+                    "are available via bridge data. Navigate the menu with keyboard: "
+                    "press Up several times to reach the first option, then press "
+                    "Enter exactly once to select it. Stop immediately after."
+                ),
+                "instruction_variant": instruction_variant,
+                "candidate_choices": [],
+                "candidate_index": 0,
+                "retry_reason": "no bridge choices available, using keyboard navigation",
+                "choice_id": "",
+                "suggestion_reason": "",
+            }
+        if candidate_index >= len(candidate_choices):
             return None
         if instruction_variant >= 2:
             return None
@@ -3732,7 +3783,7 @@ class GameLLMAgent:
             if screen_type == OCR_CAPTURE_PROFILE_STAGE_DIALOGUE:
                 return "choice_menu" if bool(snapshot.get("is_menu_open")) and choices else "dialogue"
             if screen_type == OCR_CAPTURE_PROFILE_STAGE_MENU:
-                return "choice_menu" if choices else "unknown"
+                return "choice_menu"
             if screen_type == OCR_CAPTURE_PROFILE_STAGE_TITLE:
                 return "title_or_menu"
             if screen_type == OCR_CAPTURE_PROFILE_STAGE_SAVE_LOAD:

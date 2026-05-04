@@ -6,6 +6,8 @@ from concurrent.futures import Future
 import os
 from pathlib import Path
 import re
+import subprocess
+import sys
 import threading
 import time
 from types import SimpleNamespace
@@ -35,6 +37,7 @@ from .models import (
     DATA_SOURCE_MEMORY_READER,
     DATA_SOURCE_NONE,
     DATA_SOURCE_OCR_READER,
+    MODE_CHOICE_ADVISOR,
     MODE_COMPANION,
     MODES,
     build_ocr_capture_profile_bucket_key,
@@ -79,6 +82,7 @@ from .models import (
     STORE_OCR_BACKEND_SELECTION,
     STORE_OCR_CAPTURE_BACKEND,
     STORE_OCR_CAPTURE_PROFILES,
+    STORE_OCR_FAST_LOOP_ENABLED,
     STORE_OCR_POLL_INTERVAL_SECONDS,
     STORE_OCR_SCREEN_TEMPLATES,
     STORE_OCR_TRIGGER_MODE,
@@ -187,6 +191,15 @@ _OCR_FOREGROUND_ADVANCE_MONITOR_INTERVAL_SECONDS = 0.05
 _OCR_AFTER_ADVANCE_CAPTURE_DELAY_SECONDS = 0.15
 _OCR_AFTER_ADVANCE_SETTLE_POLL_SECONDS = 0.15
 _OCR_AFTER_ADVANCE_MAX_SETTLE_SECONDS = 2.0
+
+
+def _open_url_in_browser(url: str) -> None:
+    if sys.platform == "win32":
+        os.startfile(url)
+    elif sys.platform == "darwin":
+        subprocess.run(["open", url], check=True)
+    else:
+        subprocess.run(["xdg-open", url], check=True)
 
 
 def _normalize_ocr_trigger_mode(value: str | None) -> str:
@@ -681,6 +694,7 @@ class GalgamePluginConfigService:
         *,
         poll_interval_seconds: float,
         trigger_mode: str,
+        fast_loop_enabled: bool | None = None,
     ) -> None:
         self._plugin._persist.persist_config_override(
             STORE_OCR_POLL_INTERVAL_SECONDS,
@@ -690,6 +704,11 @@ class GalgamePluginConfigService:
             STORE_OCR_TRIGGER_MODE,
             trigger_mode,
         )
+        if fast_loop_enabled is not None:
+            self._plugin._persist.persist_config_override(
+                STORE_OCR_FAST_LOOP_ENABLED,
+                bool(fast_loop_enabled),
+            )
 
     def persist_llm_vision(
         self,
@@ -764,6 +783,8 @@ class GalgamePlugin(NekoPluginBase):
         self._ocr_fast_loop_last_duration_seconds = 0.0
         self._ocr_fast_loop_last_run_at = 0.0
         self._ocr_fast_loop_iteration_count = 0
+        self._fast_loop_auto_enabled = False
+        self._fast_loop_consecutive_errors = 0
         self._ocr_reader_tick_lock = threading.Lock()
         self._ocr_poll_duration_samples: deque[float] = deque(maxlen=_LATENCY_SAMPLE_LIMIT)
         self._bridge_poll_duration_samples: deque[float] = deque(maxlen=_LATENCY_SAMPLE_LIMIT)
@@ -2477,6 +2498,7 @@ class GalgamePlugin(NekoPluginBase):
                     should_start_bridge_poll = True
                 self._state_dirty = True
                 self._cached_snapshot = None
+            self._fast_loop_consecutive_errors = 0
             return True
         except Exception as exc:
             self._record_error(
@@ -2486,6 +2508,14 @@ class GalgamePlugin(NekoPluginBase):
                     kind="warning",
                 )
             )
+            self._fast_loop_consecutive_errors += 1
+            if self._fast_loop_consecutive_errors >= 5:
+                self.logger.warning(
+                    f"ocr fast loop paused after {self._fast_loop_consecutive_errors} consecutive errors"
+                )
+                if self._cfg is not None:
+                    self._cfg.ocr_reader_fast_loop_enabled = False
+                self._fast_loop_auto_enabled = False
             return False
         finally:
             finished_at = time.monotonic()
@@ -2677,6 +2707,10 @@ class GalgamePlugin(NekoPluginBase):
         value = overrides.get(STORE_OCR_TRIGGER_MODE)
         if value is not None and value in OCR_TRIGGER_MODES:
             self._cfg.ocr_reader.ocr_reader_trigger_mode = value
+
+        value = overrides.get(STORE_OCR_FAST_LOOP_ENABLED)
+        if value is not None:
+            self._cfg.ocr_reader.ocr_reader_fast_loop_enabled = bool(value)
 
         value = overrides.get(STORE_LLM_VISION_ENABLED)
         if value is not None:
@@ -2929,6 +2963,19 @@ class GalgamePlugin(NekoPluginBase):
                 }
             ]
         )
+
+        if self._cfg.bridge.auto_open_ui:
+            port = os.getenv("NEKO_USER_PLUGIN_SERVER_PORT", "48916")
+            url = f"http://127.0.0.1:{port}/plugin/{self.plugin_id}/ui/"
+            try:
+                await asyncio.to_thread(_open_url_in_browser, url)
+            except Exception as exc:
+                _log_plugin_noncritical(
+                    self.logger,
+                    "warning",
+                    "galgame auto-open UI failed: {}",
+                    exc,
+                )
 
         await self._poll_bridge(force=True)
         self._start_ocr_fast_loop()
@@ -4675,6 +4722,21 @@ class GalgamePlugin(NekoPluginBase):
         ):
             self.request_ocr_after_advance_capture(reason="mode_change_to_read_only")
         self._start_background_bridge_poll()
+
+        # 进入 choice_advisor 时默认启用 OCR fast loop；离开时仅关闭自动开启的。
+        if mode == MODE_CHOICE_ADVISOR and old_mode != MODE_CHOICE_ADVISOR:
+            if not self._ocr_fast_loop_should_run():
+                if self._cfg is not None:
+                    self._cfg.ocr_reader_fast_loop_enabled = True
+                self._fast_loop_auto_enabled = True
+                self._start_ocr_fast_loop()
+        elif old_mode == MODE_CHOICE_ADVISOR and mode != MODE_CHOICE_ADVISOR:
+            if self._fast_loop_auto_enabled:
+                if self._cfg is not None:
+                    self._cfg.ocr_reader_fast_loop_enabled = False
+                self._fast_loop_auto_enabled = False
+                await self._cancel_ocr_fast_loop()
+
         if self._game_agent is not None and not mode_allows_agent_actuation(mode):
             try:
                 agent_payload = await self._game_agent.apply_mode_change(self._snapshot_state())
@@ -4819,6 +4881,7 @@ class GalgamePlugin(NekoPluginBase):
                     "enum": ["interval", "after_advance"],
                     "default": "interval",
                 },
+                "fast_loop_enabled": {"type": "boolean"},
             },
             "required": ["poll_interval_seconds"],
         },
@@ -4828,6 +4891,7 @@ class GalgamePlugin(NekoPluginBase):
         self,
         poll_interval_seconds: float,
         trigger_mode: str | None = None,
+        fast_loop_enabled: bool | None = None,
         **_,
     ):
         if self._cfg is None:
@@ -4847,14 +4911,25 @@ class GalgamePlugin(NekoPluginBase):
 
         old_interval = self._cfg.ocr_reader_poll_interval_seconds
         old_trigger_mode = self._cfg.ocr_reader_trigger_mode
+        old_fast_loop = self._cfg.ocr_reader_fast_loop_enabled
+        old_fast_loop_auto_enabled = self._fast_loop_auto_enabled
+        if fast_loop_enabled is not None:
+            self._fast_loop_auto_enabled = False
         self._cfg.ocr_reader_poll_interval_seconds = normalized_interval
         self._cfg.ocr_reader_trigger_mode = normalized_trigger_mode
+        self._cfg.ocr_reader_fast_loop_enabled = (
+            bool(fast_loop_enabled)
+            if fast_loop_enabled is not None
+            else old_fast_loop
+        )
         if self._ocr_reader_manager is not None:
             try:
                 self._ocr_reader_manager.update_config(self._cfg)
             except Exception as exc:
                 self._cfg.ocr_reader_poll_interval_seconds = old_interval
                 self._cfg.ocr_reader_trigger_mode = old_trigger_mode
+                self._cfg.ocr_reader_fast_loop_enabled = old_fast_loop
+                self._fast_loop_auto_enabled = old_fast_loop_auto_enabled
                 return Err(SdkError(f"apply OCR timing failed: {exc}"))
 
         with self._state_lock:
@@ -4866,10 +4941,17 @@ class GalgamePlugin(NekoPluginBase):
             self._config_service.persist_ocr_timing(
                 poll_interval_seconds=normalized_interval,
                 trigger_mode=normalized_trigger_mode,
+                fast_loop_enabled=(
+                    fast_loop_enabled
+                    if fast_loop_enabled is not None
+                    else old_fast_loop
+                ),
             )
         except Exception as exc:
             self._cfg.ocr_reader_poll_interval_seconds = old_interval
             self._cfg.ocr_reader_trigger_mode = old_trigger_mode
+            self._cfg.ocr_reader_fast_loop_enabled = old_fast_loop
+            self._fast_loop_auto_enabled = old_fast_loop_auto_enabled
             if self._ocr_reader_manager is not None:
                 try:
                     self._ocr_reader_manager.update_config(self._cfg)
@@ -4884,6 +4966,41 @@ class GalgamePlugin(NekoPluginBase):
 
         if normalized_trigger_mode != OCR_TRIGGER_MODE_AFTER_ADVANCE:
             self._clear_pending_ocr_advance_captures()
+        if fast_loop_enabled is not None:
+            try:
+                if bool(fast_loop_enabled) and not old_fast_loop:
+                    self._start_ocr_fast_loop()
+                elif not bool(fast_loop_enabled) and old_fast_loop:
+                    await self._cancel_ocr_fast_loop()
+            except Exception as exc:
+                self._cfg.ocr_reader_poll_interval_seconds = old_interval
+                self._cfg.ocr_reader_trigger_mode = old_trigger_mode
+                self._cfg.ocr_reader_fast_loop_enabled = old_fast_loop
+                self._fast_loop_auto_enabled = old_fast_loop_auto_enabled
+                if self._ocr_reader_manager is not None:
+                    try:
+                        self._ocr_reader_manager.update_config(self._cfg)
+                    except Exception as rollback_exc:
+                        _log_plugin_noncritical(
+                            self.logger,
+                            "warning",
+                            "galgame OCR timing rollback update_config failed: {}",
+                            rollback_exc,
+                        )
+                try:
+                    self._config_service.persist_ocr_timing(
+                        poll_interval_seconds=old_interval,
+                        trigger_mode=old_trigger_mode,
+                        fast_loop_enabled=old_fast_loop,
+                    )
+                except Exception as rollback_exc:
+                    _log_plugin_noncritical(
+                        self.logger,
+                        "warning",
+                        "galgame OCR fast loop rollback persist failed: {}",
+                        rollback_exc,
+                    )
+                return Err(SdkError(f"apply fast_loop_enabled failed: {exc}"))
         await self._ensure_ocr_foreground_advance_monitor()
         self._start_background_bridge_poll()
         trigger_mode_label = (
@@ -4894,9 +5011,11 @@ class GalgamePlugin(NekoPluginBase):
         payload = {
             "poll_interval_seconds": self._cfg.ocr_reader_poll_interval_seconds,
             "trigger_mode": self._cfg.ocr_reader_trigger_mode,
+            "fast_loop_enabled": self._cfg.ocr_reader_fast_loop_enabled,
             "summary": (
                 f"OCR/DXcam {trigger_mode_label}；间隔="
-                f"{self._cfg.ocr_reader_poll_interval_seconds:.1f}s"
+                f"{self._cfg.ocr_reader_poll_interval_seconds:.1f}s；"
+                f"Fast Loop={'开启' if self._cfg.ocr_reader_fast_loop_enabled else '关闭'}"
             ),
         }
         return Ok(payload)

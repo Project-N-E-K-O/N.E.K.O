@@ -14,6 +14,7 @@ from plugin.plugins.galgame_plugin.models import (
     STORE_LLM_VISION_MAX_IMAGE_PX,
     STORE_OCR_BACKEND_SELECTION,
     STORE_OCR_CAPTURE_BACKEND,
+    STORE_OCR_FAST_LOOP_ENABLED,
     STORE_OCR_POLL_INTERVAL_SECONDS,
     STORE_OCR_SCREEN_TEMPLATES,
     STORE_OCR_TRIGGER_MODE,
@@ -41,7 +42,11 @@ def test_config_service_persists_runtime_overrides_to_store() -> None:
         capture_backend="dxcam",
     )
     service.persist_reader_mode(reader_mode="ocr_reader")
-    service.persist_ocr_timing(poll_interval_seconds=0.5, trigger_mode="after_advance")
+    service.persist_ocr_timing(
+        poll_interval_seconds=0.5,
+        trigger_mode="after_advance",
+        fast_loop_enabled=False,
+    )
     service.persist_llm_vision(vision_enabled=False, vision_max_image_px=1024)
     service.persist_ocr_screen_templates(templates)
 
@@ -51,6 +56,7 @@ def test_config_service_persists_runtime_overrides_to_store() -> None:
         (STORE_READER_MODE, "ocr_reader"),
         (STORE_OCR_POLL_INTERVAL_SECONDS, 0.5),
         (STORE_OCR_TRIGGER_MODE, "after_advance"),
+        (STORE_OCR_FAST_LOOP_ENABLED, False),
         (STORE_LLM_VISION_ENABLED, False),
         (STORE_LLM_VISION_MAX_IMAGE_PX, 1024),
         (STORE_OCR_SCREEN_TEMPLATES, [{"id": "title", "stage": "title_stage"}]),
@@ -84,6 +90,7 @@ def test_json_copy_fast_path_preserves_copy_semantics() -> None:
 def test_galgame_config_groups_fields_and_keeps_flat_compatibility(tmp_path: Path) -> None:
     cfg = GalgameConfig(
         bridge_root=tmp_path / "bridge",
+        auto_open_ui=True,
         llm_target_entry_ref="entry-1",
         ocr_reader_enabled=True,
         ocr_reader_backend_selection="tesseract",
@@ -96,9 +103,12 @@ def test_galgame_config_groups_fields_and_keeps_flat_compatibility(tmp_path: Pat
     assert len(fields(GalgameConfig)) == 7
     assert cfg.bridge.bridge_root == tmp_path / "bridge"
     assert cfg.bridge_root == tmp_path / "bridge"
+    assert cfg.bridge.auto_open_ui is True
+    assert cfg.auto_open_ui is True
     assert cfg.llm.llm_target_entry_ref == "entry-1"
     assert cfg.ocr_reader.ocr_reader_enabled is True
     assert cfg.ocr_reader_enabled is True
+    assert cfg.ocr_reader.ocr_reader_poll_interval_seconds == 0.5
     assert cfg.ocr_reader.ocr_reader_screen_templates == [{"id": "demo", "stage": "title_stage"}]
     assert cfg.ocr_reader.ocr_reader_screen_awareness_model_enabled is True
     assert cfg.ocr_reader_screen_awareness_model_path == "screen-model.json"

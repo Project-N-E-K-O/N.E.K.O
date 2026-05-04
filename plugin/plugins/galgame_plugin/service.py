@@ -616,6 +616,7 @@ def build_config(raw_config: dict[str, Any]) -> GalgameConfig:
         scene_merge_total_threshold=max(
             1, int(galgame_obj.get("scene_merge_total_threshold") or 12)
         ),
+        auto_open_ui=_coerce_bool(galgame_obj.get("auto_open_ui"), False),
         llm_call_timeout_seconds=_coerce_float(
             llm_obj.get("llm_call_timeout_seconds"), 15.0, minimum=0.1
         ),
@@ -695,14 +696,14 @@ def build_config(raw_config: dict[str, Any]) -> GalgameConfig:
             ocr_reader_obj.get("install_timeout_seconds"), 300.0, minimum=1.0
         ),
         ocr_reader_poll_interval_seconds=_coerce_float(
-            ocr_reader_obj.get("poll_interval_seconds"), 2.0, minimum=0.1
+            ocr_reader_obj.get("poll_interval_seconds"), 0.5, minimum=0.1
         ),
         ocr_reader_trigger_mode=_coerce_ocr_trigger_mode(
             ocr_reader_obj.get("trigger_mode"),
         ),
         ocr_reader_fast_loop_enabled=_coerce_bool(
             ocr_reader_obj.get("fast_loop_enabled"),
-            False,
+            True,
         ),
         ocr_reader_no_text_takeover_after_seconds=_coerce_float(
             ocr_reader_obj.get("no_text_takeover_after_seconds"), 30.0, minimum=0.0

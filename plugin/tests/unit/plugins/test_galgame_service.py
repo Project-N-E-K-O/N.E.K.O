@@ -120,6 +120,32 @@ def test_build_config_defaults_ocr_trigger_mode_to_after_advance() -> None:
     assert cfg.ocr_reader_trigger_mode == OCR_TRIGGER_MODE_AFTER_ADVANCE
 
 
+def test_build_config_reads_auto_open_ui_flag() -> None:
+    default_cfg = galgame_service.build_config({})
+    enabled_cfg = galgame_service.build_config({"galgame": {"auto_open_ui": True}})
+    invalid_cfg = galgame_service.build_config({"galgame": {"auto_open_ui": "true"}})
+
+    assert default_cfg.auto_open_ui is False
+    assert enabled_cfg.auto_open_ui is True
+    assert invalid_cfg.auto_open_ui is False
+
+
+def test_build_config_defaults_fast_loop_enabled() -> None:
+    default_cfg = galgame_service.build_config({})
+    disabled_cfg = galgame_service.build_config({"ocr_reader": {"fast_loop_enabled": False}})
+    invalid_cfg = galgame_service.build_config({"ocr_reader": {"fast_loop_enabled": "false"}})
+
+    assert default_cfg.ocr_reader_fast_loop_enabled is True
+    assert disabled_cfg.ocr_reader_fast_loop_enabled is False
+    assert invalid_cfg.ocr_reader_fast_loop_enabled is True
+
+
+def test_build_config_defaults_ocr_poll_interval_to_fast_capture() -> None:
+    cfg = galgame_service.build_config({})
+
+    assert cfg.ocr_reader_poll_interval_seconds == 0.5
+
+
 def _candidate(
     tmp_path,
     *,
