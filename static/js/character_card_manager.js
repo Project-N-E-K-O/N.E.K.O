@@ -2290,7 +2290,7 @@ function unsubscribeItem(itemId, itemName) {
                     return;
                 }
                 const errorMsg = (data && (data.error || data.message)) || `HTTP ${response.status}`;
-                showMessage(`${window.t ? window.t('steam.unsubscribeFailed') : '取消订阅失败'}: ${errorMsg}`, 'error');
+                showMessage(window.t ? window.t('steam.unsubscribeFailed', { error: errorMsg }) : `取消订阅失败: ${errorMsg}`, 'error');
                 restoreCard();
                 return;
             }
@@ -2375,7 +2375,7 @@ function unsubscribeItem(itemId, itemName) {
                 }
             } else {
                 const errorMsg = (data && (data.error || data.message)) || (window.t ? window.t('common.unknownError') : '未知错误');
-                showMessage(`${window.t ? window.t('steam.unsubscribeFailed') : '取消订阅失败'}: ${errorMsg}`, 'error');
+                showMessage(window.t ? window.t('steam.unsubscribeFailed', { error: errorMsg }) : `取消订阅失败: ${errorMsg}`, 'error');
                 restoreCard();
             }
         })
@@ -3012,7 +3012,8 @@ function renderCardMetaBlock(container, name, isNew, rawData) {
                     if (window._cardMetas) window._cardMetas[name] = data.meta || { ...m, author: newVal };
                     showMessage(window.t ? window.t('character.cardAuthorUpdated') : '作者已更新', 'success');
                 } catch (e) {
-                    showMessage(window.t ? window.t('character.cardAuthorUpdateFailed') : '作者更新失败', 'error');
+                    const errorMessage = e.message || String(e);
+                    showMessage(window.t ? window.t('character.cardAuthorUpdateFailed', { error: errorMessage }) : '更新作者失败: ' + errorMessage, 'error');
                     authorInput.value = author;
                 } finally { saving = false; }
             };
@@ -4459,7 +4460,8 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
             } catch (e) {
                 console.error('重命名失败:', e);
                 if (typeof showAlert === 'function') {
-                    await showAlert(window.t ? window.t('character.renameError') : '重命名时发生错误');
+                    const errorMessage = e.message || String(e);
+                    await showAlert(window.t ? window.t('character.renameError', { error: errorMessage }) : '重命名失败: ' + errorMessage);
                 }
             }
         });
@@ -5419,7 +5421,7 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
                 const errorJson = JSON.parse(errorText);
                 if (errorJson.error) errorMessage = errorJson.error;
             } catch (e) { /* keep original */ }
-            showMessage((window.t ? window.t('character.saveFailedWithError') : '保存失败: ') + errorMessage, 'error');
+            showMessage(window.t ? window.t('character.saveFailedWithError', { error: errorMessage }) : '保存失败: ' + errorMessage, 'error');
             return;
         }
 
@@ -5442,13 +5444,13 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
                     if (!voiceResp.ok || voiceResult.success === false) {
                         const detail = (voiceResult && voiceResult.error) || (voiceResp.status + ' ' + voiceResp.statusText);
                         showMessage(
-                            (window.t ? window.t('character.partialSaveVoiceFailed') : '角色已保存，但音色更新失败: ') + detail,
+                            window.t ? window.t('character.partialSaveVoiceFailed', { error: detail }) : '角色已保存，但音色更新失败: ' + detail,
                             'error'
                         );
                     }
                 } catch (voiceErr) {
                     showMessage(
-                        (window.t ? window.t('character.partialSaveVoiceFailed') : '角色已保存，但音色更新失败: ') + (voiceErr.message || String(voiceErr)),
+                        window.t ? window.t('character.partialSaveVoiceFailed', { error: voiceErr.message || String(voiceErr) }) : '角色已保存，但音色更新失败: ' + (voiceErr.message || String(voiceErr)),
                         'error'
                     );
                 }
@@ -5461,13 +5463,13 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
                     if (!clearResp.ok || clearResult.success === false) {
                         const detail = (clearResult && clearResult.error) || (clearResp.status + ' ' + clearResp.statusText);
                         showMessage(
-                            (window.t ? window.t('character.partialSaveVoiceFailed') : '角色已保存，但音色更新失败: ') + detail,
+                            window.t ? window.t('character.partialSaveVoiceFailed', { error: detail }) : '角色已保存，但音色更新失败: ' + detail,
                             'error'
                         );
                     }
                 } catch (clearErr) {
                     showMessage(
-                        (window.t ? window.t('character.partialSaveVoiceFailed') : '角色已保存，但音色更新失败: ') + (clearErr.message || String(clearErr)),
+                        window.t ? window.t('character.partialSaveVoiceFailed', { error: clearErr.message || String(clearErr) }) : '角色已保存，但音色更新失败: ' + (clearErr.message || String(clearErr)),
                         'error'
                     );
                 }
@@ -5532,7 +5534,8 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
         await loadCharacterCards();
     } catch (error) {
         console.error('保存猫娘失败:', error);
-        showMessage(window.t ? window.t('character.saveError') : '保存时发生错误: ' + error.message, 'error');
+        const errorMessage = error.message || String(error);
+        showMessage(window.t ? window.t('character.saveError', { error: errorMessage }) : '保存时发生错误: ' + errorMessage, 'error');
     } finally {
         form.dataset.submitting = 'false';
     }
@@ -9137,7 +9140,8 @@ async function renameMaster() {
             showMessage(result.error || (window.t ? window.t('character.renameFailed') : '重命名失败'), 'error');
         }
     } catch (e) {
-        showMessage(window.t ? window.t('character.renameError') : '重命名时发生错误', 'error');
+        const errorMessage = e.message || String(e);
+        showMessage(window.t ? window.t('character.renameError', { error: errorMessage }) : '重命名失败: ' + errorMessage, 'error');
     }
 }
 

@@ -1849,7 +1849,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         showStatus(t('live2d.pixiInitialized', 'PIXI 初始化完成'));
     } catch (pixiError) {
         console.error('[模型管理] PIXI 初始化失败:', pixiError);
-        showStatus(t('live2d.pixiInitFailed', `PIXI 初始化失败: ${pixiError.message}`));
+        const errMsg = (pixiError && typeof pixiError.message === 'string') ? pixiError.message : String(pixiError ?? 'Unknown error');
+        showStatus(t('live2d.pixiInitFailed', `PIXI 初始化失败: ${errMsg}`, { error: errMsg }));
     }
 
     // 先加载模型列表
@@ -1898,7 +1899,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         await switchModelDisplay(savedModelType, savedSubType);
     } catch (switchError) {
         console.error('[模型管理] 切换模型显示模式失败:', switchError);
-        showStatus(t('live2d.switchDisplayFailed', `切换显示模式失败: ${switchError.message}`), 3000);
+        const errMsg = (switchError && typeof switchError.message === 'string') ? switchError.message : String(switchError ?? 'Unknown error');
+        showStatus(t('live2d.switchDisplayFailed', `切换显示模式失败: ${errMsg}`, { error: errMsg }), 3000);
     }
 
     // 注意：loadCurrentCharacterModel() 的调用已移到所有事件监听器注册之后
@@ -2719,7 +2721,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                     window.vrmManager = vrmManager;
                 } catch (error) {
                     console.error('VRM 管理器创建失败:', error);
-                    showStatus(t('live2d.vrmInitFailed', `VRM 管理器创建失败: ${error.message}`));
+                    const errMsg = (error && typeof error.message === 'string') ? error.message : String(error ?? 'Unknown error');
+                    showStatus(t('live2d.vrmInitFailed', `VRM 管理器创建失败: ${errMsg}`, { error: errMsg }));
                     return;
                 }
             }
@@ -2770,7 +2773,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
             } catch (error) {
                 console.error('VRM 场景初始化失败:', error);
-                showStatus(t('live2d.vrmInitFailed', `VRM 场景初始化失败: ${error.message}`));
+                const errMsg = (error && typeof error.message === 'string') ? error.message : String(error ?? 'Unknown error');
+                showStatus(t('live2d.vrmInitFailed', `VRM 场景初始化失败: ${errMsg}`, { error: errMsg }));
             }
             } else {
                 // MMD 子类型：暂停 VRM 渲染循环，避免后台仍然绘制已缓存的 VRM 模型
@@ -3311,7 +3315,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                     showStatus(t('live2d.vrmInitialized', 'VRM 管理器初始化成功'));
                 } catch (error) {
                     console.error('VRM 管理器初始化失败:', error);
-                    showStatus(t('live2d.vrmInitFailed', `VRM 管理器初始化失败: ${error.message}`));
+                    const errMsg = (error && typeof error.message === 'string') ? error.message : String(error ?? 'Unknown error');
+                    showStatus(t('live2d.vrmInitFailed', `VRM 管理器初始化失败: ${errMsg}`, { error: errMsg }));
                     return;
                 }
             }
@@ -3328,7 +3333,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                     console.log('[模型管理] VRM 场景初始化成功');
                 } catch (initError) {
                     console.error('[模型管理] 场景初始化失败:', initError);
-                    showStatus(t('live2d.vrmInitFailed', `场景初始化失败: ${initError.message}`), 5000);
+                    const errMsg = (initError && typeof initError.message === 'string') ? initError.message : String(initError ?? 'Unknown error');
+                    showStatus(t('live2d.vrmInitFailed', `场景初始化失败: ${errMsg}`, { error: errMsg }), 5000);
                     return;
                 }
             }
@@ -3487,7 +3493,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                 showStatus(t('live2d.vrmModelLoaded', `VRM 模型 ${modelPath} 加载成功`, { model: modelPath }));
             } catch (error) {
                 console.error('加载 VRM 模型失败:', error);
-                showStatus(t('live2d.vrmModelLoadFailed', `加载 VRM 模型失败: ${error.message}。您仍可以保存模型设置。`));
+                const errMsg = (error && typeof error.message === 'string') ? error.message : String(error ?? 'Unknown error');
+                showStatus(t('live2d.vrmModelLoadFailed', `加载 VRM 模型失败: ${errMsg}。您仍可以保存模型设置。`, { error: errMsg }));
                 // 即使模型加载失败，也尝试加载动作列表（可能用户想预览其他动作）
                 try {
                     await loadVRMAnimations(false);
@@ -3732,7 +3739,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                     updateVRMAnimationPlayButtonIcon();
                 } catch (error) {
                     console.error('播放 VRM 动作失败:', error);
-                    showStatus(t('live2d.vrmAnimation.animationPlayFailed', `播放动作失败: ${error.message}`));
+                    const errMsg = (error && typeof error.message === 'string') ? error.message : String(error ?? 'Unknown error');
+                    showStatus(t('live2d.vrmAnimation.animationPlayFailed', `播放动作失败: ${errMsg}`, { error: errMsg }));
                     isVrmAnimationPlaying = false;
                     updateVRMAnimationPlayButtonIcon();
                 }
