@@ -2366,12 +2366,13 @@ async def add_catgirl(request: Request):
 
     characters['猫娘'][key] = catgirl_data
     await _config_manager.asave_characters(characters)
+    await _mark_new_character_greeting_pending_safe(_config_manager, key, "create")
+
     # Fast path：新增只需为 `key` 这一个 catgirl 分配资源 + 启动线程，不影响其它角色。
     init_one_catgirl = get_init_one_catgirl()
     await init_one_catgirl(key, is_new=True)
 
     memory_server_reloaded = await notify_memory_server_reload(reason=f"新角色: {key}")
-    await _mark_new_character_greeting_pending_safe(_config_manager, key, "create")
 
     return {
         "success": True,
@@ -4010,14 +4011,14 @@ async def save_character_card(request: Request):
         
         # 保存到characters.json
         await _config_manager.asave_characters(characters)
+
+        if is_new_character:
+            await _mark_new_character_greeting_pending_safe(_config_manager, chara_name, "character_card_save")
         
         # 自动重新加载配置
         initialize_character_data = get_initialize_character_data()
         if initialize_character_data:
             await initialize_character_data()
-        
-        if is_new_character:
-            await _mark_new_character_greeting_pending_safe(_config_manager, chara_name, "character_card_save")
 
         logger.info(f"角色卡已成功保存到characters.json: {chara_name}")
         return {"success": True, "character_card_name": chara_name}
@@ -4736,6 +4737,7 @@ async def import_character_card(
 
             # 保存到文件
             await _config_manager.asave_characters(characters)
+            await _mark_new_character_greeting_pending_safe(_config_manager, character_name, "import")
 
             # 刷新内存中的角色数据，确保磁盘和内存同步
             initialize_character_data = get_initialize_character_data()
@@ -4765,7 +4767,6 @@ async def import_character_card(
                 await asyncio.to_thread(_write_card_meta, meta_path, meta)
             except Exception as meta_err:
                 logger.warning(f"[导入角色卡] 写入卡面元数据失败: {meta_err}")
-                await _mark_new_character_greeting_pending_safe(_config_manager, character_name, "import")
                 return JSONResponse({
                     "success": True,
                     "error": f"角色数据已导入，但卡面元数据写入失败: {meta_err}",
@@ -4810,7 +4811,6 @@ async def import_character_card(
             except Exception as face_err:
                 logger.warning(f"[导入角色卡] 保存载体 PNG 为卡面失败: {face_err}")
 
-        await _mark_new_character_greeting_pending_safe(_config_manager, character_name, "import")
         return JSONResponse({
             'success': True,
             'character_name': character_name,

@@ -17,6 +17,8 @@
     const S = window.appState;
     const C = window.appConst;
     const USER_ACTIVITY_CANCEL_GRACE_MS = 700;
+    const GREETING_CHECK_RETRY_BASE_MS = 800;
+    const GREETING_CHECK_RETRY_MAX_MS = 5000;
     let _pendingUserActivityCancelTimer = 0;
     let _pendingUserActivityCancelTurnId = null;
 
@@ -574,6 +576,7 @@
             console.log(window.t('console.heartbeatStarted'));
 
             // ── 首次连接 / 切换角色：标记 greeting 意图，若模型已就绪则立即发送 ──
+            _resetGreetingCheckRetry(true);
             S._greetingCheckPending = true;
             S._greetingCheckIsSwitch = !!S._pendingGreetingSwitch;
             S._pendingGreetingSwitch = false;
@@ -2001,7 +2004,6 @@
     }
     function _isGreetingCheckBlocked() {
         if (!S.socket || S.socket.readyState !== WebSocket.OPEN) return true;
-        if (window.location && /^\/chat(?:\/|$)/.test(window.location.pathname || '')) return true;
         if (_isTutorialBlockingGreeting()) return true;
         if (S.isRecording || S.isPlaying) return true;
         if (S.assistantTurnId && S.assistantTurnId !== S.assistantTurnCompletedId) return true;
@@ -2017,17 +2019,29 @@
             '.storage-location-modal'
         ]);
     }
+    function _resetGreetingCheckRetry(clearTimer) {
+        S._greetingCheckRetryDelay = 0;
+        if (clearTimer && S._greetingCheckRetryTimer) {
+            clearTimeout(S._greetingCheckRetryTimer);
+            S._greetingCheckRetryTimer = 0;
+        }
+    }
     function _scheduleGreetingCheckRetry() {
         if (S._greetingCheckRetryTimer) {
             clearTimeout(S._greetingCheckRetryTimer);
         }
+        var delay = Number(S._greetingCheckRetryDelay) || GREETING_CHECK_RETRY_BASE_MS;
+        S._greetingCheckRetryDelay = Math.min(delay * 2, GREETING_CHECK_RETRY_MAX_MS);
         S._greetingCheckRetryTimer = setTimeout(function () {
             S._greetingCheckRetryTimer = 0;
             _sendGreetingCheckIfReady();
-        }, 800);
+        }, delay);
     }
     function _sendGreetingCheckIfReady() {
-        if (!S._greetingCheckPending || !S._modelReady) return;
+        if (!S._greetingCheckPending || !S._modelReady) {
+            if (!S._greetingCheckPending) _resetGreetingCheckRetry(true);
+            return;
+        }
         if (_isGreetingCheckBlocked()) {
             _scheduleGreetingCheckRetry();
             return;
@@ -2040,10 +2054,7 @@
                     language: (window.i18next && window.i18next.language) || ''
                 }));
                 S._greetingCheckPending = false;
-                if (S._greetingCheckRetryTimer) {
-                    clearTimeout(S._greetingCheckRetryTimer);
-                    S._greetingCheckRetryTimer = 0;
-                }
+                _resetGreetingCheckRetry(true);
                 console.log('[greeting_check] sent, is_switch=' + !!S._greetingCheckIsSwitch);
             }
         } catch (e) {

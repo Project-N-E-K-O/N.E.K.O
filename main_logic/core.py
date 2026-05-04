@@ -4093,6 +4093,7 @@ class LLMSessionManager:
         delivered = False
         proactive_sid = None
         history_len = None
+        appended_snapshot = None
         try:
             async with self._proactive_write_lock:
                 if self._is_voice_session_active_or_starting():
@@ -4116,15 +4117,19 @@ class LLMSessionManager:
                     delivered = await self.session.prompt_ephemeral(instruction)
                 finally:
                     _proactive_expected_sid.reset(_sid_token)
+                if history_len is not None and isinstance(history, list) and len(history) > history_len:
+                    appended_snapshot = list(history[history_len:])
                 logger.info("[%s] trigger_new_character_greeting: delivered=%s", self.lanlan_name, delivered)
         finally:
             try:
                 interrupted = bool(proactive_sid) and self.current_speech_id != proactive_sid
                 if (not delivered or interrupted) and history_len is not None:
                     history = getattr(self.session, "_conversation_history", None)
-                    if isinstance(history, list) and len(history) > history_len:
-                        del history[history_len:]
-                if delivered and proactive_sid and self.current_speech_id == proactive_sid:
+                    if isinstance(history, list) and appended_snapshot:
+                        suffix_len = len(appended_snapshot)
+                        if suffix_len <= len(history) and history[-suffix_len:] == appended_snapshot:
+                            del history[-suffix_len:]
+                if delivered:
                     try:
                         await remove_pending(config_manager, self.lanlan_name)
                     except Exception as exc:
