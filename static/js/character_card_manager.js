@@ -3074,9 +3074,9 @@ async function openModelManagerForCharacterForm(form, fallbackName) {
         'toolbar=no,location=no,status=no,menubar=no,scrollbars=yes,resizable=yes,width=' + screen.availWidth + ',height=' + screen.availHeight + ',top=0,left=0');
     if (!popup) {
         if (typeof showAlert === 'function') await showAlert(window.t ? window.t('character.allowPopups') : '请允许弹窗！');
-        // 弹窗被拦截：回滚本次/此前已创建的临时角色，避免用户直接刷新/关页时残留空记录
-        if (form && form._autoCreated) {
-            await rollbackAutoCreatedCatgirl(form, form._autoCreatedName);
+        // 弹窗被拦截：回滚本次及此前重命名遗留的 detached 临时角色，避免用户直接刷新/关页时残留空记录
+        if (form && (form._autoCreated || form._autoCreatedDetachedName)) {
+            await rollbackAutoCreatedCatgirl(form);
         }
         return;
     }
@@ -4612,7 +4612,13 @@ async function closeCatgirlPanel() {
         window.removeEventListener('neko:character-personality-updated', currentForm._characterPersonalityUpdateHandler);
         delete currentForm._characterPersonalityUpdateHandler;
     }
-    const dependentSaved = !!(currentForm && currentForm._autoCreatedDependentPopupSaved);
+    // _autoCreatedDependentPopupSaved 由 500ms 轮询置位，存在 popup 已关到 timer 下次触发之间的窗口；
+    // 同时直接读 popup._modelManagerHasSaved 兜底，避免误把刚保存好的临时角色回滚掉
+    const dependentPopupForCheck = currentForm && currentForm._autoCreatedDependentPopup;
+    const dependentSaved = !!(currentForm && (
+        currentForm._autoCreatedDependentPopupSaved
+        || (dependentPopupForCheck && dependentPopupForCheck._modelManagerHasSaved)
+    ));
     if (!dependentSaved && hasOpenAutoCreatedDependentPopup(currentForm)) {
         currentForm._autoCreatedRollbackWhenDependentCloses = true;
     } else if (!dependentSaved) {

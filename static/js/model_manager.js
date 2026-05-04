@@ -949,6 +949,8 @@ async function offerCardFaceAfterModelSave(state = {}) {
         });
 
         if (cardFaceChoice === 'dismiss') {
+            // 用户已显式取消卡面流程，但模型保存本身已成功；清掉变更标记避免下次保存重复弹同样的提示
+            window._modelManagerModelChangedSinceSave = false;
             return;
         }
 
