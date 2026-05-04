@@ -2146,6 +2146,7 @@
             this.messageHandler = this.onWindowMessage.bind(this);
             this.skipButtonClickHandler = this.onSkipButtonClick.bind(this);
             this.interactionGuardHandler = this.onInteractionGuard.bind(this);
+            this.mobileTouchInteractionPassthrough = this.shouldUseMobileTouchInteractionPassthrough();
             this.externalizedChatSpotlightKind = '';
             const capabilityApi = window.homeTutorialPlatformCapabilities;
             this.platformCapabilities = capabilityApi && typeof capabilityApi.create === 'function'
@@ -8770,6 +8771,24 @@
             this.destroy();
         }
 
+        shouldUseMobileTouchInteractionPassthrough() {
+            const coarsePointer = !!(
+                window.matchMedia
+                && window.matchMedia('(hover: none), (pointer: coarse)').matches
+            );
+            const narrowViewport = Math.max(
+                window.innerWidth || 0,
+                document.documentElement ? document.documentElement.clientWidth || 0 : 0
+            ) <= 768;
+            const touchCapable = !!(
+                'ontouchstart' in window
+                || (navigator && Number(navigator.maxTouchPoints || 0) > 0)
+            );
+
+            // 移动触控端没有幽灵鼠标接管语义，不能用全局捕获守卫吞掉页面点击。
+            return !!((coarsePointer || touchCapable) && narrowViewport);
+        }
+
         isAllowedTutorialInteractionTarget(target) {
             if (!target || typeof target.closest !== 'function') {
                 return false;
@@ -8839,10 +8858,15 @@
                 return;
             }
 
+            const isAllowedTarget = this.isAllowedTutorialInteractionTarget(event.target);
             if (
-                this.isAllowedTutorialInteractionTarget(event.target)
+                isAllowedTarget
                 || this.isSystemDialogInteractionTarget(event.target)
             ) {
+                return;
+            }
+
+            if (this.mobileTouchInteractionPassthrough) {
                 return;
             }
 
