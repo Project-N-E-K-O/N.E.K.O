@@ -2629,3 +2629,117 @@ async def test_heartbeat_sweep_rechecks_expired_inside_lock(monkeypatch):
             "sweep finalized a route whose heartbeat had recovered "
             "before the lock was acquired; in-lock recheck is missing"
         )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_route_inactive_short_circuit_keeps_create_lock_when_peer_waits(
+    monkeypatch,
+):
+    """CR Major (PR #1127 r3183217909): when ``_run_game_chat`` hits the
+    post-lock route_inactive short-circuit AND a peer task is parked on
+    the per-key create lock, the eviction must NOT pop the lock from
+    ``_game_session_create_locks``. Otherwise the parked waiter and any
+    future arrival end up on two distinct ``asyncio.Lock`` instances and
+    the build-serialization invariant breaks — concurrent creators can
+    both run ``_build_and_register_game_session`` and the loser's
+    ``OmniOfflineClient`` leaks via the ``cached is not entry`` branch.
+
+    Mirrors the existing waiter-aware pattern in
+    ``_get_or_create_session``'s exception path
+    (``main_routers/game_router.py:3304-3306``).
+    """
+    with reset_game_route_state():
+        state = _activate_route("Lan", "soccer", "match_route_inactive_waiter")
+        key = game_router._game_session_key(
+            "Lan", "soccer", "match_route_inactive_waiter",
+        )
+        # Drop any leftovers; we'll seed the cache directly so
+        # _get_or_create_session cache-hits without touching the create
+        # lock.
+        game_router._game_sessions.pop(key, None)
+        game_router._game_session_create_locks.pop(key, None)
+
+        fake_session = _FakeOmniSession(name="route_inactive_waiter")
+        entry = {
+            "session": fake_session,
+            "reply_chunks": [],
+            "lanlan_name": "Lan",
+            "lanlan_prompt": "",
+            "source": {},
+            "last_activity": 0,
+            "lock": asyncio.Lock(),
+            "instructions": "",
+        }
+        game_router._game_sessions[key] = entry
+
+        # Seed the create lock with a real parked waiter. Holder owns it
+        # for the duration of the _run_game_chat call so the peer task
+        # cannot wake up — its future stays in ``_waiters``.
+        create_lock = asyncio.Lock()
+        game_router._game_session_create_locks[key] = create_lock
+        await create_lock.acquire()
+
+        async def _peer_waiter():
+            async with create_lock:
+                pass
+
+        peer_task = asyncio.create_task(_peer_waiter())
+        # Let the peer reach the await on lock.acquire() so it registers
+        # in ``_waiters``.
+        for _ in range(5):
+            await asyncio.sleep(0)
+        waiters_before = getattr(create_lock, "_waiters", None)
+        assert waiters_before, (
+            "Test setup: peer task did not register as a waiter on the "
+            "create lock."
+        )
+
+        # Patch _get_or_create_session to (a) flip the route to inactive
+        # AFTER the pre-create gate, then (b) return our pre-seeded entry.
+        # This drives _run_game_chat into the post-lock route_inactive
+        # branch where the under-test pop lives.
+        original_get_or_create = game_router._get_or_create_session
+
+        async def _flip_then_return(*args, **kwargs):
+            state["_exit_flow_started"] = True
+            return entry
+
+        monkeypatch.setattr(
+            game_router, "_get_or_create_session", _flip_then_return,
+        )
+
+        try:
+            result = await asyncio.wait_for(
+                game_router._run_game_chat(
+                    "soccer",
+                    "match_route_inactive_waiter",
+                    {"kind": "free-ball", "lanlan_name": "Lan"},
+                ),
+                timeout=2.0,
+            )
+        finally:
+            create_lock.release()
+            await asyncio.wait_for(peer_task, timeout=1.0)
+            monkeypatch.setattr(
+                game_router, "_get_or_create_session", original_get_or_create,
+            )
+
+        assert result.get("skipped") == "route_inactive"
+        assert result.get("line") == ""
+        # Entry was evicted from the cache (route_inactive branch fired).
+        assert key not in game_router._game_sessions
+        # Orphan client closed exactly once.
+        assert fake_session.close_calls == 1
+        # CRITICAL invariant: the create lock is STILL in the registry
+        # because a peer waiter was parked on it. Pre-fix the
+        # unconditional pop would have removed it, splitting peers
+        # across two lock instances.
+        assert key in game_router._game_session_create_locks, (
+            "route_inactive short-circuit popped the create lock while a "
+            "peer waiter was still parked on it; peers will desync onto "
+            "distinct Lock instances and concurrent builds can race."
+        )
+        assert (
+            game_router._game_session_create_locks[key] is create_lock
+        ), "registry must point at the SAME lock instance the waiter is on"

@@ -3947,7 +3947,10 @@ async def _run_game_chat(
                 cached = _game_sessions.get(key)
                 if cached is entry:
                     _game_sessions.pop(key, None)
-                    _game_session_create_locks.pop(key, None)
+                    create_lock = _game_session_create_locks.get(key)
+                    waiters = getattr(create_lock, "_waiters", None) if create_lock else None
+                    if not waiters:
+                        _game_session_create_locks.pop(key, None)
                     orphan_session_to_close = entry.get('session')
                 short_circuit_route_inactive = True
 
