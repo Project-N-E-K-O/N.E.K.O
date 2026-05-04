@@ -623,6 +623,58 @@ SOCCER_PREGAME_CONTEXT_PROMPTS = {
 }
 
 
+SOCCER_PREGAME_CONTEXT_FORMATTER_LABELS = {
+    "zh": {
+        "header": "\n开局上下文（由近期记录分析得到）：",
+        "usage": "使用方式：这是本局开局基调，不是硬脚本。你要遵守 tonePolicy、difficultyPolicy、moodPolicy、specialPolicies 和 postgameCarryback；但局内玩家语言、比分和事件仍可自然改变你的心情与难度。不要把 neutral_play 强行解释成哄开心或关系修复。",
+    },
+    "en": {
+        "header": "\nOpening context (analyzed from recent records):",
+        "usage": "Use: this is the opening tone for this match, not a hard script. Follow tonePolicy, difficultyPolicy, moodPolicy, specialPolicies, and postgameCarryback; in-match player language, score, and events may still naturally change your mood and difficulty. Do not force neutral_play into comfort or relationship repair.",
+    },
+    "ja": {
+        "header": "\n開局コンテキスト（最近の記録から分析）：",
+        "usage": "使用方法：これは本局の開局基調であり、固定脚本ではありません。tonePolicy、difficultyPolicy、moodPolicy、specialPolicies、postgameCarryback に従いつつ、局内のプレイヤー発言、スコア、イベントで気分や難易度は自然に変わり得ます。neutral_play を無理に慰めや関係修復として解釈しないでください。",
+    },
+    "ko": {
+        "header": "\n시작 컨텍스트(최근 기록 분석 결과):",
+        "usage": "사용 방식: 이것은 이번 판의 시작 기조이며 고정 스크립트가 아닙니다. tonePolicy, difficultyPolicy, moodPolicy, specialPolicies, postgameCarryback 을 따르되, 게임 중 플레이어의 말, 점수, 이벤트는 여전히 자연스럽게 기분과 난이도를 바꿀 수 있습니다. neutral_play 를 억지로 위로나 관계 회복으로 해석하지 마세요.",
+    },
+    "ru": {
+        "header": "\nНачальный контекст (проанализирован из недавних записей):",
+        "usage": "Использование: это начальный тон этой игры, а не жесткий сценарий. Следуй tonePolicy, difficultyPolicy, moodPolicy, specialPolicies и postgameCarryback; речь игрока, счет и события внутри матча всё еще могут естественно менять настроение и сложность. Не трактуй neutral_play принудительно как утешение или восстановление отношений.",
+    },
+}
+
+
+SOCCER_ANGER_PRESSURE_CAP_MESSAGES = {
+    "zh": (
+        "这是生气/惩罚/哄生气场景的狂怒压制上限。达到上限后不能继续 angry + max；"
+        "可以用累了、体力耗尽、发泄完一部分、冷处理或要求补偿作为自然转折。"
+    ),
+    "en": (
+        "This is the rage-pressure cap for angry/punishing/appeasing-anger scenes. "
+        "After the cap is reached, do not continue with angry + max; use fatigue, "
+        "running out of stamina, having vented partly, cold treatment, or asking "
+        "for compensation as a natural turn."
+    ),
+    "ja": (
+        "これは怒り/罰/怒りをなだめる場面での強い圧制上限です。上限到達後は angry + max を続けないでください。"
+        "疲れた、体力切れ、少し発散した、距離を置く、埋め合わせを求める等を自然な転換に使えます。"
+    ),
+    "ko": (
+        "이것은 화남/벌주기/화난 상태를 달래는 장면의 강한 압박 상한입니다. 상한에 도달한 뒤에는 angry + max 를 계속하지 마세요. "
+        "피곤함, 체력 소진, 일부 분풀이 완료, 냉담한 태도, 보상 요구 등을 자연스러운 전환으로 사용할 수 있습니다."
+    ),
+    "ru": (
+        "Это предел яростного давления для сцен злости/наказания/успокаивания злости. "
+        "После достижения предела нельзя продолжать angry + max; используй усталость, "
+        "исчерпанную выносливость, частичную разрядку, холодную дистанцию или просьбу "
+        "о компенсации как естественный поворот."
+    ),
+}
+
+
 def get_soccer_system_prompt(lang: str | None = None) -> str:
     return _localized_template(SOCCER_SYSTEM_PROMPTS, lang)
 
@@ -637,3 +689,12 @@ def get_soccer_quick_lines_user_prompt(lang: str | None = None) -> str:
 
 def get_soccer_pregame_context_prompt(lang: str | None = None) -> str:
     return _localized_template(SOCCER_PREGAME_CONTEXT_PROMPTS, lang)
+
+
+def get_soccer_pregame_context_formatter_labels(lang: str | None = None) -> dict[str, str]:
+    prompt_lang = _normalize_prompt_lang(lang)
+    return SOCCER_PREGAME_CONTEXT_FORMATTER_LABELS.get(prompt_lang) or SOCCER_PREGAME_CONTEXT_FORMATTER_LABELS["zh"]
+
+
+def get_soccer_anger_pressure_cap_message(lang: str | None = None) -> str:
+    return _localized_template(SOCCER_ANGER_PRESSURE_CAP_MESSAGES, lang)
